@@ -1,0 +1,95 @@
+Chapter: VerifyCache
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha512
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+
+ The VerifyCache stores previously verified CDX digest results;
+ repeated loads of the same binary skip full re-verification
+ and return the cached trust decision.
+
+ We say:
+
+Section: Cache Types
+
+  VerifyCacheEntry = record {
+    content-hash : Text,
+    result : VerifyResult
+  }
+
+  VerifyCache = record {
+    entries : HamtMap VerifyCacheEntry,
+    hits : Integer between 0 and 4294967295,
+    misses : Integer between 0 and 4294967295
+  }
+
+Section: Cache Operations
+
+  verify-cache-empty : VerifyCache
+  verify-cache-empty = VerifyCache { entries = hamt-empty, hits = 0, misses = 0 }
+
+  verify-cache-lookup : VerifyCache, Text -> Maybe VerifyCacheEntry
+  verify-cache-lookup (cache) (hash) = hamt-get (cache.entries) hash
+
+  verify-cache-store : VerifyCache, Text, VerifyResult -> VerifyCache
+  verify-cache-store (cache) (hash) (result) =
+    let entry = VerifyCacheEntry { content-hash = hash, result = result }
+    in VerifyCache {
+      entries = hamt-set (cache.entries) hash entry,
+      hits = cache.hits,
+      misses = cache.misses
+    }
+
+  verify-cache-hit-count : VerifyCache -> Integer
+  verify-cache-hit-count (cache) = cache.hits
+
+  verify-cache-miss-count : VerifyCache -> Integer
+  verify-cache-miss-count (cache) = cache.misses
+
+Section: Cached Verification
+
+  verify-cdx-cached : List Integer, TrustLattice, Policy, Integer, BareFactStore, Integer, VerifyCache -> CachedResult
+  verify-cdx-cached (binary) (lattice) (policy) (current-time) (store) (fuel) (cache) =
+    let hash = cdx-content-hash-hex binary
+    in let cached = verify-cache-lookup cache hash
+    in when cached
+      is Just (entry) -> CachedResult {
+        result = entry.result,
+        cache = VerifyCache { entries = cache.entries, hits = cache.hits + 1, misses = cache.misses },
+        was-cached = True
+      }
+      is None ->
+        let result = verify-cdx-full binary lattice policy current-time store fuel
+        in CachedResult {
+          result = result,
+          cache = verify-cache-store (VerifyCache { entries = cache.entries, hits = cache.hits, misses = cache.misses + 1 }) hash result,
+          was-cached = False
+        }
+
+  CachedResult = record {
+    result : VerifyResult,
+    cache : VerifyCache,
+    was-cached : Boolean
+  }
+
+  cdx-content-hash-hex : List Integer -> Text
+  cdx-content-hash-hex (binary) =
+    let hash-bytes = cdx-read-content-hash binary
+    in bytes-to-hex-range hash-bytes 0 32
+
+  verify-cache-invalidate : VerifyCache, Text -> VerifyCache
+  verify-cache-invalidate (cache) (hash) =
+    VerifyCache {
+      entries = hamt-remove (cache.entries) hash,
+      hits = cache.hits,
+      misses = cache.misses
+    }
+
+Page 1

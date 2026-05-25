@@ -1,0 +1,154 @@
+Chapter: FFT
+
+ Fast Fourier Transform using fixed-point arithmetic (scale 1000).
+ Cooley-Tukey radix-2 DIT algorithm. Input length must be a power
+ of 2. Operates on parallel real/imaginary arrays.
+
+ We say:
+
+Section: Constants
+  fft-scale : Integer = 1000
+
+Section: Complex Pair
+  FftSignal = record {
+    real : List Integer,
+    imag : List Integer,
+    length : Integer
+  }
+
+  fft-signal-new : List Integer -> FftSignal
+  fft-signal-new (samples) = FftSignal { real = samples, imag = fft-zeros (list-length samples) 0 [], length = list-length samples }
+
+  fft-zeros : Integer, Integer, List Integer -> List Integer
+  fft-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else fft-zeros n (i + 1) (list-push acc 0)
+
+Section: Trig Tables
+  fft-cos-table : Integer -> List Integer
+  fft-cos-table (n) = fft-build-cos n 0 []
+
+  fft-build-cos : Integer, Integer, List Integer -> List Integer
+  fft-build-cos (n) (k) (acc) =
+    if k >= n then acc
+    else fft-build-cos n (k + 1) (list-push acc (fft-cos-approx (k * 6283 / n)))
+
+  fft-sin-table : Integer -> List Integer
+  fft-sin-table (n) = fft-build-sin n 0 []
+
+  fft-build-sin : Integer, Integer, List Integer -> List Integer
+  fft-build-sin (n) (k) (acc) =
+    if k >= n then acc
+    else fft-build-sin n (k + 1) (list-push acc (fft-sin-approx (k * 6283 / n)))
+
+  fft-cos-approx : Integer -> Integer
+  fft-cos-approx (milli-rad) =
+    let x2 = milli-rad * milli-rad / fft-scale
+    in let x4 = x2 * x2 / fft-scale
+    in fft-scale - x2 / 2 + x4 / 24
+
+  fft-sin-approx : Integer -> Integer
+  fft-sin-approx (milli-rad) =
+    let x = milli-rad
+    in let x3 = x * x / fft-scale * x / fft-scale
+    in x - x3 / 6
+
+Section: Bit Reversal
+  fft-bit-reverse : Integer, Integer -> Integer
+  fft-bit-reverse (x) (bits) = fft-rev-loop x bits 0 0
+
+  fft-rev-loop : Integer, Integer, Integer, Integer -> Integer
+  fft-rev-loop (x) (bits) (i) (acc) =
+    if i >= bits then acc
+    else fft-rev-loop (bit-shru x 1) bits (i + 1) (bit-or (bit-shl acc 1) (bit-and x 1))
+
+  fft-log2 : Integer -> Integer
+  fft-log2 (n) = fft-log2-loop n 0
+
+  fft-log2-loop : Integer, Integer -> Integer
+  fft-log2-loop (n) (acc) =
+    if n <= 1 then acc
+    else fft-log2-loop (bit-shru n 1) (acc + 1)
+
+  fft-bit-reverse-copy : FftSignal -> FftSignal
+  fft-bit-reverse-copy (sig) =
+    let bits = fft-log2 (sig.length)
+    in fft-brc-loop sig bits 0 (fft-zeros (sig.length) 0 []) (fft-zeros (sig.length) 0 [])
+
+  fft-brc-loop : FftSignal, Integer, Integer, List Integer, List Integer -> FftSignal
+  fft-brc-loop (sig) (bits) (i) (re) (im) =
+    if i >= sig.length then FftSignal { real = re, imag = im, length = sig.length }
+    else let j = fft-bit-reverse i bits
+    in fft-brc-loop sig bits (i + 1) (list-set-at re j (list-at (sig.real) i)) (list-set-at im j (list-at (sig.imag) i))
+
+Section: FFT Core
+  fft-forward : FftSignal -> FftSignal
+  fft-forward (sig) =
+    let reversed = fft-bit-reverse-copy sig
+    in let cos-t = fft-cos-table (sig.length)
+    in let sin-t = fft-sin-table (sig.length)
+    in fft-stages reversed cos-t sin-t 2 (sig.length)
+
+  fft-stages : FftSignal, List Integer, List Integer, Integer, Integer -> FftSignal
+  fft-stages (sig) (cos-t) (sin-t) (size) (n) =
+    if size > n then sig
+    else let sig2 = fft-butterfly-pass sig cos-t sin-t 0 size n
+    in fft-stages sig2 cos-t sin-t (size * 2) n
+
+  fft-butterfly-pass : FftSignal, List Integer, List Integer, Integer, Integer, Integer -> FftSignal
+  fft-butterfly-pass (sig) (cos-t) (sin-t) (start) (size) (n) =
+    if start >= n then sig
+    else let sig2 = fft-butterfly-group sig cos-t sin-t start size n 0
+    in fft-butterfly-pass sig2 cos-t sin-t (start + size) size n
+
+  fft-butterfly-group : FftSignal, List Integer, List Integer, Integer, Integer, Integer, Integer -> FftSignal
+  fft-butterfly-group (sig) (cos-t) (sin-t) (start) (size) (n) (k) =
+    if k >= size / 2 then sig
+    else let i = start + k
+    in let j = i + size / 2
+    in let tw-idx = k * n / size
+    in let tw-re = list-at cos-t tw-idx
+    in let tw-im = -(list-at sin-t tw-idx)
+    in let jr = list-at (sig.real) j
+    in let ji = list-at (sig.imag) j
+    in let tr = (jr * tw-re - ji * tw-im) / fft-scale
+    in let ti = (jr * tw-im + ji * tw-re) / fft-scale
+    in let ir = list-at (sig.real) i
+    in let ii = list-at (sig.imag) i
+    in let new-re = list-set-at (list-set-at (sig.real) i (ir + tr)) j (ir - tr)
+    in let new-im = list-set-at (list-set-at (sig.imag) i (ii + ti)) j (ii - ti)
+    in fft-butterfly-group (FftSignal { real = new-re, imag = new-im, length = sig.length }) cos-t sin-t start size n (k + 1)
+
+Section: Magnitude
+  fft-magnitude : FftSignal, Integer -> Integer
+  fft-magnitude (sig) (bin) =
+    let re = list-at (sig.real) bin
+    in let im = list-at (sig.imag) bin
+    in fft-isqrt (re * re + im * im)
+
+  fft-isqrt : Integer -> Integer
+  fft-isqrt (n) =
+    if n <= 0 then 0
+    else fft-isqrt-loop n (n / 2 + 1)
+
+  fft-isqrt-loop : Integer, Integer -> Integer
+  fft-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess
+    else fft-isqrt-loop n next
+
+Section: Queries
+  fft-dc : FftSignal -> Integer
+  fft-dc (sig) = list-at (sig.real) 0
+
+  fft-peak-bin : FftSignal -> Integer
+  fft-peak-bin (sig) = fft-find-peak sig 1 (sig.length / 2) 0 0
+
+  fft-find-peak : FftSignal, Integer, Integer, Integer, Integer -> Integer
+  fft-find-peak (sig) (i) (half) (best-bin) (best-mag) =
+    if i >= half then best-bin
+    else let mag = fft-magnitude sig i
+    in if mag > best-mag then fft-find-peak sig (i + 1) half i mag
+    else fft-find-peak sig (i + 1) half best-bin best-mag
+
+Page 1

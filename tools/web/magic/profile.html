@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodexMagic - Profile</title>
+  <link rel="stylesheet" href="/web/magic/magic.css">
+  <style>
+    .page { max-width: 700px; margin: 0 auto; padding: 24px; }
+    .profile-header { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin-bottom: 16px; display: flex; align-items: center; gap: 24px; }
+    .profile-avatar { width: 80px; height: 80px; background: var(--border); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 32px; }
+    .profile-info { flex: 1; }
+    .profile-name { font-size: 22px; font-weight: bold; margin-bottom: 4px; }
+    .profile-rank { font-size: 14px; color: var(--blue); }
+    .profile-rating { font-size: 14px; color: var(--text-dim); }
+    .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+    .stat-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; text-align: center; }
+    .stat-value { font-size: 24px; font-weight: bold; margin-bottom: 4px; }
+    .stat-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
+    .stat-wins .stat-value { color: var(--green); }
+    .stat-losses .stat-value { color: var(--red); }
+    .stat-balance .stat-value { color: var(--gold); }
+    .stat-tokens .stat-value { color: var(--blue); }
+    .section { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .section h3 { font-size: 14px; margin-bottom: 12px; color: var(--text-dim); }
+    .sub-info { display: flex; justify-content: space-between; align-items: center; }
+    .sub-current { font-size: 16px; font-weight: bold; }
+    .sub-bonus { color: var(--green); font-size: 13px; }
+    .match-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .match-win { color: var(--green); }
+    .match-loss { color: var(--red); }
+    .key-display { font-family: monospace; font-size: 11px; color: var(--text-dim); background: var(--bg); padding: 8px; border-radius: 4px; word-break: break-all; margin-top: 8px; }
+    .acct-name { font-weight: bold; margin-right: 12px; }
+    .acct-rank { color: var(--blue); margin-right: 12px; }
+    .acct-balance { color: var(--gold); }
+    #account-bar { font-size: 13px; }
+  </style>
+</head>
+<body>
+<div class="topbar">
+  <h1>CodexMagic</h1>
+  <div class="nav">
+    <a href="/web/magic/game.html">Game</a>
+    <a href="/web/magic/collection.html">Collection</a>
+    <a href="/web/magic/store.html">Store</a>
+    <a href="/web/magic/queue.html">Queue</a>
+    <a href="/web/magic/profile.html" class="active">Profile</a>
+  </div>
+  <div id="account-bar"></div>
+</div>
+
+<div class="page">
+  <div class="profile-header">
+    <div class="profile-avatar" id="avatar">?</div>
+    <div class="profile-info">
+      <div class="profile-name" id="profile-name">Loading...</div>
+      <div class="profile-rank" id="profile-rank"></div>
+      <div class="profile-rating" id="profile-rating"></div>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card stat-wins"><div class="stat-value" id="stat-wins">0</div><div class="stat-label">Wins</div></div>
+    <div class="stat-card stat-losses"><div class="stat-value" id="stat-losses">0</div><div class="stat-label">Losses</div></div>
+    <div class="stat-card stat-balance"><div class="stat-value" id="stat-balance">0</div><div class="stat-label">Mana Coin</div></div>
+    <div class="stat-card stat-tokens"><div class="stat-value" id="stat-tokens">0</div><div class="stat-label">Cards Owned</div></div>
+  </div>
+
+  <div class="section">
+    <h3>Subscription</h3>
+    <div class="sub-info">
+      <span class="sub-current" id="sub-current">Free</span>
+      <span class="sub-bonus" id="sub-bonus">No pack upgrade bonus</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>Last Match</h3>
+    <div id="last-match">No matches played yet.</div>
+  </div>
+
+  <div class="section">
+    <h3>Season: Age of Embers</h3>
+    <div id="season-info">Loading...</div>
+  </div>
+
+  <div class="section">
+    <h3>Account Key</h3>
+    <div style="font-size:12px; color:var(--text-dim);">Your public key (stored on-chain):</div>
+    <div class="key-display" id="public-key">-</div>
+    <div style="font-size:11px; color:var(--text-dim); margin-top:4px;">Private key stored locally in your browser. Never shared.</div>
+  </div>
+</div>
+
+<script src="/web/magic/magic.js"></script>
+<script>
+async function init() {
+  await ensureAccount();
+  await refreshBalance();
+  await loadProfile();
+  await loadMatch();
+  await loadSeason();
+  loadKey();
+}
+
+async function loadProfile() {
+  var data = await apiCall('/account/profile?id=' + accountId());
+  if (!data) return;
+  document.getElementById('profile-name').textContent = data.name || 'Unknown';
+  document.getElementById('profile-rank').textContent = data.rank || 'Bronze';
+  document.getElementById('profile-rating').textContent = 'Rating: ' + (data.rating || 1000);
+  document.getElementById('avatar').textContent = (data.name || '?').charAt(0).toUpperCase();
+  document.getElementById('stat-wins').textContent = data.wins || 0;
+  document.getElementById('stat-losses').textContent = data.losses || 0;
+  document.getElementById('stat-balance').textContent = data.balance || 0;
+  document.getElementById('stat-tokens').textContent = data.tokens || 0;
+  var sub = data.subscription || 'Free';
+  document.getElementById('sub-current').textContent = sub;
+  var bonuses = { 'Free': 'No bonus', 'Bronze': '+1 upgrade', 'Silver': '+2 upgrades', 'Gold': '+3 upgrades', 'Platinum': '+5 upgrades' };
+  document.getElementById('sub-bonus').textContent = bonuses[sub] || 'No bonus';
+}
+
+async function loadMatch() {
+  var data = await apiCall('/match/result');
+  if (!data || data.winner === undefined || data.winner < 0) {
+    document.getElementById('last-match').textContent = 'No matches played yet.';
+    return;
+  }
+  var result = data.winner === 0 ? 'Victory' : 'Defeat';
+  var cls = data.winner === 0 ? 'match-win' : 'match-loss';
+  document.getElementById('last-match').innerHTML = '<div class="match-row"><span class="' + cls + '">' + result + '</span><span>Turns: ' + data.turns + ' | Life: ' + data['life-a'] + '/' + data['life-b'] + ' | Loyalty: ' + data['loyalty-a'] + '/' + data['loyalty-b'] + '</span></div>';
+}
+
+async function loadSeason() {
+  var data = await apiCall('/season');
+  if (!data) return;
+  document.getElementById('season-info').textContent = data.name + ' (Q' + data.quarter + ' ' + data.year + ') | ' + data['pool-size'] + ' cards | ' + data.bans + ' bans';
+}
+
+function loadKey() {
+  var pk = getStoredPrivateKey();
+  if (pk) {
+    document.getElementById('public-key').textContent = hashMix(pk.high, 2654435761) + ':' + hashMix(pk.low, 2246822519);
+  }
+}
+
+init();
+</script>
+</body>
+</html>

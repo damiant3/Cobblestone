@@ -1,0 +1,206 @@
+Chapter: Stack
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+
+ Spell stack: LIFO resolution, casting flow, responses, countering.
+ Mana abilities bypass the stack. Instants can respond at any
+ priority window. Sorcery-speed requires main phase with empty stack.
+
+ We say:
+
+Section: Stack Operations
+
+  stack-push : GameState, StackEntry -> GameState
+  stack-push (gs) (entry) = GameState {
+    players = gs.players,
+    generals = gs.generals,
+    battlefield = gs.battlefield,
+    stack = list-push (gs.stack) entry,
+    active-player = gs.active-player,
+    priority-player = gs.priority-player,
+    turn-number = gs.turn-number,
+    phase = gs.phase,
+    step = gs.step,
+    next-permanent-id = gs.next-permanent-id,
+    next-instance-id = gs.next-instance-id,
+    game-over = gs.game-over,
+    winner = gs.winner,
+    templates = gs.templates
+  }
+
+  stack-is-empty : GameState -> Boolean
+  stack-is-empty (gs) = list-length (gs.stack) == 0
+
+  stack-top : GameState -> StackEntry
+  stack-top (gs) = list-at (gs.stack) (list-length (gs.stack) - 1)
+
+  stack-pop : GameState -> GameState
+  stack-pop (gs) = GameState {
+    players = gs.players,
+    generals = gs.generals,
+    battlefield = gs.battlefield,
+    stack = list-drop-last (gs.stack),
+    active-player = gs.active-player,
+    priority-player = gs.priority-player,
+    turn-number = gs.turn-number,
+    phase = gs.phase,
+    step = gs.step,
+    next-permanent-id = gs.next-permanent-id,
+    next-instance-id = gs.next-instance-id,
+    game-over = gs.game-over,
+    winner = gs.winner,
+    templates = gs.templates
+  }
+
+  list-drop-last : List StackEntry -> List StackEntry
+  list-drop-last (xs) =
+    let len = list-length xs
+    in if len <= 1 then []
+    else list-drop-last-loop xs 0 (len - 1) []
+
+  list-drop-last-loop : List StackEntry, Integer, Integer, List StackEntry -> List StackEntry
+  list-drop-last-loop (xs) (i) (stop) (acc) =
+    if i >= stop then acc
+    else list-drop-last-loop xs (i + 1) stop (list-push acc (list-at xs i))
+
+Section: Casting
+
+  make-stack-entry : GameState, Integer, Integer, Integer, List Integer -> StackEntry
+  make-stack-entry (gs) (card-id) (template-id) (controller) (targets) = StackEntry {
+    id = gs.next-instance-id,
+    card-id = card-id,
+    template-id = template-id,
+    controller = controller,
+    targets = targets
+  }
+
+  can-cast-sorcery-speed : GameState, Integer -> Boolean
+  can-cast-sorcery-speed (gs) (player-idx) =
+    if gs.priority-player /= player-idx then False
+    else if stack-is-empty gs == False then False
+    else is-main-phase (gs.step)
+
+  can-cast-instant-speed : GameState, Integer -> Boolean
+  can-cast-instant-speed (gs) (player-idx) =
+    gs.priority-player == player-idx
+
+Section: Resolution
+
+  resolve-top : GameState -> GameState
+  resolve-top (gs) =
+    if stack-is-empty gs then gs
+    else let entry = stack-top gs
+    in let gs2 = stack-pop gs
+    in let template = get-template gs2 (entry.template-id)
+    in if is-permanent-type (template.card-type)
+      then enter-battlefield gs2 entry
+      else apply-spell-effects gs2 entry
+
+  enter-battlefield : GameState, StackEntry -> GameState
+  enter-battlefield (gs) (entry) =
+    let perm = permanent-new (gs.next-permanent-id) (entry.card-id) (entry.template-id) (entry.controller)
+    in let template = get-template gs (entry.template-id)
+    in let perm-with-kws = Permanent {
+      id = perm.id, card-id = perm.card-id, template-id = perm.template-id,
+      controller = perm.controller, owner = perm.owner,
+      tapped = perm.tapped,
+      summoning-sick = if has-keyword (template.keywords) Haste then False else True,
+      damage-marked = 0, counters = 0,
+      keywords = template.keywords, attached-to = -1,
+      power-mod = 0, toughness-mod = 0, defense-mod = 0
+    }
+    in GameState {
+      players = gs.players,
+      generals = gs.generals,
+      battlefield = list-push (gs.battlefield) perm-with-kws,
+      stack = gs.stack,
+      active-player = gs.active-player,
+      priority-player = gs.priority-player,
+      turn-number = gs.turn-number,
+      phase = gs.phase,
+      step = gs.step,
+      next-permanent-id = gs.next-permanent-id + 1,
+      next-instance-id = gs.next-instance-id + 1,
+      game-over = gs.game-over,
+      winner = gs.winner,
+      templates = gs.templates
+    }
+
+  apply-spell-effects : GameState, StackEntry -> GameState
+  apply-spell-effects (gs) (entry) =
+    let template = get-template gs (entry.template-id)
+    in apply-abilities gs (template.abilities) (entry.controller) (entry.targets)
+
+  apply-abilities : GameState, List Ability, Integer, List Integer -> GameState
+  apply-abilities (gs) (abs) (controller) (targets) =
+    apply-abilities-loop gs abs controller targets 0 (list-length abs)
+
+  apply-abilities-loop : GameState, List Ability, Integer, List Integer, Integer, Integer -> GameState
+  apply-abilities-loop (gs) (abs) (controller) (targets) (i) (len) =
+    if i >= len then gs
+    else let ab = list-at abs i
+    in let gs2 = apply-single-ability gs ab controller targets
+    in apply-abilities-loop gs2 abs controller targets (i + 1) len
+
+  apply-single-ability : GameState, Ability, Integer, List Integer -> GameState
+  apply-single-ability (gs) (ab) (controller) (targets) =
+    when ab
+      is StaticAbility (eff) -> apply-effect gs eff controller targets
+      is TriggeredAbility (cond) (eff) -> gs
+      is ActivatedAbility (cost) (eff) -> apply-effect gs eff controller targets
+      is ManaAbility (cost) (color) (amount) -> gs
+      is LoyaltyCostAbility (loyalty-cost) (eff) ->
+        let current-loyalty = army-loyalty gs controller
+        in if current-loyalty >= loyalty-cost
+          then apply-effect gs eff controller targets
+          else gs
+
+  apply-effect : GameState, Effect, Integer, List Integer -> GameState
+  apply-effect (gs) (eff) (controller) (targets) =
+    when eff
+      is DealDamage (amount) ->
+        if list-length targets > 0
+          then deal-damage-to-permanent gs (list-at targets 0) amount
+          else gs
+      is GainLife (amount) ->
+        let p = get-player gs controller
+        in let new-general = general-gain-life (p.general) amount
+        in let new-player = PlayerState {
+          general = new-general,
+          mana-pool = p.mana-pool,
+          library = p.library,
+          hand = p.hand,
+          graveyard = p.graveyard,
+          exile = p.exile,
+          land-drop-used = p.land-drop-used,
+          land-drops-per-turn = p.land-drops-per-turn
+        }
+        in set-player gs controller new-player
+      is DrawCards (count) -> draw-n gs controller count
+      is LoseLife (amount) ->
+        let opp = if controller == 0 then 1 else 0
+        in let p = get-player gs opp
+        in let new-general = general-deal-damage (p.general) amount
+        in let new-player = PlayerState {
+          general = new-general,
+          mana-pool = p.mana-pool,
+          library = p.library,
+          hand = p.hand,
+          graveyard = p.graveyard,
+          exile = p.exile,
+          land-drop-used = p.land-drop-used,
+          land-drops-per-turn = p.land-drops-per-turn
+        }
+        in set-player gs opp new-player
+      is otherwise -> gs
+
+  draw-n : GameState, Integer, Integer -> GameState
+  draw-n (gs) (player-idx) (count) =
+    if count <= 0 then gs
+    else let p = get-player gs player-idx
+    in let p2 = player-draw p
+    in let gs2 = set-player gs player-idx p2
+    in draw-n gs2 player-idx (count - 1)
+
+Page 1

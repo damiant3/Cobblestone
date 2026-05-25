@@ -1,0 +1,215 @@
+Chapter: Backup
+  cites Data chapter Catalog
+  cites Data chapter Wal
+  cites Data chapter Heap
+  cites Data chapter Row
+  cites Data chapter Schema
+  cites Data chapter Page
+  cites Data chapter Transaction
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Sha256
+
+ Full backups and transaction log backups with point-in-time
+ restore. A full backup snapshots all pages. A log backup captures
+ WAL records since the last backup. Restore replays the full backup
+ then rolls forward WAL to a target LSN or transaction ID.
+
+ We say:
+
+Section: Backup Metadata
+
+  BackupType =
+    | FullBackup
+    | LogBackup
+
+  BackupHeader = record {
+    bh-type : BackupType,
+    bh-timestamp : Integer,
+    bh-start-lsn : Integer,
+    bh-end-lsn : Integer,
+    bh-table-count : Integer,
+    bh-page-count : Integer,
+    bh-checksum : Text
+  }
+
+Section: Full Backup
+
+  FullBackupData = record {
+    fbd-header : BackupHeader,
+    fbd-tables : List TableBackup,
+    fbd-wal-records : List WalRecord
+  }
+
+  TableBackup = record {
+    tb-name : Text,
+    tb-def : TableDef,
+    tb-rows : List RowData,
+    tb-row-count : Integer
+  }
+
+  create-full-backup : Catalog, WalLog, Integer -> FullBackupData
+  create-full-backup (cat) (wal) (timestamp) =
+    let entries = hamt-to-list (cat.tables)
+    in let tables = backup-tables entries 0 (list-length entries) []
+    in let total-pages = backup-count-pages entries 0 (list-length entries) 0
+    in let checksum = sha256-hex ("backup:" & show timestamp & ":" & show (wal-last-lsn wal))
+    in FullBackupData {
+      fbd-header = BackupHeader {
+        bh-type = FullBackup,
+        bh-timestamp = timestamp,
+        bh-start-lsn = (wal.checkpoint-lsn),
+        bh-end-lsn = wal-last-lsn wal,
+        bh-table-count = cat.table-count,
+        bh-page-count = total-pages,
+        bh-checksum = checksum
+      },
+      fbd-tables = tables,
+      fbd-wal-records = wal.records
+    }
+
+  backup-tables : List (HamtEntry CatalogTable), Integer, Integer, List TableBackup -> List TableBackup
+  backup-tables (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in let ct = e.value
+    in let scan = heap-scan (ct.cat-heap)
+    in let tb = TableBackup { tb-name = ct.cat-table-name, tb-def = ct.cat-table-def, tb-rows = scan.rows, tb-row-count = scan.scan-count }
+    in backup-tables entries (i + 1) len (list-push acc tb)
+
+  backup-count-pages : List (HamtEntry CatalogTable), Integer, Integer, Integer -> Integer
+  backup-count-pages (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in backup-count-pages entries (i + 1) len (acc + heap-page-count ((e.value).cat-heap))
+
+Section: Log Backup
+
+  LogBackupData = record {
+    lbd-header : BackupHeader,
+    lbd-records : List WalRecord
+  }
+
+  create-log-backup : WalLog, Integer, Integer -> LogBackupData
+  create-log-backup (wal) (from-lsn) (timestamp) =
+    let records = wal-redo-scan wal from-lsn
+    in let checksum = sha256-hex ("log:" & show timestamp & ":" & show from-lsn & ":" & show (wal-last-lsn wal))
+    in LogBackupData {
+      lbd-header = BackupHeader {
+        bh-type = LogBackup,
+        bh-timestamp = timestamp,
+        bh-start-lsn = from-lsn,
+        bh-end-lsn = wal-last-lsn wal,
+        bh-table-count = 0,
+        bh-page-count = 0,
+        bh-checksum = checksum
+      },
+      lbd-records = records
+    }
+
+Section: Restore from Full Backup
+
+  RestoreResult = record {
+    rr-catalog : Catalog,
+    rr-tables-restored : Integer,
+    rr-rows-restored : Integer,
+    rr-ok : Boolean,
+    rr-msg : Text
+  }
+
+  restore-full : FullBackupData -> RestoreResult
+  restore-full (backup) =
+    let cat = catalog-new
+    in restore-tables cat (backup.fbd-tables) 0 (list-length (backup.fbd-tables)) 0
+
+  restore-tables : Catalog, List TableBackup, Integer, Integer, Integer -> RestoreResult
+  restore-tables (cat) (tables) (i) (len) (total-rows) =
+    if i >= len then RestoreResult { rr-catalog = cat, rr-tables-restored = len, rr-rows-restored = total-rows, rr-ok = True, rr-msg = "restore complete" }
+    else let tb = list-at tables i
+    in let cr = catalog-create-table cat (tb.tb-def)
+    in if cr.cat-ok == False then RestoreResult { rr-catalog = cat, rr-tables-restored = i, rr-rows-restored = total-rows, rr-ok = False, rr-msg = cr.cat-msg }
+    else let cat2 = restore-rows (cr.cat) (tb.tb-name) (tb.tb-rows) 0 (tb.tb-row-count)
+    in restore-tables cat2 tables (i + 1) len (total-rows + tb.tb-row-count)
+
+  restore-rows : Catalog, Text, List RowData, Integer, Integer -> Catalog
+  restore-rows (cat) (table) (rows) (i) (len) =
+    if i >= len then cat
+    else let ir = catalog-insert-row cat table (list-at rows i)
+    in restore-rows (ir.cir-cat) table rows (i + 1) len
+
+Section: Roll Forward
+
+  RollForwardTarget =
+    | RollToLsn (Integer)
+    | RollToTxn (Integer)
+    | RollToEnd
+
+  RollForwardResult = record {
+    rfr-catalog : Catalog,
+    rfr-applied : Integer,
+    rfr-final-lsn : Integer,
+    rfr-ok : Boolean,
+    rfr-msg : Text
+  }
+
+  roll-forward : Catalog, List WalRecord, RollForwardTarget -> RollForwardResult
+  roll-forward (cat) (records) (target) =
+    roll-forward-loop cat records target 0 (list-length records) 0 0
+
+  roll-forward-loop : Catalog, List WalRecord, RollForwardTarget, Integer, Integer, Integer, Integer -> RollForwardResult
+  roll-forward-loop (cat) (records) (target) (i) (len) (applied) (last-lsn) =
+    if i >= len then RollForwardResult { rfr-catalog = cat, rfr-applied = applied, rfr-final-lsn = last-lsn, rfr-ok = True, rfr-msg = "roll forward complete" }
+    else let rec = list-at records i
+    in if should-stop-rolling target rec then RollForwardResult { rfr-catalog = cat, rfr-applied = applied, rfr-final-lsn = last-lsn, rfr-ok = True, rfr-msg = "roll forward stopped at target" }
+    else roll-forward-loop cat records target (i + 1) len (applied + 1) (rec.wal-lsn)
+
+  should-stop-rolling : RollForwardTarget, WalRecord -> Boolean
+  should-stop-rolling (target) (rec) =
+    when target
+      is RollToLsn (lsn) -> rec.wal-lsn > lsn
+      is RollToTxn (txn-id) ->
+        when (rec.wal-type)
+          is WalCommitRec -> rec.wal-txn-id == txn-id
+          is otherwise -> False
+      is RollToEnd -> False
+
+Section: Backup Chain Validation
+
+  BackupChainEntry = record {
+    bce-type : BackupType,
+    bce-start-lsn : Integer,
+    bce-end-lsn : Integer,
+    bce-checksum : Text
+  }
+
+  validate-backup-chain : List BackupChainEntry -> Boolean
+  validate-backup-chain (chain) =
+    if list-length chain == 0 then False
+    else let first = list-at chain 0
+    in when (first.bce-type)
+      is FullBackup -> validate-chain-continuity chain 1 (list-length chain) (first.bce-end-lsn)
+      is LogBackup -> False
+
+  validate-chain-continuity : List BackupChainEntry, Integer, Integer, Integer -> Boolean
+  validate-chain-continuity (chain) (i) (len) (expected-lsn) =
+    if i >= len then True
+    else let entry = list-at chain i
+    in if entry.bce-start-lsn /= expected-lsn then False
+    else validate-chain-continuity chain (i + 1) len (entry.bce-end-lsn)
+
+Section: Statistics
+
+  backup-stats : FullBackupData -> Text
+  backup-stats (backup) =
+    "type=full tables=" & show (backup.fbd-header.bh-table-count)
+    & " pages=" & show (backup.fbd-header.bh-page-count)
+    & " lsn=" & show (backup.fbd-header.bh-start-lsn) & "-" & show (backup.fbd-header.bh-end-lsn)
+    & " checksum=" & backup.fbd-header.bh-checksum
+
+  log-backup-stats : LogBackupData -> Text
+  log-backup-stats (backup) =
+    "type=log records=" & show (list-length (backup.lbd-records))
+    & " lsn=" & show (backup.lbd-header.bh-start-lsn) & "-" & show (backup.lbd-header.bh-end-lsn)
+
+Page 1

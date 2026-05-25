@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Royal Game of Ur</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #0d0a06; }
+  .game-page { max-width: 750px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/royalur/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .arena { background: #0d0a06cc; border: 3px solid #c8a84833; border-radius: 16px;
+    padding: 24px; margin-bottom: 12px;
+    backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+  .score-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding: 0 8px; }
+  .score-side { display: flex; align-items: center; gap: 10px; }
+  .score-name { font-size: 14px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
+  .score-name.p1 { color: #5599ff; }
+  .score-name.p2 { color: #ff5555; }
+  .score-pips { display: flex; gap: 4px; }
+  .pip { width: 18px; height: 18px; border-radius: 50%; border: 2px solid; opacity: 0.3; }
+  .pip.p1 { border-color: #5599ff; }
+  .pip.p2 { border-color: #ff5555; }
+  .pip.scored.p1 { background: #5599ff; opacity: 1; box-shadow: 0 0 6px #5599ff88; }
+  .pip.scored.p2 { background: #ff5555; opacity: 1; box-shadow: 0 0 6px #ff555588; }
+  .pip.waiting.p1 { background: #5599ff44; opacity: 0.6; }
+  .pip.waiting.p2 { background: #ff555544; opacity: 0.6; }
+  .score-count { font-size: 22px; font-weight: bold; }
+  .score-count.p1 { color: #5599ff; }
+  .score-count.p2 { color: #ff5555; }
+  .dice-section { text-align: center; margin-bottom: 16px; }
+  .dice-row { display: flex; justify-content: center; gap: 8px; margin-bottom: 6px; }
+  .die { width: 36px; height: 36px; border-radius: 8px; border: 2px solid #c8a84844;
+    background: #1a150c; display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: bold; color: #c8a848; transition: all 0.3s; }
+  .die.lit { background: #2a1f0f; border-color: #c8a848; color: #ffe090;
+    box-shadow: 0 0 10px #c8a84844; }
+  .dice-total { font-size: 13px; color: #c8a84888; }
+  .turn-indicator { text-align: center; margin-bottom: 12px; padding: 6px 16px;
+    border-radius: 20px; display: inline-block; font-size: 13px; font-weight: bold;
+    letter-spacing: 1px; }
+  .turn-indicator.p1 { background: #5599ff22; color: #5599ff; border: 1px solid #5599ff44; }
+  .turn-indicator.p2 { background: #ff555522; color: #ff5555; border: 1px solid #ff555544; }
+  .turn-wrap { text-align: center; margin-bottom: 14px; }
+  .board-container { display: flex; justify-content: center; margin-bottom: 16px; }
+  .board-grid { display: grid; grid-template-columns: repeat(8, 58px); grid-template-rows: repeat(3, 58px);
+    gap: 3px; }
+  .board-cell { width: 58px; height: 58px; border: 2px solid #c8a84822; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    background: #1a150c; position: relative; transition: all 0.3s; }
+  .board-cell.rosette { background: #2a1f0f; border-color: #c8a84844; }
+  .board-cell.rosette::before { content: ''; position: absolute; width: 44px; height: 44px;
+    border: 1px solid #c8a84822; border-radius: 50%; }
+  .board-cell.rosette::after { content: '\2726'; position: absolute; color: #c8a84855; font-size: 28px; }
+  .board-cell.empty-cell { background: transparent; border-color: transparent; }
+  .board-cell.empty-cell::before, .board-cell.empty-cell::after { display: none; }
+  .board-cell.p1-path { border-left: 2px solid #5599ff11; border-right: 2px solid #5599ff11; }
+  .board-cell.p2-path { border-left: 2px solid #ff555511; border-right: 2px solid #ff555511; }
+  .board-cell.shared-path { border-color: #c8a84833; }
+  .piece { width: 36px; height: 36px; border-radius: 50%; position: relative; z-index: 2;
+    transition: all 0.3s; }
+  .piece.p1 { background: radial-gradient(circle at 35% 35%, #88ccff, #2266cc);
+    border: 2px solid #5599ff; box-shadow: 0 2px 8px rgba(85,153,255,0.4); }
+  .piece.p2 { background: radial-gradient(circle at 35% 35%, #ff8888, #cc2222);
+    border: 2px solid #ff5555; box-shadow: 0 2px 8px rgba(255,85,85,0.4); }
+  .piece-count { position: absolute; top: -2px; right: -2px; background: #0d0a06; color: #fff;
+    font-size: 10px; font-weight: bold; width: 16px; height: 16px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; z-index: 3; }
+  .info-line { text-align: center; color: #c8a84866; font-size: 12px; margin-top: 8px; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #c8a848, #0d0a06); border: 2px solid #c8a848;
+    border-radius: 20px; color: #fff; font-family: inherit; font-size: 14px; padding: 8px 24px;
+    cursor: pointer; font-weight: bold; transition: all 0.2s; }
+  .controls button:hover { transform: scale(1.05); box-shadow: 0 0 12px #c8a84844; }
+  .controls button:disabled { opacity: 0.3; }
+  .speed-label { color: #c8a84866; font-size: 12px; }
+  .engine-tag { background: #0d0a06; color: #c8a848; font-size: 10px; padding: 2px 8px;
+    border-radius: 10px; margin-left: 12px; border: 1px solid #c8a84844; }
+  .winner-banner { text-align: center; padding: 16px; margin-bottom: 12px; border-radius: 12px;
+    font-size: 20px; font-weight: bold; animation: glow 1.5s ease-in-out infinite alternate; }
+  .winner-banner.p1 { background: #5599ff22; color: #5599ff; border: 2px solid #5599ff66; }
+  .winner-banner.p2 { background: #ff555522; color: #ff5555; border: 2px solid #ff555566; }
+  @keyframes glow { from { box-shadow: 0 0 8px rgba(200,168,72,0.2); } to { box-shadow: 0 0 20px rgba(200,168,72,0.5); } }
+  .rules { background: #0d0a0699; border: 1px solid #c8a84822; border-radius: 8px; padding: 16px;
+    margin-top: 16px; color: #c8a84888; font-size: 13px; line-height: 1.6; }
+  .rules summary { color: #c8a848; cursor: pointer; font-weight: bold; font-size: 14px; }
+  .rules p { margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#0d0a06;border-color:#c8a84822">
+  <span class="topbar-logo" style="color:#c8a848">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#c8a84866">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#c8a848;border-color:#c8a848">Royal Game of Ur</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; Play</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Pause</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Step</button>
+    <button onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#c8a848" oninput="updateSpeed()">
+  </div>
+  <div id="status-line" style="color:#c8a848;font-size:16px;text-align:center;margin-bottom:10px;font-weight:bold">Royal Game of Ur</div>
+  <div id="winner-banner" style="display:none"></div>
+  <div class="arena">
+    <div class="score-bar">
+      <div class="score-side">
+        <span class="score-name p1">Sumerian</span>
+        <div class="score-pips" id="pips-p1"></div>
+        <span class="score-count p1" id="sc-p1">0/7</span>
+      </div>
+      <div class="score-side">
+        <span class="score-count p2" id="sc-p2">0/7</span>
+        <div class="score-pips" id="pips-p2"></div>
+        <span class="score-name p2">Akkadian</span>
+      </div>
+    </div>
+    <div class="dice-section">
+      <div class="dice-row" id="dice-row">
+        <div class="die">-</div><div class="die">-</div><div class="die">-</div><div class="die">-</div>
+      </div>
+      <div class="dice-total">Roll: <span id="roll-total">-</span></div>
+    </div>
+    <div class="turn-wrap"><span class="turn-indicator" id="turn-ind">Waiting</span></div>
+    <div class="board-container">
+      <div class="board-grid" id="board"></div>
+    </div>
+    <div class="info-line">Move <span id="moves">0</span></div>
+  </div>
+  <details class="rules">
+    <summary>How to Play the Royal Game of Ur</summary>
+    <p><b>Goal:</b> Be the first player to move all 7 pieces off the board.</p>
+    <p><b>Dice:</b> Roll 4 binary dice (each 0 or 1) for a total of 0-4 pips.</p>
+    <p><b>Movement:</b> Each piece travels along a fixed path. P1 (blue) enters from the top, P2 (red) from the bottom. Both share the middle row.</p>
+    <p><b>Rosettes (&#x2726;):</b> Landing on a rosette grants an extra turn. Pieces on rosettes are safe from capture.</p>
+    <p><b>Capture:</b> Landing on an opponent's piece in the shared row sends it back to the start.</p>
+    <p><b>Scoring:</b> A piece that moves past the last square is scored. First to score all 7 wins.</p>
+  </details>
+</div>
+<script>
+var state,prevState=null,running=false,paused=false,timer,delay=300,stepN=0;
+// P1 path: row0 cols 3->0, row1 cols 0->7, row0 cols 7->6 (positions 1-14)
+// P2 path: row2 cols 3->0, row1 cols 0->7, row2 cols 7->6 (positions 1-14)
+var P1_PATH=[[0,3],[0,2],[0,1],[0,0],[1,0],[1,1],[1,2],[1,3],[1,4],[1,5],[1,6],[1,7],[0,7],[0,6]];
+var P2_PATH=[[2,3],[2,2],[2,1],[2,0],[1,0],[1,1],[1,2],[1,3],[1,4],[1,5],[1,6],[1,7],[2,7],[2,6]];
+// Rosette positions: 4, 8, 14 map to path indices 3, 7, 13
+// Board coordinates for rosettes
+var ROSETTES=[[0,3],[0,6],[1,3],[2,3],[2,6]];
+var EMPTY_CELLS=[[0,4],[0,5],[2,4],[2,5]];
+function isRosette(r,c){return ROSETTES.some(function(x){return x[0]===r&&x[1]===c})}
+function isEmpty(r,c){return EMPTY_CELLS.some(function(x){return x[0]===r&&x[1]===c})}
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||250}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+
+function renderPips(id,scored,onBoard,player){
+  var h='';
+  for(var i=0;i<7;i++){
+    if(i<scored) h+='<div class="pip '+player+' scored"></div>';
+    else if(i<scored+onBoard) h+='<div class="pip '+player+' waiting"></div>';
+    else h+='<div class="pip '+player+'"></div>';
+  }
+  document.getElementById(id).innerHTML=h;
+}
+
+function renderDice(roll){
+  if(roll===undefined||roll===null){
+    document.getElementById('dice-row').innerHTML='<div class="die">-</div><div class="die">-</div><div class="die">-</div><div class="die">-</div>';
+    document.getElementById('roll-total').textContent='-';
+    return;
+  }
+  var dice=[0,0,0,0];
+  var remaining=roll;
+  var indices=[0,1,2,3];
+  for(var i=indices.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=indices[i];indices[i]=indices[j];indices[j]=t}
+  for(var i=0;i<remaining&&i<4;i++) dice[indices[i]]=1;
+  var h='';
+  for(var i=0;i<4;i++){
+    h+='<div class="die'+(dice[i]?' lit':'')+'">'+dice[i]+'</div>';
+  }
+  document.getElementById('dice-row').innerHTML=h;
+  document.getElementById('roll-total').textContent=roll;
+}
+
+function render(s){
+  var p1scored=s.p1scored||0,p2scored=s.p2scored||0;
+  var p1board=0,p2board=0;
+  if(s.p1) s.p1.forEach(function(p){if(p>=1&&p<=14)p1board++});
+  if(s.p2) s.p2.forEach(function(p){if(p>=1&&p<=14)p2board++});
+
+  document.getElementById('sc-p1').textContent=p1scored+'/7';
+  document.getElementById('sc-p2').textContent=p2scored+'/7';
+  renderPips('pips-p1',p1scored,p1board,'p1');
+  renderPips('pips-p2',p2scored,p2board,'p2');
+  renderDice(s.roll);
+  document.getElementById('moves').textContent=s.moves||0;
+
+  var turnInd=document.getElementById('turn-ind');
+  if(!s.done){
+    var isP1=s.cur===1;
+    turnInd.textContent=(isP1?'Sumerian':'Akkadian')+"'s Turn";
+    turnInd.className='turn-indicator '+(isP1?'p1':'p2');
+  }
+
+  // Build occupancy map: count pieces per board cell
+  var occ={};
+  if(s.p1){s.p1.forEach(function(pos){if(pos>=1&&pos<=14){var sq=P1_PATH[pos-1];var k=sq[0]+','+sq[1];if(!occ[k])occ[k]={p1:0,p2:0};occ[k].p1++}})}
+  if(s.p2){s.p2.forEach(function(pos){if(pos>=1&&pos<=14){var sq=P2_PATH[pos-1];var k=sq[0]+','+sq[1];if(!occ[k])occ[k]={p1:0,p2:0};occ[k].p2++}})}
+
+  // Which cells are on each path
+  var p1cells={},p2cells={};
+  P1_PATH.forEach(function(sq){p1cells[sq[0]+','+sq[1]]=true});
+  P2_PATH.forEach(function(sq){p2cells[sq[0]+','+sq[1]]=true});
+
+  var h='';
+  for(var r=0;r<3;r++){
+    for(var c=0;c<8;c++){
+      var key=r+','+c;
+      if(isEmpty(r,c)){h+='<div class="board-cell empty-cell"></div>';continue}
+      var cls='board-cell';
+      if(isRosette(r,c)) cls+=' rosette';
+      if(p1cells[key]&&p2cells[key]) cls+=' shared-path';
+      else if(p1cells[key]) cls+=' p1-path';
+      else if(p2cells[key]) cls+=' p2-path';
+
+      var content='';
+      if(occ[key]){
+        if(occ[key].p1>0){
+          content+='<div class="piece p1">';
+          if(occ[key].p1>1) content+='<span class="piece-count">'+occ[key].p1+'</span>';
+          content+='</div>';
+        }
+        if(occ[key].p2>0){
+          content+='<div class="piece p2">';
+          if(occ[key].p2>1) content+='<span class="piece-count">'+occ[key].p2+'</span>';
+          content+='</div>';
+        }
+      }
+      h+='<div class="'+cls+'">'+content+'</div>';
+    }
+  }
+  document.getElementById('board').innerHTML=h;
+
+  // Winner banner
+  var banner=document.getElementById('winner-banner');
+  if(s.done){
+    var w=s.winner===1?'Sumerian':s.winner===2?'Akkadian':'Unknown';
+    var pc=s.winner===1?'p1':'p2';
+    banner.className='winner-banner '+pc;
+    banner.innerHTML='&#x2726; '+w+' Wins! &#x2726;<br><span style="font-size:14px;opacity:0.7">'+p1scored+' – '+p2scored+' in '+(s.moves||0)+' moves</span>';
+    banner.style.display='block';
+    turnInd.textContent='Game Over';
+    turnInd.className='turn-indicator';
+    turnInd.style.color='#c8a848';
+  } else {
+    banner.style.display='none';
+  }
+}
+
+async function resetGame(){
+  clearTimeout(timer);running=false;paused=false;stepN=0;
+  var seed=Math.floor(Math.random()*100000);
+  state=await api('/api/royalur/new?seed='+seed);
+  if(state) render(state);
+  document.getElementById('status-line').textContent='Royal Game of Ur';
+  document.getElementById('winner-banner').style.display='none';
+  document.getElementById('btn-pause').disabled=true;
+  document.getElementById('btn-step').disabled=true;
+}
+async function startGame(){
+  await resetGame();running=true;
+  document.getElementById('btn-pause').disabled=false;
+  document.getElementById('btn-step').disabled=false;
+  updateSpeed();scheduleTick();
+}
+function togglePause(){
+  if(!running)return;paused=!paused;
+  document.getElementById('btn-pause').textContent=paused?'▶ Resume':'⏸ Pause';
+  document.getElementById('btn-step').disabled=!paused;
+  if(!paused)scheduleTick();
+}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running&&paused)await tick()}
+async function tick(){
+  if(!running||!state||state.done){
+    if(state&&state.done)running=false;
+    return;
+  }
+  var prevP1=prevState?prevState.p1scored:0;
+  var prevP2=prevState?prevState.p2scored:0;
+  prevState=state;
+  var d1=Math.random()<0.5?1:0,d2=Math.random()<0.5?1:0,d3=Math.random()<0.5?1:0,d4=Math.random()<0.5?1:0;
+  var roll=d1+d2+d3+d4;
+  stepN++;state=await api('/api/royalur/step?roll='+roll);
+  if(!state){running=false;return}
+  render(state);
+  if(state.done){
+    var w=state.winner===1?'Sumerian':state.winner===2?'Akkadian':'Unknown';
+    document.getElementById('status-line').textContent=w+' wins in '+(state.moves||0)+' moves!';
+    running=false;return;
+  }
+  var turn=state.cur===1?'Sumerian':'Akkadian';
+  var nar=turn+"'s turn — rolled "+state.roll;
+  if(state.roll===0) nar+=' (no moves)';
+  if(state.p1scored>prevP1) nar='Sumerian scores a piece! ('+state.p1scored+'/7)';
+  if(state.p2scored>prevP2) nar='Akkadian scores a piece! ('+state.p2scored+'/7)';
+  document.getElementById('status-line').textContent=nar;
+  scheduleTick();
+}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

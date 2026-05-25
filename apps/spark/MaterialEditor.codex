@@ -1,0 +1,193 @@
+Chapter: MaterialEditor
+  cites Spark chapter SceneMaterial
+  cites Spark chapter TextureMap
+  cites Spark chapter ColorPicker
+
+ Material editing with PBR-inspired properties. Supports
+ albedo, metallic, roughness, emission, and texture assignment.
+ Preview renders a sphere with the material applied.
+ All values fixed-point scale 1000.
+
+ We say:
+
+Section: Types
+
+  PbrMaterial = record {
+    pbr-name : Text,
+    pbr-albedo : Integer,
+    pbr-metallic : Integer,
+    pbr-roughness : Integer,
+    pbr-emission : Integer,
+    pbr-emission-strength : Integer,
+    pbr-opacity : Integer,
+    pbr-albedo-tex : Integer,
+    pbr-normal-tex : Integer
+  }
+
+  MaterialSlot =
+    | SlotAlbedo
+    | SlotMetallic
+    | SlotRoughness
+    | SlotEmission
+
+  MaterialLibState = record {
+    mls-materials : List PbrMaterial,
+    mls-count : Integer,
+    mls-selected : Integer
+  }
+
+Section: Default Materials
+
+  pbr-default : PbrMaterial
+  pbr-default = PbrMaterial {
+    pbr-name = "Default",
+    pbr-albedo = 12632256,
+    pbr-metallic = 0,
+    pbr-roughness = 500,
+    pbr-emission = 0,
+    pbr-emission-strength = 0,
+    pbr-opacity = 1000,
+    pbr-albedo-tex = -1,
+    pbr-normal-tex = -1
+  }
+
+  pbr-metal : PbrMaterial
+  pbr-metal = PbrMaterial {
+    pbr-name = "Metal",
+    pbr-albedo = 11184810,
+    pbr-metallic = 900,
+    pbr-roughness = 200,
+    pbr-emission = 0,
+    pbr-emission-strength = 0,
+    pbr-opacity = 1000,
+    pbr-albedo-tex = -1,
+    pbr-normal-tex = -1
+  }
+
+  pbr-glass : PbrMaterial
+  pbr-glass = PbrMaterial {
+    pbr-name = "Glass",
+    pbr-albedo = 14540253,
+    pbr-metallic = 0,
+    pbr-roughness = 50,
+    pbr-emission = 0,
+    pbr-emission-strength = 0,
+    pbr-opacity = 300,
+    pbr-albedo-tex = -1,
+    pbr-normal-tex = -1
+  }
+
+  pbr-emissive : PbrMaterial
+  pbr-emissive = PbrMaterial {
+    pbr-name = "Emissive",
+    pbr-albedo = 16777215,
+    pbr-metallic = 0,
+    pbr-roughness = 800,
+    pbr-emission = 16776960,
+    pbr-emission-strength = 800,
+    pbr-opacity = 1000,
+    pbr-albedo-tex = -1,
+    pbr-normal-tex = -1
+  }
+
+Section: Construction
+
+  pbr-new : Text, Integer -> PbrMaterial
+  pbr-new (name) (albedo) = PbrMaterial {
+    pbr-name = name,
+    pbr-albedo = albedo,
+    pbr-metallic = 0,
+    pbr-roughness = 500,
+    pbr-emission = 0,
+    pbr-emission-strength = 0,
+    pbr-opacity = 1000,
+    pbr-albedo-tex = -1,
+    pbr-normal-tex = -1
+  }
+
+  mat-lib-state-new : MaterialLibState
+  mat-lib-state-new = MaterialLibState {
+    mls-materials = [pbr-default],
+    mls-count = 1,
+    mls-selected = 0
+  }
+
+Section: Material Library
+
+  mat-lib-add : MaterialLibState, PbrMaterial -> MaterialLibState
+  mat-lib-add (lib) (mat) = MaterialLibState {
+    mls-materials = list-push (lib.mls-materials) mat,
+    mls-count = lib.mls-count + 1,
+    mls-selected = lib.mls-selected
+  }
+
+  mat-lib-get-selected : MaterialLibState -> PbrMaterial
+  mat-lib-get-selected (lib) = list-at (lib.mls-materials) (lib.mls-selected)
+
+  mat-lib-select : MaterialLibState, Integer -> MaterialLibState
+  mat-lib-select (lib) (idx) =
+    if idx < 0 then lib
+    else if idx >= lib.mls-count then lib
+    else __record-set lib "mls-selected" idx
+
+Section: Material Editing
+
+  pbr-set-albedo : PbrMaterial, Integer -> PbrMaterial
+  pbr-set-albedo (mat) (color) = __record-set mat "pbr-albedo" color
+
+  pbr-set-metallic : PbrMaterial, Integer -> PbrMaterial
+  pbr-set-metallic (mat) (val) = __record-set mat "pbr-metallic" (me-clamp val 0 1000)
+
+  pbr-set-roughness : PbrMaterial, Integer -> PbrMaterial
+  pbr-set-roughness (mat) (val) = __record-set mat "pbr-roughness" (me-clamp val 0 1000)
+
+  pbr-set-emission : PbrMaterial, Integer, Integer -> PbrMaterial
+  pbr-set-emission (mat) (color) (strength) =
+    __record-set (__record-set mat "pbr-emission" color) "pbr-emission-strength" (me-clamp strength 0 1000)
+
+  pbr-set-opacity : PbrMaterial, Integer -> PbrMaterial
+  pbr-set-opacity (mat) (val) = __record-set mat "pbr-opacity" (me-clamp val 0 1000)
+
+  pbr-set-albedo-tex : PbrMaterial, Integer -> PbrMaterial
+  pbr-set-albedo-tex (mat) (tex-id) = __record-set mat "pbr-albedo-tex" tex-id
+
+Section: Shading
+
+  pbr-shade : PbrMaterial, Integer, Integer -> Integer
+  pbr-shade (mat) (light-intensity) (view-dot-normal) =
+    let base = mat.pbr-albedo
+    in let diffuse = light-intensity * (1000 - mat.pbr-metallic) / 1000
+    in let specular = me-specular-term mat view-dot-normal light-intensity
+    in let lit-r = (base / 65536) * (diffuse + specular) / 1000
+    in let lit-g = (base / 256 - base / 65536 * 256) * (diffuse + specular) / 1000
+    in let lit-b = (base - base / 256 * 256) * (diffuse + specular) / 1000
+    in let er = mat.pbr-emission / 65536 * mat.pbr-emission-strength / 1000
+    in let eg = (mat.pbr-emission / 256 - mat.pbr-emission / 65536 * 256) * mat.pbr-emission-strength / 1000
+    in let eb = (mat.pbr-emission - mat.pbr-emission / 256 * 256) * mat.pbr-emission-strength / 1000
+    in me-clamp (lit-r + er) 0 255 * 65536 + me-clamp (lit-g + eg) 0 255 * 256 + me-clamp (lit-b + eb) 0 255
+
+  me-specular-term : PbrMaterial, Integer, Integer -> Integer
+  me-specular-term (mat) (vdn) (intensity) =
+    let smooth = 1000 - mat.pbr-roughness
+    in let power = smooth * smooth / 1000
+    in let spec = vdn * vdn / 1000 * power / 1000
+    in spec * intensity * (mat.pbr-metallic + 200) / 1200 / 1000
+
+Section: Helpers
+
+  me-clamp : Integer, Integer, Integer -> Integer
+  me-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Info
+
+  pbr-info : PbrMaterial -> Text
+  pbr-info (mat) =
+    mat.pbr-name & " albedo=" & show (mat.pbr-albedo) &
+    " metal=" & show (mat.pbr-metallic) &
+    " rough=" & show (mat.pbr-roughness)
+
+  mat-lib-info : MaterialLibState -> Text
+  mat-lib-info (lib) =
+    show (lib.mls-count) & " materials, selected=" & show (lib.mls-selected)
+
+Page 1

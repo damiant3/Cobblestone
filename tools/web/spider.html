@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Spider Solitaire</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #0a1a0a; }
+  .game-page { max-width: 780px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/spider/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .arena { background: #0a1a0acc; border: 3px solid #44aa4433; border-radius: 16px;
+    padding: 24px; margin-bottom: 12px;
+    backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #44aa44, #0a1a0a); border: 2px solid #44aa44;
+    border-radius: 20px; color: #fff; font-family: inherit; font-size: 14px; padding: 8px 24px;
+    cursor: pointer; font-weight: bold; }
+  .controls button:hover { transform: scale(1.05); }
+  .controls button:disabled { opacity: 0.3; }
+  .speed-label { color: #44aa4466; font-size: 12px; }
+  .engine-tag { background: #0a1a0a; color: #44aa44; font-size: 10px; padding: 2px 8px;
+    border-radius: 10px; margin-left: 12px; border: 1px solid #44aa4444; }
+  .section-label { color: #44aa4488; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    margin-bottom: 8px; text-align: center; }
+
+  .stats-row { display: flex; justify-content: center; gap: 32px; margin-bottom: 16px; }
+  .stat-box { text-align: center; }
+  .stat-label { font-size: 11px; color: #44aa4466; text-transform: uppercase; letter-spacing: 2px; }
+  .stat-value { font-size: 36px; font-weight: bold; color: #44aa44; }
+  .stat-sub { font-size: 10px; color: #44aa4444; }
+
+  /* Completed suits */
+  .suit-slots { display: flex; justify-content: center; gap: 10px; margin: 16px 0; flex-wrap: wrap; }
+  .suit-slot { width: 48px; height: 64px; border: 2px dashed #44aa4433; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center; font-size: 24px; color: #44aa4422;
+    background: #0a1a0a44; transition: all 0.3s ease; }
+  .suit-slot.filled { border-color: #44aa44; border-style: solid; background: #44aa4422; color: #44aa44;
+    box-shadow: 0 0 12px #44aa4444; }
+
+  /* Tableau columns */
+  .tableau { display: flex; gap: 6px; justify-content: center; margin: 16px 0; align-items: flex-end; }
+  .col-stack { display: flex; flex-direction: column; align-items: center; width: 56px; }
+  .col-label { font-size: 9px; color: #44aa4444; margin-bottom: 4px; }
+  .col-cards { display: flex; flex-direction: column; align-items: center; }
+  .card-pip { width: 44px; height: 8px; border-radius: 2px; margin-top: -2px;
+    background: linear-gradient(135deg, #1a4a1a, #0a2a0a); border: 1px solid #44aa4433;
+    transition: all 0.2s; }
+  .card-pip:first-child { margin-top: 0; border-radius: 4px 4px 2px 2px; }
+  .card-pip:last-child { border-radius: 2px 2px 4px 4px; height: 12px; background: linear-gradient(135deg, #2a6a2a, #1a4a1a);
+    border-color: #44aa4455; }
+  .col-count { font-size: 11px; color: #44aa44; font-weight: bold; margin-top: 4px; }
+
+  /* Stock pile */
+  .stock-area { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 12px 0; }
+  .stock-pile { width: 56px; height: 72px; border-radius: 6px; border: 2px solid #44aa4444;
+    background: linear-gradient(135deg, #1a4a1a, #0a2a0a); display: flex; align-items: center;
+    justify-content: center; font-size: 18px; color: #44aa44; font-weight: bold;
+    box-shadow: 3px 3px 0 #0a1a0a, 6px 6px 0 #0a1a0a33; }
+  .stock-label { font-size: 11px; color: #44aa4466; }
+
+  .progress-wrap { margin: 16px 0 8px; }
+  .progress-bar { height: 8px; background: #44aa4422; border-radius: 4px; overflow: hidden; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #44aa44, #66dd66);
+    border-radius: 4px; transition: width 0.4s ease; }
+  .progress-label { font-size: 11px; color: #44aa4466; text-align: center; margin-top: 4px; }
+
+  .result-banner { text-align: center; padding: 16px; margin-top: 12px; border-radius: 10px;
+    font-size: 18px; font-weight: bold; display: none; animation: fadeIn 0.5s; }
+  .result-banner.win { background: #44aa4422; color: #44aa44; border: 2px solid #44aa44; display: block; }
+  .result-banner.stuck { background: #aa444422; color: #aa4444; border: 2px solid #aa4444; display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+  .rules { background: #0a1a0a99; border: 1px solid #44aa4422; border-radius: 8px; padding: 16px;
+    margin-top: 16px; color: #44aa4488; font-size: 13px; line-height: 1.6; }
+  .rules summary { color: #44aa44; cursor: pointer; font-weight: bold; font-size: 14px; }
+  .rules p { margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#0a1a0a;border-color:#44aa4422">
+  <span class="topbar-logo" style="color:#44aa44">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#44aa4466">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#44aa44;border-color:#44aa44">Spider Solitaire</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; Play</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Pause</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Step</button>
+    <button onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#44aa44" oninput="updateSpeed()">
+  </div>
+  <div id="status-line" style="color:#44aa44;font-size:16px;text-align:center;margin-bottom:10px;font-weight:bold">Spider Solitaire</div>
+  <div class="arena">
+    <div class="stats-row">
+      <div class="stat-box"><div class="stat-label">Completed</div><div class="stat-value" id="s-completed">0</div><div class="stat-sub">of 8 suits</div></div>
+      <div class="stat-box"><div class="stat-label">Moves</div><div class="stat-value" id="s-moves">0</div><div class="stat-sub">total</div></div>
+      <div class="stat-box"><div class="stat-label">Stock</div><div class="stat-value" id="s-stock">0</div><div class="stat-sub">remaining</div></div>
+    </div>
+    <div class="section-label">Completed Suits</div>
+    <div class="suit-slots" id="suit-slots"></div>
+    <div class="section-label">Tableau</div>
+    <div class="tableau" id="tableau"></div>
+    <div class="stock-area">
+      <div class="stock-pile" id="stock-pile">0</div>
+      <div class="stock-label">Stock pile</div>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+      <div class="progress-label" id="progress-label">0 / 8 suits completed</div>
+    </div>
+    <div class="result-banner" id="result-banner"></div>
+  </div>
+  <details class="rules">
+    <summary>How to Play Spider Solitaire</summary>
+    <p><b>Goal:</b> Clear all 8 suits by building complete King-to-Ace descending sequences of the same suit.</p>
+    <p><b>Tableau:</b> 10 columns of cards. Move cards between columns to build descending sequences. Only same-suit sequences can be moved as a group.</p>
+    <p><b>Stock:</b> When stuck, deal one card to each column from the stock pile.</p>
+    <p><b>Completion:</b> A complete K-A same-suit run is automatically removed. Clear all 8 to win.</p>
+    <p><b>This simulation:</b> AI plays automatically, making moves and dealing from stock.</p>
+  </details>
+</div>
+<script>
+var state,running=false,paused=false,timer,delay=400;
+
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1400,1000,700,400,250,150,80,30,5][v-1]||400}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+
+function buildSlots(){
+  var h='';
+  for(var i=0;i<8;i++) h+='<div class="suit-slot" id="slot-'+i+'">♠</div>';
+  document.getElementById('suit-slots').innerHTML=h;
+}
+
+function renderTableau(columns){
+  var el=document.getElementById('tableau');
+  if(!columns||columns.length===0){el.innerHTML='';return}
+  var h='';
+  for(var i=0;i<columns.length;i++){
+    var count=columns[i]||0;
+    h+='<div class="col-stack">';
+    h+='<div class="col-label">Col '+(i+1)+'</div>';
+    h+='<div class="col-cards">';
+    for(var j=0;j<count;j++){
+      h+='<div class="card-pip"></div>';
+    }
+    if(count===0) h+='<div style="height:12px;border:1px dashed #44aa4422;border-radius:4px;width:44px"></div>';
+    h+='</div>';
+    h+='<div class="col-count">'+count+'</div>';
+    h+='</div>';
+  }
+  el.innerHTML=h;
+}
+
+function render(s){
+  document.getElementById('s-completed').textContent=s.completed;
+  document.getElementById('s-moves').textContent=s.moves;
+  document.getElementById('s-stock').textContent=s.stockSize;
+  document.getElementById('stock-pile').textContent=s.stockSize;
+
+  // Suit slots
+  for(var i=0;i<8;i++){
+    var el=document.getElementById('slot-'+i);
+    if(i<s.completed){el.classList.add('filled');el.innerHTML='✔';}
+    else{el.classList.remove('filled');el.innerHTML='♠';}
+  }
+
+  // Tableau columns
+  renderTableau(s.columns);
+
+  // Progress
+  var pct=Math.round(s.completed/8*100);
+  document.getElementById('progress-fill').style.width=pct+'%';
+  document.getElementById('progress-label').textContent=s.completed+' / 8 suits completed';
+
+  // Result
+  var banner=document.getElementById('result-banner');
+  if(s.done){
+    if(s.completed>=8){
+      banner.className='result-banner win';
+      banner.textContent='All 8 suits completed in '+s.moves+' moves!';
+    } else {
+      banner.className='result-banner stuck';
+      banner.textContent='No more moves. '+s.completed+'/8 suits completed in '+s.moves+' moves.';
+    }
+    document.getElementById('status-line').textContent='Game Over';
+    running=false;
+  } else {
+    banner.className='result-banner';banner.style.display='none';
+    document.getElementById('status-line').textContent='Move '+s.moves+' — '+s.completed+'/8 suits, stock: '+s.stockSize;
+  }
+}
+
+async function resetGame(){
+  clearTimeout(timer);running=false;paused=false;
+  buildSlots();
+  state=await api('/api/spider/new?seed='+Date.now());
+  if(state) render(state);
+  document.getElementById('status-line').textContent='Spider Solitaire';
+  document.getElementById('result-banner').className='result-banner';
+  document.getElementById('result-banner').style.display='none';
+  document.getElementById('btn-pause').disabled=true;
+  document.getElementById('btn-step').disabled=true;
+}
+async function startGame(){
+  await resetGame();running=true;
+  document.getElementById('btn-pause').disabled=false;
+  document.getElementById('btn-step').disabled=false;
+  updateSpeed();scheduleTick();
+}
+function togglePause(){
+  if(!running)return;paused=!paused;
+  document.getElementById('btn-pause').textContent=paused?'▶ Resume':'⏸ Pause';
+  document.getElementById('btn-step').disabled=!paused;
+  if(!paused)scheduleTick();
+}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running&&paused)await tick()}
+async function tick(){
+  if(!running||!state||state.done){running=false;return}
+  state=await api('/api/spider/step');
+  if(!state){running=false;return}
+  render(state);
+  if(!state.done)scheduleTick();else running=false;
+}
+updateSpeed();buildSlots();resetGame();
+</script>
+</body>
+</html>

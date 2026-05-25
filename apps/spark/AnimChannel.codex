@@ -1,0 +1,90 @@
+Chapter: AnimChannel
+  cites Spark chapter Keyframe
+
+ Animated property channels. Groups multiple keyframe tracks
+ for position (x,y,z), rotation (angle), scale, color, and
+ arbitrary float properties.
+
+ We say:
+
+Section: Types
+
+  AnimProperty =
+    | PropPosX
+    | PropPosY
+    | PropPosZ
+    | PropRotY
+    | PropScaleX
+    | PropScaleY
+    | PropScaleZ
+    | PropOpacity
+    | PropCustom (Text)
+
+  AnimChannel2 = record {
+    ac-target : Integer,
+    ac-property : AnimProperty,
+    ac-track : KeyframeTrack
+  }
+
+  AnimChannelSet = record {
+    acs-channels : List AnimChannel2,
+    acs-count : Integer
+  }
+
+Section: Construction
+
+  anim-channel-set-new : AnimChannelSet
+  anim-channel-set-new = AnimChannelSet { acs-channels = [], acs-count = 0 }
+
+  anim-add-channel : AnimChannelSet, Integer, AnimProperty, KeyframeTrack -> AnimChannelSet
+  anim-add-channel (set) (target) (prop) (track) =
+    let ch = AnimChannel2 { ac-target = target, ac-property = prop, ac-track = track }
+    in AnimChannelSet {
+      acs-channels = list-push (set.acs-channels) ch,
+      acs-count = set.acs-count + 1
+    }
+
+Section: Evaluation
+
+  anim-eval-channel : AnimChannel2, Integer -> Integer
+  anim-eval-channel (ch) (frame) = keytrack-eval (ch.ac-track) frame
+
+  anim-eval-all : AnimChannelSet, Integer, Integer -> List Integer
+  anim-eval-all (set) (frame) (i) =
+    if i >= set.acs-count then []
+    else let ch = list-at (set.acs-channels) i
+    in let val = anim-eval-channel ch frame
+    in list-push (anim-eval-all set frame (i + 1)) val
+
+Section: Property Names
+
+  prop-name : AnimProperty -> Text
+  prop-name (p) =
+    when p
+      is PropPosX -> "Position X"
+      is PropPosY -> "Position Y"
+      is PropPosZ -> "Position Z"
+      is PropRotY -> "Rotation Y"
+      is PropScaleX -> "Scale X"
+      is PropScaleY -> "Scale Y"
+      is PropScaleZ -> "Scale Z"
+      is PropOpacity -> "Opacity"
+      is PropCustom (name) -> name
+
+Section: Queries
+
+  anim-channel-count : AnimChannelSet -> Integer
+  anim-channel-count (set) = set.acs-count
+
+  anim-total-frames : AnimChannelSet -> Integer
+  anim-total-frames (set) = anim-max-frame set 0 0
+
+  anim-max-frame : AnimChannelSet, Integer, Integer -> Integer
+  anim-max-frame (set) (i) (best) =
+    if i >= set.acs-count then best
+    else let ch = list-at (set.acs-channels) i
+    in let last = keytrack-last-frame (ch.ac-track)
+    in let new-best = if last > best then last else best
+    in anim-max-frame set (i + 1) new-best
+
+Page 1

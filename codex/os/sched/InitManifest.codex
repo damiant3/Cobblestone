@@ -1,0 +1,146 @@
+Chapter: InitManifest
+  cites Sched chapter TaskQueue
+  cites OS chapter ServiceRegistry
+  cites Sched chapter Watchdog
+  cites Observe chapter ConfigStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter TextSearch
+
+ An InitManifest declares the set of services to start at boot,
+ each with a restart policy (always, on-failure, never), resource
+ limits, and dependency ordering.
+
+ We say:
+
+Section: Service Definition
+
+  RestartPolicy =
+    | RestartAlways
+    | RestartOnFailure
+    | RestartNever
+
+  ServiceDef = record {
+    name : Text,
+    priority : TaskPriority,
+    capabilities : Integer,
+    restart : RestartPolicy,
+    depends-on : List Text
+  }
+
+  InitManifest = record {
+    services : List ServiceDef,
+    count : Integer between 0 and 255,
+    config : ConfigStore
+  }
+
+Section: Manifest Construction
+
+  manifest-empty : InitManifest
+  manifest-empty = InitManifest { services = [], count = 0, config = config-empty }
+
+  manifest-add-service : InitManifest, ServiceDef -> InitManifest
+  manifest-add-service (m) (def) =
+    InitManifest { services = list-push (m.services) def, count = m.count + 1, config = m.config }
+
+  manifest-with-config : InitManifest, ConfigStore -> InitManifest
+  manifest-with-config (m) (cfg) =
+    InitManifest { services = m.services, count = m.count, config = cfg }
+
+Section: Service Builders
+
+  service-def : Text, TaskPriority, Integer, RestartPolicy -> ServiceDef
+  service-def (name) (prio) (caps) (restart) =
+    ServiceDef { name = name, priority = prio, capabilities = caps, restart = restart, depends-on = [] }
+
+  service-def-with-deps : Text, TaskPriority, Integer, RestartPolicy, List Text -> ServiceDef
+  service-def-with-deps (name) (prio) (caps) (restart) (deps) =
+    ServiceDef { name = name, priority = prio, capabilities = caps, restart = restart, depends-on = deps }
+
+Section: Boot Plan
+
+  BootStep = record {
+    service : ServiceDef,
+    order : Integer between 0 and 255
+  }
+
+  BootPlan = record {
+    steps : List BootStep,
+    step-count : Integer between 0 and 255
+  }
+
+  plan-boot : InitManifest -> BootPlan
+  plan-boot (m) =
+    let ordered = topo-sort (m.services) 0 (m.count) [] []
+    in BootPlan { steps = ordered, step-count = list-length ordered }
+
+  topo-sort : List ServiceDef, Integer, Integer, List Text, List BootStep -> List BootStep
+  topo-sort (defs) (pass) (total) (started) (plan) =
+    if list-length plan >= total then plan
+    else if pass > total then plan
+    else let result = topo-pass defs total started plan 0 (list-length plan)
+    in topo-sort defs (pass + 1) total (result.started) (result.plan)
+
+  TopoResult = record {
+    started : List Text,
+    plan : List BootStep
+  }
+
+  topo-pass : List ServiceDef, Integer, List Text, List BootStep, Integer, Integer -> TopoResult
+  topo-pass (defs) (total) (started) (plan) (i) (order) =
+    if i >= total then TopoResult { started = started, plan = plan }
+    else let def = list-at defs i
+    in if name-in-list (def.name) started 0 (list-length started) then topo-pass defs total started plan (i + 1) order
+    else if deps-satisfied (def.depends-on) started 0 (list-length (def.depends-on)) then
+      let step = BootStep { service = def, order = order }
+      in topo-pass defs total (list-push started (def.name)) (list-push plan step) (i + 1) (order + 1)
+    else topo-pass defs total started plan (i + 1) order
+
+  deps-satisfied : List Text, List Text, Integer, Integer -> Boolean
+  deps-satisfied (deps) (started) (i) (len) =
+    if i >= len then True
+    else if name-in-list (list-at deps i) started 0 (list-length started) then deps-satisfied deps started (i + 1) len
+    else False
+
+  name-in-list : Text, List Text, Integer, Integer -> Boolean
+  name-in-list (name) (lst) (i) (len) =
+    if i >= len then False
+    else if list-at lst i == name then True
+    else name-in-list name lst (i + 1) len
+
+Section: Boot Execution
+
+  BootResult = record {
+    registry : ServiceRegistry,
+    tasks : TaskQueue,
+    booted : Integer between 0 and 255
+  }
+
+  execute-boot-plan : BootPlan -> BootResult
+  execute-boot-plan (plan) =
+    execute-steps (plan.steps) 0 (plan.step-count) service-registry-empty task-queue-empty
+
+  execute-steps : List BootStep, Integer, Integer, ServiceRegistry, TaskQueue -> BootResult
+  execute-steps (steps) (i) (len) (reg) (q) =
+    if i >= len then BootResult { registry = reg, tasks = q, booted = len }
+    else let step = list-at steps i
+    in let def = step.service
+    in let q1 = task-enqueue q (def.name) (def.priority)
+    in execute-steps steps (i + 1) len reg q1
+
+Section: Formatting
+
+  format-restart : RestartPolicy -> Text
+  format-restart (r) = when r
+    is RestartAlways -> "always"
+    is RestartOnFailure -> "on-failure"
+    is RestartNever -> "never"
+
+  format-service-def : ServiceDef -> Text
+  format-service-def (def) =
+    def.name & " [" & format-priority (def.priority) & "] caps=" & show (def.capabilities) & " restart=" & format-restart (def.restart)
+
+  format-boot-plan : BootPlan -> Text
+  format-boot-plan (plan) = "boot-plan: " & show (plan.step-count) & " services"
+
+Page 1

@@ -1,0 +1,70 @@
+Chapter: TabComplete
+  cites Foreword chapter Maybe
+  cites Foreword chapter MathLib
+  cites Foreword chapter StringUtils
+
+ A Completion is a record containing comp-matches, comp-prefix, and comp-count.
+ To tab-complete gives a Completion with all candidates matching the partial input and their longest common prefix.
+ To format-completion gives a Text representation of a Completion.
+
+ We say:
+
+Section: Types
+  Completion = record {
+    comp-matches : List Text,
+    comp-prefix : Text,
+    comp-count : Integer
+  }
+
+Section: Completion
+  tab-complete : Text, List Text -> Completion
+  tab-complete (partial) (candidates) =
+    let matches = tab-filter candidates partial 0 (list-length candidates) []
+    in let count = list-length matches
+    in let prefix = if count == 0 then partial
+      else if count == 1 then list-at matches 0
+      else tab-common-prefix matches
+    in Completion { comp-matches = matches, comp-prefix = prefix, comp-count = count }
+
+  tab-filter : List Text, Text, Integer, Integer, List Text -> List Text
+  tab-filter (candidates) (partial) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at candidates i
+    in if text-starts-with c partial then tab-filter candidates partial (i + 1) n (list-push acc c)
+    else tab-filter candidates partial (i + 1) n acc
+
+Section: Common Prefix
+  tab-common-prefix : List Text -> Text
+  tab-common-prefix (matches) =
+    let n = list-length matches
+    in if n == 0 then ""
+    else if n == 1 then list-at matches 0
+    else tab-lcp (list-at matches 0) matches 1 n
+
+  tab-lcp : Text, List Text, Integer, Integer -> Text
+  tab-lcp (prefix) (matches) (i) (n) =
+    if i >= n then prefix
+    else let next = list-at matches i
+    in let shorter = tab-shared-prefix prefix next
+    in tab-lcp shorter matches (i + 1) n
+
+  tab-shared-prefix : Text, Text -> Text
+  tab-shared-prefix (a) (b) =
+    let limit = math-min (text-length a) (text-length b)
+    in let shared-len = tab-shared-len a b 0 limit
+    in substring a 0 shared-len
+
+  tab-shared-len : Text, Text, Integer, Integer -> Integer
+  tab-shared-len (a) (b) (i) (limit) =
+    if i >= limit then i
+    else if char-at a i /= char-at b i then i
+    else tab-shared-len a b (i + 1) limit
+
+Section: Formatting
+  format-completion : Completion -> Text
+  format-completion (c) =
+    if c.comp-count == 0 then ""
+    else if c.comp-count == 1 then c.comp-prefix
+    else c.comp-prefix & " [" & show (c.comp-count) & " matches]"
+
+Page 1

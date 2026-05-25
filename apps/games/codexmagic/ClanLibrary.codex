@@ -1,0 +1,202 @@
+Chapter: ClanLibrary
+  cites CodexMagic chapter Clan
+  cites CodexMagic chapter ClanEconomy
+  cites CodexMagic chapter Token
+
+ Shared card pool owned by the clan. Members check out cards from
+ the library to use in their decks. A deposit in clan coin is
+ required; forfeited if not returned by due date.
+
+ We say:
+
+Section: Library State
+
+  ClanLibrary = record {
+    clan-id : Integer,
+    cards : List LibraryCard,
+    checkouts : List LibraryCheckout,
+    total-value : Integer
+  }
+
+  LibraryCard = record {
+    token-id : Integer,
+    template-id : Integer,
+    acquired-at : Integer,
+    acquired-from : AcquisitionSource,
+    checked-out : Boolean
+  }
+
+  AcquisitionSource =
+    | AcqPurchase
+    | AcqDonation
+    | AcqPrize
+    | AcqTrade
+
+  acquisition-name : AcquisitionSource -> Text
+  acquisition-name (a) =
+    when a
+      is AcqPurchase -> "Purchase"
+      is AcqDonation -> "Donation"
+      is AcqPrize -> "Prize"
+      is AcqTrade -> "Trade"
+
+  LibraryCheckout = record {
+    token-id : Integer,
+    borrower : Integer,
+    checked-out-at : Integer,
+    due-at : Integer,
+    deposit : Integer
+  }
+
+Section: Library Creation
+
+  clan-library-new : Integer -> ClanLibrary
+  clan-library-new (clan-id) =
+    ClanLibrary { clan-id = clan-id, cards = [], checkouts = [], total-value = 0 }
+
+Section: Card Management
+
+  library-add-card : ClanLibrary, Integer, Integer, Integer, AcquisitionSource -> ClanLibrary
+  library-add-card (lib) (token-id) (template-id) (time) (source) =
+    let card = LibraryCard { token-id = token-id, template-id = template-id, acquired-at = time, acquired-from = source, checked-out = False }
+    in ClanLibrary {
+      clan-id = lib.clan-id,
+      cards = list-push (lib.cards) card,
+      checkouts = lib.checkouts,
+      total-value = lib.total-value + 1
+    }
+
+  library-remove-card : ClanLibrary, Integer -> ClanLibrary
+  library-remove-card (lib) (token-id) =
+    let new-cards = remove-library-card (lib.cards) token-id 0 (list-length (lib.cards)) []
+    in ClanLibrary {
+      clan-id = lib.clan-id,
+      cards = new-cards,
+      checkouts = lib.checkouts,
+      total-value = list-length new-cards
+    }
+
+  remove-library-card : List LibraryCard, Integer, Integer, Integer, List LibraryCard -> List LibraryCard
+  remove-library-card (cards) (token-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at cards i
+    in if c.token-id == token-id then remove-library-card cards token-id (i + 1) len acc
+    else remove-library-card cards token-id (i + 1) len (list-push acc c)
+
+  is-card-checked-out : ClanLibrary, Integer -> Boolean
+  is-card-checked-out (lib) (token-id) =
+    find-checkout (lib.checkouts) token-id 0 (list-length (lib.checkouts))
+
+  find-checkout : List LibraryCheckout, Integer, Integer, Integer -> Boolean
+  find-checkout (checkouts) (token-id) (i) (len) =
+    if i >= len then False
+    else let co = list-at checkouts i
+    in if co.token-id == token-id then True
+    else find-checkout checkouts token-id (i + 1) len
+
+Section: Checkout Operations
+
+  CheckoutResult = record {
+    library : ClanLibrary,
+    economy : ClanEconomy,
+    success : Boolean
+  }
+
+  library-checkout : ClanLibrary, ClanEconomy, Integer, Integer, Integer, Integer, Integer -> CheckoutResult
+  library-checkout (lib) (econ) (token-id) (borrower) (deposit) (time) (duration) =
+    if is-card-checked-out lib token-id then CheckoutResult { library = lib, economy = econ, success = False }
+    else let borrower-bal = get-clan-balance econ borrower
+    in if borrower-bal < deposit then CheckoutResult { library = lib, economy = econ, success = False }
+    else if card-in-library (lib.cards) token-id 0 (list-length (lib.cards)) == False then CheckoutResult { library = lib, economy = econ, success = False }
+    else let co = LibraryCheckout { token-id = token-id, borrower = borrower, checked-out-at = time, due-at = time + duration, deposit = deposit }
+    in let lib2 = ClanLibrary {
+      clan-id = lib.clan-id,
+      cards = mark-checked-out (lib.cards) token-id 0 (list-length (lib.cards)) [],
+      checkouts = list-push (lib.checkouts) co,
+      total-value = lib.total-value
+    }
+    in let tx = ClanTransaction { tx-id = list-length (econ.transaction-log), tx-type = TxLibraryDeposit, from-account = borrower, to-account = -1, amount = deposit, timestamp = time, memo = "Library checkout deposit" }
+    in let econ2 = clan-burn econ borrower deposit time
+    in CheckoutResult { library = lib2, economy = econ2, success = True }
+
+  library-return : ClanLibrary, ClanEconomy, Integer, Integer, Integer -> CheckoutResult
+  library-return (lib) (econ) (token-id) (returner) (time) =
+    let checkout = get-checkout (lib.checkouts) token-id 0 (list-length (lib.checkouts))
+    in if checkout.token-id < 0 then CheckoutResult { library = lib, economy = econ, success = False }
+    else if checkout.borrower /= returner then CheckoutResult { library = lib, economy = econ, success = False }
+    else let overdue = time > checkout.due-at
+    in let refund = if overdue then 0 else checkout.deposit
+    in let lib2 = ClanLibrary {
+      clan-id = lib.clan-id,
+      cards = mark-returned (lib.cards) token-id 0 (list-length (lib.cards)) [],
+      checkouts = remove-checkout (lib.checkouts) token-id 0 (list-length (lib.checkouts)) [],
+      total-value = lib.total-value
+    }
+    in let econ2 = if refund > 0 then clan-mint econ returner refund time else econ
+    in CheckoutResult { library = lib2, economy = econ2, success = True }
+
+  get-checkout : List LibraryCheckout, Integer, Integer, Integer -> LibraryCheckout
+  get-checkout (checkouts) (token-id) (i) (len) =
+    if i >= len then LibraryCheckout { token-id = -1, borrower = -1, checked-out-at = 0, due-at = 0, deposit = 0 }
+    else let co = list-at checkouts i
+    in if co.token-id == token-id then co
+    else get-checkout checkouts token-id (i + 1) len
+
+Section: Library Helpers
+
+  card-in-library : List LibraryCard, Integer, Integer, Integer -> Boolean
+  card-in-library (cards) (token-id) (i) (len) =
+    if i >= len then False
+    else let c = list-at cards i
+    in if c.token-id == token-id then True
+    else card-in-library cards token-id (i + 1) len
+
+  mark-checked-out : List LibraryCard, Integer, Integer, Integer, List LibraryCard -> List LibraryCard
+  mark-checked-out (cards) (token-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at cards i
+    in if c.token-id == token-id then
+      mark-checked-out cards token-id (i + 1) len (list-push acc (LibraryCard { token-id = c.token-id, template-id = c.template-id, acquired-at = c.acquired-at, acquired-from = c.acquired-from, checked-out = True }))
+    else mark-checked-out cards token-id (i + 1) len (list-push acc c)
+
+  mark-returned : List LibraryCard, Integer, Integer, Integer, List LibraryCard -> List LibraryCard
+  mark-returned (cards) (token-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at cards i
+    in if c.token-id == token-id then
+      mark-returned cards token-id (i + 1) len (list-push acc (LibraryCard { token-id = c.token-id, template-id = c.template-id, acquired-at = c.acquired-at, acquired-from = c.acquired-from, checked-out = False }))
+    else mark-returned cards token-id (i + 1) len (list-push acc c)
+
+  remove-checkout : List LibraryCheckout, Integer, Integer, Integer, List LibraryCheckout -> List LibraryCheckout
+  remove-checkout (checkouts) (token-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let co = list-at checkouts i
+    in if co.token-id == token-id then remove-checkout checkouts token-id (i + 1) len acc
+    else remove-checkout checkouts token-id (i + 1) len (list-push acc co)
+
+  overdue-checkouts : ClanLibrary, Integer -> List LibraryCheckout
+  overdue-checkouts (lib) (current-time) =
+    find-overdue (lib.checkouts) current-time 0 (list-length (lib.checkouts)) []
+
+  find-overdue : List LibraryCheckout, Integer, Integer, Integer, List LibraryCheckout -> List LibraryCheckout
+  find-overdue (checkouts) (time) (i) (len) (acc) =
+    if i >= len then acc
+    else let co = list-at checkouts i
+    in if time > co.due-at then find-overdue checkouts time (i + 1) len (list-push acc co)
+    else find-overdue checkouts time (i + 1) len acc
+
+  library-card-count : ClanLibrary -> Integer
+  library-card-count (lib) = list-length (lib.cards)
+
+  library-available-count : ClanLibrary -> Integer
+  library-available-count (lib) =
+    count-available (lib.cards) 0 (list-length (lib.cards)) 0
+
+  count-available : List LibraryCard, Integer, Integer, Integer -> Integer
+  count-available (cards) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at cards i
+    in if c.checked-out then count-available cards (i + 1) len acc
+    else count-available cards (i + 1) len (acc + 1)
+
+Page 1

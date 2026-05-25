@@ -1,0 +1,94 @@
+Chapter: RateLimiter
+  cites Foreword chapter Maybe
+
+ A RateLimiter enforces request budgets using a token-bucket
+ algorithm with configurable capacity and refill rate, returning
+ allow or deny per request.
+
+ We say:
+
+Section: Token Bucket
+
+  RateLimiter = record {
+    capacity : Integer between 1 and 4294967295,
+    tokens : Integer between 0 and 4294967295,
+    refill-rate : Integer between 1 and 4294967295,
+    last-refill : Integer between 0 and 4294967295
+  }
+
+  limiter-new : Integer, Integer -> RateLimiter
+  limiter-new (capacity) (rate) = RateLimiter {
+    capacity = capacity,
+    tokens = capacity,
+    refill-rate = rate,
+    last-refill = 0
+  }
+
+Section: Refill
+
+  limiter-refill : RateLimiter, Integer -> RateLimiter
+  limiter-refill (lim) (now) =
+    let elapsed = now - lim.last-refill
+    in let added = elapsed * lim.refill-rate
+    in let new-tokens = lim.tokens + added
+    in let capped = if new-tokens > lim.capacity then lim.capacity else new-tokens
+    in RateLimiter { capacity = lim.capacity, tokens = capped, refill-rate = lim.refill-rate, last-refill = now }
+
+Section: Acquire
+
+  AcquireResult = record {
+    limiter : RateLimiter,
+    allowed : Boolean
+  }
+
+  limiter-try-acquire : RateLimiter, Integer, Integer -> AcquireResult
+  limiter-try-acquire (lim) (cost) (now) =
+    let refreshed = limiter-refill lim now
+    in if refreshed.tokens >= cost then AcquireResult {
+      limiter = RateLimiter { capacity = refreshed.capacity, tokens = refreshed.tokens - cost, refill-rate = refreshed.refill-rate, last-refill = refreshed.last-refill },
+      allowed = True
+    }
+    else AcquireResult { limiter = refreshed, allowed = False }
+
+  limiter-acquire : RateLimiter, Integer -> AcquireResult
+  limiter-acquire (lim) (now) = limiter-try-acquire lim 1 now
+
+Section: Multi-Limiter
+
+  LimiterSet = record {
+    limiters : List RateLimiter,
+    names : List Text,
+    count : Integer between 0 and 255
+  }
+
+  limiter-set-empty : LimiterSet
+  limiter-set-empty = LimiterSet { limiters = [], names = [], count = 0 }
+
+  limiter-set-add : LimiterSet, Text, Integer, Integer -> LimiterSet
+  limiter-set-add (ls) (name) (capacity) (rate) =
+    LimiterSet { limiters = list-push (ls.limiters) (limiter-new capacity rate), names = list-push (ls.names) name, count = ls.count + 1 }
+
+  limiter-set-acquire : LimiterSet, Text, Integer -> AcquireResult
+  limiter-set-acquire (ls) (name) (now) =
+    limiter-set-find-acquire ls name now 0
+
+  limiter-set-find-acquire : LimiterSet, Text, Integer, Integer -> AcquireResult
+  limiter-set-find-acquire (ls) (name) (now) (i) =
+    if i >= ls.count then AcquireResult { limiter = limiter-new 1 1, allowed = False }
+    else if list-at (ls.names) i == name then
+      let r = limiter-acquire (list-at (ls.limiters) i) now
+      in AcquireResult { limiter = r.limiter, allowed = r.allowed }
+    else limiter-set-find-acquire ls name now (i + 1)
+
+Section: Queries
+
+  limiter-tokens : RateLimiter -> Integer
+  limiter-tokens (lim) = lim.tokens
+
+  limiter-capacity : RateLimiter -> Integer
+  limiter-capacity (lim) = lim.capacity
+
+  limiter-stats : RateLimiter -> Text
+  limiter-stats (lim) = "tokens=" & show (lim.tokens) & "/" & show (lim.capacity) & " rate=" & show (lim.refill-rate)
+
+Page 1

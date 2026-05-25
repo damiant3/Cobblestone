@@ -1,0 +1,686 @@
+Chapter: DbFullTest
+  cites Codex chapter General
+  cites Data chapter Page
+  cites Data chapter Row
+  cites Data chapter Schema
+  cites Data chapter Heap
+  cites Data chapter BTreeIndex
+  cites Data chapter Catalog
+  cites Data chapter RelAlgebra
+  cites Data chapter Executor
+  cites Data chapter Transaction
+  cites Data chapter LockManager
+  cites Data chapter Deadlock
+  cites Data chapter Wal
+  cites Data chapter BufferPool
+  cites Data chapter Mvcc
+  cites Data chapter Optimizer
+  cites Data chapter HashJoin
+  cites Data chapter SortMerge
+  cites Data chapter ColumnStore
+  cites Data chapter MapReduce
+  cites Data chapter BulkLoader
+  cites Data chapter Backup
+  cites Data chapter Security
+  cites Data chapter Protocol
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Sort
+
+Section: Helpers
+
+  sv : ColumnValue -> Text
+  sv (v) =
+    when v
+      is ValInteger (n) -> show n
+      is ValText (t) -> t
+      is ValBoolean (b) -> if b then "T" else "F"
+      is ValNull -> "N"
+
+  sr : RowData -> Text
+  sr (row) = sr-loop (row.values) 0 (list-length (row.values)) ""
+
+  sr-loop : List ColumnValue, Integer, Integer, Text -> Text
+  sr-loop (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i > 0 then "|" else ""
+    in sr-loop vals (i + 1) len (acc & sep & sv (list-at vals i))
+
+  qr-summary : QueryResult -> Text
+  qr-summary (qr) =
+    if qr.qr-ok == False then "ERR:" & qr.qr-msg
+    else show (qr.qr-count)
+
+  qr-first : QueryResult -> Text
+  qr-first (qr) =
+    if qr.qr-ok == False then "ERR"
+    else if qr.qr-count == 0 then "EMPTY"
+    else sr (list-at (qr.qr-rows) 0)
+
+Section: Schema Setup
+
+  mk-emp-table : TableDef
+  mk-emp-table = table-def-with-pk "emp" [
+    col-def-not-null "id" ColInteger,
+    col-def-not-null "name" ColText,
+    col-def-not-null "dept" ColText,
+    col-def "salary" ColInteger,
+    col-def "mgr-id" ColInteger
+  ] ["id"]
+
+  mk-dept-table : TableDef
+  mk-dept-table = table-def-with-pk "dept" [
+    col-def-not-null "name" ColText,
+    col-def "budget" ColInteger,
+    col-def "head-id" ColInteger
+  ] ["name"]
+
+  mk-order-table : TableDef
+  mk-order-table = table-def-with-pk "orders" [
+    col-def-not-null "oid" ColInteger,
+    col-def-not-null "cust" ColText,
+    col-def-not-null "product" ColText,
+    col-def "qty" ColInteger,
+    col-def "price" ColInteger
+  ] ["oid"]
+
+  emp-schema : RowSchema = table-schema mk-emp-table
+  dept-schema : RowSchema = table-schema mk-dept-table
+  order-schema : RowSchema = table-schema mk-order-table
+
+  emp : Integer, Text, Text, Integer, Integer -> RowData
+  emp (id) (name) (dept) (salary) (mgr) = row-new emp-schema [ValInteger id, ValText name, ValText dept, ValInteger salary, ValInteger mgr]
+
+  dept : Text, Integer, Integer -> RowData
+  dept (name) (budget) (head) = row-new dept-schema [ValText name, ValInteger budget, ValInteger head]
+
+  ord : Integer, Text, Text, Integer, Integer -> RowData
+  ord (oid) (cust) (product) (qty) (price) = row-new order-schema [ValInteger oid, ValText cust, ValText product, ValInteger qty, ValInteger price]
+
+Section: Build Test Database
+
+  build-db : Catalog
+  build-db =
+    let c0 = catalog-new
+    in let c1 = (catalog-create-table c0 mk-emp-table).cat
+    in let c2 = (catalog-create-table c1 mk-dept-table).cat
+    in let c3 = (catalog-create-table c2 mk-order-table).cat
+    in let c4 = ins c3 "emp" (emp 1 "Alice" "Eng" 130000 0)
+    in let c5 = ins c4 "emp" (emp 2 "Bob" "Eng" 115000 1)
+    in let c6 = ins c5 "emp" (emp 3 "Carol" "Sales" 92000 0)
+    in let c7 = ins c6 "emp" (emp 4 "Dave" "Sales" 85000 3)
+    in let c8 = ins c7 "emp" (emp 5 "Eve" "Research" 140000 0)
+    in let c9 = ins c8 "emp" (emp 6 "Frank" "Research" 108000 5)
+    in let c10 = ins c9 "emp" (emp 7 "Grace" "Eng" 145000 1)
+    in let c11 = ins c10 "emp" (emp 8 "Heidi" "Sales" 76000 3)
+    in let c12 = ins c11 "emp" (emp 9 "Ivan" "Research" 99000 5)
+    in let c13 = ins c12 "emp" (emp 10 "Judy" "Eng" 128000 1)
+    in let c14 = ins c13 "dept" (dept "Eng" 500000 1)
+    in let c15 = ins c14 "dept" (dept "Sales" 300000 3)
+    in let c16 = ins c15 "dept" (dept "Research" 400000 5)
+    in let c17 = ins c16 "orders" (ord 1 "Acme" "Widget" 100 25)
+    in let c18 = ins c17 "orders" (ord 2 "Acme" "Gadget" 50 75)
+    in let c19 = ins c18 "orders" (ord 3 "Beta" "Widget" 200 25)
+    in let c20 = ins c19 "orders" (ord 4 "Beta" "Gizmo" 30 120)
+    in let c21 = ins c20 "orders" (ord 5 "Gamma" "Widget" 150 25)
+    in let c22 = ins c21 "orders" (ord 6 "Gamma" "Gadget" 80 75)
+    in let c23 = ins c22 "orders" (ord 7 "Acme" "Gizmo" 10 120)
+    in let c24 = ins c23 "orders" (ord 8 "Delta" "Widget" 500 25)
+    in c24
+
+  ins : Catalog, Text, RowData -> Catalog
+  ins (cat) (table) (row) = (catalog-insert-row cat table row).cir-cat
+
+Section: Test 1 — Full Scan
+
+  test-scan : Catalog -> Text
+  test-scan (cat) =
+    let qr = query cat (RelScan "emp")
+    in "scan: " & qr-summary qr
+
+Section: Test 2 — Filter Equality
+
+  test-filter-eq : Catalog -> Text
+  test-filter-eq (cat) =
+    let qr = query cat (RelFilter (RelScan "emp") (PredColCmp "dept" CmpEq (ValText "Eng")))
+    in "filter-eq: " & qr-summary qr
+
+Section: Test 3 — Filter Range
+
+  test-filter-range : Catalog -> Text
+  test-filter-range (cat) =
+    let qr = query cat (RelFilter (RelScan "emp") (PredAnd (PredColCmp "salary" CmpGe (ValInteger 100000)) (PredColCmp "salary" CmpLt (ValInteger 140000))))
+    in "filter-range: " & qr-summary qr
+
+Section: Test 4 — Project
+
+  test-project : Catalog -> Text
+  test-project (cat) =
+    let qr = query cat (RelProject (RelScan "emp") (proj-columns ["name", "salary"]))
+    in "project: " & qr-summary qr & " first=" & qr-first qr
+
+Section: Test 5 — Sort Asc
+
+  test-sort-asc : Catalog -> Text
+  test-sort-asc (cat) =
+    let qr = query cat (RelSort (RelScan "emp") [SortSpec { sort-col = "salary", sort-dir = SortAsc }])
+    in "sort-asc: first=" & qr-first qr
+
+Section: Test 6 — Sort Desc + Limit
+
+  test-sort-limit : Catalog -> Text
+  test-sort-limit (cat) =
+    let qr = query cat
+      (RelLimit (RelSort (RelScan "emp") [SortSpec { sort-col = "salary", sort-dir = SortDesc }]) 3)
+    in "sort-limit: " & qr-summary qr & " top=" & sv (row-get-by-name (list-at (qr.qr-rows) 0) "name")
+
+Section: Test 7 — Distinct
+
+  test-distinct : Catalog -> Text
+  test-distinct (cat) =
+    let qr = query cat (RelDistinct (RelProject (RelScan "emp") (proj-columns ["dept"])))
+    in "distinct-dept: " & qr-summary qr
+
+Section: Test 8 — Group By with Aggregates
+
+  test-group : Catalog -> Text
+  test-group (cat) =
+    let qr = query cat (RelGroup (RelScan "emp") ["dept"] [
+      AggSpec { agg-func = AggCount, agg-alias = "cnt" },
+      AggSpec { agg-func = AggSum "salary", agg-alias = "total" },
+      AggSpec { agg-func = AggAvg "salary", agg-alias = "avg" },
+      AggSpec { agg-func = AggMin "salary", agg-alias = "min" },
+      AggSpec { agg-func = AggMax "salary", agg-alias = "max" }
+    ])
+    in "group: " & qr-summary qr & " groups"
+
+Section: Test 9 — Nested Loop Join
+
+  test-nl-join : Catalog -> Text
+  test-nl-join (cat) =
+    let qr = query cat (RelJoin (RelScan "emp") (RelScan "dept") (PredColCmp "dept" CmpEq (ValText "Eng")))
+    in "nl-join: " & qr-summary qr
+
+Section: Test 10 — Left Join
+
+  test-left-join : Catalog -> Text
+  test-left-join (cat) =
+    let qr = query cat (RelLeftJoin (RelScan "dept") (RelScan "emp") PredTrue)
+    in "left-join: " & qr-summary qr
+
+Section: Test 11 — Union
+
+  test-union : Catalog -> Text
+  test-union (cat) =
+    let eng = RelFilter (RelScan "emp") (PredColCmp "dept" CmpEq (ValText "Eng"))
+    in let res = RelFilter (RelScan "emp") (PredColCmp "dept" CmpEq (ValText "Research"))
+    in let qr = query cat (RelUnion eng res)
+    in "union: " & qr-summary qr
+
+Section: Test 12 — Intersect (same set = same count)
+
+  test-intersect : Catalog -> Text
+  test-intersect (cat) =
+    let all = RelScan "emp"
+    in let qr = query cat (RelIntersect all all)
+    in "intersect: " & qr-summary qr
+
+Section: Test 13 — Except
+
+  test-except : Catalog -> Text
+  test-except (cat) =
+    let all = RelScan "emp"
+    in let eng = RelFilter (RelScan "emp") (PredColCmp "dept" CmpEq (ValText "Eng"))
+    in let qr = query cat (RelExcept all eng)
+    in "except: " & qr-summary qr
+
+Section: Test 14 — Compound Query (filter + group + sort + limit)
+
+  test-compound : Catalog -> Text
+  test-compound (cat) =
+    let qr = query cat
+      (RelLimit
+        (RelSort
+          (RelGroup
+            (RelFilter (RelScan "orders") (PredColCmp "qty" CmpGt (ValInteger 30)))
+            ["cust"]
+            [AggSpec { agg-func = AggSum "qty", agg-alias = "total-qty" },
+             AggSpec { agg-func = AggCount, agg-alias = "order-cnt" }])
+          [SortSpec { sort-col = "total-qty", sort-dir = SortDesc }])
+        2)
+    in "compound: " & qr-summary qr & " top=" & qr-first qr
+
+Section: Test 15 — Hash Join
+
+  test-hash-join : Catalog -> Text
+  test-hash-join (cat) =
+    let emps = (query cat (RelScan "emp")).qr-rows
+    in let depts = (query cat (RelScan "dept")).qr-rows
+    in let result = hash-join depts emps "name" "dept"
+    in "hash-join: " & show (result.hj-count) & " build=" & show (result.hj-build-size)
+
+Section: Test 16 — Semi Join
+
+  test-semi-join : Catalog -> Text
+  test-semi-join (cat) =
+    let emps = (query cat (RelScan "emp")).qr-rows
+    in let high-pay = (query cat (RelFilter (RelScan "emp") (PredColCmp "salary" CmpGe (ValInteger 120000)))).qr-rows
+    in let result = hash-semi-join emps high-pay "dept" "dept"
+    in "semi-join: " & show (list-length result)
+
+Section: Test 17 — Anti Join
+
+  test-anti-join : Catalog -> Text
+  test-anti-join (cat) =
+    let all-depts = (query cat (RelScan "dept")).qr-rows
+    in let has-orders = [row-new dept-schema [ValText "Eng", ValInteger 0, ValInteger 0]]
+    in let result = hash-anti-join all-depts has-orders "name" "name"
+    in "anti-join: " & show (list-length result)
+
+Section: Test 18 — Sort-Merge Join
+
+  test-sm-join : Catalog -> Text
+  test-sm-join (cat) =
+    let emps = (query cat (RelScan "emp")).qr-rows
+    in let depts = (query cat (RelScan "dept")).qr-rows
+    in let result = sort-merge-join emps depts "dept" "name"
+    in "sm-join: " & show (result.sm-count)
+
+Section: Test 19 — Column Store + Aggregation
+
+  test-colstore : Catalog -> Text
+  test-colstore (cat) =
+    let rows = (query cat (RelScan "orders")).qr-rows
+    in let ct = ct-bulk-load (ct-new "orders" order-schema) rows
+    in let total = ct-sum ct "qty"
+    in let mn = sv (ct-min ct "price")
+    in let mx = sv (ct-max ct "price")
+    in let avg = ct-avg ct "price"
+    in "colstore: sum-qty=" & show total & " min-price=" & mn & " max-price=" & mx & " avg-price=" & show avg
+
+Section: Test 20 — Column Store Filtered Scan
+
+  test-col-filter : Catalog -> Text
+  test-col-filter (cat) =
+    let rows = (query cat (RelScan "orders")).qr-rows
+    in let ct = ct-bulk-load (ct-new "orders" order-schema) rows
+    in let big-orders = ct-scan-where ct "qty" CmpGe (ValInteger 100)
+    in let materialized = ct-materialize ct big-orders
+    in "col-filter: " & show (list-length materialized)
+
+Section: Test 21 — Map-Reduce Sum
+
+  test-mr-sum : Catalog -> Text
+  test-mr-sum (cat) =
+    let rows = (query cat (RelScan "orders")).qr-rows
+    in let ct = ct-bulk-load (ct-new "orders" order-schema) rows
+    in let results = mr-sum-by ct "cust" "qty"
+    in "mr-sum: " & show (list-length results) & " groups"
+
+Section: Test 22 — Map-Reduce Count
+
+  test-mr-count : Catalog -> Text
+  test-mr-count (cat) =
+    let rows = (query cat (RelScan "orders")).qr-rows
+    in let ct = ct-bulk-load (ct-new "orders" order-schema) rows
+    in let results = mr-count-by ct "product"
+    in "mr-count: " & show (list-length results) & " products"
+
+Section: Test 23 — RLE Encoding
+
+  test-rle : Text =
+    let vals = [ValInteger 1, ValInteger 1, ValInteger 1, ValInteger 2, ValInteger 2, ValInteger 3]
+    in let encoded = rle-encode vals
+    in let s = rle-sum encoded
+    in "rle: entries=" & show (list-length encoded) & " sum=" & show s
+
+Section: Test 24 — Transactions Commit + Abort
+
+  test-txn : Text =
+    let mgr = txn-manager-new
+    in let b1 = txn-begin mgr Serializable
+    in let b2 = txn-begin (b1.tbr-mgr) RepeatableRead
+    in let c1 = txn-commit (b2.tbr-mgr) (b1.tbr-txn.txn-id)
+    in let a2 = txn-abort (c1.tr-mgr) (b2.tbr-txn.txn-id)
+    in "txn: c=" & show ((a2.tr-mgr).committed-count) & " a=" & show ((a2.tr-mgr).aborted-count)
+
+Section: Test 25 — WAL Round-Trip
+
+  test-wal : Text =
+    let log = wal-log-new
+    in let log2 = wal-log-append log (wal-begin 1 1)
+    in let log3 = wal-log-append log2 (wal-insert 2 1 1 0 0 [10, 20])
+    in let log4 = wal-log-append log3 (wal-insert 3 1 1 0 1 [30, 40])
+    in let log5 = wal-log-append log4 (wal-commit 4 1)
+    in let log6 = wal-log-append log5 (wal-begin 5 2)
+    in let log7 = wal-log-append log6 (wal-abort 6 2)
+    in let committed = wal-committed-txns log7
+    in "wal: rec=" & show (wal-record-count log7) & " c1=" & show (wal-is-committed committed 1) & " c2=" & show (wal-is-committed committed 2)
+
+Section: Test 26 — Locks Compatibility
+
+  test-locks : Text =
+    let lt = lock-table-new
+    in let r1 = lock-acquire lt (LockTable "emp") LockShared 1
+    in let lt2 = r1.fst
+    in let g1 = r1.snd
+    in let r2 = lock-acquire lt2 (LockTable "emp") LockShared 2
+    in let lt3 = r2.fst
+    in let r3 = lock-acquire lt3 (LockTable "emp") LockExclusive 3
+    in let g3 = r3.snd
+    in let s1 = when g1 is LockGranted -> "G" is otherwise -> "W"
+    in let x3 = when g3 is LockGranted -> "G" is LockWaiting -> "W" is otherwise -> "D"
+    in "locks: s1=" & s1 & " x3=" & x3
+
+Section: Test 27 — Lock Release + Promotion
+
+  test-lock-release : Text =
+    let lt = lock-table-new
+    in let r1 = lock-acquire lt (LockRow "emp" 0 0) LockExclusive 1
+    in let lt2 = r1.fst
+    in let r2 = lock-acquire lt2 (LockRow "emp" 0 0) LockShared 2
+    in let lt3 = r2.fst
+    in let g2 = r2.snd
+    in let w = when g2 is LockWaiting -> "W" is otherwise -> "G"
+    in let lt4 = lock-release lt3 1
+    in "lock-release: before=" & w
+
+Section: Test 28 — Deadlock Detection
+
+  test-deadlock : Text =
+    let edges = [
+      WaitEdge { we-waiter = 10, we-holder = 20 },
+      WaitEdge { we-waiter = 20, we-holder = 30 },
+      WaitEdge { we-waiter = 30, we-holder = 10 }
+    ]
+    in let wfg = wfg-build edges
+    in let result = detect-deadlock wfg
+    in when result
+      is NoDeadlock -> "deadlock: none"
+      is DeadlockFound (cycle) -> "deadlock: victim=" & show (select-victim cycle)
+
+Section: Test 29 — No Deadlock (linear chain)
+
+  test-no-deadlock : Text =
+    let edges = [
+      WaitEdge { we-waiter = 1, we-holder = 2 },
+      WaitEdge { we-waiter = 2, we-holder = 3 }
+    ]
+    in let wfg = wfg-build edges
+    in let result = detect-deadlock wfg
+    in when result
+      is NoDeadlock -> "no-deadlock: ok"
+      is DeadlockFound (cycle) -> "no-deadlock: FAIL"
+
+Section: Test 30 — MVCC Snapshot Isolation
+
+  test-mvcc : Text =
+    let vs = vs-new
+    in let vs2 = vs-insert vs (emp 1 "Alice" "Eng" 130000 0) 1
+    in let vs3 = vs-insert vs2 (emp 2 "Bob" "Eng" 115000 1) 1
+    in let vs4 = vs-delete vs3 0 2
+    in let snap1 = vs-scan vs4 1
+    in let snap2 = vs-scan vs4 2
+    in let snap3 = vs-scan vs4 3
+    in "mvcc: snap1=" & show (list-length snap1) & " snap2=" & show (list-length snap2) & " snap3=" & show (list-length snap3)
+
+Section: Test 31 — MVCC Garbage Collection
+
+  test-mvcc-gc : Text =
+    let vs = vs-new
+    in let vs2 = vs-insert vs (emp 1 "Alice" "Eng" 130000 0) 1
+    in let vs3 = vs-insert vs2 (emp 2 "Bob" "Eng" 115000 1) 2
+    in let vs4 = vs-delete vs3 0 3
+    in let before = vs4.vs-count
+    in let vs5 = vs-gc vs4 4
+    in "mvcc-gc: before=" & show before & " after=" & show (vs5.vs-count)
+
+Section: Test 32 — Optimistic Concurrency
+
+  test-occ : Text =
+    let vs = vs-new
+    in let vs2 = vs-insert vs (emp 1 "Alice" "Eng" 130000 0) 1
+    in let ws = occ-record-read occ-new 0 1
+    in let valid1 = occ-validate ws vs2
+    in let vs3 = vs-update vs2 0 (emp 1 "Alice" "Eng" 140000 0) 2
+    in let valid2 = occ-validate ws vs3
+    in let v1 = when valid1 is OccValid -> "ok" is OccConflict (r) -> "conflict"
+    in let v2 = when valid2 is OccValid -> "ok" is OccConflict (r) -> "conflict"
+    in "occ: before-update=" & v1 & " after-update=" & v2
+
+Section: Test 33 — B+ Tree Rebalance
+
+  test-rebalance : Text =
+    let t0 = btree-new
+    in let t1 = (btree-insert t0 (index-key-single (ValInteger 5)) (RowId { rid-page = 0, rid-slot = 0 })).bt-tree
+    in let t2 = (btree-insert t1 (index-key-single (ValInteger 3)) (RowId { rid-page = 0, rid-slot = 1 })).bt-tree
+    in let t3 = (btree-insert t2 (index-key-single (ValInteger 8)) (RowId { rid-page = 0, rid-slot = 2 })).bt-tree
+    in let t4 = (btree-insert t3 (index-key-single (ValInteger 1)) (RowId { rid-page = 0, rid-slot = 3 })).bt-tree
+    in let t5 = (btree-insert t4 (index-key-single (ValInteger 9)) (RowId { rid-page = 0, rid-slot = 4 })).bt-tree
+    in let before = btree-stats t5
+    in let t6 = btree-rebalance t5
+    in let after = btree-stats t6
+    in "rebalance: before=" & show (before.bts-count) & " after=" & show (after.bts-count) & " h=" & show (after.bts-height)
+
+Section: Test 34 — B+ Tree Range Scan
+
+  test-range-scan : Text =
+    let t0 = btree-new
+    in let t1 = (btree-insert t0 (index-key-single (ValInteger 1)) (RowId { rid-page = 0, rid-slot = 0 })).bt-tree
+    in let t2 = (btree-insert t1 (index-key-single (ValInteger 3)) (RowId { rid-page = 0, rid-slot = 1 })).bt-tree
+    in let t3 = (btree-insert t2 (index-key-single (ValInteger 5)) (RowId { rid-page = 0, rid-slot = 2 })).bt-tree
+    in let t4 = (btree-insert t3 (index-key-single (ValInteger 7)) (RowId { rid-page = 0, rid-slot = 3 })).bt-tree
+    in let t5 = (btree-insert t4 (index-key-single (ValInteger 9)) (RowId { rid-page = 0, rid-slot = 4 })).bt-tree
+    in let result = btree-range-scan t5 (index-key-single (ValInteger 3)) (index-key-single (ValInteger 7))
+    in "range-scan: " & show (result.rs-count)
+
+Section: Test 35 — Page Insert + Read + Delete
+
+  test-page-ops : Text =
+    let pg = page-new 0 page-type-data
+    in let r1 = page-insert pg [10, 20, 30]
+    in let r2 = page-insert (r1.page) [40, 50]
+    in let read1 = page-read-slot (r2.page) 0
+    in let pg2 = page-delete-slot (r2.page) 0
+    in let read2 = page-read-slot pg2 0
+    in let v1 = when read1 is Just (bs) -> show (list-length bs) is None -> "N"
+    in let v2 = when read2 is Just (bs) -> show (list-length bs) is None -> "N"
+    in "page: slots=" & show (page-slot-count (r2.page)) & " read=" & v1 & " after-del=" & v2
+
+Section: Test 36 — Row Encode + Decode Round-Trip
+
+  test-row-roundtrip : Text =
+    let schema = schema-new ["a", "b", "c"] [ColInteger, ColText, ColBoolean]
+    in let row = row-new schema [ValInteger 42, ValText "hello", ValBoolean True]
+    in let encoded = row-encode row
+    in let decoded = row-decode encoded schema
+    in let a = sv (row-get decoded 0)
+    in let b = sv (row-get decoded 1)
+    in let c = sv (row-get decoded 2)
+    in "row-rt: " & a & "|" & b & "|" & c
+
+Section: Test 37 — Buffer Pool LRU
+
+  test-buffer-pool : Text =
+    let pool = bp-new 2
+    in let r1 = bp-fetch pool (page-new 1 page-type-data)
+    in let r2 = bp-fetch (r1.pool) (page-new 2 page-type-data)
+    in let r3 = bp-fetch (r2.pool) (page-new 3 page-type-data)
+    in "bp: evictions=" & show ((r3.pool).evict-count) & " frames=" & show ((r3.pool).frame-count)
+
+Section: Test 38 — Bulk Loader
+
+  test-bulk-load : Catalog -> Text
+  test-bulk-load (cat) =
+    let rows = [
+      ord 100 "Bulk1" "X" 10 5,
+      ord 101 "Bulk2" "Y" 20 10,
+      ord 102 "Bulk3" "Z" 30 15
+    ]
+    in let mgr = txn-manager-new
+    in let result = bulk-insert cat mgr "orders" rows
+    in "bulk: " & show (result.bi-rows-loaded) & " ok=" & show (result.bi-ok)
+
+Section: Test 39 — Text Import
+
+  test-import : Catalog -> Text
+  test-import (cat) =
+    let lines = ["oid,cust,product,qty,price", "200,Import1,W,5,50", "201,Import2,X,10,100"]
+    in let mgr = txn-manager-new
+    in let result = bulk-import-lines cat mgr "orders" lines default-import-config
+    in "import: " & show (result.bi-rows-loaded) & " ok=" & show (result.bi-ok)
+
+Section: Test 40 — Optimizer Predicate Pushdown
+
+  test-pushdown : Text =
+    let plan = RelFilter (RelJoin (RelScan "emp") (RelScan "dept") PredTrue) (PredColCmp "salary" CmpGt (ValInteger 100000))
+    in let optimized = optimize plan
+    in let explained = explain optimized 0
+    in "pushdown: " & rel-op-name optimized
+
+Section: Test 41 — Plan Cache
+
+  test-plan-cache : Text =
+    let cache = plan-cache-new
+    in let cache2 = plan-cache-store cache "q1" (RelScan "emp")
+    in let r1 = plan-cache-lookup cache2 "q1"
+    in let cache3 = r1.fst
+    in let found1 = r1.snd
+    in let r2 = plan-cache-lookup cache3 "q2"
+    in let f1 = when found1 is Just (p) -> "hit" is None -> "miss"
+    in let f2 = when (r2.snd) is Just (p) -> "hit" is None -> "miss"
+    in let cache4 = plan-cache-mark-stale (r2.fst) "emp"
+    in let r3 = plan-cache-lookup cache4 "q1"
+    in let f3 = when (r3.snd) is Just (p) -> "hit" is None -> "miss"
+    in "plan-cache: q1=" & f1 & " q2=" & f2 & " after-stale=" & f3
+
+Section: Test 42 — Protocol Frame Round-Trip
+
+  test-protocol : Text =
+    let f = proto-query-frame "scan emp"
+    in let encoded = frame-encode f
+    in let decoded = frame-decode encoded
+    in let ok = when (decoded.fdr-frame) is Just (fr) -> fr.frame-type == msg-query is None -> False
+    in "protocol: ok=" & show ok
+
+Section: Test 43 — Backup + Restore
+
+  test-backup-restore : Catalog -> Text
+  test-backup-restore (cat) =
+    let wal = wal-log-new
+    in let backup = create-full-backup cat wal 1000
+    in let restored = restore-full backup
+    in "backup: tables=" & show (restored.rr-tables-restored) & " rows=" & show (restored.rr-rows-restored) & " ok=" & show (restored.rr-ok)
+
+Section: Test 44 — Security Auth Levels
+
+  test-security : Text =
+    let store = user-store-new
+    in let store2 = user-store-add store (user-admin "root" "abc123")
+    in let store3 = user-store-add store2 (user-reader "viewer" "def456")
+    in let admin = authenticate store3 "root" "abc123"
+    in let reader = authenticate store3 "viewer" "def456"
+    in let bad = authenticate store3 "root" "wrong"
+    in let a = when admin is Just (u) -> auth-level-name (u.user-auth-level) is None -> "denied"
+    in let r = when reader is Just (u) -> auth-level-name (u.user-auth-level) is None -> "denied"
+    in let b = when bad is Just (u) -> "oops" is None -> "denied"
+    in "security: admin=" & a & " reader=" & r & " bad=" & b
+
+Section: Test 45 — Row-Level Security
+
+  test-row-security : Text =
+    let rps = row-policy-store-new
+    in let policy = RowPolicy { rp-table = "emp", rp-name = "hide-high-salary", rp-predicate = PredColCmp "salary" CmpLt (ValInteger 120000), rp-applies-to = AuthReadOnly }
+    in let rps2 = row-policy-add rps policy
+    in let found = row-policy-for-table rps2 "emp" AuthReadOnly
+    in let has-policy = when found is Just (p) -> "yes" is None -> "no"
+    in let admin-found = row-policy-for-table rps2 "emp" AuthAdmin
+    in let admin-has = when admin-found is Just (p) -> "yes" is None -> "no"
+    in "row-sec: readonly=" & has-policy & " admin=" & admin-has
+
+Section: Test 46 — Time Window
+
+  test-time-window : Text =
+    let tws = time-window-store-new
+    in let tw = TimeWindow { tw-name = "business-hours", tw-table = "orders", tw-start-hour = 8, tw-end-hour = 18, tw-days = [1, 2, 3, 4, 5], tw-auth-level = AuthReadOnly }
+    in let tws2 = time-window-add tws tw
+    in let ok1 = time-window-check tws2 "orders" AuthReadOnly 10 3
+    in let ok2 = time-window-check tws2 "orders" AuthReadOnly 22 3
+    in let ok3 = time-window-check tws2 "orders" AuthReadOnly 10 0
+    in "time-window: 10am-wed=" & show ok1 & " 10pm-wed=" & show ok2 & " 10am-sun=" & show ok3
+
+Section: Test 47 — Join Algorithm Selection
+
+  test-join-choice : Text =
+    let small = choose-join 10 10
+    in let big = choose-join 10000 10000
+    in let s = when small is UseNestedLoop -> "NL" is UseHashJoin -> "HJ" is UseSortMerge -> "SM"
+    in let b = when big is UseNestedLoop -> "NL" is UseHashJoin -> "HJ" is UseSortMerge -> "SM"
+    in "join-choice: small=" & s & " big=" & b
+
+Section: Test 48 — Heap Update
+
+  test-heap-update : Catalog -> Text
+  test-heap-update (cat) =
+    let scan = catalog-scan cat "dept"
+    in let original = list-at (scan.rows) 0
+    in let orig-name = sv (row-get-by-name original "name")
+    in "heap-update: first-dept=" & orig-name & " rows=" & show (scan.scan-count)
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    let cat = build-db
+    in act
+      print-line (test-scan cat)
+      print-line (test-filter-eq cat)
+      print-line (test-filter-range cat)
+      print-line (test-project cat)
+      print-line (test-sort-asc cat)
+      print-line (test-sort-limit cat)
+      print-line (test-distinct cat)
+      print-line (test-group cat)
+      print-line (test-nl-join cat)
+      print-line (test-left-join cat)
+      print-line (test-union cat)
+      print-line (test-intersect cat)
+      print-line (test-except cat)
+      print-line (test-compound cat)
+      print-line (test-hash-join cat)
+      print-line (test-semi-join cat)
+      print-line (test-anti-join cat)
+      print-line (test-sm-join cat)
+      print-line (test-colstore cat)
+      print-line (test-col-filter cat)
+      print-line (test-mr-sum cat)
+      print-line (test-mr-count cat)
+      print-line test-rle
+      print-line test-txn
+      print-line test-wal
+      print-line test-locks
+      print-line test-lock-release
+      print-line test-deadlock
+      print-line test-no-deadlock
+      print-line test-mvcc
+      print-line test-mvcc-gc
+      print-line test-occ
+      print-line test-rebalance
+      print-line test-range-scan
+      print-line test-page-ops
+      print-line test-row-roundtrip
+      print-line test-buffer-pool
+      print-line (test-bulk-load cat)
+      print-line (test-import cat)
+      print-line test-pushdown
+      print-line test-plan-cache
+      print-line test-protocol
+      print-line (test-backup-restore cat)
+      print-line test-security
+      print-line test-row-security
+      print-line test-time-window
+      print-line test-join-choice
+      print-line (test-heap-update cat)
+    end
+  end
+
+Page 1

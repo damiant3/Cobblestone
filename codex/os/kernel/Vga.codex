@@ -1,0 +1,173 @@
+Chapter: Vga
+  cites Foreword chapter CCE
+
+ VGA text-mode console. Writes directly to the 80x25 character buffer
+ at physical address 0xB8000 via poke-byte. Each cell is 2 bytes:
+ [character, attribute]. Attribute = background(4 bits) | foreground(4 bits).
+ Characters are converted from CCE to ASCII on write.
+
+ We say:
+
+Section: Constants
+  vga-base : Integer = 753664
+
+  vga-cols : Integer = 80
+
+  vga-rows : Integer = 25
+
+  vga-black : Integer = 0
+  vga-blue : Integer = 1
+  vga-green : Integer = 2
+  vga-cyan : Integer = 3
+  vga-red : Integer = 4
+  vga-magenta : Integer = 5
+  vga-brown : Integer = 6
+  vga-light-gray : Integer = 7
+  vga-dark-gray : Integer = 8
+  vga-light-blue : Integer = 9
+  vga-light-green : Integer = 10
+  vga-light-cyan : Integer = 11
+  vga-light-red : Integer = 12
+  vga-light-magenta : Integer = 13
+  vga-yellow : Integer = 14
+  vga-white : Integer = 15
+
+  vga-attr : Integer, Integer -> Integer
+  vga-attr (fg) (bg) = bit-or fg (bit-shl bg 4)
+
+Section: Cell Operations
+  vga-offset : Integer, Integer -> Integer
+  vga-offset (row) (col) = row * 160 + col * 2
+
+  vga-put-char : Integer, Integer, Integer, Integer -> Integer
+  vga-put-char (row) (col) (ch) (attr) =
+    let off = vga-offset row col
+    in let ascii = to-unicode ch
+    in let w1 = poke-byte vga-base off ascii
+    in poke-byte vga-base (off + 1) attr
+
+  vga-put-raw : Integer, Integer, Integer, Integer -> Integer
+  vga-put-raw (row) (col) (ascii-byte) (attr) =
+    let off = vga-offset row col
+    in let w1 = poke-byte vga-base off ascii-byte
+    in poke-byte vga-base (off + 1) attr
+
+  vga-get-char : Integer, Integer -> Integer
+  vga-get-char (row) (col) = peek-byte vga-base (vga-offset row col)
+
+  vga-get-attr : Integer, Integer -> Integer
+  vga-get-attr (row) (col) = peek-byte vga-base (vga-offset row col + 1)
+
+Section: Hardware Cursor
+  vga-set-hw-cursor : Integer, Integer -> Integer
+  vga-set-hw-cursor (row) (col) =
+    let pos = row * vga-cols + col
+    in let w1 = port-out-byte 980 14
+    in let w2 = port-out-byte 981 (bit-shru pos 8)
+    in let w3 = port-out-byte 980 15
+    in port-out-byte 981 (bit-and pos 255)
+
+Section: Text Output
+  vga-put-text : Integer, Integer, Text, Integer -> Integer
+  vga-put-text (row) (col) (s) (attr) =
+    vga-put-text-loop row col s attr 0 (text-length s)
+
+  vga-put-text-loop : Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  vga-put-text-loop (row) (col) (s) (attr) (i) (len) =
+    if i >= len then 0
+    else let c = col + i
+    in if c >= vga-cols then 0
+    else let w = vga-put-char row c (char-code (char-at s i)) attr
+    in vga-put-text-loop row col s attr (i + 1) len
+
+Section: Clear and Fill
+  vga-clear : Integer -> Integer
+  vga-clear (attr) = vga-clear-loop 0 attr
+
+  vga-clear-loop : Integer, Integer -> Integer
+  vga-clear-loop (i) (attr) =
+    if i >= 2000 then 0
+    else let off = i * 2
+    in let w1 = poke-byte vga-base off 32
+    in let w2 = poke-byte vga-base (off + 1) attr
+    in vga-clear-loop (i + 1) attr
+
+  vga-clear-row : Integer, Integer -> Integer
+  vga-clear-row (row) (attr) = vga-clear-row-loop row 0 attr
+
+  vga-clear-row-loop : Integer, Integer, Integer -> Integer
+  vga-clear-row-loop (row) (col) (attr) =
+    if col >= vga-cols then 0
+    else let w = vga-put-raw row col 32 attr
+    in vga-clear-row-loop row (col + 1) attr
+
+Section: Scrolling
+  vga-scroll-up : Integer -> Integer
+  vga-scroll-up (attr) =
+    let cp = vga-copy-rows 1 0
+    in vga-clear-row (vga-rows - 1) attr
+
+  vga-copy-rows : Integer, Integer -> Integer
+  vga-copy-rows (src-row) (dst-row) =
+    if src-row >= vga-rows then 0
+    else let cp = vga-copy-row src-row dst-row
+    in vga-copy-rows (src-row + 1) (dst-row + 1)
+
+  vga-copy-row : Integer, Integer -> Integer
+  vga-copy-row (src) (dst) = vga-copy-row-loop src dst 0
+
+  vga-copy-row-loop : Integer, Integer, Integer -> Integer
+  vga-copy-row-loop (src) (dst) (col) =
+    if col >= vga-cols then 0
+    else let ch = vga-get-char src col
+    in let at = vga-get-attr src col
+    in let w = vga-put-raw dst col ch at
+    in vga-copy-row-loop src dst (col + 1)
+
+Section: Cursor State (software)
+  VgaCursor = record {
+    row : Integer between 0 and 24,
+    col : Integer between 0 and 79,
+    attr : Integer between 0 and 255
+  }
+
+  vga-cursor-new : Integer -> VgaCursor
+  vga-cursor-new (attr) = VgaCursor { row = 0, col = 0, attr = attr }
+
+  vga-cursor-write-char : VgaCursor, Integer -> VgaCursor
+  vga-cursor-write-char (cur) (ch) =
+    if ch == 1 then vga-cursor-newline cur
+    else let w = vga-put-char (cur.row) (cur.col) ch (cur.attr)
+    in vga-cursor-advance cur
+
+  vga-cursor-advance : VgaCursor -> VgaCursor
+  vga-cursor-advance (cur) =
+    if cur.col + 1 >= vga-cols then vga-cursor-newline cur
+    else let c = VgaCursor { row = cur.row, col = cur.col + 1, attr = cur.attr }
+    in let hw = vga-set-hw-cursor (c.row) (c.col)
+    in c
+
+  vga-cursor-newline : VgaCursor -> VgaCursor
+  vga-cursor-newline (cur) =
+    if cur.row + 1 >= vga-rows then
+      let s = vga-scroll-up (cur.attr)
+      in let hw = vga-set-hw-cursor (cur.row) 0
+      in VgaCursor { row = cur.row, col = 0, attr = cur.attr }
+    else let hw = vga-set-hw-cursor (cur.row + 1) 0
+    in VgaCursor { row = cur.row + 1, col = 0, attr = cur.attr }
+
+  vga-cursor-write-text : VgaCursor, Text -> VgaCursor
+  vga-cursor-write-text (cur) (s) = vga-cursor-write-text-loop cur s 0 (text-length s)
+
+  vga-cursor-write-text-loop : VgaCursor, Text, Integer, Integer -> VgaCursor
+  vga-cursor-write-text-loop (cur) (s) (i) (len) =
+    if i >= len then cur
+    else let cur1 = vga-cursor-write-char cur (char-code (char-at s i))
+    in vga-cursor-write-text-loop cur1 s (i + 1) len
+
+  vga-cursor-write-line : VgaCursor, Text -> VgaCursor
+  vga-cursor-write-line (cur) (s) =
+    let cur1 = vga-cursor-write-text cur s
+    in vga-cursor-newline cur1
+
+Page 1

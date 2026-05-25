@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodexMagic - Find Match</title>
+  <link rel="stylesheet" href="/web/magic/magic.css">
+  <style>
+    .page { max-width: 600px; margin: 0 auto; padding: 24px; }
+    .queue-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin-bottom: 16px; }
+    .queue-card h3 { margin-bottom: 16px; font-size: 16px; }
+    .form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .form-row label { min-width: 80px; font-size: 13px; color: var(--text-dim); }
+    .form-row select { flex: 1; background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px; }
+    .queue-btn { width: 100%; background: var(--green); color: #000; border: none; padding: 12px; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 16px; }
+    .queue-btn:hover { background: #4cc960; }
+    .queue-btn:disabled { background: var(--border); color: var(--text-dim); cursor: not-allowed; }
+    .queue-status { text-align: center; padding: 32px; display: none; }
+    .queue-spinner { font-size: 32px; animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .queue-timer { font-size: 14px; color: var(--text-dim); margin-top: 8px; }
+    .match-found { background: var(--bg-surface); border: 2px solid var(--green); border-radius: 8px; padding: 24px; text-align: center; display: none; }
+    .match-found h3 { color: var(--green); margin-bottom: 12px; }
+    .match-info { font-size: 14px; color: var(--text-dim); margin-bottom: 16px; }
+    .accept-btn { background: var(--green); color: #000; border: none; padding: 10px 32px; border-radius: 6px; font-size: 14px; font-weight: bold; cursor: pointer; margin: 0 8px; }
+    .decline-btn { background: var(--red); color: #fff; border: none; padding: 10px 32px; border-radius: 6px; font-size: 14px; cursor: pointer; margin: 0 8px; }
+    .acct-name { font-weight: bold; margin-right: 12px; }
+    .acct-rank { color: var(--blue); margin-right: 12px; }
+    .acct-balance { color: var(--gold); }
+    #account-bar { font-size: 13px; }
+  </style>
+</head>
+<body>
+<div class="topbar">
+  <h1>CodexMagic</h1>
+  <div class="nav">
+    <a href="/web/magic/game.html">Game</a>
+    <a href="/web/magic/collection.html">Collection</a>
+    <a href="/web/magic/store.html">Store</a>
+    <a href="/web/magic/queue.html" class="active">Queue</a>
+    <a href="/web/magic/profile.html">Profile</a>
+  </div>
+  <div id="account-bar"></div>
+</div>
+
+<div class="page">
+  <div class="queue-card" id="queue-form">
+    <h3>Find a Match</h3>
+    <div class="form-row">
+      <label>Format</label>
+      <select id="format">
+        <option value="standard">Standard</option>
+        <option value="vintage">Vintage</option>
+        <option value="draft">Draft</option>
+        <option value="sealed">Sealed</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Tier</label>
+      <select id="tier">
+        <option value="fair">Fair (no sub bonus)</option>
+        <option value="open">Open (sub bonus active)</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Mode</label>
+      <select id="mode">
+        <option value="ranked">Ranked</option>
+        <option value="casual">Casual</option>
+      </select>
+    </div>
+    <button class="queue-btn" onclick="joinQueue()">Find Match</button>
+  </div>
+
+  <div class="queue-status" id="queue-status">
+    <div class="queue-spinner">&#x2694;</div>
+    <div style="margin-top:16px; font-size:16px;">Searching for opponent...</div>
+    <div class="queue-timer" id="queue-timer">0s</div>
+    <button class="decline-btn" style="margin-top:16px;" onclick="cancelQueue()">Cancel</button>
+  </div>
+
+  <div class="match-found" id="match-found">
+    <h3>Match Found!</h3>
+    <div class="match-info" id="match-info"></div>
+    <button class="accept-btn" onclick="acceptMatch()">Accept</button>
+    <button class="decline-btn" onclick="declineMatch()">Decline</button>
+  </div>
+</div>
+
+<script src="/web/magic/magic.js"></script>
+<script>
+var queueTimer = null;
+var queueSeconds = 0;
+
+async function joinQueue() {
+  if (!currentAccount) return;
+  var format = document.getElementById('format').value;
+  var tier = document.getElementById('tier').value;
+  document.getElementById('queue-form').style.display = 'none';
+  document.getElementById('queue-status').style.display = 'block';
+  queueSeconds = 0;
+  queueTimer = setInterval(function() {
+    queueSeconds++;
+    document.getElementById('queue-timer').textContent = queueSeconds + 's';
+  }, 1000);
+
+  var data = await apiCall('/queue/join?account=' + accountId() + '&format=' + format + '&tier=' + tier);
+  clearInterval(queueTimer);
+  if (data && data.status === 'matched') {
+    document.getElementById('queue-status').style.display = 'none';
+    document.getElementById('match-found').style.display = 'block';
+    document.getElementById('match-info').textContent = 'Format: ' + format.toUpperCase() + ' | Tier: ' + tier.toUpperCase() + ' | Rating: ' + (data.rating || '?');
+  }
+}
+
+function cancelQueue() {
+  clearInterval(queueTimer);
+  document.getElementById('queue-status').style.display = 'none';
+  document.getElementById('queue-form').style.display = 'block';
+}
+
+function acceptMatch() {
+  window.location.href = '/web/magic/game.html';
+}
+
+function declineMatch() {
+  document.getElementById('match-found').style.display = 'none';
+  document.getElementById('queue-form').style.display = 'block';
+}
+
+ensureAccount();
+</script>
+</body>
+</html>

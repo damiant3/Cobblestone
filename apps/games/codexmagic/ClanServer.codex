@@ -1,0 +1,1112 @@
+Chapter: ClanServer
+  cites CodexMagic chapter Clan
+  cites CodexMagic chapter ClanEconomy
+  cites CodexMagic chapter ClanLibrary
+  cites CodexMagic chapter ClanFormat
+  cites CodexMagic chapter ClanTournament
+  cites CodexMagic chapter ClanChallenge
+  cites CodexMagic chapter ClanPacks
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter Auth
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Clan instance server. Each clan runs their own instance of this
+ server on their hardware. It manages clan state locally — economy,
+ library, tournaments, formats — and communicates with the platform
+ authority for authorization, token purchases, and inter-clan
+ operations.
+
+ The platform (MagicServer) is the authorizing authority. Clans buy
+ clan tokens from the platform using global ManaCoin. The clan
+ instance persists its own state for reporting and analysis.
+
+ We say:
+
+Section: Clan Instance State
+
+  ClanInstance = record {
+    clan : Clan,
+    economy : ClanEconomy,
+    library : ClanLibrary,
+    formats : List ClanFormat,
+    tournaments : List ClanTournament,
+    challenges : List ClanChallenge,
+    packs : List ClanPackDef,
+    members : List ClanMember,
+    global-ledger : ManaCoinLedger,
+    next-format-id : Integer,
+    next-tournament-id : Integer,
+    next-challenge-id : Integer,
+    next-pack-id : Integer,
+    platform-authorized : Boolean,
+    last-sync : Integer
+  }
+
+Section: Instance Creation
+
+  clan-instance-new : Integer, Text, Text, Integer, Text, Integer, PublicKey -> ClanInstance
+  clan-instance-new (clan-id) (name) (tag) (founder) (coin-name) (exchange-rate) (instance-key) =
+    let clan = clan-new clan-id name tag founder 0 instance-key
+    in let econ = clan-economy-new clan-id coin-name exchange-rate
+    in let lib = clan-library-new clan-id
+    in let member = ClanMember { account-id = founder, role = RoleFounder, joined-at = 0, clan-coin-balance = 0 }
+    in ClanInstance {
+      clan = clan,
+      economy = econ,
+      library = lib,
+      formats = [],
+      tournaments = [],
+      challenges = [],
+      packs = [],
+      members = [member],
+      global-ledger = ledger-new 1000,
+      next-format-id = 1,
+      next-tournament-id = 1,
+      next-challenge-id = 1,
+      next-pack-id = 1,
+      platform-authorized = False,
+      last-sync = 0
+    }
+
+Section: Response Helpers
+
+  respond-json : Text -> [Console] Integer
+  respond-json (body) = act
+    print-line-uni ("200 application/json " & body)
+    0
+  end
+
+  respond-error : Text -> [Console] Integer
+  respond-error (msg) = act
+    print-line-uni ("400 application/json {\"error\":\"" & msg & "\"}")
+    0
+  end
+
+  respond-not-found : [Console] Integer
+  respond-not-found = act
+    print-line-uni "404 text/plain Not Found"
+    0
+  end
+
+Section: Request Parsing
+
+  extract-path : Text -> Text
+  extract-path (line) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then "/"
+    else let full = list-at parts 1
+    in let qpos = find-char full 63 0
+    in if qpos < 0 then full
+    else text-take full qpos
+
+  extract-query-param : Text, Text -> Text
+  extract-query-param (line) (key) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then ""
+    else let full = list-at parts 1
+    in let qpos = find-char full 63 0
+    in if qpos < 0 then ""
+    else let qs = text-drop full (qpos + 1)
+    in find-param-value qs key
+
+  find-char : Text, Integer, Integer -> Integer
+  find-char (s) (target) (i) =
+    if i >= text-length s then (-1)
+    else if to-unicode (char-code (char-at s i)) == target then i
+    else find-char s target (i + 1)
+
+  find-param-value : Text, Text -> Text
+  find-param-value (qs) (key) =
+    let pairs = text-split qs "&"
+    in find-in-pairs pairs key 0
+
+  find-in-pairs : List Text, Text, Integer -> Text
+  find-in-pairs (pairs) (key) (i) =
+    if i >= list-length pairs then ""
+    else let pair = list-at pairs i
+    in let eqpos = find-char pair 61 0
+    in if eqpos < 0 then find-in-pairs pairs key (i + 1)
+    else let k = text-take pair eqpos
+    in if k == key then text-drop pair (eqpos + 1)
+    else find-in-pairs pairs key (i + 1)
+
+  text-take : Text, Integer -> Text
+  text-take (s) (n) = text-take-loop s n 0 ""
+
+  text-take-loop : Text, Integer, Integer, Text -> Text
+  text-take-loop (s) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= text-length s then acc
+    else text-take-loop s n (i + 1) (acc & char-to-text (char-at s i))
+
+  text-drop : Text, Integer -> Text
+  text-drop (s) (n) = text-drop-loop s n 0 (text-length s) ""
+
+  text-drop-loop : Text, Integer, Integer, Integer, Text -> Text
+  text-drop-loop (s) (start) (i) (len) (acc) =
+    if i >= len then acc
+    else if i < start then text-drop-loop s start (i + 1) len acc
+    else text-drop-loop s start (i + 1) len (acc & char-to-text (char-at s i))
+
+  parse-int : Text, Integer -> Integer
+  parse-int (s) (default-val) =
+    if text-length s == 0 then default-val
+    else parse-int-loop s 0 0
+
+  parse-int-loop : Text, Integer, Integer -> Integer
+  parse-int-loop (s) (i) (acc) =
+    if i >= text-length s then acc
+    else let c = to-unicode (char-code (char-at s i))
+    in if c >= 48 then
+      if c <= 57 then parse-int-loop s (i + 1) (acc * 10 + c - 48)
+      else acc
+    else acc
+
+Section: Request Dispatch
+
+  dispatch-clan-request : ClanInstance, Text -> [Console] ClanInstance
+  dispatch-clan-request (inst) (line) =
+    let path = extract-path line
+    in if text-starts-with path "/api/clan/status" then handle-clan-status inst
+    else if text-starts-with path "/api/clan/member/" then handle-member inst line path
+    else if text-starts-with path "/api/clan/economy/" then handle-economy inst line path
+    else if text-starts-with path "/api/clan/library/" then handle-library inst line path
+    else if text-starts-with path "/api/clan/format/" then handle-format inst line path
+    else if text-starts-with path "/api/clan/tournament/" then handle-tournament inst line path
+    else if text-starts-with path "/api/clan/challenge/" then handle-challenge inst line path
+    else if text-starts-with path "/api/clan/pack/" then handle-pack inst line path
+    else if text-starts-with path "/api/clan/authorize" then handle-authorize inst line
+    else if text-starts-with path "/api/clan/sync" then handle-sync inst line
+    else act
+      pm0 <- respond-not-found
+      inst
+    end
+
+Section: Status Handler
+
+  handle-clan-status : ClanInstance -> [Console] ClanInstance
+  handle-clan-status (inst) =
+    let c = inst.clan
+    in let e = inst.economy
+    in act
+      pm0 <- respond-json ("{\"clan-id\":" & show (c.clan-id) & ",\"name\":" & jstr (c.name) & ",\"tag\":" & jstr (c.tag) & ",\"members\":" & show (c.member-count) & ",\"rank\":" & jstr (clan-rank-name (c.rank)) & ",\"reputation\":" & show (c.reputation) & ",\"treasury\":" & show (e.treasury-balance) & ",\"coin-supply\":" & show (e.coin-supply) & ",\"coin-name\":" & jstr (e.coin-name) & ",\"exchange-rate\":" & show (e.exchange-rate) & ",\"library-size\":" & show (library-card-count (inst.library)) & ",\"formats\":" & show (list-length (inst.formats)) & ",\"tournaments\":" & show (list-length (inst.tournaments)) & ",\"authorized\":" & jbool (inst.platform-authorized) & "}")
+      inst
+    end
+
+Section: Member Handlers
+
+  handle-member : ClanInstance, Text, Text -> [Console] ClanInstance
+  handle-member (inst) (line) (path) =
+    if text-starts-with path "/api/clan/member/join" then handle-member-join inst line
+    else if text-starts-with path "/api/clan/member/leave" then handle-member-leave inst line
+    else if text-starts-with path "/api/clan/member/promote" then handle-member-promote inst line
+    else if text-starts-with path "/api/clan/member/kick" then handle-member-kick inst line
+    else if text-starts-with path "/api/clan/member/list" then handle-member-list inst
+    else act pm0 <- respond-not-found
+      inst
+    end
+
+  handle-member-join : ClanInstance, Text -> [Console] ClanInstance
+  handle-member-join (inst) (line) =
+    let account-id = parse-int (extract-query-param line "account") 0
+    in if is-member (inst.clan) account-id then act
+      pm0 <- respond-error "already a member"
+      inst
+    end
+    else let clan2 = clan-add-member (inst.clan) account-id
+    in let member = ClanMember { account-id = account-id, role = RoleRecruit, joined-at = 0, clan-coin-balance = 0 }
+    in let inst2 = set-instance-clan inst clan2
+    in let inst3 = add-instance-member inst2 member
+    in act
+      pm0 <- respond-json ("{\"joined\":true,\"account\":" & show account-id & ",\"role\":\"Recruit\",\"members\":" & show (clan2.member-count) & "}")
+      inst3
+    end
+
+  handle-member-leave : ClanInstance, Text -> [Console] ClanInstance
+  handle-member-leave (inst) (line) =
+    let account-id = parse-int (extract-query-param line "account") 0
+    in if account-id == inst.clan.founder then act
+      pm0 <- respond-error "founder cannot leave"
+      inst
+    end
+    else let clan2 = clan-remove-member (inst.clan) account-id
+    in let inst2 = set-instance-clan inst clan2
+    in act
+      pm0 <- respond-json ("{\"left\":true,\"account\":" & show account-id & ",\"members\":" & show (clan2.member-count) & "}")
+      inst2
+    end
+
+  handle-member-promote : ClanInstance, Text -> [Console] ClanInstance
+  handle-member-promote (inst) (line) =
+    let account-id = parse-int (extract-query-param line "account") 0
+    in let promoter = parse-int (extract-query-param line "promoter") 0
+    in let promoter-role = get-member-role (inst.clan) promoter
+    in if can-kick promoter-role == False then act
+      pm0 <- respond-error "insufficient permissions"
+      inst
+    end
+    else let clan2 = clan-promote-officer (inst.clan) account-id
+    in let inst2 = set-instance-clan inst clan2
+    in act
+      pm0 <- respond-json ("{\"promoted\":true,\"account\":" & show account-id & ",\"new-role\":\"Officer\"}")
+      inst2
+    end
+
+  handle-member-kick : ClanInstance, Text -> [Console] ClanInstance
+  handle-member-kick (inst) (line) =
+    let account-id = parse-int (extract-query-param line "account") 0
+    in let kicker = parse-int (extract-query-param line "kicker") 0
+    in let kicker-role = get-member-role (inst.clan) kicker
+    in if can-kick kicker-role == False then act
+      pm0 <- respond-error "insufficient permissions"
+      inst
+    end
+    else if account-id == inst.clan.founder then act
+      pm0 <- respond-error "cannot kick founder"
+      inst
+    end
+    else let clan2 = clan-remove-member (inst.clan) account-id
+    in let inst2 = set-instance-clan inst clan2
+    in act
+      pm0 <- respond-json ("{\"kicked\":true,\"account\":" & show account-id & ",\"members\":" & show (clan2.member-count) & "}")
+      inst2
+    end
+
+  handle-member-list : ClanInstance -> [Console] ClanInstance
+  handle-member-list (inst) =
+    let members-json = members-to-json (inst.members) (inst.clan) 0 (list-length (inst.members)) ""
+    in act
+      pm0 <- respond-json ("{\"members\":[" & members-json & "],\"count\":" & show (list-length (inst.members)) & "}")
+      inst
+    end
+
+  members-to-json : List ClanMember, Clan, Integer, Integer, Text -> Text
+  members-to-json (members) (clan) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at members i
+    in let sep = if i > 0 then "," else ""
+    in let role = get-member-role clan (m.account-id)
+    in let mj = sep & "{\"account\":" & show (m.account-id) & ",\"role\":" & jstr (role-name role) & ",\"clan-coin\":" & show (m.clan-coin-balance) & "}"
+    in members-to-json members clan (i + 1) len (acc & mj)
+
+Section: Economy Handlers
+
+  handle-economy : ClanInstance, Text, Text -> [Console] ClanInstance
+  handle-economy (inst) (line) (path) =
+    if text-starts-with path "/api/clan/economy/mint" then handle-econ-mint inst line
+    else if text-starts-with path "/api/clan/economy/transfer" then handle-econ-transfer inst line
+    else if text-starts-with path "/api/clan/economy/buy-coin" then handle-econ-buy-coin inst line
+    else if text-starts-with path "/api/clan/economy/sell-coin" then handle-econ-sell-coin inst line
+    else if text-starts-with path "/api/clan/economy/treasury-deposit" then handle-treasury-deposit inst line
+    else if text-starts-with path "/api/clan/economy/balance" then handle-econ-balance inst line
+    else if text-starts-with path "/api/clan/economy/treasury" then handle-treasury-status inst
+    else if text-starts-with path "/api/clan/economy/log" then handle-tx-log inst line
+    else act pm0 <- respond-not-found
+      inst
+    end
+
+  handle-econ-mint : ClanInstance, Text -> [Console] ClanInstance
+  handle-econ-mint (inst) (line) =
+    let minter = parse-int (extract-query-param line "minter") 0
+    in let to-account = parse-int (extract-query-param line "to") 0
+    in let amount = parse-int (extract-query-param line "amount") 0
+    in let minter-role = get-member-role (inst.clan) minter
+    in if can-mint-coin minter-role == False then act
+      pm0 <- respond-error "insufficient permissions to mint"
+      inst
+    end
+    else let econ2 = clan-mint (inst.economy) to-account amount 0
+    in let inst2 = set-instance-economy inst econ2
+    in act
+      pm0 <- respond-json ("{\"minted\":" & show amount & ",\"to\":" & show to-account & ",\"supply\":" & show (econ2.coin-supply) & "}")
+      inst2
+    end
+
+  handle-econ-transfer : ClanInstance, Text -> [Console] ClanInstance
+  handle-econ-transfer (inst) (line) =
+    let from = parse-int (extract-query-param line "from") 0
+    in let to = parse-int (extract-query-param line "to") 0
+    in let amount = parse-int (extract-query-param line "amount") 0
+    in let result = clan-transfer (inst.economy) from to amount 0
+    in if result.success == False then act
+      pm0 <- respond-error "insufficient clan coin balance"
+      inst
+    end
+    else let inst2 = set-instance-economy inst (result.economy)
+    in act
+      pm0 <- respond-json ("{\"transferred\":" & show amount & ",\"from\":" & show from & ",\"to\":" & show to & ",\"from-balance\":" & show (get-clan-balance (result.economy) from) & ",\"to-balance\":" & show (get-clan-balance (result.economy) to) & "}")
+      inst2
+    end
+
+  handle-econ-buy-coin : ClanInstance, Text -> [Console] ClanInstance
+  handle-econ-buy-coin (inst) (line) =
+    let account-id = parse-int (extract-query-param line "account") 0
+    in let global-amount = parse-int (extract-query-param line "amount") 0
+    in let result = exchange-buy-clan-coin (inst.economy) (inst.global-ledger) account-id global-amount 0
+    in if result.success == False then act
+      pm0 <- respond-error "exchange failed: insufficient balance or exchange disabled"
+      inst
+    end
+    else let inst2 = set-instance-economy inst (result.economy)
+    in let inst3 = set-instance-ledger inst2 (result.global-ledger)
+    in act
+      pm0 <- respond-json ("{\"bought\":true,\"clan-coin-received\":" & show (result.clan-amount) & ",\"global-spent\":" & show (result.global-amount) & ",\"treasury\":" & show (result.economy.treasury-balance) & "}")
+      inst3
+    end
+
+  handle-econ-sell-coin : ClanInstance, Text -> [Console] ClanInstance
+  handle-econ-sell-coin (inst) (line) =
+    let account-id = parse-int (extract-query-param line "account") 0
+    in let clan-amount = parse-int (extract-query-param line "amount") 0
+    in let result = exchange-sell-clan-coin (inst.economy) (inst.global-ledger) account-id clan-amount 0
+    in if result.success == False then act
+      pm0 <- respond-error "exchange failed: insufficient balance or treasury"
+      inst
+    end
+    else let inst2 = set-instance-economy inst (result.economy)
+    in let inst3 = set-instance-ledger inst2 (result.global-ledger)
+    in act
+      pm0 <- respond-json ("{\"sold\":true,\"clan-coin-spent\":" & show (result.clan-amount) & ",\"global-received\":" & show (result.global-amount) & ",\"treasury\":" & show (result.economy.treasury-balance) & "}")
+      inst3
+    end
+
+  handle-treasury-deposit : ClanInstance, Text -> [Console] ClanInstance
+  handle-treasury-deposit (inst) (line) =
+    let account-id = parse-int (extract-query-param line "account") 0
+    in let amount = parse-int (extract-query-param line "amount") 0
+    in let result = treasury-deposit (inst.economy) (inst.global-ledger) account-id amount 0
+    in if result.success == False then act
+      pm0 <- respond-error "insufficient global balance for deposit"
+      inst
+    end
+    else let inst2 = set-instance-economy inst (result.economy)
+    in let inst3 = set-instance-ledger inst2 (result.global-ledger)
+    in act
+      pm0 <- respond-json ("{\"deposited\":" & show amount & ",\"treasury\":" & show (result.economy.treasury-balance) & "}")
+      inst3
+    end
+
+  handle-econ-balance : ClanInstance, Text -> [Console] ClanInstance
+  handle-econ-balance (inst) (line) =
+    let account-id = parse-int (extract-query-param line "account") 0
+    in let clan-bal = get-clan-balance (inst.economy) account-id
+    in let global-bal = ledger-balance (inst.global-ledger) account-id
+    in act
+      pm0 <- respond-json ("{\"account\":" & show account-id & ",\"clan-coin\":" & show clan-bal & ",\"global-coin\":" & show global-bal & ",\"coin-name\":" & jstr (inst.economy.coin-name) & "}")
+      inst
+    end
+
+  handle-treasury-status : ClanInstance -> [Console] ClanInstance
+  handle-treasury-status (inst) =
+    let e = inst.economy
+    in act
+      pm0 <- respond-json ("{\"treasury\":" & show (e.treasury-balance) & ",\"coin-supply\":" & show (e.coin-supply) & ",\"coin-burned\":" & show (e.coin-burned) & ",\"exchange-rate\":" & show (e.exchange-rate) & ",\"exchange-fee\":" & show (e.exchange-fee) & ",\"exchange-enabled\":" & jbool (e.exchange-enabled) & ",\"transactions\":" & show (list-length (e.transaction-log)) & "}")
+      inst
+    end
+
+  handle-tx-log : ClanInstance, Text -> [Console] ClanInstance
+  handle-tx-log (inst) (line) =
+    let count = parse-int (extract-query-param line "count") 10
+    in let log = inst.economy.transaction-log
+    in let len = list-length log
+    in let start = if len > count then len - count else 0
+    in let json = tx-log-to-json log start len ""
+    in act
+      pm0 <- respond-json ("{\"transactions\":[" & json & "],\"total\":" & show len & "}")
+      inst
+    end
+
+  tx-log-to-json : List ClanTransaction, Integer, Integer, Text -> Text
+  tx-log-to-json (log) (i) (len) (acc) =
+    if i >= len then acc
+    else let tx = list-at log i
+    in let sep = if text-length acc > 0 then "," else ""
+    in let tj = sep & "{\"id\":" & show (tx.tx-id) & ",\"type\":" & jstr (tx-type-name (tx.tx-type)) & ",\"from\":" & show (tx.from-account) & ",\"to\":" & show (tx.to-account) & ",\"amount\":" & show (tx.amount) & ",\"memo\":" & jstr (tx.memo) & "}"
+    in tx-log-to-json log (i + 1) len (acc & tj)
+
+Section: Library Handlers
+
+  handle-library : ClanInstance, Text, Text -> [Console] ClanInstance
+  handle-library (inst) (line) (path) =
+    if text-starts-with path "/api/clan/library/list" then handle-library-list inst
+    else if text-starts-with path "/api/clan/library/add" then handle-library-add inst line
+    else if text-starts-with path "/api/clan/library/checkout" then handle-library-checkout inst line
+    else if text-starts-with path "/api/clan/library/return" then handle-library-return inst line
+    else if text-starts-with path "/api/clan/library/overdue" then handle-library-overdue inst
+    else act pm0 <- respond-not-found
+      inst
+    end
+
+  handle-library-list : ClanInstance -> [Console] ClanInstance
+  handle-library-list (inst) =
+    let lib = inst.library
+    in act
+      pm0 <- respond-json ("{\"total\":" & show (library-card-count lib) & ",\"available\":" & show (library-available-count lib) & ",\"checked-out\":" & show (list-length (lib.checkouts)) & "}")
+      inst
+    end
+
+  handle-library-add : ClanInstance, Text -> [Console] ClanInstance
+  handle-library-add (inst) (line) =
+    let token-id = parse-int (extract-query-param line "token") 0
+    in let template-id = parse-int (extract-query-param line "template") 0
+    in let adder = parse-int (extract-query-param line "account") 0
+    in let adder-role = get-member-role (inst.clan) adder
+    in if can-edit-rules adder-role == False then act
+      pm0 <- respond-error "insufficient permissions"
+      inst
+    end
+    else let lib2 = library-add-card (inst.library) token-id template-id 0 AcqPurchase
+    in let inst2 = set-instance-library inst lib2
+    in act
+      pm0 <- respond-json ("{\"added\":true,\"token\":" & show token-id & ",\"library-size\":" & show (library-card-count lib2) & "}")
+      inst2
+    end
+
+  handle-library-checkout : ClanInstance, Text -> [Console] ClanInstance
+  handle-library-checkout (inst) (line) =
+    let token-id = parse-int (extract-query-param line "token") 0
+    in let borrower = parse-int (extract-query-param line "account") 0
+    in let deposit = parse-int (extract-query-param line "deposit") 10
+    in let duration = parse-int (extract-query-param line "duration") 604800
+    in let borrower-role = get-member-role (inst.clan) borrower
+    in if can-checkout-library borrower-role == False then act
+      pm0 <- respond-error "insufficient permissions"
+      inst
+    end
+    else let result = library-checkout (inst.library) (inst.economy) token-id borrower deposit 0 duration
+    in if result.success == False then act
+      pm0 <- respond-error "checkout failed: card unavailable or insufficient deposit"
+      inst
+    end
+    else let inst2 = set-instance-library inst (result.library)
+    in let inst3 = set-instance-economy inst2 (result.economy)
+    in act
+      pm0 <- respond-json ("{\"checked-out\":true,\"token\":" & show token-id & ",\"deposit\":" & show deposit & ",\"duration\":" & show duration & "}")
+      inst3
+    end
+
+  handle-library-return : ClanInstance, Text -> [Console] ClanInstance
+  handle-library-return (inst) (line) =
+    let token-id = parse-int (extract-query-param line "token") 0
+    in let returner = parse-int (extract-query-param line "account") 0
+    in let result = library-return (inst.library) (inst.economy) token-id returner 0
+    in if result.success == False then act
+      pm0 <- respond-error "return failed"
+      inst
+    end
+    else let inst2 = set-instance-library inst (result.library)
+    in let inst3 = set-instance-economy inst2 (result.economy)
+    in act
+      pm0 <- respond-json ("{\"returned\":true,\"token\":" & show token-id & "}")
+      inst3
+    end
+
+  handle-library-overdue : ClanInstance -> [Console] ClanInstance
+  handle-library-overdue (inst) =
+    let overdue = overdue-checkouts (inst.library) 0
+    in act
+      pm0 <- respond-json ("{\"overdue-count\":" & show (list-length overdue) & "}")
+      inst
+    end
+
+Section: Format Handlers
+
+  handle-format : ClanInstance, Text, Text -> [Console] ClanInstance
+  handle-format (inst) (line) (path) =
+    if text-starts-with path "/api/clan/format/create" then handle-format-create inst line
+    else if text-starts-with path "/api/clan/format/list" then handle-format-list inst
+    else if text-starts-with path "/api/clan/format/rule" then handle-format-add-rule inst line
+    else act pm0 <- respond-not-found
+      inst
+    end
+
+  handle-format-create : ClanInstance, Text -> [Console] ClanInstance
+  handle-format-create (inst) (line) =
+    let creator = parse-int (extract-query-param line "account") 0
+    in let name = extract-query-param line "name"
+    in let description = extract-query-param line "desc"
+    in let creator-role = get-member-role (inst.clan) creator
+    in if can-edit-rules creator-role == False then act
+      pm0 <- respond-error "insufficient permissions"
+      inst
+    end
+    else let fmt = clan-format-new (inst.next-format-id) (inst.clan.clan-id) name description creator 0
+    in let inst2 = ClanInstance {
+      clan = inst.clan,
+      economy = inst.economy,
+      library = inst.library,
+      formats = list-push (inst.formats) fmt,
+      tournaments = inst.tournaments,
+      challenges = inst.challenges,
+      packs = inst.packs,
+      members = inst.members,
+      global-ledger = inst.global-ledger,
+      next-format-id = inst.next-format-id + 1,
+      next-tournament-id = inst.next-tournament-id,
+      next-challenge-id = inst.next-challenge-id,
+      next-pack-id = inst.next-pack-id,
+      platform-authorized = inst.platform-authorized,
+      last-sync = inst.last-sync
+    }
+    in act
+      pm0 <- respond-json ("{\"created\":true,\"format-id\":" & show (inst.next-format-id) & ",\"name\":" & jstr name & "}")
+      inst2
+    end
+
+  handle-format-list : ClanInstance -> [Console] ClanInstance
+  handle-format-list (inst) =
+    let json = formats-to-json (inst.formats) 0 (list-length (inst.formats)) ""
+    in act
+      pm0 <- respond-json ("{\"formats\":[" & json & "],\"count\":" & show (list-length (inst.formats)) & "}")
+      inst
+    end
+
+  formats-to-json : List ClanFormat, Integer, Integer, Text -> Text
+  formats-to-json (formats) (i) (len) (acc) =
+    if i >= len then acc
+    else let f = list-at formats i
+    in let sep = if i > 0 then "," else ""
+    in let fj = sep & "{\"id\":" & show (f.format-id) & ",\"name\":" & jstr (f.name) & ",\"life\":" & show (f.base-life) & ",\"turn-cap\":" & show (f.base-turn-cap) & ",\"deck-min\":" & show (f.deck-min) & ",\"deck-max\":" & show (f.deck-max) & ",\"bans\":" & show (list-length (f.banned-cards)) & "}"
+    in formats-to-json formats (i + 1) len (acc & fj)
+
+  handle-format-add-rule : ClanInstance, Text -> [Console] ClanInstance
+  handle-format-add-rule (inst) (line) =
+    let format-id = parse-int (extract-query-param line "format") 0
+    in let rule-type = extract-query-param line "rule"
+    in let value = parse-int (extract-query-param line "value") 0
+    in let editor = parse-int (extract-query-param line "account") 0
+    in let editor-role = get-member-role (inst.clan) editor
+    in if can-edit-rules editor-role == False then act
+      pm0 <- respond-error "insufficient permissions"
+      inst
+    end
+    else let rule = parse-house-rule rule-type value
+    in let new-formats = apply-rule-to-format (inst.formats) format-id rule 0 (list-length (inst.formats)) []
+    in let inst2 = ClanInstance {
+      clan = inst.clan,
+      economy = inst.economy,
+      library = inst.library,
+      formats = new-formats,
+      tournaments = inst.tournaments,
+      challenges = inst.challenges,
+      packs = inst.packs,
+      members = inst.members,
+      global-ledger = inst.global-ledger,
+      next-format-id = inst.next-format-id,
+      next-tournament-id = inst.next-tournament-id,
+      next-challenge-id = inst.next-challenge-id,
+      next-pack-id = inst.next-pack-id,
+      platform-authorized = inst.platform-authorized,
+      last-sync = inst.last-sync
+    }
+    in act
+      pm0 <- respond-json ("{\"applied\":true,\"format\":" & show format-id & ",\"rule\":" & jstr rule-type & "}")
+      inst2
+    end
+
+  parse-house-rule : Text, Integer -> HouseRule
+  parse-house-rule (rule-type) (value) =
+    if rule-type == "ban-card" then BanCard value
+    else if rule-type == "set-life" then SetLifeTotal value
+    else if rule-type == "set-turn-cap" then SetTurnCap value
+    else if rule-type == "set-deck-min" then SetDeckMin value
+    else if rule-type == "set-deck-max" then SetDeckMax value
+    else if rule-type == "set-copy-limit" then SetCopyLimit value
+    else if rule-type == "ban-keyword" then BanKeyword value
+    else if rule-type == "require-keyword" then RequireKeyword value
+    else if rule-type == "set-general-life" then SetGeneralLife value
+    else SetLifeTotal value
+
+  apply-rule-to-format : List ClanFormat, Integer, HouseRule, Integer, Integer, List ClanFormat -> List ClanFormat
+  apply-rule-to-format (formats) (format-id) (rule) (i) (len) (acc) =
+    if i >= len then acc
+    else let f = list-at formats i
+    in if f.format-id == format-id then
+      apply-rule-to-format formats format-id rule (i + 1) len (list-push acc (apply-house-rule f rule))
+    else apply-rule-to-format formats format-id rule (i + 1) len (list-push acc f)
+
+Section: Tournament Handlers
+
+  handle-tournament : ClanInstance, Text, Text -> [Console] ClanInstance
+  handle-tournament (inst) (line) (path) =
+    if text-starts-with path "/api/clan/tournament/create" then handle-tourn-create inst line
+    else if text-starts-with path "/api/clan/tournament/join" then handle-tourn-join inst line
+    else if text-starts-with path "/api/clan/tournament/start" then handle-tourn-start inst line
+    else if text-starts-with path "/api/clan/tournament/result" then handle-tourn-result inst line
+    else if text-starts-with path "/api/clan/tournament/finalize" then handle-tourn-finalize inst line
+    else if text-starts-with path "/api/clan/tournament/list" then handle-tourn-list inst
+    else act pm0 <- respond-not-found
+      inst
+    end
+
+  handle-tourn-create : ClanInstance, Text -> [Console] ClanInstance
+  handle-tourn-create (inst) (line) =
+    let creator = parse-int (extract-query-param line "account") 0
+    in let name = extract-query-param line "name"
+    in let format-id = parse-int (extract-query-param line "format") 1
+    in let entry-fee = parse-int (extract-query-param line "fee") 10
+    in let max-players = parse-int (extract-query-param line "max") 8
+    in let creator-role = get-member-role (inst.clan) creator
+    in if can-run-tournament creator-role == False then act
+      pm0 <- respond-error "insufficient permissions"
+      inst
+    end
+    else let tourn = clan-tournament-new (inst.next-tournament-id) (inst.clan.clan-id) name format-id (SingleElim) entry-fee max-players creator 0
+    in let inst2 = ClanInstance {
+      clan = inst.clan,
+      economy = inst.economy,
+      library = inst.library,
+      formats = inst.formats,
+      tournaments = list-push (inst.tournaments) tourn,
+      challenges = inst.challenges,
+      packs = inst.packs,
+      members = inst.members,
+      global-ledger = inst.global-ledger,
+      next-format-id = inst.next-format-id,
+      next-tournament-id = inst.next-tournament-id + 1,
+      next-challenge-id = inst.next-challenge-id,
+      next-pack-id = inst.next-pack-id,
+      platform-authorized = inst.platform-authorized,
+      last-sync = inst.last-sync
+    }
+    in act
+      pm0 <- respond-json ("{\"created\":true,\"tournament-id\":" & show (inst.next-tournament-id) & ",\"name\":" & jstr name & ",\"fee\":" & show entry-fee & ",\"max\":" & show max-players & "}")
+      inst2
+    end
+
+  handle-tourn-join : ClanInstance, Text -> [Console] ClanInstance
+  handle-tourn-join (inst) (line) =
+    let tourn-id = parse-int (extract-query-param line "tournament") 0
+    in let account-id = parse-int (extract-query-param line "account") 0
+    in let tourn = find-tournament (inst.tournaments) tourn-id 0 (list-length (inst.tournaments))
+    in if tourn.tournament-id < 0 then act
+      pm0 <- respond-error "tournament not found"
+      inst
+    end
+    else let result = tournament-join tourn (inst.economy) account-id 0
+    in if result.success == False then act
+      pm0 <- respond-error "join failed: registration closed, full, or insufficient funds"
+      inst
+    end
+    else let inst2 = update-instance-tournament inst (result.tournament)
+    in let inst3 = set-instance-economy inst2 (result.economy)
+    in act
+      pm0 <- respond-json ("{\"joined\":true,\"tournament\":" & show tourn-id & ",\"players\":" & show (tournament-player-count (result.tournament)) & ",\"prize-pool\":" & show (result.tournament.prize-pool) & "}")
+      inst3
+    end
+
+  handle-tourn-start : ClanInstance, Text -> [Console] ClanInstance
+  handle-tourn-start (inst) (line) =
+    let tourn-id = parse-int (extract-query-param line "tournament") 0
+    in let tourn = find-tournament (inst.tournaments) tourn-id 0 (list-length (inst.tournaments))
+    in if tourn.tournament-id < 0 then act
+      pm0 <- respond-error "tournament not found"
+      inst
+    end
+    else let started = tournament-start tourn
+    in let inst2 = update-instance-tournament inst started
+    in act
+      pm0 <- respond-json ("{\"started\":true,\"tournament\":" & show tourn-id & ",\"players\":" & show (tournament-player-count started) & ",\"round\":" & show (started.current-round) & "}")
+      inst2
+    end
+
+  handle-tourn-result : ClanInstance, Text -> [Console] ClanInstance
+  handle-tourn-result (inst) (line) =
+    let tourn-id = parse-int (extract-query-param line "tournament") 0
+    in let player-a = parse-int (extract-query-param line "player-a") 0
+    in let player-b = parse-int (extract-query-param line "player-b") 0
+    in let winner = parse-int (extract-query-param line "winner") 0
+    in let tourn = find-tournament (inst.tournaments) tourn-id 0 (list-length (inst.tournaments))
+    in if tourn.tournament-id < 0 then act
+      pm0 <- respond-error "tournament not found"
+      inst
+    end
+    else let updated = report-match-result tourn player-a player-b winner
+    in let inst2 = update-instance-tournament inst updated
+    in act
+      pm0 <- respond-json ("{\"reported\":true,\"tournament\":" & show tourn-id & ",\"winner\":" & show winner & "}")
+      inst2
+    end
+
+  handle-tourn-finalize : ClanInstance, Text -> [Console] ClanInstance
+  handle-tourn-finalize (inst) (line) =
+    let tourn-id = parse-int (extract-query-param line "tournament") 0
+    in let tourn = find-tournament (inst.tournaments) tourn-id 0 (list-length (inst.tournaments))
+    in if tourn.tournament-id < 0 then act
+      pm0 <- respond-error "tournament not found"
+      inst
+    end
+    else let placements = compute-placements tourn
+    in let dist-result = distribute-prizes tourn (inst.economy) placements 0
+    in let inst2 = update-instance-tournament inst (dist-result.tournament)
+    in let inst3 = set-instance-economy inst2 (dist-result.economy)
+    in act
+      pm0 <- respond-json ("{\"finalized\":true,\"tournament\":" & show tourn-id & ",\"placements\":" & show (list-length placements) & "}")
+      inst3
+    end
+
+  handle-tourn-list : ClanInstance -> [Console] ClanInstance
+  handle-tourn-list (inst) =
+    let json = tourns-to-json (inst.tournaments) 0 (list-length (inst.tournaments)) ""
+    in act
+      pm0 <- respond-json ("{\"tournaments\":[" & json & "],\"count\":" & show (list-length (inst.tournaments)) & "}")
+      inst
+    end
+
+  tourns-to-json : List ClanTournament, Integer, Integer, Text -> Text
+  tourns-to-json (tourns) (i) (len) (acc) =
+    if i >= len then acc
+    else let t = list-at tourns i
+    in let sep = if i > 0 then "," else ""
+    in let tj = sep & "{\"id\":" & show (t.tournament-id) & ",\"name\":" & jstr (t.name) & ",\"status\":" & jstr (status-name (t.status)) & ",\"players\":" & show (list-length (t.participants)) & ",\"prize-pool\":" & show (t.prize-pool) & "}"
+    in tourns-to-json tourns (i + 1) len (acc & tj)
+
+Section: Challenge Handlers
+
+  handle-challenge : ClanInstance, Text, Text -> [Console] ClanInstance
+  handle-challenge (inst) (line) (path) =
+    if text-starts-with path "/api/clan/challenge/issue" then handle-chal-issue inst line
+    else if text-starts-with path "/api/clan/challenge/accept" then handle-chal-accept inst line
+    else if text-starts-with path "/api/clan/challenge/decline" then handle-chal-decline inst line
+    else if text-starts-with path "/api/clan/challenge/roster" then handle-chal-roster inst line
+    else if text-starts-with path "/api/clan/challenge/start" then handle-chal-start inst line
+    else if text-starts-with path "/api/clan/challenge/list" then handle-chal-list inst
+    else act pm0 <- respond-not-found
+      inst
+    end
+
+  handle-chal-issue : ClanInstance, Text -> [Console] ClanInstance
+  handle-chal-issue (inst) (line) =
+    let issuer = parse-int (extract-query-param line "account") 0
+    in let defender-clan = parse-int (extract-query-param line "defender") 0
+    in let format-id = parse-int (extract-query-param line "format") 1
+    in let players = parse-int (extract-query-param line "players") 3
+    in let stake-amount = parse-int (extract-query-param line "stake") 0
+    in let issuer-role = get-member-role (inst.clan) issuer
+    in if can-issue-challenge issuer-role == False then act
+      pm0 <- respond-error "insufficient permissions"
+      inst
+    end
+    else let stake = if stake-amount > 0 then StakeManaCoin stake-amount else StakeHonor
+    in let chal = challenge-new (inst.next-challenge-id) (inst.clan.clan-id) defender-clan format-id players stake 0
+    in let inst2 = ClanInstance {
+      clan = inst.clan,
+      economy = inst.economy,
+      library = inst.library,
+      formats = inst.formats,
+      tournaments = inst.tournaments,
+      challenges = list-push (inst.challenges) chal,
+      packs = inst.packs,
+      members = inst.members,
+      global-ledger = inst.global-ledger,
+      next-format-id = inst.next-format-id,
+      next-tournament-id = inst.next-tournament-id,
+      next-challenge-id = inst.next-challenge-id + 1,
+      next-pack-id = inst.next-pack-id,
+      platform-authorized = inst.platform-authorized,
+      last-sync = inst.last-sync
+    }
+    in act
+      pm0 <- respond-json ("{\"issued\":true,\"challenge-id\":" & show (inst.next-challenge-id) & ",\"defender\":" & show defender-clan & ",\"players-per-side\":" & show players & "}")
+      inst2
+    end
+
+  handle-chal-accept : ClanInstance, Text -> [Console] ClanInstance
+  handle-chal-accept (inst) (line) =
+    let chal-id = parse-int (extract-query-param line "challenge") 0
+    in let chal = find-challenge (inst.challenges) chal-id 0 (list-length (inst.challenges))
+    in if chal.challenge-id < 0 then act
+      pm0 <- respond-error "challenge not found"
+      inst
+    end
+    else let accepted = challenge-accept chal
+    in let inst2 = update-instance-challenge inst accepted
+    in act
+      pm0 <- respond-json ("{\"accepted\":true,\"challenge\":" & show chal-id & "}")
+      inst2
+    end
+
+  handle-chal-decline : ClanInstance, Text -> [Console] ClanInstance
+  handle-chal-decline (inst) (line) =
+    let chal-id = parse-int (extract-query-param line "challenge") 0
+    in let chal = find-challenge (inst.challenges) chal-id 0 (list-length (inst.challenges))
+    in if chal.challenge-id < 0 then act
+      pm0 <- respond-error "challenge not found"
+      inst
+    end
+    else let declined = challenge-decline chal
+    in let inst2 = update-instance-challenge inst declined
+    in act
+      pm0 <- respond-json ("{\"declined\":true,\"challenge\":" & show chal-id & "}")
+      inst2
+    end
+
+  handle-chal-roster : ClanInstance, Text -> [Console] ClanInstance
+  handle-chal-roster (inst) (line) =
+    let chal-id = parse-int (extract-query-param line "challenge") 0
+    in let is-challenger = extract-query-param line "side" == "challenger"
+    in act
+      pm0 <- respond-json ("{\"roster-set\":true,\"challenge\":" & show chal-id & "}")
+      inst
+    end
+
+  handle-chal-start : ClanInstance, Text -> [Console] ClanInstance
+  handle-chal-start (inst) (line) =
+    let chal-id = parse-int (extract-query-param line "challenge") 0
+    in let chal = find-challenge (inst.challenges) chal-id 0 (list-length (inst.challenges))
+    in if chal.challenge-id < 0 then act
+      pm0 <- respond-error "challenge not found"
+      inst
+    end
+    else let started = challenge-start chal 0
+    in let inst2 = update-instance-challenge inst started
+    in act
+      pm0 <- respond-json ("{\"started\":true,\"challenge\":" & show chal-id & ",\"matches\":" & show (list-length (started.matches)) & "}")
+      inst2
+    end
+
+  handle-chal-list : ClanInstance -> [Console] ClanInstance
+  handle-chal-list (inst) =
+    act
+      pm0 <- respond-json ("{\"challenges\":" & show (list-length (inst.challenges)) & "}")
+      inst
+    end
+
+Section: Pack Handlers
+
+  handle-pack : ClanInstance, Text, Text -> [Console] ClanInstance
+  handle-pack (inst) (line) (path) =
+    if text-starts-with path "/api/clan/pack/create" then handle-pack-create inst line
+    else if text-starts-with path "/api/clan/pack/approve" then handle-pack-approve inst line
+    else if text-starts-with path "/api/clan/pack/list" then handle-pack-list inst
+    else act pm0 <- respond-not-found
+      inst
+    end
+
+  handle-pack-create : ClanInstance, Text -> [Console] ClanInstance
+  handle-pack-create (inst) (line) =
+    let creator = parse-int (extract-query-param line "account") 0
+    in let name = extract-query-param line "name"
+    in let description = extract-query-param line "desc"
+    in let card-count = parse-int (extract-query-param line "cards") 15
+    in let price = parse-int (extract-query-param line "price") 100
+    in let creator-role = get-member-role (inst.clan) creator
+    in if can-edit-rules creator-role == False then act
+      pm0 <- respond-error "insufficient permissions"
+      inst
+    end
+    else let pack = clan-pack-new (inst.next-pack-id) (inst.clan.clan-id) name description card-count price 0
+    in let inst2 = ClanInstance {
+      clan = inst.clan,
+      economy = inst.economy,
+      library = inst.library,
+      formats = inst.formats,
+      tournaments = inst.tournaments,
+      challenges = inst.challenges,
+      packs = list-push (inst.packs) pack,
+      members = inst.members,
+      global-ledger = inst.global-ledger,
+      next-format-id = inst.next-format-id,
+      next-tournament-id = inst.next-tournament-id,
+      next-challenge-id = inst.next-challenge-id,
+      next-pack-id = inst.next-pack-id + 1,
+      platform-authorized = inst.platform-authorized,
+      last-sync = inst.last-sync
+    }
+    in act
+      pm0 <- respond-json ("{\"created\":true,\"pack-id\":" & show (inst.next-pack-id) & ",\"name\":" & jstr name & ",\"price\":" & show price & "}")
+      inst2
+    end
+
+  handle-pack-approve : ClanInstance, Text -> [Console] ClanInstance
+  handle-pack-approve (inst) (line) =
+    let pack-id = parse-int (extract-query-param line "pack") 0
+    in let new-packs = approve-pack-in-list (inst.packs) pack-id 0 (list-length (inst.packs)) []
+    in let inst2 = ClanInstance {
+      clan = inst.clan,
+      economy = inst.economy,
+      library = inst.library,
+      formats = inst.formats,
+      tournaments = inst.tournaments,
+      challenges = inst.challenges,
+      packs = new-packs,
+      members = inst.members,
+      global-ledger = inst.global-ledger,
+      next-format-id = inst.next-format-id,
+      next-tournament-id = inst.next-tournament-id,
+      next-challenge-id = inst.next-challenge-id,
+      next-pack-id = inst.next-pack-id,
+      platform-authorized = inst.platform-authorized,
+      last-sync = inst.last-sync
+    }
+    in act
+      pm0 <- respond-json ("{\"approved\":true,\"pack\":" & show pack-id & "}")
+      inst2
+    end
+
+  approve-pack-in-list : List ClanPackDef, Integer, Integer, Integer, List ClanPackDef -> List ClanPackDef
+  approve-pack-in-list (packs) (pack-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at packs i
+    in if p.pack-id == pack-id then approve-pack-in-list packs pack-id (i + 1) len (list-push acc (approve-pack p))
+    else approve-pack-in-list packs pack-id (i + 1) len (list-push acc p)
+
+  handle-pack-list : ClanInstance -> [Console] ClanInstance
+  handle-pack-list (inst) =
+    let json = packs-to-json (inst.packs) 0 (list-length (inst.packs)) ""
+    in act
+      pm0 <- respond-json ("{\"packs\":[" & json & "],\"count\":" & show (list-length (inst.packs)) & "}")
+      inst
+    end
+
+  packs-to-json : List ClanPackDef, Integer, Integer, Text -> Text
+  packs-to-json (packs) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at packs i
+    in let sep = if i > 0 then "," else ""
+    in let pj = sep & "{\"id\":" & show (p.pack-id) & ",\"name\":" & jstr (p.name) & ",\"price\":" & show (p.price) & ",\"cards\":" & show (p.card-count) & ",\"approved\":" & jbool (p.approved) & ",\"sold\":" & show (p.total-sold) & "}"
+    in packs-to-json packs (i + 1) len (acc & pj)
+
+Section: Platform Authorization
+
+  handle-authorize : ClanInstance, Text -> [Console] ClanInstance
+  handle-authorize (inst) (line) =
+    let auth-token = extract-query-param line "token"
+    in let inst2 = ClanInstance {
+      clan = clan-approve (inst.clan),
+      economy = inst.economy,
+      library = inst.library,
+      formats = inst.formats,
+      tournaments = inst.tournaments,
+      challenges = inst.challenges,
+      packs = inst.packs,
+      members = inst.members,
+      global-ledger = inst.global-ledger,
+      next-format-id = inst.next-format-id,
+      next-tournament-id = inst.next-tournament-id,
+      next-challenge-id = inst.next-challenge-id,
+      next-pack-id = inst.next-pack-id,
+      platform-authorized = True,
+      last-sync = inst.last-sync
+    }
+    in act
+      pm0 <- respond-json ("{\"authorized\":true,\"clan-id\":" & show (inst.clan.clan-id) & ",\"name\":" & jstr (inst.clan.name) & "}")
+      inst2
+    end
+
+  handle-sync : ClanInstance, Text -> [Console] ClanInstance
+  handle-sync (inst) (line) =
+    let timestamp = parse-int (extract-query-param line "time") 0
+    in let inst2 = ClanInstance {
+      clan = inst.clan,
+      economy = inst.economy,
+      library = inst.library,
+      formats = inst.formats,
+      tournaments = inst.tournaments,
+      challenges = inst.challenges,
+      packs = inst.packs,
+      members = inst.members,
+      global-ledger = inst.global-ledger,
+      next-format-id = inst.next-format-id,
+      next-tournament-id = inst.next-tournament-id,
+      next-challenge-id = inst.next-challenge-id,
+      next-pack-id = inst.next-pack-id,
+      platform-authorized = inst.platform-authorized,
+      last-sync = timestamp
+    }
+    in act
+      pm0 <- respond-json ("{\"synced\":true,\"timestamp\":" & show timestamp & ",\"treasury\":" & show (inst.economy.treasury-balance) & ",\"members\":" & show (inst.clan.member-count) & ",\"coin-supply\":" & show (inst.economy.coin-supply) & "}")
+      inst2
+    end
+
+Section: Instance Updaters
+
+  set-instance-clan : ClanInstance, Clan -> ClanInstance
+  set-instance-clan (inst) (new-clan) =
+    ClanInstance { clan = new-clan, economy = inst.economy, library = inst.library, formats = inst.formats, tournaments = inst.tournaments, challenges = inst.challenges, packs = inst.packs, members = inst.members, global-ledger = inst.global-ledger, next-format-id = inst.next-format-id, next-tournament-id = inst.next-tournament-id, next-challenge-id = inst.next-challenge-id, next-pack-id = inst.next-pack-id, platform-authorized = inst.platform-authorized, last-sync = inst.last-sync }
+
+  set-instance-economy : ClanInstance, ClanEconomy -> ClanInstance
+  set-instance-economy (inst) (new-econ) =
+    ClanInstance { clan = inst.clan, economy = new-econ, library = inst.library, formats = inst.formats, tournaments = inst.tournaments, challenges = inst.challenges, packs = inst.packs, members = inst.members, global-ledger = inst.global-ledger, next-format-id = inst.next-format-id, next-tournament-id = inst.next-tournament-id, next-challenge-id = inst.next-challenge-id, next-pack-id = inst.next-pack-id, platform-authorized = inst.platform-authorized, last-sync = inst.last-sync }
+
+  set-instance-library : ClanInstance, ClanLibrary -> ClanInstance
+  set-instance-library (inst) (new-lib) =
+    ClanInstance { clan = inst.clan, economy = inst.economy, library = new-lib, formats = inst.formats, tournaments = inst.tournaments, challenges = inst.challenges, packs = inst.packs, members = inst.members, global-ledger = inst.global-ledger, next-format-id = inst.next-format-id, next-tournament-id = inst.next-tournament-id, next-challenge-id = inst.next-challenge-id, next-pack-id = inst.next-pack-id, platform-authorized = inst.platform-authorized, last-sync = inst.last-sync }
+
+  set-instance-ledger : ClanInstance, ManaCoinLedger -> ClanInstance
+  set-instance-ledger (inst) (new-ledger) =
+    ClanInstance { clan = inst.clan, economy = inst.economy, library = inst.library, formats = inst.formats, tournaments = inst.tournaments, challenges = inst.challenges, packs = inst.packs, members = inst.members, global-ledger = new-ledger, next-format-id = inst.next-format-id, next-tournament-id = inst.next-tournament-id, next-challenge-id = inst.next-challenge-id, next-pack-id = inst.next-pack-id, platform-authorized = inst.platform-authorized, last-sync = inst.last-sync }
+
+  add-instance-member : ClanInstance, ClanMember -> ClanInstance
+  add-instance-member (inst) (member) =
+    ClanInstance { clan = inst.clan, economy = inst.economy, library = inst.library, formats = inst.formats, tournaments = inst.tournaments, challenges = inst.challenges, packs = inst.packs, members = list-push (inst.members) member, global-ledger = inst.global-ledger, next-format-id = inst.next-format-id, next-tournament-id = inst.next-tournament-id, next-challenge-id = inst.next-challenge-id, next-pack-id = inst.next-pack-id, platform-authorized = inst.platform-authorized, last-sync = inst.last-sync }
+
+  update-instance-tournament : ClanInstance, ClanTournament -> ClanInstance
+  update-instance-tournament (inst) (tourn) =
+    let new-tourns = replace-tournament (inst.tournaments) tourn 0 (list-length (inst.tournaments)) []
+    in ClanInstance { clan = inst.clan, economy = inst.economy, library = inst.library, formats = inst.formats, tournaments = new-tourns, challenges = inst.challenges, packs = inst.packs, members = inst.members, global-ledger = inst.global-ledger, next-format-id = inst.next-format-id, next-tournament-id = inst.next-tournament-id, next-challenge-id = inst.next-challenge-id, next-pack-id = inst.next-pack-id, platform-authorized = inst.platform-authorized, last-sync = inst.last-sync }
+
+  replace-tournament : List ClanTournament, ClanTournament, Integer, Integer, List ClanTournament -> List ClanTournament
+  replace-tournament (tourns) (new-tourn) (i) (len) (acc) =
+    if i >= len then acc
+    else let t = list-at tourns i
+    in if t.tournament-id == new-tourn.tournament-id then replace-tournament tourns new-tourn (i + 1) len (list-push acc new-tourn)
+    else replace-tournament tourns new-tourn (i + 1) len (list-push acc t)
+
+  update-instance-challenge : ClanInstance, ClanChallenge -> ClanInstance
+  update-instance-challenge (inst) (chal) =
+    let new-chals = replace-challenge (inst.challenges) chal 0 (list-length (inst.challenges)) []
+    in ClanInstance { clan = inst.clan, economy = inst.economy, library = inst.library, formats = inst.formats, tournaments = inst.tournaments, challenges = new-chals, packs = inst.packs, members = inst.members, global-ledger = inst.global-ledger, next-format-id = inst.next-format-id, next-tournament-id = inst.next-tournament-id, next-challenge-id = inst.next-challenge-id, next-pack-id = inst.next-pack-id, platform-authorized = inst.platform-authorized, last-sync = inst.last-sync }
+
+  replace-challenge : List ClanChallenge, ClanChallenge, Integer, Integer, List ClanChallenge -> List ClanChallenge
+  replace-challenge (chals) (new-chal) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at chals i
+    in if c.challenge-id == new-chal.challenge-id then replace-challenge chals new-chal (i + 1) len (list-push acc new-chal)
+    else replace-challenge chals new-chal (i + 1) len (list-push acc c)
+
+Section: Lookup Helpers
+
+  find-tournament : List ClanTournament, Integer, Integer, Integer -> ClanTournament
+  find-tournament (tourns) (id) (i) (len) =
+    if i >= len then ClanTournament { tournament-id = -1, clan-id = 0, name = "", format-id = 0, structure = SingleElim, entry-fee = 0, prize-pool = 0, participants = [], max-players = 0, status = TournCancelled, results = [], current-round = 0, pairings = [], created-by = 0, created-at = 0 }
+    else let t = list-at tourns i
+    in if t.tournament-id == id then t
+    else find-tournament tourns id (i + 1) len
+
+  find-challenge : List ClanChallenge, Integer, Integer, Integer -> ClanChallenge
+  find-challenge (chals) (id) (i) (len) =
+    if i >= len then ClanChallenge { challenge-id = -1, challenger-clan = 0, defending-clan = 0, format-id = 0, players-per-side = 0, stake = StakeHonor, status = ChalDeclined, challenger-roster = [], defender-roster = [], matches = [], winner-clan = -1, proposed-at = 0, started-at = 0, completed-at = 0 }
+    else let c = list-at chals i
+    in if c.challenge-id == id then c
+    else find-challenge chals id (i + 1) len
+
+Section: JSON Helpers
+
+  jstr : Text -> Text
+  jstr (s) = "\"" & s & "\""
+
+  jbool : Boolean -> Text
+  jbool (b) = if b then "true" else "false"
+
+Section: Server Loop
+
+  opening : [Console] Nothing = act
+    print-line-uni "CLAN-SERVER READY"
+    let inst = clan-instance-new 1 "DefaultClan" "DFLT" 0 "Clan Coins" 200 (PublicKey { key-high = 0, key-low = 0 })
+    in clan-server-loop inst
+  end
+
+  clan-server-loop : ClanInstance -> [Console] Nothing
+  clan-server-loop (inst) = act
+    line-result <- read-line
+    when line-result
+      is Just (line) -> act
+        new-inst <- dispatch-clan-request inst line
+        clan-server-loop new-inst
+      end
+      is None -> print-line-uni "CLAN-SERVER-EXIT"
+    end
+
+Page 1

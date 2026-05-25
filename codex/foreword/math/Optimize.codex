@@ -1,0 +1,146 @@
+Chapter: Optimize
+
+ Mathematical optimization — gradient descent, golden-section
+ search, and Nelder-Mead simplex for finding minima of scalar
+ and multi-variable functions. Uses fixed-point scale-1000
+ arithmetic. Distinct from AI/Optimizer which is for ML training.
+
+ To opt-gradient-descent gives the minimum of f via gradient steps.
+ To opt-golden-section gives the minimum of f(x) in [a,b].
+ To opt-nelder-mead gives the minimum of f(x,y) via simplex.
+
+ We say:
+
+Section: Gradient Descent (1D)
+
+  opt-gradient-descent : (Integer -> Integer), Integer, Integer, Integer -> Integer
+  opt-gradient-descent (f) (x0) (lr) (max-iter) =
+    opt-gd-loop f x0 lr max-iter 0
+
+  opt-gd-loop : (Integer -> Integer), Integer, Integer, Integer, Integer -> Integer
+  opt-gd-loop (f) (x) (lr) (max-iter) (i) =
+    if i >= max-iter then x
+    else let grad = opt-numerical-grad f x
+    in let x-next = x - lr * grad / 1000
+    in if opt-abs (x-next - x) < 1 then x-next
+    else opt-gd-loop f x-next lr max-iter (i + 1)
+
+  opt-numerical-grad : (Integer -> Integer), Integer -> Integer
+  opt-numerical-grad (f) (x) =
+    let h = 1
+    in (f (x + h) - f (x - h)) * 1000 / (2 * h)
+
+Section: Golden Section Search
+
+  opt-golden-section : (Integer -> Integer), Integer, Integer, Integer -> Integer
+  opt-golden-section (f) (a) (b) (max-iter) =
+    opt-gs-loop f a b max-iter 0
+
+  opt-gs-loop : (Integer -> Integer), Integer, Integer, Integer, Integer -> Integer
+  opt-gs-loop (f) (a) (b) (max-iter) (i) =
+    if i >= max-iter then (a + b) / 2
+    else if b - a < 2 then (a + b) / 2
+    else let x1 = b - (b - a) * 618 / 1000
+    in let x2 = a + (b - a) * 618 / 1000
+    in if f x1 < f x2 then opt-gs-loop f a x2 max-iter (i + 1)
+    else opt-gs-loop f x1 b max-iter (i + 1)
+
+Section: Multi-Variable Gradient Descent
+
+  opt-gradient-descent-mv : (List Integer -> Integer), List Integer, Integer, Integer -> List Integer
+  opt-gradient-descent-mv (f) (x0) (lr) (max-iter) =
+    opt-gd-mv-loop f x0 lr max-iter 0
+
+  opt-gd-mv-loop : (List Integer -> Integer), List Integer, Integer, Integer, Integer -> List Integer
+  opt-gd-mv-loop (f) (x) (lr) (max-iter) (i) =
+    if i >= max-iter then x
+    else let grad = opt-mv-grad f x
+    in let x-next = opt-mv-step x grad lr 0 (list-length x) []
+    in opt-gd-mv-loop f x-next lr max-iter (i + 1)
+
+  opt-mv-grad : (List Integer -> Integer), List Integer -> List Integer
+  opt-mv-grad (f) (x) = opt-mv-grad-loop f x 0 (list-length x) []
+
+  opt-mv-grad-loop : (List Integer -> Integer), List Integer, Integer, Integer, List Integer -> List Integer
+  opt-mv-grad-loop (f) (x) (i) (n) (acc) =
+    if i >= n then acc
+    else let h = 1
+    in let x-plus = list-set-at x i (list-at x i + h)
+    in let x-minus = list-set-at x i (list-at x i - h)
+    in let gi = (f x-plus - f x-minus) * 1000 / (2 * h)
+    in opt-mv-grad-loop f x (i + 1) n (list-push acc gi)
+
+  opt-mv-step : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  opt-mv-step (x) (grad) (lr) (i) (n) (acc) =
+    if i >= n then acc
+    else opt-mv-step x grad lr (i + 1) n (list-push acc (list-at x i - lr * list-at grad i / 1000))
+
+Section: Nelder-Mead Simplex (2D)
+
+  NmSimplex = record {
+    nm-p0 : List Integer,
+    nm-p1 : List Integer,
+    nm-p2 : List Integer
+  }
+
+  opt-nelder-mead : (List Integer -> Integer), NmSimplex, Integer -> List Integer
+  opt-nelder-mead (f) (simplex) (max-iter) =
+    opt-nm-loop f simplex max-iter 0
+
+  opt-nm-loop : (List Integer -> Integer), NmSimplex, Integer, Integer -> List Integer
+  opt-nm-loop (f) (s) (max-iter) (i) =
+    if i >= max-iter then s.nm-p0
+    else let sorted = nm-sort f s
+    in let centroid = nm-centroid (sorted.nm-p0) (sorted.nm-p1)
+    in let reflected = nm-reflect centroid (sorted.nm-p2)
+    in let fr = f reflected
+    in let f0 = f (sorted.nm-p0)
+    in let f1 = f (sorted.nm-p1)
+    in if fr < f1 then
+      opt-nm-loop f (NmSimplex { nm-p0 = sorted.nm-p0, nm-p1 = reflected, nm-p2 = sorted.nm-p1 }) max-iter (i + 1)
+    else let contracted = nm-contract centroid (sorted.nm-p2)
+    in opt-nm-loop f (NmSimplex { nm-p0 = sorted.nm-p0, nm-p1 = sorted.nm-p1, nm-p2 = contracted }) max-iter (i + 1)
+
+  nm-sort : (List Integer -> Integer), NmSimplex -> NmSimplex
+  nm-sort (f) (s) =
+    let f0 = f (s.nm-p0)
+    in let f1 = f (s.nm-p1)
+    in let f2 = f (s.nm-p2)
+    in if f0 <= f1 then
+      if f1 <= f2 then s
+      else if f0 <= f2 then NmSimplex { nm-p0 = s.nm-p0, nm-p1 = s.nm-p2, nm-p2 = s.nm-p1 }
+      else NmSimplex { nm-p0 = s.nm-p2, nm-p1 = s.nm-p0, nm-p2 = s.nm-p1 }
+    else if f0 <= f2 then NmSimplex { nm-p0 = s.nm-p1, nm-p1 = s.nm-p0, nm-p2 = s.nm-p2 }
+    else if f1 <= f2 then NmSimplex { nm-p0 = s.nm-p1, nm-p1 = s.nm-p2, nm-p2 = s.nm-p0 }
+    else NmSimplex { nm-p0 = s.nm-p2, nm-p1 = s.nm-p1, nm-p2 = s.nm-p0 }
+
+  nm-centroid : List Integer, List Integer -> List Integer
+  nm-centroid (a) (b) = nm-avg a b 0 (list-length a) []
+
+  nm-avg : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  nm-avg (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else nm-avg a b (i + 1) n (list-push acc ((list-at a i + list-at b i) / 2))
+
+  nm-reflect : List Integer, List Integer -> List Integer
+  nm-reflect (centroid) (worst) = nm-mirror centroid worst 0 (list-length centroid) []
+
+  nm-contract : List Integer, List Integer -> List Integer
+  nm-contract (centroid) (worst) = nm-mid centroid worst 0 (list-length centroid) []
+
+  nm-mirror : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  nm-mirror (c) (w) (i) (n) (acc) =
+    if i >= n then acc
+    else nm-mirror c w (i + 1) n (list-push acc (2 * list-at c i - list-at w i))
+
+  nm-mid : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  nm-mid (c) (w) (i) (n) (acc) =
+    if i >= n then acc
+    else nm-mid c w (i + 1) n (list-push acc ((list-at c i + list-at w i) / 2))
+
+Section: Helpers
+
+  opt-abs : Integer -> Integer
+  opt-abs (x) = if x < 0 then 0 - x else x
+
+Page 1

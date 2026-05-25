@@ -1,0 +1,201 @@
+Chapter: ShellPersistence
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter TextSearch
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Disk persistence for shell state. Serializes and restores command
+ history, aliases, and environment across reboots.
+
+ We say:
+
+Section: Serialization Format
+
+  serialize-trust-entry : Text, Integer -> Text
+  serialize-trust-entry (agent) (score) = agent & "=" & show score
+
+  serialize-policy-rule : Text, Text, Integer -> Text
+  serialize-policy-rule (name) (cap) (dir) = name & "=" & cap & ":" & show dir
+
+Section: Manifest
+
+  ShellManifest = record {
+    trust-data : Text,
+    policy-data : Text
+  }
+
+  empty-manifest : ShellManifest = ShellManifest { trust-data = "", policy-data = "" }
+
+  encode-manifest : ShellManifest -> Text
+  encode-manifest (m) = "T:" & m.trust-data & "|P:" & m.policy-data
+
+  decode-manifest : Text -> ShellManifest
+  decode-manifest (s) =
+    let parts = text-split s "|P:"
+    in if list-length parts < 2 then empty-manifest
+    else let t-part = list-at parts 0
+    in let p-part = list-at parts 1
+    in let trust-str = if starts-with t-part "T:" then substring t-part 2 (text-length t-part - 2) else ""
+    in ShellManifest { trust-data = trust-str, policy-data = p-part }
+
+Section: Save State
+
+  build-manifest : ShellState, List Text -> ShellManifest
+  build-manifest (state) (trust-names) =
+    let td = build-trust-manifest (state.lattice) trust-names 0 (list-length trust-names) ""
+    in let pd = build-policy-manifest (state.policy) 0 (list-length ((state.policy).rules)) ""
+    in ShellManifest { trust-data = td, policy-data = pd }
+
+  build-trust-manifest : TrustLattice, List Text, Integer, Integer, Text -> Text
+  build-trust-manifest (lat) (names) (i) (len) (acc) =
+    if i >= len then acc
+    else let name = list-at names i
+    in let score = lattice-trust-score lat name
+    in let entry = serialize-trust-entry name score
+    in let sep = if i == 0 then "" else ","
+    in build-trust-manifest lat names (i + 1) len (acc & sep & entry)
+
+  build-policy-manifest : Policy, Integer, Integer, Text -> Text
+  build-policy-manifest (pol) (i) (len) (acc) =
+    if i >= len then acc
+    else let rule = list-at (pol.rules) i
+    in let cond-text = serialize-condition (rule.condition)
+    in if text-length cond-text > 0 then
+      let entry = rule.name & "=" & cond-text
+      in let sep = if i == 0 then "" else ","
+      in build-policy-manifest pol (i + 1) len (acc & sep & entry)
+    else build-policy-manifest pol (i + 1) len acc
+
+  serialize-condition : PolicyCondition -> Text
+  serialize-condition (cond) = when cond
+    is CapabilityMatch (cap) (dir) -> cap & ":" & show dir
+    is AlwaysTrue -> "*:0"
+    is otherwise -> ""
+
+Section: Restore State
+
+  restore-shell-state : ShellManifest, Integer -> ShellState
+  restore-shell-state (m) (fuel) =
+    let lat = restore-lattice (m.trust-data)
+    in let pol = restore-policy (m.policy-data)
+    in ShellState { registry = registry-empty, lattice = lat, policy = pol, store = fact-store-empty, fuel = fuel }
+
+  restore-lattice : Text -> TrustLattice
+  restore-lattice (data) =
+    if text-length data == 0 then lattice-empty
+    else let entries = text-split data ","
+    in restore-lattice-loop entries 0 (list-length entries) lattice-empty
+
+  restore-lattice-loop : List Text, Integer, Integer, TrustLattice -> TrustLattice
+  restore-lattice-loop (entries) (i) (len) (lat) =
+    if i >= len then lat
+    else let entry = list-at entries i
+    in let parsed = parse-trust-entry entry
+    in when parsed
+      is Just (p) -> restore-lattice-loop entries (i + 1) len (lattice-add-direct lat (pair-key p) (pair-val p))
+      is None -> restore-lattice-loop entries (i + 1) len lat
+
+  restore-policy : Text -> Policy
+  restore-policy (data) =
+    if text-length data == 0 then policy-empty "codex-os"
+    else let entries = text-split data ","
+    in restore-policy-loop entries 0 (list-length entries) (policy-empty "codex-os")
+
+  restore-policy-loop : List Text, Integer, Integer, Policy -> Policy
+  restore-policy-loop (entries) (i) (len) (pol) =
+    if i >= len then pol
+    else let entry = list-at entries i
+    in let parsed = parse-policy-entry entry
+    in when parsed
+      is Just (pr) -> restore-policy-loop entries (i + 1) len (policy-add-rule pol (pr-to-rule pr))
+      is None -> restore-policy-loop entries (i + 1) len pol
+
+Section: Parse Helpers
+
+  TrustPair = record {
+    key : Text,
+    val : Integer
+  }
+
+  pair-key : TrustPair -> Text
+  pair-key (p) = p.key
+
+  pair-val : TrustPair -> Integer
+  pair-val (p) = p.val
+
+  parse-trust-entry : Text -> Maybe TrustPair
+  parse-trust-entry (s) =
+    let parts = text-split s "="
+    in if list-length parts < 2 then None
+    else let maybe-score = parse-nat-sp (list-at parts 1)
+    in when maybe-score
+      is Just (score) -> Just (TrustPair { key = list-at parts 0, val = score })
+      is None -> None
+
+  PolicyParsed = record {
+    name : Text,
+    cap : Text,
+    dir : Integer
+  }
+
+  pr-to-rule : PolicyParsed -> PolicyRule
+  pr-to-rule (pr) =
+    if pr.cap == "*" then rule-allow (pr.name) AlwaysTrue
+    else rule-allow (pr.name) (CapabilityMatch (pr.cap) (pr.dir))
+
+  parse-policy-entry : Text -> Maybe PolicyParsed
+  parse-policy-entry (s) =
+    let parts = text-split s "="
+    in if list-length parts < 2 then None
+    else let name = list-at parts 0
+    in let val-str = list-at parts 1
+    in let val-parts = text-split val-str ":"
+    in if list-length val-parts < 2 then None
+    else let maybe-dir = parse-nat-sp (list-at val-parts 1)
+    in when maybe-dir
+      is Just (dir) -> Just (PolicyParsed { name = name, cap = list-at val-parts 0, dir = dir })
+      is None -> None
+
+  parse-trust-fact : Text -> Maybe TrustPair
+  parse-trust-fact (content) =
+    if starts-with content "trust:" == False then None
+    else let rest = substring content 6 (text-length content - 6)
+    in parse-trust-entry rest
+
+  parse-policy-fact : Text -> Maybe PolicyParsed
+  parse-policy-fact (content) =
+    if starts-with content "rule:" == False then None
+    else let rest = substring content 5 (text-length content - 5)
+    in parse-policy-entry rest
+
+  parse-nat-sp : Text -> Maybe Integer
+  parse-nat-sp (s) =
+    if text-length s == 0 then None
+    else if all-digits-sp s 0 (text-length s) then Just (parse-nat-loop-sp s 0 (text-length s) 0)
+    else None
+
+  all-digits-sp : Text, Integer, Integer -> Boolean
+  all-digits-sp (s) (i) (len) =
+    if i >= len then True
+    else if is-digit (char-at s i) then all-digits-sp s (i + 1) len
+    else False
+
+  parse-nat-loop-sp : Text, Integer, Integer, Integer -> Integer
+  parse-nat-loop-sp (s) (i) (len) (acc) =
+    if i >= len then acc
+    else parse-nat-loop-sp s (i + 1) len (acc * 10 + digit-value (char-at s i))
+
+Page 1

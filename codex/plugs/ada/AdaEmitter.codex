@@ -1,0 +1,712 @@
+Chapter: Ada Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Generates Ada source code from the IR.
+
+Section: Keywords and Sanitization
+
+  ada-keywords : List Text
+  ada-keywords = ["begin", "end", "is", "type", "procedure", "function", "return",
+   "if", "then", "else", "elsif", "loop", "while", "for", "exit",
+   "case", "when", "others", "null", "declare", "package", "body",
+   "use", "with", "in", "out", "of", "new", "all", "access",
+   "record", "array", "range", "constant", "abs", "not", "and",
+   "or", "xor", "mod", "rem", "raise", "exception", "entry",
+   "select", "accept", "delay", "task", "protected", "subtype",
+   "generic", "limited", "tagged", "abstract", "interface",
+   "overriding", "separate", "private", "delta", "digits"]
+
+  ada-is-keyword : Text -> Boolean
+  ada-is-keyword (n) = ada-is-keyword-loop n ada-keywords 0
+
+  ada-is-keyword-loop : Text, List Text, Integer -> Boolean
+  ada-is-keyword-loop (n) (kws) (i) =
+   if i >= list-length kws then False
+   else if list-at kws i == n then True
+   else ada-is-keyword-loop n kws (i + 1)
+
+  ada-sanitize : Text -> Text
+  ada-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if ada-is-keyword s then s & "_v"
+      else s
+
+  ada-capitalize : Text -> Text
+  ada-capitalize (s) =
+   if text-length s == 0 then s
+   else let first = char-code-at s 0
+   in let upper-e = char-code 'E'
+   in let upper-z = char-code 'Z'
+   in let lower-e = char-code 'e'
+   in let lower-z = char-code 'z'
+   in if first >= lower-e then if first <= lower-z then char-to-text (code-to-char (first - lower-e + upper-e)) & substring s 1 (text-length s - 1)
+                                                    else s
+   else s
+
+  ada-cap-sanitize : Text -> Text
+  ada-cap-sanitize (name) = ada-capitalize (ada-sanitize name)
+
+  ada-escape-text : Text -> Text
+  ada-escape-text (s) = text-replace s "\"" "\"\""
+
+  ada-indent : Integer -> Text
+  ada-indent (n) = ada-indent-loop n ""
+
+  ada-indent-loop : Integer, Text -> Text
+  ada-indent-loop (n) (acc) =
+   if n <= 0 then acc
+   else ada-indent-loop (n - 1) (acc & "   ")
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Emission
+
+  ada-type : CodexType -> Text
+  ada-type (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> "Long_Long_Integer"
+    is NumberTy -> "Long_Float"
+    is TextTy -> "Unbounded_String"
+    is BooleanTy -> "Boolean"
+    is CharTy -> "Long_Long_Integer"
+    is VoidTy -> "Boolean"
+    is NothingTy -> "Boolean"
+    is ErrorTy -> "Long_Long_Integer"
+    is FunTy (p) (r) -> "Long_Long_Integer"
+    is ListTy (elem) -> "Long_Long_Integer"
+    is TypeVar (id) -> "Long_Long_Integer"
+    is ForAllTy (id) (body) -> ada-type body
+    is SumTy (name) (ty-args) (ctors) -> ada-cap-sanitize (name.value)
+    is RecordTy (name) (ty-args) (fields) -> ada-cap-sanitize (name.value)
+    is ConstructedTy (name) (args) -> ada-cap-sanitize (name.value)
+    is EffectfulTy (effects) (sc) (ret) -> ada-type ret
+    is LinkedListTy (elem) -> "Long_Long_Integer"
+
+Section: Type Definition Emission
+
+  emit-ada-type-defs : List ATypeDef, Integer -> Text
+  emit-ada-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-ada-type-def (list-at tds i) & "\n" & emit-ada-type-defs tds (i + 1)
+
+  emit-ada-type-def : ATypeDef -> Text
+  emit-ada-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     let n = ada-cap-sanitize (name.value)
+     in "   type " & n & " is record\n" & emit-ada-record-fields fields 0 & "   end record;\n\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-ada-sum-type (name.value) ctors
+
+  emit-ada-record-fields : List ARecordFieldDef, Integer -> Text
+  emit-ada-record-fields (fields) (i) =
+   if i >= list-length fields then ""
+   else let f = list-at fields i
+   in "      " & ada-cap-sanitize (f.name.value) & " : " & emit-ada-atype-expr (f.type-expr) & ";\n" & emit-ada-record-fields fields (i + 1)
+
+  emit-ada-atype-expr : ATypeExpr -> Text
+  emit-ada-atype-expr (te) =
+   when te
+    is ANamedType (name) (s) -> ada-when-type-name (name.value)
+    is AFunType (p) (r) (s) -> "Long_Long_Integer"
+    is AAppType (base) (args) (s) -> emit-ada-atype-expr base
+    is AEffectType (effs) (scopes) (r) (s) -> emit-ada-atype-expr r
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-ada-atype-expr b
+
+  ada-when-type-name : Text -> Text
+  ada-when-type-name (n) =
+   if n == "Integer" then "Long_Long_Integer"
+   else if n == "Number" then "Long_Float"
+   else if n == "Text" then "Unbounded_String"
+   else if n == "Boolean" then "Boolean"
+   else ada-cap-sanitize n
+
+  emit-ada-sum-type : Text, List AVariantCtorDef -> Text
+  emit-ada-sum-type (base-name) (ctors) =
+   let n = ada-cap-sanitize base-name
+   in "   type " & n & "_Tag is (" & emit-ada-tag-list ctors 0 & ");\n" ++
+      "   type " & n & "(Kind : " & n & "_Tag := " & n & "_Tag'First) is record\n" ++
+      "      case Kind is\n" & emit-ada-sum-branches ctors 0 ++
+      "      end case;\n   end record;\n\n"
+
+  emit-ada-tag-list : List AVariantCtorDef, Integer -> Text
+  emit-ada-tag-list (ctors) (i) =
+   if i >= list-length ctors then ""
+   else let c = list-at ctors i
+   in let tag = "Tag_" & ada-cap-sanitize (c.name.value)
+   in if i == list-length ctors - 1 then tag
+      else tag & ", " & emit-ada-tag-list ctors (i + 1)
+
+  emit-ada-sum-branches : List AVariantCtorDef, Integer -> Text
+  emit-ada-sum-branches (ctors) (i) =
+   if i >= list-length ctors then ""
+   else let c = list-at ctors i
+   in let tag = "Tag_" & ada-cap-sanitize (c.name.value)
+   in "         when " & tag & " =>\n" & emit-ada-sum-fields c tag 0 & emit-ada-sum-branches ctors (i + 1)
+
+  emit-ada-sum-fields : AVariantCtorDef, Text, Integer -> Text
+  emit-ada-sum-fields (c) (tag) (i) =
+   if list-length (c.fields) == 0 then "            null;\n"
+   else if i >= list-length (c.fields) then ""
+   else "            " & tag & "_F" & integer-to-text i & " : " & emit-ada-atype-expr (list-at (c.fields) i) & ";\n" & emit-ada-sum-fields c tag (i + 1)
+
+Section: Expression Emission
+
+  emit-ada-expr : IRExpr, List ArityEntry -> Text
+  emit-ada-expr (e) (arities) = emit-ada-expr-at e arities 0
+
+  emit-ada-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-ada-expr-at (e) (arities) (depth) =
+   if depth >= 256 then "null"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> "Long_Float(" & integer-to-text n & ")"
+    is IrTextLit (s) (sp) -> "To_Unbounded_String(\"" & ada-escape-text s & "\")"
+    is IrBoolLit (b) (sp) -> if b then "True" else "False"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-ada-name n ty arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-ada-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-ada-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-ada-expr-at c arities (depth + 1) & " then " & emit-ada-expr-at t arities (depth + 1) & " else " & emit-ada-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(declare " & ada-cap-sanitize name & " : constant " & ada-type ty & " := " & emit-ada-expr-at val arities (depth + 1) & " begin " & emit-ada-expr-at body arities (depth + 1) & ")"
+    is IrApply (f) (a) (ty) (sp) -> emit-ada-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "null"
+    is IrList (elems) (ty) (sp) -> if list-length elems == 0 then "(1 .. 0 => <>)" else "(" & emit-ada-list-elems elems arities 0 & ")"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-ada-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-ada-act-expr stmts arities
+    is IrRecord (name) (fields) (ty) (sp) -> emit-ada-record fields arities
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-ada-expr-at rec arities (depth + 1) & "." & ada-cap-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-ada-expr-at rec arities (depth + 1) & "'Update(" & ada-cap-sanitize field & " => " & emit-ada-expr-at val arities (depth + 1) & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ada-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ada-expr-at body arities (depth + 1)
+    is IrFork (body) (ty) (sp) -> emit-ada-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-ada-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "null"
+    is IrError (msg) (ty) (sp) -> "raise Program_Error"
+    is otherwise -> "null"
+
+  emit-ada-name : Text, CodexType, List ArityEntry -> Text
+  emit-ada-name (n) (ty) (arities) =
+   if n == "read-line" then "To_Unbounded_String(Get_Line)"
+   else if n == "True" then "True"
+   else if n == "False" then "False"
+   else if n == "Nothing" then "null"
+   else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then emit-ada-ctor-nullary n ty
+        else let ar = lookup-arity arities n
+        in if ar == 0 then ada-cap-sanitize n
+        else ada-cap-sanitize n
+   else ada-cap-sanitize n
+
+  emit-ada-ctor-nullary : Text, CodexType -> Text
+  emit-ada-ctor-nullary (n) (ty) =
+   let tag = "Tag_" & ada-cap-sanitize n
+   in "(Kind => " & tag & ")"
+
+  emit-ada-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-ada-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(" & emit-ada-expr l arities & " & " & emit-ada-expr r arities & ")"
+    is IrAppendList -> "(" & emit-ada-expr l arities & " & " & emit-ada-expr r arities & ")"
+    is IrConsList -> "(" & emit-ada-expr l arities & " & " & emit-ada-expr r arities & ")"
+    is IrPowInt -> "(" & emit-ada-expr l arities & " ** Natural(" & emit-ada-expr r arities & "))"
+    is otherwise -> "(" & emit-ada-expr l arities & " " & emit-ada-bin-op op & " " & emit-ada-expr r arities & ")"
+
+  emit-ada-bin-op : IRBinaryOp -> Text
+  emit-ada-bin-op (op) =
+   when op
+    is IrAddInt -> "+"
+    is IrSubInt -> "-"
+    is IrMulInt -> "*"
+    is IrDivInt -> "/"
+    is IrAddNum -> "+"
+    is IrSubNum -> "-"
+    is IrMulNum -> "*"
+    is IrDivNum -> "/"
+    is IrEq -> "="
+    is IrNotEq -> "/="
+    is IrLt -> "<"
+    is IrGt -> ">"
+    is IrLtEq -> "<="
+    is IrGtEq -> ">="
+    is IrAnd -> "and then"
+    is IrOr -> "or else"
+    is otherwise -> "+"
+
+  emit-ada-apply : IRExpr, List ArityEntry -> Text
+  emit-ada-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) -> emit-ada-apply-named n ty args arities e
+    is otherwise -> emit-ada-expr-curried e arities
+
+  emit-ada-apply-named : Text, CodexType, List IRExpr, List ArityEntry, IRExpr -> Text
+  emit-ada-apply-named (n) (ty) (args) (arities) (original) =
+   if n == "show" then "To_Unbounded_String(Long_Long_Integer'Image(" & emit-ada-expr (list-at args 0) arities & "))"
+   else if n == "print-line-uni" then "Put_Line(To_String(" & emit-ada-expr (list-at args 0) arities & "))"
+   else if n == "print-error-uni" then "Put_Line(Standard_Error, To_String(" & emit-ada-expr (list-at args 0) arities & "))"
+   else if n == "text-length" then "Long_Long_Integer(Length(" & emit-ada-expr (list-at args 0) arities & "))"
+   else if n == "integer-to-text" then "To_Unbounded_String(Long_Long_Integer'Image(" & emit-ada-expr (list-at args 0) arities & "))"
+   else if n == "negate" then "(-" & emit-ada-expr (list-at args 0) arities & ")"
+   else if n == "char-code" then emit-ada-expr (list-at args 0) arities
+   else if n == "code-to-char" then emit-ada-expr (list-at args 0) arities
+   else if n == "char-to-text" then "To_Unbounded_String((1 => Character'Val(Integer(" & emit-ada-expr (list-at args 0) arities & "))))"
+   else if n == "char-at" then "Long_Long_Integer(Character'Pos(Element(" & emit-ada-expr (list-at args 0) arities & ", Integer(" & emit-ada-expr (list-at args 1) arities & ") + 1)))"
+   else if n == "char-code-at" then "Long_Long_Integer(Character'Pos(Element(" & emit-ada-expr (list-at args 0) arities & ", Integer(" & emit-ada-expr (list-at args 1) arities & ") + 1)))"
+   else if n == "substring" then "Unbounded_Slice(" & emit-ada-expr (list-at args 0) arities & ", Integer(" & emit-ada-expr (list-at args 1) arities & ") + 1, Integer(" & emit-ada-expr (list-at args 1) arities & ") + Integer(" & emit-ada-expr (list-at args 2) arities & "))"
+   else if n == "text-to-integer" then "Long_Long_Integer'Value(To_String(" & emit-ada-expr (list-at args 0) arities & "))"
+   else if n == "is-letter" then "Ada.Characters.Handling.Is_Letter(Character'Val(Integer(" & emit-ada-expr (list-at args 0) arities & ")))"
+   else if n == "is-digit" then "Ada.Characters.Handling.Is_Digit(Character'Val(Integer(" & emit-ada-expr (list-at args 0) arities & ")))"
+   else if n == "is-whitespace" then "(" & emit-ada-expr (list-at args 0) arities & " <= Long_Long_Integer(Character'Pos(' ')))"
+   else if n == "list-length" then "Long_Long_Integer(" & emit-ada-expr (list-at args 0) arities & "'Length)"
+   else if n == "list-at" then emit-ada-expr (list-at args 0) arities & "(Integer(" & emit-ada-expr (list-at args 1) arities & "))"
+   else if n == "text-compare" then "Long_Long_Integer(Ada.Strings.Unbounded.To_String(" & emit-ada-expr (list-at args 0) arities & ")'Compare(To_String(" & emit-ada-expr (list-at args 1) arities & ")))"
+   else if n == "text-replace" then emit-ada-builtin-text-replace args arities
+   else if n == "text-concat-list" then emit-ada-builtin-text-concat-list args arities
+   else if n == "text-contains" then "(Index(" & emit-ada-expr (list-at args 0) arities & ", To_String(" & emit-ada-expr (list-at args 1) arities & ")) > 0)"
+   else if n == "text-starts-with" then "(Index(" & emit-ada-expr (list-at args 0) arities & ", To_String(" & emit-ada-expr (list-at args 1) arities & ")) = 1)"
+   else if n == "read-file" then emit-ada-builtin-read-file args arities
+   else if n == "write-file" then emit-ada-builtin-write-file args arities
+   else if n == "file-exists" then "Ada.Directories.Exists(To_String(" & emit-ada-expr (list-at args 0) arities & "))"
+   else if n == "get-args" then "Ada.Command_Line.Argument_Count"
+   else if n == "process-exit" then "Ada.Command_Line.Set_Exit_Status(Ada.Command_Line.Exit_Status(" & emit-ada-expr (list-at args 0) arities & "))"
+   else if n == "bit-and" then "Long_Long_Integer(Interfaces.Unsigned_64(" & emit-ada-expr (list-at args 0) arities & ") and Interfaces.Unsigned_64(" & emit-ada-expr (list-at args 1) arities & "))"
+   else if n == "bit-or" then "Long_Long_Integer(Interfaces.Unsigned_64(" & emit-ada-expr (list-at args 0) arities & ") or Interfaces.Unsigned_64(" & emit-ada-expr (list-at args 1) arities & "))"
+   else if n == "bit-xor" then "Long_Long_Integer(Interfaces.Unsigned_64(" & emit-ada-expr (list-at args 0) arities & ") xor Interfaces.Unsigned_64(" & emit-ada-expr (list-at args 1) arities & "))"
+   else if n == "bit-shl" then "Long_Long_Integer(Interfaces.Shift_Left(Interfaces.Unsigned_64(" & emit-ada-expr (list-at args 0) arities & "), Natural(" & emit-ada-expr (list-at args 1) arities & ")))"
+   else if n == "bit-shr" then "Long_Long_Integer(Interfaces.Shift_Right(Interfaces.Unsigned_64(" & emit-ada-expr (list-at args 0) arities & "), Natural(" & emit-ada-expr (list-at args 1) arities & ")))"
+   else if n == "bit-not" then "Long_Long_Integer(not Interfaces.Unsigned_64(" & emit-ada-expr (list-at args 0) arities & "))"
+   else if n == "int-mod" then "(" & emit-ada-expr (list-at args 0) arities & " mod " & emit-ada-expr (list-at args 1) arities & ")"
+   else if n == "min" then "Long_Long_Integer'Min(" & emit-ada-expr (list-at args 0) arities & ", " & emit-ada-expr (list-at args 1) arities & ")"
+   else if n == "max" then "Long_Long_Integer'Max(" & emit-ada-expr (list-at args 0) arities & ", " & emit-ada-expr (list-at args 1) arities & ")"
+   else if n == "abs" then "abs(" & emit-ada-expr (list-at args 0) arities & ")"
+   else if n == "__record-set" then emit-ada-builtin-record-set args arities
+   else if n == "get-state" then "State_Value"
+   else if n == "set-state" then emit-ada-builtin-set-state args arities
+   else if n == "run-state" then emit-ada-builtin-run-state args arities
+   else if n == "list-snoc" then emit-ada-expr (list-at args 0) arities & " & (" & emit-ada-expr (list-at args 1) arities & ")"
+   else if n == "list-insert-at" then emit-ada-expr (list-at args 0) arities
+   else if n == "list-set-at" then emit-ada-expr (list-at args 0) arities
+   else if n == "text-split" then emit-ada-expr (list-at args 0) arities
+   else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then emit-ada-ctor-apply n args arities
+        else emit-ada-func-apply n args arities original
+   else emit-ada-expr-curried original arities
+
+  emit-ada-ctor-apply : Text, List IRExpr, List ArityEntry -> Text
+  emit-ada-ctor-apply (n) (args) (arities) =
+   let tag = "Tag_" & ada-cap-sanitize n
+   in "(Kind => " & tag & emit-ada-ctor-fields tag args arities 0 & ")"
+
+  emit-ada-ctor-fields : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-ada-ctor-fields (tag) (args) (arities) (i) =
+   if i >= list-length args then ""
+   else ", " & tag & "_F" & integer-to-text i & " => " & emit-ada-expr (list-at args i) arities & emit-ada-ctor-fields tag args arities (i + 1)
+
+  emit-ada-func-apply : Text, List IRExpr, List ArityEntry, IRExpr -> Text
+  emit-ada-func-apply (n) (args) (arities) (original) =
+   let ar = lookup-arity arities n
+   in if ar > 1 then if list-length args == ar then ada-cap-sanitize n & "(" & emit-ada-apply-args args arities 0 & ")"
+                     else emit-ada-expr-curried original arities
+   else if ar == 1 then ada-cap-sanitize n & "(" & emit-ada-expr (list-at args 0) arities & ")"
+   else emit-ada-expr-curried original arities
+
+  emit-ada-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-ada-apply-args (args) (arities) (i) =
+   if i >= list-length args then ""
+   else if i == list-length args - 1 then emit-ada-expr (list-at args i) arities
+   else emit-ada-expr (list-at args i) arities & ", " & emit-ada-apply-args args arities (i + 1)
+
+  emit-ada-expr-curried : IRExpr, List ArityEntry -> Text
+  emit-ada-expr-curried (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> emit-ada-expr f arities & "(" & emit-ada-expr a arities & ")"
+    is otherwise -> emit-ada-expr e arities
+
+  emit-ada-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-ada-match (scrut) (branches) (arities) =
+   "(case " & emit-ada-expr scrut arities & ".Kind is " & emit-ada-match-arms branches arities 0 & "when others => raise Program_Error)"
+
+  emit-ada-match-arms : List IRBranch, List ArityEntry, Integer -> Text
+  emit-ada-match-arms (branches) (arities) (i) =
+   if i >= list-length branches then ""
+   else let b = list-at branches i
+   in emit-ada-match-arm b arities & emit-ada-match-arms branches arities (i + 1)
+
+  emit-ada-match-arm : IRBranch, List ArityEntry -> Text
+  emit-ada-match-arm (b) (arities) =
+   when b.pattern
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     "when Tag_" & ada-cap-sanitize name & " => " & emit-ada-expr (b.body) arities & ", "
+    is IrWildPat (sp) -> "when others => " & emit-ada-expr (b.body) arities & ", "
+    is IrVarPat (name) (ty) (sp) -> "when others => " & emit-ada-expr (b.body) arities & ", "
+    is otherwise -> ""
+
+  emit-ada-record : List IRFieldVal, List ArityEntry -> Text
+  emit-ada-record (fields) (arities) =
+   "(" & emit-ada-record-field-vals fields arities 0 & ")"
+
+  emit-ada-record-field-vals : List IRFieldVal, List ArityEntry, Integer -> Text
+  emit-ada-record-field-vals (fields) (arities) (i) =
+   if i >= list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & ada-cap-sanitize (f.name) & " => " & emit-ada-expr (f.value) arities & emit-ada-record-field-vals fields arities (i + 1)
+
+  emit-ada-builtin-text-replace : List IRExpr, List ArityEntry -> Text
+  emit-ada-builtin-text-replace (args) (arities) =
+   let a0 = emit-ada-expr (list-at args 0) arities
+   in let a1 = emit-ada-expr (list-at args 1) arities
+   in let a2 = emit-ada-expr (list-at args 2) arities
+   in "To_Unbounded_String(Ada.Strings.Fixed.Replace_Slice(To_String(" & a0 & "), Ada.Strings.Fixed.Index(To_String(" & a0 & "), To_String(" & a1 & ")), Ada.Strings.Fixed.Index(To_String(" & a0 & "), To_String(" & a1 & ")) + Length(" & a1 & ") - 1, To_String(" & a2 & ")))"
+
+  emit-ada-builtin-text-concat-list : List IRExpr, List ArityEntry -> Text
+  emit-ada-builtin-text-concat-list (args) (arities) =
+   "Null_Unbounded_String"
+
+  emit-ada-builtin-read-file : List IRExpr, List ArityEntry -> Text
+  emit-ada-builtin-read-file (args) (arities) =
+   let a0 = emit-ada-expr (list-at args 0) arities
+   in "To_Unbounded_String(Ada.Strings.Unbounded.Text_IO.Get_Line(Ada.Text_IO.Open(To_String(" & a0 & "))))"
+
+  emit-ada-builtin-write-file : List IRExpr, List ArityEntry -> Text
+  emit-ada-builtin-write-file (args) (arities) =
+   let a0 = emit-ada-expr (list-at args 0) arities
+   in let a1 = emit-ada-expr (list-at args 1) arities
+   in "Ada.Text_IO.Put_Line(Ada.Text_IO.Create(To_String(" & a0 & ")), To_String(" & a1 & "))"
+
+  emit-ada-builtin-record-set : List IRExpr, List ArityEntry -> Text
+  emit-ada-builtin-record-set (args) (arities) =
+   let field-name = when (list-at args 1)
+    is IrTextLit (s) (sp) -> s
+    is otherwise -> ""
+   in emit-ada-expr (list-at args 0) arities & "'Update(" & ada-cap-sanitize field-name & " => " & emit-ada-expr (list-at args 2) arities & ")"
+
+  emit-ada-builtin-set-state : List IRExpr, List ArityEntry -> Text
+  emit-ada-builtin-set-state (args) (arities) =
+   let a0 = emit-ada-expr (list-at args 0) arities
+   in "State_Value := " & a0
+
+  emit-ada-builtin-run-state : List IRExpr, List ArityEntry -> Text
+  emit-ada-builtin-run-state (args) (arities) =
+   let a0 = emit-ada-expr (list-at args 0) arities
+   in let a1 = emit-ada-expr (list-at args 1) arities
+   in "(declare Saved : Long_Long_Integer := State_Value; begin State_Value := " & a0 & "; return " & a1 & "; State_Value := Saved; end)"
+
+Section: Tail Call Optimization
+
+  ada-is-self-call : IRExpr, Text -> Boolean
+  ada-is-self-call (e) (func-name) =
+   let chain = collect-apply-chain e []
+   in when chain.root
+    is IrName (n) (ty) (sp) -> n == func-name
+    is otherwise -> False
+
+  ada-has-tail-call : IRExpr, Text -> Boolean
+  ada-has-tail-call (e) (func-name) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) -> ada-has-tail-call t func-name | ada-has-tail-call el func-name
+    is IrLet (name) (ty) (val) (body) (sp) -> ada-has-tail-call body func-name
+    is IrMatch (scrut) (branches) (ty) (sp) -> ada-has-tail-call-branches branches func-name 0
+    is IrApply (f) (a) (ty) (sp) -> ada-is-self-call e func-name
+    is otherwise -> False
+
+  ada-has-tail-call-branches : List IRBranch, Text, Integer -> Boolean
+  ada-has-tail-call-branches (branches) (func-name) (i) =
+   if i == list-length branches then False
+   else let b = list-at branches i
+   in if ada-has-tail-call (b.body) func-name then True
+      else ada-has-tail-call-branches branches func-name (i + 1)
+
+  ada-should-tco : IRDef -> Boolean
+  ada-should-tco (d) =
+   if list-length (d.params) == 0 then False
+   else ada-has-tail-call (d.body) (d.name)
+
+Section: Definition Emission
+
+  emit-ada-def : IRDef, List ArityEntry -> Text
+  emit-ada-def (d) (arities) =
+   if ada-should-tco d then emit-ada-tco-def d arities
+   else let ret = ada-get-return-type (d.type-val) (list-length (d.params))
+   in let is-proc = ada-is-effectful (d.type-val)
+   in if is-proc then emit-ada-procedure d arities
+      else emit-ada-function d arities ret
+
+  ada-is-effectful : CodexType -> Boolean
+  ada-is-effectful (ty) =
+   when ty
+    is EffectfulTy (effs) (sc) (ret) -> True
+    is FunTy (p) (r) -> ada-is-effectful r
+    is ForAllTy (id) (body) -> ada-is-effectful body
+    is otherwise -> False
+
+  ada-get-return-type : CodexType, Integer -> CodexType
+  ada-get-return-type (ty) (n) =
+   if n == 0 then ada-strip-forall ty
+   else when ada-strip-forall ty
+    is FunTy (p) (r) -> ada-get-return-type r (n - 1)
+    is otherwise -> ty
+
+  ada-strip-forall : CodexType -> CodexType
+  ada-strip-forall (ty) =
+   when ty
+    is ForAllTy (id) (body) -> ada-strip-forall body
+    is otherwise -> ty
+
+  emit-ada-procedure : IRDef, List ArityEntry -> Text
+  emit-ada-procedure (d) (arities) =
+   let name = ada-cap-sanitize (d.name)
+   in "   procedure " & name & (if list-length (d.params) > 0 then "(" & emit-ada-def-params (d.params) 0 & ")" else "") & " is\n" ++
+      "   begin\n" & emit-ada-statement (d.body) arities 2 ++
+      "   end " & name & ";\n"
+
+  emit-ada-function : IRDef, List ArityEntry, CodexType -> Text
+  emit-ada-function (d) (arities) (ret) =
+   let name = ada-cap-sanitize (d.name)
+   in "   function " & name & (if list-length (d.params) > 0 then "(" & emit-ada-def-params (d.params) 0 & ")" else "") & " return " & ada-type ret & " is\n" ++
+      "   begin\n" ++
+      "      return " & emit-ada-expr (d.body) arities & ";\n" ++
+      "   end " & name & ";\n"
+
+  emit-ada-def-params : List IRParam, Integer -> Text
+  emit-ada-def-params (params) (i) =
+   if i == list-length params then ""
+   else let p = list-at params i
+   in ada-cap-sanitize (p.name) & " : " & ada-type (p.type-val) & (if i < list-length params - 1 then "; " else "") & emit-ada-def-params params (i + 1)
+
+  emit-ada-tco-def : IRDef, List ArityEntry -> Text
+  emit-ada-tco-def (d) (arities) =
+   let name = ada-cap-sanitize (d.name)
+   in let ret = ada-get-return-type (d.type-val) (list-length (d.params))
+   in "   function " & name & (if list-length (d.params) > 0 then "(" & emit-ada-tco-params (d.params) 0 & ")" else "") & " return " & ada-type ret & " is\n" ++
+      emit-ada-tco-vars (d.params) 0 ++
+      "   begin\n" ++
+      "      loop\n" ++
+      emit-ada-tco-body (d.body) (d.name) (d.params) arities 3 ++
+      "      end loop;\n" ++
+      "   end " & name & ";\n"
+
+  emit-ada-tco-params : List IRParam, Integer -> Text
+  emit-ada-tco-params (params) (i) =
+   if i == list-length params then ""
+   else let p = list-at params i
+   in ada-cap-sanitize (p.name) & "_0 : " & ada-type (p.type-val) & (if i < list-length params - 1 then "; " else "") & emit-ada-tco-params params (i + 1)
+
+  emit-ada-tco-vars : List IRParam, Integer -> Text
+  emit-ada-tco-vars (params) (i) =
+   if i >= list-length params then ""
+   else let p = list-at params i
+   in "      " & ada-cap-sanitize (p.name) & " : " & ada-type (p.type-val) & " := " & ada-cap-sanitize (p.name) & "_0;\n" & emit-ada-tco-vars params (i + 1)
+
+  emit-ada-tco-body : IRExpr, Text, List IRParam, List ArityEntry, Integer -> Text
+  emit-ada-tco-body (e) (func-name) (params) (arities) (indent) =
+   let pad = ada-indent indent
+   in when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     pad & "if " & emit-ada-expr c arities & " then\n" ++
+     emit-ada-tco-body t func-name params arities (indent + 1) ++
+     pad & "else\n" ++
+     emit-ada-tco-body el func-name params arities (indent + 1) ++
+     pad & "end if;\n"
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     pad & "declare\n" ++
+     pad & "   " & ada-cap-sanitize name & " : constant " & ada-type ty & " := " & emit-ada-expr val arities & ";\n" ++
+     pad & "begin\n" ++
+     emit-ada-tco-body body func-name params arities (indent + 1) ++
+     pad & "end;\n"
+    is IrMatch (scrut) (branches) (rty) (sp) ->
+     pad & "case " & emit-ada-expr scrut arities & ".Kind is\n" ++
+     emit-ada-tco-match-arms branches func-name params arities indent ++
+     pad & "end case;\n"
+    is IrApply (f) (a) (rty) (sp) ->
+     if ada-is-self-call e func-name then emit-ada-tco-jump e params arities indent
+     else pad & "return " & emit-ada-expr e arities & ";\n"
+    is otherwise -> pad & "return " & emit-ada-expr e arities & ";\n"
+
+  emit-ada-tco-jump : IRExpr, List IRParam, List ArityEntry, Integer -> Text
+  emit-ada-tco-jump (e) (params) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let pad = ada-indent indent
+   in emit-ada-tco-assigns (chain.args) params arities pad 0
+
+  emit-ada-tco-assigns : List IRExpr, List IRParam, List ArityEntry, Text, Integer -> Text
+  emit-ada-tco-assigns (args) (params) (arities) (pad) (i) =
+   if i >= list-length args then ""
+   else if i >= list-length params then ""
+   else let p = list-at params i
+   in pad & ada-cap-sanitize (p.name) & " := " & emit-ada-expr (list-at args i) arities & ";\n" & emit-ada-tco-assigns args params arities pad (i + 1)
+
+  emit-ada-act-expr : List IRActStmt, List ArityEntry -> Text
+  emit-ada-act-expr (stmts) (arities) =
+   if list-length stmts == 0 then "null"
+   else "(declare " & emit-ada-act-expr-binds stmts arities 0 & "begin " & emit-ada-act-expr-body stmts arities 0 & "end)"
+
+  emit-ada-act-expr-binds : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-ada-act-expr-binds (stmts) (arities) (i) =
+   if i >= list-length stmts then ""
+   else let s = list-at stmts i
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> ada-cap-sanitize name & " : " & ada-type ty & " := " & emit-ada-expr val arities & "; " & emit-ada-act-expr-binds stmts arities (i + 1)
+    is IrDoExec (e) (sp) -> emit-ada-act-expr-binds stmts arities (i + 1)
+
+  emit-ada-act-expr-body : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-ada-act-expr-body (stmts) (arities) (i) =
+   if i >= list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoExec (e) (sp) -> if is-last then "return " & emit-ada-expr e arities & "; " else emit-ada-expr e arities & "; " & emit-ada-act-expr-body stmts arities (i + 1)
+    is IrDoBind (name) (ty) (val) (sp) -> emit-ada-act-expr-body stmts arities (i + 1)
+
+  emit-ada-list-elems : List IRExpr, List ArityEntry, Integer -> Text
+  emit-ada-list-elems (elems) (arities) (i) =
+   if i >= list-length elems then ""
+   else if i == list-length elems - 1 then emit-ada-expr (list-at elems i) arities
+   else emit-ada-expr (list-at elems i) arities & ", " & emit-ada-list-elems elems arities (i + 1)
+
+  emit-ada-tco-match-arms : List IRBranch, Text, List IRParam, List ArityEntry, Integer -> Text
+  emit-ada-tco-match-arms (branches) (func-name) (params) (arities) (indent) =
+   emit-ada-tco-match-arms-loop branches func-name params arities indent 0
+
+  emit-ada-tco-match-arms-loop : List IRBranch, Text, List IRParam, List ArityEntry, Integer, Integer -> Text
+  emit-ada-tco-match-arms-loop (branches) (func-name) (params) (arities) (indent) (i) =
+   if i >= list-length branches then let pad = ada-indent (indent + 1) in pad & "when others => raise Program_Error;\n"
+   else let b = list-at branches i
+   in let pad = ada-indent (indent + 1)
+   in when b.pattern
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     pad & "when Tag_" & ada-cap-sanitize name & " =>\n" ++
+     emit-ada-tco-body (b.body) func-name params arities (indent + 2) ++
+     emit-ada-tco-match-arms-loop branches func-name params arities indent (i + 1)
+    is IrWildPat (sp) ->
+     pad & "when others =>\n" ++
+     emit-ada-tco-body (b.body) func-name params arities (indent + 2)
+    is IrVarPat (name) (vty) (sp) ->
+     pad & "when others =>\n" ++
+     emit-ada-tco-body (b.body) func-name params arities (indent + 2)
+    is otherwise -> emit-ada-tco-match-arms-loop branches func-name params arities indent (i + 1)
+
+  emit-ada-statement : IRExpr, List ArityEntry, Integer -> Text
+  emit-ada-statement (e) (arities) (indent) =
+   let pad = ada-indent indent
+   in when e
+    is IrAct (stmts) (ty) (sp) -> emit-ada-act-stmts stmts arities indent 0
+    is otherwise -> pad & emit-ada-expr e arities & ";\n"
+
+  emit-ada-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-ada-act-stmts (stmts) (arities) (indent) (i) =
+   if i >= list-length stmts then ""
+   else let s = list-at stmts i
+   in emit-ada-act-stmt s arities indent & emit-ada-act-stmts stmts arities indent (i + 1)
+
+  emit-ada-act-stmt : IRActStmt, List ArityEntry, Integer -> Text
+  emit-ada-act-stmt (s) (arities) (indent) =
+   let pad = ada-indent indent
+   in when s
+    is IrDoExec (e) (sp) -> pad & emit-ada-expr e arities & ";\n"
+    is IrDoBind (name) (ty) (val) (sp) -> pad & ada-cap-sanitize name & " : " & ada-type ty & " := " & emit-ada-expr val arities & ";\n"
+
+Section: Chapter Emission
+
+  ada-opening-entry-point : Text
+  ada-opening-entry-point = "opening"
+
+  ada-find-entry : List IRDef, Integer -> Integer
+  ada-find-entry (defs) (i) =
+   if i >= list-length defs then -1
+   else let d = list-at defs i
+   in if d.name == ada-opening-entry-point then i
+      else ada-find-entry defs (i + 1)
+
+  emit-ada-defs : List IRDef, List ArityEntry, Integer, Integer -> Text
+  emit-ada-defs (defs) (arities) (i) (entry-idx) =
+   if i >= list-length defs then ""
+   else if i == entry-idx then emit-ada-defs defs arities (i + 1) entry-idx
+   else emit-ada-def (list-at defs i) arities & "\n" & emit-ada-defs defs arities (i + 1) entry-idx
+
+  emit-ada-entry-body : List IRDef, Integer, List ArityEntry -> Text
+  emit-ada-entry-body (defs) (entry-idx) (arities) =
+   if entry-idx < 0 then if list-length defs == 0 then "   Put_Line(\"All proofs verified at compile time.\");\n"
+                          else "   null;\n"
+   else let d = list-at defs entry-idx
+   in let is-eff = ada-is-effectful (d.type-val)
+   in if is-eff then emit-ada-statement (d.body) arities 1
+      else let ret = ada-get-return-type (d.type-val) (list-length (d.params))
+      in emit-ada-entry-print (d.body) ret arities
+
+  emit-ada-entry-print : IRExpr, CodexType, List ArityEntry -> Text
+  emit-ada-entry-print (body) (ret) (arities) =
+   when ret
+    is IntegerTy (lo) (hi) (mode) -> "   Put(Long_Long_Integer'Image(" & emit-ada-expr body arities & "));\n   New_Line;\n"
+    is NumberTy -> "   Put(Long_Float'Image(" & emit-ada-expr body arities & "));\n   New_Line;\n"
+    is TextTy -> "   Put_Line(To_String(" & emit-ada-expr body arities & "));\n"
+    is otherwise -> "   Put_Line(\"<result>\");\n"
+
+  emit-ada-chapter : IRChapter, List ATypeDef -> Text
+  emit-ada-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let pkg = ada-cap-sanitize (m.name.value)
+   in let entry-idx = ada-find-entry (m.defs) 0
+   in "with Ada.Text_IO; use Ada.Text_IO;\n" ++
+      "with Ada.Integer_Text_IO; use Ada.Integer_Text_IO;\n" ++
+      "with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;\n" ++
+      "with Ada.Characters.Handling;\n" ++
+      "with Ada.Command_Line;\n" ++
+      "with Ada.Directories;\n" ++
+      "with Interfaces; use Interfaces;\n\n" ++
+      "procedure " & pkg & " is\n\n" ++
+      emit-ada-type-defs type-defs 0 ++
+      emit-ada-defs (m.defs) arities 0 entry-idx ++
+      "begin\n" ++
+      emit-ada-entry-body (m.defs) entry-idx arities ++
+      "end " & pkg & ";\n"
+
+Page 1

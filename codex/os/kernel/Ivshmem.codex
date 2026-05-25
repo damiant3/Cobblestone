@@ -1,0 +1,70 @@
+Chapter: Ivshmem
+  cites Kernel chapter Pci
+  cites Foreword chapter Maybe
+
+ QEMU ivshmem-plain driver. Discovers the ivshmem PCI device
+ (vendor 0x1AF4, device 0x1110), reads BAR0 for the shared memory
+ base address, and provides 32-bit MMIO read/write access.
+
+ We say:
+
+Section: Constants
+  ivshmem-vendor : Integer = 6900
+  ivshmem-device : Integer = 4368
+
+Section: State
+  IvshmemDev = record {
+    shm-base : Integer,
+    shm-found : Boolean
+  }
+
+  ivshmem-not-found : IvshmemDev
+  ivshmem-not-found = IvshmemDev { shm-base = 0, shm-found = False }
+
+Section: Initialization
+  ivshmem-init : IvshmemDev
+  ivshmem-init =
+    let scan = pci-scan-bus 0
+    in let found = pci-find-device scan ivshmem-vendor ivshmem-device
+    in when found
+      is None -> ivshmem-not-found
+      is Just (dev) ->
+        let enabled = pci-enable-mmio dev
+        in let bar = pci-parse-bar (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 0
+        in IvshmemDev { shm-base = bar.bar-base, shm-found = True }
+
+Section: MMIO Access
+  shm-read-32 : IvshmemDev, Integer -> Integer
+  shm-read-32 (dev) (offset) = peek-32 (dev.shm-base) offset
+
+  shm-write-32 : IvshmemDev, Integer, Integer -> Integer
+  shm-write-32 (dev) (offset) (value) = poke-32 (dev.shm-base) offset value
+
+  shm-read-byte : IvshmemDev, Integer -> Integer
+  shm-read-byte (dev) (offset) = peek-byte (dev.shm-base) offset
+
+  shm-write-byte : IvshmemDev, Integer, Integer -> Integer
+  shm-write-byte (dev) (offset) (value) = poke-byte (dev.shm-base) offset value
+
+Section: Block Operations
+  shm-write-bytes : IvshmemDev, Integer, List Integer, Integer, Integer -> Integer
+  shm-write-bytes (dev) (offset) (data) (i) (len) =
+    if i >= len then 0
+    else let w = shm-write-byte dev (offset + i) (list-at data i)
+    in w + shm-write-bytes dev (offset + i + 1) data (i + 1) len
+
+  shm-read-bytes : IvshmemDev, Integer, Integer -> List Integer
+  shm-read-bytes (dev) (offset) (len) = shm-read-loop dev offset len 0 []
+
+  shm-read-loop : IvshmemDev, Integer, Integer, Integer, List Integer -> List Integer
+  shm-read-loop (dev) (offset) (len) (i) (acc) =
+    if i >= len then acc
+    else shm-read-loop dev offset len (i + 1) (list-push acc (shm-read-byte dev (offset + i)))
+
+Section: Formatting
+  format-ivshmem : IvshmemDev -> Text
+  format-ivshmem (dev) =
+    if dev.shm-found then "ivshmem at " & pci-hex16 (bit-shru (dev.shm-base) 16) & pci-hex16 (bit-and (dev.shm-base) 65535)
+    else "ivshmem not found"
+
+Page 1

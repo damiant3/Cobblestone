@@ -1,0 +1,154 @@
+Chapter: Numeric
+
+ Numerical methods — root-finding, numerical integration, and ODE
+ solvers. Uses fixed-point scale-1000 arithmetic. Functions take
+ function pointers (lambdas) for the target function.
+
+ To bisect gives a root of f(x) = 0 in [a, b] via bisection.
+ To newton gives a root via Newton's method.
+ To integrate-simpson gives the definite integral via Simpson's rule.
+ To integrate-trapezoid gives the definite integral via trapezoid rule.
+ To rk4-step gives one Runge-Kutta 4th-order step.
+ To rk4-solve gives the ODE solution over an interval.
+
+ We say:
+
+Section: Root Finding (Bisection)
+
+  bisect : (Integer -> Integer), Integer, Integer, Integer -> Integer
+  bisect (f) (a) (b) (max-iter) =
+    bisect-loop f a b max-iter 0
+
+  bisect-loop : (Integer -> Integer), Integer, Integer, Integer, Integer -> Integer
+  bisect-loop (f) (a) (b) (max-iter) (i) =
+    if i >= max-iter then (a + b) / 2
+    else let mid = (a + b) / 2
+    in let fa = f a
+    in let fm = f mid
+    in if fm == 0 then mid
+    else if fa * fm < 0 then bisect-loop f a mid max-iter (i + 1)
+    else bisect-loop f mid b max-iter (i + 1)
+
+Section: Root Finding (Newton)
+
+  newton : (Integer -> Integer), (Integer -> Integer), Integer, Integer -> Integer
+  newton (f) (df) (x0) (max-iter) =
+    newton-loop f df x0 max-iter 0
+
+  newton-loop : (Integer -> Integer), (Integer -> Integer), Integer, Integer, Integer -> Integer
+  newton-loop (f) (df) (x) (max-iter) (i) =
+    if i >= max-iter then x
+    else let fx = f x
+    in let dfx = df x
+    in if dfx == 0 then x
+    else let x-next = x - fx * 1000 / dfx
+    in if num-abs (x-next - x) < 1 then x-next
+    else newton-loop f df x-next max-iter (i + 1)
+
+Section: Numerical Integration (Simpson)
+
+  integrate-simpson : (Integer -> Integer), Integer, Integer, Integer -> Integer
+  integrate-simpson (f) (a) (b) (n) =
+    let steps = if n - (n / 2) * 2 == 0 then n else n + 1
+    in let h = (b - a) * 1000 / steps
+    in let fa = f a
+    in let fb = f b
+    in let interior = simpson-loop f a h steps 1 0 0
+    in (fa + fb + 4 * interior.odd + 2 * interior.even) * h / (3 * 1000)
+
+  SimpsonSums = record {
+    odd : Integer,
+    even : Integer
+  }
+
+  simpson-loop : (Integer -> Integer), Integer, Integer, Integer, Integer, Integer, Integer -> SimpsonSums
+  simpson-loop (f) (a) (h) (n) (i) (odd-sum) (even-sum) =
+    if i >= n then SimpsonSums { odd = odd-sum, even = even-sum }
+    else let x = a + i * h / 1000
+    in let fx = f x
+    in if i - (i / 2) * 2 == 1 then simpson-loop f a h n (i + 1) (odd-sum + fx) even-sum
+    else simpson-loop f a h n (i + 1) odd-sum (even-sum + fx)
+
+Section: Numerical Integration (Trapezoid)
+
+  integrate-trapezoid : (Integer -> Integer), Integer, Integer, Integer -> Integer
+  integrate-trapezoid (f) (a) (b) (n) =
+    let h = (b - a) * 1000 / n
+    in let fa = f a
+    in let fb = f b
+    in let interior = trap-loop f a h n 1 0
+    in (fa + fb + 2 * interior) * h / (2 * 1000)
+
+  trap-loop : (Integer -> Integer), Integer, Integer, Integer, Integer, Integer -> Integer
+  trap-loop (f) (a) (h) (n) (i) (acc) =
+    if i >= n then acc
+    else let x = a + i * h / 1000
+    in trap-loop f a h n (i + 1) (acc + f x)
+
+Section: ODE Solver (Runge-Kutta 4)
+
+  Rk4State = record {
+    rk-t : Integer,
+    rk-y : Integer
+  }
+
+  rk4-step : (Integer -> Integer -> Integer), Integer, Integer, Integer -> Rk4State
+  rk4-step (f) (t) (y) (h) =
+    let k1 = f t y
+    in let k2 = f (t + h / 2) (y + h * k1 / (2 * 1000))
+    in let k3 = f (t + h / 2) (y + h * k2 / (2 * 1000))
+    in let k4 = f (t + h) (y + h * k3 / 1000)
+    in let y-next = y + h * (k1 + 2 * k2 + 2 * k3 + k4) / (6 * 1000)
+    in Rk4State { rk-t = t + h, rk-y = y-next }
+
+  rk4-solve : (Integer -> Integer -> Integer), Integer, Integer, Integer, Integer -> List Rk4State
+  rk4-solve (f) (t0) (y0) (t-end) (steps) =
+    let h = (t-end - t0) * 1000 / steps
+    in rk4-solve-loop f t0 y0 h steps 0 [Rk4State { rk-t = t0, rk-y = y0 }]
+
+  rk4-solve-loop : (Integer -> Integer -> Integer), Integer, Integer, Integer, Integer, Integer, List Rk4State -> List Rk4State
+  rk4-solve-loop (f) (t) (y) (h) (steps) (i) (acc) =
+    if i >= steps then acc
+    else let next = rk4-step f t y h
+    in rk4-solve-loop f (next.rk-t) (next.rk-y) h steps (i + 1) (list-push acc next)
+
+Section: Vector ODE (systems)
+
+  Rk4VecState = record {
+    rkv-t : Integer,
+    rkv-y : List Integer
+  }
+
+  rk4-vec-step : (Integer -> List Integer -> List Integer), Integer, List Integer, Integer -> Rk4VecState
+  rk4-vec-step (f) (t) (y) (h) =
+    let n = list-length y
+    in let k1 = f t y
+    in let y2 = rk4-vec-add y k1 (h / 2) n
+    in let k2 = f (t + h / 2) y2
+    in let y3 = rk4-vec-add y k2 (h / 2) n
+    in let k3 = f (t + h / 2) y3
+    in let y4 = rk4-vec-add y k3 h n
+    in let k4 = f (t + h) y4
+    in let y-next = rk4-vec-combine y k1 k2 k3 k4 h n 0 []
+    in Rk4VecState { rkv-t = t + h, rkv-y = y-next }
+
+  rk4-vec-add : List Integer, List Integer, Integer, Integer -> List Integer
+  rk4-vec-add (y) (k) (scale) (n) = rk4-va-loop y k scale n 0 []
+
+  rk4-va-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  rk4-va-loop (y) (k) (scale) (n) (i) (acc) =
+    if i >= n then acc
+    else rk4-va-loop y k scale n (i + 1) (list-push acc (list-at y i + scale * list-at k i / 1000))
+
+  rk4-vec-combine : List Integer, List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  rk4-vec-combine (y) (k1) (k2) (k3) (k4) (h) (n) (i) (acc) =
+    if i >= n then acc
+    else let dy = (list-at k1 i + 2 * list-at k2 i + 2 * list-at k3 i + list-at k4 i) * h / (6 * 1000)
+    in rk4-vec-combine y k1 k2 k3 k4 h n (i + 1) (list-push acc (list-at y i + dy))
+
+Section: Helpers
+
+  num-abs : Integer -> Integer
+  num-abs (x) = if x < 0 then 0 - x else x
+
+Page 1

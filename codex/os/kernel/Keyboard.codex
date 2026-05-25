@@ -1,0 +1,205 @@
+Chapter: Keyboard
+  cites Foreword chapter CCE
+
+ PS/2 keyboard driver. Reads scancodes from the kernel's IRQ1 key
+ buffer (memory address 28680), maps scancode set 1 (XT) to CCE via
+ a byte-array lookup table. Tracks shift state. Output is CCE codes.
+
+ We say:
+
+Section: Key Buffer
+  kb-buffer-addr : Integer = 28680
+
+  kb-has-key : Boolean
+  kb-has-key = peek-byte kb-buffer-addr 0 /= 0
+
+  kb-read-scancode : Integer
+  kb-read-scancode =
+    let sc = peek-byte kb-buffer-addr 0
+    in let clear = poke-byte kb-buffer-addr 0 0
+    in sc
+
+Section: Keyboard State
+  KbState = record {
+    shift : Boolean,
+    ctrl : Boolean,
+    caps : Boolean,
+    num : Boolean,
+    table : Integer
+  }
+
+  kb-state-new : KbState
+  kb-state-new = KbState { shift = False, ctrl = False, caps = False, num = False, table = kb-init-table }
+
+Section: Scancode Processing
+  KbEvent = record {
+    ascii : Integer between 0 and 127,
+    scancode : Integer between 0 and 255,
+    pressed : Boolean,
+    state : KbState
+  }
+
+  kb-no-event : KbState -> KbEvent
+  kb-no-event (st) = KbEvent { ascii = 0, scancode = 0, pressed = False, state = st }
+
+  kb-process-scancode : KbState, Integer -> KbEvent
+  kb-process-scancode (st) (sc) =
+    if sc == 42 then KbEvent { ascii = 0, scancode = sc, pressed = True, state = KbState { shift = True, ctrl = st.ctrl, caps = st.caps, num = st.num, table = st.table } }
+    else if sc == 54 then KbEvent { ascii = 0, scancode = sc, pressed = True, state = KbState { shift = True, ctrl = st.ctrl, caps = st.caps, num = st.num, table = st.table } }
+    else if sc == 170 then KbEvent { ascii = 0, scancode = sc, pressed = False, state = KbState { shift = False, ctrl = st.ctrl, caps = st.caps, num = st.num, table = st.table } }
+    else if sc == 182 then KbEvent { ascii = 0, scancode = sc, pressed = False, state = KbState { shift = False, ctrl = st.ctrl, caps = st.caps, num = st.num, table = st.table } }
+    else if sc == 29 then KbEvent { ascii = 0, scancode = sc, pressed = True, state = KbState { shift = st.shift, ctrl = True, caps = st.caps, num = st.num, table = st.table } }
+    else if sc == 157 then KbEvent { ascii = 0, scancode = sc, pressed = False, state = KbState { shift = st.shift, ctrl = False, caps = st.caps, num = st.num, table = st.table } }
+    else if sc == 58 then KbEvent { ascii = 0, scancode = sc, pressed = True, state = KbState { shift = st.shift, ctrl = st.ctrl, caps = if st.caps then False else True, num = st.num, table = st.table } }
+    else if sc == 69 then KbEvent { ascii = 0, scancode = sc, pressed = True, state = KbState { shift = st.shift, ctrl = st.ctrl, caps = st.caps, num = if st.num then False else True, table = st.table } }
+    else if sc >= 128 then KbEvent { ascii = 0, scancode = sc, pressed = False, state = st }
+    else if sc >= 71 then if sc <= 83 then
+      if st.num then let base = scancode-to-cce (st.table) sc in KbEvent { ascii = base, scancode = sc, pressed = True, state = st }
+      else KbEvent { ascii = 0, scancode = sc, pressed = True, state = st }
+    else KbEvent { ascii = 0, scancode = sc, pressed = True, state = st }
+    else let base = scancode-to-cce (st.table) sc
+    in let shifted = if st.shift then shift-cce base else base
+    in let ch = if st.caps then caps-cce shifted else shifted
+    in KbEvent { ascii = ch, scancode = sc, pressed = True, state = st }
+
+  caps-cce : Integer -> Integer
+  caps-cce (c) =
+    if c >= 13 then if c <= 38 then c + 26 else if c >= 39 then if c <= 64 then c - 26 else c else c
+    else c
+
+  shift-cce : Integer -> Integer
+  shift-cce (c) =
+    if c >= 13 then if c <= 38 then c + 26
+    else if c == 65 then 80
+    else if c == 66 then 79
+    else if c == 70 then 69
+    else if c == 71 then 72
+    else if c == 73 then 85
+    else if c == 77 then 76
+    else if c == 81 then 68
+    else if c == 86 then 87
+    else if c == 88 then 90
+    else if c == 89 then 91
+    else if c == 93 then 92
+    else c
+    else if c == 4 then from-unicode 33
+    else if c == 5 then from-unicode 64
+    else if c == 6 then from-unicode 35
+    else if c == 7 then from-unicode 36
+    else if c == 8 then from-unicode 37
+    else if c == 9 then from-unicode 94
+    else if c == 10 then from-unicode 38
+    else if c == 11 then from-unicode 42
+    else if c == 12 then from-unicode 40
+    else if c == 3 then from-unicode 41
+    else c
+
+Section: Scancode Table (Set 1 -> CCE, O(1) byte-array lookup)
+  kb-table-size : Integer = 84
+
+  kb-write-cce : Integer, Integer, Integer -> Integer
+  kb-write-cce (base) (sc) (unicode) = poke-byte base sc (from-unicode unicode)
+
+  kb-build-table : Integer -> Integer
+  kb-build-table (base) =
+    let w0 = poke-byte base 0 0
+    in let w1 = poke-byte base 1 0
+    in let w2 = kb-write-cce base 2 49
+    in let w3 = kb-write-cce base 3 50
+    in let w4 = kb-write-cce base 4 51
+    in let w5 = kb-write-cce base 5 52
+    in let w6 = kb-write-cce base 6 53
+    in let w7 = kb-write-cce base 7 54
+    in let w8 = kb-write-cce base 8 55
+    in let w9 = kb-write-cce base 9 56
+    in let w10 = kb-write-cce base 10 57
+    in let w11 = kb-write-cce base 11 48
+    in let w12 = kb-write-cce base 12 45
+    in let w13 = kb-write-cce base 13 61
+    in let w14 = poke-byte base 14 0
+    in let w15 = poke-byte base 15 0
+    in let w16 = kb-write-cce base 16 113
+    in let w17 = kb-write-cce base 17 119
+    in let w18 = kb-write-cce base 18 101
+    in let w19 = kb-write-cce base 19 114
+    in let w20 = kb-write-cce base 20 116
+    in let w21 = kb-write-cce base 21 121
+    in let w22 = kb-write-cce base 22 117
+    in let w23 = kb-write-cce base 23 105
+    in let w24 = kb-write-cce base 24 111
+    in let w25 = kb-write-cce base 25 112
+    in let w26 = kb-write-cce base 26 91
+    in let w27 = kb-write-cce base 27 93
+    in let w28 = poke-byte base 28 1
+    in let w29 = poke-byte base 29 0
+    in let w30 = kb-write-cce base 30 97
+    in let w31 = kb-write-cce base 31 115
+    in let w32 = kb-write-cce base 32 100
+    in let w33 = kb-write-cce base 33 102
+    in let w34 = kb-write-cce base 34 103
+    in let w35 = kb-write-cce base 35 104
+    in let w36 = kb-write-cce base 36 106
+    in let w37 = kb-write-cce base 37 107
+    in let w38 = kb-write-cce base 38 108
+    in let w39 = kb-write-cce base 39 59
+    in let w40 = kb-write-cce base 40 39
+    in let w41 = kb-write-cce base 41 96
+    in let w42 = poke-byte base 42 0
+    in let w43 = kb-write-cce base 43 92
+    in let w44 = kb-write-cce base 44 122
+    in let w45 = kb-write-cce base 45 120
+    in let w46 = kb-write-cce base 46 99
+    in let w47 = kb-write-cce base 47 118
+    in let w48 = kb-write-cce base 48 98
+    in let w49 = kb-write-cce base 49 110
+    in let w50 = kb-write-cce base 50 109
+    in let w51 = kb-write-cce base 51 44
+    in let w52 = kb-write-cce base 52 46
+    in let w53 = kb-write-cce base 53 47
+    in let w54 = poke-byte base 54 0
+    in let w55 = poke-byte base 55 0
+    in let w56 = poke-byte base 56 0
+    in let w57 = poke-byte base 57 2
+    in let w58 = poke-byte base 58 0
+    in let w59 = poke-byte base 59 0
+    in let w60 = poke-byte base 60 0
+    in let w61 = poke-byte base 61 0
+    in let w62 = poke-byte base 62 0
+    in let w63 = poke-byte base 63 0
+    in let w64 = poke-byte base 64 0
+    in let w65 = poke-byte base 65 0
+    in let w66 = poke-byte base 66 0
+    in let w67 = poke-byte base 67 0
+    in let w68 = poke-byte base 68 0
+    in let w69 = poke-byte base 69 0
+    in let w70 = poke-byte base 70 0
+    in let w71 = kb-write-cce base 71 55
+    in let w72 = kb-write-cce base 72 56
+    in let w73 = kb-write-cce base 73 57
+    in let w74 = kb-write-cce base 74 45
+    in let w75 = kb-write-cce base 75 52
+    in let w76 = kb-write-cce base 76 53
+    in let w77 = kb-write-cce base 77 54
+    in let w78 = kb-write-cce base 78 43
+    in let w79 = kb-write-cce base 79 49
+    in let w80 = kb-write-cce base 80 50
+    in let w81 = kb-write-cce base 81 51
+    in let w82 = kb-write-cce base 82 48
+    in let w83 = kb-write-cce base 83 46
+    in base
+
+  kb-init-table : Integer
+  kb-init-table = kb-build-table (alloc-bytes kb-table-size)
+
+  scancode-to-cce : Integer, Integer -> Integer
+  scancode-to-cce (table) (sc) =
+    if sc >= kb-table-size then 0
+    else peek-byte table sc
+
+Section: Polling
+  kb-poll : KbState -> KbEvent
+  kb-poll (st) =
+    if kb-has-key then kb-process-scancode st kb-read-scancode
+    else kb-no-event st
+
+Page 1

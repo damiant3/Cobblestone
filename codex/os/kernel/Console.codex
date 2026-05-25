@@ -1,0 +1,82 @@
+Chapter: Console
+  cites Kernel chapter Vga
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ A ConsoleState wraps VGA cursor position and a line-input buffer,
+ providing text output and basic line-editing for the kernel
+ interactive shell.
+
+ We say:
+
+Section: Console State
+
+  ConsoleState = record {
+    cursor : VgaCursor,
+    input-buf : Text,
+    input-ready : Boolean
+  }
+
+  console-new : Integer -> ConsoleState
+  console-new (attr) = ConsoleState {
+    cursor = vga-cursor-new attr,
+    input-buf = "",
+    input-ready = False
+  }
+
+Section: Output
+
+  console-write-char : ConsoleState, Integer -> ConsoleState
+  console-write-char (con) (cce-code) =
+    let cur = vga-cursor-write-char (con.cursor) cce-code
+    in ConsoleState { cursor = cur, input-buf = con.input-buf, input-ready = con.input-ready }
+
+  console-write-text : ConsoleState, Text -> ConsoleState
+  console-write-text (con) (s) =
+    let cur = vga-cursor-write-text (con.cursor) s
+    in ConsoleState { cursor = cur, input-buf = con.input-buf, input-ready = con.input-ready }
+
+  console-write-line : ConsoleState, Text -> ConsoleState
+  console-write-line (con) (s) =
+    let cur = vga-cursor-write-line (con.cursor) s
+    in ConsoleState { cursor = cur, input-buf = con.input-buf, input-ready = con.input-ready }
+
+Section: Input Buffer
+
+  console-feed-char : ConsoleState, Integer -> ConsoleState
+  console-feed-char (con) (cce-code) =
+    if cce-code == 1 then ConsoleState { cursor = vga-cursor-newline (con.cursor), input-buf = con.input-buf, input-ready = True }
+    else let cur = vga-cursor-write-char (con.cursor) cce-code
+    in ConsoleState { cursor = cur, input-buf = con.input-buf & char-to-text (code-to-char cce-code), input-ready = False }
+
+  console-feed-backspace : ConsoleState -> ConsoleState
+  console-feed-backspace (con) =
+    if text-length (con.input-buf) == 0 then con
+    else let new-buf = substring (con.input-buf) 0 (text-length (con.input-buf) - 1)
+    in let col = if (con.cursor).col == 0 then 79 else (con.cursor).col - 1
+    in let row = if (con.cursor).col == 0 then (con.cursor).row - 1 else (con.cursor).row
+    in let cur = VgaCursor { row = row, col = col, attr = (con.cursor).attr }
+    in let w = vga-put-raw row col 32 (cur.attr)
+    in let hw = vga-set-hw-cursor row col
+    in ConsoleState { cursor = cur, input-buf = new-buf, input-ready = False }
+
+Section: Line Reading
+
+  console-has-line : ConsoleState -> Boolean
+  console-has-line (con) = con.input-ready
+
+  console-get-line : ConsoleState -> Text
+  console-get-line (con) = con.input-buf
+
+  console-take-line : ConsoleState -> ConsoleState
+  console-take-line (con) = ConsoleState { cursor = con.cursor, input-buf = "", input-ready = False }
+
+Section: Queries
+
+  console-row : ConsoleState -> Integer
+  console-row (con) = (con.cursor).row
+
+  console-col : ConsoleState -> Integer
+  console-col (con) = (con.cursor).col
+
+Page 1

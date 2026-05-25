@@ -1,0 +1,133 @@
+Chapter: Narrator
+  cites Works chapter Annotation
+  cites Works chapter AnnotationStore
+  cites Works chapter CodeBrowser
+  cites Foreword chapter Maybe
+
+ H11: the Narrator role collapses a definition's Rationale,
+ Discovery, and Doctrine annotations into a plain-language
+ summary block. Skips Warning/Invariant/Todo (those are
+ actionable signals, not narration) and Discussion (that's
+ for the Discussion chapter).
+
+ The Reader uses Narrator output as a "what this is" preamble
+ above the H1 inline bubble. Empty inputs yield empty output.
+
+ We say:
+
+Section: Narration Block
+
+  NarrationBlock = record {
+    target : AnnotationTarget,
+    rationale-lines : List Text,
+    discovery-lines : List Text,
+    doctrine-lines : List Text,
+    line-count : Integer
+  }
+
+  empty-narration : AnnotationTarget -> NarrationBlock
+  empty-narration (target) = NarrationBlock {
+    target = target,
+    rationale-lines = [],
+    discovery-lines = [],
+    doctrine-lines = [],
+    line-count = 0
+  }
+
+Section: Narration-Relevant Kind
+
+  is-narration-kind : AnnotationKind -> Boolean
+  is-narration-kind (k) = when k
+    is Rationale -> True
+    is Discovery -> True
+    is Doctrine -> True
+    is Invariant -> False
+    is Warning -> False
+    is Todo -> False
+
+  narration-line : Annotation -> Text
+  narration-line (a) = a.body & "  -- " & a.author
+
+Section: Building the Block
+
+  build-narration : AnnotationFact, DefLocation -> NarrationBlock
+  build-narration (af) (loc) =
+    let target = make-target (loc.chapter) (loc.name)
+    in let anns = af-annotations-for af target
+    in fold-narration anns 0 (list-length anns) (empty-narration target)
+
+  fold-narration : List Annotation, Integer, Integer, NarrationBlock -> NarrationBlock
+  fold-narration (anns) (i) (n) (block) =
+    if i >= n then block
+    else let a = list-at anns i
+    in let block2 = if is-narration-kind (a.kind)
+      then add-narration-line block a
+      else block
+    in fold-narration anns (i + 1) n block2
+
+  add-narration-line : NarrationBlock, Annotation -> NarrationBlock
+  add-narration-line (block) (a) =
+    let line = narration-line a
+    in when a.kind
+      is Rationale -> NarrationBlock {
+        target = block.target,
+        rationale-lines = list-snoc (block.rationale-lines) line,
+        discovery-lines = block.discovery-lines,
+        doctrine-lines = block.doctrine-lines,
+        line-count = block.line-count + 1
+      }
+      is Discovery -> NarrationBlock {
+        target = block.target,
+        rationale-lines = block.rationale-lines,
+        discovery-lines = list-snoc (block.discovery-lines) line,
+        doctrine-lines = block.doctrine-lines,
+        line-count = block.line-count + 1
+      }
+      is Doctrine -> NarrationBlock {
+        target = block.target,
+        rationale-lines = block.rationale-lines,
+        discovery-lines = block.discovery-lines,
+        doctrine-lines = list-snoc (block.doctrine-lines) line,
+        line-count = block.line-count + 1
+      }
+      is Invariant -> block
+      is Warning -> block
+      is Todo -> block
+
+Section: Formatting
+
+ Output as four sections (Why / Found / Rule / blank trailer)
+ with a heading per section. Sections with no entries are
+ omitted entirely.
+
+  format-narration : NarrationBlock -> Text
+  format-narration (block) =
+    if block.line-count == 0 then ""
+    else format-section "Why" (block.rationale-lines)
+      & format-section "Found" (block.discovery-lines)
+      & format-section "Rule" (block.doctrine-lines)
+
+  format-section : Text, List Text -> Text
+  format-section (heading) (lines) =
+    if list-length lines == 0 then ""
+    else heading & ":\n" & format-lines lines 0 (list-length lines) "" & "\n"
+
+  format-lines : List Text, Integer, Integer, Text -> Text
+  format-lines (lines) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "  " else "\n  "
+    in format-lines lines (i + 1) n (acc & sep & list-at lines i)
+
+Section: Brief
+
+ D.8: brief() collapses by kind and emits a one-liner. Used by
+ list views and search summaries.
+
+  brief-narration : NarrationBlock -> Text
+  brief-narration (block) =
+    if block.line-count == 0 then "(no narration)"
+    else show (list-length (block.rationale-lines)) & " why, "
+      & show (list-length (block.discovery-lines)) & " found, "
+      & show (list-length (block.doctrine-lines)) & " rule"
+
+Page 1

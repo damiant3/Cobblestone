@@ -1,0 +1,103 @@
+Chapter: TileMap
+
+ 2D tile map with layers, tile properties, and collision flags.
+ Foundation for side-scrollers, top-down RPGs, and strategy games.
+ Each tile is an integer ID; the map can have multiple layers
+ for background, terrain, and objects.
+
+ We say:
+
+Section: Types
+  TileLayer = record {
+    tl-tiles : List Integer,
+    tl-width : Integer between 1 and 1024,
+    tl-height : Integer between 1 and 1024,
+    tl-name : Text
+  }
+
+  TileMap = record {
+    tm-layers : List TileLayer,
+    tm-num-layers : Integer,
+    tm-width : Integer,
+    tm-height : Integer
+  }
+
+  TileProps = record {
+    tp-solid : Boolean,
+    tp-damage : Integer,
+    tp-friction : Integer
+  }
+
+Section: Construction
+  tilemap-new : Integer, Integer -> TileMap
+  tilemap-new (w) (h) = TileMap { tm-layers = [], tm-num-layers = 0, tm-width = w, tm-height = h }
+
+  tilemap-add-layer : TileMap, Text -> TileMap
+  tilemap-add-layer (tm) (name) =
+    let tiles = tile-zeros (tm.tm-width * tm.tm-height) 0 []
+    in let layer = TileLayer { tl-tiles = tiles, tl-width = tm.tm-width, tl-height = tm.tm-height, tl-name = name }
+    in TileMap { tm-layers = list-push (tm.tm-layers) layer, tm-num-layers = tm.tm-num-layers + 1, tm-width = tm.tm-width, tm-height = tm.tm-height }
+
+  tile-zeros : Integer, Integer, List Integer -> List Integer
+  tile-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else tile-zeros n (i + 1) (list-push acc 0)
+
+Section: Tile Access
+  tilemap-get : TileMap, Integer, Integer, Integer -> Integer
+  tilemap-get (tm) (layer) (x) (y) =
+    if layer >= tm.tm-num-layers then 0
+    else if x < 0 then 0 else if y < 0 then 0
+    else if x >= tm.tm-width then 0 else if y >= tm.tm-height then 0
+    else let l = list-at (tm.tm-layers) layer
+    in list-at (l.tl-tiles) (y * l.tl-width + x)
+
+  tilemap-set : TileMap, Integer, Integer, Integer, Integer -> TileMap
+  tilemap-set (tm) (layer) (x) (y) (tile-id) =
+    if layer >= tm.tm-num-layers then tm
+    else let l = list-at (tm.tm-layers) layer
+    in let new-tiles = list-set-at (l.tl-tiles) (y * l.tl-width + x) tile-id
+    in let new-layer = TileLayer { tl-tiles = new-tiles, tl-width = l.tl-width, tl-height = l.tl-height, tl-name = l.tl-name }
+    in TileMap { tm-layers = list-set-at (tm.tm-layers) layer new-layer, tm-num-layers = tm.tm-num-layers, tm-width = tm.tm-width, tm-height = tm.tm-height }
+
+Section: Fill Operations
+  tilemap-fill-rect : TileMap, Integer, Integer, Integer, Integer, Integer, Integer -> TileMap
+  tilemap-fill-rect (tm) (layer) (x0) (y0) (x1) (y1) (tile-id) = tile-fill-loop tm layer x0 y0 x1 y1 tile-id x0 y0
+
+  tile-fill-loop : TileMap, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> TileMap
+  tile-fill-loop (tm) (layer) (x0) (y0) (x1) (y1) (tid) (cx) (cy) =
+    if cy > y1 then tm
+    else if cx > x1 then tile-fill-loop tm layer x0 y0 x1 y1 tid x0 (cy + 1)
+    else tile-fill-loop (tilemap-set tm layer cx cy tid) layer x0 y0 x1 y1 tid (cx + 1) cy
+
+  tilemap-fill-border : TileMap, Integer, Integer -> TileMap
+  tilemap-fill-border (tm) (layer) (tile-id) =
+    let w = tm.tm-width - 1
+    in let h = tm.tm-height - 1
+    in let tm1 = tilemap-fill-rect tm layer 0 0 w 0 tile-id
+    in let tm2 = tilemap-fill-rect tm1 layer 0 h w h tile-id
+    in let tm3 = tilemap-fill-rect tm2 layer 0 0 0 h tile-id
+    in tilemap-fill-rect tm3 layer w 0 w h tile-id
+
+Section: Queries
+  tilemap-count-tile : TileMap, Integer, Integer -> Integer
+  tilemap-count-tile (tm) (layer) (tile-id) =
+    if layer >= tm.tm-num-layers then 0
+    else let l = list-at (tm.tm-layers) layer
+    in tile-count-loop (l.tl-tiles) tile-id 0 (tm.tm-width * tm.tm-height) 0
+
+  tile-count-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  tile-count-loop (tiles) (tid) (i) (len) (acc) =
+    if i >= len then acc
+    else tile-count-loop tiles tid (i + 1) len (acc + if list-at tiles i == tid then 1 else 0)
+
+  tilemap-row-text : TileMap, Integer, Integer -> Text
+  tilemap-row-text (tm) (layer) (y) = tile-row-loop tm layer 0 y ""
+
+  tile-row-loop : TileMap, Integer, Integer, Integer, Text -> Text
+  tile-row-loop (tm) (layer) (x) (y) (acc) =
+    if x >= tm.tm-width then acc
+    else let sep = if x == 0 then "" else " "
+    in tile-row-loop tm layer (x + 1) y (acc & sep & show (tilemap-get tm layer x y))
+
+Page 1

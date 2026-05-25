@@ -1,0 +1,112 @@
+Chapter: Base64
+  cites Foreword chapter CCE
+
+ RFC 4648 Base64 encoding and decoding. Operates on List Integer
+ (byte arrays). Encoding produces ASCII text, decoding accepts
+ ASCII text and returns bytes.
+
+ We say:
+
+Section: Alphabet
+  b64-encode-char : Integer -> Integer
+  b64-encode-char (v) =
+    if v < 26 then v + 65
+    else if v < 52 then v - 26 + 97
+    else if v < 62 then v - 52 + 48
+    else if v == 62 then 43
+    else if v == 63 then 47
+    else 61
+
+  b64-decode-char : Integer -> Integer
+  b64-decode-char (c) =
+    if c >= 65 then if c <= 90 then c - 65 else
+    if c >= 97 then if c <= 122 then c - 97 + 26 else 0 else 0
+    else if c >= 48 then if c <= 57 then c - 48 + 52 else 0
+    else if c == 43 then 62
+    else if c == 47 then 63
+    else 0
+
+Section: Encoding
+  base64-encode : List Integer -> Text
+  base64-encode (bs) = b64-encode-loop bs 0 (list-length bs) ""
+
+  b64-encode-loop : List Integer, Integer, Integer, Text -> Text
+  b64-encode-loop (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else if i + 2 < len then
+      let b0 = list-at bs i
+      in let b1 = list-at bs (i + 1)
+      in let b2 = list-at bs (i + 2)
+      in let c0 = b64-encode-char (bit-shru b0 2)
+      in let c1 = b64-encode-char (bit-or (bit-shl (bit-and b0 3) 4) (bit-shru b1 4))
+      in let c2 = b64-encode-char (bit-or (bit-shl (bit-and b1 15) 2) (bit-shru b2 6))
+      in let c3 = b64-encode-char (bit-and b2 63)
+      in b64-encode-loop bs (i + 3) len (acc & b64-chr c0 & b64-chr c1 & b64-chr c2 & b64-chr c3)
+    else if i + 1 < len then
+      let b0 = list-at bs i
+      in let b1 = list-at bs (i + 1)
+      in let c0 = b64-encode-char (bit-shru b0 2)
+      in let c1 = b64-encode-char (bit-or (bit-shl (bit-and b0 3) 4) (bit-shru b1 4))
+      in let c2 = b64-encode-char (bit-shl (bit-and b1 15) 2)
+      in acc & b64-chr c0 & b64-chr c1 & b64-chr c2 & "="
+    else
+      let b0 = list-at bs i
+      in let c0 = b64-encode-char (bit-shru b0 2)
+      in let c1 = b64-encode-char (bit-shl (bit-and b0 3) 4)
+      in acc & b64-chr c0 & b64-chr c1 & "=="
+
+  b64-chr : Integer -> Text
+  b64-chr (code) = char-to-text (code-to-char (from-unicode code))
+
+Section: Decoding
+  base64-decode : Text -> List Integer
+  base64-decode (s) = b64-decode-loop s 0 (text-length s) []
+
+  b64-decode-loop : Text, Integer, Integer, List Integer -> List Integer
+  b64-decode-loop (s) (i) (len) (acc) =
+    if i + 3 >= len then
+      if i >= len then acc
+      else b64-decode-tail s i len acc
+    else let c0 = b64-decode-char (to-unicode (char-code (char-at s i)))
+    in let c1 = b64-decode-char (to-unicode (char-code (char-at s (i + 1))))
+    in let c2-raw = to-unicode (char-code (char-at s (i + 2)))
+    in let c3-raw = to-unicode (char-code (char-at s (i + 3)))
+    in if c2-raw == 61 then
+      list-push acc (bit-or (bit-shl c0 2) (bit-shru c1 4))
+    else if c3-raw == 61 then
+      let c2 = b64-decode-char c2-raw
+      in let b0 = bit-or (bit-shl c0 2) (bit-shru c1 4)
+      in let b1 = bit-and (bit-or (bit-shl c1 4) (bit-shru c2 2)) 255
+      in acc & [b0, b1]
+    else let c2 = b64-decode-char c2-raw
+    in let c3 = b64-decode-char c3-raw
+    in let b0 = bit-or (bit-shl c0 2) (bit-shru c1 4)
+    in let b1 = bit-and (bit-or (bit-shl c1 4) (bit-shru c2 2)) 255
+    in let b2 = bit-and (bit-or (bit-shl c2 6) c3) 255
+    in b64-decode-loop s (i + 4) len (acc & [b0, b1, b2])
+
+  b64-decode-tail : Text, Integer, Integer, List Integer -> List Integer
+  b64-decode-tail (s) (i) (len) (acc) =
+    if i + 1 >= len then acc
+    else let c0 = b64-decode-char (to-unicode (char-code (char-at s i)))
+    in let c1 = b64-decode-char (to-unicode (char-code (char-at s (i + 1))))
+    in list-push acc (bit-or (bit-shl c0 2) (bit-shru c1 4))
+
+Section: Text Helpers
+  base64-encode-text : Text -> Text
+  base64-encode-text (s) = base64-encode (b64-text-to-bytes s 0 (text-length s) [])
+
+  base64-decode-text : Text -> Text
+  base64-decode-text (s) = b64-bytes-to-text (base64-decode s) 0
+
+  b64-text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
+  b64-text-to-bytes (s) (i) (len) (acc) =
+    if i >= len then acc
+    else b64-text-to-bytes s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
+
+  b64-bytes-to-text : List Integer, Integer -> Text
+  b64-bytes-to-text (bs) (i) =
+    if i >= list-length bs then ""
+    else char-to-text (code-to-char (from-unicode (list-at bs i))) & b64-bytes-to-text bs (i + 1)
+
+Page 1

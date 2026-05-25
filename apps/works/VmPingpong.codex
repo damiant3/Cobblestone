@@ -1,0 +1,101 @@
+Chapter: VmPingpong
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Works chapter VmCompile
+  cites Works chapter SourceConcat
+
+ VmPingpong is the Codex-native pingpong acceptance test. It replaces
+ pingpong-self.ps1. Runs the CDX fixed-point check and the text
+ round-trip check using the VMX hypervisor — no QEMU, no PS1.
+
+ Phase 1: Seed compiles source → SUT CDX.
+ Phase 2: SUT compiles source → stage1 CDX. Stage1 compiles source → stage2 CDX.
+          stage1 === stage2 proves the CDX is a fixed point.
+ Phase 3: SUT TEXT(source) → stage1.codex. SUT TEXT(stage1) → stage2.codex.
+          stage1 === stage2 proves the text emitter round-trips.
+
+ To vm-pingpong gives PingpongResult,
+   running all phases and reporting pass/fail.
+
+ We say:
+
+Section: Types
+
+  PingpongResult = record {
+    pp-cdx-fixed-point : Boolean,
+    pp-text-fixed-point : Boolean,
+    pp-sut-size : Integer,
+    pp-stage1-hash : Text,
+    pp-stage2-hash : Text
+  }
+
+  pingpong-passed : PingpongResult -> Boolean
+  pingpong-passed (r) = r.pp-cdx-fixed-point & r.pp-text-fixed-point
+
+Section: Hash Helpers
+
+  bytes-to-sha256 : List Integer -> Text
+  bytes-to-sha256 (bs) = sha256-to-hex (sha256 bs)
+
+  lists-byte-identical : List Integer, List Integer -> Boolean
+  lists-byte-identical (a) (b) =
+    if list-length a == list-length b then lists-eq-loop a b 0 (list-length a)
+    else False
+
+  lists-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  lists-eq-loop (a) (b) (i) (len) =
+    if i >= len then True
+    else if list-at a i == list-at b i then lists-eq-loop a b (i + 1) len
+    else False
+
+Section: Pingpong
+
+  vm-pingpong : List Integer, Text, Text, Integer -> PingpongResult
+  vm-pingpong (seed-cdx) (codex-dir) (foreword-dir) (revision-id) =
+    let source = concat-compiler-source codex-dir foreword-dir
+    in let sut-result = vm-compile-cdx seed-cdx source revision-id
+    in if sut-result.vcr-success == False then PingpongResult {
+      pp-cdx-fixed-point = False, pp-text-fixed-point = False,
+      pp-sut-size = 0, pp-stage1-hash = "", pp-stage2-hash = ""
+    }
+    else let sut = sut-result.vcr-binary
+    in let stage1-result = vm-compile-cdx sut source revision-id
+    in if stage1-result.vcr-success == False then PingpongResult {
+      pp-cdx-fixed-point = False, pp-text-fixed-point = False,
+      pp-sut-size = sut-result.vcr-size, pp-stage1-hash = "", pp-stage2-hash = ""
+    }
+    else let stage2-result = vm-compile-cdx (stage1-result.vcr-binary) source revision-id
+    in if stage2-result.vcr-success == False then PingpongResult {
+      pp-cdx-fixed-point = False, pp-text-fixed-point = False,
+      pp-sut-size = sut-result.vcr-size, pp-stage1-hash = "", pp-stage2-hash = ""
+    }
+    else let cdx-fp = lists-byte-identical (stage1-result.vcr-binary) (stage2-result.vcr-binary)
+    in let s1-hash = bytes-to-sha256 (stage1-result.vcr-binary)
+    in let s2-hash = bytes-to-sha256 (stage2-result.vcr-binary)
+    in let text-fp = vm-text-round-trip sut source revision-id
+    in PingpongResult {
+      pp-cdx-fixed-point = cdx-fp,
+      pp-text-fixed-point = text-fp,
+      pp-sut-size = sut-result.vcr-size,
+      pp-stage1-hash = s1-hash,
+      pp-stage2-hash = s2-hash
+    }
+
+  vm-text-round-trip : List Integer, Text, Integer -> Boolean
+  vm-text-round-trip (sut) (source) (revision-id) =
+    let stage1 = vm-compile-text sut source revision-id
+    in if stage1.vcr-success == False then False
+    else let stage1-text = vm-bytes-to-text (stage1.vcr-binary)
+    in let stage2 = vm-compile-text sut stage1-text revision-id
+    in if stage2.vcr-success == False then False
+    else lists-byte-identical (stage1.vcr-binary) (stage2.vcr-binary)
+
+  vm-bytes-to-text : List Integer -> Text
+  vm-bytes-to-text (bs) = vm-b2t-loop bs 0 (list-length bs) ""
+
+  vm-b2t-loop : List Integer, Integer, Integer, Text -> Text
+  vm-b2t-loop (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else vm-b2t-loop bs (i + 1) len (acc & char-to-text (code-to-char (list-at bs i)))
+
+Page 1

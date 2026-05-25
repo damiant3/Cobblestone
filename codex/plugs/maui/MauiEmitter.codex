@@ -1,0 +1,238 @@
+Chapter: MAUI Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates .NET MAUI C# from the IR. Targets Android, iOS, macOS,
+ Windows via Microsoft's multi-platform UI framework.
+
+Section: Sanitization
+
+  maui-sanitize : Text -> Text
+  maui-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  maui-escape : Text -> Text
+  maui-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in text-replace s2 "\n" "\\n"
+
+  maui-indent : Integer -> Text
+  maui-indent (n) =
+   if n <= 0 then ""
+   else "    " & maui-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare name (list-at entries mid).name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   list-insert-at xs (bsearch-arity-pos xs (e.name) 0 (list-length xs)) e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry { name = d.name, arity = list-length (d.params), generic-count = 0 }))
+
+Section: Expression Emission
+
+  emit-maui-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-maui-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n & "L"
+    is IrNumLit (n) (sp) -> "BitConverter.Int64BitsToDouble(" & show n & "L)"
+    is IrTextLit (s) (sp) -> "\"" & maui-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "((char)" & show n & ")"
+    is IrName (n) (ty) (sp) -> maui-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-maui-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-maui-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-maui-expr c arities indent & " ? " & emit-maui-expr t arities indent & " : " & emit-maui-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "((Func<dynamic>)(() => { dynamic " & maui-sanitize name & " = " & emit-maui-expr val arities indent & "; return " & emit-maui-expr body arities indent & "; }))()"
+    is IrApply (f) (a) (ty) (sp) -> emit-maui-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "((" & emit-maui-params params 0 & ") => " & emit-maui-expr body arities indent & ")"
+    is IrList (elems) (ty) (sp) -> "new List<dynamic> { " & emit-maui-elems elems arities indent 0 & " }"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-maui-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-maui-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "new Dictionary<string,dynamic> { [\"_type\"] = \"" & name & "\"" & emit-maui-rec-fields fields arities indent 0 & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-maui-expr rec arities indent & ")[\"" & field & "\"])"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((" & emit-maui-expr rec arities indent & ")[\"" & field & "\"] = " & emit-maui-expr val arities indent & ")"
+    is IrFork (body) (ty) (sp) -> "Task.Run(() => " & emit-maui-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-maui-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-maui-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-maui-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-maui-expr body arities indent
+    is IrError (msg) (ty) (sp) -> "throw new Exception(\"" & maui-escape msg & "\")"
+
+  emit-maui-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-maui-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-maui-expr l arities indent
+   in let rhs = emit-maui-expr r arities indent
+   in when op
+    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
+    is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
+    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrEq -> "object.Equals(" & lhs & ", " & rhs & ")"
+    is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
+    is IrLt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
+    is IrGt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
+    is IrLtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
+    is IrGtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(\"\" + " & lhs & " + " & rhs & ")"
+    is IrAppendList -> "((List<dynamic>)" & lhs & ").Concat((List<dynamic>)" & rhs & ").ToList()"
+    is IrConsList -> "new List<dynamic> { " & lhs & " }.Concat((List<dynamic>)" & rhs & ").ToList()"
+
+  FlatApply = record { root : IRExpr, args : List IRExpr }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-maui-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-maui-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in emit-maui-expr (chain.root) arities indent & "(" & emit-maui-elems (chain.args) arities indent 0 & ")"
+
+  emit-maui-params : List IRParam, Integer -> Text
+  emit-maui-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "dynamic " & maui-sanitize (list-at params i).name & emit-maui-params params (i + 1)
+
+  emit-maui-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-maui-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-maui-expr (list-at elems i) arities indent & emit-maui-elems elems arities indent (i + 1)
+
+  emit-maui-rec-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-maui-rec-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", [\"" & f.name & "\"] = " & emit-maui-expr (f.value) arities indent & emit-maui-rec-fields fields arities indent (i + 1)
+
+  emit-maui-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-maui-match (scrut) (branches) (arities) (indent) =
+   "((Func<dynamic>)(() => { dynamic _s = " & emit-maui-expr scrut arities indent & "; " & emit-maui-arms branches arities indent 0 & "throw new Exception(\"match\"); }))()"
+
+  emit-maui-arms : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-maui-arms (branches) (arities) (indent) (i) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in let cond = emit-maui-pat-cond (b.pattern) "_s"
+   in let binds = emit-maui-pat-binds (b.pattern) "_s"
+   in "if (" & cond & ") { " & binds & "return " & emit-maui-expr (b.body) arities indent & "; } " & emit-maui-arms branches arities indent (i + 1)
+
+  emit-maui-pat-cond : IRPat, Text -> Text
+  emit-maui-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> "object.Equals(" & scrut & ", (dynamic)" & text & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "(string)" & scrut & "[\"_tag\"] == \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+
+  emit-maui-pat-binds : IRPat, Text -> Text
+  emit-maui-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "dynamic " & maui-sanitize name & " = " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-maui-ctor-binds subs scrut 0
+    is IrWildPat (sp) -> ""
+
+  emit-maui-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-maui-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else emit-maui-pat-binds (list-at subs i) (scrut & "[\"_" & show i & "\"]") & emit-maui-ctor-binds subs scrut (i + 1)
+
+  emit-maui-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-maui-act (stmts) (arities) (indent) =
+   "((Func<dynamic>)(() => { " & emit-maui-act-loop stmts arities indent 0 & " }))()"
+
+  emit-maui-act-loop : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-maui-act-loop (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> "dynamic " & maui-sanitize name & " = " & emit-maui-expr val arities indent & "; " & emit-maui-act-loop stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) -> if is-last then "return " & emit-maui-expr e arities indent & "; " else emit-maui-expr e arities indent & "; " & emit-maui-act-loop stmts arities indent (i + 1)
+
+Section: Type Definitions
+
+  emit-maui-type-def : ATypeDef -> Text
+  emit-maui-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) -> ""
+    is AVariantTypeDef (name) (tparams) (ctors) (s) -> emit-maui-var-ctors ctors 0
+
+  emit-maui-var-ctors : List AVariantCtorDef, Integer -> Text
+  emit-maui-var-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let t = if n == 0 then maui-indent 2 & "static readonly Dictionary<string,dynamic> " & maui-sanitize (c.name.value) & " = new() { [\"_tag\"] = \"" & c.name.value & "\" };\n"
+      else maui-indent 2 & "static Dictionary<string,dynamic> " & maui-sanitize (c.name.value) & "(" & emit-maui-ctor-p n 0 & ") => new() { [\"_tag\"] = \"" & c.name.value & "\"" & emit-maui-ctor-f n 0 & " };\n"
+   in t & emit-maui-var-ctors ctors (i + 1)
+
+  emit-maui-ctor-p : Integer, Integer -> Text
+  emit-maui-ctor-p (n) (i) = if i == n then "" else let sep = if i > 0 then ", " else "" in sep & "dynamic _" & show i & emit-maui-ctor-p n (i + 1)
+
+  emit-maui-ctor-f : Integer, Integer -> Text
+  emit-maui-ctor-f (n) (i) = if i == n then "" else ", [\"_" & show i & "\"] = _" & show i & emit-maui-ctor-f n (i + 1)
+
+Section: Definition Emission
+
+  emit-maui-def : IRDef, List ArityEntry -> Text
+  emit-maui-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = maui-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then maui-indent 2 & "static dynamic " & sname & " = " & emit-maui-expr (d.body) arities 2 & ";\n\n"
+      else maui-indent 2 & "static dynamic " & sname & "(" & emit-maui-params (d.params) 0 & ") {\n" & maui-indent 3 & "return " & emit-maui-expr (d.body) arities 3 & ";\n" & maui-indent 2 & "}\n\n"
+
+  emit-maui-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-maui-defs (defs) (i) (arities) =
+   if i == list-length defs then "" else emit-maui-def (list-at defs i) arities & emit-maui-defs defs (i + 1) arities
+
+  emit-maui-type-defs : List ATypeDef, Integer -> Text
+  emit-maui-type-defs (tds) (i) =
+   if i == list-length tds then "" else emit-maui-type-def (list-at tds i) & emit-maui-type-defs tds (i + 1)
+
+Section: MAUI Assembly
+
+  emit-maui-chapter : IRChapter, List ATypeDef -> Text
+  emit-maui-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "CodexApp" else maui-sanitize (m.chapter-title)
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing Microsoft.Maui;\nusing Microsoft.Maui.Controls;\n\nnamespace " & title & ";\n\npublic partial class MainPage : ContentPage\n{\n"
+   in let builtins = maui-indent 1 & "static readonly List<string> _output = new();\n" & maui-indent 1 & "static void print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); }\n" & maui-indent 1 & "static void print_line(dynamic s) { print_line_uni(s); }\n" & maui-indent 1 & "static string show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & maui-indent 1 & "static long text_length(string s) { return s.Length; }\n" & maui-indent 1 & "static string text_replace(string s, string a, string b) { return s.Replace(a, b); }\n" & maui-indent 1 & "static long text_compare(string a, string b) { return string.Compare(a, b, StringComparison.Ordinal); }\n" & maui-indent 1 & "static long list_length(dynamic xs) { return ((List<dynamic>)xs).Count; }\n" & maui-indent 1 & "static dynamic list_at(dynamic xs, long i) { return ((List<dynamic>)xs)[(int)i]; }\n" & maui-indent 1 & "static List<dynamic> list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static string integer_to_text(long n) { return n.ToString(); }\n" & maui-indent 1 & "static long negate(long n) { return -n; }\n\n"
+   in let types-text = emit-maui-type-defs type-defs 0
+   in let defs-text = emit-maui-defs (m.defs) 0 arities
+   in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) { _output.Add(\"ERROR: \" + ex.Message); }\n" & maui-indent 2 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 2 & "foreach (var line in _output)\n" & maui-indent 3 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Consolas\" });\n" & maui-indent 2 & "Content = new ScrollView { Content = stack };\n" & maui-indent 1 & "}\n"
+   in let footer = "}\n"
+   in header & builtins & types-text & defs-text & constructor & footer

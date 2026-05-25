@@ -1,0 +1,179 @@
+Chapter: TextField
+  cites UI chapter Widget
+  cites UI chapter Event
+  cites UI chapter Selection
+
+ Text input widget — single-line and multi-line text fields with
+ caret navigation, character insert/delete, selection via shift-
+ arrows, and basic clipboard integration. Builds on Widget for
+ tree placement and Event for keyboard input.
+
+ To text-field-new gives a new empty text field.
+ To text-field-with-text gives a text field pre-filled with content.
+ To text-field-handle-key gives updated state after a key event.
+ To text-field-value gives the current text content.
+ To text-field-widget gives a WidgetNode for rendering.
+
+ We say:
+
+Section: State
+
+  TextFieldState = record {
+    tf-text : Text,
+    tf-cursor : Integer,
+    tf-selection : SelectionRange,
+    tf-id : Text,
+    tf-placeholder : Text,
+    tf-max-length : Integer,
+    tf-multiline : Boolean,
+    tf-focused : Boolean
+  }
+
+Section: Construction
+
+  text-field-new : Text -> TextFieldState
+  text-field-new (id) = TextFieldState {
+    tf-text = "",
+    tf-cursor = 0,
+    tf-selection = selection-empty,
+    tf-id = id,
+    tf-placeholder = "",
+    tf-max-length = 1024,
+    tf-multiline = False,
+    tf-focused = False
+  }
+
+  text-field-with-text : Text, Text -> TextFieldState
+  text-field-with-text (id) (initial) = TextFieldState {
+    tf-text = initial,
+    tf-cursor = text-length initial,
+    tf-selection = selection-empty,
+    tf-id = id,
+    tf-placeholder = "",
+    tf-max-length = 1024,
+    tf-multiline = False,
+    tf-focused = False
+  }
+
+  text-field-set-placeholder : TextFieldState, Text -> TextFieldState
+  text-field-set-placeholder (tf) (ph) = __record-set tf "tf-placeholder" ph
+
+  text-field-set-multiline : TextFieldState, Boolean -> TextFieldState
+  text-field-set-multiline (tf) (ml) = __record-set tf "tf-multiline" ml
+
+  text-field-set-max-length : TextFieldState, Integer -> TextFieldState
+  text-field-set-max-length (tf) (n) = __record-set tf "tf-max-length" n
+
+Section: Queries
+
+  text-field-value : TextFieldState -> Text
+  text-field-value (tf) = tf.tf-text
+
+  text-field-cursor : TextFieldState -> Integer
+  text-field-cursor (tf) = tf.tf-cursor
+
+  text-field-has-selection : TextFieldState -> Boolean
+  text-field-has-selection (tf) = selection-is-empty (tf.tf-selection) == False
+
+  text-field-selected-text : TextFieldState -> Text
+  text-field-selected-text (tf) =
+    let r = selection-normalized (tf.tf-selection)
+    in if r.sel-start == r.sel-end then ""
+    else substring (tf.tf-text) (r.sel-start) (r.sel-end - r.sel-start)
+
+Section: Key Handling
+
+  text-field-handle-key : TextFieldState, Integer, Integer -> TextFieldState
+  text-field-handle-key (tf) (key) (mods) =
+    if tf.tf-focused == False then tf
+    else tf-dispatch-key tf key mods
+
+  tf-dispatch-key : TextFieldState, Integer, Integer -> TextFieldState
+  tf-dispatch-key (tf) (key) (mods) =
+    if key == 8 then tf-backspace tf
+    else if key == 127 then tf-delete tf
+    else if key == 37 then tf-move-left tf mods
+    else if key == 39 then tf-move-right tf mods
+    else if key == 36 then tf-move-home tf mods
+    else if key == 35 then tf-move-end tf mods
+    else if key >= 32 then tf-insert-char tf key
+    else tf
+
+Section: Insert
+
+  tf-insert-char : TextFieldState, Integer -> TextFieldState
+  tf-insert-char (tf) (ch) =
+    let len = text-length (tf.tf-text)
+    in if len >= tf.tf-max-length then tf
+    else let before = if tf.tf-cursor > 0 then substring (tf.tf-text) 0 (tf.tf-cursor) else ""
+    in let after = if tf.tf-cursor < len then substring (tf.tf-text) (tf.tf-cursor) (len - tf.tf-cursor) else ""
+    in let new-text = before & char-to-text (code-to-char ch) & after
+    in __record-set (__record-set (__record-set tf "tf-text" new-text) "tf-cursor" (tf.tf-cursor + 1)) "tf-selection" selection-empty
+
+Section: Delete
+
+  tf-backspace : TextFieldState -> TextFieldState
+  tf-backspace (tf) =
+    if selection-is-empty (tf.tf-selection) == False then tf-delete-selection tf
+    else if tf.tf-cursor <= 0 then tf
+    else let before = substring (tf.tf-text) 0 (tf.tf-cursor - 1)
+    in let after = substring (tf.tf-text) (tf.tf-cursor) (text-length (tf.tf-text) - tf.tf-cursor)
+    in __record-set (__record-set tf "tf-text" (before & after)) "tf-cursor" (tf.tf-cursor - 1)
+
+  tf-delete : TextFieldState -> TextFieldState
+  tf-delete (tf) =
+    if selection-is-empty (tf.tf-selection) == False then tf-delete-selection tf
+    else if tf.tf-cursor >= text-length (tf.tf-text) then tf
+    else let before = substring (tf.tf-text) 0 (tf.tf-cursor)
+    in let after = substring (tf.tf-text) (tf.tf-cursor + 1) (text-length (tf.tf-text) - tf.tf-cursor - 1)
+    in __record-set tf "tf-text" (before & after)
+
+  tf-delete-selection : TextFieldState -> TextFieldState
+  tf-delete-selection (tf) =
+    let r = selection-normalized (tf.tf-selection)
+    in let before = substring (tf.tf-text) 0 (r.sel-start)
+    in let after = substring (tf.tf-text) (r.sel-end) (text-length (tf.tf-text) - r.sel-end)
+    in __record-set (__record-set (__record-set tf "tf-text" (before & after)) "tf-cursor" (r.sel-start)) "tf-selection" selection-empty
+
+Section: Navigation
+
+  tf-move-left : TextFieldState, Integer -> TextFieldState
+  tf-move-left (tf) (mods) =
+    let new-pos = if tf.tf-cursor > 0 then tf.tf-cursor - 1 else 0
+    in let sel = if bit-and mods 1 > 0 then selection-extend (tf.tf-selection) (tf.tf-cursor) new-pos else selection-empty
+    in __record-set (__record-set tf "tf-cursor" new-pos) "tf-selection" sel
+
+  tf-move-right : TextFieldState, Integer -> TextFieldState
+  tf-move-right (tf) (mods) =
+    let len = text-length (tf.tf-text)
+    in let new-pos = if tf.tf-cursor < len then tf.tf-cursor + 1 else len
+    in let sel = if bit-and mods 1 > 0 then selection-extend (tf.tf-selection) (tf.tf-cursor) new-pos else selection-empty
+    in __record-set (__record-set tf "tf-cursor" new-pos) "tf-selection" sel
+
+  tf-move-home : TextFieldState, Integer -> TextFieldState
+  tf-move-home (tf) (mods) =
+    let sel = if bit-and mods 1 > 0 then selection-extend (tf.tf-selection) (tf.tf-cursor) 0 else selection-empty
+    in __record-set (__record-set tf "tf-cursor" 0) "tf-selection" sel
+
+  tf-move-end : TextFieldState, Integer -> TextFieldState
+  tf-move-end (tf) (mods) =
+    let len = text-length (tf.tf-text)
+    in let sel = if bit-and mods 1 > 0 then selection-extend (tf.tf-selection) (tf.tf-cursor) len else selection-empty
+    in __record-set (__record-set tf "tf-cursor" len) "tf-selection" sel
+
+Section: Focus
+
+  text-field-focus : TextFieldState -> TextFieldState
+  text-field-focus (tf) = __record-set tf "tf-focused" True
+
+  text-field-blur : TextFieldState -> TextFieldState
+  text-field-blur (tf) = __record-set (__record-set tf "tf-focused" False) "tf-selection" selection-empty
+
+Section: Widget
+
+  text-field-widget : TextFieldState -> WidgetNode
+  text-field-widget (tf) =
+    let display = if text-length (tf.tf-text) == 0 then tf.tf-placeholder else tf.tf-text
+    in widget-input (tf.tf-id) display (tf.tf-cursor)
+
+Page 1

@@ -1,0 +1,157 @@
+Chapter: LightEditor
+  cites Math chapter Quaternion
+  cites Game chapter Rasterizer
+  cites Spark chapter SceneLight
+  cites Spark chapter SceneGraph
+
+ Interactive light editor. Add, remove, and configure lights
+ in the scene. Supports directional, point, spot, and ambient
+ light types with color, intensity, and attenuation.
+
+ We say:
+
+Section: Types
+
+  LightPreset =
+    | PresetSunlight
+    | PresetStudio
+    | PresetInterior
+    | PresetDramatic
+    | PresetNight
+
+  LightSetup = record {
+    lts-lights : List SparkLight,
+    lts-count : Integer,
+    lts-selected : Integer,
+    lts-ambient-color : Integer,
+    lts-ambient-intensity : Integer
+  }
+
+Section: Construction
+
+  light-setup-new : LightSetup
+  light-setup-new = LightSetup {
+    lts-lights = [],
+    lts-count = 0,
+    lts-selected = -1,
+    lts-ambient-color = 16777215,
+    lts-ambient-intensity = 150
+  }
+
+Section: Add/Remove
+
+  light-setup-add : LightSetup, SparkLight -> LightSetup
+  light-setup-add (lts) (light) = LightSetup {
+    lts-lights = list-push (lts.lts-lights) light,
+    lts-count = lts.lts-count + 1,
+    lts-selected = lts.lts-count,
+    lts-ambient-color = lts.lts-ambient-color,
+    lts-ambient-intensity = lts.lts-ambient-intensity
+  }
+
+  light-setup-remove : LightSetup, Integer -> LightSetup
+  light-setup-remove (lts) (idx) =
+    if idx < 0 then lts
+    else if idx >= lts.lts-count then lts
+    else let new-lights = le-remove-at (lts.lts-lights) (lts.lts-count) idx 0 []
+    in LightSetup {
+      lts-lights = new-lights,
+      lts-count = lts.lts-count - 1,
+      lts-selected = if lts.lts-selected >= lts.lts-count - 1 then lts.lts-count - 2 else lts.lts-selected,
+      lts-ambient-color = lts.lts-ambient-color,
+      lts-ambient-intensity = lts.lts-ambient-intensity
+    }
+
+  le-remove-at : List SparkLight, Integer, Integer, Integer, List SparkLight -> List SparkLight
+  le-remove-at (lights) (count) (skip) (i) (acc) =
+    if i >= count then acc
+    else if i == skip then le-remove-at lights count skip (i + 1) acc
+    else le-remove-at lights count skip (i + 1) (list-push acc (list-at lights i))
+
+Section: Selection
+
+  light-setup-select : LightSetup, Integer -> LightSetup
+  light-setup-select (lts) (idx) = __record-set lts "lts-selected" idx
+
+  light-setup-get-selected : LightSetup -> SparkLight
+  light-setup-get-selected (lts) =
+    if lts.lts-selected < 0 then light-ambient 16777215 100
+    else if lts.lts-selected >= lts.lts-count then light-ambient 16777215 100
+    else list-at (lts.lts-lights) (lts.lts-selected)
+
+Section: Editing
+
+  light-setup-set-color : LightSetup, Integer, Integer -> LightSetup
+  light-setup-set-color (lts) (idx) (color) =
+    if idx < 0 then lts
+    else if idx >= lts.lts-count then lts
+    else let light = list-at (lts.lts-lights) idx
+    in let updated = le-set-light-color light color
+    in __record-set lts "lts-lights" (list-set-at (lts.lts-lights) idx updated)
+
+  le-set-light-color : SparkLight, Integer -> SparkLight
+  le-set-light-color (light) (color) = __record-set light "sl-color" color
+
+  light-setup-set-intensity : LightSetup, Integer, Integer -> LightSetup
+  light-setup-set-intensity (lts) (idx) (intensity) =
+    if idx < 0 then lts
+    else if idx >= lts.lts-count then lts
+    else let light = list-at (lts.lts-lights) idx
+    in let updated = __record-set light "sl-intensity" intensity
+    in __record-set lts "lts-lights" (list-set-at (lts.lts-lights) idx updated)
+
+  light-setup-set-ambient : LightSetup, Integer, Integer -> LightSetup
+  light-setup-set-ambient (lts) (color) (intensity) =
+    __record-set (__record-set lts "lts-ambient-color" color) "lts-ambient-intensity" intensity
+
+Section: Presets
+
+  light-preset-apply : LightPreset -> LightSetup
+  light-preset-apply (preset) =
+    when preset
+      is PresetSunlight -> le-preset-sun
+      is PresetStudio -> le-preset-studio
+      is PresetInterior -> le-preset-interior
+      is PresetDramatic -> le-preset-dramatic
+      is PresetNight -> le-preset-night
+
+  le-preset-sun : LightSetup
+  le-preset-sun =
+    let lts = light-setup-new
+    in light-setup-add lts (light-directional (vec3-new 577 577 577) 16777200 900)
+
+  le-preset-studio : LightSetup
+  le-preset-studio =
+    let lts = light-setup-new
+    in let lts2 = light-setup-add lts (light-directional (vec3-new 500 700 300) 16777215 700)
+    in let lts3 = light-setup-add lts2 (light-directional (vec3-new (-400) 600 (-200)) 14540253 400)
+    in light-setup-add lts3 (light-directional (vec3-new 0 (-200) (-800)) 10066329 200)
+
+  le-preset-interior : LightSetup
+  le-preset-interior =
+    let lts = __record-set light-setup-new "lts-ambient-intensity" 300
+    in light-setup-add lts (light-directional (vec3-new 0 1000 0) 16770000 500)
+
+  le-preset-dramatic : LightSetup
+  le-preset-dramatic =
+    let lts = __record-set light-setup-new "lts-ambient-intensity" 50
+    in light-setup-add lts (light-directional (vec3-new 900 200 0) 16744448 1000)
+
+  le-preset-night : LightSetup
+  le-preset-night =
+    let lts = __record-set light-setup-new "lts-ambient-intensity" 30
+    in light-setup-add lts (light-directional (vec3-new 0 800 400) 6684927 300)
+
+Section: Export to Scene
+
+  light-setup-to-list : LightSetup -> List SparkLight
+  light-setup-to-list (lts) =
+    list-push (lts.lts-lights) (light-ambient (lts.lts-ambient-color) (lts.lts-ambient-intensity))
+
+Section: Info
+
+  light-setup-info : LightSetup -> Text
+  light-setup-info (lts) =
+    show (lts.lts-count) & " lights, ambient=" & show (lts.lts-ambient-intensity) & " sel=" & show (lts.lts-selected)
+
+Page 1

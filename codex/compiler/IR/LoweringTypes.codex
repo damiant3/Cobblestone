@@ -1,0 +1,152 @@
+Chapter: Lowering
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Type lookup, substitution, and constructor binding utilities
+ used by the main lowering pass.
+
+Section: Lookup Overlay
+
+ Cons-cell stack used by lowering for nested let / lambda / match /
+ act bindings. Each binding prepends a single OverlayCons cell —
+ O(1) per binding regardless of depth.
+
+  LookupOverlay =
+   | OverlayNil
+   | OverlayCons (TypeBinding) (LookupOverlay)
+
+  lookup-overlay : LookupOverlay, Text -> CodexType
+  lookup-overlay (ovl) (name) =
+   when ovl
+    is OverlayNil -> ErrorTy
+    is OverlayCons (b) (rest) ->
+     if b.name == name then b.bound-type
+     else lookup-overlay rest name
+
+Section: Type Lookup
+  lookup-type : List TypeBinding, Text -> CodexType
+  lookup-type (bindings) (name) =
+   lookup-type-loop bindings name 0 (list-length bindings)
+
+  lookup-type-loop : List TypeBinding, Text, Integer, Integer -> CodexType
+  lookup-type-loop (bindings) (name) (i) (len) =
+   if i == len then ErrorTy
+   else let b = list-at bindings i
+   in if b.name == name then b.bound-type
+      else lookup-type-loop bindings name (i + 1) len
+
+  lookup-type-bsearch : List TypeBinding, Text -> CodexType
+  lookup-type-bsearch (bindings) (name) =
+   let len = list-length bindings
+   in if len == 0 then ErrorTy
+   else let pos = bsearch-text-pos bindings name 0 len
+   in if pos >= len then ErrorTy
+   else let b = list-at bindings pos
+   in if b.name == name then b.bound-type else ErrorTy
+
+  lookup-type-split : LookupOverlay, List TypeBinding, Text -> CodexType
+  lookup-type-split (overlay) (base) (name) =
+   let overlay-hit = lookup-overlay overlay name
+   in when overlay-hit
+    is ErrorTy -> lookup-type-bsearch base name
+    is otherwise -> overlay-hit
+
+  compare-binding-names : TypeBinding, TypeBinding -> Integer
+  compare-binding-names (a) (b) = text-compare (a.name) (b.name)
+
+  sort-bindings : List TypeBinding -> List TypeBinding
+  sort-bindings (xs) = sort-by xs compare-binding-names
+
+Section: Type Substitution
+  subst-type-vars-from-arg : CodexType, CodexType, CodexType -> CodexType
+  subst-type-vars-from-arg (param-ty) (arg-ty) (target) =
+   when param-ty
+    is TypeVar (id) -> subst-type-var-in-target target id arg-ty
+    is ListTy (pe) -> subst-from-list pe arg-ty target
+    is FunTy (pp) (pr) -> subst-from-fun pp pr arg-ty target
+    is otherwise -> target
+
+  subst-from-list : CodexType, CodexType, CodexType -> CodexType
+  subst-from-list (pe) (arg-ty) (target) =
+   when arg-ty
+    is ListTy (ae) -> subst-type-vars-from-arg pe ae target
+    is otherwise -> target
+
+  subst-from-fun : CodexType, CodexType, CodexType, CodexType -> CodexType
+  subst-from-fun (pp) (pr) (arg-ty) (target) =
+   when arg-ty
+    is FunTy (ap) (ar) ->
+     let t2 = subst-type-vars-from-arg pp ap target
+     in subst-type-vars-from-arg pr ar t2
+    is otherwise -> target
+
+  subst-type-var-in-target : CodexType, Integer, CodexType -> CodexType
+  subst-type-var-in-target (ty) (var-id) (replacement) =
+   if ty-has-typevars ty == False then ty
+   else when ty
+    is TypeVar (id) -> if id == var-id then replacement else ty
+    is ForAllTy (fid) (body) ->
+     if fid == var-id then ty
+     else ForAllTy fid (subst-type-var-in-target body var-id replacement)
+    is otherwise -> codex-type-map-children (\c -> subst-type-var-in-target c var-id replacement) ty
+
+  is-text-type : CodexType -> Boolean
+  is-text-type (ty) =
+   when ty
+    is TextTy -> True
+    is otherwise -> False
+
+Section: Binary Op Lowering
+  is-number-type : CodexType -> Boolean
+  is-number-type (ty) =
+   when ty
+    is NumberTy -> True
+    is otherwise -> False
+
+  is-boolean-type : CodexType -> Boolean
+  is-boolean-type (ty) =
+   when ty
+    is BooleanTy -> True
+    is otherwise -> False
+
+  lower-bin-op : BinaryOp, CodexType -> IRBinaryOp
+  lower-bin-op (op) (ty) =
+   when op
+    is OpAdd -> if is-number-type ty then IrAddNum else IrAddInt
+    is OpSub -> if is-number-type ty then IrSubNum else IrSubInt
+    is OpMul -> if is-number-type ty then IrMulNum else IrMulInt
+    is OpDiv -> if is-number-type ty then IrDivNum else IrDivInt
+    is OpPow -> IrPowInt
+    is OpEq -> IrEq
+    is OpNotEq -> IrNotEq
+    is OpLt -> IrLt
+    is OpGt -> IrGt
+    is OpLtEq -> IrLtEq
+    is OpGtEq -> IrGtEq
+    is OpDefEq -> IrEq
+    is OpAppend -> if is-text-type ty then IrAppendText else IrAppendList
+    is OpCons -> IrConsList
+    is OpAnd -> if is-text-type ty then IrAppendText else if is-boolean-type ty then IrAnd else IrAppendList
+    is OpOr -> IrOr
+
+  binary-result-type : BinaryOp, CodexType, CodexType -> CodexType
+  binary-result-type (op) (left-ty) (expected-ty) =
+   when op
+    is OpEq -> BooleanTy
+    is OpNotEq -> BooleanTy
+    is OpLt -> BooleanTy
+    is OpGt -> BooleanTy
+    is OpLtEq -> BooleanTy
+    is OpGtEq -> BooleanTy
+    is OpDefEq -> BooleanTy
+    is OpAnd -> if is-boolean-type left-ty then BooleanTy
+           else if is-text-type left-ty then TextTy
+           else left-ty
+    is OpOr -> BooleanTy
+    is OpAppend -> if is-text-type left-ty then TextTy
+           else if is-text-type expected-ty then TextTy
+           else left-ty
+    is otherwise -> left-ty
+
+Page 2 of 2
+

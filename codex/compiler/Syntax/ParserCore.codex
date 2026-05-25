@@ -1,0 +1,537 @@
+Chapter: Parser
+  cites Codex chapter Text
+  cites Codex chapter Lists
+  cites Codex chapter Runtime
+  cites Codex chapter Build Settings (max-parse-fuel)
+
+ Core parser utilities: state, results, predicates, helpers.
+
+  cites Foreword chapter Maybe
+
+Section: Parser State
+
+  mutable ParseState = record {
+   tokens : List Token,
+   pos : Integer between 0 and 4294967295,
+   bag : DiagnosticBag,
+   paren-depth : Integer between 0 and 65535,
+   fuel : Integer
+  }
+
+  make-parse-state : List Token, Text -> ParseState
+  make-parse-state (toks) (source) =
+   ParseState {
+    tokens = toks,
+    pos = 0,
+    bag = empty-bag,
+    paren-depth = 0,
+    fuel = max-parse-fuel
+   }
+
+  current : ParseState -> Token
+  current (st) =
+   list-at (st.tokens) (st.pos)
+
+  current-kind : ParseState -> TokenKind
+  current-kind (st) = (current st).kind
+
+  advance : ParseState -> ParseState
+  advance (st) =
+   if st.pos >= list-length (st.tokens) - 1 then st
+   else ParseState {
+    tokens = st.tokens,
+    pos = st.pos + 1,
+    bag = st.bag,
+    paren-depth = st.paren-depth,
+    fuel = st.fuel
+   }
+
+  parse-fuel-exhausted : ParseState -> Boolean
+  parse-fuel-exhausted (st) = st.fuel <= 0
+
+  consume-parse-fuel : ParseState -> ParseState
+  consume-parse-fuel (st) = __record-set st "fuel" (st.fuel - 1)
+
+  emit-parse-fuel-error : ParseState, Text -> ParseState
+  emit-parse-fuel-error (st) (op) =
+   __record-set st "bag" (bag-add (st.bag) (make-error cdx-resource-exhausted ("compiler resource exhausted in parser." & op & " (budget " & integer-to-text max-parse-fuel & ")") (token-to-span (current st))))
+
+  token-to-span : Token -> SourceSpan
+  token-to-span (tok) =
+   span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id)
+
+  enter-paren : ParseState -> ParseState
+  enter-paren (st) =
+   __record-set st "paren-depth" (st.paren-depth + 1)
+
+  exit-paren : ParseState -> ParseState
+  exit-paren (st) =
+   __record-set st "paren-depth" (st.paren-depth - 1)
+
+  is-done : ParseState -> Boolean
+  is-done (st) =
+   when current-kind st
+    is EndOfFile -> True
+    is otherwise -> False
+
+  peek-kind : ParseState, Integer -> TokenKind
+  peek-kind (st) (offset) =
+   let idx = st.pos + offset
+   in if idx >= list-length (st.tokens) then EndOfFile
+      else (list-at (st.tokens) idx).kind
+
+Section: Parse Results
+  ParseExprResult =
+   | ExprOk (Expr) (ParseState)
+
+  ParsePatResult =
+   | PatOk (Pat) (ParseState)
+
+  ParseTypeResult =
+   | TypeOk (TypeExpr) (ParseState)
+
+  ParseDefResult = record {
+   maybe-def : Maybe Def,
+   state : ParseState
+  }
+
+  ParseTypeDefResult = record {
+   maybe-type-def : Maybe TypeDef,
+   state : ParseState
+  }
+
+Section: TokenKind Predicates
+  is-ident : TokenKind -> Boolean
+  is-ident (k) =
+   when k
+    is Identifier -> True
+    is otherwise -> False
+
+  is-ident-like : TokenKind -> Boolean
+  is-ident-like (k) =
+   when k
+    is Identifier -> True
+    is ActKeyword -> True
+    is EndKeyword -> True
+    is QedKeyword -> True
+    is otherwise -> False
+
+  is-field-name-token : TokenKind -> Boolean
+  is-field-name-token (k) =
+   when k
+    is Identifier -> True
+    is ActKeyword -> True
+    is EndKeyword -> True
+    is QedKeyword -> True
+    is EffectKeyword -> True
+    is WhereKeyword -> True
+    is WithKeyword -> True
+    is LinearKeyword -> True
+    is ClaimKeyword -> True
+    is ProofKeyword -> True
+    is RecordKeyword -> True
+    is otherwise -> False
+
+  is-type-ident : TokenKind -> Boolean
+  is-type-ident (k) =
+   when k
+    is TypeIdentifier -> True
+    is otherwise -> False
+
+  is-arrow : TokenKind -> Boolean
+  is-arrow (k) =
+   when k
+    is Arrow -> True
+    is otherwise -> False
+
+  is-equals : TokenKind -> Boolean
+  is-equals (k) =
+   when k
+    is Equals -> True
+    is otherwise -> False
+
+  is-colon : TokenKind -> Boolean
+  is-colon (k) =
+   when k
+    is Colon -> True
+    is otherwise -> False
+
+  is-plus-plus : TokenKind -> Boolean
+  is-plus-plus (k) =
+   when k
+    is PlusPlus -> True
+    is otherwise -> False
+
+  is-comma : TokenKind -> Boolean
+  is-comma (k) =
+   when k
+    is Comma -> True
+    is otherwise -> False
+
+  is-pipe : TokenKind -> Boolean
+  is-pipe (k) =
+   when k
+    is Pipe -> True
+    is otherwise -> False
+
+  is-pipe-forward : TokenKind -> Boolean
+  is-pipe-forward (k) =
+   when k
+    is PipeForward -> True
+    is otherwise -> False
+
+  is-dot : TokenKind -> Boolean
+  is-dot (k) =
+   when k
+    is Dot -> True
+    is otherwise -> False
+
+  is-text-lit : TokenKind -> Boolean
+  is-text-lit (k) =
+   when k
+    is TextLiteral -> True
+    is otherwise -> False
+
+  is-left-paren : TokenKind -> Boolean
+  is-left-paren (k) =
+   when k
+    is LeftParen -> True
+    is otherwise -> False
+
+  is-left-brace : TokenKind -> Boolean
+  is-left-brace (k) =
+   when k
+    is LeftBrace -> True
+    is otherwise -> False
+
+  is-left-bracket : TokenKind -> Boolean
+  is-left-bracket (k) =
+   when k
+    is LeftBracket -> True
+    is otherwise -> False
+
+  is-right-brace : TokenKind -> Boolean
+  is-right-brace (k) =
+   when k
+    is RightBrace -> True
+    is otherwise -> False
+
+  is-right-bracket : TokenKind -> Boolean
+  is-right-bracket (k) =
+   when k
+    is RightBracket -> True
+    is otherwise -> False
+
+  is-right-paren : TokenKind -> Boolean
+  is-right-paren (k) =
+   when k
+    is RightParen -> True
+    is otherwise -> False
+
+  is-if-keyword : TokenKind -> Boolean
+  is-if-keyword (k) =
+   when k
+    is IfKeyword -> True
+    is otherwise -> False
+
+  is-is-keyword : TokenKind -> Boolean
+  is-is-keyword (k) =
+   when k
+    is IsKeyword -> True
+    is otherwise -> False
+
+  is-match-arm-start : TokenKind -> Boolean
+  is-match-arm-start (k) =
+   is-is-keyword k
+
+  is-otherwise-keyword : TokenKind -> Boolean
+  is-otherwise-keyword (k) =
+   when k
+    is OtherwiseKeyword -> True
+    is otherwise -> False
+
+  is-wildcard-pat : TokenKind -> Boolean
+  is-wildcard-pat (k) =
+   is-otherwise-keyword k
+
+  is-let-keyword : TokenKind -> Boolean
+  is-let-keyword (k) =
+   when k
+    is LetKeyword -> True
+    is otherwise -> False
+
+  is-when-keyword : TokenKind -> Boolean
+  is-when-keyword (k) =
+   when k
+    is WhenKeyword -> True
+    is InductionKeyword -> True
+    is otherwise -> False
+
+  is-claim-keyword : TokenKind -> Boolean
+  is-claim-keyword (k) =
+   when k
+    is ClaimKeyword -> True
+    is otherwise -> False
+
+  is-proof-keyword : TokenKind -> Boolean
+  is-proof-keyword (k) =
+   when k
+    is ProofKeyword -> True
+    is otherwise -> False
+
+  is-act-keyword : TokenKind -> Boolean
+  is-act-keyword (k) =
+   when k
+    is ActKeyword -> True
+    is otherwise -> False
+
+  is-end-keyword : TokenKind -> Boolean
+  is-end-keyword (k) =
+   when k
+    is EndKeyword -> True
+    is otherwise -> False
+
+  is-with-keyword : TokenKind -> Boolean
+  is-with-keyword (k) =
+   when k
+    is WithKeyword -> True
+    is otherwise -> False
+
+  is-with-timeout-keyword : TokenKind -> Boolean
+  is-with-timeout-keyword (k) =
+   when k
+    is WithTimeoutKeyword -> True
+    is otherwise -> False
+
+  is-trying-keyword : TokenKind -> Boolean
+  is-trying-keyword (k) =
+   when k
+    is TryingKeyword -> True
+    is otherwise -> False
+
+  is-effect-keyword : TokenKind -> Boolean
+  is-effect-keyword (k) =
+   when k
+    is EffectKeyword -> True
+    is otherwise -> False
+
+  is-cites-keyword : TokenKind -> Boolean
+  is-cites-keyword (k) =
+   when k
+    is CitesKeyword -> True
+    is otherwise -> False
+
+  is-where-keyword : TokenKind -> Boolean
+  is-where-keyword (k) =
+   when k
+    is WhereKeyword -> True
+    is otherwise -> False
+
+  is-in-keyword : TokenKind -> Boolean
+  is-in-keyword (k) =
+   when k
+    is InKeyword -> True
+    is otherwise -> False
+
+  is-between-keyword : TokenKind -> Boolean
+  is-between-keyword (k) =
+   when k
+    is BetweenKeyword -> True
+    is otherwise -> False
+
+  is-else-keyword : TokenKind -> Boolean
+  is-else-keyword (k) =
+   when k
+    is ElseKeyword -> True
+    is otherwise -> False
+
+  is-reserved-keyword : TokenKind -> Boolean
+  is-reserved-keyword (k) =
+   when k
+    is LetKeyword -> True
+    is InKeyword -> True
+    is BetweenKeyword -> True
+    is IfKeyword -> True
+    is IsKeyword -> True
+    is OtherwiseKeyword -> True
+    is ThenKeyword -> True
+    is ElseKeyword -> True
+    is WhenKeyword -> True
+    is WhereKeyword -> True
+    is SuchThatKeyword -> True
+    is ActKeyword -> True
+    is EndKeyword -> True
+    is RecordKeyword -> True
+    is CitesKeyword -> True
+    is ClaimKeyword -> True
+    is ProofKeyword -> True
+    is QedKeyword -> True
+    is InductionKeyword -> True
+    is ForAllKeyword -> True
+    is ThereExistsKeyword -> True
+    is LinearKeyword -> True
+    is MutableKeyword -> True
+    is EffectKeyword -> True
+    is WithKeyword -> True
+    is TrueKeyword -> True
+    is FalseKeyword -> True
+    is otherwise -> False
+
+  is-minus : TokenKind -> Boolean
+  is-minus (k) =
+   when k
+    is Minus -> True
+    is otherwise -> False
+
+  is-dedent : TokenKind -> Boolean
+  is-dedent (k) =
+   when k
+    is Dedent -> True
+    is otherwise -> False
+
+  is-left-arrow : TokenKind -> Boolean
+  is-left-arrow (k) =
+   when k
+    is LeftArrow -> True
+    is otherwise -> False
+
+  is-mutable-keyword : TokenKind -> Boolean
+  is-mutable-keyword (k) =
+   when k
+    is MutableKeyword -> True
+    is otherwise -> False
+
+  is-record-keyword : TokenKind -> Boolean
+  is-record-keyword (k) =
+   when k
+    is RecordKeyword -> True
+    is otherwise -> False
+
+  is-underscore : TokenKind -> Boolean
+  is-underscore (k) =
+   when k
+    is Underscore -> True
+    is otherwise -> False
+
+  is-backslash : TokenKind -> Boolean
+  is-backslash (k) =
+   when k
+    is Backslash -> True
+    is otherwise -> False
+
+  is-literal : TokenKind -> Boolean
+  is-literal (k) =
+   when k
+    is IntegerLiteral -> True
+    is NumberLiteral -> True
+    is TextLiteral -> True
+    is CharLiteral -> True
+    is TrueKeyword -> True
+    is FalseKeyword -> True
+    is otherwise -> False
+
+  is-app-start : TokenKind -> Boolean
+  is-app-start (k) =
+   when k
+    is Identifier -> True
+    is TypeIdentifier -> True
+    is IntegerLiteral -> True
+    is NumberLiteral -> True
+    is TextLiteral -> True
+    is CharLiteral -> True
+    is TrueKeyword -> True
+    is FalseKeyword -> True
+    is LeftParen -> True
+    is LeftBracket -> True
+    is ActKeyword -> True
+    is WithKeyword -> True
+    is otherwise -> False
+
+  is-compound : Expr -> Boolean
+  is-compound (e) =
+   when e
+    is MatchExpr (s) (arms) -> True
+    is IfExpr (c) (t) (el) -> True
+    is LetExpr (binds) (body) -> True
+    is ActExpr (stmts) -> True
+    is FieldAssignExpr (l) (f) (r) -> True
+    is otherwise -> False
+
+  is-type-arg-start : TokenKind -> Boolean
+  is-type-arg-start (k) =
+   when k
+    is TypeIdentifier -> True
+    is Identifier -> True
+    is LeftParen -> True
+    is IntegerLiteral -> True
+    is otherwise -> False
+
+  operator-precedence : TokenKind -> Integer
+  operator-precedence (k) =
+   when k
+    is PlusPlus -> 5
+    is ColonColon -> 5
+    is Plus -> 6
+    is Minus -> 6
+    is Star -> 7
+    is Slash -> 7
+    is Caret -> 8
+    is DoubleEquals -> 4
+    is NotEquals -> 4
+    is LessThan -> 4
+    is GreaterThan -> 4
+    is LessOrEqual -> 4
+    is GreaterOrEqual -> 4
+    is TripleEquals -> 4
+    is Ampersand -> 3
+    is Pipe -> 2
+    is PipeForward -> 1
+    is otherwise -> -1
+
+  is-right-assoc : TokenKind -> Boolean
+  is-right-assoc (k) =
+   when k
+    is PlusPlus -> True
+    is ColonColon -> True
+    is Caret -> True
+    is Arrow -> True
+    is otherwise -> False
+
+Section: Token Helpers
+  expect : TokenKind, ParseState -> ParseState
+  expect (kind) (st) =
+   if is-done st then st
+   else if current-kind st == kind then advance st
+   else let tok = current st
+   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-expected-token-kind ("Expected token kind mismatch, got '" & (token-text tok) & "'") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+
+  expect-coded : TokenKind, Integer, Text, ParseState -> ParseState
+  expect-coded (kind) (code) (msg) (st) =
+   if is-done st then st
+   else if current-kind st == kind then advance st
+   else let tok = current st
+   in __record-set st "bag" (bag-add (st.bag) (make-error code (msg & " (got '" & (token-text tok) & "')") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+
+  report-reserved-keyword : Text, ParseState -> ParseState
+  report-reserved-keyword (context) (st) =
+   let tok = current st
+   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-reserved-keyword-as-identifier ("'" & (token-text tok) & "' is a reserved keyword and cannot be used as " & context & "; rename it") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+
+  skip-newlines-pos : List Token, Integer, Integer -> Integer
+  skip-newlines-pos (tokens) (pos) (len) =
+   if pos >= len - 1 then pos
+   else let kind = (list-at tokens pos).kind
+   in when kind
+     is Newline -> skip-newlines-pos tokens (pos + 1) len
+     is Indent -> skip-newlines-pos tokens (pos + 1) len
+     is Dedent -> skip-newlines-pos tokens (pos + 1) len
+     is otherwise -> pos
+
+  skip-newlines : ParseState -> ParseState
+  skip-newlines (st) =
+   let end-pos = skip-newlines-pos (st.tokens) (st.pos) (list-length (st.tokens))
+   in if end-pos == st.pos then st
+      else __record-set st "pos" end-pos
+
+Page 2 of 3
+

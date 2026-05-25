@@ -1,0 +1,311 @@
+Chapter: Pascal Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Free Pascal source code from the IR.
+
+Section: Keywords and Sanitization
+
+  pas-keywords : List Text =
+   ["absolute", "and", "array", "asm", "begin", "case", "const",
+    "constructor", "destructor", "div", "do", "downto", "else", "end",
+    "file", "for", "function", "goto", "if", "implementation", "in",
+    "inherited", "inline", "interface", "label", "mod", "nil", "not",
+    "object", "of", "operator", "or", "packed", "procedure", "program",
+    "record", "repeat", "set", "shl", "shr", "string", "then", "to",
+    "type", "unit", "until", "uses", "var", "while", "with", "xor",
+    "true", "false", "result", "write", "writeln", "read", "readln"]
+
+  pas-is-keyword : Text, Integer -> Boolean
+  pas-is-keyword (name) (i) =
+   if i == list-length pas-keywords then False
+   else if list-at pas-keywords i == name then True
+   else pas-is-keyword name (i + 1)
+
+  pas-sanitize : Text -> Text
+  pas-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if pas-is-keyword s then s & "_v"
+      else s
+
+  pas-escape : Text -> Text
+  pas-escape (s) = text-replace s "'" "''"
+
+  pas-indent : Integer -> Text
+  pas-indent (n) = if n <= 0 then "" else "  " & pas-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-pas-type-defs : List ATypeDef, Integer -> Text
+  emit-pas-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-pas-type-def (list-at tds i) & emit-pas-type-defs tds (i + 1)
+
+  emit-pas-type-def : ATypeDef -> Text
+  emit-pas-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     "  " & pas-sanitize (name.value) & " = record\n" & emit-pas-record-fields fields 0 & "  end;\n\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     "  " & pas-sanitize (name.value) & " = record\n    tag: string;\n" & emit-pas-variant-fields ctors 0 0 & "  end;\n\n"
+
+  emit-pas-record-fields : List ARecordFieldDef, Integer -> Text
+  emit-pas-record-fields (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in "    " & pas-sanitize (f.name.value) & ": Variant;\n" & emit-pas-record-fields fields (i + 1)
+
+  emit-pas-variant-max-fields : List AVariantCtorDef, Integer, Integer -> Integer
+  emit-pas-variant-max-fields (ctors) (i) (mx) =
+   if i == list-length ctors then mx
+   else let n = list-length ((list-at ctors i).fields)
+   in emit-pas-variant-max-fields ctors (i + 1) (if n > mx then n else mx)
+
+  emit-pas-variant-fields : List AVariantCtorDef, Integer, Integer -> Text
+  emit-pas-variant-fields (ctors) (f) (mx-check) =
+   let mx = emit-pas-variant-max-fields ctors 0 0
+   in emit-pas-variant-field-lines f mx
+
+  emit-pas-variant-field-lines : Integer, Integer -> Text
+  emit-pas-variant-field-lines (f) (mx) =
+   if f >= mx then ""
+   else "    field" & integer-to-text f & ": Variant;\n" & emit-pas-variant-field-lines (f + 1) mx
+
+Section: Expression Emission
+
+  emit-pas-expr : IRExpr, List ArityEntry -> Text
+  emit-pas-expr (e) (arities) = emit-pas-expr-at e arities 0
+
+  emit-pas-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-pas-expr-at (e) (arities) (depth) =
+   if depth >= 256 then "0"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> integer-to-text n & ".0"
+    is IrTextLit (s) (sp) -> "'" & pas-escape s & "'"
+    is IrBoolLit (b) (sp) -> if b then "True" else "False"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-pas-name n arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-pas-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-pas-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "IfThen(" & emit-pas-expr-at c arities (depth + 1) & ", " & emit-pas-expr-at t arities (depth + 1) & ", " & emit-pas-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> emit-pas-expr-at body arities (depth + 1)
+    is IrApply (f) (a) (ty) (sp) -> emit-pas-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> emit-pas-expr-at body arities (depth + 1)
+    is IrList (elems) (ty) (sp) -> "VarArrayOf([" & emit-pas-list-elems elems 0 arities & "])"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-pas-match scrut branches arities depth
+    is IrAct (stmts) (ty) (sp) -> emit-pas-act-expr stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-pas-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-pas-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> "Make" & pas-sanitize name & "(" & emit-pas-field-vals fields 0 arities & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-pas-expr-at rec arities (depth + 1) & "." & pas-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "0"
+    is IrFork (body) (ty) (sp) -> emit-pas-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-pas-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "0"
+    is IrError (msg) (ty) (sp) -> "0"
+
+  emit-pas-name : Text, List ArityEntry -> Text
+  emit-pas-name (n) (arities) =
+   if n == "True" then "True"
+   else if n == "False" then "False"
+   else if n == "Nothing" then "0"
+   else let ar = lookup-arity arities n
+   in if ar == 0 then pas-sanitize n & "()"
+      else pas-sanitize n
+
+  emit-pas-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-pas-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "Concat(" & emit-pas-expr l arities & ", " & emit-pas-expr r arities & ")"
+    is IrAppendList -> "ConcatArrays(" & emit-pas-expr l arities & ", " & emit-pas-expr r arities & ")"
+    is IrConsList -> "ConsArray(" & emit-pas-expr l arities & ", " & emit-pas-expr r arities & ")"
+    is IrAnd -> "(" & emit-pas-expr l arities & " and " & emit-pas-expr r arities & ")"
+    is IrOr -> "(" & emit-pas-expr l arities & " or " & emit-pas-expr r arities & ")"
+    is IrDivInt -> "(" & emit-pas-expr l arities & " div " & emit-pas-expr r arities & ")"
+    is otherwise -> "(" & emit-pas-expr l arities & " " & pas-bin-op op & " " & emit-pas-expr r arities & ")"
+
+  pas-bin-op : IRBinaryOp -> Text
+  pas-bin-op (op) =
+   when op
+    is IrAddInt -> "+"  is IrSubInt -> "-"  is IrMulInt -> "*"  is IrDivInt -> "div"
+    is IrPowInt -> "**"  is IrAddNum -> "+"  is IrSubNum -> "-"  is IrMulNum -> "*"
+    is IrDivNum -> "/"  is IrEq -> "="  is IrNotEq -> "<>"
+    is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
+    is IrAnd -> "and"  is IrOr -> "or"  is IrAppendText -> "+"
+    is IrAppendList -> "+"  is IrConsList -> "+"
+
+  emit-pas-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-pas-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-pas-expr (list-at elems i) arities
+   else emit-pas-expr (list-at elems i) arities & ", " & emit-pas-list-elems elems (i + 1) arities
+
+  emit-pas-field-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-pas-field-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & emit-pas-expr (f.value) arities & emit-pas-field-vals fields (i + 1) arities
+
+  emit-pas-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-pas-match (scrut) (branches) (arities) (depth) =
+   if list-length branches == 0 then "0"
+   else emit-pas-match-merge branches scrut arities depth 0
+
+  emit-pas-match-merge : List IRBranch, IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-pas-match-merge (branches) (scrut) (arities) (depth) (i) =
+   if i >= list-length branches - 1 then emit-pas-expr-at (list-at branches i).body arities (depth + 1)
+   else let b = list-at branches i
+   in "IfThen(" & emit-pas-match-cond (b.pattern) scrut arities depth & ", " & emit-pas-expr-at (b.body) arities (depth + 1) & ", " & emit-pas-match-merge branches scrut arities depth (i + 1) & ")"
+
+  emit-pas-match-cond : IRPat, IRExpr, List ArityEntry, Integer -> Text
+  emit-pas-match-cond (pat) (scrut) (arities) (depth) =
+   when pat
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-pas-expr-at scrut arities depth & ".tag = '" & name & "'"
+    is IrLitPat (text) (ty) (sp) -> emit-pas-expr-at scrut arities depth & " = " & text
+    is otherwise -> "True"
+
+  emit-pas-act-expr : List IRActStmt, List ArityEntry -> Text
+  emit-pas-act-expr (stmts) (arities) =
+   if list-length stmts == 0 then "0"
+   else let last = list-at stmts (list-length stmts - 1)
+   in when last
+    is IrDoExec (e) (sp) -> emit-pas-expr e arities
+    is IrDoBind (name) (ty) (val) (sp) -> emit-pas-expr val arities
+
+Section: Apply Emission
+
+  emit-pas-apply : IRExpr, List ArityEntry -> Text
+  emit-pas-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     let bi = pas-try-builtin n args arities
+     in if text-length bi > 0 then bi
+     else pas-sanitize n & "(" & emit-pas-apply-args args arities 0 & ")"
+    is otherwise -> emit-pas-expr root arities & "(" & emit-pas-apply-args args arities 0 & ")"
+
+  emit-pas-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-pas-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-pas-expr (list-at args i) arities
+        else emit-pas-expr (list-at args i) arities & ", " & emit-pas-apply-args args arities (i + 1)
+
+  pas-try-builtin : Text, List IRExpr, List ArityEntry -> Text
+  pas-try-builtin (n) (args) (arities) =
+   if n == "print-line-uni" then "WriteLn(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if n == "show" then "IntToStr(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if n == "integer-to-text" then "IntToStr(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if n == "text-to-integer" then "StrToInt(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if n == "text-length" then "Length(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if n == "list-length" then "Length(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if n == "list-at" then emit-pas-expr (list-at args 0) arities & "[" & emit-pas-expr (list-at args 1) arities & " + 1]"
+   else if n == "char-at" then "Ord(" & emit-pas-expr (list-at args 0) arities & "[" & emit-pas-expr (list-at args 1) arities & " + 1])"
+   else if n == "char-code" then emit-pas-expr (list-at args 0) arities
+   else if n == "char-to-text" then "Chr(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if n == "substring" then "Copy(" & emit-pas-expr (list-at args 0) arities & ", " & emit-pas-expr (list-at args 1) arities & " + 1, " & emit-pas-expr (list-at args 2) arities & ")"
+   else if n == "text-contains" then "(Pos(" & emit-pas-expr (list-at args 1) arities & ", " & emit-pas-expr (list-at args 0) arities & ") > 0)"
+   else if n == "process-exit" then "Halt(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if n == "int-mod" then "(" & emit-pas-expr (list-at args 0) arities & " mod " & emit-pas-expr (list-at args 1) arities & ")"
+   else if n == "negate" then "(-" & emit-pas-expr (list-at args 0) arities & ")"
+   else if n == "min" then "Min(" & emit-pas-expr (list-at args 0) arities & ", " & emit-pas-expr (list-at args 1) arities & ")"
+   else if n == "max" then "Max(" & emit-pas-expr (list-at args 0) arities & ", " & emit-pas-expr (list-at args 1) arities & ")"
+   else if n == "abs" then "Abs(" & emit-pas-expr (list-at args 0) arities & ")"
+   else ""
+
+Section: Definition Emission
+
+  emit-pas-def : IRDef, List ArityEntry -> Text
+  emit-pas-def (d) (arities) =
+   let name = pas-sanitize (d.name)
+   in if list-length (d.params) == 0 then
+    "function " & name & ": Variant;\nbegin\n  Result := " & emit-pas-expr (d.body) arities & ";\nend;\n\n"
+   else
+    "function " & name & "(" & emit-pas-def-params (d.params) 0 & "): Variant;\nbegin\n  Result := " & emit-pas-expr (d.body) arities & ";\nend;\n\n"
+
+  emit-pas-def-params : List IRParam, Integer -> Text
+  emit-pas-def-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then pas-sanitize ((list-at params i).name) & ": Variant"
+   else pas-sanitize ((list-at params i).name) & ": Variant; " & emit-pas-def-params params (i + 1)
+
+  emit-pas-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-pas-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-pas-def (list-at defs i) arities & emit-pas-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-pascal-chapter : IRChapter, List ATypeDef -> Text
+  emit-pascal-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "program CodexProgram;\n{$mode objfpc}{$H+}\nuses SysUtils, Variants, Math;\n\ntype\n"
+   in let types-text = emit-pas-type-defs type-defs 0
+   in let defs-text = emit-pas-defs (m.defs) 0 arities
+   in let entry = pas-emit-entry (m.defs)
+   in header & types-text & "\n" & defs-text & "begin\n  " & entry & "end.\n"
+
+  pas-emit-entry : List IRDef -> Text
+  pas-emit-entry (defs) = pas-emit-entry-loop defs 0
+
+  pas-emit-entry-loop : List IRDef, Integer -> Text
+  pas-emit-entry-loop (defs) (i) =
+   if i >= list-length defs then ""
+   else let d = list-at defs i
+   in if d.name == opening-entry-point then
+    if list-length (d.params) == 0 then "WriteLn(" & pas-sanitize opening-entry-point & ");\n" else ""
+   else pas-emit-entry-loop defs (i + 1)
+
+Page 1

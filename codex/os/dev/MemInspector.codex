@@ -1,0 +1,59 @@
+Chapter: MemInspector
+  cites Dev chapter HexFormat
+  cites Kernel chapter Console
+  cites Foreword chapter CCE
+
+ The MemInspector dumps physical memory ranges as hex lines
+ to the console, enabling inspection of heap contents, page
+ tables, and memory-mapped device registers.
+
+ We say:
+
+Section: Memory Read Commands
+  mem-dump : Integer, Integer, ConsoleState -> ConsoleState
+  mem-dump (addr) (len) (con) =
+    mem-dump-loop addr len 0 con
+
+  mem-dump-loop : Integer, Integer, Integer, ConsoleState -> ConsoleState
+  mem-dump-loop (addr) (len) (off) (con) =
+    if off >= len then con
+    else let line = hex-dump-line addr addr off
+    in let con1 = console-write-text con line
+    in let con2 = console-write-char con1 1
+    in let next = if len - off >= 16 then 16 else len - off
+    in mem-dump-loop addr len (off + next) con2
+
+  mem-read-byte : Integer, ConsoleState -> ConsoleState
+  mem-read-byte (addr) (con) =
+    let v = peek-byte addr 0
+    in console-write-text con (addr32-to-hex addr & " = 0x" & byte-to-hex v & " (" & show v & ")")
+
+  mem-read-u16 : Integer, ConsoleState -> ConsoleState
+  mem-read-u16 (addr) (con) =
+    let v = bit-or (peek-byte addr 0) (bit-shl (peek-byte addr 1) 8)
+    in console-write-text con (addr32-to-hex addr & " = 0x" & u16-to-hex v & " (" & show v & ")")
+
+  mem-read-u32 : Integer, ConsoleState -> ConsoleState
+  mem-read-u32 (addr) (con) =
+    let b0 = peek-byte addr 0
+    in let b1 = bit-shl (peek-byte addr 1) 8
+    in let b2 = bit-shl (peek-byte addr 2) 16
+    in let b3 = bit-shl (peek-byte addr 3) 24
+    in let v = bit-or b0 (bit-or b1 (bit-or b2 b3))
+    in console-write-text con (addr32-to-hex addr & " = 0x" & u32-to-hex v & " (" & show v & ")")
+
+  mem-read-u64 : Integer, ConsoleState -> ConsoleState
+  mem-read-u64 (addr) (con) =
+    let lo = bit-or (peek-byte addr 0) (bit-or (bit-shl (peek-byte addr 1) 8) (bit-or (bit-shl (peek-byte addr 2) 16) (bit-shl (peek-byte addr 3) 24)))
+    in let hi = bit-or (peek-byte addr 4) (bit-or (bit-shl (peek-byte addr 5) 8) (bit-or (bit-shl (peek-byte addr 6) 16) (bit-shl (peek-byte addr 7) 24)))
+    in let v = bit-or lo (bit-shl hi 32)
+    in console-write-text con (addr32-to-hex addr & " = 0x" & addr-to-hex v & " (" & show v & ")")
+
+Section: Memory Write
+  mem-write-byte : Integer, Integer, ConsoleState -> ConsoleState
+  mem-write-byte (addr) (val) (con) =
+    let old = peek-byte addr 0
+    in let w = poke-byte addr 0 val
+    in console-write-text con (addr32-to-hex addr & ": 0x" & byte-to-hex old & " -> 0x" & byte-to-hex val)
+
+Page 1

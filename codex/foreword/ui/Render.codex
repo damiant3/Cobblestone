@@ -1,0 +1,180 @@
+Chapter: Render
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Widget
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Game chapter Bresenham
+  cites Encode chapter Png
+  cites Math chapter Bezier
+
+ Themed widget rendering. Walks a laid-out widget tree, resolves
+ style from the theme, draws to a framebuffer using Rasterizer
+ primitives. Widgets never touch pixels directly — this chapter
+ is the only bridge between semantics and visuals.
+
+Section: Render Widget Tree
+  render-tree : WidgetNode, Theme, Framebuf -> Framebuf
+  render-tree (w) (th) (fb) =
+    let fb2 = render-node w th fb
+    in render-children (w.wn-children) th fb2 0 (w.wn-child-count)
+
+  render-children : List WidgetNode, Theme, Framebuf, Integer, Integer -> Framebuf
+  render-children (children) (th) (fb) (i) (n) =
+    if i >= n then fb
+    else let fb2 = render-tree (list-at children i) th fb
+    in render-children children th fb2 (i + 1) n
+
+Section: Render Single Node
+  render-node : WidgetNode, Theme, Framebuf -> Framebuf
+  render-node (w) (th) (fb) = when w.wn-kind
+    is WkPanel -> render-panel w th fb
+    is WkLabel (txt) -> render-label w th txt fb
+    is WkButton (txt) -> render-button w th txt fb
+    is WkGauge (val) (max-val) -> render-gauge w th val max-val fb
+    is WkSeparator -> render-separator w th fb
+    is WkInput (txt) (cursor) -> render-input w th txt cursor fb
+    is WkCustom (tag) -> render-panel w th fb
+
+Section: Panel
+  render-panel : WidgetNode, Theme, Framebuf -> Framebuf
+  render-panel (w) (th) (fb) =
+    let style = theme-resolve-panel th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let fb2 = render-filled-rect fb br (style.ws-bg)
+    in render-border fb2 br (style.ws-border)
+
+Section: Label
+  render-label : WidgetNode, Theme, Text, Framebuf -> Framebuf
+  render-label (w) (th) (txt) (fb) =
+    let style = theme-resolve-label th (w.wn-state)
+    in let content = box-content-from-style (w.wn-bounds) style
+    in fb
+
+Section: Button
+  render-button : WidgetNode, Theme, Text, Framebuf -> Framebuf
+  render-button (w) (th) (txt) (fb) =
+    let style = theme-resolve-button th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let fb2 = render-styled-rect fb br style
+    in fb2
+
+Section: Gauge
+  render-gauge : WidgetNode, Theme, Integer, Integer, Framebuf -> Framebuf
+  render-gauge (w) (th) (val) (max-val) (fb) =
+    let style = theme-resolve-gauge th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let fb2 = render-filled-rect fb br (style.ws-bg)
+    in let fb3 = render-border fb2 br (style.ws-border)
+    in let content = box-content-from-style (w.wn-bounds) style
+    in let fill-w = if max-val > 0 then content.lr-w * val / max-val else 0
+    in let fill-rect = layout-rect (content.lr-x) (content.lr-y) fill-w (content.lr-h)
+    in render-filled-rect fb3 fill-rect (style.ws-fg)
+
+Section: Separator
+  render-separator : WidgetNode, Theme, Framebuf -> Framebuf
+  render-separator (w) (th) (fb) =
+    let style = theme-resolve-separator th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let h = box-max 1 (style.ws-min-height)
+    in let sep-rect = layout-rect (br.lr-x) (br.lr-y + br.lr-h / 2 - h / 2) (br.lr-w) h
+    in render-filled-rect fb sep-rect (style.ws-bg)
+
+Section: Input
+  render-input : WidgetNode, Theme, Text, Integer, Framebuf -> Framebuf
+  render-input (w) (th) (txt) (cursor) (fb) =
+    let style = theme-resolve-input th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let fb2 = render-styled-rect fb br style
+    in fb2
+
+Section: Drawing Primitives
+  render-filled-rect : Framebuf, LayoutRect, Integer -> Framebuf
+  render-filled-rect (fb) (r) (color) =
+    if r.lr-w <= 0 then fb
+    else if r.lr-h <= 0 then fb
+    else fb-rect fb (r.lr-x) (r.lr-y) (r.lr-w) (r.lr-h) color
+
+  render-border : Framebuf, LayoutRect, Border -> Framebuf
+  render-border (fb) (r) (bdr) =
+    let fb2 = render-border-top fb r bdr
+    in let fb3 = render-border-bottom fb2 r bdr
+    in let fb4 = render-border-left fb3 r bdr
+    in render-border-right fb4 r bdr
+
+  render-border-top : Framebuf, LayoutRect, Border -> Framebuf
+  render-border-top (fb) (r) (bdr) =
+    if (bdr.bdr-top).brd-width <= 0 then fb
+    else let top = layout-rect (r.lr-x) (r.lr-y) (r.lr-w) ((bdr.bdr-top).brd-width)
+    in render-filled-rect fb top ((bdr.bdr-top).brd-color)
+
+  render-border-bottom : Framebuf, LayoutRect, Border -> Framebuf
+  render-border-bottom (fb) (r) (bdr) =
+    if (bdr.bdr-bottom).brd-width <= 0 then fb
+    else let bot = layout-rect (r.lr-x) (r.lr-y + r.lr-h - (bdr.bdr-bottom).brd-width) (r.lr-w) ((bdr.bdr-bottom).brd-width)
+    in render-filled-rect fb bot ((bdr.bdr-bottom).brd-color)
+
+  render-border-left : Framebuf, LayoutRect, Border -> Framebuf
+  render-border-left (fb) (r) (bdr) =
+    if (bdr.bdr-left).brd-width <= 0 then fb
+    else let lft = layout-rect (r.lr-x) (r.lr-y) ((bdr.bdr-left).brd-width) (r.lr-h)
+    in render-filled-rect fb lft ((bdr.bdr-left).brd-color)
+
+  render-border-right : Framebuf, LayoutRect, Border -> Framebuf
+  render-border-right (fb) (r) (bdr) =
+    if (bdr.bdr-right).brd-width <= 0 then fb
+    else let rgt = layout-rect (r.lr-x + r.lr-w - (bdr.bdr-right).brd-width) (r.lr-y) ((bdr.bdr-right).brd-width) (r.lr-h)
+    in render-filled-rect fb rgt ((bdr.bdr-right).brd-color)
+
+  render-styled-rect : Framebuf, LayoutRect, WidgetStyle -> Framebuf
+  render-styled-rect (fb) (r) (style) =
+    let fb2 = render-filled-rect fb r (style.ws-bg)
+    in render-border fb2 r (style.ws-border)
+
+Section: Rounded Rect
+  render-rounded-rect : Framebuf, LayoutRect, Integer, Integer -> Framebuf
+  render-rounded-rect (fb) (r) (radius) (color) =
+    if radius <= 0 then render-filled-rect fb r color
+    else let rad = box-min radius (box-min (r.lr-w / 2) (r.lr-h / 2))
+    in let fb2 = fb-rect fb (r.lr-x + rad) (r.lr-y) (r.lr-w - 2 * rad) rad color
+    in let fb3 = fb-rect fb2 (r.lr-x) (r.lr-y + rad) (r.lr-w) (r.lr-h - 2 * rad) color
+    in let fb4 = fb-rect fb3 (r.lr-x + rad) (r.lr-y + r.lr-h - rad) (r.lr-w - 2 * rad) rad color
+    in let fb5 = rnd-corner fb4 (r.lr-x + rad) (r.lr-y + rad) rad color
+    in let fb6 = rnd-corner fb5 (r.lr-x + r.lr-w - rad - 1) (r.lr-y + rad) rad color
+    in let fb7 = rnd-corner fb6 (r.lr-x + rad) (r.lr-y + r.lr-h - rad - 1) rad color
+    in rnd-corner fb7 (r.lr-x + r.lr-w - rad - 1) (r.lr-y + r.lr-h - rad - 1) rad color
+
+  rnd-corner : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  rnd-corner (fb) (cx) (cy) (r) (color) = rnd-corner-loop fb cx cy r 0 color
+
+  rnd-corner-loop : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  rnd-corner-loop (fb) (cx) (cy) (r) (dy) (color) =
+    if dy >= r then fb
+    else let dx = rast-isqrt (r * r - dy * dy)
+    in let fb2 = fb-hline fb (cx - dx) (cx + dx) (cy - dy) color
+    in let fb3 = fb-hline fb2 (cx - dx) (cx + dx) (cy + dy) color
+    in rnd-corner-loop fb3 cx cy r (dy + 1) color
+
+Section: Image Loading Bridge
+
+  render-png-to-framebuf : Framebuf, List Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-png-to-framebuf (fb) (png-pixels) (dst-x) (dst-y) (img-w) (img-h) =
+    rnd-blit-loop fb png-pixels dst-x dst-y img-w img-h 0
+
+  rnd-blit-loop : Framebuf, List Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  rnd-blit-loop (fb) (pixels) (dx) (dy) (w) (h) (row) =
+    if row >= h then fb
+    else let fb2 = rnd-blit-row fb pixels dx (dy + row) w (row * w) 0
+    in rnd-blit-loop fb2 pixels dx dy w h (row + 1)
+
+  rnd-blit-row : Framebuf, List Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  rnd-blit-row (fb) (pixels) (dx) (y) (w) (src-off) (col) =
+    if col >= w then fb
+    else let pixel-idx = (src-off + col) * 3
+    in let r = list-at pixels pixel-idx
+    in let g = list-at pixels (pixel-idx + 1)
+    in let b = list-at pixels (pixel-idx + 2)
+    in let color = bit-or (bit-or (bit-shl r 16) (bit-shl g 8)) b
+    in rnd-blit-row (fb-set fb (dx + col) y color) pixels dx y w src-off (col + 1)
+
+Page 1

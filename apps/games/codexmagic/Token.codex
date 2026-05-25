@@ -1,0 +1,351 @@
+Chapter: Token
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+
+ Blockchain token primitives for the CodexMagic economy. Every card
+ instance is a token on-chain. Defines token identity, ownership,
+ provenance, minting, and the Mana Coin currency. These are data
+ structures and pure functions -- actual chain interaction happens
+ at I/O boundaries.
+
+ We say:
+
+Section: Token Identity
+
+  CardToken = record {
+    token-id : Integer,
+    card-template-id : Integer,
+    owner : Integer,
+    mint-time : Integer,
+    mint-source : MintSource,
+    copy-of : Integer,
+    prominence : Integer
+  }
+
+  MintSource =
+   | MintPack
+   | MintPrize
+   | MintPromo
+   | MintUbiquitous
+   | MintDirectSale
+
+  mint-source-name : MintSource -> Text
+  mint-source-name (ms) =
+    when ms
+      is MintPack -> "Pack"
+      is MintPrize -> "Prize"
+      is MintPromo -> "Promo"
+      is MintUbiquitous -> "Ubiquitous Copy"
+      is MintDirectSale -> "Direct Sale"
+
+Section: Token Minting
+
+  next-token-id : List CardToken -> Integer
+  next-token-id (tokens) = list-length tokens
+
+  mint-token : List CardToken, Integer, Integer, Integer, MintSource -> List CardToken
+  mint-token (tokens) (template-id) (owner) (time) (source) =
+    let id = next-token-id tokens
+    in let token = CardToken { token-id = id, card-template-id = template-id, owner = owner, mint-time = time, mint-source = source, copy-of = -1, prominence = 0 }
+    in list-push tokens token
+
+  mint-ubiquitous-copy : List CardToken, Integer, Integer, Integer, Integer -> List CardToken
+  mint-ubiquitous-copy (tokens) (master-token-id) (template-id) (buyer) (time) =
+    let id = next-token-id tokens
+    in let token = CardToken { token-id = id, card-template-id = template-id, owner = buyer, mint-time = time, mint-source = MintUbiquitous, copy-of = master-token-id, prominence = 0 }
+    in list-push tokens token
+
+Section: Token Queries
+
+  token-owner : List CardToken, Integer -> Integer
+  token-owner (tokens) (token-id) =
+    if token-id >= list-length tokens then -1
+    else let t = list-at tokens token-id
+    in t.owner
+
+  tokens-owned-by : List CardToken, Integer, Integer, Integer, List Integer -> List Integer
+  tokens-owned-by (tokens) (owner) (i) (len) (acc) =
+    if i >= len then acc
+    else let t = list-at tokens i
+    in if t.owner == owner then tokens-owned-by tokens owner (i + 1) len (list-push acc (t.token-id))
+    else tokens-owned-by tokens owner (i + 1) len acc
+
+  count-tokens-for-template : List CardToken, Integer, Integer, Integer, Integer -> Integer
+  count-tokens-for-template (tokens) (template-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let t = list-at tokens i
+    in if t.card-template-id == template-id then count-tokens-for-template tokens template-id (i + 1) len (acc + 1)
+    else count-tokens-for-template tokens template-id (i + 1) len acc
+
+  is-ubiquitous-copy : CardToken -> Boolean
+  is-ubiquitous-copy (t) = t.copy-of >= 0
+
+Section: Mana Coin
+
+  ManaCoinLedger = record {
+    balances : List Integer,
+    total-supply : Integer,
+    total-burned : Integer
+  }
+
+  ledger-new : Integer -> ManaCoinLedger
+  ledger-new (num-accounts) = ManaCoinLedger { balances = init-balances num-accounts 0 [], total-supply = 0, total-burned = 0 }
+
+  init-balances : Integer, Integer, List Integer -> List Integer
+  init-balances (n) (i) (acc) =
+    if i >= n then acc
+    else init-balances n (i + 1) (list-push acc 0)
+
+  ledger-balance : ManaCoinLedger, Integer -> Integer
+  ledger-balance (ledger) (account) =
+    if account >= list-length (ledger.balances) then 0
+    else list-at (ledger.balances) account
+
+  ledger-mint : ManaCoinLedger, Integer, Integer -> ManaCoinLedger
+  ledger-mint (ledger) (account) (amount) =
+    let new-bal = list-set-at (ledger.balances) account (list-at (ledger.balances) account + amount)
+    in ManaCoinLedger { balances = new-bal, total-supply = ledger.total-supply + amount, total-burned = ledger.total-burned }
+
+  ledger-burn : ManaCoinLedger, Integer, Integer -> ManaCoinLedger
+  ledger-burn (ledger) (account) (amount) =
+    let current = list-at (ledger.balances) account
+    in let to-burn = if amount > current then current else amount
+    in let new-bal = list-set-at (ledger.balances) account (current - to-burn)
+    in ManaCoinLedger { balances = new-bal, total-supply = ledger.total-supply - to-burn, total-burned = ledger.total-burned + to-burn }
+
+  ledger-transfer : ManaCoinLedger, Integer, Integer, Integer -> ManaCoinLedger
+  ledger-transfer (ledger) (from) (to) (amount) =
+    let from-bal = list-at (ledger.balances) from
+    in if from-bal < amount then ledger
+    else let new-from = list-set-at (ledger.balances) from (from-bal - amount)
+    in let to-bal = list-at new-from to
+    in let new-to = list-set-at new-from to (to-bal + amount)
+    in ManaCoinLedger { balances = new-to, total-supply = ledger.total-supply, total-burned = ledger.total-burned }
+
+Section: Trading
+
+  Trade = record {
+    trade-id : Integer,
+    seller : Integer,
+    buyer : Integer,
+    token-id : Integer,
+    price : Integer,
+    timestamp : Integer
+  }
+
+  execute-trade : List CardToken, ManaCoinLedger, Trade -> TradeResult
+  execute-trade (tokens) (ledger) (trade) =
+    let seller-bal = ledger-balance ledger (trade.seller)
+    in let buyer-bal = ledger-balance ledger (trade.buyer)
+    in if buyer-bal < trade.price then TradeResult { tokens = tokens, ledger = ledger, success = False }
+    else if token-owner tokens (trade.token-id) /= trade.seller then TradeResult { tokens = tokens, ledger = ledger, success = False }
+    else let ledger2 = ledger-transfer ledger (trade.buyer) (trade.seller) (trade.price)
+    in let rake-amount = trade.price / 6
+    in let ledger3 = ledger-burn ledger2 (trade.seller) rake-amount
+    in let tokens2 = transfer-token tokens (trade.token-id) (trade.buyer)
+    in TradeResult { tokens = tokens2, ledger = ledger3, success = True }
+
+  TradeResult = record {
+    tokens : List CardToken,
+    ledger : ManaCoinLedger,
+    success : Boolean
+  }
+
+  transfer-token : List CardToken, Integer, Integer -> List CardToken
+  transfer-token (tokens) (token-id) (new-owner) =
+    if token-id >= list-length tokens then tokens
+    else let t = list-at tokens token-id
+    in let updated = CardToken { token-id = t.token-id, card-template-id = t.card-template-id, owner = new-owner, mint-time = t.mint-time, mint-source = t.mint-source, copy-of = t.copy-of, prominence = t.prominence }
+    in list-set-at tokens token-id updated
+
+Section: Pack Cracking
+
+  PackContents = record {
+    cards : List Integer,
+    num-cards : Integer
+  }
+
+  crack-pack : List CardTemplate, Integer, Integer -> PackContents
+  crack-pack (templates) (seed) (sub-bonus) =
+    let r = rng-new seed
+    in let commons = pick-n-random templates r Common 10 0 []
+    in let r2 = rng-advance r 10
+    in let uncommons = pick-n-random templates r2 Uncommon 3 0 []
+    in let r3 = rng-advance r2 3
+    in let rare-roll = rng-mod (rng-value r3) 8
+    in let rare-rarity = if rare-roll == 0 then Mythic else Rare
+    in let rares = pick-n-random templates (rng-next r3) rare-rarity 1 0 []
+    in let r4 = rng-next (rng-next r3)
+    in let wildcard = pick-n-random templates r4 Uncommon 1 0 []
+    in let base-cards = append-int-lists (append-int-lists commons uncommons) (append-int-lists rares wildcard)
+    in let upgraded = apply-sub-upgrades base-cards templates (rng-next r4) sub-bonus 0
+    in PackContents { cards = upgraded, num-cards = list-length upgraded }
+
+  pick-n-random : List CardTemplate, Rng, Rarity, Integer, Integer, List Integer -> List Integer
+  pick-n-random (templates) (r) (rarity) (n) (picked) (acc) =
+    if picked >= n then acc
+    else let idx = rng-mod (rng-value r) (list-length templates)
+    in let t = list-at templates idx
+    in if t.rarity == rarity then pick-n-random templates (rng-next r) rarity n (picked + 1) (list-push acc (t.id))
+    else pick-n-random templates (rng-next r) rarity n picked acc
+
+  apply-sub-upgrades : List Integer, List CardTemplate, Rng, Integer, Integer -> List Integer
+  apply-sub-upgrades (cards) (templates) (r) (bonus) (applied) =
+    if applied >= bonus then cards
+    else if list-length cards == 0 then cards
+    else let idx = rng-mod (rng-value r) (list-length cards)
+    in let card-id = list-at cards idx
+    in let t = list-at templates card-id
+    in let upgraded-id = find-upgraded-rarity templates (t.rarity) (rng-next r)
+    in if upgraded-id >= 0 then
+      let cards2 = list-set-at cards idx upgraded-id
+      in apply-sub-upgrades cards2 templates (rng-next (rng-next r)) bonus (applied + 1)
+    else apply-sub-upgrades cards templates (rng-next r) bonus applied
+
+  find-upgraded-rarity : List CardTemplate, Rarity, Rng -> Integer
+  find-upgraded-rarity (templates) (current) (r) =
+    let target = next-rarity current
+    in find-card-of-rarity templates target r 0 (list-length templates)
+
+  next-rarity : Rarity -> Rarity
+  next-rarity (r) =
+    when r
+      is Common -> Uncommon
+      is Uncommon -> Rare
+      is Rare -> Mythic
+      is Mythic -> Mythic
+      is LegendaryMythic -> LegendaryMythic
+
+  find-card-of-rarity : List CardTemplate, Rarity, Rng, Integer, Integer -> Integer
+  find-card-of-rarity (templates) (rarity) (r) (attempts) (max-attempts) =
+    if attempts >= max-attempts then -1
+    else let idx = rng-mod (rng-value r) (list-length templates)
+    in let t = list-at templates idx
+    in if t.rarity == rarity then t.id
+    else find-card-of-rarity templates rarity (rng-next r) (attempts + 1) max-attempts
+
+Section: Rng Helpers
+
+  Rng = record {
+    state : Integer
+  }
+
+  rng-new : Integer -> Rng
+  rng-new (seed) = Rng { state = if seed == 0 then 1 else seed }
+
+  rng-next : Rng -> Rng
+  rng-next (r) = Rng { state = r.state * 1103515245 + 12345 }
+
+  rng-value : Rng -> Integer
+  rng-value (r) = if r.state < 0 then 0 - r.state else r.state
+
+  rng-mod : Integer, Integer -> Integer
+  rng-mod (val) (modulus) =
+    if modulus <= 0 then 0
+    else let v = if val < 0 then 0 - val else val
+    in v - (v / modulus) * modulus
+
+  rng-advance : Rng, Integer -> Rng
+  rng-advance (r) (n) =
+    if n <= 0 then r
+    else rng-advance (rng-next r) (n - 1)
+
+Section: Utility
+
+  append-int-lists : List Integer, List Integer -> List Integer
+  append-int-lists (a) (b) = append-int-loop a b 0 (list-length b)
+
+  append-int-loop : List Integer, List Integer, Integer, Integer -> List Integer
+  append-int-loop (acc) (src) (i) (len) =
+    if i >= len then acc
+    else append-int-loop (list-push acc (list-at src i)) src (i + 1) len
+
+Section: Prominence
+
+  compute-prominence : CardToken, Integer, Integer, Integer -> Integer
+  compute-prominence (token) (win-rate) (trade-volume) (tournament-appearances) =
+    let utility = win-rate * 3
+    in let reception = trade-volume * 2
+    in let history = tournament-appearances * 5
+    in utility + reception + history
+
+  update-prominence : List CardToken, Integer, Integer -> List CardToken
+  update-prominence (tokens) (token-id) (new-prominence) =
+    if token-id >= list-length tokens then tokens
+    else let t = list-at tokens token-id
+    in let updated = CardToken { token-id = t.token-id, card-template-id = t.card-template-id, owner = t.owner, mint-time = t.mint-time, mint-source = t.mint-source, copy-of = t.copy-of, prominence = new-prominence }
+    in list-set-at tokens token-id updated
+
+Section: Subscription Tiers
+
+  SubscriptionTier =
+   | SubFree
+   | SubBronze
+   | SubSilver
+   | SubGold
+   | SubPlatinum
+
+  sub-upgrade-bonus : SubscriptionTier -> Integer
+  sub-upgrade-bonus (tier) =
+    when tier
+      is SubFree -> 0
+      is SubBronze -> 1
+      is SubSilver -> 2
+      is SubGold -> 3
+      is SubPlatinum -> 5
+
+  sub-tier-name : SubscriptionTier -> Text
+  sub-tier-name (tier) =
+    when tier
+      is SubFree -> "Free"
+      is SubBronze -> "Bronze"
+      is SubSilver -> "Silver"
+      is SubGold -> "Gold"
+      is SubPlatinum -> "Platinum"
+
+Section: Ubiquitous Token
+
+  UbiquitousListing = record {
+    master-token-id : Integer,
+    template-id : Integer,
+    owner : Integer,
+    copy-price : Integer,
+    copies-sold : Integer,
+    active : Boolean
+  }
+
+  create-listing : Integer, Integer, Integer, Integer -> UbiquitousListing
+  create-listing (master-id) (template-id) (owner) (price) = UbiquitousListing { master-token-id = master-id, template-id = template-id, owner = owner, copy-price = price, copies-sold = 0, active = True }
+
+  buy-ubiquitous-copy : List CardToken, ManaCoinLedger, UbiquitousListing, Integer, Integer -> UbiquitousBuyResult
+  buy-ubiquitous-copy (tokens) (ledger) (listing) (buyer) (time) =
+    if listing.active == False then UbiquitousBuyResult { tokens = tokens, ledger = ledger, listing = listing, success = False }
+    else let buyer-bal = ledger-balance ledger buyer
+    in if buyer-bal < listing.copy-price then UbiquitousBuyResult { tokens = tokens, ledger = ledger, listing = listing, success = False }
+    else let rake = listing.copy-price / 6
+    in let seller-gets = listing.copy-price - rake
+    in let ledger2 = ledger-transfer ledger buyer (listing.owner) seller-gets
+    in let ledger3 = ledger-burn ledger2 buyer rake
+    in let tokens2 = mint-ubiquitous-copy tokens (listing.master-token-id) (listing.template-id) buyer time
+    in let listing2 = UbiquitousListing { master-token-id = listing.master-token-id, template-id = listing.template-id, owner = listing.owner, copy-price = listing.copy-price, copies-sold = listing.copies-sold + 1, active = listing.active }
+    in UbiquitousBuyResult { tokens = tokens2, ledger = ledger3, listing = listing2, success = True }
+
+  UbiquitousBuyResult = record {
+    tokens : List CardToken,
+    ledger : ManaCoinLedger,
+    listing : UbiquitousListing,
+    success : Boolean
+  }
+
+Section: Formatting
+
+  format-token : CardToken, List CardTemplate -> Text
+  format-token (t) (templates) =
+    let template = list-at templates (t.card-template-id)
+    in template.name & " [#" & show (t.token-id) & " " & mint-source-name (t.mint-source) & " P:" & show (t.prominence) & "]"
+
+  format-ledger : ManaCoinLedger -> Text
+  format-ledger (ledger) =
+    "Supply: " & show (ledger.total-supply) & " Burned: " & show (ledger.total-burned)
+
+Page 1

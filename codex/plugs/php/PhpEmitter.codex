@@ -1,0 +1,329 @@
+Chapter: PHP Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates PHP source code from the IR.
+
+Section: Keywords and Sanitization
+
+  php-keywords : List Text =
+   ["abstract", "and", "array", "as", "break",
+    "callable", "case", "catch", "class", "clone",
+    "const", "continue", "declare", "default", "die",
+    "do", "echo", "else", "elseif", "empty",
+    "enddeclare", "endfor", "endforeach", "endif", "endswitch",
+    "endwhile", "eval", "exit", "extends", "final",
+    "finally", "fn", "for", "foreach", "function",
+    "global", "goto", "if", "implements", "include",
+    "instanceof", "interface", "isset", "list", "match",
+    "namespace", "new", "or", "print", "private",
+    "protected", "public", "readonly", "require", "return",
+    "static", "switch", "throw", "trait", "try",
+    "unset", "use", "var", "while", "xor", "yield"]
+
+  is-php-keyword-loop : List Text, Text, Integer, Integer -> Boolean
+  is-php-keyword-loop (kws) (name) (i) (len) =
+   if i == len then False
+   else if list-at kws i == name then True
+   else is-php-keyword-loop kws name (i + 1) len
+
+  is-php-keyword : Text -> Boolean
+  is-php-keyword (name) = is-php-keyword-loop php-keywords name 0 (list-length php-keywords)
+
+  php-sanitize : Text -> Text
+  php-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if is-php-keyword s then "_" & s
+      else s
+
+  php-escape-text : Text -> Text
+  php-escape-text (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-php-type-defs : List ATypeDef, Integer -> Text
+  emit-php-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-php-type-def (list-at tds i) & emit-php-type-defs tds (i + 1)
+
+  emit-php-type-def : ATypeDef -> Text
+  emit-php-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     emit-php-record-type (name.value) fields
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-php-sum-type ctors
+
+  emit-php-sum-type : List AVariantCtorDef -> Text
+  emit-php-sum-type (ctors) =
+   emit-php-sum-type-loop ctors 0 (list-length ctors)
+
+  emit-php-sum-type-loop : List AVariantCtorDef, Integer, Integer -> Text
+  emit-php-sum-type-loop (ctors) (i) (len) =
+   if i == len then ""
+   else let c = list-at ctors i
+   in emit-php-ctor c & emit-php-sum-type-loop ctors (i + 1) len
+
+  emit-php-ctor : AVariantCtorDef -> Text
+  emit-php-ctor (c) =
+   let name = php-sanitize (c.name.value)
+   in "class " & name & " { public $tag = \"" & c.name.value & "\";" & emit-php-ctor-fields (c.fields) 0 & " }\n"
+
+  emit-php-ctor-fields : List ATypeExpr, Integer -> Text
+  emit-php-ctor-fields (fields) (i) =
+   if i == list-length fields then ""
+   else " public $field" & integer-to-text i & " = null;" & emit-php-ctor-fields fields (i + 1)
+
+  emit-php-record-type : Text, List ARecordFieldDef -> Text
+  emit-php-record-type (name) (fields) =
+   let sname = php-sanitize name
+   in "class " & sname & " {" & emit-php-record-fields fields 0 & " }\n\n"
+
+  emit-php-record-fields : List ARecordFieldDef, Integer -> Text
+  emit-php-record-fields (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in " public $" & php-sanitize (f.name.value) & " = null;" & emit-php-record-fields fields (i + 1)
+
+Section: Expression Emission
+
+  php-max-depth : Integer = 256
+
+  emit-php-expr : IRExpr, List ArityEntry -> Text
+  emit-php-expr (e) (arities) = emit-php-expr-at e arities 0
+
+  emit-php-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-php-expr-at (e) (arities) (depth) =
+   if depth >= php-max-depth then "null"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> integer-to-text n & ".0"
+    is IrTextLit (s) (sp) -> "\"" & php-escape-text s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-php-name n ty arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-php-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-php-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-php-expr-at c arities (depth + 1) & " ? " & emit-php-expr-at t arities (depth + 1) & " : " & emit-php-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(function() use (&$" & php-sanitize name & ") { $" & php-sanitize name & " = " & emit-php-expr-at val arities (depth + 1) & "; return " & emit-php-expr-at body arities (depth + 1) & "; })()"
+    is IrApply (f) (a) (ty) (sp) -> emit-php-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "function(" & emit-php-lambda-params params 0 & ") { return " & emit-php-expr body arities & "; }"
+    is IrList (elems) (ty) (sp) -> "[" & emit-php-list-elems elems 0 arities & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-php-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-php-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-php-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-php-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> emit-php-record name fields arities
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-php-expr-at rec arities (depth + 1) & "->" & php-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(clone " & emit-php-expr-at rec arities (depth + 1) & ")->" & php-sanitize field & " = " & emit-php-expr-at val arities (depth + 1)
+    is IrFork (body) (ty) (sp) -> emit-php-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-php-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(function() { try { return " & emit-php-act body arities & "; } catch (\\Exception $e) { return " & emit-php-act fb arities & "; } })()"
+    is IrError (msg) (ty) (sp) -> "throw new \\Exception(\"" & php-escape-text msg & "\")"
+
+  emit-php-name : Text, CodexType, List ArityEntry -> Text
+  emit-php-name (n) (ty) (arities) =
+   if n == "read-line" then "trim(fgets(STDIN))"
+   else if n == "show" then "strval"
+   else if n == "True" then "true"
+   else if n == "False" then "false"
+   else if n == "Nothing" then "null"
+   else "$" & php-sanitize n
+
+  emit-php-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-php-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(" & emit-php-expr l arities & " . " & emit-php-expr r arities & ")"
+    is IrAppendList -> "array_merge(" & emit-php-expr l arities & ", " & emit-php-expr r arities & ")"
+    is IrConsList -> "array_merge([" & emit-php-expr l arities & "], " & emit-php-expr r arities & ")"
+    is IrDivInt -> "intdiv(" & emit-php-expr l arities & ", " & emit-php-expr r arities & ")"
+    is IrPowInt -> "(" & emit-php-expr l arities & " ** " & emit-php-expr r arities & ")"
+    is IrAnd -> "(" & emit-php-expr l arities & " && " & emit-php-expr r arities & ")"
+    is IrOr -> "(" & emit-php-expr l arities & " || " & emit-php-expr r arities & ")"
+    is otherwise -> "(" & emit-php-expr l arities & " " & php-bin-op-symbol op & " " & emit-php-expr r arities & ")"
+
+  php-bin-op-symbol : IRBinaryOp -> Text
+  php-bin-op-symbol (op) =
+   when op
+    is IrAddInt -> "+"
+    is IrSubInt -> "-"
+    is IrMulInt -> "*"
+    is IrDivInt -> "/"
+    is IrPowInt -> "**"
+    is IrAddNum -> "+"
+    is IrSubNum -> "-"
+    is IrMulNum -> "*"
+    is IrDivNum -> "/"
+    is IrEq -> "==="
+    is IrNotEq -> "!=="
+    is IrLt -> "<"
+    is IrGt -> ">"
+    is IrLtEq -> "<="
+    is IrGtEq -> ">="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText -> "."
+    is IrAppendList -> "+"
+    is IrConsList -> "+"
+
+  emit-php-lambda-params : List IRParam, Integer -> Text
+  emit-php-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then "$" & php-sanitize ((list-at params i).name)
+   else "$" & php-sanitize ((list-at params i).name) & ", " & emit-php-lambda-params params (i + 1)
+
+  emit-php-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-php-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-php-expr (list-at elems i) arities
+   else emit-php-expr (list-at elems i) arities & ", " & emit-php-list-elems elems (i + 1) arities
+
+  emit-php-record : Text, List IRFieldVal, List ArityEntry -> Text
+  emit-php-record (name) (fields) (arities) =
+   "(function() { $r = new " & php-sanitize name & "(); " & emit-php-record-assigns fields 0 arities & "return $r; })()"
+
+  emit-php-record-assigns : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-php-record-assigns (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in "$r->" & php-sanitize (f.name) & " = " & emit-php-expr (f.value) arities & "; " & emit-php-record-assigns fields (i + 1) arities
+
+  emit-php-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-php-match (scrut) (branches) (arities) =
+   "(function($__s) { " & emit-php-match-arms branches 0 arities & " })(" & emit-php-expr scrut arities & ")"
+
+  emit-php-match-arms : List IRBranch, Integer, List ArityEntry -> Text
+  emit-php-match-arms (branches) (i) (arities) =
+   if i == list-length branches then "return null; "
+   else let b = list-at branches i
+   in emit-php-match-arm (b.pattern) (b.body) arities i & emit-php-match-arms branches (i + 1) arities
+
+  emit-php-match-arm : IRPat, IRExpr, List ArityEntry, Integer -> Text
+  emit-php-match-arm (pat) (body) (arities) (i) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "if ($__s === " & text & ") return " & emit-php-expr body arities & "; "
+    is IrCtorPat (name) (subs) (ty) (sp) -> "if ($__s instanceof " & php-sanitize name & ") return " & emit-php-expr body arities & "; "
+    is IrVarPat (name) (ty) (sp) -> "$" & php-sanitize name & " = $__s; return " & emit-php-expr body arities & "; "
+    is IrWildPat (sp) -> "return " & emit-php-expr body arities & "; "
+
+  emit-php-act : List IRActStmt, List ArityEntry -> Text
+  emit-php-act (stmts) (arities) =
+   "(function() { " & emit-php-act-stmts stmts 0 arities & " })()"
+
+  emit-php-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-php-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "$" & php-sanitize name & " = " & emit-php-expr val arities & "; "
+    is IrDoExec (e) (sp) -> if is-last then "return " & emit-php-expr e arities & "; " else emit-php-expr e arities & "; ") & emit-php-act-stmts stmts (i + 1) arities
+
+Section: Apply Emission
+
+  emit-php-apply : IRExpr, List ArityEntry -> Text
+  emit-php-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if n == "print-line-uni" then "echo " & emit-php-expr (list-at args 0) arities & " . \"\\n\""
+     else php-sanitize n & "(" & emit-php-apply-args args arities 0 & ")"
+    is otherwise -> emit-php-expr-curried e arities
+
+  emit-php-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-php-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-php-expr (list-at args i) arities
+   else emit-php-expr (list-at args i) arities & ", " & emit-php-apply-args args arities (i + 1)
+
+  emit-php-expr-curried : IRExpr, List ArityEntry -> Text
+  emit-php-expr-curried (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> emit-php-expr f arities & "(" & emit-php-expr a arities & ")"
+    is otherwise -> emit-php-expr e arities
+
+Section: Definition Emission
+
+  emit-php-def : IRDef, List ArityEntry -> Text
+  emit-php-def (d) (arities) =
+   let name = php-sanitize (d.name)
+   in let params-text = emit-php-def-params (d.params) 0
+   in "function " & name & "(" & params-text & ") {\n  return " & emit-php-expr (d.body) arities & ";\n}\n\n"
+
+  emit-php-def-params : List IRParam, Integer -> Text
+  emit-php-def-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then "$" & php-sanitize ((list-at params i).name)
+   else "$" & php-sanitize ((list-at params i).name) & ", " & emit-php-def-params params (i + 1)
+
+  emit-php-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-php-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-php-def (list-at defs i) arities & emit-php-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-php-chapter : IRChapter, List ATypeDef -> Text
+  emit-php-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "<?php\n\n"
+   in let types-text = emit-php-type-defs type-defs 0
+   in let defs-text = emit-php-defs (m.defs) 0 arities
+   in header & types-text & defs-text & php-sanitize opening-entry-point & "();\n"
+
+Page 1

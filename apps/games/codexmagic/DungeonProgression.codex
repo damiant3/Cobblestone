@@ -1,0 +1,390 @@
+Chapter: DungeonProgression
+  cites CodexMagic chapter GMEconomy
+  cites CodexMagic chapter CampaignWorld
+  cites CodexMagic chapter RPGEngine
+  cites CodexMagic chapter Clan
+
+ Dungeon progression and QA gates. A clan can't just drop Diablo
+ into their dungeon on day one. They start in Tristram — a few
+ shamans in a small room. They playtest it themselves, earn revenue,
+ unlock the next tier, and build up. The clan IS the QA team on
+ their own creation.
+
+ Every floor must be cleared by the clan before it goes public.
+ Every monster must be defeated by internal testers. Every loot
+ drop must be verified as achievable. The dungeon grows organically
+ from what the clan can actually build, fund, and prove works.
+
+ The progression mirrors Diablo 1: catacombs first, then caves,
+ then hell. You earn your way to the boss. The clan earns their
+ way to spawning the boss.
+
+ We say:
+
+Section: Dungeon Growth Stages
+
+  DungeonStage =
+    | StageFoundation
+    | StageEarlyFloors
+    | StageMidGame
+    | StageDeepFloors
+    | StageBossLair
+    | StageEndgame
+
+  stage-name : DungeonStage -> Text
+  stage-name (s) =
+    when s
+      is StageFoundation -> "Foundation"
+      is StageEarlyFloors -> "Early Floors"
+      is StageMidGame -> "Mid Game"
+      is StageDeepFloors -> "Deep Floors"
+      is StageBossLair -> "Boss Lair"
+      is StageEndgame -> "Endgame"
+
+  stage-requirements : DungeonStage -> StageReqs
+  stage-requirements (s) =
+    when s
+      is StageFoundation -> StageReqs { min-clears = 0, min-revenue = 0, min-floors = 0, min-monster-tier = 0, min-gm-tier = 1, qa-clears-needed = 3 }
+      is StageEarlyFloors -> StageReqs { min-clears = 10, min-revenue = 100, min-floors = 1, min-monster-tier = 1, min-gm-tier = 1, qa-clears-needed = 5 }
+      is StageMidGame -> StageReqs { min-clears = 50, min-revenue = 500, min-floors = 3, min-monster-tier = 2, min-gm-tier = 2, qa-clears-needed = 5 }
+      is StageDeepFloors -> StageReqs { min-clears = 200, min-revenue = 2000, min-floors = 5, min-monster-tier = 3, min-gm-tier = 3, qa-clears-needed = 8 }
+      is StageBossLair -> StageReqs { min-clears = 500, min-revenue = 5000, min-floors = 8, min-monster-tier = 4, min-gm-tier = 4, qa-clears-needed = 10 }
+      is StageEndgame -> StageReqs { min-clears = 1000, min-revenue = 15000, min-floors = 12, min-monster-tier = 5, min-gm-tier = 5, qa-clears-needed = 15 }
+
+  StageReqs = record {
+    min-clears : Integer,
+    min-revenue : Integer,
+    min-floors : Integer,
+    min-monster-tier : Integer,
+    min-gm-tier : Integer,
+    qa-clears-needed : Integer
+  }
+
+Section: Dungeon Progression State
+
+  DungeonProgress = record {
+    dungeon-id : Integer,
+    clan-id : Integer,
+    current-stage : DungeonStage,
+    total-clears : Integer,
+    total-revenue : Integer,
+    total-deaths : Integer,
+    floors-built : Integer,
+    highest-monster-tier : Integer,
+    qa-runs : List QARun,
+    qa-clears : Integer,
+    qa-failures : Integer,
+    public-floors : Integer,
+    internal-only-floors : Integer,
+    player-feedback : List PlayerFeedback,
+    avg-completion-rate : Integer,
+    avg-clear-time : Integer,
+    last-updated : Integer
+  }
+
+  progress-new : Integer, Integer -> DungeonProgress
+  progress-new (dungeon-id) (clan-id) =
+    DungeonProgress {
+      dungeon-id = dungeon-id,
+      clan-id = clan-id,
+      current-stage = StageFoundation,
+      total-clears = 0,
+      total-revenue = 0,
+      total-deaths = 0,
+      floors-built = 0,
+      highest-monster-tier = 0,
+      qa-runs = [],
+      qa-clears = 0,
+      qa-failures = 0,
+      public-floors = 0,
+      internal-only-floors = 0,
+      player-feedback = [],
+      avg-completion-rate = 0,
+      avg-clear-time = 0,
+      last-updated = 0
+    }
+
+Section: QA Runs — The clan tests their own dungeon
+
+  QARun = record {
+    run-id : Integer,
+    tester : Integer,
+    floor-tested : Integer,
+    cleared : Boolean,
+    death-count : Integer,
+    time-taken : Integer,
+    bugs-found : List BugReport,
+    balance-notes : Text,
+    fun-rating : Integer,
+    timestamp : Integer
+  }
+
+  BugReport = record {
+    bug-id : Integer,
+    description : Text,
+    severity : BugSeverity,
+    floor : Integer,
+    encounter-id : Integer,
+    fixed : Boolean
+  }
+
+  BugSeverity =
+    | BugCritical
+    | BugMajor
+    | BugMinor
+    | BugCosmetic
+
+  bug-severity-name : BugSeverity -> Text
+  bug-severity-name (s) =
+    when s
+      is BugCritical -> "Critical"
+      is BugMajor -> "Major"
+      is BugMinor -> "Minor"
+      is BugCosmetic -> "Cosmetic"
+
+  PlayerFeedback = record {
+    player : Integer,
+    floor : Integer,
+    rating : Integer,
+    comment : Text,
+    timestamp : Integer
+  }
+
+Section: QA Operations
+
+  QARunResult = record {
+    progress : DungeonProgress,
+    passed : Boolean,
+    can-publish-floor : Boolean
+  }
+
+  record-qa-run : DungeonProgress, QARun -> QARunResult
+  record-qa-run (progress) (run) =
+    let new-runs = list-push (progress.qa-runs) run
+    in let new-clears = if run.cleared then progress.qa-clears + 1 else progress.qa-clears
+    in let new-failures = if run.cleared == False then progress.qa-failures + 1 else progress.qa-failures
+    in let has-critical = has-unfixed-critical (run.bugs-found) 0 (list-length (run.bugs-found))
+    in let floor-qa-count = count-floor-clears new-runs (run.floor-tested) 0 (list-length new-runs) 0
+    in let reqs = stage-requirements (progress.current-stage)
+    in let can-publish = floor-qa-count >= reqs.qa-clears-needed
+    in let can-publish-final = can-publish & (has-critical == False)
+    in let progress2 = DungeonProgress {
+      dungeon-id = progress.dungeon-id,
+      clan-id = progress.clan-id,
+      current-stage = progress.current-stage,
+      total-clears = progress.total-clears,
+      total-revenue = progress.total-revenue,
+      total-deaths = progress.total-deaths + run.death-count,
+      floors-built = progress.floors-built,
+      highest-monster-tier = progress.highest-monster-tier,
+      qa-runs = new-runs,
+      qa-clears = new-clears,
+      qa-failures = new-failures,
+      public-floors = progress.public-floors,
+      internal-only-floors = progress.internal-only-floors,
+      player-feedback = progress.player-feedback,
+      avg-completion-rate = progress.avg-completion-rate,
+      avg-clear-time = progress.avg-clear-time,
+      last-updated = run.timestamp
+    }
+    in QARunResult { progress = progress2, passed = run.cleared, can-publish-floor = can-publish-final }
+
+  has-unfixed-critical : List BugReport, Integer, Integer -> Boolean
+  has-unfixed-critical (bugs) (i) (len) =
+    if i >= len then False
+    else let b = list-at bugs i
+    in if b.fixed == False then
+      when b.severity
+        is BugCritical -> True
+        is BugMajor -> has-unfixed-critical bugs (i + 1) len
+        is BugMinor -> has-unfixed-critical bugs (i + 1) len
+        is BugCosmetic -> has-unfixed-critical bugs (i + 1) len
+    else has-unfixed-critical bugs (i + 1) len
+
+  count-floor-clears : List QARun, Integer, Integer, Integer, Integer -> Integer
+  count-floor-clears (runs) (floor) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at runs i
+    in if r.floor-tested == floor then
+      if r.cleared then count-floor-clears runs floor (i + 1) len (acc + 1)
+      else count-floor-clears runs floor (i + 1) len acc
+    else count-floor-clears runs floor (i + 1) len acc
+
+Section: Floor Publication Gate
+
+  PublishFloorResult = record {
+    progress : DungeonProgress,
+    success : Boolean,
+    reason : Text
+  }
+
+  publish-floor : DungeonProgress, Integer, Integer -> PublishFloorResult
+  publish-floor (progress) (floor-num) (time) =
+    let reqs = stage-requirements (progress.current-stage)
+    in let floor-clears = count-floor-clears (progress.qa-runs) floor-num 0 (list-length (progress.qa-runs)) 0
+    in if floor-clears < reqs.qa-clears-needed then PublishFloorResult { progress = progress, success = False, reason = "Need " & show reqs.qa-clears-needed & " QA clears, have " & show floor-clears }
+    else if has-unfixed-critical-for-floor (progress.qa-runs) floor-num 0 (list-length (progress.qa-runs)) then PublishFloorResult { progress = progress, success = False, reason = "Unfixed critical bugs on this floor" }
+    else let progress2 = DungeonProgress {
+      dungeon-id = progress.dungeon-id,
+      clan-id = progress.clan-id,
+      current-stage = progress.current-stage,
+      total-clears = progress.total-clears,
+      total-revenue = progress.total-revenue,
+      total-deaths = progress.total-deaths,
+      floors-built = progress.floors-built,
+      highest-monster-tier = progress.highest-monster-tier,
+      qa-runs = progress.qa-runs,
+      qa-clears = progress.qa-clears,
+      qa-failures = progress.qa-failures,
+      public-floors = progress.public-floors + 1,
+      internal-only-floors = if progress.internal-only-floors > 0 then progress.internal-only-floors - 1 else 0,
+      player-feedback = progress.player-feedback,
+      avg-completion-rate = progress.avg-completion-rate,
+      avg-clear-time = progress.avg-clear-time,
+      last-updated = time
+    }
+    in PublishFloorResult { progress = progress2, success = True, reason = "" }
+
+  has-unfixed-critical-for-floor : List QARun, Integer, Integer, Integer -> Boolean
+  has-unfixed-critical-for-floor (runs) (floor) (i) (len) =
+    if i >= len then False
+    else let r = list-at runs i
+    in if r.floor-tested == floor then
+      if has-unfixed-critical (r.bugs-found) 0 (list-length (r.bugs-found)) then True
+      else has-unfixed-critical-for-floor runs floor (i + 1) len
+    else has-unfixed-critical-for-floor runs floor (i + 1) len
+
+Section: Stage Advancement — Earning the next tier of content
+
+  StageAdvanceResult = record {
+    progress : DungeonProgress,
+    advanced : Boolean,
+    new-stage : DungeonStage
+  }
+
+  check-stage-advance : DungeonProgress, GMLicense -> StageAdvanceResult
+  check-stage-advance (progress) (license) =
+    let next = next-stage (progress.current-stage)
+    in let reqs = stage-requirements next
+    in if progress.total-clears < reqs.min-clears then StageAdvanceResult { progress = progress, advanced = False, new-stage = progress.current-stage }
+    else if progress.total-revenue < reqs.min-revenue then StageAdvanceResult { progress = progress, advanced = False, new-stage = progress.current-stage }
+    else if progress.public-floors < reqs.min-floors then StageAdvanceResult { progress = progress, advanced = False, new-stage = progress.current-stage }
+    else if gm-tier-rank (license.tier) < reqs.min-gm-tier then StageAdvanceResult { progress = progress, advanced = False, new-stage = progress.current-stage }
+    else let progress2 = DungeonProgress {
+      dungeon-id = progress.dungeon-id,
+      clan-id = progress.clan-id,
+      current-stage = next,
+      total-clears = progress.total-clears,
+      total-revenue = progress.total-revenue,
+      total-deaths = progress.total-deaths,
+      floors-built = progress.floors-built,
+      highest-monster-tier = progress.highest-monster-tier,
+      qa-runs = progress.qa-runs,
+      qa-clears = progress.qa-clears,
+      qa-failures = progress.qa-failures,
+      public-floors = progress.public-floors,
+      internal-only-floors = progress.internal-only-floors,
+      player-feedback = progress.player-feedback,
+      avg-completion-rate = progress.avg-completion-rate,
+      avg-clear-time = progress.avg-clear-time,
+      last-updated = progress.last-updated
+    }
+    in StageAdvanceResult { progress = progress2, advanced = True, new-stage = next }
+
+  next-stage : DungeonStage -> DungeonStage
+  next-stage (s) =
+    when s
+      is StageFoundation -> StageEarlyFloors
+      is StageEarlyFloors -> StageMidGame
+      is StageMidGame -> StageDeepFloors
+      is StageDeepFloors -> StageBossLair
+      is StageBossLair -> StageEndgame
+      is StageEndgame -> StageEndgame
+
+Section: Record Public Play
+
+  record-public-clear : DungeonProgress, Integer, Boolean, Integer, Integer -> DungeonProgress
+  record-public-clear (progress) (entry-fee) (completed) (deaths) (time) =
+    let new-clears = if completed then progress.total-clears + 1 else progress.total-clears
+    in let gm-rev = gm-revenue-from-play entry-fee
+    in DungeonProgress {
+      dungeon-id = progress.dungeon-id,
+      clan-id = progress.clan-id,
+      current-stage = progress.current-stage,
+      total-clears = new-clears,
+      total-revenue = progress.total-revenue + gm-rev,
+      total-deaths = progress.total-deaths + deaths,
+      floors-built = progress.floors-built,
+      highest-monster-tier = progress.highest-monster-tier,
+      qa-runs = progress.qa-runs,
+      qa-clears = progress.qa-clears,
+      qa-failures = progress.qa-failures,
+      public-floors = progress.public-floors,
+      internal-only-floors = progress.internal-only-floors,
+      player-feedback = progress.player-feedback,
+      avg-completion-rate = update-avg (progress.avg-completion-rate) (if completed then 100 else 0) (progress.total-clears),
+      avg-clear-time = progress.avg-clear-time,
+      last-updated = time
+    }
+
+  update-avg : Integer, Integer, Integer -> Integer
+  update-avg (current-avg) (new-val) (count) =
+    if count == 0 then new-val
+    else (current-avg * count + new-val) / (count + 1)
+
+Section: Progression Summary — Where the clan stands
+
+  ProgressionSummary = record {
+    stage : DungeonStage,
+    next-stage : DungeonStage,
+    clears-needed : Integer,
+    revenue-needed : Integer,
+    floors-needed : Integer,
+    qa-clears-this-stage : Integer,
+    completion-rate : Integer,
+    total-bugs-found : Integer,
+    unfixed-bugs : Integer
+  }
+
+  summarize-progress : DungeonProgress, GMLicense -> ProgressionSummary
+  summarize-progress (progress) (license) =
+    let next = next-stage (progress.current-stage)
+    in let reqs = stage-requirements next
+    in let clears-left = if reqs.min-clears > progress.total-clears then reqs.min-clears - progress.total-clears else 0
+    in let rev-left = if reqs.min-revenue > progress.total-revenue then reqs.min-revenue - progress.total-revenue else 0
+    in let floors-left = if reqs.min-floors > progress.public-floors then reqs.min-floors - progress.public-floors else 0
+    in let total-bugs = count-all-bugs (progress.qa-runs) 0 (list-length (progress.qa-runs)) 0
+    in let unfixed = count-unfixed-bugs (progress.qa-runs) 0 (list-length (progress.qa-runs)) 0
+    in ProgressionSummary {
+      stage = progress.current-stage,
+      next-stage = next,
+      clears-needed = clears-left,
+      revenue-needed = rev-left,
+      floors-needed = floors-left,
+      qa-clears-this-stage = progress.qa-clears,
+      completion-rate = progress.avg-completion-rate,
+      total-bugs-found = total-bugs,
+      unfixed-bugs = unfixed
+    }
+
+  count-all-bugs : List QARun, Integer, Integer, Integer -> Integer
+  count-all-bugs (runs) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at runs i
+    in count-all-bugs runs (i + 1) len (acc + list-length (r.bugs-found))
+
+  count-unfixed-bugs : List QARun, Integer, Integer, Integer -> Integer
+  count-unfixed-bugs (runs) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at runs i
+    in let unfixed = count-unfixed-in-run (r.bugs-found) 0 (list-length (r.bugs-found)) 0
+    in count-unfixed-bugs runs (i + 1) len (acc + unfixed)
+
+  count-unfixed-in-run : List BugReport, Integer, Integer, Integer -> Integer
+  count-unfixed-in-run (bugs) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bugs i
+    in if b.fixed == False then count-unfixed-in-run bugs (i + 1) len (acc + 1)
+    else count-unfixed-in-run bugs (i + 1) len acc
+
+Page 1

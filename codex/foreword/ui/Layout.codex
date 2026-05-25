@@ -1,0 +1,171 @@
+Chapter: Layout
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+
+ Flex layout engine. Arranges children in a row or column within
+ a container rect. Each child has a flex weight (0 = fixed size,
+ >0 = proportional share of remaining space) and min size.
+ Outputs positioned LayoutRects.
+
+Section: Layout Direction
+  LayoutDir =
+    | DirRow
+    | DirColumn
+
+Section: Layout Item
+  LayoutItem = record {
+    li-min-w : Integer,
+    li-min-h : Integer,
+    li-flex : Integer,
+    li-margin : Edges
+  }
+
+  LayoutResult = record {
+    lrs : List LayoutRect,
+    lr-count : Integer
+  }
+
+Section: Construction
+  layout-item : Integer, Integer, Integer -> LayoutItem
+  layout-item (minw) (minh) (flex) =
+    LayoutItem { li-min-w = minw, li-min-h = minh, li-flex = flex, li-margin = edges-zero }
+
+  layout-item-m : Integer, Integer, Integer, Edges -> LayoutItem
+  layout-item-m (minw) (minh) (flex) (margin) =
+    LayoutItem { li-min-w = minw, li-min-h = minh, li-flex = flex, li-margin = margin }
+
+Section: Flex Layout
+  flex-layout : LayoutRect, LayoutDir, Integer, List LayoutItem, Integer -> LayoutResult
+  flex-layout (container) (dir) (gap) (items) (count) =
+    when dir
+      is DirRow -> flex-row container gap items count
+      is DirColumn -> flex-col container gap items count
+
+Section: Row Layout
+  flex-row : LayoutRect, Integer, List LayoutItem, Integer -> LayoutResult
+  flex-row (container) (gap) (items) (count) =
+    let total-gap = if count > 1 then gap * (count - 1) else 0
+    in let fixed = flex-sum-fixed-w items 0 count 0
+    in let total-flex = flex-sum-flex items 0 count 0
+    in let avail = box-clamp0 (container.lr-w - total-gap - fixed)
+    in flex-row-place container gap items count total-flex avail 0 container.lr-x []
+
+  flex-row-place : LayoutRect, Integer, List LayoutItem, Integer, Integer, Integer, Integer, Integer, List LayoutRect -> LayoutResult
+  flex-row-place (container) (gap) (items) (count) (total-flex) (avail) (i) (cursor) (acc) =
+    if i >= count then LayoutResult { lrs = acc, lr-count = count }
+    else let item = list-at items i
+    in let mw = item.li-min-w + edges-h (item.li-margin)
+    in let w = if item.li-flex > 0 then
+        if total-flex > 0 then box-max mw (item.li-flex * avail / total-flex)
+        else mw
+      else mw
+    in let h = box-max (item.li-min-h + edges-v (item.li-margin)) (container.lr-h)
+    in let r = box-margin-rect (layout-rect cursor (container.lr-y) w h) (item.li-margin)
+    in let next = cursor + w + gap
+    in flex-row-place container gap items count total-flex avail (i + 1) next (list-push acc r)
+
+Section: Column Layout
+  flex-col : LayoutRect, Integer, List LayoutItem, Integer -> LayoutResult
+  flex-col (container) (gap) (items) (count) =
+    let total-gap = if count > 1 then gap * (count - 1) else 0
+    in let fixed = flex-sum-fixed-h items 0 count 0
+    in let total-flex = flex-sum-flex items 0 count 0
+    in let avail = box-clamp0 (container.lr-h - total-gap - fixed)
+    in flex-col-place container gap items count total-flex avail 0 container.lr-y []
+
+  flex-col-place : LayoutRect, Integer, List LayoutItem, Integer, Integer, Integer, Integer, Integer, List LayoutRect -> LayoutResult
+  flex-col-place (container) (gap) (items) (count) (total-flex) (avail) (i) (cursor) (acc) =
+    if i >= count then LayoutResult { lrs = acc, lr-count = count }
+    else let item = list-at items i
+    in let mh = item.li-min-h + edges-v (item.li-margin)
+    in let h = if item.li-flex > 0 then
+        if total-flex > 0 then box-max mh (item.li-flex * avail / total-flex)
+        else mh
+      else mh
+    in let w = box-max (item.li-min-w + edges-h (item.li-margin)) (container.lr-w)
+    in let r = box-margin-rect (layout-rect (container.lr-x) cursor w h) (item.li-margin)
+    in let next = cursor + h + gap
+    in flex-col-place container gap items count total-flex avail (i + 1) next (list-push acc r)
+
+Section: Summation Helpers
+  flex-sum-fixed-w : List LayoutItem, Integer, Integer, Integer -> Integer
+  flex-sum-fixed-w (items) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in let add = if item.li-flex > 0 then 0 else item.li-min-w + edges-h (item.li-margin)
+    in flex-sum-fixed-w items (i + 1) n (acc + add)
+
+  flex-sum-fixed-h : List LayoutItem, Integer, Integer, Integer -> Integer
+  flex-sum-fixed-h (items) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in let add = if item.li-flex > 0 then 0 else item.li-min-h + edges-v (item.li-margin)
+    in flex-sum-fixed-h items (i + 1) n (acc + add)
+
+  flex-sum-flex : List LayoutItem, Integer, Integer, Integer -> Integer
+  flex-sum-flex (items) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in flex-sum-flex items (i + 1) n (acc + item.li-flex)
+
+Section: Grid Layout
+
+  GridLayout = record {
+    gl-columns : Integer,
+    gl-row-gap : Integer,
+    gl-col-gap : Integer
+  }
+
+  grid-layout : Integer, Integer, Integer -> GridLayout
+  grid-layout (cols) (row-gap) (col-gap) = GridLayout { gl-columns = cols, gl-row-gap = row-gap, gl-col-gap = col-gap }
+
+  grid-cell-rect : GridLayout, Integer, Integer, Integer, Integer -> LayoutRect
+  grid-cell-rect (g) (index) (total-w) (total-h) (count) =
+    let col = index - (index / g.gl-columns) * g.gl-columns
+    in let row = index / g.gl-columns
+    in let rows = (count + g.gl-columns - 1) / g.gl-columns
+    in let cell-w = (total-w - (g.gl-columns - 1) * g.gl-col-gap) / g.gl-columns
+    in let cell-h = (total-h - (rows - 1) * g.gl-row-gap) / rows
+    in LayoutRect { lr-x = col * (cell-w + g.gl-col-gap), lr-y = row * (cell-h + g.gl-row-gap), lr-w = cell-w, lr-h = cell-h }
+
+Section: Stack Layout
+
+  stack-layout : List LayoutRect, LayoutRect -> List LayoutRect
+  stack-layout (children) (bounds) =
+    stack-loop children bounds 0 (list-length children) []
+
+  stack-loop : List LayoutRect, LayoutRect, Integer, Integer, List LayoutRect -> List LayoutRect
+  stack-loop (children) (bounds) (i) (len) (acc) =
+    if i >= len then acc
+    else stack-loop children bounds (i + 1) len (list-push acc bounds)
+
+Section: Splitter Layout
+
+  SplitLayout = record {
+    sl-ratio : Integer,
+    sl-direction : LayoutDir,
+    sl-gap : Integer
+  }
+
+  split-layout : LayoutDir, Integer, Integer -> SplitLayout
+  split-layout (dir) (ratio) (gap) = SplitLayout { sl-ratio = ratio, sl-direction = dir, sl-gap = gap }
+
+  split-first : SplitLayout, LayoutRect -> LayoutRect
+  split-first (s) (bounds) = when s.sl-direction
+    is DirRow ->
+      let w = bounds.lr-w * s.sl-ratio / 1000 - s.sl-gap / 2
+      in LayoutRect { lr-x = bounds.lr-x, lr-y = bounds.lr-y, lr-w = w, lr-h = bounds.lr-h }
+    is DirColumn ->
+      let h = bounds.lr-h * s.sl-ratio / 1000 - s.sl-gap / 2
+      in LayoutRect { lr-x = bounds.lr-x, lr-y = bounds.lr-y, lr-w = bounds.lr-w, lr-h = h }
+
+  split-second : SplitLayout, LayoutRect -> LayoutRect
+  split-second (s) (bounds) = when s.sl-direction
+    is DirRow ->
+      let first-w = bounds.lr-w * s.sl-ratio / 1000 + s.sl-gap / 2
+      in LayoutRect { lr-x = bounds.lr-x + first-w, lr-y = bounds.lr-y, lr-w = bounds.lr-w - first-w, lr-h = bounds.lr-h }
+    is DirColumn ->
+      let first-h = bounds.lr-h * s.sl-ratio / 1000 + s.sl-gap / 2
+      in LayoutRect { lr-x = bounds.lr-x, lr-y = bounds.lr-y + first-h, lr-w = bounds.lr-w, lr-h = bounds.lr-h - first-h }
+
+Page 1

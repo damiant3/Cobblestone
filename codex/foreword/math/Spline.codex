@@ -1,0 +1,61 @@
+Chapter: Spline
+  cites Math chapter Quaternion
+
+ Catmull-Rom spline interpolation. Fixed-point (scale 1000).
+ Produces smooth curves through control points with C1 continuity.
+ Useful for camera paths, animation, and procedural curves.
+
+ We say:
+
+Section: Evaluation
+  catmull-rom : Vec3, Vec3, Vec3, Vec3, Integer -> Vec3
+  catmull-rom (p0) (p1) (p2) (p3) (t) =
+    let t2 = t * t / 1000
+    in let t3 = t2 * t / 1000
+    in let c0 = -t3 / 2 + t2 - t / 2
+    in let c1 = 3 * t3 / 2 - 5 * t2 / 2 + 1000
+    in let c2 = 0 - 3 * t3 / 2 + 2 * t2 + t / 2
+    in let c3 = t3 / 2 - t2 / 2
+    in Vec3 { vx = (c0 * p0.vx + c1 * p1.vx + c2 * p2.vx + c3 * p3.vx) / 1000, vy = (c0 * p0.vy + c1 * p1.vy + c2 * p2.vy + c3 * p3.vy) / 1000, vz = (c0 * p0.vz + c1 * p1.vz + c2 * p2.vz + c3 * p3.vz) / 1000 }
+
+Section: Multi-Point Spline
+  spline-eval : List Vec3, Integer -> Vec3
+  spline-eval (points) (t-global) =
+    let num-segments = list-length points - 3
+    in if num-segments <= 0 then vec3-zero
+    else let segment = t-global * num-segments / 1000
+    in let seg-idx = if segment >= num-segments then num-segments - 1 else segment
+    in let local-t = t-global * num-segments - seg-idx * 1000
+    in catmull-rom (list-at points seg-idx) (list-at points (seg-idx + 1)) (list-at points (seg-idx + 2)) (list-at points (seg-idx + 3)) local-t
+
+Section: Sampling
+  spline-sample : List Vec3, Integer -> List Vec3
+  spline-sample (points) (steps) = spline-sample-loop points steps 0 []
+
+  spline-sample-loop : List Vec3, Integer, Integer, List Vec3 -> List Vec3
+  spline-sample-loop (points) (steps) (i) (acc) =
+    if i > steps then acc
+    else let t = i * 1000 / steps
+    in spline-sample-loop points steps (i + 1) (list-push acc (spline-eval points t))
+
+Section: Arc Length
+  spline-arc-length : List Vec3, Integer -> Integer
+  spline-arc-length (points) (segments) = spline-arc-loop points segments 0 0 (spline-eval points 0)
+
+  spline-arc-loop : List Vec3, Integer, Integer, Integer, Vec3 -> Integer
+  spline-arc-loop (points) (segments) (i) (total) (prev) =
+    if i >= segments then total
+    else let t = (i + 1) * 1000 / segments
+    in let curr = spline-eval points t
+    in let dx = curr.vx - prev.vx
+    in let dy = curr.vy - prev.vy
+    in let dist = spline-isqrt (dx * dx + dy * dy)
+    in spline-arc-loop points segments (i + 1) (total + dist) curr
+
+  spline-isqrt : Integer -> Integer
+  spline-isqrt (n) = if n <= 0 then 0 else spline-isqrt-loop n (n / 2 + 1)
+
+  spline-isqrt-loop : Integer, Integer -> Integer
+  spline-isqrt-loop (n) (g) = let next = (g + n / g) / 2 in if next >= g then g else spline-isqrt-loop n next
+
+Page 1

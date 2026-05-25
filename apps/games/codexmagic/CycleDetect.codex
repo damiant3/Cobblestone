@@ -1,0 +1,108 @@
+Chapter: CycleDetect
+  cites CodexMagic chapter GameState
+
+ Cycle detection for infinite loops in automatic events. Uses state
+ fingerprinting to detect repeating game states. Clamps cycles at a
+ configurable maximum iteration count.
+
+ We say:
+
+Section: Configuration
+
+  max-cycle-iterations : Integer
+  max-cycle-iterations = 500
+
+  max-replacement-depth : Integer
+  max-replacement-depth = 50
+
+Section: State Fingerprint
+
+  StateFingerprint = record {
+    life-a : Integer,
+    life-b : Integer,
+    battlefield-count : Integer,
+    stack-depth : Integer,
+    hand-size-a : Integer,
+    hand-size-b : Integer,
+    library-size-a : Integer,
+    library-size-b : Integer
+  }
+
+  compute-fingerprint : GameState -> StateFingerprint
+  compute-fingerprint (gs) =
+    let p0 = get-player gs 0
+    in let p1 = get-player gs 1
+    in StateFingerprint {
+      life-a = p0.general.life,
+      life-b = p1.general.life,
+      battlefield-count = list-length (gs.battlefield),
+      stack-depth = list-length (gs.stack),
+      hand-size-a = list-length (p0.hand),
+      hand-size-b = list-length (p1.hand),
+      library-size-a = list-length (p0.library),
+      library-size-b = list-length (p1.library)
+    }
+
+  fingerprints-equal : StateFingerprint, StateFingerprint -> Boolean
+  fingerprints-equal (a) (b) =
+    a.life-a == b.life-a &
+    a.life-b == b.life-b &
+    a.battlefield-count == b.battlefield-count &
+    a.stack-depth == b.stack-depth &
+    a.hand-size-a == b.hand-size-a &
+    a.hand-size-b == b.hand-size-b &
+    a.library-size-a == b.library-size-a &
+    a.library-size-b == b.library-size-b
+
+Section: Cycle Detector
+
+  CycleDetector = record {
+    history : List StateFingerprint,
+    iteration-count : Integer,
+    cycle-detected : Boolean,
+    cycle-length : Integer
+  }
+
+  detector-new : CycleDetector
+  detector-new = CycleDetector {
+    history = [],
+    iteration-count = 0,
+    cycle-detected = False,
+    cycle-length = 0
+  }
+
+  detector-advance : CycleDetector, StateFingerprint -> CycleDetector
+  detector-advance (det) (fp) =
+    if det.cycle-detected then det
+    else if det.iteration-count >= max-cycle-iterations
+      then CycleDetector {
+        history = det.history,
+        iteration-count = det.iteration-count,
+        cycle-detected = True,
+        cycle-length = 0
+      }
+      else let match-idx = find-fingerprint-match (det.history) fp 0 (list-length (det.history))
+      in if match-idx >= 0
+        then CycleDetector {
+          history = list-push (det.history) fp,
+          iteration-count = det.iteration-count + 1,
+          cycle-detected = True,
+          cycle-length = det.iteration-count - match-idx
+        }
+        else CycleDetector {
+          history = list-push (det.history) fp,
+          iteration-count = det.iteration-count + 1,
+          cycle-detected = False,
+          cycle-length = 0
+        }
+
+  find-fingerprint-match : List StateFingerprint, StateFingerprint, Integer, Integer -> Integer
+  find-fingerprint-match (history) (target) (i) (len) =
+    if i >= len then -1
+    else if fingerprints-equal (list-at history i) target then i
+    else find-fingerprint-match history target (i + 1) len
+
+  is-cycle-detected : CycleDetector -> Boolean
+  is-cycle-detected (det) = det.cycle-detected
+
+Page 1

@@ -1,0 +1,106 @@
+Chapter: Plug Chain
+  cites Codex chapter Lists
+  cites Codex chapter Text
+  cites Codex chapter Characters
+
+ Wire protocol types and parsers for plug-to-plug chaining.
+ The x86 codegen plug produces machine code bytes + metadata;
+ container writer plugs (ELF, PE, CDX) consume this format.
+
+ Binary wire format (tag=2):
+   [4 bytes] code-len   (LE)
+   [4 bytes] data-len   (LE)
+   [4 bytes] func-count (LE)
+   [code-len bytes] code
+   [data-len bytes] data
+   For each function:
+     [2 bytes] name-len (LE)
+     [name-len bytes] name (CCE)
+     [4 bytes] offset  (LE)
+
+Section: Constants
+
+  x86-output-tag : Integer = 2
+
+  bare-metal-load-addr : Integer = 1048576
+
+  bare-metal-ram-size : Integer = 2147483648
+
+  bare-metal-heap-base : Integer = 6291456
+
+Section: Types
+
+  FuncEntry = record {
+   name : Text,
+   offset : Integer
+  }
+
+  X86Output = record {
+   code : List Integer,
+   data : List Integer,
+   code-len : Integer,
+   data-len : Integer,
+   func-names : List Text,
+   func-offsets : List Integer
+  }
+
+Section: Parse Header
+
+  parse-x86-header : List Integer -> X86Output
+  parse-x86-header (bs) =
+   let code-len = read-i32-le bs 0
+   in let data-len = read-i32-le bs 4
+   in let func-count = read-i32-le bs 8
+   in let code-start = 12
+   in let data-start = code-start + code-len
+   in let func-start = data-start + data-len
+   in let code = slice-bytes bs code-start (code-start + code-len)
+   in let data-bytes = slice-bytes bs data-start (data-start + data-len)
+   in let funcs = parse-func-table bs func-start func-count
+   in X86Output {
+    code = code,
+    data = data-bytes,
+    code-len = code-len,
+    data-len = data-len,
+    func-names = funcs.names,
+    func-offsets = funcs.offsets
+   }
+
+Section: Function Table Parser
+
+  FuncTable = record {
+   names : List Text,
+   offsets : List Integer
+  }
+
+  parse-func-table : List Integer, Integer, Integer -> FuncTable
+  parse-func-table (bs) (off) (count) =
+   parse-func-table-loop bs off count 0 [] []
+
+  parse-func-table-loop : List Integer, Integer, Integer, Integer, List Text, List Integer -> FuncTable
+  parse-func-table-loop (bs) (off) (count) (i) (names) (offsets) =
+   if i >= count then FuncTable { names = names, offsets = offsets }
+   else let name-len = read-i16-le bs off
+   in let name = bytes-to-text-range bs (off + 2) name-len
+   in let func-off = read-i32-le bs (off + 2 + name-len)
+   in parse-func-table-loop bs (off + 2 + name-len + 4) count (i + 1) (list-push names name) (list-push offsets func-off)
+
+Section: Byte Slice
+
+  slice-bytes : List Integer, Integer, Integer -> List Integer
+  slice-bytes (bs) (start) (stop) =
+   slice-bytes-loop bs start stop []
+
+  slice-bytes-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  slice-bytes-loop (bs) (i) (stop) (acc) =
+   if i >= stop then acc
+   else slice-bytes-loop bs (i + 1) stop (list-push acc (list-at bs i))
+
+  bytes-to-text-range : List Integer, Integer, Integer -> Text
+  bytes-to-text-range (bs) (off) (len) =
+   bytes-to-text-loop bs off (off + len) ""
+
+  bytes-to-text-loop : List Integer, Integer, Integer, Text -> Text
+  bytes-to-text-loop (bs) (i) (stop) (acc) =
+   if i >= stop then acc
+   else bytes-to-text-loop bs (i + 1) stop (acc & char-to-text (code-to-char (list-at bs i)))

@@ -1,0 +1,175 @@
+Chapter: AudioAnalysis
+
+ Audio analysis: waveform envelope, RMS energy, spectral centroid,
+ BPM estimation via onset autocorrelation, and spectrogram bands.
+ Fixed-point (scale 1000). Ported from Spark MusicAnalyzer.
+
+ We say:
+
+Section: Types
+  AudioFeatures = record {
+    af-peak : Integer,
+    af-rms : Integer,
+    af-centroid : Integer,
+    af-bpm : Integer,
+    af-duration-ms : Integer
+  }
+
+Section: Peak and RMS
+  audio-peak : List Integer -> Integer
+  audio-peak (samples) = aa-peak-loop samples 0 (list-length samples) 0
+
+  aa-peak-loop : List Integer, Integer, Integer, Integer -> Integer
+  aa-peak-loop (samples) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at samples i
+    in let abs-v = if v < 0 then -v else v
+    in aa-peak-loop samples (i + 1) n (if abs-v > best then abs-v else best)
+
+  audio-rms : List Integer -> Integer
+  audio-rms (samples) =
+    let n = list-length samples
+    in if n == 0 then 0
+    else let sum-sq = aa-sum-sq samples 0 n 0
+    in aa-isqrt (sum-sq / n)
+
+  aa-sum-sq : List Integer, Integer, Integer, Integer -> Integer
+  aa-sum-sq (samples) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at samples i
+    in aa-sum-sq samples (i + 1) n (acc + v * v / 1000)
+
+Section: Envelope (RMS per window)
+  audio-envelope : List Integer, Integer -> List Integer
+  audio-envelope (samples) (window-size) = aa-env-loop samples window-size 0 (list-length samples) []
+
+  aa-env-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  aa-env-loop (samples) (ws) (i) (n) (acc) =
+    if i + ws > n then acc
+    else let rms = aa-window-rms samples i ws
+    in aa-env-loop samples ws (i + ws) n (list-push acc rms)
+
+  aa-window-rms : List Integer, Integer, Integer -> Integer
+  aa-window-rms (samples) (start) (ws) = aa-isqrt (aa-window-sum-sq samples start ws 0 / ws)
+
+  aa-window-sum-sq : List Integer, Integer, Integer, Integer -> Integer
+  aa-window-sum-sq (samples) (start) (ws) (acc) =
+    if ws <= 0 then acc
+    else let v = list-at samples start
+    in aa-window-sum-sq samples (start + 1) (ws - 1) (acc + v * v / 1000)
+
+Section: Onset Detection
+  audio-onsets : List Integer -> List Integer
+  audio-onsets (envelope) = aa-onset-loop envelope 1 (list-length envelope) []
+
+  aa-onset-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  aa-onset-loop (env) (i) (n) (acc) =
+    if i >= n then acc
+    else let diff = list-at env i - list-at env (i - 1)
+    in let onset = if diff > 0 then diff else 0
+    in aa-onset-loop env (i + 1) n (list-push acc onset)
+
+Section: BPM Estimation (autocorrelation on onsets)
+  audio-estimate-bpm : List Integer, Integer, Integer -> Integer
+  audio-estimate-bpm (envelope) (sample-rate) (window-size) =
+    let onsets = audio-onsets envelope
+    in let env-rate = sample-rate / window-size
+    in let min-lag = env-rate * 60 / 200
+    in let max-lag = aa-min-val (env-rate * 60 / 50) (list-length onsets / 2)
+    in let best-lag = aa-autocorr onsets min-lag max-lag 0 min-lag
+    in if best-lag <= 0 then 120
+    else let bpm = 60 * env-rate / best-lag
+    in if bpm < 50 then 50 else if bpm > 200 then 200 else bpm
+
+  aa-autocorr : List Integer, Integer, Integer, Integer, Integer -> Integer
+  aa-autocorr (onsets) (lag) (max-lag) (best-corr) (best-lag) =
+    if lag > max-lag then best-lag
+    else let corr = aa-corr-at onsets lag 0 (list-length onsets - lag) 0
+    in if corr > best-corr then aa-autocorr onsets (lag + 1) max-lag corr lag
+    else aa-autocorr onsets (lag + 1) max-lag best-corr best-lag
+
+  aa-corr-at : List Integer, Integer, Integer, Integer, Integer -> Integer
+  aa-corr-at (onsets) (lag) (i) (n) (acc) =
+    if i >= n then acc
+    else aa-corr-at onsets lag (i + 1) n (acc + list-at onsets i * list-at onsets (i + lag) / 1000)
+
+Section: Spectral Centroid (simplified)
+  audio-spectral-centroid : List Integer, Integer -> Integer
+  audio-spectral-centroid (samples) (sample-rate) =
+    let n = aa-min-val 256 (list-length samples)
+    in let weighted = aa-centroid-loop samples sample-rate n 1 0 0
+    in if aa-centroid-mag weighted == 0 then 1000
+    else aa-centroid-freq weighted / aa-centroid-mag weighted
+
+  CentroidAccum = record { ca-weighted : Integer, ca-mag : Integer }
+
+  aa-centroid-freq : CentroidAccum -> Integer
+  aa-centroid-freq (c) = c.ca-weighted
+
+  aa-centroid-mag : CentroidAccum -> Integer
+  aa-centroid-mag (c) = c.ca-mag
+
+  aa-centroid-loop : List Integer, Integer, Integer, Integer, Integer, Integer -> CentroidAccum
+  aa-centroid-loop (samples) (sr) (n) (bin) (w-sum) (m-sum) =
+    if bin >= n / 2 then CentroidAccum { ca-weighted = w-sum, ca-mag = m-sum }
+    else let mag = aa-dft-mag samples n bin
+    in let hz = bin * sr / n
+    in aa-centroid-loop samples sr n (bin + 1) (w-sum + hz * mag / 1000) (m-sum + mag)
+
+  aa-dft-mag : List Integer, Integer, Integer -> Integer
+  aa-dft-mag (samples) (n) (bin) =
+    let result = aa-dft-loop samples n bin 0 0 0
+    in aa-isqrt (result.dft-re * result.dft-re / 1000 + result.dft-im * result.dft-im / 1000)
+
+  DftResult = record { dft-re : Integer, dft-im : Integer }
+
+  aa-dft-loop : List Integer, Integer, Integer, Integer, Integer, Integer -> DftResult
+  aa-dft-loop (samples) (n) (bin) (i) (re) (im) =
+    if i >= n then DftResult { dft-re = re, dft-im = im }
+    else let angle = i * bin * 6283 / n
+    in let cos-val = aa-cos angle
+    in let sin-val = aa-sin angle
+    in let v = list-at samples i
+    in aa-dft-loop samples n bin (i + 1) (re + v * cos-val / 1000) (im - v * sin-val / 1000)
+
+Section: Full Analysis
+  audio-analyze : List Integer, Integer -> AudioFeatures
+  audio-analyze (samples) (sample-rate) =
+    let peak = audio-peak samples
+    in let rms = audio-rms samples
+    in let centroid = audio-spectral-centroid samples sample-rate
+    in let env = audio-envelope samples 2048
+    in let bpm = audio-estimate-bpm env sample-rate 2048
+    in let dur = list-length samples * 1000 / sample-rate
+    in AudioFeatures { af-peak = peak, af-rms = rms, af-centroid = centroid, af-bpm = bpm, af-duration-ms = dur }
+
+  audio-vibe : AudioFeatures -> Text
+  audio-vibe (f) =
+    let energy = if f.af-rms > 700 then "high-energy" else if f.af-rms > 300 then "moderate" else "soft"
+    in let tempo = if f.af-bpm > 140 then "fast" else if f.af-bpm > 100 then "mid-tempo" else "relaxed"
+    in energy & ", " & tempo & " (" & show (f.af-bpm) & " BPM)"
+
+Section: Helpers
+  aa-sin : Integer -> Integer
+  aa-sin (x) = let x3 = x * x / 1000 * x / 1000 in x - x3 / 6
+
+  aa-cos : Integer -> Integer
+  aa-cos (x) = let x2 = x * x / 1000 in let x4 = x2 * x2 / 1000 in 1000 - x2 / 2 + x4 / 24
+
+  aa-isqrt : Integer -> Integer
+  aa-isqrt (n) = if n <= 0 then 0 else aa-isqrt-loop n (n / 2 + 1)
+
+  aa-isqrt-loop : Integer, Integer -> Integer
+  aa-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else aa-isqrt-loop n next
+
+  aa-min-val : Integer, Integer -> Integer
+  aa-min-val (a) (b) = if a < b then a else b
+
+Section: Formatting
+  format-audio-features : AudioFeatures -> Text
+  format-audio-features (f) =
+    "peak=" & show (f.af-peak) & " rms=" & show (f.af-rms) & " centroid=" & show (f.af-centroid) & "Hz bpm=" & show (f.af-bpm) & " dur=" & show (f.af-duration-ms) & "ms"
+
+Page 1

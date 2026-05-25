@@ -1,0 +1,108 @@
+Chapter: SortMerge
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+  cites Foreword chapter List
+  cites Foreword chapter Sort
+
+ Sort-merge join for pre-sorted or merge-friendly equi-joins.
+ Both sides are sorted on the join key, then merged in a single
+ linear pass. Efficient when inputs are already sorted or when
+ the result needs to be sorted anyway.
+
+ We say:
+
+Section: Sort-Merge Join
+
+  SortMergeResult = record {
+    sm-rows : List RowData,
+    sm-count : Integer
+  }
+
+  sort-merge-join : List RowData, List RowData, Text, Text -> SortMergeResult
+  sort-merge-join (left-rows) (right-rows) (left-col) (right-col) =
+    let sorted-left = sort-by left-rows (sm-cmp left-col)
+    in let sorted-right = sort-by right-rows (sm-cmp right-col)
+    in let result = sm-merge sorted-left sorted-right left-col right-col 0 0 (list-length sorted-left) (list-length sorted-right) []
+    in SortMergeResult { sm-rows = result, sm-count = list-length result }
+
+  sm-cmp : Text -> (RowData, RowData -> Integer)
+  sm-cmp (col) = \a -> \b ->
+    val-compare (row-get-by-name a col) (row-get-by-name b col)
+
+  sm-merge : List RowData, List RowData, Text, Text, Integer, Integer, Integer, Integer, List RowData -> List RowData
+  sm-merge (left) (right) (lcol) (rcol) (li) (ri) (llen) (rlen) (acc) =
+    if li >= llen then acc
+    else if ri >= rlen then acc
+    else let lval = row-get-by-name (list-at left li) lcol
+    in let rval = row-get-by-name (list-at right ri) rcol
+    in let cmp = val-compare lval rval
+    in if cmp < 0 then sm-merge left right lcol rcol (li + 1) ri llen rlen acc
+    else if cmp > 0 then sm-merge left right lcol rcol li (ri + 1) llen rlen acc
+    else let group-end = sm-find-group-end right rcol rval ri rlen
+    in let expanded = sm-cross-group (list-at left li) right ri group-end acc
+    in sm-merge left right lcol rcol (li + 1) ri llen rlen expanded
+
+  sm-find-group-end : List RowData, Text, ColumnValue, Integer, Integer -> Integer
+  sm-find-group-end (rows) (col) (val) (i) (len) =
+    if i >= len then i
+    else let cur = row-get-by-name (list-at rows i) col
+    in if val-compare cur val /= 0 then i
+    else sm-find-group-end rows col val (i + 1) len
+
+  sm-cross-group : RowData, List RowData, Integer, Integer, List RowData -> List RowData
+  sm-cross-group (lrow) (right) (start) (stop) (acc) =
+    if start >= stop then acc
+    else let rrow = list-at right start
+    in let combined = sm-merge-rows lrow rrow
+    in sm-cross-group lrow right (start + 1) stop (list-push acc combined)
+
+  sm-merge-rows : RowData, RowData -> RowData
+  sm-merge-rows (a) (b) =
+    let schema = schema-new (a.schema.col-names & b.schema.col-names) (a.schema.col-types & b.schema.col-types)
+    in row-new schema (a.values & b.values)
+
+Section: Sort-Merge Left Join
+
+  sort-merge-left-join : List RowData, List RowData, Text, Text -> SortMergeResult
+  sort-merge-left-join (left-rows) (right-rows) (left-col) (right-col) =
+    let sorted-left = sort-by left-rows (sm-cmp left-col)
+    in let sorted-right = sort-by right-rows (sm-cmp right-col)
+    in let result = sm-left-merge sorted-left sorted-right left-col right-col 0 0 (list-length sorted-left) (list-length sorted-right) []
+    in SortMergeResult { sm-rows = result, sm-count = list-length result }
+
+  sm-left-merge : List RowData, List RowData, Text, Text, Integer, Integer, Integer, Integer, List RowData -> List RowData
+  sm-left-merge (left) (right) (lcol) (rcol) (li) (ri) (llen) (rlen) (acc) =
+    if li >= llen then acc
+    else if ri >= rlen then sm-pad-remaining left right li llen acc
+    else let lval = row-get-by-name (list-at left li) lcol
+    in let rval = row-get-by-name (list-at right ri) rcol
+    in let cmp = val-compare lval rval
+    in if cmp < 0 then
+      let null-right = sm-null-row right
+      in let combined = sm-merge-rows (list-at left li) null-right
+      in sm-left-merge left right lcol rcol (li + 1) ri llen rlen (list-push acc combined)
+    else if cmp > 0 then sm-left-merge left right lcol rcol li (ri + 1) llen rlen acc
+    else let group-end = sm-find-group-end right rcol rval ri rlen
+    in let expanded = sm-cross-group (list-at left li) right ri group-end acc
+    in sm-left-merge left right lcol rcol (li + 1) ri llen rlen expanded
+
+  sm-pad-remaining : List RowData, List RowData, Integer, Integer, List RowData -> List RowData
+  sm-pad-remaining (left) (right) (li) (llen) (acc) =
+    if li >= llen then acc
+    else let null-right = sm-null-row right
+    in let combined = sm-merge-rows (list-at left li) null-right
+    in sm-pad-remaining left right (li + 1) llen (list-push acc combined)
+
+  sm-null-row : List RowData -> RowData
+  sm-null-row (sample) =
+    if list-length sample == 0 then row-new (schema-new [] []) []
+    else let s = list-at sample 0
+    in let nulls = sm-make-nulls (list-length (s.values)) []
+    in row-new (s.schema) nulls
+
+  sm-make-nulls : Integer, List ColumnValue -> List ColumnValue
+  sm-make-nulls (n) (acc) =
+    if n <= 0 then acc
+    else sm-make-nulls (n - 1) (list-push acc ValNull)
+
+Page 1

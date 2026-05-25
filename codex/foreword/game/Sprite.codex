@@ -1,0 +1,158 @@
+Chapter: Sprite
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Math chapter Geometry
+  cites Math chapter Quaternion
+  cites Game chapter Bresenham
+
+ Sprite system. Sprites are rectangular pixel regions stored as
+ flat lists of packed RGB values. Supports blitting to framebuffer,
+ transparency (color key), flipping, and animation frames from
+ sprite sheets.
+
+ We say:
+
+Section: Types
+  Sprite = record {
+    spr-width : Integer,
+    spr-height : Integer,
+    spr-pixels : List Integer
+  }
+
+  AnimFrame = record {
+    af-sprite : Sprite,
+    af-duration : Integer
+  }
+
+  SpriteAnim = record {
+    sa-frames : List AnimFrame,
+    sa-count : Integer,
+    sa-current : Integer,
+    sa-elapsed : Integer,
+    sa-looping : Boolean
+  }
+
+Section: Construction
+  sprite-new : Integer, Integer, Integer -> Sprite
+  sprite-new (w) (h) (fill) = Sprite { spr-width = w, spr-height = h, spr-pixels = spr-fill (w * h) fill }
+
+  spr-fill : Integer, Integer -> List Integer
+  spr-fill (n) (val) = spr-fill-loop n val []
+
+  spr-fill-loop : Integer, Integer, List Integer -> List Integer
+  spr-fill-loop (n) (val) (acc) =
+    if n <= 0 then acc
+    else spr-fill-loop (n - 1) val (list-push acc val)
+
+  sprite-from-pixels : Integer, Integer, List Integer -> Sprite
+  sprite-from-pixels (w) (h) (pixels) = Sprite { spr-width = w, spr-height = h, spr-pixels = pixels }
+
+Section: Pixel Access
+  sprite-get : Sprite, Integer, Integer -> Integer
+  sprite-get (spr) (x) (y) =
+    if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= spr.spr-width then 0
+    else if y >= spr.spr-height then 0
+    else list-at (spr.spr-pixels) (y * spr.spr-width + x)
+
+  sprite-set : Sprite, Integer, Integer, Integer -> Sprite
+  sprite-set (spr) (x) (y) (color) =
+    if x < 0 then spr
+    else if y < 0 then spr
+    else if x >= spr.spr-width then spr
+    else if y >= spr.spr-height then spr
+    else Sprite { spr-width = spr.spr-width, spr-height = spr.spr-height, spr-pixels = list-set-at (spr.spr-pixels) (y * spr.spr-width + x) color }
+
+Section: Blitting
+  sprite-blit : Framebuf, Sprite, Integer, Integer -> Framebuf
+  sprite-blit (fb) (spr) (dx) (dy) = spr-blit-loop fb spr dx dy 0 0
+
+  spr-blit-loop : Framebuf, Sprite, Integer, Integer, Integer, Integer -> Framebuf
+  spr-blit-loop (fb) (spr) (dx) (dy) (sx) (sy) =
+    if sy >= spr.spr-height then fb
+    else if sx >= spr.spr-width then spr-blit-loop fb spr dx dy 0 (sy + 1)
+    else let color = sprite-get spr sx sy
+    in let fb2 = fb-set fb (dx + sx) (dy + sy) color
+    in spr-blit-loop fb2 spr dx dy (sx + 1) sy
+
+  sprite-blit-keyed : Framebuf, Sprite, Integer, Integer, Integer -> Framebuf
+  sprite-blit-keyed (fb) (spr) (dx) (dy) (key) = spr-blit-key-loop fb spr dx dy key 0 0
+
+  spr-blit-key-loop : Framebuf, Sprite, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  spr-blit-key-loop (fb) (spr) (dx) (dy) (key) (sx) (sy) =
+    if sy >= spr.spr-height then fb
+    else if sx >= spr.spr-width then spr-blit-key-loop fb spr dx dy key 0 (sy + 1)
+    else let color = sprite-get spr sx sy
+    in let fb2 = if color == key then fb else fb-set fb (dx + sx) (dy + sy) color
+    in spr-blit-key-loop fb2 spr dx dy key (sx + 1) sy
+
+Section: Transform
+  sprite-flip-h : Sprite -> Sprite
+  sprite-flip-h (spr) = spr-flip-h-loop spr 0 0 (sprite-new (spr.spr-width) (spr.spr-height) 0)
+
+  spr-flip-h-loop : Sprite, Integer, Integer, Sprite -> Sprite
+  spr-flip-h-loop (src) (x) (y) (dst) =
+    if y >= src.spr-height then dst
+    else if x >= src.spr-width then spr-flip-h-loop src 0 (y + 1) dst
+    else let color = sprite-get src x y
+    in spr-flip-h-loop src (x + 1) y (sprite-set dst (src.spr-width - 1 - x) y color)
+
+  sprite-flip-v : Sprite -> Sprite
+  sprite-flip-v (spr) = spr-flip-v-loop spr 0 0 (sprite-new (spr.spr-width) (spr.spr-height) 0)
+
+  spr-flip-v-loop : Sprite, Integer, Integer, Sprite -> Sprite
+  spr-flip-v-loop (src) (x) (y) (dst) =
+    if y >= src.spr-height then dst
+    else if x >= src.spr-width then spr-flip-v-loop src 0 (y + 1) dst
+    else let color = sprite-get src x y
+    in spr-flip-v-loop src (x + 1) y (sprite-set dst x (src.spr-height - 1 - y) color)
+
+Section: Sprite Sheet
+  sprite-sheet-frame : Sprite, Integer, Integer, Integer, Integer -> Sprite
+  sprite-sheet-frame (sheet) (fx) (fy) (fw) (fh) =
+    spr-extract sheet fx fy fw fh 0 0 (sprite-new fw fh 0)
+
+  spr-extract : Sprite, Integer, Integer, Integer, Integer, Integer, Integer, Sprite -> Sprite
+  spr-extract (sheet) (fx) (fy) (fw) (fh) (x) (y) (dst) =
+    if y >= fh then dst
+    else if x >= fw then spr-extract sheet fx fy fw fh 0 (y + 1) dst
+    else let color = sprite-get sheet (fx + x) (fy + y)
+    in spr-extract sheet fx fy fw fh (x + 1) y (sprite-set dst x y color)
+
+Section: Animation
+  anim-new : List AnimFrame, Boolean -> SpriteAnim
+  anim-new (frames) (loop) = SpriteAnim { sa-frames = frames, sa-count = list-length frames, sa-current = 0, sa-elapsed = 0, sa-looping = loop }
+
+  anim-frame : Integer, Sprite -> AnimFrame
+  anim-frame (dur) (spr) = AnimFrame { af-sprite = spr, af-duration = dur }
+
+  anim-tick : SpriteAnim, Integer -> SpriteAnim
+  anim-tick (anim) (dt) =
+    let new-elapsed = anim.sa-elapsed + dt
+    in let cur-frame = list-at (anim.sa-frames) (anim.sa-current)
+    in if new-elapsed >= cur-frame.af-duration then
+      let next = anim.sa-current + 1
+      in if next >= anim.sa-count then
+        if anim.sa-looping then SpriteAnim { sa-frames = anim.sa-frames, sa-count = anim.sa-count, sa-current = 0, sa-elapsed = 0, sa-looping = True }
+        else SpriteAnim { sa-frames = anim.sa-frames, sa-count = anim.sa-count, sa-current = anim.sa-count - 1, sa-elapsed = cur-frame.af-duration, sa-looping = False }
+      else SpriteAnim { sa-frames = anim.sa-frames, sa-count = anim.sa-count, sa-current = next, sa-elapsed = 0, sa-looping = anim.sa-looping }
+    else SpriteAnim { sa-frames = anim.sa-frames, sa-count = anim.sa-count, sa-current = anim.sa-current, sa-elapsed = new-elapsed, sa-looping = anim.sa-looping }
+
+  anim-current-sprite : SpriteAnim -> Sprite
+  anim-current-sprite (anim) = (list-at (anim.sa-frames) (anim.sa-current)).af-sprite
+
+Section: Queries
+  sprite-pixel-count : Sprite -> Integer
+  sprite-pixel-count (spr) = spr.spr-width * spr.spr-height
+
+  sprite-count-color : Sprite, Integer -> Integer
+  sprite-count-color (spr) (color) = spr-count-loop (spr.spr-pixels) color 0 (list-length (spr.spr-pixels)) 0
+
+  spr-count-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  spr-count-loop (px) (color) (i) (n) (acc) =
+    if i >= n then acc
+    else let inc = if list-at px i == color then 1 else 0
+    in spr-count-loop px color (i + 1) n (acc + inc)
+
+Page 1

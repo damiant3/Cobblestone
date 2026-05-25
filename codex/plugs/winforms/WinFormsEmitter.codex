@@ -1,0 +1,238 @@
+Chapter: WinForms Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates WinForms C# from the IR.
+
+Section: Sanitization
+
+  wf-sanitize : Text -> Text
+  wf-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  wf-escape : Text -> Text
+  wf-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in text-replace s2 "\n" "\\n"
+
+  wf-indent : Integer -> Text
+  wf-indent (n) =
+   if n <= 0 then ""
+   else "    " & wf-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare name (list-at entries mid).name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   list-insert-at xs (bsearch-arity-pos xs (e.name) 0 (list-length xs)) e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry { name = d.name, arity = list-length (d.params), generic-count = 0 }))
+
+Section: Expression Emission
+
+  emit-wf-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-wf-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n & "L"
+    is IrNumLit (n) (sp) -> "BitConverter.Int64BitsToDouble(" & show n & "L)"
+    is IrTextLit (s) (sp) -> "\"" & wf-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "((char)" & show n & ")"
+    is IrName (n) (ty) (sp) -> wf-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-wf-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-wf-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-wf-expr c arities indent & " ? " & emit-wf-expr t arities indent & " : " & emit-wf-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "((Func<dynamic>)(() => { dynamic " & wf-sanitize name & " = " & emit-wf-expr val arities indent & "; return " & emit-wf-expr body arities indent & "; }))()"
+    is IrApply (f) (a) (ty) (sp) -> emit-wf-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "((" & emit-wf-params params 0 & ") => " & emit-wf-expr body arities indent & ")"
+    is IrList (elems) (ty) (sp) -> "new List<dynamic> { " & emit-wf-elems elems arities indent 0 & " }"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-wf-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-wf-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "new Dictionary<string,dynamic> { [\"_type\"] = \"" & name & "\"" & emit-wf-rec-fields fields arities indent 0 & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-wf-expr rec arities indent & ")[\"" & field & "\"])"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((" & emit-wf-expr rec arities indent & ")[\"" & field & "\"] = " & emit-wf-expr val arities indent & ")"
+    is IrFork (body) (ty) (sp) -> "Task.Run(() => " & emit-wf-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-wf-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-wf-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-wf-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-wf-expr body arities indent
+    is IrError (msg) (ty) (sp) -> "throw new Exception(\"" & wf-escape msg & "\")"
+
+  emit-wf-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-wf-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-wf-expr l arities indent
+   in let rhs = emit-wf-expr r arities indent
+   in when op
+    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
+    is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
+    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrEq -> "object.Equals(" & lhs & ", " & rhs & ")"
+    is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
+    is IrLt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
+    is IrGt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
+    is IrLtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
+    is IrGtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(\"\" + " & lhs & " + " & rhs & ")"
+    is IrAppendList -> "((List<dynamic>)" & lhs & ").Concat((List<dynamic>)" & rhs & ").ToList()"
+    is IrConsList -> "new List<dynamic> { " & lhs & " }.Concat((List<dynamic>)" & rhs & ").ToList()"
+
+  FlatApply = record { root : IRExpr, args : List IRExpr }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-wf-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-wf-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in emit-wf-expr (chain.root) arities indent & "(" & emit-wf-elems (chain.args) arities indent 0 & ")"
+
+  emit-wf-params : List IRParam, Integer -> Text
+  emit-wf-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "dynamic " & wf-sanitize (list-at params i).name & emit-wf-params params (i + 1)
+
+  emit-wf-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-wf-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-wf-expr (list-at elems i) arities indent & emit-wf-elems elems arities indent (i + 1)
+
+  emit-wf-rec-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-wf-rec-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", [\"" & f.name & "\"] = " & emit-wf-expr (f.value) arities indent & emit-wf-rec-fields fields arities indent (i + 1)
+
+  emit-wf-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-wf-match (scrut) (branches) (arities) (indent) =
+   "((Func<dynamic>)(() => { dynamic _s = " & emit-wf-expr scrut arities indent & "; " & emit-wf-branches branches arities indent 0 & "throw new Exception(\"match\"); }))()"
+
+  emit-wf-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-wf-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in let cond = emit-wf-pat-cond (b.pattern) "_s"
+   in let binds = emit-wf-pat-binds (b.pattern) "_s"
+   in "if (" & cond & ") { " & binds & "return " & emit-wf-expr (b.body) arities indent & "; } " & emit-wf-branches branches arities indent (i + 1)
+
+  emit-wf-pat-cond : IRPat, Text -> Text
+  emit-wf-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> "object.Equals(" & scrut & ", (dynamic)" & text & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "(string)" & scrut & "[\"_tag\"] == \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+
+  emit-wf-pat-binds : IRPat, Text -> Text
+  emit-wf-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "dynamic " & wf-sanitize name & " = " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-wf-ctor-binds subs scrut 0
+    is IrWildPat (sp) -> ""
+
+  emit-wf-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-wf-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else emit-wf-pat-binds (list-at subs i) (scrut & "[\"_" & show i & "\"]") & emit-wf-ctor-binds subs scrut (i + 1)
+
+  emit-wf-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-wf-act (stmts) (arities) (indent) =
+   "((Func<dynamic>)(() => { " & emit-wf-act-loop stmts arities indent 0 & " }))()"
+
+  emit-wf-act-loop : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-wf-act-loop (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> "dynamic " & wf-sanitize name & " = " & emit-wf-expr val arities indent & "; " & emit-wf-act-loop stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) -> if is-last then "return " & emit-wf-expr e arities indent & "; " else emit-wf-expr e arities indent & "; " & emit-wf-act-loop stmts arities indent (i + 1)
+
+Section: Type and Definition Emission
+
+  emit-wf-type-def : ATypeDef -> Text
+  emit-wf-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) -> ""
+    is AVariantTypeDef (name) (tparams) (ctors) (s) -> emit-wf-var-ctors ctors 0
+
+  emit-wf-var-ctors : List AVariantCtorDef, Integer -> Text
+  emit-wf-var-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let t = if n == 0 then wf-indent 2 & "static readonly Dictionary<string,dynamic> " & wf-sanitize (c.name.value) & " = new() { [\"_tag\"] = \"" & c.name.value & "\" };\n"
+      else wf-indent 2 & "static Dictionary<string,dynamic> " & wf-sanitize (c.name.value) & "(" & emit-wf-ctor-p n 0 & ") => new() { [\"_tag\"] = \"" & c.name.value & "\"" & emit-wf-ctor-f n 0 & " };\n"
+   in t & emit-wf-var-ctors ctors (i + 1)
+
+  emit-wf-ctor-p : Integer, Integer -> Text
+  emit-wf-ctor-p (n) (i) =
+   if i == n then "" else let sep = if i > 0 then ", " else "" in sep & "dynamic _" & show i & emit-wf-ctor-p n (i + 1)
+
+  emit-wf-ctor-f : Integer, Integer -> Text
+  emit-wf-ctor-f (n) (i) =
+   if i == n then "" else ", [\"_" & show i & "\"] = _" & show i & emit-wf-ctor-f n (i + 1)
+
+  emit-wf-def : IRDef, List ArityEntry -> Text
+  emit-wf-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = wf-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then wf-indent 2 & "static dynamic " & sname & " = " & emit-wf-expr (d.body) arities 2 & ";\n\n"
+      else wf-indent 2 & "static dynamic " & sname & "(" & emit-wf-params (d.params) 0 & ") {\n" & wf-indent 3 & "return " & emit-wf-expr (d.body) arities 3 & ";\n" & wf-indent 2 & "}\n\n"
+
+  emit-wf-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-wf-defs (defs) (i) (arities) =
+   if i == list-length defs then "" else emit-wf-def (list-at defs i) arities & emit-wf-defs defs (i + 1) arities
+
+  emit-wf-type-defs : List ATypeDef, Integer -> Text
+  emit-wf-type-defs (tds) (i) =
+   if i == list-length tds then "" else emit-wf-type-def (list-at tds i) & emit-wf-type-defs tds (i + 1)
+
+Section: WinForms Assembly
+
+  emit-winforms-chapter : IRChapter, List ATypeDef -> Text
+  emit-winforms-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "CodexApp" else wf-sanitize (m.chapter-title)
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Drawing;\nusing System.Linq;\nusing System.Windows.Forms;\n\nnamespace " & title & "\n{\n    public class MainForm : Form\n    {\n"
+   in let builtins = wf-indent 2 & "static readonly List<string> _output = new();\n" & wf-indent 2 & "static void print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); }\n" & wf-indent 2 & "static void print_line(dynamic s) { print_line_uni(s); }\n" & wf-indent 2 & "static string show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & wf-indent 2 & "static long text_length(string s) { return s.Length; }\n" & wf-indent 2 & "static string text_replace(string s, string a, string b) { return s.Replace(a, b); }\n" & wf-indent 2 & "static long text_compare(string a, string b) { return string.Compare(a, b, StringComparison.Ordinal); }\n" & wf-indent 2 & "static long list_length(dynamic xs) { return ((List<dynamic>)xs).Count; }\n" & wf-indent 2 & "static dynamic list_at(dynamic xs, long i) { return ((List<dynamic>)xs)[(int)i]; }\n" & wf-indent 2 & "static List<dynamic> list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & wf-indent 2 & "static string integer_to_text(long n) { return n.ToString(); }\n" & wf-indent 2 & "static long negate(long n) { return -n; }\n\n"
+   in let types-text = emit-wf-type-defs type-defs 0
+   in let defs-text = emit-wf-defs (m.defs) 0 arities
+   in let constructor = wf-indent 2 & "public MainForm()\n" & wf-indent 2 & "{\n" & wf-indent 3 & "Text = \"" & title & "\";\n" & wf-indent 3 & "Size = new Size(800, 600);\n" & wf-indent 3 & "try { opening(); } catch (Exception ex) { _output.Add(\"ERROR: \" + ex.Message); }\n" & wf-indent 3 & "var tb = new TextBox { Multiline = true, ReadOnly = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, Font = new Font(\"Consolas\", 10) };\n" & wf-indent 3 & "tb.Text = string.Join(Environment.NewLine, _output);\n" & wf-indent 3 & "Controls.Add(tb);\n" & wf-indent 2 & "}\n\n"
+   in let main = wf-indent 2 & "[STAThread]\n" & wf-indent 2 & "static void Main()\n" & wf-indent 2 & "{\n" & wf-indent 3 & "Application.EnableVisualStyles();\n" & wf-indent 3 & "Application.Run(new MainForm());\n" & wf-indent 2 & "}\n"
+   in let footer = "    }\n}\n"
+   in header & builtins & types-text & defs-text & constructor & main & footer

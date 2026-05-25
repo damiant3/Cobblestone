@@ -1,0 +1,324 @@
+Chapter: DungeonRun
+  cites CodexMagic chapter RPGEngine
+  cites CodexMagic chapter CampaignWorld
+  cites CodexMagic chapter GMEconomy
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter GameRegistry
+
+ Active dungeon run gameplay. This is the Diablo layer — the
+ actual floor-by-floor, encounter-by-encounter resolution of a
+ player moving through a dungeon. Combat turns, loot drops, trap
+ detection, floor advancement, boss fights, death and recovery.
+
+ The run is deterministic given a seed — the same seed produces
+ the same encounter sequence, loot rolls, and trap placements.
+ This makes runs replayable and verifiable on-chain.
+
+ We say:
+
+Section: Run State
+
+  ActiveRun = record {
+    run-id : Integer,
+    dungeon-id : Integer,
+    player-id : Integer,
+    char : RPGCharacter,
+    current-floor : Integer,
+    current-tile : Integer,
+    floors-cleared : Integer,
+    encounters-fought : Integer,
+    encounters-won : Integer,
+    traps-triggered : Integer,
+    traps-disarmed : Integer,
+    loot-found : List Integer,
+    gold-found : Integer,
+    xp-earned : Integer,
+    potions-used : Integer,
+    seed : Integer,
+    turn-count : Integer,
+    run-status : ActiveRunStatus,
+    combat : CombatInstance,
+    pending-loot : Integer,
+    subgame-pending : Boolean,
+    subgame-game-id : Integer
+  }
+
+  ActiveRunStatus =
+    | RunExploring
+    | RunInCombat
+    | RunAtTrap
+    | RunAtChest
+    | RunAtPortal
+    | RunFloorComplete
+    | RunDead
+    | RunVictory
+    | RunInSubgame
+
+  run-status-text : ActiveRunStatus -> Text
+  run-status-text (s) =
+    when s
+      is RunExploring -> "Exploring"
+      is RunInCombat -> "In Combat"
+      is RunAtTrap -> "Trap Detected"
+      is RunAtChest -> "Chest Found"
+      is RunAtPortal -> "Portal"
+      is RunFloorComplete -> "Floor Complete"
+      is RunDead -> "Dead"
+      is RunVictory -> "Victory"
+      is RunInSubgame -> "In Subgame"
+
+Section: Combat Instance — Turn-by-turn resolution
+
+  CombatInstance = record {
+    active : Boolean,
+    player-hp : Integer,
+    player-max-hp : Integer,
+    player-atk : Integer,
+    player-def : Integer,
+    enemy-name : Text,
+    enemy-hp : Integer,
+    enemy-max-hp : Integer,
+    enemy-atk : Integer,
+    enemy-def : Integer,
+    round : Integer,
+    player-turn : Boolean,
+    last-action : Text
+  }
+
+  combat-empty : CombatInstance
+  combat-empty = CombatInstance { active = False, player-hp = 0, player-max-hp = 0, player-atk = 0, player-def = 0, enemy-name = "", enemy-hp = 0, enemy-max-hp = 0, enemy-atk = 0, enemy-def = 0, round = 0, player-turn = True, last-action = "" }
+
+  start-encounter : ActiveRun, Text, Integer, Integer, Integer -> ActiveRun
+  start-encounter (run) (enemy-name) (enemy-hp) (enemy-atk) (enemy-def) =
+    let combat = CombatInstance { active = True, player-hp = run.char.hp, player-max-hp = run.char.max-hp, player-atk = run.char.class.base-attack + get-stat-modifier (run.char.stats) Str, player-def = 10 + get-stat-modifier (run.char.stats) Dex, enemy-name = enemy-name, enemy-hp = enemy-hp, enemy-max-hp = enemy-hp, enemy-atk = enemy-atk, enemy-def = enemy-def, round = 1, player-turn = True, last-action = "Combat begins!" }
+    in set-run-combat run combat RunInCombat
+
+Section: Combat Actions
+
+  CombatAction =
+    | ActionAttack
+    | ActionDefend
+    | ActionSpell (Integer)
+    | ActionPotion
+    | ActionFlee
+
+  resolve-player-action : ActiveRun, CombatAction, Integer -> ActiveRun
+  resolve-player-action (run) (action) (roll) =
+    let c = run.combat
+    in when action
+      is ActionAttack ->
+        let damage = compute-attack-damage (c.player-atk) (c.enemy-def) roll
+        in let new-enemy-hp = c.enemy-hp - damage
+        in if new-enemy-hp <= 0 then
+          let c2 = CombatInstance { active = False, player-hp = c.player-hp, player-max-hp = c.player-max-hp, player-atk = c.player-atk, player-def = c.player-def, enemy-name = c.enemy-name, enemy-hp = 0, enemy-max-hp = c.enemy-max-hp, enemy-atk = c.enemy-atk, enemy-def = c.enemy-def, round = c.round, player-turn = False, last-action = "Enemy defeated! Dealt " & show damage & " damage." }
+          in win-encounter run c2
+        else let c2 = CombatInstance { active = True, player-hp = c.player-hp, player-max-hp = c.player-max-hp, player-atk = c.player-atk, player-def = c.player-def, enemy-name = c.enemy-name, enemy-hp = new-enemy-hp, enemy-max-hp = c.enemy-max-hp, enemy-atk = c.enemy-atk, enemy-def = c.enemy-def, round = c.round, player-turn = False, last-action = "You attack for " & show damage & " damage." }
+        in set-run-combat run c2 RunInCombat
+      is ActionDefend ->
+        let c2 = CombatInstance { active = True, player-hp = c.player-hp, player-max-hp = c.player-max-hp, player-atk = c.player-atk, player-def = c.player-def + 4, enemy-name = c.enemy-name, enemy-hp = c.enemy-hp, enemy-max-hp = c.enemy-max-hp, enemy-atk = c.enemy-atk, enemy-def = c.enemy-def, round = c.round, player-turn = False, last-action = "You brace for impact (+4 def)." }
+        in set-run-combat run c2 RunInCombat
+      is ActionPotion ->
+        let heal = 10 + run.char.level * 2
+        in let new-hp = if c.player-hp + heal > c.player-max-hp then c.player-max-hp else c.player-hp + heal
+        in let c2 = CombatInstance { active = True, player-hp = new-hp, player-max-hp = c.player-max-hp, player-atk = c.player-atk, player-def = c.player-def, enemy-name = c.enemy-name, enemy-hp = c.enemy-hp, enemy-max-hp = c.enemy-max-hp, enemy-atk = c.enemy-atk, enemy-def = c.enemy-def, round = c.round, player-turn = False, last-action = "Potion heals " & show heal & " HP." }
+        in set-run-combat run c2 RunInCombat
+      is ActionFlee ->
+        if roll > 10 then
+          let c2 = combat-empty
+          in set-run-combat run c2 RunExploring
+        else let c2 = CombatInstance { active = True, player-hp = c.player-hp, player-max-hp = c.player-max-hp, player-atk = c.player-atk, player-def = c.player-def, enemy-name = c.enemy-name, enemy-hp = c.enemy-hp, enemy-max-hp = c.enemy-max-hp, enemy-atk = c.enemy-atk, enemy-def = c.enemy-def, round = c.round, player-turn = False, last-action = "Failed to flee!" }
+        in set-run-combat run c2 RunInCombat
+      is ActionSpell (spell-power) ->
+        let damage = spell-power + get-stat-modifier (run.char.stats) Int
+        in let new-enemy-hp = c.enemy-hp - damage
+        in if new-enemy-hp <= 0 then
+          let c2 = CombatInstance { active = False, player-hp = c.player-hp, player-max-hp = c.player-max-hp, player-atk = c.player-atk, player-def = c.player-def, enemy-name = c.enemy-name, enemy-hp = 0, enemy-max-hp = c.enemy-max-hp, enemy-atk = c.enemy-atk, enemy-def = c.enemy-def, round = c.round, player-turn = False, last-action = "Spell kills enemy! " & show damage & " damage." }
+          in win-encounter run c2
+        else let c2 = CombatInstance { active = True, player-hp = c.player-hp, player-max-hp = c.player-max-hp, player-atk = c.player-atk, player-def = c.player-def, enemy-name = c.enemy-name, enemy-hp = new-enemy-hp, enemy-max-hp = c.enemy-max-hp, enemy-atk = c.enemy-atk, enemy-def = c.enemy-def, round = c.round, player-turn = False, last-action = "Spell hits for " & show damage & "." }
+        in set-run-combat run c2 RunInCombat
+
+  resolve-enemy-turn : ActiveRun, Integer -> ActiveRun
+  resolve-enemy-turn (run) (roll) =
+    let c = run.combat
+    in let damage = compute-attack-damage (c.enemy-atk) (c.player-def) roll
+    in let new-hp = c.player-hp - damage
+    in if new-hp <= 0 then
+      let c2 = CombatInstance { active = False, player-hp = 0, player-max-hp = c.player-max-hp, player-atk = c.player-atk, player-def = c.player-def, enemy-name = c.enemy-name, enemy-hp = c.enemy-hp, enemy-max-hp = c.enemy-max-hp, enemy-atk = c.enemy-atk, enemy-def = c.enemy-def, round = c.round + 1, player-turn = True, last-action = c.enemy-name & " kills you! " & show damage & " damage." }
+      in set-run-combat run c2 RunDead
+    else let c2 = CombatInstance { active = True, player-hp = new-hp, player-max-hp = c.player-max-hp, player-atk = c.player-atk, player-def = c.player-def, enemy-name = c.enemy-name, enemy-hp = c.enemy-hp, enemy-max-hp = c.enemy-max-hp, enemy-atk = c.enemy-atk, enemy-def = c.enemy-def, round = c.round + 1, player-turn = True, last-action = c.enemy-name & " attacks for " & show damage & "." }
+    in set-run-combat run c2 RunInCombat
+
+  compute-attack-damage : Integer, Integer, Integer -> Integer
+  compute-attack-damage (atk) (def) (roll) =
+    let hit-roll = roll + atk
+    in if hit-roll < def then 0
+    else let base-damage = hit-roll - def + 1
+    in if roll == 20 then base-damage * 2
+    else base-damage
+
+Section: Encounter Resolution
+
+  win-encounter : ActiveRun, CombatInstance -> ActiveRun
+  win-encounter (run) (combat) =
+    let xp-gain = run.combat.enemy-max-hp * 2
+    in let gold-gain = run.combat.enemy-max-hp + run.current-floor * 5
+    in ActiveRun {
+      run-id = run.run-id,
+      dungeon-id = run.dungeon-id,
+      player-id = run.player-id,
+      char = grant-xp (run.char) xp-gain,
+      current-floor = run.current-floor,
+      current-tile = run.current-tile,
+      floors-cleared = run.floors-cleared,
+      encounters-fought = run.encounters-fought + 1,
+      encounters-won = run.encounters-won + 1,
+      traps-triggered = run.traps-triggered,
+      traps-disarmed = run.traps-disarmed,
+      loot-found = run.loot-found,
+      gold-found = run.gold-found + gold-gain,
+      xp-earned = run.xp-earned + xp-gain,
+      potions-used = run.potions-used,
+      seed = run.seed,
+      turn-count = run.turn-count + 1,
+      run-status = RunExploring,
+      combat = combat,
+      pending-loot = 1,
+      subgame-pending = False,
+      subgame-game-id = 0
+    }
+
+Section: Trap Resolution
+
+  TrapAction =
+    | TrapDisarm
+    | TrapDodge
+    | TrapTrigger
+
+  resolve-trap : ActiveRun, Integer, Integer, Integer -> ActiveRun
+  resolve-trap (run) (trap-damage) (disarm-dc) (roll) =
+    let dex-mod = get-stat-modifier (run.char.stats) Dex
+    in let total = roll + dex-mod
+    in if total >= disarm-dc then
+      ActiveRun { run-id = run.run-id, dungeon-id = run.dungeon-id, player-id = run.player-id, char = run.char, current-floor = run.current-floor, current-tile = run.current-tile + 1, floors-cleared = run.floors-cleared, encounters-fought = run.encounters-fought, encounters-won = run.encounters-won, traps-triggered = run.traps-triggered, traps-disarmed = run.traps-disarmed + 1, loot-found = run.loot-found, gold-found = run.gold-found, xp-earned = run.xp-earned + 10, potions-used = run.potions-used, seed = run.seed, turn-count = run.turn-count + 1, run-status = RunExploring, combat = run.combat, pending-loot = 0, subgame-pending = False, subgame-game-id = 0 }
+    else let new-hp = run.char.hp - trap-damage
+    in if new-hp <= 0 then
+      let dead-char = set-char-hp (run.char) 0
+      in ActiveRun { run-id = run.run-id, dungeon-id = run.dungeon-id, player-id = run.player-id, char = dead-char, current-floor = run.current-floor, current-tile = run.current-tile, floors-cleared = run.floors-cleared, encounters-fought = run.encounters-fought, encounters-won = run.encounters-won, traps-triggered = run.traps-triggered + 1, traps-disarmed = run.traps-disarmed, loot-found = run.loot-found, gold-found = run.gold-found, xp-earned = run.xp-earned, potions-used = run.potions-used, seed = run.seed, turn-count = run.turn-count + 1, run-status = RunDead, combat = run.combat, pending-loot = 0, subgame-pending = False, subgame-game-id = 0 }
+    else let hit-char = set-char-hp (run.char) new-hp
+    in ActiveRun { run-id = run.run-id, dungeon-id = run.dungeon-id, player-id = run.player-id, char = hit-char, current-floor = run.current-floor, current-tile = run.current-tile + 1, floors-cleared = run.floors-cleared, encounters-fought = run.encounters-fought, encounters-won = run.encounters-won, traps-triggered = run.traps-triggered + 1, traps-disarmed = run.traps-disarmed, loot-found = run.loot-found, gold-found = run.gold-found, xp-earned = run.xp-earned, potions-used = run.potions-used, seed = run.seed, turn-count = run.turn-count + 1, run-status = RunExploring, combat = run.combat, pending-loot = 0, subgame-pending = False, subgame-game-id = 0 }
+
+Section: Floor Advancement
+
+  advance-floor : ActiveRun -> ActiveRun
+  advance-floor (run) =
+    ActiveRun { run-id = run.run-id, dungeon-id = run.dungeon-id, player-id = run.player-id, char = run.char, current-floor = run.current-floor + 1, current-tile = 0, floors-cleared = run.floors-cleared + 1, encounters-fought = run.encounters-fought, encounters-won = run.encounters-won, traps-triggered = run.traps-triggered, traps-disarmed = run.traps-disarmed, loot-found = run.loot-found, gold-found = run.gold-found, xp-earned = run.xp-earned, potions-used = run.potions-used, seed = run.seed * 1103515245 + 12345, turn-count = run.turn-count, run-status = RunExploring, combat = combat-empty, pending-loot = 0, subgame-pending = False, subgame-game-id = 0 }
+
+  complete-dungeon : ActiveRun -> ActiveRun
+  complete-dungeon (run) =
+    ActiveRun { run-id = run.run-id, dungeon-id = run.dungeon-id, player-id = run.player-id, char = run.char, current-floor = run.current-floor, current-tile = run.current-tile, floors-cleared = run.floors-cleared + 1, encounters-fought = run.encounters-fought, encounters-won = run.encounters-won, traps-triggered = run.traps-triggered, traps-disarmed = run.traps-disarmed, loot-found = run.loot-found, gold-found = run.gold-found, xp-earned = run.xp-earned + 100, potions-used = run.potions-used, seed = run.seed, turn-count = run.turn-count, run-status = RunVictory, combat = combat-empty, pending-loot = 1, subgame-pending = False, subgame-game-id = 0 }
+
+Section: Loot Collection
+
+  collect-loot : ActiveRun, Integer -> ActiveRun
+  collect-loot (run) (item-id) =
+    ActiveRun { run-id = run.run-id, dungeon-id = run.dungeon-id, player-id = run.player-id, char = run.char, current-floor = run.current-floor, current-tile = run.current-tile + 1, floors-cleared = run.floors-cleared, encounters-fought = run.encounters-fought, encounters-won = run.encounters-won, traps-triggered = run.traps-triggered, traps-disarmed = run.traps-disarmed, loot-found = list-push (run.loot-found) item-id, gold-found = run.gold-found, xp-earned = run.xp-earned, potions-used = run.potions-used, seed = run.seed, turn-count = run.turn-count, run-status = RunExploring, combat = run.combat, pending-loot = 0, subgame-pending = False, subgame-game-id = 0 }
+
+  skip-loot : ActiveRun -> ActiveRun
+  skip-loot (run) =
+    ActiveRun { run-id = run.run-id, dungeon-id = run.dungeon-id, player-id = run.player-id, char = run.char, current-floor = run.current-floor, current-tile = run.current-tile + 1, floors-cleared = run.floors-cleared, encounters-fought = run.encounters-fought, encounters-won = run.encounters-won, traps-triggered = run.traps-triggered, traps-disarmed = run.traps-disarmed, loot-found = run.loot-found, gold-found = run.gold-found, xp-earned = run.xp-earned, potions-used = run.potions-used, seed = run.seed, turn-count = run.turn-count, run-status = RunExploring, combat = run.combat, pending-loot = 0, subgame-pending = False, subgame-game-id = 0 }
+
+Section: Portal Encounter — Trigger subgame
+
+  enter-portal : ActiveRun, Integer -> ActiveRun
+  enter-portal (run) (dest-game-id) =
+    ActiveRun { run-id = run.run-id, dungeon-id = run.dungeon-id, player-id = run.player-id, char = run.char, current-floor = run.current-floor, current-tile = run.current-tile, floors-cleared = run.floors-cleared, encounters-fought = run.encounters-fought, encounters-won = run.encounters-won, traps-triggered = run.traps-triggered, traps-disarmed = run.traps-disarmed, loot-found = run.loot-found, gold-found = run.gold-found, xp-earned = run.xp-earned, potions-used = run.potions-used, seed = run.seed, turn-count = run.turn-count, run-status = RunInSubgame, combat = run.combat, pending-loot = 0, subgame-pending = True, subgame-game-id = dest-game-id }
+
+  return-from-subgame : ActiveRun, Boolean -> ActiveRun
+  return-from-subgame (run) (won) =
+    let bonus-xp = if won then 50 else 0
+    in let bonus-gold = if won then 25 else 0
+    in ActiveRun { run-id = run.run-id, dungeon-id = run.dungeon-id, player-id = run.player-id, char = grant-xp (run.char) bonus-xp, current-floor = run.current-floor, current-tile = run.current-tile + 1, floors-cleared = run.floors-cleared, encounters-fought = run.encounters-fought, encounters-won = run.encounters-won, traps-triggered = run.traps-triggered, traps-disarmed = run.traps-disarmed, loot-found = run.loot-found, gold-found = run.gold-found + bonus-gold, xp-earned = run.xp-earned + bonus-xp, potions-used = run.potions-used, seed = run.seed, turn-count = run.turn-count + 1, run-status = RunExploring, combat = combat-empty, pending-loot = if won then 1 else 0, subgame-pending = False, subgame-game-id = 0 }
+
+Section: Run Summary
+
+  RunSummary = record {
+    run-id : Integer,
+    dungeon-id : Integer,
+    floors-cleared : Integer,
+    encounters-won : Integer,
+    traps-disarmed : Integer,
+    items-found : Integer,
+    gold-earned : Integer,
+    xp-earned : Integer,
+    final-status : ActiveRunStatus,
+    turns-taken : Integer
+  }
+
+  summarize-run : ActiveRun -> RunSummary
+  summarize-run (run) =
+    RunSummary {
+      run-id = run.run-id,
+      dungeon-id = run.dungeon-id,
+      floors-cleared = run.floors-cleared,
+      encounters-won = run.encounters-won,
+      traps-disarmed = run.traps-disarmed,
+      items-found = list-length (run.loot-found),
+      gold-earned = run.gold-found,
+      xp-earned = run.xp-earned,
+      final-status = run.run-status,
+      turns-taken = run.turn-count
+    }
+
+Section: Run Creation
+
+  create-run : Integer, Integer, Integer, RPGCharacter, Integer -> ActiveRun
+  create-run (run-id) (dungeon-id) (player-id) (char) (seed) =
+    ActiveRun {
+      run-id = run-id,
+      dungeon-id = dungeon-id,
+      player-id = player-id,
+      char = char,
+      current-floor = 1,
+      current-tile = 0,
+      floors-cleared = 0,
+      encounters-fought = 0,
+      encounters-won = 0,
+      traps-triggered = 0,
+      traps-disarmed = 0,
+      loot-found = [],
+      gold-found = 0,
+      xp-earned = 0,
+      potions-used = 0,
+      seed = seed,
+      turn-count = 0,
+      run-status = RunExploring,
+      combat = combat-empty,
+      pending-loot = 0,
+      subgame-pending = False,
+      subgame-game-id = 0
+    }
+
+Section: Helpers
+
+  set-run-combat : ActiveRun, CombatInstance, ActiveRunStatus -> ActiveRun
+  set-run-combat (run) (combat) (status) =
+    ActiveRun { run-id = run.run-id, dungeon-id = run.dungeon-id, player-id = run.player-id, char = run.char, current-floor = run.current-floor, current-tile = run.current-tile, floors-cleared = run.floors-cleared, encounters-fought = run.encounters-fought, encounters-won = run.encounters-won, traps-triggered = run.traps-triggered, traps-disarmed = run.traps-disarmed, loot-found = run.loot-found, gold-found = run.gold-found, xp-earned = run.xp-earned, potions-used = run.potions-used, seed = run.seed, turn-count = run.turn-count + 1, run-status = status, combat = combat, pending-loot = run.pending-loot, subgame-pending = run.subgame-pending, subgame-game-id = run.subgame-game-id }
+
+  set-char-hp : RPGCharacter, Integer -> RPGCharacter
+  set-char-hp (char) (new-hp) =
+    RPGCharacter { char-id = char.char-id, owner = char.owner, name = char.name, class = char.class, race = char.race, level = char.level, experience = char.experience, stats = char.stats, hp = new-hp, max-hp = char.max-hp, mp = char.mp, max-mp = char.max-mp, inventory = char.inventory, equipped = char.equipped, skills = char.skills, status = if new-hp <= 0 then Dead else char.status, campaign-id = char.campaign-id, gold = char.gold }
+
+  is-run-over : ActiveRun -> Boolean
+  is-run-over (run) =
+    when run.run-status
+      is RunDead -> True
+      is RunVictory -> True
+      is RunExploring -> False
+      is RunInCombat -> False
+      is RunAtTrap -> False
+      is RunAtChest -> False
+      is RunAtPortal -> False
+      is RunFloorComplete -> False
+      is RunInSubgame -> False
+
+Page 1

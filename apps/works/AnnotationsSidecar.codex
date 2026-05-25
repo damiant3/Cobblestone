@@ -1,0 +1,212 @@
+Chapter: AnnotationsSidecar
+  cites Works chapter Annotation
+  cites Works chapter AnnotationStore
+  cites Encode chapter Json
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ Loads the on-disk annotation sidecars at codex.annotations/
+ <chapter>.json and folds them into an AnnotationFact. Each
+ sidecar is a JSON array of records:
+
+   [
+     { "target": "function:emit-start",
+       "kind":   "invariant",
+       "author": "cam",
+       "date":   "2026-05-06",
+       "body":   "...",
+       "thread": null }
+   ]
+
+ The "thread" field is ignored here; threaded discussion lives
+ in Discussion, not plain Annotation. Unknown kinds map to
+ Discovery (the most permissive bucket).
+
+ We say:
+
+Section: Kind Mapping
+
+  parse-kind : Text -> AnnotationKind
+  parse-kind (k) =
+    if k == "rationale" then Rationale
+    else if k == "invariant" then Invariant
+    else if k == "warning" then Warning
+    else if k == "discovery" then Discovery
+    else if k == "doctrine" then Doctrine
+    else if k == "todo" then Todo
+    else Discovery
+
+Section: Date Mapping
+
+ "YYYY-MM-DD" -> YYYYMMDD as an integer timestamp. Malformed
+ dates yield 0. The format is line-based digit extraction,
+ ignoring non-digits — so "2026-05-06" and "2026/05/06" both
+ parse to 20260506.
+
+  parse-date : Text -> Integer
+  parse-date (s) = parse-date-loop s 0 (text-length s) 0
+
+  parse-date-loop : Text, Integer, Integer, Integer -> Integer
+  parse-date-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else parse-date-step s i len acc (cp-at s i)
+
+  parse-date-step : Text, Integer, Integer, Integer, Integer -> Integer
+  parse-date-step (s) (i) (len) (acc) (cp) =
+    if cp >= 48 then if cp <= 57
+      then parse-date-loop s (i + 1) len (acc * 10 + (cp - 48))
+      else parse-date-loop s (i + 1) len acc
+    else parse-date-loop s (i + 1) len acc
+
+  cp-at : Text, Integer -> Integer
+  cp-at (s) (i) = to-unicode (char-code (char-at s i))
+
+Section: Annotation Construction
+
+  parse-annotation : Text, JsonValue -> Maybe Annotation
+  parse-annotation (chapter) (v) = when v
+    is JsonObject (pairs) -> build-annotation chapter v
+    is otherwise -> None
+
+  build-annotation : Text, JsonValue -> Maybe Annotation
+  build-annotation (chapter) (v) =
+    let target-str = json-get-str v "target" ""
+    in let kind-str = json-get-str v "kind" ""
+    in let author = json-get-str v "author" ""
+    in let body = json-get-str v "body" ""
+    in let date-str = json-get-str v "date" ""
+    in if text-length target-str == 0 then None
+    else if text-length kind-str == 0 then None
+    else Just (build-annotation-record chapter target-str kind-str author body date-str)
+
+  build-annotation-record : Text, Text, Text, Text, Text, Text -> Annotation
+  build-annotation-record (chapter) (target-str) (kind-str) (author) (body) (date-str) =
+    let target = AnnotationTarget { chapter = chapter, path = target-str }
+    in let kind = parse-kind kind-str
+    in let ts = parse-date date-str
+    in let content = annotation-content-string target kind author body
+    in let hash = sha256-to-hex (sha256 (text-to-bytes content))
+    in Annotation { hash = hash, target = target, kind = kind, author = author, body = body, timestamp = ts }
+
+Section: Sidecar Parsing
+
+ parse-sidecar takes the chapter name (for the AnnotationTarget)
+ and the raw JSON text. Returns a list of Annotation records;
+ invalid records are silently dropped (an annotation is dropped
+ if its target or kind is missing — since the system can do
+ nothing useful with them — and the rest still load). Returns
+ None only if the JSON itself fails to parse.
+
+  parse-sidecar : Text, Text -> Maybe (List Annotation)
+  parse-sidecar (chapter) (json-text) =
+    when json-parse json-text
+      is None -> None
+      is Just (v) -> Just (sidecar-array-to-annotations chapter v)
+
+  sidecar-array-to-annotations : Text, JsonValue -> List Annotation
+  sidecar-array-to-annotations (chapter) (v) = when v
+    is JsonArray (items) -> collect-annotations chapter items 0 (list-length items) []
+    is otherwise -> []
+
+  collect-annotations : Text, List JsonValue, Integer, Integer, List Annotation -> List Annotation
+  collect-annotations (chapter) (items) (i) (n) (acc) =
+    if i >= n then acc
+    else let parsed = parse-annotation chapter (list-at items i)
+    in append-annotation chapter items i n acc parsed
+
+  append-annotation : Text, List JsonValue, Integer, Integer, List Annotation, Maybe Annotation -> List Annotation
+  append-annotation (chapter) (items) (i) (n) (acc) (parsed) = when parsed
+    is None -> collect-annotations chapter items (i + 1) n acc
+    is Just (a) -> collect-annotations chapter items (i + 1) n (list-snoc acc a)
+
+Section: Discussion Routing
+
+ Discussion entries in the sidecar JSON have kind "discussion"
+ and carry a "thread" id. They belong in the DiscussionStore,
+ not the AnnotationStore — Codex's discussion layer is a
+ first-class peer of annotation, not a sub-kind. The reader
+ routes them via discuss().
+
+  is-discussion-kind : Text -> Boolean
+  is-discussion-kind (k) = k == "discussion"
+
+Section: Per-Entry Folding
+
+ fold-sidecar-entry handles one JSON object out of the sidecar
+ array. Branches on the "kind" field; routes annotations to the
+ store and discussions to the thread, dropping entries that
+ lack the bare-minimum fields.
+
+  fold-sidecar-entry : AnnotationFact, Text, JsonValue -> AnnotationFact
+  fold-sidecar-entry (af) (chapter) (v) = when v
+    is JsonObject (pairs) -> dispatch-sidecar-entry af chapter v
+    is otherwise -> af
+
+  dispatch-sidecar-entry : AnnotationFact, Text, JsonValue -> AnnotationFact
+  dispatch-sidecar-entry (af) (chapter) (v) =
+    let kind-str = json-get-str v "kind" ""
+    in if is-discussion-kind kind-str then fold-discussion-entry af chapter v
+    else fold-annotation-entry af chapter v
+
+  fold-annotation-entry : AnnotationFact, Text, JsonValue -> AnnotationFact
+  fold-annotation-entry (af) (chapter) (v) =
+    when parse-annotation chapter v
+      is None -> af
+      is Just (a) -> annotate-fact-with af a
+
+  fold-discussion-entry : AnnotationFact, Text, JsonValue -> AnnotationFact
+  fold-discussion-entry (af) (chapter) (v) =
+    let target-str = json-get-str v "target" ""
+    in let author = json-get-str v "author" ""
+    in let body = json-get-str v "body" ""
+    in let date-str = json-get-str v "date" ""
+    in if text-length target-str == 0 then af
+    else if text-length author == 0 then af
+    else if text-length body == 0 then af
+    else discuss af (make-target chapter target-str) author body (parse-date date-str)
+
+Section: Folding into AnnotationFact
+
+ load-sidecar is the convenience that takes a base AnnotationFact
+ and a sidecar's chapter+text and returns the fact augmented
+ with all parseable entries. A None from json-parse (JSON
+ itself failed) yields the base fact unchanged. The "thread"
+ id is read but the threading semantics are handled by
+ Discussion (one thread per target).
+
+  load-sidecar : AnnotationFact, Text, Text -> AnnotationFact
+  load-sidecar (af) (chapter) (json-text) =
+    when json-parse json-text
+      is None -> af
+      is Just (v) -> fold-sidecar-array af chapter v
+
+  fold-sidecar-array : AnnotationFact, Text, JsonValue -> AnnotationFact
+  fold-sidecar-array (af) (chapter) (v) = when v
+    is JsonArray (items) -> fold-entries af chapter items 0 (list-length items)
+    is otherwise -> af
+
+  fold-entries : AnnotationFact, Text, List JsonValue, Integer, Integer -> AnnotationFact
+  fold-entries (af) (chapter) (items) (i) (n) =
+    if i >= n then af
+    else fold-entries (fold-sidecar-entry af chapter (list-at items i)) chapter items (i + 1) n
+
+  annotate-fact-with : AnnotationFact, Annotation -> AnnotationFact
+  annotate-fact-with (af) (a) = AnnotationFact {
+    annotations = annotation-store-add (af.annotations) a,
+    discussions = af.discussions,
+    facts = af.facts
+  }
+
+Section: Sidecar Path Convention
+
+ sidecar-path-for-chapter encodes the codex.annotations/...
+ layout. The full path is codex.annotations/<quire>/<chapter>.json
+ — but the quire prefix depends on the source's quire and the
+ caller knows that better than this chapter does. So the
+ builder takes both quire and chapter explicitly.
+
+  sidecar-path-for : Text, Text -> Text
+  sidecar-path-for (quire) (chapter) =
+    "codex.annotations/" & quire & "/" & chapter & ".json"
+
+Page 1

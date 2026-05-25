@@ -1,0 +1,92 @@
+Chapter: Voronoi
+
+ 2D Voronoi diagram via nearest-seed assignment on a grid. Given a
+ set of seed points, assigns each cell to the nearest seed. Produces
+ a region map suitable for territory generation, texture synthesis,
+ and map partitioning.
+
+ We say:
+
+Section: Types
+  VoronoiSeed = record {
+    vs-x : Integer,
+    vs-y : Integer,
+    vs-id : Integer
+  }
+
+  VoronoiMap = record {
+    vm-cells : List Integer,
+    vm-width : Integer,
+    vm-height : Integer
+  }
+
+Section: Generation
+  voronoi-generate : Integer, Integer, List VoronoiSeed -> VoronoiMap
+  voronoi-generate (w) (h) (seeds) =
+    let cells = voronoi-fill w h seeds 0 0 (list-length seeds) []
+    in VoronoiMap { vm-cells = cells, vm-width = w, vm-height = h }
+
+  voronoi-fill : Integer, Integer, List VoronoiSeed, Integer, Integer, Integer, List Integer -> List Integer
+  voronoi-fill (w) (h) (seeds) (x) (y) (num-seeds) (acc) =
+    if y >= h then acc
+    else if x >= w then voronoi-fill w h seeds 0 (y + 1) num-seeds acc
+    else let nearest = voronoi-nearest seeds x y num-seeds 0 0 999999999
+    in voronoi-fill w h seeds (x + 1) y num-seeds (list-push acc nearest)
+
+  voronoi-nearest : List VoronoiSeed, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  voronoi-nearest (seeds) (px) (py) (len) (i) (best-id) (best-dist) =
+    if i >= len then best-id
+    else let s = list-at seeds i
+    in let dx = px - s.vs-x
+    in let dy = py - s.vs-y
+    in let d = dx * dx + dy * dy
+    in if d < best-dist then voronoi-nearest seeds px py len (i + 1) (s.vs-id) d
+    else voronoi-nearest seeds px py len (i + 1) best-id best-dist
+
+Section: Queries
+  voronoi-get : VoronoiMap, Integer, Integer -> Integer
+  voronoi-get (vm) (x) (y) = list-at (vm.vm-cells) (y * vm.vm-width + x)
+
+  voronoi-region-count : VoronoiMap, Integer -> Integer
+  voronoi-region-count (vm) (region-id) = voronoi-count-loop (vm.vm-cells) region-id 0 (vm.vm-width * vm.vm-height) 0
+
+  voronoi-count-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  voronoi-count-loop (cells) (id) (i) (len) (acc) =
+    if i >= len then acc
+    else voronoi-count-loop cells id (i + 1) len (acc + if list-at cells i == id then 1 else 0)
+
+  voronoi-row-text : VoronoiMap, Integer -> Text
+  voronoi-row-text (vm) (y) = voronoi-row-loop vm 0 y ""
+
+  voronoi-row-loop : VoronoiMap, Integer, Integer, Text -> Text
+  voronoi-row-loop (vm) (x) (y) (acc) =
+    if x >= vm.vm-width then acc
+    else voronoi-row-loop vm (x + 1) y (acc & show (voronoi-get vm x y))
+
+Section: Distance Map
+  voronoi-distance-map : Integer, Integer, List VoronoiSeed -> List Integer
+  voronoi-distance-map (w) (h) (seeds) = voronoi-dist-fill w h seeds 0 0 (list-length seeds) []
+
+  voronoi-dist-fill : Integer, Integer, List VoronoiSeed, Integer, Integer, Integer, List Integer -> List Integer
+  voronoi-dist-fill (w) (h) (seeds) (x) (y) (num-seeds) (acc) =
+    if y >= h then acc
+    else if x >= w then voronoi-dist-fill w h seeds 0 (y + 1) num-seeds acc
+    else let d = voronoi-min-dist seeds x y num-seeds 0 999999999
+    in voronoi-dist-fill w h seeds (x + 1) y num-seeds (list-push acc (voronoi-isqrt d))
+
+  voronoi-min-dist : List VoronoiSeed, Integer, Integer, Integer, Integer, Integer -> Integer
+  voronoi-min-dist (seeds) (px) (py) (len) (i) (best) =
+    if i >= len then best
+    else let s = list-at seeds i
+    in let dx = px - s.vs-x
+    in let dy = py - s.vs-y
+    in let d = dx * dx + dy * dy
+    in voronoi-min-dist seeds px py len (i + 1) (if d < best then d else best)
+
+  voronoi-isqrt : Integer -> Integer
+  voronoi-isqrt (n) = if n <= 0 then 0 else voronoi-isqrt-loop n (n / 2 + 1)
+
+  voronoi-isqrt-loop : Integer, Integer -> Integer
+  voronoi-isqrt-loop (n) (g) = let next = (g + n / g) / 2 in if next >= g then g else voronoi-isqrt-loop n next
+
+Page 1

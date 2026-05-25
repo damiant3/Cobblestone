@@ -1,0 +1,141 @@
+Chapter: Regex
+  cites Foreword chapter Maybe
+
+ An RxNode is one of RxLiteral, RxDot, RxStar, RxPlus, RxOptional, RxClass, RxAnchorStart, or RxAnchorEnd.
+ An RxPattern is a record containing nodes and count.
+ An RxMatch is a record containing matched, start, and length.
+ To rx-literal gives an RxPattern matching exact text character by character.
+ To rx-dot-star gives an RxPattern matching zero or more of any character.
+ To rx-from-nodes gives an RxPattern from a list of RxNode values.
+ To rx-match-at gives an RxMatch for the pattern starting at the given position.
+ To rx-search gives an RxMatch for the first occurrence of the pattern anywhere in the text.
+ To rx-matches gives True when the pattern matches at position zero.
+ To rx-contains gives True when the pattern occurs anywhere in the text.
+
+ We say:
+
+Section: Pattern AST
+  RxNode =
+    | RxLiteral (Integer)
+    | RxDot
+    | RxStar (RxNode)
+    | RxPlus (RxNode)
+    | RxOptional (RxNode)
+    | RxClass (List Integer)
+    | RxAnchorStart
+    | RxAnchorEnd
+
+  RxPattern = record {
+    nodes : List RxNode,
+    count : Integer
+  }
+
+Section: Match Result
+  RxMatch = record {
+    matched : Boolean,
+    start : Integer,
+    length : Integer
+  }
+
+  rx-no-match : RxMatch
+  rx-no-match = RxMatch { matched = False, start = 0, length = 0 }
+
+Section: Pattern Construction
+  rx-literal : Text -> RxPattern
+  rx-literal (s) = rx-literal-loop s 0 (text-length s) []
+
+  rx-literal-loop : Text, Integer, Integer, List RxNode -> RxPattern
+  rx-literal-loop (s) (i) (len) (acc) =
+    if i >= len then RxPattern { nodes = acc, count = list-length acc }
+    else rx-literal-loop s (i + 1) len (list-push acc (RxLiteral (char-code (char-at s i))))
+
+  rx-dot-star : RxPattern
+  rx-dot-star = RxPattern { nodes = [RxStar RxDot], count = 1 }
+
+  rx-from-nodes : List RxNode -> RxPattern
+  rx-from-nodes (nodes) = RxPattern { nodes = nodes, count = list-length nodes }
+
+Section: Matching Engine
+  rx-match-at : RxPattern, Text, Integer -> RxMatch
+  rx-match-at (pat) (s) (pos) =
+    let consumed = rx-match-nodes (pat.nodes) s pos (text-length s) 0 (pat.count)
+    in if consumed < 0 then rx-no-match
+    else RxMatch { matched = True, start = pos, length = consumed - pos }
+
+  rx-search : RxPattern, Text -> RxMatch
+  rx-search (pat) (s) = rx-search-loop pat s 0 (text-length s)
+
+  rx-search-loop : RxPattern, Text, Integer, Integer -> RxMatch
+  rx-search-loop (pat) (s) (pos) (len) =
+    if pos > len then rx-no-match
+    else let m = rx-match-at pat s pos
+    in if m.matched then m
+    else rx-search-loop pat s (pos + 1) len
+
+  rx-match-nodes : List RxNode, Text, Integer, Integer, Integer, Integer -> Integer
+  rx-match-nodes (nodes) (s) (pos) (slen) (ni) (ncount) =
+    if ni >= ncount then pos
+    else let node = list-at nodes ni
+    in rx-match-node node nodes s pos slen ni ncount
+
+  rx-match-node : RxNode, List RxNode, Text, Integer, Integer, Integer, Integer -> Integer
+  rx-match-node (node) (nodes) (s) (pos) (slen) (ni) (ncount) = when node
+    is RxLiteral (c) ->
+      if pos >= slen then 0 - 1
+      else if char-code (char-at s pos) == c then rx-match-nodes nodes s (pos + 1) slen (ni + 1) ncount
+      else 0 - 1
+    is RxDot ->
+      if pos >= slen then 0 - 1
+      else rx-match-nodes nodes s (pos + 1) slen (ni + 1) ncount
+    is RxStar (inner) ->
+      let max-pos = rx-greedy-consume inner s pos slen
+      in rx-star-backtrack nodes s slen ni ncount pos max-pos
+    is RxPlus (inner) ->
+      if rx-node-matches inner s pos slen then
+        let max-pos = rx-greedy-consume inner s (pos + 1) slen
+        in rx-star-backtrack nodes s slen ni ncount (pos + 1) max-pos
+      else 0 - 1
+    is RxOptional (inner) ->
+      let with-it = if rx-node-matches inner s pos slen then rx-match-nodes nodes s (pos + 1) slen (ni + 1) ncount else 0 - 1
+      in if with-it >= 0 then with-it
+      else rx-match-nodes nodes s pos slen (ni + 1) ncount
+    is RxClass (chars) ->
+      if pos >= slen then 0 - 1
+      else if rx-in-class chars (char-code (char-at s pos)) 0 (list-length chars) then rx-match-nodes nodes s (pos + 1) slen (ni + 1) ncount
+      else 0 - 1
+    is RxAnchorStart -> if pos == 0 then rx-match-nodes nodes s pos slen (ni + 1) ncount else 0 - 1
+    is RxAnchorEnd -> if pos == slen then rx-match-nodes nodes s pos slen (ni + 1) ncount else 0 - 1
+
+  rx-greedy-consume : RxNode, Text, Integer, Integer -> Integer
+  rx-greedy-consume (inner) (s) (pos) (slen) =
+    if rx-node-matches inner s pos slen then rx-greedy-consume inner s (pos + 1) slen
+    else pos
+
+  rx-star-backtrack : List RxNode, Text, Integer, Integer, Integer, Integer, Integer -> Integer
+  rx-star-backtrack (nodes) (s) (slen) (ni) (ncount) (min-pos) (try-pos) =
+    let rest = rx-match-nodes nodes s try-pos slen (ni + 1) ncount
+    in if rest >= 0 then rest
+    else if try-pos > min-pos then rx-star-backtrack nodes s slen ni ncount min-pos (try-pos - 1)
+    else 0 - 1
+
+  rx-node-matches : RxNode, Text, Integer, Integer -> Boolean
+  rx-node-matches (node) (s) (pos) (slen) = when node
+    is RxLiteral (c) -> if pos >= slen then False else char-code (char-at s pos) == c
+    is RxDot -> pos < slen
+    is RxClass (chars) -> if pos >= slen then False else rx-in-class chars (char-code (char-at s pos)) 0 (list-length chars)
+    is otherwise -> False
+
+  rx-in-class : List Integer, Integer, Integer, Integer -> Boolean
+  rx-in-class (chars) (c) (i) (len) =
+    if i >= len then False
+    else if list-at chars i == c then True
+    else rx-in-class chars c (i + 1) len
+
+Section: Convenience
+  rx-matches : RxPattern, Text -> Boolean
+  rx-matches (pat) (s) = (rx-match-at pat s 0).matched
+
+  rx-contains : RxPattern, Text -> Boolean
+  rx-contains (pat) (s) = (rx-search pat s).matched
+
+Page 1
