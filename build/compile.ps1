@@ -24,7 +24,8 @@ param(
     [string]$Break = '',
     [string]$Watch = '',
     [int]$WatchSize = 8,
-    [switch]$DebugMode
+    [switch]$DebugMode,
+    [switch]$Profile
 )
 
 Set-StrictMode -Version Latest
@@ -152,6 +153,7 @@ try {
     if ($Repl) { $mode = "$mode repl" }
     if ($Poison) { $mode = "$mode poison" }
     if ($DebugMode) { $mode = "$mode debug" }
+    if ($Profile) { $mode = "$mode profile" }
     $hdr = [System.Text.Encoding]::UTF8.GetBytes("$mode`n")
     $stream.Write($hdr, 0, $hdr.Length)
     $fwBytes  = [System.IO.File]::ReadAllBytes($fwTmp)

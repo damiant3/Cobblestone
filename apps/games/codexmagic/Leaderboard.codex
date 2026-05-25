@@ -1,0 +1,204 @@
+Chapter: Leaderboard
+  cites CodexMagic chapter PlayerIdentity
+  cites CodexMagic chapter GameRegistry
+  cites CodexMagic chapter SeasonalContent
+  cites CodexMagic chapter Clan
+
+ Multi-dimensional leaderboards across the multiverse. Rankings
+ for individual games, cross-game composite, clans, GMs, dungeons,
+ traders, and seasonal performance. Leaderboards drive competition
+ and visibility - top players get featured, top clans get promoted,
+ top GMs get more traffic.
+
+ We say:
+
+Section: Leaderboard Types
+
+  BoardType =
+    | BoardGlobal
+    | BoardGame (Integer)
+    | BoardClan
+    | BoardGM
+    | BoardDungeon
+    | BoardTrader
+    | BoardSeasonal (Integer)
+    | BoardCrossPlane
+
+  board-type-name : BoardType -> Text
+  board-type-name (bt) =
+    when bt
+      is BoardGlobal -> "Global"
+      is BoardGame (gid) -> "Game #" & show gid
+      is BoardClan -> "Clan"
+      is BoardGM -> "Game Master"
+      is BoardDungeon -> "Dungeon"
+      is BoardTrader -> "Trader"
+      is BoardSeasonal (sid) -> "Season #" & show sid
+      is BoardCrossPlane -> "Cross-Plane"
+
+Section: Ranking Entry
+
+  RankEntry = record {
+    entity-id : Integer,
+    entity-name : Text,
+    score : Integer,
+    rank : Integer,
+    change : Integer,
+    peak-rank : Integer,
+    games-played : Integer,
+    win-rate : Integer,
+    streak : Integer
+  }
+
+  rank-entry-new : Integer, Text, Integer -> RankEntry
+  rank-entry-new (id) (name) (score) =
+    RankEntry { entity-id = id, entity-name = name, score = score, rank = 0, change = 0, peak-rank = 0, games-played = 0, win-rate = 0, streak = 0 }
+
+Section: Board State
+
+  BoardState = record {
+    board-type : BoardType,
+    entries : List RankEntry,
+    last-updated : Integer,
+    snapshot-history : List BoardSnapshot
+  }
+
+  BoardSnapshot = record {
+    timestamp : Integer,
+    top-ten : List RankEntry
+  }
+
+  board-new : BoardType -> BoardState
+  board-new (btype) =
+    BoardState { board-type = btype, entries = [], last-updated = 0, snapshot-history = [] }
+
+Section: Score Update
+
+  update-score : BoardState, Integer, Text, Integer, Boolean, Integer -> BoardState
+  update-score (board) (entity-id) (name) (score-delta) (won) (time) =
+    let entries2 = upsert-entry (board.entries) entity-id name score-delta won 0 (list-length (board.entries)) [] False
+    in let ranked = assign-ranks entries2 0 (list-length entries2) []
+    in BoardState { board-type = board.board-type, entries = ranked, last-updated = time, snapshot-history = board.snapshot-history }
+
+  upsert-entry : List RankEntry, Integer, Text, Integer, Boolean, Integer, Integer, List RankEntry, Boolean -> List RankEntry
+  upsert-entry (entries) (id) (name) (delta) (won) (i) (len) (acc) (found) =
+    if i >= len then
+      if found then acc
+      else let new-entry = RankEntry { entity-id = id, entity-name = name, score = delta, rank = 0, change = 0, peak-rank = 0, games-played = 1, win-rate = if won then 100 else 0, streak = if won then 1 else 0 }
+      in list-push acc new-entry
+    else let e = list-at entries i
+    in if e.entity-id == id then
+      let new-score = e.score + delta
+      in let new-games = e.games-played + 1
+      in let new-wins = e.win-rate * e.games-played / 100 + (if won then 1 else 0)
+      in let new-rate = new-wins * 100 / new-games
+      in let new-streak = if won then e.streak + 1 else 0
+      in let updated = RankEntry { entity-id = e.entity-id, entity-name = name, score = new-score, rank = e.rank, change = 0, peak-rank = e.peak-rank, games-played = new-games, win-rate = new-rate, streak = new-streak }
+      in upsert-entry entries id name delta won (i + 1) len (list-push acc updated) True
+    else upsert-entry entries id name delta won (i + 1) len (list-push acc e) found
+
+  assign-ranks : List RankEntry, Integer, Integer, List RankEntry -> List RankEntry
+  assign-ranks (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in let new-rank = count-higher entries (e.score) 0 len 0 + 1
+    in let rank-change = if e.rank == 0 then 0 else e.rank - new-rank
+    in let new-peak = if new-rank < e.peak-rank then new-rank else if e.peak-rank == 0 then new-rank else e.peak-rank
+    in let updated = RankEntry { entity-id = e.entity-id, entity-name = e.entity-name, score = e.score, rank = new-rank, change = rank-change, peak-rank = new-peak, games-played = e.games-played, win-rate = e.win-rate, streak = e.streak }
+    in assign-ranks entries (i + 1) len (list-push acc updated)
+
+  count-higher : List RankEntry, Integer, Integer, Integer, Integer -> Integer
+  count-higher (entries) (score) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.score > score then count-higher entries score (i + 1) len (acc + 1)
+    else count-higher entries score (i + 1) len acc
+
+Section: Queries
+
+  get-top-n : BoardState, Integer -> List RankEntry
+  get-top-n (board) (n) =
+    take-by-rank (board.entries) n 1 0 (list-length (board.entries)) []
+
+  take-by-rank : List RankEntry, Integer, Integer, Integer, Integer, List RankEntry -> List RankEntry
+  take-by-rank (entries) (n) (target-rank) (i) (len) (acc) =
+    if target-rank > n then acc
+    else if i >= len then acc
+    else let found = find-at-rank entries target-rank 0 len
+    in if found.entity-id < 0 then acc
+    else take-by-rank entries n (target-rank + 1) 0 len (list-push acc found)
+
+  find-at-rank : List RankEntry, Integer, Integer, Integer -> RankEntry
+  find-at-rank (entries) (rank) (i) (len) =
+    if i >= len then RankEntry { entity-id = -1, entity-name = "", score = 0, rank = 0, change = 0, peak-rank = 0, games-played = 0, win-rate = 0, streak = 0 }
+    else let e = list-at entries i
+    in if e.rank == rank then e
+    else find-at-rank entries rank (i + 1) len
+
+  get-player-rank : BoardState, Integer -> RankEntry
+  get-player-rank (board) (player-id) =
+    find-entry-by-id (board.entries) player-id 0 (list-length (board.entries))
+
+  find-entry-by-id : List RankEntry, Integer, Integer, Integer -> RankEntry
+  find-entry-by-id (entries) (id) (i) (len) =
+    if i >= len then RankEntry { entity-id = id, entity-name = "Unranked", score = 0, rank = 0, change = 0, peak-rank = 0, games-played = 0, win-rate = 0, streak = 0 }
+    else let e = list-at entries i
+    in if e.entity-id == id then e
+    else find-entry-by-id entries id (i + 1) len
+
+Section: Snapshots - Historical rankings
+
+  take-snapshot : BoardState, Integer -> BoardState
+  take-snapshot (board) (time) =
+    let top = get-top-n board 10
+    in let snap = BoardSnapshot { timestamp = time, top-ten = top }
+    in BoardState { board-type = board.board-type, entries = board.entries, last-updated = board.last-updated, snapshot-history = list-push (board.snapshot-history) snap }
+
+Section: Clan Leaderboard Scoring
+
+  clan-score : Integer, Integer, Integer, Integer, Integer -> Integer
+  clan-score (members) (reputation) (tournament-wins) (challenge-wins) (revenue) =
+    members * 2 + reputation + tournament-wins * 50 + challenge-wins * 30 + revenue / 100
+
+Section: GM Leaderboard Scoring
+
+  gm-score : Integer, Integer, Integer, Integer, Integer -> Integer
+  gm-score (plays) (revenue) (avg-rating) (completions) (reputation) =
+    plays * 3 + revenue / 10 + avg-rating * 2 + completions * 5 + reputation * 4
+
+Section: Dungeon Leaderboard - Speedrun/score rankings per dungeon
+
+  DungeonRecord = record {
+    dungeon-id : Integer,
+    player-id : Integer,
+    player-name : Text,
+    time-taken : Integer,
+    floors-cleared : Integer,
+    score : Integer,
+    deaths : Integer,
+    loot-value : Integer,
+    timestamp : Integer
+  }
+
+  DungeonLeaderboard = record {
+    dungeon-id : Integer,
+    records : List DungeonRecord,
+    fastest-clear : Integer,
+    highest-score : Integer
+  }
+
+  dungeon-lb-new : Integer -> DungeonLeaderboard
+  dungeon-lb-new (dungeon-id) =
+    DungeonLeaderboard { dungeon-id = dungeon-id, records = [], fastest-clear = 999999, highest-score = 0 }
+
+  submit-dungeon-record : DungeonLeaderboard, DungeonRecord -> DungeonLeaderboard
+  submit-dungeon-record (lb) (record) =
+    let new-fastest = if record.time-taken < lb.fastest-clear then record.time-taken else lb.fastest-clear
+    in let new-highest = if record.score > lb.highest-score then record.score else lb.highest-score
+    in DungeonLeaderboard { dungeon-id = lb.dungeon-id, records = list-push (lb.records) record, fastest-clear = new-fastest, highest-score = new-highest }
+
+  compute-dungeon-run-score : Integer, Integer, Integer, Integer -> Integer
+  compute-dungeon-run-score (floors) (kills) (gold) (time-bonus) =
+    floors * 100 + kills * 10 + gold + time-bonus
+
+Page 1

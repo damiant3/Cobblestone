@@ -183,3 +183,19 @@ threshold.
 - "Whenever [this creature] attacks" — triggers on declare attackers
 - "Whenever [this creature] blocks" — triggers on declare blockers
 - "Whenever [this creature] deals combat damage to a player" — triggers on damage resolution
+
+## Keyword Power and Costing
+
+Simulation data from 8 tournaments (see [GameBalance.md](GameBalance.md)
+sections 8.3-8.6) shows keyword power tiers:
+
+- **Premium:** First Strike (most consistent winner), Trample (most
+  explosive). Should cost +1 mana over vanilla.
+- **Standard:** Flying, Haste. Standard costing.
+- **Situational:** Deathtouch (trades up but stalls), Vigilance
+  (strong vs vanilla, weak in diverse metas). +0 mana.
+- **Synergy:** Lifelink. Needs cheap bodies or keyword pairing.
+
+Defense as a stat creates natural color identity: Green gets highest
+defense (3-5), White mid (2-3), Blue low (0-1), Red/Black zero.
+Deathtouch (Black) is the universal answer to high defense.

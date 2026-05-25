@@ -32,7 +32,11 @@ foreach ($f in @($PeInput, $CdxInput)) {
 
 $peBytes = [System.IO.File]::ReadAllBytes($PeInput)
 $cdxBytes = [System.IO.File]::ReadAllBytes($CdxInput)
-$srcBytes = if ($Source -and (Test-Path -PathType Leaf $Source)) { [System.IO.File]::ReadAllBytes($Source) } else { [byte[]]::new(0) }
+if ($Source -and (Test-Path -PathType Leaf $Source)) {
+    [byte[]]$srcBytes = [System.IO.File]::ReadAllBytes($Source)
+} else {
+    [byte[]]$srcBytes = [byte[]]::new(0)
+}
 
 # Build payload: [fs-type(1)] [total-sectors(4)] [pe-size(4)] [cdx-size(4)] [src-size(4)] [pe][cdx][src]
 $ms = [System.IO.MemoryStream]::new()

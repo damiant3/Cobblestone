@@ -1,0 +1,374 @@
+Chapter: ClanPacks
+  cites CodexMagic chapter Clan
+  cites CodexMagic chapter ClanEconomy
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter ServerUtil
+
+ Custom pack definitions and content theming. Clans define their own
+ pack products: mechanics filter, art direction, content theme, rarity
+ distribution. The platform approves packs before they go live.
+ Revenue splits: 30% platform, 40-60% clan treasury, 10% generation.
+
+ We say:
+
+Section: Pack Definition
+
+  ClanPackDef = record {
+    pack-id : Integer,
+    clan-id : Integer,
+    name : Text,
+    description : Text,
+    card-count : Integer,
+    rarity-dist : RarityDist,
+    mechanic-filter : MechanicFilter,
+    content-theme : ContentTheme,
+    art-direction : ArtDirection,
+    price : Integer,
+    clan-revenue-pct : Integer,
+    platform-fee-pct : Integer,
+    approved : Boolean,
+    public-listed : Boolean,
+    total-sold : Integer,
+    total-revenue : Integer
+  }
+
+Section: Rarity Distribution
+
+  RarityDist = record {
+    commons : Integer,
+    uncommons : Integer,
+    rares : Integer,
+    mythics : Integer,
+    guaranteed-rare-plus : Boolean,
+    wildcard-slot : Boolean
+  }
+
+  default-rarity-dist : Integer -> RarityDist
+  default-rarity-dist (card-count) =
+    RarityDist {
+      commons = card-count * 66 / 100,
+      uncommons = card-count * 20 / 100,
+      rares = card-count * 10 / 100,
+      mythics = card-count * 4 / 100,
+      guaranteed-rare-plus = True,
+      wildcard-slot = True
+    }
+
+  validate-rarity-dist : RarityDist, Integer -> Boolean
+  validate-rarity-dist (dist) (card-count) =
+    let total = dist.commons + dist.uncommons + dist.rares + dist.mythics
+    in total <= card-count
+
+Section: Mechanic Filter
+
+  MechanicFilter = record {
+    allowed-keywords : List Integer,
+    banned-keywords : List Integer,
+    allowed-card-types : List Integer,
+    banned-card-types : List Integer,
+    max-cmc : Integer,
+    min-creatures-pct : Integer,
+    require-defense : Boolean,
+    allow-tokens : Boolean,
+    complexity-cap : Integer
+  }
+
+  default-mechanic-filter : MechanicFilter
+  default-mechanic-filter =
+    MechanicFilter {
+      allowed-keywords = [],
+      banned-keywords = [],
+      allowed-card-types = [],
+      banned-card-types = [],
+      max-cmc = 10,
+      min-creatures-pct = 0,
+      require-defense = False,
+      allow-tokens = True,
+      complexity-cap = 5
+    }
+
+  kids-mechanic-filter : MechanicFilter
+  kids-mechanic-filter =
+    MechanicFilter {
+      allowed-keywords = [],
+      banned-keywords = [4],
+      allowed-card-types = [],
+      banned-card-types = [],
+      max-cmc = 5,
+      min-creatures-pct = 50,
+      require-defense = False,
+      allow-tokens = True,
+      complexity-cap = 2
+    }
+
+Section: Content Theme
+
+  ContentTheme = record {
+    theme-name : Text,
+    flavor-tone : FlavorTone,
+    creature-types : List Text,
+    setting : Text,
+    name-style : NameStyle,
+    profanity-level : ProfanityLevel
+  }
+
+  FlavorTone =
+    | ToneWholesome
+    | ToneHeroic
+    | ToneNeutral
+    | ToneDark
+    | ToneComedic
+    | ToneAcademic
+
+  tone-name : FlavorTone -> Text
+  tone-name (t) =
+    when t
+      is ToneWholesome -> "Wholesome"
+      is ToneHeroic -> "Heroic"
+      is ToneNeutral -> "Neutral"
+      is ToneDark -> "Dark"
+      is ToneComedic -> "Comedic"
+      is ToneAcademic -> "Academic"
+
+  NameStyle =
+    | StyleClassicFantasy
+    | StyleSciFi
+    | StyleBiblical
+    | StyleModern
+    | StyleMythological
+    | StyleCustom (Text)
+
+  ProfanityLevel =
+    | ProfClean
+    | ProfMild
+    | ProfStandard
+    | ProfMature
+    | ProfUnrestricted
+
+  profanity-name : ProfanityLevel -> Text
+  profanity-name (p) =
+    when p
+      is ProfClean -> "Clean"
+      is ProfMild -> "Mild"
+      is ProfStandard -> "Standard"
+      is ProfMature -> "Mature"
+      is ProfUnrestricted -> "Unrestricted"
+
+  profanity-rank : ProfanityLevel -> Integer
+  profanity-rank (p) =
+    when p
+      is ProfClean -> 0
+      is ProfMild -> 1
+      is ProfStandard -> 2
+      is ProfMature -> 3
+      is ProfUnrestricted -> 4
+
+Section: Art Direction
+
+  ArtDirection = record {
+    style : ArtStyle,
+    palette : Text,
+    medium : Text,
+    motifs : List Text,
+    border-style : Text,
+    content-restrictions : List Text
+  }
+
+  ArtStyle =
+    | ArtRealistic
+    | ArtStylized
+    | ArtCartoon
+    | ArtAnime
+    | ArtPixelArt
+    | ArtWatercolor
+    | ArtAbstract
+    | ArtStainedGlass
+    | ArtComicBook
+    | ArtCustom (Text)
+
+  art-style-name : ArtStyle -> Text
+  art-style-name (s) =
+    when s
+      is ArtRealistic -> "Realistic"
+      is ArtStylized -> "Stylized"
+      is ArtCartoon -> "Cartoon"
+      is ArtAnime -> "Anime"
+      is ArtPixelArt -> "Pixel Art"
+      is ArtWatercolor -> "Watercolor"
+      is ArtAbstract -> "Abstract"
+      is ArtStainedGlass -> "Stained Glass"
+      is ArtComicBook -> "Comic Book"
+      is ArtCustom (name) -> name
+
+Section: Pack Creation
+
+  clan-pack-new : Integer, Integer, Text, Text, Integer, Integer, Integer -> ClanPackDef
+  clan-pack-new (pack-id) (clan-id) (name) (description) (card-count) (price) (time) =
+    ClanPackDef {
+      pack-id = pack-id,
+      clan-id = clan-id,
+      name = name,
+      description = description,
+      card-count = card-count,
+      rarity-dist = default-rarity-dist card-count,
+      mechanic-filter = default-mechanic-filter,
+      content-theme = ContentTheme { theme-name = "Default", flavor-tone = ToneNeutral, creature-types = [], setting = "Fantasy", name-style = StyleClassicFantasy, profanity-level = ProfStandard },
+      art-direction = ArtDirection { style = ArtStylized, palette = "standard fantasy", medium = "digital painting", motifs = [], border-style = "standard", content-restrictions = [] },
+      price = price,
+      clan-revenue-pct = 50,
+      platform-fee-pct = 30,
+      approved = False,
+      public-listed = False,
+      total-sold = 0,
+      total-revenue = 0
+    }
+
+Section: Age Enforcement
+
+  max-profanity-for-age : ClanAgeClass -> ProfanityLevel
+  max-profanity-for-age (age) =
+    when age
+      is KidsClan -> ProfClean
+      is TeenClan -> ProfStandard
+      is AdultClan -> ProfMature
+      is MixedClan -> ProfMild
+      is FamilyClan -> ProfClean
+
+  pack-age-valid : ClanPackDef, ClanAgeClass -> Boolean
+  pack-age-valid (pack) (age) =
+    let max-level = profanity-rank (max-profanity-for-age age)
+    in let pack-level = profanity-rank (pack.content-theme.profanity-level)
+    in pack-level <= max-level
+
+Section: Pack Economics
+
+  PackCrackResult = record {
+    cards-minted : List Integer,
+    clan-revenue : Integer,
+    platform-revenue : Integer,
+    generation-cost : Integer,
+    pack-def : ClanPackDef,
+    economy : ClanEconomy,
+    global-ledger : ManaCoinLedger,
+    success : Boolean
+  }
+
+  crack-clan-pack : ClanPackDef, ClanEconomy, ManaCoinLedger, List CardTemplate, Integer, Integer, Integer -> PackCrackResult
+  crack-clan-pack (pack) (econ) (ledger) (templates) (buyer) (seed) (time) =
+    if pack.approved == False then PackCrackResult { cards-minted = [], clan-revenue = 0, platform-revenue = 0, generation-cost = 0, pack-def = pack, economy = econ, global-ledger = ledger, success = False }
+    else let buyer-bal = ledger-balance ledger buyer
+    in if buyer-bal < pack.price then PackCrackResult { cards-minted = [], clan-revenue = 0, platform-revenue = 0, generation-cost = 0, pack-def = pack, economy = econ, global-ledger = ledger, success = False }
+    else let platform-cut = pack.price * pack.platform-fee-pct / 100
+    in let clan-cut = pack.price * pack.clan-revenue-pct / 100
+    in let gen-cost = pack.price - platform-cut - clan-cut
+    in let ledger2 = ledger-burn ledger buyer (pack.price)
+    in let econ2 = ClanEconomy {
+      clan-id = econ.clan-id,
+      coin-name = econ.coin-name,
+      coin-supply = econ.coin-supply,
+      coin-burned = econ.coin-burned,
+      mint-authority = econ.mint-authority,
+      exchange-enabled = econ.exchange-enabled,
+      exchange-rate = econ.exchange-rate,
+      exchange-fee = econ.exchange-fee,
+      treasury-balance = econ.treasury-balance + clan-cut,
+      member-balances = econ.member-balances,
+      transaction-log = econ.transaction-log
+    }
+    in let cards = generate-pack-cards templates (pack.rarity-dist) (pack.mechanic-filter) seed (pack.card-count)
+    in let pack2 = ClanPackDef {
+      pack-id = pack.pack-id,
+      clan-id = pack.clan-id,
+      name = pack.name,
+      description = pack.description,
+      card-count = pack.card-count,
+      rarity-dist = pack.rarity-dist,
+      mechanic-filter = pack.mechanic-filter,
+      content-theme = pack.content-theme,
+      art-direction = pack.art-direction,
+      price = pack.price,
+      clan-revenue-pct = pack.clan-revenue-pct,
+      platform-fee-pct = pack.platform-fee-pct,
+      approved = pack.approved,
+      public-listed = pack.public-listed,
+      total-sold = pack.total-sold + 1,
+      total-revenue = pack.total-revenue + pack.price
+    }
+    in PackCrackResult { cards-minted = cards, clan-revenue = clan-cut, platform-revenue = platform-cut, generation-cost = gen-cost, pack-def = pack2, economy = econ2, global-ledger = ledger2, success = True }
+
+  generate-pack-cards : List CardTemplate, RarityDist, MechanicFilter, Integer, Integer -> List Integer
+  generate-pack-cards (templates) (dist) (filter) (seed) (count) =
+    let r = rng-new seed
+    in let commons = pick-filtered templates r Common (dist.commons) filter 0 []
+    in let r2 = rng-advance r (dist.commons)
+    in let uncommons = pick-filtered templates r2 Uncommon (dist.uncommons) filter 0 []
+    in let r3 = rng-advance r2 (dist.uncommons)
+    in let rares = pick-filtered templates r3 Rare (dist.rares) filter 0 []
+    in let r4 = rng-advance r3 (dist.rares)
+    in let mythics = pick-filtered templates r4 Mythic (dist.mythics) filter 0 []
+    in append-int-lists (append-int-lists commons uncommons) (append-int-lists rares mythics)
+
+  pick-filtered : List CardTemplate, Rng, Rarity, Integer, MechanicFilter, Integer, List Integer -> List Integer
+  pick-filtered (templates) (r) (rarity) (n) (filter) (picked) (acc) =
+    if picked >= n then acc
+    else let idx = rng-mod (rng-value r) (list-length templates)
+    in let t = list-at templates idx
+    in if t.rarity == rarity then
+      if passes-filter t filter then pick-filtered templates (rng-next r) rarity n filter (picked + 1) (list-push acc (t.id))
+      else pick-filtered templates (rng-next r) rarity n filter picked acc
+    else pick-filtered templates (rng-next r) rarity n filter picked acc
+
+  passes-filter : CardTemplate, MechanicFilter -> Boolean
+  passes-filter (t) (filter) =
+    if filter.max-cmc > 0 then
+      let total-cost = t.mana-cost.white + t.mana-cost.blue + t.mana-cost.black + t.mana-cost.red + t.mana-cost.green + t.mana-cost.generic
+      in if total-cost > filter.max-cmc then False
+      else True
+    else True
+
+Section: Pack Approval
+
+  approve-pack : ClanPackDef -> ClanPackDef
+  approve-pack (pack) =
+    ClanPackDef {
+      pack-id = pack.pack-id,
+      clan-id = pack.clan-id,
+      name = pack.name,
+      description = pack.description,
+      card-count = pack.card-count,
+      rarity-dist = pack.rarity-dist,
+      mechanic-filter = pack.mechanic-filter,
+      content-theme = pack.content-theme,
+      art-direction = pack.art-direction,
+      price = pack.price,
+      clan-revenue-pct = pack.clan-revenue-pct,
+      platform-fee-pct = pack.platform-fee-pct,
+      approved = True,
+      public-listed = pack.public-listed,
+      total-sold = pack.total-sold,
+      total-revenue = pack.total-revenue
+    }
+
+  list-pack-public : ClanPackDef -> ClanPackDef
+  list-pack-public (pack) =
+    ClanPackDef {
+      pack-id = pack.pack-id,
+      clan-id = pack.clan-id,
+      name = pack.name,
+      description = pack.description,
+      card-count = pack.card-count,
+      rarity-dist = pack.rarity-dist,
+      mechanic-filter = pack.mechanic-filter,
+      content-theme = pack.content-theme,
+      art-direction = pack.art-direction,
+      price = pack.price,
+      clan-revenue-pct = pack.clan-revenue-pct,
+      platform-fee-pct = pack.platform-fee-pct,
+      approved = pack.approved,
+      public-listed = True,
+      total-sold = pack.total-sold,
+      total-revenue = pack.total-revenue
+    }
+
+Page 1

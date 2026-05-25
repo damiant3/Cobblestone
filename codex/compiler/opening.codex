@@ -44,6 +44,7 @@ Section: Frontend
 
   CompileFrontend = record {
    type-defs : List ATypeDef,
+   text-meta : IRTextMeta,
    ir : IRChapter,
    cdx-ir : IRChapter,
    sorted-type-defs : List TypeBinding,
@@ -93,15 +94,12 @@ Section: Frontend
    in let blank-ir = IRChapter {
        name = blank-name,
        defs = [],
-       chapter-title = "",
-       prose = "",
-       section-titles = [],
-       ctor-names = [],
        effect-op-names = [],
        span = synthetic-span
       }
    in CompileFrontend {
     type-defs = [],
+    text-meta = IRTextMeta { chapter-title = "", prose = "", section-titles = [], ctor-names = [] },
     ir = blank-ir,
     cdx-ir = blank-ir,
     sorted-type-defs = [],
@@ -195,7 +193,7 @@ Section: Frontend
   compile-lex : Text, Integer, CompileFlags -> LexResult
   compile-lex (source) (h0) (flags) =
    let mountain-base = init-phase-allocator
-   in let lex-deck-height = text-length source * 12 + 1048576
+   in let lex-deck-height = text-length source * 40 + 1048576
    in let lex-base = build lex-deck-height
    in let lex-phase = phase-start
    in let tok-result = tokenize-into source 1 (flags.prose)
@@ -316,32 +314,50 @@ Section: Frontend
   compile-frontend (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = text-length source * 600 + 1048576
+   else let lower-deck-height = list-length (checked.scoped.defs) * 42200 * survey-headroom / 100 + 8388608
    in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
    in let ir = deck-record (lower-chapter (checked.scoped) (checked.types) (checked.type-env) (checked.ust) (checked.ctor-names))
+   in let tm = deck-record (IRTextMeta {
+    chapter-title = checked.scoped.chapter-title,
+    prose = checked.scoped.prose,
+    section-titles = checked.scoped.section-titles,
+    ctor-names = checked.ctor-names
+   })
+   in let lower-metrics = phase-measure lower-phase
+   in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
+   in let lower-sealed = phase-compact
+   in let resolve-deck-height = list-length (ir.defs) * 3600 * survey-headroom / 100 + 8388608
+   in let resolve-base = build resolve-deck-height
+   in let resolve-phase = phase-start
    in let stds = deck-record (sort-bindings (checked.type-env.bindings))
+   in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs) 0 (list-length (ir.defs)) [])
+   in let resolve-metrics = phase-measure resolve-phase
+   in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
+   in let resolve-sealed = phase-compact
+   in let lift-deck-height = list-length resolved-defs * 7600 * survey-headroom / 100 + 8388608
+   in let lift-base = build lift-deck-height
+   in let lift-phase = phase-start
    in let cdx-chapter = deck-record (lift-lambdas (IRChapter {
     name = ir.name,
-    defs = rewrite-ir-defs stds (ir.defs) 0 (list-length (ir.defs)) [],
-    chapter-title = ir.chapter-title,
-    prose = ir.prose,
-    section-titles = ir.section-titles,
-    ctor-names = ir.ctor-names,
+    defs = resolved-defs,
     effect-op-names = ir.effect-op-names,
     span = ir.span
    }))
-   in let lower-metrics = phase-measure lower-phase
-   in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
-   in let lower-phase-metrics = deck-record (list-push (checked.phase-metrics) lower-metrics)
+   in let lift-metrics = phase-measure lift-phase
+   in let lift-ov = check-deck-overflow (lift-metrics.deck-end - lift-metrics.deck-origin) lift-deck-height
+   in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
+   in let pm2 = deck-record (list-push pm1 resolve-metrics)
+   in let pm3 = deck-record (list-push pm2 lift-metrics)
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
+    text-meta = tm,
     ir = ir,
     cdx-ir = cdx-chapter,
     sorted-type-defs = stds,
     bag = checked.bag,
     heap-marks = checked.heap-marks,
-    phase-metrics = lower-phase-metrics
+    phase-metrics = pm3
    })
    in let sealed = phase-compact
    in result
@@ -501,12 +517,12 @@ Section: Text Compilation
   compile-text : CompileFrontend, CompileTarget -> Text
   compile-text (fe) (target) =
    if bag-has-errors (fe.bag) then ""
-   else emit-for-text-target target (fe.ir) (fe.type-defs)
+   else emit-for-text-target target (fe.ir) (fe.text-meta) (fe.type-defs)
 
-  emit-for-text-target : CompileTarget, IRChapter, List ATypeDef -> Text
-  emit-for-text-target (target) (ir) (type-defs) =
+  emit-for-text-target : CompileTarget, IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-for-text-target (target) (ir) (meta) (type-defs) =
    when target
-    is CtCodexText -> emit-codex-text-chapter ir type-defs
+    is CtCodexText -> emit-codex-text-chapter ir meta type-defs
     is CtX86_64Bare -> ""
     is CtCdx -> ""
 
@@ -543,7 +559,7 @@ Section: Measurement
     "h-pre-emit", "h-post-emit"]
 
   phase-metric-names : List Text
-  phase-metric-names = ["lex", "parse", "desugar", "scope", "check", "lower"]
+  phase-metric-names = ["lex", "parse", "desugar", "scope", "check", "lower", "resolve", "lift"]
 
   format-phase-metrics-wd : List PhaseMetrics -> Text
   format-phase-metrics-wd (metrics) =
@@ -643,25 +659,25 @@ Section: Streaming Emission
    in let ir-defs = fe.ir.defs
    in let len = list-length ir-defs
    in if len == 0
-      then let header = if fe.ir.chapter-title == "" then ""
-           else "Chapter: " & fe.ir.chapter-title & "\n\n"
-             & if fe.ir.prose == "" then "" else " " & fe.ir.prose & "\n\n"
+      then let header = if fe.text-meta.chapter-title == "" then ""
+           else "Chapter: " & fe.text-meta.chapter-title & "\n\n"
+             & if fe.text-meta.prose == "" then "" else " " & fe.text-meta.prose & "\n\n"
       in let type-defs-text = emit-type-defs (fe.type-defs) 0
       in act
        print-line-uni wd-marks
        print-line-uni (header & type-defs-text)
       end
    else let h-emit = __heap-save
-   in let header = if fe.ir.chapter-title == "" then ""
-      else "Chapter: " & fe.ir.chapter-title & "\n\n"
-        & if fe.ir.prose == "" then "" else " " & fe.ir.prose & "\n\n"
+   in let header = if fe.text-meta.chapter-title == "" then ""
+      else "Chapter: " & fe.text-meta.chapter-title & "\n\n"
+        & if fe.text-meta.prose == "" then "" else " " & fe.text-meta.prose & "\n\n"
    in let type-defs-text = emit-type-defs (fe.type-defs) 0
-   in let first-text = emit-def (list-at ir-defs 0) (fe.ir.ctor-names)
+   in let first-text = emit-def (list-at ir-defs 0) (fe.text-meta.ctor-names)
    in act
     print-line-uni wd-marks
     print-line-uni (header & type-defs-text & first-text)
     let restored = __heap-restore h-emit
-    in emit-streaming-ir-defs ir-defs (fe.ir.ctor-names) 1 len
+    in emit-streaming-ir-defs ir-defs (fe.text-meta.ctor-names) 1 len
    end
 
 Section: Entry Point
@@ -747,7 +763,7 @@ Section: Entry Point
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
     else act
      print-line-uni "IR-BEGIN"
-     print-line-uni (emit-ir-chapter (fe.ir) (fe.type-defs))
+     print-line-uni (emit-ir-chapter (fe.ir) (fe.text-meta) (fe.type-defs))
      print-line-uni "IR-END"
     end
     let h-post-emit = __heap-save
@@ -762,7 +778,7 @@ Section: Entry Point
     print-codegen-error-header (bag-errors (fe.bag))
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
     else act
-     let ir-text = emit-ir-chapter (fe.ir) (fe.type-defs)
+     let ir-text = emit-ir-chapter (fe.ir) (fe.text-meta) (fe.type-defs)
      in print-line-uni ("SIZE:" & show (text-length ir-text))
      print-line ir-text
     end

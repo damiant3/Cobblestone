@@ -1,0 +1,340 @@
+Chapter: ClanChallenge
+  cites CodexMagic chapter Clan
+  cites CodexMagic chapter ClanEconomy
+  cites CodexMagic chapter ClanFormat
+
+ Inter-clan challenges. Clans challenge each other to matches or
+ tournaments with stakes - honor, ManaCoin, cards, or trophies.
+ Both clans select representatives, matches are played on the
+ global network, results update reputation.
+
+ We say:
+
+Section: Challenge Types
+
+  ChallengeStake =
+    | StakeHonor
+    | StakeManaCoin (Integer)
+    | StakeCards (List Integer)
+    | StakeTrophy
+
+  stake-name : ChallengeStake -> Text
+  stake-name (s) =
+    when s
+      is StakeHonor -> "Honor"
+      is StakeManaCoin (amount) -> show amount & " ManaCoin"
+      is StakeCards (ids) -> show (list-length ids) & " cards"
+      is StakeTrophy -> "Trophy"
+
+  ChallengeStatus =
+    | ChalProposed
+    | ChalAccepted
+    | ChalInProgress
+    | ChalCompleted
+    | ChalDeclined
+
+  challenge-status-name : ChallengeStatus -> Text
+  challenge-status-name (s) =
+    when s
+      is ChalProposed -> "Proposed"
+      is ChalAccepted -> "Accepted"
+      is ChalInProgress -> "In Progress"
+      is ChalCompleted -> "Completed"
+      is ChalDeclined -> "Declined"
+
+Section: Challenge Record
+
+  ClanChallenge = record {
+    challenge-id : Integer,
+    challenger-clan : Integer,
+    defending-clan : Integer,
+    format-id : Integer,
+    players-per-side : Integer,
+    stake : ChallengeStake,
+    status : ChallengeStatus,
+    challenger-roster : List Integer,
+    defender-roster : List Integer,
+    matches : List ChallengeMatch,
+    winner-clan : Integer,
+    proposed-at : Integer,
+    started-at : Integer,
+    completed-at : Integer
+  }
+
+  ChallengeMatch = record {
+    match-index : Integer,
+    challenger-player : Integer,
+    defender-player : Integer,
+    winner : Integer,
+    completed : Boolean
+  }
+
+Section: Challenge Creation
+
+  challenge-new : Integer, Integer, Integer, Integer, Integer, ChallengeStake, Integer -> ClanChallenge
+  challenge-new (id) (challenger) (defender) (format-id) (players-per-side) (stake) (time) =
+    ClanChallenge {
+      challenge-id = id,
+      challenger-clan = challenger,
+      defending-clan = defender,
+      format-id = format-id,
+      players-per-side = players-per-side,
+      stake = stake,
+      status = ChalProposed,
+      challenger-roster = [],
+      defender-roster = [],
+      matches = [],
+      winner-clan = -1,
+      proposed-at = time,
+      started-at = 0,
+      completed-at = 0
+    }
+
+Section: Challenge Flow
+
+  challenge-accept : ClanChallenge -> ClanChallenge
+  challenge-accept (chal) =
+    ClanChallenge {
+      challenge-id = chal.challenge-id,
+      challenger-clan = chal.challenger-clan,
+      defending-clan = chal.defending-clan,
+      format-id = chal.format-id,
+      players-per-side = chal.players-per-side,
+      stake = chal.stake,
+      status = ChalAccepted,
+      challenger-roster = chal.challenger-roster,
+      defender-roster = chal.defender-roster,
+      matches = chal.matches,
+      winner-clan = chal.winner-clan,
+      proposed-at = chal.proposed-at,
+      started-at = chal.started-at,
+      completed-at = chal.completed-at
+    }
+
+  challenge-decline : ClanChallenge -> ClanChallenge
+  challenge-decline (chal) =
+    ClanChallenge {
+      challenge-id = chal.challenge-id,
+      challenger-clan = chal.challenger-clan,
+      defending-clan = chal.defending-clan,
+      format-id = chal.format-id,
+      players-per-side = chal.players-per-side,
+      stake = chal.stake,
+      status = ChalDeclined,
+      challenger-roster = chal.challenger-roster,
+      defender-roster = chal.defender-roster,
+      matches = chal.matches,
+      winner-clan = chal.winner-clan,
+      proposed-at = chal.proposed-at,
+      started-at = chal.started-at,
+      completed-at = chal.completed-at
+    }
+
+  challenge-set-roster : ClanChallenge, Boolean, List Integer -> ClanChallenge
+  challenge-set-roster (chal) (is-challenger) (roster) =
+    if is-challenger then
+      ClanChallenge {
+        challenge-id = chal.challenge-id,
+        challenger-clan = chal.challenger-clan,
+        defending-clan = chal.defending-clan,
+        format-id = chal.format-id,
+        players-per-side = chal.players-per-side,
+        stake = chal.stake,
+        status = chal.status,
+        challenger-roster = roster,
+        defender-roster = chal.defender-roster,
+        matches = chal.matches,
+        winner-clan = chal.winner-clan,
+        proposed-at = chal.proposed-at,
+        started-at = chal.started-at,
+        completed-at = chal.completed-at
+      }
+    else
+      ClanChallenge {
+        challenge-id = chal.challenge-id,
+        challenger-clan = chal.challenger-clan,
+        defending-clan = chal.defending-clan,
+        format-id = chal.format-id,
+        players-per-side = chal.players-per-side,
+        stake = chal.stake,
+        status = chal.status,
+        challenger-roster = chal.challenger-roster,
+        defender-roster = roster,
+        matches = chal.matches,
+        winner-clan = chal.winner-clan,
+        proposed-at = chal.proposed-at,
+        started-at = chal.started-at,
+        completed-at = chal.completed-at
+      }
+
+  challenge-start : ClanChallenge, Integer -> ClanChallenge
+  challenge-start (chal) (time) =
+    if chal.status /= ChalAccepted then chal
+    else if list-length (chal.challenger-roster) < chal.players-per-side then chal
+    else if list-length (chal.defender-roster) < chal.players-per-side then chal
+    else let matches = generate-challenge-matches (chal.challenger-roster) (chal.defender-roster) 0 (chal.players-per-side) []
+    in ClanChallenge {
+      challenge-id = chal.challenge-id,
+      challenger-clan = chal.challenger-clan,
+      defending-clan = chal.defending-clan,
+      format-id = chal.format-id,
+      players-per-side = chal.players-per-side,
+      stake = chal.stake,
+      status = ChalInProgress,
+      challenger-roster = chal.challenger-roster,
+      defender-roster = chal.defender-roster,
+      matches = matches,
+      winner-clan = chal.winner-clan,
+      proposed-at = chal.proposed-at,
+      started-at = time,
+      completed-at = chal.completed-at
+    }
+
+  generate-challenge-matches : List Integer, List Integer, Integer, Integer, List ChallengeMatch -> List ChallengeMatch
+  generate-challenge-matches (challengers) (defenders) (i) (count) (acc) =
+    if i >= count then acc
+    else let m = ChallengeMatch { match-index = i, challenger-player = list-at challengers i, defender-player = list-at defenders i, winner = -1, completed = False }
+    in generate-challenge-matches challengers defenders (i + 1) count (list-push acc m)
+
+Section: Match Results
+
+  challenge-report-match : ClanChallenge, Integer, Integer -> ClanChallenge
+  challenge-report-match (chal) (match-index) (winner) =
+    let new-matches = update-challenge-match (chal.matches) match-index winner 0 (list-length (chal.matches)) []
+    in ClanChallenge {
+      challenge-id = chal.challenge-id,
+      challenger-clan = chal.challenger-clan,
+      defending-clan = chal.defending-clan,
+      format-id = chal.format-id,
+      players-per-side = chal.players-per-side,
+      stake = chal.stake,
+      status = chal.status,
+      challenger-roster = chal.challenger-roster,
+      defender-roster = chal.defender-roster,
+      matches = new-matches,
+      winner-clan = chal.winner-clan,
+      proposed-at = chal.proposed-at,
+      started-at = chal.started-at,
+      completed-at = chal.completed-at
+    }
+
+  update-challenge-match : List ChallengeMatch, Integer, Integer, Integer, Integer, List ChallengeMatch -> List ChallengeMatch
+  update-challenge-match (matches) (idx) (winner) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at matches i
+    in if m.match-index == idx then
+      update-challenge-match matches idx winner (i + 1) len (list-push acc (ChallengeMatch { match-index = m.match-index, challenger-player = m.challenger-player, defender-player = m.defender-player, winner = winner, completed = True }))
+    else update-challenge-match matches idx winner (i + 1) len (list-push acc m)
+
+Section: Challenge Resolution
+
+  ChallengeResolveResult = record {
+    challenge : ClanChallenge,
+    challenger-clan : Clan,
+    defender-clan : Clan
+  }
+
+  challenge-resolve : ClanChallenge, Clan, Clan, Integer -> ChallengeResolveResult
+  challenge-resolve (chal) (chal-clan) (def-clan) (time) =
+    if all-matches-complete (chal.matches) 0 (list-length (chal.matches)) == False then
+      ChallengeResolveResult { challenge = chal, challenger-clan = chal-clan, defender-clan = def-clan }
+    else let chal-wins = count-clan-wins (chal.matches) (chal.challenger-roster) 0 (list-length (chal.matches)) 0
+    in let def-wins = count-clan-wins (chal.matches) (chal.defender-roster) 0 (list-length (chal.matches)) 0
+    in let winner-id = if chal-wins > def-wins then chal.challenger-clan else chal.defending-clan
+    in let rep-gain = 50
+    in let rep-loss = 10
+    in let winner-clan = if winner-id == chal.challenger-clan then clan-add-reputation chal-clan rep-gain else clan-add-reputation def-clan rep-gain
+    in let loser-clan = if winner-id == chal.challenger-clan then clan-add-reputation def-clan rep-loss else clan-add-reputation chal-clan rep-loss
+    in let final-chal = ClanChallenge {
+      challenge-id = chal.challenge-id,
+      challenger-clan = chal.challenger-clan,
+      defending-clan = chal.defending-clan,
+      format-id = chal.format-id,
+      players-per-side = chal.players-per-side,
+      stake = chal.stake,
+      status = ChalCompleted,
+      challenger-roster = chal.challenger-roster,
+      defender-roster = chal.defender-roster,
+      matches = chal.matches,
+      winner-clan = winner-id,
+      proposed-at = chal.proposed-at,
+      started-at = chal.started-at,
+      completed-at = time
+    }
+    in if winner-id == chal.challenger-clan then
+      ChallengeResolveResult { challenge = final-chal, challenger-clan = winner-clan, defender-clan = loser-clan }
+    else
+      ChallengeResolveResult { challenge = final-chal, challenger-clan = loser-clan, defender-clan = winner-clan }
+
+  all-matches-complete : List ChallengeMatch, Integer, Integer -> Boolean
+  all-matches-complete (matches) (i) (len) =
+    if i >= len then True
+    else let m = list-at matches i
+    in if m.completed == False then False
+    else all-matches-complete matches (i + 1) len
+
+  count-clan-wins : List ChallengeMatch, List Integer, Integer, Integer, Integer -> Integer
+  count-clan-wins (matches) (roster) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at matches i
+    in if m.completed then
+      if roster-contains roster (m.winner) 0 (list-length roster) then count-clan-wins matches roster (i + 1) len (acc + 1)
+      else count-clan-wins matches roster (i + 1) len acc
+    else count-clan-wins matches roster (i + 1) len acc
+
+  roster-contains : List Integer, Integer, Integer, Integer -> Boolean
+  roster-contains (roster) (id) (i) (len) =
+    if i >= len then False
+    else if list-at roster i == id then True
+    else roster-contains roster id (i + 1) len
+
+Section: Stake Settlement
+
+  StakeSettleResult = record {
+    challenger-econ : ClanEconomy,
+    defender-econ : ClanEconomy,
+    global-ledger : ManaCoinLedger
+  }
+
+  settle-manacoin-stake : ClanChallenge, ClanEconomy, ClanEconomy, ManaCoinLedger, Integer -> StakeSettleResult
+  settle-manacoin-stake (chal) (chal-econ) (def-econ) (ledger) (time) =
+    when chal.stake
+      is StakeManaCoin (amount) ->
+        if chal.winner-clan == chal.challenger-clan then
+          let result = treasury-withdraw def-econ ledger 0 amount time
+          in let ledger2 = ledger-mint (result.global-ledger) 0 amount
+          in let chal-econ2 = ClanEconomy {
+            clan-id = chal-econ.clan-id,
+            coin-name = chal-econ.coin-name,
+            coin-supply = chal-econ.coin-supply,
+            coin-burned = chal-econ.coin-burned,
+            mint-authority = chal-econ.mint-authority,
+            exchange-enabled = chal-econ.exchange-enabled,
+            exchange-rate = chal-econ.exchange-rate,
+            exchange-fee = chal-econ.exchange-fee,
+            treasury-balance = chal-econ.treasury-balance + amount,
+            member-balances = chal-econ.member-balances,
+            transaction-log = chal-econ.transaction-log
+          }
+          in StakeSettleResult { challenger-econ = chal-econ2, defender-econ = result.economy, global-ledger = result.global-ledger }
+        else
+          let result = treasury-withdraw chal-econ ledger 0 amount time
+          in let def-econ2 = ClanEconomy {
+            clan-id = def-econ.clan-id,
+            coin-name = def-econ.coin-name,
+            coin-supply = def-econ.coin-supply,
+            coin-burned = def-econ.coin-burned,
+            mint-authority = def-econ.mint-authority,
+            exchange-enabled = def-econ.exchange-enabled,
+            exchange-rate = def-econ.exchange-rate,
+            exchange-fee = def-econ.exchange-fee,
+            treasury-balance = def-econ.treasury-balance + amount,
+            member-balances = def-econ.member-balances,
+            transaction-log = def-econ.transaction-log
+          }
+          in StakeSettleResult { challenger-econ = result.economy, defender-econ = def-econ2, global-ledger = result.global-ledger }
+      is StakeHonor -> StakeSettleResult { challenger-econ = chal-econ, defender-econ = def-econ, global-ledger = ledger }
+      is StakeCards (ids) -> StakeSettleResult { challenger-econ = chal-econ, defender-econ = def-econ, global-ledger = ledger }
+      is StakeTrophy -> StakeSettleResult { challenger-econ = chal-econ, defender-econ = def-econ, global-ledger = ledger }
+
+Page 1

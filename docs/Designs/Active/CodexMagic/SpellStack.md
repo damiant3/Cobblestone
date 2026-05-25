@@ -66,6 +66,14 @@ Mana abilities do NOT use the stack. They resolve immediately:
 
 Example: Tapping a Forest for {G} resolves immediately.
 
-## Split Second (out of scope for v1)
+## Player-Facing Model
 
-Not implemented in initial version.
+The stack is a **hidden system**. Players never interact with it
+directly. The AI supervisor resolves all stack interactions and
+presents the player with decision points: "Opponent cast Lightning
+Strike targeting your General. Respond?" with options like [Counter]
+or [Let it resolve]. The full LIFO resolution, priority passing,
+and APNAP ordering happen in the engine; the player sees outcomes
+and choices. See [AIGameplay.md](AIGameplay.md) for the supervisor
+model and [GameBalance.md](GameBalance.md) section 3.7 for the
+hidden-complexity design rationale.

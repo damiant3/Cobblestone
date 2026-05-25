@@ -1,0 +1,284 @@
+Chapter: Angular Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates TypeScript Angular components from the IR.
+
+Section: Sanitization
+
+  ng-sanitize : Text -> Text
+  ng-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  ng-escape : Text -> Text
+  ng-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  ng-indent : Integer -> Text
+  ng-indent (n) =
+   if n <= 0 then ""
+   else "  " & ng-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then 0
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0
+
+Section: Expression Emission
+
+  emit-ng-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-ng-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> show n
+    is IrTextLit (s) (sp) -> "\"" & ng-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
+    is IrName (n) (ty) (sp) -> ng-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-ng-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-ng-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-ng-expr c arities indent & " ? " & emit-ng-expr t arities indent & " : " & emit-ng-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(() => { const " & ng-sanitize name & " = " & emit-ng-expr val arities indent & "; return " & emit-ng-expr body arities indent & "; })()"
+    is IrApply (f) (a) (ty) (sp) -> emit-ng-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "(" & emit-ng-params params 0 & ") => " & emit-ng-expr body arities indent
+    is IrList (elems) (ty) (sp) -> "[" & emit-ng-list-elems elems arities indent 0 & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-ng-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-ng-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-ng-record-fields fields arities indent 0 & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-ng-expr rec arities indent & "." & ng-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-ng-expr rec arities indent & "." & ng-sanitize field & " = " & emit-ng-expr val arities indent & ")"
+    is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-ng-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-ng-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ng-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ng-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> "/* try */"
+    is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & ng-escape msg & "\"); })()"
+
+Section: Binary Operators
+
+  emit-ng-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-ng-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-ng-expr l arities indent
+   in let rhs = emit-ng-expr r arities indent
+   in when op
+    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
+    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrEq -> "(" & lhs & " === " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
+    is IrLt -> "(" & lhs & " < " & rhs & ")"
+    is IrGt -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq -> "(" & lhs & " >= " & rhs & ")"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(" & lhs & " + " & rhs & ")"
+    is IrAppendList -> "([..." & lhs & ", ..." & rhs & "])"
+    is IrConsList -> "[" & lhs & ", ..." & rhs & "]"
+
+Section: Apply and Helpers
+
+
+  emit-ng-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-ng-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let func = emit-ng-expr (chain.root) arities indent
+   in func & "(" & emit-ng-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-ng-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-ng-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-ng-expr (list-at args i) arities indent & emit-ng-apply-args args arities indent (i + 1)
+
+  emit-ng-params : List IRParam, Integer -> Text
+  emit-ng-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & ng-sanitize (list-at params i).name & emit-ng-params params (i + 1)
+
+  emit-ng-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-ng-list-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-ng-expr (list-at elems i) arities indent & emit-ng-list-elems elems arities indent (i + 1)
+
+  emit-ng-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-ng-record-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", " & ng-sanitize (f.name) & ": " & emit-ng-expr (f.value) arities indent & emit-ng-record-fields fields arities indent (i + 1)
+
+Section: Match
+
+  emit-ng-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-ng-match (scrut) (branches) (arities) (indent) =
+   "(() => { const _s = " & emit-ng-expr scrut arities indent & "; " & emit-ng-branches branches arities indent 0 & " })()"
+
+  emit-ng-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-ng-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then "throw new Error('non-exhaustive match');"
+   else let b = list-at branches i
+   in let cond = emit-ng-pat-cond (b.pattern) "_s"
+   in let binds = emit-ng-pat-binds (b.pattern) "_s"
+   in let body = emit-ng-expr (b.body) arities indent
+   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-ng-branches branches arities indent (i + 1)
+
+  emit-ng-pat-cond : IRPat, Text -> Text
+  emit-ng-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
+    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+
+  emit-ng-pat-binds : IRPat, Text -> Text
+  emit-ng-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "const " & ng-sanitize name & " = " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-ng-ctor-binds subs scrut 0
+    is IrWildPat (sp) -> ""
+
+  emit-ng-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-ng-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = scrut & "._" & show i
+   in emit-ng-pat-binds sub access & emit-ng-ctor-binds subs scrut (i + 1)
+
+Section: Act Blocks
+
+  emit-ng-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-ng-act (stmts) (arities) (indent) =
+   "(() => {\n" & emit-ng-act-stmts stmts arities (indent + 1) 0 & ng-indent indent & "})()"
+
+  emit-ng-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-ng-act-stmts (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> ng-indent indent & "const " & ng-sanitize name & " = " & emit-ng-expr val arities indent & ";\n" & emit-ng-act-stmts stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) ->
+     if is-last then ng-indent indent & "return " & emit-ng-expr e arities indent & ";\n"
+     else ng-indent indent & emit-ng-expr e arities indent & ";\n" & emit-ng-act-stmts stmts arities indent (i + 1)
+
+Section: Type Definitions
+
+  emit-ng-type-def : ATypeDef -> Text
+  emit-ng-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "interface " & ng-sanitize (name.value) & " { _type: string; " & emit-ng-iface-fields fields 0 & "}\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-ng-variant-ctors ctors 0
+
+  emit-ng-iface-fields : List ARecordFieldDef, Integer -> Text
+  emit-ng-iface-fields (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ng-sanitize (f.name.value) & ": any; " & emit-ng-iface-fields fields (i + 1)
+
+  emit-ng-variant-ctors : List AVariantCtorDef, Integer -> Text
+  emit-ng-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let ctor-text = if n == 0 then "const " & ng-sanitize (c.name.value) & ": any = { _tag: \"" & c.name.value & "\" };\n"
+      else "function " & ng-sanitize (c.name.value) & "(" & emit-ng-ctor-params n 0 & "): any { return { _tag: \"" & c.name.value & "\"" & emit-ng-ctor-fields n 0 & " }; }\n"
+   in ctor-text & emit-ng-variant-ctors ctors (i + 1)
+
+  emit-ng-ctor-params : Integer, Integer -> Text
+  emit-ng-ctor-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "_" & show i & ": any" & emit-ng-ctor-params n (i + 1)
+
+  emit-ng-ctor-fields : Integer, Integer -> Text
+  emit-ng-ctor-fields (n) (i) =
+   if i == n then ""
+   else ", _" & show i & ": _" & show i & emit-ng-ctor-fields n (i + 1)
+
+Section: Definition Emission
+
+  emit-ng-def : IRDef, List ArityEntry -> Text
+  emit-ng-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = ng-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "const " & sname & ": any = " & emit-ng-expr (d.body) arities 0 & ";\n\n"
+      else "function " & sname & "(" & emit-ng-params (d.params) 0 & "): any {\n  return " & emit-ng-expr (d.body) arities 1 & ";\n}\n\n"
+
+  emit-ng-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-ng-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-ng-def (list-at defs i) arities & emit-ng-defs defs (i + 1) arities
+
+  emit-ng-type-defs : List ATypeDef, Integer -> Text
+  emit-ng-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-ng-type-def (list-at tds i) & emit-ng-type-defs tds (i + 1)
+
+Section: Angular Component Assembly
+
+  emit-angular-chapter : IRChapter, List ATypeDef -> Text
+  emit-angular-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "App" else m.chapter-title
+   in let comp-name = ng-sanitize title
+   in let imports = "import { Component, OnInit } from '@angular/core';\n\n"
+   in let builtins = "function print_line_uni(s: string): void { console.log(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): number { return s.length; }\nfunction text_replace(s: string, a: string, b: string): string { return s.split(a).join(b); }\nfunction text_compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs: any[]): number { return xs.length; }\nfunction list_at(xs: any[], i: number): any { return xs[i]; }\nfunction integer_to_text(n: number): string { return String(n); }\nfunction negate(n: number): number { return -n; }\n\n"
+   in let types-text = emit-ng-type-defs type-defs 0
+   in let defs-text = emit-ng-defs (m.defs) 0 arities
+   in let decorator = "@Component({\n  selector: 'app-" & text-replace title " " "-" & "',\n  template: `\n    <div class=\"app\">\n      <div *ngFor=\"let line of output\">{{line}}</div>\n    </div>\n  `\n})\n"
+   in let cls = "export class " & comp-name & "Component implements OnInit {\n  output: string[] = [];\n  ngOnInit(): void {\n    const _print = print_line_uni;\n    (window as any).print_line_uni = (s: string) => this.output.push(s);\n    try { opening(); } catch(e) { console.error(e); }\n    (window as any).print_line_uni = _print;\n  }\n}\n"
+   in imports & builtins & types-text & defs-text & decorator & cls
+
+Page 1

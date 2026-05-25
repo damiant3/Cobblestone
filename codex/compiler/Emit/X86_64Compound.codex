@@ -518,19 +518,74 @@ Section: Narrow-store with overflow-mode dispatch
       is otherwise -> int-ty-default
     is otherwise -> int-ty-default
 
-  proven-mod : IRExpr, IRExpr -> CodexType
-  proven-mod (x-expr) (n-expr) =
-   let nr = ir-expr-proven-range n-expr
+  RangeEntry = record {
+   rng-name : Text,
+   rng-type : CodexType
+  }
+
+  lookup-range : List RangeEntry, Text, Integer -> CodexType
+  lookup-range (env) (name) (i) =
+   if i == list-length env then int-ty-default
+   else let e = list-at env i
+   in if e.rng-name == name then e.rng-type
+   else lookup-range env name (i + 1)
+
+  ir-expr-proven-range : IRExpr -> CodexType
+  ir-expr-proven-range (e) = ir-proven-env e []
+
+  ir-proven-env : IRExpr, List RangeEntry -> CodexType
+  ir-proven-env (e) (env) =
+   when e
+    is IrIntLit (v) (s) -> IntegerTy v v OvError
+    is IrName (n) (t) (s) -> lookup-range env n 0
+    is IrFieldAccess (rec) (fname) (vty) (sp) ->
+     when vty
+      is IntegerTy (lo) (hi) (mode) -> vty
+      is otherwise -> int-ty-default
+    is IrApply (func) (arg) (ty) (sp) ->
+     when func
+      is IrName (n) (nty) (nsp) ->
+       if n == "__narrow" then ir-proven-env arg env else int-ty-default
+      is IrApply (inner-func) (inner-arg) (ity) (isp) ->
+       when inner-func
+        is IrName (n) (nty) (nsp) ->
+         if n == "int-mod" then proven-mod inner-arg arg env
+         else if n == "bit-and" then proven-bitand inner-arg arg env
+         else if n == "bit-shru" then proven-shru inner-arg arg env
+         else int-ty-default
+        is otherwise -> int-ty-default
+      is otherwise -> int-ty-default
+    is IrNegate (x) (s) ->
+     let inner = ir-proven-env x env
+     in when inner
+      is IntegerTy (lo) (hi) (m) ->
+       if lo == i64-min then int-ty-default
+       else IntegerTy (negate hi) (negate lo) m
+      is otherwise -> int-ty-default
+    is IrBinary (op) (l) (r) (t) (s) ->
+     let lb = ir-proven-env l env
+     in let rb = ir-proven-env r env
+     in binary-proven-range op lb rb
+    is IrIf (cond) (then-e) (else-e) (t) (s) ->
+     union-range (ir-proven-env then-e env) (ir-proven-env else-e env)
+    is IrLet (name) (ty) (value) (body) (s) ->
+     let val-range = ir-proven-env value env
+     in ir-proven-env body (list-push env (RangeEntry { rng-name = name, rng-type = val-range }))
+    is otherwise -> int-ty-default
+
+  proven-mod : IRExpr, IRExpr, List RangeEntry -> CodexType
+  proven-mod (x-expr) (n-expr) (env) =
+   let nr = ir-proven-env n-expr env
    in when nr
     is IntegerTy (n-lo) (n-hi) (nm) ->
      if n-lo > 0 then IntegerTy 0 (n-hi - 1) OvError
      else int-ty-default
     is otherwise -> int-ty-default
 
-  proven-bitand : IRExpr, IRExpr -> CodexType
-  proven-bitand (x-expr) (y-expr) =
-   let xr = ir-expr-proven-range x-expr
-   in let yr = ir-expr-proven-range y-expr
+  proven-bitand : IRExpr, IRExpr, List RangeEntry -> CodexType
+  proven-bitand (x-expr) (y-expr) (env) =
+   let xr = ir-proven-env x-expr env
+   in let yr = ir-proven-env y-expr env
    in when xr
     is IntegerTy (x-lo) (x-hi) (xm) ->
      when yr
@@ -542,10 +597,10 @@ Section: Narrow-store with overflow-mode dispatch
       is otherwise -> int-ty-default
     is otherwise -> int-ty-default
 
-  proven-shru : IRExpr, IRExpr -> CodexType
-  proven-shru (x-expr) (n-expr) =
-   let xr = ir-expr-proven-range x-expr
-   in let nr = ir-expr-proven-range n-expr
+  proven-shru : IRExpr, IRExpr, List RangeEntry -> CodexType
+  proven-shru (x-expr) (n-expr) (env) =
+   let xr = ir-proven-env x-expr env
+   in let nr = ir-proven-env n-expr env
    in when xr
     is IntegerTy (x-lo) (x-hi) (xm) ->
      when nr
@@ -554,42 +609,6 @@ Section: Narrow-store with overflow-mode dispatch
        then IntegerTy (bit-shru x-lo n-hi) (bit-shru x-hi n-lo) OvError
        else int-ty-default
       is otherwise -> int-ty-default
-    is otherwise -> int-ty-default
-
-  ir-expr-proven-range : IRExpr -> CodexType
-  ir-expr-proven-range (e) =
-   when e
-    is IrIntLit (v) (s) -> IntegerTy v v OvError
-    is IrFieldAccess (rec) (fname) (vty) (sp) ->
-     when vty
-      is IntegerTy (lo) (hi) (mode) -> vty
-      is otherwise -> int-ty-default
-    is IrApply (func) (arg) (ty) (sp) ->
-     when func
-      is IrName (n) (nty) (nsp) ->
-       if n == "__narrow" then ir-expr-proven-range arg else int-ty-default
-      is IrApply (inner-func) (inner-arg) (ity) (isp) ->
-       when inner-func
-        is IrName (n) (nty) (nsp) ->
-         if n == "int-mod" then proven-mod inner-arg arg
-         else if n == "bit-and" then proven-bitand inner-arg arg
-         else if n == "bit-shru" then proven-shru inner-arg arg
-         else int-ty-default
-        is otherwise -> int-ty-default
-      is otherwise -> int-ty-default
-    is IrNegate (x) (s) ->
-     let inner = ir-expr-proven-range x
-     in when inner
-      is IntegerTy (lo) (hi) (m) ->
-       if lo == i64-min then int-ty-default
-       else IntegerTy (negate hi) (negate lo) m
-      is otherwise -> int-ty-default
-    is IrBinary (op) (l) (r) (t) (s) ->
-     let lb = ir-expr-proven-range l
-     in let rb = ir-expr-proven-range r
-     in binary-proven-range op lb rb
-    is IrIf (cond) (then-e) (else-e) (t) (s) ->
-     union-range (ir-expr-proven-range then-e) (ir-expr-proven-range else-e)
     is otherwise -> int-ty-default
 
   bounds-subset : CodexType, CodexType -> Boolean
@@ -750,7 +769,8 @@ Section: Narrow-store with overflow-mode dispatch
    in let st1 = store-local (loc.state) (loc.reg) (r.reg)
    in emit-eval-record-fields st1 fields (i + 1) (list-push acc (FieldLocal {
     name = fv.name,
-    slot = loc.reg
+    slot = loc.reg,
+    value-expr = fv.value
    }))
 
   find-field-local-slot : List FieldLocal, Text, Integer -> Integer
@@ -759,6 +779,13 @@ Section: Narrow-store with overflow-mode dispatch
    else let fl = list-at fls i
    in if fl.name == name then fl.slot
       else find-field-local-slot fls name (i + 1)
+
+  find-field-local-expr : List FieldLocal, Text, Integer -> IRExpr
+  find-field-local-expr (fls) (name) (i) =
+   if i == list-length fls then IrIntLit 0 (SourceSpan { line = 0, column = 0, offset = 0, length = 0, file-id = 0 })
+   else let fl = list-at fls i
+   in if fl.name == name then fl.value-expr
+      else find-field-local-expr fls name (i + 1)
 
   emit-store-record-fields-by-type : CodegenState, List RecordField, List FieldLocal, SkipListText, List Integer, Integer, Integer -> CodegenState
   emit-store-record-fields-by-type (st) (type-fields) (field-locals) (sorted) (offsets) (ptr-loc) (i) =
@@ -769,7 +796,8 @@ Section: Narrow-store with overflow-mode dispatch
    in let ptr = load-local (val.state) ptr-loc
    in let rank = skip-list-text-rank-of sorted (field-sort-key tf)
    in let offset = list-at offsets rank
-   in let st1 = emit-narrow-store-checked (ptr.state) (tf.type-val) (ptr.reg) (val.reg) offset
+   in let val-ir = find-field-local-expr field-locals (tf.name.value) 0
+   in let st1 = emit-narrow-store-proven (ptr.state) (tf.type-val) (ptr.reg) (val.reg) offset val-ir
    in emit-store-record-fields-by-type st1 type-fields field-locals sorted offsets ptr-loc (i + 1)
      else emit-store-record-fields-by-type st type-fields field-locals sorted offsets ptr-loc (i + 1)
 

@@ -1,0 +1,242 @@
+Chapter: Crafting
+  cites CodexMagic chapter RPGEngine
+  cites CodexMagic chapter PlanarExchange
+  cites CodexMagic chapter Token
+
+ Crafting system. Players combine materials from different games
+ to create new items. Dungeon loot becomes crafting materials,
+ card game dust becomes enchantment fuel, race car scraps become
+ weapon components. Recipes are discoverable, tradeable, and
+ clan-publishable. GMs can create custom recipes for their worlds.
+
+ We say:
+
+Section: Materials
+
+  Material = record {
+    material-id : Integer,
+    name : Text,
+    category : MaterialCategory,
+    tier : Integer,
+    source-game : Integer,
+    quantity : Integer
+  }
+
+  MaterialCategory =
+    | MatOre
+    | MatGem
+    | MatWood
+    | MatCloth
+    | MatLeather
+    | MatEssence
+    | MatDust
+    | MatScrap
+    | MatHerb
+    | MatBone
+
+  material-category-name : MaterialCategory -> Text
+  material-category-name (mc) =
+    when mc
+      is MatOre -> "Ore"
+      is MatGem -> "Gem"
+      is MatWood -> "Wood"
+      is MatCloth -> "Cloth"
+      is MatLeather -> "Leather"
+      is MatEssence -> "Essence"
+      is MatDust -> "Dust"
+      is MatScrap -> "Scrap"
+      is MatHerb -> "Herb"
+      is MatBone -> "Bone"
+
+Section: Recipes
+
+  Recipe = record {
+    recipe-id : Integer,
+    name : Text,
+    output-item : Integer,
+    output-name : Text,
+    output-type : Integer,
+    ingredients : List Ingredient,
+    skill-required : Integer,
+    time-cost : Integer,
+    coin-cost : Integer,
+    discoverable : Boolean,
+    discovered-by : Integer,
+    clan-exclusive : Integer,
+    tier : Integer
+  }
+
+  Ingredient = record {
+    material-id : Integer,
+    quantity-needed : Integer,
+    category : MaterialCategory,
+    min-tier : Integer,
+    any-source : Boolean
+  }
+
+Section: Player Crafting State
+
+  CraftingState = record {
+    player-id : Integer,
+    skill-level : Integer,
+    skill-xp : Integer,
+    materials : List Material,
+    known-recipes : List Integer,
+    items-crafted : Integer,
+    rare-items-crafted : Integer
+  }
+
+  crafting-state-new : Integer -> CraftingState
+  crafting-state-new (player-id) =
+    CraftingState { player-id = player-id, skill-level = 1, skill-xp = 0, materials = [], known-recipes = [], items-crafted = 0, rare-items-crafted = 0 }
+
+Section: Material Gathering - Items from games become materials
+
+  salvage-item : CraftingState, Integer, Text, MaterialCategory, Integer, Integer -> CraftingState
+  salvage-item (state) (material-id) (name) (category) (tier) (source-game) =
+    let mat = Material { material-id = material-id, name = name, category = category, tier = tier, source-game = source-game, quantity = 1 }
+    in CraftingState { player-id = state.player-id, skill-level = state.skill-level, skill-xp = state.skill-xp, materials = list-push (state.materials) mat, known-recipes = state.known-recipes, items-crafted = state.items-crafted, rare-items-crafted = state.rare-items-crafted }
+
+  add-materials : CraftingState, Material, Integer -> CraftingState
+  add-materials (state) (mat) (qty) =
+    let updated-mat = Material { material-id = mat.material-id, name = mat.name, category = mat.category, tier = mat.tier, source-game = mat.source-game, quantity = qty }
+    in CraftingState { player-id = state.player-id, skill-level = state.skill-level, skill-xp = state.skill-xp, materials = list-push (state.materials) updated-mat, known-recipes = state.known-recipes, items-crafted = state.items-crafted, rare-items-crafted = state.rare-items-crafted }
+
+Section: Crafting Execution
+
+  CraftResult = record {
+    state : CraftingState,
+    success : Boolean,
+    reason : Text,
+    item-produced : Integer,
+    quality : CraftQuality
+  }
+
+  CraftQuality =
+    | QualityNormal
+    | QualityFine
+    | QualitySuperior
+    | QualityMasterwork
+    | QualityLegendary
+
+  quality-name : CraftQuality -> Text
+  quality-name (q) =
+    when q
+      is QualityNormal -> "Normal"
+      is QualityFine -> "Fine"
+      is QualitySuperior -> "Superior"
+      is QualityMasterwork -> "Masterwork"
+      is QualityLegendary -> "Legendary"
+
+  attempt-craft : CraftingState, Recipe, Integer -> CraftResult
+  attempt-craft (state) (recipe) (roll) =
+    if state.skill-level < recipe.skill-required then CraftResult { state = state, success = False, reason = "Skill too low", item-produced = -1, quality = QualityNormal }
+    else if has-ingredients state (recipe.ingredients) 0 (list-length (recipe.ingredients)) == False then CraftResult { state = state, success = False, reason = "Missing materials", item-produced = -1, quality = QualityNormal }
+    else let state2 = consume-ingredients state (recipe.ingredients) 0 (list-length (recipe.ingredients))
+    in let quality = determine-quality state2 recipe roll
+    in let xp-gain = recipe.tier * 10 + 5
+    in let state3 = grant-craft-xp state2 xp-gain
+    in CraftResult { state = state3, success = True, reason = "", item-produced = recipe.output-item, quality = quality }
+
+  determine-quality : CraftingState, Recipe, Integer -> CraftQuality
+  determine-quality (state) (recipe) (roll) =
+    let skill-bonus = state.skill-level - recipe.skill-required
+    in let total = roll + skill-bonus
+    in if total >= 25 then QualityLegendary
+    else if total >= 20 then QualityMasterwork
+    else if total >= 15 then QualitySuperior
+    else if total >= 10 then QualityFine
+    else QualityNormal
+
+  has-ingredients : CraftingState, List Ingredient, Integer, Integer -> Boolean
+  has-ingredients (state) (ingredients) (i) (len) =
+    if i >= len then True
+    else let ing = list-at ingredients i
+    in let owned = count-material-qty (state.materials) (ing.category) (ing.min-tier) 0 (list-length (state.materials)) 0
+    in if owned < ing.quantity-needed then False
+    else has-ingredients state ingredients (i + 1) len
+
+  count-material-qty : List Material, MaterialCategory, Integer, Integer, Integer, Integer -> Integer
+  count-material-qty (materials) (category) (min-tier) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at materials i
+    in if m.tier >= min-tier then count-material-qty materials category min-tier (i + 1) len (acc + m.quantity)
+    else count-material-qty materials category min-tier (i + 1) len acc
+
+  consume-ingredients : CraftingState, List Ingredient, Integer, Integer -> CraftingState
+  consume-ingredients (state) (ingredients) (i) (len) =
+    if i >= len then state
+    else let ing = list-at ingredients i
+    in let new-mats = remove-material-qty (state.materials) (ing.category) (ing.min-tier) (ing.quantity-needed) 0 (list-length (state.materials)) []
+    in let state2 = CraftingState { player-id = state.player-id, skill-level = state.skill-level, skill-xp = state.skill-xp, materials = new-mats, known-recipes = state.known-recipes, items-crafted = state.items-crafted, rare-items-crafted = state.rare-items-crafted }
+    in consume-ingredients state2 ingredients (i + 1) len
+
+  remove-material-qty : List Material, MaterialCategory, Integer, Integer, Integer, Integer, List Material -> List Material
+  remove-material-qty (materials) (category) (min-tier) (to-remove) (i) (len) (acc) =
+    if i >= len then acc
+    else if to-remove <= 0 then append-remaining materials i len acc
+    else let m = list-at materials i
+    in if m.tier >= min-tier then
+      if m.quantity <= to-remove then remove-material-qty materials category min-tier (to-remove - m.quantity) (i + 1) len acc
+      else let remaining = Material { material-id = m.material-id, name = m.name, category = m.category, tier = m.tier, source-game = m.source-game, quantity = m.quantity - to-remove }
+      in remove-material-qty materials category min-tier 0 (i + 1) len (list-push acc remaining)
+    else remove-material-qty materials category min-tier to-remove (i + 1) len (list-push acc m)
+
+  append-remaining : List Material, Integer, Integer, List Material -> List Material
+  append-remaining (materials) (i) (len) (acc) =
+    if i >= len then acc
+    else append-remaining materials (i + 1) len (list-push acc (list-at materials i))
+
+Section: Skill Progression
+
+  grant-craft-xp : CraftingState, Integer -> CraftingState
+  grant-craft-xp (state) (xp) =
+    let new-xp = state.skill-xp + xp
+    in let new-level = compute-craft-level new-xp
+    in CraftingState { player-id = state.player-id, skill-level = new-level, skill-xp = new-xp, materials = state.materials, known-recipes = state.known-recipes, items-crafted = state.items-crafted + 1, rare-items-crafted = state.rare-items-crafted }
+
+  compute-craft-level : Integer -> Integer
+  compute-craft-level (xp) =
+    if xp >= 5000 then 10
+    else if xp >= 3000 then 8
+    else if xp >= 1800 then 6
+    else if xp >= 900 then 4
+    else if xp >= 400 then 3
+    else if xp >= 150 then 2
+    else 1
+
+Section: Recipe Discovery
+
+  discover-recipe : CraftingState, Integer -> CraftingState
+  discover-recipe (state) (recipe-id) =
+    CraftingState { player-id = state.player-id, skill-level = state.skill-level, skill-xp = state.skill-xp, materials = state.materials, known-recipes = list-push (state.known-recipes) recipe-id, items-crafted = state.items-crafted, rare-items-crafted = state.rare-items-crafted }
+
+  knows-recipe : CraftingState, Integer -> Boolean
+  knows-recipe (state) (recipe-id) =
+    list-contains (state.known-recipes) recipe-id 0 (list-length (state.known-recipes))
+
+  list-contains : List Integer, Integer, Integer, Integer -> Boolean
+  list-contains (xs) (target) (i) (len) =
+    if i >= len then False
+    else if list-at xs i == target then True
+    else list-contains xs target (i + 1) len
+
+Section: Cross-Game Material Sources
+
+  card-dust-from-disenchant : Integer -> Material
+  card-dust-from-disenchant (card-rarity) =
+    Material { material-id = 0, name = "Card Dust", category = MatDust, tier = card-rarity, source-game = 3, quantity = card-rarity + 1 }
+
+  scrap-from-dungeon-loot : Integer, Integer -> Material
+  scrap-from-dungeon-loot (item-tier) (dungeon-floor) =
+    Material { material-id = 0, name = "Dungeon Scrap", category = MatScrap, tier = item-tier, source-game = 0, quantity = dungeon-floor }
+
+  essence-from-subgame-win : Integer -> Material
+  essence-from-subgame-win (game-id) =
+    Material { material-id = 0, name = "Planar Essence", category = MatEssence, tier = 3, source-game = game-id, quantity = 1 }
+
+  bone-from-boss-kill : Integer -> Material
+  bone-from-boss-kill (boss-tier) =
+    Material { material-id = 0, name = "Boss Bone", category = MatBone, tier = boss-tier, source-game = 0, quantity = 1 }
+
+Page 1

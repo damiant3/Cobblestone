@@ -258,6 +258,107 @@ into a bounded slot. Use `__narrow` to assert the value is in range
   make-byte (n) = Byte { val = __narrow n }
 ```
 
+## Proofs and Dependent Types
+
+Codex has dependent types: types that carry values. The `===` operator
+in type position creates a propositional equality type. Proof terms
+inhabit these types; the unifier verifies them at compile time; the
+emitter erases them (zero machine code).
+
+### Propositional Equality
+
+```
+  nil-eq : Nil === Nil
+  nil-eq = Refl
+```
+
+`Refl` proves `a === a` for any `a`. The unifier instantiates the type
+variable and checks both sides are equal. An invalid proof is a type error:
+
+```
+  bad : Nil === Cons
+  bad = Refl                 -- CDX2001: Type mismatch
+```
+
+### Proof Terms
+
+| Term | Type | Meaning |
+|------|------|---------|
+| `Refl` | `forall a. a === a` | Reflexivity |
+| `sym` | `forall a b. (a === b) -> (b === a)` | Symmetry |
+| `trans` | `forall a b c. (a === b) -> (b === c) -> (a === c)` | Transitivity |
+| `assume` | `Proof` | Axiom (unverified) |
+| `cong` | `Proof -> Proof` | Congruence (degenerate) |
+
+### Claim and Proof Syntax
+
+`claim` declares a proposition. `proof` provides the evidence. `qed`
+marks the end of the proof block. Claims at column 2 are parsed; the
+proposition is stored as an annotation. Proofs compile as real
+definitions and are erased at emit time.
+
+```
+  claim id-nil : Nil === Nil
+  proof id-nil = Refl
+  qed
+
+  claim chain : 5 === 5
+  proof chain = trans Refl Refl
+  qed
+```
+
+Non-parametric claims (`claim name : prop`) create type annotations
+via `PropEqTy`. The proof's body is checked against the annotation.
+
+### The Proof Type
+
+`Proof` is a first-class type name. Functions can take or return proofs:
+
+```
+  my-proof : Proof
+  my-proof = assume
+
+  parametric : Integer -> Proof
+  parametric (x) = assume
+```
+
+### Proof Erasure
+
+All definitions whose return type is `Proof` or `PropEqTy` are erased
+during emit — they produce no machine code. The compiler reports each
+erasure with CDX4020.
+
+### Static Bounds Prover
+
+The compiler statically proves bounded-integer range safety. When it can
+prove a value fits within a field's declared bounds, the runtime bounds
+check (`cmp`/`jcc`/`ud2`) is elided and CDX4010 is emitted.
+
+The prover recognizes these expression patterns:
+
+| Pattern | Proven range |
+|---------|-------------|
+| Literal `n` | `[n, n]` |
+| Field access `r.f` with `IntegerTy(lo, hi)` | `[lo, hi]` |
+| `__narrow expr` | Propagates inner range |
+| `a + b` (non-negative) | `[a.lo+b.lo, a.hi+b.hi]` |
+| `a - b` (non-negative) | `[a.lo-b.hi, a.hi-b.lo]` |
+| `a * b` (non-negative, overflow guard) | `[a.lo*b.lo, a.hi*b.hi]` |
+| `a / b` (non-negative, b > 0) | `[a.lo/b.hi, a.hi/b.lo]` |
+| `negate x` | `[-x.hi, -x.lo]` |
+| `int-mod x n` (n > 0) | `[0, n-1]` |
+| `bit-and x y` (non-negative) | `[0, min(x.hi, y.hi)]` |
+| `bit-shru x n` (non-negative) | `[x.lo>>n.hi, x.hi>>n.lo]` |
+| `if c then a else b` | Union of branch ranges |
+| `let x = v in body` | Carries `v`'s range for `x` in body |
+
+### Diagnostics
+
+| Code | Severity | Meaning |
+|------|----------|---------|
+| CDX4010 | info | Bounds proven, runtime check elided |
+| CDX4020 | info | Proof definition erased (compile-time only) |
+
 ## Linear Types
 
 ```

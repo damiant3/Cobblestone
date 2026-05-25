@@ -1,0 +1,442 @@
+Chapter: CrossPlaneItems
+  cites CodexMagic chapter PlanarExchange
+  cites CodexMagic chapter RPGEngine
+  cites CodexMagic chapter GameRegistry
+  cites CodexMagic chapter CampaignWorld
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter ClanEconomy
+
+ Cross-plane item utility and dungeon interaction. Items exist
+ across game boundaries - a CodexMagic card becomes a spell in
+ the RPG, a vehicle part in a racer, a key in someone's dungeon.
+ Players spend coin to explore other people's games, spawn content
+ in foreign dungeons, and transfer relevant bits back to their
+ own world.
+
+ The planar membrane is permeable. Everything connects.
+
+ We say:
+
+Section: Item Manifestation - One item, many forms
+
+  ItemManifest = record {
+    planar-id : Integer,
+    manifestations : List Manifestation
+  }
+
+  Manifestation = record {
+    game-id : Integer,
+    form : ManifestForm,
+    stats : ManifestStats,
+    usable : Boolean,
+    conditions : List UseCondition
+  }
+
+  ManifestForm =
+    | FormCard (Integer)
+    | FormSpell (SpellManifest)
+    | FormWeapon (WeaponManifest)
+    | FormArmor (ArmorManifest)
+    | FormKey (KeyManifest)
+    | FormVehiclePart (PartManifest)
+    | FormConsumable (ConsumableManifest)
+    | FormCompanion (CompanionManifest)
+    | FormTerrain (TerrainManifest)
+    | FormCustom (Text)
+
+  ManifestStats = record {
+    power-level : Integer,
+    durability : Integer,
+    charges : Integer,
+    max-charges : Integer,
+    cooldown : Integer
+  }
+
+  UseCondition =
+    | CondMinLevel (Integer)
+    | CondClassReq (Integer)
+    | CondQuestComplete (Integer)
+    | CondOwnerOnly
+    | CondSingleUse
+    | CondCostPerUse (Integer)
+
+Section: Spell Manifest - Card becomes spell
+
+  SpellManifest = record {
+    spell-name : Text,
+    school : SpellSchool,
+    mp-cost : Integer,
+    damage : Integer,
+    heal : Integer,
+    spell-fx : SpellEffect,
+    range : Integer,
+    area : Integer,
+    duration : Integer
+  }
+
+  SpellSchool =
+    | Evocation
+    | Conjuration
+    | Abjuration
+    | Transmutation
+    | Necromancy
+    | Divination
+    | SpellEnchantment
+    | Illusion
+
+  SpellEffect =
+    | SpellDamage
+    | SpellHeal
+    | SpellBuff (Text)
+    | SpellDebuff (Text)
+    | SpellSummon (Integer)
+    | SpellTeleport
+    | SpellReveal
+    | SpellControl
+
+Section: Weapon / Armor / Key / Part Manifests
+
+  WeaponManifest = record {
+    weapon-name : Text,
+    damage-die : Integer,
+    damage-bonus : Integer,
+    attack-bonus : Integer,
+    weapon-type : Text,
+    special-ability : Text
+  }
+
+  ArmorManifest = record {
+    armor-name : Text,
+    ac-bonus : Integer,
+    max-dex : Integer,
+    special : Text
+  }
+
+  KeyManifest = record {
+    key-name : Text,
+    unlocks-dungeon : Integer,
+    unlocks-floor : Integer,
+    unlocks-region : Integer,
+    one-time : Boolean
+  }
+
+  PartManifest = record {
+    part-name : Text,
+    part-slot : Text,
+    speed-bonus : Integer,
+    handling-bonus : Integer,
+    durability-bonus : Integer
+  }
+
+  ConsumableManifest = record {
+    item-name : Text,
+    heal-amount : Integer,
+    buff-type : Text,
+    buff-duration : Integer
+  }
+
+  CompanionManifest = record {
+    companion-name : Text,
+    hp : Integer,
+    attack : Integer,
+    ability : Text
+  }
+
+  TerrainManifest = record {
+    terrain-name : Text,
+    tile-type : Integer,
+    passable : Boolean,
+    effect-on-step : Text
+  }
+
+Section: Conversion Rules - How items transform between planes
+
+  ConversionTemplate = record {
+    template-id : Integer,
+    source-game : Integer,
+    source-type : PlanarItemType,
+    target-game : Integer,
+    target-form : ManifestForm,
+    power-scaling : Integer,
+    cost-to-convert : Integer,
+    reversible : Boolean
+  }
+
+  card-to-spell-template : ConversionTemplate
+  card-to-spell-template =
+    ConversionTemplate {
+      template-id = 1,
+      source-game = 3,
+      source-type = PlanarCard,
+      target-game = 0,
+      target-form = FormSpell (SpellManifest { spell-name = "Card Invocation", school = Evocation, mp-cost = 5, damage = 10, heal = 0, spell-fx = SpellDamage, range = 3, area = 1, duration = 0 }),
+      power-scaling = 100,
+      cost-to-convert = 25,
+      reversible = True
+    }
+
+  card-to-weapon-template : ConversionTemplate
+  card-to-weapon-template =
+    ConversionTemplate {
+      template-id = 2,
+      source-game = 3,
+      source-type = PlanarCard,
+      target-game = 0,
+      target-form = FormWeapon (WeaponManifest { weapon-name = "Enchanted Card Blade", damage-die = 6, damage-bonus = 2, attack-bonus = 1, weapon-type = "Magical", special-ability = "Card Strike" }),
+      power-scaling = 100,
+      cost-to-convert = 50,
+      reversible = True
+    }
+
+  rpg-item-to-card-template : ConversionTemplate
+  rpg-item-to-card-template =
+    ConversionTemplate {
+      template-id = 3,
+      source-game = 0,
+      source-type = PlanarRPGItem,
+      target-game = 3,
+      target-form = FormCard 0,
+      power-scaling = 80,
+      cost-to-convert = 30,
+      reversible = True
+    }
+
+  loot-to-vehicle-part-template : ConversionTemplate
+  loot-to-vehicle-part-template =
+    ConversionTemplate {
+      template-id = 4,
+      source-game = 0,
+      source-type = PlanarRPGItem,
+      target-game = 0,
+      target-form = FormVehiclePart (PartManifest { part-name = "Salvaged Component", part-slot = "Engine", speed-bonus = 5, handling-bonus = 2, durability-bonus = 3 }),
+      power-scaling = 60,
+      cost-to-convert = 40,
+      reversible = False
+    }
+
+Section: Item Conversion Operations
+
+  ConvertResult = record {
+    manifest : ItemManifest,
+    ledger : ManaCoinLedger,
+    success : Boolean,
+    reason : Text
+  }
+
+  convert-item : ItemManifest, ConversionTemplate, ManaCoinLedger, Integer -> ConvertResult
+  convert-item (manifest) (template) (ledger) (owner) =
+    let bal = ledger-balance ledger owner
+    in if bal < template.cost-to-convert then ConvertResult { manifest = manifest, ledger = ledger, success = False, reason = "Insufficient coin for conversion" }
+    else let ledger2 = ledger-burn ledger owner (template.cost-to-convert)
+    in let new-manifestation = Manifestation { game-id = template.target-game, form = template.target-form, stats = ManifestStats { power-level = template.power-scaling, durability = 100, charges = -1, max-charges = -1, cooldown = 0 }, usable = True, conditions = [] }
+    in let manifest2 = ItemManifest { planar-id = manifest.planar-id, manifestations = list-push (manifest.manifestations) new-manifestation }
+    in ConvertResult { manifest = manifest2, ledger = ledger2, success = True, reason = "" }
+
+  manifest-new : Integer -> ItemManifest
+  manifest-new (planar-id) = ItemManifest { planar-id = planar-id, manifestations = [] }
+
+  get-manifestation-for-game : ItemManifest, Integer -> Manifestation
+  get-manifestation-for-game (manifest) (game-id) =
+    find-manifestation (manifest.manifestations) game-id 0 (list-length (manifest.manifestations))
+
+  find-manifestation : List Manifestation, Integer, Integer, Integer -> Manifestation
+  find-manifestation (manifests) (game-id) (i) (len) =
+    if i >= len then Manifestation { game-id = -1, form = FormCustom "None", stats = ManifestStats { power-level = 0, durability = 0, charges = 0, max-charges = 0, cooldown = 0 }, usable = False, conditions = [] }
+    else let m = list-at manifests i
+    in if m.game-id == game-id then m
+    else find-manifestation manifests game-id (i + 1) len
+
+Section: Dungeon Invasion - Spawn content in other people's worlds
+
+  InvasionType =
+    | InvadeSpawnMonster (Combatant)
+    | InvadeSpawnLoot (ItemToken)
+    | InvadePlaceTrap (DungeonTrap)
+    | InvadeSpawnEvent (Text)
+    | InvadeOpenPortal (Integer)
+    | InvadeDropKey (KeyManifest)
+
+  invasion-type-name : InvasionType -> Text
+  invasion-type-name (inv) =
+    when inv
+      is InvadeSpawnMonster (m) -> "Spawn Monster: " & m.cbt-name
+      is InvadeSpawnLoot (item) -> "Drop Loot: " & item.name
+      is InvadePlaceTrap (t) -> "Place Trap: " & t.trap-name
+      is InvadeSpawnEvent (desc) -> "Event: " & desc
+      is InvadeOpenPortal (dest) -> "Open Portal to game #" & show dest
+      is InvadeDropKey (k) -> "Drop Key: " & k.key-name
+
+  Invasion = record {
+    invasion-id : Integer,
+    invader : Integer,
+    invader-clan : Integer,
+    target-dungeon : Integer,
+    target-clan : Integer,
+    invasion-type : InvasionType,
+    cost-paid : Integer,
+    approved : Boolean,
+    executed : Boolean,
+    timestamp : Integer
+  }
+
+  InvasionCost = record {
+    base-cost : Integer,
+    power-multiplier : Integer,
+    foreign-clan-surcharge : Integer
+  }
+
+  invasion-base-cost : InvasionType -> Integer
+  invasion-base-cost (inv) =
+    when inv
+      is InvadeSpawnMonster (m) -> 50 + m.cbt-max-hp * 2
+      is InvadeSpawnLoot (item) -> 30 + item.value
+      is InvadePlaceTrap (t) -> 20 + t.trap-damage * 3
+      is InvadeSpawnEvent (desc) -> 100
+      is InvadeOpenPortal (dest) -> 200
+      is InvadeDropKey (k) -> 150
+
+  compute-invasion-cost : InvasionType, Boolean -> Integer
+  compute-invasion-cost (inv) (same-clan) =
+    let base = invasion-base-cost inv
+    in if same-clan then base
+    else base * 3 / 2
+
+Section: Invasion Operations
+
+  InvasionResult = record {
+    invasion : Invasion,
+    ledger : ManaCoinLedger,
+    success : Boolean,
+    reason : Text
+  }
+
+  attempt-invasion : Integer, Integer, Integer, Integer, InvasionType, ManaCoinLedger, Boolean, Integer -> InvasionResult
+  attempt-invasion (invasion-id) (invader) (invader-clan) (target-dungeon) (inv-type) (ledger) (same-clan) (time) =
+    let cost = compute-invasion-cost inv-type same-clan
+    in let bal = ledger-balance ledger invader
+    in if bal < cost then InvasionResult { invasion = Invasion { invasion-id = invasion-id, invader = invader, invader-clan = invader-clan, target-dungeon = target-dungeon, target-clan = 0, invasion-type = inv-type, cost-paid = 0, approved = False, executed = False, timestamp = time }, ledger = ledger, success = False, reason = "Insufficient coin" }
+    else let ledger2 = ledger-burn ledger invader cost
+    in let inv = Invasion { invasion-id = invasion-id, invader = invader, invader-clan = invader-clan, target-dungeon = target-dungeon, target-clan = 0, invasion-type = inv-type, cost-paid = cost, approved = same-clan, executed = same-clan, timestamp = time }
+    in InvasionResult { invasion = inv, ledger = ledger2, success = True, reason = "" }
+
+  approve-invasion : Invasion -> Invasion
+  approve-invasion (inv) =
+    Invasion { invasion-id = inv.invasion-id, invader = inv.invader, invader-clan = inv.invader-clan, target-dungeon = inv.target-dungeon, target-clan = inv.target-clan, invasion-type = inv.invasion-type, cost-paid = inv.cost-paid, approved = True, executed = False, timestamp = inv.timestamp }
+
+  execute-invasion : Invasion -> Invasion
+  execute-invasion (inv) =
+    if inv.approved == False then inv
+    else Invasion { invasion-id = inv.invasion-id, invader = inv.invader, invader-clan = inv.invader-clan, target-dungeon = inv.target-dungeon, target-clan = inv.target-clan, invasion-type = inv.invasion-type, cost-paid = inv.cost-paid, approved = inv.approved, executed = True, timestamp = inv.timestamp }
+
+Section: Portal Mechanics - Games spawn other games
+
+  Portal = record {
+    portal-id : Integer,
+    source-game : Integer,
+    source-dungeon : Integer,
+    source-floor : Integer,
+    destination-game : Integer,
+    destination-instance : Text,
+    cost-to-enter : Integer,
+    one-way : Boolean,
+    reward-on-return : PlanarItemType,
+    active : Boolean
+  }
+
+  portal-new : Integer, Integer, Integer, Integer, Integer, Text, Integer -> Portal
+  portal-new (id) (src-game) (src-dungeon) (src-floor) (dest-game) (dest-instance) (cost) =
+    Portal {
+      portal-id = id,
+      source-game = src-game,
+      source-dungeon = src-dungeon,
+      source-floor = src-floor,
+      destination-game = dest-game,
+      destination-instance = dest-instance,
+      cost-to-enter = cost,
+      one-way = False,
+      reward-on-return = PlanarCustom "Planar Souvenir",
+      active = True
+    }
+
+  PortalUseResult = record {
+    ledger : ManaCoinLedger,
+    subgame-spawned : Boolean,
+    destination-game : Integer,
+    success : Boolean
+  }
+
+  use-portal : Portal, ManaCoinLedger, Integer -> PortalUseResult
+  use-portal (portal) (ledger) (user) =
+    if portal.active == False then PortalUseResult { ledger = ledger, subgame-spawned = False, destination-game = 0, success = False }
+    else let bal = ledger-balance ledger user
+    in if bal < portal.cost-to-enter then PortalUseResult { ledger = ledger, subgame-spawned = False, destination-game = 0, success = False }
+    else let ledger2 = ledger-burn ledger user (portal.cost-to-enter)
+    in PortalUseResult { ledger = ledger2, subgame-spawned = True, destination-game = portal.destination-game, success = True }
+
+Section: Loot Extraction - Bring stuff back from other planes
+
+  ExtractionResult = record {
+    manifest : ItemManifest,
+    exchange : PlanarExchangeState,
+    success : Boolean,
+    extracted-form : ManifestForm
+  }
+
+  extract-from-foreign-game : ItemManifest, PlanarExchangeState, Integer, Integer, Integer, Integer -> ExtractionResult
+  extract-from-foreign-game (manifest) (exchange) (planar-id) (from-game) (to-game) (time) =
+    let source-manifest = get-manifestation-for-game manifest from-game
+    in if source-manifest.game-id < 0 then ExtractionResult { manifest = manifest, exchange = exchange, success = False, extracted-form = FormCustom "No manifestation in source game" }
+    else let exchange2 = transfer-from-subgame exchange planar-id from-game to-game (find-item-owner (exchange.items) planar-id 0 (list-length (exchange.items))) time
+    in ExtractionResult { manifest = manifest, exchange = exchange2, success = True, extracted-form = source-manifest.form }
+
+  find-item-owner : List PlanarItem, Integer, Integer, Integer -> Integer
+  find-item-owner (items) (planar-id) (i) (len) =
+    if i >= len then -1
+    else let item = list-at items i
+    in if item.planar-id == planar-id then item.owner
+    else find-item-owner items planar-id (i + 1) len
+
+Section: Auto-Manifest - Determine what an item becomes in a new game
+
+  auto-manifest : PlanarItemType, Integer, Integer -> ManifestForm
+  auto-manifest (source-type) (target-game-type) (power-level) =
+    when source-type
+      is PlanarCard -> auto-manifest-card target-game-type power-level
+      is PlanarRPGItem -> auto-manifest-rpg target-game-type power-level
+      is PlanarVehiclePart -> auto-manifest-vehicle target-game-type
+      is PlanarKey ->
+        let k = KeyManifest { key-name = "Planar Key", unlocks-dungeon = 0, unlocks-floor = 0, unlocks-region = 0, one-time = True }
+        in FormKey k
+      is PlanarCosmetic -> FormCustom "Cosmetic"
+      is PlanarMaterial ->
+        let mat-c = ConsumableManifest { item-name = "Raw Material", heal-amount = 0, buff-type = "Craft", buff-duration = 0 }
+        in FormConsumable mat-c
+      is PlanarCurrency (amount) -> FormCustom (show amount & " coin equivalent")
+      is PlanarCustom (name) -> FormCustom name
+
+  auto-manifest-card : Integer, Integer -> ManifestForm
+  auto-manifest-card (target-game-type) (power-level) =
+    if target-game-type == 1 then
+      let spell = SpellManifest { spell-name = "Card Invocation", school = Evocation, mp-cost = power-level / 4, damage = power-level / 2, heal = 0, spell-fx = SpellDamage, range = 3, area = 1, duration = 0 }
+      in FormSpell spell
+    else if target-game-type == 2 then
+      let wpn = WeaponManifest { weapon-name = "Enchanted Blade", damage-die = power-level / 3, damage-bonus = power-level / 10, attack-bonus = power-level / 20, weapon-type = "Magic", special-ability = "Card Strike" }
+      in FormWeapon wpn
+    else FormCustom "Card Token"
+
+  auto-manifest-rpg : Integer, Integer -> ManifestForm
+  auto-manifest-rpg (target-game-type) (power-level) =
+    if target-game-type == 3 then FormCard 0
+    else if target-game-type == 4 then
+      let part = PartManifest { part-name = "Salvaged", part-slot = "Misc", speed-bonus = power-level / 5, handling-bonus = power-level / 10, durability-bonus = power-level / 8 }
+      in FormVehiclePart part
+    else FormCustom "Artifact"
+
+  auto-manifest-vehicle : Integer -> ManifestForm
+  auto-manifest-vehicle (target-game-type) =
+    if target-game-type == 1 then
+      let c = ConsumableManifest { item-name = "Fuel Cell", heal-amount = 0, buff-type = "Speed", buff-duration = 3 }
+      in FormConsumable c
+    else FormCustom "Mechanical Component"
+
+Page 1
