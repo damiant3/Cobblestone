@@ -11,40 +11,270 @@ Chapter: Type Environment
   cites Codex chapter Concurrency
   cites Codex chapter Runtime
 
- An immutable mapping from names to types.
+ An immutable mapping from names to types. Global bindings use a
+ skip list for O(log N) in-place insert (no list-insert-at copy
+ churn). Locals use a sorted list (small, reset between defs).
 
 Section: Environment Type
-  TypeEnv = record {
-   bindings : List TypeBinding,
-   locals : List TypeBinding
-  }
-
   TypeBinding = record {
    name : Text,
    bound-type : CodexType
   }
 
+  TypeEnv = record {
+   bindings : SkipListBinding,
+   locals : List TypeBinding
+  }
+
+Section: Skip List Node
+  mutable SkipNodeBinding = record {
+   binding : TypeBinding,
+   is-end : Boolean,
+   forward : List SkipNodeBinding,
+   spans : List Integer
+  }
+
+  SkipListBinding = record {
+   head : SkipNodeBinding,
+   size : Integer between 0 and 4294967295,
+   max-level : Integer between 0 and 255
+  }
+
+Section: Skip List Helpers
+  slb-max-height : Integer
+  slb-max-height = 16
+
+  slb-make-end-node : SkipNodeBinding
+  slb-make-end-node =
+   SkipNodeBinding {
+    binding = TypeBinding { name = "", bound-type = ErrorTy },
+    is-end = True,
+    forward = [],
+    spans = []
+   }
+
+  slb-replicate-node : Integer, SkipNodeBinding -> List SkipNodeBinding
+  slb-replicate-node (n) (v) =
+   slb-replicate-node-loop n v 0 []
+
+  slb-replicate-node-loop : Integer, SkipNodeBinding, Integer, List SkipNodeBinding -> List SkipNodeBinding
+  slb-replicate-node-loop (n) (v) (i) (acc) =
+   if i == n then acc
+   else slb-replicate-node-loop n v (i + 1) (list-push acc v)
+
+  slb-replicate-int : Integer, Integer -> List Integer
+  slb-replicate-int (n) (v) =
+   slb-replicate-int-loop n v 0 []
+
+  slb-replicate-int-loop : Integer, Integer, Integer, List Integer -> List Integer
+  slb-replicate-int-loop (n) (v) (i) (acc) =
+   if i == n then acc
+   else slb-replicate-int-loop n v (i + 1) (list-push acc v)
+
+  slb-trailing-zeros : Integer -> Integer
+  slb-trailing-zeros (n) =
+   if n == 0 then 0
+   else slb-trailing-zeros-loop n 0
+
+  slb-trailing-zeros-loop : Integer, Integer -> Integer
+  slb-trailing-zeros-loop (n) (acc) =
+   if n / 2 * 2 /= n then acc
+   else slb-trailing-zeros-loop (n / 2) (acc + 1)
+
+  slb-pick-height : Integer -> Integer
+  slb-pick-height (counter) =
+   let raw = 1 + slb-trailing-zeros counter
+   in if raw > slb-max-height then slb-max-height
+      else raw
+
+Section: Skip List Construction
+  skip-list-binding-empty : SkipListBinding
+  skip-list-binding-empty =
+   let end-node = slb-make-end-node
+   in let head-forward = slb-replicate-node slb-max-height end-node
+   in let head-spans = slb-replicate-int slb-max-height 0
+   in SkipListBinding {
+    head = SkipNodeBinding {
+     binding = TypeBinding { name = "", bound-type = ErrorTy },
+     is-end = False,
+     forward = head-forward,
+     spans = head-spans
+    },
+    size = 0,
+    max-level = 0
+   }
+
+Section: Skip List Query
+  skip-list-binding-lookup : SkipListBinding, Text -> CodexType
+  skip-list-binding-lookup (s) (name) =
+   if s.size == 0 then ErrorTy
+   else slb-lookup-descend (s.head) (s.max-level - 1) name
+
+  slb-lookup-descend : SkipNodeBinding, Integer, Text -> CodexType
+  slb-lookup-descend (node) (level) (name) =
+   if level < 0 then ErrorTy
+   else let node2 = slb-advance-while-less node level name
+   in let next = list-at (node2.forward) level
+   in if next.is-end then slb-lookup-descend node2 (level - 1) name
+      else if next.binding.name == name then next.binding.bound-type
+      else slb-lookup-descend node2 (level - 1) name
+
+  slb-advance-while-less : SkipNodeBinding, Integer, Text -> SkipNodeBinding
+  slb-advance-while-less (node) (level) (name) =
+   let next = list-at (node.forward) level
+   in if next.is-end then node
+      else if text-compare (next.binding.name) name < 0 then slb-advance-while-less next level name
+      else node
+
+  skip-list-binding-has : SkipListBinding, Text -> Boolean
+  skip-list-binding-has (s) (name) =
+   if s.size == 0 then False
+   else slb-has-descend (s.head) (s.max-level - 1) name
+
+  slb-has-descend : SkipNodeBinding, Integer, Text -> Boolean
+  slb-has-descend (node) (level) (name) =
+   if level < 0 then False
+   else let node2 = slb-advance-while-less node level name
+   in let next = list-at (node2.forward) level
+   in if next.is-end then slb-has-descend node2 (level - 1) name
+      else if next.binding.name == name then True
+      else slb-has-descend node2 (level - 1) name
+
+Section: Skip List Insert
+  skip-list-binding-insert : SkipListBinding, TypeBinding -> SkipListBinding
+  skip-list-binding-insert (s) (b) =
+   let path = slb-build-path s (b.name)
+   in let pred0 = list-at (path.nodes) 0
+   in let next0 = list-at (pred0.forward) 0
+   in if next0.is-end == False
+      then if next0.binding.name == b.name
+           then let dummy = __record-set next0 "binding" b
+                in s
+           else slb-do-insert s b path
+      else slb-do-insert s b path
+
+  SlbPath = record {
+   nodes : List SkipNodeBinding,
+   ranks : List Integer
+  }
+
+  slb-build-path : SkipListBinding, Text -> SlbPath
+  slb-build-path (s) (name) =
+   let init-nodes = slb-replicate-node slb-max-height (s.head)
+   in let init-ranks = slb-replicate-int slb-max-height 0
+   in slb-build-path-loop (s.head) 0 (s.max-level - 1) name init-nodes init-ranks
+
+  slb-build-path-loop : SkipNodeBinding, Integer, Integer, Text, List SkipNodeBinding, List Integer -> SlbPath
+  slb-build-path-loop (cursor) (pos) (level) (name) (nodes) (ranks) =
+   if level < 0 then SlbPath { nodes = nodes, ranks = ranks }
+   else let advanced = slb-advance-with-rank cursor pos level name
+   in let nodes2 = list-set-at nodes level (advanced.node)
+   in let ranks2 = list-set-at ranks level (advanced.pos)
+   in slb-build-path-loop (advanced.node) (advanced.pos) (level - 1) name nodes2 ranks2
+
+  SlbAdvance = record {
+   node : SkipNodeBinding,
+   pos : Integer between 0 and 4294967295 wrapping
+  }
+
+  slb-advance-with-rank : SkipNodeBinding, Integer, Integer, Text -> SlbAdvance
+  slb-advance-with-rank (node) (pos) (level) (name) =
+   let next = list-at (node.forward) level
+   in if next.is-end then SlbAdvance { node = node, pos = pos }
+      else if text-compare (next.binding.name) name < 0 then
+       let span = list-at (node.spans) level
+       in slb-advance-with-rank next (pos + span) level name
+      else SlbAdvance { node = node, pos = pos }
+
+  slb-do-insert : SkipListBinding, TypeBinding, SlbPath -> SkipListBinding
+  slb-do-insert (s) (b) (path) =
+   let new-height = slb-pick-height (s.size + 1)
+   in let path2 = slb-extend-path s path new-height
+   in let new-pos = list-at (path2.ranks) 0 + 1
+   in let new-node = slb-make-node b new-height path2 new-pos
+   in let s2 = slb-splice s path2 new-node new-height new-pos 0
+   in let new-max = if new-height > s2.max-level then new-height else s2.max-level
+   in let s3 = slb-bump-spans s2 path2 new-height new-max
+   in SkipListBinding {
+    head = s3.head,
+    size = s3.size + 1,
+    max-level = new-max
+   }
+
+  slb-extend-path : SkipListBinding, SlbPath, Integer -> SlbPath
+  slb-extend-path (s) (path) (new-height) =
+   if new-height <= s.max-level then path
+   else slb-extend-path-loop s path (s.max-level) new-height
+
+  slb-extend-path-loop : SkipListBinding, SlbPath, Integer, Integer -> SlbPath
+  slb-extend-path-loop (s) (path) (l) (new-height) =
+   if l == new-height then path
+   else let nodes2 = list-set-at (path.nodes) l (s.head)
+   in let ranks2 = list-set-at (path.ranks) l 0
+   in let dummy = list-set-at (s.head.spans) l (s.size)
+   in slb-extend-path-loop s (SlbPath { nodes = nodes2, ranks = ranks2 }) (l + 1) new-height
+
+  slb-make-node : TypeBinding, Integer, SlbPath, Integer -> SkipNodeBinding
+  slb-make-node (b) (height) (path) (new-pos) =
+   let init-fwd = slb-replicate-node height slb-make-end-node
+   in let init-spans = slb-replicate-int height 0
+   in let node-fwd = slb-fill-fwd path height init-fwd 0
+   in let node-spans = slb-fill-spans path height init-spans new-pos 0
+   in SkipNodeBinding {
+    binding = b,
+    is-end = False,
+    forward = node-fwd,
+    spans = node-spans
+   }
+
+  slb-fill-fwd : SlbPath, Integer, List SkipNodeBinding, Integer -> List SkipNodeBinding
+  slb-fill-fwd (path) (height) (acc) (i) =
+   if i == height then acc
+   else let pred = list-at (path.nodes) i
+   in let target = list-at (pred.forward) i
+   in slb-fill-fwd path height (list-set-at acc i target) (i + 1)
+
+  slb-fill-spans : SlbPath, Integer, List Integer, Integer, Integer -> List Integer
+  slb-fill-spans (path) (height) (acc) (new-pos) (i) =
+   if i == height then acc
+   else let pred = list-at (path.nodes) i
+   in let pred-rank = list-at (path.ranks) i
+   in let old-span = list-at (pred.spans) i
+   in let new-span = old-span - (new-pos - pred-rank - 1)
+   in slb-fill-spans path height (list-set-at acc i new-span) new-pos (i + 1)
+
+  slb-splice : SkipListBinding, SlbPath, SkipNodeBinding, Integer, Integer, Integer -> SkipListBinding
+  slb-splice (s) (path) (new-node) (height) (new-pos) (i) =
+   if i == height then s
+   else let pred = list-at (path.nodes) i
+   in let pred-rank = list-at (path.ranks) i
+   in let dummy1 = list-set-at (pred.forward) i new-node
+   in let dummy2 = list-set-at (pred.spans) i (new-pos - pred-rank)
+   in slb-splice s path new-node height new-pos (i + 1)
+
+  slb-bump-spans : SkipListBinding, SlbPath, Integer, Integer -> SkipListBinding
+  slb-bump-spans (s) (path) (from) (max-val) =
+   if from >= max-val then s
+   else let pred = list-at (path.nodes) from
+   in let old = list-at (pred.spans) from
+   in let dummy = list-set-at (pred.spans) from (old + 1)
+   in slb-bump-spans s path (from + 1) max-val
+
+Section: Skip List Flatten
+  skip-list-binding-to-list : SkipListBinding -> List TypeBinding
+  skip-list-binding-to-list (s) =
+   if s.size == 0 then []
+   else slb-to-list-loop (list-at (s.head.forward) 0) []
+
+  slb-to-list-loop : SkipNodeBinding, List TypeBinding -> List TypeBinding
+  slb-to-list-loop (node) (acc) =
+   if node.is-end then acc
+   else slb-to-list-loop (list-at (node.forward) 0) (list-push acc (node.binding))
+
 Section: Construction
-  empty-type-env : TypeEnv = TypeEnv { bindings = [], locals = [] }
+  empty-type-env : TypeEnv = TypeEnv { bindings = skip-list-binding-empty, locals = [] }
 
 Section: Lookup (locals first, then globals)
-  env-lookup-in : List TypeBinding, Text -> CodexType
-  env-lookup-in (bs) (name) =
-   let len = list-length bs
-   in if len == 0 then ErrorTy
-   else let pos = bsearch-text-pos bs name 0 len
-   in if pos >= len then ErrorTy
-   else let b = list-at bs pos
-   in if b.name == name then b.bound-type else ErrorTy
-
-  env-has-in : List TypeBinding, Text -> Boolean
-  env-has-in (bs) (name) =
-   let len = list-length bs
-   in if len == 0 then False
-   else let pos = bsearch-text-pos bs name 0 len
-   in if pos >= len then False
-      else (list-at bs pos).name == name
-
   env-lookup : TypeEnv, Text -> CodexType
   env-lookup (env) (name) =
    let llen = list-length (env.locals)
@@ -52,8 +282,8 @@ Section: Lookup (locals first, then globals)
    in if lpos < llen
       then let lb = list-at (env.locals) lpos
            in if lb.name == name then lb.bound-type
-              else env-lookup-in (env.bindings) name
-      else env-lookup-in (env.bindings) name
+              else skip-list-binding-lookup (env.bindings) name
+      else skip-list-binding-lookup (env.bindings) name
 
   env-has : TypeEnv, Text -> Boolean
   env-has (env) (name) =
@@ -61,18 +291,14 @@ Section: Lookup (locals first, then globals)
    in let lpos = bsearch-text-pos (env.locals) name 0 llen
    in if lpos < llen
       then if (list-at (env.locals) lpos).name == name then True
-           else env-has-in (env.bindings) name
-      else env-has-in (env.bindings) name
+           else skip-list-binding-has (env.bindings) name
+      else skip-list-binding-has (env.bindings) name
 
-Section: Bind (sorted insert via list-insert-at)
+Section: Bind
   env-bind : TypeEnv, Text, CodexType -> TypeEnv
   env-bind (env) (name) (ty) =
-   let len = list-length (env.bindings)
-   in let pos = bsearch-text-pos (env.bindings) name 0 len
-   in __record-set env "bindings" (list-insert-at (env.bindings) pos (deck-record (TypeBinding {
-    name = name,
-    bound-type = ty
-   })))
+   let b = deck-record (TypeBinding { name = name, bound-type = ty })
+   in __record-set env "bindings" (skip-list-binding-insert (env.bindings) b)
 
   env-bind-local : TypeEnv, Text, CodexType -> TypeEnv
   env-bind-local (env) (name) (ty) =
@@ -218,8 +444,7 @@ Section: Builtins
    in let e35u4 = env-bind e35u3 "uefi-set-mode" (FunTy int-ty-default int-ty-default)
    in let e35u5 = env-bind e35u4 "uefi-read-key" int-ty-default
    in let e35u6 = env-bind e35u5 "uefi-read-key-ex" int-ty-default
-   in let e35u7 = env-bind e35u6 "uefi-read-file" (FunTy TextTy TextTy)
-   in let e36 = env-bind e35u7 "text-concat-list" (FunTy (ListTy TextTy) TextTy)
+   in let e36 = env-bind e35u6 "text-concat-list" (FunTy (ListTy TextTy) TextTy)
    in let e37 = env-bind e36 "__linked-list-empty" (ForAllTy 0 (FunTy int-ty-default (LinkedListTy (TypeVar 0))))
    in let e38 = env-bind e37 "__linked-list-push" (ForAllTy 0 (FunTy (LinkedListTy (TypeVar 0)) (FunTy (TypeVar 0) (LinkedListTy (TypeVar 0)))))
    in let e39 = env-bind e38 "__linked-list-to-list" (ForAllTy 0 (FunTy (LinkedListTy (TypeVar 0)) (ListTy (TypeVar 0))))
