@@ -1,0 +1,121 @@
+Chapter: BuildRecord
+  cites Works chapter SweepHarness
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+
+ A BuildRecord is a record containing the source hash, seed hash, gate results, and change history of a single compilation. Build records are content-addressed by SHA-256.
+
+ We say:
+
+Section: Gate Results
+
+  GateStatus =
+    | GatePass
+    | GateFail
+    | GateSkip
+
+  GateResult = record {
+    name : Text,
+    status : GateStatus,
+    detail : Text
+  }
+
+  gate-pass : Text -> GateResult
+  gate-pass (name) = GateResult { name = name, status = GatePass, detail = "" }
+
+  gate-fail : Text, Text -> GateResult
+  gate-fail (name) (detail) = GateResult { name = name, status = GateFail, detail = detail }
+
+  gate-status-name : GateStatus -> Text
+  gate-status-name (s) = when s
+    is GatePass -> "PASS"
+    is GateFail -> "FAIL"
+    is GateSkip -> "SKIP"
+
+Section: Change Summary
+
+ What changed after the previous build. Each entry names a file
+ and a list of functions that were added, modified, or removed.
+
+  ChangeAction =
+    | Added
+    | Modified
+    | Removed
+
+  FunctionChange = record {
+    name : Text,
+    action : ChangeAction
+  }
+
+  FileChange = record {
+    path : Text,
+    functions : List FunctionChange
+  }
+
+  change-action-name : ChangeAction -> Text
+  change-action-name (a) = when a
+    is Added -> "add"
+    is Modified -> "mod"
+    is Removed -> "del"
+
+Section: Build Record
+
+  BuildRecord = record {
+    hash : Text,
+    seed-hash : Text,
+    source-hash : Text,
+    output-hash : Text,
+    output-size : Integer,
+    cl-number : Integer,
+    prior-cl : Integer,
+    author : Text,
+    timestamp : Integer,
+    gates : List GateResult,
+    sweep : SweepSummary,
+    changes : List FileChange,
+    fixed-point : Boolean,
+    elapsed-seconds : Integer
+  }
+
+  build-record-content : Text, Text, Text, Integer, Integer -> Text
+  build-record-content (seed-hash) (source-hash) (output-hash) (cl) (ts) =
+    seed-hash & "|" & source-hash & "|" & output-hash & "|" & show cl & "|" & show ts
+
+  create-build-record : Text, Text, Text, Integer, Integer, Integer, Text, Integer -> BuildRecord
+  create-build-record (seed-hash) (source-hash) (output-hash) (output-size) (cl) (prior-cl) (author) (ts) =
+    let content = build-record-content seed-hash source-hash output-hash cl ts
+    in let hash = sha256-to-hex (sha256 (text-to-bytes content))
+    in BuildRecord {
+      hash = hash,
+      seed-hash = seed-hash,
+      source-hash = source-hash,
+      output-hash = output-hash,
+      output-size = output-size,
+      cl-number = cl,
+      prior-cl = prior-cl,
+      author = author,
+      timestamp = ts,
+      gates = [],
+      sweep = SweepSummary { pass-verified = 0, pass-failing = 0, pass-unverified = 0, skipped = 0, failed = 0, total = 0 },
+      changes = [],
+      fixed-point = False,
+      elapsed-seconds = 0
+    }
+
+  build-record-set-gates : BuildRecord, List GateResult -> BuildRecord
+  build-record-set-gates (br) (gs) = __record-set br "gates" gs
+
+  build-record-set-sweep : BuildRecord, SweepSummary -> BuildRecord
+  build-record-set-sweep (br) (s) = __record-set br "sweep" s
+
+  build-record-set-changes : BuildRecord, List FileChange -> BuildRecord
+  build-record-set-changes (br) (cs) = __record-set br "changes" cs
+
+  build-record-set-fixed-point : BuildRecord, Boolean -> BuildRecord
+  build-record-set-fixed-point (br) (fp) = __record-set br "fixed-point" fp
+
+  build-record-set-elapsed : BuildRecord, Integer -> BuildRecord
+  build-record-set-elapsed (br) (s) = __record-set br "elapsed-seconds" s
+
+Page 1

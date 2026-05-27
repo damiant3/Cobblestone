@@ -1,0 +1,93 @@
+Chapter: PePlug
+  cites Codex chapter General
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Kernel chapter Ne2k
+
+ Plug entry. Connects to host TCP server on port 9100,
+ receives CDX bytes, builds a PE32+ UEFI binary, sends it back.
+ Wire protocol: tag=4 for CDX-to-PE conversion.
+ First byte of body = mode (0=kernel, 1=app).
+ For app mode, bytes 1-4 = heap-pages (LE).
+ Remaining bytes = CDX binary.
+
+Section: Network Config
+
+  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  local-ip : List Integer = [10, 0, 2, 15]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+  host-ip : List Integer = [127, 0, 0, 1]
+
+Section: Streaming Send
+
+ Send from a heap buffer in 1400-byte chunks. Uses spin-wait
+ between packets to prevent NE2000 TX buffer overwrite.
+ Known limitation: spin-wait iteration count is hardware-dependent.
+ Future: poll NE2K ISR bit 0x02 (TX complete) instead.
+
+  spin-wait : Integer, Integer -> Integer
+  spin-wait (i) (n) =
+   if i >= n then 0
+   else spin-wait (i + 1) n
+
+  send-buf-loop : TcpTransportState, Integer, Integer, Integer -> TcpTransportState
+  send-buf-loop (ts) (buf) (off) (remaining) =
+   if remaining <= 0 then ts
+   else let chunk = if remaining > 1400 then 1400 else remaining
+   in let hp = __heap-save
+   in let bs = __buf-read-bytes buf off chunk
+   in let r = net-send (ts.session) bs
+   in let restored = __heap-restore hp
+   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+   in let ts2 = flush-transport-outbox ts1
+   in let w = spin-wait 0 10000000
+   in send-buf-loop ts2 buf (off + chunk) (remaining - chunk)
+
+Section: Drain
+
+  drain-wait : TcpTransportState, Integer -> Integer
+  drain-wait (ts) (tries) =
+   if tries > 5000000 then 0
+   else let frame = ne2k-recv-frame
+   in if list-length frame == 0 then drain-wait ts (tries + 1)
+   else 0
+
+Section: Body
+
+  opening : [Console, FileSystem] Nothing = act
+   let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
+   in let ts = transport-new sess
+   in let ts1 = net-io-connect ts
+   in let recv = net-io-recv-loop ts1 0
+   in if recv.has-message then
+    let payload = recv.body
+    in let payload-len = list-length payload
+    in let mode = list-at payload 0
+    in let cdx-off = if mode == 0 then 1 else 5
+    in let heap-pages = if mode == 0 then 0 else list-at payload 1 + list-at payload 2 * 256 + list-at payload 3 * 65536 + list-at payload 4 * 16777216
+    in let cdx = slice-bytes payload cdx-off payload-len
+    in let pe = if mode == 0 then build-pe-from-cdx cdx else build-uefi-app-pe-from-cdx cdx heap-pages
+    in let pe-len = list-length pe
+    in let pe-buf = __heap-save
+    in let pa = __heap-advance pe-len
+    in let pw = __buf-write-bytes pe-buf 0 pe
+    in let ts5 = send-buf-loop (recv.transport) pe-buf 0 pe-len
+    in let ts6 = net-io-close ts5
+    in let drained = drain-wait ts6 0
+    in act print-line-uni ("OK pe=" & show (pe-len + drained - drained)) end
+   else act print-line-uni "FAIL" end
+  end
+
+  slice-bytes : List Integer, Integer, Integer -> List Integer
+  slice-bytes (bs) (from) (to) = slice-bytes-loop bs from to []
+
+  slice-bytes-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  slice-bytes-loop (bs) (i) (to) (acc) =
+   if i >= to then acc
+   else slice-bytes-loop bs (i + 1) to (list-push acc (list-at bs i))
+
+Page 1

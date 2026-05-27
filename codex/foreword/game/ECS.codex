@@ -1,0 +1,103 @@
+Chapter: ECS
+  cites Foreword chapter Maybe
+  cites Foreword chapter BitSet
+
+ Entity-Component-System architecture. Entities are integer IDs.
+ Components are stored in typed arrays indexed by entity ID.
+ Systems query entities by component mask using BitSet.
+
+ We say:
+
+Section: Constants
+  ecs-max-entities : Integer = 256
+
+Section: Entity Manager
+  EntityManager = record {
+    next-id : Integer between 0 and 65535,
+    alive : List Integer,
+    count : Integer between 0 and 65535
+  }
+
+  ecs-new : EntityManager
+  ecs-new = EntityManager { next-id = 0, alive = ecs-zero-list ecs-max-entities 0 [], count = 0 }
+
+  ecs-zero-list : Integer, Integer, List Integer -> List Integer
+  ecs-zero-list (n) (i) (acc) =
+    if i >= n then acc
+    else ecs-zero-list n (i + 1) (list-push acc 0)
+
+  ecs-spawn : EntityManager -> EntityManager
+  ecs-spawn (em) =
+    let id = em.next-id
+    in EntityManager { next-id = id + 1, alive = list-set-at (em.alive) id 1, count = em.count + 1 }
+
+  ecs-despawn : EntityManager, Integer -> EntityManager
+  ecs-despawn (em) (id) =
+    EntityManager { next-id = em.next-id, alive = list-set-at (em.alive) id 0, count = em.count - 1 }
+
+  ecs-is-alive : EntityManager, Integer -> Boolean
+  ecs-is-alive (em) (id) = list-at (em.alive) id == 1
+
+  ecs-last-spawned : EntityManager -> Integer
+  ecs-last-spawned (em) = em.next-id - 1
+
+Section: Component Storage
+  ComponentStore = record {
+    values : List Integer,
+    masks : List Integer
+  }
+
+  comp-new : ComponentStore
+  comp-new = ComponentStore { values = ecs-zero-list ecs-max-entities 0 [], masks = ecs-zero-list ecs-max-entities 0 [] }
+
+  comp-set : ComponentStore, Integer, Integer -> ComponentStore
+  comp-set (cs) (entity) (val) =
+    ComponentStore { values = list-set-at (cs.values) entity val, masks = list-set-at (cs.masks) entity 1 }
+
+  comp-get : ComponentStore, Integer -> Maybe Integer
+  comp-get (cs) (entity) =
+    if list-at (cs.masks) entity == 1 then Just (list-at (cs.values) entity)
+    else None
+
+  comp-has : ComponentStore, Integer -> Boolean
+  comp-has (cs) (entity) = list-at (cs.masks) entity == 1
+
+  comp-remove : ComponentStore, Integer -> ComponentStore
+  comp-remove (cs) (entity) =
+    ComponentStore { values = cs.values, masks = list-set-at (cs.masks) entity 0 }
+
+Section: Component Mask
+  ecs-entity-mask : List ComponentStore, Integer -> BitSet
+  ecs-entity-mask (stores) (entity) = ecs-build-mask stores entity 0 (list-length stores) bitset-empty
+
+  ecs-build-mask : List ComponentStore, Integer, Integer, Integer, BitSet -> BitSet
+  ecs-build-mask (stores) (entity) (i) (len) (mask) =
+    if i >= len then mask
+    else let cs = list-at stores i
+    in let new-mask = if comp-has cs entity then bitset-set mask i else mask
+    in ecs-build-mask stores entity (i + 1) len new-mask
+
+Section: System Query
+  ecs-query : EntityManager, List ComponentStore, BitSet -> List Integer
+  ecs-query (em) (stores) (required) = ecs-query-loop em stores required 0 (em.next-id) []
+
+  ecs-query-loop : EntityManager, List ComponentStore, BitSet, Integer, Integer, List Integer -> List Integer
+  ecs-query-loop (em) (stores) (required) (i) (limit) (acc) =
+    if i >= limit then acc
+    else if ecs-is-alive em i then
+      let mask = ecs-entity-mask stores i
+      in if bitset-subset required mask then ecs-query-loop em stores required (i + 1) limit (list-push acc i)
+      else ecs-query-loop em stores required (i + 1) limit acc
+    else ecs-query-loop em stores required (i + 1) limit acc
+
+Section: Formatting
+  format-entity-list : List Integer -> Text
+  format-entity-list (ids) = format-ids-loop ids 0 (list-length ids) ""
+
+  format-ids-loop : List Integer, Integer, Integer, Text -> Text
+  format-ids-loop (ids) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else ","
+    in format-ids-loop ids (i + 1) len (acc & sep & show (list-at ids i))
+
+Page 1

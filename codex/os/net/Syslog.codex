@@ -1,0 +1,146 @@
+Chapter: Syslog
+  cites Net chapter Udp
+  cites Net chapter Ethernet
+  cites Foreword chapter CCE
+
+ BSD syslog client (RFC 5424 / RFC 3164). Builds syslog messages as
+ UDP payloads on port 514. Severity levels, facility codes, and
+ structured message formatting. Pure logic — no I/O.
+
+ We say:
+
+Section: Constants
+  syslog-port : Integer = 514
+
+  syslog-facility-kern : Integer = 0
+  syslog-facility-user : Integer = 1
+  syslog-facility-daemon : Integer = 3
+  syslog-facility-auth : Integer = 4
+  syslog-facility-syslog : Integer = 5
+  syslog-facility-local0 : Integer = 16
+  syslog-facility-local7 : Integer = 23
+
+  syslog-severity-emergency : Integer = 0
+  syslog-severity-alert : Integer = 1
+  syslog-severity-critical : Integer = 2
+  syslog-severity-error : Integer = 3
+  syslog-severity-warning : Integer = 4
+  syslog-severity-notice : Integer = 5
+  syslog-severity-info : Integer = 6
+  syslog-severity-debug : Integer = 7
+
+Section: Priority
+  syslog-priority : Integer, Integer -> Integer
+  syslog-priority (facility) (severity) = facility * 8 + severity
+
+Section: Message Types
+  SyslogMessage = record {
+    facility : Integer between 0 and 23,
+    severity : Integer between 0 and 7,
+    hostname : Text,
+    app-name : Text,
+    msg : Text
+  }
+
+Section: Message Construction
+  syslog-build-message : SyslogMessage -> List Integer
+  syslog-build-message (m) =
+    let pri = syslog-priority (m.facility) (m.severity)
+    in let header = "<" & show pri & ">"
+    in let body = header & m.hostname & " " & m.app-name & ": " & m.msg
+    in syslog-text-to-bytes body
+
+  syslog-text-to-bytes : Text -> List Integer
+  syslog-text-to-bytes (s) = syslog-encode-loop s 0 (text-length s) []
+
+  syslog-encode-loop : Text, Integer, Integer, List Integer -> List Integer
+  syslog-encode-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else syslog-encode-loop s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
+
+Section: Convenience Builders
+  syslog-emergency : Text, Text, Text -> SyslogMessage
+  syslog-emergency (host) (app) (msg) = SyslogMessage { facility = syslog-facility-daemon, severity = syslog-severity-emergency, hostname = host, app-name = app, msg = msg }
+
+  syslog-error : Text, Text, Text -> SyslogMessage
+  syslog-error (host) (app) (msg) = SyslogMessage { facility = syslog-facility-daemon, severity = syslog-severity-error, hostname = host, app-name = app, msg = msg }
+
+  syslog-warning : Text, Text, Text -> SyslogMessage
+  syslog-warning (host) (app) (msg) = SyslogMessage { facility = syslog-facility-daemon, severity = syslog-severity-warning, hostname = host, app-name = app, msg = msg }
+
+  syslog-info : Text, Text, Text -> SyslogMessage
+  syslog-info (host) (app) (msg) = SyslogMessage { facility = syslog-facility-daemon, severity = syslog-severity-info, hostname = host, app-name = app, msg = msg }
+
+  syslog-debug : Text, Text, Text -> SyslogMessage
+  syslog-debug (host) (app) (msg) = SyslogMessage { facility = syslog-facility-daemon, severity = syslog-severity-debug, hostname = host, app-name = app, msg = msg }
+
+  syslog-kern-info : Text, Text -> SyslogMessage
+  syslog-kern-info (host) (msg) = SyslogMessage { facility = syslog-facility-kern, severity = syslog-severity-info, hostname = host, app-name = "kernel", msg = msg }
+
+  syslog-auth-warning : Text, Text, Text -> SyslogMessage
+  syslog-auth-warning (host) (app) (msg) = SyslogMessage { facility = syslog-facility-auth, severity = syslog-severity-warning, hostname = host, app-name = app, msg = msg }
+
+Section: UDP Integration
+  syslog-send-udp : List Integer, List Integer, Integer, SyslogMessage -> List Integer
+  syslog-send-udp (src-ip) (syslog-ip) (src-port) (msg) =
+    let payload = syslog-build-message msg
+    in udp-build-ip-packet src-ip syslog-ip src-port syslog-port payload
+
+  syslog-send-frame : List Integer, List Integer, List Integer, List Integer, Integer, SyslogMessage -> List Integer
+  syslog-send-frame (dst-mac) (src-mac) (src-ip) (syslog-ip) (src-port) (msg) =
+    let ip-pkt = syslog-send-udp src-ip syslog-ip src-port msg
+    in eth-build-frame dst-mac src-mac eth-type-ipv4 ip-pkt
+
+Section: Parsing
+  SyslogParsed = record {
+    priority : Integer,
+    body : Text,
+    valid : Boolean
+  }
+
+  syslog-parse : List Integer -> SyslogParsed
+  syslog-parse (data) =
+    let dlen = list-length data
+    in if dlen < 3 then SyslogParsed { priority = 0, body = "", valid = False }
+    else if list-at data 0 /= 60 then SyslogParsed { priority = 0, body = "", valid = False }
+    else let pri-end = syslog-find-gt data 1 dlen
+    in if pri-end >= dlen then SyslogParsed { priority = 0, body = "", valid = False }
+    else let pri = syslog-parse-digits data 1 pri-end 0
+    in let body = syslog-decode-bytes data (pri-end + 1) dlen ""
+    in SyslogParsed { priority = pri, body = body, valid = True }
+
+  syslog-find-gt : List Integer, Integer, Integer -> Integer
+  syslog-find-gt (data) (i) (dlen) =
+    if i >= dlen then dlen
+    else if list-at data i == 62 then i
+    else syslog-find-gt data (i + 1) dlen
+
+  syslog-parse-digits : List Integer, Integer, Integer, Integer -> Integer
+  syslog-parse-digits (data) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let d = list-at data i - 48
+    in syslog-parse-digits data (i + 1) stop (acc * 10 + d)
+
+  syslog-decode-bytes : List Integer, Integer, Integer, Text -> Text
+  syslog-decode-bytes (data) (i) (dlen) (acc) =
+    if i >= dlen then acc
+    else syslog-decode-bytes data (i + 1) dlen (acc & char-to-text (code-to-char (from-unicode (list-at data i))))
+
+Section: Formatting
+  format-syslog : SyslogMessage -> Text
+  format-syslog (m) =
+    "<" & show (syslog-priority (m.facility) (m.severity)) & ">" & m.hostname & " " & m.app-name & ": " & m.msg
+
+  syslog-severity-name : Integer -> Text
+  syslog-severity-name (s) =
+    if s == 0 then "EMERG"
+    else if s == 1 then "ALERT"
+    else if s == 2 then "CRIT"
+    else if s == 3 then "ERR"
+    else if s == 4 then "WARN"
+    else if s == 5 then "NOTICE"
+    else if s == 6 then "INFO"
+    else if s == 7 then "DEBUG"
+    else "?"
+
+Page 1

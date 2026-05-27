@@ -1,0 +1,135 @@
+Chapter: HttpClient
+  cites Net chapter MessageFraming
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Net chapter DnsResolver
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter CCE
+
+ The HttpClient builds HTTP/1.1 request messages, sends them over
+ a TCP connection via the NetworkStack, and parses status lines,
+ headers, and response bodies.
+
+ We say:
+
+Section: Request Building
+
+  HttpClientRequest = record {
+    method : Text,
+    host : Text,
+    path : Text,
+    headers : List Text,
+    body : Text
+  }
+
+  http-get-request : Text, Text -> HttpClientRequest
+  http-get-request (host) (path) = HttpClientRequest { method = "GET", host = host, path = path, headers = [], body = "" }
+
+  http-post-request : Text, Text, Text -> HttpClientRequest
+  http-post-request (host) (path) (body) = HttpClientRequest { method = "POST", host = host, path = path, headers = [], body = body }
+
+  http-add-header : HttpClientRequest, Text -> HttpClientRequest
+  http-add-header (req) (header) = HttpClientRequest { method = req.method, host = req.host, path = req.path, headers = list-push (req.headers) header, body = req.body }
+
+Section: Request Serialization
+
+  http-serialize-request : HttpClientRequest -> List Integer
+  http-serialize-request (req) =
+    let request-line = http-to-ascii (req.method & " " & req.path & " HTTP/1.0")
+    in let host-header = http-to-ascii ("Host: " & req.host)
+    in let headers = serialize-headers (req.headers) 0 (list-length (req.headers)) []
+    in let body-bytes = if text-length (req.body) > 0 then http-to-ascii (req.body) else []
+    in let content-len = if text-length (req.body) > 0 then http-to-ascii ("Content-Length: " & show (list-length body-bytes)) & [13, 10] else []
+    in request-line & [13, 10] & host-header & [13, 10] & content-len & headers & [13, 10] & body-bytes
+
+  serialize-headers : List Text, Integer, Integer, List Integer -> List Integer
+  serialize-headers (hdrs) (i) (len) (acc) =
+    if i >= len then acc
+    else let h = http-to-ascii (list-at hdrs i)
+    in serialize-headers hdrs (i + 1) len (acc & h & [13, 10])
+
+  http-to-ascii : Text -> List Integer
+  http-to-ascii (s) = http-to-ascii-loop s 0 (text-length s) []
+
+  http-to-ascii-loop : Text, Integer, Integer, List Integer -> List Integer
+  http-to-ascii-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = to-unicode (char-code (char-at s i))
+    in http-to-ascii-loop s (i + 1) len (list-push acc b)
+
+Section: Response Parsing
+
+  HttpClientResponse = record {
+    status-code : Integer,
+    status-text : Text,
+    body : Text,
+    content-length : Integer,
+    valid : Boolean
+  }
+
+  http-parse-response : List Integer -> HttpClientResponse
+  http-parse-response (bs) =
+    let status-line = read-line-from-bytes bs 0 (list-length bs) ""
+    in let parts = split-on-space status-line
+    in if list-length parts < 2 then HttpClientResponse { status-code = 0, status-text = "", body = "", content-length = 0, valid = False }
+    else let code = parse-status-code (list-at parts 1)
+    in let body-start = find-body-start bs 0 (list-length bs)
+    in let body = if body-start >= list-length bs then ""
+      else read-body-from-bytes bs body-start (list-length bs) ""
+    in HttpClientResponse { status-code = code, status-text = list-at parts 1, body = body, content-length = text-length body, valid = True }
+
+  read-line-from-bytes : List Integer, Integer, Integer, Text -> Text
+  read-line-from-bytes (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bs i
+    in if b == 13 then acc
+    else if b == 10 then acc
+    else read-line-from-bytes bs (i + 1) len (acc & char-to-text (code-to-char (from-unicode b)))
+
+  find-body-start : List Integer, Integer, Integer -> Integer
+  find-body-start (bs) (i) (len) =
+    if i + 3 >= len then len
+    else if list-at bs i == 13 then if list-at bs (i + 1) == 10 then if list-at bs (i + 2) == 13 then if list-at bs (i + 3) == 10 then i + 4 else find-body-start bs (i + 1) len else find-body-start bs (i + 1) len else find-body-start bs (i + 1) len
+    else find-body-start bs (i + 1) len
+
+  read-body-from-bytes : List Integer, Integer, Integer, Text -> Text
+  read-body-from-bytes (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else read-body-from-bytes bs (i + 1) len (acc & char-to-text (code-to-char (from-unicode (list-at bs i))))
+
+  split-on-space : Text -> List Text
+  split-on-space (s) = split-space-loop s 0 (text-length s) "" []
+
+  split-space-loop : Text, Integer, Integer, Text, List Text -> List Text
+  split-space-loop (s) (i) (len) (cur) (acc) =
+    if i >= len then if text-length cur > 0 then list-push acc cur else acc
+    else let ch = char-code (char-at s i)
+    in if ch == 2 then split-space-loop s (i + 1) len "" (if text-length cur > 0 then list-push acc cur else acc)
+    else split-space-loop s (i + 1) len (cur & char-to-text (char-at s i)) acc
+
+  parse-status-code : Text -> Integer
+  parse-status-code (s) = parse-code-loop s 0 (text-length s) 0
+
+  parse-code-loop : Text, Integer, Integer, Integer -> Integer
+  parse-code-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let ch = char-code (char-at s i)
+    in if ch >= 3 then if ch <= 12 then parse-code-loop s (i + 1) len (acc * 10 + ch - 3) else acc
+    else acc
+
+Section: Queries
+
+  response-ok : HttpClientResponse -> Boolean
+  response-ok (r) =
+    if r.valid == False then False
+    else if r.status-code >= 200 then r.status-code < 300
+    else False
+
+  format-response : HttpClientResponse -> Text
+  format-response (r) = "HTTP " & show (r.status-code) & " body-len=" & show (r.content-length)
+
+Page 1

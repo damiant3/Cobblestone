@@ -1,0 +1,270 @@
+Chapter: Bridge
+  cites Games chapter Rng
+
+ Contract Bridge, 4 players (N/S team 0 vs E/W team 1).
+ Standard 52-card deck: suit = card / 13, rank = card mod 13
+ (0=2 up to 12=Ace). HCP: A=4, K=3, Q=2, J=1.
+ Simplified bidding: count HCP and longest suit, bid accordingly.
+ Declarer plays both own hand and dummy. Score for making/defeating.
+
+ We say:
+
+Section: Types
+
+  BridgeHand = record {
+    cards : List Integer
+  }
+
+  BridgeState = record {
+    north   : List Integer,
+    south   : List Integer,
+    east    : List Integer,
+    west    : List Integer,
+    trump   : Integer,
+    contract : Integer,
+    declarer : Integer
+  }
+
+  BridgeResult = record {
+    declarer-team  : Integer,
+    contract-level : Integer,
+    tricks-made    : Integer,
+    score          : Integer
+  }
+
+Section: Card Helpers
+
+  br-suit : Integer -> Integer
+  br-suit (c) = c / 13
+
+  br-rank : Integer -> Integer
+  br-rank (c) = rng-mod c 13
+
+  br-hcp : Integer -> Integer
+  br-hcp (c) =
+    let r = br-rank c
+    in if r == 12 then 4
+    else if r == 11 then 3
+    else if r == 10 then 2
+    else if r == 9  then 1
+    else 0
+
+Section: Deck and Shuffle
+
+  br-deck-new : List Integer
+  br-deck-new = br-build-deck 0 []
+
+  br-build-deck : Integer, List Integer -> List Integer
+  br-build-deck (i) (acc) =
+    if i >= 52 then acc
+    else br-build-deck (i + 1) (list-push acc i)
+
+  br-shuffle : List Integer, Rng -> List Integer
+  br-shuffle (deck) (r) = br-fy deck 51 r
+
+  br-fy : List Integer, Integer, Rng -> List Integer
+  br-fy (deck) (i) (r) =
+    if i <= 0 then deck
+    else let r2 = rng-next r
+    in let j = rng-mod (rng-value r2) (i + 1)
+    in let a = list-at deck i
+    in let b = list-at deck j
+    in let d2 = list-set-at deck i b
+    in let d3 = list-set-at d2 j a
+    in br-fy d3 (i - 1) r2
+
+  br-collect : List Integer, Integer, Integer -> List Integer
+  br-collect (deck) (lo) (hi) =
+    br-collect-loop deck lo hi []
+
+  br-collect-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  br-collect-loop (deck) (lo) (hi) (acc) =
+    if lo >= hi then acc
+    else br-collect-loop deck (lo + 1) hi (list-push acc (list-at deck lo))
+
+  br-deal : List Integer -> BridgeState
+  br-deal (deck) =
+    let north = br-collect deck 0 13
+    in let east  = br-collect deck 13 26
+    in let south = br-collect deck 26 39
+    in let west  = br-collect deck 39 52
+    in BridgeState { north = north, south = south, east = east, west = west,
+                     trump = 4, contract = 1, declarer = 0 }
+
+Section: Point Counting
+
+  hand-hcp : List Integer -> Integer
+  hand-hcp (cards) =
+    hand-hcp-loop cards 0 0
+
+  hand-hcp-loop : List Integer, Integer, Integer -> Integer
+  hand-hcp-loop (cards) (i) (acc) =
+    if i >= list-length cards then acc
+    else hand-hcp-loop cards (i + 1) (acc + br-hcp (list-at cards i))
+
+  count-suit-in-hand : List Integer, Integer -> Integer
+  count-suit-in-hand (cards) (s) =
+    count-suit-loop cards s 0 0
+
+  count-suit-loop : List Integer, Integer, Integer, Integer -> Integer
+  count-suit-loop (cards) (s) (i) (acc) =
+    if i >= list-length cards then acc
+    else let delta = if br-suit (list-at cards i) == s then 1 else 0
+    in count-suit-loop cards s (i + 1) (acc + delta)
+
+  longest-suit : List Integer -> Integer
+  longest-suit (cards) =
+    longest-suit-loop cards 0 0 0
+
+  longest-suit-loop : List Integer, Integer, Integer, Integer -> Integer
+  longest-suit-loop (cards) (s) (best-count) (best-suit) =
+    if s >= 4 then best-suit
+    else let n = count-suit-in-hand cards s
+    in if n > best-count then longest-suit-loop cards (s + 1) n s
+    else longest-suit-loop cards (s + 1) best-count best-suit
+
+Section: Bidding
+
+  bid-hand : List Integer -> Integer
+  bid-hand (cards) =
+    let pts = hand-hcp cards
+    in let suit = longest-suit cards
+    in if pts >= 25 then suit * 10 + 6
+    else if pts >= 22 then suit * 10 + 5
+    else if pts >= 19 then suit * 10 + 4
+    else if pts >= 16 then suit * 10 + 3
+    else if pts >= 13 then suit * 10 + 2
+    else if pts >= 10 then suit * 10 + 1
+    else (-1)
+
+  combine-bids : Integer, Integer -> Integer
+  combine-bids (b1) (b2) =
+    if b1 < 0 & b2 < 0 then (-1)
+    else if b1 < 0 then b2
+    else if b2 < 0 then b1
+    else let level1 = rng-mod b1 10
+    in let level2 = rng-mod b2 10
+    in if level1 >= level2 then b1 else b2
+
+  determine-contract : BridgeState -> BridgeState
+  determine-contract (st) =
+    let ns-bid = combine-bids (bid-hand (st.north)) (bid-hand (st.south))
+    in let ew-bid = combine-bids (bid-hand (st.east)) (bid-hand (st.west))
+    in let ns-level = if ns-bid < 0 then 0 else rng-mod ns-bid 10
+    in let ew-level = if ew-bid < 0 then 0 else rng-mod ew-bid 10
+    in if ns-level >= ew-level & ns-bid >= 0 then
+      let trump = ns-bid / 10
+      in let level = ns-level
+      in __record-set (__record-set (__record-set st "trump" trump) "contract" level) "declarer" 0
+    else if ew-bid >= 0 then
+      let trump = ew-bid / 10
+      in let level = ew-level
+      in __record-set (__record-set (__record-set st "trump" trump) "contract" level) "declarer" 1
+    else __record-set (__record-set st "contract" 1) "declarer" 0
+
+Section: Trick Taking
+
+  card-beats : Integer, Integer, Integer, Integer -> Boolean
+  card-beats (challenger) (current-best) (led-suit) (trump) =
+    let cs = br-suit challenger
+    in let bs = br-suit current-best
+    in let cr = br-rank challenger
+    in let br-val = br-rank current-best
+    in if cs == trump & bs /= trump then True
+    else if cs == trump & bs == trump then cr > br-val
+    else if cs == bs then cr > br-val
+    else False
+
+  best-card-idx : List Integer, Integer, Integer -> Integer
+  best-card-idx (hand) (led-suit) (trump) =
+    best-card-loop hand led-suit trump 0 0
+
+  best-card-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  best-card-loop (hand) (led-suit) (trump) (i) (best-i) =
+    if i >= list-length hand then best-i
+    else let c = list-at hand i
+    in let b = list-at hand best-i
+    in if card-beats c b led-suit trump then best-card-loop hand led-suit trump (i + 1) i
+    else best-card-loop hand led-suit trump (i + 1) best-i
+
+  remove-at : List Integer, Integer -> List Integer
+  remove-at (xs) (idx) =
+    remove-at-loop xs idx 0 []
+
+  remove-at-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  remove-at-loop (xs) (idx) (i) (acc) =
+    if i >= list-length xs then acc
+    else if i == idx then remove-at-loop xs idx (i + 1) acc
+    else remove-at-loop xs idx (i + 1) (list-push acc (list-at xs i))
+
+  play-trick : List Integer, List Integer, List Integer, List Integer, Integer, Integer -> Integer
+  play-trick (north) (south) (east) (west) (trump) (declarer) =
+    let lead = if declarer == 0 then list-at south 0 else list-at east 0
+    in let led-suit = br-suit lead
+    in let ni = best-card-idx north led-suit trump
+    in let si = best-card-idx south led-suit trump
+    in let ei = best-card-idx east  led-suit trump
+    in let wi = best-card-idx west  led-suit trump
+    in let nc = list-at north ni
+    in let sc = list-at south si
+    in let ec = list-at east  ei
+    in let wc = list-at west  wi
+    in let w01 = if card-beats sc nc led-suit trump then sc else nc
+    in let w012 = if card-beats ec w01 led-suit trump then ec else w01
+    in let w0123 = if card-beats wc w012 led-suit trump then wc else w012
+    in let ns-wins = br-suit w0123 == br-suit nc | br-suit w0123 == br-suit sc
+    in if ns-wins then 0 else 1
+
+  play-all-br-tricks : List Integer, List Integer, List Integer, List Integer, Integer, Integer -> Integer
+  play-all-br-tricks (north) (south) (east) (west) (trump) (declarer) =
+    play-br-tricks-loop north south east west trump declarer 0 0
+
+  play-br-tricks-loop : List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  play-br-tricks-loop (north) (south) (east) (west) (trump) (declarer) (trick) (ns-tricks) =
+    if list-length north == 0 then ns-tricks
+    else let winner-team = play-trick north south east west trump declarer
+    in let new-ns = if winner-team == 0 then ns-tricks + 1 else ns-tricks
+    in let n2 = remove-at north 0
+    in let s2 = remove-at south 0
+    in let e2 = remove-at east  0
+    in let w2 = remove-at west  0
+    in play-br-tricks-loop n2 s2 e2 w2 trump declarer (trick + 1) new-ns
+
+Section: Scoring
+
+  bridge-score : Integer, Integer, Integer -> Integer
+  bridge-score (level) (tricks-made) (trump) =
+    let needed = level + 6
+    in if tricks-made >= needed then
+      let overtricks = tricks-made - needed
+      in let per-trick = if trump >= 3 then 30 else 20
+      in level * per-trick + overtricks * 50 + if level >= 6 then 500 else 0
+    else
+      let undertricks = needed - tricks-made
+      in -(undertricks * 50)
+
+Section: Game Runner
+
+  run-bridge-hand : Integer -> BridgeResult
+  run-bridge-hand (seed) =
+    let deck = br-shuffle br-deck-new (rng-new seed)
+    in let st0 = br-deal deck
+    in let st = determine-contract st0
+    in let ns-tricks = play-all-br-tricks (st.north) (st.south) (st.east) (st.west) (st.trump) (st.declarer)
+    in let tricks-for-decl = if st.declarer == 0 then ns-tricks else 13 - ns-tricks
+    in let score = bridge-score (st.contract) tricks-for-decl (st.trump)
+    in let winner = if score >= 0 then st.declarer else 1 - st.declarer
+    in BridgeResult { declarer-team = st.declarer, contract-level = st.contract,
+                      tricks-made = tricks-for-decl, score = score }
+
+Section: Formatting
+
+  format-bridge-result : BridgeResult -> Text
+  format-bridge-result (r) =
+    let team = if r.declarer-team == 0 then "NS" else "EW"
+    in let outcome = if r.score >= 0 then "made" else "down"
+    in "Bridge: " & team & " contract=" & show (r.contract-level) &
+       " tricks=" & show (r.tricks-made) & " " & outcome &
+       " score=" & show (r.score)
+
+Page 1

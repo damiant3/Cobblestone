@@ -1,0 +1,119 @@
+Chapter: StringBuilder
+
+ A StringBuilder is a record containing parts, the accumulated text fragments in append order, and total-length, the sum of all fragment lengths.
+
+ To sb-new gives StringBuilder, an empty builder with no parts and zero length.
+
+ To sb-append gives StringBuilder, appending text to the end; no-op when the text is empty.
+
+ To sb-append-line gives StringBuilder, appending text followed by a newline.
+
+ To sb-append-int gives StringBuilder, appending the decimal text of an integer.
+
+ To sb-prepend gives StringBuilder, prepending text before all existing parts.
+
+ To sb-to-text gives Text, concatenating all parts into a single Text value.
+
+ To sb-length gives Integer, the total character count across all parts.
+
+ To sb-is-empty gives Boolean, True when no text has been appended.
+
+ To sb-clear gives StringBuilder, resetting to the empty state.
+
+ To sb-join gives Text, joining all items with a separator between each adjacent pair.
+
+ To sb-build gives Text, building text by calling a function for each index from 0 to count-1 and concatenating the results.
+
+ To sb-indent gives Text, prefixing every line with the given number of space characters.
+
+ We say:
+
+Section: Definitions
+
+  StringBuilder = record {
+
+    parts : List Text,
+
+    total-length : Integer between 0 and 4294967295
+  }
+
+  sb-new : StringBuilder = StringBuilder { parts = [], total-length = 0 }
+
+  sb-append : StringBuilder, Text -> StringBuilder
+  sb-append (sb) (s) =
+    if text-length s == 0 then sb
+    else StringBuilder { parts = sb.parts & [s], total-length = sb.total-length + text-length s }
+
+  sb-append-line : StringBuilder, Text -> StringBuilder
+  sb-append-line (sb) (s) =
+    sb-append (sb-append sb s) (char-to-text (code-to-char 10))
+
+  sb-append-int : StringBuilder, Integer -> StringBuilder
+  sb-append-int (sb) (n) = sb-append sb (integer-to-text n)
+
+  sb-prepend : StringBuilder, Text -> StringBuilder
+  sb-prepend (sb) (s) =
+    if text-length s == 0 then sb
+    else StringBuilder { parts = [s] & sb.parts, total-length = sb.total-length + text-length s }
+
+  sb-to-text : StringBuilder -> Text
+  sb-to-text (sb) = sb-join-parts sb.parts 0 (list-length sb.parts) ""
+
+  sb-join-parts : List Text, Integer, Integer, Text -> Text
+  sb-join-parts (parts) (i) (len) (acc) =
+    if i == len then acc
+    else sb-join-parts parts (i + 1) len (acc & list-at parts i)
+
+  sb-length : StringBuilder -> Integer
+  sb-length (sb) = sb.total-length
+
+  sb-is-empty : StringBuilder -> Boolean
+  sb-is-empty (sb) = sb.total-length == 0
+
+  sb-clear : StringBuilder -> StringBuilder
+  sb-clear (sb) = sb-new
+
+  sb-join : Text, List Text -> Text
+  sb-join (sep) (items) =
+    if list-length items == 0 then ""
+    else sb-to-text (sb-join-loop sep items 0 (list-length items) sb-new)
+
+  sb-join-loop : Text, List Text, Integer, Integer, StringBuilder -> StringBuilder
+  sb-join-loop (sep) (items) (i) (len) (sb) =
+    if i == len then sb
+    else if i == 0 then sb-join-loop sep items 1 len (sb-append sb (list-at items 0))
+    else sb-join-loop sep items (i + 1) len (sb-append (sb-append sb sep) (list-at items i))
+
+  sb-build : Integer, (Integer -> Text) -> Text
+  sb-build (count) (f) = sb-to-text (sb-build-loop count f 0 sb-new)
+
+  sb-build-loop : Integer, (Integer -> Text), Integer, StringBuilder -> StringBuilder
+  sb-build-loop (count) (f) (i) (sb) =
+    if i == count then sb
+    else sb-build-loop count f (i + 1) (sb-append sb (f i))
+
+  sb-indent : Integer, Text -> Text
+  sb-indent (spaces) (s) =
+    let prefix = text-repeat-spaces spaces
+    in let lines = split-newlines s 0 (text-length s) 0 []
+    in sb-join (char-to-text (code-to-char 10)) (indent-lines prefix lines 0 (list-length lines) [])
+
+  text-repeat-spaces : Integer -> Text
+  text-repeat-spaces (n) =
+    if n <= 0 then ""
+    else " " & text-repeat-spaces (n - 1)
+
+  split-newlines : Text, Integer, Integer, Integer, List Text -> List Text
+  split-newlines (s) (i) (len) (start) (acc) =
+    if i == len then acc & [substring s start (len - start)]
+    else if char-code (char-at s i) == 10
+      then split-newlines s (i + 1) len (i + 1) (acc & [substring s start (i - start)])
+    else split-newlines s (i + 1) len start acc
+
+  indent-lines : Text, List Text, Integer, Integer, List Text -> List Text
+  indent-lines (prefix) (lines) (i) (len) (acc) =
+    if i == len then acc
+    else indent-lines prefix lines (i + 1) len (acc & [prefix & list-at lines i])
+
+Page 1
+

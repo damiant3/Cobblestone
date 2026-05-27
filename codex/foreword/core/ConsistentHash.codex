@@ -1,0 +1,92 @@
+Chapter: ConsistentHash
+
+ A HashRingEntry is a record containing hr-hash and hr-node.
+ A ConsistentHashRing is a record containing hr-entries, hr-count, and hr-vnodes.
+ To chr-new gives an empty ConsistentHashRing with the given vnode count.
+ To chr-add-node gives a new ring with the node and all vnodes inserted.
+ To chr-get-node gives the node responsible for the given key, or negative one when the ring is empty.
+ To chr-node-count gives the number of distinct nodes on the ring.
+ To chr-entry-count gives the total number of entries including vnodes.
+
+ We say:
+
+Section: Types
+  HashRingEntry = record {
+    hr-hash : Integer,
+    hr-node : Integer
+  }
+
+  ConsistentHashRing = record {
+    hr-entries : List HashRingEntry,
+    hr-count : Integer,
+    hr-vnodes : Integer
+  }
+
+Section: Construction
+  chr-new : Integer -> ConsistentHashRing
+  chr-new (vnodes) = ConsistentHashRing { hr-entries = [], hr-count = 0, hr-vnodes = vnodes }
+
+  chr-add-node : ConsistentHashRing, Integer -> ConsistentHashRing
+  chr-add-node (ring) (node-id) = chr-add-vnodes ring node-id 0 (ring.hr-vnodes)
+
+  chr-add-vnodes : ConsistentHashRing, Integer, Integer, Integer -> ConsistentHashRing
+  chr-add-vnodes (ring) (node-id) (i) (limit) =
+    if i >= limit then ring
+    else let h = chr-hash-pair node-id i
+    in let entry = HashRingEntry { hr-hash = h, hr-node = node-id }
+    in let pos = chr-find-insert (ring.hr-entries) h 0 (ring.hr-count)
+    in let new-entries = chr-insert-at (ring.hr-entries) pos entry (ring.hr-count)
+    in chr-add-vnodes (ConsistentHashRing { hr-entries = new-entries, hr-count = ring.hr-count + 1, hr-vnodes = ring.hr-vnodes }) node-id (i + 1) limit
+
+  chr-find-insert : List HashRingEntry, Integer, Integer, Integer -> Integer
+  chr-find-insert (entries) (h) (i) (len) =
+    if i >= len then len
+    else if (list-at entries i).hr-hash > h then i
+    else chr-find-insert entries h (i + 1) len
+
+  chr-insert-at : List HashRingEntry, Integer, HashRingEntry, Integer -> List HashRingEntry
+  chr-insert-at (entries) (pos) (entry) (len) = chr-splice entries pos entry 0 len []
+
+  chr-splice : List HashRingEntry, Integer, HashRingEntry, Integer, Integer, List HashRingEntry -> List HashRingEntry
+  chr-splice (entries) (pos) (entry) (i) (len) (acc) =
+    if i > len then acc
+    else if i == pos then chr-splice entries pos entry (i + 1) len (list-push (list-push acc entry) (if i < len then list-at entries i else entry))
+    else if i < len then chr-splice entries pos entry (i + 1) len (list-push acc (list-at entries i))
+    else acc
+
+Section: Lookup
+  chr-get-node : ConsistentHashRing, Integer -> Integer
+  chr-get-node (ring) (key) =
+    if ring.hr-count == 0 then 0 - 1
+    else let h = chr-hash-key key
+    in chr-find-node (ring.hr-entries) h 0 (ring.hr-count)
+
+  chr-find-node : List HashRingEntry, Integer, Integer, Integer -> Integer
+  chr-find-node (entries) (h) (i) (len) =
+    if i >= len then (list-at entries 0).hr-node
+    else if (list-at entries i).hr-hash >= h then (list-at entries i).hr-node
+    else chr-find-node entries h (i + 1) len
+
+Section: Hash Functions
+  chr-hash-key : Integer -> Integer
+  chr-hash-key (key) =
+    let h = bit-xor (key * 2654435761) 1013904223
+    in let h2 = bit-xor h (bit-shru h 16)
+    in let positive = if h2 < 0 then -h2 else h2
+    in positive
+
+  chr-hash-pair : Integer, Integer -> Integer
+  chr-hash-pair (node) (vnode) =
+    let h = bit-xor (node * 2654435761) (vnode * 40503 + 73244475)
+    in let h2 = bit-xor h (bit-shru h 13)
+    in let positive = if h2 < 0 then -h2 else h2
+    in positive
+
+Section: Queries
+  chr-node-count : ConsistentHashRing -> Integer
+  chr-node-count (ring) = ring.hr-count / ring.hr-vnodes
+
+  chr-entry-count : ConsistentHashRing -> Integer
+  chr-entry-count (ring) = ring.hr-count
+
+Page 1

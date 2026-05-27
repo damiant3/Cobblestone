@@ -1,0 +1,236 @@
+Chapter: ExplorerServer
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Net chapter MessageFraming
+  cites Kernel chapter Ne2k
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Minimal web server CDX. Boots bare-metal with NE2K NIC and serves
+ JSON API requests. Two modes: serial (file-mapped I/O) and TCP
+ (persistent connection via NE2K NIC NAT to host:9100).
+
+ We say:
+
+Section: Server State
+
+  ServerState = record {
+    request-count : Integer
+  }
+
+  server-new : ServerState
+  server-new = ServerState { request-count = 0 }
+
+Section: Request Parsing
+
+  extract-path : Text -> Text
+  extract-path (line) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then "/"
+    else list-at parts 1
+
+Section: JSON Helpers
+
+  jstr : Text -> Text
+  jstr (s) = "\"" & s & "\""
+
+Section: Request Dispatch
+
+  dispatch : ServerState, Text -> Text
+  dispatch (state) (line) =
+    let path = extract-path line
+    in if path == "/api/status" then "{\"requests\":" & show (state.request-count) & ",\"mode\":\"tcp\"}"
+    else if path == "/api/health" then "{\"status\":\"ok\"}"
+    else "{\"error\":\"not found\",\"path\":" & jstr path & "}"
+
+Section: Serial Mode (one-shot, file-mapped I/O)
+
+  handle-serial-request : ServerState, Text -> [Console] ServerState
+  handle-serial-request (state) (line) =
+    let ns = ServerState { request-count = state.request-count + 1 }
+    in let response = dispatch ns line
+    in act
+      print-line-uni ("200 application/json " & response)
+      ns
+    end
+
+  serial-server-loop : ServerState -> [Console] ServerState
+  serial-server-loop (state) = act
+    line-result <- read-line
+    when line-result
+      is Just (line) -> act
+        ns <- handle-serial-request state line
+        serial-server-loop ns
+      end
+      is None -> state
+  end
+
+Section: TCP Mode (persistent, NE2K NIC)
+
+  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  local-ip : List Integer = [10, 0, 2, 15]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+  host-ip : List Integer = [127, 0, 0, 1]
+
+  text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
+  text-to-bytes (s) (i) (stop) (acc) =
+    if i >= stop then acc
+    else text-to-bytes s (i + 1) stop (list-push acc (to-unicode (char-code (char-at s i))))
+
+  bytes-to-text : List Integer, Integer, Integer, Text -> Text
+  bytes-to-text (bs) (off) (total) (acc) =
+    if off >= total then acc
+    else let stop = if off + 256 > total then total else off + 256
+    in let chunk = bytes-to-text-chunk bs off stop ""
+    in bytes-to-text bs stop total (acc & chunk)
+
+  bytes-to-text-chunk : List Integer, Integer, Integer, Text -> Text
+  bytes-to-text-chunk (bs) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let cce = from-unicode (list-at bs i)
+    in bytes-to-text-chunk bs (i + 1) stop (acc & char-to-text (code-to-char cce))
+
+  send-response : TcpTransportState, Text -> TcpTransportState
+  send-response (ts) (response) =
+    let body = "200 application/json " & response
+    in let body-bytes = text-to-bytes body 0 (text-length body) []
+    in let r = transport-send-message ts 1 body-bytes
+    in flush-transport-outbox (r.transport)
+
+  TcpLoopState = record {
+    server : ServerState,
+    transport : TcpTransportState
+  }
+
+  handle-tcp-request : TcpLoopState, TransportRecvResult -> TcpLoopState
+  handle-tcp-request (ls) (recv) =
+    let request-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
+    in let ns = ServerState { request-count = (ls.server).request-count + 1 }
+    in let response = dispatch ns request-text
+    in let ts2 = send-response (recv.transport) response
+    in TcpLoopState { server = ns, transport = ts2 }
+
+  tcp-server-loop : TcpLoopState -> [Console] Integer
+  tcp-server-loop (ls) = act
+    let recv = net-io-recv-loop (ls.transport) 0
+    in if recv.has-message then act
+      let next = handle-tcp-request ls recv
+      in tcp-server-loop next
+    end
+    else act
+      0
+    end
+  end
+
+  start-tcp-server : ServerState -> [Console] Integer
+  start-tcp-server (state) =
+    let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
+    in let ts = transport-new sess
+    in let ts1 = net-io-connect ts
+    in act
+      print-line-uni "TCP connected"
+      tcp-server-loop (TcpLoopState { server = state, transport = ts1 })
+    end
+
+Section: HTTP Server Mode (listen on port 80, accept connections)
+
+  build-http-response : Text, Text -> Text
+  build-http-response (content-type) (body) =
+    "HTTP/1.0 200 OK\nContent-Type: " & content-type & "\nContent-Length: " & show (text-length body) & "\nConnection: close\n\n" & body
+
+  build-http-404 : Text
+  build-http-404 = "HTTP/1.0 404 Not Found\nContent-Type: text/plain\nContent-Length: 9\nConnection: close\n\nNot Found"
+
+  http-response-bytes : Text -> List Integer
+  http-response-bytes (resp) = text-to-bytes resp 0 (text-length resp) []
+
+  has-header-end : List Integer, Integer -> Boolean
+  has-header-end (bs) (i) =
+    if i + 3 >= list-length bs then False
+    else if list-at bs i == 13 then
+      if list-at bs (i + 1) == 10 then
+        if list-at bs (i + 2) == 13 then
+          if list-at bs (i + 3) == 10 then True
+          else has-header-end bs (i + 1)
+        else has-header-end bs (i + 1)
+      else has-header-end bs (i + 1)
+    else has-header-end bs (i + 1)
+
+  recv-http-request : TcpTransportState, List Integer, Integer -> RawRecvResult
+  recv-http-request (ts) (acc) (rounds) =
+    if rounds > 20 then RawRecvResult { transport = ts, data = acc, has-data = list-length acc > 0 }
+    else if has-header-end acc 0 then RawRecvResult { transport = ts, data = acc, has-data = True }
+    else let recv = net-io-recv-raw ts 0
+    in if recv.has-data then recv-http-request (recv.transport) (acc & recv.data) (rounds + 1)
+    else RawRecvResult { transport = recv.transport, data = acc, has-data = list-length acc > 0 }
+
+  handle-http-connection : ServerState, TcpTransportState -> ServerState
+  handle-http-connection (state) (ts) =
+    let recv = recv-http-request ts [] 0
+    in if recv.has-data then
+      let request-text = bytes-to-text (recv.data) 0 (list-length (recv.data)) ""
+      in let ns = ServerState { request-count = state.request-count + 1 }
+      in let json = dispatch ns request-text
+      in let resp = build-http-response "application/json" json
+      in let resp-bytes = http-response-bytes resp
+      in let ts1 = net-io-send-chunk (recv.transport) resp-bytes 0 (list-length resp-bytes)
+      in let ts2 = net-io-close ts1
+      in ns
+    else state
+
+  serve-one : ServerState, TcpTransportState -> [Console] ServerState
+  serve-one (state) (ts) =
+    let ts1 = net-io-accept ts 0
+    in let ns = handle-http-connection state ts1
+    in act
+      print-line-uni ("served " & show (ns.request-count))
+      ns
+    end
+
+  http-accept-loop : ServerState -> [Console] Integer
+  http-accept-loop (state) =
+    let sess = net-session-new local-mac local-ip gateway-ip 80 0 gateway-ip 2000
+    in let ts = transport-new sess
+    in let ts1 = net-io-listen ts
+    in act
+      ns <- serve-one state ts1
+      http-accept-loop ns
+    end
+
+  start-http-server : ServerState -> [Console] Integer
+  start-http-server (state) = act
+    print-line-uni "HTTP listening on port 80"
+    http-accept-loop state
+  end
+
+Section: Entry
+
+  opening : [Console, FileSystem] Nothing =
+    let state = server-new
+    in act
+      print-line-uni "READY"
+      mode-result <- read-line
+      when mode-result
+        is Just (mode) ->
+          if mode == "HTTP" then act
+            r <- start-http-server state
+            print-line-uni "SHUTDOWN"
+          end
+          else if mode == "TCP" then act
+            r <- start-tcp-server state
+            print-line-uni "SHUTDOWN"
+          end
+          else act
+            ns <- serial-server-loop state
+            print-line-uni "SHUTDOWN"
+          end
+        is None -> act
+          ns <- serial-server-loop state
+          print-line-uni "SHUTDOWN"
+        end
+    end
+
+Page 1

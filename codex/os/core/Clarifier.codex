@@ -1,0 +1,178 @@
+Chapter: Clarifier
+  cites Foreword chapter Maybe
+
+ The Clarifier resolves ambiguous user input by classifying
+ questions into kinds (referent, domain, cardinality, threshold,
+ temporal) and ranking them by priority for interactive resolution.
+
+ We say:
+
+Section: Question Kinds
+
+  QuestionKind =
+    | ReferentQuestion
+    | DomainQuestion
+    | CardinalityQuestion
+    | ThresholdQuestion
+    | TemporalQuestion
+
+  question-priority : QuestionKind -> Integer
+  question-priority (k) = when k
+    is ReferentQuestion -> 0
+    is DomainQuestion -> 1
+    is CardinalityQuestion -> 2
+    is ThresholdQuestion -> 3
+    is TemporalQuestion -> 4
+
+  question-kind-name : QuestionKind -> Text
+  question-kind-name (k) = when k
+    is ReferentQuestion -> "referent"
+    is DomainQuestion -> "domain"
+    is CardinalityQuestion -> "cardinality"
+    is ThresholdQuestion -> "threshold"
+    is TemporalQuestion -> "temporal"
+
+Section: Register
+
+  Register =
+    | Child
+    | Casual
+    | Technical
+    | Formal
+
+  register-name : Register -> Text
+  register-name (r) = when r
+    is Child -> "child"
+    is Casual -> "casual"
+    is Technical -> "technical"
+    is Formal -> "formal"
+
+Section: Parse Nodes
+
+  SolidNode = record {
+    label : Text,
+    description : Text
+  }
+
+  UnresolvedNode = record {
+    kind : QuestionKind,
+    label : Text,
+    ambiguity : Text
+  }
+
+  Utterance = record {
+    solid : List SolidNode,
+    unresolved : List UnresolvedNode
+  }
+
+Section: Clarification Result
+
+  ClarifyResult = record {
+    solid-count : Integer between 0 and 65535,
+    unresolved-count : Integer between 0 and 65535,
+    next-question : Text,
+    register : Register,
+    fully-resolved : Boolean
+  }
+
+Section: Question Formatting
+
+  format-question : UnresolvedNode, Register -> Text
+  format-question (node) (reg) = when reg
+    is Child -> format-child-question node
+    is Casual -> format-casual-question node
+    is Technical -> format-technical-question node
+    is Formal -> format-formal-question node
+
+  format-child-question : UnresolvedNode -> Text
+  format-child-question (node) = when (node.kind)
+    is ReferentQuestion -> "Who do you mean by " & qt (node.label) & "?"
+    is DomainQuestion -> "What are you talking about when you say " & qt (node.label) & "?"
+    is CardinalityQuestion -> "How many do you mean by " & qt (node.label) & "?"
+    is ThresholdQuestion -> "Compared to what?"
+    is TemporalQuestion -> "When did that happen?"
+
+  format-casual-question : UnresolvedNode -> Text
+  format-casual-question (node) = when (node.kind)
+    is ReferentQuestion -> "When you say " & qt (node.label) & ", who specifically?"
+    is DomainQuestion -> "What domain does " & qt (node.label) & " refer to?"
+    is CardinalityQuestion -> qt (node.label) & " — how many exactly?"
+    is ThresholdQuestion -> qt (node.label) & " — compared to what baseline?"
+    is TemporalQuestion -> qt (node.label) & " — when, specifically?"
+
+  format-technical-question : UnresolvedNode -> Text
+  format-technical-question (node) = when (node.kind)
+    is ReferentQuestion -> "Unresolved referent: " & qt (node.label) & " (" & node.ambiguity & ")"
+    is DomainQuestion -> "Domain unspecified: " & qt (node.label) & " (" & node.ambiguity & ")"
+    is CardinalityQuestion -> "Cardinality unbound: " & qt (node.label) & " (" & node.ambiguity & ")"
+    is ThresholdQuestion -> "Threshold undefined: " & qt (node.label) & " (" & node.ambiguity & ")"
+    is TemporalQuestion -> "Temporal scope unresolved: " & qt (node.label) & " (" & node.ambiguity & ")"
+
+  format-formal-question : UnresolvedNode -> Text
+  format-formal-question (node) = when (node.kind)
+    is ReferentQuestion -> "NP-1: referent of " & qt (node.label) & " is unresolved. " & node.ambiguity
+    is DomainQuestion -> "DOM-1: domain of " & qt (node.label) & " is undeclared. " & node.ambiguity
+    is CardinalityQuestion -> "QE-1: cardinality of " & qt (node.label) & " is unbound. " & node.ambiguity
+    is ThresholdQuestion -> "TH-1: threshold for " & qt (node.label) & " is undefined. " & node.ambiguity
+    is TemporalQuestion -> "TP-1: temporal scope of " & qt (node.label) & " is unresolved. " & node.ambiguity
+
+  qt : Text -> Text
+  qt (s) = "'" & s & "'"
+
+Section: Priority Sort
+
+  sort-by-priority : List UnresolvedNode -> List UnresolvedNode
+  sort-by-priority (nodes) = sort-nodes-loop nodes 0 (list-length nodes) []
+
+  sort-nodes-loop : List UnresolvedNode, Integer, Integer, List UnresolvedNode -> List UnresolvedNode
+  sort-nodes-loop (nodes) (i) (len) (sorted) =
+    if i >= len then sorted
+    else let node = list-at nodes i
+    in sort-nodes-loop nodes (i + 1) len (insert-node node sorted)
+
+  insert-node : UnresolvedNode, List UnresolvedNode -> List UnresolvedNode
+  insert-node (node) (sorted) = insert-node-loop node sorted 0 (list-length sorted)
+
+  insert-node-loop : UnresolvedNode, List UnresolvedNode, Integer, Integer -> List UnresolvedNode
+  insert-node-loop (node) (sorted) (i) (len) =
+    if i >= len then list-push sorted node
+    else let existing = list-at sorted i
+    in if question-priority (node.kind) <= question-priority (existing.kind) then
+      list-insert-at sorted i node
+    else insert-node-loop node sorted (i + 1) len
+
+Section: Clarification Engine
+
+  clarify : Utterance, Register -> ClarifyResult
+  clarify (utterance) (reg) =
+    let sorted = sort-by-priority (utterance.unresolved)
+    in let sc = list-length (utterance.solid)
+    in let uc = list-length sorted
+    in if uc == 0 then ClarifyResult {
+      solid-count = sc,
+      unresolved-count = 0,
+      next-question = "",
+      register = reg,
+      fully-resolved = True
+    }
+    else let top = list-at sorted 0
+    in ClarifyResult {
+      solid-count = sc,
+      unresolved-count = uc,
+      next-question = format-question top reg,
+      register = reg,
+      fully-resolved = False
+    }
+
+  clarify-all-questions : Utterance, Register -> List Text
+  clarify-all-questions (utterance) (reg) =
+    let sorted = sort-by-priority (utterance.unresolved)
+    in format-all-questions sorted reg 0 (list-length sorted) []
+
+  format-all-questions : List UnresolvedNode, Register, Integer, Integer, List Text -> List Text
+  format-all-questions (nodes) (reg) (i) (len) (acc) =
+    if i >= len then acc
+    else let node = list-at nodes i
+    in format-all-questions nodes reg (i + 1) len (list-push acc (format-question node reg))
+
+Page 1

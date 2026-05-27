@@ -1,0 +1,350 @@
+Chapter: ClanTournament
+  cites CodexMagic chapter Clan
+  cites CodexMagic chapter ClanEconomy
+  cites CodexMagic chapter ClanFormat
+
+ Clan-run tournaments. Clans operate their own tournaments using
+ any format (global or custom). Entry fees in clan coin, prizes
+ distributed to top finishers, 5% rake to clan treasury.
+
+ We say:
+
+Section: Tournament Types
+
+  TournamentStructure =
+    | Swiss (Integer)
+    | SingleElim
+    | DoubleElim
+    | RoundRobin
+    | League (Integer, Integer)
+
+  structure-name : TournamentStructure -> Text
+  structure-name (s) =
+    when s
+      is Swiss (rounds) -> "Swiss " & show rounds & " rounds"
+      is SingleElim -> "Single Elimination"
+      is DoubleElim -> "Double Elimination"
+      is RoundRobin -> "Round Robin"
+      is League (min-games) (days) -> "League: " & show min-games & " games / " & show days & " days"
+
+  TournamentStatus =
+    | TournRegistration
+    | TournInProgress
+    | TournCompleted
+    | TournCancelled
+
+  status-name : TournamentStatus -> Text
+  status-name (s) =
+    when s
+      is TournRegistration -> "Registration"
+      is TournInProgress -> "In Progress"
+      is TournCompleted -> "Completed"
+      is TournCancelled -> "Cancelled"
+
+Section: Tournament Record
+
+  ClanTournament = record {
+    tournament-id : Integer,
+    clan-id : Integer,
+    name : Text,
+    format-id : Integer,
+    structure : TournamentStructure,
+    entry-fee : Integer,
+    prize-pool : Integer,
+    participants : List Integer,
+    max-players : Integer,
+    status : TournamentStatus,
+    results : List TournamentPlacement,
+    current-round : Integer,
+    pairings : List Pairing,
+    created-by : Integer,
+    created-at : Integer
+  }
+
+  TournamentPlacement = record {
+    account-id : Integer,
+    place : Integer,
+    prize : Integer,
+    wins : Integer,
+    losses : Integer,
+    draws : Integer
+  }
+
+  Pairing = record {
+    round : Integer,
+    player-a : Integer,
+    player-b : Integer,
+    winner : Integer,
+    completed : Boolean
+  }
+
+Section: Tournament Creation
+
+  clan-tournament-new : Integer, Integer, Text, Integer, TournamentStructure, Integer, Integer, Integer, Integer -> ClanTournament
+  clan-tournament-new (id) (clan-id) (name) (format-id) (structure) (entry-fee) (max-players) (creator) (time) =
+    ClanTournament {
+      tournament-id = id,
+      clan-id = clan-id,
+      name = name,
+      format-id = format-id,
+      structure = structure,
+      entry-fee = entry-fee,
+      prize-pool = 0,
+      participants = [],
+      max-players = max-players,
+      status = TournRegistration,
+      results = [],
+      current-round = 0,
+      pairings = [],
+      created-by = creator,
+      created-at = time
+    }
+
+Section: Registration
+
+  TournamentJoinResult = record {
+    tournament : ClanTournament,
+    economy : ClanEconomy,
+    success : Boolean
+  }
+
+  tournament-join : ClanTournament, ClanEconomy, Integer, Integer -> TournamentJoinResult
+  tournament-join (tourn) (econ) (account-id) (time) =
+    if tourn.status /= TournRegistration then TournamentJoinResult { tournament = tourn, economy = econ, success = False }
+    else if list-length (tourn.participants) >= tourn.max-players then TournamentJoinResult { tournament = tourn, economy = econ, success = False }
+    else if player-registered (tourn.participants) account-id 0 (list-length (tourn.participants)) then TournamentJoinResult { tournament = tourn, economy = econ, success = False }
+    else let bal = get-clan-balance econ account-id
+    in if bal < tourn.entry-fee then TournamentJoinResult { tournament = tourn, economy = econ, success = False }
+    else let econ2 = clan-burn econ account-id (tourn.entry-fee) time
+    in let rake = tourn.entry-fee * 5 / 100
+    in let prize-add = tourn.entry-fee - rake
+    in let econ3 = ClanEconomy {
+      clan-id = econ2.clan-id,
+      coin-name = econ2.coin-name,
+      coin-supply = econ2.coin-supply,
+      coin-burned = econ2.coin-burned,
+      mint-authority = econ2.mint-authority,
+      exchange-enabled = econ2.exchange-enabled,
+      exchange-rate = econ2.exchange-rate,
+      exchange-fee = econ2.exchange-fee,
+      treasury-balance = econ2.treasury-balance + rake,
+      member-balances = econ2.member-balances,
+      transaction-log = econ2.transaction-log
+    }
+    in let tourn2 = ClanTournament {
+      tournament-id = tourn.tournament-id,
+      clan-id = tourn.clan-id,
+      name = tourn.name,
+      format-id = tourn.format-id,
+      structure = tourn.structure,
+      entry-fee = tourn.entry-fee,
+      prize-pool = tourn.prize-pool + prize-add,
+      participants = list-push (tourn.participants) account-id,
+      max-players = tourn.max-players,
+      status = tourn.status,
+      results = tourn.results,
+      current-round = tourn.current-round,
+      pairings = tourn.pairings,
+      created-by = tourn.created-by,
+      created-at = tourn.created-at
+    }
+    in TournamentJoinResult { tournament = tourn2, economy = econ3, success = True }
+
+  player-registered : List Integer, Integer, Integer, Integer -> Boolean
+  player-registered (participants) (account-id) (i) (len) =
+    if i >= len then False
+    else if list-at participants i == account-id then True
+    else player-registered participants account-id (i + 1) len
+
+Section: Tournament Progression
+
+  tournament-start : ClanTournament -> ClanTournament
+  tournament-start (tourn) =
+    if tourn.status /= TournRegistration then tourn
+    else if list-length (tourn.participants) < 2 then tourn
+    else let initial-pairings = generate-pairings (tourn.participants) 1 0 (list-length (tourn.participants)) []
+    in ClanTournament {
+      tournament-id = tourn.tournament-id,
+      clan-id = tourn.clan-id,
+      name = tourn.name,
+      format-id = tourn.format-id,
+      structure = tourn.structure,
+      entry-fee = tourn.entry-fee,
+      prize-pool = tourn.prize-pool,
+      participants = tourn.participants,
+      max-players = tourn.max-players,
+      status = TournInProgress,
+      results = tourn.results,
+      current-round = 1,
+      pairings = initial-pairings,
+      created-by = tourn.created-by,
+      created-at = tourn.created-at
+    }
+
+  generate-pairings : List Integer, Integer, Integer, Integer, List Pairing -> List Pairing
+  generate-pairings (players) (round) (i) (len) (acc) =
+    if i + 1 >= len then acc
+    else let p = Pairing { round = round, player-a = list-at players i, player-b = list-at players (i + 1), winner = -1, completed = False }
+    in generate-pairings players round (i + 2) len (list-push acc p)
+
+  report-match-result : ClanTournament, Integer, Integer, Integer -> ClanTournament
+  report-match-result (tourn) (player-a) (player-b) (winner) =
+    let new-pairings = update-pairing (tourn.pairings) player-a player-b winner 0 (list-length (tourn.pairings)) []
+    in ClanTournament {
+      tournament-id = tourn.tournament-id,
+      clan-id = tourn.clan-id,
+      name = tourn.name,
+      format-id = tourn.format-id,
+      structure = tourn.structure,
+      entry-fee = tourn.entry-fee,
+      prize-pool = tourn.prize-pool,
+      participants = tourn.participants,
+      max-players = tourn.max-players,
+      status = tourn.status,
+      results = tourn.results,
+      current-round = tourn.current-round,
+      pairings = new-pairings,
+      created-by = tourn.created-by,
+      created-at = tourn.created-at
+    }
+
+  update-pairing : List Pairing, Integer, Integer, Integer, Integer, Integer, List Pairing -> List Pairing
+  update-pairing (pairings) (pa) (pb) (winner) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pairings i
+    in if p.player-a == pa then
+      if p.player-b == pb then
+        update-pairing pairings pa pb winner (i + 1) len (list-push acc (Pairing { round = p.round, player-a = p.player-a, player-b = p.player-b, winner = winner, completed = True }))
+      else update-pairing pairings pa pb winner (i + 1) len (list-push acc p)
+    else update-pairing pairings pa pb winner (i + 1) len (list-push acc p)
+
+Section: Prize Distribution
+
+  PrizeDistResult = record {
+    tournament : ClanTournament,
+    economy : ClanEconomy
+  }
+
+  distribute-prizes : ClanTournament, ClanEconomy, List TournamentPlacement, Integer -> PrizeDistResult
+  distribute-prizes (tourn) (econ) (placements) (time) =
+    let econ2 = distribute-loop econ placements 0 (list-length placements) time
+    in let tourn2 = ClanTournament {
+      tournament-id = tourn.tournament-id,
+      clan-id = tourn.clan-id,
+      name = tourn.name,
+      format-id = tourn.format-id,
+      structure = tourn.structure,
+      entry-fee = tourn.entry-fee,
+      prize-pool = 0,
+      participants = tourn.participants,
+      max-players = tourn.max-players,
+      status = TournCompleted,
+      results = placements,
+      current-round = tourn.current-round,
+      pairings = tourn.pairings,
+      created-by = tourn.created-by,
+      created-at = tourn.created-at
+    }
+    in PrizeDistResult { tournament = tourn2, economy = econ2 }
+
+  distribute-loop : ClanEconomy, List TournamentPlacement, Integer, Integer, Integer -> ClanEconomy
+  distribute-loop (econ) (placements) (i) (len) (time) =
+    if i >= len then econ
+    else let p = list-at placements i
+    in if p.prize > 0 then
+      let econ2 = clan-mint econ (p.account-id) (p.prize) time
+      in distribute-loop econ2 placements (i + 1) len time
+    else distribute-loop econ placements (i + 1) len time
+
+  compute-placements : ClanTournament -> List TournamentPlacement
+  compute-placements (tourn) =
+    let standings = compute-standings (tourn.pairings) (tourn.participants) 0 (list-length (tourn.participants)) []
+    in let sorted = sort-standings standings 0 (list-length standings)
+    in assign-prizes sorted (tourn.prize-pool) 0 (list-length sorted) []
+
+  Standing = record {
+    account-id : Integer,
+    wins : Integer,
+    losses : Integer
+  }
+
+  compute-standings : List Pairing, List Integer, Integer, Integer, List Standing -> List Standing
+  compute-standings (pairings) (players) (i) (len) (acc) =
+    if i >= len then acc
+    else let pid = list-at players i
+    in let w = count-wins pairings pid 0 (list-length pairings) 0
+    in let l = count-losses pairings pid 0 (list-length pairings) 0
+    in compute-standings pairings players (i + 1) len (list-push acc (Standing { account-id = pid, wins = w, losses = l }))
+
+  count-wins : List Pairing, Integer, Integer, Integer, Integer -> Integer
+  count-wins (pairings) (pid) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pairings i
+    in if p.winner == pid then count-wins pairings pid (i + 1) len (acc + 1)
+    else count-wins pairings pid (i + 1) len acc
+
+  count-losses : List Pairing, Integer, Integer, Integer, Integer -> Integer
+  count-losses (pairings) (pid) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pairings i
+    in if p.completed then
+      if p.player-a == pid then
+        if p.winner /= pid then count-losses pairings pid (i + 1) len (acc + 1)
+        else count-losses pairings pid (i + 1) len acc
+      else if p.player-b == pid then
+        if p.winner /= pid then count-losses pairings pid (i + 1) len (acc + 1)
+        else count-losses pairings pid (i + 1) len acc
+      else count-losses pairings pid (i + 1) len acc
+    else count-losses pairings pid (i + 1) len acc
+
+  sort-standings : List Standing, Integer, Integer -> List Standing
+  sort-standings (standings) (i) (len) =
+    if len <= 1 then standings
+    else bubble-sort-standings standings 0 (len - 1) len
+
+  bubble-sort-standings : List Standing, Integer, Integer, Integer -> List Standing
+  bubble-sort-standings (standings) (pass) (max-pass) (len) =
+    if pass >= max-pass then standings
+    else let sorted = bubble-pass standings 0 (len - 1 - pass)
+    in bubble-sort-standings sorted (pass + 1) max-pass len
+
+  bubble-pass : List Standing, Integer, Integer -> List Standing
+  bubble-pass (standings) (i) (limit) =
+    if i >= limit then standings
+    else let a = list-at standings i
+    in let b = list-at standings (i + 1)
+    in if a.wins < b.wins then
+      let swapped = list-set-at (list-set-at standings i b) (i + 1) a
+      in bubble-pass swapped (i + 1) limit
+    else bubble-pass standings (i + 1) limit
+
+  assign-prizes : List Standing, Integer, Integer, Integer, List TournamentPlacement -> List TournamentPlacement
+  assign-prizes (sorted) (pool) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at sorted i
+    in let prize = if i == 0 then pool * 60 / 100
+      else if i == 1 then pool * 30 / 100
+      else if i == 2 then pool * 10 / 100
+      else 0
+    in let placement = TournamentPlacement { account-id = s.account-id, place = i + 1, prize = prize, wins = s.wins, losses = s.losses, draws = 0 }
+    in assign-prizes sorted pool (i + 1) len (list-push acc placement)
+
+Section: Tournament Queries
+
+  tournament-player-count : ClanTournament -> Integer
+  tournament-player-count (tourn) = list-length (tourn.participants)
+
+  round-complete : ClanTournament -> Boolean
+  round-complete (tourn) =
+    all-pairings-done (tourn.pairings) (tourn.current-round) 0 (list-length (tourn.pairings))
+
+  all-pairings-done : List Pairing, Integer, Integer, Integer -> Boolean
+  all-pairings-done (pairings) (round) (i) (len) =
+    if i >= len then True
+    else let p = list-at pairings i
+    in if p.round == round then
+      if p.completed == False then False
+      else all-pairings-done pairings round (i + 1) len
+    else all-pairings-done pairings round (i + 1) len
+
+Page 1

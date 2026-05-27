@@ -1,0 +1,446 @@
+Chapter: RPGEngine
+  cites CodexMagic chapter GameRegistry
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter Clan
+
+ Paper RPG abstraction. A game system that any clan can customize
+ with their own stats, classes, races, skills, and combat rules.
+ Originally Magic was a short thing between D&D sessions - now the
+ D&D sits inside the same platform, and a card game can spawn an
+ RPG session which can spawn a chess match. Turtles all the way.
+
+ The RPG engine is generic: a game master defines the system, the
+ players make characters, the GM narrates. Combat, skill checks,
+ and loot are all resolved by the engine. Items won in dungeons are
+ real tokens on the economy - tradeable, sellable, usable across
+ games.
+
+ We say:
+
+Section: Character System
+
+  RPGCharacter = record {
+    char-id : Integer,
+    owner : Integer,
+    name : Text,
+    class : HeroClass,
+    race : CharRace,
+    level : Integer,
+    experience : Integer,
+    stats : StatBlock,
+    hp : Integer,
+    max-hp : Integer,
+    mp : Integer,
+    max-mp : Integer,
+    inventory : List ItemToken,
+    equipped : List ItemToken,
+    skills : List Skill,
+    status : CharStatus,
+    campaign-id : Integer,
+    gold : Integer
+  }
+
+  StatBlock = record {
+    strength : Integer,
+    dexterity : Integer,
+    constitution : Integer,
+    intelligence : Integer,
+    wisdom : Integer,
+    charisma : Integer
+  }
+
+  CharStatus =
+    | Alive
+    | Dead
+    | Unconscious
+    | Resting
+    | InCombat
+    | InTown
+
+  char-status-name : CharStatus -> Text
+  char-status-name (s) =
+    when s
+      is Alive -> "Alive"
+      is Dead -> "Dead"
+      is Unconscious -> "Unconscious"
+      is Resting -> "Resting"
+      is InCombat -> "In Combat"
+      is InTown -> "In Town"
+
+Section: Classes and Races - GM-definable
+
+  HeroClass = record {
+    class-id : Integer,
+    name : Text,
+    hit-die : Integer,
+    primary-stat : StatName,
+    skills-per-level : Integer,
+    base-attack : Integer,
+    description : Text
+  }
+
+  CharRace = record {
+    race-id : Integer,
+    name : Text,
+    stat-bonus : StatBonus,
+    traits : List Text,
+    description : Text
+  }
+
+  StatName =
+    | Str
+    | Dex
+    | Con
+    | Int
+    | Wis
+    | Cha
+
+  stat-name-text : StatName -> Text
+  stat-name-text (s) =
+    when s
+      is Str -> "Strength"
+      is Dex -> "Dexterity"
+      is Con -> "Constitution"
+      is Int -> "Intelligence"
+      is Wis -> "Wisdom"
+      is Cha -> "Charisma"
+
+  StatBonus = record {
+    str-mod : Integer,
+    dex-mod : Integer,
+    con-mod : Integer,
+    int-mod : Integer,
+    wis-mod : Integer,
+    cha-mod : Integer
+  }
+
+Section: Skills
+
+  Skill = record {
+    skill-id : Integer,
+    name : Text,
+    governing-stat : StatName,
+    ranks : Integer,
+    max-ranks : Integer
+  }
+
+  SkillCheck = record {
+    skill-id : Integer,
+    difficulty : Integer,
+    roll : Integer,
+    modifier : Integer,
+    success : Boolean
+  }
+
+  resolve-skill-check : Skill, StatBlock, Integer, Integer -> SkillCheck
+  resolve-skill-check (skill) (stats) (difficulty) (roll) =
+    let stat-mod = get-stat-modifier stats (skill.governing-stat)
+    in let total = roll + skill.ranks + stat-mod
+    in SkillCheck { skill-id = skill.skill-id, difficulty = difficulty, roll = roll, modifier = skill.ranks + stat-mod, success = total >= difficulty }
+
+  get-stat-modifier : StatBlock, StatName -> Integer
+  get-stat-modifier (stats) (name) =
+    let raw = when name
+      is Str -> stats.strength
+      is Dex -> stats.dexterity
+      is Con -> stats.constitution
+      is Int -> stats.intelligence
+      is Wis -> stats.wisdom
+      is Cha -> stats.charisma
+    in (raw - 10) / 2
+
+Section: Combat
+
+  CombatState = record {
+    combatants : List Combatant,
+    initiative-order : List Integer,
+    current-turn : Integer,
+    round : Integer,
+    active : Boolean
+  }
+
+  Combatant = record {
+    combatant-id : Integer,
+    name : Text,
+    is-player : Boolean,
+    char-id : Integer,
+    hp : Integer,
+    max-hp : Integer,
+    ac : Integer,
+    attack-bonus : Integer,
+    damage-die : Integer,
+    damage-bonus : Integer,
+    initiative : Integer,
+    alive : Boolean
+  }
+
+  AttackResult = record {
+    attacker : Integer,
+    defender : Integer,
+    roll : Integer,
+    total : Integer,
+    hit : Boolean,
+    damage : Integer,
+    critical : Boolean,
+    defender-hp-remaining : Integer
+  }
+
+  resolve-attack : Combatant, Combatant, Integer, Integer -> AttackResult
+  resolve-attack (attacker) (defender) (attack-roll) (damage-roll) =
+    let total = attack-roll + attacker.attack-bonus
+    in let is-crit = attack-roll == 20
+    in let hit = total >= defender.ac
+    in let dmg = if hit then
+      if is-crit then (damage-roll + attacker.damage-bonus) * 2
+      else damage-roll + attacker.damage-bonus
+    else 0
+    in let remaining = if hit then defender.hp - dmg else defender.hp
+    in AttackResult { attacker = attacker.combatant-id, defender = defender.combatant-id, roll = attack-roll, total = total, hit = hit, damage = dmg, critical = is-crit, defender-hp-remaining = remaining }
+
+  combat-new : CombatState
+  combat-new = CombatState { combatants = [], initiative-order = [], current-turn = 0, round = 1, active = False }
+
+  add-combatant : CombatState, Combatant -> CombatState
+  add-combatant (combat) (c) =
+    CombatState { combatants = list-push (combat.combatants) c, initiative-order = combat.initiative-order, current-turn = combat.current-turn, round = combat.round, active = combat.active }
+
+  start-combat : CombatState -> CombatState
+  start-combat (combat) =
+    let order = sort-by-initiative (combat.combatants) 0 (list-length (combat.combatants))
+    in CombatState { combatants = combat.combatants, initiative-order = order, current-turn = 0, round = 1, active = True }
+
+  sort-by-initiative : List Combatant, Integer, Integer -> List Integer
+  sort-by-initiative (combatants) (i) (len) =
+    build-init-order combatants 0 len []
+
+  build-init-order : List Combatant, Integer, Integer, List Integer -> List Integer
+  build-init-order (combatants) (i) (len) (acc) =
+    if i >= len then acc
+    else build-init-order combatants (i + 1) len (list-push acc i)
+
+  advance-turn : CombatState -> CombatState
+  advance-turn (combat) =
+    let next = combat.current-turn + 1
+    in if next >= list-length (combat.initiative-order) then
+      CombatState { combatants = combat.combatants, initiative-order = combat.initiative-order, current-turn = 0, round = combat.round + 1, active = combat.active }
+    else CombatState { combatants = combat.combatants, initiative-order = combat.initiative-order, current-turn = next, round = combat.round, active = combat.active }
+
+Section: Items - Real tokens on the economy
+
+  ItemToken = record {
+    item-id : Integer,
+    name : Text,
+    item-type : ItemType,
+    rarity : ItemRarity,
+    stats : ItemStats,
+    value : Integer,
+    tradeable : Boolean,
+    bound-to : Integer,
+    source-dungeon : Integer,
+    source-campaign : Integer
+  }
+
+  ItemType =
+    | Weapon
+    | Armor
+    | Shield
+    | Helm
+    | Accessory
+    | Consumable
+    | QuestItem
+    | Currency
+    | Material
+
+  item-type-name : ItemType -> Text
+  item-type-name (t) =
+    when t
+      is Weapon -> "Weapon"
+      is Armor -> "Armor"
+      is Shield -> "Shield"
+      is Helm -> "Helm"
+      is Accessory -> "Accessory"
+      is Consumable -> "Consumable"
+      is QuestItem -> "Quest Item"
+      is Currency -> "Currency"
+      is Material -> "Material"
+
+  ItemRarity =
+    | ItemCommon
+    | ItemUncommon
+    | ItemRare
+    | ItemEpic
+    | ItemLegendary
+
+  item-rarity-name : ItemRarity -> Text
+  item-rarity-name (r) =
+    when r
+      is ItemCommon -> "Common"
+      is ItemUncommon -> "Uncommon"
+      is ItemRare -> "Rare"
+      is ItemEpic -> "Epic"
+      is ItemLegendary -> "Legendary"
+
+  ItemStats = record {
+    attack-bonus : Integer,
+    defense-bonus : Integer,
+    hp-bonus : Integer,
+    mp-bonus : Integer,
+    stat-bonus : StatBonus,
+    special : Text
+  }
+
+  item-stats-empty : ItemStats
+  item-stats-empty = ItemStats { attack-bonus = 0, defense-bonus = 0, hp-bonus = 0, mp-bonus = 0, stat-bonus = StatBonus { str-mod = 0, dex-mod = 0, con-mod = 0, int-mod = 0, wis-mod = 0, cha-mod = 0 }, special = "" }
+
+Section: Loot Tables - GM defines what drops
+
+  LootTable = record {
+    table-id : Integer,
+    name : Text,
+    entries : List LootEntry,
+    dungeon-id : Integer
+  }
+
+  LootEntry = record {
+    item-template : ItemToken,
+    weight : Integer,
+    min-level : Integer
+  }
+
+  roll-loot : LootTable, Integer, Integer -> ItemToken
+  roll-loot (table) (seed) (player-level) =
+    let eligible = filter-by-level (table.entries) player-level 0 (list-length (table.entries)) []
+    in if list-length eligible == 0 then empty-item
+    else let total-weight = sum-weights eligible 0 (list-length eligible) 0
+    in let roll = rng-mod seed total-weight
+    in pick-from-table eligible roll 0 (list-length eligible) 0
+
+  filter-by-level : List LootEntry, Integer, Integer, Integer, List LootEntry -> List LootEntry
+  filter-by-level (entries) (level) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if level >= e.min-level then filter-by-level entries level (i + 1) len (list-push acc e)
+    else filter-by-level entries level (i + 1) len acc
+
+  sum-weights : List LootEntry, Integer, Integer, Integer -> Integer
+  sum-weights (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in sum-weights entries (i + 1) len (acc + e.weight)
+
+  pick-from-table : List LootEntry, Integer, Integer, Integer, Integer -> ItemToken
+  pick-from-table (entries) (roll) (i) (len) (running) =
+    if i >= len then empty-item
+    else let e = list-at entries i
+    in let new-running = running + e.weight
+    in if roll < new-running then e.item-template
+    else pick-from-table entries roll (i + 1) len new-running
+
+  empty-item : ItemToken
+  empty-item = ItemToken { item-id = -1, name = "Nothing", item-type = Currency, rarity = ItemCommon, stats = item-stats-empty, value = 0, tradeable = False, bound-to = -1, source-dungeon = -1, source-campaign = -1 }
+
+
+Section: Character Creation
+
+  char-new : Integer, Integer, Text, HeroClass, CharRace, Integer -> RPGCharacter
+  char-new (char-id) (owner) (name) (class) (race) (campaign-id) =
+    let base-stats = StatBlock { strength = 10, dexterity = 10, constitution = 10, intelligence = 10, wisdom = 10, charisma = 10 }
+    in let hp = class.hit-die + get-stat-modifier base-stats Con
+    in RPGCharacter {
+      char-id = char-id,
+      owner = owner,
+      name = name,
+      class = class,
+      race = race,
+      level = 1,
+      experience = 0,
+      stats = apply-race-bonus base-stats (race.stat-bonus),
+      hp = hp,
+      max-hp = hp,
+      mp = get-stat-modifier base-stats Int * 2,
+      max-mp = get-stat-modifier base-stats Int * 2,
+      inventory = [],
+      equipped = [],
+      skills = [],
+      status = Alive,
+      campaign-id = campaign-id,
+      gold = 0
+    }
+
+  apply-race-bonus : StatBlock, StatBonus -> StatBlock
+  apply-race-bonus (stats) (bonus) =
+    StatBlock {
+      strength = stats.strength + bonus.str-mod,
+      dexterity = stats.dexterity + bonus.dex-mod,
+      constitution = stats.constitution + bonus.con-mod,
+      intelligence = stats.intelligence + bonus.int-mod,
+      wisdom = stats.wisdom + bonus.wis-mod,
+      charisma = stats.charisma + bonus.cha-mod
+    }
+
+Section: Experience and Leveling
+
+  xp-for-level : Integer -> Integer
+  xp-for-level (level) = level * level * 100
+
+  grant-xp : RPGCharacter, Integer -> RPGCharacter
+  grant-xp (char) (xp) =
+    let new-xp = char.experience + xp
+    in let new-level = compute-level new-xp 1
+    in let leveled-up = new-level > char.level
+    in let hp-gain = if leveled-up then char.class.hit-die + get-stat-modifier (char.stats) Con else 0
+    in RPGCharacter {
+      char-id = char.char-id,
+      owner = char.owner,
+      name = char.name,
+      class = char.class,
+      race = char.race,
+      level = new-level,
+      experience = new-xp,
+      stats = char.stats,
+      hp = char.hp + hp-gain,
+      max-hp = char.max-hp + hp-gain,
+      mp = char.mp,
+      max-mp = char.max-mp,
+      inventory = char.inventory,
+      equipped = char.equipped,
+      skills = char.skills,
+      status = char.status,
+      campaign-id = char.campaign-id,
+      gold = char.gold
+    }
+
+  compute-level : Integer, Integer -> Integer
+  compute-level (xp) (level) =
+    if xp < xp-for-level (level + 1) then level
+    else compute-level xp (level + 1)
+
+Section: Default Classes
+
+  class-warrior : HeroClass
+  class-warrior = HeroClass { class-id = 1, name = "Warrior", hit-die = 10, primary-stat = Str, skills-per-level = 2, base-attack = 1, description = "Melee combat specialist" }
+
+  class-mage : HeroClass
+  class-mage = HeroClass { class-id = 2, name = "Mage", hit-die = 4, primary-stat = Int, skills-per-level = 4, base-attack = 0, description = "Arcane spellcaster" }
+
+  class-rogue : HeroClass
+  class-rogue = HeroClass { class-id = 3, name = "Rogue", hit-die = 6, primary-stat = Dex, skills-per-level = 6, base-attack = 0, description = "Stealth and precision" }
+
+  class-cleric : HeroClass
+  class-cleric = HeroClass { class-id = 4, name = "Cleric", hit-die = 8, primary-stat = Wis, skills-per-level = 3, base-attack = 0, description = "Divine healer and protector" }
+
+Section: Default Races
+
+  race-human : CharRace
+  race-human = CharRace { race-id = 1, name = "Human", stat-bonus = StatBonus { str-mod = 0, dex-mod = 0, con-mod = 0, int-mod = 0, wis-mod = 0, cha-mod = 1 }, traits = ["Versatile", "Bonus Skill"], description = "Adaptable and ambitious" }
+
+  race-elf : CharRace
+  race-elf = CharRace { race-id = 2, name = "Elf", stat-bonus = StatBonus { str-mod = 0, dex-mod = 2, con-mod = -1, int-mod = 1, wis-mod = 0, cha-mod = 0 }, traits = ["Darkvision", "Trance"], description = "Graceful and long-lived" }
+
+  race-dwarf : CharRace
+  race-dwarf = CharRace { race-id = 3, name = "Dwarf", stat-bonus = StatBonus { str-mod = 1, dex-mod = 0, con-mod = 2, int-mod = 0, wis-mod = 0, cha-mod = -1 }, traits = ["Stonecunning", "Hardy"], description = "Stout and resilient" }
+
+  race-halfling : CharRace
+  race-halfling = CharRace { race-id = 4, name = "Halfling", stat-bonus = StatBonus { str-mod = -1, dex-mod = 2, con-mod = 0, int-mod = 0, wis-mod = 0, cha-mod = 1 }, traits = ["Lucky", "Nimble"], description = "Small and fortunate" }
+
+Page 1

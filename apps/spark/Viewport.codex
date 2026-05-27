@@ -1,0 +1,90 @@
+Chapter: Viewport
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Game chapter Rasterizer
+  cites Spark chapter Mesh
+  cites Spark chapter Pipeline3D
+  cites Spark chapter SceneCamera
+  cites Spark chapter SceneLight
+  cites Spark chapter Project
+
+ 3D viewport: renders the scene to a framebuffer using the 3D
+ pipeline with camera controls and object highlighting.
+
+ We say:
+
+Section: Types
+
+  ViewportState = record {
+    vs-width : Integer,
+    vs-height : Integer,
+    vs-bg-color : Integer,
+    vs-grid-visible : Boolean,
+    vs-wireframe : Boolean
+  }
+
+Section: Construction
+
+  viewport-new : Integer, Integer -> ViewportState
+  viewport-new (w) (h) = ViewportState {
+    vs-width = w,
+    vs-height = h,
+    vs-bg-color = 2631720,
+    vs-grid-visible = True,
+    vs-wireframe = False
+  }
+
+Section: Rendering
+
+  viewport-render : ViewportState, SparkProject -> Framebuf
+  viewport-render (vs) (proj) =
+    let rt = render-target-new (vs.vs-width) (vs.vs-height) (vs.vs-bg-color)
+    in let rt2 = if vs.vs-grid-visible then viewport-draw-grid rt (proj.sp-camera) else rt
+    in let rt3 = viewport-render-objects rt2 proj 0
+    in rt3.rt-fb
+
+  viewport-render-objects : RenderTarget, SparkProject, Integer -> RenderTarget
+  viewport-render-objects (rt) (proj) (i) =
+    if i >= proj.sp-object-count then rt
+    else let obj = project-get-object proj i
+    in let rt2 = if obj.so-visible then viewport-render-object rt proj obj else rt
+    in viewport-render-objects rt2 proj (i + 1)
+
+  viewport-render-object : RenderTarget, SparkProject, SceneObject -> RenderTarget
+  viewport-render-object (rt) (proj) (obj) =
+    let model = vp-object-model-matrix obj
+    in pipe-render-scene rt (obj.so-mesh) model (proj.sp-camera) (proj.sp-lights) (obj.so-color)
+
+  vp-object-model-matrix : SceneObject -> Mat4
+  vp-object-model-matrix (obj) =
+    let t = mat4-translate (obj.so-position.vx) (obj.so-position.vy) (obj.so-position.vz)
+    in let r = mat4-from-quat (obj.so-rotation)
+    in let s = mat4-scale (obj.so-scale.vx) (obj.so-scale.vy) (obj.so-scale.vz)
+    in mat4-mul t (mat4-mul r s)
+
+Section: Grid
+
+  viewport-draw-grid : RenderTarget, SparkCamera -> RenderTarget
+  viewport-draw-grid (rt) (cam) =
+    let vp = spark-camera-vp cam
+    in let w = rt.rt-fb.fb-width
+    in let h = rt.rt-fb.fb-height
+    in let grid-color = 3355443
+    in viewport-draw-grid-lines rt vp w h grid-color (-5) 0
+
+  viewport-draw-grid-lines : RenderTarget, Mat4, Integer, Integer, Integer, Integer, Integer -> RenderTarget
+  viewport-draw-grid-lines (rt) (mvp) (w) (h) (color) (i) (axis) =
+    if axis > 1 then rt
+    else if i > 5 then viewport-draw-grid-lines rt mvp w h color (-5) (axis + 1)
+    else let pos = i * 1000
+    in let p0 = if axis == 0 then vec3-new pos 0 (-5000) else vec3-new (-5000) 0 pos
+    in let p1 = if axis == 0 then vec3-new pos 0 5000 else vec3-new 5000 0 pos
+    in let s0 = pipe-project-vert mvp p0 w h
+    in let s1 = pipe-project-vert mvp p1 w h
+    in let rt2 = if s0.sv-sx >= 0 then
+        if s1.sv-sx >= 0 then RenderTarget { rt-fb = fb-line (rt.rt-fb) (s0.sv-sx) (s0.sv-sy) (s1.sv-sx) (s1.sv-sy) color, rt-db = rt.rt-db }
+        else rt
+      else rt
+    in viewport-draw-grid-lines rt2 mvp w h color (i + 1) axis
+
+Page 1

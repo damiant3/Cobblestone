@@ -1,0 +1,265 @@
+Chapter: UniversalMatchmaking
+  cites CodexMagic chapter GameRegistry
+  cites CodexMagic chapter PlayerIdentity
+  cites CodexMagic chapter Clan
+
+ Universal matchmaking that works across any registered game.
+ Players queue for a game type, the system pairs them by rating,
+ preferences, and availability. Handles subgame matchmaking too --
+ when a Shahrazad card fires, the system finds or creates the
+ right match instantly.
+
+ We say:
+
+Section: Queue State
+
+  MatchQueue = record {
+    queue-id : Integer,
+    game-id : Integer,
+    entries : List QueueEntry,
+    matches-made : Integer,
+    avg-wait-time : Integer
+  }
+
+  QueueEntry = record {
+    entry-id : Integer,
+    player : Integer,
+    rating : Integer,
+    queued-at : Integer,
+    preferences : MatchPrefs,
+    status : QueueStatus
+  }
+
+  MatchPrefs = record {
+    max-wait : Integer,
+    rating-range : Integer,
+    accept-cross-clan : Boolean,
+    accept-cross-age : Boolean,
+    preferred-opponent : Integer
+  }
+
+  QueueStatus =
+    | Waiting
+    | Matched
+    | Expired
+    | Cancelled
+
+  queue-status-name : QueueStatus -> Text
+  queue-status-name (s) =
+    when s
+      is Waiting -> "Waiting"
+      is Matched -> "Matched"
+      is Expired -> "Expired"
+      is Cancelled -> "Cancelled"
+
+Section: Matchmaking State
+
+  MatchmakingState = record {
+    queues : List MatchQueue,
+    active-matches : List ActiveMatch,
+    next-match-id : Integer,
+    next-entry-id : Integer,
+    total-matches : Integer,
+    total-queue-time : Integer
+  }
+
+  ActiveMatch = record {
+    match-id : Integer,
+    game-id : Integer,
+    player-a : Integer,
+    player-b : Integer,
+    started-at : Integer,
+    status : MatchStatus,
+    is-subgame : Boolean,
+    parent-session : Integer,
+    result-reported : Boolean,
+    winner : Integer
+  }
+
+  MatchStatus =
+    | MatchPending
+    | MatchActive
+    | MatchComplete
+    | MatchAbandoned
+
+  match-status-name : MatchStatus -> Text
+  match-status-name (s) =
+    when s
+      is MatchPending -> "Pending"
+      is MatchActive -> "Active"
+      is MatchComplete -> "Complete"
+      is MatchAbandoned -> "Abandoned"
+
+Section: Initialization
+
+  matchmaking-new : MatchmakingState
+  matchmaking-new =
+    MatchmakingState {
+      queues = [
+        MatchQueue { queue-id = 1, game-id = 1, entries = [], matches-made = 0, avg-wait-time = 0 },
+        MatchQueue { queue-id = 2, game-id = 2, entries = [], matches-made = 0, avg-wait-time = 0 },
+        MatchQueue { queue-id = 3, game-id = 3, entries = [], matches-made = 0, avg-wait-time = 0 }
+      ],
+      active-matches = [],
+      next-match-id = 1,
+      next-entry-id = 1,
+      total-matches = 0,
+      total-queue-time = 0
+    }
+
+Section: Queue Operations
+
+  join-queue : MatchmakingState, Integer, Integer, Integer, MatchPrefs, Integer -> MatchmakingState
+  join-queue (mm) (game-id) (player) (rating) (prefs) (time) =
+    let entry = QueueEntry { entry-id = mm.next-entry-id, player = player, rating = rating, queued-at = time, preferences = prefs, status = Waiting }
+    in let new-queues = add-to-queue (mm.queues) game-id entry 0 (list-length (mm.queues)) []
+    in MatchmakingState {
+      queues = new-queues,
+      active-matches = mm.active-matches,
+      next-match-id = mm.next-match-id,
+      next-entry-id = mm.next-entry-id + 1,
+      total-matches = mm.total-matches,
+      total-queue-time = mm.total-queue-time
+    }
+
+  add-to-queue : List MatchQueue, Integer, QueueEntry, Integer, Integer, List MatchQueue -> List MatchQueue
+  add-to-queue (queues) (game-id) (entry) (i) (len) (acc) =
+    if i >= len then
+      let new-queue = MatchQueue { queue-id = list-length acc + 1, game-id = game-id, entries = [entry], matches-made = 0, avg-wait-time = 0 }
+      in list-push acc new-queue
+    else let q = list-at queues i
+    in if q.game-id == game-id then
+      let updated = MatchQueue { queue-id = q.queue-id, game-id = q.game-id, entries = list-push (q.entries) entry, matches-made = q.matches-made, avg-wait-time = q.avg-wait-time }
+      in add-to-queue queues game-id entry (i + 1) len (list-push acc updated)
+    else add-to-queue queues game-id entry (i + 1) len (list-push acc q)
+
+  leave-queue : MatchmakingState, Integer, Integer -> MatchmakingState
+  leave-queue (mm) (game-id) (player) =
+    let new-queues = remove-from-queue (mm.queues) game-id player 0 (list-length (mm.queues)) []
+    in MatchmakingState { queues = new-queues, active-matches = mm.active-matches, next-match-id = mm.next-match-id, next-entry-id = mm.next-entry-id, total-matches = mm.total-matches, total-queue-time = mm.total-queue-time }
+
+  remove-from-queue : List MatchQueue, Integer, Integer, Integer, Integer, List MatchQueue -> List MatchQueue
+  remove-from-queue (queues) (game-id) (player) (i) (len) (acc) =
+    if i >= len then acc
+    else let q = list-at queues i
+    in if q.game-id == game-id then
+      let filtered = filter-entries (q.entries) player 0 (list-length (q.entries)) []
+      in let updated = MatchQueue { queue-id = q.queue-id, game-id = q.game-id, entries = filtered, matches-made = q.matches-made, avg-wait-time = q.avg-wait-time }
+      in remove-from-queue queues game-id player (i + 1) len (list-push acc updated)
+    else remove-from-queue queues game-id player (i + 1) len (list-push acc q)
+
+  filter-entries : List QueueEntry, Integer, Integer, Integer, List QueueEntry -> List QueueEntry
+  filter-entries (entries) (player) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.player == player then filter-entries entries player (i + 1) len acc
+    else filter-entries entries player (i + 1) len (list-push acc e)
+
+Section: Match Finding
+
+  MatchResult = record {
+    matchmaking : MatchmakingState,
+    found : Boolean,
+    match-id : Integer,
+    opponent : Integer
+  }
+
+  find-match : MatchmakingState, Integer, Integer, Integer, Integer -> MatchResult
+  find-match (mm) (game-id) (player) (rating) (time) =
+    let queue = get-queue-for-game (mm.queues) game-id 0 (list-length (mm.queues))
+    in let opponent = find-best-opponent (queue.entries) player rating 200 0 (list-length (queue.entries)) (-1) 9999
+    in if opponent < 0 then MatchResult { matchmaking = mm, found = False, match-id = -1, opponent = -1 }
+    else let match = ActiveMatch { match-id = mm.next-match-id, game-id = game-id, player-a = player, player-b = opponent, started-at = time, status = MatchActive, is-subgame = False, parent-session = -1, result-reported = False, winner = -1 }
+    in let new-queues = remove-from-queue (remove-from-queue (mm.queues) game-id player 0 (list-length (mm.queues)) []) game-id opponent 0 (list-length (mm.queues)) []
+    in let mm2 = MatchmakingState { queues = new-queues, active-matches = list-push (mm.active-matches) match, next-match-id = mm.next-match-id + 1, next-entry-id = mm.next-entry-id, total-matches = mm.total-matches + 1, total-queue-time = mm.total-queue-time }
+    in MatchResult { matchmaking = mm2, found = True, match-id = mm.next-match-id, opponent = opponent }
+
+  find-best-opponent : List QueueEntry, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  find-best-opponent (entries) (player) (rating) (max-range) (i) (len) (best-player) (best-diff) =
+    if i >= len then best-player
+    else let e = list-at entries i
+    in if e.player == player then find-best-opponent entries player rating max-range (i + 1) len best-player best-diff
+    else if e.status /= Waiting then find-best-opponent entries player rating max-range (i + 1) len best-player best-diff
+    else let diff = abs-int (e.rating - rating)
+    in if diff <= max-range then
+      if diff < best-diff then find-best-opponent entries player rating max-range (i + 1) len (e.player) diff
+      else find-best-opponent entries player rating max-range (i + 1) len best-player best-diff
+    else find-best-opponent entries player rating max-range (i + 1) len best-player best-diff
+
+  abs-int : Integer -> Integer
+  abs-int (n) = if n < 0 then 0 - n else n
+
+  get-queue-for-game : List MatchQueue, Integer, Integer, Integer -> MatchQueue
+  get-queue-for-game (queues) (game-id) (i) (len) =
+    if i >= len then MatchQueue { queue-id = 0, game-id = game-id, entries = [], matches-made = 0, avg-wait-time = 0 }
+    else let q = list-at queues i
+    in if q.game-id == game-id then q
+    else get-queue-for-game queues game-id (i + 1) len
+
+Section: Subgame Matchmaking - Instant pairing for Shahrazad
+
+  create-subgame-match : MatchmakingState, Integer, Integer, Integer, Integer, Integer -> MatchmakingState
+  create-subgame-match (mm) (game-id) (player-a) (player-b) (parent-session) (time) =
+    let match = ActiveMatch { match-id = mm.next-match-id, game-id = game-id, player-a = player-a, player-b = player-b, started-at = time, status = MatchActive, is-subgame = True, parent-session = parent-session, result-reported = False, winner = -1 }
+    in MatchmakingState { queues = mm.queues, active-matches = list-push (mm.active-matches) match, next-match-id = mm.next-match-id + 1, next-entry-id = mm.next-entry-id, total-matches = mm.total-matches + 1, total-queue-time = mm.total-queue-time }
+
+Section: Match Resolution
+
+  report-result : MatchmakingState, Integer, Integer -> MatchmakingState
+  report-result (mm) (match-id) (winner) =
+    let new-matches = update-match-result (mm.active-matches) match-id winner 0 (list-length (mm.active-matches)) []
+    in MatchmakingState { queues = mm.queues, active-matches = new-matches, next-match-id = mm.next-match-id, next-entry-id = mm.next-entry-id, total-matches = mm.total-matches, total-queue-time = mm.total-queue-time }
+
+  update-match-result : List ActiveMatch, Integer, Integer, Integer, Integer, List ActiveMatch -> List ActiveMatch
+  update-match-result (matches) (id) (winner) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at matches i
+    in if m.match-id == id then
+      update-match-result matches id winner (i + 1) len (list-push acc (ActiveMatch { match-id = m.match-id, game-id = m.game-id, player-a = m.player-a, player-b = m.player-b, started-at = m.started-at, status = MatchComplete, is-subgame = m.is-subgame, parent-session = m.parent-session, result-reported = True, winner = winner }))
+    else update-match-result matches id winner (i + 1) len (list-push acc m)
+
+Section: Queue Statistics
+
+  queue-depth : MatchmakingState, Integer -> Integer
+  queue-depth (mm) (game-id) =
+    let q = get-queue-for-game (mm.queues) game-id 0 (list-length (mm.queues))
+    in count-waiting (q.entries) 0 (list-length (q.entries)) 0
+
+  count-waiting : List QueueEntry, Integer, Integer, Integer -> Integer
+  count-waiting (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.status == Waiting then count-waiting entries (i + 1) len (acc + 1)
+    else count-waiting entries (i + 1) len acc
+
+  active-match-count : MatchmakingState -> Integer
+  active-match-count (mm) =
+    count-active-matches (mm.active-matches) 0 (list-length (mm.active-matches)) 0
+
+  count-active-matches : List ActiveMatch, Integer, Integer, Integer -> Integer
+  count-active-matches (matches) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at matches i
+    in when m.status
+      is MatchActive -> count-active-matches matches (i + 1) len (acc + 1)
+      is MatchPending -> count-active-matches matches (i + 1) len (acc + 1)
+      is MatchComplete -> count-active-matches matches (i + 1) len acc
+      is MatchAbandoned -> count-active-matches matches (i + 1) len acc
+
+  subgame-match-count : MatchmakingState -> Integer
+  subgame-match-count (mm) =
+    count-subgame-matches (mm.active-matches) 0 (list-length (mm.active-matches)) 0
+
+  count-subgame-matches : List ActiveMatch, Integer, Integer, Integer -> Integer
+  count-subgame-matches (matches) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at matches i
+    in if m.is-subgame then
+      when m.status
+        is MatchActive -> count-subgame-matches matches (i + 1) len (acc + 1)
+        is MatchPending -> count-subgame-matches matches (i + 1) len (acc + 1)
+        is MatchComplete -> count-subgame-matches matches (i + 1) len acc
+        is MatchAbandoned -> count-subgame-matches matches (i + 1) len acc
+    else count-subgame-matches matches (i + 1) len acc
+
+Page 1

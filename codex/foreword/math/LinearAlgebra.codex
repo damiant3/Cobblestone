@@ -1,0 +1,244 @@
+Chapter: LinearAlgebra
+
+ General N×N matrix operations — creation, multiplication, transpose,
+ determinant, Gaussian elimination, LU decomposition, and linear
+ system solving. Uses fixed-point scale-1000 arithmetic. Matrices
+ are stored as flat row-major List Integer with a dimension record.
+
+ To mat-new gives a zero matrix of size N×N.
+ To mat-identity gives an N×N identity matrix.
+ To mat-mul gives the product of two matrices.
+ To mat-transpose gives the transpose.
+ To mat-det gives the determinant.
+ To mat-solve gives the solution vector for Ax = b.
+ To mat-lu gives the LU decomposition.
+
+ We say:
+
+Section: Types
+
+  Matrix = record {
+    mat-rows : Integer,
+    mat-cols : Integer,
+    mat-data : List Integer
+  }
+
+  LuResult = record {
+    lu-lower : Matrix,
+    lu-upper : Matrix,
+    lu-pivot : List Integer
+  }
+
+Section: Construction
+
+  mat-new : Integer, Integer -> Matrix
+  mat-new (rows) (cols) = Matrix {
+    mat-rows = rows,
+    mat-cols = cols,
+    mat-data = mat-zeros (rows * cols) 0 []
+  }
+
+  mat-identity : Integer -> Matrix
+  mat-identity (n) = Matrix {
+    mat-rows = n,
+    mat-cols = n,
+    mat-data = mat-ident-data n 0 (n * n) []
+  }
+
+  mat-from-list : Integer, Integer, List Integer -> Matrix
+  mat-from-list (rows) (cols) (data) = Matrix {
+    mat-rows = rows,
+    mat-cols = cols,
+    mat-data = data
+  }
+
+  mat-zeros : Integer, Integer, List Integer -> List Integer
+  mat-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else mat-zeros n (i + 1) (list-push acc 0)
+
+  mat-ident-data : Integer, Integer, Integer, List Integer -> List Integer
+  mat-ident-data (n) (i) (total) (acc) =
+    if i >= total then acc
+    else let row = i / n
+    in let col = i - row * n
+    in mat-ident-data n (i + 1) total (list-push acc (if row == col then 1000 else 0))
+
+Section: Access
+
+  mat-get : Matrix, Integer, Integer -> Integer
+  mat-get (m) (row) (col) = list-at (m.mat-data) (row * m.mat-cols + col)
+
+  mat-set : Matrix, Integer, Integer, Integer -> Matrix
+  mat-set (m) (row) (col) (val) =
+    __record-set m "mat-data" (list-set-at (m.mat-data) (row * m.mat-cols + col) val)
+
+Section: Arithmetic
+
+  mat-add : Matrix, Matrix -> Matrix
+  mat-add (a) (b) = Matrix {
+    mat-rows = a.mat-rows,
+    mat-cols = a.mat-cols,
+    mat-data = mat-zip-op (a.mat-data) (b.mat-data) 0 (list-length (a.mat-data)) [] 1
+  }
+
+  mat-sub : Matrix, Matrix -> Matrix
+  mat-sub (a) (b) = Matrix {
+    mat-rows = a.mat-rows,
+    mat-cols = a.mat-cols,
+    mat-data = mat-zip-op (a.mat-data) (b.mat-data) 0 (list-length (a.mat-data)) [] 0
+  }
+
+  mat-zip-op : List Integer, List Integer, Integer, Integer, List Integer, Integer -> List Integer
+  mat-zip-op (a) (b) (i) (len) (acc) (is-add) =
+    if i >= len then acc
+    else let val = if is-add == 1 then list-at a i + list-at b i else list-at a i - list-at b i
+    in mat-zip-op a b (i + 1) len (list-push acc val) is-add
+
+  mat-scale : Matrix, Integer -> Matrix
+  mat-scale (m) (s) = Matrix {
+    mat-rows = m.mat-rows,
+    mat-cols = m.mat-cols,
+    mat-data = mat-scale-data (m.mat-data) s 0 (list-length (m.mat-data)) []
+  }
+
+  mat-scale-data : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mat-scale-data (data) (s) (i) (len) (acc) =
+    if i >= len then acc
+    else mat-scale-data data s (i + 1) len (list-push acc (list-at data i * s / 1000))
+
+Section: Multiply
+
+  mat-mul : Matrix, Matrix -> Matrix
+  mat-mul (a) (b) = Matrix {
+    mat-rows = a.mat-rows,
+    mat-cols = b.mat-cols,
+    mat-data = mat-mul-data a b 0 (a.mat-rows * b.mat-cols) []
+  }
+
+  mat-mul-data : Matrix, Matrix, Integer, Integer, List Integer -> List Integer
+  mat-mul-data (a) (b) (i) (total) (acc) =
+    if i >= total then acc
+    else let row = i / b.mat-cols
+    in let col = i - row * b.mat-cols
+    in let val = mat-dot-row-col a b row col 0 (a.mat-cols) 0
+    in mat-mul-data a b (i + 1) total (list-push acc val)
+
+  mat-dot-row-col : Matrix, Matrix, Integer, Integer, Integer, Integer, Integer -> Integer
+  mat-dot-row-col (a) (b) (row) (col) (k) (n) (acc) =
+    if k >= n then acc
+    else let val = mat-get a row k * mat-get b k col / 1000
+    in mat-dot-row-col a b row col (k + 1) n (acc + val)
+
+Section: Transpose
+
+  mat-transpose : Matrix -> Matrix
+  mat-transpose (m) = Matrix {
+    mat-rows = m.mat-cols,
+    mat-cols = m.mat-rows,
+    mat-data = mat-trans-data m 0 (m.mat-rows * m.mat-cols) []
+  }
+
+  mat-trans-data : Matrix, Integer, Integer, List Integer -> List Integer
+  mat-trans-data (m) (i) (total) (acc) =
+    if i >= total then acc
+    else let new-row = i / m.mat-rows
+    in let new-col = i - new-row * m.mat-rows
+    in mat-trans-data m (i + 1) total (list-push acc (mat-get m new-col new-row))
+
+Section: Determinant
+
+  mat-det : Matrix -> Integer
+  mat-det (m) =
+    if m.mat-rows == 1 then mat-get m 0 0
+    else if m.mat-rows == 2 then
+      mat-get m 0 0 * mat-get m 1 1 / 1000 - mat-get m 0 1 * mat-get m 1 0 / 1000
+    else mat-det-expansion m 0 (m.mat-cols) 0 1
+
+  mat-det-expansion : Matrix, Integer, Integer, Integer, Integer -> Integer
+  mat-det-expansion (m) (col) (n) (acc) (sign) =
+    if col >= n then acc
+    else let cofactor = mat-get m 0 col * mat-det (mat-minor m 0 col) / 1000
+    in mat-det-expansion m (col + 1) n (acc + sign * cofactor) (0 - sign)
+
+  mat-minor : Matrix, Integer, Integer -> Matrix
+  mat-minor (m) (skip-row) (skip-col) =
+    let n = m.mat-rows - 1
+    in Matrix {
+      mat-rows = n,
+      mat-cols = n,
+      mat-data = mat-minor-data m skip-row skip-col 0 0 (m.mat-rows) (m.mat-cols) []
+    }
+
+  mat-minor-data : Matrix, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mat-minor-data (m) (sr) (sc) (r) (c) (rows) (cols) (acc) =
+    if r >= rows then acc
+    else if r == sr then mat-minor-data m sr sc (r + 1) 0 rows cols acc
+    else if c >= cols then mat-minor-data m sr sc (r + 1) 0 rows cols acc
+    else if c == sc then mat-minor-data m sr sc r (c + 1) rows cols acc
+    else mat-minor-data m sr sc r (c + 1) rows cols (list-push acc (mat-get m r c))
+
+Section: Solve (Gaussian Elimination)
+
+  mat-solve : Matrix, List Integer -> List Integer
+  mat-solve (a) (b) =
+    let n = a.mat-rows
+    in let aug = mat-augment a b
+    in let reduced = mat-forward-elim aug n 0
+    in mat-back-sub reduced n
+
+  mat-augment : Matrix, List Integer -> Matrix
+  mat-augment (m) (b) =
+    let cols = m.mat-cols + 1
+    in Matrix {
+      mat-rows = m.mat-rows,
+      mat-cols = cols,
+      mat-data = mat-aug-data m b 0 (m.mat-rows) []
+    }
+
+  mat-aug-data : Matrix, List Integer, Integer, Integer, List Integer -> List Integer
+  mat-aug-data (m) (b) (row) (n) (acc) =
+    if row >= n then acc
+    else let row-data = mat-copy-row m row 0 (m.mat-cols) []
+    in mat-aug-data m b (row + 1) n (acc & row-data & [list-at b row])
+
+  mat-copy-row : Matrix, Integer, Integer, Integer, List Integer -> List Integer
+  mat-copy-row (m) (row) (col) (cols) (acc) =
+    if col >= cols then acc
+    else mat-copy-row m row (col + 1) cols (list-push acc (mat-get m row col))
+
+  mat-forward-elim : Matrix, Integer, Integer -> Matrix
+  mat-forward-elim (m) (n) (pivot) =
+    if pivot >= n then m
+    else let m2 = mat-elim-column m n pivot (pivot + 1)
+    in mat-forward-elim m2 n (pivot + 1)
+
+  mat-elim-column : Matrix, Integer, Integer, Integer -> Matrix
+  mat-elim-column (m) (n) (pivot) (row) =
+    if row >= n then m
+    else let factor = mat-get m row pivot * 1000 / mat-get m pivot pivot
+    in let m2 = mat-row-reduce m row pivot factor (m.mat-cols) 0
+    in mat-elim-column m2 n pivot (row + 1)
+
+  mat-row-reduce : Matrix, Integer, Integer, Integer, Integer, Integer -> Matrix
+  mat-row-reduce (m) (row) (pivot) (factor) (cols) (col) =
+    if col >= cols then m
+    else let val = mat-get m row col - factor * mat-get m pivot col / 1000
+    in mat-row-reduce (mat-set m row col val) row pivot factor cols (col + 1)
+
+  mat-back-sub : Matrix, Integer -> List Integer
+  mat-back-sub (m) (n) = mat-back-loop m n (n - 1) (mat-zeros n 0 [])
+
+  mat-back-loop : Matrix, Integer, Integer, List Integer -> List Integer
+  mat-back-loop (m) (n) (row) (x) =
+    if row < 0 then x
+    else let sum = mat-back-sum m x row (row + 1) n 0
+    in let val = (mat-get m row n - sum) * 1000 / mat-get m row row
+    in mat-back-loop m n (row - 1) (list-set-at x row val)
+
+  mat-back-sum : Matrix, List Integer, Integer, Integer, Integer, Integer -> Integer
+  mat-back-sum (m) (x) (row) (col) (n) (acc) =
+    if col >= n then acc
+    else mat-back-sum m x row (col + 1) n (acc + mat-get m row col * list-at x col / 1000)
+
+Page 1

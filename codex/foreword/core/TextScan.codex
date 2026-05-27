@@ -1,0 +1,103 @@
+Chapter: TextScan
+
+ Generic text scanning, folding, and matching primitives.
+
+ To text-fold-indexed gives b, folding a function over each character with its index.
+ To text-fold-back gives b, folding backward from the end of the string.
+ To text-map-chars gives Text, applying a character transform to each character.
+ To text-find-char gives Integer, the index of the first character satisfying a predicate, or -1.
+ To text-find-char-from gives Integer, searching from a given offset.
+ To text-match-at gives Boolean, True when a substring matches at a given offset.
+ To text-join gives Text, joining a list of texts with a separator.
+ To text-repeat gives Text, repeating a string n times.
+ To text-pad-left gives Text, padding to a minimum width with a given character.
+
+ We say:
+
+Section: Core Fold
+
+  text-fold-indexed : Text, b, (b, Char, Integer -> b) -> b
+  text-fold-indexed (s) (init) (f) =
+    text-fold-indexed-loop s init f 0 (text-length s)
+
+  text-fold-indexed-loop : Text, b, (b, Char, Integer -> b), Integer, Integer -> b
+  text-fold-indexed-loop (s) (acc) (f) (i) (len) =
+    if i >= len then acc
+    else text-fold-indexed-loop s (f acc (char-at s i) i) f (i + 1) len
+
+  text-fold-back : Text, b, (b, Char, Integer -> b) -> b
+  text-fold-back (s) (init) (f) =
+    text-fold-back-loop s init f (text-length s - 1)
+
+  text-fold-back-loop : Text, b, (b, Char, Integer -> b), Integer -> b
+  text-fold-back-loop (s) (acc) (f) (i) =
+    if i < 0 then acc
+    else text-fold-back-loop s (f acc (char-at s i) i) f (i - 1)
+
+Section: Character Operations
+
+  text-map-chars : Text, (Char -> Char) -> Text
+  text-map-chars (s) (f) =
+    text-map-chars-loop s f 0 (text-length s) ""
+
+  text-map-chars-loop : Text, (Char -> Char), Integer, Integer, Text -> Text
+  text-map-chars-loop (s) (f) (i) (len) (acc) =
+    if i >= len then acc
+    else text-map-chars-loop s f (i + 1) len (acc & char-to-text (f (char-at s i)))
+
+  text-find-char : Text, (Char -> Boolean) -> Integer
+  text-find-char (s) (pred) =
+    text-find-char-from s pred 0
+
+  text-find-char-from : Text, (Char -> Boolean), Integer -> Integer
+  text-find-char-from (s) (pred) (start) =
+    text-find-char-loop s pred start (text-length s)
+
+  text-find-char-loop : Text, (Char -> Boolean), Integer, Integer -> Integer
+  text-find-char-loop (s) (pred) (i) (len) =
+    if i >= len then -1
+    else if pred (char-at s i) then i
+    else text-find-char-loop s pred (i + 1) len
+
+Section: Matching
+
+  text-match-at : Text, Text, Integer -> Boolean
+  text-match-at (haystack) (needle) (offset) =
+    let nlen = text-length needle
+    in if offset + nlen > text-length haystack then False
+    else text-match-at-loop haystack needle offset 0 nlen
+
+  text-match-at-loop : Text, Text, Integer, Integer, Integer -> Boolean
+  text-match-at-loop (haystack) (needle) (offset) (i) (nlen) =
+    if i >= nlen then True
+    else if char-at haystack (offset + i) /= char-at needle i then False
+    else text-match-at-loop haystack needle offset (i + 1) nlen
+
+Section: Join and Repeat
+
+  text-join : List Text, Text -> Text
+  text-join (parts) (sep) =
+    if list-length parts == 0 then ""
+    else text-join-loop parts sep 1 (list-length parts) (list-at parts 0)
+
+  text-join-loop : List Text, Text, Integer, Integer, Text -> Text
+  text-join-loop (parts) (sep) (i) (len) (acc) =
+    if i >= len then acc
+    else text-join-loop parts sep (i + 1) len (acc & sep & list-at parts i)
+
+  text-repeat : Text, Integer -> Text
+  text-repeat (s) (n) =
+    text-repeat-loop s n 0 ""
+
+  text-repeat-loop : Text, Integer, Integer, Text -> Text
+  text-repeat-loop (s) (n) (i) (acc) =
+    if i >= n then acc
+    else text-repeat-loop s n (i + 1) (acc & s)
+
+  text-pad-left : Text, Integer, Char -> Text
+  text-pad-left (s) (width) (pad-char) =
+    let slen = text-length s
+    in if slen >= width then s
+    else text-repeat (char-to-text pad-char) (width - slen) & s
+
+Page 1

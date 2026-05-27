@@ -1,0 +1,1793 @@
+Chapter: X86-64 Boot Infrastructure
+  cites Codex chapter Numbers
+  cites Codex chapter Lists
+
+ Bare-metal boot sequence, interrupt handling, process management,
+ syscall dispatch, and capability model.
+
+Section: Memory Address Map
+
+ Sorted by address. To add a new entry, find the gap and confirm
+ the preceding allocation has ended.
+
+ LOAD-BEARING CONSTANTS — every value in this section is compiled
+ into the seed as a hardcoded x86-64 immediate (via `li`, `cmp-ri`,
+ `add-ri` in emit functions). Changing any value here WITHOUT a seed
+ rebuild causes the old seed to silently emit code with the old values.
+ The new values only take effect after `build/build.ps1` produces a
+ new fixed-point seed.
+
+ The same applies to constants in "Size and Threshold Constants" and
+ "BuildSettings.codex" that are used in emit functions. When in doubt,
+ rebuild the seed.
+
+ `build/build.ps1` checks a hash of these constants against
+ `seed/constants.hash` and warns if they differ.
+
+  proc-table-base : Integer = 20480
+  idt-base : Integer = 24576
+  tick-count-addr : Integer = 28672
+  key-buffer-addr : Integer = 28680
+  current-proc-addr : Integer = 28688
+  arena-base-addr : Integer = 28696
+  serial-write-pos-addr : Integer = 28704
+  serial-read-pos-addr : Integer = 28712
+  deck-pos-addr : Integer = 28720
+  heap-hwm-addr : Integer = 28728
+  stack-min-rsp-addr : Integer = 28736
+  wd-stale-tick-addr : Integer = 28744
+  wd-last-heap-addr : Integer = 28752
+  wd-last-rip-addr : Integer = 28760
+  wd-ring-buf-addr : Integer = 28768
+  wd-ring-head-addr : Integer = 28896
+  deck-bound-counter-addr : Integer = 28904
+  bivy-save-addr : Integer = 28912
+  stdin-eof-flag-addr : Integer = 28920
+  stdin-eof-settled-addr : Integer = 28928
+  cap-expiry-addr : Integer = 28936
+  sched-ready-head-addr : Integer = 28944
+  sched-current-task-addr : Integer = 28952
+  sched-yield-flag-addr : Integer = 28960
+  handler-table-base-addr : Integer = 28968
+  fork-pool-cursor-addr : Integer = 29480
+  ata-identify-buf-addr : Integer = 29488
+  ata-sector-count-addr : Integer = 30000
+  slice-table-addr : Integer = 30008
+  fork-free-head-addr : Integer = 30040
+  starve-counter-addr : Integer = 30048
+  boot-factstore-addr : Integer = 30056
+  identity-table-base : Integer = 30064
+  uefi-heap-base-addr : Integer = 30080
+  device-seed-addr : Integer = 30576
+  identity-key-addr : Integer = 30608
+  identity-key-loaded-addr : Integer = 30640
+  identity-lock-tick-addr : Integer = 30648
+  ata-active-drive-addr : Integer = 30656
+  ata-active-base-addr : Integer = 30664
+  ata-active-ctrl-addr : Integer = 30672
+  ata-active-select-addr : Integer = 30680
+  chan-table-base : Integer = 30720
+  nic-present-addr : Integer = 33024
+  nic-mac-addr : Integer = 33032
+  nic-rx-pending-addr : Integer = 33040
+  nic-rx-len-addr : Integer = 33048
+  nic-rx-buf-addr : Integer = 33056
+  nic-tx-buf-addr : Integer = 34592
+  try-fail-flag-addr : Integer = 36128
+  prof-enabled-addr : Integer = 36136
+  prof-cursor-addr : Integer = 36144
+  prof-max-samples : Integer = 65536
+  prof-buf-addr : Integer = 36160
+  trace-enabled-addr : Integer = 560448
+  trace-cursor-addr : Integer = 560456
+  trace-buf-addr : Integer = 560464
+  trace-max-entries : Integer = 30000
+  serial-ring-buf-addr : Integer = 5242880
+
+Section: Size and Threshold Constants
+  proc-entry-size : Integer = 256
+  identity-entry-size : Integer = 32
+  chan-entry-size : Integer = 128
+  chan-max-channels : Integer = 16
+  chan-max-slots : Integer = 8
+  nic-max-frame-size : Integer = 1536
+  task-stack-size : Integer = 65536
+  task-desc-size : Integer = 64
+  fork-pool-reservation : Integer = 4194304
+  starve-threshold : Integer = 100
+  ticks-per-second : Integer = 18
+  wd-tier1-threshold : Integer = 5500001
+  wd-tier2-threshold : Integer = 5500001
+  wd-stale-threshold-progress : Integer = 5500000
+  wd-stale-threshold-pet : Integer = 20
+  serial-ring-buf-size : Integer = 1048576
+  serial-ring-buf-mask : Integer = 1048575
+  proc-spawn-stack-size : Integer = 1048576
+  proc-spawn-heap-size : Integer = 1048576
+  proc-starvation-threshold : Integer = 100
+
+Section: I/O Port Constants
+  ata-data-port : Integer = 496
+  ata-error-port : Integer = 497
+  ata-sector-count-port : Integer = 498
+  ata-lba-low-port : Integer = 499
+  ata-lba-mid-port : Integer = 500
+  ata-lba-high-port : Integer = 501
+  ata-drive-head-port : Integer = 502
+  ata-status-port : Integer = 503
+  ata-command-port : Integer = 503
+  ata-read-cmd : Integer = 32
+  ata-write-cmd : Integer = 48
+  ata-flush-cmd : Integer = 231
+  ata-identify-cmd : Integer = 236
+  ata-status-bsy : Integer = 128
+  ata-status-drdy : Integer = 64
+  ata-status-drq : Integer = 8
+  ata-status-err : Integer = 1
+  ne2k-base-port : Integer = 768
+  ne2k-cr-port : Integer = 768
+  ne2k-pstart-port : Integer = 769
+  ne2k-pstop-port : Integer = 770
+  ne2k-bnry-port : Integer = 771
+  ne2k-tpsr-port : Integer = 772
+  ne2k-tbcr0-port : Integer = 773
+  ne2k-tbcr1-port : Integer = 774
+  ne2k-isr-port : Integer = 775
+  ne2k-rsar0-port : Integer = 776
+  ne2k-rsar1-port : Integer = 777
+  ne2k-rbcr0-port : Integer = 778
+  ne2k-rbcr1-port : Integer = 779
+  ne2k-rcr-port : Integer = 780
+  ne2k-tcr-port : Integer = 781
+  ne2k-dcr-port : Integer = 782
+  ne2k-imr-port : Integer = 783
+  ne2k-data-port : Integer = 784
+  ne2k-reset-port : Integer = 799
+  ne2k-page-start : Integer = 70
+  ne2k-page-stop : Integer = 128
+  ne2k-tx-page : Integer = 64
+
+Section: Process Table Layout
+  proc-cap-offset : Integer = 56
+  proc-scope-offset : Integer = 64
+  proc-saved-rsp-offset : Integer = 72
+  proc-saved-r10-offset : Integer = 80
+  proc-saved-rbx-offset : Integer = 88
+  proc-saved-rbp-offset : Integer = 96
+  proc-saved-r12-offset : Integer = 104
+  proc-saved-r13-offset : Integer = 112
+  proc-saved-r14-offset : Integer = 120
+  proc-saved-r15-offset : Integer = 128
+  proc-closure-offset : Integer = 136
+  proc-priority-offset : Integer = 144
+  proc-slice-offset : Integer = 152
+  proc-saved-rip-offset : Integer = 160
+  proc-saved-rflags-offset : Integer = 168
+  proc-saved-rax-offset : Integer = 176
+  proc-saved-rcx-offset : Integer = 184
+  proc-saved-rdx-offset : Integer = 192
+  proc-saved-rsi-offset : Integer = 200
+  proc-saved-rdi-offset : Integer = 208
+  proc-saved-r8-offset : Integer = 216
+  proc-saved-r9-offset : Integer = 224
+  proc-saved-r11-offset : Integer = 232
+  proc-max-ticks-offset : Integer = 240
+  proc-blocked-on-offset : Integer = 248
+  proc-state-free : Integer = 0
+  proc-state-ready : Integer = 1
+  proc-state-running : Integer = 2
+  proc-state-blocked : Integer = 3
+  proc-state-zombie : Integer = 4
+  blocked-on-chan-send : Integer = 256
+  blocked-on-chan-recv : Integer = 512
+  proc-priority-kernel : Integer = 0
+  proc-priority-system : Integer = 1
+  proc-priority-normal : Integer = 2
+  proc-priority-background : Integer = 3
+  proc-slice-system : Integer = 6
+  proc-slice-normal : Integer = 3
+  proc-slice-background : Integer = 1
+  proc-default-slice : Integer = 3
+
+Section: Channel Table Layout
+  chan-state-offset : Integer = 0
+  chan-capacity-offset : Integer = 8
+  chan-count-offset : Integer = 16
+  chan-write-pos-offset : Integer = 24
+  chan-read-pos-offset : Integer = 32
+  chan-owner-offset : Integer = 40
+  chan-buffer-offset : Integer = 64
+  chan-state-free : Integer = 0
+  chan-state-open : Integer = 1
+  chan-state-closed : Integer = 2
+
+  cap-console : Integer = 0
+
+  cap-console-read : Integer = 4
+
+  cap-console-write : Integer = 5
+
+  cap-filesystem-read : Integer = 6
+
+  cap-filesystem-write : Integer = 7
+
+  cap-network-read : Integer = 8
+
+  cap-network-write : Integer = 9
+
+  cap-concurrent : Integer = 3
+
+  cap-block-device : Integer = 10
+  cap-ipc : Integer = 11
+  cap-process-create : Integer = 12
+  cap-capability-admin : Integer = 14
+  cap-identity : Integer = 15
+
+Section: PIT and PIC Initialization
+  emit-pit-init : CodegenState -> CodegenState
+  emit-pit-init (st) =
+   let st1 = emit-out-byte st 67 52
+   in let st2 = emit-out-byte st1 64 0
+   in emit-out-byte st2 64 0
+
+  emit-pic-init : CodegenState -> CodegenState
+  emit-pic-init (st) =
+   let st1 = emit-out-byte st 32 17
+   in let st2 = emit-out-byte st1 160 17
+   in let st3 = emit-out-byte st2 33 32
+   in let st4 = emit-out-byte st3 161 40
+   in let st5 = emit-out-byte st4 33 4
+   in let st6 = emit-out-byte st5 161 2
+   in let st7 = emit-out-byte st6 33 1
+   in let st8 = emit-out-byte st7 161 1
+   in let st9 = emit-out-byte st8 33 236
+   in emit-out-byte st9 161 255
+
+Section: CPU Exception Dump
+  emit-print-hex-nibble-rdi : CodegenState -> CodegenState
+  emit-print-hex-nibble-rdi (st) =
+   let st1 = st-append-code st (and-ri reg-rdi 15)
+   in let st2 = st-append-code st1 (cmp-ri reg-rdi 10)
+   in let jge-pos = st2.code-len
+   in let st3 = st-append-code st2 (jcc cc-ge 0)
+   in let st4 = st-append-code st3 (add-ri reg-rdi 48)
+   in let jmp-pos = st4.code-len
+   in let st5 = st-append-code st4 (jmp 0)
+   in let st6 = patch-jcc-at st5 jge-pos (st5.code-len)
+   in let st7 = st-append-code st6 (add-ri reg-rdi 87)
+   in let st8 = patch-jmp-at st7 jmp-pos (st7.code-len)
+   in emit-serial-send-rdi st8
+
+  emit-print-hex-qword-rdi-loop : CodegenState, Integer -> CodegenState
+  emit-print-hex-qword-rdi-loop (st) (nibble-idx) =
+   if nibble-idx < 0 then st
+   else let st1 = st-append-code st (push-r reg-rdi)
+   in let shift = nibble-idx * 4
+   in let st2 = if shift == 0 then st1 else st-append-code st1 (shr-ri reg-rdi shift)
+   in let st3 = emit-print-hex-nibble-rdi st2
+   in let st4 = st-append-code st3 (pop-r reg-rdi)
+   in emit-print-hex-qword-rdi-loop st4 (nibble-idx - 1)
+
+  emit-print-hex-qword-rdi : CodegenState -> CodegenState
+  emit-print-hex-qword-rdi (st) =
+   emit-print-hex-qword-rdi-loop st 15
+
+  emit-print-hex-byte-rdi : CodegenState -> CodegenState
+  emit-print-hex-byte-rdi (st) =
+   let st1 = st-append-code st (push-r reg-rdi)
+   in let st2 = st-append-code st1 (shr-ri reg-rdi 4)
+   in let st3 = emit-print-hex-nibble-rdi st2
+   in let st4 = st-append-code st3 (pop-r reg-rdi)
+   in emit-print-hex-nibble-rdi st4
+
+  emit-cpu-exception-dump : CodegenState -> CodegenState
+  emit-cpu-exception-dump (st) =
+   let st0a = st-append-code st (mov-rr reg-r11 reg-rsp)
+   in let st0b = st-append-code st0a (li reg-rsp bare-metal-stack-top)
+   in let st0c = st-append-code st0b (mov-rr reg-rbp reg-rsp)
+   in let st0d = st-append-code st0c (push-r reg-r15)
+   in let st0 = st-append-code st0d (mov-rr reg-rdi reg-rax)
+   in let st1 = emit-serial-wait-and-send st0 33
+   in let st2 = emit-serial-wait-and-send st1 69
+   in let st3 = emit-serial-wait-and-send st2 88
+   in let st4 = emit-serial-wait-and-send st3 67
+   in let st5 = emit-serial-wait-and-send st4 61
+   in let st6 = emit-print-hex-byte-rdi st5
+   in let st7 = emit-serial-wait-and-send st6 32
+   in let st8 = emit-serial-wait-and-send st7 82
+   in let st9 = emit-serial-wait-and-send st8 73
+   in let st10 = emit-serial-wait-and-send st9 80
+   in let st11 = emit-serial-wait-and-send st10 61
+   in let st12 = st-append-code st11 (mov-load reg-rdi reg-r11 40)
+   in let st13 = emit-print-hex-qword-rdi st12
+   in let st13a = emit-serial-wait-and-send st13 32
+   in let st13b = emit-serial-wait-and-send st13a 82
+   in let st13c = emit-serial-wait-and-send st13b 66
+   in let st13d = emit-serial-wait-and-send st13c 88
+   in let st13e = emit-serial-wait-and-send st13d 61
+   in let st13f = st-append-code st13e (mov-rr reg-rdi reg-rbx)
+   in let st13g = emit-print-hex-qword-rdi st13f
+   in let st13h = emit-serial-wait-and-send st13g 32
+   in let st13i = emit-serial-wait-and-send st13h 82
+   in let st13j = emit-serial-wait-and-send st13i 49
+   in let st13k = emit-serial-wait-and-send st13j 50
+   in let st13l = emit-serial-wait-and-send st13k 61
+   in let st13m = st-append-code st13l (mov-rr reg-rdi reg-r12)
+   in let st13n = emit-print-hex-qword-rdi st13m
+   in let st13o = emit-serial-wait-and-send st13n 32
+   in let st13p = emit-serial-wait-and-send st13o 82
+   in let st13q = emit-serial-wait-and-send st13p 49
+   in let st13r = emit-serial-wait-and-send st13q 51
+   in let st13s = emit-serial-wait-and-send st13r 61
+   in let st13t = st-append-code st13s (mov-rr reg-rdi reg-r13)
+   in let st13u = emit-print-hex-qword-rdi st13t
+   in let st13v = emit-serial-wait-and-send st13u 32
+   in let st13w = emit-serial-wait-and-send st13v 82
+   in let st13x = emit-serial-wait-and-send st13w 49
+   in let st13y = emit-serial-wait-and-send st13x 52
+   in let st13z = emit-serial-wait-and-send st13y 61
+   in let st13aa = st-append-code st13z (mov-rr reg-rdi reg-r14)
+   in let st13ab = emit-print-hex-qword-rdi st13aa
+   in let st13ac = emit-serial-wait-and-send st13ab 32
+   in let st13ad = emit-serial-wait-and-send st13ac 82
+   in let st13ae = emit-serial-wait-and-send st13ad 49
+   in let st13af = emit-serial-wait-and-send st13ae 48
+   in let st13ag = emit-serial-wait-and-send st13af 61
+   in let st13ah = st-append-code st13ag (mov-rr reg-rdi reg-r10)
+   in let st13ai = emit-print-hex-qword-rdi st13ah
+   in let st13aj = emit-serial-wait-and-send st13ai 32
+   in let st13ak = emit-serial-wait-and-send st13aj 82
+   in let st13al = emit-serial-wait-and-send st13ak 68
+   in let st13am = emit-serial-wait-and-send st13al 73
+   in let st13an = emit-serial-wait-and-send st13am 61
+   in let st13ao = st-append-code st13an (mov-load reg-rdi reg-r11 0)
+   in let st13ap = emit-print-hex-qword-rdi st13ao
+   in let st13aq = emit-serial-wait-and-send st13ap 32
+   in let st13ar = emit-serial-wait-and-send st13aq 82
+   in let st13as = emit-serial-wait-and-send st13ar 83
+   in let st13at = emit-serial-wait-and-send st13as 73
+   in let st13au = emit-serial-wait-and-send st13at 61
+   in let st13av = st-append-code st13au (mov-load reg-rdi reg-r11 8)
+   in let st13aw = emit-print-hex-qword-rdi st13av
+   in let st13ax = emit-serial-wait-and-send st13aw 32
+   in let st13ay = emit-serial-wait-and-send st13ax 67
+   in let st13az = emit-serial-wait-and-send st13ay 97
+   in let st13ba = emit-serial-wait-and-send st13az 108
+   in let st13bb = emit-serial-wait-and-send st13ba 108
+   in let st13bc = emit-serial-wait-and-send st13bb 82
+   in let st13bd = emit-serial-wait-and-send st13bc 61
+   in let st13be = st-append-code st13bd (mov-load reg-rdi reg-r11 64)
+   in let st13bf = emit-print-hex-qword-rdi st13be
+   in let st-cr2a = emit-serial-wait-and-send st13bf 32
+   in let st-cr2b = emit-serial-wait-and-send st-cr2a 67
+   in let st-cr2c = emit-serial-wait-and-send st-cr2b 82
+   in let st-cr2d = emit-serial-wait-and-send st-cr2c 50
+   in let st-cr2e = emit-serial-wait-and-send st-cr2d 61
+   in let st-cr2f = st-append-code st-cr2e [15, 32, 215]
+   in let st-cr2g = emit-print-hex-qword-rdi st-cr2f
+   in let st-r15a = emit-serial-wait-and-send st-cr2g 32
+   in let st-r15b = emit-serial-wait-and-send st-r15a 82
+   in let st-r15c = emit-serial-wait-and-send st-r15b 49
+   in let st-r15d = emit-serial-wait-and-send st-r15c 53
+   in let st-r15e = emit-serial-wait-and-send st-r15d 61
+   in let st-r15f = st-append-code st-r15e (mov-load reg-rdi reg-rbp (-8))
+   in let st-r15g = emit-print-hex-qword-rdi st-r15f
+   in let st14 = emit-serial-wait-and-send st-r15g 10
+   in let st14a = emit-exc-stack-dump st14
+   in let st14b = emit-serial-drain-delay st14a
+   in let st15 = st-append-code st14b cli
+   in let halt-pos = st15.code-len
+   in let st16 = st-append-code st15 hlt
+   in st-append-code st16 (jmp (halt-pos - (st16.code-len + 5)))
+
+Section: Exception Stack Dump
+
+  emit-exc-stack-dump : CodegenState -> CodegenState
+  emit-exc-stack-dump (st) =
+   let st0 = st-append-code st (mov-rr reg-rbx reg-r11)
+   in let st1 = st-append-code st0 (li reg-rcx 16)
+   in let st2 = st-append-code st1 (xor-rr reg-rsi reg-rsi)
+   in let loop-top = st2.code-len
+   in let st3 = emit-serial-wait-and-send st2 83
+   in let st4 = emit-serial-wait-and-send st3 91
+   in let st5 = st-append-code st4 (mov-rr reg-rdi reg-rsi)
+   in let st6 = emit-print-hex-qword-rdi st5
+   in let st7 = emit-serial-wait-and-send st6 93
+   in let st8 = emit-serial-wait-and-send st7 61
+   in let st9 = st-append-code st8 (mov-rr reg-rdi reg-rsi)
+   in let st10 = st-append-code st9 (add-rr reg-rdi reg-rbx)
+   in let st11 = st-append-code st10 (mov-load reg-rdi reg-rdi 0)
+   in let st12 = emit-print-hex-qword-rdi st11
+   in let st13 = emit-serial-wait-and-send st12 10
+   in let st14 = st-append-code st13 (add-ri reg-rsi 8)
+   in let st15 = st-append-code st14 (sub-ri reg-rcx 1)
+   in let cur = st15.code-len
+   in st-append-code st15 (jcc cc-ne (loop-top - (cur + 6)))
+
+Section: Serial Drain Delay
+
+  emit-serial-drain-delay : CodegenState -> CodegenState
+  emit-serial-drain-delay (st) =
+   let wait-top = st.code-len
+   in let st1 = st-append-code st (li reg-rdx 1021)
+   in let st2 = st-append-code st1 [236]
+   in let st3 = st-append-code st2 [168, 32]
+   in let jnz-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-ne 0)
+   in let st5 = st-append-code st4 (jmp (wait-top - (st4.code-len + 5)))
+   in patch-jcc-at st5 jnz-pos (st5.code-len)
+
+Section: Watchdog Timer Check
+
+ Emitted into the timer ISR when the target is bare-metal. Compares R10
+ (live heap pointer) and saved-RIP at [rsp+40] to snapshots stored at
+ wd-last-heap-addr / wd-last-rip-addr. If either moved (RIP delta > 4 KB
+ window), snapshot and reset the stale-tick counter. If neither moved,
+ increment stale-tick and compare to threshold; panic if exceeded.
+
+  emit-watchdog-ring-write : CodegenState -> CodegenState
+  emit-watchdog-ring-write (st) =
+   let st1 = st-append-code st (li reg-rdi wd-ring-head-addr)
+   in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
+   in let st3 = st-append-code st2 (and-ri reg-rax 3)
+   in let st4 = st-append-code st3 (shl-ri reg-rax 5)
+   in let st5 = st-append-code st4 (li reg-rsi wd-ring-buf-addr)
+   in let st6 = st-append-code st5 (add-rr reg-rsi reg-rax)
+   in let st7 = st-append-code st6 (mov-store reg-rsi reg-rcx 0)
+   in let st8 = st-append-code st7 (mov-load reg-rdx reg-rsp 64)
+   in let st9 = st-append-code st8 (mov-store reg-rsi reg-rdx 8)
+   in let st10 = st-append-code st9 (mov-store reg-rsi reg-r10 16)
+   in let st11 = st-append-code st10 (mov-load reg-rdx reg-rdi 0)
+   in let st12 = st-append-code st11 (add-ri reg-rdx 1)
+   in st-append-code st12 (mov-store reg-rdi reg-rdx 0)
+
+  emit-watchdog-progress-dispatch : CodegenState -> CodegenState
+  emit-watchdog-progress-dispatch (st) =
+   let st1 = st-append-code st (cmp-ri reg-rax wd-tier1-threshold)
+   in let tier1-skip-pos = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let st3 = emit-call-to st2 "__watchdog_tier1"
+   in let st4 = patch-jcc-at st3 tier1-skip-pos (st3.code-len)
+   in let st5 = st-append-code st4 (cmp-ri reg-rax wd-tier2-threshold)
+   in let tier2-skip-pos = st5.code-len
+   in let st6 = st-append-code st5 (jcc cc-ne 0)
+   in let st7 = emit-call-to st6 "__watchdog_tier2"
+   in let st8 = patch-jcc-at st7 tier2-skip-pos (st7.code-len)
+   in let st9 = st-append-code st8 (cmp-ri reg-rax wd-stale-threshold-progress)
+   in let tier3-skip-pos = st9.code-len
+   in let st10 = st-append-code st9 (jcc cc-b 0)
+   in let st11 = emit-call-to st10 "__watchdog_panic"
+   in patch-jcc-at st11 tier3-skip-pos (st11.code-len)
+
+  emit-watchdog-pet-dispatch : CodegenState -> CodegenState
+  emit-watchdog-pet-dispatch (st) =
+   let st1 = st-append-code st (cmp-ri reg-rax wd-stale-threshold-pet)
+   in let skip-pos = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-b 0)
+   in let st3 = emit-call-to st2 "__watchdog_panic"
+   in patch-jcc-at st3 skip-pos (st3.code-len)
+
+  emit-watchdog-timer-check : CodegenState -> CodegenState
+  emit-watchdog-timer-check (st) =
+   let st0 = st-append-code st (mov-load reg-rcx reg-rsp 40)
+   in let st2 = st-append-code st0 (li reg-rdi wd-last-heap-addr)
+   in let st3 = st-append-code st2 (mov-load reg-rdx reg-rdi 0)
+   in let st4 = st-append-code st3 (cmp-rr reg-r10 reg-rdx)
+   in let heap-same-pos = st4.code-len
+   in let st5 = st-append-code st4 (jcc cc-e 0)
+   in let st6 = st-append-code st5 (mov-store reg-rdi reg-r10 0)
+   in let st7 = st-append-code st6 (li reg-rdi wd-last-rip-addr)
+   in let st8 = st-append-code st7 (mov-store reg-rdi reg-rcx 0)
+   in let st9 = st-append-code st8 (li reg-rdi wd-stale-tick-addr)
+   in let st10 = st-append-code st9 (li reg-rax 0)
+   in let st11 = st-append-code st10 (mov-store reg-rdi reg-rax 0)
+   in let doneA-pos = st11.code-len
+   in let st12 = st-append-code st11 (jmp 0)
+   in let st13 = patch-jcc-at st12 heap-same-pos (st12.code-len)
+   in let st14 = st-append-code st13 (li reg-rdi wd-last-rip-addr)
+   in let st15 = st-append-code st14 (mov-load reg-rdx reg-rdi 0)
+   in let st16 = st-append-code st15 (mov-rr reg-rax reg-rcx)
+   in let st17 = st-append-code st16 (sub-rr reg-rax reg-rdx)
+   in let st18 = st-append-code st17 (mov-rr reg-rdx reg-rax)
+   in let st19 = st-append-code st18 (sar-ri reg-rdx 63)
+   in let st20 = st-append-code st19 (xor-rr reg-rax reg-rdx)
+   in let st21 = st-append-code st20 (sub-rr reg-rax reg-rdx)
+   in let st22 = st-append-code st21 (cmp-ri reg-rax 4096)
+   in let rip-same-pos = st22.code-len
+   in let st23 = st-append-code st22 (jcc cc-be 0)
+   in let st24 = st-append-code st23 (mov-store reg-rdi reg-rcx 0)
+   in let st25 = st-append-code st24 (li reg-rdi wd-stale-tick-addr)
+   in let st26 = st-append-code st25 (li reg-rax 0)
+   in let st27 = st-append-code st26 (mov-store reg-rdi reg-rax 0)
+   in let doneB-pos = st27.code-len
+   in let st28 = st-append-code st27 (jmp 0)
+   in let st29 = patch-jcc-at st28 rip-same-pos (st28.code-len)
+   in let st-ring = emit-watchdog-ring-write st29
+   in let st30 = st-append-code st-ring (li reg-rdi wd-stale-tick-addr)
+   in let st31 = st-append-code st30 (mov-load reg-rax reg-rdi 0)
+   in let st32 = st-append-code st31 (add-ri reg-rax 1)
+   in let st33 = st-append-code st32 (mov-store reg-rdi reg-rax 0)
+   in let st-dispatch = when st33.watchdog-mode
+     is WatchdogPet -> emit-watchdog-pet-dispatch st33
+     is otherwise -> emit-watchdog-progress-dispatch st33
+   in let st-final1 = patch-jmp-at st-dispatch doneA-pos (st-dispatch.code-len)
+   in patch-jmp-at st-final1 doneB-pos (st-final1.code-len)
+
+Section: Common Interrupt Handler
+  emit-common-interrupt-handler : CodegenState -> CodegenState
+  emit-common-interrupt-handler (st) =
+   let st1 = st-append-code st (push-r reg-rcx)
+   in let st2 = st-append-code st1 (push-r reg-rdx)
+   in let st3 = st-append-code st2 (push-r reg-rsi)
+   in let st4 = st-append-code st3 (push-r reg-rdi)
+   in let st5 = st-append-code st4 [15, 182, 192]
+   in let st6 = st-append-code st5 (cmp-ri reg-rax 32)
+   in let exc-jcc = st6.code-len
+   in let st6a = st-append-code st6 (jcc cc-b 0)
+   in let not-timer = st6a.code-len
+   in let st7 = st-append-code st6a (jcc cc-ne 0)
+   in let st8 = st-append-code st7 (li reg-rdi tick-count-addr)
+   in let st9 = st-append-code st8 (mov-load reg-rsi reg-rdi 0)
+   in let st10 = st-append-code st9 (add-ri reg-rsi 1)
+   in let st11 = st-append-code st10 (mov-store reg-rdi reg-rsi 0)
+   in let pr0 = st-append-code st11 (li reg-rdi prof-enabled-addr)
+   in let pr1 = st-append-code pr0 (mov-load reg-rdi reg-rdi 0)
+   in let pr2 = st-append-code pr1 (test-rr reg-rdi reg-rdi)
+   in let prof-skip = pr2.code-len
+   in let pr3 = st-append-code pr2 (jcc cc-e 0)
+   in let pr4 = st-append-code pr3 (li reg-rdi prof-cursor-addr)
+   in let pr5 = st-append-code pr4 (mov-load reg-rsi reg-rdi 0)
+   in let pr6 = st-append-code pr5 (cmp-ri reg-rsi prof-max-samples)
+   in let prof-full = pr6.code-len
+   in let pr7 = st-append-code pr6 (jcc cc-ge 0)
+   in let pr8 = st-append-code pr7 (mov-load reg-rcx reg-rsp 40)
+   in let pr9 = st-append-code pr8 (li reg-rdx prof-buf-addr)
+   in let pr10 = st-append-code pr9 (mov-rr reg-rax reg-rsi)
+   in let pr11 = st-append-code pr10 (shl-ri reg-rax 3)
+   in let pr12 = st-append-code pr11 (add-rr reg-rdx reg-rax)
+   in let pr13 = st-append-code pr12 (mov-store reg-rdx reg-rcx 0)
+   in let pr14 = st-append-code pr13 (add-ri reg-rsi 1)
+   in let pr15 = st-append-code pr14 (mov-store reg-rdi reg-rsi 0)
+   in let pr16 = patch-jcc-at pr15 prof-skip (pr15.code-len)
+   in let pr17 = patch-jcc-at pr16 prof-full (pr16.code-len)
+   in let st11-wd = emit-watchdog-timer-check pr17
+   in let st11-y0 = st-append-code st11-wd (li reg-rdi sched-current-task-addr)
+   in let st11-y1 = st-append-code st11-y0 (mov-load reg-rdi reg-rdi 0)
+   in let st11-y2 = st-append-code st11-y1 (cmp-ri reg-rdi 0)
+   in let yf-skip = st11-y2.code-len
+   in let st11-y3 = st-append-code st11-y2 (jcc cc-e 0)
+   in let st11-y4 = st-append-code st11-y3 (li reg-rdi sched-yield-flag-addr)
+   in let st11-y5 = st-append-code st11-y4 (li reg-rsi 1)
+   in let st11-y6 = st-append-code st11-y5 (mov-store reg-rdi reg-rsi 0)
+   in let st11-y7 = patch-jcc-at st11-y6 yf-skip (st11-y6.code-len)
+   in let sp0 = st-append-code st11-y7 (li reg-rdi current-proc-addr)
+   in let sp1 = st-append-code sp0 (mov-load reg-rdi reg-rdi 0)
+   in let sp2 = st-append-code sp1 (mov-rr reg-rcx reg-rdi)
+   in let sp3 = st-append-code sp2 (shl-ri reg-rcx 8)
+   in let sp4 = st-append-code sp3 (add-ri reg-rcx proc-table-base)
+   in let sp5 = st-append-code sp4 (mov-load reg-rsi reg-rcx proc-slice-offset)
+   in let sp6 = st-append-code sp5 (test-rr reg-rsi reg-rsi)
+   in let no-pre1 = sp6.code-len
+   in let sp7 = st-append-code sp6 (jcc cc-e 0)
+   in let sp8 = st-append-code sp7 (sub-ri reg-rsi 1)
+   in let sp9 = st-append-code sp8 (mov-store reg-rcx reg-rsi proc-slice-offset)
+   in let sp10 = st-append-code sp9 (test-rr reg-rsi reg-rsi)
+   in let no-pre2 = sp10.code-len
+   in let sp11 = st-append-code sp10 (jcc cc-ne 0)
+   in let sp12 = st-append-code sp11 (mov-store reg-rcx reg-rbx proc-saved-rbx-offset)
+   in let sp13 = st-append-code sp12 (mov-store reg-rcx reg-rbp proc-saved-rbp-offset)
+   in let sp14 = st-append-code sp13 (mov-store reg-rcx reg-r8 proc-saved-r8-offset)
+   in let sp15 = st-append-code sp14 (mov-store reg-rcx reg-r9 proc-saved-r9-offset)
+   in let sp16 = st-append-code sp15 (mov-store reg-rcx reg-r10 proc-saved-r10-offset)
+   in let sp17 = st-append-code sp16 (mov-store reg-rcx reg-r11 proc-saved-r11-offset)
+   in let sp18 = st-append-code sp17 (mov-store reg-rcx reg-r12 proc-saved-r12-offset)
+   in let sp19 = st-append-code sp18 (mov-store reg-rcx reg-r13 proc-saved-r13-offset)
+   in let sp20 = st-append-code sp19 (mov-store reg-rcx reg-r14 proc-saved-r14-offset)
+   in let sp21 = st-append-code sp20 (mov-store reg-rcx reg-r15 proc-saved-r15-offset)
+   in let sp22 = st-append-code sp21 (mov-load reg-rsi reg-rsp 0)
+   in let sp23 = st-append-code sp22 (mov-store reg-rcx reg-rsi proc-saved-rdi-offset)
+   in let sp24 = st-append-code sp23 (mov-load reg-rsi reg-rsp 8)
+   in let sp25 = st-append-code sp24 (mov-store reg-rcx reg-rsi proc-saved-rsi-offset)
+   in let sp26 = st-append-code sp25 (mov-load reg-rsi reg-rsp 16)
+   in let sp27 = st-append-code sp26 (mov-store reg-rcx reg-rsi proc-saved-rdx-offset)
+   in let sp28 = st-append-code sp27 (mov-load reg-rsi reg-rsp 24)
+   in let sp29 = st-append-code sp28 (mov-store reg-rcx reg-rsi proc-saved-rcx-offset)
+   in let sp30 = st-append-code sp29 (mov-load reg-rsi reg-rsp 32)
+   in let sp31 = st-append-code sp30 (mov-store reg-rcx reg-rsi proc-saved-rax-offset)
+   in let sp32 = st-append-code sp31 (mov-load reg-rsi reg-rsp 40)
+   in let sp33 = st-append-code sp32 (mov-store reg-rcx reg-rsi proc-saved-rip-offset)
+   in let sp34 = st-append-code sp33 (mov-load reg-rsi reg-rsp 56)
+   in let sp35 = st-append-code sp34 (mov-store reg-rcx reg-rsi proc-saved-rflags-offset)
+   in let sp36 = st-append-code sp35 (mov-load reg-rsi reg-rsp 64)
+   in let sp37 = st-append-code sp36 (mov-store reg-rcx reg-rsi proc-saved-rsp-offset)
+   in let sq0 = st-append-code sp37 (mov-load reg-rsi reg-rcx proc-max-ticks-offset)
+   in let sq1 = st-append-code sq0 (test-rr reg-rsi reg-rsi)
+   in let sq-unlim = sq1.code-len
+   in let sq2 = st-append-code sq1 (jcc cc-e 0)
+   in let sq3 = st-append-code sq2 (sub-ri reg-rsi 1)
+   in let sq4 = st-append-code sq3 (mov-store reg-rcx reg-rsi proc-max-ticks-offset)
+   in let sq5 = st-append-code sq4 (test-rr reg-rsi reg-rsi)
+   in let sq-alive = sq5.code-len
+   in let sq6 = st-append-code sq5 (jcc cc-ne 0)
+   in let sq7 = st-append-code sq6 (li reg-rsi proc-state-zombie)
+   in let sq8 = st-append-code sq7 (mov-store reg-rcx reg-rsi 0)
+   in let sq-done = sq8.code-len
+   in let sq9 = st-append-code sq8 (jmp 0)
+   in let sq-ready = sq9.code-len
+   in let sq10 = st-append-code sq9 (li reg-rsi proc-state-ready)
+   in let sq11 = st-append-code sq10 (mov-store reg-rcx reg-rsi 0)
+   in let sq12 = patch-jcc-at sq11 sq-unlim sq-ready
+   in let sq13 = patch-jcc-at sq12 sq-alive sq-ready
+   in let sp39 = patch-jmp-at sq13 sq-done (sq13.code-len)
+   in let sp40 = st-append-code sp39 (li reg-r8 (-1))
+   in let sp41 = st-append-code sp40 (li reg-r9 4)
+   in let sp42 = st-append-code sp41 (xor-rr reg-rax reg-rax)
+   in let pscan-top = sp42.code-len
+   in let sp43 = st-append-code sp42 (cmp-ri reg-rax 16)
+   in let pscan-done = sp43.code-len
+   in let sp44 = st-append-code sp43 (jcc cc-ge 0)
+   in let sp45 = st-append-code sp44 (cmp-rr reg-rax reg-rdi)
+   in let pscan-skip = sp45.code-len
+   in let sp46 = st-append-code sp45 (jcc cc-e 0)
+   in let sp47 = st-append-code sp46 (mov-rr reg-rsi reg-rax)
+   in let sp48 = st-append-code sp47 (shl-ri reg-rsi 8)
+   in let sp49 = st-append-code sp48 (add-ri reg-rsi proc-table-base)
+   in let sp50 = st-append-code sp49 (mov-load reg-rdx reg-rsi 0)
+   in let sp51 = st-append-code sp50 (cmp-ri reg-rdx proc-state-ready)
+   in let pscan-nr = sp51.code-len
+   in let sp52 = st-append-code sp51 (jcc cc-ne 0)
+   in let sp53 = st-append-code sp52 (mov-load reg-rdx reg-rsi proc-priority-offset)
+   in let sp54 = st-append-code sp53 (cmp-rr reg-rdx reg-r9)
+   in let pscan-worse = sp54.code-len
+   in let sp55 = st-append-code sp54 (jcc cc-ge 0)
+   in let sp56 = st-append-code sp55 (mov-rr reg-r8 reg-rax)
+   in let sp57 = st-append-code sp56 (mov-rr reg-r9 reg-rdx)
+   in let pscan-next = sp57.code-len
+   in let sp58 = st-append-code sp57 (add-ri reg-rax 1)
+   in let sp59 = st-append-code sp58 (jmp (pscan-top - (sp58.code-len + 5)))
+   in let sp60 = patch-jcc-at sp59 pscan-skip pscan-next
+   in let sp61 = patch-jcc-at sp60 pscan-nr pscan-next
+   in let sp62 = patch-jcc-at sp61 pscan-worse pscan-next
+   in let sp63 = patch-jcc-at sp62 pscan-done (sp62.code-len)
+   in let sv0 = st-append-code sp63 (li reg-rsi starve-counter-addr)
+   in let sv1 = st-append-code sv0 (mov-load reg-rcx reg-rsi 0)
+   in let sv2 = st-append-code sv1 (add-ri reg-rcx 1)
+   in let sv3 = st-append-code sv2 (mov-store reg-rsi reg-rcx 0)
+   in let sv4 = st-append-code sv3 (cmp-ri reg-rcx starve-threshold)
+   in let sv-skip-pos = sv4.code-len
+   in let sv5 = st-append-code sv4 (jcc cc-l 0)
+   in let sv6 = st-append-code sv5 (xor-rr reg-rcx reg-rcx)
+   in let sv7 = st-append-code sv6 (mov-store reg-rsi reg-rcx 0)
+   in let sv8 = st-append-code sv7 (cmp-ri reg-r9 2)
+   in let sv-nolo = sv8.code-len
+   in let sv9 = st-append-code sv8 (jcc cc-ge 0)
+   in let sv10 = st-append-code sv9 (cmp-ri reg-r8 (-1))
+   in let sv-none = sv10.code-len
+   in let sv11 = st-append-code sv10 (jcc cc-e 0)
+   in let sv12 = st-append-code sv11 (xor-rr reg-rax reg-rax)
+   in let rscan-top = sv12.code-len
+   in let sv13 = st-append-code sv12 (cmp-ri reg-rax 16)
+   in let rscan-done = sv13.code-len
+   in let sv14 = st-append-code sv13 (jcc cc-ge 0)
+   in let sv15 = st-append-code sv14 (cmp-rr reg-rax reg-rdi)
+   in let rscan-skip = sv15.code-len
+   in let sv16 = st-append-code sv15 (jcc cc-e 0)
+   in let sv17 = st-append-code sv16 (mov-rr reg-rsi reg-rax)
+   in let sv18 = st-append-code sv17 (shl-ri reg-rsi 8)
+   in let sv19 = st-append-code sv18 (add-ri reg-rsi proc-table-base)
+   in let sv20 = st-append-code sv19 (mov-load reg-rdx reg-rsi 0)
+   in let sv21 = st-append-code sv20 (cmp-ri reg-rdx proc-state-ready)
+   in let rscan-nr = sv21.code-len
+   in let sv22 = st-append-code sv21 (jcc cc-ne 0)
+   in let sv23 = st-append-code sv22 (mov-load reg-rdx reg-rsi proc-priority-offset)
+   in let sv24 = st-append-code sv23 (cmp-ri reg-rdx 2)
+   in let rscan-hipri = sv24.code-len
+   in let sv25 = st-append-code sv24 (jcc cc-l 0)
+   in let sv26 = st-append-code sv25 (mov-rr reg-r8 reg-rax)
+   in let sv27 = st-append-code sv26 (mov-rr reg-r9 reg-rdx)
+   in let rscan-found = sv27.code-len
+   in let sv28 = st-append-code sv27 (jmp 0)
+   in let rscan-next = sv28.code-len
+   in let sv29 = st-append-code sv28 (add-ri reg-rax 1)
+   in let sv30 = st-append-code sv29 (jmp (rscan-top - (sv29.code-len + 5)))
+   in let sv31 = patch-jcc-at sv30 rscan-skip rscan-next
+   in let sv32 = patch-jcc-at sv31 rscan-nr rscan-next
+   in let sv33 = patch-jcc-at sv32 rscan-hipri rscan-next
+   in let sv34 = patch-jcc-at sv33 rscan-done (sv33.code-len)
+   in let sv35 = patch-jcc-at sv34 sv-nolo (sv34.code-len)
+   in let sv36 = patch-jcc-at sv35 sv-none (sv35.code-len)
+   in let sv37 = patch-jmp-at sv36 rscan-found (sv36.code-len)
+   in let sp63a = patch-jcc-at sv37 sv-skip-pos (sv37.code-len)
+   in let sp64 = st-append-code sp63a (cmp-ri reg-r8 (-1))
+   in let pno-other = sp64.code-len
+   in let sp65 = st-append-code sp64 (jcc cc-e 0)
+   in let sp66 = st-append-code sp65 (mov-rr reg-rdi reg-r8)
+   in let sp67 = st-append-code sp66 (mov-rr reg-rsi reg-rdi)
+   in let sp68 = st-append-code sp67 (shl-ri reg-rsi 8)
+   in let sp69 = st-append-code sp68 (add-ri reg-rsi proc-table-base)
+   in let sp70 = st-append-code sp69 (li reg-rax current-proc-addr)
+   in let sp71 = st-append-code sp70 (mov-store reg-rax reg-rdi 0)
+   in let sp72 = st-append-code sp71 (li reg-rax proc-state-running)
+   in let sp73 = st-append-code sp72 (mov-store reg-rsi reg-rax 0)
+   in let sp74 = st-append-code sp73 (mov-load reg-rax reg-rsi proc-priority-offset)
+   in let sp75 = st-append-code sp74 (shl-ri reg-rax 3)
+   in let sp76 = st-append-code sp75 (add-ri reg-rax slice-table-addr)
+   in let sp77 = st-append-code sp76 (mov-load reg-rax reg-rax 0)
+   in let sp78 = st-append-code sp77 (mov-store reg-rsi reg-rax proc-slice-offset)
+   in let sp79 = emit-out-byte sp78 32 32
+   in let sp80 = emit-jmp-to sp79 "__process_resume"
+   in let pno-other-pos = sp80.code-len
+   in let rr0 = st-append-code sp80 (li reg-rcx current-proc-addr)
+   in let rr1 = st-append-code rr0 (mov-load reg-rcx reg-rcx 0)
+   in let rr2 = st-append-code rr1 (shl-ri reg-rcx 8)
+   in let rr3 = st-append-code rr2 (add-ri reg-rcx proc-table-base)
+   in let sp81 = st-append-code rr3 (li reg-rsi proc-state-running)
+   in let sp82 = st-append-code sp81 (mov-store reg-rcx reg-rsi 0)
+   in let sp83 = st-append-code sp82 (mov-load reg-rsi reg-rcx proc-priority-offset)
+   in let sp84 = st-append-code sp83 (shl-ri reg-rsi 3)
+   in let sp85 = st-append-code sp84 (add-ri reg-rsi slice-table-addr)
+   in let sp86 = st-append-code sp85 (mov-load reg-rsi reg-rsi 0)
+   in let sp87 = st-append-code sp86 (mov-store reg-rcx reg-rsi proc-slice-offset)
+   in let rx0 = st-append-code sp87 (mov-load reg-rbx reg-rcx proc-saved-rbx-offset)
+   in let rx1 = st-append-code rx0 (mov-load reg-rbp reg-rcx proc-saved-rbp-offset)
+   in let rx2 = st-append-code rx1 (mov-load reg-r8 reg-rcx proc-saved-r8-offset)
+   in let rx3 = st-append-code rx2 (mov-load reg-r9 reg-rcx proc-saved-r9-offset)
+   in let rx4 = st-append-code rx3 (mov-load reg-r10 reg-rcx proc-saved-r10-offset)
+   in let rx5 = st-append-code rx4 (mov-load reg-r11 reg-rcx proc-saved-r11-offset)
+   in let rx6 = st-append-code rx5 (mov-load reg-r12 reg-rcx proc-saved-r12-offset)
+   in let rx7 = st-append-code rx6 (mov-load reg-r13 reg-rcx proc-saved-r13-offset)
+   in let rx8 = st-append-code rx7 (mov-load reg-r14 reg-rcx proc-saved-r14-offset)
+   in let rx9 = st-append-code rx8 (mov-load reg-r15 reg-rcx proc-saved-r15-offset)
+   in let pno-pre-pos = rx9.code-len
+   in let sp88 = patch-jcc-at sp87 no-pre1 pno-pre-pos
+   in let sp89 = patch-jcc-at sp88 no-pre2 pno-pre-pos
+   in let sp90 = patch-jcc-at sp89 pno-other pno-other-pos
+   in let st12 = emit-out-byte sp90 32 32
+   in let st13 = st-append-code st12 (pop-r reg-rdi)
+   in let st14 = st-append-code st13 (pop-r reg-rsi)
+   in let st15 = st-append-code st14 (pop-r reg-rdx)
+   in let st16 = st-append-code st15 (pop-r reg-rcx)
+   in let st17 = st-append-code st16 (pop-r reg-rax)
+   in let st18 = st-append-code st17 iretq
+   in let st19 = patch-jcc-at st18 not-timer (st18.code-len)
+   in let st20 = st-append-code st19 (cmp-ri reg-rax 33)
+   in let not-keyboard = st20.code-len
+   in let st21 = st-append-code st20 (jcc cc-ne 0)
+   in let st22 = st-append-code st21 (li reg-rdx 96)
+   in let st23 = st-append-code st22 in-al-dx
+   in let st24 = st-append-code st23 (li reg-rdi key-buffer-addr)
+   in let st25 = st-append-code st24 [72, 15, 182, 192]
+   in let st26 = st-append-code st25 (mov-store reg-rdi reg-rax 0)
+   in let st26a = st-append-code st26 (li reg-rdi (753664 + 3840))
+   in let st26b = st-append-code st26a (add-ri reg-rax 3840)
+   in let st26c = st-append-code st26b (mov-store reg-rdi reg-rax 0)
+   in let st27 = patch-jcc-at st26c not-keyboard (st26c.code-len)
+   in let st28 = st-append-code st27 (cmp-ri reg-rax 36)
+   in let not-serial = st28.code-len
+   in let st29 = st-append-code st28 (jcc cc-ne 0)
+   in let serial-drain-loop = st29.code-len
+   in let st30 = st-append-code st29 (li reg-rdx 1021)
+   in let st31 = st-append-code st30 in-al-dx
+   in let st32 = st-append-code st31 (li reg-rcx 1)
+   in let st33 = st-append-code st32 (and-rr reg-rax reg-rcx)
+   in let st34 = st-append-code st33 (test-rr reg-rax reg-rax)
+   in let serial-drain-done = st34.code-len
+   in let st35 = st-append-code st34 (jcc cc-e 0)
+   in let st36 = st-append-code st35 (li reg-rdx 1016)
+   in let st37 = st-append-code st36 in-al-dx
+   in let st38 = st-append-code st37 [72, 15, 182, 192]
+   in let st39 = st-append-code st38 (li reg-rdi serial-write-pos-addr)
+   in let st40 = st-append-code st39 (mov-load reg-rcx reg-rdi 0)
+   in let st41 = st-append-code st40 (mov-rr reg-rsi reg-rcx)
+   in let st42 = st-append-code st41 (and-ri reg-rsi serial-ring-buf-mask)
+   in let st43 = st-append-code st42 (add-ri reg-rsi serial-ring-buf-addr)
+   in let st44 = st-append-code st43 [136, 6]
+   in let st45 = st-append-code st44 (add-ri reg-rcx 1)
+   in let st46 = st-append-code st45 (mov-store reg-rdi reg-rcx 0)
+   in let st47 = st-append-code st46 (jmp (serial-drain-loop - (st46.code-len + 5)))
+   in let st48 = patch-jcc-at st47 serial-drain-done (st47.code-len)
+   in let st49 = patch-jcc-at st48 not-serial (st48.code-len)
+   in let st50 = emit-out-byte st49 32 32
+   in let st51 = st-append-code st50 (pop-r reg-rdi)
+   in let st52 = st-append-code st51 (pop-r reg-rsi)
+   in let st53 = st-append-code st52 (pop-r reg-rdx)
+   in let st54 = st-append-code st53 (pop-r reg-rcx)
+   in let st55 = st-append-code st54 (pop-r reg-rax)
+   in let st56 = st-append-code st55 iretq
+   in let exc-handler-pos = st56.code-len
+   in let st57 = emit-cpu-exception-dump st56
+   in patch-jcc-at st57 exc-jcc exc-handler-pos
+
+Section: ISR Stubs
+  IsrStubResult = record {
+   state : CodegenState,
+   first-stub-vaddr : Integer between 0 and 4294967295
+  }
+
+  has-error-code : Integer -> Boolean
+  has-error-code (vec) =
+   if vec == 8 then True
+   else if vec == 10 then True
+   else if vec == 11 then True
+   else if vec == 12 then True
+   else if vec == 13 then True
+   else if vec == 14 then True
+   else if vec == 17 then True
+   else if vec == 21 then True
+   else if vec == 29 then True
+   else if vec == 30 then True
+   else False
+
+  emit-isr-stub : CodegenState, Integer, Integer -> CodegenState
+  emit-isr-stub (st) (vec) (common-handler-offset) =
+   let st1 = if has-error-code vec then st-append-code st (add-ri reg-rsp 8)
+             else st-append-code st [15, 31, 64, 0]
+   in let st2 = st-append-code st1 (push-r reg-rax)
+   in let st3 = st-append-code st2 [176, vec]
+   in let rel = common-handler-offset - (st3.code-len + 5)
+   in st-append-code st3 (jmp rel)
+
+  emit-isr-stubs-loop : CodegenState, Integer, Integer -> CodegenState
+  emit-isr-stubs-loop (st) (vec) (common-handler-offset) =
+   if vec == 256 then st
+   else emit-isr-stubs-loop (emit-isr-stub st vec common-handler-offset) (vec + 1) common-handler-offset
+
+  emit-isr-stubs : CodegenState -> IsrStubResult
+  emit-isr-stubs (st) =
+   let common-handler-offset = st.code-len
+   in let st1 = emit-common-interrupt-handler st
+   in let first-stub-offset = st1.code-len
+   in let st2 = emit-isr-stubs-loop st1 0 common-handler-offset
+   in IsrStubResult {
+    state = st2,
+    first-stub-vaddr = bare-metal-load-addr + first-stub-offset
+  }
+
+Section: IDT Construction
+  emit-idt-entries : CodegenState, Integer -> CodegenState
+  emit-idt-entries (st) (first-stub-vaddr) =
+   let st1 = st-append-code st (li reg-rcx 256)
+   in let st2 = st-append-code st1 (li reg-rdi idt-base)
+   in let st3 = st-append-code st2 (li reg-rsi first-stub-vaddr)
+   in let loop-top = st3.code-len
+   in let st4 = st-append-code st3 (mov-rr reg-rax reg-rsi)
+   in let st5 = st-append-code st4 (and-ri reg-rax 65535)
+   in let st6 = st-append-code st5 (add-ri reg-rax 524288)
+   in let st7 = st-append-code st6 (mov-store reg-rdi reg-rax 0)
+   in let st8 = st-append-code st7 (mov-rr reg-rax reg-rsi)
+   in let st9 = st-append-code st8 (shr-ri reg-rax 16)
+   in let st10 = st-append-code st9 (shl-ri reg-rax 16)
+   in let st11 = st-append-code st10 (add-ri reg-rax 36352)
+   in let st12 = st-append-code st11 (mov-store reg-rdi reg-rax 4)
+   in let st13 = st-append-code st12 (li reg-rax 0)
+   in let st14 = st-append-code st13 (mov-store reg-rdi reg-rax 8)
+   in let st15 = st-append-code st14 (add-ri reg-rdi 16)
+   in let st16 = st-append-code st15 (add-ri reg-rsi 12)
+   in let st17 = st-append-code st16 (sub-ri reg-rcx 1)
+   in let jcc-pos = st17.code-len
+   in let st18 = st-append-code st17 (jcc cc-ne 0)
+   in patch-jcc-at st18 jcc-pos loop-top
+
+Section: Interrupt Setup
+  emit-load-idt : CodegenState -> CodegenState
+  emit-load-idt (st) =
+   let st2 = st-append-code st (sub-ri reg-rsp 16)
+   in let idtr-low = int-mod (256 * 16 - 1) 65536 + idt-base * 65536
+   in let st3 = st-append-code st2 (li reg-rax idtr-low)
+   in let st4 = st-append-code st3 (mov-store reg-rsp reg-rax 0)
+   in let st5 = st-append-code st4 (li reg-rax 0)
+   in let st6 = st-append-code st5 (mov-store reg-rsp reg-rax 8)
+   in let st7 = st-append-code st6 (mov-rr reg-rdi reg-rsp)
+   in let st8 = st-append-code st7 lidt-rdi
+   in st-append-code st8 (add-ri reg-rsp 16)
+
+  emit-vga-progress : CodegenState, Integer, Integer -> CodegenState
+  emit-vga-progress (st) (pos) (ascii) =
+   let st1 = st-append-code st (li reg-rdi (753664 + pos * 2))
+   in let st2 = st-append-code st1 (li reg-rax (3840 + ascii))
+   in st-append-code st2 (mov-store reg-rdi reg-rax 0)
+
+  emit-lapic-disable : CodegenState -> CodegenState
+  emit-lapic-disable (st) =
+   let st1 = st-append-code st (li reg-rdx 1296)
+   in let st1a = st-append-code st1 (xor-rr reg-rax reg-rax)
+   in let st2 = st-append-code st1a [236]
+   in let st3 = st-append-code st2 (cmp-ri reg-rax 255)
+   in let skip-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-ne 0)
+   in let st5 = st-append-code st4 (li reg-rcx 27)
+   in let st6 = st-append-code st5 [15, 50]
+   in let st7 = st-append-code st6 (and-ri reg-rax (-2049))
+   in let st8 = st-append-code st7 [15, 48]
+   in patch-jcc-at st8 skip-pos (st8.code-len)
+
+  emit-kbd-wait-ibf : CodegenState -> CodegenState
+  emit-kbd-wait-ibf (st) =
+   let wait-top = st.code-len
+   in let st1 = st-append-code st (li reg-rdx 100)
+   in let st2 = st-append-code st1 in-al-dx
+   in let st3 = st-append-code st2 [168, 2]
+   in let done-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-e 0)
+   in let st5 = st-append-code st4 (jmp (wait-top - (st4.code-len + 5)))
+   in patch-jcc-at st5 done-pos (st5.code-len)
+
+  emit-kbd-init : CodegenState -> CodegenState
+  emit-kbd-init (st) =
+   let flush-top = st.code-len
+   in let f1 = st-append-code st (li reg-rdx 100)
+   in let f2 = st-append-code f1 in-al-dx
+   in let f3 = st-append-code f2 [168, 1]
+   in let flush-done = f3.code-len
+   in let f4 = st-append-code f3 (jcc cc-e 0)
+   in let f5 = st-append-code f4 (li reg-rdx 96)
+   in let f6 = st-append-code f5 in-al-dx
+   in let f7 = st-append-code f6 (jmp (flush-top - (f6.code-len + 5)))
+   in let f8 = patch-jcc-at f7 flush-done (f7.code-len)
+   in let k1 = emit-kbd-wait-ibf f8
+   in let k2 = emit-out-byte k1 100 174
+   in let k3 = emit-kbd-wait-ibf k2
+   in let k4 = emit-out-byte k3 100 96
+   in let k5 = emit-kbd-wait-ibf k4
+   in let k6 = emit-out-byte k5 96 101
+   in let k7 = emit-kbd-wait-ibf k6
+   in emit-out-byte k7 96 244
+
+  emit-interrupt-setup : CodegenState -> CodegenState
+  emit-interrupt-setup (st) =
+   let st-d0 = emit-vga-progress st 4 49
+   in let st0 = emit-lapic-disable st-d0
+   in let st-d1 = emit-vga-progress st0 5 50
+   in let st0a = emit-pit-init st-d1
+   in let st-d2 = emit-vga-progress st0a 6 51
+   in let st1 = emit-pic-init st-d2
+   in let st-d3 = emit-vga-progress st1 7 52
+   in let st1a = emit-kbd-init st-d3
+   in let st-d4 = emit-vga-progress st1a 8 53
+   in let st10 = st-append-code st-d4 (li reg-rdi tick-count-addr)
+   in let st11 = st-append-code st10 (li reg-rax 0)
+   in let st12 = st-append-code st11 (mov-store reg-rdi reg-rax 0)
+   in let st13 = st-append-code st12 (li reg-rdi key-buffer-addr)
+   in let st14 = st-append-code st13 (mov-store reg-rdi reg-rax 0)
+   in let st15 = st-append-code st14 (li reg-rdi arena-base-addr)
+   in let st18 = st-append-code st15 (mov-store reg-rdi reg-rax 0)
+   in let st19 = st-append-code st18 (li reg-rdi wd-stale-tick-addr)
+   in let st20 = st-append-code st19 (mov-store reg-rdi reg-rax 0)
+   in let st21 = st-append-code st20 (li reg-rdi wd-last-heap-addr)
+   in let st22 = st-append-code st21 (mov-store reg-rdi reg-rax 0)
+   in let st23 = st-append-code st22 (li reg-rdi wd-last-rip-addr)
+   in let st24 = st-append-code st23 (mov-store reg-rdi reg-rax 0)
+   in let st25 = st-append-code st24 (li reg-rdi wd-ring-head-addr)
+   in let st26 = st-append-code st25 (mov-store reg-rdi reg-rax 0)
+   in let st27 = st-append-code st26 (li reg-rdi cap-expiry-addr)
+   in let st28 = st-append-code st27 (mov-store reg-rdi reg-rax 0)
+   in st-append-code st28 sti
+
+Section: Process Management
+  emit-zero-region : CodegenState, Integer, Integer -> CodegenState
+  emit-zero-region (st) (addr) (qwords) =
+   let st1 = st-append-code st (li reg-rdi addr)
+   in let st2 = st-append-code st1 (li reg-rcx qwords)
+   in let st3 = st-append-code st2 (li reg-rax 0)
+   in st-append-code st3 [72, 243, 171]
+
+  emit-pd-entries : CodegenState, Integer, Integer -> CodegenState
+  emit-pd-entries (st) (i) (n) =
+   let count = n - i
+   in if count <= 0 then st
+   else let phys-start = i * 2097152
+   in let st1 = st-append-code st (li reg-rax (phys-start + 131))
+   in let st2 = st-append-code st1 (li reg-rcx count)
+   in let loop-start = st2.code-len
+   in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
+   in let st4 = st-append-code st3 (add-ri reg-rdi 8)
+   in let st5 = st-append-code st4 (add-ri reg-rax 2097152)
+   in let st6 = st-append-code st5 (sub-ri reg-rcx 1)
+   in let cur = st6.code-len
+   in st-append-code st6 (jcc cc-ne (loop-start - (cur + 6)))
+
+  emit-pdpt-entries : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-pdpt-entries (st) (pdpt-addr) (pml4-addr) (i) =
+   if i >= bare-metal-pd-count then st
+   else let st1 = st-append-code st (li reg-rdi (pdpt-addr + i * 8))
+    in let st2 = st-append-code st1 (li reg-rax (pml4-addr + 8192 + i * 4096 + 3))
+    in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
+    in emit-pdpt-entries st3 pdpt-addr pml4-addr (i + 1)
+
+  emit-fill-pds : CodegenState, Integer, Integer -> CodegenState
+  emit-fill-pds (st) (pml4-addr) (i) =
+   if i >= bare-metal-pd-count then st
+   else let pd-addr = pml4-addr + 8192 + i * 4096
+    in let page-start = i * 512
+    in let page-end = if (i + 1) * 512 > bare-metal-page-count then bare-metal-page-count else (i + 1) * 512
+    in let st1 = st-append-code st (li reg-rdi pd-addr)
+    in let st2 = emit-pd-entries st1 page-start page-end
+    in emit-fill-pds st2 pml4-addr (i + 1)
+
+  emit-build-process-page-tables : CodegenState, Integer, Integer -> CodegenState
+  emit-build-process-page-tables (st) (pml4-addr) (heap-phys) =
+   let zero-qwords = (2 + bare-metal-pd-count) * 512
+   in let st1 = emit-zero-region st pml4-addr zero-qwords
+   in let st2 = st-append-code st1 (li reg-rdi pml4-addr)
+   in let st3 = st-append-code st2 (li reg-rax (pml4-addr + 4096 + 3))
+   in let st4 = st-append-code st3 (mov-store reg-rdi reg-rax 0)
+   in let pdpt-addr = pml4-addr + 4096
+   in let st5 = emit-pdpt-entries st4 pdpt-addr pml4-addr 0
+   in emit-fill-pds st5 pml4-addr 0
+
+  emit-create-process : CodegenState, Integer, Integer, Integer, Integer -> CodegenState
+  emit-create-process (st) (proc-index) (state-val) (cr3-val) (heap-base) =
+   let entry-addr = proc-table-base + proc-index * proc-entry-size
+   in let st1 = st-append-code st (li reg-rdi entry-addr)
+   in let st2 = st-append-code st1 (li reg-rax state-val)
+   in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
+   in let st4 = st-append-code st3 (li reg-rdi (entry-addr + 16))
+   in let st5 = st-append-code st4 (li reg-rax cr3-val)
+   in let st6 = st-append-code st5 (mov-store reg-rdi reg-rax 0)
+   in let st7 = st-append-code st6 (li reg-rdi (entry-addr + 40))
+   in let st8 = st-append-code st7 (li reg-rax heap-base)
+   in let st9 = st-append-code st8 (mov-store reg-rdi reg-rax 0)
+   in let st10 = st-append-code st9 (li reg-rdi (entry-addr + 48))
+   in st-append-code st10 (mov-store reg-rdi reg-rax 0)
+
+  emit-process-setup : CodegenState -> CodegenState
+  emit-process-setup (st) =
+   let st1 = emit-zero-region st proc-table-base (16 * proc-entry-size / 8)
+   in let st1a = emit-zero-region st1 chan-table-base (chan-max-channels * chan-entry-size / 8)
+   in let st1b = emit-zero-region st1a identity-table-base (16 * identity-entry-size / 8 + 4)
+   in let st1c = emit-device-seed-init st1b
+   in let st1d = emit-zero-region st1c identity-key-addr 6
+   in let st1e = emit-ata-active-init st1d
+   in let st2 = st-append-code st1e (li reg-rdi current-proc-addr)
+   in let st3 = st-append-code st2 (li reg-rax 0)
+   in let st4 = st-append-code st3 (mov-store reg-rdi reg-rax 0)
+   in let slt0 = st-append-code st4 (li reg-rdi slice-table-addr)
+   in let slt1 = st-append-code slt0 (li reg-rax 0)
+   in let slt2 = st-append-code slt1 (mov-store reg-rdi reg-rax 0)
+   in let slt3 = st-append-code slt2 (li reg-rax proc-slice-system)
+   in let slt4 = st-append-code slt3 (mov-store reg-rdi reg-rax 8)
+   in let slt5 = st-append-code slt4 (li reg-rax proc-slice-normal)
+   in let slt6 = st-append-code slt5 (mov-store reg-rdi reg-rax 16)
+   in let slt7 = st-append-code slt6 (li reg-rax proc-slice-background)
+   in let slt8 = st-append-code slt7 (mov-store reg-rdi reg-rax 24)
+   in let st5 = emit-build-process-page-tables slt8 32768 6291456
+   in let st6 = emit-create-process st5 0 1 32768 6291456
+   in let st7 = st-append-code st6 (li reg-rax 32768)
+   in let st8 = st-append-code st7 [15, 34, 216]
+   in st-append-code st8 (li reg-r10 6291456)
+
+Section: Device Seed
+  emit-device-seed-init : CodegenState -> CodegenState
+  emit-device-seed-init (st) =
+   let st0 = st-append-code st (li reg-rdi device-seed-addr)
+   in let st1 = emit-rdrand-store st0 0
+   in let st2 = emit-rdrand-store st1 8
+   in let st3 = emit-rdrand-store st2 16
+   in emit-rdrand-store st3 24
+
+  emit-rdrand-store : CodegenState, Integer -> CodegenState
+  emit-rdrand-store (st) (offset) =
+   let retry = st.code-len
+   in let st1 = st-append-code st [72, 15, 199, 240]
+   in let st2 = st-append-code st1 (jcc cc-ae (retry - (st1.code-len + 6)))
+   in st-append-code st2 (mov-store reg-rdi reg-rax offset)
+
+Section: Capabilities
+  emit-grant-capability : CodegenState, Integer, Integer -> CodegenState
+  emit-grant-capability (st) (proc-index) (cap-bit) =
+   let cap-addr = proc-table-base + proc-index * proc-entry-size + proc-cap-offset
+   in let st1 = st-append-code st (li reg-rdi cap-addr)
+   in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
+   in let bit-mask = shl-1 cap-bit
+   in let st3 = st-append-code st2 (or-ri reg-rax bit-mask)
+   in st-append-code st3 (mov-store reg-rdi reg-rax 0)
+
+  emit-revoke-capability : CodegenState, Integer, Integer -> CodegenState
+  emit-revoke-capability (st) (proc-index) (cap-bit) =
+   let cap-addr = proc-table-base + proc-index * proc-entry-size + proc-cap-offset
+   in let st1 = st-append-code st (li reg-rdi cap-addr)
+   in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
+   in let inv-mask = bit-xor (shl-1 cap-bit) (0 - 1)
+   in let st3 = st-append-code st2 (and-ri reg-rax inv-mask)
+   in st-append-code st3 (mov-store reg-rdi reg-rax 0)
+
+  shl-1 : Integer -> Integer
+  shl-1 (n) =
+   if n == 0 then 1
+   else 2 * shl-1 (n - 1)
+
+  emit-boot-probe-factstore : CodegenState -> CodegenState
+  emit-boot-probe-factstore (st) =
+   let st0 = st-append-code st (li reg-rdi boot-factstore-addr)
+   in let st1 = st-append-code st0 (xor-rr reg-rax reg-rax)
+   in let st2 = st-append-code st1 (mov-store reg-rdi reg-rax 0)
+   in let st3 = st-append-code st2 (li reg-rdi ata-sector-count-addr)
+   in let st4 = st-append-code st3 (mov-load reg-rax reg-rdi 0)
+   in let st5 = st-append-code st4 (test-rr reg-rax reg-rax)
+   in let no-disk = st5.code-len
+   in let st6 = st-append-code st5 (jcc cc-e 0)
+   in let st7 = emit-ata-read-sector-zero st6
+   in let st8 = st-append-code st7 (li reg-rdi ata-identify-buf-addr)
+   in let st9 = st-append-code st8 (movzx-byte reg-rax reg-rdi 0)
+   in let st10 = st-append-code st9 (cmp-ri reg-rax 50)
+   in let no-magic = st10.code-len
+   in let st11 = st-append-code st10 (jcc cc-ne 0)
+   in let st12 = st-append-code st11 (movzx-byte reg-rax reg-rdi 1)
+   in let st13 = st-append-code st12 (cmp-ri reg-rax 42)
+   in let nm1 = st13.code-len
+   in let st14 = st-append-code st13 (jcc cc-ne 0)
+   in let st15 = st-append-code st14 (movzx-byte reg-rax reg-rdi 2)
+   in let st16 = st-append-code st15 (cmp-ri reg-rax 48)
+   in let nm2 = st16.code-len
+   in let st17 = st-append-code st16 (jcc cc-ne 0)
+   in let st18 = st-append-code st17 (movzx-byte reg-rax reg-rdi 3)
+   in let st19 = st-append-code st18 (cmp-ri reg-rax 39)
+   in let nm3 = st19.code-len
+   in let st20 = st-append-code st19 (jcc cc-ne 0)
+   in let st21 = st-append-code st20 (movzx-byte reg-rax reg-rdi 4)
+   in let st22 = st-append-code st21 (cmp-ri reg-rax 62)
+   in let nm4 = st22.code-len
+   in let st23 = st-append-code st22 (jcc cc-ne 0)
+   in let st24 = st-append-code st23 (movzx-byte reg-rax reg-rdi 5)
+   in let st25 = st-append-code st24 (cmp-ri reg-rax 54)
+   in let nm5 = st25.code-len
+   in let st26 = st-append-code st25 (jcc cc-ne 0)
+   in let st27 = st-append-code st26 (movzx-byte reg-rax reg-rdi 6)
+   in let st28 = st-append-code st27 (cmp-ri reg-rax 45)
+   in let nm6 = st28.code-len
+   in let st29 = st-append-code st28 (jcc cc-ne 0)
+   in let st30 = st-append-code st29 (movzx-byte reg-rax reg-rdi 7)
+   in let st31 = st-append-code st30 (cmp-ri reg-rax 4)
+   in let nm7 = st31.code-len
+   in let st32 = st-append-code st31 (jcc cc-ne 0)
+   in let st33 = st-append-code st32 (li reg-rdi boot-factstore-addr)
+   in let st34 = st-append-code st33 (li reg-rax 1)
+   in let st35 = st-append-code st34 (mov-store reg-rdi reg-rax 0)
+   in let done-pos = st35.code-len
+   in let st36 = patch-jcc-at st35 no-disk done-pos
+   in let st37 = patch-jcc-at st36 no-magic done-pos
+   in let st38 = patch-jcc-at st37 nm1 done-pos
+   in let st39 = patch-jcc-at st38 nm2 done-pos
+   in let st40 = patch-jcc-at st39 nm3 done-pos
+   in let st41 = patch-jcc-at st40 nm4 done-pos
+   in let st42 = patch-jcc-at st41 nm5 done-pos
+   in let st43 = patch-jcc-at st42 nm6 done-pos
+   in patch-jcc-at st43 nm7 done-pos
+
+  emit-ata-read-sector-zero : CodegenState -> CodegenState
+  emit-ata-read-sector-zero (st) =
+   let st1 = st-append-code st (li reg-rax 0)
+   in let st2 = st-append-code st1 (li reg-rdx ata-sector-count-port)
+   in let st3 = st-append-code st2 (li reg-rax 1)
+   in let st4 = st-append-code st3 out-dx-al
+   in let st5 = st-append-code st4 (li reg-rdx ata-lba-low-port)
+   in let st6 = st-append-code st5 (li reg-rax 0)
+   in let st7 = st-append-code st6 out-dx-al
+   in let st8 = st-append-code st7 (li reg-rdx ata-lba-mid-port)
+   in let st9 = st-append-code st8 out-dx-al
+   in let st10 = st-append-code st9 (li reg-rdx ata-lba-high-port)
+   in let st11 = st-append-code st10 out-dx-al
+   in let st12 = st-append-code st11 (li reg-rdx ata-drive-head-port)
+   in let st13 = st-append-code st12 (li reg-rax 224)
+   in let st14 = st-append-code st13 out-dx-al
+   in let st15 = st-append-code st14 (li reg-rax ata-read-cmd)
+   in let st16 = st-append-code st15 (li reg-rdx ata-command-port)
+   in let st17 = st-append-code st16 out-dx-al
+   in let st18 = emit-ata-wait-drq st17
+   in let st19 = st-append-code st18 (li reg-rdi ata-identify-buf-addr)
+   in let st20 = st-append-code st19 (li reg-rdx ata-data-port)
+   in let st21 = st-append-code st20 (li reg-rcx 256)
+   in let st22 = st-append-code st21 [252]
+   in st-append-code st22 rep-insw
+
+Section: MSR and Syscall
+  emit-write-msr : CodegenState, Integer, Integer -> CodegenState
+  emit-write-msr (st) (msr-addr) (value) =
+   let low32 = int-mod value 4294967296
+   in let high32 = value / 4294967296
+   in let st1 = st-append-code st (li reg-rcx msr-addr)
+   in let st2 = st-append-code st1 (li reg-rax low32)
+   in let st3 = st-append-code st2 (li reg-rdx high32)
+   in st-append-code st3 [15, 48]
+
+  SyscallResult = record {
+   state : CodegenState,
+   handler-offset : Integer between 0 and 4294967295
+  }
+
+  CheckExpiryResult = record {
+   state : CodegenState,
+   deny-offset : Integer between 0 and 4294967295
+  }
+
+  emit-check-expiry : CodegenState -> CheckExpiryResult
+  emit-check-expiry (st) =
+   let st1 = st-append-code st (push-r reg-rdi)
+   in let st2 = st-append-code st1 (push-r reg-rsi)
+   in let st3 = st-append-code st2 (li reg-rdi cap-expiry-addr)
+   in let st4 = st-append-code st3 (mov-load reg-rdi reg-rdi 0)
+   in let st5 = st-append-code st4 (test-rr reg-rdi reg-rdi)
+   in let no-expiry-pos = st5.code-len
+   in let st6 = st-append-code st5 (jcc cc-e 0)
+   in let st7 = st-append-code st6 (li reg-rsi tick-count-addr)
+   in let st8 = st-append-code st7 (mov-load reg-rsi reg-rsi 0)
+   in let st9 = st-append-code st8 (cmp-rr reg-rsi reg-rdi)
+   in let expired-pos = st9.code-len
+   in let st10 = st-append-code st9 (jcc cc-ae 0)
+   in let st11 = patch-jcc-at st10 no-expiry-pos (st10.code-len)
+   in let st12 = st-append-code st11 (pop-r reg-rsi)
+   in let st13 = st-append-code st12 (pop-r reg-rdi)
+   in CheckExpiryResult { state = st13, deny-offset = expired-pos }
+
+  emit-check-capability : CodegenState -> CodegenState
+  emit-check-capability (st) =
+   let st1 = st-append-code st (push-r reg-rcx)
+   in let st2 = st-append-code st1 (li reg-rcx proc-table-base)
+   in let st3 = st-append-code st2 (push-r reg-r11)
+   in let st4 = st-append-code st3 (li reg-r11 current-proc-addr)
+   in let st5 = st-append-code st4 (mov-load reg-r11 reg-r11 0)
+   in let st6 = st-append-code st5 (li reg-rcx proc-entry-size)
+   in let st7 = st-append-code st6 [72, 15, 175, 203]
+   in let st8 = st-append-code st7 (add-ri reg-rcx proc-table-base)
+   in let st9 = st-append-code st8 (add-ri reg-rcx proc-cap-offset)
+   in let st10 = st-append-code st9 (mov-load reg-rcx reg-rcx 0)
+   in let st11 = st-append-code st10 [72, 15, 163, 209]
+   in let st12 = st-append-code st11 (pop-r reg-r11)
+   in st-append-code st12 (pop-r reg-rcx)
+
+  emit-syscall-handler : CodegenState -> SyscallResult
+  emit-syscall-handler (st) =
+   let handler-offset = st.code-len
+   in let st1 = st-append-code st (push-r reg-rcx)
+   in let st2 = st-append-code st1 (push-r reg-r11)
+   in let st3 = st-append-code st2 (cmp-ri reg-rax 1)
+   in let not-write = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-ne 0)
+   in let st5 = st-append-code st4 (mov-rr reg-rdx reg-rdi)
+   in let st6 = emit-check-capability st5
+   in let no-write-cap = st6.code-len
+   in let st7 = st-append-code st6 (jcc cc-e 0)
+   in let expiry = emit-check-expiry st7
+   in let st8 = st-append-code (expiry.state) (mov-rr reg-rax reg-rdx)
+   in let st9 = st-append-code st8 (li reg-rdx 1016)
+   in let st10 = st-append-code st9 out-dx-al
+   in let st10a = patch-jcc-at st10 no-write-cap (st10.code-len)
+   in let st11 = patch-jcc-at st10a (expiry.deny-offset) (st10a.code-len)
+   in let st12 = st-append-code st11 (li reg-rax 0)
+   in let write-done = st12.code-len
+   in let st13 = st-append-code st12 (jmp 0)
+   in let st14 = patch-jcc-at st13 not-write (st13.code-len)
+   in let st15 = st-append-code st14 (cmp-ri reg-rax 2)
+   in let not-read-key = st15.code-len
+   in let st16 = st-append-code st15 (jcc cc-ne 0)
+   in let st17 = st-append-code st16 (li reg-rdi key-buffer-addr)
+   in let st18 = st-append-code st17 (mov-load reg-rax reg-rdi 0)
+   in let read-done = st18.code-len
+   in let st19 = st-append-code st18 (jmp 0)
+   in let st20 = patch-jcc-at st19 not-read-key (st19.code-len)
+   in let st21 = st-append-code st20 (cmp-ri reg-rax 3)
+   in let not-get-ticks = st21.code-len
+   in let st22 = st-append-code st21 (jcc cc-ne 0)
+   in let st23 = st-append-code st22 (li reg-rdi tick-count-addr)
+   in let st24 = st-append-code st23 (mov-load reg-rax reg-rdi 0)
+   in let ticks-done = st24.code-len
+   in let st25 = st-append-code st24 (jmp 0)
+   in let st26 = patch-jcc-at st25 not-get-ticks (st25.code-len)
+   in let st-br = emit-block-read-syscall st26
+   in let st-bw = emit-block-write-syscall (st-br.state)
+   in let st-bsc = emit-block-sector-count-syscall (st-bw.state)
+   in let st-bsel = emit-block-select-syscall (st-bsc.state)
+   in let st-kl = emit-key-load-syscall (st-bsel.state)
+   in let st-kz = emit-key-zero-syscall (st-kl.state)
+   in let st-ks = emit-key-status-syscall (st-kz.state)
+   in let st27 = st-append-code (st-ks.state) (li reg-rax (-1))
+   in let common-exit = st27.code-len
+   in let st27a = patch-jmp-at st27 (st-br.done-jmp) common-exit
+   in let st27b = patch-jmp-at st27a (st-bw.done-jmp) common-exit
+   in let st27c = patch-jmp-at st27b (st-bsc.done-jmp) common-exit
+   in let st27c2 = patch-jmp-at st27c (st-bsel.done-jmp) common-exit
+   in let st27d = patch-jmp-at st27c2 (st-kl.done-jmp) common-exit
+   in let st27e = patch-jmp-at st27d (st-kz.done-jmp) common-exit
+   in let st27f = patch-jmp-at st27e (st-ks.done-jmp) common-exit
+   in let st28 = patch-jmp-at st27f write-done common-exit
+   in let st29 = patch-jmp-at st28 read-done common-exit
+   in let st30 = patch-jmp-at st29 ticks-done common-exit
+   in let st31 = st-append-code st30 (pop-r reg-r11)
+   in let st32 = st-append-code st31 (pop-r reg-rcx)
+   in let st33 = st-append-code st32 (push-r reg-r11)
+   in let st34 = st-append-code st33 [157]
+   in let st35 = st-append-code st34 [255, 225]
+   in SyscallResult {
+    state = st35,
+    handler-offset = handler-offset
+  }
+
+  BlockSyscallResult = record {
+   state : CodegenState,
+   done-jmp : Integer between 0 and 4294967295
+  }
+
+  emit-block-read-syscall : CodegenState -> BlockSyscallResult
+  emit-block-read-syscall (st) =
+   let st1 = st-append-code st (cmp-ri reg-rax 10)
+   in let not-block-read = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let st3 = st-append-code st2 (push-r reg-rsi)
+   in let st4 = st-append-code st3 (push-r reg-rcx)
+   in let st5 = emit-ata-setup-lba st4
+   in let st6 = st-append-code st5 (li reg-rax ata-read-cmd)
+   in let st7 = st-append-code st6 (li reg-rdx ata-command-port)
+   in let st8 = st-append-code st7 out-dx-al
+   in let st9 = emit-ata-wait-drq st8
+   in let st10 = st-append-code st9 (pop-r reg-rcx)
+   in let st11 = st-append-code st10 (pop-r reg-rdi)
+   in let st12 = st-append-code st11 (li reg-rdx ata-data-port)
+   in let st13 = st-append-code st12 (li reg-rcx 256)
+   in let st13a = st-append-code st13 [252]
+   in let st14 = st-append-code st13a rep-insw
+   in let st15 = st-append-code st14 (li reg-rax 0)
+   in let done = st15.code-len
+   in let st16 = st-append-code st15 (jmp 0)
+   in let st17 = patch-jcc-at st16 not-block-read (st16.code-len)
+   in BlockSyscallResult { state = st17, done-jmp = done }
+
+  emit-block-write-syscall : CodegenState -> BlockSyscallResult
+  emit-block-write-syscall (st) =
+   let st1 = st-append-code st (cmp-ri reg-rax 11)
+   in let not-block-write = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let st3 = st-append-code st2 (push-r reg-rsi)
+   in let st4 = st-append-code st3 (push-r reg-rcx)
+   in let st5 = emit-ata-setup-lba st4
+   in let st6 = st-append-code st5 (li reg-rax ata-write-cmd)
+   in let st7 = st-append-code st6 (li reg-rdx ata-command-port)
+   in let st8 = st-append-code st7 out-dx-al
+   in let st9 = emit-ata-wait-drq st8
+   in let st10 = st-append-code st9 (pop-r reg-rcx)
+   in let st11 = st-append-code st10 (pop-r reg-rsi)
+   in let st12 = st-append-code st11 (li reg-rdx ata-data-port)
+   in let st13 = st-append-code st12 (li reg-rcx 256)
+   in let st13b = st-append-code st13 [252]
+   in let st14 = st-append-code st13b rep-outsw
+   in let st14a = emit-ata-400ns-delay st14
+   in let st14b = emit-ata-wait-ready st14a
+   in let st14c = st-append-code st14b (li reg-rax ata-flush-cmd)
+   in let st14d = st-append-code st14c (li reg-rdx ata-command-port)
+   in let st14e = st-append-code st14d out-dx-al
+   in let st15 = emit-ata-wait-ready (emit-ata-400ns-delay st14e)
+   in let st19 = st-append-code st15 (li reg-rax 0)
+   in let done = st19.code-len
+   in let st20 = st-append-code st19 (jmp 0)
+   in let st21 = patch-jcc-at st20 not-block-write (st20.code-len)
+   in BlockSyscallResult { state = st21, done-jmp = done }
+
+  emit-block-sector-count-syscall : CodegenState -> BlockSyscallResult
+  emit-block-sector-count-syscall (st) =
+   let st1 = st-append-code st (cmp-ri reg-rax 12)
+   in let not-block-sector-count = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let st3 = st-append-code st2 (li reg-rdi ata-sector-count-addr)
+   in let st4 = st-append-code st3 (mov-load reg-rax reg-rdi 0)
+   in let done = st4.code-len
+   in let st5 = st-append-code st4 (jmp 0)
+   in let st6 = patch-jcc-at st5 not-block-sector-count (st5.code-len)
+   in BlockSyscallResult { state = st6, done-jmp = done }
+
+  emit-ata-active-init : CodegenState -> CodegenState
+  emit-ata-active-init (st) =
+   let st1 = st-append-code st (li reg-rdi ata-active-drive-addr)
+   in let st2 = st-append-code st1 (li reg-rax 0)
+   in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
+   in let st4 = st-append-code st3 (li reg-rdi ata-active-base-addr)
+   in let st5 = st-append-code st4 (li reg-rax ata-data-port)
+   in let st6 = st-append-code st5 (mov-store reg-rdi reg-rax 0)
+   in let st7 = st-append-code st6 (li reg-rdi ata-active-ctrl-addr)
+   in let st8 = st-append-code st7 (li reg-rax ata-control-port)
+   in let st9 = st-append-code st8 (mov-store reg-rdi reg-rax 0)
+   in let st10 = st-append-code st9 (li reg-rdi ata-active-select-addr)
+   in let st11 = st-append-code st10 (li reg-rax 224)
+   in st-append-code st11 (mov-store reg-rdi reg-rax 0)
+
+  emit-block-select-syscall : CodegenState -> BlockSyscallResult
+  emit-block-select-syscall (st) =
+   let st1 = st-append-code st (cmp-ri reg-rax 13)
+   in let not-block-select = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let st3 = st-append-code st2 (push-r reg-rdi)
+   in let st4 = st-append-code st3 (li reg-rsi ata-active-drive-addr)
+   in let st5 = st-append-code st4 (mov-store reg-rsi reg-rdi 0)
+   in let st6 = st-append-code st5 (mov-rr reg-rax reg-rdi)
+   in let st7 = st-append-code st6 (and-ri reg-rax 1)
+   in let st9 = st-append-code st7 (shl-ri reg-rax 4)
+   in let st10 = st-append-code st9 (add-ri reg-rax 224)
+   in let st11 = st-append-code st10 (li reg-rsi ata-active-select-addr)
+   in let st12 = st-append-code st11 (mov-store reg-rsi reg-rax 0)
+   in let st13 = st-append-code st12 (pop-r reg-rdi)
+   in let st14 = st-append-code st13 (mov-rr reg-rax reg-rdi)
+   in let st15 = st-append-code st14 [72, 193, 232, 1]
+   in let st16 = st-append-code st15 (test-rr reg-rax reg-rax)
+   in let primary = st16.code-len
+   in let st17 = st-append-code st16 (jcc cc-e 0)
+   in let st18 = st-append-code st17 (li reg-rax 368)
+   in let st19 = st-append-code st18 (li reg-rcx 886)
+   in let sec-done = st19.code-len
+   in let st20 = st-append-code st19 (jmp 0)
+   in let st21 = patch-jcc-at st20 primary (st20.code-len)
+   in let st22 = st-append-code st21 (li reg-rax ata-data-port)
+   in let st23 = st-append-code st22 (li reg-rcx ata-control-port)
+   in let st24 = patch-jmp-at st23 sec-done (st23.code-len)
+   in let st25 = st-append-code st24 (li reg-rsi ata-active-base-addr)
+   in let st26 = st-append-code st25 (mov-store reg-rsi reg-rax 0)
+   in let st27 = st-append-code st26 (li reg-rsi ata-active-ctrl-addr)
+   in let st28 = st-append-code st27 (mov-store reg-rsi reg-rcx 0)
+   in let st29 = st-append-code st28 (li reg-rax 0)
+   in let done = st29.code-len
+   in let st30 = st-append-code st29 (jmp 0)
+   in let st31 = patch-jcc-at st30 not-block-select (st30.code-len)
+   in BlockSyscallResult { state = st31, done-jmp = done }
+
+  emit-key-load-syscall : CodegenState -> BlockSyscallResult
+  emit-key-load-syscall (st) =
+   let st1 = st-append-code st (cmp-ri reg-rax 15)
+   in let not-key-load = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let st3 = st-append-code st2 (push-r reg-rcx)
+   in let st4 = st-append-code st3 (push-r reg-rsi)
+   in let st5 = st-append-code st4 (mov-rr reg-rsi reg-rdi)
+   in let st6 = st-append-code st5 (li reg-rdi identity-key-addr)
+   in let st7 = st-append-code st6 (li reg-rcx 4)
+   in let st8 = st-append-code st7 [252]
+   in let st9 = st-append-code st8 [243, 72, 165]
+   in let st10 = st-append-code st9 (pop-r reg-rsi)
+   in let st11 = st-append-code st10 (pop-r reg-rcx)
+   in let st12 = st-append-code st11 (li reg-rdi identity-key-loaded-addr)
+   in let st13 = st-append-code st12 (li reg-rax 1)
+   in let st14 = st-append-code st13 (mov-store reg-rdi reg-rax 0)
+   in let st15 = st-append-code st14 (li reg-rax 0)
+   in let done = st15.code-len
+   in let st16 = st-append-code st15 (jmp 0)
+   in let st17 = patch-jcc-at st16 not-key-load (st16.code-len)
+   in BlockSyscallResult { state = st17, done-jmp = done }
+
+  emit-key-zero-syscall : CodegenState -> BlockSyscallResult
+  emit-key-zero-syscall (st) =
+   let st1 = st-append-code st (cmp-ri reg-rax 16)
+   in let not-key-zero = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let st3 = st-append-code st2 (li reg-rdi identity-key-addr)
+   in let st4 = st-append-code st3 (li reg-rax 0)
+   in let st5 = st-append-code st4 (mov-store reg-rdi reg-rax 0)
+   in let st6 = st-append-code st5 (mov-store reg-rdi reg-rax 8)
+   in let st7 = st-append-code st6 (mov-store reg-rdi reg-rax 16)
+   in let st8 = st-append-code st7 (mov-store reg-rdi reg-rax 24)
+   in let st9 = st-append-code st8 (li reg-rdi identity-key-loaded-addr)
+   in let st10 = st-append-code st9 (mov-store reg-rdi reg-rax 0)
+   in let st11 = st-append-code st10 (li reg-rdi identity-lock-tick-addr)
+   in let st12 = st-append-code st11 (mov-store reg-rdi reg-rax 0)
+   in let done = st12.code-len
+   in let st13 = st-append-code st12 (jmp 0)
+   in let st14 = patch-jcc-at st13 not-key-zero (st13.code-len)
+   in BlockSyscallResult { state = st14, done-jmp = done }
+
+  emit-key-status-syscall : CodegenState -> BlockSyscallResult
+  emit-key-status-syscall (st) =
+   let st1 = st-append-code st (cmp-ri reg-rax 18)
+   in let not-key-status = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let st3 = st-append-code st2 (li reg-rdi identity-key-loaded-addr)
+   in let st4 = st-append-code st3 (mov-load reg-rax reg-rdi 0)
+   in let done = st4.code-len
+   in let st5 = st-append-code st4 (jmp 0)
+   in let st6 = patch-jcc-at st5 not-key-status (st5.code-len)
+   in BlockSyscallResult { state = st6, done-jmp = done }
+
+  ata-control-port : Integer = 1014
+
+  emit-ata-soft-reset : CodegenState -> CodegenState
+  emit-ata-soft-reset (st) =
+   let st1 = st-append-code st (li reg-rdx ata-control-port)
+   in let st2 = st-append-code st1 (li reg-rax 4)
+   in let st3 = st-append-code st2 out-dx-al
+   in let st4 = emit-ata-400ns-delay st3
+   in let st5 = st-append-code st4 (li reg-rdx ata-control-port)
+   in let st6 = st-append-code st5 (li reg-rax 2)
+   in let st7 = st-append-code st6 out-dx-al
+   in emit-ata-400ns-delay st7
+
+  emit-ata-setup-lba : CodegenState -> CodegenState
+  emit-ata-setup-lba (st) =
+   let st1 = emit-ata-wait-ready st
+   in let st2 = st-append-code st1 (li reg-rdx ata-drive-head-port)
+   in let st3 = st-append-code st2 (li reg-rax 224)
+   in let st4 = st-append-code st3 out-dx-al
+   in let st5 = emit-ata-400ns-delay st4
+   in let st6 = emit-ata-wait-ready st5
+   in let st7 = st-append-code st6 (li reg-rdx ata-sector-count-port)
+   in let st8 = st-append-code st7 (li reg-rax 1)
+   in let st9 = st-append-code st8 out-dx-al
+   in let st10 = st-append-code st9 (li reg-rdx ata-lba-low-port)
+   in let st11 = st-append-code st10 (mov-rr reg-rax reg-rdi)
+   in let st12 = st-append-code st11 out-dx-al
+   in let st13 = st-append-code st12 (li reg-rdx ata-lba-mid-port)
+   in let st14 = st-append-code st13 (mov-rr reg-rax reg-rdi)
+   in let st15 = st-append-code st14 [72, 193, 232, 8]
+   in let st16 = st-append-code st15 out-dx-al
+   in let st17 = st-append-code st16 (li reg-rdx ata-lba-high-port)
+   in let st18 = st-append-code st17 (mov-rr reg-rax reg-rdi)
+   in let st19 = st-append-code st18 [72, 193, 232, 16]
+   in st-append-code st19 out-dx-al
+
+  emit-ata-400ns-delay : CodegenState -> CodegenState
+  emit-ata-400ns-delay (st) =
+   let st1 = st-append-code st (li reg-rdx ata-control-port)
+   in let st2 = st-append-code st1 in-al-dx
+   in let st3 = st-append-code st2 in-al-dx
+   in let st4 = st-append-code st3 in-al-dx
+   in st-append-code st4 in-al-dx
+
+  emit-ata-wait-ready : CodegenState -> CodegenState
+  emit-ata-wait-ready (st) =
+   let loop-top = st.code-len
+   in let st1 = st-append-code st (li reg-rdx ata-status-port)
+   in let st2 = st-append-code st1 in-al-dx
+   in let st3 = st-append-code st2 [168, ata-status-bsy]
+   in let st4 = patch-jcc-at (st-append-code st3 (jcc cc-ne 0)) (st3.code-len) loop-top
+   in let st5 = st-append-code st4 [168, 64]
+   in patch-jcc-at (st-append-code st5 (jcc cc-e 0)) (st5.code-len) loop-top
+
+  emit-ata-wait-drq : CodegenState -> CodegenState
+  emit-ata-wait-drq (st) =
+   let st1 = emit-ata-400ns-delay st
+   in let loop-top = st1.code-len
+   in let st2 = st-append-code st1 (li reg-rdx ata-status-port)
+   in let st3 = st-append-code st2 in-al-dx
+   in let st4 = st-append-code st3 [168, ata-status-bsy]
+   in let st5 = patch-jcc-at (st-append-code st4 (jcc cc-ne 0)) (st4.code-len) loop-top
+   in let st6 = st-append-code st5 [168, ata-status-drq]
+   in patch-jcc-at (st-append-code st6 (jcc cc-e 0)) (st6.code-len) loop-top
+
+  emit-ata-spin-delay : CodegenState, Integer -> CodegenState
+  emit-ata-spin-delay (st) (count) =
+   let st1 = st-append-code st (li reg-rcx count)
+   in let loop-top = st1.code-len
+   in let st2 = st-append-code st1 (li reg-rdx ata-control-port)
+   in let st3 = st-append-code st2 in-al-dx
+   in let st4 = st-append-code st3 (sub-ri reg-rcx 1)
+   in patch-jcc-at (st-append-code st4 (jcc cc-ne 0)) (st4.code-len) loop-top
+
+  emit-ata-wait-bsy-clear-bounded : CodegenState -> CodegenState
+  emit-ata-wait-bsy-clear-bounded (st) =
+   let st0 = st-append-code st (li reg-rcx 1000000)
+   in let loop-top = st0.code-len
+   in let st1 = st-append-code st0 (li reg-rdx ata-control-port)
+   in let st2 = st-append-code st1 in-al-dx
+   in let st3 = st-append-code st2 [168, ata-status-bsy]
+   in let done-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-e 0)
+   in let st5 = st-append-code st4 (sub-ri reg-rcx 1)
+   in let st6 = patch-jcc-at (st-append-code st5 (jcc cc-ne 0)) (st5.code-len) loop-top
+   in patch-jcc-at st6 done-pos (st6.code-len)
+
+  emit-ata-wait-ready-bounded : CodegenState -> CodegenState
+  emit-ata-wait-ready-bounded (st) =
+   let st0 = st-append-code st (li reg-rcx 1000000)
+   in let loop-top = st0.code-len
+   in let st1 = st-append-code st0 (li reg-rdx ata-control-port)
+   in let st2 = st-append-code st1 in-al-dx
+   in let st3 = st-append-code st2 [168, ata-status-bsy]
+   in let bsy-set-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-ne 0)
+   in let st5 = st-append-code st4 [168, ata-status-drdy]
+   in let drdy-set-pos = st5.code-len
+   in let st6 = st-append-code st5 (jcc cc-ne 0)
+   in let dec-pos = st6.code-len
+   in let st7 = st-append-code st6 (sub-ri reg-rcx 1)
+   in let st8 = st-append-code st7 (jcc cc-ne 0)
+   in let st9 = patch-jcc-at st8 (st7.code-len) loop-top
+   in let st10 = patch-jcc-at st9 bsy-set-pos dec-pos
+   in patch-jcc-at st10 drdy-set-pos (st10.code-len)
+
+  emit-ata-init : CodegenState -> CodegenState
+  emit-ata-init (st) =
+   let st-z1 = st-append-code st (li reg-rdi ata-sector-count-addr)
+   in let st-z2 = st-append-code st-z1 (li reg-rax 0)
+   in let st-z3 = st-append-code st-z2 (mov-store reg-rdi reg-rax 0)
+   in if st.vm-profile.skip-ata-bring-up then st-z3
+   else emit-ata-bring-up st-z3
+
+  emit-ata-bring-up : CodegenState -> CodegenState
+  emit-ata-bring-up (st-z3) =
+   let st-r1 = st-append-code st-z3 (li reg-rdx ata-control-port)
+   in let st-r2 = st-append-code st-r1 (li reg-rax 4)
+   in let st-r3 = st-append-code st-r2 out-dx-al
+   in let st-r4 = emit-ata-spin-delay st-r3 100
+   in let st-r5 = st-append-code st-r4 (li reg-rdx ata-control-port)
+   in let st-r6 = st-append-code st-r5 (li reg-rax 2)
+   in let st-r7 = st-append-code st-r6 out-dx-al
+   in let st-r8 = emit-ata-spin-delay st-r7 100
+   in let st-r9 = emit-ata-wait-bsy-clear-bounded st-r8
+   in let st1 = st-append-code st-r9 (li reg-rdx ata-drive-head-port)
+   in let st2 = st-append-code st1 (li reg-rax 160)
+   in let st3 = st-append-code st2 out-dx-al
+   in let st4 = emit-ata-400ns-delay st3
+   in let st-mid = st-append-code st4 (li reg-rdx ata-lba-mid-port)
+   in let st-mid1 = st-append-code st-mid in-al-dx
+   in let st-mid2 = st-append-code st-mid1 (cmp-ri reg-rax 0)
+   in let no-drive-sig = st-mid2.code-len
+   in let st-mid3 = st-append-code st-mid2 (jcc cc-ne 0)
+   in let st-hi = st-append-code st-mid3 (li reg-rdx ata-lba-high-port)
+   in let st-hi1 = st-append-code st-hi in-al-dx
+   in let st-hi2 = st-append-code st-hi1 (cmp-ri reg-rax 0)
+   in let no-drive-sig2 = st-hi2.code-len
+   in let st-hi3 = st-append-code st-hi2 (jcc cc-ne 0)
+   in let st5 = st-append-code st-hi3 (li reg-rdx ata-status-port)
+   in let st6 = st-append-code st5 in-al-dx
+   in let st7 = st-append-code st6 (cmp-ri reg-rax 0)
+   in let no-drive-1 = st7.code-len
+   in let st8 = st-append-code st7 (jcc cc-e 0)
+   in let st9 = st-append-code st8 (cmp-ri reg-rax 255)
+   in let no-drive-2 = st9.code-len
+   in let st10 = st-append-code st9 (jcc cc-e 0)
+   in let st11 = emit-ata-wait-ready-bounded st10
+   in let st12 = st-append-code st11 (li reg-rdx ata-command-port)
+   in let st13 = st-append-code st12 (li reg-rax ata-identify-cmd)
+   in let st14 = st-append-code st13 out-dx-al
+   in let st14a = emit-ata-400ns-delay st14
+   in let st14b = emit-ata-wait-bsy-clear-bounded st14a
+   in let st14c = st-append-code st14b (li reg-rdx ata-status-port)
+   in let st14d = st-append-code st14c in-al-dx
+   in let st14e = st-append-code st14d [168, ata-status-err]
+   in let no-drive-err = st14e.code-len
+   in let st14f = st-append-code st14e (jcc cc-ne 0)
+   in let st14g = st-append-code st14f [168, ata-status-drq]
+   in let no-drive-drq = st14g.code-len
+   in let st14h = st-append-code st14g (jcc cc-e 0)
+   in let st16 = st-append-code st14h (li reg-rdx ata-data-port)
+   in let st17 = st-append-code st16 (li reg-rcx 256)
+   in let st18 = st-append-code st17 (li reg-rdi ata-identify-buf-addr)
+   in let st19 = st-append-code st18 [252]
+   in let st20 = st-append-code st19 rep-insw
+   in let st21 = st-append-code st20 (li reg-rdi (ata-identify-buf-addr + 120))
+   in let st22 = st-append-code st21 (mov-load-u32 reg-rax reg-rdi 0)
+   in let st23 = st-append-code st22 (li reg-rdi ata-sector-count-addr)
+   in let st24 = st-append-code st23 (mov-store reg-rdi reg-rax 0)
+   in let done = st24.code-len
+   in let st-p1 = patch-jcc-at st24 no-drive-sig done
+   in let st-p2 = patch-jcc-at st-p1 no-drive-sig2 done
+   in let st-p3 = patch-jcc-at st-p2 no-drive-1 done
+   in let st-p4 = patch-jcc-at st-p3 no-drive-2 done
+   in let st-p5 = patch-jcc-at st-p4 no-drive-err done
+   in patch-jcc-at st-p5 no-drive-drq done
+
+  emit-nic-init : CodegenState -> CodegenState
+  emit-nic-init (st) =
+   let st0 = st-append-code st (li reg-rdi nic-present-addr)
+   in let st1 = st-append-code st0 (xor-rr reg-rax reg-rax)
+   in let st2 = st-append-code st1 (mov-store reg-rdi reg-rax 0)
+   in let st3 = st-append-code st2 (li reg-rdx ne2k-reset-port)
+   in let st4 = st-append-code st3 in-al-dx
+   in let st5 = st-append-code st4 out-dx-al
+   in let st6 = st-append-code st5 (li reg-rcx 1000000)
+   in let wait-top = st6.code-len
+   in let st7 = st-append-code st6 (li reg-rdx ne2k-isr-port)
+   in let st8 = st-append-code st7 in-al-dx
+   in let st9 = st-append-code st8 [168, 128]
+   in let rst-found = st9.code-len
+   in let st10 = st-append-code st9 (jcc cc-ne 0)
+   in let st11 = st-append-code st10 (sub-ri reg-rcx 1)
+   in let st12 = patch-jcc-at (st-append-code st11 (jcc cc-ne 0)) (st11.code-len) wait-top
+   in let no-nic = st12.code-len
+   in let st13 = st-append-code st12 (jmp 0)
+   in let st14 = patch-jcc-at st13 rst-found (st13.code-len)
+   in let st15 = st-append-code st14 (li reg-rdx ne2k-isr-port)
+   in let st16 = st-append-code st15 (li reg-rax 255)
+   in let st17 = st-append-code st16 out-dx-al
+   in let st17a = st-append-code st17 (li reg-rdx ne2k-isr-port)
+   in let st17b = st-append-code st17a in-al-dx
+   in let st17c = st-append-code st17b (cmp-ri reg-rax 255)
+   in let phantom = st17c.code-len
+   in let st17d = st-append-code st17c (jcc cc-e 0)
+   in let st18 = st-append-code st17d (li reg-rdx ne2k-cr-port)
+   in let st19 = st-append-code st18 (li reg-rax 33)
+   in let st20 = st-append-code st19 out-dx-al
+   in let st21 = st-append-code st20 (li reg-rdx ne2k-dcr-port)
+   in let st22 = st-append-code st21 (li reg-rax 73)
+   in let st23 = st-append-code st22 out-dx-al
+   in let st24 = st-append-code st23 (li reg-rdx ne2k-rbcr0-port)
+   in let st25 = st-append-code st24 (xor-rr reg-rax reg-rax)
+   in let st26 = st-append-code st25 out-dx-al
+   in let st27 = st-append-code st26 (li reg-rdx ne2k-rbcr1-port)
+   in let st28 = st-append-code st27 out-dx-al
+   in let st29 = st-append-code st28 (li reg-rdx ne2k-rcr-port)
+   in let st30 = st-append-code st29 (li reg-rax 4)
+   in let st31 = st-append-code st30 out-dx-al
+   in let st32 = st-append-code st31 (li reg-rdx ne2k-tcr-port)
+   in let st33 = st-append-code st32 (li reg-rax 2)
+   in let st34 = st-append-code st33 out-dx-al
+   in let st35 = st-append-code st34 (li reg-rdx ne2k-pstart-port)
+   in let st36 = st-append-code st35 (li reg-rax ne2k-page-start)
+   in let st37 = st-append-code st36 out-dx-al
+   in let st38 = st-append-code st37 (li reg-rdx ne2k-pstop-port)
+   in let st39 = st-append-code st38 (li reg-rax ne2k-page-stop)
+   in let st40 = st-append-code st39 out-dx-al
+   in let st41 = st-append-code st40 (li reg-rdx ne2k-bnry-port)
+   in let st42 = st-append-code st41 (li reg-rax ne2k-page-start)
+   in let st43 = st-append-code st42 out-dx-al
+   in let st44 = st-append-code st43 (li reg-rdx ne2k-imr-port)
+   in let st45 = st-append-code st44 (xor-rr reg-rax reg-rax)
+   in let st46 = st-append-code st45 out-dx-al
+   in let st47 = st-append-code st46 (li reg-rdx ne2k-rsar0-port)
+   in let st48 = st-append-code st47 (xor-rr reg-rax reg-rax)
+   in let st49 = st-append-code st48 out-dx-al
+   in let st50 = st-append-code st49 (li reg-rdx ne2k-rsar1-port)
+   in let st51 = st-append-code st50 out-dx-al
+   in let st52 = st-append-code st51 (li reg-rdx ne2k-rbcr0-port)
+   in let st53 = st-append-code st52 (li reg-rax 32)
+   in let st54 = st-append-code st53 out-dx-al
+   in let st55 = st-append-code st54 (li reg-rdx ne2k-rbcr1-port)
+   in let st56 = st-append-code st55 (xor-rr reg-rax reg-rax)
+   in let st57 = st-append-code st56 out-dx-al
+   in let st58 = st-append-code st57 (li reg-rdx ne2k-cr-port)
+   in let st59 = st-append-code st58 (li reg-rax 10)
+   in let st60 = st-append-code st59 out-dx-al
+   in let st61 = st-append-code st60 (li reg-rdi nic-mac-addr)
+   in let st62 = st-append-code st61 (li reg-rdx ne2k-data-port)
+   in let st63 = st-append-code st62 in-ax-dx
+   in let st65 = st-append-code st63 (mov-store-byte reg-rdi reg-rax 0)
+   in let st66 = st-append-code st65 in-ax-dx
+   in let st69 = st-append-code st66 (mov-store-byte reg-rdi reg-rax 1)
+   in let st70 = st-append-code st69 in-ax-dx
+   in let st73 = st-append-code st70 (mov-store-byte reg-rdi reg-rax 2)
+   in let st74 = st-append-code st73 in-ax-dx
+   in let st77 = st-append-code st74 (mov-store-byte reg-rdi reg-rax 3)
+   in let st78 = st-append-code st77 in-ax-dx
+   in let st81 = st-append-code st78 (mov-store-byte reg-rdi reg-rax 4)
+   in let st82 = st-append-code st81 in-ax-dx
+   in let st85 = st-append-code st82 (mov-store-byte reg-rdi reg-rax 5)
+   in let st86 = st-append-code st85 (li reg-rdx ne2k-isr-port)
+   in let st87 = st-append-code st86 (li reg-rax 64)
+   in let st88 = st-append-code st87 out-dx-al
+   in let st89 = st-append-code st88 (li reg-rdx ne2k-cr-port)
+   in let st90 = st-append-code st89 (li reg-rax 97)
+   in let st91 = st-append-code st90 out-dx-al
+   in let st92 = st-append-code st91 (li reg-rdx (ne2k-base-port + 7))
+   in let st93 = st-append-code st92 (li reg-rax ne2k-page-start)
+   in let st94 = st-append-code st93 out-dx-al
+   in let st95 = st-append-code st94 (li reg-rdx ne2k-cr-port)
+   in let st96 = st-append-code st95 (li reg-rax 34)
+   in let st97 = st-append-code st96 out-dx-al
+   in let st98 = st-append-code st97 (li reg-rdx ne2k-tcr-port)
+   in let st99 = st-append-code st98 (xor-rr reg-rax reg-rax)
+   in let st100 = st-append-code st99 out-dx-al
+   in let st101 = st-append-code st100 (li reg-rdi nic-present-addr)
+   in let st102 = st-append-code st101 (li reg-rax 1)
+   in let st103 = st-append-code st102 (mov-store reg-rdi reg-rax 0)
+   in let done = st103.code-len
+   in let st104 = patch-jmp-at st103 no-nic done
+   in patch-jcc-at st104 phantom done
+
+  emit-wait-for-tick : CodegenState -> CodegenState
+  emit-wait-for-tick (st) =
+   let loop-top = st.code-len
+   in let st1 = st-append-code st hlt
+   in let st2 = st-append-code st1 (li reg-rdi tick-count-addr)
+   in let st3 = st-append-code st2 (mov-load reg-rax reg-rdi 0)
+   in let st4 = st-append-code st3 (cmp-ri reg-rax 0)
+   in patch-jcc-at (st-append-code st4 (jcc cc-e 0)) (st4.code-len) loop-top
+
+Section: Heap High-Water Mark
+  emit-update-heap-hwm : CodegenState -> CodegenState
+  emit-update-heap-hwm (st) =
+   let st1 = st-append-code st (push-r reg-r11)
+   in let st2 = st-append-code st1 (li reg-r11 heap-hwm-addr)
+   in let st3 = st-append-code st2 (push-r reg-rax)
+   in let st4 = st-append-code st3 (mov-load reg-rax reg-r11 0)
+   in let st5 = st-append-code st4 (cmp-rr reg-r10 reg-rax)
+   in let skip-update = st5.code-len
+   in let st6 = st-append-code st5 (jcc cc-le 0)
+   in let st7 = st-append-code st6 (mov-store reg-r11 reg-r10 0)
+   in let st8 = patch-jcc-at st7 skip-update (st7.code-len)
+   in let st9 = st-append-code st8 (pop-r reg-rax)
+   in st-append-code st9 (pop-r reg-r11)
+
+Page 1

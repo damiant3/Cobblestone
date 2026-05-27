@@ -1,0 +1,72 @@
+Chapter: Deflate
+  cites Compress chapter Lz77
+  cites Compress chapter Huffman
+
+ Deflate compression (RFC 1951) — stored blocks (BTYPE=00). Each
+ block carries a 5-byte header (BFINAL, LEN, NLEN) followed by
+ verbatim data. Block size is capped at 65535 bytes per the RFC.
+ This is the simplest RFC-compliant Deflate: correct framing,
+ correct round-trip, no entropy coding. LZ77+Huffman compressed
+ blocks (BTYPE=01/02) are a future extension.
+
+ To deflate-compress gives RFC 1951 stored-block compressed bytes.
+ To deflate-decompress gives original bytes from stored-block input.
+
+ We say:
+
+Section: Constants
+
+  deflate-max-block : Integer = 65535
+
+Section: Compression (Stored Blocks)
+
+  deflate-compress : List Integer -> List Integer
+  deflate-compress (input) =
+    let len = list-length input
+    in deflate-emit-blocks input len 0
+
+  deflate-emit-blocks : List Integer, Integer, Integer -> List Integer
+  deflate-emit-blocks (input) (total) (pos) =
+    if pos >= total then []
+    else let remaining = total - pos
+    in let chunk = if remaining > deflate-max-block then deflate-max-block else remaining
+    in let is-last = pos + chunk >= total
+    in let header = deflate-stored-header is-last chunk
+    in let data = deflate-slice input pos chunk 0 []
+    in header & data & deflate-emit-blocks input total (pos + chunk)
+
+  deflate-stored-header : Boolean, Integer -> List Integer
+  deflate-stored-header (is-last) (len) =
+    let bfinal = if is-last then 1 else 0
+    in let len-lo = bit-and len 255
+    in let len-hi = bit-and (bit-shru len 8) 255
+    in let nlen-lo = bit-and (bit-xor len 65535) 255
+    in let nlen-hi = bit-and (bit-shru (bit-xor len 65535) 8) 255
+    in [bfinal, len-lo, len-hi, nlen-lo, nlen-hi]
+
+Section: Decompression
+
+  deflate-decompress : List Integer -> List Integer
+  deflate-decompress (input) =
+    deflate-decode-blocks input 0 (list-length input) []
+
+  deflate-decode-blocks : List Integer, Integer, Integer, List Integer -> List Integer
+  deflate-decode-blocks (input) (pos) (total) (acc) =
+    if pos + 4 >= total then acc
+    else let bfinal = list-at input pos
+    in let len = bit-or (list-at input (pos + 1)) (bit-shl (list-at input (pos + 2)) 8)
+    in let data-start = pos + 5
+    in let data = deflate-slice input data-start len 0 []
+    in let acc2 = acc & data
+    in if bit-and bfinal 1 == 1 then acc2
+    else deflate-decode-blocks input (data-start + len) total acc2
+
+Section: Helpers
+
+  deflate-slice : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  deflate-slice (xs) (off) (len) (i) (acc) =
+    if i >= len then acc
+    else if off + i >= list-length xs then acc
+    else deflate-slice xs off len (i + 1) (list-push acc (list-at xs (off + i)))
+
+Page 1

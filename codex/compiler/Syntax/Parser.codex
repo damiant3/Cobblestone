@@ -1,0 +1,1264 @@
+Chapter: Parser
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ The parser transforms a flat token list into a concrete syntax tree.
+
+  cites Foreword chapter Maybe
+
+Section: Type Parsing
+  parse-type : ParseState -> ParseTypeResult
+  parse-type (st) =
+   if parse-fuel-exhausted st then TypeOk (deck-record (NamedType (current st))) (emit-parse-fuel-error st "parse-type")
+   else let st0 = consume-parse-fuel st
+   in let atom-r = parse-type-atom st0
+   in unwrap-type-ok atom-r parse-type-with-args
+
+  parse-type-with-args : TypeExpr, ParseState -> ParseTypeResult
+  parse-type-with-args (atom) (st) =
+   let applied-r = parse-type-args atom st
+   in unwrap-type-ok applied-r parse-type-bound-or-continue
+
+  parse-type-bound-or-continue : TypeExpr, ParseState -> ParseTypeResult
+  parse-type-bound-or-continue (left) (st) =
+   if is-between-keyword (current-kind st) then parse-bound-between left (advance st)
+   else parse-type-continue left st
+
+  BoundIntResult = record {
+   value : Integer,
+   state : ParseState
+  }
+
+  parse-bound-int : ParseState -> BoundIntResult
+  parse-bound-int (st) =
+   if is-minus (current-kind st) then
+    let st1 = advance st
+    in if is-literal (current-kind st1) then BoundIntResult {
+     value = -(text-to-integer (token-text (current st1))),
+     state = advance st1
+    }
+    else BoundIntResult { value = 0, state = report-bound-int-error st1 }
+   else if is-literal (current-kind st) then BoundIntResult {
+    value = text-to-integer (token-text (current st)),
+    state = advance st
+   }
+   else BoundIntResult { value = 0, state = report-bound-int-error st }
+
+  report-bound-int-error : ParseState -> ParseState
+  report-bound-int-error (st) =
+   let tok = current st
+   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-expected-token-kind ("expected integer literal in bound annotation, got '" & (token-text tok) & "'") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+
+  parse-bound-between : TypeExpr, ParseState -> ParseTypeResult
+  parse-bound-between (base) (st) =
+   let lo-r = parse-bound-int st
+   in let st-and = expect-and-keyword (lo-r.state)
+   in let hi-r = parse-bound-int st-and
+   in let mode-r = parse-overflow-mode (hi-r.state)
+   in parse-type-continue (deck-record (BoundedIntType base (lo-r.value) (hi-r.value) (mode-r.value))) (mode-r.state)
+
+  expect-and-keyword : ParseState -> ParseState
+  expect-and-keyword (st) =
+   if is-ident (current-kind st) & token-text (current st) == "and"
+   then advance st
+   else let tok = current st
+        in __record-set st "bag" (bag-add (st.bag) (make-error cdx-expected-token-kind ("expected 'and' in bound annotation, got '" & (token-text tok) & "'") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+
+  OverflowModeResult = record {
+   value : OverflowMode,
+   state : ParseState
+  }
+
+  parse-overflow-mode : ParseState -> OverflowModeResult
+  parse-overflow-mode (st) =
+   if is-ident (current-kind st) then
+    let txt = token-text (current st)
+    in if txt == "wrapping" then OverflowModeResult { value = deck-record OvWrapping, state = advance st }
+       else if txt == "clamping" then OverflowModeResult { value = deck-record OvClamping, state = advance st }
+       else if txt == "error" then OverflowModeResult { value = deck-record OvError, state = advance st }
+       else OverflowModeResult { value = deck-record OvError, state = st }
+   else OverflowModeResult { value = deck-record OvError, state = st }
+
+  parse-type-continue : TypeExpr, ParseState -> ParseTypeResult
+  parse-type-continue (left) (st) =
+   if parse-fuel-exhausted st then TypeOk left (emit-parse-fuel-error st "parse-type-continue")
+   else let st-fueled = consume-parse-fuel st
+   in if is-arrow (current-kind st-fueled) then let arrow-span = token-to-span (current st-fueled)
+     in let st2 = advance st-fueled
+     in let right-result = parse-type st2
+     in unwrap-type-ok right-result (make-fun-type-arrow left arrow-span)
+    else if is-fat-arrow (current-kind st-fueled) then let st2 = advance st-fueled
+     in let right-result = parse-type st2
+     in unwrap-type-ok right-result (make-constrained-type left)
+    else if current-kind st-fueled == TripleEquals then let eq-span = token-to-span (current st-fueled)
+     in let st2 = advance st-fueled
+     in let right-result = parse-type st2
+     in unwrap-type-ok right-result (make-prop-eq-type left eq-span)
+    else if is-comma (current-kind st-fueled) then if comma-starts-type-param st-fueled
+     then let st2 = skip-newlines (advance st-fueled)
+       in let right-result = parse-type st2
+       in unwrap-type-ok right-result (make-fun-type left)
+     else TypeOk left st-fueled
+    else TypeOk left st-fueled
+
+  comma-starts-type-param : ParseState -> Boolean
+  comma-starts-type-param (st) =
+   let next = peek-kind st 1
+   in if is-type-ident next then True
+      else if is-left-bracket next then True
+      else if is-left-paren next then True
+      else if is-ident next then if is-colon (peek-kind st 2) then False else True
+      else False
+
+  make-fun-type : TypeExpr, TypeExpr, ParseState -> ParseTypeResult
+  make-fun-type (left) (right) (st) =
+   TypeOk (deck-record (FunType left right)) st
+
+  make-prop-eq-type : TypeExpr, SourceSpan, TypeExpr, ParseState -> ParseTypeResult
+  make-prop-eq-type (left) (span) (right) (st) =
+   TypeOk (deck-record (PropEqType left right span)) st
+
+  make-constrained-type : TypeExpr, TypeExpr, ParseState -> ParseTypeResult
+  make-constrained-type (constraint) (body) (st) =
+   TypeOk (deck-record (ConstrainedType constraint body)) st
+
+  make-fun-type-arrow : TypeExpr, SourceSpan, TypeExpr, ParseState -> ParseTypeResult
+  make-fun-type-arrow (left) (arrow-span) (right) (st) =
+   let st2 = when right
+    is FunType (p) (r) (s) -> if bag-has-code (st.bag) cdx-deprecated-arrow-params then st
+      else __record-set st "bag" (bag-add (st.bag) (make-deprecated cdx-deprecated-arrow-params "A -> B -> C is deprecated; use A, B -> C instead" arrow-span))
+    is otherwise -> st
+   in TypeOk (deck-record (FunType left right)) st2
+
+  unwrap-type-ok : ParseTypeResult, (TypeExpr -> ParseState -> ParseTypeResult) -> ParseTypeResult
+  unwrap-type-ok (r) (f) =
+   when r
+    is TypeOk (t) (st) -> f t st
+
+  parse-type-atom : ParseState -> ParseTypeResult
+  parse-type-atom (st) =
+   if is-ident (current-kind st) then let tok = current st
+   in TypeOk (deck-record (NamedType tok)) (advance st)
+   else if is-type-ident (current-kind st) then let tok = current st
+   in TypeOk (deck-record (NamedType tok)) (advance st)
+   else if is-left-paren (current-kind st) then parse-paren-type (advance st)
+   else if is-left-bracket (current-kind st) then parse-effect-type (advance st)
+   else let tok = current st
+   in TypeOk (deck-record (NamedType tok)) (advance st)
+
+  parse-paren-type : ParseState -> ParseTypeResult
+  parse-paren-type (st) =
+   let inner = parse-type st
+   in unwrap-type-ok inner finish-paren-type
+
+  finish-paren-type : TypeExpr, ParseState -> ParseTypeResult
+  finish-paren-type (t) (st) =
+   let st2 = expect RightParen st
+   in TypeOk (deck-record (ParenType t)) st2
+
+  parse-effect-type : ParseState -> ParseTypeResult
+  parse-effect-type (st) =
+   let effs = parse-effect-names st [] []
+   in let ret = parse-type (effs.state)
+   in unwrap-type-ok ret (finish-effect-type (effs.names) (effs.scopes))
+
+  finish-effect-type : List Token, List Token, TypeExpr, ParseState -> ParseTypeResult
+  finish-effect-type (effs) (scopes) (ret) (st) =
+   TypeOk (deck-record (EffectTypeExpr effs scopes ret)) st
+
+  empty-scope-tok : Token = Token {
+   kind = TextLiteral,
+   source = "",
+   offset = 0,
+   length = 0,
+   line = 0,
+   column = 0,
+   file-id = 0
+  }
+
+  EffectNamesResult = record {
+   names : List Token,
+   state : ParseState,
+   scopes : List Token
+  }
+
+  parse-effect-names : ParseState, LinkedList Token, LinkedList Token -> EffectNamesResult
+  parse-effect-names (st) (acc) (sacc) =
+   if is-done st then EffectNamesResult { names = deck-record (__linked-list-to-list acc), state = st, scopes = deck-record (__linked-list-to-list sacc) }
+   else if is-right-bracket (current-kind st) then EffectNamesResult { names = deck-record (__linked-list-to-list acc), state = advance st, scopes = deck-record (__linked-list-to-list sacc) }
+   else if is-comma (current-kind st) then parse-effect-names (advance st) acc sacc
+   else if is-ident (current-kind st) | is-type-ident (current-kind st) then
+    let tok = current st
+    in let st2 = advance st
+    in if is-dot (current-kind st2) then parse-dotted-effect st2 tok acc sacc
+       else parse-effect-with-scope st2 tok acc sacc
+   else parse-effect-names (advance st) acc sacc
+
+  parse-effect-with-scope : ParseState, Token, LinkedList Token, LinkedList Token -> EffectNamesResult
+  parse-effect-with-scope (st) (name-tok) (acc) (sacc) =
+   if is-text-lit (current-kind st) then
+    let scope-tok = current st
+    in parse-effect-names (advance st) (__linked-list-push acc name-tok) (__linked-list-push sacc scope-tok)
+   else parse-effect-names st (__linked-list-push acc name-tok) (__linked-list-push sacc empty-scope-tok)
+
+  parse-dotted-effect : ParseState, Token, LinkedList Token, LinkedList Token -> EffectNamesResult
+  parse-dotted-effect (st) (base-tok) (acc) (sacc) =
+   let st2 = advance st
+   in if is-ident (current-kind st2) | is-type-ident (current-kind st2) then
+    let sub = current st2
+    in let combined = deck-record (Token {
+     kind = Identifier,
+     source = base-tok.source,
+     offset = base-tok.offset,
+     length = sub.offset + sub.length - base-tok.offset,
+     line = base-tok.line,
+     column = base-tok.column,
+     file-id = base-tok.file-id
+    })
+    in parse-effect-with-scope (advance st2) combined acc sacc
+   else parse-effect-names st2 (__linked-list-push acc base-tok) (__linked-list-push sacc empty-scope-tok)
+
+  parse-type-args : TypeExpr, ParseState -> ParseTypeResult
+  parse-type-args (base-type) (st) =
+   if parse-fuel-exhausted st then TypeOk base-type (emit-parse-fuel-error st "parse-type-args")
+   else let st-fueled = consume-parse-fuel st
+   in if is-done st-fueled then TypeOk base-type st-fueled
+   else if is-type-arg-start (current-kind st-fueled) then parse-type-arg-next base-type st-fueled
+   else TypeOk base-type st-fueled
+
+  parse-type-arg-next : TypeExpr, ParseState -> ParseTypeResult
+  parse-type-arg-next (base-type) (st) =
+   let arg-result = parse-type-atom st
+   in unwrap-type-ok arg-result (continue-type-args base-type)
+
+  continue-type-args : TypeExpr, TypeExpr, ParseState -> ParseTypeResult
+  continue-type-args (base-type) (arg) (st) =
+   parse-type-args (deck-record (AppType base-type [arg])) st
+
+Section: Pattern Parsing
+  parse-pattern : ParseState -> ParsePatResult
+  parse-pattern (st) =
+   if parse-fuel-exhausted st then PatOk (deck-record (WildPat (current st))) (emit-parse-fuel-error st "parse-pattern")
+   else let st-fueled = consume-parse-fuel st
+   in if is-wildcard-pat (current-kind st-fueled) then PatOk (deck-record (WildPat (current st-fueled))) (advance st-fueled)
+   else if is-literal (current-kind st-fueled) then PatOk (deck-record (LitPat (current st-fueled))) (advance st-fueled)
+   else if is-type-ident (current-kind st-fueled) then let tok = current st-fueled
+       in parse-ctor-pattern-fields tok [] (advance st-fueled)
+   else if is-ident (current-kind st-fueled) then PatOk (deck-record (VarPat (current st-fueled))) (advance st-fueled)
+       else PatOk (deck-record (WildPat (current st-fueled))) (advance st-fueled)
+
+  parse-ctor-pattern-fields : Token, LinkedList Pat, ParseState -> ParsePatResult
+  parse-ctor-pattern-fields (ctor) (acc) (st) =
+   if parse-fuel-exhausted st then PatOk (deck-record (CtorPat ctor (deck-record (__linked-list-to-list acc)))) (emit-parse-fuel-error st "parse-ctor-pattern-fields")
+   else let st-fueled = consume-parse-fuel st
+   in if is-left-paren (current-kind st-fueled) then let st2 = advance st-fueled
+     in let sub = parse-pattern st2
+     in unwrap-pat-ok sub (continue-ctor-fields ctor acc)
+    else PatOk (deck-record (CtorPat ctor (deck-record (__linked-list-to-list acc)))) st-fueled
+
+  continue-ctor-fields : Token, LinkedList Pat, Pat, ParseState -> ParsePatResult
+  continue-ctor-fields (ctor) (acc) (p) (st) =
+   let st2 = expect RightParen st
+   in parse-ctor-pattern-fields ctor (__linked-list-push acc p) st2
+
+  unwrap-pat-ok : ParsePatResult, (Pat -> ParseState -> ParsePatResult) -> ParsePatResult
+  unwrap-pat-ok (r) (f) =
+   when r
+    is PatOk (p) (st) -> f p st
+
+Section: Definition Parsing
+  parse-type-annotation : ParseState -> ParseTypeResult
+  parse-type-annotation (st) =
+   let st2 = advance st
+   in let st3 = expect Colon st2
+   in parse-type st3
+
+  parse-definition : ParseState -> ParseDefResult
+  parse-definition (st) =
+   if is-done st then ParseDefResult { maybe-def = None, state = st }
+   else if is-claim-keyword (current-kind st) then skip-claim-def st
+   else if is-proof-keyword (current-kind st) then parse-definition (advance st)
+   else if is-ident (current-kind st) then try-parse-def st
+   else if is-type-ident (current-kind st) then try-parse-def st
+     else ParseDefResult { maybe-def = None, state = st }
+
+  is-simple-claim : ParseState -> Boolean
+  is-simple-claim (st) =
+   if is-ident (peek-kind st 1) then is-colon (peek-kind st 2)
+   else False
+
+  parse-claim-annotation : ParseState -> AnnotationNode
+  parse-claim-annotation (st) =
+   let st1 = advance st
+   in if is-ident (current-kind st1) then
+    let name = token-text (current st1)
+    in let prop = collect-claim-prop (advance st1) ""
+    in deck-record (AnnotationNode { kind = "claim", target = name, body = prop })
+   else deck-record (AnnotationNode { kind = "claim", target = "", body = "" })
+
+  collect-claim-prop : ParseState, Text -> Text
+  collect-claim-prop (st) (acc) =
+   if is-done st then acc
+   else when current-kind st
+    is Newline -> acc
+    is otherwise -> collect-claim-prop (advance st) (acc & " " & token-text (current st))
+
+  skip-claim-def : ParseState -> ParseDefResult
+  skip-claim-def (st) =
+   let col = (current st).column
+   in let st2 = advance st
+   in let st3 = skip-claim-tokens st2 col
+   in parse-definition st3
+
+  skip-claim-tokens : ParseState, Integer -> ParseState
+  skip-claim-tokens (st) (col) =
+   if is-done st then st
+   else if (current st).column <= col & is-claim-or-def-start (current-kind st) then st
+   else skip-claim-tokens (advance st) col
+
+  is-claim-or-def-start : TokenKind -> Boolean
+  is-claim-or-def-start (k) =
+   when k
+    is Identifier -> True
+    is TypeIdentifier -> True
+    is ClaimKeyword -> True
+    is ProofKeyword -> True
+    is otherwise -> False
+
+  try-parse-def : ParseState -> ParseDefResult
+  try-parse-def (st) =
+   if is-colon (peek-kind st 1) then let first-name = current st
+     in let ann-result = parse-type-annotation st
+     in unwrap-type-for-def first-name ann-result
+    else parse-def-body-with-ann [] st
+
+  unwrap-type-for-def : Token, ParseTypeResult -> ParseDefResult
+  unwrap-type-for-def (first-name) (r) =
+   when r
+    is TypeOk (ann-type) (st) ->
+     if is-equals (current-kind st) then
+      let ann = deck-record ([deck-record (TypeAnn {
+       name = first-name,
+       type-expr = ann-type
+      })])
+      in let st2 = advance st
+      in let st3 = skip-newlines st2
+      in let body-result = parse-expr-col st3 (first-name.column)
+      in unwrap-def-body body-result ann first-name []
+     else
+      let name-tok = deck-record (Token {
+       kind = Identifier,
+       source = "",
+       offset = 0,
+       length = 0,
+       line = 0,
+       column = 0,
+       file-id = 0
+      })
+      in let ann = deck-record ([deck-record (TypeAnn {
+       name = name-tok,
+       type-expr = ann-type
+      })])
+      in let st2 = skip-newlines st
+      in parse-def-body-with-ann ann st2
+
+  parse-def-body-with-ann : List TypeAnn, ParseState -> ParseDefResult
+  parse-def-body-with-ann (ann) (st) =
+   let st-skip = if is-proof-keyword (current-kind st) then advance st else st
+   in let name-tok = current st-skip
+   in let st2 = advance st-skip
+   in parse-def-params-then ann name-tok [] st2
+
+  parse-def-params-then : List TypeAnn, Token, LinkedList Token, ParseState -> ParseDefResult
+  parse-def-params-then (ann) (name-tok) (acc) (st) =
+   if is-left-paren (current-kind st) then parse-def-params-after-lparen ann name-tok acc (advance st)
+   else finish-def ann name-tok (deck-record (__linked-list-to-list acc)) st
+
+  parse-def-params-after-lparen : List TypeAnn, Token, LinkedList Token, ParseState -> ParseDefResult
+  parse-def-params-after-lparen (ann) (name-tok) (acc) (st) =
+   if is-ident (current-kind st) then let param = current st
+     in let st2 = expect RightParen (advance st)
+     in parse-def-params-then ann name-tok (__linked-list-push acc param) st2
+    else if is-reserved-keyword (current-kind st) then
+     let st2 = report-reserved-keyword "a parameter name" st
+     in let st3 = expect RightParen (advance st2)
+     in parse-def-params-then ann name-tok acc st3
+      else finish-def ann name-tok (deck-record (__linked-list-to-list acc)) st
+
+  finish-def : List TypeAnn, Token, List Token, ParseState -> ParseDefResult
+  finish-def (ann) (name-tok) (params) (st) =
+   if is-equals (current-kind st) then
+    let st2 = advance st
+    in let st3 = skip-newlines st2
+    in let body-result = parse-expr-col st3 (name-tok.column)
+    in unwrap-def-body body-result ann name-tok params
+   else let tok = current st
+    in let err-st = expect Equals st
+    in let st2 = skip-body-tokens err-st (name-tok.column)
+    in ParseDefResult {
+     maybe-def = Just (deck-record (Def {
+      name = name-tok,
+      params = params,
+      ann = ann,
+      body = ErrExpr tok,
+      chapter-slug = ""
+     })),
+     state = st2
+    }
+
+  unwrap-def-body : ParseExprResult, List TypeAnn, Token, List Token -> ParseDefResult
+  unwrap-def-body (r) (ann) (name-tok) (params) =
+   when r
+    is ExprOk (b) (st) ->
+     ParseDefResult {
+      maybe-def = Just (deck-record (Def {
+       name = name-tok,
+       params = params,
+       ann = ann,
+       body = b,
+       chapter-slug = ""
+      })),
+      state = st
+     }
+
+Section: Type Definition Parsing
+  is-paren-type-param : ParseState -> Boolean
+  is-paren-type-param (st) =
+   if is-left-paren (current-kind st) then let k1 = peek-kind st 1
+   in if is-ident k1 then is-right-paren (peek-kind st 2)
+      else if is-type-ident k1 then is-right-paren (peek-kind st 2)
+      else False
+    else False
+
+  is-type-param-pattern : ParseState -> Boolean
+  is-type-param-pattern (st) =
+   if is-paren-type-param st then True
+   else is-ident (current-kind st)
+
+  parse-type-params : ParseState, LinkedList Token -> ParseState
+  parse-type-params (st) (acc) =
+   if is-paren-type-param st then parse-type-params (advance (advance (advance st))) (__linked-list-push acc (list-at (st.tokens) (st.pos + 1)))
+   else if is-ident (current-kind st) then parse-type-params (advance st) (__linked-list-push acc (current st))
+   else st
+
+  collect-type-params : ParseState, LinkedList Token -> List Token
+  collect-type-params (st) (acc) =
+   if is-paren-type-param st then collect-type-params (advance (advance (advance st))) (__linked-list-push acc (list-at (st.tokens) (st.pos + 1)))
+   else if is-ident (current-kind st) then collect-type-params (advance st) (__linked-list-push acc (current st))
+   else deck-record (__linked-list-to-list acc)
+
+  parse-type-def : ParseState -> ParseTypeDefResult
+  parse-type-def (st) =
+   if is-mutable-keyword (current-kind st) then let st0 = advance st
+     in parse-type-def-inner True st0
+   else parse-type-def-inner False st
+
+  parse-type-def-inner : Boolean, ParseState -> ParseTypeDefResult
+  parse-type-def-inner (is-mut) (st) =
+   if is-type-ident (current-kind st) then let name-tok = current st
+     in let st2 = advance st
+     in let tparams = collect-type-params st2 []
+     in let st3 = parse-type-params st2 []
+     in if is-equals (current-kind st3) then let st4 = skip-newlines (advance st3)
+     in if is-record-keyword (current-kind st4) then parse-record-type name-tok tparams is-mut st4
+            else if is-pipe (current-kind st4) then parse-variant-type name-tok tparams st4
+            else if is-type-ident (current-kind st4) & looks-like-variant st4 then parse-variant-type name-tok tparams st4
+            else ParseTypeDefResult { maybe-type-def = None, state = st }
+         else ParseTypeDefResult { maybe-type-def = None, state = st }
+    else ParseTypeDefResult { maybe-type-def = None, state = st }
+
+  parse-record-type : Token, List Token, Boolean, ParseState -> ParseTypeDefResult
+  parse-record-type (name-tok) (tparams) (is-mut) (st) =
+   let st2 = advance st
+   in let st3 = expect LeftBrace st2
+   in let st4 = skip-newlines st3
+   in parse-record-fields-loop name-tok tparams is-mut [] st4
+
+  parse-record-fields-loop : Token, List Token, Boolean, LinkedList RecordFieldDef, ParseState -> ParseTypeDefResult
+  parse-record-fields-loop (name-tok) (tparams) (is-mut) (acc) (st) =
+   if is-right-brace (current-kind st) then ParseTypeDefResult {
+    maybe-type-def = Just (deck-record (TypeDef {
+     name = name-tok,
+     type-params = tparams,
+     body = RecordBody (deck-record (__linked-list-to-list acc)),
+     is-mutable = is-mut
+    })),
+    state = advance st
+   }
+   else if is-field-name-token (current-kind st) then parse-one-record-field name-tok tparams is-mut acc st
+   else ParseTypeDefResult {
+    maybe-type-def = Just (deck-record (TypeDef {
+     name = name-tok,
+     type-params = tparams,
+     body = RecordBody (deck-record (__linked-list-to-list acc)),
+     is-mutable = is-mut
+    })),
+    state = st
+   }
+
+  parse-one-record-field : Token, List Token, Boolean, LinkedList RecordFieldDef, ParseState -> ParseTypeDefResult
+  parse-one-record-field (name-tok) (tparams) (is-mut) (acc) (st) =
+   let field-name = current st
+   in let st2 = advance st
+   in let st3 = expect Colon st2
+   in let field-type-result = parse-type st3
+   in unwrap-record-field-type name-tok tparams is-mut acc field-name field-type-result
+
+  unwrap-record-field-type : Token, List Token, Boolean, LinkedList RecordFieldDef, Token, ParseTypeResult -> ParseTypeDefResult
+  unwrap-record-field-type (name-tok) (tparams) (is-mut) (acc) (field-name) (r) =
+   when r
+    is TypeOk (ft) (st) ->
+     let field = deck-record (RecordFieldDef {
+      name = field-name,
+      type-expr = ft
+     })
+     in let st2 = skip-newlines st
+     in if is-comma (current-kind st2) then parse-record-fields-loop name-tok tparams is-mut (__linked-list-push acc field) (skip-newlines (advance st2))
+         else parse-record-fields-loop name-tok tparams is-mut (__linked-list-push acc field) st2
+
+  looks-like-variant : ParseState -> Boolean
+  looks-like-variant (st) =
+   looks-like-variant-scan (st.tokens) (st.pos + 1) (list-length (st.tokens))
+
+  looks-like-variant-scan : List Token, Integer, Integer -> Boolean
+  looks-like-variant-scan (tokens) (i) (len) =
+   if i >= len then False
+   else let k = (list-at tokens i).kind
+   in if is-pipe k then True
+      else when k
+      is Newline -> False
+      is EndOfFile -> False
+      is otherwise -> looks-like-variant-scan tokens (i + 1) len
+
+  parse-variant-type : Token, List Token, ParseState -> ParseTypeDefResult
+  parse-variant-type (name-tok) (tparams) (st) =
+   if is-type-ident (current-kind st) then let ctor-name = current st
+     in let st2 = advance st
+     in parse-ctor-fields ctor-name [] st2 name-tok tparams []
+    else parse-variant-ctors name-tok tparams [] st
+
+  parse-variant-ctors : Token, List Token, LinkedList VariantCtorDef, ParseState -> ParseTypeDefResult
+  parse-variant-ctors (name-tok) (tparams) (acc) (st) =
+   if is-pipe (current-kind st) then let st2 = skip-newlines (advance st)
+     in let ctor-name = current st2
+     in let st3 = advance st2
+     in parse-ctor-fields ctor-name [] st3 name-tok tparams acc
+    else ParseTypeDefResult {
+     maybe-type-def = Just (deck-record (TypeDef {
+      name = name-tok,
+      type-params = tparams,
+      body = VariantBody (deck-record (__linked-list-to-list acc)),
+      is-mutable = False
+     })),
+     state = st
+    }
+
+  parse-ctor-fields : Token, LinkedList TypeExpr, ParseState, Token, List Token, LinkedList VariantCtorDef -> ParseTypeDefResult
+  parse-ctor-fields (ctor-name) (fields) (st) (name-tok) (tparams) (acc) =
+   if is-left-paren (current-kind st) then let field-result = parse-type (advance st)
+     in unwrap-ctor-field field-result ctor-name fields name-tok tparams acc
+    else let st2 = skip-newlines st
+    in let ctor = deck-record (VariantCtorDef {
+      name = ctor-name,
+      fields = deck-record (__linked-list-to-list fields)
+     })
+    in parse-variant-ctors name-tok tparams (__linked-list-push acc ctor) st2
+
+  unwrap-ctor-field : ParseTypeResult, Token, LinkedList TypeExpr, Token, List Token, LinkedList VariantCtorDef -> ParseTypeDefResult
+  unwrap-ctor-field (r) (ctor-name) (fields) (name-tok) (tparams) (acc) =
+   when r
+    is TypeOk (ty) (st) ->
+     let st2 = expect RightParen st
+      in parse-ctor-fields ctor-name (__linked-list-push fields ty) st2 name-tok tparams acc
+
+Section: Document Parsing
+  parse-document : ParseState -> Document
+  parse-document (st) =
+   let st2 = skip-newlines st
+   in let imp-result = parse-citations st2 "" []
+   in let doc = parse-top-level [] [] [] (imp-result.imports) "" [] [] [] [] (imp-result.state)
+   in let ci = scan-class-instance-defs (make-parse-state (st.tokens) "") [] []
+   in __record-set (__record-set doc "class-defs" (ci.class-defs)) "instance-defs" (ci.instance-defs)
+
+  CiteTitleResult = record { title : Text, state : ParseState }
+
+  deck-copy-text : Text -> Text
+  deck-copy-text (t) =
+   if text-length t == 0 then "" else deck-record (substring t 0 (text-length t))
+
+  collect-cite-title : ParseState, Text -> CiteTitleResult
+  collect-cite-title (st) (acc) =
+   if is-done st then CiteTitleResult { title = deck-copy-text acc, state = st }
+    else when current-kind st
+     is Newline -> CiteTitleResult { title = deck-copy-text acc, state = st }
+     is LeftParen -> CiteTitleResult { title = deck-copy-text acc, state = st }
+     is otherwise -> let tok = current st
+      in collect-cite-title (advance st) (join-title-parts acc (token-text tok))
+
+  parse-citations : ParseState, Text, LinkedList CitesDecl -> ImportParseResult
+  parse-citations (st) (citing) (acc) =
+   if is-cites-keyword (current-kind st) then let st2 = advance st
+     in let quire-tok = current st2
+     in let st3 = advance st2
+     in let st4 = advance st3
+     in let title-result = collect-cite-title st4 ""
+     in let st5 = title-result.state
+     in if is-left-paren (current-kind st5) then let sel = parse-selected-names (advance st5) []
+     in let st6 = skip-newlines (sel.state)
+     in parse-citations st6 citing (__linked-list-push acc (deck-record (CitesDecl {
+           quire = quire-tok,
+           chapter-name = title-result.title,
+           selected-names = sel.names,
+           citing-chapter = citing
+          })))
+     else let st6 = skip-newlines st5
+     in parse-citations st6 citing (__linked-list-push acc (deck-record (CitesDecl {
+          quire = quire-tok,
+          chapter-name = title-result.title,
+          selected-names = [],
+          citing-chapter = citing
+         })))
+    else ImportParseResult {
+     imports = deck-record (__linked-list-to-list acc),
+     state = st
+    }
+
+  SelectedNamesResult = record { names : List Token, state : ParseState }
+
+  parse-selected-names : ParseState, LinkedList Token -> SelectedNamesResult
+  parse-selected-names (st) (acc) =
+   if is-ident (current-kind st) | is-type-ident (current-kind st) then let tok = current st
+     in let st2 = advance st
+     in let acc2 = __linked-list-push acc tok
+     in if is-comma (current-kind st2) then parse-selected-names (skip-newlines (advance st2)) acc2
+        else if is-right-paren (current-kind st2) then SelectedNamesResult {
+          names = deck-record (__linked-list-to-list acc2),
+          state = advance st2
+         }
+        else SelectedNamesResult {
+          names = deck-record (__linked-list-to-list acc2),
+          state = st2
+         }
+    else if is-right-paren (current-kind st) then SelectedNamesResult {
+     names = deck-record (__linked-list-to-list acc),
+     state = advance st
+    }
+    else SelectedNamesResult {
+     names = deck-record (__linked-list-to-list acc),
+     state = st
+    }
+
+  ImportParseResult = record { imports : List CitesDecl, state : ParseState }
+
+  is-chapter-header : ParseState -> Boolean
+  is-chapter-header (st) =
+   if is-type-ident (current-kind st) then let tok = current st
+      in if tok.length == 7 then if (token-text tok) == "Chapter" then is-colon (peek-kind st 1)
+            else False
+         else False
+    else False
+
+  is-section-header : ParseState -> Boolean
+  is-section-header (st) =
+   if is-type-ident (current-kind st) then let tok = current st
+      in if tok.length == 7 then if (token-text tok) == "Section" then is-colon (peek-kind st 1)
+            else False
+         else False
+    else False
+
+  is-page-number : TokenKind -> Boolean
+  is-page-number (k) =
+   when k
+    is IntegerLiteral -> True
+    is otherwise -> False
+
+  is-page-marker : ParseState -> Boolean
+  is-page-marker (st) =
+   if is-type-ident (current-kind st) then let tok = current st
+      in if tok.length == 4 then if (token-text tok) == "Page" then is-page-number (peek-kind st 1)
+         else False
+      else False
+    else False
+
+  extract-header-title : ParseState -> Text
+  extract-header-title (st) =
+   let st2 = advance (advance st)
+   in deck-copy-text (collect-title-tokens st2 "")
+
+  join-title-parts : Text, Text -> Text
+  join-title-parts (acc) (next) =
+   if text-length acc == 0 then next
+    else if text-length next == 0 then acc
+    else let prev-last = char-code-at acc (text-length acc - 1)
+     in let next-first = char-code-at next 0
+     in if (is-letter-code prev-last | is-digit-code prev-last) & (is-letter-code next-first | is-digit-code next-first)
+        then deck-record (acc & " " & next)
+        else deck-record (acc & next)
+
+  collect-title-tokens : ParseState, Text -> Text
+  collect-title-tokens (st) (acc) =
+   if is-done st then acc
+   else when current-kind st
+    is Newline -> acc
+    is otherwise -> let tok = current st
+     in collect-title-tokens (advance st) (join-title-parts acc (token-text tok))
+
+  is-prose-line : ParseState -> Boolean
+  is-prose-line (st) = (current st).column == 2
+
+  skip-body-lines : ParseState -> ParseState
+  skip-body-lines (st) =
+   let st2 = skip-newlines st
+   in if is-done st2 then st2
+   else if (current st2).column >= 3 then skip-body-lines (skip-to-next-line st2)
+   else st2
+
+  skip-prose-lines : ParseState -> ParseState
+  skip-prose-lines (st) =
+   let st2 = skip-newlines st
+   in if is-done st2 then st2
+      else if is-prose-line st2 then skip-prose-lines (skip-to-next-line st2)
+      else if (current st2).column > 3 then skip-prose-lines (skip-to-next-line st2)
+      else st2
+
+  is-prose-token : ParseState -> Boolean
+  is-prose-token (st) = current-kind st == ProseText
+
+  classify-transition : Text -> ProseTransition
+  classify-transition (line) =
+   if text-contains line "We say:" then PtWeSay
+   else if text-contains line "This is written:" then PtThisIsWritten
+   else PtNone
+
+  extract-template-name : Text, Text -> Text
+  extract-template-name (line) (marker) =
+   let parts = text-split line marker
+   in if list-length parts < 1 then ""
+      else let prefix = list-at parts 0
+   in let words = text-split prefix " "
+   in extract-last-word words (list-length words)
+
+  extract-last-word : List Text, Integer -> Text
+  extract-last-word (words) (len) =
+   if len == 0 then ""
+   else let w = list-at words (len - 1)
+   in if text-length w == 0 then extract-last-word words (len - 1)
+      else w
+
+  extract-function-name : Text -> Text
+  extract-function-name (line) =
+   let parts = text-split line " "
+   in if list-length parts < 2 then ""
+      else let second = list-at parts 1
+   in if text-length second == 0 then "" else second
+
+  classify-template : Text -> ProseTemplate
+  classify-template (line) =
+   if text-contains line "is a record containing:" then
+    PtRecordTemplate (extract-template-name line "is a record containing:")
+   else if text-contains line "is one of:" then
+    PtVariantTemplate (extract-template-name line "is one of:")
+   else if text-contains line "is either:" then
+    PtVariantTemplate (extract-template-name line "is either:")
+   else if text-starts-with line "To " then
+    PtFunctionTemplate (extract-function-name line)
+   else if text-starts-with line "such that " then PtConstraintTemplate
+   else if text-starts-with line "where " then PtConstraintTemplate
+   else if text-starts-with line "provided that " then PtConstraintTemplate
+   else if text-starts-with line "claim:" then PtProofTemplate
+   else if text-starts-with line "Claim:" then PtProofTemplate
+   else if text-starts-with line "therefore," then PtProofTemplate
+   else if text-starts-with line "it follows that " then PtProofTemplate
+   else if text-starts-with line "first," then PtProcedureTemplate
+   else if text-starts-with line "First," then PtProcedureTemplate
+   else if text-starts-with line "then," then PtProcedureTemplate
+   else if text-starts-with line "Then," then PtProcedureTemplate
+   else if text-starts-with line "finally," then PtProcedureTemplate
+   else if text-starts-with line "Finally," then PtProcedureTemplate
+   else if text-starts-with line "for every " then PtQuantifiedTemplate
+   else if text-starts-with line "For every " then PtQuantifiedTemplate
+   else if text-starts-with line "there exists " then PtQuantifiedTemplate
+   else if text-starts-with line "There exists " then PtQuantifiedTemplate
+   else if text-starts-with line "no " then PtQuantifiedTemplate
+   else PtNoTemplate
+
+  classify-prose-line : Text -> ProseBlock
+  classify-prose-line (line) =
+   deck-record (ProseBlock {
+    text = line,
+    transition = classify-transition line,
+    template = classify-template line
+   })
+
+  CollectProseResult = record { state : ParseState, lines : LinkedList Text, blocks : LinkedList ProseBlock }
+
+  collect-prose-with-text : ParseState, LinkedList Text, LinkedList ProseBlock -> CollectProseResult
+  collect-prose-with-text (st) (acc) (blk-acc) =
+   let st2 = skip-newlines st
+   in if is-done st2 then CollectProseResult { state = st2, lines = acc, blocks = blk-acc }
+      else if is-prose-token st2 then let txt = token-text (current st2)
+        in let block = classify-prose-line txt
+        in collect-prose-with-text (skip-to-next-line (advance st2)) (__linked-list-push acc (txt & "\n")) (__linked-list-push blk-acc block)
+      else if is-prose-line st2 then collect-prose-with-text (skip-to-next-line st2) acc blk-acc
+      else if (current st2).column > 3 then collect-prose-with-text (skip-to-next-line st2) acc blk-acc
+      else CollectProseResult { state = st2, lines = acc, blocks = blk-acc }
+
+  skip-to-next-line : ParseState -> ParseState
+  skip-to-next-line (st) =
+   if is-done st then st
+   else when current-kind st
+    is Newline -> advance st
+    is otherwise -> skip-to-next-line (advance st)
+
+  is-at-sign : ParseState -> Boolean
+  is-at-sign (st) = current-kind st == AtSign
+
+  parse-annotation-line : ParseState -> AnnotationNode
+  parse-annotation-line (st) =
+   let st1 = advance st
+   in let kind-text = if is-done st1 then "" else token-text (current st1)
+   in let st2 = if is-done st1 then st1 else advance st1
+   in let target-text = if is-done st2 then "" else token-text (current st2)
+   in let st3 = if is-done st2 then st2 else advance st2
+   in let body-text = if is-done st3 then "" else token-text (current st3)
+   in deck-record (AnnotationNode { kind = kind-text, target = target-text, body = body-text })
+
+  parse-top-level : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
+  parse-top-level (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
+   if is-done st then let prose-text = deck-record (text-concat-list (deck-record (__linked-list-to-list prose)))
+    in deck-record (Document {
+    defs = deck-record (__linked-list-to-list defs),
+    type-defs = deck-record (__linked-list-to-list type-defs),
+    effect-defs = deck-record (__linked-list-to-list effect-defs),
+    class-defs = [],
+    instance-defs = [],
+    citations = imports,
+    chapter-title = ch-title,
+    section-titles = deck-record (__linked-list-to-list sec-titles),
+    prose = prose-text,
+    prose-blocks = deck-record (__linked-list-to-list blocks),
+    annotations = deck-record (__linked-list-to-list anns),
+    parse-bag = st.bag
+   })
+   else if is-chapter-header st then let title = extract-header-title st
+     in let pr = collect-prose-with-text (skip-to-next-line st) prose blocks
+     in parse-top-level defs type-defs effect-defs imports title sec-titles (pr.lines) (pr.blocks) anns (pr.state)
+   else if is-section-header st then let title = extract-header-title st
+     in let pr = collect-prose-with-text (skip-to-next-line st) prose blocks
+     in parse-top-level defs type-defs effect-defs imports ch-title (__linked-list-push sec-titles title) (pr.lines) (pr.blocks) anns (pr.state)
+   else if is-page-marker st then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-to-next-line st)
+   else if is-cites-keyword (current-kind st) then let cite-result = parse-citations st ch-title []
+     in parse-top-level defs type-defs effect-defs (deck-record (imports & cite-result.imports)) ch-title sec-titles prose blocks anns (cite-result.state)
+   else if is-effect-keyword (current-kind st) then parse-top-level-effect defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
+   else if is-class-keyword (current-kind st) then let st-c1 = advance st
+    in let st-c2 = advance st-c1
+    in let st-c3 = if is-where-keyword (current-kind st-c2) then skip-newlines (advance st-c2) else st-c2
+    in let ops = parse-effect-ops st-c3 []
+    in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-newlines (ops.state))
+   else if is-instance-keyword (current-kind st) then let st-i1 = advance st
+    in let st-i2 = advance st-i1
+    in let st-i3 = advance st-i2
+    in let st-i4 = if is-where-keyword (current-kind st-i3) then skip-newlines (advance st-i3) else st-i3
+    in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-body-lines st-i4)
+   else if is-at-sign st then let ann = parse-annotation-line st
+     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns ann) (skip-to-next-line st)
+   else if is-claim-keyword (current-kind st) then
+    if is-simple-claim st then try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (advance st)
+    else let claim-ann = parse-claim-annotation st
+     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns claim-ann) (skip-to-next-line st)
+   else if is-proof-keyword (current-kind st) then try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (advance st)
+   else if is-prose-line st then let pr = collect-prose-with-text st prose blocks
+     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles (pr.lines) (pr.blocks) anns (pr.state)
+   else if (current st).column > 3 then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-to-next-line st)
+   else try-top-level-type-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
+
+  parse-top-level-effect : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
+  parse-top-level-effect (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
+   let st1 = advance st
+   in let name-tok = current st1
+   in let st2 = advance st1
+   in let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
+   in let ops = parse-effect-ops st3 []
+   in let ed = deck-record (EffectDef {
+        name = name-tok,
+        ops = ops.ops
+       })
+   in parse-top-level defs type-defs (__linked-list-push effect-defs ed) imports ch-title sec-titles prose blocks anns (skip-newlines (ops.state))
+
+  EffectOpsResult = record { ops : List EffectOpDef, state : ParseState }
+
+  parse-effect-ops : ParseState, LinkedList EffectOpDef -> EffectOpsResult
+  parse-effect-ops (st) (acc) =
+   if is-ident (current-kind st) then if is-colon (peek-kind st 1) then let op-tok = current st
+      in let st2 = advance (advance st)
+      in let type-result = parse-type st2
+      in when type-result
+         is TypeOk (ty) (st3) ->
+          let op = deck-record (EffectOpDef {
+           name = op-tok,
+           type-expr = ty
+          })
+      in parse-effect-ops (skip-newlines st3) (__linked-list-push acc op)
+     else EffectOpsResult {
+      ops = deck-record (__linked-list-to-list acc),
+      state = st
+     }
+    else EffectOpsResult {
+     ops = deck-record (__linked-list-to-list acc),
+     state = st
+    }
+
+  ClassDefsResult = record { class-defs : List ClassDef, instance-defs : List InstanceDef }
+
+  scan-class-instance-defs : ParseState, LinkedList ClassDef, LinkedList InstanceDef -> ClassDefsResult
+  scan-class-instance-defs (st) (cacc) (iacc) =
+   if is-done st then ClassDefsResult {
+    class-defs = deck-record (__linked-list-to-list cacc),
+    instance-defs = deck-record (__linked-list-to-list iacc)
+   }
+   else if is-class-keyword (current-kind st) then let st1 = advance st
+    in let name-tok = current st1
+    in let st2 = advance st1
+    in let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
+    in let ops = parse-effect-ops st3 []
+    in let cd = deck-record (ClassDef { name = name-tok, methods = ops.ops })
+    in scan-class-instance-defs (skip-newlines (ops.state)) (__linked-list-push cacc cd) iacc
+   else if is-instance-keyword (current-kind st) then let st1 = advance st
+    in let class-tok = current st1
+    in let st2 = advance st1
+    in let type-tok = current st2
+    in let st3 = advance st2
+    in let st4 = if is-where-keyword (current-kind st3) then skip-newlines (advance st3) else st3
+    in let methods = parse-instance-methods st4 []
+    in let id = deck-record (InstanceDef { class-name = class-tok, type-name = type-tok, methods = methods.defs })
+    in scan-class-instance-defs (skip-newlines (methods.state)) cacc (__linked-list-push iacc id)
+   else scan-class-instance-defs (advance st) cacc iacc
+
+  InstanceMethodsResult = record { defs : List InstanceMethodDef, state : ParseState }
+
+  finish-instance-methods : LinkedList InstanceMethodDef, ParseState -> InstanceMethodsResult
+  finish-instance-methods (acc) (st) =
+   InstanceMethodsResult { defs = deck-record (__linked-list-to-list acc), state = st }
+
+  parse-instance-methods : ParseState, LinkedList InstanceMethodDef -> InstanceMethodsResult
+  parse-instance-methods (st) (acc) =
+   if is-ident (current-kind st) then let name-tok = current st
+    in let st2 = advance st
+    in let params-result = parse-instance-params st2 []
+    in if is-equals (current-kind (params-result.state))
+     then let st3 = skip-newlines (advance (params-result.state))
+      in let expr-result = parse-expr st3
+      in when expr-result
+       is ExprOk (body) (st4) ->
+        let md = deck-record (InstanceMethodDef { name = name-tok, params = params-result.params, body = body })
+        in parse-instance-methods (skip-newlines st4) (__linked-list-push acc md)
+     else finish-instance-methods acc st
+   else finish-instance-methods acc st
+
+  InstanceParamsResult = record { params : List Token, state : ParseState }
+
+  parse-instance-params : ParseState, LinkedList Token -> InstanceParamsResult
+  parse-instance-params (st) (acc) =
+   if is-left-paren (current-kind st) then let st2 = advance st
+    in let p = current st2
+    in let st3 = advance st2
+    in let st4 = if is-right-paren (current-kind st3) then advance st3 else st3
+    in parse-instance-params st4 (__linked-list-push acc p)
+   else InstanceParamsResult { params = deck-record (__linked-list-to-list acc), state = st }
+
+  try-top-level-type-def : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
+  try-top-level-type-def (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
+   let td-result = parse-type-def st
+   in let st2 = td-result.state
+   in when td-result.maybe-type-def
+    is Just (td) ->
+     parse-top-level defs (__linked-list-push type-defs td) effect-defs imports ch-title sec-titles prose blocks anns (skip-newlines st2)
+    is None ->
+     try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
+
+  try-top-level-def : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
+  try-top-level-def (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
+   let def-result = parse-definition st
+   in let st2 = def-result.state
+   in when def-result.maybe-def
+    is Just (d) ->
+     let tagged = deck-record (Def {
+      name = d.name,
+      params = d.params,
+      ann = d.ann,
+      body = d.body,
+      chapter-slug = ch-title
+     })
+     in parse-top-level (__linked-list-push defs tagged) type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-newlines st2)
+    is None ->
+     parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-newlines (advance st2))
+
+Section: Prose-Notation Consistency
+
+  check-prose-record : Text, List RecordFieldDef, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-prose-record (template-name) (fields) (i) (len) (acc) =
+   if i >= len then acc
+   else check-prose-record template-name fields (i + 1) len acc
+
+  check-prose-variant : Text, List VariantCtorDef, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-prose-variant (template-name) (ctors) (i) (len) (acc) =
+   if i >= len then acc
+   else check-prose-variant template-name ctors (i + 1) len acc
+
+  check-prose-function : Text, List Def, List Diagnostic -> List Diagnostic
+  check-prose-function (template-name) (defs) (acc) =
+   if list-length defs == 0 then acc
+   else let first-def = list-at defs 0
+   in let def-name = token-text (first-def.name)
+   in if template-name == def-name then acc
+      else list-push acc (make-warning cdx-prose-function-name-mismatch ("Prose declares function '" & template-name & "' but notation defines '" & def-name & "'") synthetic-span)
+
+  check-prose-block-against-defs : ProseBlock, List Def, List TypeDef, List Diagnostic -> List Diagnostic
+  check-prose-block-against-defs (block) (defs) (type-defs) (acc) =
+   when (block.template)
+    is PtFunctionTemplate (name) -> check-prose-function name defs acc
+    is PtRecordTemplate (name) -> acc
+    is PtVariantTemplate (name) -> acc
+    is PtNoTemplate -> acc
+    is PtConstraintTemplate -> acc
+    is PtProofTemplate -> acc
+    is PtProcedureTemplate -> acc
+    is PtQuantifiedTemplate -> acc
+
+  check-prose-consistency : Document -> List Diagnostic
+  check-prose-consistency (doc) =
+   check-prose-blocks-loop (doc.prose-blocks) (doc.defs) (doc.type-defs) 0 (list-length (doc.prose-blocks)) []
+
+  check-prose-blocks-loop : List ProseBlock, List Def, List TypeDef, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-prose-blocks-loop (blocks) (defs) (type-defs) (i) (len) (acc) =
+   if i >= len then acc
+   else let block = list-at blocks i
+   in check-prose-blocks-loop blocks defs type-defs (i + 1) len (check-prose-block-against-defs block defs type-defs acc)
+
+Section: Banned Word Enforcement
+
+  BannedWord = record {
+   word : Text,
+   substitute : Text
+  }
+
+  banned-words : List BannedWord = [
+   BannedWord { word = " it ", substitute = "the named value" },
+   BannedWord { word = " this ", substitute = "the named value" },
+   BannedWord { word = " they ", substitute = "the named collection" },
+   BannedWord { word = " some ", substitute = "a quantifier (all, every, exactly one, ...)" },
+   BannedWord { word = " many ", substitute = "a quantifier or explicit bound" },
+   BannedWord { word = " few ", substitute = "a quantifier or explicit bound" },
+   BannedWord { word = " etc.", substitute = "exhaust the list or use a type" },
+   BannedWord { word = " etc ", substitute = "exhaust the list or use a type" },
+   BannedWord { word = " so ", substitute = "'therefore' or 'in order to'" },
+   BannedWord { word = " since ", substitute = "'because' (causal) or 'after' (temporal)" },
+   BannedWord { word = " while ", substitute = "'during' or 'at the same time as'" },
+   BannedWord { word = " may ", substitute = "'can' (possibility) or 'is permitted to' (permission)" },
+   BannedWord { word = " might ", substitute = "'can' (possibility) or 'is permitted to' (permission)" },
+   BannedWord { word = " should ", substitute = "'must' (obligation) or 'is recommended to' (recommendation)" }
+  ]
+
+  check-banned-word : Text, BannedWord -> Maybe Diagnostic
+  check-banned-word (line) (bw) =
+   if text-contains line (bw.word) then
+    Just (make-warning cdx-prose-banned-word ("Banned word '" & bw.word & "' in load-bearing prose; use " & bw.substitute) synthetic-span)
+   else None
+
+  check-banned-words-in-line : Text, List BannedWord, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-banned-words-in-line (line) (words) (i) (len) (acc) =
+   if i >= len then acc
+   else let bw = list-at words i
+   in when check-banned-word line bw
+    is Just (d) -> check-banned-words-in-line line words (i + 1) len (list-push acc d)
+    is None -> check-banned-words-in-line line words (i + 1) len acc
+
+  check-banned-in-blocks : List ProseBlock, Integer, Integer, Boolean, List Diagnostic -> List Diagnostic
+  check-banned-in-blocks (blocks) (i) (len) (in-we-say) (acc) =
+   if i >= len then acc
+   else let block = list-at blocks i
+   in let now-in-we-say = when (block.transition) is PtWeSay -> True is PtThisIsWritten -> True is PtNone -> in-we-say
+   in if now-in-we-say then let diags = check-banned-words-in-line (block.text) banned-words 0 (list-length banned-words) acc
+      in check-banned-in-blocks blocks (i + 1) len now-in-we-say diags
+      else check-banned-in-blocks blocks (i + 1) len now-in-we-say acc
+
+  check-prose-banned : Document -> List Diagnostic
+  check-prose-banned (doc) =
+   check-banned-in-blocks (doc.prose-blocks) 0 (list-length (doc.prose-blocks)) False []
+
+Section: Header Scanning (streaming)
+  scan-document : ParseState -> ScanResult
+  scan-document (st) =
+   let st2 = skip-newlines st
+   in let imp-result = parse-citations st2 "" []
+   in scan-top-level [] [] [] (imp-result.imports) "" "" [] (imp-result.state)
+
+  scan-top-level : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text, LinkedList Text, ParseState -> ScanResult
+  scan-top-level (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
+   if is-done st then deck-record (ScanResult {
+    type-defs = deck-record (__linked-list-to-list type-defs),
+    effect-defs = deck-record (__linked-list-to-list effect-defs),
+    class-defs = [],
+    instance-defs = [],
+    def-headers = deck-record (__linked-list-to-list headers),
+    citations = imports,
+    chapter-title = ch-title,
+    section-titles = deck-record (__linked-list-to-list sec-titles)
+   })
+   else if is-chapter-header st then let title = extract-header-title st
+     in scan-top-level headers type-defs effect-defs imports title title sec-titles (skip-prose-lines (skip-to-next-line st))
+   else if is-section-header st then let title = extract-header-title st
+     in scan-top-level headers type-defs effect-defs imports cur-chap ch-title (__linked-list-push sec-titles title) (skip-prose-lines (skip-to-next-line st))
+   else if is-page-marker st then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-to-next-line st)
+   else if is-cites-keyword (current-kind st) then let cite-result = parse-citations st cur-chap []
+     in scan-top-level headers type-defs effect-defs (deck-record (imports & cite-result.imports)) cur-chap ch-title sec-titles (cite-result.state)
+   else if is-effect-keyword (current-kind st) then scan-top-level-effect headers type-defs effect-defs imports cur-chap ch-title sec-titles st
+   else if is-class-keyword (current-kind st) then let st-c1 = advance st
+    in let st-c2 = advance st-c1
+    in let st-c3 = if is-where-keyword (current-kind st-c2) then skip-newlines (advance st-c2) else st-c2
+    in let ops = parse-effect-ops st-c3 []
+    in scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-newlines (ops.state))
+   else if is-instance-keyword (current-kind st) then let st-i1 = advance st
+    in let st-i2 = advance st-i1
+    in let st-i3 = advance st-i2
+    in let st-i4 = if is-where-keyword (current-kind st-i3) then skip-newlines (advance st-i3) else st-i3
+    in scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-body-lines st-i4)
+   else if is-prose-line st then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-prose-lines st)
+   else if (current st).column > 3 then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-to-next-line st)
+   else try-scan-type-def headers type-defs effect-defs imports cur-chap ch-title sec-titles st
+
+  scan-top-level-effect : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text, LinkedList Text, ParseState -> ScanResult
+  scan-top-level-effect (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
+   let st1 = advance st
+   in let name-tok = current st1
+   in let st2 = advance st1
+   in let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
+   in let ops = parse-effect-ops st3 []
+   in let ed = deck-record (EffectDef {
+        name = name-tok,
+        ops = ops.ops
+       })
+   in scan-top-level headers type-defs (__linked-list-push effect-defs ed) imports cur-chap ch-title sec-titles (skip-newlines (ops.state))
+
+  try-scan-type-def : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text, LinkedList Text, ParseState -> ScanResult
+  try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
+   let td-result = parse-type-def st
+   in let st2 = td-result.state
+   in when td-result.maybe-type-def
+    is Just (td) ->
+     scan-top-level headers (__linked-list-push type-defs td) effect-defs imports cur-chap ch-title sec-titles (skip-newlines st2)
+    is None ->
+     try-scan-def-header headers type-defs effect-defs imports cur-chap ch-title sec-titles st
+
+  try-scan-def-header : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text, LinkedList Text, ParseState -> ScanResult
+  try-scan-def-header (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
+   let hdr-result = scan-definition cur-chap st
+   in let st2 = hdr-result.state
+   in when hdr-result.maybe-header
+    is Just (hdr) ->
+     scan-top-level (__linked-list-push headers hdr) type-defs effect-defs imports cur-chap ch-title sec-titles (skip-newlines st2)
+    is None ->
+     scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-newlines (advance st2))
+
+  scan-definition : Text, ParseState -> ScanDefResult
+  scan-definition (cur-chap) (st) =
+   if is-done st then ScanDefResult { maybe-header = None, state = st }
+   else if is-ident (current-kind st) then try-scan-def cur-chap st
+   else if is-type-ident (current-kind st) then try-scan-def cur-chap st
+     else ScanDefResult { maybe-header = None, state = st }
+
+  try-scan-def : Text, ParseState -> ScanDefResult
+  try-scan-def (cur-chap) (st) =
+   if is-colon (peek-kind st 1) then let first-name = current st
+     in let ann-result = parse-type-annotation st
+     in unwrap-type-for-scan cur-chap first-name ann-result
+    else scan-def-body-with-ann cur-chap [] st
+
+  unwrap-type-for-scan : Text, Token, ParseTypeResult -> ScanDefResult
+  unwrap-type-for-scan (cur-chap) (first-name) (r) =
+   when r
+    is TypeOk (ann-type) (st) ->
+     if is-equals (current-kind st) then
+      let ann = deck-record ([deck-record (TypeAnn {
+       name = first-name,
+       type-expr = ann-type
+      })])
+      in let st2 = advance st
+      in let st3 = skip-newlines st2
+      in let body-pos = st3.pos
+      in let st4 = skip-body-tokens st3 (first-name.column)
+      in ScanDefResult {
+          maybe-header = Just (deck-record (DefHeader {
+           name = first-name,
+           params = [],
+           ann = ann,
+           body-pos = body-pos,
+           chapter-slug = cur-chap
+          })),
+          state = st4
+         }
+     else
+      let name-tok = deck-record (Token {
+       kind = Identifier,
+       source = "",
+       offset = 0,
+       length = 0,
+       line = 0,
+       column = 0,
+       file-id = 0
+      })
+      in let ann = deck-record ([deck-record (TypeAnn {
+       name = name-tok,
+       type-expr = ann-type
+      })])
+      in let st2 = skip-newlines st
+      in scan-def-body-with-ann cur-chap ann st2
+
+  scan-def-body-with-ann : Text, List TypeAnn, ParseState -> ScanDefResult
+  scan-def-body-with-ann (cur-chap) (ann) (st) =
+   let name-tok = current st
+   in let st2 = advance st
+   in scan-def-params-then cur-chap ann name-tok [] st2
+
+  scan-def-params-then : Text, List TypeAnn, Token, LinkedList Token, ParseState -> ScanDefResult
+  scan-def-params-then (cur-chap) (ann) (name-tok) (acc) (st) =
+   if is-left-paren (current-kind st) then let st2 = advance st
+   in if is-ident (current-kind st2) then let param = current st2
+   in let st3 = advance st2
+   in let st4 = expect RightParen st3
+   in scan-def-params-then cur-chap ann name-tok (__linked-list-push acc param) st4
+      else finish-def-scan cur-chap ann name-tok (deck-record (__linked-list-to-list acc)) st
+    else finish-def-scan cur-chap ann name-tok (deck-record (__linked-list-to-list acc)) st
+
+  finish-def-scan : Text, List TypeAnn, Token, List Token, ParseState -> ScanDefResult
+  finish-def-scan (cur-chap) (ann) (name-tok) (params) (st) =
+   if is-equals (current-kind st) == False then ScanDefResult { maybe-header = None, state = st }
+   else let st2 = advance st
+   in let st3 = skip-newlines st2
+   in let body-pos = st3.pos
+   in let st4 = skip-body-tokens st3 (name-tok.column)
+   in ScanDefResult {
+       maybe-header = Just (deck-record (DefHeader {
+        name = name-tok,
+        params = params,
+        ann = ann,
+        body-pos = body-pos,
+        chapter-slug = cur-chap
+       })),
+       state = st4
+      }
+
+  skip-body-tokens : ParseState, Integer -> ParseState
+  skip-body-tokens (st) (name-col) =
+   if is-done st then st
+   else let tok = current st
+   in when tok.kind
+     is Newline -> skip-body-tokens (advance st) name-col
+     is Indent -> skip-body-tokens (advance st) name-col
+     is Dedent -> skip-body-tokens (advance st) name-col
+     is otherwise -> if tok.column <= name-col then st
+      else skip-body-tokens (advance st) name-col
+
+Page 1 of 3
+

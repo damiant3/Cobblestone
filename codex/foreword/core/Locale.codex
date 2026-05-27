@@ -1,0 +1,145 @@
+Chapter: Locale
+
+ Locale identity and locale-aware formatting. A Locale carries a
+ language tag (BCP 47 style), text direction, and formatting rules
+ for numbers and dates. Used by UI layers for internationalized
+ display.
+
+ To locale-new gives a Locale from a language tag.
+ To locale-format-number gives a locale-aware number string.
+ To locale-format-date gives a locale-aware date string.
+ To locale-direction gives the text direction for a locale.
+ To locale-decimal-sep gives the decimal separator character.
+ To locale-thousands-sep gives the thousands separator character.
+
+ We say:
+
+Section: Types
+
+  TextDirection =
+    | DirLTR
+    | DirRTL
+
+  Locale = record {
+    lang-tag : Text,
+    direction : TextDirection,
+    decimal-sep : Text,
+    thousands-sep : Text,
+    date-order : DateOrder
+  }
+
+  DateOrder =
+    | DateYMD
+    | DateMDY
+    | DateDMY
+
+Section: Common Locales
+
+  locale-en-us : Locale = Locale {
+    lang-tag = "en-US",
+    direction = DirLTR,
+    decimal-sep = ".",
+    thousands-sep = ",",
+    date-order = DateMDY
+  }
+
+  locale-en-gb : Locale = Locale {
+    lang-tag = "en-GB",
+    direction = DirLTR,
+    decimal-sep = ".",
+    thousands-sep = ",",
+    date-order = DateDMY
+  }
+
+  locale-de : Locale = Locale {
+    lang-tag = "de",
+    direction = DirLTR,
+    decimal-sep = ",",
+    thousands-sep = ".",
+    date-order = DateDMY
+  }
+
+  locale-ja : Locale = Locale {
+    lang-tag = "ja",
+    direction = DirLTR,
+    decimal-sep = ".",
+    thousands-sep = ",",
+    date-order = DateYMD
+  }
+
+  locale-ar : Locale = Locale {
+    lang-tag = "ar",
+    direction = DirRTL,
+    decimal-sep = ".",
+    thousands-sep = ",",
+    date-order = DateDMY
+  }
+
+Section: Construction
+
+  locale-new : Text -> Locale
+  locale-new (tag) =
+    if tag == "en-US" then locale-en-us
+    else if tag == "en-GB" then locale-en-gb
+    else if tag == "de" then locale-de
+    else if tag == "ja" then locale-ja
+    else if tag == "ar" then locale-ar
+    else locale-en-us
+
+  locale-direction : Locale -> TextDirection
+  locale-direction (loc) = loc.direction
+
+  locale-decimal-sep : Locale -> Text
+  locale-decimal-sep (loc) = loc.decimal-sep
+
+  locale-thousands-sep : Locale -> Text
+  locale-thousands-sep (loc) = loc.thousands-sep
+
+  locale-is-rtl : Locale -> Boolean
+  locale-is-rtl (loc) = when loc.direction
+    is DirRTL -> True
+    is DirLTR -> False
+
+Section: Number Formatting
+
+  locale-format-number : Locale, Integer -> Text
+  locale-format-number (loc) (n) =
+    if n < 0 then "-" & locale-format-positive loc (0 - n)
+    else locale-format-positive loc n
+
+  locale-format-positive : Locale, Integer -> Text
+  locale-format-positive (loc) (n) =
+    let raw = show n
+    in if text-length (loc.thousands-sep) == 0 then raw
+    else locale-insert-thousands raw (loc.thousands-sep)
+
+  locale-insert-thousands : Text, Text -> Text
+  locale-insert-thousands (raw) (sep) =
+    let len = text-length raw
+    in if len <= 3 then raw
+    else locale-insert-loop raw sep (len - 1) 0 ""
+
+  locale-insert-loop : Text, Text, Integer, Integer, Text -> Text
+  locale-insert-loop (raw) (sep) (i) (count) (acc) =
+    if i < 0 then acc
+    else let c = char-to-text (char-at raw i)
+    in let s = if count > 0 then if count - (count / 3) * 3 == 0 then sep else "" else ""
+    in locale-insert-loop raw sep (i - 1) (count + 1) (c & s & acc)
+
+Section: Date Formatting
+
+  locale-format-date : Locale, Integer, Integer, Integer -> Text
+  locale-format-date (loc) (year) (month) (day) =
+    let y = show year
+    in let m = locale-two-digit month
+    in let d = locale-two-digit day
+    in when loc.date-order
+      is DateYMD -> y & "-" & m & "-" & d
+      is DateMDY -> m & "/" & d & "/" & y
+      is DateDMY -> d & "/" & m & "/" & y
+
+  locale-two-digit : Integer -> Text
+  locale-two-digit (n) =
+    if n < 10 then "0" & show n else show n
+
+Page 1

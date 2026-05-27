@@ -1,0 +1,89 @@
+Chapter: WebServerTest
+  cites Codex chapter General
+  cites Works chapter WebServer
+  cites Works chapter Http
+  cites Net chapter Router
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Net chapter MessageFraming
+  cites Observe chapter SystemInfo
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Setup
+  my-mac : List Integer = mac-bytes 82 84 0 18 52 86
+  my-ip : List Integer = ip-bytes 10 0 2 15
+  gw-ip : List Integer = ip-bytes 10 0 2 2
+  gw-mac : List Integer = mac-bytes 82 84 0 0 0 1
+  client-ip : List Integer = ip-bytes 10 0 2 100
+
+  make-transport : TcpTransportState
+  make-transport =
+    let sess = net-session-new my-mac my-ip gw-ip 80 49152 client-ip 4096
+    in let sess1 = set-arp sess (arp-cache-add (sess.arp) gw-ip gw-mac)
+    in let r = net-connect sess1
+    in let syn-ack = tcp-build-segment 49152 80 3000 1001 (bit-or tcp-flag-syn tcp-flag-ack) 16384 []
+    in let syn-ack-ip = ip-build-packet client-ip my-ip ip-proto-tcp syn-ack
+    in let syn-ack-frame = eth-build-frame my-mac gw-mac eth-type-ipv4 syn-ack-ip
+    in let r2 = net-process-frame (r.session) syn-ack-frame
+    in transport-new (r2.session)
+
+  test-router : Router
+  test-router =
+    let r0 = router-empty
+    in let r1 = router-get r0 "/" "status"
+    in let r2 = router-get r1 "/health" "health"
+    in let r3 = router-get r2 "/info" "info"
+    in r3
+
+  test-state : ShellState
+  test-state = shell-init (policy-empty "web-test") 50
+
+Section: Tests
+
+  test-handle-status : Text =
+    let srv = web-server-new test-router make-transport
+    in let req = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 48, 13, 10]
+    in let wr = web-server-handle srv req test-state
+    in "status=" & (wr.response).status & " type=" & (wr.response).content-type
+
+  test-handle-health : Text =
+    let srv = web-server-new test-router make-transport
+    in let req = [71, 69, 84, 32, 47, 104, 101, 97, 108, 116, 104, 32, 72, 84, 84, 80, 47, 49, 46, 48, 13, 10]
+    in let wr = web-server-handle srv req test-state
+    in "status=" & (wr.response).status & " body-len=" & show (text-length ((wr.response).body))
+
+  test-handle-404 : Text =
+    let srv = web-server-new test-router make-transport
+    in let req = [71, 69, 84, 32, 47, 120, 32, 72, 84, 84, 80, 47, 49, 46, 48, 13, 10]
+    in let wr = web-server-handle srv req test-state
+    in "status=" & (wr.response).status
+
+  test-stats : Text =
+    let srv = web-server-new test-router make-transport
+    in let req = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 48, 13, 10]
+    in let wr1 = web-server-handle srv req test-state
+    in let wr2 = web-server-handle (wr1.server) req test-state
+    in web-server-stats (wr2.server)
+
+  opening : [Console] Nothing = act
+    print-line-uni test-handle-status
+    print-line-uni test-handle-health
+    print-line-uni test-handle-404
+    print-line-uni test-stats
+  end

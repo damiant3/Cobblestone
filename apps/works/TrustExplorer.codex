@@ -1,0 +1,281 @@
+Chapter: TrustExplorer
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Overlay
+
+ H6: the user-visible surface for the trust system. Lists the
+ publishers known to the local TrustLattice with their scores,
+ supports adjusting the read-time trust threshold (the H3 dial),
+ and lets the user maintain an explicit blocklist that suppresses
+ below-threshold annotations even if they would otherwise pass.
+
+ The driver (key bindings, overlay summon, edit submit) lives in
+ a downstream UefiConsole/menu CL; this chapter is the data and
+ widget surface.
+
+ We say:
+
+Section: Publisher Entry
+
+  PublisherEntry = record {
+    identity : Text,
+    trust-score : Integer,
+    blocked : Boolean
+  }
+
+  make-publisher-entry : Text, Integer, Boolean -> PublisherEntry
+  make-publisher-entry (id) (score) (blocked) =
+    PublisherEntry { identity = id, trust-score = score, blocked = blocked }
+
+Section: Explorer State
+
+  TrustExplorerState = record {
+    publishers : List PublisherEntry,
+    threshold : Integer,
+    blocklist : List Text,
+    selected-index : Integer
+  }
+
+  trust-explorer-empty : TrustExplorerState = TrustExplorerState {
+    publishers = [],
+    threshold = trust-default-threshold,
+    blocklist = [],
+    selected-index = 0
+  }
+
+Section: Publisher Discovery
+
+ Build a PublisherEntry list by walking the TrustLattice's entries
+ HAMT and combining each agent's trust score with its blocklist
+ status. Pure read — does not mutate the lattice.
+
+  build-publisher-list : TrustLattice, List Text -> List PublisherEntry
+  build-publisher-list (lat) (blocklist) =
+    let entries = hamt-to-list (lat.entries)
+    in build-publishers-loop lat blocklist entries 0 (list-length entries) []
+
+  build-publishers-loop : TrustLattice, List Text, List (HamtEntry TrustEntry), Integer, Integer, List PublisherEntry -> List PublisherEntry
+  build-publishers-loop (lat) (blocklist) (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in let id = e.key
+    in let score = lattice-trust-score lat id
+    in let blocked = is-blocked blocklist id
+    in let entry = make-publisher-entry id score blocked
+    in build-publishers-loop lat blocklist entries (i + 1) n (list-push acc entry)
+
+  is-blocked : List Text, Text -> Boolean
+  is-blocked (blocklist) (id) =
+    is-blocked-loop blocklist id 0 (list-length blocklist)
+
+  is-blocked-loop : List Text, Text, Integer, Integer -> Boolean
+  is-blocked-loop (blocklist) (id) (i) (n) =
+    if i >= n then False
+    else if list-at blocklist i == id then True
+    else is-blocked-loop blocklist id (i + 1) n
+
+Section: State Refresh
+
+ Re-derive the publishers field from the current lattice. Call
+ after the user blocks/unblocks or after the lattice changes.
+
+  refresh-publishers : TrustExplorerState, TrustLattice -> TrustExplorerState
+  refresh-publishers (state) (lat) =
+    let pubs = build-publisher-list lat (state.blocklist)
+    in TrustExplorerState {
+      publishers = pubs,
+      threshold = state.threshold,
+      blocklist = state.blocklist,
+      selected-index = clamp-index (state.selected-index) (list-length pubs)
+    }
+
+  clamp-index : Integer, Integer -> Integer
+  clamp-index (i) (n) =
+    if n == 0 then 0
+    else if i < 0 then 0
+    else if i >= n then n - 1
+    else i
+
+Section: Threshold Control
+
+ The threshold is a fixed-point integer in 0..10000 (matching
+ TrustLattice's score range). H3's filter consumes this value.
+ The step is 500 — coarse enough that the user feels the dial.
+
+  threshold-step : Integer = 500
+
+  raise-threshold : TrustExplorerState -> TrustExplorerState
+  raise-threshold (state) =
+    set-threshold state (state.threshold + threshold-step)
+
+  lower-threshold : TrustExplorerState -> TrustExplorerState
+  lower-threshold (state) =
+    set-threshold state (state.threshold - threshold-step)
+
+  clamp-threshold : Integer -> Integer
+  clamp-threshold (value) =
+    if value < trust-none then trust-none
+    else if value > trust-max then trust-max
+    else value
+
+  set-threshold : TrustExplorerState, Integer -> TrustExplorerState
+  set-threshold (state) (value) =
+    TrustExplorerState {
+      publishers = state.publishers,
+      threshold = clamp-threshold value,
+      blocklist = state.blocklist,
+      selected-index = state.selected-index
+    }
+
+Section: Block Management
+
+  block-selected : TrustExplorerState -> TrustExplorerState
+  block-selected (state) =
+    if list-length (state.publishers) == 0 then state
+    else let p = list-at (state.publishers) (state.selected-index)
+    in if is-blocked (state.blocklist) (p.identity) then state
+    else TrustExplorerState {
+      publishers = state.publishers,
+      threshold = state.threshold,
+      blocklist = list-snoc (state.blocklist) (p.identity),
+      selected-index = state.selected-index
+    }
+
+  unblock-selected : TrustExplorerState -> TrustExplorerState
+  unblock-selected (state) =
+    if list-length (state.publishers) == 0 then state
+    else let p = list-at (state.publishers) (state.selected-index)
+    in TrustExplorerState {
+      publishers = state.publishers,
+      threshold = state.threshold,
+      blocklist = remove-from-list (state.blocklist) (p.identity),
+      selected-index = state.selected-index
+    }
+
+  remove-from-list : List Text, Text -> List Text
+  remove-from-list (xs) (target) =
+    remove-from-list-loop xs target 0 (list-length xs) []
+
+  remove-from-list-loop : List Text, Text, Integer, Integer, List Text -> List Text
+  remove-from-list-loop (xs) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let x = list-at xs i
+    in if x == target
+      then remove-from-list-loop xs target (i + 1) n acc
+      else remove-from-list-loop xs target (i + 1) n (list-push acc x)
+
+Section: Selection
+
+  bounded-next-index : Integer, Integer -> Integer
+  bounded-next-index (idx) (count) =
+    if idx + 1 >= count then count - 1 else idx + 1
+
+  bounded-prev-index : Integer -> Integer
+  bounded-prev-index (idx) =
+    if idx <= 0 then 0 else idx - 1
+
+  non-negative : Integer -> Integer
+  non-negative (i) = if i < 0 then 0 else i
+
+  select-next : TrustExplorerState -> TrustExplorerState
+  select-next (state) =
+    TrustExplorerState {
+      publishers = state.publishers,
+      threshold = state.threshold,
+      blocklist = state.blocklist,
+      selected-index = non-negative (bounded-next-index (state.selected-index) (list-length (state.publishers)))
+    }
+
+  select-prev : TrustExplorerState -> TrustExplorerState
+  select-prev (state) =
+    TrustExplorerState {
+      publishers = state.publishers,
+      threshold = state.threshold,
+      blocklist = state.blocklist,
+      selected-index = bounded-prev-index (state.selected-index)
+    }
+
+Section: Effective Threshold
+
+ An identity passes the filter only if its trust-score >= threshold
+ AND it is not on the blocklist. Used by H3's downstream caller to
+ augment the simple-threshold check with the explicit blocklist.
+
+  passes-trust : TrustExplorerState, Text, Integer -> Boolean
+  passes-trust (state) (author) (author-score) =
+    if is-blocked (state.blocklist) author then False
+    else if author-score < state.threshold then False
+    else True
+
+Section: Rendering Helpers
+
+ Build the widget tree for the explorer overlay. Top-level
+ helpers return single rows so the list literal in the panel
+ body stays free of inline `when` (which is the parser's
+ sore spot, see KNOWN-CONDITIONS / Parser).
+
+  selected-prefix : Boolean -> Text
+  selected-prefix (selected) = if selected then "> " else "  "
+
+  blocked-suffix : Boolean -> Text
+  blocked-suffix (blocked) = if blocked then " [BLOCKED]" else ""
+
+  publisher-row-text : PublisherEntry, Boolean -> Text
+  publisher-row-text (p) (selected) =
+    selected-prefix selected & p.identity & "  " & show (p.trust-score) & blocked-suffix (p.blocked)
+
+  publisher-row-widget : Integer, PublisherEntry, Boolean -> WidgetNode
+  publisher-row-widget (idx) (p) (selected) =
+    let id = "trust-pub-" & show idx
+    in widget-label id (publisher-row-text p selected)
+
+  build-publisher-rows : List PublisherEntry, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  build-publisher-rows (pubs) (selected-idx) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at pubs i
+    in let row = publisher-row-widget i p (i == selected-idx)
+    in build-publisher-rows pubs selected-idx (i + 1) n (list-push acc row)
+
+  threshold-line : TrustExplorerState -> Text
+  threshold-line (state) =
+    "Threshold: " & show (state.threshold) & " / " & show trust-max
+
+  blocklist-line : TrustExplorerState -> Text
+  blocklist-line (state) =
+    "Blocklist: " & show (list-length (state.blocklist)) & " entries"
+
+  build-explorer-header : TrustExplorerState -> List WidgetNode
+  build-explorer-header (state) = [
+    widget-label "trust-title" "Trust Explorer",
+    widget-separator "trust-sep1",
+    widget-label "trust-thresh" (threshold-line state),
+    widget-label "trust-block" (blocklist-line state),
+    widget-separator "trust-sep2"
+  ]
+
+Section: Rendering
+
+  trust-explorer-widget : TrustExplorerState -> WidgetNode
+  trust-explorer-widget (state) =
+    let header = build-explorer-header state
+    in let rows = build-publisher-rows (state.publishers) (state.selected-index) 0 (list-length (state.publishers)) []
+    in widget-panel "trust-explorer" DirColumn 2 (concat-widget-lists header rows)
+
+  concat-widget-lists : List WidgetNode, List WidgetNode -> List WidgetNode
+  concat-widget-lists (a) (b) = append-widgets a b 0 (list-length b)
+
+  append-widgets : List WidgetNode, List WidgetNode, Integer, Integer -> List WidgetNode
+  append-widgets (acc) (b) (i) (n) =
+    if i >= n then acc
+    else append-widgets (list-push acc (list-at b i)) b (i + 1) n
+
+  trust-explorer-overlay : TrustExplorerState, Integer, Integer -> Overlay
+  trust-explorer-overlay (state) (x) (y) =
+    let widget = trust-explorer-widget state
+    in let h = 96 + 20 * list-length (state.publishers)
+    in overlay-popup "trust-explorer-overlay" x y 480 h widget
+
+Page 1

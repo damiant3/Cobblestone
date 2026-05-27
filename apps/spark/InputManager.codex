@@ -1,0 +1,164 @@
+Chapter: InputManager
+
+ Keyboard and mouse input dispatch. Translates raw input events
+ into editor actions via keybindings. Supports modifier keys,
+ mouse buttons, drag state, and configurable shortcut maps.
+
+ We say:
+
+Section: Types
+
+  MouseButton =
+    | BtnLeft
+    | BtnMiddle
+    | BtnRight
+    | BtnNone
+
+  ModifierKeys = record {
+    mk-shift : Boolean,
+    mk-ctrl : Boolean,
+    mk-alt : Boolean
+  }
+
+  InputEvent =
+    | EvKeyDown (Integer) (ModifierKeys)
+    | EvKeyUp (Integer)
+    | EvMouseDown (Integer) (Integer) (MouseButton) (ModifierKeys)
+    | EvMouseUp (Integer) (Integer) (MouseButton)
+    | EvMouseMove (Integer) (Integer) (ModifierKeys)
+    | EvScroll (Integer)
+
+  DragState = record {
+    ds-active : Boolean,
+    ds-button : MouseButton,
+    ds-start-x : Integer,
+    ds-start-y : Integer,
+    ds-current-x : Integer,
+    ds-current-y : Integer
+  }
+
+  InputState = record {
+    is-mouse-x : Integer,
+    is-mouse-y : Integer,
+    is-mouse-btn : MouseButton,
+    is-modifiers : ModifierKeys,
+    is-drag : DragState,
+    is-last-key : Integer,
+    is-double-click : Boolean
+  }
+
+Section: Construction
+
+  no-modifiers : ModifierKeys
+  no-modifiers = ModifierKeys { mk-shift = False, mk-ctrl = False, mk-alt = False }
+
+  drag-none : DragState
+  drag-none = DragState { ds-active = False, ds-button = BtnNone, ds-start-x = 0, ds-start-y = 0, ds-current-x = 0, ds-current-y = 0 }
+
+  input-state-new : InputState
+  input-state-new = InputState {
+    is-mouse-x = 0,
+    is-mouse-y = 0,
+    is-mouse-btn = BtnNone,
+    is-modifiers = no-modifiers,
+    is-drag = drag-none,
+    is-last-key = 0,
+    is-double-click = False
+  }
+
+Section: Event Processing
+
+  input-process : InputState, InputEvent -> InputState
+  input-process (state) (event) =
+    when event
+      is EvKeyDown (key) (mods) ->
+        __record-set (__record-set state "is-last-key" key) "is-modifiers" mods
+      is EvKeyUp (key) ->
+        __record-set state "is-last-key" 0
+      is EvMouseDown (x) (y) (btn) (mods) ->
+        let drag = DragState { ds-active = True, ds-button = btn, ds-start-x = x, ds-start-y = y, ds-current-x = x, ds-current-y = y }
+        in InputState { is-mouse-x = x, is-mouse-y = y, is-mouse-btn = btn, is-modifiers = mods, is-drag = drag, is-last-key = state.is-last-key, is-double-click = False }
+      is EvMouseUp (x) (y) (btn) ->
+        InputState { is-mouse-x = x, is-mouse-y = y, is-mouse-btn = BtnNone, is-modifiers = state.is-modifiers, is-drag = drag-none, is-last-key = state.is-last-key, is-double-click = False }
+      is EvMouseMove (x) (y) (mods) ->
+        let drag2 = if state.is-drag.ds-active then __record-set (__record-set state.is-drag "ds-current-x" x) "ds-current-y" y else state.is-drag
+        in InputState { is-mouse-x = x, is-mouse-y = y, is-mouse-btn = state.is-mouse-btn, is-modifiers = mods, is-drag = drag2, is-last-key = state.is-last-key, is-double-click = False }
+      is EvScroll (delta) -> state
+
+Section: Drag Queries
+
+  input-drag-dx : InputState -> Integer
+  input-drag-dx (state) =
+    if state.is-drag.ds-active then state.is-drag.ds-current-x - state.is-drag.ds-start-x else 0
+
+  input-drag-dy : InputState -> Integer
+  input-drag-dy (state) =
+    if state.is-drag.ds-active then state.is-drag.ds-current-y - state.is-drag.ds-start-y else 0
+
+  input-is-dragging : InputState -> Boolean
+  input-is-dragging (state) = state.is-drag.ds-active
+
+Section: Keybinding Map
+
+  Keybinding = record {
+    kb-key : Integer,
+    kb-ctrl : Boolean,
+    kb-shift : Boolean,
+    kb-alt : Boolean,
+    kb-action : Text
+  }
+
+  KeybindingMap = record {
+    km-bindings : List Keybinding,
+    km-count : Integer
+  }
+
+  keymap-new : KeybindingMap
+  keymap-new = KeybindingMap { km-bindings = [], km-count = 0 }
+
+  keymap-bind : KeybindingMap, Integer, Boolean, Boolean, Boolean, Text -> KeybindingMap
+  keymap-bind (km) (key) (ctrl) (shift) (alt) (action) =
+    let kb = Keybinding { kb-key = key, kb-ctrl = ctrl, kb-shift = shift, kb-alt = alt, kb-action = action }
+    in KeybindingMap { km-bindings = list-push (km.km-bindings) kb, km-count = km.km-count + 1 }
+
+  keymap-lookup : KeybindingMap, Integer, ModifierKeys -> Text
+  keymap-lookup (km) (key) (mods) =
+    km-lookup-loop (km.km-bindings) (km.km-count) key mods 0
+
+  km-lookup-loop : List Keybinding, Integer, Integer, ModifierKeys, Integer -> Text
+  km-lookup-loop (bindings) (count) (key) (mods) (i) =
+    if i >= count then ""
+    else let kb = list-at bindings i
+    in if kb.kb-key == key then
+      if kb.kb-ctrl == mods.mk-ctrl then
+        if kb.kb-shift == mods.mk-shift then
+          if kb.kb-alt == mods.mk-alt then kb.kb-action
+          else km-lookup-loop bindings count key mods (i + 1)
+        else km-lookup-loop bindings count key mods (i + 1)
+      else km-lookup-loop bindings count key mods (i + 1)
+    else km-lookup-loop bindings count key mods (i + 1)
+
+Section: Default Keymap
+
+  keymap-default : KeybindingMap
+  keymap-default =
+    let km = keymap-new
+    in let km2 = keymap-bind km 71 False False False "grab"
+    in let km3 = keymap-bind km2 82 False False False "rotate"
+    in let km4 = keymap-bind km3 83 False False False "scale"
+    in let km5 = keymap-bind km4 88 False False False "delete"
+    in let km6 = keymap-bind km5 90 True False False "undo"
+    in let km7 = keymap-bind km6 90 True True False "redo"
+    in let km8 = keymap-bind km7 83 True False False "save"
+    in let km9 = keymap-bind km8 78 True False False "new"
+    in keymap-bind km9 27 False False False "cancel"
+
+Section: Info
+
+  input-info : InputState -> Text
+  input-info (state) =
+    "mouse=(" & show (state.is-mouse-x) & "," & show (state.is-mouse-y) & ")" &
+    (if state.is-drag.ds-active then " dragging" else "") &
+    " key=" & show (state.is-last-key)
+
+Page 1

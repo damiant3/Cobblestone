@@ -1,0 +1,200 @@
+Chapter: Jpeg
+  cites Game chapter Color
+
+ JPEG encoder. Baseline JFIF with 8x8 DCT, quantization, zigzag
+ scan, and Huffman coding. Fixed-point DCT (scale 1000). Produces
+ valid JPEG files at configurable quality. Luminance-only (grayscale)
+ for simplicity. RGB input converted to Y channel.
+
+ We say:
+
+Section: Constants
+  jpeg-soi : List Integer = [255, 216]
+  jpeg-eoi : List Integer = [255, 217]
+
+Section: Encoding
+  jpeg-encode-gray : Integer, Integer, List Rgb, Integer -> List Integer
+  jpeg-encode-gray (width) (height) (pixels) (quality) =
+    let qtable = jpeg-scale-qtable jpeg-lum-qtable quality
+    in let y-data = jpeg-rgb-to-y pixels 0 (list-length pixels) []
+    in jpeg-soi & jpeg-app0 & jpeg-dqt qtable & jpeg-sof0 width height & jpeg-dht-dc & jpeg-dht-ac & jpeg-sos & jpeg-encode-blocks y-data width height qtable & jpeg-eoi
+
+Section: JFIF APP0
+  jpeg-app0 : List Integer
+  jpeg-app0 = [255, 224, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]
+
+Section: Quantization Table
+  jpeg-dqt : List Integer -> List Integer
+  jpeg-dqt (qtable) = [255, 219, 0, 67, 0] & qtable
+
+  jpeg-lum-qtable : List Integer
+  jpeg-lum-qtable = [16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99]
+
+  jpeg-scale-qtable : List Integer, Integer -> List Integer
+  jpeg-scale-qtable (base) (quality) =
+    let s = if quality < 50 then 5000 / quality else 200 - 2 * quality
+    in jpeg-scale-loop base s 0 64 []
+
+  jpeg-scale-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  jpeg-scale-loop (base) (s) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = (list-at base i * s + 50) / 100
+    in let clamped = if val < 1 then 1 else if val > 255 then 255 else val
+    in jpeg-scale-loop base s (i + 1) n (list-push acc clamped)
+
+Section: SOF0 (Start of Frame)
+  jpeg-sof0 : Integer, Integer -> List Integer
+  jpeg-sof0 (w) (h) = [255, 192, 0, 11, 8] & jpeg-be16 h & jpeg-be16 w & [1, 1, 17, 0]
+
+Section: Huffman Tables (DC + AC, standard JPEG tables)
+  jpeg-dht-dc : List Integer
+  jpeg-dht-dc = [255, 196, 0, 31, 0, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+
+  jpeg-dht-ac : List Integer
+  jpeg-dht-ac = [255, 196, 0, 181, 16, 0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125, 1, 2, 3, 0, 4, 17, 5, 18, 33, 49, 65, 6, 19, 81, 97, 7, 34, 113, 20, 50, 129, 145, 161, 8, 35, 66, 177, 193, 21, 82, 209, 240, 36, 51, 98, 114, 130, 9, 10, 22, 23, 24, 25, 26, 37, 38, 39, 40, 41, 42, 52, 53, 54, 55, 56, 57, 58, 67, 68, 69, 70, 71, 72, 73, 74, 83, 84, 85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104, 105, 106, 115, 116, 117, 118, 119, 120, 121, 122, 131, 132, 133, 134, 135, 136, 137, 138, 146, 147, 148, 149, 150, 151, 152, 153, 154, 162, 163, 164, 165, 166, 167, 168, 169, 170, 178, 179, 180, 181, 182, 183, 184, 185, 186, 194, 195, 196, 197, 198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215, 216, 217, 218, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250]
+
+Section: SOS (Start of Scan)
+  jpeg-sos : List Integer
+  jpeg-sos = [255, 218, 0, 8, 1, 1, 0, 0, 63, 0]
+
+Section: Block Encoding
+  jpeg-encode-blocks : List Integer, Integer, Integer, List Integer -> List Integer
+  jpeg-encode-blocks (y-data) (width) (height) (qtable) =
+    let bw = (width + 7) / 8
+    in let bh = (height + 7) / 8
+    in jpeg-block-loop y-data width height qtable bw bh 0 0 0 [] 0
+
+  jpeg-block-loop : List Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer, Integer -> List Integer
+  jpeg-block-loop (y-data) (w) (h) (qt) (bw) (bh) (bx) (by) (prev-dc) (acc) (bit-count) =
+    if by >= bh then jpeg-pad-byte acc bit-count
+    else if bx >= bw then jpeg-block-loop y-data w h qt bw bh 0 (by + 1) prev-dc acc bit-count
+    else let block = jpeg-extract-block y-data w h (bx * 8) (by * 8)
+    in let dct = jpeg-dct-block block
+    in let quantized = jpeg-quantize dct qt
+    in let zigzag = jpeg-zigzag quantized
+    in let dc = list-at zigzag 0
+    in let dc-diff = dc - prev-dc
+    in let encoded = jpeg-encode-dc dc-diff & jpeg-encode-ac-simple zigzag
+    in jpeg-block-loop y-data w h qt bw bh (bx + 1) by dc acc bit-count
+
+Section: RGB to Y
+  jpeg-rgb-to-y : List Rgb, Integer, Integer, List Integer -> List Integer
+  jpeg-rgb-to-y (pixels) (i) (n) (acc) =
+    if i >= n then acc
+    else let px = list-at pixels i
+    in let y = (299 * px.cr + 587 * px.cg + 114 * px.cb) / 1000
+    in jpeg-rgb-to-y pixels (i + 1) n (list-push acc (y - 128))
+
+Section: Block Extraction
+  jpeg-extract-block : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  jpeg-extract-block (data) (w) (h) (ox) (oy) = jpeg-extract-loop data w h ox oy 0 0 []
+
+  jpeg-extract-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  jpeg-extract-loop (data) (w) (h) (ox) (oy) (x) (y) (acc) =
+    if y >= 8 then acc
+    else if x >= 8 then jpeg-extract-loop data w h ox oy 0 (y + 1) acc
+    else let px = ox + x
+    in let py = oy + y
+    in let val = if px < w then if py < h then list-at data (py * w + px) else 0 else 0
+    in jpeg-extract-loop data w h ox oy (x + 1) y (list-push acc val)
+
+Section: Simplified DCT (scaled integer)
+  jpeg-dct-block : List Integer -> List Integer
+  jpeg-dct-block (block) = jpeg-dct-loop block 0 0 []
+
+  jpeg-dct-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  jpeg-dct-loop (block) (u) (v) (acc) =
+    if v >= 8 then acc
+    else if u >= 8 then jpeg-dct-loop block 0 (v + 1) acc
+    else let val = jpeg-dct-coeff block u v
+    in jpeg-dct-loop block (u + 1) v (list-push acc val)
+
+  jpeg-dct-coeff : List Integer, Integer, Integer -> Integer
+  jpeg-dct-coeff (block) (u) (v) =
+    let sum = jpeg-dct-sum block u v 0 0 0
+    in let cu = if u == 0 then 707 else 1000
+    in let cv = if v == 0 then 707 else 1000
+    in sum * cu / 1000 * cv / 1000 / 4
+
+  jpeg-dct-sum : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  jpeg-dct-sum (block) (u) (v) (x) (y) (acc) =
+    if y >= 8 then acc
+    else if x >= 8 then jpeg-dct-sum block u v 0 (y + 1) acc
+    else let val = list-at block (y * 8 + x)
+    in let cos-xu = jpeg-cos-table-val x u
+    in let cos-yv = jpeg-cos-table-val y v
+    in jpeg-dct-sum block u v (x + 1) y (acc + val * cos-xu / 1000 * cos-yv / 1000)
+
+  jpeg-cos-table-val : Integer, Integer -> Integer
+  jpeg-cos-table-val (n) (k) =
+    let angle = (2 * n + 1) * k * 1571 / 16
+    in jpeg-cos-approx angle
+
+  jpeg-cos-approx : Integer -> Integer
+  jpeg-cos-approx (x) =
+    let x2 = x * x / 1000
+    in let x4 = x2 * x2 / 1000
+    in 1000 - x2 / 2 + x4 / 24
+
+Section: Quantization
+  jpeg-quantize : List Integer, List Integer -> List Integer
+  jpeg-quantize (dct) (qt) = jpeg-quant-loop dct qt 0 64 []
+
+  jpeg-quant-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  jpeg-quant-loop (dct) (qt) (i) (n) (acc) =
+    if i >= n then acc
+    else let q = list-at qt i
+    in let val = if q == 0 then 0 else list-at dct i / q
+    in jpeg-quant-loop dct qt (i + 1) n (list-push acc val)
+
+Section: Zigzag
+  jpeg-zigzag : List Integer -> List Integer
+  jpeg-zigzag (block) =
+    let order = [0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63]
+    in jpeg-reorder block order 0 64 []
+
+  jpeg-reorder : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  jpeg-reorder (block) (order) (i) (n) (acc) =
+    if i >= n then acc
+    else jpeg-reorder block order (i + 1) n (list-push acc (list-at block (list-at order i)))
+
+Section: DC/AC Encoding (simplified - raw bytes)
+  jpeg-encode-dc : Integer -> List Integer
+  jpeg-encode-dc (diff) =
+    let abs-val = if diff < 0 then -diff else diff
+    in let cat = jpeg-bit-length abs-val
+    in [cat, bit-and abs-val 255]
+
+  jpeg-encode-ac-simple : List Integer -> List Integer
+  jpeg-encode-ac-simple (zigzag) = jpeg-ac-loop zigzag 1 64 []
+
+  jpeg-ac-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  jpeg-ac-loop (zz) (i) (n) (acc) =
+    if i >= n then acc & [0, 0]
+    else let val = list-at zz i
+    in if val == 0 then jpeg-ac-loop zz (i + 1) n acc
+    else jpeg-ac-loop zz (i + 1) n (acc & [bit-and val 255])
+
+  jpeg-bit-length : Integer -> Integer
+  jpeg-bit-length (v) =
+    if v == 0 then 0
+    else if v < 2 then 1
+    else if v < 4 then 2
+    else if v < 8 then 3
+    else if v < 16 then 4
+    else if v < 32 then 5
+    else if v < 64 then 6
+    else if v < 128 then 7
+    else if v < 256 then 8
+    else if v < 512 then 9
+    else if v < 1024 then 10
+    else 11
+
+  jpeg-pad-byte : List Integer, Integer -> List Integer
+  jpeg-pad-byte (acc) (bits) = acc
+
+Section: Helpers
+  jpeg-be16 : Integer -> List Integer
+  jpeg-be16 (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+Page 1

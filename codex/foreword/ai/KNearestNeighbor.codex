@@ -1,0 +1,94 @@
+Chapter: KNearestNeighbor
+  cites Foreword chapter Maybe
+  cites Foreword chapter PriorityQueue
+
+ K-nearest neighbor search and classification. Uses a priority queue
+ to maintain the k closest points. Supports weighted voting for
+ classification and distance-weighted regression.
+
+ We say:
+
+Section: Types
+  KnnPoint = record {
+    knn-id : Integer,
+    knn-features : List Integer,
+    knn-label : Integer
+  }
+
+  KnnResult = record {
+    knn-neighbors : List KnnPoint,
+    knn-distances : List Integer,
+    knn-count : Integer
+  }
+
+Section: Distance
+  knn-euclidean-sq : List Integer, List Integer -> Integer
+  knn-euclidean-sq (a) (b) = knn-dist-loop a b 0 (list-length a) 0
+
+  knn-dist-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  knn-dist-loop (a) (b) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = list-at a i - list-at b i
+    in knn-dist-loop a b (i + 1) len (acc + d * d)
+
+  knn-manhattan : List Integer, List Integer -> Integer
+  knn-manhattan (a) (b) = knn-man-loop a b 0 (list-length a) 0
+
+  knn-man-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  knn-man-loop (a) (b) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = list-at a i - list-at b i
+    in let ad = if d < 0 then -d else d
+    in knn-man-loop a b (i + 1) len (acc + ad)
+
+Section: K-NN Search
+  knn-search : List KnnPoint, List Integer, Integer -> KnnResult
+  knn-search (dataset) (query) (k) =
+    knn-search-loop dataset query k 0 (list-length dataset) pq-empty
+
+  knn-search-loop : List KnnPoint, List Integer, Integer, Integer, Integer, PriorityQueue -> KnnResult
+  knn-search-loop (data) (query) (k) (i) (len) (pq) =
+    if i >= len then knn-extract-result data pq k
+    else let pt = list-at data i
+    in let dist = knn-euclidean-sq (pt.knn-features) query
+    in let pq2 = pq-insert pq dist i
+    in knn-search-loop data query k (i + 1) len pq2
+
+  knn-extract-result : List KnnPoint, PriorityQueue, Integer -> KnnResult
+  knn-extract-result (data) (pq) (k) = knn-extract-loop data pq k 0 [] [] 0
+
+  knn-extract-loop : List KnnPoint, PriorityQueue, Integer, Integer, List KnnPoint, List Integer, Integer -> KnnResult
+  knn-extract-loop (data) (pq) (k) (i) (pts) (dists) (count) =
+    if i >= k then KnnResult { knn-neighbors = pts, knn-distances = dists, knn-count = count }
+    else if pq-is-empty pq then KnnResult { knn-neighbors = pts, knn-distances = dists, knn-count = count }
+    else let pop = pq-pop pq
+    in let pt = list-at data (pop.entry.value)
+    in knn-extract-loop data (pop.queue) k (i + 1) (list-push pts pt) (list-push dists (pop.entry.priority)) (count + 1)
+
+Section: Classification
+  knn-classify : KnnResult -> Integer
+  knn-classify (result) = knn-majority-vote (result.knn-neighbors) 0 (result.knn-count)
+
+  knn-majority-vote : List KnnPoint, Integer, Integer -> Integer
+  knn-majority-vote (pts) (i) (len) =
+    if len == 0 then 0 - 1
+    else knn-count-labels pts 0 len 0 0 0
+
+  knn-count-labels : List KnnPoint, Integer, Integer, Integer, Integer, Integer -> Integer
+  knn-count-labels (pts) (i) (len) (best-label) (best-count) (check-label) =
+    if check-label > 255 then best-label
+    else let cnt = knn-count-label pts check-label 0 len 0
+    in if cnt > best-count then knn-count-labels pts i len check-label cnt (check-label + 1)
+    else knn-count-labels pts i len best-label best-count (check-label + 1)
+
+  knn-count-label : List KnnPoint, Integer, Integer, Integer, Integer -> Integer
+  knn-count-label (pts) (label) (i) (len) (acc) =
+    if i >= len then acc
+    else let pt = list-at pts i
+    in knn-count-label pts label (i + 1) len (acc + if pt.knn-label == label then 1 else 0)
+
+Section: Formatting
+  format-knn-result : KnnResult -> Text
+  format-knn-result (r) = "k=" & show (r.knn-count) & " class=" & show (knn-classify r)
+
+Page 1

@@ -1,0 +1,79 @@
+Chapter: UefiBoot
+  cites Works chapter UefiConsole
+  cites Works chapter DevConsole
+  cites Works chapter DevConsoleBoot
+  cites Works chapter DevConsoleMenu
+  cites Works chapter CodeBrowser
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ UEFI boot entry point. The PE stub stores the SystemTable pointer
+ at address 0x8000. We read it, initialize the UEFI console, read
+ SOURCE.SRC from the FAT16 boot disk, index all chapters for the
+ code browser, and enter the dev console main menu loop.
+
+ We say:
+
+Section: Source Indexing
+
+  uefi-partition-start : Integer = 2048
+
+  index-concatenated-source : Text -> SourceIndex
+  index-concatenated-source (source) =
+    let lines = text-split source "\n"
+    in let len = list-length lines
+    in let base = SourceIndex {
+      name-trie = (empty-source-index).name-trie,
+      locations = [],
+      chapter-names = [],
+      chapter-starts = [],
+      source-lines = lines,
+      source-line-count = len,
+      total-defs = 0
+    }
+    in scan-chapters lines 0 len "" 0 base
+
+  scan-chapters : List Text, Integer, Integer, Text, Integer, SourceIndex -> SourceIndex
+  scan-chapters (lines) (i) (len) (cur-name) (cur-start) (idx) =
+    if i >= len then
+      if text-length cur-name > 0
+      then index-chapter-range idx cur-name lines cur-start len
+      else idx
+    else let line = list-at lines i
+    in if text-starts-with line "Chapter: "
+      then let idx2 = if text-length cur-name > 0
+            then index-chapter-range idx cur-name lines cur-start i
+            else idx
+      in let name = substring line 9 (text-length line - 9)
+      in scan-chapters lines (i + 1) len name i idx2
+    else scan-chapters lines (i + 1) len cur-name cur-start idx
+
+  index-chapter-range : SourceIndex, Text, List Text, Integer, Integer -> SourceIndex
+  index-chapter-range (idx) (name) (lines) (start) (end-pos) =
+    let idx2 = index-lines idx name lines start end-pos
+    in SourceIndex {
+      name-trie = idx2.name-trie,
+      locations = idx2.locations,
+      chapter-names = list-snoc (idx2.chapter-names) name,
+      chapter-starts = list-snoc (idx2.chapter-starts) start,
+      source-lines = idx2.source-lines,
+      source-line-count = idx2.source-line-count,
+      total-defs = idx2.total-defs
+    }
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let sys-table = peek-qword 32768 0
+    in let con = uefi-console-init sys-table
+    in let vol = fat16-init uefi-partition-start
+    in let source-result = fat16-read-text vol "SOURCE.SRC"
+    in let idx = when source-result
+          is Just (source) -> index-concatenated-source source
+          is None -> empty-source-index
+    in let state = dev-console-init con
+    in let state2 = __record-set state "source-index" idx
+    in let state3 = __record-set state2 "status" ("Indexed " & show (idx.total-defs) & " defs, " & show (list-length (idx.chapter-names)) & " chapters")
+    in dev-console-loop state3
+
+Page 1

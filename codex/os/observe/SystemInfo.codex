@@ -1,0 +1,83 @@
+Chapter: SystemInfo
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ SystemInfo gathers a snapshot of OS state — process count, boot
+ PID, identity presence, installed programs, trust fuel, and
+ uptime — into a single SystemReport record.
+
+ We say:
+
+Section: System Report
+
+  SystemReport = record {
+    process-count : Integer,
+    boot-pid : Integer,
+    identity-word0 : Integer,
+    has-identity : Boolean,
+    programs-installed : Integer,
+    trust-fuel : Integer,
+    policy-name : Text,
+    policy-rules : Integer
+  }
+
+  gather-report : ShellState -> SystemReport
+  gather-report (state) = SystemReport {
+    process-count = process-count,
+    boot-pid = process-get-pid,
+    identity-word0 = identity-whoami 0,
+    has-identity = identity-whoami 0 /= 0,
+    programs-installed = registry-count (state.registry),
+    trust-fuel = state.fuel,
+    policy-name = (state.policy).name,
+    policy-rules = list-length ((state.policy).rules)
+  }
+
+Section: Report Formatting
+
+  format-report : SystemReport -> Text
+  format-report (r) =
+    "procs=" & show (r.process-count)
+    & " pid=" & show (r.boot-pid)
+    & " identity=" & (if r.has-identity then "yes" else "none")
+    & " programs=" & show (r.programs-installed)
+    & " policy=" & r.policy-name & "(" & show (r.policy-rules) & " rules)"
+    & " fuel=" & show (r.trust-fuel)
+
+  format-report-lines : SystemReport -> List Text
+  format-report-lines (r) = [
+    "Processes: " & show (r.process-count),
+    "Boot PID: " & show (r.boot-pid),
+    "Identity: " & (if r.has-identity then "word0=" & show (r.identity-word0) else "none"),
+    "Programs: " & show (r.programs-installed),
+    "Policy: " & r.policy-name & " (" & show (r.policy-rules) & " rules)",
+    "Fuel: " & show (r.trust-fuel)
+  ]
+
+Section: Queries
+
+  report-has-identity : SystemReport -> Boolean
+  report-has-identity (r) = r.has-identity
+
+  report-program-count : SystemReport -> Integer
+  report-program-count (r) = r.programs-installed
+
+  report-is-healthy : SystemReport -> Boolean
+  report-is-healthy (r) =
+    if r.process-count == 0 then False
+    else if r.trust-fuel == 0 then False
+    else True
+
+Page 1

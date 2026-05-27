@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Mahjong Solitaire</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #0a1a0a; }
+  .game-page { max-width: 700px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/mahjong/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .board-wrap { background: #1a3a1acc; border: 3px solid #22884422; border-radius: 12px;
+    padding: 8px; margin-bottom: 12px; backdrop-filter: blur(8px);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+  .mj-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 2px; }
+  .mj-tile { aspect-ratio: 0.75; border-radius: 4px; display: flex; align-items: center;
+    justify-content: center; font-size: 14px; font-weight: bold; transition: all 0.3s; }
+  .mj-present { background: linear-gradient(180deg, #f5f0e0, #e8dcc0); color: #333;
+    border: 1px solid #c8b888; box-shadow: 1px 2px 3px rgba(0,0,0,0.3),
+    inset 0 1px 0 rgba(255,255,255,0.5); }
+  .mj-removed { background: transparent; border: 1px solid #22884411; }
+  .mj-matched { background: #44aa4433; border: 1px solid #44aa4444; }
+  .info-bar { display: flex; justify-content: space-between; align-items: center;
+    background: #1a3a1acc; border: 1px solid #22884422; border-radius: 8px;
+    padding: 8px 16px; margin-bottom: 8px; backdrop-filter: blur(8px); }
+  .stat { font-size: 14px; color: #88cc88; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #228844, #115522); border: 2px solid #33aa55;
+    border-radius: 20px; color: #fff; font-family: inherit; font-size: 14px; padding: 8px 24px;
+    cursor: pointer; font-weight: bold; }
+  .controls button:hover { transform: scale(1.05); }
+  .controls button:disabled { opacity: 0.3; }
+  #status-line { color: #33aa55; font-size: 16px; margin-bottom: 10px; text-align: center; font-weight: bold; }
+  .speed-label { color: #33aa5566; font-size: 12px; }
+  .engine-tag { background: #0a1a0a; color: #33aa55; font-size: 10px; padding: 2px 8px;
+    border-radius: 10px; margin-left: 12px; border: 1px solid #33aa5544; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#0a1a0a;border-color:#22884422">
+  <span class="topbar-logo" style="color:#33aa55">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#22884466">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#33aa55;border-color:#33aa55">Mahjong</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x1F000; Play!</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Next</button>
+    <button onclick="resetGame()">&#x21BB;</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#33aa55" oninput="updateSpeed()">
+  </div>
+  <div id="status-line">Match the tiles!</div>
+  <div class="info-bar">
+    <span class="stat">Matched: <span id="matched">0</span></span>
+    <span class="stat">Remaining: <span id="remaining">144</span></span>
+  </div>
+  <div class="board-wrap"><div class="mj-grid" id="board"></div></div>
+  <details style="background:#1a3a1a99;border:1px solid #22884422;border-radius:8px;padding:16px;margin-top:12px;color:#88cc8888;font-size:13px;line-height:1.6">
+    <summary style="color:#33aa55;cursor:pointer;font-weight:bold;font-size:14px">How to Play Mahjong Solitaire</summary>
+    <p>Mahjong Solitaire (Shanghai). 144 tiles arranged in layers. Match and remove pairs of identical free tiles. A tile is free if it has no tile on top and at least one side (left or right) is open. Game ends when no more pairs can be found or all tiles are cleared.</p>
+  </details>
+</div>
+<script>
+var SYMS=['一','二','三','四','五','六','七','八','九',
+  '①','②','③','④','⑤','⑥','⑦','⑧','⑨',
+  '&#9824;','&#9829;','&#9830;','&#9827;','&#9733;','&#9728;','&#9731;','&#9752;','&#9786;',
+  '&#x265F;','&#x265E;','&#x265D;','&#x265C;','&#x265B;','&#x265A;','&#x2654;','&#x2655;','&#x2656;'];
+var COLS=['#cc3333','#3366cc','#339933','#cc6600','#993399','#cc9900','#336666','#993333','#666'];
+var state,running=false,timer,delay=400,prevTiles=null;
+
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1400,1000,700,400,250,150,80,30,5][v-1]||400}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+function render(s){
+  var h='';
+  for(var i=0;i<144;i++){
+    var v=s.tiles[i];
+    if(v===0){
+      var was=prevTiles&&prevTiles[i]!==0;
+      h+='<div class="mj-tile '+(was?'mj-matched':'mj-removed')+'"></div>';
+    } else {
+      var idx=(v-1)%36;var col=COLS[idx%9]||'#333';
+      h+='<div class="mj-tile mj-present" style="color:'+col+'">'+SYMS[idx]+'</div>';
+    }
+  }
+  document.getElementById('board').innerHTML=h;
+  document.getElementById('matched').textContent=s.matched;
+  document.getElementById('remaining').textContent=s.remaining;
+  prevTiles=s.tiles.slice();
+}
+async function resetGame(){clearTimeout(timer);running=false;prevTiles=null;state=await api('/api/mahjong/new');if(state)render(state);document.getElementById('status-line').innerHTML='Match the tiles!';document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;document.getElementById('btn-step').disabled=false;document.getElementById('status-line').innerHTML='Finding pairs...';updateSpeed();scheduleTick()}
+function scheduleTick(){if(running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running)await tick()}
+async function tick(){
+  if(!running||!state)return;
+  if(state.done||state.remaining<=0){
+    document.getElementById('status-line').innerHTML=state.remaining<=0?'Board cleared!':'No more pairs';
+    running=false;return}
+  state=await api('/api/mahjong/step');
+  if(!state){running=false;return}
+  render(state);
+  if(state.done||state.remaining<=0){
+    document.getElementById('status-line').innerHTML=state.remaining<=0?'Board cleared!':'No more pairs';
+    running=false;return}
+  document.getElementById('status-line').innerHTML='Matched '+state.matched+' pairs...';
+  scheduleTick();
+}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

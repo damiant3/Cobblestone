@@ -1,0 +1,184 @@
+Chapter: TransformGizmo
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Game chapter Rasterizer
+  cites Spark chapter SceneCamera
+  cites Spark chapter NodeTransform
+
+ Visual manipulation gizmos for translate, rotate, and scale.
+ Draws axis handles on the framebuffer and processes mouse input
+ to produce transform deltas. Screen coordinates are integer pixels.
+
+ We say:
+
+Section: Types
+
+  GizmoMode =
+    | GizmoTranslate
+    | GizmoRotate
+    | GizmoScale
+
+  GizmoAxis =
+    | AxisNone
+    | AxisX
+    | AxisY
+    | AxisZ
+
+  GizmoState = record {
+    gz-mode : GizmoMode,
+    gz-active-axis : GizmoAxis,
+    gz-dragging : Boolean,
+    gz-start-x : Integer,
+    gz-start-y : Integer,
+    gz-handle-length : Integer,
+    gz-handle-width : Integer
+  }
+
+Section: Construction
+
+  gizmo-new : GizmoMode -> GizmoState
+  gizmo-new (mode) = GizmoState {
+    gz-mode = mode,
+    gz-active-axis = AxisNone,
+    gz-dragging = False,
+    gz-start-x = 0,
+    gz-start-y = 0,
+    gz-handle-length = 60,
+    gz-handle-width = 4
+  }
+
+Section: Drawing
+
+  gizmo-draw : Framebuf, GizmoState, SparkCamera, Transform3D -> Framebuf
+  gizmo-draw (fb) (gz) (cam) (transform) =
+    let vp = spark-camera-vp cam
+    in let center = transform.t3-position
+    in let sx = gizmo-project-x vp center (fb.fb-width) (fb.fb-height)
+    in let sy = gizmo-project-y vp center (fb.fb-width) (fb.fb-height)
+    in if sx < 0 then fb
+    else let len = gz.gz-handle-length
+    in let fb2 = fb-line fb sx sy (sx + len) sy 16711680
+    in let fb3 = fb-line fb2 sx sy sx (sy - len) 65280
+    in let fb4 = gizmo-draw-z-handle fb3 sx sy len
+    in gizmo-draw-active-highlight fb4 gz sx sy len
+
+  gizmo-draw-z-handle : Framebuf, Integer, Integer, Integer -> Framebuf
+  gizmo-draw-z-handle (fb) (sx) (sy) (len) =
+    let diag = len * 707 / 1000
+    in fb-line fb sx sy (sx - diag) (sy - diag) 255
+
+  gizmo-draw-active-highlight : Framebuf, GizmoState, Integer, Integer, Integer -> Framebuf
+  gizmo-draw-active-highlight (fb) (gz) (sx) (sy) (len) =
+    when gz.gz-active-axis
+      is AxisX -> fb-line fb sx (sy - 1) (sx + len) (sy - 1) 16776960
+      is AxisY -> fb-line fb (sx - 1) sy (sx - 1) (sy - len) 16776960
+      is AxisZ -> let diag = len * 707 / 1000
+        in fb-line fb (sx + 1) (sy + 1) (sx - diag + 1) (sy - diag + 1) 16776960
+      is AxisNone -> fb
+
+Section: Hit Testing
+
+  gizmo-hit-test : GizmoState, Integer, Integer, Integer, Integer -> GizmoAxis
+  gizmo-hit-test (gz) (mx) (my) (cx) (cy) =
+    let len = gz.gz-handle-length
+    in let thresh = 8
+    in if gizmo-near-x-axis mx my cx cy len thresh then AxisX
+    else if gizmo-near-y-axis mx my cx cy len thresh then AxisY
+    else if gizmo-near-z-axis mx my cx cy len thresh then AxisZ
+    else AxisNone
+
+  gizmo-near-x-axis : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  gizmo-near-x-axis (mx) (my) (cx) (cy) (len) (thresh) =
+    if mx >= cx then
+      if mx <= cx + len then
+        let dy = my - cy
+        in let abs-dy = if dy < 0 then 0 - dy else dy
+        in abs-dy <= thresh
+      else False
+    else False
+
+  gizmo-near-y-axis : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  gizmo-near-y-axis (mx) (my) (cx) (cy) (len) (thresh) =
+    if my <= cy then
+      if my >= cy - len then
+        let dx = mx - cx
+        in let abs-dx = if dx < 0 then 0 - dx else dx
+        in abs-dx <= thresh
+      else False
+    else False
+
+  gizmo-near-z-axis : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  gizmo-near-z-axis (mx) (my) (cx) (cy) (len) (thresh) =
+    let diag = len * 707 / 1000
+    in let dx = mx - cx
+    in let dy = my - cy
+    in if dx >= 0 - diag then
+      if dx <= 0 then
+        let expected-y = dx
+        in let diff = dy - expected-y
+        in let abs-diff = if diff < 0 then 0 - diff else diff
+        in abs-diff <= thresh * 2
+      else False
+    else False
+
+Section: Interaction
+
+  gizmo-begin-drag : GizmoState, Integer, Integer, Integer, Integer -> GizmoState
+  gizmo-begin-drag (gz) (mx) (my) (cx) (cy) =
+    let axis = gizmo-hit-test gz mx my cx cy
+    in GizmoState {
+      gz-mode = gz.gz-mode,
+      gz-active-axis = axis,
+      gz-dragging = when axis is AxisNone -> False is otherwise -> True,
+      gz-start-x = mx,
+      gz-start-y = my,
+      gz-handle-length = gz.gz-handle-length,
+      gz-handle-width = gz.gz-handle-width
+    }
+
+  gizmo-drag : GizmoState, Integer, Integer -> Vec3
+  gizmo-drag (gz) (mx) (my) =
+    if gz.gz-dragging then
+      let dx = mx - gz.gz-start-x
+      in let dy = gz.gz-start-y - my
+      in when gz.gz-active-axis
+        is AxisX -> vec3-new (dx * 10) 0 0
+        is AxisY -> vec3-new 0 (dy * 10) 0
+        is AxisZ -> vec3-new 0 0 ((dx + dy) * 7)
+        is AxisNone -> vec3-zero
+    else vec3-zero
+
+  gizmo-end-drag : GizmoState -> GizmoState
+  gizmo-end-drag (gz) = GizmoState {
+    gz-mode = gz.gz-mode,
+    gz-active-axis = AxisNone,
+    gz-dragging = False,
+    gz-start-x = 0,
+    gz-start-y = 0,
+    gz-handle-length = gz.gz-handle-length,
+    gz-handle-width = gz.gz-handle-width
+  }
+
+Section: Projection Helper
+
+  gizmo-project-x : Mat4, Vec3, Integer, Integer -> Integer
+  gizmo-project-x (mvp) (v) (vp-w) (vp-h) =
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1000 })
+    in if clip.v4w <= 0 then -1
+    else (clip.v4x * 1000 / clip.v4w + 1000) * vp-w / 2000
+
+  gizmo-project-y : Mat4, Vec3, Integer, Integer -> Integer
+  gizmo-project-y (mvp) (v) (vp-w) (vp-h) =
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1000 })
+    in if clip.v4w <= 0 then -1
+    else (1000 - clip.v4y * 1000 / clip.v4w) * vp-h / 2000
+
+Section: Info
+
+  gizmo-info : GizmoState -> Text
+  gizmo-info (gz) =
+    let mode = when gz.gz-mode is GizmoTranslate -> "Translate" is GizmoRotate -> "Rotate" is GizmoScale -> "Scale"
+    in let axis = when gz.gz-active-axis is AxisNone -> "none" is AxisX -> "X" is AxisY -> "Y" is AxisZ -> "Z"
+    in mode & " axis=" & axis
+
+Page 1

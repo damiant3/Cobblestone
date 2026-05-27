@@ -1,0 +1,115 @@
+Chapter: Deque
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+  cites Foreword chapter MathLib
+
+ Double-ended queue of integers backed by a ring buffer. O(1) push
+ and pop on both ends using list-set-at mutation. Fixed capacity with
+ modular wrap-around. Rejects pushes when full.
+
+ A Deque is a record containing:
+   dq-data  -- flat backing array.
+   dq-cap   -- maximum capacity (1..65535).
+   dq-head  -- index of the front element.
+   dq-tail  -- index past the back element.
+   dq-count -- number of elements stored.
+
+ A DequePopResult is a record containing:
+   dqr-value -- the popped value (0 if invalid).
+   dqr-deque -- the deque after the pop.
+   dqr-valid -- True if an element was actually removed.
+
+ To deque-new gives Deque,
+   creating an empty deque with the given capacity.
+
+ To deque-push-back gives Deque,
+   appending a value at the back; returns the deque unchanged if full.
+
+ To deque-push-front gives Deque,
+   prepending a value at the front; returns the deque unchanged if full.
+
+ To deque-pop-front gives DequePopResult,
+   removing and returning the front element, or returning valid=False if empty.
+
+ To deque-pop-back gives DequePopResult,
+   removing and returning the back element, or returning valid=False if empty.
+
+ To deque-peek-front gives Maybe Integer,
+   returning Just the front element, or None if empty.
+
+ To deque-peek-back gives Maybe Integer,
+   returning Just the back element, or None if empty.
+
+ To deque-count gives Integer,
+   returning the number of elements stored.
+
+ To deque-is-empty gives Boolean,
+   True if the deque holds no elements.
+
+ To deque-is-full gives Boolean,
+   True if the deque is at capacity.
+
+ We say:
+
+Section: Type
+  Deque = record {
+    dq-data : List Integer,
+    dq-cap : Integer between 1 and 65535,
+    dq-head : Integer between 0 and 65535,
+    dq-tail : Integer between 0 and 65535,
+    dq-count : Integer between 0 and 65535
+  }
+
+Section: Construction
+  deque-new : Integer -> Deque
+  deque-new (cap) = Deque { dq-data = list-zeros cap, dq-cap = cap, dq-head = 0, dq-tail = 0, dq-count = 0 }
+
+Section: Push
+  deque-push-back : Deque, Integer -> Deque
+  deque-push-back (dq) (val) =
+    if dq.dq-count >= dq.dq-cap then dq
+    else Deque { dq-data = list-set-at (dq.dq-data) (dq.dq-tail) val, dq-cap = dq.dq-cap, dq-head = dq.dq-head, dq-tail = math-mod (dq.dq-tail + 1) (dq.dq-cap), dq-count = dq.dq-count + 1 }
+
+  deque-push-front : Deque, Integer -> Deque
+  deque-push-front (dq) (val) =
+    if dq.dq-count >= dq.dq-cap then dq
+    else let new-head = math-mod (dq.dq-head - 1 + dq.dq-cap) (dq.dq-cap)
+    in Deque { dq-data = list-set-at (dq.dq-data) new-head val, dq-cap = dq.dq-cap, dq-head = new-head, dq-tail = dq.dq-tail, dq-count = dq.dq-count + 1 }
+
+Section: Pop
+  DequePopResult = record { dqr-value : Integer, dqr-deque : Deque, dqr-valid : Boolean }
+
+  deque-pop-front : Deque -> DequePopResult
+  deque-pop-front (dq) =
+    if dq.dq-count == 0 then DequePopResult { dqr-value = 0, dqr-deque = dq, dqr-valid = False }
+    else let val = list-at (dq.dq-data) (dq.dq-head)
+    in DequePopResult { dqr-value = val, dqr-deque = Deque { dq-data = dq.dq-data, dq-cap = dq.dq-cap, dq-head = math-mod (dq.dq-head + 1) (dq.dq-cap), dq-tail = dq.dq-tail, dq-count = dq.dq-count - 1 }, dqr-valid = True }
+
+  deque-pop-back : Deque -> DequePopResult
+  deque-pop-back (dq) =
+    if dq.dq-count == 0 then DequePopResult { dqr-value = 0, dqr-deque = dq, dqr-valid = False }
+    else let new-tail = math-mod (dq.dq-tail - 1 + dq.dq-cap) (dq.dq-cap)
+    in let val = list-at (dq.dq-data) new-tail
+    in DequePopResult { dqr-value = val, dqr-deque = Deque { dq-data = dq.dq-data, dq-cap = dq.dq-cap, dq-head = dq.dq-head, dq-tail = new-tail, dq-count = dq.dq-count - 1 }, dqr-valid = True }
+
+  deque-peek-front : Deque -> Maybe Integer
+  deque-peek-front (dq) =
+    if dq.dq-count == 0 then None
+    else Just (list-at (dq.dq-data) (dq.dq-head))
+
+  deque-peek-back : Deque -> Maybe Integer
+  deque-peek-back (dq) =
+    if dq.dq-count == 0 then None
+    else Just (list-at (dq.dq-data) (math-mod (dq.dq-tail - 1 + dq.dq-cap) (dq.dq-cap)))
+
+Section: Helpers
+  deque-count : Deque -> Integer
+  deque-count (dq) = dq.dq-count
+
+  deque-is-empty : Deque -> Boolean
+  deque-is-empty (dq) = dq.dq-count == 0
+
+  deque-is-full : Deque -> Boolean
+  deque-is-full (dq) = dq.dq-count == dq.dq-cap
+
+Page 1

@@ -1,0 +1,746 @@
+Chapter: Desugarer
+  cites Codex chapter Text
+  cites Codex chapter Lists
+  cites Codex chapter Build Settings (max-recursion-depth)
+
+ Transforms the concrete syntax tree into the abstract syntax tree.
+ Tokens become Names, literal token text becomes literal values,
+ parenthesized nodes are removed, binary operators are resolved, and
+ a SourceSpan is carried on every AST node. Compound nodes without
+ a natural source token inherit a span from a sub-expression (or fall
+ back to synthetic) and are tagged ProvDesugared.
+
+Section: Span Helpers
+  token-span : Token -> SourceSpan
+  token-span (tok) =
+   span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id)
+
+  desugared-span : SourceSpan -> SourceSpan
+  desugared-span (s) =
+   span-with-provenance s ProvDesugared
+
+Section: Expression Desugaring
+  desugar-expr : Expr -> AExpr
+  desugar-expr (node) = desugar-expr-at node 0
+
+  desugar-expr-at : Expr, Integer -> AExpr
+  desugar-expr-at (node) (depth) =
+   if depth >= max-recursion-depth then deck-record (AErrorExpr "desugar fuel exhausted" synthetic-span)
+   else when node
+    is LitExpr (tok) -> desugar-literal tok
+    is NameExpr (tok) -> deck-record (ANameExpr (make-name (token-text tok)) (token-span tok))
+    is AppExpr (f) (a) ->
+     let df = desugar-expr-at f (depth + 1)
+     in let da = desugar-expr-at a (depth + 1)
+     in deck-record (AApplyExpr df da (desugared-span (aexpr-span df)))
+    is BinExpr (l) (op) (r) ->
+     let dl = desugar-expr-at l (depth + 1)
+     in let dr = desugar-expr-at r (depth + 1)
+     in if is-pipe-forward (op.kind) then deck-record (AApplyExpr dr dl (desugared-span (token-span op)))
+     else deck-record (ABinaryExpr dl (desugar-bin-op (op.kind)) dr (token-span op))
+    is UnaryExpr (op) (operand) -> deck-record (AUnaryExpr (desugar-expr-at operand (depth + 1)) (token-span op))
+    is IfExpr (c) (t) (e) ->
+     let dc = desugar-expr-at c (depth + 1)
+     in deck-record (AIfExpr dc (desugar-expr-at t (depth + 1)) (desugar-expr-at e (depth + 1)) (desugared-span (aexpr-span dc)))
+    is LetExpr (bindings) (body) ->
+     let db = desugar-expr-at body (depth + 1)
+     in deck-record (ALetExpr (map-list desugar-let-bind bindings) db (desugared-span (aexpr-span db)))
+    is MatchExpr (scrut) (arms) ->
+     let ds = desugar-expr-at scrut (depth + 1)
+     in deck-record (AMatchExpr ds (map-list desugar-match-arm arms) (desugared-span (aexpr-span ds)))
+    is ListExpr (elems) -> deck-record (AListExpr (map-list desugar-expr elems) synthetic-span)
+    is RecordExpr (type-tok) (fields) -> deck-record (ARecordExpr (make-name (token-text type-tok)) (map-list desugar-field-expr fields) (token-span type-tok))
+    is FieldExpr (rec) (field-tok) -> deck-record (AFieldAccess (desugar-expr-at rec (depth + 1)) (make-name (token-text field-tok)) (token-span field-tok))
+    is ParenExpr (inner) -> desugar-expr-at inner (depth + 1)
+    is ActExpr (stmts) -> deck-record (AActExpr (map-list desugar-act-stmt stmts) synthetic-span)
+    is HandleExpr (eff-tok) (body) (clauses) -> deck-record (AHandleExpr (make-name (token-text eff-tok)) (desugar-expr-at body (depth + 1)) (map-list desugar-handle-clause clauses) (token-span eff-tok))
+    is WithTimeoutExpr (timeout-tok) (effs) (scopes) (body) -> deck-record (AWithTimeoutExpr (token-text timeout-tok) (map-list make-type-param-name effs) (map-list extract-scope-text scopes) (desugar-expr-at body (depth + 1)) (token-span timeout-tok))
+    is LambdaExpr (params) (body) -> deck-record (ALambdaExpr (map-list desugar-lambda-param params) (desugar-expr-at body (depth + 1)) synthetic-span)
+    is TryExpr (count-tok) (body) (fb) (fail) -> deck-record (ATryExpr (text-to-integer (token-text count-tok)) (map-list desugar-act-stmt body) (map-list desugar-act-stmt fb) (map-list desugar-act-stmt fail) (token-span count-tok))
+    is FieldAssignExpr (lhs) (field-tok) (rhs) ->
+     let dr = desugar-expr-at rhs (depth + 1)
+     in when lhs
+      is FieldExpr (rec) (ftok) -> deck-record (AFieldAssignExpr (desugar-expr-at rec (depth + 1)) (make-name (token-text field-tok)) dr (token-span field-tok))
+      is otherwise -> deck-record (AFieldAssignExpr (desugar-expr-at lhs (depth + 1)) (make-name (token-text field-tok)) dr (token-span field-tok))
+    is LazyExpr (inner) -> deck-record (ALazyExpr (desugar-expr-at inner (depth + 1)) synthetic-span)
+    is ErrExpr (tok) -> deck-record (AErrorExpr (token-text tok) (token-span tok))
+
+  literal-body-length : Token -> Integer
+  literal-body-length (tok) =
+   if tok.length < 2 then 0 else tok.length - 2
+
+  decode-char-literal-value : Token -> Text
+  decode-char-literal-value (tok) =
+   let body-off = tok.offset + 1
+   in let body-len = literal-body-length tok
+   in if body-len <= 0 then "0"
+      else let c0 = char-code-at (tok.source) body-off
+      in if c0 == cc-backslash then if body-len < 2 then integer-to-text c0
+            else let nc = char-code-at (tok.source) (body-off + 1)
+            in let val = if nc == cc-lower-n then cc-newline
+                  else if nc == cc-lower-t then cc-space
+                  else if nc == cc-lower-r then cc-newline
+                  else if nc == cc-backslash then cc-backslash
+                  else if nc == cc-single-quote then cc-single-quote
+                  else nc
+            in integer-to-text val
+         else integer-to-text c0
+
+  literal-value-text : Token -> Text
+  literal-value-text (tok) =
+   when tok.kind
+    is TextLiteral -> decode-escapes (substring (tok.source) (tok.offset + 1) (literal-body-length tok))
+    is CharLiteral -> decode-char-literal-value tok
+    is otherwise -> token-text tok
+
+  desugar-literal : Token -> AExpr
+  desugar-literal (tok) =
+   if is-literal (tok.kind) then deck-record (ALitExpr (literal-value-text tok) (classify-literal (tok.kind)) (token-span tok))
+   else deck-record (AErrorExpr (token-text tok) (token-span tok))
+
+  classify-literal : TokenKind -> LiteralKind
+  classify-literal (k) =
+   when k
+    is IntegerLiteral -> IntLit
+    is NumberLiteral -> NumLit
+    is TextLiteral -> TextLit
+    is CharLiteral -> CharLit
+    is TrueKeyword -> BoolLit
+    is FalseKeyword -> BoolLit
+    is otherwise -> TextLit
+
+  desugar-let-bind : LetBind -> ALetBind
+  desugar-let-bind (b) =
+   deck-record (ALetBind {
+    name = make-name (token-text (b.name)),
+    value = desugar-expr (b.value),
+    span = token-span (b.name)
+   })
+
+  desugar-match-arm : MatchArm -> AMatchArm
+  desugar-match-arm (arm) =
+   let dp = desugar-pattern (arm.pattern)
+   in deck-record (AMatchArm {
+    pattern = dp,
+    body = desugar-expr (arm.body),
+    span = apat-span dp
+   })
+
+  desugar-field-expr : RecordFieldExpr -> AFieldExpr
+  desugar-field-expr (f) =
+   deck-record (AFieldExpr {
+    name = make-name (token-text (f.name)),
+    value = desugar-expr (f.value),
+    span = token-span (f.name)
+   })
+
+  desugar-act-stmt : ActStmt -> AActStmt
+  desugar-act-stmt (s) =
+   when s
+    is ActBindStmt (tok) (val) -> deck-record (AActBindStmt (make-name (token-text tok)) (desugar-expr val) (token-span tok))
+    is ActExprStmt (e) ->
+     let de = desugar-expr e
+     in deck-record (AActExprStmt de (aexpr-span de))
+
+  desugar-handle-clause : HandleClause -> AHandleClause
+  desugar-handle-clause (c) =
+   deck-record (AHandleClause {
+    op-name = make-name (token-text (c.op-name)),
+    params = desugar-handle-params (c.params) 0 (list-length (c.params)) [],
+    resume-name = make-name (token-text (c.resume-name)),
+    body = desugar-expr (c.body),
+    span = token-span (c.op-name)
+   })
+
+  desugar-handle-params : List Token, Integer, Integer, List Name -> List Name
+  desugar-handle-params (toks) (i) (len) (acc) =
+   if i >= len then acc
+   else desugar-handle-params toks (i + 1) len (list-push acc (make-name (token-text (list-at toks i))))
+
+  desugar-lambda-param : Token -> Name
+  desugar-lambda-param (tok) =
+   make-name (token-text tok)
+
+Section: Binary Operator Desugaring
+  desugar-bin-op : TokenKind -> BinaryOp
+  desugar-bin-op (k) =
+   when k
+    is Plus -> OpAdd
+    is Minus -> OpSub
+    is Star -> OpMul
+    is Slash -> OpDiv
+    is Caret -> OpPow
+    is DoubleEquals -> OpEq
+    is NotEquals -> OpNotEq
+    is LessThan -> OpLt
+    is GreaterThan -> OpGt
+    is LessOrEqual -> OpLtEq
+    is GreaterOrEqual -> OpGtEq
+    is TripleEquals -> OpDefEq
+    is PlusPlus -> OpAppend
+    is ColonColon -> OpCons
+    is Ampersand -> OpAnd
+    is Pipe -> OpOr
+    is otherwise -> OpAdd
+
+Section: Pattern Desugaring
+  apat-span : APat -> SourceSpan
+  apat-span (p) =
+   when p
+    is AVarPat (n) (s) -> s
+    is ALitPat (t) (k) (s) -> s
+    is ACtorPat (n) (sub) (s) -> s
+    is AWildPat (s) -> s
+
+  desugar-pattern : Pat -> APat
+  desugar-pattern (p) = desugar-pattern-at p 0
+
+  desugar-pattern-at : Pat, Integer -> APat
+  desugar-pattern-at (p) (depth) =
+   if depth >= max-recursion-depth then deck-record (AWildPat synthetic-span)
+   else when p
+    is VarPat (tok) -> deck-record (AVarPat (make-name (token-text tok)) (token-span tok))
+    is LitPat (tok) -> deck-record (ALitPat (literal-value-text tok) (classify-literal (tok.kind)) (token-span tok))
+    is CtorPat (tok) (subs) -> deck-record (ACtorPat (make-name (token-text tok)) (map-list desugar-pattern subs) (token-span tok))
+    is WildPat (tok) -> deck-record (AWildPat (token-span tok))
+
+Section: Type Desugaring
+  desugar-type-expr : TypeExpr -> ATypeExpr
+  desugar-type-expr (t) = desugar-type-expr-at t 0
+
+  desugar-type-expr-at : TypeExpr, Integer -> ATypeExpr
+  desugar-type-expr-at (t) (depth) =
+   if depth >= max-recursion-depth then deck-record (ANamedType (make-name "_fuel") synthetic-span)
+   else when t
+    is NamedType (tok) -> deck-record (ANamedType (make-name (token-text tok)) (token-span tok))
+    is FunType (param) (ret) ->
+     let dp = desugar-type-expr-at param (depth + 1)
+     in deck-record (AFunType dp (desugar-type-expr-at ret (depth + 1)) (atype-span dp))
+    is AppType (ctor) (args) ->
+     let dc = desugar-type-expr-at ctor (depth + 1)
+     in deck-record (AAppType dc (map-list desugar-type-expr args) (atype-span dc))
+    is ParenType (inner) -> desugar-type-expr-at inner (depth + 1)
+    is ListType (elem) ->
+     let de = desugar-type-expr-at elem (depth + 1)
+     in deck-record (AAppType (deck-record (ANamedType (make-name "List") (atype-span de))) [de] (atype-span de))
+    is LinearTypeExpr (inner) -> desugar-type-expr-at inner (depth + 1)
+    is EffectTypeExpr (effs) (scopes) (ret) ->
+     let dr = desugar-type-expr-at ret (depth + 1)
+     in deck-record (AEffectType (map-list make-type-param-name effs) (map-list extract-scope-text scopes) dr (atype-span dr))
+    is BoundedIntType (base) (lo) (hi) (mode) ->
+     let db = desugar-type-expr-at base (depth + 1)
+     in deck-record (ABoundedIntType db lo hi mode (atype-span db))
+    is PropEqType (left) (right) (sp) ->
+     let dl = desugar-type-expr-at left (depth + 1)
+     in let dr = desugar-type-expr-at right (depth + 1)
+     in deck-record (APropEqType dl dr sp)
+    is ConstrainedType (constraint) (body) ->
+     let db = desugar-type-expr-at body (depth + 1)
+     in desugar-constraint constraint db
+
+  desugar-constraint : TypeExpr, ATypeExpr -> ATypeExpr
+  desugar-constraint (constraint) (body) =
+   when constraint
+    is AppType (ctor) (args) ->
+     when ctor
+      is NamedType (class-tok) ->
+       if list-length args >= 1
+        then when (list-at args 0)
+         is NamedType (var-tok) -> deck-record (AConstrainedType (make-name (token-text class-tok)) (make-name (token-text var-tok)) body synthetic-span)
+         is otherwise -> body
+        else body
+      is otherwise -> body
+    is otherwise -> body
+
+  atype-span : ATypeExpr -> SourceSpan
+  atype-span (t) =
+   when t
+    is ANamedType (n) (s) -> s
+    is AFunType (p) (r) (s) -> s
+    is AAppType (c) (args) (s) -> s
+    is AEffectType (effs) (scopes) (r) (s) -> s
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> s
+    is APropEqType (l) (r) (s) -> s
+    is AConstrainedType (cn) (cv) (body) (s) -> s
+
+Section: Definition Desugaring
+  desugar-def : Def -> ADef
+  desugar-def (d) =
+   let ann-types = desugar-annotations (d.ann)
+   in deck-record (ADef {
+    name = make-name (token-text (d.name)),
+    params = map-list desugar-param (d.params),
+    declared-type = ann-types,
+    body = desugar-expr (d.body),
+    chapter-slug = d.chapter-slug,
+    span = token-span (d.name)
+   })
+
+  desugar-annotations : List TypeAnn -> List ATypeExpr
+  desugar-annotations (anns) =
+   if list-length anns == 0 then []
+   else let a = list-at anns 0
+   in deck-record [desugar-type-expr (a.type-expr)]
+
+  desugar-param : Token -> AParam
+  desugar-param (tok) =
+   deck-record (AParam { name = make-name (token-text tok), span = token-span tok })
+
+  desugar-type-def : TypeDef -> ATypeDef
+  desugar-type-def (td) =
+   when td.body
+    is RecordBody (fields) -> deck-record (ARecordTypeDef (make-name (token-text (td.name))) (map-list make-type-param-name (td.type-params)) (map-list desugar-record-field-def fields) (td.is-mutable) (token-span (td.name)))
+    is VariantBody (ctors) -> deck-record (AVariantTypeDef (make-name (token-text (td.name))) (map-list make-type-param-name (td.type-params)) (map-list desugar-variant-ctor-def ctors) (token-span (td.name)))
+
+  make-type-param-name : Token -> Name
+  make-type-param-name (tok) =
+   make-name (token-text tok)
+
+  extract-scope-text : Token -> Text
+  extract-scope-text (tok) =
+   let raw = token-text tok
+   in let len = text-length raw
+   in if len >= 2 then substring raw 1 (len - 2)
+      else ""
+
+  desugar-record-field-def : RecordFieldDef -> ARecordFieldDef
+  desugar-record-field-def (f) =
+   deck-record (ARecordFieldDef {
+    name = make-name (token-text (f.name)),
+    type-expr = desugar-type-expr (f.type-expr),
+    span = token-span (f.name)
+   })
+
+  desugar-variant-ctor-def : VariantCtorDef -> AVariantCtorDef
+  desugar-variant-ctor-def (c) =
+   deck-record (AVariantCtorDef {
+    name = make-name (token-text (c.name)),
+    fields = map-list desugar-type-expr (c.fields),
+    span = token-span (c.name)
+   })
+
+Section: Document Desugaring
+  desugar-defs-ll : List Def, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  desugar-defs-ll (src) (i) (len) (acc) =
+   if i >= len then acc
+   else desugar-defs-ll src (i + 1) len (__linked-list-push acc (desugar-def (list-at src i)))
+
+  desugar-type-defs-ll : List TypeDef, Integer, Integer, LinkedList ATypeDef -> LinkedList ATypeDef
+  desugar-type-defs-ll (src) (i) (len) (acc) =
+   if i >= len then acc
+   else desugar-type-defs-ll src (i + 1) len (__linked-list-push acc (desugar-type-def (list-at src i)))
+
+  desugar-effect-defs-ll : List EffectDef, Integer, Integer, LinkedList AEffectDef -> LinkedList AEffectDef
+  desugar-effect-defs-ll (src) (i) (len) (acc) =
+   if i >= len then acc
+   else desugar-effect-defs-ll src (i + 1) len (__linked-list-push acc (desugar-effect-def (list-at src i)))
+
+  desugar-cites-ll : List CitesDecl, Integer, Integer, LinkedList ACitesDecl -> LinkedList ACitesDecl
+  desugar-cites-ll (src) (i) (len) (acc) =
+   if i >= len then acc
+   else desugar-cites-ll src (i + 1) len (__linked-list-push acc (desugar-cite (list-at src i)))
+
+  desugar-document : Text, Document, Text -> AChapter
+  desugar-document (source) (doc) (chapter-name) =
+   let raw-defs = desugar-defs-ll (doc.defs) 0 (list-length (doc.defs)) []
+   in let raw-tds = desugar-type-defs-ll (doc.type-defs) 0 (list-length (doc.type-defs)) []
+   in let raw-eds = desugar-effect-defs-ll (doc.effect-defs) 0 (list-length (doc.effect-defs)) []
+   in let raw-cites = desugar-cites-ll (doc.citations) 0 (list-length (doc.citations)) []
+   in let class-tds = synth-class-type-defs (doc.class-defs) 0 (list-length (doc.class-defs)) raw-tds
+   in let inst-defs = synth-instance-defs (doc.class-defs) (doc.instance-defs) 0 (list-length (doc.instance-defs)) raw-defs
+   in let dispatch-defs = synth-dispatch-defs (doc.class-defs) (doc.instance-defs) 0 (list-length (doc.class-defs)) inst-defs
+   in let all-defs = __linked-list-to-list dispatch-defs
+   in let rewritten = rewrite-constrained-defs all-defs (doc.class-defs) (doc.instance-defs) 0 (list-length all-defs) []
+   in let constrained-info = collect-constrained-names all-defs (doc.class-defs) (doc.instance-defs) 0 (list-length all-defs) []
+   in let final-defs = insert-dicts-at-call-sites rewritten constrained-info 0 (list-length rewritten) []
+   in deck-record (AChapter {
+    name = make-name chapter-name,
+    defs = deck-record final-defs,
+    type-defs = deck-record (__linked-list-to-list class-tds),
+    effect-defs = deck-record (__linked-list-to-list raw-eds),
+    class-defs = deck-record (desugar-class-defs (doc.class-defs) 0 (list-length (doc.class-defs)) []),
+    instance-defs = deck-record (desugar-instance-defs (doc.instance-defs) 0 (list-length (doc.instance-defs)) []),
+    citations = deck-record (__linked-list-to-list raw-cites),
+    chapter-title = doc.chapter-title,
+    prose = doc.prose,
+    section-titles = doc.section-titles,
+    span = synthetic-span
+   })
+
+  desugar-cite : CitesDecl -> ACitesDecl
+  desugar-cite (imp) =
+   deck-record (ACitesDecl {
+    quire = make-name (token-text (imp.quire)),
+    chapter-name = make-name (imp.chapter-name),
+    selected-names = map-list desugar-cite-name (imp.selected-names),
+    citing-chapter = imp.citing-chapter,
+    span = token-span (imp.quire)
+   })
+
+  desugar-cite-name : Token -> Name
+  desugar-cite-name (tok) =
+   make-name (token-text tok)
+
+  desugar-effect-def : EffectDef -> AEffectDef
+  desugar-effect-def (ed) =
+   deck-record (AEffectDef {
+    name = make-name (token-text (ed.name)),
+    ops = map-list desugar-effect-op (ed.ops),
+    span = token-span (ed.name)
+   })
+
+  desugar-effect-op : EffectOpDef -> AEffectOpDef
+  desugar-effect-op (op) =
+   deck-record (AEffectOpDef {
+    name = make-name (token-text (op.name)),
+    type-expr = desugar-type-expr (op.type-expr),
+    span = token-span (op.name)
+   })
+
+  synth-class-type-defs : List ClassDef, Integer, Integer, LinkedList ATypeDef -> LinkedList ATypeDef
+  synth-class-type-defs (cds) (i) (len) (acc) =
+   if i >= len then acc
+   else let cd = list-at cds i
+   in let dict-name = make-name (token-text (cd.name) & "Dict")
+   in let fields = synth-class-fields (cd.methods) 0 (list-length (cd.methods)) []
+   in let td = deck-record (ARecordTypeDef dict-name [] fields False synthetic-span)
+   in synth-class-type-defs cds (i + 1) len (__linked-list-push acc td)
+
+  synth-class-fields : List EffectOpDef, Integer, Integer, List ARecordFieldDef -> List ARecordFieldDef
+  synth-class-fields (ops) (i) (len) (acc) =
+   if i >= len then acc
+   else let op = list-at ops i
+   in let field = deck-record (ARecordFieldDef {
+    name = make-name (token-text (op.name) & "-impl"),
+    type-expr = desugar-type-expr (op.type-expr),
+    span = synthetic-span
+   })
+   in synth-class-fields ops (i + 1) len (list-push acc field)
+
+  synth-dispatch-defs : List ClassDef, List InstanceDef, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  synth-dispatch-defs (cds) (ids) (i) (len) (acc) =
+   if i >= len then acc
+   else let cd = list-at cds i
+   in let class-name = token-text (cd.name)
+   in let ic = count-class-instances ids class-name 0 (list-length ids) 0
+   in if ic == 1
+    then synth-dispatch-defs cds ids (i + 1) len acc
+    else synth-dispatch-defs cds ids (i + 1) len (synth-dispatch-methods (cd.methods) 0 (list-length (cd.methods)) acc)
+
+  rewrite-constrained-defs : List ADef, List ClassDef, List InstanceDef, Integer, Integer, List ADef -> List ADef
+  rewrite-constrained-defs (defs) (cds) (ids) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in let rewritten = rewrite-if-constrained d cds ids
+   in rewrite-constrained-defs defs cds ids (i + 1) len (list-push acc rewritten)
+
+  rewrite-if-constrained : ADef, List ClassDef, List InstanceDef -> ADef
+  rewrite-if-constrained (d) (cds) (ids) =
+   if list-length (d.declared-type) == 0 then d
+   else let ty = list-at (d.declared-type) 0
+   in when ty
+    is AConstrainedType (class-name) (type-var) (body-type) (sp) ->
+     let ic = count-class-instances ids (class-name.value) 0 (list-length ids) 0
+     in if ic == 1
+      then deck-record (__record-set d "declared-type" [body-type])
+      else let dict-param-name = "__" & (class-name.value) & "-dict"
+       in let method-names = collect-class-method-names cds (class-name.value) 0 (list-length cds) []
+       in let new-param = deck-record (AParam { name = make-name dict-param-name, span = synthetic-span })
+       in let new-params = list-insert-at (d.params) 0 new-param
+       in let new-body = rewrite-method-calls (d.body) method-names dict-param-name
+       in deck-record (ADef {
+        name = d.name,
+        params = new-params,
+        declared-type = [body-type],
+        body = new-body,
+        chapter-slug = d.chapter-slug,
+        span = d.span
+       })
+    is otherwise -> d
+
+  collect-class-method-names : List ClassDef, Text, Integer, Integer, List Text -> List Text
+  collect-class-method-names (cds) (class-name) (i) (len) (acc) =
+   if i >= len then acc
+   else let cd = list-at cds i
+   in if token-text (cd.name) == class-name
+    then collect-method-names-from (cd.methods) 0 (list-length (cd.methods)) acc
+    else collect-class-method-names cds class-name (i + 1) len acc
+
+  collect-method-names-from : List EffectOpDef, Integer, Integer, List Text -> List Text
+  collect-method-names-from (ops) (i) (len) (acc) =
+   if i >= len then acc
+   else collect-method-names-from ops (i + 1) len (list-push acc (token-text (list-at ops i).name))
+
+  rewrite-method-calls : AExpr, List Text, Text -> AExpr
+  rewrite-method-calls (expr) (method-names) (dict-param) =
+   when expr
+    is AApplyExpr (func) (arg) (s) ->
+     let new-arg = rewrite-method-calls arg method-names dict-param
+     in when func
+      is ANameExpr (n) (ns) ->
+       if is-in-list (n.value) method-names 0 (list-length method-names)
+        then let dict-ref = deck-record (ANameExpr (make-name dict-param) synthetic-span)
+         in let dispatched = deck-record (AApplyExpr func dict-ref s)
+         in deck-record (AApplyExpr dispatched new-arg s)
+        else deck-record (AApplyExpr func new-arg s)
+      is otherwise -> deck-record (AApplyExpr (rewrite-method-calls func method-names dict-param) new-arg s)
+    is ABinaryExpr (l) (op) (r) (s) ->
+     deck-record (ABinaryExpr (rewrite-method-calls l method-names dict-param) op (rewrite-method-calls r method-names dict-param) s)
+    is AIfExpr (c) (t) (e) (s) ->
+     deck-record (AIfExpr (rewrite-method-calls c method-names dict-param) (rewrite-method-calls t method-names dict-param) (rewrite-method-calls e method-names dict-param) s)
+    is ALetExpr (binds) (body) (s) ->
+     deck-record (ALetExpr (rewrite-let-binds binds method-names dict-param 0 (list-length binds) []) (rewrite-method-calls body method-names dict-param) s)
+    is otherwise -> expr
+
+  rewrite-let-binds : List ALetBind, List Text, Text, Integer, Integer, List ALetBind -> List ALetBind
+  rewrite-let-binds (binds) (method-names) (dict-param) (i) (len) (acc) =
+   if i >= len then acc
+   else let b = list-at binds i
+   in let new-b = deck-record (ALetBind { name = b.name, value = rewrite-method-calls (b.value) method-names dict-param, span = b.span })
+   in rewrite-let-binds binds method-names dict-param (i + 1) len (list-push acc new-b)
+
+  ConstrainedFnInfo = record {
+   fn-name : Text,
+   dict-name : Text
+  }
+
+  collect-constrained-names : List ADef, List ClassDef, List InstanceDef, Integer, Integer, List ConstrainedFnInfo -> List ConstrainedFnInfo
+  collect-constrained-names (defs) (cds) (ids) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in if list-length (d.declared-type) == 0 then collect-constrained-names defs cds ids (i + 1) len acc
+   else let ty = list-at (d.declared-type) 0
+   in when ty
+    is AConstrainedType (class-name) (type-var) (body-type) (sp) ->
+     let ic = count-class-instances ids (class-name.value) 0 (list-length ids) 0
+     in if ic == 1
+      then let inst-type = find-single-instance-type ids (class-name.value) 0 (list-length ids)
+       in let dict = class-name.value & "-dict-" & inst-type
+       in collect-constrained-names defs cds ids (i + 1) len (list-push acc (ConstrainedFnInfo { fn-name = d.name.value, dict-name = dict }))
+      else collect-constrained-names defs cds ids (i + 1) len acc
+    is otherwise -> collect-constrained-names defs cds ids (i + 1) len acc
+
+  find-single-instance-type : List InstanceDef, Text, Integer, Integer -> Text
+  find-single-instance-type (ids) (class-name) (i) (len) =
+   if i >= len then ""
+   else let id = list-at ids i
+   in if token-text (id.class-name) == class-name then token-text (id.type-name)
+   else find-single-instance-type ids class-name (i + 1) len
+
+  insert-dicts-at-call-sites : List ADef, List ConstrainedFnInfo, Integer, Integer, List ADef -> List ADef
+  insert-dicts-at-call-sites (defs) (info) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in let new-body = insert-dict-refs (d.body) info
+   in let new-d = deck-record (__record-set d "body" new-body)
+   in insert-dicts-at-call-sites defs info (i + 1) len (list-push acc new-d)
+
+  insert-dict-refs : AExpr, List ConstrainedFnInfo -> AExpr
+  insert-dict-refs (expr) (info) =
+   if list-length info == 0 then expr
+   else when expr
+    is AApplyExpr (func) (arg) (s) ->
+     let new-arg = insert-dict-refs arg info
+     in when func
+      is ANameExpr (n) (ns) ->
+       let dict = lookup-constrained-dict (n.value) info 0 (list-length info)
+       in if dict == "" then deck-record (AApplyExpr func new-arg s)
+       else let dict-ref = deck-record (ANameExpr (make-name dict) synthetic-span)
+        in let with-dict = deck-record (AApplyExpr func dict-ref s)
+        in deck-record (AApplyExpr with-dict new-arg s)
+      is otherwise -> deck-record (AApplyExpr (insert-dict-refs func info) new-arg s)
+    is ABinaryExpr (l) (op) (r) (s) ->
+     deck-record (ABinaryExpr (insert-dict-refs l info) op (insert-dict-refs r info) s)
+    is AIfExpr (c) (t) (e) (s) ->
+     deck-record (AIfExpr (insert-dict-refs c info) (insert-dict-refs t info) (insert-dict-refs e info) s)
+    is ALetExpr (binds) (body) (s) ->
+     let new-binds = rewrite-let-binds-dict binds info 0 (list-length binds) []
+     in deck-record (ALetExpr new-binds (insert-dict-refs body info) s)
+    is otherwise -> expr
+
+  rewrite-let-binds-dict : List ALetBind, List ConstrainedFnInfo, Integer, Integer, List ALetBind -> List ALetBind
+  rewrite-let-binds-dict (binds) (info) (i) (len) (acc) =
+   if i >= len then acc
+   else let b = list-at binds i
+   in let new-b = deck-record (ALetBind { name = b.name, value = insert-dict-refs (b.value) info, span = b.span })
+   in rewrite-let-binds-dict binds info (i + 1) len (list-push acc new-b)
+
+  lookup-constrained-dict : Text, List ConstrainedFnInfo, Integer, Integer -> Text
+  lookup-constrained-dict (name) (info) (i) (len) =
+   if i >= len then ""
+   else let ci = list-at info i
+   in if ci.fn-name == name then ci.dict-name
+   else lookup-constrained-dict name info (i + 1) len
+
+  is-in-list : Text, List Text, Integer, Integer -> Boolean
+  is-in-list (target) (xs) (i) (len) =
+   if i >= len then False
+   else if list-at xs i == target then True
+   else is-in-list target xs (i + 1) len
+
+  count-fun-arity : TypeExpr -> Integer
+  count-fun-arity (t) =
+   when t
+    is FunType (param) (ret) -> 1 + count-fun-arity ret
+    is otherwise -> 0
+
+  synth-dispatch-params : Integer, Integer, List AParam -> List AParam
+  synth-dispatch-params (i) (arity) (acc) =
+   if i >= arity then acc
+   else synth-dispatch-params (i + 1) arity (list-push acc (deck-record (AParam { name = make-name ("__p" & show i), span = synthetic-span })))
+
+  synth-dispatch-apply : AExpr, Integer, Integer -> AExpr
+  synth-dispatch-apply (func) (i) (arity) =
+   if i >= arity then func
+   else synth-dispatch-apply (deck-record (AApplyExpr func (deck-record (ANameExpr (make-name ("__p" & show i)) synthetic-span)) synthetic-span)) (i + 1) arity
+
+  synth-dispatch-methods : List EffectOpDef, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  synth-dispatch-methods (ops) (i) (len) (acc) =
+   if i >= len then acc
+   else let op = list-at ops i
+   in let method-name = token-text (op.name)
+   in let arity = count-fun-arity (op.type-expr)
+   in let dict-param = deck-record (AParam { name = make-name "__dict", span = synthetic-span })
+   in let val-params = synth-dispatch-params 0 arity []
+   in let all-params = list-insert-at val-params 0 dict-param
+   in let field-access = deck-record (AFieldAccess (deck-record (ANameExpr (make-name "__dict") synthetic-span)) (make-name (method-name & "-impl")) synthetic-span)
+   in let body = synth-dispatch-apply field-access 0 arity
+   in let def = deck-record (ADef {
+    name = make-name method-name,
+    params = all-params,
+    declared-type = [],
+    body = body,
+    chapter-slug = "",
+    span = synthetic-span
+   })
+   in synth-dispatch-methods ops (i + 1) len (__linked-list-push acc def)
+
+  synth-instance-defs : List ClassDef, List InstanceDef, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  synth-instance-defs (cds) (ids) (i) (len) (acc) =
+   if i >= len then acc
+   else let id = list-at ids i
+   in let class-name = token-text (id.class-name)
+   in let type-name = token-text (id.type-name)
+   in let dict-name = class-name & "Dict"
+   in let def-name = make-name (class-name & "-dict-" & type-name)
+   in let fields = synth-instance-fields (id.methods) 0 (list-length (id.methods)) []
+   in let body = deck-record (ARecordExpr (make-name dict-name) fields synthetic-span)
+   in let def = deck-record (ADef {
+    name = def-name,
+    params = [],
+    declared-type = [],
+    body = body,
+    chapter-slug = "",
+    span = synthetic-span
+   })
+   in let acc2 = __linked-list-push acc def
+   in let instance-count = count-class-instances ids class-name 0 (list-length ids) 0
+   in let acc3 = synth-specialized-methods (id.methods) type-name 0 (list-length (id.methods)) acc2
+   in let acc4 = if instance-count == 1
+    then synth-bare-methods (id.methods) 0 (list-length (id.methods)) acc3
+    else acc3
+   in synth-instance-defs cds ids (i + 1) len acc4
+
+  count-class-instances : List InstanceDef, Text, Integer, Integer, Integer -> Integer
+  count-class-instances (ids) (class-name) (i) (len) (acc) =
+   if i >= len then acc
+   else let id = list-at ids i
+   in let cn = token-text (id.class-name)
+   in count-class-instances ids class-name (i + 1) len (if cn == class-name then acc + 1 else acc)
+
+  synth-bare-methods : List InstanceMethodDef, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  synth-bare-methods (ms) (i) (len) (acc) =
+   if i >= len then acc
+   else let m = list-at ms i
+   in let method-name = token-text (m.name)
+   in let params = synth-param-names (m.params) 0 (list-length (m.params)) []
+   in let param-list = synth-aparams params 0 (list-length params) []
+   in let def = deck-record (ADef {
+    name = make-name method-name,
+    params = param-list,
+    declared-type = [],
+    body = desugar-expr (m.body),
+    chapter-slug = "",
+    span = synthetic-span
+   })
+   in synth-bare-methods ms (i + 1) len (__linked-list-push acc def)
+
+  synth-specialized-methods : List InstanceMethodDef, Text, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  synth-specialized-methods (ms) (type-name) (i) (len) (acc) =
+   if i >= len then acc
+   else let m = list-at ms i
+   in let method-name = token-text (m.name)
+   in let spec-name = make-name (method-name & "-" & type-name)
+   in let params = synth-param-names (m.params) 0 (list-length (m.params)) []
+   in let param-list = synth-aparams params 0 (list-length params) []
+   in let def = deck-record (ADef {
+    name = spec-name,
+    params = param-list,
+    declared-type = [],
+    body = desugar-expr (m.body),
+    chapter-slug = "",
+    span = synthetic-span
+   })
+   in synth-specialized-methods ms type-name (i + 1) len (__linked-list-push acc def)
+
+  synth-aparams : List Name, Integer, Integer, List AParam -> List AParam
+  synth-aparams (names) (i) (len) (acc) =
+   if i >= len then acc
+   else synth-aparams names (i + 1) len (list-push acc (deck-record (AParam { name = list-at names i, span = synthetic-span })))
+
+  synth-instance-fields : List InstanceMethodDef, Integer, Integer, List AFieldExpr -> List AFieldExpr
+  synth-instance-fields (ms) (i) (len) (acc) =
+   if i >= len then acc
+   else let m = list-at ms i
+   in let params = synth-param-names (m.params) 0 (list-length (m.params)) []
+   in let lam-body = desugar-expr (m.body)
+   in let field-val = if list-length params == 0 then lam-body
+    else deck-record (ALambdaExpr params lam-body synthetic-span)
+   in let field = deck-record (AFieldExpr {
+    name = make-name (token-text (m.name) & "-impl"),
+    value = field-val,
+    span = synthetic-span
+   })
+   in synth-instance-fields ms (i + 1) len (list-push acc field)
+
+  synth-param-names : List Token, Integer, Integer, List Name -> List Name
+  synth-param-names (toks) (i) (len) (acc) =
+   if i >= len then acc
+   else synth-param-names toks (i + 1) len (list-push acc (make-name (token-text (list-at toks i))))
+
+  desugar-class-defs : List ClassDef, Integer, Integer, List AClassDef -> List AClassDef
+  desugar-class-defs (cds) (i) (len) (acc) =
+   if i >= len then acc
+   else let cd = list-at cds i
+   in let acd = deck-record (AClassDef {
+    name = make-name (token-text (cd.name)),
+    methods = map-list desugar-effect-op (cd.methods),
+    span = token-span (cd.name)
+   })
+   in desugar-class-defs cds (i + 1) len (list-push acc acd)
+
+  desugar-instance-defs : List InstanceDef, Integer, Integer, List AInstanceDef -> List AInstanceDef
+  desugar-instance-defs (ids) (i) (len) (acc) =
+   if i >= len then acc
+   else let id = list-at ids i
+   in let aid = deck-record (AInstanceDef {
+    class-name = make-name (token-text (id.class-name)),
+    type-name = make-name (token-text (id.type-name)),
+    methods = desugar-instance-methods (id.methods) 0 (list-length (id.methods)) [],
+    span = token-span (id.class-name)
+   })
+   in desugar-instance-defs ids (i + 1) len (list-push acc aid)
+
+  desugar-instance-methods : List InstanceMethodDef, Integer, Integer, List AInstanceMethodDef -> List AInstanceMethodDef
+  desugar-instance-methods (ms) (i) (len) (acc) =
+   if i >= len then acc
+   else let m = list-at ms i
+   in let am = deck-record (AInstanceMethodDef {
+    name = make-name (token-text (m.name)),
+    params = map-list desugar-cite-name (m.params),
+    body = desugar-expr (m.body),
+    span = token-span (m.name)
+   })
+   in desugar-instance-methods ms (i + 1) len (list-push acc am)
+
+Page 1

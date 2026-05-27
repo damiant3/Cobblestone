@@ -1,0 +1,145 @@
+Chapter: RelAlgebra
+  cites Data chapter Row
+  cites Data chapter Schema
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Relational algebra intermediate representation. Query expressions
+ desugar to a tree of RelOp nodes. The executor walks this tree
+ using the volcano iterator model.
+
+ We say:
+
+Section: Comparison Operators
+
+  CmpOp =
+    | CmpEq
+    | CmpNe
+    | CmpLt
+    | CmpGt
+    | CmpLe
+    | CmpGe
+
+  cmp-eval : CmpOp, Integer -> Boolean
+  cmp-eval (op) (cmp-result) =
+    when op
+      is CmpEq -> cmp-result == 0
+      is CmpNe -> cmp-result /= 0
+      is CmpLt -> cmp-result < 0
+      is CmpGt -> cmp-result > 0
+      is CmpLe -> cmp-result <= 0
+      is CmpGe -> cmp-result >= 0
+
+Section: Predicate Expression
+
+  Predicate =
+    | PredColCmp (Text) (CmpOp) (ColumnValue)
+    | PredAnd (Predicate) (Predicate)
+    | PredOr (Predicate) (Predicate)
+    | PredNot (Predicate)
+    | PredTrue
+    | PredFalse
+
+  pred-eval : Predicate, RowData -> Boolean
+  pred-eval (pred) (row) =
+    when pred
+      is PredTrue -> True
+      is PredFalse -> False
+      is PredColCmp (col) (op) (val) ->
+        let row-val = row-get-by-name row col
+        in let cmp = val-compare row-val val
+        in cmp-eval op cmp
+      is PredAnd (a) (b) -> if pred-eval a row then pred-eval b row else False
+      is PredOr (a) (b) -> if pred-eval a row then True else pred-eval b row
+      is PredNot (inner) -> if pred-eval inner row then False else True
+
+Section: Projection
+
+  Projection = record {
+    proj-cols : List Text
+  }
+
+  proj-all : Projection
+  proj-all = Projection { proj-cols = [] }
+
+  proj-columns : List Text -> Projection
+  proj-columns (cols) = Projection { proj-cols = cols }
+
+  proj-is-all : Projection -> Boolean
+  proj-is-all (p) = list-length (p.proj-cols) == 0
+
+  proj-apply : Projection, RowData -> RowData
+  proj-apply (proj) (row) =
+    if proj-is-all proj then row
+    else proj-extract row (proj.proj-cols) 0 (list-length (proj.proj-cols)) [] [] []
+
+  proj-extract : RowData, List Text, Integer, Integer, List Text, List ColumnType, List ColumnValue -> RowData
+  proj-extract (row) (cols) (i) (len) (names) (types) (vals) =
+    if i >= len then
+      let schema = schema-new names types
+      in row-new schema vals
+    else let col-name = list-at cols i
+    in let idx = row-find-col (row.schema.col-names) col-name 0 (row.schema.col-count)
+    in if idx < 0 then proj-extract row cols (i + 1) len (list-push names col-name) (list-push types ColInteger) (list-push vals ValNull)
+    else proj-extract row cols (i + 1) len (list-push names col-name) (list-push types (list-at (row.schema.col-types) idx)) (list-push vals (list-at (row.values) idx))
+
+Section: Sort Spec
+
+  SortDir =
+    | SortAsc
+    | SortDesc
+
+  SortSpec = record {
+    sort-col : Text,
+    sort-dir : SortDir
+  }
+
+Section: Aggregate Functions
+
+  AggFunc =
+    | AggCount
+    | AggSum (Text)
+    | AggMin (Text)
+    | AggMax (Text)
+    | AggAvg (Text)
+
+  AggSpec = record {
+    agg-func : AggFunc,
+    agg-alias : Text
+  }
+
+Section: Relational Operators
+
+  RelOp =
+    | RelScan (Text)
+    | RelFilter (RelOp) (Predicate)
+    | RelProject (RelOp) (Projection)
+    | RelSort (RelOp) (List SortSpec)
+    | RelLimit (RelOp) (Integer)
+    | RelDistinct (RelOp)
+    | RelJoin (RelOp) (RelOp) (Predicate)
+    | RelLeftJoin (RelOp) (RelOp) (Predicate)
+    | RelGroup (RelOp) (List Text) (List AggSpec)
+    | RelUnion (RelOp) (RelOp)
+    | RelIntersect (RelOp) (RelOp)
+    | RelExcept (RelOp) (RelOp)
+
+Section: Query Plan Display
+
+  rel-op-name : RelOp -> Text
+  rel-op-name (op) =
+    when op
+      is RelScan (t) -> "Scan(" & t & ")"
+      is RelFilter (child) (pred) -> "Filter"
+      is RelProject (child) (proj) -> "Project"
+      is RelSort (child) (specs) -> "Sort"
+      is RelLimit (child) (n) -> "Limit(" & show n & ")"
+      is RelDistinct (child) -> "Distinct"
+      is RelJoin (left) (right) (pred) -> "Join"
+      is RelLeftJoin (left) (right) (pred) -> "LeftJoin"
+      is RelGroup (child) (cols) (aggs) -> "GroupBy"
+      is RelUnion (left) (right) -> "Union"
+      is RelIntersect (left) (right) -> "Intersect"
+      is RelExcept (left) (right) -> "Except"
+
+Page 1

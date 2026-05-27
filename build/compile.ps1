@@ -1,0 +1,229 @@
+# Compile a single .codex source file to CDX, TEXT, or IR by booting
+# the bare-metal self-host compiler (Codex.cdx) in a VM with memory-mapped I/O.
+#
+# Input is loaded into guest memory at the serial ring buffer address (0x500000)
+# before boot. Output is captured from guest UART writes and dumped to file.
+# No TCP sockets. No serial port polling.
+#
+# Usage: compile.ps1 -Src <source.codex> -Out <out.cdx> -Log <log.out>
+# Exit 0 = compile succeeded, output written.
+# Exit non-zero = compile failed.
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)] [string]$Src,
+    [Parameter(Mandatory=$true)] [string]$Out,
+    [Parameter(Mandatory=$true)] [string]$Log,
+    [int]$PCore = 1,
+    [int]$MemMB = 2048,
+    [switch]$IrUni,
+    [switch]$IrCce,
+    [switch]$Prose,
+    [switch]$Repl,
+    [switch]$Poison,
+    [switch]$DebugMode,
+    [switch]$Profile,
+    [switch]$Trace,
+    [switch]$EscapeCheck
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'vm-config.ps1')
+
+$Stage0 = 'build-output\bare-metal\Codex.cdx'
+if (-not (Test-Path -PathType Leaf $Stage0)) {
+    [Console]::Error.WriteLine("MISSING: $Stage0 - run build.ps1 first")
+    exit 2
+}
+
+$inputFile = $null
+$outputFile = $null
+$stderrFile = $null
+
+$QuireDirs = @{ 'Foreword' = 'codex\foreword\core'; 'Kernel' = 'codex\os\kernel'; 'OS' = 'codex\os\core'; 'Works' = 'apps\works'; 'Trust' = 'codex\os\trust'; 'Net' = 'codex\os\net'; 'Verify' = 'codex\os\verify'; 'Replay' = 'codex\os\replay'; 'Sched' = 'codex\os\sched'; 'Observe' = 'codex\os\observe'; 'Game' = 'codex\foreword\game'; 'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'; 'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'; 'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'; 'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'; 'Magic' = 'apps\games\magic'; 'CodexMagic' = 'apps\games\codexmagic'; 'Games' = 'apps\games\classic'; 'Spark' = 'apps\spark'; 'Data' = 'apps\data'; 'Explorer' = 'apps\explorer' }
+
+try {
+    $citePat = '^\s*cites\s+(Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev|Magic|CodexMagic|Games|Spark|Data|Explorer)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
+    $queue = [System.Collections.Generic.Queue[hashtable]]::new()
+    $seen = @{}
+    $embeddedPat = '^Chapter:\s*(\w+)--(.+?)\s*$'
+    foreach ($line in [System.IO.File]::ReadAllLines($Src)) {
+        if ($line -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
+        if ($line -match $embeddedPat) { $seen["$($matches[1])::$($matches[2])"] = $true }
+    }
+    $ordered = @()
+    while ($queue.Count -gt 0) {
+        $cite = $queue.Dequeue()
+        $key = "$($cite.Quire)::$($cite.Name)"
+        if ($seen[$key]) { continue }
+        $seen[$key] = $true
+        $fwPath = Join-Path $QuireDirs[$cite.Quire] "$($cite.Name).codex"
+        if (-not (Test-Path -PathType Leaf $fwPath)) {
+            "error 3010: Cited $($cite.Quire) chapter '$($cite.Name)' not found (expected $fwPath)" | Set-Content -Path $Log -Encoding UTF8
+            exit 8
+        }
+        $lines = [System.IO.File]::ReadAllLines($fwPath)
+        foreach ($l in $lines) { if ($l -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) } }
+        $ordered += @{ Quire = $cite.Quire; Name = $cite.Name; Lines = $lines }
+    }
+    [array]::Reverse($ordered)
+    $emitted = @{}
+    $sb = [System.Text.StringBuilder]::new(524288)
+
+    # Mode header
+    $mode = if ($IrUni) { "IR-UNI" } elseif ($IrCce) { "IR-CCE" } else { "CDX" }
+    if ($Prose) { $mode = "$mode prose" }
+    if ($Repl) { $mode = "$mode repl" }
+    if ($Poison) { $mode = "$mode poison" }
+    if ($DebugMode) { $mode = "$mode debug" }
+    if ($Profile) { $mode = "$mode profile" }
+    if ($Trace) { $mode = "$mode trace" }
+    if ($EscapeCheck) { $mode = "$mode escape-check" }
+    [void]$sb.Append("$mode`n")
+
+    foreach ($entry in $ordered) {
+        $key = "$($entry.Quire)::$($entry.Name)"
+        if ($emitted[$key]) { continue }
+        $emitted[$key] = $true
+        $renamed = $false
+        foreach ($l in $entry.Lines) {
+            if (-not $renamed -and $l -match '^Chapter:\s*(.+?)\s*$') {
+                [void]$sb.Append("Chapter: $($entry.Quire)--$($matches[1])`n")
+                $renamed = $true
+            } else { [void]$sb.Append($l + "`n") }
+        }
+        [void]$sb.Append("`n`n")
+    }
+    foreach ($line in [System.IO.File]::ReadAllLines($Src)) { [void]$sb.Append($line + "`n") }
+    [void]$sb.Append([char]4)  # EOT
+
+    $inputFile = [System.IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllText($inputFile, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
+
+    $outputFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+
+    $vmBin = Join-Path (Split-Path $PSScriptRoot) 'tools\codex-vm.exe'
+    $curMem = $MemMB
+    $attempt = 0
+    $maxAttempts = 2
+    :compile_loop while ($attempt -lt $maxAttempts) {
+    $attempt++
+    if (Test-Path $outputFile) { [System.IO.File]::WriteAllBytes($outputFile, [byte[]]::new(0)) }
+
+    $vmArgs = @('-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', "$curMem", '-headless')
+    $proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
+    $proc.WaitForExit(600000)
+    if (-not $proc.HasExited) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        "FAIL: VM timed out" | Set-Content -Path $Log -Encoding UTF8
+        exit 3
+    }
+
+    if (-not (Test-Path $outputFile) -or (Get-Item $outputFile).Length -eq 0) {
+        if ($attempt -lt $maxAttempts -and $curMem -lt 4096) {
+            [Console]::Error.WriteLine("  compile: no output with ${curMem}MB, retrying with 4096MB")
+            $curMem = 4096; continue compile_loop
+        }
+        "FAIL: no output" | Set-Content -Path $Log -Encoding UTF8
+        if (Test-Path $stderrFile) { Add-Content -Path $Log -Value (Get-Content $stderrFile -Raw) -Encoding UTF8 }
+        exit 4
+    }
+
+    $outBytes = [System.IO.File]::ReadAllBytes($outputFile)
+    $outText = [System.Text.Encoding]::UTF8.GetString($outBytes)
+    $outLines = $outText -split "`n"
+
+    Set-Content -Path $Log -Value '' -Encoding UTF8
+    $binSize = 0; $binStart = -1
+    $hitExc = $false
+    for ($i = 0; $i -lt $outLines.Count; $i++) {
+        $line = $outLines[$i].TrimEnd("`r")
+        if ($line.StartsWith('SIZE:')) {
+            if ($line.Substring(5) -match '^\d+') { $binSize = [int]$matches[0] }
+            $binStart = $i + 1; break
+        }
+        if ($line.StartsWith('CODEGEN-HALTED') -or $line.StartsWith('CODEGEN-ERRORS')) {
+            Add-Content -Path $Log -Value $line -Encoding UTF8
+            for ($k = $i + 1; $k -lt $outLines.Count; $k++) {
+                $el = $outLines[$k].TrimEnd("`r")
+                if ($el -and -not $el.StartsWith('WD:') -and -not $el.StartsWith('HEAP:') -and -not $el.StartsWith('STACK:')) {
+                    Add-Content -Path $Log -Value $el -Encoding UTF8
+                }
+            }
+            exit 4
+        }
+        if ($line.StartsWith('!EXC')) {
+            Add-Content -Path $Log -Value $line -Encoding UTF8
+            if ($attempt -lt $maxAttempts -and $curMem -lt 4096) {
+                [Console]::Error.WriteLine("  compile: crash with ${curMem}MB, retrying with 4096MB")
+                $curMem = 4096; $hitExc = $true; break
+            }
+            exit 4
+        }
+        if ($line -and -not $line.StartsWith('WD:')) { Add-Content -Path $Log -Value $line -Encoding UTF8 }
+    }
+
+    if ($binSize -gt 0) {
+        $sizeLineEnd = 0; $nlCount = 0
+        for ($j = 0; $j -lt $outBytes.Length; $j++) {
+            if ($outBytes[$j] -eq 10) { $nlCount++; if ($nlCount -eq $binStart) { $sizeLineEnd = $j + 1; break } }
+        }
+        if ($sizeLineEnd + $binSize -le $outBytes.Length) {
+            $binBytes = New-Object byte[] $binSize
+            [Array]::Copy($outBytes, $sizeLineEnd, $binBytes, 0, $binSize)
+            [System.IO.File]::WriteAllBytes($Out, $binBytes)
+
+            # Parse remaining output after binary for MAP and PROF lines
+            $tailStart = $sizeLineEnd + $binSize
+            if ($tailStart -lt $outBytes.Length) {
+                $tailText = [System.Text.Encoding]::UTF8.GetString($outBytes, $tailStart, $outBytes.Length - $tailStart)
+                $tailLines = $tailText -split "`n"
+
+                # Capture MAP
+                $mapFile = [System.IO.Path]::ChangeExtension($Out, '.map')
+                $inMap = $false
+                $mapLines = [System.Collections.Generic.List[string]]::new()
+                [void]$mapLines.Add('# Codex Symbol Map')
+                [void]$mapLines.Add('# Address         Size  Name')
+
+                # Capture PROF
+                $profFile = [System.IO.Path]::ChangeExtension($Out, '.prof')
+                $inProf = $false; $profCount = 0
+                $profLines = [System.Collections.Generic.List[string]]::new()
+
+                foreach ($tl in $tailLines) {
+                    $tl = $tl.TrimEnd("`r")
+                    if ($tl.StartsWith('MAP:')) { $inMap = $true; continue }
+                    if ($tl.StartsWith('MAP-END')) { $inMap = $false; continue }
+                    if ($inMap -and $tl.StartsWith('0x')) { [void]$mapLines.Add($tl) }
+                    if ($tl.StartsWith('PROF:')) {
+                        if (-not $inProf) {
+                            $inProf = $true
+                            if ($tl.Substring(5) -match '^\d+') { $profCount = [int]$matches[0] }
+                        } else {
+                            [void]$profLines.Add($tl.Substring(5))
+                        }
+                    }
+                }
+                if ($mapLines.Count -gt 2) {
+                    [System.IO.File]::WriteAllLines($mapFile, $mapLines, [System.Text.UTF8Encoding]::new($false))
+                }
+                if ($profLines.Count -gt 0) {
+                    [System.IO.File]::WriteAllLines($profFile, $profLines, [System.Text.UTF8Encoding]::new($false))
+                    [Console]::Error.WriteLine("  profile: $($profLines.Count) samples -> $profFile")
+                }
+            }
+            exit 0
+        }
+        "Binary size mismatch" | Add-Content -Path $Log -Encoding UTF8; exit 5
+    }
+    if ($hitExc) { continue compile_loop }
+    exit 4
+    } # end compile_loop
+} finally {
+    if ($inputFile) { Remove-Item -Force $inputFile -ErrorAction SilentlyContinue }
+    if ($outputFile) { Remove-Item -Force $outputFile -ErrorAction SilentlyContinue }
+    if ($stderrFile) { Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue }
+}

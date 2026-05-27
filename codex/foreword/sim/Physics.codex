@@ -1,0 +1,96 @@
+Chapter: Physics
+  cites Math chapter Quaternion
+
+ Point-mass physics with Verlet integration. Fixed-point (scale 1000).
+ Bodies have position, previous position, acceleration, mass, and
+ damping. Verlet needs no explicit velocity — velocity derives from the
+ position delta, making constraints trivial.
+
+ We say:
+
+Section: Body
+  PhysBody = record {
+    px : Integer, py : Integer, pz : Integer,
+    prev-x : Integer, prev-y : Integer, prev-z : Integer,
+    ax : Integer, ay : Integer, az : Integer,
+    mass : Integer,
+    damping : Integer
+  }
+
+Section: Construction
+  phys-body : Integer, Integer, Integer, Integer -> PhysBody
+  phys-body (x) (y) (z) (mass) = PhysBody { px = x, py = y, pz = z, prev-x = x, prev-y = y, prev-z = z, ax = 0, ay = 0, az = 0, mass = mass, damping = 990 }
+
+  phys-body-with-velocity : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> PhysBody
+  phys-body-with-velocity (x) (y) (z) (vx) (vy) (vz) (mass) = PhysBody { px = x, py = y, pz = z, prev-x = x - vx, prev-y = y - vy, prev-z = z - vz, ax = 0, ay = 0, az = 0, mass = mass, damping = 990 }
+
+Section: Forces
+  phys-apply-force : PhysBody, Integer, Integer, Integer -> PhysBody
+  phys-apply-force (b) (fx) (fy) (fz) =
+    if b.mass == 0 then b
+    else PhysBody { px = b.px, py = b.py, pz = b.pz, prev-x = b.prev-x, prev-y = b.prev-y, prev-z = b.prev-z, ax = b.ax + fx * 1000 / b.mass, ay = b.ay + fy * 1000 / b.mass, az = b.az + fz * 1000 / b.mass, mass = b.mass, damping = b.damping }
+
+  phys-gravity : PhysBody, Integer -> PhysBody
+  phys-gravity (b) (g) = phys-apply-force b 0 (-g * b.mass / 1000) 0
+
+  phys-clear-forces : PhysBody -> PhysBody
+  phys-clear-forces (b) = PhysBody { px = b.px, py = b.py, pz = b.pz, prev-x = b.prev-x, prev-y = b.prev-y, prev-z = b.prev-z, ax = 0, ay = 0, az = 0, mass = b.mass, damping = b.damping }
+
+Section: Verlet Integration
+  phys-step : PhysBody, Integer -> PhysBody
+  phys-step (b) (dt) =
+    let dt2 = dt * dt / 1000
+    in let vx = (b.px - b.prev-x) * b.damping / 1000
+    in let vy = (b.py - b.prev-y) * b.damping / 1000
+    in let vz = (b.pz - b.prev-z) * b.damping / 1000
+    in let nx = b.px + vx + b.ax * dt2 / 1000
+    in let ny = b.py + vy + b.ay * dt2 / 1000
+    in let nz = b.pz + vz + b.az * dt2 / 1000
+    in PhysBody { px = nx, py = ny, pz = nz, prev-x = b.px, prev-y = b.py, prev-z = b.pz, ax = 0, ay = 0, az = 0, mass = b.mass, damping = b.damping }
+
+Section: Velocity
+  phys-velocity-x : PhysBody -> Integer
+  phys-velocity-x (b) = b.px - b.prev-x
+
+  phys-velocity-y : PhysBody -> Integer
+  phys-velocity-y (b) = b.py - b.prev-y
+
+  phys-velocity-z : PhysBody -> Integer
+  phys-velocity-z (b) = b.pz - b.prev-z
+
+  phys-speed : PhysBody -> Integer
+  phys-speed (b) =
+    let vx = phys-velocity-x b
+    in let vy = phys-velocity-y b
+    in let vz = phys-velocity-z b
+    in phys-isqrt (vx * vx + vy * vy + vz * vz)
+
+  phys-isqrt : Integer -> Integer
+  phys-isqrt (n) = if n <= 0 then 0 else phys-isqrt-loop n (n / 2 + 1)
+
+  phys-isqrt-loop : Integer, Integer -> Integer
+  phys-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else phys-isqrt-loop n next
+
+Section: Constraints
+  phys-constrain-floor : PhysBody, Integer -> PhysBody
+  phys-constrain-floor (b) (floor-y) =
+    if b.py < floor-y then PhysBody { px = b.px, py = floor-y, pz = b.pz, prev-x = b.prev-x, prev-y = floor-y, prev-z = b.prev-z, ax = b.ax, ay = b.ay, az = b.az, mass = b.mass, damping = b.damping }
+    else b
+
+  phys-constrain-distance : PhysBody, PhysBody, Integer -> PhysBody
+  phys-constrain-distance (a) (anchor) (target-dist) =
+    let dx = a.px - anchor.px
+    in let dy = a.py - anchor.py
+    in let dz = a.pz - anchor.pz
+    in let dist = phys-isqrt (dx * dx + dy * dy + dz * dz)
+    in if dist == 0 then a
+    else let correction = (dist - target-dist) * 500 / dist
+    in PhysBody { px = a.px - dx * correction / 1000, py = a.py - dy * correction / 1000, pz = a.pz - dz * correction / 1000, prev-x = a.prev-x, prev-y = a.prev-y, prev-z = a.prev-z, ax = a.ax, ay = a.ay, az = a.az, mass = a.mass, damping = a.damping }
+
+Section: Formatting
+  format-phys : PhysBody -> Text
+  format-phys (b) = "(" & show (b.px) & "," & show (b.py) & "," & show (b.pz) & ")"
+
+Page 1

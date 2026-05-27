@@ -1,0 +1,323 @@
+Chapter: Nim Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Nim source code from the IR.
+
+Section: Keywords and Sanitization
+
+  nim-keywords : List Text =
+   ["addr", "and", "as", "asm", "bind",
+    "block", "break", "case", "cast", "concept",
+    "const", "continue", "converter", "defer", "discard",
+    "distinct", "div", "do", "elif", "else",
+    "end", "enum", "except", "export", "finally",
+    "for", "from", "func", "if", "import",
+    "in", "include", "interface", "is", "isnot",
+    "iterator", "let", "macro", "method", "mixin",
+    "mod", "nil", "not", "notin", "object",
+    "of", "or", "out", "proc", "ptr",
+    "raise", "ref", "return", "shl", "shr",
+    "static", "template", "try", "tuple", "type",
+    "using", "var", "when", "while", "xor", "yield"]
+
+  is-nim-keyword-loop : List Text, Text, Integer, Integer -> Boolean
+  is-nim-keyword-loop (kws) (name) (i) (len) =
+   if i == len then False
+   else if list-at kws i == name then True
+   else is-nim-keyword-loop kws name (i + 1) len
+
+  is-nim-keyword : Text -> Boolean
+  is-nim-keyword (name) = is-nim-keyword-loop nim-keywords name 0 (list-length nim-keywords)
+
+  nim-sanitize : Text -> Text
+  nim-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if is-nim-keyword s then s & "Val"
+      else s
+
+  nim-escape-text : Text -> Text
+  nim-escape-text (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  nim-indent : Integer -> Text
+  nim-indent (n) =
+   if n <= 0 then ""
+   else "  " & nim-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-nim-type-defs : List ATypeDef, Integer -> Text
+  emit-nim-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-nim-type-def (list-at tds i) & emit-nim-type-defs tds (i + 1)
+
+  emit-nim-type-def : ATypeDef -> Text
+  emit-nim-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     emit-nim-record-type (name.value) fields
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-nim-sum-type (name.value) ctors
+
+  emit-nim-sum-type : Text, List AVariantCtorDef -> Text
+  emit-nim-sum-type (name) (ctors) =
+   "type " & nim-sanitize name & "Kind = enum\n" & emit-nim-enum-ctors ctors 0 (list-length ctors) & "\ntype " & nim-sanitize name & " = object\n  tag: " & nim-sanitize name & "Kind\n\n"
+
+  emit-nim-enum-ctors : List AVariantCtorDef, Integer, Integer -> Text
+  emit-nim-enum-ctors (ctors) (i) (len) =
+   if i == len then ""
+   else let c = list-at ctors i
+   in "  " & nim-sanitize (c.name.value) & "Tag" & (if i < len - 1 then "," else "") & "\n" & emit-nim-enum-ctors ctors (i + 1) len
+
+  emit-nim-record-type : Text, List ARecordFieldDef -> Text
+  emit-nim-record-type (name) (fields) =
+   let sname = nim-sanitize name
+   in "type " & sname & " = object\n" & emit-nim-record-fields fields 0 & "\n"
+
+  emit-nim-record-fields : List ARecordFieldDef, Integer -> Text
+  emit-nim-record-fields (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in "  " & nim-sanitize (f.name.value) & ": string\n" & emit-nim-record-fields fields (i + 1)
+
+Section: Expression Emission
+
+  nim-max-depth : Integer = 256
+
+  emit-nim-expr : IRExpr, List ArityEntry -> Text
+  emit-nim-expr (e) (arities) = emit-nim-expr-at e arities 0
+
+  emit-nim-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-nim-expr-at (e) (arities) (depth) =
+   if depth >= nim-max-depth then "nil"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> integer-to-text n & ".0"
+    is IrTextLit (s) (sp) -> "\"" & nim-escape-text s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-nim-name n ty arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-nim-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-nim-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-nim-expr-at c arities (depth + 1) & ": " & emit-nim-expr-at t arities (depth + 1) & " else: " & emit-nim-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(block: (let " & nim-sanitize name & " = " & emit-nim-expr-at val arities (depth + 1) & "; " & emit-nim-expr-at body arities (depth + 1) & "))"
+    is IrApply (f) (a) (ty) (sp) -> emit-nim-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "(proc(" & emit-nim-lambda-params params 0 & "): auto = " & emit-nim-expr body arities & ")"
+    is IrList (elems) (ty) (sp) -> "@[" & emit-nim-list-elems elems 0 arities & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-nim-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-nim-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-nim-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-nim-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> emit-nim-record name fields arities
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-nim-expr-at rec arities (depth + 1) & "." & nim-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(block: (var _r = " & emit-nim-expr-at rec arities (depth + 1) & "; _r." & nim-sanitize field & " = " & emit-nim-expr-at val arities (depth + 1) & "; _r))"
+    is IrFork (body) (ty) (sp) -> emit-nim-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-nim-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(try: " & emit-nim-act body arities & " except: " & emit-nim-act fb arities & ")"
+    is IrError (msg) (ty) (sp) -> "raise newException(Exception, \"" & nim-escape-text msg & "\")"
+
+  emit-nim-name : Text, CodexType, List ArityEntry -> Text
+  emit-nim-name (n) (ty) (arities) =
+   if n == "read-line" then "readLine(stdin)"
+   else if n == "show" then "$"
+   else if n == "True" then "true"
+   else if n == "False" then "false"
+   else if n == "Nothing" then "nil"
+   else nim-sanitize n
+
+  emit-nim-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-nim-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(" & emit-nim-expr l arities & " & " & emit-nim-expr r arities & ")"
+    is IrAppendList -> "(" & emit-nim-expr l arities & " & " & emit-nim-expr r arities & ")"
+    is IrConsList -> "(@[" & emit-nim-expr l arities & "] & " & emit-nim-expr r arities & ")"
+    is IrDivInt -> "(" & emit-nim-expr l arities & " div " & emit-nim-expr r arities & ")"
+    is IrAnd -> "(" & emit-nim-expr l arities & " and " & emit-nim-expr r arities & ")"
+    is IrOr -> "(" & emit-nim-expr l arities & " or " & emit-nim-expr r arities & ")"
+    is otherwise -> "(" & emit-nim-expr l arities & " " & nim-bin-op-symbol op & " " & emit-nim-expr r arities & ")"
+
+  nim-bin-op-symbol : IRBinaryOp -> Text
+  nim-bin-op-symbol (op) =
+   when op
+    is IrAddInt -> "+"
+    is IrSubInt -> "-"
+    is IrMulInt -> "*"
+    is IrDivInt -> "div"
+    is IrPowInt -> "^"
+    is IrAddNum -> "+"
+    is IrSubNum -> "-"
+    is IrMulNum -> "*"
+    is IrDivNum -> "/"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt -> "<"
+    is IrGt -> ">"
+    is IrLtEq -> "<="
+    is IrGtEq -> ">="
+    is IrAnd -> "and"
+    is IrOr -> "or"
+    is IrAppendText -> "&"
+    is IrAppendList -> "&"
+    is IrConsList -> "&"
+
+  emit-nim-lambda-params : List IRParam, Integer -> Text
+  emit-nim-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then nim-sanitize ((list-at params i).name) & ": auto"
+   else nim-sanitize ((list-at params i).name) & ": auto, " & emit-nim-lambda-params params (i + 1)
+
+  emit-nim-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-nim-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-nim-expr (list-at elems i) arities
+   else emit-nim-expr (list-at elems i) arities & ", " & emit-nim-list-elems elems (i + 1) arities
+
+  emit-nim-record : Text, List IRFieldVal, List ArityEntry -> Text
+  emit-nim-record (name) (fields) (arities) =
+   nim-sanitize name & "(" & emit-nim-record-vals fields 0 arities & ")"
+
+  emit-nim-record-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-nim-record-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & nim-sanitize (f.name) & ": " & emit-nim-expr (f.value) arities & emit-nim-record-vals fields (i + 1) arities
+
+  emit-nim-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-nim-match (scrut) (branches) (arities) =
+   "(block: (let _s = " & emit-nim-expr scrut arities & "; case _s " & emit-nim-match-arms branches 0 arities & "))"
+
+  emit-nim-match-arms : List IRBranch, Integer, List ArityEntry -> Text
+  emit-nim-match-arms (branches) (i) (arities) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-nim-match-arm (b.pattern) (b.body) arities & emit-nim-match-arms branches (i + 1) arities
+
+  emit-nim-match-arm : IRPat, IRExpr, List ArityEntry -> Text
+  emit-nim-match-arm (pat) (body) (arities) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "of " & text & ": " & emit-nim-expr body arities & " "
+    is IrCtorPat (name) (subs) (ty) (sp) -> "of " & nim-sanitize name & ": " & emit-nim-expr body arities & " "
+    is IrVarPat (name) (ty) (sp) -> "else: (let " & nim-sanitize name & " = _s; " & emit-nim-expr body arities & ") "
+    is IrWildPat (sp) -> "else: " & emit-nim-expr body arities & " "
+
+  emit-nim-act : List IRActStmt, List ArityEntry -> Text
+  emit-nim-act (stmts) (arities) =
+   "(block: " & emit-nim-act-stmts stmts 0 arities & ")"
+
+  emit-nim-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-nim-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "let " & nim-sanitize name & " = " & emit-nim-expr val arities & "; "
+    is IrDoExec (e) (sp) -> emit-nim-expr e arities & "; ") & emit-nim-act-stmts stmts (i + 1) arities
+
+Section: Apply Emission
+
+  emit-nim-apply : IRExpr, List ArityEntry -> Text
+  emit-nim-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if n == "print-line-uni" then "echo " & emit-nim-expr (list-at args 0) arities
+     else nim-sanitize n & "(" & emit-nim-apply-args args arities 0 & ")"
+    is otherwise -> emit-nim-expr-curried e arities
+
+  emit-nim-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-nim-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-nim-expr (list-at args i) arities
+   else emit-nim-expr (list-at args i) arities & ", " & emit-nim-apply-args args arities (i + 1)
+
+  emit-nim-expr-curried : IRExpr, List ArityEntry -> Text
+  emit-nim-expr-curried (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> emit-nim-expr f arities & "(" & emit-nim-expr a arities & ")"
+    is otherwise -> emit-nim-expr e arities
+
+Section: Definition Emission
+
+  emit-nim-def : IRDef, List ArityEntry -> Text
+  emit-nim-def (d) (arities) =
+   let name = nim-sanitize (d.name)
+   in let params-text = emit-nim-def-params (d.params) 0
+   in "proc " & name & "(" & params-text & "): auto =\n  " & emit-nim-expr (d.body) arities & "\n\n"
+
+  emit-nim-def-params : List IRParam, Integer -> Text
+  emit-nim-def-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then nim-sanitize ((list-at params i).name) & ": auto"
+   else nim-sanitize ((list-at params i).name) & ": auto, " & emit-nim-def-params params (i + 1)
+
+  emit-nim-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-nim-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-nim-def (list-at defs i) arities & emit-nim-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-nim-chapter : IRChapter, List ATypeDef -> Text
+  emit-nim-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "import tables\n\n"
+   in let types-text = emit-nim-type-defs type-defs 0
+   in let defs-text = emit-nim-defs (m.defs) 0 arities
+   in header & types-text & defs-text & nim-sanitize opening-entry-point & "()\n"
+
+Page 1

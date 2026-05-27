@@ -1,0 +1,198 @@
+Chapter: Bridge
+  cites CodexMagic chapter ChainCore
+  cites CodexMagic chapter TransactionValidator
+  cites CodexMagic chapter MintAuthority
+
+ Cross-chain bridge between the ManaCoin main chain and clan
+ sidechains. Two-phase protocol: lock ManaCoin on main chain,
+ prove the lock, mint clan coin on sidechain (and reverse).
+ Bridge fee is burned - deflationary pressure on both sides.
+
+ We say:
+
+Section: Bridge State
+
+  BridgeState = record {
+    bridge-id : Integer,
+    main-chain-id : Integer,
+    sidechain-id : Integer,
+    clan-id : Integer,
+    pending-locks : List BridgeLock,
+    pending-releases : List BridgeRelease,
+    completed-transfers : Integer,
+    total-locked : Integer,
+    total-released : Integer,
+    fee-pct : Integer
+  }
+
+  BridgeLock = record {
+    lock-id : Integer,
+    account : Integer,
+    amount : Integer,
+    fee : Integer,
+    main-chain-tx : Hash256,
+    timestamp : Integer,
+    status : LockStatus,
+    proof-hash : Hash256
+  }
+
+  BridgeRelease = record {
+    release-id : Integer,
+    account : Integer,
+    amount : Integer,
+    fee : Integer,
+    sidechain-burn-proof : Hash256,
+    timestamp : Integer,
+    status : LockStatus
+  }
+
+  LockStatus =
+    | LockPending
+    | LockConfirmed
+    | LockProven
+    | LockCompleted
+    | LockExpired
+
+  lock-status-name : LockStatus -> Text
+  lock-status-name (s) =
+    when s
+      is LockPending -> "Pending"
+      is LockConfirmed -> "Confirmed"
+      is LockProven -> "Proven"
+      is LockCompleted -> "Completed"
+      is LockExpired -> "Expired"
+
+Section: Bridge Initialization
+
+  bridge-new : Integer, Integer, Integer, Integer -> BridgeState
+  bridge-new (bridge-id) (main-id) (side-id) (clan-id) =
+    BridgeState {
+      bridge-id = bridge-id,
+      main-chain-id = main-id,
+      sidechain-id = side-id,
+      clan-id = clan-id,
+      pending-locks = [],
+      pending-releases = [],
+      completed-transfers = 0,
+      total-locked = 0,
+      total-released = 0,
+      fee-pct = 3
+    }
+
+Section: Phase 1 - Lock ManaCoin on Main Chain
+
+  LockResult = record {
+    bridge : BridgeState,
+    chain : ChainState,
+    lock-id : Integer,
+    success : Boolean,
+    reason : Text
+  }
+
+  initiate-lock : BridgeState, ChainState, Integer, Integer, Integer, Integer -> LockResult
+  initiate-lock (bridge) (chain) (account) (amount) (timestamp) (platform-key) =
+    let fee = amount * bridge.fee-pct / 100
+    in let lock-amount = amount - fee
+    in if lock-amount <= 0 then LockResult { bridge = bridge, chain = chain, lock-id = -1, success = False, reason = "Amount too small after fee" }
+    else let bal = get-balance chain account
+    in if bal < amount then LockResult { bridge = bridge, chain = chain, lock-id = -1, success = False, reason = "Insufficient balance" }
+    else let nonce = get-nonce chain account
+    in let tx = sign-transaction account 0 amount TxBridgeLock nonce timestamp account
+    in let submit = submit-validated chain tx platform-key
+    in if submit.accepted == False then LockResult { bridge = bridge, chain = submit.chain, lock-id = -1, success = False, reason = submit.reason }
+    else let lock-id = list-length (bridge.pending-locks)
+    in let lock = BridgeLock { lock-id = lock-id, account = account, amount = lock-amount, fee = fee, main-chain-tx = tx.tx-hash, timestamp = timestamp, status = LockPending, proof-hash = hash-zero }
+    in let bridge2 = BridgeState {
+      bridge-id = bridge.bridge-id,
+      main-chain-id = bridge.main-chain-id,
+      sidechain-id = bridge.sidechain-id,
+      clan-id = bridge.clan-id,
+      pending-locks = list-push (bridge.pending-locks) lock,
+      pending-releases = bridge.pending-releases,
+      completed-transfers = bridge.completed-transfers,
+      total-locked = bridge.total-locked + lock-amount,
+      total-released = bridge.total-released,
+      fee-pct = bridge.fee-pct
+    }
+    in LockResult { bridge = bridge2, chain = submit.chain, lock-id = lock-id, success = True, reason = "" }
+
+Section: Phase 2 - Confirm lock (block included)
+
+  confirm-lock : BridgeState, Integer, Hash256 -> BridgeState
+  confirm-lock (bridge) (lock-id) (block-hash) =
+    let new-locks = update-lock-status (bridge.pending-locks) lock-id LockConfirmed block-hash 0 (list-length (bridge.pending-locks)) []
+    in BridgeState { bridge-id = bridge.bridge-id, main-chain-id = bridge.main-chain-id, sidechain-id = bridge.sidechain-id, clan-id = bridge.clan-id, pending-locks = new-locks, pending-releases = bridge.pending-releases, completed-transfers = bridge.completed-transfers, total-locked = bridge.total-locked, total-released = bridge.total-released, fee-pct = bridge.fee-pct }
+
+Section: Phase 3 - Prove and complete (sidechain mints equivalent clan coin)
+
+  complete-lock : BridgeState, Integer -> BridgeState
+  complete-lock (bridge) (lock-id) =
+    let new-locks = update-lock-status (bridge.pending-locks) lock-id LockCompleted hash-zero 0 (list-length (bridge.pending-locks)) []
+    in BridgeState { bridge-id = bridge.bridge-id, main-chain-id = bridge.main-chain-id, sidechain-id = bridge.sidechain-id, clan-id = bridge.clan-id, pending-locks = new-locks, pending-releases = bridge.pending-releases, completed-transfers = bridge.completed-transfers + 1, total-locked = bridge.total-locked, total-released = bridge.total-released, fee-pct = bridge.fee-pct }
+
+Section: Reverse - Burn clan coin, release ManaCoin
+
+  ReleaseResult = record {
+    bridge : BridgeState,
+    chain : ChainState,
+    success : Boolean,
+    reason : Text,
+    released : Integer
+  }
+
+  initiate-release : BridgeState, ChainState, Integer, Integer, Hash256, Integer, Integer -> ReleaseResult
+  initiate-release (bridge) (chain) (account) (amount) (burn-proof) (timestamp) (platform-key) =
+    let fee = amount * bridge.fee-pct / 100
+    in let release-amount = amount - fee
+    in if release-amount <= 0 then ReleaseResult { bridge = bridge, chain = chain, success = False, reason = "Amount too small", released = 0 }
+    else if bridge.total-locked < release-amount then ReleaseResult { bridge = bridge, chain = chain, success = False, reason = "Bridge underfunded", released = 0 }
+    else let nonce = get-nonce chain platform-key
+    in let tx = sign-transaction platform-key account release-amount TxBridgeRelease nonce timestamp platform-key
+    in let submit = submit-validated chain tx platform-key
+    in if submit.accepted == False then ReleaseResult { bridge = bridge, chain = submit.chain, success = False, reason = submit.reason, released = 0 }
+    else let release = BridgeRelease { release-id = list-length (bridge.pending-releases), account = account, amount = release-amount, fee = fee, sidechain-burn-proof = burn-proof, timestamp = timestamp, status = LockCompleted }
+    in let bridge2 = BridgeState {
+      bridge-id = bridge.bridge-id,
+      main-chain-id = bridge.main-chain-id,
+      sidechain-id = bridge.sidechain-id,
+      clan-id = bridge.clan-id,
+      pending-locks = bridge.pending-locks,
+      pending-releases = list-push (bridge.pending-releases) release,
+      completed-transfers = bridge.completed-transfers + 1,
+      total-locked = bridge.total-locked - release-amount,
+      total-released = bridge.total-released + release-amount,
+      fee-pct = bridge.fee-pct
+    }
+    in ReleaseResult { bridge = bridge2, chain = submit.chain, success = True, reason = "", released = release-amount }
+
+Section: Bridge Queries
+
+  bridge-balance : BridgeState -> Integer
+  bridge-balance (bridge) = bridge.total-locked - bridge.total-released
+
+  pending-lock-count : BridgeState -> Integer
+  pending-lock-count (bridge) =
+    count-pending-locks (bridge.pending-locks) 0 (list-length (bridge.pending-locks)) 0
+
+  count-pending-locks : List BridgeLock, Integer, Integer, Integer -> Integer
+  count-pending-locks (locks) (i) (len) (acc) =
+    if i >= len then acc
+    else let l = list-at locks i
+    in when l.status
+      is LockPending -> count-pending-locks locks (i + 1) len (acc + 1)
+      is LockConfirmed -> count-pending-locks locks (i + 1) len (acc + 1)
+      is LockProven -> count-pending-locks locks (i + 1) len (acc + 1)
+      is LockCompleted -> count-pending-locks locks (i + 1) len acc
+      is LockExpired -> count-pending-locks locks (i + 1) len acc
+
+Section: Lock Status Updates
+
+  update-lock-status : List BridgeLock, Integer, LockStatus, Hash256, Integer, Integer, List BridgeLock -> List BridgeLock
+  update-lock-status (locks) (id) (new-status) (proof) (i) (len) (acc) =
+    if i >= len then acc
+    else let l = list-at locks i
+    in if l.lock-id == id then
+      update-lock-status locks id new-status proof (i + 1) len (list-push acc (BridgeLock { lock-id = l.lock-id, account = l.account, amount = l.amount, fee = l.fee, main-chain-tx = l.main-chain-tx, timestamp = l.timestamp, status = new-status, proof-hash = proof }))
+    else update-lock-status locks id new-status proof (i + 1) len (list-push acc l)
+
+Page 1

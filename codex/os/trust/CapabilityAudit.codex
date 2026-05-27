@@ -1,0 +1,106 @@
+Chapter: CapabilityAudit
+  cites Foreword chapter Maybe
+
+ CapabilityAudit records every grant, revocation, install, and
+ removal of agent capabilities as timestamped audit entries,
+ forming a tamper-evident log of privilege changes.
+
+ We say:
+
+Section: Audit Events
+
+  AuditAction =
+    | AuditGrant (Text) (Integer)
+    | AuditRevoke (Text) (Integer)
+    | AuditInstall (Text) (Integer)
+    | AuditRemove (Text)
+
+  AuditEntry = record {
+    timestamp : Integer,
+    agent : Text,
+    action : AuditAction
+  }
+
+  AuditLog = record {
+    entries : List AuditEntry,
+    count : Integer between 0 and 65535
+  }
+
+Section: Log Operations
+
+  audit-empty : AuditLog
+  audit-empty = AuditLog { entries = [], count = 0 }
+
+  audit-append : AuditLog, AuditEntry -> AuditLog
+  audit-append (log) (entry) = AuditLog { entries = list-push (log.entries) entry, count = log.count + 1 }
+
+  audit-grant : AuditLog, Text, Integer, Integer -> AuditLog
+  audit-grant (log) (program) (cap-bit) (ts) =
+    audit-append log (AuditEntry { timestamp = ts, agent = program, action = AuditGrant program cap-bit })
+
+  audit-revoke : AuditLog, Text, Integer, Integer -> AuditLog
+  audit-revoke (log) (program) (cap-bit) (ts) =
+    audit-append log (AuditEntry { timestamp = ts, agent = program, action = AuditRevoke program cap-bit })
+
+  audit-install : AuditLog, Text, Integer, Integer -> AuditLog
+  audit-install (log) (program) (cap-mask) (ts) =
+    audit-append log (AuditEntry { timestamp = ts, agent = program, action = AuditInstall program cap-mask })
+
+  audit-remove : AuditLog, Text, Integer -> AuditLog
+  audit-remove (log) (program) (ts) =
+    audit-append log (AuditEntry { timestamp = ts, agent = program, action = AuditRemove program })
+
+Section: Queries
+
+  audit-count : AuditLog -> Integer
+  audit-count (log) = log.count
+
+  audit-last : AuditLog -> Maybe AuditEntry
+  audit-last (log) =
+    if log.count == 0 then None
+    else Just (list-at (log.entries) (log.count - 1))
+
+  audit-grants-for : AuditLog, Text -> Integer
+  audit-grants-for (log) (program) =
+    count-grants (log.entries) program 0 (log.count) 0
+
+  count-grants : List AuditEntry, Text, Integer, Integer, Integer -> Integer
+  count-grants (entries) (program) (i) (len) (acc) =
+    if i >= len then acc
+    else let entry = list-at entries i
+    in let inc = when (entry.action)
+      is AuditGrant (name) (bit) -> if name == program then 1 else 0
+      is AuditInstall (name) (mask) -> if name == program then 1 else 0
+      is otherwise -> 0
+    in count-grants entries program (i + 1) len (acc + inc)
+
+  audit-revokes-for : AuditLog, Text -> Integer
+  audit-revokes-for (log) (program) =
+    count-revokes (log.entries) program 0 (log.count) 0
+
+  count-revokes : List AuditEntry, Text, Integer, Integer, Integer -> Integer
+  count-revokes (entries) (program) (i) (len) (acc) =
+    if i >= len then acc
+    else let entry = list-at entries i
+    in let inc = when (entry.action)
+      is AuditRevoke (name) (bit) -> if name == program then 1 else 0
+      is AuditRemove (name) -> if name == program then 1 else 0
+      is otherwise -> 0
+    in count-revokes entries program (i + 1) len (acc + inc)
+
+Section: Formatting
+
+  audit-format-action : AuditAction -> Text
+  audit-format-action (a) = when a
+    is AuditGrant (name) (bit) -> "grant " & name & " bit=" & show bit
+    is AuditRevoke (name) (bit) -> "revoke " & name & " bit=" & show bit
+    is AuditInstall (name) (mask) -> "install " & name & " mask=" & show mask
+    is AuditRemove (name) -> "remove " & name
+
+  format-entry : AuditEntry -> Text
+  format-entry (e) = "[" & show (e.timestamp) & "] " & audit-format-action (e.action)
+
+  format-audit-summary : AuditLog -> Text
+  format-audit-summary (log) = "audit: " & show (log.count) & " entries"
+
+Page 1

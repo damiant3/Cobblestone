@@ -1,0 +1,204 @@
+Chapter: RoyalUr
+  cites Games chapter Rng
+
+ The Royal Game of Ur, circa 2600 BCE. Two players race 7 pieces along
+ a path of 14 steps. Steps 1-4 are private start, 5-12 are shared
+ combat, 13-14 are private exit. Step 15 means scored (off board).
+ Landing on an opponent piece in the shared zone (5-12) sends it back
+ to step 0 (not entered). Rosette squares (4, 8, 14) grant an extra
+ turn and are safe from capture. Roll four binary dice (0-4 total).
+ First player to score all 7 pieces wins.
+
+ We say:
+
+Section: Types
+
+  UrBoard = record {
+    p1-pieces : List Integer,
+    p2-pieces : List Integer,
+    current-player : Integer,
+    p1-scored : Integer,
+    p2-scored : Integer,
+    game-over : Boolean,
+    winner : Integer,
+    last-roll : Integer,
+    moves-made : Integer
+  }
+
+  UrResult = record {
+    winner : Integer,
+    moves-made : Integer
+  }
+
+Section: Construction
+
+  ur-new : UrBoard
+  ur-new =
+    let p1 = ur-fill-pieces 0 []
+    in let p2 = ur-fill-pieces 0 []
+    in UrBoard { p1-pieces = p1, p2-pieces = p2, current-player = 1,
+                 p1-scored = 0, p2-scored = 0, game-over = False,
+                 winner = 0, last-roll = 0, moves-made = 0 }
+
+  ur-fill-pieces : Integer, List Integer -> List Integer
+  ur-fill-pieces (i) (acc) =
+    if i >= 7 then acc
+    else ur-fill-pieces (i + 1) (list-push acc 0)
+
+Section: Dice
+
+  ur-roll : Rng -> Integer
+  ur-roll (r) =
+    let r1 = rng-next r
+    in let r2 = rng-next r1
+    in let r3 = rng-next r2
+    in let r4 = rng-next r3
+    in let d1 = rng-mod (rng-value r1) 2
+    in let d2 = rng-mod (rng-value r2) 2
+    in let d3 = rng-mod (rng-value r3) 2
+    in let d4 = rng-mod (rng-value r4) 2
+    in d1 + d2 + d3 + d4
+
+Section: Board Queries
+
+  ur-is-rosette : Integer -> Boolean
+  ur-is-rosette (step) =
+    step == 4 | step == 8 | step == 14
+
+  ur-is-shared : Integer -> Boolean
+  ur-is-shared (step) =
+    step >= 5 & step <= 12
+
+  ur-piece-at-step : List Integer, Integer -> Boolean
+  ur-piece-at-step (pieces) (step) =
+    ur-find-at pieces step 0
+
+  ur-find-at : List Integer, Integer, Integer -> Boolean
+  ur-find-at (pieces) (step) (i) =
+    if i >= 7 then False
+    else if list-at pieces i == step then True
+    else ur-find-at pieces step (i + 1)
+
+  ur-find-piece-idx : List Integer, Integer, Integer -> Integer
+  ur-find-piece-idx (pieces) (step) (i) =
+    if i >= 7 then (-1)
+    else if list-at pieces i == step then i
+    else ur-find-piece-idx pieces step (i + 1)
+
+Section: Move Application
+
+  ur-apply-move : UrBoard, Integer, Integer -> UrBoard
+  ur-apply-move (b) (piece-idx) (roll) =
+    let pieces = if b.current-player == 1 then b.p1-pieces else b.p2-pieces
+    in let opp-pieces = if b.current-player == 1 then b.p2-pieces else b.p1-pieces
+    in let cur-step = list-at pieces piece-idx
+    in let new-step = cur-step + roll
+    in if new-step > 15 then b
+    else if new-step == 15 then
+      let new-pieces = list-set-at pieces piece-idx 15
+      in let new-scored = if b.current-player == 1 then b.p1-scored + 1 else b.p2-scored
+      in let won = new-scored >= 7
+      in let np1 = if b.current-player == 1 then new-pieces else b.p1-pieces
+      in let np2 = if b.current-player == 2 then new-pieces else b.p2-pieces
+      in let ns1 = if b.current-player == 1 then new-scored else b.p1-scored
+      in let ns2 = if b.current-player == 2 then new-scored else b.p2-scored
+      in let next-player = if ur-is-rosette new-step then b.current-player else if b.current-player == 1 then 2 else 1
+      in UrBoard { p1-pieces = np1, p2-pieces = np2, current-player = next-player,
+                   p1-scored = ns1, p2-scored = ns2, game-over = won,
+                   winner = if won then b.current-player else 0,
+                   last-roll = roll, moves-made = b.moves-made + 1 }
+    else if ur-is-shared new-step then
+      if ur-piece-at-step pieces new-step then b
+      else if ur-piece-at-step opp-pieces new-step & ur-is-rosette new-step then b
+      else let new-pieces = list-set-at pieces piece-idx new-step
+      in let captured = ur-is-shared new-step & ur-piece-at-step opp-pieces new-step
+      in let new-opp = if captured then ur-send-back opp-pieces new-step else opp-pieces
+      in let np1 = if b.current-player == 1 then new-pieces else new-opp
+      in let np2 = if b.current-player == 2 then new-pieces else new-opp
+      in let rosette = ur-is-rosette new-step
+      in let next-player = if rosette then b.current-player else if b.current-player == 1 then 2 else 1
+      in UrBoard { p1-pieces = np1, p2-pieces = np2, current-player = next-player,
+                   p1-scored = b.p1-scored, p2-scored = b.p2-scored, game-over = False,
+                   winner = 0, last-roll = roll, moves-made = b.moves-made + 1 }
+    else if ur-piece-at-step pieces new-step then b
+    else let new-pieces = list-set-at pieces piece-idx new-step
+      in let np1 = if b.current-player == 1 then new-pieces else b.p1-pieces
+      in let np2 = if b.current-player == 2 then new-pieces else b.p2-pieces
+      in let rosette = ur-is-rosette new-step
+      in let next-player = if rosette then b.current-player else if b.current-player == 1 then 2 else 1
+      in UrBoard { p1-pieces = np1, p2-pieces = np2, current-player = next-player,
+                   p1-scored = b.p1-scored, p2-scored = b.p2-scored, game-over = False,
+                   winner = 0, last-roll = roll, moves-made = b.moves-made + 1 }
+
+  ur-send-back : List Integer, Integer -> List Integer
+  ur-send-back (pieces) (step) =
+    let idx = ur-find-piece-idx pieces step 0
+    in if idx < 0 then pieces
+    else list-set-at pieces idx 0
+
+Section: AI
+
+  ur-ai-pick : UrBoard, Integer -> Integer
+  ur-ai-pick (b) (roll) =
+    let pieces = if b.current-player == 1 then b.p1-pieces else b.p2-pieces
+    in let opp = if b.current-player == 1 then b.p2-pieces else b.p1-pieces
+    in ur-best-move pieces opp roll 0 (-1) (-1)
+
+  ur-best-move : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  ur-best-move (pieces) (opp) (roll) (i) (best-idx) (best-score) =
+    if i >= 7 then best-idx
+    else let step = list-at pieces i
+    in let target = step + roll
+    in if step == 15 then ur-best-move pieces opp roll (i + 1) best-idx best-score
+    else if target > 15 then ur-best-move pieces opp roll (i + 1) best-idx best-score
+    else if ur-piece-at-step pieces target then ur-best-move pieces opp roll (i + 1) best-idx best-score
+    else if ur-is-shared target & ur-piece-at-step opp target & ur-is-rosette target then ur-best-move pieces opp roll (i + 1) best-idx best-score
+    else let score = ur-score-move step target opp
+    in if score > best-score then ur-best-move pieces opp roll (i + 1) i score
+    else ur-best-move pieces opp roll (i + 1) best-idx best-score
+
+  ur-score-move : Integer, Integer, List Integer -> Integer
+  ur-score-move (from-step) (to-step) (opp) =
+    let base = to-step * 10
+    in let capture-bonus = if ur-is-shared to-step & ur-piece-at-step opp to-step then 500 else 0
+    in let rosette-bonus = if ur-is-rosette to-step then 300 else 0
+    in let score-bonus = if to-step == 15 then 1000 else 0
+    in base + capture-bonus + rosette-bonus + score-bonus
+
+Section: Game Runner
+
+  run-ur-game : Integer -> UrResult
+  run-ur-game (seed) =
+    let b = ur-new
+    in let r = rng-new seed
+    in ur-loop b r
+
+  ur-loop : UrBoard, Rng -> UrResult
+  ur-loop (b) (r) =
+    if b.game-over then UrResult { winner = b.winner, moves-made = b.moves-made }
+    else if b.moves-made > 500 then UrResult { winner = 0, moves-made = b.moves-made }
+    else let r1 = rng-next r
+    in let roll = ur-roll r1
+    in let r2 = rng-next (rng-next (rng-next (rng-next r1)))
+    in if roll == 0 then
+      let next-player = if b.current-player == 1 then 2 else 1
+      in let b2 = __record-set (__record-set b "current-player" next-player) "moves-made" (b.moves-made + 1)
+      in ur-loop (__record-set b2 "last-roll" 0) r2
+    else let idx = ur-ai-pick b roll
+    in if idx < 0 then
+      let next-player = if b.current-player == 1 then 2 else 1
+      in let b2 = __record-set (__record-set b "current-player" next-player) "moves-made" (b.moves-made + 1)
+      in ur-loop (__record-set b2 "last-roll" roll) r2
+    else let next = ur-apply-move b idx roll
+    in ur-loop next r2
+
+Section: Formatting
+
+  format-ur-result : UrResult -> Text
+  format-ur-result (r) =
+    let w = if r.winner == 1 then "Player 1 wins"
+            else if r.winner == 2 then "Player 2 wins"
+            else "Draw"
+    in "Royal Game of Ur: " & w & " in " & show (r.moves-made) & " moves"
+
+Page 1

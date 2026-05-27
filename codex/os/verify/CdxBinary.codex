@@ -1,0 +1,712 @@
+Chapter: CdxBinary
+
+  cites Foreword chapter Sha256
+
+  cites Foreword chapter Ed25519
+
+  cites Foreword chapter Sha512
+
+
+
+ CdxBinary defines the CDX binary format: magic bytes, version,
+
+ capability flags (bare-metal, needs-heap), and the header layout
+
+ for signed, verifiable Codex executables.
+
+
+
+ We say:
+
+
+
+Section: Header Constants
+
+
+
+  cdx-magic : List Integer = [67, 68, 88, 49]
+
+
+
+  cdx-format-version : Integer = 1
+
+
+
+  cdx-flag-bare-metal : Integer = 1
+
+
+
+  cdx-flag-needs-heap : Integer = 2
+
+
+
+  cdx-flag-needs-stack-guard : Integer = 4
+
+
+
+  cdx-flag-has-proofs : Integer = 8
+
+
+
+  cdx-header-fixed-size : Integer = 224
+
+
+
+Section: Capability Entry
+
+
+
+  CdxCapability = record {
+
+    cap-id : Integer between 0 and 255,
+
+    direction : Integer between 0 and 255,
+
+    scope : Text,
+
+    max-duration : Integer
+
+  }
+
+
+
+  cdx-dir-read : Integer = 0
+
+
+
+  cdx-dir-write : Integer = 1
+
+
+
+  cdx-dir-readwrite : Integer = 2
+
+
+
+  cdx-cap-console : Integer = 0
+
+
+
+  cdx-cap-filesystem : Integer = 1
+
+
+
+  cdx-cap-network : Integer = 2
+
+
+
+  cdx-cap-concurrent : Integer = 3
+
+
+
+Section: Binary Builder
+
+
+
+  CdxBinaryParts = record {
+
+    flags : Integer between 0 and 65535,
+
+    capabilities : List CdxCapability,
+
+    effects : List Text,
+
+    text-bytes : List Integer,
+
+    rodata-bytes : List Integer,
+
+    entry-offset : Integer,
+
+    stack-size : Integer between 0 and 4294967295,
+
+    heap-size : Integer between 0 and 4294967295,
+
+    trust-threshold : Integer between 0 and 65535
+
+  }
+
+
+
+  cdx-encode : CdxBinaryParts -> List Integer
+
+  cdx-encode (parts) =
+
+    let cap-bytes = encode-capabilities (parts.capabilities) 0 (list-length (parts.capabilities)) []
+
+    in let eff-bytes = encode-effects (parts.effects)
+
+    in let cap-size = list-length cap-bytes
+
+    in let eff-size = list-length eff-bytes
+
+    in let text-size = list-length (parts.text-bytes)
+
+    in let rodata-size = list-length (parts.rodata-bytes)
+
+    in let cap-offset = cdx-header-fixed-size
+
+    in let eff-offset = cap-offset + cap-size
+
+    in let text-offset = eff-offset + eff-size
+
+    in let rodata-offset = text-offset + text-size
+
+    in let content-bytes = cap-bytes & eff-bytes & (parts.text-bytes) & (parts.rodata-bytes)
+
+    in let content-hash = sha256 content-bytes
+
+    in let header = encode-header parts content-hash cap-offset cap-size eff-offset eff-size text-offset text-size rodata-offset rodata-size
+
+    in header & content-bytes
+
+
+
+  encode-header : CdxBinaryParts, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+
+  encode-header (parts) (hash) (cap-off) (cap-sz) (eff-off) (eff-sz) (text-off) (text-sz) (ro-off) (ro-sz) =
+
+    let h = cdx-magic
+
+    in let h1 = h & le16 cdx-format-version
+
+    in let h2 = h1 & le16 (parts.flags)
+
+    in let h3 = h2 & hash-words-to-bytes hash
+
+    in let h4 = h3 & cdx-zero-bytes 32
+
+    in let h5 = h4 & cdx-zero-bytes 64
+
+    in let h6 = h5 & le64 cap-off & le64 cap-sz
+
+    in let h7 = h6 & le64 eff-off & le64 eff-sz
+
+    in let h8 = h7 & le64 text-off & le64 text-sz
+
+    in let h9 = h8 & le64 ro-off & le64 ro-sz
+
+    in let h10 = h9 & le64 (parts.entry-offset)
+
+    in let h11 = h10 & le32 (parts.stack-size) & le32 (parts.heap-size)
+
+    in let h12 = h11 & le16 (parts.trust-threshold) & le16 0
+
+    in h12 & le32 0
+
+
+
+  cdx-encode-signed : CdxBinaryParts, List Integer -> List Integer
+
+  cdx-encode-signed (parts) (private-key) =
+
+    let public-key = ed25519-public-key private-key
+
+    in let cap-bytes = encode-capabilities (parts.capabilities) 0 (list-length (parts.capabilities)) []
+
+    in let eff-bytes = encode-effects (parts.effects)
+
+    in let cap-size = list-length cap-bytes
+
+    in let eff-size = list-length eff-bytes
+
+    in let text-size = list-length (parts.text-bytes)
+
+    in let rodata-size = list-length (parts.rodata-bytes)
+
+    in let cap-offset = cdx-header-fixed-size
+
+    in let eff-offset = cap-offset + cap-size
+
+    in let text-offset = eff-offset + eff-size
+
+    in let rodata-offset = text-offset + text-size
+
+    in let content-bytes = cap-bytes & eff-bytes & (parts.text-bytes) & (parts.rodata-bytes)
+
+    in let content-hash = sha256 content-bytes
+
+    in let content-hash-bytes = hash-words-to-bytes content-hash
+
+    in let sig = ed25519-sign private-key public-key content-hash-bytes
+
+    in let header = encode-signed-header parts content-hash public-key sig cap-offset cap-size eff-offset eff-size text-offset text-size rodata-offset rodata-size
+
+    in header & content-bytes
+
+
+
+  encode-signed-header : CdxBinaryParts, List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+
+  encode-signed-header (parts) (hash) (pub-key) (sig) (cap-off) (cap-sz) (eff-off) (eff-sz) (text-off) (text-sz) (ro-off) (ro-sz) =
+
+    let h = cdx-magic
+
+    in let h1 = h & le16 cdx-format-version
+
+    in let h2 = h1 & le16 (parts.flags)
+
+    in let h3 = h2 & hash-words-to-bytes hash
+
+    in let h4 = h3 & pub-key
+
+    in let h5 = h4 & sig
+
+    in let h6 = h5 & le64 cap-off & le64 cap-sz
+
+    in let h7 = h6 & le64 eff-off & le64 eff-sz
+
+    in let h8 = h7 & le64 text-off & le64 text-sz
+
+    in let h9 = h8 & le64 ro-off & le64 ro-sz
+
+    in let h10 = h9 & le64 (parts.entry-offset)
+
+    in let h11 = h10 & le32 (parts.stack-size) & le32 (parts.heap-size)
+
+    in let h12 = h11 & le16 (parts.trust-threshold) & le16 0
+
+    in h12 & le32 0
+
+
+
+  cdx-verify-signature : List Integer -> Boolean
+
+  cdx-verify-signature (bytes) =
+
+    let pub-key = list-slice bytes 40 72
+
+    in let sig = list-slice bytes 72 136
+
+    in let content-hash = cdx-read-content-hash bytes
+
+    in ed25519-verify pub-key content-hash sig
+
+
+
+Section: Capability Encoding
+
+
+
+  encode-capabilities : List CdxCapability, Integer, Integer, List Integer -> List Integer
+
+  encode-capabilities (caps) (i) (len) (acc) =
+
+    if i == len then acc
+
+    else let c = list-at caps i
+
+    in let scope-bytes = text-to-cap-bytes (c.scope)
+
+    in let entry = le16 (c.cap-id) & le16 (c.direction) & le32 (list-length scope-bytes) & scope-bytes & le64 (c.max-duration)
+
+    in encode-capabilities caps (i + 1) len (acc & entry)
+
+
+
+  text-to-cap-bytes : Text -> List Integer
+
+  text-to-cap-bytes (s) = text-to-cap-loop s 0 (text-length s) []
+
+
+
+  text-to-cap-loop : Text, Integer, Integer, List Integer -> List Integer
+
+  text-to-cap-loop (s) (i) (len) (acc) =
+
+    if i == len then acc
+
+    else text-to-cap-loop s (i + 1) len (list-push acc (char-code (char-at s i)))
+
+
+
+Section: Effect Encoding
+
+
+
+  encode-effects : List Text -> List Integer
+
+  encode-effects (effs) =
+
+    let count = list-length effs
+
+    in encode-effects-loop effs 0 count (le16 count)
+
+
+
+  encode-effects-loop : List Text, Integer, Integer, List Integer -> List Integer
+
+  encode-effects-loop (effs) (i) (count) (acc) =
+
+    if i >= count then acc
+
+    else let name = list-at effs i
+
+    in let name-bytes = text-to-cap-bytes name
+
+    in let entry = le16 (list-length name-bytes) & name-bytes
+
+    in encode-effects-loop effs (i + 1) count (acc & entry)
+
+
+
+  decode-effects : List Integer, Integer, Integer -> List Text
+
+  decode-effects (binary) (off) (sz) =
+
+    if sz == 0 then []
+
+    else let count = cdx-read-le16 binary off
+
+    in decode-effects-loop binary (off + 2) count 0 []
+
+
+
+  decode-effects-loop : List Integer, Integer, Integer, Integer, List Text -> List Text
+
+  decode-effects-loop (binary) (off) (count) (i) (acc) =
+
+    if i >= count then acc
+
+    else let name-len = cdx-read-le16 binary off
+
+    in let name = bytes-to-cap-text binary (off + 2) name-len
+
+    in decode-effects-loop binary (off + 2 + name-len) count (i + 1) (list-push acc name)
+
+
+
+  bytes-to-cap-text : List Integer, Integer, Integer -> Text
+
+  bytes-to-cap-text (bs) (off) (len) = b2ct-loop bs off len 0 ""
+
+
+
+  b2ct-loop : List Integer, Integer, Integer, Integer, Text -> Text
+
+  b2ct-loop (bs) (off) (len) (i) (acc) =
+
+    if i >= len then acc
+
+    else b2ct-loop bs off len (i + 1) (acc & char-to-text (code-to-char (list-at bs (off + i))))
+
+
+
+  cdx-read-le16 : List Integer, Integer -> Integer
+
+  cdx-read-le16 (bs) (off) =
+
+    list-at bs off + bit-shl (list-at bs (off + 1)) 8
+
+
+
+Section: Integer Encoding (Little-Endian)
+
+
+
+  le16 : Integer -> List Integer
+
+  le16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+
+
+  le32 : Integer -> List Integer
+
+  le32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+
+
+  le64 : Integer -> List Integer
+
+  le64 (v) = le32 v & le32 (bit-shru v 32)
+
+
+
+Section: Helpers
+
+
+
+  cdx-zero-bytes : Integer -> List Integer
+
+  cdx-zero-bytes (n) = cdx-zero-bytes-loop n []
+
+
+
+  cdx-zero-bytes-loop : Integer, List Integer -> List Integer
+
+  cdx-zero-bytes-loop (n) (acc) =
+
+    if n <= 0 then acc
+
+    else cdx-zero-bytes-loop (n - 1) (list-push acc 0)
+
+
+
+  hash-words-to-bytes : List Integer -> List Integer
+
+  hash-words-to-bytes (ws) = hash-words-loop ws 0 (list-length ws) []
+
+
+
+  hash-words-loop : List Integer, Integer, Integer, List Integer -> List Integer
+
+  hash-words-loop (ws) (i) (len) (acc) =
+
+    if i == len then acc
+
+    else let w = list-at ws i
+
+    in hash-words-loop ws (i + 1) len (acc & [bit-and (bit-shru w 24) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 8) 255, bit-and w 255])
+
+
+
+Section: Verification
+
+
+
+  cdx-verify-magic : List Integer -> Boolean
+
+  cdx-verify-magic (bytes) =
+
+    list-length bytes >= 4
+
+    & list-at bytes 0 == 67
+
+    & list-at bytes 1 == 68
+
+    & list-at bytes 2 == 88
+
+    & list-at bytes 3 == 49
+
+
+
+  cdx-read-content-hash : List Integer -> List Integer
+
+  cdx-read-content-hash (bytes) = list-slice bytes 8 40
+
+
+
+  list-slice : List Integer, Integer, Integer -> List Integer
+
+  list-slice (xs) (start) (stop) = list-slice-loop xs start stop []
+
+
+
+  list-slice-loop : List Integer, Integer, Integer, List Integer -> List Integer
+
+  list-slice-loop (xs) (i) (stop) (acc) =
+
+    if i >= stop then acc
+
+    else list-slice-loop xs (i + 1) stop (list-push acc (list-at xs i))
+
+
+
+  cdx-verify-content-hash : List Integer -> Boolean
+
+  cdx-verify-content-hash (bytes) =
+
+    let stored-hash = cdx-read-content-hash bytes
+
+    in let cap-off = read-le64 bytes 136
+
+    in let content = list-slice bytes cap-off (list-length bytes)
+
+    in let computed = sha256 content
+
+    in let computed-bytes = hash-words-to-bytes computed
+
+    in bytes-equal stored-hash computed-bytes 0 32
+
+
+
+  read-le64 : List Integer, Integer -> Integer
+
+  read-le64 (bs) (off) =
+
+    list-at bs off + bit-shl (list-at bs (off + 1)) 8
+
+    + bit-shl (list-at bs (off + 2)) 16 + bit-shl (list-at bs (off + 3)) 24
+
+    + bit-shl (list-at bs (off + 4)) 32 + bit-shl (list-at bs (off + 5)) 40
+
+    + bit-shl (list-at bs (off + 6)) 48 + bit-shl (list-at bs (off + 7)) 56
+
+
+
+  bytes-equal : List Integer, List Integer, Integer, Integer -> Boolean
+
+  bytes-equal (a) (b) (i) (len) =
+
+    if i == len then True
+
+    else if list-at a i == list-at b i then bytes-equal a b (i + 1) len
+
+    else False
+
+
+
+Section: Proof Constants
+
+
+
+  cdx-proof-termination : Integer = 0
+
+
+
+  cdx-proof-memory-safety : Integer = 1
+
+
+
+  cdx-proof-capability-compliance : Integer = 2
+
+
+
+  cdx-proof-custom : Integer = 3
+
+
+
+  proof-kind-name : Integer -> Text
+
+  proof-kind-name (k) =
+
+    if k == 0 then "Termination"
+
+    else if k == 1 then "MemorySafety"
+
+    else if k == 2 then "CapabilityCompliance"
+
+    else if k == 3 then "Custom"
+
+    else "Unknown"
+
+
+
+Section: Proof Entry
+
+
+
+  CdxProofEntry = record {
+
+    kind : Integer between 0 and 255,
+
+    hash-bytes : List Integer
+
+  }
+
+
+
+Section: Proof Encoding
+
+
+
+  encode-proof-section : List CdxProofEntry -> List Integer
+
+  encode-proof-section (entries) =
+
+    let count = list-length entries
+
+    in encode-proof-entries entries 0 count (le16 count)
+
+
+
+  encode-proof-entries : List CdxProofEntry, Integer, Integer, List Integer -> List Integer
+
+  encode-proof-entries (entries) (i) (count) (acc) =
+
+    if i >= count then acc
+
+    else let e = list-at entries i
+
+    in encode-proof-entries entries (i + 1) count (acc & [e.kind] & e.hash-bytes)
+
+
+
+  decode-proof-section : List Integer, Integer -> List CdxProofEntry
+
+  decode-proof-section (binary) (off) =
+
+    let count = cdx-read-le16 binary off
+
+    in decode-proof-loop binary (off + 2) count 0 []
+
+
+
+  decode-proof-loop : List Integer, Integer, Integer, Integer, List CdxProofEntry -> List CdxProofEntry
+
+  decode-proof-loop (binary) (off) (count) (i) (acc) =
+
+    if i >= count then acc
+
+    else let kind = list-at binary off
+
+    in let hb = list-slice binary (off + 1) (off + 33)
+
+    in decode-proof-loop binary (off + 33) count (i + 1) (list-push acc (CdxProofEntry { kind = kind, hash-bytes = hb }))
+
+
+
+  cdx-encode-signed-with-proofs : CdxBinaryParts, List Integer, List CdxProofEntry -> List Integer
+
+  cdx-encode-signed-with-proofs (parts) (private-key) (proof-entries) =
+
+    let public-key = ed25519-public-key private-key
+
+    in let cap-bytes = encode-capabilities (parts.capabilities) 0 (list-length (parts.capabilities)) []
+
+    in let eff-bytes = encode-effects (parts.effects)
+
+    in let proof-bytes = encode-proof-section proof-entries
+
+    in let cap-size = list-length cap-bytes
+
+    in let eff-size = list-length eff-bytes
+
+    in let text-size = list-length (parts.text-bytes)
+
+    in let rodata-size = list-length (parts.rodata-bytes)
+
+    in let cap-offset = cdx-header-fixed-size
+
+    in let eff-offset = cap-offset + cap-size
+
+    in let text-offset = eff-offset + eff-size
+
+    in let rodata-offset = text-offset + text-size
+
+    in let content-bytes = cap-bytes & eff-bytes & (parts.text-bytes) & (parts.rodata-bytes) & proof-bytes
+
+    in let content-hash = sha256 content-bytes
+
+    in let content-hash-bytes = hash-words-to-bytes content-hash
+
+    in let sig = ed25519-sign private-key public-key content-hash-bytes
+
+    in let proofed-parts = CdxBinaryParts {
+
+      flags = bit-or (parts.flags) cdx-flag-has-proofs,
+
+      capabilities = parts.capabilities,
+
+      effects = parts.effects,
+
+      text-bytes = parts.text-bytes,
+
+      rodata-bytes = parts.rodata-bytes,
+
+      entry-offset = parts.entry-offset,
+
+      stack-size = parts.stack-size,
+
+      heap-size = parts.heap-size,
+
+      trust-threshold = parts.trust-threshold
+
+    }
+
+    in let header = encode-signed-header proofed-parts content-hash public-key sig cap-offset cap-size eff-offset eff-size text-offset text-size rodata-offset rodata-size
+
+    in header & content-bytes
+
+
+
+Page 1
+

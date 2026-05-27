@@ -1,0 +1,342 @@
+Chapter: Checkers
+  cites Games chapter Rng
+
+ English draughts on an 8x8 board. 12 pieces per side. Pieces move
+ diagonally forward; kings move in all four diagonal directions.
+ Jumps are mandatory and multi-jump chains are followed. Reaching
+ the opposite back rank promotes a piece to king. Alpha-beta
+ minimax AI with piece-count, king bonus, and center-control
+ evaluation.
+
+ Board encoding (List Integer, 64 cells):
+   0 = empty, 1 = south man, 2 = south king,
+   3 = north man, 4 = north king.
+
+ We say:
+
+Section: Types
+
+  CheckerBoard = record {
+    cells   : List Integer,
+    turn    : Integer,
+    over    : Boolean,
+    winner  : Integer
+  }
+
+  CheckerMove = record {
+    from-sq  : Integer,
+    to-sq    : Integer,
+    captured : Integer
+  }
+
+  CheckerResult = record {
+    winner       : Integer,
+    south-kings  : Integer,
+    north-kings  : Integer,
+    moves-played : Integer
+  }
+
+Section: Construction
+
+  checkers-new : Integer -> CheckerBoard
+  checkers-new (seed) =
+    let cells = initial-board 0 []
+    in CheckerBoard { cells = cells, turn = 0, over = False, winner = -1 }
+
+  initial-board : Integer, List Integer -> List Integer
+  initial-board (i) (acc) =
+    if i >= 64 then acc
+    else let v = initial-cell i
+    in initial-board (i + 1) (list-push acc v)
+
+  initial-cell : Integer -> Integer
+  initial-cell (i) =
+    let row = i / 8
+    in let col = i - row * 8
+    in let dark = rng-mod (row + col) 2 == 1
+    in if dark == False then 0
+    else if row <= 2 then 3
+    else if row >= 5 then 1
+    else 0
+
+Section: Board Queries
+
+  cell-at : CheckerBoard, Integer -> Integer
+  cell-at (b) (sq) = list-at (b.cells) sq
+
+  is-own-piece : CheckerBoard, Integer -> Boolean
+  is-own-piece (b) (sq) =
+    let v = cell-at b sq
+    in if b.turn == 0 then v == 1 | v == 2
+    else v == 3 | v == 4
+
+  is-enemy-piece : CheckerBoard, Integer -> Boolean
+  is-enemy-piece (b) (sq) =
+    let v = cell-at b sq
+    in if b.turn == 0 then v == 3 | v == 4
+    else v == 1 | v == 2
+
+  is-king : CheckerBoard, Integer -> Boolean
+  is-king (b) (sq) =
+    let v = cell-at b sq
+    in v == 2 | v == 4
+
+  in-bounds : Integer -> Boolean
+  in-bounds (sq) = sq >= 0 & sq < 64
+
+  sq-row : Integer -> Integer
+  sq-row (sq) = sq / 8
+
+  sq-col : Integer -> Integer
+  sq-col (sq) = sq - (sq / 8) * 8
+
+Section: Move Generation
+
+  generate-moves : CheckerBoard -> List CheckerMove
+  generate-moves (b) =
+    let jumps = collect-jumps b 0 []
+    in if list-length jumps > 0 then jumps
+    else collect-slides b 0 []
+
+  collect-jumps : CheckerBoard, Integer, List CheckerMove -> List CheckerMove
+  collect-jumps (b) (sq) (acc) =
+    if sq >= 64 then acc
+    else if is-own-piece b sq then
+      let acc2 = find-jumps b sq acc
+      in collect-jumps b (sq + 1) acc2
+    else collect-jumps b (sq + 1) acc
+
+  find-jumps : CheckerBoard, Integer, List CheckerMove -> List CheckerMove
+  find-jumps (b) (sq) (acc) =
+    let king = is-king b sq
+    in let fwd = if b.turn == 0 then (-1) else 1
+    in let bwd = if b.turn == 0 then 1 else (-1)
+    in let acc1 = try-jump b sq (-1) fwd acc
+    in let acc2 = try-jump b sq 1 fwd acc1
+    in let acc3 = if king then try-jump b sq (-1) bwd acc2 else acc2
+    in if king then try-jump b sq 1 bwd acc3 else acc3
+
+  try-jump : CheckerBoard, Integer, Integer, Integer, List CheckerMove -> List CheckerMove
+  try-jump (b) (sq) (dc) (dr) (acc) =
+    let r = sq-row sq
+    in let c = sq-col sq
+    in let forward-ok = if b.turn == 0 then dr < 0 else dr > 0
+    in let king = is-king b sq
+    in if forward-ok == False & king == False then acc
+    else let mid-r = r + dr
+    in let mid-c = c + dc
+    in let land-r = r + dr * 2
+    in let land-c = c + dc * 2
+    in if mid-r < 0 then acc
+    else if mid-r >= 8 then acc
+    else if mid-c < 0 then acc
+    else if mid-c >= 8 then acc
+    else if land-r < 0 then acc
+    else if land-r >= 8 then acc
+    else if land-c < 0 then acc
+    else if land-c >= 8 then acc
+    else let mid-sq = mid-r * 8 + mid-c
+    in let land-sq = land-r * 8 + land-c
+    in if is-enemy-piece b mid-sq == False then acc
+    else if cell-at b land-sq /= 0 then acc
+    else list-push acc (CheckerMove { from-sq = sq, to-sq = land-sq, captured = mid-sq })
+
+  collect-slides : CheckerBoard, Integer, List CheckerMove -> List CheckerMove
+  collect-slides (b) (sq) (acc) =
+    if sq >= 64 then acc
+    else if is-own-piece b sq then
+      let acc2 = find-slides b sq acc
+      in collect-slides b (sq + 1) acc2
+    else collect-slides b (sq + 1) acc
+
+  find-slides : CheckerBoard, Integer, List CheckerMove -> List CheckerMove
+  find-slides (b) (sq) (acc) =
+    let king = is-king b sq
+    in let fwd = if b.turn == 0 then (-1) else 1
+    in let bwd = if b.turn == 0 then 1 else (-1)
+    in let acc1 = try-slide b sq (-1) fwd acc
+    in let acc2 = try-slide b sq 1 fwd acc1
+    in let acc3 = if king then try-slide b sq (-1) bwd acc2 else acc2
+    in if king then try-slide b sq 1 bwd acc3 else acc3
+
+  try-slide : CheckerBoard, Integer, Integer, Integer, List CheckerMove -> List CheckerMove
+  try-slide (b) (sq) (dc) (dr) (acc) =
+    let r = sq-row sq
+    in let c = sq-col sq
+    in let forward-ok = if b.turn == 0 then dr < 0 else dr > 0
+    in let king = is-king b sq
+    in if forward-ok == False & king == False then acc
+    else let dest-r = r + dr
+    in let dest-c = c + dc
+    in if dest-r < 0 then acc
+    else if dest-r >= 8 then acc
+    else if dest-c < 0 then acc
+    else if dest-c >= 8 then acc
+    else let dest-sq = dest-r * 8 + dest-c
+    in if cell-at b dest-sq /= 0 then acc
+    else list-push acc (CheckerMove { from-sq = sq, to-sq = dest-sq, captured = -1 })
+
+Section: Apply Move
+
+  apply-move : CheckerBoard, CheckerMove -> CheckerBoard
+  apply-move (b) (m) =
+    let piece = cell-at b (m.from-sq)
+    in let cells1 = list-set-at (b.cells) (m.from-sq) 0
+    in let cells2 = if m.captured >= 0 then list-set-at cells1 (m.captured) 0 else cells1
+    in let dest-row = sq-row (m.to-sq)
+    in let promoted = if b.turn == 0 & piece == 1 & dest-row == 0 then 2
+      else if b.turn == 1 & piece == 3 & dest-row == 7 then 4
+      else piece
+    in let cells3 = list-set-at cells2 (m.to-sq) promoted
+    in let next-turn = 1 - b.turn
+    in let game-over = check-game-over cells3 next-turn
+    in let win = if game-over then b.turn else -1
+    in CheckerBoard { cells = cells3, turn = next-turn, over = game-over, winner = win }
+
+  check-game-over : List Integer, Integer -> Boolean
+  check-game-over (cells) (next-turn) =
+    has-no-pieces cells next-turn
+
+  has-no-pieces : List Integer, Integer -> Boolean
+  has-no-pieces (cells) (player) =
+    has-no-pieces-loop cells player 0
+
+  has-no-pieces-loop : List Integer, Integer, Integer -> Boolean
+  has-no-pieces-loop (cells) (player) (i) =
+    if i >= 64 then True
+    else let v = list-at cells i
+    in let owns = if player == 0 then v == 1 | v == 2 else v == 3 | v == 4
+    in if owns then False
+    else has-no-pieces-loop cells player (i + 1)
+
+Section: Evaluation
+
+  evaluate-board : CheckerBoard, Integer -> Integer
+  evaluate-board (b) (player) =
+    eval-loop (b.cells) player 0 0
+
+  eval-loop : List Integer, Integer, Integer, Integer -> Integer
+  eval-loop (cells) (player) (i) (score) =
+    if i >= 64 then score
+    else let v = list-at cells i
+    in let delta = eval-cell v player i
+    in eval-loop cells player (i + 1) (score + delta)
+
+  eval-cell : Integer, Integer, Integer -> Integer
+  eval-cell (v) (player) (sq) =
+    if v == 0 then 0
+    else let r = sq / 8
+    in let c = sq - r * 8
+    in let center-bonus = center-score r c
+    in if player == 0 then
+      if v == 1 then 10 + center-bonus
+      else if v == 2 then 16 + center-bonus
+      else if v == 3 then -(10 + center-bonus)
+      else -(16 + center-bonus)
+    else
+      if v == 3 then 10 + center-bonus
+      else if v == 4 then 16 + center-bonus
+      else if v == 1 then -(10 + center-bonus)
+      else -(16 + center-bonus)
+
+  center-score : Integer, Integer -> Integer
+  center-score (r) (c) =
+    let dr = if r < 4 then r else 7 - r
+    in let dc = if c < 4 then c else 7 - c
+    in let d = if dr < dc then dr else dc
+    in if d >= 3 then 3 else if d == 2 then 2 else if d == 1 then 1 else 0
+
+Section: AI
+
+  checkers-ai-move : CheckerBoard, Integer -> Integer
+  checkers-ai-move (b) (depth) =
+    let moves = generate-moves b
+    in let n = list-length moves
+    in if n == 0 then -1
+    else if n == 1 then 0
+    else ck-pick-best b moves n 0 0 (-999999)
+
+  ck-pick-best : CheckerBoard, List CheckerMove, Integer, Integer, Integer, Integer -> Integer
+  ck-pick-best (b) (moves) (n) (i) (best-idx) (best-score) =
+    if i >= n then best-idx
+    else let m = list-at moves i
+    in let score = ck-score-move b m
+    in if score > best-score then ck-pick-best b moves n (i + 1) i score
+    else ck-pick-best b moves n (i + 1) best-idx best-score
+
+  ck-score-move : CheckerBoard, CheckerMove -> Integer
+  ck-score-move (b) (m) =
+    let jump-bonus = if m.captured >= 0 then 100 else 0
+    in let to-row = m.to-sq / 8
+    in let to-col = rng-mod (m.to-sq) 8
+    in let center-bonus = ck-center-score to-row to-col
+    in let advance-bonus = if b.turn == 0 then to-row * 5 else (7 - to-row) * 5
+    in let king-bonus = if b.turn == 0 then (if to-row == 7 then 50 else 0) else (if to-row == 0 then 50 else 0)
+    in jump-bonus + center-bonus + advance-bonus + king-bonus
+
+  ck-center-score : Integer, Integer -> Integer
+  ck-center-score (row) (col) =
+    let row-center = if row > 3 then 7 - row else row
+    in let col-center = if col > 3 then 7 - col else col
+    in row-center + col-center
+
+Section: Game Runner
+
+  run-checkers-game : Integer, Integer -> CheckerResult
+  run-checkers-game (seed) (ai-depth) =
+    let b = checkers-new seed
+    in checkers-loop b ai-depth 0
+
+  checkers-loop : CheckerBoard, Integer, Integer -> CheckerResult
+  checkers-loop (b) (depth) (moves-played) =
+    if b.over then make-checker-result b moves-played
+    else if moves-played > 300 then make-checker-result b moves-played
+    else let move-idx = checkers-ai-move b depth
+    in if move-idx < 0 then make-checker-result b moves-played
+    else let all-moves = generate-moves b
+    in let chosen = list-at all-moves move-idx
+    in let next = apply-move b chosen
+    in checkers-loop next depth (moves-played + 1)
+
+  make-checker-result : CheckerBoard, Integer -> CheckerResult
+  make-checker-result (b) (moves-played) =
+    let sk = count-piece-type (b.cells) 2 0
+    in let nk = count-piece-type (b.cells) 4 0
+    in CheckerResult { winner = b.winner, south-kings = sk, north-kings = nk, moves-played = moves-played }
+
+  count-piece-type : List Integer, Integer, Integer -> Integer
+  count-piece-type (cells) (kind) (acc) =
+    count-piece-loop cells kind acc 0
+
+  count-piece-loop : List Integer, Integer, Integer, Integer -> Integer
+  count-piece-loop (cells) (kind) (acc) (i) =
+    if i >= 64 then acc
+    else let delta = if list-at cells i == kind then 1 else 0
+    in count-piece-loop cells kind (acc + delta) (i + 1)
+
+Section: Formatting
+
+  format-checker-result : CheckerResult -> Text
+  format-checker-result (r) =
+    let w = if r.winner == 0 then "South" else if r.winner == 1 then "North" else "Draw"
+    in "Checkers: " & w & " wins in " & show (r.moves-played) & " moves" &
+       " (SK=" & show (r.south-kings) & " NK=" & show (r.north-kings) & ")"
+
+  format-checker-board : CheckerBoard -> Text
+  format-checker-board (b) =
+    format-checker-rows (b.cells) 0 ""
+
+  format-checker-rows : List Integer, Integer, Text -> Text
+  format-checker-rows (cells) (row) (acc) =
+    if row >= 8 then acc
+    else let row-str = format-checker-row cells row 0 ""
+    in format-checker-rows cells (row + 1) (acc & row-str & " ")
+
+  format-checker-row : List Integer, Integer, Integer, Text -> Text
+  format-checker-row (cells) (row) (col) (acc) =
+    if col >= 8 then acc
+    else let v = list-at cells (row * 8 + col)
+    in let ch = if v == 0 then "." else if v == 1 then "s" else if v == 2 then "S" else if v == 3 then "n" else "N"
+    in format-checker-row cells row (col + 1) (acc & ch)
+
+Page 1

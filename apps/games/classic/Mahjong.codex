@@ -1,0 +1,152 @@
+Chapter: Mahjong
+  cites Games chapter Rng
+
+ Mahjong Solitaire (Shanghai variant). 144 tiles arranged on a
+ simplified flat layout. Tiles are integers 0-143: tile-type =
+ tile-index / 4, so each of the 36 types appears exactly 4 times.
+ A tile is free if no tile sits directly to its left or right
+ (adjacent columns occupied). The solver finds matching free pairs
+ and removes them until no pairs remain (stuck) or all are cleared.
+
+ Layout: tiles occupy a 12x12 grid plus two side stacks. For this
+ simplified variant we use a 1D list of 144 positions. Position
+ state: 0 = removed, else original tile value (1..144).
+
+ We say:
+
+Section: Types
+
+  MahjongState = record {
+    tiles     : List Integer,
+    removed   : Integer,
+    matched   : Integer,
+    remaining : Integer
+  }
+
+  MahjongResult = record {
+    matched   : Integer,
+    remaining : Integer,
+    cleared   : Boolean
+  }
+
+Section: Construction
+
+  mahjong-new : Integer -> MahjongState
+  mahjong-new (seed) =
+    let base = mahjong-fill-tiles 0 []
+    in let shuffled = mahjong-shuffle base seed 143
+    in MahjongState { tiles = shuffled, removed = 0, matched = 0, remaining = 144 }
+
+  mahjong-fill-tiles : Integer, List Integer -> List Integer
+  mahjong-fill-tiles (i) (acc) =
+    if i >= 144 then acc
+    else mahjong-fill-tiles (i + 1) (list-push acc (i + 1))
+
+  mahjong-shuffle : List Integer, Integer, Integer -> List Integer
+  mahjong-shuffle (tiles) (seed) (passes) =
+    if passes <= 0 then tiles
+    else let rng = rng-new (seed + passes)
+    in let tiles2 = mahjong-shuffle-pass tiles rng 143
+    in mahjong-shuffle tiles2 seed (passes - 1)
+
+  mahjong-shuffle-pass : List Integer, Rng, Integer -> List Integer
+  mahjong-shuffle-pass (tiles) (rng) (i) =
+    if i <= 0 then tiles
+    else let rng2 = rng-next rng
+    in let j = rng-mod (rng-value rng2) (i + 1)
+    in let vi = list-at tiles i
+    in let vj = list-at tiles j
+    in let tiles2 = list-set-at tiles i vj
+    in let tiles3 = list-set-at tiles2 j vi
+    in mahjong-shuffle-pass tiles3 rng2 (i - 1)
+
+Section: Tile Queries
+
+  tile-type : Integer -> Integer
+  tile-type (v) = (v - 1) / 4
+
+  tile-present : MahjongState, Integer -> Boolean
+  tile-present (st) (i) = list-at (st.tiles) i > 0
+
+  tile-free : MahjongState, Integer -> Boolean
+  tile-free (st) (i) =
+    let left-blocked = mahjong-neighbor-present st i (-1)
+    in let right-blocked = mahjong-neighbor-present st i 1
+    in left-blocked == False | right-blocked == False
+
+  mahjong-neighbor-present : MahjongState, Integer, Integer -> Boolean
+  mahjong-neighbor-present (st) (i) (offset) =
+    let j = i + offset
+    in if j < 0 then False
+    else if j >= 144 then False
+    else tile-present st j
+
+Section: Finding Pairs
+
+  find-matching-free-pairs : MahjongState -> Integer
+  find-matching-free-pairs (st) =
+    find-pair-loop st 0
+
+  find-pair-loop : MahjongState, Integer -> Integer
+  find-pair-loop (st) (i) =
+    if i >= 143 then (-1)
+    else if tile-present st i == False then find-pair-loop st (i + 1)
+    else if tile-free st i == False then find-pair-loop st (i + 1)
+    else let match = find-match st i (i + 1)
+    in if match >= 0 then i * 144 + match
+    else find-pair-loop st (i + 1)
+
+  find-match : MahjongState, Integer, Integer -> Integer
+  find-match (st) (target) (j) =
+    if j >= 144 then (-1)
+    else if tile-present st j == False then find-match st target (j + 1)
+    else if tile-free st j == False then find-match st target (j + 1)
+    else let tt = tile-type (list-at (st.tiles) target)
+    in let tj = tile-type (list-at (st.tiles) j)
+    in if tt == tj then j
+    else find-match st target (j + 1)
+
+Section: Remove Pair
+
+  remove-pair : MahjongState, Integer, Integer -> MahjongState
+  remove-pair (st) (i) (j) =
+    let tiles2 = list-set-at (st.tiles) i 0
+    in let tiles3 = list-set-at tiles2 j 0
+    in MahjongState { tiles = tiles3, removed = st.removed + 2,
+                      matched = st.matched + 1, remaining = st.remaining - 2 }
+
+  mahjong-stuck : MahjongState -> Boolean
+  mahjong-stuck (st) =
+    find-matching-free-pairs st < 0
+
+Section: Game Runner
+
+  run-mahjong-game : Integer -> MahjongResult
+  run-mahjong-game (seed) =
+    let st = mahjong-new seed
+    in mahjong-loop st 0
+
+  mahjong-loop : MahjongState, Integer -> MahjongResult
+  mahjong-loop (st) (steps) =
+    if st.remaining <= 0 then
+      MahjongResult { matched = st.matched, remaining = 0, cleared = True }
+    else if steps > 200 then
+      MahjongResult { matched = st.matched, remaining = st.remaining, cleared = False }
+    else let pair-code = find-matching-free-pairs st
+    in if pair-code < 0 then
+      MahjongResult { matched = st.matched, remaining = st.remaining, cleared = False }
+    else let i = pair-code / 144
+    in let j = rng-mod pair-code 144
+    in let st2 = remove-pair st i j
+    in mahjong-loop st2 (steps + 1)
+
+Section: Formatting
+
+  format-mahjong-result : MahjongResult -> Text
+  format-mahjong-result (r) =
+    let status = if r.cleared then "Cleared!" else "Stuck"
+    in "Mahjong Solitaire: " & status &
+       " matched=" & show (r.matched) &
+       " pairs, remaining=" & show (r.remaining) & " tiles"
+
+Page 1

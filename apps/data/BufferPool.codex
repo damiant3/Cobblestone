@@ -1,0 +1,250 @@
+Chapter: BufferPool
+  cites Data chapter Page
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ The buffer pool manages a fixed-size cache of pages in memory.
+ Pages are identified by page-id. The pool uses LRU eviction and
+ tracks dirty pages that need flushing. Pin counting prevents
+ eviction of pages under active use.
+
+ We say:
+
+Section: Frame
+
+  PageFrame = record {
+    frame-page : DbPage,
+    frame-dirty : Boolean,
+    frame-pin-count : Integer between 0 and 65535,
+    frame-access-tick : Integer
+  }
+
+  frame-new : DbPage -> PageFrame
+  frame-new (pg) = PageFrame {
+    frame-page = pg,
+    frame-dirty = False,
+    frame-pin-count = 0,
+    frame-access-tick = 0
+  }
+
+  frame-mark-dirty : PageFrame -> PageFrame
+  frame-mark-dirty (f) = PageFrame {
+    frame-page = f.frame-page,
+    frame-dirty = True,
+    frame-pin-count = f.frame-pin-count,
+    frame-access-tick = f.frame-access-tick
+  }
+
+  frame-touch : PageFrame, Integer -> PageFrame
+  frame-touch (f) (tick) = PageFrame {
+    frame-page = f.frame-page,
+    frame-dirty = f.frame-dirty,
+    frame-pin-count = f.frame-pin-count,
+    frame-access-tick = tick
+  }
+
+  frame-pin : PageFrame -> PageFrame
+  frame-pin (f) = PageFrame {
+    frame-page = f.frame-page,
+    frame-dirty = f.frame-dirty,
+    frame-pin-count = f.frame-pin-count + 1,
+    frame-access-tick = f.frame-access-tick
+  }
+
+  frame-unpin : PageFrame -> PageFrame
+  frame-unpin (f) = PageFrame {
+    frame-page = f.frame-page,
+    frame-dirty = f.frame-dirty,
+    frame-pin-count = if f.frame-pin-count > 0 then f.frame-pin-count - 1 else 0,
+    frame-access-tick = f.frame-access-tick
+  }
+
+Section: Buffer Pool
+
+  BufferPool = record {
+    frames : List PageFrame,
+    page-map : HamtMap Integer,
+    capacity : Integer between 1 and 65536,
+    frame-count : Integer between 0 and 65536,
+    tick : Integer,
+    hit-count : Integer,
+    miss-count : Integer,
+    evict-count : Integer
+  }
+
+  bp-new : Integer -> BufferPool
+  bp-new (cap) = BufferPool {
+    frames = [],
+    page-map = hamt-empty,
+    capacity = cap,
+    frame-count = 0,
+    tick = 0,
+    hit-count = 0,
+    miss-count = 0,
+    evict-count = 0
+  }
+
+Section: Fetch
+
+  BpFetchResult = record {
+    pool : BufferPool,
+    frame : PageFrame,
+    frame-idx : Integer,
+    was-hit : Boolean
+  }
+
+  bp-fetch : BufferPool, DbPage -> BpFetchResult
+  bp-fetch (pool) (pg) =
+    let pid = page-id pg
+    in let pid-key = show pid
+    in let lookup = hamt-get (pool.page-map) pid-key
+    in when lookup
+      is Just (idx) ->
+        let f = list-at (pool.frames) idx
+        in let new-tick = pool.tick + 1
+        in let touched = frame-touch (frame-pin f) new-tick
+        in let new-frames = list-set-at (pool.frames) idx touched
+        in BpFetchResult {
+          pool = BufferPool {
+            frames = new-frames,
+            page-map = pool.page-map,
+            capacity = pool.capacity,
+            frame-count = pool.frame-count,
+            tick = new-tick,
+            hit-count = pool.hit-count + 1,
+            miss-count = pool.miss-count,
+            evict-count = pool.evict-count
+          },
+          frame = touched,
+          frame-idx = idx,
+          was-hit = True
+        }
+      is None ->
+        let new-tick = pool.tick + 1
+        in let f = frame-touch (frame-pin (frame-new pg)) new-tick
+        in if pool.frame-count < pool.capacity then
+          let idx = pool.frame-count
+          in BpFetchResult {
+            pool = BufferPool {
+              frames = list-push (pool.frames) f,
+              page-map = hamt-set (pool.page-map) pid-key idx,
+              capacity = pool.capacity,
+              frame-count = pool.frame-count + 1,
+              tick = new-tick,
+              hit-count = pool.hit-count,
+              miss-count = pool.miss-count + 1,
+              evict-count = pool.evict-count
+            },
+            frame = f,
+            frame-idx = idx,
+            was-hit = False
+          }
+        else let victim = bp-find-victim (pool.frames) 0 (pool.frame-count) (-1) (pool.tick + 1)
+        in if victim < 0 then BpFetchResult {
+          pool = pool,
+          frame = f,
+          frame-idx = -1,
+          was-hit = False
+        }
+        else let old-frame = list-at (pool.frames) victim
+        in let old-pid = show (page-id (old-frame.frame-page))
+        in let new-map = hamt-remove (hamt-set (pool.page-map) pid-key victim) old-pid
+        in BpFetchResult {
+          pool = BufferPool {
+            frames = list-set-at (pool.frames) victim f,
+            page-map = new-map,
+            capacity = pool.capacity,
+            frame-count = pool.frame-count,
+            tick = new-tick,
+            hit-count = pool.hit-count,
+            miss-count = pool.miss-count + 1,
+            evict-count = pool.evict-count + 1
+          },
+          frame = f,
+          frame-idx = victim,
+          was-hit = False
+        }
+
+Section: Eviction
+
+  bp-find-victim : List PageFrame, Integer, Integer, Integer, Integer -> Integer
+  bp-find-victim (frames) (i) (len) (best) (best-tick) =
+    if i >= len then best
+    else let f = list-at frames i
+    in if f.frame-pin-count > 0 then bp-find-victim frames (i + 1) len best best-tick
+    else if f.frame-access-tick < best-tick then bp-find-victim frames (i + 1) len i (f.frame-access-tick)
+    else bp-find-victim frames (i + 1) len best best-tick
+
+Section: Update Page in Pool
+
+  bp-update : BufferPool, Integer, DbPage -> BufferPool
+  bp-update (pool) (frame-idx) (pg) =
+    if frame-idx < 0 then pool
+    else if frame-idx >= pool.frame-count then pool
+    else let old = list-at (pool.frames) frame-idx
+    in let updated = PageFrame {
+      frame-page = pg,
+      frame-dirty = True,
+      frame-pin-count = old.frame-pin-count,
+      frame-access-tick = old.frame-access-tick
+    }
+    in BufferPool {
+      frames = list-set-at (pool.frames) frame-idx updated,
+      page-map = pool.page-map,
+      capacity = pool.capacity,
+      frame-count = pool.frame-count,
+      tick = pool.tick,
+      hit-count = pool.hit-count,
+      miss-count = pool.miss-count,
+      evict-count = pool.evict-count
+    }
+
+Section: Unpin
+
+  bp-unpin : BufferPool, Integer -> BufferPool
+  bp-unpin (pool) (frame-idx) =
+    if frame-idx < 0 then pool
+    else if frame-idx >= pool.frame-count then pool
+    else let f = list-at (pool.frames) frame-idx
+    in let unpinned = frame-unpin f
+    in BufferPool {
+      frames = list-set-at (pool.frames) frame-idx unpinned,
+      page-map = pool.page-map,
+      capacity = pool.capacity,
+      frame-count = pool.frame-count,
+      tick = pool.tick,
+      hit-count = pool.hit-count,
+      miss-count = pool.miss-count,
+      evict-count = pool.evict-count
+    }
+
+Section: Dirty Pages
+
+  bp-dirty-pages : BufferPool -> List Integer
+  bp-dirty-pages (pool) = bp-collect-dirty (pool.frames) 0 (pool.frame-count) []
+
+  bp-collect-dirty : List PageFrame, Integer, Integer, List Integer -> List Integer
+  bp-collect-dirty (frames) (i) (len) (acc) =
+    if i >= len then acc
+    else let f = list-at frames i
+    in if f.frame-dirty then bp-collect-dirty frames (i + 1) len (list-push acc (page-id (f.frame-page)))
+    else bp-collect-dirty frames (i + 1) len acc
+
+Section: Statistics
+
+  bp-stats : BufferPool -> Text
+  bp-stats (pool) =
+    "capacity=" & show (pool.capacity)
+    & " frames=" & show (pool.frame-count)
+    & " hits=" & show (pool.hit-count)
+    & " misses=" & show (pool.miss-count)
+    & " evictions=" & show (pool.evict-count)
+
+  bp-hit-rate : BufferPool -> Integer
+  bp-hit-rate (pool) =
+    let total = pool.hit-count + pool.miss-count
+    in if total == 0 then 100
+    else (pool.hit-count * 100) / total
+
+Page 1
