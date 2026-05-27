@@ -1,0 +1,426 @@
+Chapter: Geometry
+  cites Math chapter Quaternion
+
+ 2D computational geometry. Vec2, line segments, polygons, triangles,
+ convex hull, point-in-polygon, ray casting. Fixed-point (scale 1000).
+
+ We say:
+
+Section: Vec2
+  Vec2 = record { v2x : Integer, v2y : Integer }
+
+  vec2-new : Integer, Integer -> Vec2
+  vec2-new (x) (y) = Vec2 { v2x = x, v2y = y }
+
+  vec2-zero : Vec2
+  vec2-zero = Vec2 { v2x = 0, v2y = 0 }
+
+  vec2-add : Vec2, Vec2 -> Vec2
+  vec2-add (a) (b) = Vec2 { v2x = a.v2x + b.v2x, v2y = a.v2y + b.v2y }
+
+  vec2-sub : Vec2, Vec2 -> Vec2
+  vec2-sub (a) (b) = Vec2 { v2x = a.v2x - b.v2x, v2y = a.v2y - b.v2y }
+
+  vec2-scale : Vec2, Integer -> Vec2
+  vec2-scale (v) (s) = Vec2 { v2x = v.v2x * s / 1000, v2y = v.v2y * s / 1000 }
+
+  vec2-dot : Vec2, Vec2 -> Integer
+  vec2-dot (a) (b) = (a.v2x * b.v2x + a.v2y * b.v2y) / 1000
+
+  vec2-cross : Vec2, Vec2 -> Integer
+  vec2-cross (a) (b) = (a.v2x * b.v2y - a.v2y * b.v2x) / 1000
+
+  vec2-length-sq : Vec2 -> Integer
+  vec2-length-sq (v) = (v.v2x * v.v2x + v.v2y * v.v2y) / 1000
+
+  vec2-length : Vec2 -> Integer
+  vec2-length (v) = geo-isqrt (v.v2x * v.v2x + v.v2y * v.v2y)
+
+  vec2-normalize : Vec2 -> Vec2
+  vec2-normalize (v) =
+    let len = vec2-length v
+    in if len == 0 then vec2-zero
+    else Vec2 { v2x = v.v2x * 1000 / len, v2y = v.v2y * 1000 / len }
+
+  vec2-negate : Vec2 -> Vec2
+  vec2-negate (v) = Vec2 { v2x = -v.v2x, v2y = -v.v2y }
+
+  vec2-perp : Vec2 -> Vec2
+  vec2-perp (v) = Vec2 { v2x = -v.v2y, v2y = v.v2x }
+
+  vec2-lerp : Vec2, Vec2, Integer -> Vec2
+  vec2-lerp (a) (b) (t) =
+    let inv = 1000 - t
+    in Vec2 { v2x = (a.v2x * inv + b.v2x * t) / 1000, v2y = (a.v2y * inv + b.v2y * t) / 1000 }
+
+  vec2-distance-sq : Vec2, Vec2 -> Integer
+  vec2-distance-sq (a) (b) =
+    let dx = b.v2x - a.v2x
+    in let dy = b.v2y - a.v2y
+    in (dx * dx + dy * dy) / 1000
+
+  vec2-distance : Vec2, Vec2 -> Integer
+  vec2-distance (a) (b) =
+    let dx = b.v2x - a.v2x
+    in let dy = b.v2y - a.v2y
+    in geo-isqrt (dx * dx + dy * dy)
+
+Section: Line Segments
+  Seg2 = record { seg-a : Vec2, seg-b : Vec2 }
+
+  seg2-new : Vec2, Vec2 -> Seg2
+  seg2-new (a) (b) = Seg2 { seg-a = a, seg-b = b }
+
+  seg2-length : Seg2 -> Integer
+  seg2-length (s) = vec2-distance (s.seg-a) (s.seg-b)
+
+  seg2-midpoint : Seg2 -> Vec2
+  seg2-midpoint (s) = Vec2 { v2x = (s.seg-a.v2x + s.seg-b.v2x) / 2, v2y = (s.seg-a.v2y + s.seg-b.v2y) / 2 }
+
+  seg2-closest-point : Seg2, Vec2 -> Vec2
+  seg2-closest-point (s) (p) =
+    let d = vec2-sub (s.seg-b) (s.seg-a)
+    in let len-sq = d.v2x * d.v2x + d.v2y * d.v2y
+    in if len-sq == 0 then s.seg-a
+    else let t-raw = (p.v2x - s.seg-a.v2x) * d.v2x + (p.v2y - s.seg-a.v2y) * d.v2y
+    in let t = geo-clamp (t-raw * 1000 / len-sq) 0 1000
+    in vec2-lerp (s.seg-a) (s.seg-b) t
+
+  seg2-distance : Seg2, Vec2 -> Integer
+  seg2-distance (s) (p) = vec2-distance (seg2-closest-point s p) p
+
+  SegIntersect = record { si-hit : Boolean, si-point : Vec2, si-t : Integer }
+
+  seg2-intersect : Seg2, Seg2 -> SegIntersect
+  seg2-intersect (s1) (s2) =
+    let d1 = vec2-sub (s1.seg-b) (s1.seg-a)
+    in let d2 = vec2-sub (s2.seg-b) (s2.seg-a)
+    in let cross = d1.v2x * d2.v2y - d1.v2y * d2.v2x
+    in if geo-abs cross < 1 then SegIntersect { si-hit = False, si-point = vec2-zero, si-t = 0 }
+    else let dp = vec2-sub (s2.seg-a) (s1.seg-a)
+    in let t = (dp.v2x * d2.v2y - dp.v2y * d2.v2x) * 1000 / cross
+    in let u = (dp.v2x * d1.v2y - dp.v2y * d1.v2x) * 1000 / cross
+    in if t < 0 then SegIntersect { si-hit = False, si-point = vec2-zero, si-t = 0 }
+    else if t > 1000 then SegIntersect { si-hit = False, si-point = vec2-zero, si-t = 0 }
+    else if u < 0 then SegIntersect { si-hit = False, si-point = vec2-zero, si-t = 0 }
+    else if u > 1000 then SegIntersect { si-hit = False, si-point = vec2-zero, si-t = 0 }
+    else let pt = vec2-lerp (s1.seg-a) (s1.seg-b) t
+    in SegIntersect { si-hit = True, si-point = pt, si-t = t }
+
+Section: Triangles
+  Tri2 = record { tri-a : Vec2, tri-b : Vec2, tri-c : Vec2 }
+
+  tri2-new : Vec2, Vec2, Vec2 -> Tri2
+  tri2-new (a) (b) (c) = Tri2 { tri-a = a, tri-b = b, tri-c = c }
+
+  tri2-area-2x : Tri2 -> Integer
+  tri2-area-2x (t) =
+    let ab = vec2-sub (t.tri-b) (t.tri-a)
+    in let ac = vec2-sub (t.tri-c) (t.tri-a)
+    in ab.v2x * ac.v2y - ab.v2y * ac.v2x
+
+  tri2-area : Tri2 -> Integer
+  tri2-area (t) = geo-abs (tri2-area-2x t) / 2
+
+  tri2-contains : Tri2, Vec2 -> Boolean
+  tri2-contains (tri) (p) =
+    let d1 = geo-tri-sign p (tri.tri-a) (tri.tri-b)
+    in let d2 = geo-tri-sign p (tri.tri-b) (tri.tri-c)
+    in let d3 = geo-tri-sign p (tri.tri-c) (tri.tri-a)
+    in let has-neg = d1 < 0 | d2 < 0 | d3 < 0
+    in let has-pos = d1 > 0 | d2 > 0 | d3 > 0
+    in if has-neg & has-pos then False else True
+
+  geo-tri-sign : Vec2, Vec2, Vec2 -> Integer
+  geo-tri-sign (p) (a) (b) = (p.v2x - b.v2x) * (a.v2y - b.v2y) - (a.v2x - b.v2x) * (p.v2y - b.v2y)
+
+  Bary = record { bary-u : Integer, bary-v : Integer, bary-w : Integer }
+
+  tri2-barycentric : Tri2, Vec2 -> Bary
+  tri2-barycentric (tri) (p) =
+    let v0 = vec2-sub (tri.tri-b) (tri.tri-a)
+    in let v1 = vec2-sub (tri.tri-c) (tri.tri-a)
+    in let v2 = vec2-sub p (tri.tri-a)
+    in let d00 = v0.v2x * v0.v2x + v0.v2y * v0.v2y
+    in let d01 = v0.v2x * v1.v2x + v0.v2y * v1.v2y
+    in let d11 = v1.v2x * v1.v2x + v1.v2y * v1.v2y
+    in let d20 = v2.v2x * v0.v2x + v2.v2y * v0.v2y
+    in let d21 = v2.v2x * v1.v2x + v2.v2y * v1.v2y
+    in let denom = d00 * d11 - d01 * d01
+    in if denom == 0 then Bary { bary-u = 0, bary-v = 0, bary-w = 1000 }
+    else let bv = (d11 * d20 - d01 * d21) * 1000 / denom
+    in let bw = (d00 * d21 - d01 * d20) * 1000 / denom
+    in let bu = 1000 - bv - bw
+    in Bary { bary-u = bu, bary-v = bv, bary-w = bw }
+
+  tri2-circumcenter : Tri2 -> Vec2
+  tri2-circumcenter (tri) =
+    let ax = tri.tri-a.v2x
+    in let ay = tri.tri-a.v2y
+    in let bx = tri.tri-b.v2x
+    in let by = tri.tri-b.v2y
+    in let cx = tri.tri-c.v2x
+    in let cy = tri.tri-c.v2y
+    in let d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    in if d == 0 then tri.tri-a
+    else let a2 = ax * ax + ay * ay
+    in let b2 = bx * bx + by * by
+    in let c2 = cx * cx + cy * cy
+    in let ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
+    in let uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
+    in vec2-new ux uy
+
+Section: Polygons
+  poly-area-2x : List Vec2 -> Integer
+  poly-area-2x (pts) = geo-poly-area-loop pts 0 (list-length pts) 0
+
+  geo-poly-area-loop : List Vec2, Integer, Integer, Integer -> Integer
+  geo-poly-area-loop (pts) (i) (n) (acc) =
+    if i >= n then acc
+    else let j = if i + 1 >= n then 0 else i + 1
+    in let pi = list-at pts i
+    in let pj = list-at pts j
+    in geo-poly-area-loop pts (i + 1) n (acc + pi.v2x * pj.v2y - pj.v2x * pi.v2y)
+
+  poly-area : List Vec2 -> Integer
+  poly-area (pts) = geo-abs (poly-area-2x pts) / 2
+
+  poly-perimeter : List Vec2 -> Integer
+  poly-perimeter (pts) = geo-poly-perim-loop pts 0 (list-length pts) 0
+
+  geo-poly-perim-loop : List Vec2, Integer, Integer, Integer -> Integer
+  geo-poly-perim-loop (pts) (i) (n) (acc) =
+    if i >= n then acc
+    else let j = if i + 1 >= n then 0 else i + 1
+    in geo-poly-perim-loop pts (i + 1) n (acc + vec2-distance (list-at pts i) (list-at pts j))
+
+  poly-contains : List Vec2, Vec2 -> Boolean
+  poly-contains (pts) (p) = geo-pip-loop pts p 0 (list-length pts) False
+
+  geo-pip-loop : List Vec2, Vec2, Integer, Integer, Boolean -> Boolean
+  geo-pip-loop (pts) (p) (i) (n) (inside) =
+    if i >= n then inside
+    else let j = if i + 1 >= n then 0 else i + 1
+    in let pi = list-at pts i
+    in let pj = list-at pts j
+    in let crosses = if pi.v2y <= p.v2y then pj.v2y > p.v2y & geo-pip-side pi pj p > 0
+      else pj.v2y <= p.v2y & geo-pip-side pi pj p < 0
+    in let next = if crosses then if inside then False else True else inside
+    in geo-pip-loop pts p (i + 1) n next
+
+  geo-pip-side : Vec2, Vec2, Vec2 -> Integer
+  geo-pip-side (a) (b) (p) = (b.v2x - a.v2x) * (p.v2y - a.v2y) - (p.v2x - a.v2x) * (b.v2y - a.v2y)
+
+  poly-centroid : List Vec2 -> Vec2
+  poly-centroid (pts) =
+    let n = list-length pts
+    in if n == 0 then vec2-zero
+    else let sums = geo-centroid-loop pts 0 n 0 0
+    in vec2-new (geo-fst sums / n) (geo-snd sums / n)
+
+  geo-centroid-loop : List Vec2, Integer, Integer, Integer, Integer -> Vec2
+  geo-centroid-loop (pts) (i) (n) (sx) (sy) =
+    if i >= n then vec2-new sx sy
+    else let p = list-at pts i
+    in geo-centroid-loop pts (i + 1) n (sx + p.v2x) (sy + p.v2y)
+
+  geo-fst : Vec2 -> Integer
+  geo-fst (v) = v.v2x
+
+  geo-snd : Vec2 -> Integer
+  geo-snd (v) = v.v2y
+
+Section: Convex Hull (Andrew's Monotone Chain)
+  convex-hull : List Vec2 -> List Vec2
+  convex-hull (pts) =
+    let sorted = geo-sort-pts pts
+    in let n = list-length sorted
+    in if n <= 2 then sorted
+    else let lower = geo-hull-half sorted 0 n []
+    in let upper = geo-hull-half-rev sorted (n - 1) []
+    in geo-hull-merge lower upper
+
+  geo-hull-half : List Vec2, Integer, Integer, List Vec2 -> List Vec2
+  geo-hull-half (pts) (i) (n) (hull) =
+    if i >= n then hull
+    else let p = list-at pts i
+    in let trimmed = geo-hull-trim hull p
+    in geo-hull-half pts (i + 1) n (list-push trimmed p)
+
+  geo-hull-half-rev : List Vec2, Integer, List Vec2 -> List Vec2
+  geo-hull-half-rev (pts) (i) (hull) =
+    if i < 0 then hull
+    else let p = list-at pts i
+    in let trimmed = geo-hull-trim hull p
+    in geo-hull-half-rev pts (i - 1) (list-push trimmed p)
+
+  geo-hull-trim : List Vec2, Vec2 -> List Vec2
+  geo-hull-trim (hull) (p) =
+    let n = list-length hull
+    in if n < 2 then hull
+    else let a = list-at hull (n - 2)
+    in let b = list-at hull (n - 1)
+    in let cross = (b.v2x - a.v2x) * (p.v2y - a.v2y) - (b.v2y - a.v2y) * (p.v2x - a.v2x)
+    in if cross <= 0 then geo-hull-trim (geo-list-drop-last hull) p
+    else hull
+
+  geo-hull-merge : List Vec2, List Vec2 -> List Vec2
+  geo-hull-merge (lower) (upper) =
+    let l = geo-list-drop-last lower
+    in let u = geo-list-drop-last upper
+    in l & u
+
+Section: Ray Casting
+  Ray2 = record { ray-origin : Vec2, ray-dir : Vec2 }
+
+  ray2-new : Vec2, Vec2 -> Ray2
+  ray2-new (origin) (dir) = Ray2 { ray-origin = origin, ray-dir = vec2-normalize dir }
+
+  RayHit = record { rh-hit : Boolean, rh-t : Integer, rh-point : Vec2 }
+
+  ray2-seg : Ray2, Seg2 -> RayHit
+  ray2-seg (ray) (seg) =
+    let d = ray.ray-dir
+    in let e = vec2-sub (seg.seg-b) (seg.seg-a)
+    in let cross = d.v2x * e.v2y - d.v2y * e.v2x
+    in if geo-abs cross < 1 then RayHit { rh-hit = False, rh-t = 0, rh-point = vec2-zero }
+    else let f = vec2-sub (seg.seg-a) (ray.ray-origin)
+    in let t = (f.v2x * e.v2y - f.v2y * e.v2x) * 1000 / cross
+    in let u = (f.v2x * d.v2y - f.v2y * d.v2x) * 1000 / cross
+    in if t < 0 then RayHit { rh-hit = False, rh-t = 0, rh-point = vec2-zero }
+    else if u < 0 then RayHit { rh-hit = False, rh-t = 0, rh-point = vec2-zero }
+    else if u > 1000 then RayHit { rh-hit = False, rh-t = 0, rh-point = vec2-zero }
+    else let pt = vec2-add (ray.ray-origin) (vec2-scale d t)
+    in RayHit { rh-hit = True, rh-t = t, rh-point = pt }
+
+  ray2-circle : Ray2, Vec2, Integer -> RayHit
+  ray2-circle (ray) (center) (radius) =
+    let oc = vec2-sub (ray.ray-origin) center
+    in let a = vec2-dot (ray.ray-dir) (ray.ray-dir)
+    in let b = 2 * vec2-dot oc (ray.ray-dir)
+    in let c = vec2-dot oc oc - radius * radius / 1000
+    in let disc = b * b - 4 * a * c
+    in if disc < 0 then RayHit { rh-hit = False, rh-t = 0, rh-point = vec2-zero }
+    else let sqrt-d = geo-isqrt (disc * 1000)
+    in let t = (-b - sqrt-d) * 1000 / (2 * a)
+    in if t < 0 then let t2 = (-b + sqrt-d) * 1000 / (2 * a)
+      in if t2 < 0 then RayHit { rh-hit = False, rh-t = 0, rh-point = vec2-zero }
+      else let pt = vec2-add (ray.ray-origin) (vec2-scale (ray.ray-dir) t2)
+      in RayHit { rh-hit = True, rh-t = t2, rh-point = pt }
+    else let pt = vec2-add (ray.ray-origin) (vec2-scale (ray.ray-dir) t)
+    in RayHit { rh-hit = True, rh-t = t, rh-point = pt }
+
+Section: 3D Ray Helpers
+  Ray3 = record { r3-origin : Vec3, r3-dir : Vec3 }
+
+  ray3-new : Vec3, Vec3 -> Ray3
+  ray3-new (origin) (dir) = Ray3 { r3-origin = origin, r3-dir = dir }
+
+  RayHit3 = record { rh3-hit : Boolean, rh3-t : Integer, rh3-point : Vec3 }
+
+  ray3-plane : Ray3, Vec3, Vec3 -> RayHit3
+  ray3-plane (ray) (plane-point) (plane-normal) =
+    let denom = vec3-dot (ray.r3-dir) plane-normal
+    in if geo-abs denom < 1 then RayHit3 { rh3-hit = False, rh3-t = 0, rh3-point = vec3-zero }
+    else let diff = vec3-subtract plane-point (ray.r3-origin)
+    in let t = vec3-dot diff plane-normal * 1000 / denom
+    in if t < 0 then RayHit3 { rh3-hit = False, rh3-t = 0, rh3-point = vec3-zero }
+    else let pt = vec3-add (ray.r3-origin) (vec3-scale (ray.r3-dir) t)
+    in RayHit3 { rh3-hit = True, rh3-t = t, rh3-point = pt }
+
+  ray3-sphere : Ray3, Vec3, Integer -> RayHit3
+  ray3-sphere (ray) (center) (radius) =
+    let oc = vec3-subtract (ray.r3-origin) center
+    in let a = vec3-dot (ray.r3-dir) (ray.r3-dir)
+    in let b = 2 * vec3-dot oc (ray.r3-dir)
+    in let c = vec3-dot oc oc - radius * radius / 1000
+    in let disc = b * b - 4 * a * c
+    in if disc < 0 then RayHit3 { rh3-hit = False, rh3-t = 0, rh3-point = vec3-zero }
+    else let sqrt-d = geo-isqrt (disc * 1000)
+    in let t = (-b - sqrt-d) * 1000 / (2 * a)
+    in if t < 0 then let t2 = (-b + sqrt-d) * 1000 / (2 * a)
+      in if t2 < 0 then RayHit3 { rh3-hit = False, rh3-t = 0, rh3-point = vec3-zero }
+      else let pt = vec3-add (ray.r3-origin) (vec3-scale (ray.r3-dir) t2)
+      in RayHit3 { rh3-hit = True, rh3-t = t2, rh3-point = pt }
+    else let pt = vec3-add (ray.r3-origin) (vec3-scale (ray.r3-dir) t)
+    in RayHit3 { rh3-hit = True, rh3-t = t, rh3-point = pt }
+
+Section: Sorting Helpers
+  geo-sort-pts : List Vec2 -> List Vec2
+  geo-sort-pts (pts) =
+    let n = list-length pts
+    in if n <= 1 then pts
+    else let mid = n / 2
+    in let left = geo-sort-pts (geo-list-take pts mid)
+    in let right = geo-sort-pts (geo-list-drop pts mid)
+    in geo-merge-pts left right
+
+  geo-merge-pts : List Vec2, List Vec2 -> List Vec2
+  geo-merge-pts (left) (right) =
+    if list-length left == 0 then right
+    else if list-length right == 0 then left
+    else let l = list-at left 0
+    in let r = list-at right 0
+    in if l.v2x < r.v2x then [l] & geo-merge-pts (geo-list-drop left 1) right
+    else if l.v2x > r.v2x then [r] & geo-merge-pts left (geo-list-drop right 1)
+    else if l.v2y <= r.v2y then [l] & geo-merge-pts (geo-list-drop left 1) right
+    else [r] & geo-merge-pts left (geo-list-drop right 1)
+
+  geo-list-take : List Vec2, Integer -> List Vec2
+  geo-list-take (xs) (n) = geo-list-take-loop xs 0 n []
+
+  geo-list-take-loop : List Vec2, Integer, Integer, List Vec2 -> List Vec2
+  geo-list-take-loop (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else if i >= list-length xs then acc
+    else geo-list-take-loop xs (i + 1) n (list-push acc (list-at xs i))
+
+  geo-list-drop : List Vec2, Integer -> List Vec2
+  geo-list-drop (xs) (n) = geo-list-drop-loop xs n (list-length xs) []
+
+  geo-list-drop-loop : List Vec2, Integer, Integer, List Vec2 -> List Vec2
+  geo-list-drop-loop (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else geo-list-drop-loop xs (i + 1) len (list-push acc (list-at xs i))
+
+  geo-list-drop-last : List Vec2 -> List Vec2
+  geo-list-drop-last (xs) = geo-list-take xs (list-length xs - 1)
+
+Section: Utilities
+  geo-abs : Integer -> Integer
+  geo-abs (n) = if n < 0 then -n else n
+
+  geo-isqrt : Integer -> Integer
+  geo-isqrt (n) = if n <= 0 then 0 else geo-isqrt-loop n (n / 2 + 1)
+
+  geo-isqrt-loop : Integer, Integer -> Integer
+  geo-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else geo-isqrt-loop n next
+
+  geo-clamp : Integer, Integer, Integer -> Integer
+  geo-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  geo-min : Integer, Integer -> Integer
+  geo-min (a) (b) = if a < b then a else b
+
+  geo-max : Integer, Integer -> Integer
+  geo-max (a) (b) = if a > b then a else b
+
+Section: Formatting
+  format-vec2 : Vec2 -> Text
+  format-vec2 (v) = "(" & show (v.v2x) & "," & show (v.v2y) & ")"
+
+  format-seg2 : Seg2 -> Text
+  format-seg2 (s) = format-vec2 (s.seg-a) & "->" & format-vec2 (s.seg-b)
+
+  format-tri2 : Tri2 -> Text
+  format-tri2 (t) = format-vec2 (t.tri-a) & " " & format-vec2 (t.tri-b) & " " & format-vec2 (t.tri-c)
+
+  format-ray-hit : RayHit -> Text
+  format-ray-hit (h) = if h.rh-hit then "HIT t=" & show (h.rh-t) & " at " & format-vec2 (h.rh-point) else "MISS"
+
+  format-bary : Bary -> Text
+  format-bary (b) = "(" & show (b.bary-u) & "," & show (b.bary-v) & "," & show (b.bary-w) & ")"
+
+Page 1

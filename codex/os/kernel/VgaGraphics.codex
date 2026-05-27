@@ -1,0 +1,187 @@
+Chapter: VgaGraphics
+  cites Game chapter Color
+  cites Kernel chapter BitmapFont
+
+ VGA graphics mode via Bochs VBE extensions. QEMU's standard VGA
+ emulates the Bochs Display Adapter interface through I/O ports
+ 0x01CE (index) and 0x01CF (data). Provides a linear framebuffer
+ at physical address 0xFD000000 (QEMU default for stdvga PCI BAR).
+ Supports 32-bit color (XRGB8888).
+
+ We say:
+
+Section: VBE Constants
+  vbe-index-port : Integer = 462
+  vbe-data-port : Integer = 463
+
+  vbe-reg-id : Integer = 0
+  vbe-reg-xres : Integer = 1
+  vbe-reg-yres : Integer = 2
+  vbe-reg-bpp : Integer = 3
+  vbe-reg-enable : Integer = 4
+  vbe-reg-bank : Integer = 5
+  vbe-reg-virt-width : Integer = 6
+  vbe-reg-virt-height : Integer = 7
+  vbe-reg-x-offset : Integer = 8
+  vbe-reg-y-offset : Integer = 9
+
+  vbe-enable-flag : Integer = 1
+  vbe-lfb-flag : Integer = 64
+  vbe-noclear-flag : Integer = 128
+
+Section: Framebuffer State
+  GfxMode = record {
+    gfx-width : Integer,
+    gfx-height : Integer,
+    gfx-bpp : Integer,
+    gfx-pitch : Integer,
+    gfx-fb-base : Integer,
+    gfx-active : Boolean
+  }
+
+  gfx-text-mode : GfxMode
+  gfx-text-mode = GfxMode { gfx-width = 80, gfx-height = 25, gfx-bpp = 0, gfx-pitch = 160, gfx-fb-base = 753664, gfx-active = False }
+
+Section: VBE Register Access
+  vbe-write : Integer, Integer -> Integer
+  vbe-write (reg) (val) =
+    let w1 = port-out-16 vbe-index-port reg
+    in w1 + port-out-16 vbe-data-port val
+
+  vbe-read : Integer -> Integer
+  vbe-read (reg) =
+    let w = port-out-16 vbe-index-port reg
+    in bit-and (w + port-in-16 vbe-data-port) 65535
+
+Section: Mode Setting
+  gfx-set-mode : Integer, Integer, Integer -> GfxMode
+  gfx-set-mode (width) (height) (bpp) =
+    let w0 = vbe-write vbe-reg-enable 0
+    in let w1 = vbe-write vbe-reg-xres width
+    in let w2 = vbe-write vbe-reg-yres height
+    in let w3 = vbe-write vbe-reg-bpp bpp
+    in let w4 = vbe-write vbe-reg-enable vbe-enable-flag
+    in let pitch = width * (bpp / 8)
+    in GfxMode { gfx-width = width, gfx-height = height, gfx-bpp = bpp, gfx-pitch = pitch, gfx-fb-base = 655360, gfx-active = True }
+
+  gfx-640x480 : GfxMode
+  gfx-640x480 = gfx-set-mode 640 480 32
+
+  gfx-800x600 : GfxMode
+  gfx-800x600 = gfx-set-mode 800 600 32
+
+  gfx-1024x768 : GfxMode
+  gfx-1024x768 = gfx-set-mode 1024 768 32
+
+  gfx-find-fb : Integer
+  gfx-find-fb = 4244635648
+
+Section: Pixel Operations
+  gfx-pixel-offset : GfxMode, Integer, Integer -> Integer
+  gfx-pixel-offset (mode) (x) (y) = y * mode.gfx-pitch + x * 4
+
+  gfx-put-pixel : GfxMode, Integer, Integer, Rgb -> Integer
+  gfx-put-pixel (mode) (x) (y) (color) =
+    if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= mode.gfx-width then 0
+    else if y >= mode.gfx-height then 0
+    else let off = gfx-pixel-offset mode x y
+    in let bank = off / 65536
+    in let local = off - bank * 65536
+    in let wb = vbe-write vbe-reg-bank bank
+    in let packed = rgb-to-packed color
+    in wb + poke-32 655360 local packed
+
+  gfx-get-pixel : GfxMode, Integer, Integer -> Rgb
+  gfx-get-pixel (mode) (x) (y) =
+    let off = gfx-pixel-offset mode x y
+    in let b = peek-byte (mode.gfx-fb-base) off
+    in let g = peek-byte (mode.gfx-fb-base) (off + 1)
+    in let r = peek-byte (mode.gfx-fb-base) (off + 2)
+    in rgb r g b
+
+Section: Drawing Primitives
+  gfx-clear : GfxMode, Rgb -> Integer
+  gfx-clear (mode) (color) = gfx-clear-loop mode color 0 0
+
+  gfx-clear-loop : GfxMode, Rgb, Integer, Integer -> Integer
+  gfx-clear-loop (mode) (color) (x) (y) =
+    if y >= mode.gfx-height then 0
+    else if x >= mode.gfx-width then gfx-clear-loop mode color 0 (y + 1)
+    else let w = gfx-put-pixel mode x y color
+    in gfx-clear-loop mode color (x + 1) y
+
+  gfx-hline : GfxMode, Integer, Integer, Integer, Rgb -> Integer
+  gfx-hline (mode) (x0) (x1) (y) (color) =
+    if x0 > x1 then 0
+    else let w = gfx-put-pixel mode x0 y color
+    in gfx-hline mode (x0 + 1) x1 y color
+
+  gfx-vline : GfxMode, Integer, Integer, Integer, Rgb -> Integer
+  gfx-vline (mode) (x) (y0) (y1) (color) =
+    if y0 > y1 then 0
+    else let w = gfx-put-pixel mode x y0 color
+    in gfx-vline mode x (y0 + 1) y1 color
+
+  gfx-rect : GfxMode, Integer, Integer, Integer, Integer, Rgb -> Integer
+  gfx-rect (mode) (x) (y) (w) (h) (color) = gfx-rect-loop mode x y (x + w - 1) (y + h - 1) y color
+
+  gfx-rect-loop : GfxMode, Integer, Integer, Integer, Integer, Integer, Rgb -> Integer
+  gfx-rect-loop (mode) (x0) (y0) (x1) (y1) (cy) (color) =
+    if cy > y1 then 0
+    else let w = gfx-hline mode x0 x1 cy color
+    in gfx-rect-loop mode x0 y0 x1 y1 (cy + 1) color
+
+  gfx-rect-outline : GfxMode, Integer, Integer, Integer, Integer, Rgb -> Integer
+  gfx-rect-outline (mode) (x) (y) (w) (h) (color) =
+    let w1 = gfx-hline mode x (x + w - 1) y color
+    in let w2 = gfx-hline mode x (x + w - 1) (y + h - 1) color
+    in let w3 = gfx-vline mode x y (y + h - 1) color
+    in gfx-vline mode (x + w - 1) y (y + h - 1) color
+
+Section: Text Rendering (CBF font, indexed by CCE code)
+  gfx-char-width : Integer = 8
+  gfx-char-height : Integer = 16
+
+  gfx-put-cce : GfxMode, CbfFont, Integer, Integer, Integer, Rgb, Rgb -> Integer
+  gfx-put-cce (mode) (font) (x) (y) (cce) (fg) (bg) =
+    gfx-cce-rows mode font x y cce fg bg 0
+
+  gfx-cce-rows : GfxMode, CbfFont, Integer, Integer, Integer, Rgb, Rgb, Integer -> Integer
+  gfx-cce-rows (mode) (font) (x) (y) (cce) (fg) (bg) (row) =
+    if row >= gfx-char-height then 0
+    else let glyph-byte = cbf-row font cce row
+    in let w = gfx-cce-cols mode x (y + row) glyph-byte fg bg 0
+    in gfx-cce-rows mode font x y cce fg bg (row + 1)
+
+  gfx-cce-cols : GfxMode, Integer, Integer, Integer, Rgb, Rgb, Integer -> Integer
+  gfx-cce-cols (mode) (x) (y) (glyph-byte) (fg) (bg) (col) =
+    if col >= gfx-char-width then 0
+    else let bit = bit-and (bit-shru glyph-byte (7 - col)) 1
+    in let color = if bit == 1 then fg else bg
+    in let w = gfx-put-pixel mode (x + col) y color
+    in gfx-cce-cols mode x y glyph-byte fg bg (col + 1)
+
+  gfx-put-text : GfxMode, CbfFont, Integer, Integer, Text, Rgb, Rgb -> Integer
+  gfx-put-text (mode) (font) (x) (y) (s) (fg) (bg) = gfx-text-loop mode font x y s fg bg 0 (text-length s)
+
+  gfx-text-loop : GfxMode, CbfFont, Integer, Integer, Text, Rgb, Rgb, Integer, Integer -> Integer
+  gfx-text-loop (mode) (font) (x) (y) (s) (fg) (bg) (i) (len) =
+    if i >= len then 0
+    else let cce = char-code (char-at s i)
+    in let w = gfx-put-cce mode font (x + i * gfx-char-width) y cce fg bg
+    in gfx-text-loop mode font x y s fg bg (i + 1) len
+
+Section: Queries
+  gfx-is-active : GfxMode -> Boolean
+  gfx-is-active (mode) = mode.gfx-active
+
+  gfx-pixel-count : GfxMode -> Integer
+  gfx-pixel-count (mode) = mode.gfx-width * mode.gfx-height
+
+  format-gfx-mode : GfxMode -> Text
+  format-gfx-mode (mode) =
+    show (mode.gfx-width) & "x" & show (mode.gfx-height) & "x" & show (mode.gfx-bpp)
+
+Page 1

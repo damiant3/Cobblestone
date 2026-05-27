@@ -1,0 +1,207 @@
+Chapter: NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+ Full-stack networking: composes Ethernet framing, IP, and TCP into
+ a session-oriented API. Tracks ARP cache, connection state, and
+ outbound frame queue. All pure — actual NIC I/O is the caller's
+ responsibility (feed frames in, send frames out).
+
+ We say:
+
+Section: ARP Cache
+  ArpEntry = record {
+    ip : List Integer,
+    mac : List Integer
+  }
+
+  ArpCache = record {
+    entries : List ArpEntry,
+    count : Integer between 0 and 255
+  }
+
+  arp-cache-empty : ArpCache
+  arp-cache-empty = ArpCache { entries = [], count = 0 }
+
+  arp-cache-lookup : ArpCache, List Integer -> List Integer
+  arp-cache-lookup (cache) (ip) = arp-cache-search (cache.entries) ip 0 (cache.count)
+
+  arp-cache-search : List ArpEntry, List Integer, Integer, Integer -> List Integer
+  arp-cache-search (entries) (ip) (i) (len) =
+    if i >= len then []
+    else let e = list-at entries i
+    in if ip-equal (e.ip) ip then e.mac
+    else arp-cache-search entries ip (i + 1) len
+
+  arp-cache-add : ArpCache, List Integer, List Integer -> ArpCache
+  arp-cache-add (cache) (ip) (mac) =
+    ArpCache { entries = list-push (cache.entries) (ArpEntry { ip = ip, mac = mac }), count = cache.count + 1 }
+
+Section: Network Session
+  NetSession = record {
+    local-mac : List Integer,
+    local-ip : List Integer,
+    gateway-ip : List Integer,
+    conn : TcpConnection,
+    arp : ArpCache,
+    outbox : List (List Integer)
+  }
+
+  net-session-new : List Integer, List Integer, List Integer, Integer, Integer, List Integer, Integer -> NetSession
+  net-session-new (local-mac) (local-ip) (gateway-ip) (local-port) (remote-port) (remote-ip) (initial-seq) =
+    NetSession {
+      local-mac = local-mac,
+      local-ip = local-ip,
+      gateway-ip = gateway-ip,
+      conn = tcp-new-connection local-port local-ip remote-port remote-ip initial-seq,
+      arp = arp-cache-empty,
+      outbox = []
+    }
+
+Section: Frame Wrapping
+  wrap-tcp-in-ip-eth : NetSession, List Integer, List Integer -> List Integer
+  wrap-tcp-in-ip-eth (sess) (tcp-bytes) (dst-mac) =
+    let ip-pkt = ip-build-packet (sess.local-ip) (sess.conn.remote-ip) ip-proto-tcp tcp-bytes
+    in eth-build-frame dst-mac (sess.local-mac) eth-type-ipv4 ip-pkt
+
+  resolve-dst-mac : NetSession -> List Integer
+  resolve-dst-mac (sess) =
+    let cached = arp-cache-lookup (sess.arp) (sess.gateway-ip)
+    in if list-length cached == 6 then cached
+    else mac-broadcast
+
+Section: Session Operations
+  NetResult = record {
+    session : NetSession,
+    output : Text,
+    data : List Integer
+  }
+
+  set-conn : NetSession, TcpConnection -> NetSession
+  set-conn (s) (c) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = c, arp = s.arp, outbox = s.outbox }
+
+  set-arp : NetSession, ArpCache -> NetSession
+  set-arp (s) (a) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = a, outbox = s.outbox }
+
+  set-outbox : NetSession, List (List Integer) -> NetSession
+  set-outbox (s) (o) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = o }
+
+  net-listen : NetSession -> NetResult
+  net-listen (sess) =
+    let step = tcp-step (sess.conn) EvListen
+    in let s1 = set-conn sess (step.conn)
+    in NetResult { session = s1, output = "listening", data = [] }
+
+  net-connect : NetSession -> NetResult
+  net-connect (sess) =
+    let step = tcp-step (sess.conn) EvConnect
+    in let s1 = set-conn sess (step.conn)
+    in let frame = when (step.action)
+      is ActSend (seg) -> [wrap-tcp-in-ip-eth s1 seg (resolve-dst-mac s1)]
+      is ActDataAck (d) (ack) -> [wrap-tcp-in-ip-eth s1 ack (resolve-dst-mac s1)]
+      is ActNone -> []
+      is ActEstablished -> []
+      is ActData (d) -> []
+      is ActClosed -> []
+      is ActError (m) -> []
+    in NetResult { session = set-outbox s1 frame, output = "connecting", data = [] }
+
+  net-send : NetSession, List Integer -> NetResult
+  net-send (sess) (payload) =
+    let step = tcp-step (sess.conn) (EvSend payload)
+    in let s1 = set-conn sess (step.conn)
+    in let frame = when (step.action)
+      is ActSend (seg) -> [wrap-tcp-in-ip-eth s1 seg (resolve-dst-mac s1)]
+      is ActDataAck (d) (ack) -> [wrap-tcp-in-ip-eth s1 ack (resolve-dst-mac s1)]
+      is ActError (m) -> []
+      is ActNone -> []
+      is ActEstablished -> []
+      is ActData (d) -> []
+      is ActClosed -> []
+    in let out-text = when (step.action)
+      is ActSend (seg) -> "sent " & show (list-length payload) & " bytes"
+      is ActDataAck (d) (ack) -> "no action"
+      is ActError (m) -> "error: " & m
+      is ActNone -> "no action"
+      is ActEstablished -> "no action"
+      is ActData (d) -> "no action"
+      is ActClosed -> "no action"
+    in NetResult { session = set-outbox s1 frame, output = out-text, data = [] }
+
+  net-receive-segment : NetSession, TcpSegment -> NetResult
+  net-receive-segment (sess) (seg) =
+    let step = tcp-step (sess.conn) (EvSegment seg)
+    in let s1 = set-conn sess (step.conn)
+    in let frame = when (step.action)
+      is ActSend (ack) -> [wrap-tcp-in-ip-eth s1 ack (resolve-dst-mac s1)]
+      is ActDataAck (d) (ack) -> [wrap-tcp-in-ip-eth s1 ack (resolve-dst-mac s1)]
+      is ActNone -> []
+      is ActEstablished -> []
+      is ActData (d) -> []
+      is ActClosed -> []
+      is ActError (m) -> []
+    in let recv = when (step.action)
+      is ActData (d) -> d
+      is ActDataAck (d) (ack) -> d
+      is ActSend (s) -> []
+      is ActNone -> []
+      is ActEstablished -> []
+      is ActClosed -> []
+      is ActError (m) -> []
+    in let out-text = when (step.action)
+      is ActData (d) -> "received " & show (list-length d) & " bytes"
+      is ActDataAck (d) (ack) -> "received " & show (list-length d) & " bytes"
+      is ActSend (s) -> "ack"
+      is ActEstablished -> "established"
+      is ActClosed -> "closed"
+      is ActError (m) -> "error: " & m
+      is ActNone -> "none"
+    in NetResult { session = set-outbox s1 frame, output = out-text, data = recv }
+
+  net-close : NetSession -> NetResult
+  net-close (sess) =
+    let step = tcp-step (sess.conn) EvClose
+    in let s1 = set-conn sess (step.conn)
+    in let frame = when (step.action)
+      is ActSend (seg) -> [wrap-tcp-in-ip-eth s1 seg (resolve-dst-mac s1)]
+      is ActDataAck (d) (ack) -> [wrap-tcp-in-ip-eth s1 ack (resolve-dst-mac s1)]
+      is ActNone -> []
+      is ActEstablished -> []
+      is ActData (d) -> []
+      is ActClosed -> []
+      is ActError (m) -> []
+    in NetResult { session = set-outbox s1 frame, output = "closing", data = [] }
+
+  net-outbox-count : NetSession -> Integer
+  net-outbox-count (sess) = list-length (sess.outbox)
+
+  net-outbox-frame : NetSession, Integer -> List Integer
+  net-outbox-frame (sess) (i) = list-at (sess.outbox) i
+
+Section: Inbound Frame Processing
+  net-process-frame : NetSession, List Integer -> NetResult
+  net-process-frame (sess) (frame) =
+    let et = eth-ethertype frame
+    in if et == eth-type-arp then net-process-arp sess (eth-payload frame)
+    else if et == eth-type-ipv4 then net-process-ip sess (eth-payload frame)
+    else NetResult { session = sess, output = "unknown ethertype", data = [] }
+
+  net-process-arp : NetSession, List Integer -> NetResult
+  net-process-arp (sess) (payload) =
+    let pkt = arp-parse payload
+    in let new-arp = arp-cache-add (sess.arp) (pkt.sender-ip) (pkt.sender-mac)
+    in NetResult { session = set-arp sess new-arp, output = "arp-learned", data = [] }
+
+  net-process-ip : NetSession, List Integer -> NetResult
+  net-process-ip (sess) (ip-pkt) =
+    let proto = ip-proto ip-pkt
+    in if proto == ip-proto-tcp then
+      let tcp-data = ip-payload ip-pkt
+      in let r = net-receive-segment sess (tcp-parse tcp-data)
+      in let updated = when (r.session).conn.state
+        is TcpSynReceived -> NetResult { session = set-conn (r.session) (set-remote ((r.session).conn) ((r.session).conn.remote-port) (ip-src ip-pkt)), output = r.output, data = r.data }
+        is otherwise -> r
+      in updated
+    else NetResult { session = sess, output = "unknown proto", data = [] }
+
+Page 1

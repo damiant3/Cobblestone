@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Bridge</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<script src="/web/card-utils.js"></script>
+<style>
+  body { background: #0a1a0a; }
+  .game-page { max-width: 800px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/bridge/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(3px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .table { background: #0a1a0acc; border: 4px solid #44aa44; border-radius: 24px; padding: 30px;
+    margin-bottom: 12px; box-shadow: 0 8px 40px rgba(0,0,0,0.7), inset 0 2px 20px rgba(0,0,0,0.5);
+    min-height: 280px; backdrop-filter: blur(4px); }
+  .scoreboard { display: flex; justify-content: center; gap: 40px; margin-bottom: 16px; }
+  .team { text-align: center; flex: 1; max-width: 200px; padding: 16px;
+    border-radius: 12px; background: #0a1a0a88; border: 2px solid #44aa4422; transition: all 0.3s; }
+  .team.leading { border-color: #44aa44; box-shadow: 0 0 16px #44aa4433; }
+  .team-name { font-size: 13px; color: #44aa4466; text-transform: uppercase; letter-spacing: 3px; margin-bottom: 6px; }
+  .team-score { font-size: 52px; font-weight: bold; color: #44aa44; }
+  .team-sub { font-size: 10px; color: #44aa4444; margin-top: 4px; }
+  .vs { font-size: 20px; color: #44aa4433; align-self: center; font-weight: bold; }
+  .hand-result { text-align: center; margin: 16px 0; padding: 16px;
+    background: #0a1a0a66; border-radius: 12px; border: 1px solid #44aa4422; min-height: 80px; }
+  .hand-result.hidden { display: none; }
+  .contract-line { font-size: 24px; font-weight: bold; color: #44aa44; margin-bottom: 8px; }
+  .tricks-line { font-size: 18px; margin-bottom: 4px; }
+  .tricks-made { color: #44ee66; }
+  .tricks-down { color: #ee4444; }
+  .score-line { font-size: 14px; color: #44aa4488; }
+  .narration { text-align: center; font-size: 20px; font-weight: bold; padding: 12px; margin: 12px 0;
+    border-radius: 12px; min-height: 28px; }
+  .nar-deal { color: #44aa44; background: #44aa4411; }
+  .nar-win { color: #44ee66; background: #44ee6622; border: 1px solid #44ee6633; font-size: 24px; }
+  .nar-loss { color: #ee4444; background: #ee444422; border: 1px solid #ee444433; font-size: 24px; }
+  .history { margin-top: 12px; max-height: 120px; overflow-y: auto; }
+  .hist-entry { font-size: 12px; padding: 4px 8px; border-radius: 4px; margin: 2px 0;
+    background: #0a1a0a44; color: #44aa4488; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #1a3a1a, #0a1a0a);
+    border: 1px solid #44aa44; border-radius: 6px; color: #44aa44;
+    font-family: inherit; font-size: 14px; padding: 8px 24px; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 1px; }
+  .controls button:hover { color: #88ee88; }
+  .controls button:disabled { opacity: 0.3; }
+  .speed-label { color: #44aa4466; font-size: 12px; }
+  .engine-tag { background: #0a1a0a; color: #44aa44; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; margin-left: 12px; border: 1px solid #44aa4444; }
+  .rules { background: #0a1a0a99; border: 1px solid #44aa4422; border-radius: 8px; padding: 16px;
+    margin-top: 16px; color: #44aa4488; font-size: 13px; line-height: 1.6; }
+  .rules summary { color: #44aa44; cursor: pointer; font-weight: bold; font-size: 14px; }
+  .rules p { margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#0a1a0a;border-color:#44aa4422">
+  <span class="topbar-logo" style="color:#44aa44">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#44aa4466">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#44aa44;border-color:#44aa44">Bridge</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button id="btn-deal" onclick="dealHand()">&#x1F0A1; Deal Hand</button>
+    <button id="btn-step" onclick="stepAnim()" disabled>&#x23ED; Next</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#44aa44" oninput="updateSpeed()">
+  </div>
+  <div id="status-line" style="color:#44aa44;font-size:16px;text-align:center;margin-bottom:10px;font-weight:bold">Click Deal Hand to play</div>
+  <div class="table">
+    <div class="scoreboard">
+      <div class="team" id="team-ns">
+        <div class="team-name">North / South</div>
+        <div class="team-score" id="s-ns">0</div>
+        <div class="team-sub">score</div>
+      </div>
+      <div class="vs">VS</div>
+      <div class="team" id="team-ew">
+        <div class="team-name">East / West</div>
+        <div class="team-score" id="s-ew">0</div>
+        <div class="team-sub">score</div>
+      </div>
+    </div>
+    <div class="hand-result hidden" id="hand-result">
+      <div class="contract-line" id="contract-line"></div>
+      <div class="tricks-line" id="tricks-line"></div>
+      <div class="score-line" id="score-line"></div>
+    </div>
+    <div id="narration" class="narration"></div>
+    <div class="history" id="history"></div>
+  </div>
+  <details class="rules">
+    <summary>How to Play Bridge</summary>
+    <p><b>Goal:</b> Score more points than the opposing partnership over 8 hands.</p>
+    <p><b>Teams:</b> North/South vs East/West.</p>
+    <p><b>Bidding:</b> Teams bid to set a contract — the number of tricks (above 6) they commit to win, and the trump suit.</p>
+    <p><b>Trump suits:</b> &#x2660; Spades, &#x2665; Hearts, &#x2666; Diamonds, &#x2663; Clubs.</p>
+    <p><b>Tricks:</b> 13 tricks per hand. Highest card of led suit wins unless trumped.</p>
+    <p><b>Scoring:</b> Make your contract = score points. Fall short = opponents score penalties.</p>
+  </details>
+</div>
+<script>
+var TRUMP_SYM=['♠','♥','♦','♣'];
+var hand=null, seq=[], seqIdx=0, animTimer=null, delay=800, animating=false, inited=false;
+
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[3000,2200,1600,1200,800,600,400,250,120,40][v-1]||800}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+
+function renderStep(){
+  if(seqIdx<=0) return;
+  var s=hand;
+  var nar=document.getElementById('narration');
+  var hr=document.getElementById('hand-result');
+  var tns=document.getElementById('team-ns'),tew=document.getElementById('team-ew');
+
+  if(seqIdx>=1){
+    var sym=TRUMP_SYM[s.trump]||'NT';
+    hr.className='hand-result';
+    document.getElementById('contract-line').textContent='Contract: '+s.contract+sym;
+    document.getElementById('tricks-line').innerHTML='';
+    document.getElementById('score-line').textContent='';
+    nar.textContent='Bidding complete: '+s.contract+sym;nar.className='narration nar-deal';
+  }
+  if(seqIdx>=2){
+    var needed=s.contract+6;
+    var diff=s.lastTricks-needed;
+    var tl=document.getElementById('tricks-line');
+    if(diff>=0){tl.innerHTML='<span class="tricks-made">Tricks: '+s.lastTricks+'/'+needed+' — Made'+(diff>0?' +'+diff:'')+'!</span>'}
+    else{tl.innerHTML='<span class="tricks-down">Tricks: '+s.lastTricks+'/'+needed+' — Down '+Math.abs(diff)+'</span>'}
+    nar.textContent='Playing tricks... '+s.lastTricks+' of '+needed+' needed';nar.className='narration nar-deal';
+  }
+  if(seqIdx>=3){
+    document.getElementById('s-ns').textContent=s.nsScore;
+    document.getElementById('s-ew').textContent=s.ewScore;
+    tns.className='team'+(s.nsScore>s.ewScore?' leading':'');
+    tew.className='team'+(s.ewScore>s.nsScore?' leading':'');
+    var needed2=s.contract+6;var diff2=s.lastTricks-needed2;
+    if(diff2>=0){nar.textContent='N/S makes the contract!';nar.className='narration nar-win'}
+    else{nar.textContent='Contract goes down!';nar.className='narration nar-loss'}
+    document.getElementById('score-line').textContent='N/S: '+s.nsScore+' | E/W: '+s.ewScore;
+    var hist=document.getElementById('history');
+    var sym2=TRUMP_SYM[s.trump]||'NT';
+    var entry=document.createElement('div');entry.className='hist-entry';
+    entry.textContent='Hand '+s.hands+': '+s.contract+sym2+', '+s.lastTricks+' tricks → N/S: '+s.nsScore+' E/W: '+s.ewScore;
+    hist.insertBefore(entry,hist.firstChild);
+    if(s.done){
+      var w=s.nsScore>s.ewScore?'North/South':'East/West';
+      document.getElementById('status-line').textContent=w+' wins! Final: '+s.nsScore+' – '+s.ewScore;
+      document.getElementById('btn-deal').disabled=true;
+    }else{
+      document.getElementById('status-line').textContent='Hand '+s.hands+' of 8 complete — Deal again!';
+    }
+  }
+}
+
+function stepAnim(){if(!hand||seqIdx>=seq.length)return;seqIdx++;renderStep();if(seqIdx>=seq.length)finishHand()}
+function autoStep(){
+  if(!animating||!hand||seqIdx>=seq.length){animating=false;updateBtns();return}
+  seqIdx++;renderStep();
+  if(seqIdx>=seq.length){finishHand();animating=false;updateBtns();return}
+  animTimer=setTimeout(autoStep,delay);
+}
+function finishHand(){document.getElementById('btn-step').disabled=true;document.getElementById('btn-deal').disabled=hand&&hand.done}
+
+async function dealHand(){
+  clearTimeout(animTimer);animating=false;
+  if(!inited){await api('/api/bridge/new?seed='+Date.now());inited=true}
+  hand=await api('/api/bridge/step');
+  if(!hand){document.getElementById('status-line').textContent='Connection error — try again';document.getElementById('btn-deal').disabled=false;return}
+  seq=['contract','tricks','result'];seqIdx=0;
+  document.getElementById('hand-result').className='hand-result hidden';
+  document.getElementById('narration').textContent='Dealing hand '+hand.hands+'...';
+  document.getElementById('narration').className='narration nar-deal';
+  document.getElementById('status-line').textContent='Hand '+hand.hands+' — playing...';
+  document.getElementById('btn-step').disabled=false;document.getElementById('btn-deal').disabled=true;
+  animating=true;updateBtns();animTimer=setTimeout(autoStep,delay);
+}
+
+function updateBtns(){
+  document.getElementById('btn-deal').disabled=animating||(hand&&hand.done);
+  document.getElementById('btn-step').disabled=!hand||seqIdx>=seq.length;
+}
+updateSpeed();
+</script>
+</body>
+</html>

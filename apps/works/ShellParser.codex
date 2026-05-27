@@ -1,0 +1,154 @@
+Chapter: ShellParser
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter TextSearch
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter EditDistance
+
+ Input parser for the Codex shell. Tokenizes command lines into
+ program name, arguments, and flags.
+
+ We say:
+
+Section: Parsed Input
+
+  ShellInput =
+    | InputInstall (Text)
+    | InputRun (Text)
+    | InputRevoke (Text) (Integer)
+    | InputStatus (Text)
+    | InputList
+    | InputTrust (Text) (Integer)
+    | InputUntrust (Text)
+    | InputRule (Text) (Text) (Integer)
+    | InputVerify (Text)
+    | InputSave
+    | InputInfo
+    | InputHelp
+    | InputExit
+
+  ParseResult =
+    | ParseOk (ShellInput)
+    | ParseError (Text)
+
+Section: Integer Parsing
+
+  parse-nat : Text -> Maybe Integer
+  parse-nat (s) =
+    if text-length s == 0 then None
+    else if all-digits s 0 (text-length s) then Just (parse-nat-loop s 0 (text-length s) 0)
+    else None
+
+  all-digits : Text, Integer, Integer -> Boolean
+  all-digits (s) (i) (len) =
+    if i >= len then True
+    else if is-digit (char-at s i) then all-digits s (i + 1) len
+    else False
+
+  parse-nat-loop : Text, Integer, Integer, Integer -> Integer
+  parse-nat-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else parse-nat-loop s (i + 1) len (acc * 10 + digit-value (char-at s i))
+
+Section: Command Parsing
+
+  parse-command : Text -> ParseResult
+  parse-command (line) =
+    let trimmed = text-trim line
+    in if text-length trimmed == 0 then ParseError "empty command"
+    else let tokens = text-split trimmed " "
+    in let verb = list-at tokens 0
+    in let argc = list-length tokens
+    in parse-verb verb tokens argc
+
+  parse-verb : Text, List Text, Integer -> ParseResult
+  parse-verb (verb) (tokens) (argc) =
+    if verb == "install" then parse-install tokens argc
+    else if verb == "run" then parse-run tokens argc
+    else if verb == "revoke" then parse-revoke tokens argc
+    else if verb == "status" then parse-status tokens argc
+    else if verb == "list" then ParseOk InputList
+    else if verb == "trust" then parse-trust tokens argc
+    else if verb == "untrust" then parse-untrust tokens argc
+    else if verb == "rule" then parse-rule tokens argc
+    else if verb == "verify" then parse-verify tokens argc
+    else if verb == "save" then ParseOk InputSave
+    else if verb == "info" then ParseOk InputInfo
+    else if verb == "help" then ParseOk InputHelp
+    else if verb == "exit" then ParseOk InputExit
+    else let suggestion = shell-suggest-cmd verb
+    in ParseError ("unknown command: " & verb & suggestion)
+
+  parse-verify : List Text, Integer -> ParseResult
+  parse-verify (tokens) (argc) =
+    if argc < 2 then ParseError "usage: verify <name>"
+    else ParseOk (InputVerify (list-at tokens 1))
+
+  parse-install : List Text, Integer -> ParseResult
+  parse-install (tokens) (argc) =
+    if argc < 2 then ParseError "usage: install <name>"
+    else ParseOk (InputInstall (list-at tokens 1))
+
+  parse-run : List Text, Integer -> ParseResult
+  parse-run (tokens) (argc) =
+    if argc < 2 then ParseError "usage: run <name>"
+    else ParseOk (InputRun (list-at tokens 1))
+
+  parse-revoke : List Text, Integer -> ParseResult
+  parse-revoke (tokens) (argc) =
+    if argc < 3 then ParseError "usage: revoke <name> <bit>"
+    else let maybe-bit = parse-nat (list-at tokens 2)
+    in when maybe-bit
+      is Just (bit) -> ParseOk (InputRevoke (list-at tokens 1) bit)
+      is None -> ParseError "revoke: bit must be a number"
+
+  parse-status : List Text, Integer -> ParseResult
+  parse-status (tokens) (argc) =
+    if argc < 2 then ParseError "usage: status <name>"
+    else ParseOk (InputStatus (list-at tokens 1))
+
+  parse-trust : List Text, Integer -> ParseResult
+  parse-trust (tokens) (argc) =
+    if argc < 3 then ParseError "usage: trust <key> <score>"
+    else let maybe-score = parse-nat (list-at tokens 2)
+    in when maybe-score
+      is Just (score) -> ParseOk (InputTrust (list-at tokens 1) score)
+      is None -> ParseError "trust: score must be a number"
+
+  parse-untrust : List Text, Integer -> ParseResult
+  parse-untrust (tokens) (argc) =
+    if argc < 2 then ParseError "usage: untrust <key>"
+    else ParseOk (InputUntrust (list-at tokens 1))
+
+  parse-rule : List Text, Integer -> ParseResult
+  parse-rule (tokens) (argc) =
+    if argc < 4 then ParseError "usage: rule <name> <capability> <direction>"
+    else let maybe-dir = parse-nat (list-at tokens 3)
+    in when maybe-dir
+      is Just (dir) -> ParseOk (InputRule (list-at tokens 1) (list-at tokens 2) dir)
+      is None -> ParseError "rule: direction must be a number"
+
+Section: Fuzzy Suggest
+
+  shell-command-names : List Text
+  shell-command-names = ["install", "run", "revoke", "status", "list", "trust", "untrust", "rule", "verify", "save", "info", "help", "exit"]
+
+  shell-suggest-cmd : Text -> Text
+  shell-suggest-cmd (verb) =
+    let best = edit-best-match verb shell-command-names
+    in if best.em-distance <= 2 then " -- did you mean '" & best.em-text & "'?"
+    else ""
+
+Page 1

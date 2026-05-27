@@ -1,0 +1,170 @@
+Chapter: Statistics
+  cites Foreword chapter Sort
+  cites Foreword chapter ListUtils
+  cites Foreword chapter MathLib
+
+ To stat-mean gives the arithmetic mean of a list of integers.
+ To stat-median gives the median value of a list of integers.
+ To stat-mode gives the most frequently occurring value in a list of integers.
+ To stat-variance gives the sample variance of a list of integers.
+ To stat-std-dev gives the integer square root of the variance.
+ To stat-range gives the difference between the maximum and minimum values.
+ To stat-min-val gives the smallest value in a list.
+ To stat-max-val gives the largest value in a list.
+ To stat-percentile gives the value at the given percentile rank in a sorted list.
+ To stat-histogram gives a list of bin counts for the given number of bins.
+ To stat-correlation gives the Pearson correlation between two lists, scaled by 1000.
+ To stat-sum gives the total of all elements in a list.
+ To stat-count-where gives the number of elements falling between the given lower and upper bounds.
+
+ We say:
+
+Section: Central Tendency
+  stat-mean : List Integer -> Integer
+  stat-mean (xs) =
+    let n = list-length xs
+    in if n == 0 then 0
+    else stat-sum xs 0 n 0 / n
+
+  stat-median : List Integer -> Integer
+  stat-median (xs) =
+    let sorted = stat-sort xs
+    in let n = list-length sorted
+    in if n == 0 then 0
+    else if n - n / 2 * 2 == 1 then list-at sorted (n / 2)
+    else (list-at sorted (n / 2 - 1) + list-at sorted (n / 2)) / 2
+
+  stat-mode : List Integer -> Integer
+  stat-mode (xs) =
+    let sorted = stat-sort xs
+    in stat-mode-scan sorted 0 (list-length sorted) 0 0 0 0
+
+  stat-mode-scan : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  stat-mode-scan (sorted) (i) (n) (cur-val) (cur-count) (best-val) (best-count) =
+    if i >= n then if cur-count > best-count then cur-val else best-val
+    else let val = list-at sorted i
+    in if val == cur-val then stat-mode-scan sorted (i + 1) n cur-val (cur-count + 1) best-val best-count
+    else if cur-count > best-count then stat-mode-scan sorted (i + 1) n val 1 cur-val cur-count
+    else stat-mode-scan sorted (i + 1) n val 1 best-val best-count
+
+Section: Dispersion
+  stat-variance : List Integer -> Integer
+  stat-variance (xs) =
+    let n = list-length xs
+    in if n <= 1 then 0
+    else let m = stat-mean xs
+    in stat-var-sum xs m 0 n 0 / (n - 1)
+
+  stat-var-sum : List Integer, Integer, Integer, Integer, Integer -> Integer
+  stat-var-sum (xs) (mean) (i) (n) (acc) =
+    if i >= n then acc
+    else let diff = list-at xs i - mean
+    in stat-var-sum xs mean (i + 1) n (acc + diff * diff)
+
+  stat-std-dev : List Integer -> Integer
+  stat-std-dev (xs) = stat-isqrt (stat-variance xs)
+
+  stat-range : List Integer -> Integer
+  stat-range (xs) =
+    let n = list-length xs
+    in if n == 0 then 0
+    else stat-max-val xs - stat-min-val xs
+
+Section: Extremes
+  stat-min-val : List Integer -> Integer
+  stat-min-val (xs) = stat-fold-min xs 0 (list-length xs) 999999999
+
+  stat-max-val : List Integer -> Integer
+  stat-max-val (xs) = stat-fold-max xs 0 (list-length xs) (0 - 999999999)
+
+  stat-fold-min : List Integer, Integer, Integer, Integer -> Integer
+  stat-fold-min (xs) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at xs i
+    in stat-fold-min xs (i + 1) n (if v < best then v else best)
+
+  stat-fold-max : List Integer, Integer, Integer, Integer -> Integer
+  stat-fold-max (xs) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at xs i
+    in stat-fold-max xs (i + 1) n (if v > best then v else best)
+
+Section: Percentile
+  stat-percentile : List Integer, Integer -> Integer
+  stat-percentile (xs) (p) =
+    let sorted = stat-sort xs
+    in let n = list-length sorted
+    in if n == 0 then 0
+    else let idx = p * (n - 1) / 100
+    in list-at sorted idx
+
+Section: Histogram
+  stat-histogram : List Integer, Integer -> List Integer
+  stat-histogram (xs) (num-bins) =
+    let lo = stat-min-val xs
+    in let hi = stat-max-val xs
+    in let range = hi - lo + 1
+    in let bin-width = if range <= num-bins then 1 else range / num-bins + 1
+    in stat-hist-fill xs lo bin-width num-bins 0 (list-length xs) (list-zeros num-bins)
+
+  stat-hist-fill : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  stat-hist-fill (xs) (lo) (bin-width) (num-bins) (i) (n) (bins) =
+    if i >= n then bins
+    else let val = list-at xs i
+    in let bin = (val - lo) / bin-width
+    in let clamped = if bin >= num-bins then num-bins - 1 else if bin < 0 then 0 else bin
+    in stat-hist-fill xs lo bin-width num-bins (i + 1) n (list-set-at bins clamped (list-at bins clamped + 1))
+
+Section: Correlation
+  stat-correlation : List Integer, List Integer -> Integer
+  stat-correlation (xs) (ys) =
+    let n = math-min (list-length xs) (list-length ys)
+    in if n <= 1 then 0
+    else let mx = stat-mean xs
+    in let my = stat-mean ys
+    in let cov = stat-covariance xs ys mx my n
+    in let sx = stat-std-dev xs
+    in let sy = stat-std-dev ys
+    in if sx == 0 then 0 else if sy == 0 then 0
+    else cov * 1000 / sx * 1000 / sy
+
+  stat-covariance : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  stat-covariance (xs) (ys) (mx) (my) (n) = stat-cov-loop xs ys mx my 0 n 0 / (n - 1)
+
+  stat-cov-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  stat-cov-loop (xs) (ys) (mx) (my) (i) (n) (acc) =
+    if i >= n then acc
+    else stat-cov-loop xs ys mx my (i + 1) n (acc + (list-at xs i - mx) * (list-at ys i - my))
+
+Section: Aggregation
+  stat-sum : List Integer, Integer, Integer, Integer -> Integer
+  stat-sum (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else stat-sum xs (i + 1) n (acc + list-at xs i)
+
+  stat-count-where : List Integer, Integer, Integer -> Integer
+  stat-count-where (xs) (lo) (hi) = stat-cw-loop xs lo hi 0 (list-length xs) 0
+
+  stat-cw-loop : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  stat-cw-loop (xs) (lo) (hi) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at xs i
+    in stat-cw-loop xs lo hi (i + 1) n (if v >= lo then if v <= hi then acc + 1 else acc else acc)
+
+Section: Sorting (delegates to Sort foreword in-place quicksort)
+  stat-sort : List Integer -> List Integer
+  stat-sort (xs) = sort-by xs stat-compare
+
+  stat-compare : Integer, Integer -> Integer
+  stat-compare (a) (b) = a - b
+
+Section: Helpers
+  stat-isqrt : Integer -> Integer
+  stat-isqrt (n) = if n <= 0 then 0 else stat-isqrt-loop n (n / 2 + 1)
+
+  stat-isqrt-loop : Integer, Integer -> Integer
+  stat-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else stat-isqrt-loop n next
+
+Page 1

@@ -1,0 +1,199 @@
+Chapter: Sampling
+
+ Sampling strategies for autoregressive text generation — greedy,
+ top-k, top-p (nucleus), temperature scaling, and repetition
+ penalty. Operates on logit vectors (fixed-point scale-1000) and
+ returns token IDs.
+
+ To sample-greedy gives the token with the highest logit.
+ To sample-top-k gives a token sampled from the top K candidates.
+ To sample-top-p gives a token sampled from the nucleus set.
+ To sample-temperature gives temperature-scaled logits.
+ To sample-repetition-penalty gives penalized logits.
+
+ We say:
+
+Section: Greedy
+
+  sample-greedy : List Integer -> Integer
+  sample-greedy (logits) =
+    samp-argmax logits 0 (list-length logits) 0 (0 - 999999)
+
+  samp-argmax : List Integer, Integer, Integer, Integer, Integer -> Integer
+  samp-argmax (xs) (i) (len) (best-idx) (best-val) =
+    if i >= len then best-idx
+    else let v = list-at xs i
+    in if v > best-val then samp-argmax xs (i + 1) len i v
+    else samp-argmax xs (i + 1) len best-idx best-val
+
+Section: Temperature
+
+  sample-temperature : List Integer, Integer -> List Integer
+  sample-temperature (logits) (temp) =
+    if temp <= 0 then logits
+    else samp-temp-loop logits temp 0 (list-length logits) []
+
+  samp-temp-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  samp-temp-loop (logits) (temp) (i) (len) (acc) =
+    if i >= len then acc
+    else samp-temp-loop logits temp (i + 1) len (list-push acc (list-at logits i * 1000 / temp))
+
+Section: Top-K
+
+  SampCandidate = record {
+    sc-token : Integer,
+    sc-logit : Integer
+  }
+
+  sample-top-k : List Integer, Integer, Integer -> Integer
+  sample-top-k (logits) (k) (seed) =
+    let candidates = samp-build-candidates logits 0 (list-length logits) []
+    in let top = samp-select-top-k candidates k 0 []
+    in let probs = samp-softmax-candidates top
+    in samp-pick probs seed
+
+  samp-build-candidates : List Integer, Integer, Integer, List SampCandidate -> List SampCandidate
+  samp-build-candidates (logits) (i) (len) (acc) =
+    if i >= len then acc
+    else samp-build-candidates logits (i + 1) len (list-push acc (SampCandidate { sc-token = i, sc-logit = list-at logits i }))
+
+  samp-take-k : List SampCandidate, Integer -> List SampCandidate
+  samp-take-k (xs) (k) = samp-take-loop xs k 0 []
+
+  samp-take-loop : List SampCandidate, Integer, Integer, List SampCandidate -> List SampCandidate
+  samp-take-loop (xs) (k) (i) (acc) =
+    if i >= k then acc
+    else if i >= list-length xs then acc
+    else samp-take-loop xs k (i + 1) (list-push acc (list-at xs i))
+
+Section: Top-P (Nucleus)
+
+  sample-top-p : List Integer, Integer, Integer -> Integer
+  sample-top-p (logits) (p) (seed) =
+    let candidates = samp-build-candidates logits 0 (list-length logits) []
+    in let probs = samp-softmax-candidates candidates
+    in let nucleus = samp-greedy-nucleus probs p
+    in samp-pick nucleus seed
+
+  samp-nucleus-cut : List SampCandidate, Integer, Integer, Integer, Integer, List SampCandidate -> List SampCandidate
+  samp-nucleus-cut (candidates) (p) (i) (len) (cumulative) (acc) =
+    if i >= len then acc
+    else if cumulative >= p then acc
+    else let c = list-at candidates i
+    in samp-nucleus-cut candidates p (i + 1) len (cumulative + c.sc-logit) (list-push acc c)
+
+Section: Repetition Penalty
+
+  sample-repetition-penalty : List Integer, List Integer, Integer -> List Integer
+  sample-repetition-penalty (logits) (seen-tokens) (penalty) =
+    samp-penalty-loop logits seen-tokens penalty 0 (list-length seen-tokens)
+
+  samp-penalty-loop : List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  samp-penalty-loop (logits) (seen) (penalty) (i) (len) =
+    if i >= len then logits
+    else let token = list-at seen i
+    in let old-val = list-at logits token
+    in let new-val = if old-val > 0 then old-val * 1000 / penalty else old-val * penalty / 1000
+    in samp-penalty-loop (list-set-at logits token new-val) seen penalty (i + 1) len
+
+Section: Softmax
+
+  samp-softmax-candidates : List SampCandidate -> List SampCandidate
+  samp-softmax-candidates (xs) =
+    let max-val = samp-cand-max xs 0 (list-length xs) (0 - 999999)
+    in let exps = samp-cand-exp xs max-val 0 (list-length xs) []
+    in let total = samp-cand-sum exps 0 (list-length exps) 0
+    in samp-cand-norm exps total 0 (list-length exps) []
+
+  samp-cand-max : List SampCandidate, Integer, Integer, Integer -> Integer
+  samp-cand-max (xs) (i) (len) (best) =
+    if i >= len then best
+    else let v = (list-at xs i).sc-logit
+    in samp-cand-max xs (i + 1) len (if v > best then v else best)
+
+  samp-cand-exp : List SampCandidate, Integer, Integer, Integer, List SampCandidate -> List SampCandidate
+  samp-cand-exp (xs) (max-val) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at xs i
+    in let e = samp-exp (c.sc-logit - max-val)
+    in samp-cand-exp xs max-val (i + 1) len (list-push acc (SampCandidate { sc-token = c.sc-token, sc-logit = e }))
+
+  samp-cand-sum : List SampCandidate, Integer, Integer, Integer -> Integer
+  samp-cand-sum (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else samp-cand-sum xs (i + 1) len (acc + (list-at xs i).sc-logit)
+
+  samp-cand-norm : List SampCandidate, Integer, Integer, Integer, List SampCandidate -> List SampCandidate
+  samp-cand-norm (xs) (total) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at xs i
+    in samp-cand-norm xs total (i + 1) len (list-push acc (SampCandidate { sc-token = c.sc-token, sc-logit = c.sc-logit * 1000 / total }))
+
+  samp-exp : Integer -> Integer
+  samp-exp (x) =
+    if x < (0 - 6000) then 0
+    else let x2 = x * x / 1000
+    in 1000 + x + x2 / 2 + x * x2 / (6 * 1000)
+
+Section: Selection
+
+  samp-pick : List SampCandidate, Integer -> Integer
+  samp-pick (candidates) (seed) =
+    let n = list-length candidates
+    in if n == 0 then 0
+    else let total = samp-cand-sum candidates 0 n 0
+    in let target = samp-mod seed total
+    in samp-pick-loop candidates target 0 n 0
+
+  samp-pick-loop : List SampCandidate, Integer, Integer, Integer, Integer -> Integer
+  samp-pick-loop (xs) (target) (i) (len) (cumulative) =
+    if i >= len then (list-at xs (len - 1)).sc-token
+    else let c = list-at xs i
+    in let cum2 = cumulative + c.sc-logit
+    in if cum2 >= target then c.sc-token
+    else samp-pick-loop xs target (i + 1) len cum2
+
+  samp-mod : Integer, Integer -> Integer
+  samp-mod (a) (b) =
+    if b == 0 then 0
+    else let positive = if a < 0 then 0 - a else a
+    in positive - (positive / b) * b
+
+Section: Partial Selection (O(N*K))
+
+  samp-select-top-k : List SampCandidate, Integer, Integer, List SampCandidate -> List SampCandidate
+  samp-select-top-k (candidates) (k) (found) (acc) =
+    if found >= k then acc
+    else let best = samp-find-max-excluding candidates acc 0 (list-length candidates) (0 - 1) (0 - 999999)
+    in if best < 0 then acc
+    else samp-select-top-k candidates k (found + 1) (list-push acc (list-at candidates best))
+
+  samp-find-max-excluding : List SampCandidate, List SampCandidate, Integer, Integer, Integer, Integer -> Integer
+  samp-find-max-excluding (candidates) (exclude) (i) (len) (best-idx) (best-val) =
+    if i >= len then best-idx
+    else let c = list-at candidates i
+    in if samp-in-exclude exclude c 0 (list-length exclude) then samp-find-max-excluding candidates exclude (i + 1) len best-idx best-val
+    else if c.sc-logit > best-val then samp-find-max-excluding candidates exclude (i + 1) len i (c.sc-logit)
+    else samp-find-max-excluding candidates exclude (i + 1) len best-idx best-val
+
+  samp-in-exclude : List SampCandidate, SampCandidate, Integer, Integer -> Boolean
+  samp-in-exclude (exclude) (c) (i) (len) =
+    if i >= len then False
+    else if (list-at exclude i).sc-token == c.sc-token then True
+    else samp-in-exclude exclude c (i + 1) len
+
+Section: Greedy Nucleus (O(N) per selected)
+
+  samp-greedy-nucleus : List SampCandidate, Integer -> List SampCandidate
+  samp-greedy-nucleus (candidates) (p) =
+    samp-nucleus-greedy-loop candidates p 0 [] []
+
+  samp-nucleus-greedy-loop : List SampCandidate, Integer, Integer, List SampCandidate, List SampCandidate -> List SampCandidate
+  samp-nucleus-greedy-loop (candidates) (p) (cumulative) (acc) (used) =
+    if cumulative >= p then acc
+    else let best = samp-find-max-excluding candidates used 0 (list-length candidates) (0 - 1) (0 - 999999)
+    in if best < 0 then acc
+    else let c = list-at candidates best
+    in samp-nucleus-greedy-loop candidates p (cumulative + c.sc-logit) (list-push acc c) (list-push used c)
+
+Page 1

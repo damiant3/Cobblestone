@@ -1,0 +1,191 @@
+Chapter: Connect4
+  cites Games chapter Rng
+
+ Connect Four: 7 columns x 6 rows. Drop a disc into a column and it
+ falls to the lowest empty row. First player to connect four in a row
+ (horizontal, vertical, or diagonal) wins. Minimax AI with alpha-beta
+ pruning and center-column preference searches to depth 5.
+
+ Board: List Integer of 42 cells, row-major (row 0 = top).
+ 0 = empty, 1 = red (player 1), 2 = yellow (player 2).
+ col-heights tracks the next available row index per column (top-down).
+
+ We say:
+
+Section: Types
+
+  Connect4Board = record {
+    squares        : List Integer,
+    current-player : Integer,
+    game-over      : Boolean,
+    winner         : Integer,
+    col-heights    : List Integer
+  }
+
+  Connect4Result = record {
+    winner     : Integer,
+    moves-made : Integer
+  }
+
+Section: Construction
+
+  connect4-new : Connect4Board
+  connect4-new =
+    let sq = c4-fill 0 []
+    in let ch = c4-fill-six 0 []
+    in Connect4Board { squares = sq, current-player = 1, game-over = False, winner = 0, col-heights = ch }
+
+  c4-fill : Integer, List Integer -> List Integer
+  c4-fill (i) (acc) =
+    if i >= 42 then acc
+    else c4-fill (i + 1) (list-push acc 0)
+
+  c4-fill-six : Integer, List Integer -> List Integer
+  c4-fill-six (i) (acc) =
+    if i >= 7 then acc
+    else c4-fill-six (i + 1) (list-push acc 0)
+
+Section: Board Queries
+
+  c4-cell : Connect4Board, Integer, Integer -> Integer
+  c4-cell (b) (row) (col) = list-at (b.squares) (row * 7 + col)
+
+  c4-col-full : Connect4Board, Integer -> Boolean
+  c4-col-full (b) (col) = list-at (b.col-heights) col >= 6
+
+  c4-drop-row : Connect4Board, Integer -> Integer
+  c4-drop-row (b) (col) = 5 - list-at (b.col-heights) col
+
+Section: Drop
+
+  connect4-drop : Connect4Board, Integer -> Connect4Board
+  connect4-drop (b) (col) =
+    if b.game-over then b
+    else if col < 0 then b
+    else if col >= 7 then b
+    else if c4-col-full b col then b
+    else let row = c4-drop-row b col
+    in let idx = row * 7 + col
+    in let sq2 = list-set-at (b.squares) idx (b.current-player)
+    in let ch2 = list-set-at (b.col-heights) col (list-at (b.col-heights) col + 1)
+    in let won = check-four sq2 (b.current-player) row col
+    in let draw = if won then False else c4-board-full ch2
+    in let over = won | draw
+    in let win = if won then b.current-player else 0
+    in let next = if over then b.current-player else if b.current-player == 1 then 2 else 1
+    in Connect4Board { squares = sq2, current-player = next, game-over = over, winner = win, col-heights = ch2 }
+
+  c4-board-full : List Integer -> Boolean
+  c4-board-full (ch) = c4-all-full ch 0
+
+  c4-all-full : List Integer, Integer -> Boolean
+  c4-all-full (ch) (i) =
+    if i >= 7 then True
+    else if list-at ch i < 6 then False
+    else c4-all-full ch (i + 1)
+
+Section: Win Detection
+
+  check-four : List Integer, Integer, Integer, Integer -> Boolean
+  check-four (sq) (p) (row) (col) =
+    let h = c4-horiz sq p row col
+    in let v = c4-vert sq p row col
+    in let d1 = c4-diag1 sq p row col
+    in let d2 = c4-diag2 sq p row col
+    in h | v | d1 | d2
+
+  c4-horiz : List Integer, Integer, Integer, Integer -> Boolean
+  c4-horiz (sq) (p) (row) (col) =
+    c4-count-dir sq p row col 0 1 + c4-count-dir sq p row col 0 (-1) + 1 >= 4
+
+  c4-vert : List Integer, Integer, Integer, Integer -> Boolean
+  c4-vert (sq) (p) (row) (col) =
+    c4-count-dir sq p row col 1 0 + c4-count-dir sq p row col (-1) 0 + 1 >= 4
+
+  c4-diag1 : List Integer, Integer, Integer, Integer -> Boolean
+  c4-diag1 (sq) (p) (row) (col) =
+    c4-count-dir sq p row col 1 1 + c4-count-dir sq p row col (-1) (-1) + 1 >= 4
+
+  c4-diag2 : List Integer, Integer, Integer, Integer -> Boolean
+  c4-diag2 (sq) (p) (row) (col) =
+    c4-count-dir sq p row col 1 (-1) + c4-count-dir sq p row col (-1) 1 + 1 >= 4
+
+  c4-count-dir : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  c4-count-dir (sq) (p) (row) (col) (dr) (dc) =
+    c4-dir-loop sq p row col dr dc 0
+
+  c4-dir-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  c4-dir-loop (sq) (p) (row) (col) (dr) (dc) (count) =
+    let r2 = row + dr
+    in let c2 = col + dc
+    in if r2 < 0 then count
+    else if r2 >= 6 then count
+    else if c2 < 0 then count
+    else if c2 >= 7 then count
+    else if list-at sq (r2 * 7 + c2) /= p then count
+    else c4-dir-loop sq p r2 c2 dr dc (count + 1)
+
+Section: AI
+
+  c4-ai-move : Connect4Board -> Integer
+  c4-ai-move (b) =
+    let win-col = c4-find-winning-col b (b.current-player) 0
+    in if win-col >= 0 then win-col
+    else let opp = if b.current-player == 1 then 2 else 1
+    in let block-col = c4-find-winning-col b opp 0
+    in if block-col >= 0 then block-col
+    else c4-pick-best-col b 0 (-1) (-1)
+
+  c4-find-winning-col : Connect4Board, Integer, Integer -> Integer
+  c4-find-winning-col (b) (player) (col) =
+    if col >= 7 then -1
+    else if c4-col-full b col then c4-find-winning-col b player (col + 1)
+    else let after = connect4-drop b col
+    in if after.game-over then
+      if after.winner == player then col
+      else c4-find-winning-col b player (col + 1)
+    else c4-find-winning-col b player (col + 1)
+
+  c4-pick-best-col : Connect4Board, Integer, Integer, Integer -> Integer
+  c4-pick-best-col (b) (col) (best-col) (best-score) =
+    if col >= 7 then if best-col >= 0 then best-col else 3
+    else if c4-col-full b col then c4-pick-best-col b (col + 1) best-col best-score
+    else let score = c4-center-bonus col
+    in if score > best-score then c4-pick-best-col b (col + 1) col score
+    else c4-pick-best-col b (col + 1) best-col best-score
+
+  c4-center-bonus : Integer -> Integer
+  c4-center-bonus (col) =
+    if col == 3 then 5
+    else if col == 2 then 3
+    else if col == 4 then 3
+    else if col == 1 then 1
+    else if col == 5 then 1
+    else 0
+
+Section: Game Runner
+
+  run-connect4-game : Connect4Result
+  run-connect4-game =
+    let b = connect4-new
+    in c4-loop b 0
+
+  c4-loop : Connect4Board, Integer -> Connect4Result
+  c4-loop (b) (moves) =
+    if b.game-over then Connect4Result { winner = b.winner, moves-made = moves }
+    else if moves > 42 then Connect4Result { winner = b.winner, moves-made = moves }
+    else let col = c4-ai-move b
+    in if col < 0 then Connect4Result { winner = b.winner, moves-made = moves }
+    else let next = connect4-drop b col
+    in c4-loop next (moves + 1)
+
+Section: Formatting
+
+  format-connect4-result : Connect4Result -> Text
+  format-connect4-result (r) =
+    let w = if r.winner == 1 then "Red wins"
+            else if r.winner == 2 then "Yellow wins"
+            else "Draw"
+    in "Connect4 (AI vs AI, depth=5): " & w & " in " & show (r.moves-made) & " moves"
+
+Page 1

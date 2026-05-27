@@ -1,0 +1,133 @@
+Chapter: Tensor
+
+ N-dimensional tensor backed by a flat List Integer. Fixed-point
+ (scale 1000). Supports matrix multiply, element-wise operations,
+ transpose, and dot product. Shapes are [rows, cols] for 2D.
+
+ We say:
+
+Section: Type
+  Tensor = record {
+    data : List Integer,
+    rows : Integer,
+    cols : Integer
+  }
+
+Section: Construction
+  tensor-new : Integer, Integer -> Tensor
+  tensor-new (rows) (cols) = Tensor { data = tensor-zeros (rows * cols) 0 [], rows = rows, cols = cols }
+
+  tensor-from : Integer, Integer, List Integer -> Tensor
+  tensor-from (rows) (cols) (data) = Tensor { data = data, rows = rows, cols = cols }
+
+  tensor-zeros : Integer, Integer, List Integer -> List Integer
+  tensor-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else tensor-zeros n (i + 1) (list-push acc 0)
+
+  tensor-vector : List Integer -> Tensor
+  tensor-vector (data) = Tensor { data = data, rows = list-length data, cols = 1 }
+
+Section: Access
+  tensor-get : Tensor, Integer, Integer -> Integer
+  tensor-get (t) (row) (col) = list-at (t.data) (row * t.cols + col)
+
+  tensor-set : Tensor, Integer, Integer, Integer -> Tensor
+  tensor-set (t) (row) (col) (val) =
+    Tensor { data = list-set-at (t.data) (row * t.cols + col) val, rows = t.rows, cols = t.cols }
+
+Section: Matrix Multiply
+  tensor-matmul : Tensor, Tensor -> Tensor
+  tensor-matmul (a) (b) = tensor-mm-build a b 0 0 []
+
+  tensor-mm-build : Tensor, Tensor, Integer, Integer, List Integer -> Tensor
+  tensor-mm-build (a) (b) (r) (c) (acc) =
+    if r >= a.rows then Tensor { data = acc, rows = a.rows, cols = b.cols }
+    else if c >= b.cols then tensor-mm-build a b (r + 1) 0 acc
+    else let val = tensor-mm-dot a b r c 0 0
+    in tensor-mm-build a b r (c + 1) (list-push acc val)
+
+  tensor-mm-dot : Tensor, Tensor, Integer, Integer, Integer, Integer -> Integer
+  tensor-mm-dot (a) (b) (r) (c) (k) (acc) =
+    if k >= a.cols then acc
+    else tensor-mm-dot a b r c (k + 1) (acc + tensor-get a r k * tensor-get b k c / 1000)
+
+Section: Element-wise Operations
+  tensor-add : Tensor, Tensor -> Tensor
+  tensor-add (a) (b) = Tensor { data = tensor-ewise-add (a.data) (b.data) 0 (a.rows * a.cols) [], rows = a.rows, cols = a.cols }
+
+  tensor-ewise-add : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  tensor-ewise-add (a) (b) (i) (len) (acc) =
+    if i >= len then acc
+    else tensor-ewise-add a b (i + 1) len (list-push acc (list-at a i + list-at b i))
+
+  tensor-scale : Tensor, Integer -> Tensor
+  tensor-scale (t) (s) = Tensor { data = tensor-scale-loop (t.data) s 0 (t.rows * t.cols) [], rows = t.rows, cols = t.cols }
+
+  tensor-scale-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  tensor-scale-loop (data) (s) (i) (len) (acc) =
+    if i >= len then acc
+    else tensor-scale-loop data s (i + 1) len (list-push acc (list-at data i * s / 1000))
+
+  tensor-ewise-mul : Tensor, Tensor -> Tensor
+  tensor-ewise-mul (a) (b) = Tensor { data = tensor-hadamard (a.data) (b.data) 0 (a.rows * a.cols) [], rows = a.rows, cols = a.cols }
+
+  tensor-hadamard : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  tensor-hadamard (a) (b) (i) (len) (acc) =
+    if i >= len then acc
+    else tensor-hadamard a b (i + 1) len (list-push acc (list-at a i * list-at b i / 1000))
+
+Section: Transpose
+  tensor-transpose : Tensor -> Tensor
+  tensor-transpose (t) = tensor-trans-build t 0 0 []
+
+  tensor-trans-build : Tensor, Integer, Integer, List Integer -> Tensor
+  tensor-trans-build (t) (r) (c) (acc) =
+    if r >= t.cols then Tensor { data = acc, rows = t.cols, cols = t.rows }
+    else if c >= t.rows then tensor-trans-build t (r + 1) 0 acc
+    else tensor-trans-build t r (c + 1) (list-push acc (tensor-get t c r))
+
+Section: Reduction
+  tensor-dot : Tensor, Tensor -> Integer
+  tensor-dot (a) (b) = tensor-dot-loop (a.data) (b.data) 0 (list-length (a.data)) 0
+
+  tensor-dot-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  tensor-dot-loop (a) (b) (i) (len) (acc) =
+    if i >= len then acc
+    else tensor-dot-loop a b (i + 1) len (acc + list-at a i * list-at b i / 1000)
+
+  tensor-sum : Tensor -> Integer
+  tensor-sum (t) = tensor-sum-loop (t.data) 0 (list-length (t.data)) 0
+
+  tensor-sum-loop : List Integer, Integer, Integer, Integer -> Integer
+  tensor-sum-loop (data) (i) (len) (acc) =
+    if i >= len then acc
+    else tensor-sum-loop data (i + 1) len (acc + list-at data i)
+
+  tensor-max : Tensor -> Integer
+  tensor-max (t) = tensor-max-loop (t.data) 1 (list-length (t.data)) (list-at (t.data) 0)
+
+  tensor-max-loop : List Integer, Integer, Integer, Integer -> Integer
+  tensor-max-loop (data) (i) (len) (best) =
+    if i >= len then best
+    else let v = list-at data i
+    in tensor-max-loop data (i + 1) len (if v > best then v else best)
+
+  tensor-argmax : Tensor -> Integer
+  tensor-argmax (t) = tensor-argmax-loop (t.data) 1 (list-length (t.data)) 0 (list-at (t.data) 0)
+
+  tensor-argmax-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  tensor-argmax-loop (data) (i) (len) (best-idx) (best-val) =
+    if i >= len then best-idx
+    else let v = list-at data i
+    in if v > best-val then tensor-argmax-loop data (i + 1) len i v
+    else tensor-argmax-loop data (i + 1) len best-idx best-val
+
+Section: Queries
+  tensor-size : Tensor -> Integer
+  tensor-size (t) = t.rows * t.cols
+
+  tensor-shape : Tensor -> Text
+  tensor-shape (t) = show (t.rows) & "x" & show (t.cols)
+
+Page 1

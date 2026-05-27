@@ -1,0 +1,146 @@
+Chapter: StringUtils
+  cites Foreword chapter CCE
+
+ To text-starts-with gives True when the text begins with the given prefix.
+ To text-ends-with gives True when the text ends with the given suffix.
+ To text-contains gives True when the substring appears anywhere in the text.
+ To text-index-of gives the position of the first occurrence of the substring, or negative one when absent.
+ To text-count gives the number of non-overlapping occurrences of the substring.
+ To text-replace gives a new text with all occurrences of the old substring replaced by the new one.
+ To text-reverse gives the text with characters in reversed order.
+ To text-to-upper gives the text with all letters converted to uppercase.
+ To text-to-lower gives the text with all letters converted to lowercase.
+ To text-pad-left gives the text padded on the left to the given width with the fill string.
+ To text-pad-right gives the text padded on the right to the given width with the fill string.
+ To text-substring gives a portion of the text starting at the given offset for the given length.
+ To text-take gives the first n characters of the text.
+ To text-drop gives the text with the first n characters removed.
+ To text-join gives a single text by joining a list of texts with the given separator.
+
+ We say:
+
+Section: Predicates
+  text-starts-with : Text, Text -> Boolean
+  text-starts-with (s) (prefix) =
+    let plen = text-length prefix
+    in if plen > text-length s then False
+    else str-prefix-match s prefix 0 plen
+
+  str-prefix-match : Text, Text, Integer, Integer -> Boolean
+  str-prefix-match (s) (prefix) (i) (len) =
+    if i >= len then True
+    else if char-at s i /= char-at prefix i then False
+    else str-prefix-match s prefix (i + 1) len
+
+  text-ends-with : Text, Text -> Boolean
+  text-ends-with (s) (suffix) =
+    let slen = text-length s
+    in let plen = text-length suffix
+    in if plen > slen then False
+    else str-prefix-match-at s suffix (slen - plen) 0 plen
+
+  str-prefix-match-at : Text, Text, Integer, Integer, Integer -> Boolean
+  str-prefix-match-at (s) (prefix) (offset) (i) (len) =
+    if i >= len then True
+    else if char-at s (offset + i) /= char-at prefix i then False
+    else str-prefix-match-at s prefix offset (i + 1) len
+
+  text-contains : Text, Text -> Boolean
+  text-contains (s) (sub) = text-index-of s sub >= 0
+
+Section: Search
+  text-index-of : Text, Text -> Integer
+  text-index-of (s) (sub) =
+    let slen = text-length s
+    in let sublen = text-length sub
+    in if sublen > slen then 0 - 1
+    else str-index-loop s sub 0 (slen - sublen + 1) sublen
+
+  str-index-loop : Text, Text, Integer, Integer, Integer -> Integer
+  str-index-loop (s) (sub) (i) (limit) (sublen) =
+    if i >= limit then 0 - 1
+    else if str-prefix-match-at s sub i 0 sublen then i
+    else str-index-loop s sub (i + 1) limit sublen
+
+  text-count : Text, Text -> Integer
+  text-count (s) (sub) = str-count-loop s sub 0 (text-length s) (text-length sub) 0
+
+  str-count-loop : Text, Text, Integer, Integer, Integer, Integer -> Integer
+  str-count-loop (s) (sub) (i) (slen) (sublen) (acc) =
+    if i > slen - sublen then acc
+    else if str-prefix-match-at s sub i 0 sublen then str-count-loop s sub (i + sublen) slen sublen (acc + 1)
+    else str-count-loop s sub (i + 1) slen sublen acc
+
+Section: Transform
+  text-replace : Text, Text, Text -> Text
+  text-replace (s) (old) (new) = str-replace-loop s old new 0 (text-length s) (text-length old) ""
+
+  str-replace-loop : Text, Text, Text, Integer, Integer, Integer, Text -> Text
+  str-replace-loop (s) (old) (new) (i) (slen) (oldlen) (acc) =
+    if i >= slen then acc
+    else if i <= slen - oldlen then
+      if str-prefix-match-at s old i 0 oldlen then str-replace-loop s old new (i + oldlen) slen oldlen (acc & new)
+      else str-replace-loop s old new (i + 1) slen oldlen (acc & char-to-text (char-at s i))
+    else str-replace-loop s old new (i + 1) slen oldlen (acc & char-to-text (char-at s i))
+
+  text-reverse : Text -> Text
+  text-reverse (s) = str-rev-loop s (text-length s - 1) ""
+
+  str-rev-loop : Text, Integer, Text -> Text
+  str-rev-loop (s) (i) (acc) =
+    if i < 0 then acc
+    else str-rev-loop s (i - 1) (acc & char-to-text (char-at s i))
+
+  text-to-upper : Text -> Text
+  text-to-upper (s) = str-case-loop s to-upper 0 (text-length s) ""
+
+  text-to-lower : Text -> Text
+  text-to-lower (s) = str-case-loop s to-lower 0 (text-length s) ""
+
+  str-case-loop : Text, (Char -> Char), Integer, Integer, Text -> Text
+  str-case-loop (s) (f) (i) (len) (acc) =
+    if i >= len then acc
+    else str-case-loop s f (i + 1) len (acc & char-to-text (f (char-at s i)))
+
+Section: Padding
+  text-pad-left : Text, Integer, Text -> Text
+  text-pad-left (s) (width) (fill) =
+    let deficit = width - text-length s
+    in if deficit <= 0 then s
+    else str-repeat fill deficit & s
+
+  text-pad-right : Text, Integer, Text -> Text
+  text-pad-right (s) (width) (fill) =
+    let deficit = width - text-length s
+    in if deficit <= 0 then s
+    else s & str-repeat fill deficit
+
+  str-repeat : Text, Integer -> Text
+  str-repeat (s) (n) = str-repeat-loop s n ""
+
+  str-repeat-loop : Text, Integer, Text -> Text
+  str-repeat-loop (s) (n) (acc) =
+    if n <= 0 then acc
+    else str-repeat-loop s (n - 1) (acc & s)
+
+Section: Substring
+  text-substring : Text, Integer, Integer -> Text
+  text-substring (s) (start) (len) = substring s start len
+
+  text-take : Text, Integer -> Text
+  text-take (s) (n) = substring s 0 n
+
+  text-drop : Text, Integer -> Text
+  text-drop (s) (n) = substring s n (text-length s - n)
+
+Section: Join
+  text-join : Text, List Text -> Text
+  text-join (sep) (parts) = str-join-loop sep parts 0 (list-length parts) ""
+
+  str-join-loop : Text, List Text, Integer, Integer, Text -> Text
+  str-join-loop (sep) (parts) (i) (n) (acc) =
+    if i >= n then acc
+    else let prefix = if i == 0 then "" else sep
+    in str-join-loop sep parts (i + 1) n (acc & prefix & list-at parts i)
+
+Page 1

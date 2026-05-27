@@ -1,0 +1,239 @@
+Chapter: SwiftUI Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates SwiftUI views from the IR.
+
+Section: Sanitization
+
+  swift-sanitize : Text -> Text
+  swift-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in text-replace s "'" ""
+
+  swift-escape : Text -> Text
+  swift-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in text-replace s2 "\n" "\\n"
+
+  swift-indent : Integer -> Text
+  swift-indent (n) =
+   if n <= 0 then ""
+   else "    " & swift-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare name (list-at entries mid).name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   list-insert-at xs (bsearch-arity-pos xs (e.name) 0 (list-length xs)) e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry { name = d.name, arity = list-length (d.params), generic-count = 0 }))
+
+Section: Expression Emission
+
+  emit-sw-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-sw-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> "Double(bitPattern: UInt64(" & show n & "))"
+    is IrTextLit (s) (sp) -> "\"" & swift-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "Character(UnicodeScalar(" & show n & ")!)"
+    is IrName (n) (ty) (sp) -> swift-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-sw-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-sw-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-sw-expr c arities indent & " ? " & emit-sw-expr t arities indent & " : " & emit-sw-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "({ let " & swift-sanitize name & " = " & emit-sw-expr val arities indent & "; return " & emit-sw-expr body arities indent & " }() as Any)"
+    is IrApply (f) (a) (ty) (sp) -> emit-sw-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "{ (" & emit-sw-params params 0 & ") in " & emit-sw-expr body arities indent & " }"
+    is IrList (elems) (ty) (sp) -> "[" & emit-sw-elems elems arities indent 0 & "] as [Any]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-sw-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-sw-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "[\"_type\": \"" & name & "\" as Any" & emit-sw-rec-fields fields arities indent 0 & "] as [String: Any]"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-sw-expr rec arities indent & " as! [String: Any])[\"" & field & "\"]!)"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-sw-expr rec arities indent
+    is IrFork (body) (ty) (sp) -> emit-sw-expr body arities indent
+    is IrAwait (task) (ty) (sp) -> emit-sw-expr task arities indent
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-sw-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-sw-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-sw-expr body arities indent
+    is IrError (msg) (ty) (sp) -> "fatalError(\"" & swift-escape msg & "\")"
+
+  emit-sw-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-sw-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-sw-expr l arities indent
+   in let rhs = emit-sw-expr r arities indent
+   in when op
+    is IrAddInt -> "((" & lhs & " as! Int) + (" & rhs & " as! Int))"
+    is IrSubInt -> "((" & lhs & " as! Int) - (" & rhs & " as! Int))"
+    is IrMulInt -> "((" & lhs & " as! Int) * (" & rhs & " as! Int))"
+    is IrDivInt -> "((" & lhs & " as! Int) / (" & rhs & " as! Int))"
+    is IrPowInt -> "Int(pow(Double(" & lhs & " as! Int), Double(" & rhs & " as! Int)))"
+    is IrAddNum -> "((" & lhs & " as! Double) + (" & rhs & " as! Double))"
+    is IrSubNum -> "((" & lhs & " as! Double) - (" & rhs & " as! Double))"
+    is IrMulNum -> "((" & lhs & " as! Double) * (" & rhs & " as! Double))"
+    is IrDivNum -> "((" & lhs & " as! Double) / (" & rhs & " as! Double))"
+    is IrEq -> "isEqual(" & lhs & ", " & rhs & ")"
+    is IrNotEq -> "!isEqual(" & lhs & ", " & rhs & ")"
+    is IrLt -> "isLess(" & lhs & ", " & rhs & ")"
+    is IrGt -> "isLess(" & rhs & ", " & lhs & ")"
+    is IrLtEq -> "!isLess(" & rhs & ", " & lhs & ")"
+    is IrGtEq -> "!isLess(" & lhs & ", " & rhs & ")"
+    is IrAnd -> "((" & lhs & " as! Bool) && (" & rhs & " as! Bool))"
+    is IrOr -> "((" & lhs & " as! Bool) || (" & rhs & " as! Bool))"
+    is IrAppendText -> "(\"\" + (" & lhs & " as! String) + (" & rhs & " as! String))"
+    is IrAppendList -> "((" & lhs & " as! [Any]) + (" & rhs & " as! [Any]))"
+    is IrConsList -> "[" & lhs & "] + (" & rhs & " as! [Any])"
+
+  FlatApply = record { root : IRExpr, args : List IRExpr }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-sw-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-sw-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in emit-sw-expr (chain.root) arities indent & "(" & emit-sw-elems (chain.args) arities indent 0 & ")"
+
+  emit-sw-params : List IRParam, Integer -> Text
+  emit-sw-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "_ " & swift-sanitize (list-at params i).name & ": Any" & emit-sw-params params (i + 1)
+
+  emit-sw-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-sw-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-sw-expr (list-at elems i) arities indent & emit-sw-elems elems arities indent (i + 1)
+
+  emit-sw-rec-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-sw-rec-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", \"" & f.name & "\": " & emit-sw-expr (f.value) arities indent & " as Any" & emit-sw-rec-fields fields arities indent (i + 1)
+
+  emit-sw-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-sw-match (scrut) (branches) (arities) (indent) =
+   "({ let _s: Any = " & emit-sw-expr scrut arities indent & "; " & emit-sw-match-arms branches arities indent 0 & "fatalError(\"match\") }() as Any)"
+
+  emit-sw-match-arms : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-sw-match-arms (branches) (arities) (indent) (i) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in let cond = emit-sw-pat-cond (b.pattern) "_s"
+   in let binds = emit-sw-pat-binds (b.pattern) "_s"
+   in "if " & cond & " { " & binds & "return " & emit-sw-expr (b.body) arities indent & " }; " & emit-sw-match-arms branches arities indent (i + 1)
+
+  emit-sw-pat-cond : IRPat, Text -> Text
+  emit-sw-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> "isEqual(" & scrut & ", " & text & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "((" & scrut & " as! [String: Any])[\"_tag\"] as! String) == \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+
+  emit-sw-pat-binds : IRPat, Text -> Text
+  emit-sw-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "let " & swift-sanitize name & ": Any = " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-sw-ctor-binds subs scrut 0
+    is IrWildPat (sp) -> ""
+
+  emit-sw-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-sw-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else emit-sw-pat-binds (list-at subs i) ("((" & scrut & " as! [String: Any])[\"_" & show i & "\"]!)") & emit-sw-ctor-binds subs scrut (i + 1)
+
+  emit-sw-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-sw-act (stmts) (arities) (indent) =
+   "({ " & emit-sw-act-loop stmts arities indent 0 & " }() as Any)"
+
+  emit-sw-act-loop : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-sw-act-loop (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> "let " & swift-sanitize name & ": Any = " & emit-sw-expr val arities indent & "; " & emit-sw-act-loop stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) -> if is-last then "return " & emit-sw-expr e arities indent & "; " else "let _ = " & emit-sw-expr e arities indent & "; " & emit-sw-act-loop stmts arities indent (i + 1)
+
+Section: Type and Definition Emission
+
+  emit-sw-type-def : ATypeDef -> Text
+  emit-sw-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "func " & swift-sanitize (name.value) & "(_ fields: [String: Any]) -> [String: Any] {\n    var d = fields; d[\"_type\"] = \"" & name.value & "\"; return d\n}\n\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-sw-var-ctors ctors 0
+
+  emit-sw-var-ctors : List AVariantCtorDef, Integer -> Text
+  emit-sw-var-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let t = if n == 0 then "let " & swift-sanitize (c.name.value) & ": [String: Any] = [\"_tag\": \"" & c.name.value & "\"]\n"
+      else "func " & swift-sanitize (c.name.value) & "(" & emit-sw-ctor-p n 0 & ") -> [String: Any] { [\"_tag\": \"" & c.name.value & "\"" & emit-sw-ctor-f n 0 & "] }\n"
+   in t & emit-sw-var-ctors ctors (i + 1)
+
+  emit-sw-ctor-p : Integer, Integer -> Text
+  emit-sw-ctor-p (n) (i) =
+   if i == n then "" else let sep = if i > 0 then ", " else "" in sep & "_ _" & show i & ": Any" & emit-sw-ctor-p n (i + 1)
+
+  emit-sw-ctor-f : Integer, Integer -> Text
+  emit-sw-ctor-f (n) (i) =
+   if i == n then "" else ", \"_" & show i & "\": _" & show i & emit-sw-ctor-f n (i + 1)
+
+  emit-sw-def : IRDef, List ArityEntry -> Text
+  emit-sw-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = swift-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "let " & sname & ": Any = " & emit-sw-expr (d.body) arities 0 & "\n\n"
+      else "func " & sname & "(" & emit-sw-params (d.params) 0 & ") -> Any {\n    return " & emit-sw-expr (d.body) arities 1 & "\n}\n\n"
+
+  emit-sw-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-sw-defs (defs) (i) (arities) =
+   if i == list-length defs then "" else emit-sw-def (list-at defs i) arities & emit-sw-defs defs (i + 1) arities
+
+  emit-sw-type-defs : List ATypeDef, Integer -> Text
+  emit-sw-type-defs (tds) (i) =
+   if i == list-length tds then "" else emit-sw-type-def (list-at tds i) & emit-sw-type-defs tds (i + 1)
+
+Section: SwiftUI Assembly
+
+  emit-swiftui-chapter : IRChapter, List ATypeDef -> Text
+  emit-swiftui-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "CodexApp" else swift-sanitize (m.chapter-title)
+   in let header = "import SwiftUI\nimport Foundation\n\n"
+   in let builtins = "var _output: [String] = []\nfunc print_line_uni(_ s: Any) { _output.append(\"\\(s)\") }\nfunc print_line(_ s: Any) { print_line_uni(s) }\nfunc show(_ n: Any) -> String { \"\\(n)\" }\nfunc text_length(_ s: Any) -> Int { (s as! String).count }\nfunc text_replace(_ s: Any, _ a: Any, _ b: Any) -> String { (s as! String).replacingOccurrences(of: a as! String, with: b as! String) }\nfunc text_compare(_ a: Any, _ b: Any) -> Int { (a as! String) < (b as! String) ? -1 : (a as! String) > (b as! String) ? 1 : 0 }\nfunc list_length(_ xs: Any) -> Int { (xs as! [Any]).count }\nfunc list_at(_ xs: Any, _ i: Any) -> Any { (xs as! [Any])[i as! Int] }\nfunc list_push(_ xs: Any, _ x: Any) -> [Any] { (xs as! [Any]) + [x] }\nfunc integer_to_text(_ n: Any) -> String { \"\\(n)\" }\nfunc negate(_ n: Any) -> Int { -(n as! Int) }\nfunc isEqual(_ a: Any, _ b: Any) -> Bool { \"\\(a)\" == \"\\(b)\" }\nfunc isLess(_ a: Any, _ b: Any) -> Bool { \"\\(a)\" < \"\\(b)\" }\n\n"
+   in let types-text = emit-sw-type-defs type-defs 0
+   in let defs-text = emit-sw-defs (m.defs) 0 arities
+   in let view = "struct ContentView: View {\n    @State private var lines: [String] = []\n\n    var body: some View {\n        ScrollView {\n            VStack(alignment: .leading, spacing: 4) {\n                ForEach(Array(lines.enumerated()), id: \\.offset) { _, line in\n                    Text(line).font(.system(.body, design: .monospaced))\n                }\n            }.padding()\n        }\n        .onAppear {\n            _output = []\n            opening()\n            lines = _output\n        }\n    }\n}\n\n@main\nstruct " & title & ": App {\n    var body: some Scene {\n        WindowGroup { ContentView() }\n    }\n}\n"
+   in header & builtins & types-text & defs-text & view

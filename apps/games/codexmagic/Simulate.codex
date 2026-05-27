@@ -1,0 +1,187 @@
+Chapter: Simulate
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+  cites CodexMagic chapter General
+  cites CodexMagic chapter Supervisor
+  cites CodexMagic chapter Engine
+  cites CodexMagic chapter Action
+  cites CodexMagic chapter Deck
+  cites CodexMagic chapter CardPool
+  cites CodexMagic chapter GameRules
+
+ Simulation harness for balance testing. Runs N games with a given
+ RuleSet, collects per-game metrics, and aggregates results for
+ comparison across configurations.
+
+ We say:
+
+Section: Per-Game Metrics
+
+  GameMetrics = record {
+    winner : Integer,
+    turns : Integer,
+    first-player-won : Boolean,
+    life-a : Integer,
+    life-b : Integer,
+    loyalty-a : Integer,
+    loyalty-b : Integer,
+    screw-events-a : Integer,
+    screw-events-b : Integer,
+    flood-events-a : Integer,
+    flood-events-b : Integer,
+    discards-for-mana : Integer,
+    lands-pitched : Integer,
+    creatures-played : Integer,
+    spells-cast : Integer
+  }
+
+Section: Aggregate Results
+
+  SimAggregate = record {
+    total-games : Integer,
+    p0-wins : Integer,
+    p1-wins : Integer,
+    draws : Integer,
+    first-player-wins : Integer,
+    total-turns : Integer,
+    total-screw : Integer,
+    total-flood : Integer,
+    total-discards : Integer,
+    total-pitches : Integer,
+    total-creatures : Integer,
+    total-spells : Integer,
+    sudden-death-games : Integer
+  }
+
+  aggregate-empty : SimAggregate
+  aggregate-empty = SimAggregate { total-games = 0, p0-wins = 0, p1-wins = 0, draws = 0, first-player-wins = 0, total-turns = 0, total-screw = 0, total-flood = 0, total-discards = 0, total-pitches = 0, total-creatures = 0, total-spells = 0, sudden-death-games = 0 }
+
+  aggregate-add : SimAggregate, GameMetrics, Integer -> SimAggregate
+  aggregate-add (agg) (m) (turn-cap) =
+    SimAggregate { total-games = agg.total-games + 1, p0-wins = agg.p0-wins + (if m.winner == 0 then 1 else 0), p1-wins = agg.p1-wins + (if m.winner == 1 then 1 else 0), draws = agg.draws + (if m.winner < 0 then 1 else 0), first-player-wins = agg.first-player-wins + (if m.first-player-won then 1 else 0), total-turns = agg.total-turns + m.turns, total-screw = agg.total-screw + m.screw-events-a + m.screw-events-b, total-flood = agg.total-flood + m.flood-events-a + m.flood-events-b, total-discards = agg.total-discards + m.discards-for-mana, total-pitches = agg.total-pitches + m.lands-pitched, total-creatures = agg.total-creatures + m.creatures-played, total-spells = agg.total-spells + m.spells-cast, sudden-death-games = agg.sudden-death-games + (if m.turns > turn-cap then 1 else 0) }
+
+Section: Single Game Simulation
+
+  run-sim-game : GameState, RuleSet, GeneralTemplate, GeneralTemplate, Integer -> GameMetrics
+  run-sim-game (gs) (rules) (gen-a) (gen-b) (seed) =
+    let gs2 = apply-fairness gs rules
+    in let gs3 = run-mulligan-phase gs2 rules seed
+    in sim-game-loop gs3 rules gen-a gen-b 0 0 0 0 0 0 0
+
+  run-mulligan-phase : GameState, RuleSet, Integer -> GameState
+  run-mulligan-phase (gs) (rules) (seed) =
+    let gs2 = maybe-mulligan gs rules 0 seed 0
+    in maybe-mulligan gs2 rules 1 (seed + 100) 0
+
+  maybe-mulligan : GameState, RuleSet, Integer, Integer, Integer -> GameState
+  maybe-mulligan (gs) (rules) (player) (seed) (attempt) =
+    if attempt >= 3 then gs
+    else if should-mulligan gs player (gs.templates) then
+      let gs2 = apply-mulligan gs rules player (attempt + 1) (seed + attempt * 17)
+      in maybe-mulligan gs2 rules player seed (attempt + 1)
+    else gs
+
+  sim-game-loop : GameState, RuleSet, GeneralTemplate, GeneralTemplate, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> GameMetrics
+  sim-game-loop (gs) (rules) (gen-a) (gen-b) (screw-a) (screw-b) (flood-a) (flood-b) (discards) (pitches) (creatures) =
+    if gs.game-over then make-metrics gs screw-a screw-b flood-a flood-b discards pitches creatures
+    else if gs.turn-number > rules.turn-cap + 5 then make-metrics gs screw-a screw-b flood-a flood-b discards pitches creatures
+    else let player = gs.active-player
+    in let p = get-player gs player
+    in let stance = effective-stance posture-default (if player == 0 then gen-a else gen-b) (p.general)
+    in let lands-in-hand = count-lands-in-hand (p.hand) (gs.templates) 0 (list-length (p.hand)) 0
+    in let hand-size = list-length (p.hand)
+    in let new-screw-a = screw-a + (if player == 0 then (if lands-in-hand == 0 then 1 else 0) else 0)
+    in let new-screw-b = screw-b + (if player == 1 then (if lands-in-hand == 0 then 1 else 0) else 0)
+    in let new-flood-a = flood-a + (if player == 0 then (if lands-in-hand >= 3 then 1 else 0) else 0)
+    in let new-flood-b = flood-b + (if player == 1 then (if lands-in-hand >= 3 then 1 else 0) else 0)
+    in let gs2 = apply-sudden-death gs rules
+    in let gs3 = check-state-based-actions gs2
+    in if gs3.game-over then make-metrics gs3 new-screw-a new-screw-b new-flood-a new-flood-b discards pitches creatures
+    else let gs4 = apply-screw-fix gs3 rules player
+    in let gs5 = apply-flood-fix gs4 rules player
+    in let new-discards = discards + (if mana-pool-total (get-player gs5 player).mana-pool > mana-pool-total (get-player gs4 player).mana-pool then 1 else 0)
+    in let new-pitches = pitches + (if list-length (get-player gs5 player).hand < list-length (get-player gs4 player).hand then 1 else 0)
+    in let bf-before = list-length (gs5.battlefield)
+    in let gs6 = run-turn gs5
+    in let gs7 = check-state-based-actions gs6
+    in let bf-after = list-length (gs7.battlefield)
+    in let new-creatures = creatures + (if bf-after > bf-before then bf-after - bf-before else 0)
+    in let gs8 = if gs7.game-over then gs7 else advance-turn gs7
+    in sim-game-loop gs8 rules gen-a gen-b new-screw-a new-screw-b new-flood-a new-flood-b new-discards new-pitches new-creatures
+
+  make-metrics : GameState, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> GameMetrics
+  make-metrics (gs) (sa) (sb) (fa) (fb) (disc) (pitch) (creatures) =
+    let p0 = get-player gs 0
+    in let p1 = get-player gs 1
+    in GameMetrics { winner = gs.winner, turns = gs.turn-number, first-player-won = gs.winner == 0, life-a = p0.general.life, life-b = p1.general.life, loyalty-a = army-loyalty gs 0, loyalty-b = army-loyalty gs 1, screw-events-a = sa, screw-events-b = sb, flood-events-a = fa, flood-events-b = fb, discards-for-mana = disc, lands-pitched = pitch, creatures-played = creatures, spells-cast = 0 }
+
+Section: Batch Simulation
+
+  run-batch : RuleSet, GeneralTemplate, GeneralTemplate, Integer, Integer -> SimAggregate
+  run-batch (rules) (gen-a) (gen-b) (num-games) (base-seed) =
+    run-batch-loop rules gen-a gen-b num-games base-seed 0 aggregate-empty
+
+  run-batch-loop : RuleSet, GeneralTemplate, GeneralTemplate, Integer, Integer, Integer, SimAggregate -> SimAggregate
+  run-batch-loop (rules) (gen-a) (gen-b) (total) (base-seed) (i) (agg) =
+    if i >= total then agg
+    else let seed = base-seed + i * 97
+    in let templates = full-card-pool
+    in let deck-a = gen-starter-deck gen-a templates (seed + 1)
+    in let deck-b = gen-starter-deck gen-b templates (seed + 2)
+    in let gs = game-new templates gen-a gen-b
+    in let gs2 = load-deck-for-sim gs 0 (deck-a.cards) 0
+    in let gs3 = load-deck-for-sim gs2 1 (deck-b.cards) 0
+    in let gs4 = draw-n-sim gs3 0 7
+    in let gs5 = draw-n-sim gs4 1 7
+    in let metrics = run-sim-game gs5 rules gen-a gen-b seed
+    in let agg2 = aggregate-add agg metrics (rules.turn-cap)
+    in run-batch-loop rules gen-a gen-b total base-seed (i + 1) agg2
+
+  load-deck-for-sim : GameState, Integer, List Integer, Integer -> GameState
+  load-deck-for-sim (gs) (player) (cards) (i) =
+    if i >= list-length cards then gs
+    else let p = get-player gs player
+    in let p2 = PlayerState { general = p.general, mana-pool = p.mana-pool, library = list-push (p.library) (list-at cards i), hand = p.hand, graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in let gs2 = set-player gs player p2
+    in load-deck-for-sim gs2 player cards (i + 1)
+
+  draw-n-sim : GameState, Integer, Integer -> GameState
+  draw-n-sim (gs) (player) (n) =
+    if n <= 0 then gs
+    else let p = get-player gs player
+    in let p2 = player-draw p
+    in let gs2 = set-player gs player p2
+    in draw-n-sim gs2 player (n - 1)
+
+Section: Reporting
+
+  format-aggregate : SimAggregate, RuleSet -> Text
+  format-aggregate (agg) (rules) =
+    let n = if agg.total-games == 0 then 1 else agg.total-games
+    in let fp-pct = agg.first-player-wins * 100 / n
+    in let avg-turns = agg.total-turns / n
+    in let screw-per = agg.total-screw * 100 / n
+    in let flood-per = agg.total-flood * 100 / n
+    in "Games:" & show (agg.total-games) & " P0:" & show (agg.p0-wins) & " P1:" & show (agg.p1-wins) & " Draw:" & show (agg.draws) & " | FP%:" & show fp-pct & " AvgT:" & show avg-turns & " Screw:" & show screw-per & "% Flood:" & show flood-per & "% Disc:" & show (agg.total-discards) & " Pitch:" & show (agg.total-pitches) & " SD:" & show (agg.sudden-death-games) & " | " & format-rules rules
+
+Section: Comparison Runner
+
+  SimComparison = record {
+    label-a : Text,
+    label-b : Text,
+    result-a : SimAggregate,
+    result-b : SimAggregate
+  }
+
+  run-comparison : RuleSet, RuleSet, Text, Text, GeneralTemplate, GeneralTemplate, Integer, Integer -> SimComparison
+  run-comparison (rules-a) (rules-b) (label-a) (label-b) (gen-a) (gen-b) (num-games) (seed) =
+    let result-a = run-batch rules-a gen-a gen-b num-games seed
+    in let result-b = run-batch rules-b gen-a gen-b num-games (seed + 50000)
+    in SimComparison { label-a = label-a, label-b = label-b, result-a = result-a, result-b = result-b }
+
+  format-comparison : SimComparison, RuleSet, RuleSet -> Text
+  format-comparison (cmp) (rules-a) (rules-b) =
+    "=== " & cmp.label-a & " ===\n" & format-aggregate (cmp.result-a) rules-a & "\n=== " & cmp.label-b & " ===\n" & format-aggregate (cmp.result-b) rules-b
+
+Page 1

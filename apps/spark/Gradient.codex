@@ -1,0 +1,164 @@
+Chapter: Gradient
+  cites Game chapter Rasterizer
+  cites Spark chapter ColorPicker
+
+ Gradient fills for canvas operations. Supports linear and radial
+ gradients with multiple color stops. All positions use fixed-point
+ scale 1000 (0 = start, 1000 = end).
+
+ We say:
+
+Section: Types
+
+  GradientStop = record {
+    gs-position : Integer,
+    gs-color : Integer
+  }
+
+  GradientKind =
+    | GradLinear
+    | GradRadial
+
+  GradientDef = record {
+    gd-stops : List GradientStop,
+    gd-stop-count : Integer,
+    gd-kind : GradientKind,
+    gd-x0 : Integer,
+    gd-y0 : Integer,
+    gd-x1 : Integer,
+    gd-y1 : Integer
+  }
+
+Section: Construction
+
+  gradient-linear : Integer, Integer, Integer, Integer -> GradientDef
+  gradient-linear (x0) (y0) (x1) (y1) = GradientDef {
+    gd-stops = [],
+    gd-stop-count = 0,
+    gd-kind = GradLinear,
+    gd-x0 = x0,
+    gd-y0 = y0,
+    gd-x1 = x1,
+    gd-y1 = y1
+  }
+
+  gradient-radial : Integer, Integer, Integer -> GradientDef
+  gradient-radial (cx) (cy) (radius) = GradientDef {
+    gd-stops = [],
+    gd-stop-count = 0,
+    gd-kind = GradRadial,
+    gd-x0 = cx,
+    gd-y0 = cy,
+    gd-x1 = radius,
+    gd-y1 = 0
+  }
+
+  gradient-add-stop : GradientDef, Integer, Integer -> GradientDef
+  gradient-add-stop (gd) (pos) (color) =
+    let stop = GradientStop { gs-position = pos, gs-color = color }
+    in GradientDef {
+      gd-stops = list-push (gd.gd-stops) stop,
+      gd-stop-count = gd.gd-stop-count + 1,
+      gd-kind = gd.gd-kind,
+      gd-x0 = gd.gd-x0,
+      gd-y0 = gd.gd-y0,
+      gd-x1 = gd.gd-x1,
+      gd-y1 = gd.gd-y1
+    }
+
+Section: Evaluation
+
+  gradient-eval : GradientDef, Integer, Integer -> Integer
+  gradient-eval (gd) (x) (y) =
+    let t = when gd.gd-kind
+      is GradLinear -> grad-linear-t gd x y
+      is GradRadial -> grad-radial-t gd x y
+    in grad-sample-stops (gd.gd-stops) (gd.gd-stop-count) t
+
+  grad-linear-t : GradientDef, Integer, Integer -> Integer
+  grad-linear-t (gd) (x) (y) =
+    let dx = gd.gd-x1 - gd.gd-x0
+    in let dy = gd.gd-y1 - gd.gd-y0
+    in let len-sq = dx * dx + dy * dy
+    in if len-sq == 0 then 0
+    else let dot = (x - gd.gd-x0) * dx + (y - gd.gd-y0) * dy
+    in grad-clamp (dot * 1000 / len-sq) 0 1000
+
+  grad-radial-t : GradientDef, Integer, Integer -> Integer
+  grad-radial-t (gd) (x) (y) =
+    let dx = x - gd.gd-x0
+    in let dy = y - gd.gd-y0
+    in let dist-sq = dx * dx + dy * dy
+    in let radius = gd.gd-x1
+    in if radius <= 0 then 1000
+    else let dist = grad-isqrt dist-sq
+    in grad-clamp (dist * 1000 / radius) 0 1000
+
+  grad-sample-stops : List GradientStop, Integer, Integer -> Integer
+  grad-sample-stops (stops) (count) (t) =
+    if count == 0 then 0
+    else if count == 1 then (list-at stops 0).gs-color
+    else grad-find-segment stops count t 0
+
+  grad-find-segment : List GradientStop, Integer, Integer, Integer -> Integer
+  grad-find-segment (stops) (count) (t) (i) =
+    if i >= count - 1 then (list-at stops (count - 1)).gs-color
+    else let s0 = list-at stops i
+    in let s1 = list-at stops (i + 1)
+    in if t <= s0.gs-position then s0.gs-color
+    else if t < s1.gs-position then
+      let seg-t = (t - s0.gs-position) * 1000 / (s1.gs-position - s0.gs-position)
+      in grad-lerp-color (s0.gs-color) (s1.gs-color) seg-t
+    else grad-find-segment stops count t (i + 1)
+
+Section: Color Interpolation
+
+  grad-lerp-color : Integer, Integer, Integer -> Integer
+  grad-lerp-color (a) (b) (t) =
+    let ar = a / 65536
+    in let ag = a / 256 - ar * 256
+    in let ab = a - a / 256 * 256
+    in let br2 = b / 65536
+    in let bg = b / 256 - br2 * 256
+    in let bb = b - b / 256 * 256
+    in let rr = ar + (br2 - ar) * t / 1000
+    in let rg = ag + (bg - ag) * t / 1000
+    in let rb = ab + (bb - ab) * t / 1000
+    in grad-clamp rr 0 255 * 65536 + grad-clamp rg 0 255 * 256 + grad-clamp rb 0 255
+
+Section: Fill
+
+  gradient-fill : Framebuf, GradientDef -> Framebuf
+  gradient-fill (fb) (gd) =
+    grad-fill-loop fb gd 0 (fb.fb-width * fb.fb-height)
+
+  grad-fill-loop : Framebuf, GradientDef, Integer, Integer -> Framebuf
+  grad-fill-loop (fb) (gd) (i) (total) =
+    if i >= total then fb
+    else let x = i - i / fb.fb-width * fb.fb-width
+    in let y = i / fb.fb-width
+    in let color = gradient-eval gd x y
+    in let fb2 = fb-set fb x y color
+    in grad-fill-loop fb2 gd (i + 1) total
+
+Section: Helpers
+
+  grad-clamp : Integer, Integer, Integer -> Integer
+  grad-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  grad-isqrt : Integer -> Integer
+  grad-isqrt (n) = if n <= 0 then 0 else grad-isqrt-loop n (n / 2 + 1)
+
+  grad-isqrt-loop : Integer, Integer -> Integer
+  grad-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else grad-isqrt-loop n next
+
+Section: Info
+
+  gradient-info : GradientDef -> Text
+  gradient-info (gd) =
+    let kind = when gd.gd-kind is GradLinear -> "linear" is GradRadial -> "radial"
+    in kind & " " & show (gd.gd-stop-count) & " stops"
+
+Page 1

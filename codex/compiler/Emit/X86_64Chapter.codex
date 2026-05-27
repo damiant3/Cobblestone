@@ -1,0 +1,907 @@
+Chapter: X86-64 Code Generator
+  cites Codex chapter Lists
+  cites Codex chapter Runtime
+  cites Foreword chapter Sha256
+  cites Emit chapter Emit Allocator (init-emit-workspace)
+  cites Codex chapter Build Settings (code-buffer-size, data-buffer-size, accum-capacity)
+
+ Bare-metal start routine and chapter entry point (x86-64-emit-cdx).
+ ConstructedTy resolution is now in IR/ResolveTypes.codex.
+
+Section: Bare-Metal Start
+  bare-metal-heap-base : Integer = 6291456
+
+  emit-oom-string : CodegenState, List Integer, Integer -> CodegenState
+  emit-oom-string (st) (chars) (i) =
+   if i >= list-length chars then st
+   else emit-oom-string (emit-control-wait-and-send st (list-at chars i)) chars (i + 1)
+
+  emit-out-of-memory-handler : CodegenState -> CodegenState
+  emit-out-of-memory-handler (st) =
+   let st1 = record-func-offset st "__out_of_memory"
+   in let st2 = st-append-code st1 (mov-rr reg-rbx reg-rsp)
+   in let st3 = st-append-code st2 (mov-rr reg-r12 reg-r10)
+   in let st4 = st-append-code st3 (li reg-rsp bare-metal-stack-top)
+   in let st5 = st-append-code st4 (mov-rr reg-rbp reg-rsp)
+   in let st6 = emit-oom-string st5 [79, 85, 84, 32, 79, 70, 32, 77, 69, 77, 79, 82, 89, 10] 0
+   in let st7 = st-append-code st6 [244]
+   in st-append-code st7 (jmp (-6))
+
+  emit-pet-watchdog-helper : CodegenState -> CodegenState
+  emit-pet-watchdog-helper (st) =
+   let st1 = record-func-offset st "__pet_watchdog"
+   in let st2 = st-append-code st1 (push-r reg-rax)
+   in let st3 = st-append-code st2 (li reg-rax wd-stale-tick-addr)
+   in let st4 = st-append-code st3 [72, 199, 0, 0, 0, 0, 0]
+   in let st5 = st-append-code st4 (pop-r reg-rax)
+   in st-append-code st5 [195]
+
+  emit-watchdog-dump-slots-loop : CodegenState, Integer -> CodegenState
+  emit-watchdog-dump-slots-loop (st) (i) =
+   if i >= 4 then st
+   else let slot-offset = i * 32
+    in let st1 = st-append-code st (li reg-rsi (wd-ring-buf-addr + slot-offset))
+    in let st2 = emit-oom-string st1 [82, 61] 0
+    in let st3 = st-append-code st2 (mov-load reg-rdi reg-rsi 0)
+    in let st4 = emit-print-hex-qword-rdi st3
+    in let st5 = emit-oom-string st4 [32, 83, 61] 0
+    in let st6 = st-append-code st5 (mov-load reg-rdi reg-rsi 8)
+    in let st7 = emit-print-hex-qword-rdi st6
+    in let st8 = emit-oom-string st7 [32, 72, 61] 0
+    in let st9 = st-append-code st8 (mov-load reg-rdi reg-rsi 16)
+    in let st10 = emit-print-hex-qword-rdi st9
+    in let st11 = emit-serial-wait-and-send st10 10
+    in emit-watchdog-dump-slots-loop st11 (i + 1)
+
+  emit-watchdog-dump-slots-helper : CodegenState -> CodegenState
+  emit-watchdog-dump-slots-helper (st) =
+   let st1 = record-func-offset st "__watchdog_dump_slots"
+   in let st2 = emit-watchdog-dump-slots-loop st1 0
+   in st-append-code st2 [195]
+
+  emit-watchdog-tier1-helper : CodegenState -> CodegenState
+  emit-watchdog-tier1-helper (st) =
+   let st1 = record-func-offset st "__watchdog_tier1"
+   in let st2 = st-append-code st1 (push-r reg-rax)
+   in let st3 = st-append-code st2 (push-r reg-rcx)
+   in let st4 = st-append-code st3 (push-r reg-rdx)
+   in let st5 = st-append-code st4 (push-r reg-rsi)
+   in let st6 = st-append-code st5 (push-r reg-rdi)
+   in let st7 = emit-oom-string st6 [87, 68, 58, 115, 116, 97, 108, 108, 10] 0
+   in let st8 = st-append-code st7 (pop-r reg-rdi)
+   in let st9 = st-append-code st8 (pop-r reg-rsi)
+   in let st10 = st-append-code st9 (pop-r reg-rdx)
+   in let st11 = st-append-code st10 (pop-r reg-rcx)
+   in let st12 = st-append-code st11 (pop-r reg-rax)
+   in st-append-code st12 [195]
+
+  emit-watchdog-tier2-helper : CodegenState -> CodegenState
+  emit-watchdog-tier2-helper (st) =
+   let st1 = record-func-offset st "__watchdog_tier2"
+   in let st2 = st-append-code st1 (push-r reg-rax)
+   in let st3 = st-append-code st2 (push-r reg-rcx)
+   in let st4 = st-append-code st3 (push-r reg-rdx)
+   in let st5 = st-append-code st4 (push-r reg-rsi)
+   in let st6 = st-append-code st5 (push-r reg-rdi)
+   in let st7 = emit-oom-string st6 [87, 68, 58, 100, 117, 109, 112, 10] 0
+   in let st8 = emit-call-to st7 "__watchdog_dump_slots"
+   in let st9 = st-append-code st8 (pop-r reg-rdi)
+   in let st10 = st-append-code st9 (pop-r reg-rsi)
+   in let st11 = st-append-code st10 (pop-r reg-rdx)
+   in let st12 = st-append-code st11 (pop-r reg-rcx)
+   in let st13 = st-append-code st12 (pop-r reg-rax)
+   in st-append-code st13 [195]
+
+  emit-watchdog-stack-walk-loop : CodegenState, Integer -> CodegenState
+  emit-watchdog-stack-walk-loop (st) (i) =
+   if i >= 4 then emit-serial-wait-and-send st 10
+   else let st1 = st-append-code st (push-r reg-rsi)
+    in let st2 = st-append-code st1 (mov-load reg-rdi reg-rsi (i * 8))
+    in let st3 = emit-print-hex-qword-rdi st2
+    in let st4 = st-append-code st3 (pop-r reg-rsi)
+    in let st5 = emit-serial-wait-and-send st4 32
+    in emit-watchdog-stack-walk-loop st5 (i + 1)
+
+  emit-watchdog-stack-walk : CodegenState -> CodegenState
+  emit-watchdog-stack-walk (st) =
+   let st1 = emit-oom-string st [83, 84, 75, 61] 0
+   in let st2 = st-append-code st1 (li reg-rdi wd-ring-head-addr)
+   in let st3 = st-append-code st2 (mov-load reg-rax reg-rdi 0)
+   in let st4 = st-append-code st3 (sub-ri reg-rax 1)
+   in let st5 = st-append-code st4 (and-ri reg-rax 3)
+   in let st6 = st-append-code st5 (shl-ri reg-rax 5)
+   in let st7 = st-append-code st6 (li reg-rsi wd-ring-buf-addr)
+   in let st8 = st-append-code st7 (add-rr reg-rsi reg-rax)
+   in let st9 = st-append-code st8 (mov-load reg-rsi reg-rsi 8)
+   in emit-watchdog-stack-walk-loop st9 0
+
+  emit-watchdog-panic-handler : CodegenState -> CodegenState
+  emit-watchdog-panic-handler (st) =
+   let st1 = record-func-offset st "__watchdog_panic"
+   in let st2 = st-append-code st1 (li reg-rsp bare-metal-stack-top)
+   in let st3 = st-append-code st2 (mov-rr reg-rbp reg-rsp)
+   in let st4 = emit-oom-string st3 [87, 68, 33, 10] 0
+   in let st5 = emit-call-to st4 "__watchdog_dump_slots"
+   in let st6 = emit-oom-string st5 [72, 87, 77, 61] 0
+   in let st7 = st-append-code st6 (li reg-rdi heap-hwm-addr)
+   in let st8 = st-append-code st7 (mov-load reg-rdi reg-rdi 0)
+   in let st9 = emit-print-hex-qword-rdi st8
+   in let st10 = emit-serial-wait-and-send st9 10
+   in let st11 = emit-watchdog-stack-walk st10
+   in let st12 = st-append-code st11 [244]
+   in st-append-code st12 (jmp (-6))
+
+  emit-trace-serial-dump : CodegenState -> CodegenState
+  emit-trace-serial-dump (st) =
+   let st0 = st-append-code st (push-r reg-rbx & push-r reg-r12)
+   in let st1 = st-append-code st0 (li reg-r11 trace-cursor-addr)
+   in let st2 = st-append-code st1 (mov-load reg-rbx reg-r11 0)
+   in let st3 = st-append-code st2 (test-rr reg-rbx reg-rbx)
+   in let skip-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-e 0)
+   in let st5 = emit-serial-wait-and-send st4 84
+   in let st6 = emit-serial-wait-and-send st5 82
+   in let st7 = emit-serial-wait-and-send st6 65
+   in let st8 = emit-serial-wait-and-send st7 67
+   in let st9 = emit-serial-wait-and-send st8 69
+   in let st10 = emit-serial-wait-and-send st9 58
+   in let st11 = st-append-code st10 (mov-rr reg-rax reg-rbx)
+   in let st12 = emit-inline-itoa-and-print st11
+   in let st13 = emit-serial-wait-and-send st12 10
+   in let st14 = st-append-code st13 (li reg-r12 trace-buf-addr)
+   in let st15 = st-append-code st14 (xor-rr reg-rbx reg-rbx)
+   in let st16 = st-append-code st15 (li reg-r11 trace-cursor-addr)
+   in let st17 = st-append-code st16 (mov-load reg-r11 reg-r11 0)
+   in let loop-top = st17.code-len
+   in let st18 = st-append-code st17 (cmp-rr reg-rbx reg-r11)
+   in let done-pos = st18.code-len
+   in let st19 = st-append-code st18 (jcc cc-ge 0)
+   in let st20 = emit-serial-wait-and-send st19 84
+   in let st21 = emit-serial-wait-and-send st20 58
+   in let st22 = st-append-code st21 (push-r reg-r11)
+   in let st23 = st-append-code st22 (mov-load reg-rdi reg-r12 0)
+   in let st24 = emit-print-hex-qword-rdi st23
+   in let st25 = emit-serial-wait-and-send st24 58
+   in let st26 = st-append-code st25 (mov-load reg-rdi reg-r12 8)
+   in let st27 = emit-print-hex-qword-rdi st26
+   in let st28 = emit-serial-wait-and-send st27 10
+   in let st29 = st-append-code st28 (pop-r reg-r11)
+   in let st30 = st-append-code st29 (add-ri reg-r12 16)
+   in let st31 = st-append-code st30 (add-ri reg-rbx 1)
+   in let st32 = st-append-code st31 (jmp (loop-top - (st31.code-len + 5)))
+   in let st33 = patch-jcc-at st32 done-pos (st32.code-len)
+   in let st34 = emit-serial-wait-and-send st33 84
+   in let st35 = emit-serial-wait-and-send st34 82
+   in let st36 = emit-serial-wait-and-send st35 65
+   in let st37 = emit-serial-wait-and-send st36 67
+   in let st38 = emit-serial-wait-and-send st37 69
+   in let st39 = emit-serial-wait-and-send st38 45
+   in let st40 = emit-serial-wait-and-send st39 69
+   in let st41 = emit-serial-wait-and-send st40 78
+   in let st42 = emit-serial-wait-and-send st41 68
+   in let st43 = emit-serial-wait-and-send st42 10
+   in let st44 = patch-jcc-at st43 skip-pos (st43.code-len)
+   in st-append-code st44 (pop-r reg-r12 & pop-r reg-rbx)
+
+  collect-overflow-patches : List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
+  collect-overflow-patches (checks) (oom-offset) (i) (acc) =
+   if i >= list-length checks then acc
+   else let pos = list-at checks i
+    in let rel32 = oom-offset - (pos + 6)
+    in collect-overflow-patches checks oom-offset (i + 1) (list-push acc (make-i32-patch (pos + 2) rel32))
+
+  peel-effectful-ty : CodexType -> CodexType
+  peel-effectful-ty (ty) =
+   when ty
+    is EffectfulTy (effs) (sc) (inner) -> inner
+    is otherwise -> ty
+
+  opening-bare-print-type : List IRDef -> CodexType
+  opening-bare-print-type (defs) = opening-bare-print-type-loop defs 0 (list-length defs)
+
+  opening-bare-print-type-loop : List IRDef, Integer, Integer -> CodexType
+  opening-bare-print-type-loop (defs) (i) (len) =
+   if i >= len then NothingTy
+   else let d = list-at defs i
+   in if d.name == opening-entry-point then peel-effectful-ty (strip-fun-args (d.type-val))
+      else opening-bare-print-type-loop defs (i + 1) len
+
+  emit-opening-result-print : CodegenState -> CodegenState
+  emit-opening-result-print (st) =
+   when st.opening-ret-type
+    is IntegerTy (lo) (hi) (mode) ->
+     let st1 = emit-inline-itoa-and-print st
+     in emit-serial-wait-and-send st1 10
+    is TextTy -> emit-print-text st reg-rax
+    is BooleanTy -> emit-print-bool st reg-rax
+    is NumberTy ->
+     let st1 = st-append-code st (mov-rr reg-rdi reg-rax)
+     in let st2 = emit-call-to st1 "__number_to_text"
+     in emit-print-text st2 reg-rax
+    is ConstructedTy (cname) (cargs) ->
+     let resolved = resolve-constructed-ty st (st.opening-ret-type)
+     in emit-opening-print-sum st resolved cargs reg-rax
+    is SumTy (sname) (sargs) (ctors) ->
+     emit-opening-print-sum st (st.opening-ret-type) sargs reg-rax
+    is otherwise -> st
+
+  emit-opening-print-sum : CodegenState, CodexType, List CodexType, Integer -> CodegenState
+  emit-opening-print-sum (st) (resolved) (type-args) (ptr-reg) =
+   when resolved
+    is SumTy (sname) (sargs) (ctors) ->
+     let rbx-guard = alloc-local st
+     in let sum-loc = alloc-local (rbx-guard.state)
+     in let st0 = store-local (sum-loc.state) (sum-loc.reg) ptr-reg
+     in let sum-ld = load-local st0 (sum-loc.reg)
+     in let st1 = st-append-code (sum-ld.state) (mov-load reg-rcx (sum-ld.reg) 0)
+     in let st2 = emit-opening-print-sum-ctors st1 ctors sargs type-args (sum-loc.reg) 0 (list-length ctors) []
+     in emit-serial-wait-and-send st2 10
+    is otherwise -> st
+
+  emit-opening-print-sum-ctors : CodegenState, List SumCtor, List CodexType, List CodexType, Integer, Integer, Integer, List Integer -> CodegenState
+  emit-opening-print-sum-ctors (st) (ctors) (formal-params) (actual-args) (sum-local) (i) (len) (jmp-patches) =
+   if i == len then emit-opening-patch-jmps st jmp-patches 0 (list-length jmp-patches) (st.code-len)
+   else let c = list-at ctors i
+   in let st0 = st-append-code st (cmp-ri reg-rcx i)
+   in let jne-pos = st0.code-len
+   in let st1 = st-append-code st0 (jcc cc-ne 0)
+   in let name-result = emit-text-lit st1 (c.name.value)
+   in let st2 = emit-print-text-no-newline (name-result.state) (name-result.reg)
+   in let st3 = emit-opening-print-sum-fields st2 (c.fields) formal-params actual-args sum-local 0 (list-length (c.fields))
+   in let jmp-pos = st3.code-len
+   in let st4 = st-append-code st3 (jmp 0)
+   in let st5 = if i < len - 1 then patch-jcc-at st4 jne-pos (st4.code-len) else st4
+   in emit-opening-print-sum-ctors st5 ctors formal-params actual-args sum-local (i + 1) len (list-push jmp-patches jmp-pos)
+
+  emit-opening-patch-jmps : CodegenState, List Integer, Integer, Integer, Integer -> CodegenState
+  emit-opening-patch-jmps (st) (patches) (i) (len) (target) =
+   if i == len then st
+   else emit-opening-patch-jmps (patch-jmp-at st (list-at patches i) target) patches (i + 1) len target
+
+  emit-opening-print-sum-fields : CodegenState, List CodexType, List CodexType, List CodexType, Integer, Integer, Integer -> CodegenState
+  emit-opening-print-sum-fields (st) (fields) (formal-params) (actual-args) (sum-local) (i) (len) =
+   if i >= len then st
+   else let st0 = emit-serial-wait-and-send st 32
+   in let fty = resolve-field-type (list-at fields i) formal-params actual-args
+   in let sum-ld = load-local st0 (sum-local)
+   in let st1 = st-append-code (sum-ld.state) (mov-load reg-rax (sum-ld.reg) ((1 + i) * 8))
+   in let st2 = emit-opening-print-field st1 fty
+   in emit-opening-print-sum-fields st2 fields formal-params actual-args sum-local (i + 1) len
+
+  resolve-field-type : CodexType, List CodexType, List CodexType -> CodexType
+  resolve-field-type (fty) (formal-params) (actual-args) =
+   when fty
+    is TypeVar (id) ->
+     let mapped = find-type-arg id formal-params actual-args 0
+     in when mapped
+      is NothingTy -> if id < list-length actual-args then list-at actual-args id else fty
+      is otherwise -> mapped
+    is otherwise -> fty
+
+  find-type-arg : Integer, List CodexType, List CodexType, Integer -> CodexType
+  find-type-arg (id) (formals) (actuals) (i) =
+   if i >= list-length formals then NothingTy
+   else when list-at formals i
+    is TypeVar (fid) -> if fid == id then if i < list-length actuals then list-at actuals i else NothingTy
+       else find-type-arg id formals actuals (i + 1)
+    is otherwise -> find-type-arg id formals actuals (i + 1)
+
+  emit-opening-print-field : CodegenState, CodexType -> CodegenState
+  emit-opening-print-field (st) (fty) =
+   when fty
+    is IntegerTy (lo) (hi) (mode) -> emit-inline-itoa-and-print st
+    is TextTy -> emit-print-text-no-newline st reg-rax
+    is BooleanTy -> emit-print-bool-no-newline st reg-rax
+    is NumberTy ->
+     let st1 = st-append-code st (mov-rr reg-rdi reg-rax)
+     in let st2 = emit-call-to st1 "__number_to_text"
+     in emit-print-text-no-newline st2 reg-rax
+    is otherwise -> emit-inline-itoa-and-print st
+
+  emit-print-bool-no-newline : CodegenState, Integer -> CodegenState
+  emit-print-bool-no-newline (st) (val-reg) =
+   let saved-val = alloc-local st
+   in let st0 = store-local (saved-val.state) (saved-val.reg) val-reg
+   in let val-l = load-local st0 (saved-val.reg)
+   in let st1 = st-append-code (val-l.state) (test-rr (val-l.reg) (val-l.reg))
+   in let je-false-pos = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-e 0)
+   in let true-lit = emit-text-lit st2 "True"
+   in let st3 = emit-print-text-no-newline (true-lit.state) (true-lit.reg)
+   in let jmp-end-pos = st3.code-len
+   in let st4 = st-append-code st3 (jmp 0)
+   in let st5 = patch-jcc-at st4 je-false-pos (st4.code-len)
+   in let false-lit = emit-text-lit st5 "False"
+   in let st6 = emit-print-text-no-newline (false-lit.state) (false-lit.reg)
+   in patch-jmp-at st6 jmp-end-pos (st6.code-len)
+
+  emit-uefi-start : CodegenState -> CodegenState
+  emit-uefi-start (st) =
+   let st0 = record-func-offset st "__start"
+   in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14 & emit-sub-rsp-imm32 256)
+   in let st2 = st-append-code st1 ([76, 139, 20, 37] & write-i32 uefi-heap-base-addr)
+   in let st3 = st-append-code st2 (li reg-rdi 28672)
+   in let st4 = st-append-code st3 (mov-store reg-rdi reg-r10 0)
+   in let st5 = emit-call-to st4 "opening"
+   in let st6 = st-append-code st5 (add-ri reg-rsp 256)
+   in let st7 = st-append-code st6 (pop-r reg-r14 & pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx)
+   in let st8 = st-append-code st7 (pop-r reg-rbp)
+   in st-append-code st8 [195]
+
+  emit-start : CodegenState, Integer, Integer -> CodegenState
+  emit-start (st) (first-stub-vaddr) (syscall-handler-offset) =
+   let st0 = record-func-offset st "__start"
+   in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14 & emit-sub-rsp-imm32 0)
+   in let st2 = st-append-code st1 cli
+   in let st3 = st-append-code st2 (li reg-rsp bare-metal-stack-top)
+   in let st4 = st-append-code st3 (mov-rr reg-rbp reg-rsp)
+   in let st5 = st-append-code st4 (li reg-r10 bare-metal-heap-base)
+   in let st5a = st-append-code st5 (li reg-rdi deck-pos-addr)
+   in let st5b = st-append-code st5a (mov-store reg-rdi reg-r10 0)
+   in let st5c = st-append-code st5b (li reg-rdi deck-bound-counter-addr)
+   in let st5d = st-append-code st5c (li reg-rax 0)
+   in let st5e = st-append-code st5d (mov-store reg-rdi reg-rax 0)
+   in let st7 = st-append-code st5e (li reg-r11 stack-min-rsp-addr)
+   in let st8 = st-append-code st7 (li reg-rax bare-metal-stack-top)
+   in let st11 = st-append-code st8 (mov-store reg-r11 reg-rax 0)
+   in let st12 = emit-process-setup st11
+   in let st13 = emit-grant-capability st12 0 cap-console
+   in let st13a = emit-grant-capability st13 0 cap-console-read
+   in let st13b = emit-grant-capability st13a 0 cap-console-write
+   in let st13c = emit-grant-capability st13b 0 cap-filesystem-read
+   in let st13d = emit-grant-capability st13c 0 cap-filesystem-write
+   in let st13e = emit-grant-capability st13d 0 cap-network-read
+   in let st13f = emit-grant-capability st13e 0 cap-network-write
+   in let st13g = emit-grant-capability st13f 0 cap-block-device
+   in let st13h = emit-grant-capability st13g 0 cap-process-create
+   in let st13i = emit-grant-capability st13h 0 cap-capability-admin
+   in let st13j = emit-grant-capability st13i 0 cap-ipc
+   in let st13k = emit-grant-capability st13j 0 cap-identity
+   in let st14 = emit-grant-capability st13k 0 cap-concurrent
+   in let st15 = emit-grant-capability st14 1 cap-console
+   in let syscall-vaddr = bare-metal-load-addr + syscall-handler-offset
+   in let st16 = emit-write-msr st15 3221225601 (8 * 4294967296)
+   in let st17 = emit-write-msr st16 3221225602 syscall-vaddr
+   in let st18 = emit-write-msr st17 3221225604 512
+   in let st19 = st-append-code st18 (li reg-rcx 3221225600)
+   in let st20 = st-append-code st19 [15, 50]
+   in let st21 = st-append-code st20 [72, 131, 200, 1]
+   in let st22 = st-append-code st21 [15, 48]
+   in let st23 = emit-idt-entries st22 first-stub-vaddr
+   in let st23a = emit-load-idt st23
+   in let st24 = emit-out-byte st23a 1019 128
+   in let st25 = emit-out-byte st24 1016 1
+   in let st26 = emit-out-byte st25 1017 0
+   in let st27 = emit-out-byte st26 1019 3
+   in let st28 = emit-out-byte st27 1018 199
+   in let st29 = emit-out-byte st28 1020 11
+   in let st29a = emit-com2-init st29
+   in let st30 = emit-out-byte st29a 1017 1
+   in let st31 = st-append-code st30 (li reg-rdi serial-write-pos-addr)
+   in let st32 = st-append-code st31 (li reg-rax 0)
+   in let st33 = st-append-code st32 (mov-store reg-rdi reg-rax 0)
+   in let st34 = st-append-code st33 (li reg-rdi serial-read-pos-addr)
+   in let st35 = st-append-code st34 (mov-store reg-rdi reg-rax 0)
+   in let st35a = emit-control-string st35 [66, 79, 79, 84, 58, 83, 48, 45, 72, 87, 10]
+   in let st36 = emit-interrupt-setup st35a
+   in let st36-d = emit-vga-progress st36 9 54
+   in let st36a = emit-wait-for-tick st36-d
+   in let st36a-d = emit-vga-progress st36a 10 55
+   in let st36a1 = emit-control-string st36a-d [66, 79, 79, 84, 58, 83, 49, 45, 73, 82, 81, 10]
+   in let st36b = emit-ata-init st36a1
+   in let st36b-d = emit-vga-progress st36b 11 56
+   in let st36b1 = emit-control-string st36b-d [66, 79, 79, 84, 58, 83, 50, 45, 65, 84, 65, 10]
+   in let st36c = emit-boot-probe-factstore st36b1
+   in let st36c1 = emit-control-string st36c [66, 79, 79, 84, 58, 83, 51, 45, 70, 83, 10]
+   in let st36d = emit-nic-init st36c1
+   in let st37 = emit-control-string st36d [82, 69, 65, 68, 89, 10]
+   in let st38 = st-append-code st37 (li reg-rdi arena-base-addr)
+   in let st41 = st-append-code st38 (mov-store reg-rdi reg-r10 0)
+   in let repl-loop = st41.code-len
+   in let st42 = st-append-code st41 (li reg-rdi arena-base-addr)
+   in let st45 = st-append-code st42 (mov-load reg-r10 reg-rdi 0)
+   in let st45a = st-append-code st45 (li reg-rdi deck-pos-addr)
+   in let st45b = st-append-code st45a (mov-store reg-rdi reg-r10 0)
+   in let st46 = st-append-code st45b (li reg-rdi heap-hwm-addr)
+   in let st47 = st-append-code st46 (mov-store reg-rdi reg-r10 0)
+   in let st47a = st-append-code st47 (li reg-rax 0)
+   in let st47b = st-append-code st47a (li reg-rdi stdin-eof-flag-addr)
+   in let st47c = st-append-code st47b (mov-store reg-rdi reg-rax 0)
+   in let st47d = st-append-code st47c (li reg-rdi stdin-eof-settled-addr)
+   in let st47e = st-append-code st47d (mov-store reg-rdi reg-rax 0)
+   in let st47f = st-append-code st47e (li reg-rdi try-fail-flag-addr)
+   in let st47g = st-append-code st47f (mov-store reg-rdi reg-rax 0)
+   in let st47h = st-append-code st47g (li reg-rdi deck-bound-counter-addr)
+   in let st47i = st-append-code st47h (mov-store reg-rdi reg-rax 0)
+   in let st47t = if st.trace-alloc
+    then let sta = st-append-code st47i (li reg-rax 1)
+     in let stb = st-append-code sta (li reg-rdi trace-enabled-addr)
+     in let stc = st-append-code stb (mov-store reg-rdi reg-rax 0)
+     in let std = st-append-code stc (li reg-rax 0)
+     in let ste = st-append-code std (li reg-rdi trace-cursor-addr)
+     in st-append-code ste (mov-store reg-rdi reg-rax 0)
+    else st47i
+   in let st48 = emit-call-to st47t opening-entry-point
+   in let st48b = emit-opening-result-print st48
+   in let st49 = emit-update-heap-hwm st48b
+   in let st50 = emit-control-string st49 [72, 69, 65, 80, 58]
+   in let st51 = st-append-code st50 (li reg-rdi heap-hwm-addr)
+   in let st52 = st-append-code st51 (mov-load reg-rax reg-rdi 0)
+   in let st53 = emit-control-inline-itoa-and-print st52
+   in let st54 = emit-control-wait-and-send st53 10
+   in let st55 = emit-control-string st54 [83, 84, 65, 67, 75, 58]
+   in let st56 = st-append-code st55 (li reg-rsi bare-metal-stack-top)
+   in let st57 = st-append-code st56 (li reg-rdi stack-min-rsp-addr)
+   in let st58 = st-append-code st57 (mov-load reg-rdi reg-rdi 0)
+   in let st59 = st-append-code st58 (sub-rr reg-rsi reg-rdi)
+   in let st60 = st-append-code st59 (mov-rr reg-rax reg-rsi)
+   in let st61 = emit-control-inline-itoa-and-print st60
+   in let st62 = emit-control-wait-and-send st61 10
+   in let st63 = st-append-code st62 (li reg-r11 stack-min-rsp-addr)
+   in let st64 = st-append-code st63 (li reg-rax bare-metal-stack-top)
+   in let st65 = st-append-code st64 (mov-store reg-r11 reg-rax 0)
+   in let st65t = if st.trace-alloc then emit-trace-serial-dump st65 else st65
+   in when st.exit-mode
+    is Exit ->
+     let st66 = st-append-code st65t (li reg-rax 0)
+     in let st67 = st-append-code st66 (li reg-rdx 244)
+     in let st68 = st-append-code st67 out-dx-al
+     in let halt-pos = st68.code-len
+     in let st69 = st-append-code st68 hlt
+     in st-append-code st69 (jmp (halt-pos - (st69.code-len + 5)))
+    is otherwise -> st-append-code st65t (jmp (repl-loop - (st65t.code-len + 5)))
+
+Section: Chapter Entry Point
+  flatten-chunks : LinkedList (List Integer) -> List Integer
+  flatten-chunks (chunks) =
+   let chunk-list = __linked-list-to-list chunks
+   in flatten-chunks-loop chunk-list 0 (list-length chunk-list) []
+
+  flatten-chunks-loop : List (List Integer), Integer, Integer, List Integer -> List Integer
+  flatten-chunks-loop (chunks) (i) (len) (acc) =
+   if i == len then acc
+   else flatten-one-chunk (list-at chunks i) 0 (list-length (list-at chunks i)) acc chunks (i + 1) len
+
+  flatten-one-chunk : List Integer, Integer, Integer, List Integer, List (List Integer), Integer, Integer -> List Integer
+  flatten-one-chunk (chunk) (j) (clen) (acc) (chunks) (next-i) (len) =
+   if j == clen then flatten-chunks-loop chunks next-i len acc
+   else flatten-one-chunk chunk (j + 1) clen (list-push acc (list-at chunk j)) chunks next-i len
+
+  apply-one-patch-buf : Integer, PatchEntry -> Integer
+  apply-one-patch-buf (base-addr) (p) =
+   __buf-write-byte base-addr (p.pos) (p.b0)
+   + __buf-write-byte base-addr (p.pos + 1) (p.b1)
+   + __buf-write-byte base-addr (p.pos + 2) (p.b2)
+   + __buf-write-byte base-addr (p.pos + 3) (p.b3)
+
+  apply-all-patches-buf : Integer, List PatchEntry, Integer -> Integer
+  apply-all-patches-buf (base-addr) (patches) (i) =
+   if i >= list-length patches then 0
+   else let r = apply-one-patch-buf base-addr (list-at patches i)
+   in apply-all-patches-buf base-addr patches (i + 1)
+
+  buf-write-i32 : Integer, Integer, Integer -> Integer
+  buf-write-i32 (buf) (off) (v) =
+   let w0 = __buf-write-byte buf off (int-mod v 256)
+   in let w1 = __buf-write-byte buf (off + 1) (int-mod (floor-div v 256) 256)
+   in let w2 = __buf-write-byte buf (off + 2) (int-mod (floor-div v 65536) 256)
+   in let w3 = __buf-write-byte buf (off + 3) (int-mod (floor-div v 16777216) 256)
+   in off + 4
+
+  buf-write-i64 : Integer, Integer, Integer -> Integer
+  buf-write-i64 (buf) (off) (v) =
+   let w0 = __buf-write-byte buf off (int-mod v 256)
+   in let w1 = __buf-write-byte buf (off + 1) (int-mod (floor-div v 256) 256)
+   in let w2 = __buf-write-byte buf (off + 2) (int-mod (floor-div v 65536) 256)
+   in let w3 = __buf-write-byte buf (off + 3) (int-mod (floor-div v 16777216) 256)
+   in let w4 = __buf-write-byte buf (off + 4) (int-mod (floor-div v 4294967296) 256)
+   in let w5 = __buf-write-byte buf (off + 5) (int-mod (floor-div v 1099511627776) 256)
+   in let w6 = __buf-write-byte buf (off + 6) (int-mod (floor-div v 281474976710656) 256)
+   in let w7 = __buf-write-byte buf (off + 7) (int-mod (floor-div v 72057594037927936) 256)
+   in off + 8
+
+  apply-call-patches-direct : Integer, List Integer, List Text, OffsetTable, Integer -> Integer
+  apply-call-patches-direct (code-buffer) (offsets) (targets) (offset-map) (i) =
+   if i >= list-length offsets then 0
+   else let po = list-at offsets i
+   in let target = list-at targets i
+   in let target-offset = offset-table-lookup offset-map target
+   in let resolved = if target-offset == -1 then offset-table-lookup offset-map "__unresolved_trap" else target-offset
+   in if resolved == -1 then apply-call-patches-direct code-buffer offsets targets offset-map (i + 1)
+      else let rel32 = resolved - (po + 5)
+      in let w = buf-write-i32 code-buffer (po + 1) rel32
+      in apply-call-patches-direct code-buffer offsets targets offset-map (i + 1)
+
+  apply-func-addr-patches-direct : Integer, List Integer, List Text, OffsetTable, Integer, Integer -> Integer
+  apply-func-addr-patches-direct (code-buffer) (patch-offsets) (targets) (offset-map) (text-base) (i) =
+   if i >= list-length patch-offsets then 0
+   else let po = list-at patch-offsets i
+   in let target = list-at targets i
+   in let func-offset = offset-table-lookup offset-map target
+   in let resolved = if func-offset == -1 then offset-table-lookup offset-map "__unresolved_trap" else func-offset
+   in if resolved == -1 then apply-func-addr-patches-direct code-buffer patch-offsets targets offset-map text-base (i + 1)
+      else let addr = text-base + resolved
+      in let w = buf-write-i64 code-buffer po addr
+      in apply-func-addr-patches-direct code-buffer patch-offsets targets offset-map text-base (i + 1)
+
+  apply-rodata-patches-direct : Integer, List Integer, List Integer, Integer, Integer -> Integer
+  apply-rodata-patches-direct (code-buffer) (patch-offsets) (rodata-offsets) (data-vaddr) (i) =
+   if i >= list-length patch-offsets then 0
+   else let po = list-at patch-offsets i
+   in let ro = list-at rodata-offsets i
+   in let addr = data-vaddr + ro
+   in let w = buf-write-i64 code-buffer po addr
+   in apply-rodata-patches-direct code-buffer patch-offsets rodata-offsets data-vaddr (i + 1)
+
+  apply-overflow-patches-direct : Integer, List Integer, Integer, Integer -> Integer
+  apply-overflow-patches-direct (code-buffer) (checks) (oom-offset) (i) =
+   if i >= list-length checks then 0
+   else let pos = list-at checks i
+   in let rel32 = oom-offset - (pos + 6)
+   in let w = buf-write-i32 code-buffer (pos + 2) rel32
+   in apply-overflow-patches-direct code-buffer checks oom-offset (i + 1)
+
+  apply-direct-addr-patches-direct : Integer, List Integer, List Integer, Integer, Integer -> Integer
+  apply-direct-addr-patches-direct (code-buffer) (patch-offsets) (target-offsets) (text-base) (i) =
+   if i >= list-length patch-offsets then 0
+   else let po = list-at patch-offsets i
+   in let tgt = list-at target-offsets i
+   in let addr = text-base + tgt
+   in let w = buf-write-i64 code-buffer po addr
+   in apply-direct-addr-patches-direct code-buffer patch-offsets target-offsets text-base (i + 1)
+
+Section: Finalize
+
+  x86-64-init-codegen : TypeEnv -> CodegenState
+  x86-64-init-codegen (env) =
+   let tdefs = env.bindings
+   in
+   let tramp = bare-metal-trampoline
+   in let ws = init-emit-workspace code-buffer-size data-buffer-size
+   in let bw1 = __buf-write-bytes (ws.code-buffer) 0 (tramp.bytes)
+   in let bw2 = __buf-write-bytes (ws.data-buffer) 0 init-rodata
+   in CodegenState {
+   workspace = ws,
+   code-len = list-length (tramp.bytes),
+   data-len = list-length init-rodata,
+   fo-names = [],
+   fo-offsets = [],
+   cp-offsets = [],
+   cp-targets = [],
+   fa-offsets = [],
+   fa-targets = [],
+   rf-poffsets = [],
+   rf-roffsets = [],
+   da-poffsets = [],
+   da-offsets = [],
+   stack-overflow-checks = [],
+   locals = [],
+   next-temp = 0,
+   next-local = 0,
+   spill-count = 0,
+   load-local-toggle = 0,
+   tco = TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   },
+   type-defs = tdefs,
+   builtin-names = sorted-builtin-names,
+   emit-work = 0,
+   exit-mode = ExitRepl,
+   watchdog-mode = WatchdogProgress,
+   opening-ret-type = NothingTy,
+   state-local = 0 - 1,
+   user-arities = [],
+   bag = empty-bag,
+   deck-bound = False,
+   effect-op-addrs = [],
+   vm-profile = vm-profile-spec,
+   poison-alloc = False,
+   trace-alloc = False
+  }
+
+  x86-64-init-codegen-sorted : List TypeBinding -> CodegenState
+  x86-64-init-codegen-sorted (tdefs) =
+   let tramp = bare-metal-trampoline
+   in let ws = init-emit-workspace code-buffer-size data-buffer-size
+   in let bw1 = __buf-write-bytes (ws.code-buffer) 0 (tramp.bytes)
+   in let bw2 = __buf-write-bytes (ws.data-buffer) 0 init-rodata
+   in CodegenState {
+   workspace = ws,
+   code-len = list-length (tramp.bytes),
+   data-len = list-length init-rodata,
+   fo-names = __list-with-capacity accum-capacity,
+   fo-offsets = __list-with-capacity accum-capacity,
+   cp-offsets = __list-with-capacity (accum-capacity * 4),
+   cp-targets = __list-with-capacity (accum-capacity * 4),
+   fa-offsets = __list-with-capacity accum-capacity,
+   fa-targets = __list-with-capacity accum-capacity,
+   rf-poffsets = __list-with-capacity (accum-capacity * 2),
+   rf-roffsets = __list-with-capacity (accum-capacity * 2),
+   da-poffsets = __list-with-capacity accum-capacity,
+   da-offsets = __list-with-capacity accum-capacity,
+   stack-overflow-checks = __list-with-capacity accum-capacity,
+   locals = [],
+   next-temp = 0,
+   next-local = 0,
+   spill-count = 0,
+   load-local-toggle = 0,
+   tco = TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   },
+   type-defs = tdefs,
+   builtin-names = sorted-builtin-names,
+   emit-work = 0,
+   exit-mode = ExitRepl,
+   watchdog-mode = WatchdogProgress,
+   opening-ret-type = NothingTy,
+   state-local = 0 - 1,
+   user-arities = [],
+   bag = empty-bag,
+   deck-bound = False,
+   effect-op-addrs = [],
+   vm-profile = vm-profile-spec,
+   poison-alloc = False,
+   trace-alloc = False
+  }
+
+  collect-direct-addr-patches : List Integer, List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
+  collect-direct-addr-patches (patch-offsets) (target-offsets) (text-base) (i) (acc) =
+   if i >= list-length patch-offsets then acc
+   else let po = list-at patch-offsets i
+   in let tgt = list-at target-offsets i
+   in let addr = text-base + tgt
+   in let addr-bytes = write-i64 addr
+   in let p0 = PatchEntry {
+    pos = po,
+    b0 = list-at addr-bytes 0,
+    b1 = list-at addr-bytes 1,
+    b2 = list-at addr-bytes 2,
+    b3 = list-at addr-bytes 3
+   }
+   in let p1 = PatchEntry {
+    pos = po + 4,
+    b0 = list-at addr-bytes 4,
+    b1 = list-at addr-bytes 5,
+    b2 = list-at addr-bytes 6,
+    b3 = list-at addr-bytes 7
+   }
+   in collect-direct-addr-patches patch-offsets target-offsets text-base (i + 1) (list-push (list-push acc p0) p1)
+
+  build-offset-table-parallel : List Text, List Integer -> OffsetTable
+  build-offset-table-parallel (names) (offsets) =
+   build-offset-table-parallel-loop names offsets 0 (list-length names) offset-table-empty
+
+  build-offset-table-parallel-loop : List Text, List Integer, Integer, Integer, OffsetTable -> OffsetTable
+  build-offset-table-parallel-loop (names) (offsets) (i) (len) (acc) =
+   if i >= len then acc
+   else build-offset-table-parallel-loop names offsets (i + 1) len (offset-table-set acc (list-at names i) (list-at offsets i))
+
+  buf-copy-chunk-size : Integer = 65536
+
+  buf-copy-chunked : Integer, Integer, Integer, Integer, Integer -> Integer
+  buf-copy-chunked (dst) (dst-off) (src) (src-off) (remaining) =
+   if remaining == 0 then 0
+   else let chunk = if remaining > buf-copy-chunk-size then buf-copy-chunk-size else remaining
+   in let hp = __heap-save
+   in let data = __buf-read-bytes src src-off chunk
+   in let w = __buf-write-bytes dst dst-off data
+   in let restored = __heap-restore hp
+   in buf-copy-chunked dst (dst-off + chunk) src (src-off + chunk) (remaining - chunk)
+
+  x86-64-apply-patches-and-build-cdx : CodegenState, Integer, Boolean -> EmitChapterResult
+  x86-64-apply-patches-and-build-cdx (st) (far-jump-patch-pos) (has-oom) =
+   let func-map = build-offset-table-parallel (st.fo-names) (st.fo-offsets)
+   in let st2a = check-call-patch-targets st func-map 0
+   in let st2b = check-func-addr-targets st2a func-map 0
+   in let st2c = check-runtime-symbol st2b func-map "__start"
+   in let st2d = if has-oom then check-runtime-symbol st2c func-map "__out_of_memory" else st2c
+   in let start-offset = offset-table-lookup func-map "__start"
+   in let start-addr = bare-metal-load-addr + start-offset
+   in let w-fj = buf-write-i32 (st2d.workspace.code-buffer) (far-jump-patch-pos + 1) start-addr
+   in let w-call = apply-call-patches-direct (st2d.workspace.code-buffer) (st2d.cp-offsets) (st2d.cp-targets) func-map 0
+   in let w-addr = apply-func-addr-patches-direct (st2d.workspace.code-buffer) (st2d.fa-offsets) (st2d.fa-targets) func-map bare-metal-load-addr 0
+   in let data-vaddr = compute-data-vaddr-bare (st2d.code-len)
+   in let w-rodata = apply-rodata-patches-direct (st2d.workspace.code-buffer) (st2d.rf-poffsets) (st2d.rf-roffsets) data-vaddr 0
+   in let w-overflow = if has-oom then let oom-offset = offset-table-lookup func-map "__out_of_memory" in apply-overflow-patches-direct (st2d.workspace.code-buffer) (st2d.stack-overflow-checks) oom-offset 0 else 0
+   in let w-direct = apply-direct-addr-patches-direct (st2d.workspace.code-buffer) (st2d.da-poffsets) (st2d.da-offsets) bare-metal-load-addr 0
+   in let code-len = st2d.code-len
+   in let data-len = st2d.data-len
+   in let text-bytes = __buf-read-bytes (st2d.workspace.code-buffer) 0 code-len
+   in let rodata-bytes = __buf-read-bytes (st2d.workspace.data-buffer) 0 data-len
+   in let text-aligned = align-up code-len 8
+   in let pad-len = text-aligned - code-len
+   in let padding = cdx-zeros pad-len
+   in let content = text-bytes & padding & rodata-bytes
+   in let content-hash = sha256 content
+   in let cdx-header-size = 224
+   in let cap-size = 0
+   in let text-offset = cdx-header-size + cap-size
+   in let rodata-offset = text-offset + text-aligned
+   in let func-count = list-length (st2d.fo-names)
+   in let debug-map = build-debug-map (st2d.fo-names) (st2d.fo-offsets) code-len func-count
+   in let debug-off = if func-count > 0 then cdx-header-size + list-length content else 0
+   in let header = cdx-build-header content-hash text-offset code-len rodata-offset data-len start-offset debug-off
+   in let smap = build-symbol-map (st2d.fo-names) (st2d.fo-offsets) bare-metal-load-addr code-len 0 func-count []
+   in EmitChapterResult {
+    bytes = header & content & debug-map,
+    bag = st2d.bag,
+    symbol-map = smap
+   }
+
+  x86-64-finalize-cdx : CodegenState, Integer -> EmitChapterResult
+  x86-64-finalize-cdx (st1) (far-jump-patch-pos) =
+   let isr-result = emit-isr-stubs st1
+   in let syscall-result = emit-syscall-handler (isr-result.state)
+   in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
+   in x86-64-apply-patches-and-build-cdx st2 far-jump-patch-pos True
+
+  cdx-build-header : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  cdx-build-header (hash) (text-off) (text-sz) (ro-off) (ro-sz) (entry-off) (debug-off) =
+   let magic = [67, 68, 88, 49]
+   in let version = cdx-le16 1
+   in let flag-val = if debug-off > 0 then 19 else 3
+   in let flags = cdx-le16 flag-val
+   in let hash-bytes = cdx-hash-to-bytes hash 0 []
+   in let author-hash = cdx-zeros 32
+   in let reserved = cdx-zeros 64
+   in let cap-off = cdx-le64 224
+   in let cap-sz = cdx-le64 0
+   in let proof-off = cdx-le64 0
+   in let proof-sz = cdx-le64 0
+   in let text = cdx-le64 text-off & cdx-le64 text-sz
+   in let rodata = cdx-le64 ro-off & cdx-le64 ro-sz
+   in let entry = cdx-le64 entry-off
+   in let stack = cdx-le32 1048576
+   in let heap = cdx-le32 (bare-metal-ram-size - bare-metal-heap-base)
+   in let trust = cdx-le16 5000 & cdx-le16 0
+   in let tail = cdx-le32 debug-off
+   in magic & version & flags & hash-bytes & author-hash & reserved & cap-off & cap-sz & proof-off & proof-sz & text & rodata & entry & stack & heap & trust & tail
+
+  cdx-hash-to-bytes : List Integer, Integer, List Integer -> List Integer
+  cdx-hash-to-bytes (ws) (i) (acc) =
+   if i == list-length ws then acc
+   else let w = list-at ws i
+   in cdx-hash-to-bytes ws (i + 1) (acc & [bit-and (bit-shru w 24) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 8) 255, bit-and w 255])
+
+  cdx-le16 : Integer -> List Integer
+  cdx-le16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  cdx-le32 : Integer -> List Integer
+  cdx-le32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  cdx-le64 : Integer -> List Integer
+  cdx-le64 (v) = cdx-le32 v & cdx-le32 (bit-shru v 32)
+
+  cdx-zeros : Integer -> List Integer
+  cdx-zeros (n) = cdx-zeros-loop n []
+
+  cdx-zeros-loop : Integer, List Integer -> List Integer
+  cdx-zeros-loop (n) (acc) =
+   if n <= 0 then acc
+   else cdx-zeros-loop (n - 1) (list-push acc 0)
+
+
+Section: Symbol Map
+
+  build-symbol-map : List Text, List Integer, Integer, Integer, Integer, Integer, List Text -> List Text
+  build-symbol-map (names) (offsets) (load-addr) (code-len) (i) (len) (acc) =
+   if i >= len then acc
+   else let addr = load-addr + list-at offsets i
+   in let size = if i + 1 < len then (list-at offsets (i + 1)) - (list-at offsets i) else code-len - (list-at offsets i)
+   in let line = "0x" & map-hex-pad8 addr & " " & show size & " " & list-at names i
+   in build-symbol-map names offsets load-addr code-len (i + 1) len (list-push acc line)
+
+  map-hex-pad8 : Integer -> Text
+  map-hex-pad8 (n) =
+   let d7 = bit-and (bit-shru n 28) 15
+   in let d6 = bit-and (bit-shru n 24) 15
+   in let d5 = bit-and (bit-shru n 20) 15
+   in let d4 = bit-and (bit-shru n 16) 15
+   in let d3 = bit-and (bit-shru n 12) 15
+   in let d2 = bit-and (bit-shru n 8) 15
+   in let d1 = bit-and (bit-shru n 4) 15
+   in let d0 = bit-and n 15
+   in map-hex-digit d7 & map-hex-digit d6 & map-hex-digit d5 & map-hex-digit d4 & map-hex-digit d3 & map-hex-digit d2 & map-hex-digit d1 & map-hex-digit d0
+
+  map-hex-digit : Integer -> Text
+  map-hex-digit (n) =
+   if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+   else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+   else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+   else if n == 9 then "9" else if n == 10 then "A" else if n == 11 then "B"
+   else if n == 12 then "C" else if n == 13 then "D" else if n == 14 then "E"
+   else "F"
+
+Section: Binary Debug Map (MAP1)
+
+  map1-magic : List Integer = [77, 65, 80, 49]
+
+  MapStrings = record {
+   bytes : List Integer,
+   offsets : List Integer
+  }
+
+  build-debug-map : List Text, List Integer, Integer, Integer -> List Integer
+  build-debug-map (names) (offsets) (code-len) (count) =
+   if count == 0 then []
+   else let strings = build-map-strings names 0 count []
+   in let entries-size = count * 12
+   in let strings-off = 12 + entries-size
+   in let entries = build-map-entries offsets names (strings.offsets) code-len 0 count []
+   in map1-magic & cdx-le32 count & cdx-le32 strings-off & entries & (strings.bytes)
+
+  build-map-strings : List Text, Integer, Integer, List Integer -> MapStrings
+  build-map-strings (names) (i) (count) (acc-offsets) =
+   build-map-strings-inc names 0 count 0 []
+
+  build-map-strings-inc : List Text, Integer, Integer, Integer, List Integer -> MapStrings
+  build-map-strings-inc (names) (i) (count) (running-off) (acc-offsets) =
+   if i >= count then MapStrings { bytes = build-map-string-bytes names 0 count [], offsets = acc-offsets }
+   else let name-len = text-length (list-at names i) + 1
+   in build-map-strings-inc names (i + 1) count (running-off + name-len) (list-push acc-offsets running-off)
+
+  build-map-string-bytes : List Text, Integer, Integer, List Integer -> List Integer
+  build-map-string-bytes (names) (i) (count) (acc) =
+   if i >= count then acc
+   else let name = list-at names i
+   in let acc1 = map-text-to-cce-bytes name 0 (text-length name) acc
+   in build-map-string-bytes names (i + 1) count (list-push acc1 0)
+
+  map-text-to-cce-bytes : Text, Integer, Integer, List Integer -> List Integer
+  map-text-to-cce-bytes (t) (i) (len) (acc) =
+   if i >= len then acc
+   else map-text-to-cce-bytes t (i + 1) len (list-push acc (char-code-at t i))
+
+  build-map-entries : List Integer, List Text, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  build-map-entries (offsets) (names) (str-offsets) (code-len) (i) (count) (acc) =
+   if i >= count then acc
+   else let off = list-at offsets i
+   in let size = if i + 1 < count then (list-at offsets (i + 1)) - off else code-len - off
+   in let str-off = list-at str-offsets i
+   in build-map-entries offsets names str-offsets code-len (i + 1) count (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push acc (bit-and off 255)) (bit-and (bit-shr off 8) 255)) (bit-and (bit-shr off 16) 255)) (bit-and (bit-shr off 24) 255)) (bit-and size 255)) (bit-and (bit-shr size 8) 255)) (bit-and (bit-shr size 16) 255)) (bit-and (bit-shr size 24) 255)) (bit-and str-off 255)) (bit-and (bit-shr str-off 8) 255)) (bit-and (bit-shr str-off 16) 255)) (bit-and (bit-shr str-off 24) 255))
+
+
+  x86-64-emit-cdx : IRChapter, List TypeBinding -> EmitChapterResult
+  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False
+
+  x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean -> EmitChapterResult
+  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) =
+   let emit-deck = emit-build (list-length (m.defs) * 65536 + 16777216)
+   in let de = __deck-enter
+   in let tramp = bare-metal-trampoline
+   in let st0 = x86-64-init-codegen-sorted tdefs
+   in let st-mode = __record-set st0 "exit-mode" exit-mode
+   in let st-poison = __record-set st-mode "poison-alloc" poison
+   in let st-trace = __record-set st-poison "trace-alloc" trace
+   in let st-wd = __record-set st-trace "watchdog-mode" WatchdogProgress
+   in let st-eo2 = __record-set st-wd "effect-op-addrs" (assign-effect-op-addrs (m.effect-op-names) 0 (list-length (m.effect-op-names)) [])
+   in let defs-lifted = m.defs
+   in let ret-ty = opening-bare-print-type defs-lifted
+   in let st-ret = __record-set st-eo2 "opening-ret-type" ret-ty
+   in let arities = build-x86-arities defs-lifted 0 (list-length defs-lifted) []
+   in let st-ar = __record-set st-ret "user-arities" arities
+   in let st0a = emit-runtime-helpers st-ar
+   in let dx = __deck-exit
+   in let st1 = emit-all-defs st0a defs-lifted 0
+   in x86-64-finalize-cdx st1 (tramp.far-jump-patch-pos)
+
+  assign-effect-op-addrs : List Text, Integer, Integer, List EffectOpAddr -> List EffectOpAddr
+  assign-effect-op-addrs (names) (i) (len) (acc) =
+   if i >= len then acc
+   else assign-effect-op-addrs names (i + 1) len (list-push acc (EffectOpAddr { name = list-at names i, addr = handler-table-base-addr + i * 8 }))
+
+Page 3 of 10

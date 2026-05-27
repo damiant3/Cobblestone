@@ -1,0 +1,101 @@
+Chapter: LruCache
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ Least-recently-used (LRU) cache with fixed capacity. Evicts the
+ oldest entry when full. Backed by parallel key, value, and age
+ arrays. Access and eviction require an O(n) scan, making the
+ structure suitable for small caches (up to 256 entries).
+
+ A LruCache is a record containing:
+   keys     -- parallel array of integer keys.
+   values   -- parallel array of integer values.
+   ages     -- parallel array of access timestamps (logical clock).
+   capacity -- maximum number of entries (1..256).
+   count    -- number of entries currently stored (0..256).
+   clock    -- monotonically increasing logical timestamp.
+
+ A LruGetResult is a record containing:
+   value -- the retrieved value (0 if not found).
+   cache -- the cache after updating the access timestamp.
+   found -- True if the key was present.
+
+ To lru-new gives LruCache,
+   creating an empty LRU cache with the given capacity.
+
+ To lru-get gives LruGetResult,
+   looking up a key, refreshing its age on hit, or returning found=False on miss.
+
+ To lru-put gives LruCache,
+   inserting or updating a key-value pair, evicting the least-recently-used entry if full.
+
+ To lru-count gives Integer,
+   returning the number of entries stored.
+
+ To lru-contains gives Boolean,
+   True if the key exists in the cache without updating its age.
+
+ We say:
+
+Section: Type
+  LruCache = record {
+    keys : List Integer,
+    values : List Integer,
+    ages : List Integer,
+    capacity : Integer between 1 and 256,
+    count : Integer between 0 and 256,
+    clock : Integer
+  }
+
+Section: Construction
+  lru-new : Integer -> LruCache
+  lru-new (cap) = LruCache { keys = list-zeros cap, values = list-zeros cap, ages = list-zeros cap, capacity = cap, count = 0, clock = 1 }
+
+Section: Get
+  LruGetResult = record {
+    value : Integer,
+    cache : LruCache,
+    found : Boolean
+  }
+
+  lru-get : LruCache, Integer -> LruGetResult
+  lru-get (c) (key) =
+    let idx = lru-find-key c key 0
+    in if idx < 0 then LruGetResult { value = 0, cache = c, found = False }
+    else let val = list-at (c.values) idx
+    in let updated = LruCache { keys = c.keys, values = c.values, ages = list-set-at (c.ages) idx (c.clock), capacity = c.capacity, count = c.count, clock = c.clock + 1 }
+    in LruGetResult { value = val, cache = updated, found = True }
+
+  lru-find-key : LruCache, Integer, Integer -> Integer
+  lru-find-key (c) (key) (i) =
+    if i >= c.count then 0 - 1
+    else if list-at (c.keys) i == key then i
+    else lru-find-key c key (i + 1)
+
+Section: Put
+  lru-put : LruCache, Integer, Integer -> LruCache
+  lru-put (c) (key) (val) =
+    let existing = lru-find-key c key 0
+    in if existing >= 0 then LruCache { keys = c.keys, values = list-set-at (c.values) existing val, ages = list-set-at (c.ages) existing (c.clock), capacity = c.capacity, count = c.count, clock = c.clock + 1 }
+    else if c.count < c.capacity then LruCache { keys = list-set-at (c.keys) (c.count) key, values = list-set-at (c.values) (c.count) val, ages = list-set-at (c.ages) (c.count) (c.clock), capacity = c.capacity, count = c.count + 1, clock = c.clock + 1 }
+    else let victim = lru-find-oldest c 0
+    in LruCache { keys = list-set-at (c.keys) victim key, values = list-set-at (c.values) victim val, ages = list-set-at (c.ages) victim (c.clock), capacity = c.capacity, count = c.count, clock = c.clock + 1 }
+
+  lru-find-oldest : LruCache, Integer -> Integer
+  lru-find-oldest (c) (i) = lru-oldest-loop c 0 (c.count) 0 (c.clock + 1)
+
+  lru-oldest-loop : LruCache, Integer, Integer, Integer, Integer -> Integer
+  lru-oldest-loop (c) (i) (len) (best) (best-age) =
+    if i >= len then best
+    else let age = list-at (c.ages) i
+    in if age < best-age then lru-oldest-loop c (i + 1) len i age
+    else lru-oldest-loop c (i + 1) len best best-age
+
+Section: Queries
+  lru-count : LruCache -> Integer
+  lru-count (c) = c.count
+
+  lru-contains : LruCache, Integer -> Boolean
+  lru-contains (c) (key) = lru-find-key c key 0 >= 0
+
+Page 1

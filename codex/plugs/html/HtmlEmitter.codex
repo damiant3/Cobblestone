@@ -1,0 +1,476 @@
+Chapter: HTML Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates HTML + CSS + JavaScript from the IR.
+
+Section: Keywords and Sanitization
+
+  html-sanitize : Text -> Text
+  html-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  html-escape : Text -> Text
+  html-escape (s) =
+   let s1 = text-replace s "&" "&amp;"
+   in let s2 = text-replace s1 "<" "&lt;"
+   in let s3 = text-replace s2 ">" "&gt;"
+   in let s4 = text-replace s3 "\"" "&quot;"
+   in s4
+
+  js-escape : Text -> Text
+  js-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in let s4 = text-replace s3 "'" "\\'"
+   in s4
+
+  html-indent : Integer -> Text
+  html-indent (n) =
+   if n <= 0 then ""
+   else "  " & html-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then 0
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0
+
+Section: Type Emission
+
+  emit-html-type : CodexType -> Text
+  emit-html-type (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> "number"
+    is NumberTy -> "number"
+    is TextTy -> "string"
+    is BooleanTy -> "boolean"
+    is CharTy -> "string"
+    is VoidTy -> "void"
+    is NothingTy -> "void"
+    is ErrorTy -> "any"
+    is FunTy (p) (r) -> "Function"
+    is ListTy (elem) -> "Array"
+    is LinkedListTy (elem) -> "Array"
+    is TypeVar (id) -> "any"
+    is ForAllTy (id) (body) -> emit-html-type body
+    is SumTy (name) (ty-args) (ctors) -> name.value
+    is RecordTy (name) (args) (fields) -> name.value
+    is ConstructedTy (name) (args) -> name.value
+    is EffectfulTy (effs) (sc) (ret) -> emit-html-type ret
+
+Section: JavaScript Expression Emission
+
+  emit-js-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-js-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> show n
+    is IrTextLit (s) (sp) -> "\"" & js-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
+    is IrName (n) (ty) (sp) -> html-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-js-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-js-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-js-expr c arities indent & " ? " & emit-js-expr t arities indent & " : " & emit-js-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> emit-js-let name val body arities indent
+    is IrApply (f) (a) (ty) (sp) -> emit-js-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> emit-js-lambda params body arities indent
+    is IrList (elems) (ty) (sp) -> "[" & emit-js-list-elems elems arities indent 0 & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-js-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-js-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> emit-js-record name fields arities indent
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-js-expr rec arities indent & "." & html-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-js-expr rec arities indent & "." & html-sanitize field & " = " & emit-js-expr val arities indent & ")"
+    is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-js-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-js-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-js-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-js-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-js-try max body fb fail arities indent
+    is IrError (msg) (ty) (sp) -> "(() => { throw new Error(" & "\"" & js-escape msg & "\"" & "); })()"
+
+Section: Binary Operators
+
+  emit-js-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-js-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-js-expr l arities indent
+   in let rhs = emit-js-expr r arities indent
+   in when op
+    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
+    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrEq -> "(" & lhs & " === " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
+    is IrLt -> "(" & lhs & " < " & rhs & ")"
+    is IrGt -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq -> "(" & lhs & " >= " & rhs & ")"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(" & lhs & " + " & rhs & ")"
+    is IrAppendList -> "(" & lhs & ".concat(" & rhs & "))"
+    is IrConsList -> "[" & lhs & ", ..." & rhs & "]"
+
+Section: Let Bindings
+
+  emit-js-let : Text, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-js-let (name) (val) (body) (arities) (indent) =
+   "(() => {\n" & html-indent (indent + 1) & "const " & html-sanitize name & " = " & emit-js-expr val arities (indent + 1) & ";\n" & html-indent (indent + 1) & "return " & emit-js-expr body arities (indent + 1) & ";\n" & html-indent indent & "})()"
+
+Section: Apply
+
+  FlatApply = record {
+   root : IRExpr,
+   args : List IRExpr
+  }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-js-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-js-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let func = emit-js-expr (chain.root) arities indent
+   in let args = emit-js-apply-args (chain.args) arities indent 0
+   in func & "(" & args & ")"
+
+  emit-js-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-js-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-js-expr (list-at args i) arities indent & emit-js-apply-args args arities indent (i + 1)
+
+Section: Lambda
+
+  emit-js-lambda : List IRParam, IRExpr, List ArityEntry, Integer -> Text
+  emit-js-lambda (params) (body) (arities) (indent) =
+   "(" & emit-js-param-names params 0 & ") => " & emit-js-expr body arities indent
+
+  emit-js-param-names : List IRParam, Integer -> Text
+  emit-js-param-names (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & html-sanitize (list-at params i).name & emit-js-param-names params (i + 1)
+
+Section: List
+
+  emit-js-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-js-list-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-js-expr (list-at elems i) arities indent & emit-js-list-elems elems arities indent (i + 1)
+
+Section: Match
+
+  emit-js-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-js-match (scrut) (branches) (arities) (indent) =
+   let sv = emit-js-expr scrut arities indent
+   in "(() => {\n" & html-indent (indent + 1) & "const _s = " & sv & ";\n" & emit-js-branches branches arities (indent + 1) 0 & html-indent indent & "})()"
+
+  emit-js-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-js-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then html-indent indent & "throw new Error('non-exhaustive match');\n"
+   else let b = list-at branches i
+   in let cond = emit-js-pattern-cond (b.pattern) "_s"
+   in let binds = emit-js-pattern-binds (b.pattern) "_s" indent
+   in let body = emit-js-expr (b.body) arities indent
+   in let kw = if i == 0 then "if" else "} else if"
+   in html-indent indent & kw & " (" & cond & ") {\n" & binds & html-indent (indent + 1) & "return " & body & ";\n" & emit-js-branches branches arities indent (i + 1)
+
+  emit-js-pattern-cond : IRPat, Text -> Text
+  emit-js-pattern-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
+    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+
+  emit-js-pattern-binds : IRPat, Text, Integer -> Text
+  emit-js-pattern-binds (p) (scrut) (indent) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> html-indent (indent + 1) & "const " & html-sanitize name & " = " & scrut & ";\n"
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-js-ctor-binds subs scrut indent 0
+    is IrWildPat (sp) -> ""
+
+  emit-js-ctor-binds : List IRPat, Text, Integer, Integer -> Text
+  emit-js-ctor-binds (subs) (scrut) (indent) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let field-access = scrut & "._" & show i
+   in emit-js-pattern-binds sub field-access indent & emit-js-ctor-binds subs scrut indent (i + 1)
+
+Section: Act Blocks
+
+  emit-js-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-js-act (stmts) (arities) (indent) =
+   "(() => {\n" & emit-js-act-stmts stmts arities (indent + 1) 0 & html-indent indent & "})()"
+
+  emit-js-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-js-act-stmts (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in emit-js-act-stmt s arities indent (i == list-length stmts - 1) & emit-js-act-stmts stmts arities indent (i + 1)
+
+  emit-js-act-stmt : IRActStmt, List ArityEntry, Integer, Boolean -> Text
+  emit-js-act-stmt (s) (arities) (indent) (is-last) =
+   when s
+    is IrDoBind (name) (ty) (val) (sp) -> html-indent indent & "const " & html-sanitize name & " = " & emit-js-expr val arities indent & ";\n"
+    is IrDoExec (e) (sp) ->
+     if is-last then html-indent indent & "return " & emit-js-expr e arities indent & ";\n"
+     else html-indent indent & emit-js-expr e arities indent & ";\n"
+
+Section: Records
+
+  emit-js-record : Text, List IRFieldVal, List ArityEntry, Integer -> Text
+  emit-js-record (name) (fields) (arities) (indent) =
+   "{ _type: \"" & name & "\"" & emit-js-record-fields fields arities indent 0 & " }"
+
+  emit-js-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-js-record-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", " & html-sanitize (f.name) & ": " & emit-js-expr (f.value) arities indent & emit-js-record-fields fields arities indent (i + 1)
+
+Section: Try
+
+  emit-js-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, List ArityEntry, Integer -> Text
+  emit-js-try (max) (body) (fb) (fail) (arities) (indent) =
+   "(() => {\n" & html-indent (indent + 1) & "for (let _try = 0; _try < " & show max & "; _try++) {\n" & html-indent (indent + 2) & "try {\n" & emit-js-act-stmts body arities (indent + 3) 0 & html-indent (indent + 2) & "} catch (_e) { continue; }\n" & html-indent (indent + 1) & "}\n" & emit-js-act-stmts fail arities (indent + 1) 0 & html-indent indent & "})()"
+
+Section: Type Definitions
+
+  emit-js-type-def : ATypeDef -> Text
+  emit-js-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "function " & html-sanitize (name.value) & "(fields) { return { _type: \"" & name.value & "\", ...fields }; }\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-js-variant-ctors ctors 0
+
+  emit-js-variant-ctors : List AVariantCtorDef, Integer -> Text
+  emit-js-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in emit-js-variant-ctor c & emit-js-variant-ctors ctors (i + 1)
+
+  emit-js-variant-ctor : AVariantCtorDef -> Text
+  emit-js-variant-ctor (c) =
+   let n = list-length (c.fields)
+   in if n == 0 then "const " & html-sanitize (c.name.value) & " = { _tag: \"" & c.name.value & "\" };\n"
+      else "function " & html-sanitize (c.name.value) & "(" & emit-js-ctor-params n 0 & ") { return { _tag: \"" & c.name.value & "\"" & emit-js-ctor-fields n 0 & " }; }\n"
+
+  emit-js-ctor-params : Integer, Integer -> Text
+  emit-js-ctor-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "_" & show i & emit-js-ctor-params n (i + 1)
+
+  emit-js-ctor-fields : Integer, Integer -> Text
+  emit-js-ctor-fields (n) (i) =
+   if i == n then ""
+   else ", _" & show i & ": _" & show i & emit-js-ctor-fields n (i + 1)
+
+Section: Definition Emission
+
+  is-html-builtin : Text -> Boolean
+  is-html-builtin (n) =
+   if text-starts-with n "dom-" then True
+   else if n == "random-int" then True
+   else if n == "fetch-json" then True
+   else if n == "json-stringify" then True
+   else if n == "json-parse" then True
+   else if n == "set-timeout" then True
+   else if n == "local-storage-get" then True
+   else if n == "local-storage-set" then True
+   else if n == "generate-image" then True
+   else if n == "check-sd-status" then True
+   else if n == "mount-widget" then True
+   else if n == "int-to-css-color" then True
+   else if n == "state-get" then True
+   else if n == "state-set" then True
+   else if n == "state-get-text" then True
+   else if n == "state-set-text" then True
+   else if n == "next-card-id" then True
+   else if n == "theme-to-css" then True
+   else if n == "inject-theme-css" then True
+   else False
+
+  emit-js-def : IRDef, List ArityEntry -> Text
+  emit-js-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else if is-html-builtin (d.name) then ""
+   else let sname = html-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "const " & sname & " = " & emit-js-expr (d.body) arities 0 & ";\n\n"
+      else "function " & sname & "(" & emit-js-param-names (d.params) 0 & ") {\n  return " & emit-js-expr (d.body) arities 1 & ";\n}\n\n"
+
+  emit-js-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-js-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-js-def (list-at defs i) arities & emit-js-defs defs (i + 1) arities
+
+Section: HTML Page Assembly
+
+  emit-html-page : Text, Text, Text -> Text
+  emit-html-page (title) (css) (js) =
+   "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>" & html-escape title & "</title>\n  <style>\n" & css & "  </style>\n</head>\n<body>\n  <div id=\"app\"></div>\n  <script>\n" & js & "  </script>\n</body>\n</html>\n"
+
+  emit-default-css : Text
+  emit-default-css =
+   "    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }\n    #app { display: contents; }\n"
+
+Section: Chapter Emission
+
+  opening-return-type : List IRDef -> CodexType
+  opening-return-type (defs) =
+   opening-return-type-loop defs 0 (list-length defs)
+
+  opening-return-type-loop : List IRDef, Integer, Integer -> CodexType
+  opening-return-type-loop (defs) (i) (len) =
+   if i >= len then NothingTy
+   else let d = list-at defs i
+   in if d.name == "opening" then d.type-val
+      else opening-return-type-loop defs (i + 1) len
+
+  emit-html-chapter : IRChapter, List ATypeDef -> Text
+  emit-html-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "Codex App" else m.chapter-title
+   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\n\n"
+   in let types-text = emit-js-type-defs type-defs 0
+   in let defs-text = emit-js-defs (m.defs) 0 arities
+   in let entry = "// Entry\ntry { opening(); } catch(e) { console.error(e); }\n"
+   in let dom-bi = emit-dom-builtins
+   in let js = builtins & dom-bi & types-text & defs-text & entry
+   in emit-html-page title (emit-default-css) js
+
+  emit-dom-builtins : Text
+  emit-dom-builtins =
+   "function dom_get(id){return document.getElementById(id);}\n"
+   & "function dom_create(tag){return document.createElement(tag);}\n"
+   & "function dom_set_attr(el,k,v){el.setAttribute(k,v);return el;}\n"
+   & "function dom_set_text(el,s){el.textContent=s;return el;}\n"
+   & "function dom_set_html(el,s){el.innerHTML=s;return el;}\n"
+   & "function dom_get_value(el){return el.value||'';}\n"
+   & "function dom_set_value(el,v){el.value=v;return el;}\n"
+   & "function dom_append(p,c){p.appendChild(c);return p;}\n"
+   & "function dom_prepend(p,c){p.prepend(c);return p;}\n"
+   & "function dom_remove(el){if(el.parentNode)el.parentNode.removeChild(el);return el;}\n"
+   & "function dom_add_class(el,c){el.classList.add(c);return el;}\n"
+   & "function dom_remove_class(el,c){el.classList.remove(c);return el;}\n"
+   & "function dom_set_style(el,k,v){el.style[k]=v;return el;}\n"
+   & "function dom_on(el,ev,fn){el.addEventListener(ev,fn);return el;}\n"
+   & "function dom_query(sel){return document.querySelector(sel);}\n"
+   & "function dom_body(){return document.body;}\n"
+   & "function random_int(lo,hi){return lo+Math.floor(Math.random()*(hi-lo+1));}\n"
+   & "function fetch_json(u,m,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=b;return fetch(u,o).then(function(r){return r.json();});}\n"
+   & "function json_stringify(v){return JSON.stringify(v);}\n"
+   & "function json_parse(s){return JSON.parse(s);}\n"
+   & "function set_timeout(fn,ms){return setTimeout(fn,ms);}\n"
+   & "function local_storage_get(k){try{return localStorage.getItem(k)||'';}catch(e){return'';}}\n"
+   & "function local_storage_set(k,v){try{localStorage.setItem(k,v);}catch(e){}return 0;}\n"
+   & "var _st={};function state_get(k){return _st[k]!==undefined?_st[k]:0;}function state_set(k,v){_st[k]=v;return v;}function state_get_text(k){return _st[k]||'';}function state_set_text(k,v){_st[k]=v;return v;}\n"
+   & "var _cc=0;function next_card_id(x){_cc++;return 'c'+_cc;}\n"
+   & "function check_sd_status(x){fetch('/api/config').then(function(r){return r.json();}).then(function(d){"
+   & "var dot=dom_get('sd-dot');var lbl=dom_get('sd-label');"
+   & "if(dot)dot.style.background='#4caf50';if(lbl)lbl.textContent=(d.current_model||'SD').split('.')[0].substring(0,25);"
+   & "}).catch(function(){var dot=dom_get('sd-dot');var lbl=dom_get('sd-label');"
+   & "if(dot)dot.style.background='#f44336';if(lbl)lbl.textContent='SD offline';});return 0;}\n"
+   & "function generate_image(url,body,cid){var card=dom_get(cid);"
+   & "fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body})"
+   & ".then(function(r){return r.json();}).then(function(d){if(card){var img=card.querySelector('img');"
+   & "if(img&&d.url){img.src=d.url;var hero=dom_get('hero-img');"
+   & "if(hero){hero.src=d.url;hero.style.display='';var em=dom_get('hero-empty');if(em)em.style.display='none';}}"
+   & "var sp=card.querySelector('.sp');if(sp)sp.style.display='none';}}).catch(function(){"
+   & "if(card){var sp=card.querySelector('.sp');if(sp)sp.style.display='none';}});return 0;}\n"
+   & "function _c(n){var r=(n>>16)&255,g=(n>>8)&255,b=n&255;return'#'+((1<<24)|(r<<16)|(g<<8)|b).toString(16).slice(1);}\n"
+   & "function _ws(ws,sel){var s=sel+'{';if(ws.ws_bg)s+='background:'+_c(ws.ws_bg)+';';\n"
+   & "if(ws.ws_fg)s+='color:'+_c(ws.ws_fg)+';';\n"
+   & "var p=ws.ws_padding;if(p)s+='padding:'+p.edge_top+'px '+p.edge_right+'px '+p.edge_bottom+'px '+p.edge_left+'px;';\n"
+   & "var m=ws.ws_margin;if(m)s+='margin:'+m.edge_top+'px '+m.edge_right+'px '+m.edge_bottom+'px '+m.edge_left+'px;';\n"
+   & "var b=ws.ws_border;if(b&&b.bdr_top&&b.bdr_top.brd_width>0){\n"
+   & "s+='border:'+b.bdr_top.brd_width+'px solid '+_c(b.bdr_top.brd_color)+';';\n"
+   & "if(b.bdr_corner){if(b.bdr_corner._tag==='CornerRound')s+='border-radius:'+b.bdr_corner._0+'px;';\n"
+   & "if(b.bdr_corner._tag==='CornerBevel')s+='border-radius:0;';}}\n"
+   & "if(ws.ws_min_width>0)s+='min-width:'+ws.ws_min_width+'px;';\n"
+   & "if(ws.ws_min_height>0)s+='min-height:'+ws.ws_min_height+'px;';return s+'}';}\n"
+   & "function _ss(ss,base){var s=_ws(ss.ss_normal,base);\n"
+   & "s+=_ws(ss.ss_hover,base+':hover');s+=_ws(ss.ss_pressed,base+':active');\n"
+   & "s+=_ws(ss.ss_disabled,base+':disabled');s+=_ws(ss.ss_focused,base+':focus');return s;}\n"
+   & "function theme_to_css(th){var p=th.th_palette;var s=':root{';\n"
+   & "s+='--bg:'+_c(p.pal_bg)+';--fg:'+_c(p.pal_fg)+';';\n"
+   & "s+='--primary:'+_c(p.pal_primary)+';--secondary:'+_c(p.pal_secondary)+';';\n"
+   & "s+='--accent:'+_c(p.pal_accent)+';--muted:'+_c(p.pal_muted)+';';\n"
+   & "s+='--error:'+_c(p.pal_error)+';--success:'+_c(p.pal_success)+';';\n"
+   & "s+='--warning:'+_c(p.pal_warning)+';--border:'+_c(p.pal_border)+';}';\n"
+   & "s+='*{margin:0;padding:0;box-sizing:border-box}';\n"
+   & "s+='body{background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif}';\n"
+   & "s+=_ss(th.th_panel,'.wk-panel');s+=_ss(th.th_button,'.wk-btn');\n"
+   & "s+=_ss(th.th_label,'.wk-label');s+=_ss(th.th_input,'.wk-input');\n"
+   & "s+=_ss(th.th_gauge,'.wk-gauge');s+=_ss(th.th_separator,'.wk-sep');\n"
+   & "s+='.wk-row{display:flex;flex-direction:row}.wk-col{display:flex;flex-direction:column}';\n"
+   & "return s;}\n"
+   & "function inject_theme_css(th){var s=document.createElement('style');\n"
+   & "s.textContent=theme_to_css(th);document.head.appendChild(s);return 0;}\n"
+
+  is-builtin-type : Text -> Boolean
+  is-builtin-type (n) =
+   if n == "DomElement" then True
+   else False
+
+  emit-js-type-defs : List ATypeDef, Integer -> Text
+  emit-js-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else let td = list-at tds i
+   in let name = when td
+     is ARecordTypeDef (nm) (tp) (fs) (sp) -> nm.value
+     is AVariantTypeDef (nm) (tp) (cs) (sp) -> nm.value
+   in if is-builtin-type name then emit-js-type-defs tds (i + 1)
+   else emit-js-type-def td & emit-js-type-defs tds (i + 1)

@@ -1,0 +1,195 @@
+Chapter: Server
+  cites Data chapter Session
+  cites Data chapter Protocol
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Transaction
+  cites Data chapter LockManager
+  cites Data chapter Deadlock
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Codex DB server. Manages connections, dispatches requests to
+ sessions, and coordinates the catalog and transaction manager.
+ Entry point: opening.
+
+ We say:
+
+Section: Server State
+
+  DbServer = record {
+    db-catalog : Catalog,
+    db-txn-mgr : TxnManager,
+    db-lock-table : LockTable,
+    db-sessions : HamtMap SessionState,
+    db-next-session : Integer,
+    db-name : Text
+  }
+
+  db-server-new : Text -> DbServer
+  db-server-new (name) = DbServer {
+    db-catalog = catalog-new,
+    db-txn-mgr = txn-manager-new,
+    db-lock-table = lock-table-new,
+    db-sessions = hamt-empty,
+    db-next-session = 1,
+    db-name = name
+  }
+
+Section: Connection Management
+
+  db-connect : DbServer -> (DbServer, SessionState)
+  db-connect (srv) =
+    let sess = session-new (srv.db-next-session)
+    in let new-srv = DbServer {
+      db-catalog = srv.db-catalog,
+      db-txn-mgr = srv.db-txn-mgr,
+      db-lock-table = srv.db-lock-table,
+      db-sessions = hamt-set (srv.db-sessions) (show (srv.db-next-session)) sess,
+      db-next-session = srv.db-next-session + 1,
+      db-name = srv.db-name
+    }
+    in (new-srv, sess)
+
+  db-disconnect : DbServer, Integer -> DbServer
+  db-disconnect (srv) (session-id) =
+    let key = show session-id
+    in DbServer {
+      db-catalog = srv.db-catalog,
+      db-txn-mgr = srv.db-txn-mgr,
+      db-lock-table = srv.db-lock-table,
+      db-sessions = hamt-remove (srv.db-sessions) key,
+      db-next-session = srv.db-next-session,
+      db-name = srv.db-name
+    }
+
+Section: Request Dispatch
+
+  DbResponse = record {
+    dbr-server : DbServer,
+    dbr-frames : List Frame
+  }
+
+  db-handle-frame : DbServer, Integer, Frame -> DbResponse
+  db-handle-frame (srv) (session-id) (f) =
+    let key = show session-id
+    in let maybe-sess = hamt-get (srv.db-sessions) key
+    in when maybe-sess
+      is None -> DbResponse {
+        dbr-server = srv,
+        dbr-frames = [proto-error-frame "session not found"]
+      }
+      is Just (sess) ->
+        let result = session-handle sess f (srv.db-catalog) (srv.db-txn-mgr)
+        in let new-srv = DbServer {
+          db-catalog = result.sr-catalog,
+          db-txn-mgr = result.sr-txn-mgr,
+          db-lock-table = srv.db-lock-table,
+          db-sessions = hamt-set (srv.db-sessions) key (result.sr-session),
+          db-next-session = srv.db-next-session,
+          db-name = srv.db-name
+        }
+        in DbResponse {
+          dbr-server = new-srv,
+          dbr-frames = result.sr-frames
+        }
+
+Section: DDL Operations
+
+  db-create-table : DbServer, TableDef -> DbServer
+  db-create-table (srv) (tdef) =
+    let result = catalog-create-table (srv.db-catalog) tdef
+    in DbServer {
+      db-catalog = result.cat,
+      db-txn-mgr = srv.db-txn-mgr,
+      db-lock-table = srv.db-lock-table,
+      db-sessions = srv.db-sessions,
+      db-next-session = srv.db-next-session,
+      db-name = srv.db-name
+    }
+
+  db-insert : DbServer, Text, RowData -> DbServer
+  db-insert (srv) (table-name) (row) =
+    let result = catalog-insert-row (srv.db-catalog) table-name row
+    in DbServer {
+      db-catalog = result.cir-cat,
+      db-txn-mgr = srv.db-txn-mgr,
+      db-lock-table = srv.db-lock-table,
+      db-sessions = srv.db-sessions,
+      db-next-session = srv.db-next-session,
+      db-name = srv.db-name
+    }
+
+Section: Deadlock Check
+
+  db-check-deadlocks : DbServer -> DeadlockResult
+  db-check-deadlocks (srv) = check-deadlocks (srv.db-lock-table)
+
+Section: Statistics
+
+  db-stats : DbServer -> Text
+  db-stats (srv) =
+    "db=" & srv.db-name
+    & " " & catalog-stats (srv.db-catalog)
+    & " " & txn-stats (srv.db-txn-mgr)
+    & " " & lock-stats (srv.db-lock-table)
+    & " sessions=" & show (hamt-size (srv.db-sessions))
+
+Section: Demo Entry Point
+
+  opening : [Console] Nothing = act
+    let srv = db-server-new "codex"
+    in let emp-schema = table-def "employees" [
+      col-def-not-null "id" ColInteger,
+      col-def-not-null "name" ColText,
+      col-def "department" ColText,
+      col-def "salary" ColInteger
+    ]
+    in let srv2 = db-create-table srv emp-schema
+    in let schema = table-schema emp-schema
+    in let row1 = row-new schema [ValInteger 1, ValText "Alice", ValText "Engineering", ValInteger 95000]
+    in let row2 = row-new schema [ValInteger 2, ValText "Bob", ValText "Engineering", ValInteger 88000]
+    in let row3 = row-new schema [ValInteger 3, ValText "Carol", ValText "Sales", ValInteger 72000]
+    in let row4 = row-new schema [ValInteger 4, ValText "Dave", ValText "Sales", ValInteger 68000]
+    in let srv3 = db-insert srv2 "employees" row1
+    in let srv4 = db-insert srv3 "employees" row2
+    in let srv5 = db-insert srv4 "employees" row3
+    in let srv6 = db-insert srv5 "employees" row4
+    in let scan-result = execute (srv6.db-catalog) (RelScan "employees")
+    in let filter-result = execute (srv6.db-catalog) (RelFilter (RelScan "employees") (PredColCmp "department" CmpEq (ValText "Engineering")))
+    in let group-result = execute (srv6.db-catalog) (RelGroup (RelScan "employees") ["department"] [AggSpec { agg-func = AggCount, agg-alias = "count" }, AggSpec { agg-func = AggSum "salary", agg-alias = "total-salary" }])
+    in print-line-uni ("Codex DB v0.1")
+    in print-line-uni (db-stats srv6)
+    in print-line-uni ("scan: " & show (scan-result.qr-count) & " rows")
+    in print-line-uni ("filter(Engineering): " & show (filter-result.qr-count) & " rows")
+    in print-line-uni ("group-by(department): " & show (group-result.qr-count) & " groups")
+    in print-line-uni (db-format-rows scan-result)
+    in print-line-uni (db-format-rows filter-result)
+    in print-line-uni (db-format-rows group-result)
+  end
+
+  db-format-rows : QueryResult -> Text
+  db-format-rows (qr) =
+    if qr.qr-ok == False then "ERROR: " & qr.qr-msg
+    else db-fmt-loop (qr.qr-rows) 0 (qr.qr-count) ""
+
+  db-fmt-loop : List RowData, Integer, Integer, Text -> Text
+  db-fmt-loop (rows) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let line = db-fmt-row row
+    in db-fmt-loop rows (i + 1) len (acc & line & "\n")
+
+  db-fmt-row : RowData -> Text
+  db-fmt-row (row) = db-fmt-vals (row.values) 0 (list-length (row.values)) ""
+
+  db-fmt-vals : List ColumnValue, Integer, Integer, Text -> Text
+  db-fmt-vals (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vals i
+    in let sep = if i > 0 then " | " else ""
+    in db-fmt-vals vals (i + 1) len (acc & sep & val-to-text v)
+
+Page 1

@@ -1,0 +1,461 @@
+Chapter: Monopoly
+  cites Games chapter Rng
+
+ Simplified Monopoly: 40 board spaces, 2-4 players. Properties have
+ color groups and rent. No houses or hotels. Players roll 2d6, move,
+ and take landing actions: buy unowned property if affordable, pay rent
+ if owned by another, go to jail on space 30, collect $200 passing Go.
+ Bankruptcy ends the game. AI always buys if affordable.
+
+ Board spaces 0-39. Properties occupy specific slots. Color groups
+ 0-7 correspond to standard Monopoly color sets (2-3 properties each).
+ Rent = base-rent * 2 if owner holds all in group.
+
+ We say:
+
+Section: Types
+
+  MonopolyPlayer = record {
+    position         : Integer,
+    cash             : Integer,
+    owned-properties : List Integer,
+    in-jail          : Boolean,
+    jail-turns       : Integer
+  }
+
+  PropertyState = record {
+    owner      : Integer,
+    cost       : Integer,
+    base-rent  : Integer,
+    color      : Integer
+  }
+
+  MonopolyState = record {
+    players        : List MonopolyPlayer,
+    properties     : List PropertyState,
+    current-player : Integer,
+    turn-number    : Integer,
+    game-over      : Boolean,
+    winner         : Integer,
+    num-players    : Integer
+  }
+
+  MonopolyResult = record {
+    winner      : Integer,
+    turns       : Integer,
+    final-cash  : List Integer
+  }
+
+Section: Board Data
+
+ 40 spaces. Properties at specific indices. Non-property spaces: 0=Go,
+ 2=CommunityChest, 4=Tax, 5=Railroad, 7=Chance, 10=Jail/Visiting,
+ 17=CommunityChest, 20=FreeParking, 22=Chance, 25=Railroad, 28=Utility,
+ 30=GoToJail, 33=CommunityChest, 35=Railroad, 36=Chance, 38=Tax, 40 wraps.
+
+  mono-is-property : Integer -> Boolean
+  mono-is-property (space) =
+    if space == 1 then True
+    else if space == 3 then True
+    else if space == 6 then True
+    else if space == 8 then True
+    else if space == 9 then True
+    else if space == 11 then True
+    else if space == 13 then True
+    else if space == 14 then True
+    else if space == 16 then True
+    else if space == 18 then True
+    else if space == 19 then True
+    else if space == 21 then True
+    else if space == 23 then True
+    else if space == 24 then True
+    else if space == 26 then True
+    else if space == 27 then True
+    else if space == 29 then True
+    else if space == 31 then True
+    else if space == 32 then True
+    else if space == 34 then True
+    else if space == 37 then True
+    else if space == 39 then True
+    else False
+
+  mono-prop-index : Integer -> Integer
+  mono-prop-index (space) =
+    if space == 1  then 0
+    else if space == 3  then 1
+    else if space == 6  then 2
+    else if space == 8  then 3
+    else if space == 9  then 4
+    else if space == 11 then 5
+    else if space == 13 then 6
+    else if space == 14 then 7
+    else if space == 16 then 8
+    else if space == 18 then 9
+    else if space == 19 then 10
+    else if space == 21 then 11
+    else if space == 23 then 12
+    else if space == 24 then 13
+    else if space == 26 then 14
+    else if space == 27 then 15
+    else if space == 29 then 16
+    else if space == 31 then 17
+    else if space == 32 then 18
+    else if space == 34 then 19
+    else if space == 37 then 20
+    else if space == 39 then 21
+    else (-1)
+
+  mono-prop-cost : Integer -> Integer
+  mono-prop-cost (pi) =
+    if pi == 0  then 60
+    else if pi == 1  then 60
+    else if pi == 2  then 100
+    else if pi == 3  then 100
+    else if pi == 4  then 120
+    else if pi == 5  then 140
+    else if pi == 6  then 140
+    else if pi == 7  then 160
+    else if pi == 8  then 180
+    else if pi == 9  then 180
+    else if pi == 10 then 200
+    else if pi == 11 then 220
+    else if pi == 12 then 220
+    else if pi == 13 then 240
+    else if pi == 14 then 260
+    else if pi == 15 then 260
+    else if pi == 16 then 280
+    else if pi == 17 then 300
+    else if pi == 18 then 300
+    else if pi == 19 then 320
+    else if pi == 20 then 350
+    else 400
+
+  mono-prop-rent : Integer -> Integer
+  mono-prop-rent (pi) =
+    if pi == 0  then 2
+    else if pi == 1  then 4
+    else if pi == 2  then 6
+    else if pi == 3  then 6
+    else if pi == 4  then 8
+    else if pi == 5  then 10
+    else if pi == 6  then 10
+    else if pi == 7  then 12
+    else if pi == 8  then 14
+    else if pi == 9  then 14
+    else if pi == 10 then 16
+    else if pi == 11 then 18
+    else if pi == 12 then 18
+    else if pi == 13 then 20
+    else if pi == 14 then 22
+    else if pi == 15 then 22
+    else if pi == 16 then 24
+    else if pi == 17 then 26
+    else if pi == 18 then 26
+    else if pi == 19 then 28
+    else if pi == 20 then 35
+    else 50
+
+  mono-prop-color : Integer -> Integer
+  mono-prop-color (pi) =
+    if pi <= 1  then 0
+    else if pi <= 4  then 1
+    else if pi <= 7  then 2
+    else if pi <= 10 then 3
+    else if pi <= 13 then 4
+    else if pi <= 16 then 5
+    else if pi <= 19 then 6
+    else 7
+
+Section: Initialization
+
+  mono-build-properties : Integer, List PropertyState -> List PropertyState
+  mono-build-properties (i) (acc) =
+    if i >= 22 then acc
+    else let ps = PropertyState {
+           owner = (-1),
+           cost = mono-prop-cost i,
+           base-rent = mono-prop-rent i,
+           color = mono-prop-color i
+         }
+    in mono-build-properties (i + 1) (list-push acc ps)
+
+  mono-build-zeroes : Integer, Integer, List Integer -> List Integer
+  mono-build-zeroes (i) (n) (acc) =
+    if i >= n then acc
+    else mono-build-zeroes (i + 1) n (list-push acc 0)
+
+  mono-build-players : Integer, Integer, List MonopolyPlayer -> List MonopolyPlayer
+  mono-build-players (i) (np) (acc) =
+    if i >= np then acc
+    else let p = MonopolyPlayer {
+           position = 0,
+           cash = 1500,
+           owned-properties = [],
+           in-jail = False,
+           jail-turns = 0
+         }
+    in mono-build-players (i + 1) np (list-push acc p)
+
+  mono-init : Integer, Integer -> MonopolyState
+  mono-init (seed) (num-players) =
+    let np = if num-players < 2 then 2 else if num-players > 4 then 4 else num-players
+    in let props = mono-build-properties 0 []
+    in let players = mono-build-players 0 np []
+    in MonopolyState {
+         players = players,
+         properties = props,
+         current-player = 0,
+         turn-number = 0,
+         game-over = False,
+         winner = (-1),
+         num-players = np
+       }
+
+Section: Player Helpers
+
+  mono-get-player : MonopolyState, Integer -> MonopolyPlayer
+  mono-get-player (s) (i) = list-at (s.players) i
+
+  mono-set-player : MonopolyState, Integer, MonopolyPlayer -> MonopolyState
+  mono-set-player (s) (i) (p) =
+    MonopolyState {
+      players = list-set-at (s.players) i p,
+      properties = s.properties,
+      current-player = s.current-player,
+      turn-number = s.turn-number,
+      game-over = s.game-over,
+      winner = s.winner,
+      num-players = s.num-players
+    }
+
+  mono-get-prop : MonopolyState, Integer -> PropertyState
+  mono-get-prop (s) (i) = list-at (s.properties) i
+
+  mono-set-prop : MonopolyState, Integer, PropertyState -> MonopolyState
+  mono-set-prop (s) (i) (ps) =
+    MonopolyState {
+      players = s.players,
+      properties = list-set-at (s.properties) i ps,
+      current-player = s.current-player,
+      turn-number = s.turn-number,
+      game-over = s.game-over,
+      winner = s.winner,
+      num-players = s.num-players
+    }
+
+Section: Color Group Check
+
+  mono-color-group-size : Integer -> Integer
+  mono-color-group-size (color) =
+    if color == 0 then 2
+    else if color == 7 then 2
+    else 3
+
+  mono-player-owns-color : MonopolyState, Integer, Integer -> Integer
+  mono-player-owns-color (s) (player) (color) =
+    mono-count-color-owned s player color 0 0
+
+  mono-count-color-owned : MonopolyState, Integer, Integer, Integer, Integer -> Integer
+  mono-count-color-owned (s) (player) (color) (pi) (acc) =
+    if pi >= 22 then acc
+    else let ps = mono-get-prop s pi
+    in let delta = if ps.owner == player & ps.color == color then 1 else 0
+    in mono-count-color-owned s player color (pi + 1) (acc + delta)
+
+  mono-has-monopoly : MonopolyState, Integer, Integer -> Boolean
+  mono-has-monopoly (s) (player) (color) =
+    let owned = mono-player-owns-color s player color
+    in let needed = mono-color-group-size color
+    in owned >= needed
+
+Section: Landing Actions
+
+  mono-pay : MonopolyState, Integer, Integer, Integer -> MonopolyState
+  mono-pay (s) (payer) (receiver) (amount) =
+    let p = mono-get-player s payer
+    in let actual = if p.cash < amount then p.cash else amount
+    in let new-payer = MonopolyPlayer {
+           position = p.position,
+           cash = p.cash - actual,
+           owned-properties = p.owned-properties,
+           in-jail = p.in-jail,
+           jail-turns = p.jail-turns
+         }
+    in let s2 = mono-set-player s payer new-payer
+    in if receiver >= 0 then
+      let r = mono-get-player s2 receiver
+      in let new-rec = MonopolyPlayer {
+             position = r.position,
+             cash = r.cash + actual,
+             owned-properties = r.owned-properties,
+             in-jail = r.in-jail,
+             jail-turns = r.jail-turns
+           }
+      in mono-set-player s2 receiver new-rec
+    else s2
+
+  mono-buy-property : MonopolyState, Integer, Integer -> MonopolyState
+  mono-buy-property (s) (player) (pi) =
+    let ps = mono-get-prop s pi
+    in let p = mono-get-player s player
+    in if p.cash < ps.cost then s
+    else let new-p = MonopolyPlayer {
+           position = p.position,
+           cash = p.cash - ps.cost,
+           owned-properties = list-push (p.owned-properties) pi,
+           in-jail = p.in-jail,
+           jail-turns = p.jail-turns
+         }
+    in let new-ps = PropertyState {
+           owner = player,
+           cost = ps.cost,
+           base-rent = ps.base-rent,
+           color = ps.color
+         }
+    in let s2 = mono-set-player s player new-p
+    in mono-set-prop s2 pi new-ps
+
+  mono-land : MonopolyState, Integer, Integer -> MonopolyState
+  mono-land (s) (player) (space) =
+    if space == 30 then
+      let p = mono-get-player s player
+      in let new-p = MonopolyPlayer {
+             position = 10,
+             cash = p.cash,
+             owned-properties = p.owned-properties,
+             in-jail = True,
+             jail-turns = 0
+           }
+      in mono-set-player s player new-p
+    else if mono-is-property space then
+      let pi = mono-prop-index space
+      in let ps = mono-get-prop s pi
+      in if ps.owner < 0 then
+        let p = mono-get-player s player
+        in if p.cash >= ps.cost then mono-buy-property s player pi
+        else s
+      else if ps.owner == player then s
+      else
+        let monopoly = mono-has-monopoly s ps.owner ps.color
+        in let rent = if monopoly then ps.base-rent * 2 else ps.base-rent
+        in mono-pay s player ps.owner rent
+    else s
+
+Section: Bankruptcy Check
+
+  mono-check-bankrupt : MonopolyState -> MonopolyState
+  mono-check-bankrupt (s) =
+    mono-bankrupt-loop s 0
+
+  mono-bankrupt-loop : MonopolyState, Integer -> MonopolyState
+  mono-bankrupt-loop (s) (i) =
+    if i >= s.num-players then s
+    else let p = mono-get-player s i
+    in if p.cash <= 0 then
+      MonopolyState {
+        players = s.players,
+        properties = s.properties,
+        current-player = s.current-player,
+        turn-number = s.turn-number,
+        game-over = True,
+        winner = mono-richest s i,
+        num-players = s.num-players
+      }
+    else mono-bankrupt-loop s (i + 1)
+
+  mono-richest : MonopolyState, Integer -> Integer
+  mono-richest (s) (bankrupt) =
+    mono-richest-loop s bankrupt 0 0 (-1)
+
+  mono-richest-loop : MonopolyState, Integer, Integer, Integer, Integer -> Integer
+  mono-richest-loop (s) (bankrupt) (i) (best-cash) (best-player) =
+    if i >= s.num-players then best-player
+    else if i == bankrupt then mono-richest-loop s bankrupt (i + 1) best-cash best-player
+    else let p = mono-get-player s i
+    in if p.cash > best-cash then mono-richest-loop s bankrupt (i + 1) p.cash i
+    else mono-richest-loop s bankrupt (i + 1) best-cash best-player
+
+Section: Turn
+
+  mono-do-turn : MonopolyState, Rng -> MonopolyState
+  mono-do-turn (s) (r) =
+    if s.game-over then s
+    else let player = s.current-player
+    in let p = mono-get-player s player
+    in let r2 = rng-next r
+    in let r3 = rng-next r2
+    in let die1 = rng-range r2 1 6
+    in let die2 = rng-range r3 1 6
+    in let roll = die1 + die2
+    in if p.in-jail then
+      let new-p = MonopolyPlayer {
+            position = p.position,
+            cash = p.cash,
+            owned-properties = p.owned-properties,
+            in-jail = if p.jail-turns >= 2 then False else True,
+            jail-turns = if p.jail-turns >= 2 then 0 else p.jail-turns + 1
+          }
+      in let s2 = mono-set-player s player new-p
+      in mono-advance-turn (mono-check-bankrupt s2)
+    else
+      let new-pos = rng-mod (p.position + roll) 40
+      in let passed-go = p.position + roll >= 40
+      in let bonus = if passed-go then 200 else 0
+      in let new-p = MonopolyPlayer {
+             position = new-pos,
+             cash = p.cash + bonus,
+             owned-properties = p.owned-properties,
+             in-jail = False,
+             jail-turns = 0
+           }
+      in let s2 = mono-set-player s player new-p
+      in let s3 = mono-land s2 player new-pos
+      in mono-advance-turn (mono-check-bankrupt s3)
+
+  mono-advance-turn : MonopolyState -> MonopolyState
+  mono-advance-turn (s) =
+    let next = rng-mod (s.current-player + 1) s.num-players
+    in MonopolyState {
+         players = s.players,
+         properties = s.properties,
+         current-player = next,
+         turn-number = s.turn-number + 1,
+         game-over = s.game-over,
+         winner = s.winner,
+         num-players = s.num-players
+       }
+
+Section: Game Runner
+
+  run-monopoly-game : Integer, Integer -> MonopolyResult
+  run-monopoly-game (seed) (num-players) =
+    let s = mono-init seed num-players
+    in mono-loop s (rng-new seed) 0
+
+  mono-loop : MonopolyState, Rng, Integer -> MonopolyResult
+  mono-loop (s) (r) (turns) =
+    if s.game-over then mono-make-result s turns
+    else if turns > 600 then mono-make-result s turns
+    else let r2 = rng-next r
+    in mono-loop (mono-do-turn s r2) r2 (turns + 1)
+
+  mono-make-result : MonopolyState, Integer -> MonopolyResult
+  mono-make-result (s) (turns) =
+    let w = if s.winner >= 0 then s.winner else mono-richest s (-1)
+    in let cash-list = mono-collect-cash s 0 []
+    in MonopolyResult { winner = w, turns = turns, final-cash = cash-list }
+
+  mono-collect-cash : MonopolyState, Integer, List Integer -> List Integer
+  mono-collect-cash (s) (i) (acc) =
+    if i >= s.num-players then acc
+    else let p = mono-get-player s i
+    in mono-collect-cash s (i + 1) (list-push acc p.cash)
+
+Section: Formatting
+
+  format-monopoly-result : MonopolyResult -> Text
+  format-monopoly-result (r) =
+    let w = if r.winner < 0 then "None" else "P" & show (r.winner + 1)
+    in "Monopoly (" & show r.turns & " turns): winner=" & w
+
+Page 1

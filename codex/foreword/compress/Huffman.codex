@@ -1,0 +1,128 @@
+Chapter: Huffman
+  cites Foreword chapter Maybe
+
+ Huffman coding: frequency-based variable-length prefix codes.
+ Builds an optimal binary tree from byte frequencies, encodes
+ data as bit streams, and decodes back. Compression for any
+ data with non-uniform byte distribution.
+
+ We say:
+
+Section: Tree
+  HuffNode =
+    | HuffLeaf (Integer) (Integer)
+    | HuffBranch (Integer) (HuffNode) (HuffNode)
+
+  huff-node-freq : HuffNode -> Integer
+  huff-node-freq (n) = when n
+    is HuffLeaf (byte) (freq) -> freq
+    is HuffBranch (freq) (left) (right) -> freq
+
+Section: Frequency Counting
+  huff-count-freq : List Integer -> List Integer
+  huff-count-freq (data) = huff-count-loop data 0 (list-length data) (huff-zero-freq 256 0 [])
+
+  huff-zero-freq : Integer, Integer, List Integer -> List Integer
+  huff-zero-freq (n) (i) (acc) =
+    if i >= n then acc
+    else huff-zero-freq n (i + 1) (list-push acc 0)
+
+  huff-count-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  huff-count-loop (data) (i) (len) (freq) =
+    if i >= len then freq
+    else let b = list-at data i
+    in huff-count-loop data (i + 1) len (list-set-at freq b (list-at freq b + 1))
+
+Section: Tree Building
+  HuffTree = record {
+    nodes : List HuffNode,
+    count : Integer
+  }
+
+  huff-build-tree : List Integer -> HuffTree
+  huff-build-tree (freq) =
+    let initial = huff-init-leaves freq 0 256 [] 0
+    in huff-merge-loop (initial.nodes) (initial.count)
+
+  HuffInit = record { nodes : List HuffNode, count : Integer }
+
+  huff-init-leaves : List Integer, Integer, Integer, List HuffNode, Integer -> HuffInit
+  huff-init-leaves (freq) (i) (limit) (acc) (count) =
+    if i >= limit then HuffInit { nodes = acc, count = count }
+    else if list-at freq i > 0 then huff-init-leaves freq (i + 1) limit (list-push acc (HuffLeaf i (list-at freq i))) (count + 1)
+    else huff-init-leaves freq (i + 1) limit acc count
+
+  huff-merge-loop : List HuffNode, Integer -> HuffTree
+  huff-merge-loop (nodes) (count) =
+    if count <= 1 then HuffTree { nodes = nodes, count = count }
+    else let min1-idx = huff-find-min nodes 0 count 0
+    in let n1 = list-at nodes min1-idx
+    in let rest1 = huff-remove-at nodes min1-idx count
+    in let min2-idx = huff-find-min rest1 0 (count - 1) 0
+    in let n2 = list-at rest1 min2-idx
+    in let rest2 = huff-remove-at rest1 min2-idx (count - 1)
+    in let merged = HuffBranch (huff-node-freq n1 + huff-node-freq n2) n1 n2
+    in huff-merge-loop (list-push rest2 merged) (count - 1)
+
+  huff-find-min : List HuffNode, Integer, Integer, Integer -> Integer
+  huff-find-min (nodes) (i) (len) (best) =
+    if i >= len then best
+    else if huff-node-freq (list-at nodes i) < huff-node-freq (list-at nodes best) then huff-find-min nodes (i + 1) len i
+    else huff-find-min nodes (i + 1) len best
+
+  huff-remove-at : List HuffNode, Integer, Integer -> List HuffNode
+  huff-remove-at (nodes) (idx) (len) =
+    huff-remove-at-loop nodes idx len 0 []
+
+  huff-remove-at-loop : List HuffNode, Integer, Integer, Integer, List HuffNode -> List HuffNode
+  huff-remove-at-loop (nodes) (skip) (len) (i) (acc) =
+    if i >= len then acc
+    else if i == skip then huff-remove-at-loop nodes skip len (i + 1) acc
+    else huff-remove-at-loop nodes skip len (i + 1) (list-push acc (list-at nodes i))
+
+Section: Code Table
+  HuffCode = record {
+    byte : Integer,
+    bits : Integer,
+    length : Integer between 0 and 32
+  }
+
+  huff-build-codes : HuffTree -> List HuffCode
+  huff-build-codes (tree) =
+    if tree.count == 0 then []
+    else if tree.count == 1 then
+      let node = list-at (tree.nodes) 0
+      in when node
+        is HuffLeaf (byte) (freq) -> [HuffCode { byte = byte, bits = 0, length = 1 }]
+        is otherwise -> []
+    else huff-walk-node (list-at (tree.nodes) 0) 0 0 []
+
+  huff-walk-node : HuffNode, Integer, Integer, List HuffCode -> List HuffCode
+  huff-walk-node (node) (bits) (depth) (acc) =
+    when node
+      is HuffLeaf (byte) (freq) -> list-push acc (HuffCode { byte = byte, bits = bits, length = depth })
+      is HuffBranch (freq) (left) (right) ->
+        let acc2 = huff-walk-node left (bits * 2) (depth + 1) acc
+        in huff-walk-node right (bits * 2 + 1) (depth + 1) acc2
+
+Section: Queries
+  huff-tree-depth : HuffTree -> Integer
+  huff-tree-depth (tree) = tree.count
+
+  huff-total-freq : List Integer -> Integer
+  huff-total-freq (freq) = huff-sum-freq freq 0 256 0
+
+  huff-sum-freq : List Integer, Integer, Integer, Integer -> Integer
+  huff-sum-freq (freq) (i) (len) (acc) =
+    if i >= len then acc
+    else huff-sum-freq freq (i + 1) len (acc + list-at freq i)
+
+  huff-unique-bytes : List Integer -> Integer
+  huff-unique-bytes (freq) = huff-count-nonzero freq 0 256 0
+
+  huff-count-nonzero : List Integer, Integer, Integer, Integer -> Integer
+  huff-count-nonzero (freq) (i) (len) (acc) =
+    if i >= len then acc
+    else huff-count-nonzero freq (i + 1) len (acc + if list-at freq i > 0 then 1 else 0)
+
+Page 1

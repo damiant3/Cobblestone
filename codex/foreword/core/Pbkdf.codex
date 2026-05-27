@@ -1,0 +1,161 @@
+Chapter: Pbkdf
+  cites Foreword chapter Sha256
+
+ Password-based key derivation with memory passes. Iterates
+ SHA-256 over an expanding block array to resist brute-force
+ attacks. NOT Argon2id — does not use BLAKE2b or the Argon2
+ G permutation. Provides memory-hard-ish password hashing using
+ only primitives already in the Codex foreword. Cross-incompatible
+ with RFC 9106 verifiers. A real Argon2id requires BLAKE2b which
+ is not yet in the foreword.
+
+ To pbkdf-hash gives a password hash with salt and parameters.
+ To pbkdf-verify gives True when a password matches a hash.
+
+ We say:
+
+Section: Types
+
+  PbkdfParams = record {
+    pb-time-cost : Integer,
+    pb-memory-kb : Integer,
+    pb-hash-length : Integer
+  }
+
+  PbkdfResult = record {
+    pbr-hash : List Integer,
+    pbr-salt : List Integer,
+    pbr-params : PbkdfParams
+  }
+
+Section: Defaults
+
+  pbkdf-default-params : PbkdfParams = PbkdfParams {
+    pb-time-cost = 3,
+    pb-memory-kb = 4096,
+    pb-hash-length = 32
+  }
+
+Section: Hash
+
+  pbkdf-hash : List Integer, List Integer, PbkdfParams -> PbkdfResult
+  pbkdf-hash (password) (salt) (params) =
+    let h0 = pbkdf-initial-hash password salt params
+    in let blocks = pbkdf-init-blocks h0 params
+    in let filled = pbkdf-fill-passes blocks params 0
+    in let final-block = pbkdf-final-block filled params
+    in let tag = pbkdf-extract-tag final-block (params.pb-hash-length)
+    in PbkdfResult { pbr-hash = tag, pbr-salt = salt, pbr-params = params }
+
+Section: Initial Hash
+
+  pbkdf-initial-hash : List Integer, List Integer, PbkdfParams -> List Integer
+  pbkdf-initial-hash (pw) (salt) (params) =
+    let input = pb-le32 (params.pb-hash-length)
+      & pb-le32 (params.pb-memory-kb)
+      & pb-le32 (params.pb-time-cost)
+      & pb-le32 (list-length pw) & pw
+      & pb-le32 (list-length salt) & salt
+    in sha256-to-bytes (sha256 input)
+
+Section: Block Operations
+
+  pbkdf-init-blocks : List Integer, PbkdfParams -> List Integer
+  pbkdf-init-blocks (h0) (params) =
+    let block-count = params.pb-memory-kb
+    in pb-expand-blocks h0 block-count 0 []
+
+  pb-expand-blocks : List Integer, Integer, Integer, List Integer -> List Integer
+  pb-expand-blocks (seed) (count) (i) (acc) =
+    if i >= count then acc
+    else let block-seed = seed & pb-le32 i
+    in let block = sha256-to-bytes (sha256 block-seed)
+    in pb-expand-blocks seed count (i + 1) (acc & block)
+
+  pbkdf-fill-passes : List Integer, PbkdfParams, Integer -> List Integer
+  pbkdf-fill-passes (blocks) (params) (pass) =
+    if pass >= params.pb-time-cost then blocks
+    else let updated = pb-fill-one-pass blocks params pass
+    in pbkdf-fill-passes updated params (pass + 1)
+
+  pb-fill-one-pass : List Integer, PbkdfParams, Integer -> List Integer
+  pb-fill-one-pass (blocks) (params) (pass) =
+    let block-count = list-length blocks / 32
+    in pb-fill-loop blocks block-count pass 1
+
+  pb-fill-loop : List Integer, Integer, Integer, Integer -> List Integer
+  pb-fill-loop (blocks) (count) (pass) (i) =
+    if i >= count then blocks
+    else let prev = (i - 1) * 32
+    in let ref-idx = pb-ref-index blocks prev count
+    in let ref = ref-idx * 32
+    in let mixed = pb-xor-blocks blocks prev ref 32 0 []
+    in pb-fill-loop (pb-replace-block blocks (i * 32) mixed 0 32) count pass (i + 1)
+
+  pb-ref-index : List Integer, Integer, Integer -> Integer
+  pb-ref-index (blocks) (prev-off) (count) =
+    let j = list-at blocks prev-off
+    in let positive = if j < 0 then 0 - j else j
+    in positive - (positive / count) * count
+
+  pb-xor-blocks : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  pb-xor-blocks (blocks) (a-off) (b-off) (len) (i) (acc) =
+    if i >= len then acc
+    else pb-xor-blocks blocks a-off b-off len (i + 1) (list-push acc (bit-xor (list-at blocks (a-off + i)) (list-at blocks (b-off + i))))
+
+  pb-replace-block : List Integer, Integer, List Integer, Integer, Integer -> List Integer
+  pb-replace-block (blocks) (off) (new-data) (i) (len) =
+    if i >= len then blocks
+    else pb-replace-block (list-set-at blocks (off + i) (list-at new-data i)) off new-data (i + 1) len
+
+Section: Finalization
+
+  pbkdf-final-block : List Integer, PbkdfParams -> List Integer
+  pbkdf-final-block (blocks) (params) =
+    let count = list-length blocks / 32
+    in let last = (count - 1) * 32
+    in pb-slice blocks last 32 0 []
+
+  pbkdf-extract-tag : List Integer, Integer -> List Integer
+  pbkdf-extract-tag (block) (length) =
+    let hash = sha256-to-bytes (sha256 block)
+    in pb-take hash length 0 []
+
+  pb-take : List Integer, Integer, Integer, List Integer -> List Integer
+  pb-take (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= list-length xs then acc
+    else pb-take xs n (i + 1) (list-push acc (list-at xs i))
+
+  pb-slice : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  pb-slice (xs) (off) (len) (i) (acc) =
+    if i >= len then acc
+    else pb-slice xs off len (i + 1) (list-push acc (list-at xs (off + i)))
+
+Section: Verify
+
+  pbkdf-verify : List Integer, PbkdfResult -> Boolean
+  pbkdf-verify (password) (result) =
+    let rehash = pbkdf-hash password (result.pbr-salt) (result.pbr-params)
+    in pb-constant-eq (rehash.pbr-hash) (result.pbr-hash) 0 (list-length (result.pbr-hash)) 0
+
+  pb-constant-eq : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  pb-constant-eq (a) (b) (i) (len) (diff) =
+    if i >= len then diff == 0
+    else pb-constant-eq a b (i + 1) len (bit-or diff (bit-xor (list-at a i) (list-at b i)))
+
+Section: Encoding
+
+  pb-le32 : Integer -> List Integer
+  pb-le32 (n) = [bit-and n 255, bit-and (bit-shru n 8) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 24) 255]
+
+  sha256-to-bytes : List Integer -> List Integer
+  sha256-to-bytes (words) = pb-words-to-bytes words 0 (list-length words) []
+
+  pb-words-to-bytes : List Integer, Integer, Integer, List Integer -> List Integer
+  pb-words-to-bytes (ws) (i) (len) (acc) =
+    if i >= len then acc
+    else let w = list-at ws i
+    in pb-words-to-bytes ws (i + 1) len (list-push (list-push (list-push (list-push acc (bit-and (bit-shru w 24) 255)) (bit-and (bit-shru w 16) 255)) (bit-and (bit-shru w 8) 255)) (bit-and w 255))
+
+Page 1

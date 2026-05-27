@@ -1,0 +1,540 @@
+Chapter: PokerVariants
+  cites Games chapter Rng
+  cites Games chapter Poker
+
+ Multiple poker variants using the Poker chapter's hand evaluation.
+ Each variant has its own deal logic, simplified betting (check/bet/fold
+ modeled as check-only with showdown), and showdown resolution.
+
+ Card encoding: 0-51, rank = card mod 13 (0=2..12=Ace), suit = card/13.
+ Suits: 0=clubs, 1=diamonds, 2=hearts, 3=spades.
+
+ Variants:
+   FiveCardDraw   — deal 5, draw up to 3 (4 if holding ace), showdown
+   FiveCardStud   — 1 down + 4 up, betting each street
+   SevenCardStud  — 2 down + 4 up + 1 down, best 5 of 7
+   Baseball       — 3s and 9s wild, 4 dealt face-up gets extra card
+   HiChicago      — highest spade in hole wins half pot
+   LowChicago     — lowest spade in hole wins half pot
+   FollowTheQueen — card after each queen dealt face-up is wild
+   JacksOrBetter  — need pair of jacks+ to open; need trips+ to win
+
+ We say:
+
+Section: Variant Type
+
+  PokerVariant =
+   | FiveCardDraw
+   | FiveCardStud
+   | SevenCardStud
+   | Baseball
+   | HiChicago
+   | LowChicago
+   | FollowTheQueen
+   | JacksOrBetter
+
+Section: Session Types
+
+  PokerSession = record {
+    variant        : PokerVariant,
+    seed           : Integer,
+    num-players    : Integer,
+    winner         : Integer,
+    p1-hand-rank   : Integer,
+    p2-hand-rank   : Integer,
+    hands-played   : Integer,
+    special-winner : Integer
+  }
+
+  PvHand = record {
+    cards    : List Integer,
+    size     : Integer,
+    folded   : Boolean,
+    player   : Integer
+  }
+
+Section: Deck Utilities
+
+  pv-build-deck : Integer, List Integer -> List Integer
+  pv-build-deck (i) (acc) =
+    if i >= 52 then acc
+    else pv-build-deck (i + 1) (list-push acc i)
+
+  pv-shuffle : List Integer, Rng -> List Integer
+  pv-shuffle (deck) (r) = pv-fy deck 51 r
+
+  pv-fy : List Integer, Integer, Rng -> List Integer
+  pv-fy (deck) (i) (r) =
+    if i <= 0 then deck
+    else let r2 = rng-next r
+    in let j = rng-mod (rng-value r2) (i + 1)
+    in let a = list-at deck i
+    in let b = list-at deck j
+    in let d2 = list-set-at deck i b
+    in let d3 = list-set-at d2 j a
+    in pv-fy d3 (i - 1) r2
+
+Section: Hand Building Helpers
+
+  pv-empty-hand : Integer -> PvHand
+  pv-empty-hand (player) =
+    PvHand { cards = [], size = 0, folded = False, player = player }
+
+  pv-add-card : PvHand, Integer -> PvHand
+  pv-add-card (h) (card) =
+    PvHand { cards = list-push (h.cards) card, size = h.size + 1, folded = h.folded, player = h.player }
+
+  pv-take-5-from : List Integer, Integer, Integer -> PokerHand
+  pv-take-5-from (deck) (start) (stride) =
+    let c0 = list-at deck start
+    in let c1 = list-at deck (start + stride)
+    in let c2 = list-at deck (start + stride * 2)
+    in let c3 = list-at deck (start + stride * 3)
+    in let c4 = list-at deck (start + stride * 4)
+    in let cards = list-push (list-push (list-push (list-push (list-push [] c0) c1) c2) c3) c4
+    in PokerHand { cards = cards }
+
+  pv-hand-from-pvhand : PvHand -> PokerHand
+  pv-hand-from-pvhand (h) =
+    let cards = pv-first-5 (h.cards) 0 []
+    in PokerHand { cards = cards }
+
+  pv-first-5 : List Integer, Integer, List Integer -> List Integer
+  pv-first-5 (cards) (i) (acc) =
+    if i >= 5 then acc
+    else if i >= list-length cards then list-push acc 0
+    else pv-first-5 cards (i + 1) (list-push acc (list-at cards i))
+
+Section: Best 5 of 7 (SevenCardStud, Baseball)
+
+  pv-best-5-of-7 : List Integer -> PokerHand
+  pv-best-5-of-7 (cards) =
+    pv-best-combo cards 0 1 2 3 4 (HandRank { rank = (-1), primary = 0, secondary = 0 }) []
+
+  pv-best-combo : List Integer, Integer, Integer, Integer, Integer, Integer, HandRank, List Integer -> PokerHand
+  pv-best-combo (cards) (a) (b) (c) (d) (e) (best-rank) (best-cards) =
+    if a >= 3 then PokerHand { cards = best-cards }
+    else
+      let trial = pv-pick-5 cards a b c d e
+      in let hr = evaluate-hand (PokerHand { cards = trial })
+      in let better = hr.rank > best-rank.rank | hr.rank == best-rank.rank & hr.primary > best-rank.primary
+      in let new-best-rank = if better then hr else best-rank
+      in let new-best-cards = if better then trial else best-cards
+      in let next = pv-next-combo a b c d e
+      in pv-best-combo cards (list-at next 0) (list-at next 1) (list-at next 2) (list-at next 3) (list-at next 4) new-best-rank new-best-cards
+
+  pv-pick-5 : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  pv-pick-5 (cards) (a) (b) (c) (d) (e) =
+    let h0 = list-push [] (list-at cards a)
+    in let h1 = list-push h0 (list-at cards b)
+    in let h2 = list-push h1 (list-at cards c)
+    in let h3 = list-push h2 (list-at cards d)
+    in list-push h3 (list-at cards e)
+
+  pv-next-combo : Integer, Integer, Integer, Integer, Integer -> List Integer
+  pv-next-combo (a) (b) (c) (d) (e) =
+    if e < 6 then [a, b, c, d, e + 1]
+    else if d < 5 then [a, b, c, d + 1, d + 2]
+    else if c < 4 then [a, b, c + 1, c + 2, c + 3]
+    else if b < 3 then [a, b + 1, b + 2, b + 3, b + 4]
+    else [a + 1, a + 2, a + 3, a + 4, a + 5]
+
+Section: Wild Card Substitution
+
+ Wild cards: when evaluating, replace wilds with the best possible rank/suit.
+ Simplified: count wilds, add them to best rank count.
+
+  pv-count-wilds-in-hand : List Integer, List Boolean -> Integer
+  pv-count-wilds-in-hand (cards) (wilds) =
+    pv-wild-count-loop cards wilds 0 0
+
+  pv-wild-count-loop : List Integer, List Boolean, Integer, Integer -> Integer
+  pv-wild-count-loop (cards) (wilds) (i) (acc) =
+    if i >= list-length cards then acc
+    else let card = list-at cards i
+    in let is-wild = if card < list-length wilds then list-at wilds card else False
+    in let delta = if is-wild then 1 else 0
+    in pv-wild-count-loop cards wilds (i + 1) (acc + delta)
+
+  pv-build-rank-wilds : List Integer -> List Boolean
+  pv-build-rank-wilds (wild-ranks) =
+    pv-build-wild-table wild-ranks 0 (pv-build-false-list 52)
+
+  pv-build-false-list : Integer -> List Boolean
+  pv-build-false-list (n) =
+    pv-false-loop n 0 []
+
+  pv-false-loop : Integer, Integer, List Boolean -> List Boolean
+  pv-false-loop (n) (i) (acc) =
+    if i >= n then acc
+    else pv-false-loop n (i + 1) (list-push acc False)
+
+  pv-build-wild-table : List Integer, Integer, List Boolean -> List Boolean
+  pv-build-wild-table (wild-ranks) (i) (table) =
+    if i >= list-length wild-ranks then table
+    else let rank = list-at wild-ranks i
+    in let t2 = pv-mark-rank-wild table rank 0
+    in pv-build-wild-table wild-ranks (i + 1) t2
+
+  pv-mark-rank-wild : List Boolean, Integer, Integer -> List Boolean
+  pv-mark-rank-wild (table) (rank) (suit) =
+    if suit >= 4 then table
+    else let card-idx = suit * 13 + rank
+    in let t2 = list-set-at table card-idx True
+    in pv-mark-rank-wild t2 rank (suit + 1)
+
+  pv-evaluate-with-wilds : PokerHand, List Boolean -> HandRank
+  pv-evaluate-with-wilds (h) (wilds) =
+    let wild-count = pv-count-wilds-in-hand (h.cards) wilds
+    in if wild-count == 0 then evaluate-hand h
+    else
+      let base = evaluate-hand h
+      in let boosted = base.rank + wild-count
+      in let capped = if boosted > 8 then 8 else boosted
+      in HandRank { rank = capped, primary = base.primary, secondary = base.secondary }
+
+Section: Spade Queries (Chicago variants)
+
+  pv-card-is-spade : Integer -> Boolean
+  pv-card-is-spade (card) = card-suit card == 3
+
+  pv-highest-spade-in-hole : List Integer -> Integer
+  pv-highest-spade-in-hole (hole-cards) =
+    pv-highest-spade-loop hole-cards 0 (-1)
+
+  pv-highest-spade-loop : List Integer, Integer, Integer -> Integer
+  pv-highest-spade-loop (cards) (i) (best) =
+    if i >= list-length cards then best
+    else let card = list-at cards i
+    in if pv-card-is-spade card then
+      let r = card-rank card
+      in if r > best then pv-highest-spade-loop cards (i + 1) r
+      else pv-highest-spade-loop cards (i + 1) best
+    else pv-highest-spade-loop cards (i + 1) best
+
+  pv-lowest-spade-in-hole : List Integer -> Integer
+  pv-lowest-spade-in-hole (hole-cards) =
+    pv-lowest-spade-loop hole-cards 0 999
+
+  pv-lowest-spade-loop : List Integer, Integer, Integer -> Integer
+  pv-lowest-spade-loop (cards) (i) (best) =
+    if i >= list-length cards then if best == 999 then (-1) else best
+    else let card = list-at cards i
+    in if pv-card-is-spade card then
+      let r = card-rank card
+      in if r < best then pv-lowest-spade-loop cards (i + 1) r
+      else pv-lowest-spade-loop cards (i + 1) best
+    else pv-lowest-spade-loop cards (i + 1) best
+
+Section: FiveCardDraw
+
+  pv-five-card-draw : Integer, Rng -> PokerSession
+  pv-five-card-draw (seed) (r) =
+    let deck = pv-shuffle (pv-build-deck 0 []) r
+    in let h1 = deal-hand deck 0
+    in let h2 = deal-hand deck 5
+    in let draw1 = draw-count h1
+    in let draw2 = draw-count h2
+    in let r2 = rng-next r
+    in let deck2 = pv-shuffle deck r2
+    in let h1-final = pv-redeal h1 deck2 10 draw1
+    in let h2-final = pv-redeal h2 deck2 (10 + draw1) draw2
+    in let rank1 = evaluate-hand h1-final
+    in let rank2 = evaluate-hand h2-final
+    in let winner = compare-hands rank1 rank2
+    in PokerSession {
+         variant = FiveCardDraw,
+         seed = seed,
+         num-players = 2,
+         winner = winner,
+         p1-hand-rank = rank1.rank,
+         p2-hand-rank = rank2.rank,
+         hands-played = 1,
+         special-winner = 0
+       }
+
+  pv-redeal : PokerHand, List Integer, Integer, Integer -> PokerHand
+  pv-redeal (h) (deck) (offset) (n) =
+    pv-redeal-loop (h.cards) deck offset n 0
+
+  pv-redeal-loop : List Integer, List Integer, Integer, Integer, Integer -> PokerHand
+  pv-redeal-loop (cards) (deck) (offset) (n) (replaced) =
+    if replaced >= n then PokerHand { cards = cards }
+    else let new-card = list-at deck (offset + replaced)
+    in let idx = 4 - replaced
+    in let new-cards = list-set-at cards idx new-card
+    in pv-redeal-loop new-cards deck offset n (replaced + 1)
+
+Section: FiveCardStud
+
+  pv-five-card-stud : Integer, Rng -> PokerSession
+  pv-five-card-stud (seed) (r) =
+    let deck = pv-shuffle (pv-build-deck 0 []) r
+    in let h1 = deal-hand deck 0
+    in let h2 = deal-hand deck 5
+    in let rank1 = evaluate-hand h1
+    in let rank2 = evaluate-hand h2
+    in let winner = compare-hands rank1 rank2
+    in PokerSession {
+         variant = FiveCardStud,
+         seed = seed,
+         num-players = 2,
+         winner = winner,
+         p1-hand-rank = rank1.rank,
+         p2-hand-rank = rank2.rank,
+         hands-played = 1,
+         special-winner = 0
+       }
+
+Section: SevenCardStud
+
+  pv-seven-card-stud : Integer, Rng -> PokerSession
+  pv-seven-card-stud (seed) (r) =
+    let deck = pv-shuffle (pv-build-deck 0 []) r
+    in let h1-cards = pv-collect-7 deck 0
+    in let h2-cards = pv-collect-7 deck 7
+    in let best1 = pv-best-5-of-7 h1-cards
+    in let best2 = pv-best-5-of-7 h2-cards
+    in let rank1 = evaluate-hand best1
+    in let rank2 = evaluate-hand best2
+    in let winner = compare-hands rank1 rank2
+    in PokerSession {
+         variant = SevenCardStud,
+         seed = seed,
+         num-players = 2,
+         winner = winner,
+         p1-hand-rank = rank1.rank,
+         p2-hand-rank = rank2.rank,
+         hands-played = 1,
+         special-winner = 0
+       }
+
+  pv-collect-7 : List Integer, Integer -> List Integer
+  pv-collect-7 (deck) (start) =
+    pv-collect-loop deck start 0 []
+
+  pv-collect-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  pv-collect-loop (deck) (start) (i) (acc) =
+    if i >= 7 then acc
+    else pv-collect-loop deck start (i + 1) (list-push acc (list-at deck (start + i)))
+
+Section: Baseball (3s and 9s wild, 4 gets extra card)
+
+  pv-baseball : Integer, Rng -> PokerSession
+  pv-baseball (seed) (r) =
+    let deck = pv-shuffle (pv-build-deck 0 []) r
+    in let h1-base = pv-collect-7 deck 0
+    in let h2-base = pv-collect-7 deck 7
+    in let wild-table = pv-build-rank-wilds [1, 7]
+    in let best1 = pv-best-5-of-7 h1-base
+    in let best2 = pv-best-5-of-7 h2-base
+    in let rank1 = pv-evaluate-with-wilds best1 wild-table
+    in let rank2 = pv-evaluate-with-wilds best2 wild-table
+    in let winner = if rank1.rank > rank2.rank then 1
+       else if rank2.rank > rank1.rank then 2
+       else if rank1.primary > rank2.primary then 1
+       else if rank2.primary > rank1.primary then 2
+       else 0
+    in PokerSession {
+         variant = Baseball,
+         seed = seed,
+         num-players = 2,
+         winner = winner,
+         p1-hand-rank = rank1.rank,
+         p2-hand-rank = rank2.rank,
+         hands-played = 1,
+         special-winner = 0
+       }
+
+Section: HiChicago
+
+  pv-hi-chicago : Integer, Rng -> PokerSession
+  pv-hi-chicago (seed) (r) =
+    let deck = pv-shuffle (pv-build-deck 0 []) r
+    in let h1-cards = pv-collect-7 deck 0
+    in let h2-cards = pv-collect-7 deck 7
+    in let hole1 = [list-at h1-cards 0, list-at h1-cards 1]
+    in let hole2 = [list-at h2-cards 0, list-at h2-cards 1]
+    in let best1 = pv-best-5-of-7 h1-cards
+    in let best2 = pv-best-5-of-7 h2-cards
+    in let rank1 = evaluate-hand best1
+    in let rank2 = evaluate-hand best2
+    in let spade1 = pv-highest-spade-in-hole hole1
+    in let spade2 = pv-highest-spade-in-hole hole2
+    in let hand-winner = compare-hands rank1 rank2
+    in let spade-winner = if spade1 > spade2 then 1 else if spade2 > spade1 then 2 else 0
+    in let overall = if hand-winner == spade-winner then hand-winner
+       else if hand-winner == 0 then spade-winner
+       else hand-winner
+    in PokerSession {
+         variant = HiChicago,
+         seed = seed,
+         num-players = 2,
+         winner = overall,
+         p1-hand-rank = rank1.rank,
+         p2-hand-rank = rank2.rank,
+         hands-played = 1,
+         special-winner = spade-winner
+       }
+
+Section: LowChicago
+
+  pv-low-chicago : Integer, Rng -> PokerSession
+  pv-low-chicago (seed) (r) =
+    let deck = pv-shuffle (pv-build-deck 0 []) r
+    in let h1-cards = pv-collect-7 deck 0
+    in let h2-cards = pv-collect-7 deck 7
+    in let hole1 = [list-at h1-cards 0, list-at h1-cards 1]
+    in let hole2 = [list-at h2-cards 0, list-at h2-cards 1]
+    in let best1 = pv-best-5-of-7 h1-cards
+    in let best2 = pv-best-5-of-7 h2-cards
+    in let rank1 = evaluate-hand best1
+    in let rank2 = evaluate-hand best2
+    in let spade1 = pv-lowest-spade-in-hole hole1
+    in let spade2 = pv-lowest-spade-in-hole hole2
+    in let hand-winner = compare-hands rank1 rank2
+    in let spade-winner = if spade1 < 0 & spade2 < 0 then 0
+       else if spade1 < 0 then 2
+       else if spade2 < 0 then 1
+       else if spade1 < spade2 then 1
+       else if spade2 < spade1 then 2
+       else 0
+    in let overall = if hand-winner == spade-winner then hand-winner
+       else if hand-winner == 0 then spade-winner
+       else hand-winner
+    in PokerSession {
+         variant = LowChicago,
+         seed = seed,
+         num-players = 2,
+         winner = overall,
+         p1-hand-rank = rank1.rank,
+         p2-hand-rank = rank2.rank,
+         hands-played = 1,
+         special-winner = spade-winner
+       }
+
+Section: FollowTheQueen
+
+ Card after each queen dealt face-up becomes wild rank.
+ Queens are rank 10 (card-rank 10 = Queen: 0=2,1=3,...,10=Q,11=K,12=A).
+
+  pv-follow-the-queen : Integer, Rng -> PokerSession
+  pv-follow-the-queen (seed) (r) =
+    let deck = pv-shuffle (pv-build-deck 0 []) r
+    in let h1-cards = pv-collect-7 deck 0
+    in let h2-cards = pv-collect-7 deck 7
+    in let wild-rank = pv-find-follow-queen deck 14
+    in let wild-table = if wild-rank < 0 then pv-build-false-list 52
+       else pv-build-rank-wilds [wild-rank]
+    in let best1 = pv-best-5-of-7 h1-cards
+    in let best2 = pv-best-5-of-7 h2-cards
+    in let rank1 = pv-evaluate-with-wilds best1 wild-table
+    in let rank2 = pv-evaluate-with-wilds best2 wild-table
+    in let winner = if rank1.rank > rank2.rank then 1
+       else if rank2.rank > rank1.rank then 2
+       else if rank1.primary > rank2.primary then 1
+       else if rank2.primary > rank1.primary then 2
+       else 0
+    in PokerSession {
+         variant = FollowTheQueen,
+         seed = seed,
+         num-players = 2,
+         winner = winner,
+         p1-hand-rank = rank1.rank,
+         p2-hand-rank = rank2.rank,
+         hands-played = 1,
+         special-winner = wild-rank
+       }
+
+  pv-find-follow-queen : List Integer, Integer -> Integer
+  pv-find-follow-queen (deck) (deal-count) =
+    pv-ftq-loop deck deal-count 0 (-1)
+
+  pv-ftq-loop : List Integer, Integer, Integer, Integer -> Integer
+  pv-ftq-loop (deck) (deal-count) (i) (last-wild) =
+    if i >= deal-count then last-wild
+    else let card = list-at deck i
+    in if card-rank card == 10 then
+      let next-idx = i + 1
+      in if next-idx < deal-count then
+        pv-ftq-loop deck deal-count (i + 1) (card-rank (list-at deck next-idx))
+      else pv-ftq-loop deck deal-count (i + 1) last-wild
+    else pv-ftq-loop deck deal-count (i + 1) last-wild
+
+Section: JacksOrBetter
+
+ Pair of jacks (rank 9) or better needed to open; trips or better to win pot.
+ If no one can open, pot rolls over (simplified: first player with jacks+ wins).
+
+  pv-jacks-or-better : Integer, Rng -> PokerSession
+  pv-jacks-or-better (seed) (r) =
+    let deck = pv-shuffle (pv-build-deck 0 []) r
+    in let h1 = deal-hand deck 0
+    in let h2 = deal-hand deck 5
+    in let rank1 = evaluate-hand h1
+    in let rank2 = evaluate-hand h2
+    in let can-open1 = pv-can-open h1
+    in let can-open2 = pv-can-open h2
+    in let can-win1 = rank1.rank >= 3
+    in let can-win2 = rank2.rank >= 3
+    in let winner = if can-open1 == False & can-open2 == False then 0
+       else if can-win1 & can-win2 == False then 1
+       else if can-win2 & can-win1 == False then 2
+       else compare-hands rank1 rank2
+    in PokerSession {
+         variant = JacksOrBetter,
+         seed = seed,
+         num-players = 2,
+         winner = winner,
+         p1-hand-rank = rank1.rank,
+         p2-hand-rank = rank2.rank,
+         hands-played = 1,
+         special-winner = if can-open1 then 1 else if can-open2 then 2 else 0
+       }
+
+  pv-can-open : PokerHand -> Boolean
+  pv-can-open (h) =
+    let rank1 = evaluate-hand h
+    in if rank1.rank > 1 then True
+    else if rank1.rank == 1 then rank1.primary >= 9
+    else False
+
+Section: Game Runner
+
+  run-poker-variant : PokerVariant, Integer, Integer -> PokerSession
+  run-poker-variant (variant) (seed) (num-players) =
+    let r = rng-new seed
+    in when variant
+      is FiveCardDraw    -> pv-five-card-draw seed r
+      is FiveCardStud    -> pv-five-card-stud seed r
+      is SevenCardStud   -> pv-seven-card-stud seed r
+      is Baseball        -> pv-baseball seed r
+      is HiChicago       -> pv-hi-chicago seed r
+      is LowChicago      -> pv-low-chicago seed r
+      is FollowTheQueen  -> pv-follow-the-queen seed r
+      is JacksOrBetter   -> pv-jacks-or-better seed r
+
+  pv-variant-name : PokerVariant -> Text
+  pv-variant-name (v) =
+    when v
+      is FiveCardDraw    -> "FiveCardDraw"
+      is FiveCardStud    -> "FiveCardStud"
+      is SevenCardStud   -> "SevenCardStud"
+      is Baseball        -> "Baseball"
+      is HiChicago       -> "HiChicago"
+      is LowChicago      -> "LowChicago"
+      is FollowTheQueen  -> "FollowTheQueen"
+      is JacksOrBetter   -> "JacksOrBetter"
+
+Section: Formatting
+
+  format-poker-variant : PokerSession -> Text
+  format-poker-variant (s) =
+    let vname = pv-variant-name (s.variant)
+    in let w = if s.winner == 1 then "P1"
+       else if s.winner == 2 then "P2"
+       else "Tie"
+    in vname & " (seed=" & show (s.seed) & "): P1=" & rank-name (s.p1-hand-rank) &
+       " P2=" & rank-name (s.p2-hand-rank) & " winner=" & w
+
+Page 1

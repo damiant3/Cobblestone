@@ -1,0 +1,142 @@
+Chapter: Ntp
+  cites Net chapter Udp
+  cites Net chapter Ethernet
+
+ NTP client (RFC 5905, SNTPv4). Builds time-sync requests and parses
+ server responses. Pure logic — no I/O. Requests are UDP payloads
+ on port 123. NTP timestamps are seconds from 1900-01-01 00:00:00.
+
+ We say:
+
+Section: Constants
+  ntp-port : Integer = 123
+  ntp-packet-size : Integer = 48
+  ntp-version : Integer = 4
+  ntp-mode-client : Integer = 3
+  ntp-mode-server : Integer = 4
+  ntp-epoch-offset : Integer = 2208988800
+
+Section: Timestamp
+  NtpTimestamp = record {
+    seconds : Integer,
+    fraction : Integer
+  }
+
+  ntp-timestamp-zero : NtpTimestamp
+  ntp-timestamp-zero = NtpTimestamp { seconds = 0, fraction = 0 }
+
+  ntp-to-unix : NtpTimestamp -> Integer
+  ntp-to-unix (ts) = ts.seconds - ntp-epoch-offset
+
+Section: Request Construction
+  ntp-build-request : NtpTimestamp -> List Integer
+  ntp-build-request (transmit-ts) =
+    let li-vn-mode = bit-or (bit-shl ntp-version 3) ntp-mode-client
+    in let header = [li-vn-mode, 0, 0, 0]
+    in let root-delay = [0, 0, 0, 0]
+    in let root-dispersion = [0, 0, 0, 0]
+    in let ref-id = [0, 0, 0, 0]
+    in let ref-ts = ntp-zeros 8
+    in let origin-ts = ntp-zeros 8
+    in let recv-ts = ntp-zeros 8
+    in let tx-ts = ntp-encode-timestamp transmit-ts
+    in header & root-delay & root-dispersion & ref-id & ref-ts & origin-ts & recv-ts & tx-ts
+
+  ntp-build-simple-request : List Integer
+  ntp-build-simple-request = ntp-build-request ntp-timestamp-zero
+
+  ntp-zeros : Integer -> List Integer
+  ntp-zeros (n) = ntp-zeros-loop n []
+
+  ntp-zeros-loop : Integer, List Integer -> List Integer
+  ntp-zeros-loop (n) (acc) =
+    if n <= 0 then acc
+    else ntp-zeros-loop (n - 1) (list-push acc 0)
+
+  ntp-encode-timestamp : NtpTimestamp -> List Integer
+  ntp-encode-timestamp (ts) = ntp-write-be32 (ts.seconds) & ntp-write-be32 (ts.fraction)
+
+  ntp-write-be32 : Integer -> List Integer
+  ntp-write-be32 (v) =
+    [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+Section: Response Parsing
+  NtpResponse = record {
+    leap : Integer,
+    version : Integer,
+    mode : Integer,
+    stratum : Integer,
+    reference-ts : NtpTimestamp,
+    origin-ts : NtpTimestamp,
+    receive-ts : NtpTimestamp,
+    transmit-ts : NtpTimestamp,
+    valid : Boolean
+  }
+
+  ntp-parse-response : List Integer -> NtpResponse
+  ntp-parse-response (data) =
+    if list-length data < ntp-packet-size then NtpResponse {
+      leap = 0, version = 0, mode = 0, stratum = 0,
+      reference-ts = ntp-timestamp-zero, origin-ts = ntp-timestamp-zero,
+      receive-ts = ntp-timestamp-zero, transmit-ts = ntp-timestamp-zero,
+      valid = False
+    }
+    else let li-vn-mode = list-at data 0
+    in NtpResponse {
+      leap = bit-and (bit-shru li-vn-mode 6) 3,
+      version = bit-and (bit-shru li-vn-mode 3) 7,
+      mode = bit-and li-vn-mode 7,
+      stratum = list-at data 1,
+      reference-ts = ntp-read-timestamp data 16,
+      origin-ts = ntp-read-timestamp data 24,
+      receive-ts = ntp-read-timestamp data 32,
+      transmit-ts = ntp-read-timestamp data 40,
+      valid = True
+    }
+
+  ntp-read-timestamp : List Integer, Integer -> NtpTimestamp
+  ntp-read-timestamp (data) (off) =
+    NtpTimestamp { seconds = ntp-read-be32 data off, fraction = ntp-read-be32 data (off + 4) }
+
+  ntp-read-be32 : List Integer, Integer -> Integer
+  ntp-read-be32 (data) (off) =
+    let b0 = bit-shl (list-at data off) 24
+    in let b1 = bit-shl (list-at data (off + 1)) 16
+    in let b2 = bit-shl (list-at data (off + 2)) 8
+    in let b3 = list-at data (off + 3)
+    in bit-or b0 (bit-or b1 (bit-or b2 b3))
+
+Section: Clock Offset
+  ntp-clock-offset : NtpTimestamp, NtpTimestamp, NtpResponse -> Integer
+  ntp-clock-offset (t1) (t4) (resp) =
+    let t2 = resp.receive-ts.seconds
+    in let t3 = resp.transmit-ts.seconds
+    in ((t2 - t1.seconds) + (t3 - t4.seconds)) / 2
+
+  ntp-round-trip : NtpTimestamp, NtpTimestamp, NtpResponse -> Integer
+  ntp-round-trip (t1) (t4) (resp) =
+    let t2 = resp.receive-ts.seconds
+    in let t3 = resp.transmit-ts.seconds
+    in (t4.seconds - t1.seconds) - (t3 - t2)
+
+Section: UDP Integration
+  ntp-request-udp : List Integer, List Integer -> List Integer
+  ntp-request-udp (src-ip) (ntp-server-ip) =
+    udp-build-ip-packet src-ip ntp-server-ip 1025 ntp-port ntp-build-simple-request
+
+  ntp-request-frame : List Integer, List Integer, List Integer, List Integer -> List Integer
+  ntp-request-frame (dst-mac) (src-mac) (src-ip) (ntp-server-ip) =
+    let ip-pkt = ntp-request-udp src-ip ntp-server-ip
+    in eth-build-frame dst-mac src-mac eth-type-ipv4 ip-pkt
+
+Section: Formatting
+  format-ntp-response : NtpResponse -> Text
+  format-ntp-response (r) =
+    "v=" & show (r.version) & " stratum=" & show (r.stratum)
+    & " tx=" & show (r.transmit-ts.seconds)
+    & " unix=" & show (ntp-to-unix (r.transmit-ts))
+
+  format-ntp-timestamp : NtpTimestamp -> Text
+  format-ntp-timestamp (ts) = show (ts.seconds) & "." & show (ts.fraction)
+
+Page 1

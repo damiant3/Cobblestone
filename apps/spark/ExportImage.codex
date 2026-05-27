@@ -1,0 +1,80 @@
+Chapter: ExportImage
+  cites Game chapter Rasterizer
+  cites Spark chapter Canvas
+
+ Export a Canvas2D or Framebuf to image format data. Produces
+ raw pixel bytes suitable for writing through the encode modules.
+ Converts the internal 0xRRGGBB integer pixels to RGB byte triples.
+
+ We say:
+
+Section: Types
+
+  ImageExport = record {
+    ie-width : Integer,
+    ie-height : Integer,
+    ie-rgb-data : List Integer,
+    ie-pixel-count : Integer
+  }
+
+Section: From Canvas
+
+  export-canvas : Canvas2D -> ImageExport
+  export-canvas (cv) =
+    let fb = canvas-flatten cv
+    in export-framebuf fb
+
+  export-framebuf : Framebuf -> ImageExport
+  export-framebuf (fb) =
+    let count = fb.fb-width * fb.fb-height
+    in let rgb = export-to-rgb (fb.fb-pixels) 0 count []
+    in ImageExport {
+      ie-width = fb.fb-width,
+      ie-height = fb.fb-height,
+      ie-rgb-data = rgb,
+      ie-pixel-count = count
+    }
+
+Section: Conversion
+
+  export-to-rgb : List Integer, Integer, Integer, List Integer -> List Integer
+  export-to-rgb (pixels) (i) (n) (acc) =
+    if i >= n then acc
+    else let color = list-at pixels i
+    in let r = color / 65536
+    in let g = color / 256 - r * 256
+    in let b = color - color / 256 * 256
+    in let acc2 = list-push (list-push (list-push acc r) g) b
+    in export-to-rgb pixels (i + 1) n acc2
+
+Section: Statistics
+
+  export-color-count : ImageExport -> Integer
+  export-color-count (ie) = ie-count-unique (ie.ie-rgb-data) 0 (ie.ie-pixel-count) 0
+
+  ie-count-unique : List Integer, Integer, Integer, Integer -> Integer
+  ie-count-unique (data) (i) (n) (count) =
+    if i >= n then count
+    else let idx = i * 3
+    in let r = list-at data idx
+    in let g = list-at data (idx + 1)
+    in let b = list-at data (idx + 2)
+    in let color = r * 65536 + g * 256 + b
+    in let is-new = ie-not-seen data color 0 i
+    in ie-count-unique data (i + 1) n (if is-new then count + 1 else count)
+
+  ie-not-seen : List Integer, Integer, Integer, Integer -> Boolean
+  ie-not-seen (data) (target) (j) (limit) =
+    if j >= limit then True
+    else let idx = j * 3
+    in let c = list-at data idx * 65536 + list-at data (idx + 1) * 256 + list-at data (idx + 2)
+    in if c == target then False
+    else ie-not-seen data target (j + 1) limit
+
+Section: Summary
+
+  export-summary : ImageExport -> Text
+  export-summary (ie) =
+    show (ie.ie-width) & "x" & show (ie.ie-height) & " (" & show (ie.ie-pixel-count) & " pixels, " & show (list-length (ie.ie-rgb-data)) & " bytes)"
+
+Page 1

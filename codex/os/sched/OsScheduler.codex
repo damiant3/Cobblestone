@@ -1,0 +1,106 @@
+Chapter: OsScheduler
+  cites Sched chapter TaskQueue
+  cites OS chapter ServiceRegistry
+  cites Sched chapter Watchdog
+  cites Observe chapter HealthCheck
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ The OsScheduler owns the top-level OS state: service registry,
+ task queue, watchdog, and health checks. To os-tick advances
+ the scheduler by processing the next pending task.
+
+ We say:
+
+Section: Scheduler State
+
+  OsState = record {
+    services : ServiceRegistry,
+    tasks : TaskQueue,
+    shell : ShellState,
+    tick : Integer between 0 and 4294967295,
+    next-pid : Integer between 1 and 65535
+  }
+
+  os-state-new : ShellState -> OsState
+  os-state-new (sh) = OsState {
+    services = service-registry-empty,
+    tasks = task-queue-empty,
+    shell = sh,
+    tick = 0,
+    next-pid = 2
+  }
+
+Section: Tick
+
+  TickResult = record {
+    state : OsState,
+    dispatched : Integer between 0 and 255,
+    restarted : Integer between 0 and 255,
+    health-ok : Boolean
+  }
+
+  os-tick : OsState -> TickResult
+  os-tick (os) =
+    let os1 = OsState { services = os.services, tasks = os.tasks, shell = os.shell, tick = os.tick + 1, next-pid = os.next-pid }
+    in let dispatch-result = try-dispatch os1
+    in let os2 = dispatch-result.state
+    in let wd-result = watchdog-check-all os2
+    in let os3 = wd-result.state
+    in let health = run-health-check (os3.shell) (os3.services)
+    in TickResult { state = os3, dispatched = dispatch-result.count, restarted = wd-result.count, health-ok = is-system-healthy health }
+
+Section: Task Dispatch
+
+  DispatchCount = record {
+    state : OsState,
+    count : Integer between 0 and 255
+  }
+
+  try-dispatch : OsState -> DispatchCount
+  try-dispatch (os) =
+    let dr = task-dequeue (os.tasks)
+    in if dr.has-task == False then DispatchCount { state = os, count = 0 }
+    else let task = dr.task
+    in let q1 = task-mark-running (dr.queue) (task.id) (os.next-pid)
+    in let svc = service-register (os.services) (task.name) (os.next-pid) 0
+    in let os1 = OsState { services = svc, tasks = q1, shell = os.shell, tick = os.tick, next-pid = os.next-pid + 1 }
+    in DispatchCount { state = os1, count = 1 }
+
+Section: Watchdog Integration
+
+  WdCount = record {
+    state : OsState,
+    count : Integer between 0 and 255
+  }
+
+  watchdog-check-all : OsState -> WdCount
+  watchdog-check-all (os) = WdCount { state = os, count = 0 }
+
+Section: Queries
+
+  os-tick-count : OsState -> Integer
+  os-tick-count (os) = os.tick
+
+  os-service-count : OsState -> Integer
+  os-service-count (os) = service-count (os.services)
+
+  os-task-count : OsState -> Integer
+  os-task-count (os) = task-queue-count (os.tasks)
+
+  os-stats : OsState -> Text
+  os-stats (os) = "tick=" & show (os.tick) & " services=" & show (os-service-count os) & " tasks=" & show (os-task-count os) & " next-pid=" & show (os.next-pid)
+
+Page 1

@@ -1,0 +1,67 @@
+Chapter: History
+
+ Undo/redo stack with memory-bounded command history. Stores
+ snapshots of state before and after each edit operation.
+
+ We say:
+
+Section: Types
+
+  EditCommand =
+    | CmdTransform (Integer) (List Integer) (List Integer)
+    | CmdAddObject (Integer)
+    | CmdDeleteObject (Integer)
+
+  UndoStack = record {
+    us-past : List EditCommand,
+    us-future : List EditCommand,
+    us-past-count : Integer,
+    us-limit : Integer
+  }
+
+Section: Construction
+
+  undo-stack-new : Integer -> UndoStack
+  undo-stack-new (limit) = UndoStack {
+    us-past = [],
+    us-future = [],
+    us-past-count = 0,
+    us-limit = limit
+  }
+
+Section: Operations
+
+  undo-push : UndoStack, EditCommand -> UndoStack
+  undo-push (stack) (cmd) =
+    let new-past = list-push (stack.us-past) cmd
+    in let new-count = stack.us-past-count + 1
+    in let trimmed = if new-count > stack.us-limit then undo-trim new-past (new-count - stack.us-limit) else new-past
+    in let final-count = if new-count > stack.us-limit then stack.us-limit else new-count
+    in UndoStack {
+      us-past = trimmed,
+      us-future = [],
+      us-past-count = final-count,
+      us-limit = stack.us-limit
+    }
+
+  undo-can-undo : UndoStack -> Boolean
+  undo-can-undo (stack) = stack.us-past-count > 0
+
+  undo-can-redo : UndoStack -> Boolean
+  undo-can-redo (stack) = list-length (stack.us-future) > 0
+
+  undo-trim : List EditCommand, Integer -> List EditCommand
+  undo-trim (cmds) (n) =
+    if n <= 0 then cmds
+    else if list-length cmds <= 1 then cmds
+    else undo-trim (undo-drop-first cmds) (n - 1)
+
+  undo-drop-first : List EditCommand -> List EditCommand
+  undo-drop-first (cmds) = undo-drop-first-loop cmds 1 (list-length cmds) []
+
+  undo-drop-first-loop : List EditCommand, Integer, Integer, List EditCommand -> List EditCommand
+  undo-drop-first-loop (cmds) (i) (n) (acc) =
+    if i >= n then acc
+    else undo-drop-first-loop cmds (i + 1) n (list-push acc (list-at cmds i))
+
+Page 1

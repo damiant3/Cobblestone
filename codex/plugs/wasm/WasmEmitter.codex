@@ -1,0 +1,273 @@
+Chapter: WASM Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates WebAssembly text format (.wat) from the IR.
+
+Section: Keywords and Sanitization
+
+  wat-keywords : List Text =
+   ["block", "br", "call", "data", "drop", "elem", "else", "end",
+    "export", "func", "global", "if", "import", "local", "loop",
+    "memory", "module", "mut", "nop", "offset", "param", "result",
+    "return", "select", "start", "table", "then", "type", "unreachable"]
+
+  wat-is-keyword : Text, Integer -> Boolean
+  wat-is-keyword (name) (i) =
+   if i == list-length wat-keywords then False
+   else if list-at wat-keywords i == name then True
+   else wat-is-keyword name (i + 1)
+
+  wat-sanitize : Text -> Text
+  wat-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if wat-is-keyword s then s & "_v"
+      else s
+
+  wat-escape : Text -> Text
+  wat-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in text-replace s1 "\"" "\\\""
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-wat-type-defs : List ATypeDef, Integer -> Text
+  emit-wat-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-wat-type-def (list-at tds i) & emit-wat-type-defs tds (i + 1)
+
+  emit-wat-type-def : ATypeDef -> Text
+  emit-wat-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     "  ;; record " & name.value & ": " & integer-to-text (list-length fields) & " fields at 8 bytes each\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     "  ;; variant " & name.value & ": tag i64 + max " & integer-to-text (wat-variant-max-fields ctors 0 0) & " fields\n"
+
+  wat-variant-max-fields : List AVariantCtorDef, Integer, Integer -> Integer
+  wat-variant-max-fields (ctors) (i) (mx) =
+   if i == list-length ctors then mx
+   else let n = list-length ((list-at ctors i).fields)
+   in wat-variant-max-fields ctors (i + 1) (if n > mx then n else mx)
+
+Section: Expression Emission
+
+  emit-wat-expr : IRExpr, List ArityEntry -> Text
+  emit-wat-expr (e) (arities) = emit-wat-expr-at e arities 0
+
+  emit-wat-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-wat-expr-at (e) (arities) (depth) =
+   if depth >= 256 then "(i64.const 0)"
+   else when e
+    is IrIntLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
+    is IrNumLit (n) (sp) -> "(f64.reinterpret_i64 (i64.const " & integer-to-text n & "))"
+    is IrTextLit (s) (sp) -> "(i64.const 0) ;; text: \"" & wat-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "(i64.const 1)" else "(i64.const 0)"
+    is IrCharLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
+    is IrName (n) (ty) (sp) -> emit-wat-name n arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-wat-binary op l r arities depth
+    is IrNegate (operand) (sp) -> "(i64.sub (i64.const 0) " & emit-wat-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if (result i64) " & emit-wat-expr-at c arities (depth + 1) & " (then " & emit-wat-expr-at t arities (depth + 1) & ") (else " & emit-wat-expr-at el arities (depth + 1) & "))"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr-at val arities (depth + 1) & ") " & emit-wat-expr-at body arities (depth + 1)
+    is IrApply (f) (a) (ty) (sp) -> emit-wat-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> emit-wat-expr-at body arities (depth + 1)
+    is IrList (elems) (ty) (sp) -> "(i64.const 0) ;; list"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-wat-match scrut branches arities depth
+    is IrAct (stmts) (ty) (sp) -> emit-wat-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-wat-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-wat-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> "(i64.const 0) ;; record " & name
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "(i64.load (i64.add " & emit-wat-expr-at rec arities (depth + 1) & " (i64.const 0))) ;; ." & field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(i64.const 0)"
+    is IrFork (body) (ty) (sp) -> emit-wat-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-wat-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-wat-act body arities
+    is IrError (msg) (ty) (sp) -> "(unreachable)"
+
+  emit-wat-name : Text, List ArityEntry -> Text
+  emit-wat-name (n) (arities) =
+   if n == "True" then "(i64.const 1)"
+   else if n == "False" then "(i64.const 0)"
+   else if n == "Nothing" then "(i64.const 0)"
+   else let ar = lookup-arity arities n
+   in if ar == 0 then "(call $" & wat-sanitize n & ")"
+      else "(local.get $" & wat-sanitize n & ")"
+
+  emit-wat-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-wat-binary (op) (l) (r) (arities) (depth) =
+   "(" & wat-bin-instr op & " " & emit-wat-expr-at l arities (depth + 1) & " " & emit-wat-expr-at r arities (depth + 1) & ")"
+
+  wat-bin-instr : IRBinaryOp -> Text
+  wat-bin-instr (op) =
+   when op
+    is IrAddInt -> "i64.add"  is IrSubInt -> "i64.sub"  is IrMulInt -> "i64.mul"
+    is IrDivInt -> "i64.div_s"  is IrPowInt -> "i64.mul"
+    is IrAddNum -> "f64.add"  is IrSubNum -> "f64.sub"  is IrMulNum -> "f64.mul"
+    is IrDivNum -> "f64.div"  is IrEq -> "i64.eq"  is IrNotEq -> "i64.ne"
+    is IrLt -> "i64.lt_s"  is IrGt -> "i64.gt_s"  is IrLtEq -> "i64.le_s"
+    is IrGtEq -> "i64.ge_s"  is IrAnd -> "i64.and"  is IrOr -> "i64.or"
+    is IrAppendText -> "i64.add"  is IrAppendList -> "i64.add"
+    is IrConsList -> "i64.add"
+
+  emit-wat-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-wat-match (scrut) (branches) (arities) (depth) =
+   if list-length branches == 0 then "(unreachable)"
+   else "(local.set $_s " & emit-wat-expr scrut arities & ") " & emit-wat-match-body branches 0 arities depth
+
+  emit-wat-match-body : List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-wat-match-body (branches) (i) (arities) (depth) =
+   if i == list-length branches then "(unreachable)"
+   else let b = list-at branches i
+   in emit-wat-match-arm (b.pattern) (b.body) branches i arities depth
+
+  emit-wat-match-arm : IRPat, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-wat-match-arm (pat) (body) (branches) (i) (arities) (depth) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "(if (result i64) (i64.eq (local.get $_s) (i64.const " & text & ")) (then " & emit-wat-expr body arities & ") (else " & emit-wat-match-body branches (i + 1) arities depth & "))"
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-wat-expr body arities
+    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (local.get $_s)) " & emit-wat-expr body arities
+    is IrWildPat (sp) -> emit-wat-expr body arities
+
+  emit-wat-act : List IRActStmt, List ArityEntry -> Text
+  emit-wat-act (stmts) (arities) =
+   emit-wat-act-stmts stmts 0 arities
+
+  emit-wat-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-wat-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then "(i64.const 0)"
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr val arities & ") "
+    is IrDoExec (e) (sp) -> if is-last then emit-wat-expr e arities else "(drop " & emit-wat-expr e arities & ") ") & (if is-last then "" else emit-wat-act-stmts stmts (i + 1) arities)
+
+Section: Apply Emission
+
+  emit-wat-apply : IRExpr, List ArityEntry -> Text
+  emit-wat-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     let bi = wat-try-builtin n args arities
+     in if text-length bi > 0 then bi
+     else "(call $" & wat-sanitize n & " " & emit-wat-apply-args args arities 0 & ")"
+    is otherwise -> "(call_indirect " & emit-wat-apply-args args arities 0 & " " & emit-wat-expr root arities & ")"
+
+  emit-wat-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-wat-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else emit-wat-expr (list-at args i) arities & " " & emit-wat-apply-args args arities (i + 1)
+
+  wat-try-builtin : Text, List IRExpr, List ArityEntry -> Text
+  wat-try-builtin (n) (args) (arities) =
+   if n == "print-line-uni" then "(call $print " & emit-wat-expr (list-at args 0) arities & ")"
+   else if n == "show" then emit-wat-expr (list-at args 0) arities
+   else if n == "integer-to-text" then emit-wat-expr (list-at args 0) arities
+   else if n == "text-to-integer" then emit-wat-expr (list-at args 0) arities
+   else if n == "text-length" then "(call $text_length " & emit-wat-expr (list-at args 0) arities & ")"
+   else if n == "list-length" then "(call $list_length " & emit-wat-expr (list-at args 0) arities & ")"
+   else if n == "list-at" then "(call $list_at " & emit-wat-expr (list-at args 0) arities & " " & emit-wat-expr (list-at args 1) arities & ")"
+   else if n == "char-code" then emit-wat-expr (list-at args 0) arities
+   else if n == "code-to-char" then emit-wat-expr (list-at args 0) arities
+   else if n == "negate" then "(i64.sub (i64.const 0) " & emit-wat-expr (list-at args 0) arities & ")"
+   else if n == "int-mod" then "(i64.rem_s " & emit-wat-expr (list-at args 0) arities & " " & emit-wat-expr (list-at args 1) arities & ")"
+   else if n == "bit-and" then "(i64.and " & emit-wat-expr (list-at args 0) arities & " " & emit-wat-expr (list-at args 1) arities & ")"
+   else if n == "bit-or" then "(i64.or " & emit-wat-expr (list-at args 0) arities & " " & emit-wat-expr (list-at args 1) arities & ")"
+   else if n == "bit-xor" then "(i64.xor " & emit-wat-expr (list-at args 0) arities & " " & emit-wat-expr (list-at args 1) arities & ")"
+   else if n == "bit-shl" then "(i64.shl " & emit-wat-expr (list-at args 0) arities & " " & emit-wat-expr (list-at args 1) arities & ")"
+   else if n == "bit-shr" then "(i64.shr_s " & emit-wat-expr (list-at args 0) arities & " " & emit-wat-expr (list-at args 1) arities & ")"
+   else if n == "bit-not" then "(i64.xor " & emit-wat-expr (list-at args 0) arities & " (i64.const -1))"
+   else if n == "process-exit" then "(unreachable)"
+   else ""
+
+Section: Definition Emission
+
+  emit-wat-def : IRDef, List ArityEntry -> Text
+  emit-wat-def (d) (arities) =
+   let name = wat-sanitize (d.name)
+   in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64)\n    " & emit-wat-expr (d.body) arities & ")\n"
+
+  emit-wat-def-params : List IRParam, Integer -> Text
+  emit-wat-def-params (params) (i) =
+   if i == list-length params then ""
+   else "(param $" & wat-sanitize ((list-at params i).name) & " i64) " & emit-wat-def-params params (i + 1)
+
+  emit-wat-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-wat-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-wat-def (list-at defs i) arities & "\n" & emit-wat-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-wasm-chapter : IRChapter, List ATypeDef -> Text
+  emit-wasm-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "(module\n  (import \"env\" \"print\" (func $print (param i64) (result i64)))\n  (memory (export \"memory\") 1)\n\n"
+   in let types-text = emit-wat-type-defs type-defs 0
+   in let defs-text = emit-wat-defs (m.defs) 0 arities
+   in let entry = wat-emit-entry (m.defs)
+   in header & types-text & "\n" & defs-text & entry & ")\n"
+
+  wat-emit-entry : List IRDef -> Text
+  wat-emit-entry (defs) = wat-emit-entry-loop defs 0
+
+  wat-emit-entry-loop : List IRDef, Integer -> Text
+  wat-emit-entry-loop (defs) (i) =
+   if i >= list-length defs then ""
+   else let d = list-at defs i
+   in if d.name == opening-entry-point then
+    if list-length (d.params) == 0 then "  (export \"_start\" (func $" & wat-sanitize opening-entry-point & "))\n" else ""
+   else wat-emit-entry-loop defs (i + 1)
+
+Page 1

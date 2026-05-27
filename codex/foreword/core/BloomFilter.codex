@@ -1,0 +1,148 @@
+Chapter: BloomFilter
+
+ Probabilistic set membership test using k independent hash functions
+ over a bit array. False positives are possible; false negatives never
+ occur. Backed by List Integer as a byte array with bit-level access.
+ Supports both integer and text keys.
+
+ A BloomFilter is a record containing:
+   bits       -- byte array holding the bit field.
+   num-bits   -- total number of bits in the filter (1..65535).
+   num-hashes -- number of hash functions (1..16).
+   count      -- number of elements inserted (0..65535).
+
+ To bloom-new gives BloomFilter,
+   creating an empty Bloom filter with the given bit count and hash count.
+
+ To bloom-add gives BloomFilter,
+   inserting an integer into the filter by setting k hash-derived bits.
+
+ To bloom-contains gives Boolean,
+   testing whether an integer is probably in the set.
+
+ To bloom-add-text gives BloomFilter,
+   inserting a text string into the filter.
+
+ To bloom-contains-text gives Boolean,
+   testing whether a text string is probably in the set.
+
+ To bloom-count gives Integer,
+   returning the number of elements inserted.
+
+ To bloom-false-positive-rate gives Integer,
+   returning the percentage of bits that are set.
+
+ We say:
+
+Section: Type
+  BloomFilter = record {
+    bits : List Integer,
+    num-bits : Integer between 1 and 65535,
+    num-hashes : Integer between 1 and 16,
+    count : Integer between 0 and 65535
+  }
+
+Section: Construction
+  bloom-new : Integer, Integer -> BloomFilter
+  bloom-new (num-bits) (num-hashes) =
+    let num-bytes = (num-bits + 7) / 8
+    in BloomFilter { bits = bloom-zero-bytes num-bytes 0 [], num-bits = num-bits, num-hashes = num-hashes, count = 0 }
+
+  bloom-zero-bytes : Integer, Integer, List Integer -> List Integer
+  bloom-zero-bytes (n) (i) (acc) =
+    if i >= n then acc
+    else bloom-zero-bytes n (i + 1) (list-push acc 0)
+
+Section: Hash Functions
+  bloom-hash : Integer, Integer, Integer -> Integer
+  bloom-hash (value) (seed) (num-bits) =
+    let h = bit-xor (value * 2654435761) (seed * 40503)
+    in let h2 = bit-xor h (bit-shru h 16)
+    in let h3 = h2 * 73244475 + seed
+    in let positive = if h3 < 0 then -h3 else h3
+    in positive - (positive / num-bits) * num-bits
+
+  bloom-hash-text : Text, Integer, Integer -> Integer
+  bloom-hash-text (s) (seed) (num-bits) =
+    let h = bloom-hash-text-loop s 0 (text-length s) seed
+    in let positive = if h < 0 then -h else h
+    in positive - (positive / num-bits) * num-bits
+
+  bloom-hash-text-loop : Text, Integer, Integer, Integer -> Integer
+  bloom-hash-text-loop (s) (i) (len) (hash) =
+    if i >= len then hash
+    else let c = char-code (char-at s i)
+    in bloom-hash-text-loop s (i + 1) len (bit-xor (hash * 31 + c) (bit-shru hash 3))
+
+Section: Bit Operations
+  bloom-set-bit : List Integer, Integer -> List Integer
+  bloom-set-bit (bits) (pos) =
+    let byte-idx = pos / 8
+    in let bit-idx = pos - byte-idx * 8
+    in list-set-at bits byte-idx (bit-or (list-at bits byte-idx) (bit-shl 1 bit-idx))
+
+  bloom-test-bit : List Integer, Integer -> Boolean
+  bloom-test-bit (bits) (pos) =
+    let byte-idx = pos / 8
+    in let bit-idx = pos - byte-idx * 8
+    in bit-and (list-at bits byte-idx) (bit-shl 1 bit-idx) > 0
+
+Section: Insert and Query (Integer)
+  bloom-add : BloomFilter, Integer -> BloomFilter
+  bloom-add (bf) (value) =
+    let new-bits = bloom-add-hashes (bf.bits) value (bf.num-bits) (bf.num-hashes) 0
+    in BloomFilter { bits = new-bits, num-bits = bf.num-bits, num-hashes = bf.num-hashes, count = bf.count + 1 }
+
+  bloom-add-hashes : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  bloom-add-hashes (bits) (value) (num-bits) (k) (i) =
+    if i >= k then bits
+    else let pos = bloom-hash value i num-bits
+    in bloom-add-hashes (bloom-set-bit bits pos) value num-bits k (i + 1)
+
+  bloom-contains : BloomFilter, Integer -> Boolean
+  bloom-contains (bf) (value) = bloom-check-hashes (bf.bits) value (bf.num-bits) (bf.num-hashes) 0
+
+  bloom-check-hashes : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  bloom-check-hashes (bits) (value) (num-bits) (k) (i) =
+    if i >= k then True
+    else let pos = bloom-hash value i num-bits
+    in if bloom-test-bit bits pos then bloom-check-hashes bits value num-bits k (i + 1)
+    else False
+
+Section: Insert and Query (Text)
+  bloom-add-text : BloomFilter, Text -> BloomFilter
+  bloom-add-text (bf) (s) =
+    let new-bits = bloom-add-text-hashes (bf.bits) s (bf.num-bits) (bf.num-hashes) 0
+    in BloomFilter { bits = new-bits, num-bits = bf.num-bits, num-hashes = bf.num-hashes, count = bf.count + 1 }
+
+  bloom-add-text-hashes : List Integer, Text, Integer, Integer, Integer -> List Integer
+  bloom-add-text-hashes (bits) (s) (num-bits) (k) (i) =
+    if i >= k then bits
+    else let pos = bloom-hash-text s i num-bits
+    in bloom-add-text-hashes (bloom-set-bit bits pos) s num-bits k (i + 1)
+
+  bloom-contains-text : BloomFilter, Text -> Boolean
+  bloom-contains-text (bf) (s) = bloom-check-text-hashes (bf.bits) s (bf.num-bits) (bf.num-hashes) 0
+
+  bloom-check-text-hashes : List Integer, Text, Integer, Integer, Integer -> Boolean
+  bloom-check-text-hashes (bits) (s) (num-bits) (k) (i) =
+    if i >= k then True
+    else let pos = bloom-hash-text s i num-bits
+    in if bloom-test-bit bits pos then bloom-check-text-hashes bits s num-bits k (i + 1)
+    else False
+
+Section: Queries
+  bloom-count : BloomFilter -> Integer
+  bloom-count (bf) = bf.count
+
+  bloom-false-positive-rate : BloomFilter -> Integer
+  bloom-false-positive-rate (bf) =
+    let filled = bloom-count-set-bits (bf.bits) 0 (bf.num-bits) 0
+    in filled * 100 / bf.num-bits
+
+  bloom-count-set-bits : List Integer, Integer, Integer, Integer -> Integer
+  bloom-count-set-bits (bits) (i) (num-bits) (acc) =
+    if i >= num-bits then acc
+    else bloom-count-set-bits bits (i + 1) num-bits (acc + if bloom-test-bit bits i then 1 else 0)
+
+Page 1

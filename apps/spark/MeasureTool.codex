@@ -1,0 +1,217 @@
+Chapter: MeasureTool
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Game chapter Rasterizer
+  cites Spark chapter Mesh
+  cites Spark chapter SceneCamera
+  cites Spark chapter Pipeline3D
+
+ Measurement tools for 3D space: distance between points, angle
+ between edges, face area, and mesh volume. Renders measurement
+ annotations as overlays on the viewport. Fixed-point scale 1000.
+
+ We say:
+
+Section: Types
+
+  MeasureKind =
+    | MeasDist
+    | MeasAngle
+    | MeasArea
+
+  Measurement = record {
+    msr-kind : MeasureKind,
+    msr-value : Integer,
+    msr-unit : Text,
+    msr-p0 : Vec3,
+    msr-p1 : Vec3,
+    msr-visible : Boolean
+  }
+
+  MeasureState = record {
+    ms-measurements : List Measurement,
+    ms-count : Integer,
+    ms-active : Boolean,
+    ms-snap-verts : Boolean
+  }
+
+Section: Construction
+
+  measure-state-new : MeasureState
+  measure-state-new = MeasureState {
+    ms-measurements = [],
+    ms-count = 0,
+    ms-active = False,
+    ms-snap-verts = True
+  }
+
+Section: Distance
+
+  measure-distance : Vec3, Vec3 -> Measurement
+  measure-distance (a) (b) =
+    let dx = b.vx - a.vx
+    in let dy = b.vy - a.vy
+    in let dz = b.vz - a.vz
+    in let dist = mt-isqrt (dx * dx + dy * dy + dz * dz)
+    in Measurement {
+      msr-kind = MeasDist,
+      msr-value = dist,
+      msr-unit = "units",
+      msr-p0 = a,
+      msr-p1 = b,
+      msr-visible = True
+    }
+
+Section: Angle
+
+  measure-angle : Vec3, Vec3, Vec3 -> Measurement
+  measure-angle (a) (center) (b) =
+    let v1 = vec3-subtract a center
+    in let v2 = vec3-subtract b center
+    in let dot = vec3-dot v1 v2
+    in let len1 = mt-v3-length v1
+    in let len2 = mt-v3-length v2
+    in let denom = len1 * len2 / 1000
+    in let cos-a = if denom == 0 then 0 else dot * 1000 / denom
+    in let angle = mt-acos-approx (mt-clamp cos-a (-1000) 1000)
+    in Measurement {
+      msr-kind = MeasAngle,
+      msr-value = angle,
+      msr-unit = "mrad",
+      msr-p0 = a,
+      msr-p1 = b,
+      msr-visible = True
+    }
+
+Section: Face Area
+
+  measure-face-area : Vec3, Vec3, Vec3 -> Measurement
+  measure-face-area (v0) (v1) (v2) =
+    let e1 = vec3-subtract v1 v0
+    in let e2 = vec3-subtract v2 v0
+    in let cross = vec3-cross e1 e2
+    in let area = mt-v3-length cross / 2
+    in Measurement {
+      msr-kind = MeasArea,
+      msr-value = area,
+      msr-unit = "sq units",
+      msr-p0 = v0,
+      msr-p1 = v2,
+      msr-visible = True
+    }
+
+Section: Mesh Stats
+
+  measure-mesh-surface-area : TriMesh -> Integer
+  measure-mesh-surface-area (mesh) =
+    mt-surface-loop mesh 0 0
+
+  mt-surface-loop : TriMesh, Integer, Integer -> Integer
+  mt-surface-loop (mesh) (fi) (acc) =
+    if fi >= mesh.tm-face-count then acc
+    else let face = tri-mesh-face mesh fi
+    in let v0 = tri-mesh-vert mesh (face.tf-v0)
+    in let v1 = tri-mesh-vert mesh (face.tf-v1)
+    in let v2 = tri-mesh-vert mesh (face.tf-v2)
+    in let e1 = vec3-subtract v1 v0
+    in let e2 = vec3-subtract v2 v0
+    in let cross = vec3-cross e1 e2
+    in let area = mt-v3-length cross / 2
+    in mt-surface-loop mesh (fi + 1) (acc + area)
+
+  measure-mesh-bounds-size : TriMesh -> Vec3
+  measure-mesh-bounds-size (mesh) =
+    let bounds = tri-mesh-bounds mesh
+    in vec3-subtract (bounds.mb-max) (bounds.mb-min)
+
+Section: State Management
+
+  measure-add : MeasureState, Measurement -> MeasureState
+  measure-add (ms) (msr) = MeasureState {
+    ms-measurements = list-push (ms.ms-measurements) msr,
+    ms-count = ms.ms-count + 1,
+    ms-active = ms.ms-active,
+    ms-snap-verts = ms.ms-snap-verts
+  }
+
+  measure-clear : MeasureState -> MeasureState
+  measure-clear (ms) = MeasureState {
+    ms-measurements = [],
+    ms-count = 0,
+    ms-active = ms.ms-active,
+    ms-snap-verts = ms.ms-snap-verts
+  }
+
+  measure-toggle : MeasureState -> MeasureState
+  measure-toggle (ms) = __record-set ms "ms-active" (if ms.ms-active then False else True)
+
+Section: Rendering
+
+  measure-draw-all : Framebuf, MeasureState, Mat4, Integer, Integer -> Framebuf
+  measure-draw-all (fb) (ms) (mvp) (vp-w) (vp-h) =
+    mt-draw-loop fb ms mvp vp-w vp-h 0
+
+  mt-draw-loop : Framebuf, MeasureState, Mat4, Integer, Integer, Integer -> Framebuf
+  mt-draw-loop (fb) (ms) (mvp) (vp-w) (vp-h) (i) =
+    if i >= ms.ms-count then fb
+    else let msr = list-at (ms.ms-measurements) i
+    in let fb2 = if msr.msr-visible then mt-draw-one fb msr mvp vp-w vp-h else fb
+    in mt-draw-loop fb2 ms mvp vp-w vp-h (i + 1)
+
+  mt-draw-one : Framebuf, Measurement, Mat4, Integer, Integer -> Framebuf
+  mt-draw-one (fb) (msr) (mvp) (vp-w) (vp-h) =
+    let sx0 = mt-project-x mvp (msr.msr-p0) vp-w vp-h
+    in let sy0 = mt-project-y mvp (msr.msr-p0) vp-w vp-h
+    in let sx1 = mt-project-x mvp (msr.msr-p1) vp-w vp-h
+    in let sy1 = mt-project-y mvp (msr.msr-p1) vp-w vp-h
+    in if sx0 < 0 then fb
+    else if sx1 < 0 then fb
+    else let color = when msr.msr-kind is MeasDist -> 16776960 is MeasAngle -> 65535 is MeasArea -> 16711935
+    in fb-line fb sx0 sy0 sx1 sy1 color
+
+  mt-project-x : Mat4, Vec3, Integer, Integer -> Integer
+  mt-project-x (mvp) (v) (vp-w) (vp-h) =
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1000 })
+    in if clip.v4w <= 0 then -1
+    else (clip.v4x * 1000 / clip.v4w + 1000) * vp-w / 2000
+
+  mt-project-y : Mat4, Vec3, Integer, Integer -> Integer
+  mt-project-y (mvp) (v) (vp-w) (vp-h) =
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1000 })
+    in if clip.v4w <= 0 then -1
+    else (1000 - clip.v4y * 1000 / clip.v4w) * vp-h / 2000
+
+Section: Helpers
+
+  mt-isqrt : Integer -> Integer
+  mt-isqrt (n) = if n <= 0 then 0 else mt-isqrt-loop n (n / 2 + 1)
+
+  mt-isqrt-loop : Integer, Integer -> Integer
+  mt-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else mt-isqrt-loop n next
+
+  mt-v3-length : Vec3 -> Integer
+  mt-v3-length (v) = mt-isqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
+
+  mt-acos-approx : Integer -> Integer
+  mt-acos-approx (cos-val) =
+    1571 - cos-val - cos-val * cos-val / 1000 * cos-val / 6000
+
+  mt-clamp : Integer, Integer, Integer -> Integer
+  mt-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Formatting
+
+  measure-format : Measurement -> Text
+  measure-format (msr) =
+    let kind = when msr.msr-kind is MeasDist -> "Distance" is MeasAngle -> "Angle" is MeasArea -> "Area"
+    in kind & ": " & show (msr.msr-value) & " " & msr.msr-unit
+
+Section: Info
+
+  measure-state-info : MeasureState -> Text
+  measure-state-info (ms) =
+    show (ms.ms-count) & " measurements" & (if ms.ms-active then " [active]" else "")
+
+Page 1

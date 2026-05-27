@@ -1,0 +1,382 @@
+Chapter: EventBus
+  cites CodexMagic chapter GameRegistry
+  cites CodexMagic chapter Clan
+
+ Inter-service event bus. When something happens in one game or
+ server, other services need to know. Invasions trigger notifications.
+ Subgame resolution fires callbacks. Dungeon completions update
+ profiles. Trade completions notify both parties. This is the
+ nervous system of the multiverse.
+
+ Events are typed, timestamped, and routed by subscription.
+ Services subscribe to event types they care about. The bus
+ delivers asynchronously - fire and forget, eventual consistency.
+
+ We say:
+
+Section: Event Types
+
+  GameEvent =
+    | EvtGameResult (GameResultEvent)
+    | EvtSubgameSpawned (SubgameSpawnEvent)
+    | EvtSubgameResolved (SubgameResolveEvent)
+    | EvtInvasion (InvasionEvent)
+    | EvtTrade (TradeEvent)
+    | EvtItemConverted (ConversionEvent)
+    | EvtPortalOpened (PortalEvent)
+    | EvtDungeonCleared (DungeonClearEvent)
+    | EvtAchievement (AchievementEvent)
+    | EvtClanAction (ClanActionEvent)
+    | EvtTournamentUpdate (TournamentEvent)
+    | EvtEconomyTx (EconomyEvent)
+    | EvtPlayerJoined (JoinEvent)
+    | EvtGMAction (GMActionEvent)
+
+  GameResultEvent = record {
+    game-id : Integer,
+    match-id : Integer,
+    player-a : Integer,
+    player-b : Integer,
+    winner : Integer,
+    timestamp : Integer
+  }
+
+  SubgameSpawnEvent = record {
+    parent-game : Integer,
+    parent-match : Integer,
+    subgame-id : Integer,
+    session-id : Integer,
+    player-a : Integer,
+    player-b : Integer,
+    timestamp : Integer
+  }
+
+  SubgameResolveEvent = record {
+    session-id : Integer,
+    winner : Integer,
+    effect-applied : Text,
+    parent-game : Integer,
+    timestamp : Integer
+  }
+
+  InvasionEvent = record {
+    invasion-id : Integer,
+    invader : Integer,
+    target-dungeon : Integer,
+    invasion-type : Text,
+    cost : Integer,
+    approved : Boolean,
+    timestamp : Integer
+  }
+
+  TradeEvent = record {
+    trade-id : Integer,
+    seller : Integer,
+    buyer : Integer,
+    item-id : Integer,
+    price : Integer,
+    timestamp : Integer
+  }
+
+  ConversionEvent = record {
+    planar-id : Integer,
+    owner : Integer,
+    from-game : Integer,
+    to-game : Integer,
+    cost : Integer,
+    timestamp : Integer
+  }
+
+  PortalEvent = record {
+    portal-id : Integer,
+    user : Integer,
+    source-dungeon : Integer,
+    destination-game : Integer,
+    timestamp : Integer
+  }
+
+  DungeonClearEvent = record {
+    dungeon-id : Integer,
+    player : Integer,
+    char-id : Integer,
+    floor-reached : Integer,
+    loot-count : Integer,
+    xp-earned : Integer,
+    timestamp : Integer
+  }
+
+  AchievementEvent = record {
+    player : Integer,
+    achievement-id : Integer,
+    achievement-name : Text,
+    tier : Text,
+    timestamp : Integer
+  }
+
+  ClanActionEvent = record {
+    clan-id : Integer,
+    actor : Integer,
+    action-type : Text,
+    target : Integer,
+    timestamp : Integer
+  }
+
+  TournamentEvent = record {
+    tournament-id : Integer,
+    clan-id : Integer,
+    event-type : Text,
+    player : Integer,
+    timestamp : Integer
+  }
+
+  EconomyEvent = record {
+    tx-type : Text,
+    from-account : Integer,
+    to-account : Integer,
+    amount : Integer,
+    currency : Text,
+    timestamp : Integer
+  }
+
+  JoinEvent = record {
+    player : Integer,
+    game-id : Integer,
+    match-id : Integer,
+    timestamp : Integer
+  }
+
+  GMActionEvent = record {
+    gm-id : Integer,
+    action : Text,
+    dungeon-id : Integer,
+    cost : Integer,
+    timestamp : Integer
+  }
+
+Section: Event Envelope
+
+  EventEnvelope = record {
+    event-id : Integer,
+    source-service : Text,
+    event-type : Text,
+    payload : GameEvent,
+    timestamp : Integer,
+    delivered : Boolean,
+    delivery-count : Integer
+  }
+
+Section: Event Bus State
+
+  EventBusState = record {
+    events : List EventEnvelope,
+    next-event-id : Integer,
+    subscriptions : List Subscription,
+    pending-delivery : List Integer,
+    total-events : Integer,
+    total-delivered : Integer
+  }
+
+  Subscription = record {
+    sub-id : Integer,
+    service-name : Text,
+    event-filter : Text,
+    active : Boolean
+  }
+
+  event-bus-new : EventBusState
+  event-bus-new =
+    EventBusState {
+      events = [],
+      next-event-id = 1,
+      subscriptions = [
+        Subscription { sub-id = 1, service-name = "MagicServer", event-filter = "game-result", active = True },
+        Subscription { sub-id = 2, service-name = "ClanServer", event-filter = "clan-action", active = True },
+        Subscription { sub-id = 3, service-name = "PlaneServer", event-filter = "subgame", active = True },
+        Subscription { sub-id = 4, service-name = "PlaneServer", event-filter = "invasion", active = True },
+        Subscription { sub-id = 5, service-name = "PlaneServer", event-filter = "trade", active = True },
+        Subscription { sub-id = 6, service-name = "PlaneServer", event-filter = "dungeon", active = True },
+        Subscription { sub-id = 7, service-name = "ProfileService", event-filter = "achievement", active = True },
+        Subscription { sub-id = 8, service-name = "ProfileService", event-filter = "game-result", active = True }
+      ],
+      pending-delivery = [],
+      total-events = 0,
+      total-delivered = 0
+    }
+
+Section: Publishing Events
+
+  publish-event : EventBusState, Text, GameEvent, Integer -> EventBusState
+  publish-event (bus) (source) (event) (time) =
+    let etype = event-type-tag event
+    in let envelope = EventEnvelope { event-id = bus.next-event-id, source-service = source, event-type = etype, payload = event, timestamp = time, delivered = False, delivery-count = 0 }
+    in EventBusState {
+      events = list-push (bus.events) envelope,
+      next-event-id = bus.next-event-id + 1,
+      subscriptions = bus.subscriptions,
+      pending-delivery = list-push (bus.pending-delivery) (bus.next-event-id),
+      total-events = bus.total-events + 1,
+      total-delivered = bus.total-delivered
+    }
+
+  event-type-tag : GameEvent -> Text
+  event-type-tag (event) =
+    when event
+      is EvtGameResult (e) -> "game-result"
+      is EvtSubgameSpawned (e) -> "subgame"
+      is EvtSubgameResolved (e) -> "subgame"
+      is EvtInvasion (e) -> "invasion"
+      is EvtTrade (e) -> "trade"
+      is EvtItemConverted (e) -> "conversion"
+      is EvtPortalOpened (e) -> "portal"
+      is EvtDungeonCleared (e) -> "dungeon"
+      is EvtAchievement (e) -> "achievement"
+      is EvtClanAction (e) -> "clan-action"
+      is EvtTournamentUpdate (e) -> "tournament"
+      is EvtEconomyTx (e) -> "economy"
+      is EvtPlayerJoined (e) -> "player-joined"
+      is EvtGMAction (e) -> "gm-action"
+
+Section: Subscriptions
+
+  subscribe : EventBusState, Text, Text -> EventBusState
+  subscribe (bus) (service) (filter) =
+    let sub = Subscription { sub-id = list-length (bus.subscriptions) + 1, service-name = service, event-filter = filter, active = True }
+    in EventBusState {
+      events = bus.events,
+      next-event-id = bus.next-event-id,
+      subscriptions = list-push (bus.subscriptions) sub,
+      pending-delivery = bus.pending-delivery,
+      total-events = bus.total-events,
+      total-delivered = bus.total-delivered
+    }
+
+  get-subscribers-for : EventBusState, Text -> List Subscription
+  get-subscribers-for (bus) (event-type) =
+    filter-subs (bus.subscriptions) event-type 0 (list-length (bus.subscriptions)) []
+
+  filter-subs : List Subscription, Text, Integer, Integer, List Subscription -> List Subscription
+  filter-subs (subs) (filter) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at subs i
+    in if s.event-filter == filter then
+      if s.active then filter-subs subs filter (i + 1) len (list-push acc s)
+      else filter-subs subs filter (i + 1) len acc
+    else filter-subs subs filter (i + 1) len acc
+
+Section: Delivery
+
+  DeliveryBatch = record {
+    service : Text,
+    events : List EventEnvelope,
+    count : Integer
+  }
+
+  get-pending-for-service : EventBusState, Text -> DeliveryBatch
+  get-pending-for-service (bus) (service) =
+    let subs = get-service-subs (bus.subscriptions) service 0 (list-length (bus.subscriptions)) []
+    in let matching = get-matching-events (bus.events) subs (bus.pending-delivery) 0 (list-length (bus.pending-delivery)) []
+    in DeliveryBatch { service = service, events = matching, count = list-length matching }
+
+  get-service-subs : List Subscription, Text, Integer, Integer, List Subscription -> List Subscription
+  get-service-subs (subs) (service) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at subs i
+    in if s.service-name == service then
+      if s.active then get-service-subs subs service (i + 1) len (list-push acc s)
+      else get-service-subs subs service (i + 1) len acc
+    else get-service-subs subs service (i + 1) len acc
+
+  get-matching-events : List EventEnvelope, List Subscription, List Integer, Integer, Integer, List EventEnvelope -> List EventEnvelope
+  get-matching-events (events) (subs) (pending) (i) (len) (acc) =
+    if i >= len then acc
+    else let evt-id = list-at pending i
+    in let evt = find-event events evt-id 0 (list-length events)
+    in if evt.event-id < 0 then get-matching-events events subs pending (i + 1) len acc
+    else if matches-any-sub (evt.event-type) subs 0 (list-length subs) then
+      get-matching-events events subs pending (i + 1) len (list-push acc evt)
+    else get-matching-events events subs pending (i + 1) len acc
+
+  matches-any-sub : Text, List Subscription, Integer, Integer -> Boolean
+  matches-any-sub (etype) (subs) (i) (len) =
+    if i >= len then False
+    else let s = list-at subs i
+    in if s.event-filter == etype then True
+    else matches-any-sub etype subs (i + 1) len
+
+  find-event : List EventEnvelope, Integer, Integer, Integer -> EventEnvelope
+  find-event (events) (id) (i) (len) =
+    if i >= len then EventEnvelope { event-id = -1, source-service = "", event-type = "", payload = EvtPlayerJoined (JoinEvent { player = 0, game-id = 0, match-id = 0, timestamp = 0 }), timestamp = 0, delivered = False, delivery-count = 0 }
+    else let e = list-at events i
+    in if e.event-id == id then e
+    else find-event events id (i + 1) len
+
+  mark-delivered : EventBusState, Integer -> EventBusState
+  mark-delivered (bus) (event-id) =
+    let new-pending = remove-from-pending (bus.pending-delivery) event-id 0 (list-length (bus.pending-delivery)) []
+    in EventBusState {
+      events = bus.events,
+      next-event-id = bus.next-event-id,
+      subscriptions = bus.subscriptions,
+      pending-delivery = new-pending,
+      total-events = bus.total-events,
+      total-delivered = bus.total-delivered + 1
+    }
+
+  remove-from-pending : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  remove-from-pending (pending) (id) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pending i
+    in if p == id then remove-from-pending pending id (i + 1) len acc
+    else remove-from-pending pending id (i + 1) len (list-push acc p)
+
+Section: Convenience Publishers
+
+  publish-game-result : EventBusState, Integer, Integer, Integer, Integer, Integer, Integer -> EventBusState
+  publish-game-result (bus) (game-id) (match-id) (player-a) (player-b) (winner) (time) =
+    let evt = EvtGameResult (GameResultEvent { game-id = game-id, match-id = match-id, player-a = player-a, player-b = player-b, winner = winner, timestamp = time })
+    in publish-event bus "GameEngine" evt time
+
+  publish-subgame-spawned : EventBusState, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> EventBusState
+  publish-subgame-spawned (bus) (parent-game) (parent-match) (subgame-id) (session-id) (pa) (pb) (time) =
+    let evt = EvtSubgameSpawned (SubgameSpawnEvent { parent-game = parent-game, parent-match = parent-match, subgame-id = subgame-id, session-id = session-id, player-a = pa, player-b = pb, timestamp = time })
+    in publish-event bus "PlaneServer" evt time
+
+  publish-invasion : EventBusState, Integer, Integer, Integer, Text, Integer, Boolean, Integer -> EventBusState
+  publish-invasion (bus) (inv-id) (invader) (dungeon) (inv-type) (cost) (approved) (time) =
+    let evt = EvtInvasion (InvasionEvent { invasion-id = inv-id, invader = invader, target-dungeon = dungeon, invasion-type = inv-type, cost = cost, approved = approved, timestamp = time })
+    in publish-event bus "PlaneServer" evt time
+
+  publish-trade : EventBusState, Integer, Integer, Integer, Integer, Integer, Integer -> EventBusState
+  publish-trade (bus) (trade-id) (seller) (buyer) (item-id) (price) (time) =
+    let evt = EvtTrade (TradeEvent { trade-id = trade-id, seller = seller, buyer = buyer, item-id = item-id, price = price, timestamp = time })
+    in publish-event bus "Exchange" evt time
+
+  publish-dungeon-clear : EventBusState, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> EventBusState
+  publish-dungeon-clear (bus) (dungeon-id) (player) (char-id) (floor) (loot) (xp) (time) =
+    let evt = EvtDungeonCleared (DungeonClearEvent { dungeon-id = dungeon-id, player = player, char-id = char-id, floor-reached = floor, loot-count = loot, xp-earned = xp, timestamp = time })
+    in publish-event bus "DungeonEngine" evt time
+
+  publish-gm-action : EventBusState, Integer, Text, Integer, Integer, Integer -> EventBusState
+  publish-gm-action (bus) (gm-id) (action) (dungeon-id) (cost) (time) =
+    let evt = EvtGMAction (GMActionEvent { gm-id = gm-id, action = action, dungeon-id = dungeon-id, cost = cost, timestamp = time })
+    in publish-event bus "GMEngine" evt time
+
+Section: Bus Statistics
+
+  bus-stats : EventBusState -> BusStats
+  bus-stats (bus) =
+    BusStats {
+      total-events = bus.total-events,
+      total-delivered = bus.total-delivered,
+      pending = list-length (bus.pending-delivery),
+      subscriptions = list-length (bus.subscriptions)
+    }
+
+  BusStats = record {
+    total-events : Integer,
+    total-delivered : Integer,
+    pending : Integer,
+    subscriptions : Integer
+  }
+
+Page 1

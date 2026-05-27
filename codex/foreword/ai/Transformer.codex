@@ -1,0 +1,155 @@
+Chapter: Transformer
+  cites AI chapter Attention
+  cites AI chapter Tensor
+  cites Math chapter Cordic
+
+ Transformer encoder and decoder layers — LayerNorm, multi-head
+ self-attention, feed-forward network, and residual connections.
+ Composes Attention for the core mechanism. Uses fixed-point
+ scale-1000 arithmetic throughout.
+
+ To transformer-encoder-layer gives output after one encoder layer.
+ To transformer-decoder-layer gives output after one decoder layer.
+ To layer-norm gives layer-normalized output.
+ To feed-forward gives FFN output (two linear layers with ReLU).
+
+ We say:
+
+Section: Types
+
+  TransformerConfig = record {
+    tf-d-model : Integer,
+    tf-num-heads : Integer,
+    tf-d-ff : Integer,
+    tf-seq-len : Integer,
+    tf-dropout : Integer
+  }
+
+  TransformerWeights = record {
+    tw-q : List Integer,
+    tw-k : List Integer,
+    tw-v : List Integer,
+    tw-out : List Integer,
+    tw-ff1 : List Integer,
+    tw-ff1-bias : List Integer,
+    tw-ff2 : List Integer,
+    tw-ff2-bias : List Integer,
+    tw-ln1-gamma : List Integer,
+    tw-ln1-beta : List Integer,
+    tw-ln2-gamma : List Integer,
+    tw-ln2-beta : List Integer,
+    tw-ln3-gamma : List Integer,
+    tw-ln3-beta : List Integer
+  }
+
+Section: Layer Norm
+
+  layer-norm : List Integer, List Integer, List Integer, Integer -> List Integer
+  layer-norm (input) (gamma) (beta) (dim) =
+    let len = list-length input
+    in let num-vecs = len / dim
+    in ln-vec-loop input gamma beta dim num-vecs 0 []
+
+  ln-vec-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ln-vec-loop (input) (gamma) (beta) (dim) (num-vecs) (v) (acc) =
+    if v >= num-vecs then acc
+    else let start = v * dim
+    in let mean = ln-mean input start dim
+    in let var = ln-variance input start dim mean
+    in let normed = ln-apply input gamma beta start dim mean var 0 []
+    in ln-vec-loop input gamma beta dim num-vecs (v + 1) (acc & normed)
+
+  ln-mean : List Integer, Integer, Integer -> Integer
+  ln-mean (data) (start) (dim) = ln-sum data start dim 0 / dim
+
+  ln-sum : List Integer, Integer, Integer, Integer -> Integer
+  ln-sum (data) (start) (remaining) (acc) =
+    if remaining <= 0 then acc
+    else ln-sum data (start + 1) (remaining - 1) (acc + list-at data start)
+
+  ln-variance : List Integer, Integer, Integer, Integer -> Integer
+  ln-variance (data) (start) (dim) (mean) = ln-var-loop data start dim mean 0 / dim
+
+  ln-var-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  ln-var-loop (data) (start) (remaining) (mean) (acc) =
+    if remaining <= 0 then acc
+    else let diff = list-at data start - mean
+    in ln-var-loop data (start + 1) (remaining - 1) mean (acc + diff * diff / 1000)
+
+  ln-apply : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ln-apply (data) (gamma) (beta) (start) (dim) (mean) (var) (i) (acc) =
+    if i >= dim then acc
+    else let x = list-at data (start + i)
+    in let normed = (x - mean) * 1000 / (cordic-sqrt (var + 1) + 1)
+    in let scaled = normed * list-at gamma i / 1000 + list-at beta i
+    in ln-apply data gamma beta start dim mean var (i + 1) (list-push acc scaled)
+
+Section: Feed-Forward Network
+
+  feed-forward : List Integer, List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  feed-forward (input) (w1) (b1) (w2) (b2) (seq-len) (d-model) (d-ff) =
+    let hidden = ff-linear input w1 b1 seq-len d-model d-ff
+    in let activated = ff-relu hidden 0 (list-length hidden) []
+    in ff-linear activated w2 b2 seq-len d-ff d-model
+
+  ff-linear : List Integer, List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  ff-linear (input) (weights) (bias) (seq-len) (in-dim) (out-dim) =
+    ff-linear-loop input weights bias seq-len in-dim out-dim 0 (seq-len * out-dim) []
+
+  ff-linear-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ff-linear-loop (input) (w) (b) (seq-len) (in-dim) (out-dim) (i) (total) (acc) =
+    if i >= total then acc
+    else let row = i / out-dim
+    in let col = i - row * out-dim
+    in let dot = ff-dot input w (row * in-dim) (col * in-dim) in-dim 0
+    in let val = dot + list-at b col
+    in ff-linear-loop input w b seq-len in-dim out-dim (i + 1) total (list-push acc val)
+
+  ff-dot : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  ff-dot (a) (b) (a-off) (b-off) (len) (acc) =
+    ff-dot-loop a b a-off b-off len 0 acc
+
+  ff-dot-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ff-dot-loop (a) (b) (a-off) (b-off) (len) (k) (acc) =
+    if k >= len then acc
+    else ff-dot-loop a b a-off b-off len (k + 1) (acc + list-at a (a-off + k) * list-at b (b-off + k) / 1000)
+
+  ff-relu : List Integer, Integer, Integer, List Integer -> List Integer
+  ff-relu (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at xs i
+    in ff-relu xs (i + 1) len (list-push acc (if v > 0 then v else 0))
+
+Section: Residual Add
+
+  residual-add : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  residual-add (a) (b) (i) (len) (acc) =
+    if i >= len then acc
+    else residual-add a b (i + 1) len (list-push acc (list-at a i + list-at b i))
+
+Section: Encoder Layer
+
+  transformer-encoder-layer : List Integer, TransformerWeights, TransformerConfig -> List Integer
+  transformer-encoder-layer (input) (w) (cfg) =
+    let normed1 = layer-norm input (w.tw-ln1-gamma) (w.tw-ln1-beta) (cfg.tf-d-model)
+    in let attn-out = attention-multi-head normed1 normed1 normed1 (cfg.tf-seq-len) (cfg.tf-d-model) (cfg.tf-num-heads)
+    in let res1 = residual-add input attn-out 0 (list-length input) []
+    in let normed2 = layer-norm res1 (w.tw-ln2-gamma) (w.tw-ln2-beta) (cfg.tf-d-model)
+    in let ff-out = feed-forward normed2 (w.tw-ff1) (w.tw-ff1-bias) (w.tw-ff2) (w.tw-ff2-bias) (cfg.tf-seq-len) (cfg.tf-d-model) (cfg.tf-d-ff)
+    in residual-add res1 ff-out 0 (list-length res1) []
+
+Section: Decoder Layer
+
+  transformer-decoder-layer : List Integer, List Integer, TransformerWeights, TransformerConfig -> List Integer
+  transformer-decoder-layer (input) (encoder-out) (w) (cfg) =
+    let normed1 = layer-norm input (w.tw-ln1-gamma) (w.tw-ln1-beta) (cfg.tf-d-model)
+    in let self-attn = attention-multi-head normed1 normed1 normed1 (cfg.tf-seq-len) (cfg.tf-d-model) (cfg.tf-num-heads)
+    in let res1 = residual-add input self-attn 0 (list-length input) []
+    in let normed2 = layer-norm res1 (w.tw-ln2-gamma) (w.tw-ln2-beta) (cfg.tf-d-model)
+    in let cross-attn = attention-multi-head normed2 encoder-out encoder-out (cfg.tf-seq-len) (cfg.tf-d-model) (cfg.tf-num-heads)
+    in let res2 = residual-add res1 cross-attn 0 (list-length res1) []
+    in let normed3 = layer-norm res2 (w.tw-ln3-gamma) (w.tw-ln3-beta) (cfg.tf-d-model)
+    in let ff-out = feed-forward normed3 (w.tw-ff1) (w.tw-ff1-bias) (w.tw-ff2) (w.tw-ff2-bias) (cfg.tf-seq-len) (cfg.tf-d-model) (cfg.tf-d-ff)
+    in residual-add res2 ff-out 0 (list-length res2) []
+
+Page 1

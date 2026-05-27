@@ -1,0 +1,126 @@
+Chapter: CurveEditor
+  cites Spark chapter Keyframe
+
+ Bezier curve interpolation for animation channels. Replaces
+ linear-only keyframe evaluation with cubic bezier curves.
+ Control points use fixed-point scale 1000.
+
+ We say:
+
+Section: Types
+
+  CurveHandle = record {
+    ch-x : Integer,
+    ch-y : Integer
+  }
+
+  BezierKey = record {
+    bk-frame : Integer,
+    bk-value : Integer,
+    bk-in-handle : CurveHandle,
+    bk-out-handle : CurveHandle
+  }
+
+  BezierTrack = record {
+    bt-name : Text,
+    bt-keys : List BezierKey,
+    bt-key-count : Integer
+  }
+
+  CurvePreset =
+    | CurveLinear
+    | CurveEaseIn
+    | CurveEaseOut
+    | CurveEaseInOut
+    | CurveBounce
+
+Section: Construction
+
+  bezier-track-new : Text -> BezierTrack
+  bezier-track-new (name) = BezierTrack {
+    bt-name = name,
+    bt-keys = [],
+    bt-key-count = 0
+  }
+
+  bezier-key-new : Integer, Integer -> BezierKey
+  bezier-key-new (frame) (value) = BezierKey {
+    bk-frame = frame,
+    bk-value = value,
+    bk-in-handle = CurveHandle { ch-x = -100, ch-y = 0 },
+    bk-out-handle = CurveHandle { ch-x = 100, ch-y = 0 }
+  }
+
+  bezier-key-with-handles : Integer, Integer, CurveHandle, CurveHandle -> BezierKey
+  bezier-key-with-handles (frame) (value) (in-h) (out-h) = BezierKey {
+    bk-frame = frame,
+    bk-value = value,
+    bk-in-handle = in-h,
+    bk-out-handle = out-h
+  }
+
+Section: Track Operations
+
+  bezier-track-add : BezierTrack, BezierKey -> BezierTrack
+  bezier-track-add (track) (key) = BezierTrack {
+    bt-name = track.bt-name,
+    bt-keys = list-push (track.bt-keys) key,
+    bt-key-count = track.bt-key-count + 1
+  }
+
+  bezier-track-add-preset : BezierTrack, Integer, Integer, CurvePreset -> BezierTrack
+  bezier-track-add-preset (track) (frame) (value) (preset) =
+    let handles = curve-preset-handles preset
+    in let key = bezier-key-with-handles frame value (list-at handles 0) (list-at handles 1)
+    in bezier-track-add track key
+
+Section: Evaluation
+
+  bezier-track-eval : BezierTrack, Integer -> Integer
+  bezier-track-eval (track) (frame) =
+    if track.bt-key-count == 0 then 0
+    else if track.bt-key-count == 1 then (list-at (track.bt-keys) 0).bk-value
+    else bezier-find-segment (track.bt-keys) (track.bt-key-count) frame 0
+
+  bezier-find-segment : List BezierKey, Integer, Integer, Integer -> Integer
+  bezier-find-segment (keys) (count) (frame) (i) =
+    if i >= count - 1 then (list-at keys (count - 1)).bk-value
+    else let k0 = list-at keys i
+    in let k1 = list-at keys (i + 1)
+    in if frame <= k0.bk-frame then k0.bk-value
+    else if frame < k1.bk-frame then
+      let t = (frame - k0.bk-frame) * 1000 / (k1.bk-frame - k0.bk-frame)
+      in bezier-cubic k0 k1 t
+    else bezier-find-segment keys count frame (i + 1)
+
+  bezier-cubic : BezierKey, BezierKey, Integer -> Integer
+  bezier-cubic (k0) (k1) (t) =
+    let p0 = k0.bk-value
+    in let p1 = k0.bk-value + k0.bk-out-handle.ch-y
+    in let p2 = k1.bk-value + k1.bk-in-handle.ch-y
+    in let p3 = k1.bk-value
+    in let one-minus-t = 1000 - t
+    in let a = one-minus-t * one-minus-t * one-minus-t / 1000000
+    in let b = 3 * one-minus-t * one-minus-t / 1000 * t / 1000
+    in let c = 3 * one-minus-t * t / 1000 * t / 1000
+    in let d = t * t * t / 1000000
+    in a * p0 / 1000 + b * p1 / 1000 + c * p2 / 1000 + d * p3 / 1000
+
+Section: Preset Handles
+
+  curve-preset-handles : CurvePreset -> List CurveHandle
+  curve-preset-handles (preset) =
+    when preset
+      is CurveLinear -> [CurveHandle { ch-x = -100, ch-y = 0 }, CurveHandle { ch-x = 100, ch-y = 0 }]
+      is CurveEaseIn -> [CurveHandle { ch-x = -100, ch-y = 0 }, CurveHandle { ch-x = 420, ch-y = 0 }]
+      is CurveEaseOut -> [CurveHandle { ch-x = -420, ch-y = 0 }, CurveHandle { ch-x = 100, ch-y = 0 }]
+      is CurveEaseInOut -> [CurveHandle { ch-x = -420, ch-y = 0 }, CurveHandle { ch-x = 420, ch-y = 0 }]
+      is CurveBounce -> [CurveHandle { ch-x = -50, ch-y = 300 }, CurveHandle { ch-x = 50, ch-y = -150 }]
+
+Section: Info
+
+  bezier-track-info : BezierTrack -> Text
+  bezier-track-info (track) =
+    track.bt-name & ": " & show (track.bt-key-count) & " keys"
+
+Page 1

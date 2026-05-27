@@ -1,0 +1,338 @@
+Chapter: Supervisor
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+  cites CodexMagic chapter Turn
+  cites CodexMagic chapter Stack
+  cites CodexMagic chapter Combat
+  cites CodexMagic chapter Action
+  cites CodexMagic chapter General
+
+ AI Supervisor: reads the General's behavioral modifiers and the
+ player's posture to make play decisions. Handles land drops, spell
+ casting, attacker/blocker selection, and mana tapping. The General's
+ modifiers bias decisions - stance override, combat bias, aggression
+ triggers all feed into the scoring.
+
+ We say:
+
+Section: Posture
+
+  Posture = record {
+    stance : Stance,
+    phase-freeze-combat : Boolean,
+    mana-policy-auto : Boolean,
+    block-policy-auto : Boolean
+  }
+
+  posture-default : Posture
+  posture-default = Posture { stance = Balanced, phase-freeze-combat = False, mana-policy-auto = True, block-policy-auto = True }
+
+Section: Effective Stance
+
+  effective-stance : Posture, GeneralTemplate, GeneralState -> Stance
+  effective-stance (posture) (gen-template) (gen-state) =
+    let threshold = get-aggression-threshold (gen-template.modifiers)
+    in if threshold > 0 then
+      if gen-state.life <= threshold then Aggressive
+      else resolve-stance (posture.stance) (gen-template.modifiers)
+    else resolve-stance (posture.stance) (gen-template.modifiers)
+
+  resolve-stance : Stance, List BehavioralModifier -> Stance
+  resolve-stance (player-stance) (mods) =
+    if has-stance-override mods then get-stance-override mods
+    else player-stance
+
+Section: AI Land Play
+
+  ai-play-land : GameState, Integer -> GameState
+  ai-play-land (gs) (player) =
+    let p = get-player gs player
+    in if p.land-drop-used then gs
+    else let land-id = find-land-in-hand (p.hand) (gs.templates) 0 (list-length (p.hand))
+    in if land-id >= 0 then play-land-from-hand gs player land-id
+    else gs
+
+  find-land-in-hand : List Integer, List CardTemplate, Integer, Integer -> Integer
+  find-land-in-hand (hand) (templates) (i) (len) =
+    if i >= len then -1
+    else let card-id = list-at hand i
+    in if card-id < list-length templates then
+      let t = list-at templates card-id
+      in when t.card-type
+        is Land -> card-id
+        is otherwise -> find-land-in-hand hand templates (i + 1) len
+    else find-land-in-hand hand templates (i + 1) len
+
+  play-land-from-hand : GameState, Integer, Integer -> GameState
+  play-land-from-hand (gs) (player) (card-id) =
+    let p = get-player gs player
+    in let p2 = PlayerState { general = p.general, mana-pool = p.mana-pool, library = p.library, hand = list-remove (p.hand) card-id, graveyard = p.graveyard, exile = p.exile, land-drop-used = True, land-drops-per-turn = p.land-drops-per-turn }
+    in let gs2 = set-player gs player p2
+    in let perm = permanent-new (gs2.next-permanent-id) card-id card-id player
+    in let template = get-template gs2 card-id
+    in let perm2 = Permanent { id = perm.id, card-id = perm.card-id, template-id = perm.template-id, controller = perm.controller, owner = perm.owner, tapped = False, summoning-sick = False, damage-marked = 0, counters = 0, keywords = template.keywords, attached-to = -1, power-mod = 0, toughness-mod = 0, defense-mod = 0 }
+    in GameState { players = gs2.players, generals = gs2.generals, battlefield = list-push (gs2.battlefield) perm2, stack = gs2.stack, active-player = gs2.active-player, priority-player = gs2.priority-player, turn-number = gs2.turn-number, phase = gs2.phase, step = gs2.step, next-permanent-id = gs2.next-permanent-id + 1, next-instance-id = gs2.next-instance-id, game-over = gs2.game-over, winner = gs2.winner, templates = gs2.templates }
+
+Section: AI Mana Tapping
+
+  ai-tap-lands : GameState, Integer -> GameState
+  ai-tap-lands (gs) (player) = tap-lands-loop gs player 0 (list-length (gs.battlefield))
+
+  tap-lands-loop : GameState, Integer, Integer, Integer -> GameState
+  tap-lands-loop (gs) (player) (i) (len) =
+    if i >= len then gs
+    else if i >= list-length (gs.battlefield) then gs
+    else let perm = list-at (gs.battlefield) i
+    in if perm.controller == player then
+      if perm.tapped == False then
+        let template = get-template gs (perm.template-id)
+        in when template.card-type
+          is Land -> let gs2 = tap-and-add-mana gs player perm template in tap-lands-loop gs2 player (i + 1) (list-length (gs2.battlefield))
+          is otherwise -> tap-lands-loop gs player (i + 1) len
+      else tap-lands-loop gs player (i + 1) len
+    else tap-lands-loop gs player (i + 1) len
+
+  tap-and-add-mana : GameState, Integer, Permanent, CardTemplate -> GameState
+  tap-and-add-mana (gs) (player) (perm) (template) =
+    let gs2 = tap-permanent-by-id gs (perm.id)
+    in let mana-result = find-mana-ability-in-list (template.abilities) 0 (list-length (template.abilities))
+    in if mana-result.found then add-mana-to-player gs2 player (mana-result.color) (mana-result.amount)
+    else gs2
+
+  ManaFound = record {
+    found : Boolean,
+    color : ManaColor,
+    amount : Integer
+  }
+
+  find-mana-ability-in-list : List Ability, Integer, Integer -> ManaFound
+  find-mana-ability-in-list (abs) (i) (len) =
+    if i >= len then ManaFound { found = False, color = Colorless, amount = 0 }
+    else when list-at abs i
+      is ManaAbility (cost) (color) (amount) -> ManaFound { found = True, color = color, amount = amount }
+      is otherwise -> find-mana-ability-in-list abs (i + 1) len
+
+  add-mana-to-player : GameState, Integer, ManaColor, Integer -> GameState
+  add-mana-to-player (gs) (player) (color) (amount) =
+    let p = get-player gs player
+    in let new-pool = mana-pool-add (p.mana-pool) color amount
+    in let p2 = PlayerState { general = p.general, mana-pool = new-pool, library = p.library, hand = p.hand, graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in set-player gs player p2
+
+Section: AI Spell Casting
+
+  ai-cast-spells : GameState, Integer, Stance -> GameState
+  ai-cast-spells (gs) (player) (stance) =
+    let p = get-player gs player
+    in let best = find-best-castable (p.hand) (gs.templates) (p.mana-pool) stance 0 (list-length (p.hand)) (-1) (-1)
+    in if best >= 0 then
+      let template = get-template gs best
+      in if can-pay (p.mana-pool) (template.mana-cost) then
+        let new-pool = pay-cost (p.mana-pool) (template.mana-cost)
+        in let p2 = PlayerState { general = p.general, mana-pool = new-pool, library = p.library, hand = list-remove (p.hand) best, graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+        in let gs2 = set-player gs player p2
+        in let targets = ai-pick-targets gs2 template player
+        in let entry = make-stack-entry gs2 best best player targets
+        in let gs3 = stack-push gs2 entry
+        in let gs4 = resolve-top gs3
+        in let gs5 = check-state-based-actions gs4
+        in ai-cast-spells gs5 player stance
+      else gs
+    else gs
+
+  find-best-castable : List Integer, List CardTemplate, ManaPool, Stance, Integer, Integer, Integer, Integer -> Integer
+  find-best-castable (hand) (templates) (pool) (stance) (i) (len) (best) (best-score) =
+    if i >= len then best
+    else let card-id = list-at hand i
+    in if card-id < list-length templates then
+      let t = list-at templates card-id
+      in when t.card-type
+        is Land -> find-best-castable hand templates pool stance (i + 1) len best best-score
+        is otherwise ->
+          if can-pay pool (t.mana-cost) then
+            let score = score-card t stance
+            in if score > best-score then find-best-castable hand templates pool stance (i + 1) len card-id score
+            else find-best-castable hand templates pool stance (i + 1) len best best-score
+          else find-best-castable hand templates pool stance (i + 1) len best best-score
+    else find-best-castable hand templates pool stance (i + 1) len best best-score
+
+  score-card : CardTemplate, Stance -> Integer
+  score-card (t) (stance) =
+    let base = t.power * 10 + t.toughness * 5 + t.defense * 8 + cmc (t.mana-cost) * 3
+    in when stance
+      is Aggressive -> base + t.power * 15
+      is Defensive -> base + t.toughness * 10 + t.defense * 12
+      is Tempo -> base + (if cmc (t.mana-cost) <= 3 then 20 else 0)
+      is Control -> base + (if has-destroy-in-abilities (t.abilities) then 30 else 0)
+      is Balanced -> base
+
+  has-destroy-in-abilities : List Ability -> Boolean
+  has-destroy-in-abilities (abs) = has-destroy-loop abs 0 (list-length abs)
+
+  has-destroy-loop : List Ability, Integer, Integer -> Boolean
+  has-destroy-loop (abs) (i) (len) =
+    if i >= len then False
+    else when list-at abs i
+      is StaticAbility (eff) -> when eff
+        is DestroyTarget -> True
+        is DealDamage (n) -> True
+        is otherwise -> has-destroy-loop abs (i + 1) len
+      is otherwise -> has-destroy-loop abs (i + 1) len
+
+  ai-pick-targets : GameState, CardTemplate, Integer -> List Integer
+  ai-pick-targets (gs) (template) (player) =
+    if has-destroy-in-abilities (template.abilities) then
+      let opp = if player == 0 then 1 else 0
+      in let biggest = find-biggest-threat (gs.battlefield) (gs.templates) opp 0 (list-length (gs.battlefield)) (-1) 0
+      in if biggest >= 0 then [biggest] else []
+    else []
+
+  find-biggest-threat : List Permanent, List CardTemplate, Integer, Integer, Integer, Integer, Integer -> Integer
+  find-biggest-threat (perms) (templates) (opp) (i) (len) (best-id) (best-power) =
+    if i >= len then best-id
+    else let perm = list-at perms i
+    in if perm.controller == opp then
+      let t = list-at templates (perm.template-id)
+      in when t.card-type
+        is Creature ->
+          let power = t.power + perm.power-mod
+          in if power > best-power then find-biggest-threat perms templates opp (i + 1) len (perm.id) power
+          else find-biggest-threat perms templates opp (i + 1) len best-id best-power
+        is otherwise -> find-biggest-threat perms templates opp (i + 1) len best-id best-power
+    else find-biggest-threat perms templates opp (i + 1) len best-id best-power
+
+Section: AI Combat
+
+  ai-combat-phase : GameState, Integer, Stance, GeneralTemplate -> GameState
+  ai-combat-phase (gs) (player) (stance) (gen-template) =
+    let defender = if player == 0 then 1 else 0
+    in let my-creatures = count-creatures (gs.battlefield) (gs.templates) player 0 (list-length (gs.battlefield)) 0
+    in if my-creatures == 0 then gs
+    else let should-atk = should-attack-check stance gen-template
+    in if should-atk then
+      let combat = ai-select-attackers (gs.battlefield) (gs.templates) player stance gen-template 0 (list-length (gs.battlefield)) combat-empty
+      in if combat.num-attackers == 0 then gs
+      else let gs2 = tap-attackers gs combat
+      in let combat2 = ai-assign-blockers gs2 combat defender stance
+      in let result = resolve-combat-damage gs2 combat2
+      in let gs3 = check-state-based-actions (result.game)
+      in gs3
+    else gs
+
+  should-attack-check : Stance, GeneralTemplate -> Boolean
+  should-attack-check (stance) (gen-template) =
+    if has-combat-bias (gen-template.modifiers) then
+      when get-combat-bias (gen-template.modifiers)
+        is AlwaysAttack -> True
+        is SuicidalCharge -> True
+        is NeverOverextend -> when stance
+          is Aggressive -> True
+          is Balanced -> True
+          is otherwise -> False
+        is Cautious -> when stance
+          is Aggressive -> True
+          is otherwise -> False
+    else when stance
+      is Aggressive -> True
+      is Balanced -> True
+      is Tempo -> True
+      is otherwise -> False
+
+  ai-select-attackers : List Permanent, List CardTemplate, Integer, Stance, GeneralTemplate, Integer, Integer, CombatState -> CombatState
+  ai-select-attackers (perms) (templates) (player) (stance) (gen-template) (i) (len) (cs) =
+    if i >= len then cs
+    else let perm = list-at perms i
+    in if perm.controller == player then
+      let t = list-at templates (perm.template-id)
+      in when t.card-type
+        is Creature ->
+          if can-attack perm (perm.keywords) then
+            let dominated = t.power + perm.power-mod <= 0
+            in if dominated then
+              when stance
+                is Aggressive -> ai-select-attackers perms templates player stance gen-template (i + 1) len (declare-attacker cs (perm.id))
+                is otherwise -> ai-select-attackers perms templates player stance gen-template (i + 1) len cs
+            else ai-select-attackers perms templates player stance gen-template (i + 1) len (declare-attacker cs (perm.id))
+          else ai-select-attackers perms templates player stance gen-template (i + 1) len cs
+        is otherwise -> ai-select-attackers perms templates player stance gen-template (i + 1) len cs
+    else ai-select-attackers perms templates player stance gen-template (i + 1) len cs
+
+  ai-assign-blockers : GameState, CombatState, Integer, Stance -> CombatState
+  ai-assign-blockers (gs) (combat) (defender) (stance) =
+    let available = get-untapped-creatures (gs.battlefield) (gs.templates) defender 0 (list-length (gs.battlefield)) []
+    in assign-blockers-loop gs combat defender stance available 0 (combat.num-attackers)
+
+  assign-blockers-loop : GameState, CombatState, Integer, Stance, List Integer, Integer, Integer -> CombatState
+  assign-blockers-loop (gs) (combat) (defender) (stance) (available) (i) (num-atk) =
+    if i >= num-atk then combat
+    else if list-length available == 0 then combat
+    else let attacker = list-at (combat.attackers) i
+    in let atk-perm = find-permanent (gs.battlefield) (attacker.permanent-id) 0 (list-length (gs.battlefield))
+    in let atk-template = get-template gs (atk-perm.template-id)
+    in let atk-power = atk-template.power + atk-perm.power-mod
+    in let gen-state = (get-player gs defender).general
+    in let blocker-id = pick-best-blocker gs atk-power (gen-state.life) stance available 0 (list-length available) (-1) 0
+    in if blocker-id >= 0 then
+      let combat2 = declare-blocker combat blocker-id (attacker.permanent-id)
+      in let available2 = list-remove available blocker-id
+      in assign-blockers-loop gs combat2 defender stance available2 (i + 1) num-atk
+    else assign-blockers-loop gs combat defender stance available (i + 1) num-atk
+
+  pick-best-blocker : GameState, Integer, Integer, Stance, List Integer, Integer, Integer, Integer, Integer -> Integer
+  pick-best-blocker (gs) (atk-power) (my-life) (stance) (available) (i) (len) (best) (best-score) =
+    if i >= len then best
+    else let perm-id = list-at available i
+    in let perm = find-permanent (gs.battlefield) perm-id 0 (list-length (gs.battlefield))
+    in let t = get-template gs (perm.template-id)
+    in let my-toughness = t.toughness + perm.toughness-mod
+    in let my-defense = t.defense + perm.defense-mod
+    in let survives = my-toughness > atk-power
+    in let absorbs = my-defense >= atk-power
+    in let score = if absorbs then 100 else if survives then 50 else if atk-power >= my-life / 3 then 30 else 0
+    in let stance-bonus = when stance
+      is Defensive -> 20
+      is Control -> 15
+      is otherwise -> 0
+    in let total = score + stance-bonus
+    in if total > best-score then pick-best-blocker gs atk-power my-life stance available (i + 1) len perm-id total
+    else pick-best-blocker gs atk-power my-life stance available (i + 1) len best best-score
+
+Section: Utility
+
+  count-creatures : List Permanent, List CardTemplate, Integer, Integer, Integer, Integer -> Integer
+  count-creatures (perms) (templates) (player) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in if perm.controller == player then
+      let t = list-at templates (perm.template-id)
+      in when t.card-type
+        is Creature -> count-creatures perms templates player (i + 1) len (acc + 1)
+        is otherwise -> count-creatures perms templates player (i + 1) len acc
+    else count-creatures perms templates player (i + 1) len acc
+
+  total-power-for-player : List Permanent, List CardTemplate, Integer, Integer, Integer, Integer -> Integer
+  total-power-for-player (perms) (templates) (player) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in if perm.controller == player then
+      let t = list-at templates (perm.template-id)
+      in when t.card-type
+        is Creature -> total-power-for-player perms templates player (i + 1) len (acc + t.power + perm.power-mod)
+        is otherwise -> total-power-for-player perms templates player (i + 1) len acc
+    else total-power-for-player perms templates player (i + 1) len acc
+
+  get-untapped-creatures : List Permanent, List CardTemplate, Integer, Integer, Integer, List Integer -> List Integer
+  get-untapped-creatures (perms) (templates) (player) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in if perm.controller == player then
+      if perm.tapped == False then
+        let t = list-at templates (perm.template-id)
+        in when t.card-type
+          is Creature -> get-untapped-creatures perms templates player (i + 1) len (list-push acc (perm.id))
+          is otherwise -> get-untapped-creatures perms templates player (i + 1) len acc
+      else get-untapped-creatures perms templates player (i + 1) len acc
+    else get-untapped-creatures perms templates player (i + 1) len acc
+
+Page 1

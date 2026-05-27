@@ -1,0 +1,110 @@
+Chapter: Icmp
+  cites Net chapter Ethernet
+
+ ICMP message construction and parsing. Supports Echo Request/Reply
+ (ping) and Destination Unreachable. Pure logic — no I/O. Messages
+ are List Integer handed to ip-build-packet with ip-proto-icmp.
+
+ We say:
+
+Section: Constants
+  icmp-type-echo-reply : Integer = 0
+  icmp-type-dest-unreachable : Integer = 3
+  icmp-type-echo-request : Integer = 8
+  icmp-header-size : Integer = 8
+
+  icmp-code-net-unreachable : Integer = 0
+  icmp-code-host-unreachable : Integer = 1
+  icmp-code-port-unreachable : Integer = 3
+
+Section: Message Types
+  IcmpMessage = record {
+    icmp-type : Integer between 0 and 255,
+    code : Integer between 0 and 255,
+    identifier : Integer between 0 and 65535,
+    sequence : Integer between 0 and 65535,
+    payload : List Integer
+  }
+
+Section: Echo Request (Ping)
+  icmp-build-echo-request : Integer, Integer, List Integer -> List Integer
+  icmp-build-echo-request (ident) (seq) (payload) =
+    let hdr = [icmp-type-echo-request, 0, 0, 0] & write-be16 ident & write-be16 seq
+    in let raw = hdr & payload
+    in let cksum = icmp-checksum raw 0 (list-length raw) 0
+    in [icmp-type-echo-request, 0] & write-be16 cksum & write-be16 ident & write-be16 seq & payload
+
+  icmp-build-echo-reply : IcmpMessage -> List Integer
+  icmp-build-echo-reply (msg) =
+    let hdr = [icmp-type-echo-reply, 0, 0, 0] & write-be16 (msg.identifier) & write-be16 (msg.sequence)
+    in let raw = hdr & msg.payload
+    in let cksum = icmp-checksum raw 0 (list-length raw) 0
+    in [icmp-type-echo-reply, 0] & write-be16 cksum & write-be16 (msg.identifier) & write-be16 (msg.sequence) & msg.payload
+
+Section: Destination Unreachable
+  icmp-build-unreachable : Integer, List Integer -> List Integer
+  icmp-build-unreachable (code) (original-ip-header) =
+    let hdr = [icmp-type-dest-unreachable, code, 0, 0, 0, 0, 0, 0]
+    in let raw = hdr & original-ip-header
+    in let cksum = icmp-checksum raw 0 (list-length raw) 0
+    in [icmp-type-dest-unreachable, code] & write-be16 cksum & [0, 0, 0, 0] & original-ip-header
+
+Section: Parsing
+  icmp-parse : List Integer -> IcmpMessage
+  icmp-parse (data) =
+    let dlen = list-length data
+    in if dlen < icmp-header-size then IcmpMessage { icmp-type = 0, code = 0, identifier = 0, sequence = 0, payload = [] }
+    else IcmpMessage {
+      icmp-type = list-at data 0,
+      code = list-at data 1,
+      identifier = read-be16 data 4,
+      sequence = read-be16 data 6,
+      payload = icmp-extract-payload data icmp-header-size dlen []
+    }
+
+  icmp-extract-payload : List Integer, Integer, Integer, List Integer -> List Integer
+  icmp-extract-payload (data) (i) (dlen) (acc) =
+    if i >= dlen then acc
+    else icmp-extract-payload data (i + 1) dlen (list-push acc (list-at data i))
+
+  icmp-is-echo-request : IcmpMessage -> Boolean
+  icmp-is-echo-request (msg) = msg.icmp-type == icmp-type-echo-request
+
+  icmp-is-echo-reply : IcmpMessage -> Boolean
+  icmp-is-echo-reply (msg) = msg.icmp-type == icmp-type-echo-reply
+
+Section: Checksum
+  icmp-checksum : List Integer, Integer, Integer, Integer -> Integer
+  icmp-checksum (data) (i) (len) (sum) =
+    if i >= len then
+      let folded = bit-and sum 65535 + bit-shru sum 16
+      in let folded2 = bit-and folded 65535 + bit-shru folded 16
+      in bit-and (bit-xor folded2 65535) 65535
+    else if i + 1 >= len then
+      icmp-checksum data (i + 1) len (sum + bit-shl (list-at data i) 8)
+    else icmp-checksum data (i + 2) len (sum + read-be16 data i)
+
+Section: IP Integration
+  icmp-build-echo-ip : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  icmp-build-echo-ip (src-ip) (dst-ip) (ident) (seq) (payload) =
+    let icmp-data = icmp-build-echo-request ident seq payload
+    in ip-build-packet src-ip dst-ip ip-proto-icmp icmp-data
+
+  icmp-build-echo-frame : List Integer, List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  icmp-build-echo-frame (dst-mac) (src-mac) (src-ip) (dst-ip) (ident) (seq) (payload) =
+    let ip-pkt = icmp-build-echo-ip src-ip dst-ip ident seq payload
+    in eth-build-frame dst-mac src-mac eth-type-ipv4 ip-pkt
+
+Section: Formatting
+  format-icmp : IcmpMessage -> Text
+  format-icmp (msg) =
+    icmp-type-name (msg.icmp-type) & " id=" & show (msg.identifier) & " seq=" & show (msg.sequence) & " len=" & show (list-length (msg.payload))
+
+  icmp-type-name : Integer -> Text
+  icmp-type-name (t) =
+    if t == icmp-type-echo-reply then "echo-reply"
+    else if t == icmp-type-echo-request then "echo-request"
+    else if t == icmp-type-dest-unreachable then "unreachable"
+    else "icmp-" & show t
+
+Page 1

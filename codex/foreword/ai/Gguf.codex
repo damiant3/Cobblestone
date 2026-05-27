@@ -1,0 +1,216 @@
+Chapter: Gguf
+  cites AI chapter Tensor
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ GGUF model file parser (llama.cpp format). Reads header, metadata
+ key-value pairs, and tensor info from a byte array. Dequantizes
+ Q8_0 and Q4_0 tensors to fixed-point (scale 1000). Based on
+ Damian's GgufReader.cs from SpatialDb/NeuralNavigator.
+
+ Magic: 0x46554747 ("GGUF"), versions 2-3.
+
+ We say:
+
+Section: Constants
+  gguf-magic : Integer = 1179993927
+
+  gguf-dtype-f32 : Integer = 0
+  gguf-dtype-f16 : Integer = 1
+  gguf-dtype-q4-0 : Integer = 2
+  gguf-dtype-q8-0 : Integer = 8
+
+  gguf-vtype-uint32 : Integer = 4
+  gguf-vtype-int32 : Integer = 5
+  gguf-vtype-float32 : Integer = 6
+  gguf-vtype-string : Integer = 8
+  gguf-vtype-array : Integer = 9
+
+Section: Byte Reading
+  gguf-read-u32 : List Integer, Integer -> Integer
+  gguf-read-u32 (data) (off) =
+    let b0 = list-at data off
+    in let b1 = bit-shl (list-at data (off + 1)) 8
+    in let b2 = bit-shl (list-at data (off + 2)) 16
+    in let b3 = bit-shl (list-at data (off + 3)) 24
+    in bit-or b0 (bit-or b1 (bit-or b2 b3))
+
+  gguf-read-u64 : List Integer, Integer -> Integer
+  gguf-read-u64 (data) (off) =
+    let lo = gguf-read-u32 data off
+    in let hi = gguf-read-u32 data (off + 4)
+    in lo + hi * 4294967296
+
+  gguf-read-i8 : List Integer, Integer -> Integer
+  gguf-read-i8 (data) (off) =
+    let b = list-at data off
+    in if b >= 128 then b - 256 else b
+
+  gguf-read-string : List Integer, Integer -> GgufString
+  gguf-read-string (data) (off) =
+    let len = gguf-read-u64 data off
+    in GgufString { gs-text = gguf-extract-text data (off + 8) len "", gs-length = len, gs-total-bytes = 8 + len }
+
+  GgufString = record {
+    gs-text : Text,
+    gs-length : Integer,
+    gs-total-bytes : Integer
+  }
+
+  gguf-extract-text : List Integer, Integer, Integer, Text -> Text
+  gguf-extract-text (data) (off) (remaining) (acc) =
+    if remaining <= 0 then acc
+    else if off >= list-length data then acc
+    else let b = list-at data off
+    in gguf-extract-text data (off + 1) (remaining - 1) (acc & char-to-text (code-to-char (from-unicode b)))
+
+Section: Half-Float to Fixed-Point
+  gguf-half-to-fixed : Integer -> Integer
+  gguf-half-to-fixed (h) =
+    let sign = bit-and (bit-shru h 15) 1
+    in let exp = bit-and (bit-shru h 10) 31
+    in let mant = bit-and h 1023
+    in if exp == 0 then 0
+    else if exp == 31 then if sign == 1 then 0 - 30000 else 30000
+    else let e = exp - 15
+    in let frac = 1024 + mant
+    in let val = frac * 1000 / 1024
+    in let shifted = if e >= 0 then val * gguf-pow2 e else val / gguf-pow2 (-e)
+    in if sign == 1 then -shifted else shifted
+
+  gguf-pow2 : Integer -> Integer
+  gguf-pow2 (n) =
+    if n <= 0 then 1
+    else 2 * gguf-pow2 (n - 1)
+
+Section: Header
+  GgufHeader = record {
+    gh-version : Integer,
+    gh-tensor-count : Integer,
+    gh-metadata-count : Integer,
+    gh-valid : Boolean
+  }
+
+  gguf-parse-header : List Integer -> GgufHeader
+  gguf-parse-header (data) =
+    if list-length data < 20 then GgufHeader { gh-version = 0, gh-tensor-count = 0, gh-metadata-count = 0, gh-valid = False }
+    else let magic = gguf-read-u32 data 0
+    in if magic /= gguf-magic then GgufHeader { gh-version = 0, gh-tensor-count = 0, gh-metadata-count = 0, gh-valid = False }
+    else GgufHeader { gh-version = gguf-read-u32 data 4, gh-tensor-count = gguf-read-u64 data 8, gh-metadata-count = gguf-read-u64 data 16, gh-valid = True }
+
+Section: Tensor Info
+  GgufTensorInfo = record {
+    gti-name : Text,
+    gti-ndim : Integer,
+    gti-shape : List Integer,
+    gti-dtype : Integer,
+    gti-offset : Integer
+  }
+
+  gguf-parse-tensor-info : List Integer, Integer -> GgufTensorInfo
+  gguf-parse-tensor-info (data) (off) =
+    let name = gguf-read-string data off
+    in let ndim-off = off + name.gs-total-bytes
+    in let ndim = gguf-read-u32 data ndim-off
+    in let shape = gguf-read-shape data (ndim-off + 4) ndim 0 []
+    in let dtype-off = ndim-off + 4 + ndim * 8
+    in let dtype = gguf-read-u32 data dtype-off
+    in let tensor-off = gguf-read-u64 data (dtype-off + 4)
+    in GgufTensorInfo { gti-name = name.gs-text, gti-ndim = ndim, gti-shape = shape, gti-dtype = dtype, gti-offset = tensor-off }
+
+  gguf-read-shape : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gguf-read-shape (data) (off) (ndim) (i) (acc) =
+    if i >= ndim then acc
+    else gguf-read-shape data (off + 8) ndim (i + 1) (list-push acc (gguf-read-u64 data off))
+
+  gguf-tensor-info-bytes : GgufTensorInfo -> Integer
+  gguf-tensor-info-bytes (info) =
+    let name-bytes = 8 + gguf-text-byte-length (info.gti-name)
+    in name-bytes + 4 + info.gti-ndim * 8 + 4 + 8
+
+  gguf-text-byte-length : Text -> Integer
+  gguf-text-byte-length (s) = text-length s
+
+  gguf-tensor-element-count : GgufTensorInfo -> Integer
+  gguf-tensor-element-count (info) = gguf-product (info.gti-shape) 0 (info.gti-ndim) 1
+
+  gguf-product : List Integer, Integer, Integer, Integer -> Integer
+  gguf-product (dims) (i) (len) (acc) =
+    if i >= len then acc
+    else gguf-product dims (i + 1) len (acc * list-at dims i)
+
+Section: Q8_0 Dequantization
+  gguf-dequant-q8-0 : List Integer, Integer, Integer -> List Integer
+  gguf-dequant-q8-0 (data) (off) (elements) =
+    let blocks = elements / 32
+    in gguf-dq8-loop data off blocks 0 []
+
+  gguf-dq8-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gguf-dq8-loop (data) (off) (blocks) (b) (acc) =
+    if b >= blocks then acc
+    else let block-off = off + b * 34
+    in let scale-raw = bit-or (list-at data block-off) (bit-shl (list-at data (block-off + 1)) 8)
+    in let scale = gguf-half-to-fixed scale-raw
+    in let acc2 = gguf-dq8-block data (block-off + 2) scale 0 acc
+    in gguf-dq8-loop data off blocks (b + 1) acc2
+
+  gguf-dq8-block : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gguf-dq8-block (data) (off) (scale) (j) (acc) =
+    if j >= 32 then acc
+    else let q = gguf-read-i8 data (off + j)
+    in gguf-dq8-block data off scale (j + 1) (list-push acc (scale * q / 1000))
+
+Section: Q4_0 Dequantization
+  gguf-dequant-q4-0 : List Integer, Integer, Integer -> List Integer
+  gguf-dequant-q4-0 (data) (off) (elements) =
+    let blocks = elements / 32
+    in gguf-dq4-loop data off blocks 0 []
+
+  gguf-dq4-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gguf-dq4-loop (data) (off) (blocks) (b) (acc) =
+    if b >= blocks then acc
+    else let block-off = off + b * 18
+    in let scale-raw = bit-or (list-at data block-off) (bit-shl (list-at data (block-off + 1)) 8)
+    in let scale = gguf-half-to-fixed scale-raw
+    in let acc2 = gguf-dq4-block data (block-off + 2) scale 0 acc
+    in gguf-dq4-loop data off blocks (b + 1) acc2
+
+  gguf-dq4-block : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gguf-dq4-block (data) (off) (scale) (j) (acc) =
+    if j >= 16 then acc
+    else let raw = list-at data (off + j)
+    in let lo = bit-and raw 15 - 8
+    in let hi = bit-shru raw 4 - 8
+    in gguf-dq4-block data off scale (j + 1) (acc & [scale * lo / 1000, scale * hi / 1000])
+
+Section: F32 Reading
+  gguf-read-f32-fixed : List Integer, Integer, Integer -> List Integer
+  gguf-read-f32-fixed (data) (off) (elements) = gguf-rf32-loop data off elements 0 []
+
+  gguf-rf32-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gguf-rf32-loop (data) (off) (elements) (i) (acc) =
+    if i >= elements then acc
+    else let raw = gguf-read-u32 data (off + i * 4)
+    in let sign = bit-and (bit-shru raw 31) 1
+    in let exp = bit-and (bit-shru raw 23) 255
+    in let mant = bit-and raw 8388607
+    in let val = if exp == 0 then 0 else (8388608 + mant) * gguf-pow2 (exp - 127) / 8388
+    in let fixed-val = if sign == 1 then -val else val
+    in gguf-rf32-loop data off elements (i + 1) (list-push acc fixed-val)
+
+Section: Queries
+  format-gguf-header : GgufHeader -> Text
+  format-gguf-header (h) =
+    "v=" & show (h.gh-version) & " tensors=" & show (h.gh-tensor-count) & " metadata=" & show (h.gh-metadata-count)
+
+  format-gguf-tensor : GgufTensorInfo -> Text
+  format-gguf-tensor (t) =
+    t.gti-name & " dtype=" & show (t.gti-dtype) & " shape=" & gguf-format-shape (t.gti-shape) 0 (t.gti-ndim) ""
+
+  gguf-format-shape : List Integer, Integer, Integer, Text -> Text
+  gguf-format-shape (dims) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else "x"
+    in gguf-format-shape dims (i + 1) len (acc & sep & show (list-at dims i))
+
+Page 1

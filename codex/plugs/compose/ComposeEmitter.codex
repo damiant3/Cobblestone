@@ -1,0 +1,256 @@
+Chapter: Compose Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Jetpack Compose (Kotlin) from the IR.
+ Targets Android via Kotlin Composable functions.
+
+Section: Sanitization
+
+  kt-sanitize : Text -> Text
+  kt-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in let s2 = text-replace s "'" ""
+   in if s2 == "when" then "_when"
+      else if s2 == "is" then "_is"
+      else if s2 == "in" then "_in"
+      else if s2 == "fun" then "_fun"
+      else if s2 == "val" then "_val"
+      else if s2 == "var" then "_var"
+      else if s2 == "object" then "_object"
+      else s2
+
+  kt-escape : Text -> Text
+  kt-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in text-replace s2 "\n" "\\n"
+
+  kt-indent : Integer -> Text
+  kt-indent (n) =
+   if n <= 0 then ""
+   else "    " & kt-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare name (list-at entries mid).name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   list-insert-at xs (bsearch-arity-pos xs (e.name) 0 (list-length xs)) e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry { name = d.name, arity = list-length (d.params), generic-count = 0 }))
+
+Section: Expression Emission
+
+  emit-kt-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-kt-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n & "L"
+    is IrNumLit (n) (sp) -> "java.lang.Double.longBitsToDouble(" & show n & "L)"
+    is IrTextLit (s) (sp) -> "\"" & kt-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> show n & ".toChar()"
+    is IrName (n) (ty) (sp) -> kt-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-kt-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-kt-expr x arities indent & " as Long))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-kt-expr c arities indent & " as Boolean) " & emit-kt-expr t arities indent & " else " & emit-kt-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "run {\n" & kt-indent (indent + 1) & "val " & kt-sanitize name & ": Any? = " & emit-kt-expr val arities (indent + 1) & "\n" & kt-indent (indent + 1) & emit-kt-expr body arities (indent + 1) & "\n" & kt-indent indent & "}"
+    is IrApply (f) (a) (ty) (sp) -> emit-kt-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "{ " & emit-kt-lam-params params 0 & "-> " & emit-kt-expr body arities indent & " }"
+    is IrList (elems) (ty) (sp) -> "mutableListOf<Any?>(" & emit-kt-elems elems arities indent 0 & ")"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-kt-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-kt-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "mutableMapOf<String,Any?>(\"_type\" to \"" & name & "\"" & emit-kt-rec-fields fields arities indent 0 & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "(" & emit-kt-expr rec arities indent & " as Map<String,Any?>)[\"" & field & "\"]"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-kt-expr rec arities indent & " as MutableMap<String,Any?>).also { it[\"" & field & "\"] = " & emit-kt-expr val arities indent & " }"
+    is IrFork (body) (ty) (sp) -> emit-kt-expr body arities indent
+    is IrAwait (task) (ty) (sp) -> emit-kt-expr task arities indent
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-kt-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-kt-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-kt-expr body arities indent
+    is IrError (msg) (ty) (sp) -> "error(\"" & kt-escape msg & "\")"
+
+  emit-kt-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-kt-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-kt-expr l arities indent
+   in let rhs = emit-kt-expr r arities indent
+   in when op
+    is IrAddInt -> "((" & lhs & " as Long) + (" & rhs & " as Long))"
+    is IrSubInt -> "((" & lhs & " as Long) - (" & rhs & " as Long))"
+    is IrMulInt -> "((" & lhs & " as Long) * (" & rhs & " as Long))"
+    is IrDivInt -> "((" & lhs & " as Long) / (" & rhs & " as Long))"
+    is IrPowInt -> "Math.pow((" & lhs & " as Long).toDouble(), (" & rhs & " as Long).toDouble()).toLong()"
+    is IrAddNum -> "((" & lhs & " as Double) + (" & rhs & " as Double))"
+    is IrSubNum -> "((" & lhs & " as Double) - (" & rhs & " as Double))"
+    is IrMulNum -> "((" & lhs & " as Double) * (" & rhs & " as Double))"
+    is IrDivNum -> "((" & lhs & " as Double) / (" & rhs & " as Double))"
+    is IrEq -> "(" & lhs & " == " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " != " & rhs & ")"
+    is IrLt -> "((" & lhs & " as Comparable<Any>).compareTo(" & rhs & " as Any) < 0)"
+    is IrGt -> "((" & lhs & " as Comparable<Any>).compareTo(" & rhs & " as Any) > 0)"
+    is IrLtEq -> "((" & lhs & " as Comparable<Any>).compareTo(" & rhs & " as Any) <= 0)"
+    is IrGtEq -> "((" & lhs & " as Comparable<Any>).compareTo(" & rhs & " as Any) >= 0)"
+    is IrAnd -> "((" & lhs & " as Boolean) && (" & rhs & " as Boolean))"
+    is IrOr -> "((" & lhs & " as Boolean) || (" & rhs & " as Boolean))"
+    is IrAppendText -> "(\"\" + " & lhs & " + " & rhs & ")"
+    is IrAppendList -> "((" & lhs & " as List<Any?>) + (" & rhs & " as List<Any?>))"
+    is IrConsList -> "(listOf(" & lhs & ") + (" & rhs & " as List<Any?>))"
+
+  FlatApply = record { root : IRExpr, args : List IRExpr }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-kt-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-kt-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in "(" & emit-kt-expr (chain.root) arities indent & " as Function" & show (list-length (chain.args)) & "<" & emit-kt-any-stars (list-length (chain.args)) 0 & "Any?>).invoke(" & emit-kt-elems (chain.args) arities indent 0 & ")"
+
+  emit-kt-any-stars : Integer, Integer -> Text
+  emit-kt-any-stars (n) (i) =
+   if i == n then "" else "Any?, " & emit-kt-any-stars n (i + 1)
+
+  emit-kt-lam-params : List IRParam, Integer -> Text
+  emit-kt-lam-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & kt-sanitize (list-at params i).name & ": Any? " & emit-kt-lam-params params (i + 1)
+
+  emit-kt-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-kt-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-kt-expr (list-at elems i) arities indent & emit-kt-elems elems arities indent (i + 1)
+
+  emit-kt-rec-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-kt-rec-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", \"" & f.name & "\" to " & emit-kt-expr (f.value) arities indent & emit-kt-rec-fields fields arities indent (i + 1)
+
+  emit-kt-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-kt-match (scrut) (branches) (arities) (indent) =
+   "run {\n" & kt-indent (indent + 1) & "val _s: Any? = " & emit-kt-expr scrut arities indent & "\n" & emit-kt-arms branches arities (indent + 1) 0 & kt-indent (indent + 1) & "error(\"match\")\n" & kt-indent indent & "}"
+
+  emit-kt-arms : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-kt-arms (branches) (arities) (indent) (i) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in let cond = emit-kt-pat-cond (b.pattern) "_s"
+   in let binds = emit-kt-pat-binds (b.pattern) "_s" indent
+   in kt-indent indent & "if (" & cond & ") {\n" & binds & kt-indent (indent + 1) & "return@run " & emit-kt-expr (b.body) arities (indent + 1) & "\n" & kt-indent indent & "}\n" & emit-kt-arms branches arities indent (i + 1)
+
+  emit-kt-pat-cond : IRPat, Text -> Text
+  emit-kt-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> scrut & " == " & text
+    is IrCtorPat (name) (subs) (ty) (sp) -> "(" & scrut & " as Map<String,Any?>)[\"_tag\"] == \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+
+  emit-kt-pat-binds : IRPat, Text, Integer -> Text
+  emit-kt-pat-binds (p) (scrut) (indent) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> kt-indent (indent + 1) & "val " & kt-sanitize name & ": Any? = " & scrut & "\n"
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-kt-ctor-binds subs scrut indent 0
+    is IrWildPat (sp) -> ""
+
+  emit-kt-ctor-binds : List IRPat, Text, Integer, Integer -> Text
+  emit-kt-ctor-binds (subs) (scrut) (indent) (i) =
+   if i == list-length subs then ""
+   else emit-kt-pat-binds (list-at subs i) ("(" & scrut & " as Map<String,Any?>)[\"_" & show i & "\"]") indent & emit-kt-ctor-binds subs scrut indent (i + 1)
+
+  emit-kt-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-kt-act (stmts) (arities) (indent) =
+   "run {\n" & emit-kt-act-loop stmts arities (indent + 1) 0 & kt-indent indent & "}"
+
+  emit-kt-act-loop : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-kt-act-loop (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> kt-indent indent & "val " & kt-sanitize name & ": Any? = " & emit-kt-expr val arities indent & "\n" & emit-kt-act-loop stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) -> if is-last then kt-indent indent & emit-kt-expr e arities indent & "\n" else kt-indent indent & emit-kt-expr e arities indent & "\n" & emit-kt-act-loop stmts arities indent (i + 1)
+
+Section: Type and Definition Emission
+
+  emit-kt-type-def : ATypeDef -> Text
+  emit-kt-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "fun " & kt-sanitize (name.value) & "(fields: Map<String,Any?>): MutableMap<String,Any?> = (fields + (\"_type\" to \"" & name.value & "\")).toMutableMap()\n\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-kt-var-ctors ctors 0
+
+  emit-kt-var-ctors : List AVariantCtorDef, Integer -> Text
+  emit-kt-var-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let t = if n == 0 then "val " & kt-sanitize (c.name.value) & ": Map<String,Any?> = mapOf(\"_tag\" to \"" & c.name.value & "\")\n"
+      else "fun " & kt-sanitize (c.name.value) & "(" & emit-kt-ctor-p n 0 & "): Map<String,Any?> = mapOf(\"_tag\" to \"" & c.name.value & "\"" & emit-kt-ctor-f n 0 & ")\n"
+   in t & emit-kt-var-ctors ctors (i + 1)
+
+  emit-kt-ctor-p : Integer, Integer -> Text
+  emit-kt-ctor-p (n) (i) = if i == n then "" else let sep = if i > 0 then ", " else "" in sep & "_" & show i & ": Any?" & emit-kt-ctor-p n (i + 1)
+
+  emit-kt-ctor-f : Integer, Integer -> Text
+  emit-kt-ctor-f (n) (i) = if i == n then "" else ", \"_" & show i & "\" to _" & show i & emit-kt-ctor-f n (i + 1)
+
+  emit-kt-def : IRDef, List ArityEntry -> Text
+  emit-kt-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = kt-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "val " & sname & ": Any? = " & emit-kt-expr (d.body) arities 0 & "\n\n"
+      else "fun " & sname & "(" & emit-kt-fun-params (d.params) 0 & "): Any? {\n    return " & emit-kt-expr (d.body) arities 1 & "\n}\n\n"
+
+  emit-kt-fun-params : List IRParam, Integer -> Text
+  emit-kt-fun-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & kt-sanitize (list-at params i).name & ": Any?" & emit-kt-fun-params params (i + 1)
+
+  emit-kt-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-kt-defs (defs) (i) (arities) =
+   if i == list-length defs then "" else emit-kt-def (list-at defs i) arities & emit-kt-defs defs (i + 1) arities
+
+  emit-kt-type-defs : List ATypeDef, Integer -> Text
+  emit-kt-type-defs (tds) (i) =
+   if i == list-length tds then "" else emit-kt-type-def (list-at tds i) & emit-kt-type-defs tds (i + 1)
+
+Section: Compose Assembly
+
+  emit-compose-chapter : IRChapter, List ATypeDef -> Text
+  emit-compose-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "CodexApp" else kt-sanitize (m.chapter-title)
+   in let header = "package com.codex.app\n\nimport androidx.compose.foundation.layout.*\nimport androidx.compose.foundation.rememberScrollState\nimport androidx.compose.foundation.verticalScroll\nimport androidx.compose.material3.*\nimport androidx.compose.runtime.*\nimport androidx.compose.ui.Modifier\nimport androidx.compose.ui.text.font.FontFamily\nimport androidx.compose.ui.unit.dp\nimport android.os.Bundle\nimport androidx.activity.ComponentActivity\nimport androidx.activity.compose.setContent\n\n"
+   in let builtins = "val _output = mutableListOf<String>()\nfun print_line_uni(s: Any?) { _output.add(s?.toString() ?: \"\") }\nfun print_line(s: Any?) { print_line_uni(s) }\nfun show(n: Any?): String = n?.toString() ?: \"\"\nfun text_length(s: Any?): Long = (s as String).length.toLong()\nfun text_replace(s: Any?, a: Any?, b: Any?): String = (s as String).replace(a as String, b as String)\nfun text_compare(a: Any?, b: Any?): Long = (a as String).compareTo(b as String).toLong()\nfun list_length(xs: Any?): Long = (xs as List<Any?>).size.toLong()\nfun list_at(xs: Any?, i: Any?): Any? = (xs as List<Any?>)[(i as Long).toInt()]\nfun list_push(xs: Any?, x: Any?): List<Any?> = (xs as List<Any?>) + listOf(x)\nfun integer_to_text(n: Any?): String = n?.toString() ?: \"\"\nfun negate(n: Any?): Long = -(n as Long)\n\n"
+   in let types-text = emit-kt-type-defs type-defs 0
+   in let defs-text = emit-kt-defs (m.defs) 0 arities
+   in let activity = "class MainActivity : ComponentActivity() {\n    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        _output.clear()\n        try { opening() } catch (e: Exception) { _output.add(\"ERROR: ${e.message}\") }\n        val lines = _output.toList()\n        setContent {\n            MaterialTheme {\n                Surface(modifier = Modifier.fillMaxSize()) {\n                    Column(\n                        modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp),\n                        verticalArrangement = Arrangement.spacedBy(4.dp)\n                    ) {\n                        lines.forEach { line ->\n                            Text(text = line, fontFamily = FontFamily.Monospace)\n                        }\n                    }\n                }\n            }\n        }\n    }\n}\n"
+   in header & builtins & types-text & defs-text & activity

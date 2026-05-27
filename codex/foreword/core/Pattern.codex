@@ -1,0 +1,308 @@
+Chapter: Pattern
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ A Pat is one of PatLiteral, PatAnyChar, PatDigit, PatLetter, PatUpper, PatLower, PatWhitespace, PatOneOf, PatNoneOf, PatSeq, PatChoice, PatMany, PatMany1, PatOptional, or PatRepeat.
+ A MatchResult is a record containing mr-matched, mr-consumed, and mr-value.
+ To lit gives a Pat that matches exact text.
+ To digit gives a Pat that matches a single digit.
+ To letter gives a Pat that matches a single letter.
+ To upper gives a Pat that matches a single uppercase letter.
+ To lower gives a Pat that matches a single lowercase letter.
+ To whitespace gives a Pat that matches a single whitespace character.
+ To one-of gives a Pat that matches one character from the given set.
+ To none-of gives a Pat that matches one character not in the given set.
+ To and-then gives a Pat that matches two patterns in sequence.
+ To or-else gives a Pat that tries the first pattern then falls back to the second.
+ To many-repetitions gives a Pat matching zero or more occurrences of a sub-pattern.
+ To many1 gives a Pat that matches one or more repetitions.
+ To optional gives a Pat that matches zero or one occurrence.
+ To exactly gives a Pat that matches a fixed number of repetitions.
+ To pat-match gives a MatchResult for the pattern starting at the given position in the input.
+ To pat-test gives True when the pattern matches at the start of the text.
+ To pat-extract gives the matched text, or empty text on failure.
+ To pat-find gives the position of the first match, or negative one when not found.
+ To pattern gives a Pat parsed from a plain-English description.
+ To format-match gives a Text representation of a MatchResult.
+
+ We say:
+
+Section: Types
+  Pat =
+    | PatLiteral (Text)
+    | PatAnyChar
+    | PatDigit
+    | PatLetter
+    | PatUpper
+    | PatLower
+    | PatWhitespace
+    | PatOneOf (Text)
+    | PatNoneOf (Text)
+    | PatSeq (Pat) (Pat)
+    | PatChoice (Pat) (Pat)
+    | PatMany (Pat)
+    | PatMany1 (Pat)
+    | PatOptional (Pat)
+    | PatRepeat (Pat) (Integer)
+  MatchResult = record {
+    mr-matched : Boolean,
+    mr-consumed : Integer,
+    mr-value : Text
+  }
+
+Section: Constructors
+  lit : Text -> Pat
+  lit (s) = PatLiteral s
+
+  any-char : Pat
+  any-char = PatAnyChar
+
+  digit : Pat
+  digit = PatDigit
+
+  letter : Pat
+  letter = PatLetter
+
+  upper : Pat
+  upper = PatUpper
+
+  lower : Pat
+  lower = PatLower
+
+  whitespace : Pat
+  whitespace = PatWhitespace
+
+  one-of : Text -> Pat
+  one-of (chars) = PatOneOf chars
+
+  none-of : Text -> Pat
+  none-of (chars) = PatNoneOf chars
+
+Section: Combinators
+  and-then : Pat, Pat -> Pat
+  and-then (a) (b) = PatSeq a b
+
+  or-else : Pat, Pat -> Pat
+  or-else (a) (b) = PatChoice a b
+
+  many : Pat -> Pat
+  many (p) = PatMany p
+
+  many1 : Pat -> Pat
+  many1 (p) = PatMany1 p
+
+  optional : Pat -> Pat
+  optional (p) = PatOptional p
+
+  exactly : Integer, Pat -> Pat
+  exactly (n) (p) = PatRepeat p n
+
+Section: Common Patterns
+  digits : Pat
+  digits = many1 digit
+
+  letters : Pat
+  letters = many1 letter
+
+  word : Pat
+  word = many1 (or-else letter digit)
+
+  spaces : Pat
+  spaces = many1 whitespace
+
+  identifier : Pat
+  identifier = and-then letter (many (or-else letter (or-else digit (lit "-"))))
+
+  integer-pat : Pat
+  integer-pat = and-then (optional (lit "-")) digits
+
+  email-like : Pat
+  email-like = and-then word (and-then (lit "@") (and-then word (and-then (lit ".") word)))
+
+Section: Matching
+  pat-match : Pat, Text, Integer -> MatchResult
+  pat-match (pat) (input) (pos) =
+    when pat
+      is PatLiteral (s) -> pat-match-literal input pos s
+      is PatAnyChar -> pat-match-any input pos
+      is PatDigit -> pat-match-pred input pos is-digit
+      is PatLetter -> pat-match-pred input pos is-letter
+      is PatUpper -> pat-match-pred input pos is-upper
+      is PatLower -> pat-match-pred input pos is-lower
+      is PatWhitespace -> pat-match-pred input pos is-whitespace
+      is PatOneOf (chars) -> pat-match-oneof input pos chars
+      is PatNoneOf (chars) -> pat-match-noneof input pos chars
+      is PatSeq (a) (b) -> pat-match-seq a b input pos
+      is PatChoice (a) (b) -> pat-match-choice a b input pos
+      is PatMany (p) -> pat-match-many p input pos 0 ""
+      is PatMany1 (p) -> pat-match-many1 p input pos
+      is PatOptional (p) -> pat-match-optional p input pos
+      is PatRepeat (p) (n) -> pat-match-repeat p n input pos 0 ""
+
+  pat-no-match : MatchResult
+  pat-no-match = MatchResult { mr-matched = False, mr-consumed = 0, mr-value = "" }
+
+Section: Primitive Matchers
+  pat-match-literal : Text, Integer, Text -> MatchResult
+  pat-match-literal (input) (pos) (target) =
+    let tlen = text-length target
+    in if pos + tlen > text-length input then pat-no-match
+    else if pat-substr-eq input pos target 0 tlen then MatchResult { mr-matched = True, mr-consumed = tlen, mr-value = target }
+    else pat-no-match
+
+  pat-substr-eq : Text, Integer, Text, Integer, Integer -> Boolean
+  pat-substr-eq (input) (ipos) (target) (ti) (tlen) =
+    if ti >= tlen then True
+    else if char-at input (ipos + ti) /= char-at target ti then False
+    else pat-substr-eq input ipos target (ti + 1) tlen
+
+  pat-match-any : Text, Integer -> MatchResult
+  pat-match-any (input) (pos) =
+    if pos >= text-length input then pat-no-match
+    else MatchResult { mr-matched = True, mr-consumed = 1, mr-value = char-to-text (char-at input pos) }
+
+  pat-match-pred : Text, Integer, (Char -> Boolean) -> MatchResult
+  pat-match-pred (input) (pos) (pred) =
+    if pos >= text-length input then pat-no-match
+    else if pred (char-at input pos) then MatchResult { mr-matched = True, mr-consumed = 1, mr-value = char-to-text (char-at input pos) }
+    else pat-no-match
+
+  pat-match-oneof : Text, Integer, Text -> MatchResult
+  pat-match-oneof (input) (pos) (chars) =
+    if pos >= text-length input then pat-no-match
+    else if pat-char-in (char-at input pos) chars 0 (text-length chars) then MatchResult { mr-matched = True, mr-consumed = 1, mr-value = char-to-text (char-at input pos) }
+    else pat-no-match
+
+  pat-match-noneof : Text, Integer, Text -> MatchResult
+  pat-match-noneof (input) (pos) (chars) =
+    if pos >= text-length input then pat-no-match
+    else if pat-char-in (char-at input pos) chars 0 (text-length chars) then pat-no-match
+    else MatchResult { mr-matched = True, mr-consumed = 1, mr-value = char-to-text (char-at input pos) }
+
+  pat-char-in : Char, Text, Integer, Integer -> Boolean
+  pat-char-in (c) (chars) (i) (len) =
+    if i >= len then False
+    else if c == char-at chars i then True
+    else pat-char-in c chars (i + 1) len
+
+Section: Compound Matchers
+  pat-match-seq : Pat, Pat, Text, Integer -> MatchResult
+  pat-match-seq (a) (b) (input) (pos) =
+    let ra = pat-match a input pos
+    in if ra.mr-matched then let rb = pat-match b input (pos + ra.mr-consumed)
+      in if rb.mr-matched then MatchResult { mr-matched = True, mr-consumed = ra.mr-consumed + rb.mr-consumed, mr-value = ra.mr-value & rb.mr-value }
+      else pat-no-match
+    else pat-no-match
+
+  pat-match-choice : Pat, Pat, Text, Integer -> MatchResult
+  pat-match-choice (a) (b) (input) (pos) =
+    let ra = pat-match a input pos
+    in if ra.mr-matched then ra
+    else pat-match b input pos
+
+  pat-match-many : Pat, Text, Integer, Integer, Text -> MatchResult
+  pat-match-many (p) (input) (pos) (total) (acc) =
+    let r = pat-match p input pos
+    in if r.mr-matched then pat-match-many p input (pos + r.mr-consumed) (total + r.mr-consumed) (acc & r.mr-value)
+    else MatchResult { mr-matched = True, mr-consumed = total, mr-value = acc }
+
+  pat-match-many1 : Pat, Text, Integer -> MatchResult
+  pat-match-many1 (p) (input) (pos) =
+    let r = pat-match-many p input pos 0 ""
+    in if r.mr-consumed > 0 then r else pat-no-match
+
+  pat-match-optional : Pat, Text, Integer -> MatchResult
+  pat-match-optional (p) (input) (pos) =
+    let r = pat-match p input pos
+    in if r.mr-matched then r
+    else MatchResult { mr-matched = True, mr-consumed = 0, mr-value = "" }
+
+  pat-match-repeat : Pat, Integer, Text, Integer, Integer, Text -> MatchResult
+  pat-match-repeat (p) (n) (input) (pos) (count) (acc) =
+    if count >= n then MatchResult { mr-matched = True, mr-consumed = pos, mr-value = acc }
+    else let r = pat-match p input pos
+    in if r.mr-matched then pat-match-repeat p n input (pos + r.mr-consumed) (count + 1) (acc & r.mr-value)
+    else pat-no-match
+
+Section: Convenience
+  pat-test : Pat, Text -> Boolean
+  pat-test (p) (s) = (pat-match p s 0).mr-matched
+
+  pat-extract : Pat, Text -> Text
+  pat-extract (p) (s) =
+    let r = pat-match p s 0
+    in if r.mr-matched then r.mr-value else ""
+
+  pat-find : Pat, Text -> Integer
+  pat-find (p) (s) = pat-find-loop p s 0 (text-length s)
+
+  pat-find-loop : Pat, Text, Integer, Integer -> Integer
+  pat-find-loop (p) (s) (i) (len) =
+    if i >= len then 0 - 1
+    else let r = pat-match p s i
+    in if r.mr-matched then i
+    else pat-find-loop p s (i + 1) len
+
+Section: Formatting
+  format-match : MatchResult -> Text
+  format-match (r) =
+    if r.mr-matched then "matched(" & show (r.mr-consumed) & "): " & r.mr-value
+    else "no match"
+
+Section: English Parser
+  pattern : Text -> Pat
+  pattern (text) =
+    let tokens = text-split text " "
+    in pat-parse-tokens tokens 0 (list-length tokens)
+
+  pat-parse-tokens : List Text, Integer, Integer -> Pat
+  pat-parse-tokens (tokens) (i) (n) =
+    if i >= n then PatLiteral ""
+    else let first = pat-parse-single tokens i n
+    in let consumed = first.pp-consumed
+    in if i + consumed >= n then first.pp-pat
+    else let next-tok = list-at tokens (i + consumed)
+    in if next-tok == "then" then PatSeq (first.pp-pat) (pat-parse-tokens tokens (i + consumed + 1) n)
+    else if next-tok == "or" then PatChoice (first.pp-pat) (pat-parse-tokens tokens (i + consumed + 1) n)
+    else PatSeq (first.pp-pat) (pat-parse-tokens tokens (i + consumed) n)
+  PatParseResult = record { pp-pat : Pat, pp-consumed : Integer }
+
+  pat-parse-single : List Text, Integer, Integer -> PatParseResult
+  pat-parse-single (tokens) (i) (n) =
+    let tok = list-at tokens i
+    in if tok == "letter" then PatParseResult { pp-pat = PatLetter, pp-consumed = 1 }
+    else if tok == "digit" then PatParseResult { pp-pat = PatDigit, pp-consumed = 1 }
+    else if tok == "letters" then PatParseResult { pp-pat = PatMany1 PatLetter, pp-consumed = 1 }
+    else if tok == "digits" then PatParseResult { pp-pat = PatMany1 PatDigit, pp-consumed = 1 }
+    else if tok == "space" then PatParseResult { pp-pat = PatWhitespace, pp-consumed = 1 }
+    else if tok == "spaces" then PatParseResult { pp-pat = PatMany1 PatWhitespace, pp-consumed = 1 }
+    else if tok == "word" then PatParseResult { pp-pat = many1 (or-else letter digit), pp-consumed = 1 }
+    else if tok == "any" then PatParseResult { pp-pat = PatAnyChar, pp-consumed = 1 }
+    else if tok == "optional" then pat-parse-optional tokens (i + 1) n
+    else if tok == "one" then pat-parse-one-or-more tokens (i + 1) n
+    else if tok == "many" then pat-parse-many-of tokens (i + 1) n
+    else PatParseResult { pp-pat = PatLiteral tok, pp-consumed = 1 }
+
+  pat-parse-optional : List Text, Integer, Integer -> PatParseResult
+  pat-parse-optional (tokens) (i) (n) =
+    if i >= n then PatParseResult { pp-pat = PatLiteral "", pp-consumed = 1 }
+    else let inner = pat-parse-single tokens i n
+    in PatParseResult { pp-pat = PatOptional (inner.pp-pat), pp-consumed = 1 + inner.pp-consumed }
+
+  pat-parse-one-or-more : List Text, Integer, Integer -> PatParseResult
+  pat-parse-one-or-more (tokens) (i) (n) =
+    if i + 2 > n then PatParseResult { pp-pat = PatLetter, pp-consumed = 1 }
+    else if list-at tokens i == "or" then if list-at tokens (i + 1) == "more" then
+      if i + 2 < n then let inner = pat-parse-single tokens (i + 2) n
+        in PatParseResult { pp-pat = PatMany1 (inner.pp-pat), pp-consumed = 3 + inner.pp-consumed }
+      else PatParseResult { pp-pat = PatLetter, pp-consumed = 3 }
+    else PatParseResult { pp-pat = PatLetter, pp-consumed = 1 }
+    else PatParseResult { pp-pat = PatLetter, pp-consumed = 1 }
+
+  pat-parse-many-of : List Text, Integer, Integer -> PatParseResult
+  pat-parse-many-of (tokens) (i) (n) =
+    if i >= n then PatParseResult { pp-pat = PatMany PatAnyChar, pp-consumed = 1 }
+    else let inner = pat-parse-single tokens i n
+    in PatParseResult { pp-pat = PatMany (inner.pp-pat), pp-consumed = 1 + inner.pp-consumed }
+
+Page 1

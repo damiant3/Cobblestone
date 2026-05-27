@@ -1,0 +1,258 @@
+Chapter: Combat
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+
+ Combat phase logic: declaring attackers and blockers, damage
+ assignment with defense threshold, first strike, trample, lifelink,
+ deathtouch. Unblocked attackers hit the opposing General. Defense
+ absorbs damage per-source - if power is at or below defense, zero
+ damage is dealt.
+
+ We say:
+
+Section: Combat State
+
+  CombatState = record {
+    attackers : List Attacker,
+    blockers : List Blocker,
+    num-attackers : Integer,
+    num-blockers : Integer
+  }
+
+  Attacker = record {
+    permanent-id : Integer,
+    blocked-by : List Integer,
+    damage-assigned : Integer
+  }
+
+  Blocker = record {
+    permanent-id : Integer,
+    blocking : Integer
+  }
+
+  combat-empty : CombatState
+  combat-empty = CombatState { attackers = [], blockers = [], num-attackers = 0, num-blockers = 0 }
+
+Section: Defense Check
+
+  combat-damage-applies : Integer, Integer -> Boolean
+  combat-damage-applies (power) (defense) =
+    power > defense
+
+  combat-damage-with-deathtouch : Integer, Integer, Boolean -> Boolean
+  combat-damage-with-deathtouch (power) (defense) (has-dt) =
+    if has-dt then True
+    else power > defense
+
+Section: Declare Attackers
+
+  can-attack : Permanent, KeywordSet -> Boolean
+  can-attack (perm) (kws) =
+    if perm.tapped then False
+    else if has-keyword kws Defender then True == False
+    else if perm.summoning-sick then has-keyword kws Haste
+    else True
+
+  declare-attacker : CombatState, Integer -> CombatState
+  declare-attacker (cs) (perm-id) =
+    let a = Attacker { permanent-id = perm-id, blocked-by = [], damage-assigned = 0 }
+    in CombatState {
+      attackers = list-push (cs.attackers) a,
+      blockers = cs.blockers,
+      num-attackers = cs.num-attackers + 1,
+      num-blockers = cs.num-blockers
+    }
+
+  tap-attackers : GameState, CombatState -> GameState
+  tap-attackers (gs) (cs) = tap-attacker-loop gs cs 0 (cs.num-attackers)
+
+  tap-attacker-loop : GameState, CombatState, Integer, Integer -> GameState
+  tap-attacker-loop (gs) (cs) (i) (len) =
+    if i >= len then gs
+    else let a = list-at (cs.attackers) i
+    in let gs2 = tap-permanent-by-id gs (a.permanent-id)
+    in tap-attacker-loop gs2 cs (i + 1) len
+
+  tap-permanent-by-id : GameState, Integer -> GameState
+  tap-permanent-by-id (gs) (perm-id) = GameState {
+    players = gs.players,
+    generals = gs.generals,
+    battlefield = tap-in-list (gs.battlefield) perm-id 0 (list-length (gs.battlefield)) [],
+    stack = gs.stack,
+    active-player = gs.active-player,
+    priority-player = gs.priority-player,
+    turn-number = gs.turn-number,
+    phase = gs.phase,
+    step = gs.step,
+    next-permanent-id = gs.next-permanent-id,
+    next-instance-id = gs.next-instance-id,
+    game-over = gs.game-over,
+    winner = gs.winner,
+    templates = gs.templates
+  }
+
+  tap-in-list : List Permanent, Integer, Integer, Integer, List Permanent -> List Permanent
+  tap-in-list (perms) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in let updated = if perm.id == target then permanent-tap perm else perm
+    in tap-in-list perms target (i + 1) len (list-push acc updated)
+
+Section: Declare Blockers
+
+  can-block : Permanent, KeywordSet, Permanent, KeywordSet -> Boolean
+  can-block (blocker) (blocker-kws) (attacker) (attacker-kws) =
+    if blocker.tapped then False
+    else if has-keyword attacker-kws Flying then
+      if has-keyword blocker-kws Flying then True
+      else has-keyword blocker-kws Reach
+    else True
+
+  declare-blocker : CombatState, Integer, Integer -> CombatState
+  declare-blocker (cs) (blocker-id) (attacker-id) =
+    let b = Blocker { permanent-id = blocker-id, blocking = attacker-id }
+    in let updated-attackers = add-blocker-to-attacker (cs.attackers) attacker-id blocker-id 0 (cs.num-attackers) []
+    in CombatState {
+      attackers = updated-attackers,
+      blockers = list-push (cs.blockers) b,
+      num-attackers = cs.num-attackers,
+      num-blockers = cs.num-blockers + 1
+    }
+
+  add-blocker-to-attacker : List Attacker, Integer, Integer, Integer, Integer, List Attacker -> List Attacker
+  add-blocker-to-attacker (attackers) (attacker-id) (blocker-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let a = list-at attackers i
+    in let updated = if a.permanent-id == attacker-id
+      then Attacker { permanent-id = a.permanent-id, blocked-by = list-push (a.blocked-by) blocker-id, damage-assigned = a.damage-assigned }
+      else a
+    in add-blocker-to-attacker attackers attacker-id blocker-id (i + 1) len (list-push acc updated)
+
+Section: Damage Resolution
+
+  DamageResult = record {
+    game : GameState,
+    life-gained : Integer
+  }
+
+  resolve-combat-damage : GameState, CombatState -> DamageResult
+  resolve-combat-damage (gs) (cs) =
+    resolve-attacker-damage gs cs 0 (cs.num-attackers) 0
+
+  resolve-attacker-damage : GameState, CombatState, Integer, Integer, Integer -> DamageResult
+  resolve-attacker-damage (gs) (cs) (i) (len) (life-gained) =
+    if i >= len then DamageResult { game = gs, life-gained = life-gained }
+    else let a = list-at (cs.attackers) i
+    in let result = resolve-single-attacker gs a (gs.active-player)
+    in resolve-attacker-damage (result.game) cs (i + 1) len (life-gained + result.life-gained)
+
+  resolve-single-attacker : GameState, Attacker, Integer -> DamageResult
+  resolve-single-attacker (gs) (a) (attacking-player) =
+    let perm = find-permanent (gs.battlefield) (a.permanent-id) 0 (list-length (gs.battlefield))
+    in let template = get-template gs (perm.template-id)
+    in let power = template.power + perm.power-mod
+    in let kws = perm.keywords
+    in if list-length (a.blocked-by) == 0
+      then resolve-unblocked gs power kws attacking-player
+      else resolve-blocked gs a power kws (a.blocked-by)
+
+  resolve-unblocked : GameState, Integer, KeywordSet, Integer -> DamageResult
+  resolve-unblocked (gs) (power) (kws) (attacking-player) =
+    let defending = if attacking-player == 0 then 1 else 0
+    in let gen-template = get-general gs defending
+    in let gen-defense = gen-template.defense
+    in let has-dt = has-keyword kws Deathtouch
+    in if combat-damage-with-deathtouch power gen-defense has-dt
+      then let p = get-player gs defending
+      in let new-general = general-deal-damage (p.general) power
+      in let new-player = PlayerState {
+        general = new-general,
+        mana-pool = p.mana-pool,
+        library = p.library,
+        hand = p.hand,
+        graveyard = p.graveyard,
+        exile = p.exile,
+        land-drop-used = p.land-drop-used,
+        land-drops-per-turn = p.land-drops-per-turn
+      }
+      in let gs2 = set-player gs defending new-player
+      in let gained = if has-keyword kws Lifelink then power else 0
+      in DamageResult { game = gs2, life-gained = gained }
+      else DamageResult { game = gs, life-gained = 0 }
+
+  resolve-blocked : GameState, Attacker, Integer, KeywordSet, List Integer -> DamageResult
+  resolve-blocked (gs) (a) (power) (kws) (blocker-ids) =
+    let gs2 = assign-damage-to-blockers gs power kws blocker-ids 0 (list-length blocker-ids) power
+    in let gs3 = assign-blocker-damage-to-attacker gs2 (a.permanent-id) blocker-ids 0 (list-length blocker-ids)
+    in DamageResult { game = gs3, life-gained = 0 }
+
+  assign-damage-to-blockers : GameState, Integer, KeywordSet, List Integer, Integer, Integer, Integer -> GameState
+  assign-damage-to-blockers (gs) (total-power) (kws) (blocker-ids) (i) (len) (remaining) =
+    if i >= len then gs
+    else if remaining <= 0 then gs
+    else let blocker-id = list-at blocker-ids i
+    in let blocker-perm = find-permanent (gs.battlefield) blocker-id 0 (list-length (gs.battlefield))
+    in let blocker-template = get-template gs (blocker-perm.template-id)
+    in let blocker-defense = blocker-template.defense + blocker-perm.defense-mod
+    in let has-dt = has-keyword kws Deathtouch
+    in if combat-damage-with-deathtouch total-power blocker-defense has-dt
+      then let blocker-toughness = blocker-template.toughness + blocker-perm.toughness-mod
+      in let lethal = if has-dt then 1 else blocker-toughness - blocker-perm.damage-marked
+      in let damage-to-assign = if remaining < lethal then remaining else lethal
+      in let gs2 = if has-dt then deal-damage-to-permanent-dt gs blocker-id damage-to-assign else deal-damage-to-permanent gs blocker-id damage-to-assign
+      in assign-damage-to-blockers gs2 total-power kws blocker-ids (i + 1) len (remaining - damage-to-assign)
+      else assign-damage-to-blockers gs total-power kws blocker-ids (i + 1) len remaining
+
+  assign-blocker-damage-to-attacker : GameState, Integer, List Integer, Integer, Integer -> GameState
+  assign-blocker-damage-to-attacker (gs) (attacker-id) (blocker-ids) (i) (len) =
+    if i >= len then gs
+    else let blocker-id = list-at blocker-ids i
+    in let blocker-perm = find-permanent (gs.battlefield) blocker-id 0 (list-length (gs.battlefield))
+    in let blocker-template = get-template gs (blocker-perm.template-id)
+    in let blocker-power = blocker-template.power + blocker-perm.power-mod
+    in let attacker-perm = find-permanent (gs.battlefield) attacker-id 0 (list-length (gs.battlefield))
+    in let attacker-template = get-template gs (attacker-perm.template-id)
+    in let attacker-defense = attacker-template.defense + attacker-perm.defense-mod
+    in let has-dt = has-keyword (blocker-perm.keywords) Deathtouch
+    in if combat-damage-with-deathtouch blocker-power attacker-defense has-dt
+      then let gs2 = if has-dt then deal-damage-to-permanent-dt gs attacker-id blocker-power else deal-damage-to-permanent gs attacker-id blocker-power
+      in assign-blocker-damage-to-attacker gs2 attacker-id blocker-ids (i + 1) len
+      else assign-blocker-damage-to-attacker gs attacker-id blocker-ids (i + 1) len
+
+  deal-damage-to-permanent : GameState, Integer, Integer -> GameState
+  deal-damage-to-permanent (gs) (perm-id) (amount) = GameState {
+    players = gs.players,
+    generals = gs.generals,
+    battlefield = damage-in-list (gs.battlefield) perm-id amount 0 (list-length (gs.battlefield)) [],
+    stack = gs.stack,
+    active-player = gs.active-player,
+    priority-player = gs.priority-player,
+    turn-number = gs.turn-number,
+    phase = gs.phase,
+    step = gs.step,
+    next-permanent-id = gs.next-permanent-id,
+    next-instance-id = gs.next-instance-id,
+    game-over = gs.game-over,
+    winner = gs.winner,
+    templates = gs.templates
+  }
+
+  damage-in-list : List Permanent, Integer, Integer, Integer, Integer, List Permanent -> List Permanent
+  damage-in-list (perms) (target) (amount) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in let updated = if perm.id == target then permanent-deal-damage perm amount else perm
+    in damage-in-list perms target amount (i + 1) len (list-push acc updated)
+
+  deal-damage-to-permanent-dt : GameState, Integer, Integer -> GameState
+  deal-damage-to-permanent-dt (gs) (perm-id) (amount) = GameState { players = gs.players, generals = gs.generals, battlefield = damage-and-mark-dt (gs.battlefield) perm-id amount 0 (list-length (gs.battlefield)) [], stack = gs.stack, active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
+
+  damage-and-mark-dt : List Permanent, Integer, Integer, Integer, Integer, List Permanent -> List Permanent
+  damage-and-mark-dt (perms) (target) (amount) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in let updated = if perm.id == target then mark-deathtouch (permanent-deal-damage perm amount) else perm
+    in damage-and-mark-dt perms target amount (i + 1) len (list-push acc updated)
+
+Page 1

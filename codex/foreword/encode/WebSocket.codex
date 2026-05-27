@@ -1,0 +1,137 @@
+Chapter: WebSocket
+  cites Encode chapter Base64
+  cites Foreword chapter Sha256
+  cites Foreword chapter CCE
+
+ WebSocket protocol (RFC 6455). Frame encoder/decoder for text and
+ binary messages. Includes handshake header generation with
+ Sec-WebSocket-Accept computation.
+
+ We say:
+
+Section: Constants
+  ws-opcode-text : Integer = 1
+  ws-opcode-binary : Integer = 2
+  ws-opcode-close : Integer = 8
+  ws-opcode-ping : Integer = 9
+  ws-opcode-pong : Integer = 10
+
+  ws-guid : Text = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+Section: Types
+  WsFrame = record {
+    ws-fin : Boolean,
+    ws-opcode : Integer,
+    ws-masked : Boolean,
+    ws-payload : List Integer,
+    ws-length : Integer
+  }
+
+Section: Frame Encoding
+  ws-encode-text : Text -> List Integer
+  ws-encode-text (msg) =
+    let payload = ws-text-to-bytes msg
+    in ws-encode-frame True ws-opcode-text False payload
+
+  ws-encode-binary : List Integer -> List Integer
+  ws-encode-binary (payload) =
+    ws-encode-frame True ws-opcode-binary False payload
+
+  ws-encode-close : Integer -> List Integer
+  ws-encode-close (code) =
+    ws-encode-frame True ws-opcode-close False (ws-be16 code)
+
+  ws-encode-ping : List Integer -> List Integer
+  ws-encode-ping (payload) =
+    ws-encode-frame True ws-opcode-ping False payload
+
+  ws-encode-pong : List Integer -> List Integer
+  ws-encode-pong (payload) =
+    ws-encode-frame True ws-opcode-pong False payload
+
+  ws-encode-frame : Boolean, Integer, Boolean, List Integer -> List Integer
+  ws-encode-frame (fin) (opcode) (masked) (payload) =
+    let len = list-length payload
+    in let byte0 = bit-or (if fin then 128 else 0) opcode
+    in let mask-bit = if masked then 128 else 0
+    in if len < 126 then [byte0, bit-or mask-bit len] & payload
+    else if len < 65536 then [byte0, bit-or mask-bit 126] & ws-be16 len & payload
+    else [byte0, bit-or mask-bit 127] & ws-be64 len & payload
+
+Section: Frame Decoding
+  ws-decode-frame : List Integer -> WsFrame
+  ws-decode-frame (bytes) =
+    let byte0 = list-at bytes 0
+    in let byte1 = list-at bytes 1
+    in let fin = bit-and byte0 128 > 0
+    in let opcode = bit-and byte0 15
+    in let masked = bit-and byte1 128 > 0
+    in let len-code = bit-and byte1 127
+    in let header-end = ws-header-size len-code masked
+    in let payload-len = ws-read-length bytes len-code
+    in let payload = ws-slice bytes header-end payload-len []
+    in WsFrame { ws-fin = fin, ws-opcode = opcode, ws-masked = masked, ws-payload = payload, ws-length = payload-len }
+
+  ws-header-size : Integer, Boolean -> Integer
+  ws-header-size (len-code) (masked) =
+    let base = if len-code < 126 then 2 else if len-code == 126 then 4 else 10
+    in if masked then base + 4 else base
+
+  ws-read-length : List Integer, Integer -> Integer
+  ws-read-length (bytes) (len-code) =
+    if len-code < 126 then len-code
+    else if len-code == 126 then bit-or (bit-shl (list-at bytes 2) 8) (list-at bytes 3)
+    else bit-or (bit-shl (list-at bytes 6) 24) (bit-or (bit-shl (list-at bytes 7) 16) (bit-or (bit-shl (list-at bytes 8) 8) (list-at bytes 9)))
+
+Section: Handshake
+  ws-accept-key : Text -> Text
+  ws-accept-key (client-key) =
+    let combined = client-key & ws-guid
+    in let hash = sha256 (ws-text-to-bytes combined)
+    in base64-encode hash
+
+  ws-handshake-response : Text -> Text
+  ws-handshake-response (client-key) =
+    let accept = ws-accept-key client-key
+    in "HTTP/1.1 101 Switching Protocols\nUpgrade: websocket\nConnection: Upgrade\nSec-WebSocket-Accept: " & accept & "\n\n"
+
+Section: Helpers
+  ws-be16 : Integer -> List Integer
+  ws-be16 (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  ws-be64 : Integer -> List Integer
+  ws-be64 (v) = [0, 0, 0, 0, bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  ws-text-to-bytes : Text -> List Integer
+  ws-text-to-bytes (s) = ws-t2b-loop s 0 (text-length s) []
+
+  ws-t2b-loop : Text, Integer, Integer, List Integer -> List Integer
+  ws-t2b-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else ws-t2b-loop s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
+
+  ws-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  ws-slice (data) (start) (len) (acc) =
+    if len <= 0 then acc
+    else if start >= list-length data then acc
+    else ws-slice data (start + 1) (len - 1) (list-push acc (list-at data start))
+
+Section: Queries
+  ws-is-text : WsFrame -> Boolean
+  ws-is-text (f) = f.ws-opcode == ws-opcode-text
+
+  ws-is-binary : WsFrame -> Boolean
+  ws-is-binary (f) = f.ws-opcode == ws-opcode-binary
+
+  ws-is-close : WsFrame -> Boolean
+  ws-is-close (f) = f.ws-opcode == ws-opcode-close
+
+  ws-is-ping : WsFrame -> Boolean
+  ws-is-ping (f) = f.ws-opcode == ws-opcode-ping
+
+  format-ws-frame : WsFrame -> Text
+  format-ws-frame (f) =
+    let op = if f.ws-opcode == 1 then "TEXT" else if f.ws-opcode == 2 then "BIN" else if f.ws-opcode == 8 then "CLOSE" else if f.ws-opcode == 9 then "PING" else "OP-" & show (f.ws-opcode)
+    in op & " len=" & show (f.ws-length) & " fin=" & show (f.ws-fin)
+
+Page 1

@@ -1,0 +1,462 @@
+Chapter: Risk
+  cites Games chapter Rng
+
+ Simplified Risk: 12 territories in 4 continents (3 territories each).
+ Territories 0-2: Continent A, 3-5: Continent B, 6-8: Continent C, 9-11: Continent D.
+ Each continent bonus = 2 armies. Adjacency is hardcoded.
+ Turn: reinforcements (territories/3 + continent bonuses, min 3), attack
+ weakest adjacent enemy (attacker up to 3 dice, defender up to 2,
+ compare sorted descending — attacker wins ties go to defender), fortify.
+ Win when one player owns all territories.
+
+ We say:
+
+Section: Types
+
+  RiskTerritory = record {
+    owner  : Integer,
+    armies : Integer
+  }
+
+  RiskPlayer = record {
+    id          : Integer,
+    alive       : Boolean,
+    total-armies : Integer
+  }
+
+  RiskState = record {
+    territories    : List RiskTerritory,
+    players        : List RiskPlayer,
+    current-player : Integer,
+    turn-number    : Integer,
+    game-over      : Boolean,
+    winner         : Integer,
+    num-players    : Integer
+  }
+
+  RiskResult = record {
+    winner      : Integer,
+    turns       : Integer,
+    territories : List Integer
+  }
+
+Section: Adjacency
+
+ 12 territories. Adjacency pairs encoded as flat list of pairs:
+ (from, to). Adjacency is symmetric.
+
+  risk-adjacent : Integer, Integer -> Boolean
+  risk-adjacent (a) (b) =
+    risk-adj-check a b | risk-adj-check b a
+
+  risk-adj-check : Integer, Integer -> Boolean
+  risk-adj-check (a) (b) =
+    if a == 0  then b == 1 | b == 3 | b == 9
+    else if a == 1  then b == 2 | b == 4
+    else if a == 2  then b == 5 | b == 11
+    else if a == 3  then b == 4 | b == 6
+    else if a == 4  then b == 5 | b == 7
+    else if a == 5  then b == 8
+    else if a == 6  then b == 7 | b == 9
+    else if a == 7  then b == 8 | b == 10
+    else if a == 8  then b == 11
+    else if a == 9  then b == 10
+    else if a == 10 then b == 11
+    else False
+
+Section: Continent Bonus
+
+  risk-continent : Integer -> Integer
+  risk-continent (t) = t / 3
+
+  risk-continent-bonus : RiskState, Integer -> Integer
+  risk-continent-bonus (s) (player) =
+    risk-check-continents s player 0 0
+
+  risk-check-continents : RiskState, Integer, Integer, Integer -> Integer
+  risk-check-continents (s) (player) (continent) (bonus) =
+    if continent >= 4 then bonus
+    else let owned = risk-owns-continent s player continent
+    in let b = if owned then 2 else 0
+    in risk-check-continents s player (continent + 1) (bonus + b)
+
+  risk-owns-continent : RiskState, Integer, Integer -> Boolean
+  risk-owns-continent (s) (player) (continent) =
+    risk-owns-cont-loop s player continent 0
+
+  risk-owns-cont-loop : RiskState, Integer, Integer, Integer -> Boolean
+  risk-owns-cont-loop (s) (player) (continent) (i) =
+    if i >= 12 then True
+    else if risk-continent i /= continent then risk-owns-cont-loop s player continent (i + 1)
+    else let t = list-at (s.territories) i
+    in if t.owner /= player then False
+    else risk-owns-cont-loop s player continent (i + 1)
+
+Section: Initialization
+
+  risk-init : Integer, Integer -> RiskState
+  risk-init (seed) (num-players) =
+    let np = if num-players < 2 then 2 else if num-players > 4 then 4 else num-players
+    in let terrs = risk-assign-territories np (rng-new seed)
+    in let players = risk-build-players np 0 []
+    in let s0 = RiskState {
+         territories = terrs,
+         players = players,
+         current-player = 0,
+         turn-number = 0,
+         game-over = False,
+         winner = (-1),
+         num-players = np
+       }
+    in risk-update-army-counts s0
+
+  risk-assign-territories : Integer, Rng -> List RiskTerritory
+  risk-assign-territories (np) (r) =
+    risk-assign-loop np r 0 []
+
+  risk-assign-loop : Integer, Rng, Integer, List RiskTerritory -> List RiskTerritory
+  risk-assign-loop (np) (r) (i) (acc) =
+    if i >= 12 then acc
+    else let r2 = rng-next r
+    in let owner = rng-mod i np
+    in let t = RiskTerritory { owner = owner, armies = 3 }
+    in risk-assign-loop np r2 (i + 1) (list-push acc t)
+
+  risk-build-players : Integer, Integer, List RiskPlayer -> List RiskPlayer
+  risk-build-players (np) (i) (acc) =
+    if i >= np then acc
+    else let p = RiskPlayer { id = i, alive = True, total-armies = 0 }
+    in risk-build-players np (i + 1) (list-push acc p)
+
+  risk-update-army-counts : RiskState -> RiskState
+  risk-update-army-counts (s) =
+    let players2 = risk-recount-players s 0 (s.players)
+    in RiskState {
+         territories = s.territories,
+         players = players2,
+         current-player = s.current-player,
+         turn-number = s.turn-number,
+         game-over = s.game-over,
+         winner = s.winner,
+         num-players = s.num-players
+       }
+
+  risk-recount-players : RiskState, Integer, List RiskPlayer -> List RiskPlayer
+  risk-recount-players (s) (i) (players) =
+    if i >= s.num-players then players
+    else let count = risk-count-armies s i
+    in let p = list-at players i
+    in let new-p = RiskPlayer { id = p.id, alive = count > 0, total-armies = count }
+    in risk-recount-players s (i + 1) (list-set-at players i new-p)
+
+  risk-count-armies : RiskState, Integer -> Integer
+  risk-count-armies (s) (player) =
+    risk-count-loop s player 0 0
+
+  risk-count-loop : RiskState, Integer, Integer, Integer -> Integer
+  risk-count-loop (s) (player) (i) (acc) =
+    if i >= 12 then acc
+    else let t = list-at (s.territories) i
+    in let delta = if t.owner == player then t.armies else 0
+    in risk-count-loop s player (i + 1) (acc + delta)
+
+Section: Territory Helpers
+
+  risk-get-terr : RiskState, Integer -> RiskTerritory
+  risk-get-terr (s) (i) = list-at (s.territories) i
+
+  risk-set-terr : RiskState, Integer, RiskTerritory -> RiskState
+  risk-set-terr (s) (i) (t) =
+    RiskState {
+      territories = list-set-at (s.territories) i t,
+      players = s.players,
+      current-player = s.current-player,
+      turn-number = s.turn-number,
+      game-over = s.game-over,
+      winner = s.winner,
+      num-players = s.num-players
+    }
+
+  risk-count-player-territories : RiskState, Integer -> Integer
+  risk-count-player-territories (s) (player) =
+    risk-terr-count-loop s player 0 0
+
+  risk-terr-count-loop : RiskState, Integer, Integer, Integer -> Integer
+  risk-terr-count-loop (s) (player) (i) (acc) =
+    if i >= 12 then acc
+    else let t = list-at (s.territories) i
+    in let delta = if t.owner == player then 1 else 0
+    in risk-terr-count-loop s player (i + 1) (acc + delta)
+
+Section: Reinforcements
+
+  risk-calc-reinforcements : RiskState, Integer -> Integer
+  risk-calc-reinforcements (s) (player) =
+    let terr-count = risk-count-player-territories s player
+    in let base = if terr-count / 3 < 3 then 3 else terr-count / 3
+    in let bonus = risk-continent-bonus s player
+    in base + bonus
+
+  risk-place-reinforcements : RiskState, Integer, Integer -> RiskState
+  risk-place-reinforcements (s) (player) (armies) =
+    let best-terr = risk-find-border-territory s player
+    in if best-terr < 0 then s
+    else let t = risk-get-terr s best-terr
+    in let new-t = RiskTerritory { owner = t.owner, armies = t.armies + armies }
+    in risk-set-terr s best-terr new-t
+
+  risk-find-border-territory : RiskState, Integer -> Integer
+  risk-find-border-territory (s) (player) =
+    risk-border-loop s player 0 (-1) 999999
+
+  risk-border-loop : RiskState, Integer, Integer, Integer, Integer -> Integer
+  risk-border-loop (s) (player) (i) (best) (best-ratio) =
+    if i >= 12 then best
+    else let t = list-at (s.territories) i
+    in if t.owner /= player then risk-border-loop s player (i + 1) best best-ratio
+    else if risk-has-enemy-neighbor s player i == False then risk-border-loop s player (i + 1) best best-ratio
+    else if t.armies < best-ratio then risk-border-loop s player (i + 1) i t.armies
+    else risk-border-loop s player (i + 1) best best-ratio
+
+  risk-has-enemy-neighbor : RiskState, Integer, Integer -> Boolean
+  risk-has-enemy-neighbor (s) (player) (terr) =
+    risk-enemy-neighbor-loop s player terr 0
+
+  risk-enemy-neighbor-loop : RiskState, Integer, Integer, Integer -> Boolean
+  risk-enemy-neighbor-loop (s) (player) (terr) (i) =
+    if i >= 12 then False
+    else if risk-adjacent terr i == False then risk-enemy-neighbor-loop s player terr (i + 1)
+    else let t = list-at (s.territories) i
+    in if t.owner /= player then True
+    else risk-enemy-neighbor-loop s player terr (i + 1)
+
+Section: Attack Dice
+
+  risk-roll-dice : Rng, Integer -> Integer
+  risk-roll-dice (r) (n) =
+    rng-range r 1 6
+
+  risk-attack-result : Rng, Integer, Integer -> RiskState -> RiskState
+  risk-attack-result (r) (atk-terr) (def-terr) (s) =
+    let atk-t = risk-get-terr s atk-terr
+    in let def-t = risk-get-terr s def-terr
+    in let atk-dice = if atk-t.armies - 1 >= 3 then 3 else atk-t.armies - 1
+    in let def-dice = if def-t.armies >= 2 then 2 else def-t.armies
+    in if atk-dice <= 0 then s
+    else
+      let r2 = rng-next r
+      in let r3 = rng-next r2
+      in let r4 = rng-next r3
+      in let r5 = rng-next r4
+      in let r6 = rng-next r5
+      in let a1 = rng-range r2 1 6
+      in let a2 = if atk-dice >= 2 then rng-range r3 1 6 else 0
+      in let a3 = if atk-dice >= 3 then rng-range r4 1 6 else 0
+      in let d1 = rng-range r5 1 6
+      in let d2 = if def-dice >= 2 then rng-range r6 1 6 else 0
+      in let atk-best = if a1 >= a2 & a1 >= a3 then a1 else if a2 >= a3 then a2 else a3
+      in let atk-second = if a1 >= a2 & a1 >= a3 then
+             if a2 >= a3 then a2 else a3
+           else if a2 >= a3 then
+             if a1 >= a3 then a1 else a3
+           else if a1 >= a2 then a1 else a2
+      in let def-best = if d1 >= d2 then d1 else d2
+      in let def-second = if d1 >= d2 then d2 else d1
+      in let atk-loses-best = if atk-best > def-best then 0 else 1
+      in let def-loses-best = if atk-best > def-best then 1 else 0
+      in let atk-loses-second = if def-dice >= 2 & atk-dice >= 2 then
+             if atk-second > def-second then 0 else 1
+           else 0
+      in let def-loses-second = if def-dice >= 2 & atk-dice >= 2 then
+             if atk-second > def-second then 1 else 0
+           else 0
+      in let atk-losses = atk-loses-best + atk-loses-second
+      in let def-losses = def-loses-best + def-loses-second
+      in let new-atk-armies = atk-t.armies - atk-losses
+      in let new-def-armies = def-t.armies - def-losses
+      in let new-atk-t = RiskTerritory { owner = atk-t.owner, armies = new-atk-armies }
+      in if new-def-armies <= 0 then
+        let conquer-armies = if new-atk-armies - 1 > atk-dice then atk-dice else new-atk-armies - 1
+        in let remain-atk = new-atk-armies - conquer-armies
+        in let new-atk2 = RiskTerritory { owner = atk-t.owner, armies = remain-atk }
+        in let new-def = RiskTerritory { owner = atk-t.owner, armies = conquer-armies }
+        in let s2 = risk-set-terr s atk-terr new-atk2
+        in risk-set-terr s2 def-terr new-def
+      else
+        let new-def-t = RiskTerritory { owner = def-t.owner, armies = new-def-armies }
+        in let s2 = risk-set-terr s atk-terr new-atk-t
+        in risk-set-terr s2 def-terr new-def-t
+
+Section: AI Strategy
+
+  risk-find-attack : RiskState, Integer -> Integer
+  risk-find-attack (s) (player) =
+    risk-find-attack-loop s player 0 (-1) 0
+
+  risk-find-attack-loop : RiskState, Integer, Integer, Integer, Integer -> Integer
+  risk-find-attack-loop (s) (player) (i) (best-def) (best-def-armies) =
+    if i >= 12 then best-def
+    else let t = list-at (s.territories) i
+    in if t.owner /= player then risk-find-attack-loop s player (i + 1) best-def best-def-armies
+    else if t.armies < 2 then risk-find-attack-loop s player (i + 1) best-def best-def-armies
+    else
+      let weak-enemy = risk-weakest-enemy-neighbor s player i
+      in if weak-enemy < 0 then risk-find-attack-loop s player (i + 1) best-def best-def-armies
+      else let enemy-t = list-at (s.territories) weak-enemy
+      in if best-def < 0 | enemy-t.armies < best-def-armies then
+        risk-find-attack-loop s player (i + 1) weak-enemy enemy-t.armies
+      else risk-find-attack-loop s player (i + 1) best-def best-def-armies
+
+  risk-find-attack-from : RiskState, Integer, Integer -> Integer
+  risk-find-attack-from (s) (player) (def-terr) =
+    risk-find-from-loop s player def-terr 0 (-1) 0
+
+  risk-find-from-loop : RiskState, Integer, Integer, Integer, Integer, Integer -> Integer
+  risk-find-from-loop (s) (player) (def-terr) (i) (best-atk) (best-armies) =
+    if i >= 12 then best-atk
+    else let t = list-at (s.territories) i
+    in if t.owner /= player then risk-find-from-loop s player def-terr (i + 1) best-atk best-armies
+    else if t.armies < 2 then risk-find-from-loop s player def-terr (i + 1) best-atk best-armies
+    else if risk-adjacent i def-terr == False then risk-find-from-loop s player def-terr (i + 1) best-atk best-armies
+    else if t.armies > best-armies then risk-find-from-loop s player def-terr (i + 1) i t.armies
+    else risk-find-from-loop s player def-terr (i + 1) best-atk best-armies
+
+  risk-weakest-enemy-neighbor : RiskState, Integer, Integer -> Integer
+  risk-weakest-enemy-neighbor (s) (player) (terr) =
+    risk-weakest-loop s player terr 0 (-1) 999999
+
+  risk-weakest-loop : RiskState, Integer, Integer, Integer, Integer, Integer -> Integer
+  risk-weakest-loop (s) (player) (terr) (i) (best) (best-armies) =
+    if i >= 12 then best
+    else if risk-adjacent terr i == False then risk-weakest-loop s player terr (i + 1) best best-armies
+    else let t = list-at (s.territories) i
+    in if t.owner == player then risk-weakest-loop s player terr (i + 1) best best-armies
+    else if t.armies < best-armies then risk-weakest-loop s player terr (i + 1) i t.armies
+    else risk-weakest-loop s player terr (i + 1) best best-armies
+
+Section: Turn
+
+  risk-do-turn : RiskState, Rng -> RiskState
+  risk-do-turn (s) (r) =
+    if s.game-over then s
+    else let player = s.current-player
+    in let p = list-at (s.players) player
+    in if p.alive == False then risk-advance-player s
+    else
+      let reinf = risk-calc-reinforcements s player
+      in let s2 = risk-place-reinforcements s player reinf
+      in let s3 = risk-do-attacks s2 player r 0
+      in let s4 = risk-update-alive s3
+      in let s5 = risk-check-winner s4
+      in risk-advance-player s5
+
+  risk-do-attacks : RiskState, Integer, Rng, Integer -> RiskState
+  risk-do-attacks (s) (player) (r) (attack-count) =
+    if s.game-over then s
+    else if attack-count >= 3 then s
+    else let def-terr = risk-find-attack s player
+    in if def-terr < 0 then s
+    else let atk-terr = risk-find-attack-from s player def-terr
+    in if atk-terr < 0 then s
+    else let r2 = rng-next r
+    in let s2 = risk-attack-result r2 atk-terr def-terr s
+    in risk-do-attacks s2 player r2 (attack-count + 1)
+
+  risk-update-alive : RiskState -> RiskState
+  risk-update-alive (s) =
+    let players2 = risk-recount-players s 0 (s.players)
+    in RiskState {
+         territories = s.territories,
+         players = players2,
+         current-player = s.current-player,
+         turn-number = s.turn-number,
+         game-over = s.game-over,
+         winner = s.winner,
+         num-players = s.num-players
+       }
+
+  risk-check-winner : RiskState -> RiskState
+  risk-check-winner (s) =
+    let alive-count = risk-count-alive s
+    in if alive-count <= 1 then
+      let w = risk-find-alive s
+      in RiskState {
+           territories = s.territories,
+           players = s.players,
+           current-player = s.current-player,
+           turn-number = s.turn-number,
+           game-over = True,
+           winner = w,
+           num-players = s.num-players
+         }
+    else s
+
+  risk-count-alive : RiskState -> Integer
+  risk-count-alive (s) =
+    risk-alive-loop s 0 0
+
+  risk-alive-loop : RiskState, Integer, Integer -> Integer
+  risk-alive-loop (s) (i) (acc) =
+    if i >= s.num-players then acc
+    else let p = list-at (s.players) i
+    in let delta = if p.alive then 1 else 0
+    in risk-alive-loop s (i + 1) (acc + delta)
+
+  risk-find-alive : RiskState -> Integer
+  risk-find-alive (s) =
+    risk-find-alive-loop s 0
+
+  risk-find-alive-loop : RiskState, Integer -> Integer
+  risk-find-alive-loop (s) (i) =
+    if i >= s.num-players then (-1)
+    else let p = list-at (s.players) i
+    in if p.alive then i
+    else risk-find-alive-loop s (i + 1)
+
+  risk-advance-player : RiskState -> RiskState
+  risk-advance-player (s) =
+    let next = rng-mod (s.current-player + 1) s.num-players
+    in RiskState {
+         territories = s.territories,
+         players = s.players,
+         current-player = next,
+         turn-number = s.turn-number + 1,
+         game-over = s.game-over,
+         winner = s.winner,
+         num-players = s.num-players
+       }
+
+Section: Game Runner
+
+  run-risk-game : Integer, Integer -> RiskResult
+  run-risk-game (seed) (num-players) =
+    let s = risk-init seed num-players
+    in risk-loop s (rng-new seed) 0
+
+  risk-loop : RiskState, Rng, Integer -> RiskResult
+  risk-loop (s) (r) (turns) =
+    if s.game-over then risk-make-result s turns
+    else if turns > 400 then risk-make-result s turns
+    else let r2 = rng-next r
+    in risk-loop (risk-do-turn s r2) r2 (turns + 1)
+
+  risk-make-result : RiskState, Integer -> RiskResult
+  risk-make-result (s) (turns) =
+    let w = if s.winner >= 0 then s.winner else risk-find-alive s
+    in let terr-list = risk-collect-owners s 0 []
+    in RiskResult { winner = w, turns = turns, territories = terr-list }
+
+  risk-collect-owners : RiskState, Integer, List Integer -> List Integer
+  risk-collect-owners (s) (i) (acc) =
+    if i >= 12 then acc
+    else let t = list-at (s.territories) i
+    in risk-collect-owners s (i + 1) (list-push acc t.owner)
+
+Section: Formatting
+
+  format-risk-result : RiskResult -> Text
+  format-risk-result (r) =
+    let w = if r.winner < 0 then "None" else "P" & show (r.winner + 1)
+    in "Risk (12 territories, " & show r.turns & " turns): winner=" & w
+
+Page 1

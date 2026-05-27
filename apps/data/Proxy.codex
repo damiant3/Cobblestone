@@ -1,0 +1,540 @@
+Chapter: Proxy
+  cites Data chapter Protocol
+  cites Data chapter SystemDb
+  cites Data chapter Security
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Forward and reverse proxy for Codex DB and HTTP services. Forward
+ proxy tunnels client requests to upstream servers. Reverse proxy
+ load-balances across backends with health checks, sticky sessions,
+ circuit breakers, and request rewriting. Both integrate with
+ SystemDb for logging, firewall checks, and shared deny lists.
+
+ We say:
+
+Section: Backend
+
+  BackendState =
+    | BsHealthy
+    | BsDegraded
+    | BsDown
+    | BsDraining
+
+  Backend = record {
+    be-id : Integer,
+    be-address : Text,
+    be-port : Integer,
+    be-weight : Integer,
+    be-state : BackendState,
+    be-active-conns : Integer,
+    be-total-requests : Integer,
+    be-total-errors : Integer,
+    be-avg-latency-us : Integer,
+    be-last-health-check : Integer
+  }
+
+  backend-new : Integer, Text, Integer -> Backend
+  backend-new (id) (addr) (port) = Backend {
+    be-id = id,
+    be-address = addr,
+    be-port = port,
+    be-weight = 1,
+    be-state = BsHealthy,
+    be-active-conns = 0,
+    be-total-requests = 0,
+    be-total-errors = 0,
+    be-avg-latency-us = 0,
+    be-last-health-check = 0
+  }
+
+  backend-weighted : Integer, Text, Integer, Integer -> Backend
+  backend-weighted (id) (addr) (port) (weight) =
+    let be = backend-new id addr port
+    in Backend { be-id = be.be-id, be-address = be.be-address, be-port = be.be-port, be-weight = weight, be-state = be.be-state, be-active-conns = be.be-active-conns, be-total-requests = be.be-total-requests, be-total-errors = be.be-total-errors, be-avg-latency-us = be.be-avg-latency-us, be-last-health-check = be.be-last-health-check }
+
+  be-is-available : Backend -> Boolean
+  be-is-available (be) =
+    when (be.be-state)
+      is BsHealthy -> True
+      is BsDegraded -> True
+      is otherwise -> False
+
+  be-state-name : BackendState -> Text
+  be-state-name (s) =
+    when s
+      is BsHealthy -> "healthy"
+      is BsDegraded -> "degraded"
+      is BsDown -> "down"
+      is BsDraining -> "draining"
+
+Section: Load Balance Strategy
+
+  LbStrategy =
+    | LbRoundRobin
+    | LbLeastConns
+    | LbWeightedRoundRobin
+    | LbIpHash
+    | LbRandom
+
+  lb-strategy-name : LbStrategy -> Text
+  lb-strategy-name (s) =
+    when s
+      is LbRoundRobin -> "round-robin"
+      is LbLeastConns -> "least-connections"
+      is LbWeightedRoundRobin -> "weighted-round-robin"
+      is LbIpHash -> "ip-hash"
+      is LbRandom -> "random"
+
+Section: Backend Pool
+
+  BackendPool = record {
+    bp-backends : List Backend,
+    bp-count : Integer,
+    bp-strategy : LbStrategy,
+    bp-rr-index : Integer,
+    bp-healthy-count : Integer
+  }
+
+  pool-new : LbStrategy -> BackendPool
+  pool-new (strategy) = BackendPool { bp-backends = [], bp-count = 0, bp-strategy = strategy, bp-rr-index = 0, bp-healthy-count = 0 }
+
+  pool-add : BackendPool, Backend -> BackendPool
+  pool-add (pool) (be) = BackendPool {
+    bp-backends = list-push (pool.bp-backends) be,
+    bp-count = pool.bp-count + 1,
+    bp-strategy = pool.bp-strategy,
+    bp-rr-index = pool.bp-rr-index,
+    bp-healthy-count = if be-is-available be then pool.bp-healthy-count + 1 else pool.bp-healthy-count
+  }
+
+  pool-select : BackendPool, Text -> (BackendPool, Maybe Backend)
+  pool-select (pool) (client-addr) =
+    if pool.bp-healthy-count == 0 then (pool, None)
+    else when (pool.bp-strategy)
+      is LbRoundRobin -> pool-select-rr pool
+      is LbLeastConns -> (pool, pool-select-least-conns pool)
+      is LbWeightedRoundRobin -> pool-select-wrr pool
+      is LbIpHash -> (pool, pool-select-ip-hash pool client-addr)
+      is LbRandom -> pool-select-rr pool
+
+  pool-select-rr : BackendPool -> (BackendPool, Maybe Backend)
+  pool-select-rr (pool) =
+    let idx = pool-next-healthy pool (pool.bp-rr-index) 0
+    in if idx < 0 then (pool, None)
+    else let new-pool = BackendPool { bp-backends = pool.bp-backends, bp-count = pool.bp-count, bp-strategy = pool.bp-strategy, bp-rr-index = (idx + 1) - (if idx + 1 >= pool.bp-count then pool.bp-count else 0), bp-healthy-count = pool.bp-healthy-count }
+    in (new-pool, Just (list-at (pool.bp-backends) idx))
+
+  pool-select-wrr : BackendPool -> (BackendPool, Maybe Backend)
+  pool-select-wrr (pool) =
+    let total-weight = pool-total-weight pool 0 (pool.bp-count) 0
+    in let target = (pool.bp-rr-index * 7 + 13) - ((pool.bp-rr-index * 7 + 13) / (if total-weight == 0 then 1 else total-weight)) * total-weight
+    in let idx = pool-find-weighted pool target 0 (pool.bp-count) 0
+    in if idx < 0 then (pool, None)
+    else let new-pool = BackendPool { bp-backends = pool.bp-backends, bp-count = pool.bp-count, bp-strategy = pool.bp-strategy, bp-rr-index = pool.bp-rr-index + 1, bp-healthy-count = pool.bp-healthy-count }
+    in (new-pool, Just (list-at (pool.bp-backends) idx))
+
+  pool-total-weight : BackendPool, Integer, Integer, Integer -> Integer
+  pool-total-weight (pool) (i) (len) (acc) =
+    if i >= len then acc
+    else let be = list-at (pool.bp-backends) i
+    in pool-total-weight pool (i + 1) len (if be-is-available be then acc + be.be-weight else acc)
+
+  pool-find-weighted : BackendPool, Integer, Integer, Integer, Integer -> Integer
+  pool-find-weighted (pool) (target) (i) (len) (running) =
+    if i >= len then -1
+    else let be = list-at (pool.bp-backends) i
+    in if be-is-available be == False then pool-find-weighted pool target (i + 1) len running
+    else let new-running = running + be.be-weight
+    in if new-running > target then i
+    else pool-find-weighted pool target (i + 1) len new-running
+
+  pool-select-least-conns : BackendPool -> Maybe Backend
+  pool-select-least-conns (pool) =
+    plc-loop (pool.bp-backends) 0 (pool.bp-count) (-1) 2147483647
+
+  plc-loop : List Backend, Integer, Integer, Integer, Integer -> Maybe Backend
+  plc-loop (backends) (i) (len) (best-idx) (best-conns) =
+    if i >= len then if best-idx < 0 then None else Just (list-at backends best-idx)
+    else let be = list-at backends i
+    in if be-is-available be & be.be-active-conns < best-conns then plc-loop backends (i + 1) len i (be.be-active-conns)
+    else plc-loop backends (i + 1) len best-idx best-conns
+
+  pool-select-ip-hash : BackendPool, Text -> Maybe Backend
+  pool-select-ip-hash (pool) (addr) =
+    let hash = ip-hash addr
+    in let idx = pool-next-healthy pool (hash - (hash / (if pool.bp-count == 0 then 1 else pool.bp-count)) * pool.bp-count) 0
+    in if idx < 0 then None else Just (list-at (pool.bp-backends) idx)
+
+  ip-hash : Text -> Integer
+  ip-hash (addr) = iph-loop addr 0 (text-length addr) 5381
+
+  iph-loop : Text, Integer, Integer, Integer -> Integer
+  iph-loop (s) (i) (len) (h) =
+    if i >= len then if h < 0 then negate h else h
+    else iph-loop s (i + 1) len (h * 33 + text-char-at s i)
+
+  pool-next-healthy : BackendPool, Integer, Integer -> Integer
+  pool-next-healthy (pool) (start) (tried) =
+    if tried >= pool.bp-count then -1
+    else let idx = start - (start / (if pool.bp-count == 0 then 1 else pool.bp-count)) * pool.bp-count
+    in let be = list-at (pool.bp-backends) idx
+    in if be-is-available be then idx
+    else pool-next-healthy pool (idx + 1) (tried + 1)
+
+Section: Health Check
+
+  HealthCheckConfig = record {
+    hc-interval : Integer,
+    hc-timeout : Integer,
+    hc-unhealthy-threshold : Integer,
+    hc-healthy-threshold : Integer
+  }
+
+  default-health-config : HealthCheckConfig
+  default-health-config = HealthCheckConfig { hc-interval = 10, hc-timeout = 5, hc-unhealthy-threshold = 3, hc-healthy-threshold = 2 }
+
+  HealthCheckResult = record {
+    hcr-backend-id : Integer,
+    hcr-ok : Boolean,
+    hcr-latency : Integer
+  }
+
+  pool-apply-health : BackendPool, HealthCheckResult -> BackendPool
+  pool-apply-health (pool) (result) =
+    let updated = pah-loop (pool.bp-backends) result 0 (pool.bp-count) []
+    in let healthy = pah-count-healthy updated 0 (pool.bp-count) 0
+    in BackendPool { bp-backends = updated, bp-count = pool.bp-count, bp-strategy = pool.bp-strategy, bp-rr-index = pool.bp-rr-index, bp-healthy-count = healthy }
+
+  pah-loop : List Backend, HealthCheckResult, Integer, Integer, List Backend -> List Backend
+  pah-loop (backends) (result) (i) (len) (acc) =
+    if i >= len then acc
+    else let be = list-at backends i
+    in if be.be-id == result.hcr-backend-id then
+      let new-state = if result.hcr-ok then BsHealthy else BsDown
+      in let updated = Backend { be-id = be.be-id, be-address = be.be-address, be-port = be.be-port, be-weight = be.be-weight, be-state = new-state, be-active-conns = be.be-active-conns, be-total-requests = be.be-total-requests, be-total-errors = if result.hcr-ok then be.be-total-errors else be.be-total-errors + 1, be-avg-latency-us = result.hcr-latency, be-last-health-check = 0 }
+      in pah-loop backends result (i + 1) len (list-push acc updated)
+    else pah-loop backends result (i + 1) len (list-push acc be)
+
+  pah-count-healthy : List Backend, Integer, Integer, Integer -> Integer
+  pah-count-healthy (backends) (i) (len) (acc) =
+    if i >= len then acc
+    else let be = list-at backends i
+    in pah-count-healthy backends (i + 1) len (if be-is-available be then acc + 1 else acc)
+
+Section: Circuit Breaker
+
+  CbState =
+    | CbClosed
+    | CbOpen
+    | CbHalfOpen
+
+  CircuitBreaker = record {
+    cb-state : CbState,
+    cb-failure-count : Integer,
+    cb-success-count : Integer,
+    cb-failure-threshold : Integer,
+    cb-success-threshold : Integer,
+    cb-last-failure : Integer,
+    cb-cooldown : Integer
+  }
+
+  cb-new : Integer, Integer, Integer -> CircuitBreaker
+  cb-new (fail-threshold) (success-threshold) (cooldown) = CircuitBreaker {
+    cb-state = CbClosed,
+    cb-failure-count = 0,
+    cb-success-count = 0,
+    cb-failure-threshold = fail-threshold,
+    cb-success-threshold = success-threshold,
+    cb-last-failure = 0,
+    cb-cooldown = cooldown
+  }
+
+  cb-default : CircuitBreaker
+  cb-default = cb-new 5 2 30
+
+  cb-allows-request : CircuitBreaker, Integer -> Boolean
+  cb-allows-request (cb) (now) =
+    when (cb.cb-state)
+      is CbClosed -> True
+      is CbHalfOpen -> True
+      is CbOpen -> now - cb.cb-last-failure > cb.cb-cooldown
+
+  cb-record-success : CircuitBreaker -> CircuitBreaker
+  cb-record-success (cb) =
+    when (cb.cb-state)
+      is CbHalfOpen ->
+        let new-count = cb.cb-success-count + 1
+        in if new-count >= cb.cb-success-threshold then CircuitBreaker { cb-state = CbClosed, cb-failure-count = 0, cb-success-count = 0, cb-failure-threshold = cb.cb-failure-threshold, cb-success-threshold = cb.cb-success-threshold, cb-last-failure = cb.cb-last-failure, cb-cooldown = cb.cb-cooldown }
+        else CircuitBreaker { cb-state = CbHalfOpen, cb-failure-count = cb.cb-failure-count, cb-success-count = new-count, cb-failure-threshold = cb.cb-failure-threshold, cb-success-threshold = cb.cb-success-threshold, cb-last-failure = cb.cb-last-failure, cb-cooldown = cb.cb-cooldown }
+      is otherwise -> cb
+
+  cb-record-failure : CircuitBreaker, Integer -> CircuitBreaker
+  cb-record-failure (cb) (now) =
+    let new-count = cb.cb-failure-count + 1
+    in let new-state = if new-count >= cb.cb-failure-threshold then CbOpen else cb.cb-state
+    in CircuitBreaker { cb-state = new-state, cb-failure-count = new-count, cb-success-count = 0, cb-failure-threshold = cb.cb-failure-threshold, cb-success-threshold = cb.cb-success-threshold, cb-last-failure = now, cb-cooldown = cb.cb-cooldown }
+
+  cb-state-name : CbState -> Text
+  cb-state-name (s) =
+    when s is CbClosed -> "closed" is CbOpen -> "open" is CbHalfOpen -> "half-open"
+
+Section: Sticky Sessions
+
+  StickyStore = record {
+    ss-map : HamtMap Integer,
+    ss-ttl : Integer,
+    ss-timestamps : HamtMap Integer
+  }
+
+  sticky-new : Integer -> StickyStore
+  sticky-new (ttl) = StickyStore { ss-map = hamt-empty, ss-ttl = ttl, ss-timestamps = hamt-empty }
+
+  sticky-get : StickyStore, Text, Integer -> Maybe Integer
+  sticky-get (store) (client-addr) (now) =
+    let found = hamt-get (store.ss-map) client-addr
+    in when found
+      is None -> None
+      is Just (backend-id) ->
+        let ts = when (hamt-get (store.ss-timestamps) client-addr) is Just (t) -> t is None -> 0
+        in if now - ts > store.ss-ttl then None
+        else Just backend-id
+
+  sticky-set : StickyStore, Text, Integer, Integer -> StickyStore
+  sticky-set (store) (client-addr) (backend-id) (now) = StickyStore {
+    ss-map = hamt-set (store.ss-map) client-addr backend-id,
+    ss-ttl = store.ss-ttl,
+    ss-timestamps = hamt-set (store.ss-timestamps) client-addr now
+  }
+
+Section: URL Rewrite
+
+  RewriteRule = record {
+    rr-match : Text,
+    rr-replace : Text
+  }
+
+  RewriteEngine = record {
+    re-rules : List RewriteRule,
+    re-count : Integer
+  }
+
+  rewrite-new : RewriteEngine
+  rewrite-new = RewriteEngine { re-rules = [], re-count = 0 }
+
+  rewrite-add : RewriteEngine, Text, Text -> RewriteEngine
+  rewrite-add (engine) (match) (replace) =
+    RewriteEngine { re-rules = list-push (engine.re-rules) (RewriteRule { rr-match = match, rr-replace = replace }), re-count = engine.re-count + 1 }
+
+  rewrite-apply : RewriteEngine, Text -> Text
+  rewrite-apply (engine) (path) = rwa-loop (engine.re-rules) path 0 (engine.re-count)
+
+  rwa-loop : List RewriteRule, Text, Integer, Integer -> Text
+  rwa-loop (rules) (path) (i) (len) =
+    if i >= len then path
+    else let rule = list-at rules i
+    in if text-starts-with path (rule.rr-match) then
+      let rest = rwa-strip path (text-length (rule.rr-match))
+      in rule.rr-replace & rest
+    else rwa-loop rules path (i + 1) len
+
+  rwa-strip : Text, Integer -> Text
+  rwa-strip (s) (n) = rwas-loop s n (text-length s) ""
+
+  rwas-loop : Text, Integer, Integer, Text -> Text
+  rwas-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else rwas-loop s (i + 1) len (acc & text-from-char (text-char-at s i))
+
+Section: Reverse Proxy
+
+  ReverseProxy = record {
+    rp-pool : BackendPool,
+    rp-sticky : StickyStore,
+    rp-circuit-breakers : HamtMap CircuitBreaker,
+    rp-rewriter : RewriteEngine,
+    rp-sysdb : SysDb,
+    rp-total-requests : Integer,
+    rp-total-errors : Integer
+  }
+
+  rp-new : LbStrategy, SysDb -> ReverseProxy
+  rp-new (strategy) (sysdb) = ReverseProxy {
+    rp-pool = pool-new strategy,
+    rp-sticky = sticky-new 1800,
+    rp-circuit-breakers = hamt-empty,
+    rp-rewriter = rewrite-new,
+    rp-sysdb = sysdb,
+    rp-total-requests = 0,
+    rp-total-errors = 0
+  }
+
+  rp-add-backend : ReverseProxy, Backend -> ReverseProxy
+  rp-add-backend (rp) (be) = ReverseProxy {
+    rp-pool = pool-add (rp.rp-pool) be,
+    rp-sticky = rp.rp-sticky,
+    rp-circuit-breakers = hamt-set (rp.rp-circuit-breakers) (show (be.be-id)) cb-default,
+    rp-rewriter = rp.rp-rewriter,
+    rp-sysdb = rp.rp-sysdb,
+    rp-total-requests = rp.rp-total-requests,
+    rp-total-errors = rp.rp-total-errors
+  }
+
+  rp-add-rewrite : ReverseProxy, Text, Text -> ReverseProxy
+  rp-add-rewrite (rp) (match) (replace) = ReverseProxy {
+    rp-pool = rp.rp-pool,
+    rp-sticky = rp.rp-sticky,
+    rp-circuit-breakers = rp.rp-circuit-breakers,
+    rp-rewriter = rewrite-add (rp.rp-rewriter) match replace,
+    rp-sysdb = rp.rp-sysdb,
+    rp-total-requests = rp.rp-total-requests,
+    rp-total-errors = rp.rp-total-errors
+  }
+
+Section: Route Request
+
+  ProxyResult = record {
+    pr-backend : Maybe Backend,
+    pr-rewritten-path : Text,
+    pr-proxy : ReverseProxy,
+    pr-allowed : Boolean,
+    pr-reason : Text
+  }
+
+  rp-route : ReverseProxy, Text, Text, Integer -> ProxyResult
+  rp-route (rp) (client-addr) (path) (now) =
+    let fw-result = sysdb-check-request (rp.rp-sysdb) client-addr now 0 0 False
+    in let sysdb2 = when fw-result is (db, d) -> db
+    in let decision = when fw-result is (db, d) -> d
+    in when decision
+      is FwDeny (reason) -> ProxyResult {
+        pr-backend = None,
+        pr-rewritten-path = path,
+        pr-proxy = rp-with-sysdb rp sysdb2,
+        pr-allowed = False,
+        pr-reason = reason
+      }
+      is otherwise ->
+        let rewritten = rewrite-apply (rp.rp-rewriter) path
+        in let sticky-be = sticky-get (rp.rp-sticky) client-addr now
+        in when sticky-be
+          is Just (be-id) ->
+            let be = pool-find-by-id (rp.rp-pool) be-id
+            in ProxyResult {
+              pr-backend = be,
+              pr-rewritten-path = rewritten,
+              pr-proxy = rp-with-sysdb (rp-inc-requests rp) sysdb2,
+              pr-allowed = True,
+              pr-reason = ""
+            }
+          is None ->
+            let selected = pool-select (rp.rp-pool) client-addr
+            in let new-pool = when selected is (p, b) -> p
+            in let maybe-be = when selected is (p, b) -> b
+            in let rp2 = rp-with-pool (rp-with-sysdb (rp-inc-requests rp) sysdb2) new-pool
+            in let rp3 = when maybe-be
+              is Just (be) -> rp-with-sticky rp2 (sticky-set (rp2.rp-sticky) client-addr (be.be-id) now)
+              is None -> rp2
+            in ProxyResult {
+              pr-backend = maybe-be,
+              pr-rewritten-path = rewritten,
+              pr-proxy = rp3,
+              pr-allowed = True,
+              pr-reason = ""
+            }
+
+  pool-find-by-id : BackendPool, Integer -> Maybe Backend
+  pool-find-by-id (pool) (id) = pfbi-loop (pool.bp-backends) id 0 (pool.bp-count)
+
+  pfbi-loop : List Backend, Integer, Integer, Integer -> Maybe Backend
+  pfbi-loop (backends) (id) (i) (len) =
+    if i >= len then None
+    else let be = list-at backends i
+    in if be.be-id == id then Just be
+    else pfbi-loop backends id (i + 1) len
+
+  rp-with-sysdb : ReverseProxy, SysDb -> ReverseProxy
+  rp-with-sysdb (rp) (sysdb) = ReverseProxy { rp-pool = rp.rp-pool, rp-sticky = rp.rp-sticky, rp-circuit-breakers = rp.rp-circuit-breakers, rp-rewriter = rp.rp-rewriter, rp-sysdb = sysdb, rp-total-requests = rp.rp-total-requests, rp-total-errors = rp.rp-total-errors }
+
+  rp-with-pool : ReverseProxy, BackendPool -> ReverseProxy
+  rp-with-pool (rp) (pool) = ReverseProxy { rp-pool = pool, rp-sticky = rp.rp-sticky, rp-circuit-breakers = rp.rp-circuit-breakers, rp-rewriter = rp.rp-rewriter, rp-sysdb = rp.rp-sysdb, rp-total-requests = rp.rp-total-requests, rp-total-errors = rp.rp-total-errors }
+
+  rp-with-sticky : ReverseProxy, StickyStore -> ReverseProxy
+  rp-with-sticky (rp) (sticky) = ReverseProxy { rp-pool = rp.rp-pool, rp-sticky = sticky, rp-circuit-breakers = rp.rp-circuit-breakers, rp-rewriter = rp.rp-rewriter, rp-sysdb = rp.rp-sysdb, rp-total-requests = rp.rp-total-requests, rp-total-errors = rp.rp-total-errors }
+
+  rp-inc-requests : ReverseProxy -> ReverseProxy
+  rp-inc-requests (rp) = ReverseProxy { rp-pool = rp.rp-pool, rp-sticky = rp.rp-sticky, rp-circuit-breakers = rp.rp-circuit-breakers, rp-rewriter = rp.rp-rewriter, rp-sysdb = rp.rp-sysdb, rp-total-requests = rp.rp-total-requests + 1, rp-total-errors = rp.rp-total-errors }
+
+Section: Forward Proxy
+
+  ForwardProxy = record {
+    fp-allowed-destinations : HamtMap Integer,
+    fp-denied-destinations : HamtMap Text,
+    fp-sysdb : SysDb,
+    fp-total-requests : Integer,
+    fp-total-blocked : Integer
+  }
+
+  fp-new : SysDb -> ForwardProxy
+  fp-new (sysdb) = ForwardProxy { fp-allowed-destinations = hamt-empty, fp-denied-destinations = hamt-empty, fp-sysdb = sysdb, fp-total-requests = 0, fp-total-blocked = 0 }
+
+  fp-allow-destination : ForwardProxy, Text -> ForwardProxy
+  fp-allow-destination (fp) (dest) = ForwardProxy { fp-allowed-destinations = hamt-set (fp.fp-allowed-destinations) dest 1, fp-denied-destinations = fp.fp-denied-destinations, fp-sysdb = fp.fp-sysdb, fp-total-requests = fp.fp-total-requests, fp-total-blocked = fp.fp-total-blocked }
+
+  fp-deny-destination : ForwardProxy, Text, Text -> ForwardProxy
+  fp-deny-destination (fp) (dest) (reason) = ForwardProxy { fp-allowed-destinations = fp.fp-allowed-destinations, fp-denied-destinations = hamt-set (fp.fp-denied-destinations) dest reason, fp-sysdb = fp.fp-sysdb, fp-total-requests = fp.fp-total-requests, fp-total-blocked = fp.fp-total-blocked }
+
+  FpDecision =
+    | FpForward (Text)
+    | FpBlock (Text)
+
+  fp-check : ForwardProxy, Text, Text, Integer -> (ForwardProxy, FpDecision)
+  fp-check (fp) (client-addr) (dest) (now) =
+    let fw-result = sysdb-check-request (fp.fp-sysdb) client-addr now 0 0 False
+    in let sysdb2 = when fw-result is (db, d) -> db
+    in let decision = when fw-result is (db, d) -> d
+    in when decision
+      is FwDeny (reason) ->
+        let fp2 = ForwardProxy { fp-allowed-destinations = fp.fp-allowed-destinations, fp-denied-destinations = fp.fp-denied-destinations, fp-sysdb = sysdb2, fp-total-requests = fp.fp-total-requests + 1, fp-total-blocked = fp.fp-total-blocked + 1 }
+        in (fp2, FpBlock reason)
+      is otherwise ->
+        let denied = hamt-get (fp.fp-denied-destinations) dest
+        in when denied
+          is Just (reason) ->
+            let fp2 = ForwardProxy { fp-allowed-destinations = fp.fp-allowed-destinations, fp-denied-destinations = fp.fp-denied-destinations, fp-sysdb = sysdb2, fp-total-requests = fp.fp-total-requests + 1, fp-total-blocked = fp.fp-total-blocked + 1 }
+            in (fp2, FpBlock reason)
+          is None ->
+            let uses-allowlist = hamt-size (fp.fp-allowed-destinations) > 0
+            in if uses-allowlist then
+              let allowed = hamt-get (fp.fp-allowed-destinations) dest
+              in when allowed
+                is Just (v) ->
+                  let fp2 = ForwardProxy { fp-allowed-destinations = fp.fp-allowed-destinations, fp-denied-destinations = fp.fp-denied-destinations, fp-sysdb = sysdb2, fp-total-requests = fp.fp-total-requests + 1, fp-total-blocked = fp.fp-total-blocked }
+                  in (fp2, FpForward dest)
+                is None ->
+                  let fp2 = ForwardProxy { fp-allowed-destinations = fp.fp-allowed-destinations, fp-denied-destinations = fp.fp-denied-destinations, fp-sysdb = sysdb2, fp-total-requests = fp.fp-total-requests + 1, fp-total-blocked = fp.fp-total-blocked + 1 }
+                  in (fp2, FpBlock "destination not in allowlist")
+            else
+              let fp2 = ForwardProxy { fp-allowed-destinations = fp.fp-allowed-destinations, fp-denied-destinations = fp.fp-denied-destinations, fp-sysdb = sysdb2, fp-total-requests = fp.fp-total-requests + 1, fp-total-blocked = fp.fp-total-blocked }
+              in (fp2, FpForward dest)
+
+Section: Statistics
+
+  rp-stats : ReverseProxy -> Text
+  rp-stats (rp) =
+    "reverse-proxy: backends=" & show (rp.rp-pool.bp-count)
+    & " healthy=" & show (rp.rp-pool.bp-healthy-count)
+    & " strategy=" & lb-strategy-name (rp.rp-pool.bp-strategy)
+    & " requests=" & show (rp.rp-total-requests)
+    & " errors=" & show (rp.rp-total-errors)
+    & " rewrites=" & show (rp.rp-rewriter.re-count)
+
+  fp-stats : ForwardProxy -> Text
+  fp-stats (fp) =
+    "forward-proxy: requests=" & show (fp.fp-total-requests)
+    & " blocked=" & show (fp.fp-total-blocked)
+    & " allowed-dests=" & show (hamt-size (fp.fp-allowed-destinations))
+    & " denied-dests=" & show (hamt-size (fp.fp-denied-destinations))
+
+Page 1
