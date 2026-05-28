@@ -80,7 +80,7 @@ for ($i = 0; $i -lt $sources.Count; $i++) {
         continue
     }
     $testNames.Add($name)
-    $mode = if ($testNames.Count -eq 1) { "CDX repl`n" } else { "CDX`n" }
+    $mode = "CDX repl`n"
     [void]$inputSb.Append($mode)
     [void]$inputSb.Append($resolved)
     [void]$inputSb.Append([char]4)
@@ -136,21 +136,6 @@ while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length) {
                 [Array]::Copy($raw, $pos, $binBytes, 0, $binSize)
                 [System.IO.File]::WriteAllBytes((Join-Path $testOut "$name.cdx"), $binBytes)
                 SkipBytes $binSize
-                $mapLines = [System.Collections.Generic.List[string]]::new()
-                [void]$mapLines.Add('# Codex Symbol Map')
-                [void]$mapLines.Add('# Address         Size  Name')
-                $inMap = $false
-                while ($pos -lt $raw.Length) {
-                    $tl = NextLine; if ($null -eq $tl) { break }
-                    if ($tl.StartsWith('MAP:')) { $inMap = $true; continue }
-                    if ($tl.StartsWith('MAP-END')) { $inMap = $false; continue }
-                    if ($inMap -and $tl.StartsWith('0x')) { [void]$mapLines.Add($tl); continue }
-                    if ($tl.StartsWith('STACK:')) { break }
-                    if ($tl.StartsWith('HEAP:') -or $tl.StartsWith('WD:') -or $tl.StartsWith('PROF:')) { continue }
-                }
-                if ($mapLines.Count -gt 2) {
-                    [System.IO.File]::WriteAllLines((Join-Path $testOut "$name.map"), $mapLines, [System.Text.UTF8Encoding]::new($false))
-                }
                 $exitCode = '0'
             }
             break testloop
@@ -159,9 +144,8 @@ while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length) {
             $logLines.Add($line)
             while ($pos -lt $raw.Length) {
                 $el = NextLine; if ($null -eq $el) { break }
-                if ($el.StartsWith('STACK:')) { break }
-                if ($el.StartsWith('HEAP:') -or $el.StartsWith('WD:')) { continue }
-                $logLines.Add($el)
+                if ($el.StartsWith('CODEGEN-HALTED')) { $logLines.Add($el); break }
+                if ($el -ne '') { $logLines.Add($el) }
             }
             $exitCode = '7'
             break testloop
