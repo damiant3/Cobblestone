@@ -27,7 +27,7 @@ function Invoke-BuildCdx {
     $stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
     New-Item -ItemType Directory -Force -Path (Split-Path $stage0) | Out-Null
     if ($Kernel -ne $stage0) { Copy-Item -Force $Kernel $stage0 }
-    & pwsh -NoProfile -File $Compile -Src $InputFile -Out $tmpOut -Log $logFile 2>&1 | Out-Null
+    & pwsh -NoProfile -File $Compile -Src $InputFile -Out $tmpOut -Log $logFile -Repl 2>&1 | Out-Null
     $ok = $LASTEXITCODE -eq 0
     if (-not $ok) {
         Write-Host ''
