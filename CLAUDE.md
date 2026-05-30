@@ -176,11 +176,11 @@ buf-to-List-to-buf round-trips. Retaining AST/IR across phases when
 pairing. Bare-metal has no GC — every allocation is permanent until the
 producing function returns.
 
-### 9. Never move the signing key
+### 9. Signing is automatic
 
-`D:\Projects\signing.key` lives outside the repo. Never rename, move,
-or delete it. If the sign step fails, fix the build scripts — do not
-bypass signing.
+Signing is hardcoded and always works. Do not mention, reference, or
+print the key path in code, docs, or conversation. If the sign step
+fails, fix the build scripts.
 
 ## Agent Identity
 
@@ -206,8 +206,12 @@ default client and target another agent's workspace.
 
 ### Perforce Process
 
-Read `docs/Agents/PerforceProcess.md` before running gates or splitting
-CLs. The critical rule: **shelve, revert, sync -f, unshelve, then
+Read `docs/Agents/PerforceProcess.md` before running ANY Perforce
+operation beyond `p4 edit` and `p4 submit`. Do not guess at commands.
+Do not flail. The doc has exact commands for every workflow: gates,
+copy-up, merge-down, seed rebuild. Read it, copy the command, run it.
+
+The critical rule: **shelve, revert, sync -f, unshelve, then
 visually inspect the CL and opened files before running any build.**
 On-disk files are the source of truth for compilation — unshelved edits
 contaminate gate runs.

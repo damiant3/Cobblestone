@@ -273,11 +273,51 @@ Section: Compound Expression Parsing
    if is-ident (current-kind st) then parse-let-binding acc st
    else if is-reserved-keyword-let-name st then parse-let-binding acc (report-reserved-keyword "a let-binding name" st)
    else if is-in-keyword (current-kind st) then let st2 = skip-newlines (advance st)
-      in let body = parse-expr st2
+      in let body = parse-let-body st2
       in unwrap-expr-ok body (finish-let acc)
      else let st-err = __record-set st "bag" (bag-add (st.bag) (make-error cdx-let-no-in "Expected 'in' after let bindings" (token-to-span (current st))))
-     in let body = parse-expr st-err
+     in let body = parse-let-body st-err
      in unwrap-expr-ok body (finish-let acc)
+
+  parse-let-body : ParseState -> ParseExprResult
+  parse-let-body (st) =
+   let r = parse-expr st
+   in unwrap-expr-ok r continue-let-seq
+
+  continue-let-seq : Expr, ParseState -> ParseExprResult
+  continue-let-seq (stmt) (st) =
+   if is-field-assign-expr stmt then
+     let st1 = skip-newlines st
+     in if is-in-keyword (current-kind st1) then let st2 = skip-newlines (advance st1)
+       in let rest = parse-let-body st2
+       in unwrap-expr-ok rest (make-stmt-seq stmt)
+      else ExprOk stmt st
+   else ExprOk stmt st
+
+  is-field-assign-expr : Expr -> Boolean
+  is-field-assign-expr (e) =
+   when e
+    is FieldAssignExpr (l) (f) (r) -> True
+    is otherwise -> False
+
+  make-stmt-seq : Expr, Expr, ParseState -> ParseExprResult
+  make-stmt-seq (stmt) (rest) (st) =
+   ExprOk (deck-record (SeqExpr stmt rest)) st
+
+  parse-def-body-seq : ParseState, Integer -> ParseExprResult
+  parse-def-body-seq (st) (min-col) =
+   let r = parse-expr-col st min-col
+   in unwrap-expr-ok r (continue-def-seq min-col)
+
+  continue-def-seq : Integer, Expr, ParseState -> ParseExprResult
+  continue-def-seq (min-col) (stmt) (st) =
+   if is-field-assign-expr stmt then
+     let st1 = skip-newlines st
+     in if is-done st1 then ExprOk stmt st
+        else if (current st1).column > min-col then let rest-r = parse-def-body-seq st1 min-col
+          in unwrap-expr-ok rest-r (make-stmt-seq stmt)
+        else ExprOk stmt st
+   else ExprOk stmt st
 
   is-reserved-keyword-let-name : ParseState -> Boolean
   is-reserved-keyword-let-name (st) =
@@ -337,16 +377,93 @@ Section: Compound Expression Parsing
 
   parse-match-branch-body : Expr, LinkedList MatchArm, Integer, Integer, Pat, ParseState -> ParseExprResult
   parse-match-branch-body (scrut) (acc) (col) (ln) (p) (st) =
-   let st2 = expect-coded Arrow cdx-match-no-arrow "Expected '->' in match arm" st
-   in let st3 = skip-newlines st2
-   in let body = parse-expr-col st3 col
-   in unwrap-expr-ok body (finish-match-branch scrut acc col ln p)
+   if is-pipe (current-kind st)
+   then collect-alt-patterns scrut acc col ln (__linked-list-push [] p) st
+   else if is-when-keyword (current-kind st)
+   then let st2 = advance st
+        in let gp = extract-guard-pair (parse-expr st2)
+        in let st3 = expect-coded Arrow cdx-match-no-arrow "Expected '->' after guard" (gp.state)
+        in let st4 = skip-newlines st3
+        in let bp = extract-guard-pair (parse-expr-col st4 col)
+        in let arm = deck-record (MatchArm { pattern = p, body = bp.expr, guard = gp.expr })
+        in let st5 = skip-newlines (bp.state)
+        in parse-match-branches scrut (__linked-list-push acc arm) col ln st5
+   else let st2 = expect-coded Arrow cdx-match-no-arrow "Expected '->' in match arm" st
+        in let st3 = skip-newlines st2
+        in let body = parse-expr-col st3 col
+        in unwrap-expr-ok body (finish-match-branch scrut acc col ln p)
+
+  collect-alt-patterns : Expr, LinkedList MatchArm, Integer, Integer, LinkedList Pat, ParseState -> ParseExprResult
+  collect-alt-patterns (scrut) (acc) (col) (ln) (pats) (st) =
+   let st2 = skip-newlines (advance st)
+   in if is-arrow (current-kind st2)
+      then let tok = current st2
+           in let st3 = __record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-match-no-arrow ("Expected pattern after '|' in match arm (got '" & (token-text tok) & "')") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+           in let st4 = skip-newlines (advance st3)
+           in let body = parse-expr-col st4 col
+           in unwrap-expr-ok body (finish-alt-match scrut acc col ln pats)
+      else let pat-result = parse-pattern st2
+           in unwrap-pat-for-expr pat-result (after-alt-pattern scrut acc col ln pats)
+
+  after-alt-pattern : Expr, LinkedList MatchArm, Integer, Integer, LinkedList Pat, Pat, ParseState -> ParseExprResult
+  after-alt-pattern (scrut) (acc) (col) (ln) (pats) (p) (st) =
+   let pats2 = __linked-list-push pats p
+   in if is-pipe (current-kind st)
+      then collect-alt-patterns scrut acc col ln pats2 st
+      else if is-when-keyword (current-kind st)
+      then let st2 = advance st
+           in let gp = extract-guard-pair (parse-expr st2)
+           in let st3 = expect-coded Arrow cdx-match-no-arrow "Expected '->' after guard" (gp.state)
+           in let st4 = skip-newlines st3
+           in let bp = extract-guard-pair (parse-expr-col st4 col)
+           in let pat-list = deck-record (__linked-list-to-list pats2)
+           in let acc2 = push-alt-arms acc pat-list (bp.expr) (gp.expr) 0 (list-length pat-list)
+           in let st5 = skip-newlines (bp.state)
+           in parse-match-branches scrut acc2 col ln st5
+      else let st2 = expect-coded Arrow cdx-match-no-arrow "Expected '->' in match arm" st
+           in let st3 = skip-newlines st2
+           in let body = parse-expr-col st3 col
+           in unwrap-expr-ok body (finish-alt-match scrut acc col ln pats2)
+
+  finish-alt-match : Expr, LinkedList MatchArm, Integer, Integer, LinkedList Pat, Expr, ParseState -> ParseExprResult
+  finish-alt-match (scrut) (acc) (col) (ln) (pats) (b) (st) =
+   let pat-list = deck-record (__linked-list-to-list pats)
+   in let g = make-true-guard st
+   in let acc2 = push-alt-arms acc pat-list b g 0 (list-length pat-list)
+   in let st2 = skip-newlines st
+   in parse-match-branches scrut acc2 col ln st2
+
+  GuardPair = record {
+   expr : Expr,
+   state : ParseState
+  }
+
+  extract-guard-pair : ParseExprResult -> GuardPair
+  extract-guard-pair (r) =
+   when r
+    is ExprOk (e) (st) -> GuardPair { expr = e, state = st }
+
+  make-true-guard : ParseState -> Expr
+  make-true-guard (st) =
+   let tok = current st
+   in deck-record (LitExpr (deck-record (Token { kind = deck-record TrueKeyword, source = "True", offset = 0, length = 4, line = tok.line, column = tok.column, file-id = tok.file-id })))
+
+  push-alt-arms : LinkedList MatchArm, List Pat, Expr, Expr, Integer, Integer -> LinkedList MatchArm
+  push-alt-arms (acc) (pats) (b) (g) (i) (len) =
+   if i >= len then acc
+   else let arm = deck-record (MatchArm {
+         pattern = list-at pats i,
+         body = b,
+         guard = g
+        })
+        in push-alt-arms (__linked-list-push acc arm) pats b g (i + 1) len
 
   finish-match-branch : Expr, LinkedList MatchArm, Integer, Integer, Pat, Expr, ParseState -> ParseExprResult
   finish-match-branch (scrut) (acc) (col) (ln) (p) (b) (st) =
    let arm = deck-record (MatchArm {
     pattern = p,
-    body = b
+    body = b,
+    guard = make-true-guard st
    })
    in let st2 = skip-newlines st
    in parse-match-branches scrut (__linked-list-push acc arm) col ln st2

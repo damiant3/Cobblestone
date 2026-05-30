@@ -1,5 +1,24 @@
 # Perforce Process for Agents
 
+## Quick Reference: Copy-Up to Main
+
+```powershell
+# 1. Sync the main client
+p4 -c BigWhite_Codex_<agent>_main sync
+
+# 2. Copy from your dev stream to main
+p4 -c BigWhite_Codex_<agent>_main copy --from <YourStream>
+
+# 3. Resolve (usually no-op for clean copy-up)
+p4 -c BigWhite_Codex_<agent>_main resolve -am
+
+# 4. Submit on the main client
+p4 -c BigWhite_Codex_<agent>_main submit -d "copy-up: <description>"
+```
+
+Always use `-c <main-client>`. Your `.p4config` points at the dev
+client — a bare `p4 copy` targets the wrong workspace.
+
 ## The Golden Rule
 
 **Your workspace files must match depot state before running gates (build, test, BS3).** The compiler reads source from disk. If you have shelved-but-not-reverted edits, the on-disk files contaminate the build. The seed doesn't know about your changes — it compiles what it reads.
@@ -13,6 +32,17 @@ p4 shelve -c <CL>
 # 2. Force-sync to guarantee clean (handles stale/missing files)
 p4 sync -f
 
+# 2b. Remove strays that force-sync leaves behind. `p4 sync -f` restores
+#     TRACKED files, but it does NOT delete untracked files, nor files
+#     that were deleted on the depot yet still exist on disk. Our
+#     "gather the files and build" loose system is sensitive to these:
+#     concat-codex-self globs codex/**/*.codex and compile.ps1 pulls the
+#     apps/ quires, so an orphaned or deleted-on-repo-still-local .codex
+#     gets silently baked into the seed/build. `p4 clean` deletes strays
+#     and restores the trees to exact depot state. It respects .p4ignore
+#     (build-output/ and friends are left alone).
+p4 clean codex/... apps/...
+
 # 3. Unshelve your changes back to the workspace
 p4 unshelve -s <CL> -c <CL>
 
@@ -20,6 +50,11 @@ p4 unshelve -s <CL> -c <CL>
 codex.build/build.ps1
 codex.build/test.ps1 -Jobs 4
 ```
+
+`p4 clean` is also the fix when a build mysteriously bakes in a name or
+file that "isn't there" — a stray .codex from a reverted/abandoned branch
+or a depot-side delete that sync left on disk. When in doubt before a seed
+rebuild or copy-up verification, `p4 clean codex/... apps/...` first.
 
 ## Common Mistakes
 

@@ -62,6 +62,10 @@ Section: Expression Desugaring
      in when lhs
       is FieldExpr (rec) (ftok) -> deck-record (AFieldAssignExpr (desugar-expr-at rec (depth + 1)) (make-name (token-text field-tok)) dr (token-span field-tok))
       is otherwise -> deck-record (AFieldAssignExpr (desugar-expr-at lhs (depth + 1)) (make-name (token-text field-tok)) dr (token-span field-tok))
+    is SeqExpr (stmt) (rest) ->
+     let ds = desugar-expr-at stmt (depth + 1)
+     in let dr = desugar-expr-at rest (depth + 1)
+     in deck-record (ALetExpr [deck-record (ALetBind { name = make-name "__seq", value = ds, span = aexpr-span ds })] dr (desugared-span (aexpr-span dr)))
     is LazyExpr (inner) -> deck-record (ALazyExpr (desugar-expr-at inner (depth + 1)) synthetic-span)
     is ErrExpr (tok) -> deck-record (AErrorExpr (token-text tok) (token-span tok))
 
@@ -105,8 +109,7 @@ Section: Expression Desugaring
     is NumberLiteral -> NumLit
     is TextLiteral -> TextLit
     is CharLiteral -> CharLit
-    is TrueKeyword -> BoolLit
-    is FalseKeyword -> BoolLit
+    is TrueKeyword | FalseKeyword -> BoolLit
     is otherwise -> TextLit
 
   desugar-let-bind : LetBind -> ALetBind
@@ -123,6 +126,7 @@ Section: Expression Desugaring
    in deck-record (AMatchArm {
     pattern = dp,
     body = desugar-expr (arm.body),
+    guard = desugar-expr (arm.guard),
     span = apat-span dp
    })
 
@@ -187,10 +191,7 @@ Section: Pattern Desugaring
   apat-span : APat -> SourceSpan
   apat-span (p) =
    when p
-    is AVarPat (n) (s) -> s
-    is ALitPat (t) (k) (s) -> s
-    is ACtorPat (n) (sub) (s) -> s
-    is AWildPat (s) -> s
+    is AVarPat (n) (s) | ALitPat (t) (k) (s) | ACtorPat (n) (sub) (s) | AWildPat (s) -> s
 
   desugar-pattern : Pat -> APat
   desugar-pattern (p) = desugar-pattern-at p 0
@@ -223,7 +224,9 @@ Section: Type Desugaring
     is ListType (elem) ->
      let de = desugar-type-expr-at elem (depth + 1)
      in deck-record (AAppType (deck-record (ANamedType (make-name "List") (atype-span de))) [de] (atype-span de))
-    is LinearTypeExpr (inner) -> desugar-type-expr-at inner (depth + 1)
+    is LinearTypeExpr (inner) ->
+     let di = desugar-type-expr-at inner (depth + 1)
+     in deck-record (ALinearType di (atype-span di))
     is EffectTypeExpr (effs) (scopes) (ret) ->
      let dr = desugar-type-expr-at ret (depth + 1)
      in deck-record (AEffectType (map-list make-type-param-name effs) (map-list extract-scope-text scopes) dr (atype-span dr))
@@ -255,13 +258,7 @@ Section: Type Desugaring
   atype-span : ATypeExpr -> SourceSpan
   atype-span (t) =
    when t
-    is ANamedType (n) (s) -> s
-    is AFunType (p) (r) (s) -> s
-    is AAppType (c) (args) (s) -> s
-    is AEffectType (effs) (scopes) (r) (s) -> s
-    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> s
-    is APropEqType (l) (r) (s) -> s
-    is AConstrainedType (cn) (cv) (body) (s) -> s
+    is ANamedType (n) (s) | AFunType (p) (r) (s) | AAppType (c) (args) (s) | AEffectType (effs) (scopes) (r) (s) | ABoundedIntType (b) (lo) (hi) (mode) (s) | APropEqType (l) (r) (s) | AConstrainedType (cn) (cv) (body) (s) | ALinearType (inner) (s) -> s
 
 Section: Definition Desugaring
   desugar-def : Def -> ADef
@@ -346,16 +343,14 @@ Section: Document Desugaring
    in let raw-tds = desugar-type-defs-ll (doc.type-defs) 0 (list-length (doc.type-defs)) []
    in let raw-eds = desugar-effect-defs-ll (doc.effect-defs) 0 (list-length (doc.effect-defs)) []
    in let raw-cites = desugar-cites-ll (doc.citations) 0 (list-length (doc.citations)) []
-   in let class-tds = synth-class-type-defs (doc.class-defs) 0 (list-length (doc.class-defs)) raw-tds
+   in let class-tds = synth-class-type-defs (doc.class-defs) (doc.instance-defs) 0 (list-length (doc.class-defs)) raw-tds
    in let inst-defs = synth-instance-defs (doc.class-defs) (doc.instance-defs) 0 (list-length (doc.instance-defs)) raw-defs
-   in let dispatch-defs = synth-dispatch-defs (doc.class-defs) (doc.instance-defs) 0 (list-length (doc.class-defs)) inst-defs
-   in let all-defs = __linked-list-to-list dispatch-defs
+   in let all-defs = __linked-list-to-list inst-defs
    in let rewritten = rewrite-constrained-defs all-defs (doc.class-defs) (doc.instance-defs) 0 (list-length all-defs) []
    in let constrained-info = collect-constrained-names all-defs (doc.class-defs) (doc.instance-defs) 0 (list-length all-defs) []
-   in let final-defs = insert-dicts-at-call-sites rewritten constrained-info 0 (list-length rewritten) []
    in deck-record (AChapter {
     name = make-name chapter-name,
-    defs = deck-record final-defs,
+    defs = deck-record (insert-dicts-at-call-sites rewritten constrained-info 0 (list-length rewritten) []),
     type-defs = deck-record (__linked-list-to-list class-tds),
     effect-defs = deck-record (__linked-list-to-list raw-eds),
     class-defs = deck-record (desugar-class-defs (doc.class-defs) 0 (list-length (doc.class-defs)) []),
@@ -397,14 +392,15 @@ Section: Document Desugaring
     span = token-span (op.name)
    })
 
-  synth-class-type-defs : List ClassDef, Integer, Integer, LinkedList ATypeDef -> LinkedList ATypeDef
-  synth-class-type-defs (cds) (i) (len) (acc) =
+  synth-class-type-defs : List ClassDef, List InstanceDef, Integer, Integer, LinkedList ATypeDef -> LinkedList ATypeDef
+  synth-class-type-defs (cds) (ids) (i) (len) (acc) =
    if i >= len then acc
    else let cd = list-at cds i
    in let dict-name = make-name (token-text (cd.name) & "Dict")
    in let fields = synth-class-fields (cd.methods) 0 (list-length (cd.methods)) []
-   in let td = deck-record (ARecordTypeDef dict-name [] fields False synthetic-span)
-   in synth-class-type-defs cds (i + 1) len (__linked-list-push acc td)
+   in let tparams = if count-class-instances ids (token-text (cd.name)) 0 (list-length ids) 0 > 1 then [make-name "a"] else []
+   in let td = deck-record (ARecordTypeDef dict-name tparams fields False synthetic-span)
+   in synth-class-type-defs cds ids (i + 1) len (__linked-list-push acc td)
 
   synth-class-fields : List EffectOpDef, Integer, Integer, List ARecordFieldDef -> List ARecordFieldDef
   synth-class-fields (ops) (i) (len) (acc) =
@@ -416,16 +412,6 @@ Section: Document Desugaring
     span = synthetic-span
    })
    in synth-class-fields ops (i + 1) len (list-push acc field)
-
-  synth-dispatch-defs : List ClassDef, List InstanceDef, Integer, Integer, LinkedList ADef -> LinkedList ADef
-  synth-dispatch-defs (cds) (ids) (i) (len) (acc) =
-   if i >= len then acc
-   else let cd = list-at cds i
-   in let class-name = token-text (cd.name)
-   in let ic = count-class-instances ids class-name 0 (list-length ids) 0
-   in if ic == 1
-    then synth-dispatch-defs cds ids (i + 1) len acc
-    else synth-dispatch-defs cds ids (i + 1) len (synth-dispatch-methods (cd.methods) 0 (list-length (cd.methods)) acc)
 
   rewrite-constrained-defs : List ADef, List ClassDef, List InstanceDef, Integer, Integer, List ADef -> List ADef
   rewrite-constrained-defs (defs) (cds) (ids) (i) (len) (acc) =
@@ -448,10 +434,12 @@ Section: Document Desugaring
        in let new-param = deck-record (AParam { name = make-name dict-param-name, span = synthetic-span })
        in let new-params = list-insert-at (d.params) 0 new-param
        in let new-body = rewrite-method-calls (d.body) method-names dict-param-name
+       in let dict-type = deck-record (AAppType (deck-record (ANamedType (make-name ((class-name.value) & "Dict")) synthetic-span)) [deck-record (ANamedType type-var synthetic-span)] synthetic-span)
+       in let new-decl = deck-record (AFunType dict-type body-type synthetic-span)
        in deck-record (ADef {
         name = d.name,
         params = new-params,
-        declared-type = [body-type],
+        declared-type = [new-decl],
         body = new-body,
         chapter-slug = d.chapter-slug,
         span = d.span
@@ -480,8 +468,8 @@ Section: Document Desugaring
       is ANameExpr (n) (ns) ->
        if is-in-list (n.value) method-names 0 (list-length method-names)
         then let dict-ref = deck-record (ANameExpr (make-name dict-param) synthetic-span)
-         in let dispatched = deck-record (AApplyExpr func dict-ref s)
-         in deck-record (AApplyExpr dispatched new-arg s)
+         in let field-acc = deck-record (AFieldAccess dict-ref (make-name ((n.value) & "-impl")) s)
+         in deck-record (AApplyExpr field-acc new-arg s)
         else deck-record (AApplyExpr func new-arg s)
       is otherwise -> deck-record (AApplyExpr (rewrite-method-calls func method-names dict-param) new-arg s)
     is ABinaryExpr (l) (op) (r) (s) ->
@@ -513,9 +501,8 @@ Section: Document Desugaring
    in when ty
     is AConstrainedType (class-name) (type-var) (body-type) (sp) ->
      let ic = count-class-instances ids (class-name.value) 0 (list-length ids) 0
-     in if ic == 1
-      then let inst-type = find-single-instance-type ids (class-name.value) 0 (list-length ids)
-       in let dict = class-name.value & "-dict-" & inst-type
+     in if ic > 1
+      then let dict = "__dict-of-" & (class-name.value)
        in collect-constrained-names defs cds ids (i + 1) len (list-push acc (ConstrainedFnInfo { fn-name = d.name.value, dict-name = dict }))
       else collect-constrained-names defs cds ids (i + 1) len acc
     is otherwise -> collect-constrained-names defs cds ids (i + 1) len acc
@@ -556,7 +543,18 @@ Section: Document Desugaring
     is ALetExpr (binds) (body) (s) ->
      let new-binds = rewrite-let-binds-dict binds info 0 (list-length binds) []
      in deck-record (ALetExpr new-binds (insert-dict-refs body info) s)
+    is AActExpr (stmts) (s) ->
+     deck-record (AActExpr (insert-dict-refs-stmts stmts info 0 (list-length stmts) []) s)
     is otherwise -> expr
+
+  insert-dict-refs-stmts : List AActStmt, List ConstrainedFnInfo, Integer, Integer, List AActStmt -> List AActStmt
+  insert-dict-refs-stmts (stmts) (info) (i) (len) (acc) =
+   if i >= len then acc
+   else let st = list-at stmts i
+   in let new-st = when st
+    is AActExprStmt (e) (s) -> deck-record (AActExprStmt (insert-dict-refs e info) s)
+    is AActBindStmt (n) (e) (s) -> deck-record (AActBindStmt n (insert-dict-refs e info) s)
+   in insert-dict-refs-stmts stmts info (i + 1) len (list-push acc new-st)
 
   rewrite-let-binds-dict : List ALetBind, List ConstrainedFnInfo, Integer, Integer, List ALetBind -> List ALetBind
   rewrite-let-binds-dict (binds) (info) (i) (len) (acc) =
@@ -578,43 +576,6 @@ Section: Document Desugaring
    else if list-at xs i == target then True
    else is-in-list target xs (i + 1) len
 
-  count-fun-arity : TypeExpr -> Integer
-  count-fun-arity (t) =
-   when t
-    is FunType (param) (ret) -> 1 + count-fun-arity ret
-    is otherwise -> 0
-
-  synth-dispatch-params : Integer, Integer, List AParam -> List AParam
-  synth-dispatch-params (i) (arity) (acc) =
-   if i >= arity then acc
-   else synth-dispatch-params (i + 1) arity (list-push acc (deck-record (AParam { name = make-name ("__p" & show i), span = synthetic-span })))
-
-  synth-dispatch-apply : AExpr, Integer, Integer -> AExpr
-  synth-dispatch-apply (func) (i) (arity) =
-   if i >= arity then func
-   else synth-dispatch-apply (deck-record (AApplyExpr func (deck-record (ANameExpr (make-name ("__p" & show i)) synthetic-span)) synthetic-span)) (i + 1) arity
-
-  synth-dispatch-methods : List EffectOpDef, Integer, Integer, LinkedList ADef -> LinkedList ADef
-  synth-dispatch-methods (ops) (i) (len) (acc) =
-   if i >= len then acc
-   else let op = list-at ops i
-   in let method-name = token-text (op.name)
-   in let arity = count-fun-arity (op.type-expr)
-   in let dict-param = deck-record (AParam { name = make-name "__dict", span = synthetic-span })
-   in let val-params = synth-dispatch-params 0 arity []
-   in let all-params = list-insert-at val-params 0 dict-param
-   in let field-access = deck-record (AFieldAccess (deck-record (ANameExpr (make-name "__dict") synthetic-span)) (make-name (method-name & "-impl")) synthetic-span)
-   in let body = synth-dispatch-apply field-access 0 arity
-   in let def = deck-record (ADef {
-    name = make-name method-name,
-    params = all-params,
-    declared-type = [],
-    body = body,
-    chapter-slug = "",
-    span = synthetic-span
-   })
-   in synth-dispatch-methods ops (i + 1) len (__linked-list-push acc def)
-
   synth-instance-defs : List ClassDef, List InstanceDef, Integer, Integer, LinkedList ADef -> LinkedList ADef
   synth-instance-defs (cds) (ids) (i) (len) (acc) =
    if i >= len then acc
@@ -625,6 +586,7 @@ Section: Document Desugaring
    in let def-name = make-name (class-name & "-dict-" & type-name)
    in let fields = synth-instance-fields (id.methods) 0 (list-length (id.methods)) []
    in let body = deck-record (ARecordExpr (make-name dict-name) fields synthetic-span)
+   in let instance-count = count-class-instances ids class-name 0 (list-length ids) 0
    in let def = deck-record (ADef {
     name = def-name,
     params = [],
@@ -634,7 +596,6 @@ Section: Document Desugaring
     span = synthetic-span
    })
    in let acc2 = __linked-list-push acc def
-   in let instance-count = count-class-instances ids class-name 0 (list-length ids) 0
    in let acc3 = synth-specialized-methods (id.methods) type-name 0 (list-length (id.methods)) acc2
    in let acc4 = if instance-count == 1
     then synth-bare-methods (id.methods) 0 (list-length (id.methods)) acc3

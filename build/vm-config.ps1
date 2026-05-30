@@ -36,15 +36,6 @@ for ($i = 0; $i -lt $script:CceToUnicode.Length; $i++) {
     $script:UnicodeToCce[$u] = [byte]$i
 }
 
-function ConvertTo-Cce {
-    param([byte[]]$Bytes)
-    $out = [byte[]]::new($Bytes.Length)
-    for ($i = 0; $i -lt $Bytes.Length; $i++) {
-        $out[$i] = $script:UnicodeToCce[$Bytes[$i]]
-    }
-    return $out
-}
-
 # Resolve a code address to "function+offset" using a .map file.
 $script:MapCache = @{}
 function Resolve-Rip {

@@ -23,7 +23,9 @@ param(
     [switch]$DebugMode,
     [switch]$Profile,
     [switch]$Trace,
-    [switch]$EscapeCheck
+    [switch]$EscapeCheck,
+    [string]$Break,
+    [string]$Survey = ''
 )
 
 Set-StrictMode -Version Latest
@@ -35,6 +37,34 @@ $Stage0 = 'build-output\bare-metal\Codex.cdx'
 if (-not (Test-Path -PathType Leaf $Stage0)) {
     [Console]::Error.WriteLine("MISSING: $Stage0 - run build.ps1 first")
     exit 2
+}
+$kernelHash = (Get-FileHash -Algorithm SHA256 $Stage0).Hash.Substring(0, 16)
+[Console]::Error.WriteLine("kernel: $Stage0 [$kernelHash]")
+
+if ($Break) {
+    $mapFile = Join-Path (Split-Path $Stage0) 'Codex.map'
+    if (-not (Test-Path $mapFile)) { $mapFile = Join-Path (Split-Path $PSScriptRoot) 'seed\Codex.map' }
+    $breakAddr = -1
+    if (Test-Path $mapFile) {
+        foreach ($ml in Get-Content $mapFile) {
+            if ($ml -match "^(0x[0-9a-fA-F]+)\s+\d+\s+$([regex]::Escape($Break))$") {
+                $breakAddr = [Convert]::ToInt64($matches[1], 16) - 0x100000 + 224
+                break
+            }
+        }
+    }
+    if ($breakAddr -ge 224) {
+        $Stage0Copy = [System.IO.Path]::GetTempFileName()
+        [System.IO.File]::Copy($Stage0, $Stage0Copy, $true)
+        $cdxBytes = [System.IO.File]::ReadAllBytes($Stage0Copy)
+        $origByte = $cdxBytes[$breakAddr]
+        $cdxBytes[$breakAddr] = 0xCC
+        [System.IO.File]::WriteAllBytes($Stage0Copy, $cdxBytes)
+        $Stage0 = $Stage0Copy
+        [Console]::Error.WriteLine("BREAK: patched INT3 at $Break (0x$(($breakAddr - 224 + 0x100000).ToString('X')), orig=0x$($origByte.ToString('X2')))")
+    } else {
+        [Console]::Error.WriteLine("BREAK: function '$Break' not found in map")
+    }
 }
 
 $inputFile = $null
@@ -80,6 +110,7 @@ try {
     if ($Profile) { $mode = "$mode profile" }
     if ($Trace) { $mode = "$mode trace" }
     if ($EscapeCheck) { $mode = "$mode escape-check" }
+    if ($Survey) { $mode = "$mode survey=$Survey" }
     [void]$sb.Append("$mode`n")
 
     foreach ($entry in $ordered) {

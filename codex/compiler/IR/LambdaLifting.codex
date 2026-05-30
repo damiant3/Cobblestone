@@ -111,13 +111,7 @@ Section: Expression Walker
   lift-expr : LiftCtx, SkipListText, IRExpr -> LiftExprResult
   lift-expr (ctx) (enclosing) (e) =
    when e
-    is IrIntLit (v) (s) -> LiftExprResult { ctx = ctx, expr = e }
-    is IrNumLit (v) (s) -> LiftExprResult { ctx = ctx, expr = e }
-    is IrTextLit (v) (s) -> LiftExprResult { ctx = ctx, expr = e }
-    is IrBoolLit (v) (s) -> LiftExprResult { ctx = ctx, expr = e }
-    is IrCharLit (v) (s) -> LiftExprResult { ctx = ctx, expr = e }
-    is IrName (n) (t) (s) -> LiftExprResult { ctx = ctx, expr = e }
-    is IrError (m) (t) (s) -> LiftExprResult { ctx = ctx, expr = e }
+    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) | IrName (n) (t) (s) | IrError (m) (t) (s) -> LiftExprResult { ctx = ctx, expr = e }
     is IrLambda (ps) (b) (t) (s) -> lift-one-lambda ctx enclosing ps b t s
     is IrBinary (op) (l) (r) (t) (s) ->
      let l-res = lift-expr ctx enclosing l
@@ -192,12 +186,14 @@ Section: Expression Walker
    else let b = list-at bs i
    in let branch-enclosing = collect-pattern-names (b.pattern) enclosing
    in let body-res = lift-expr ctx branch-enclosing (b.body)
+   in let guard-res = lift-expr (body-res.ctx) branch-enclosing (b.guard)
    in let new-b = deck-record (IRBranch {
     pattern = b.pattern,
     body = body-res.expr,
+    guard = guard-res.expr,
     span = b.span
    })
-   in lift-branches (body-res.ctx) enclosing bs (i + 1) len (list-push acc new-b)
+   in lift-branches (guard-res.ctx) enclosing bs (i + 1) len (list-push acc new-b)
 
   lift-fields : LiftCtx, SkipListText, List IRFieldVal, Integer, Integer, List IRFieldVal -> LiftFieldsResult
   lift-fields (ctx) (enclosing) (fs) (i) (len) (acc) =
@@ -261,8 +257,7 @@ Section: Pattern Variables
   collect-pattern-names (p) (acc) =
    when p
     is IrVarPat (n) (t) (s) -> skip-list-text-insert acc n
-    is IrLitPat (v) (t) (s) -> acc
-    is IrWildPat (s) -> acc
+    is IrLitPat (v) (t) (s) | IrWildPat (s) -> acc
     is IrCtorPat (n) (subs) (t) (s) -> collect-pattern-name-list subs 0 (list-length subs) acc
 
   collect-pattern-name-list : List IRPat, Integer, Integer, SkipListText -> SkipListText
@@ -360,12 +355,7 @@ Section: Free Variable Collection
       then let fv-pos = bsearch-freevar-pos acc n 0 (list-length acc)
       in list-insert-at acc fv-pos (FreeVar { name = n, type-val = t })
       else acc
-    is IrIntLit (v) (s) -> acc
-    is IrNumLit (v) (s) -> acc
-    is IrTextLit (v) (s) -> acc
-    is IrBoolLit (v) (s) -> acc
-    is IrCharLit (v) (s) -> acc
-    is IrError (m) (t) (s) -> acc
+    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) | IrError (m) (t) (s) -> acc
     is IrLambda (ps) (b) (t) (s) ->
      let inner-bound = params-to-names ps 0 (list-length ps) local-bound
      in collect-free-vars b inner-bound capturable acc
@@ -430,7 +420,8 @@ Section: Free Variable Collection
    else let b = list-at bs i
    in let branch-bound = collect-pattern-names (b.pattern) local-bound
    in let acc1 = collect-free-vars (b.body) branch-bound capturable acc
-   in collect-free-vars-branches bs local-bound capturable (i + 1) len acc1
+   in let acc2 = collect-free-vars (b.guard) branch-bound capturable acc1
+   in collect-free-vars-branches bs local-bound capturable (i + 1) len acc2
 
   collect-free-vars-fields : List IRFieldVal, SkipListText, SkipListText, Integer, Integer, List FreeVar -> List FreeVar
   collect-free-vars-fields (fs) (local-bound) (capturable) (i) (len) (acc) =

@@ -73,6 +73,8 @@ Section: Type Definition Emission
     is AAppType (base) (args) (s) -> emit-type-expr base & " " & emit-type-expr-args args 0
     is AEffectType (effs) (scopes) (ret) (s) -> "[" & emit-effect-names effs 0 & "] " & emit-type-expr ret
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-type-expr b & " between " & integer-to-text lo & " and " & integer-to-text hi & emit-overflow-mode mode
+    is ALinearType (inner) (s) -> "linear " & emit-type-expr inner
+    is otherwise -> "Unknown"
 
   emit-overflow-mode : OverflowMode -> Text
   emit-overflow-mode (mode) =
@@ -106,8 +108,7 @@ Section: Type Definition Emission
   emit-type-expr-wrapped : ATypeExpr -> Text
   emit-type-expr-wrapped (te) =
    when te
-    is AFunType (p) (r) (s) -> "(" & emit-type-expr te & ")"
-    is AAppType (base) (args) (s) -> "(" & emit-type-expr te & ")"
+    is AFunType (p) (r) (s) | AAppType (base) (args) (s) -> "(" & emit-type-expr te & ")"
     is otherwise -> emit-type-expr te
 
   emit-effect-names : List Name, Integer -> Text
@@ -145,8 +146,7 @@ Section: TypeVar Normalization
     is TypeVar (id) -> tvar-map-insert m id
     is ForAllTy (id) (body) -> collect-tvars body (tvar-map-insert m id)
     is FunTy (p) (r) -> collect-tvars r (collect-tvars p m)
-    is ListTy (elem) -> collect-tvars elem m
-    is LinkedListTy (elem) -> collect-tvars elem m
+    is ListTy (elem) | LinkedListTy (elem) -> collect-tvars elem m
     is EffectfulTy (effs) (sc) (ret) -> collect-tvars ret m
     is ConstructedTy (name) (args) -> collect-tvars-list args 0 m
     is otherwise -> m
@@ -192,20 +192,19 @@ Section: CodexType Emission
     is TextTy -> "Text"
     is BooleanTy -> "Boolean"
     is CharTy -> "Char"
-    is VoidTy -> "Nothing"
-    is NothingTy -> "Nothing"
+    is VoidTy | NothingTy -> "Nothing"
     is ErrorTy -> "Unknown"
     is FunTy (p) (r) -> emit-fun-params p r
     is ListTy (elem) -> "List " & wrap-complex elem
     is LinkedListTy (elem) -> "LinkedList " & wrap-complex elem
     is TypeVar (id) -> "a" & integer-to-text id
     is ForAllTy (id) (body) -> emit-type body
-    is SumTy (name) (ty-args) (ctors) -> name.value
-    is RecordTy (name) (args) (fields) -> name.value
+    is SumTy (name) (ty-args) (ctors) | RecordTy (name) (args) (fields) -> name.value
     is ConstructedTy (name) (args) ->
      if list-length args == 0 then name.value
      else name.value & emit-type-args args 0
     is EffectfulTy (effs) (sc) (ret) -> "[" & emit-type-effect-names effs 0 & "] " & emit-type ret
+    is otherwise -> "Unknown"
 
   emit-fun-params : CodexType, CodexType -> Text
   emit-fun-params (p) (r) =
@@ -222,9 +221,7 @@ Section: CodexType Emission
   wrap-complex : CodexType -> Text
   wrap-complex (ty) =
    when ty
-    is FunTy (p) (r) -> "(" & emit-type ty & ")"
-    is ListTy (elem) -> "(" & emit-type ty & ")"
-    is LinkedListTy (elem) -> "(" & emit-type ty & ")"
+    is FunTy (p) (r) | ListTy (elem) | LinkedListTy (elem) -> "(" & emit-type ty & ")"
     is ConstructedTy (name) (args) ->
      if list-length args == 0 then name.value
      else "(" & emit-type ty & ")"
@@ -242,8 +239,8 @@ Section: CodexType Emission
    in sep & (list-at effs i).value & emit-type-effect-names effs (i + 1)
 
 Section: Definition Emission
-  emit-def : IRDef, List Text -> Text
-  emit-def (d) (ctor-names) =
+  emit-def : IRDef, List Text, List RenameEntry -> Text
+  emit-def (d) (ctor-names) (renames) =
    if skip-def d ctor-names then ""
    else let norm-ty = normalize-type-vars (d.type-val)
    in let sig = d.name & " : " & emit-type norm-ty & "\n" & d.name & emit-def-params (d.params) 0
@@ -276,8 +273,7 @@ Section: Expression Emission
   emit-expr-at (e) (ctors) (indent) (depth) =
    if depth >= max-recursion-depth then "?fuel-exhausted"
    else when e
-    is IrIntLit (n) (sp) -> integer-to-text n
-    is IrNumLit (n) (sp) -> integer-to-text n
+    is IrIntLit (n) (sp) | IrNumLit (n) (sp) -> integer-to-text n
     is IrTextLit (s) (sp) -> "\"" & escape-text s & "\""
     is IrBoolLit (b) (sp) -> if b then "True" else "False"
     is IrCharLit (n) (sp) -> "'" & escape-char n & "'"
@@ -332,15 +328,7 @@ Section: Binary Operators
   is-associative-op : IRBinaryOp -> Boolean
   is-associative-op (op) =
    when op
-    is IrAddInt -> True
-    is IrAddNum -> True
-    is IrMulInt -> True
-    is IrMulNum -> True
-    is IrAppendText -> True
-    is IrAppendList -> True
-    is IrConsList -> True
-    is IrAnd -> True
-    is IrOr -> True
+    is IrAddInt | IrAddNum | IrMulInt | IrMulNum | IrAppendText | IrAppendList | IrConsList | IrAnd | IrOr -> True
     is otherwise -> False
 
   bin-op-prec : IRBinaryOp -> Integer
@@ -348,23 +336,11 @@ Section: Binary Operators
    when op
     is IrOr -> 2
     is IrAnd -> 3
-    is IrEq -> 4
-    is IrNotEq -> 4
-    is IrLt -> 4
-    is IrGt -> 4
-    is IrLtEq -> 4
-    is IrGtEq -> 4
-    is IrAppendText -> 3
-    is IrAppendList -> 3
+    is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq -> 4
+    is IrAppendText | IrAppendList -> 3
     is IrConsList -> 5
-    is IrAddInt -> 6
-    is IrSubInt -> 6
-    is IrAddNum -> 6
-    is IrSubNum -> 6
-    is IrMulInt -> 7
-    is IrDivInt -> 7
-    is IrMulNum -> 7
-    is IrDivNum -> 7
+    is IrAddInt | IrSubInt | IrAddNum | IrSubNum -> 6
+    is IrMulInt | IrDivInt | IrMulNum | IrDivNum -> 7
     is IrPowInt -> 8
     is otherwise -> 0
 
@@ -388,8 +364,7 @@ Section: Binary Operators
     is IrGtEq -> ">="
     is IrAnd -> "&"
     is IrOr -> "|"
-    is IrAppendText -> "&"
-    is IrAppendList -> "&"
+    is IrAppendText | IrAppendList -> "&"
     is IrConsList -> "::"
 
 Section: If/Then/Else
@@ -470,16 +445,7 @@ Section: Apply
   needs-parens : IRExpr, Boolean -> Boolean
   needs-parens (e) (is-ctor) =
    when e
-    is IrApply (f) (a) (ty) (sp) -> True
-    is IrBinary (op) (l) (r) (ty) (sp) -> True
-    is IrIf (c) (t) (el) (ty) (sp) -> True
-    is IrLet (name) (ty) (val) (body) (sp) -> True
-    is IrMatch (scrut) (branches) (ty) (sp) -> True
-    is IrNegate (operand) (sp) -> True
-    is IrLambda (params) (body) (ty) (sp) -> True
-    is IrFieldAccess (rec) (field) (ty) (sp) -> True
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> True
-    is IrRecord (name) (fields) (ty) (sp) -> True
+    is IrApply (f) (a) (ty) (sp) | IrBinary (op) (l) (r) (ty) (sp) | IrIf (c) (t) (el) (ty) (sp) | IrLet (name) (ty) (val) (body) (sp) | IrMatch (scrut) (branches) (ty) (sp) | IrNegate (operand) (sp) | IrLambda (params) (body) (ty) (sp) | IrFieldAccess (rec) (field) (ty) (sp) | IrFieldStore (rec) (field) (val) (ty) (sp) | IrRecord (name) (fields) (ty) (sp) -> True
     is IrIntLit (n) (sp) -> n < 0
     is otherwise -> False
 
@@ -523,7 +489,33 @@ Section: Match
   emit-branches-acc (branches) (ctors) (indent) (i) (len) (acc) =
    if i == len then acc
    else let b = list-at branches i
-   in emit-branches-acc branches ctors indent (i + 1) len (list-push acc ("\n" & make-indent (indent + 1) & "is " & emit-pattern (b.pattern) & " -> " & emit-expr (b.body) ctors (indent + 1)))
+   in let body-text = emit-expr (b.body) ctors (indent + 1)
+   in let guard-text = emit-guard-suffix (b.guard) ctors (indent + 1)
+   in let group-end = find-group-end branches ctors indent body-text guard-text (i + 1) len
+   in let pat-text = emit-group-pats-tail branches (i + 1) group-end (emit-pattern (b.pattern))
+   in emit-branches-acc branches ctors indent group-end len (list-push acc ("\n" & make-indent (indent + 1) & "is " & pat-text & guard-text & " -> " & body-text))
+
+  emit-guard-suffix : IRExpr, List Text, Integer -> Text
+  emit-guard-suffix (guard) (ctors) (indent) =
+   when guard
+    is IrBoolLit (v) (sp) -> if v then "" else " when False"
+    is otherwise -> " when " & emit-expr guard ctors indent
+
+  find-group-end : List IRBranch, List Text, Integer, Text, Text, Integer, Integer -> Integer
+  find-group-end (branches) (ctors) (indent) (body-text) (guard-text) (i) (len) =
+   if i >= len then i
+   else let b = list-at branches i
+   in let next-body = emit-expr (b.body) ctors (indent + 1)
+   in let next-guard = emit-guard-suffix (b.guard) ctors (indent + 1)
+   in if next-body == body-text & next-guard == guard-text
+      then find-group-end branches ctors indent body-text guard-text (i + 1) len
+      else i
+
+  emit-group-pats-tail : List IRBranch, Integer, Integer, Text -> Text
+  emit-group-pats-tail (branches) (i) (stop) (acc) =
+   if i >= stop then acc
+   else let b = list-at branches i
+   in emit-group-pats-tail branches (i + 1) stop (acc & " | " & emit-pattern (b.pattern))
 
   emit-pattern : IRPat -> Text
   emit-pattern (p) =
@@ -678,21 +670,21 @@ Section: Utilities
    else char-to-text (code-to-char c)
 
 Section: Chapter Emission
-  emit-codex-text-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
-  emit-codex-text-chapter (m) (meta) (type-defs) =
+  emit-codex-text-chapter : IRChapter, IRTextMeta, List ATypeDef, List RenameEntry -> Text
+  emit-codex-text-chapter (m) (meta) (type-defs) (renames) =
    let header = if meta.chapter-title == "" then ""
       else "Chapter: " & meta.chapter-title & "\n\n"
         & if meta.prose == "" then "" else " " & meta.prose & "\n\n"
-   in header & emit-type-defs type-defs 0 & emit-all-defs (m.defs) (meta.ctor-names) 0
+   in header & emit-type-defs type-defs 0 & emit-all-defs (m.defs) (meta.ctor-names) 0 renames
 
-  emit-all-defs : List IRDef, List Text, Integer -> Text
-  emit-all-defs (defs) (ctor-names) (i) =
-   text-concat-list (emit-all-defs-acc defs ctor-names 0 (list-length defs) [])
+  emit-all-defs : List IRDef, List Text, Integer, List RenameEntry -> Text
+  emit-all-defs (defs) (ctor-names) (i) (renames) =
+   text-concat-list (emit-all-defs-acc defs ctor-names 0 (list-length defs) [] renames)
 
-  emit-all-defs-acc : List IRDef, List Text, Integer, Integer, List Text -> List Text
-  emit-all-defs-acc (defs) (ctor-names) (i) (len) (acc) =
+  emit-all-defs-acc : List IRDef, List Text, Integer, Integer, List Text, List RenameEntry -> List Text
+  emit-all-defs-acc (defs) (ctor-names) (i) (len) (acc) (renames) =
    if i == len then acc
-   else emit-all-defs-acc defs ctor-names (i + 1) len (list-push acc (emit-def (list-at defs i) ctor-names & "\n"))
+   else emit-all-defs-acc defs ctor-names (i + 1) len (list-push acc (emit-def (list-at defs i) ctor-names renames & "\n")) renames
 
 Page 1
 

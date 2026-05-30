@@ -2,6 +2,7 @@ Chapter: IR Text Emitter
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Codex chapter OffsetTable (offset-table-empty, offset-table-set, offset-table-get)
 
  Serializes IRChapter + ATypeDef list as S-expression text. The output
  is the wire format between the compiler and emit-plug programs (e.g.
@@ -139,6 +140,7 @@ Section: CodexType Emission
     is RecordTy (name) (args) (fields) -> "(record-ty " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & ") (record-fields" & ir-emit-record-fields fields 0 & "))"
     is ConstructedTy (name) (args) -> "(ctd " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & "))"
     is EffectfulTy (effs) (sc) (ret) -> "(effectful (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted sc 0 []) & ") " & ir-emit-type ret & ")"
+    is otherwise -> "error"
 
   ir-emit-type-list : List CodexType, Integer -> Text
   ir-emit-type-list (xs) (i) =
@@ -182,6 +184,8 @@ Section: ATypeExpr Emission
     is AAppType (base) (args) (s) -> "(a-app " & ir-emit-atype-expr base & " (args" & ir-emit-atype-expr-list args 0 & "))"
     is AEffectType (effs) (scopes) (r) (s) -> "(a-eff (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted scopes 0 []) & ") " & ir-emit-atype-expr r & ")"
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> "(a-bounded " & ir-emit-atype-expr b & " " & safe-int-text lo & " " & safe-int-text hi & " " & ov-mode-atom mode & ")"
+    is ALinearType (inner) (s) -> "(a-linear " & ir-emit-atype-expr inner & ")"
+    is otherwise -> "(a-unknown)"
 
   ir-emit-atype-expr-list : List ATypeExpr, Integer -> Text
   ir-emit-atype-expr-list (xs) (i) =
@@ -225,6 +229,9 @@ Section: Type Parameter Inference
      ir-collect-atexpr-tparams r acc
     is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
      ir-collect-atexpr-tparams b acc
+    is ALinearType (inner) (s) ->
+     ir-collect-atexpr-tparams inner acc
+    is otherwise -> acc
 
   ir-collect-atexpr-list-tparams : List ATypeExpr, Integer, Integer, List Text -> List Text
   ir-collect-atexpr-list-tparams (xs) (i) (len) (acc) =
@@ -369,7 +376,7 @@ Section: IRExpr Emission
   ir-emit-branches-acc (xs) (i) (len) (acc) =
    if i == len then acc
    else let b = list-at xs i
-   in ir-emit-branches-acc xs (i + 1) len (list-push acc (" (branch " & ir-emit-pat (b.pattern) & " " & ir-emit-expr (b.body) & ")"))
+   in ir-emit-branches-acc xs (i + 1) len (list-push acc (" (branch " & ir-emit-pat (b.pattern) & " " & ir-emit-expr (b.body) & " " & ir-emit-expr (b.guard) & ")"))
 
   ir-emit-act-stmts : List IRActStmt, Integer -> Text
   ir-emit-act-stmts (xs) (i) =
@@ -405,6 +412,149 @@ Section: IRExpr Emission
    if i == len then acc
    else let f = list-at xs i
    in ir-emit-field-vals-acc xs (i + 1) len (list-push acc (" (field-val " & ir-quote (f.name) & " " & ir-emit-expr (f.value) & ")"))
+
+Section: IR Dead Code Elimination
+
+ Reachability pruning of the chapter's def list. A def is kept when it
+ is reachable, through referenced names, from the entry point. Operates
+ on the structured IR — no text, no Unicode. The collected name set is
+ every atom the text emitter would quote, so the kept set matches a
+ substring reachability over the emitted IR text. Type defs, ctors, and
+ effect-op names live in the chapter header and are untouched.
+
+  DceWork = record {
+   visited : List Boolean,
+   frontier : List Integer
+  }
+
+  ir-dce-append-list : List Text, Integer, List Text -> List Text
+  ir-dce-append-list (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else ir-dce-append-list xs (i + 1) (list-push acc (list-at xs i))
+
+  ir-dce-collect-expr : IRExpr, List Text -> List Text
+  ir-dce-collect-expr (e) (acc) =
+   when e
+    is IrIntLit (n) (sp) | IrNumLit (n) (sp) -> acc
+    is IrTextLit (s) (sp) -> list-push acc s
+    is IrBoolLit (b) (sp) | IrCharLit (c) (sp) -> acc
+    is IrName (n) (ty) (sp) -> list-push acc n
+    is IrBinary (op) (l) (r) (ty) (sp) -> ir-dce-collect-expr r (ir-dce-collect-expr l acc)
+    is IrNegate (x) (sp) -> ir-dce-collect-expr x acc
+    is IrIf (c) (t) (el) (ty) (sp) -> ir-dce-collect-expr el (ir-dce-collect-expr t (ir-dce-collect-expr c acc))
+    is IrLet (n) (ty) (v) (b) (sp) -> ir-dce-collect-expr b (ir-dce-collect-expr v (list-push acc n))
+    is IrApply (f) (a) (ty) (sp) -> ir-dce-collect-expr a (ir-dce-collect-expr f acc)
+    is IrLambda (ps) (body) (ty) (sp) -> ir-dce-collect-expr body (ir-dce-collect-params ps 0 acc)
+    is IrList (es) (ty) (sp) -> ir-dce-collect-expr-list es 0 acc
+    is IrMatch (sc) (bs) (ty) (sp) -> ir-dce-collect-branches bs 0 (ir-dce-collect-expr sc acc)
+    is IrAct (ss) (ty) (sp) -> ir-dce-collect-stmts ss 0 acc
+    is IrHandle (eff) (h) (cs) (ty) (sp) -> ir-dce-collect-clauses cs 0 (ir-dce-collect-expr h (list-push acc eff))
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> ir-dce-collect-expr body (ir-dce-append-list scopes 0 (ir-dce-append-list effs 0 acc))
+    is IrRecord (n) (fs) (ty) (sp) -> ir-dce-collect-fields fs 0 (list-push acc n)
+    is IrFieldAccess (r) (f) (ty) (sp) -> ir-dce-collect-expr r (list-push acc f)
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> ir-dce-collect-expr v (ir-dce-collect-expr r (list-push acc f))
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> ir-dce-collect-stmts fail 0 (ir-dce-collect-stmts fb 0 (ir-dce-collect-stmts body 0 acc))
+    is IrFork (b) (ty) (sp) -> ir-dce-collect-expr b acc
+    is IrAwait (t) (ty) (sp) -> ir-dce-collect-expr t acc
+    is IrError (m) (ty) (sp) -> list-push acc m
+
+  ir-dce-collect-expr-list : List IRExpr, Integer, List Text -> List Text
+  ir-dce-collect-expr-list (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else ir-dce-collect-expr-list xs (i + 1) (ir-dce-collect-expr (list-at xs i) acc)
+
+  ir-dce-collect-params : List IRParam, Integer, List Text -> List Text
+  ir-dce-collect-params (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else ir-dce-collect-params xs (i + 1) (list-push acc ((list-at xs i).name))
+
+  ir-dce-collect-branches : List IRBranch, Integer, List Text -> List Text
+  ir-dce-collect-branches (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else let b = list-at xs i
+   in ir-dce-collect-branches xs (i + 1) (ir-dce-collect-expr (b.guard) (ir-dce-collect-expr (b.body) (ir-dce-collect-pat (b.pattern) acc)))
+
+  ir-dce-collect-pat : IRPat, List Text -> List Text
+  ir-dce-collect-pat (p) (acc) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> list-push acc name
+    is IrLitPat (text) (ty) (sp) -> list-push acc text
+    is IrCtorPat (name) (subs) (ty) (sp) -> ir-dce-collect-pat-list subs 0 (list-push acc name)
+    is IrWildPat (sp) -> acc
+
+  ir-dce-collect-pat-list : List IRPat, Integer, List Text -> List Text
+  ir-dce-collect-pat-list (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else ir-dce-collect-pat-list xs (i + 1) (ir-dce-collect-pat (list-at xs i) acc)
+
+  ir-dce-collect-stmts : List IRActStmt, Integer, List Text -> List Text
+  ir-dce-collect-stmts (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else ir-dce-collect-stmts xs (i + 1) (ir-dce-collect-stmt (list-at xs i) acc)
+
+  ir-dce-collect-stmt : IRActStmt, List Text -> List Text
+  ir-dce-collect-stmt (s) (acc) =
+   when s
+    is IrDoBind (n) (ty) (v) (sp) -> ir-dce-collect-expr v (list-push acc n)
+    is IrDoExec (e) (sp) -> ir-dce-collect-expr e acc
+
+  ir-dce-collect-clauses : List IRHandleClause, Integer, List Text -> List Text
+  ir-dce-collect-clauses (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else let c = list-at xs i
+   in ir-dce-collect-clauses xs (i + 1) (ir-dce-collect-expr (c.body) (ir-dce-append-list (c.params) 0 (list-push (list-push acc (c.op-name)) (c.resume-name))))
+
+  ir-dce-collect-fields : List IRFieldVal, Integer, List Text -> List Text
+  ir-dce-collect-fields (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else let f = list-at xs i
+   in ir-dce-collect-fields xs (i + 1) (ir-dce-collect-expr (f.value) (list-push acc (f.name)))
+
+  ir-dce-build-index : List IRDef, Integer, Integer, OffsetTable -> OffsetTable
+  ir-dce-build-index (defs) (i) (len) (tbl) =
+   if i == len then tbl
+   else ir-dce-build-index defs (i + 1) len (offset-table-set tbl ((list-at defs i).name) i)
+
+  ir-dce-falses : Integer, Integer, List Boolean -> List Boolean
+  ir-dce-falses (n) (i) (acc) =
+   if i >= n then acc
+   else ir-dce-falses n (i + 1) (list-push acc False)
+
+  ir-dce-add-name : Text, OffsetTable, DceWork -> DceWork
+  ir-dce-add-name (nm) (tbl) (w) =
+   let j = offset-table-get tbl nm
+   in if j < 0 then w
+      else if list-at (w.visited) j then w
+      else DceWork { visited = list-set-at (w.visited) j True, frontier = list-push (w.frontier) j }
+
+  ir-dce-add-names : List Text, Integer, Integer, OffsetTable, DceWork -> DceWork
+  ir-dce-add-names (names) (i) (len) (tbl) (w) =
+   if i == len then w
+   else ir-dce-add-names names (i + 1) len tbl (ir-dce-add-name (list-at names i) tbl w)
+
+  ir-dce-flood : List IRDef, OffsetTable, Integer, DceWork -> DceWork
+  ir-dce-flood (defs) (tbl) (i) (w) =
+   if i >= list-length (w.frontier) then w
+   else let cur = list-at (w.frontier) i
+   in let names = ir-dce-collect-expr ((list-at defs cur).body) []
+   in ir-dce-flood defs tbl (i + 1) (ir-dce-add-names names 0 (list-length names) tbl w)
+
+  ir-dce-filter : List IRDef, List Boolean, Integer, Integer, List IRDef -> List IRDef
+  ir-dce-filter (defs) (visited) (i) (len) (acc) =
+   if i == len then acc
+   else if list-at visited i then ir-dce-filter defs visited (i + 1) len (list-push acc (list-at defs i))
+   else ir-dce-filter defs visited (i + 1) len acc
+
+  ir-prune-unreachable : IRChapter, Text -> IRChapter
+  ir-prune-unreachable (m) (root) =
+   let defs = m.defs
+   in let n = list-length defs
+   in let tbl = ir-dce-build-index defs 0 n offset-table-empty
+   in let root-idx = offset-table-get tbl root
+   in if root-idx < 0 then m
+      else let visited0 = list-set-at (ir-dce-falses n 0 (__list-with-capacity n)) root-idx True
+      in let w = ir-dce-flood defs tbl 0 (DceWork { visited = visited0, frontier = [root-idx] })
+      in __record-set m "defs" (ir-dce-filter defs (w.visited) 0 n [])
 
 Section: IRDef Emission
 
