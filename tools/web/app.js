@@ -34,7 +34,10 @@ function filterGames(category) {
 
 setInterval(function() {
   if (!document.getElementById('tab-status').classList.contains('active')) return;
-  location.reload();
+  fetch('/api/status').then(function(r) { return r.text(); }).then(function(html) {
+    var panel = document.getElementById('tab-status');
+    if (panel) panel.innerHTML = html;
+  }).catch(function() {});
 }, 30000);
 
 // ── Audio system ──

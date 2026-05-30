@@ -24,9 +24,8 @@ pipeline. Each phase must pass before the next begins.
    receive the compiled CDX binary. This produces the SUT (System Under
    Test).
 
-4. **Sign**: If `D:\Projects\signing.key` exists, compile and run an
-   inline Ed25519 signing program to embed a signature in the CDX
-   header (bytes 40–135).
+4. **Sign**: Compile and run an inline Ed25519 signing program to
+   embed a signature in the CDX header (bytes 40-135).
 
 5. **Canary**: Compile `codex.test/hello.codex` with the SUT and verify
    runtime output matches `hello.expected`. This confirms the SUT can
@@ -179,9 +178,8 @@ plugs in `codex/plugs/`. See `docs/Designs/Active/Compiler/EmitterExodus.md`.
 
 ## Seed Management
 
-The canonical seed is `seed/Codex.cdx` — the self-sustaining CDX
-binary, bootable via codex-vm or QEMU multiboot. `seed/Codex.img` is
-a UEFI-bootable GPT disk image.
+The canonical seed is `seed/Codex.cdx` — the signed, self-sustaining
+CDX binary, bootable via codex-vm or QEMU multiboot.
 
 ### Seed Rebuild Procedure
 
@@ -192,19 +190,42 @@ a UEFI-bootable GPT disk image.
 
 **Steps:**
 1. Run the full build: `build/build.ps1`. All phases must PASS.
-2. Install new seed: `Copy-Item build-output\bare-metal\Codex.cdx seed\Codex.cdx -Force`
-3. Build bootable image: `build/build-boot-img.ps1`
-4. Self-verify: `build/test-self-verify.ps1`. Must print
+2. Install new seed: `Copy-Item build/output/Sut.cdx seed\Codex.cdx -Force`
+   Use `build/output/Sut.cdx` — the signed SUT. Do NOT use
+   `build-output/bare-metal/Codex.cdx` (unsigned boot kernel).
+3. Self-verify: `build/test-self-verify.ps1`. Must print
    "THE SEED VERIFIES ITSELF".
-5. Capture digests: `Get-FileHash -Algorithm SHA256 seed\Codex.cdx`
-6. Submit to Perforce.
+4. Capture digest: `Get-FileHash -Algorithm SHA256 seed\Codex.cdx`
+5. Submit to Perforce.
 
 **Rules:**
 - Never skip the full build. Never skip self-verify.
-- One seed per CL. CDX is primary; ELF is derived.
-- IMG is the distribution artifact.
-- Signing is automatic if `D:\Projects\signing.key` exists.
+- One seed per CL. CDX is primary.
+- The bootable image (`seed/Codex.img`) is a separate distribution
+  artifact built by `build/build-boot-img.ps1`. It is NOT part of
+  the seed rebuild.
+- Signing is automatic.
 - Never `git add -A`. Never force-push.
+
+**Codegen changes need a one-pass fixed point.** Step 2's "install
+`Sut.cdx`" is correct ONLY when the build prints
+`(SUT === stage1 — hard fixed point in one pass)`. A change to code
+generation (e.g. `emit-prologue`) built from a pre-change seed is
+**two-pass**: the stage0 seed lacks the new codegen, so its `Sut` carries
+the change only in its emit logic, not yet in its own function bodies —
+`Sut != stage1`, and the real fixed point is `stage1` (`NewSeed.cdx`, which
+is unsigned). Installing `Sut.cdx` there leaves a seed that is one pass
+short: it compiles correctly but is not byte-identical to itself
+(`seed != seed-compiles-seed`), so it must not be trusted or copied up. The
+fix is simply to **rebuild again** from that once-built seed — the second
+build converges one-pass with the change baked into the seed's own
+prologues, and `Sut.cdx` is then the signed fixed point. Always rebuild
+until the build reports one pass before submitting a codegen seed.
+
+(The CDX fixed-point check compares content ignoring the signature bytes,
+so a signed `Sut` and the unsigned `stage1` still register as one pass when
+their code is identical. On copy-up, the gate is `Sut === seed` rebuilt on
+the *target* workspace — see `docs/Agents/PerforceProcess.md`.)
 
 ## Status Server
 
@@ -361,6 +382,7 @@ SIZE:2176384
 | `-DebugMode` | Phase markers (`DBG:frontend`, `DBG:emit`) |
 | `-Poison` | 0xCD fill in `__alloc` (catches uninitialized fields) |
 | `-Repl` | REPL loop (for batch compilation) |
+| `-Survey "f:n,..."` | Override per-phase survey multipliers at runtime (no seed rebuild). Fields: `lex-mul`, `parse-mul`, `desugar-mul`, `scope-mul`, `check-mul`, `lower-mul`, `resolve-mul`, `lift-mul`, `headroom`. Appends `survey=...` to the mode line; defaults are byte-identical to `BuildSettings`. Raising a multiplier reserves more deck (safe); lowering too far under-reserves and currently faults rather than bailing cleanly. |
 
 ### GDB (Legacy Fallback)
 
@@ -472,3 +494,33 @@ build/test.ps1 -CodexCdx build/output/poison-seed.cdx -Jobs 4
 # The crash CR2 will be 0xCDCDCDCDCDCDCDCD — look up RIP in the
 # symbol map to find the function that dereferenced the bad pointer.
 ```
+
+## Release-to-Public Gate
+
+These steps run ONLY when publishing the seed to the public mirrors
+(GitHub, GitLab) — never on routine seed rebuilds or copy-to-main. The
+day-to-day gates (text + CDX fixed point, sample battery) already prove
+correctness; the items here are public-facing polish and are not usually
+needed internally.
+
+1. **Poison build passes** (above) — the seed has no uninitialized-field
+   dependencies.
+2. **Refresh `seed/Codex.map`.** This is the one artifact that silently
+   drifts: the seed is built `-Repl`, and `-Repl` mode does not emit the
+   text `MAP:` block that `compile.ps1` captures into `<out>.map`, so
+   neither the seed rebuild nor copy-to-main ever refreshes it.
+   Regenerate by compiling the compiler source NON-repl with the
+   published seed and copying the emitted map:
+
+   ```powershell
+   Copy-Item -Force seed/Codex.cdx build-output/bare-metal/Codex.cdx
+   build/concat-codex-self.ps1 -CodexDir codex/compiler -OutFile build/output/Codex.codex
+   build/compile.ps1 -Src build/output/Codex.codex -Out build/output/SutMap.cdx -Log build/output/map.log
+   Copy-Item -Force build/output/SutMap.map seed/Codex.map
+   ```
+
+   The non-repl binary differs from the `-Repl` seed only in unnamed
+   padding; every named function offset is byte-identical (cross-check
+   against the seed's embedded MAP1 if unsure), so the text map is exact.
+   The embedded MAP1 in each CDX is authoritative for crash reports
+   regardless — the text map only feeds `-Break` and `resolve-rip.ps1`.

@@ -54,5 +54,32 @@ Section: Integer Bounds
 
   int-ty-default : CodexType = IntegerTy i64-min i64-max OvError
 
+Section: Pointer Classification
+
+ Whether a runtime value of this type is a heap pointer (True) or an
+ inline scalar (False). The foundation for precise pointer-maps: the
+ escape check, dead-deck reclamation, and a copying compactor all need
+ to know which record/ctor slots hold pointers vs raw values.
+
+ Scalars are stored inline: Integer (1/2/4/8 bytes by bounds), Boolean
+ (1), Char and Number (8, but not pointers). Everything heap-allocated
+ is an 8-byte pointer. Nullary ctors are heap-boxed too (emit-nullary-ctor
+ allocates 8 bytes and stores the tag), so ALL SumTy values are pointers.
+ EffectfulTy and ForAllTy classify by their underlying value type.
+
+ TypeVar is the one undecidable case: a polymorphic field's runtime
+ representation depends on its instantiation. Classified conservatively
+ as a pointer here; a precise map for a generic record requires a
+ per-instantiation (monomorphized) map, which is future work.
+
+  is-pointer-type : CodexType -> Boolean
+  is-pointer-type (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) | NumberTy | BooleanTy | CharTy | VoidTy | NothingTy | ErrorTy | ProofTy | PropEqTy (a) (b) -> False
+    is TextTy | ListTy (e) | LinkedListTy (e) | RecordTy (n) (a) (f) | SumTy (n) (a) (c) | ConstructedTy (n) (a) | FunTy (p) (r) -> True
+    is EffectfulTy (e) (s) (r) -> is-pointer-type r
+    is ForAllTy (i) (b) -> is-pointer-type b
+    is TypeVar (i) -> True
+
 Page 1
 

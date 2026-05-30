@@ -12,8 +12,25 @@ Section: Type Parsing
   parse-type (st) =
    if parse-fuel-exhausted st then TypeOk (deck-record (NamedType (current st))) (emit-parse-fuel-error st "parse-type")
    else let st0 = consume-parse-fuel st
-   in let atom-r = parse-type-atom st0
-   in unwrap-type-ok atom-r parse-type-with-args
+   in when (current-kind st0)
+    is LinearKeyword ->
+     let atom-r = parse-type-atom (advance st0)
+     in unwrap-type-ok atom-r parse-linear-after
+    is MutableKeyword ->
+     let atom-r = parse-type-atom (advance st0)
+     in unwrap-type-ok atom-r parse-type-with-args
+    is otherwise ->
+     let atom-r = parse-type-atom st0
+     in unwrap-type-ok atom-r parse-type-with-args
+
+  parse-linear-after : TypeExpr, ParseState -> ParseTypeResult
+  parse-linear-after (atom) (st) =
+   let applied-r = parse-type-args atom st
+   in unwrap-type-ok applied-r wrap-linear-continue
+
+  wrap-linear-continue : TypeExpr, ParseState -> ParseTypeResult
+  wrap-linear-continue (applied) (st) =
+   parse-type-bound-or-continue (deck-record (LinearTypeExpr applied)) st
 
   parse-type-with-args : TypeExpr, ParseState -> ParseTypeResult
   parse-type-with-args (atom) (st) =
@@ -320,10 +337,7 @@ Section: Definition Parsing
   is-claim-or-def-start : TokenKind -> Boolean
   is-claim-or-def-start (k) =
    when k
-    is Identifier -> True
-    is TypeIdentifier -> True
-    is ClaimKeyword -> True
-    is ProofKeyword -> True
+    is Identifier | TypeIdentifier | ClaimKeyword | ProofKeyword -> True
     is otherwise -> False
 
   try-parse-def : ParseState -> ParseDefResult
@@ -344,7 +358,7 @@ Section: Definition Parsing
       })])
       in let st2 = advance st
       in let st3 = skip-newlines st2
-      in let body-result = parse-expr-col st3 (first-name.column)
+      in let body-result = parse-def-body-seq st3 (first-name.column)
       in unwrap-def-body body-result ann first-name []
      else
       let name-tok = deck-record (Token {
@@ -391,7 +405,7 @@ Section: Definition Parsing
    if is-equals (current-kind st) then
     let st2 = advance st
     in let st3 = skip-newlines st2
-    in let body-result = parse-expr-col st3 (name-tok.column)
+    in let body-result = parse-def-body-seq st3 (name-tok.column)
     in unwrap-def-body body-result ann name-tok params
    else let tok = current st
     in let err-st = expect Equals st
@@ -527,8 +541,7 @@ Section: Type Definition Parsing
    else let k = (list-at tokens i).kind
    in if is-pipe k then True
       else when k
-      is Newline -> False
-      is EndOfFile -> False
+      is Newline | EndOfFile -> False
       is otherwise -> looks-like-variant-scan tokens (i + 1) len
 
   parse-variant-type : Token, List Token, ParseState -> ParseTypeDefResult
@@ -591,8 +604,7 @@ Section: Document Parsing
   collect-cite-title (st) (acc) =
    if is-done st then CiteTitleResult { title = deck-copy-text acc, state = st }
     else when current-kind st
-     is Newline -> CiteTitleResult { title = deck-copy-text acc, state = st }
-     is LeftParen -> CiteTitleResult { title = deck-copy-text acc, state = st }
+     is Newline | LeftParen -> CiteTitleResult { title = deck-copy-text acc, state = st }
      is otherwise -> let tok = current st
       in collect-cite-title (advance st) (join-title-parts acc (token-text tok))
 
@@ -927,13 +939,31 @@ Section: Document Parsing
    else if is-instance-keyword (current-kind st) then let st1 = advance st
     in let class-tok = current st1
     in let st2 = advance st1
-    in let type-tok = current st2
-    in let st3 = advance st2
-    in let st4 = if is-where-keyword (current-kind st3) then skip-newlines (advance st3) else st3
+    in let it = parse-instance-type-head st2
+    in let st4 = if is-where-keyword (current-kind (it.state)) then skip-newlines (advance (it.state)) else (it.state)
     in let methods = parse-instance-methods st4 []
-    in let id = deck-record (InstanceDef { class-name = class-tok, type-name = type-tok, methods = methods.defs })
+    in let id = deck-record (InstanceDef { class-name = class-tok, type-name = it.head, methods = methods.defs })
     in scan-class-instance-defs (skip-newlines (methods.state)) cacc (__linked-list-push iacc id)
    else scan-class-instance-defs (advance st) cacc iacc
+
+  InstanceTypeResult = record { head : Token, state : ParseState }
+
+  parse-instance-type-head : ParseState -> InstanceTypeResult
+  parse-instance-type-head (st) =
+   if is-left-paren (current-kind st)
+    then let st1 = advance st
+     in InstanceTypeResult { head = current st1, state = skip-to-close-paren (advance st1) 1 }
+   else InstanceTypeResult { head = current st, state = advance st }
+
+  skip-to-close-paren : ParseState, Integer -> ParseState
+  skip-to-close-paren (st) (depth) =
+   if depth <= 0 then st
+   else when (current-kind st)
+    is EndOfFile -> st
+    is otherwise ->
+     if is-left-paren (current-kind st) then skip-to-close-paren (advance st) (depth + 1)
+     else if is-right-paren (current-kind st) then skip-to-close-paren (advance st) (depth - 1)
+     else skip-to-close-paren (advance st) depth
 
   InstanceMethodsResult = record { defs : List InstanceMethodDef, state : ParseState }
 
@@ -1018,13 +1048,7 @@ Section: Prose-Notation Consistency
   check-prose-block-against-defs (block) (defs) (type-defs) (acc) =
    when (block.template)
     is PtFunctionTemplate (name) -> check-prose-function name defs acc
-    is PtRecordTemplate (name) -> acc
-    is PtVariantTemplate (name) -> acc
-    is PtNoTemplate -> acc
-    is PtConstraintTemplate -> acc
-    is PtProofTemplate -> acc
-    is PtProcedureTemplate -> acc
-    is PtQuantifiedTemplate -> acc
+    is PtRecordTemplate (name) | PtVariantTemplate (name) | PtNoTemplate | PtConstraintTemplate | PtProofTemplate | PtProcedureTemplate | PtQuantifiedTemplate -> acc
 
   check-prose-consistency : Document -> List Diagnostic
   check-prose-consistency (doc) =
@@ -1078,7 +1102,7 @@ Section: Banned Word Enforcement
   check-banned-in-blocks (blocks) (i) (len) (in-we-say) (acc) =
    if i >= len then acc
    else let block = list-at blocks i
-   in let now-in-we-say = when (block.transition) is PtWeSay -> True is PtThisIsWritten -> True is PtNone -> in-we-say
+   in let now-in-we-say = when (block.transition) is PtWeSay | PtThisIsWritten -> True is PtNone -> in-we-say
    in if now-in-we-say then let diags = check-banned-words-in-line (block.text) banned-words 0 (list-length banned-words) acc
       in check-banned-in-blocks blocks (i + 1) len now-in-we-say diags
       else check-banned-in-blocks blocks (i + 1) len now-in-we-say acc
@@ -1254,9 +1278,7 @@ Section: Header Scanning (streaming)
    if is-done st then st
    else let tok = current st
    in when tok.kind
-     is Newline -> skip-body-tokens (advance st) name-col
-     is Indent -> skip-body-tokens (advance st) name-col
-     is Dedent -> skip-body-tokens (advance st) name-col
+     is Newline | Indent | Dedent -> skip-body-tokens (advance st) name-col
      is otherwise -> if tok.column <= name-col then st
       else skip-body-tokens (advance st) name-col
 

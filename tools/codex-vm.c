@@ -2968,7 +2968,7 @@ static size_t output_len = 0;
 static size_t output_cap = 0;
 
 static void output_buf_init(void) {
-    output_cap = 4 * 1024 * 1024;  /* 4MB */
+    output_cap = 16 * 1024 * 1024;  /* 16MB */
     output_buf = (unsigned char *)malloc(output_cap);
     output_len = 0;
 }

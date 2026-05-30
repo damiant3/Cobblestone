@@ -1,21 +1,24 @@
-# server.ps1 — SD Explorer web server
-# Boots the SdExplorer CDX in a VM, feeds it SD config over serial,
-# bridges HTTP requests, proxies SD API calls, and caches images.
-# Usage: tools/web/explorer/server.ps1 [-Port 8888] [-SdPort 7860]
+# server.ps1 — Explorer web server
+# Boots the ExplorerServer CDX in a VM, bridges HTTP requests to
+# the CDX over TCP (via NE2K NIC NAT) or serial (fallback).
+# Usage: apps/explorer/server.ps1 [-Port 8888] [-Mode tcp]
 [CmdletBinding()]
 param(
     [int]$Port = 8888,
-    [int]$SdPort = 7860
+    [int]$SdPort = 7860,
+    [int]$TcpBridgePort = 9100,
+    [ValidateSet('tcp','serial')]
+    [string]$Mode = 'tcp'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $WebDir    = $PSScriptRoot
-$Repo      = (Resolve-Path (Join-Path $WebDir '..\..\..')).Path
+$Repo      = (Resolve-Path (Join-Path $WebDir '..\..')).Path
 $CacheDir  = 'D:\Projects\CodexMagic\explorer\cache'
 $PagesDir  = 'D:\Projects\CodexMagic\explorer\pages'
-$CdxPath   = Join-Path $Repo 'build-output\sd-explorer.cdx'
+$CdxPath   = Join-Path $Repo 'build-output\explorer-server.cdx'
 $SdApi     = "http://localhost:$SdPort/sdapi/v1"
 
 New-Item -ItemType Directory -Force $CacheDir | Out-Null
@@ -49,9 +52,9 @@ $script:VmBuf = New-Object byte[] 65536
 function Start-ExplorerVm {
     if (-not (Test-Path -PathType Leaf $CdxPath)) {
         Write-Host "CDX not found: $CdxPath" -ForegroundColor Red
-        Write-Host "Compiling SdExplorer.codex..." -ForegroundColor Yellow
-        $src = Join-Path $Repo 'apps\works\SdExplorer.codex'
-        $log = Join-Path $Repo 'build-output\sd-explorer.log'
+        Write-Host "Compiling ExplorerServer.codex..." -ForegroundColor Yellow
+        $src = Join-Path $Repo 'apps\explorer\ExplorerServer.codex'
+        $log = Join-Path $Repo 'build-output\explorer-server.log'
         New-Item -ItemType Directory -Force (Split-Path $CdxPath) | Out-Null
         & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $src -Out $CdxPath -Log $log 2>&1 | Out-Null
         if (-not (Test-Path -PathType Leaf $CdxPath)) {
@@ -61,7 +64,7 @@ function Start-ExplorerVm {
         Write-Host "  Compiled: $((Get-Item $CdxPath).Length) bytes" -ForegroundColor Green
     }
 
-    Write-Host "Booting SD Explorer VM..." -ForegroundColor Cyan
+    Write-Host "Booting Explorer VM..." -ForegroundColor Cyan
     $run = Start-VmRun -Kernel $CdxPath -ConnectTimeoutSec 30 -MemMB 2048
     if (-not $run) {
         Write-Host "  VM failed to start." -ForegroundColor Red
@@ -90,11 +93,21 @@ function Start-ExplorerVm {
         $script:ExplorerVm = $null; $script:ExplorerStream = $null
         return
     }
-    Write-Host "  VM ready. Feeding SD config..." -ForegroundColor Green
+    Write-Host "  VM ready." -ForegroundColor Green
 
-    # Feed SD configuration to the CDX
-    Feed-SdConfig
-    Write-Host "  Config loaded." -ForegroundColor Green
+    if ($script:UseTcp) {
+        Send-VmLine 'TCP'
+        Write-Host "  Sent TCP mode. Waiting for CDX connection..." -ForegroundColor Cyan
+        if (-not (Wait-TcpConnection -TimeoutSec 30)) {
+            Write-Host "  CDX did not connect via TCP." -ForegroundColor Red
+            Close-Vm -Conn $run.Conn -Process $run.Process
+            $script:ExplorerVm = $null; $script:ExplorerStream = $null
+            return
+        }
+    } else {
+        Send-VmLine 'SERIAL'
+        Write-Host "  Serial mode active." -ForegroundColor Green
+    }
 }
 
 function Feed-SdConfig {
@@ -163,6 +176,114 @@ function Send-VmRequest {
         if ($acc.Length -gt 0) { return $acc.TrimEnd("`r", "`n") }
         return $null
     } catch { return $null }
+}
+
+# ── TCP Bridge ────────────────────────────────────────────────
+
+$script:TcpListener = $null
+$script:TcpClient = $null
+$script:TcpStream = $null
+
+function Start-TcpBridge {
+    $script:TcpListener = [System.Net.Sockets.TcpListener]::new(
+        [System.Net.IPAddress]::Loopback, $TcpBridgePort)
+    $script:TcpListener.Start()
+    Write-Host "  TCP bridge listening on port $TcpBridgePort" -ForegroundColor Cyan
+}
+
+function Wait-TcpConnection {
+    param([int]$TimeoutSec = 30)
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if ($script:TcpListener.Pending()) {
+            $script:TcpClient = $script:TcpListener.AcceptTcpClient()
+            $script:TcpClient.NoDelay = $true
+            $script:TcpClient.ReceiveTimeout = 15000
+            $script:TcpStream = $script:TcpClient.GetStream()
+            Write-Host "  CDX connected via TCP" -ForegroundColor Green
+            return $true
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    Write-Host "  TCP connection timeout" -ForegroundColor Red
+    return $false
+}
+
+function Send-FramedMessage {
+    param([int]$Tag, [byte[]]$Body)
+    if (-not $script:TcpStream) { return }
+    $totalLen = 1 + $Body.Length
+    $header = [BitConverter]::GetBytes([int]$totalLen)
+    $script:TcpStream.Write($header, 0, 4)
+    $script:TcpStream.WriteByte([byte]$Tag)
+    if ($Body.Length -gt 0) { $script:TcpStream.Write($Body, 0, $Body.Length) }
+    $script:TcpStream.Flush()
+}
+
+function Recv-FramedMessage {
+    param([int]$TimeoutMs = 10000)
+    if (-not $script:TcpStream) { return $null }
+    $old = $script:TcpStream.ReadTimeout
+    $script:TcpStream.ReadTimeout = $TimeoutMs
+    try {
+        $hdr = New-Object byte[] 4
+        $read = 0
+        while ($read -lt 4) {
+            $n = $script:TcpStream.Read($hdr, $read, 4 - $read)
+            if ($n -le 0) { return $null }
+            $read += $n
+        }
+        $msgLen = [BitConverter]::ToInt32($hdr, 0)
+        if ($msgLen -lt 1 -or $msgLen -gt 1048576) { return $null }
+        $payload = New-Object byte[] $msgLen
+        $read = 0
+        while ($read -lt $msgLen) {
+            $n = $script:TcpStream.Read($payload, $read, $msgLen - $read)
+            if ($n -le 0) { return $null }
+            $read += $n
+        }
+        $tag = $payload[0]
+        $body = if ($msgLen -gt 1) { $payload[1..($msgLen - 1)] } else { @() }
+        return @{ Tag = $tag; Body = $body; Text = [System.Text.Encoding]::UTF8.GetString($body) }
+    } catch { return $null }
+    finally { $script:TcpStream.ReadTimeout = $old }
+}
+
+function Send-TcpRequest {
+    param([string]$RequestLine)
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($RequestLine)
+    Send-FramedMessage -Tag 1 -Body $bytes
+    $resp = Recv-FramedMessage -TimeoutMs 10000
+    if ($resp) { return $resp.Text }
+    return $null
+}
+
+function Stop-TcpBridge {
+    if ($script:TcpStream) { try { $script:TcpStream.Close() } catch {} }
+    if ($script:TcpClient) { try { $script:TcpClient.Close() } catch {} }
+    if ($script:TcpListener) { try { $script:TcpListener.Stop() } catch {} }
+}
+
+function Send-CdxRequest {
+    param([string]$RequestLine)
+    if ($script:UseTcp -and $script:TcpStream) {
+        return Send-TcpRequest $RequestLine
+    } else {
+        return Send-VmRequest $RequestLine
+    }
+}
+
+function Parse-CdxResponse {
+    param([string]$Raw)
+    if (-not $Raw) { return $null }
+    $firstSpace = $Raw.IndexOf(' ')
+    if ($firstSpace -lt 0) { return $null }
+    $secondSpace = $Raw.IndexOf(' ', $firstSpace + 1)
+    if ($secondSpace -lt 0) { return $null }
+    $status = $Raw.Substring(0, $firstSpace)
+    $ctype = $Raw.Substring($firstSpace + 1, $secondSpace - $firstSpace - 1)
+    $body = $Raw.Substring($secondSpace + 1)
+    return @{ Status = [int]$status; ContentType = $ctype; Body = $body }
 }
 
 # ── Static file serving ───────────────────────────────────────
@@ -310,12 +431,13 @@ try {
     Write-Host "Warning: SD API not reachable on port $SdPort" -ForegroundColor Yellow
 }
 
-# CDX VM disabled for now — pages are pre-built, SD proxy works directly
-# To enable: uncomment Start-ExplorerVm below
-# try { Start-ExplorerVm } catch {
-#     Write-Host "  CDX VM not available." -ForegroundColor Yellow
-# }
-Write-Host "  CDX VM: skipped (pages pre-built)" -ForegroundColor DarkGray
+$script:UseTcp = ($Mode -eq 'tcp')
+if ($script:UseTcp) {
+    Start-TcpBridge
+}
+try { Start-ExplorerVm } catch {
+    Write-Host "  CDX VM not available: $_" -ForegroundColor Yellow
+}
 
 # ── HTTP Server ───────────────────────────────────────────────
 
@@ -323,9 +445,8 @@ $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add("http://localhost:$Port/")
 $listener.Start()
 Write-Host ""
-Write-Host "  SD Explorer running at http://localhost:$Port/" -ForegroundColor Green
-Write-Host "  SD API: http://localhost:$SdPort/" -ForegroundColor Gray
-Write-Host "  Cache: $CacheDir" -ForegroundColor Gray
+Write-Host "  Explorer running at http://localhost:$Port/" -ForegroundColor Green
+Write-Host "  Mode: $Mode" -ForegroundColor Gray
 Write-Host "  Press Ctrl+C to stop." -ForegroundColor DarkGray
 Write-Host ""
 
@@ -358,68 +479,13 @@ try {
                 $relPath = $path.Substring(7) -replace '/', '\'
                 Send-StaticFile -Response $resp -FilePath (Join-Path $CacheDir $relPath)
             }
-            elseif ($path -eq '/api/config' -and $method -eq 'GET') {
-                # Forward to CDX
-                $vmResp = Send-VmRequest "GET /api/config"
-                if ($vmResp) {
-                    $firstSpace = $vmResp.IndexOf(' ')
-                    $secondSpace = if ($firstSpace -ge 0) { $vmResp.IndexOf(' ', $firstSpace + 1) } else { -1 }
-                    if ($secondSpace -gt 0) {
-                        $body = $vmResp.Substring($secondSpace + 1)
-                        Send-Json -Response $resp -Json $body
-                    } else {
-                        Send-Json -Response $resp -Json '{"error":"bad CDX response"}' -Status 502
-                    }
+            elseif ($path -like '/api/*' -and $method -eq 'GET') {
+                $cdxResp = Send-CdxRequest "$method $path"
+                $parsed = Parse-CdxResponse $cdxResp
+                if ($parsed) {
+                    Send-Json -Response $resp -Json $parsed.Body -Status $parsed.Status
                 } else {
-                    # Fallback: build config directly from SD API
-                    $cfg = @{
-                        models = @(); samplers = @(); loras = @(); upscalers = @()
-                        current_model = $script:CurrentModel
-                        steps_options = @(4,8,12,15,20,25,30,40)
-                        cfg_options = @(1,2,3,4,5,7,9,12)
-                    }
-                    $sdModels = Invoke-SdApi 'sd-models'
-                    $skip = @('uberRealistic','0.5(')
-                    foreach ($m in $sdModels) {
-                        $bad = $false
-                        foreach ($s in $skip) { if ($m.model_name -like "*$s*") { $bad = $true } }
-                        if (-not $bad) { $cfg.models += @{ title = $m.title; name = $m.model_name } }
-                    }
-                    $sdSamplers = Invoke-SdApi 'samplers'
-                    $good = @('DPM++ SDE','DPM++ 2M SDE','DPM++ 2S a','Euler a','Euler','DDIM','UniPC','Heun','DPM++ 3M SDE')
-                    foreach ($s in $sdSamplers) { if ($s.name -in $good) { $cfg.samplers += $s.name } }
-                    $sdLoras = Invoke-SdApi 'loras'
-                    foreach ($l in $sdLoras) { $cfg.loras += @{ name = $l.name } }
-                    $sdUp = Invoke-SdApi 'upscalers'
-                    foreach ($u in $sdUp) { if ($u.name -ne 'None') { $cfg.upscalers += $u.name } }
-                    Send-Json -Response $resp -Json ($cfg | ConvertTo-Json -Depth 5 -Compress)
-                }
-            }
-            elseif ($path -eq '/api/generate' -and $method -eq 'POST') {
-                $reader = New-Object System.IO.StreamReader($ctx.Request.InputStream)
-                $body = $reader.ReadToEnd() | ConvertFrom-Json
-                $result = Invoke-SdGenerate $body
-                Send-Json -Response $resp -Json ($result | ConvertTo-Json -Compress)
-            }
-            elseif ($path -eq '/api/cached' -and $method -eq 'POST') {
-                $reader = New-Object System.IO.StreamReader($ctx.Request.InputStream)
-                $body = $reader.ReadToEnd() | ConvertFrom-Json
-                $hash = Get-PromptHash $body.prompt
-                $dir = Join-Path $CacheDir $hash
-                $files = @()
-                if (Test-Path $dir) {
-                    $files = (Get-ChildItem -File $dir -Filter '*.png' |
-                              Where-Object { $_.Name -notlike '_*' }).Name
-                }
-                Send-Json -Response $resp -Json (@{ hash = $hash; files = $files; count = $files.Count } | ConvertTo-Json -Compress)
-            }
-            elseif ($path -eq '/api/status' -and $method -eq 'GET') {
-                $vmResp = Send-VmRequest "GET /api/status"
-                if ($vmResp -and $vmResp.IndexOf(' ') -gt 0) {
-                    $body = $vmResp.Substring($vmResp.IndexOf(' ', $vmResp.IndexOf(' ') + 1) + 1)
-                    Send-Json -Response $resp -Json $body
-                } else {
-                    Send-Json -Response $resp -Json '{"status":"vm unavailable"}'
+                    Send-Json -Response $resp -Json '{"error":"CDX unavailable"}' -Status 502
                 }
             }
             else {
@@ -439,6 +505,7 @@ try {
 } finally {
     $listener.Stop()
     $listener.Close()
+    Stop-TcpBridge
     if ($script:ExplorerVm) {
         Write-Host "Shutting down Explorer VM..." -ForegroundColor Gray
         Close-Vm -Conn $script:ExplorerVm.Conn -Process $script:ExplorerVm.Process

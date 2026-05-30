@@ -92,6 +92,18 @@ function Invoke-BuildText {
     }
 }
 
+# The CDX header embeds the compiler's own SHA-256 over the binary
+# content (text + padding + rodata) at bytes 8-39. This is the
+# canonical content identity: the sign step signs exactly these bytes,
+# and the header offsets, debug map, and deterministic signature are
+# all derived from this content. Comparing it gives an apples-to-apples
+# fixed-point test regardless of whether either side is signed.
+function Get-CdxContentHash {
+    param([string]$Path)
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    return (($bytes[8..39]) | ForEach-Object { $_.ToString('x2') }) -join ''
+}
+
 # ===================================================================
 $buildTimer = [System.Diagnostics.Stopwatch]::StartNew()
 $phaseTimings = [ordered]@{}
@@ -125,6 +137,29 @@ Measure-Phase 'source-concat' {
     if (-not (Test-Path -PathType Leaf $Concat))  { Write-Host "FAIL: $Concat missing"; exit 1 }
     & pwsh -NoProfile -File $Concat -CodexDir (Join-Path $Repo 'codex\compiler') -OutFile $CodexSrc
     if (-not (Test-Path -PathType Leaf $CodexSrc)) { Write-Host 'FAIL: source concat produced no file'; exit 1 }
+
+    # Guard against untracked-source pollution. concat-codex-self globs
+    # *.codex under codex/compiler/, so an untracked stray there (e.g.
+    # leftover WIP) is silently baked into the seed, producing a binary that
+    # does not match the depot source and is not reproducible. Scope the
+    # check to codex/compiler/ ONLY — plug build-output dirs (codex/plugs/*/
+    # build-output/*.codex) hold legitimate untracked artifacts the concat
+    # never reads. Match the reconcile ACTION (" - ... add"), not "add"
+    # anywhere, so editing a tracked file like list-add.codex does not
+    # false-trip. (A real stray, DeckCopy.codex, cost a detour 2026-05-29.)
+    try {
+        $stray = @(p4 reconcile -n codex/compiler/... 2>$null |
+            Where-Object { $_ -match '\.codex' -and $_ -match ' - .*\badd\b' })
+        if ($stray.Count -gt 0) {
+            Write-Host ''
+            Write-Host 'FAIL: untracked .codex file(s) under codex/compiler/ would be baked into the seed:'
+            $stray | ForEach-Object { Write-Host "  $_" }
+            Write-Host '  p4 add them (so the seed is reproducible) or remove them, then rebuild.'
+            exit 1
+        }
+    } catch {
+        Write-Host '  (note: p4 reconcile unavailable; skipped untracked-source guard)'
+    }
 }
 
 # Check if source constants match the seed — warn if they differ.
@@ -299,13 +334,13 @@ Measure-Phase 'cdx-stage1' {
 }
 
 Measure-Phase 'cdx-fixedpoint' {
-    $sutHash = (Get-FileHash -Algorithm SHA256 $SutCdx).Hash
-    $ch1 = (Get-FileHash -Algorithm SHA256 $cdxStage1).Hash
+    $sutHash = Get-CdxContentHash $SutCdx
+    $ch1 = Get-CdxContentHash $cdxStage1
     if ($sutHash -eq $ch1) {
         Write-Host '(SUT === stage1 — hard fixed point in one pass)'
     } else {
         if (-not (Invoke-BuildCdx -InputFile $CodexSrc -Kernel $cdxStage1 -Output $cdxStage2)) { exit 1 }
-        $ch2 = (Get-FileHash -Algorithm SHA256 $cdxStage2).Hash
+        $ch2 = Get-CdxContentHash $cdxStage2
         if ($ch1 -ne $ch2) {
             Write-Host 'FAIL: CDX fixed point — stage1 !== stage2'
             Write-Host "  stage1: $((Get-Item $cdxStage1).Length) bytes  $ch1"

@@ -11,20 +11,21 @@ Chapter: Opening
  Entry point for the Codex compiler.
 
   cites Emit chapter Codex Emitter (emit-codex-text-chapter, emit-type-defs, emit-def)
-  cites Emit chapter IR Text Emitter (emit-ir-chapter)
+  cites Emit chapter IR Text Emitter (emit-ir-chapter, ir-prune-unreachable)
   cites Emit chapter Emit Allocator (emit-build)
-  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet)
+  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test)
   cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites)
 
 Section: Compile Flags
 
   CompileFlags = record {
    prose : Boolean,
-   escape-check : Boolean
+   escape-check : Boolean,
+   survey : SurveyConfig
   }
 
   compile-flags-default : CompileFlags
-  compile-flags-default = CompileFlags { prose = False, escape-check = False }
+  compile-flags-default = CompileFlags { prose = False, escape-check = False, survey = survey-config-default }
 
 Section: Compile Target
 
@@ -52,6 +53,7 @@ Section: Frontend
    ir : IRChapter,
    cdx-ir : IRChapter,
    sorted-type-defs : List TypeBinding,
+   renames : List RenameEntry,
    bag : DiagnosticBag,
    heap-marks : List Integer,
    phase-metrics : List PhaseMetrics
@@ -76,6 +78,9 @@ Section: Frontend
   ScopeResult = record {
    scoped : AChapter,
    ctor-names : List Text,
+   renames : List RenameEntry,
+   colliding : SkipListText,
+   assignments : List ChapterAssignment,
    resolve-bag : DiagnosticBag,
    heap-marks : List Integer,
    phase-metrics : List PhaseMetrics
@@ -87,6 +92,9 @@ Section: Frontend
    type-env : TypeEnv,
    ust : UnificationState,
    ctor-names : List Text,
+   renames : List RenameEntry,
+   colliding : SkipListText,
+   assignments : List ChapterAssignment,
    bag : DiagnosticBag,
    heap-marks : List Integer,
    phase-metrics : List PhaseMetrics
@@ -107,6 +115,7 @@ Section: Frontend
     ir = blank-ir,
     cdx-ir = blank-ir,
     sorted-type-defs = [],
+    renames = [],
     bag = bag,
     heap-marks = marks,
     phase-metrics = []
@@ -132,6 +141,9 @@ Section: Frontend
     type-env = empty-type-env,
     ust = empty-unification-state,
     ctor-names = [],
+    renames = [],
+    colliding = skip-list-text-empty,
+    assignments = [],
     bag = bag,
     heap-marks = marks,
     phase-metrics = []
@@ -143,7 +155,7 @@ Section: Frontend
 
   deck-overflow-bag : Text -> DiagnosticBag
   deck-overflow-bag (phase-name) =
-   bag-from-list [make-warning cdx-deck-overflow ("Deck overflow in " & phase-name & "; compilation continues but heap exhaustion may follow") synthetic-span]
+   bag-from-list [make-error cdx-deck-overflow ("Deck overflow in " & phase-name & "; survey multiplier too low for this input") synthetic-span]
 
   no-overflow-bag : DiagnosticBag = bag-from-list []
 
@@ -189,10 +201,15 @@ Section: Frontend
    if enabled then check-escape-invariant m phase-name
    else bag-from-list []
 
+  pmap-selftest-bag : Boolean -> DiagnosticBag
+  pmap-selftest-bag (enabled) =
+   if enabled then (if pmap-self-test == 3 then bag-from-list [] else bag-from-list [make-warning cdx-escape-violation ("pointer-map walker conformance FAILED: pmap-self-test=" & show pmap-self-test & " (expect 3)") synthetic-span])
+   else bag-from-list []
+
   compile-lex : Text, Integer, CompileFlags -> LexResult
   compile-lex (source) (h0) (flags) =
    let mountain-base = init-phase-allocator
-   in let lex-deck-height = text-length source * survey-lex-mul + survey-lex-base
+   in let lex-deck-height = text-length source * (flags.survey.lex-mul) + survey-lex-base
    in let lex-base = build lex-deck-height
    in let lex-phase = phase-start
    in let tok-result = tokenize-into source 1 (flags.prose)
@@ -213,7 +230,7 @@ Section: Frontend
   compile-parse : List Token, Text, Integer, List PhaseMetrics, CompileFlags -> ParseResult
   compile-parse (tokens) (source) (h0) (prior-metrics) (flags) =
    let h1 = __heap-save
-   in let parse-deck-height = list-length tokens * survey-parse-mul + survey-parse-base
+   in let parse-deck-height = list-length tokens * (flags.survey.parse-mul) + survey-parse-base
    in let parse-base = build parse-deck-height
    in let parse-phase = phase-start
    in let st = make-parse-state tokens source
@@ -240,7 +257,7 @@ Section: Frontend
 
   compile-desugar-and-scope : Text, ParseResult, Text, CompileFlags -> ScopeResult
   compile-desugar-and-scope (source) (pr) (chapter-name) (flags) =
-   let desugar-deck-height = text-length source * survey-desugar-mul + survey-desugar-base
+   let desugar-deck-height = text-length source * (flags.survey.desugar-mul) + survey-desugar-base
    in let desugar-base = build desugar-deck-height
    in let desugar-phase = phase-start
    in let ast = desugar-document source (pr.doc) chapter-name
@@ -248,16 +265,16 @@ Section: Frontend
    in let desugar-ov = check-deck-overflow (desugar-metrics.deck-end - desugar-metrics.deck-origin) desugar-deck-height
    in let desugar-sealed = phase-compact
    in let h5 = __heap-save
-   in let scope-deck-height = text-length source * survey-scope-mul + survey-scope-base
+   in let scope-deck-height = text-length source * (flags.survey.scope-mul) + survey-scope-base
    in let scope-base = build scope-deck-height
    in let scope-phase = phase-start
    in let scoped = scope-achapter ast (pr.colliding) (pr.assignments)
    in let h6 = __heap-save
    in let cite-bag = deck-record (check-duplicate-cites (scoped.citations))
-   in let resolve-result = resolve-chapter scoped
+   in let resolve-result = resolve-chapter scoped (pr.colliding) (pr.assignments)
    in let desugar-ov-bag = if desugar-ov == 1 then deck-overflow-bag "DESUGAR" else no-overflow-bag
    in let desugar-esc-bag = escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR"
-   in let resolve-bag = deck-record (bag-merge-all [pr.parse-bag, cite-bag, resolve-result.bag, desugar-ov-bag, desugar-esc-bag])
+   in let resolve-bag = deck-record (bag-merge-all [pr.parse-bag, cite-bag, resolve-result.bag, desugar-ov-bag, desugar-esc-bag, pmap-selftest-bag (flags.escape-check)])
    in let scope-metrics = phase-measure scope-phase
    in let scope-ov = check-deck-overflow (scope-metrics.deck-end - scope-metrics.deck-origin) scope-deck-height
    in let scope-ov-bag = if scope-ov == 1 then deck-overflow-bag "SCOPE" else no-overflow-bag
@@ -267,9 +284,13 @@ Section: Frontend
    in let scope-heap-marks = deck-record (list-push hm1 h6)
    in let pm1 = deck-record (list-push (pr.phase-metrics) desugar-metrics)
    in let scope-phase-metrics = deck-record (list-push pm1 scope-metrics)
+   in let global-renames = deck-record (build-global-rename-table (pr.assignments) (pr.colliding))
    in let result = deck-record (ScopeResult {
     scoped = scoped,
     ctor-names = resolve-result.ctor-names,
+    renames = global-renames,
+    colliding = pr.colliding,
+    assignments = pr.assignments,
     resolve-bag = resolve-bag2,
     heap-marks = scope-heap-marks,
     phase-metrics = scope-phase-metrics
@@ -278,10 +299,10 @@ Section: Frontend
 
   compile-type-check : ScopeResult, Integer, CompileFlags -> CompileChecked
   compile-type-check (sr) (source-len) (flags) =
-   let check-deck-height = source-len * survey-check-mul + survey-check-base
+   let check-deck-height = source-len * (flags.survey.check-mul) * (flags.survey.headroom) / 100 + survey-check-base
    in let check-base = build check-deck-height
    in let check-phase = phase-start
-   in let check-result = deck-record (check-chapter (sr.scoped))
+   in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments))
    in let h8 = __heap-save
    in let cap-diags = deck-record (check-opening-capabilities (check-result.types))
    in let check-bag0 = deck-record (bag-merge-all [sr.resolve-bag, check-result.state.bag, bag-from-list cap-diags])
@@ -300,6 +321,9 @@ Section: Frontend
        type-env = check-result.env,
        ust = check-result.state,
        ctor-names = sr.ctor-names,
+       renames = sr.renames,
+       colliding = sr.colliding,
+       assignments = sr.assignments,
        bag = check-bag,
        heap-marks = check-heap-marks,
        phase-metrics = check-phase-metrics
@@ -325,10 +349,10 @@ Section: Frontend
   compile-frontend (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = list-length (checked.scoped.defs) * survey-lower-mul * survey-headroom / 100 + survey-lower-base
+   else let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
    in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
-   in let ir = deck-record (lower-chapter (checked.scoped) (checked.types) (checked.type-env) (checked.ust) (checked.ctor-names))
+   in let ir = deck-record (lower-chapter (checked.scoped) (checked.types) (checked.type-env) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
    in let tm = deck-record (IRTextMeta {
     chapter-title = checked.scoped.chapter-title,
     prose = checked.scoped.prose,
@@ -349,6 +373,7 @@ Section: Frontend
     ir = ir,
     cdx-ir = blank-ir,
     sorted-type-defs = [],
+    renames = checked.renames,
     bag = fe-bag,
     heap-marks = checked.heap-marks,
     phase-metrics = pm1
@@ -360,14 +385,15 @@ Section: Frontend
   compile-frontend-cdx (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = list-length (checked.scoped.defs) * survey-lower-mul * survey-headroom / 100 + survey-lower-base
+   else let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
    in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
-   in let ir = deck-record (lower-chapter (checked.scoped) (checked.types) (checked.type-env) (checked.ust) (checked.ctor-names))
+   in let ir-raw = lower-chapter (checked.scoped) (checked.types) (checked.type-env) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments)
+   in let ir = deck-record (fold-constants-in-chapter ir-raw)
    in let lower-metrics = phase-measure lower-phase
    in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
    in let lower-sealed = phase-compact
-   in let resolve-deck-height = list-length (ir.defs) * survey-resolve-mul * survey-headroom / 100 + survey-resolve-base
+   in let resolve-deck-height = list-length (ir.defs) * (flags.survey.resolve-mul) * (flags.survey.headroom) / 100 + survey-resolve-base
    in let resolve-base = build resolve-deck-height
    in let resolve-phase = phase-start
    in let stds = deck-record (sort-bindings (checked.type-env.bindings))
@@ -375,7 +401,7 @@ Section: Frontend
    in let resolve-metrics = phase-measure resolve-phase
    in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
    in let resolve-sealed = phase-compact
-   in let lift-deck-height = list-length resolved-defs * survey-lift-mul * survey-headroom / 100 + survey-lift-base
+   in let lift-deck-height = list-length resolved-defs * (flags.survey.lift-mul) * (flags.survey.headroom) / 100 + survey-lift-base
    in let lift-base = build lift-deck-height
    in let lift-phase = phase-start
    in let cdx-chapter = deck-record (lift-lambdas (IRChapter {
@@ -409,6 +435,7 @@ Section: Frontend
     ir = blank-ir,
     cdx-ir = cdx-chapter,
     sorted-type-defs = stds,
+    renames = checked.renames,
     bag = fe-bag,
     heap-marks = checked.heap-marks,
     phase-metrics = pm3
@@ -571,14 +598,13 @@ Section: Text Compilation
   compile-text : CompileFrontend, CompileTarget -> Text
   compile-text (fe) (target) =
    if bag-has-errors (fe.bag) then ""
-   else emit-for-text-target target (fe.ir) (fe.text-meta) (fe.type-defs)
+   else emit-for-text-target target (fe.ir) (fe.text-meta) (fe.type-defs) (fe.renames)
 
-  emit-for-text-target : CompileTarget, IRChapter, IRTextMeta, List ATypeDef -> Text
-  emit-for-text-target (target) (ir) (meta) (type-defs) =
+  emit-for-text-target : CompileTarget, IRChapter, IRTextMeta, List ATypeDef, List RenameEntry -> Text
+  emit-for-text-target (target) (ir) (meta) (type-defs) (renames) =
    when target
-    is CtCodexText -> emit-codex-text-chapter ir meta type-defs
-    is CtX86_64Bare -> ""
-    is CtCdx -> ""
+    is CtCodexText -> emit-codex-text-chapter ir meta type-defs renames
+    is CtX86_64Bare | CtCdx -> ""
 
 Section: Binary Compilation
 
@@ -689,15 +715,15 @@ Section: Streaming Emission
  Per-definition emit with heap strikes between definitions.
  Uses pre-lowered IR from compile-frontend, matching the CDX path.
 
-  emit-streaming-ir-defs : List IRDef, List Text, Integer, Integer -> [Console] Nothing
-  emit-streaming-ir-defs (ir-defs) (ctor-names) (i) (len) =
+  emit-streaming-ir-defs : List IRDef, List Text, List RenameEntry, Integer, Integer -> [Console] Nothing
+  emit-streaming-ir-defs (ir-defs) (ctor-names) (renames) (i) (len) =
    if i == len then print-line-uni ""
    else let h = __heap-save
-   in let text = emit-def (list-at ir-defs i) ctor-names
+   in let text = emit-def (list-at ir-defs i) ctor-names renames
    in act
     print-line-uni text
     let restored = __heap-restore h
-    in emit-streaming-ir-defs ir-defs ctor-names (i + 1) len
+    in emit-streaming-ir-defs ir-defs ctor-names renames (i + 1) len
    end
 
   emit-text-streaming : Text, CompileFlags -> [Console] Nothing
@@ -726,12 +752,12 @@ Section: Streaming Emission
       else "Chapter: " & fe.text-meta.chapter-title & "\n\n"
         & if fe.text-meta.prose == "" then "" else " " & fe.text-meta.prose & "\n\n"
    in let type-defs-text = emit-type-defs (fe.type-defs) 0
-   in let first-text = emit-def (list-at ir-defs 0) (fe.text-meta.ctor-names)
+   in let first-text = emit-def (list-at ir-defs 0) (fe.text-meta.ctor-names) (fe.renames)
    in act
     print-line-uni wd-marks
     print-line-uni (header & type-defs-text & first-text)
     let restored = __heap-restore h-emit
-    in emit-streaming-ir-defs ir-defs (fe.text-meta.ctor-names) 1 len
+    in emit-streaming-ir-defs ir-defs (fe.text-meta.ctor-names) (fe.renames) 1 len
    end
 
 Section: Entry Point
@@ -817,7 +843,7 @@ Section: Entry Point
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
     else act
      print-line-uni "IR-BEGIN"
-     print-line-uni (emit-ir-chapter (fe.ir) (fe.text-meta) (fe.type-defs))
+     print-line-uni (emit-ir-chapter (ir-prune-unreachable (fe.ir) "opening") (fe.text-meta) (fe.type-defs))
      print-line-uni "IR-END"
     end
     let h-post-emit = __heap-save
@@ -832,7 +858,7 @@ Section: Entry Point
     print-codegen-error-header (bag-errors (fe.bag))
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
     else act
-     let ir-text = emit-ir-chapter (fe.ir) (fe.text-meta) (fe.type-defs)
+     let ir-text = emit-ir-chapter (ir-prune-unreachable (fe.ir) "opening") (fe.text-meta) (fe.type-defs)
      in print-line-uni ("SIZE:" & show (text-length ir-text))
      print-line ir-text
     end
@@ -877,7 +903,47 @@ Section: Entry Point
 
   parse-mode-flags : Text -> CompileFlags
   parse-mode-flags (mode) =
-   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check" }
+   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", survey = parse-survey-config mode }
+
+  parse-survey-config : Text -> SurveyConfig
+  parse-survey-config (mode) =
+   find-survey-token (text-split mode " ") 0
+
+  find-survey-token : List Text, Integer -> SurveyConfig
+  find-survey-token (parts) (i) =
+   if i >= list-length parts then survey-config-default
+   else let p = list-at parts i
+   in if text-starts-with p "survey=" then apply-survey-pairs (text-split (survey-token-value p) ",") 0 survey-config-default
+      else find-survey-token parts (i + 1)
+
+  survey-token-value : Text -> Text
+  survey-token-value (p) =
+   let kv = text-split p "="
+   in if list-length kv >= 2 then list-at kv 1 else ""
+
+  apply-survey-pairs : List Text, Integer, SurveyConfig -> SurveyConfig
+  apply-survey-pairs (pairs) (i) (cfg) =
+   if i >= list-length pairs then cfg
+   else apply-survey-pairs pairs (i + 1) (apply-survey-pair (list-at pairs i) cfg)
+
+  apply-survey-pair : Text, SurveyConfig -> SurveyConfig
+  apply-survey-pair (pair) (cfg) =
+   let kv = text-split pair ":"
+   in if list-length kv == 2 then set-survey-field cfg (list-at kv 0) (text-to-integer (list-at kv 1))
+      else cfg
+
+  set-survey-field : SurveyConfig, Text, Integer -> SurveyConfig
+  set-survey-field (cfg) (name) (val) =
+   if name == "lex-mul" then __record-set cfg "lex-mul" val
+   else if name == "parse-mul" then __record-set cfg "parse-mul" val
+   else if name == "desugar-mul" then __record-set cfg "desugar-mul" val
+   else if name == "scope-mul" then __record-set cfg "scope-mul" val
+   else if name == "check-mul" then __record-set cfg "check-mul" val
+   else if name == "lower-mul" then __record-set cfg "lower-mul" val
+   else if name == "resolve-mul" then __record-set cfg "resolve-mul" val
+   else if name == "lift-mul" then __record-set cfg "lift-mul" val
+   else if name == "headroom" then __record-set cfg "headroom" val
+   else cfg
 
   disk-partition-start : Integer = 2048
 

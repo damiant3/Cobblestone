@@ -57,6 +57,33 @@ pointer storage off `0x7580`.
 
 ## Parser
 
+### Multi-statement def body kept only the first statement — FIXED (CL 2709)
+
+A function body written as several newline-separated statements at the
+same column (the natural way to write an in-place mutation sequence)
+parsed only the FIRST statement and silently dropped the rest. It
+compiled cleanly and produced wrong results — e.g.
+
+```codex
+add-score (gs) (points) =
+  gs.score = gs.score + points   -- this ran
+  gs.turn = gs.turn + 1          -- silently DROPPED
+  gs
+```
+
+returned `gs` with `score` updated but `turn` unchanged. Single-statement
+bodies were unaffected (a field-assign returns its record), which is why
+it hid for so long. The compiler itself never tripped it: every compiler
+def body is a single expression (a let-chain).
+
+Fix: `finish-def` / `unwrap-type-for-def` now parse the body via
+`parse-def-body-seq`, which sequences trailing same-column statements into
+`SeqExpr` (desugared to throwaway `let __seq = stmt in rest`). Sequencing
+triggers ONLY when the preceding statement is a `FieldAssignExpr`, so
+def bodies with no field-assign (i.e. all compiler code) parse
+byte-identically — the CDX hard fixed point is unchanged. Regression:
+`codex/test/mutable-def-seq.codex`.
+
 ### `[list] & when ... is ... is ... & [list]` chain mis-parses — FIXED (CL 1526)
 
 Concatenating a list literal with a `when`/`is`/`is` branch
@@ -100,3 +127,43 @@ into list literals and record constructors.
 
 **Status**: CLOSED. The workaround pattern (hoisting `when` to a
 helper) is no longer necessary. Inline `when` in lists/records works.
+
+## Type System — Linearity / mutable-aliasing checker
+
+The checker in `Types/TypeChecker.codex` (`lin-of` for `linear`, `consume-of`
+for `mutable`) is sound for current code but deliberately approximate at a few
+edges. Do NOT "fix" these without reading this note — at least one cure is worse
+than the disease.
+
+### Borrow-vs-move is inferred from the callee's RETURN type — record-field only
+
+`apply-threads` decides a call consumes its bare mutable argument iff the
+callee's return type mentions the mutable record via `type-mentions-mut`, which
+walks `RecordTy`/`ConstructedTy` fields, `FunTy` returns, `ForAllTy`/`EffectfulTy`
+bodies — but **intentionally NOT `SumTy`/`ListTy`/`LinkedListTy`**. This is not an
+oversight. Adding Sum/List recursion (tried, CL 2710) makes `make-token : ... ,
+LexState -> Token` look like a thread because `Token` transitively mentions
+`LexState` through a list/sum field — but `make-token` only *reads* `s` to
+snapshot a position; it borrows. The narrow record-field rule matches the real
+threading pattern (`-> CheckResult { state : UnificationState }`) and avoids that
+false positive. Consequence (accepted): a function that genuinely threads by
+returning `Result`/`List`-of-mutable is treated as a borrow, so such aliasing is
+not flagged. False-negative, never false-positive.
+
+### Other known false-negative edges (narrow, no current code affected)
+
+- `peel-returns-n` uses `peel-fun-return`, which returns `ErrorTy` on
+  `EffectfulTy`; a call whose signature is effectful at the peeled position is
+  treated as a borrow.
+- `apply-threads` resolves the call head through `rename-lookup`, but the
+  `__mutable-<name>` probe in `check-one-param` uses the un-renamed type name; a
+  mutable record threaded across a chapter boundary with renames may not be
+  matched. Wants a cross-chapter test.
+
+### Effect-handler clauses ARE counted (CL 2710)
+
+`lin-of`/`consume-of` walk `AHandleExpr` clause bodies (summed, with
+clause-param/resume shadowing). A `linear`/`mutable` value used only inside a
+handler clause is no longer mis-reported as a leak. The sum is approximate: a
+value used in both the handle body and a *conditional* clause can over-count
+(rare). Sound-leaning.

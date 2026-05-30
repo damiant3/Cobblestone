@@ -1,4 +1,8 @@
-# Run HTML plug: source -> IR-CCE -> CCE-to-UTF8 -> plug CDX -> HTML
+# Run HTML plug: source -> IR-CCE (DCE in compiler) -> plug CDX -> HTML
+# Native CCE pipeline. No encoding conversion. The compiler prunes
+# unreachable defs (ir-prune-unreachable) during IR-CCE emit, so there
+# is no external DCE step. The plug uses read-line-cce + read-file
+# (both CCE-native, null-terminated).
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out)
 Set-StrictMode -Version Latest
@@ -6,33 +10,36 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugCdx = Join-Path $PSScriptRoot 'build-output\html-plug.cdx'
-$IrFile = Join-Path $PSScriptRoot 'build-output\last-run.ir'
 $LogFile = Join-Path $PSScriptRoot 'build-output\run.log'
 if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx"); exit 2 }
 
 # Phase 1: source -> IR-CCE
+$IrFile = Join-Path $PSScriptRoot 'build-output\last-run.ir'
 & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce
 if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: IR; see $LogFile"); exit 3 }
-$irCceBytes = [System.IO.File]::ReadAllBytes($IrFile)
-Write-Host "[html-run] IR: $($irCceBytes.Length) bytes (CCE)"
+Write-Host "[html-run] IR: $((Get-Item $IrFile).Length) bytes (CCE)"
 
-# Phase 1b: CCE -> UTF-8 (avoids byte-4 EOT collision with CCE digit '1')
-$sb = [System.Text.StringBuilder]::new($irCceBytes.Length)
-foreach ($b in $irCceBytes) {
-    if ($b -lt $script:CceToUnicode.Length) { [void]$sb.Append([char]$script:CceToUnicode[$b]) }
-}
-$utf8Ir = [System.Text.Encoding]::UTF8.GetBytes($sb.ToString())
+# IR is already dead-code-eliminated by the compiler during IR-CCE emit
+# (ir-prune-unreachable, reachable from 'opening'). Fully CCE-native, no
+# Unicode round-trip, no external DCE step.
+$irBytes = [System.IO.File]::ReadAllBytes($IrFile)
 
-# Phase 2: Build input: mode header + UTF-8 IR + EOT
+# Phase 3: Build input — CCE mode header + CCE IR + null terminator
 $inputFile = [System.IO.Path]::GetTempFileName()
-$header = [System.Text.Encoding]::UTF8.GetBytes("IR-CCE`n")
-$combined = New-Object byte[] ($header.Length + $utf8Ir.Length + 1)
-[Array]::Copy($header, 0, $combined, 0, $header.Length)
-[Array]::Copy($utf8Ir, 0, $combined, $header.Length, $utf8Ir.Length)
-$combined[$combined.Length - 1] = 4
+$hdrList = [System.Collections.Generic.List[byte]]::new()
+foreach ($ch in "IR-CCE".ToCharArray()) {
+    $u = [int]$ch
+    if ($u -lt 256) { $hdrList.Add([byte]$script:UnicodeToCce[$u]) }
+}
+$hdrList.Add([byte]1)  # CCE newline
+$modeHeader = $hdrList.ToArray()
+$combined = New-Object byte[] ($modeHeader.Length + $irBytes.Length + 1)
+[Buffer]::BlockCopy($modeHeader, 0, $combined, 0, $modeHeader.Length)
+[Buffer]::BlockCopy($irBytes, 0, $combined, $modeHeader.Length, $irBytes.Length)
+$combined[$combined.Length - 1] = 0  # null terminator for read-file
 [System.IO.File]::WriteAllBytes($inputFile, $combined)
 
-# Phase 3: Run plug CDX with file I/O
+# Phase 4: Run plug CDX
 $vmBin = Join-Path $Repo 'tools\codex-vm.exe'
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()

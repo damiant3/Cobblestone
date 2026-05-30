@@ -38,9 +38,10 @@ Section: Infer Literal
 Section: Infer Name
   infer-name : UnificationState, TypeEnv, Text, SourceSpan -> CheckResult
   infer-name (st) (env) (name) (span) =
-   if env-has env name
+   let resolved = rename-lookup (env.chapter-renames) name
+   in if env-has env resolved
     then
-     let raw = env-lookup env name
+     let raw = env-lookup env resolved
      in let inst = instantiate-type st raw
      in CheckResult {
       inferred-type = inst.var-type,
@@ -83,17 +84,8 @@ Section: Infer Binary
   infer-binary-op : UnificationState, CodexType, CodexType, BinaryOp, SourceSpan -> CheckResult
   infer-binary-op (st) (lt) (rt) (op) (span) =
    when op
-    is OpAdd -> infer-arithmetic st lt rt span
-    is OpSub -> infer-arithmetic st lt rt span
-    is OpMul -> infer-arithmetic st lt rt span
-    is OpDiv -> infer-arithmetic st lt rt span
-    is OpPow -> infer-arithmetic st lt rt span
-    is OpEq -> infer-comparison st lt rt span
-    is OpNotEq -> infer-comparison st lt rt span
-    is OpLt -> infer-comparison st lt rt span
-    is OpGt -> infer-comparison st lt rt span
-    is OpLtEq -> infer-comparison st lt rt span
-    is OpGtEq -> infer-comparison st lt rt span
+    is OpAdd | OpSub | OpMul | OpDiv | OpPow -> infer-arithmetic st lt rt span
+    is OpEq | OpNotEq | OpLt | OpGt | OpLtEq | OpGtEq -> infer-comparison st lt rt span
     is OpAnd -> infer-and st lt rt span
     is OpOr -> infer-logical st lt rt span
     is OpAppend -> infer-append st lt rt span
@@ -115,10 +107,7 @@ Section: Infer Binary
   is-arithmetic-type : CodexType -> Boolean
   is-arithmetic-type (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) -> True
-    is NumberTy -> True
-    is TypeVar (id) -> True
-    is ErrorTy -> True
+    is IntegerTy (lo) (hi) (mode) | NumberTy | TypeVar (id) | ErrorTy -> True
     is otherwise -> False
 
   infer-comparison : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
@@ -143,8 +132,7 @@ Section: Infer Binary
    let resolved = resolve-silent st lt
    in when resolved
     is BooleanTy -> infer-logical st lt rt span
-    is TextTy -> infer-append st lt rt span
-    is otherwise -> infer-append st lt rt span
+    is TextTy | otherwise -> infer-append st lt rt span
 
   infer-append : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-append (st) (lt) (rt) (span) =
@@ -415,9 +403,10 @@ Section: Infer Match
    let sr = infer-expr st env scrutinee
    in let fr = fresh-and-advance (sr.state)
    in let st2 = infer-match-arms (fr.state) env (sr.inferred-type) (fr.var-type) arms 0 (list-length arms)
+   in let st3 = check-match-exhaustiveness st2 (sr.inferred-type) arms (aexpr-span scrutinee)
    in CheckResult {
     inferred-type = fr.var-type,
-    state = st2
+    state = st3
    }
 
   infer-match-arms : UnificationState, TypeEnv, CodexType, CodexType, List AMatchArm, Integer, Integer -> UnificationState
@@ -425,9 +414,60 @@ Section: Infer Match
    if i == len then st
    else let arm = list-at arms i
    in let pr = bind-pattern st env (arm.pattern) scrut-ty
-   in let br = infer-expr (pr.state) (pr.env) (arm.body)
+   in let gr = infer-expr (pr.state) (pr.env) (arm.guard)
+   in let gu = unify (gr.state) (gr.inferred-type) BooleanTy (aexpr-span (arm.guard))
+   in let br = infer-expr (gu.state) (pr.env) (arm.body)
    in let r = unify (br.state) (br.inferred-type) result-ty (aexpr-span (arm.body))
    in infer-match-arms (r.state) env scrut-ty result-ty arms (i + 1) len
+
+  check-match-exhaustiveness : UnificationState, CodexType, List AMatchArm, SourceSpan -> UnificationState
+  check-match-exhaustiveness (st) (scrut-ty) (arms) (span) =
+   let resolved = deep-resolve st scrut-ty
+   in when resolved
+    is SumTy (name) (args) (ctors) ->
+     if match-has-catchall arms 0 (list-length arms) then st
+     else let covered = collect-covered-ctors arms 0 (list-length arms) []
+      in let missing = find-missing-ctors ctors covered 0 (list-length ctors) []
+      in if list-length missing == 0 then st
+         else __record-set st "bag" (bag-add (st.bag) (make-error cdx-non-exhaustive-match ("Non-exhaustive match on '" & name.value & "': missing " & format-missing-ctors missing 0 (list-length missing) "") span))
+    is otherwise -> st
+
+  match-has-catchall : List AMatchArm, Integer, Integer -> Boolean
+  match-has-catchall (arms) (i) (len) =
+   if i == len then False
+   else let pat = (list-at arms i).pattern
+   in when pat
+    is AWildPat (s) | AVarPat (n) (s) -> True
+    is otherwise -> match-has-catchall arms (i + 1) len
+
+  collect-covered-ctors : List AMatchArm, Integer, Integer, List Text -> List Text
+  collect-covered-ctors (arms) (i) (len) (acc) =
+   if i == len then acc
+   else let pat = (list-at arms i).pattern
+   in when pat
+    is ACtorPat (ctor-name) (sub-pats) (s) ->
+     collect-covered-ctors arms (i + 1) len (list-push acc (ctor-name.value))
+    is otherwise -> collect-covered-ctors arms (i + 1) len acc
+
+  find-missing-ctors : List SumCtor, List Text, Integer, Integer, List Text -> List Text
+  find-missing-ctors (ctors) (covered) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at ctors i
+   in if text-list-contains covered (c.name.value) 0 (list-length covered)
+      then find-missing-ctors ctors covered (i + 1) len acc
+      else find-missing-ctors ctors covered (i + 1) len (list-push acc (c.name.value))
+
+  text-list-contains : List Text, Text, Integer, Integer -> Boolean
+  text-list-contains (xs) (target) (i) (len) =
+   if i == len then False
+   else if list-at xs i == target then True
+   else text-list-contains xs target (i + 1) len
+
+  format-missing-ctors : List Text, Integer, Integer, Text -> Text
+  format-missing-ctors (names) (i) (len) (acc) =
+   if i == len then acc
+   else let sep = if i == 0 then "" else ", "
+   in format-missing-ctors names (i + 1) len (acc & sep & list-at names i)
 
   PatBindResult = record {
    state : UnificationState,
@@ -441,11 +481,7 @@ Section: Infer Match
      state = st,
      env = env-bind-local env (name.value) ty
     }
-    is AWildPat (s) -> PatBindResult {
-     state = st,
-     env = env
-    }
-    is ALitPat (val) (kind) (s) -> PatBindResult {
+    is AWildPat (s) | ALitPat (val) (kind) (s) -> PatBindResult {
      state = st,
      env = env
     }
@@ -628,7 +664,8 @@ Section: Infer Expression (dispatch)
   strip-effect-from-env (env) (eff-name) =
    TypeEnv {
     bindings = strip-binding-list (env.bindings) eff-name 0 (list-length (env.bindings)) [],
-    locals = env.locals
+    locals = env.locals,
+    chapter-renames = env.chapter-renames
    }
 
   strip-binding-list : List TypeBinding, Text, Integer, Integer, List TypeBinding -> List TypeBinding

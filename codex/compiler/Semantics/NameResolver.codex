@@ -51,15 +51,17 @@ Section: Scope
 
   mutable Scope = record {
    names : SkipListText,
-   locals : SkipListText
+   locals : SkipListText,
+   chapter-renames : List RenameEntry
   }
 
-  empty-scope : Scope = Scope { names = skip-list-text-empty, locals = skip-list-text-empty }
+  empty-scope : Scope = Scope { names = skip-list-text-empty, locals = skip-list-text-empty, chapter-renames = [] }
 
   scope-has : Scope, Text -> Boolean
   scope-has (sc) (name) =
    if skip-list-text-has (sc.locals) name then True
-   else skip-list-text-has (sc.names) name
+   else let resolved = rename-lookup (sc.chapter-renames) name
+   in skip-list-text-has (sc.names) resolved
 
   scope-add : Scope, Text -> Scope
   scope-add (sc) (name) =
@@ -73,7 +75,7 @@ Section: Built-in Names
   builtin-names : List Text
   builtin-names =
    ["show", "negate", "True", "False", "Nothing",
-    "print-line", "print-line-raw", "print-line-uni", "print-uni", "print-error", "print-error-uni", "read-line",
+    "print-line", "print-line-raw", "print-line-uni", "print-uni", "print-error", "print-error-uni", "read-line", "read-line-cce",
     "open-file", "read-all", "close-file", "read-file", "read-file-raw", "read-file-uni", "read-serial-cce",
     "write-file", "write-binary", "write-binary-file", "file-exists", "list-files",
     "list-directories", "create-directory", "path-combine", "path-filename",
@@ -309,7 +311,7 @@ Section: Resolve Expressions
   resolve-handle-clauses (sc) (clauses) (i) (len) (errs) =
    if i == len then errs
    else let c = list-at clauses i
-   in let clause-scope = Scope { names = sc.names, locals = skip-list-text-clone (sc.locals) }
+   in let clause-scope = Scope { names = sc.names, locals = skip-list-text-clone (sc.locals), chapter-renames = sc.chapter-renames }
    in let sc2 = scope-add-local clause-scope (c.resume-name.value)
    in let resume-seen = skip-list-text-insert skip-list-text-empty (c.resume-name.value)
    in let param-result = scope-add-clause-params sc2 (c.params) 0 (list-length (c.params)) (c.span) resume-seen []
@@ -349,10 +351,11 @@ Section: Resolve Match Arms
   resolve-match-arms (sc) (arms) (i) (len) (errs) =
    if i == len then errs
    else let arm = list-at arms i
-   in let arm-scope = Scope { names = sc.names, locals = skip-list-text-clone (sc.locals) }
+   in let arm-scope = Scope { names = sc.names, locals = skip-list-text-clone (sc.locals), chapter-renames = sc.chapter-renames }
    in let pat-result = collect-pattern-names arm-scope (arm.pattern)
+   in let guard-errs = resolve-expr (pat-result.scope) (arm.guard)
    in let arm-errs = resolve-expr (pat-result.scope) (arm.body)
-   in resolve-match-arms sc arms (i + 1) len (errs & pat-result.errors & arm-errs)
+   in resolve-match-arms sc arms (i + 1) len (errs & pat-result.errors & guard-errs & arm-errs)
 
   collect-pattern-names : Scope, APat -> ResolveScopeResult
   collect-pattern-names (sc) (pat) =
@@ -368,8 +371,7 @@ Section: Resolve Match Arms
      then deck-record (PatResult { scope = sc, seen = seen, errors = errs & [make-error cdx-duplicate-definition ("Duplicate pattern variable: '" & name.value & "'") s] })
      else deck-record (PatResult { scope = scope-add-local sc (name.value), seen = skip-list-text-insert seen (name.value), errors = errs })
     is ACtorPat (name) (subs) (s) -> collect-ctor-pat-names sc subs 0 (list-length subs) (depth + 1) seen errs
-    is ALitPat (val) (kind) (s) -> deck-record (PatResult { scope = sc, seen = seen, errors = errs })
-    is AWildPat (s) -> deck-record (PatResult { scope = sc, seen = seen, errors = errs })
+    is ALitPat (val) (kind) (s) | AWildPat (s) -> deck-record (PatResult { scope = sc, seen = seen, errors = errs })
 
   collect-ctor-pat-names : Scope, List APat, Integer, Integer, Integer, SkipListText, List Diagnostic -> PatResult
   collect-ctor-pat-names (sc) (subs) (i) (len) (depth) (seen) (errs) =
@@ -409,14 +411,16 @@ Section: Resolve Act Statements
    in resolve-act-stmts sc2 stmts (i + 1) len (skip-list-text-insert seen (name.value)) (errs & errs2 & dup-errs)
 
 Section: Resolve All Definitions
-  resolve-all-defs : Scope, List ADef, Integer, Integer, List Diagnostic -> List Diagnostic
-  resolve-all-defs (sc) (defs) (i) (len) (errs) =
+  resolve-all-defs : Scope, List ADef, Integer, Integer, List Diagnostic, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry -> List Diagnostic
+  resolve-all-defs (sc) (defs) (i) (len) (errs) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) =
    if i == len then errs
    else let def = list-at defs i
-   in let fresh-scope = Scope { names = sc.names, locals = skip-list-text-empty }
+   in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
+      else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments slug-cache (def.chapter-slug) 0
+   in let fresh-scope = Scope { names = sc.names, locals = skip-list-text-empty, chapter-renames = chapter-rn }
    in let param-result = add-def-params fresh-scope (def.params) 0 (list-length (def.params)) []
    in let errs2 = resolve-expr (param-result.scope) (def.body)
-   in resolve-all-defs sc defs (i + 1) len (errs & param-result.errors & errs2)
+   in resolve-all-defs sc defs (i + 1) len (errs & param-result.errors & errs2) colliding assignments citations slug-cache (def.chapter-slug) chapter-rn
 
   add-def-params : Scope, List AParam, Integer, Integer, List Diagnostic -> ResolveScopeResult
   add-def-params (sc) (params) (i) (len) (errs) =
@@ -428,19 +432,22 @@ Section: Resolve All Definitions
       else add-def-params (scope-add-local sc name) params (i + 1) len errs
 
 Section: Resolve Chapter
-  resolve-chapter : AChapter -> ResolveResult
-  resolve-chapter (mod) =
-   resolve-chapter-with-citations mod []
+  resolve-chapter : AChapter, SkipListText, List ChapterAssignment -> ResolveResult
+  resolve-chapter (mod) (colliding) (assignments) =
+   resolve-chapter-with-citations mod [] colliding assignments
 
-  resolve-chapter-with-citations : AChapter, List ResolveResult -> ResolveResult
-  resolve-chapter-with-citations (mod) (imported) =
+  resolve-chapter-with-citations : AChapter, List ResolveResult, SkipListText, List ChapterAssignment -> ResolveResult
+  resolve-chapter-with-citations (mod) (imported) (colliding) (assignments) =
    let top = collect-top-level-names (mod.defs) 0 (list-length (mod.defs)) skip-list-text-empty []
    in let ctors = collect-ctor-names (mod.type-defs) 0 (list-length (mod.type-defs)) skip-list-text-empty skip-list-text-empty []
    in let effect-ops = collect-effect-op-names (mod.effect-defs) (top.names) (ctors.ctor-names) 0 (list-length (mod.effect-defs)) skip-list-text-empty []
    in let cited-names = collect-cited-names imported 0 (list-length imported) skip-list-text-empty
-   in let all-top = skip-list-text-union (skip-list-text-union (skip-list-text-clone (top.names)) (effect-ops.op-names)) cited-names
+   in let class-method-names = collect-class-method-names-nr (mod.class-defs) 0 (list-length (mod.class-defs)) skip-list-text-empty
+   in let dict-placeholder-names = collect-dict-placeholder-names-nr (mod.class-defs) (mod.instance-defs) 0 (list-length (mod.class-defs)) skip-list-text-empty
+   in let all-top = skip-list-text-union (skip-list-text-union (skip-list-text-union (skip-list-text-union (skip-list-text-clone (top.names)) (effect-ops.op-names)) cited-names) class-method-names) dict-placeholder-names
    in let sc = build-all-names-scope all-top (ctors.ctor-names) builtin-names
-   in let expr-errs = resolve-all-defs sc (mod.defs) 0 (list-length (mod.defs)) []
+   in let slug-cache = build-slug-cache assignments 0 (list-length assignments) []
+   in let expr-errs = resolve-all-defs sc (mod.defs) 0 (list-length (mod.defs)) [] colliding assignments (mod.citations) slug-cache "" []
    in let ctor-list = deck-record (skip-list-text-to-list (ctors.ctor-names))
    in deck-record (ResolveResult {
      bag = deck-record (bag-from-list (top.errors & ctors.errors & effect-ops.errors & expr-errs)),
@@ -456,6 +463,33 @@ Section: Resolve Chapter
    in let acc2 = skip-list-text-union acc (r.top-level-names)
    in let acc3 = skip-list-text-union acc2 (skip-list-text-from-list (r.ctor-names))
    in collect-cited-names results (i + 1) len acc3
+
+  collect-class-method-names-nr : List AClassDef, Integer, Integer, SkipListText -> SkipListText
+  collect-class-method-names-nr (cds) (i) (len) (acc) =
+   if i == len then acc
+   else let cd = list-at cds i
+   in collect-class-method-names-nr cds (i + 1) len (add-class-method-names-nr (cd.methods) 0 (list-length (cd.methods)) acc)
+
+  add-class-method-names-nr : List AEffectOpDef, Integer, Integer, SkipListText -> SkipListText
+  add-class-method-names-nr (ops) (i) (len) (acc) =
+   if i == len then acc
+   else let op = list-at ops i
+   in add-class-method-names-nr ops (i + 1) len (skip-list-text-insert acc (op.name.value))
+
+  collect-dict-placeholder-names-nr : List AClassDef, List AInstanceDef, Integer, Integer, SkipListText -> SkipListText
+  collect-dict-placeholder-names-nr (cds) (ids) (i) (len) (acc) =
+   if i == len then acc
+   else let cd = list-at cds i
+   in let ic = count-instances-nr ids (cd.name.value) 0 (list-length ids) 0
+   in if ic > 1
+    then collect-dict-placeholder-names-nr cds ids (i + 1) len (skip-list-text-insert acc ("__dict-of-" & (cd.name.value)))
+    else collect-dict-placeholder-names-nr cds ids (i + 1) len acc
+
+  count-instances-nr : List AInstanceDef, Text, Integer, Integer, Integer -> Integer
+  count-instances-nr (ids) (cname) (i) (len) (acc) =
+   if i == len then acc
+   else let id = list-at ids i
+   in count-instances-nr ids cname (i + 1) len (if (id.class-name.value) == cname then acc + 1 else acc)
 
 Page 1
 

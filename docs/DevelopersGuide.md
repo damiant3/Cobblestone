@@ -117,13 +117,21 @@ Prefix `mutable` on a record type to allow in-place field assignment:
 ```
 
 Field assignment (`r.field = expr`) is valid anywhere, not just in
-act blocks. The type checker rejects field assignment on immutable
-records (CDX2060). Mutable records use `__record-set` under the hood
-but the compiler enforces ownership: CDX2061 (use after consume) and
-CDX2062 (aliasing) are planned for Phase 3 (linearity tracking).
+act blocks; a field-assign may also precede the result in a let/def
+body and the statements sequence. The type checker rejects field
+assignment on immutable records (CDX2060). Mutable records use
+`__record-set` under the hood, and the compiler enforces **unique
+ownership**: a `mutable` record is read-free but may be passed on,
+aliased, or returned at most once per path — handing it to two owners
+is an error (CDX2062). Borrow-vs-move is inferred from callee
+signatures (a function that only reads it borrows; one that threads it
+onward consumes). See the Linear Types section: `linear` is for
+resources (exactly-once), `mutable` is for data (no aliasing); they
+are orthogonal disciplines.
 
-`freeze` (planned): converts `mutable T` to `T`, consuming the
-mutable reference and producing an immutable copy.
+`freeze : linear a -> a` converts a uniquely-owned value to an ordinary
+immutable one, consuming the source. Because the source is unique and
+spent, no copy is needed — `freeze` is the identity at runtime.
 
 ## Variants (Sum Types)
 
@@ -361,10 +369,48 @@ The prover recognizes these expression patterns:
 
 ## Linear Types
 
+A `linear` value must be **used exactly once** on every path — not
+dropped (leak, CDX2063) and not reused (CDX2061). It is the discipline
+for resources with a lifecycle: file handles, sockets, capabilities.
+
 ```
-  open-file : Text -> [FileSystem] linear FileHandle
+  open-file  : Text -> [FileSystem] linear FileHandle
   close-file : linear FileHandle -> [FileSystem] Nothing
+
+  consume : linear Integer -> Integer
+  consume (n) = n * 2          -- OK: used exactly once
+                               -- `0`     -> CDX2063 (never used)
+                               -- `n + n` -> CDX2061 (used twice)
 ```
+
+`linear` and `mutable` are orthogonal uniqueness disciplines: `linear`
+is exactly-once (resources — every mention counts); `mutable` is
+no-aliasing-with-free-reads (data — see Mutable Records). `freeze :
+linear a -> a` bridges them, consuming a uniquely-owned value and
+returning a shareable immutable one (the identity at runtime).
+
+Diagnostics: CDX2061 (linear used more than once / inconsistent across
+branches), CDX2063 (linear never used — leak), CDX2062 (mutable record
+aliased).
+
+## Type Classes
+
+`class` declares an interface; `instance` provides an implementation.
+Dispatch is resolved at compile time by dictionary passing — no runtime
+cost.
+
+```
+  class Showable where
+    to-text : Integer -> Text
+
+  instance Showable Integer where
+    to-text (x) = show x
+```
+
+Multiple instances, return-type polymorphism (the result type selects
+the instance), generic functions constrained by a class, and instances
+over parametric types are supported. A missing instance is a static
+error (CDX2040).
 
 ## Lists
 
@@ -410,8 +456,9 @@ with CDX3014.
 
 ```
 let  in  if  then  else  when  is  otherwise  act  end
-record  cites  claim  proof  qed  forall  exists
+record  mutable  cites  claim  proof  qed  forall  exists  induction
 linear  effect  where  with  between  and  such  that
+class  instance  lazy
 True  False
 ```
 
@@ -536,9 +583,8 @@ creates deep scope nesting. Split into smaller functions.
 
 ## Seed Rebuild Procedure
 
-The canonical seed is `seed/Codex.cdx` (CDX binary, bootable via
-codex-vm or QEMU multiboot). `seed/Codex.img` is a UEFI-bootable GPT disk image
-containing the PE32+ compiler, CDX seed, all source, and docs.
+The canonical seed is `seed/Codex.cdx` — the signed, self-sustaining CDX
+binary, bootable via codex-vm or QEMU multiboot.
 
 ### Pre-conditions
 
@@ -549,18 +595,18 @@ containing the PE32+ compiler, CDX seed, all source, and docs.
 
 1. **Run full build** — `build/build.ps1`. All phases must PASS (text round-trip + CDX fixed-point + test battery).
 2. **Install new seed** — `Copy-Item build/output/Sut.cdx seed\Codex.cdx -Force`
-3. **Build bootable image** — `build/build-boot-img.ps1`
-4. **Verify sweep** — `build/test.ps1 -Jobs 4`. Must match or exceed prior pass count.
-5. **Self-verify** — `build/test-self-verify.ps1`. Must print "THE SEED VERIFIES ITSELF".
-6. **Capture digests** — `Get-FileHash -Algorithm SHA256 seed\Codex.cdx`, same for `.img`.
-7. **Update files** — README.md (digest tables, sample counts), `docs/PM/CurrentPlan.md` (seed size, sweep counts), `docs/PM/BACKLOG.md` (sweep counts).
-8. **Submit to Perforce** — `p4 submit -d "seed: rebuild for CL <N>"`
-9. **Push to GitHub + GitLab** — stage specific files, merge with `-X ours`, push.
+   The signed SUT is at `build/output/Sut.cdx`. Do NOT use
+   `build-output/bare-metal/Codex.cdx` — that is the unsigned boot
+   kernel, not the signed SUT.
+3. **Self-verify** — `build/test-self-verify.ps1`. Must print "THE SEED VERIFIES ITSELF".
+4. **Capture digest** — `Get-FileHash -Algorithm SHA256 seed\Codex.cdx`
+5. **Submit to Perforce** — `p4 submit -d "seed: rebuild for CL <N>"`
 
 ### Rules
 
-- Never skip pingpong. Never skip self-verify. Never skip sweep.
-- One seed per CL. CDX is primary; ELF is derived.
-- IMG is the distribution artifact.
-- Signing is automatic if `D:\Projects\signing.key` exists (lives OUTSIDE the repo).
-- Never `git add -A`. Never force-push.
+- Never skip pingpong. Never skip self-verify.
+- One seed per CL. CDX is primary.
+- Signing is automatic.
+- The bootable image (`seed/Codex.img`) is a separate distribution
+  artifact built by `build/build-boot-img.ps1`. It is NOT part of the
+  seed rebuild. Do not run it during seed rebuilds.

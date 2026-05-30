@@ -121,8 +121,8 @@ Section: JavaScript Expression Emission
     is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-js-expr rec arities indent & "." & html-sanitize field & " = " & emit-js-expr val arities indent & ")"
     is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-js-expr body arities indent & ")"
     is IrAwait (task) (ty) (sp) -> "(await " & emit-js-expr task arities indent & ")"
-    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-js-expr body arities indent
-    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-js-expr body arities indent
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> "(console.warn('effect handler not supported in web target'), " & emit-js-expr body arities indent & ")"
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> "(console.warn('with-timeout not supported in web target'), " & emit-js-expr body arities indent & ")"
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-js-try max body fb fail arities indent
     is IrError (msg) (ty) (sp) -> "(() => { throw new Error(" & "\"" & js-escape msg & "\"" & "); })()"
 
@@ -158,7 +158,13 @@ Section: Let Bindings
 
   emit-js-let : Text, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-js-let (name) (val) (body) (arities) (indent) =
-   "(() => {\n" & html-indent (indent + 1) & "const " & html-sanitize name & " = " & emit-js-expr val arities (indent + 1) & ";\n" & html-indent (indent + 1) & "return " & emit-js-expr body arities (indent + 1) & ";\n" & html-indent indent & "})()"
+   "(() => {\n" & html-indent (indent + 1) & "const " & html-sanitize name & " = " & emit-js-expr val arities (indent + 1) & ";\n" & emit-js-let-tail body arities (indent + 1) & html-indent indent & "})()"
+
+  emit-js-let-tail : IRExpr, List ArityEntry, Integer -> Text
+  emit-js-let-tail (body) (arities) (indent) =
+   when body
+    is IrLet (name) (ty) (val) (inner) (sp) -> html-indent indent & "const " & html-sanitize name & " = " & emit-js-expr val arities indent & ";\n" & emit-js-let-tail inner arities indent
+    is otherwise -> html-indent indent & "return " & emit-js-expr body arities indent & ";\n"
 
 Section: Apply
 
@@ -333,6 +339,7 @@ Section: Definition Emission
    else if n == "check-sd-status" then True
    else if n == "mount-widget" then True
    else if n == "int-to-css-color" then True
+   else if n == "mount-widget-themed" then True
    else if n == "state-get" then True
    else if n == "state-set" then True
    else if n == "state-get-text" then True
@@ -340,6 +347,29 @@ Section: Definition Emission
    else if n == "next-card-id" then True
    else if n == "theme-to-css" then True
    else if n == "inject-theme-css" then True
+   else if n == "fetch-then" then True
+   else if n == "fetch-get-then" then True
+   else if n == "dom-on-click" then True
+   else if n == "dom-on-input" then True
+   else if n == "dom-on-key" then True
+   else if n == "set-render" then True
+   else if n == "state-set-render" then True
+   else if n == "state-set-text-render" then True
+   else if n == "request-render" then True
+   else if n == "show-alert" then True
+   else if n == "show-confirm" then True
+   else if n == "show-prompt" then True
+   else if n == "close-dialog" then True
+   else if n == "dom-set-aria" then True
+   else if n == "dom-set-role" then True
+   else if n == "css-animate-spin" then True
+   else if n == "css-animate-pulse" then True
+   else if n == "css-animate-bounce" then True
+   else if n == "css-transition" then True
+   else if n == "save-theme" then True
+   else if n == "load-theme" then True
+   else if n == "save-layout" then True
+   else if n == "load-layout" then True
    else False
 
   emit-js-def : IRDef, List ArityEntry -> Text
@@ -393,6 +423,10 @@ Section: Chapter Emission
 
   emit-dom-builtins : Text
   emit-dom-builtins =
+   emit-dom-core & emit-dom-ajax & emit-dom-state & emit-dom-events & emit-dom-reactive & emit-dom-dialog & emit-dom-a11y & emit-dom-anim & emit-dom-persist & emit-dom-sd & emit-dom-theme & emit-dom-widget
+
+  emit-dom-core : Text
+  emit-dom-core =
    "function dom_get(id){return document.getElementById(id);}\n"
    & "function dom_create(tag){return document.createElement(tag);}\n"
    & "function dom_set_attr(el,k,v){el.setAttribute(k,v);return el;}\n"
@@ -410,15 +444,127 @@ Section: Chapter Emission
    & "function dom_query(sel){return document.querySelector(sel);}\n"
    & "function dom_body(){return document.body;}\n"
    & "function random_int(lo,hi){return lo+Math.floor(Math.random()*(hi-lo+1));}\n"
-   & "function fetch_json(u,m,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=b;return fetch(u,o).then(function(r){return r.json();});}\n"
-   & "function json_stringify(v){return JSON.stringify(v);}\n"
-   & "function json_parse(s){return JSON.parse(s);}\n"
    & "function set_timeout(fn,ms){return setTimeout(fn,ms);}\n"
    & "function local_storage_get(k){try{return localStorage.getItem(k)||'';}catch(e){return'';}}\n"
    & "function local_storage_set(k,v){try{localStorage.setItem(k,v);}catch(e){}return 0;}\n"
-   & "var _st={};function state_get(k){return _st[k]!==undefined?_st[k]:0;}function state_set(k,v){_st[k]=v;return v;}function state_get_text(k){return _st[k]||'';}function state_set_text(k,v){_st[k]=v;return v;}\n"
    & "var _cc=0;function next_card_id(x){_cc++;return 'c'+_cc;}\n"
-   & "function check_sd_status(x){fetch('/api/config').then(function(r){return r.json();}).then(function(d){"
+
+  emit-dom-ajax : Text
+  emit-dom-ajax =
+   "function fetch_json(u,m,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=b;return fetch(u,o).then(function(r){return r.json();});}\n"
+   & "function json_stringify(v){return JSON.stringify(v);}\n"
+   & "function json_parse(s){return JSON.parse(s);}\n"
+   & "function fetch_then(u,m,b,cb){var o={method:m,headers:{'Content-Type':'application/json'}};"
+   & "if(b)o.body=b;fetch(u,o).then(function(r){return r.json()})"
+   & ".then(function(d){cb(json_stringify(d))})"
+   & ".catch(function(e){cb('{\"error\":\"'+e.message+'\"}')});return 0}\n"
+   & "function fetch_get_then(u,cb){return fetch_then(u,'GET','',cb)}\n"
+
+  emit-dom-state : Text
+  emit-dom-state =
+   "var _st={};function state_get(k){return _st[k]!==undefined?_st[k]:0;}function state_set(k,v){_st[k]=v;return v;}function state_get_text(k){return _st[k]||'';}function state_set_text(k,v){_st[k]=v;return v;}\n"
+
+  emit-dom-events : Text
+  emit-dom-events =
+   "function dom_on_click(el,cb){el.addEventListener('click',function(){cb(el.id||'')});return el}\n"
+   & "function dom_on_input(el,cb){el.addEventListener('input',function(){cb(el.value||'')});return el}\n"
+   & "function dom_on_key(el,cb){el.addEventListener('keydown',function(e){cb(e.key)});return el}\n"
+
+  emit-dom-reactive : Text
+  emit-dom-reactive =
+   "var _renderFn=null;var _renderPending=false;\n"
+   & "function set_render(fn){_renderFn=fn;return 0}\n"
+   & "function request_render(x){if(_renderFn&&!_renderPending){"
+   & "_renderPending=true;requestAnimationFrame(function(){"
+   & "_renderPending=false;_renderFn(0)})}return 0}\n"
+   & "function state_set_render(k,v){_st[k]=v;request_render(0);return v}\n"
+   & "function state_set_text_render(k,v){_st[k]=v;request_render(0);return v}\n"
+
+  emit-dom-dialog : Text
+  emit-dom-dialog = emit-dom-dialog-a & emit-dom-dialog-b & emit-dom-dialog-c
+
+  emit-dom-dialog-a : Text
+  emit-dom-dialog-a =
+   "function _dlg(t,m,bs,inp){var d=document.createElement('dialog');"
+   & "d.className='wk-dialog';"
+   & "d.innerHTML='<h3>'+t+'</h3><p>'+m+'</p>';"
+   & "if(inp){var i=document.createElement('input');"
+   & "i.id='dlg-input';i.className='wk-input';"
+   & "i.placeholder=inp;d.appendChild(i)}\n"
+
+  emit-dom-dialog-b : Text
+  emit-dom-dialog-b =
+   "var r=document.createElement('div');"
+   & "r.className='wk-row';r.style.gap='8px';"
+   & "r.style.justifyContent='flex-end';r.style.marginTop='12px';"
+   & "bs.forEach(function(b){var btn=document.createElement('button');"
+   & "btn.className='wk-btn';btn.textContent=b.text;"
+   & "btn.addEventListener('click',function(){d.close(b.val)});"
+   & "r.appendChild(btn)});"
+   & "d.appendChild(r);document.body.appendChild(d);return d}\n"
+
+  emit-dom-dialog-c : Text
+  emit-dom-dialog-c =
+   "function show_alert(t,m,cb){"
+   & "var d=_dlg(t,m,[{text:'OK',val:'ok'}],null);"
+   & "d.addEventListener('close',function(){d.remove();cb('ok')});"
+   & "d.showModal();return 0}\n"
+   & "function show_confirm(t,m,cb){"
+   & "var d=_dlg(t,m,[{text:'Cancel',val:'cancel'},{text:'OK',val:'ok'}],null);"
+   & "d.addEventListener('close',function(){d.remove();"
+   & "cb(d.returnValue||'cancel')});d.showModal();return 0}\n"
+   & "function show_prompt(t,m,p,cb){"
+   & "var d=_dlg(t,m,[{text:'Cancel',val:'cancel'},{text:'OK',val:'ok'}],p);"
+   & "d.addEventListener('close',function(){"
+   & "var v=d.returnValue==='ok'?(d.querySelector('#dlg-input')||{}).value||'':'';"
+   & "d.remove();cb(v)});d.showModal();return 0}\n"
+   & "function close_dialog(x){var d=document.querySelector('dialog[open]');"
+   & "if(d)d.close();return 0}\n"
+
+  emit-dom-a11y : Text
+  emit-dom-a11y =
+   "function dom_set_aria(el,k,v){el.setAttribute('aria-'+k,v);return el}\n"
+   & "function dom_set_role(el,r){el.setAttribute('role',r);return el}\n"
+
+  emit-dom-anim : Text
+  emit-dom-anim = emit-dom-anim-setup & emit-dom-anim-fns
+
+  emit-dom-anim-setup : Text
+  emit-dom-anim-setup =
+   "var _animCSS=false;function _ensureAnim(){if(_animCSS)return;"
+   & "_animCSS=true;var s=document.createElement('style');"
+   & "s.textContent='@keyframes wk-spin{to{transform:rotate(360deg)}}"
+   & "@keyframes wk-pulse{0%,100%{opacity:1}50%{opacity:.4}}"
+   & "@keyframes wk-bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}';"
+   & "document.head.appendChild(s)}\n"
+
+  emit-dom-anim-fns : Text
+  emit-dom-anim-fns =
+   "function css_animate_spin(el,ms){_ensureAnim();"
+   & "el.style.animation='wk-spin '+ms+'ms linear infinite';return el}\n"
+   & "function css_animate_pulse(el,ms){_ensureAnim();"
+   & "el.style.animation='wk-pulse '+ms+'ms ease-in-out infinite';return el}\n"
+   & "function css_animate_bounce(el,ms){_ensureAnim();"
+   & "el.style.animation='wk-bounce '+ms+'ms ease-in-out infinite';return el}\n"
+   & "function css_transition(el,prop,ms){"
+   & "el.style.transition=prop+' '+ms+'ms ease';return el}\n"
+
+  emit-dom-persist : Text
+  emit-dom-persist = emit-dom-persist-theme & emit-dom-persist-layout
+
+  emit-dom-persist-theme : Text
+  emit-dom-persist-theme =
+   "function save_theme(n,th){try{localStorage.setItem('codex-theme-'+n,JSON.stringify(th))}catch(e){}return 0}\n"
+   & "function load_theme(n){try{var s=localStorage.getItem('codex-theme-'+n);return s?JSON.parse(s):null}catch(e){return null}}\n"
+
+  emit-dom-persist-layout : Text
+  emit-dom-persist-layout =
+   "function save_layout(n,w){try{localStorage.setItem('codex-layout-'+n,JSON.stringify(w))}catch(e){}return 0}\n"
+   & "function load_layout(n){try{var s=localStorage.getItem('codex-layout-'+n);return s?JSON.parse(s):null}catch(e){return null}}\n"
+
+  emit-dom-sd : Text
+  emit-dom-sd =
+   "function check_sd_status(x){fetch('/api/config').then(function(r){return r.json();}).then(function(d){"
    & "var dot=dom_get('sd-dot');var lbl=dom_get('sd-label');"
    & "if(dot)dot.style.background='#4caf50';if(lbl)lbl.textContent=(d.current_model||'SD').split('.')[0].substring(0,25);"
    & "}).catch(function(){var dot=dom_get('sd-dot');var lbl=dom_get('sd-label');"
@@ -430,7 +576,11 @@ Section: Chapter Emission
    & "if(hero){hero.src=d.url;hero.style.display='';var em=dom_get('hero-empty');if(em)em.style.display='none';}}"
    & "var sp=card.querySelector('.sp');if(sp)sp.style.display='none';}}).catch(function(){"
    & "if(card){var sp=card.querySelector('.sp');if(sp)sp.style.display='none';}});return 0;}\n"
-   & "function _c(n){var r=(n>>16)&255,g=(n>>8)&255,b=n&255;return'#'+((1<<24)|(r<<16)|(g<<8)|b).toString(16).slice(1);}\n"
+
+  emit-dom-theme : Text
+  emit-dom-theme =
+   "function _c(n){var r=(n>>16)&255,g=(n>>8)&255,b=n&255;return'#'+((1<<24)|(r<<16)|(g<<8)|b).toString(16).slice(1);}\n"
+   & "function int_to_css_color(n){return _c(n);}\n"
    & "function _ws(ws,sel){var s=sel+'{';if(ws.ws_bg)s+='background:'+_c(ws.ws_bg)+';';\n"
    & "if(ws.ws_fg)s+='color:'+_c(ws.ws_fg)+';';\n"
    & "var p=ws.ws_padding;if(p)s+='padding:'+p.edge_top+'px '+p.edge_right+'px '+p.edge_bottom+'px '+p.edge_left+'px;';\n"
@@ -459,6 +609,61 @@ Section: Chapter Emission
    & "return s;}\n"
    & "function inject_theme_css(th){var s=document.createElement('style');\n"
    & "s.textContent=theme_to_css(th);document.head.appendChild(s);return 0;}\n"
+
+  emit-dom-widget : Text
+  emit-dom-widget = emit-dom-widget-style & emit-dom-widget-create & emit-dom-widget-mount
+
+  emit-dom-widget-style : Text
+  emit-dom-widget-style =
+   "var _wkTheme=null;\n"
+   & "function _wkStyle(ws,el){if(!ws)return;"
+   & "if(ws.ws_bg)el.style.background=_c(ws.ws_bg);"
+   & "if(ws.ws_fg)el.style.color=_c(ws.ws_fg);"
+   & "var p=ws.ws_padding;if(p&&(p.edge_top||p.edge_right||p.edge_bottom||p.edge_left))"
+   & "el.style.padding=p.edge_top+'px '+p.edge_right+'px '+p.edge_bottom+'px '+p.edge_left+'px';"
+   & "var m=ws.ws_margin;if(m&&(m.edge_top||m.edge_right||m.edge_bottom||m.edge_left))"
+   & "el.style.margin=m.edge_top+'px '+m.edge_right+'px '+m.edge_bottom+'px '+m.edge_left+'px';"
+   & "var b=ws.ws_border;if(b&&b.bdr_top&&b.bdr_top.brd_width>0){"
+   & "el.style.border=b.bdr_top.brd_width+'px solid '+_c(b.bdr_top.brd_color);"
+   & "if(b.bdr_corner&&b.bdr_corner._tag==='CornerRound')el.style.borderRadius=b.bdr_corner._0+'px'}"
+   & "if(ws.ws_min_width>0)el.style.minWidth=ws.ws_min_width+'px';"
+   & "if(ws.ws_min_height>0)el.style.minHeight=ws.ws_min_height+'px'}\n"
+   & "function _wkSS(tag,state){if(!_wkTheme)return null;"
+   & "var ss=tag==='WkPanel'?_wkTheme.th_panel:tag==='WkLabel'?_wkTheme.th_label:"
+   & "tag==='WkButton'?_wkTheme.th_button:tag==='WkInput'?_wkTheme.th_input:"
+   & "tag==='WkGauge'?_wkTheme.th_gauge:tag==='WkSeparator'?_wkTheme.th_separator:_wkTheme.th_panel;"
+   & "if(!ss)return null;"
+   & "return state===1?ss.ss_hover:state===2?ss.ss_pressed:"
+   & "state===3?ss.ss_disabled:state===4?ss.ss_focused:ss.ss_normal}\n"
+
+  emit-dom-widget-create : Text
+  emit-dom-widget-create =
+   "function _wk(n){var k=n.wn_kind,el;"
+   & "if(k._tag==='WkPanel')el=document.createElement('div');"
+   & "else if(k._tag==='WkLabel'){el=document.createElement('span');el.textContent=k._0}"
+   & "else if(k._tag==='WkButton'){el=document.createElement('button');el.textContent=k._0}"
+   & "else if(k._tag==='WkInput'){el=document.createElement('input');el.value=k._0}"
+   & "else if(k._tag==='WkGauge'){el=document.createElement('progress');el.value=k._0;el.max=k._1}"
+   & "else if(k._tag==='WkSeparator')el=document.createElement('hr');"
+   & "else{el=document.createElement('div');el.dataset.custom=k._0||''}"
+   & "if(n.wn_id)el.id=n.wn_id;"
+   & "var t=k._tag;el.classList.add('wk-'+(t==='WkPanel'?'panel':t==='WkLabel'?'label':"
+   & "t==='WkButton'?'btn':t==='WkInput'?'input':t==='WkGauge'?'gauge':t==='WkSeparator'?'sep':'panel'));"
+   & "var d=n.wn_layout_dir;if(d){if(d._tag==='DirRow')el.classList.add('wk-row');"
+   & "if(d._tag==='DirColumn')el.classList.add('wk-col')}"
+   & "if(n.wn_gap>0)el.style.gap=n.wn_gap+'px';"
+   & "if(n.wn_flex>0)el.style.flex=n.wn_flex;"
+   & "var st=n.wn_state||0;"
+   & "if(st===3&&el.disabled!==undefined)el.disabled=true;"
+   & "var ws=_wkSS(t,st);if(ws)_wkStyle(ws,el);"
+   & "var ch=n.wn_children||[];"
+   & "for(var i=0;i<ch.length;i++)el.appendChild(_wk(ch[i]));"
+   & "return el}\n"
+
+  emit-dom-widget-mount : Text
+  emit-dom-widget-mount =
+   "function mount_widget(n){var a=document.getElementById('app');a.innerHTML='';a.appendChild(_wk(n));return 0}\n"
+   & "function mount_widget_themed(th,n){_wkTheme=th;return mount_widget(n)}\n"
 
   is-builtin-type : Text -> Boolean
   is-builtin-type (n) =

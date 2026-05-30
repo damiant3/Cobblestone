@@ -9,44 +9,14 @@ $ErrorActionPreference = 'Stop'
 $WebDir = $PSScriptRoot
 $Repo   = (Resolve-Path (Join-Path $WebDir '..\..')).Path
 
-# ── Game catalog ──────────────────────────────────────────────────────
+# ── Game catalog (loaded from games.json) ─────────────────────────────
 
-$GameCatalog = @(
-    @{ Id='royalur';       Name='Royal Game of Ur';    Cat='Board';    Desc='Ancient Mesopotamian race game, 2600 BCE — capture, rosettes, tetrahedral dice'; Players='2'; Icon='&#x1F3DB;' }
-    @{ Id='backgammon';    Name='Backgammon';          Cat='Board';    Desc='24-point board with dice-based movement and doubling cube'; Players='2'; Icon='&#x1F3B2;' }
-    @{ Id='battleship';    Name='Battleship';          Cat='Strategy'; Desc='10x10 grid naval combat — hunt the hidden fleet'; Players='2'; Icon='&#x1F6A2;' }
-    @{ Id='blackjack';     Name='Blackjack';           Cat='Card';     Desc='Beat the dealer to 21 with basic strategy AI'; Players='1'; Icon='&#x1F0CF;' }
-    @{ Id='bridge';        Name='Bridge';              Cat='Card';     Desc='4-player contract bridge with HCP bidding'; Players='4'; Icon='&#x2660;' }
-    @{ Id='checkers';      Name='Checkers';            Cat='Board';    Desc='English draughts with king promotions and minimax AI'; Players='2'; Icon='&#x26C0;' }
-    @{ Id='connect4';      Name='Connect Four';        Cat='Board';    Desc='Drop discs to connect four — alpha-beta pruning AI'; Players='2'; Icon='&#x1F534;' }
-    @{ Id='crazyeights';   Name='Crazy Eights';        Cat='Card';     Desc='Eights are wild — match suit or rank to shed cards'; Players='2-4'; Icon='&#x1F0A8;' }
-    @{ Id='dotsandboxes';  Name='Dots and Boxes';      Cat='Other';    Desc='Complete boxes on a 4x4 dot grid to score points'; Players='2'; Icon='&#x25A2;' }
-    @{ Id='game2048';      Name='2048';                Cat='Puzzle';   Desc='Slide and merge tiles on a 4x4 grid'; Players='1'; Icon='&#x1F522;' }
-    @{ Id='go';            Name='Go';                  Cat='Board';    Desc='9x9 board with area scoring and Ko rule'; Players='2'; Icon='&#x26AB;' }
-    @{ Id='gofish';        Name='Go Fish';             Cat='Card';     Desc='Ask for ranks to complete books of four'; Players='2-4'; Icon='&#x1F41F;' }
-    @{ Id='hexgame';       Name='Hex';                 Cat='Board';    Desc='11x11 board — connect your edges with BFS flood-fill'; Players='2'; Icon='&#x2B22;' }
-    @{ Id='hexwar';        Name='Hex War';             Cat='Strategy'; Desc='Hex-and-counter wargame with terrain and CRT'; Players='2'; Icon='&#x2694;' }
-    @{ Id='liarsdice';     Name="Liar's Dice";          Cat='Dice';     Desc='Bluff and bid on hidden dice — probability AI'; Players='2-4'; Icon='&#x1F3B2;' }
-    @{ Id='life';          Name="Conway's Life";         Cat='Puzzle';   Desc='20x20 toroidal cellular automaton — B3/S23 rules'; Players='0'; Icon='&#x1F9EC;' }
-    @{ Id='mahjong';       Name='Mahjong Solitaire';   Cat='Other';    Desc='Shanghai variant — match and remove 144 free tiles'; Players='1'; Icon='&#x1F004;' }
-    @{ Id='mancala';       Name='Mancala';             Cat='Board';    Desc='Kalah variant with sowing, capture, and extra turns'; Players='2'; Icon='&#x1F95C;' }
-    @{ Id='mastermind';    Name='Mastermind';           Cat='Puzzle';   Desc='Crack the 4-peg color code with elimination AI'; Players='1'; Icon='&#x1F510;' }
-    @{ Id='minesweeper';   Name='Minesweeper';         Cat='Puzzle';   Desc='9x9 grid with 10 mines — flood-fill and zero-risk AI'; Players='1'; Icon='&#x1F4A3;' }
-    @{ Id='monopoly';      Name='Monopoly';            Cat='Strategy'; Desc='40-space property trading — simplified, no houses'; Players='2-4'; Icon='&#x1F3E0;' }
-    @{ Id='othello';       Name='Othello';             Cat='Board';    Desc='8x8 Reversi — flip pieces in all 8 directions'; Players='2'; Icon='&#x25CF;' }
-    @{ Id='pinochle';      Name='Pinochle';            Cat='Card';     Desc='4-player trick-taking with 48-card meld deck'; Players='4'; Icon='&#x1F0DB;' }
-    @{ Id='poker';         Name='Poker';               Cat='Card';     Desc='5-card draw with 9 hand ranks'; Players='2'; Icon='&#x1F0A1;' }
-    @{ Id='pokervariants'; Name='Poker Variants';      Cat='Card';     Desc='7 variants — Stud, Baseball, Hi/Low Chicago, more'; Players='2-6'; Icon='&#x1F0AA;' }
-    @{ Id='risk';          Name='Risk';                Cat='Strategy'; Desc='12 territories in 4 continents — conquer the world'; Players='2-4'; Icon='&#x1F30D;' }
-    @{ Id='rps';           Name='Rock Paper Scissors'; Cat='Other';    Desc='Best-of-N with history-weighted counter AI'; Players='2'; Icon='&#x270A;' }
-    @{ Id='setgame';       Name='The Set Game';        Cat='Other';    Desc='Find sets among 81 cards with 4 attributes'; Players='1+'; Icon='&#x1F0DF;' }
-    @{ Id='spider';        Name='Spider Solitaire';    Cat='Card';     Desc='2-suit 104-card solitaire in 10 tableau columns'; Players='1'; Icon='&#x1F578;' }
-    @{ Id='sudoku';        Name='Sudoku';              Cat='Puzzle';   Desc='9x9 grid generator and backtracking solver'; Players='1'; Icon='&#x1F9E9;' }
-    @{ Id='tictactoe';     Name='Tic-Tac-Toe';        Cat='Board';    Desc='3x3 classic with perfect-play minimax AI'; Players='2'; Icon='&#x274C;' }
-    @{ Id='war';           Name='War';                 Cat='Card';     Desc='Flip and compare — ties trigger war rounds'; Players='2'; Icon='&#x1F4A5;' }
-    @{ Id='yahtzee';       Name='Yahtzee';             Cat='Dice';     Desc='5 dice, 3 rolls, 13 scoring categories'; Players='1+'; Icon='&#x1F3AF;' }
-    @{ Id='magic';         Name='Magic: The Gathering'; Cat='Magic';   Desc='Full rules engine — 20 modules, AI personalities, tournaments'; Players='2'; Icon='&#x2728;' }
-)
+$GamesJson = Join-Path $WebDir 'games.json'
+$GameCatalog = if (Test-Path $GamesJson) {
+    (Get-Content $GamesJson -Raw | ConvertFrom-Json) | ForEach-Object {
+        @{ Id=$_.id; Name=$_.name; Cat=$_.cat; Desc=$_.desc; Players=$_.players; Icon=$_.icon }
+    }
+} else { @() }
 
 # ── Data-gathering ────────────────────────────────────────────────────
 
@@ -385,7 +355,23 @@ try {
         try {
             $path = $ctx.Request.Url.AbsolutePath
 
-            if ($path -eq '/' -or $path -eq '/index') {
+            if ($path -eq '/api/status') {
+                $html = Build-StatusContent
+                $buf = [System.Text.Encoding]::UTF8.GetBytes($html)
+                $resp.ContentType = 'text/html; charset=utf-8'
+                $resp.ContentLength64 = $buf.Length
+                $resp.StatusCode = 200
+                $resp.OutputStream.Write($buf, 0, $buf.Length)
+            }
+            elseif ($path -eq '/api/games') {
+                $json = if (Test-Path $GamesJson) { [System.IO.File]::ReadAllText($GamesJson) } else { '[]' }
+                $buf = [System.Text.Encoding]::UTF8.GetBytes($json)
+                $resp.ContentType = 'application/json; charset=utf-8'
+                $resp.ContentLength64 = $buf.Length
+                $resp.StatusCode = 200
+                $resp.OutputStream.Write($buf, 0, $buf.Length)
+            }
+            elseif ($path -eq '/' -or $path -eq '/index') {
                 $html = Build-MainPage
                 $buf = [System.Text.Encoding]::UTF8.GetBytes($html)
                 $resp.ContentType = 'text/html; charset=utf-8'

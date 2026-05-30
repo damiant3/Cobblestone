@@ -38,7 +38,7 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-05-27:
+As of 2026-05-29:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
@@ -142,11 +142,11 @@ As of 2026-05-27:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,267,679 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (2,400,385 bytes) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 (file) | `011DB01D75F8AAE4AD269C00A9AB29387F3877B51FD7D782913F65A2EF80B2EC` |
+| SHA-256 (file) | `96E86720E8F60EB8A1E872E6A24991B994F47DF131C863D9687367C0018E2F29` |
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
@@ -361,6 +361,8 @@ Section: Linear Types
   open-file : Text -> [FileSystem] linear FileHandle
   close-file : linear FileHandle -> [FileSystem] Nothing
 
+  freeze : linear a -> a
+
 Section: Database Queries (Codex.DB)
 
   employees-table : TableDef
@@ -441,6 +443,86 @@ Section: Proofs and Dependent Types
   wrap-proof = assume
 
 Page 1
+```
+
+### Linear types and safe mutation
+
+Codex pulls apart two ideas that most languages tangle together:
+**`linear` is for resources, `mutable` is for data** — two orthogonal
+uniqueness disciplines, neither implying the other.
+
+A `linear` value must be **used exactly once** along every path. It can't
+be silently dropped — a file you forgot to close is a leak (CDX2063) — and
+it can't be used twice — a handle you closed and then read is a
+double-use (CDX2061). Every mention counts. This is the discipline for
+resources with a lifecycle: file handles, sockets, capabilities.
+
+```codex
+  consume : linear Integer -> Integer
+  consume (n) = n * 2          -- OK: used exactly once
+  -- leak (n)  = 0             -- REJECTED CDX2063: linear value never used
+  -- twice (n) = n + n         -- REJECTED CDX2061: used twice
+```
+
+A `mutable` record is the other face of uniqueness: **data you own and
+update in place**. You may read its fields as often as you like, but you
+may not *alias* it — handing the same record to two owners is a compile
+error (CDX2062). In-place field assignment (`r.field = v`) is safe
+*precisely because* the record is uniquely owned: no GC, no copy, no
+hidden sharing.
+
+```codex
+  mutable GameState = record { turn : Integer, score : Integer }
+
+  add-score : mutable GameState, Integer -> mutable GameState
+  add-score (gs) (points) =
+    gs.score = gs.score + points
+    gs.turn = gs.turn + 1
+    gs
+```
+
+`freeze : linear a -> a` is the one-way door between the two worlds. It
+consumes a uniquely-owned value and hands back an ordinary immutable one
+that can be shared freely. Because the source is unique and is spent here,
+no copy is needed — `freeze` is the identity, and its whole meaning lives
+in the type.
+
+Borrow-vs-move is inferred from signatures: pass a mutable record to a
+function that only reads it (returns a plain value) and you *borrow* it;
+pass it to one that threads it onward and you *consume* it. The compiler
+itself is the proof — its hottest state records (the type-checker's
+unification state, the lexer, the name-resolver scope) carry the `mutable`
+discipline, and the self-compile reports zero aliasing violations.
+
+### Type classes
+
+`class`/`instance` give ad-hoc polymorphism through dictionary passing,
+fully resolved at compile time — zero runtime dispatch:
+
+```codex
+  class Showable where
+    to-text : Integer -> Text
+
+  instance Showable Integer where
+    to-text (x) = show x
+```
+
+Multiple instances, **return-type polymorphism** (the result type selects
+the instance), generic functions constrained by a class, and instances
+over parametric types all work. A missing instance is a static error
+(CDX2040), never a runtime crash.
+
+### Pattern matching: multi-pattern arms and exhaustiveness
+
+One `when`/`is` arm can match several shapes with `|`, and the compiler
+checks that every match is **exhaustive** — a forgotten constructor is a
+compile error, not a silent fall-through.
+
+```codex
+  describe : Shape -> Text
+  describe (s) = when s
+    is Circle (r) | Rectangle (w) (h) -> "has area"
+    -- dropping a constructor here is a static non-exhaustiveness error
 ```
 
 ### Proofs and dependent types
@@ -724,6 +806,16 @@ old/                      Retired C# reference compiler — historical only
 | Editor undo/redo | Ctrl+Z/Ctrl+Y wired to undo/redo stacks, snapshots on every edit (char, backspace, delete, enter) | 2026-05-23 |
 | **Dependent types** | **PropEqTy: types carry values. `Nil === Nil` in type position produces PropEqTy; `Refl` verified by unifier; invalid proofs are type errors. ProofTy, proof erasure (zero machine code), CDX4020 diagnostic. Builtins: Refl, sym, trans, cong, assume. claim/proof parser, induction keyword.** | **2026-05-23** |
 | **420 modules** | **24 quires, 53 compiler files, 205 test samples** | **2026-05-23** |
+| **Lazy evaluation** | **`lazy` keyword with memoized thunks; `force` builtin** | **2026-05-26** |
+| Serial removal | TCP eliminated from the build — memory-mapped I/O (ring-buffer in, UART out), 95+ plug scripts; REPL batch compile (140s→30s); VM `-portfwd` | 2026-05-27 |
+| Explorer app | 17-module parameter explorer with web UI | 2026-05-27 |
+| Multi-pattern matching | `\|` alternation in `when`/`is` arms (P1) | 2026-05-27 |
+| Exhaustiveness checking | A non-exhaustive `when` is a static error (P8) | 2026-05-28 |
+| Constant folding | Compile-time arithmetic folding (P9); in-compiler IR dead-code elimination (`ir-prune-unreachable`) | 2026-05-28 |
+| **Type classes** | **`class`/`instance` via dictionary passing: multi-instance dispatch, return-type polymorphism, generic constrained functions, parametric-type instances, missing-instance diagnostic (CDX2040)** | **2026-05-29** |
+| **Linear types (Phase 3)** | **`linear` resources used exactly once (CDX2061/2063); `freeze : linear a -> a` immutable bridge; `mutable`-record aliasing checked (CDX2062, signature-inferred borrow/move); `linear`=resources & `mutable`=data as orthogonal disciplines; field-assign sequencing** | **2026-05-29** |
+| Mutable records + pointer map | In-place record mutation under linear ownership; pointer-map foundation (is-pointer-type, pmap-walk, gated conformance check) | 2026-05-29 |
+| **236 foreword modules** | **24 quires, 54 compiler files, 50 transpiler plugs; CDX hard fixed point (seed `96E86720`)** | **2026-05-29** |
 
 ---
 

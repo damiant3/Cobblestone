@@ -213,13 +213,34 @@ S = 1,174,861 bytes):
 | PARSE | 5.4 MB | 25.4 MB | tokens × 265 + 1 MB |
 | DESUGAR | 19.2 MB | 0.04 MB | S × 21 + 1 MB |
 | SCOPE | 11.6 MB | 31.7 MB | S × 52 + 1 MB |
-| CHECK | 66.1 MB | ~0 | S × 95 + 1 MB |
+| CHECK | 66.1 MB | ~0 | S × 400 + 1 MB |
 | LOWER | 92.5 MB | ~0 | S × 300 + 1 MB |
 | RESOLVE | — | — | S × 200 + 1 MB (CDX only) |
 | LIFT | — | — | S × 200 + 1 MB (CDX only) |
 | EMIT | ~48 MB | per-func | defs × 64 KB + 16 MB |
 
 Cumulative deck (TEXT): ~208 MB. Gap to stack: ~1,834 MB.
+
+### CHECK Deck Overflow (CL 2574/2596)
+
+The CHECK phase survey originally used `S × 95 + 1 MB`. This was
+sufficient for normal compiler source (~2-3 type definitions per
+file) but failed for plug source where PlugTypes.codex defines
+~40 types in 368 lines (~15x normal type density). The deck
+overflowed silently (CDX9002 was a warning), corrupting heap data.
+Subsequent type-checker reads hit corrupted `ParamEntry` records
+containing non-canonical addresses, triggering GPF.
+
+Three fixes: (1) `survey-headroom` (120%) now applies to CHECK,
+(2) `survey-check-mul` raised from 95 → 200 → 400, (3) CDX9002
+promoted from warning to error (halts cleanly on overflow).
+
+The survey formula with headroom:
+`deck_height = source_len × survey-check-mul × 120 / 100 + 1 MB`
+
+At `survey-check-mul = 400`: a 76 KB plug source gets
+`76339 × 480 + 1 MB ≈ 36.6 MB` for CHECK. This is sufficient
+for type-dense source.
 
 Prior measurement (CL 2169, S ≈ 1,158,497 bytes) for comparison:
 
@@ -349,7 +370,7 @@ stays within capacity. The `accum-at-capacity` guard in
 
 | Buffer | Size | Contents |
 |--------|------|----------|
-| code-buffer | 4 MB (`code-buffer-size`) | x86-64 machine code; written sequentially via `st-append-code` |
+| code-buffer | 8 MB (`code-buffer-size`) | x86-64 machine code; written sequentially via `st-append-code` |
 | data-buffer | 512 KB (`data-buffer-size`) | String literals, CCE tables, static data |
 
 Current selfhost binary: ~2.1 MB code, ~100 KB data. The 4 MB code
@@ -453,7 +474,7 @@ avoids the issue entirely with ample margin.
 ### Code Buffer Ceiling
 
 The compiler's own code segment is approximately 2.1 MB. The code
-buffer (`code-buffer-size`) is 4 MB with roughly 1.9 MB headroom. The
+buffer (`code-buffer-size`) is 8 MB with roughly 5.9 MB headroom. The
 serial ring buffer at 0x500000 (5 MB) sits between the code and heap,
 providing a hard upper bound on code size at the current layout (4 MB
 for the binary, starting at 0x100000).

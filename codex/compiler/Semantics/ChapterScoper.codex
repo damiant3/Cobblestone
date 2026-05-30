@@ -151,12 +151,7 @@ Section: IR Expression Renaming
   rename-ir-expr : List RenameEntry, IRExpr -> IRExpr
   rename-ir-expr (rn) (e) =
    when e
-    is IrIntLit (v) (sp) -> e
-    is IrNumLit (v) (sp) -> e
-    is IrTextLit (v) (sp) -> e
-    is IrBoolLit (v) (sp) -> e
-    is IrCharLit (v) (sp) -> e
-    is IrError (msg) (ty) (sp) -> e
+    is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrTextLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) | IrError (msg) (ty) (sp) -> e
     is IrFork (x) (ty) (sp) -> IrFork (rename-ir-expr rn x) ty sp
     is IrAwait (x) (ty) (sp) -> IrAwait (rename-ir-expr rn x) ty sp
     is IrNegate (x) (sp) -> IrNegate (rename-ir-expr rn x) sp
@@ -174,6 +169,7 @@ Section: IR Expression Renaming
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty sp
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> IrWithTimeout secs effs scopes (rename-ir-expr rn body) ty sp
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> IrTry max (rename-ir-act-stmts rn body 0 []) (rename-ir-act-stmts rn fb 0 []) (rename-ir-act-stmts rn fail 0 []) ty sp
+    is otherwise -> e
 
   rename-ir-let : List RenameEntry, Text, CodexType, IRExpr, IRExpr, SourceSpan -> IRExpr
   rename-ir-let (rn) (nm) (ty) (val) (body) (sp) =
@@ -217,8 +213,7 @@ Section: IR Collection Renaming
    when p
     is IrVarPat (nm) (ty) (sp) -> remove-rename rn nm
     is IrCtorPat (nm) (subs) (ty) (sp) -> remove-renames-for-pats rn subs 0
-    is IrLitPat (v) (ty) (sp) -> rn
-    is IrWildPat (sp) -> rn
+    is IrLitPat (v) (ty) (sp) | IrWildPat (sp) -> rn
 
   remove-renames-for-pats : List RenameEntry, List IRPat, Integer -> List RenameEntry
   remove-renames-for-pats (rn) (pats) (i) =
@@ -288,137 +283,29 @@ Section: Chapter Scoping Pipeline
                 }))
       else build-mod-renames colliding assignments cur-chap (i + 1) len acc
 
+  build-global-rename-table : List ChapterAssignment, SkipListText -> List RenameEntry
+  build-global-rename-table (assignments) (colliding) =
+   build-global-renames assignments colliding 0 (list-length assignments) []
+
+  build-global-renames : List ChapterAssignment, SkipListText, Integer, Integer, List RenameEntry -> List RenameEntry
+  build-global-renames (assignments) (colliding) (i) (len) (acc) =
+   if i == len then acc
+   else let a = list-at assignments i
+   in if is-colliding colliding (a.def-name)
+      then build-global-renames assignments colliding (i + 1) len (sorted-rename-insert acc (RenameEntry {
+            original = a.def-name,
+            mangled = mangle-name (a.chapter-slug) (a.def-name)
+           }))
+      else build-global-renames assignments colliding (i + 1) len acc
+
+  resolve-def-name : List RenameEntry, Text, Text -> Text
+  resolve-def-name (renames) (name) (chapter-slug) =
+   if rename-has-entry renames name then mangle-name chapter-slug name
+   else name
+
   has-rename : List RenameEntry, Text -> Boolean
   has-rename (entries) (name) =
    rename-has-entry entries name
-
-Section: AST Expression Renaming
-  rename-aexpr : List RenameEntry, AExpr -> AExpr
-  rename-aexpr (rn) (e) =
-   if list-length rn == 0 then e
-   else when e
-    is ALitExpr (v) (k) (s) -> e
-    is AErrorExpr (msg) (s) -> e
-    is ANameExpr (n) (s) ->
-     let new-text = rename-lookup rn (n.value)
-     in if new-text == n.value then e
-        else deck-record (ANameExpr (deck-record (Name { value = new-text })) s)
-    is ABinaryExpr (l) (op) (r) (s) -> deck-record (ABinaryExpr (rename-aexpr rn l) op (rename-aexpr rn r) s)
-    is AUnaryExpr (x) (s) -> deck-record (AUnaryExpr (rename-aexpr rn x) s)
-    is AApplyExpr (f) (a) (s) -> deck-record (AApplyExpr (rename-aexpr rn f) (rename-aexpr rn a) s)
-    is AIfExpr (c) (t) (el) (s) -> deck-record (AIfExpr (rename-aexpr rn c) (rename-aexpr rn t) (rename-aexpr rn el) s)
-    is ALetExpr (binds) (body) (s) -> rename-alet rn binds body s
-    is ALambdaExpr (params) (body) (s) -> rename-alambda rn params body s
-    is AMatchExpr (scrut) (arms) (s) -> deck-record (AMatchExpr (rename-aexpr rn scrut) (rename-amatch-arms rn arms 0 []) s)
-    is AListExpr (elems) (s) -> deck-record (AListExpr (rename-aexprs rn elems 0 []) s)
-    is ARecordExpr (name) (fields) (s) -> deck-record (ARecordExpr name (rename-afields rn fields 0 []) s)
-    is AFieldAccess (rec) (field) (s) -> deck-record (AFieldAccess (rename-aexpr rn rec) field s)
-    is AActExpr (stmts) (s) -> deck-record (AActExpr (rename-act-stmts rn stmts 0 []) s)
-    is AHandleExpr (eff) (body) (clauses) (s) -> deck-record (AHandleExpr eff (rename-aexpr rn body) (rename-ahandle-clauses rn clauses 0 []) s)
-    is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (s) -> deck-record (AWithTimeoutExpr timeout effs scopes (rename-aexpr rn body) s)
-    is ATryExpr (max) (body) (fb) (fail) (s) -> deck-record (ATryExpr max (rename-act-stmts rn body 0 []) (rename-act-stmts rn fb 0 []) (rename-act-stmts rn fail 0 []) s)
-    is AFieldAssignExpr (rec) (field) (val) (s) -> deck-record (AFieldAssignExpr (rename-aexpr rn rec) field (rename-aexpr rn val) s)
-    is ALazyExpr (inner) (s) -> deck-record (ALazyExpr (rename-aexpr rn inner) s)
-
-  rename-alet : List RenameEntry, List ALetBind, AExpr, SourceSpan -> AExpr
-  rename-alet (rn) (binds) (body) (s) =
-   let new-binds = deck-record (rename-alet-binds rn binds 0 [])
-   in let rn2 = remove-renames-for-let-binds rn binds 0
-   in deck-record (ALetExpr new-binds (rename-aexpr rn2 body) s)
-
-  rename-alet-binds : List RenameEntry, List ALetBind, Integer, List ALetBind -> List ALetBind
-  rename-alet-binds (rn) (binds) (i) (acc) =
-   if i == list-length binds then acc
-   else let b = list-at binds i
-   in rename-alet-binds rn binds (i + 1) (list-push acc (deck-record (ALetBind {
-    name = b.name,
-    value = rename-aexpr rn (b.value),
-    span = b.span
-   })))
-
-  remove-renames-for-let-binds : List RenameEntry, List ALetBind, Integer -> List RenameEntry
-  remove-renames-for-let-binds (rn) (binds) (i) =
-   if i == list-length binds then rn
-   else remove-renames-for-let-binds (remove-rename rn ((list-at binds i).name.value)) binds (i + 1)
-
-  rename-alambda : List RenameEntry, List Name, AExpr, SourceSpan -> AExpr
-  rename-alambda (rn) (params) (body) (s) =
-   let rn2 = remove-renames-for-names rn params 0
-   in deck-record (ALambdaExpr params (rename-aexpr rn2 body) s)
-
-  remove-renames-for-names : List RenameEntry, List Name, Integer -> List RenameEntry
-  remove-renames-for-names (rn) (names) (i) =
-   if i == list-length names then rn
-   else remove-renames-for-names (remove-rename rn ((list-at names i).value)) names (i + 1)
-
-  rename-aexprs : List RenameEntry, List AExpr, Integer, List AExpr -> List AExpr
-  rename-aexprs (rn) (elems) (i) (acc) =
-   if i == list-length elems then acc
-   else rename-aexprs rn elems (i + 1) (list-push acc (rename-aexpr rn (list-at elems i)))
-
-  rename-afields : List RenameEntry, List AFieldExpr, Integer, List AFieldExpr -> List AFieldExpr
-  rename-afields (rn) (fields) (i) (acc) =
-   if i == list-length fields then acc
-   else let f = list-at fields i
-   in rename-afields rn fields (i + 1) (list-push acc (deck-record (AFieldExpr {
-    name = f.name,
-    value = rename-aexpr rn (f.value),
-    span = f.span
-   })))
-
-  rename-amatch-arms : List RenameEntry, List AMatchArm, Integer, List AMatchArm -> List AMatchArm
-  rename-amatch-arms (rn) (arms) (i) (acc) =
-   if i == list-length arms then acc
-   else let a = list-at arms i
-   in let rn2 = remove-renames-for-apat rn (a.pattern)
-   in rename-amatch-arms rn arms (i + 1) (list-push acc (deck-record (AMatchArm {
-    pattern = a.pattern,
-    body = rename-aexpr rn2 (a.body),
-    span = a.span
-   })))
-
-  remove-renames-for-apat : List RenameEntry, APat -> List RenameEntry
-  remove-renames-for-apat (rn) (p) =
-   when p
-    is AVarPat (n) (s) -> remove-rename rn (n.value)
-    is ACtorPat (n) (subs) (s) -> remove-renames-for-apats rn subs 0
-    is ALitPat (v) (k) (s) -> rn
-    is AWildPat (s) -> rn
-
-  remove-renames-for-apats : List RenameEntry, List APat, Integer -> List RenameEntry
-  remove-renames-for-apats (rn) (pats) (i) =
-   if i == list-length pats then rn
-   else remove-renames-for-apats (remove-renames-for-apat rn (list-at pats i)) pats (i + 1)
-
-  rename-act-stmts : List RenameEntry, List AActStmt, Integer, List AActStmt -> List AActStmt
-  rename-act-stmts (rn) (stmts) (i) (acc) =
-   if i == list-length stmts then acc
-   else let s = list-at stmts i
-   in when s
-    is AActBindStmt (nm) (expr) (sp) ->
-     let rn2 = remove-rename rn (nm.value)
-   in rename-act-stmts rn2 stmts (i + 1) (list-push acc (deck-record (AActBindStmt nm (rename-aexpr rn expr) sp)))
-    is AActExprStmt (expr) (sp) ->
-     rename-act-stmts rn stmts (i + 1) (list-push acc (deck-record (AActExprStmt (rename-aexpr rn expr) sp)))
-
-  rename-ahandle-clauses : List RenameEntry, List AHandleClause, Integer, List AHandleClause -> List AHandleClause
-  rename-ahandle-clauses (rn) (clauses) (i) (acc) =
-   if i == list-length clauses then acc
-   else let c = list-at clauses i
-   in let rn2 = remove-rename rn (c.resume-name.value)
-   in let rn3 = remove-arenames-for-params rn2 (c.params) 0 (list-length (c.params))
-   in rename-ahandle-clauses rn clauses (i + 1) (list-push acc (deck-record (AHandleClause {
-    op-name = c.op-name,
-    params = c.params,
-    resume-name = c.resume-name,
-    body = rename-aexpr rn3 (c.body),
-    span = c.span
-   })))
-
-  remove-arenames-for-params : List RenameEntry, List Name, Integer, Integer -> List RenameEntry
-  remove-arenames-for-params (rn) (ps) (i) (len) =
-   if i >= len then rn
-   else remove-arenames-for-params (remove-rename rn (list-at ps i).value) ps (i + 1) len
 
 Section: Duplicate Cite Detection
   cite-selects-name : ACitesDecl, Text -> Boolean
@@ -488,12 +375,11 @@ Section: AST-Level Chapter Scoping
    in let rn = if d.chapter-slug == cur-slug then cur-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments slug-cache (d.chapter-slug) 0
    in let new-name = deck-record (Name { value = rename-lookup rn (d.name.value) })
-   in let new-body = rename-aexpr rn (d.body)
    in scope-adefs-ll defs colliding assignments citations slug-cache (d.chapter-slug) rn (i + 1) (__linked-list-push acc (deck-record (ADef {
     name = new-name,
     params = d.params,
     declared-type = d.declared-type,
-    body = new-body,
+    body = d.body,
     chapter-slug = d.chapter-slug,
     span = d.span
    })))

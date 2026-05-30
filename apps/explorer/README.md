@@ -1,209 +1,158 @@
-# Building a Web App with Codex
+# Codex Explorer
 
-The Explorer is a reference implementation for building data-driven
-web applications on the Codex platform. This document describes the
-architecture and how the pieces fit together.
+Data-driven web applications on the Codex platform. Users own
+their theme and layout — we provide the widgets, they arrange them.
 
 ## Architecture
 
 ```
-                    ┌─────────────────────────────────────────┐
-                    │           Browser                       │
-                    │  HTML page (from plug pipeline)         │
-                    │  Theme CSS (from inject-theme-css)      │
-                    │  App logic (from Codex → IR → JS/HTML)  │
-                    └──────────────┬──────────────────────────┘
-                                   │ HTTP
-                    ┌──────────────▼──────────────────────────┐
-                    │        server.ps1 (HTTP bridge)         │
-                    │  Accepts browser requests on port 8888  │
-                    │  Proxies to CDX server over serial      │
-                    │  Proxies SD API calls to port 7860      │
-                    │  Serves static HTML/JS from pages dir   │
-                    └──────────────┬──────────────────────────┘
-                                   │ serial (file-mapped I/O)
-                    ┌──────────────▼──────────────────────────┐
-                    │     ExplorerServer.codex (CDX binary)   │
-                    │  Boots bare-metal in codex-vm            │
-                    │  Initializes Catalog with 7 tables      │
-                    │  Serves JSON API: /api/items, etc.      │
-                    │  Reads/writes IDE disk for persistence  │
-                    └──────────────┬──────────────────────────┘
-                                   │ cites
-            ┌──────────────────────┼──────────────────────┐
-            ▼                      ▼                      ▼
-    ExplorerDb.codex      ExplorerData.codex     ExplorerTheme.codex
-    (DB schema,           (content data,          (theme, DOM stubs,
-     table defs,           items, races,           CSS components,
-     bootstrap,            biomes, etc.)           shared nav/UI)
-     row builders)
+Codex source (.codex)
+    |
+    v
+Compiler (IR-CCE mode)
+    |
+    v
+HTML plug CDX (codex/plugs/html/)
+    |
+    v
+Self-contained HTML page
+    |  - Theme CSS from inject-theme-css
+    |  - Widget tree from mount-widget-themed
+    |  - AJAX via fetch-then / fetch-get-then
+    |  - Events via dom-on-click / dom-on-input / dom-on-key
+    |  - Reactive rendering via set-render / state-set-render
+    |  - Dialogs via show-alert / show-confirm / show-prompt
+    |  - Animation via css-animate-spin / pulse / bounce
+    |  - Accessibility via dom-set-role / dom-set-aria
+    v
+Browser
 ```
 
 ## File Inventory
 
-### Shared Chapters (cited by pages and server)
+### Shared Chapters
 
 | File | Purpose |
 |------|---------|
-| `ExplorerTheme.codex` | Theme types (Palette, WidgetStyle, Border, Edges), dark-gold theme, DOM stub declarations, CSS component functions (css-nav, css-dim-picker, css-hero, etc.), shared UI builders (explorer-nav, dim-pill, build-dropdown-items), shared callbacks (random-seed-cb, close-lb-cb, add-history-card) |
-| `ExplorerData.codex` | All content data — item categories, materials, rarity tiers, conditions, enchantments, alignments, sizes, colors, modifier options, character races/classes/genders/personalities/portraits, setting biomes/times/weathers/moods/scales. Type definitions. Name extraction helpers. Negative prompt defaults. |
-| `ExplorerDb.codex` | Database schema using the Codex data quire (cites `Data chapter Schema`, `Row`, `Catalog`). 7 table definitions (items, materials, rarities, prefs, history, sd_config, themes). Bootstrap function creates all tables in a Catalog. Seed row builders for populating defaults. |
+| `ExplorerTheme.codex` | Theme types (inlined from foreword UI), dark-gold theme, DOM stubs, CSS components, shared nav/dropdown builders |
+| `ExplorerData.codex` | All content data — items, materials, rarities, races, classes, biomes, etc. |
+| `ExplorerDb.codex` | Database schema (7 tables), bootstrap, seed rows |
 
 ### Page Files (compiled through the HTML plug)
 
-| File | Lines | What it defines |
-|------|-------|-----------------|
-| `ItemDesignerApp.codex` | 210 | Item prompt builder, 8-dimension mega-menu, modifier logic, item-specific controls |
-| `CharDesignerApp.codex` | 158 | Character prompt builder, race grouping, 5-dimension controls |
-| `SettingDesignerApp.codex` | 131 | Setting prompt builder, 5-dimension controls |
-
-Each page cites `ExplorerTheme` and `ExplorerData`, defines only its
-page-specific logic, and produces a self-contained HTML page via the
-HTML plug.
+| File | Purpose |
+|------|---------|
+| `ItemDesignerApp.codex` | Item prompt builder, 8-dimension mega-menu |
+| `CharDesignerApp.codex` | Character prompt builder, 5-dimension controls |
+| `SettingDesignerApp.codex` | Setting prompt builder, 5-dimension controls |
+| `CardDesignerPage.codex` | Card dimension explorer |
+| `WidgetDemo.codex` | End-to-end demo of the widget stack |
 
 ### Server
 
 | File | Purpose |
 |------|---------|
-| `ExplorerServer.codex` | Bare-metal CDX server. Boots in codex-vm, initializes DB from ExplorerDb schema, seeds data from ExplorerData, serves JSON API over serial. |
-| `server.ps1` | PowerShell HTTP bridge. Accepts browser requests, proxies to CDX server, serves static pages, proxies SD API. |
-
-### Legacy (from original CL 2422, pre-plug-pipeline)
-
-| File | Status |
-|------|--------|
-| `CardDesigner.codex` | Old inline-JS approach, superseded by CardDesignerApp |
-| `ItemDesigner.codex` | Old inline-JS approach, superseded by ItemDesignerApp |
-| `CharacterDesigner.codex` | Old inline-JS approach, superseded by CharDesignerApp |
-| `SettingDesigner.codex` | Old inline-JS approach, superseded by SettingDesignerApp |
-| `VoiceStudio.codex` | Placeholder, TTS backend not connected |
-| `WorkflowExporter.codex` | ComfyUI workflow builder |
-| `CharMini.codex` | Minimal test file |
+| `ExplorerServer.codex` | Bare-metal CDX server, JSON API over serial |
+| `server.ps1` | PowerShell HTTP bridge, SD API proxy |
 
 ## How to Build a Page
 
-### 1. Define your data in ExplorerData
-
-Add records and lists for your content. Use existing types where
-possible (`NamedPrompt` pattern: `{name : Text, prompt : Text}`).
-Add a name extraction helper for your type.
-
-### 2. Create a page .codex file
+### 1. Create your .codex file
 
 ```codex
 Chapter: MyPage
   cites Explorer chapter ExplorerTheme
   cites Explorer chapter ExplorerData
-
- My page description.
-
- We say:
-
-Section: Prompt Builder
-  build-my-prompt : ... -> Text
-  build-my-prompt (...) = ...
-
-Section: Controls
-  render-controls : ... -> Text
-  render-controls (...) = ...
-
-Section: Page
-  build-page : ... -> Text
-  build-page (...) =
-    explorer-nav "my-page"
-    & "<div class=\"page\">..."
-    & "</div>"
-
-Section: Callbacks
-  pick : Text, Integer -> Integer
-  pick (group) (idx) = ...
-
-Section: Entry
-  opening : Integer -> [Console] Nothing
-  opening (x) = act
-    let st = init-state 0
-    in let ex = init-explorer 0
-    in let app = dom-get "app"
-    in let a2 = dom-set-html app (build-page ...)
-    in print-line-uni ""
-  end
 ```
 
-### 3. Build through the HTML plug
+Cite `ExplorerTheme` for the theme, DOM stubs, widget constructors,
+and CSS components. Cite `ExplorerData` for content data.
+
+### 2. Build through the HTML plug
 
 ```powershell
-# Build the HTML plug CDX (once)
-codex/plugs/html/build.ps1
+# Build the plug CDX (once)
+pwsh codex/plugs/html/build.ps1
 
 # Build your page
-codex/plugs/html/run.ps1 -Src apps/explorer/MyPage.codex -Out pages/my-page.html
+pwsh codex/plugs/html/run.ps1 -Src apps/explorer/MyPage.codex -Out pages/my-page.html
 ```
 
-The plug pipeline:
-1. `compile.ps1 -IrCce` compiles your .codex to IR (includes
-   foreword resolution for all cited chapters)
-2. `run.ps1` converts CCE IR to UTF-8 (avoids byte-4 EOT collision)
-3. Plug CDX parses the IR S-expressions, emits HTML + CSS + JS
-4. Output is a self-contained .html file
-
-### 4. Add a route in server.ps1
-
-```powershell
-elseif ($path -eq '/my-page') {
-    Send-StaticFile -Response $resp -FilePath (Join-Path $PagesDir 'my-page.html')
-}
-```
-
-### 5. Add an API endpoint in ExplorerServer.codex
-
-If your page needs dynamic data, add a handler:
+### 3. Use the widget stack
 
 ```codex
-handle-my-data : ServerState -> [Console] ServerState
-handle-my-data (state) =
-  let data = my-data-list
-  in act
-    r <- respond-json (my-data-to-json data)
-    state
+  opening : [Console] Nothing = act
+    let theme = inject-theme-css dark-gold
+    in let s = set-render (my-render)
+    in let r = my-render 0
+    in print-line ""
   end
+
+  my-render : Integer -> Integer
+  my-render (x) =
+    let tree = widget-panel "root" DirColumn 8 [
+      widget-label "title" "My App",
+      widget-button "go" "Click Me"
+    ]
+    in let m = mount-widget-themed dark-gold tree
+    in let btn = dom-get "go"
+    in let b2 = dom-on-click btn (on-go)
+    in 0
+
+  on-go : Text -> Integer
+  on-go (id) = show-alert "Hi" "Button clicked!" (done)
+
+  done : Text -> Integer
+  done (r) = 0
 ```
 
-## Key Design Decisions
+## Available Builtins
 
-### CSS from Theme, not strings
+### DOM
+`dom-get`, `dom-create`, `dom-set-attr`, `dom-set-text`,
+`dom-set-html`, `dom-get-value`, `dom-set-value`, `dom-append`,
+`dom-prepend`, `dom-remove`, `dom-add-class`, `dom-remove-class`,
+`dom-set-style`, `dom-on`, `dom-query`, `dom-body`
 
-Colors come from `inject-theme-css dark-gold` which generates CSS
-custom properties (`:root { --primary: #ffd700; --bg: #0a0a0a; ... }`)
-from the Codex `Theme` record at runtime. Layout CSS references these
-variables (`var(--primary)`, `var(--border)`) — never hardcoded hex.
-Changing the theme changes every page.
+### Widget Rendering
+`mount-widget`, `mount-widget-themed`, `widget-panel`,
+`widget-label`, `widget-button`, `widget-input`, `widget-gauge`,
+`widget-separator`
 
-### Data in shared chapters, not per-page
+### Events
+`dom-on-click` (callback receives element ID),
+`dom-on-input` (callback receives current value),
+`dom-on-key` (callback receives key name)
 
-All content data lives in `ExplorerData.codex`. Pages cite it and use
-the data. Adding an item type or rarity tier in ExplorerData makes it
-available on every page. No duplication.
+### AJAX
+`fetch-json` (returns Promise), `fetch-then` (callback-based),
+`fetch-get-then`, `json-stringify`, `json-parse`
 
-### DOM stubs for browser builtins
+### State + Reactive Rendering
+`state-get`, `state-set`, `state-get-text`, `state-set-text`,
+`set-render` (register render function),
+`state-set-render` (set + trigger render),
+`state-set-text-render`, `request-render`
 
-The Codex compiler needs type signatures for browser functions
-(`dom-get`, `dom-create`, `state-get`, etc.). These are declared as
-stub functions in `ExplorerTheme.codex` with trivial bodies. The HTML
-plug's JavaScript runtime provides the real implementations. The
-`is-html-builtin` filter in the plug emitter strips the stubs from
-the output so the runtime versions take precedence.
+### Dialogs
+`show-alert` (title, message, callback),
+`show-confirm` (title, message, callback — result "ok" or "cancel"),
+`show-prompt` (title, message, placeholder, callback — result is input text or ""),
+`close-dialog`
 
-### CCE-to-UTF8 IR conversion
+### Animation
+`css-animate-spin` (element, period-ms),
+`css-animate-pulse`, `css-animate-bounce`,
+`css-transition` (element, property, duration-ms)
 
-The Codex IR emitter produces CCE-encoded output. CCE maps digit '1'
-to byte value 4, which collides with the EOT sentinel. The plug
-run script converts CCE bytes to UTF-8 on the host side before feeding
-to the plug CDX, eliminating the collision. The plug reads via
-`read-file-uni` which handles the encoding.
+### Accessibility
+`dom-set-role` (element, role string),
+`dom-set-aria` (element, attribute name, value)
 
-### Server CDX with data quire
+### Theme
+`inject-theme-css` (Theme record — generates CSS custom properties),
+`theme-to-css` (Theme → CSS text), `int-to-css-color` (Integer → hex)
 
-The ExplorerServer boots bare-metal, initializes a Catalog from the
-data quire, and serves JSON over serial. The PowerShell bridge
-translates HTTP to serial. This means the data layer runs in Codex
-on Codex hardware — no external database, no FFI, fully owned stack.
+### Other
+`random-int`, `set-timeout`, `local-storage-get`, `local-storage-set`,
+`next-card-id`, `generate-image`, `check-sd-status`

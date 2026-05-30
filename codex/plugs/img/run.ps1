@@ -61,6 +61,7 @@ $listener.Start()
 
 # -- Boot plug CDX ---------------------------------------------------
 $stderrFile = [System.IO.Path]::GetTempFileName()
+try {
     $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '4096', '-headless') `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -108,10 +109,9 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
 
     $tcpClient.Close()
 
-    # -- Drain serial ------------------------------------------------
+} finally {
     if ($proc -and -not $proc.HasExited) {
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
     }
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
-}
 }

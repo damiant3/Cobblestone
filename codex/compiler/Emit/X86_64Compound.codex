@@ -377,16 +377,14 @@ Section: Record Emission
   resolve-constructed-raw : CodexType, CodexType -> CodexType
   resolve-constructed-raw (raw) (fallback) =
    when raw
-    is RecordTy (rn) (ra) (rf) -> raw
-    is SumTy (sn) (sa) (sc) -> raw
+    is RecordTy (rn) (ra) (rf) | SumTy (sn) (sa) (sc) -> raw
     is FunTy (p) (r) -> strip-fun-args-emitter r
     is otherwise -> fallback
 
   resolve-constructed-ty : CodegenState, CodexType -> CodexType
   resolve-constructed-ty (st) (ty) =
    when ty
-    is RecordTy (rn) (ra) (rf) -> ty
-    is SumTy (sn) (sa) (sc) -> ty
+    is RecordTy (rn) (ra) (rf) | SumTy (sn) (sa) (sc) -> ty
     is ConstructedTy (cname) (cargs) ->
      let raw = lookup-type-binding (st.type-defs) (cname.value)
      in resolve-constructed-raw raw ty
@@ -626,6 +624,114 @@ Section: Narrow-store with overflow-mode dispatch
       then accumulate-offset-width-sort fields target-name target-w (i + 1) (acc + f-w)
       else accumulate-offset-width-sort fields target-name target-w (i + 1) acc
 
+Section: Pointer-Map Walk
+
+ Precise typed traversal of a live heap object graph, driven by the
+ pointer-maps — no per-object type tags needed: the static type says
+ which slots are pointers (record map / ctor map), and a variant's tag
+ already sits at offset 0 (emit-sum-ctor). This is the precise
+ replacement for scan-deck-dangling: rather than scanning raw deck slots
+ (which cannot tell a pointer from an integer — the source of the SCOPE
+ false positives), it follows only real pointer slots from a typed root
+ and counts those landing in the dead range [lo, hi). Fuel-bounded for
+ safety. Handles RecordTy, SumTy, ListTy, and ConstructedTy (resolved by
+ name against a TypeBinding table via lookup-type-binding, so the full
+ named-type graph AChapter->ADef->AExpr is traversable given the table).
+ FunTy / LinkedListTy are leaves for now (cons-cell layout is a later
+ refinement). The TypeBinding table must be sorted by name (bsearch).
+
+  ptr-in-range : Integer, Integer, Integer -> Integer
+  ptr-in-range (p) (lo) (hi) =
+   if p >= lo then if p < hi then 1 else 0 else 0
+
+  pmap-walk : Integer, CodexType, List TypeBinding, Integer, Integer, Integer -> Integer
+  pmap-walk (ptr) (ty) (defs) (lo) (hi) (fuel) =
+   if fuel <= 0 then 0
+   else if ptr == 0 then 0
+   else when ty
+    is RecordTy (n) (a) (fields) -> pmap-walk-record ptr fields defs 0 (list-length fields) lo hi fuel 0
+    is SumTy (n) (a) (ctors) -> pmap-walk-sum ptr ctors defs lo hi fuel
+    is ListTy (elem) -> pmap-walk-list ptr elem defs lo hi fuel
+    is ConstructedTy (cn) (ca) -> pmap-walk ptr (lookup-type-binding defs (cn.value)) defs lo hi (fuel - 1)
+    is otherwise -> 0
+
+  pmap-walk-record : Integer, List RecordField, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pmap-walk-record (ptr) (fields) (defs) (i) (len) (lo) (hi) (fuel) (acc) =
+   if i == len then acc
+   else let f = list-at fields i
+   in if is-pointer-type (f.type-val)
+      then let fot = cce-byte-offset-and-type fields (f.name.value)
+           in let child = peek-qword ptr (fot.offset)
+           in let sub = ptr-in-range child lo hi + pmap-walk child (f.type-val) defs lo hi (fuel - 1)
+           in pmap-walk-record ptr fields defs (i + 1) len lo hi fuel (acc + sub)
+      else pmap-walk-record ptr fields defs (i + 1) len lo hi fuel acc
+
+  pmap-walk-sum : Integer, List SumCtor, List TypeBinding, Integer, Integer, Integer -> Integer
+  pmap-walk-sum (ptr) (ctors) (defs) (lo) (hi) (fuel) =
+   let tag = peek-qword ptr 0
+   in if tag >= list-length ctors then 0
+      else let c = list-at ctors tag
+      in pmap-walk-ctor (c.fields) ptr defs 0 (list-length (c.fields)) lo hi fuel 0
+
+  pmap-walk-ctor : List CodexType, Integer, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pmap-walk-ctor (tys) (ptr) (defs) (i) (len) (lo) (hi) (fuel) (acc) =
+   if i == len then acc
+   else let ety = list-at tys i
+   in if is-pointer-type ety
+      then let child = peek-qword ptr (8 + i * 8)
+           in let sub = ptr-in-range child lo hi + pmap-walk child ety defs lo hi (fuel - 1)
+           in pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel (acc + sub)
+      else pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel acc
+
+  pmap-walk-list : Integer, CodexType, List TypeBinding, Integer, Integer, Integer -> Integer
+  pmap-walk-list (ptr) (elem) (defs) (lo) (hi) (fuel) =
+   if is-pointer-type elem
+   then pmap-walk-list-elems ptr elem defs 0 (peek-qword ptr 0) lo hi fuel 0
+   else 0
+
+  pmap-walk-list-elems : Integer, CodexType, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pmap-walk-list-elems (ptr) (elem) (defs) (j) (count) (lo) (hi) (fuel) (acc) =
+   if j == count then acc
+   else if fuel <= 0 then acc
+   else let child = peek-qword ptr (8 + j * 8)
+   in let sub = ptr-in-range child lo hi + pmap-walk child elem defs lo hi (fuel - 1)
+   in pmap-walk-list-elems ptr elem defs (j + 1) count lo hi fuel (acc + sub)
+
+ Runtime conformance check for pmap-walk (gated by -EscapeCheck at the call
+ site; fires a diagnostic only on failure). This guards the pointer-map
+ walker — the safety-critical machinery the escape check and copying
+ compactor will drive — against silent breakage from layout or codegen
+ changes. `cap` = __heap-save captured just before the record's allocation
+ is the record's address (a record's pointer is its alloc start — no cap
+ word, unlike lists); the record is forced (rec.tr-num) so it is materialized
+ at cap, then pmap-walk over [h0, cap) counts the in-range pointers. PmTestRec
+ has tr-ptr (Text), a scalar tr-num, and tr-inner (a ConstructedTy "PmInner"
+ record whose in-ptr is another heap Text). Expected result: 3 (tr-ptr +
+ tr-inner + inner.in-ptr; tr-num scalar skipped; ConstructedTy resolved via
+ the defs table).
+
+ The pointees MUST be runtime heap allocations: a bare string literal is
+ emitted into rodata (emit-text-lit, X86_64.codex), so its pointer lands
+ below the heap and would never fall in [h0, cap) — a real pointer the
+ escape check correctly ignores. `show N` forces a runtime heap string.
+
+  PmInner = record { in-ptr : Text }
+
+  PmTestRec = record { tr-num : Integer, tr-ptr : Text, tr-inner : PmInner }
+
+  pmap-self-test : Integer
+  pmap-self-test =
+   let defs = [TypeBinding { name = "PmInner", bound-type = RecordTy (make-name "PmInner") [] [RecordField { name = make-name "in-ptr", type-val = TextTy }] }]
+   in let h0 = __heap-save
+   in let sub = show 99
+   in let inner-sub = show 88
+   in let inner = PmInner { in-ptr = inner-sub }
+   in let cap = __heap-save
+   in let rec = PmTestRec { tr-num = 42, tr-ptr = sub, tr-inner = inner }
+   in if rec.tr-num == 42
+      then pmap-walk cap (RecordTy (make-name "PmTestRec") [] [RecordField { name = make-name "tr-num", type-val = int-ty-default }, RecordField { name = make-name "tr-ptr", type-val = TextTy }, RecordField { name = make-name "tr-inner", type-val = ConstructedTy (make-name "PmInner") [] }]) defs h0 cap 64
+      else 0 - 1
+
   record-field-sort-keys : List RecordField, Integer, List Text -> List Text
   record-field-sort-keys (fields) (i) (acc) =
    if i == list-length fields then acc
@@ -814,7 +920,8 @@ Section: Pattern Matching
   emit-one-match-branch : MatchBranchState, Integer, Integer, IRBranch, Boolean, CodexType -> MatchBranchState
   emit-one-match-branch (mbs) (scrut-loc) (result-loc) (branch) (needs-jmp-end) (scrut-ty) =
    let pat-result = emit-pattern (mbs.cg-state) scrut-loc (branch.pattern) scrut-ty
-   in let body-result = emit-expr (pat-result.state) (branch.body)
+   in let guard-result = emit-match-guard (pat-result.state) (branch.guard)
+   in let body-result = emit-expr (guard-result.state) (branch.body)
    in let st1 = store-local (body-result.state) result-loc (body-result.reg)
    in let st2 = if needs-jmp-end then let jmp-pos = st1.code-len
    in MatchBranchState {
@@ -830,7 +937,31 @@ Section: Pattern Matching
      end-patches = st2.end-patches
     }
     else st2
-   in st3
+   in if guard-result.guard-patch >= 0 then MatchBranchState {
+     cg-state = patch-jcc-at (st3.cg-state) (guard-result.guard-patch) (st3.cg-state.code-len),
+     end-patches = st3.end-patches
+    }
+    else st3
+
+  GuardResult = record {
+   state : CodegenState,
+   guard-patch : Integer
+  }
+
+  emit-match-guard : CodegenState, IRExpr -> GuardResult
+  emit-match-guard (st) (guard) =
+   when guard
+    is IrBoolLit (v) (sp) ->
+     if v then GuardResult { state = st, guard-patch = -1 }
+     else let patch-pos = st.code-len
+          in let st1 = st-append-code st (jmp 0)
+          in GuardResult { state = st1, guard-patch = patch-pos }
+    is otherwise ->
+     let gr = emit-expr st guard
+     in let st1 = st-append-code (gr.state) (cmp-ri (gr.reg) 0)
+     in let patch-pos = st1.code-len
+     in let st2 = st-append-code st1 (jcc cc-e 0)
+     in GuardResult { state = st2, guard-patch = patch-pos }
 
   EmitPatternResult = record {
    state : CodegenState,

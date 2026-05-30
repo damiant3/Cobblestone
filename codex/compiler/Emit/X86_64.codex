@@ -44,7 +44,8 @@ Section: Function Emission
    in let st10i = st-append-code st10h (cmp-ri reg-r11 0)
    in let yskip2 = st10i.code-len
    in let st10j = st-append-code st10i (jcc cc-e 0)
-   in let st10k = st-append-code st10j (li reg-r11 sched-yield-flag-addr)
+   in let st10jp = st-append-code st10j (push-r reg-rdi & push-r reg-rsi)
+   in let st10k = st-append-code st10jp (li reg-r11 sched-yield-flag-addr)
    in let st10l = st-append-code st10k (li reg-rdi 0)
    in let st10m = st-append-code st10l (mov-store reg-r11 reg-rdi 0)
    in let st10n = st-append-code st10m (li reg-r11 sched-current-task-addr)
@@ -56,7 +57,8 @@ Section: Function Emission
    in let st10t = st-append-code st10s (mov-store reg-r11 reg-rsi 24)
    in let st10u = st-append-code st10t (mov-store reg-rdi reg-r11 24)
    in let st10v = emit-call-to st10u "__task_yield"
-   in let st10w = patch-jcc-at st10v yskip (st10v.code-len)
+   in let st10vp = st-append-code st10v (pop-r reg-rsi & pop-r reg-rdi)
+   in let st10w = patch-jcc-at st10vp yskip (st10vp.code-len)
    in patch-jcc-at st10w yskip2 (st10w.code-len)
 
   emit-epilogue : CodegenState -> CodegenState
@@ -89,8 +91,7 @@ Section: Function Emission
     is IrMatch (s) (bs) (t) (sp) -> has-tail-call-branches bs func-name 0
     is IrApply (f) (a) (t) (sp) -> is-self-call expr func-name
     is IrAct (stmts) (t) (sp) -> has-tail-call-act stmts func-name
-    is IrTry (max) (body) (fb) (fail) (t) (sp) -> False
-    is otherwise -> False
+    is IrTry (max) (body) (fb) (fail) (t) (sp) | otherwise -> False
 
   has-tail-call-act : List IRActStmt, Text -> Boolean
   has-tail-call-act (stmts) (func-name) =
@@ -184,8 +185,7 @@ Section: Function Emission
   is-proof-type : CodexType -> Boolean
   is-proof-type (ty) =
    when ty
-    is ProofTy -> True
-    is PropEqTy (a) (b) -> True
+    is ProofTy | PropEqTy (a) (b) -> True
     is otherwise -> False
 
   is-proof-def : IRDef -> Boolean
@@ -245,8 +245,7 @@ Section: Expression Emission
   emit-expr-dispatch : CodegenState, IRExpr -> EmitResult
   emit-expr-dispatch (st) (expr) =
    when expr
-    is IrIntLit (value) (sp) -> emit-int-lit st value
-    is IrNumLit (value) (sp) -> emit-int-lit st value
+    is IrIntLit (value) (sp) | IrNumLit (value) (sp) -> emit-int-lit st value
     is IrBoolLit (value) (sp) -> emit-int-lit st (if value then 1 else 0)
     is IrCharLit (value) (sp) -> emit-int-lit st value
     is IrTextLit (value) (sp) -> emit-text-lit st value
@@ -788,6 +787,7 @@ Section: Expression Emission
   emit-name-as-call : CodegenState, Text -> EmitResult
   emit-name-as-call (st) (name) =
    if name == "read-line" then emit-read-line-builtin st
+   else if name == "read-line-cce" then emit-read-line-cce-builtin st
    else let st1 = emit-call-to st name
    in let tmp = alloc-temp st1
    in EmitResult {
