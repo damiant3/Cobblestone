@@ -33,7 +33,7 @@ Section: Expression Lowering
      let left-ir = lower-expr-at l ty ctx (depth + 1)
      in let left-ty = ir-expr-type left-ir
      in let right-ir = lower-expr-at r ty ctx (depth + 1)
-     in deck-record (IrBinary (lower-bin-op op left-ty) left-ir right-ir (binary-result-type op left-ty ty) s)
+     in lower-binary-maybe-eq op left-ty left-ir right-ir ty ctx s
     is AUnaryExpr (operand) (s) ->
      let inner = lower-expr-at operand int-ty-default ctx (depth + 1)
      in when inner
@@ -251,7 +251,8 @@ Section: Expression Lowering
   lower-apply (f) (a) (ty) (ctx) (sp) =
    when f
     is ANameExpr (mn) (ns) ->
-     let cm = lookup-type-split (ctx.overlay) (ctx.base) "__classmethods"
+     if (mn.value) == "show" then lower-show-apply f a ty ctx sp
+     else let cm = lookup-type-split (ctx.overlay) (ctx.base) "__classmethods"
      in when cm
       is RecordTy (cmn) (cma) (cmf) ->
        let probe = lookup-record-field cmf (mn.value)
@@ -260,12 +261,45 @@ Section: Expression Lowering
         is otherwise -> lower-method-apply (mn.value) a ty ctx sp f
       is otherwise -> lower-apply-normal f a ty ctx sp
     is AApplyExpr (inner-f) (inner-a) (innersp) ->
-     when inner-a
-      is ANameExpr (pn) (pns) ->
-       if text-starts-with (pn.value) "__dict-of-" then lower-constrained-apply inner-f (pn.value) a ty ctx sp
-       else lower-apply-normal f a ty ctx sp
-      is otherwise -> lower-apply-normal f a ty ctx sp
+     when inner-f
+      is ANameExpr (ifn) (ifns) ->
+       if (ifn.value) == "compare" then lower-compare-apply inner-a a ty ctx sp
+       else lower-apply-aa inner-f inner-a a f ty ctx sp
+      is otherwise -> lower-apply-aa inner-f inner-a a f ty ctx sp
     is otherwise -> lower-apply-normal f a ty ctx sp
+
+  lower-apply-aa : AExpr, AExpr, AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-apply-aa (inner-f) (inner-a) (a) (f) (ty) (ctx) (sp) =
+   when inner-a
+    is ANameExpr (pn) (pns) ->
+     if text-starts-with (pn.value) "__dict-of-" then lower-constrained-apply inner-f (pn.value) a ty ctx sp
+     else if text-starts-with (pn.value) "__dderiv-" then lower-derived-apply inner-f (pn.value) a ty ctx sp
+     else lower-apply-normal f a ty ctx sp
+    is otherwise -> lower-apply-normal f a ty ctx sp
+
+  lower-compare-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-compare-apply (a1) (a2) (ty) (ctx) (sp) =
+   let l-ir = lower-expr a1 ErrorTy ctx
+   in let r-ir = lower-expr a2 ErrorTy ctx
+   in let lt = deep-resolve (ctx.ust) (ir-expr-type l-ir)
+   in let tn = type-name-of lt
+   in let probe = if text-length tn == 0 | is-primitive-type-name tn then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__compare_" & tn)
+   in when probe
+    is ErrorTy -> lower-compare-prim lt l-ir r-ir sp
+    is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
+     in deck-record (IrApply (deck-record (IrApply (deck-record (IrName ("__compare_" & tn) fty sp)) l-ir (peel-fun-return fty) sp)) r-ir int-ty-default sp)
+
+  lower-compare-prim : CodexType, IRExpr, IRExpr, SourceSpan -> IRExpr
+  lower-compare-prim (lt) (l-ir) (r-ir) (sp) =
+   when lt
+    is TextTy -> deck-record (IrApply (deck-record (IrApply (deck-record (IrName "text-compare" (FunTy TextTy (FunTy TextTy int-ty-default)) sp)) l-ir (FunTy TextTy int-ty-default) sp)) r-ir int-ty-default sp)
+    is otherwise -> gen-int-compare l-ir r-ir sp
+
+  gen-int-compare : IRExpr, IRExpr, SourceSpan -> IRExpr
+  gen-int-compare (l-ir) (r-ir) (sp) =
+   let na = deck-record (IrName "__cmpa" int-ty-default sp)
+   in let nb = deck-record (IrName "__cmpb" int-ty-default sp)
+   in deck-record (IrLet "__cmpa" int-ty-default l-ir (deck-record (IrLet "__cmpb" int-ty-default r-ir (deck-record (IrIf (deck-record (IrBinary IrLt na nb BooleanTy sp)) (deck-record (IrIntLit (0 - 1) sp)) (deck-record (IrIf (deck-record (IrBinary IrGt na nb BooleanTy sp)) (deck-record (IrIntLit 1 sp)) (deck-record (IrIntLit 0 sp)) int-ty-default sp)) int-ty-default sp)) sp)) sp)
 
   lower-constrained-apply : AExpr, Text, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-constrained-apply (inner-f) (pname) (a) (ty) (ctx) (sp) =
@@ -281,6 +315,20 @@ Section: Expression Lowering
       in let inner-ret = peel-fun-return func-ty
       in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
       in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret)) sp
+
+  lower-derived-apply : AExpr, Text, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-derived-apply (inner-f) (pname) (a) (ty) (ctx) (sp) =
+   let func-ir = lower-expr inner-f ErrorTy ctx
+   in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
+   in let arg-ir = lower-expr a ErrorTy ctx
+   in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
+   in let prefix = if pname == "__dderiv-Show" then "__show_" else "__compare_"
+   in let dict-rn = prefix & type-name-of arg-ty
+   in let db = lookup-type-split (ctx.overlay) (ctx.base) dict-rn
+   in let dict-ir = deck-record (IrName dict-rn (deep-resolve (ctx.ust) db) sp)
+   in let inner-ret = peel-fun-return func-ty
+   in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
+   in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret)) sp
 
   constrained-dict-rn : Text, Text, LowerCtx -> Text
   constrained-dict-rn (pname) (tn) (ctx) =
@@ -326,6 +374,51 @@ Section: Expression Lowering
       is otherwise -> resolved-ret
    in let preferred-ret = prefer-applied-ty ty actual-ret
    in lower-apply-dispatch func-ir arg-ir preferred-ret sp
+
+  lower-show-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-show-apply (f) (a) (ty) (ctx) (sp) =
+   let func-ir = lower-expr f ErrorTy ctx
+   in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
+   in let arg-ty-hint = peel-fun-param func-ty
+   in let ret-ty = peel-fun-return func-ty
+   in let arg-ir = lower-expr a arg-ty-hint ctx
+   in let resolved-ret = subst-type-vars-from-arg arg-ty-hint (ir-expr-type arg-ir) ret-ty
+   in let actual-ret = when resolved-ret
+      is ErrorTy -> ty
+      is otherwise -> resolved-ret
+   in let preferred-ret = prefer-applied-ty ty actual-ret
+   in let arg-tn = type-name-of (deep-resolve (ctx.ust) (ir-expr-type arg-ir))
+   in let probe = if text-length arg-tn == 0 | is-primitive-type-name arg-tn then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__show_" & arg-tn)
+   in when probe
+    is ErrorTy -> lower-apply-dispatch func-ir arg-ir preferred-ret sp
+    is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
+     in lower-apply-dispatch (deck-record (IrName ("__show_" & arg-tn) fty sp)) arg-ir (peel-fun-return fty) sp
+
+  lower-binary-maybe-eq : BinaryOp, CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-binary-maybe-eq (op) (left-ty) (left-ir) (right-ir) (ty) (ctx) (s) =
+   when op
+    is OpEq -> lower-eq-dispatch left-ty left-ir right-ir ty ctx s True
+    is OpNotEq -> lower-eq-dispatch left-ty left-ir right-ir ty ctx s False
+    is otherwise -> deck-record (IrBinary (lower-bin-op op left-ty) left-ir right-ir (binary-result-type op left-ty ty) s)
+
+  eq-op-for : Boolean -> BinaryOp
+  eq-op-for (positive) = if positive then OpEq else OpNotEq
+
+  lower-eq-dispatch : CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan, Boolean -> IRExpr
+  lower-eq-dispatch (left-ty) (left-ir) (right-ir) (ty) (ctx) (s) (positive) =
+   let tn = type-name-of (deep-resolve (ctx.ust) left-ty)
+   in let probe = if text-length tn == 0 then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
+   in when probe
+    is ErrorTy -> deck-record (IrBinary (lower-bin-op (eq-op-for positive) left-ty) left-ir right-ir (binary-result-type (eq-op-for positive) left-ty ty) s)
+    is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
+     in let inner = deck-record (IrApply (deck-record (IrName ("__eq_" & tn) fty s)) left-ir (peel-fun-return fty) s)
+     in let call = deck-record (IrApply inner right-ir BooleanTy s)
+     in if positive then call
+        else deck-record (IrIf call (deck-record (IrBoolLit False s)) (deck-record (IrBoolLit True s)) BooleanTy s)
+
+  is-primitive-type-name : Text -> Boolean
+  is-primitive-type-name (tn) =
+   tn == "Integer" | tn == "Number" | tn == "Text" | tn == "Boolean" | tn == "Char" | tn == "List" | tn == "Nothing"
 
   type-name-of : CodexType -> Text
   type-name-of (ty) =

@@ -1,6 +1,7 @@
 Chapter: Page
   cites Foreword chapter List
   cites Foreword chapter Maybe
+  cites Foreword chapter Tuple
   cites Encode chapter Crc32
 
  A page is the fundamental unit of storage. Every page is 8192 bytes.
@@ -66,23 +67,21 @@ Section: Page
   DbPage = record {
     header : PageHeader,
     slots : List SlotEntry,
-    data : List Integer
+    data : Integer
   }
+
+ The page body is a mutable arena byte buffer (alloc-bytes / poke-byte /
+ peek-byte), NOT a List Integer. Row data is appended backward from the
+ page end into free space, so writes never overwrite live rows — the
+ buffer can be shared across a linear chain of inserts (the header and
+ slot directory remain immutable, properly versioned per page).
 
   page-new : Integer, Integer -> DbPage
   page-new (pid) (ptype) = DbPage {
     header = page-header-new pid ptype,
     slots = [],
-    data = page-empty-data
+    data = alloc-bytes page-size
   }
-
-  page-empty-data : List Integer
-  page-empty-data = page-fill-zeros page-size []
-
-  page-fill-zeros : Integer, List Integer -> List Integer
-  page-fill-zeros (n) (acc) =
-    if n <= 0 then acc
-    else page-fill-zeros (n - 1) (list-push acc 0)
 
 Section: Free Space
 
@@ -109,17 +108,11 @@ Section: Free Space
 
 Section: Insert Row
 
-  PageInsertResult = record {
-    page : DbPage,
-    slot-id : Integer,
-    ok : Boolean
-  }
-
-  page-insert : DbPage, List Integer -> PageInsertResult
+  page-insert : DbPage, List Integer -> (DbPage, Integer, Boolean)
   page-insert (pg) (row-bytes) =
     let row-len = list-length row-bytes
     in let needed = row-len + slot-entry-size
-    in if needed > page-free-space pg then PageInsertResult { page = pg, slot-id = -1, ok = False }
+    in if needed > page-free-space pg then (pg, -1, False)
     else let data-offset = (page-data-start pg) - row-len
     in let new-data = page-write-bytes (pg.data) data-offset row-bytes 0 row-len
     in let new-slot = SlotEntry { slot-offset = data-offset, slot-length = row-len }
@@ -133,11 +126,9 @@ Section: Insert Row
       lsn = pg.header.lsn,
       checksum = 0
     }
-    in PageInsertResult {
-      page = DbPage { header = new-header, slots = new-slots, data = new-data },
-      slot-id = pg.header.slot-count,
-      ok = True
-    }
+    in (DbPage { header = new-header, slots = new-slots, data = new-data },
+        pg.header.slot-count,
+        True)
 
 Section: Read Row
 
@@ -149,10 +140,10 @@ Section: Read Row
     in if slot-is-dead s then None
     else Just (page-extract-bytes (pg.data) (s.slot-offset) (s.slot-length) 0 [])
 
-  page-extract-bytes : List Integer, Integer, Integer, Integer, List Integer -> List Integer
-  page-extract-bytes (data) (offset) (len) (i) (acc) =
+  page-extract-bytes : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  page-extract-bytes (buf) (offset) (len) (i) (acc) =
     if i >= len then acc
-    else page-extract-bytes data offset len (i + 1) (list-push acc (list-at data (offset + i)))
+    else page-extract-bytes buf offset len (i + 1) (list-push acc (peek-byte buf (offset + i)))
 
 Section: Delete Row
 
@@ -165,10 +156,11 @@ Section: Delete Row
 
 Section: Byte Helpers
 
-  page-write-bytes : List Integer, Integer, List Integer, Integer, Integer -> List Integer
-  page-write-bytes (data) (offset) (src) (i) (len) =
-    if i >= len then data
-    else page-write-bytes (list-set-at data (offset + i) (list-at src i)) offset src (i + 1) len
+  page-write-bytes : Integer, Integer, List Integer, Integer, Integer -> Integer
+  page-write-bytes (buf) (offset) (src) (i) (len) =
+    if i >= len then buf
+    else let w = poke-byte buf (offset + i) (list-at src i)
+    in page-write-bytes buf offset src (i + 1) len
 
   page-slot-count : DbPage -> Integer
   page-slot-count (pg) = pg.header.slot-count

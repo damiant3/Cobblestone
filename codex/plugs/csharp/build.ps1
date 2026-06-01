@@ -33,6 +33,7 @@ $OutDir    = Join-Path $PlugDir 'build-output'
 $OutFile   = Join-Path $OutDir 'csharp-plug.cdx'
 $BundleSrc = Join-Path $OutDir 'plug-source.codex'
 $LogFile   = Join-Path $OutDir 'build.log'
+$Stage0    = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
 if (-not (Test-Path -PathType Leaf $Stage0)) {
     [Console]::Error.WriteLine("MISSING: $Stage0 -- run build/build.ps1 first to build the self-host")
     exit 2

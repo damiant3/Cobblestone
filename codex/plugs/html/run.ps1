@@ -56,6 +56,9 @@ if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
 $raw = [System.IO.File]::ReadAllText($outFile)
 $lines = $raw -split "`n" | Where-Object { $_ -notmatch '^(HEAP|WD|STACK|PM):' -and $_.Trim().Length -gt 0 }
 $html = ($lines -join "`n")
+# Strip any leading control bytes the plug emits before the document
+# (e.g. a stray CCE newline 0x01) — they render as .notdef glyphs in browsers.
+$html = $html -replace '^[\x00-\x1f]+', ''
 [System.IO.File]::WriteAllText($Out, $html, [System.Text.UTF8Encoding]::new($false))
 Write-Host "[html-plug] OK: $Out ($($html.Length) chars)"
 Remove-Item $inputFile,$outFile,$errFile -Force -ErrorAction SilentlyContinue

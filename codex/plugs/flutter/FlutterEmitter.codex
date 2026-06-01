@@ -123,7 +123,13 @@ Section: Expression Emission
   emit-dart-apply : IRExpr, List ArityEntry, Integer -> Text
   emit-dart-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
-   in "Function.apply(" & emit-dart-expr (chain.root) arities indent & ", [" & emit-dart-elems (chain.args) arities indent 0 & "])"
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if is-mktup-name n then "[" & emit-dart-elems args arities indent 0 & "]"
+     else "Function.apply(" & emit-dart-expr root arities indent & ", [" & emit-dart-elems args arities indent 0 & "])"
+    is otherwise -> "Function.apply(" & emit-dart-expr root arities indent & ", [" & emit-dart-elems args arities indent 0 & "])"
 
   emit-dart-params : List IRParam, Integer -> Text
   emit-dart-params (params) (i) =
@@ -160,7 +166,7 @@ Section: Expression Emission
    when p
     is IrVarPat (name) (ty) (sp) -> "true"
     is IrLitPat (text) (ty) (sp) -> scrut & " == " & text
-    is IrCtorPat (name) (subs) (ty) (sp) -> "(" & scrut & " as Map)['_tag'] == '" & name & "'"
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then scrut & " is List" else "(" & scrut & " as Map)['_tag'] == '" & name & "'"
     is IrWildPat (sp) -> "true"
 
   emit-dart-pat-binds : IRPat, Text, Integer -> Text
@@ -168,7 +174,7 @@ Section: Expression Emission
    when p
     is IrVarPat (name) (ty) (sp) -> dart-indent (indent + 1) & "final " & dart-sanitize name & " = " & scrut & ";\n"
     is IrLitPat (text) (ty) (sp) -> ""
-    is IrCtorPat (name) (subs) (ty) (sp) -> emit-dart-ctor-binds subs scrut indent 0
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then emit-dart-tup-binds subs scrut indent 0 else emit-dart-ctor-binds subs scrut indent 0
     is IrWildPat (sp) -> ""
 
   emit-dart-ctor-binds : List IRPat, Text, Integer, Integer -> Text
@@ -197,7 +203,8 @@ Section: Type and Definition Emission
     is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
      "Map " & dart-sanitize (name.value) & "(Map fields) => {'_type': '" & name.value & "', ...fields};\n\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-dart-var-ctors ctors 0
+     if is-tup-type (name.value) then ""
+     else emit-dart-var-ctors ctors 0
 
   emit-dart-var-ctors : List AVariantCtorDef, Integer -> Text
   emit-dart-var-ctors (ctors) (i) =
@@ -242,3 +249,22 @@ Section: Flutter Assembly
    in let defs-text = emit-dart-defs (m.defs) 0 arities
    in let app = "void main() => runApp(const CodexApp());\n\nclass CodexApp extends StatelessWidget {\n  const CodexApp({super.key});\n  @override\n  Widget build(BuildContext context) {\n    return MaterialApp(\n      title: '" & dart-escape title & "',\n      theme: ThemeData.dark(),\n      home: const CodexPage(),\n    );\n  }\n}\n\nclass CodexPage extends StatefulWidget {\n  const CodexPage({super.key});\n  @override\n  State<CodexPage> createState() => _CodexPageState();\n}\n\nclass _CodexPageState extends State<CodexPage> {\n  List<String> lines = [];\n\n  @override\n  void initState() {\n    super.initState();\n    _output.clear();\n    try { opening(); } catch (e) { _output.add('ERROR: $e'); }\n    lines = List.from(_output);\n  }\n\n  @override\n  Widget build(BuildContext context) {\n    return Scaffold(\n      appBar: AppBar(title: const Text('" & dart-escape title & "')),\n      body: ListView.builder(\n        padding: const EdgeInsets.all(16),\n        itemCount: lines.length,\n        itemBuilder: (_, i) => Text(lines[i],\n          style: const TextStyle(fontFamily: 'monospace', fontSize: 14)),\n      ),\n    );\n  }\n}\n"
    in header & builtins & types-text & defs-text & app
+
+Section: Tuple Helpers
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+  emit-dart-tup-binds : List IRPat, Text, Integer, Integer -> Text
+  emit-dart-tup-binds (subs) (scrut) (indent) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> dart-indent (indent + 1) & "final " & dart-sanitize name & " = (" & scrut & " as List)[" & show i & "];\n"
+    is IrWildPat (sp) -> ""
+    is otherwise -> "") & emit-dart-tup-binds subs scrut indent (i + 1)

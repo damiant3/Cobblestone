@@ -1,40 +1,42 @@
 # Plug Compile Crash: parameterize-walk-children Stack Overflow
 
-**Status:** CRASH RESOLVED (verified 2026-05-29, reek); one residual
-perf item open. The crash was not stack overflow but a CHECK-phase deck
-overflow — fixed by raising `survey-check-mul` to 400
-(`codex/Core/BuildSettings.codex`) and promoting CDX9002 from warning to
-error. The HTML plug now builds past 76KB.
+**Status: FULLY RESOLVED (2026-05-30, val).** Both the original CHECK-phase
+deck-overflow crash (fixed 2026-05-29 by `survey-check-mul`=400 + CDX9002
+promoted to error) and the residual plug-run timeout are now closed. The
+foreword-cites migration (`cites UI chapter`) works end to end. Nothing here
+blocks; this file is kept for history only.
 
-**Residual open item — re-verified 2026-05-29 (reek). The timeout is REAL
-and current (not stale), but its attribution to `parse-ir-chapter` is
-wrong.** Measured end-to-end: `codex\plugs\html\run.ps1 -Src
-apps\explorer\ExplorerTheme.codex` → IR-CCE is 6,236,094 bytes (~6.2 MB)
-and the plug run hits the 300 s cap (346 s total = ~46 s IR-compile + 300 s
-plug-run, 0 bytes output). So the migration is still blocked. BUT
-micro-benchmarks show every parser/emitter PRIMITIVE is O(1)/sub-quadratic
-at 1M scale — `char-code-at` (literal and large-Text index), `list-push`,
-`list-at`, and `&` (text append) all measured flat (ratios ~1.0). So the
-blow-up is an emergent algorithmic-or-memory cost at the 6.2 MB /
-millions-of-nodes scale, NOT primitive complexity — and it is at least as
-likely in `emit-html-chapter` (HtmlEmitter builds output via recursive `&`
-chains, the pattern the compiler's own IRTextEmitter avoids with
-list-snoc + text-concat-list) as in the parser.
+## Residual timeout — RESOLVED (2026-05-30, val)
 
-Ruled out this pass: (1) transport — the html plug uses memory-mapped
-`-input`/`-output`, not NE2K TCP, so the time is real compute, not I/O;
-(2) missing IR DCE — the compiler already prunes via `ir-prune-unreachable`
-during IR-CCE emit (this is why `ir-dce.ps1` was deleted), but it does NOT
-shrink ExplorerTheme because a library chapter has no `opening` to prune
-from. The plug also BUILDS fine now (the CHECK-deck crash is fixed); only
-the run times out.
+Re-measured the whole pipeline on the current seed and the 6.2 MB timeout
+**no longer reproduces** — two independent reasons:
 
-**Next step: profile the actual plug run** — instrument `HtmlPlug` with
-`prof-start`/`prof-dump`, run on a smaller IR that completes, read the
-histogram to pinpoint the hot frame; or sweep IR size (1/2/4 MB) to confirm
-O(n²) and isolate parse-vs-emit. Micro-benchmarks have exhausted their
-usefulness; the next move is measuring the real pipeline.
-**Severity (residual):** Blocks migrating plug types to `cites UI chapter`.
+1. **The IR shrank ~18x.** `ExplorerTheme.codex` (same `cites UI chapter
+   Theme/BoxModel/Layout/Widget`) now emits **336,625 bytes** of IR-CCE, not
+   6.2 MB — intervening seed work (DCE / dead-phase reclamation) cut the
+   cited closure dramatically. The plug renders it in ~1.5 s (480 defs →
+   70,572 B valid HTML, exit 0). A 13-UI-chapter stress source (1.37 MB IR,
+   ~1500 defs) renders in ~2.8 s → 225 KB HTML. Plug time scales **linearly**
+   with output at every achievable scale; the 300 s cap is never approached.
+
+2. **The structural O(n²) was localized and the emitter half fixed.** The
+   doc's parser suspicion was correct to doubt: `list-push`/`__list_snoc` is
+   an amortized-O(1) growable vector (Path 1 in `X86_64ListHelpers.codex`
+   writes in place on spare capacity with NO heap-top requirement; reallocs
+   only double-and-copy when full), so the IR parser is O(n), not O(n²). The
+   real super-linear cost was the emitter's right-nested `&` chains:
+   `emit-js-defs`/`emit-js-type-defs` pushed the entire output through a
+   D-deep concat (O(L·D), worse since CL 2814 made `&` always fresh-alloc).
+   Converted both to the compiler's own idiom — accumulate piece strings with
+   `list-push`, concat once with `text-concat-list` (O(L), single len-pass +
+   one alloc + copy-once, as in `opening.codex:606`). Byte-identical output
+   verified on ExplorerTheme (480 defs), the 1.37 MB stress (1500 defs), and
+   SettingDesignerApp. Also lowers heap HWM (no O(L·D) retained intermediates).
+   Per-construct combiners (act-stmts/list-elems/branches) are bounded by one
+   def's local size and were left as `&` (Rule 4).
+
+`lookup-arity` already uses bsearch (O(log D)); not a factor. Profiling /
+prof-dump proved unnecessary — the IR-size sweep above settled scaling.
 
 **Original status:** Active. Discovered 2026-05-27 by val.
 **Severity:** Blocks HTML plug growth past ~75KB source.

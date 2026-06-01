@@ -97,7 +97,8 @@ Section: Type Definition Emission
     is ARecordTypeDef (name) (tparams) (fields) (s) ->
      emit-lua-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-lua-sum-type ctors
+     if is-tup-type (name.value) then ""
+     else emit-lua-sum-type ctors
 
   emit-lua-sum-type : List AVariantCtorDef -> Text
   emit-lua-sum-type (ctors) =
@@ -262,7 +263,7 @@ Section: Expression Emission
   emit-lua-match-arm (pat) (body) (arities) (i) =
    when pat
     is IrLitPat (text) (ty) (sp) -> "if _s == " & text & " then return " & emit-lua-expr body arities & " end"
-    is IrCtorPat (name) (subs) (ty) (sp) -> "if _s.tag == \"" & name & "\" then return " & emit-lua-expr body arities & " end"
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "do " & emit-lua-tup-pat-binds subs 1 & "return " & emit-lua-expr body arities & " end" else "if _s.tag == \"" & name & "\" then return " & emit-lua-expr body arities & " end"
     is IrVarPat (name) (ty) (sp) -> "do local " & lua-sanitize name & " = _s; return " & emit-lua-expr body arities & " end"
     is IrWildPat (sp) -> "do return " & emit-lua-expr body arities & " end"
 
@@ -290,6 +291,7 @@ Section: Apply Emission
     is IrName (n) (ty) (sp) ->
      if n == "print-line-uni" then "print(" & emit-lua-expr (list-at args 0) arities & ")"
      else if n == "list-at" then emit-lua-expr (list-at args 0) arities & "[" & emit-lua-expr (list-at args 1) arities & " + 1]"
+     else if is-mktup-name n then "{" & emit-lua-apply-args args arities 0 & "}"
      else lua-sanitize n & "(" & emit-lua-apply-args args arities 0 & ")"
     is otherwise -> emit-lua-expr-curried e arities
 
@@ -332,5 +334,24 @@ Section: Chapter Emission
    in let types-text = emit-lua-type-defs type-defs 0
    in let defs-text = emit-lua-defs (m.defs) 0 arities
    in types-text & defs-text & lua-sanitize opening-entry-point & "()\n"
+
+Section: Tuple Helpers
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+  emit-lua-tup-pat-binds : List IRPat, Integer -> Text
+  emit-lua-tup-pat-binds (subs) (i) =
+   if i > list-length subs then ""
+   else let sub = list-at subs (i - 1)
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> "local " & lua-sanitize name & " = _s[" & integer-to-text i & "]; "
+    is IrWildPat (sp) -> ""
+    is otherwise -> "") & emit-lua-tup-pat-binds subs (i + 1)
 
 Page 1

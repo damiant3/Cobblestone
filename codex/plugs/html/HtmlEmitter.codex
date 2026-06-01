@@ -182,9 +182,14 @@ Section: Apply
   emit-js-apply : IRExpr, List ArityEntry, Integer -> Text
   emit-js-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
-   in let func = emit-js-expr (chain.root) arities indent
-   in let args = emit-js-apply-args (chain.args) arities indent 0
-   in func & "(" & args & ")"
+   in when (chain.root)
+    is IrName (n) (ty) (sp) -> if is-mktup-name n then "[" & emit-js-apply-args (chain.args) arities indent 0 & "]"
+     else let func = emit-js-expr (chain.root) arities indent
+     in let args = emit-js-apply-args (chain.args) arities indent 0
+     in func & "(" & args & ")"
+    is otherwise -> let func = emit-js-expr (chain.root) arities indent
+     in let args = emit-js-apply-args (chain.args) arities indent 0
+     in func & "(" & args & ")"
 
   emit-js-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-js-apply-args (args) (arities) (indent) (i) =
@@ -226,15 +231,15 @@ Section: Match
    in let cond = emit-js-pattern-cond (b.pattern) "_s"
    in let binds = emit-js-pattern-binds (b.pattern) "_s" indent
    in let body = emit-js-expr (b.body) arities indent
-   in let kw = if i == 0 then "if" else "} else if"
-   in html-indent indent & kw & " (" & cond & ") {\n" & binds & html-indent (indent + 1) & "return " & body & ";\n" & emit-js-branches branches arities indent (i + 1)
+   in let kw = if i == 0 then "if" else "else if"
+   in html-indent indent & kw & " (" & cond & ") {\n" & binds & html-indent (indent + 1) & "return " & body & ";\n" & html-indent indent & "}\n" & emit-js-branches branches arities indent (i + 1)
 
   emit-js-pattern-cond : IRPat, Text -> Text
   emit-js-pattern-cond (p) (scrut) =
    when p
     is IrVarPat (name) (ty) (sp) -> "true"
     is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
-    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "true" else scrut & "._tag === \"" & name & "\""
     is IrWildPat (sp) -> "true"
 
   emit-js-pattern-binds : IRPat, Text, Integer -> Text
@@ -242,7 +247,7 @@ Section: Match
    when p
     is IrVarPat (name) (ty) (sp) -> html-indent (indent + 1) & "const " & html-sanitize name & " = " & scrut & ";\n"
     is IrLitPat (text) (ty) (sp) -> ""
-    is IrCtorPat (name) (subs) (ty) (sp) -> emit-js-ctor-binds subs scrut indent 0
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then emit-js-tuple-binds subs scrut indent 0 else emit-js-ctor-binds subs scrut indent 0
     is IrWildPat (sp) -> ""
 
   emit-js-ctor-binds : List IRPat, Text, Integer, Integer -> Text
@@ -298,7 +303,8 @@ Section: Type Definitions
     is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
      "function " & html-sanitize (name.value) & "(fields) { return { _type: \"" & name.value & "\", ...fields }; }\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-js-variant-ctors ctors 0
+     if is-tup-type (name.value) then ""
+     else emit-js-variant-ctors ctors 0
 
   emit-js-variant-ctors : List AVariantCtorDef, Integer -> Text
   emit-js-variant-ctors (ctors) (i) =
@@ -332,6 +338,10 @@ Section: Definition Emission
    else if n == "fetch-json" then True
    else if n == "json-stringify" then True
    else if n == "json-parse" then True
+   else if n == "json-parse-obj" then True
+   else if n == "json-obj-field" then True
+   else if n == "url-encode" then True
+   else if n == "download-text" then True
    else if n == "set-timeout" then True
    else if n == "local-storage-get" then True
    else if n == "local-storage-set" then True
@@ -340,6 +350,8 @@ Section: Definition Emission
    else if n == "mount-widget" then True
    else if n == "int-to-css-color" then True
    else if n == "mount-widget-themed" then True
+   else if n == "mount-widget-into" then True
+   else if n == "register-handlers" then True
    else if n == "state-get" then True
    else if n == "state-set" then True
    else if n == "state-get-text" then True
@@ -383,8 +395,12 @@ Section: Definition Emission
 
   emit-js-defs : List IRDef, Integer, List ArityEntry -> Text
   emit-js-defs (defs) (i) (arities) =
-   if i == list-length defs then ""
-   else emit-js-def (list-at defs i) arities & emit-js-defs defs (i + 1) arities
+   text-concat-list (emit-js-defs-acc defs i (list-length defs) arities [])
+
+  emit-js-defs-acc : List IRDef, Integer, Integer, List ArityEntry, List Text -> List Text
+  emit-js-defs-acc (defs) (i) (len) (arities) (acc) =
+   if i >= len then acc
+   else emit-js-defs-acc defs (i + 1) len arities (list-push acc (emit-js-def (list-at defs i) arities))
 
 Section: HTML Page Assembly
 
@@ -413,7 +429,7 @@ Section: Chapter Emission
   emit-html-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let title = if m.chapter-title == "" then "Codex App" else m.chapter-title
-   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\n\n"
+   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (Math.trunc(a)^Math.trunc(b));}\nfunction bit_and(a,b){return (Math.trunc(a)&Math.trunc(b));}\nfunction bit_or(a,b){return (Math.trunc(a)|Math.trunc(b));}\nfunction bit_shl(a,n){return (Math.trunc(a)<<n);}\nfunction bit_shr(a,n){return (Math.trunc(a)>>n);}\nfunction bit_shru(a,n){return (Math.trunc(a)>>>n);}\nfunction bit_not(a){return (~Math.trunc(a));}\n\n"
    in let types-text = emit-js-type-defs type-defs 0
    in let defs-text = emit-js-defs (m.defs) 0 arities
    in let entry = "// Entry\ntry { opening(); } catch(e) { console.error(e); }\n"
@@ -454,6 +470,10 @@ Section: Chapter Emission
    "function fetch_json(u,m,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=b;return fetch(u,o).then(function(r){return r.json();});}\n"
    & "function json_stringify(v){return JSON.stringify(v);}\n"
    & "function json_parse(s){return JSON.parse(s);}\n"
+   & "function json_parse_obj(s){return JSON.parse(s);}\n"
+   & "function json_obj_field(o,k){if(o==null)return '';var v=o[k];return v==null?'':typeof v==='object'?JSON.stringify(v):String(v);}\n"
+   & "function url_encode(s){return encodeURIComponent(s);}\n"
+   & "function download_text(c,f,m){var b=new Blob([c],{type:m});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=f;a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},1000);return 0;}\n"
    & "function fetch_then(u,m,b,cb){var o={method:m,headers:{'Content-Type':'application/json'}};"
    & "if(b)o.body=b;fetch(u,o).then(function(r){return r.json()})"
    & ".then(function(d){cb(json_stringify(d))})"
@@ -611,11 +631,25 @@ Section: Chapter Emission
    & "s.textContent=theme_to_css(th);document.head.appendChild(s);return 0;}\n"
 
   emit-dom-widget : Text
-  emit-dom-widget = emit-dom-widget-style & emit-dom-widget-create & emit-dom-widget-mount
+  emit-dom-widget = emit-dom-widget-style & emit-dom-widget-create & emit-dom-widget-dim & emit-dom-widget-custom & emit-dom-widget-mount
+
+  emit-dom-widget-dim : Text
+  emit-dom-widget-dim =
+   "function _wkDim(n,dim,sel){var k=n.wn_kind,tag=(k&&k._0)||'',ch=n.wn_children||[];"
+   & "function lbl(i){var c=ch[i];if(!c)return '';var kk=c.wn_kind;return (kk&&kk._0!==undefined&&kk._0!==null)?kk._0:'';}"
+   & "if(tag==='opt'){var p=document.createElement('span');var idx=n.wn_state;p.className=(idx===sel?'pip active':'pip');p.textContent=lbl(0);p.onclick=function(){if(_wkOnPick)_wkOnPick(dim,idx)};return p;}"
+   & "if(tag==='optc'){var p=document.createElement('span');var idx=n.wn_state;p.className=(idx===sel?'pip active':'pip');p.textContent=lbl(0);p.style.borderLeft='4px solid '+lbl(1);p.onclick=function(){if(_wkOnPick)_wkOnPick(dim,idx)};return p;}"
+   & "if(tag==='cat'){var w=document.createElement('div');w.className='cat';"
+   & "var h=document.createElement('span');h.className='pip catpip';h.textContent=lbl(0);w.appendChild(h);"
+   & "var pop=document.createElement('div');pop.className='catpop';"
+   & "for(var i=1;i<ch.length;i++)pop.appendChild(_wkDim(ch[i],dim,sel));"
+   & "w.appendChild(pop);return w;}"
+   & "return document.createElement('span');}\n"
 
   emit-dom-widget-style : Text
   emit-dom-widget-style =
-   "var _wkTheme=null;\n"
+   "var _wkTheme=null,_wkOnPick=null,_wkOnClick=null;\n"
+   & "function register_handlers(p,c){_wkOnPick=p;_wkOnClick=c;return 0}\n"
    & "function _wkStyle(ws,el){if(!ws)return;"
    & "if(ws.ws_bg)el.style.background=_c(ws.ws_bg);"
    & "if(ws.ws_fg)el.style.color=_c(ws.ws_fg);"
@@ -639,6 +673,7 @@ Section: Chapter Emission
   emit-dom-widget-create : Text
   emit-dom-widget-create =
    "function _wk(n){var k=n.wn_kind,el;"
+   & "if(k._tag==='WkCustom')return _wkCustom(n,k._0||'');"
    & "if(k._tag==='WkPanel')el=document.createElement('div');"
    & "else if(k._tag==='WkLabel'){el=document.createElement('span');el.textContent=k._0}"
    & "else if(k._tag==='WkButton'){el=document.createElement('button');el.textContent=k._0}"
@@ -660,10 +695,71 @@ Section: Chapter Emission
    & "for(var i=0;i<ch.length;i++)el.appendChild(_wk(ch[i]));"
    & "return el}\n"
 
+  emit-dom-widget-custom : Text
+  emit-dom-widget-custom =
+   "function _wkCustom(n,tag){"
+   & "var id=n.wn_id||'',st=n.wn_state||0,ch=n.wn_children||[];"
+   & "function lbl(i){var c=ch[i];if(!c)return '';var kk=c.wn_kind;return (kk&&kk._0!==undefined&&kk._0!==null)?kk._0:'';}"
+   & "if(tag.indexOf('box:')===0){var el=document.createElement('div');var cls=tag.slice(4);if(cls)el.className=cls;if(id)el.id=id;for(var i=0;i<ch.length;i++)el.appendChild(_wk(ch[i]));return el;}"
+   & "if(tag==='h1'){var h=document.createElement('h1');h.textContent=lbl(0);return h;}"
+   & "if(tag==='nav'){var nv=document.createElement('nav');nv.className='nv';"
+   & "var pages=[['/item','item','Items'],['/character','character','Characters'],['/setting','setting','Settings'],['/card','card','Cards'],['/mine','mine','My Creations']];"
+   & "for(var i=0;i<pages.length;i++){var a=document.createElement('a');a.href=pages[i][0];a.textContent=pages[i][2];if(id===pages[i][1])a.className='active';nv.appendChild(a);}"
+   & "var sp=document.createElement('span');sp.style.flex='1';nv.appendChild(sp);"
+   & "var sd=document.createElement('span');sd.className='sd';var dot=document.createElement('span');dot.id='sd-dot';dot.className='dot';"
+   & "var lab=document.createElement('span');lab.id='sd-label';lab.textContent='checking...';"
+   & "sd.appendChild(dot);sd.appendChild(document.createTextNode(' '));sd.appendChild(lab);nv.appendChild(sd);return nv;}"
+   & "if(tag==='dim-picker'){var w=document.createElement('div');w.className='dim';"
+   & "var pill=document.createElement('div');pill.className='dim-pill';pill.textContent=lbl(st)||'?';"
+   & "var dd=document.createElement('div');dd.className='dd';"
+   & "for(var i=0;i<ch.length;i++){(function(ix){var it=document.createElement('div');it.className=ix===st?'dd-item active':'dd-item';it.textContent=lbl(ix);it.onclick=function(){if(_wkOnPick)_wkOnPick(id,ix)};dd.appendChild(it);})(i);}"
+   & "w.appendChild(pill);w.appendChild(dd);return w;}"
+   & "if(tag==='prompt-field'){var w=document.createElement('div');w.className='prow';"
+   & "var ta=document.createElement('textarea');ta.id='prompt';ta.placeholder=lbl(0);"
+   & "var pc=document.createElement('div');pc.className='pc';var la=document.createElement('label');la.textContent='Seed';"
+   & "var inp=document.createElement('input');inp.id='seed';inp.type='number';inp.value=st;"
+   & "pc.appendChild(la);pc.appendChild(inp);w.appendChild(ta);w.appendChild(pc);return w;}"
+   & "if(tag==='toolbar'){var w=document.createElement('div');w.className='tb';"
+   & "for(var i=0;i<ch.length;i++){(function(c){var b=document.createElement('button');var kk=c.wn_kind;b.textContent=(kk&&kk._0)||'';b.className=c.wn_state===2?'btn primary':'btn';var bid=c.wn_id||'';b.onclick=function(){if(_wkOnClick)_wkOnClick(bid)};w.appendChild(b);})(ch[i]);}"
+   & "return w;}"
+   & "if(tag==='hero'){var w=document.createElement('div');w.className='hero';w.id='hero';"
+   & "var img=document.createElement('img');img.id='hero-img';img.style.display='none';"
+   & "img.onclick=function(){if(this.src&&this.src.indexOf('data:')<0){var lb=document.getElementById('lb');if(lb){lb.classList.add('on');var li=document.getElementById('lb-img');if(li)li.src=this.src;}}};"
+   & "var emp=document.createElement('div');emp.className='he';emp.id='hero-empty';emp.textContent=lbl(0);"
+   & "var meta=document.createElement('div');meta.id='hero-meta';meta.className='hm';"
+   & "w.appendChild(img);w.appendChild(emp);w.appendChild(meta);return w;}"
+   & "if(tag==='history'){var w=document.createElement('div');w.className='hist';"
+   & "var h=document.createElement('h3');h.textContent='History';var hd=document.createElement('div');hd.id='history';"
+   & "w.appendChild(h);w.appendChild(hd);return w;}"
+   & "if(tag==='lightbox'){var w=document.createElement('div');w.className='lb';w.id='lb';"
+   & "w.onclick=function(){this.classList.remove('on')};"
+   & "var x=document.createElement('span');x.className='x';x.innerHTML='&times;';var img=document.createElement('img');img.id='lb-img';"
+   & "w.appendChild(x);w.appendChild(img);return w;}"
+   & "if(tag==='dimsel'){var w=document.createElement('span');w.className='dimw';"
+   & "var hd=document.createElement('span');hd.className='pip head';hd.textContent=lbl(0);w.appendChild(hd);"
+   & "var pop=document.createElement('div');pop.className='pop';"
+   & "var f=(ch[1]&&ch[1].wn_kind&&ch[1].wn_kind._0)||'';pop.classList.add(f==='cat'?'pop-col':'pop-wrap');"
+   & "for(var i=1;i<ch.length;i++)pop.appendChild(_wkDim(ch[i],id,st));"
+   & "w.appendChild(pop);return w;}"
+   & "if(tag==='prompt-only'){var ta=document.createElement('textarea');ta.id='prompt';ta.placeholder=lbl(0);return ta;}"
+   & "if(tag==='btnbar'){var w=document.createElement('div');w.className='btnbar';"
+   & "var g=document.createElement('button');g.className='btn primary';g.textContent='Generate';g.onclick=function(){if(_wkOnClick)_wkOnClick('gen')};"
+   & "var s=document.createElement('input');s.id='seed';s.type='number';s.value=st;"
+   & "var r=document.createElement('button');r.className='btn';r.textContent='Random';r.onclick=function(){if(_wkOnClick)_wkOnClick('rnd')};"
+   & "w.appendChild(g);w.appendChild(s);w.appendChild(r);return w;}"
+   & "if(tag==='btnbar-batch'){var w=document.createElement('div');w.className='btnbar';"
+   & "var g=document.createElement('button');g.className='btn primary';g.textContent='Generate';g.onclick=function(){if(_wkOnClick)_wkOnClick('gen')};"
+   & "var s=document.createElement('input');s.id='seed';s.type='number';s.value=st;"
+   & "var b=document.createElement('button');b.className='btn';b.textContent='Batch All Rarities';b.onclick=function(){if(_wkOnClick)_wkOnClick('batch')};"
+   & "var r=document.createElement('button');r.className='btn';r.textContent='Random';r.onclick=function(){if(_wkOnClick)_wkOnClick('rnd')};"
+   & "w.appendChild(g);w.appendChild(s);w.appendChild(b);w.appendChild(r);return w;}"
+   & "var el=document.createElement('div');el.dataset.custom=tag;if(id)el.id=id;for(var i=0;i<ch.length;i++)el.appendChild(_wk(ch[i]));return el;}\n"
+
   emit-dom-widget-mount : Text
   emit-dom-widget-mount =
    "function mount_widget(n){var a=document.getElementById('app');a.innerHTML='';a.appendChild(_wk(n));return 0}\n"
    & "function mount_widget_themed(th,n){_wkTheme=th;return mount_widget(n)}\n"
+   & "function mount_widget_into(id,n){var a=document.getElementById(id);if(!a)return 0;a.innerHTML='';var ch=n.wn_children||[];for(var i=0;i<ch.length;i++)a.appendChild(_wk(ch[i]));return 0}\n"
 
   is-builtin-type : Text -> Boolean
   is-builtin-type (n) =
@@ -672,10 +768,29 @@ Section: Chapter Emission
 
   emit-js-type-defs : List ATypeDef, Integer -> Text
   emit-js-type-defs (tds) (i) =
-   if i == list-length tds then ""
+   text-concat-list (emit-js-type-defs-acc tds i (list-length tds) [])
+
+  emit-js-type-defs-acc : List ATypeDef, Integer, Integer, List Text -> List Text
+  emit-js-type-defs-acc (tds) (i) (len) (acc) =
+   if i >= len then acc
    else let td = list-at tds i
    in let name = when td
      is ARecordTypeDef (nm) (tp) (fs) (sp) -> nm.value
      is AVariantTypeDef (nm) (tp) (cs) (sp) -> nm.value
-   in if is-builtin-type name then emit-js-type-defs tds (i + 1)
-   else emit-js-type-def td & emit-js-type-defs tds (i + 1)
+   in if is-builtin-type name then emit-js-type-defs-acc tds (i + 1) len acc
+   else emit-js-type-defs-acc tds (i + 1) len (list-push acc (emit-js-type-def td))
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+  emit-js-tuple-binds : List IRPat, Text, Integer, Integer -> Text
+  emit-js-tuple-binds (subs) (scrut) (indent) (i) =
+   if i >= list-length subs then ""
+   else when (list-at subs i)
+    is IrVarPat (name) (ty) (sp) -> html-indent (indent + 1) & "const " & html-sanitize name & " = " & scrut & "[" & integer-to-text i & "];\n" & emit-js-tuple-binds subs scrut indent (i + 1)
+    is otherwise -> emit-js-tuple-binds subs scrut indent (i + 1)

@@ -1,236 +1,224 @@
 Chapter: ExplorerServer
-  cites Net chapter NetIO
-  cites Net chapter NetworkStack
-  cites Net chapter TcpTransport
-  cites Net chapter Tcp
-  cites Net chapter Ethernet
-  cites Net chapter MessageFraming
-  cites Kernel chapter Ne2k
+  cites Net chapter WebServer
+  cites Net chapter Accounts
+  cites Explorer chapter ExplorerStore
   cites Foreword chapter Maybe
-  cites Foreword chapter CCE
 
- Minimal web server CDX. Boots bare-metal with NE2K NIC and serves
- JSON API requests. Two modes: serial (file-mapped I/O) and TCP
- (persistent connection via NE2K NIC NAT to host:9100).
+ Explorer webapp server. Reads a multi-table .db off the attached disk
+ (ExplorerStore format, raw sectors via block-read-sector) and serves any
+ table by name as JSON over framed TCP via the WebServer std-include. A
+ request /api/<name> (or /api/d/<name>) returns that table's rows as a JSON
+ array of field-arrays: [["Forest","dense ..."], ...]. No serial.
 
  We say:
 
-Section: Server State
+Section: Table -> JSON
 
-  ServerState = record {
-    request-count : Integer
-  }
+  db-buf : Integer
+  db-buf = es-disk-load 160
 
-  server-new : ServerState
-  server-new = ServerState { request-count = 0 }
+  fields-json : List Text, Integer, Integer, Text -> Text
+  fields-json (fs) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else ","
+    in fields-json fs (i + 1) n (acc & sep & jstr (list-at fs i))
 
-Section: Request Parsing
+  rows-json : List (List Text), Integer, Integer, Text -> Text
+  rows-json (rows) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rows i
+    in let sep = if i == 0 then "" else ","
+    in rows-json rows (i + 1) n (acc & sep & "[" & fields-json r 0 (list-length r) "" & "]")
 
-  extract-path : Text -> Text
-  extract-path (line) =
-    let parts = text-split line " "
-    in if list-length parts < 2 then "/"
-    else list-at parts 1
+  table-json : Text -> Text
+  table-json (name) =
+    let rows = es-read-table db-buf name
+    in "[" & rows-json rows 0 (list-length rows) "" & "]"
 
-Section: JSON Helpers
+Section: URL decoding
 
-  jstr : Text -> Text
-  jstr (s) = "\"" & s & "\""
+ Query-param values arrive percent-encoded (the browser encodes spaces and
+ punctuation). Decode in Unicode space via to-unicode/from-unicode so the
+ frequency-ordered CCE table is never assumed to be ASCII-contiguous.
 
-Section: Request Dispatch
+  url-hex : Integer -> Integer
+  url-hex (u) =
+    if (u >= 48) & (u <= 57) then u - 48
+    else if (u >= 97) & (u <= 102) then u - 87
+    else if (u >= 65) & (u <= 70) then u - 55
+    else 0
 
-  dispatch : ServerState, Text -> Text
-  dispatch (state) (line) =
-    let path = extract-path line
-    in if path == "/api/status" then "{\"requests\":" & show (state.request-count) & ",\"mode\":\"tcp\"}"
-    else if path == "/api/health" then "{\"status\":\"ok\"}"
-    else "{\"error\":\"not found\",\"path\":" & jstr path & "}"
+  url-decode-loop : Text, Integer, Integer, Text -> Text
+  url-decode-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let u = to-unicode (char-code (char-at s i))
+    in if u == 43 then url-decode-loop s (i + 1) len (acc & " ")
+    else if (u == 37) & ((i + 2) < len)
+      then let h = url-hex (to-unicode (char-code (char-at s (i + 1))))
+           in let l = url-hex (to-unicode (char-code (char-at s (i + 2))))
+           in url-decode-loop s (i + 3) len (acc & char-to-text (code-to-char (from-unicode (h * 16 + l))))
+    else url-decode-loop s (i + 1) len (acc & char-to-text (char-at s i))
 
-Section: Serial Mode (one-shot, file-mapped I/O)
+  url-decode : Text -> Text
+  url-decode (s) = url-decode-loop s 0 (text-length s) ""
 
-  handle-serial-request : ServerState, Text -> [Console] ServerState
-  handle-serial-request (state) (line) =
-    let ns = ServerState { request-count = state.request-count + 1 }
-    in let response = dispatch ns line
-    in act
-      print-line-uni ("200 application/json " & response)
-      ns
-    end
+Section: Per-user creations
 
-  serial-server-loop : ServerState -> [Console] ServerState
-  serial-server-loop (state) = act
-    line-result <- read-line
-    when line-result
-      is Just (line) -> act
-        ns <- handle-serial-request state line
-        serial-server-loop ns
-      end
-      is None -> state
-  end
+ A user's saved creations (generated settings/characters/items) persist on
+ disk as one ExplorerStore page in a fixed region (sectors cr-start..). Each
+ row is [owner-id, kind, name, data]; owner-id is the account id as text so a
+ plain text compare selects "mine". Stateless per request: save re-reads the
+ region, appends, and rewrites it; the route holds no in-memory content.
 
-Section: TCP Mode (persistent, NE2K NIC)
+  cr-start : Integer = 220
+  cr-sectors : Integer = 32
+  cr-max : Integer = 50
 
-  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
-  local-ip : List Integer = [10, 0, 2, 15]
-  gateway-ip : List Integer = [10, 0, 2, 2]
-  host-ip : List Integer = [127, 0, 0, 1]
+  cr-cap : Text, Integer -> Text
+  cr-cap (s) (n) = if text-length s <= n then s else substring s 0 n
 
-  text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
-  text-to-bytes (s) (i) (stop) (acc) =
-    if i >= stop then acc
-    else text-to-bytes s (i + 1) stop (list-push acc (to-unicode (char-code (char-at s i))))
+  creations-read : Integer -> List (List Text)
+  creations-read (x) =
+    let buf = es-disk-load-at cr-start cr-sectors
+    in let n = es-r-u16 buf 0
+    in if n > cr-max then [] else es-page-rows buf 2 0 n []
 
-  bytes-to-text : List Integer, Integer, Integer, Text -> Text
-  bytes-to-text (bs) (off) (total) (acc) =
-    if off >= total then acc
-    else let stop = if off + 256 > total then total else off + 256
-    in let chunk = bytes-to-text-chunk bs off stop ""
-    in bytes-to-text bs stop total (acc & chunk)
+  creation-save : Integer, Text, Text, Text -> Integer
+  creation-save (owner) (kind) (name) (data) =
+    let rows = creations-read 0
+    in if list-length rows >= cr-max then 0 - 1
+    else let all = list-push rows [show owner, cr-cap kind 20, cr-cap name 60, cr-cap data 200]
+    in let buf = es-build-page-sized all (cr-sectors * 512)
+    in es-disk-save buf cr-start cr-sectors
 
-  bytes-to-text-chunk : List Integer, Integer, Integer, Text -> Text
-  bytes-to-text-chunk (bs) (i) (stop) (acc) =
-    if i >= stop then acc
-    else let cce = from-unicode (list-at bs i)
-    in bytes-to-text-chunk bs (i + 1) stop (acc & char-to-text (code-to-char cce))
+  cr-row-json : List Text -> Text
+  cr-row-json (r) =
+    "{\"kind\":" & jstr (list-at r 1) & ",\"name\":" & jstr (list-at r 2) & ",\"data\":" & jstr (list-at r 3) & "}"
 
-  send-response : TcpTransportState, Text -> TcpTransportState
-  send-response (ts) (response) =
-    let body = "200 application/json " & response
-    in let body-bytes = text-to-bytes body 0 (text-length body) []
-    in let r = transport-send-message ts 1 body-bytes
-    in flush-transport-outbox (r.transport)
+  mine-loop : List (List Text), Text, Integer, Integer, Integer, Text -> Text
+  mine-loop (rows) (owner) (i) (n) (cnt) (acc) =
+    if i >= n then acc
+    else let r = list-at rows i
+    in if list-at r 0 == owner
+       then let sep = if cnt == 0 then "" else ","
+            in mine-loop rows owner (i + 1) n (cnt + 1) (acc & sep & cr-row-json r)
+       else mine-loop rows owner (i + 1) n cnt acc
 
-  TcpLoopState = record {
-    server : ServerState,
-    transport : TcpTransportState
-  }
+  mine-json : Integer -> Text
+  mine-json (owner) =
+    let rows = creations-read 0
+    in "[" & mine-loop rows (show owner) 0 (list-length rows) 0 "" & "]"
 
-  handle-tcp-request : TcpLoopState, TransportRecvResult -> TcpLoopState
-  handle-tcp-request (ls) (recv) =
-    let request-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
-    in let ns = ServerState { request-count = (ls.server).request-count + 1 }
-    in let response = dispatch ns request-text
-    in let ts2 = send-response (recv.transport) response
-    in TcpLoopState { server = ns, transport = ts2 }
+  handle-for : List Account, Integer, Integer, Text -> Text
+  handle-for (accts) (i) (n) (oid) =
+    if i >= n then "?"
+    else let a = list-at accts i
+    in if show (a.acc-id) == oid then a.handle else handle-for accts (i + 1) n oid
 
-  tcp-server-loop : TcpLoopState -> [Console] Integer
-  tcp-server-loop (ls) = act
-    let recv = net-io-recv-loop (ls.transport) 0
-    in if recv.has-message then act
-      let next = handle-tcp-request ls recv
-      in tcp-server-loop next
-    end
-    else act
-      0
-    end
-  end
+  gallery-loop : List (List Text), List Account, Integer, Integer, Text -> Text
+  gallery-loop (rows) (accts) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rows i
+    in let sep = if i == 0 then "" else ","
+    in let h = handle-for accts 0 (list-length accts) (list-at r 0)
+    in gallery-loop rows accts (i + 1) n (acc & sep & "{\"by\":" & jstr h & ",\"kind\":" & jstr (list-at r 1) & ",\"name\":" & jstr (list-at r 2) & ",\"data\":" & jstr (list-at r 3) & "}")
 
-  start-tcp-server : ServerState -> [Console] Integer
-  start-tcp-server (state) =
-    let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
-    in let ts = transport-new sess
-    in let ts1 = net-io-connect ts
-    in act
-      print-line-uni "TCP connected"
-      tcp-server-loop (TcpLoopState { server = state, transport = ts1 })
-    end
+  gallery-json : Integer -> Text
+  gallery-json (x) =
+    let rows = creations-read 0
+    in let accts = (accounts-load 0).accounts
+    in "[" & gallery-loop rows accts 0 (list-length rows) "" & "]"
 
-Section: HTTP Server Mode (listen on port 80, accept connections)
+  remix-find : List (List Text), List Account, Text, Text, Integer, Integer -> List Text
+  remix-find (rows) (accts) (by) (nm) (i) (n) =
+    if i >= n then []
+    else let r = list-at rows i
+    in if (handle-for accts 0 (list-length accts) (list-at r 0) == by) & (list-at r 2 == nm)
+       then r else remix-find rows accts by nm (i + 1) n
 
-  build-http-response : Text, Text -> Text
-  build-http-response (content-type) (body) =
-    "HTTP/1.0 200 OK\nContent-Type: " & content-type & "\nContent-Length: " & show (text-length body) & "\nConnection: close\n\n" & body
+  creation-remix : Integer, Text, Text -> Integer
+  creation-remix (owner) (by) (nm) =
+    let rows = creations-read 0
+    in let accts = (accounts-load 0).accounts
+    in let src = remix-find rows accts by nm 0 (list-length rows)
+    in if list-length src < 4 then 0 - 1
+    else creation-save owner (list-at src 1) (list-at src 2 & " (remix)") (list-at src 3)
 
-  build-http-404 : Text
-  build-http-404 = "HTTP/1.0 404 Not Found\nContent-Type: text/plain\nContent-Length: 9\nConnection: close\n\nNot Found"
+  md-rows : List (List Text), Text, Text, Integer, Integer, Text -> Text
+  md-rows (rows) (owner) (kind) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rows i
+    in if (list-at r 0 == owner) & (list-at r 1 == kind)
+       then md-rows rows owner kind (i + 1) n (acc & "### " & list-at r 2 & "\n" & list-at r 3 & "\n\n")
+       else md-rows rows owner kind (i + 1) n acc
 
-  http-response-bytes : Text -> List Integer
-  http-response-bytes (resp) = text-to-bytes resp 0 (text-length resp) []
+  export-md : Integer, Text -> Text
+  export-md (owner) (handle) =
+    let rows = creations-read 0
+    in let o = show owner
+    in "# " & handle & "'s World Codex\n\n## Settings\n\n" & md-rows rows o "setting" 0 (list-length rows) ""
+       & "## Characters\n\n" & md-rows rows o "character" 0 (list-length rows) ""
+       & "## Items\n\n" & md-rows rows o "item" 0 (list-length rows) ""
 
-  has-header-end : List Integer, Integer -> Boolean
-  has-header-end (bs) (i) =
-    if i + 3 >= list-length bs then False
-    else if list-at bs i == 13 then
-      if list-at bs (i + 1) == 10 then
-        if list-at bs (i + 2) == 13 then
-          if list-at bs (i + 3) == 10 then True
-          else has-header-end bs (i + 1)
-        else has-header-end bs (i + 1)
-      else has-header-end bs (i + 1)
-    else has-header-end bs (i + 1)
+  del-loop : List (List Text), Text, Text, Integer, Integer, List (List Text) -> List (List Text)
+  del-loop (rows) (owner) (name) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rows i
+    in if (list-at r 0 == owner) & (list-at r 2 == name)
+       then del-loop rows owner name (i + 1) n acc
+       else del-loop rows owner name (i + 1) n (list-push acc r)
 
-  recv-http-request : TcpTransportState, List Integer, Integer -> RawRecvResult
-  recv-http-request (ts) (acc) (rounds) =
-    if rounds > 20 then RawRecvResult { transport = ts, data = acc, has-data = list-length acc > 0 }
-    else if has-header-end acc 0 then RawRecvResult { transport = ts, data = acc, has-data = True }
-    else let recv = net-io-recv-raw ts 0
-    in if recv.has-data then recv-http-request (recv.transport) (acc & recv.data) (rounds + 1)
-    else RawRecvResult { transport = recv.transport, data = acc, has-data = list-length acc > 0 }
+  creation-delete : Integer, Text -> Integer
+  creation-delete (owner) (name) =
+    let rows = creations-read 0
+    in let kept = del-loop rows (show owner) name 0 (list-length rows) []
+    in let buf = es-build-page-sized kept (cr-sectors * 512)
+    in es-disk-save buf cr-start cr-sectors
 
-  handle-http-connection : ServerState, TcpTransportState -> ServerState
-  handle-http-connection (state) (ts) =
-    let recv = recv-http-request ts [] 0
-    in if recv.has-data then
-      let request-text = bytes-to-text (recv.data) 0 (list-length (recv.data)) ""
-      in let ns = ServerState { request-count = state.request-count + 1 }
-      in let json = dispatch ns request-text
-      in let resp = build-http-response "application/json" json
-      in let resp-bytes = http-response-bytes resp
-      in let ts1 = net-io-send-chunk (recv.transport) resp-bytes 0 (list-length resp-bytes)
-      in let ts2 = net-io-close ts1
-      in ns
-    else state
+Section: Routes
 
-  serve-one : ServerState, TcpTransportState -> [Console] ServerState
-  serve-one (state) (ts) =
-    let ts1 = net-io-accept ts 0
-    in let ns = handle-http-connection state ts1
-    in act
-      print-line-uni ("served " & show (ns.request-count))
-      ns
-    end
+  last-seg : Text -> Text
+  last-seg (path) =
+    let parts = text-split path "/"
+    in list-at parts (list-length parts - 1)
 
-  http-accept-loop : ServerState -> [Console] Integer
-  http-accept-loop (state) =
-    let sess = net-session-new local-mac local-ip gateway-ip 80 0 gateway-ip 2000
-    in let ts = transport-new sess
-    in let ts1 = net-io-listen ts
-    in act
-      ns <- serve-one state ts1
-      http-accept-loop ns
-    end
-
-  start-http-server : ServerState -> [Console] Integer
-  start-http-server (state) = act
-    print-line-uni "HTTP listening on port 80"
-    http-accept-loop state
-  end
+  my-route : Maybe Account, Text -> Text
+  my-route (acct) (path) =
+    let base = path-base path
+    in if base == "/api/gallery" then gallery-json 0
+       else if base == "/api/save"
+       then when acct
+         is None -> err-json "login required"
+         is Just (a) ->
+           let rc = creation-save (a.acc-id) (url-decode (qp path "kind")) (url-decode (qp path "name")) (url-decode (qp path "data"))
+           in if rc < 0 then err-json "store full" else "{\"ok\":true}"
+       else if base == "/api/mine"
+       then when acct
+         is None -> err-json "login required"
+         is Just (a) -> mine-json (a.acc-id)
+       else if base == "/api/delete"
+       then when acct
+         is None -> err-json "login required"
+         is Just (a) ->
+           let rc = creation-delete (a.acc-id) (url-decode (qp path "name"))
+           in "{\"ok\":true}"
+       else if base == "/api/remix"
+       then when acct
+         is None -> err-json "login required"
+         is Just (a) ->
+           let rc = creation-remix (a.acc-id) (url-decode (qp path "by")) (url-decode (qp path "name"))
+           in if rc < 0 then err-json "not found or store full" else "{\"ok\":true}"
+       else if base == "/api/export"
+       then when acct
+         is None -> err-json "login required"
+         is Just (a) -> export-md (a.acc-id) (a.handle)
+       else table-json (last-seg base)
 
 Section: Entry
 
-  opening : [Console, FileSystem] Nothing =
-    let state = server-new
-    in act
-      print-line-uni "READY"
-      mode-result <- read-line
-      when mode-result
-        is Just (mode) ->
-          if mode == "HTTP" then act
-            r <- start-http-server state
-            print-line-uni "SHUTDOWN"
-          end
-          else if mode == "TCP" then act
-            r <- start-tcp-server state
-            print-line-uni "SHUTDOWN"
-          end
-          else act
-            ns <- serial-server-loop state
-            print-line-uni "SHUTDOWN"
-          end
-        is None -> act
-          ns <- serial-server-loop state
-          print-line-uni "SHUTDOWN"
-        end
-    end
+  opening : [Console] Nothing = act
+    r <- auth-serve (my-route)
+    print-line-uni "SHUTDOWN"
+  end
 
 Page 1

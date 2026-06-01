@@ -27,7 +27,9 @@ function Invoke-BuildCdx {
     $stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
     New-Item -ItemType Directory -Force -Path (Split-Path $stage0) | Out-Null
     if ($Kernel -ne $stage0) { Copy-Item -Force $Kernel $stage0 }
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     & pwsh -NoProfile -File $Compile -Src $InputFile -Out $tmpOut -Log $logFile -Repl 2>&1 | Out-Null
+    $ErrorActionPreference = $prev
     $ok = $LASTEXITCODE -eq 0
     if (-not $ok) {
         Write-Host ''
@@ -74,7 +76,7 @@ function Invoke-BuildText {
             return $false
         }
 
-        $raw = [System.IO.File]::ReadAllText($outputFile) -replace "`r", ''
+        $raw = [System.IO.File]::ReadAllText($outputFile) -replace "`r", '' -replace "^\x01", ''
         $lines = $raw -split "`n"
         $textLines = [System.Collections.Generic.List[string]]::new()
         $halted = $false
@@ -221,9 +223,13 @@ Section: Body
     $signCdx = Join-Path $OutDir 'cdx-sign.cdx'
     $signLog = Join-Path $OutDir 'cdx-sign.log'
     $signOut = Join-Path $OutDir 'cdx-sign.out'
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     & pwsh -NoProfile -File $compileScript -Src $signSrc -Out $signCdx -Log $signLog 2>&1 | Out-Null
+    $ErrorActionPreference = $prev
     if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: sign tool compile failed'; Get-Content $signLog -TotalCount 10 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }; exit 1 }
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     & pwsh -NoProfile -File $runScript -Kernel $signCdx -OutFile $signOut 2>&1 | Out-Null
+    $ErrorActionPreference = $prev
     if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: sign tool run failed'; exit 1 }
     $signRaw = [System.IO.File]::ReadAllText($signOut)
     $signClean = $signRaw -replace '[^\x20-\x7E\r\n]', ''
@@ -250,15 +256,19 @@ if (-not (Test-Path -PathType Leaf $canarySrc))      { Write-Host "FAIL: $canary
 if (-not (Test-Path -PathType Leaf $canaryExpected)) { Write-Host "FAIL: $canaryExpected missing"; exit 1 }
 $compileScript = Join-Path $PSScriptRoot 'compile.ps1'
 $runScript     = Join-Path $PSScriptRoot 'test-run.ps1'
+$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 & pwsh -NoProfile -File $compileScript -Src $canarySrc -Out $canaryCdx -Log $canaryLog 2>&1 | Out-Null
+$ErrorActionPreference = $prev
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'FAIL: canary compile — SUT cannot compile factorial.codex'
     Get-Content $canaryLog -TotalCount 20 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
     exit 1
 }
+$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 & pwsh -NoProfile -File $runScript -Kernel $canaryCdx -OutFile $canaryOut 2>&1 | Out-Null
-$expectedBytes = if (Test-Path $canaryExpected) { [System.IO.File]::ReadAllText($canaryExpected) -replace "`r",'' } else { '' }
-$actualBytes   = if (Test-Path $canaryOut)      { [System.IO.File]::ReadAllText($canaryOut) }                       else { '' }
+$ErrorActionPreference = $prev
+$expectedBytes = if (Test-Path $canaryExpected) { ([System.IO.File]::ReadAllText($canaryExpected) -replace "`r",'').TrimEnd() } else { '' }
+$actualBytes   = if (Test-Path $canaryOut)      { ([System.IO.File]::ReadAllText($canaryOut) -replace "`r",'').TrimEnd() }    else { '' }
 if ($expectedBytes -ne $actualBytes) {
     Write-Host 'FAIL: canary output mismatch'
     Write-Host "  expected: $($expectedBytes.Trim())"
@@ -292,7 +302,9 @@ Measure-Phase 'text-stage1' {
 
 Measure-Phase 'sem-equiv' {
     $semEquivScript = Join-Path $PSScriptRoot 'compare-codex-semantic.ps1'
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     & pwsh -NoProfile -File $semEquivScript -Source $CodexSrc -Stage1 $textStage1 2>&1 | Out-Null
+    $ErrorActionPreference = $prev
     if ($LASTEXITCODE -ne 0) {
         Write-Host ''
         Write-Host 'FAIL: semantic equivalence — stage1 does not match source'

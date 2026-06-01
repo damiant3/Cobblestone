@@ -1,0 +1,276 @@
+Chapter: Accounts
+  cites Net chapter WebServer
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ Reusable user-accounts std-include for Codex web apps. A web app cites this,
+ writes ONE app route `(Maybe Account, Text -> Text)` (logged-in user, request
+ path -> JSON body), and calls `auth-serve route`. Registration, login, logout,
+ and identity (/api/auth/register|login|logout|me) are handled here; for every
+ other path the route is called with the authenticated Account (or None).
+
+ Built on the WebServer std-include (transport, framing, NIC connect, codec).
+ Passwords are stored as salted SHA-256 digests; session tokens are SHA-256 of
+ (handle | server nonce). NOTE v1: state is in-memory (per server run) and the
+ nonce is a counter, not a CSPRNG -- durable storage (disk write) and real
+ entropy are follow-ups. No serial; framed TCP over the NIC like WebServer.
+
+ NOTE (compiler): byte conversion is local (str-bytes-loop), not WebServer's
+ text-to-bytes. Passing an empty-list literal [] as an argument to a
+ cross-chapter function call currently poisons bare-metal type inference
+ (bogus "List vs Fun" in NetworkStack). Local helpers sidestep it. See
+ docs/Designs/Compiler/Active.
+
+ We say:
+
+Section: Model
+
+  Account = record { acc-id : Integer, handle : Text, display : Text, pwhash : Text }
+  Session = record { token : Text, sess-uid : Integer }
+  AuthState = record { accounts : List Account, sessions : List Session, next-id : Integer, nonce : Integer }
+  AuthStep = record { astate : AuthState, resp : Text }
+
+  auth-empty : AuthState
+  auth-empty = AuthState { accounts = [], sessions = [], next-id = 1, nonce = 1 }
+
+Section: Hashing
+
+  str-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  str-bytes-loop (s) (i) (n) (acc) =
+    if i >= n then acc
+    else str-bytes-loop s (i + 1) n (list-push acc (to-unicode (char-code (char-at s i))))
+
+  str-bytes : Text -> List Integer
+  str-bytes (t) = str-bytes-loop t 0 (text-length t) []
+
+  digest : Text -> Text
+  digest (t) = sha256-to-hex (sha256 (str-bytes t))
+
+  hash-pw : Text, Text -> Text
+  hash-pw (salt) (pw) = digest (salt & ":" & pw)
+
+ Salt is derived deterministically from the account id (v1: no stored salt
+ field, no CSPRNG). A durable store with per-account random salt is a follow-up.
+
+  salt-for : Integer -> Text
+  salt-for (id) = digest (show id & "$codex-salt")
+
+Section: Lookups
+
+  find-handle : List Account, Integer, Integer, Text -> Maybe Account
+  find-handle (xs) (i) (n) (h) =
+    if i >= n then None
+    else let a = list-at xs i
+    in if a.handle == h then Just (a) else find-handle xs (i + 1) n h
+
+  find-id : List Account, Integer, Integer, Integer -> Maybe Account
+  find-id (xs) (i) (n) (uid) =
+    if i >= n then None
+    else let a = list-at xs i
+    in if a.acc-id == uid then Just (a) else find-id xs (i + 1) n uid
+
+  find-token : List Session, Integer, Integer, Text -> Integer
+  find-token (xs) (i) (n) (tok) =
+    if i >= n then 0 - 1
+    else let se = list-at xs i
+    in if se.token == tok then se.sess-uid else find-token xs (i + 1) n tok
+
+  drop-token : List Session, Integer, Integer, Text, List Session -> List Session
+  drop-token (xs) (i) (n) (tok) (acc) =
+    if i >= n then acc
+    else let se = list-at xs i
+    in if se.token == tok then drop-token xs (i + 1) n tok acc
+       else drop-token xs (i + 1) n tok (list-push acc se)
+
+  whoami : AuthState, Text -> Maybe Account
+  whoami (s) (tok) =
+    if text-length tok == 0 then None
+    else let uid = find-token (s.sessions) 0 (list-length (s.sessions)) tok
+    in if uid < 0 then None else find-id (s.accounts) 0 (list-length (s.accounts)) uid
+
+Section: Operations
+
+  err-json : Text -> Text
+  err-json (m) = "{\"error\":" & jstr m & "}"
+
+  auth-register : AuthState, Text, Text, Text -> AuthStep
+  auth-register (s) (h) (d) (pw) =
+    if text-length h == 0 then AuthStep { astate = s, resp = err-json "handle required" }
+    else when find-handle (s.accounts) 0 (list-length (s.accounts)) h
+      is Just (a) -> AuthStep { astate = s, resp = err-json "handle taken" }
+      is None ->
+        let id = s.next-id
+        in let ph = hash-pw (salt-for id) pw
+        in let acc = Account { acc-id = id, handle = h, display = d, pwhash = ph }
+        in let s2 = AuthState { accounts = list-push (s.accounts) acc, sessions = s.sessions, next-id = id + 1, nonce = s.nonce + 1 }
+        in let sv = accounts-save s2
+        in AuthStep { astate = s2, resp = "{\"id\":" & show id & ",\"handle\":" & jstr h & "}" }
+
+  auth-login : AuthState, Text, Text -> AuthStep
+  auth-login (s) (h) (pw) =
+    when find-handle (s.accounts) 0 (list-length (s.accounts)) h
+      is None -> AuthStep { astate = s, resp = err-json "invalid credentials" }
+      is Just (a) ->
+        if hash-pw (salt-for (a.acc-id)) pw == a.pwhash
+        then let tok = digest (h & "|" & show (s.nonce))
+          in let sess = Session { token = tok, sess-uid = a.acc-id }
+          in let s2 = AuthState { accounts = s.accounts, sessions = list-push (s.sessions) sess, next-id = s.next-id, nonce = s.nonce + 1 }
+          in AuthStep { astate = s2, resp = "{\"token\":" & jstr tok & ",\"handle\":" & jstr h & "}" }
+        else AuthStep { astate = s, resp = err-json "invalid credentials" }
+
+  auth-logout : AuthState, Text -> AuthStep
+  auth-logout (s) (tok) =
+    let kept = drop-token (s.sessions) 0 (list-length (s.sessions)) tok []
+    in let s2 = AuthState { accounts = s.accounts, sessions = kept, next-id = s.next-id, nonce = s.nonce }
+    in AuthStep { astate = s2, resp = "{\"ok\":true}" }
+
+  auth-me : AuthState, Text -> Text
+  auth-me (s) (tok) =
+    when whoami s tok
+      is None -> err-json "not authenticated"
+      is Just (a) -> "{\"id\":" & show (a.acc-id) & ",\"handle\":" & jstr (a.handle) & ",\"display\":" & jstr (a.display) & "}"
+
+Section: Request Parsing
+
+  path-base : Text -> Text
+  path-base (p) = list-at (text-split p "?") 0
+
+  path-query : Text -> Text
+  path-query (p) =
+    let parts = text-split p "?"
+    in if list-length parts > 1 then list-at parts 1 else ""
+
+  qp-scan : List Text, Integer, Integer, Text -> Text
+  qp-scan (parts) (i) (n) (key) =
+    if i >= n then ""
+    else let kv = text-split (list-at parts i) "="
+    in if list-length kv >= 2
+       then (if list-at kv 0 == key then list-at kv 1 else qp-scan parts (i + 1) n key)
+       else qp-scan parts (i + 1) n key
+
+  qp : Text, Text -> Text
+  qp (p) (key) =
+    let parts = text-split (path-query p) "&"
+    in qp-scan parts 0 (list-length parts) key
+
+Section: Durability
+
+ Persist accounts to one disk sector (200) as fixed-width slots, loaded on boot
+ and rewritten on each register. Fixed-width avoids parse-result records. Slot =
+ 160 bytes: id (u16 @0), handle (@4, NUL-term, max 30), display (@36, max 30),
+ pwhash (@68, max 70). Header u16 count @0; ~3 accounts fit one sector (v1).
+ Sessions stay in-memory (ephemeral). Needs codex-vm with disk-write support.
+
+  acct-sector : Integer = 200
+  slot-size : Integer = 160
+
+  aw-u16 : Integer, Integer, Integer -> Integer
+  aw-u16 (buf) (off) (v) =
+    let a = poke-byte buf off (bit-and v 255)
+    in poke-byte buf (off + 1) (bit-and (bit-shru v 8) 255)
+
+  ar-u16 : Integer, Integer -> Integer
+  ar-u16 (buf) (off) = (peek-byte buf off) + (peek-byte buf (off + 1)) * 256
+
+  aw-fixed-loop : Integer, Integer, Text, Integer, Integer -> Integer
+  aw-fixed-loop (buf) (off) (s) (i) (len) =
+    if i >= len then off
+    else let w = poke-byte buf (off + i) (to-unicode (char-code (char-at s i)))
+    in aw-fixed-loop buf off s (i + 1) len
+
+  aw-fixed : Integer, Integer, Text, Integer -> Integer
+  aw-fixed (buf) (off) (s) (maxlen) =
+    let len = if text-length s < maxlen then text-length s else maxlen
+    in let o = aw-fixed-loop buf off s 0 len
+    in poke-byte buf (off + len) 0
+
+  ar-fixed-loop : Integer, Integer, Integer, Integer, Text -> Text
+  ar-fixed-loop (buf) (off) (i) (maxlen) (acc) =
+    if i >= maxlen then acc
+    else let c = peek-byte buf (off + i)
+    in if c == 0 then acc
+       else ar-fixed-loop buf off (i + 1) maxlen (acc & char-to-text (code-to-char (from-unicode c)))
+
+  ar-fixed : Integer, Integer, Integer -> Text
+  ar-fixed (buf) (off) (maxlen) = ar-fixed-loop buf off 0 maxlen ""
+
+  aw-acct : Integer, Integer, Account -> Integer
+  aw-acct (buf) (so) (a) =
+    let o0 = aw-u16 buf so (a.acc-id)
+    in let o1 = aw-fixed buf (so + 4) (a.handle) 30
+    in let o2 = aw-fixed buf (so + 36) (a.display) 30
+    in aw-fixed buf (so + 68) (a.pwhash) 70
+
+  ar-acct : Integer, Integer -> Account
+  ar-acct (buf) (so) =
+    Account { acc-id = ar-u16 buf so, handle = ar-fixed buf (so + 4) 30, display = ar-fixed buf (so + 36) 30, pwhash = ar-fixed buf (so + 68) 70 }
+
+  aw-accts : Integer, List Account, Integer, Integer -> Integer
+  aw-accts (buf) (xs) (i) (n) =
+    if i >= n then 0
+    else let w = aw-acct buf (2 + i * slot-size) (list-at xs i)
+    in aw-accts buf xs (i + 1) n
+
+  ar-accts : Integer, Integer, Integer, List Account -> List Account
+  ar-accts (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else ar-accts buf (i + 1) n (list-push acc (ar-acct buf (2 + i * slot-size)))
+
+  accounts-save : AuthState -> Integer
+  accounts-save (s) =
+    let n = list-length (s.accounts)
+    in let buf = alloc-bytes 512
+    in let o = aw-u16 buf 0 n
+    in let w = aw-accts buf (s.accounts) 0 n
+    in block-write-sector acct-sector buf
+
+  accounts-load : Integer -> AuthState
+  accounts-load (x) =
+    let buf = block-read-sector acct-sector
+    in let raw = ar-u16 buf 0
+    in let n = if raw > 3 then 0 else raw
+    in AuthState { accounts = ar-accts buf 0 n [], sessions = [], next-id = n + 1, nonce = 1 }
+
+Section: Routing + Serve Loop
+
+  auth-route : (Maybe Account, Text -> Text), AuthState, Text -> AuthStep
+  auth-route (app) (s) (path) =
+    let base = path-base path
+    in if base == "/api/auth/register" then auth-register s (qp path "u") (qp path "d") (qp path "p")
+    else if base == "/api/auth/login" then auth-login s (qp path "u") (qp path "p")
+    else if base == "/api/auth/logout" then auth-logout s (qp path "t")
+    else if base == "/api/auth/me" then AuthStep { astate = s, resp = auth-me s (qp path "t") }
+    else AuthStep { astate = s, resp = app (whoami s (qp path "t")) path }
+
+  AuthLoop = record { astate : AuthState, transport : TcpTransportState }
+
+  auth-handle : (Maybe Account, Text -> Text), AuthLoop, TransportRecvResult -> AuthLoop
+  auth-handle (app) (ls) (recv) =
+    let req = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
+    in let path = extract-path req
+    in let step = auth-route app (ls.astate) path
+    in let ts2 = web-send (recv.transport) (step.resp)
+    in AuthLoop { astate = step.astate, transport = ts2 }
+
+  auth-loop : (Maybe Account, Text -> Text), AuthLoop -> [Console] Integer
+  auth-loop (app) (ls) = act
+    let recv = net-io-recv-loop (ls.transport) 0
+    in if recv.has-message then act
+      let next = auth-handle app ls recv
+      in auth-loop app next
+    end
+    else act
+      0
+    end
+  end
+
+  auth-serve : (Maybe Account, Text -> Text) -> [Console] Integer
+  auth-serve (app) =
+    let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
+    in let ts = transport-new sess
+    in let ts1 = net-io-connect ts
+    in act
+      auth-loop app (AuthLoop { astate = accounts-load 0, transport = ts1 })
+    end
+
+Page 1

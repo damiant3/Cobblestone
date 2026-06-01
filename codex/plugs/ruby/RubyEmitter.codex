@@ -105,7 +105,8 @@ Section: Type Definition Emission
     is ARecordTypeDef (name) (tparams) (fields) (s) ->
      emit-rb-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-rb-sum-type ctors
+     if is-tup-type (name.value) then ""
+     else emit-rb-sum-type ctors
 
   emit-rb-sum-type : List AVariantCtorDef -> Text
   emit-rb-sum-type (ctors) =
@@ -257,7 +258,7 @@ Section: Expression Emission
   emit-rb-match-arm (pat) (body) (arities) =
    when pat
     is IrLitPat (text) (ty) (sp) -> "when " & text & " then " & emit-rb-expr body arities & "; "
-    is IrCtorPat (name) (subs) (ty) (sp) -> "when " & rb-sanitize name & " then " & emit-rb-expr body arities & "; "
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "else " & emit-rb-tup-pat-names subs 0 & " = *_s; " & emit-rb-expr body arities & "; " else "when " & rb-sanitize name & " then " & emit-rb-expr body arities & "; "
     is IrVarPat (name) (ty) (sp) -> "else " & emit-rb-expr body arities & "; "
     is IrWildPat (sp) -> "else " & emit-rb-expr body arities & "; "
 
@@ -284,6 +285,7 @@ Section: Apply Emission
    in when root
     is IrName (n) (ty) (sp) ->
      if n == "print-line-uni" then "puts " & emit-rb-expr (list-at args 0) arities
+     else if is-mktup-name n then "[" & emit-rb-apply-args args arities 0 & "]"
      else rb-sanitize n & "(" & emit-rb-apply-args args arities 0 & ")"
     is otherwise -> emit-rb-expr-curried e arities
 
@@ -326,5 +328,25 @@ Section: Chapter Emission
    in let types-text = emit-rb-type-defs type-defs 0
    in let defs-text = emit-rb-defs (m.defs) 0 arities
    in types-text & defs-text & rb-sanitize opening-entry-point & "\n"
+
+Section: Tuple Helpers
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+  emit-rb-tup-pat-names : List IRPat, Integer -> Text
+  emit-rb-tup-pat-names (subs) (i) =
+   if i == list-length subs then ""
+   else let sep = if i > 0 then ", " else ""
+   in let sub = list-at subs i
+   in sep & (when sub
+    is IrVarPat (name) (ty) (sp) -> rb-sanitize name
+    is IrWildPat (sp) -> "_"
+    is otherwise -> "_") & emit-rb-tup-pat-names subs (i + 1)
 
 Page 1

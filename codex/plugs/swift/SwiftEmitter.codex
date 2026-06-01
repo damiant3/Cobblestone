@@ -102,7 +102,8 @@ Section: Type Definition Emission
     is ARecordTypeDef (name) (tparams) (fields) (s) ->
      emit-sw-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-sw-sum-type (name.value) ctors
+     if is-tup-type (name.value) then ""
+     else emit-sw-sum-type (name.value) ctors
 
   emit-sw-sum-type : Text, List AVariantCtorDef -> Text
   emit-sw-sum-type (name) (ctors) =
@@ -253,7 +254,9 @@ Section: Expression Emission
   emit-sw-match-arm (pat) (body) (arities) =
    when pat
     is IrLitPat (text) (ty) (sp) -> "case " & text & ": return " & emit-sw-expr body arities & "; "
-    is IrCtorPat (name) (subs) (ty) (sp) -> "case ." & sw-sanitize name & ": return " & emit-sw-expr body arities & "; "
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then "default: let (" & emit-sw-tup-pat-names subs 0 & ") = _s as! (" & emit-sw-tup-pat-types subs 0 & "); return " & emit-sw-expr body arities & "; "
+     else "case ." & sw-sanitize name & ": return " & emit-sw-expr body arities & "; "
     is IrVarPat (name) (ty) (sp) -> "default: let " & sw-sanitize name & " = _s; return " & emit-sw-expr body arities & "; "
     is IrWildPat (sp) -> "default: return " & emit-sw-expr body arities & "; "
 
@@ -279,6 +282,7 @@ Section: Apply Emission
    in when root
     is IrName (n) (ty) (sp) ->
      if n == "print-line-uni" then "print(" & emit-sw-expr (list-at args 0) arities & ")"
+     else if is-mktup-name n then "(" & emit-sw-apply-args args arities 0 & ")"
      else sw-sanitize n & "(" & emit-sw-apply-args args arities 0 & ")"
     is otherwise -> emit-sw-expr-curried e arities
 
@@ -322,5 +326,29 @@ Section: Chapter Emission
    in let types-text = emit-sw-type-defs type-defs 0
    in let defs-text = emit-sw-defs (m.defs) 0 arities
    in header & types-text & defs-text & sw-sanitize opening-entry-point & "()\n"
+
+  emit-sw-tup-pat-names : List IRPat, Integer -> Text
+  emit-sw-tup-pat-names (subs) (i) =
+   if i == list-length subs then ""
+   else let sep = if i > 0 then ", " else ""
+   in let nm = when (list-at subs i)
+    is IrVarPat (name) (ty) (sp) -> sw-sanitize name
+    is IrWildPat (sp) -> "_"
+    is otherwise -> "_"
+   in sep & nm & emit-sw-tup-pat-names subs (i + 1)
+
+  emit-sw-tup-pat-types : List IRPat, Integer -> Text
+  emit-sw-tup-pat-types (subs) (i) =
+   if i == list-length subs then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "Any?" & emit-sw-tup-pat-types subs (i + 1)
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
 
 Page 1

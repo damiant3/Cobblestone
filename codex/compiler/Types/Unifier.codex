@@ -4,6 +4,7 @@ Chapter: Unification
   cites Codex chapter Runtime
   cites Foreword chapter Sort
   cites Codex chapter Build Settings (max-recursion-depth)
+  cites Foreword chapter Tuple
 
  Type unification for the Codex type checker. The UnificationState
  is threaded through all operations — it tracks type variable
@@ -21,11 +22,6 @@ Section: State
    next-id : Integer between 0 and 4294967295,
    bag : DiagnosticBag,
    expr-types : List ExprTypeEntry
-  }
-
-  UnifyResult = record {
-   success : Boolean,
-   state : UnificationState
   }
 
 Section: Construction
@@ -50,17 +46,9 @@ Section: Fresh Variables
    in let st1 = __record-set st "substitutions" new-subs
    in __record-set st1 "next-id" new-id
 
-  fresh-and-advance : UnificationState -> FreshResult
+  fresh-and-advance : UnificationState -> (CodexType, UnificationState)
   fresh-and-advance (st) =
-   FreshResult {
-    var-type = TypeVar (st.next-id),
-    state = advance-id st
-   }
-
-  FreshResult = record {
-   var-type : CodexType,
-   state : UnificationState
-  }
+   (TypeVar (st.next-id), advance-id st)
 
 Section: Fuel Budget
 
@@ -167,16 +155,13 @@ Section: Occurs Check
     is otherwise -> False
 
 Section: Unify
-  unify : UnificationState, CodexType, CodexType, SourceSpan -> UnifyResult
+  unify : UnificationState, CodexType, CodexType, SourceSpan -> (Boolean, UnificationState)
   unify (st) (a) (b) (span) =
    unify-at st a b span 0
 
-  unify-at : UnificationState, CodexType, CodexType, SourceSpan, Integer -> UnifyResult
+  unify-at : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-at (st) (a) (b) (span) (depth) =
-   if depth >= max-recursion-depth then UnifyResult {
-    success = False,
-    state = add-fuel-error st "unify" span
-   }
+   if depth >= max-recursion-depth then (False, add-fuel-error st "unify" span)
    else let ra = resolve-silent st a
    in let rb = resolve-silent st b
    in when ra
@@ -190,33 +175,18 @@ Section: Unify
       is otherwise -> unify-at st ra ret-b span (depth + 1)
      is otherwise -> unify-resolved st ra rb span (depth + 1)
 
-  unify-resolved : UnificationState, CodexType, CodexType, SourceSpan, Integer -> UnifyResult
+  unify-resolved : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-resolved (st) (a) (b) (span) (depth) =
-   if types-equal a b then UnifyResult {
-    success = True,
-    state = st
-   }
+   if types-equal a b then (True, st)
    else when a
     is TypeVar (id-a) -> when b
      is TypeVar (id-b) ->
       if id-a < id-b
-       then UnifyResult {
-        success = True,
-        state = add-subst st id-b a
-       }
-       else UnifyResult {
-        success = True,
-        state = add-subst st id-a b
-       }
+       then (True, add-subst st id-b a)
+       else (True, add-subst st id-a b)
      is otherwise ->
-      if occurs-in st id-a b 0 then UnifyResult {
-       success = False,
-       state = add-unify-error st cdx-infinite-type "Infinite type" span
-      }
-       else UnifyResult {
-        success = True,
-        state = add-subst st id-a b
-       }
+      if occurs-in st id-a b 0 then (False, add-unify-error st cdx-infinite-type "Infinite type" span)
+       else (True, add-subst st id-a b)
     is otherwise -> unify-rhs st a b span depth
 
   types-equal : CodexType, CodexType -> Boolean
@@ -258,110 +228,61 @@ Section: Unify
      is otherwise -> False
     is otherwise -> False
 
-  unify-rhs : UnificationState, CodexType, CodexType, SourceSpan, Integer -> UnifyResult
+  unify-rhs : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-rhs (st) (a) (b) (span) (depth) =
    when b
     is TypeVar (id-b) ->
-     if occurs-in st id-b a 0 then UnifyResult {
-      success = False,
-      state = add-unify-error st cdx-infinite-type "Infinite type" span
-     }
-      else UnifyResult {
-       success = True,
-       state = add-subst st id-b a
-      }
+     if occurs-in st id-b a 0 then (False, add-unify-error st cdx-infinite-type "Infinite type" span)
+      else (True, add-subst st id-b a)
     is otherwise -> unify-structural st a b span depth
 
-  unify-structural : UnificationState, CodexType, CodexType, SourceSpan, Integer -> UnifyResult
+  unify-structural : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-structural (st) (a) (b) (span) (depth) =
    when a
     is IntegerTy (a-lo) (a-hi) (a-mode) -> when b
      is IntegerTy (b-lo) (b-hi) (b-mode) ->
-      if a-lo >= b-lo & a-hi <= b-hi then UnifyResult {
-       success = True,
-       state = st
-      }
-      else if b-lo >= a-lo & b-hi <= a-hi then UnifyResult {
-       success = True,
-       state = st
-      }
+      if a-lo >= b-lo & a-hi <= b-hi then (True, st)
+      else if b-lo >= a-lo & b-hi <= a-hi then (True, st)
       else unify-mismatch st a b span
-     is ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is NumberTy -> when b
-     is NumberTy | ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is NumberTy | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is TextTy -> when b
-     is TextTy | ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is TextTy | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is BooleanTy -> when b
-     is BooleanTy | ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is BooleanTy | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is NothingTy -> when b
-     is NothingTy | ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is NothingTy | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is VoidTy -> when b
-     is VoidTy | ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is VoidTy | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ProofTy -> when b
-     is ProofTy | PropEqTy (b1) (b2) | ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is ProofTy | PropEqTy (b1) (b2) | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is PropEqTy (a1) (a2) -> when b
      is PropEqTy (b1) (b2) ->
-      let r1 = unify-resolved st a1 b1 span (depth + 1)
-      in if r1.success then let r2 = unify-resolved (r1.state) a2 b2 span (depth + 1)
-         in r2
-         else r1
-     is ProofTy | ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+      let (ok1, st1) = unify-resolved st a1 b1 span (depth + 1)
+      in if ok1 then unify-resolved st1 a2 b2 span (depth + 1)
+         else (ok1, st1)
+     is ProofTy | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
-    is ErrorTy -> UnifyResult {
-     success = True,
-     state = st
-    }
+    is ErrorTy -> (True, st)
     is FunTy (pa) (ra) -> when b
      is FunTy (pb) (rb) -> unify-fun st pa ra pb rb span depth
-     is ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ListTy (ea) -> when b
      is ListTy (eb) | LinkedListTy (eb) -> unify-at st ea eb span (depth + 1)
-     is ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is LinkedListTy (ea) -> when b
      is LinkedListTy (eb) | ListTy (eb) -> unify-at st ea eb span (depth + 1)
-     is ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ConstructedTy (na) (args-a) -> when b
      is ConstructedTy (nb) (args-b) ->
@@ -373,10 +294,7 @@ Section: Unify
      is RecordTy (rb-name) (rb-args) (rb-fields) ->
       if na.value == rb-name.value then unify-constructed-args st args-a rb-args 0 (list-length args-a) span depth
       else unify-mismatch st a b span
-     is ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is SumTy (sa-name) (sa-args) (sa-ctors) -> when b
      is SumTy (sb-name) (sb-args) (sb-ctors) ->
@@ -385,10 +303,7 @@ Section: Unify
      is ConstructedTy (nb) (args-b) ->
       if sa-name.value == nb.value then unify-constructed-args st sa-args args-b 0 (list-length sa-args) span depth
       else unify-mismatch st a b span
-     is ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is RecordTy (ra-name) (ra-args) (ra-fields) -> when b
      is RecordTy (rb-name) (rb-args) (rb-fields) ->
@@ -397,45 +312,30 @@ Section: Unify
      is ConstructedTy (nb) (args-b) ->
       if ra-name.value == nb.value then unify-constructed-args st ra-args args-b 0 (list-length ra-args) span depth
       else unify-mismatch st a b span
-     is ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ForAllTy (id) (body) -> unify-at st body b span (depth + 1)
     is otherwise -> when b
-     is ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
+     is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
 
-  unify-constructed-args : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer -> UnifyResult
+  unify-constructed-args : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-constructed-args (st) (args-a) (args-b) (i) (len) (span) (depth) =
-   if i == len then UnifyResult {
-    success = True,
-    state = st
-   }
-   else if i >= list-length args-b then UnifyResult {
-    success = True,
-    state = st
-   }
-   else let r = unify-at st (list-at args-a i) (list-at args-b i) span (depth + 1)
-   in if r.success then unify-constructed-args (r.state) args-a args-b (i + 1) len span depth
-        else r
+   if i == len then (True, st)
+   else if i >= list-length args-b then (True, st)
+   else let (ok, st1) = unify-at st (list-at args-a i) (list-at args-b i) span (depth + 1)
+   in if ok then unify-constructed-args st1 args-a args-b (i + 1) len span depth
+        else (ok, st1)
 
-  unify-fun : UnificationState, CodexType, CodexType, CodexType, CodexType, SourceSpan, Integer -> UnifyResult
+  unify-fun : UnificationState, CodexType, CodexType, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-fun (st) (pa) (ra) (pb) (rb) (span) (depth) =
-   let r1 = unify-at st pa pb span (depth + 1)
-   in if r1.success then unify-at (r1.state) ra rb span (depth + 1)
-      else r1
+   let (ok1, st1) = unify-at st pa pb span (depth + 1)
+   in if ok1 then unify-at st1 ra rb span (depth + 1)
+      else (ok1, st1)
 
-  unify-mismatch : UnificationState, CodexType, CodexType, SourceSpan -> UnifyResult
+  unify-mismatch : UnificationState, CodexType, CodexType, SourceSpan -> (Boolean, UnificationState)
   unify-mismatch (st) (a) (b) (span) =
-   UnifyResult {
-    success = False,
-    state = add-unify-error st cdx-type-mismatch ("Type mismatch: " & type-desc a & " vs " & type-desc b) span
-   }
+   (False, add-unify-error st cdx-type-mismatch ("Type mismatch: " & type-desc a & " vs " & type-desc b) span)
 
   type-desc : CodexType -> Text
   type-desc (ty) =

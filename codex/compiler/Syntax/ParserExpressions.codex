@@ -178,7 +178,26 @@ Section: Expression Parsing
   parse-paren-expr (st) =
    let st2 = skip-newlines (enter-paren st)
    in let inner = parse-expr st2
-   in unwrap-expr-ok inner finish-paren-expr
+   in unwrap-expr-ok inner finish-paren-or-tuple
+
+  finish-paren-or-tuple : Expr, ParseState -> ParseExprResult
+  finish-paren-or-tuple (first) (st) =
+   let st1 = skip-newlines st
+   in if is-comma (current-kind st1) then collect-tuple-elems (__linked-list-push [] first) (skip-newlines (advance st1))
+   else finish-paren-expr first st
+
+  collect-tuple-elems : LinkedList Expr, ParseState -> ParseExprResult
+  collect-tuple-elems (acc) (st) =
+   let e = parse-expr st
+   in unwrap-expr-ok e (after-tuple-elem acc)
+
+  after-tuple-elem : LinkedList Expr, Expr, ParseState -> ParseExprResult
+  after-tuple-elem (acc) (e) (st) =
+   let acc2 = __linked-list-push acc e
+   in let st1 = skip-newlines st
+   in if is-comma (current-kind st1) then collect-tuple-elems acc2 (skip-newlines (advance st1))
+   else let st2 = expect RightParen st1
+   in parse-field-access (deck-record (TupleExpr (deck-record (__linked-list-to-list acc2)))) (exit-paren st2)
 
   finish-paren-expr : Expr, ParseState -> ParseExprResult
   finish-paren-expr (e) (st) =
@@ -270,7 +289,8 @@ Section: Compound Expression Parsing
 
   parse-let-bindings : LinkedList LetBind, ParseState -> ParseExprResult
   parse-let-bindings (acc) (st) =
-   if is-ident (current-kind st) then parse-let-binding acc st
+   if is-left-paren (current-kind st) then parse-let-pattern-binding acc (advance st)
+   else if is-ident (current-kind st) then parse-let-binding acc st
    else if is-reserved-keyword-let-name st then parse-let-binding acc (report-reserved-keyword "a let-binding name" st)
    else if is-in-keyword (current-kind st) then let st2 = skip-newlines (advance st)
       in let body = parse-let-body st2
@@ -344,6 +364,36 @@ Section: Compound Expression Parsing
    in let st2 = skip-newlines st
    in if is-comma (current-kind st2) then parse-let-bindings (__linked-list-push acc binding) (skip-newlines (advance st2))
       else parse-let-bindings (__linked-list-push acc binding) st2
+
+  parse-let-pattern-binding : LinkedList LetBind, ParseState -> ParseExprResult
+  parse-let-pattern-binding (acc) (st) =
+   let pr = parse-tuple-pattern st
+   in unwrap-pat-for-expr pr (after-let-pattern acc)
+
+  after-let-pattern : LinkedList LetBind, Pat, ParseState -> ParseExprResult
+  after-let-pattern (acc) (pat) (st) =
+   let st2 = expect Equals st
+   in let vr = parse-expr st2
+   in unwrap-expr-ok vr (after-let-pattern-value acc pat)
+
+  after-let-pattern-value : LinkedList LetBind, Pat, Expr, ParseState -> ParseExprResult
+  after-let-pattern-value (acc) (pat) (val) (st) =
+   let st1 = skip-newlines st
+   in if is-in-keyword (current-kind st1)
+      then let st2 = skip-newlines (advance st1)
+        in let body-r = parse-let-body st2
+        in unwrap-expr-ok body-r (finish-let-pattern acc pat val)
+      else let st-err = __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-let-no-in "Expected 'in' after let bindings" (token-to-span (current st1))))
+        in let body-r = parse-let-body st-err
+        in unwrap-expr-ok body-r (finish-let-pattern acc pat val)
+
+  finish-let-pattern : LinkedList LetBind, Pat, Expr, Expr, ParseState -> ParseExprResult
+  finish-let-pattern (acc) (pat) (val) (body) (st) =
+   let arm = deck-record (MatchArm { pattern = pat, body = body, guard = make-true-guard st })
+   in let m = deck-record (MatchExpr val (deck-record [arm]))
+   in let binds = deck-record (__linked-list-to-list acc)
+   in if list-length binds == 0 then ExprOk m st
+      else ExprOk (deck-record (LetExpr binds m)) st
 
   parse-match-expr : ParseState -> ParseExprResult
   parse-match-expr (st) =
@@ -697,9 +747,9 @@ Section: Compound Expression Parsing
    in let timeout-tok = current st1
    in let st2 = advance st1
    in let st3 = expect LeftBracket st2
-   in let effs = parse-effect-names st3 [] []
-   in let body-result = parse-expr (effs.state)
-   in unwrap-expr-ok body-result (finish-with-timeout timeout-tok (effs.names) (effs.scopes))
+   in let (eff-names, st-effs, eff-scopes) = parse-effect-names st3 [] []
+   in let body-result = parse-expr st-effs
+   in unwrap-expr-ok body-result (finish-with-timeout timeout-tok eff-names eff-scopes)
 
   finish-with-timeout : Token, List Token, List Token, Expr, ParseState -> ParseExprResult
   finish-with-timeout (timeout-tok) (effs) (scopes) (body) (st) =

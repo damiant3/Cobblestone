@@ -1,0 +1,106 @@
+Chapter: ExcaliburSlice
+  cites Explorer chapter ExplorerTheme
+  cites Explorer chapter WorldModel
+  cites Explorer chapter Emitters
+  cites Explorer chapter CardEmitter
+
+ Vertical slice for the Game-World Design Tool: canonical entities emitted
+ three ways -- Stable Diffusion prompt, D&D 5e block, and a Magic: the
+ Gathering card -- side by side, all derived from one system-neutral
+ abstraction. Two entities of different kinds (Excalibur, a weapon; Merlin,
+ a character) prove the model generalizes: the SAME emitters dispatch on the
+ tagged abstraction. Static (authored in WorldModel); panels are filled via
+ dom-set-html from the emitters after the shell mounts.
+
+ We say:
+
+Section: Layout CSS
+
+  slice-css : Text
+  slice-css =
+    ".slice{padding:24px 28px;max-width:1500px;margin:0 auto;overflow-y:auto;height:calc(100vh - 41px)}"
+    & ".entblock{margin-bottom:40px}"
+    & ".ehd h1{color:var(--primary);font-size:1.6em;font-weight:600}"
+    & ".etax{color:var(--muted);font-size:.78em;text-transform:uppercase;letter-spacing:.14em;margin-top:2px}"
+    & ".elore{color:var(--fg);font-size:.92em;line-height:1.6;max-width:860px;margin:10px 0 18px;opacity:.85}"
+    & ".panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:18px;align-items:start}"
+    & ".engine{color:#e8e0c8;font-family:ui-monospace,monospace;font-size:.82em;line-height:1.5;white-space:pre-wrap;background:var(--bg);padding:12px;border-radius:8px}"
+    & ".panel{background:var(--secondary);border:1px solid var(--border);border-radius:12px;padding:18px;font-size:.86em;line-height:1.5}"
+    & ".panel h3{color:var(--primary);font-size:.72em;text-transform:uppercase;letter-spacing:.12em;margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:8px}"
+    & ".prompt{color:var(--fg);font-family:ui-monospace,monospace;font-size:.9em;background:var(--bg);padding:12px;border-radius:8px;opacity:.92}"
+    & ".statblock{color:var(--fg)}.statblock hr{border:none;border-top:1px solid var(--primary);margin:8px 0;opacity:.5}.statblock i{color:var(--muted)}"
+    & ".mtgcard{background:linear-gradient(160deg,#2a2418,#15120c);border:1px solid var(--primary);border-radius:10px;padding:14px;color:#e8e0c8}"
+    & ".cardtop{display:flex;justify-content:space-between;font-weight:600;font-size:1.02em}.cardtop .cost{color:var(--primary)}"
+    & ".cardtype{font-size:.8em;border-top:1px solid rgba(255,215,0,.3);border-bottom:1px solid rgba(255,215,0,.3);margin:8px 0;padding:5px 0;font-style:italic}"
+    & ".cardtext{font-size:.86em;line-height:1.55}.cardft{display:flex;justify-content:space-between;align-items:flex-end;margin-top:12px;font-size:.74em;color:var(--muted)}.cardft .flavor{font-style:italic;max-width:50%;text-align:center}.cardft .pt{font-weight:700;color:#e8e0c8;font-size:1.15em}"
+
+Section: Render
+
+  inject-slice-css : Integer -> Integer
+  inject-slice-css (x) =
+    let style = dom-create "style"
+    in let s2 = dom-set-text style slice-css
+    in let head = dom-query "head"
+    in let h2 = dom-append head style
+    in 0
+
+  render-panel : Text, Text -> Integer
+  render-panel (id) (html) =
+    let el = dom-get id in let s = dom-set-html el html in 0
+
+  emit-engine-card : Entity -> Text
+  emit-engine-card (e) =
+    "<h3>CodexMagic &middot; engine card</h3><div class=\"engine\">"
+    & format-card-full (entity-to-card e) & "</div>"
+
+  entity-block : Entity, Integer -> WidgetNode
+  entity-block (e) (idx) =
+    widget-box ("eb" & show idx) "entblock" [
+      widget-box ("ehd" & show idx) "ehd" [ widget-h1 e.name ],
+      widget-box ("etb" & show idx) "etax" [ widget-label ("etl" & show idx) e.taxonomy ],
+      widget-box ("elb" & show idx) "elore" [ widget-label ("ell" & show idx) e.lore ],
+      widget-box ("pn" & show idx) "panels" [
+        widget-box ("pv" & show idx) "panel" [],
+        widget-box ("pd" & show idx) "panel" [],
+        widget-box ("pm" & show idx) "panel" [],
+        widget-box ("pe" & show idx) "panel" []
+      ]
+    ]
+
+  render-entity : Entity, Integer -> Integer
+  render-entity (e) (idx) =
+    let p1 = render-panel ("pv" & show idx) (emit-visual e)
+    in let p2 = render-panel ("pd" & show idx) (emit-dnd5e e)
+    in let p3 = render-panel ("pm" & show idx) (emit-mtg e)
+    in let p4 = render-panel ("pe" & show idx) (emit-engine-card e)
+    in 0
+
+  entity-blocks : List Entity, Integer, Integer, List WidgetNode -> List WidgetNode
+  entity-blocks (es) (i) (n) (acc) =
+    if i >= n then acc
+    else entity-blocks es (i + 1) n (list-push acc (entity-block (list-at es i) i))
+
+  page-tree : Integer -> WidgetNode
+  page-tree (x) =
+    widget-box "approot" "" [
+      widget-nav "item",
+      widget-box "slice" "slice" (entity-blocks camelot-entities 0 (list-length camelot-entities) [])
+    ]
+
+Section: Entry
+
+  render-all : List Entity, Integer, Integer -> Integer
+  render-all (es) (i) (n) =
+    if i >= n then 0
+    else let r = render-entity (list-at es i) i in render-all es (i + 1) n
+
+  opening : Integer -> [Console] Nothing
+  opening (x) = act
+    let ex = init-explorer 0
+    in let cs = inject-slice-css 0
+    in let m = mount-widget-themed dark-gold (page-tree 0)
+    in let a = render-all camelot-entities 0 (list-length camelot-entities)
+    in print-line-uni ""
+  end
+
+Page 1

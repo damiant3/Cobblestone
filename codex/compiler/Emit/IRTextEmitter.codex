@@ -120,6 +120,50 @@ Section: CodexType Emission
    if is-default-int lo hi mode then "int-default"
    else "(int " & safe-int-text lo & " " & safe-int-text hi & " " & ov-mode-atom mode & ")"
 
+ A bare reference to a generic record (e.g. `-> SortPartition`) parses as
+ a RecordTy with empty type-args but fields whose types carry the free
+ type variables (parameterize-walk merges the record's own param names
+ with the enclosing signature's, so a field `list : List a` holds the
+ function's tvar). We do NOT re-emit the fields (that caused exponential
+ IR bloat on recursive types) - instead we recover the type arguments
+ from the field tvars so a transpiler can emit `SortPartition<T9>`
+ rather than an unparameterized generic.
+
+  ir-int-member : List Integer, Integer -> Boolean
+  ir-int-member (xs) (n) = ir-int-member-loop xs n 0 (list-length xs)
+
+  ir-int-member-loop : List Integer, Integer, Integer, Integer -> Boolean
+  ir-int-member-loop (xs) (n) (i) (len) =
+   if i >= len then False
+   else if list-at xs i == n then True
+   else ir-int-member-loop xs n (i + 1) len
+
+  ir-tvars-of-type : CodexType, List Integer -> List Integer
+  ir-tvars-of-type (ty) (acc) =
+   when ty
+    is TypeVar (id) -> if ir-int-member acc id then acc else list-push acc id
+    is ListTy (elem) | LinkedListTy (elem) -> ir-tvars-of-type elem acc
+    is FunTy (p) (r) -> ir-tvars-of-type r (ir-tvars-of-type p acc)
+    is ForAllTy (tid) (body) -> ir-tvars-of-type body acc
+    is ConstructedTy (name) (args) | RecordTy (name) (args) (fields) | SumTy (name) (args) (ctors) -> ir-tvars-of-type-list args 0 acc
+    is EffectfulTy (effs) (sc) (ret) -> ir-tvars-of-type ret acc
+    is otherwise -> acc
+
+  ir-tvars-of-type-list : List CodexType, Integer, List Integer -> List Integer
+  ir-tvars-of-type-list (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else ir-tvars-of-type-list xs (i + 1) (ir-tvars-of-type (list-at xs i) acc)
+
+  ir-record-field-tvars : List RecordField, Integer, List Integer -> List Integer
+  ir-record-field-tvars (fields) (i) (acc) =
+   if i >= list-length fields then acc
+   else ir-record-field-tvars fields (i + 1) (ir-tvars-of-type ((list-at fields i).type-val) acc)
+
+  ir-emit-tvar-args : List Integer, Integer -> Text
+  ir-emit-tvar-args (ids) (i) =
+   if i >= list-length ids then ""
+   else " (tvar " & integer-to-text (list-at ids i) & ")" & ir-emit-tvar-args ids (i + 1)
+
   ir-emit-type : CodexType -> Text
   ir-emit-type (ty) =
    when ty
@@ -136,8 +180,8 @@ Section: CodexType Emission
     is LinkedListTy (elem) -> "(llist " & ir-emit-type elem & ")"
     is TypeVar (id) -> "(tvar " & integer-to-text id & ")"
     is ForAllTy (id) (body) -> "(forall " & integer-to-text id & " " & ir-emit-type body & ")"
-    is SumTy (name) (args) (ctors) -> "(sum " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & ") (sum-ctors" & ir-emit-sum-ctors ctors 0 & "))"
-    is RecordTy (name) (args) (fields) -> "(record-ty " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & ") (record-fields" & ir-emit-record-fields fields 0 & "))"
+    is SumTy (name) (args) (ctors) -> "(sum " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & ") (sum-ctors))"
+    is RecordTy (name) (args) (fields) -> "(record-ty " & ir-quote (name.value) & " (args" & (if list-length args > 0 then ir-emit-type-list args 0 else ir-emit-tvar-args (ir-record-field-tvars fields 0 []) 0) & ") (record-fields))"
     is ConstructedTy (name) (args) -> "(ctd " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & "))"
     is EffectfulTy (effs) (sc) (ret) -> "(effectful (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted sc 0 []) & ") " & ir-emit-type ret & ")"
     is otherwise -> "error"
@@ -333,7 +377,7 @@ Section: IRExpr Emission
     is IrBinary (op) (l) (r) (ty) (sp) -> "(binary " & bin-op-atom op & " " & ir-emit-expr l & " " & ir-emit-expr r & " " & ir-emit-type ty & ")"
     is IrNegate (x) (sp) -> "(negate " & ir-emit-expr x & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & ir-emit-expr c & " " & ir-emit-expr t & " " & ir-emit-expr el & " " & ir-emit-type ty & ")"
-    is IrLet (n) (ty) (v) (b) (sp) -> "(let " & ir-quote n & " " & ir-emit-type ty & " " & ir-emit-expr v & " " & ir-emit-expr b & ")"
+    is IrLet (n) (ty) (v) (b) (sp) -> ir-cat (ir-emit-let-chain e [] 0)
     is IrApply (f) (a) (ty) (sp) -> "(apply " & ir-emit-expr f & " " & ir-emit-expr a & " " & ir-emit-type ty & ")"
     is IrLambda (params) (body) (ty) (sp) -> "(lambda (params" & ir-emit-params params 0 & ") " & ir-emit-expr body & " " & ir-emit-type ty & ")"
     is IrList (es) (ty) (sp) -> "(list-expr (elems" & ir-emit-expr-list es 0 & ") " & ir-emit-type ty & ")"
@@ -348,6 +392,28 @@ Section: IRExpr Emission
     is IrFork (b) (ty) (sp) -> "(fork " & ir-emit-expr b & " " & ir-emit-type ty & ")"
     is IrAwait (t) (ty) (sp) -> "(await " & ir-emit-expr t & " " & ir-emit-type ty & ")"
     is IrError (m) (ty) (sp) -> "(error " & ir-quote m & " " & ir-emit-type ty & ")"
+
+ Let-chains are the deepest structure in real Codex (every `in` nests
+ the rest), so emitting `IrLet` by naive recursion makes each level
+ concatenate the entire inner body — the left operand is never at the
+ heap bump pointer, so __str_concat takes the copy path every level,
+ giving O(depth^2) copies. Flatten the chain instead: collect each
+ level's "(let name ty val " prefix into one list, emit the innermost
+ body, then append one ")" per level, and join once. Byte-identical
+ output, O(total). Mirrors emit-let-chain in the Codex text emitter.
+
+  ir-emit-let-chain : IRExpr, List Text, Integer -> List Text
+  ir-emit-let-chain (e) (acc) (depth) =
+   when e
+    is IrLet (n) (ty) (v) (b) (sp) ->
+     ir-emit-let-chain b (list-push acc ("(let " & ir-quote n & " " & ir-emit-type ty & " " & ir-emit-expr v & " ")) (depth + 1)
+    is otherwise ->
+     ir-close-parens (list-push acc (ir-emit-expr e)) depth
+
+  ir-close-parens : List Text, Integer -> List Text
+  ir-close-parens (acc) (n) =
+   if n == 0 then acc
+   else ir-close-parens (list-push acc ")") (n - 1)
 
   ir-emit-expr-list : List IRExpr, Integer -> Text
   ir-emit-expr-list (xs) (i) =
@@ -586,6 +652,16 @@ Section: IRChapter Emission
 
   emit-ir-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
   emit-ir-chapter (m) (meta) (type-defs) =
+   emit-ir-chapter-prefix m meta type-defs & ir-emit-defs (m.defs) 0 & "))\n"
+
+ The chapter header up to and including the "(defs" opener — everything
+ except the per-def list and the closing "))". emit-ir-cce streams each
+ def out separately (reclaiming heap between defs) rather than building
+ the whole chapter as one value, so it emits this prefix, the defs one
+ at a time, then the "))" footer.
+
+  emit-ir-chapter-prefix : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-ir-chapter-prefix (m) (meta) (type-defs) =
    "(chapter "
     & ir-quote (m.name.value) & "\n  "
     & "(title " & ir-quote (meta.chapter-title) & ")\n  "
@@ -594,6 +670,6 @@ Section: IRChapter Emission
     & "(ctors" & ir-emit-text-strs (meta.ctor-names) 0 & ")\n  "
     & "(eff-ops" & ir-emit-text-strs (m.effect-op-names) 0 & ")\n  "
     & "(type-defs" & ir-emit-atype-defs type-defs 0 & ")\n  "
-    & "(defs" & ir-emit-defs (m.defs) 0 & "))\n"
+    & "(defs"
 
 Page 1

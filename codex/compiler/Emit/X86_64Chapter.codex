@@ -541,6 +541,12 @@ Section: Chapter Entry Point
    in let w = buf-write-i32 code-buffer (pos + 2) rel32
    in apply-overflow-patches-direct code-buffer checks oom-offset (i + 1)
 
+  patch-stype-sites : Integer, List Integer, Integer, Integer -> Integer
+  patch-stype-sites (code-buffer) (sites) (addr) (i) =
+   if i >= list-length sites then 0
+   else let w = buf-write-i64 code-buffer (list-at sites i) addr
+   in patch-stype-sites code-buffer sites addr (i + 1)
+
   apply-direct-addr-patches-direct : Integer, List Integer, List Integer, Integer, Integer -> Integer
   apply-direct-addr-patches-direct (code-buffer) (patch-offsets) (target-offsets) (text-base) (i) =
    if i >= list-length patch-offsets then 0
@@ -603,7 +609,8 @@ Section: Finalize
    effect-op-addrs = [],
    vm-profile = vm-profile-spec,
    poison-alloc = False,
-   trace-alloc = False
+   trace-alloc = False,
+   stype-sites = []
   }
 
   x86-64-init-codegen-sorted : List TypeBinding -> CodegenState
@@ -655,7 +662,8 @@ Section: Finalize
    effect-op-addrs = [],
    vm-profile = vm-profile-spec,
    poison-alloc = False,
-   trace-alloc = False
+   trace-alloc = False,
+   stype-sites = __list-with-capacity accum-capacity
   }
 
   collect-direct-addr-patches : List Integer, List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
@@ -715,11 +723,14 @@ Section: Finalize
    in let w-call = apply-call-patches-direct (st2d.workspace.code-buffer) (st2d.cp-offsets) (st2d.cp-targets) func-map 0
    in let w-addr = apply-func-addr-patches-direct (st2d.workspace.code-buffer) (st2d.fa-offsets) (st2d.fa-targets) func-map bare-metal-load-addr 0
    in let data-vaddr = compute-data-vaddr-bare (st2d.code-len)
+   in let has-stype = list-length (st2d.stype-sites) > 0
+   in let tbl = if has-stype then emit-self-type-table (st2d.workspace.data-buffer) (st2d.data-len) data-vaddr (st2d.type-defs) else ConstEmit { len = st2d.data-len, off = 0 }
+   in let w-stype = if has-stype then patch-stype-sites (st2d.workspace.code-buffer) (st2d.stype-sites) (data-vaddr + tbl.off) 0 else 0
    in let w-rodata = apply-rodata-patches-direct (st2d.workspace.code-buffer) (st2d.rf-poffsets) (st2d.rf-roffsets) data-vaddr 0
    in let w-overflow = if has-oom then let oom-offset = offset-table-lookup func-map "__out_of_memory" in apply-overflow-patches-direct (st2d.workspace.code-buffer) (st2d.stack-overflow-checks) oom-offset 0 else 0
    in let w-direct = apply-direct-addr-patches-direct (st2d.workspace.code-buffer) (st2d.da-poffsets) (st2d.da-offsets) bare-metal-load-addr 0
    in let code-len = st2d.code-len
-   in let data-len = st2d.data-len
+   in let data-len = tbl.len
    in let text-bytes = __buf-read-bytes (st2d.workspace.code-buffer) 0 code-len
    in let rodata-bytes = __buf-read-bytes (st2d.workspace.data-buffer) 0 data-len
    in let text-aligned = align-up code-len 8

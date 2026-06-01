@@ -412,6 +412,22 @@ the instance), generic functions constrained by a class, and instances
 over parametric types are supported. A missing instance is a static
 error (CDX2040).
 
+## Tuples
+
+`(a, b)` builds a pair, `(a, b, c)` a triple, up to five. Take one apart
+with a tuple pattern in `when`:
+
+```
+  swap : Tup2 a b -> Tup2 b a
+  swap (p) = when p
+    is (x, y) -> (y, x)
+```
+
+Tuples desugar to the foreword `Tup2`..`Tup5` variants — cite
+`Foreword chapter Tuple`. Write the type as `Tup2 A B` in signatures; the
+`(A, B)` type shorthand is not yet available (in type position the comma
+is read as a function-parameter separator).
+
 ## Lists
 
 ```

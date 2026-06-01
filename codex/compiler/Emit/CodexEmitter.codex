@@ -201,7 +201,8 @@ Section: CodexType Emission
     is ForAllTy (id) (body) -> emit-type body
     is SumTy (name) (ty-args) (ctors) | RecordTy (name) (args) (fields) -> name.value
     is ConstructedTy (name) (args) ->
-     if list-length args == 0 then name.value
+     if is-tup-type-name (name.value) (list-length args) then "(" & emit-tuple-type-elems args 0 (list-length args) & ")"
+     else if list-length args == 0 then name.value
      else name.value & emit-type-args args 0
     is EffectfulTy (effs) (sc) (ret) -> "[" & emit-type-effect-names effs 0 & "] " & emit-type ret
     is otherwise -> "Unknown"
@@ -231,6 +232,18 @@ Section: CodexType Emission
   emit-type-args (args) (i) =
    if i == list-length args then ""
    else " " & wrap-complex (list-at args i) & emit-type-args args (i + 1)
+
+  is-tup-type-name : Text, Integer -> Boolean
+  is-tup-type-name (n) (arity) =
+   if arity < 2 then False
+   else if arity > 5 then False
+   else n == ("Tup" & integer-to-text arity)
+
+  emit-tuple-type-elems : List CodexType, Integer, Integer -> Text
+  emit-tuple-type-elems (args) (i) (len) =
+   if i >= len then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-type (list-at args i) & emit-tuple-type-elems args (i + 1) len
 
   emit-type-effect-names : List Name, Integer -> Text
   emit-type-effect-names (effs) (i) =
@@ -423,7 +436,22 @@ Section: Apply
    let chain = collect-apply-chain e []
    in let func = chain.root
    in let args = chain.args
-   in emit-expr func ctors indent & emit-apply-args args ctors indent 0 (list-length args) (is-ctor-name func ctors)
+   in if is-tuple-ctor func (list-length args) then "(" & emit-tuple-expr-elems args ctors indent 0 (list-length args) & ")"
+   else emit-expr func ctors indent & emit-apply-args args ctors indent 0 (list-length args) (is-ctor-name func ctors)
+
+  is-tuple-ctor : IRExpr, Integer -> Boolean
+  is-tuple-ctor (e) (arity) =
+   if arity < 2 then False
+   else if arity > 5 then False
+   else when e
+    is IrName (n) (ty) (sp) -> n == ("MkTup" & integer-to-text arity)
+    is otherwise -> False
+
+  emit-tuple-expr-elems : List IRExpr, List Text, Integer, Integer, Integer -> Text
+  emit-tuple-expr-elems (args) (ctors) (indent) (i) (len) =
+   if i >= len then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-expr (list-at args i) ctors indent & emit-tuple-expr-elems args ctors indent (i + 1) len
 
   emit-apply-args : List IRExpr, List Text, Integer, Integer, Integer, Boolean -> Text
   emit-apply-args (args) (ctors) (indent) (i) (len) (is-ctor) =
@@ -479,7 +507,49 @@ Section: List
 Section: Match
   emit-match : IRExpr, List IRBranch, List Text, Integer -> Text
   emit-match (scrut) (branches) (ctors) (indent) =
-   "when " & emit-expr scrut ctors indent & emit-branches branches ctors indent 0
+   if is-let-tuple-match branches then emit-let-tuple scrut (list-at branches 0) ctors indent
+   else "when " & emit-expr scrut ctors indent & emit-branches branches ctors indent 0
+
+  is-let-tuple-match : List IRBranch -> Boolean
+  is-let-tuple-match (branches) =
+   if list-length branches == 1 then is-tuple-pat-branch (list-at branches 0)
+   else False
+
+  is-tuple-pat-branch : IRBranch -> Boolean
+  is-tuple-pat-branch (b) =
+   when b.guard
+    is IrBoolLit (v) (sp) -> if v then is-mktup-pat (b.pattern) else False
+    is otherwise -> False
+
+  is-mktup-pat : IRPat -> Boolean
+  is-mktup-pat (p) =
+   when p
+    is IrCtorPat (name) (subs) (ty) (sp) -> text-starts-with name "MkTup"
+    is otherwise -> False
+
+  emit-let-tuple : IRExpr, IRBranch, List Text, Integer -> Text
+  emit-let-tuple (scrut) (b) (ctors) (indent) =
+   let pat-text = emit-tuple-pat-names (b.pattern) 0
+   in "let (" & pat-text & ") = " & emit-expr scrut ctors (indent + 1)
+   & "\n" & make-indent indent & "in " & emit-expr (b.body) ctors indent
+
+  emit-tuple-pat-names : IRPat, Integer -> Text
+  emit-tuple-pat-names (p) (i) =
+   when p
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-tuple-pat-name-list subs 0 (list-length subs)
+    is otherwise -> emit-pattern p
+
+  emit-tuple-pat-name-list : List IRPat, Integer, Integer -> Text
+  emit-tuple-pat-name-list (subs) (i) (len) =
+   if i >= len then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-tuple-pat-elem (list-at subs i) & emit-tuple-pat-name-list subs (i + 1) len
+
+  emit-tuple-pat-elem : IRPat -> Text
+  emit-tuple-pat-elem (p) =
+   when p
+    is IrWildPat (sp) -> "_"
+    is otherwise -> emit-pattern p
 
   emit-branches : List IRBranch, List Text, Integer, Integer -> Text
   emit-branches (branches) (ctors) (indent) (i) =

@@ -191,7 +191,8 @@ Section: Type Definition Emission
     is ARecordTypeDef (name) (tparams) (fields) (s) ->
      "#[derive(Debug, Clone, PartialEq)]\nstruct " & rs-sanitize (name.value) & " {\n" & emit-rs-record-fields fields 0 & "}\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     "#[derive(Debug, Clone, PartialEq)]\nenum " & rs-sanitize (name.value) & " {\n" & emit-rs-variant-ctors ctors 0 & "}\n"
+     if is-tup-type (name.value) then ""
+     else "#[derive(Debug, Clone, PartialEq)]\nenum " & rs-sanitize (name.value) & " {\n" & emit-rs-variant-ctors ctors 0 & "}\n"
 
   emit-rs-record-fields : List ARecordFieldDef, Integer -> Text
   emit-rs-record-fields (fields) (i) =
@@ -500,6 +501,7 @@ Section: Apply Emission
    in when root
       is IrName (n) (ty) (sp) ->
        if is-rs-builtin-name n then emit-rs-builtin n args arities ctor-map
+       else if is-mktup-name n then "(" & emit-rs-apply-args args arities ctor-map 0 & ")"
        else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then emit-rs-ctor-apply n args arities ctor-map
        else let ar = lookup-arity arities n
        in if ar > 1 then if list-length args == ar then rs-sanitize n & "(" & emit-rs-apply-args args arities ctor-map 0 & ")"
@@ -603,7 +605,8 @@ Section: Match Emission
     is IrVarPat (name) (ty) (sp) -> rs-sanitize name
     is IrLitPat (text) (ty) (sp) -> emit-rs-lit-pat text ty
     is IrCtorPat (name) (subs) (ty) (sp) ->
-     let parent = lookup-ctor-enum ctor-map name
+     if is-mktup-name name then "(" & emit-rs-sub-patterns subs ctor-map 0 & ")"
+     else let parent = lookup-ctor-enum ctor-map name
      in let prefix = if text-length parent > 0 then rs-sanitize parent & "::" & rs-sanitize name else rs-sanitize name
      in if list-length subs == 0 then prefix
         else prefix & "(" & emit-rs-sub-patterns subs ctor-map 0 & ")"
@@ -842,5 +845,13 @@ Section: Chapter Emission
    in let entry = if has-opening (m.defs) 0 then emit-rs-entry-point (rs-opening-return-type (m.defs))
       else "fn main() {\n    println!(\"Chapter loaded.\");\n}\n"
    in header & type-text & defs-text & entry
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
 
 Page 1

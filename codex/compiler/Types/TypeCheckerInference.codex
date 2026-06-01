@@ -1,6 +1,7 @@
 Chapter: Type Checker
   cites Codex chapter Lists
   cites Codex chapter Build Settings (max-recursion-depth)
+  cites Foreword chapter Tuple
 
  Expression type inference dispatch.
 
@@ -42,27 +43,24 @@ Section: Infer Name
    in if env-has env resolved
     then
      let raw = env-lookup env resolved
-     in let inst = instantiate-type st raw
+     in let (inst-ty, inst-st) = instantiate-type st raw
      in CheckResult {
-      inferred-type = inst.var-type,
-      state = record-expr-type (inst.state) span (inst.var-type)
+      inferred-type = inst-ty,
+      state = record-expr-type inst-st span inst-ty
      }
     else CheckResult {
      inferred-type = ErrorTy,
      state = add-unify-error st cdx-unknown-name ("Unknown name: " & name) span
     }
 
-  instantiate-type : UnificationState, CodexType -> FreshResult
+  instantiate-type : UnificationState, CodexType -> (CodexType, UnificationState)
   instantiate-type (st) (ty) =
    when ty
     is ForAllTy (var-id) (body) ->
-     let fr = fresh-and-advance st
-     in let substituted = subst-type-var body var-id (fr.var-type)
-     in instantiate-type (fr.state) substituted
-    is otherwise -> FreshResult {
-     var-type = ty,
-     state = st
-    }
+     let (fr-ty, fr-st) = fresh-and-advance st
+     in let substituted = subst-type-var body var-id fr-ty
+     in instantiate-type fr-st substituted
+    is otherwise -> (ty, st)
 
   subst-type-var : CodexType, Integer, CodexType -> CodexType
   subst-type-var (ty) (var-id) (replacement) =
@@ -94,11 +92,11 @@ Section: Infer Binary
 
   infer-arithmetic : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-arithmetic (st) (lt) (rt) (span) =
-   let r = unify st lt rt span
-   in let resolved-l = resolve-silent (r.state) lt
-   in let resolved-r = resolve-silent (r.state) rt
-   in let st2 = if is-arithmetic-type resolved-l & is-arithmetic-type resolved-r then r.state
-                else add-unify-error (r.state) cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Number" span
+   let (_, u-st) = unify st lt rt span
+   in let resolved-l = resolve-silent u-st lt
+   in let resolved-r = resolve-silent u-st rt
+   in let st2 = if is-arithmetic-type resolved-l & is-arithmetic-type resolved-r then u-st
+                else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Number" span
    in CheckResult {
     inferred-type = lt,
     state = st2
@@ -112,19 +110,19 @@ Section: Infer Binary
 
   infer-comparison : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-comparison (st) (lt) (rt) (span) =
-   let r = unify st lt rt span
+   let (_, u-st) = unify st lt rt span
    in CheckResult {
     inferred-type = BooleanTy,
-    state = r.state
+    state = u-st
    }
 
   infer-logical : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-logical (st) (lt) (rt) (span) =
-   let r1 = unify st lt BooleanTy span
-   in let r2 = unify (r1.state) rt BooleanTy span
+   let (_, u-st1) = unify st lt BooleanTy span
+   in let (_, u-st2) = unify u-st1 rt BooleanTy span
    in CheckResult {
     inferred-type = BooleanTy,
-    state = r2.state
+    state = u-st2
    }
 
   infer-and : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
@@ -139,38 +137,38 @@ Section: Infer Binary
    let resolved = resolve-silent st lt
    in when resolved
     is TextTy ->
-     let r = unify st rt TextTy span
+     let (_, u-st) = unify st rt TextTy span
    in CheckResult {
       inferred-type = TextTy,
-      state = r.state
+      state = u-st
      }
     is otherwise ->
-     let r = unify st lt rt span
+     let (_, u-st) = unify st lt rt span
    in CheckResult {
       inferred-type = lt,
-      state = r.state
+      state = u-st
      }
 
   infer-cons : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-cons (st) (lt) (rt) (span) =
    let list-ty = deck-record (ListTy lt)
-   in let r = unify st rt list-ty span
+   in let (_, u-st) = unify st rt list-ty span
    in CheckResult {
     inferred-type = list-ty,
-    state = r.state
+    state = u-st
    }
 
 Section: Infer If
   infer-if : UnificationState, TypeEnv, AExpr, AExpr, AExpr, SourceSpan -> CheckResult
   infer-if (st) (env) (cond) (then-e) (else-e) (span) =
    let cr = infer-expr st env cond
-   in let r1 = unify (cr.state) (cr.inferred-type) BooleanTy (aexpr-span cond)
-   in let tr = infer-expr (r1.state) env then-e
+   in let (_, u-st1) = unify (cr.state) (cr.inferred-type) BooleanTy (aexpr-span cond)
+   in let tr = infer-expr u-st1 env then-e
    in let er = infer-expr (tr.state) env else-e
-   in let r2 = unify (er.state) (tr.inferred-type) (er.inferred-type) span
+   in let (_, u-st2) = unify (er.state) (tr.inferred-type) (er.inferred-type) span
    in CheckResult {
     inferred-type = tr.inferred-type,
-    state = r2.state
+    state = u-st2
    }
 
 Section: Infer Let
@@ -238,9 +236,9 @@ Section: Infer Lambda
     param-types = acc
    }
    else let p = list-at params i
-   in let fr = fresh-and-advance st
-   in let env2 = env-bind-local env (p.value) (fr.var-type)
-   in bind-lambda-params (fr.state) env2 params (i + 1) len (list-push acc (fr.var-type))
+   in let (fr-ty, fr-st) = fresh-and-advance st
+   in let env2 = env-bind-local env (p.value) fr-ty
+   in bind-lambda-params fr-st env2 params (i + 1) len (list-push acc fr-ty)
 
   wrap-fun-type : List CodexType, CodexType -> CodexType
   wrap-fun-type (param-types) (result) =
@@ -251,6 +249,59 @@ Section: Infer Lambda
    if i < 0 then result
    else wrap-fun-type-loop param-types (deck-record (FunTy (list-at param-types i) result)) (i - 1)
 
+Section: Class Instance Check
+
+ `show` and `compare` require an instance for their operand type. A
+ primitive (Integer, Number, Text, Boolean, Char) has a built-in one; a
+ user type must derive the class, which leaves a `__show_T`/`__compare_T`
+ definition in scope (mirrors the dispatch probe in Lowering, so the
+ checker rejects exactly when codegen would otherwise fall back to a
+ meaningless number or a pointer compare). Primitives, type variables,
+ lists, and other non-nominal types are never rejected here; type
+ variables are deferred to the constraint pass.
+
+ `==` / `/=` are intentionally not checked: the emitter already compares
+ sums and text structurally (`emit-sum-structural-eq`, `__str_eq`), so
+ equality is sound there without deriving. Record equality is a separate
+ concern handled in codegen, not here.
+
+  class-prefix-for : Text -> Text
+  class-prefix-for (cls) =
+   if cls == "Show" then "__show_"
+   else "__compare_"
+
+  class-derives : TypeEnv, Text, Text -> Boolean
+  class-derives (env) (prefix) (tn) =
+   if text-length tn == 0 then False
+   else env-has env (rename-lookup (env.chapter-renames) (prefix & tn))
+
+  nominal-type-name : CodexType -> Text
+  nominal-type-name (ty) =
+   when ty
+    is SumTy (n) (a) (cs) | RecordTy (n) (ra) (rf) | ConstructedTy (n) (ca) -> n.value
+    is otherwise -> ""
+
+  class-op-ok : TypeEnv, Text, CodexType -> Boolean
+  class-op-ok (env) (cls) (ty) =
+   let tn = nominal-type-name ty
+   in if text-length tn == 0 then True
+   else class-derives env (class-prefix-for cls) tn
+
+  check-class-op : UnificationState, TypeEnv, Text, CodexType, SourceSpan -> UnificationState
+  check-class-op (st) (env) (cls) (ty) (span) =
+   let rty = deep-resolve st ty
+   in if class-op-ok env cls rty then st
+   else add-unify-error st cdx-no-class-instance ("No " & cls & " instance for type '" & nominal-type-name rty & "'; derive " & cls & " on the type or convert manually") span
+
+  check-class-op-app : UnificationState, TypeEnv, AExpr, CodexType, SourceSpan -> UnificationState
+  check-class-op-app (st) (env) (func) (arg-ty) (span) =
+   when func
+    is ANameExpr (n) (ns) ->
+     if (n.value) == "show" then check-class-op st env "Show" arg-ty span
+     else if (n.value) == "compare" then check-class-op st env "Ord" arg-ty span
+     else st
+    is otherwise -> st
+
 Section: Infer Application
   infer-application : UnificationState, TypeEnv, AExpr, AExpr, SourceSpan -> CheckResult
   infer-application (st) (env) (func) (arg) (span) =
@@ -258,11 +309,12 @@ Section: Infer Application
    in let ar = when arg
        is ALitExpr (val) (kind) (s) -> infer-int-lit-arg (fr.state) (fr.inferred-type) val kind
        is otherwise -> infer-expr (fr.state) env arg
-   in let ret = fresh-and-advance (ar.state)
-   in let r = unify (ret.state) (fr.inferred-type) (deck-record (FunTy (ar.inferred-type) (ret.var-type))) span
-   in let st-final = lint-record-set (r.state) env func arg (ar.inferred-type) (ret.var-type) span
+   in let (ret-ty, ret-st) = fresh-and-advance (ar.state)
+   in let (ok, r-st) = unify ret-st (fr.inferred-type) (deck-record (FunTy (ar.inferred-type) ret-ty)) span
+   in let st-cls = check-class-op-app r-st env func (ar.inferred-type) span
+   in let st-final = lint-record-set st-cls env func arg (ar.inferred-type) ret-ty span
    in CheckResult {
-    inferred-type = ret.var-type,
+    inferred-type = ret-ty,
     state = st-final
    }
 
@@ -377,10 +429,10 @@ Section: Infer List
   infer-list (st) (env) (elems) (span) =
    if list-length elems == 0
     then
-     let fr = fresh-and-advance st
+     let (fr-ty, fr-st) = fresh-and-advance st
      in CheckResult {
-      inferred-type = fr.var-type,
-      state = fr.state
+      inferred-type = fr-ty,
+      state = fr-st
      }
     else let first = infer-expr st env (list-at elems 0)
     in let st2 = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems)
@@ -394,18 +446,18 @@ Section: Infer List
    if i == len then st
    else let e = list-at elems i
    in let er = infer-expr st env e
-   in let r = unify (er.state) (er.inferred-type) elem-ty (aexpr-span e)
-   in unify-list-elems (r.state) env elems elem-ty (i + 1) len
+   in let (_, u-st) = unify (er.state) (er.inferred-type) elem-ty (aexpr-span e)
+   in unify-list-elems u-st env elems elem-ty (i + 1) len
 
 Section: Infer Match
   infer-match : UnificationState, TypeEnv, AExpr, List AMatchArm -> CheckResult
   infer-match (st) (env) (scrutinee) (arms) =
    let sr = infer-expr st env scrutinee
-   in let fr = fresh-and-advance (sr.state)
-   in let st2 = infer-match-arms (fr.state) env (sr.inferred-type) (fr.var-type) arms 0 (list-length arms)
+   in let (fr-ty, fr-st) = fresh-and-advance (sr.state)
+   in let st2 = infer-match-arms fr-st env (sr.inferred-type) fr-ty arms 0 (list-length arms)
    in let st3 = check-match-exhaustiveness st2 (sr.inferred-type) arms (aexpr-span scrutinee)
    in CheckResult {
-    inferred-type = fr.var-type,
+    inferred-type = fr-ty,
     state = st3
    }
 
@@ -415,10 +467,10 @@ Section: Infer Match
    else let arm = list-at arms i
    in let pr = bind-pattern st env (arm.pattern) scrut-ty
    in let gr = infer-expr (pr.state) (pr.env) (arm.guard)
-   in let gu = unify (gr.state) (gr.inferred-type) BooleanTy (aexpr-span (arm.guard))
-   in let br = infer-expr (gu.state) (pr.env) (arm.body)
-   in let r = unify (br.state) (br.inferred-type) result-ty (aexpr-span (arm.body))
-   in infer-match-arms (r.state) env scrut-ty result-ty arms (i + 1) len
+   in let (_, gu-st) = unify (gr.state) (gr.inferred-type) BooleanTy (aexpr-span (arm.guard))
+   in let br = infer-expr gu-st (pr.env) (arm.body)
+   in let (_, u-st) = unify (br.state) (br.inferred-type) result-ty (aexpr-span (arm.body))
+   in infer-match-arms u-st env scrut-ty result-ty arms (i + 1) len
 
   check-match-exhaustiveness : UnificationState, CodexType, List AMatchArm, SourceSpan -> UnificationState
   check-match-exhaustiveness (st) (scrut-ty) (arms) (span) =
@@ -486,10 +538,10 @@ Section: Infer Match
      env = env
     }
     is ACtorPat (ctor-name) (sub-pats) (s) ->
-     let ctor-lookup = instantiate-type st (env-lookup env (ctor-name.value))
-     in let ctor-ret = strip-fun-args (ctor-lookup.var-type)
-     in let unified = unify (ctor-lookup.state) ctor-ret ty s
-     in bind-ctor-sub-patterns (unified.state) env sub-pats (ctor-lookup.var-type) 0 (list-length sub-pats)
+     let (ctor-ty, ctor-st) = instantiate-type st (env-lookup env (ctor-name.value))
+     in let ctor-ret = strip-fun-args ctor-ty
+     in let (ok, unified-st) = unify ctor-st ctor-ret ty s
+     in bind-ctor-sub-patterns unified-st env sub-pats ctor-ty 0 (list-length sub-pats)
 
   bind-ctor-sub-patterns : UnificationState, TypeEnv, List APat, CodexType, Integer, Integer -> PatBindResult
   bind-ctor-sub-patterns (st) (env) (sub-pats) (ctor-ty) (i) (len) =
@@ -502,8 +554,8 @@ Section: Infer Match
       let pr = bind-pattern st env (list-at sub-pats i) param-ty
       in bind-ctor-sub-patterns (pr.state) (pr.env) sub-pats ret-ty (i + 1) len
      is otherwise ->
-      let fr = fresh-and-advance st
-      in let pr = bind-pattern (fr.state) env (list-at sub-pats i) (fr.var-type)
+      let (fr-ty, fr-st) = fresh-and-advance st
+      in let pr = bind-pattern fr-st env (list-at sub-pats i) fr-ty
       in bind-ctor-sub-patterns (pr.state) (pr.env) sub-pats ctor-ty (i + 1) len
 
 Section: Infer Act
@@ -546,10 +598,10 @@ Section: Infer Expression (dispatch)
     is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right s
     is AUnaryExpr (operand) (s) ->
      let r = infer-expr-at st env operand (depth + 1)
-     in let u = unify (r.state) (r.inferred-type) int-ty-default (aexpr-span operand)
+     in let (_, u-st) = unify (r.state) (r.inferred-type) int-ty-default (aexpr-span operand)
      in CheckResult {
       inferred-type = int-ty-default,
-      state = u.state
+      state = u-st
      }
     is AApplyExpr (func) (arg) (s) -> infer-application st env func arg s
     is AIfExpr (cond) (then-e) (else-e) (s) -> infer-if st env cond then-e else-e s
@@ -585,23 +637,23 @@ Section: Infer Expression (dispatch)
           state = st2
          }
         is otherwise ->
-         let fr = fresh-and-advance (r.state)
+         let (fr-ty, fr-st) = fresh-and-advance (r.state)
      in CheckResult {
-          inferred-type = fr.var-type,
-          state = fr.state
+          inferred-type = fr-ty,
+          state = fr-st
          }
       is otherwise ->
-       let fr = fresh-and-advance (r.state)
+       let (fr-ty, fr-st) = fresh-and-advance (r.state)
      in CheckResult {
-        inferred-type = fr.var-type,
-        state = fr.state
+        inferred-type = fr-ty,
+        state = fr-st
        }
 
     is ARecordExpr (name) (fields) (s) ->
      let ctor-raw = if env-has env (name.value) then env-lookup env (name.value) else ErrorTy
-     in let inst = instantiate-type st ctor-raw
-     in let result-type = strip-fun-args (inst.var-type)
-     in let st2 = infer-and-unify-record-fields (inst.state) env fields result-type 0 (list-length fields)
+     in let (inst-ty, inst-st) = instantiate-type st ctor-raw
+     in let result-type = strip-fun-args inst-ty
+     in let st2 = infer-and-unify-record-fields inst-st env fields result-type 0 (list-length fields)
      in CheckResult {
       inferred-type = result-type,
       state = record-expr-type st2 s result-type
@@ -644,7 +696,7 @@ Section: Infer Expression (dispatch)
       is otherwise -> ErrorTy
      in let st2 = when field-ty
       is ErrorTy -> add-unify-error st-mut cdx-unknown-record-field ("Record type has no field '" & field.value & "'") s
-      is otherwise -> (unify st-mut (vr.inferred-type) field-ty s).state
+      is otherwise -> let (_, u-st) = unify st-mut (vr.inferred-type) field-ty s in u-st
      in CheckResult {
       inferred-type = rr.inferred-type,
       state = st2
@@ -724,7 +776,7 @@ Section: Infer Expression (dispatch)
        is otherwise -> ErrorTy
    in let st2 = when expected
        is ErrorTy -> r.state
-       is otherwise -> (unify (r.state) (r.inferred-type) expected (aexpr-span (f.value))).state
+       is otherwise -> let (_, u-st) = unify (r.state) (r.inferred-type) expected (aexpr-span (f.value)) in u-st
    in let st3 = lint-narrowing-check st2 (f.value) (r.inferred-type) expected (aexpr-span (f.value)) (f.name.value)
    in infer-and-unify-record-fields st3 env fields record-ty (i + 1) len
 

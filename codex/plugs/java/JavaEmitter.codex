@@ -138,8 +138,16 @@ Section: Apply and Helpers
   emit-jv-apply : IRExpr, List ArityEntry, Integer -> Text
   emit-jv-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
-   in let func = emit-jv-expr (chain.root) arities indent
-   in func & "(" & emit-jv-apply-args (chain.args) arities indent 0 & ")"
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if is-mktup-name n then "new Object[]{" & emit-jv-apply-args args arities indent 0 & "}"
+     else let func = emit-jv-expr root arities indent
+     in func & "(" & emit-jv-apply-args args arities indent 0 & ")"
+    is otherwise ->
+     let func = emit-jv-expr root arities indent
+     in func & "(" & emit-jv-apply-args args arities indent 0 & ")"
 
   emit-jv-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-jv-apply-args (args) (arities) (indent) (i) =
@@ -199,7 +207,9 @@ Section: Match
    when p
     is IrVarPat (name) (ty) (sp) -> "true"
     is IrLitPat (text) (ty) (sp) -> "java.util.Objects.equals(" & scrut & ", " & text & ")"
-    is IrCtorPat (name) (subs) (ty) (sp) -> "java.util.Objects.equals(((java.util.Map<String,Object>)" & scrut & ").get(\"_tag\"), \"" & name & "\")"
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then "true"
+     else "java.util.Objects.equals(((java.util.Map<String,Object>)" & scrut & ").get(\"_tag\"), \"" & name & "\")"
     is IrWildPat (sp) -> "true"
 
   emit-jv-pat-binds : IRPat, Text -> Text
@@ -207,7 +217,9 @@ Section: Match
    when p
     is IrVarPat (name) (ty) (sp) -> "var " & jv-sanitize name & " = " & scrut & "; "
     is IrLitPat (text) (ty) (sp) -> ""
-    is IrCtorPat (name) (subs) (ty) (sp) -> emit-jv-ctor-binds subs scrut 0
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then emit-jv-tup-binds subs scrut 0
+     else emit-jv-ctor-binds subs scrut 0
     is IrWildPat (sp) -> ""
 
   emit-jv-ctor-binds : List IRPat, Text, Integer -> Text
@@ -242,7 +254,8 @@ Section: Type Definitions
     is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
      ""
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-jv-variant-ctors ctors 0
+     if is-tup-type (name.value) then ""
+     else emit-jv-variant-ctors ctors 0
 
   emit-jv-variant-ctors : List AVariantCtorDef, Integer -> Text
   emit-jv-variant-ctors (ctors) (i) =
@@ -302,5 +315,20 @@ Section: Java Class Assembly
    in let defs-text = emit-jv-defs (m.defs) 0 arities
    in let main-method = "    public static void main(String[] args) {\n        try { opening(); } catch(Exception e) { System.err.println(e); }\n    }\n}\n"
    in header & builtins & types-text & defs-text & main-method
+
+  emit-jv-tup-binds : List IRPat, Text, Integer -> Text
+  emit-jv-tup-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = "((Object[])" & scrut & ")[" & show i & "]"
+   in emit-jv-pat-binds sub access & emit-jv-tup-binds subs scrut (i + 1)
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
 
 Page 1
