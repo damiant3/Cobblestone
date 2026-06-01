@@ -128,6 +128,41 @@ into list literals and record constructors.
 **Status**: CLOSED. The workaround pattern (hoisting `when` to a
 helper) is no longer necessary. Inline `when` in lists/records works.
 
+## Type System — parametric same-name type+constructor (FIXED)
+
+A variant whose constructor shares the type's name — `Box (a) = | Box (a)` —
+now compiles and runs correctly (test `ctor-type-name-collision.codex`,
+expects 42). It previously **silently miscompiled** to an invalid-opcode
+(#UD) crash at construction; for a while it was rejected outright with a
+CDX3001 diagnostic. Both the miscompile and the rejection are gone.
+
+Root cause: the codegen's emit type table was built from the type-checker's
+**value env** alone (`opening.codex`: `sort-bindings checked.type-env.bindings`,
+used as `sorted-type-defs`). `env-bind` *replaces* same-name entries, so the
+constructor's `FunTy` clobbered the type's `SumTy`. For a parametric type the
+IR type is a `ConstructedTy "Box"` resolved via `resolve-constructed-ty` ->
+`lookup-type-binding "Box"`, which then got the ctor `FunTy` (not a `SumTy`) ->
+`emit-apply` fell through to a direct call to a nonexistent `Box` function ->
+`__unresolved_trap` -> #UD. Non-parametric same-name (e.g.
+`Wrapped = | Wrapped (Color) (Shape)` in nested-match.codex) always worked
+because its IR value is a `SumTy` directly (no lookup).
+
+Fix (two parts):
+1. `opening.codex` builds a **type-only** table with
+   `build-type-def-map (checked.scoped.type-defs)` (type name ->
+   `SumTy`/`RecordTy`, the same map the type checker uses internally) and
+   merges it ahead of the value env: `sort-bindings (type-map &
+   checked.type-env.bindings)`.
+2. `lookup-type-binding` (X86_64Compound) now prefers a `SumTy`/`RecordTy`
+   over a same-named `FunTy` among the sorted run (`prefer-type-binding`),
+   because the sort (quicksort) is not stable so the type's position among
+   equal-name entries is not guaranteed. This makes the type win regardless
+   of order, with zero effect on non-colliding names (single match, or
+   identical-`SumTy` duplicates).
+
+The earlier NameResolver `check-param-ctor-name-collision` diagnostic was
+removed.
+
 ## Type System — Linearity / mutable-aliasing checker
 
 The checker in `Types/TypeChecker.codex` (`lin-of` for `linear`, `consume-of`

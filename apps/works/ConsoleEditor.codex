@@ -11,6 +11,7 @@ Chapter: ConsoleEditor
   cites UI chapter Widget
   cites UI chapter Layout
   cites Foreword chapter Maybe
+  cites Foreword chapter Tuple
 
  Minimal console text editor for the UEFI dev console. Edits
  source files in-place on the boot image filesystem. Line-oriented
@@ -267,42 +268,38 @@ Section: Rendering
 
 Section: Find and Replace
 
-  FindResult = record {
-    found : Boolean,
-    line : Integer,
-    col : Integer
-  }
-
   editor-find : EditorState, Text -> EditorState
   editor-find (e) (query) =
     if text-length query == 0 then __record-set e "status" "Find: empty query"
     else let result = find-in-lines (e.lines) query (e.cursor-line) (e.cursor-col + 1) (e.line-count)
-    in if result.found then
-      let e2 = __record-set e "cursor-line" (result.line)
-      in let e3 = __record-set e2 "cursor-col" (result.col)
+    in let (r-found, r-line, r-col) = result
+    in if r-found then
+      let e2 = __record-set e "cursor-line" r-line
+      in let e3 = __record-set e2 "cursor-col" r-col
       in let e4 = editor-ensure-visible e3
-      in __record-set e4 "status" ("Found: '" & query & "' at L" & show (result.line + 1) & ":" & show (result.col + 1))
+      in __record-set e4 "status" ("Found: '" & query & "' at L" & show (r-line + 1) & ":" & show (r-col + 1))
     else __record-set e "status" ("Not found: '" & query & "'")
 
   editor-find-next : EditorState, Text -> EditorState
   editor-find-next (e) (query) = editor-find e query
 
-  find-in-lines : List Text, Text, Integer, Integer, Integer -> FindResult
+  find-in-lines : List Text, Text, Integer, Integer, Integer -> (Boolean, Integer, Integer)
   find-in-lines (lines) (query) (start-line) (start-col) (line-count) =
     let found = find-from-line lines query start-line start-col line-count
-    in if found.found then found
+    in let (f-found, f-line, f-col) = found
+    in if f-found then found
     else find-from-line lines query 0 0 start-line
 
-  find-from-line : List Text, Text, Integer, Integer, Integer -> FindResult
+  find-from-line : List Text, Text, Integer, Integer, Integer -> (Boolean, Integer, Integer)
   find-from-line (lines) (query) (from-line) (from-col) (stop-line) =
     find-line-loop lines query from-line from-col stop-line
 
-  find-line-loop : List Text, Text, Integer, Integer, Integer -> FindResult
+  find-line-loop : List Text, Text, Integer, Integer, Integer -> (Boolean, Integer, Integer)
   find-line-loop (lines) (query) (i) (start-col) (stop) =
-    if i >= stop then FindResult { found = False, line = 0, col = 0 }
+    if i >= stop then (False, 0, 0)
     else let line = list-at lines i
     in let col = find-in-text line query start-col
-    in if col >= 0 then FindResult { found = True, line = i, col = col }
+    in if col >= 0 then (True, i, col)
     else find-line-loop lines query (i + 1) 0 stop
 
   find-in-text : Text, Text, Integer -> Integer
@@ -337,15 +334,14 @@ Section: Find and Replace
   editor-replace-all : EditorState, Text, Text -> EditorState
   editor-replace-all (e) (old) (new) =
     let result = replace-all-lines (e.lines) old new 0 (e.line-count) [] 0
-    in let e2 = __record-set e "lines" (result.ra-lines)
+    in let (ra-lines, ra-count) = result
+    in let e2 = __record-set e "lines" ra-lines
     in let e3 = __record-set e2 "dirty" True
-    in __record-set e3 "status" ("Replaced " & show (result.ra-count) & " occurrences")
+    in __record-set e3 "status" ("Replaced " & show ra-count & " occurrences")
 
-  ReplaceAllResult = record { ra-lines : List Text, ra-count : Integer }
-
-  replace-all-lines : List Text, Text, Text, Integer, Integer, List Text, Integer -> ReplaceAllResult
+  replace-all-lines : List Text, Text, Text, Integer, Integer, List Text, Integer -> (List Text, Integer)
   replace-all-lines (lines) (old) (new) (i) (len) (acc) (count) =
-    if i >= len then ReplaceAllResult { ra-lines = acc, ra-count = count }
+    if i >= len then (acc, count)
     else let line = list-at lines i
     in let replaced = replace-in-line line old new
     in let line-count = count-occurrences line old

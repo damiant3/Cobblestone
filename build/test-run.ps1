@@ -54,7 +54,7 @@ try {
         exit 1
     }
 
-    $raw = [System.IO.File]::ReadAllText($outputFile) -replace "`r", ''
+    $raw = [System.IO.File]::ReadAllText($outputFile) -replace "`r", '' -replace "^\x01", ''
     $allLines = $raw -split "`n"
     $lines = [System.Collections.Generic.List[string]]::new()
     foreach ($l in $allLines) {

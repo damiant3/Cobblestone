@@ -139,7 +139,11 @@ Section: Apply and Helpers
   emit-ts-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
    in let func = emit-ts-expr (chain.root) arities indent
-   in func & "(" & emit-ts-apply-args (chain.args) arities indent 0 & ")"
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     if is-mktup-name n then "[" & emit-ts-apply-args (chain.args) arities indent 0 & "]"
+     else func & "(" & emit-ts-apply-args (chain.args) arities indent 0 & ")"
+    is otherwise -> func & "(" & emit-ts-apply-args (chain.args) arities indent 0 & ")"
 
   emit-ts-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-ts-apply-args (args) (arities) (indent) (i) =
@@ -185,7 +189,9 @@ Section: Match
    when p
     is IrVarPat (name) (ty) (sp) -> "true"
     is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
-    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then "Array.isArray(" & scrut & ")"
+     else scrut & "._tag === \"" & name & "\""
     is IrWildPat (sp) -> "true"
 
   emit-ts-pat-binds : IRPat, Text -> Text
@@ -193,7 +199,9 @@ Section: Match
    when p
     is IrVarPat (name) (ty) (sp) -> "const " & ts-sanitize name & ": any = " & scrut & "; "
     is IrLitPat (text) (ty) (sp) -> ""
-    is IrCtorPat (name) (subs) (ty) (sp) -> emit-ts-ctor-binds subs scrut 0
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then emit-ts-tup-binds subs scrut 0
+     else emit-ts-ctor-binds subs scrut 0
     is IrWildPat (sp) -> ""
 
   emit-ts-ctor-binds : List IRPat, Text, Integer -> Text
@@ -228,7 +236,8 @@ Section: Type Definitions
     is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
      "interface " & ts-sanitize (name.value) & " { _type: string; " & emit-ts-iface-fields fields 0 & "}\nfunction " & ts-sanitize (name.value) & "(fields: any): any { return { _type: \"" & name.value & "\", ...fields }; }\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-ts-variant-type name ctors
+     if is-tup-type (name.value) then ""
+     else emit-ts-variant-type name ctors
 
   emit-ts-iface-fields : List ARecordFieldDef, Integer -> Text
   emit-ts-iface-fields (fields) (i) =
@@ -297,5 +306,20 @@ Section: TypeScript Module Assembly
    in let defs-text = emit-ts-defs (m.defs) 0 arities
    in let entry = "// Entry\ntry { (opening as any)(); } catch(e) { console.error(e); }\n"
    in builtins & types-text & defs-text & entry
+
+  emit-ts-tup-binds : List IRPat, Text, Integer -> Text
+  emit-ts-tup-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = scrut & "[" & show i & "]"
+   in emit-ts-pat-binds sub access & emit-ts-tup-binds subs scrut (i + 1)
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
 
 Page 1

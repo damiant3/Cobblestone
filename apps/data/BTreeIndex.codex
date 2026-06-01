@@ -5,6 +5,7 @@ Chapter: BTreeIndex
   cites Foreword chapter List
   cites Foreword chapter Maybe
   cites Foreword chapter Pair
+  cites Foreword chapter Tuple
 
  B+ tree index on typed keys. Generalizes the foreword BPlusTree
  from Integer-only to ColumnValue keys. Supports point lookup,
@@ -129,50 +130,39 @@ Section: Lookup
 
 Section: Insert
 
-  BtInsertResult = record {
-    bt-tree : BTreeIdx,
-    bt-inserted : Boolean
-  }
-
-  btree-insert : BTreeIdx, IndexKey, RowId -> BtInsertResult
+  btree-insert : BTreeIdx, IndexKey, RowId -> (BTreeIdx, Boolean)
   btree-insert (tree) (key) (rid) =
     let node = list-at (tree.bt-nodes) (tree.bt-root)
     in when node
       is BtLeafNode (leaf) ->
         if leaf.bt-leaf-count < btree-order then
           let new-leaf = btree-leaf-insert leaf key rid
-          in BtInsertResult {
-            bt-tree = BTreeIdx {
+          in (BTreeIdx {
               bt-nodes = list-set-at (tree.bt-nodes) (tree.bt-root) (BtLeafNode new-leaf),
               bt-root = tree.bt-root,
               bt-count = tree.bt-count + 1,
               bt-height = tree.bt-height
-            },
-            bt-inserted = True
-          }
-        else let split = btree-leaf-split leaf key rid
+            }, True)
+        else let (split-left, split-right, split-key) = btree-leaf-split leaf key rid
         in let left-idx = tree.bt-root
         in let right-idx = list-length (tree.bt-nodes)
         in let root-idx = right-idx + 1
         in let new-root = BtInternalNode (BtInternal {
-          bt-int-keys = [split.bts-split-key],
+          bt-int-keys = [split-key],
           bt-int-children = [left-idx, right-idx],
           bt-int-count = 1
         })
-        in let nodes2 = list-set-at (tree.bt-nodes) left-idx (BtLeafNode (split.bts-left))
-        in let nodes3 = list-push nodes2 (BtLeafNode (split.bts-right))
+        in let nodes2 = list-set-at (tree.bt-nodes) left-idx (BtLeafNode split-left)
+        in let nodes3 = list-push nodes2 (BtLeafNode split-right)
         in let nodes4 = list-push nodes3 new-root
-        in BtInsertResult {
-          bt-tree = BTreeIdx {
+        in (BTreeIdx {
             bt-nodes = nodes4,
             bt-root = root-idx,
             bt-count = tree.bt-count + 1,
             bt-height = tree.bt-height + 1
-          },
-          bt-inserted = True
-        }
+          }, True)
       is BtInternalNode (internal) ->
-        BtInsertResult { bt-tree = tree, bt-inserted = False }
+        (tree, False)
 
   btree-leaf-insert : BtLeaf, IndexKey, RowId -> BtLeaf
   btree-leaf-insert (leaf) (key) (rid) =
@@ -199,13 +189,7 @@ Section: Insert
 
 Section: Split
 
-  BtSplitResult = record {
-    bts-left : BtLeaf,
-    bts-right : BtLeaf,
-    bts-split-key : IndexKey
-  }
-
-  btree-leaf-split : BtLeaf, IndexKey, RowId -> BtSplitResult
+  btree-leaf-split : BtLeaf, IndexKey, RowId -> (BtLeaf, BtLeaf, IndexKey)
   btree-leaf-split (leaf) (key) (rid) =
     let inserted = btree-leaf-insert leaf key rid
     in let mid = (inserted.bt-leaf-count) / 2
@@ -213,11 +197,9 @@ Section: Split
     in let left-rids = btree-take-rids (inserted.bt-leaf-rids) 0 mid []
     in let right-keys = btree-drop-keys (inserted.bt-leaf-keys) mid (inserted.bt-leaf-count) []
     in let right-rids = btree-drop-rids (inserted.bt-leaf-rids) mid (inserted.bt-leaf-count) []
-    in BtSplitResult {
-      bts-left = BtLeaf { bt-leaf-keys = left-keys, bt-leaf-rids = left-rids, bt-leaf-count = mid, bt-leaf-next = -1 },
-      bts-right = BtLeaf { bt-leaf-keys = right-keys, bt-leaf-rids = right-rids, bt-leaf-count = inserted.bt-leaf-count - mid, bt-leaf-next = inserted.bt-leaf-next },
-      bts-split-key = list-at right-keys 0
-    }
+    in (BtLeaf { bt-leaf-keys = left-keys, bt-leaf-rids = left-rids, bt-leaf-count = mid, bt-leaf-next = -1 },
+        BtLeaf { bt-leaf-keys = right-keys, bt-leaf-rids = right-rids, bt-leaf-count = inserted.bt-leaf-count - mid, bt-leaf-next = inserted.bt-leaf-next },
+        list-at right-keys 0)
 
   btree-take-keys : List IndexKey, Integer, Integer, List IndexKey -> List IndexKey
   btree-take-keys (xs) (i) (stop) (acc) =
@@ -241,12 +223,7 @@ Section: Split
 
 Section: Range Scan
 
-  RangeScanResult = record {
-    rs-rids : List RowId,
-    rs-count : Integer
-  }
-
-  btree-range-scan : BTreeIdx, IndexKey, IndexKey -> RangeScanResult
+  btree-range-scan : BTreeIdx, IndexKey, IndexKey -> (List RowId, Integer)
   btree-range-scan (tree) (lo) (hi) =
     let leaf-idx = btree-find-leaf tree (tree.bt-root) lo
     in btree-scan-leaves tree leaf-idx lo hi [] 0
@@ -260,24 +237,24 @@ Section: Range Scan
         let child = btree-route internal key
         in btree-find-leaf tree child key
 
-  btree-scan-leaves : BTreeIdx, Integer, IndexKey, IndexKey, List RowId, Integer -> RangeScanResult
+  btree-scan-leaves : BTreeIdx, Integer, IndexKey, IndexKey, List RowId, Integer -> (List RowId, Integer)
   btree-scan-leaves (tree) (node-idx) (lo) (hi) (acc) (count) =
-    if node-idx < 0 then RangeScanResult { rs-rids = acc, rs-count = count }
+    if node-idx < 0 then (acc, count)
     else let node = list-at (tree.bt-nodes) node-idx
     in when node
       is BtLeafNode (leaf) ->
-        let result = btree-scan-leaf-entries (leaf.bt-leaf-keys) (leaf.bt-leaf-rids) lo hi 0 (leaf.bt-leaf-count) acc count
-        in if result.rs-count == count then RangeScanResult { rs-rids = acc, rs-count = count }
-        else btree-scan-leaves tree (leaf.bt-leaf-next) lo hi (result.rs-rids) (result.rs-count)
-      is BtInternalNode (internal) -> RangeScanResult { rs-rids = acc, rs-count = count }
+        let (result-rids, result-count) = btree-scan-leaf-entries (leaf.bt-leaf-keys) (leaf.bt-leaf-rids) lo hi 0 (leaf.bt-leaf-count) acc count
+        in if result-count == count then (acc, count)
+        else btree-scan-leaves tree (leaf.bt-leaf-next) lo hi result-rids result-count
+      is BtInternalNode (internal) -> (acc, count)
 
-  btree-scan-leaf-entries : List IndexKey, List RowId, IndexKey, IndexKey, Integer, Integer, List RowId, Integer -> RangeScanResult
+  btree-scan-leaf-entries : List IndexKey, List RowId, IndexKey, IndexKey, Integer, Integer, List RowId, Integer -> (List RowId, Integer)
   btree-scan-leaf-entries (keys) (rids) (lo) (hi) (i) (len) (acc) (count) =
-    if i >= len then RangeScanResult { rs-rids = acc, rs-count = count }
+    if i >= len then (acc, count)
     else let k = list-at keys i
     in let cmp-lo = index-key-compare k lo
     in let cmp-hi = index-key-compare k hi
-    in if cmp-hi > 0 then RangeScanResult { rs-rids = acc, rs-count = count }
+    in if cmp-hi > 0 then (acc, count)
     else if cmp-lo >= 0 then
       btree-scan-leaf-entries keys rids lo hi (i + 1) len (list-push acc (list-at rids i)) (count + 1)
     else btree-scan-leaf-entries keys rids lo hi (i + 1) len acc count
@@ -337,8 +314,8 @@ Section: Rebalance
     else let entry = list-at entries i
     in let key = entry.fst
     in let rid = entry.snd
-    in let result = btree-insert tree key rid
-    in btree-rebuild-loop entries (i + 1) len (result.bt-tree)
+    in let (new-tree, _) = btree-insert tree key rid
+    in btree-rebuild-loop entries (i + 1) len new-tree
 
 Section: Index Statistics
 

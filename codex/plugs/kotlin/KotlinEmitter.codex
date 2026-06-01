@@ -106,7 +106,8 @@ Section: Type Definition Emission
     is ARecordTypeDef (name) (tparams) (fields) (s) ->
      emit-kt-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-kt-sum-type (name.value) ctors
+     if is-tup-type (name.value) then ""
+     else emit-kt-sum-type (name.value) ctors
 
   emit-kt-sum-type : Text, List AVariantCtorDef -> Text
   emit-kt-sum-type (name) (ctors) =
@@ -259,7 +260,9 @@ Section: Expression Emission
   emit-kt-match-arm (pat) (body) (arities) =
    when pat
     is IrLitPat (text) (ty) (sp) -> text & " -> " & emit-kt-expr body arities & "; "
-    is IrCtorPat (name) (subs) (ty) (sp) -> "is " & kt-sanitize name & " -> " & emit-kt-expr body arities & "; "
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then "is List<*> -> { val _arr = _s as List<*>; " & emit-kt-tup-binds subs 0 & emit-kt-expr body arities & " }; "
+     else "is " & kt-sanitize name & " -> " & emit-kt-expr body arities & "; "
     is IrVarPat (name) (ty) (sp) -> "else -> { val " & kt-sanitize name & " = _s; " & emit-kt-expr body arities & " }; "
     is IrWildPat (sp) -> "else -> " & emit-kt-expr body arities & "; "
 
@@ -285,6 +288,7 @@ Section: Apply Emission
    in when root
     is IrName (n) (ty) (sp) ->
      if n == "print-line-uni" then "println(" & emit-kt-expr (list-at args 0) arities & ")"
+     else if is-mktup-name n then "listOf(" & emit-kt-apply-args args arities 0 & ")"
      else kt-sanitize n & "(" & emit-kt-apply-args args arities 0 & ")"
     is otherwise -> emit-kt-expr-curried e arities
 
@@ -327,5 +331,22 @@ Section: Chapter Emission
    in let types-text = emit-kt-type-defs type-defs 0
    in let defs-text = emit-kt-defs (m.defs) 0 arities
    in types-text & defs-text & "fun main() {\n  " & kt-sanitize opening-entry-point & "()\n}\n"
+
+  emit-kt-tup-binds : List IRPat, Integer -> Text
+  emit-kt-tup-binds (subs) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> "val " & kt-sanitize name & " = _arr[" & integer-to-text i & "]; "
+    is IrWildPat (sp) -> ""
+    is otherwise -> "") & emit-kt-tup-binds subs (i + 1)
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
 
 Page 1

@@ -2,6 +2,7 @@ Chapter: LambdaLifting
   cites Codex chapter Lists
   cites Codex chapter Text
   cites Foreword chapter Sort
+  cites Foreword chapter Tuple
 
  Rewrites every IrLambda in the IR tree into an IrName reference to
  a synthesized top-level IRDef, with any free variables partially
@@ -14,44 +15,9 @@ Section: Types
    lifted : List IRDef
   }
 
-  LiftExprResult = record {
-   ctx : LiftCtx,
-   expr : IRExpr
-  }
-
-  LiftExprsResult = record {
-   ctx : LiftCtx,
-   exprs : List IRExpr
-  }
-
-  LiftFieldsResult = record {
-   ctx : LiftCtx,
-   fields : List IRFieldVal
-  }
-
-  LiftBranchesResult = record {
-   ctx : LiftCtx,
-   branches : List IRBranch
-  }
-
-  LiftActStmtsResult = record {
-   ctx : LiftCtx,
-   stmts : List IRActStmt
-  }
-
-  LiftDefsResult = record {
-   ctx : LiftCtx,
-   defs : List IRDef
-  }
-
   FreeVar = record {
    name : Text,
    type-val : CodexType
-  }
-
-  GenNameResult = record {
-   ctx : LiftCtx,
-   name : Text
   }
 
 Section: Entry Point
@@ -59,8 +25,8 @@ Section: Entry Point
   lift-lambdas (chapter) =
    let reserved = collect-reserved-names (chapter.defs) 0 (list-length (chapter.defs)) skip-list-text-empty
    in let ctx0 = LiftCtx { reserved = reserved, counter = 0, lifted = [] }
-   in let res = lift-defs ctx0 (chapter.defs) 0 (list-length (chapter.defs)) []
-   in __record-set chapter "defs" ((res.defs) & (res.ctx.lifted))
+   in let (ctx, defs) = lift-defs ctx0 (chapter.defs) 0 (list-length (chapter.defs)) []
+   in __record-set chapter "defs" (defs & (ctx.lifted))
 
   collect-reserved-names : List IRDef, Integer, Integer, SkipListText -> SkipListText
   collect-reserved-names (defs) (i) (len) (acc) =
@@ -74,22 +40,22 @@ Section: Entry Point
    else let p = list-at params i
    in params-to-names params (i + 1) len (skip-list-text-insert acc (p.name))
 
-  lift-defs : LiftCtx, List IRDef, Integer, Integer, List IRDef -> LiftDefsResult
+  lift-defs : LiftCtx, List IRDef, Integer, Integer, List IRDef -> (LiftCtx, List IRDef)
   lift-defs (ctx) (defs) (i) (len) (acc) =
-   if i >= len then LiftDefsResult { ctx = ctx, defs = acc }
+   if i >= len then (ctx, acc)
    else let d = list-at defs i
    in let absorbed = absorb-outer-lambdas d
    in let enclosing = params-to-names (absorbed.params) 0 (list-length (absorbed.params)) skip-list-text-empty
-   in let body-res = lift-expr ctx enclosing (absorbed.body)
+   in let (ctx1, body-expr) = lift-expr ctx enclosing (absorbed.body)
    in let new-def = deck-record (IRDef {
     name = absorbed.name,
     params = absorbed.params,
     type-val = absorbed.type-val,
-    body = body-res.expr,
+    body = body-expr,
     chapter-slug = absorbed.chapter-slug,
     span = absorbed.span
    })
-   in lift-defs (body-res.ctx) defs (i + 1) len (list-push acc new-def)
+   in lift-defs ctx1 defs (i + 1) len (list-push acc new-def)
 
   absorb-outer-lambdas : IRDef -> IRDef
   absorb-outer-lambdas (d) =
@@ -108,137 +74,132 @@ Section: Entry Point
     is otherwise -> d
 
 Section: Expression Walker
-  lift-expr : LiftCtx, SkipListText, IRExpr -> LiftExprResult
+  lift-expr : LiftCtx, SkipListText, IRExpr -> (LiftCtx, IRExpr)
   lift-expr (ctx) (enclosing) (e) =
    when e
-    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) | IrName (n) (t) (s) | IrError (m) (t) (s) -> LiftExprResult { ctx = ctx, expr = e }
+    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) | IrName (n) (t) (s) | IrError (m) (t) (s) -> (ctx, e)
     is IrLambda (ps) (b) (t) (s) -> lift-one-lambda ctx enclosing ps b t s
     is IrBinary (op) (l) (r) (t) (s) ->
-     let l-res = lift-expr ctx enclosing l
-     in let r-res = lift-expr (l-res.ctx) enclosing r
-     in LiftExprResult { ctx = r-res.ctx, expr = deck-record (IrBinary op (l-res.expr) (r-res.expr) t s) }
+     let (ctx1, l-expr) = lift-expr ctx enclosing l
+     in let (ctx2, r-expr) = lift-expr ctx1 enclosing r
+     in (ctx2, deck-record (IrBinary op l-expr r-expr t s))
     is IrNegate (x) (s) ->
-     let x-res = lift-expr ctx enclosing x
-     in LiftExprResult { ctx = x-res.ctx, expr = deck-record (IrNegate (x-res.expr) s) }
+     let (ctx1, x-expr) = lift-expr ctx enclosing x
+     in (ctx1, deck-record (IrNegate x-expr s))
     is IrIf (c) (th) (el) (t) (s) ->
-     let c-res = lift-expr ctx enclosing c
-     in let th-res = lift-expr (c-res.ctx) enclosing th
-     in let el-res = lift-expr (th-res.ctx) enclosing el
-     in LiftExprResult { ctx = el-res.ctx, expr = deck-record (IrIf (c-res.expr) (th-res.expr) (el-res.expr) t s) }
+     let (ctx1, c-expr) = lift-expr ctx enclosing c
+     in let (ctx2, th-expr) = lift-expr ctx1 enclosing th
+     in let (ctx3, el-expr) = lift-expr ctx2 enclosing el
+     in (ctx3, deck-record (IrIf c-expr th-expr el-expr t s))
     is IrLet (n) (t) (v) (b) (s) ->
-     let v-res = lift-expr ctx enclosing v
+     let (ctx1, v-expr) = lift-expr ctx enclosing v
      in let b-enclosing = skip-list-text-insert enclosing n
-     in let b-res = lift-expr (v-res.ctx) b-enclosing b
-     in LiftExprResult { ctx = b-res.ctx, expr = deck-record (IrLet n t (v-res.expr) (b-res.expr) s) }
+     in let (ctx2, b-expr) = lift-expr ctx1 b-enclosing b
+     in (ctx2, deck-record (IrLet n t v-expr b-expr s))
     is IrApply (f) (a) (t) (s) ->
-     let f-res = lift-expr ctx enclosing f
-     in let a-res = lift-expr (f-res.ctx) enclosing a
-     in LiftExprResult { ctx = a-res.ctx, expr = deck-record (IrApply (f-res.expr) (a-res.expr) t s) }
+     let (ctx1, f-expr) = lift-expr ctx enclosing f
+     in let (ctx2, a-expr) = lift-expr ctx1 enclosing a
+     in (ctx2, deck-record (IrApply f-expr a-expr t s))
     is IrList (es) (t) (s) ->
-     let es-res = lift-exprs ctx enclosing es 0 (list-length es) []
-     in LiftExprResult { ctx = es-res.ctx, expr = deck-record (IrList (es-res.exprs) t s) }
+     let (ctx1, es-lifted) = lift-exprs ctx enclosing es 0 (list-length es) []
+     in (ctx1, deck-record (IrList es-lifted t s))
     is IrMatch (sc) (bs) (t) (s) ->
-     let sc-res = lift-expr ctx enclosing sc
-     in let bs-res = lift-branches (sc-res.ctx) enclosing bs 0 (list-length bs) []
-     in LiftExprResult { ctx = bs-res.ctx, expr = deck-record (IrMatch (sc-res.expr) (bs-res.branches) t s) }
+     let (ctx1, sc-expr) = lift-expr ctx enclosing sc
+     in let (ctx2, bs-lifted) = lift-branches ctx1 enclosing bs 0 (list-length bs) []
+     in (ctx2, deck-record (IrMatch sc-expr bs-lifted t s))
     is IrAct (ss) (t) (s) ->
-     let ss-res = lift-act-stmts ctx enclosing ss 0 (list-length ss) []
-     in LiftExprResult { ctx = ss-res.ctx, expr = deck-record (IrAct (ss-res.stmts) t s) }
+     let (ctx1, ss-lifted) = lift-act-stmts ctx enclosing ss 0 (list-length ss) []
+     in (ctx1, deck-record (IrAct ss-lifted t s))
     is IrRecord (n) (fs) (t) (s) ->
-     let fs-res = lift-fields ctx enclosing fs 0 (list-length fs) []
-     in LiftExprResult { ctx = fs-res.ctx, expr = deck-record (IrRecord n (fs-res.fields) t s) }
+     let (ctx1, fs-lifted) = lift-fields ctx enclosing fs 0 (list-length fs) []
+     in (ctx1, deck-record (IrRecord n fs-lifted t s))
     is IrFieldAccess (r) (f) (t) (s) ->
-     let r-res = lift-expr ctx enclosing r
-     in LiftExprResult { ctx = r-res.ctx, expr = deck-record (IrFieldAccess (r-res.expr) f t s) }
+     let (ctx1, r-expr) = lift-expr ctx enclosing r
+     in (ctx1, deck-record (IrFieldAccess r-expr f t s))
     is IrFieldStore (r) (f) (v) (t) (s) ->
-     let r-res = lift-expr ctx enclosing r
-     in let v-res = lift-expr (r-res.ctx) enclosing v
-     in LiftExprResult { ctx = v-res.ctx, expr = deck-record (IrFieldStore (r-res.expr) f (v-res.expr) t s) }
+     let (ctx1, r-expr) = lift-expr ctx enclosing r
+     in let (ctx2, v-expr) = lift-expr ctx1 enclosing v
+     in (ctx2, deck-record (IrFieldStore r-expr f v-expr t s))
     is IrFork (body) (t) (s) ->
-     let b-res = lift-expr ctx enclosing body
-     in LiftExprResult { ctx = b-res.ctx, expr = deck-record (IrFork (b-res.expr) t s) }
+     let (ctx1, b-expr) = lift-expr ctx enclosing body
+     in (ctx1, deck-record (IrFork b-expr t s))
     is IrAwait (task) (t) (s) ->
-     let t-res = lift-expr ctx enclosing task
-     in LiftExprResult { ctx = t-res.ctx, expr = deck-record (IrAwait (t-res.expr) t s) }
+     let (ctx1, t-expr) = lift-expr ctx enclosing task
+     in (ctx1, deck-record (IrAwait t-expr t s))
     is IrHandle (eff) (h) (cs) (t) (s) ->
-     let h-res = lift-expr ctx enclosing h
+     let (ctx1, h-expr) = lift-expr ctx enclosing h
      in let clause-enclosing = add-clause-names-to-enclosing cs enclosing
-     in let cs-res = lift-handle-clauses (h-res.ctx) clause-enclosing cs 0 (list-length cs) []
-     in LiftExprResult { ctx = cs-res.ctx, expr = deck-record (IrHandle eff (h-res.expr) (cs-res.clauses) t s) }
+     in let (ctx2, cs-lifted) = lift-handle-clauses ctx1 clause-enclosing cs 0 (list-length cs) []
+     in (ctx2, deck-record (IrHandle eff h-expr cs-lifted t s))
     is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) ->
-     let b-res = lift-expr ctx enclosing body
-     in LiftExprResult { ctx = b-res.ctx, expr = deck-record (IrWithTimeout secs effs scopes (b-res.expr) t s) }
+     let (ctx1, b-expr) = lift-expr ctx enclosing body
+     in (ctx1, deck-record (IrWithTimeout secs effs scopes b-expr t s))
     is IrTry (max) (body) (fb) (fail) (t) (s) ->
-     let body-res = lift-act-stmts ctx enclosing body 0 (list-length body) []
-     in let fb-res = lift-act-stmts (body-res.ctx) enclosing fb 0 (list-length fb) []
-     in let fail-res = lift-act-stmts (fb-res.ctx) enclosing fail 0 (list-length fail) []
-     in LiftExprResult { ctx = fail-res.ctx, expr = deck-record (IrTry max (body-res.stmts) (fb-res.stmts) (fail-res.stmts) t s) }
+     let (ctx1, body-stmts) = lift-act-stmts ctx enclosing body 0 (list-length body) []
+     in let (ctx2, fb-stmts) = lift-act-stmts ctx1 enclosing fb 0 (list-length fb) []
+     in let (ctx3, fail-stmts) = lift-act-stmts ctx2 enclosing fail 0 (list-length fail) []
+     in (ctx3, deck-record (IrTry max body-stmts fb-stmts fail-stmts t s))
 
-  lift-exprs : LiftCtx, SkipListText, List IRExpr, Integer, Integer, List IRExpr -> LiftExprsResult
+  lift-exprs : LiftCtx, SkipListText, List IRExpr, Integer, Integer, List IRExpr -> (LiftCtx, List IRExpr)
   lift-exprs (ctx) (enclosing) (es) (i) (len) (acc) =
-   if i >= len then LiftExprsResult { ctx = ctx, exprs = acc }
-   else let r = lift-expr ctx enclosing (list-at es i)
-   in lift-exprs (r.ctx) enclosing es (i + 1) len (list-push acc (r.expr))
+   if i >= len then (ctx, acc)
+   else let (ctx1, expr) = lift-expr ctx enclosing (list-at es i)
+   in lift-exprs ctx1 enclosing es (i + 1) len (list-push acc expr)
 
-  lift-branches : LiftCtx, SkipListText, List IRBranch, Integer, Integer, List IRBranch -> LiftBranchesResult
+  lift-branches : LiftCtx, SkipListText, List IRBranch, Integer, Integer, List IRBranch -> (LiftCtx, List IRBranch)
   lift-branches (ctx) (enclosing) (bs) (i) (len) (acc) =
-   if i >= len then LiftBranchesResult { ctx = ctx, branches = acc }
+   if i >= len then (ctx, acc)
    else let b = list-at bs i
    in let branch-enclosing = collect-pattern-names (b.pattern) enclosing
-   in let body-res = lift-expr ctx branch-enclosing (b.body)
-   in let guard-res = lift-expr (body-res.ctx) branch-enclosing (b.guard)
+   in let (ctx1, body-expr) = lift-expr ctx branch-enclosing (b.body)
+   in let (ctx2, guard-expr) = lift-expr ctx1 branch-enclosing (b.guard)
    in let new-b = deck-record (IRBranch {
     pattern = b.pattern,
-    body = body-res.expr,
-    guard = guard-res.expr,
+    body = body-expr,
+    guard = guard-expr,
     span = b.span
    })
-   in lift-branches (guard-res.ctx) enclosing bs (i + 1) len (list-push acc new-b)
+   in lift-branches ctx2 enclosing bs (i + 1) len (list-push acc new-b)
 
-  lift-fields : LiftCtx, SkipListText, List IRFieldVal, Integer, Integer, List IRFieldVal -> LiftFieldsResult
+  lift-fields : LiftCtx, SkipListText, List IRFieldVal, Integer, Integer, List IRFieldVal -> (LiftCtx, List IRFieldVal)
   lift-fields (ctx) (enclosing) (fs) (i) (len) (acc) =
-   if i >= len then LiftFieldsResult { ctx = ctx, fields = acc }
+   if i >= len then (ctx, acc)
    else let f = list-at fs i
-   in let v-res = lift-expr ctx enclosing (f.value)
+   in let (ctx1, v-expr) = lift-expr ctx enclosing (f.value)
    in let new-f = deck-record (IRFieldVal {
     name = f.name,
-    value = v-res.expr,
+    value = v-expr,
     span = f.span
    })
-   in lift-fields (v-res.ctx) enclosing fs (i + 1) len (list-push acc new-f)
+   in lift-fields ctx1 enclosing fs (i + 1) len (list-push acc new-f)
 
-  lift-act-stmts : LiftCtx, SkipListText, List IRActStmt, Integer, Integer, List IRActStmt -> LiftActStmtsResult
+  lift-act-stmts : LiftCtx, SkipListText, List IRActStmt, Integer, Integer, List IRActStmt -> (LiftCtx, List IRActStmt)
   lift-act-stmts (ctx) (enclosing) (ss) (i) (len) (acc) =
-   if i >= len then LiftActStmtsResult { ctx = ctx, stmts = acc }
+   if i >= len then (ctx, acc)
    else let s = list-at ss i
    in when s
     is IrDoBind (n) (t) (v) (sp) ->
-     let v-res = lift-expr ctx enclosing v
+     let (ctx1, v-expr) = lift-expr ctx enclosing v
      in let new-enclosing = skip-list-text-insert enclosing n
-     in lift-act-stmts (v-res.ctx) new-enclosing ss (i + 1) len (list-push acc (deck-record (IrDoBind n t (v-res.expr) sp)))
+     in lift-act-stmts ctx1 new-enclosing ss (i + 1) len (list-push acc (deck-record (IrDoBind n t v-expr sp)))
     is IrDoExec (v) (sp) ->
-     let v-res = lift-expr ctx enclosing v
-     in lift-act-stmts (v-res.ctx) enclosing ss (i + 1) len (list-push acc (deck-record (IrDoExec (v-res.expr) sp)))
+     let (ctx1, v-expr) = lift-expr ctx enclosing v
+     in lift-act-stmts ctx1 enclosing ss (i + 1) len (list-push acc (deck-record (IrDoExec v-expr sp)))
 
-  LiftClausesResult = record {
-   ctx : LiftCtx,
-   clauses : List IRHandleClause
-  }
-
-  lift-handle-clauses : LiftCtx, SkipListText, List IRHandleClause, Integer, Integer, List IRHandleClause -> LiftClausesResult
+  lift-handle-clauses : LiftCtx, SkipListText, List IRHandleClause, Integer, Integer, List IRHandleClause -> (LiftCtx, List IRHandleClause)
   lift-handle-clauses (ctx) (enclosing) (cs) (i) (len) (acc) =
-   if i >= len then LiftClausesResult { ctx = ctx, clauses = acc }
+   if i >= len then (ctx, acc)
    else let c = list-at cs i
    in let clause-enc = skip-list-text-insert enclosing (c.resume-name)
-   in let body-res = lift-expr ctx clause-enc (c.body)
+   in let (ctx1, body-expr) = lift-expr ctx clause-enc (c.body)
    in let new-c = deck-record (IRHandleClause {
     op-name = c.op-name,
     params = c.params,
     resume-name = c.resume-name,
-    body = body-res.expr,
+    body = body-expr,
     span = c.span
    })
-   in lift-handle-clauses (body-res.ctx) enclosing cs (i + 1) len (list-push acc new-c)
+   in lift-handle-clauses ctx1 enclosing cs (i + 1) len (list-push acc new-c)
 
   add-clause-names-to-enclosing : List IRHandleClause, SkipListText -> SkipListText
   add-clause-names-to-enclosing (cs) (enc) =
@@ -266,43 +227,43 @@ Section: Pattern Variables
    else collect-pattern-name-list ps (i + 1) len (collect-pattern-names (list-at ps i) acc)
 
 Section: Lift Single Lambda
-  lift-one-lambda : LiftCtx, SkipListText, List IRParam, IRExpr, CodexType, SourceSpan -> LiftExprResult
+  lift-one-lambda : LiftCtx, SkipListText, List IRParam, IRExpr, CodexType, SourceSpan -> (LiftCtx, IRExpr)
   lift-one-lambda (ctx) (enclosing) (ps) (body) (ty) (sp) =
    when body
     is IrLambda (inner-ps) (inner-body) (inner-ty) (inner-sp) ->
      lift-one-lambda ctx enclosing (ps & inner-ps) inner-body ty sp
     is otherwise ->
    let body-enclosing = params-to-names ps 0 (list-length ps) enclosing
-   in let body-res = lift-expr ctx body-enclosing body
+   in let (ctx1, body-expr) = lift-expr ctx body-enclosing body
    in let param-names = params-to-names ps 0 (list-length ps) skip-list-text-empty
-   in let sorted-free = collect-free-vars (body-res.expr) param-names enclosing []
-   in let name-result = gen-unique-name (body-res.ctx) "__lam"
+   in let sorted-free = collect-free-vars body-expr param-names enclosing []
+   in let (ctx2, lam-name) = gen-unique-name ctx1 "__lam"
    in let ret-ty = infer-lambda-return-ty ty (list-length ps)
    in let lifted-params = build-lifted-params sorted-free ps
    in let lifted-ty = build-function-ty lifted-params 0 (list-length lifted-params) ret-ty
    in let lifted-def = deck-record (IRDef {
-    name = name-result.name,
+    name = lam-name,
     params = lifted-params,
     type-val = lifted-ty,
-    body = body-res.expr,
+    body = body-expr,
     chapter-slug = "",
     span = sp
    })
-   in let ctx1 = __record-set (name-result.ctx) "lifted" (list-push ((name-result.ctx).lifted) lifted-def)
-   in let replacement = build-partial-app (name-result.name) lifted-ty sorted-free 0 (list-length sorted-free) sp
-   in LiftExprResult { ctx = ctx1, expr = replacement }
+   in let ctx3 = __record-set ctx2 "lifted" (list-push (ctx2.lifted) lifted-def)
+   in let replacement = build-partial-app lam-name lifted-ty sorted-free 0 (list-length sorted-free) sp
+   in (ctx3, replacement)
 
-  gen-unique-name : LiftCtx, Text -> GenNameResult
+  gen-unique-name : LiftCtx, Text -> (LiftCtx, Text)
   gen-unique-name (ctx) (base) =
    gen-unique-name-loop ctx base (ctx.counter)
 
-  gen-unique-name-loop : LiftCtx, Text, Integer -> GenNameResult
+  gen-unique-name-loop : LiftCtx, Text, Integer -> (LiftCtx, Text)
   gen-unique-name-loop (ctx) (base) (i) =
    let candidate = base & "_" & integer-to-text i
    in if skip-list-text-has (ctx.reserved) candidate then gen-unique-name-loop ctx base (i + 1)
       else let ctx1 = __record-set ctx "reserved" (skip-list-text-insert (ctx.reserved) candidate)
       in let ctx2 = __record-set ctx1 "counter" (i + 1)
-      in GenNameResult { ctx = ctx2, name = candidate }
+      in (ctx2, candidate)
 
   build-lifted-params : List FreeVar, List IRParam -> List IRParam
   build-lifted-params (captures) (lam-params) =

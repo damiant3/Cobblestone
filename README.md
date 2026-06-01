@@ -38,7 +38,7 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-05-29:
+As of 2026-05-31:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
@@ -122,8 +122,21 @@ As of 2026-05-29:
 - **Repository restructure**: 31 top-level dirs to 8. codex-vm
   replaces QEMU as default VM (WHP-based, ~4500 lines C: PCI, xHCI USB,
   Intel HDA audio, HPET, IOAPIC, ACPI, SMBIOS, UEFI firmware, Bochs VBE).
-- **Sample battery**: 172 samples (incl. 29 error tests); 119 pass,
-  0 fail in the gate battery (52 skipped: slow, fatal, or platform-specific).
+- **Tuples**: `(A, B)` sugar in type position, `let (x, y) = e`
+  destructuring. Desugars to foreword `Tup2`..`Tup5`; all 15 transpiler
+  plugs emit idiomatic tuple syntax for their target language.
+- **Scoped constraint dispatch**: `show`/`compare` inside class-
+  constrained functions dispatches through the dictionary only for
+  parameter-typed arguments; let-bound locals use direct dispatch.
+- **C# plug full-compiler emit**: the emitted full compiler (2376 defs)
+  now compiles under `dotnet build` with 0 errors.
+- **Durable disk writes**: codex-vm IDE WRITE SECTORS + flush to host
+  image file. Accounts and SystemDb persist across restarts.
+- **Interactive debugger**: `-debug -break <fn> -map <file>` with
+  command shell, guest `!EXC=03` serial interception, symbol resolution,
+  conditional breakpoints.
+- **Sample battery**: 208 samples (incl. 31 error tests); 157 pass,
+  0 fail in the gate battery (51 skipped: slow, fatal, or platform-specific).
 - **Codex.Spark creative suite**: 85-module application (3D modeling,
   image editor, animation, audio/DAW, video compositor, skeletal
   animation, particles, procedural noise, interactive UI shell) running
@@ -142,11 +155,11 @@ As of 2026-05-29:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,400,385 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (2,653,313 bytes) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 (file) | `96E86720E8F60EB8A1E872E6A24991B994F47DF131C863D9687367C0018E2F29` |
+| SHA-256 (file) | `3C62496D32A7FCA22E1D0FB13E58713C42EE8101965B668EBEA05BB58D66BA0C` |
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
@@ -660,7 +673,7 @@ Unicode exists only at I/O boundaries. Internally, everything is CCE.
 ## Library Quires
 
 Code outside the compiler is organized into **24 quires** (library namespaces)
-with **367 modules** total (420 including the 53-file compiler):
+with **367 modules** total (421 including the 54-file compiler):
 
 | Quire | Directory | Count | Highlights |
 |-------|-----------|------:|------------|
@@ -691,7 +704,7 @@ of the directory name, capitalized.
 
 ```
 codex/
-  compiler/               Self-hosted compiler (59 files, ~30.5K lines)
+  compiler/               Self-hosted compiler (54 files, ~30.5K lines)
   foreword/
     core/                 Core forewords — data structures, crypto (89 modules)
     ai/                   AI — tensors, neural nets, GGUF, transformer (19 modules)
@@ -713,7 +726,7 @@ codex/
     trust/                Trust — lattice, policy, sessions (11 modules)
     verify/               Verification — 5-phase CDX verifier (5 modules)
   plugs/                  Plug architecture — IR-text-driven emitters
-  test/                   Compiler samples + OS integration tests (203 samples)
+  test/                   Compiler samples + OS integration tests (208 samples)
 apps/
   works/                  Console, agents, VM tools, first boot (53 modules)
   spark/                  Codex.Spark — 3D, image, animation, audio, video (85 modules)
@@ -739,83 +752,19 @@ old/                      Retired C# reference compiler — historical only
 | Pingpong (BS2) | Bare-metal semantic equivalence | 2026-04-07 |
 | **Self-sustaining (BS3)** | **Bare-metal CDX reproduces itself byte-identical** | **2026-04-24** |
 | CDX binary format | Signed CDX with SHA-256, capability tables, effect metadata | 2026-04-30 |
-| Codex.OS kernel | Preemptive scheduler, IPC channels, process management | 2026-05-03 |
-| Identity + crypto | RDRAND, Ed25519 identity, trust lattice, in-place keygen | 2026-05-03 |
-| Verifier (5-phase) | Integrity, author, capabilities, effects, proofs; cache; verified loader | 2026-05-04 |
-| **Networking** | **Full TCP/IP: Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, Syslog, TFTP** | **2026-05-05** |
-| OS shell + VGA | Interactive REPL, 13 command types, VGA 80x25, colored boot | 2026-05-05 |
-| Trust network | Authenticated TCP sessions, agent protocol, peer management | 2026-05-05 |
-| C# emitter removed | Legacy emitter deleted. CDX-only pipeline. Seed shrunk to 1.74MB | 2026-05-05 |
-| **176+ forewords** | **14 quires: game, AI, signal, encoding, math, compression, simulation** | **2026-05-05** |
-| Developer debugger | Memory/IO inspectors, ATA debugger, perf monitor | 2026-05-05 |
-| GPU compute design | Shared-memory proxy protocol, PCIe enumeration, F32 conversion | 2026-05-05 |
-| **UI substrate** | **18-chapter themeable GUI: widgets, layout, compositor, events, bindings, animations, icons, font, orchestrator** | **2026-05-05** |
-| UEFI boot path | PE32+ builder, CDX loader stub, diagnostic shell, LAPIC management | 2026-05-05 |
-| Boot gate | Hold-any-key for diagnostic shell, welcome screen for normal boot | 2026-05-05 |
-| DRY + list-push rename | Shared forewords (ListUtils, math-mod), IrNegate constant fold, list-snoc → list-push | 2026-05-06 |
-| GPT/FAT32 writers | Native GPT + FAT32 in Codex, IMG compile mode, 64 MB bootable disk image | 2026-05-06 |
-| **UEFI console** | **ConOut routing: print-line → screen on real hardware. UEFI app PE stub (no EBS)** | **2026-05-06** |
-| Prose buildout | Load-bearing prose: consistency checks, banned words, flag-gated pipeline | 2026-05-06 |
-| Agent lifecycle | AgentRuntime (GGUF loader), AgentAcquisition, AgentCoordinator, FirstBoot wizard | 2026-05-06 |
-| **288 modules** | **19 quires, 40 works modules** | **2026-05-06** |
-| **Real hardware boot** | **"Welcome to Codex" on Asus x86-64: PE stub alignment fix, ImageBase=0, pure-PS1 toolchain** | **2026-05-07** |
-| bit-shr/shru | SAR (arithmetic) + SHR (logical) split, 78-file codebase migration | 2026-05-07 |
-| Fat16 reader | Foreword for reading FAT16 filesystems | 2026-05-07 |
-| **VMX hypervisor** | **codex-vm.exe (WHP), VmSerial, VmIde, DevHypervisor — replaces QEMU** | **2026-05-07** |
-| VM build tools | VmCompile, VmRunner, VmPingpong, VmSweep — Codex-native build pipeline | 2026-05-07 |
-| Source embedding | FAT16 8MB IMG with SOURCE.CDX, SourceConcat transitive resolution | 2026-05-07 |
-| codex-vm.exe | WHP-based VM host: PIT, serial, disk — replaces QEMU | 2026-05-07 |
-| rdmsr/wrmsr builtins | MSR access + vmlaunch-full/vmresume-full | 2026-05-07 |
-| **UEFI dev console** | **Interactive menus, source indexing, ConOut/ConIn, write-usb** | **2026-05-07** |
-| FAT16 IMG OOM fix | Emit deck reclaim: peak heap ~990 to ~350 MB | 2026-05-07 |
-| **295 modules** | **19 quires, 44 works, 212 test samples** | **2026-05-07** |
-| Pip joins | Third Claude Code agent (Cam, Nib, Pip) | 2026-05-08 |
-| Annotations H1-H12 | First-class fact-publication surface for AI agents (codex.annotations/) | 2026-05-08 |
-| Frontend de-deck | Lex / parse / desugar / scope phases move scratch to bivy; tighter heap surveys | 2026-05-08 |
-| **Resilient act blocks** | **`trying N times … falling back to … on failure`: retry loops with bivy reclaim, fallback, failure handler** | **2026-05-09** |
-| **Plug architecture** | **Emitters as standalone CDX programs reading IR text on stdin; first plug = C#** | **2026-05-09** |
-| Diagnostic dangler fix | `make-diagnostic` deck-copies message text; `bag-add` deck-records the bag — emit-time errors no longer dangle past `__heap-restore` | 2026-05-09 |
-| Library expansion | 295 → 352 modules (+57: Path, Hkdf, Locale, Transformer, Toml, Cbor, Decimal, Argon2, Zstd, Brotli, Wavelet, ...) | 2026-05-09 |
-| **352 modules** | **19 quires, 52 works, 401 test samples** | **2026-05-09** |
-| New syntax | `&` replaces `++` for concat; comma-separated params (`Integer, Integer -> Integer`) | 2026-05-13 |
-| Syntax conversion | Entire codebase (compiler + 352 library modules + 245 tests) converted | 2026-05-15 |
-| 2GB address space | DEV_2GB_SYNTAX branch: 2 GB identity-mapped, 2 MB page tables | 2026-05-13 |
-| Memory layout fix | Serial ring buffer collision discovered and fixed (0x300000→0x500000) | 2026-05-16 |
-| **New builtins** | **print-line-raw, read-file-raw, chan-text-send, chan-text-recv + IPC helpers** | **2026-05-16** |
-| Test harness overhaul | Crash recovery, per-test timing, batch parallelism, 3-min full sweep | 2026-05-16 |
-| Editor features | Find/replace, undo, go-to-line, multi-file buffers | 2026-05-16 |
-| **357 modules** | **19 quires, 59 compiler files, 581 test samples** | **2026-05-16** |
-| codex-vm NE2000 NIC | Network-enabled VM, VGA display, keyboard, mouse | 2026-05-18 |
-| codex-vm UEFI emulation | ConOut/ConIn trap dispatch, ReadKeyStroke, AllocatePages | 2026-05-18 |
-| Compiler: pipe-forward | `\|>` operator and `.field` record selectors | 2026-05-18 |
-| **Codex.Spark** | **85-module creative suite: 3D modeling, image editor, animation, audio/DAW, video compositor, procedural gen, interactive UI shell on GOP framebuffer** | **2026-05-18** |
-| **codex-vm GOP** | **Graphics Output Protocol framebuffer — Spark renders 3D on screen** | **2026-05-18** |
-| Codex.DB | Relational database server (38 modules) with pipe-forward queries | 2026-05-18 |
-| CodexMagic | Card game + game server with web portal (56 modules) | 2026-05-18 |
-| Mutable records | `__record-set-mut` for in-place mutation under linear ownership | 2026-05-18 |
-| **575 modules** | **24 quires, 59 compiler files, 581+ test samples** | **2026-05-18** |
-| Emitter Exodus | PE, ELF, GPT, FAT writers extracted from compiler to plug CDX binaries | 2026-05-23 |
-| **codex-vm hardware** | **PCI, xHCI USB (mass storage + HID + UVC camera), Intel HDA audio, HPET, IOAPIC, ACPI, SMBIOS, Bochs VBE, PC speaker — VM grows from 400 to ~4500 lines** | **2026-05-23** |
-| UsbVideo.codex | USB Video Class kernel driver: discovery, Probe/Commit, YUYV-to-RGB, framebuffer blit | 2026-05-23 |
-| Hardware tests | 5 new test samples: pci-scan, xhci-discover, uvc-discover, usb-msc-detect, hda-codec | 2026-05-23 |
-| xHCI transfers | Xhci.codex: command/transfer ring management, bulk/control transfers, event ring | 2026-05-23 |
-| **Static bounds prover** | **Compiler proves bounded-integer range safety at compile time, elides runtime checks (CDX4010). Handles literals, fields, arithmetic (+,-,*,/), int-mod, bit-and, bit-shru, negate, if/else union** | **2026-05-23** |
-| Short-circuit AND/OR | `IrAnd`/`IrOr` emit proper short-circuit codegen (test + jcc, no right-operand eval when unnecessary) | 2026-05-23 |
-| Plug emitter fixes | Rust + JS Unicode escape (CCE→codepoint), C# O(n²) concat→text-concat-list, deprecated `++`→`&` across all 6 emitters (2661 replacements) | 2026-05-23 |
-| Debugger | Symbolic breakpoints (name→MAP1→INT3), backtrace (stack walk + symbol resolve), register dump, perf counters, single-step (#DB), all views wired | 2026-05-23 |
-| Editor undo/redo | Ctrl+Z/Ctrl+Y wired to undo/redo stacks, snapshots on every edit (char, backspace, delete, enter) | 2026-05-23 |
-| **Dependent types** | **PropEqTy: types carry values. `Nil === Nil` in type position produces PropEqTy; `Refl` verified by unifier; invalid proofs are type errors. ProofTy, proof erasure (zero machine code), CDX4020 diagnostic. Builtins: Refl, sym, trans, cong, assume. claim/proof parser, induction keyword.** | **2026-05-23** |
-| **420 modules** | **24 quires, 53 compiler files, 205 test samples** | **2026-05-23** |
-| **Lazy evaluation** | **`lazy` keyword with memoized thunks; `force` builtin** | **2026-05-26** |
-| Serial removal | TCP eliminated from the build — memory-mapped I/O (ring-buffer in, UART out), 95+ plug scripts; REPL batch compile (140s→30s); VM `-portfwd` | 2026-05-27 |
-| Explorer app | 17-module parameter explorer with web UI | 2026-05-27 |
-| Multi-pattern matching | `\|` alternation in `when`/`is` arms (P1) | 2026-05-27 |
-| Exhaustiveness checking | A non-exhaustive `when` is a static error (P8) | 2026-05-28 |
-| Constant folding | Compile-time arithmetic folding (P9); in-compiler IR dead-code elimination (`ir-prune-unreachable`) | 2026-05-28 |
-| **Type classes** | **`class`/`instance` via dictionary passing: multi-instance dispatch, return-type polymorphism, generic constrained functions, parametric-type instances, missing-instance diagnostic (CDX2040)** | **2026-05-29** |
-| **Linear types (Phase 3)** | **`linear` resources used exactly once (CDX2061/2063); `freeze : linear a -> a` immutable bridge; `mutable`-record aliasing checked (CDX2062, signature-inferred borrow/move); `linear`=resources & `mutable`=data as orthogonal disciplines; field-assign sequencing** | **2026-05-29** |
-| Mutable records + pointer map | In-place record mutation under linear ownership; pointer-map foundation (is-pointer-type, pmap-walk, gated conformance check) | 2026-05-29 |
-| **236 foreword modules** | **24 quires, 54 compiler files, 50 transpiler plugs; CDX hard fixed point (seed `96E86720`)** | **2026-05-29** |
+| Codex.OS kernel | Preemptive scheduler, IPC, identity, trust lattice, 5-phase verifier | 2026-05-03 |
+| **Networking** | **Full TCP/IP: Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, TLS** | **2026-05-05** |
+| **Real hardware boot** | **"Welcome to Codex" on Asus x86-64 — UEFI PE stub, pure-PS1 toolchain** | **2026-05-07** |
+| **codex-vm** | **WHP VM host (~4500 lines C): PCI, xHCI USB, Intel HDA, HPET, IOAPIC, ACPI, SMBIOS, Bochs VBE, GOP framebuffer, NE2K NIC** | **2026-05-07** |
+| **Plug architecture** | **48 transpiler plugs (Ada → Zig, 14 UI frameworks, 4 binary formats)** | **2026-05-09** |
+| **Codex.Spark** | **85-module creative suite on GOP framebuffer** | **2026-05-18** |
+| **Static bounds prover** | **Compiler proves bounded-integer range safety, elides runtime checks** | **2026-05-23** |
+| **Dependent types** | **PropEqTy, Refl, proof erasure, claim/proof/qed** | **2026-05-23** |
+| **Type classes** | **`class`/`instance` via dictionary passing, return-type polymorphism** | **2026-05-29** |
+| **Linear types** | **`linear` (resources) + `mutable` (data) as orthogonal disciplines** | **2026-05-29** |
+| **Tuples + debugger** | **`(A, B)` sugar, `let (x, y) = e`, C# full-compiler emit (0 errors), interactive debugger** | **2026-05-31** |
+
+Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 
 ---
 

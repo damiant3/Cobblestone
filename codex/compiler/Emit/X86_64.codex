@@ -660,6 +660,7 @@ Section: Expression Emission
   emit-show-builtin (st) (args) =
    let arg = list-at args 0
    in when ir-expr-type arg
+    is TextTy -> emit-expr (st-set-tail-pos st False) arg
     is BooleanTy -> emit-show-bool st arg
     is NumberTy -> emit-helper-call-1 st args "__number_to_text"
     is otherwise -> emit-helper-call-1 st args "__itoa"
@@ -747,6 +748,7 @@ Section: Expression Emission
   emit-name-nonlocal : CodegenState, Text, CodexType -> EmitResult
   emit-name-nonlocal (st) (name) (ty) =
    if name == "__heap-save" then emit-heap-save-builtin st
+   else if name == "__self-type-defs" then emit-self-type-defs-builtin st
    else if name == "__deck-pos" then emit-deck-pos-builtin st
    else if name == "__deck-enter" then emit-deck-enter-builtin st
    else if name == "__deck-exit" then emit-deck-exit-builtin st
@@ -983,6 +985,9 @@ Section: Expression Emission
    reg = rd.reg
   }
 
+  eq-empty-type-args : List CodexType
+  eq-empty-type-args = []
+
   emit-eq-op : CodegenState, Integer, Integer, CodexType -> EmitResult
   emit-eq-op (st) (l-reg) (r-reg) (ty) =
    let resolved = resolve-to-sum-with-defs st ty
@@ -992,7 +997,7 @@ Section: Expression Emission
     is SumTy (sn) (args) (cs) ->
      let type-args = (when ty
       is ConstructedTy (cn) (ca) -> ca
-      is otherwise -> [])
+      is otherwise -> eq-empty-type-args)
      in emit-sum-structural-eq st l-reg r-reg cs type-args
     is otherwise -> emit-comparison st cc-e l-reg r-reg
 
@@ -1011,7 +1016,7 @@ Section: Expression Emission
     is SumTy (sn) (args) (cs) ->
      let type-args = (when ty
       is ConstructedTy (cn) (ca) -> ca
-      is otherwise -> [])
+      is otherwise -> eq-empty-type-args)
      in let eq-result = emit-sum-structural-eq st l-reg r-reg cs type-args
      in let rd = alloc-temp (eq-result.state)
      in EmitResult {

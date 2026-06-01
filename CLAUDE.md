@@ -33,8 +33,9 @@ document is in the file above.
 On session start, read ALL live docs using parallel agents. This costs
 ~20K tokens (~2% of context) and eliminates an entire class of mistakes
 where an agent doesn't know about a prior decision, a known condition,
-or a design that's relevant to the current task. Skip `docs/Designs/Done/`
-and `docs/PM/Done/` — those are historical and recoverable from
+or a design that's relevant to the current task. Skip every
+`docs/Designs/*/Done/`, the `docs/Designs/History/` archive, and
+`docs/PM/Done/` — those are historical and recoverable from
 `p4 filelog` if needed.
 
 ### Mandatory Reading (read directly, not via agent)
@@ -50,7 +51,7 @@ and `docs/PM/Done/` — those are historical and recoverable from
 - `docs/PM/CurrentPlan.md` — current plan
 - `docs/PM/BACKLOG.md` — outstanding work items
 - `docs/Agents/PerforceProcess.md` — shelve/revert/sync protocol
-- `docs/Designs/Active/` — ALL active designs (compiler, hardware, language, OS, features, tools)
+- `docs/Designs/*/Active/` — ALL active designs, one section per concern: `Compiler/`, `Language/`, `Memory/`, `OS/`, `Hardware/`, `Backends/`, `Build/`, `Test/`, `Tools/`, `Features/`, `Projects/`, and `Apps/<project>/` (e.g. `Apps/CodexMagic/`, `Apps/Explorer/`). Each section has its own `Active/` + `Done/`; historical piles live under `docs/Designs/History/`
 - `docs/PM/Stories/Vision/` — founding prompts
 - `docs/Test/` — known conditions, crash investigations
 - `docs/Reference/` — UEFI specs, AMI Aptio, paper index

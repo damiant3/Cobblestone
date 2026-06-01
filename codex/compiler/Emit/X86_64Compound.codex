@@ -415,7 +415,17 @@ Section: Record Emission
    in let pos = bsearch-type-binding-pos bindings name 0 len
    in if pos >= len then ErrorTy
       else let b = list-at bindings pos
-      in if b.name == name then b.bound-type else ErrorTy
+      in if b.name == name then prefer-type-binding bindings name pos len (b.bound-type) else ErrorTy
+
+  prefer-type-binding : List TypeBinding, Text, Integer, Integer, CodexType -> CodexType
+  prefer-type-binding (bindings) (name) (i) (len) (fallback) =
+   if i >= len then fallback
+   else let b = list-at bindings i
+   in if b.name == name
+      then when b.bound-type
+        is SumTy (sn) (sa) (sc) | RecordTy (rn) (ra) (rf) -> b.bound-type
+        is otherwise -> prefer-type-binding bindings name (i + 1) len fallback
+      else fallback
 
   find-record-field-index : List RecordField, Text, Integer -> Integer
   find-record-field-index (fields) (name) (i) =
@@ -707,8 +717,11 @@ Section: Pointer-Map Walk
  at cap, then pmap-walk over [h0, cap) counts the in-range pointers. PmTestRec
  has tr-ptr (Text), a scalar tr-num, and tr-inner (a ConstructedTy "PmInner"
  record whose in-ptr is another heap Text). Expected result: 3 (tr-ptr +
- tr-inner + inner.in-ptr; tr-num scalar skipped; ConstructedTy resolved via
- the defs table).
+ tr-inner + inner.in-ptr; tr-num scalar skipped; ConstructedTy "PmInner"
+ resolved against __self-type-defs). The root type PmTestRec is itself
+ resolved from __self-type-defs by name, so this exercises the whole
+ self-type-table: the emitted table carries the compiler's OWN types (baked
+ in at the compiler's self-compile), and pmap-walk drives off it.
 
  The pointees MUST be runtime heap allocations: a bare string literal is
  emitted into rodata (emit-text-lit, X86_64.codex), so its pointer lands
@@ -721,7 +734,7 @@ Section: Pointer-Map Walk
 
   pmap-self-test : Integer
   pmap-self-test =
-   let defs = [TypeBinding { name = "PmInner", bound-type = RecordTy (make-name "PmInner") [] [RecordField { name = make-name "in-ptr", type-val = TextTy }] }]
+   let defs = __self-type-defs
    in let h0 = __heap-save
    in let sub = show 99
    in let inner-sub = show 88
@@ -729,8 +742,256 @@ Section: Pointer-Map Walk
    in let cap = __heap-save
    in let rec = PmTestRec { tr-num = 42, tr-ptr = sub, tr-inner = inner }
    in if rec.tr-num == 42
-      then pmap-walk cap (RecordTy (make-name "PmTestRec") [] [RecordField { name = make-name "tr-num", type-val = int-ty-default }, RecordField { name = make-name "tr-ptr", type-val = TextTy }, RecordField { name = make-name "tr-inner", type-val = ConstructedTy (make-name "PmInner") [] }]) defs h0 cap 64
+      then pmap-walk cap (lookup-type-binding defs "PmTestRec") defs h0 cap 64
       else 0 - 1
+
+  pmap-escape-fuel : Integer = 1000000
+
+  pmap-escape-count : Integer, Text, Integer, Integer -> Integer
+  pmap-escape-count (root-addr) (type-name) (lo) (hi) =
+   let defs = __self-type-defs
+   in pmap-walk root-addr (lookup-type-binding defs type-name) defs lo hi pmap-escape-fuel
+
+Section: Self-Type-Table Emission
+
+ Emits the compiler's own type-defs (filtered to RecordTy/SumTy) into rodata
+ as a live `List TypeBinding` graph in exact heap layout with ABSOLUTE
+ addresses (data-vaddr is known at finalize, so no relocations needed).
+ pmap-walk consumes it unchanged to resolve ConstructedTy at runtime. Layouts:
+ List = [cap][len][elem@8+i*8] (pointer = len word); Sum box = [tag][field@8+
+ i*8]; record fields width-sorted (all 8B here, so name-sorted at 8*k); Text =
+ [len][bytes][pad8]. pmap-walk/is-pointer-type read only a descriptor's tag and
+ the pointer slots they recurse on (ListTy.elem, RecordTy.fields, SumTy.ctors,
+ ConstructedTy.name), so unused scalar/pointer slots are emitted as 0 — EXCEPT
+ IntegerTy's lo/hi bounds, which field-byte-width reads to compute a record's
+ field widths (and hence offsets), so those are emitted faithfully.
+
+  ConstEmit = record { len : Integer, off : Integer }
+
+  ConstList = record { len : Integer, offs : List Integer }
+
+  const-text-bytes : Integer, Integer, Text, Integer, Integer -> Integer
+  const-text-bytes (buf) (pos) (s) (i) (n) =
+   if i == n then pos
+   else let w = __buf-write-byte buf pos (char-code-at s i)
+   in const-text-bytes buf (pos + 1) s (i + 1) n
+
+  const-pad8 : Integer, Integer -> Integer
+  const-pad8 (buf) (pos) =
+   if int-mod pos 8 == 0 then pos
+   else let w = __buf-write-byte buf pos 0 in const-pad8 buf (pos + 1)
+
+  const-words : Integer, Integer, List Integer, Integer, Integer -> Integer
+  const-words (buf) (pos) (ws) (i) (n) =
+   if i == n then pos else const-words buf (buf-write-i64 buf pos (list-at ws i)) ws (i + 1) n
+
+  emit-const-text : Integer, Integer, Text -> ConstEmit
+  emit-const-text (buf) (len) (s) =
+   let n = text-length s
+   in let p1 = buf-write-i64 buf len n
+   in let p2 = const-text-bytes buf p1 s 0 n
+   in ConstEmit { len = const-pad8 buf p2, off = len }
+
+  const-addr-words : Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
+  const-addr-words (buf) (pos) (offs) (i) (n) (vaddr) =
+   if i == n then pos
+   else const-addr-words buf (buf-write-i64 buf pos (vaddr + list-at offs i)) offs (i + 1) n vaddr
+
+  emit-const-ptr-list : Integer, Integer, Integer, List Integer -> ConstEmit
+  emit-const-ptr-list (buf) (len) (vaddr) (child-offs) =
+   let n = list-length child-offs
+   in let p1 = buf-write-i64 buf len n
+   in let p2 = buf-write-i64 buf p1 n
+   in ConstEmit { len = const-addr-words buf p2 child-offs 0 n vaddr, off = len + 8 }
+
+  const-box : Integer, Integer, Integer, List Integer -> ConstEmit
+  const-box (buf) (len) (tag) (words) =
+   let p1 = buf-write-i64 buf len tag
+   in ConstEmit { len = const-words buf p1 words 0 (list-length words), off = len }
+
+  emit-const-name : Integer, Integer, Integer, Name -> ConstEmit
+  emit-const-name (buf) (len) (vaddr) (nm) =
+   let t = emit-const-text buf len (nm.value)
+   in ConstEmit { len = buf-write-i64 buf (t.len) (vaddr + t.off), off = t.len }
+
+  emit-const-codextype : Integer, Integer, Integer, CodexType, Integer -> ConstEmit
+  emit-const-codextype (buf) (len) (vaddr) (ty) (fuel) =
+   if fuel <= 0 then const-box buf len 7 []
+   else when ty
+    is IntegerTy (lo) (hi) (mode) -> const-box buf len 0 [lo, hi, 0]
+    is NumberTy -> const-box buf len 1 []
+    is TextTy -> const-box buf len 2 []
+    is BooleanTy -> const-box buf len 3 []
+    is CharTy -> const-box buf len 4 []
+    is VoidTy -> const-box buf len 5 []
+    is NothingTy -> const-box buf len 6 []
+    is ErrorTy -> const-box buf len 7 []
+    is FunTy (p) (r) -> const-box buf len 8 [0, 0]
+    is ListTy (elem) -> let c = emit-const-codextype buf len vaddr elem (fuel - 1) in const-box buf (c.len) 9 [vaddr + c.off]
+    is LinkedListTy (elem) -> const-box buf len 10 [0]
+    is TypeVar (i) -> const-box buf len 11 [0]
+    is ForAllTy (i) (b) -> let c = emit-const-codextype buf len vaddr b (fuel - 1) in const-box buf (c.len) 12 [0, vaddr + c.off]
+    is SumTy (n) (a) (ctors) | RecordTy (n) (a) (fields) | ConstructedTy (n) (a) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) 15 [vaddr + nm.off, 0]
+    is EffectfulTy (e) (s) (r) -> let c = emit-const-codextype buf len vaddr r (fuel - 1) in const-box buf (c.len) 16 [0, 0, vaddr + c.off]
+    is ProofTy -> const-box buf len 17 []
+    is PropEqTy (a) (b) -> const-box buf len 18 [0, 0]
+
+  emit-const-codextype-top : Integer, Integer, Integer, CodexType -> ConstEmit
+  emit-const-codextype-top (buf) (len) (vaddr) (ty) =
+   when ty
+    is SumTy (n) (a) (ctors) -> let nm = emit-const-name buf len vaddr n in let cs = emit-const-ctorlist buf (nm.len) vaddr ctors 12 in const-box buf (cs.len) 13 [vaddr + nm.off, 0, vaddr + cs.off]
+    is RecordTy (n) (a) (fields) -> let nm = emit-const-name buf len vaddr n in let fs = emit-const-fieldlist buf (nm.len) vaddr fields 12 in const-box buf (fs.len) 14 [vaddr + nm.off, 0, vaddr + fs.off]
+    is otherwise -> emit-const-codextype buf len vaddr ty 12
+
+  emit-const-recordfield : Integer, Integer, Integer, RecordField, Integer -> ConstEmit
+  emit-const-recordfield (buf) (len) (vaddr) (fld) (fuel) =
+   let nm = emit-const-name buf len vaddr (fld.name)
+   in let tv = emit-const-codextype buf (nm.len) vaddr (fld.type-val) fuel
+   in let p1 = buf-write-i64 buf (tv.len) (vaddr + tv.off)
+   in ConstEmit { len = buf-write-i64 buf p1 (vaddr + nm.off), off = tv.len }
+
+  emit-const-sumctor : Integer, Integer, Integer, SumCtor, Integer -> ConstEmit
+  emit-const-sumctor (buf) (len) (vaddr) (ct) (fuel) =
+   let fs = emit-const-typelist buf len vaddr (ct.fields) fuel
+   in let nm = emit-const-name buf (fs.len) vaddr (ct.name)
+   in let p1 = buf-write-i64 buf (nm.len) (vaddr + nm.off)
+   in ConstEmit { len = buf-write-i64 buf p1 (vaddr + fs.off), off = nm.len }
+
+  emit-const-type-elems : Integer, Integer, Integer, List CodexType, Integer, Integer, List Integer, Integer -> ConstList
+  emit-const-type-elems (buf) (len) (vaddr) (tys) (i) (n) (acc) (fuel) =
+   if i == n then ConstList { len = len, offs = acc }
+   else let c = emit-const-codextype buf len vaddr (list-at tys i) fuel
+   in emit-const-type-elems buf (c.len) vaddr tys (i + 1) n (list-push acc (c.off)) fuel
+
+  emit-const-typelist : Integer, Integer, Integer, List CodexType, Integer -> ConstEmit
+  emit-const-typelist (buf) (len) (vaddr) (tys) (fuel) =
+   let r = emit-const-type-elems buf len vaddr tys 0 (list-length tys) [] fuel
+   in emit-const-ptr-list buf (r.len) vaddr (r.offs)
+
+  emit-const-field-elems : Integer, Integer, Integer, List RecordField, Integer, Integer, List Integer, Integer -> ConstList
+  emit-const-field-elems (buf) (len) (vaddr) (flds) (i) (n) (acc) (fuel) =
+   if i == n then ConstList { len = len, offs = acc }
+   else let c = emit-const-recordfield buf len vaddr (list-at flds i) fuel
+   in emit-const-field-elems buf (c.len) vaddr flds (i + 1) n (list-push acc (c.off)) fuel
+
+  emit-const-fieldlist : Integer, Integer, Integer, List RecordField, Integer -> ConstEmit
+  emit-const-fieldlist (buf) (len) (vaddr) (flds) (fuel) =
+   let r = emit-const-field-elems buf len vaddr flds 0 (list-length flds) [] fuel
+   in emit-const-ptr-list buf (r.len) vaddr (r.offs)
+
+  emit-const-ctor-elems : Integer, Integer, Integer, List SumCtor, Integer, Integer, List Integer, Integer -> ConstList
+  emit-const-ctor-elems (buf) (len) (vaddr) (cts) (i) (n) (acc) (fuel) =
+   if i == n then ConstList { len = len, offs = acc }
+   else let c = emit-const-sumctor buf len vaddr (list-at cts i) fuel
+   in emit-const-ctor-elems buf (c.len) vaddr cts (i + 1) n (list-push acc (c.off)) fuel
+
+  emit-const-ctorlist : Integer, Integer, Integer, List SumCtor, Integer -> ConstEmit
+  emit-const-ctorlist (buf) (len) (vaddr) (cts) (fuel) =
+   let r = emit-const-ctor-elems buf len vaddr cts 0 (list-length cts) [] fuel
+   in emit-const-ptr-list buf (r.len) vaddr (r.offs)
+
+  emit-const-typebinding : Integer, Integer, Integer, TypeBinding -> ConstEmit
+  emit-const-typebinding (buf) (len) (vaddr) (tb) =
+   let bt = emit-const-codextype-top buf len vaddr (tb.bound-type)
+   in let nm = emit-const-text buf (bt.len) (tb.name)
+   in let p1 = buf-write-i64 buf (nm.len) (vaddr + nm.off)
+   in ConstEmit { len = buf-write-i64 buf p1 (vaddr + bt.off), off = nm.len }
+
+  is-record-or-sum : CodexType -> Boolean
+  is-record-or-sum (ty) =
+   when ty
+    is RecordTy (n) (a) (f) | SumTy (sn) (sa) (sc) -> True
+    is otherwise -> False
+
+  emit-const-binding-elems : Integer, Integer, Integer, List TypeBinding, Integer, Integer, List Integer -> ConstList
+  emit-const-binding-elems (buf) (len) (vaddr) (bs) (i) (n) (acc) =
+   if i == n then ConstList { len = len, offs = acc }
+   else let c = emit-const-typebinding buf len vaddr (list-at bs i)
+   in emit-const-binding-elems buf (c.len) vaddr bs (i + 1) n (list-push acc (c.off))
+
+  name-in-set : Text, List Text, Integer, Integer -> Boolean
+  name-in-set (nm) (names) (i) (n) =
+   if i == n then False
+   else if (list-at names i) == nm then True
+   else name-in-set nm names (i + 1) n
+
+  filter-by-names : List TypeBinding, List Text, Integer, Integer, List TypeBinding -> List TypeBinding
+  filter-by-names (bs) (names) (i) (n) (acc) =
+   if i == n then acc
+   else let b = list-at bs i
+   in let resolved = resolve-constructed-raw-ty (b.bound-type)
+   in if name-in-set (b.name) names 0 (list-length names) & is-record-or-sum resolved
+      then filter-by-names bs names (i + 1) n (list-push acc (__record-set b "bound-type" resolved))
+      else filter-by-names bs names (i + 1) n acc
+
+  resolve-constructed-raw-ty : CodexType -> CodexType
+  resolve-constructed-raw-ty (raw) =
+   when raw
+    is RecordTy (rn) (ra) (rf) | SumTy (sn) (sa) (sc) -> raw
+    is FunTy (p) (r) -> strip-fun-args-emitter r
+    is otherwise -> raw
+
+  collect-ctd-in-tylist : List CodexType, Integer, Integer, List Text -> List Text
+  collect-ctd-in-tylist (tys) (i) (n) (acc) =
+   if i == n then acc
+   else collect-ctd-in-tylist tys (i + 1) n (collect-ctd-in-type (list-at tys i) acc)
+
+  collect-ctd-in-fields : List RecordField, Integer, Integer, List Text -> List Text
+  collect-ctd-in-fields (fields) (i) (n) (acc) =
+   if i == n then acc
+   else let f = list-at fields i
+   in collect-ctd-in-fields fields (i + 1) n (collect-ctd-in-type (f.type-val) acc)
+
+  collect-ctd-in-ctors : List SumCtor, Integer, Integer, List Text -> List Text
+  collect-ctd-in-ctors (ctors) (i) (n) (acc) =
+   if i == n then acc
+   else let c = list-at ctors i
+   in collect-ctd-in-ctors ctors (i + 1) n (collect-ctd-in-tylist (c.fields) 0 (list-length (c.fields)) acc)
+
+  collect-ctd-in-type : CodexType, List Text -> List Text
+  collect-ctd-in-type (ty) (acc) =
+   when ty
+    is ConstructedTy (cn) (ca) -> collect-ctd-in-tylist ca 0 (list-length ca) (list-push acc (cn.value))
+    is RecordTy (n) (a) (fields) | SumTy (n) (a) (ctors) -> list-push acc (n.value)
+    is ListTy (e) | LinkedListTy (e) -> collect-ctd-in-type e acc
+    is ForAllTy (i) (b) -> collect-ctd-in-type b acc
+    is EffectfulTy (ef) (s) (r) -> collect-ctd-in-type r acc
+    is FunTy (p) (r) -> collect-ctd-in-type r (collect-ctd-in-type p acc)
+    is otherwise -> acc
+
+  collect-ctd-roots : CodexType, List Text -> List Text
+  collect-ctd-roots (ty) (acc) =
+   when ty
+    is RecordTy (n) (a) (fields) -> collect-ctd-in-fields fields 0 (list-length fields) acc
+    is SumTy (n) (a) (ctors) -> collect-ctd-in-ctors ctors 0 (list-length ctors) acc
+    is otherwise -> collect-ctd-in-type ty acc
+
+  reach-names : List TypeBinding, Text, List Text, Integer -> List Text
+  reach-names (defs) (nm) (seen) (fuel) =
+   if fuel <= 0 then seen
+   else if name-in-set nm seen 0 (list-length seen) then seen
+   else let seen1 = list-push seen nm
+   in let resolved = resolve-constructed-raw-ty (lookup-type-binding defs nm)
+   in if is-record-or-sum resolved
+      then let refs = collect-ctd-roots resolved []
+           in reach-names-list defs refs 0 (list-length refs) seen1 (fuel - 1)
+      else seen1
+
+  reach-names-list : List TypeBinding, List Text, Integer, Integer, List Text, Integer -> List Text
+  reach-names-list (defs) (refs) (i) (n) (seen) (fuel) =
+   if i == n then seen
+   else if fuel <= 0 then seen
+   else let seen2 = reach-names defs (list-at refs i) seen (fuel - 1)
+   in reach-names-list defs refs (i + 1) n seen2 (fuel - 1)
+
+  emit-self-type-table : Integer, Integer, Integer, List TypeBinding -> ConstEmit
+  emit-self-type-table (buf) (len) (vaddr) (type-defs) =
+   let roots = ["PmTestRec", "Document", "AChapter"]
+   in let names = reach-names-list type-defs roots 0 (list-length roots) [] 100000
+   in let filtered = filter-by-names type-defs names 0 (list-length type-defs) []
+   in let sorted = sort-type-bindings filtered 0 0 []
+   in let r = emit-const-binding-elems buf len vaddr sorted 0 (list-length sorted) []
+   in emit-const-ptr-list buf (r.len) vaddr (r.offs)
 
   record-field-sort-keys : List RecordField, Integer, List Text -> List Text
   record-field-sort-keys (fields) (i) (acc) =
@@ -793,7 +1054,7 @@ Section: Pointer-Map Walk
 
   find-field-local-expr : List FieldLocal, Text, Integer -> IRExpr
   find-field-local-expr (fls) (name) (i) =
-   if i == list-length fls then IrIntLit 0 (SourceSpan { line = 0, column = 0, offset = 0, length = 0, file-id = 0 })
+   if i == list-length fls then IrIntLit 0 synthetic-span
    else let fl = list-at fls i
    in if fl.name == name then fl.value-expr
       else find-field-local-expr fls name (i + 1)

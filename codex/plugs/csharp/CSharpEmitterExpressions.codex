@@ -34,10 +34,20 @@ Section: Identifier Helpers
     "switch", "this", "throw", "true", "try",
     "typeof", "using", "virtual", "void", "while"]
 
+  cs-keywords-3 : SkipListText
+  cs-keywords-3 =
+   skip-list-text-from-list ["byte", "char", "checked", "const", "enum",
+    "explicit", "extern", "fixed", "float", "foreach",
+    "goto", "implicit", "interface", "lock", "operator",
+    "readonly", "sbyte", "short", "sizeof", "stackalloc",
+    "struct", "uint", "ulong", "unchecked", "unsafe",
+    "ushort", "volatile"]
+
   is-cs-keyword : Text -> Boolean
   is-cs-keyword (n) =
    if skip-list-text-has cs-keywords-1 n then True
-   else skip-list-text-has cs-keywords-2 n
+   else if skip-list-text-has cs-keywords-2 n then True
+   else skip-list-text-has cs-keywords-3 n
 
   sanitize : Text -> Text
   sanitize (name) =
@@ -71,7 +81,8 @@ Section: Identifier Helpers
                                           else sanitize (name.value) & "<" & emit-cs-type-args ty-args 0 & ">"
     is RecordTy (name) (ty-args) (fields) -> if list-length ty-args > 0 then sanitize (name.value) & "<" & emit-cs-type-args ty-args 0 & ">"
                                               else sanitize (name.value) & extract-ctor-type-args ty
-    is ConstructedTy (name) (args) -> if list-length args == 0 then sanitize (name.value)
+    is ConstructedTy (name) (args) -> if is-tup-type (name.value) then "(" & emit-cs-type-args args 0 & ")"
+                                     else if list-length args == 0 then sanitize (name.value)
                                      else sanitize (name.value) & "<" & emit-cs-type-args args 0 & ">"
     is EffectfulTy (effects) (sc) (ret) -> cs-type ret
 
@@ -115,6 +126,58 @@ Section: Arity Map
     arity = list-length (d.params),
     generic-count = list-length (collect-type-var-ids (d.type-val) [])
    }))
+
+ Streaming variants: build the arity map and find the entry return type
+ straight from the raw def S-expressions, reading only each def's
+ signature (name xs[1], params xs[3], return type xs[4]) - never the
+ body xs[5]. This lets the plug emit defs one at a time without ever
+ materializing the whole IRChapter (2295 IRDefs blew the 2GB heap).
+
+ Accumulate with list-push (O(1) amortized, array-backed) then sort
+ once with sort-by - NOT sorted-insert-arity per def. sorted-insert
+ calls list-insert-at, a persistent-cons splice that recurses to the
+ insert position rebuilding the prefix with & and list-tail; none of
+ it is heap-restored here, so over 2295 defs it is O(n^2)+ permanent
+ allocation that fills the heap and corrupts a live sum-tag, yielding
+ a wild jump-table dispatch (EXC=06) ~600 defs in. list-push + one
+ sort-by is O(n log n) and allocates nothing past the array.
+
+ In-place insertion sort of the arity entries by name, reusing Sort's
+ sort-swap (list-set-at mutation - allocates nothing). We do NOT use
+ sort-by here: its helper returns the generic record SortPartition, and a
+ bare `-> SortPartition` return type carries no type args/fields, so the
+ emitter can't recover `<T>` and emits an unparameterized generic. A
+ monomorphic sort sidesteps that. O(n^2) time on ~2300 entries is trivial
+ and, being in-place + tail-recursive, costs no heap and no stack growth.
+
+  arity-sink : List ArityEntry, Integer -> List ArityEntry
+  arity-sink (xs) (j) =
+   if j <= 0 then xs
+   else if text-compare ((list-at xs (j - 1)).name) ((list-at xs j).name) <= 0 then xs
+   else arity-sink (sort-swap xs (j - 1) j) (j - 1)
+
+  arity-sort : List ArityEntry, Integer, Integer -> List ArityEntry
+  arity-sort (xs) (i) (n) =
+   if i >= n then xs
+   else arity-sort (arity-sink xs i) (i + 1) n
+
+  build-arity-map-sexp : List SExp, Integer, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map-sexp (def-sexps) (i) (n) (acc) =
+   if i >= n then arity-sort acc 1 (list-length acc)
+   else let xs = sexp-list (list-at def-sexps i)
+   in build-arity-map-sexp def-sexps (i + 1) n (list-push acc (ArityEntry {
+    name = sexp-str (list-at xs 1),
+    arity = list-length (sexp-list (list-at xs 3)) - 1,
+    generic-count = list-length (collect-type-var-ids (parse-type (list-at xs 4)) [])
+   }))
+
+  opening-return-type-sexp : List SExp, Integer, Integer -> CodexType
+  opening-return-type-sexp (def-sexps) (i) (n) =
+   if i >= n then NothingTy
+   else let xs = sexp-list (list-at def-sexps i)
+   in if sexp-str (list-at xs 1) == opening-entry-point
+      then strip-fun-args (parse-type (list-at xs 4))
+      else opening-return-type-sexp def-sexps (i + 1) n
 
   build-arity-map-from-ast : List ADef, Integer, List ArityEntry -> List ArityEntry
   build-arity-map-from-ast (defs) (i) (acc) =
@@ -179,7 +242,9 @@ Section: Raw Reference Builtins
    RawBuiltin { name = "__buf-write-byte", emission = "new Func<object, Func<object, Func<object, long>>>(_b => _o => _v => _Buf.buf_write_byte(_b, _o, _v))" },
    RawBuiltin { name = "__buf-write-bytes", emission = "new Func<object, Func<object, Func<object, long>>>(_b => _o => _vs => _Buf.buf_write_bytes(_b, _o, _vs))" },
    RawBuiltin { name = "__buf-read-bytes", emission = "new Func<object, Func<object, Func<object, List<long>>>>(_b => _o => _n => _Buf.buf_read_bytes(_b, _o, _n))" },
-   RawBuiltin { name = "get-state", emission = "_State.get_state" }
+   RawBuiltin { name = "get-state", emission = "_State.get_state" },
+   RawBuiltin { name = "__self-type-defs", emission = "new List<TypeBinding>()" },
+   RawBuiltin { name = "ir-text", emission = "\"\"" }
 
   ]
 
@@ -301,8 +366,8 @@ Section: Apply Chain
    BuiltinEmitter { name = "par", emit = \args -> \arities -> \ty -> emit-builtin-par args arities },
    BuiltinEmitter { name = "race", emit = \args -> \arities -> \ty -> emit-builtin-race args arities },
    BuiltinEmitter { name = "__record-set", emit = \args -> \arities -> \ty -> emit-builtin-record-set args arities },
-   BuiltinEmitter { name = "__linked-list-empty", emit = \args -> \arities -> \ty -> let et = when ty is LinkedListTy (elem) -> cs-type elem is otherwise -> "object" in "new List<" & et & ">()" },
-   BuiltinEmitter { name = "__linked-list-push", emit = \args -> \arities -> \ty -> let et = when ty is LinkedListTy (elem) -> cs-type elem is otherwise -> "object" in "((Func<List<" & et & ">, " & et & ", List<" & et & ">>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(" & emit-expr (list-at args 0) arities & ", " & emit-expr (list-at args 1) arities & ")" },
+   BuiltinEmitter { name = "__linked-list-empty", emit = \args -> \arities -> \ty -> let et = when ty is LinkedListTy (elem) | ListTy (elem) -> cs-type elem is otherwise -> "object" in "new List<" & et & ">()" },
+   BuiltinEmitter { name = "__linked-list-push", emit = \args -> \arities -> \ty -> let et = when ty is LinkedListTy (elem) | ListTy (elem) -> cs-type elem is otherwise -> "object" in "((Func<List<" & et & ">, " & et & ", List<" & et & ">>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(" & emit-expr (list-at args 0) arities & ", " & emit-expr (list-at args 1) arities & ")" },
    BuiltinEmitter { name = "__linked-list-to-list", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities },
    BuiltinEmitter { name = "__heap-save", emit = \args -> \arities -> \ty -> "_Buf.heap_save()" },
    BuiltinEmitter { name = "__heap-restore", emit = \args -> \arities -> \ty -> emit-buf-call-1 "heap-restore" args arities },
@@ -407,6 +472,19 @@ Section: Apply Chain
    else if n == "race" then emit-builtin-race args arities
    else if n == "fork" then "Task.Run(() => (" & emit-expr (list-at args 0) arities & ")(null))"
    else if n == "await" then "(" & emit-expr (list-at args 0) arities & ").Result"
+   else if n == "list-push" then emit-builtin-list-snoc args arities
+   else if n == "__linked-list-push" then let et = when ty is LinkedListTy (elem) | ListTy (elem) -> cs-type elem is otherwise -> "object" in "((Func<List<" & et & ">, " & et & ", List<" & et & ">>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(" & emit-expr (list-at args 0) arities & ", " & emit-expr (list-at args 1) arities & ")"
+   else if n == "__linked-list-empty" then let et = when ty is LinkedListTy (elem) | ListTy (elem) -> cs-type elem is otherwise -> "object" in "new List<" & et & ">()"
+   else if n == "__linked-list-to-list" then emit-expr (list-at args 0) arities
+   else if n == "write-binary" then "((Func<object>)(() => { List<long> _bl = (List<long>)" & emit-expr (list-at args 0) arities & "; using System.IO.Stream _s = Console.OpenStandardOutput(); foreach (long _b in _bl) _s.WriteByte((byte)_b); _s.Flush(); return null; }))()"
+   else if n == "peek-byte" then "0L"
+   else if n == "peek-qword" then "0L"
+   else if n == "block-read-sector" then "0L"
+   else if n == "address-of" then "0L"
+   else if n == "print-line" then "((Func<object>)(() => { Console.WriteLine(" & emit-expr (list-at args 0) arities & "); return null; }))()"
+   else if n == "ir-text" then "\"\""
+   else if n == "read-file-uni" then "File.ReadAllText(" & emit-expr (list-at args 0) arities & ")"
+   else if n == "__list-with-capacity" then when ty is ListTy (elem) | LinkedListTy (elem) -> "new List<" & cs-type elem & ">((int)(long)(" & emit-expr (list-at args 0) arities & "))" is otherwise -> emit-buf-call-1 "list-with-capacity" args arities
    else ""
 
   cs-name-for : Text -> Text
@@ -671,6 +749,7 @@ Section: Apply Chain
    in when root
       is IrName (n) (ty) (sp) ->
        if is-builtin-name n & prefer-user-over-builtin n args arities == False then emit-builtin n args arities (ir-expr-type e)
+       else if is-mktup-name n then "(" & emit-apply-args args arities 0 & ")"
        else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n (ir-expr-type e) (emit-apply-args args arities 0)
    else let ar = lookup-arity arities n
    in if ar > 1 & list-length args == ar then sanitize n & "(" & emit-apply-args args arities 0 & ")"
@@ -714,7 +793,7 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> "\"" & escape-text s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
-    is IrName (n) (ty) (sp) -> let raw = lookup-raw-builtin n in if text-length raw > 0 then raw else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n ty "" else let ar = lookup-arity arities n in if ar == 0 then sanitize n & (if lookup-generic-count arities n > 0 then extract-fn-type-args ty else "") & "()" else if ar >= 2 then emit-partial-wrappers 0 ar & sanitize n & "(" & emit-partial-params 0 ar & ")" else sanitize n
+    is IrName (n) (ty) (sp) -> let raw = lookup-raw-builtin n in if text-length raw > 0 then raw else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n ty "" else let ar = lookup-arity arities n in if ar == 0 then sanitize n & (if lookup-generic-count arities n > 0 then extract-fn-type-args ty else "") & "()" else if ar >= 2 then (if ty-is-concrete-value ty then sanitize n else emit-partial-wrappers 0 ar & sanitize n & "(" & emit-partial-params 0 ar & ")") else sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-binary op l r ty arities
     is IrNegate (operand) (sp) -> "(-" & emit-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-expr-at c arities (depth + 1) & " ? " & emit-expr-at t arities (depth + 1) & " : " & emit-expr-at el arities (depth + 1) & ")"
@@ -760,7 +839,29 @@ Section: Expression Emission
 
   escape-text : Text -> Text
   escape-text (s) =
-   text-replace (text-replace s "\\" "\\\\") "\"" "\\\""
+   text-replace (text-replace (text-replace s "\\" "\\\\") "\"" "\\\"") "\n" "\\n"
+
+ True for a concrete value type - one that can never be a reference to a
+ top-level function. A bare IrName whose type is concrete must be a local
+ (param / let binding), so it is emitted as-is rather than eta-expanded,
+ even when its name collides with a global function of the same name
+ (e.g. a param `ch : IRChapter` vs the Sha256 `ch` of arity 3).
+
+  ty-is-concrete-value : CodexType -> Boolean
+  ty-is-concrete-value (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> True
+    is NumberTy -> True
+    is TextTy -> True
+    is BooleanTy -> True
+    is CharTy -> True
+    is ListTy (elem) -> True
+    is LinkedListTy (elem) -> True
+    is SumTy (name) (ty-args) (ctors) -> True
+    is RecordTy (name) (ty-args) (fields) -> True
+    is ConstructedTy (name) (args) -> True
+    is ForAllTy (id) (body) -> ty-is-concrete-value body
+    is otherwise -> False
 
   emit-bin-op : IRBinaryOp -> Text
   emit-bin-op (op) =
@@ -916,7 +1017,8 @@ Section: Expression Emission
     is IrVarPat (name) (ty) (sp) -> cs-type ty & " " & sanitize name
     is IrLitPat (text) (ty) (sp) -> text
     is IrCtorPat (name) (subs) (ty) (sp) ->
-     if list-length subs == 0 then sanitize name & extract-ctor-type-args ty & " { }"
+     if is-mktup-name name then "(" & emit-sub-patterns subs 0 & ")"
+     else if list-length subs == 0 then sanitize name & extract-ctor-type-args ty & " { }"
       else sanitize name & extract-ctor-type-args ty & "(" & emit-sub-patterns subs 0 & ")"
     is IrWildPat (sp) -> "_"
 
@@ -1031,6 +1133,14 @@ Section: Expression Emission
    else when e
     is IrLambda (ps) (b) (t) (s) -> b
     is otherwise -> e
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
 
 Page 2 of 2
 

@@ -52,6 +52,7 @@ Section: Expression Desugaring
     is RecordExpr (type-tok) (fields) -> deck-record (ARecordExpr (make-name (token-text type-tok)) (map-list desugar-field-expr fields) (token-span type-tok))
     is FieldExpr (rec) (field-tok) -> deck-record (AFieldAccess (desugar-expr-at rec (depth + 1)) (make-name (token-text field-tok)) (token-span field-tok))
     is ParenExpr (inner) -> desugar-expr-at inner (depth + 1)
+    is TupleExpr (elems) -> apply-aexpr-args (deck-record (ANameExpr (make-name ("MkTup" & integer-to-text (list-length elems))) synthetic-span)) (map-list desugar-expr elems) 0 (list-length elems)
     is ActExpr (stmts) -> deck-record (AActExpr (map-list desugar-act-stmt stmts) synthetic-span)
     is HandleExpr (eff-tok) (body) (clauses) -> deck-record (AHandleExpr (make-name (token-text eff-tok)) (desugar-expr-at body (depth + 1)) (map-list desugar-handle-clause clauses) (token-span eff-tok))
     is WithTimeoutExpr (timeout-tok) (effs) (scopes) (body) -> deck-record (AWithTimeoutExpr (token-text timeout-tok) (map-list make-type-param-name effs) (map-list extract-scope-text scopes) (desugar-expr-at body (depth + 1)) (token-span timeout-tok))
@@ -68,6 +69,11 @@ Section: Expression Desugaring
      in deck-record (ALetExpr [deck-record (ALetBind { name = make-name "__seq", value = ds, span = aexpr-span ds })] dr (desugared-span (aexpr-span dr)))
     is LazyExpr (inner) -> deck-record (ALazyExpr (desugar-expr-at inner (depth + 1)) synthetic-span)
     is ErrExpr (tok) -> deck-record (AErrorExpr (token-text tok) (token-span tok))
+
+  apply-aexpr-args : AExpr, List AExpr, Integer, Integer -> AExpr
+  apply-aexpr-args (f) (args) (i) (len) =
+   if i >= len then f
+   else apply-aexpr-args (deck-record (AApplyExpr f (list-at args i) (desugared-span (aexpr-span f)))) args (i + 1) len
 
   literal-body-length : Token -> Integer
   literal-body-length (tok) =
@@ -204,6 +210,7 @@ Section: Pattern Desugaring
     is LitPat (tok) -> deck-record (ALitPat (literal-value-text tok) (classify-literal (tok.kind)) (token-span tok))
     is CtorPat (tok) (subs) -> deck-record (ACtorPat (make-name (token-text tok)) (map-list desugar-pattern subs) (token-span tok))
     is WildPat (tok) -> deck-record (AWildPat (token-span tok))
+    is TuplePat (pats) -> deck-record (ACtorPat (make-name ("MkTup" & integer-to-text (list-length pats))) (map-list desugar-pattern pats) synthetic-span)
 
 Section: Type Desugaring
   desugar-type-expr : TypeExpr -> ATypeExpr
@@ -240,6 +247,19 @@ Section: Type Desugaring
     is ConstrainedType (constraint) (body) ->
      let db = desugar-type-expr-at body (depth + 1)
      in desugar-constraint constraint db
+    is TupleType (elems) ->
+     let de-elems = map-list desugar-type-expr elems
+     in make-atuple-type de-elems (list-length de-elems)
+
+  make-atuple-type : List ATypeExpr, Integer -> ATypeExpr
+  make-atuple-type (elems) (n) =
+   let base = deck-record (ANamedType (make-name ("Tup" & integer-to-text n)) synthetic-span)
+   in apply-atype-args base elems 0 n
+
+  apply-atype-args : ATypeExpr, List ATypeExpr, Integer, Integer -> ATypeExpr
+  apply-atype-args (base) (elems) (i) (n) =
+   if i == n then base
+   else apply-atype-args (deck-record (AAppType base [list-at elems i] synthetic-span)) elems (i + 1) n
 
   desugar-constraint : TypeExpr, ATypeExpr -> ATypeExpr
   desugar-constraint (constraint) (body) =
@@ -339,7 +359,8 @@ Section: Document Desugaring
 
   desugar-document : Text, Document, Text -> AChapter
   desugar-document (source) (doc) (chapter-name) =
-   let raw-defs = desugar-defs-ll (doc.defs) 0 (list-length (doc.defs)) []
+   let raw-defs0 = desugar-defs-ll (doc.defs) 0 (list-length (doc.defs)) []
+   in let raw-defs = synth-derived-defs (doc.type-defs) 0 (list-length (doc.type-defs)) raw-defs0
    in let raw-tds = desugar-type-defs-ll (doc.type-defs) 0 (list-length (doc.type-defs)) []
    in let raw-eds = desugar-effect-defs-ll (doc.effect-defs) 0 (list-length (doc.effect-defs)) []
    in let raw-cites = desugar-cites-ll (doc.citations) 0 (list-length (doc.citations)) []
@@ -348,9 +369,10 @@ Section: Document Desugaring
    in let all-defs = __linked-list-to-list inst-defs
    in let rewritten = rewrite-constrained-defs all-defs (doc.class-defs) (doc.instance-defs) 0 (list-length all-defs) []
    in let constrained-info = collect-constrained-names all-defs (doc.class-defs) (doc.instance-defs) 0 (list-length all-defs) []
+   in let base-defs = insert-dicts-at-call-sites rewritten constrained-info 0 (list-length rewritten) []
    in deck-record (AChapter {
     name = make-name chapter-name,
-    defs = deck-record (insert-dicts-at-call-sites rewritten constrained-info 0 (list-length rewritten) []),
+    defs = deck-record (prepend-prim-wrappers all-defs base-defs),
     type-defs = deck-record (__linked-list-to-list class-tds),
     effect-defs = deck-record (__linked-list-to-list raw-eds),
     class-defs = deck-record (desugar-class-defs (doc.class-defs) 0 (list-length (doc.class-defs)) []),
@@ -361,6 +383,269 @@ Section: Document Desugaring
     section-titles = doc.section-titles,
     span = synthetic-span
    })
+
+  deriving-has : List Token, Text -> Boolean
+  deriving-has (toks) (name) = deriving-has-loop toks 0 (list-length toks) name
+
+  deriving-has-loop : List Token, Integer, Integer, Text -> Boolean
+  deriving-has-loop (toks) (i) (len) (name) =
+   if i >= len then False
+   else if token-text (list-at toks i) == name then True
+   else deriving-has-loop toks (i + 1) len name
+
+  synth-derived-defs : List TypeDef, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  synth-derived-defs (tds) (i) (len) (acc) =
+   if i >= len then acc
+   else let td = list-at tds i
+   in synth-derived-defs tds (i + 1) len (push-derived-for-type td acc)
+
+  push-derived-for-type : TypeDef, LinkedList ADef -> LinkedList ADef
+  push-derived-for-type (td) (acc) =
+   let acc1 = if deriving-has (td.deriving) "Show" then __linked-list-push acc (gen-show-def td) else acc
+   in let acc2 = if deriving-has (td.deriving) "Eq" then __linked-list-push acc1 (gen-eq-def td) else acc1
+   in if deriving-has (td.deriving) "Ord" then __linked-list-push acc2 (gen-compare-def td) else acc2
+
+  gen-wild-pats : Integer, Integer, LinkedList APat -> List APat
+  gen-wild-pats (n) (i) (acc) =
+   if i >= n then deck-record (__linked-list-to-list acc)
+   else gen-wild-pats n (i + 1) (__linked-list-push acc (deck-record (AWildPat synthetic-span)))
+
+  vars-to-exprs : List Name, Integer, Integer, LinkedList AExpr -> List AExpr
+  vars-to-exprs (vars) (i) (len) (acc) =
+   if i >= len then deck-record (__linked-list-to-list acc)
+   else vars-to-exprs vars (i + 1) len (__linked-list-push acc (deck-record (ANameExpr (list-at vars i) synthetic-span)))
+
+  rec-accessors : List RecordFieldDef, Name, Integer, Integer, LinkedList AExpr -> List AExpr
+  rec-accessors (fields) (rn) (i) (len) (acc) =
+   if i >= len then deck-record (__linked-list-to-list acc)
+   else rec-accessors fields rn (i + 1) len (__linked-list-push acc (deck-record (AFieldAccess (deck-record (ANameExpr rn synthetic-span)) (make-name (token-text (list-at fields i).name)) synthetic-span)))
+
+  acompare-call : AExpr, AExpr -> AExpr
+  acompare-call (lhs) (rhs) =
+   deck-record (AApplyExpr (deck-record (AApplyExpr (deck-record (ANameExpr (make-name "compare") synthetic-span)) lhs synthetic-span)) rhs synthetic-span)
+
+  gen-cmp-lex : List AExpr, List AExpr, Integer, Integer -> AExpr
+  gen-cmp-lex (lhss) (rhss) (i) (len) =
+   if i >= len then deck-record (ALitExpr "0" IntLit synthetic-span)
+   else let ci = make-name ("__cc" & integer-to-text i)
+   in let cmp = acompare-call (list-at lhss i) (list-at rhss i)
+   in let rest = gen-cmp-lex lhss rhss (i + 1) len
+   in deck-record (ALetExpr [deck-record (ALetBind { name = ci, value = cmp, span = synthetic-span })] (deck-record (AIfExpr (deck-record (ABinaryExpr (deck-record (ANameExpr ci synthetic-span)) OpEq (deck-record (ALitExpr "0" IntLit synthetic-span)) synthetic-span)) rest (deck-record (ANameExpr ci synthetic-span)) synthetic-span)) synthetic-span)
+
+  gen-compare-def : TypeDef -> ADef
+  gen-compare-def (td) =
+   let tname = token-text (td.name)
+   in let xn = make-name "__cx"
+   in let yn = make-name "__cy"
+   in let tref = deck-record (ANamedType (make-name tname) synthetic-span)
+   in deck-record (ADef {
+    name = make-name ("__compare_" & tname),
+    params = [deck-record (AParam { name = xn, span = synthetic-span }), deck-record (AParam { name = yn, span = synthetic-span })],
+    declared-type = [deck-record (AFunType tref (deck-record (AFunType tref (deck-record (ANamedType (make-name "Integer") synthetic-span)) synthetic-span)) synthetic-span)],
+    body = gen-cmp-body (td.body) xn yn,
+    chapter-slug = "",
+    span = synthetic-span
+   })
+
+  gen-cmp-body : TypeBody, Name, Name -> AExpr
+  gen-cmp-body (body) (xn) (yn) =
+   when body
+    is VariantBody (ctors) -> deck-record (AMatchExpr (deck-record (ANameExpr xn synthetic-span)) (gen-cmp-x-arms ctors yn 0 (list-length ctors) []) synthetic-span)
+    is RecordBody (fields) -> gen-cmp-lex (rec-accessors fields xn 0 (list-length fields) []) (rec-accessors fields yn 0 (list-length fields) []) 0 (list-length fields)
+
+  gen-cmp-x-arms : List VariantCtorDef, Name, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
+  gen-cmp-x-arms (ctors) (yn) (i) (len) (acc) =
+   if i >= len then deck-record (__linked-list-to-list acc)
+   else gen-cmp-x-arms ctors yn (i + 1) len (__linked-list-push acc (gen-cmp-x-arm ctors i yn))
+
+  gen-cmp-x-arm : List VariantCtorDef, Integer, Name -> AMatchArm
+  gen-cmp-x-arm (ctors) (i) (yn) =
+   let c = list-at ctors i
+   in let cname = token-text (c.name)
+   in let xvars = gen-field-vars-pre "__cxf" (list-length (c.fields)) 0 []
+   in deck-record (AMatchArm {
+    pattern = deck-record (ACtorPat (make-name cname) (gen-var-pats xvars 0 (list-length xvars) []) synthetic-span),
+    body = deck-record (AMatchExpr (deck-record (ANameExpr yn synthetic-span)) (gen-cmp-y-arms ctors i xvars 0 (list-length ctors) []) synthetic-span),
+    guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
+    span = synthetic-span
+   })
+
+  gen-cmp-y-arms : List VariantCtorDef, Integer, List Name, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
+  gen-cmp-y-arms (ctors) (i) (xvars) (j) (len) (acc) =
+   if j >= len then deck-record (__linked-list-to-list acc)
+   else gen-cmp-y-arms ctors i xvars (j + 1) len (__linked-list-push acc (gen-cmp-y-arm ctors i xvars j))
+
+  gen-cmp-y-arm : List VariantCtorDef, Integer, List Name, Integer -> AMatchArm
+  gen-cmp-y-arm (ctors) (i) (xvars) (j) =
+   let c = list-at ctors j
+   in let cname = token-text (c.name)
+   in let nf = list-length (c.fields)
+   in if i == j then let yvars = gen-field-vars-pre "__cyf" nf 0 []
+       in deck-record (AMatchArm {
+        pattern = deck-record (ACtorPat (make-name cname) (gen-var-pats yvars 0 nf []) synthetic-span),
+        body = gen-cmp-lex (vars-to-exprs xvars 0 (list-length xvars) []) (vars-to-exprs yvars 0 nf []) 0 nf,
+        guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
+        span = synthetic-span
+       })
+      else deck-record (AMatchArm {
+        pattern = deck-record (ACtorPat (make-name cname) (gen-wild-pats nf 0 []) synthetic-span),
+        body = if i < j then deck-record (AUnaryExpr (deck-record (ALitExpr "1" IntLit synthetic-span)) synthetic-span) else deck-record (ALitExpr "1" IntLit synthetic-span),
+        guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
+        span = synthetic-span
+       })
+
+  gen-field-vars-pre : Text, Integer, Integer, LinkedList Name -> List Name
+  gen-field-vars-pre (pre) (n) (i) (acc) =
+   if i >= n then deck-record (__linked-list-to-list acc)
+   else gen-field-vars-pre pre n (i + 1) (__linked-list-push acc (make-name (pre & integer-to-text i)))
+
+  gen-eq-def : TypeDef -> ADef
+  gen-eq-def (td) =
+   let tname = token-text (td.name)
+   in let xn = make-name "__ex"
+   in let yn = make-name "__ey"
+   in let tref = deck-record (ANamedType (make-name tname) synthetic-span)
+   in deck-record (ADef {
+    name = make-name ("__eq_" & tname),
+    params = [deck-record (AParam { name = xn, span = synthetic-span }), deck-record (AParam { name = yn, span = synthetic-span })],
+    declared-type = [deck-record (AFunType tref (deck-record (AFunType tref (deck-record (ANamedType (make-name "Boolean") synthetic-span)) synthetic-span)) synthetic-span)],
+    body = gen-eq-body (td.body) xn yn,
+    chapter-slug = "",
+    span = synthetic-span
+   })
+
+  gen-eq-body : TypeBody, Name, Name -> AExpr
+  gen-eq-body (body) (xn) (yn) =
+   when body
+    is VariantBody (ctors) -> deck-record (AMatchExpr (deck-record (ANameExpr xn synthetic-span)) (gen-eq-x-arms ctors yn 0 (list-length ctors) []) synthetic-span)
+    is RecordBody (fields) -> gen-eq-record fields xn yn 1 (list-length fields) (gen-record-eq0 fields xn yn)
+
+  gen-eq-x-arms : List VariantCtorDef, Name, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
+  gen-eq-x-arms (ctors) (yn) (i) (len) (acc) =
+   if i >= len then deck-record (__linked-list-to-list acc)
+   else gen-eq-x-arms ctors yn (i + 1) len (__linked-list-push acc (gen-eq-x-arm (list-at ctors i) yn))
+
+  gen-eq-x-arm : VariantCtorDef, Name -> AMatchArm
+  gen-eq-x-arm (c) (yn) =
+   let cname = token-text (c.name)
+   in let xvars = gen-field-vars-pre "__exf" (list-length (c.fields)) 0 []
+   in deck-record (AMatchArm {
+    pattern = deck-record (ACtorPat (make-name cname) (gen-var-pats xvars 0 (list-length xvars) []) synthetic-span),
+    body = gen-eq-y-match cname xvars yn,
+    guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
+    span = synthetic-span
+   })
+
+  gen-eq-y-match : Text, List Name, Name -> AExpr
+  gen-eq-y-match (cname) (xvars) (yn) =
+   let yvars = gen-field-vars-pre "__eyf" (list-length xvars) 0 []
+   in let match-arm = deck-record (AMatchArm {
+       pattern = deck-record (ACtorPat (make-name cname) (gen-var-pats yvars 0 (list-length yvars) []) synthetic-span),
+       body = gen-field-eq xvars yvars,
+       guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
+       span = synthetic-span
+      })
+   in let else-arm = deck-record (AMatchArm {
+       pattern = deck-record (AWildPat synthetic-span),
+       body = deck-record (ALitExpr "False" BoolLit synthetic-span),
+       guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
+       span = synthetic-span
+      })
+   in deck-record (AMatchExpr (deck-record (ANameExpr yn synthetic-span)) [match-arm, else-arm] synthetic-span)
+
+  gen-one-eq : AExpr, AExpr -> AExpr
+  gen-one-eq (lhs) (rhs) = deck-record (ABinaryExpr lhs OpEq rhs synthetic-span)
+
+  gen-field-eq : List Name, List Name -> AExpr
+  gen-field-eq (xvars) (yvars) =
+   if list-length xvars == 0 then deck-record (ALitExpr "True" BoolLit synthetic-span)
+   else gen-field-eq-loop xvars yvars 1 (list-length xvars) (gen-one-eq (deck-record (ANameExpr (list-at xvars 0) synthetic-span)) (deck-record (ANameExpr (list-at yvars 0) synthetic-span)))
+
+  gen-field-eq-loop : List Name, List Name, Integer, Integer, AExpr -> AExpr
+  gen-field-eq-loop (xvars) (yvars) (i) (len) (acc) =
+   if i >= len then acc
+   else gen-field-eq-loop xvars yvars (i + 1) len (deck-record (ABinaryExpr acc OpAnd (gen-one-eq (deck-record (ANameExpr (list-at xvars i) synthetic-span)) (deck-record (ANameExpr (list-at yvars i) synthetic-span))) synthetic-span))
+
+  gen-record-eq0 : List RecordFieldDef, Name, Name -> AExpr
+  gen-record-eq0 (fields) (xn) (yn) =
+   if list-length fields == 0 then deck-record (ALitExpr "True" BoolLit synthetic-span)
+   else gen-one-field-eq (list-at fields 0) xn yn
+
+  gen-eq-record : List RecordFieldDef, Name, Name, Integer, Integer, AExpr -> AExpr
+  gen-eq-record (fields) (xn) (yn) (i) (len) (acc) =
+   if i >= len then acc
+   else gen-eq-record fields xn yn (i + 1) len (deck-record (ABinaryExpr acc OpAnd (gen-one-field-eq (list-at fields i) xn yn) synthetic-span))
+
+  gen-one-field-eq : RecordFieldDef, Name, Name -> AExpr
+  gen-one-field-eq (f) (xn) (yn) =
+   let fname = token-text (f.name)
+   in gen-one-eq (deck-record (AFieldAccess (deck-record (ANameExpr xn synthetic-span)) (make-name fname) synthetic-span)) (deck-record (AFieldAccess (deck-record (ANameExpr yn synthetic-span)) (make-name fname) synthetic-span))
+
+  gen-show-def : TypeDef -> ADef
+  gen-show-def (td) =
+   let pname = make-name "__sv"
+   in deck-record (ADef {
+    name = make-name ("__show_" & token-text (td.name)),
+    params = [deck-record (AParam { name = pname, span = synthetic-span })],
+    declared-type = [],
+    body = gen-show-body (td.body) pname,
+    chapter-slug = "",
+    span = synthetic-span
+   })
+
+  gen-show-body : TypeBody, Name -> AExpr
+  gen-show-body (body) (pname) =
+   when body
+    is VariantBody (ctors) -> deck-record (AMatchExpr (deck-record (ANameExpr pname synthetic-span)) (gen-show-arms ctors 0 (list-length ctors) []) synthetic-span)
+    is RecordBody (fields) -> gen-show-record fields pname 0 (list-length fields) (deck-record (ALitExpr "{" TextLit synthetic-span))
+
+  gen-show-arms : List VariantCtorDef, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
+  gen-show-arms (ctors) (i) (len) (acc) =
+   if i >= len then deck-record (__linked-list-to-list acc)
+   else gen-show-arms ctors (i + 1) len (__linked-list-push acc (gen-show-arm (list-at ctors i)))
+
+  gen-show-arm : VariantCtorDef -> AMatchArm
+  gen-show-arm (c) =
+   let cname = token-text (c.name)
+   in let vars = gen-field-vars (list-length (c.fields)) 0 []
+   in deck-record (AMatchArm {
+    pattern = deck-record (ACtorPat (make-name cname) (gen-var-pats vars 0 (list-length vars) []) synthetic-span),
+    body = gen-show-arm-body cname vars,
+    guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
+    span = synthetic-span
+   })
+
+  gen-field-vars : Integer, Integer, LinkedList Name -> List Name
+  gen-field-vars (n) (i) (acc) =
+   if i >= n then deck-record (__linked-list-to-list acc)
+   else gen-field-vars n (i + 1) (__linked-list-push acc (make-name ("__f" & integer-to-text i)))
+
+  gen-var-pats : List Name, Integer, Integer, LinkedList APat -> List APat
+  gen-var-pats (vars) (i) (len) (acc) =
+   if i >= len then deck-record (__linked-list-to-list acc)
+   else gen-var-pats vars (i + 1) len (__linked-list-push acc (deck-record (AVarPat (list-at vars i) synthetic-span)))
+
+  gen-show-arm-body : Text, List Name -> AExpr
+  gen-show-arm-body (cname) (vars) =
+   if list-length vars == 0 then deck-record (ALitExpr cname TextLit synthetic-span)
+   else gen-show-fields (deck-record (ALitExpr cname TextLit synthetic-span)) vars 0 (list-length vars)
+
+  gen-show-fields : AExpr, List Name, Integer, Integer -> AExpr
+  gen-show-fields (acc) (vars) (i) (len) =
+   if i >= len then acc
+   else let spaced = deck-record (ABinaryExpr acc OpAppend (deck-record (ALitExpr " " TextLit synthetic-span)) synthetic-span)
+   in let showed = deck-record (AApplyExpr (deck-record (ANameExpr (make-name "show") synthetic-span)) (deck-record (ANameExpr (list-at vars i) synthetic-span)) synthetic-span)
+   in gen-show-fields (deck-record (ABinaryExpr spaced OpAppend showed synthetic-span)) vars (i + 1) len
+
+  gen-show-record : List RecordFieldDef, Name, Integer, Integer, AExpr -> AExpr
+  gen-show-record (fields) (pname) (i) (len) (acc) =
+   if i >= len then deck-record (ABinaryExpr acc OpAppend (deck-record (ALitExpr " }" TextLit synthetic-span)) synthetic-span)
+   else let f = list-at fields i
+   in let fname = token-text (f.name)
+   in let sep = if i == 0 then " " else ", "
+   in let label = deck-record (ABinaryExpr acc OpAppend (deck-record (ALitExpr (sep & fname & " = ") TextLit synthetic-span)) synthetic-span)
+   in let showed = deck-record (AApplyExpr (deck-record (ANameExpr (make-name "show") synthetic-span)) (deck-record (AFieldAccess (deck-record (ANameExpr pname synthetic-span)) (make-name fname) synthetic-span)) synthetic-span)
+   in gen-show-record fields pname (i + 1) len (deck-record (ABinaryExpr label OpAppend showed synthetic-span))
 
   desugar-cite : CitesDecl -> ACitesDecl
   desugar-cite (imp) =
@@ -426,7 +711,8 @@ Section: Document Desugaring
    else let ty = list-at (d.declared-type) 0
    in when ty
     is AConstrainedType (class-name) (type-var) (body-type) (sp) ->
-     let ic = count-class-instances ids (class-name.value) 0 (list-length ids) 0
+     if is-derived-class (class-name.value) then rewrite-derived-constrained d (class-name.value) type-var body-type
+     else let ic = count-class-instances ids (class-name.value) 0 (list-length ids) 0
      in if ic == 1
       then deck-record (__record-set d "declared-type" [body-type])
       else let dict-param-name = "__" & (class-name.value) & "-dict"
@@ -445,6 +731,225 @@ Section: Document Desugaring
         span = d.span
        })
     is otherwise -> d
+
+  is-derived-class : Text -> Boolean
+  is-derived-class (name) = name == "Show" | name == "Ord"
+
+  first-param-is-tyvar : ATypeExpr, Text -> Boolean
+  first-param-is-tyvar (body-type) (tv) =
+   when body-type
+    is AFunType (p) (r) (s) ->
+     when p
+      is ANamedType (n) (ns) -> (n.value) == tv
+      is otherwise -> False
+    is otherwise -> False
+
+  derived-class-method : Text -> Text
+  derived-class-method (cls) = if cls == "Show" then "show" else "compare"
+
+  derived-dict-type : Text, Name -> ATypeExpr
+  derived-dict-type (cls) (type-var) =
+   let tv = deck-record (ANamedType type-var synthetic-span)
+   in if cls == "Show"
+    then deck-record (AFunType tv (deck-record (ANamedType (make-name "Text") synthetic-span)) synthetic-span)
+    else deck-record (AFunType tv (deck-record (AFunType tv (deck-record (ANamedType (make-name "Integer") synthetic-span)) synthetic-span)) synthetic-span)
+
+  rewrite-derived-constrained : ADef, Text, Name, ATypeExpr -> ADef
+  rewrite-derived-constrained (d) (cls) (type-var) (body-type) =
+   if first-param-is-tyvar body-type (type-var.value) == False
+    then deck-record (__record-set d "declared-type" [body-type])
+   else let dict-param-name = "__d-" & cls & "-" & (type-var.value)
+   in let dict-ty = derived-dict-type cls type-var
+   in let new-param = deck-record (AParam { name = make-name dict-param-name, span = synthetic-span })
+   in let new-params = list-insert-at (d.params) 0 new-param
+   in let all-param-names = collect-all-param-names (d.params) 0 (list-length (d.params)) []
+   in let new-body = rewrite-derived-method-calls-scoped (d.body) (derived-class-method cls) dict-param-name all-param-names
+   in let new-decl = deck-record (AFunType dict-ty body-type synthetic-span)
+   in deck-record (ADef {
+    name = d.name,
+    params = new-params,
+    declared-type = [new-decl],
+    body = new-body,
+    chapter-slug = d.chapter-slug,
+    span = d.span
+   })
+
+  rewrite-derived-method-calls : AExpr, Text, Text -> AExpr
+  rewrite-derived-method-calls (expr) (method) (dict-param) =
+   when expr
+    is AApplyExpr (func) (arg) (s) ->
+     let new-arg = rewrite-derived-method-calls arg method dict-param
+     in when func
+      is ANameExpr (n) (ns) ->
+       if (n.value) == method
+        then if is-concrete-arg arg then deck-record (AApplyExpr func new-arg s)
+        else deck-record (AApplyExpr (deck-record (ANameExpr (make-name dict-param) synthetic-span)) new-arg s)
+        else deck-record (AApplyExpr func new-arg s)
+      is otherwise -> deck-record (AApplyExpr (rewrite-derived-method-calls func method dict-param) new-arg s)
+    is ABinaryExpr (l) (op) (r) (s) ->
+     deck-record (ABinaryExpr (rewrite-derived-method-calls l method dict-param) op (rewrite-derived-method-calls r method dict-param) s)
+    is AIfExpr (c) (t) (e) (s) ->
+     deck-record (AIfExpr (rewrite-derived-method-calls c method dict-param) (rewrite-derived-method-calls t method dict-param) (rewrite-derived-method-calls e method dict-param) s)
+    is ALetExpr (binds) (body) (s) ->
+     deck-record (ALetExpr (rewrite-derived-let-binds binds method dict-param 0 (list-length binds) []) (rewrite-derived-method-calls body method dict-param) s)
+    is AMatchExpr (scrut) (arms) (s) ->
+     deck-record (AMatchExpr (rewrite-derived-method-calls scrut method dict-param) (rewrite-derived-arms arms method dict-param 0 (list-length arms) []) s)
+    is AActExpr (stmts) (s) ->
+     deck-record (AActExpr (rewrite-derived-stmts stmts method dict-param 0 (list-length stmts) []) s)
+    is otherwise -> expr
+
+  rewrite-derived-arms : List AMatchArm, Text, Text, Integer, Integer, List AMatchArm -> List AMatchArm
+  rewrite-derived-arms (arms) (method) (dict-param) (i) (len) (acc) =
+   if i >= len then acc
+   else let a = list-at arms i
+   in let na = deck-record (AMatchArm { pattern = a.pattern, body = rewrite-derived-method-calls (a.body) method dict-param, guard = a.guard, span = a.span })
+   in rewrite-derived-arms arms method dict-param (i + 1) len (list-push acc na)
+
+  rewrite-derived-stmts : List AActStmt, Text, Text, Integer, Integer, List AActStmt -> List AActStmt
+  rewrite-derived-stmts (stmts) (method) (dict-param) (i) (len) (acc) =
+   if i >= len then acc
+   else let st = list-at stmts i
+   in let nst = when st
+    is AActExprStmt (e) (s) -> deck-record (AActExprStmt (rewrite-derived-method-calls e method dict-param) s)
+    is AActBindStmt (n) (e) (s) -> deck-record (AActBindStmt n (rewrite-derived-method-calls e method dict-param) s)
+   in rewrite-derived-stmts stmts method dict-param (i + 1) len (list-push acc nst)
+
+  rewrite-derived-let-binds : List ALetBind, Text, Text, Integer, Integer, List ALetBind -> List ALetBind
+  rewrite-derived-let-binds (binds) (method) (dict-param) (i) (len) (acc) =
+   if i >= len then acc
+   else let b = list-at binds i
+   in let nb = deck-record (ALetBind { name = b.name, value = rewrite-derived-method-calls (b.value) method dict-param, span = b.span })
+   in rewrite-derived-let-binds binds method dict-param (i + 1) len (list-push acc nb)
+
+  is-concrete-arg : AExpr -> Boolean
+  is-concrete-arg (e) =
+   when e
+    is ALitExpr (v) (k) (s) -> True
+    is AUnaryExpr (inner) (s) -> is-concrete-arg inner
+    is otherwise -> False
+
+  collect-all-param-names : List AParam, Integer, Integer, List Text -> List Text
+  collect-all-param-names (params) (i) (len) (acc) =
+   if i >= len then acc
+   else collect-all-param-names params (i + 1) len (list-push acc ((list-at params i).name.value))
+
+  collect-tyvar-param-names : ATypeExpr, List AParam, Text, Integer -> List Text
+  collect-tyvar-param-names (ty) (params) (tv) (i) =
+   if i >= list-length params then []
+   else when ty
+    is AFunType (p) (r) (s) ->
+     let rest = collect-tyvar-param-names r params tv (i + 1)
+     in when p
+      is ANamedType (n) (ns) -> if (n.value) == tv then list-insert-at rest 0 ((list-at params i).name.value) else rest
+      is otherwise -> rest
+    is otherwise -> []
+
+  is-tyvar-arg : AExpr, List Text -> Boolean
+  is-tyvar-arg (e) (tyvar-params) =
+   when e
+    is ANameExpr (n) (s) -> name-in-list (n.value) tyvar-params 0
+    is otherwise -> False
+
+  name-in-list : Text, List Text, Integer -> Boolean
+  name-in-list (name) (names) (i) =
+   if i >= list-length names then False
+   else if (list-at names i) == name then True
+   else name-in-list name names (i + 1)
+
+  rewrite-derived-method-calls-scoped : AExpr, Text, Text, List Text -> AExpr
+  rewrite-derived-method-calls-scoped (expr) (method) (dict-param) (tvp) =
+   when expr
+    is AApplyExpr (func) (arg) (s) ->
+     let new-arg = rewrite-derived-method-calls-scoped arg method dict-param tvp
+     in when func
+      is ANameExpr (n) (ns) ->
+       if (n.value) == method
+        then if is-tyvar-arg arg tvp then deck-record (AApplyExpr (deck-record (ANameExpr (make-name dict-param) synthetic-span)) new-arg s)
+        else deck-record (AApplyExpr func new-arg s)
+        else deck-record (AApplyExpr func new-arg s)
+      is otherwise -> deck-record (AApplyExpr (rewrite-derived-method-calls-scoped func method dict-param tvp) new-arg s)
+    is ABinaryExpr (l) (op) (r) (s) ->
+     deck-record (ABinaryExpr (rewrite-derived-method-calls-scoped l method dict-param tvp) op (rewrite-derived-method-calls-scoped r method dict-param tvp) s)
+    is AIfExpr (c) (t) (e) (s) ->
+     deck-record (AIfExpr (rewrite-derived-method-calls-scoped c method dict-param tvp) (rewrite-derived-method-calls-scoped t method dict-param tvp) (rewrite-derived-method-calls-scoped e method dict-param tvp) s)
+    is ALetExpr (binds) (body) (s) ->
+     let new-binds = rewrite-derived-let-binds-scoped binds method dict-param tvp 0 (list-length binds) []
+     in deck-record (ALetExpr new-binds (rewrite-derived-method-calls-scoped body method dict-param tvp) s)
+    is AMatchExpr (scrut) (arms) (s) ->
+     deck-record (AMatchExpr (rewrite-derived-method-calls-scoped scrut method dict-param tvp) (rewrite-derived-arms-scoped arms method dict-param tvp 0 (list-length arms) []) s)
+    is AActExpr (stmts) (s) ->
+     deck-record (AActExpr (rewrite-derived-stmts-scoped stmts method dict-param tvp 0 (list-length stmts) []) s)
+    is otherwise -> expr
+
+  rewrite-derived-arms-scoped : List AMatchArm, Text, Text, List Text, Integer, Integer, List AMatchArm -> List AMatchArm
+  rewrite-derived-arms-scoped (arms) (method) (dict-param) (tvp) (i) (len) (acc) =
+   if i >= len then acc
+   else let a = list-at arms i
+   in let na = deck-record (AMatchArm { pattern = a.pattern, body = rewrite-derived-method-calls-scoped (a.body) method dict-param tvp, guard = a.guard, span = a.span })
+   in rewrite-derived-arms-scoped arms method dict-param tvp (i + 1) len (list-push acc na)
+
+  rewrite-derived-stmts-scoped : List AActStmt, Text, Text, List Text, Integer, Integer, List AActStmt -> List AActStmt
+  rewrite-derived-stmts-scoped (stmts) (method) (dict-param) (tvp) (i) (len) (acc) =
+   if i >= len then acc
+   else let st = list-at stmts i
+   in let nst = when st
+    is AActExprStmt (e) (s) -> deck-record (AActExprStmt (rewrite-derived-method-calls-scoped e method dict-param tvp) s)
+    is AActBindStmt (n) (e) (s) -> deck-record (AActBindStmt n (rewrite-derived-method-calls-scoped e method dict-param tvp) s)
+   in rewrite-derived-stmts-scoped stmts method dict-param tvp (i + 1) len (list-push acc nst)
+
+  rewrite-derived-let-binds-scoped : List ALetBind, Text, Text, List Text, Integer, Integer, List ALetBind -> List ALetBind
+  rewrite-derived-let-binds-scoped (binds) (method) (dict-param) (tvp) (i) (len) (acc) =
+   if i >= len then acc
+   else let b = list-at binds i
+   in let nb = deck-record (ALetBind { name = b.name, value = rewrite-derived-method-calls-scoped (b.value) method dict-param tvp, span = b.span })
+   in rewrite-derived-let-binds-scoped binds method dict-param tvp (i + 1) len (list-push acc nb)
+
+  named-aty : Text -> ATypeExpr
+  named-aty (n) = deck-record (ANamedType (make-name n) synthetic-span)
+
+  prim-show-wrapper : Text -> ADef
+  prim-show-wrapper (tn) =
+   let pn = make-name "__w"
+   in deck-record (ADef {
+    name = make-name ("__show_" & tn),
+    params = [deck-record (AParam { name = pn, span = synthetic-span })],
+    declared-type = [deck-record (AFunType (named-aty tn) (named-aty "Text") synthetic-span)],
+    body = deck-record (AApplyExpr (deck-record (ANameExpr (make-name "show") synthetic-span)) (deck-record (ANameExpr pn synthetic-span)) synthetic-span),
+    chapter-slug = "",
+    span = synthetic-span
+   })
+
+  prim-compare-wrapper : Text -> ADef
+  prim-compare-wrapper (tn) =
+   let xn = make-name "__wx"
+   in let yn = make-name "__wy"
+   in deck-record (ADef {
+    name = make-name ("__compare_" & tn),
+    params = [deck-record (AParam { name = xn, span = synthetic-span }), deck-record (AParam { name = yn, span = synthetic-span })],
+    declared-type = [deck-record (AFunType (named-aty tn) (deck-record (AFunType (named-aty tn) (named-aty "Integer") synthetic-span)) synthetic-span)],
+    body = deck-record (AApplyExpr (deck-record (AApplyExpr (deck-record (ANameExpr (make-name "compare") synthetic-span)) (deck-record (ANameExpr xn synthetic-span)) synthetic-span)) (deck-record (ANameExpr yn synthetic-span)) synthetic-span),
+    chapter-slug = "",
+    span = synthetic-span
+   })
+
+  chapter-has-constraint : List ADef, Text, Integer, Integer -> Boolean
+  chapter-has-constraint (defs) (cls) (i) (len) =
+   if i >= len then False
+   else let d = list-at defs i
+   in if list-length (d.declared-type) == 0 then chapter-has-constraint defs cls (i + 1) len
+   else when (list-at (d.declared-type) 0)
+    is AConstrainedType (cn) (cv) (b) (s) -> if (cn.value) == cls then True else chapter-has-constraint defs cls (i + 1) len
+    is otherwise -> chapter-has-constraint defs cls (i + 1) len
+
+  prepend-prim-wrappers : List ADef, List ADef -> List ADef
+  prepend-prim-wrappers (all-defs) (base) =
+   let n = list-length all-defs
+   in let with-show = if chapter-has-constraint all-defs "Show" 0 n
+        then [prim-show-wrapper "Integer", prim-show-wrapper "Boolean", prim-show-wrapper "Text", prim-show-wrapper "Number"] & base
+        else base
+   in if chapter-has-constraint all-defs "Ord" 0 n
+      then [prim-compare-wrapper "Integer", prim-compare-wrapper "Boolean", prim-compare-wrapper "Text", prim-compare-wrapper "Number"] & with-show
+      else with-show
 
   collect-class-method-names : List ClassDef, Text, Integer, Integer, List Text -> List Text
   collect-class-method-names (cds) (class-name) (i) (len) (acc) =
@@ -500,7 +1005,11 @@ Section: Document Desugaring
    else let ty = list-at (d.declared-type) 0
    in when ty
     is AConstrainedType (class-name) (type-var) (body-type) (sp) ->
-     let ic = count-class-instances ids (class-name.value) 0 (list-length ids) 0
+     if is-derived-class (class-name.value)
+      then if first-param-is-tyvar body-type (type-var.value)
+        then collect-constrained-names defs cds ids (i + 1) len (list-push acc (ConstrainedFnInfo { fn-name = d.name.value, dict-name = "__dderiv-" & (class-name.value) }))
+        else collect-constrained-names defs cds ids (i + 1) len acc
+      else let ic = count-class-instances ids (class-name.value) 0 (list-length ids) 0
      in if ic > 1
       then let dict = "__dict-of-" & (class-name.value)
        in collect-constrained-names defs cds ids (i + 1) len (list-push acc (ConstrainedFnInfo { fn-name = d.name.value, dict-name = dict }))

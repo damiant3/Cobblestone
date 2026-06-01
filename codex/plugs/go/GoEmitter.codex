@@ -138,8 +138,16 @@ Section: Apply and Helpers
   emit-go-apply : IRExpr, List ArityEntry, Integer -> Text
   emit-go-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
-   in let func = emit-go-expr (chain.root) arities indent
-   in func & ".(func(" & emit-go-any-params (list-length (chain.args)) 0 & ") interface{})(" & emit-go-apply-args (chain.args) arities indent 0 & ")"
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if is-mktup-name n then "[]interface{}{" & emit-go-apply-args args arities indent 0 & "}"
+     else let func = emit-go-expr root arities indent
+     in func & ".(func(" & emit-go-any-params (list-length args) 0 & ") interface{})(" & emit-go-apply-args args arities indent 0 & ")"
+    is otherwise ->
+     let func = emit-go-expr root arities indent
+     in func & ".(func(" & emit-go-any-params (list-length args) 0 & ") interface{})(" & emit-go-apply-args args arities indent 0 & ")"
 
   emit-go-any-params : Integer, Integer -> Text
   emit-go-any-params (n) (i) =
@@ -191,7 +199,9 @@ Section: Match
    when p
     is IrVarPat (name) (ty) (sp) -> "true"
     is IrLitPat (text) (ty) (sp) -> scrut & " == " & text
-    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & ".(map[string]interface{})[\"_tag\"] == \"" & name & "\""
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then "true"
+     else scrut & ".(map[string]interface{})[\"_tag\"] == \"" & name & "\""
     is IrWildPat (sp) -> "true"
 
   emit-go-pat-binds : IRPat, Text -> Text
@@ -199,7 +209,9 @@ Section: Match
    when p
     is IrVarPat (name) (ty) (sp) -> go-sanitize name & " := " & scrut & "; "
     is IrLitPat (text) (ty) (sp) -> ""
-    is IrCtorPat (name) (subs) (ty) (sp) -> emit-go-ctor-binds subs scrut 0
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then emit-go-tup-binds subs scrut 0
+     else emit-go-ctor-binds subs scrut 0
     is IrWildPat (sp) -> ""
 
   emit-go-ctor-binds : List IRPat, Text, Integer -> Text
@@ -234,7 +246,8 @@ Section: Type Definitions
     is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
      "type " & go-sanitize (name.value) & " = map[string]interface{}\n\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-go-variant-ctors ctors 0
+     if is-tup-type (name.value) then ""
+     else emit-go-variant-ctors ctors 0
 
   emit-go-variant-ctors : List AVariantCtorDef, Integer -> Text
   emit-go-variant-ctors (ctors) (i) =
@@ -293,5 +306,20 @@ Section: Go Module Assembly
    in let defs-text = emit-go-defs (m.defs) 0 arities
    in let main-func = "func main() {\n    opening()\n}\n"
    in header & builtins & types-text & defs-text & main-func
+
+  emit-go-tup-binds : List IRPat, Text, Integer -> Text
+  emit-go-tup-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = scrut & ".([]interface{})[" & show i & "]"
+   in emit-go-pat-binds sub access & emit-go-tup-binds subs scrut (i + 1)
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
 
 Page 1

@@ -1,114 +1,114 @@
 Chapter: CharDesignerApp
   cites Explorer chapter ExplorerTheme
-  cites Explorer chapter ExplorerData
 
- Character designer. Compiled through the HTML plug.
- DOM stubs, theme types, and dark-gold theme from ExplorerTheme.
+ Character designer, fully DB-backed. Dimensions are fetched at load over
+ AJAX (/api/d/<table>); the race dimension groups by ancestry (the
+ racegroups table gives each group's name and its [from,to) slice of the
+ races list). Other dimensions are flat. Selections index the parsed rows
+ (tbl-field) for both name and prompt fragment. No compiled-in content.
 
  We say:
 
 Section: Prompt
 
-  build-char-prompt : SubRace, ClassDef, GenderDef, PersonalityDef, PortraitMode, Text -> Text
-  build-char-prompt (race) (cls) (gender) (pers) (port) (extra) =
-    race.traits & ", " & gender.traits & ", " & cls.gear & ", " & pers.expression & ", " & port.framing & ", fantasy RPG character art, professional concept art, detailed face, masterpiece, best quality, 4k, sharp focus" & (if text-length extra > 0 then ", " & extra else "")
-
   char-negative : Text
   char-negative = "blurry, low quality, deformed, extra limbs, extra fingers, ugly, text, watermark, nsfw"
 
-Section: Computed Name Lists
+  build-char-prompt : Integer, Integer, Integer, Integer, Integer, Text -> Text
+  build-char-prompt (sr) (sc) (sg) (sp) (spm) (extra) =
+    tbl-field "dRace" sr 1 & ", " & tbl-field "dGender" sg 1 & ", " & tbl-field "dClass" sc 1 & ", " & tbl-field "dPers" sp 1 & ", " & tbl-field "dPort" spm 1 & ", fantasy RPG character art, professional concept art, detailed face, masterpiece, best quality, 4k, sharp focus" & (if text-length extra > 0 then ", " & extra else "")
 
-  race-names : List Text
-  race-names = extract-sub-names all-races 0 []
-  class-names : List Text
-  class-names = extract-class-names class-defs 0 []
-  gender-names : List Text
-  gender-names = extract-gender-names gender-defs 0 []
-  pers-names : List Text
-  pers-names = extract-pers-names personality-defs 0 []
-  port-names : List Text
-  port-names = extract-port-names portrait-modes 0 []
+Section: UI Tree
 
-Section: Race Menu
+  race-cats : List (List Text), List Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  race-cats (groups) (rnames) (i) (n) (acc) =
+    if i >= n then acc
+    else let g = list-at groups i
+    in let from = text-to-int (list-at g 1)
+    in let to = text-to-int (list-at g 2)
+    in race-cats groups rnames (i + 1) n (list-push acc (widget-cat-range ("rg" & show i) (list-at g 0) rnames from to))
 
-  build-race-dd : Integer -> Text
-  build-race-dd (sel) =
-    let humans = build-race-range race-names sel "race" 0 3 ""
-    in let elves = build-race-range race-names sel "race" 3 6 ""
-    in let dwarves = build-race-range race-names sel "race" 6 8 ""
-    in let others = build-race-range race-names sel "race" 8 11 ""
-    in "<div class=\"dd-sec\"><span class=\"dd-cat\">Human</span><div class=\"dd-horiz\">" & humans & "</div></div>"
-    & "<div class=\"dd-sec\"><span class=\"dd-cat\">Elf</span><div class=\"dd-horiz\">" & elves & "</div></div>"
-    & "<div class=\"dd-sec\"><span class=\"dd-cat\">Dwarf</span><div class=\"dd-horiz\">" & dwarves & "</div></div>"
-    & build-dropdown-items-from race-names sel "race" 8 ""
+  race-dimsel : Integer -> WidgetNode
+  race-dimsel (sr) =
+    let rnames = tbl-names "dRace"
+    in let head = if sr < list-length rnames then list-at rnames sr else "?"
+    in let groups = parse-table "dRaceGroups"
+    in widget-dimsel "race" head sr (race-cats groups rnames 0 (list-length groups) [])
 
-  build-race-range : List Text, Integer, Text, Integer, Integer, Text -> Text
-  build-race-range (names) (sel) (group) (from) (to) (acc) =
-    if from >= to then acc
-    else if from >= list-length names then acc
-    else let n = list-at names from
-    in let c = if from == sel then "dd-item active" else "dd-item"
-    in build-race-range names sel group (from + 1) to (acc & "<div class=\"" & c & "\" onclick=\"pick('" & group & "'," & show from & ")\">" & n & "</div>")
+  dims : Integer, Integer, Integer, Integer, Integer -> List WidgetNode
+  dims (sr) (sc) (sg) (sp) (spm) = [
+    race-dimsel sr,
+    widget-dim-flat "class" (tbl-names "dClass") sc,
+    widget-dim-flat "gender" (tbl-names "dGender") sg,
+    widget-dim-flat "pers" (tbl-names "dPers") sp,
+    widget-dim-flat "port" (tbl-names "dPort") spm
+  ]
 
-  build-dropdown-items-from : List Text, Integer, Text, Integer, Text -> Text
-  build-dropdown-items-from (names) (sel) (group) (i) (acc) =
-    if i >= list-length names then acc
-    else let n = list-at names i
-    in let c = if i == sel then "dd-item active" else "dd-item"
-    in build-dropdown-items-from names sel group (i + 1) (acc & "<div class=\"" & c & "\" onclick=\"pick('" & group & "'," & show i & ")\">" & n & "</div>")
+  dimrow-holder : Integer, Integer, Integer, Integer, Integer -> WidgetNode
+  dimrow-holder (sr) (sc) (sg) (sp) (spm) =
+    widget-panel "dimrow-h" DirRow 0 (dims sr sc sg sp spm)
 
-Section: Controls
+  page-tree : Integer -> WidgetNode
+  page-tree (x) = designer-page-tree "character" "Character Designer" "Backstory, appearance, distinguishing features..."
 
-  render-controls : Integer, Integer, Integer, Integer, Integer -> Text
-  render-controls (sr) (sc) (sg) (sp) (spm) =
-    "<div class=\"dimbar\">"
-    & dim-pill "Race" (selected-name race-names sr) (build-race-dd sr)
-    & dim-pill "Class" (selected-name class-names sc) (build-dropdown-items class-names sc "class" 0 "")
-    & dim-pill "Gender" (selected-name gender-names sg) (build-dropdown-items gender-names sg "gender" 0 "")
-    & dim-pill "Personality" (selected-name pers-names sp) (build-dropdown-items pers-names sp "pers" 0 "")
-    & dim-pill "Portrait" (selected-name port-names spm) (build-dropdown-items port-names spm "port" 0 "")
-    & "</div>"
-    & "<div class=\"prow\"><textarea id=\"prompt\" placeholder=\"Backstory, appearance, distinguishing features...\"></textarea><div class=\"pc\"><label>Seed</label><input id=\"seed\" type=\"number\" value=\"424242\"></div></div>"
-    & "<div class=\"tb\"><button class=\"btn primary\" onclick=\"do_generate(0)\">Generate</button><button class=\"btn\" onclick=\"random_seed(0)\">Random Seed</button></div>"
+Section: Fetch Coordination
 
-Section: Page
+  rebuild-dims : Integer -> Integer
+  rebuild-dims (x) =
+    let sr = state-get "sr"
+    in let sc = state-get "sc"
+    in let sg = state-get "sg"
+    in let sp = state-get "sp"
+    in let spm = state-get "spm"
+    in mount-widget-into "dimrow" (dimrow-holder sr sc sg sp spm)
 
-  build-page : Integer, Integer, Integer, Integer, Integer -> Text
-  build-page (sr) (sc) (sg) (sp) (spm) =
-    explorer-nav "character"
-    & "<div class=\"page\"><div class=\"left\"><div class=\"hd\"><h1>Character Designer</h1><div id=\"controls\" class=\"ctrl\">" & render-controls sr sc sg sp spm & "</div></div>"
-    & "<div class=\"hero\" id=\"hero\"><img id=\"hero-img\" style=\"display:none\" onclick=\"document.getElementById('lb').classList.add('on');document.getElementById('lb-img').src=this.src\"><div class=\"he\" id=\"hero-empty\">Generate a character to see it here</div><div id=\"hero-meta\" class=\"hm\"></div></div></div>"
-    & "<div class=\"hist\"><h3>History</h3><div id=\"history\"></div></div></div>"
-    & "<div class=\"lb\" id=\"lb\" onclick=\"close_lb(0)\"><span class=\"x\">&times;</span><img id=\"lb-img\"></div>"
+  bump-and-build : Integer -> Integer
+  bump-and-build (x) =
+    let c = state-get "loaded" + 1
+    in let s = state-set "loaded" c
+    in if c >= 6 then rebuild-dims 0 else 0
+
+  cb-race : Text -> Integer
+  cb-race (s) = let a = state-set-text "dRace" s in bump-and-build 0
+  cb-racegroups : Text -> Integer
+  cb-racegroups (s) = let a = state-set-text "dRaceGroups" s in bump-and-build 0
+  cb-class : Text -> Integer
+  cb-class (s) = let a = state-set-text "dClass" s in bump-and-build 0
+  cb-gender : Text -> Integer
+  cb-gender (s) = let a = state-set-text "dGender" s in bump-and-build 0
+  cb-pers : Text -> Integer
+  cb-pers (s) = let a = state-set-text "dPers" s in bump-and-build 0
+  cb-port : Text -> Integer
+  cb-port (s) = let a = state-set-text "dPort" s in bump-and-build 0
 
 Section: Callbacks
 
-  pick : Text, Integer -> Integer
-  pick (group) (idx) =
-    let s1 = if group == "race" then state-set "sr" idx else state-get "sr"
-    in let s2 = if group == "class" then state-set "sc" idx else state-get "sc"
-    in let s3 = if group == "gender" then state-set "sg" idx else state-get "sg"
-    in let s4 = if group == "pers" then state-set "sp" idx else state-get "sp"
-    in let s5 = if group == "port" then state-set "spm" idx else state-get "spm"
-    in let ctrl = dom-get "controls"
-    in let c2 = dom-set-html ctrl (render-controls s1 s2 s3 s4 s5)
-    in 0
+  group-key : Text -> Text
+  group-key (g) =
+    if g == "race" then "sr"
+    else if g == "class" then "sc"
+    else if g == "gender" then "sg"
+    else if g == "pers" then "sp"
+    else "spm"
 
-  meta-html : Text, Text, Text, Text, Integer -> Text
+  on-pick : Text, Integer -> Integer
+  on-pick (group) (idx) =
+    let s = state-set (group-key group) idx
+    in rebuild-dims 0
+
+  on-click : Text -> Integer
+  on-click (id) =
+    if id == "gen" then do-generate 0
+    else if id == "rnd" then random-seed 0
+    else 0
+
+  meta-html : Text, Text, Text, Text, Text -> Text
   meta-html (rname) (cname) (gname) (pname) (seed) =
-    "<div class=\"rm\"><span class=\"mt\">" & rname & "</span><span class=\"mt\">" & cname & "</span><span class=\"mt\">" & gname & "</span><span class=\"mt\">" & pname & "</span><span class=\"mt md\">seed:" & show seed & "</span></div>"
+    "<div class=\"rm\"><span class=\"mt\">" & rname & "</span><span class=\"mt\">" & cname & "</span><span class=\"mt\">" & gname & "</span><span class=\"mt\">" & pname & "</span><span class=\"mt md\">seed:" & seed & "</span></div>"
 
-  add-run : Text, Text, Text, Text, Integer -> Text
+  add-run : Text, Text, Text, Text, Text -> Text
   add-run (rname) (cname) (gname) (pname) (seed) =
-    let cid = next-card-id 0
-    in let hist = dom-get "history"
-    in let card = dom-create "div"
-    in let c2 = dom-add-class card "rc"
-    in let c3 = dom-set-attr card "id" cid
-    in let ch = "<div class=\"ri\"><div class=\"sp\"></div><img src=\"\" onclick=\"if(this.src&&this.src.indexOf('data:')<0){document.getElementById('hero-img').src=this.src;document.getElementById('hero-img').style.display='';document.getElementById('hero-empty').style.display='none'}\"></div>" & meta-html rname cname gname pname seed
-    in let c4 = dom-set-html card ch
-    in let c5 = dom-prepend hist card
-    in cid
+    add-history-card "" (meta-html rname cname gname pname seed) hero-click-handler
 
   do-generate : Integer -> Integer
   do-generate (x) =
@@ -117,43 +117,42 @@ Section: Callbacks
     in let sg = state-get "sg"
     in let sp = state-get "sp"
     in let spm = state-get "spm"
-    in let race = list-at all-races sr
-    in let cls = list-at class-defs sc
-    in let gender = list-at gender-defs sg
-    in let pers = list-at personality-defs sp
-    in let port = list-at portrait-modes spm
     in let extra = dom-get-value (dom-get "prompt")
-    in let seed = 424242
-    in let prompt = build-char-prompt race cls gender pers port extra
-    in let body = "{\"prompt\":\"" & prompt & "\",\"negative_prompt\":\"" & char-negative & "\",\"model_title\":\"\",\"model_short\":\"default\",\"sampler\":\"DPM++ SDE\",\"steps\":12,\"cfg\":2,\"lora\":\"\",\"lora_short\":\"none\",\"seed\":" & show seed & ",\"width\":768,\"height\":1024}"
+    in let seed = dom-get-value (dom-get "seed")
+    in let prompt = build-char-prompt sr sc sg sp spm extra
+    in let body = gen-body prompt char-negative seed 768 1024
     in let hm = dom-get "hero-meta"
-    in let h2 = dom-set-html hm ("<b>" & race.name & " " & cls.name & "</b> - " & gender.name & ", " & pers.name)
-    in let cid = add-run (race.name) (cls.name) (gender.name) (pers.name) seed
+    in let h2 = dom-set-html hm ("<b>" & tbl-field "dRace" sr 0 & " " & tbl-field "dClass" sc 0 & "</b> - " & tbl-field "dGender" sg 0 & ", " & tbl-field "dPers" sp 0)
+    in let cid = add-run (tbl-field "dRace" sr 0) (tbl-field "dClass" sc 0) (tbl-field "dGender" sg 0) (tbl-field "dPers" sp 0) seed
     in generate-image "/api/generate" body cid
 
   random-seed : Integer -> Integer
   random-seed (x) = random-seed-cb x
 
-  close-lb : Integer -> Integer
-  close-lb (x) = close-lb-cb x
-
 Section: Entry
 
   init-state : Integer -> Integer
   init-state (x) =
-    let s1 = state-set "sr" 3
+    let s1 = state-set "sr" 0
     in let s2 = state-set "sc" 0
     in let s3 = state-set "sg" 0
     in let s4 = state-set "sp" 0
     in let s5 = state-set "spm" 0
+    in let s6 = state-set "loaded" 0
     in 0
 
   opening : Integer -> [Console] Nothing
   opening (x) = act
-    let st = init-state 0
-    in let ex = init-explorer 0
-    in let app = dom-get "app"
-    in let a2 = dom-set-html app (build-page 3 0 0 0 0)
+    let ex = init-explorer 0
+    in let st = init-state 0
+    in let h = register-handlers (on-pick) (on-click)
+    in let m = mount-widget-themed dark-gold (page-tree 0)
+    in let f1 = fetch-get-then "/api/d/races" (cb-race)
+    in let f2 = fetch-get-then "/api/d/racegroups" (cb-racegroups)
+    in let f3 = fetch-get-then "/api/d/classes" (cb-class)
+    in let f4 = fetch-get-then "/api/d/genders" (cb-gender)
+    in let f5 = fetch-get-then "/api/d/personalities" (cb-pers)
+    in let f6 = fetch-get-then "/api/d/portraits" (cb-port)
     in print-line-uni ""
   end
 

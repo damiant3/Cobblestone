@@ -13,8 +13,8 @@ Chapter: Opening
   cites Emit chapter Codex Emitter (emit-codex-text-chapter, emit-type-defs, emit-def)
   cites Emit chapter IR Text Emitter (emit-ir-chapter, ir-prune-unreachable)
   cites Emit chapter Emit Allocator (emit-build)
-  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test)
-  cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites)
+  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count)
+  cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites, count-typecheck-units)
 
 Section: Compile Flags
 
@@ -201,10 +201,22 @@ Section: Frontend
    if enabled then check-escape-invariant m phase-name
    else bag-from-list []
 
+  precise-escape-bag : Boolean, Integer, Text, PhaseMetrics, Text -> DiagnosticBag
+  precise-escape-bag (enabled) (root-addr) (type-name) (m) (phase-name) =
+   if enabled then
+    let escaped = pmap-escape-count root-addr type-name (m.bivy-origin) (m.bivy-hwm)
+    in bag-from-list [make-warning cdx-escape-violation ("PRECISE escape (" & phase-name & "/" & type-name & "): " & show escaped & " ptr(s) into bivy") synthetic-span]
+   else bag-from-list []
+
   pmap-selftest-bag : Boolean -> DiagnosticBag
   pmap-selftest-bag (enabled) =
-   if enabled then (if pmap-self-test == 3 then bag-from-list [] else bag-from-list [make-warning cdx-escape-violation ("pointer-map walker conformance FAILED: pmap-self-test=" & show pmap-self-test & " (expect 3)") synthetic-span])
+   if enabled then pmap-selftest-result pmap-self-test
    else bag-from-list []
+
+  pmap-selftest-result : Integer -> DiagnosticBag
+  pmap-selftest-result (r) =
+   if r == 3 then bag-from-list []
+   else bag-from-list [make-warning cdx-escape-violation ("pmap-walk self-test FAILED: got " & show r & " (expect 3)") synthetic-span]
 
   compile-lex : Text, Integer, CompileFlags -> LexResult
   compile-lex (source) (h0) (flags) =
@@ -250,7 +262,8 @@ Section: Frontend
    in let parse-ov = check-deck-overflow (parse-metrics.deck-end - parse-metrics.deck-origin) parse-deck-height
    in let parse-ov-bag = if parse-ov == 1 then deck-overflow-bag "PARSE" else no-overflow-bag
    in let parse-esc-bag = escape-check-bag (flags.escape-check) parse-metrics "PARSE"
-   in let parse-bag2 = deck-record (bag-merge-all [parse-bag, parse-ov-bag, parse-esc-bag])
+   in let parse-precise-bag = precise-escape-bag (flags.escape-check) (address-of doc) "Document" parse-metrics "PARSE"
+   in let parse-bag2 = deck-record (bag-merge-all [parse-bag, parse-ov-bag, parse-esc-bag, parse-precise-bag])
    in let parse-phase-metrics = deck-record (list-push prior-metrics parse-metrics)
    in let result = deck-record (ParseResult { doc = doc, colliding = colliding, assignments = assignments, parse-bag = parse-bag2, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = parse-phase-metrics })
    in result
@@ -279,7 +292,8 @@ Section: Frontend
    in let scope-ov = check-deck-overflow (scope-metrics.deck-end - scope-metrics.deck-origin) scope-deck-height
    in let scope-ov-bag = if scope-ov == 1 then deck-overflow-bag "SCOPE" else no-overflow-bag
    in let scope-esc-bag = escape-check-bag (flags.escape-check) scope-metrics "SCOPE"
-   in let resolve-bag2 = deck-record (bag-merge-all [resolve-bag, scope-ov-bag, scope-esc-bag])
+   in let scope-precise-bag = precise-escape-bag (flags.escape-check) (address-of scoped) "AChapter" scope-metrics "SCOPE"
+   in let resolve-bag2 = deck-record (bag-merge-all [resolve-bag, scope-ov-bag, scope-esc-bag, scope-precise-bag])
    in let hm1 = deck-record (list-push (pr.heap-marks) h5)
    in let scope-heap-marks = deck-record (list-push hm1 h6)
    in let pm1 = deck-record (list-push (pr.phase-metrics) desugar-metrics)
@@ -295,11 +309,13 @@ Section: Frontend
     heap-marks = scope-heap-marks,
     phase-metrics = scope-phase-metrics
    })
+   in let sealed = phase-compact
    in result
 
   compile-type-check : ScopeResult, Integer, CompileFlags -> CompileChecked
   compile-type-check (sr) (source-len) (flags) =
-   let check-deck-height = source-len * (flags.survey.check-mul) * (flags.survey.headroom) / 100 + survey-check-base
+   let check-units = count-typecheck-units (sr.scoped.type-defs) 0 (list-length (sr.scoped.type-defs)) 0
+   in let check-deck-height = (source-len * (flags.survey.check-mul) + check-units * (flags.survey.check-unit-mul)) * (flags.survey.headroom) / 100 + survey-check-base
    in let check-base = build check-deck-height
    in let check-phase = phase-start
    in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments))
@@ -396,7 +412,8 @@ Section: Frontend
    in let resolve-deck-height = list-length (ir.defs) * (flags.survey.resolve-mul) * (flags.survey.headroom) / 100 + survey-resolve-base
    in let resolve-base = build resolve-deck-height
    in let resolve-phase = phase-start
-   in let stds = deck-record (sort-bindings (checked.type-env.bindings))
+   in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
+   in let stds = deck-record (sort-bindings (type-map & checked.type-env.bindings))
    in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs) 0 (list-length (ir.defs)) [])
    in let resolve-metrics = phase-measure resolve-phase
    in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
@@ -850,6 +867,15 @@ Section: Entry Point
     in print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
    end
 
+ Emit the IR S-expression chapter as the SIZE-framed wire format the
+ emit plugs consume. Built as one value and printed with a single
+ print-line: the internal separators are CCE "\n" (byte 1), recognized
+ as whitespace by the plug tokenizer. print-line appends one raw LF
+ (CCE byte 10) at the very end, which is harmless past the closing "))".
+ (A per-print-line stream would inject that raw LF — a stray CCE "7" —
+ between every def, corrupting the wire format; the type-def dedup in
+ IRTextEmitter keeps the whole chapter small enough to build at once.)
+
   emit-ir-cce : Text, CompileFlags -> [Console] Nothing
   emit-ir-cce (source) (flags) =
    let fe = compile-frontend source "Program" flags
@@ -939,6 +965,7 @@ Section: Entry Point
    else if name == "desugar-mul" then __record-set cfg "desugar-mul" val
    else if name == "scope-mul" then __record-set cfg "scope-mul" val
    else if name == "check-mul" then __record-set cfg "check-mul" val
+   else if name == "check-unit-mul" then __record-set cfg "check-unit-mul" val
    else if name == "lower-mul" then __record-set cfg "lower-mul" val
    else if name == "resolve-mul" then __record-set cfg "resolve-mul" val
    else if name == "lift-mul" then __record-set cfg "lift-mul" val

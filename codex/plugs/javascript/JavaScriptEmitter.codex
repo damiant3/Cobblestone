@@ -141,7 +141,8 @@ Section: Type Definition Emission
     is ARecordTypeDef (name) (tparams) (fields) (s) ->
      js-emit-record-type (name.value) fields 0
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     js-emit-variant-type ctors 0
+     if is-tup-type (name.value) then ""
+     else js-emit-variant-type ctors 0
 
   js-emit-record-type : Text , List ARecordFieldDef , Integer -> Text
   js-emit-record-type (name) (fields) (i) =
@@ -344,7 +345,8 @@ Section: Expression Emission
      in sep & "(_s === " & text & " ? " & js-emit-expr (b.body) arities & js-emit-match-branches branches arities (i + 1) (opens + 1)
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
-     in sep & "(_s.tag === \"" & name & "\" ? " & js-emit-ctor-pattern-body subs (b.body) arities 0 & js-emit-match-branches branches arities (i + 1) (opens + 1)
+     in if is-mktup-name name then sep & "((() => { const [" & js-emit-tuple-pat-names subs 0 & "] = _s; return " & js-emit-expr (b.body) arities & "; })())" & js-emit-match-branches branches arities (i + 1) opens
+     else sep & "(_s.tag === \"" & name & "\" ? " & js-emit-ctor-pattern-body subs (b.body) arities 0 & js-emit-match-branches branches arities (i + 1) (opens + 1)
     is IrVarPat (name) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
      in sep & "((" & js-sanitize name & ") => " & js-emit-expr (b.body) arities & ")(_s)" & js-close-parens opens
@@ -417,6 +419,7 @@ Section: Expression Emission
   js-emit-apply-named (n) (ty) (args) (arities) (original) =
    let builtin-result = js-try-builtin n args arities
    in if text-length builtin-result > 0 then builtin-result
+   else if is-mktup-name n then "[" & js-emit-apply-args args arities 0 & "]"
    else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then js-sanitize n & "(" & js-emit-apply-args args arities 0 & ")"
    else let ar = lookup-arity arities n
    in if ar > 1 & list-length args == ar then js-sanitize n & "(" & js-emit-apply-args args arities 0 & ")"
@@ -641,7 +644,8 @@ Section: Definition Emission
     is IrWildPat (sp) -> "        {\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
     is IrVarPat (name) (ty) (sp) -> "        {\n            const " & js-sanitize name & " = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
     is IrCtorPat (name) (subs) (ty) (sp) ->
-     let keyword = if is-first then "if" else "else if"
+     if is-mktup-name name then "        {\n            const [" & js-emit-tuple-pat-names subs 0 & "] = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
+     else let keyword = if is-first then "if" else "else if"
      in "        " & keyword & " (" & s-var & ".tag === \"" & name & "\") {\n" & js-emit-tco-ctor-bindings subs s-var 0 & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
     is IrLitPat (text) (ty) (sp) ->
      let keyword = if is-first then "if" else "else if"
@@ -734,5 +738,22 @@ Section: Chapter Emission
    in let defs = js-emit-defs-loop (m.defs) 0 (list-length (m.defs)) arities
    in let entry = js-emit-entry (js-opening-return-type (m.defs))
    in header & types & defs & entry
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+  js-emit-tuple-pat-names : List IRPat, Integer -> Text
+  js-emit-tuple-pat-names (subs) (i) =
+   if i >= list-length subs then ""
+   else let sep = if i > 0 then ", " else ""
+   in when (list-at subs i)
+    is IrVarPat (name) (ty) (sp) -> sep & js-sanitize name & js-emit-tuple-pat-names subs (i + 1)
+    is IrWildPat (sp) -> sep & "_" & js-emit-tuple-pat-names subs (i + 1)
+    is otherwise -> sep & "_" & js-emit-tuple-pat-names subs (i + 1)
 
 Page 1

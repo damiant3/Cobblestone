@@ -1,6 +1,7 @@
 Chapter: Protobuf
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
+  cites Foreword chapter Tuple
 
  Protocol Buffers wire format encoder and decoder. Supports varint,
  fixed32, length-delimited fields. No schema compilation — the
@@ -25,17 +26,15 @@ Section: Varint Encoding
     if val < 128 then list-push acc (bit-and val 127)
     else pb-encode-varint-loop (bit-shru val 7) (list-push acc (bit-or (bit-and val 127) 128))
 
-  PbVarintResult = record { pb-val : Integer, pb-pos : Integer }
-
-  pb-decode-varint : List Integer, Integer -> PbVarintResult
+  pb-decode-varint : List Integer, Integer -> (Integer, Integer)
   pb-decode-varint (data) (pos) = pb-decode-varint-loop data pos 0 0
 
-  pb-decode-varint-loop : List Integer, Integer, Integer, Integer -> PbVarintResult
+  pb-decode-varint-loop : List Integer, Integer, Integer, Integer -> (Integer, Integer)
   pb-decode-varint-loop (data) (pos) (result) (shift) =
-    if pos >= list-length data then PbVarintResult { pb-val = result, pb-pos = pos }
+    if pos >= list-length data then (result, pos)
     else let b = list-at data pos
     in let val = result + bit-shl (bit-and b 127) shift
-    in if bit-and b 128 == 0 then PbVarintResult { pb-val = val, pb-pos = pos + 1 }
+    in if bit-and b 128 == 0 then (val, pos + 1)
     else pb-decode-varint-loop data (pos + 1) val (shift + 7)
 
 Section: Field Tag
@@ -82,20 +81,20 @@ Section: Field Decoding
 
   pb-decode-field : List Integer, Integer -> PbField
   pb-decode-field (data) (pos) =
-    let tag-r = pb-decode-varint data pos
-    in let field-num = pb-field-number (tag-r.pb-val)
-    in let wire = pb-wire-type (tag-r.pb-val)
+    let (tag-val, tag-pos) = pb-decode-varint data pos
+    in let field-num = pb-field-number tag-val
+    in let wire = pb-wire-type tag-val
     in if wire == pb-wire-varint then
-      let val-r = pb-decode-varint data (tag-r.pb-pos)
-      in PbField { pbf-num = field-num, pbf-wire = wire, pbf-varint = val-r.pb-val, pbf-bytes = [], pbf-pos = val-r.pb-pos }
+      let (v-val, v-pos) = pb-decode-varint data tag-pos
+      in PbField { pbf-num = field-num, pbf-wire = wire, pbf-varint = v-val, pbf-bytes = [], pbf-pos = v-pos }
     else if wire == pb-wire-length then
-      let len-r = pb-decode-varint data (tag-r.pb-pos)
-      in let bytes = pb-extract data (len-r.pb-pos) (len-r.pb-val) []
-      in PbField { pbf-num = field-num, pbf-wire = wire, pbf-varint = 0, pbf-bytes = bytes, pbf-pos = len-r.pb-pos + len-r.pb-val }
+      let (l-val, l-pos) = pb-decode-varint data tag-pos
+      in let bytes = pb-extract data l-pos l-val []
+      in PbField { pbf-num = field-num, pbf-wire = wire, pbf-varint = 0, pbf-bytes = bytes, pbf-pos = l-pos + l-val }
     else if wire == pb-wire-fixed32 then
-      let v = pb-read-u32 data (tag-r.pb-pos)
-      in PbField { pbf-num = field-num, pbf-wire = wire, pbf-varint = v, pbf-bytes = [], pbf-pos = tag-r.pb-pos + 4 }
-    else PbField { pbf-num = field-num, pbf-wire = wire, pbf-varint = 0, pbf-bytes = [], pbf-pos = tag-r.pb-pos }
+      let v = pb-read-u32 data tag-pos
+      in PbField { pbf-num = field-num, pbf-wire = wire, pbf-varint = v, pbf-bytes = [], pbf-pos = tag-pos + 4 }
+    else PbField { pbf-num = field-num, pbf-wire = wire, pbf-varint = 0, pbf-bytes = [], pbf-pos = tag-pos }
 
   pb-extract : List Integer, Integer, Integer, List Integer -> List Integer
   pb-extract (data) (off) (len) (acc) =

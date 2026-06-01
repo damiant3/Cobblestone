@@ -132,8 +132,11 @@ typedef struct IdeState_ {
     size_t buf_off;
     int buf_remaining;
     int sectors_left;
+    int writing;            /* 1 during a WRITE SECTORS (0x30) transfer */
+    const char *path;       /* disk image path, for write-back */
 } IdeState;
 static IdeState ide;
+static void ide_flush(IdeState *d, size_t off, size_t len);
 
 /* ══ UEFI Emulation ══ */
 #define UEFI_TABLE_PAGE   0xF0000   /* fake SystemTable + protocols */
@@ -2880,6 +2883,326 @@ static int watch_active = 0;
 
 static void die(const char *msg) { fprintf(stderr, "FATAL: %s\n", msg); exit(1); }
 
+static void watch_init(void);
+
+/* ── Interactive Debugger ─────────────────────────────────────────── */
+
+static int debug_mode = 0;
+static const char *map_file_path = NULL;
+#define MAX_INIT_BREAKS 8
+static const char *init_break_names[MAX_INIT_BREAKS];
+static int init_break_count = 0;
+
+#define MAX_SYMBOLS 8192
+#define MAX_BREAKPOINTS 64
+static struct { unsigned long long addr; int size; char name[128]; } symbols[MAX_SYMBOLS];
+static int symbol_count = 0;
+
+static struct {
+    unsigned long long addr;
+    unsigned char orig_byte;
+    int active;
+    /* conditional: if cond_reg >= 0, only break when reg == cond_val */
+    int cond_reg; /* -1 = unconditional, 0=rax..17=cr2 per dump order */
+    unsigned long long cond_val;
+} breakpoints[MAX_BREAKPOINTS];
+static int bp_count = 0;
+
+static void load_map_file(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof(line), f) && symbol_count < MAX_SYMBOLS) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        unsigned long long a; int sz; char nm[128];
+        if (sscanf(line, "0x%llx %d %127[^\n]", &a, &sz, nm) == 3) {
+            symbols[symbol_count].addr = a;
+            symbols[symbol_count].size = sz;
+            strncpy(symbols[symbol_count].name, nm, 127);
+            symbols[symbol_count].name[127] = 0;
+            symbol_count++;
+        }
+    }
+    fclose(f);
+    fprintf(stderr, "DBG: loaded %d symbols from %s\n", symbol_count, path);
+}
+
+static const char *sym_lookup(unsigned long long addr, int *offset_out) {
+    for (int i = 0; i < symbol_count; i++) {
+        if (addr >= symbols[i].addr && addr < symbols[i].addr + (unsigned long long)symbols[i].size) {
+            if (offset_out) *offset_out = (int)(addr - symbols[i].addr);
+            return symbols[i].name;
+        }
+    }
+    if (offset_out) *offset_out = 0;
+    return NULL;
+}
+
+static unsigned long long sym_find(const char *name) {
+    for (int i = 0; i < symbol_count; i++)
+        if (!strcmp(symbols[i].name, name)) return symbols[i].addr;
+    return 0;
+}
+
+static void dbg_print_addr(unsigned long long addr) {
+    int off;
+    const char *name = sym_lookup(addr, &off);
+    if (name) fprintf(stderr, "0x%llx <%s+%d>", addr, name, off);
+    else fprintf(stderr, "0x%llx", addr);
+}
+
+static void dbg_dump_regs(void) {
+    WHV_REGISTER_NAME names[] = {
+        WHvX64RegisterRip, WHvX64RegisterRsp, WHvX64RegisterRax,
+        WHvX64RegisterRbx, WHvX64RegisterRcx, WHvX64RegisterRdx,
+        WHvX64RegisterRsi, WHvX64RegisterRdi, WHvX64RegisterRbp,
+        WHvX64RegisterR8, WHvX64RegisterR9, WHvX64RegisterR10,
+        WHvX64RegisterR11, WHvX64RegisterR12, WHvX64RegisterR13,
+        WHvX64RegisterR14, WHvX64RegisterR15, WHvX64RegisterRflags
+    };
+    WHV_REGISTER_VALUE vals[18];
+    WHvGetVirtualProcessorRegisters(partition, 0, names, 18, vals);
+    fprintf(stderr, "  RIP="); dbg_print_addr(vals[0].Reg64); fprintf(stderr, "\n");
+    fprintf(stderr, "  RSP=%016llx RBP=%016llx RFLAGS=%016llx\n", vals[1].Reg64, vals[8].Reg64, vals[17].Reg64);
+    fprintf(stderr, "  RAX=%016llx RBX=%016llx RCX=%016llx RDX=%016llx\n",
+        vals[2].Reg64, vals[3].Reg64, vals[4].Reg64, vals[5].Reg64);
+    fprintf(stderr, "  RSI=%016llx RDI=%016llx\n", vals[6].Reg64, vals[7].Reg64);
+    fprintf(stderr, "  R8 =%016llx R9 =%016llx R10=%016llx R11=%016llx\n",
+        vals[9].Reg64, vals[10].Reg64, vals[11].Reg64, vals[12].Reg64);
+    fprintf(stderr, "  R12=%016llx R13=%016llx R14=%016llx R15=%016llx\n",
+        vals[13].Reg64, vals[14].Reg64, vals[15].Reg64, vals[16].Reg64);
+}
+
+static void dbg_dump_mem(unsigned long long addr, int len) {
+    if (addr + (unsigned long long)len > guest_mem_size) {
+        fprintf(stderr, "  address out of range\n"); return;
+    }
+    unsigned char *p = (unsigned char *)guest_mem + addr;
+    for (int i = 0; i < len; i += 16) {
+        fprintf(stderr, "  %012llx: ", addr + i);
+        for (int j = 0; j < 16 && i+j < len; j++)
+            fprintf(stderr, "%02x ", p[i+j]);
+        fprintf(stderr, " ");
+        for (int j = 0; j < 16 && i+j < len; j++) {
+            unsigned char c = p[i+j];
+            fprintf(stderr, "%c", (c >= 0x20 && c < 0x7f) ? c : '.');
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
+static void dbg_dump_stack(int count) {
+    WHV_REGISTER_NAME names[2] = { WHvX64RegisterRsp, WHvX64RegisterRbp };
+    WHV_REGISTER_VALUE vals[2];
+    WHvGetVirtualProcessorRegisters(partition, 0, names, 2, vals);
+    unsigned long long rsp = vals[0].Reg64;
+    fprintf(stderr, "  Stack at RSP=0x%llx:\n", rsp);
+    for (int i = 0; i < count && rsp + i*8 + 8 <= guest_mem_size; i++) {
+        unsigned long long val = *(unsigned long long *)((unsigned char *)guest_mem + rsp + i*8);
+        fprintf(stderr, "  [RSP+%02x] = ", i*8);
+        dbg_print_addr(val);
+        fprintf(stderr, "\n");
+    }
+}
+
+static void dbg_backtrace(void) {
+    WHV_REGISTER_NAME names[2] = { WHvX64RegisterRip, WHvX64RegisterRbp };
+    WHV_REGISTER_VALUE vals[2];
+    WHvGetVirtualProcessorRegisters(partition, 0, names, 2, vals);
+    unsigned long long rip = vals[0].Reg64, rbp = vals[1].Reg64;
+    fprintf(stderr, "  Backtrace:\n");
+    fprintf(stderr, "    #0 "); dbg_print_addr(rip); fprintf(stderr, "\n");
+    for (int depth = 1; depth < 32 && rbp > 0 && rbp + 16 <= guest_mem_size; depth++) {
+        unsigned long long ret = *(unsigned long long *)((unsigned char *)guest_mem + rbp + 8);
+        unsigned long long prev = *(unsigned long long *)((unsigned char *)guest_mem + rbp);
+        if (ret == 0) break;
+        fprintf(stderr, "    #%d ", depth); dbg_print_addr(ret); fprintf(stderr, "\n");
+        rbp = prev;
+    }
+}
+
+static int dbg_set_breakpoint(unsigned long long addr, int cond_reg, unsigned long long cond_val) {
+    if (addr >= guest_mem_size) { fprintf(stderr, "  address out of range\n"); return -1; }
+    if (bp_count >= MAX_BREAKPOINTS) { fprintf(stderr, "  too many breakpoints\n"); return -1; }
+    int idx = bp_count++;
+    breakpoints[idx].addr = addr;
+    breakpoints[idx].orig_byte = *((unsigned char *)guest_mem + addr);
+    breakpoints[idx].active = 1;
+    breakpoints[idx].cond_reg = cond_reg;
+    breakpoints[idx].cond_val = cond_val;
+    *((unsigned char *)guest_mem + addr) = 0xCC;
+    fprintf(stderr, "DBG: breakpoint %d at 0x%llx (patched 0x%02x -> 0xCC)\n", idx, addr, breakpoints[idx].orig_byte);
+    return idx;
+}
+
+static void dbg_enable_single_step(void) {
+    WHV_REGISTER_NAME name = WHvX64RegisterRflags;
+    WHV_REGISTER_VALUE val;
+    WHvGetVirtualProcessorRegisters(partition, 0, &name, 1, &val);
+    val.Reg64 |= 0x100; /* set TF */
+    WHvSetVirtualProcessorRegisters(partition, 0, &name, 1, &val);
+}
+
+static int dbg_reg_index(const char *name) {
+    const char *names[] = {"rip","rsp","rax","rbx","rcx","rdx","rsi","rdi","rbp",
+                           "r8","r9","r10","r11","r12","r13","r14","r15","rflags"};
+    for (int i = 0; i < 18; i++) if (!strcmp(name, names[i])) return i;
+    return -1;
+}
+
+static unsigned long long dbg_read_reg(int idx) {
+    WHV_REGISTER_NAME names[] = {
+        WHvX64RegisterRip, WHvX64RegisterRsp, WHvX64RegisterRax,
+        WHvX64RegisterRbx, WHvX64RegisterRcx, WHvX64RegisterRdx,
+        WHvX64RegisterRsi, WHvX64RegisterRdi, WHvX64RegisterRbp,
+        WHvX64RegisterR8, WHvX64RegisterR9, WHvX64RegisterR10,
+        WHvX64RegisterR11, WHvX64RegisterR12, WHvX64RegisterR13,
+        WHvX64RegisterR14, WHvX64RegisterR15, WHvX64RegisterRflags
+    };
+    WHV_REGISTER_VALUE val;
+    WHvGetVirtualProcessorRegisters(partition, 0, &names[idx], 1, &val);
+    return val.Reg64;
+}
+
+/* Returns: 0 = continue VM loop, 1 = goto done (quit) */
+static int dbg_command_loop(int vec, unsigned long long exc_rip) {
+    /* For #DB, check if this is a hardware breakpoint with a condition */
+    if (vec == 1) {
+        unsigned long long rip = dbg_read_reg(0); /* RIP */
+        for (int i = 0; i < bp_count; i++) {
+            if (breakpoints[i].addr == rip && breakpoints[i].active && breakpoints[i].cond_reg >= 0) {
+                unsigned long long rv = dbg_read_reg(breakpoints[i].cond_reg);
+                if (rv != breakpoints[i].cond_val) {
+                    /* Condition not met — resume via single-step past this address */
+                    dbg_enable_single_step();
+                    return 0;
+                }
+            }
+        }
+    }
+
+    fprintf(stderr, "\n--- %s at ", vec == 1 ? "Step" : "Break");
+    dbg_print_addr(vec == 3 ? exc_rip - 1 : exc_rip);
+    fprintf(stderr, " ---\n");
+    dbg_dump_regs();
+
+    char cmd[256];
+    for (;;) {
+        fprintf(stderr, "dbg> ");
+        if (!fgets(cmd, sizeof(cmd), stdin)) return 1;
+        cmd[strcspn(cmd, "\n")] = 0;
+        if (!cmd[0]) continue;
+
+        if (!strcmp(cmd, "s") || !strcmp(cmd, "step")) {
+            dbg_enable_single_step();
+            return 0;
+        }
+        else if (!strcmp(cmd, "c") || !strcmp(cmd, "continue")) {
+            return 0;
+        }
+        else if (!strcmp(cmd, "r") || !strcmp(cmd, "regs")) {
+            dbg_dump_regs();
+        }
+        else if (!strncmp(cmd, "m ", 2) || !strncmp(cmd, "mem ", 4)) {
+            char *arg = cmd + (cmd[1] == ' ' ? 2 : 4);
+            unsigned long long addr = strtoull(arg, &arg, 0);
+            int len = 64;
+            while (*arg == ' ') arg++;
+            if (*arg) len = atoi(arg);
+            if (len <= 0) len = 64;
+            if (len > 4096) len = 4096;
+            dbg_dump_mem(addr, len);
+        }
+        else if (!strncmp(cmd, "x ", 2)) {
+            /* x <addr> — read 8-byte qword at addr */
+            unsigned long long addr = strtoull(cmd + 2, NULL, 0);
+            if (addr + 8 <= guest_mem_size) {
+                unsigned long long val = *(unsigned long long *)((unsigned char *)guest_mem + addr);
+                fprintf(stderr, "  [0x%llx] = 0x%llx (%llu)\n", addr, val, val);
+            } else fprintf(stderr, "  out of range\n");
+        }
+        else if (!strcmp(cmd, "bt") || !strcmp(cmd, "backtrace")) {
+            dbg_backtrace();
+        }
+        else if (!strcmp(cmd, "stack")) {
+            dbg_dump_stack(16);
+        }
+        else if (!strncmp(cmd, "b ", 2) || !strncmp(cmd, "break ", 6)) {
+            char *arg = cmd + (cmd[1] == ' ' ? 2 : 6);
+            unsigned long long addr = 0;
+            int cond_reg = -1;
+            unsigned long long cond_val = 0;
+            /* Try symbolic: "b funcname" or numeric "b 0x1234" */
+            if (arg[0] == '0' && arg[1] == 'x') {
+                addr = strtoull(arg, &arg, 16);
+            } else {
+                /* Parse "funcname" or "funcname if reg=val" */
+                char fname[128]; int fi = 0;
+                while (*arg && *arg != ' ' && fi < 127) fname[fi++] = *arg++;
+                fname[fi] = 0;
+                addr = sym_find(fname);
+                if (!addr) { fprintf(stderr, "  symbol '%s' not found\n", fname); continue; }
+            }
+            /* Check for conditional: "if reg=val" */
+            while (*arg == ' ') arg++;
+            if (!strncmp(arg, "if ", 3)) {
+                arg += 3;
+                while (*arg == ' ') arg++;
+                char rname[16]; int ri = 0;
+                while (*arg && *arg != '=' && ri < 15) rname[ri++] = *arg++;
+                rname[ri] = 0;
+                cond_reg = dbg_reg_index(rname);
+                if (cond_reg < 0) { fprintf(stderr, "  unknown register '%s'\n", rname); continue; }
+                if (*arg == '=') arg++;
+                cond_val = strtoull(arg, NULL, 0);
+                fprintf(stderr, "  conditional: %s == 0x%llx\n", rname, cond_val);
+            }
+            int idx = dbg_set_breakpoint(addr, cond_reg, cond_val);
+            if (idx >= 0) {
+                fprintf(stderr, "  breakpoint %d at ", idx);
+                dbg_print_addr(addr);
+                fprintf(stderr, "\n");
+            }
+        }
+        else if (!strncmp(cmd, "w ", 2) || !strncmp(cmd, "watch ", 6)) {
+            char *arg = cmd + (cmd[1] == ' ' ? 2 : 6);
+            watch_addr = strtoull(arg, &arg, 0);
+            while (*arg == ' ') arg++;
+            if (*arg) watch_size = atoi(arg);
+            if (watch_size <= 0) watch_size = 8;
+            watch_init();
+            fprintf(stderr, "  watching 0x%llx (%d bytes)\n", watch_addr, watch_size);
+        }
+        else if (!strncmp(cmd, "sym ", 4)) {
+            char *arg = cmd + 4;
+            while (*arg == ' ') arg++;
+            unsigned long long a = sym_find(arg);
+            if (a) fprintf(stderr, "  %s = 0x%llx\n", arg, a);
+            else fprintf(stderr, "  not found\n");
+        }
+        else if (!strcmp(cmd, "q") || !strcmp(cmd, "quit")) {
+            return 1;
+        }
+        else if (!strcmp(cmd, "help") || !strcmp(cmd, "h") || !strcmp(cmd, "?")) {
+            fprintf(stderr,
+                "  s / step          — single-step one instruction\n"
+                "  c / continue      — resume execution\n"
+                "  r / regs          — dump registers\n"
+                "  m <addr> [len]    — dump memory (hex+ascii)\n"
+                "  x <addr>          — read qword at address\n"
+                "  bt / backtrace    — walk RBP chain\n"
+                "  stack             — dump 16 stack slots\n"
+                "  b <fn|addr> [if reg=val] — set breakpoint (conditional)\n"
+                "  w <addr> [size]   — set memory watchpoint\n"
+                "  sym <name>        — look up symbol address\n"
+                "  q / quit          — exit VM\n");
+        }
+        else {
+            fprintf(stderr, "  unknown command: %s (type 'help')\n", cmd);
+        }
+    }
+}
+
 /* Shutdown watchdog: runs in a background thread, polls serial socket
    health every 500ms.  When the harness closes the socket (or the process
    receives Ctrl+C), the watchdog calls WHvCancelRunVirtualProcessor to
@@ -2973,9 +3296,28 @@ static void output_buf_init(void) {
     output_len = 0;
 }
 
+/* Debug: detect "!EXC=03" in serial stream */
+static char exc_detect_buf[8];
+static int exc_detect_pos = 0;
+static int dbg_exc_pending = 0;
+
 static void output_buf_write(unsigned char b) {
     if (!output_buf) return;
     if (output_len < output_cap) output_buf[output_len++] = b;
+
+    /* Detect "!EXC=03" pattern for debugger */
+    if (debug_mode && bp_count > 0) {
+        const char *pattern = "!EXC=03";
+        if (b == (unsigned char)pattern[exc_detect_pos]) {
+            exc_detect_pos++;
+            if (exc_detect_pos == 7) {
+                dbg_exc_pending = 1;
+                exc_detect_pos = 0;
+            }
+        } else {
+            exc_detect_pos = (b == '!') ? 1 : 0;
+        }
+    }
 }
 
 static void dump_output_file(const char *path) {
@@ -3007,6 +3349,7 @@ static void ide_init(IdeState *d, const char *path) {
     memset(d, 0, sizeof(*d));
     d->status = 0x50; /* DRDY */
     if (!path) return;
+    d->path = path;
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "WARN: cannot open disk %s\n", path); return; }
     fseek(f, 0, SEEK_END);
@@ -3016,6 +3359,16 @@ static void ide_init(IdeState *d, const char *path) {
     fread(d->data, 1, d->size, f);
     fclose(f);
     fprintf(stderr, "IDE: %s (%zu bytes, %zu sectors)\n", path, d->size, d->size/512);
+}
+
+/* Persist a written region back to the disk image file (durability). */
+static void ide_flush(IdeState *d, size_t off, size_t len) {
+    if (!d->path || !d->data || off + len > d->size) return;
+    FILE *f = fopen(d->path, "r+b");
+    if (!f) { fprintf(stderr, "WARN: cannot reopen disk %s for write\n", d->path); return; }
+    fseek(f, (long)off, SEEK_SET);
+    fwrite(d->data + off, 1, len, f);
+    fclose(f);
 }
 
 static unsigned int ide_get_lba(IdeState *d) {
@@ -3041,6 +3394,36 @@ static void ide_advance(IdeState *d) {
     d->status = 0x58;
 }
 
+static void ide_start_write(IdeState *d) {
+    unsigned int lba = ide_get_lba(d);
+    int count = d->sect_count ? d->sect_count : 256;
+    if ((size_t)lba * 512 >= d->size) { d->status = 0x51; d->error = 0x10; return; }
+    d->buf_off = (size_t)lba * 512;
+    d->buf_remaining = 512;
+    d->sectors_left = count - 1;
+    d->writing = 1;
+    d->status = 0x58; /* DRDY|DRQ — ready to accept data */
+    d->error = 0;
+}
+
+/* Accept one 16-bit word during a WRITE SECTORS transfer (REP OUTSW). Stores
+   into the in-memory disk and flushes each completed sector to the image. */
+static void ide_write_data(IdeState *d, int val) {
+    if (!d->writing || d->buf_remaining <= 0) return;
+    if (d->buf_off + 1 < d->size) {
+        d->data[d->buf_off]     = (unsigned char)(val & 0xFF);
+        d->data[d->buf_off + 1] = (unsigned char)((val >> 8) & 0xFF);
+    }
+    d->buf_off += 2;
+    d->buf_remaining -= 2;
+    if (d->buf_remaining <= 0) {
+        size_t sec_off = d->buf_off - 512;
+        ide_flush(d, sec_off, 512);
+        if (d->sectors_left <= 0) { d->status = 0x50; d->writing = 0; }
+        else { d->buf_remaining = 512; d->sectors_left--; d->status = 0x58; }
+    }
+}
+
 static int ide_read_data(IdeState *d) {
     if (d->buf_remaining <= 0) return 0;
     int lo = (d->buf_off < d->size) ? d->data[d->buf_off] : 0;
@@ -3058,7 +3441,11 @@ static void ide_handle_out(IdeState *d, int port, int val) {
     else if (reg == 4) d->lba_mid = val & 0xFF;
     else if (reg == 5) d->lba_hi = val & 0xFF;
     else if (reg == 6) d->drive_head = val & 0xFF;
-    else if (reg == 7) { if (val == 0x20) ide_start_read(d); else d->status = 0x50; }
+    else if (reg == 7) {
+        if (val == 0x20) ide_start_read(d);
+        else if (val == 0x30) ide_start_write(d);
+        else { d->writing = 0; d->status = 0x50; } /* flush (0xE7/0xEA) and others -> DRDY */
+    }
 }
 
 static int ide_handle_in(IdeState *d, int port) {
@@ -3166,10 +3553,11 @@ static void create_vm(size_t mem_mb) {
     hr = WHvSetupPartition(partition);
     if (FAILED(hr)) { fprintf(stderr, "WHvSetupPartition: 0x%lx\n", hr); exit(1); }
 
-    /* Enable exception exit for vector 1 (debug trap / single step) */
+    /* Enable exception exit for debug/breakpoint vectors (must be after setup) */
     memset(&prop, 0, sizeof(prop));
     prop.ExceptionExitBitmap = (1ULL << 1) | (1ULL << 3) | (1ULL << 6) | (1ULL << 13) | (1ULL << 14);  /* #DB, #BP, #UD, #GP, #PF */
-    WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeExceptionExitBitmap, &prop, sizeof(prop.ExceptionExitBitmap));
+    hr = WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeExceptionExitBitmap, &prop, sizeof(prop.ExceptionExitBitmap));
+    if (FAILED(hr)) fprintf(stderr, "WARNING: ExceptionExitBitmap failed: 0x%lx\n", hr);
 
     guest_mem = VirtualAlloc(NULL, guest_mem_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!guest_mem) die("VirtualAlloc");
@@ -3658,6 +4046,31 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     if (is_out) val = (int)ctx->IoPortAccess.Rax;
 
     if (is_out) {
+        /* REP OUTSW to the IDE data port: a WRITE SECTORS data phase. Read each
+           word from guest [RSI], feed the disk, manage RSI/RCX/RIP per iteration. */
+        if (ctx->IoPortAccess.AccessInfo.StringOp && port == 0x1F0) {
+            unsigned long long gpa = ctx->IoPortAccess.Rsi;
+            unsigned char *gmem = (unsigned char *)guest_mem;
+            int wval = 0;
+            if (gpa + (unsigned long long)size <= guest_mem_size) {
+                if (size == 1) wval = gmem[gpa];
+                else if (size == 2) wval = gmem[gpa] | (gmem[gpa + 1] << 8);
+                else wval = (int)(*(unsigned int *)(gmem + gpa));
+            }
+            ide_write_data(&ide, wval);
+            WHV_REGISTER_NAME sn[] = { WHvX64RegisterRsi, WHvX64RegisterRcx };
+            WHV_REGISTER_VALUE sv[2];
+            sv[0].Reg64 = ctx->IoPortAccess.Rsi + size;
+            sv[1].Reg64 = ctx->IoPortAccess.Rcx - 1;
+            WHvSetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
+            if (ctx->IoPortAccess.Rcx <= 1) {
+                WHV_REGISTER_NAME rn = WHvX64RegisterRip;
+                WHV_REGISTER_VALUE rv;
+                rv.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
+                WHvSetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+            }
+            return;
+        }
         /* COM1 OUT: buffer the byte for file output */
         if (port >= 0x3F8 && port <= 0x3FF) {
             if (port == 0x3F8) output_buf_write((unsigned char)val);
@@ -4119,6 +4532,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-output") && i+1 < argc) output_file = argv[++i];
         else if (!strcmp(argv[i], "-watch") && i+1 < argc) watch_addr = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "-watch-size") && i+1 < argc) watch_size = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-debug")) debug_mode = 1;
+        else if (!strcmp(argv[i], "-break") && i+1 < argc) {
+            debug_mode = 1;
+            if (init_break_count < MAX_INIT_BREAKS) init_break_names[init_break_count++] = argv[++i];
+        }
+        else if (!strcmp(argv[i], "-map") && i+1 < argc) map_file_path = argv[++i];
         else if (!strcmp(argv[i], "-headless")) vga_headless = 1;
         else if (!strcmp(argv[i], "-uefi")) uefi_mode = 1;
         else if (!strcmp(argv[i], "-gop")) { gop_active = 1; }
@@ -4223,6 +4642,32 @@ int main(int argc, char **argv) {
 
     if (watch_addr) watch_init();
 
+    /* Load symbol map if provided or auto-detect from kernel path */
+    if (map_file_path) {
+        load_map_file(map_file_path);
+    } else if (debug_mode && kernel) {
+        /* Try <kernel-dir>/Codex.map, then seed/Codex.map */
+        char auto_map[512];
+        strncpy(auto_map, kernel, sizeof(auto_map)-1);
+        char *last_sep = strrchr(auto_map, '\\');
+        if (!last_sep) last_sep = strrchr(auto_map, '/');
+        if (last_sep) { strcpy(last_sep + 1, "Codex.map"); }
+        else strcpy(auto_map, "Codex.map");
+        FILE *tf = fopen(auto_map, "r");
+        if (tf) { fclose(tf); load_map_file(auto_map); }
+    }
+
+    /* Apply initial breakpoints from -break args */
+    for (int bi = 0; bi < init_break_count; bi++) {
+        unsigned long long ba = sym_find(init_break_names[bi]);
+        if (ba) {
+            int idx = dbg_set_breakpoint(ba, -1, 0);
+            if (idx >= 0) fprintf(stderr, "DBG: break %d at %s (0x%llx)\n", idx, init_break_names[bi], ba);
+        } else {
+            fprintf(stderr, "DBG: symbol '%s' not found\n", init_break_names[bi]);
+        }
+    }
+
     if (uefi_mode) {
         /* Verify guest memory at entry point */
         unsigned char *ep = (unsigned char *)guest_mem + 0x1000;
@@ -4299,7 +4744,18 @@ int main(int argc, char **argv) {
             fprintf(stderr, "  exit #%llu: reason=%d RIP=0x%llx\n", exits, ctx.ExitReason, ctx.VpContext.Rip);
         }
 
-        /* (shadow snapshot moved to after exit handling) */
+        /* Check if guest exception handler wrote !EXC=03 to serial */
+        if (dbg_exc_pending) {
+            dbg_exc_pending = 0;
+            /* Guest is inside its exception handler — read registers directly */
+            unsigned long long rip = 0;
+            WHV_REGISTER_NAME rn = WHvX64RegisterRip;
+            WHV_REGISTER_VALUE rv;
+            WHvGetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+            rip = rv.Reg64;
+            int r = dbg_command_loop(3, rip);
+            if (r == 1) goto done;
+        }
 
         /* ── Handle exit ── */
         switch (ctx.ExitReason) {
@@ -4351,34 +4807,43 @@ int main(int argc, char **argv) {
             int vec = ctx.VpException.ExceptionType;
             unsigned long long exc_rip = ctx.VpContext.Rip;
             if (vec == 1 || vec == 3) {
-                /* #DB (single-step/watchpoint) or #BP (INT3 breakpoint)
-                   Write exception info to guest memory at 0x7100 for kernel debugger:
-                   +0: vector (8 bytes), +8: RIP (8 bytes), +16: RSP (8 bytes), +24: flags (8 bytes) */
+                /* #DB (single-step) or #BP (INT3 breakpoint) */
+                if (vec == 1) {
+                    /* Clear TF for single-step */
+                    WHV_REGISTER_NAME fn = WHvX64RegisterRflags;
+                    WHV_REGISTER_VALUE fv;
+                    WHvGetVirtualProcessorRegisters(partition, 0, &fn, 1, &fv);
+                    fv.Reg64 &= ~0x100ULL;
+                    WHvSetVirtualProcessorRegisters(partition, 0, &fn, 1, &fv);
+                }
+                if (vec == 3) {
+                    /* INT3: back up RIP */
+                    WHV_REGISTER_NAME rn = WHvX64RegisterRip;
+                    WHV_REGISTER_VALUE rv;
+                    rv.Reg64 = exc_rip - 1;
+                    WHvSetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+                }
+                /* Write to guest 0x7100 for kernel debugger compat */
                 if (0x7100 + 32 <= guest_mem_size) {
                     unsigned char *exc = (unsigned char *)guest_mem + 0x7100;
                     *(unsigned long long *)(exc + 0) = (unsigned long long)vec;
                     *(unsigned long long *)(exc + 8) = exc_rip;
-                    /* Read RSP and RFLAGS */
-                    WHV_REGISTER_NAME enames[2] = { WHvX64RegisterRsp, WHvX64RegisterRflags };
-                    WHV_REGISTER_VALUE evals[2];
-                    WHvGetVirtualProcessorRegisters(partition, 0, enames, 2, evals);
-                    *(unsigned long long *)(exc + 16) = evals[0].Reg64;
-                    *(unsigned long long *)(exc + 24) = evals[1].Reg64;
-                    /* For single-step (#DB), clear TF to stop stepping */
-                    if (vec == 1) {
-                        evals[1].Reg64 &= ~0x100ULL; /* clear TF */
-                        WHvSetVirtualProcessorRegisters(partition, 0, &enames[1], 1, &evals[1]);
+                    WHV_REGISTER_NAME en[2] = { WHvX64RegisterRsp, WHvX64RegisterRflags };
+                    WHV_REGISTER_VALUE ev[2];
+                    WHvGetVirtualProcessorRegisters(partition, 0, en, 2, ev);
+                    *(unsigned long long *)(exc + 16) = ev[0].Reg64;
+                    *(unsigned long long *)(exc + 24) = ev[1].Reg64;
+                }
+                if (debug_mode) {
+                    int r = dbg_command_loop(vec, exc_rip);
+                    if (r == 1) goto done;
+                    if (r < 0) {
+                        /* stepping over breakpoint — will re-patch on next #DB */
                     }
-                    /* For breakpoint (#BP), RIP points after INT3 — back up 1 byte */
-                    if (vec == 3) {
-                        WHV_REGISTER_NAME rip_name = WHvX64RegisterRip;
-                        WHV_REGISTER_VALUE rip_val;
-                        rip_val.Reg64 = exc_rip - 1;
-                        WHvSetVirtualProcessorRegisters(partition, 0, &rip_name, 1, &rip_val);
-                    }
+                    break;
                 }
                 fprintf(stderr, "%s at RIP=0x%llx\n", vec == 1 ? "Single-step" : "Breakpoint", exc_rip);
-                break; /* continue execution — guest debugger reads 0x7100 */
+                break;
             }
             fprintf(stderr, "Exception vector=%d at RIP=0x%llx\n", vec, exc_rip);
             goto done;
@@ -4394,7 +4859,7 @@ int main(int argc, char **argv) {
                 int wr = handle_watch_write(&ctx);
                 if (wr == 2) goto done;  /* target hit or crash */
                 if (wr == 1) {
-                    if (watch_hit_count >= 5000) { fprintf(stderr, "WATCH: 5000 page hits.\n"); goto done; }
+                    if (watch_hit_count >= 50000) { fprintf(stderr, "WATCH: 50000 page hits.\n"); goto done; }
                     break;
                 }
             }

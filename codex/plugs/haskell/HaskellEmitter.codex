@@ -103,7 +103,8 @@ Section: Type Definition Emission
     is ARecordTypeDef (name) (tparams) (fields) (s) ->
      emit-hs-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-hs-sum-type (name.value) ctors
+     if is-tup-type (name.value) then ""
+     else emit-hs-sum-type (name.value) ctors
 
   emit-hs-sum-type : Text, List AVariantCtorDef -> Text
   emit-hs-sum-type (name) (ctors) =
@@ -253,7 +254,9 @@ Section: Expression Emission
   emit-hs-pat (pat) =
    when pat
     is IrLitPat (text) (ty) (sp) -> text
-    is IrCtorPat (name) (subs) (ty) (sp) -> hs-sanitize name & emit-hs-sub-pats subs 0
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then "(" & emit-hs-tup-pats subs 0 & ")"
+     else hs-sanitize name & emit-hs-sub-pats subs 0
     is IrVarPat (name) (ty) (sp) -> hs-sanitize name
     is IrWildPat (sp) -> "_"
 
@@ -285,6 +288,7 @@ Section: Apply Emission
    in when root
     is IrName (n) (ty) (sp) ->
      if n == "print-line-uni" then "putStrLn " & emit-hs-expr (list-at args 0) arities
+     else if is-mktup-name n then "(" & emit-hs-tup-args args arities 0 & ")"
      else "(" & hs-sanitize n & " " & emit-hs-apply-args args arities 0 & ")"
     is otherwise -> emit-hs-expr-curried e arities
 
@@ -327,5 +331,25 @@ Section: Chapter Emission
    in let types-text = emit-hs-type-defs type-defs 0
    in let defs-text = emit-hs-defs (m.defs) 0 arities
    in header & types-text & defs-text & "main :: IO ()\nmain = " & hs-sanitize opening-entry-point & "\n"
+
+  emit-hs-tup-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-hs-tup-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-hs-expr (list-at args i) arities & emit-hs-tup-args args arities (i + 1)
+
+  emit-hs-tup-pats : List IRPat, Integer -> Text
+  emit-hs-tup-pats (subs) (i) =
+   if i == list-length subs then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-hs-pat (list-at subs i) & emit-hs-tup-pats subs (i + 1)
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
 
 Page 1

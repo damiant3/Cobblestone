@@ -1,86 +1,118 @@
 Chapter: SettingDesignerApp
   cites Explorer chapter ExplorerTheme
-  cites Explorer chapter ExplorerData
 
- Setting/landscape designer. Compiled through the HTML plug.
- DOM stubs, theme types, and dark-gold theme from ExplorerTheme.
+ Setting/landscape designer, fully DB-backed. The page ships no content:
+ at load it fetches each dimension's rows from the bare-metal DB server
+ over AJAX (/api/d/<table>) and builds the pip tree from the fetched rows.
+ Each row is [name, prompt-fragment]; selections index into the parsed rows
+ (tbl-field) for both the visible name and the prompt fragment. The fetch
+ helpers (parse-table / tbl-names / tbl-field) live in ExplorerTheme.
 
  We say:
 
 Section: Prompt
 
-  build-setting-prompt : BiomeDef, TimeDef, WeatherDef, MoodDef, ScaleDef, Text -> Text
-  build-setting-prompt (biome) (time) (weather) (mood) (scale) (extra) =
-    biome.traits & ", " & time.lighting & ", " & weather.effects & ", " & mood.tone & ", " & scale.framing & ", fantasy game environment concept art, matte painting, highly detailed landscape, masterpiece, best quality, 4k, sharp focus" & (if text-length extra > 0 then ", " & extra else "")
-
   setting-negative : Text
   setting-negative = "blurry, low quality, deformed, text, watermark, person, character, nsfw, UI elements"
 
-Section: Computed Name Lists
+  setting-suffix : Text
+  setting-suffix = ", fantasy game environment concept art, matte painting, highly detailed landscape, masterpiece, best quality, 4k, sharp focus"
 
-  biome-names : List Text
-  biome-names = extract-biome-names biome-defs 0 []
-  time-names : List Text
-  time-names = extract-time-names time-defs 0 []
-  weather-names : List Text
-  weather-names = extract-weather-names weather-defs 0 []
-  mood-names : List Text
-  mood-names = extract-mood-names mood-defs 0 []
-  scale-names : List Text
-  scale-names = extract-scale-names scale-defs 0 []
+  build-setting-prompt : Integer, Integer, Integer, Integer, Integer, Text -> Text
+  build-setting-prompt (sb) (st) (sw) (sm) (ss) (extra) =
+    tbl-field "dBiome" sb 1 & ", " & tbl-field "dTime" st 1 & ", " & tbl-field "dWeather" sw 1 & ", " & tbl-field "dMood" sm 1 & ", " & tbl-field "dScale" ss 1 & setting-suffix & (if text-length extra > 0 then ", " & extra else "")
 
-Section: Controls
+Section: UI Tree
 
-  render-controls : Integer, Integer, Integer, Integer, Integer -> Text
-  render-controls (sb) (st) (sw) (sm) (ss) =
-    "<div class=\"dimbar\">"
-    & dim-pill "Biome" (selected-name biome-names sb) (build-dropdown-items biome-names sb "biome" 0 "")
-    & dim-pill "Time" (selected-name time-names st) (build-dropdown-items time-names st "time" 0 "")
-    & dim-pill "Weather" (selected-name weather-names sw) (build-dropdown-items weather-names sw "weather" 0 "")
-    & dim-pill "Mood" (selected-name mood-names sm) (build-dropdown-items mood-names sm "mood" 0 "")
-    & dim-pill "Scale" (selected-name scale-names ss) (build-dropdown-items scale-names ss "scale" 0 "")
-    & "</div>"
-    & "<div class=\"prow\"><textarea id=\"prompt\" placeholder=\"Landmarks, creatures, architectural style...\"></textarea><div class=\"pc\"><label>Seed</label><input id=\"seed\" type=\"number\" value=\"424242\"></div></div>"
-    & "<div class=\"tb\"><button class=\"btn primary\" onclick=\"do_generate(0)\">Generate</button><button class=\"btn\" onclick=\"random_seed(0)\">Random Seed</button></div>"
+  biome-cats : List (List Text), List Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  biome-cats (groups) (bnames) (i) (n) (acc) =
+    if i >= n then acc
+    else let g = list-at groups i
+    in let from = text-to-int (list-at g 1)
+    in let to = text-to-int (list-at g 2)
+    in biome-cats groups bnames (i + 1) n (list-push acc (widget-cat-range ("bg" & show i) (list-at g 0) bnames from to))
 
-Section: Page
+  biome-dimsel : Integer -> WidgetNode
+  biome-dimsel (sb) =
+    let bnames = tbl-names "dBiome"
+    in let head = if sb < list-length bnames then list-at bnames sb else "?"
+    in let groups = parse-table "dGenres"
+    in widget-dimsel "biome" head sb (biome-cats groups bnames 0 (list-length groups) [])
 
-  build-page : Integer, Integer, Integer, Integer, Integer -> Text
-  build-page (sb) (st) (sw) (sm) (ss) =
-    explorer-nav "setting"
-    & "<div class=\"page\"><div class=\"left\"><div class=\"hd\"><h1>Setting Designer</h1><div id=\"controls\" class=\"ctrl\">" & render-controls sb st sw sm ss & "</div></div>"
-    & "<div class=\"hero\" id=\"hero\"><img id=\"hero-img\" style=\"display:none\" onclick=\"document.getElementById('lb').classList.add('on');document.getElementById('lb-img').src=this.src\"><div class=\"he\" id=\"hero-empty\">Generate a setting to see it here</div><div id=\"hero-meta\" class=\"hm\"></div></div></div>"
-    & "<div class=\"hist\"><h3>History</h3><div id=\"history\"></div></div></div>"
-    & "<div class=\"lb\" id=\"lb\" onclick=\"close_lb(0)\"><span class=\"x\">&times;</span><img id=\"lb-img\"></div>"
+  dims : Integer, Integer, Integer, Integer, Integer -> List WidgetNode
+  dims (sb) (st) (sw) (sm) (ss) = [
+    biome-dimsel sb,
+    widget-dim-flat "time" (tbl-names "dTime") st,
+    widget-dim-flat "weather" (tbl-names "dWeather") sw,
+    widget-dim-flat "mood" (tbl-names "dMood") sm,
+    widget-dim-flat "scale" (tbl-names "dScale") ss
+  ]
+
+  dimrow-holder : Integer, Integer, Integer, Integer, Integer -> WidgetNode
+  dimrow-holder (sb) (st) (sw) (sm) (ss) =
+    widget-panel "dimrow-h" DirRow 0 (dims sb st sw sm ss)
+
+  page-tree : Integer -> WidgetNode
+  page-tree (x) = designer-page-tree "setting" "Setting Designer" "Landmarks, creatures, architectural style..."
+
+Section: Fetch Coordination
+
+  rebuild-dims : Integer -> Integer
+  rebuild-dims (x) =
+    let sb = state-get "sb"
+    in let st = state-get "st"
+    in let sw = state-get "sw"
+    in let sm = state-get "sm"
+    in let ss = state-get "ss"
+    in mount-widget-into "dimrow" (dimrow-holder sb st sw sm ss)
+
+  bump-and-build : Integer -> Integer
+  bump-and-build (x) =
+    let c = state-get "loaded" + 1
+    in let s = state-set "loaded" c
+    in if c >= 6 then rebuild-dims 0 else 0
+
+  cb-biome : Text -> Integer
+  cb-biome (s) = let a = state-set-text "dBiome" s in bump-and-build 0
+  cb-genres : Text -> Integer
+  cb-genres (s) = let a = state-set-text "dGenres" s in bump-and-build 0
+  cb-time : Text -> Integer
+  cb-time (s) = let a = state-set-text "dTime" s in bump-and-build 0
+  cb-weather : Text -> Integer
+  cb-weather (s) = let a = state-set-text "dWeather" s in bump-and-build 0
+  cb-mood : Text -> Integer
+  cb-mood (s) = let a = state-set-text "dMood" s in bump-and-build 0
+  cb-scale : Text -> Integer
+  cb-scale (s) = let a = state-set-text "dScale" s in bump-and-build 0
 
 Section: Callbacks
 
-  pick : Text, Integer -> Integer
-  pick (group) (idx) =
-    let s1 = if group == "biome" then state-set "sb" idx else state-get "sb"
-    in let s2 = if group == "time" then state-set "st" idx else state-get "st"
-    in let s3 = if group == "weather" then state-set "sw" idx else state-get "sw"
-    in let s4 = if group == "mood" then state-set "sm" idx else state-get "sm"
-    in let s5 = if group == "scale" then state-set "ss" idx else state-get "ss"
-    in let ctrl = dom-get "controls"
-    in let c2 = dom-set-html ctrl (render-controls s1 s2 s3 s4 s5)
-    in 0
+  group-key : Text -> Text
+  group-key (g) =
+    if g == "biome" then "sb"
+    else if g == "time" then "st"
+    else if g == "weather" then "sw"
+    else if g == "mood" then "sm"
+    else "ss"
 
-  meta-html : Text, Text, Text, Text, Text, Integer -> Text
+  on-pick : Text, Integer -> Integer
+  on-pick (group) (idx) =
+    let s = state-set (group-key group) idx
+    in rebuild-dims 0
+
+  on-click : Text -> Integer
+  on-click (id) =
+    if id == "gen" then do-generate 0
+    else if id == "rnd" then random-seed 0
+    else 0
+
+  meta-html : Text, Text, Text, Text, Text, Text -> Text
   meta-html (bname) (tname) (wname) (mname) (sname) (seed) =
-    "<div class=\"rm\"><span class=\"mt\">" & bname & "</span><span class=\"mt\">" & tname & "</span><span class=\"mt\">" & wname & "</span><span class=\"mt\">" & mname & "</span><span class=\"mt\">" & sname & "</span><span class=\"mt md\">seed:" & show seed & "</span></div>"
+    "<div class=\"rm\"><span class=\"mt\">" & bname & "</span><span class=\"mt\">" & tname & "</span><span class=\"mt\">" & wname & "</span><span class=\"mt\">" & mname & "</span><span class=\"mt\">" & sname & "</span><span class=\"mt md\">seed:" & seed & "</span></div>"
 
-  add-run : Text, Text, Text, Text, Text, Integer -> Text
+  add-run : Text, Text, Text, Text, Text, Text -> Text
   add-run (bname) (tname) (wname) (mname) (sname) (seed) =
-    let cid = next-card-id 0
-    in let hist = dom-get "history"
-    in let card = dom-create "div"
-    in let c2 = dom-add-class card "rc"
-    in let c3 = dom-set-attr card "id" cid
-    in let ch = "<div class=\"ri\"><div class=\"sp\"></div><img src=\"\" onclick=\"if(this.src&&this.src.indexOf('data:')<0){document.getElementById('hero-img').src=this.src;document.getElementById('hero-img').style.display='';document.getElementById('hero-empty').style.display='none'}\"></div>" & meta-html bname tname wname mname sname seed
-    in let c4 = dom-set-html card ch
-    in let c5 = dom-prepend hist card
-    in cid
+    add-history-card "" (meta-html bname tname wname mname sname seed) hero-click-handler
 
   do-generate : Integer -> Integer
   do-generate (x) =
@@ -89,25 +121,17 @@ Section: Callbacks
     in let sw = state-get "sw"
     in let sm = state-get "sm"
     in let ss = state-get "ss"
-    in let biome = list-at biome-defs sb
-    in let time = list-at time-defs st
-    in let weather = list-at weather-defs sw
-    in let mood = list-at mood-defs sm
-    in let scale = list-at scale-defs ss
     in let extra = dom-get-value (dom-get "prompt")
-    in let seed = 424242
-    in let prompt = build-setting-prompt biome time weather mood scale extra
-    in let body = "{\"prompt\":\"" & prompt & "\",\"negative_prompt\":\"" & setting-negative & "\",\"model_title\":\"\",\"model_short\":\"default\",\"sampler\":\"DPM++ SDE\",\"steps\":12,\"cfg\":2,\"lora\":\"\",\"lora_short\":\"none\",\"seed\":" & show seed & ",\"width\":1280,\"height\":720}"
+    in let seed = dom-get-value (dom-get "seed")
+    in let prompt = build-setting-prompt sb st sw sm ss extra
+    in let body = gen-body prompt setting-negative seed 1280 720
     in let hm = dom-get "hero-meta"
-    in let h2 = dom-set-html hm ("<b>" & biome.name & "</b> - " & time.name & ", " & weather.name & ", " & mood.name)
-    in let cid = add-run (biome.name) (time.name) (weather.name) (mood.name) (scale.name) seed
+    in let h2 = dom-set-html hm ("<b>" & tbl-field "dBiome" sb 0 & "</b> - " & tbl-field "dTime" st 0 & ", " & tbl-field "dWeather" sw 0 & ", " & tbl-field "dMood" sm 0)
+    in let cid = add-run (tbl-field "dBiome" sb 0) (tbl-field "dTime" st 0) (tbl-field "dWeather" sw 0) (tbl-field "dMood" sm 0) (tbl-field "dScale" ss 0) seed
     in generate-image "/api/generate" body cid
 
   random-seed : Integer -> Integer
   random-seed (x) = random-seed-cb x
-
-  close-lb : Integer -> Integer
-  close-lb (x) = close-lb-cb x
 
 Section: Entry
 
@@ -118,14 +142,21 @@ Section: Entry
     in let s3 = state-set "sw" 0
     in let s4 = state-set "sm" 0
     in let s5 = state-set "ss" 0
+    in let s6 = state-set "loaded" 0
     in 0
 
   opening : Integer -> [Console] Nothing
   opening (x) = act
-    let st = init-state 0
-    in let ex = init-explorer 0
-    in let app = dom-get "app"
-    in let a2 = dom-set-html app (build-page 0 1 0 0 0)
+    let ex = init-explorer 0
+    in let st = init-state 0
+    in let h = register-handlers (on-pick) (on-click)
+    in let m = mount-widget-themed dark-gold (page-tree 0)
+    in let f1 = fetch-get-then "/api/d/biomes" (cb-biome)
+    in let fg = fetch-get-then "/api/d/genres" (cb-genres)
+    in let f2 = fetch-get-then "/api/d/times" (cb-time)
+    in let f3 = fetch-get-then "/api/d/weathers" (cb-weather)
+    in let f4 = fetch-get-then "/api/d/moods" (cb-mood)
+    in let f5 = fetch-get-then "/api/d/scales" (cb-scale)
     in print-line-uni ""
   end
 

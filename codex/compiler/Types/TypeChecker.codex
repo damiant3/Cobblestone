@@ -3,6 +3,7 @@ Chapter: Type Checker
   cites Codex chapter Characters
   cites Codex chapter Lists
   cites Codex chapter Build Settings (substitution-capacity, expr-type-capacity)
+  cites Foreword chapter Tuple
 
  Bidirectional type checker for Codex.
 
@@ -119,22 +120,22 @@ Section: Parameterize Type
         entries = entries,
         state = st
        }
-       else let fr = fresh-and-advance st
-       in when fr.var-type
+       else let (fr-ty, fr-st) = fresh-and-advance st
+       in when fr-ty
           is TypeVar (new-id) ->
            let new-entry = ParamEntry {
             param-name = name.value,
             var-id = new-id
            }
        in WalkResult {
-            walked = fr.var-type,
+            walked = fr-ty,
             entries = list-push entries new-entry,
-            state = fr.state
+            state = fr-st
            }
           is otherwise -> WalkResult {
            walked = ty,
            entries = entries,
-           state = fr.state
+           state = fr-st
           }
       else parameterize-walk-children st entries ty
     is FunTy (param) (ret) ->
@@ -273,15 +274,15 @@ Section: Check Definition
    let rn = resolve-def-name renames (def.name.value) (def.chapter-slug)
    in let declared = resolve-declared-type st env def renames
    in let linked-state = if list-length (def.declared-type) == 0
-        then (unify (declared.state) (env-lookup (declared.env) rn) (declared.expected-type) (def.span)).state
+        then let (_, link-st) = unify (declared.state) (env-lookup (declared.env) rn) (declared.expected-type) (def.span) in link-st
         else declared.state
    in let env2 = bind-def-params linked-state (declared.env) (def.params) (declared.expected-type) 0 (list-length (def.params))
    in let body-r = infer-expr (env2.state) (env2.env) (def.body)
-   in let u = unify (body-r.state) (env2.remaining-type) (body-r.inferred-type) (aexpr-span (def.body))
-   in let effect-checked = check-effect-subset (u.state) (env2.remaining-type) (deep-resolve (u.state) (body-r.inferred-type)) (aexpr-span (def.body))
+   in let (_, u-st) = unify (body-r.state) (env2.remaining-type) (body-r.inferred-type) (aexpr-span (def.body))
+   in let effect-checked = check-effect-subset u-st (env2.remaining-type) (deep-resolve u-st (body-r.inferred-type)) (aexpr-span (def.body))
    in let env-type = env-lookup env rn
    in let tied-state = when env-type
-        is ForAllTy (id) (body) -> (unify effect-checked (declared.expected-type) (strip-forall-ty env-type) (def.span)).state
+        is ForAllTy (id) (body) -> let (_, tied-u) = unify effect-checked (declared.expected-type) (strip-forall-ty env-type) (def.span) in tied-u
         is otherwise -> effect-checked
    in CheckResult {
     inferred-type = declared.expected-type,
@@ -347,38 +348,33 @@ Section: Check Definition
    if list-length (def.declared-type) == 0
     then
      let pcount = list-length (def.params)
-     in let fun-built = build-undeclared-fun-type st pcount
+     in let (fun-ty, fun-st) = build-undeclared-fun-type st pcount
      in DefSetup {
-      expected-type = fun-built.fun-type,
-      remaining-type = fun-built.fun-type,
-      state = fun-built.state,
+      expected-type = fun-ty,
+      remaining-type = fun-ty,
+      state = fun-st,
       env = env
      }
     else let env-type = env-lookup env (resolve-def-name renames (def.name.value) (def.chapter-slug))
-    in let inst = instantiate-type st env-type
+    in let (inst-ty, inst-st) = instantiate-type st env-type
     in DefSetup {
-      expected-type = inst.var-type,
-      remaining-type = inst.var-type,
-      state = inst.state,
+      expected-type = inst-ty,
+      remaining-type = inst-ty,
+      state = inst-st,
       env = env
      }
 
-  FunBuiltResult = record {
-   fun-type : CodexType,
-   state : UnificationState
-  }
-
-  build-undeclared-fun-type : UnificationState, Integer -> FunBuiltResult
+  build-undeclared-fun-type : UnificationState, Integer -> (CodexType, UnificationState)
   build-undeclared-fun-type (st) (pcount) =
-   let body-fr = fresh-and-advance st
-   in if pcount == 0 then FunBuiltResult { fun-type = body-fr.var-type, state = body-fr.state }
-   else build-fun-type-loop (body-fr.state) pcount (body-fr.var-type)
+   let (body-ty, body-st) = fresh-and-advance st
+   in if pcount == 0 then (body-ty, body-st)
+   else build-fun-type-loop body-st pcount body-ty
 
-  build-fun-type-loop : UnificationState, Integer, CodexType -> FunBuiltResult
+  build-fun-type-loop : UnificationState, Integer, CodexType -> (CodexType, UnificationState)
   build-fun-type-loop (st) (n) (acc) =
-   if n == 0 then FunBuiltResult { fun-type = acc, state = st }
-   else let fr = fresh-and-advance st
-   in build-fun-type-loop (fr.state) (n - 1) (FunTy (fr.var-type) acc)
+   if n == 0 then (acc, st)
+   else let (fr-ty, fr-st) = fresh-and-advance st
+   in build-fun-type-loop fr-st (n - 1) (FunTy fr-ty acc)
 
   DefParamResult = record {
    state : UnificationState,
@@ -399,9 +395,9 @@ Section: Check Definition
       let env2 = env-bind-local env (p.name.value) param-ty
    in bind-def-params st env2 params ret-ty (i + 1) len
      is otherwise ->
-      let fr = fresh-and-advance st
-   in let env2 = env-bind-local env (p.name.value) (fr.var-type)
-   in bind-def-params (fr.state) env2 params remaining (i + 1) len
+      let (fr-ty, fr-st) = fresh-and-advance st
+   in let env2 = env-bind-local env (p.name.value) fr-ty
+   in bind-def-params fr-st env2 params remaining (i + 1) len
 
 Section: Check Chapter
   ChapterResult = record {
@@ -468,10 +464,10 @@ Section: Check Chapter
    }
    else let def = list-at defs i
    in let resolved-name = resolve-def-name renames (def.name.value) (def.chapter-slug)
-   in let ty = if list-length (def.declared-type) == 0 then let fr = fresh-and-advance st
-   in let env2 = env-bind env resolved-name (fr.var-type)
+   in let ty = if list-length (def.declared-type) == 0 then let (fr-ty, fr-st) = fresh-and-advance st
+   in let env2 = env-bind env resolved-name fr-ty
    in LetBindResult {
-          state = fr.state,
+          state = fr-st,
           env = env2
          }
    else let resolved = resolve-type-expr tdm (list-at (def.declared-type) 0)
@@ -521,12 +517,12 @@ Section: Check Chapter
    in let ic = count-instances-for ids (cd.name.value) 0 (list-length ids) 0
    in if ic <= 1 then register-cm-bindings st env tdm cds ids (i + 1) len
       else let after = register-cm-ops st env tdm (cd.methods) 0 (list-length (cd.methods))
-      in let fr = fresh-and-advance (after.state)
-      in let dict-ty = when (fr.var-type)
-       is TypeVar (vid) -> deck-record (ForAllTy vid (deck-record (ConstructedTy (Name { value = (cd.name.value) & "Dict" }) [fr.var-type])))
-       is otherwise -> fr.var-type
+      in let (fr-ty, fr-st) = fresh-and-advance (after.state)
+      in let dict-ty = when fr-ty
+       is TypeVar (vid) -> deck-record (ForAllTy vid (deck-record (ConstructedTy (Name { value = (cd.name.value) & "Dict" }) [fr-ty])))
+       is otherwise -> fr-ty
       in let env2 = env-bind (after.env) ("__dict-of-" & (cd.name.value)) dict-ty
-      in register-cm-bindings (fr.state) env2 tdm cds ids (i + 1) len
+      in register-cm-bindings fr-st env2 tdm cds ids (i + 1) len
 
   register-cm-ops : UnificationState, TypeEnv, List TypeBinding, List AEffectOpDef, Integer, Integer -> LetBindResult
   register-cm-ops (st) (env) (tdm) (ops) (i) (len) =
@@ -555,6 +551,9 @@ Section: Check Chapter
    if i == len then acc
    else build-cm-fields names (i + 1) len (list-push acc (deck-record (RecordField { name = Name { value = list-at names i }, type-val = int-ty-default })))
 
+  empty-type-bindings : List TypeBinding
+  empty-type-bindings = []
+
   check-all-defs : UnificationState, TypeEnv, List ADef, Integer, Integer, List TypeBinding, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry -> ChapterResult
   check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) =
    if i == len then ChapterResult {
@@ -565,7 +564,7 @@ Section: Check Chapter
    else let def = list-at defs i
    in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments slug-cache (def.chapter-slug) 0
-   in let fresh-env = __record-set (__record-set env "locals" []) "chapter-renames" chapter-rn
+   in let fresh-env = __record-set (__record-set env "locals" empty-type-bindings) "chapter-renames" chapter-rn
    in let r = check-def st fresh-env def renames
    in let lin-st = check-linearity-def def fresh-env (r.state)
    in let resolved = deep-resolve lin-st (r.inferred-type)

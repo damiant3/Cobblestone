@@ -336,8 +336,77 @@ BREAK: patched INT3 at lookup-expr-type+0x0 (0x2F56FB, orig=0x4C)
     RDI   0x00000010
 ```
 
-Exit code 5 = breakpoint hit (vs 4 = real crash). The VM halts on
-the breakpoint — there is no continue-after-break yet.
+Exit code 5 = breakpoint hit (vs 4 = real crash).
+
+### Interactive Debugger
+
+Run codex-vm directly with `-debug` (and optionally `-map <file>.map`)
+to get an interactive debug shell on breakpoints and single-steps.
+
+```
+tools/codex-vm.exe -kernel build-output/bare-metal/Codex.cdx ^
+    -input input.tmp -output out.tmp -mem 2048 -headless ^
+    -debug -map build/output/reg.map
+```
+
+When a breakpoint fires (`-Break` patch or runtime `b` command), the
+debugger prints registers with symbol resolution and waits for commands:
+
+```
+--- Break at 0x12f1de <desugar-def+0> ---
+  RIP=0x12f1de <desugar-def+0>
+  RSP=00000000007ffa08 RBP=00000000007ffa30 ...
+  R13=00000000006ff325
+dbg> _
+```
+
+**Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `s` / `step` | Single-step one instruction (sets TF) |
+| `c` / `continue` | Resume until next breakpoint |
+| `r` / `regs` | Dump all registers with symbol lookup |
+| `m <addr> [len]` | Hex+ASCII memory dump (default 64 bytes) |
+| `x <addr>` | Read one qword at address |
+| `bt` / `backtrace` | Walk RBP chain (resolved frames) |
+| `stack` | Dump 16 stack slots with symbol lookup |
+| `b <fn\|0xaddr> [if reg=val]` | Set breakpoint (optional condition) |
+| `w <addr> [size]` | Set memory watchpoint |
+| `sym <name>` | Look up symbol address |
+| `q` / `quit` | Exit VM |
+
+**Conditional breakpoints** let you skip high-frequency call sites and
+only break when a register matches:
+
+```
+dbg> b desugar-def if rdi=0x705320
+  conditional: rdi == 0x705320
+  breakpoint 0 at 0x12f1de <desugar-def+0>
+```
+
+The debugger skips the breakpoint when `rdi != 0x705320` by restoring
+the original byte, single-stepping past, and re-patching.
+
+**Workflow: tracing a field corruption**
+
+1. Break at the function that builds the record (`-Break "desugar-def"`)
+2. `regs` to see the input parameter (rdi = Def pointer)
+3. `x <rdi+0>` to read the Def's first field (ann in CCE order)
+4. `step` through the function, watching how field values flow
+5. After the record constructor, `x <r10_before+16>` to verify the
+   declared-type field was stored correctly
+6. Or use `w <addr>` to set a memory watchpoint on the field slot
+
+**Build codex-vm with debugger:**
+
+```powershell
+tools/build-vm.ps1   # standard build includes debugger
+```
+
+The debugger compiles into the same binary — `-debug` activates it.
+Without `-debug`, behavior is unchanged (breakpoints print and continue
+as before).
 
 ### Debug Compile Mode
 
@@ -378,7 +447,7 @@ SIZE:2176384
 
 | Flag | Purpose |
 |------|---------|
-| `-Break "name"` | INT3 at function entry; exit 5 on hit |
+| `-Break "name"` | INT3 at function entry; use with codex-vm `-debug` for interactive shell |
 | `-DebugMode` | Phase markers (`DBG:frontend`, `DBG:emit`) |
 | `-Poison` | 0xCD fill in `__alloc` (catches uninitialized fields) |
 | `-Repl` | REPL loop (for batch compilation) |
@@ -386,10 +455,11 @@ SIZE:2176384
 
 ### GDB (Legacy Fallback)
 
-GDB under WSL with QEMU TCG is still available for hardware
-watchpoints (DR0-DR3) and instruction tracing. Use only when the
-native toolkit is insufficient — Rule 6 permits Unix tools for
-this purpose. See `build/gdb-watchpoint.ps1`.
+The interactive debugger (`-debug`) covers breakpoints, single-step,
+register/memory inspection, conditional breaks, and backtraces. GDB
+under WSL with QEMU TCG is a last resort for hardware watchpoints
+(DR0-DR3) on specific memory addresses. Rule 6 permits Unix tools
+for this purpose only. See `build/gdb-watchpoint.ps1`.
 
 ## Poison-Alloc Diagnostic Build
 

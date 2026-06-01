@@ -1,0 +1,217 @@
+Chapter: ExplorerStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Lightweight, tight binary paged store for explorer app data. Fixed 4 KB
+ pages like a real DB file, easily loadable and page-cacheable, but with
+ none of the relational-engine weight. Built on the mutable arena byte
+ buffer (alloc-bytes / poke-byte / peek-byte) so loads/builds are O(bytes)
+ with no immutable-copy blowup.
+
+ File layout (little-endian):
+   Page 0 (superblock):
+     [0..3]   magic  0xE5 'D' 'B' version-byte
+     [4..5]   table-count : u16
+     [6..]    table directory, per table:
+                name-len : u8, name bytes (CCE), first-page : u16,
+                page-count : u16, row-count : u16
+   Data pages (one run per table):
+     [0..1]   row-count-in-page : u16
+     [2..]    rows packed forward, each row:
+                field-count : u8, then per field: len : u16, bytes (CCE)
+
+ Text is stored as raw CCE bytes (the app content is single-byte CCE);
+ conversion to Unicode happens only when the server emits JSON.
+
+ We say:
+
+Section: Constants
+
+  es-page-sz : Integer = 4096
+  es-magic0 : Integer = 229
+  es-magic1 : Integer = 68
+  es-magic2 : Integer = 66
+  es-version : Integer = 1
+
+Section: Byte / Text Codec
+
+  es-w-u16 : Integer, Integer, Integer -> Integer
+  es-w-u16 (buf) (off) (val) =
+    let a = poke-byte buf off (bit-and val 255)
+    in poke-byte buf (off + 1) (bit-and (bit-shru val 8) 255)
+
+  es-r-u16 : Integer, Integer -> Integer
+  es-r-u16 (buf) (off) = (peek-byte buf off) + (peek-byte buf (off + 1)) * 256
+
+  es-w-text : Integer, Integer, Text, Integer, Integer -> Integer
+  es-w-text (buf) (off) (s) (i) (len) =
+    if i >= len then off + len
+    else let w = poke-byte buf (off + i) (to-unicode (char-code (char-at s i)))
+    in es-w-text buf off s (i + 1) len
+
+  es-r-text : Integer, Integer, Integer, Integer, Text -> Text
+  es-r-text (buf) (off) (len) (i) (acc) =
+    if i >= len then acc
+    else es-r-text buf off len (i + 1) (acc & char-to-text (code-to-char (from-unicode (peek-byte buf (off + i)))))
+
+Section: Row Writing
+
+  StrRow = record { fields : List Text }
+
+  es-w-row : Integer, Integer, List Text, Integer, Integer -> Integer
+  es-w-row (buf) (off) (fields) (i) (n) =
+    if i >= n then off
+    else let f = list-at fields i
+    in let flen = text-length f
+    in let o1 = es-w-u16 buf off flen
+    in let o2 = es-w-text buf (off + 2) f 0 flen
+    in es-w-row buf o2 fields (i + 1) n
+
+  es-write-rows : Integer, Integer, List (List Text), Integer, Integer -> Integer
+  es-write-rows (buf) (off) (rows) (i) (n) =
+    if i >= n then off
+    else let row = list-at rows i
+    in let fc = list-length row
+    in let o1 = poke-byte buf off fc
+    in let o2 = es-w-row buf (off + 1) row 0 fc
+    in es-write-rows buf o2 rows (i + 1) n
+
+Section: Row Reading
+
+  RowFields = record { rf-fields : List Text, rf-next : Integer }
+
+  es-read-row : Integer, Integer -> RowFields
+  es-read-row (buf) (off) =
+    let fc = peek-byte buf off
+    in es-read-fields buf (off + 1) fc 0 []
+
+  es-read-fields : Integer, Integer, Integer, Integer, List Text -> RowFields
+  es-read-fields (buf) (off) (fc) (i) (acc) =
+    if i >= fc then RowFields { rf-fields = acc, rf-next = off }
+    else let flen = es-r-u16 buf off
+    in let txt = es-r-text buf (off + 2) flen 0 ""
+    in es-read-fields buf (off + 2 + flen) fc (i + 1) (list-push acc txt)
+
+Section: Single-Table Round-Trip (proof)
+
+ Builds one data page holding `rows`, then reads it back. Returns the
+ page buffer; callers read with es-page-rows.
+
+  es-build-page : List (List Text) -> Integer
+  es-build-page (rows) = es-build-page-sized rows es-page-sz
+
+  es-build-page-sized : List (List Text), Integer -> Integer
+  es-build-page-sized (rows) (size) =
+    let buf = alloc-bytes size
+    in let o0 = es-w-u16 buf 0 (list-length rows)
+    in let oz = es-write-rows buf 2 rows 0 (list-length rows)
+    in buf
+
+  es-page-rows : Integer, Integer, Integer, Integer, List (List Text) -> List (List Text)
+  es-page-rows (buf) (off) (i) (n) (acc) =
+    if i >= n then acc
+    else let rf = es-read-row buf off
+    in es-page-rows buf (rf.rf-next) (i + 1) n (list-push acc (rf.rf-fields))
+
+  es-page-read-all : Integer -> List (List Text)
+  es-page-read-all (buf) =
+    let n = es-r-u16 buf 0
+    in es-page-rows buf 2 0 n []
+
+Section: Disk Load
+
+ Read `sectors` 512-byte sectors off the attached disk (block-read-sector)
+ into one contiguous arena buffer, ready for es-page-read-all. The .db file
+ is just the paged bytes written to the raw disk — the sectors ARE the pages.
+
+  es-copy-sector : Integer, Integer, Integer, Integer -> Integer
+  es-copy-sector (big) (boff) (sec) (i) =
+    if i >= 512 then big
+    else let w = poke-byte big (boff + i) (peek-byte sec i)
+    in es-copy-sector big boff sec (i + 1)
+
+  es-disk-load-loop : Integer, Integer, Integer -> Integer
+  es-disk-load-loop (big) (s) (n) =
+    if s >= n then big
+    else let sec = block-read-sector s
+    in let c = es-copy-sector big (s * 512) sec 0
+    in es-disk-load-loop big (s + 1) n
+
+  es-disk-load : Integer -> Integer
+  es-disk-load (sectors) =
+    let big = alloc-bytes (sectors * 512)
+    in es-disk-load-loop big 0 sectors
+
+Section: Disk Save
+
+ Mirror of disk load: write a contiguous arena buffer back to the disk as
+ raw 512-byte sectors via block-write-sector (durable; codex-vm flushes IDE
+ writes). es-disk-load-at reads a region at an arbitrary start sector — the
+ sector-0 case is es-disk-load above.
+
+  es-copy-out : Integer, Integer, Integer, Integer -> Integer
+  es-copy-out (big) (boff) (tmp) (i) =
+    if i >= 512 then tmp
+    else let w = poke-byte tmp i (peek-byte big (boff + i))
+    in es-copy-out big boff tmp (i + 1)
+
+  es-disk-save-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  es-disk-save-loop (big) (start) (s) (n) (tmp) =
+    if s >= n then 0
+    else let c = es-copy-out big (s * 512) tmp 0
+    in let w = block-write-sector (start + s) tmp
+    in es-disk-save-loop big start (s + 1) n tmp
+
+  es-disk-save : Integer, Integer, Integer -> Integer
+  es-disk-save (big) (start) (sectors) =
+    let tmp = alloc-bytes 512
+    in es-disk-save-loop big start 0 sectors tmp
+
+  es-disk-load-at-loop : Integer, Integer, Integer, Integer -> Integer
+  es-disk-load-at-loop (big) (start) (s) (n) =
+    if s >= n then big
+    else let sec = block-read-sector (start + s)
+    in let c = es-copy-sector big (s * 512) sec 0
+    in es-disk-load-at-loop big start (s + 1) n
+
+  es-disk-load-at : Integer, Integer -> Integer
+  es-disk-load-at (start) (sectors) =
+    let big = alloc-bytes (sectors * 512)
+    in es-disk-load-at-loop big start 0 sectors
+
+Section: Multi-Table
+
+ A multi-table .db starts with a directory, then one page-block per table:
+   [0..1]  table-count : u16
+   [2..]   directory, per table: name-len : u8, name (ASCII), data-off : u32
+   then at each data-off: [u16 row-count][rows...] (the single-table layout).
+ es-read-table looks a table up by name and returns its rows.
+
+  es-r-u32 : Integer, Integer -> Integer
+  es-r-u32 (buf) (off) =
+    (peek-byte buf off) + (peek-byte buf (off + 1)) * 256
+    + (peek-byte buf (off + 2)) * 65536 + (peek-byte buf (off + 3)) * 16777216
+
+  es-page-read-at : Integer, Integer -> List (List Text)
+  es-page-read-at (buf) (off) =
+    let n = es-r-u16 buf off
+    in es-page-rows buf (off + 2) 0 n []
+
+  es-dir-find : Integer, Integer, Integer, Text -> Integer
+  es-dir-find (buf) (off) (remaining) (name) =
+    if remaining <= 0 then 0 - 1
+    else let nl = peek-byte buf off
+    in let tname = es-r-text buf (off + 1) nl 0 ""
+    in let doff = es-r-u32 buf (off + 1 + nl)
+    in if tname == name then doff
+    else es-dir-find buf (off + 1 + nl + 4) (remaining - 1) name
+
+  es-table-offset : Integer, Text -> Integer
+  es-table-offset (buf) (name) = es-dir-find buf 2 (es-r-u16 buf 0) name
+
+  es-read-table : Integer, Text -> List (List Text)
+  es-read-table (buf) (name) =
+    let off = es-table-offset buf name
+    in if off < 0 then [] else es-page-read-at buf off
+
+Page 1
