@@ -24,6 +24,7 @@ param(
     [switch]$Profile,
     [switch]$Trace,
     [switch]$EscapeCheck,
+    [switch]$Uefi,
     [string]$Break,
     [string]$Survey = ''
 )
@@ -110,6 +111,7 @@ try {
     if ($Profile) { $mode = "$mode profile" }
     if ($Trace) { $mode = "$mode trace" }
     if ($EscapeCheck) { $mode = "$mode escape-check" }
+    if ($Uefi) { $mode = "$mode uefi" }
     if ($Survey) { $mode = "$mode survey=$Survey" }
     [void]$sb.Append("$mode`n")
 

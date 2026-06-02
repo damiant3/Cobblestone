@@ -721,17 +721,12 @@ Section: Match Lowering
    else when ty
     is ConstructedTy (name) (args) ->
      if list-length args == 0 then lookup-subst subst (name.value) ty
-     else ConstructedTy name (apply-ctor-subst-list subst args 0 (list-length args) [])
+     else ConstructedTy name (for a in args -> apply-ctor-subst subst a)
     is FunTy (p) (r) -> FunTy (apply-ctor-subst subst p) (apply-ctor-subst subst r)
     is ListTy (e) -> ListTy (apply-ctor-subst subst e)
     is LinkedListTy (e) -> LinkedListTy (apply-ctor-subst subst e)
     is EffectfulTy (effs) (sc) (r) -> EffectfulTy effs sc (apply-ctor-subst subst r)
     is otherwise -> ty
-
-  apply-ctor-subst-list : List TypeBinding, List CodexType, Integer, Integer, List CodexType -> List CodexType
-  apply-ctor-subst-list (subst) (args) (i) (len) (acc) =
-   if i == len then acc
-   else apply-ctor-subst-list subst args (i + 1) len (list-push acc (apply-ctor-subst subst (list-at args i)))
 
   lookup-subst : List TypeBinding, Text, CodexType -> CodexType
   lookup-subst (subst) (name) (default-ty) =
@@ -770,16 +765,7 @@ Section: Collections and Act
    in let elem-ty = when from-context
       is ErrorTy -> ir-expr-type (lower-expr (list-at elems 0) ErrorTy ctx)
       is otherwise -> from-context
-   in deck-record (IrList (lower-list-elems-loop elems elem-ty ctx 0 (list-length elems)) elem-ty sp)
-
-  lower-list-elems-loop : List AExpr, CodexType, LowerCtx, Integer, Integer -> List IRExpr
-  lower-list-elems-loop (elems) (elem-ty) (ctx) (i) (len) =
-   lower-list-elems-acc elems elem-ty ctx i len []
-
-  lower-list-elems-acc : List AExpr, CodexType, LowerCtx, Integer, Integer, List IRExpr -> List IRExpr
-  lower-list-elems-acc (elems) (elem-ty) (ctx) (i) (len) (acc) =
-   if i == len then acc
-   else lower-list-elems-acc elems elem-ty ctx (i + 1) len (list-push acc (lower-expr (list-at elems i) elem-ty ctx))
+   in deck-record (IrList (for e in elems -> lower-expr e elem-ty ctx) elem-ty sp)
 
   lower-record : Name, List AFieldExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-record (name) (fields) (ty) (ctx) (sp) =
@@ -917,7 +903,7 @@ Section: Collections and Act
    if i == list-length clauses then acc
    else let c = list-at clauses i
    in let body-ir = lower-expr (c.body) ty ctx
-   in let param-names = lower-clause-param-names (c.params) 0 (list-length (c.params)) []
+   in let param-names = for p in (c.params) -> p.value
    in let wrapped = wrap-clause-body-in-lambda param-names body-ir (c.span)
    in lower-handle-clauses-acc clauses ty ctx (i + 1) (list-push acc (deck-record (IRHandleClause {
     op-name = c.op-name.value,
@@ -927,23 +913,13 @@ Section: Collections and Act
     span = c.span
    })))
 
-  lower-clause-param-names : List Name, Integer, Integer, List Text -> List Text
-  lower-clause-param-names (ps) (i) (len) (acc) =
-   if i >= len then acc
-   else lower-clause-param-names ps (i + 1) len (list-push acc (list-at ps i).value)
-
   wrap-clause-body-in-lambda : List Text, IRExpr, SourceSpan -> IRExpr
   wrap-clause-body-in-lambda (params) (body) (sp) =
    if list-length params == 0 then body
-   else let ir-params = build-ir-params params 0 (list-length params) [] sp
+   else let ir-params = for n in params -> deck-record (IRParam { name = n, type-val = int-ty-default, span = sp })
    in let body-ty = ir-expr-type body
    in let lam-ty = build-lambda-type params body-ty 0
    in deck-record (IrLambda ir-params body lam-ty sp)
-
-  build-ir-params : List Text, Integer, Integer, List IRParam, SourceSpan -> List IRParam
-  build-ir-params (names) (i) (len) (acc) (sp) =
-   if i >= len then acc
-   else build-ir-params names (i + 1) len (list-push acc (deck-record (IRParam { name = list-at names i, type-val = int-ty-default, span = sp }))) sp
 
   build-lambda-type : List Text, CodexType, Integer -> CodexType
   build-lambda-type (params) (ret) (i) =
@@ -1028,14 +1004,12 @@ Section: Definition Lowering
     is FunTy (p) (r) -> get-return-type-n r (n - 1)
     is otherwise -> ty
 
-  lower-chapter : AChapter, List TypeBinding, TypeEnv, UnificationState, List Text, List RenameEntry, SkipListText, List ChapterAssignment -> IRChapter
-  lower-chapter (m) (types) (env) (ust) (ctor-names) (renames) (colliding) (assignments) =
-   let all-types = sort-bindings (types & env.bindings)
-   in let sorted-ust = __record-set ust "expr-types" (sort-expr-types (ust.expr-types))
-   in let slug-cache = build-slug-cache assignments 0 (list-length assignments) []
+  lower-chapter : AChapter, List TypeBinding, UnificationState, List Text, List RenameEntry, SkipListText, List ChapterAssignment -> IRChapter
+  lower-chapter (m) (all-types) (ust) (ctor-names) (renames) (colliding) (assignments) =
+   let slug-cache = for a in assignments -> slugify (a.chapter-slug)
    in deck-record (IRChapter {
     name = m.name,
-    defs = lower-defs (m.defs) all-types sorted-ust 0 renames colliding assignments (m.citations) slug-cache "" [],
+    defs = lower-defs (m.defs) all-types ust 0 renames colliding assignments (m.citations) slug-cache "" [],
     effect-op-names = collect-effect-op-names (m.effect-defs) 0 (list-length (m.effect-defs)) [],
     span = m.span
    })
@@ -1044,12 +1018,7 @@ Section: Definition Lowering
   collect-effect-op-names (effs) (i) (len) (acc) =
    if i >= len then acc
    else let e = list-at effs i
-   in collect-effect-op-names effs (i + 1) len (collect-ops-from-def (e.ops) 0 (list-length (e.ops)) acc)
-
-  collect-ops-from-def : List AEffectOpDef, Integer, Integer, List Text -> List Text
-  collect-ops-from-def (ops) (i) (len) (acc) =
-   if i >= len then acc
-   else collect-ops-from-def ops (i + 1) len (list-push acc (list-at ops i).name.value)
+   in collect-effect-op-names effs (i + 1) len (acc & (for op in (e.ops) -> op.name.value))
 
   lower-defs : List ADef, List TypeBinding, UnificationState, Integer, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry -> List IRDef
   lower-defs (defs) (types) (ust) (i) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) =
@@ -1067,14 +1036,7 @@ Section: Constant Folding
 
   fold-constants-in-chapter : IRChapter -> IRChapter
   fold-constants-in-chapter (ch) =
-   __record-set ch "defs" (fold-defs (ch.defs) 0 (list-length (ch.defs)) [])
-
-  fold-defs : List IRDef, Integer, Integer, List IRDef -> List IRDef
-  fold-defs (defs) (i) (len) (acc) =
-   if i == len then acc
-   else let d = list-at defs i
-   in let folded = __record-set d "body" (fold-expr (d.body))
-   in fold-defs defs (i + 1) len (list-push acc (deck-record folded))
+   __record-set ch "defs" (for d in (ch.defs) -> let folded = __record-set d "body" (fold-expr (d.body)) in deck-record folded)
 
   fold-expr : IRExpr -> IRExpr
   fold-expr (e) =
@@ -1089,12 +1051,12 @@ Section: Constant Folding
      in when fx
       is IrIntLit (v) (ls) -> deck-record (IrIntLit (-v) sp)
       is otherwise -> deck-record (IrNegate fx sp)
-    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (fold-expr sc) (fold-branches bs 0 (list-length bs) []) ty sp)
-    is IrAct (ss) (ty) (sp) -> deck-record (IrAct (fold-act-stmts ss 0 (list-length ss) []) ty sp)
-    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (fold-fields fs 0 (list-length fs) []) ty sp)
+    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (fold-expr sc) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = fold-expr (b.body), guard = fold-expr (b.guard), span = b.span })) ty sp)
+    is IrAct (ss) (ty) (sp) -> deck-record (IrAct (for stmt in ss -> when stmt is IrDoBind (n) (sty) (v) (ssp) -> deck-record (IrDoBind n sty (fold-expr v) ssp) is IrDoExec (ev) (esp) -> deck-record (IrDoExec (fold-expr ev) esp)) ty sp)
+    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (fold-expr (fv.value)))) ty sp)
     is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (fold-expr r) f ty sp)
     is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (fold-expr r) f (fold-expr v) ty sp)
-    is IrList (es) (ty) (sp) -> deck-record (IrList (fold-expr-list es 0 (list-length es) []) ty sp)
+    is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> fold-expr x) ty sp)
     is otherwise -> e
 
   fold-apply : IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
@@ -1127,35 +1089,5 @@ Section: Constant Folding
      is otherwise -> deck-record (IrApply partial idx-arg ty sp)
     is otherwise -> deck-record (IrApply partial idx-arg ty sp)
 
-  fold-branches : List IRBranch, Integer, Integer, List IRBranch -> List IRBranch
-  fold-branches (bs) (i) (len) (acc) =
-   if i == len then acc
-   else let b = list-at bs i
-   in fold-branches bs (i + 1) len (list-push acc (deck-record (IRBranch {
-    pattern = b.pattern,
-    body = fold-expr (b.body),
-    guard = fold-expr (b.guard),
-    span = b.span
-   })))
-
-  fold-act-stmts : List IRActStmt, Integer, Integer, List IRActStmt -> List IRActStmt
-  fold-act-stmts (ss) (i) (len) (acc) =
-   if i == len then acc
-   else let s = list-at ss i
-   in let folded = when s
-    is IrDoBind (n) (ty) (v) (sp) -> deck-record (IrDoBind n ty (fold-expr v) sp)
-    is IrDoExec (e) (sp) -> deck-record (IrDoExec (fold-expr e) sp)
-   in fold-act-stmts ss (i + 1) len (list-push acc folded)
-
-  fold-fields : List IRFieldVal, Integer, Integer, List IRFieldVal -> List IRFieldVal
-  fold-fields (fs) (i) (len) (acc) =
-   if i == len then acc
-   else let f = list-at fs i
-   in fold-fields fs (i + 1) len (list-push acc (deck-record (__record-set f "value" (fold-expr (f.value)))))
-
-  fold-expr-list : List IRExpr, Integer, Integer, List IRExpr -> List IRExpr
-  fold-expr-list (es) (i) (len) (acc) =
-   if i == len then acc
-   else fold-expr-list es (i + 1) len (list-push acc (fold-expr (list-at es i)))
 
 Page 1 of 2

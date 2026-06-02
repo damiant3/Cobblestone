@@ -1652,9 +1652,14 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
 
     case UEFI_TRAP_CONIN_READKEY: {
         /* ReadKeyStroke(This, Key) — RDX = pointer to EFI_INPUT_KEY (4 bytes)
-           Block until a key arrives to prevent guest busy-polling stack overflow. */
+           Non-blocking: returns EFI_NOT_READY if no key available.
+           Handles PS/2 extended scancodes (0xE0 prefix) in one call. */
         int sc = kbd_dequeue();
-        while (sc < 0 || (sc & 0x80)) { Sleep(10); sc = kbd_dequeue(); }
+        /* Skip key-up events */
+        while (sc >= 0 && (sc & 0x80)) sc = kbd_dequeue();
+        /* Handle 0xE0 extended prefix: consume it and read the real scancode */
+        if (sc == 0xE0) sc = kbd_dequeue();
+        if (sc < 0 || (sc & 0x80)) sc = -1;
         if (sc < 0) {
             rax_result = EFI_NOT_READY;
         } else {
@@ -1859,9 +1864,20 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
     }
     case UEFI_TRAP_BOOT_EXIT_BOOTSVC:
-    case UEFI_TRAP_BOOT_STALL:
+    case UEFI_TRAP_BOOT_STALL: {
+        /* Stall(Microseconds) — RCX = microseconds to pause.
+           Cap at 16ms for UI responsiveness (compiled-in read-key
+           helper requests 50ms which is too sluggish for menus). */
+        unsigned long long us = rcx;
+        if (us > 0) {
+            DWORD ms = (DWORD)((us + 999) / 1000);
+            if (ms > 8) ms = 8;
+            Sleep(ms);
+        }
+        break;
+    }
     case UEFI_TRAP_BOOT_SETWATCHDOG:
-        break; /* stubs */
+        break;
 
     case UEFI_TRAP_BOOT_HANDLEPROTO: {
         /* HandleProtocol(Handle, Protocol*, Interface**) — RCX=handle, RDX=&GUID, R8=&interface */
@@ -2230,7 +2246,11 @@ static void vga_start(void) {
             0x900000  Heap                                             */
 #define INPUT_BUF_ADDR        0x500000
 #define INPUT_BUF_MAX         0x200000  /* 2 MB */
-#define GUEST_RING_SIZE       0x100000  /* 1 MB — must match seed's serial-ring-buf-size */
+#define GUEST_RING_SIZE       0x200000  /* 2 MB — must match seed's serial-ring-buf-size
+                                         Pre-load the entire file: old seeds with 1 MB
+                                         ring wrap reads via (pos & mask); as long as the
+                                         compiler reads linearly, the wrap-overwrite is
+                                         safe because earlier bytes are already consumed. */
 #define GUEST_RING_MASK       0x0FFFFF
 
 /* Drip-feed state: host-side overflow buffer for input > GUEST_RING_SIZE */
@@ -2239,7 +2259,7 @@ static size_t input_overflow_len = 0;
 static size_t input_overflow_pos = 0;
 static unsigned long long input_total_written = 0;
 #define OUTPUT_RING_ADDR      0x700000
-#define OUTPUT_RING_SIZE      0x200000  /* 2 MB */
+#define OUTPUT_RING_SIZE      0x400000  /* 4 MB */
 #define OUTPUT_RING_MASK      0x1FFFFF
 #define OUTPUT_WRITE_POS_ADDR 36152
 #define DOORBELL_PORT         0x510
@@ -3219,9 +3239,22 @@ static BOOL WINAPI ctrl_handler(DWORD type) {
     return TRUE;
 }
 
-/* Shutdown watchdog removed — socket probing caused false positives
-   during binary transfer (idle ctrl channel misread as disconnect),
-   truncating the output.  Partition cleanup relies on atexit + mutex. */
+/* Input drip-feed thread: when the input file exceeds the guest ring,
+   periodically cancel the VP so the main loop drip-feeds overflow data.
+   Without this, the guest busy-waits on the empty ring with no VM exits,
+   and the drip-feed (which runs on exit) never fires — deadlock. */
+static DWORD WINAPI drip_feed_thread(LPVOID arg) {
+    (void)arg;
+    while (!shutdown_requested) {
+        if (input_overflow && input_overflow_pos < input_overflow_len) {
+            Sleep(5);
+            if (partition) WHvCancelRunVirtualProcessor(partition, 0, 0);
+        } else {
+            Sleep(50);
+        }
+    }
+    return 0;
+}
 
 /* ── Serial ────────────────────────────────────────────────────────── */
 
@@ -4142,6 +4175,11 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         else if (port == 0x71) {
             /* write to CMOS — ignore */
         }
+        /* Guest sleep request: out 0xE0, ms — yields to host for N ms */
+        else if (port == 0xE0) {
+            DWORD ms = (val > 0 && val <= 1000) ? (DWORD)val : 1;
+            Sleep(ms);
+        }
         /* Keyboard controller (0x60/0x64) — accept silently */
         else if (port == 0x60 || port == 0x64) {
             /* guest disables keyboard; ignore */
@@ -4680,6 +4718,9 @@ int main(int argc, char **argv) {
     }
 
     WHV_RUN_VP_EXIT_CONTEXT ctx;
+    /* Start drip-feed thread for input overflow */
+    CreateThread(NULL, 0, drip_feed_thread, NULL, 0, NULL);
+
     unsigned long long exits = 0;
     int watch_hits = 0;
     int pending_irq = -1;      /* next interrupt vector to deliver, or -1 */

@@ -10,12 +10,7 @@ Chapter: Codex Emitter
 Section: Type Definition Emission
   emit-type-defs : List ATypeDef, Integer -> Text
   emit-type-defs (tds) (i) =
-   text-concat-list (emit-type-defs-acc tds 0 (list-length tds) [])
-
-  emit-type-defs-acc : List ATypeDef, Integer, Integer, List Text -> List Text
-  emit-type-defs-acc (tds) (i) (len) (acc) =
-   if i == len then acc
-   else emit-type-defs-acc tds (i + 1) len (list-push acc (emit-type-def (list-at tds i) & "\n"))
+   text-concat-list (for td in tds -> emit-type-def td & "\n")
 
   emit-type-def : ATypeDef -> Text
   emit-type-def (td) =
@@ -28,12 +23,7 @@ Section: Type Definition Emission
 
   emit-tparams : List Name, Integer -> Text
   emit-tparams (tparams) (i) =
-   text-concat-list (emit-tparams-acc tparams i (list-length tparams) [])
-
-  emit-tparams-acc : List Name, Integer, Integer, List Text -> List Text
-  emit-tparams-acc (tparams) (i) (len) (acc) =
-   if i == len then acc
-   else emit-tparams-acc tparams (i + 1) len (list-push acc (" (" & (list-at tparams i).value & ")"))
+   text-concat-list (for tp in tparams -> " (" & tp.value & ")")
 
   emit-record-field-defs : List ARecordFieldDef, Integer -> Text
   emit-record-field-defs (fields) (i) =
@@ -58,12 +48,7 @@ Section: Type Definition Emission
 
   emit-ctor-fields : List ATypeExpr, Integer -> Text
   emit-ctor-fields (fields) (i) =
-   text-concat-list (emit-ctor-fields-acc fields i (list-length fields) [])
-
-  emit-ctor-fields-acc : List ATypeExpr, Integer, Integer, List Text -> List Text
-  emit-ctor-fields-acc (fields) (i) (len) (acc) =
-   if i == len then acc
-   else emit-ctor-fields-acc fields (i + 1) len (list-push acc (" (" & emit-type-expr (list-at fields i) & ")"))
+   text-concat-list (for f in fields -> " (" & emit-type-expr f & ")")
 
   emit-type-expr : ATypeExpr -> Text
   emit-type-expr (te) =
@@ -170,12 +155,7 @@ Section: TypeVar Normalization
 
   normalize-type-list : List CodexType, Integer, TypeVarMap -> List CodexType
   normalize-type-list (args) (i) (m) =
-   normalize-type-list-loop args i (list-length args) m []
-
-  normalize-type-list-loop : List CodexType, Integer, Integer, TypeVarMap, List CodexType -> List CodexType
-  normalize-type-list-loop (args) (i) (len) (m) (acc) =
-   if i == len then acc
-   else normalize-type-list-loop args (i + 1) len m (list-push acc (normalize-type (list-at args i) m))
+   for a in args -> normalize-type a m
 
   normalize-type-vars : CodexType -> CodexType
   normalize-type-vars (ty) =
@@ -437,7 +417,26 @@ Section: Apply
    in let func = chain.root
    in let args = chain.args
    in if is-tuple-ctor func (list-length args) then "(" & emit-tuple-expr-elems args ctors indent 0 (list-length args) & ")"
+   else if is-for-expr func args then emit-for-expr args ctors indent
    else emit-expr func ctors indent & emit-apply-args args ctors indent 0 (list-length args) (is-ctor-name func ctors)
+
+  is-for-expr : IRExpr, List IRExpr -> Boolean
+  is-for-expr (func) (args) =
+   if list-length args == 2 then when func
+    is IrName (n) (ty) (sp) -> if n == "map-list" then when (list-at args 0)
+      is IrLambda (ps) (b) (t) (s) -> list-length ps == 1
+      is otherwise -> False
+     else False
+    is otherwise -> False
+   else False
+
+  emit-for-expr : List IRExpr, List Text, Integer -> Text
+  emit-for-expr (args) (ctors) (indent) =
+   when (list-at args 0)
+    is IrLambda (ps) (body) (ty) (sp) ->
+     let param-name = (list-at ps 0).name
+     in "for " & param-name & " in " & emit-expr (list-at args 1) ctors indent & " -> " & emit-expr body ctors (indent + 1)
+    is otherwise -> "for _ in [] -> 0"
 
   is-tuple-ctor : IRExpr, Integer -> Boolean
   is-tuple-ctor (e) (arity) =
@@ -597,12 +596,7 @@ Section: Match
 
   emit-sub-patterns : List IRPat, Integer -> Text
   emit-sub-patterns (subs) (i) =
-   text-concat-list (emit-sub-patterns-acc subs i (list-length subs) [])
-
-  emit-sub-patterns-acc : List IRPat, Integer, Integer, List Text -> List Text
-  emit-sub-patterns-acc (subs) (i) (len) (acc) =
-   if i == len then acc
-   else emit-sub-patterns-acc subs (i + 1) len (list-push acc (" (" & emit-pattern (list-at subs i) & ")"))
+   text-concat-list (for p in subs -> " (" & emit-pattern p & ")")
 
 Section: Act Blocks
   emit-act : List IRActStmt, List Text, Integer -> Text
@@ -749,12 +743,7 @@ Section: Chapter Emission
 
   emit-all-defs : List IRDef, List Text, Integer, List RenameEntry -> Text
   emit-all-defs (defs) (ctor-names) (i) (renames) =
-   text-concat-list (emit-all-defs-acc defs ctor-names 0 (list-length defs) [] renames)
-
-  emit-all-defs-acc : List IRDef, List Text, Integer, Integer, List Text, List RenameEntry -> List Text
-  emit-all-defs-acc (defs) (ctor-names) (i) (len) (acc) (renames) =
-   if i == len then acc
-   else emit-all-defs-acc defs ctor-names (i + 1) len (list-push acc (emit-def (list-at defs i) ctor-names renames & "\n")) renames
+   text-concat-list (for d in defs -> emit-def d ctor-names renames & "\n")
 
 Page 1
 

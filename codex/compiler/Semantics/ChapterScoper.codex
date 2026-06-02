@@ -163,8 +163,8 @@ Section: IR Expression Renaming
     is IrLet (nm) (ty) (val) (body) (sp) -> rename-ir-let rn nm ty val body sp
     is IrLambda (params) (body) (ty) (sp) -> rename-ir-lambda rn params body ty sp
     is IrMatch (scrut) (branches) (ty) (sp) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0 []) ty sp
-    is IrList (elems) (ty) (sp) -> IrList (rename-ir-exprs rn elems 0 []) ty sp
-    is IrRecord (nm) (fields) (ty) (sp) -> IrRecord nm (rename-ir-fields rn fields 0 []) ty sp
+    is IrList (elems) (ty) (sp) -> IrList (for e in elems -> rename-ir-expr rn e) ty sp
+    is IrRecord (nm) (fields) (ty) (sp) -> IrRecord nm (for f in fields -> IRFieldVal { name = f.name, value = rename-ir-expr rn (f.value), span = f.span }) ty sp
     is IrAct (stmts) (ty) (sp) -> IrAct (rename-ir-act-stmts rn stmts 0 []) ty sp
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty sp
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> IrWithTimeout secs effs scopes (rename-ir-expr rn body) ty sp
@@ -182,21 +182,6 @@ Section: IR Expression Renaming
    in IrLambda params (rename-ir-expr rn2 body) ty sp
 
 Section: IR Collection Renaming
-  rename-ir-exprs : List RenameEntry, List IRExpr, Integer, List IRExpr -> List IRExpr
-  rename-ir-exprs (rn) (elems) (i) (acc) =
-   if i == list-length elems then acc
-   else rename-ir-exprs rn elems (i + 1) (list-push acc (rename-ir-expr rn (list-at elems i)))
-
-  rename-ir-fields : List RenameEntry, List IRFieldVal, Integer, List IRFieldVal -> List IRFieldVal
-  rename-ir-fields (rn) (fields) (i) (acc) =
-   if i == list-length fields then acc
-   else let f = list-at fields i
-   in rename-ir-fields rn fields (i + 1) (list-push acc (IRFieldVal {
-    name = f.name,
-    value = rename-ir-expr rn (f.value),
-    span = f.span
-   }))
-
   rename-ir-branches : List RenameEntry, List IRBranch, Integer, List IRBranch -> List IRBranch
   rename-ir-branches (rn) (branches) (i) (acc) =
    if i == list-length branches then acc
@@ -350,7 +335,7 @@ Section: Duplicate Cite Detection
 Section: AST-Level Chapter Scoping
   scope-achapter : AChapter, SkipListText, List ChapterAssignment -> AChapter
   scope-achapter (ast) (colliding) (assignments) =
-   let slug-cache = build-slug-cache assignments 0 (list-length assignments) []
+   let slug-cache = for a in assignments -> slugify (a.chapter-slug)
    in let raw-defs = scope-adefs-ll (ast.defs) colliding assignments (ast.citations) slug-cache "" [] 0 []
    in deck-record (AChapter {
     name = ast.name,
@@ -394,11 +379,6 @@ Section: AST-Level Chapter Scoping
    in let cite-slug = find-slug-for-cite-name full-cite-name assignments slug-cache
    in let rn2 = apply-cite-selected rn (cite.selected-names) cite-slug colliding assignments cur-slug 0
    in apply-cite-overrides-loop rn2 citations colliding assignments slug-cache cur-slug (i + 1)
-
-  build-slug-cache : List ChapterAssignment, Integer, Integer, List Text -> List Text
-  build-slug-cache (assignments) (i) (len) (acc) =
-   if i == len then acc
-   else build-slug-cache assignments (i + 1) len (list-push acc (slugify ((list-at assignments i).chapter-slug)))
 
   find-slug-for-cite-name : Text, List ChapterAssignment, List Text -> Text
   find-slug-for-cite-name (cite-name) (assignments) (slug-cache) =
