@@ -35,15 +35,10 @@ Section: Resolve Type Expression
        else deck-record (ListTy ErrorTy)
       else if name.value == "LinkedList" then if list-length args == 1 then deck-record (LinkedListTy (resolve-type-expr tdm (list-at args 0)))
        else deck-record (LinkedListTy ErrorTy)
-      else deck-record (ConstructedTy name (resolve-type-expr-list tdm args 0 (list-length args) []))
+      else deck-record (ConstructedTy name (for a in args -> resolve-type-expr tdm a))
     is AAppType (inner-ctor) (inner-args) (s) ->
      resolve-applied-type tdm inner-ctor (inner-args & args)
     is otherwise -> resolve-type-expr tdm ctor
-
-  resolve-type-expr-list : List TypeBinding, List ATypeExpr, Integer, Integer, List CodexType -> List CodexType
-  resolve-type-expr-list (tdm) (args) (i) (len) (acc) =
-   if i == len then acc
-   else resolve-type-expr-list tdm args (i + 1) len (list-push acc (resolve-type-expr tdm (list-at args i)))
 
   resolve-type-name : List TypeBinding, Text -> CodexType
   resolve-type-name (tdm) (name) =
@@ -439,16 +434,19 @@ Section: Check Chapter
    in let env2 = register-effect-ops (env.state) (env.env) tdm (mod.effect-defs) 0 (list-length (mod.effect-defs))
    in let env3 = register-class-methods (env2.state) (env2.env) tdm (mod.class-defs) (mod.instance-defs)
    in let sorted-env = env-finalize (env3.env)
+   in let def-count = list-length (mod.defs)
    in let pre-st = deck-record (UnificationState {
-    substitutions = copy-list-with-headroom (env3.state.substitutions) substitution-capacity,
+    substitutions = copy-list-with-headroom (env3.state.substitutions) (def-count * 12),
     next-id = env3.state.next-id,
     bag = env3.state.bag,
-    expr-types = copy-list-with-headroom (env3.state.expr-types) expr-type-capacity
+    expr-types = copy-list-with-headroom (env3.state.expr-types) (def-count * 56)
    })
-   in let def-count = list-length (mod.defs)
    in let acc0 = deck-record (__list-with-capacity def-count)
-   in let slug-cache = build-slug-cache assignments 0 (list-length assignments) []
-   in check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" []
+   in let slug-cache = for a in assignments -> slugify (a.chapter-slug)
+   in let exit = __deck-exit
+   in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" []
+   in let enter = __deck-enter
+   in result
 
   add-diagnostics-to-state : UnificationState, List Diagnostic, Integer, Integer -> UnificationState
   add-diagnostics-to-state (st) (diags) (i) (len) =
@@ -501,7 +499,7 @@ Section: Check Chapter
    in if list-length mnames == 0 then bound
       else LetBindResult {
        state = bound.state,
-       env = env-bind (bound.env) "__classmethods" (deck-record (RecordTy (Name { value = "__classmethods" }) [] (build-cm-fields mnames 0 (list-length mnames) [])))
+       env = env-bind (bound.env) "__classmethods" (deck-record (RecordTy (Name { value = "__classmethods" }) [] (for n in mnames -> deck-record (RecordField { name = Name { value = n }, type-val = int-ty-default }))))
       }
 
   count-instances-for : List AInstanceDef, Text, Integer, Integer, Integer -> Integer
@@ -538,29 +536,24 @@ Section: Check Chapter
    else let cd = list-at cds i
    in let ic = count-instances-for ids (cd.name.value) 0 (list-length ids) 0
    in if ic <= 1 then collect-multi-method-names cds ids (i + 1) len acc
-      else collect-multi-method-names cds ids (i + 1) len (add-method-names (cd.methods) 0 (list-length (cd.methods)) acc)
-
-  add-method-names : List AEffectOpDef, Integer, Integer, List Text -> List Text
-  add-method-names (ops) (i) (len) (acc) =
-   if i == len then acc
-   else let op = list-at ops i
-   in add-method-names ops (i + 1) len (list-push acc (op.name.value))
-
-  build-cm-fields : List Text, Integer, Integer, List RecordField -> List RecordField
-  build-cm-fields (names) (i) (len) (acc) =
-   if i == len then acc
-   else build-cm-fields names (i + 1) len (list-push acc (deck-record (RecordField { name = Name { value = list-at names i }, type-val = int-ty-default })))
+      else collect-multi-method-names cds ids (i + 1) len (acc & (for op in (cd.methods) -> op.name.value))
 
   empty-type-bindings : List TypeBinding
   empty-type-bindings = []
 
   check-all-defs : UnificationState, TypeEnv, List ADef, Integer, Integer, List TypeBinding, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry -> ChapterResult
   check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) =
-   if i == len then ChapterResult {
+   if i == len then let final-st = deck-record (UnificationState {
+    substitutions = copy-list-with-headroom (st.substitutions) 0,
+    next-id = st.next-id,
+    bag = st.bag,
+    expr-types = copy-list-with-headroom (st.expr-types) 0
+   })
+   in deck-record (ChapterResult {
     types = acc,
     env = env,
-    state = st
-   }
+    state = final-st
+   })
    else let def = list-at defs i
    in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments slug-cache (def.chapter-slug) 0
@@ -909,14 +902,14 @@ Section: Register Type Definitions
    in let entry = when td
        is AVariantTypeDef (name) (type-params) (ctors) (s) ->
         let sum-ctors = build-sum-ctors tdefs ctors 0 (list-length ctors) [] acc
-   in let ty-args = type-params-to-refs type-params 0 (list-length type-params) []
+   in let ty-args = for p in type-params -> deck-record (ConstructedTy p [])
    in deck-record (TypeBinding {
          name = name.value,
          bound-type = deck-record (SumTy name ty-args sum-ctors)
         })
        is ARecordTypeDef (name) (type-params) (fields) (is-mut) (s) ->
         let rec-fields = build-record-fields-for-map tdefs fields 0 (list-length fields) [] acc
-   in let ty-args = type-params-to-refs type-params 0 (list-length type-params) []
+   in let ty-args = for p in type-params -> deck-record (ConstructedTy p [])
    in deck-record (TypeBinding {
          name = name.value,
          bound-type = deck-record (RecordTy name ty-args rec-fields)
@@ -959,12 +952,6 @@ Section: Register Type Definitions
    in let r = register-one-type-def st env tdm td
    in register-type-defs (r.state) (r.env) tdm tdefs (i + 1) len
 
-  type-params-to-refs : List Name, Integer, Integer, List CodexType -> List CodexType
-  type-params-to-refs (params) (i) (len) (acc) =
-   if i == len then acc
-   else let p = list-at params i
-   in type-params-to-refs params (i + 1) len (list-push acc (deck-record (ConstructedTy p [])))
-
   register-one-type-def : UnificationState, TypeEnv, List TypeBinding, ATypeDef -> LetBindResult
   register-one-type-def (st) (env) (tdm) (td) =
    when td
@@ -972,11 +959,11 @@ Section: Register Type Definitions
      let sum-ty = lookup-type-def tdm (name.value)
      in let env1 = env-bind env (name.value) sum-ty
      in let result-ty = if list-length type-params == 0 then sum-ty
-          else deck-record (ConstructedTy name (type-params-to-refs type-params 0 (list-length type-params) []))
+          else deck-record (ConstructedTy name (for p in type-params -> deck-record (ConstructedTy p [])))
      in register-variant-ctors st env1 tdm ctors result-ty 0 (list-length ctors)
     is ARecordTypeDef (name) (type-params) (fields) (is-mut) (s) ->
-     let resolved-fields = build-record-fields tdm fields 0 (list-length fields) []
-     in let ty-args = type-params-to-refs type-params 0 (list-length type-params) []
+     let resolved-fields = for f in fields -> deck-record (RecordField { name = f.name, type-val = resolve-type-expr tdm (f.type-expr) })
+     in let ty-args = for p in type-params -> deck-record (ConstructedTy p [])
      in let result-ty = deck-record (RecordTy name ty-args resolved-fields)
      in let ctor-ty = build-record-ctor-type tdm fields result-ty 0 (list-length fields)
      in let pr = parameterize-type st ctor-ty
@@ -984,16 +971,6 @@ Section: Register Type Definitions
       state = pr.state,
       env = env-bind env (name.value) (pr.parameterized)
      }
-
-  build-record-fields : List TypeBinding, List ARecordFieldDef, Integer, Integer, List RecordField -> List RecordField
-  build-record-fields (tdm) (fields) (i) (len) (acc) =
-   if i == len then acc
-   else let f = list-at fields i
-   in let rfield = deck-record (RecordField {
-    name = f.name,
-    type-val = resolve-type-expr tdm (f.type-expr)
-   })
-   in build-record-fields tdm fields (i + 1) len (list-push acc rfield)
 
   lookup-record-field : List RecordField, Text -> CodexType
   lookup-record-field (fields) (name) =

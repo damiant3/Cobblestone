@@ -68,6 +68,12 @@ Section: Expression Desugaring
      in let dr = desugar-expr-at rest (depth + 1)
      in deck-record (ALetExpr [deck-record (ALetBind { name = make-name "__seq", value = ds, span = aexpr-span ds })] dr (desugared-span (aexpr-span dr)))
     is LazyExpr (inner) -> deck-record (ALazyExpr (desugar-expr-at inner (depth + 1)) synthetic-span)
+    is ForExpr (var-tok) (list-expr) (body) ->
+     let dlist = desugar-expr-at list-expr (depth + 1)
+     in let dbody = desugar-expr-at body (depth + 1)
+     in let lam = deck-record (ALambdaExpr [make-name (token-text var-tok)] dbody synthetic-span)
+     in let map-fn = deck-record (ANameExpr (make-name "map-list") synthetic-span)
+     in deck-record (AApplyExpr (deck-record (AApplyExpr map-fn lam synthetic-span)) dlist synthetic-span)
     is ErrExpr (tok) -> deck-record (AErrorExpr (token-text tok) (token-span tok))
 
   apply-aexpr-args : AExpr, List AExpr, Integer, Integer -> AExpr
@@ -156,16 +162,12 @@ Section: Expression Desugaring
   desugar-handle-clause (c) =
    deck-record (AHandleClause {
     op-name = make-name (token-text (c.op-name)),
-    params = desugar-handle-params (c.params) 0 (list-length (c.params)) [],
+    params = for p in (c.params) -> make-name (token-text p),
     resume-name = make-name (token-text (c.resume-name)),
     body = desugar-expr (c.body),
     span = token-span (c.op-name)
    })
 
-  desugar-handle-params : List Token, Integer, Integer, List Name -> List Name
-  desugar-handle-params (toks) (i) (len) (acc) =
-   if i >= len then acc
-   else desugar-handle-params toks (i + 1) len (list-push acc (make-name (token-text (list-at toks i))))
 
   desugar-lambda-param : Token -> Name
   desugar-lambda-param (tok) =
@@ -762,7 +764,7 @@ Section: Document Desugaring
    in let dict-ty = derived-dict-type cls type-var
    in let new-param = deck-record (AParam { name = make-name dict-param-name, span = synthetic-span })
    in let new-params = list-insert-at (d.params) 0 new-param
-   in let all-param-names = collect-all-param-names (d.params) 0 (list-length (d.params)) []
+   in let all-param-names = for p in (d.params) -> p.name.value
    in let new-body = rewrite-derived-method-calls-scoped (d.body) (derived-class-method cls) dict-param-name all-param-names
    in let new-decl = deck-record (AFunType dict-ty body-type synthetic-span)
    in deck-record (ADef {
@@ -828,10 +830,6 @@ Section: Document Desugaring
     is AUnaryExpr (inner) (s) -> is-concrete-arg inner
     is otherwise -> False
 
-  collect-all-param-names : List AParam, Integer, Integer, List Text -> List Text
-  collect-all-param-names (params) (i) (len) (acc) =
-   if i >= len then acc
-   else collect-all-param-names params (i + 1) len (list-push acc ((list-at params i).name.value))
 
   collect-tyvar-param-names : ATypeExpr, List AParam, Text, Integer -> List Text
   collect-tyvar-param-names (ty) (params) (tv) (i) =
@@ -1123,8 +1121,8 @@ Section: Document Desugaring
    if i >= len then acc
    else let m = list-at ms i
    in let method-name = token-text (m.name)
-   in let params = synth-param-names (m.params) 0 (list-length (m.params)) []
-   in let param-list = synth-aparams params 0 (list-length params) []
+   in let params = for p in (m.params) -> make-name (token-text p)
+   in let param-list = for n in params -> deck-record (AParam { name = n, span = synthetic-span })
    in let def = deck-record (ADef {
     name = make-name method-name,
     params = param-list,
@@ -1141,8 +1139,8 @@ Section: Document Desugaring
    else let m = list-at ms i
    in let method-name = token-text (m.name)
    in let spec-name = make-name (method-name & "-" & type-name)
-   in let params = synth-param-names (m.params) 0 (list-length (m.params)) []
-   in let param-list = synth-aparams params 0 (list-length params) []
+   in let params = for p in (m.params) -> make-name (token-text p)
+   in let param-list = for n in params -> deck-record (AParam { name = n, span = synthetic-span })
    in let def = deck-record (ADef {
     name = spec-name,
     params = param-list,
@@ -1153,16 +1151,12 @@ Section: Document Desugaring
    })
    in synth-specialized-methods ms type-name (i + 1) len (__linked-list-push acc def)
 
-  synth-aparams : List Name, Integer, Integer, List AParam -> List AParam
-  synth-aparams (names) (i) (len) (acc) =
-   if i >= len then acc
-   else synth-aparams names (i + 1) len (list-push acc (deck-record (AParam { name = list-at names i, span = synthetic-span })))
 
   synth-instance-fields : List InstanceMethodDef, Integer, Integer, List AFieldExpr -> List AFieldExpr
   synth-instance-fields (ms) (i) (len) (acc) =
    if i >= len then acc
    else let m = list-at ms i
-   in let params = synth-param-names (m.params) 0 (list-length (m.params)) []
+   in let params = for p in (m.params) -> make-name (token-text p)
    in let lam-body = desugar-expr (m.body)
    in let field-val = if list-length params == 0 then lam-body
     else deck-record (ALambdaExpr params lam-body synthetic-span)
@@ -1173,10 +1167,6 @@ Section: Document Desugaring
    })
    in synth-instance-fields ms (i + 1) len (list-push acc field)
 
-  synth-param-names : List Token, Integer, Integer, List Name -> List Name
-  synth-param-names (toks) (i) (len) (acc) =
-   if i >= len then acc
-   else synth-param-names toks (i + 1) len (list-push acc (make-name (token-text (list-at toks i))))
 
   desugar-class-defs : List ClassDef, Integer, Integer, List AClassDef -> List AClassDef
   desugar-class-defs (cds) (i) (len) (acc) =

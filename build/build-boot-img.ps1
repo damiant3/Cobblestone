@@ -12,32 +12,43 @@ if (-not (Test-Path $BuildOut)) { New-Item -ItemType Directory -Force $BuildOut 
 
 Write-Host "=== Build Boot IMG ==="
 
-# Step 1: Compile boot source to CDX
+# Step 1: Bundle boot source with all dependencies
+$bundleScript = Join-Path $PSScriptRoot 'bundle-app.ps1'
 $compileScript = Join-Path $PSScriptRoot 'compile.ps1'
 $BootSource = Join-Path $Repo 'apps\works\UefiBoot.codex'
+$BundledSource = Join-Path $BuildOut 'boot-bundled.codex'
 $BootCdx = Join-Path $BuildOut 'boot.cdx'
 $BootLog = Join-Path $BuildOut 'img-compile.log'
-Write-Host "  Compiling $BootSource -> CDX..."
-& pwsh -NoProfile -File $compileScript -Src $BootSource -Out $BootCdx -Log $BootLog
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $BootCdx)) { Write-Host "FAIL: CDX compile failed"; exit 1 }
+Write-Host "  Bundling $BootSource..."
+& pwsh -NoProfile -File $bundleScript -Src $BootSource -Out $BundledSource
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $BundledSource)) { Write-Host "FAIL: bundle failed"; exit 1 }
 
-# Step 2: Convert CDX to PE via PE plug
-$PePlug = Join-Path $Repo 'codex\plugs\pe\run.ps1'
-$BootPe = Join-Path $BuildOut 'boot.efi'
-Write-Host "  Converting CDX -> PE via plug..."
-& pwsh -NoProfile -File $PePlug -CdxInput $BootCdx -Out $BootPe
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $BootPe)) { Write-Host "FAIL: PE plug failed"; exit 1 }
-
-# Step 3: Build IMG via IMG plug (PE + seed CDX -> FAT16 GPT image)
-$ImgPlug = Join-Path $Repo 'codex\plugs\img\run.ps1'
-if (Test-Path -PathType Leaf $ImgPlug) {
-    Write-Host "  Building IMG via plug..."
-    & pwsh -NoProfile -File $ImgPlug -PeInput $BootPe -CdxInput $Seed -Out $ImgOut -Fat16
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ImgOut)) { Write-Host "FAIL: IMG plug failed"; exit 1 }
-} else {
-    Write-Host "SKIP: IMG plug not yet available (codex/plugs/img/run.ps1 missing)"
-    exit 0
+# Step 2: Compile bundled source to CDX
+Write-Host "  Compiling bundled source -> CDX (UEFI mode)..."
+& pwsh -NoProfile -File $compileScript -Src $BundledSource -Out $BootCdx -Log $BootLog -Uefi
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $BootCdx)) {
+    Write-Host "FAIL: CDX compile failed"
+    Get-Content $BootLog -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Write-Host "  $_" }
+    exit 1
 }
+
+# Step 3: Convert CDX to PE
+$PeScript = Join-Path $PSScriptRoot 'cdx-to-pe.ps1'
+$BootPe = Join-Path $BuildOut 'boot.efi'
+Write-Host "  Converting CDX -> PE..."
+& pwsh -NoProfile -File $PeScript -CdxInput $BootCdx -Out $BootPe -HeapPages 131072
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $BootPe)) { Write-Host "FAIL: PE conversion failed"; exit 1 }
+
+# Step 4: Build GPT FAT16 disk image
+$ImgScript = Join-Path $PSScriptRoot 'build-img.ps1'
+$SourceFile = Join-Path $BuildOut 'Codex.codex'
+Write-Host "  Building GPT disk image..."
+if (Test-Path -PathType Leaf $SourceFile) {
+    & pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Source $SourceFile
+} else {
+    & pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut
+}
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ImgOut)) { Write-Host "FAIL: IMG build failed"; exit 1 }
 
 $totalSize = (Get-Item $ImgOut).Length
 Write-Host "Done: $ImgOut ($([math]::Round($totalSize / 1MB, 1)) MB)"

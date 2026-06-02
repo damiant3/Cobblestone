@@ -38,12 +38,12 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-05-31:
+As of 2026-06-02:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
   byte-identical. The compiler reproduces itself on bare metal.
-- **357 library modules** across 19 quires: data structures, crypto,
+- **359 library modules** across 19 quires: data structures, crypto,
   networking (full TCP/IP + UDP/ICMP/DNS/DHCP/NTP/Syslog/TFTP), game
   engine (A*, hex maps, ECS, physics, Voronoi, Perlin), AI inference
   (tensors, neural nets, GGUF model loading, genetic algorithms),
@@ -135,8 +135,11 @@ As of 2026-05-31:
 - **Interactive debugger**: `-debug -break <fn> -map <file>` with
   command shell, guest `!EXC=03` serial interception, symbol resolution,
   conditional breakpoints.
-- **Sample battery**: 208 samples (incl. 31 error tests); 157 pass,
-  0 fail in the gate battery (51 skipped: slow, fatal, or platform-specific).
+- **For-expressions**: `for x in xs do f x` syntactic sugar for map
+  loops. Desugars to `list-map` with a lambda. Dogfooded across ~50
+  call sites in 19 files.
+- **Sample battery**: 211 samples; 201 pass, 0 fail in the gate battery
+  (10 skipped: fatal or platform-specific).
 - **Codex.Spark creative suite**: 85-module application (3D modeling,
   image editor, animation, audio/DAW, video compositor, skeletal
   animation, particles, procedural noise, interactive UI shell) running
@@ -155,17 +158,17 @@ As of 2026-05-31:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,653,313 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (2,654,334 bytes) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 (file) | `3C62496D32A7FCA22E1D0FB13E58713C42EE8101965B668EBEA05BB58D66BA0C` |
+| SHA-256 (file) | `88762D2C23E737742E762BC32E83DC483359D6197FE9331A76B15AF8AF009AF2` |
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `3233F3F1B183F6D655121398C058B45CA7BCD51A54434F8F3C0DCD4E430C2484` |
+| SHA-256 | `83E76CC16C326BDEA9F792EE87FE9E3F28360A0BFB645DE57918F5F5DFA2DC2A` |
 
 The IMG contains `EFI/BOOT/BOOTX64.EFI` (interactive UEFI dev console as a
 UEFI PE32+ application) and `SOURCE.SRC` (compiler source) in an 8 MB
@@ -269,7 +272,9 @@ at boot; output is captured from guest UART writes. No TCP sockets.
 
 ---
 
-## Language Features
+## Language Examples
+
+The following is real Codex source — the same syntax the compiler parses.
 
 ```codex
 Chapter: Feature Tour
@@ -622,9 +627,9 @@ Source (.codex)
 ```
 
 The pipeline lives in `codex/` — the self-hosted compiler,
-~29,300 lines across 54 `.codex` files. Each phase has its own deck
-allocation and `phase-compact` cycle; cumulative deck ~228 MB, peak
-working set ~252 MB for selfhost. This is the only path that is
+~25,000 lines across 54 `.codex` files. Each phase has its own deck
+allocation and `phase-compact` cycle; cumulative deck ~208 MB, peak
+working set ~210 MB for selfhost. This is the only path that is
 maintained, exercised, and load-bearing.
 
 The original C# reference implementation under `old/src/` was the
@@ -673,11 +678,11 @@ Unicode exists only at I/O boundaries. Internally, everything is CCE.
 ## Library Quires
 
 Code outside the compiler is organized into **24 quires** (library namespaces)
-with **367 modules** total (421 including the 54-file compiler):
+with **369 modules** total (423 including the 54-file compiler):
 
 | Quire | Directory | Count | Highlights |
 |-------|-----------|------:|------------|
-| **Foreword** | `codex/foreword/core/` | 89 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, CCE, MathLib, Path, Format, Hkdf, NumberTheory, Probability, Locale |
+| **Foreword** | `codex/foreword/core/` | 91 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, CCE, MathLib, Path, Format, Hkdf, NumberTheory, Probability, Locale |
 | **Game** | `codex/foreword/game/` | 26 | A*, Dijkstra, DiamondSquare, HexMap, Voronoi, FloodFill, Octree, Quadtree, Bresenham, CellularAutomata, ECS, StateMachine, Tween, TileMap, CardDeck, Rasterizer, Sprite, Scene2D, Color, Raytracer, Klondike, Camera |
 | **AI** | `codex/foreword/ai/` | 19 | Tensor, NeuralNet, Transformer, GGUF, SparseLattice, KNN, DecisionTree, GeneticAlgorithm, Tokenizer, KvCache, Sampling, Optimizer, Attention, Embedding, Loss, DiffusionScheduler |
 | **UI** | `codex/foreword/ui/` | 28 | Theme (3 built-in), Widget, Layout, Render, Surface, Event, Binding, Animation, Icon (5 sizes), Overlay, Sound, Font (CCE), Cursor, Scroll, Focus, Dialog, Orchestrator, Selection, TextField, Clipboard, RichText, Charts, Accessibility |
@@ -688,7 +693,7 @@ with **367 modules** total (421 including the 54-file compiler):
 | **Sim** | `codex/foreword/sim/` | 7 | Verlet Physics, Collision, ParticleSystem, Steering, SpatialHash |
 | **Net** | `codex/os/net/` | 16 | Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, Syslog, TFTP, HttpClient, Tls (AesGcm + X25519) |
 | **Kernel** | `codex/os/kernel/` | 22 | DiskFacts, DriveManager, Vga, VgaGraphics, Pci, Keyboard, Mouse, BitmapFont, Console, DiagnosticShell, GpuBridge, IdentityManager, Ivshmem, Ne2k, SystemDb, Usb, UsbAudio, UsbMassStorage, UsbVideo, Xhci, VmSerial, VmIde |
-| **OS** | `codex/os/*/` | 57 | Trust lattice, verifier, scheduler, IPC, identity, shell, clarifier, replay, observability, dev tools |
+| **OS** | `codex/os/*/` | 81 | Trust lattice, verifier, scheduler, IPC, identity, shell, clarifier, replay, observability, dev tools |
 | **Works** | `apps/works/` | 53 | DevConsole, UefiConsole, ConsoleEditor, FirstBoot, AgentRuntime, AgentCoordinator, AgentAcquisition, VmCompile, VmPingpong, VmSweep, Http, WebServer, AnnotationDriver |
 | **Spark** | `apps/spark/` | 85 | 3D modeling, software rasterizer, image editor, animation/skeletal IK, audio/DAW, video compositor, procedural noise, interactive GOP framebuffer UI |
 | **Games** | `apps/games/` | 56 | CodexMagic card game engine, classic board games, game server, AI opponents, web portal |
@@ -704,7 +709,7 @@ of the directory name, capitalized.
 
 ```
 codex/
-  compiler/               Self-hosted compiler (54 files, ~30.5K lines)
+  compiler/               Self-hosted compiler (54 files, ~25K lines)
   foreword/
     core/                 Core forewords — data structures, crypto (89 modules)
     ai/                   AI — tensors, neural nets, GGUF, transformer (19 modules)
@@ -726,7 +731,7 @@ codex/
     trust/                Trust — lattice, policy, sessions (11 modules)
     verify/               Verification — 5-phase CDX verifier (5 modules)
   plugs/                  Plug architecture — IR-text-driven emitters
-  test/                   Compiler samples + OS integration tests (208 samples)
+  test/                   Compiler samples + OS integration tests (211 gate + 400 app tests)
 apps/
   works/                  Console, agents, VM tools, first boot (53 modules)
   spark/                  Codex.Spark — 3D, image, animation, audio, video (85 modules)
@@ -763,6 +768,7 @@ old/                      Retired C# reference compiler — historical only
 | **Type classes** | **`class`/`instance` via dictionary passing, return-type polymorphism** | **2026-05-29** |
 | **Linear types** | **`linear` (resources) + `mutable` (data) as orthogonal disciplines** | **2026-05-29** |
 | **Tuples + debugger** | **`(A, B)` sugar, `let (x, y) = e`, C# full-compiler emit (0 errors), interactive debugger** | **2026-05-31** |
+| **For-exprs + phase heap** | **`for x in xs do f x` sugar, CHECK/LOWER heap reduction (~80 MB saved), EOF settle counter, 201/211 tests pass** | **2026-06-02** |
 
 Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 
@@ -777,6 +783,8 @@ Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 - [docs/OperatorsManual.md](docs/OperatorsManual.md) — Build process, test harness, VM setup, debugging
 - [docs/ArchitectsSketchbook.md](docs/ArchitectsSketchbook.md) — Memory layout, registers, allocators, phase maps
 - [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md) — Foreword quire catalog, library rules
+- [docs/ExaminersAssay.md](docs/ExaminersAssay.md) — Test infrastructure, coverage, known results
+- [docs/TheShimmeringPortal.md](docs/TheShimmeringPortal.md) — Web developer's guide to the UI-to-browser pipeline
 
 ---
 

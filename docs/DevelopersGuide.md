@@ -424,9 +424,8 @@ with a tuple pattern in `when`:
 ```
 
 Tuples desugar to the foreword `Tup2`..`Tup5` variants — cite
-`Foreword chapter Tuple`. Write the type as `Tup2 A B` in signatures; the
-`(A, B)` type shorthand is not yet available (in type position the comma
-is read as a function-parameter separator).
+`Foreword chapter Tuple`. Both `Tup2 A B` and `(A, B)` work in type
+signatures. `let (x, y) = expr in body` destructures in let-bindings.
 
 ## Lists
 

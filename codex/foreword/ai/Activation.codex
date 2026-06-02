@@ -1,5 +1,6 @@
 Chapter: Activation
   cites AI chapter Tensor
+  cites Foreword chapter ListUtils
 
  Neural network activation functions. Fixed-point (scale 1000).
  Operates on Tensor data element-wise. Includes ReLU, sigmoid,
@@ -9,31 +10,14 @@ Chapter: Activation
 
 Section: ReLU
   act-relu : Tensor -> Tensor
-  act-relu (t) = Tensor { data = act-relu-loop (t.data) 0 (list-length (t.data)) [], rows = t.rows, cols = t.cols }
-
-  act-relu-loop : List Integer, Integer, Integer, List Integer -> List Integer
-  act-relu-loop (data) (i) (len) (acc) =
-    if i >= len then acc
-    else let v = list-at data i
-    in act-relu-loop data (i + 1) len (list-push acc (if v > 0 then v else 0))
+  act-relu (t) = Tensor { data = for v in (t.data) -> if v > 0 then v else 0, rows = t.rows, cols = t.cols }
 
   act-leaky-relu : Tensor, Integer -> Tensor
-  act-leaky-relu (t) (alpha) = Tensor { data = act-lrelu-loop (t.data) alpha 0 (list-length (t.data)) [], rows = t.rows, cols = t.cols }
-
-  act-lrelu-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
-  act-lrelu-loop (data) (alpha) (i) (len) (acc) =
-    if i >= len then acc
-    else let v = list-at data i
-    in act-lrelu-loop data alpha (i + 1) len (list-push acc (if v > 0 then v else v * alpha / 1000))
+  act-leaky-relu (t) (alpha) = Tensor { data = for v in (t.data) -> if v > 0 then v else v * alpha / 1000, rows = t.rows, cols = t.cols }
 
 Section: Sigmoid Approximation
   act-sigmoid : Tensor -> Tensor
-  act-sigmoid (t) = Tensor { data = act-sig-loop (t.data) 0 (list-length (t.data)) [], rows = t.rows, cols = t.cols }
-
-  act-sig-loop : List Integer, Integer, Integer, List Integer -> List Integer
-  act-sig-loop (data) (i) (len) (acc) =
-    if i >= len then acc
-    else act-sig-loop data (i + 1) len (list-push acc (act-sigmoid-val (list-at data i)))
+  act-sigmoid (t) = Tensor { data = for v in (t.data) -> act-sigmoid-val v, rows = t.rows, cols = t.cols }
 
   act-sigmoid-val : Integer -> Integer
   act-sigmoid-val (x) =
@@ -43,12 +27,7 @@ Section: Sigmoid Approximation
 
 Section: Tanh Approximation
   act-tanh : Tensor -> Tensor
-  act-tanh (t) = Tensor { data = act-tanh-loop (t.data) 0 (list-length (t.data)) [], rows = t.rows, cols = t.cols }
-
-  act-tanh-loop : List Integer, Integer, Integer, List Integer -> List Integer
-  act-tanh-loop (data) (i) (len) (acc) =
-    if i >= len then acc
-    else act-tanh-loop data (i + 1) len (list-push acc (act-tanh-val (list-at data i)))
+  act-tanh (t) = Tensor { data = for v in (t.data) -> act-tanh-val v, rows = t.rows, cols = t.cols }
 
   act-tanh-val : Integer -> Integer
   act-tanh-val (x) =
@@ -59,12 +38,7 @@ Section: Tanh Approximation
 
 Section: GELU Approximation
   act-gelu : Tensor -> Tensor
-  act-gelu (t) = Tensor { data = act-gelu-loop (t.data) 0 (list-length (t.data)) [], rows = t.rows, cols = t.cols }
-
-  act-gelu-loop : List Integer, Integer, Integer, List Integer -> List Integer
-  act-gelu-loop (data) (i) (len) (acc) =
-    if i >= len then acc
-    else act-gelu-loop data (i + 1) len (list-push acc (act-gelu-val (list-at data i)))
+  act-gelu (t) = Tensor { data = for v in (t.data) -> act-gelu-val v, rows = t.rows, cols = t.cols }
 
   act-gelu-val : Integer -> Integer
   act-gelu-val (x) =
@@ -75,16 +49,11 @@ Section: Softmax
   act-softmax : Tensor -> Tensor
   act-softmax (t) =
     let max-val = tensor-max t
-    in let shifted = act-shift (t.data) max-val 0 (list-length (t.data)) []
-    in let exps = act-exp-all shifted 0 (list-length shifted) []
+    in let shifted = for v in (t.data) -> v - max-val
+    in let exps = for v in shifted -> act-exp-approx v
     in let total = act-sum-list exps 0 (list-length exps) 0
-    in let normed = if total == 0 then exps else act-normalize exps total 0 (list-length exps) []
+    in let normed = if total == 0 then exps else for v in exps -> v * 1000 / total
     in Tensor { data = normed, rows = t.rows, cols = t.cols }
-
-  act-shift : List Integer, Integer, Integer, Integer, List Integer -> List Integer
-  act-shift (data) (offset) (i) (len) (acc) =
-    if i >= len then acc
-    else act-shift data offset (i + 1) len (list-push acc (list-at data i - offset))
 
   act-exp-approx : Integer -> Integer
   act-exp-approx (x) =
@@ -92,19 +61,9 @@ Section: Softmax
     else if x < (0 - 3000) then 0
     else 1000 + x + x * x / 2000
 
-  act-exp-all : List Integer, Integer, Integer, List Integer -> List Integer
-  act-exp-all (data) (i) (len) (acc) =
-    if i >= len then acc
-    else act-exp-all data (i + 1) len (list-push acc (act-exp-approx (list-at data i)))
-
   act-sum-list : List Integer, Integer, Integer, Integer -> Integer
   act-sum-list (data) (i) (len) (acc) =
     if i >= len then acc
     else act-sum-list data (i + 1) len (acc + list-at data i)
-
-  act-normalize : List Integer, Integer, Integer, Integer, List Integer -> List Integer
-  act-normalize (data) (total) (i) (len) (acc) =
-    if i >= len then acc
-    else act-normalize data total (i + 1) len (list-push acc (list-at data i * 1000 / total))
 
 Page 1

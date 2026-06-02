@@ -41,11 +41,9 @@ Section: Frontend
 
  Two frontend builders: compile-frontend (TEXT/IR/MEASURE — LOWER on
  deck, no RESOLVE/LIFT) and compile-frontend-cdx (CDX — LOWER on
- bivy feeding RESOLVE on deck, then LIFT on deck). Lowering.codex
- has no deck-record calls, so lower-chapter allocates on whatever
- R10 points at: deck when called from compile-frontend (wrapped in
- deck-record), bivy when called from compile-frontend-cdx (unwrapped).
- RESOLVE copies the full IR tree from bivy to deck via rewrite-ir-defs.
+ deck, then RESOLVE on deck, then LIFT on deck). Both paths wrap
+ lower-chapter in deck-record; rewrite-ir-defs does not deep-copy
+ all referenced type data, so bivy placement is unsafe (CL 2968).
 
   CompileFrontend = record {
    type-defs : List ATypeDef,
@@ -88,8 +86,7 @@ Section: Frontend
 
   CompileChecked = record {
    scoped : AChapter,
-   types : List TypeBinding,
-   type-env : TypeEnv,
+   all-bindings : List TypeBinding,
    ust : UnificationState,
    ctor-names : List Text,
    renames : List RenameEntry,
@@ -137,8 +134,7 @@ Section: Frontend
       section-titles = [],
       span = synthetic-span
     },
-    types = [],
-    type-env = empty-type-env,
+    all-bindings = [],
     ust = empty-unification-state,
     ctor-names = [],
     renames = [],
@@ -331,11 +327,19 @@ Section: Frontend
    in let check-phase-metrics = deck-record (list-push (sr.phase-metrics) check-metrics)
    in if bag-has-errors check-bag
       then halted-checked check-bag check-heap-marks
-      else let result = deck-record (CompileChecked {
+      else let resolved-env = deck-record (for b in (check-result.env.bindings) -> deck-record (TypeBinding { name = b.name, bound-type = deep-resolve (check-result.state) (b.bound-type) }))
+      in let sorted-all = deck-record (sort-bindings (check-result.types & resolved-env))
+      in let sorted-et = sort-expr-types (check-result.state.expr-types)
+      in let pre-sorted-ust = deck-record (UnificationState {
+       substitutions = check-result.state.substitutions,
+       next-id = check-result.state.next-id,
+       bag = check-result.state.bag,
+       expr-types = sorted-et
+      })
+      in let result = deck-record (CompileChecked {
        scoped = sr.scoped,
-       types = check-result.types,
-       type-env = check-result.env,
-       ust = check-result.state,
+       all-bindings = sorted-all,
+       ust = pre-sorted-ust,
        ctor-names = sr.ctor-names,
        renames = sr.renames,
        colliding = sr.colliding,
@@ -368,7 +372,7 @@ Section: Frontend
    else let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
    in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
-   in let ir = deck-record (lower-chapter (checked.scoped) (checked.types) (checked.type-env) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
+   in let ir = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
    in let tm = deck-record (IRTextMeta {
     chapter-title = checked.scoped.chapter-title,
     prose = checked.scoped.prose,
@@ -404,7 +408,7 @@ Section: Frontend
    else let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
    in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
-   in let ir-raw = lower-chapter (checked.scoped) (checked.types) (checked.type-env) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments)
+   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
    in let ir = deck-record (fold-constants-in-chapter ir-raw)
    in let lower-metrics = phase-measure lower-phase
    in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
@@ -413,8 +417,8 @@ Section: Frontend
    in let resolve-base = build resolve-deck-height
    in let resolve-phase = phase-start
    in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
-   in let stds = deck-record (sort-bindings (type-map & checked.type-env.bindings))
-   in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs) 0 (list-length (ir.defs)) [])
+   in let stds = deck-record (sort-bindings (type-map & checked.all-bindings))
+   in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs))
    in let resolve-metrics = phase-measure resolve-phase
    in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
    in let resolve-sealed = phase-compact
@@ -685,6 +689,22 @@ Section: Measurement
    if i == len then acc
    else let label = if i < list-length labels then list-at labels i else "h?"
     in format-heap-marks-prefix marks labels pfx (i + 1) len (list-push acc (pfx & label & ":" & integer-to-text (list-at marks i) & "\n"))
+
+Section: Expr-Type Pre-Resolution
+
+  resolve-all-expr-types : UnificationState, List ExprTypeEntry, Integer, Integer, List ExprTypeEntry -> List ExprTypeEntry
+  resolve-all-expr-types (st) (entries) (i) (len) (acc) =
+   if i >= len then acc
+   else let e = list-at entries i
+   in let resolved = deck-record (ExprTypeEntry { key = e.key, ty = deep-resolve st (e.ty) })
+   in resolve-all-expr-types st entries (i + 1) len (list-push acc resolved)
+
+  resolve-all-bindings : UnificationState, List TypeBinding, Integer, Integer, List TypeBinding -> List TypeBinding
+  resolve-all-bindings (st) (bindings) (i) (len) (acc) =
+   if i >= len then acc
+   else let b = list-at bindings i
+   in let resolved = deck-record (TypeBinding { name = b.name, bound-type = deep-resolve st (b.bound-type) })
+   in resolve-all-bindings st bindings (i + 1) len (list-push acc resolved)
 
 Section: Whitespace Normalization
 

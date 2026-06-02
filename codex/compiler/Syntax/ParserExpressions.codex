@@ -115,6 +115,7 @@ Section: Expression Parsing
   parse-atom : ParseState -> ParseExprResult
   parse-atom (st) =
    if is-literal (current-kind st) then ExprOk (deck-record (LitExpr (current st))) (advance st)
+   else if is-ident (current-kind st) & (token-text (current st)) == "for" then parse-for-expr st
    else if is-ident (current-kind st) then parse-field-access (deck-record (NameExpr (current st))) (advance st)
    else if is-type-ident (current-kind st) then parse-atom-type-ident st
    else if is-left-paren (current-kind st) then parse-paren-expr (advance st)
@@ -799,6 +800,27 @@ Section: Compound Expression Parsing
 
   finish-lazy : Expr, ParseState -> ParseExprResult
   finish-lazy (inner) (st) = ExprOk (deck-record (LazyExpr inner)) st
+
+  parse-for-expr : ParseState -> ParseExprResult
+  parse-for-expr (st) =
+   let st1 = advance st
+   in let var-tok = current st1
+   in let st2 = advance st1
+   in if is-in-keyword (current-kind st2) then let st3 = advance st2
+     in let list-result = parse-expr st3
+     in unwrap-expr-ok list-result (finish-for-list var-tok)
+   else ExprOk (deck-record (ErrExpr var-tok)) st2
+
+  finish-for-list : Token, Expr, ParseState -> ParseExprResult
+  finish-for-list (var-tok) (list-expr) (st) =
+   if is-arrow (current-kind st) then let st2 = advance st
+     in let body-result = parse-expr st2
+     in unwrap-expr-ok body-result (finish-for-body var-tok list-expr)
+   else ExprOk (deck-record (ErrExpr var-tok)) st
+
+  finish-for-body : Token, Expr, Expr, ParseState -> ParseExprResult
+  finish-for-body (var-tok) (list-expr) (body) (st) =
+   ExprOk (deck-record (ForExpr var-tok list-expr body)) st
 
 Page 3 of 3
 
