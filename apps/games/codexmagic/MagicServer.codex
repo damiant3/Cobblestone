@@ -17,9 +17,10 @@ Chapter: MagicServer
   cites CodexMagic chapter Clan
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
+  cites Net chapter WebServer
 
  HTTP request handler for CodexMagic. Boots as a server, listens
- for request lines on serial, dispatches to game/pool/deck/store
+ for request lines on TCP, dispatches to game/pool/deck/store
  handlers, responds with JSON.
 
  We say:
@@ -40,6 +41,11 @@ Section: Server State
     account-keys : List AccountKey,
     next-nonce : Integer,
     platform : PlatformAuthority
+  }
+
+  MagicStep = record {
+    store : MagicStore,
+    resp : Text
   }
 
   magic-store-new : MagicStore
@@ -65,23 +71,14 @@ Section: Server State
 
 Section: Response Helpers
 
-  respond-json : Text -> [Console] Integer
-  respond-json (body) = act
-    print-line-uni ("200 application/json " & body)
-    0
-  end
+  respond-json : MagicStore, Text -> MagicStep
+  respond-json (store) (body) = MagicStep { store = store, resp = body }
 
-  respond-error : Text -> [Console] Integer
-  respond-error (msg) = act
-    print-line-uni ("400 application/json {\"error\":\"" & msg & "\"}")
-    0
-  end
+  respond-error : MagicStore, Text -> MagicStep
+  respond-error (store) (msg) = MagicStep { store = store, resp = "{\"error\":\"" & msg & "\"}" }
 
-  respond-not-found : [Console] Integer
-  respond-not-found = act
-    print-line-uni "404 text/plain Not Found"
-    0
-  end
+  respond-not-found : MagicStore -> MagicStep
+  respond-not-found (store) = MagicStep { store = store, resp = "{\"error\":\"not found\"}" }
 
 Section: String Helpers
 
@@ -161,7 +158,7 @@ Section: Request Parsing
 
 Section: Request Dispatch
 
-  dispatch-request : MagicStore, Text -> [Console] MagicStore
+  dispatch-request : MagicStore, Text -> MagicStep
   dispatch-request (store) (line) =
     let path = extract-path line
     in if text-starts-with path "/api/magic/game/" then handle-game store line path
@@ -175,23 +172,18 @@ Section: Request Dispatch
     else if text-starts-with path "/api/magic/season" then handle-season store
     else if text-starts-with path "/api/magic/clan/" then handle-clan store line path
     else if text-starts-with path "/api/magic/status" then handle-magic-status store
-    else act
-      pm0 <- respond-not-found
-      store
-    end
+    else respond-not-found store
 
 Section: Game Handlers
 
-  handle-game : MagicStore, Text, Text -> [Console] MagicStore
+  handle-game : MagicStore, Text, Text -> MagicStep
   handle-game (store) (line) (path) =
     if text-starts-with path "/api/magic/game/new" then handle-game-new store line
     else if text-starts-with path "/api/magic/game/step" then handle-game-step store
     else if text-starts-with path "/api/magic/game/state" then handle-game-state store
-    else act pm0 <- respond-not-found
-      store
-    end
+    else respond-not-found store
 
-  handle-game-new : MagicStore, Text -> [Console] MagicStore
+  handle-game-new : MagicStore, Text -> MagicStep
   handle-game-new (store) (line) =
     let gen-a = get-general-by-id (store.generals) 0
     in let gen-b = get-general-by-id (store.generals) 4
@@ -203,19 +195,12 @@ Section: Game Handlers
     in let gs4 = draw-cards gs3 0 7
     in let gs5 = draw-cards gs4 1 7
     in let ns = update-store-game store gs5 True
-    in act
-      pm0 <- respond-json (game-state-to-json gs5 gen-a gen-b (store.templates))
-      ns
-    end
+    in respond-json ns (game-state-to-json gs5 gen-a gen-b (store.templates))
 
-  handle-game-step : MagicStore -> [Console] MagicStore
+  handle-game-step : MagicStore -> MagicStep
   handle-game-step (store) =
-    if store.game-active == False then act pm0 <- respond-error "no active game"
-      store
-    end
-    else if store.game.game-over then act pm0 <- respond-error "game is over"
-      store
-    end
+    if store.game-active == False then respond-error store "no active game"
+    else if store.game.game-over then respond-error store "game is over"
     else let gs = store.game
     in let gs2 = run-turn gs
     in let gs3 = check-state-based-actions gs2
@@ -224,10 +209,7 @@ Section: Game Handlers
     in let gen-b = get-general-by-id (store.generals) 4
     in let ns = update-store-game store gs4 (if gs4.game-over then False else True)
     in let ns2 = if gs4.game-over then finalize-match ns gs4 else ns
-    in act
-      pm0 <- respond-json (game-state-to-json gs4 gen-a gen-b (store.templates))
-      ns2
-    end
+    in respond-json ns2 (game-state-to-json gs4 gen-a gen-b (store.templates))
 
   finalize-match : MagicStore, GameState -> MagicStore
   finalize-match (store) (gs) =
@@ -243,29 +225,23 @@ Section: Game Handlers
     in let ledger2 = ledger-mint (store.ledger) 0 reward
     in MagicStore { game = store.game, game-active = False, templates = store.templates, generals = store.generals, accounts = new-accts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = ledger2, current-season = store.current-season, match-record = mr, account-keys = store.account-keys, next-nonce = store.next-nonce, platform = store.platform }
 
-  handle-game-state : MagicStore -> [Console] MagicStore
+  handle-game-state : MagicStore -> MagicStep
   handle-game-state (store) =
     let gen-a = get-general-by-id (store.generals) 0
     in let gen-b = get-general-by-id (store.generals) 4
-    in act
-      pm0 <- respond-json (game-state-to-json (store.game) gen-a gen-b (store.templates))
-      store
-    end
+    in respond-json store (game-state-to-json (store.game) gen-a gen-b (store.templates))
 
 Section: Pool Handler
 
-  handle-pool : MagicStore -> [Console] MagicStore
+  handle-pool : MagicStore -> MagicStep
   handle-pool (store) =
     let cards-json = templates-to-json-str (store.templates) 0 (list-length (store.templates)) ""
-    in act
-      pm0 <- respond-json ("{\"cards\":[" & cards-json & "],\"count\":" & show (list-length (store.templates)) & "}")
-      store
-    end
+    in respond-json store ("{\"cards\":[" & cards-json & "],\"count\":" & show (list-length (store.templates)) & "}")
 
 
 Section: Deck Handler
 
-  handle-deck : MagicStore, Text, Text -> [Console] MagicStore
+  handle-deck : MagicStore, Text, Text -> MagicStep
   handle-deck (store) (line) (path) =
     if text-starts-with path "/api/magic/deck/generate" then
       let gen-id = parse-int (extract-query-param line "general") 0
@@ -273,43 +249,30 @@ Section: Deck Handler
       in let gen = get-general-by-id (store.generals) gen-id
       in let deck = gen-starter-deck gen (store.templates) seed
       in let cards-json = int-list-to-str (deck.cards) 0 (deck.num-cards) ""
-      in act
-        pm0 <- respond-json ("{\"cards\":[" & cards-json & "],\"count\":" & show (deck.num-cards) & ",\"general\":" & show gen-id & "}")
-        store
-      end
+      in respond-json store ("{\"cards\":[" & cards-json & "],\"count\":" & show (deck.num-cards) & ",\"general\":" & show gen-id & "}")
     else if text-starts-with path "/api/magic/deck/validate" then
       let gen-id = parse-int (extract-query-param line "general") 0
       in let gen = get-general-by-id (store.generals) gen-id
-      in act
-        pm0 <- respond-json ("{\"valid\":true,\"reason\":\"\"}")
-        store
-      end
-    else act pm0 <- respond-not-found
-      store
-    end
+      in respond-json store "{\"valid\":true,\"reason\":\"\"}"
+    else respond-not-found store
 
 Section: Store Handler
 
-  handle-store : MagicStore, Text, Text -> [Console] MagicStore
+  handle-store : MagicStore, Text, Text -> MagicStep
   handle-store (store) (line) (path) =
     if text-starts-with path "/api/magic/store/crack" then handle-crack-pack store line
     else if text-starts-with path "/api/magic/store/balance" then handle-balance store line
     else if text-starts-with path "/api/magic/store/buy-coin" then handle-buy-coin store line
     else if text-starts-with path "/api/magic/store/generals" then handle-generals-list store
-    else act pm0 <- respond-not-found
-      store
-    end
+    else respond-not-found store
 
-  handle-crack-pack : MagicStore, Text -> [Console] MagicStore
+  handle-crack-pack : MagicStore, Text -> MagicStep
   handle-crack-pack (store) (line) =
     let acct-id = parse-int (extract-query-param line "account") 0
     in let seed = parse-int (extract-query-param line "seed") 42
     in let cost = 100
     in let bal = ledger-balance (store.ledger) acct-id
-    in if bal < cost then act
-      pm0 <- respond-error "insufficient mana coin"
-      store
-    end
+    in if bal < cost then respond-error store "insufficient mana coin"
     else let acct = get-account (store.accounts) acct-id
     in let sub-bonus = sub-upgrade-bonus (acct.subscription)
     in let ledger2 = ledger-burn (store.ledger) acct-id cost
@@ -317,10 +280,7 @@ Section: Store Handler
     in let tokens2 = mint-pack-cards (store.tokens) (pack.cards) acct-id seed 0 (pack.num-cards)
     in let cards-json = int-list-to-str (pack.cards) 0 (pack.num-cards) ""
     in let ns = update-store-tokens store tokens2 ledger2
-    in act
-      pm0 <- respond-json ("{\"cards\":[" & cards-json & "],\"count\":" & show (pack.num-cards) & ",\"balance\":" & show (ledger-balance ledger2 acct-id) & ",\"tokens-minted\":" & show (list-length tokens2) & "}")
-      ns
-    end
+    in respond-json ns ("{\"cards\":[" & cards-json & "],\"count\":" & show (pack.num-cards) & ",\"balance\":" & show (ledger-balance ledger2 acct-id) & ",\"tokens-minted\":" & show (list-length tokens2) & "}")
 
   mint-pack-cards : List CardToken, List Integer, Integer, Integer, Integer, Integer -> List CardToken
   mint-pack-cards (tokens) (cards) (owner) (time) (i) (len) =
@@ -328,15 +288,12 @@ Section: Store Handler
     else let tokens2 = mint-token tokens (list-at cards i) owner time MintPack
     in mint-pack-cards tokens2 cards owner time (i + 1) len
 
-  handle-balance : MagicStore, Text -> [Console] MagicStore
+  handle-balance : MagicStore, Text -> MagicStep
   handle-balance (store) (line) =
     let acct-id = parse-int (extract-query-param line "account") 0
     in let bal = ledger-balance (store.ledger) acct-id
     in let acct = get-account (store.accounts) acct-id
-    in act
-      pm0 <- respond-json ("{\"balance\":" & show bal & ",\"sub-tier\":" & jstr (sub-tier-name (acct.subscription)) & ",\"tokens-owned\":" & show (count-tokens-owned (store.tokens) acct-id 0 (list-length (store.tokens)) 0) & "}")
-      store
-    end
+    in respond-json store ("{\"balance\":" & show bal & ",\"sub-tier\":" & jstr (sub-tier-name (acct.subscription)) & ",\"tokens-owned\":" & show (count-tokens-owned (store.tokens) acct-id 0 (list-length (store.tokens)) 0) & "}")
 
   count-tokens-owned : List CardToken, Integer, Integer, Integer, Integer -> Integer
   count-tokens-owned (tokens) (owner) (i) (len) (acc) =
@@ -345,24 +302,18 @@ Section: Store Handler
     in if t.owner == owner then count-tokens-owned tokens owner (i + 1) len (acc + 1)
     else count-tokens-owned tokens owner (i + 1) len acc
 
-  handle-buy-coin : MagicStore, Text -> [Console] MagicStore
+  handle-buy-coin : MagicStore, Text -> MagicStep
   handle-buy-coin (store) (line) =
     let acct-id = parse-int (extract-query-param line "account") 0
     in let amount = parse-int (extract-query-param line "amount") 100
     in let ledger2 = ledger-mint (store.ledger) acct-id amount
     in let ns = update-store-ledger store ledger2
-    in act
-      pm0 <- respond-json ("{\"balance\":" & show (ledger-balance ledger2 acct-id) & ",\"minted\":" & show amount & "}")
-      ns
-    end
+    in respond-json ns ("{\"balance\":" & show (ledger-balance ledger2 acct-id) & ",\"minted\":" & show amount & "}")
 
-  handle-generals-list : MagicStore -> [Console] MagicStore
+  handle-generals-list : MagicStore -> MagicStep
   handle-generals-list (store) =
     let json = generals-list-to-json (store.generals) 0 (list-length (store.generals)) ""
-    in act
-      pm0 <- respond-json ("{\"generals\":[" & json & "]}")
-      store
-    end
+    in respond-json store ("{\"generals\":[" & json & "]}")
 
   generals-list-to-json : List GeneralTemplate, Integer, Integer, Text -> Text
   generals-list-to-json (generals) (i) (len) (acc) =
@@ -374,79 +325,58 @@ Section: Store Handler
 
 Section: Queue Handler
 
-  handle-queue : MagicStore, Text, Text -> [Console] MagicStore
+  handle-queue : MagicStore, Text, Text -> MagicStep
   handle-queue (store) (line) (path) =
     if text-starts-with path "/api/magic/queue/join" then handle-queue-join store line
     else if text-starts-with path "/api/magic/queue/status" then handle-queue-status store line
-    else act pm0 <- respond-not-found
-      store
-    end
+    else respond-not-found store
 
-  handle-queue-join : MagicStore, Text -> [Console] MagicStore
+  handle-queue-join : MagicStore, Text -> MagicStep
   handle-queue-join (store) (line) =
     let acct-id = parse-int (extract-query-param line "account") 0
     in let format-str = extract-query-param line "format"
     in let tier-str = extract-query-param line "tier"
     in let acct = get-account (store.accounts) acct-id
-    in act
-      pm0 <- respond-json ("{\"queued\":true,\"account\":" & show acct-id & ",\"format\":" & jstr format-str & ",\"tier\":" & jstr tier-str & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & ",\"match-id\":1,\"status\":\"matched\"}")
-      store
-    end
+    in respond-json store ("{\"queued\":true,\"account\":" & show acct-id & ",\"format\":" & jstr format-str & ",\"tier\":" & jstr tier-str & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & ",\"match-id\":1,\"status\":\"matched\"}")
 
-  handle-queue-status : MagicStore, Text -> [Console] MagicStore
+  handle-queue-status : MagicStore, Text -> MagicStep
   handle-queue-status (store) (line) =
-    act
-      pm0 <- respond-json "{\"status\":\"matched\",\"match-id\":1,\"wait-time\":0}"
-      store
-    end
+    respond-json store "{\"status\":\"matched\",\"match-id\":1,\"wait-time\":0}"
 
 Section: Match Handler
 
-  handle-match : MagicStore, Text, Text -> [Console] MagicStore
+  handle-match : MagicStore, Text, Text -> MagicStep
   handle-match (store) (line) (path) =
     if text-starts-with path "/api/magic/match/result" then handle-match-result store
     else if text-starts-with path "/api/magic/match/history" then handle-match-history store line
-    else act pm0 <- respond-not-found
-      store
-    end
+    else respond-not-found store
 
-  handle-match-result : MagicStore -> [Console] MagicStore
+  handle-match-result : MagicStore -> MagicStep
   handle-match-result (store) =
     let mr = store.match-record
-    in act
-      pm0 <- respond-json ("{\"match-id\":" & show (mr.match-id) & ",\"winner\":" & show (mr.winner) & ",\"turns\":" & show (mr.turns-played) & ",\"life-a\":" & show (mr.final-life-a) & ",\"life-b\":" & show (mr.final-life-b) & ",\"loyalty-a\":" & show (mr.final-loyalty-a) & ",\"loyalty-b\":" & show (mr.final-loyalty-b) & ",\"actions\":" & show (mr.action-count) & "}")
-      store
-    end
+    in respond-json store ("{\"match-id\":" & show (mr.match-id) & ",\"winner\":" & show (mr.winner) & ",\"turns\":" & show (mr.turns-played) & ",\"life-a\":" & show (mr.final-life-a) & ",\"life-b\":" & show (mr.final-life-b) & ",\"loyalty-a\":" & show (mr.final-loyalty-a) & ",\"loyalty-b\":" & show (mr.final-loyalty-b) & ",\"actions\":" & show (mr.action-count) & "}")
 
-  handle-match-history : MagicStore, Text -> [Console] MagicStore
+  handle-match-history : MagicStore, Text -> MagicStep
   handle-match-history (store) (line) =
     let acct-id = parse-int (extract-query-param line "account") 0
     in let acct = get-account (store.accounts) acct-id
-    in act
-      pm0 <- respond-json ("{\"account\":" & show acct-id & ",\"wins\":" & show (acct.wins) & ",\"losses\":" & show (acct.losses) & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & "}")
-      store
-    end
+    in respond-json store ("{\"account\":" & show acct-id & ",\"wins\":" & show (acct.wins) & ",\"losses\":" & show (acct.losses) & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & "}")
 
 Section: Auth Handler
 
-  handle-auth : MagicStore, Text, Text -> [Console] MagicStore
+  handle-auth : MagicStore, Text, Text -> MagicStep
   handle-auth (store) (line) (path) =
     if text-starts-with path "/api/magic/auth/challenge" then handle-auth-challenge store line
     else if text-starts-with path "/api/magic/auth/verify" then handle-auth-verify store line
-    else act pm0 <- respond-not-found
-      store
-    end
+    else respond-not-found store
 
-  handle-auth-challenge : MagicStore, Text -> [Console] MagicStore
+  handle-auth-challenge : MagicStore, Text -> MagicStep
   handle-auth-challenge (store) (line) =
     let challenge = generate-challenge (store.next-nonce)
     in let ns = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce + 1, platform = store.platform }
-    in act
-      pm0 <- respond-json ("{\"nonce\":" & show (challenge.nonce) & ",\"timestamp\":" & show (challenge.timestamp) & "}")
-      ns
-    end
+    in respond-json ns ("{\"nonce\":" & show (challenge.nonce) & ",\"timestamp\":" & show (challenge.timestamp) & "}")
 
-  handle-auth-verify : MagicStore, Text -> [Console] MagicStore
+  handle-auth-verify : MagicStore, Text -> MagicStep
   handle-auth-verify (store) (line) =
     let acct-id = parse-int (extract-query-param line "id") 0
     in let nonce = parse-int (extract-query-param line "nonce") 0
@@ -458,27 +388,19 @@ Section: Auth Handler
     in if valid then
       let session = create-session acct-id (store.next-nonce) 3600
       in let ns = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce + 1, platform = store.platform }
-      in act
-        pm0 <- respond-json ("{\"verified\":true,\"session-id\":" & show (session.session-id) & ",\"expires\":" & show (session.expires-at) & "}")
-        ns
-      end
-    else act
-      pm0 <- respond-error "signature verification failed"
-      store
-    end
+      in respond-json ns ("{\"verified\":true,\"session-id\":" & show (session.session-id) & ",\"expires\":" & show (session.expires-at) & "}")
+    else respond-error store "signature verification failed"
 
 Section: Account Handler
 
-  handle-account : MagicStore, Text, Text -> [Console] MagicStore
+  handle-account : MagicStore, Text, Text -> MagicStep
   handle-account (store) (line) (path) =
     if text-starts-with path "/api/magic/account/new" then handle-account-new store line
     else if text-starts-with path "/api/magic/account/profile" then handle-account-profile store line
     else if text-starts-with path "/api/magic/account/subscribe" then handle-subscribe store line
-    else act pm0 <- respond-not-found
-      store
-    end
+    else respond-not-found store
 
-  handle-account-new : MagicStore, Text -> [Console] MagicStore
+  handle-account-new : MagicStore, Text -> MagicStep
   handle-account-new (store) (line) =
     let name = extract-query-param line "name"
     in let gen-id = parse-int (extract-query-param line "general") 0
@@ -492,23 +414,17 @@ Section: Account Handler
     in let ak = account-key-new (store.num-accounts) pubkey (store.next-nonce)
     in let new-keys = list-push (store.account-keys) ak
     in let ns = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = new-accts, num-accounts = store.num-accounts + 1, tokens = store.tokens, ledger = ledger2, current-season = store.current-season, match-record = store.match-record, account-keys = new-keys, next-nonce = store.next-nonce + 1, platform = store.platform }
-    in act
-      pm0 <- respond-json ("{\"account-id\":" & show (acct.account-id) & ",\"name\":" & jstr display-name & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & ",\"balance\":500,\"public-key\":" & jstr (format-public-key pubkey) & "}")
-      ns
-    end
+    in respond-json ns ("{\"account-id\":" & show (acct.account-id) & ",\"name\":" & jstr display-name & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & ",\"balance\":500,\"public-key\":" & jstr (format-public-key pubkey) & "}")
 
-  handle-account-profile : MagicStore, Text -> [Console] MagicStore
+  handle-account-profile : MagicStore, Text -> MagicStep
   handle-account-profile (store) (line) =
     let acct-id = parse-int (extract-query-param line "id") 0
     in let acct = get-account (store.accounts) acct-id
     in let bal = ledger-balance (store.ledger) acct-id
     in let token-count = count-tokens-owned (store.tokens) acct-id 0 (list-length (store.tokens)) 0
-    in act
-      pm0 <- respond-json ("{\"account-id\":" & show (acct.account-id) & ",\"name\":" & jstr (acct.name) & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & ",\"wins\":" & show (acct.wins) & ",\"losses\":" & show (acct.losses) & ",\"balance\":" & show bal & ",\"tokens\":" & show token-count & ",\"subscription\":" & jstr (sub-tier-name (acct.subscription)) & "}")
-      store
-    end
+    in respond-json store ("{\"account-id\":" & show (acct.account-id) & ",\"name\":" & jstr (acct.name) & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & ",\"wins\":" & show (acct.wins) & ",\"losses\":" & show (acct.losses) & ",\"balance\":" & show bal & ",\"tokens\":" & show token-count & ",\"subscription\":" & jstr (sub-tier-name (acct.subscription)) & "}")
 
-  handle-subscribe : MagicStore, Text -> [Console] MagicStore
+  handle-subscribe : MagicStore, Text -> MagicStep
   handle-subscribe (store) (line) =
     let acct-id = parse-int (extract-query-param line "id") 0
     in let tier-str = extract-query-param line "tier"
@@ -517,10 +433,7 @@ Section: Account Handler
     in let updated = PlayerAccount { account-id = acct.account-id, name = acct.name, rating = acct.rating, rank = acct.rank, wins = acct.wins, losses = acct.losses, general-id = acct.general-id, subscription = tier }
     in let new-accts = set-account (store.accounts) acct-id updated
     in let ns = update-store-accounts store new-accts (store.num-accounts)
-    in act
-      pm0 <- respond-json ("{\"account-id\":" & show acct-id & ",\"subscription\":" & jstr (sub-tier-name tier) & ",\"upgrade-bonus\":" & show (sub-upgrade-bonus tier) & "}")
-      ns
-    end
+    in respond-json ns ("{\"account-id\":" & show acct-id & ",\"subscription\":" & jstr (sub-tier-name tier) & ",\"upgrade-bonus\":" & show (sub-upgrade-bonus tier) & "}")
 
   parse-sub-tier : Text -> SubscriptionTier
   parse-sub-tier (s) =
@@ -542,26 +455,20 @@ Section: Account Handler
 
 Section: Season Handler
 
-  handle-season : MagicStore -> [Console] MagicStore
+  handle-season : MagicStore -> MagicStep
   handle-season (store) =
     let s = store.current-season
-    in act
-      pm0 <- respond-json ("{\"name\":" & jstr (s.name) & ",\"year\":" & show (s.id.year) & ",\"quarter\":" & show (s.id.quarter) & ",\"pool-size\":" & show (s.pool-size) & ",\"bans\":" & show (list-length (s.banned)) & ",\"active\":" & jbool (s.active) & "}")
-      store
-    end
+    in respond-json store ("{\"name\":" & jstr (s.name) & ",\"year\":" & show (s.id.year) & ",\"quarter\":" & show (s.id.quarter) & ",\"pool-size\":" & show (s.pool-size) & ",\"bans\":" & show (list-length (s.banned)) & ",\"active\":" & jbool (s.active) & "}")
 
 Section: Status Handler
 
-  handle-magic-status : MagicStore -> [Console] MagicStore
+  handle-magic-status : MagicStore -> MagicStep
   handle-magic-status (store) =
-    act
-      pm0 <- respond-json ("{\"server\":\"CodexMagic\",\"version\":3,\"cards\":" & show (list-length (store.templates)) & ",\"generals\":" & show (list-length (store.generals)) & ",\"accounts\":" & show (store.num-accounts) & ",\"tokens\":" & show (list-length (store.tokens)) & ",\"coin-supply\":" & show (store.ledger.total-supply) & ",\"game-active\":" & jbool (store.game-active) & ",\"clans\":" & show (platform-clan-count (store.platform)) & ",\"platform-revenue\":" & show (platform-total-revenue (store.platform)) & "}")
-      store
-    end
+    respond-json store ("{\"server\":\"CodexMagic\",\"version\":3,\"cards\":" & show (list-length (store.templates)) & ",\"generals\":" & show (list-length (store.generals)) & ",\"accounts\":" & show (store.num-accounts) & ",\"tokens\":" & show (list-length (store.tokens)) & ",\"coin-supply\":" & show (store.ledger.total-supply) & ",\"game-active\":" & jbool (store.game-active) & ",\"clans\":" & show (platform-clan-count (store.platform)) & ",\"platform-revenue\":" & show (platform-total-revenue (store.platform)) & "}")
 
 Section: Clan Authority Handlers
 
-  handle-clan : MagicStore, Text, Text -> [Console] MagicStore
+  handle-clan : MagicStore, Text, Text -> MagicStep
   handle-clan (store) (line) (path) =
     if text-starts-with path "/api/magic/clan/register" then handle-clan-register store line
     else if text-starts-with path "/api/magic/clan/authorize" then handle-clan-authorize store line
@@ -573,11 +480,9 @@ Section: Clan Authority Handlers
     else if text-starts-with path "/api/magic/clan/challenge-register" then handle-clan-challenge-reg store line
     else if text-starts-with path "/api/magic/clan/list" then handle-clan-list store
     else if text-starts-with path "/api/magic/clan/treasury" then handle-clan-treasury store line
-    else act pm0 <- respond-not-found
-      store
-    end
+    else respond-not-found store
 
-  handle-clan-register : MagicStore, Text -> [Console] MagicStore
+  handle-clan-register : MagicStore, Text -> MagicStep
   handle-clan-register (store) (line) =
     let name = extract-query-param line "name"
     in let tag = extract-query-param line "tag"
@@ -586,123 +491,81 @@ Section: Clan Authority Handlers
     in let pk-low = parse-int (extract-query-param line "pk-low") 0
     in let instance-key = PublicKey { key-high = pk-high, key-low = pk-low }
     in let result = register-clan (store.platform) name tag founder instance-key (store.next-nonce)
-    in if result.success == False then act
-      pm0 <- respond-error "registration failed: tag already taken"
-      store
-    end
+    in if result.success == False then respond-error store "registration failed: tag already taken"
     else let ns = update-store-platform store (result.platform)
     in let ns2 = MagicStore { game = ns.game, game-active = ns.game-active, templates = ns.templates, generals = ns.generals, accounts = ns.accounts, num-accounts = ns.num-accounts, tokens = ns.tokens, ledger = ns.ledger, current-season = ns.current-season, match-record = ns.match-record, account-keys = ns.account-keys, next-nonce = ns.next-nonce + 1, platform = ns.platform }
-    in act
-      pm0 <- respond-json ("{\"registered\":true,\"clan-id\":" & show (result.clan-id) & ",\"name\":" & jstr name & ",\"tag\":" & jstr tag & ",\"auth-token\":" & show (result.auth-token) & "}")
-      ns2
-    end
+    in respond-json ns2 ("{\"registered\":true,\"clan-id\":" & show (result.clan-id) & ",\"name\":" & jstr name & ",\"tag\":" & jstr tag & ",\"auth-token\":" & show (result.auth-token) & "}")
 
-  handle-clan-authorize : MagicStore, Text -> [Console] MagicStore
+  handle-clan-authorize : MagicStore, Text -> MagicStep
   handle-clan-authorize (store) (line) =
     let clan-id = parse-int (extract-query-param line "clan") 0
     in let auth-token = parse-int (extract-query-param line "token") 0
     in let platform2 = authorize-clan (store.platform) clan-id auth-token
     in let ns = update-store-platform store platform2
-    in act
-      pm0 <- respond-json ("{\"authorized\":true,\"clan\":" & show clan-id & "}")
-      ns
-    end
+    in respond-json ns ("{\"authorized\":true,\"clan\":" & show clan-id & "}")
 
-  handle-clan-buy-tokens : MagicStore, Text -> [Console] MagicStore
+  handle-clan-buy-tokens : MagicStore, Text -> MagicStep
   handle-clan-buy-tokens (store) (line) =
     let clan-id = parse-int (extract-query-param line "clan") 0
     in let amount = parse-int (extract-query-param line "amount") 0
     in let result = purchase-global-tokens (store.platform) clan-id amount (store.next-nonce)
-    in if result.success == False then act
-      pm0 <- respond-error "purchase failed: clan not authorized or not found"
-      store
-    end
+    in if result.success == False then respond-error store "purchase failed: clan not authorized or not found"
     else let ns = update-store-platform store (result.platform)
-    in act
-      pm0 <- respond-json ("{\"purchased\":true,\"clan\":" & show clan-id & ",\"amount\":" & show amount & ",\"treasury-balance\":" & show (get-clan-treasury-balance (result.platform) clan-id) & "}")
-      ns
-    end
+    in respond-json ns ("{\"purchased\":true,\"clan\":" & show clan-id & ",\"amount\":" & show amount & ",\"treasury-balance\":" & show (get-clan-treasury-balance (result.platform) clan-id) & "}")
 
-  handle-clan-submit-pack : MagicStore, Text -> [Console] MagicStore
+  handle-clan-submit-pack : MagicStore, Text -> MagicStep
   handle-clan-submit-pack (store) (line) =
     let clan-id = parse-int (extract-query-param line "clan") 0
     in let pack-name = extract-query-param line "name"
     in let price = parse-int (extract-query-param line "price") 100
     in let card-count = parse-int (extract-query-param line "cards") 15
-    in if is-clan-authorized (store.platform) clan-id == False then act
-      pm0 <- respond-error "clan not authorized"
-      store
-    end
+    in if is-clan-authorized (store.platform) clan-id == False then respond-error store "clan not authorized"
     else let platform2 = submit-pack-for-approval (store.platform) clan-id pack-name price card-count (store.next-nonce)
     in let ns = update-store-platform store platform2
-    in act
-      pm0 <- respond-json ("{\"submitted\":true,\"clan\":" & show clan-id & ",\"pack\":" & jstr pack-name & ",\"status\":\"Pending\"}")
-      ns
-    end
+    in respond-json ns ("{\"submitted\":true,\"clan\":" & show clan-id & ",\"pack\":" & jstr pack-name & ",\"status\":\"Pending\"}")
 
-  handle-clan-review-pack : MagicStore, Text -> [Console] MagicStore
+  handle-clan-review-pack : MagicStore, Text -> MagicStep
   handle-clan-review-pack (store) (line) =
     let approval-id = parse-int (extract-query-param line "approval") 0
     in let approved = extract-query-param line "approved" == "true"
     in let platform2 = review-pack-approval (store.platform) approval-id approved (store.next-nonce)
     in let ns = update-store-platform store platform2
-    in act
-      pm0 <- respond-json ("{\"reviewed\":true,\"approval\":" & show approval-id & ",\"approved\":" & jbool approved & "}")
-      ns
-    end
+    in respond-json ns ("{\"reviewed\":true,\"approval\":" & show approval-id & ",\"approved\":" & jbool approved & "}")
 
-  handle-clan-revenue : MagicStore, Text -> [Console] MagicStore
+  handle-clan-revenue : MagicStore, Text -> MagicStep
   handle-clan-revenue (store) (line) =
     let clan-id = parse-int (extract-query-param line "clan") 0
     in let amount = parse-int (extract-query-param line "amount") 0
     in let platform2 = collect-pack-revenue (store.platform) clan-id amount
     in let ns = update-store-platform store platform2
-    in act
-      pm0 <- respond-json ("{\"collected\":true,\"clan\":" & show clan-id & ",\"amount\":" & show amount & ",\"total-revenue\":" & show (platform-total-revenue platform2) & "}")
-      ns
-    end
+    in respond-json ns ("{\"collected\":true,\"clan\":" & show clan-id & ",\"amount\":" & show amount & ",\"total-revenue\":" & show (platform-total-revenue platform2) & "}")
 
-  handle-clan-sync : MagicStore, Text -> [Console] MagicStore
+  handle-clan-sync : MagicStore, Text -> MagicStep
   handle-clan-sync (store) (line) =
     let clan-id = parse-int (extract-query-param line "clan") 0
     in let members = parse-int (extract-query-param line "members") 0
     in let reputation = parse-int (extract-query-param line "reputation") 0
     in let platform2 = sync-clan-state (store.platform) clan-id members reputation (store.next-nonce)
     in let ns = update-store-platform store platform2
-    in act
-      pm0 <- respond-json ("{\"synced\":true,\"clan\":" & show clan-id & ",\"members\":" & show members & ",\"reputation\":" & show reputation & "}")
-      ns
-    end
+    in respond-json ns ("{\"synced\":true,\"clan\":" & show clan-id & ",\"members\":" & show members & ",\"reputation\":" & show reputation & "}")
 
-  handle-clan-challenge-reg : MagicStore, Text -> [Console] MagicStore
+  handle-clan-challenge-reg : MagicStore, Text -> MagicStep
   handle-clan-challenge-reg (store) (line) =
     let challenger = parse-int (extract-query-param line "challenger") 0
     in let defender = parse-int (extract-query-param line "defender") 0
     in let stake = parse-int (extract-query-param line "stake") 0
     in let challenge-id = parse-int (extract-query-param line "id") 0
-    in if is-clan-authorized (store.platform) challenger == False then act
-      pm0 <- respond-error "challenger clan not authorized"
-      store
-    end
-    else if is-clan-authorized (store.platform) defender == False then act
-      pm0 <- respond-error "defender clan not authorized"
-      store
-    end
+    in if is-clan-authorized (store.platform) challenger == False then respond-error store "challenger clan not authorized"
+    else if is-clan-authorized (store.platform) defender == False then respond-error store "defender clan not authorized"
     else let platform2 = register-challenge (store.platform) challenger defender stake challenge-id
     in let ns = update-store-platform store platform2
-    in act
-      pm0 <- respond-json ("{\"registered\":true,\"challenge\":" & show challenge-id & ",\"challenger\":" & show challenger & ",\"defender\":" & show defender & ",\"stake\":" & show stake & "}")
-      ns
-    end
+    in respond-json ns ("{\"registered\":true,\"challenge\":" & show challenge-id & ",\"challenger\":" & show challenger & ",\"defender\":" & show defender & ",\"stake\":" & show stake & "}")
 
-  handle-clan-list : MagicStore -> [Console] MagicStore
+  handle-clan-list : MagicStore -> MagicStep
   handle-clan-list (store) =
     let clans = store.platform.registered-clans
     in let json = clan-reg-list-to-json clans 0 (list-length clans) ""
-    in act
-      pm0 <- respond-json ("{\"clans\":[" & json & "],\"count\":" & show (list-length clans) & "}")
-      store
-    end
+    in respond-json store ("{\"clans\":[" & json & "],\"count\":" & show (list-length clans) & "}")
 
   clan-reg-list-to-json : List ClanRegistration, Integer, Integer, Text -> Text
   clan-reg-list-to-json (clans) (i) (len) (acc) =
@@ -712,14 +575,11 @@ Section: Clan Authority Handlers
     in let cj = sep & "{\"id\":" & show (c.clan-id) & ",\"name\":" & jstr (c.name) & ",\"tag\":" & jstr (c.tag) & ",\"authorized\":" & jbool (c.authorized) & ",\"members\":" & show (c.member-count) & ",\"rank\":" & jstr (clan-rank-name (c.rank)) & "}"
     in clan-reg-list-to-json clans (i + 1) len (acc & cj)
 
-  handle-clan-treasury : MagicStore, Text -> [Console] MagicStore
+  handle-clan-treasury : MagicStore, Text -> MagicStep
   handle-clan-treasury (store) (line) =
     let clan-id = parse-int (extract-query-param line "clan") 0
     in let bal = get-clan-treasury-balance (store.platform) clan-id
-    in act
-      pm0 <- respond-json ("{\"clan\":" & show clan-id & ",\"treasury-balance\":" & show bal & "}")
-      store
-    end
+    in respond-json store ("{\"clan\":" & show clan-id & ",\"treasury-balance\":" & show bal & "}")
 
 Section: JSON Serializers
 
@@ -796,20 +656,30 @@ Section: Helpers
 
 Section: Server Loop
 
-  opening : [Console] Nothing = act
-    print-line-uni "READY"
-    server-loop magic-store-new
+  MagicLoop = record { mstate : MagicStore, transport : TcpTransportState }
+
+  magic-handle : MagicLoop, TransportRecvResult -> MagicLoop
+  magic-handle (ls) (recv) =
+    let req = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
+    in let step = dispatch-request (ls.mstate) req
+    in let ts2 = web-send (recv.transport) (step.resp)
+    in MagicLoop { mstate = step.store, transport = ts2 }
+
+  magic-loop : MagicLoop -> [Console] Nothing
+  magic-loop (ls) = act
+    let recv = net-io-recv-loop (ls.transport) 0
+    in if recv.has-message then act
+      let next = magic-handle ls recv
+      in magic-loop next
+    end
+    else print-line-uni "SERVER-EXIT"
   end
 
-  server-loop : MagicStore -> [Console] Nothing
-  server-loop (store) = act
-    line-result <- read-line
-    when line-result
-      is Just (line) -> act
-        new-store <- dispatch-request store line
-        server-loop new-store
-      end
-      is None -> print-line-uni "SERVER-EXIT"
-    end
+  opening : [Console] Nothing = act
+    let sess = net-session-new local-mac local-ip gateway-ip 49152 9200 host-ip 1000
+    in let ts = transport-new sess
+    in let ts1 = net-io-connect ts
+    in magic-loop (MagicLoop { mstate = magic-store-new, transport = ts1 })
+  end
 
 Page 1

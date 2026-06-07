@@ -43,14 +43,7 @@ Section: Serialize Response
     in status-line & h1 & h2 & h3 & blank & body-bytes
 
   http-text-to-ascii : Text -> List Integer
-  http-text-to-ascii (s) = http-text-to-bytes s 0 (text-length s) []
-
-  http-text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
-  http-text-to-bytes (s) (i) (len) (acc) =
-    if i >= len then acc
-    else let b = to-unicode (char-code (char-at s i))
-    in if b == 10 then http-text-to-bytes s (i + 1) len (acc & [13, 10])
-    else http-text-to-bytes s (i + 1) len (list-push acc b)
+  http-text-to-ascii (s) = text-to-unicode-bytes s
 
 Section: Request Parsing
   HttpRequest = record {
@@ -61,18 +54,36 @@ Section: Request Parsing
 
   http-parse-request : List Integer -> HttpRequest
   http-parse-request (bs) =
-    let line = http-read-line bs 0 (list-length bs) ""
-    in let parts = text-split line " "
-    in if list-length parts < 2 then HttpRequest { method = "", path = "", valid = False }
-    else HttpRequest { method = list-at parts 0, path = list-at parts 1, valid = True }
+    let len = list-length bs
+    in let sp1 = http-find-byte bs 32 0 len
+    in if sp1 >= len then HttpRequest { method = "", path = "", valid = False }
+    else let sp2 = http-find-byte bs 32 (sp1 + 1) len
+    in let path-stop = if sp2 >= len then http-find-line-stop bs (sp1 + 1) len else sp2
+    in HttpRequest { method = http-bytes-to-text bs 0 sp1, path = http-bytes-to-text bs (sp1 + 1) path-stop, valid = True }
 
-  http-read-line : List Integer, Integer, Integer, Text -> Text
-  http-read-line (bs) (i) (len) (acc) =
-    if i >= len then acc
+  http-find-byte : List Integer, Integer, Integer, Integer -> Integer
+  http-find-byte (bs) (target) (i) (len) =
+    if i >= len then len
     else let b = list-at bs i
-    in if b == 13 then acc
-    else if b == 10 then acc
-    else http-read-line bs (i + 1) len (acc & char-to-text (code-to-char (from-unicode b)))
+    in if b == target then i
+    else http-find-byte bs target (i + 1) len
+
+  http-find-line-stop : List Integer, Integer, Integer -> Integer
+  http-find-line-stop (bs) (i) (len) =
+    if i >= len then len
+    else let b = list-at bs i
+    in if b == 13 then i
+    else if b == 10 then i
+    else http-find-line-stop bs (i + 1) len
+
+  http-bytes-to-text : List Integer, Integer, Integer -> Text
+  http-bytes-to-text (bs) (start) (stop) =
+    unicode-bytes-to-text (http-slice bs start stop [])
+
+  http-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  http-slice (bs) (i) (stop) (acc) =
+    if i >= stop then acc
+    else http-slice bs (i + 1) stop (list-push acc (list-at bs i))
 
   http-is-get : HttpRequest -> Boolean
   http-is-get (req) = req.method == "GET"

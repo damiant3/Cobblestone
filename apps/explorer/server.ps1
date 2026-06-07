@@ -1,10 +1,11 @@
 # server.ps1 — Explorer web server
 # Boots the ExplorerServer CDX in a VM, bridges HTTP requests to
 # the CDX over TCP (via NE2K NIC NAT) or serial (fallback).
-# Usage: apps/explorer/server.ps1 [-Port 8888] [-Mode tcp]
+# Usage: apps/explorer/server.ps1 [-Port 8889] [-Mode tcp]
 [CmdletBinding()]
 param(
-    [int]$Port = 8888,
+    [int]$Port = 8889,
+    [int]$MagicPort = 8090,
     [int]$SdPort = 7860,
     [int]$TcpBridgePort = 9100,
     [ValidateSet('tcp','serial')]
@@ -64,50 +65,25 @@ function Start-ExplorerVm {
         Write-Host "  Compiled: $((Get-Item $CdxPath).Length) bytes" -ForegroundColor Green
     }
 
-    Write-Host "Booting Explorer VM..." -ForegroundColor Cyan
-    $run = Start-VmRun -Kernel $CdxPath -ConnectTimeoutSec 30 -MemMB 2048
-    if (-not $run) {
-        Write-Host "  VM failed to start." -ForegroundColor Red
+    Write-Host "Booting Explorer VM (codex-vm, NE2K NIC)..." -ForegroundColor Cyan
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    $vmArgs = @('-kernel', $CdxPath, '-mem', '2048', '-headless')
+    $script:VmProcess = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
+    $script:VmStderrFile = $stderrFile
+
+    if ($script:VmProcess.HasExited) {
+        Write-Host "  VM exited immediately." -ForegroundColor Red
         return
     }
-    $script:ExplorerVm = $run
-    $script:ExplorerStream = $run.Conn.Data.GetStream()
-    $script:ExplorerStream.ReadTimeout = 15000
+    Write-Host "  VM PID: $($script:VmProcess.Id). Waiting for CDX to connect on port $TcpBridgePort..." -ForegroundColor Cyan
 
-    # Wait for READY
-    $ready = ''
-    $deadline = (Get-Date).AddSeconds(15)
-    while ((Get-Date) -lt $deadline) {
-        try {
-            $n = $script:ExplorerStream.Read($script:VmBuf, 0, $script:VmBuf.Length)
-            if ($n -gt 0) {
-                $ready += [System.Text.Encoding]::UTF8.GetString($script:VmBuf, 0, $n)
-                if ($ready -match 'READY') { break }
-            }
-        } catch { break }
-    }
-
-    if ($ready -notmatch 'READY') {
-        Write-Host "  VM did not signal READY." -ForegroundColor Red
-        Close-Vm -Conn $run.Conn -Process $run.Process
-        $script:ExplorerVm = $null; $script:ExplorerStream = $null
+    if (-not (Wait-TcpConnection -TimeoutSec 30)) {
+        Write-Host "  CDX did not connect via TCP." -ForegroundColor Red
+        try { Stop-Process -Id $script:VmProcess.Id -Force -ErrorAction Stop } catch {}
+        Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
         return
     }
-    Write-Host "  VM ready." -ForegroundColor Green
-
-    if ($script:UseTcp) {
-        Send-VmLine 'TCP'
-        Write-Host "  Sent TCP mode. Waiting for CDX connection..." -ForegroundColor Cyan
-        if (-not (Wait-TcpConnection -TimeoutSec 30)) {
-            Write-Host "  CDX did not connect via TCP." -ForegroundColor Red
-            Close-Vm -Conn $run.Conn -Process $run.Process
-            $script:ExplorerVm = $null; $script:ExplorerStream = $null
-            return
-        }
-    } else {
-        Send-VmLine 'SERIAL'
-        Write-Host "  Serial mode active." -ForegroundColor Green
-    }
+    Write-Host "  CDX connected." -ForegroundColor Green
 }
 
 function Feed-SdConfig {
@@ -431,13 +407,44 @@ try {
     Write-Host "Warning: SD API not reachable on port $SdPort" -ForegroundColor Yellow
 }
 
+# ── CodexMagic proxy (forward /api/magic/* and /api/clan/* to MagicPort) ──
+
+$script:MagicHttp = [System.Net.Http.HttpClient]::new()
+$script:MagicHttp.Timeout = [TimeSpan]::FromSeconds(15)
+$script:MagicBase = "http://localhost:$MagicPort"
+
+function Proxy-ToMagic {
+    param($Context, $Response)
+    $url = "$($script:MagicBase)$($Context.Request.Url.PathAndQuery)"
+    try {
+        $result = $script:MagicHttp.GetAsync($url).GetAwaiter().GetResult()
+        $body = $result.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+        $Response.StatusCode = [int]$result.StatusCode
+        $ct = $result.Content.Headers.ContentType
+        $Response.ContentType = if ($ct) { $ct.ToString() } else { 'application/json; charset=utf-8' }
+        $Response.Headers.Add('Access-Control-Allow-Origin', '*')
+        $Response.ContentLength64 = $body.Length
+        $Response.OutputStream.Write($body, 0, $body.Length)
+    } catch {
+        Send-Json -Response $Response -Json '{"error":"codexmagic server unavailable"}' -Status 502
+    }
+}
+
 $script:UseTcp = ($Mode -eq 'tcp')
-if ($script:UseTcp) {
-    Start-TcpBridge
+
+function Cleanup-Resources {
+    if ($script:TcpStream)   { try { $script:TcpStream.Close() }   catch {}; $script:TcpStream = $null }
+    if ($script:TcpClient)   { try { $script:TcpClient.Close() }   catch {}; $script:TcpClient = $null }
+    if ($script:TcpListener) { try { $script:TcpListener.Stop() }  catch {}; $script:TcpListener = $null }
+    if ($script:VmProcess -and -not $script:VmProcess.HasExited) {
+        try { Stop-Process -Id $script:VmProcess.Id -Force } catch {}
+        $script:VmProcess = $null
+    }
+    if ($listener) { try { $listener.Stop(); $listener.Close() } catch {} }
+    if ($script:MagicHttp) { try { $script:MagicHttp.Dispose() } catch {} }
 }
-try { Start-ExplorerVm } catch {
-    Write-Host "  CDX VM not available: $_" -ForegroundColor Yellow
-}
+
+try { [Console]::CancelKeyPress.Add({ Cleanup-Resources }) } catch {}
 
 # ── HTTP Server ───────────────────────────────────────────────
 
@@ -451,12 +458,15 @@ Write-Host "  Press Ctrl+C to stop." -ForegroundColor DarkGray
 Write-Host ""
 
 try {
+    if ($script:UseTcp) { Start-TcpBridge }
+    try { Start-ExplorerVm } catch { Write-Host "  CDX VM not available: $_" -ForegroundColor Yellow }
     while ($listener.IsListening) {
         $ctx = $listener.GetContext()
         $resp = $ctx.Response
 
         try {
             $path = $ctx.Request.Url.AbsolutePath
+            $query = $ctx.Request.Url.PathAndQuery
             $method = $ctx.Request.HttpMethod
 
             if ($path -eq '/' -or $path -eq '/index.html' -or $path -eq '/item') {
@@ -479,8 +489,11 @@ try {
                 $relPath = $path.Substring(7) -replace '/', '\'
                 Send-StaticFile -Response $resp -FilePath (Join-Path $CacheDir $relPath)
             }
-            elseif ($path -like '/api/*' -and $method -eq 'GET') {
-                $cdxResp = Send-CdxRequest "$method $path"
+            elseif ($path -like '/api/magic/*' -or $path -like '/api/clan/*') {
+                Proxy-ToMagic -Context $ctx -Response $resp
+            }
+            elseif ($path -like '/api/*') {
+                $cdxResp = Send-CdxRequest "GET $query"
                 $parsed = Parse-CdxResponse $cdxResp
                 if ($parsed) {
                     Send-Json -Response $resp -Json $parsed.Body -Status $parsed.Status
@@ -503,12 +516,6 @@ try {
         }
     }
 } finally {
-    $listener.Stop()
-    $listener.Close()
-    Stop-TcpBridge
-    if ($script:ExplorerVm) {
-        Write-Host "Shutting down Explorer VM..." -ForegroundColor Gray
-        Close-Vm -Conn $script:ExplorerVm.Conn -Process $script:ExplorerVm.Process
-    }
+    Cleanup-Resources
     Write-Host "Server stopped." -ForegroundColor Yellow
 }

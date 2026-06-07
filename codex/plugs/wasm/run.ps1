@@ -1,66 +1,55 @@
-# Run the Wasm plug over a Codex source file via TCP.
+# Run WASM plug: source -> IR-CCE -> plug CDX -> WAT
 [CmdletBinding()]
-param(
-    [Parameter(Mandatory=$true)] [string]$Src,
-    [Parameter(Mandatory=$true)] [string]$Out
-)
-
+param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
+$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+$PlugCdx = Join-Path $PSScriptRoot 'build-output\wasm-plug.cdx'
+$LogFile = Join-Path $PSScriptRoot 'build-output\run.log'
+if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx"); exit 2 }
 
-$Repo     = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
-$PlugDir  = (Resolve-Path $PSScriptRoot).Path
-$PlugCdx  = Join-Path $PlugDir 'build-output\wasm-plug.cdx'
-$IrDir    = Join-Path $PlugDir 'build-output'
-$IrFile   = Join-Path $IrDir 'last-run.ir'
-$LogFile  = Join-Path $IrDir 'run.log'
+# Phase 1: source -> IR-CCE
+$IrFile = Join-Path $PSScriptRoot 'build-output\last-run.ir'
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce
+if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: IR; see $LogFile"); exit 3 }
+Write-Host "[wasm-run] IR: $((Get-Item $IrFile).Length) bytes (CCE)"
 
-if (-not (Test-Path -PathType Leaf $PlugCdx)) {
-    [Console]::Error.WriteLine("MISSING: $PlugCdx -- run plugs/wasm/build.ps1 first")
-    exit 2
-}
+$irBytes = [System.IO.File]::ReadAllBytes($IrFile)
 
-# -- Phase 1: Codex source -> IR text --------------------------------
-$compileScript = Join-Path $Repo 'build' 'compile.ps1'
-& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IrFile)) {
-    [Console]::Error.WriteLine("FAIL: IR compile failed; see $LogFile")
-    exit 4
+# Phase 2: Build input -- CCE mode header + CCE IR + null terminator
+$inputFile = [System.IO.Path]::GetTempFileName()
+$hdrList = [System.Collections.Generic.List[byte]]::new()
+foreach ($ch in "IR-CCE".ToCharArray()) {
+    $u = [int]$ch
+    if ($u -lt 256) { $hdrList.Add([byte]$script:UnicodeToCce[$u]) }
 }
-# -- Phase 2: IR text -> Wasm via plug -------------------------------
-$stderrFile = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '2048', '-headless') `
-        -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
-    # Send IR over TCP to plug
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9100)
-    $listener.Start()
-    $deadline = (Get-Date).AddSeconds(30)
-    while (-not $listener.Pending() -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
-    if (-not $listener.Pending()) { [Console]::Error.WriteLine("FAIL: plug did not connect"); exit 7 }
-    $client = $listener.AcceptTcpClient()
-    $listener.Stop()
-    $ns = $client.GetStream()
-    $irData = [System.IO.File]::ReadAllBytes($IrFile)
-    $ns.Write($irData, 0, $irData.Length)
-    $ns.Flush()
-    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
-    # Read response
-    $resp = [System.Collections.Generic.List[byte]]::new()
-    $buf = New-Object byte[] 65536
-    while ($true) {
-        try { $n = $ns.Read($buf, 0, $buf.Length) } catch { break }
-        if ($n -le 0) { break }
-        for ($i = 0; $i -lt $n; $i++) { $resp.Add($buf[$i]) }
-    }
-    $client.Close()
-    if ($resp.Count -eq 0) { [Console]::Error.WriteLine("FAIL: empty response from plug"); exit 8 }
-    [System.IO.File]::WriteAllBytes($Out, $resp.ToArray())
-    Write-Host "[wasm-plug] OK: $Out ($($resp.Count) bytes)"
-} finally {
-    if ($proc -and -not $proc.HasExited) {
-        try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
-    }
-    Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
+$hdrList.Add([byte]1)  # CCE newline
+$modeHeader = $hdrList.ToArray()
+$combined = New-Object byte[] ($modeHeader.Length + $irBytes.Length + 1)
+[Buffer]::BlockCopy($modeHeader, 0, $combined, 0, $modeHeader.Length)
+[Buffer]::BlockCopy($irBytes, 0, $combined, $modeHeader.Length, $irBytes.Length)
+$combined[$combined.Length - 1] = 0  # null terminator for read-file
+[System.IO.File]::WriteAllBytes($inputFile, $combined)
+
+# Phase 3: Run plug CDX
+$vmBin = Join-Path $Repo 'tools\codex-vm.exe'
+$outFile = [System.IO.Path]::GetTempFileName()
+$errFile = [System.IO.Path]::GetTempFileName()
+$proc = Start-Process -FilePath $vmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$inputFile,'-output',$outFile,'-mem','4096','-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
+$proc.WaitForExit(300000)
+if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force; [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
+
+if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
+    $err = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { "" }
+    [Console]::Error.WriteLine("FAIL: no output")
+    if ($err -match 'EXC') { [Console]::Error.WriteLine($err.Substring(0, [Math]::Min(300, $err.Length))) }
+    exit 5
 }
+$raw = [System.IO.File]::ReadAllText($outFile)
+$lines = $raw -split "`n" | Where-Object { $_ -notmatch '^(HEAP|WD|STACK|PM):' -and $_.Trim().Length -gt 0 }
+$wat = ($lines -join "`n")
+$wat = $wat -replace '^[\x00-\x1f]+', ''
+[System.IO.File]::WriteAllText($Out, $wat, [System.Text.UTF8Encoding]::new($false))
+Write-Host "[wasm-plug] OK: $Out ($($wat.Length) chars)"
+Remove-Item $inputFile,$outFile,$errFile -Force -ErrorAction SilentlyContinue

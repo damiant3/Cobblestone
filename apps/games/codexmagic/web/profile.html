@@ -4,15 +4,25 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CodexMagic - Profile</title>
-  <link rel="stylesheet" href="/web/magic/magic.css">
+  <link rel="stylesheet" href="/magic.css">
   <style>
-    .page { max-width: 700px; margin: 0 auto; padding: 24px; }
+    .page { max-width: 700px; }
     .profile-header { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin-bottom: 16px; display: flex; align-items: center; gap: 24px; }
     .profile-avatar { width: 80px; height: 80px; background: var(--border); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 32px; }
     .profile-info { flex: 1; }
     .profile-name { font-size: 22px; font-weight: bold; margin-bottom: 4px; }
-    .profile-rank { font-size: 14px; color: var(--blue); }
+    .profile-handle { font-size: 13px; color: var(--text-dim); margin-bottom: 6px; }
+    .profile-rank { font-size: 14px; font-weight: bold; }
     .profile-rating { font-size: 14px; color: var(--text-dim); }
+    .profile-badges { display: flex; gap: 6px; margin-top: 6px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
+    .badge-admin { background: var(--red); color: #fff; }
+    .badge-sub { background: var(--gold); color: #000; }
+    .rank-bronze { color: #cd7f32; }
+    .rank-silver { color: #c0c0c0; }
+    .rank-gold { color: var(--gold); }
+    .rank-platinum { color: #58a6ff; }
+    .rank-diamond { color: #b9f2ff; }
     .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
     .stat-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; text-align: center; }
     .stat-value { font-size: 24px; font-weight: bold; margin-bottom: 4px; }
@@ -30,32 +40,20 @@
     .match-win { color: var(--green); }
     .match-loss { color: var(--red); }
     .key-display { font-family: monospace; font-size: 11px; color: var(--text-dim); background: var(--bg); padding: 8px; border-radius: 4px; word-break: break-all; margin-top: 8px; }
-    .acct-name { font-weight: bold; margin-right: 12px; }
-    .acct-rank { color: var(--blue); margin-right: 12px; }
-    .acct-balance { color: var(--gold); }
-    #account-bar { font-size: 13px; }
   </style>
 </head>
 <body>
-<div class="topbar">
-  <h1>CodexMagic</h1>
-  <div class="nav">
-    <a href="/web/magic/game.html">Game</a>
-    <a href="/web/magic/collection.html">Collection</a>
-    <a href="/web/magic/store.html">Store</a>
-    <a href="/web/magic/queue.html">Queue</a>
-    <a href="/web/magic/profile.html" class="active">Profile</a>
-  </div>
-  <div id="account-bar"></div>
-</div>
+<div id="cx-header"></div>
 
 <div class="page">
   <div class="profile-header">
     <div class="profile-avatar" id="avatar">?</div>
     <div class="profile-info">
       <div class="profile-name" id="profile-name">Loading...</div>
+      <div class="profile-handle" id="profile-handle"></div>
       <div class="profile-rank" id="profile-rank"></div>
       <div class="profile-rating" id="profile-rating"></div>
+      <div class="profile-badges" id="profile-badges"></div>
     </div>
   </div>
 
@@ -85,18 +83,29 @@
   </div>
 
   <div class="section">
+    <h3>Change Password</h3>
+    <div id="pw-msg" style="font-size:13px;margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+      <label style="font-size:12px;color:var(--text-dim);display:flex;flex-direction:column;gap:4px;">Current <input id="pw-old" type="password" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;"></label>
+      <label style="font-size:12px;color:var(--text-dim);display:flex;flex-direction:column;gap:4px;">New <input id="pw-new" type="password" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;"></label>
+      <button onclick="changePassword()" style="background:var(--blue);color:#000;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;">Change</button>
+    </div>
+  </div>
+
+  <div class="section">
     <h3>Account Key</h3>
     <div style="font-size:12px; color:var(--text-dim);">Your public key (stored on-chain):</div>
     <div class="key-display" id="public-key">-</div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:4px;">Private key stored locally in your browser. Never shared.</div>
   </div>
+
+  <button onclick="doLogout()" style="width:100%;background:var(--red);color:#fff;border:none;padding:12px;border-radius:6px;font-size:14px;cursor:pointer;margin-top:8px;">Sign Out</button>
 </div>
 
-<script src="/web/magic/magic.js"></script>
+<script src="/magic.js"></script>
 <script>
 async function init() {
   await ensureAccount();
-  await refreshBalance();
   await loadProfile();
   await loadMatch();
   await loadSeason();
@@ -104,12 +113,17 @@ async function init() {
 }
 
 async function loadProfile() {
-  var data = await apiCall('/account/profile?id=' + accountId());
-  if (!data) return;
-  document.getElementById('profile-name').textContent = data.name || 'Unknown';
-  document.getElementById('profile-rank').textContent = data.rank || 'Bronze';
+  var data = await authCall('/profile?t=' + encodeURIComponent(authToken));
+  if (!data || !data.handle) return;
+  var name = data.display || data.handle;
+  document.getElementById('profile-name').textContent = name;
+  document.getElementById('profile-handle').textContent = '@' + data.handle;
+  var rank = data.rank || 'Bronze';
+  var rankEl = document.getElementById('profile-rank');
+  rankEl.textContent = rank;
+  rankEl.className = 'profile-rank rank-' + rank.toLowerCase();
   document.getElementById('profile-rating').textContent = 'Rating: ' + (data.rating || 1000);
-  document.getElementById('avatar').textContent = (data.name || '?').charAt(0).toUpperCase();
+  document.getElementById('avatar').textContent = name.charAt(0).toUpperCase();
   document.getElementById('stat-wins').textContent = data.wins || 0;
   document.getElementById('stat-losses').textContent = data.losses || 0;
   document.getElementById('stat-balance').textContent = data.balance || 0;
@@ -118,6 +132,10 @@ async function loadProfile() {
   document.getElementById('sub-current').textContent = sub;
   var bonuses = { 'Free': 'No bonus', 'Bronze': '+1 upgrade', 'Silver': '+2 upgrades', 'Gold': '+3 upgrades', 'Platinum': '+5 upgrades' };
   document.getElementById('sub-bonus').textContent = bonuses[sub] || 'No bonus';
+  var badges = '';
+  if (data.admin) badges += '<span class="badge badge-admin">Admin</span>';
+  if (sub !== 'Free') badges += '<span class="badge badge-sub">' + sub + '</span>';
+  document.getElementById('profile-badges').innerHTML = badges;
 }
 
 async function loadMatch() {
@@ -132,7 +150,7 @@ async function loadMatch() {
 }
 
 async function loadSeason() {
-  var data = await apiCall('/season');
+  var data = await authCall('/season');
   if (!data) return;
   document.getElementById('season-info').textContent = data.name + ' (Q' + data.quarter + ' ' + data.year + ') | ' + data['pool-size'] + ' cards | ' + data.bans + ' bans';
 }
@@ -142,6 +160,30 @@ function loadKey() {
   if (pk) {
     document.getElementById('public-key').textContent = hashMix(pk.high, 2654435761) + ':' + hashMix(pk.low, 2246822519);
   }
+}
+
+async function changePassword() {
+  var old = document.getElementById('pw-old').value;
+  var nw = document.getElementById('pw-new').value;
+  var msg = document.getElementById('pw-msg');
+  if (!old || !nw) { msg.textContent = 'Both fields required'; msg.style.color = 'var(--red)'; return; }
+  var r = await authCall('/change-password?t=' + encodeURIComponent(authToken) + '&old=' + encodeURIComponent(old) + '&new=' + encodeURIComponent(nw));
+  if (r && r.ok) {
+    msg.textContent = 'Password changed. Strength: ' + r['pw-label'];
+    msg.style.color = 'var(--green)';
+    document.getElementById('pw-old').value = '';
+    document.getElementById('pw-new').value = '';
+  } else {
+    msg.textContent = (r && r.error) || 'Failed';
+    msg.style.color = 'var(--red)';
+  }
+}
+
+async function doLogout() {
+  await authCall('/logout?t=' + encodeURIComponent(authToken));
+  clearStoredToken();
+  currentAccount = null;
+  window.location.href = '/game.html';
 }
 
 init();

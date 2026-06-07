@@ -6,7 +6,7 @@ A foreword quire is a library package marked `"foreword": true` in its
 `codex.project.json`. Foreword modules compile before user code and
 make their types and functions automatically available.
 
-### codex.foreword (89 modules) — Core
+### codex.foreword (92 modules) — Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -85,7 +85,7 @@ Charts, Sound, Clipboard, Vector
 
 These are not auto-loaded. User code must `cites` them explicitly.
 
-### codex (59 modules) — The Compiler
+### codex (54 modules) — The Compiler
 
 The self-hosted compiler. Subdirectories: Ast, Core, Emit, IR,
 Semantics, Syntax, Types. Do not modify without reading the code first
@@ -98,7 +98,7 @@ DiskFacts, DriveManager, GpuBridge, IdentityManager, Ivshmem,
 Keyboard, Mouse, Ne2k, Pci, SystemDb, Usb, UsbAudio, UsbMassStorage,
 UsbVideo, Vga, VgaGraphics, VmIde, VmSerial, Xhci
 
-### codex.os (51 modules) — Operating System
+### codex.os (81 modules) — Operating System
 
 Split across sub-quires:
 
@@ -106,18 +106,19 @@ Split across sub-quires:
 |-----------|---------|---------|
 | codex.os | 4 | Core OS abstractions |
 | codex.os.dev | 5 | Device management |
-| codex.os.net | 15 | Networking stack |
+| codex.os.kernel | 22 | Hardware drivers (PCI, xHCI, NE2K, VGA, IDE, HDA, etc.) |
+| codex.os.net | 18 | Networking stack |
 | codex.os.observe | 7 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
 | codex.os.sched | 6 | Scheduling |
 | codex.os.trust | 11 | Trust lattice |
 | codex.os.verify | 5 | Verification |
 
-### codex.works (53 modules) — Tools and Applications
+### codex.plugs (113 modules) — Transpiler Plugs
 
-Agents, build system, dev console, repository protocol, web server,
-test harness, UEFI boot, and other tooling built on top of the
-compiler and OS layers.
+48 transpiler plugs (Ada to Zig, 14 UI frameworks, 4 binary
+formats) plus WASM and HTML backends. Each plug receives IR or CDX
+over TCP and produces the target format.
 
 ## Library Rules
 

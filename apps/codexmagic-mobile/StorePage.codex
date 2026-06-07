@@ -1,0 +1,118 @@
+Chapter: CreationsPage
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ My Creations page. Lists the user's saved creations from the
+ explorer server. Supports viewing and deleting creations.
+
+Section: State Keys
+
+  sk-cr-loaded : Text = "cr-loaded"
+  sk-cr-msg : Text = "cr-msg"
+  sk-cr-data : Text = "cr-data-text"
+  sk-cr-count : Text = "cr-count"
+
+Section: Page Tree
+
+  creations-page-tree : Integer -> WidgetNode
+  creations-page-tree (x) =
+   let loaded = state-get sk-cr-loaded
+   in let msg = state-get-text sk-cr-msg
+   in let count = state-get sk-cr-count
+   in widget-panel "cr-root" DirColumn 12 [
+     widget-label "cr-title" "My Creations",
+     widget-panel "cr-bar" DirRow 8 [
+       widget-label "cr-count-lbl" (show count & " saved"),
+       widget-button "cr-refresh" "Refresh"
+     ],
+     widget-separator "sep-list",
+     if loaded == 0 then widget-label "cr-loading" "Tap Refresh to load"
+     else creations-list-tree 0,
+     if text-length msg > 0 then widget-label "cr-msg" msg
+     else widget-label "cr-msg-empty" ""
+   ]
+
+  creations-list-tree : Integer -> WidgetNode
+  creations-list-tree (x) =
+   let count = state-get sk-cr-count
+   in if count == 0 then widget-label "cr-empty" "No creations yet. Use the web portal to create settings, characters, and items."
+   else widget-panel "cr-list" DirColumn 6 (creations-items 0 count [])
+
+  creations-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  creations-items (i) (count) (acc) =
+   if i >= count then acc
+   else let kind = state-get-text ("cr-kind-" & show i)
+   in let name = state-get-text ("cr-name-" & show i)
+   in let item = widget-panel ("cr-item-" & show i) DirRow 8 [
+     widget-label ("cr-badge-" & show i) ("[" & kind & "]"),
+     widget-label ("cr-nm-" & show i) name,
+     widget-button ("cr-del-" & show i) "Delete"
+   ]
+   in creations-items (i + 1) count (list-push acc item)
+
+Section: Data Loading
+
+  creations-load : Integer -> Integer
+  creations-load (x) =
+   let tok = state-get-text "cx_token"
+   in let url = api-base & "/api/mine?t=" & url-encode tok
+   in let s = set-msg sk-cr-msg "Loading..."
+   in fetch-get-then url (creations-load-cb)
+
+  creations-load-cb : Text -> Integer
+  creations-load-cb (resp) =
+   let s1 = state-set-text sk-cr-data resp
+   in let s2 = state-set sk-cr-loaded 1
+   in let parsed = creations-parse resp 0 0
+   in let s3 = state-set sk-cr-count parsed
+   in let s4 = state-set-text sk-cr-msg ""
+   in let r = request-render 0
+   in 0
+
+  creations-parse : Text, Integer, Integer -> Integer
+  creations-parse (resp) (pos) (count) =
+   let kind-key = "\"kind\":\""
+   in let idx = text-index-of resp kind-key pos
+   in if idx < 0 then count
+   else let kind-start = idx + text-length kind-key
+   in let kind-end = text-index-of resp "\"" kind-start
+   in let kind = text-substring resp kind-start (kind-end - kind-start)
+   in let name-key = "\"name\":\""
+   in let name-idx = text-index-of resp name-key kind-end
+   in if name-idx < 0 then count
+   else let name-start = name-idx + text-length name-key
+   in let name-end = text-index-of resp "\"" name-start
+   in let name = text-substring resp name-start (name-end - name-start)
+   in let s1 = state-set-text ("cr-kind-" & show count) kind
+   in let s2 = state-set-text ("cr-name-" & show count) name
+   in creations-parse resp name-end (count + 1)
+
+Section: Delete
+
+  creations-delete : Integer -> Integer
+  creations-delete (idx) =
+   let name = state-get-text ("cr-name-" & show idx)
+   in let tok = state-get-text "cx_token"
+   in let url = api-base & "/api/delete?t=" & url-encode tok & "&name=" & url-encode name
+   in let s = set-msg sk-cr-msg ("Deleting " & name & "...")
+   in fetch-get-then url (creations-delete-cb)
+
+  creations-delete-cb : Text -> Integer
+  creations-delete-cb (resp) =
+   let s = set-msg sk-cr-msg "Deleted. Refreshing..."
+   in creations-load 0
+
+Section: Handlers
+
+  creations-on-click : Text -> Integer
+  creations-on-click (id) =
+   if id == "cr-refresh" then creations-load 0
+   else if text-starts-with id "cr-del-" then
+     let idx-text = text-substring id 7 (text-length id - 7)
+     in creations-delete 0
+   else 0
+
+  creations-on-pick : Text, Integer -> Integer
+  creations-on-pick (group) (idx) = 0
+
+Page 1

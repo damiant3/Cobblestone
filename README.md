@@ -38,12 +38,12 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-06-02:
+As of 2026-06-06:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
   byte-identical. The compiler reproduces itself on bare metal.
-- **359 library modules** across 19 quires: data structures, crypto,
+- **362 library modules** across 19 quires: data structures, crypto,
   networking (full TCP/IP + UDP/ICMP/DNS/DHCP/NTP/Syslog/TFTP), game
   engine (A*, hex maps, ECS, physics, Voronoi, Perlin), AI inference
   (tensors, neural nets, GGUF model loading, genetic algorithms),
@@ -158,11 +158,11 @@ As of 2026-06-02:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,654,334 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (2,236,413 bytes) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 (file) | `88762D2C23E737742E762BC32E83DC483359D6197FE9331A76B15AF8AF009AF2` |
+| SHA-256 (file) | `30253220ADAC1004BD118C013A8F5B1354FA4577FBBAB9DE857B2794FA5647EC` |
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
@@ -769,6 +769,7 @@ old/                      Retired C# reference compiler — historical only
 | **Linear types** | **`linear` (resources) + `mutable` (data) as orthogonal disciplines** | **2026-05-29** |
 | **Tuples + debugger** | **`(A, B)` sugar, `let (x, y) = e`, C# full-compiler emit (0 errors), interactive debugger** | **2026-05-31** |
 | **For-exprs + phase heap** | **`for x in xs do f x` sugar, CHECK/LOWER heap reduction (~80 MB saved), EOF settle counter, 201/211 tests pass** | **2026-06-02** |
+| **x86-64 codegen optimization** | **Comparison folding, preamble elision, store-load elimination, immediate ops, single-arg mov — fib(35) cut from 107 to 53 instructions. WASM backend + WebGPU 3D. Spark Studio. CodexMagic web platform.** | **2026-06-06** |
 
 Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 

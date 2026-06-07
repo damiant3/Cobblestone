@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex WASM</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+@font-face { font-family: 'Codex'; src: local('Cascadia Code'), local('JetBrains Mono'), local('Fira Code'), local('Consolas'); }
+:root {
+  --bg: #0a0a1a; --surface: #0f0f2a; --border: #1a1a3e;
+  --text: #c8c8e8; --dim: #6868a8; --accent: #00d4ff;
+  --accent2: #7b61ff; --green: #00e88f; --amber: #ffa726;
+}
+body {
+  font-family: 'Codex', monospace; background: var(--bg); color: var(--text);
+  min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+  padding: 2em 1em;
+}
+.header { text-align: center; margin-bottom: 2em; }
+.header h1 {
+  font-size: 2.4em; font-weight: 300; letter-spacing: 0.15em;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.header .sub { color: var(--dim); font-size: 0.85em; margin-top: 0.3em; }
+.container { width: 100%; max-width: 720px; }
+.drop-zone {
+  border: 2px dashed var(--border); border-radius: 12px; padding: 2.5em;
+  text-align: center; cursor: pointer; transition: all 0.2s;
+  background: var(--surface); margin-bottom: 1.5em;
+}
+.drop-zone:hover, .drop-zone.hover {
+  border-color: var(--accent); background: rgba(0, 212, 255, 0.04);
+}
+.drop-zone .icon { font-size: 2em; margin-bottom: 0.5em; opacity: 0.5; }
+.drop-zone .label { color: var(--dim); }
+.drop-zone input[type=file] { display: none; }
+.output-panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; overflow: hidden;
+}
+.output-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.6em 1em; border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+}
+.output-bar .title { color: var(--dim); font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.1em; }
+.output-bar .status { font-size: 0.75em; }
+.status .ok { color: var(--green); }
+.status .err { color: var(--amber); }
+.output-content {
+  padding: 1.2em 1.4em; white-space: pre-wrap; word-break: break-word;
+  min-height: 120px; font-size: 0.92em; line-height: 1.6;
+  color: var(--text); max-height: 60vh; overflow-y: auto;
+}
+.output-content:empty::after {
+  content: 'Drop a .wasm file above to run it'; color: var(--dim); font-style: italic;
+}
+.meta { margin-top: 1.5em; text-align: center; }
+.meta span { display: inline-block; margin: 0 0.8em; color: var(--dim); font-size: 0.75em; }
+.meta .val { color: var(--accent); }
+.footer {
+  margin-top: 3em; color: var(--dim); font-size: 0.7em; text-align: center;
+  opacity: 0.6;
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>CODEX WASM</h1>
+  <div class="sub">Codex programs compiled to WebAssembly, running in your browser</div>
+</div>
+
+<div class="container">
+  <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+    <div class="icon">&#9881;</div>
+    <div class="label">Drop <strong>.wasm</strong> file here or click to browse</div>
+    <input type="file" id="file-input" accept=".wasm">
+  </div>
+
+  <div class="output-panel">
+    <div class="output-bar">
+      <span class="title">Output</span>
+      <span class="status" id="status"></span>
+    </div>
+    <div class="output-content" id="output"></div>
+  </div>
+
+  <div class="meta" id="meta" style="display:none">
+    <span>Size: <span class="val" id="m-size">-</span></span>
+    <span>Time: <span class="val" id="m-time">-</span></span>
+    <span>Module: <span class="val" id="m-name">-</span></span>
+  </div>
+</div>
+
+<div class="footer">
+  Codex &mdash; a self-sustaining compiler, language, and computational substrate.
+  <br>WASI polyfill &mdash; fd_write only. No filesystem, no network, no clock.
+</div>
+
+<script>
+const output = document.getElementById('output');
+const status = document.getElementById('status');
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const meta = document.getElementById('meta');
+
+function setStatus(text, ok) {
+  status.innerHTML = ok
+    ? '<span class="ok">' + text + '</span>'
+    : '<span class="err">' + text + '</span>';
+}
+
+async function runWasm(bytes, name) {
+  output.textContent = '';
+  meta.style.display = 'none';
+  setStatus('loading...', true);
+
+  let mem = null;
+  const imports = {
+    wasi_snapshot_preview1: {
+      fd_write(fd, iovs_ptr, iovs_len, nwritten_ptr) {
+        const view = new DataView(mem.buffer);
+        let total = 0;
+        for (let i = 0; i < iovs_len; i++) {
+          const ptr = view.getUint32(iovs_ptr + i * 8, true);
+          const len = view.getUint32(iovs_ptr + i * 8 + 4, true);
+          const chunk = new Uint8Array(mem.buffer, ptr, len);
+          output.textContent += new TextDecoder().decode(chunk);
+          total += len;
+        }
+        view.setUint32(nwritten_ptr, total, true);
+        return 0;
+      }
+    }
+  };
+
+  const t0 = performance.now();
+  try {
+    const module = await WebAssembly.compile(bytes);
+    const instance = await WebAssembly.instantiate(module, imports);
+    mem = instance.exports.memory;
+    if (instance.exports._start) instance.exports._start();
+    const dt = (performance.now() - t0).toFixed(1);
+
+    if (!output.textContent) output.textContent = '(completed with no output)';
+    setStatus('done', true);
+    meta.style.display = '';
+    document.getElementById('m-size').textContent = (bytes.byteLength / 1024).toFixed(1) + ' KB';
+    document.getElementById('m-time').textContent = dt + ' ms';
+    document.getElementById('m-name').textContent = name;
+  } catch (e) {
+    output.textContent = e.message + '\n' + (e.stack || '');
+    setStatus('error', false);
+  }
+}
+
+async function handleFile(file) {
+  const bytes = await file.arrayBuffer();
+  await runWasm(bytes, file.name);
+}
+
+fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('hover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('hover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('hover');
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+</script>
+</body>
+</html>

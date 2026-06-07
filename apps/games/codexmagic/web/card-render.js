@@ -78,6 +78,11 @@ function renderCard(card, opts) {
   const isCreature = card.type === 'Creature' || card.type === 'General';
   const hasPTD = isCreature && (card.power !== undefined);
 
+  const rarityColor = card.rarity ? (RARITY_COLORS[card.rarity] || '#c9d1d9') : '#c9d1d9';
+  if (card.rarity && card.rarity !== 'Common') {
+    el.style.boxShadow = `0 0 6px ${rarityColor}40`;
+  }
+
   el.innerHTML = `
     <div class="card-header">
       <span class="card-name">${card.name || '???'}</span>
@@ -86,7 +91,7 @@ function renderCard(card, opts) {
     <div class="card-art" style="background:${cardBackground(card)}">
       ${card.type === 'General' ? '<div class="general-badge">GENERAL</div>' : ''}
     </div>
-    <div class="card-type">${card.type || ''}${card.subtypes ? ' - ' + card.subtypes : ''}</div>
+    <div class="card-type">${card.type || ''}${card.subtypes ? ' - ' + card.subtypes : ''}${card.rarity ? ' <span style="float:right;color:' + rarityColor + '">' + card.rarity.charAt(0) + '</span>' : ''}</div>
     <div class="card-text">${card.keywords || ''}${card.rules || ''}</div>
     ${hasPTD ? `<div class="card-ptd">${card.power}/${card.toughness}/${card.defense}</div>` : ''}
     ${card.damage > 0 ? `<div class="card-damage">${card.damage} dmg</div>` : ''}
@@ -133,4 +138,29 @@ function renderCardSmall(card, opts) {
   `;
   if (opts.onClick) el.addEventListener('click', () => opts.onClick(card));
   return el;
+}
+
+function showCardDetail(card) {
+  var ov = document.getElementById('card-detail-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'card-detail-overlay';
+    ov.className = 'card-detail-overlay';
+    ov.innerHTML = '<div class="card-detail" id="card-detail-content"></div>';
+    ov.addEventListener('click', function(e) { if (e.target === ov) ov.classList.remove('active'); });
+    document.body.appendChild(ov);
+  }
+  var rarityColor = card.rarity ? (RARITY_COLORS[card.rarity] || '#c9d1d9') : '#c9d1d9';
+  var isCreature = card.type === 'Creature' || card.type === 'General';
+  var content = document.getElementById('card-detail-content');
+  content.style.borderColor = cardBorderColor(card);
+  content.innerHTML =
+    '<div class="cd-name">' + (card.name || '???') + '</div>' +
+    '<div class="cd-type">' + (card.type || '') + (card.subtypes ? ' — ' + card.subtypes : '') + '</div>' +
+    '<div class="cd-rarity" style="color:' + rarityColor + '">' + (card.rarity || 'Common') + '</div>' +
+    '<div class="cd-cost">' + renderManaSymbols(formatManaCost(card.cost)) + '</div>' +
+    (isCreature ? '<div class="cd-stats">Power ' + (card.power||0) + ' / Toughness ' + (card.toughness||0) + ' / Defense ' + (card.defense||0) + '</div>' : '') +
+    (card.keywords ? '<div class="cd-keywords">' + card.keywords + '</div>' : '') +
+    '<button class="cd-close" onclick="document.getElementById(\'card-detail-overlay\').classList.remove(\'active\')">Close</button>';
+  ov.classList.add('active');
 }

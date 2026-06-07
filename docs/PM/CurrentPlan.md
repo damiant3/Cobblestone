@@ -1,6 +1,6 @@
 # Current Plan — Closing the Toolbox
 
-**Updated**: 2026-05-25
+**Updated**: 2026-06-06 (Spark Studio: 16/18 items complete)
 
 This file is forward-looking only. Past work is in the Perforce log; if
 you want milestones, run `p4 changes -m 100 //Codex/main/...`. Don't
@@ -223,6 +223,102 @@ Compiler-correctness work, not user-facing, but each one moves the
 heap HWM down and improves the chance that compile-on-stick succeeds
 on lower-RAM boards.
 
+### 9. Spark WebGPU Studio — creative suite in the browser
+
+**Updated**: 2026-06-06
+
+Spark is an 86-module creative suite (3D modeling, animation, image
+editing, materials, audio) compiled to WASM and running in the browser
+via WebGPU. The studio is the first Codex application visible to
+non-Codex users — a working demo of the language and tools.
+
+**Completed** (CLs 3130–3177):
+- WASM-owned scene (128-byte objects, 7 primitives, per-vertex PBR)
+- Data-driven panel layout (outliner, properties, viewport, timeline, scene panel)
+- 6 editor modes (Model, Animate, Render, Image, Audio, Stage)
+- Animation timeline with linear interpolation, 5 channels, auto-key
+- Image editor with brush painting, layers, eyedropper, brush presets, PNG export
+- Undo system (16-entry circular buffer of scene snapshots)
+- Project save/load via IndexedDB, OBJ/STL export, viewport screenshot
+- Camera presets (Front/Top/Right/Perspective), continuous orbit
+- Object rename, duplicate, group, lock, hide/show/isolate, snap-to-grid
+- Context menus, hover tooltips, search filtering, scene statistics
+- Audio synth preview, scene presets, mode-aware right panel
+- 55+ WASM exports, 21KB binary, 256-page (16MB) memory
+
+**Remaining — Foundations:**
+
+a. **KvStore data layer** — migrate from flat shared-memory scene to
+   KvStore-backed project database. Keys like `obj:{id}:pos-x`. Enables
+   proper undo via HAMT structural sharing. Requires solving HAMT
+   persistence across `__heap_reset` (the critical WASM challenge).
+
+b. ~~Asset browser~~ — **PARTIAL**. Scene panel has primitive catalog,
+   material library (5 presets), light list. Full KvStore-backed
+   asset browser deferred to KvStore data layer.
+
+c. ~~Project deserialize~~ — **DONE** (CL 3192). Text parser in WASM,
+   round-trip via IndexedDB.
+
+**~~Animation depth~~ — DONE:**
+
+d. ~~Bezier keyframes~~ — **DONE**. 5 easing modes (linear, ease-in,
+   ease-out, ease-in-out, cubic). Timeline zoom in/out/frame-all.
+
+e. ~~Camera path animation~~ — **DONE**. Camera keyframes with
+   interpolation, Cam button in timeline.
+
+f. ~~Playback rendering~~ — **DONE**. Frame-by-frame render export
+   (PNG sequence from range markers). Animation CSV export.
+
+**~~Image editor depth~~ — DONE:**
+
+g. ~~Brush interpolation~~ — **DONE**. Stroke interpolation between
+   drag points. Eraser with line interpolation.
+
+h. ~~Selection tools~~ — **DONE**. Rect selection (shift+drag),
+   fill selection (Enter), clear (Escape). Overlay rendering.
+
+i. ~~Image filters~~ — **DONE**. 7 filters: grayscale, invert,
+   brighten, darken, contrast+/-, sepia. One-click buttons.
+
+j. ~~Layer blend modes~~ — **DONE**. Normal/Multiply/Screen/Overlay
+   selectable per layer. Click to cycle.
+
+**~~3D depth~~ — MOSTLY DONE:**
+
+k. ~~Material library~~ — **DONE**. 5 presets (Default/Metal/Glass/
+   Blue/Emissive), one-click assign, add custom materials.
+
+l. ~~Light editor~~ — **DONE**. 3 default lights, add directional/
+   point, color display in scene panel.
+
+m. ~~Transform gizmo~~ — **DONE**. RGB axis lines rendered at selected
+   object position. Snap rotation (15/45/90°), rotate-by, copy/paste
+   transforms, mirror, align/distribute.
+
+n. ~~Mesh operations~~ — **PARTIAL**. Flatten (zero rotation/anim),
+   subdivision level stored per-object (0-3). CSG not wired.
+
+o. **UV editor** — Not started. UvEditor.codex exists but needs
+   dedicated panel and WebGPU overlay.
+
+**Remaining — Architecture:**
+
+p. **Move JS to Codex** — the HTML harness still has ~600 lines of JS
+   for DOM rendering, MVP construction, event forwarding. Long-term
+   these should be emitted from Codex via the HtmlEmitter or WebEmitter
+   plug. The view matrix (lookAt with horizon-flip) must eventually
+   move to Codex once the fixed-point scale issue is resolved.
+
+q. ~~WasmEmitter export convention~~ — **DONE** (CL 3221). Replaced
+   115 if-branches with a single `text-contains` check against a
+   pipe-separated export list string. Adding a new export = add its
+   name to the string. WASM plug shrank 20KB.
+
+r. ~~Test harness~~ — **DONE**. `self-test` export verifies scene
+   constants. Command palette includes "Self Test" command.
+
 ## No Dates
 
 Every estimate has been wrong by orders of magnitude in both
@@ -237,3 +333,7 @@ directions. The order above is the priority order. That's all.
   bare-metal VMX entry).
 - `docs/VisionAndVirtues.md` — the founding vision behind this gap
   list. Read that before redesigning anything in gap 6.
+- `codex/plugs/wasm/build-output/spark-webgpu.codex` — gap 9 WASM
+  module (scene, camera, timeline, canvas, export, 55+ exports).
+- `apps/spark/` — 86 Spark modules, most 100% complete, awaiting
+  WASM wiring (gap 9 items d–o).
