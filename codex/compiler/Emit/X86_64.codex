@@ -18,48 +18,24 @@ Section: Function Emission
   emit-prologue : CodegenState -> CodegenState
   emit-prologue (st) =
    let st1 = st-append-code st (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14)
-   in let st2 = st-append-code st1 (li reg-r11 stack-min-rsp-addr)
-   in let st3 = st-append-code st2 (mov-load reg-r11 reg-r11 0)
-   in let st4 = st-append-code st3 (cmp-rr reg-rsp reg-r11)
-   in let skip-pos = st4.code-len
-   in let st5 = st-append-code st4 (jcc cc-ae 0)
-   in let st6 = st-append-code st5 (li reg-r11 stack-min-rsp-addr)
-   in let st7 = st-append-code st6 (mov-store reg-r11 reg-rsp 0)
-   in let st8 = patch-jcc-at st7 skip-pos (st7.code-len)
-   in let st9 = st-append-code st8 (cmp-rr reg-rsp reg-r10)
+   in let st-hwm = if st1.trace-alloc then
+    let st2 = st-append-code st1 (li reg-r11 stack-min-rsp-addr)
+    in let st3 = st-append-code st2 (mov-load reg-r11 reg-r11 0)
+    in let st4 = st-append-code st3 (cmp-rr reg-rsp reg-r11)
+    in let skip-pos = st4.code-len
+    in let st5 = st-append-code st4 (jcc cc-ae 0)
+    in let st6 = st-append-code st5 (li reg-r11 stack-min-rsp-addr)
+    in let st7 = st-append-code st6 (mov-store reg-r11 reg-rsp 0)
+    in patch-jcc-at st7 skip-pos (st7.code-len)
+   else st1
+   in let st9 = st-append-code st-hwm (cmp-rr reg-rsp reg-r10)
    in let check-pos = st9.code-len
    in let st10 = st-append-code st9 (jcc cc-b 0)
    in let so-c = list-push (st10.stack-overflow-checks) check-pos
    in let st10a = __record-set st10 "stack-overflow-checks" so-c
-   in let st10b = when st10a.watchdog-mode
+   in when st10a.watchdog-mode
     is WatchdogPet -> emit-call-to st10a "__pet_watchdog"
     is otherwise -> st10a
-   in let st10c = st-append-code st10b (li reg-r11 sched-yield-flag-addr)
-   in let st10d = st-append-code st10c (mov-load reg-r11 reg-r11 0)
-   in let st10e = st-append-code st10d (cmp-ri reg-r11 0)
-   in let yskip = st10e.code-len
-   in let st10f = st-append-code st10e (jcc cc-e 0)
-   in let st10g = st-append-code st10f (li reg-r11 sched-ready-head-addr)
-   in let st10h = st-append-code st10g (mov-load reg-r11 reg-r11 0)
-   in let st10i = st-append-code st10h (cmp-ri reg-r11 0)
-   in let yskip2 = st10i.code-len
-   in let st10j = st-append-code st10i (jcc cc-e 0)
-   in let st10jp = st-append-code st10j (push-r reg-rdi & push-r reg-rsi)
-   in let st10k = st-append-code st10jp (li reg-r11 sched-yield-flag-addr)
-   in let st10l = st-append-code st10k (li reg-rdi 0)
-   in let st10m = st-append-code st10l (mov-store reg-r11 reg-rdi 0)
-   in let st10n = st-append-code st10m (li reg-r11 sched-current-task-addr)
-   in let st10o = st-append-code st10n (mov-load reg-r11 reg-r11 0)
-   in let st10p = st-append-code st10o (mov-store reg-r11 reg-rdi 0)
-   in let st10q = st-append-code st10p (li reg-rdi sched-ready-head-addr)
-   in let st10r = st-append-code st10q (mov-load reg-rdi reg-rdi 0)
-   in let st10s = st-append-code st10r (mov-load reg-rsi reg-rdi 24)
-   in let st10t = st-append-code st10s (mov-store reg-r11 reg-rsi 24)
-   in let st10u = st-append-code st10t (mov-store reg-rdi reg-r11 24)
-   in let st10v = emit-call-to st10u "__task_yield"
-   in let st10vp = st-append-code st10v (pop-r reg-rsi & pop-r reg-rdi)
-   in let st10w = patch-jcc-at st10vp yskip (st10vp.code-len)
-   in patch-jcc-at st10w yskip2 (st10w.code-len)
 
   emit-epilogue : CodegenState -> CodegenState
   emit-epilogue (st) =
@@ -909,7 +885,33 @@ Section: Expression Emission
    if is-append-list-op op then emit-append-list st left right
    else if is-and-op op then emit-short-circuit-and st left right
    else if is-or-op op then emit-short-circuit-or st left right
-   else emit-binary-standard st op left right
+   else when right
+    is IrIntLit (v) (s) ->
+     if v >= (0 - 2147483648) & v <= 2147483647 then
+      when op
+       is IrAddInt -> emit-binary-add-imm st left v
+       is IrSubInt -> emit-binary-sub-imm st left v
+       is otherwise -> emit-binary-standard st op left right
+     else emit-binary-standard st op left right
+    is otherwise -> emit-binary-standard st op left right
+
+  emit-binary-add-imm : CodegenState, IRExpr, Integer -> EmitResult
+  emit-binary-add-imm (st) (left) (imm) =
+   let l = emit-expr (st-set-tail-pos st False) left
+   in let l-loc = alloc-local (l.state)
+   in let st1 = store-local (l-loc.state) (l-loc.reg) (l.reg)
+   in let r-loc = alloc-local st1
+   in let l-load = load-local (r-loc.state) (l-loc.reg)
+   in EmitResult { state = st-append-code (l-load.state) (add-ri (l-load.reg) imm), reg = l-load.reg }
+
+  emit-binary-sub-imm : CodegenState, IRExpr, Integer -> EmitResult
+  emit-binary-sub-imm (st) (left) (imm) =
+   let l = emit-expr (st-set-tail-pos st False) left
+   in let l-loc = alloc-local (l.state)
+   in let st1 = store-local (l-loc.state) (l-loc.reg) (l.reg)
+   in let r-loc = alloc-local st1
+   in let l-load = load-local (r-loc.state) (l-loc.reg)
+   in EmitResult { state = st-append-code (l-load.state) (sub-ri (l-load.reg) imm), reg = l-load.reg }
 
   emit-append-list : CodegenState, IRExpr, IRExpr -> EmitResult
   emit-append-list (st) (left) (right) =
@@ -922,12 +924,27 @@ Section: Expression Emission
    in let l-loc = alloc-local (l.state)
    in let st1 = store-local (l-loc.state) (l-loc.reg) (l.reg)
    in let r = emit-expr st1 right
-   in let r-loc = alloc-local (r.state)
-   in let st2 = store-local (r-loc.state) (r-loc.reg) (r.reg)
-   in let l-load = load-local st2 (l-loc.reg)
-   in let r-load = load-local (l-load.state) (r-loc.reg)
-   in let operand-ty = ir-expr-type left
-   in emit-binary-op (r-load.state) op (l-load.reg) (r-load.reg) operand-ty
+   in when right
+    is IrIntLit (v) (s) ->
+     let r-loc = alloc-local (r.state)
+     in let l-load = load-local (r-loc.state) (l-loc.reg)
+     in when op
+      is IrAddInt -> EmitResult { state = st-append-code (l-load.state) (add-rr (l-load.reg) (r.reg)), reg = l-load.reg }
+      is IrSubInt -> EmitResult { state = st-append-code (l-load.state) (sub-rr (l-load.reg) (r.reg)), reg = l-load.reg }
+      is IrMulInt -> EmitResult { state = st-append-code (l-load.state) (imul-rr (l-load.reg) (r.reg)), reg = l-load.reg }
+      is otherwise ->
+       let st2 = store-local (r-loc.state) (r-loc.reg) (r.reg)
+       in let l-load2 = load-local st2 (l-loc.reg)
+       in let r-load = load-local (l-load2.state) (r-loc.reg)
+       in let operand-ty = ir-expr-type left
+       in emit-binary-op (r-load.state) op (l-load2.reg) (r-load.reg) operand-ty
+    is otherwise ->
+     let r-loc = alloc-local (r.state)
+     in let st2 = store-local (r-loc.state) (r-loc.reg) (r.reg)
+     in let l-load = load-local st2 (l-loc.reg)
+     in let r-load = load-local (l-load.state) (r-loc.reg)
+     in let operand-ty = ir-expr-type left
+     in emit-binary-op (r-load.state) op (l-load.reg) (r-load.reg) operand-ty
 
   emit-binary-op : CodegenState, IRBinaryOp, Integer, Integer, CodexType -> EmitResult
   emit-binary-op (st) (op) (l-reg) (r-reg) (operand-ty) =
@@ -1137,8 +1154,106 @@ Section: Expression Emission
    reg = rd.reg
   }
 
+  invert-cc : Integer -> Integer
+  invert-cc (cc) =
+   if cc == cc-e then cc-ne
+   else if cc == cc-ne then cc-e
+   else if cc == cc-l then cc-ge
+   else if cc == cc-ge then cc-l
+   else if cc == cc-le then cc-g
+   else if cc == cc-g then cc-le
+   else cc-ne
+
+  comparison-op-cc : IRBinaryOp -> Integer
+  comparison-op-cc (op) =
+   when op
+    is IrEq -> cc-e
+    is IrNotEq -> cc-ne
+    is IrLt -> cc-l
+    is IrGt -> cc-g
+    is IrLtEq -> cc-le
+    is IrGtEq -> cc-ge
+    is otherwise -> 0 - 1
+
+  is-fusable-int-comparison : CodegenState, IRBinaryOp, IRExpr -> Boolean
+  is-fusable-int-comparison (st) (op) (left) =
+   let cc = comparison-op-cc op
+   in if cc == 0 - 1 then False
+   else when op
+    is IrLt | IrGt | IrLtEq | IrGtEq -> True
+    is IrEq | IrNotEq ->
+     let operand-ty = resolve-to-sum-with-defs st (ir-expr-type left)
+     in when operand-ty
+      is IntegerTy (lo) (hi) (mode) | BooleanTy | CharTy -> True
+      is otherwise -> False
+    is otherwise -> False
+
+  emit-if-fused : CodegenState, IRBinaryOp, IRExpr, IRExpr, IRExpr, IRExpr -> EmitResult
+  emit-if-fused (st) (op) (cmp-left) (cmp-right) (then-e) (else-e) =
+   let saved-tail = st.tco.in-tail-pos
+   in let l = emit-expr (st-set-tail-pos st False) cmp-left
+   in let l-loc = alloc-local (l.state)
+   in let st1 = store-local (l-loc.state) (l-loc.reg) (l.reg)
+   in let r = emit-expr st1 cmp-right
+   in let r-loc = alloc-local (r.state)
+   in let st2 = store-local (r-loc.state) (r-loc.reg) (r.reg)
+   in let l-load = load-local st2 (l-loc.reg)
+   in let r-load = load-local (l-load.state) (r-loc.reg)
+   in let inv-cc = invert-cc (comparison-op-cc op)
+   in let st3 = st-append-code (r-load.state) (cmp-rr (l-load.reg) (r-load.reg))
+   in let jcc-false-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc inv-cc 0)
+   in let then-result = emit-expr (st-set-tail-pos st4 saved-tail) then-e
+   in let result-loc = alloc-local (then-result.state)
+   in let st5 = store-local (result-loc.state) (result-loc.reg) (then-result.reg)
+   in let jmp-end-pos = st5.code-len
+   in let st6 = st-append-code st5 (jmp 0)
+   in let st7 = patch-jcc-at st6 jcc-false-pos (st6.code-len)
+   in let else-result = emit-expr (st-set-tail-pos st7 saved-tail) else-e
+   in let st8 = store-local (else-result.state) (result-loc.reg) (else-result.reg)
+   in let st9 = patch-jmp-at st8 jmp-end-pos (st8.code-len)
+   in load-local st9 (result-loc.reg)
+
+  emit-if-fused-imm : CodegenState, IRBinaryOp, IRExpr, Integer, IRExpr, IRExpr -> EmitResult
+  emit-if-fused-imm (st) (op) (cmp-left) (imm) (then-e) (else-e) =
+   let saved-tail = st.tco.in-tail-pos
+   in let l = emit-expr (st-set-tail-pos st False) cmp-left
+   in let l-loc = alloc-local (l.state)
+   in let st1 = store-local (l-loc.state) (l-loc.reg) (l.reg)
+   in let r-loc = alloc-local st1
+   in let l-load = load-local (r-loc.state) (l-loc.reg)
+   in let r-load-dummy = load-local (l-load.state) (r-loc.reg)
+   in let inv-cc = invert-cc (comparison-op-cc op)
+   in let st3 = st-append-code (r-load-dummy.state) (cmp-ri (l-load.reg) imm)
+   in let jcc-false-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc inv-cc 0)
+   in let then-result = emit-expr (st-set-tail-pos st4 saved-tail) then-e
+   in let result-loc = alloc-local (then-result.state)
+   in let st5 = store-local (result-loc.state) (result-loc.reg) (then-result.reg)
+   in let jmp-end-pos = st5.code-len
+   in let st6 = st-append-code st5 (jmp 0)
+   in let st7 = patch-jcc-at st6 jcc-false-pos (st6.code-len)
+   in let else-result = emit-expr (st-set-tail-pos st7 saved-tail) else-e
+   in let st8 = store-local (else-result.state) (result-loc.reg) (else-result.reg)
+   in let st9 = patch-jmp-at st8 jmp-end-pos (st8.code-len)
+   in load-local st9 (result-loc.reg)
+
   emit-if : CodegenState, IRExpr, IRExpr, IRExpr -> EmitResult
   emit-if (st) (cond) (then-e) (else-e) =
+   when cond
+    is IrBinary (op) (left) (right) (ty) (sp) ->
+     if is-fusable-int-comparison st op left then
+      when right
+       is IrIntLit (v) (s) ->
+        if v >= (0 - 2147483648) & v <= 2147483647
+        then emit-if-fused-imm st op left v then-e else-e
+        else emit-if-fused st op left right then-e else-e
+       is otherwise -> emit-if-fused st op left right then-e else-e
+     else emit-if-generic st cond then-e else-e
+    is otherwise -> emit-if-generic st cond then-e else-e
+
+  emit-if-generic : CodegenState, IRExpr, IRExpr, IRExpr -> EmitResult
+  emit-if-generic (st) (cond) (then-e) (else-e) =
    let saved-tail = st.tco.in-tail-pos
    in let cond-result = emit-expr (st-set-tail-pos st False) cond
    in let st1 = st-append-code (cond-result.state) (test-rr (cond-result.reg) (cond-result.reg))

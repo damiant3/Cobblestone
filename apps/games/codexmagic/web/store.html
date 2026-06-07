@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodexMagic - Store</title>
+  <link rel="stylesheet" href="/magic.css">
+  <style>
+    .sub-badge { font-size: 12px; color: var(--text-dim); margin-left: 12px; }
+  </style>
+</head>
+<body>
+<div id="cx-header"></div>
+
+<div class="page">
+  <div class="balance-bar">
+    <span class="balance" id="balance">0 MC</span>
+  </div>
+
+  <div class="section-title">Buy Mana Coin</div>
+  <div id="coin-shop" style="margin-bottom:24px;">
+    <div id="coin-available" style="color:var(--text-dim);font-size:13px;margin-bottom:8px;">Loading...</div>
+    <div class="pack-grid" id="coin-grid"></div>
+  </div>
+
+  <div class="section-title">Store</div>
+  <div class="pack-grid" id="store-items-grid">
+    <div style="color:var(--text-dim);font-size:13px;">No items available. Check back later!</div>
+  </div>
+
+  <div class="section-title">Subscription</div>
+  <div class="sub-grid" id="sub-grid">
+    <div class="sub-card" onclick="subscribe('Free')"><div class="sub-tier-name">Free</div><div class="sub-bonus">No bonus</div></div>
+    <div class="sub-card" onclick="subscribe('Bronze')"><div class="sub-tier-name">Bronze</div><div class="sub-bonus">+1 upgrade</div></div>
+    <div class="sub-card" onclick="subscribe('Silver')"><div class="sub-tier-name">Silver</div><div class="sub-bonus">+2 upgrades</div></div>
+    <div class="sub-card" onclick="subscribe('Gold')"><div class="sub-tier-name">Gold</div><div class="sub-bonus">+3 upgrades</div></div>
+    <div class="sub-card" onclick="subscribe('Platinum')"><div class="sub-tier-name">Platinum</div><div class="sub-bonus">+5 upgrades</div></div>
+  </div>
+</div>
+
+<!-- Pack Reveal Overlay -->
+<div class="pack-reveal" id="pack-reveal">
+  <div class="reveal-top">
+    <div class="reveal-info" id="reveal-info">Click cards to reveal!</div>
+    <button class="reveal-close" onclick="closeReveal()">Add to Collection</button>
+  </div>
+  <div class="reveal-body">
+    <div class="reveal-cards" id="reveal-cards"></div>
+  </div>
+</div>
+
+<script src="/card-render.js"></script>
+<script src="/magic.js"></script>
+<script>
+var pool = [];
+
+async function init() {
+  await ensureAccount();
+  updateBalanceDisplay();
+  if (currentAccount && currentAccount.subscription) updateSubHighlight(currentAccount.subscription);
+  await loadCoinShop();
+  await loadStoreItems();
+  var data = await authCall('/pool');
+  if (data && data.cards) pool = data.cards;
+}
+
+async function loadCoinShop() {
+  var data = await authCall('/coin-info');
+  if (!data) return;
+  var avail = data.forSale || 0;
+  document.getElementById('coin-available').textContent = avail.toLocaleString() + ' MC available';
+  var grid = document.getElementById('coin-grid');
+  grid.innerHTML = '';
+  if (avail <= 0) { grid.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">No coins available for purchase right now.</div>'; return; }
+  var amounts = [100, 500, 1000, 5000];
+  for (var i = 0; i < amounts.length; i++) {
+    var amt = amounts[i];
+    if (amt > avail) continue;
+    var div = document.createElement('div');
+    div.className = 'pack-card';
+    div.onclick = (function(a) { return function() { buyCoin(a); }; })(amt);
+    div.innerHTML = '<div class="pack-name" style="color:var(--gold)">' + amt.toLocaleString() + ' MC</div>'
+      + '<div class="pack-desc">Mana Coin</div>'
+      + '<div class="pack-price">Buy</div>';
+    grid.appendChild(div);
+  }
+}
+
+async function buyCoin(amount) {
+  if (!currentAccount) return;
+  var data = await authCall('/buy-coin?t=' + encodeURIComponent(authToken) + '&amount=' + amount);
+  if (!data) { alert('Purchase failed.'); return; }
+  if (data.error) { alert(data.error); return; }
+  currentAccount.balance = data.balance;
+  updateBalanceDisplay();
+  updateAccountBar();
+  await loadCoinShop();
+}
+
+async function loadStoreItems() {
+  try {
+    var r = await fetch('/api/admin/store-items');
+    var data = await r.json();
+    var grid = document.getElementById('store-items-grid');
+    grid.innerHTML = '';
+    if (!data || !data.items || data.items.length === 0) { grid.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">No items stocked yet. Check back later!</div>'; return; }
+    for (var it of data.items) {
+      var effectivePrice = it.discount > 0 ? Math.floor(it.price * (1 - it.discount / 100)) : it.price;
+      var div = document.createElement('div');
+      div.className = 'pack-card';
+      if (it.qty === 0) div.classList.add('disabled');
+      else div.onclick = (function(id) { return function() { buyStoreItem(id); }; })(it.id);
+      var priceHtml = it.discount > 0
+        ? '<span style="text-decoration:line-through;color:var(--text-dim);font-size:13px">' + it.price + '</span> ' + effectivePrice + ' MC'
+        : it.price + ' MC';
+      var saleHtml = it.saleLabel ? '<div style="color:var(--green);font-size:11px;font-weight:bold;margin-bottom:4px">' + it.saleLabel + '</div>' : '';
+      div.innerHTML = saleHtml + '<div class="pack-name">' + it.name + '</div>'
+        + '<div class="pack-desc">' + (it.desc || it.type) + '</div>'
+        + '<div class="pack-price">' + priceHtml + '</div>'
+        + (it.qty >= 0 ? '<div class="pack-contents">' + it.qty + ' remaining</div>' : '')
+        + '<div class="pack-contents">' + it.sold + ' sold</div>';
+      grid.appendChild(div);
+    }
+  } catch(e) {}
+}
+
+function updateBalanceDisplay() {
+  var bal = currentAccount ? (currentAccount.balance || 0) : 0;
+  document.getElementById('balance').textContent = bal + ' MC';
+}
+
+async function loadGenerals_unused() {
+  var data = await apiCall('/store/generals');
+  if (!data || !data.generals) return;
+  var grid = document.getElementById('starter-grid');
+  grid.innerHTML = '';
+  var colors = { 0: '#d32f2f', 1: '#0e68ab', 2: '#2e7d32', 3: '#888', 4: '#f0e6d3' };
+  for (var g of data.generals) {
+    var div = document.createElement('div');
+    div.className = 'pack-card';
+    div.onclick = (function(gid) { return function() { buyStarter(gid); }; })(g.id);
+    div.innerHTML = '<div class="pack-name" style="color:' + (colors[g.id] || '#ccc') + '">' + g.name + '</div>' +
+      '<div class="pack-desc">' + g.power + '/' + g.toughness + '/' + g.defense + ' | Life: ' + g.life + '</div>' +
+      '<div class="pack-price">500 MC</div>';
+    grid.appendChild(div);
+  }
+}
+
+async function crackPack(type, cost) {
+  if (!currentAccount) return;
+  var bal = currentAccount.balance || 0;
+  if (bal < cost) { alert('Not enough Mana Coin! You have ' + bal + ' MC, need ' + cost + '.'); return; }
+  var data = await authCall('/crack-pack?t=' + encodeURIComponent(authToken) + '&type=' + type);
+  if (!data) { alert('Failed to crack pack.'); return; }
+  if (data.error) { alert(data.error); return; }
+  currentAccount.balance = data.balance;
+  updateBalanceDisplay();
+  updateAccountBar();
+  showReveal(data.cards, data.count);
+}
+
+function showReveal(cards, count) {
+  var container = document.getElementById('reveal-cards');
+  container.innerHTML = '';
+  document.getElementById('reveal-info').textContent = count + ' cards pulled! Click to reveal.';
+  for (var i = 0; i < cards.length; i++) {
+    var c = cards[i];
+    var t = (typeof c === 'object' && c.cardId !== undefined) ? (pool.find(function(p) { return p.id === c.cardId; }) || { name: c.name || 'Card #' + c.cardId, type: 'Unknown', rarity: c.rarity }) : (pool[c] || { name: 'Card #' + c, type: 'Unknown' });
+    if (typeof c === 'object' && c.rarity) t.rarity = c.rarity;
+    var card = renderCard(t, { size: 'normal' });
+    card.classList.add('reveal-card');
+    card.addEventListener('click', function() { this.classList.toggle('flipped'); });
+    container.appendChild(card);
+  }
+  document.getElementById('pack-reveal').classList.add('active');
+}
+
+function closeReveal() {
+  document.getElementById('pack-reveal').classList.remove('active');
+}
+
+async function buyCoin() {
+  var data = await apiCall('/store/buy-coin?account=' + accountId() + '&amount=500');
+  if (data) {
+    currentAccount.balance = data.balance;
+    updateBalanceDisplay();
+    updateAccountBar();
+  }
+}
+
+async function subscribe(tier) {
+  var data = await authCall('/subscribe?t=' + encodeURIComponent(authToken) + '&tier=' + tier);
+  if (data && data.ok) {
+    currentAccount.subscription = data.subscription;
+    updateSubHighlight(data.subscription);
+    updateAccountBar();
+  }
+}
+
+async function buyStoreItem(itemId) {
+  if (!currentAccount) return;
+  var data = await authCall('/buy-store-item?t=' + encodeURIComponent(authToken) + '&id=' + itemId);
+  if (!data) { alert('Purchase failed.'); return; }
+  if (data.error) { alert(data.error); return; }
+  currentAccount.balance = data.balance;
+  updateBalanceDisplay();
+  updateAccountBar();
+  if (data.cards && data.cards.length > 0) {
+    showReveal(data.cards, data.count);
+  } else {
+    alert('Purchased: ' + (data.itemName || 'item'));
+  }
+  await loadAdminItems();
+}
+
+async function loadAdminItems() {
+  try {
+    var r = await fetch('/api/admin/store-items');
+    var data = await r.json();
+    var grid = document.getElementById('admin-items-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (!data || !data.items || data.items.length === 0) { grid.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">No items stocked yet. Admins can add items from the Admin panel.</div>'; return; }
+    for (var it of data.items) {
+      var effectivePrice = it.discount > 0 ? Math.floor(it.price * (1 - it.discount / 100)) : it.price;
+      var div = document.createElement('div');
+      div.className = 'pack-card';
+      if (it.qty === 0) div.classList.add('disabled');
+      else div.onclick = (function(id) { return function() { buyStoreItem(id); }; })(it.id);
+      var priceHtml = it.discount > 0
+        ? '<span style="text-decoration:line-through;color:var(--text-dim);font-size:13px">' + it.price + '</span> ' + effectivePrice + ' MC'
+        : it.price + ' MC';
+      var saleHtml = it.saleLabel ? '<div style="color:var(--green);font-size:11px;font-weight:bold;margin-bottom:4px">' + it.saleLabel + '</div>' : '';
+      div.innerHTML = saleHtml + '<div class="pack-name">' + it.name + '</div>'
+        + '<div class="pack-desc">' + (it.desc || it.type) + '</div>'
+        + '<div class="pack-price">' + priceHtml + '</div>'
+        + (it.qty >= 0 ? '<div class="pack-contents">' + it.qty + ' remaining</div>' : '')
+        + '<div class="pack-contents">' + it.sold + ' sold</div>';
+      grid.appendChild(div);
+    }
+  } catch(e) {}
+}
+
+function updateSubHighlight(tier) {
+  var cards = document.querySelectorAll('.sub-card');
+  var tiers = ['Free', 'Bronze', 'Silver', 'Gold', 'Platinum'];
+  for (var i = 0; i < cards.length; i++) {
+    cards[i].classList.toggle('active', tiers[i] === tier);
+  }
+}
+
+async function buyStarter(generalId) {
+  if (!currentAccount) return;
+  var bal = currentAccount.balance || 0;
+  if (bal < 500) { alert('Not enough Mana Coin!'); return; }
+  var data = await apiCall('/deck/generate?general=' + generalId + '&seed=' + Date.now());
+  if (data) {
+    await apiCall('/store/buy-coin?account=' + accountId() + '&amount=-500');
+    await refreshProfile();
+    updateBalanceDisplay();
+    alert('Starter deck generated with ' + data.count + ' cards!');
+  }
+}
+
+init();
+</script>
+</body>
+</html>

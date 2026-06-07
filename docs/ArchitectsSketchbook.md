@@ -382,7 +382,7 @@ Defined in `codex/Emit/EmitAllocator.codex`. The code generator needs
 two large contiguous buffers for the output binary:
 
 - **code-buffer**: Machine code (x86-64 instructions). Capacity set by
-  `code-buffer-size` in `codex/Core/BuildSettings.codex` (currently 4 MB).
+  `code-buffer-size` in `codex/Core/BuildSettings.codex` (currently 8 MB).
 - **data-buffer**: Static data (string literals, CCE tables). Capacity
   set by `data-buffer-size` in `codex/Core/BuildSettings.codex`
   (currently 512 KB).

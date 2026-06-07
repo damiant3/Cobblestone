@@ -89,7 +89,7 @@ Write-Host "[wasm-plug] bundled $($preLines.Count + $lines.Count) lines, $($body
 
 # -- Compile via compile.ps1 ------------------------------------------
 $compileScript = Join-Path $Repo 'build' 'compile.ps1'
-& pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $OutFile -Log $LogFile 2>&1 | Out-Null
+& pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $OutFile -Log $LogFile -Survey "lower-mul:120000"
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("FAIL: compile errors; see $LogFile")
     Get-Content $LogFile -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { [Console]::Error.WriteLine("  $_") }

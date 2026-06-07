@@ -1,0 +1,156 @@
+Chapter: MobileApp
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites MobileApp chapter MobileTheme
+  cites MobileApp chapter LoginPage
+  cites MobileApp chapter HomePage
+  cites MobileApp chapter CreationsPage
+  cites MobileApp chapter GalleryPage
+  cites MobileApp chapter ClanPage
+  cites MobileApp chapter ProfilePage
+
+ Entry point for the CodexMagic mobile app. Manages page navigation
+ and authentication state. Routes render calls to the active page.
+
+ Pages:
+  0 = Login
+  1 = Home (dashboard)
+  2 = My Creations
+  3 = Gallery
+  4 = Clans (coming soon)
+  5 = Profile
+
+Section: Configuration
+
+  api-base : Text = "http://10.0.2.2:8889"
+
+Section: Utilities
+
+  text-index-of : Text, Text, Integer -> Integer
+  text-index-of (haystack) (needle) (start) =
+   if start + text-length needle > text-length haystack then 0 - 1
+   else if text-substring haystack start (text-length needle) == needle then start
+   else text-index-of haystack needle (start + 1)
+
+Section: Navigation State
+
+  sk-page : Text = "current-page"
+
+  navigate-to-login : Integer -> Integer
+  navigate-to-login (x) =
+   let s = state-set sk-page 0
+   in let r = request-render 0
+   in 0
+
+  navigate-to-home : Integer -> Integer
+  navigate-to-home (x) =
+   let s = state-set sk-page 1
+   in let l = home-load 0
+   in let r = request-render 0
+   in 0
+
+  navigate-to-page : Text -> Integer
+  navigate-to-page (name) =
+   if name == "creations" then
+     let s = state-set-render sk-page 2
+     in creations-load 0
+   else if name == "gallery" then
+     let s = state-set-render sk-page 3
+     in gallery-load 0
+   else if name == "clan" then state-set-render sk-page 4
+   else if name == "profile" then state-set-render sk-page 5
+   else state-set-render sk-page 1
+
+Section: Render
+
+  render : Integer -> Integer
+  render (x) =
+   let page = state-get sk-page
+   in let tree = if page == 0 then login-page-tree 0
+     else if page == 2 then creations-page-tree 0
+     else if page == 3 then gallery-page-tree 0
+     else if page == 4 then clan-page-tree 0
+     else if page == 5 then profile-page-tree 0
+     else home-page-tree 0
+   in let nav = if page >= 1 then nav-bar page else widget-label "no-nav" ""
+   in let app-tree = if page == 0 then tree
+     else widget-panel "app-root" DirColumn 0 [
+       tree,
+       widget-separator "nav-sep",
+       nav
+     ]
+   in let m = mount-widget-themed mobile-theme app-tree
+   in 0
+
+  nav-bar : Integer -> WidgetNode
+  nav-bar (page) =
+   widget-panel "nav-bar" DirRow 0 [
+     widget-button "nav-home" (if page == 1 then "[Home]" else "Home"),
+     widget-button "nav-creations" (if page == 2 then "[Mine]" else "Mine"),
+     widget-button "nav-gallery" (if page == 3 then "[Gallery]" else "Gallery"),
+     widget-button "nav-clan" (if page == 4 then "[Clan]" else "Clan"),
+     widget-button "nav-profile" (if page == 5 then "[Me]" else "Me")
+   ]
+
+Section: Event Routing
+
+  on-click : Text -> Integer
+  on-click (id) =
+   if id == "nav-home" then navigate-to-page "home"
+   else if id == "nav-creations" then navigate-to-page "creations"
+   else if id == "nav-gallery" then navigate-to-page "gallery"
+   else if id == "nav-clan" then navigate-to-page "clan"
+   else if id == "nav-profile" then navigate-to-page "profile"
+   else let page = state-get sk-page
+   in if page == 0 then login-on-click id
+   else if page == 1 then home-on-click id
+   else if page == 2 then creations-on-click id
+   else if page == 3 then gallery-on-click id
+   else if page == 4 then clan-on-click id
+   else if page == 5 then profile-on-click id
+   else 0
+
+  on-pick : Text, Integer -> Integer
+  on-pick (group) (idx) =
+   let page = state-get sk-page
+   in if page == 0 then login-on-pick group idx
+   else if page == 1 then home-on-pick group idx
+   else if page == 2 then creations-on-pick group idx
+   else if page == 3 then gallery-on-pick group idx
+   else if page == 4 then clan-on-pick group idx
+   else if page == 5 then profile-on-pick group idx
+   else 0
+
+Section: Auth Check
+
+  check-session : Integer -> Integer
+  check-session (x) =
+   let tok = local-storage-get "cx_tok"
+   in if text-length tok == 0 then navigate-to-login 0
+   else let s = state-set-text "cx_token" tok
+   in let url = api-base & "/api/auth/me?t=" & url-encode tok
+   in fetch-get-then url (session-cb)
+
+  session-cb : Text -> Integer
+  session-cb (resp) =
+   let obj = json-parse-obj resp
+   in let handle = json-obj-field obj "handle"
+   in let err = json-obj-field obj "error"
+   in if text-length err > 0 then navigate-to-login 0
+   else if text-length handle > 0 then
+     let s1 = state-set-text "cx_handle" handle
+     in let s2 = state-set-text sk-home-display (json-obj-field obj "display")
+     in navigate-to-home 0
+   else navigate-to-login 0
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let s1 = state-set sk-page 0
+    in let s2 = set-render (render)
+    in let s3 = register-handlers (on-pick) (on-click)
+    in let s4 = check-session 0
+    in let r = render 0
+    in print-line "CodexMagic Mobile initialized"
+  end

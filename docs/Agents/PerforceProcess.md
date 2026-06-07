@@ -123,7 +123,21 @@ p4 unshelve -s <big-CL> -c <big-CL>
 p4 resolve -am  # auto-merge
 ```
 
-### 4. Test sidecars with CRLF or trailing newline corruption
+### 4. Em-dash and non-ASCII in `p4 submit -d`
+**Symptom:** `p4 submit -d "..."` fails with `No Translation for parameter`
+and dumps a hex blob instead of your description.
+**Cause:** The Perforce client's charset cannot encode characters outside
+ASCII. Em-dashes (U+2014), curly quotes, and other Unicode punctuation
+silently creep in from LLM output, copy-paste, and PowerShell here-strings
+that interpolate smart punctuation.
+**Fix:** Keep submit descriptions pure ASCII. Replace em-dashes with `--`,
+curly quotes with straight quotes. When using PowerShell here-strings for
+multi-line descriptions, use the single-quoted form `@'...'@` (literal,
+no interpolation) and visually scan for non-ASCII before submitting. If
+in doubt, pipe through `[System.Text.Encoding]::ASCII.GetString()` to
+catch offenders.
+
+### 5. Test sidecars with CRLF or trailing newline corruption
 **Symptom:** A test that passes on first run fails after `p4 sync`. The output matches visually but differs by one byte.
 **Cause:** Perforce `text` type files get CRLF translation on Windows and an appended trailing newline. `.expected` sidecars are compared byte-for-byte against serial output (which is LF-only). A `text`-typed `.expected` file gains `\r` bytes and/or an extra `\n` that the runtime never emits.
 **Fix:** The test harness strips `\r` from expected files, but cannot detect a spurious trailing newline. If a test fails with an off-by-one length mismatch, hex-dump both files and check for a trailing `0x0A 0x0A` in expected vs `0x0A` in actual. Fix by removing the trailing blank line from the `.expected` file, or retype it as `binary` with `p4 retype -t binary <file>`.

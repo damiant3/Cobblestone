@@ -2246,11 +2246,7 @@ static void vga_start(void) {
             0x900000  Heap                                             */
 #define INPUT_BUF_ADDR        0x500000
 #define INPUT_BUF_MAX         0x200000  /* 2 MB */
-#define GUEST_RING_SIZE       0x200000  /* 2 MB — must match seed's serial-ring-buf-size
-                                         Pre-load the entire file: old seeds with 1 MB
-                                         ring wrap reads via (pos & mask); as long as the
-                                         compiler reads linearly, the wrap-overwrite is
-                                         safe because earlier bytes are already consumed. */
+#define GUEST_RING_SIZE       0x100000  /* 1 MB — must match seed's serial-ring-buf-size */
 #define GUEST_RING_MASK       0x0FFFFF
 
 /* Drip-feed state: host-side overflow buffer for input > GUEST_RING_SIZE */
@@ -2259,7 +2255,7 @@ static size_t input_overflow_len = 0;
 static size_t input_overflow_pos = 0;
 static unsigned long long input_total_written = 0;
 #define OUTPUT_RING_ADDR      0x700000
-#define OUTPUT_RING_SIZE      0x400000  /* 4 MB */
+#define OUTPUT_RING_SIZE      0x200000  /* 2 MB */
 #define OUTPUT_RING_MASK      0x1FFFFF
 #define OUTPUT_WRITE_POS_ADDR 36152
 #define DOORBELL_PORT         0x510
@@ -2909,6 +2905,7 @@ static void watch_init(void);
 
 static int debug_mode = 0;
 static const char *map_file_path = NULL;
+static const char *g_kernel_path = NULL;
 #define MAX_INIT_BREAKS 8
 static const char *init_break_names[MAX_INIT_BREAKS];
 static int init_break_count = 0;
@@ -3041,6 +3038,352 @@ static void dbg_backtrace(void) {
     }
 }
 
+/* ── Mini x86-64 Disassembler ──────────────────────────────────────── */
+
+static const char *reg64_names[] = {
+    "rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi",
+    "r8","r9","r10","r11","r12","r13","r14","r15"
+};
+
+static const char *cc_names[] = {
+    "o","no","b","ae","e","ne","be","a",
+    "s","ns","p","np","l","ge","le","g"
+};
+
+static int disasm_one(unsigned char *code, int max_len, char *buf, int buf_sz) {
+    if (max_len <= 0) { buf[0] = 0; return 0; }
+    int pos = 0, rex_w = 0, rex_r = 0, rex_b = 0, rex_x = 0;
+    int has_rex = 0;
+
+    /* REX prefix */
+    if (code[pos] >= 0x40 && code[pos] <= 0x4F) {
+        has_rex = 1;
+        rex_w = (code[pos] >> 3) & 1;
+        rex_r = (code[pos] >> 2) & 1;
+        rex_b = code[pos] & 1;
+        rex_x = (code[pos] >> 1) & 1;
+        pos++;
+        if (pos >= max_len) { snprintf(buf, buf_sz, "rex"); return pos; }
+    }
+
+    unsigned char op = code[pos++];
+    int rd, rs, mod, rm;
+    long long imm;
+
+    /* Helpers for modrm decoding */
+    #define MODRM() do { if (pos >= max_len) goto raw; \
+        mod = (code[pos]>>6)&3; rs = ((code[pos]>>3)&7)|(rex_r?8:0); \
+        rm = (code[pos]&7)|(rex_b?8:0); pos++; } while(0)
+
+    #define IMM32() do { if (pos+4 > max_len) goto raw; \
+        imm = (int)(code[pos]|(code[pos+1]<<8)|(code[pos+2]<<16)|((unsigned)code[pos+3]<<24)); \
+        pos += 4; } while(0)
+
+    #define IMM8() do { if (pos >= max_len) goto raw; \
+        imm = (signed char)code[pos]; pos++; } while(0)
+
+    switch (op) {
+    case 0x50: case 0x51: case 0x52: case 0x53:
+    case 0x54: case 0x55: case 0x56: case 0x57:
+        rd = (op - 0x50) | (rex_b ? 8 : 0);
+        snprintf(buf, buf_sz, "push    %s", reg64_names[rd]); return pos;
+    case 0x58: case 0x59: case 0x5A: case 0x5B:
+    case 0x5C: case 0x5D: case 0x5E: case 0x5F:
+        rd = (op - 0x58) | (rex_b ? 8 : 0);
+        snprintf(buf, buf_sz, "pop     %s", reg64_names[rd]); return pos;
+    case 0xC3:
+        snprintf(buf, buf_sz, "ret"); return pos;
+    case 0x90:
+        snprintf(buf, buf_sz, "nop"); return pos;
+    case 0xCC:
+        snprintf(buf, buf_sz, "int3"); return pos;
+    case 0xE8: /* call rel32 */
+        IMM32();
+        snprintf(buf, buf_sz, "call    0x%llx", imm + pos); return pos;
+    case 0xE9: /* jmp rel32 */
+        IMM32();
+        snprintf(buf, buf_sz, "jmp     0x%llx", imm + pos); return pos;
+    case 0xEB: /* jmp rel8 */
+        IMM8();
+        snprintf(buf, buf_sz, "jmp     0x%llx", imm + pos); return pos;
+    case 0x89: /* mov r/m, r */
+        MODRM();
+        if (mod == 3)
+            snprintf(buf, buf_sz, "mov     %s,%s", reg64_names[rm], reg64_names[rs]);
+        else if (mod == 1) { IMM8(); snprintf(buf, buf_sz, "mov     [%s%+lld],%s", reg64_names[rm], imm, reg64_names[rs]); }
+        else if (mod == 2) { IMM32(); snprintf(buf, buf_sz, "mov     [%s%+lld],%s", reg64_names[rm], imm, reg64_names[rs]); }
+        else snprintf(buf, buf_sz, "mov     [%s],%s", reg64_names[rm], reg64_names[rs]);
+        return pos;
+    case 0x8B: /* mov r, r/m */
+        MODRM();
+        if (mod == 3)
+            snprintf(buf, buf_sz, "mov     %s,%s", reg64_names[rs], reg64_names[rm]);
+        else if (mod == 1) { IMM8(); snprintf(buf, buf_sz, "mov     %s,[%s%+lld]", reg64_names[rs], reg64_names[rm], imm); }
+        else if (mod == 2) { IMM32(); snprintf(buf, buf_sz, "mov     %s,[%s%+lld]", reg64_names[rs], reg64_names[rm], imm); }
+        else snprintf(buf, buf_sz, "mov     %s,[%s]", reg64_names[rs], reg64_names[rm]);
+        return pos;
+    case 0xC7: /* mov r/m, imm32 */
+        MODRM();
+        IMM32();
+        if (mod == 3)
+            snprintf(buf, buf_sz, "mov     %s,0x%llx", reg64_names[rm], imm & (rex_w ? 0xFFFFFFFFLL : 0xFFFFFFFFLL));
+        else
+            snprintf(buf, buf_sz, "mov     [%s],0x%llx", reg64_names[rm], imm);
+        return pos;
+    case 0xB8: case 0xB9: case 0xBA: case 0xBB:
+    case 0xBC: case 0xBD: case 0xBE: case 0xBF: /* mov r, imm */
+        rd = (op - 0xB8) | (rex_b ? 8 : 0);
+        if (rex_w && pos + 8 <= max_len) {
+            unsigned long long v = 0;
+            for (int i = 0; i < 8; i++) v |= (unsigned long long)code[pos+i] << (i*8);
+            pos += 8;
+            snprintf(buf, buf_sz, "mov     %s,0x%llx", reg64_names[rd], v);
+        } else { IMM32(); snprintf(buf, buf_sz, "mov     %s,0x%llx", reg64_names[rd], imm); }
+        return pos;
+    case 0x01: /* add r/m, r */
+        MODRM();
+        if (mod == 3) snprintf(buf, buf_sz, "add     %s,%s", reg64_names[rm], reg64_names[rs]);
+        else snprintf(buf, buf_sz, "add     [%s],%s", reg64_names[rm], reg64_names[rs]);
+        return pos;
+    case 0x03: /* add r, r/m */
+        MODRM();
+        if (mod == 3) snprintf(buf, buf_sz, "add     %s,%s", reg64_names[rs], reg64_names[rm]);
+        else snprintf(buf, buf_sz, "add     %s,[%s]", reg64_names[rs], reg64_names[rm]);
+        return pos;
+    case 0x29: /* sub r/m, r */
+        MODRM();
+        if (mod == 3) snprintf(buf, buf_sz, "sub     %s,%s", reg64_names[rm], reg64_names[rs]);
+        else snprintf(buf, buf_sz, "sub     [%s],%s", reg64_names[rm], reg64_names[rs]);
+        return pos;
+    case 0x2B: /* sub r, r/m */
+        MODRM();
+        if (mod == 3) snprintf(buf, buf_sz, "sub     %s,%s", reg64_names[rs], reg64_names[rm]);
+        else snprintf(buf, buf_sz, "sub     %s,[%s]", reg64_names[rs], reg64_names[rm]);
+        return pos;
+    case 0x39: /* cmp r/m, r */
+        MODRM();
+        if (mod == 3) snprintf(buf, buf_sz, "cmp     %s,%s", reg64_names[rm], reg64_names[rs]);
+        else snprintf(buf, buf_sz, "cmp     [%s],%s", reg64_names[rm], reg64_names[rs]);
+        return pos;
+    case 0x3B: /* cmp r, r/m */
+        MODRM();
+        if (mod == 3) snprintf(buf, buf_sz, "cmp     %s,%s", reg64_names[rs], reg64_names[rm]);
+        else snprintf(buf, buf_sz, "cmp     %s,[%s]", reg64_names[rs], reg64_names[rm]);
+        return pos;
+    case 0x85: /* test r/m, r */
+        MODRM();
+        if (mod == 3) snprintf(buf, buf_sz, "test    %s,%s", reg64_names[rm], reg64_names[rs]);
+        else snprintf(buf, buf_sz, "test    [%s],%s", reg64_names[rm], reg64_names[rs]);
+        return pos;
+    case 0x31: /* xor r/m, r */
+        MODRM();
+        if (mod == 3) snprintf(buf, buf_sz, "xor     %s,%s", reg64_names[rm], reg64_names[rs]);
+        else snprintf(buf, buf_sz, "xor     [%s],%s", reg64_names[rm], reg64_names[rs]);
+        return pos;
+    case 0x8D: /* lea */
+        MODRM();
+        if (mod == 1) { IMM8(); snprintf(buf, buf_sz, "lea     %s,[%s%+lld]", reg64_names[rs], reg64_names[rm], imm); }
+        else if (mod == 2) { IMM32(); snprintf(buf, buf_sz, "lea     %s,[%s%+lld]", reg64_names[rs], reg64_names[rm], imm); }
+        else snprintf(buf, buf_sz, "lea     %s,[%s]", reg64_names[rs], reg64_names[rm]);
+        return pos;
+    case 0x81: /* alu r/m, imm32 (add/or/adc/sbb/and/sub/xor/cmp) */
+        MODRM(); IMM32();
+        { const char *ops[] = {"add","or","adc","sbb","and","sub","xor","cmp"};
+          snprintf(buf, buf_sz, "%-7s %s,0x%llx", ops[rs&7], reg64_names[rm], imm); }
+        return pos;
+    case 0x83: /* alu r/m, imm8 */
+        MODRM(); IMM8();
+        { const char *ops[] = {"add","or","adc","sbb","and","sub","xor","cmp"};
+          snprintf(buf, buf_sz, "%-7s %s,%lld", ops[rs&7], reg64_names[rm], imm); }
+        return pos;
+    case 0x0F: /* two-byte opcode */
+        if (pos >= max_len) goto raw;
+        op = code[pos++];
+        if (op >= 0x80 && op <= 0x8F) { /* jcc rel32 */
+            IMM32();
+            snprintf(buf, buf_sz, "j%-6s 0x%llx", cc_names[op-0x80], imm + pos);
+            return pos;
+        }
+        if (op >= 0x90 && op <= 0x9F) { /* setcc */
+            MODRM();
+            snprintf(buf, buf_sz, "set%-4s %s", cc_names[op-0x90], reg64_names[rm]);
+            return pos;
+        }
+        if (op == 0xAF) { /* imul r, r/m */
+            MODRM();
+            if (mod == 3) snprintf(buf, buf_sz, "imul    %s,%s", reg64_names[rs], reg64_names[rm]);
+            else snprintf(buf, buf_sz, "imul    %s,[%s]", reg64_names[rs], reg64_names[rm]);
+            return pos;
+        }
+        if (op == 0xB6) { /* movzx r, r/m8 */
+            MODRM();
+            snprintf(buf, buf_sz, "movzx   %s,%s", reg64_names[rs], reg64_names[rm]);
+            return pos;
+        }
+        if (op == 0xBE) { /* movsx r, r/m8 */
+            MODRM();
+            snprintf(buf, buf_sz, "movsx   %s,%s", reg64_names[rs], reg64_names[rm]);
+            return pos;
+        }
+        snprintf(buf, buf_sz, "0F %02x ...", op);
+        return pos;
+    case 0x70: case 0x71: case 0x72: case 0x73:
+    case 0x74: case 0x75: case 0x76: case 0x77:
+    case 0x78: case 0x79: case 0x7A: case 0x7B:
+    case 0x7C: case 0x7D: case 0x7E: case 0x7F: /* jcc rel8 */
+        IMM8();
+        snprintf(buf, buf_sz, "j%-6s 0x%llx", cc_names[op-0x70], imm + pos);
+        return pos;
+    case 0xF7: /* group3: test/not/neg/mul/imul/div/idiv */
+        MODRM();
+        { const char *ops[] = {"test","test","not","neg","mul","imul","div","idiv"};
+          snprintf(buf, buf_sz, "%-7s %s", ops[rs&7], reg64_names[rm]); }
+        return pos;
+    case 0xFF: /* group5: inc/dec/call/jmp/push */
+        MODRM();
+        if ((rs&7) == 2) snprintf(buf, buf_sz, "call    %s", reg64_names[rm]);
+        else if ((rs&7) == 4) snprintf(buf, buf_sz, "jmp     %s", reg64_names[rm]);
+        else if ((rs&7) == 6) snprintf(buf, buf_sz, "push    %s", reg64_names[rm]);
+        else if ((rs&7) == 0) snprintf(buf, buf_sz, "inc     %s", reg64_names[rm]);
+        else if ((rs&7) == 1) snprintf(buf, buf_sz, "dec     %s", reg64_names[rm]);
+        else snprintf(buf, buf_sz, "ff /%d  %s", rs&7, reg64_names[rm]);
+        return pos;
+    default:
+        break;
+    }
+
+raw:
+    /* Fallback: raw hex */
+    { int n = pos < max_len ? pos : 1;
+      int off = 0;
+      for (int i = 0; i < n && off < buf_sz - 4; i++)
+          off += snprintf(buf + off, buf_sz - off, "%02x ", code[i]);
+      snprintf(buf + off, buf_sz - off, "...");
+    }
+    return pos > 0 ? pos : 1;
+
+    #undef MODRM
+    #undef IMM32
+    #undef IMM8
+}
+
+static void dbg_disasm_at(unsigned long long addr, int count) {
+    if (addr >= guest_mem_size || addr < 16) return;
+    unsigned char *base = (unsigned char *)guest_mem + addr;
+    int max_bytes = (int)(guest_mem_size - addr);
+    if (max_bytes > 256) max_bytes = 256;
+    int offset = 0;
+    for (int i = 0; i < count && offset < max_bytes; i++) {
+        char buf[128];
+        int len = disasm_one(base + offset, max_bytes - offset, buf, sizeof(buf));
+        fprintf(stderr, "  %012llx: ", addr + offset);
+        for (int j = 0; j < len && j < 8; j++) fprintf(stderr, "%02x ", base[offset+j]);
+        for (int j = len; j < 8; j++) fprintf(stderr, "   ");
+        fprintf(stderr, " %s", buf);
+        /* symbol annotation for calls/jumps */
+        if (buf[0] == 'c' || buf[0] == 'j') {
+            char *at = strchr(buf, '0');
+            if (at) {
+                unsigned long long target = strtoull(at, NULL, 0);
+                if (target > 0x100000) {
+                    int off2; const char *sym = sym_lookup(addr + target, &off2);
+                    if (sym) fprintf(stderr, "  ; <%s+%d>", sym, off2);
+                }
+            }
+        }
+        fprintf(stderr, "\n");
+        offset += len;
+    }
+}
+
+/* Forward declarations for crash report */
+static unsigned long long dbg_read_reg(int idx);
+static int dbg_command_loop(int vec, unsigned long long exc_rip);
+
+/* ── Crash Report ─────────────────────────────────────────────────── */
+
+static void dbg_auto_load_map(const char *kernel_path) {
+    if (symbol_count > 0) return;
+    if (!kernel_path) return;
+    char map_path[512];
+    /* Try <kernel-basename>.map */
+    strncpy(map_path, kernel_path, sizeof(map_path) - 1);
+    map_path[sizeof(map_path)-1] = 0;
+    char *dot = strrchr(map_path, '.');
+    if (dot && (dot - map_path) < (int)sizeof(map_path) - 5) {
+        strcpy(dot, ".map");
+        FILE *f = fopen(map_path, "r");
+        if (f) { fclose(f); load_map_file(map_path); return; }
+    }
+    /* Try <kernel-dir>/Codex.map */
+    strncpy(map_path, kernel_path, sizeof(map_path) - 1);
+    char *sep = strrchr(map_path, '\\');
+    if (!sep) sep = strrchr(map_path, '/');
+    if (sep) { strcpy(sep + 1, "Codex.map"); }
+    else strcpy(map_path, "Codex.map");
+    FILE *f2 = fopen(map_path, "r");
+    if (f2) { fclose(f2); load_map_file(map_path); return; }
+    /* Try seed/Codex.map */
+    f2 = fopen("seed\\Codex.map", "r");
+    if (f2) { fclose(f2); load_map_file("seed\\Codex.map"); }
+}
+
+static void dbg_crash_report(const char *reason, unsigned long long fault_addr,
+                             int access_type, const char *kernel_path) {
+    fprintf(stderr, "\n╔══════════════════════════════════════════════════════════╗\n");
+    fprintf(stderr, "║  CRASH: %-49s║\n", reason);
+    fprintf(stderr, "╚══════════════════════════════════════════════════════════╝\n\n");
+
+    dbg_auto_load_map(kernel_path);
+
+    /* Registers */
+    fprintf(stderr, "── Registers ──\n");
+    dbg_dump_regs();
+    fprintf(stderr, "\n");
+
+    /* Fault info */
+    if (fault_addr != (unsigned long long)-1) {
+        fprintf(stderr, "── Fault ──\n");
+        fprintf(stderr, "  Address: 0x%llx  Access: %s\n", fault_addr,
+            access_type == 0 ? "READ" : access_type == 1 ? "WRITE" : "EXEC");
+        if (fault_addr < guest_mem_size && fault_addr > 0) {
+            fprintf(stderr, "  Memory at fault address:\n");
+            int dump_len = 64;
+            if (fault_addr + dump_len > guest_mem_size) dump_len = (int)(guest_mem_size - fault_addr);
+            dbg_dump_mem(fault_addr, dump_len);
+        }
+        fprintf(stderr, "\n");
+    }
+
+    /* Disassembly around RIP */
+    unsigned long long rip = dbg_read_reg(0);
+    fprintf(stderr, "── Code at RIP ──\n");
+    /* Back up ~16 bytes for context */
+    unsigned long long dis_start = rip > 32 ? rip - 32 : rip;
+    dbg_disasm_at(dis_start, 12);
+    fprintf(stderr, "         ^^^^^^^^ RIP\n\n");
+
+    /* Backtrace */
+    fprintf(stderr, "── Backtrace ──\n");
+    dbg_backtrace();
+    fprintf(stderr, "\n");
+
+    /* Stack */
+    fprintf(stderr, "── Stack ──\n");
+    dbg_dump_stack(24);
+    fprintf(stderr, "\n");
+
+    if (symbol_count > 0)
+        fprintf(stderr, "(%d symbols loaded)\n", symbol_count);
+    else
+        fprintf(stderr, "(no symbols — pass -map <file.map> for resolved names)\n");
+
+    if (!vga_headless) {
+        fprintf(stderr, "\nEntering debugger. Type 'help' for commands, 'q' to quit.\n");
+        dbg_command_loop(99, dbg_read_reg(0));
+    }
+}
+
 static int dbg_set_breakpoint(unsigned long long addr, int cond_reg, unsigned long long cond_val) {
     if (addr >= guest_mem_size) { fprintf(stderr, "  address out of range\n"); return -1; }
     if (bp_count >= MAX_BREAKPOINTS) { fprintf(stderr, "  too many breakpoints\n"); return -1; }
@@ -3147,6 +3490,27 @@ static int dbg_command_loop(int vec, unsigned long long exc_rip) {
         else if (!strcmp(cmd, "stack")) {
             dbg_dump_stack(16);
         }
+        else if (!strncmp(cmd, "d ", 2) || !strncmp(cmd, "disasm ", 7)) {
+            char *arg = cmd + (cmd[1] == ' ' ? 2 : 7);
+            unsigned long long addr = 0;
+            int count = 16;
+            if (arg[0] == '0' && arg[1] == 'x') {
+                addr = strtoull(arg, &arg, 0);
+            } else {
+                addr = sym_find(arg);
+                while (*arg && *arg != ' ') arg++;
+                if (!addr) { fprintf(stderr, "  symbol not found\n"); continue; }
+            }
+            while (*arg == ' ') arg++;
+            if (*arg) count = atoi(arg);
+            if (count <= 0) count = 16;
+            dbg_disasm_at(addr, count);
+        }
+        else if (!strcmp(cmd, "di")) {
+            /* disassemble at RIP, 16 instructions */
+            unsigned long long rip = dbg_read_reg(0);
+            dbg_disasm_at(rip, 16);
+        }
         else if (!strncmp(cmd, "b ", 2) || !strncmp(cmd, "break ", 6)) {
             char *arg = cmd + (cmd[1] == ' ' ? 2 : 6);
             unsigned long long addr = 0;
@@ -3210,6 +3574,8 @@ static int dbg_command_loop(int vec, unsigned long long exc_rip) {
                 "  r / regs          — dump registers\n"
                 "  m <addr> [len]    — dump memory (hex+ascii)\n"
                 "  x <addr>          — read qword at address\n"
+                "  d <fn|addr> [n]   — disassemble n instructions at address\n"
+                "  di                — disassemble 16 instructions at RIP\n"
                 "  bt / backtrace    — walk RBP chain\n"
                 "  stack             — dump 16 stack slots\n"
                 "  b <fn|addr> [if reg=val] — set breakpoint (conditional)\n"
@@ -4563,7 +4929,7 @@ int main(int argc, char **argv) {
     int mem_mb = 2048;
 
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-kernel") && i+1 < argc) kernel = argv[++i];
+        if (!strcmp(argv[i], "-kernel") && i+1 < argc) { kernel = argv[++i]; g_kernel_path = kernel; }
         else if (!strcmp(argv[i], "-disk") && i+1 < argc) disk = argv[++i];
         else if (!strcmp(argv[i], "-mem") && i+1 < argc) mem_mb = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-input") && i+1 < argc) input_file = argv[++i];
@@ -4886,7 +5252,14 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "%s at RIP=0x%llx\n", vec == 1 ? "Single-step" : "Breakpoint", exc_rip);
                 break;
             }
-            fprintf(stderr, "Exception vector=%d at RIP=0x%llx\n", vec, exc_rip);
+            { char reason[128];
+              const char *exc_names[] = {"#DE","#DB","NMI","#BP","#OF","#BR","#UD","#NM",
+                  "#DF","","#TS","#NP","#SS","#GP","#PF"};
+              const char *exc_name = vec < 15 ? exc_names[vec] : "???";
+              snprintf(reason, sizeof(reason), "Exception %s (vec=%d) at RIP=0x%llx after %llu exits",
+                  exc_name, vec, exc_rip, exits);
+              dbg_crash_report(reason, (unsigned long long)-1, -1, g_kernel_path);
+            }
             goto done;
         }
         case WHvRunVpExitReasonMemoryAccess:
@@ -4904,11 +5277,15 @@ int main(int argc, char **argv) {
                     break;
                 }
             }
-            fprintf(stderr, "MMIO at GPA=0x%llx (RIP=0x%llx, access=%s) after %llu exits\n",
-                ctx.MemoryAccess.Gpa, ctx.VpContext.Rip,
-                ctx.MemoryAccess.AccessInfo.AccessType == 0 ? "read" :
-                ctx.MemoryAccess.AccessInfo.AccessType == 1 ? "write" : "exec",
-                exits);
+            { char reason[128];
+              snprintf(reason, sizeof(reason), "Unmapped MMIO GPA=0x%llx (%s) after %llu exits",
+                  ctx.MemoryAccess.Gpa,
+                  ctx.MemoryAccess.AccessInfo.AccessType == 0 ? "READ" :
+                  ctx.MemoryAccess.AccessInfo.AccessType == 1 ? "WRITE" : "EXEC",
+                  exits);
+              dbg_crash_report(reason, ctx.MemoryAccess.Gpa,
+                  ctx.MemoryAccess.AccessInfo.AccessType, g_kernel_path);
+            }
             goto done;
         default:
             /* Check for UEFI HLT trap on any unhandled exit reason */
@@ -4972,23 +5349,20 @@ int main(int argc, char **argv) {
                     break;
                 }
             }
-            fprintf(stderr, "Unhandled exit reason %d (RIP=0x%llx) after %llu exits\n",
-                ctx.ExitReason, ctx.VpContext.Rip, exits);
             if (ctx.ExitReason == 4) {
-                fprintf(stderr, "  MemAccess GPA=0x%llx type=%d\n",
-                    ctx.MemoryAccess.Gpa, ctx.MemoryAccess.AccessInfo.AccessType);
-                WHV_REGISTER_NAME gp_names[] = {WHvX64RegisterRdi, WHvX64RegisterRcx, WHvX64RegisterRsi, WHvX64RegisterRbx, WHvX64RegisterR10};
-                WHV_REGISTER_VALUE gp_vals[5];
-                WHvGetVirtualProcessorRegisters(partition, 0, gp_names, 5, gp_vals);
-                fprintf(stderr, "  RDI=0x%llx RCX=0x%llx RSI=0x%llx RBX=0x%llx R10=0x%llx\n",
-                    gp_vals[0].Reg64, gp_vals[1].Reg64, gp_vals[2].Reg64, gp_vals[3].Reg64, gp_vals[4].Reg64);
-                WHV_REGISTER_NAME dbg_names[] = {WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4, WHvX64RegisterEfer, WHvX64RegisterCs, WHvX64RegisterSs, WHvX64RegisterTr};
-                WHV_REGISTER_VALUE dbg_vals[7];
-                WHvGetVirtualProcessorRegisters(partition, 0, dbg_names, 7, dbg_vals);
-                fprintf(stderr, "  CR0=0x%llx CR3=0x%llx CR4=0x%llx EFER=0x%llx\n", dbg_vals[0].Reg64, dbg_vals[1].Reg64, dbg_vals[2].Reg64, dbg_vals[3].Reg64);
-                fprintf(stderr, "  CS: sel=0x%x attr=0x%x base=0x%llx limit=0x%x\n", dbg_vals[4].Segment.Selector, dbg_vals[4].Segment.Attributes, dbg_vals[4].Segment.Base, dbg_vals[4].Segment.Limit);
-                fprintf(stderr, "  SS: sel=0x%x attr=0x%x\n", dbg_vals[5].Segment.Selector, dbg_vals[5].Segment.Attributes);
-                fprintf(stderr, "  TR: sel=0x%x attr=0x%x base=0x%llx limit=0x%x\n", dbg_vals[6].Segment.Selector, dbg_vals[6].Segment.Attributes, dbg_vals[6].Segment.Base, dbg_vals[6].Segment.Limit);
+                char reason[128];
+                snprintf(reason, sizeof(reason), "MemAccess GPA=0x%llx (%s) after %llu exits",
+                    ctx.MemoryAccess.Gpa,
+                    ctx.MemoryAccess.AccessInfo.AccessType == 0 ? "READ" :
+                    ctx.MemoryAccess.AccessInfo.AccessType == 1 ? "WRITE" : "EXEC",
+                    exits);
+                dbg_crash_report(reason, ctx.MemoryAccess.Gpa,
+                    ctx.MemoryAccess.AccessInfo.AccessType, g_kernel_path);
+            } else {
+                char reason[128];
+                snprintf(reason, sizeof(reason), "Unhandled exit reason %d after %llu exits",
+                    ctx.ExitReason, exits);
+                dbg_crash_report(reason, (unsigned long long)-1, -1, g_kernel_path);
             }
             goto done;
         }

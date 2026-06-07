@@ -8,9 +8,68 @@ Chapter: MAUI Emitter
 
 Section: Sanitization
 
+  is-csharp-keyword : Text -> Boolean
+  is-csharp-keyword (n) =
+   if n == "base" then True
+   else if n == "class" then True
+   else if n == "event" then True
+   else if n == "object" then True
+   else if n == "string" then True
+   else if n == "int" then True
+   else if n == "long" then True
+   else if n == "bool" then True
+   else if n == "new" then True
+   else if n == "null" then True
+   else if n == "this" then True
+   else if n == "true" then True
+   else if n == "false" then True
+   else if n == "return" then True
+   else if n == "if" then True
+   else if n == "else" then True
+   else if n == "for" then True
+   else if n == "while" then True
+   else if n == "do" then True
+   else if n == "switch" then True
+   else if n == "case" then True
+   else if n == "break" then True
+   else if n == "continue" then True
+   else if n == "try" then True
+   else if n == "catch" then True
+   else if n == "finally" then True
+   else if n == "throw" then True
+   else if n == "var" then True
+   else if n == "void" then True
+   else if n == "static" then True
+   else if n == "readonly" then True
+   else if n == "const" then True
+   else if n == "delegate" then True
+   else if n == "interface" then True
+   else if n == "abstract" then True
+   else if n == "override" then True
+   else if n == "virtual" then True
+   else if n == "params" then True
+   else if n == "ref" then True
+   else if n == "out" then True
+   else if n == "in" then True
+   else if n == "is" then True
+   else if n == "as" then True
+   else if n == "typeof" then True
+   else if n == "checked" then True
+   else if n == "unchecked" then True
+   else if n == "default" then True
+   else if n == "lock" then True
+   else if n == "operator" then True
+   else if n == "implicit" then True
+   else if n == "explicit" then True
+   else if n == "fixed" then True
+   else if n == "volatile" then True
+   else False
+
   maui-sanitize : Text -> Text
   maui-sanitize (name) =
-   text-replace (text-replace name "-" "_") "'" ""
+   let clean = text-replace (text-replace name "-" "_") "'" ""
+   in if is-csharp-keyword clean then "@" & clean
+   else clean
 
   maui-escape : Text -> Text
   maui-escape (s) =
@@ -48,6 +107,45 @@ Section: Arity Map
    else let d = list-at defs i
    in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry { name = d.name, arity = list-length (d.params), generic-count = 0 }))
 
+Section: Delegate Wrapping
+
+  fun-arity : CodexType -> Integer
+  fun-arity (ty) =
+   when ty
+    is FunTy (p) (r) -> 1 + fun-arity r
+    is ForAllTy (id) (body) -> fun-arity body
+    is EffectfulTy (effs) (sc) (ret) -> 0
+    is otherwise -> 0
+
+  is-fun-type : CodexType -> Boolean
+  is-fun-type (ty) =
+   when ty
+    is FunTy (p) (r) -> True
+    is ForAllTy (id) (body) -> is-fun-type body
+    is otherwise -> False
+
+  func-type-str : Integer -> Text
+  func-type-str (arity) =
+   if arity == 1 then "Func<dynamic,dynamic>"
+   else if arity == 2 then "Func<dynamic,dynamic,dynamic>"
+   else if arity == 3 then "Func<dynamic,dynamic,dynamic,dynamic>"
+   else if arity == 4 then "Func<dynamic,dynamic,dynamic,dynamic,dynamic>"
+   else "Func<dynamic,dynamic>"
+
+  wrap-delegate : Text, CodexType -> Text
+  wrap-delegate (name) (ty) =
+   if is-fun-type ty then "((" & func-type-str (fun-arity ty) & ")" & name & ")"
+   else name
+
+Section: Arity Lookup
+
+  lookup-arity : List ArityEntry, Text, Integer -> Integer
+  lookup-arity (entries) (name) (i) =
+   if i >= list-length entries then 0 - 1
+   else let e = list-at entries i
+   in if e.name == name then e.arity
+   else lookup-arity entries name (i + 1)
+
 Section: Expression Emission
 
   emit-maui-expr : IRExpr, List ArityEntry, Integer -> Text
@@ -58,7 +156,7 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> "\"" & maui-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "((char)" & show n & ")"
-    is IrName (n) (ty) (sp) -> maui-sanitize n
+    is IrName (n) (ty) (sp) -> let sn = maui-sanitize n in let ar = lookup-arity arities n 0 in if ar == 0 then sn & "()" else sn
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-maui-binary op l r arities indent
     is IrNegate (x) (sp) -> "(-(" & emit-maui-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-maui-expr c arities indent & " ? " & emit-maui-expr t arities indent & " : " & emit-maui-expr el arities indent & ")"
@@ -75,7 +173,7 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> "(await " & emit-maui-expr task arities indent & ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-maui-expr body arities indent
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-maui-expr body arities indent
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-maui-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-maui-try max body fb fail arities indent
     is IrError (msg) (ty) (sp) -> "throw new Exception(\"" & maui-escape msg & "\")"
 
   emit-maui-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
@@ -104,18 +202,27 @@ Section: Expression Emission
     is IrAppendList -> "((List<dynamic>)" & lhs & ").Concat((List<dynamic>)" & rhs & ").ToList()"
     is IrConsList -> "new List<dynamic> { " & lhs & " }.Concat((List<dynamic>)" & rhs & ").ToList()"
 
-  FlatApply = record { root : IRExpr, args : List IRExpr }
-
-  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
-  collect-apply-chain (e) (acc) =
+  emit-maui-arg : IRExpr, List ArityEntry, Integer -> Text
+  emit-maui-arg (e) (arities) (indent) =
    when e
-    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
-    is otherwise -> FlatApply { root = e, args = acc }
+    is IrName (n) (ty) (sp) ->
+     let sn = maui-sanitize n
+     in let ar = lookup-arity arities n 0
+     in if is-fun-type ty then wrap-delegate sn ty
+     else if ar == 0 then sn & "()"
+     else sn
+    is otherwise -> emit-maui-expr e arities indent
 
   emit-maui-apply : IRExpr, List ArityEntry, Integer -> Text
   emit-maui-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
-   in emit-maui-expr (chain.root) arities indent & "(" & emit-maui-elems (chain.args) arities indent 0 & ")"
+   in emit-maui-expr (chain.root) arities indent & "(" & emit-maui-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-maui-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-maui-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-maui-arg (list-at args i) arities indent & emit-maui-apply-args args arities indent (i + 1)
 
   emit-maui-params : List IRParam, Integer -> Text
   emit-maui-params (params) (i) =
@@ -204,15 +311,81 @@ Section: Type Definitions
   emit-maui-ctor-f : Integer, Integer -> Text
   emit-maui-ctor-f (n) (i) = if i == n then "" else ", [\"_" & show i & "\"] = _" & show i & emit-maui-ctor-f n (i + 1)
 
+Section: Type Helpers
+
+  emit-maui-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, List ArityEntry, Integer -> Text
+  emit-maui-try (max) (body) (fb) (fail) (arities) (indent) =
+   emit-maui-act body arities indent
+
+Section: Builtin Recognition
+
+  is-maui-builtin : Text -> Boolean
+  is-maui-builtin (n) =
+   if text-starts-with n "dom-" then True
+   else if n == "mount-widget" then True
+   else if n == "mount-widget-themed" then True
+   else if n == "mount-widget-into" then True
+   else if n == "register-handlers" then True
+   else if n == "state-get" then True
+   else if n == "state-set" then True
+   else if n == "state-get-text" then True
+   else if n == "state-set-text" then True
+   else if n == "state-set-render" then True
+   else if n == "state-set-text-render" then True
+   else if n == "set-render" then True
+   else if n == "request-render" then True
+   else if n == "show-alert" then True
+   else if n == "show-confirm" then True
+   else if n == "show-prompt" then True
+   else if n == "close-dialog" then True
+   else if n == "fetch-json" then True
+   else if n == "fetch-then" then True
+   else if n == "fetch-get-then" then True
+   else if n == "json-stringify" then True
+   else if n == "json-parse" then True
+   else if n == "json-parse-obj" then True
+   else if n == "json-obj-field" then True
+   else if n == "url-encode" then True
+   else if n == "download-text" then True
+   else if n == "random-int" then True
+   else if n == "set-timeout" then True
+   else if n == "local-storage-get" then True
+   else if n == "local-storage-set" then True
+   else if n == "int-to-css-color" then True
+   else if n == "next-card-id" then True
+   else if n == "generate-image" then True
+   else if n == "check-sd-status" then True
+   else if n == "theme-to-css" then True
+   else if n == "inject-theme-css" then True
+   else if n == "save-theme" then True
+   else if n == "load-theme" then True
+   else if n == "save-layout" then True
+   else if n == "load-layout" then True
+   else if n == "css-animate-spin" then True
+   else if n == "css-animate-pulse" then True
+   else if n == "css-animate-bounce" then True
+   else if n == "css-transition" then True
+   else if n == "text-substring" then True
+   else if n == "text-starts-with" then True
+   else if n == "text-length" then True
+   else if n == "text-replace" then True
+   else if n == "text-compare" then True
+   else if n == "integer-to-text" then True
+   else if n == "negate" then True
+   else if n == "list-length" then True
+   else if n == "list-at" then True
+   else if n == "list-push" then True
+   else if n == "list-insert-at" then True
+   else False
+
 Section: Definition Emission
 
   emit-maui-def : IRDef, List ArityEntry -> Text
   emit-maui-def (d) (arities) =
    if text-length (d.name) == 0 then ""
+   else if is-maui-builtin (d.name) then ""
    else let sname = maui-sanitize (d.name)
-   in if list-length (d.params) == 0
-      then maui-indent 2 & "static dynamic " & sname & " = " & emit-maui-expr (d.body) arities 2 & ";\n\n"
-      else maui-indent 2 & "static dynamic " & sname & "(" & emit-maui-params (d.params) 0 & ") {\n" & maui-indent 3 & "return " & emit-maui-expr (d.body) arities 3 & ";\n" & maui-indent 2 & "}\n\n"
+   in maui-indent 2 & "static dynamic " & sname & "(" & emit-maui-params (d.params) 0 & ") {\n" & maui-indent 3 & "return " & emit-maui-expr (d.body) arities 3 & ";\n" & maui-indent 2 & "}\n\n"
 
   emit-maui-defs : List IRDef, Integer, List ArityEntry -> Text
   emit-maui-defs (defs) (i) (arities) =
@@ -222,16 +395,350 @@ Section: Definition Emission
   emit-maui-type-defs (tds) (i) =
    if i == list-length tds then "" else emit-maui-type-def (list-at tds i) & emit-maui-type-defs tds (i + 1)
 
+Section: Color Runtime
+
+  emit-maui-color-runtime : Text
+  emit-maui-color-runtime =
+   maui-indent 1 & "static Color _cc(dynamic n) {\n"
+   & maui-indent 2 & "int r = (int)((n >> 16) & 255);\n"
+   & maui-indent 2 & "int g = (int)((n >> 8) & 255);\n"
+   & maui-indent 2 & "int b = (int)(n & 255);\n"
+   & maui-indent 2 & "return Color.FromRgb(r, g, b);\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic int_to_css_color(dynamic n) {\n"
+   & maui-indent 2 & "int r = (int)((n >> 16) & 255);\n"
+   & maui-indent 2 & "int g = (int)((n >> 8) & 255);\n"
+   & maui-indent 2 & "int b = (int)(n & 255);\n"
+   & maui-indent 2 & "return $\"#{r:X2}{g:X2}{b:X2}\";\n"
+   & maui-indent 1 & "}\n\n"
+
+Section: State Runtime
+
+  emit-maui-state-runtime : Text
+  emit-maui-state-runtime =
+   maui-indent 1 & "static readonly Dictionary<string,dynamic> _st = new();\n"
+   & maui-indent 1 & "static dynamic state_get(dynamic k) { return _st.ContainsKey(k) ? _st[k] : 0L; }\n"
+   & maui-indent 1 & "static dynamic state_set(dynamic k, dynamic v) { _st[k] = v; return v; }\n"
+   & maui-indent 1 & "static dynamic state_get_text(dynamic k) { return _st.ContainsKey(k) ? _st[k]?.ToString() ?? \"\" : \"\"; }\n"
+   & maui-indent 1 & "static dynamic state_set_text(dynamic k, dynamic v) { _st[k] = v; return v; }\n"
+   & maui-indent 1 & "static dynamic next_card_id(dynamic _) { _st[\"_cid\"] = state_get(\"_cid\") + 1L; return (long)_st[\"_cid\"]; }\n\n"
+
+Section: Reactive Runtime
+
+  emit-maui-reactive-runtime : Text
+  emit-maui-reactive-runtime =
+   maui-indent 1 & "static Func<dynamic,dynamic> _renderFn = null;\n"
+   & maui-indent 1 & "static bool _renderPending = false;\n"
+   & maui-indent 1 & "static dynamic set_render(dynamic fn) { _renderFn = (Func<dynamic,dynamic>)fn; return 0; }\n"
+   & maui-indent 1 & "static dynamic request_render(dynamic _) {\n"
+   & maui-indent 2 & "if (_renderFn != null && !_renderPending) {\n"
+   & maui-indent 3 & "_renderPending = true;\n"
+   & maui-indent 3 & "if (MainThread.IsMainThread) { _renderPending = false; _renderFn(0L); }\n"
+   & maui-indent 3 & "else { MainThread.BeginInvokeOnMainThread(() => { _renderPending = false; _renderFn(0L); }); }\n"
+   & maui-indent 2 & "}\n"
+   & maui-indent 2 & "return 0L;\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic state_set_render(dynamic k, dynamic v) { _st[k] = v; request_render(0L); return v; }\n"
+   & maui-indent 1 & "static dynamic state_set_text_render(dynamic k, dynamic v) { _st[k] = v; request_render(0L); return v; }\n\n"
+
+Section: Widget Runtime
+
+  emit-maui-widget-runtime : Text
+  emit-maui-widget-runtime =
+   emit-maui-widget-edges
+   & emit-maui-widget-style
+   & emit-maui-widget-resolve
+   & emit-maui-widget-create
+   & emit-maui-widget-custom
+   & emit-maui-widget-mount
+   & emit-maui-widget-handlers
+
+  emit-maui-widget-edges : Text
+  emit-maui-widget-edges =
+   maui-indent 1 & "static Thickness _wkEdges(dynamic e) {\n"
+   & maui-indent 2 & "if (e == null) return new Thickness(0);\n"
+   & maui-indent 2 & "var d = (Dictionary<string,dynamic>)e;\n"
+   & maui-indent 2 & "double l = d.ContainsKey(\"edge-left\") ? (double)(long)d[\"edge-left\"] : 0;\n"
+   & maui-indent 2 & "double t = d.ContainsKey(\"edge-top\") ? (double)(long)d[\"edge-top\"] : 0;\n"
+   & maui-indent 2 & "double r = d.ContainsKey(\"edge-right\") ? (double)(long)d[\"edge-right\"] : 0;\n"
+   & maui-indent 2 & "double b = d.ContainsKey(\"edge-bottom\") ? (double)(long)d[\"edge-bottom\"] : 0;\n"
+   & maui-indent 2 & "return new Thickness(l, t, r, b);\n"
+   & maui-indent 1 & "}\n\n"
+
+  emit-maui-widget-style : Text
+  emit-maui-widget-style =
+   maui-indent 1 & "static void _wkStyle(dynamic ws, View el) {\n"
+   & maui-indent 2 & "if (ws == null) return;\n"
+   & maui-indent 2 & "var s = (Dictionary<string,dynamic>)ws;\n"
+   & maui-indent 2 & "if (s.ContainsKey(\"ws-bg\") && (long)s[\"ws-bg\"] != 0)\n"
+   & maui-indent 3 & "el.BackgroundColor = _cc((long)s[\"ws-bg\"]);\n"
+   & maui-indent 2 & "if (s.ContainsKey(\"ws-padding\"))\n"
+   & maui-indent 3 & "if (el is Microsoft.Maui.Controls.Layout lay) lay.Padding = _wkEdges(s[\"ws-padding\"]);\n"
+   & maui-indent 2 & "if (s.ContainsKey(\"ws-margin\"))\n"
+   & maui-indent 3 & "el.Margin = _wkEdges(s[\"ws-margin\"]);\n"
+   & maui-indent 2 & "if (s.ContainsKey(\"ws-min-width\") && (long)s[\"ws-min-width\"] > 0)\n"
+   & maui-indent 3 & "el.MinimumWidthRequest = (double)(long)s[\"ws-min-width\"];\n"
+   & maui-indent 2 & "if (s.ContainsKey(\"ws-min-height\") && (long)s[\"ws-min-height\"] > 0)\n"
+   & maui-indent 3 & "el.MinimumHeightRequest = (double)(long)s[\"ws-min-height\"];\n"
+   & maui-indent 2 & "if (s.ContainsKey(\"ws-fg\") && (long)s[\"ws-fg\"] != 0) {\n"
+   & maui-indent 3 & "if (el is Label lbl) lbl.TextColor = _cc((long)s[\"ws-fg\"]);\n"
+   & maui-indent 3 & "else if (el is Button btn) btn.TextColor = _cc((long)s[\"ws-fg\"]);\n"
+   & maui-indent 3 & "else if (el is Entry ent) ent.TextColor = _cc((long)s[\"ws-fg\"]);\n"
+   & maui-indent 2 & "}\n"
+   & maui-indent 1 & "}\n\n"
+
+  emit-maui-widget-resolve : Text
+  emit-maui-widget-resolve =
+   maui-indent 1 & "static Dictionary<string,dynamic> _wkTheme = null;\n"
+   & maui-indent 1 & "static dynamic _wkSS(string tag, long state) {\n"
+   & maui-indent 2 & "if (_wkTheme == null) return null;\n"
+   & maui-indent 2 & "var th = _wkTheme;\n"
+   & maui-indent 2 & "string key = tag == \"panel\" ? \"th-panel\" : tag == \"button\" ? \"th-button\" : tag == \"label\" ? \"th-label\" : tag == \"input\" ? \"th-input\" : tag == \"gauge\" ? \"th-gauge\" : tag == \"separator\" ? \"th-separator\" : \"th-panel\";\n"
+   & maui-indent 2 & "if (!th.ContainsKey(key)) return null;\n"
+   & maui-indent 2 & "var ss = (Dictionary<string,dynamic>)th[key];\n"
+   & maui-indent 2 & "string sk = state == 1 ? \"ss-hover\" : state == 2 ? \"ss-pressed\" : state == 3 ? \"ss-disabled\" : state == 4 ? \"ss-focused\" : \"ss-normal\";\n"
+   & maui-indent 2 & "return ss.ContainsKey(sk) ? ss[sk] : null;\n"
+   & maui-indent 1 & "}\n\n"
+
+  emit-maui-widget-create : Text
+  emit-maui-widget-create =
+   maui-indent 1 & "static View _wk(dynamic node) {\n"
+   & maui-indent 2 & "if (node == null) return new Label { Text = \"null\" };\n"
+   & maui-indent 2 & "var n = (Dictionary<string,dynamic>)node;\n"
+   & maui-indent 2 & "var kind = (Dictionary<string,dynamic>)n[\"wn-kind\"];\n"
+   & maui-indent 2 & "string tag = (string)kind[\"_tag\"];\n"
+   & maui-indent 2 & "string id = n.ContainsKey(\"wn-id\") ? n[\"wn-id\"]?.ToString() ?? \"\" : \"\";\n"
+   & maui-indent 2 & "long state = n.ContainsKey(\"wn-state\") ? (long)n[\"wn-state\"] : 0;\n"
+   & maui-indent 2 & "var children = n.ContainsKey(\"wn-children\") ? (List<dynamic>)n[\"wn-children\"] : new List<dynamic>();\n"
+   & maui-indent 2 & "long gap = n.ContainsKey(\"wn-gap\") ? (long)n[\"wn-gap\"] : 0;\n"
+   & maui-indent 2 & "View el;\n"
+   & maui-indent 2 & "string styleTag;\n"
+   & maui-indent 2 & "if (tag == \"WkPanel\") {\n"
+   & maui-indent 3 & "var dir = n.ContainsKey(\"wn-layout-dir\") ? (Dictionary<string,dynamic>)n[\"wn-layout-dir\"] : null;\n"
+   & maui-indent 3 & "bool isRow = dir != null && (string)dir[\"_tag\"] == \"DirRow\";\n"
+   & maui-indent 3 & "if (isRow) {\n"
+   & maui-indent 4 & "var layout = new HorizontalStackLayout { Spacing = (double)gap };\n"
+   & maui-indent 4 & "foreach (var c in children) layout.Add(_wk(c));\n"
+   & maui-indent 4 & "el = layout;\n"
+   & maui-indent 3 & "} else {\n"
+   & maui-indent 4 & "var layout = new VerticalStackLayout { Spacing = (double)gap };\n"
+   & maui-indent 4 & "foreach (var c in children) layout.Add(_wk(c));\n"
+   & maui-indent 4 & "el = layout;\n"
+   & maui-indent 3 & "}\n"
+   & maui-indent 3 & "styleTag = \"panel\";\n"
+   & maui-indent 2 & "} else if (tag == \"WkLabel\") {\n"
+   & maui-indent 3 & "string txt = kind.ContainsKey(\"_0\") ? kind[\"_0\"]?.ToString() ?? \"\" : \"\";\n"
+   & maui-indent 3 & "el = new Label { Text = txt };\n"
+   & maui-indent 3 & "styleTag = \"label\";\n"
+   & maui-indent 2 & "} else if (tag == \"WkButton\") {\n"
+   & maui-indent 3 & "string txt = kind.ContainsKey(\"_0\") ? kind[\"_0\"]?.ToString() ?? \"\" : \"\";\n"
+   & maui-indent 3 & "var btn = new Button { Text = txt };\n"
+   & maui-indent 3 & "string btnId = id;\n"
+   & maui-indent 3 & "btn.Clicked += (s, e) => { if (_wkOnClick != null) _wkOnClick(btnId); };\n"
+   & maui-indent 3 & "el = btn;\n"
+   & maui-indent 3 & "styleTag = \"button\";\n"
+   & maui-indent 2 & "} else if (tag == \"WkGauge\") {\n"
+   & maui-indent 3 & "long val = kind.ContainsKey(\"_0\") ? (long)kind[\"_0\"] : 0;\n"
+   & maui-indent 3 & "long max = kind.ContainsKey(\"_1\") ? (long)kind[\"_1\"] : 100;\n"
+   & maui-indent 3 & "double prog = max > 0 ? (double)val / (double)max : 0;\n"
+   & maui-indent 3 & "el = new ProgressBar { Progress = prog, HorizontalOptions = LayoutOptions.Fill };\n"
+   & maui-indent 3 & "styleTag = \"gauge\";\n"
+   & maui-indent 2 & "} else if (tag == \"WkSeparator\") {\n"
+   & maui-indent 3 & "el = new BoxView { HeightRequest = 2, HorizontalOptions = LayoutOptions.Fill, Color = Colors.Gray };\n"
+   & maui-indent 3 & "styleTag = \"separator\";\n"
+   & maui-indent 2 & "} else if (tag == \"WkInput\") {\n"
+   & maui-indent 3 & "string txt = kind.ContainsKey(\"_0\") ? kind[\"_0\"]?.ToString() ?? \"\" : \"\";\n"
+   & maui-indent 3 & "var entry = new Entry { Text = txt, HorizontalOptions = LayoutOptions.Fill };\n"
+   & maui-indent 3 & "string entId = id;\n"
+   & maui-indent 3 & "entry.TextChanged += (s, e) => { state_set_text(entId, e.NewTextValue); };\n"
+   & maui-indent 3 & "el = entry;\n"
+   & maui-indent 3 & "styleTag = \"input\";\n"
+   & maui-indent 2 & "} else if (tag == \"WkCustom\") {\n"
+   & maui-indent 3 & "string ctag = kind.ContainsKey(\"_0\") ? kind[\"_0\"]?.ToString() ?? \"\" : \"\";\n"
+   & maui-indent 3 & "el = _wkCustom(n, ctag, children);\n"
+   & maui-indent 3 & "styleTag = \"panel\";\n"
+   & maui-indent 2 & "} else {\n"
+   & maui-indent 3 & "el = new Label { Text = \"[unknown: \" + tag + \"]\" };\n"
+   & maui-indent 3 & "styleTag = \"label\";\n"
+   & maui-indent 2 & "}\n"
+   & maui-indent 2 & "if (id.Length > 0) el.AutomationId = id;\n"
+   & maui-indent 2 & "var ws = _wkSS(styleTag, state);\n"
+   & maui-indent 2 & "_wkStyle(ws, el);\n"
+   & maui-indent 2 & "return el;\n"
+   & maui-indent 1 & "}\n\n"
+
+  emit-maui-widget-custom : Text
+  emit-maui-widget-custom =
+   maui-indent 1 & "static View _wkCustom(Dictionary<string,dynamic> n, string tag, List<dynamic> children) {\n"
+   & maui-indent 2 & "if (tag == \"dim-picker\") {\n"
+   & maui-indent 3 & "var picker = new Picker { Title = n.ContainsKey(\"wn-id\") ? n[\"wn-id\"]?.ToString() : \"Select\" };\n"
+   & maui-indent 3 & "string pid = n.ContainsKey(\"wn-id\") ? n[\"wn-id\"]?.ToString() ?? \"\" : \"\";\n"
+   & maui-indent 3 & "picker.SelectedIndexChanged += (s, e) => { if (_wkOnPick != null) _wkOnPick(pid, picker.SelectedIndex); };\n"
+   & maui-indent 3 & "return picker;\n"
+   & maui-indent 2 & "}\n"
+   & maui-indent 2 & "if (tag == \"hero\") {\n"
+   & maui-indent 3 & "return new Image { Aspect = Aspect.AspectFit, HeightRequest = 300, HorizontalOptions = LayoutOptions.Fill };\n"
+   & maui-indent 2 & "}\n"
+   & maui-indent 2 & "if (tag == \"toolbar\" || tag == \"btnbar\" || tag == \"btnbar-batch\") {\n"
+   & maui-indent 3 & "var layout = new HorizontalStackLayout { Spacing = 4 };\n"
+   & maui-indent 3 & "foreach (var c in children) layout.Add(_wk(c));\n"
+   & maui-indent 3 & "return layout;\n"
+   & maui-indent 2 & "}\n"
+   & maui-indent 2 & "if (tag == \"prompt-field\") {\n"
+   & maui-indent 3 & "var stack = new VerticalStackLayout { Spacing = 4 };\n"
+   & maui-indent 3 & "string pid = n.ContainsKey(\"wn-id\") ? n[\"wn-id\"]?.ToString() ?? \"\" : \"\";\n"
+   & maui-indent 3 & "stack.Add(new Label { Text = pid });\n"
+   & maui-indent 3 & "var editor = new Editor { HeightRequest = 80, HorizontalOptions = LayoutOptions.Fill };\n"
+   & maui-indent 3 & "editor.TextChanged += (s, e) => { state_set_text(pid, e.NewTextValue); };\n"
+   & maui-indent 3 & "stack.Add(editor);\n"
+   & maui-indent 3 & "return stack;\n"
+   & maui-indent 2 & "}\n"
+   & maui-indent 2 & "if (tag == \"history\") {\n"
+   & maui-indent 3 & "return new ScrollView { Content = new VerticalStackLayout { Spacing = 4 }, HeightRequest = 200 };\n"
+   & maui-indent 2 & "}\n"
+   & maui-indent 2 & "if (tag == \"nav\") {\n"
+   & maui-indent 3 & "var layout = new HorizontalStackLayout { Spacing = 8 };\n"
+   & maui-indent 3 & "foreach (var c in children) layout.Add(_wk(c));\n"
+   & maui-indent 3 & "return layout;\n"
+   & maui-indent 2 & "}\n"
+   & maui-indent 2 & "var fallback = new VerticalStackLayout { Spacing = 4 };\n"
+   & maui-indent 2 & "fallback.Add(new Label { Text = \"[custom: \" + tag + \"]\" });\n"
+   & maui-indent 2 & "foreach (var c in children) fallback.Add(_wk(c));\n"
+   & maui-indent 2 & "return fallback;\n"
+   & maui-indent 1 & "}\n\n"
+
+  emit-maui-widget-mount : Text
+  emit-maui-widget-mount =
+   maui-indent 1 & "static dynamic mount_widget(dynamic node) {\n"
+   & maui-indent 2 & "var view = _wk(node);\n"
+   & maui-indent 2 & "view.VerticalOptions = LayoutOptions.Fill;\n"
+   & maui-indent 2 & "view.HorizontalOptions = LayoutOptions.Fill;\n"
+   & maui-indent 2 & "var scroll = new ScrollView { Content = view, VerticalOptions = LayoutOptions.Fill, HorizontalOptions = LayoutOptions.Fill };\n"
+   & maui-indent 2 & "if (_wkTheme != null && _wkTheme.ContainsKey(\"th-palette\")) {\n"
+   & maui-indent 3 & "var pal = (Dictionary<string,dynamic>)_wkTheme[\"th-palette\"];\n"
+   & maui-indent 3 & "if (pal.ContainsKey(\"pal-bg\")) { scroll.BackgroundColor = _cc((long)pal[\"pal-bg\"]); _page.BackgroundColor = _cc((long)pal[\"pal-bg\"]); }\n"
+   & maui-indent 2 & "}\n"
+   & maui-indent 2 & "if (MainThread.IsMainThread) { _page.Content = scroll; }\n"
+   & maui-indent 2 & "else { MainThread.BeginInvokeOnMainThread(() => { _page.Content = scroll; }); }\n"
+   & maui-indent 2 & "return 0L;\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic mount_widget_themed(dynamic th, dynamic node) {\n"
+   & maui-indent 2 & "_wkTheme = (Dictionary<string,dynamic>)th;\n"
+   & maui-indent 2 & "return mount_widget(node);\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic mount_widget_into(dynamic id, dynamic node) {\n"
+   & maui-indent 2 & "return mount_widget(node);\n"
+   & maui-indent 1 & "}\n\n"
+
+  emit-maui-widget-handlers : Text
+  emit-maui-widget-handlers =
+   maui-indent 1 & "static Func<string,long,long> _wkOnPick = null;\n"
+   & maui-indent 1 & "static Func<string,long> _wkOnClick = null;\n"
+   & maui-indent 1 & "static dynamic register_handlers(dynamic pickFn, dynamic clickFn) {\n"
+   & maui-indent 2 & "_wkOnPick = (s,i) => (long)((Func<dynamic,dynamic,dynamic>)pickFn)(s, i);\n"
+   & maui-indent 2 & "_wkOnClick = (s) => (long)((Func<dynamic,dynamic>)clickFn)(s);\n"
+   & maui-indent 2 & "return 0;\n"
+   & maui-indent 1 & "}\n\n"
+
+Section: Dialog Runtime
+
+  emit-maui-dialog-runtime : Text
+  emit-maui-dialog-runtime =
+   maui-indent 1 & "static dynamic show_alert(dynamic title, dynamic msg, dynamic cb) {\n"
+   & maui-indent 2 & "MainThread.BeginInvokeOnMainThread(async () => {\n"
+   & maui-indent 3 & "await _page.DisplayAlert(title, msg, \"OK\");\n"
+   & maui-indent 3 & "if (cb != null) ((Func<dynamic,dynamic>)cb)(\"ok\");\n"
+   & maui-indent 2 & "});\n"
+   & maui-indent 2 & "return 0;\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic show_confirm(dynamic title, dynamic msg, dynamic cb) {\n"
+   & maui-indent 2 & "MainThread.BeginInvokeOnMainThread(async () => {\n"
+   & maui-indent 3 & "bool ok = await _page.DisplayAlert(title, msg, \"Yes\", \"No\");\n"
+   & maui-indent 3 & "if (cb != null) ((Func<dynamic,dynamic>)cb)(ok ? \"yes\" : \"no\");\n"
+   & maui-indent 2 & "});\n"
+   & maui-indent 2 & "return 0;\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic show_prompt(dynamic title, dynamic msg, dynamic cb) {\n"
+   & maui-indent 2 & "MainThread.BeginInvokeOnMainThread(async () => {\n"
+   & maui-indent 3 & "string result = await _page.DisplayPromptAsync(title, msg);\n"
+   & maui-indent 3 & "if (cb != null) ((Func<dynamic,dynamic>)cb)(result ?? \"\");\n"
+   & maui-indent 2 & "});\n"
+   & maui-indent 2 & "return 0;\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic close_dialog(dynamic _) { return 0; }\n\n"
+
+Section: Network and Storage Runtime
+
+  emit-maui-net-runtime : Text
+  emit-maui-net-runtime =
+   maui-indent 1 & "static readonly HttpClient _http = new();\n"
+   & maui-indent 1 & "static dynamic fetch_json(dynamic url, dynamic method, dynamic body, dynamic cb) {\n"
+   & maui-indent 2 & "Task.Run(async () => {\n"
+   & maui-indent 3 & "try {\n"
+   & maui-indent 4 & "HttpResponseMessage resp;\n"
+   & maui-indent 4 & "if (method == \"POST\") {\n"
+   & maui-indent 5 & "var content = new StringContent(body, System.Text.Encoding.UTF8, \"application/json\");\n"
+   & maui-indent 5 & "resp = await _http.PostAsync(url, content);\n"
+   & maui-indent 4 & "} else { resp = await _http.GetAsync(url); }\n"
+   & maui-indent 4 & "var text = await resp.Content.ReadAsStringAsync();\n"
+   & maui-indent 4 & "MainThread.BeginInvokeOnMainThread(() => ((Func<dynamic,dynamic>)cb)(text));\n"
+   & maui-indent 3 & "} catch (Exception ex) {\n"
+   & maui-indent 4 & "MainThread.BeginInvokeOnMainThread(() => ((Func<dynamic,dynamic>)cb)(\"ERROR: \" + ex.Message));\n"
+   & maui-indent 3 & "}\n"
+   & maui-indent 2 & "});\n"
+   & maui-indent 2 & "return 0;\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic fetch_then(dynamic url, dynamic method, dynamic body, dynamic cb) { return fetch_json(url, method, body, cb); }\n"
+   & maui-indent 1 & "static dynamic fetch_get_then(dynamic url, dynamic cb) { return fetch_json(url, \"GET\", \"\", cb); }\n"
+   & maui-indent 1 & "static dynamic json_stringify(dynamic obj) { return System.Text.Json.JsonSerializer.Serialize(obj); }\n"
+   & maui-indent 1 & "static dynamic json_parse(string s) { return System.Text.Json.JsonSerializer.Deserialize<dynamic>(s); }\n"
+   & maui-indent 1 & "static dynamic json_parse_obj(string s) { return json_parse(s); }\n"
+   & maui-indent 1 & "static dynamic json_obj_field(dynamic obj, string field) {\n"
+   & maui-indent 2 & "if (obj is System.Text.Json.JsonElement je && je.TryGetProperty(field, out var val)) return val.ToString();\n"
+   & maui-indent 2 & "if (obj is Dictionary<string,dynamic> d && d.ContainsKey(field)) return d[field];\n"
+   & maui-indent 2 & "return \"\";\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic url_encode(dynamic s) { return Uri.EscapeDataString(s); }\n"
+   & maui-indent 1 & "static dynamic download_text(dynamic name, dynamic content) { return 0; }\n"
+   & maui-indent 1 & "static dynamic random_int(dynamic lo, dynamic hi) { return Random.Shared.NextInt64(lo, hi + 1); }\n"
+   & maui-indent 1 & "static dynamic set_timeout(dynamic fn, dynamic ms) {\n"
+   & maui-indent 2 & "Task.Run(async () => {\n"
+   & maui-indent 3 & "await Task.Delay((int)ms);\n"
+   & maui-indent 3 & "MainThread.BeginInvokeOnMainThread(() => ((Func<dynamic,dynamic>)fn)(0L));\n"
+   & maui-indent 2 & "});\n"
+   & maui-indent 2 & "return 0;\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic local_storage_get(dynamic k) {\n"
+   & maui-indent 2 & "return Preferences.Default.Get(k, \"\");\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic local_storage_set(dynamic k, dynamic v) {\n"
+   & maui-indent 2 & "Preferences.Default.Set(k, v); return 0;\n"
+   & maui-indent 1 & "}\n"
+   & maui-indent 1 & "static dynamic generate_image(dynamic _) { return 0; }\n"
+   & maui-indent 1 & "static dynamic check_sd_status(dynamic _) { return 0; }\n"
+   & maui-indent 1 & "static dynamic theme_to_css(dynamic _) { return \"\"; }\n"
+   & maui-indent 1 & "static dynamic inject_theme_css(dynamic _) { return 0; }\n"
+   & maui-indent 1 & "static dynamic save_theme(dynamic _) { return 0; }\n"
+   & maui-indent 1 & "static dynamic load_theme(dynamic _) { return 0L; }\n"
+   & maui-indent 1 & "static dynamic save_layout(dynamic _) { return 0; }\n"
+   & maui-indent 1 & "static dynamic load_layout(dynamic _) { return 0L; }\n"
+   & maui-indent 1 & "static dynamic css_animate_spin(dynamic _) { return 0; }\n"
+   & maui-indent 1 & "static dynamic css_animate_pulse(dynamic _) { return 0; }\n"
+   & maui-indent 1 & "static dynamic css_animate_bounce(dynamic _) { return 0; }\n"
+   & maui-indent 1 & "static dynamic css_transition(dynamic _) { return 0; }\n\n"
+
 Section: MAUI Assembly
 
   emit-maui-chapter : IRChapter, List ATypeDef -> Text
   emit-maui-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let title = if m.chapter-title == "" then "CodexApp" else maui-sanitize (m.chapter-title)
-   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing Microsoft.Maui;\nusing Microsoft.Maui.Controls;\n\nnamespace " & title & ";\n\npublic partial class MainPage : ContentPage\n{\n"
-   in let builtins = maui-indent 1 & "static readonly List<string> _output = new();\n" & maui-indent 1 & "static void print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); }\n" & maui-indent 1 & "static void print_line(dynamic s) { print_line_uni(s); }\n" & maui-indent 1 & "static string show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & maui-indent 1 & "static long text_length(string s) { return s.Length; }\n" & maui-indent 1 & "static string text_replace(string s, string a, string b) { return s.Replace(a, b); }\n" & maui-indent 1 & "static long text_compare(string a, string b) { return string.Compare(a, b, StringComparison.Ordinal); }\n" & maui-indent 1 & "static long list_length(dynamic xs) { return ((List<dynamic>)xs).Count; }\n" & maui-indent 1 & "static dynamic list_at(dynamic xs, long i) { return ((List<dynamic>)xs)[(int)i]; }\n" & maui-indent 1 & "static List<dynamic> list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static string integer_to_text(long n) { return n.ToString(); }\n" & maui-indent 1 & "static long negate(long n) { return -n; }\n\n"
+   in let title = "CodexApp"
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Net.Http;\nusing System.Runtime.CompilerServices;\nusing System.Text.Json;\nusing Microsoft.Maui;\nusing Microsoft.Maui.Controls;\nusing Microsoft.Maui.Controls.Shapes;\nusing Microsoft.Maui.Layouts;\n\nnamespace " & title & ";\n\npublic partial class MainPage : ContentPage\n{\n"
+   in let page-ref = maui-indent 1 & "static MainPage _page;\n\n"
+   in let builtins = maui-indent 1 & "static readonly List<string> _output = new();\n" & maui-indent 1 & "static dynamic print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); return 0L; }\n" & maui-indent 1 & "static dynamic print_line(dynamic s) { return print_line_uni(s); }\n" & maui-indent 1 & "static dynamic show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & maui-indent 1 & "static dynamic text_length(dynamic s) { return (long)((string)s).Length; }\n" & maui-indent 1 & "static dynamic text_replace(dynamic s, dynamic a, dynamic b) { return ((string)s).Replace((string)a, (string)b); }\n" & maui-indent 1 & "static dynamic text_compare(dynamic a, dynamic b) { return (long)string.Compare((string)a, (string)b, StringComparison.Ordinal); }\n" & maui-indent 1 & "static dynamic list_length(dynamic xs) { return (long)((List<dynamic>)xs).Count; }\n" & maui-indent 1 & "static dynamic list_at(dynamic xs, dynamic i) { return ((List<dynamic>)xs)[(int)(long)i]; }\n" & maui-indent 1 & "static dynamic list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static dynamic list_insert_at(dynamic xs, dynamic i, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Insert((int)(long)i, x); return r; }\n" & maui-indent 1 & "static dynamic integer_to_text(dynamic n) { return n.ToString(); }\n" & maui-indent 1 & "static dynamic negate(dynamic n) { return -(long)n; }\n" & maui-indent 1 & "static dynamic text_starts_with(dynamic s, dynamic prefix) { return ((string)s).StartsWith((string)prefix); }\n" & maui-indent 1 & "static dynamic text_substring(dynamic s, dynamic start, dynamic len) { return ((string)s).Substring((int)(long)start, (int)(long)len); }\n\n"
+   in let runtime = emit-maui-color-runtime & emit-maui-state-runtime & emit-maui-reactive-runtime & emit-maui-widget-runtime & emit-maui-dialog-runtime & emit-maui-net-runtime
    in let types-text = emit-maui-type-defs type-defs 0
    in let defs-text = emit-maui-defs (m.defs) 0 arities
-   in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) { _output.Add(\"ERROR: \" + ex.Message); }\n" & maui-indent 2 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 2 & "foreach (var line in _output)\n" & maui-indent 3 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Consolas\" });\n" & maui-indent 2 & "Content = new ScrollView { Content = stack };\n" & maui-indent 1 & "}\n"
+   in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "_page = this;\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) {\n" & maui-indent 3 & "_output.Add(\"ERROR: \" + ex.GetType().Name + \": \" + ex.Message);\n" & maui-indent 3 & "if (ex.InnerException != null) _output.Add(\"INNER: \" + ex.InnerException.Message);\n" & maui-indent 3 & "_output.Add(ex.StackTrace ?? \"\");\n" & maui-indent 2 & "}\n" & maui-indent 2 & "if (Content == null) {\n" & maui-indent 3 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 3 & "if (_output.Count == 0) _output.Add(\"(no output -- opening() did not set Content)\");\n" & maui-indent 3 & "foreach (var line in _output)\n" & maui-indent 4 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Consolas\", TextColor = Colors.Red, FontSize = 12 });\n" & maui-indent 3 & "Content = new ScrollView { Content = stack };\n" & maui-indent 2 & "}\n" & maui-indent 1 & "}\n"
    in let footer = "}\n"
-   in header & builtins & types-text & defs-text & constructor & footer
+   in header & page-ref & builtins & runtime & types-text & defs-text & constructor & footer

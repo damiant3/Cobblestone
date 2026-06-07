@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CodexMagic - Collection</title>
-  <link rel="stylesheet" href="/web/magic/magic.css">
+  <link rel="stylesheet" href="/magic.css">
   <style>
-    .page { display: flex; gap: 16px; padding: 16px 24px; height: calc(100vh - 50px); }
+    .page.collection-layout { display: flex; gap: 16px; padding: 16px 24px; height: calc(100vh - 50px); max-width: none; }
     .collection-panel { flex: 2; overflow-y: auto; }
     .deck-panel { flex: 1; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-y: auto; }
     .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
@@ -24,29 +24,13 @@
     .curve-bar { background: var(--blue); min-width: 20px; border-radius: 2px 2px 0 0; text-align: center; font-size: 9px; color: var(--text-dim); }
     .curve-label { font-size: 9px; text-align: center; color: var(--text-dim); margin-top: 2px; }
     .collection-stats { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
-    .acct-name { font-weight: bold; margin-right: 12px; }
-    .acct-rank { color: var(--blue); margin-right: 12px; }
-    .acct-balance { color: var(--gold); }
-    #account-bar { font-size: 13px; padding: 4px 0; }
-    .btn { background: var(--border); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-    .btn:hover { background: #3d444d; }
   </style>
 </head>
 <body>
-<div class="topbar">
-  <h1>CodexMagic</h1>
-  <div class="nav">
-    <a href="/web/magic/game.html">Game</a>
-    <a href="/web/magic/collection.html" class="active">Collection</a>
-    <a href="/web/magic/store.html">Store</a>
-    <a href="/web/magic/queue.html">Queue</a>
-    <a href="/web/magic/profile.html">Profile</a>
-  </div>
-</div>
+<div id="cx-header"></div>
 
-<div class="page">
+<div class="page collection-layout">
   <div class="collection-panel">
-    <div id="account-bar">Loading...</div>
     <div class="filter-bar">
       <select id="filter-color" onchange="filterCards()">
         <option value="">All Colors</option>
@@ -64,6 +48,11 @@
         <option value="">All Rarities</option>
         <option value="Common">Common</option><option value="Uncommon">Uncommon</option>
         <option value="Rare">Rare</option><option value="Mythic">Mythic</option>
+      </select>
+      <select id="filter-owned" onchange="filterCards()">
+        <option value="">All Cards</option>
+        <option value="owned">Owned Only</option>
+        <option value="missing">Missing</option>
       </select>
       <input type="text" id="search" placeholder="Search..." oninput="filterCards()">
     </div>
@@ -92,21 +81,22 @@
   </div>
 </div>
 
-<script src="/web/magic/card-render.js"></script>
-<script src="/web/magic/magic.js"></script>
+<script src="/card-render.js"></script>
+<script src="/magic.js"></script>
 <script>
 var pool = [];
 var deck = [];
 var generals = [];
+var ownedCounts = {};
 
 async function init() {
   await ensureAccount();
-  var data = await apiCall('/pool');
+  var data = await authCall('/pool');
   if (data && data.cards) {
     pool = data.cards;
-    document.getElementById('collection-stats').textContent = pool.length + ' cards in pool';
-    renderPool(pool);
   }
+  await loadOwned();
+  renderPool(getFilteredPool());
   var gdata = await apiCall('/store/generals');
   if (gdata && gdata.generals) {
     generals = gdata.generals;
@@ -121,30 +111,50 @@ async function init() {
   }
 }
 
-function filterCards() {
+async function loadOwned() {
+  ownedCounts = {};
+  var data = await authCall('/collection?t=' + encodeURIComponent(authToken));
+  if (data && data.cards) {
+    var total = data.total || 0;
+    for (var c of data.cards) {
+      ownedCounts[c.cardId] = c.count;
+    }
+    var uniqueOwned = Object.keys(ownedCounts).length;
+    document.getElementById('collection-stats').textContent = total + ' cards owned (' + uniqueOwned + ' unique) | ' + pool.length + ' in pool';
+  } else {
+    document.getElementById('collection-stats').textContent = '0 cards owned | ' + pool.length + ' in pool';
+  }
+}
+
+function getFilteredPool() {
   var type = document.getElementById('filter-type').value;
   var rarity = document.getElementById('filter-rarity').value;
   var search = document.getElementById('search').value.toLowerCase();
   var color = document.getElementById('filter-color').value;
-  var filtered = pool.filter(function(c) {
+  var owned = document.getElementById('filter-owned').value;
+  return pool.filter(function(c) {
     if (type && c.type !== type) return false;
     if (rarity && c.rarity !== rarity) return false;
     if (search && c.name.toLowerCase().indexOf(search) === -1) return false;
+    if (owned === 'owned' && !ownedCounts[c.id]) return false;
+    if (owned === 'missing' && ownedCounts[c.id]) return false;
     if (color) {
-      if (!c.cost) return color === 'C';
-      if (color === 'W' && !c.cost.white) return false;
-      if (color === 'U' && !c.cost.blue) return false;
-      if (color === 'B' && !c.cost.black) return false;
-      if (color === 'R' && !c.cost.red) return false;
-      if (color === 'G' && !c.cost.green) return false;
+      if (!c.color) return color === 'C';
+      if (color === 'W' && !c.color.white) return false;
+      if (color === 'U' && !c.color.blue) return false;
+      if (color === 'B' && !c.color.black) return false;
+      if (color === 'R' && !c.color.red) return false;
+      if (color === 'G' && !c.color.green) return false;
       if (color === 'C') {
-        var total = (c.cost.white||0)+(c.cost.blue||0)+(c.cost.black||0)+(c.cost.red||0)+(c.cost.green||0);
-        if (total > 0) return false;
+        if (c.color.white || c.color.blue || c.color.black || c.color.red || c.color.green) return false;
       }
     }
     return true;
   });
-  renderPool(filtered);
+}
+
+function filterCards() {
+  renderPool(getFilteredPool());
 }
 
 function renderPool(cards) {
@@ -152,6 +162,17 @@ function renderPool(cards) {
   grid.innerHTML = '';
   for (var c of cards) {
     var el = renderCard(c, { size: 'normal', onClick: addToDeck });
+    el.addEventListener('contextmenu', (function(card) { return function(e) { e.preventDefault(); showCardDetail(card); }; })(c));
+    var count = ownedCounts[c.id] || 0;
+    if (count > 0) {
+      var badge = document.createElement('div');
+      badge.style.cssText = 'position:absolute;top:2px;left:2px;background:#3fb950;color:#000;font-size:10px;font-weight:bold;padding:1px 5px;border-radius:8px;z-index:1';
+      badge.textContent = 'x' + count;
+      el.style.position = 'relative';
+      el.appendChild(badge);
+    } else {
+      el.style.opacity = '0.45';
+    }
     grid.appendChild(el);
   }
   if (cards.length === 0) {

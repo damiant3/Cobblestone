@@ -1,0 +1,317 @@
+Chapter: MarketplaceApp
+  cites CodexMagic chapter MagicTheme
+
+ Marketplace for CodexMagic. Players browse listings, buy cards at
+ fixed price, bid on auctions, create their own sale/auction listings,
+ and view transaction history. All data via /api/market/* endpoints.
+
+ We say:
+
+Section: State Keys
+
+  k-tab : Text = "mkt-tab"
+  k-listings : Text = "mkt-listings"
+  k-my-cards : Text = "mkt-my-cards"
+  k-my-listings : Text = "mkt-my-list"
+  k-history : Text = "mkt-history"
+  k-balance : Text = "mkt-balance"
+  k-filter-type : Text = "mkt-ftype"
+  k-filter-rarity : Text = "mkt-frarity"
+  k-sort : Text = "mkt-sort"
+  k-search : Text = "mkt-search"
+  k-sell-type : Text = "mkt-sell-type"
+
+Section: Render
+
+  render-market : Integer -> Integer
+  render-market (x) =
+    let tab = state-get-text k-tab
+    in let active = if text-length tab == 0 then "browse" else tab
+    in let tree = market-page active
+    in mount-widget-themed magic-theme tree
+
+  market-page : Text -> WidgetNode
+  market-page (active) =
+    magic-page "Market" False [
+      widget-balance-bar "bal" (state-get-text k-balance & " MC"),
+      widget-tab-bar "tabs" [
+        widget-tab-btn "t-browse" "Browse" (active == "browse"),
+        widget-tab-btn "t-sell" "Sell / Auction" (active == "sell"),
+        widget-tab-btn "t-my" "My Listings" (active == "my"),
+        widget-tab-btn "t-hist" "History" (active == "history")
+      ],
+      render-mkt-tab active
+    ]
+
+  render-mkt-tab : Text -> WidgetNode
+  render-mkt-tab (tab) =
+    if tab == "browse" then render-browse 0
+    else if tab == "sell" then render-sell 0
+    else if tab == "my" then render-my-listings 0
+    else if tab == "history" then render-history 0
+    else widget-label "empty" "Unknown tab"
+
+Section: Browse Tab
+
+  render-browse : Integer -> WidgetNode
+  render-browse (x) =
+    widget-box "browse-tab" "" [
+      widget-stat-grid "mkt-stats" [
+        widget-stat-card "mkt-total" (state-get-text "mkt-total") "Active Listings",
+        widget-stat-card "mkt-sales" (state-get-text "mkt-sales") "For Sale",
+        widget-stat-card "mkt-aucs" (state-get-text "mkt-aucs") "Auctions",
+        widget-stat-card "mkt-vol" (state-get-text "mkt-vol") "Total Volume (MC)"
+      ],
+      widget-filter-bar "mkt-filters" [
+        widget-form-select "ft" "Type" [
+          widget-option "" "All Types",
+          widget-option "sale" "For Sale",
+          widget-option "auction" "Auctions"
+        ],
+        widget-form-select "fr" "Rarity" [
+          widget-option "" "All Rarities",
+          widget-option "Common" "Common",
+          widget-option "Uncommon" "Uncommon",
+          widget-option "Rare" "Rare",
+          widget-option "Mythic" "Mythic"
+        ],
+        widget-form-select "fs" "Sort" [
+          widget-option "newest" "Newest",
+          widget-option "price-low" "Price: Low to High",
+          widget-option "price-high" "Price: High to Low",
+          widget-option "ending" "Ending Soon"
+        ],
+        widget-form-field "fq" "Search" "Search cards..."
+      ],
+      widget-box "listings" "listing-grid" []
+    ]
+
+Section: Sell Tab
+
+  render-sell : Integer -> WidgetNode
+  render-sell (x) =
+    let sell-type = state-get-text k-sell-type
+    in let is-auction = sell-type == "auction"
+    in widget-box "sell-tab" "" [
+      widget-box "create-form" "section" [
+        widget-h2 "cr-hd" "Create Listing",
+        widget-msg "sell-msg",
+        widget-box "sell-row1" "adm-form" [
+          widget-form-select "stype" "Listing Type" [
+            widget-option "sale" "Fixed Price Sale",
+            widget-option "auction" "Auction"
+          ],
+          widget-form-select "scard" "Card" []
+        ],
+        widget-box "sell-row2" "adm-form" (
+          if is-auction then [
+            widget-form-field "smin" "Starting Bid (MC)" "50",
+            widget-form-field "sbuy" "Buyout Price (MC, 0=none)" "0",
+            widget-form-select "sdur" "Duration" [
+              widget-option "1" "1 hour",
+              widget-option "6" "6 hours",
+              widget-option "12" "12 hours",
+              widget-option "24" "24 hours",
+              widget-option "48" "48 hours",
+              widget-option "72" "72 hours"
+            ]
+          ]
+          else [
+            widget-form-field "sprice" "Price (MC)" "100"
+          ]
+        ),
+        widget-primary-button "list-btn" "List on Marketplace"
+      ],
+      widget-h2 "coll-hd" "Your Collection",
+      widget-box "coll-search" "filter-bar" [
+        widget-form-field "csearch" "Search" "Search your cards..."
+      ],
+      widget-box "my-cards" "listing-grid" []
+    ]
+
+Section: My Listings Tab
+
+  render-my-listings : Integer -> WidgetNode
+  render-my-listings (x) =
+    widget-box "my-tab" "" [
+      widget-h2 "my-hd" "Your Active Listings",
+      widget-box "my-list" "" []
+    ]
+
+Section: History Tab
+
+  render-history : Integer -> WidgetNode
+  render-history (x) =
+    widget-box "hist-tab" "" [
+      widget-h2 "hist-hd" "Transaction History",
+      widget-box "hist-list" "" []
+    ]
+
+Section: Tab Switch
+
+  on-mkt-tab : Text -> Integer
+  on-mkt-tab (id) =
+    let tab = if id == "t-browse" then "browse"
+              else if id == "t-sell" then "sell"
+              else if id == "t-my" then "my"
+              else if id == "t-hist" then "history"
+              else "browse"
+    in let s = state-set-text k-tab tab
+    in let load = load-mkt-data tab
+    in request-render 0
+
+  load-mkt-data : Text -> Integer
+  load-mkt-data (tab) =
+    if tab == "browse" then load-listings 0
+    else if tab == "sell" then load-my-cards 0
+    else if tab == "my" then fetch-get-then "/api/market/my-listings" (\ r -> let s = state-set-text-render k-my-listings r in 0)
+    else if tab == "history" then fetch-get-then "/api/market/history" (\ r -> let s = state-set-text-render k-history r in 0)
+    else 0
+
+Section: Data Loaders
+
+  load-listings : Integer -> Integer
+  load-listings (x) =
+    let ftype = state-get-text k-filter-type
+    in let frarity = state-get-text k-filter-rarity
+    in let sort = state-get-text k-sort
+    in let search = state-get-text k-search
+    in let qs = "?type=" & ftype & "&rarity=" & url-encode frarity & "&sort=" & sort & "&search=" & url-encode search
+    in fetch-get-then ("/api/market/listings" & qs) (\ r ->
+      let obj = json-parse-obj r
+      in let s1 = state-set-text "mkt-total" (json-obj-field obj "totalActive")
+      in let s2 = state-set-text "mkt-sales" (json-obj-field obj "totalSales")
+      in let s3 = state-set-text "mkt-aucs" (json-obj-field obj "totalAuctions")
+      in let s4 = state-set-text "mkt-vol" (json-obj-field obj "totalVolume")
+      in let s5 = state-set-text-render k-listings r
+      in 0)
+
+  load-my-cards : Integer -> Integer
+  load-my-cards (x) =
+    fetch-get-then "/api/market/my-cards" (\ r ->
+      let s = state-set-text-render k-my-cards r in 0)
+
+  load-balance : Integer -> Integer
+  load-balance (x) =
+    fetch-get-then "/api/market/balance" (\ r ->
+      let obj = json-parse-obj r
+      in let bal = json-obj-field obj "balance"
+      in let s = state-set-text-render k-balance bal
+      in 0)
+
+Section: Actions
+
+  do-buy : Text -> Integer
+  do-buy (listing-id) =
+    fetch-get-then ("/api/market/buy?id=" & listing-id) (\ r ->
+      let obj = json-parse-obj r
+      in let ok = json-obj-field obj "ok"
+      in if ok == "true"
+         then let b = load-balance 0 in load-listings 0
+         else let err = json-obj-field obj "error"
+              in show-mkt-alert err)
+
+  do-bid : Text, Text -> Integer
+  do-bid (listing-id) (amount) =
+    fetch-get-then ("/api/market/bid?id=" & listing-id & "&amount=" & amount) (\ r ->
+      let obj = json-parse-obj r
+      in let ok = json-obj-field obj "ok"
+      in if ok == "true"
+         then let b = load-balance 0 in load-listings 0
+         else let err = json-obj-field obj "error"
+              in show-mkt-alert err)
+
+  do-buyout : Text -> Integer
+  do-buyout (listing-id) =
+    fetch-get-then ("/api/market/buyout?id=" & listing-id) (\ r ->
+      let obj = json-parse-obj r
+      in let ok = json-obj-field obj "ok"
+      in if ok == "true"
+         then let b = load-balance 0 in load-listings 0
+         else show-mkt-alert (json-obj-field (json-parse-obj r) "error"))
+
+  do-cancel : Text -> Integer
+  do-cancel (listing-id) =
+    fetch-get-then ("/api/market/cancel?id=" & listing-id) (\ r ->
+      let obj = json-parse-obj r
+      in let ok = json-obj-field obj "ok"
+      in if ok == "true"
+         then let l = load-listings 0 in load-mkt-data "my"
+         else show-mkt-alert (json-obj-field (json-parse-obj r) "error"))
+
+  do-create-listing : Integer -> Integer
+  do-create-listing (x) =
+    let sell-type = dom-get-value (dom-get "stypes")
+    in let card = dom-get-value (dom-get "scards")
+    in let qs = "?type=" & sell-type & "&tokenId=" & card
+    in let qs2 = if sell-type == "auction"
+                 then qs & "&minBid=" & dom-get-value (dom-get "smini") & "&buyout=" & dom-get-value (dom-get "sbuyi") & "&duration=" & dom-get-value (dom-get "sdurs")
+                 else qs & "&price=" & dom-get-value (dom-get "spricei")
+    in fetch-get-then ("/api/market/create" & qs2) (\ r ->
+      let obj = json-parse-obj r
+      in let ok = json-obj-field obj "ok"
+      in if ok == "true"
+         then let m = show-msg "sell-msg" ("Listed! ID: " & json-obj-field obj "id") True
+              in let l = load-my-cards 0 in load-listings 0
+         else show-msg "sell-msg" (json-obj-field obj "error") False)
+
+  show-mkt-alert : Text -> Integer
+  show-mkt-alert (msg) = show-alert "Marketplace" msg (\ x -> 0)
+
+  show-msg : Text, Text, Boolean -> Integer
+  show-msg (id) (text) (is-ok) =
+    let el = dom-get id
+    in let e2 = dom-set-text el text
+    in let e3 = dom-add-class el (if is-ok then "msg msg-ok" else "msg msg-err")
+    in let e4 = dom-set-style el "display" "block"
+    in set-timeout (\ x -> let e5 = dom-set-style (dom-get id) "display" "none" in 0) 4000
+
+Section: Filter Handlers
+
+  on-filter-change : Text -> Integer
+  on-filter-change (id) =
+    let ftype = dom-get-value (dom-get "fts")
+    in let frarity = dom-get-value (dom-get "frs")
+    in let sort = dom-get-value (dom-get "fss")
+    in let search = dom-get-value (dom-get "fqi")
+    in let s1 = state-set-text k-filter-type ftype
+    in let s2 = state-set-text k-filter-rarity frarity
+    in let s3 = state-set-text k-sort sort
+    in let s4 = state-set-text k-search search
+    in load-listings 0
+
+  on-sell-type-change : Text -> Integer
+  on-sell-type-change (id) =
+    let v = dom-get-value (dom-get "stypes")
+    in let s = state-set-text-render k-sell-type v
+    in 0
+
+Section: Event Wiring
+
+  wire-events : Integer -> Integer
+  wire-events (x) =
+    let r = set-render render-market
+    in let b1 = dom-on-click (dom-get "t-browse") (\ id -> on-mkt-tab id)
+    in let b2 = dom-on-click (dom-get "t-sell") (\ id -> on-mkt-tab "t-sell")
+    in let b3 = dom-on-click (dom-get "t-my") (\ id -> on-mkt-tab "t-my")
+    in let b4 = dom-on-click (dom-get "t-hist") (\ id -> on-mkt-tab "t-hist")
+    in let b5 = dom-on-click (dom-get "list-btn") (\ id -> do-create-listing 0)
+    in let b6 = dom-on-input (dom-get "fts") (\ v -> on-filter-change v)
+    in let b7 = dom-on-input (dom-get "frs") (\ v -> on-filter-change v)
+    in let b8 = dom-on-input (dom-get "fss") (\ v -> on-filter-change v)
+    in let b9 = dom-on-input (dom-get "fqi") (\ v -> on-filter-change v)
+    in let b10 = dom-on-input (dom-get "stypes") (\ v -> on-sell-type-change v)
+    in 0
+
+Section: Entry Point
+
+  opening : Integer -> Integer
+  opening (x) =
+    let t = init-magic-theme 0
+    in let bal = load-balance 0
+    in let listings = load-listings 0
+    in let tree = market-page "browse"
+    in let m = mount-widget-themed magic-theme tree
+    in wire-events 0
+
+Page 1

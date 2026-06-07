@@ -1,5 +1,5 @@
-# server.ps1 — Codex web dashboard.
-# Usage: tools/web/server.ps1 [-Port 8080]
+# server.ps1 — Codex game catalog and dashboard server.
+# Usage: apps/games/server.ps1 [-Port 8080]
 [CmdletBinding()]
 param([int]$Port = 8080)
 
@@ -381,8 +381,9 @@ try {
             }
             elseif ($path -like '/games/*') {
                 $gameId = $path.Substring(7) -replace '[^a-z0-9]',''
-                $gamePage = Join-Path $WebDir "$gameId.html"
-                if (-not (Test-Path -PathType Leaf $gamePage)) { $gamePage = Join-Path $WebDir 'rungame.html' }
+                $classicWebDir = Join-Path $WebDir 'classic\web'
+                $gamePage = Join-Path $classicWebDir "$gameId.html"
+                if (-not (Test-Path -PathType Leaf $gamePage)) { $gamePage = Join-Path $classicWebDir 'rungame.html' }
                 if (Test-Path -PathType Leaf $gamePage) {
                     $gameHtml = [System.IO.File]::ReadAllText($gamePage)
                     $cssModified = if (Test-Path (Join-Path $WebDir 'style.css')) { (Get-Item (Join-Path $WebDir 'style.css')).LastWriteTime.Ticks } else { 0 }
