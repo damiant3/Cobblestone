@@ -1,0 +1,251 @@
+Chapter: DriveManager
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Volume and disk management. Enumerates physical drives, partitions,
+ and mount points. Shows capacity, health, filesystem type. Supports
+ mount/unmount and format operations. Designed to work with both
+ virtual disks (IDE in codex-vm) and real hardware (NVMe, SATA, USB
+ mass storage) — same model, different drivers underneath.
+
+Section: Disk Types
+
+  DiskBus =
+    | BusIde
+    | BusSata
+    | BusNvme
+    | BusUsb
+    | BusVirtio
+    | BusScsi
+
+  disk-bus-label : DiskBus -> Text
+  disk-bus-label (b) = when b
+    is BusIde -> "IDE"
+    is BusSata -> "SATA"
+    is BusNvme -> "NVMe"
+    is BusUsb -> "USB"
+    is BusVirtio -> "VirtIO"
+    is BusScsi -> "SCSI"
+
+  FsType =
+    | FsFat32
+    | FsExt4
+    | FsNtfs
+    | FsCdxFs
+    | FsRaw
+    | FsUnknown
+
+  fs-type-label : FsType -> Text
+  fs-type-label (f) = when f
+    is FsFat32 -> "FAT32"
+    is FsExt4 -> "ext4"
+    is FsNtfs -> "NTFS"
+    is FsCdxFs -> "CdxFS"
+    is FsRaw -> "raw"
+    is FsUnknown -> "unknown"
+
+  DiskHealth =
+    | HealthGood
+    | HealthWarning (Text)
+    | HealthFailing (Text)
+    | HealthUnknown
+
+  disk-health-label : DiskHealth -> Text
+  disk-health-label (h) = when h
+    is HealthGood -> "good"
+    is HealthWarning (msg) -> "warning: " & msg
+    is HealthFailing (msg) -> "failing: " & msg
+    is HealthUnknown -> "unknown"
+
+Section: Physical Disk
+
+  PhysicalDisk = record {
+    pd-id : Text,
+    pd-model : Text,
+    pd-serial : Text,
+    pd-bus : DiskBus,
+    pd-capacity : ByteSize,
+    pd-sector-size : Integer,
+    pd-health : DiskHealth,
+    pd-temperature : Integer,
+    pd-partition-count : Integer,
+    pd-removable : Boolean,
+    pd-status : ResourceStatus
+  }
+
+  physical-disk-new : Text, Text, DiskBus, Integer -> PhysicalDisk
+  physical-disk-new (id) (model) (bus) (capacity-bytes) = PhysicalDisk {
+    pd-id = id,
+    pd-model = model,
+    pd-serial = "",
+    pd-bus = bus,
+    pd-capacity = bytes capacity-bytes,
+    pd-sector-size = 512,
+    pd-health = HealthUnknown,
+    pd-temperature = 0,
+    pd-partition-count = 0,
+    pd-removable = False,
+    pd-status = StatusOnline
+  }
+
+Section: Partition
+
+  Partition = record {
+    pt-id : Text,
+    pt-disk-id : Text,
+    pt-index : Integer,
+    pt-label : Text,
+    pt-fs-type : FsType,
+    pt-capacity : ByteSize,
+    pt-used : ByteSize,
+    pt-mount-point : Text,
+    pt-mounted : Boolean,
+    pt-bootable : Boolean
+  }
+
+  partition-new : Text, Text, Integer, FsType, Integer -> Partition
+  partition-new (id) (disk-id) (index) (fs) (capacity-bytes) = Partition {
+    pt-id = id,
+    pt-disk-id = disk-id,
+    pt-index = index,
+    pt-label = "",
+    pt-fs-type = fs,
+    pt-capacity = bytes capacity-bytes,
+    pt-used = bytes 0,
+    pt-mount-point = "",
+    pt-mounted = False,
+    pt-bootable = False
+  }
+
+  partition-usage-percent : Partition -> Integer
+  partition-usage-percent (p) = byte-size-percent (p.pt-used) (p.pt-capacity)
+
+Section: Drive Manager State
+
+  DriveManagerState = record {
+    dm-disks : List PhysicalDisk,
+    dm-disk-count : Integer,
+    dm-partitions : List Partition,
+    dm-partition-count : Integer,
+    dm-selected-disk : Text,
+    dm-selected-partition : Text
+  }
+
+  drive-manager-new : DriveManagerState
+  drive-manager-new = DriveManagerState {
+    dm-disks = [],
+    dm-disk-count = 0,
+    dm-partitions = [],
+    dm-partition-count = 0,
+    dm-selected-disk = "",
+    dm-selected-partition = ""
+  }
+
+Section: Actions
+
+  dm-add-disk : DriveManagerState, PhysicalDisk -> DriveManagerState
+  dm-add-disk (st) (disk) =
+    __record-set (__record-set st "dm-disks" (list-push (st.dm-disks) disk)) "dm-disk-count" (st.dm-disk-count + 1)
+
+  dm-add-partition : DriveManagerState, Partition -> DriveManagerState
+  dm-add-partition (st) (part) =
+    __record-set (__record-set st "dm-partitions" (list-push (st.dm-partitions) part)) "dm-partition-count" (st.dm-partition-count + 1)
+
+  dm-select-disk : DriveManagerState, Text -> DriveManagerState
+  dm-select-disk (st) (id) = __record-set st "dm-selected-disk" id
+
+  dm-select-partition : DriveManagerState, Text -> DriveManagerState
+  dm-select-partition (st) (id) = __record-set st "dm-selected-partition" id
+
+  dm-find-disk : DriveManagerState, Text -> Maybe PhysicalDisk
+  dm-find-disk (st) (id) = dm-find-disk-loop (st.dm-disks) id 0 (st.dm-disk-count)
+
+  dm-find-disk-loop : List PhysicalDisk, Text, Integer, Integer -> Maybe PhysicalDisk
+  dm-find-disk-loop (disks) (id) (i) (n) =
+    if i >= n then None
+    else let d = list-at disks i
+    in if d.pd-id == id then Just d
+    else dm-find-disk-loop disks id (i + 1) n
+
+  dm-partitions-for-disk : DriveManagerState, Text -> List Partition
+  dm-partitions-for-disk (st) (disk-id) =
+    dm-parts-filter (st.dm-partitions) disk-id 0 (st.dm-partition-count) []
+
+  dm-parts-filter : List Partition, Text, Integer, Integer, List Partition -> List Partition
+  dm-parts-filter (parts) (disk-id) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in if p.pt-disk-id == disk-id then dm-parts-filter parts disk-id (i + 1) n (list-push acc p)
+    else dm-parts-filter parts disk-id (i + 1) n acc
+
+Section: Widget Building
+
+  dm-disk-row : PhysicalDisk -> WidgetNode
+  dm-disk-row (d) =
+    let bus = widget-label (d.pd-id & "-bus") (disk-bus-label (d.pd-bus))
+    in let model = widget-label (d.pd-id & "-model") (d.pd-model)
+    in let cap = widget-label (d.pd-id & "-cap") (format-bytes (d.pd-capacity))
+    in let health-label = widget-label (d.pd-id & "-health") (disk-health-label (d.pd-health))
+    in let parts = widget-label (d.pd-id & "-parts") (show (d.pd-partition-count) & " partitions")
+    in widget-panel d.pd-id DirRow 12 [bus, model, cap, health-label, parts]
+
+  dm-partition-row : Partition -> WidgetNode
+  dm-partition-row (p) =
+    let idx-label = widget-label (p.pt-id & "-idx") ("#" & show (p.pt-index))
+    in let fs = widget-label (p.pt-id & "-fs") (fs-type-label (p.pt-fs-type))
+    in let cap = widget-label (p.pt-id & "-cap") (format-bytes (p.pt-capacity))
+    in let usage = widget-gauge (p.pt-id & "-usage") (partition-usage-percent p) 100
+    in let mount = widget-label (p.pt-id & "-mount") (if p.pt-mounted then p.pt-mount-point else "not mounted")
+    in let mount-btn = widget-button (p.pt-id & "-mount-btn") (if p.pt-mounted then "Unmount" else "Mount")
+    in widget-panel p.pt-id DirRow 8 [idx-label, fs, cap, usage, mount, mount-btn]
+
+  dm-disk-detail : DriveManagerState, PhysicalDisk -> WidgetNode
+  dm-disk-detail (st) (d) =
+    let header = dm-disk-row d
+    in let parts = dm-partitions-for-disk st (d.pd-id)
+    in let part-rows = dm-part-rows parts 0 (list-length parts) []
+    in let sep = widget-separator "disk-sep"
+    in widget-panel ("detail-" & d.pd-id) DirColumn 4 ([header, sep] & part-rows)
+
+  dm-part-rows : List Partition, Integer, Integer, List WidgetNode -> List WidgetNode
+  dm-part-rows (parts) (i) (n) (acc) =
+    if i >= n then acc
+    else dm-part-rows parts (i + 1) n (list-push acc (dm-partition-row (list-at parts i)))
+
+  dm-widget : DriveManagerState -> WidgetNode
+  dm-widget (st) =
+    let title = widget-label "dm-title" "Drive Manager"
+    in let disk-rows = dm-disk-list-widget (st.dm-disks) 0 (st.dm-disk-count) []
+    in let summary = widget-label "dm-summary" (show (st.dm-disk-count) & " drives, " & show (st.dm-partition-count) & " partitions")
+    in widget-panel "drive-manager" DirColumn 8 ([title] & disk-rows & [summary])
+
+  dm-disk-list-widget : List PhysicalDisk, Integer, Integer, List WidgetNode -> List WidgetNode
+  dm-disk-list-widget (disks) (i) (n) (acc) =
+    if i >= n then acc
+    else dm-disk-list-widget disks (i + 1) n (list-push acc (dm-disk-row (list-at disks i)))
+
+Section: JSON
+
+  physical-disk-to-json : PhysicalDisk -> Text
+  physical-disk-to-json (d) =
+    "{\"id\":\"" & d.pd-id & "\",\"model\":\"" & d.pd-model
+    & "\",\"bus\":\"" & disk-bus-label (d.pd-bus)
+    & "\",\"capacity\":" & show (d.pd-capacity).bs-bytes
+    & ",\"health\":\"" & disk-health-label (d.pd-health)
+    & "\",\"removable\":" & if d.pd-removable then "true" else "false"
+    & ",\"partitions\":" & show (d.pd-partition-count) & "}"
+
+  partition-to-json : Partition -> Text
+  partition-to-json (p) =
+    "{\"id\":\"" & p.pt-id & "\",\"diskId\":\"" & p.pt-disk-id
+    & "\",\"index\":" & show (p.pt-index)
+    & ",\"fs\":\"" & fs-type-label (p.pt-fs-type)
+    & "\",\"capacity\":" & show (p.pt-capacity).bs-bytes
+    & ",\"used\":" & show (p.pt-used).bs-bytes
+    & ",\"mountPoint\":\"" & p.pt-mount-point
+    & "\",\"mounted\":" & if p.pt-mounted then "true" else "false"
+    & "}"
+
+Page 1

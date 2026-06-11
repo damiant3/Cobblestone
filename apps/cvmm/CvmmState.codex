@@ -1,0 +1,284 @@
+Chapter: CvmmState
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter Command
+  cites Cvmm chapter Keybindings
+  cites Foreword chapter Maybe
+
+ Global application state for the CVMM shell. Tracks which view is
+ active, the notification queue, system-wide summary stats, and the
+ navigation history. Every manager reads its slice; the shell owns
+ the top-level state and dispatches actions.
+
+Section: Navigation
+
+  ViewId =
+    | ViewDashboard
+    | ViewFileExplorer
+    | ViewDriveManager
+    | ViewUsbManager
+    | ViewProcessManager
+    | ViewServiceManager
+    | ViewPortMonitor
+    | ViewNetworkManager
+    | ViewDisplayManager
+    | ViewServerManager
+    | ViewFleetManager
+    | ViewDeployManager
+    | ViewLogViewer
+    | ViewTerminal
+    | ViewMonitor
+    | ViewMesh
+    | ViewSettings
+
+  view-id-label : ViewId -> Text
+  view-id-label (v) = when v
+    is ViewDashboard -> "Dashboard"
+    is ViewFileExplorer -> "Files"
+    is ViewDriveManager -> "Drives"
+    is ViewUsbManager -> "USB"
+    is ViewProcessManager -> "Processes"
+    is ViewServiceManager -> "Services"
+    is ViewPortMonitor -> "Ports"
+    is ViewNetworkManager -> "Network"
+    is ViewDisplayManager -> "Display"
+    is ViewServerManager -> "Servers"
+    is ViewFleetManager -> "Fleet"
+    is ViewDeployManager -> "Deploy"
+    is ViewLogViewer -> "Logs"
+    is ViewTerminal -> "Terminal"
+    is ViewMonitor -> "Monitor"
+    is ViewMesh -> "Mesh"
+    is ViewSettings -> "Settings"
+
+  view-id-icon : ViewId -> Text
+  view-id-icon (v) = when v
+    is ViewDashboard -> "dashboard"
+    is ViewFileExplorer -> "folder"
+    is ViewDriveManager -> "drive"
+    is ViewUsbManager -> "usb"
+    is ViewProcessManager -> "cpu"
+    is ViewServiceManager -> "service"
+    is ViewPortMonitor -> "port"
+    is ViewNetworkManager -> "network"
+    is ViewDisplayManager -> "display"
+    is ViewServerManager -> "server"
+    is ViewFleetManager -> "fleet"
+    is ViewDeployManager -> "deploy"
+    is ViewLogViewer -> "log"
+    is ViewTerminal -> "terminal"
+    is ViewMonitor -> "monitor"
+    is ViewMesh -> "mesh"
+    is ViewSettings -> "settings"
+
+  NavEntry = record {
+    nav-view : ViewId,
+    nav-context : Text
+  }
+
+Section: System Summary
+
+  SystemSummary = record {
+    sys-hostname : Text,
+    sys-device : DeviceId,
+    sys-status : ResourceStatus,
+    sys-uptime : Uptime,
+    sys-cpu-percent : Integer,
+    sys-mem-used : ByteSize,
+    sys-mem-total : ByteSize,
+    sys-disk-used : ByteSize,
+    sys-disk-total : ByteSize,
+    sys-process-count : Integer,
+    sys-service-count : Integer,
+    sys-port-count : Integer,
+    sys-nic-count : Integer,
+    sys-fleet-count : Integer,
+    sys-mesh-total : Integer,
+    sys-mesh-alive : Integer,
+    sys-healthy-checks : Integer,
+    sys-total-checks : Integer
+  }
+
+  system-summary-new : SystemSummary
+  system-summary-new = SystemSummary {
+    sys-hostname = "codex-vm",
+    sys-device = DeviceId { dev-uuid = "local", dev-name = "codex-vm", dev-kind = DevVirtualMachine },
+    sys-status = StatusOnline,
+    sys-uptime = Uptime { ut-seconds = 0 },
+    sys-cpu-percent = 0,
+    sys-mem-used = bytes 0,
+    sys-mem-total = megabytes 2048,
+    sys-disk-used = bytes 0,
+    sys-disk-total = megabytes 512,
+    sys-process-count = 0,
+    sys-service-count = 0,
+    sys-port-count = 0,
+    sys-nic-count = 1,
+    sys-fleet-count = 0,
+    sys-mesh-total = 0,
+    sys-mesh-alive = 0,
+    sys-healthy-checks = 0,
+    sys-total-checks = 0
+  }
+
+Section: Application State
+
+  AppState = record {
+    app-view : ViewId,
+    app-nav-history : List NavEntry,
+    app-nav-depth : Integer,
+    app-summary : SystemSummary,
+    app-notifications : List Notification,
+    app-notif-count : Integer,
+    app-next-notif-id : Integer,
+    app-sidebar-open : Boolean,
+    app-theme-name : Text,
+    app-cmd-history : CommandHistory,
+    app-shortcuts : ShortcutRegistry
+  }
+
+  app-state-new : AppState
+  app-state-new = AppState {
+    app-view = ViewDashboard,
+    app-nav-history = [],
+    app-nav-depth = 0,
+    app-summary = system-summary-new,
+    app-notifications = [],
+    app-notif-count = 0,
+    app-next-notif-id = 1,
+    app-sidebar-open = True,
+    app-theme-name = "dark",
+    app-cmd-history = cmd-history-new 100,
+    app-shortcuts = default-shortcuts
+  }
+
+Section: Navigation Actions
+
+  app-navigate : AppState, ViewId -> AppState
+  app-navigate (st) (view) =
+    let entry = NavEntry { nav-view = st.app-view, nav-context = "" }
+    in AppState {
+      app-view = view,
+      app-nav-history = list-push (st.app-nav-history) entry,
+      app-nav-depth = st.app-nav-depth + 1,
+      app-summary = st.app-summary,
+      app-notifications = st.app-notifications,
+      app-notif-count = st.app-notif-count,
+      app-next-notif-id = st.app-next-notif-id,
+      app-sidebar-open = st.app-sidebar-open,
+      app-theme-name = st.app-theme-name
+    }
+
+  app-go-back : AppState -> AppState
+  app-go-back (st) =
+    if st.app-nav-depth == 0 then st
+    else let prev = list-at (st.app-nav-history) (st.app-nav-depth - 1)
+    in AppState {
+      app-view = prev.nav-view,
+      app-nav-history = st.app-nav-history,
+      app-nav-depth = st.app-nav-depth - 1,
+      app-summary = st.app-summary,
+      app-notifications = st.app-notifications,
+      app-notif-count = st.app-notif-count,
+      app-next-notif-id = st.app-next-notif-id,
+      app-sidebar-open = st.app-sidebar-open,
+      app-theme-name = st.app-theme-name
+    }
+
+Section: Notification Actions
+
+  app-notify : AppState, NotifLevel, Text, Text -> AppState
+  app-notify (st) (level) (title) (body) =
+    let n = Notification {
+      notif-id = st.app-next-notif-id,
+      notif-level = level,
+      notif-title = title,
+      notif-body = body,
+      notif-time = 0,
+      notif-read = False
+    }
+    in AppState {
+      app-view = st.app-view,
+      app-nav-history = st.app-nav-history,
+      app-nav-depth = st.app-nav-depth,
+      app-summary = st.app-summary,
+      app-notifications = list-push (st.app-notifications) n,
+      app-notif-count = st.app-notif-count + 1,
+      app-next-notif-id = st.app-next-notif-id + 1,
+      app-sidebar-open = st.app-sidebar-open,
+      app-theme-name = st.app-theme-name
+    }
+
+  app-dismiss-notif : AppState, Integer -> AppState
+  app-dismiss-notif (st) (id) =
+    let filtered = notif-filter (st.app-notifications) id 0 (st.app-notif-count) []
+    in __record-set (__record-set st "app-notifications" filtered) "app-notif-count" (list-length filtered)
+
+  notif-filter : List Notification, Integer, Integer, Integer, List Notification -> List Notification
+  notif-filter (ns) (id) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = list-at ns i
+    in if n.notif-id == id then notif-filter ns id (i + 1) len acc
+    else notif-filter ns id (i + 1) len (list-push acc n)
+
+Section: Command Execution
+
+  app-execute : AppState, CommandKind, Integer -> AppState
+  app-execute (st) (cmd) (ts) =
+    let st2 = __record-set st "app-cmd-history" (ch-push (st.app-cmd-history) cmd ts)
+    in app-apply-command st2 cmd
+
+  app-apply-command : AppState, CommandKind -> AppState
+  app-apply-command (st) (cmd) = when cmd
+    is CmdNavigate (view) -> app-navigate-by-name st view
+    is CmdCustom ("undo") (detail) -> app-undo st
+    is CmdCustom ("redo") (detail) -> app-redo st
+    is CmdCustom ("toggle-sidebar") (detail) -> app-toggle-sidebar st
+    is CmdCustom ("refresh") (detail) -> st
+    is otherwise -> st
+
+  app-navigate-by-name : AppState, Text -> AppState
+  app-navigate-by-name (st) (name) =
+    if name == "Dashboard" then app-navigate st ViewDashboard
+    else if name == "Files" then app-navigate st ViewFileExplorer
+    else if name == "Drives" then app-navigate st ViewDriveManager
+    else if name == "USB" then app-navigate st ViewUsbManager
+    else if name == "Processes" then app-navigate st ViewProcessManager
+    else if name == "Services" then app-navigate st ViewServiceManager
+    else if name == "Ports" then app-navigate st ViewPortMonitor
+    else if name == "Network" then app-navigate st ViewNetworkManager
+    else if name == "Monitor" then app-navigate st ViewMonitor
+    else if name == "Logs" then app-navigate st ViewLogViewer
+    else if name == "Terminal" then app-navigate st ViewTerminal
+    else if name == "Settings" then app-navigate st ViewSettings
+    else st
+
+  app-undo : AppState -> AppState
+  app-undo (st) =
+    if ch-can-undo (st.app-cmd-history) then
+      let hist = ch-undo (st.app-cmd-history)
+      in __record-set st "app-cmd-history" hist
+    else st
+
+  app-redo : AppState -> AppState
+  app-redo (st) =
+    if ch-can-redo (st.app-cmd-history) then
+      let hist = ch-redo (st.app-cmd-history)
+      in __record-set st "app-cmd-history" hist
+    else st
+
+Section: Keyboard Dispatch
+
+  app-handle-key : AppState, KeyChord, Integer -> AppState
+  app-handle-key (st) (chord) (ts) =
+    let active-view = view-id-label (st.app-view)
+    in when sr-match (st.app-shortcuts) chord active-view
+      is Just (sc) -> app-execute st (sc.sc-command) ts
+      is None -> st
+
+Section: Sidebar Toggle
+
+  app-toggle-sidebar : AppState -> AppState
+  app-toggle-sidebar (st) =
+    __record-set st "app-sidebar-open" (if st.app-sidebar-open then False else True)
+
+Page 1

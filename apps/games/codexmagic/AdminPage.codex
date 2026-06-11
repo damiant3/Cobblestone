@@ -1,0 +1,180 @@
+Chapter: AdminPage
+  cites CodexMagic chapter MagicTheme
+  cites UI chapter Layout
+
+ Admin panel. Pure widget tree.
+
+ We say:
+
+Section: State
+
+  sk-a-tab : Text = "a-tab"
+  sk-a-msg : Text = "a-msg"
+  sk-a-supply : Text = "a-supply"
+  sk-a-minted : Text = "a-minted"
+  sk-a-burned : Text = "a-burned"
+  sk-a-circ : Text = "a-circ"
+  sk-a-accounts : Text = "a-accounts"
+  sk-a-user-count : Text = "a-user-count"
+  sk-a-is-admin : Text = "a-is-admin"
+
+Section: Tree
+
+  admin-tree : Integer -> WidgetNode
+  admin-tree (x) =
+    let is-admin = state-get sk-a-is-admin
+    in let content = if is-admin == 0 then widget-label "a-denied" "Admin access required" else admin-content 0
+    in widget-panel "a-page" DirColumn 0 [magic-nav-widget "Admin", widget-box "a-wrap" "page" [content]]
+
+  admin-content : Integer -> WidgetNode
+  admin-content (x) =
+    let tab = state-get sk-a-tab
+    in let msg = state-get-text sk-a-msg
+    in widget-panel "a-root" DirColumn 12 [
+      widget-h1 "Admin Panel",
+      widget-tab-bar "a-tabs" [
+        widget-tab-btn "a-t-econ" "Economy" (tab == 0),
+        widget-tab-btn "a-t-users" "Users" (tab == 1)
+      ],
+      widget-separator "a-s1",
+      if tab == 0 then econ-tree 0 else users-tree 0,
+      widget-label "a-msg" msg
+    ]
+
+  econ-tree : Integer -> WidgetNode
+  econ-tree (x) =
+    let supply = state-get-text sk-a-supply
+    in let minted = state-get-text sk-a-minted
+    in let burned = state-get-text sk-a-burned
+    in let circ = state-get-text sk-a-circ
+    in let accounts = state-get-text sk-a-accounts
+    in widget-panel "a-econ" DirColumn 12 [
+      widget-stat-grid "a-stats" [
+        widget-stat-card "a-supply" supply "Supply",
+        widget-stat-card "a-minted" minted "Minted",
+        widget-stat-card "a-burned" burned "Burned",
+        widget-stat-card "a-circ" circ "Circulating",
+        widget-stat-card "a-accts" accounts "Accounts"
+      ],
+      widget-separator "a-s2",
+      widget-h2 "a-mint-hdr" "Mint",
+      widget-form-field "a-mint-amt" "Amount" "1000",
+      widget-primary-button "a-mint" "Mint",
+      widget-h2 "a-grant-hdr" "Grant to Player",
+      widget-form-field "a-grant-handle" "Handle" "",
+      widget-form-field "a-grant-amt" "Amount" "500",
+      widget-primary-button "a-grant" "Grant",
+      widget-h2 "a-burn-hdr" "Burn",
+      widget-form-field "a-burn-amt" "Amount" "100",
+      widget-primary-button "a-burn" "Burn"
+    ]
+
+  users-tree : Integer -> WidgetNode
+  users-tree (x) =
+    let count = state-get sk-a-user-count
+    in if count == 0 then widget-label "a-no-users" "No users"
+    else widget-panel "a-users" DirColumn 4 (user-items 0 count [])
+
+  user-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  user-items (i) (count) (acc) =
+    if i >= count then acc
+    else let handle = state-get-text ("au-handle-" & show i)
+    in let bal = state-get-text ("au-balance-" & show i)
+    in let item = widget-panel ("au-" & show i) DirRow 8 [
+      widget-label ("aun-" & show i) handle,
+      widget-label ("aub-" & show i) (bal & " MC")
+    ]
+    in user-items (i + 1) count (list-push acc item)
+
+Section: Handlers
+
+  a-click : Text -> Integer
+  a-click (id) =
+    if id == "a-t-econ" then let s = state-set-render sk-a-tab 0 in load-stats 0
+    else if id == "a-t-users" then let s = state-set-render sk-a-tab 1 in load-users 0
+    else if id == "a-mint" then do-mint 0
+    else if id == "a-grant" then do-grant 0
+    else if id == "a-burn" then do-burn 0
+    else 0
+
+  do-mint : Integer -> Integer
+  do-mint (x) =
+    let tok = state-get-text "cx_token"
+    in let amt = dom-get-value (dom-get "a-mint-amt")
+    in fetch-get-then ("/api/admin/mint?t=" & url-encode tok & "&amount=" & amt) admin-action-cb
+
+  do-grant : Integer -> Integer
+  do-grant (x) =
+    let tok = state-get-text "cx_token"
+    in let handle = dom-get-value (dom-get "a-grant-handle")
+    in let amt = dom-get-value (dom-get "a-grant-amt")
+    in fetch-get-then ("/api/admin/grant?t=" & url-encode tok & "&handle=" & url-encode handle & "&amount=" & amt) admin-action-cb
+
+  do-burn : Integer -> Integer
+  do-burn (x) =
+    let tok = state-get-text "cx_token"
+    in let amt = dom-get-value (dom-get "a-burn-amt")
+    in fetch-get-then ("/api/admin/burn?t=" & url-encode tok & "&amount=" & amt) admin-action-cb
+
+  admin-action-cb : Text -> Integer
+  admin-action-cb (resp) =
+    let s = state-set-text sk-a-msg "Done"
+    in load-stats 0
+
+  load-stats : Integer -> Integer
+  load-stats (x) =
+    let tok = state-get-text "cx_token"
+    in fetch-get-then ("/api/admin/stats?t=" & url-encode tok) stats-cb
+
+  stats-cb : Text -> Integer
+  stats-cb (resp) =
+    let obj = json-parse-obj resp
+    in let s1 = state-set-text sk-a-supply (json-obj-field obj "supply")
+    in let s2 = state-set-text sk-a-minted (json-obj-field obj "minted")
+    in let s3 = state-set-text sk-a-burned (json-obj-field obj "burned")
+    in let s4 = state-set-text sk-a-circ (json-obj-field obj "circulating")
+    in let s5 = state-set-text sk-a-accounts (json-obj-field obj "accounts")
+    in request-render 0
+
+  load-users : Integer -> Integer
+  load-users (x) =
+    let tok = state-get-text "cx_token"
+    in fetch-get-then ("/api/admin/users?t=" & url-encode tok) users-cb
+
+  users-cb : Text -> Integer
+  users-cb (resp) =
+    let s = state-set-text sk-a-msg "Users loaded"
+    in request-render 0
+
+  check-admin : Integer -> Integer
+  check-admin (x) =
+    let tok = state-get-text "cx_token"
+    in fetch-get-then ("/api/admin/check?t=" & url-encode tok) check-cb
+
+  check-cb : Text -> Integer
+  check-cb (resp) =
+    let obj = json-parse-obj resp
+    in let admin-str = json-obj-field obj "admin"
+    in let s = state-set sk-a-is-admin (if admin-str == "true" then 1 else 0)
+    in if admin-str == "true" then load-stats 0
+    else request-render 0
+
+Section: Entry
+
+  render-a : Integer -> Integer
+  render-a (x) = mount-widget-themed magic-theme (admin-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = init-magic-theme 0
+    in let tok = local-storage-get "cx_tok"
+    in let s1 = state-set-text "cx_token" tok
+    in let s2 = state-set sk-a-is-admin 0
+    in let s3 = state-set sk-a-tab 0
+    in let s4 = set-render render-a
+    in let h = register-handlers no-pick a-click
+    in let r = render-a 0
+    in check-admin 0
+  end
+
+Page 1

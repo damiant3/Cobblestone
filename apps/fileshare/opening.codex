@@ -1,0 +1,54 @@
+Chapter: Opening
+  cites FileShare chapter FileShareApp
+  cites FileShare chapter FileSharePersist
+  cites Foreword chapter Console
+  cites Foreword chapter Event
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppLog
+
+ Entry point for the Codex FileShare app with disk persistence.
+ Active transfers and manifests are loaded from DiskFacts on
+ startup and persisted when transfers change.
+
+Section: Entry Point
+
+  opening : [Console] Nothing
+  opening = act
+    let disk = disk-load
+    in let state = fileshare-app-init 1024 768
+    in let saved-transfers = fileshare-persist-load disk
+    in let restored = __record-set state
+          "fs-transfers" saved-transfers
+    in let disk2 = app-log-info disk "fileshare" ("FileShare started, " & show (list-length saved-transfers) & " transfers") 0
+    in print-line "Codex FileShare v0.1"
+    in print-line ("  Disk: " & show (disk-fact-count disk2) & " facts")
+    in print-line ("  Transfers: " & show (list-length saved-transfers))
+    in fileshare-run-persistent restored disk2
+  end
+
+Section: Persistent Event Loop
+
+  FileSharePersistState = record {
+    fps-app : FileShareState,
+    fps-disk : DiskFactStore
+  }
+
+  fileshare-run-persistent : FileShareState, DiskFactStore -> [Console] Nothing
+  fileshare-run-persistent (state) (disk) = act
+    let scan = uefi-read-key
+    in let ev = if scan == 0
+          then event-timer "tick" 0
+          else event-key-down scan 0 0
+    in let handled = fileshare-handle-event state ev
+    in let persisted = fileshare-check-persist handled disk state
+    in fileshare-run-persistent (persisted.fps-app) (persisted.fps-disk)
+  end
+
+  fileshare-check-persist : FileShareState, DiskFactStore, FileShareState -> FileSharePersistState
+  fileshare-check-persist (after) (disk) (before) =
+    let changed = list-length after.fs-transfers /= list-length before.fs-transfers
+    in if changed
+      then let new-disk = fileshare-persist-save disk after 0
+        in let logged = app-log-info new-disk "fileshare" "Transfer list updated" 0
+        in FileSharePersistState { fps-app = after, fps-disk = logged }
+      else FileSharePersistState { fps-app = after, fps-disk = disk }

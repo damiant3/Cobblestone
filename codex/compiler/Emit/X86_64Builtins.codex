@@ -391,8 +391,47 @@ Section: Builtin Emission
     reg = rd.reg
    }
 
+  emit-int-mod-reg-locals : CodegenState, Integer, Integer -> EmitResult
+  emit-int-mod-reg-locals (st) (a-reg) (b-reg) =
+   let st1 = st-append-code st (mov-rr reg-rax a-reg)
+   in let st2 = st-append-code st1 cqo
+   in let st3 = st-append-code st2 (idiv-r b-reg)
+   in let rd = alloc-temp st3
+   in let st4 = st-append-code (rd.state) (mov-rr (rd.reg) reg-rdx)
+   in let st5 = st-append-code st4 (test-rr (rd.reg) (rd.reg))
+   in let jge-pos = st5.code-len
+   in let st6 = st-append-code st5 (jcc cc-ge 0)
+   in let rc = alloc-temp st6
+   in let st7 = st-append-code (rc.state) (mov-rr (rc.reg) b-reg)
+   in let sm = alloc-temp st7
+   in let st8 = st-append-code (sm.state) (mov-rr (sm.reg) (rc.reg))
+   in let st9 = st-append-code st8 (sar-ri (sm.reg) 63)
+   in let st10 = st-append-code st9 (xor-rr (rc.reg) (sm.reg))
+   in let st11 = st-append-code st10 (sub-rr (rc.reg) (sm.reg))
+   in let st12 = st-append-code st11 (add-rr (rd.reg) (rc.reg))
+   in let st13 = patch-jcc-at st12 jge-pos (st12.code-len)
+   in EmitResult {
+    state = st13,
+    reg = rd.reg
+   }
+
   emit-int-mod-builtin : CodegenState, List IRExpr -> EmitResult
   emit-int-mod-builtin (st) (args) =
+   let a = list-at args 0
+   in let b = list-at args 1
+   in when a
+    is IrName (an) (at) (asp) ->
+     let a-slot = lookup-local (st.locals) an
+     in when b
+      is IrName (bn) (bt) (bsp) ->
+       let b-slot = lookup-local (st.locals) bn
+       in if a-slot >= 0 & a-slot < spill-base & b-slot >= 0 & b-slot < spill-base then emit-int-mod-reg-locals st a-slot b-slot
+       else emit-int-mod-standard st args
+      is otherwise -> emit-int-mod-standard st args
+    is otherwise -> emit-int-mod-standard st args
+
+  emit-int-mod-standard : CodegenState, List IRExpr -> EmitResult
+  emit-int-mod-standard (st) (args) =
     let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
    in let loc0 = alloc-local (r0.state)
    in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)

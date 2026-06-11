@@ -1,0 +1,158 @@
+Chapter: Printer
+  cites Mathbook chapter Expr
+
+ Pretty-printer for symbolic expressions. Renders expressions as
+ human-readable mathematical notation (text mode), LaTeX, or
+ MathML. Handles operator precedence for minimal parenthesization.
+ The text printer is the default for the notebook REPL. The LaTeX
+ printer feeds the browser-side MathJax renderer.
+
+Section: Precedence
+
+  ex-precedence : Expr -> Integer
+  ex-precedence (e) = when e
+    is ExAdd (a) (b) -> 2
+    is ExSub (a) (b) -> 2
+    is ExMul (a) (b) -> 3
+    is ExDiv (a) (b) -> 3
+    is ExPow (a) (b) -> 5
+    is ExNeg (a) -> 4
+    is ExEq (a) (b) -> 1
+    is ExLt (a) (b) -> 1
+    is ExGt (a) (b) -> 1
+    is ExLeq (a) (b) -> 1
+    is ExGeq (a) (b) -> 1
+    is ExAnd (a) (b) -> 0
+    is ExOr (a) (b) -> 0
+    is otherwise -> 10
+
+  needs-parens : Expr, Integer -> Boolean
+  needs-parens (child) (parent-prec) = ex-precedence child < parent-prec
+
+  wrap-parens : Text, Boolean -> Text
+  wrap-parens (s) (need) = if need then "(" & s & ")" else s
+
+Section: Text Printer
+
+  ex-print : Expr -> Text
+  ex-print (e) = when e
+    is ExInt (n) -> show n
+    is ExRatio (n) (d) -> show n & "/" & show d
+    is ExFloat (n) -> show (n / 1000) & "." & ex-pad-frac (ex-abs-int (n - (n / 1000) * 1000))
+    is ExVar (name) -> name
+    is ExAdd (a) (b) -> ex-print a & " + " & ex-print b
+    is ExSub (a) (b) -> ex-print a & " - " & wrap-parens (ex-print b) (needs-parens b 2)
+    is ExMul (a) (b) -> wrap-parens (ex-print a) (needs-parens a 3) & " * " & wrap-parens (ex-print b) (needs-parens b 3)
+    is ExDiv (a) (b) -> wrap-parens (ex-print a) (needs-parens a 3) & " / " & wrap-parens (ex-print b) (needs-parens b 4)
+    is ExPow (a) (b) -> wrap-parens (ex-print a) (needs-parens a 6) & "^" & wrap-parens (ex-print b) (needs-parens b 6)
+    is ExNeg (a) -> "-" & wrap-parens (ex-print a) (needs-parens a 4)
+    is ExAbs (a) -> "|" & ex-print a & "|"
+    is ExSqrt (a) -> "sqrt(" & ex-print a & ")"
+    is ExFn (name) (args) -> name & "(" & ex-print-args args 0 (list-length args) "" & ")"
+    is ExSum (body) (var) (lo) (hi) -> "sum(" & ex-print body & ", " & var & "=" & ex-print lo & ".." & ex-print hi & ")"
+    is ExProd (body) (var) (lo) (hi) -> "prod(" & ex-print body & ", " & var & "=" & ex-print lo & ".." & ex-print hi & ")"
+    is ExDeriv (body) (var) -> "d/d" & var & "[" & ex-print body & "]"
+    is ExIntegral (body) (var) -> "integrate(" & ex-print body & ", " & var & ")"
+    is ExDefIntegral (body) (var) (lo) (hi) -> "integrate(" & ex-print body & ", " & var & ", " & ex-print lo & ", " & ex-print hi & ")"
+    is ExLim (body) (var) (to) -> "lim(" & ex-print body & ", " & var & " -> " & ex-print to & ")"
+    is ExEq (a) (b) -> ex-print a & " = " & ex-print b
+    is ExLt (a) (b) -> ex-print a & " < " & ex-print b
+    is ExGt (a) (b) -> ex-print a & " > " & ex-print b
+    is ExLeq (a) (b) -> ex-print a & " <= " & ex-print b
+    is ExGeq (a) (b) -> ex-print a & " >= " & ex-print b
+    is ExAnd (a) (b) -> ex-print a & " and " & ex-print b
+    is ExOr (a) (b) -> ex-print a & " or " & ex-print b
+    is ExNot (a) -> "not " & ex-print a
+    is ExSet (elems) -> "{" & ex-print-args elems 0 (list-length elems) "" & "}"
+    is ExList (elems) -> "[" & ex-print-args elems 0 (list-length elems) "" & "]"
+    is ExMatrix (rows) (cols) (elems) -> "matrix(" & show rows & "x" & show cols & ")"
+    is ExPi -> "pi"
+    is ExE -> "e"
+    is ExInfinity -> "oo"
+    is ExUndefined -> "undefined"
+    is ExTrue -> "true"
+    is ExFalse -> "false"
+
+  ex-pad-frac : Integer -> Text
+  ex-pad-frac (n) =
+    if n < 10 then "00" & show n
+    else if n < 100 then "0" & show n
+    else show n
+
+  ex-print-args : List Expr, Integer, Integer, Text -> Text
+  ex-print-args (args) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else ", "
+    in ex-print-args args (i + 1) n (acc & sep & ex-print (list-at args i))
+
+Section: LaTeX Printer
+
+  ex-latex : Expr -> Text
+  ex-latex (e) = when e
+    is ExInt (n) -> show n
+    is ExRatio (n) (d) -> "\\frac{" & show n & "}{" & show d & "}"
+    is ExFloat (n) -> show (n / 1000) & "." & ex-pad-frac (ex-abs-int (n - (n / 1000) * 1000))
+    is ExVar (name) -> if text-length name == 1 then name else "\\text{" & name & "}"
+    is ExAdd (a) (b) -> ex-latex a & " + " & ex-latex b
+    is ExSub (a) (b) -> ex-latex a & " - " & ex-latex-wrap b 2
+    is ExMul (a) (b) -> ex-latex-wrap a 3 & " \\cdot " & ex-latex-wrap b 3
+    is ExDiv (a) (b) -> "\\frac{" & ex-latex a & "}{" & ex-latex b & "}"
+    is ExPow (a) (b) -> ex-latex-wrap a 6 & "^{" & ex-latex b & "}"
+    is ExNeg (a) -> "-" & ex-latex-wrap a 4
+    is ExAbs (a) -> "\\left|" & ex-latex a & "\\right|"
+    is ExSqrt (a) -> "\\sqrt{" & ex-latex a & "}"
+    is ExFn (name) (args) -> ex-latex-fn name args
+    is ExSum (body) (var) (lo) (hi) -> "\\sum_{" & var & "=" & ex-latex lo & "}^{" & ex-latex hi & "} " & ex-latex body
+    is ExProd (body) (var) (lo) (hi) -> "\\prod_{" & var & "=" & ex-latex lo & "}^{" & ex-latex hi & "} " & ex-latex body
+    is ExDeriv (body) (var) -> "\\frac{d}{d" & var & "}" & ex-latex-wrap body 3
+    is ExIntegral (body) (var) -> "\\int " & ex-latex body & " \\, d" & var
+    is ExDefIntegral (body) (var) (lo) (hi) -> "\\int_{" & ex-latex lo & "}^{" & ex-latex hi & "} " & ex-latex body & " \\, d" & var
+    is ExLim (body) (var) (to) -> "\\lim_{" & var & " \\to " & ex-latex to & "} " & ex-latex body
+    is ExEq (a) (b) -> ex-latex a & " = " & ex-latex b
+    is ExLt (a) (b) -> ex-latex a & " < " & ex-latex b
+    is ExGt (a) (b) -> ex-latex a & " > " & ex-latex b
+    is ExLeq (a) (b) -> ex-latex a & " \\leq " & ex-latex b
+    is ExGeq (a) (b) -> ex-latex a & " \\geq " & ex-latex b
+    is ExAnd (a) (b) -> ex-latex a & " \\land " & ex-latex b
+    is ExOr (a) (b) -> ex-latex a & " \\lor " & ex-latex b
+    is ExNot (a) -> "\\neg " & ex-latex a
+    is ExPi -> "\\pi"
+    is ExE -> "e"
+    is ExInfinity -> "\\infty"
+    is ExUndefined -> "\\text{undefined}"
+    is ExTrue -> "\\text{true}"
+    is ExFalse -> "\\text{false}"
+    is ExSet (elems) -> "\\{" & ex-print-args elems 0 (list-length elems) "" & "\\}"
+    is ExList (elems) -> "\\left[" & ex-print-args elems 0 (list-length elems) "" & "\\right]"
+    is ExMatrix (rows) (cols) (elems) -> "\\begin{pmatrix} ... \\end{pmatrix}"
+
+  ex-latex-wrap : Expr, Integer -> Text
+  ex-latex-wrap (e) (parent-prec) =
+    if needs-parens e parent-prec then "\\left(" & ex-latex e & "\\right)"
+    else ex-latex e
+
+  ex-latex-fn : Text, List Expr -> Text
+  ex-latex-fn (name) (args) =
+    if name == "sin" then "\\sin" & ex-latex-fn-args args
+    else if name == "cos" then "\\cos" & ex-latex-fn-args args
+    else if name == "tan" then "\\tan" & ex-latex-fn-args args
+    else if name == "ln" then "\\ln" & ex-latex-fn-args args
+    else if name == "log" then "\\log" & ex-latex-fn-args args
+    else if name == "factorial" then ex-latex (list-at args 0) & "!"
+    else if name == "floor" then "\\lfloor " & ex-latex (list-at args 0) & " \\rfloor"
+    else if name == "ceil" then "\\lceil " & ex-latex (list-at args 0) & " \\rceil"
+    else if name == "max" then "\\max" & ex-latex-fn-args args
+    else if name == "min" then "\\min" & ex-latex-fn-args args
+    else "\\text{" & name & "}" & ex-latex-fn-args args
+
+  ex-latex-fn-args : List Expr -> Text
+  ex-latex-fn-args (args) =
+    "\\left(" & ex-latex-args-loop args 0 (list-length args) "" & "\\right)"
+
+  ex-latex-args-loop : List Expr, Integer, Integer, Text -> Text
+  ex-latex-args-loop (args) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else ", "
+    in ex-latex-args-loop args (i + 1) n (acc & sep & ex-latex (list-at args i))
+
+Page 1

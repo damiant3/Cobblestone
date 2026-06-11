@@ -1,0 +1,161 @@
+Chapter: ReadingList
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProductivityDb
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Reading list and book tracker. Books with author, genre, page count,
+ progress, rating, and notes. Statuses: want-to-read, reading, read,
+ abandoned. Tracks pages read per day, books per month, and reading
+ streaks. Genres for shelf organization.
+
+Section: Book Status
+
+  BookStatus =
+    | BsWantToRead
+    | BsReading
+    | BsRead
+    | BsAbandoned
+
+  bs-label : BookStatus -> Text
+  bs-label (s) = when s
+    is BsWantToRead -> "Want to Read"
+    is BsReading -> "Reading"
+    is BsRead -> "Read"
+    is BsAbandoned -> "Abandoned"
+
+Section: Book (in-memory view)
+
+  Book = record {
+    bk-id : Integer,
+    bk-title : Text,
+    bk-author : Text,
+    bk-isbn : Text,
+    bk-genre : Text,
+    bk-pages : Integer,
+    bk-current-page : Integer,
+    bk-status : BookStatus,
+    bk-rating : Integer,
+    bk-started : Integer,
+    bk-finished : Integer,
+    bk-notes : Text,
+    bk-created : Integer
+  }
+
+  bk-progress-pct : Book -> Integer
+  bk-progress-pct (b) =
+    if b.bk-pages == 0 then 0
+    else b.bk-current-page * 100 / b.bk-pages
+
+  bk-pages-left : Book -> Integer
+  bk-pages-left (b) = b.bk-pages - b.bk-current-page
+
+  bk-reading-days : Book, Integer -> Integer
+  bk-reading-days (b) (now) =
+    if b.bk-started == 0 then 0
+    else let end-time = if b.bk-finished > 0 then b.bk-finished else now
+    in (end-time - b.bk-started) / 86400
+
+  bk-pages-per-day : Book, Integer -> Integer
+  bk-pages-per-day (b) (now) =
+    let days = bk-reading-days b now
+    in if days == 0 then b.bk-current-page
+    else b.bk-current-page / days
+
+  bk-days-to-finish : Book, Integer -> Integer
+  bk-days-to-finish (b) (now) =
+    let ppd = bk-pages-per-day b now
+    in if ppd == 0 then 0
+    else bk-pages-left b / ppd
+
+Section: Reading List App State
+
+  ReadingListState = record {
+    rl-books : List Book,
+    rl-count : Integer,
+    rl-selected : Integer,
+    rl-filter : Text,
+    rl-filter-status : Text,
+    rl-filter-genre : Text,
+    rl-sort-field : Text,
+    rl-genres : List Text,
+    rl-genre-count : Integer,
+    rl-active-tab : Integer,
+    rl-total-pages-read : Integer,
+    rl-books-read : Integer,
+    rl-books-reading : Integer
+  }
+
+  reading-list-new : ReadingListState
+  reading-list-new = ReadingListState {
+    rl-books = [], rl-count = 0, rl-selected = -1,
+    rl-filter = "", rl-filter-status = "", rl-filter-genre = "",
+    rl-sort-field = "title",
+    rl-genres = ["Fiction", "Non-Fiction", "Sci-Fi", "Fantasy", "Mystery", "History", "Biography", "Science", "Tech", "Self-Help", "Poetry"],
+    rl-genre-count = 11,
+    rl-active-tab = 0,
+    rl-total-pages-read = 0, rl-books-read = 0, rl-books-reading = 0
+  }
+
+  rl-visible : ReadingListState -> List Book
+  rl-visible (st) =
+    rl-vis-loop (st.rl-books) (st.rl-filter) (st.rl-filter-status) (st.rl-filter-genre) 0 (st.rl-count) []
+
+  rl-vis-loop : List Book, Text, Text, Text, Integer, Integer, List Book -> List Book
+  rl-vis-loop (books) (filter) (status) (genre) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = list-at books i
+    in let text-ok = if text-length filter == 0 then True else text-contains (b.bk-title) filter
+    in let status-ok = if text-length status == 0 then True else bs-label (b.bk-status) == status
+    in let genre-ok = if text-length genre == 0 then True else b.bk-genre == genre
+    in if text-ok then if status-ok then if genre-ok then
+      rl-vis-loop books filter status genre (i + 1) n (list-push acc b)
+    else rl-vis-loop books filter status genre (i + 1) n acc
+    else rl-vis-loop books filter status genre (i + 1) n acc
+    else rl-vis-loop books filter status genre (i + 1) n acc
+
+  rl-avg-rating : ReadingListState -> Integer
+  rl-avg-rating (st) =
+    if st.rl-books-read == 0 then 0
+    else rl-sum-rating (st.rl-books) 0 (st.rl-count) 0 / st.rl-books-read
+
+  rl-sum-rating : List Book, Integer, Integer, Integer -> Integer
+  rl-sum-rating (books) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = list-at books i
+    in let delta = when b.bk-status is BsRead -> b.bk-rating is otherwise -> 0
+    in rl-sum-rating books (i + 1) n (acc + delta)
+
+Section: Widget Building
+
+  bk-row : Book -> WidgetNode
+  bk-row (b) =
+    let title = widget-label ("bk-t-" & show (b.bk-id)) (b.bk-title)
+    in let author = widget-label ("bk-a-" & show (b.bk-id)) (b.bk-author)
+    in let genre = widget-label ("bk-g-" & show (b.bk-id)) (b.bk-genre)
+    in let status = widget-label ("bk-s-" & show (b.bk-id)) (bs-label (b.bk-status))
+    in let progress = widget-gauge ("bk-p-" & show (b.bk-id)) (bk-progress-pct b) 100
+    in let pages = widget-label ("bk-pg-" & show (b.bk-id)) (show (b.bk-current-page) & "/" & show (b.bk-pages))
+    in let rating = if b.bk-rating > 0 then widget-gauge ("bk-r-" & show (b.bk-id)) (b.bk-rating) 5 else widget-label ("bk-r-" & show (b.bk-id)) ""
+    in widget-panel ("book-" & show (b.bk-id)) DirRow 8 [title, author, genre, status, progress, pages, rating]
+
+  rl-widget : ReadingListState -> WidgetNode
+  rl-widget (st) =
+    let title = widget-label "rl-title" "Reading List"
+    in let summary = widget-label "rl-summary" (show (st.rl-books-reading) & " reading | " & show (st.rl-books-read) & " read | " & show (st.rl-total-pages-read) & " pages | avg " & show (rl-avg-rating st) & "/5")
+    in let filter = widget-input "rl-filter" (st.rl-filter) (text-length (st.rl-filter))
+    in let new-btn = widget-button "rl-new" "Add Book"
+    in let toolbar = widget-toolbar "rl-toolbar" [filter, new-btn]
+    in let status-tabs = widget-tabs "rl-tabs" ["All", "Reading", "Want to Read", "Read", "Abandoned"] (st.rl-active-tab)
+    in let visible = rl-visible st
+    in let rows = bk-rows visible 0 (list-length visible) []
+    in widget-panel "reading-list-app" DirColumn 4 ([title, summary, toolbar, status-tabs] & rows)
+
+  bk-rows : List Book, Integer, Integer, List WidgetNode -> List WidgetNode
+  bk-rows (books) (i) (n) (acc) =
+    if i >= n then acc
+    else bk-rows books (i + 1) n (list-push acc (bk-row (list-at books i)))
+
+Page 1

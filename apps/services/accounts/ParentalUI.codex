@@ -1,0 +1,314 @@
+Chapter: ParentalUI
+  cites Foreword chapter Widget
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Foreword chapter CCE
+  cites UI chapter Layout
+  cites Accounts chapter ManagedAccounts
+
+ UI for the parental controls system. The guardian sees an admin
+ panel for managing accounts, policies, and activity. Managed
+ accounts see their own restricted launcher and time remaining.
+
+Section: Types
+
+  ParentalView =
+    | ViewAccountSelect
+    | ViewPinEntry (Integer)
+    | ViewGuardianPanel
+    | ViewManagedLauncher
+    | ViewCreateAccount
+    | ViewEditPolicy (Integer)
+    | ViewActivityLog (Integer)
+    | ViewTimeRemaining
+
+  ParentalUIState = record {
+    pu-store       : AccountStore,
+    pu-view        : ParentalView,
+    pu-pin-input   : Text,
+    pu-pin-cursor  : Integer,
+    pu-new-name    : Text,
+    pu-new-age     : AgeGroup,
+    pu-new-pin     : Text,
+    pu-status      : Text,
+    pu-width       : Integer,
+    pu-height      : Integer
+  }
+
+Section: Initialization
+
+  parental-ui-init : AccountStore, Integer, Integer -> ParentalUIState
+  parental-ui-init (store) (w) (h) =
+    ParentalUIState {
+      pu-store = store,
+      pu-view = ViewAccountSelect,
+      pu-pin-input = "",
+      pu-pin-cursor = 0,
+      pu-new-name = "",
+      pu-new-age = AgeChild,
+      pu-new-pin = "",
+      pu-status = "Select account",
+      pu-width = w,
+      pu-height = h
+    }
+
+Section: Rendering
+
+  parental-render : ParentalUIState -> WidgetNode
+  parental-render (state) =
+    when state.pu-view
+      is ViewAccountSelect -> render-account-select state
+      is ViewPinEntry (id) -> render-pin-entry state id
+      is ViewGuardianPanel -> render-guardian-panel state
+      is ViewManagedLauncher -> render-managed-launcher state
+      is ViewCreateAccount -> render-create-account state
+      is ViewEditPolicy (id) -> render-edit-policy state id
+      is ViewTimeRemaining -> render-time-remaining state
+      is otherwise -> render-account-select state
+
+  render-account-select : ParentalUIState -> WidgetNode
+  render-account-select (state) =
+    let title = widget-label "select-title" "Who is using this device?"
+    in let accounts = state.pu-store.as-accounts
+    in let buttons = list-map render-account-button accounts
+    in widget-panel "account-select" DirColumn 16 (title :: buttons)
+
+  render-account-button : Account -> WidgetNode
+  render-account-button (a) =
+    let icon = when a.acc-age-group
+          is AgeChild -> "[C]"
+          is AgeTeen -> "[T]"
+          is AgeRestricted -> "[A]"
+    in let label = icon & " " & a.acc-name
+    in widget-button ("account-" & show a.acc-id) label
+
+  render-pin-entry : ParentalUIState, Integer -> WidgetNode
+  render-pin-entry (state) (id) =
+    let acc = find-account state.pu-store.as-accounts id
+    in let name = when acc is Just (a) -> a.acc-name is Nothing -> "Unknown"
+    in let title = widget-label "pin-title" ("Enter PIN for " & name)
+    in let mask = text-repeat-char "*" (text-length state.pu-pin-input)
+    in let input = widget-input "pin" mask state.pu-pin-cursor
+    in let ok-btn = widget-button "pin-ok" "OK"
+    in let cancel-btn = widget-button "pin-cancel" "Cancel"
+    in let buttons = widget-panel "pin-buttons" DirRow 8 [ok-btn, cancel-btn]
+    in widget-panel "pin-entry" DirColumn 12 [title, input, buttons]
+
+  text-repeat-char : Text, Integer -> Text
+  text-repeat-char (ch) (n) =
+    if n <= 0 then "" else ch & text-repeat-char ch (n - 1)
+
+  render-guardian-panel : ParentalUIState -> WidgetNode
+  render-guardian-panel (state) =
+    let title = widget-label "guardian-title" "Parental Controls"
+    in let managed = managed-accounts state.pu-store
+    in let account-list = widget-panel "managed-list" DirColumn 4
+          (list-map render-managed-summary managed)
+    in let add-btn = widget-button "add-account" "+ Add Account"
+    in let lock-btn = widget-button "lock-device" "Lock Device"
+    in let status = widget-label "status" state.pu-status
+    in widget-panel "guardian" DirColumn 8 [
+      title, widget-separator "sep1",
+      widget-label "managed-title" "Managed Accounts",
+      account-list,
+      widget-separator "sep2",
+      widget-panel "buttons" DirRow 8 [add-btn, lock-btn],
+      status
+    ]
+
+  render-managed-summary : Account -> WidgetNode
+  render-managed-summary (a) =
+    let name = widget-label ("name-" & show a.acc-id) (format-account a)
+    in let limits = a.acc-policy.ap-time-limits
+    in let time-info = widget-label ("time-" & show a.acc-id)
+          (if limits.tl-enabled
+            then show limits.tl-used-today & "/" & show limits.tl-daily-minutes & " min"
+            else "No limit")
+    in let safe = widget-label ("safe-" & show a.acc-id)
+          (if a.acc-policy.ap-content-filter.cf-safe-mode then "Safe" else "")
+    in let edit-btn = widget-button ("edit-" & show a.acc-id) "Edit"
+    in let activity-btn = widget-button ("activity-" & show a.acc-id) "Activity"
+    in widget-panel ("row-" & show a.acc-id) DirRow 8 [
+      widget-set-flex name 1, time-info, safe, edit-btn, activity-btn
+    ]
+
+  render-managed-launcher : ParentalUIState -> WidgetNode
+  render-managed-launcher (state) =
+    let acc = active-account state.pu-store
+    in let name = when acc is Just (a) -> a.acc-name is Nothing -> "User"
+    in let policy = active-policy state.pu-store
+    in let title = widget-label "launcher-title" ("Hi, " & name)
+    in let time-check = check-time-allowed policy 12 False
+    in let time-label = widget-label "time-info" (format-time-check time-check)
+    in let app-list = list-map render-app-button policy.ap-allowed-apps
+    in let switch-btn = widget-button "switch-account" "Switch Account"
+    in widget-panel "launcher" DirColumn 12 [
+      title, time-label,
+      widget-separator "sep",
+      widget-label "apps-title" "Your Apps",
+      widget-panel "apps" DirColumn 4 app-list,
+      widget-separator "sep2",
+      switch-btn
+    ]
+
+  render-app-button : Text -> WidgetNode
+  render-app-button (app-name) =
+    widget-button ("app-" & app-name) app-name
+
+  render-create-account : ParentalUIState -> WidgetNode
+  render-create-account (state) =
+    let title = widget-label "create-title" "Create Managed Account"
+    in let name-label = widget-label "name-label" "Name:"
+    in let name-input = widget-input "new-name" state.pu-new-name 0
+    in let age-label = widget-label "age-label" "Age Group:"
+    in let child-btn = widget-button "age-child" "Child (6-12)"
+    in let teen-btn = widget-button "age-teen" "Teen (13-17)"
+    in let age-btns = widget-panel "age-btns" DirRow 8 [child-btn, teen-btn]
+    in let pin-label = widget-label "pin-label" "PIN (4-6 digits):"
+    in let pin-input = widget-input "new-pin" state.pu-new-pin 0
+    in let create-btn = widget-button "do-create" "Create Account"
+    in let cancel-btn = widget-button "cancel-create" "Cancel"
+    in let buttons = widget-panel "create-buttons" DirRow 8 [create-btn, cancel-btn]
+    in widget-panel "create" DirColumn 8 [
+      title, widget-separator "sep",
+      name-label, name-input,
+      age-label, age-btns,
+      pin-label, pin-input,
+      widget-separator "sep2",
+      buttons
+    ]
+
+  render-edit-policy : ParentalUIState, Integer -> WidgetNode
+  render-edit-policy (state) (id) =
+    let acc = find-account state.pu-store.as-accounts id
+    in when acc
+      is Nothing -> widget-label "not-found" "Account not found"
+      is Just (a) ->
+        let title = widget-label "edit-title" ("Edit Policy: " & a.acc-name)
+        in let limits = a.acc-policy.ap-time-limits
+        in let filter = a.acc-policy.ap-content-filter
+        in let time-section = widget-panel "time-section" DirColumn 4 [
+              widget-label "time-title" "Time Limits",
+              widget-label "daily" ("Daily: " & show limits.tl-daily-minutes & " minutes"),
+              widget-label "hours" ("Hours: " & show limits.tl-start-hour & ":00 - " & show limits.tl-end-hour & ":00"),
+              widget-button "more-time" "+30 min",
+              widget-button "less-time" "-30 min",
+              widget-button "earlier-start" "Start earlier",
+              widget-button "later-end" "End later"
+            ]
+        in let content-section = widget-panel "content-section" DirColumn 4 [
+              widget-label "content-title" "Content Filter",
+              widget-button "toggle-safe" (if filter.cf-safe-mode then "Safe Mode: ON" else "Safe Mode: OFF"),
+              widget-button "toggle-filter" (if filter.cf-enabled then "Filter: ON" else "Filter: OFF")
+            ]
+        in let access-section = widget-panel "access-section" DirColumn 4 [
+              widget-label "access-title" "Access",
+              widget-label "camera" ("Camera: " & (if a.acc-policy.ap-can-use-camera then "Allowed" else "Blocked")),
+              widget-label "files" ("File sharing: " & (if a.acc-policy.ap-can-share-files then "Allowed" else "Blocked")),
+              widget-label "install" ("Install apps: " & (if a.acc-policy.ap-can-install-apps then "Allowed" else "Blocked"))
+            ]
+        in let back-btn = widget-button "back-to-panel" "Back"
+        in widget-panel "edit-policy" DirColumn 8 [
+          title, widget-separator "sep1",
+          time-section, widget-separator "sep2",
+          content-section, widget-separator "sep3",
+          access-section, widget-separator "sep4",
+          back-btn
+        ]
+
+  render-time-remaining : ParentalUIState -> WidgetNode
+  render-time-remaining (state) =
+    let policy = active-policy state.pu-store
+    in let check = check-time-allowed policy 12 False
+    in let title = widget-label "time-title" "Screen Time"
+    in let status = widget-label "time-status" (format-time-check check)
+    in let limits = policy.ap-time-limits
+    in let used = widget-progress "time-used" limits.tl-used-today limits.tl-daily-minutes
+    in let detail = widget-label "time-detail"
+          (show limits.tl-used-today & " of " & show limits.tl-daily-minutes & " minutes used today")
+    in widget-panel "time-remaining" DirColumn 12 [
+      title, status, used, detail
+    ]
+
+Section: Event Handling
+
+  parental-handle-event : ParentalUIState, Integer, Integer -> ParentalUIState
+  parental-handle-event (state) (ev-key) (now) =
+    when state.pu-view
+      is ViewAccountSelect -> handle-select-event state ev-key
+      is ViewPinEntry (id) -> handle-pin-event state id ev-key now
+      is ViewGuardianPanel -> handle-guardian-event state ev-key now
+      is ViewManagedLauncher -> handle-launcher-event state ev-key
+      is ViewCreateAccount -> handle-create-event state ev-key now
+      is otherwise -> state
+
+  handle-select-event : ParentalUIState, Integer -> ParentalUIState
+  handle-select-event (state) (k) =
+    if k >= 49 then if k <= 57
+      then let idx = k - 49
+        in if idx < list-length state.pu-store.as-accounts
+          then let acc = list-at state.pu-store.as-accounts idx
+            in if list-length acc.acc-pin-hash > 0
+              then __record-set state "pu-view" (ViewPinEntry acc.acc-id)
+              else __record-set (__record-set state
+                "pu-store" (account-login state.pu-store acc.acc-id "" 0))
+                "pu-view" (if acc.acc-type == GuardianAccount then ViewGuardianPanel else ViewManagedLauncher)
+          else state
+        else state
+      else state
+
+  handle-pin-event : ParentalUIState, Integer, Integer, Integer -> ParentalUIState
+  handle-pin-event (state) (id) (k) (now) =
+    if k == 13
+    then let logged-in = account-login state.pu-store id state.pu-pin-input now
+      in if logged-in.as-active-id == id
+        then let acc = find-account logged-in.as-accounts id
+          in let view = when acc
+                is Just (a) -> when a.acc-type
+                  is GuardianAccount -> ViewGuardianPanel
+                  is ManagedAccount -> ViewManagedLauncher
+                is Nothing -> ViewAccountSelect
+          in __record-set (__record-set (__record-set state
+            "pu-store" logged-in)
+            "pu-view" view)
+            "pu-pin-input" ""
+        else __record-set state "pu-status" "Wrong PIN"
+    else if k == 27
+    then __record-set (__record-set state "pu-view" ViewAccountSelect) "pu-pin-input" ""
+    else if k == 8
+    then if text-length state.pu-pin-input > 0
+      then __record-set state "pu-pin-input" (text-take state.pu-pin-input (text-length state.pu-pin-input - 1))
+      else state
+    else if k >= 48 then if k <= 57
+      then __record-set state "pu-pin-input" (state.pu-pin-input & char-to-text (code-to-char (from-unicode k)))
+      else state
+      else state
+
+  handle-guardian-event : ParentalUIState, Integer, Integer -> ParentalUIState
+  handle-guardian-event (state) (k) (now) =
+    if k == 78 then __record-set state "pu-view" ViewCreateAccount
+    else if k == 76 then __record-set state "pu-store" (account-lock state.pu-store)
+    else if k == 27 then __record-set state "pu-view" ViewAccountSelect
+    else state
+
+  handle-launcher-event : ParentalUIState, Integer -> ParentalUIState
+  handle-launcher-event (state) (k) =
+    if k == 27 then __record-set (__record-set state
+          "pu-store" (account-logout state.pu-store))
+          "pu-view" ViewAccountSelect
+    else if k == 84 then __record-set state "pu-view" ViewTimeRemaining
+    else state
+
+  handle-create-event : ParentalUIState, Integer, Integer -> ParentalUIState
+  handle-create-event (state) (k) (now) =
+    if k == 27 then __record-set state "pu-view" ViewGuardianPanel
+    else if k == 13
+    then if text-length state.pu-new-name > 0
+      then let updated = create-managed-account state.pu-store state.pu-new-name state.pu-new-age state.pu-new-pin [] now
+        in __record-set (__record-set (__record-set (__record-set state
+          "pu-store" updated)
+          "pu-view" ViewGuardianPanel)
+          "pu-new-name" "")
+          "pu-status" ("Created: " & state.pu-new-name)
+      else state
+    else state

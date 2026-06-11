@@ -1,0 +1,243 @@
+Chapter: ServiceProxy
+  cites Net chapter GroupMembership
+  cites Net chapter EdgeRouter
+  cites Net chapter LoadBalancer
+  cites Net chapter HealthChecker
+  cites Foreword chapter Maybe
+
+ Service-to-service proxy (sidecar). Every service node runs a
+ local proxy that handles outbound requests: service discovery
+ (find the target via the mesh registry), load balancing (pick a
+ backend from the pool), circuit breaking (don't call a failing
+ backend), retries with backoff, timeout enforcement, and request
+ tracing (inject trace headers). This is the data plane of the
+ mesh — every inter-service call goes through the proxy.
+
+Section: Request Context
+
+  TraceContext = record {
+    tc-trace-id : Text,
+    tc-span-id : Text,
+    tc-parent-span : Text,
+    tc-service : Text,
+    tc-operation : Text,
+    tc-start-time : Integer,
+    tc-end-time : Integer,
+    tc-status : Integer,
+    tc-error : Text
+  }
+
+  trace-new : Text, Text, Text, Text, Integer -> TraceContext
+  trace-new (trace-id) (span-id) (service) (operation) (now) = TraceContext {
+    tc-trace-id = trace-id, tc-span-id = span-id,
+    tc-parent-span = "", tc-service = service,
+    tc-operation = operation, tc-start-time = now,
+    tc-end-time = 0, tc-status = 0, tc-error = ""
+  }
+
+  trace-child : TraceContext, Text, Text, Integer -> TraceContext
+  trace-child (parent) (span-id) (operation) (now) = TraceContext {
+    tc-trace-id = parent.tc-trace-id,
+    tc-span-id = span-id,
+    tc-parent-span = parent.tc-span-id,
+    tc-service = parent.tc-service,
+    tc-operation = operation,
+    tc-start-time = now, tc-end-time = 0,
+    tc-status = 0, tc-error = ""
+  }
+
+  trace-finish : TraceContext, Integer, Integer -> TraceContext
+  trace-finish (t) (status) (now) =
+    __record-set (__record-set (__record-set t "tc-end-time" now) "tc-status" status) "tc-error" ""
+
+  trace-finish-error : TraceContext, Text, Integer -> TraceContext
+  trace-finish-error (t) (err) (now) =
+    __record-set (__record-set (__record-set (__record-set t "tc-end-time" now) "tc-status" 500) "tc-error" err) "tc-end-time" now
+
+  trace-duration-ms : TraceContext -> Integer
+  trace-duration-ms (t) =
+    if t.tc-end-time == 0 then 0
+    else (t.tc-end-time - t.tc-start-time) * 1000
+
+Section: Retry Policy
+
+  RetryPolicy = record {
+    rp-max-retries : Integer,
+    rp-base-delay-ms : Integer,
+    rp-max-delay-ms : Integer,
+    rp-backoff-multiplier : Integer,
+    rp-retry-on-codes : List Integer,
+    rp-retry-on-code-count : Integer
+  }
+
+  retry-default : RetryPolicy
+  retry-default = RetryPolicy {
+    rp-max-retries = 3,
+    rp-base-delay-ms = 100,
+    rp-max-delay-ms = 5000,
+    rp-backoff-multiplier = 2,
+    rp-retry-on-codes = [502, 503, 504],
+    rp-retry-on-code-count = 3
+  }
+
+  retry-delay : RetryPolicy, Integer -> Integer
+  retry-delay (policy) (attempt) =
+    let delay = policy.rp-base-delay-ms * rp-pow (policy.rp-backoff-multiplier) attempt
+    in if delay > policy.rp-max-delay-ms then policy.rp-max-delay-ms else delay
+
+  rp-pow : Integer, Integer -> Integer
+  rp-pow (base) (exp) = if exp <= 0 then 1 else base * rp-pow base (exp - 1)
+
+  rp-should-retry : RetryPolicy, Integer, Integer -> Boolean
+  rp-should-retry (policy) (status) (attempt) =
+    if attempt >= policy.rp-max-retries then False
+    else rp-code-match (policy.rp-retry-on-codes) status 0 (policy.rp-retry-on-code-count)
+
+  rp-code-match : List Integer, Integer, Integer, Integer -> Boolean
+  rp-code-match (codes) (status) (i) (n) =
+    if i >= n then False
+    else if list-at codes i == status then True
+    else rp-code-match codes status (i + 1) n
+
+Section: Network Policy
+
+  PolicyAction =
+    | PolicyAllow
+    | PolicyDeny
+    | PolicyRateLimit (Integer)
+    | PolicyLog
+
+  pol-action-label : PolicyAction -> Text
+  pol-action-label (a) = when a
+    is PolicyAllow -> "allow"
+    is PolicyDeny -> "deny"
+    is PolicyRateLimit (rpm) -> "rate-limit " & show rpm & "/min"
+    is PolicyLog -> "log"
+
+  NetworkPolicy = record {
+    np-id : Text,
+    np-name : Text,
+    np-from-service : Text,
+    np-to-service : Text,
+    np-action : PolicyAction,
+    np-ports : List Integer,
+    np-port-count : Integer,
+    np-methods : List Text,
+    np-method-count : Integer,
+    np-paths : List Text,
+    np-path-count : Integer,
+    np-enabled : Boolean,
+    np-priority : Integer
+  }
+
+  net-policy-new : Text, Text, Text, Text, PolicyAction -> NetworkPolicy
+  net-policy-new (id) (name) (from-svc) (to-svc) (action) = NetworkPolicy {
+    np-id = id, np-name = name,
+    np-from-service = from-svc, np-to-service = to-svc,
+    np-action = action,
+    np-ports = [], np-port-count = 0,
+    np-methods = [], np-method-count = 0,
+    np-paths = [], np-path-count = 0,
+    np-enabled = True, np-priority = 100
+  }
+
+  np-matches : NetworkPolicy, Text, Text -> Boolean
+  np-matches (pol) (from-svc) (to-svc) =
+    let from-ok = if text-length (pol.np-from-service) == 0 then True else pol.np-from-service == from-svc
+    in let to-ok = if text-length (pol.np-to-service) == 0 then True else pol.np-to-service == to-svc
+    in from-ok then to-ok else False
+
+  PolicyEngine = record {
+    pe-policies : List NetworkPolicy,
+    pe-count : Integer,
+    pe-default-action : PolicyAction,
+    pe-total-evaluated : Integer,
+    pe-total-denied : Integer
+  }
+
+  policy-engine-new : PolicyEngine
+  policy-engine-new = PolicyEngine {
+    pe-policies = [], pe-count = 0,
+    pe-default-action = PolicyAllow,
+    pe-total-evaluated = 0, pe-total-denied = 0
+  }
+
+  pe-add-policy : PolicyEngine, NetworkPolicy -> PolicyEngine
+  pe-add-policy (pe) (pol) =
+    __record-set (__record-set pe "pe-policies" (list-push (pe.pe-policies) pol)) "pe-count" (pe.pe-count + 1)
+
+  pe-evaluate : PolicyEngine, Text, Text -> PolicyAction
+  pe-evaluate (pe) (from-svc) (to-svc) =
+    pe-eval-loop (pe.pe-policies) from-svc to-svc 0 (pe.pe-count) (pe.pe-default-action)
+
+  pe-eval-loop : List NetworkPolicy, Text, Text, Integer, Integer, PolicyAction -> PolicyAction
+  pe-eval-loop (pols) (from-svc) (to-svc) (i) (n) (default-act) =
+    if i >= n then default-act
+    else let pol = list-at pols i
+    in if pol.np-enabled then
+      if np-matches pol from-svc to-svc then pol.np-action
+      else pe-eval-loop pols from-svc to-svc (i + 1) n default-act
+    else pe-eval-loop pols from-svc to-svc (i + 1) n default-act
+
+Section: Service Proxy State
+
+  ServiceProxyState = record {
+    sp-service-name : Text,
+    sp-pools : List BackendPool,
+    sp-pool-count : Integer,
+    sp-breakers : List CircuitBreaker,
+    sp-breaker-count : Integer,
+    sp-retry-policy : RetryPolicy,
+    sp-policy-engine : PolicyEngine,
+    sp-traces : List TraceContext,
+    sp-trace-count : Integer,
+    sp-max-traces : Integer,
+    sp-total-requests : Integer,
+    sp-total-errors : Integer,
+    sp-total-retries : Integer,
+    sp-total-denied : Integer,
+    sp-avg-latency : Integer
+  }
+
+  service-proxy-new : Text -> ServiceProxyState
+  service-proxy-new (service) = ServiceProxyState {
+    sp-service-name = service,
+    sp-pools = [], sp-pool-count = 0,
+    sp-breakers = [], sp-breaker-count = 0,
+    sp-retry-policy = retry-default,
+    sp-policy-engine = policy-engine-new,
+    sp-traces = [], sp-trace-count = 0, sp-max-traces = 1000,
+    sp-total-requests = 0, sp-total-errors = 0,
+    sp-total-retries = 0, sp-total-denied = 0,
+    sp-avg-latency = 0
+  }
+
+  sp-add-pool : ServiceProxyState, BackendPool -> ServiceProxyState
+  sp-add-pool (st) (pool) =
+    __record-set (__record-set st "sp-pools" (list-push (st.sp-pools) pool)) "sp-pool-count" (st.sp-pool-count + 1)
+
+  sp-find-pool : ServiceProxyState, Text -> Maybe BackendPool
+  sp-find-pool (st) (name) = sp-pool-loop (st.sp-pools) name 0 (st.sp-pool-count)
+
+  sp-pool-loop : List BackendPool, Text, Integer, Integer -> Maybe BackendPool
+  sp-pool-loop (pools) (name) (i) (n) =
+    if i >= n then None
+    else let p = list-at pools i
+    in if p.bp-name == name then Just p
+    else sp-pool-loop pools name (i + 1) n
+
+  sp-error-rate : ServiceProxyState -> Integer
+  sp-error-rate (st) =
+    if st.sp-total-requests == 0 then 0
+    else st.sp-total-errors * 1000 / st.sp-total-requests
+
+  sp-denied-rate : ServiceProxyState -> Integer
+  sp-denied-rate (st) =
+    if st.sp-total-requests == 0 then 0
+    else st.sp-total-denied * 1000 / st.sp-total-requests
+
+  sp-status : ServiceProxyState -> Text
+  sp-status (st) =
+    "proxy:" & st.sp-service-name & " pools=" & show (st.sp-pool-count) & " requests=" & show (st.sp-total-requests) & " errors=" & show (st.sp-total-errors) & " retries=" & show (st.sp-total-retries) & " denied=" & show (st.sp-total-denied) & " latency=" & show (st.sp-avg-latency) & "ms"
+
+Page 1

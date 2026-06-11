@@ -1,0 +1,490 @@
+Chapter: FileExplorer
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ File system browser. Presents a tree navigator on the left, a
+ breadcrumb bar at the top, and the main file listing in icon, list,
+ or detail view modes. Supports selection, sort, filter, and basic
+ file operations (copy, move, delete, rename, mkdir). The model is
+ pure — no effects. The server wires it to real syscalls.
+
+Section: File Types
+
+  FileKind =
+    | FkDirectory
+    | FkFile
+    | FkSymlink
+    | FkDevice
+    | FkPipe
+    | FkSocket
+    | FkUnknown
+
+  file-kind-label : FileKind -> Text
+  file-kind-label (k) = when k
+    is FkDirectory -> "directory"
+    is FkFile -> "file"
+    is FkSymlink -> "symlink"
+    is FkDevice -> "device"
+    is FkPipe -> "pipe"
+    is FkSocket -> "socket"
+    is FkUnknown -> "unknown"
+
+  file-kind-icon : FileKind -> Text
+  file-kind-icon (k) = when k
+    is FkDirectory -> "[D]"
+    is FkFile -> "[F]"
+    is FkSymlink -> "[L]"
+    is FkDevice -> "[V]"
+    is FkPipe -> "[P]"
+    is FkSocket -> "[S]"
+    is FkUnknown -> "[?]"
+
+Section: File Entry
+
+  FileEntry = record {
+    fe-name : Text,
+    fe-path : Text,
+    fe-kind : FileKind,
+    fe-size : ByteSize,
+    fe-modified : Integer,
+    fe-permissions : Integer,
+    fe-owner : Text,
+    fe-extension : Text,
+    fe-hidden : Boolean,
+    fe-selected : Boolean
+  }
+
+  file-entry-new : Text, Text, FileKind, Integer -> FileEntry
+  file-entry-new (name) (path) (kind) (size) = FileEntry {
+    fe-name = name,
+    fe-path = path,
+    fe-kind = kind,
+    fe-size = bytes size,
+    fe-modified = 0,
+    fe-permissions = 0,
+    fe-owner = "",
+    fe-extension = file-extension name,
+    fe-hidden = text-starts-with name ".",
+    fe-selected = False
+  }
+
+Section: Path Operations
+
+  file-extension : Text -> Text
+  file-extension (name) =
+    let len = text-length name
+    in file-ext-scan name (len - 1) len
+
+  file-ext-scan : Text, Integer, Integer -> Text
+  file-ext-scan (name) (i) (len) =
+    if i <= 0 then ""
+    else let c = char-at name i
+    in if char-code c == 46 then text-slice name (i + 1) len
+    else file-ext-scan name (i - 1) len
+
+  path-join : Text, Text -> Text
+  path-join (parent) (child) =
+    if text-length parent == 0 then child
+    else if text-ends-with parent "/" then parent & child
+    else parent & "/" & child
+
+  path-parent : Text -> Text
+  path-parent (p) =
+    let len = text-length p
+    in if len <= 1 then "/"
+    else path-parent-scan p (len - 2)
+
+  path-parent-scan : Text, Integer -> Text
+  path-parent-scan (p) (i) =
+    if i <= 0 then "/"
+    else let c = char-at p i
+    in if char-code c == 47 then text-slice p 0 i
+    else path-parent-scan p (i - 1)
+
+  path-filename : Text -> Text
+  path-filename (p) =
+    let len = text-length p
+    in path-filename-scan p (len - 1) len
+
+  path-filename-scan : Text, Integer, Integer -> Text
+  path-filename-scan (p) (i) (len) =
+    if i < 0 then p
+    else let c = char-at p i
+    in if char-code c == 47 then text-slice p (i + 1) len
+    else path-filename-scan p (i - 1) len
+
+  breadcrumb-segments : Text -> List Text
+  breadcrumb-segments (p) = text-split p "/"
+
+Section: Explorer View Modes
+
+  ViewMode =
+    | ViewIcons
+    | ViewList
+    | ViewDetails
+
+  view-mode-label : ViewMode -> Text
+  view-mode-label (m) = when m
+    is ViewIcons -> "Icons"
+    is ViewList -> "List"
+    is ViewDetails -> "Details"
+
+Section: Sort
+
+  FileSortField =
+    | SortByName
+    | SortBySize
+    | SortByModified
+    | SortByKind
+
+  file-sort-label : FileSortField -> Text
+  file-sort-label (f) = when f
+    is SortByName -> "Name"
+    is SortBySize -> "Size"
+    is SortByModified -> "Modified"
+    is SortByKind -> "Kind"
+
+Section: Explorer State
+
+  ExplorerState = record {
+    ex-cwd : Text,
+    ex-entries : List FileEntry,
+    ex-entry-count : Integer,
+    ex-view-mode : ViewMode,
+    ex-sort-field : FileSortField,
+    ex-sort-dir : SortDir,
+    ex-filter : Text,
+    ex-selected-count : Integer,
+    ex-show-hidden : Boolean,
+    ex-page : PageInfo,
+    ex-clipboard : List Text,
+    ex-clipboard-cut : Boolean
+  }
+
+  explorer-new : ExplorerState
+  explorer-new = ExplorerState {
+    ex-cwd = "/",
+    ex-entries = [],
+    ex-entry-count = 0,
+    ex-view-mode = ViewList,
+    ex-sort-field = SortByName,
+    ex-sort-dir = SortAsc,
+    ex-filter = "",
+    ex-selected-count = 0,
+    ex-show-hidden = False,
+    ex-page = PageInfo { pg-offset = 0, pg-limit = 50, pg-total = 0 },
+    ex-clipboard = [],
+    ex-clipboard-cut = False
+  }
+
+Section: Explorer Actions
+
+  explorer-navigate : ExplorerState, Text, List FileEntry -> ExplorerState
+  explorer-navigate (st) (path) (entries) =
+    let count = list-length entries
+    in ExplorerState {
+      ex-cwd = path,
+      ex-entries = entries,
+      ex-entry-count = count,
+      ex-view-mode = st.ex-view-mode,
+      ex-sort-field = st.ex-sort-field,
+      ex-sort-dir = st.ex-sort-dir,
+      ex-filter = "",
+      ex-selected-count = 0,
+      ex-show-hidden = st.ex-show-hidden,
+      ex-page = PageInfo { pg-offset = 0, pg-limit = 50, pg-total = count },
+      ex-clipboard = st.ex-clipboard,
+      ex-clipboard-cut = st.ex-clipboard-cut
+    }
+
+  explorer-go-up : ExplorerState -> Text
+  explorer-go-up (st) = path-parent (st.ex-cwd)
+
+  explorer-set-view : ExplorerState, ViewMode -> ExplorerState
+  explorer-set-view (st) (mode) = __record-set st "ex-view-mode" mode
+
+  explorer-set-filter : ExplorerState, Text -> ExplorerState
+  explorer-set-filter (st) (f) = __record-set st "ex-filter" f
+
+  explorer-toggle-hidden : ExplorerState -> ExplorerState
+  explorer-toggle-hidden (st) =
+    __record-set st "ex-show-hidden" (if st.ex-show-hidden then False else True)
+
+  explorer-toggle-select : ExplorerState, Integer -> ExplorerState
+  explorer-toggle-select (st) (idx) =
+    if idx < 0 then st
+    else if idx >= st.ex-entry-count then st
+    else let entry = list-at (st.ex-entries) idx
+    in let toggled = __record-set entry "fe-selected" (if entry.fe-selected then False else True)
+    in let new-entries = list-set-at (st.ex-entries) idx toggled
+    in let delta = if entry.fe-selected then (-1) else 1
+    in __record-set (__record-set st "ex-entries" new-entries) "ex-selected-count" (st.ex-selected-count + delta)
+
+  explorer-select-all : ExplorerState -> ExplorerState
+  explorer-select-all (st) =
+    let selected = ex-select-all-loop (st.ex-entries) 0 (st.ex-entry-count) []
+    in __record-set (__record-set st "ex-entries" selected) "ex-selected-count" (st.ex-entry-count)
+
+  ex-select-all-loop : List FileEntry, Integer, Integer, List FileEntry -> List FileEntry
+  ex-select-all-loop (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else ex-select-all-loop entries (i + 1) n (list-push acc (__record-set (list-at entries i) "fe-selected" True))
+
+  explorer-deselect-all : ExplorerState -> ExplorerState
+  explorer-deselect-all (st) =
+    let deselected = ex-deselect-all-loop (st.ex-entries) 0 (st.ex-entry-count) []
+    in __record-set (__record-set st "ex-entries" deselected) "ex-selected-count" 0
+
+  ex-deselect-all-loop : List FileEntry, Integer, Integer, List FileEntry -> List FileEntry
+  ex-deselect-all-loop (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else ex-deselect-all-loop entries (i + 1) n (list-push acc (__record-set (list-at entries i) "fe-selected" False))
+
+  explorer-copy-selected : ExplorerState -> ExplorerState
+  explorer-copy-selected (st) =
+    let paths = ex-collect-selected (st.ex-entries) 0 (st.ex-entry-count) []
+    in __record-set (__record-set st "ex-clipboard" paths) "ex-clipboard-cut" False
+
+  explorer-cut-selected : ExplorerState -> ExplorerState
+  explorer-cut-selected (st) =
+    let paths = ex-collect-selected (st.ex-entries) 0 (st.ex-entry-count) []
+    in __record-set (__record-set st "ex-clipboard" paths) "ex-clipboard-cut" True
+
+  ex-collect-selected : List FileEntry, Integer, Integer, List Text -> List Text
+  ex-collect-selected (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if e.fe-selected then ex-collect-selected entries (i + 1) n (list-push acc (e.fe-path))
+    else ex-collect-selected entries (i + 1) n acc
+
+Section: Filtering
+
+  explorer-visible-entries : ExplorerState -> List FileEntry
+  explorer-visible-entries (st) =
+    ex-filter-loop (st.ex-entries) (st.ex-filter) (st.ex-show-hidden) 0 (st.ex-entry-count) []
+
+  ex-filter-loop : List FileEntry, Text, Boolean, Integer, Integer, List FileEntry -> List FileEntry
+  ex-filter-loop (entries) (filter) (show-hidden) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in let hidden-ok = if show-hidden then True else if e.fe-hidden then False else True
+    in let filter-ok = if text-length filter == 0 then True else text-contains (e.fe-name) filter
+    in if hidden-ok then
+      if filter-ok then ex-filter-loop entries filter show-hidden (i + 1) n (list-push acc e)
+      else ex-filter-loop entries filter show-hidden (i + 1) n acc
+    else ex-filter-loop entries filter show-hidden (i + 1) n acc
+
+Section: Widget Building
+
+  explorer-breadcrumb-widget : Text -> WidgetNode
+  explorer-breadcrumb-widget (path) =
+    let segs = breadcrumb-segments path
+    in let btns = ex-breadcrumb-loop segs 0 (list-length segs) []
+    in widget-toolbar "breadcrumb" btns
+
+  ex-breadcrumb-loop : List Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  ex-breadcrumb-loop (segs) (i) (n) (acc) =
+    if i >= n then acc
+    else let seg = list-at segs i
+    in let label = if text-length seg == 0 then "/" else seg
+    in let btn = widget-button ("bc-" & show i) label
+    in ex-breadcrumb-loop segs (i + 1) n (list-push acc btn)
+
+  explorer-toolbar-widget : ExplorerState -> WidgetNode
+  explorer-toolbar-widget (st) =
+    let up-btn = widget-button "nav-up" "Up"
+    in let mode-btn = widget-button "view-mode" (view-mode-label (st.ex-view-mode))
+    in let hidden-btn = widget-button "toggle-hidden" (if st.ex-show-hidden then "Hide ." else "Show .")
+    in let filter-input = widget-input "filter" (st.ex-filter) (text-length (st.ex-filter))
+    in let sel-label = widget-label "sel-count" (show (st.ex-selected-count) & " selected")
+    in widget-toolbar "toolbar" [up-btn, mode-btn, hidden-btn, filter-input, sel-label]
+
+  explorer-file-row : FileEntry, Integer -> WidgetNode
+  explorer-file-row (entry) (idx) =
+    let icon = widget-label ("icon-" & show idx) (file-kind-icon (entry.fe-kind))
+    in let name = widget-label ("name-" & show idx) (entry.fe-name)
+    in let size = widget-label ("size-" & show idx) (format-bytes (entry.fe-size))
+    in let row-id = "row-" & show idx
+    in let row = widget-panel row-id DirRow 8 [icon, name, size]
+    in if entry.fe-selected then widget-set-state row 4
+    else row
+
+  explorer-list-widget : ExplorerState -> WidgetNode
+  explorer-list-widget (st) =
+    let visible = explorer-visible-entries st
+    in let rows = ex-rows-loop visible 0 (list-length visible) []
+    in widget-panel "file-list" DirColumn 2 rows
+
+  ex-rows-loop : List FileEntry, Integer, Integer, List WidgetNode -> List WidgetNode
+  ex-rows-loop (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else ex-rows-loop entries (i + 1) n (list-push acc (explorer-file-row (list-at entries i) i))
+
+  explorer-widget : ExplorerState -> WidgetNode
+  explorer-widget (st) =
+    let breadcrumb = explorer-breadcrumb-widget (st.ex-cwd)
+    in let toolbar = explorer-toolbar-widget st
+    in let listing = explorer-list-widget st
+    in let status = widget-label "status" (show (st.ex-entry-count) & " items in " & st.ex-cwd)
+    in widget-panel "file-explorer" DirColumn 4 [breadcrumb, toolbar, listing, status]
+
+Section: File Operations
+
+  FileOp =
+    | OpMkdir (Text)
+    | OpRename (Text) (Text)
+    | OpDelete (List Text)
+    | OpCopy (List Text) (Text)
+    | OpMove (List Text) (Text)
+
+  file-op-label : FileOp -> Text
+  file-op-label (op) = when op
+    is OpMkdir (name) -> "mkdir " & name
+    is OpRename (old-name) (new-name) -> "rename " & old-name & " -> " & new-name
+    is OpDelete (paths) -> "delete " & show (list-length paths) & " items"
+    is OpCopy (paths) (dest) -> "copy " & show (list-length paths) & " items to " & dest
+    is OpMove (paths) (dest) -> "move " & show (list-length paths) & " items to " & dest
+
+  file-op-to-json : FileOp -> Text
+  file-op-to-json (op) = when op
+    is OpMkdir (name) -> "{\"op\":\"mkdir\",\"name\":\"" & name & "\"}"
+    is OpRename (old-name) (new-name) -> "{\"op\":\"rename\",\"from\":\"" & old-name & "\",\"to\":\"" & new-name & "\"}"
+    is OpDelete (paths) -> "{\"op\":\"delete\",\"count\":" & show (list-length paths) & "}"
+    is OpCopy (paths) (dest) -> "{\"op\":\"copy\",\"count\":" & show (list-length paths) & ",\"dest\":\"" & dest & "\"}"
+    is OpMove (paths) (dest) -> "{\"op\":\"move\",\"count\":" & show (list-length paths) & ",\"dest\":\"" & dest & "\"}"
+
+  explorer-pending-paste : ExplorerState -> FileOp
+  explorer-pending-paste (st) =
+    if st.ex-clipboard-cut then OpMove (st.ex-clipboard) (st.ex-cwd)
+    else OpCopy (st.ex-clipboard) (st.ex-cwd)
+
+  explorer-pending-delete : ExplorerState -> FileOp
+  explorer-pending-delete (st) =
+    OpDelete (ex-collect-selected (st.ex-entries) 0 (st.ex-entry-count) [])
+
+Section: Detail Panel
+
+  FileDetail = record {
+    fd-entry : FileEntry,
+    fd-mime-type : Text,
+    fd-link-target : Text,
+    fd-inode : Integer,
+    fd-blocks : Integer,
+    fd-checksum : Text
+  }
+
+  file-detail-new : FileEntry -> FileDetail
+  file-detail-new (e) = FileDetail {
+    fd-entry = e,
+    fd-mime-type = mime-from-extension (e.fe-extension),
+    fd-link-target = "",
+    fd-inode = 0,
+    fd-blocks = ((e.fe-size).bs-bytes + 511) / 512,
+    fd-checksum = ""
+  }
+
+  mime-from-extension : Text -> Text
+  mime-from-extension (ext) =
+    if ext == "codex" then "text/x-codex"
+    else if ext == "txt" then "text/plain"
+    else if ext == "json" then "application/json"
+    else if ext == "html" then "text/html"
+    else if ext == "css" then "text/css"
+    else if ext == "js" then "application/javascript"
+    else if ext == "png" then "image/png"
+    else if ext == "jpg" then "image/jpeg"
+    else if ext == "svg" then "image/svg+xml"
+    else if ext == "cdx" then "application/x-cdx"
+    else if ext == "ps1" then "text/x-powershell"
+    else if ext == "md" then "text/markdown"
+    else "application/octet-stream"
+
+  file-detail-widget : FileDetail -> WidgetNode
+  file-detail-widget (d) =
+    let e = d.fd-entry
+    in let name = widget-label "detail-name" (e.fe-name)
+    in let path = widget-label "detail-path" (e.fe-path)
+    in let kind = widget-label "detail-kind" (file-kind-label (e.fe-kind))
+    in let size = widget-label "detail-size" (format-bytes (e.fe-size))
+    in let ext = widget-label "detail-ext" (e.fe-extension)
+    in let mime = widget-label "detail-mime" (d.fd-mime-type)
+    in let blocks = widget-label "detail-blocks" (show (d.fd-blocks) & " blocks")
+    in let perms = widget-label "detail-perms" (show (e.fe-permissions))
+    in let owner = widget-label "detail-owner" (e.fe-owner)
+    in widget-panel "file-detail" DirColumn 4 [name, path, kind, size, ext, mime, blocks, perms, owner]
+
+  file-detail-to-json : FileDetail -> Text
+  file-detail-to-json (d) =
+    let e = d.fd-entry
+    in file-entry-to-json e
+    & ",\"mimeType\":\"" & d.fd-mime-type
+    & "\",\"blocks\":" & show (d.fd-blocks)
+    & ",\"checksum\":\"" & d.fd-checksum & "\"}"
+
+Section: Sorting
+
+  explorer-sort-entries : List FileEntry, FileSortField, SortDir -> List FileEntry
+  explorer-sort-entries (entries) (field) (dir) =
+    let dirs = ex-partition-kind entries FkDirectory 0 (list-length entries) [] []
+    in let files = ex-partition-kind entries FkDirectory 0 (list-length entries) [] []
+    in entries
+
+  ex-partition-kind : List FileEntry, FileKind, Integer, Integer, List FileEntry, List FileEntry -> List FileEntry
+  ex-partition-kind (entries) (kind) (i) (n) (matching) (rest) =
+    if i >= n then matching & rest
+    else let e = list-at entries i
+    in if e.fe-kind == kind then ex-partition-kind entries kind (i + 1) n (list-push matching e) rest
+    else ex-partition-kind entries kind (i + 1) n matching (list-push rest e)
+
+  explorer-total-size : ExplorerState -> ByteSize
+  explorer-total-size (st) = ex-sum-size (st.ex-entries) 0 (st.ex-entry-count) 0
+
+  ex-sum-size : List FileEntry, Integer, Integer, Integer -> ByteSize
+  ex-sum-size (entries) (i) (n) (acc) =
+    if i >= n then bytes acc
+    else ex-sum-size entries (i + 1) n (acc + (list-at entries i).fe-size.bs-bytes)
+
+  explorer-selected-size : ExplorerState -> ByteSize
+  explorer-selected-size (st) = ex-sel-size (st.ex-entries) 0 (st.ex-entry-count) 0
+
+  ex-sel-size : List FileEntry, Integer, Integer, Integer -> ByteSize
+  ex-sel-size (entries) (i) (n) (acc) =
+    if i >= n then bytes acc
+    else let e = list-at entries i
+    in if e.fe-selected then ex-sel-size entries (i + 1) n (acc + (e.fe-size).bs-bytes)
+    else ex-sel-size entries (i + 1) n acc
+
+  explorer-dir-count : ExplorerState -> Integer
+  explorer-dir-count (st) = ex-count-kind (st.ex-entries) FkDirectory 0 (st.ex-entry-count) 0
+
+  explorer-file-count : ExplorerState -> Integer
+  explorer-file-count (st) = ex-count-kind (st.ex-entries) FkFile 0 (st.ex-entry-count) 0
+
+  ex-count-kind : List FileEntry, FileKind, Integer, Integer, Integer -> Integer
+  ex-count-kind (entries) (kind) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in let delta = if e.fe-kind == kind then 1 else 0
+    in ex-count-kind entries kind (i + 1) n (acc + delta)
+
+Section: JSON Serialization
+
+  file-entry-to-json : FileEntry -> Text
+  file-entry-to-json (e) =
+    "{\"name\":\"" & e.fe-name & "\",\"path\":\"" & e.fe-path
+    & "\",\"kind\":\"" & file-kind-label (e.fe-kind)
+    & "\",\"size\":" & show (e.fe-size).bs-bytes
+    & ",\"modified\":" & show (e.fe-modified)
+    & ",\"extension\":\"" & e.fe-extension
+    & "\",\"hidden\":" & if e.fe-hidden then "true" else "false"
+    & "}"
+
+  file-entries-to-json : List FileEntry, Integer, Integer, Text -> Text
+  file-entries-to-json (entries) (i) (n) (acc) =
+    if i >= n then "[" & acc & "]"
+    else let sep = if i == 0 then "" else ","
+    in file-entries-to-json entries (i + 1) n (acc & sep & file-entry-to-json (list-at entries i))
+
+Page 1

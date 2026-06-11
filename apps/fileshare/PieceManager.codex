@@ -1,0 +1,195 @@
+Chapter: PieceManager
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites FileShare chapter ContentChunker
+
+ Tracks which pieces we have, which we need, and schedules
+ downloads. Implements rarest-first piece selection to maximize
+ swarm health.
+
+Section: Types
+
+  PieceStatus =
+    | PieceMissing
+    | PieceRequested (List Integer)
+    | PieceDownloading (Integer)
+    | PieceComplete
+    | PieceVerified
+
+  PieceState = record {
+    ps-index    : Integer,
+    ps-status   : PieceStatus,
+    ps-priority : Integer,
+    ps-attempts : Integer,
+    ps-rarity   : Integer
+  }
+
+  PieceTracker = record {
+    pt-pieces      : List PieceState,
+    pt-total       : Integer,
+    pt-have        : Integer,
+    pt-downloading : Integer,
+    pt-verified    : Integer
+  }
+
+Section: Construction
+
+  tracker-new : Integer -> PieceTracker
+  tracker-new (piece-count) =
+    PieceTracker {
+      pt-pieces = init-pieces piece-count 0 [],
+      pt-total = piece-count,
+      pt-have = 0,
+      pt-downloading = 0,
+      pt-verified = 0
+    }
+
+  init-pieces : Integer, Integer, List PieceState -> List PieceState
+  init-pieces (total) (i) (acc) =
+    if i >= total then acc
+    else init-pieces total (i + 1) (list-push acc (PieceState {
+      ps-index = i,
+      ps-status = PieceMissing,
+      ps-priority = 0,
+      ps-attempts = 0,
+      ps-rarity = 0
+    }))
+
+  tracker-from-manifest : ContentManifest -> PieceTracker
+  tracker-from-manifest (m) =
+    tracker-new m.cm-piece-count
+
+Section: Status Updates
+
+  tracker-mark-requested : PieceTracker, Integer, List Integer -> PieceTracker
+  tracker-mark-requested (pt) (index) (peer-id) =
+    update-piece-status pt index (PieceRequested peer-id)
+
+  tracker-mark-downloading : PieceTracker, Integer, Integer -> PieceTracker
+  tracker-mark-downloading (pt) (index) (progress) =
+    let updated = update-piece-status pt index (PieceDownloading progress)
+    in recount updated
+
+  tracker-mark-complete : PieceTracker, Integer -> PieceTracker
+  tracker-mark-complete (pt) (index) =
+    let updated = update-piece-status pt index PieceComplete
+    in recount updated
+
+  tracker-mark-verified : PieceTracker, Integer -> PieceTracker
+  tracker-mark-verified (pt) (index) =
+    let updated = update-piece-status pt index PieceVerified
+    in recount updated
+
+  tracker-mark-failed : PieceTracker, Integer -> PieceTracker
+  tracker-mark-failed (pt) (index) =
+    let piece = list-at pt.pt-pieces index
+    in let retried = __record-set (__record-set piece
+          "ps-status" PieceMissing)
+          "ps-attempts" (piece.ps-attempts + 1)
+    in __record-set pt "pt-pieces" (list-set-at pt.pt-pieces index retried)
+
+  update-piece-status : PieceTracker, Integer, PieceStatus -> PieceTracker
+  update-piece-status (pt) (index) (status) =
+    if index >= pt.pt-total then pt
+    else let piece = list-at pt.pt-pieces index
+    in let updated = __record-set piece "ps-status" status
+    in __record-set pt "pt-pieces" (list-set-at pt.pt-pieces index updated)
+
+  recount : PieceTracker -> PieceTracker
+  recount (pt) =
+    let counts = count-statuses pt.pt-pieces 0 0 0
+    in when counts
+      is (have, downloading, verified) ->
+        __record-set (__record-set (__record-set pt
+          "pt-have" have)
+          "pt-downloading" downloading)
+          "pt-verified" verified
+
+  count-statuses : List PieceState, Integer, Integer, Integer -> (Integer, Integer, Integer)
+  count-statuses (pieces) (have) (downloading) (verified) =
+    when pieces
+      is [] -> (have, downloading, verified)
+      is otherwise ->
+        let head = list-at pieces 0
+        in let tail = list-drop pieces 1
+        in when head.ps-status
+          is PieceComplete -> count-statuses tail (have + 1) downloading verified
+          is PieceVerified -> count-statuses tail (have + 1) downloading (verified + 1)
+          is PieceDownloading (_) -> count-statuses tail have (downloading + 1) verified
+          is otherwise -> count-statuses tail have downloading verified
+
+Section: Piece Selection (Rarest First)
+
+  tracker-update-rarity : PieceTracker, List (List Boolean) -> PieceTracker
+  tracker-update-rarity (pt) (peer-bitmaps) =
+    __record-set pt "pt-pieces" (update-rarity-loop pt.pt-pieces peer-bitmaps 0)
+
+  update-rarity-loop : List PieceState, List (List Boolean), Integer -> List PieceState
+  update-rarity-loop (pieces) (bitmaps) (i) =
+    if i >= list-length pieces then pieces
+    else let count = count-peers-with-piece bitmaps i 0
+    in let piece = list-at pieces i
+    in let updated = __record-set piece "ps-rarity" count
+    in update-rarity-loop (list-set-at pieces i updated) bitmaps (i + 1)
+
+  count-peers-with-piece : List (List Boolean), Integer, Integer -> Integer
+  count-peers-with-piece (bitmaps) (piece-idx) (acc) =
+    when bitmaps
+      is [] -> acc
+      is otherwise ->
+        let bitmap = list-at bitmaps 0
+        in let has = if piece-idx < list-length bitmap then list-at bitmap piece-idx else False
+        in count-peers-with-piece (list-drop bitmaps 1) piece-idx (if has then acc + 1 else acc)
+
+  tracker-next-piece : PieceTracker -> Maybe Integer
+  tracker-next-piece (pt) =
+    find-rarest-missing pt.pt-pieces 0 Nothing 999999
+
+  find-rarest-missing : List PieceState, Integer, Maybe Integer, Integer -> Maybe Integer
+  find-rarest-missing (pieces) (i) (best) (best-rarity) =
+    if i >= list-length pieces then best
+    else let piece = list-at pieces i
+    in when piece.ps-status
+      is PieceMissing ->
+        if piece.ps-rarity > 0
+        then if piece.ps-rarity < best-rarity
+          then find-rarest-missing pieces (i + 1) (Just i) piece.ps-rarity
+          else find-rarest-missing pieces (i + 1) best best-rarity
+        else find-rarest-missing pieces (i + 1) best best-rarity
+      is otherwise -> find-rarest-missing pieces (i + 1) best best-rarity
+
+Section: Queries
+
+  tracker-progress-pct : PieceTracker -> Integer
+  tracker-progress-pct (pt) =
+    if pt.pt-total == 0 then 100
+    else (pt.pt-have + pt.pt-verified) * 100 / pt.pt-total
+
+  tracker-is-complete : PieceTracker -> Boolean
+  tracker-is-complete (pt) =
+    pt.pt-have + pt.pt-verified >= pt.pt-total
+
+  tracker-missing-count : PieceTracker -> Integer
+  tracker-missing-count (pt) =
+    pt.pt-total - pt.pt-have - pt.pt-verified
+
+  tracker-have-bitmap : PieceTracker -> List Boolean
+  tracker-have-bitmap (pt) =
+    build-bitmap pt.pt-pieces 0 []
+
+  build-bitmap : List PieceState, Integer, List Boolean -> List Boolean
+  build-bitmap (pieces) (i) (acc) =
+    if i >= list-length pieces then acc
+    else let piece = list-at pieces i
+    in let have = when piece.ps-status
+          is PieceComplete -> True
+          is PieceVerified -> True
+          is otherwise -> False
+    in build-bitmap pieces (i + 1) (list-push acc have)
+
+  format-tracker : PieceTracker -> Text
+  format-tracker (pt) =
+    show (tracker-progress-pct pt) & "% | "
+    & show pt.pt-have & "/" & show pt.pt-total & " pieces | "
+    & show pt.pt-downloading & " downloading | "
+    & show pt.pt-verified & " verified"

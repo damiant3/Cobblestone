@@ -1,0 +1,259 @@
+Chapter: AddressBar
+  cites Foreword chapter Widget
+  cites Foreword chapter RichText
+  cites Foreword chapter TextField
+  cites Foreword chapter Maybe
+  cites Browser chapter ContentAddress
+  cites Browser chapter BrowserTheme
+
+ The address bar displays the current page address and accepts
+ user input for navigation. Supports codex:// addresses,
+ petname shortcuts, and local page names.
+
+Section: Types
+
+  AddressBarState = record {
+    ab-text       : Text,
+    ab-focused    : Boolean,
+    ab-width      : Integer,
+    ab-cursor     : Integer,
+    ab-selection  : Maybe (Integer, Integer),
+    ab-suggestions : List Text,
+    ab-show-suggestions : Boolean,
+    ab-selected-suggestion : Integer
+  }
+
+Section: Construction
+
+  address-bar-new : Integer -> AddressBarState
+  address-bar-new (width) =
+    AddressBarState {
+      ab-text = "",
+      ab-focused = False,
+      ab-width = width,
+      ab-cursor = 0,
+      ab-selection = Nothing,
+      ab-suggestions = [],
+      ab-show-suggestions = False,
+      ab-selected-suggestion = 0
+    }
+
+Section: State Updates
+
+  address-bar-set-text : AddressBarState, Text -> AddressBarState
+  address-bar-set-text (ab) (txt) =
+    __record-set (__record-set (__record-set ab
+      "ab-text" txt)
+      "ab-cursor" (text-length txt))
+      "ab-show-suggestions" False
+
+  address-bar-focus : AddressBarState -> AddressBarState
+  address-bar-focus (ab) =
+    __record-set (__record-set ab
+      "ab-focused" True)
+      "ab-selection" (Just (0, text-length ab.ab-text))
+
+  address-bar-blur : AddressBarState -> AddressBarState
+  address-bar-blur (ab) =
+    __record-set (__record-set (__record-set ab
+      "ab-focused" False)
+      "ab-selection" Nothing)
+      "ab-show-suggestions" False
+
+  address-bar-select-all : AddressBarState -> AddressBarState
+  address-bar-select-all (ab) =
+    __record-set ab "ab-selection" (Just (0, text-length ab.ab-text))
+
+Section: Text Editing
+
+  address-bar-insert-char : AddressBarState, Text -> AddressBarState
+  address-bar-insert-char (ab) (ch) =
+    let cleared = address-bar-clear-selection ab
+    in let before = text-take cleared.ab-text cleared.ab-cursor
+    in let after = text-drop cleared.ab-text cleared.ab-cursor
+    in let new-text = before & ch & after
+    in let updated = __record-set (__record-set cleared
+      "ab-text" new-text)
+      "ab-cursor" (cleared.ab-cursor + 1)
+    in address-bar-update-suggestions updated
+
+  address-bar-backspace : AddressBarState -> AddressBarState
+  address-bar-backspace (ab) =
+    when ab.ab-selection
+      is Just (_, _) -> address-bar-clear-selection ab
+      is Nothing ->
+        if ab.ab-cursor > 0
+        then let before = text-take ab.ab-text (ab.ab-cursor - 1)
+          in let after = text-drop ab.ab-text ab.ab-cursor
+          in let updated = __record-set (__record-set ab
+            "ab-text" (before & after))
+            "ab-cursor" (ab.ab-cursor - 1)
+          in address-bar-update-suggestions updated
+        else ab
+
+  address-bar-delete : AddressBarState -> AddressBarState
+  address-bar-delete (ab) =
+    when ab.ab-selection
+      is Just (_, _) -> address-bar-clear-selection ab
+      is Nothing ->
+        if ab.ab-cursor < text-length ab.ab-text
+        then let before = text-take ab.ab-text ab.ab-cursor
+          in let after = text-drop ab.ab-text (ab.ab-cursor + 1)
+          in __record-set ab "ab-text" (before & after)
+        else ab
+
+  address-bar-clear-selection : AddressBarState -> AddressBarState
+  address-bar-clear-selection (ab) =
+    when ab.ab-selection
+      is Nothing -> ab
+      is Just (start, end-pos) ->
+        let before = text-take ab.ab-text start
+        in let after = text-drop ab.ab-text end-pos
+        in __record-set (__record-set (__record-set ab
+          "ab-text" (before & after))
+          "ab-cursor" start)
+          "ab-selection" Nothing
+
+Section: Cursor Movement
+
+  address-bar-move-left : AddressBarState -> AddressBarState
+  address-bar-move-left (ab) =
+    if ab.ab-cursor > 0
+    then __record-set (__record-set ab
+      "ab-cursor" (ab.ab-cursor - 1))
+      "ab-selection" Nothing
+    else ab
+
+  address-bar-move-right : AddressBarState -> AddressBarState
+  address-bar-move-right (ab) =
+    if ab.ab-cursor < text-length ab.ab-text
+    then __record-set (__record-set ab
+      "ab-cursor" (ab.ab-cursor + 1))
+      "ab-selection" Nothing
+    else ab
+
+  address-bar-move-home : AddressBarState -> AddressBarState
+  address-bar-move-home (ab) =
+    __record-set (__record-set ab "ab-cursor" 0) "ab-selection" Nothing
+
+  address-bar-move-end : AddressBarState -> AddressBarState
+  address-bar-move-end (ab) =
+    __record-set (__record-set ab
+      "ab-cursor" (text-length ab.ab-text))
+      "ab-selection" Nothing
+
+Section: Submission
+
+  address-bar-submit : AddressBarState -> Text
+  address-bar-submit (ab) =
+    let raw = ab.ab-text
+    in normalize-address raw
+
+  normalize-address : Text -> Text
+  normalize-address (raw) =
+    if text-starts-with raw "codex://"
+    then raw
+    else if text-contains raw "."
+    then "codex://" & raw
+    else "codex://local/" & raw
+
+Section: Suggestions
+
+  address-bar-update-suggestions : AddressBarState -> AddressBarState
+  address-bar-update-suggestions (ab) =
+    let input = ab.ab-text
+    in if text-length input < 2
+      then __record-set ab "ab-show-suggestions" False
+      else let suggestions = generate-suggestions input
+        in __record-set (__record-set (__record-set ab
+          "ab-suggestions" suggestions)
+          "ab-show-suggestions" (list-length suggestions > 0))
+          "ab-selected-suggestion" 0
+
+  generate-suggestions : Text -> List Text
+  generate-suggestions (input) =
+    let locals = local-page-names
+    in filter-prefix locals input
+
+  local-page-names : List Text
+  local-page-names =
+    ["codex://local/newtab",
+     "codex://local/hello",
+     "codex://local/about",
+     "codex://local/dashboard",
+     "codex://local/trust",
+     "codex://local/history",
+     "codex://local/settings",
+     "codex://local/media"]
+
+  filter-prefix : List Text, Text -> List Text
+  filter-prefix (items) (prefix) =
+    when items
+      is [] -> []
+      is otherwise ->
+        let head = list-at items 0
+        in let tail = list-drop items 1
+        in if text-contains head prefix
+          then head :: filter-prefix tail prefix
+          else filter-prefix tail prefix
+
+  address-bar-accept-suggestion : AddressBarState -> AddressBarState
+  address-bar-accept-suggestion (ab) =
+    if ab.ab-show-suggestions
+    then if ab.ab-selected-suggestion < list-length ab.ab-suggestions
+      then let suggestion = list-at ab.ab-suggestions ab.ab-selected-suggestion
+        in address-bar-set-text ab suggestion
+      else ab
+    else ab
+
+  address-bar-next-suggestion : AddressBarState -> AddressBarState
+  address-bar-next-suggestion (ab) =
+    if ab.ab-show-suggestions
+    then let next = int-mod (ab.ab-selected-suggestion + 1) (list-length ab.ab-suggestions)
+      in __record-set ab "ab-selected-suggestion" next
+    else ab
+
+  address-bar-prev-suggestion : AddressBarState -> AddressBarState
+  address-bar-prev-suggestion (ab) =
+    if ab.ab-show-suggestions
+    then let count = list-length ab.ab-suggestions
+      in let prev = int-mod (ab.ab-selected-suggestion - 1 + count) count
+      in __record-set ab "ab-selected-suggestion" prev
+    else ab
+
+Section: Rendering
+
+  address-bar-render : AddressBarState, Integer -> WidgetNode
+  address-bar-render (ab) (trust-color) =
+    let back-btn = widget-button "nav-back" "<"
+    in let fwd-btn = widget-button "nav-forward" ">"
+    in let reload-btn = widget-button "nav-reload" "R"
+    in let input = widget-input "address" ab.ab-text ab.ab-cursor
+    in let trust = widget-custom "trust-indicator" "" trust-indicator-size trust-indicator-size
+    in let bar = widget-panel "address-bar" DirRow spacing-sm [
+          back-btn, fwd-btn, reload-btn,
+          widget-set-flex input 1,
+          trust
+        ]
+    in if ab.ab-show-suggestions
+      then let suggestion-list = render-suggestions ab.ab-suggestions ab.ab-selected-suggestion
+        in widget-panel "address-container" DirColumn 0 [bar, suggestion-list]
+      else bar
+
+  render-suggestions : List Text, Integer -> WidgetNode
+  render-suggestions (suggestions) (selected) =
+    let items = render-suggestion-items suggestions selected 0
+    in widget-panel "suggestions" DirColumn 0 items
+
+  render-suggestion-items : List Text, Integer, Integer -> List WidgetNode
+  render-suggestion-items (suggestions) (selected) (idx) =
+    when suggestions
+      is [] -> []
+      is otherwise ->
+        let head = list-at suggestions 0
+        in let tail = list-drop suggestions 1
+        in let item = widget-button ("suggestion-" & show idx) head
+        in let styled = if idx == selected
+              then widget-set-state item 1
+              else item
+        in styled :: render-suggestion-items tail selected (idx + 1)

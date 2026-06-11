@@ -1,0 +1,188 @@
+Chapter: TransferProtocol
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+
+ Wire protocol for peer-to-peer piece exchange. Runs over TCP.
+
+ Message format:
+   bytes 0-3:   message length (LE uint32, excludes this header)
+   byte 4:      message type
+   bytes 5-N:   payload
+
+ Messages:
+   HANDSHAKE (0x01): content-hash(32) + peer-id(32) + signature(64)
+   BITFIELD  (0x02): piece-count(4) + bitmap(N bytes, 1 bit per piece)
+   HAVE      (0x03): piece-index(4)
+   REQUEST   (0x04): piece-index(4) + offset(4) + length(4)
+   PIECE     (0x05): piece-index(4) + offset(4) + data(N)
+   CANCEL    (0x06): piece-index(4) + offset(4) + length(4)
+   CHOKE     (0x07): (empty)
+   UNCHOKE   (0x08): (empty)
+   INTEREST  (0x09): (empty)
+   NOTINTEREST (0x0A): (empty)
+   KEEPALIVE (0x00): (empty)
+
+Section: Message Types
+
+  MsgType =
+    | MtKeepAlive
+    | MtHandshake
+    | MtBitfield
+    | MtHave
+    | MtRequest
+    | MtPiece
+    | MtCancel
+    | MtChoke
+    | MtUnchoke
+    | MtInterested
+    | MtNotInterested
+
+  PeerMessage =
+    | PmKeepAlive
+    | PmHandshake (List Integer, List Integer, List Integer)
+    | PmBitfield (List Boolean)
+    | PmHave (Integer)
+    | PmRequest (Integer, Integer, Integer)
+    | PmPiece (Integer, Integer, List Integer)
+    | PmCancel (Integer, Integer, Integer)
+    | PmChoke
+    | PmUnchoke
+    | PmInterested
+    | PmNotInterested
+    | PmInvalid
+
+Section: Encoding
+
+  encode-handshake : List Integer, List Integer, List Integer -> List Integer
+  encode-handshake (content-hash) (peer-id) (signature) =
+    let payload = content-hash & peer-id & signature
+    in write-msg-header (1 + list-length payload) 1 & payload
+
+  encode-bitfield : List Boolean -> List Integer
+  encode-bitfield (pieces) =
+    let bitmap = pack-bits pieces
+    in let payload = write-u32 (list-length pieces) & bitmap
+    in write-msg-header (1 + list-length payload) 2 & payload
+
+  encode-have : Integer -> List Integer
+  encode-have (index) =
+    write-msg-header 5 3 & write-u32 index
+
+  encode-request : Integer, Integer, Integer -> List Integer
+  encode-request (index) (offset) (length) =
+    write-msg-header 13 4 & write-u32 index & write-u32 offset & write-u32 length
+
+  encode-piece : Integer, Integer, List Integer -> List Integer
+  encode-piece (index) (offset) (data) =
+    let payload = write-u32 index & write-u32 offset & data
+    in write-msg-header (1 + list-length payload) 5 & payload
+
+  encode-cancel : Integer, Integer, Integer -> List Integer
+  encode-cancel (index) (offset) (length) =
+    write-msg-header 13 6 & write-u32 index & write-u32 offset & write-u32 length
+
+  encode-choke : List Integer
+  encode-choke = write-msg-header 1 7
+
+  encode-unchoke : List Integer
+  encode-unchoke = write-msg-header 1 8
+
+  encode-interested : List Integer
+  encode-interested = write-msg-header 1 9
+
+  encode-not-interested : List Integer
+  encode-not-interested = write-msg-header 1 10
+
+  encode-keepalive : List Integer
+  encode-keepalive = write-u32 0
+
+Section: Decoding
+
+  decode-message : List Integer -> PeerMessage
+  decode-message (data) =
+    if list-length data < 4 then PmInvalid
+    else let msg-len = read-u32 data 0
+    in if msg-len == 0 then PmKeepAlive
+    else if list-length data < 4 + msg-len then PmInvalid
+    else let msg-type = list-at data 4
+    in decode-by-type msg-type data 5 (msg-len - 1)
+
+  decode-by-type : Integer, List Integer, Integer, Integer -> PeerMessage
+  decode-by-type (mtype) (data) (offset) (payload-len) =
+    if mtype == 1 then decode-handshake-msg data offset
+    else if mtype == 2 then decode-bitfield-msg data offset payload-len
+    else if mtype == 3 then PmHave (read-u32 data offset)
+    else if mtype == 4 then PmRequest (read-u32 data offset, read-u32 data (offset + 4), read-u32 data (offset + 8))
+    else if mtype == 5 then decode-piece-msg data offset payload-len
+    else if mtype == 6 then PmCancel (read-u32 data offset, read-u32 data (offset + 4), read-u32 data (offset + 8))
+    else if mtype == 7 then PmChoke
+    else if mtype == 8 then PmUnchoke
+    else if mtype == 9 then PmInterested
+    else if mtype == 10 then PmNotInterested
+    else PmInvalid
+
+  decode-handshake-msg : List Integer, Integer -> PeerMessage
+  decode-handshake-msg (data) (off) =
+    let content-hash = list-take (list-drop data off) 32
+    in let peer-id = list-take (list-drop data (off + 32)) 32
+    in let signature = list-take (list-drop data (off + 64)) 64
+    in PmHandshake (content-hash, peer-id, signature)
+
+  decode-bitfield-msg : List Integer, Integer, Integer -> PeerMessage
+  decode-bitfield-msg (data) (off) (payload-len) =
+    let piece-count = read-u32 data off
+    in let bitmap-bytes = list-take (list-drop data (off + 4)) (payload-len - 4)
+    in PmBitfield (unpack-bits bitmap-bytes piece-count)
+
+  decode-piece-msg : List Integer, Integer, Integer -> PeerMessage
+  decode-piece-msg (data) (off) (payload-len) =
+    let index = read-u32 data off
+    in let piece-offset = read-u32 data (off + 4)
+    in let piece-data = list-take (list-drop data (off + 8)) (payload-len - 8)
+    in PmPiece (index, piece-offset, piece-data)
+
+Section: Bit Packing
+
+  pack-bits : List Boolean -> List Integer
+  pack-bits (bits) =
+    pack-bits-loop bits 0 0 []
+
+  pack-bits-loop : List Boolean, Integer, Integer, List Integer -> List Integer
+  pack-bits-loop (bits) (i) (current-byte) (acc) =
+    if i >= list-length bits
+    then if int-mod i 8 /= 0 then list-push acc current-byte else acc
+    else let bit-pos = int-mod i 8
+    in let val = if list-at bits i then 1 else 0
+    in let shifted = bit-shl val (7 - bit-pos)
+    in let new-byte = bit-or current-byte shifted
+    in if bit-pos == 7
+      then pack-bits-loop bits (i + 1) 0 (list-push acc new-byte)
+      else pack-bits-loop bits (i + 1) new-byte acc
+
+  unpack-bits : List Integer, Integer -> List Boolean
+  unpack-bits (bytes) (count) =
+    unpack-bits-loop bytes count 0 []
+
+  unpack-bits-loop : List Integer, Integer, Integer, List Boolean -> List Boolean
+  unpack-bits-loop (bytes) (count) (i) (acc) =
+    if i >= count then acc
+    else let byte-idx = i / 8
+    in let bit-pos = int-mod i 8
+    in let b = if byte-idx < list-length bytes then list-at bytes byte-idx else 0
+    in let is-set = bit-and (bit-shru b (7 - bit-pos)) 1 == 1
+    in unpack-bits-loop bytes count (i + 1) (list-push acc is-set)
+
+Section: Helpers
+
+  write-msg-header : Integer, Integer -> List Integer
+  write-msg-header (length) (msg-type) =
+    write-u32 length & [msg-type]
+
+  write-u32 : Integer -> List Integer
+  write-u32 (n) =
+    [bit-and n 255, bit-and (n / 256) 255, bit-and (n / 65536) 255, bit-and (n / 16777216) 255]
+
+  read-u32 : List Integer, Integer -> Integer
+  read-u32 (data) (off) =
+    list-at data off + (list-at data (off + 1)) * 256 + (list-at data (off + 2)) * 65536 + (list-at data (off + 3)) * 16777216

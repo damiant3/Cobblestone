@@ -1,0 +1,154 @@
+Chapter: TestGroupMembership
+  cites Net chapter GroupMembership
+  cites Foreword chapter Maybe
+
+ Unit tests for group membership: join, heartbeat, suspect/dead
+ transitions, leader election, service registry, and trust gating.
+
+Section: Harness
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) = if val then "PASS " & label else "FAIL " & label
+
+  assert-false : Text, Boolean -> Text
+  assert-false (label) (val) = if val then "FAIL " & label else "PASS " & label
+
+Section: Membership Tests
+
+  test-group-create : Text
+  test-group-create =
+    let gs = group-new "test" "node-1"
+    in let t1 = assert-eq-text "group-name" "test" (gs.gs-group-name)
+    in let t2 = assert-eq-text "self-id" "node-1" (gs.gs-self-id)
+    in let t3 = assert-true "is-leader" (gs.gs-is-leader)
+    in let t4 = assert-eq-int "gen-1" 1 (gs.gs-generation)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-add-members : Text
+  test-add-members =
+    let gs = group-new "test" "node-1"
+    in let m1 = member-new "node-2" "machine-2" "10.0.2.16" 9100 []
+    in let m2 = member-new "node-3" "machine-3" "10.0.2.17" 9100 []
+    in let gs2 = gs-add-member (gs-add-member gs m1) m2
+    in let t1 = assert-eq-int "member-count" 2 (gs2.gs-member-count)
+    in let t2 = assert-eq-int "alive-count" 2 (gs-alive-count gs2)
+    in let found = gs-find-member gs2 "node-2"
+    in let t3 = when found
+      is Just (m) -> assert-eq-text "found-name" "machine-2" (m.gm-name)
+      is None -> "FAIL find-node-2"
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Heartbeat and Timeout Tests
+
+  test-heartbeat : Text
+  test-heartbeat =
+    let gs = group-new "test" "node-1"
+    in let m = __record-set (member-new "node-2" "m2" "10.0.2.16" 9100 []) "gm-last-heartbeat" 100
+    in let gs2 = gs-add-member gs m
+    in let gs3 = gs-process-heartbeat gs2 "node-2" 5 200
+    in let found = gs-find-member gs3 "node-2"
+    in let t1 = when found
+      is Just (m2) -> assert-eq-int "hb-updated" 200 (m2.gm-last-heartbeat)
+      is None -> "FAIL heartbeat-find"
+    in t1
+
+  test-timeouts : Text
+  test-timeouts =
+    let gs = group-new "test" "node-1"
+    in let m = __record-set (member-new "node-2" "m2" "10.0.2.16" 9100 []) "gm-last-heartbeat" 0
+    in let gs2 = gs-add-member gs m
+    in let gs3 = gs-check-timeouts gs2 20
+    in let found1 = gs-find-member gs3 "node-2"
+    in let t1 = when found1
+      is Just (m2) -> assert-eq-text "suspect" "suspect" (ms-label (m2.gm-status))
+      is None -> "FAIL timeout-suspect"
+    in let gs4 = gs-check-timeouts gs2 50
+    in let found2 = gs-find-member gs4 "node-2"
+    in let t2 = when found2
+      is Just (m2) -> assert-eq-text "dead" "dead" (ms-label (m2.gm-status))
+      is None -> "FAIL timeout-dead"
+    in t1 & "\n" & t2
+
+Section: Election Tests
+
+  test-election : Text
+  test-election =
+    let gs = group-new "test" "node-1"
+    in let m1 = __record-set (__record-set (member-new "node-1" "m1" "10.0.2.15" 9100 []) "gm-trust-score" 8000) "gm-generation" 1
+    in let m2 = __record-set (__record-set (member-new "node-2" "m2" "10.0.2.16" 9100 []) "gm-trust-score" 9000) "gm-generation" 1
+    in let gs2 = gs-add-member (gs-add-member gs m1) m2
+    in let gs3 = gs-elect-leader gs2
+    in let t1 = assert-eq-text "highest-trust-wins" "node-2" (gs3.gs-leader-id)
+    in let t2 = assert-eq-int "gen-bumped" 2 (gs3.gs-generation)
+    in let t3 = assert-false "not-self-leader" (gs3.gs-is-leader)
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-leader-return : Text
+  test-leader-return =
+    let gs = group-new "test" "node-1"
+    in let m1 = member-new "node-1" "m1" "10.0.2.15" 9100 []
+    in let m2 = member-new "node-2" "m2" "10.0.2.16" 9100 []
+    in let gs2 = gs-add-member (gs-add-member gs m1) m2
+    in let gs3 = __record-set gs2 "gs-leader-id" "node-2"
+    in let gs4 = gs-leader-return gs3 "node-1" 100
+    in let t1 = assert-eq-text "leader-returned" "node-1" (gs4.gs-leader-id)
+    in let t2 = assert-eq-int "gen-bumped-again" 2 (gs4.gs-generation)
+    in t1 & "\n" & t2
+
+Section: Service Registry Tests
+
+  test-services : Text
+  test-services =
+    let gs = group-new "test" "node-1"
+    in let loc1 = svc-location-new "web" "1.0" "node-1" "10.0.2.15" 8080 SrPrimary
+    in let loc2 = svc-location-new "web" "1.0" "node-2" "10.0.2.16" 8080 SrHotBackup
+    in let loc3 = svc-location-new "dns" "1.0" "node-1" "10.0.2.15" 53 SrPrimary
+    in let gs2 = gs-register-service (gs-register-service (gs-register-service gs loc1) loc2) loc3
+    in let t1 = assert-eq-int "total-svcs" 3 (gs2.gs-service-count)
+    in let web-locs = gs-find-service gs2 "web"
+    in let t2 = assert-eq-int "web-instances" 2 (list-length web-locs)
+    in let primary = gs-find-primary gs2 "web"
+    in let t3 = when primary
+      is Just (loc) -> assert-eq-text "primary-member" "node-1" (loc.sl-member-id)
+      is None -> "FAIL find-primary"
+    in let unique = gs-unique-services gs2
+    in let t4 = assert-eq-int "unique-svcs" 2 (list-length unique)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-service-update : Text
+  test-service-update =
+    let gs = group-new "test" "node-1"
+    in let loc1 = svc-location-new "web" "1.0" "node-1" "10.0.2.15" 8080 SrPrimary
+    in let gs2 = gs-register-service gs loc1
+    in let loc2 = svc-location-new "web" "2.0" "node-1" "10.0.2.15" 8080 SrPrimary
+    in let gs3 = gs-register-service gs2 loc2
+    in let locs = gs-find-service gs3 "web"
+    in let t1 = assert-eq-int "deduped" 1 (list-length locs)
+    in t1
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== GroupMembership Tests ==="
+    print-line-uni test-group-create
+    print-line-uni test-add-members
+    print-line-uni test-heartbeat
+    print-line-uni test-timeouts
+    print-line-uni test-election
+    print-line-uni test-leader-return
+    print-line-uni test-services
+    print-line-uni test-service-update
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

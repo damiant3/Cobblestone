@@ -1,0 +1,235 @@
+Chapter: PortScanner
+  cites Foreword chapter Maybe
+
+ Network port scanner. Probes a target host across a range of ports
+ to discover open services. Supports TCP connect scan, SYN scan
+ (half-open), and UDP scan. Results include service identification
+ (well-known port mapping), banner grabbing, and response time.
+
+Section: Scan Types
+
+  ScanType =
+    | ScanTcpConnect
+    | ScanTcpSyn
+    | ScanUdp
+    | ScanPing
+
+  scan-type-label : ScanType -> Text
+  scan-type-label (t) = when t
+    is ScanTcpConnect -> "TCP Connect"
+    is ScanTcpSyn -> "TCP SYN"
+    is ScanUdp -> "UDP"
+    is ScanPing -> "Ping"
+
+Section: Port Result
+
+  PortStatus =
+    | PsOpen
+    | PsClosed
+    | PsFiltered
+    | PsOpenFiltered
+    | PsTimeout
+
+  ps-label : PortStatus -> Text
+  ps-label (s) = when s
+    is PsOpen -> "open"
+    is PsClosed -> "closed"
+    is PsFiltered -> "filtered"
+    is PsOpenFiltered -> "open|filtered"
+    is PsTimeout -> "timeout"
+
+  ScanResult = record {
+    scr-port : Integer,
+    scr-protocol : Text,
+    scr-status : PortStatus,
+    scr-service : Text,
+    scr-banner : Text,
+    scr-latency-ms : Integer,
+    scr-version : Text
+  }
+
+  scan-result-new : Integer, Text, PortStatus -> ScanResult
+  scan-result-new (port) (proto) (status) = ScanResult {
+    scr-port = port, scr-protocol = proto, scr-status = status,
+    scr-service = well-known-service port, scr-banner = "",
+    scr-latency-ms = 0, scr-version = ""
+  }
+
+Section: Well-Known Services
+
+  well-known-service : Integer -> Text
+  well-known-service (port) =
+    if port == 22 then "ssh"
+    else if port == 23 then "telnet"
+    else if port == 25 then "smtp"
+    else if port == 53 then "dns"
+    else if port == 80 then "http"
+    else if port == 110 then "pop3"
+    else if port == 143 then "imap"
+    else if port == 443 then "https"
+    else if port == 445 then "smb"
+    else if port == 993 then "imaps"
+    else if port == 995 then "pop3s"
+    else if port == 3306 then "mysql"
+    else if port == 5432 then "postgresql"
+    else if port == 6379 then "redis"
+    else if port == 8080 then "http-alt"
+    else if port == 8443 then "https-alt"
+    else if port == 9100 then "codex-tcp"
+    else if port == 2682 then "cvmm"
+    else if port == 27017 then "mongodb"
+    else ""
+
+Section: Scan Profile
+
+  ScanProfile = record {
+    sp-name : Text,
+    sp-target : Text,
+    sp-scan-type : ScanType,
+    sp-port-start : Integer,
+    sp-port-end : Integer,
+    sp-timeout-ms : Integer,
+    sp-concurrency : Integer,
+    sp-retries : Integer
+  }
+
+  profile-common-ports : Text -> ScanProfile
+  profile-common-ports (target) = ScanProfile {
+    sp-name = "Common Ports", sp-target = target,
+    sp-scan-type = ScanTcpConnect,
+    sp-port-start = 1, sp-port-end = 1024,
+    sp-timeout-ms = 3000, sp-concurrency = 50, sp-retries = 1
+  }
+
+  profile-full-scan : Text -> ScanProfile
+  profile-full-scan (target) = ScanProfile {
+    sp-name = "Full Scan", sp-target = target,
+    sp-scan-type = ScanTcpConnect,
+    sp-port-start = 1, sp-port-end = 65535,
+    sp-timeout-ms = 2000, sp-concurrency = 100, sp-retries = 0
+  }
+
+  profile-quick-scan : Text -> ScanProfile
+  profile-quick-scan (target) = ScanProfile {
+    sp-name = "Quick Scan", sp-target = target,
+    sp-scan-type = ScanTcpConnect,
+    sp-port-start = 1, sp-port-end = 1024,
+    sp-timeout-ms = 1000, sp-concurrency = 200, sp-retries = 0
+  }
+
+Section: Scan State
+
+  ScanState = record {
+    ss-profile : ScanProfile,
+    ss-results : List ScanResult,
+    ss-result-count : Integer,
+    ss-open-count : Integer,
+    ss-closed-count : Integer,
+    ss-filtered-count : Integer,
+    ss-current-port : Integer,
+    ss-scanning : Boolean,
+    ss-start-time : Integer,
+    ss-end-time : Integer,
+    ss-elapsed-ms : Integer
+  }
+
+  scan-new : ScanProfile -> ScanState
+  scan-new (profile) = ScanState {
+    ss-profile = profile,
+    ss-results = [], ss-result-count = 0,
+    ss-open-count = 0, ss-closed-count = 0, ss-filtered-count = 0,
+    ss-current-port = profile.sp-port-start,
+    ss-scanning = False,
+    ss-start-time = 0, ss-end-time = 0, ss-elapsed-ms = 0
+  }
+
+  ss-add-result : ScanState, ScanResult -> ScanState
+  ss-add-result (st) (r) =
+    let open-d = when r.scr-status is PsOpen -> 1 is otherwise -> 0
+    in let closed-d = when r.scr-status is PsClosed -> 1 is otherwise -> 0
+    in let filt-d = when r.scr-status is PsFiltered -> 1 is PsOpenFiltered -> 1 is otherwise -> 0
+    in ScanState {
+      ss-profile = st.ss-profile,
+      ss-results = list-push (st.ss-results) r,
+      ss-result-count = st.ss-result-count + 1,
+      ss-open-count = st.ss-open-count + open-d,
+      ss-closed-count = st.ss-closed-count + closed-d,
+      ss-filtered-count = st.ss-filtered-count + filt-d,
+      ss-current-port = r.scr-port + 1,
+      ss-scanning = st.ss-scanning,
+      ss-start-time = st.ss-start-time,
+      ss-end-time = st.ss-end-time,
+      ss-elapsed-ms = st.ss-elapsed-ms
+    }
+
+  ss-open-results : ScanState -> List ScanResult
+  ss-open-results (st) = ss-open-loop (st.ss-results) 0 (st.ss-result-count) []
+
+  ss-open-loop : List ScanResult, Integer, Integer, List ScanResult -> List ScanResult
+  ss-open-loop (results) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at results i
+    in when r.scr-status
+      is PsOpen -> ss-open-loop results (i + 1) n (list-push acc r)
+      is PsOpenFiltered -> ss-open-loop results (i + 1) n (list-push acc r)
+      is otherwise -> ss-open-loop results (i + 1) n acc
+
+  ss-progress-pct : ScanState -> Integer
+  ss-progress-pct (st) =
+    let total = (st.ss-profile).sp-port-end - (st.ss-profile).sp-port-start + 1
+    in if total <= 0 then 100
+    else (st.ss-current-port - (st.ss-profile).sp-port-start) * 100 / total
+
+  ss-ports-per-sec : ScanState -> Integer
+  ss-ports-per-sec (st) =
+    if st.ss-elapsed-ms <= 0 then 0
+    else st.ss-result-count * 1000 / st.ss-elapsed-ms
+
+  ss-start : ScanState, Integer -> ScanState
+  ss-start (st) (now) = __record-set (__record-set st "ss-scanning" True) "ss-start-time" now
+
+  ss-finish : ScanState, Integer -> ScanState
+  ss-finish (st) (now) =
+    __record-set (__record-set (__record-set st "ss-scanning" False) "ss-end-time" now) "ss-elapsed-ms" (now - st.ss-start-time)
+
+Section: Network Topology Discovery
+
+  DiscoveredHost = record {
+    dh-address : Text,
+    dh-hostname : Text,
+    dh-mac : Text,
+    dh-os-guess : Text,
+    dh-open-ports : Integer,
+    dh-latency-ms : Integer,
+    dh-first-seen : Integer,
+    dh-last-seen : Integer
+  }
+
+  host-new : Text, Integer, Integer -> DiscoveredHost
+  host-new (addr) (latency) (ts) = DiscoveredHost {
+    dh-address = addr, dh-hostname = "",
+    dh-mac = "", dh-os-guess = "",
+    dh-open-ports = 0, dh-latency-ms = latency,
+    dh-first-seen = ts, dh-last-seen = ts
+  }
+
+  NetworkMap = record {
+    nm-hosts : List DiscoveredHost,
+    nm-host-count : Integer,
+    nm-subnet : Text,
+    nm-scan-time : Integer,
+    nm-gateway : Text
+  }
+
+  netmap-new : Text -> NetworkMap
+  netmap-new (subnet) = NetworkMap {
+    nm-hosts = [], nm-host-count = 0,
+    nm-subnet = subnet, nm-scan-time = 0,
+    nm-gateway = ""
+  }
+
+  nm-add-host : NetworkMap, DiscoveredHost -> NetworkMap
+  nm-add-host (nm) (h) =
+    __record-set (__record-set nm "nm-hosts" (list-push (nm.nm-hosts) h)) "nm-host-count" (nm.nm-host-count + 1)
+
+Page 1

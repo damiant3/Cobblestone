@@ -1,0 +1,464 @@
+Chapter: ErpTypes
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Foundation types for the ERP suite. All monetary amounts are integers
+ in the smallest currency unit. All dates are integers (YYYYMMDD for
+ periods, unix seconds for timestamps). Every entity has a company
+ code for multi-company isolation.
+
+ Scaling conventions, binding for the whole suite: money is integer
+ cents. Rates are basis points where 10000 equals 100 percent.
+ Ratios and indices use x100 where 100 equals 1.00 (CPI, SPI,
+ utilization, percent-complete). Fractional quantities use x1000
+ (bill-of-material component quantities). Exchange rates use x10000.
+ A field name carries its scale as a suffix whenever the value is not
+ plain cents: rate-bps, spi-x100, quantity-x1000, rate-x10000.
+ Division by a scale constant rounds half up by adding half the
+ divisor first; bare truncating division on a scaled value is a bug.
+
+Section: Company and Organization
+
+  Company = record {
+    co-code : Text,
+    co-name : Text,
+    co-currency : Text,
+    co-country : Text,
+    co-fiscal-year-start : Integer,
+    co-active : Boolean
+  }
+
+  CostCenter = record {
+    cc-code : Text,
+    cc-name : Text,
+    cc-company : Text,
+    cc-manager : Text,
+    cc-parent : Text,
+    cc-active : Boolean
+  }
+
+  Department = record {
+    dept-code : Text,
+    dept-name : Text,
+    dept-company : Text,
+    dept-cost-center : Text,
+    dept-head : Text
+  }
+
+  Plant = record {
+    plant-code : Text,
+    plant-name : Text,
+    plant-company : Text,
+    plant-address : Text,
+    plant-country : Text
+  }
+
+  Warehouse = record {
+    wh-code : Text,
+    wh-name : Text,
+    wh-plant : Text,
+    wh-type : WarehouseType,
+    wh-capacity : Integer
+  }
+
+  WarehouseType =
+    | WhRaw
+    | WhFinished
+    | WhWip
+    | WhTransit
+    | WhReturns
+
+Section: Chart of Accounts
+
+  AccountType =
+    | Asset
+    | Liability
+    | Equity
+    | Revenue
+    | Expense
+
+  account-type-name : AccountType -> Text
+  account-type-name (t) =
+    when t
+      is Asset -> "Asset"
+      is Liability -> "Liability"
+      is Equity -> "Equity"
+      is Revenue -> "Revenue"
+      is Expense -> "Expense"
+
+  account-normal-balance : AccountType -> Text
+  account-normal-balance (t) =
+    when t
+      is Asset -> "debit"
+      is Expense -> "debit"
+      is Liability -> "credit"
+      is Equity -> "credit"
+      is Revenue -> "credit"
+
+  GlAccount = record {
+    gl-number : Text,
+    gl-name : Text,
+    gl-type : AccountType,
+    gl-parent : Text,
+    gl-company : Text,
+    gl-currency : Text,
+    gl-is-control : Boolean,
+    gl-is-bank : Boolean,
+    gl-active : Boolean
+  }
+
+Section: Fiscal Periods
+
+  FiscalPeriod = record {
+    fp-year : Integer,
+    fp-period : Integer,
+    fp-company : Text,
+    fp-start-date : Integer,
+    fp-end-date : Integer,
+    fp-status : PeriodStatus
+  }
+
+  PeriodStatus =
+    | PeriodOpen
+    | PeriodSoftClose
+    | PeriodClosed
+
+  period-status-name : PeriodStatus -> Text
+  period-status-name (s) =
+    when s
+      is PeriodOpen -> "open"
+      is PeriodSoftClose -> "soft-close"
+      is PeriodClosed -> "closed"
+
+Section: Journal Entries (Double-Entry Core)
+
+  JournalEntry = record {
+    je-id : Text,
+    je-company : Text,
+    je-date : Integer,
+    je-period : Integer,
+    je-year : Integer,
+    je-description : Text,
+    je-lines : List JournalLine,
+    je-source : JournalSource,
+    je-posted : Boolean,
+    je-reversed : Boolean,
+    je-reversal-of : Text,
+    je-created-by : Text,
+    je-approved-by : Text,
+    je-created : Integer
+  }
+
+  JournalLine = record {
+    jl-account : Text,
+    jl-debit : Integer,
+    jl-credit : Integer,
+    jl-cost-center : Text,
+    jl-description : Text,
+    jl-currency : Text,
+    jl-fx-amount : Integer,
+    jl-fx-rate : Integer
+  }
+
+  journal-line-debit : Text, Integer, Text, Text -> JournalLine
+  journal-line-debit (acct) (amt) (cc) (desc) = JournalLine {
+    jl-account = acct, jl-debit = amt, jl-credit = 0,
+    jl-cost-center = cc, jl-description = desc,
+    jl-currency = "", jl-fx-amount = 0, jl-fx-rate = 0
+  }
+
+  journal-line-credit : Text, Integer, Text, Text -> JournalLine
+  journal-line-credit (acct) (amt) (cc) (desc) = JournalLine {
+    jl-account = acct, jl-debit = 0, jl-credit = amt,
+    jl-cost-center = cc, jl-description = desc,
+    jl-currency = "", jl-fx-amount = 0, jl-fx-rate = 0
+  }
+
+  JournalSource =
+    | SrcManual
+    | SrcAP
+    | SrcAR
+    | SrcPayroll
+    | SrcInventory
+    | SrcAsset
+    | SrcBank
+    | SrcAllocation
+    | SrcClosing
+
+  je-is-balanced : JournalEntry -> Boolean
+  je-is-balanced (je) =
+    let totals = sum-je-lines (je.je-lines) 0 0
+    in totals.total-debits == totals.total-credits
+
+  JeTotals = record { total-debits : Integer, total-credits : Integer }
+
+  sum-je-lines : List JournalLine, Integer, Integer -> JeTotals
+  sum-je-lines (lines) (d) (c) =
+    if list-length lines == 0 then JeTotals { total-debits = d, total-credits = c }
+    else let l = list-at lines 0
+    in sum-je-lines (list-tail lines) (d + l.jl-debit) (c + l.jl-credit)
+
+Section: Accounts Payable
+
+  Vendor = record {
+    vnd-id : Text,
+    vnd-name : Text,
+    vnd-company : Text,
+    vnd-tax-id : Text,
+    vnd-payment-terms : Text,
+    vnd-currency : Text,
+    vnd-gl-account : Text,
+    vnd-address : Text,
+    vnd-contact : Text,
+    vnd-phone : Text,
+    vnd-email : Text,
+    vnd-bank-account : Text,
+    vnd-active : Boolean
+  }
+
+  ApInvoice = record {
+    api-id : Text,
+    api-vendor-id : Text,
+    api-company : Text,
+    api-invoice-num : Text,
+    api-date : Integer,
+    api-due-date : Integer,
+    api-amount : Integer,
+    api-tax-amount : Integer,
+    api-currency : Text,
+    api-lines : List ApInvoiceLine,
+    api-status : ApStatus,
+    api-po-ref : Text,
+    api-gr-ref : Text,
+    api-payment-ref : Text,
+    api-three-way-match : Boolean,
+    api-created : Integer
+  }
+
+  ApInvoiceLine = record {
+    apl-gl-account : Text,
+    apl-amount : Integer,
+    apl-tax-code : Text,
+    apl-cost-center : Text,
+    apl-description : Text,
+    apl-quantity : Integer,
+    apl-unit-price : Integer
+  }
+
+  ApStatus =
+    | ApPending
+    | ApApproved
+    | ApScheduled
+    | ApPaid
+    | ApDisputed
+    | ApVoided
+
+  ap-status-name : ApStatus -> Text
+  ap-status-name (s) =
+    when s
+      is ApPending -> "pending"
+      is ApApproved -> "approved"
+      is ApScheduled -> "scheduled"
+      is ApPaid -> "paid"
+      is ApDisputed -> "disputed"
+      is ApVoided -> "voided"
+
+Section: Accounts Receivable
+
+  Customer = record {
+    cust-id : Text,
+    cust-name : Text,
+    cust-company : Text,
+    cust-tax-id : Text,
+    cust-payment-terms : Text,
+    cust-credit-limit : Integer,
+    cust-currency : Text,
+    cust-gl-account : Text,
+    cust-address : Text,
+    cust-contact : Text,
+    cust-phone : Text,
+    cust-email : Text,
+    cust-active : Boolean
+  }
+
+  ArInvoice = record {
+    ari-id : Text,
+    ari-customer-id : Text,
+    ari-company : Text,
+    ari-invoice-num : Text,
+    ari-date : Integer,
+    ari-due-date : Integer,
+    ari-amount : Integer,
+    ari-tax-amount : Integer,
+    ari-currency : Text,
+    ari-lines : List ArInvoiceLine,
+    ari-status : ArStatus,
+    ari-so-ref : Text,
+    ari-payment-received : Integer,
+    ari-created : Integer
+  }
+
+  ArInvoiceLine = record {
+    arl-gl-account : Text,
+    arl-amount : Integer,
+    arl-tax-code : Text,
+    arl-description : Text,
+    arl-quantity : Integer,
+    arl-unit-price : Integer
+  }
+
+  ArStatus =
+    | ArOpen
+    | ArPartial
+    | ArPaid
+    | ArOverdue
+    | ArWrittenOff
+    | ArCreditNote
+
+Section: Fixed Assets
+
+  AssetClass =
+    | Buildings
+    | Machinery
+    | Vehicles
+    | Furniture
+    | IT_Equipment
+    | Intangible
+    | LandAsset
+
+  DepreciationMethod =
+    | StraightLine
+    | DecliningBalance (Integer)
+    | SumOfYears
+    | UnitsOfProduction
+
+  FixedAsset = record {
+    fa-id : Text,
+    fa-name : Text,
+    fa-company : Text,
+    fa-class : AssetClass,
+    fa-cost : Integer,
+    fa-salvage-value : Integer,
+    fa-useful-life-months : Integer,
+    fa-depreciation-method : DepreciationMethod,
+    fa-accumulated-depr : Integer,
+    fa-acquisition-date : Integer,
+    fa-in-service-date : Integer,
+    fa-disposal-date : Integer,
+    fa-gl-asset-account : Text,
+    fa-gl-depr-account : Text,
+    fa-gl-accum-account : Text,
+    fa-cost-center : Text,
+    fa-location : Text,
+    fa-serial-number : Text,
+    fa-status : AssetStatus
+  }
+
+  AssetStatus =
+    | AssetActive
+    | AssetDisposed
+    | AssetFullyDepreciated
+    | AssetTransferred
+
+  net-book-value : FixedAsset -> Integer
+  net-book-value (fa) = fa.fa-cost - fa.fa-accumulated-depr
+
+  monthly-depreciation : FixedAsset, Integer -> Integer
+  monthly-depreciation (fa) (month) =
+    when fa.fa-depreciation-method
+      is StraightLine ->
+        if fa.fa-useful-life-months == 0 then 0
+        else (fa.fa-cost - fa.fa-salvage-value) / fa.fa-useful-life-months
+      is DecliningBalance (rate-pct) ->
+        net-book-value fa * rate-pct / 1200
+      is SumOfYears ->
+        sum-of-months-depreciation fa month
+      is UnitsOfProduction -> 0
+
+ The month parameter is the one-based month in service. StraightLine
+ and DecliningBalance ignore the month: the first is constant and the
+ second reads the asset's accumulated state. UnitsOfProduction is not
+ a time-based method, therefore the monthly figure is zero by
+ definition; use units-depreciation with the period's actual units.
+ Sum-of-years applied to a life of M months: month m bears the
+ fraction (M - m + 1) over M(M+1)/2 of the depreciable base, with
+ truncating division. The final month absorbs the rounding remainder
+ when a schedule is summed.
+
+  sum-of-months-depreciation : FixedAsset, Integer -> Integer
+  sum-of-months-depreciation (fa) (month) =
+    let m = fa.fa-useful-life-months
+    in if m == 0 then 0
+    else if month < 1 then 0
+    else if month > m then 0
+    else let depreciable = fa.fa-cost - fa.fa-salvage-value
+    in let denom = m * (m + 1) / 2
+    in depreciable * (m - month + 1) / denom
+
+  units-depreciation : FixedAsset, Integer, Integer -> Integer
+  units-depreciation (fa) (units) (total-units) =
+    if total-units == 0 then 0
+    else (fa.fa-cost - fa.fa-salvage-value) * units / total-units
+
+Section: Bank Reconciliation
+
+  BankStatement = record {
+    bs-id : Text,
+    bs-bank-account : Text,
+    bs-company : Text,
+    bs-period : Integer,
+    bs-opening-balance : Integer,
+    bs-closing-balance : Integer,
+    bs-transactions : List BankTransaction
+  }
+
+  BankTransaction = record {
+    bt-ref : Text,
+    bt-date : Integer,
+    bt-description : Text,
+    bt-amount : Integer,
+    bt-matched : Boolean,
+    bt-matched-je : Text
+  }
+
+Section: Payment Terms
+
+  PaymentTerms = record {
+    pt-code : Text,
+    pt-name : Text,
+    pt-net-days : Integer,
+    pt-discount-days : Integer,
+    pt-discount-pct : Integer
+  }
+
+  net-30 : PaymentTerms
+  net-30 = PaymentTerms { pt-code = "NET30", pt-name = "Net 30", pt-net-days = 30, pt-discount-days = 0, pt-discount-pct = 0 }
+
+  two-ten-net-30 : PaymentTerms
+  two-ten-net-30 = PaymentTerms { pt-code = "2/10N30", pt-name = "2/10 Net 30", pt-net-days = 30, pt-discount-days = 10, pt-discount-pct = 200 }
+
+  net-60 : PaymentTerms
+  net-60 = PaymentTerms { pt-code = "NET60", pt-name = "Net 60", pt-net-days = 60, pt-discount-days = 0, pt-discount-pct = 0 }
+
+Section: Tax Configuration
+
+  TaxCode = record {
+    tc-code : Text,
+    tc-name : Text,
+    tc-rate-bps : Integer,
+    tc-gl-account : Text,
+    tc-recoverable : Boolean
+  }
+
+Section: Currency and Exchange Rates
+
+  ExchangeRate = record {
+    xr-from : Text,
+    xr-to : Text,
+    xr-rate-x10000 : Integer,
+    xr-date : Integer
+  }
+
+  convert-currency : Integer, ExchangeRate -> Integer
+  convert-currency (amount) (rate) =
+    (amount * rate.xr-rate-x10000 + 5000) / 10000

@@ -1,0 +1,121 @@
+Chapter: AppPersist
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter FactStore
+  cites Kernel chapter DiskFacts
+
+ Shared persistence helpers for application data. Extends DiskFacts
+ with multi-sector fact writes and kind-based scanning. Apps assign
+ kind integers 20+ to avoid collision with system kinds (0-14).
+
+ Kind allocation:
+   20 = Browser history
+   21 = Browser trust decisions
+   22 = Diagram data
+   23 = Secrets vault metadata
+   24 = Secret entries
+   25 = FileShare manifests
+   26 = Revocation records
+   27 = Parental control settings
+
+Section: Constants
+
+  app-hdr-size : Integer = 78
+  app-sec-size : Integer = 512
+
+Section: Sector Math
+
+  app-sectors : Integer -> Integer
+  app-sectors (content-len) =
+    (app-hdr-size + content-len + app-sec-size - 1) / app-sec-size
+
+Section: Copy Helpers
+
+  app-copy-sector : Integer, Integer, Integer, Integer -> Integer
+  app-copy-sector (src) (dst) (dst-off) (i) =
+    if i >= app-sec-size then 0
+    else let w = poke-byte dst (dst-off + i) (peek-byte src i)
+    in app-copy-sector src dst dst-off (i + 1)
+
+  app-load-sectors : Integer, Integer, Integer, Integer -> Integer
+  app-load-sectors (start) (count) (dst) (i) =
+    if i >= count then 0
+    else let src = block-read-sector (start + i)
+    in let c = app-copy-sector src dst (i * app-sec-size) 0
+    in app-load-sectors start count dst (i + 1)
+
+Section: Write
+
+  app-write-fact : DiskFactStore, Integer, Text, Integer -> DiskFactStore
+  app-write-fact (store) (kind-int) (content) (timestamp) =
+    let sb = store.superblock
+    in let clen = text-length content
+    in let nsec = app-sectors clen
+    in let buf = alloc-bytes (nsec * app-sec-size)
+    in let z = zero-bytes buf 0 (nsec * app-sec-size)
+    in let hw = sha256 (text-to-bytes content)
+    in let o0 = pack-sha256-bytes buf 0 hw
+    in let o1 = pack-u16-le buf o0 kind-int
+    in let o2 = pack-u64-le buf (o1 + 32) timestamp
+    in let o3 = pack-u32-le buf o2 clen
+    in let o4 = pack-text buf o3 content
+    in let w = write-fact-sectors buf (sb.log-head) nsec 0
+    in DiskFactStore {
+      superblock = Superblock {
+        log-head = sb.log-head + nsec,
+        fact-count = sb.fact-count + 1,
+        index-gen = sb.index-gen
+      },
+      mem = store.mem
+    }
+
+  app-write-and-checkpoint : DiskFactStore, Integer, Text, Integer -> DiskFactStore
+  app-write-and-checkpoint (store) (kind-int) (content) (timestamp) =
+    disk-checkpoint (app-write-fact store kind-int content timestamp)
+
+Section: Read Content
+
+  app-read-content : Integer, Integer -> Text
+  app-read-content (start) (clen) =
+    let nsec = app-sectors clen
+    in let buf = alloc-bytes (nsec * app-sec-size)
+    in let loaded = app-load-sectors start nsec buf 0
+    in unpack-text buf app-hdr-size clen
+
+Section: Scan for Latest Fact of a Given Kind
+
+  app-scan-last : DiskFactStore, Integer -> Maybe Text
+  app-scan-last (store) (kind) =
+    app-scan-loop kind fact-log-start (store.superblock.log-head) None
+
+  app-scan-loop : Integer, Integer, Integer, Maybe Text -> Maybe Text
+  app-scan-loop (kind) (sector) (end-sec) (found) =
+    if sector >= end-sec then found
+    else let buf = block-read-sector sector
+    in let k = unpack-u16-le buf 32
+    in let clen = unpack-u32-le buf 74
+    in if clen == 0 then app-scan-loop kind (sector + 1) end-sec found
+    else let nsec = app-sectors clen
+    in if k == kind then
+      let txt = app-read-content sector clen
+      in app-scan-loop kind (sector + nsec) end-sec (Just txt)
+    else app-scan-loop kind (sector + nsec) end-sec found
+
+Section: Scan for All Facts of a Given Kind
+
+  app-scan-all : DiskFactStore, Integer -> List Text
+  app-scan-all (store) (kind) =
+    app-scan-all-loop kind fact-log-start (store.superblock.log-head) []
+
+  app-scan-all-loop : Integer, Integer, Integer, List Text -> List Text
+  app-scan-all-loop (kind) (sector) (end-sec) (acc) =
+    if sector >= end-sec then acc
+    else let buf = block-read-sector sector
+    in let k = unpack-u16-le buf 32
+    in let clen = unpack-u32-le buf 74
+    in if clen == 0 then app-scan-all-loop kind (sector + 1) end-sec acc
+    else let nsec = app-sectors clen
+    in if k == kind then
+      let txt = app-read-content sector clen
+      in app-scan-all-loop kind (sector + nsec) end-sec (list-push acc txt)
+    else app-scan-all-loop kind (sector + nsec) end-sec acc

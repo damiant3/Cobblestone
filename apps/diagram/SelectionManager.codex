@@ -1,0 +1,205 @@
+Chapter: SelectionManager
+  cites Foreword chapter Maybe
+  cites Math chapter Geometry
+  cites Diagram chapter DiagramModel
+
+ Selection state for the diagram editor. Handles single select,
+ multi-select, drag-move, and resize handles.
+
+Section: Types
+
+  SelectionState = record {
+    sel-ids       : List Integer,
+    sel-dragging  : Boolean,
+    sel-drag-x    : Integer,
+    sel-drag-y    : Integer,
+    sel-drag-ox   : Integer,
+    sel-drag-oy   : Integer,
+    sel-resizing  : Boolean,
+    sel-resize-handle : Integer,
+    sel-marquee   : Boolean,
+    sel-marquee-x : Integer,
+    sel-marquee-y : Integer,
+    sel-marquee-w : Integer,
+    sel-marquee-h : Integer
+  }
+
+  HandlePosition =
+    | HandleNone
+    | HandleTopLeft
+    | HandleTopRight
+    | HandleBottomLeft
+    | HandleBottomRight
+    | HandleTop
+    | HandleBottom
+    | HandleLeft
+    | HandleRight
+
+Section: Construction
+
+  selection-empty : SelectionState
+  selection-empty =
+    SelectionState {
+      sel-ids = [],
+      sel-dragging = False,
+      sel-drag-x = 0,
+      sel-drag-y = 0,
+      sel-drag-ox = 0,
+      sel-drag-oy = 0,
+      sel-resizing = False,
+      sel-resize-handle = 0,
+      sel-marquee = False,
+      sel-marquee-x = 0,
+      sel-marquee-y = 0,
+      sel-marquee-w = 0,
+      sel-marquee-h = 0
+    }
+
+Section: Selection Operations
+
+  selection-select : SelectionState, Integer -> SelectionState
+  selection-select (sel) (id) =
+    __record-set sel "sel-ids" [id]
+
+  selection-add : SelectionState, Integer -> SelectionState
+  selection-add (sel) (id) =
+    if list-contains-int sel.sel-ids id
+    then sel
+    else __record-set sel "sel-ids" (list-push sel.sel-ids id)
+
+  selection-toggle : SelectionState, Integer -> SelectionState
+  selection-toggle (sel) (id) =
+    if list-contains-int sel.sel-ids id
+    then __record-set sel "sel-ids" (list-remove-int sel.sel-ids id)
+    else __record-set sel "sel-ids" (list-push sel.sel-ids id)
+
+  selection-clear : SelectionState -> SelectionState
+  selection-clear (sel) =
+    __record-set sel "sel-ids" []
+
+  selection-select-all : SelectionState, Diagram -> SelectionState
+  selection-select-all (sel) (dg) =
+    __record-set sel "sel-ids" (list-map node-get-id dg.dg-nodes)
+
+  node-get-id : DiagramNode -> Integer
+  node-get-id (n) = n.dn-id
+
+  selection-is-selected : SelectionState, Integer -> Boolean
+  selection-is-selected (sel) (id) =
+    list-contains-int sel.sel-ids id
+
+  selection-count : SelectionState -> Integer
+  selection-count (sel) = list-length sel.sel-ids
+
+  selection-is-empty : SelectionState -> Boolean
+  selection-is-empty (sel) = list-length sel.sel-ids == 0
+
+Section: Drag Operations
+
+  selection-start-drag : SelectionState, Integer, Integer -> SelectionState
+  selection-start-drag (sel) (x) (y) =
+    __record-set (__record-set (__record-set (__record-set (__record-set sel
+      "sel-dragging" True)
+      "sel-drag-x" x)
+      "sel-drag-y" y)
+      "sel-drag-ox" x)
+      "sel-drag-oy" y
+
+  selection-update-drag : SelectionState, Integer, Integer -> SelectionState
+  selection-update-drag (sel) (x) (y) =
+    __record-set (__record-set sel
+      "sel-drag-x" x)
+      "sel-drag-y" y
+
+  selection-end-drag : SelectionState -> (SelectionState, Integer, Integer)
+  selection-end-drag (sel) =
+    let dx = sel.sel-drag-x - sel.sel-drag-ox
+    in let dy = sel.sel-drag-y - sel.sel-drag-oy
+    in (__record-set sel "sel-dragging" False, dx, dy)
+
+  selection-drag-delta : SelectionState -> Vec2
+  selection-drag-delta (sel) =
+    vec2-new (sel.sel-drag-x - sel.sel-drag-ox) (sel.sel-drag-y - sel.sel-drag-oy)
+
+Section: Marquee Selection
+
+  selection-start-marquee : SelectionState, Integer, Integer -> SelectionState
+  selection-start-marquee (sel) (x) (y) =
+    __record-set (__record-set (__record-set sel
+      "sel-marquee" True)
+      "sel-marquee-x" x)
+      "sel-marquee-y" y
+
+  selection-update-marquee : SelectionState, Integer, Integer -> SelectionState
+  selection-update-marquee (sel) (x) (y) =
+    __record-set (__record-set sel
+      "sel-marquee-w" (x - sel.sel-marquee-x))
+      "sel-marquee-h" (y - sel.sel-marquee-y)
+
+  selection-end-marquee : SelectionState, Diagram -> SelectionState
+  selection-end-marquee (sel) (dg) =
+    let mx = if sel.sel-marquee-w >= 0 then sel.sel-marquee-x else sel.sel-marquee-x + sel.sel-marquee-w
+    in let my = if sel.sel-marquee-h >= 0 then sel.sel-marquee-y else sel.sel-marquee-y + sel.sel-marquee-h
+    in let mw = if sel.sel-marquee-w >= 0 then sel.sel-marquee-w else 0 - sel.sel-marquee-w
+    in let mh = if sel.sel-marquee-h >= 0 then sel.sel-marquee-h else 0 - sel.sel-marquee-h
+    in let ids = nodes-in-rect dg.dg-nodes mx my mw mh
+    in __record-set (__record-set sel "sel-marquee" False) "sel-ids" ids
+
+  nodes-in-rect : List DiagramNode, Integer, Integer, Integer, Integer -> List Integer
+  nodes-in-rect (nodes) (rx) (ry) (rw) (rh) =
+    nodes-in-rect-loop nodes rx ry rw rh 0 []
+
+  nodes-in-rect-loop : List DiagramNode, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  nodes-in-rect-loop (nodes) (rx) (ry) (rw) (rh) (i) (acc) =
+    if i >= list-length nodes then acc
+    else let n = list-at nodes i
+    in let overlaps = n.dn-x + n.dn-width >= rx & n.dn-x <= rx + rw
+                    & n.dn-y + n.dn-height >= ry & n.dn-y <= ry + rh
+    in if overlaps
+      then nodes-in-rect-loop nodes rx ry rw rh (i + 1) (list-push acc n.dn-id)
+      else nodes-in-rect-loop nodes rx ry rw rh (i + 1) acc
+
+Section: Handle Hit Testing
+
+  handle-at-point : DiagramNode, Integer, Integer -> HandlePosition
+  handle-at-point (n) (px) (py) =
+    let hs = 6
+    in let x = n.dn-x
+    in let y = n.dn-y
+    in let w = n.dn-width
+    in let h = n.dn-height
+    in if near px py x y hs then HandleTopLeft
+    else if near px py (x + w) y hs then HandleTopRight
+    else if near px py x (y + h) hs then HandleBottomLeft
+    else if near px py (x + w) (y + h) hs then HandleBottomRight
+    else if near px py (x + w / 2) y hs then HandleTop
+    else if near px py (x + w / 2) (y + h) hs then HandleBottom
+    else if near px py x (y + h / 2) hs then HandleLeft
+    else if near px py (x + w) (y + h / 2) hs then HandleRight
+    else HandleNone
+
+  near : Integer, Integer, Integer, Integer, Integer -> Boolean
+  near (px) (py) (tx) (ty) (r) =
+    let dx = px - tx
+    in let dy = py - ty
+    in dx * dx + dy * dy <= r * r
+
+Section: Helpers
+
+  list-contains-int : List Integer, Integer -> Boolean
+  list-contains-int (xs) (val) =
+    when xs
+      is [] -> False
+      is otherwise ->
+        if list-at xs 0 == val then True
+        else list-contains-int (list-drop xs 1) val
+
+  list-remove-int : List Integer, Integer -> List Integer
+  list-remove-int (xs) (val) =
+    when xs
+      is [] -> []
+      is otherwise ->
+        let head = list-at xs 0
+        in let tail = list-drop xs 1
+        in if head == val then tail
+        else head :: list-remove-int tail val

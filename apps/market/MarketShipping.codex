@@ -1,0 +1,138 @@
+Chapter: MarketShipping
+  cites Market chapter MarketTypes
+  cites Foreword chapter List
+
+ Shipping calculator with multiple method support, zone-based rates,
+ weight thresholds, and handling fees. A store configures available
+ methods; the checkout offers applicable options to the buyer.
+
+Section: Shipping Zone
+
+  ShippingZone = record {
+    sz-id : Text,
+    sz-name : Text,
+    sz-countries : List Text,
+    sz-methods : List ShippingMethodConfig
+  }
+
+  ShippingMethodConfig = record {
+    smc-name : Text,
+    smc-method : ShippingMethod,
+    smc-handling-fee : Integer,
+    smc-min-weight : Integer,
+    smc-max-weight : Integer,
+    smc-est-days-min : Integer,
+    smc-est-days-max : Integer
+  }
+
+  smc-flat : Text, Integer, Integer, Integer -> ShippingMethodConfig
+  smc-flat (name) (rate-cents) (min-days) (max-days) = ShippingMethodConfig {
+    smc-name = name,
+    smc-method = FlatRate (money-usd rate-cents),
+    smc-handling-fee = 0,
+    smc-min-weight = 0,
+    smc-max-weight = 99999999,
+    smc-est-days-min = min-days,
+    smc-est-days-max = max-days
+  }
+
+  smc-free-over : Text, Integer, Integer, Integer -> ShippingMethodConfig
+  smc-free-over (name) (threshold-cents) (min-days) (max-days) = ShippingMethodConfig {
+    smc-name = name,
+    smc-method = FreeOver (money-usd threshold-cents),
+    smc-handling-fee = 0,
+    smc-min-weight = 0,
+    smc-max-weight = 99999999,
+    smc-est-days-min = min-days,
+    smc-est-days-max = max-days
+  }
+
+Section: Rate Calculation
+
+  ShippingQuote = record {
+    sq-method-name : Text,
+    sq-cost : Money,
+    sq-est-days-min : Integer,
+    sq-est-days-max : Integer
+  }
+
+  get-shipping-quotes : List ShippingZone, Text, Money, Integer -> List ShippingQuote
+  get-shipping-quotes (zones) (country) (subtotal) (weight-g) =
+    let zone = find-zone zones country 0
+    in when zone
+      is Just (z) -> build-quotes (z.sz-methods) subtotal weight-g []
+      is None -> [ShippingQuote {
+        sq-method-name = "Standard",
+        sq-cost = money-usd 999,
+        sq-est-days-min = 7,
+        sq-est-days-max = 14
+      }]
+
+  find-zone : List ShippingZone, Text, Integer -> Maybe ShippingZone
+  find-zone (zones) (country) (i) =
+    if i >= list-length zones then None
+    else let z = list-at zones i
+    in if zone-has-country z country then Just z
+    else find-zone zones country (i + 1)
+
+  zone-has-country : ShippingZone, Text -> Boolean
+  zone-has-country (z) (country) = list-contains-text (z.sz-countries) country 0
+
+  list-contains-text : List Text, Text, Integer -> Boolean
+  list-contains-text (items) (target) (i) =
+    if i >= list-length items then False
+    else if list-at items i == target then True
+    else list-contains-text items target (i + 1)
+
+  build-quotes : List ShippingMethodConfig, Money, Integer, List ShippingQuote -> List ShippingQuote
+  build-quotes (methods) (subtotal) (weight-g) (acc) =
+    if list-length methods == 0 then acc
+    else let m = list-at methods 0
+    in if weight-g >= m.smc-min-weight then if weight-g <= m.smc-max-weight then
+      let ship = calc-shipping (m.smc-method) subtotal weight-g
+      in let cost = money-add (ship.ship-cost) (money (m.smc-handling-fee) (subtotal.currency))
+      in let quote = ShippingQuote {
+        sq-method-name = m.smc-name,
+        sq-cost = cost,
+        sq-est-days-min = m.smc-est-days-min,
+        sq-est-days-max = m.smc-est-days-max
+      }
+      in build-quotes (list-tail methods) subtotal weight-g (list-push acc quote)
+    else build-quotes (list-tail methods) subtotal weight-g acc
+    else build-quotes (list-tail methods) subtotal weight-g acc
+
+Section: Default Zones
+
+  us-domestic-zone : ShippingZone
+  us-domestic-zone = ShippingZone {
+    sz-id = "us-domestic",
+    sz-name = "United States",
+    sz-countries = ["US"],
+    sz-methods = [
+      smc-flat "Standard" 599 5 7,
+      smc-flat "Express" 1299 2 3,
+      smc-flat "Overnight" 2499 1 1,
+      smc-free-over "Free (orders over $50)" 5000 5 7
+    ]
+  }
+
+  eu-zone : ShippingZone
+  eu-zone = ShippingZone {
+    sz-id = "eu",
+    sz-name = "European Union",
+    sz-countries = ["DE", "FR", "NL", "ES", "IT", "BE", "AT", "IE", "PT", "FI"],
+    sz-methods = [
+      smc-flat "Standard" 899 7 14,
+      smc-flat "Express" 1999 3 5
+    ]
+  }
+
+  worldwide-zone : ShippingZone
+  worldwide-zone = ShippingZone {
+    sz-id = "worldwide",
+    sz-name = "Rest of World",
+    sz-countries = ["*"],
+    sz-methods = [
+      smc-flat "International" 1499 10 21
+    ]
+  }

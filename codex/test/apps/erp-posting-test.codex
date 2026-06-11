@@ -1,0 +1,176 @@
+Chapter: ErpPostingTest
+  cites Codex chapter General
+  cites Foreword chapter Tuple
+  cites Foreword chapter Maybe
+  cites ERP chapter ErpTypes
+  cites ERP chapter ErpConfig
+  cites ERP chapter FinGL
+  cites ERP chapter FinApAr
+  cites ERP chapter HrCore
+  cites ERP chapter SdSales
+  cites ERP chapter MmProcurement
+  cites ERP chapter FinControlling
+
+ Smoke test for every subledger posting builder threaded through
+ ErpConfig. Runs AP invoice and payment, AR invoice and cash receipt,
+ a payroll journal, a goods receipt, a delivery with cost of goods
+ sold, and a cost allocation, then checks that the trial balance and
+ the accounting equation hold across all of them together.
+
+Section: Setup
+
+  test-state : GlState =
+    let st = gl-init "DEMO"
+    in let st2 = load-standard-coa st
+    in let p-open = FiscalPeriod { fp-year = 2026, fp-period = 6, fp-company = "DEMO", fp-start-date = 20260601, fp-end-date = 20260630, fp-status = PeriodOpen }
+    in __record-set st2 "gl-periods" [p-open]
+
+  test-vendor : Vendor =
+    Vendor {
+      vnd-id = "V100", vnd-name = "Acme Supply", vnd-company = "DEMO",
+      vnd-tax-id = "", vnd-payment-terms = "NET30", vnd-currency = "USD",
+      vnd-gl-account = "2000", vnd-address = "", vnd-contact = "",
+      vnd-phone = "", vnd-email = "", vnd-bank-account = "", vnd-active = True
+    }
+
+  test-customer : Customer =
+    Customer {
+      cust-id = "C100", cust-name = "Globex", cust-company = "DEMO",
+      cust-tax-id = "", cust-payment-terms = "NET30", cust-credit-limit = 1000000,
+      cust-currency = "USD", cust-gl-account = "1100", cust-address = "",
+      cust-contact = "", cust-phone = "", cust-email = "", cust-active = True
+    }
+
+  supplies-line : ApInvoiceLine =
+    ApInvoiceLine {
+      apl-gl-account = "6500", apl-amount = 100000, apl-tax-code = "ST",
+      apl-cost-center = "", apl-description = "office supplies",
+      apl-quantity = 1, apl-unit-price = 100000
+    }
+
+  sale-line : ArInvoiceLine =
+    ArInvoiceLine {
+      arl-gl-account = "4000", arl-amount = 200000, arl-tax-code = "ST",
+      arl-description = "widgets", arl-quantity = 1, arl-unit-price = 200000
+    }
+
+  test-stub : PayStub =
+    PayStub {
+      ps-employee-id = "E100", ps-employee-name = "Pat Lee",
+      ps-gross-pay = 100000, ps-federal-tax = 10000, ps-state-tax = 5000,
+      ps-social-security = 6200, ps-medicare = 1450,
+      ps-health-deduction = 2500, ps-retirement-deduction = 6000,
+      ps-other-deductions = 0, ps-net-pay = 68850,
+      ps-hours-worked = 80, ps-overtime-hours = 0, ps-pto-hours = 0
+    }
+
+  test-payroll : PayrollRun =
+    PayrollRun {
+      pyr-id = "100001", pyr-company = "DEMO",
+      pyr-period-start = 20260601, pyr-period-end = 20260615,
+      pyr-pay-date = 20260620, pyr-status = PayrollCalculated,
+      pyr-stubs = [test-stub], pyr-total-gross = 100000,
+      pyr-total-taxes = 22650, pyr-total-deductions = 8500,
+      pyr-total-net = 68850, pyr-created = 0
+    }
+
+  test-po : PurchaseOrder =
+    PurchaseOrder {
+      po-id = "PO100", po-company = "DEMO", po-vendor-id = "V100",
+      po-pr-ref = "", po-lines = [PoLine { pol-line-num = 1, pol-material-id = "M100", pol-description = "steel", pol-quantity = 10, pol-unit-price = 5000, pol-received-qty = 0, pol-gl-account = "1200", pol-cost-center = "", pol-tax-code = "" }],
+      po-status = PoSent, po-payment-terms = "NET30",
+      po-delivery-date = 20260615, po-total = 50000, po-currency = "USD",
+      po-approved-by = "", po-created = 0
+    }
+
+  test-gr : GoodsReceipt =
+    GoodsReceipt {
+      gr-id = "GR100", gr-po-id = "PO100", gr-company = "DEMO",
+      gr-vendor-id = "V100",
+      gr-lines = [GrLine { grl-po-line = 1, grl-material-id = "M100", grl-received-qty = 10, grl-accepted-qty = 10, grl-rejected-qty = 0, grl-bin-location = "A1" }],
+      gr-warehouse = "WH1", gr-received-by = "test", gr-date = 20260616
+    }
+
+  test-material : Material =
+    Material {
+      mat-id = "M200", mat-name = "Widget", mat-description = "",
+      mat-uom = "EA", mat-category = "FG", mat-standard-cost = 18000,
+      mat-gl-inventory = "1200", mat-gl-cogs = "5000", mat-gl-variance = "",
+      mat-reorder-point = 0, mat-reorder-qty = 0, mat-lead-time-days = 0,
+      mat-active = True
+    }
+
+  test-delivery : Delivery =
+    Delivery {
+      del-id = "DEL100", del-so-id = "SO100", del-company = "DEMO",
+      del-warehouse = "WH1",
+      del-lines = [DeliveryLine { dll-so-line = 1, dll-material-id = "M200", dll-quantity = 2, dll-picked-qty = 2, dll-bin-location = "B2", dll-serial-numbers = [] }],
+      del-ship-date = 20260618, del-carrier = "", del-tracking = "",
+      del-status = DelShipped, del-picked-by = "", del-packed-by = "",
+      del-shipped-by = ""
+    }
+
+  test-alloc : CostAllocation =
+    CostAllocation {
+      ca-id = "AL100", ca-from-cc = "CC-IT", ca-to-cc = "CC-SALES",
+      ca-amount = 12000, ca-basis = AbDirectCost, ca-period = 6,
+      ca-year = 2026, ca-description = "IT chargeback"
+    }
+
+Section: Helpers
+
+  ok-text : PostResult -> Text
+  ok-text (r) =
+    when r
+      is PostSuccess (je) -> "ok"
+      is PostFailed (msg) -> "FAIL " & msg
+
+Section: Run
+
+  run-all : List Text
+  run-all =
+    let cfg = standard-config 6 2026
+    in let (st1, apinv) = create-ap-invoice test-state cfg test-vendor "INV-77" 20260605 [supplies-line] 0
+    in let (st2, r1) = ap-post-invoice st1 cfg apinv
+    in let (st3, r2) = ap-payment st2 cfg apinv 0 20260620
+    in let ap-head = "ap: amount=" & show (apinv.api-amount) & " tax=" & show (apinv.api-tax-amount)
+    in let ap-line = ap-head & " post=" & ok-text r1 & " pay=" & ok-text r2 & " ap-bal=" & show (get-balance st3 "2000")
+    in let (st4, arinv) = create-ar-invoice st3 cfg test-customer "BILL-9" 20260610 [sale-line] 0
+    in let (st5, r3) = ar-post-invoice st4 cfg arinv
+    in let (st6, r4) = ar-cash-receipt st5 cfg arinv 216000 20260625
+    in let ar-head = "ar: amount=" & show (arinv.ari-amount) & " tax=" & show (arinv.ari-tax-amount)
+    in let ar-line = ar-head & " post=" & ok-text r3 & " receipt=" & ok-text r4 & " ar-bal=" & show (get-balance st6 "1100")
+    in let (st7, r5) = post-journal st6 (payroll-journal test-payroll cfg)
+    in let pr-line = "payroll: post=" & ok-text r5 & " wages=" & show (0 - get-balance st7 "2300")
+    in let (st8, r6) = post-journal st7 (gr-gl-entries test-gr test-po cfg)
+    in let gr-line = "gr: post=" & ok-text r6 & " gr-ir=" & show (0 - get-balance st8 "2100")
+    in let (st9, r7) = post-journal st8 (delivery-gl test-delivery [test-material] cfg)
+    in let cogs-line = "cogs: post=" & ok-text r7 & " cogs-bal=" & show (get-balance st9 "5000") & " inventory=" & show (get-balance st9 "1200")
+    in let (st10, r8) = post-journal st9 (allocation-je test-alloc "DEMO" cfg)
+    in let alloc-line = "alloc: post=" & ok-text r8
+    in let tb = trial-balance st10
+    in let d = tb-total-debits tb
+    in let c = tb-total-credits tb
+    in let bal-ok = if d == c then "True" else "False"
+    in let tb-line = "tb: debits=" & show d & " credits=" & show c & " balanced=" & bal-ok
+    in let a = total-assets st10
+    in let rhs = total-liabilities st10 + total-equity st10 + net-income st10
+    in let eq-ok = if a == rhs then "True" else "False"
+    in let eq-line = "equation: assets=" & show a & " liab-eq-ni=" & show rhs & " holds=" & eq-ok
+    in [ap-line, ar-line, pr-line, gr-line, cogs-line, alloc-line, tb-line, eq-line]
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    let lines = run-all
+    in act
+      print-line-uni (list-at lines 0)
+      print-line-uni (list-at lines 1)
+      print-line-uni (list-at lines 2)
+      print-line-uni (list-at lines 3)
+      print-line-uni (list-at lines 4)
+      print-line-uni (list-at lines 5)
+      print-line-uni (list-at lines 6)
+      print-line-uni (list-at lines 7)
+    end
+  end

@@ -1,0 +1,203 @@
+Chapter: GlobeTypes
+
+ Type system for the globe app. Geographic coordinates, map projections,
+ overlay layers, and data point types. All coordinates use fixed-point
+ scaled by 1000 (latitude -90000 to 90000, longitude -180000 to 180000).
+ The globe radius is 6371 km (Earth mean radius).
+
+Section: Geographic Coordinates
+
+  GeoCoord = record {
+    gc-lat : Integer,
+    gc-lon : Integer
+  }
+
+  geo-coord : Integer, Integer -> GeoCoord
+  geo-coord (lat) (lon) = GeoCoord { gc-lat = lat, gc-lon = lon }
+
+  geo-to-xyz : GeoCoord, Integer -> GeoPoint
+  geo-to-xyz (g) (radius) =
+    let lat-rad = g.gc-lat * 3142 / 180000000
+    in let lon-rad = g.gc-lon * 3142 / 180000000
+    in let cos-lat = geo-cos lat-rad
+    in let sin-lat = geo-sin lat-rad
+    in let cos-lon = geo-cos lon-rad
+    in let sin-lon = geo-sin lon-rad
+    in GeoPoint {
+      gp-x = radius * cos-lat / 1000 * cos-lon / 1000,
+      gp-y = radius * sin-lat / 1000,
+      gp-z = radius * cos-lat / 1000 * sin-lon / 1000
+    }
+
+  GeoPoint = record {
+    gp-x : Integer,
+    gp-y : Integer,
+    gp-z : Integer
+  }
+
+  geo-sin : Integer -> Integer
+  geo-sin (x) = x - x * x / 1000 * x / 6000000
+
+  geo-cos : Integer -> Integer
+  geo-cos (x) = 1000 - x * x / 2000000
+
+Section: Overlay Layer Types
+
+  OverlayKind =
+    | OvAircraft
+    | OvWind
+    | OvTemperature
+    | OvEarthquakes
+    | OvClouds
+    | OvISS
+    | OvPopulation
+    | OvNightLights
+    | OvOceanCurrents
+    | OvVolcanoes
+    | OvWildfires
+    | OvStorms
+    | OvFireballs
+    | OvSolarFlares
+    | OvOceanBuoys
+    | OvRadar
+
+  ov-label : OverlayKind -> Text
+  ov-label (k) = when k
+    is OvAircraft -> "Aircraft"
+    is OvWind -> "Wind"
+    is OvTemperature -> "Temperature"
+    is OvEarthquakes -> "Earthquakes"
+    is OvClouds -> "Clouds"
+    is OvISS -> "ISS Tracker"
+    is OvPopulation -> "Population"
+    is OvNightLights -> "Night Lights"
+    is OvOceanCurrents -> "Ocean Currents"
+    is OvVolcanoes -> "Volcanoes"
+    is OvWildfires -> "Wildfires"
+    is OvStorms -> "Storms"
+    is OvFireballs -> "Fireballs"
+    is OvSolarFlares -> "Solar Flares"
+    is OvOceanBuoys -> "Ocean Buoys"
+    is OvRadar -> "Rain Radar"
+
+  ov-icon : OverlayKind -> Text
+  ov-icon (k) = when k
+    is OvAircraft -> "^"
+    is OvWind -> "~"
+    is OvTemperature -> "T"
+    is OvEarthquakes -> "!"
+    is OvClouds -> "C"
+    is OvISS -> "S"
+    is OvPopulation -> "#"
+    is OvNightLights -> "*"
+    is OvOceanCurrents -> "w"
+    is OvVolcanoes -> "V"
+    is OvWildfires -> "F"
+    is OvStorms -> "S"
+    is OvFireballs -> "B"
+    is OvSolarFlares -> "X"
+    is OvOceanBuoys -> "W"
+    is OvRadar -> "R"
+
+Section: Data Points
+
+  AircraftPoint = record {
+    ap-callsign : Text,
+    ap-lat : Integer,
+    ap-lon : Integer,
+    ap-alt : Integer,
+    ap-heading : Integer,
+    ap-speed : Integer,
+    ap-origin : Text
+  }
+
+  EarthquakePoint = record {
+    eq-lat : Integer,
+    eq-lon : Integer,
+    eq-depth : Integer,
+    eq-magnitude : Integer,
+    eq-place : Text,
+    eq-time : Integer
+  }
+
+  WeatherPoint = record {
+    wp-lat : Integer,
+    wp-lon : Integer,
+    wp-temp : Integer,
+    wp-wind-speed : Integer,
+    wp-wind-dir : Integer,
+    wp-humidity : Integer,
+    wp-pressure : Integer
+  }
+
+  IssPosition = record {
+    iss-lat : Integer,
+    iss-lon : Integer,
+    iss-alt : Integer,
+    iss-speed : Integer
+  }
+
+  WildfirePoint = record {
+    wf-lat : Integer,
+    wf-lon : Integer,
+    wf-title : Text,
+    wf-source : Text,
+    wf-date : Text
+  }
+
+  StormPoint = record {
+    st-lat : Integer,
+    st-lon : Integer,
+    st-title : Text,
+    st-category : Integer
+  }
+
+Section: Temperature Color Ramp
+
+  temp-to-rgb : Integer -> Integer
+  temp-to-rgb (temp-c-x1000) =
+    let t = temp-c-x1000 / 1000
+    in if t < -30 then 4194559
+    else if t < -20 then 4227327
+    else if t < -10 then 4260095
+    else if t < 0 then 8454143
+    else if t < 10 then 8978431
+    else if t < 20 then 16777062
+    else if t < 30 then 16744448
+    else if t < 40 then 16711680
+    else 10485760
+
+Section: Wind Speed Color
+
+  wind-to-rgb : Integer -> Integer
+  wind-to-rgb (speed-kmh-x1000) =
+    let s = speed-kmh-x1000 / 1000
+    in if s < 10 then 8421631
+    else if s < 30 then 4260095
+    else if s < 60 then 65280
+    else if s < 100 then 16776960
+    else if s < 150 then 16744448
+    else 16711680
+
+Section: Earthquake Magnitude Color
+
+  quake-mag-to-rgb : Integer -> Integer
+  quake-mag-to-rgb (mag-x1000) =
+    let m = mag-x1000 / 1000
+    in if m < 2 then 4260095
+    else if m < 4 then 65280
+    else if m < 5 then 16776960
+    else if m < 6 then 16744448
+    else if m < 7 then 16727040
+    else 16711680
+
+  quake-mag-to-size : Integer -> Integer
+  quake-mag-to-size (mag-x1000) =
+    let m = mag-x1000 / 1000
+    in if m < 2 then 2
+    else if m < 4 then 4
+    else if m < 6 then 8
+    else if m < 7 then 14
+    else 20
+
+Page 1

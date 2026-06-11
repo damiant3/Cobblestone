@@ -1089,5 +1089,310 @@ Section: Constant Folding
      is otherwise -> deck-record (IrApply partial idx-arg ty sp)
     is otherwise -> deck-record (IrApply partial idx-arg ty sp)
 
+Section: Leaf Inlining
+
+ Inlines saturated calls to leaf functions whose body is pure integer
+ arithmetic over their own parameters -- shapes like math-mod (a) (b)
+ = a - (a / b) * b. The inlined expression is the callee's own body
+ with parameter names replaced by the call-site arguments, so the
+ semantics (including division traps) are the callee's by
+ construction; nothing is synthesized. A call site qualifies only
+ when every argument is a name or an integer literal (free to
+ duplicate) and the root name is not shadowed by a local binding at
+ the site. deck-record is never a candidate: its definition is the identity,
+ but the emitter intercepts the NAME and wraps the argument in
+ __deck-enter/__deck-exit -- inlining it would delete the deck
+ allocation and leave the value on reclaimable bivy (found the hard
+ way: stage1 battery failures in every lambda-heavy test, CL 3716
+ bisect). The candidate's definition is never removed: bare
+ references and partial applications still call it. Runs on the CDX
+ path only, after constant folding; the TEXT path is untouched, so
+ text round-trip and semantic equivalence never see inlined bodies.
+ Defs are scanned read-only first and rebuilt only when they contain
+ a qualifying root name, so the LOWER deck pays copies only for the
+ defs that change.
+
+  InlineLeaf = record {
+   il-name : Text,
+   il-params : List Text,
+   il-body : IRExpr
+  }
+
+  is-inline-int-op : IRBinaryOp -> Boolean
+  is-inline-int-op (op) =
+   when op
+    is IrAddInt | IrSubInt | IrMulInt | IrDivInt -> True
+    is otherwise -> False
+
+  leaf-param-index : List Text, Text, Integer -> Integer
+  leaf-param-index (params) (n) (i) =
+   if i == list-length params then 0 - 1
+   else if list-at params i == n then i
+   else leaf-param-index params n (i + 1)
+
+  leaf-body-ok : IRExpr, List Text, Integer -> Integer
+  leaf-body-ok (e) (params) (fuel) =
+   if fuel <= 0 then 0 - 1
+   else when e
+    is IrIntLit (v) (sp) -> fuel - 1
+    is IrName (n) (ty) (sp) -> if leaf-param-index params n 0 >= 0 then fuel - 1 else 0 - 1
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     if is-inline-int-op op then
+      let lf = leaf-body-ok l params (fuel - 1)
+      in if lf < 0 then 0 - 1 else leaf-body-ok r params lf
+     else 0 - 1
+    is otherwise -> 0 - 1
+
+  collect-leaf-defs : List IRDef, Integer, List InlineLeaf -> List InlineLeaf
+  collect-leaf-defs (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in let pnames = for p in (d.params) -> p.name
+   in let np = list-length pnames
+   in let ok = if d.name == "deck-record" then 0 - 1
+      else if np >= 1 & np <= 3 then leaf-body-ok (d.body) pnames 12
+      else 0 - 1
+   in if ok >= 0
+      then collect-leaf-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-body = d.body })))
+   else collect-leaf-defs defs (i + 1) acc
+
+  find-leaf-def : List InlineLeaf, Text, Integer -> Integer
+  find-leaf-def (cands) (n) (i) =
+   if i == list-length cands then 0 - 1
+   else if (list-at cands i).il-name == n then i
+   else find-leaf-def cands n (i + 1)
+
+  inline-apply-root : IRExpr -> Text
+  inline-apply-root (e) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> inline-apply-root f
+    is IrName (n) (ty) (sp) -> n
+    is otherwise -> ""
+
+  inline-apply-args : IRExpr, List IRExpr -> List IRExpr
+  inline-apply-args (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> inline-apply-args f ([a] & acc)
+    is otherwise -> acc
+
+  ir-is-int-lit : IRExpr -> Boolean
+  ir-is-int-lit (e) =
+   when e
+    is IrIntLit (v) (sp) -> True
+    is otherwise -> False
+
+  leaf-arg-simple : IRExpr -> Boolean
+  leaf-arg-simple (a) =
+   when a
+    is IrName (n) (ty) (sp) -> True
+    is otherwise -> ir-is-int-lit a
+
+  leaf-args-simple : List IRExpr, Integer -> Boolean
+  leaf-args-simple (args) (i) =
+   if i == list-length args then True
+   else if leaf-arg-simple (list-at args i) then leaf-args-simple args (i + 1)
+   else False
+
+  subst-leaf : IRExpr, List Text, List IRExpr -> IRExpr
+  subst-leaf (e) (params) (args) =
+   when e
+    is IrName (n) (ty) (sp) ->
+     let idx = leaf-param-index params n 0
+     in if idx >= 0 then list-at args idx else e
+    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (subst-leaf l params args) (subst-leaf r params args) ty sp)
+    is otherwise -> e
+
+  inline-apply-site : IRExpr, List InlineLeaf, List Text -> IRExpr
+  inline-apply-site (e) (cands) (bound) =
+   let root = inline-apply-root e
+   in if root == "" then e
+   else if leaf-param-index bound root 0 >= 0 then e
+   else let ci = find-leaf-def cands root 0
+   in if ci < 0 then e
+   else let cand = list-at cands ci
+   in let args = inline-apply-args e []
+   in if list-length args /= list-length (cand.il-params) then e
+   else if leaf-args-simple args 0 == False then e
+   else fold-rem-expr (subst-leaf (cand.il-body) (cand.il-params) args)
+
+ Remainder recognition over substituted bodies. The truncated-mod
+ idiom X - (X / Y) * Y computes with three operations what idiv
+ already left in RDX. IrRemInt emits exactly idiv's remainder --
+ truncated, sign of the dividend, trapping on Y = 0 -- which is the
+ idiom's semantics for every input including negative dividends.
+ The rewrite fires only on expressions the inliner just produced
+ (math-mod's body is the canonical source), matches the multiply in
+ either operand order, and requires the X and Y occurrences to be
+ the same name or the same literal; the matched subtree has no
+ binders, so equal names are equal values. CDX path only: the plug
+ wire format and the text round-trip build from the TEXT frontend,
+ which never inlines, so IrRemInt never reaches them.
+
+  ir-operand-same : IRExpr, IRExpr -> Boolean
+  ir-operand-same (a) (b) =
+   when a
+    is IrName (n) (ty) (sp) ->
+     (when b
+      is IrName (n2) (ty2) (sp2) -> n == n2
+      is otherwise -> False)
+    is IrIntLit (v) (sp) ->
+     (when b
+      is IrIntLit (v2) (sp2) -> v == v2
+      is otherwise -> False)
+    is otherwise -> False
+
+  rem-div-matches : IRExpr, IRExpr, IRExpr -> Boolean
+  rem-div-matches (x) (d) (y) =
+   when d
+    is IrBinary (dop) (dx) (dy) (dty) (dsp) ->
+     (when dop
+      is IrDivInt -> if ir-operand-same dx x then ir-operand-same dy y else False
+      is otherwise -> False)
+    is otherwise -> False
+
+  rem-shape-direct : IRExpr, IRExpr -> Boolean
+  rem-shape-direct (x) (r) =
+   when r
+    is IrBinary (mop) (ml) (mr) (mty) (msp) ->
+     (when mop
+      is IrMulInt -> rem-div-matches x ml mr
+      is otherwise -> False)
+    is otherwise -> False
+
+  rem-shape-commuted : IRExpr, IRExpr -> Boolean
+  rem-shape-commuted (x) (r) =
+   when r
+    is IrBinary (mop) (ml) (mr) (mty) (msp) ->
+     (when mop
+      is IrMulInt -> rem-div-matches x mr ml
+      is otherwise -> False)
+    is otherwise -> False
+
+  rem-mul-left : IRExpr -> IRExpr
+  rem-mul-left (r) =
+   when r
+    is IrBinary (mop) (ml) (mr) (mty) (msp) -> ml
+    is otherwise -> r
+
+  rem-mul-right : IRExpr -> IRExpr
+  rem-mul-right (r) =
+   when r
+    is IrBinary (mop) (ml) (mr) (mty) (msp) -> mr
+    is otherwise -> r
+
+  fold-rem-sub : IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
+  fold-rem-sub (x) (r) (ty) (sp) =
+   if rem-shape-direct x r then deck-record (IrBinary IrRemInt x (rem-mul-right r) ty sp)
+   else if rem-shape-commuted x r then deck-record (IrBinary IrRemInt x (rem-mul-left r) ty sp)
+   else deck-record (IrBinary IrSubInt x r ty sp)
+
+  fold-rem-expr : IRExpr -> IRExpr
+  fold-rem-expr (e) =
+   when e
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     let fl = fold-rem-expr l
+     in let fr = fold-rem-expr r
+     in (when op
+      is IrSubInt -> fold-rem-sub fl fr ty sp
+      is otherwise -> deck-record (IrBinary op fl fr ty sp))
+    is otherwise -> e
+
+  push-param-names : List Text, List IRParam, Integer -> List Text
+  push-param-names (bound) (ps) (i) =
+   if i == list-length ps then bound
+   else push-param-names (list-push bound (list-at ps i).name) ps (i + 1)
+
+  push-pat-names : List Text, IRPat -> List Text
+  push-pat-names (bound) (p) =
+   when p
+    is IrVarPat (n) (t) (s) -> list-push bound n
+    is IrCtorPat (n) (subs) (t) (s) -> push-pat-names-list bound subs 0
+    is otherwise -> bound
+
+  push-pat-names-list : List Text, List IRPat, Integer -> List Text
+  push-pat-names-list (bound) (ps) (i) =
+   if i == list-length ps then bound
+   else push-pat-names-list (push-pat-names bound (list-at ps i)) ps (i + 1)
+
+  has-leaf-call : IRExpr, List InlineLeaf -> Boolean
+  has-leaf-call (e) (cands) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     if find-leaf-def cands (inline-apply-root e) 0 >= 0 then True
+     else if has-leaf-call f cands then True
+     else has-leaf-call a cands
+    is IrBinary (op) (l) (r) (ty) (sp) -> if has-leaf-call l cands then True else has-leaf-call r cands
+    is IrIf (c) (t) (el) (ty) (sp) -> if has-leaf-call c cands then True else if has-leaf-call t cands then True else has-leaf-call el cands
+    is IrLet (n) (ty) (v) (b) (sp) -> if has-leaf-call v cands then True else has-leaf-call b cands
+    is IrLambda (ps) (b) (ty) (sp) -> has-leaf-call b cands
+    is IrNegate (x) (sp) -> has-leaf-call x cands
+    is IrMatch (sc) (bs) (ty) (sp) -> if has-leaf-call sc cands then True else has-leaf-call-branches bs cands 0
+    is IrAct (ss) (ty) (sp) -> has-leaf-call-stmts ss cands 0
+    is IrRecord (n) (fs) (ty) (sp) -> has-leaf-call-fields fs cands 0
+    is IrFieldAccess (r) (f) (ty) (sp) -> has-leaf-call r cands
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> if has-leaf-call r cands then True else has-leaf-call v cands
+    is IrList (es) (ty) (sp) -> has-leaf-call-list es cands 0
+    is otherwise -> False
+
+  has-leaf-call-branches : List IRBranch, List InlineLeaf, Integer -> Boolean
+  has-leaf-call-branches (bs) (cands) (i) =
+   if i == list-length bs then False
+   else let b = list-at bs i
+   in if has-leaf-call (b.body) cands then True
+   else if has-leaf-call (b.guard) cands then True
+   else has-leaf-call-branches bs cands (i + 1)
+
+  has-leaf-call-stmts : List IRActStmt, List InlineLeaf, Integer -> Boolean
+  has-leaf-call-stmts (ss) (cands) (i) =
+   if i == list-length ss then False
+   else let s = list-at ss i
+   in if has-leaf-call (ir-act-stmt-expr s) cands then True
+   else has-leaf-call-stmts ss cands (i + 1)
+
+  has-leaf-call-fields : List IRFieldVal, List InlineLeaf, Integer -> Boolean
+  has-leaf-call-fields (fs) (cands) (i) =
+   if i == list-length fs then False
+   else if has-leaf-call ((list-at fs i).value) cands then True
+   else has-leaf-call-fields fs cands (i + 1)
+
+  has-leaf-call-list : List IRExpr, List InlineLeaf, Integer -> Boolean
+  has-leaf-call-list (es) (cands) (i) =
+   if i == list-length es then False
+   else if has-leaf-call (list-at es i) cands then True
+   else has-leaf-call-list es cands (i + 1)
+
+  inline-act-stmts : List IRActStmt, List InlineLeaf, List Text, Integer, List IRActStmt -> List IRActStmt
+  inline-act-stmts (ss) (cands) (bound) (i) (acc) =
+   if i == list-length ss then acc
+   else let s = list-at ss i
+   in when s
+    is IrDoBind (n) (sty) (v) (ssp) -> inline-act-stmts ss cands (list-push bound n) (i + 1) (list-push acc (deck-record (IrDoBind n sty (inline-expr v cands bound) ssp)))
+    is IrDoExec (ev) (esp) -> inline-act-stmts ss cands bound (i + 1) (list-push acc (deck-record (IrDoExec (inline-expr ev cands bound) esp)))
+
+  inline-expr : IRExpr, List InlineLeaf, List Text -> IRExpr
+  inline-expr (e) (cands) (bound) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     let nf = inline-expr f cands bound
+     in let na = inline-expr a cands bound
+     in inline-apply-site (deck-record (IrApply nf na ty sp)) cands bound
+    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (inline-expr l cands bound) (inline-expr r cands bound) ty sp)
+    is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (inline-expr c cands bound) (inline-expr t cands bound) (inline-expr el cands bound) ty sp)
+    is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (inline-expr v cands bound) (inline-expr b cands (list-push bound n)) sp)
+    is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (inline-expr b cands (push-param-names bound ps 0)) ty sp)
+    is IrNegate (x) (sp) -> deck-record (IrNegate (inline-expr x cands bound) sp)
+    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (inline-expr sc cands bound) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = inline-expr (b.body) cands (push-pat-names bound (b.pattern)), guard = inline-expr (b.guard) cands (push-pat-names bound (b.pattern)), span = b.span })) ty sp)
+    is IrAct (ss) (ty) (sp) -> deck-record (IrAct (inline-act-stmts ss cands bound 0 []) ty sp)
+    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (inline-expr (fv.value) cands bound))) ty sp)
+    is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (inline-expr r cands bound) f ty sp)
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (inline-expr r cands bound) f (inline-expr v cands bound) ty sp)
+    is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> inline-expr x cands bound) ty sp)
+    is otherwise -> e
+
+  inline-leaf-calls-in-chapter : IRChapter -> IRChapter
+  inline-leaf-calls-in-chapter (ch) =
+   let cands = collect-leaf-defs (ch.defs) 0 []
+   in if list-length cands == 0 then ch
+   else __record-set ch "defs" (for d in (ch.defs) -> if has-leaf-call (d.body) cands then deck-record (__record-set d "body" (inline-expr (d.body) cands (push-param-names [] (d.params) 0))) else d)
 
 Page 1 of 2

@@ -1,0 +1,128 @@
+Chapter: StarDb
+  cites Starmap chapter CelestialTypes
+  cites Starmap chapter StarCatalog
+  cites Data chapter SpatialIndex
+  cites Data chapter Row
+  cites Data chapter Heap
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Spatial database layer for the star catalog. Stores celestial objects
+ in an octree-style 3D spatial index for fast range and nearest-neighbor
+ queries. Used for frustum culling (which stars are visible?) and
+ fly-to targeting (what's nearest to the cursor ray?).
+
+ The spatial index uses the data quire's SpatialIndex3D with
+ parsec-scale cell sizes. The full HYG catalog (~120K stars) would
+ partition into cells of ~100 pc. For the named-objects catalog
+ (~80 objects), cell sizes are larger.
+
+Section: Star Database
+
+  StarDatabase = record {
+    sdb-grid : OctreeNode,
+    sdb-catalog : List CelestialObj,
+    sdb-count : Integer,
+    sdb-bounds : BoundingBox3D
+  }
+
+  OctreeNode =
+    | OctLeaf (List CelestialObj)
+    | OctBranch (List OctreeNode) (BoundingBox3D) (Integer)
+    | OctEmpty
+
+  sdb-new : StarDatabase
+  sdb-new = StarDatabase {
+    sdb-grid = OctEmpty,
+    sdb-catalog = [],
+    sdb-count = 0,
+    sdb-bounds = BoundingBox3D {
+      bb3-x-min = -50000000000,
+      bb3-y-min = -50000000000,
+      bb3-z-min = -50000000000,
+      bb3-x-max = 50000000000,
+      bb3-y-max = 50000000000,
+      bb3-z-max = 50000000000
+    }
+  }
+
+  sdb-insert : StarDatabase, CelestialObj -> StarDatabase
+  sdb-insert (db) (obj) =
+    StarDatabase {
+      sdb-grid = db.sdb-grid,
+      sdb-catalog = list-push (db.sdb-catalog) obj,
+      sdb-count = db.sdb-count + 1,
+      sdb-bounds = db.sdb-bounds
+    }
+
+  sdb-bulk-load : StarDatabase, List CelestialObj, Integer, Integer -> StarDatabase
+  sdb-bulk-load (db) (objs) (i) (n) =
+    if i >= n then db
+    else sdb-bulk-load (sdb-insert db (list-at objs i)) objs (i + 1) n
+
+Section: Range Query (box search)
+
+  sdb-query-box : StarDatabase, BoundingBox3D -> List CelestialObj
+  sdb-query-box (db) (box) =
+    sdb-box-filter (db.sdb-catalog) box 0 (db.sdb-count) []
+
+  sdb-box-filter : List CelestialObj, BoundingBox3D, Integer, Integer, List CelestialObj -> List CelestialObj
+  sdb-box-filter (objs) (box) (i) (n) (acc) =
+    if i >= n then acc
+    else let obj = list-at objs i
+    in let inside = obj.co-x >= box.bb3-x-min & obj.co-x <= box.bb3-x-max
+      & obj.co-y >= box.bb3-y-min & obj.co-y <= box.bb3-y-max
+      & obj.co-z >= box.bb3-z-min & obj.co-z <= box.bb3-z-max
+    in if inside then sdb-box-filter objs box (i + 1) n (list-push acc obj)
+    else sdb-box-filter objs box (i + 1) n acc
+
+Section: Nearest Object
+
+  sdb-nearest : StarDatabase, Integer, Integer, Integer -> Maybe CelestialObj
+  sdb-nearest (db) (x) (y) (z) =
+    sdb-nearest-loop (db.sdb-catalog) x y z 0 (db.sdb-count) None 999999999999
+
+  sdb-nearest-loop : List CelestialObj, Integer, Integer, Integer, Integer, Integer, Maybe CelestialObj, Integer -> Maybe CelestialObj
+  sdb-nearest-loop (objs) (x) (y) (z) (i) (n) (best) (best-dist) =
+    if i >= n then best
+    else let obj = list-at objs i
+    in let dx = obj.co-x - x
+    in let dy = obj.co-y - y
+    in let dz = obj.co-z - z
+    in let d = dx / 1000 * (dx / 1000) + dy / 1000 * (dy / 1000) + dz / 1000 * (dz / 1000)
+    in if d < best-dist then sdb-nearest-loop objs x y z (i + 1) n (Just obj) d
+    else sdb-nearest-loop objs x y z (i + 1) n best best-dist
+
+Section: Magnitude Filter
+
+  sdb-by-magnitude : StarDatabase, Integer -> List CelestialObj
+  sdb-by-magnitude (db) (max-mag) =
+    sdb-mag-filter (db.sdb-catalog) max-mag 0 (db.sdb-count) []
+
+  sdb-mag-filter : List CelestialObj, Integer, Integer, Integer, List CelestialObj -> List CelestialObj
+  sdb-mag-filter (objs) (max-mag) (i) (n) (acc) =
+    if i >= n then acc
+    else let obj = list-at objs i
+    in if obj.co-mag <= max-mag then sdb-mag-filter objs max-mag (i + 1) n (list-push acc obj)
+    else sdb-mag-filter objs max-mag (i + 1) n acc
+
+Section: Kind Filter
+
+  sdb-by-kind : StarDatabase, CelestialKind -> List CelestialObj
+  sdb-by-kind (db) (kind) =
+    sdb-kind-filter (db.sdb-catalog) kind 0 (db.sdb-count) []
+
+  sdb-kind-filter : List CelestialObj, CelestialKind, Integer, Integer, List CelestialObj -> List CelestialObj
+  sdb-kind-filter (objs) (kind) (i) (n) (acc) =
+    if i >= n then acc
+    else let obj = list-at objs i
+    in if ck-label (obj.co-kind) == ck-label kind then sdb-kind-filter objs kind (i + 1) n (list-push acc obj)
+    else sdb-kind-filter objs kind (i + 1) n acc
+
+Section: Statistics
+
+  sdb-stats : StarDatabase -> Text
+  sdb-stats (db) =
+    show (db.sdb-count) & " objects loaded"
+
+Page 1

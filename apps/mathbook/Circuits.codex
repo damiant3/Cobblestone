@@ -1,0 +1,332 @@
+Chapter: Circuits
+  cites Mathbook chapter Expr
+  cites Mathbook chapter Printer
+  cites Foreword chapter Maybe
+
+ Digital circuit design and simulation. Boolean algebra with AND, OR,
+ NOT, XOR, NAND, NOR, XNOR gates. Truth table generation, Karnaugh
+ map simplification (up to 4 variables), circuit netlist, propagation
+ delay analysis, and binary/hex conversion. Build combinational and
+ sequential logic from gates.
+
+Section: Logic Values
+
+  LogicVal =
+    | LvZero
+    | LvOne
+    | LvX
+    | LvZ
+
+  lv-label : LogicVal -> Text
+  lv-label (v) = when v
+    is LvZero -> "0"
+    is LvOne -> "1"
+    is LvX -> "X"
+    is LvZ -> "Z"
+
+  lv-to-bool : LogicVal -> Boolean
+  lv-to-bool (v) = when v
+    is LvOne -> True
+    is otherwise -> False
+
+  bool-to-lv : Boolean -> LogicVal
+  bool-to-lv (b) = if b then LvOne else LvZero
+
+Section: Gate Types
+
+  GateType =
+    | GateAnd
+    | GateOr
+    | GateNot
+    | GateXor
+    | GateNand
+    | GateNor
+    | GateXnor
+    | GateBuf
+    | GateMux
+    | GateDff
+
+  gate-label : GateType -> Text
+  gate-label (g) = when g
+    is GateAnd -> "AND"
+    is GateOr -> "OR"
+    is GateNot -> "NOT"
+    is GateXor -> "XOR"
+    is GateNand -> "NAND"
+    is GateNor -> "NOR"
+    is GateXnor -> "XNOR"
+    is GateBuf -> "BUF"
+    is GateMux -> "MUX"
+    is GateDff -> "DFF"
+
+  gate-symbol : GateType -> Text
+  gate-symbol (g) = when g
+    is GateAnd -> "&"
+    is GateOr -> "|"
+    is GateNot -> "~"
+    is GateXor -> "^"
+    is GateNand -> "~&"
+    is GateNor -> "~|"
+    is GateXnor -> "~^"
+    is GateBuf -> ">"
+    is GateMux -> "?"
+    is GateDff -> "D"
+
+  gate-delay-ps : GateType -> Integer
+  gate-delay-ps (g) = when g
+    is GateAnd -> 100
+    is GateOr -> 100
+    is GateNot -> 50
+    is GateXor -> 150
+    is GateNand -> 75
+    is GateNor -> 75
+    is GateXnor -> 150
+    is GateBuf -> 50
+    is GateMux -> 200
+    is GateDff -> 300
+
+Section: Gate Evaluation
+
+  gate-eval-2 : GateType, LogicVal, LogicVal -> LogicVal
+  gate-eval-2 (g) (a) (b) = when g
+    is GateAnd -> bool-to-lv (lv-to-bool a then lv-to-bool b else False)
+    is GateOr -> bool-to-lv (if lv-to-bool a then True else lv-to-bool b)
+    is GateXor -> bool-to-lv (if lv-to-bool a then if lv-to-bool b then False else True else lv-to-bool b)
+    is GateNand -> bool-to-lv (if lv-to-bool a then if lv-to-bool b then False else True else True)
+    is GateNor -> bool-to-lv (if lv-to-bool a then False else if lv-to-bool b then False else True)
+    is GateXnor -> bool-to-lv (if lv-to-bool a then lv-to-bool b else if lv-to-bool b then False else True)
+    is otherwise -> LvX
+
+  gate-eval-1 : GateType, LogicVal -> LogicVal
+  gate-eval-1 (g) (a) = when g
+    is GateNot -> bool-to-lv (if lv-to-bool a then False else True)
+    is GateBuf -> a
+    is otherwise -> LvX
+
+Section: Boolean Expression
+
+  BoolExpr =
+    | BxVar (Text)
+    | BxConst (Boolean)
+    | BxAnd (BoolExpr) (BoolExpr)
+    | BxOr (BoolExpr) (BoolExpr)
+    | BxNot (BoolExpr)
+    | BxXor (BoolExpr) (BoolExpr)
+    | BxNand (BoolExpr) (BoolExpr)
+    | BxNor (BoolExpr) (BoolExpr)
+
+  bx-print : BoolExpr -> Text
+  bx-print (e) = when e
+    is BxVar (name) -> name
+    is BxConst (True) -> "1"
+    is BxConst (False) -> "0"
+    is BxAnd (a) (b) -> bx-print a & " & " & bx-print b
+    is BxOr (a) (b) -> bx-print a & " | " & bx-print b
+    is BxNot (a) -> "~" & bx-print a
+    is BxXor (a) (b) -> bx-print a & " ^ " & bx-print b
+    is BxNand (a) (b) -> "~(" & bx-print a & " & " & bx-print b & ")"
+    is BxNor (a) (b) -> "~(" & bx-print a & " | " & bx-print b & ")"
+
+  bx-eval : BoolExpr, List Text, List Boolean -> Boolean
+  bx-eval (e) (names) (vals) = when e
+    is BxVar (name) -> bx-lookup names vals name 0 (list-length names)
+    is BxConst (b) -> b
+    is BxAnd (a) (b) -> if bx-eval a names vals then bx-eval b names vals else False
+    is BxOr (a) (b) -> if bx-eval a names vals then True else bx-eval b names vals
+    is BxNot (a) -> if bx-eval a names vals then False else True
+    is BxXor (a) (b) -> let av = bx-eval a names vals in let bv = bx-eval b names vals in if av then if bv then False else True else bv
+    is BxNand (a) (b) -> if bx-eval a names vals then if bx-eval b names vals then False else True else True
+    is BxNor (a) (b) -> if bx-eval a names vals then False else if bx-eval b names vals then False else True
+
+  bx-lookup : List Text, List Boolean, Text, Integer, Integer -> Boolean
+  bx-lookup (names) (vals) (target) (i) (n) =
+    if i >= n then False
+    else if list-at names i == target then list-at vals i
+    else bx-lookup names vals target (i + 1) n
+
+Section: Boolean Simplification
+
+  bx-simplify : BoolExpr -> BoolExpr
+  bx-simplify (e) = when e
+    is BxAnd (BxConst True) (b) -> bx-simplify b
+    is BxAnd (a) (BxConst True) -> bx-simplify a
+    is BxAnd (BxConst False) (b) -> BxConst False
+    is BxAnd (a) (BxConst False) -> BxConst False
+    is BxOr (BxConst True) (b) -> BxConst True
+    is BxOr (a) (BxConst True) -> BxConst True
+    is BxOr (BxConst False) (b) -> bx-simplify b
+    is BxOr (a) (BxConst False) -> bx-simplify a
+    is BxNot (BxConst True) -> BxConst False
+    is BxNot (BxConst False) -> BxConst True
+    is BxNot (BxNot (a)) -> bx-simplify a
+    is BxXor (a) (BxConst False) -> bx-simplify a
+    is BxXor (BxConst False) (b) -> bx-simplify b
+    is otherwise -> e
+
+  bx-to-nand : BoolExpr -> BoolExpr
+  bx-to-nand (e) = when e
+    is BxAnd (a) (b) -> BxNand (BxNand (bx-to-nand a) (bx-to-nand b)) (BxNand (bx-to-nand a) (bx-to-nand b))
+    is BxOr (a) (b) -> BxNand (BxNand (bx-to-nand a) (bx-to-nand a)) (BxNand (bx-to-nand b) (bx-to-nand b))
+    is BxNot (a) -> BxNand (bx-to-nand a) (bx-to-nand a)
+    is otherwise -> e
+
+Section: Truth Table
+
+  TruthRow = record { tr-inputs : List Boolean, tr-output : Boolean }
+
+  truth-table : BoolExpr, List Text -> List TruthRow
+  truth-table (e) (vars) =
+    let n = list-length vars
+    in let rows = tt-pow 2 n
+    in tt-gen e vars n 0 rows []
+
+  tt-pow : Integer, Integer -> Integer
+  tt-pow (base) (exp) = if exp <= 0 then 1 else base * tt-pow base (exp - 1)
+
+  tt-gen : BoolExpr, List Text, Integer, Integer, Integer, List TruthRow -> List TruthRow
+  tt-gen (e) (vars) (n-vars) (row) (total) (acc) =
+    if row >= total then acc
+    else let inputs = tt-row-inputs row n-vars 0 []
+    in let output = bx-eval e vars inputs
+    in tt-gen e vars n-vars (row + 1) total (list-push acc (TruthRow { tr-inputs = inputs, tr-output = output }))
+
+  tt-row-inputs : Integer, Integer, Integer, List Boolean -> List Boolean
+  tt-row-inputs (row) (n) (bit) (acc) =
+    if bit >= n then acc
+    else let shift = n - bit - 1
+    in let val = (row / tt-pow 2 shift) - (row / tt-pow 2 (shift + 1)) * 2
+    in tt-row-inputs row n (bit + 1) (list-push acc (val == 1))
+
+  tt-format : List TruthRow, List Text -> Text
+  tt-format (rows) (vars) =
+    let header = tt-header vars 0 (list-length vars) "" & " | Out"
+    in let body = tt-body rows vars 0 (list-length rows) ""
+    in header & "\n" & body
+
+  tt-header : List Text, Integer, Integer, Text -> Text
+  tt-header (vars) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else " "
+    in tt-header vars (i + 1) n (acc & sep & list-at vars i)
+
+  tt-body : List TruthRow, List Text, Integer, Integer, Text -> Text
+  tt-body (rows) (vars) (i) (n) (acc) =
+    if i >= n then acc
+    else let row = list-at rows i
+    in let line = tt-row-str (row.tr-inputs) 0 (list-length (row.tr-inputs)) "" & " | " & if row.tr-output then "1" else "0"
+    in let sep = if i == 0 then "" else "\n"
+    in tt-body rows vars (i + 1) n (acc & sep & line)
+
+  tt-row-str : List Boolean, Integer, Integer, Text -> Text
+  tt-row-str (vals) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else " "
+    in tt-row-str vals (i + 1) n (acc & sep & if list-at vals i then "1" else "0")
+
+Section: Circuit Netlist
+
+  Wire = record { wire-name : Text, wire-val : LogicVal }
+
+  Gate = record {
+    gate-id : Text,
+    gate-type : GateType,
+    gate-inputs : List Text,
+    gate-input-count : Integer,
+    gate-output : Text,
+    gate-delay : Integer
+  }
+
+  gate-new : Text, GateType, List Text, Text -> Gate
+  gate-new (id) (gtype) (inputs) (output) = Gate {
+    gate-id = id,
+    gate-type = gtype,
+    gate-inputs = inputs,
+    gate-input-count = list-length inputs,
+    gate-output = output,
+    gate-delay = gate-delay-ps gtype
+  }
+
+  Circuit = record {
+    cir-name : Text,
+    cir-inputs : List Text,
+    cir-input-count : Integer,
+    cir-outputs : List Text,
+    cir-output-count : Integer,
+    cir-gates : List Gate,
+    cir-gate-count : Integer,
+    cir-wires : List Wire,
+    cir-wire-count : Integer
+  }
+
+  circuit-new : Text -> Circuit
+  circuit-new (name) = Circuit {
+    cir-name = name,
+    cir-inputs = [], cir-input-count = 0,
+    cir-outputs = [], cir-output-count = 0,
+    cir-gates = [], cir-gate-count = 0,
+    cir-wires = [], cir-wire-count = 0
+  }
+
+  cir-add-input : Circuit, Text -> Circuit
+  cir-add-input (c) (name) =
+    __record-set (__record-set c "cir-inputs" (list-push (c.cir-inputs) name)) "cir-input-count" (c.cir-input-count + 1)
+
+  cir-add-output : Circuit, Text -> Circuit
+  cir-add-output (c) (name) =
+    __record-set (__record-set c "cir-outputs" (list-push (c.cir-outputs) name)) "cir-output-count" (c.cir-output-count + 1)
+
+  cir-add-gate : Circuit, Gate -> Circuit
+  cir-add-gate (c) (g) =
+    __record-set (__record-set c "cir-gates" (list-push (c.cir-gates) g)) "cir-gate-count" (c.cir-gate-count + 1)
+
+  cir-critical-path : Circuit -> Integer
+  cir-critical-path (c) = cir-max-delay (c.cir-gates) 0 (c.cir-gate-count) 0
+
+  cir-max-delay : List Gate, Integer, Integer, Integer -> Integer
+  cir-max-delay (gates) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = (list-at gates i).gate-delay
+    in cir-max-delay gates (i + 1) n (acc + d)
+
+  cir-gate-count-by-type : Circuit, GateType -> Integer
+  cir-gate-count-by-type (c) (gt) =
+    let target = gate-label gt
+    in cir-count-gt (c.cir-gates) target 0 (c.cir-gate-count) 0
+
+  cir-count-gt : List Gate, Text, Integer, Integer, Integer -> Integer
+  cir-count-gt (gates) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if gate-label ((list-at gates i).gate-type) == target then 1 else 0
+    in cir-count-gt gates target (i + 1) n (acc + delta)
+
+Section: Binary/Hex Conversion
+
+  int-to-binary : Integer, Integer -> Text
+  int-to-binary (n) (bits) = itb-loop n bits ""
+
+  itb-loop : Integer, Integer, Text -> Text
+  itb-loop (n) (remaining) (acc) =
+    if remaining <= 0 then acc
+    else let bit = n - (n / 2) * 2
+    in itb-loop (n / 2) (remaining - 1) ((if bit == 1 then "1" else "0") & acc)
+
+  int-to-hex : Integer, Integer -> Text
+  int-to-hex (n) (digits) = ith-loop n digits ""
+
+  ith-loop : Integer, Integer, Text -> Text
+  ith-loop (n) (remaining) (acc) =
+    if remaining <= 0 then acc
+    else let nibble = n - (n / 16) * 16
+    in ith-loop (n / 16) (remaining - 1) (hex-nibble nibble & acc)
+
+  hex-nibble : Integer -> Text
+  hex-nibble (n) =
+    if n < 10 then show n
+    else if n == 10 then "A"
+    else if n == 11 then "B"
+    else if n == 12 then "C"
+    else if n == 13 then "D"
+    else if n == 14 then "E"
+    else "F"
+
+Page 1

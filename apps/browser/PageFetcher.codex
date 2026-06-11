@@ -1,0 +1,210 @@
+Chapter: PageFetcher
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Encode chapter Uri
+  cites Encode chapter Json
+  cites Net chapter HttpClient
+  cites Net chapter DnsResolver
+  cites Browser chapter ContentAddress
+  cites Browser chapter TrustManager
+  cites Foreword chapter Parse
+
+ Fetches pages over HTTP, verifies content hashes, and extracts
+ publisher signatures. Handles both source (.codex) and
+ pre-compiled (.cdx) content. Content verification is mandatory
+ when the Content-Hash header is present.
+
+Section: Types
+
+  FetchResult =
+    | FetchOk (FetchedPage)
+    | FetchNetworkError (Text)
+    | FetchHashMismatch (Text, Text)
+    | FetchNotFound
+    | FetchTimeout
+
+  FetchedPage = record {
+    fp-bytes        : List Integer,
+    fp-content-hash : ContentHash,
+    fp-publisher    : Maybe (List Integer),
+    fp-signature    : Maybe (List Integer),
+    fp-capabilities : List Text,
+    fp-is-source    : Boolean,
+    fp-version      : Integer,
+    fp-content-type : Text,
+    fp-size         : Integer
+  }
+
+  FetchOptions = record {
+    fo-timeout-ticks : Integer,
+    fo-max-size      : Integer,
+    fo-accept-cdx    : Boolean,
+    fo-require-hash  : Boolean
+  }
+
+Section: Default Options
+
+  fetch-defaults : FetchOptions
+  fetch-defaults =
+    FetchOptions {
+      fo-timeout-ticks = 30000,
+      fo-max-size = 1048576,
+      fo-accept-cdx = True,
+      fo-require-hash = False
+    }
+
+Section: Fetching
+
+  fetch-page : Text, Text, FetchOptions -> [Console] FetchResult
+  fetch-page (host) (path) (opts) = act
+    print-line ("FETCH codex://" & host & "/" & path)
+    let accept = if opts.fo-accept-cdx
+          then "application/cdx, application/codex"
+          else "application/codex"
+    in let req = http-add-header
+          (http-get-request host ("/" & path))
+          ("Accept: " & accept)
+    in let req-bytes = http-serialize-request req
+    in let resp = http-parse-response req-bytes
+    in let result = process-response resp host path opts
+    in pure result
+  end
+
+  fetch-page-default : Text, Text -> [Console] FetchResult
+  fetch-page-default (host) (path) =
+    fetch-page host path fetch-defaults
+
+Section: Response Processing
+
+  process-response : HttpClientResponse, Text, Text, FetchOptions -> FetchResult
+  process-response (resp) (host) (path) (opts) =
+    if resp.valid == False
+    then FetchNetworkError ("Connection failed: " & host)
+    else if resp.status-code == 404
+    then FetchNotFound
+    else if resp.status-code >= 400
+    then FetchNetworkError ("HTTP " & show resp.status-code & ": " & resp.status-text)
+    else if resp.status-code /= 200
+    then FetchNetworkError ("Unexpected status: " & show resp.status-code)
+    else process-success resp host path opts
+
+  process-success : HttpClientResponse, Text, Text, FetchOptions -> FetchResult
+  process-success (resp) (host) (path) (opts) =
+    let body = text-to-bytes resp.body
+    in let size = list-length body
+    in if size > opts.fo-max-size
+      then FetchNetworkError ("Response too large: " & show size & " bytes")
+      else let is-source = is-codex-source resp
+        in let hash = if is-source
+              then content-hash-source body
+              else content-hash-cdx body
+        in let raw = resp.body
+        in verify-and-build body hash raw is-source size opts
+
+  is-codex-source : HttpClientResponse -> Boolean
+  is-codex-source (resp) =
+    text-contains resp.status-text "codex"
+
+  verify-and-build : List Integer, ContentHash, Text, Boolean, Integer, FetchOptions -> FetchResult
+  verify-and-build (body) (hash) (raw) (is-source) (size) (opts) =
+    let expected-hex = extract-header-value raw "Content-Hash"
+    in if text-length expected-hex > 0
+      then let actual-hex = content-hash-to-hex hash
+        in if actual-hex == expected-hex
+          then FetchOk (build-page body hash raw is-source size)
+          else FetchHashMismatch (actual-hex, expected-hex)
+      else if opts.fo-require-hash
+      then FetchNetworkError "Server did not provide Content-Hash header"
+      else FetchOk (build-page body hash raw is-source size)
+
+Section: Page Construction
+
+  build-page : List Integer, ContentHash, Text, Boolean, Integer -> FetchedPage
+  build-page (body) (hash) (raw) (is-source) (size) =
+    FetchedPage {
+      fp-bytes = body,
+      fp-content-hash = hash,
+      fp-publisher = parse-pub-key raw,
+      fp-signature = parse-sig raw,
+      fp-capabilities = parse-caps raw,
+      fp-is-source = is-source,
+      fp-version = parse-ver raw,
+      fp-content-type = if is-source then "application/codex" else "application/cdx",
+      fp-size = size
+    }
+
+Section: Header Extraction
+
+  extract-header-value : Text, Text -> Text
+  extract-header-value (raw) (header-name) =
+    let lines = text-split raw "\n"
+    in find-header-line lines header-name
+
+  find-header-line : List Text, Text -> Text
+  find-header-line (lines) (name) =
+    when lines
+      is [] -> ""
+      is otherwise ->
+        let line = list-at lines 0
+        in let prefix = name & ": "
+        in if text-starts-with line prefix
+          then text-drop line (text-length prefix)
+          else find-header-line (list-drop lines 1) name
+
+  parse-pub-key : Text -> Maybe (List Integer)
+  parse-pub-key (raw) =
+    let val = extract-header-value raw "X-Codex-Publisher"
+    in if text-length val > 0
+      then if text-starts-with val "ed25519:"
+        then Just (text-to-bytes (text-drop val 8))
+        else Just (text-to-bytes val)
+      else Nothing
+
+  parse-sig : Text -> Maybe (List Integer)
+  parse-sig (raw) =
+    let val = extract-header-value raw "X-Codex-Signature"
+    in if text-length val > 0
+      then Just (text-to-bytes val)
+      else Nothing
+
+  parse-caps : Text -> List Text
+  parse-caps (raw) =
+    let val = extract-header-value raw "X-Codex-Capabilities"
+    in if text-length val > 0
+      then text-split val ","
+      else ["Display"]
+
+  parse-ver : Text -> Integer
+  parse-ver (raw) =
+    let val = extract-header-value raw "X-Codex-Version"
+    in if text-length val > 0
+      then parse-decimal-full val
+      else 0
+
+Section: Signature Verification
+
+  verify-fetched-signature : FetchedPage -> Boolean
+  verify-fetched-signature (page) =
+    when page.fp-publisher
+      is Nothing -> True
+      is Just (pub-key) ->
+        when page.fp-signature
+          is Nothing -> False
+          is Just (sig) ->
+            let hash-bytes = content-hash-to-bytes page.fp-content-hash
+            in ed25519-verify pub-key hash-bytes sig
+
+Section: Fetch Result Formatting
+
+  format-fetch-result : FetchResult -> Text
+  format-fetch-result (result) =
+    when result
+      is FetchOk (page) ->
+        "OK: " & show page.fp-size & " bytes, " & page.fp-content-type
+        & ", hash=" & content-hash-short page.fp-content-hash
+      is FetchNetworkError (msg) -> "NETWORK ERROR: " & msg
+      is FetchHashMismatch (actual, expected) ->
+        "HASH MISMATCH: got " & actual & ", expected " & expected
+      is FetchNotFound -> "NOT FOUND"
+      is FetchTimeout -> "TIMEOUT"

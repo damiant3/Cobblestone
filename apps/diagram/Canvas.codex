@@ -1,0 +1,161 @@
+Chapter: Canvas
+  cites Foreword chapter Maybe
+  cites Math chapter Geometry
+  cites Game chapter Rasterizer
+  cites Diagram chapter DiagramModel
+  cites Diagram chapter DiagramRenderer
+  cites Diagram chapter DiagramTheme
+
+ Scrollable, zoomable viewport for the diagram. Handles pan
+ and zoom, converts screen coordinates to diagram coordinates.
+
+Section: Types
+
+  CanvasState = record {
+    cv-scroll-x   : Integer,
+    cv-scroll-y   : Integer,
+    cv-zoom       : Integer,
+    cv-width      : Integer,
+    cv-height     : Integer,
+    cv-panning    : Boolean,
+    cv-pan-start-x : Integer,
+    cv-pan-start-y : Integer
+  }
+
+Section: Construction
+
+  canvas-new : Integer, Integer -> CanvasState
+  canvas-new (w) (h) =
+    CanvasState {
+      cv-scroll-x = 0,
+      cv-scroll-y = 0,
+      cv-zoom = 100,
+      cv-width = w,
+      cv-height = h,
+      cv-panning = False,
+      cv-pan-start-x = 0,
+      cv-pan-start-y = 0
+    }
+
+Section: Scroll
+
+  canvas-scroll-by : CanvasState, Integer, Integer -> CanvasState
+  canvas-scroll-by (cv) (dx) (dy) =
+    __record-set (__record-set cv
+      "cv-scroll-x" (cv.cv-scroll-x + dx))
+      "cv-scroll-y" (cv.cv-scroll-y + dy)
+
+  canvas-scroll-to : CanvasState, Integer, Integer -> CanvasState
+  canvas-scroll-to (cv) (x) (y) =
+    __record-set (__record-set cv "cv-scroll-x" x) "cv-scroll-y" y
+
+  canvas-center-on : CanvasState, Integer, Integer -> CanvasState
+  canvas-center-on (cv) (x) (y) =
+    __record-set (__record-set cv
+      "cv-scroll-x" (x - cv.cv-width / 2))
+      "cv-scroll-y" (y - cv.cv-height / 2)
+
+Section: Zoom
+
+  canvas-zoom-in : CanvasState -> CanvasState
+  canvas-zoom-in (cv) =
+    let new-zoom = if cv.cv-zoom >= 200 then 200 else cv.cv-zoom + 10
+    in __record-set cv "cv-zoom" new-zoom
+
+  canvas-zoom-out : CanvasState -> CanvasState
+  canvas-zoom-out (cv) =
+    let new-zoom = if cv.cv-zoom <= 25 then 25 else cv.cv-zoom - 10
+    in __record-set cv "cv-zoom" new-zoom
+
+  canvas-zoom-reset : CanvasState -> CanvasState
+  canvas-zoom-reset (cv) =
+    __record-set cv "cv-zoom" 100
+
+  canvas-zoom-fit : CanvasState, Diagram -> CanvasState
+  canvas-zoom-fit (cv) (dg) =
+    let bounds = diagram-bounds dg
+    in let bw = bounds.v2x
+    in let bh = bounds.v2y
+    in if bw <= 0 then cv
+    else let zoom-x = cv.cv-width * 100 / bw
+    in let zoom-y = cv.cv-height * 100 / bh
+    in let zoom = if zoom-x < zoom-y then zoom-x else zoom-y
+    in let clamped = if zoom > 200 then 200 else if zoom < 25 then 25 else zoom
+    in __record-set cv "cv-zoom" clamped
+
+  diagram-bounds : Diagram -> Vec2
+  diagram-bounds (dg) =
+    diagram-bounds-loop dg.dg-nodes 0 0
+
+  diagram-bounds-loop : List DiagramNode, Integer, Integer -> Vec2
+  diagram-bounds-loop (nodes) (max-x) (max-y) =
+    when nodes
+      is [] -> vec2-new max-x max-y
+      is otherwise ->
+        let n = list-at nodes 0
+        in let nx = n.dn-x + n.dn-width
+        in let ny = n.dn-y + n.dn-height
+        in let mx = if nx > max-x then nx else max-x
+        in let my = if ny > max-y then ny else max-y
+        in diagram-bounds-loop (list-drop nodes 1) mx my
+
+Section: Coordinate Conversion
+
+  screen-to-diagram-x : CanvasState, Integer -> Integer
+  screen-to-diagram-x (cv) (sx) =
+    cv.cv-scroll-x + sx * 100 / cv.cv-zoom
+
+  screen-to-diagram-y : CanvasState, Integer -> Integer
+  screen-to-diagram-y (cv) (sy) =
+    cv.cv-scroll-y + sy * 100 / cv.cv-zoom
+
+  diagram-to-screen-x : CanvasState, Integer -> Integer
+  diagram-to-screen-x (cv) (dx) =
+    (dx - cv.cv-scroll-x) * cv.cv-zoom / 100
+
+  diagram-to-screen-y : CanvasState, Integer -> Integer
+  diagram-to-screen-y (cv) (dy) =
+    (dy - cv.cv-scroll-y) * cv.cv-zoom / 100
+
+Section: Pan Operations
+
+  canvas-start-pan : CanvasState, Integer, Integer -> CanvasState
+  canvas-start-pan (cv) (x) (y) =
+    __record-set (__record-set (__record-set cv
+      "cv-panning" True)
+      "cv-pan-start-x" x)
+      "cv-pan-start-y" y
+
+  canvas-update-pan : CanvasState, Integer, Integer -> CanvasState
+  canvas-update-pan (cv) (x) (y) =
+    if cv.cv-panning
+    then let dx = cv.cv-pan-start-x - x
+      in let dy = cv.cv-pan-start-y - y
+      in __record-set (__record-set (canvas-scroll-by cv dx dy)
+        "cv-pan-start-x" x)
+        "cv-pan-start-y" y
+    else cv
+
+  canvas-end-pan : CanvasState -> CanvasState
+  canvas-end-pan (cv) =
+    __record-set cv "cv-panning" False
+
+Section: Rendering
+
+  canvas-render : CanvasState, Diagram, List Integer -> Framebuf
+  canvas-render (cv) (dg) (selected) =
+    let fb = fb-new cv.cv-width cv.cv-height canvas-bg
+    in render-diagram dg fb cv.cv-scroll-x cv.cv-scroll-y cv.cv-width cv.cv-height selected
+
+Section: Queries
+
+  canvas-visible-rect : CanvasState -> (Integer, Integer, Integer, Integer)
+  canvas-visible-rect (cv) =
+    (cv.cv-scroll-x, cv.cv-scroll-y,
+     cv.cv-width * 100 / cv.cv-zoom,
+     cv.cv-height * 100 / cv.cv-zoom)
+
+  format-canvas : CanvasState -> Text
+  format-canvas (cv) =
+    "scroll=" & show cv.cv-scroll-x & "," & show cv.cv-scroll-y
+    & " zoom=" & show cv.cv-zoom & "%"

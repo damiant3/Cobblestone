@@ -1,0 +1,241 @@
+Chapter: MmProcurement
+  cites ERP chapter ErpTypes
+  cites ERP chapter ErpConfig
+  cites ERP chapter FinGL
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Procurement cycle: purchase requisition -> purchase order -> goods
+ receipt -> invoice verification (3-way match). Integrates with GL
+ for accruals and AP for payment.
+
+Section: Materials
+
+  Material = record {
+    mat-id : Text,
+    mat-name : Text,
+    mat-description : Text,
+    mat-uom : Text,
+    mat-category : Text,
+    mat-standard-cost : Integer,
+    mat-gl-inventory : Text,
+    mat-gl-cogs : Text,
+    mat-gl-variance : Text,
+    mat-reorder-point : Integer,
+    mat-reorder-qty : Integer,
+    mat-lead-time-days : Integer,
+    mat-active : Boolean
+  }
+
+Section: Purchase Requisition
+
+  PrStatus =
+    | PrDraft
+    | PrSubmitted
+    | PrApproved
+    | PrRejected
+    | PrConverted
+
+  PurchaseReq = record {
+    pr-id : Text,
+    pr-company : Text,
+    pr-requestor : Text,
+    pr-department : Text,
+    pr-lines : List PrLine,
+    pr-status : PrStatus,
+    pr-approved-by : Text,
+    pr-created : Integer
+  }
+
+  PrLine = record {
+    prl-material-id : Text,
+    prl-description : Text,
+    prl-quantity : Integer,
+    prl-unit-price : Integer,
+    prl-delivery-date : Integer,
+    prl-cost-center : Text
+  }
+
+  pr-total : PurchaseReq -> Integer
+  pr-total (pr) = sum-pr-lines (pr.pr-lines) 0 0
+
+  sum-pr-lines : List PrLine, Integer, Integer -> Integer
+  sum-pr-lines (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else sum-pr-lines lines (i + 1) (acc + (list-at lines i).prl-quantity * (list-at lines i).prl-unit-price)
+
+Section: Purchase Order
+
+  PoStatus =
+    | PoDraft
+    | PoSent
+    | PoPartialReceipt
+    | PoFullyReceived
+    | PoClosed
+    | PoCancelled
+
+  PurchaseOrder = record {
+    po-id : Text,
+    po-company : Text,
+    po-vendor-id : Text,
+    po-pr-ref : Text,
+    po-lines : List PoLine,
+    po-status : PoStatus,
+    po-payment-terms : Text,
+    po-delivery-date : Integer,
+    po-total : Integer,
+    po-currency : Text,
+    po-approved-by : Text,
+    po-created : Integer
+  }
+
+  PoLine = record {
+    pol-line-num : Integer,
+    pol-material-id : Text,
+    pol-description : Text,
+    pol-quantity : Integer,
+    pol-unit-price : Integer,
+    pol-received-qty : Integer,
+    pol-gl-account : Text,
+    pol-cost-center : Text,
+    pol-tax-code : Text
+  }
+
+  po-line-amount : PoLine -> Integer
+  po-line-amount (l) = l.pol-quantity * l.pol-unit-price
+
+  po-total-calc : PurchaseOrder -> Integer
+  po-total-calc (po) = sum-po-lines (po.po-lines) 0 0
+
+  sum-po-lines : List PoLine, Integer, Integer -> Integer
+  sum-po-lines (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else sum-po-lines lines (i + 1) (acc + po-line-amount (list-at lines i))
+
+Section: Goods Receipt
+
+  GoodsReceipt = record {
+    gr-id : Text,
+    gr-po-id : Text,
+    gr-company : Text,
+    gr-vendor-id : Text,
+    gr-lines : List GrLine,
+    gr-warehouse : Text,
+    gr-received-by : Text,
+    gr-date : Integer
+  }
+
+  GrLine = record {
+    grl-po-line : Integer,
+    grl-material-id : Text,
+    grl-received-qty : Integer,
+    grl-accepted-qty : Integer,
+    grl-rejected-qty : Integer,
+    grl-bin-location : Text
+  }
+
+  gr-gl-entries : GoodsReceipt, PurchaseOrder, ErpConfig -> JournalEntry
+  gr-gl-entries (gr) (po) (cfg) =
+    let am = cfg.cfg-accounts
+    in let total = gr-receipt-value (gr.gr-lines) (po.po-lines) 0 0
+    in JournalEntry {
+      je-id = "GR-" & gr.gr-id,
+      je-company = gr.gr-company,
+      je-date = gr.gr-date,
+      je-period = cfg.cfg-period,
+      je-year = cfg.cfg-year,
+      je-description = "Goods receipt " & gr.gr-id & " for PO " & gr.gr-po-id,
+      je-lines = [
+        journal-line-debit (am.am-inventory) total "" "Inventory receipt",
+        journal-line-credit (am.am-gr-ir) total "" "GR/IR accrual"
+      ],
+      je-source = SrcInventory,
+      je-posted = False,
+      je-reversed = False,
+      je-reversal-of = "",
+      je-created-by = gr.gr-received-by,
+      je-approved-by = "",
+      je-created = gr.gr-date
+    }
+
+  gr-receipt-value : List GrLine, List PoLine, Integer, Integer -> Integer
+  gr-receipt-value (gr-lines) (po-lines) (i) (acc) =
+    if i >= list-length gr-lines then acc
+    else let grl = list-at gr-lines i
+    in let unit-price = find-po-line-price po-lines (grl.grl-po-line) 0
+    in gr-receipt-value gr-lines po-lines (i + 1) (acc + grl.grl-accepted-qty * unit-price)
+
+  find-po-line-price : List PoLine, Integer, Integer -> Integer
+  find-po-line-price (lines) (line-num) (i) =
+    if i >= list-length lines then 0
+    else let l = list-at lines i
+    in if l.pol-line-num == line-num then l.pol-unit-price
+    else find-po-line-price lines line-num (i + 1)
+
+Section: Three-Way Match
+
+  MatchResult =
+    | MatchOk
+    | MatchQtyMismatch (Integer) (Integer)
+    | MatchPriceMismatch (Integer) (Integer)
+    | MatchMissing (Text)
+
+  three-way-match : PurchaseOrder, GoodsReceipt, ApInvoice -> List MatchResult
+  three-way-match (po) (gr) (inv) =
+    match-lines (po.po-lines) (gr.gr-lines) (inv.api-lines) [] 0
+
+  match-lines : List PoLine, List GrLine, List ApInvoiceLine, List MatchResult, Integer -> List MatchResult
+  match-lines (po-lines) (gr-lines) (inv-lines) (acc) (i) =
+    if i >= list-length po-lines then acc
+    else let pol = list-at po-lines i
+    in let gr-qty = find-gr-qty gr-lines (pol.pol-line-num) 0
+    in let inv-qty = if i < list-length inv-lines then (list-at inv-lines i).apl-quantity else 0
+    in let inv-price = if i < list-length inv-lines then (list-at inv-lines i).apl-unit-price else 0
+    in let results = if gr-qty /= pol.pol-quantity then list-push acc (MatchQtyMismatch (pol.pol-quantity) gr-qty)
+      else if inv-price /= pol.pol-unit-price then list-push acc (MatchPriceMismatch (pol.pol-unit-price) inv-price)
+      else list-push acc MatchOk
+    in match-lines po-lines gr-lines inv-lines results (i + 1)
+
+  find-gr-qty : List GrLine, Integer, Integer -> Integer
+  find-gr-qty (lines) (po-line) (i) =
+    if i >= list-length lines then 0
+    else let l = list-at lines i
+    in if l.grl-po-line == po-line then l.grl-accepted-qty
+    else find-gr-qty lines po-line (i + 1)
+
+  all-matched : List MatchResult -> Boolean
+  all-matched (results) = all-match-loop results 0
+
+  all-match-loop : List MatchResult, Integer -> Boolean
+  all-match-loop (results) (i) =
+    if i >= list-length results then True
+    else when list-at results i
+      is MatchOk -> all-match-loop results (i + 1)
+      is otherwise -> False
+
+Section: Inventory Valuation
+
+  InventoryItem = record {
+    inv-material-id : Text,
+    inv-warehouse : Text,
+    inv-bin : Text,
+    inv-quantity : Integer,
+    inv-unit-cost : Integer,
+    inv-last-receipt : Integer,
+    inv-last-issue : Integer
+  }
+
+  inventory-value : InventoryItem -> Integer
+  inventory-value (item) = item.inv-quantity * item.inv-unit-cost
+
+  receive-inventory : InventoryItem, Integer, Integer -> InventoryItem
+  receive-inventory (item) (qty) (ts) =
+    let i2 = __record-set item "inv-quantity" (item.inv-quantity + qty)
+    in __record-set i2 "inv-last-receipt" ts
+
+  issue-inventory : InventoryItem, Integer, Integer -> InventoryItem
+  issue-inventory (item) (qty) (ts) =
+    let new-qty = if item.inv-quantity >= qty then item.inv-quantity - qty else 0
+    in let i2 = __record-set item "inv-quantity" new-qty
+    in __record-set i2 "inv-last-issue" ts

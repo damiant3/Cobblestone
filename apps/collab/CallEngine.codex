@@ -1,0 +1,246 @@
+Chapter: CallEngine
+  cites Collab chapter CollabTypes
+  cites Foreword chapter Maybe
+
+ Call lifecycle management. Handles call creation, participant
+ joining/leaving, mute/video/screen-share toggles, hold/resume,
+ recording, and call termination.
+
+Section: Call Construction
+
+  call-new : Text, CallType, Text, Text, Integer -> Call
+  call-new (id) (ctype) (host) (title) (now) =
+    let host-part = CallParticipant {
+      cp-user-id = host,
+      cp-name = host,
+      cp-muted = False,
+      cp-video-on = when ctype is CtVideo -> True is otherwise -> False,
+      cp-screen-sharing = when ctype is CtScreen -> True is otherwise -> False,
+      cp-hand-raised = False,
+      cp-speaking = False,
+      cp-joined-at = now,
+      cp-role = PrHost
+    }
+    in Call {
+      call-id = id,
+      call-type = ctype,
+      call-state = CsRinging,
+      call-participants = [host-part],
+      call-participant-count = 1,
+      call-started = now,
+      call-ended = 0,
+      call-recording = False,
+      call-max-participants = 100,
+      call-title = title,
+      call-host = host
+    }
+
+Section: Participant Management
+
+  call-join : Call, Text, Text, ParticipantRole, Integer -> Call
+  call-join (c) (user-id) (name) (role) (now) =
+    if c.call-participant-count >= c.call-max-participants then c
+    else let part = CallParticipant {
+      cp-user-id = user-id,
+      cp-name = name,
+      cp-muted = True,
+      cp-video-on = False,
+      cp-screen-sharing = False,
+      cp-hand-raised = False,
+      cp-speaking = False,
+      cp-joined-at = now,
+      cp-role = role
+    }
+    in let connected = if c.call-state == CsRinging then CsConnected else c.call-state
+    in __record-set (__record-set (__record-set c
+      "call-participants" (list-push c.call-participants part))
+      "call-participant-count" (c.call-participant-count + 1))
+      "call-state" connected
+
+  call-leave : Call, Text, Integer -> Call
+  call-leave (c) (user-id) (now) =
+    let filtered = call-remove-user c.call-participants user-id 0 c.call-participant-count []
+    in let new-count = list-length filtered
+    in let state = if new-count == 0 then CsEnded else c.call-state
+    in __record-set (__record-set (__record-set c
+      "call-participants" filtered)
+      "call-participant-count" new-count)
+      "call-state" state
+
+  call-remove-user : List CallParticipant, Text, Integer, Integer, List CallParticipant -> List CallParticipant
+  call-remove-user (parts) (id) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at parts i
+    in if p.cp-user-id == id then call-remove-user parts id (i + 1) len acc
+    else call-remove-user parts id (i + 1) len (list-push acc p)
+
+  call-find-participant : Call, Text -> Maybe CallParticipant
+  call-find-participant (c) (user-id) =
+    call-find-loop c.call-participants user-id 0 c.call-participant-count
+
+  call-find-loop : List CallParticipant, Text, Integer, Integer -> Maybe CallParticipant
+  call-find-loop (parts) (id) (i) (len) =
+    if i >= len then Nothing
+    else let p = list-at parts i
+    in if p.cp-user-id == id then Just p
+    else call-find-loop parts id (i + 1) len
+
+Section: Participant Controls
+
+  call-toggle-mute : Call, Text -> Call
+  call-toggle-mute (c) (user-id) =
+    __record-set c "call-participants"
+      (list-map (toggle-field-if user-id "cp-muted") c.call-participants)
+
+  call-toggle-video : Call, Text -> Call
+  call-toggle-video (c) (user-id) =
+    __record-set c "call-participants"
+      (list-map (toggle-field-if user-id "cp-video-on") c.call-participants)
+
+  call-toggle-hand : Call, Text -> Call
+  call-toggle-hand (c) (user-id) =
+    __record-set c "call-participants"
+      (list-map (toggle-field-if user-id "cp-hand-raised") c.call-participants)
+
+  toggle-field-if : Text, Text -> CallParticipant -> CallParticipant
+  toggle-field-if (id) (field) (p) =
+    if p.cp-user-id /= id then p
+    else if field == "cp-muted" then __record-set p "cp-muted" (if p.cp-muted then False else True)
+    else if field == "cp-video-on" then __record-set p "cp-video-on" (if p.cp-video-on then False else True)
+    else if field == "cp-hand-raised" then __record-set p "cp-hand-raised" (if p.cp-hand-raised then False else True)
+    else p
+
+  call-mute-all : Call, Text -> Call
+  call-mute-all (c) (except-user) =
+    __record-set c "call-participants"
+      (list-map (mute-except except-user) c.call-participants)
+
+  mute-except : Text -> CallParticipant -> CallParticipant
+  mute-except (except) (p) =
+    if p.cp-user-id == except then p
+    else __record-set p "cp-muted" True
+
+  call-lower-all-hands : Call -> Call
+  call-lower-all-hands (c) =
+    __record-set c "call-participants"
+      (list-map lower-hand c.call-participants)
+
+  lower-hand : CallParticipant -> CallParticipant
+  lower-hand (p) = __record-set p "cp-hand-raised" False
+
+Section: Screen Sharing
+
+  call-start-screen-share : Call, Text, ShareSource, Integer -> Call
+  call-start-screen-share (c) (user-id) (source) (now) =
+    let stop-others = __record-set c "call-participants"
+          (list-map stop-share c.call-participants)
+    in __record-set stop-others "call-participants"
+      (list-map (start-share-if user-id) stop-others.call-participants)
+
+  call-stop-screen-share : Call, Text -> Call
+  call-stop-screen-share (c) (user-id) =
+    __record-set c "call-participants"
+      (list-map (stop-share-if user-id) c.call-participants)
+
+  stop-share : CallParticipant -> CallParticipant
+  stop-share (p) = __record-set p "cp-screen-sharing" False
+
+  start-share-if : Text -> CallParticipant -> CallParticipant
+  start-share-if (id) (p) =
+    if p.cp-user-id == id then __record-set p "cp-screen-sharing" True else p
+
+  stop-share-if : Text -> CallParticipant -> CallParticipant
+  stop-share-if (id) (p) =
+    if p.cp-user-id == id then __record-set p "cp-screen-sharing" False else p
+
+  call-active-presenter : Call -> Maybe CallParticipant
+  call-active-presenter (c) =
+    find-presenter c.call-participants 0 c.call-participant-count
+
+  find-presenter : List CallParticipant, Integer, Integer -> Maybe CallParticipant
+  find-presenter (parts) (i) (len) =
+    if i >= len then Nothing
+    else let p = list-at parts i
+    in if p.cp-screen-sharing then Just p
+    else find-presenter parts (i + 1) len
+
+Section: Call State
+
+  call-connect : Call -> Call
+  call-connect (c) = __record-set c "call-state" CsConnected
+
+  call-hold : Call -> Call
+  call-hold (c) = __record-set c "call-state" CsOnHold
+
+  call-resume : Call -> Call
+  call-resume (c) = __record-set c "call-state" CsConnected
+
+  call-end : Call, Integer -> Call
+  call-end (c) (now) =
+    __record-set (__record-set c "call-state" CsEnded) "call-ended" now
+
+  call-decline : Call -> Call
+  call-decline (c) = __record-set c "call-state" CsDeclined
+
+  call-duration : Call, Integer -> Integer
+  call-duration (c) (now) =
+    let end-time = if c.call-ended > 0 then c.call-ended else now
+    in end-time - c.call-started
+
+Section: Recording
+
+  call-start-recording : Call -> Call
+  call-start-recording (c) = __record-set c "call-recording" True
+
+  call-stop-recording : Call -> Call
+  call-stop-recording (c) = __record-set c "call-recording" False
+
+Section: Role Management
+
+  call-promote : Call, Text, ParticipantRole -> Call
+  call-promote (c) (user-id) (new-role) =
+    __record-set c "call-participants"
+      (list-map (set-role-if user-id new-role) c.call-participants)
+
+  set-role-if : Text, ParticipantRole -> CallParticipant -> CallParticipant
+  set-role-if (id) (role) (p) =
+    if p.cp-user-id == id then __record-set p "cp-role" role else p
+
+Section: Raised Hands
+
+  call-raised-hands : Call -> List CallParticipant
+  call-raised-hands (c) =
+    filter-raised c.call-participants 0 c.call-participant-count []
+
+  filter-raised : List CallParticipant, Integer, Integer, List CallParticipant -> List CallParticipant
+  filter-raised (parts) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at parts i
+    in if p.cp-hand-raised then filter-raised parts (i + 1) len (list-push acc p)
+    else filter-raised parts (i + 1) len acc
+
+Section: Call Statistics
+
+  CallStats = record {
+    cst-duration-sec : Integer,
+    cst-participants : Integer,
+    cst-peak-participants : Integer,
+    cst-screen-shares : Integer,
+    cst-messages : Integer
+  }
+
+  call-stats : Call, Integer -> CallStats
+  call-stats (c) (now) =
+    CallStats {
+      cst-duration-sec = call-duration c now,
+      cst-participants = c.call-participant-count,
+      cst-peak-participants = c.call-participant-count,
+      cst-screen-shares = count-sharers c.call-participants 0 c.call-participant-count 0,
+      cst-messages = 0
+    }
+
+  count-sharers : List CallParticipant, Integer, Integer, Integer -> Integer
+  count-sharers (parts) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at parts i
+    in count-sharers parts (i + 1) len (acc + (if p.cp-screen-sharing then 1 else 0))

@@ -1,0 +1,234 @@
+Chapter: TimeService
+  cites Foreword chapter DateTime
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Net chapter Ntp
+  cites Net chapter NetworkConfig
+
+ Wall-clock time service for the Codex system. Combines three
+ time sources into a single coherent clock:
+
+   1. CMOS RTC — battery-backed hardware clock, read at boot.
+      Provides a baseline even without network. Drift is tens
+      of seconds per month.
+
+   2. NTP — network time sync via the existing Ntp module.
+      Provides millisecond accuracy when a server is reachable.
+      Syncs periodically (default: every 15 minutes).
+
+   3. HPET / tick counter — monotonic counter from the hardware
+      timer. Used to interpolate between NTP syncs and detect
+      clock jumps.
+
+ The service exposes two clocks:
+   - Wall clock: real-world time (affected by NTP adjustments)
+   - Monotonic clock: never goes backward (for timeouts, intervals)
+
+Section: Types
+
+  TimeSource =
+    | SourceRtc
+    | SourceNtp
+    | SourceEstimate
+
+  WallClock = record {
+    wc-unix-seconds : Integer,
+    wc-unix-millis  : Integer,
+    wc-source       : TimeSource,
+    wc-last-sync    : Integer,
+    wc-confidence   : Integer
+  }
+
+  TimeServiceState = record {
+    ts-wall         : WallClock,
+    ts-boot-ticks   : Integer,
+    ts-current-ticks : Integer,
+    ts-ntp-offset   : Integer,
+    ts-rtc-base     : Integer,
+    ts-sync-interval : Integer,
+    ts-last-sync-tick : Integer,
+    ts-sync-count   : Integer,
+    ts-drift-ppb    : Integer,
+    ts-ntp-server   : List Integer
+  }
+
+Section: Constants
+
+  default-sync-interval : Integer
+  default-sync-interval = 900
+
+  ticks-per-second : Integer
+  ticks-per-second = 1000
+
+  max-drift-ppb : Integer
+  max-drift-ppb = 500000
+
+  confidence-ntp : Integer
+  confidence-ntp = 100
+
+  confidence-rtc : Integer
+  confidence-rtc = 50
+
+  confidence-estimate : Integer
+  confidence-estimate = 10
+
+Section: Initialization
+
+  time-service-new : Integer, List Integer -> TimeServiceState
+  time-service-new (rtc-unix) (ntp-server) =
+    TimeServiceState {
+      ts-wall = WallClock {
+        wc-unix-seconds = rtc-unix,
+        wc-unix-millis = 0,
+        wc-source = SourceRtc,
+        wc-last-sync = 0,
+        wc-confidence = confidence-rtc
+      },
+      ts-boot-ticks = 0,
+      ts-current-ticks = 0,
+      ts-ntp-offset = 0,
+      ts-rtc-base = rtc-unix,
+      ts-sync-interval = default-sync-interval,
+      ts-last-sync-tick = 0,
+      ts-sync-count = 0,
+      ts-drift-ppb = 0,
+      ts-ntp-server = ntp-server
+    }
+
+  time-service-from-rtc : Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> TimeServiceState
+  time-service-from-rtc (year) (month) (day) (hour) (minute) (second) (ntp-server) =
+    let dt = DateTime { year = year, month = month, day = day, hour = hour, minute = minute, second = second }
+    in let unix = datetime-to-unix dt
+    in time-service-new unix ntp-server
+
+Section: Tick Update
+
+  time-tick : TimeServiceState, Integer -> TimeServiceState
+  time-tick (ts) (current-ticks) =
+    let elapsed-ticks = current-ticks - ts.ts-current-ticks
+    in let elapsed-seconds = elapsed-ticks / ticks-per-second
+    in let elapsed-millis = int-mod elapsed-ticks ticks-per-second
+    in let base-seconds = ts.ts-rtc-base + ts.ts-ntp-offset + (current-ticks - ts.ts-boot-ticks) / ticks-per-second
+    in let base-millis = int-mod (current-ticks - ts.ts-boot-ticks) ticks-per-second
+    in let wall = WallClock {
+      wc-unix-seconds = base-seconds,
+      wc-unix-millis = base-millis,
+      wc-source = ts.ts-wall.wc-source,
+      wc-last-sync = ts.ts-wall.wc-last-sync,
+      wc-confidence = ts.ts-wall.wc-confidence
+    }
+    in __record-set (__record-set ts "ts-wall" wall) "ts-current-ticks" current-ticks
+
+Section: NTP Sync
+
+  time-apply-ntp : TimeServiceState, NtpResponse, Integer -> TimeServiceState
+  time-apply-ntp (ts) (resp) (recv-tick) =
+    if resp.valid == False then ts
+    else let server-unix = ntp-to-unix resp.transmit-ts
+    in let local-unix = ts.ts-wall.wc-unix-seconds
+    in let offset = server-unix - local-unix
+    in let new-wall = WallClock {
+      wc-unix-seconds = server-unix,
+      wc-unix-millis = 0,
+      wc-source = SourceNtp,
+      wc-last-sync = server-unix,
+      wc-confidence = confidence-ntp
+    }
+    in let old-offset = ts.ts-ntp-offset
+    in let new-drift = if ts.ts-sync-count > 0
+          then estimate-drift old-offset offset (recv-tick - ts.ts-last-sync-tick)
+          else 0
+    in __record-set (__record-set (__record-set (__record-set (__record-set (__record-set ts
+      "ts-wall" new-wall)
+      "ts-ntp-offset" (ts.ts-ntp-offset + offset))
+      "ts-last-sync-tick" recv-tick)
+      "ts-sync-count" (ts.ts-sync-count + 1))
+      "ts-drift-ppb" new-drift)
+      "ts-current-ticks" recv-tick
+
+  estimate-drift : Integer, Integer, Integer -> Integer
+  estimate-drift (old-offset) (new-offset) (elapsed-ticks) =
+    if elapsed-ticks <= 0 then 0
+    else let delta = new-offset - old-offset
+    in delta * 1000000000 / elapsed-ticks
+
+  time-needs-sync : TimeServiceState -> Boolean
+  time-needs-sync (ts) =
+    let elapsed = ts.ts-current-ticks - ts.ts-last-sync-tick
+    in elapsed / ticks-per-second >= ts.ts-sync-interval
+
+Section: NTP Request Generation
+
+  time-build-ntp-request : TimeServiceState -> List Integer
+  time-build-ntp-request (ts) =
+    ntp-build-simple-request
+
+  time-build-ntp-frame : TimeServiceState, List Integer, List Integer, List Integer, List Integer -> List Integer
+  time-build-ntp-frame (ts) (dst-mac) (src-mac) (src-ip) (ntp-ip) =
+    ntp-request-frame dst-mac src-mac src-ip ntp-ip
+
+Section: Queries
+
+  time-now : TimeServiceState -> Integer
+  time-now (ts) = ts.ts-wall.wc-unix-seconds
+
+  time-now-millis : TimeServiceState -> Integer
+  time-now-millis (ts) =
+    ts.ts-wall.wc-unix-seconds * 1000 + ts.ts-wall.wc-unix-millis
+
+  time-now-datetime : TimeServiceState -> DateTime
+  time-now-datetime (ts) =
+    unix-to-datetime ts.ts-wall.wc-unix-seconds
+
+  time-monotonic : TimeServiceState -> Integer
+  time-monotonic (ts) = ts.ts-current-ticks
+
+  time-since-boot-seconds : TimeServiceState -> Integer
+  time-since-boot-seconds (ts) =
+    (ts.ts-current-ticks - ts.ts-boot-ticks) / ticks-per-second
+
+  time-confidence : TimeServiceState -> Integer
+  time-confidence (ts) = ts.ts-wall.wc-confidence
+
+  time-source-name : TimeSource -> Text
+  time-source-name (src) =
+    when src
+      is SourceRtc -> "RTC"
+      is SourceNtp -> "NTP"
+      is SourceEstimate -> "estimate"
+
+Section: TOTP Support
+
+ Time-based One-Time Password (RFC 6238). Used by the secrets
+ manager for TOTP codes.
+
+  totp-time-step : Integer
+  totp-time-step = 30
+
+  totp-current-counter : TimeServiceState -> Integer
+  totp-current-counter (ts) =
+    time-now ts / totp-time-step
+
+  totp-counter-at : Integer -> Integer
+  totp-counter-at (unix-seconds) =
+    unix-seconds / totp-time-step
+
+  totp-seconds-remaining : TimeServiceState -> Integer
+  totp-seconds-remaining (ts) =
+    totp-time-step - int-mod (time-now ts) totp-time-step
+
+Section: Formatting
+
+  format-time-service : TimeServiceState -> Text
+  format-time-service (ts) =
+    let dt = time-now-datetime ts
+    in "Time: " & format-datetime dt
+    & " | Source: " & time-source-name ts.ts-wall.wc-source
+    & " | Syncs: " & show ts.ts-sync-count
+    & " | Confidence: " & show ts.ts-wall.wc-confidence & "%"
+    & " | Drift: " & show ts.ts-drift-ppb & " ppb"
+
+  format-wall-clock : WallClock -> Text
+  format-wall-clock (wc) =
+    let dt = unix-to-datetime wc.wc-unix-seconds
+    in format-datetime dt & " (" & time-source-name wc.wc-source & ")"

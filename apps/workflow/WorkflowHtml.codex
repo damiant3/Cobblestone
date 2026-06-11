@@ -1,0 +1,321 @@
+Chapter: WorkflowHtml
+  cites Workflow chapter WorkflowTypes
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ HTML rendering for the workflow designer, task inbox, process
+ tracker, and admin dashboard. Generates complete server-side HTML.
+
+Section: Page Shell
+
+  wf-page : Text, Text, Text -> Text
+  wf-page (title) (nav) (body) =
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" & title & "</title><style>" & wf-css & "</style></head><body>" & nav & "<main class=\"wf-main\">" & body & "</main></body></html>"
+
+  wf-css : Text =
+    "*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,system-ui,sans-serif;background:#f8fafc;color:#0f172a;line-height:1.5}" &
+    ".wf-main{max-width:1400px;margin:0 auto;padding:24px}" &
+    ".wf-nav{background:#0f172a;color:#e2e8f0;padding:12px 24px;display:flex;align-items:center;gap:20px}" &
+    ".wf-nav a{color:#94a3b8;text-decoration:none;font-size:0.9em}.wf-nav a:hover{color:#fff}" &
+    ".wf-brand{font-weight:700;font-size:1.1em;color:#38bdf8}" &
+    ".wf-card{background:#fff;border-radius:8px;border:1px solid #e2e8f0;padding:20px;margin-bottom:16px}" &
+    ".wf-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.06)}" &
+    ".wf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}" &
+    ".wf-btn{display:inline-block;padding:8px 20px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.9em}.wf-btn:hover{opacity:0.9}" &
+    ".wf-btn-outline{background:transparent;color:#2563eb;border:1px solid #2563eb}" &
+    ".wf-btn-success{background:#16a34a}.wf-btn-danger{background:#dc2626}" &
+    ".wf-badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:0.75em;font-weight:600}" &
+    ".wf-badge-active{background:#dbeafe;color:#1d4ed8}" &
+    ".wf-badge-pending{background:#fef3c7;color:#92400e}" &
+    ".wf-badge-complete{background:#dcfce7;color:#166534}" &
+    ".wf-badge-error{background:#fee2e2;color:#991b1b}" &
+    ".wf-badge-warn{background:#fef3c7;color:#92400e}" &
+    ".wf-table{width:100%;border-collapse:collapse}.wf-table th,.wf-table td{padding:10px 12px;text-align:left;border-bottom:1px solid #e2e8f0}" &
+    ".wf-table th{font-size:0.8em;text-transform:uppercase;color:#64748b;font-weight:600}" &
+    ".wf-form-group{margin-bottom:16px}.wf-form-group label{display:block;font-size:0.85em;font-weight:600;margin-bottom:4px;color:#334155}" &
+    ".wf-input{width:100%;padding:8px 12px;border:1px solid #cbd5e1;border-radius:6px;font-size:0.9em}" &
+    ".wf-section{font-size:1.2em;font-weight:700;margin-bottom:16px;color:#0f172a}" &
+    ".wf-timeline{position:relative;padding-left:24px;border-left:2px solid #e2e8f0}" &
+    ".wf-tl-item{position:relative;padding:8px 0 16px 16px}.wf-tl-item::before{content:'';position:absolute;left:-29px;top:12px;width:12px;height:12px;border-radius:50%;background:#2563eb;border:2px solid #fff}" &
+    ".wf-tl-complete::before{background:#16a34a}" &
+    ".wf-tl-pending::before{background:#94a3b8}" &
+    ".wf-tl-active::before{background:#f59e0b;box-shadow:0 0 0 4px rgba(245,158,11,0.2)}" &
+    ".wf-stat{text-align:center;padding:16px}.wf-stat-val{font-size:2em;font-weight:700;color:#2563eb}.wf-stat-label{font-size:0.85em;color:#64748b;margin-top:4px}" &
+    ".wf-step-node{display:inline-block;padding:8px 16px;border-radius:8px;border:2px solid #e2e8f0;font-size:0.85em;margin:4px;cursor:pointer}" &
+    ".wf-step-active{border-color:#2563eb;background:#eff6ff}" &
+    ".wf-step-complete{border-color:#16a34a;background:#f0fdf4}" &
+    ".wf-step-pending{border-color:#e2e8f0;background:#f8fafc}" &
+    ".wf-alert{padding:12px 16px;border-radius:6px;margin-bottom:8px;font-size:0.9em}" &
+    ".wf-alert-warn{background:#fefce8;border:1px solid #fde047;color:#854d0e}" &
+    ".wf-alert-crit{background:#fef2f2;border:1px solid #fca5a5;color:#991b1b}" &
+    ".wf-alert-info{background:#eff6ff;border:1px solid #93c5fd;color:#1e40af}"
+
+Section: Navigation
+
+  wf-nav-bar : Text, Text -> Text
+  wf-nav-bar (title) (role) =
+    "<nav class=\"wf-nav\"><span class=\"wf-brand\">" & title & "</span>" &
+    "<a href=\"/inbox\">Inbox</a>" &
+    "<a href=\"/processes\">Processes</a>" &
+    "<a href=\"/templates\">Templates</a>" &
+    (if role == "admin" then "<a href=\"/admin\">Admin</a><a href=\"/designer\">Designer</a>" else "") &
+    "<a href=\"/alerts\">Alerts</a>" &
+    "<div style=\"margin-left:auto;display:flex;gap:12px\">" &
+    "<a href=\"/profile\">Profile</a><a href=\"/logout\">Logout</a></div></nav>"
+
+Section: Task Inbox
+
+  render-inbox : List ProcessInstance, List StepDef, Text -> Text
+  render-inbox (tasks) (step-defs) (user-id) =
+    "<div class=\"wf-section\">My Tasks</div>" &
+    (if list-length tasks == 0 then "<div class=\"wf-card\" style=\"text-align:center;color:#64748b;padding:40px\">No tasks assigned to you.</div>"
+    else "<table class=\"wf-table\"><thead><tr><th>Process</th><th>Step</th><th>Priority</th><th>Due</th><th>Status</th><th>Action</th></tr></thead><tbody>" &
+    render-inbox-rows tasks 0 &
+    "</tbody></table>")
+
+  render-inbox-rows : List ProcessInstance, Integer -> Text
+  render-inbox-rows (tasks) (i) =
+    if i >= list-length tasks then ""
+    else let t = list-at tasks i
+    in let pri-badge = if t.pi-priority > 7 then "<span class=\"wf-badge wf-badge-error\">Urgent</span>"
+      else if t.pi-priority > 4 then "<span class=\"wf-badge wf-badge-warn\">High</span>"
+      else "<span class=\"wf-badge\">Normal</span>"
+    in "<tr><td><a href=\"/process/" & t.pi-id & "\">" & t.pi-name & "</a></td>" &
+    "<td>" & t.pi-current-step & "</td>" &
+    "<td>" & pri-badge & "</td>" &
+    "<td>" & show (t.pi-due-date) & "</td>" &
+    "<td><span class=\"wf-badge wf-badge-active\">" & proc-status-name (t.pi-status) & "</span></td>" &
+    "<td><a class=\"wf-btn\" href=\"/process/" & t.pi-id & "/work\">Work</a></td></tr>" &
+    render-inbox-rows tasks (i + 1)
+
+Section: Process Tracker
+
+  render-process : ProcessInstance, ProcessDef -> Text
+  render-process (inst) (def) =
+    "<div style=\"display:flex;justify-content:space-between;align-items:center\">" &
+    "<div><div class=\"wf-section\" style=\"margin-bottom:4px\">" & inst.pi-name & "</div>" &
+    "<span class=\"wf-badge wf-badge-active\">" & proc-status-name (inst.pi-status) & "</span>" &
+    " <span style=\"font-size:0.85em;color:#64748b\">" & inst.pi-id & "</span></div>" &
+    "<div><a class=\"wf-btn\" href=\"/process/" & inst.pi-id & "/work\">Work Current Step</a></div></div>" &
+    "<div class=\"wf-card\" style=\"margin-top:16px\">" &
+    render-step-flow def (inst.pi-current-step) (inst.pi-history) &
+    "</div>" &
+    "<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px\">" &
+    "<div class=\"wf-card\"><div class=\"wf-section\" style=\"font-size:1em\">Process Data</div>" &
+    render-data-table (inst.pi-data) &
+    "</div>" &
+    "<div class=\"wf-card\"><div class=\"wf-section\" style=\"font-size:1em\">Documents</div>" &
+    render-doc-list (inst.pi-documents) &
+    "</div></div>" &
+    "<div class=\"wf-card\" style=\"margin-top:16px\"><div class=\"wf-section\" style=\"font-size:1em\">Audit Trail</div>" &
+    render-audit-trail (inst.pi-history) &
+    "</div>"
+
+  render-step-flow : ProcessDef, Text, List StepEvent -> Text
+  render-step-flow (def) (current) (history) =
+    "<div style=\"display:flex;flex-wrap:wrap;align-items:center;gap:4px\">" &
+    render-step-nodes (def.pd-steps) current history 0 &
+    "</div>"
+
+  render-step-nodes : List StepDef, Text, List StepEvent, Integer -> Text
+  render-step-nodes (steps) (current) (history) (i) =
+    if i >= list-length steps then ""
+    else let s = list-at steps i
+    in let cls = if s.sd-id == current then "wf-step-node wf-step-active"
+      else if step-was-completed history (s.sd-id) then "wf-step-node wf-step-complete"
+      else "wf-step-node wf-step-pending"
+    in let arrow = if i > 0 then "<span style=\"color:#94a3b8;font-size:0.8em\">\x2192</span>" else ""
+    in arrow & "<span class=\"" & cls & "\">" & s.sd-name & "</span>" &
+    render-step-nodes steps current history (i + 1)
+
+  step-was-completed : List StepEvent, Text -> Boolean
+  step-was-completed (events) (step-id) = swc-loop events step-id 0
+
+  swc-loop : List StepEvent, Text, Integer -> Boolean
+  swc-loop (events) (sid) (i) =
+    if i >= list-length events then False
+    else let e = list-at events i
+    in if e.se-step-id == sid then when e.se-event-type is EvStepCompleted -> True is otherwise -> swc-loop events sid (i + 1)
+    else swc-loop events sid (i + 1)
+
+Section: Data and Document Tables
+
+  render-data-table : List DataEntry -> Text
+  render-data-table (entries) =
+    if list-length entries == 0 then "<p style=\"color:#64748b\">No data collected yet.</p>"
+    else "<table class=\"wf-table\"><thead><tr><th>Field</th><th>Value</th><th>Set By</th><th>Step</th></tr></thead><tbody>" &
+    render-data-rows entries 0 &
+    "</tbody></table>"
+
+  render-data-rows : List DataEntry, Integer -> Text
+  render-data-rows (entries) (i) =
+    if i >= list-length entries then ""
+    else let e = list-at entries i
+    in "<tr><td style=\"font-weight:600\">" & e.de-key & "</td><td>" & e.de-value & "</td><td>" & e.de-set-by & "</td><td>" & e.de-step-id & "</td></tr>" &
+    render-data-rows entries (i + 1)
+
+  render-doc-list : List Document -> Text
+  render-doc-list (docs) =
+    if list-length docs == 0 then "<p style=\"color:#64748b\">No documents uploaded yet.</p>"
+    else render-doc-items docs 0
+
+  render-doc-items : List Document, Integer -> Text
+  render-doc-items (docs) (i) =
+    if i >= list-length docs then ""
+    else let d = list-at docs i
+    in let status-cls = when d.doc-status
+      is DocVerified -> "wf-badge wf-badge-complete"
+      is DocUploaded -> "wf-badge wf-badge-active"
+      is DocRequired -> "wf-badge wf-badge-pending"
+      is DocRejected (r) -> "wf-badge wf-badge-error"
+      is DocExpired -> "wf-badge wf-badge-warn"
+    in "<div style=\"display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f1f5f9\">" &
+    "<div><strong>" & d.doc-name & "</strong> <span style=\"font-size:0.8em;color:#64748b\">" & d.doc-type & "</span></div>" &
+    "<span class=\"" & status-cls & "\">" & doc-status-name (d.doc-status) & "</span></div>" &
+    render-doc-items docs (i + 1)
+
+Section: Audit Trail
+
+  render-audit-trail : List StepEvent -> Text
+  render-audit-trail (events) =
+    "<div class=\"wf-timeline\">" & render-audit-items events 0 & "</div>"
+
+  render-audit-items : List StepEvent, Integer -> Text
+  render-audit-items (events) (i) =
+    if i >= list-length events then ""
+    else let e = list-at events i
+    in let cls = when e.se-event-type
+      is EvStepCompleted -> "wf-tl-item wf-tl-complete"
+      is EvProcessCompleted -> "wf-tl-item wf-tl-complete"
+      is EvStepEntered -> "wf-tl-item wf-tl-active"
+      is otherwise -> "wf-tl-item wf-tl-pending"
+    in "<div class=\"" & cls & "\">" &
+    "<div style=\"font-weight:600;font-size:0.9em\">" & event-type-name (e.se-event-type) & "</div>" &
+    "<div style=\"font-size:0.8em;color:#64748b\">" & e.se-step-id & " | " & e.se-user-id & "</div>" &
+    (if text-length (e.se-details) > 0 then "<div style=\"font-size:0.85em;margin-top:2px\">" & e.se-details & "</div>" else "") &
+    "</div>" &
+    render-audit-items events (i + 1)
+
+Section: Form Rendering
+
+  render-form : FormDef, List DataEntry, Text -> Text
+  render-form (form) (existing-data) (action-url) =
+    "<div class=\"wf-card\">" &
+    "<div class=\"wf-section\" style=\"font-size:1.1em\">" & form.form-title & "</div>" &
+    (if text-length (form.form-instructions) > 0 then "<p style=\"color:#64748b;margin-bottom:16px\">" & form.form-instructions & "</p>" else "") &
+    "<form method=\"POST\" action=\"" & action-url & "\">" &
+    render-form-fields (form.form-fields) existing-data 0 &
+    "<div style=\"margin-top:20px;display:flex;gap:8px\">" &
+    "<button class=\"wf-btn\" type=\"submit\">Submit</button>" &
+    "<button class=\"wf-btn wf-btn-outline\" type=\"button\" onclick=\"history.back()\">Cancel</button>" &
+    "</div></form></div>"
+
+  render-form-fields : List FieldSpec, List DataEntry, Integer -> Text
+  render-form-fields (fields) (data) (i) =
+    if i >= list-length fields then ""
+    else render-one-field (list-at fields i) data & render-form-fields fields data (i + 1)
+
+  render-one-field : FieldSpec, List DataEntry -> Text
+  render-one-field (f) (data) =
+    let value = get-data data (f.fs-id)
+    in let req = if f.fs-required then " <span style=\"color:#dc2626\">*</span>" else ""
+    in "<div class=\"wf-form-group\">" &
+    "<label>" & f.fs-label & req & "</label>" &
+    (when f.fs-type
+      is InputText -> "<input class=\"wf-input\" name=\"" & f.fs-id & "\" value=\"" & value & "\"" & (if f.fs-required then " required" else "") & ">"
+      is InputTextArea -> "<textarea class=\"wf-input\" name=\"" & f.fs-id & "\" rows=\"4\"" & (if f.fs-required then " required" else "") & ">" & value & "</textarea>"
+      is InputNumber -> "<input class=\"wf-input\" type=\"number\" name=\"" & f.fs-id & "\" value=\"" & value & "\">"
+      is InputCurrency -> "<input class=\"wf-input\" type=\"number\" step=\"0.01\" name=\"" & f.fs-id & "\" value=\"" & value & "\" placeholder=\"0.00\">"
+      is InputDate -> "<input class=\"wf-input\" type=\"date\" name=\"" & f.fs-id & "\" value=\"" & value & "\">"
+      is InputDateTime -> "<input class=\"wf-input\" type=\"datetime-local\" name=\"" & f.fs-id & "\" value=\"" & value & "\">"
+      is InputCheckbox -> "<input type=\"checkbox\" name=\"" & f.fs-id & "\"" & (if value == "true" then " checked" else "") & ">"
+      is InputEmail -> "<input class=\"wf-input\" type=\"email\" name=\"" & f.fs-id & "\" value=\"" & value & "\">"
+      is InputPhone -> "<input class=\"wf-input\" type=\"tel\" name=\"" & f.fs-id & "\" value=\"" & value & "\">"
+      is InputFile -> "<input class=\"wf-input\" type=\"file\" name=\"" & f.fs-id & "\">"
+      is InputAddress -> "<textarea class=\"wf-input\" name=\"" & f.fs-id & "\" rows=\"3\" placeholder=\"Street, City, State, ZIP\">" & value & "</textarea>"
+      is InputSsn -> "<input class=\"wf-input\" name=\"" & f.fs-id & "\" placeholder=\"XXX-XX-XXXX\" maxlength=\"11\">"
+      is InputEin -> "<input class=\"wf-input\" name=\"" & f.fs-id & "\" placeholder=\"XX-XXXXXXX\" maxlength=\"10\">"
+      is InputSelect -> "<select class=\"wf-input\" name=\"" & f.fs-id & "\">" & render-select-options (f.fs-options) value 0 & "</select>"
+      is InputRadio -> render-radio-options (f.fs-id) (f.fs-options) value 0) &
+    (if text-length (f.fs-help-text) > 0 then "<div style=\"font-size:0.8em;color:#94a3b8;margin-top:2px\">" & f.fs-help-text & "</div>" else "") &
+    "</div>"
+
+  render-select-options : List Text, Text, Integer -> Text
+  render-select-options (opts) (selected) (i) =
+    if i >= list-length opts then ""
+    else let o = list-at opts i
+    in "<option value=\"" & o & "\"" & (if o == selected then " selected" else "") & ">" & o & "</option>" &
+    render-select-options opts selected (i + 1)
+
+  render-radio-options : Text, List Text, Text, Integer -> Text
+  render-radio-options (name) (opts) (selected) (i) =
+    if i >= list-length opts then ""
+    else let o = list-at opts i
+    in "<label style=\"display:block;padding:2px 0\"><input type=\"radio\" name=\"" & name & "\" value=\"" & o & "\"" & (if o == selected then " checked" else "") & "> " & o & "</label>" &
+    render-radio-options name opts selected (i + 1)
+
+Section: Alert Panel
+
+  render-alerts : List Alert -> Text
+  render-alerts (alerts) =
+    "<div class=\"wf-section\">Alerts</div>" &
+    render-alert-items alerts 0
+
+  render-alert-items : List Alert, Integer -> Text
+  render-alert-items (alerts) (i) =
+    if i >= list-length alerts then ""
+    else let a = list-at alerts i
+    in let cls = when a.alert-severity
+      is AlertCritical -> "wf-alert wf-alert-crit"
+      is AlertWarning -> "wf-alert wf-alert-warn"
+      is AlertInfo -> "wf-alert wf-alert-info"
+    in "<div class=\"" & cls & "\">" &
+    "<strong>" & a.alert-process-id & "</strong> " & a.alert-message &
+    (if a.alert-acknowledged == False then " <a href=\"/alert/" & a.alert-id & "/ack\" style=\"float:right\">Acknowledge</a>" else "") &
+    "</div>" &
+    render-alert-items alerts (i + 1)
+
+Section: Dashboard
+
+  render-dashboard : WorkflowMetrics, List Alert -> Text
+  render-dashboard (metrics) (alerts) =
+    "<div class=\"wf-section\">Dashboard</div>" &
+    "<div style=\"display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px\">" &
+    wf-stat "Active" (show (metrics.wm-total-active)) &
+    wf-stat "Completed" (show (metrics.wm-total-completed)) &
+    wf-stat "Avg Time" (format-duration (metrics.wm-avg-completion-secs)) &
+    wf-stat "SLA Breaches" (show (metrics.wm-sla-breach-count)) &
+    "</div>" &
+    (if list-length alerts > 0 then render-alerts alerts else "")
+
+  wf-stat : Text, Text -> Text
+  wf-stat (label) (value) =
+    "<div class=\"wf-card wf-stat\"><div class=\"wf-stat-val\">" & value & "</div><div class=\"wf-stat-label\">" & label & "</div></div>"
+
+  format-duration : Integer -> Text
+  format-duration (secs) =
+    if secs < 3600 then show (secs / 60) & "m"
+    else if secs < 86400 then show (secs / 3600) & "h"
+    else show (secs / 86400) & "d"
+
+Section: Template List
+
+  render-template-list : List ProcessDef -> Text
+  render-template-list (defs) =
+    "<div class=\"wf-section\">Process Templates</div>" &
+    "<div class=\"wf-grid\">" & render-template-cards defs 0 & "</div>"
+
+  render-template-cards : List ProcessDef, Integer -> Text
+  render-template-cards (defs) (i) =
+    if i >= list-length defs then ""
+    else let d = list-at defs i
+    in "<div class=\"wf-card\">" &
+    "<div style=\"font-weight:700;margin-bottom:4px\">" & d.pd-name & " <span style=\"font-size:0.75em;color:#64748b\">v" & show (d.pd-version) & "</span></div>" &
+    "<div style=\"font-size:0.85em;color:#64748b;margin-bottom:8px\">" & d.pd-description & "</div>" &
+    "<div style=\"display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px\">" &
+    "<span class=\"wf-badge\">" & show (list-length (d.pd-steps)) & " steps</span>" &
+    "<span class=\"wf-badge\">" & show (list-length (d.pd-roles)) & " roles</span>" &
+    "<span class=\"wf-badge\">" & d.pd-category & "</span></div>" &
+    "<a class=\"wf-btn\" href=\"/start/" & d.pd-id & "\">Start Process</a>" &
+    "</div>" &
+    render-template-cards defs (i + 1)

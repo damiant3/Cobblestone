@@ -1,0 +1,343 @@
+Chapter: ServiceManager
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ System service lifecycle management. Each service has a name, a
+ desired state, an actual state, dependencies, and a log. Services
+ can be started, stopped, restarted, enabled, and disabled. The
+ dependency graph prevents starting a service before its deps are up.
+
+Section: Service Types
+
+  ServiceState =
+    | SvcRunning
+    | SvcStopped
+    | SvcStarting
+    | SvcStopping
+    | SvcFailed (Text)
+
+  svc-state-label : ServiceState -> Text
+  svc-state-label (s) = when s
+    is SvcRunning -> "running"
+    is SvcStopped -> "stopped"
+    is SvcStarting -> "starting"
+    is SvcStopping -> "stopping"
+    is SvcFailed (msg) -> "failed"
+
+  svc-state-to-status : ServiceState -> ResourceStatus
+  svc-state-to-status (s) = when s
+    is SvcRunning -> StatusOnline
+    is SvcStopped -> StatusOffline
+    is SvcStarting -> StatusBusy
+    is SvcStopping -> StatusBusy
+    is SvcFailed (msg) -> StatusError msg
+
+  ServiceType =
+    | SvcTypeSystem
+    | SvcTypeNetwork
+    | SvcTypeUser
+    | SvcTypePlugin
+
+  svc-type-label : ServiceType -> Text
+  svc-type-label (t) = when t
+    is SvcTypeSystem -> "system"
+    is SvcTypeNetwork -> "network"
+    is SvcTypeUser -> "user"
+    is SvcTypePlugin -> "plugin"
+
+Section: Service Entry
+
+  ServiceEntry = record {
+    svc-id : Text,
+    svc-name : Text,
+    svc-description : Text,
+    svc-type : ServiceType,
+    svc-state : ServiceState,
+    svc-enabled : Boolean,
+    svc-pid : Integer,
+    svc-uptime : Integer,
+    svc-restart-count : Integer,
+    svc-dependencies : List Text,
+    svc-dep-count : Integer,
+    svc-log-lines : List Text,
+    svc-log-count : Integer
+  }
+
+  service-new : Text, Text, ServiceType -> ServiceEntry
+  service-new (id) (name) (stype) = ServiceEntry {
+    svc-id = id,
+    svc-name = name,
+    svc-description = "",
+    svc-type = stype,
+    svc-state = SvcStopped,
+    svc-enabled = True,
+    svc-pid = 0,
+    svc-uptime = 0,
+    svc-restart-count = 0,
+    svc-dependencies = [],
+    svc-dep-count = 0,
+    svc-log-lines = [],
+    svc-log-count = 0
+  }
+
+  service-add-log : ServiceEntry, Text -> ServiceEntry
+  service-add-log (svc) (line) =
+    __record-set (__record-set svc "svc-log-lines" (list-push (svc.svc-log-lines) line)) "svc-log-count" (svc.svc-log-count + 1)
+
+Section: Service Manager State
+
+  ServiceManagerState = record {
+    sm-services : List ServiceEntry,
+    sm-count : Integer,
+    sm-selected : Text,
+    sm-filter : Text,
+    sm-show-stopped : Boolean
+  }
+
+  svc-manager-new : ServiceManagerState
+  svc-manager-new = ServiceManagerState {
+    sm-services = [],
+    sm-count = 0,
+    sm-selected = "",
+    sm-filter = "",
+    sm-show-stopped = True
+  }
+
+Section: Actions
+
+  sm-add-service : ServiceManagerState, ServiceEntry -> ServiceManagerState
+  sm-add-service (st) (svc) =
+    __record-set (__record-set st "sm-services" (list-push (st.sm-services) svc)) "sm-count" (st.sm-count + 1)
+
+  sm-select : ServiceManagerState, Text -> ServiceManagerState
+  sm-select (st) (id) = __record-set st "sm-selected" id
+
+  sm-find : ServiceManagerState, Text -> Maybe ServiceEntry
+  sm-find (st) (id) = sm-find-loop (st.sm-services) id 0 (st.sm-count)
+
+  sm-find-loop : List ServiceEntry, Text, Integer, Integer -> Maybe ServiceEntry
+  sm-find-loop (svcs) (id) (i) (n) =
+    if i >= n then None
+    else let s = list-at svcs i
+    in if s.svc-id == id then Just s
+    else sm-find-loop svcs id (i + 1) n
+
+  sm-update-service : ServiceManagerState, Text, ServiceState -> ServiceManagerState
+  sm-update-service (st) (id) (new-state) =
+    let updated = sm-update-loop (st.sm-services) id new-state 0 (st.sm-count) []
+    in __record-set st "sm-services" updated
+
+  sm-update-loop : List ServiceEntry, Text, ServiceState, Integer, Integer, List ServiceEntry -> List ServiceEntry
+  sm-update-loop (svcs) (id) (new-state) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at svcs i
+    in if s.svc-id == id then sm-update-loop svcs id new-state (i + 1) n (list-push acc (__record-set s "svc-state" new-state))
+    else sm-update-loop svcs id new-state (i + 1) n (list-push acc s)
+
+  sm-running-count : ServiceManagerState -> Integer
+  sm-running-count (st) = sm-count-state (st.sm-services) 0 (st.sm-count) 0
+
+  sm-count-state : List ServiceEntry, Integer, Integer, Integer -> Integer
+  sm-count-state (svcs) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at svcs i
+    in let delta = when s.svc-state
+      is SvcRunning -> 1
+      is otherwise -> 0
+    in sm-count-state svcs (i + 1) n (acc + delta)
+
+  sm-deps-satisfied : ServiceManagerState, ServiceEntry -> Boolean
+  sm-deps-satisfied (st) (svc) =
+    sm-deps-check (st.sm-services) (svc.svc-dependencies) (st.sm-count) 0 (svc.svc-dep-count)
+
+  sm-deps-check : List ServiceEntry, List Text, Integer, Integer, Integer -> Boolean
+  sm-deps-check (all-svcs) (deps) (all-count) (i) (dep-count) =
+    if i >= dep-count then True
+    else let dep-id = list-at deps i
+    in let found = sm-find-running all-svcs dep-id 0 all-count
+    in if found then sm-deps-check all-svcs deps all-count (i + 1) dep-count
+    else False
+
+  sm-find-running : List ServiceEntry, Text, Integer, Integer -> Boolean
+  sm-find-running (svcs) (id) (i) (n) =
+    if i >= n then False
+    else let s = list-at svcs i
+    in if s.svc-id == id then when s.svc-state
+      is SvcRunning -> True
+      is otherwise -> False
+    else sm-find-running svcs id (i + 1) n
+
+  sm-visible : ServiceManagerState -> List ServiceEntry
+  sm-visible (st) =
+    sm-vis-loop (st.sm-services) (st.sm-filter) (st.sm-show-stopped) 0 (st.sm-count) []
+
+  sm-vis-loop : List ServiceEntry, Text, Boolean, Integer, Integer, List ServiceEntry -> List ServiceEntry
+  sm-vis-loop (svcs) (filter) (show-stopped) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at svcs i
+    in let stopped-ok = if show-stopped then True else when s.svc-state
+      is SvcStopped -> False
+      is otherwise -> True
+    in let filter-ok = if text-length filter == 0 then True else text-contains (s.svc-name) filter
+    in if stopped-ok then
+      if filter-ok then sm-vis-loop svcs filter show-stopped (i + 1) n (list-push acc s)
+      else sm-vis-loop svcs filter show-stopped (i + 1) n acc
+    else sm-vis-loop svcs filter show-stopped (i + 1) n acc
+
+Section: Widget Building
+
+  sm-service-row : ServiceEntry -> WidgetNode
+  sm-service-row (s) =
+    let name-label = widget-label (s.svc-id & "-name") (s.svc-name)
+    in let type-label = widget-label (s.svc-id & "-type") (svc-type-label (s.svc-type))
+    in let state-label = widget-label (s.svc-id & "-state") (svc-state-label (s.svc-state))
+    in let enabled-label = widget-label (s.svc-id & "-enabled") (if s.svc-enabled then "enabled" else "disabled")
+    in let uptime-label = widget-label (s.svc-id & "-up") (format-uptime (Uptime { ut-seconds = s.svc-uptime }))
+    in let restarts = widget-label (s.svc-id & "-restarts") (show (s.svc-restart-count) & " restarts")
+    in let start-btn = widget-button (s.svc-id & "-start") "Start"
+    in let stop-btn = widget-button (s.svc-id & "-stop") "Stop"
+    in let restart-btn = widget-button (s.svc-id & "-restart") "Restart"
+    in widget-panel s.svc-id DirRow 8 [name-label, type-label, state-label, enabled-label, uptime-label, restarts, start-btn, stop-btn, restart-btn]
+
+  sm-widget : ServiceManagerState -> WidgetNode
+  sm-widget (st) =
+    let title = widget-label "sm-title" "Services"
+    in let running = sm-running-count st
+    in let summary = widget-label "sm-summary" (show running & "/" & show (st.sm-count) & " running")
+    in let filter = widget-input "sm-filter" (st.sm-filter) (text-length (st.sm-filter))
+    in let toggle = widget-button "sm-toggle-stopped" (if st.sm-show-stopped then "Hide Stopped" else "Show All")
+    in let toolbar = widget-toolbar "sm-toolbar" [filter, toggle]
+    in let visible = sm-visible st
+    in let rows = sm-rows visible 0 (list-length visible) []
+    in widget-panel "service-manager" DirColumn 4 ([title, summary, toolbar] & rows)
+
+  sm-rows : List ServiceEntry, Integer, Integer, List WidgetNode -> List WidgetNode
+  sm-rows (svcs) (i) (n) (acc) =
+    if i >= n then acc
+    else sm-rows svcs (i + 1) n (list-push acc (sm-service-row (list-at svcs i)))
+
+Section: Dependency Graph
+
+  DepEdge = record {
+    de-from : Text,
+    de-to : Text
+  }
+
+  sm-dep-edges : ServiceManagerState -> List DepEdge
+  sm-dep-edges (st) = sm-collect-edges (st.sm-services) 0 (st.sm-count) []
+
+  sm-collect-edges : List ServiceEntry, Integer, Integer, List DepEdge -> List DepEdge
+  sm-collect-edges (svcs) (i) (n) (acc) =
+    if i >= n then acc
+    else let svc = list-at svcs i
+    in let edges = sm-edges-for-svc svc 0 (svc.svc-dep-count) acc
+    in sm-collect-edges svcs (i + 1) n edges
+
+  sm-edges-for-svc : ServiceEntry, Integer, Integer, List DepEdge -> List DepEdge
+  sm-edges-for-svc (svc) (j) (dep-count) (acc) =
+    if j >= dep-count then acc
+    else let dep = list-at (svc.svc-dependencies) j
+    in sm-edges-for-svc svc (j + 1) dep-count (list-push acc (DepEdge { de-from = svc.svc-id, de-to = dep }))
+
+  sm-start-order : ServiceManagerState, Text -> List Text
+  sm-start-order (st) (id) =
+    when sm-find st id
+      is None -> []
+      is Just (svc) ->
+        let deps-first = sm-resolve-deps st (svc.svc-dependencies) 0 (svc.svc-dep-count) []
+        in list-push deps-first id
+
+  sm-resolve-deps : ServiceManagerState, List Text, Integer, Integer, List Text -> List Text
+  sm-resolve-deps (st) (deps) (i) (n) (acc) =
+    if i >= n then acc
+    else let dep-id = list-at deps i
+    in let sub-order = sm-start-order st dep-id
+    in let merged = sm-merge-order acc sub-order 0 (list-length sub-order)
+    in sm-resolve-deps st deps (i + 1) n merged
+
+  sm-merge-order : List Text, List Text, Integer, Integer -> List Text
+  sm-merge-order (acc) (new-items) (i) (n) =
+    if i >= n then acc
+    else let item = list-at new-items i
+    in if sm-order-contains acc item 0 (list-length acc) then sm-merge-order acc new-items (i + 1) n
+    else sm-merge-order (list-push acc item) new-items (i + 1) n
+
+  sm-order-contains : List Text, Text, Integer, Integer -> Boolean
+  sm-order-contains (items) (target) (i) (n) =
+    if i >= n then False
+    else if list-at items i == target then True
+    else sm-order-contains items target (i + 1) n
+
+Section: Service Detail
+
+  ServiceDetail = record {
+    sd-entry : ServiceEntry,
+    sd-start-order : List Text,
+    sd-dependents : List Text,
+    sd-dep-edge-count : Integer
+  }
+
+  svc-detail-new : ServiceManagerState, ServiceEntry -> ServiceDetail
+  svc-detail-new (st) (svc) =
+    let order = sm-start-order st (svc.svc-id)
+    in let dependents = sm-find-dependents st (svc.svc-id)
+    in ServiceDetail {
+      sd-entry = svc,
+      sd-start-order = order,
+      sd-dependents = dependents,
+      sd-dep-edge-count = svc.svc-dep-count
+    }
+
+  sm-find-dependents : ServiceManagerState, Text -> List Text
+  sm-find-dependents (st) (id) =
+    sm-dependents-loop (st.sm-services) id 0 (st.sm-count) []
+
+  sm-dependents-loop : List ServiceEntry, Text, Integer, Integer, List Text -> List Text
+  sm-dependents-loop (svcs) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let svc = list-at svcs i
+    in if sm-dep-list-contains (svc.svc-dependencies) id 0 (svc.svc-dep-count) then
+      sm-dependents-loop svcs id (i + 1) n (list-push acc (svc.svc-id))
+    else sm-dependents-loop svcs id (i + 1) n acc
+
+  sm-dep-list-contains : List Text, Text, Integer, Integer -> Boolean
+  sm-dep-list-contains (deps) (target) (i) (n) =
+    if i >= n then False
+    else if list-at deps i == target then True
+    else sm-dep-list-contains deps target (i + 1) n
+
+  svc-detail-widget : ServiceDetail -> WidgetNode
+  svc-detail-widget (d) =
+    let svc = d.sd-entry
+    in let name = widget-label "sd-name" (svc.svc-name)
+    in let desc = widget-label "sd-desc" (svc.svc-description)
+    in let state = widget-label "sd-state" ("State: " & svc-state-label (svc.svc-state))
+    in let stype = widget-label "sd-type" ("Type: " & svc-type-label (svc.svc-type))
+    in let pid = widget-label "sd-pid" ("PID: " & show (svc.svc-pid))
+    in let uptime = widget-label "sd-uptime" ("Uptime: " & format-uptime (Uptime { ut-seconds = svc.svc-uptime }))
+    in let restarts = widget-label "sd-restarts" ("Restarts: " & show (svc.svc-restart-count))
+    in let deps-label = widget-label "sd-deps" ("Dependencies: " & show (svc.svc-dep-count))
+    in let dependents-label = widget-label "sd-dependents" ("Dependents: " & show (list-length (d.sd-dependents)))
+    in let order-label = widget-label "sd-order" ("Start order: " & show (list-length (d.sd-start-order)) & " services")
+    in let start-btn = widget-button "sd-start" "Start"
+    in let stop-btn = widget-button "sd-stop" "Stop"
+    in let restart-btn = widget-button "sd-restart" "Restart"
+    in let btns = widget-toolbar "sd-btns" [start-btn, stop-btn, restart-btn]
+    in widget-panel "svc-detail" DirColumn 4 [name, desc, state, stype, pid, uptime, restarts, deps-label, dependents-label, order-label, btns]
+
+Section: JSON
+
+  service-to-json : ServiceEntry -> Text
+  service-to-json (s) =
+    "{\"id\":\"" & s.svc-id & "\",\"name\":\"" & s.svc-name
+    & "\",\"type\":\"" & svc-type-label (s.svc-type)
+    & "\",\"state\":\"" & svc-state-label (s.svc-state)
+    & "\",\"enabled\":" & if s.svc-enabled then "true" else "false"
+    & ",\"pid\":" & show (s.svc-pid)
+    & ",\"uptime\":" & show (s.svc-uptime)
+    & ",\"restarts\":" & show (s.svc-restart-count)
+    & "}"
+
+Page 1

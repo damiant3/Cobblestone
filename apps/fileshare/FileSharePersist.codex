@@ -1,0 +1,106 @@
+Chapter: FileSharePersist
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Foreword chapter Parse
+  cites Foreword chapter TextSearch
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites FileShare chapter FileShareApp
+  cites FileShare chapter ContentChunker
+
+ Persistent storage for file sharing. Content manifests are
+ serialized as JSON (kind 25) and transfer metadata as
+ tab-separated text (kind 25, one fact per transfer).
+
+Section: Kind Constants
+
+  persist-kind-manifest : Integer = 25
+
+Section: Transfer Serialization
+
+  transfer-to-text : Transfer -> Text
+  transfer-to-text (t) =
+    let dir = when t.tf-direction
+          is Downloading -> "0"
+          is Seeding -> "1"
+          is Paused -> "2"
+    in show t.tf-id & "\t"
+    & t.tf-name & "\t"
+    & dir & "\t"
+    & show t.tf-up-bytes & "\t"
+    & show t.tf-down-bytes & "\t"
+    & show t.tf-started & "\t"
+    & manifest-to-json t.tf-manifest
+
+  transfer-from-text : Text -> Maybe Transfer
+  transfer-from-text (txt) =
+    let tab-pos = find-nth-tab txt 6 0 0
+    in if tab-pos == (-1) then Nothing
+    else let header = text-take txt tab-pos
+    in let json = text-drop txt (tab-pos + 1)
+    in let parts = text-split header "\t"
+    in if list-length parts < 6 then Nothing
+    else let manifest = manifest-from-json json
+    in when manifest
+      is Nothing -> Nothing
+      is Just (m) ->
+        let dir = let d = parse-decimal-full (list-at parts 2)
+              in if d == 0 then Downloading
+              else if d == 1 then Seeding
+              else Paused
+        in Just (Transfer {
+          tf-id = parse-decimal-full (list-at parts 0),
+          tf-name = list-at parts 1,
+          tf-manifest = m,
+          tf-tracker = tracker-new (m.cm-piece-count),
+          tf-swarm = swarm-new m.cm-root-hash 50,
+          tf-direction = dir,
+          tf-up-bytes = parse-decimal-full (list-at parts 3),
+          tf-down-bytes = parse-decimal-full (list-at parts 4),
+          tf-started = parse-decimal-full (list-at parts 5)
+        })
+
+  find-nth-tab : Text, Integer, Integer, Integer -> Integer
+  find-nth-tab (txt) (n) (pos) (count) =
+    if pos >= text-length txt then (-1)
+    else if char-at txt pos == 9
+      then if count + 1 >= n then pos
+      else find-nth-tab txt n (pos + 1) (count + 1)
+    else find-nth-tab txt n (pos + 1) count
+
+Section: State Serialization
+
+  transfers-to-text : List Transfer, Integer, Integer, Text -> Text
+  transfers-to-text (ts) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else "\n---\n"
+    in transfers-to-text ts (i + 1) len (acc & sep & transfer-to-text (list-at ts i))
+
+  transfers-from-text : Text -> List Transfer
+  transfers-from-text (txt) =
+    if text-length txt == 0 then []
+    else let blocks = text-split txt "\n---\n"
+    in parse-transfer-blocks blocks 0 (list-length blocks) []
+
+  parse-transfer-blocks : List Text, Integer, Integer, List Transfer -> List Transfer
+  parse-transfer-blocks (blocks) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = transfer-from-text (list-at blocks i)
+    in when parsed
+      is Just (t) -> parse-transfer-blocks blocks (i + 1) len (list-push acc t)
+      is Nothing -> parse-transfer-blocks blocks (i + 1) len acc
+
+Section: Save and Load
+
+  fileshare-persist-save : DiskFactStore, FileShareState, Integer -> DiskFactStore
+  fileshare-persist-save (store) (fs) (timestamp) =
+    let txt = transfers-to-text fs.fs-transfers 0 (list-length fs.fs-transfers) ""
+    in app-write-and-checkpoint store persist-kind-manifest txt timestamp
+
+  fileshare-persist-load : DiskFactStore -> List Transfer
+  fileshare-persist-load (store) =
+    let found = app-scan-last store persist-kind-manifest
+    in when found
+      is Nothing -> []
+      is Just (txt) -> transfers-from-text txt

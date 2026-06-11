@@ -3,9 +3,9 @@ Chapter: GameState
   cites CodexMagic chapter Card
 
  Game state: zones, general state, player records, zone transitions,
- and army loyalty. The General holds the life total - players do not
- have independent life. Army loyalty is the sum of CMC of all
- non-token creatures a player controls.
+ and army loyalty. The General holds the life total. Army loyalty is
+ the sum of total-rays cost of all non-token creatures a player
+ controls. Prismatic state tracks rays and fluorescence.
 
  We say:
 
@@ -16,7 +16,6 @@ Section: Zone Identifiers
    | ZoneHand
    | ZoneBattlefield
    | ZoneGraveyard
-   | ZoneStack
    | ZoneExile
 
   zone-name : Zone -> Text
@@ -26,7 +25,6 @@ Section: Zone Identifiers
       is ZoneHand -> "Hand"
       is ZoneBattlefield -> "Battlefield"
       is ZoneGraveyard -> "Graveyard"
-      is ZoneStack -> "Stack"
       is ZoneExile -> "Exile"
 
 Section: General State
@@ -118,25 +116,23 @@ Section: Player State
 
   PlayerState = record {
     general : GeneralState,
-    mana-pool : ManaPool,
+    prismatic : PrismaticState,
     library : List Integer,
     hand : List Integer,
     graveyard : List Integer,
     exile : List Integer,
-    land-drop-used : Boolean,
-    land-drops-per-turn : Integer
+    gem-drop-used : Boolean
   }
 
   player-new : Integer, Integer -> PlayerState
   player-new (general-template-id) (general-life) = PlayerState {
     general = general-state-new general-template-id general-life,
-    mana-pool = mana-pool-empty,
+    prismatic = prismatic-new,
     library = [],
     hand = [],
     graveyard = [],
     exile = [],
-    land-drop-used = False,
-    land-drops-per-turn = 1
+    gem-drop-used = False
   }
 
   player-draw : PlayerState -> PlayerState
@@ -145,73 +141,89 @@ Section: Player State
     else let card = list-at (p.library) 0
     in PlayerState {
       general = p.general,
-      mana-pool = p.mana-pool,
+      prismatic = p.prismatic,
       library = list-drop-front (p.library),
       hand = list-push (p.hand) card,
       graveyard = p.graveyard,
       exile = p.exile,
-      land-drop-used = p.land-drop-used,
-      land-drops-per-turn = p.land-drops-per-turn
+      gem-drop-used = p.gem-drop-used
     }
 
   player-add-to-hand : PlayerState, Integer -> PlayerState
   player-add-to-hand (p) (card-id) = PlayerState {
     general = p.general,
-    mana-pool = p.mana-pool,
+    prismatic = p.prismatic,
     library = p.library,
     hand = list-push (p.hand) card-id,
     graveyard = p.graveyard,
     exile = p.exile,
-    land-drop-used = p.land-drop-used,
-    land-drops-per-turn = p.land-drops-per-turn
+    gem-drop-used = p.gem-drop-used
   }
 
   player-remove-from-hand : PlayerState, Integer -> PlayerState
   player-remove-from-hand (p) (card-id) = PlayerState {
     general = p.general,
-    mana-pool = p.mana-pool,
+    prismatic = p.prismatic,
     library = p.library,
     hand = list-remove (p.hand) card-id,
     graveyard = p.graveyard,
     exile = p.exile,
-    land-drop-used = p.land-drop-used,
-    land-drops-per-turn = p.land-drops-per-turn
+    gem-drop-used = p.gem-drop-used
   }
 
   player-add-to-graveyard : PlayerState, Integer -> PlayerState
   player-add-to-graveyard (p) (card-id) = PlayerState {
     general = p.general,
-    mana-pool = p.mana-pool,
+    prismatic = p.prismatic,
     library = p.library,
     hand = p.hand,
     graveyard = list-push (p.graveyard) card-id,
     exile = p.exile,
-    land-drop-used = p.land-drop-used,
-    land-drops-per-turn = p.land-drops-per-turn
+    gem-drop-used = p.gem-drop-used
   }
 
-  player-empty-pool : PlayerState -> PlayerState
-  player-empty-pool (p) = PlayerState {
+  player-reset-gem-drop : PlayerState -> PlayerState
+  player-reset-gem-drop (p) = PlayerState {
     general = p.general,
-    mana-pool = mana-pool-empty,
+    prismatic = p.prismatic,
     library = p.library,
     hand = p.hand,
     graveyard = p.graveyard,
     exile = p.exile,
-    land-drop-used = p.land-drop-used,
-    land-drops-per-turn = p.land-drops-per-turn
+    gem-drop-used = False
   }
 
-  player-reset-land-drop : PlayerState -> PlayerState
-  player-reset-land-drop (p) = PlayerState {
+  player-gain-ray : PlayerState -> PlayerState
+  player-gain-ray (p) = PlayerState {
     general = p.general,
-    mana-pool = p.mana-pool,
+    prismatic = prismatic-gain-ray (p.prismatic),
     library = p.library,
     hand = p.hand,
     graveyard = p.graveyard,
     exile = p.exile,
-    land-drop-used = False,
-    land-drops-per-turn = p.land-drops-per-turn
+    gem-drop-used = p.gem-drop-used
+  }
+
+  player-refresh-prismatic : PlayerState -> PlayerState
+  player-refresh-prismatic (p) = PlayerState {
+    general = p.general,
+    prismatic = prismatic-refresh (p.prismatic),
+    library = p.library,
+    hand = p.hand,
+    graveyard = p.graveyard,
+    exile = p.exile,
+    gem-drop-used = p.gem-drop-used
+  }
+
+  player-spend-rays : PlayerState, Integer -> PlayerState
+  player-spend-rays (p) (n) = PlayerState {
+    general = p.general,
+    prismatic = prismatic-spend-rays (p.prismatic) n,
+    library = p.library,
+    hand = p.hand,
+    graveyard = p.graveyard,
+    exile = p.exile,
+    gem-drop-used = p.gem-drop-used
   }
 
 Section: Permanent
@@ -230,7 +242,9 @@ Section: Permanent
     attached-to : Integer,
     power-mod : Integer,
     toughness-mod : Integer,
-    defense-mod : Integer
+    defense-mod : Integer,
+    equipped-to : Integer,
+    socketed-gem : Integer
   }
 
   permanent-new : Integer, Integer, Integer, Integer -> Permanent
@@ -239,7 +253,8 @@ Section: Permanent
     controller = controller, owner = controller,
     tapped = False, summoning-sick = True, damage-marked = 0,
     counters = 0, keywords = keywords-none, attached-to = -1,
-    power-mod = 0, toughness-mod = 0, defense-mod = 0
+    power-mod = 0, toughness-mod = 0, defense-mod = 0,
+    equipped-to = -1, socketed-gem = -1
   }
 
   permanent-tap : Permanent -> Permanent
@@ -250,7 +265,8 @@ Section: Permanent
     damage-marked = perm.damage-marked, counters = perm.counters,
     keywords = perm.keywords, attached-to = perm.attached-to,
     power-mod = perm.power-mod, toughness-mod = perm.toughness-mod,
-    defense-mod = perm.defense-mod
+    defense-mod = perm.defense-mod,
+    equipped-to = perm.equipped-to, socketed-gem = perm.socketed-gem
   }
 
   permanent-untap : Permanent -> Permanent
@@ -261,7 +277,8 @@ Section: Permanent
     damage-marked = perm.damage-marked, counters = perm.counters,
     keywords = perm.keywords, attached-to = perm.attached-to,
     power-mod = perm.power-mod, toughness-mod = perm.toughness-mod,
-    defense-mod = perm.defense-mod
+    defense-mod = perm.defense-mod,
+    equipped-to = perm.equipped-to, socketed-gem = perm.socketed-gem
   }
 
   permanent-clear-sickness : Permanent -> Permanent
@@ -272,7 +289,8 @@ Section: Permanent
     damage-marked = perm.damage-marked, counters = perm.counters,
     keywords = perm.keywords, attached-to = perm.attached-to,
     power-mod = perm.power-mod, toughness-mod = perm.toughness-mod,
-    defense-mod = perm.defense-mod
+    defense-mod = perm.defense-mod,
+    equipped-to = perm.equipped-to, socketed-gem = perm.socketed-gem
   }
 
   permanent-deal-damage : Permanent, Integer -> Permanent
@@ -283,7 +301,8 @@ Section: Permanent
     damage-marked = perm.damage-marked + amount, counters = perm.counters,
     keywords = perm.keywords, attached-to = perm.attached-to,
     power-mod = perm.power-mod, toughness-mod = perm.toughness-mod,
-    defense-mod = perm.defense-mod
+    defense-mod = perm.defense-mod,
+    equipped-to = perm.equipped-to, socketed-gem = perm.socketed-gem
   }
 
   permanent-clear-damage : Permanent -> Permanent
@@ -294,17 +313,8 @@ Section: Permanent
     damage-marked = 0, counters = perm.counters,
     keywords = perm.keywords, attached-to = perm.attached-to,
     power-mod = perm.power-mod, toughness-mod = perm.toughness-mod,
-    defense-mod = perm.defense-mod
-  }
-
-Section: Stack Entry
-
-  StackEntry = record {
-    id : Integer,
-    card-id : Integer,
-    template-id : Integer,
-    controller : Integer,
-    targets : List Integer
+    defense-mod = perm.defense-mod,
+    equipped-to = perm.equipped-to, socketed-gem = perm.socketed-gem
   }
 
 Section: Game State
@@ -313,7 +323,6 @@ Section: Game State
     players : List PlayerState,
     generals : List GeneralTemplate,
     battlefield : List Permanent,
-    stack : List StackEntry,
     active-player : Integer,
     priority-player : Integer,
     turn-number : Integer,
@@ -331,7 +340,6 @@ Section: Game State
     players = [player-new (gen-a.id) (gen-a.life), player-new (gen-b.id) (gen-b.life)],
     generals = [gen-a, gen-b],
     battlefield = [],
-    stack = [],
     active-player = 0,
     priority-player = 0,
     turn-number = 1,
@@ -354,7 +362,6 @@ Section: Game State Accessors
     players = list-set-at (gs.players) idx p,
     generals = gs.generals,
     battlefield = gs.battlefield,
-    stack = gs.stack,
     active-player = gs.active-player,
     priority-player = gs.priority-player,
     turn-number = gs.turn-number,
@@ -394,7 +401,7 @@ Section: Army Loyalty
     in when template.card-type
       is Creature ->
         if template.is-token then army-loyalty-loop perms templates player-idx (i + 1) len acc
-        else army-loyalty-loop perms templates player-idx (i + 1) len (acc + cmc (template.mana-cost))
+        else army-loyalty-loop perms templates player-idx (i + 1) len (acc + total-rays (template.light-cost))
       is otherwise -> army-loyalty-loop perms templates player-idx (i + 1) len acc
 
 Section: Utility

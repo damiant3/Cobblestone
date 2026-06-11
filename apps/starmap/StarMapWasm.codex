@@ -1,0 +1,227 @@
+Chapter: StarMapWasm
+  cites Starmap chapter CelestialTypes
+  cites Starmap chapter StarCatalog
+  cites Starmap chapter StarMapScene
+
+ WASM exports for the WebGPU star map. The WASM module owns scene
+ state and writes vertex/label data to shared memory for the JS
+ harness to read and render.
+
+ Memory layout (shared with JS harness):
+   0x100 (256)    : star-vert-count   (i32, point sprites)
+   0x104 (260)    : label-count       (i32, text labels)
+   0x108 (264)    : grid-vert-count   (i32, grid lines)
+   0x10C (268)    : dso-vert-count    (i32, deep sky object sprites)
+   0x160 (352)    : cam-state         (12 x i32: fx,fy,fz,yaw,pitch,dist,
+                                        flags,selected-id,obj-count,
+                                        mag-limit,speed,fov)
+
+   0x200000       : star vertex buffer
+     Per vertex (stride 28 bytes = 7 x i32):
+       [0]  screen-x   i32 (pixel)
+       [4]  screen-y   i32 (pixel)
+       [8]  size       i32 (pixel radius)
+       [12] r          i32 (0-255)
+       [16] g          i32 (0-255)
+       [20] b          i32 (0-255)
+       [24] obj-id     i32
+
+   0x400000       : label buffer
+     Per label (stride 80 bytes):
+       [0]  screen-x   i32
+       [4]  screen-y   i32
+       [8]  name-len   i32
+       [12-79] name    68 bytes (UTF-8, null padded)
+
+   0x500000       : object info buffer (for info panel)
+     [0]  info-len    i32
+     [4-4099] info   4096 bytes (UTF-8 text)
+
+   0x600000       : search results buffer
+     [0]  result-count i32
+     Per result (stride 72 bytes):
+       [0]  obj-id     i32
+       [4]  name-len   i32
+       [8-71] name     64 bytes
+
+ All positions in the scene are galactic XYZ in parsecs * 1000.
+ The JS harness does the 3D->2D projection via WebGPU.
+
+Section: Memory Addresses
+
+  mem-star-count : Integer = 256
+  mem-label-count : Integer = 260
+  mem-grid-count : Integer = 264
+  mem-dso-count : Integer = 268
+  mem-cam-state : Integer = 352
+  mem-star-buf : Integer = 2097152
+  mem-label-buf : Integer = 4194304
+  mem-info-buf : Integer = 5242880
+  mem-search-buf : Integer = 6291456
+
+Section: Export Functions
+
+  export-list : Text
+  export-list =
+    "init|tick|orbit|zoom|move-forward|move-right|move-up|"
+    & "select-obj|fly-to|search|toggle-labels|toggle-grid|"
+    & "toggle-constellations|set-mag-limit|set-speed|"
+    & "get-star-count|get-label-count|get-selected-info|"
+    & "add-messier|add-galaxies|get-cam-target"
+
+Section: Scene Singleton
+
+  scene-state : StarScene
+  scene-state = scene-add-objects (scene-add-objects scene-new catalog-messier) catalog-galaxies
+
+Section: Init
+
+  init : Integer
+  init =
+    let s = scene-state
+    in write-cam-state (s.ss-camera) (s.ss-catalog-count) (s.ss-mag-limit)
+
+  write-cam-state : StarCamera, Integer, Integer -> Integer
+  write-cam-state (cam) (obj-count) (mag-limit) =
+    let base = mem-cam-state
+    in let p0 = write-int-at base (cam.sc-focus-x)
+    in let p1 = write-int-at (base + 4) (cam.sc-focus-y)
+    in let p2 = write-int-at (base + 8) (cam.sc-focus-z)
+    in let p3 = write-int-at (base + 12) (cam.sc-yaw)
+    in let p4 = write-int-at (base + 16) (cam.sc-pitch)
+    in let p5 = write-int-at (base + 20) (cam.sc-dist)
+    in let p6 = write-int-at (base + 24) 0
+    in let p7 = write-int-at (base + 28) (-1)
+    in let p8 = write-int-at (base + 32) obj-count
+    in let p9 = write-int-at (base + 36) mag-limit
+    in let p10 = write-int-at (base + 40) (cam.sc-speed)
+    in let p11 = write-int-at (base + 44) (cam.sc-fov)
+    in 0
+
+  write-int-at : Integer, Integer -> Integer
+  write-int-at (addr) (val) = __mem-store-i32 addr val
+
+  write-byte-at : Integer, Integer -> Integer
+  write-byte-at (addr) (val) = __mem-store-i8 addr val
+
+Section: Tick (called each frame)
+
+  tick : Integer -> Integer
+  tick (frame) =
+    let s = scene-state
+    in let star-count = write-star-verts s 0 (s.ss-catalog-count) 0
+    in let label-count = if s.ss-show-labels then write-labels s 0 (s.ss-catalog-count) 0 else 0
+    in let p0 = write-int-at mem-star-count star-count
+    in let p1 = write-int-at mem-label-count label-count
+    in star-count
+
+  write-star-verts : StarScene, Integer, Integer, Integer -> Integer
+  write-star-verts (ss) (i) (n) (count) =
+    if i >= n then count
+    else let obj = list-at (ss.ss-catalog) i
+    in if obj.co-mag > ss.ss-mag-limit then write-star-verts ss (i + 1) n count
+    else let rgb = bv-to-rgb (obj.co-bv)
+    in let r = rgb / 65536
+    in let g = rgb / 256 - r * 256
+    in let b = rgb - (rgb / 256) * 256
+    in let size = co-screen-size obj (ss.ss-camera.sc-dist)
+    in let addr = mem-star-buf + count * 28
+    in let w0 = write-int-at addr (obj.co-x)
+    in let w1 = write-int-at (addr + 4) (obj.co-y)
+    in let w2 = write-int-at (addr + 8) (obj.co-z)
+    in let w3 = write-int-at (addr + 12) r
+    in let w4 = write-int-at (addr + 16) g
+    in let w5 = write-int-at (addr + 20) b
+    in let w6 = write-int-at (addr + 24) (obj.co-id)
+    in write-star-verts ss (i + 1) n (count + 1)
+
+  write-labels : StarScene, Integer, Integer, Integer -> Integer
+  write-labels (ss) (i) (n) (count) =
+    if i >= n then count
+    else if count >= 200 then count
+    else let obj = list-at (ss.ss-catalog) i
+    in if obj.co-mag > 3000 then write-labels ss (i + 1) n count
+    else if text-length (obj.co-name) == 0 then write-labels ss (i + 1) n count
+    else let addr = mem-label-buf + count * 80
+    in let w0 = write-int-at addr (obj.co-x)
+    in let w1 = write-int-at (addr + 4) (obj.co-y)
+    in let w2 = write-int-at (addr + 8) (text-length (obj.co-name))
+    in let w3 = write-name-at (addr + 12) (obj.co-name) 0 (text-length (obj.co-name)) 68
+    in write-labels ss (i + 1) n (count + 1)
+
+  write-name-at : Integer, Text, Integer, Integer, Integer -> Integer
+  write-name-at (addr) (name) (i) (len) (max) =
+    if i >= len then addr + i
+    else if i >= max then addr + max
+    else let c = char-code-at name i
+    in let w = write-byte-at (addr + i) c
+    in write-name-at addr name (i + 1) len max
+
+Section: Camera Controls
+
+  orbit : Integer, Integer -> Integer
+  orbit (dyaw) (dpitch) = 0
+
+  zoom : Integer -> Integer
+  zoom (delta) = 0
+
+  move-forward : Integer -> Integer
+  move-forward (amount) = 0
+
+  move-right : Integer -> Integer
+  move-right (amount) = 0
+
+  move-up : Integer -> Integer
+  move-up (amount) = 0
+
+Section: Selection
+
+  select-obj : Integer -> Integer
+  select-obj (id) = 0
+
+  fly-to : Integer -> Integer
+  fly-to (id) = 0
+
+Section: Query
+
+  get-star-count : Integer
+  get-star-count = scene-state.ss-catalog-count
+
+  get-label-count : Integer
+  get-label-count = if scene-state.ss-show-labels then 200 else 0
+
+  get-cam-target : Integer
+  get-cam-target = 0
+
+  get-selected-info : Integer
+  get-selected-info = 0
+
+Section: Toggles
+
+  toggle-labels : Integer
+  toggle-labels = 0
+
+  toggle-grid : Integer
+  toggle-grid = 0
+
+  toggle-constellations : Integer
+  toggle-constellations = 0
+
+  set-mag-limit : Integer -> Integer
+  set-mag-limit (mag) = 0
+
+  set-speed : Integer -> Integer
+  set-speed (s) = 0
+
+Section: Catalog Loading
+
+  add-messier : Integer
+  add-messier = 0
+
+  add-galaxies : Integer
+  add-galaxies = 0
+
+  search : Integer -> Integer
+  search (query-addr) = 0
+
+Page 1

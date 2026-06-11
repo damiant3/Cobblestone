@@ -1,0 +1,163 @@
+Chapter: ContentChunker
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ Content chunking and Merkle tree construction. Files are split
+ into fixed-size pieces, each piece is hashed, and a Merkle tree
+ is built for the full-file integrity proof.
+
+ Piece size: 256 KB (262144 bytes). Larger files get more pieces.
+ A 1 GB file = 4096 pieces. The Merkle root hash is the content
+ address for the entire file.
+
+Section: Constants
+
+  piece-size : Integer
+  piece-size = 262144
+
+  hash-size : Integer
+  hash-size = 32
+
+Section: Types
+
+  ContentPiece = record {
+    cp-index    : Integer,
+    cp-hash     : List Integer,
+    cp-size     : Integer,
+    cp-data     : List Integer
+  }
+
+  MerkleNode = record {
+    mn-hash   : List Integer,
+    mn-left   : Maybe Integer,
+    mn-right  : Maybe Integer,
+    mn-leaf   : Boolean
+  }
+
+  MerkleTree = record {
+    mt-nodes   : List MerkleNode,
+    mt-root    : List Integer,
+    mt-leaves  : Integer,
+    mt-depth   : Integer
+  }
+
+  ContentManifest = record {
+    cm-root-hash   : List Integer,
+    cm-total-size  : Integer,
+    cm-piece-count : Integer,
+    cm-piece-size  : Integer,
+    cm-piece-hashes : List (List Integer),
+    cm-merkle      : MerkleTree,
+    cm-name        : Text,
+    cm-mime-type   : Text
+  }
+
+Section: Chunking
+
+  chunk-content : List Integer, Text, Text -> ContentManifest
+  chunk-content (data) (name) (mime) =
+    let total = list-length data
+    in let count = (total + piece-size - 1) / piece-size
+    in let hashes = compute-piece-hashes data count 0 []
+    in let tree = build-merkle-tree hashes
+    in ContentManifest {
+      cm-root-hash = tree.mt-root,
+      cm-total-size = total,
+      cm-piece-count = count,
+      cm-piece-size = piece-size,
+      cm-piece-hashes = hashes,
+      cm-merkle = tree,
+      cm-name = name,
+      cm-mime-type = mime
+    }
+
+  compute-piece-hashes : List Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  compute-piece-hashes (data) (count) (idx) (acc) =
+    if idx >= count then acc
+    else let offset = idx * piece-size
+    in let len = list-length data - offset
+    in let plen = if len > piece-size then piece-size else len
+    in let piece-data = list-take (list-drop data offset) plen
+    in let hash = sha256 piece-data
+    in compute-piece-hashes data count (idx + 1) (list-push acc hash)
+
+  extract-piece : List Integer, Integer -> ContentPiece
+  extract-piece (data) (index) =
+    let offset = index * piece-size
+    in let total = list-length data
+    in let len = if offset + piece-size > total then total - offset else piece-size
+    in let piece-data = list-take (list-drop data offset) len
+    in ContentPiece {
+      cp-index = index,
+      cp-hash = sha256 piece-data,
+      cp-size = len,
+      cp-data = piece-data
+    }
+
+Section: Piece Verification
+
+  verify-piece : ContentPiece, ContentManifest -> Boolean
+  verify-piece (piece) (manifest) =
+    if piece.cp-index >= manifest.cm-piece-count then False
+    else let expected = list-at manifest.cm-piece-hashes piece.cp-index
+    in sha256-to-hex piece.cp-hash == sha256-to-hex expected
+
+  verify-piece-data : List Integer, Integer, ContentManifest -> Boolean
+  verify-piece-data (data) (index) (manifest) =
+    if index >= manifest.cm-piece-count then False
+    else let hash = sha256 data
+    in let expected = list-at manifest.cm-piece-hashes index
+    in sha256-to-hex hash == sha256-to-hex expected
+
+Section: Merkle Tree
+
+  build-merkle-tree : List (List Integer) -> MerkleTree
+  build-merkle-tree (leaf-hashes) =
+    let leaf-count = list-length leaf-hashes
+    in if leaf-count == 0
+      then MerkleTree { mt-nodes = [], mt-root = sha256 [], mt-leaves = 0, mt-depth = 0 }
+    else if leaf-count == 1
+      then MerkleTree { mt-nodes = [merkle-leaf (list-at leaf-hashes 0)], mt-root = list-at leaf-hashes 0, mt-leaves = 1, mt-depth = 0 }
+    else let leaves = list-map merkle-leaf leaf-hashes
+      in let tree = merkle-build-levels leaves
+      in let root = (list-at tree (list-length tree - 1)).mn-hash
+      in MerkleTree { mt-nodes = tree, mt-root = root, mt-leaves = leaf-count, mt-depth = merkle-depth leaf-count }
+
+  merkle-leaf : List Integer -> MerkleNode
+  merkle-leaf (hash) =
+    MerkleNode { mn-hash = hash, mn-left = Nothing, mn-right = Nothing, mn-leaf = True }
+
+  merkle-build-levels : List MerkleNode -> List MerkleNode
+  merkle-build-levels (nodes) =
+    if list-length nodes <= 1 then nodes
+    else let paired = merkle-pair-nodes nodes 0 []
+    in nodes & merkle-build-levels paired
+
+  merkle-pair-nodes : List MerkleNode, Integer, List MerkleNode -> List MerkleNode
+  merkle-pair-nodes (nodes) (i) (acc) =
+    if i >= list-length nodes then acc
+    else if i + 1 >= list-length nodes
+      then let node = list-at nodes i
+        in list-push acc node
+      else let left = list-at nodes i
+        in let right = list-at nodes (i + 1)
+        in let combined = sha256 (left.mn-hash & right.mn-hash)
+        in let parent = MerkleNode { mn-hash = combined, mn-left = Just i, mn-right = Just (i + 1), mn-leaf = False }
+        in merkle-pair-nodes nodes (i + 2) (list-push acc parent)
+
+  merkle-depth : Integer -> Integer
+  merkle-depth (n) =
+    if n <= 1 then 0
+    else 1 + merkle-depth ((n + 1) / 2)
+
+  verify-merkle-root : ContentManifest -> Boolean
+  verify-merkle-root (manifest) =
+    let rebuilt = build-merkle-tree manifest.cm-piece-hashes
+    in sha256-to-hex rebuilt.mt-root == sha256-to-hex manifest.cm-root-hash
+
+Section: Manifest Formatting
+
+  format-manifest : ContentManifest -> Text
+  format-manifest (m) =
+    m.cm-name & " | " & show m.cm-total-size & " bytes | "
+    & show m.cm-piece-count & " pieces | root=" & sha256-to-hex m.cm-root-hash

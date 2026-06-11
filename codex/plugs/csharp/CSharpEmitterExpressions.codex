@@ -894,9 +894,19 @@ Section: Expression Emission
     is IrConsList -> "new List<" & cs-type (ir-expr-type l) & "> { " & emit-expr l arities & " }.Concat(" & emit-expr r arities & ").ToList()"
     is otherwise -> "(" & emit-expr l arities & " " & emit-bin-op op & " " & emit-expr r arities & ")"
 
+  has-typevar : CodexType -> Boolean
+  has-typevar (ty) =
+   when ty
+    is TypeVar (id) -> True
+    is ListTy (e) -> has-typevar e
+    is LinkedListTy (e) -> has-typevar e
+    is FunTy (p) (r) -> has-typevar p | has-typevar r
+    is otherwise -> False
+
   cs-type-or-dynamic : CodexType -> Text
   cs-type-or-dynamic (ty) =
-   let t = cs-type ty
+   if has-typevar ty then "var"
+   else let t = cs-type ty
    in if t == "object" then "dynamic" else t
 
   LetBinding = record {
@@ -965,7 +975,7 @@ Section: Expression Emission
   emit-lambda-params (params) (i) (len) =
    if i == len then ""
    else let p = list-at params i
-    in "(" & cs-type (p.type-val) & " " & sanitize (p.name) & ") => " & emit-lambda-params params (i + 1) len
+    in "(" & sanitize (p.name) & ") => " & emit-lambda-params params (i + 1) len
 
   emit-list : List IRExpr, CodexType, List ArityEntry -> Text
   emit-list (elems) (ty) (arities) =
@@ -980,7 +990,7 @@ Section: Expression Emission
 
   emit-match : IRExpr, List IRBranch, CodexType, List ArityEntry -> Text
   emit-match (scrut) (branches) (ty) (arities) =
-   let result-cast = "(" & cs-type ty & ")"
+   let result-cast = if has-typevar ty then "" else "(" & cs-type ty & ")"
    in let arms = emit-match-arms branches 0 arities result-cast
    in let needs-wild = if has-any-catch-all branches 0 then False else True
    in let scrut-ty = ir-expr-type scrut
@@ -1004,11 +1014,17 @@ Section: Expression Emission
     is IrVarPat (name) (ty) (sp) -> True
     is otherwise -> False
 
+  is-tup-pattern : IRPat -> Boolean
+  is-tup-pattern (p) =
+   when p
+    is IrCtorPat (name) (subs) (ty) (sp) -> is-mktup-name name
+    is otherwise -> False
+
   has-any-catch-all : List IRBranch, Integer -> Boolean
   has-any-catch-all (branches) (i) =
    if i == list-length branches then False
    else let b = list-at branches i
-   in if is-catch-all (b.pattern) then True
+   in if is-catch-all (b.pattern) | is-tup-pattern (b.pattern) then True
       else has-any-catch-all branches (i + 1)
 
   emit-pattern : IRPat -> Text
@@ -1137,10 +1153,6 @@ Section: Expression Emission
   is-mktup-name : Text -> Boolean
   is-mktup-name (n) =
    n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
-
-  is-tup-type : Text -> Boolean
-  is-tup-type (n) =
-   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
 
 Page 2 of 2
 

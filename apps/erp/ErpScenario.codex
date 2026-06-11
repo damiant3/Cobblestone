@@ -1,0 +1,264 @@
+Chapter: ErpScenario
+  cites ERP chapter ErpTypes
+  cites ERP chapter ErpConfig
+  cites ERP chapter FinGL
+  cites ERP chapter FinApAr
+  cites ERP chapter HrCore
+  cites ERP chapter SdSales
+  cites ERP chapter MmProcurement
+  cites ERP chapter FinControlling
+  cites ERP chapter PpPlanning
+  cites Foreword chapter Tuple
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ One month in the life of a demo company. The scenario runs every
+ subledger against a single general ledger: procure-to-pay,
+ make-to-stock, order-to-cash, payroll, cost allocation, and a
+ month-end close, then renders the trial balance and statements.
+ This chapter deliberately defines no opening; the battery test and
+ the bootable demo both cite it and provide their own entry points.
+
+ The demo company CODEX in period 6 of 2026: capitalized with
+ 5000000 cash, buys 100 units of raw material RM1 at 5000, makes 40
+ finished units FG1 (two RM1 each plus 1500 absorbed labor, standard
+ cost 11500), sells 30 at 20000, runs one payroll, allocates IT cost
+ to sales, buys a 480000 machine depreciating straight-line over 48
+ months, and closes the period.
+
+Section: Fixtures
+
+  scn-company : Text = "CODEX"
+
+  scn-vendor : Vendor =
+    Vendor {
+      vnd-id = "V1", vnd-name = "Raw Materials Inc", vnd-company = "CODEX",
+      vnd-tax-id = "", vnd-payment-terms = "NET30", vnd-currency = "USD",
+      vnd-gl-account = "2000", vnd-address = "", vnd-contact = "",
+      vnd-phone = "", vnd-email = "", vnd-bank-account = "", vnd-active = True
+    }
+
+  scn-customer : Customer =
+    Customer {
+      cust-id = "C1", cust-name = "Globex", cust-company = "CODEX",
+      cust-tax-id = "", cust-payment-terms = "NET30", cust-credit-limit = 100000000,
+      cust-currency = "USD", cust-gl-account = "1100", cust-address = "",
+      cust-contact = "", cust-phone = "", cust-email = "", cust-active = True
+    }
+
+  scn-raw-material : Material =
+    Material {
+      mat-id = "RM1", mat-name = "Steel Rod", mat-description = "",
+      mat-uom = "EA", mat-category = "RAW", mat-standard-cost = 5000,
+      mat-gl-inventory = "1200", mat-gl-cogs = "5000", mat-gl-variance = "",
+      mat-reorder-point = 20, mat-reorder-qty = 100, mat-lead-time-days = 7,
+      mat-active = True
+    }
+
+  scn-finished-good : Material =
+    Material {
+      mat-id = "FG1", mat-name = "Widget", mat-description = "",
+      mat-uom = "EA", mat-category = "FG", mat-standard-cost = 11500,
+      mat-gl-inventory = "1200", mat-gl-cogs = "5000", mat-gl-variance = "",
+      mat-reorder-point = 10, mat-reorder-qty = 40, mat-lead-time-days = 3,
+      mat-active = True
+    }
+
+  scn-materials : List Material = [scn-raw-material, scn-finished-good]
+
+  scn-po : PurchaseOrder =
+    PurchaseOrder {
+      po-id = "PO1", po-company = "CODEX", po-vendor-id = "V1",
+      po-pr-ref = "PR1",
+      po-lines = [PoLine { pol-line-num = 1, pol-material-id = "RM1", pol-description = "Steel Rod", pol-quantity = 100, pol-unit-price = 5000, pol-received-qty = 0, pol-gl-account = "1200", pol-cost-center = "", pol-tax-code = "ST" }],
+      po-status = PoSent, po-payment-terms = "NET30",
+      po-delivery-date = 20260610, po-total = 500000, po-currency = "USD",
+      po-approved-by = "boss", po-created = 0
+    }
+
+  scn-gr : GoodsReceipt =
+    GoodsReceipt {
+      gr-id = "GR1", gr-po-id = "PO1", gr-company = "CODEX",
+      gr-vendor-id = "V1",
+      gr-lines = [GrLine { grl-po-line = 1, grl-material-id = "RM1", grl-received-qty = 100, grl-accepted-qty = 100, grl-rejected-qty = 0, grl-bin-location = "A1" }],
+      gr-warehouse = "WH1", gr-received-by = "dock", gr-date = 20260610
+    }
+
+  scn-ap-lines : List ApInvoiceLine =
+    [ApInvoiceLine { apl-gl-account = "2100", apl-amount = 500000, apl-tax-code = "ST", apl-cost-center = "", apl-description = "Steel Rod x100", apl-quantity = 100, apl-unit-price = 5000 }]
+
+  scn-bom : BomHeader =
+    BomHeader {
+      bh-id = "BOM1", bh-material-id = "FG1", bh-name = "Widget",
+      bh-base-qty = 1, bh-valid-from = 0, bh-valid-to = 99999999,
+      bh-status = "active",
+      bh-components = [BomComponent { bom-material-id = "RM1", bom-quantity-x1000 = 2000, bom-unit-cost = 5000, bom-scrap-pct = 0 }]
+    }
+
+  scn-stub : PayStub =
+    PayStub {
+      ps-employee-id = "E1", ps-employee-name = "Pat Lee",
+      ps-gross-pay = 100000, ps-federal-tax = 10000, ps-state-tax = 5000,
+      ps-social-security = 6200, ps-medicare = 1450,
+      ps-health-deduction = 2500, ps-retirement-deduction = 6000,
+      ps-other-deductions = 0, ps-net-pay = 68850,
+      ps-hours-worked = 160, ps-overtime-hours = 0, ps-pto-hours = 0
+    }
+
+  scn-payroll : PayrollRun =
+    PayrollRun {
+      pyr-id = "100001", pyr-company = "CODEX",
+      pyr-period-start = 20260601, pyr-period-end = 20260630,
+      pyr-pay-date = 20260630, pyr-status = PayrollCalculated,
+      pyr-stubs = [scn-stub, scn-stub], pyr-total-gross = 200000,
+      pyr-total-taxes = 45300, pyr-total-deductions = 17000,
+      pyr-total-net = 137700, pyr-created = 0
+    }
+
+  scn-delivery : Delivery =
+    Delivery {
+      del-id = "DEL1", del-so-id = "SO1", del-company = "CODEX",
+      del-warehouse = "WH1",
+      del-lines = [DeliveryLine { dll-so-line = 1, dll-material-id = "FG1", dll-quantity = 30, dll-picked-qty = 30, dll-bin-location = "B1", dll-serial-numbers = [] }],
+      del-ship-date = 20260620, del-carrier = "", del-tracking = "",
+      del-status = DelShipped, del-picked-by = "", del-packed-by = "",
+      del-shipped-by = ""
+    }
+
+  scn-ar-lines : List ArInvoiceLine =
+    [ArInvoiceLine { arl-gl-account = "4000", arl-amount = 600000, arl-tax-code = "ST", arl-description = "Widget x30", arl-quantity = 30, arl-unit-price = 20000 }]
+
+  scn-alloc : CostAllocation =
+    CostAllocation {
+      ca-id = "AL1", ca-from-cc = "CC-IT", ca-to-cc = "CC-SALES",
+      ca-amount = 12000, ca-basis = AbDirectCost, ca-period = 6,
+      ca-year = 2026, ca-description = "IT chargeback"
+    }
+
+  scn-machine : FixedAsset =
+    FixedAsset {
+      fa-id = "FA1", fa-name = "CNC Machine", fa-company = "CODEX",
+      fa-class = Machinery, fa-cost = 480000, fa-salvage-value = 0,
+      fa-useful-life-months = 48, fa-depreciation-method = StraightLine,
+      fa-accumulated-depr = 0, fa-acquisition-date = 20260605,
+      fa-in-service-date = 20260605, fa-disposal-date = 0,
+      fa-gl-asset-account = "1500", fa-gl-depr-account = "6400",
+      fa-gl-accum-account = "1510", fa-cost-center = "CC-PROD",
+      fa-location = "Plant 1", fa-serial-number = "SN-1",
+      fa-status = AssetActive
+    }
+
+Section: Journal Helpers
+
+  scn-je : Text, Integer, List JournalLine, JournalSource -> JournalEntry
+  scn-je (id) (date) (lines) (source) =
+    JournalEntry {
+      je-id = id, je-company = "CODEX", je-date = date,
+      je-period = 6, je-year = 2026, je-description = id,
+      je-lines = lines, je-source = source, je-posted = False,
+      je-reversed = False, je-reversal-of = "", je-created-by = "scenario",
+      je-approved-by = "", je-created = 0
+    }
+
+  scn-post : GlState, JournalEntry -> GlState
+  scn-post (st) (je) =
+    when post-journal st je
+      is (st2, r) -> st2
+
+Section: The Month
+
+ Each step threads the ledger forward. The result record carries the
+ final state plus everything the report needs to tie subledgers to
+ control accounts.
+
+  ScenarioResult = record {
+    scn-state : GlState,
+    scn-match-ok : Boolean,
+    scn-ap-open : Integer,
+    scn-ar-open : Integer,
+    scn-close-rejected : Boolean
+  }
+
+  run-month : ScenarioResult
+  run-month =
+    let st0 = gl-init scn-company
+    in let st1 = load-standard-coa st0
+    in let st2 = __record-set st1 "gl-periods" [FiscalPeriod { fp-year = 2026, fp-period = 6, fp-company = "CODEX", fp-start-date = 20260601, fp-end-date = 20260630, fp-status = PeriodOpen }]
+    in let cfg = standard-config 6 2026
+    in let st3 = scn-post st2 (scn-je "CAPITAL" 20260601 [journal-line-debit "1000" 5000000 "" "seed capital", journal-line-credit "3000" 5000000 "" "common stock"] SrcManual)
+    in let st4 = scn-post st3 (gr-gl-entries scn-gr scn-po cfg)
+    in let (st5, ap-inv) = create-ap-invoice st4 cfg scn-vendor "RMI-100" 20260612 scn-ap-lines 0
+    in let match-ok = all-matched (three-way-match scn-po scn-gr ap-inv)
+    in run-month-rest st5 cfg ap-inv match-ok
+
+ The month continues in run-month-rest; splitting the function keeps
+ the let chain shallow enough to read.
+
+  run-month-rest : GlState, ErpConfig, ApInvoice, Boolean -> ScenarioResult
+  run-month-rest (st5) (cfg) (ap-inv) (match-ok) =
+    let (st6, apr) = ap-post-invoice st5 cfg ap-inv
+    in let (st7, app) = ap-payment st6 cfg ap-inv 0 20260625
+    in let st8 = scn-post st7 (payroll-journal scn-payroll cfg)
+    in let st9 = scn-post st8 (scn-je "ABSORB" 20260618 [journal-line-debit "1200" 60000 "CC-PROD" "labor absorbed into WIP", journal-line-credit "6000" 60000 "CC-PROD" "labor applied"] SrcInventory)
+    in let st10 = scn-post st9 (delivery-gl scn-delivery scn-materials cfg)
+    in let (st11, ar-inv) = create-ar-invoice st10 cfg scn-customer "BILL-1" 20260620 scn-ar-lines 0
+    in let (st12, arr) = ar-post-invoice st11 cfg ar-inv
+    in let (st13, arc) = ar-cash-receipt st12 cfg ar-inv (ar-inv.ari-amount + ar-inv.ari-tax-amount) 20260628
+    in let st14 = scn-post st13 (allocation-je scn-alloc "CODEX" cfg)
+    in let st15 = scn-post st14 (scn-je "ASSET" 20260605 [journal-line-debit "1500" 480000 "" "CNC machine", journal-line-credit "1000" 480000 "" "cash purchase"] SrcAsset)
+    in let depr = monthly-depreciation scn-machine 1
+    in let st16 = scn-post st15 (scn-je "DEPR" 20260630 [journal-line-debit "6400" depr "" "monthly depreciation", journal-line-credit "1510" depr "" "accumulated depreciation"] SrcClosing)
+    in let st17 = __record-set st16 "gl-periods" [FiscalPeriod { fp-year = 2026, fp-period = 6, fp-company = "CODEX", fp-start-date = 20260601, fp-end-date = 20260630, fp-status = PeriodClosed }]
+    in let late = post-journal st17 (scn-je "LATE" 20260630 [journal-line-debit "1000" 1 "" "late", journal-line-credit "4000" 1 "" "late"] SrcManual)
+    in when late
+      is (st18, late-r) ->
+        let rejected = when late-r is PostFailed (m) -> True is otherwise -> False
+        in ScenarioResult {
+          scn-state = st18,
+          scn-match-ok = match-ok,
+          scn-ap-open = get-balance st18 "2000",
+          scn-ar-open = get-balance st18 "1100",
+          scn-close-rejected = rejected
+        }
+
+Section: Report
+
+  bool-text : Boolean -> Text
+  bool-text (b) = if b then "True" else "False"
+
+  tb-line-text : TrialBalanceLine -> Text
+  tb-line-text (l) =
+    "  " & l.tb-account & " " & l.tb-name & "  D=" & show (l.tb-debit) & " C=" & show (l.tb-credit)
+
+  tb-lines-text : List TrialBalanceLine, Integer, List Text -> List Text
+  tb-lines-text (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else tb-lines-text lines (i + 1) (list-push acc (tb-line-text (list-at lines i)))
+
+  scenario-report : List Text
+  scenario-report =
+    let result = run-month
+    in let st = result.scn-state
+    in let tb = trial-balance st
+    in let d = tb-total-debits tb
+    in let c = tb-total-credits tb
+    in let rev = total-revenue st
+    in let exp = total-expenses st
+    in let ni = net-income st
+    in let assets = total-assets st
+    in let liab = total-liabilities st
+    in let equity = total-equity st
+    in let eq-holds = assets == liab + equity + ni
+    in let head = [
+      "CODEX -- one month, period 6/2026",
+      "three-way-match: " & bool-text (result.scn-match-ok),
+      "ap-control-after-payment: " & show (result.scn-ap-open),
+      "ar-control-after-receipt: " & show (result.scn-ar-open),
+      "close-rejects-posting: " & bool-text (result.scn-close-rejected),
+      "TRIAL BALANCE  debits=" & show d & " credits=" & show c & " balanced=" & bool-text (d == c)
+    ]
+    in let body = tb-lines-text tb 0 head
+    in let pl1 = "P&L  revenue=" & show rev & " expenses=" & show exp & " net-income=" & show ni
+    in let bs1 = "BALANCE SHEET  assets=" & show assets & " liabilities=" & show liab & " equity=" & show equity
+    in let eq1 = "EQUATION  assets == liabilities + equity + net-income: " & bool-text eq-holds
+    in list-push (list-push (list-push body pl1) bs1) eq1

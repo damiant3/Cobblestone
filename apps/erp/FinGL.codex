@@ -1,0 +1,322 @@
+Chapter: FinGL
+  cites ERP chapter ErpTypes
+  cites Data chapter Server
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Executor
+  cites Data chapter RelAlgebra
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ General Ledger engine. Posts balanced journal entries, maintains
+ account balances, enforces period controls, generates trial balance
+ and financial statements. All postings are double-entry: total
+ debits must equal total credits or the entry is rejected.
+
+Section: GL State
+
+  GlState = record {
+    gl-db : DbServer,
+    gl-log : LogState,
+    gl-accounts : List GlAccount,
+    gl-periods : List FiscalPeriod,
+    gl-journals : List JournalEntry,
+    gl-balances : HamtMap Integer,
+    gl-next-id : Integer,
+    gl-company : Text
+  }
+
+ The ledger lives twice: in the working lists and balances of GlState,
+ and written through to Codex DB tables in gl-db. Accounts, journals,
+ journal lines, and an audit trail persist; balances are derived and
+ replayed on rebuild. Periods and the bounded log are working state
+ only.
+
+  gl-accounts-tdef : TableDef
+  gl-accounts-tdef = table-def "gl_accounts" [col-def-not-null "number" ColText, col-def "name" ColText, col-def "atype" ColText, col-def "company" ColText]
+
+  gl-journals-tdef : TableDef
+  gl-journals-tdef = table-def "gl_journals" [col-def-not-null "id" ColText, col-def "period" ColInteger, col-def "year" ColInteger, col-def "description" ColText]
+
+  gl-lines-tdef : TableDef
+  gl-lines-tdef = table-def "gl_journal_lines" [col-def-not-null "je" ColText, col-def "account" ColText, col-def "debit" ColInteger, col-def "credit" ColInteger]
+
+  gl-audit-tdef : TableDef
+  gl-audit-tdef = table-def "gl_audit" [col-def-not-null "seq" ColInteger, col-def "category" ColText, col-def "message" ColText]
+
+  gl-init : Text -> GlState
+  gl-init (company) =
+    let db = db-server-new ("gl-" & company)
+    in let db2 = db-create-table db gl-accounts-tdef
+    in let db3 = db-create-table db2 gl-journals-tdef
+    in let db4 = db-create-table db3 gl-lines-tdef
+    in let db5 = db-create-table db4 gl-audit-tdef
+    in let log = logger-new 256 log-info
+    in let log2 = log-info-msg log "gl" ("initialized for " & company) 0
+    in GlState {
+      gl-db = db5,
+      gl-log = log2,
+      gl-accounts = [],
+      gl-periods = [],
+      gl-journals = [],
+      gl-balances = hamt-empty,
+      gl-next-id = 100000,
+      gl-company = company
+    }
+
+  gl-gen-id : GlState, Text -> (GlState, Text)
+  gl-gen-id (st) (prefix) =
+    let id = prefix & "-" & show (st.gl-next-id)
+    in (__record-set st "gl-next-id" (st.gl-next-id + 1), id)
+
+Section: Chart of Accounts
+
+  add-account : GlState, GlAccount -> GlState
+  add-account (st) (acct) =
+    let st2 = __record-set st "gl-accounts" (list-push (st.gl-accounts) acct)
+    in let row = row-new (table-schema gl-accounts-tdef) [ValText (acct.gl-number), ValText (acct.gl-name), ValText (account-type-name (acct.gl-type)), ValText (acct.gl-company)]
+    in let st3 = __record-set st2 "gl-db" (db-insert (st2.gl-db) "gl_accounts" row)
+    in let log2 = log-info-msg (st.gl-log) "gl" ("added account " & acct.gl-number & " " & acct.gl-name) 0
+    in __record-set st3 "gl-log" log2
+
+  find-account : GlState, Text -> Maybe GlAccount
+  find-account (st) (number) = find-acct-loop (st.gl-accounts) number 0
+
+  find-acct-loop : List GlAccount, Text, Integer -> Maybe GlAccount
+  find-acct-loop (accts) (num) (i) =
+    if i >= list-length accts then None
+    else let a = list-at accts i
+    in if a.gl-number == num then Just a
+    else find-acct-loop accts num (i + 1)
+
+  standard-coa : Text -> List GlAccount
+  standard-coa (company) = [
+    GlAccount { gl-number = "1000", gl-name = "Cash", gl-type = Asset, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = True, gl-active = True },
+    GlAccount { gl-number = "1100", gl-name = "Accounts Receivable", gl-type = Asset, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = True, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "1200", gl-name = "Inventory", gl-type = Asset, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "1300", gl-name = "Prepaid Expenses", gl-type = Asset, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "1500", gl-name = "Fixed Assets", gl-type = Asset, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = True, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "1510", gl-name = "Accumulated Depreciation", gl-type = Asset, gl-parent = "1500", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "2000", gl-name = "Accounts Payable", gl-type = Liability, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = True, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "2100", gl-name = "Accrued Liabilities", gl-type = Liability, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "2200", gl-name = "Taxes Payable", gl-type = Liability, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "2300", gl-name = "Wages Payable", gl-type = Liability, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "3000", gl-name = "Common Stock", gl-type = Equity, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "3100", gl-name = "Retained Earnings", gl-type = Equity, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "4000", gl-name = "Sales Revenue", gl-type = Revenue, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "4100", gl-name = "Service Revenue", gl-type = Revenue, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "5000", gl-name = "Cost of Goods Sold", gl-type = Expense, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "6000", gl-name = "Salaries Expense", gl-type = Expense, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "6100", gl-name = "Benefits Expense", gl-type = Expense, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "6200", gl-name = "Rent Expense", gl-type = Expense, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "6300", gl-name = "Utilities Expense", gl-type = Expense, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "6400", gl-name = "Depreciation Expense", gl-type = Expense, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "6500", gl-name = "Office Supplies", gl-type = Expense, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "6600", gl-name = "Insurance Expense", gl-type = Expense, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "7000", gl-name = "Interest Expense", gl-type = Expense, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True },
+    GlAccount { gl-number = "8000", gl-name = "Tax Expense", gl-type = Expense, gl-parent = "", gl-company = company, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True }
+  ]
+
+  load-standard-coa : GlState -> GlState
+  load-standard-coa (st) = load-coa-loop st (standard-coa (st.gl-company)) 0
+
+  load-coa-loop : GlState, List GlAccount, Integer -> GlState
+  load-coa-loop (st) (accts) (i) =
+    if i >= list-length accts then st
+    else load-coa-loop (add-account st (list-at accts i)) accts (i + 1)
+
+Section: Journal Entry Posting
+
+  PostResult =
+    | PostSuccess (JournalEntry)
+    | PostFailed (Text)
+
+  post-journal : GlState, JournalEntry -> (GlState, PostResult)
+  post-journal (st) (je) =
+    if je-is-balanced je == False then
+      let log2 = log-error-msg (st.gl-log) "gl" ("unbalanced JE " & je.je-id & ": debits /= credits") 0
+      in (__record-set st "gl-log" log2, PostFailed "Journal entry is not balanced (debits must equal credits)")
+    else let period-ok = check-period-open st (je.je-period) (je.je-year)
+    in if period-ok == False then
+      (st, PostFailed ("Period " & show (je.je-period) & "/" & show (je.je-year) & " is closed"))
+    else let je2 = __record-set je "je-posted" True
+    in let st2 = __record-set st "gl-journals" (list-push (st.gl-journals) je2)
+    in let st3 = update-balances st2 (je.je-lines)
+    in let db2 = db-insert (st3.gl-db) "gl_journals" (row-new (table-schema gl-journals-tdef) [ValText (je.je-id), ValInteger (je.je-period), ValInteger (je.je-year), ValText (je.je-description)])
+    in let db3 = persist-je-lines db2 (je.je-id) (je.je-lines) 0
+    in let db4 = db-insert db3 "gl_audit" (row-new (table-schema gl-audit-tdef) [ValInteger (list-length (st3.gl-journals)), ValText "gl", ValText ("posted " & je.je-id)])
+    in let st4 = __record-set st3 "gl-db" db4
+    in let log2 = log-info-msg (st4.gl-log) "gl" ("posted " & je.je-id & " " & je.je-description) 0
+    in (__record-set st4 "gl-log" log2, PostSuccess je2)
+
+  persist-je-lines : DbServer, Text, List JournalLine, Integer -> DbServer
+  persist-je-lines (db) (je-id) (lines) (i) =
+    if i >= list-length lines then db
+    else let l = list-at lines i
+    in let row = row-new (table-schema gl-lines-tdef) [ValText je-id, ValText (l.jl-account), ValInteger (l.jl-debit), ValInteger (l.jl-credit)]
+    in persist-je-lines (db-insert db "gl_journal_lines" row) je-id lines (i + 1)
+
+  check-period-open : GlState, Integer, Integer -> Boolean
+  check-period-open (st) (period) (year) =
+    check-period-loop (st.gl-periods) period year 0
+
+ Periods are closed by default: a period that was never opened
+ rejects postings. Scenario and test code must open every period it
+ posts into.
+
+  check-period-loop : List FiscalPeriod, Integer, Integer, Integer -> Boolean
+  check-period-loop (periods) (p) (y) (i) =
+    if i >= list-length periods then False
+    else let fp = list-at periods i
+    in if fp.fp-period == p then if fp.fp-year == y then when fp.fp-status is PeriodOpen -> True is otherwise -> False
+      else check-period-loop periods p y (i + 1)
+    else check-period-loop periods p y (i + 1)
+
+  update-balances : GlState, List JournalLine -> GlState
+  update-balances (st) (lines) = update-bal-loop st lines 0
+
+  update-bal-loop : GlState, List JournalLine, Integer -> GlState
+  update-bal-loop (st) (lines) (i) =
+    if i >= list-length lines then st
+    else let l = list-at lines i
+    in let current = when hamt-get (st.gl-balances) (l.jl-account) is Just (v) -> v is None -> 0
+    in let new-bal = current + l.jl-debit - l.jl-credit
+    in let st2 = __record-set st "gl-balances" (hamt-set (st.gl-balances) (l.jl-account) new-bal)
+    in update-bal-loop st2 lines (i + 1)
+
+  get-balance : GlState, Text -> Integer
+  get-balance (st) (account) =
+    when hamt-get (st.gl-balances) account
+      is Just (v) -> v
+      is None -> 0
+
+Section: Rebuild From DB
+
+ Rebuilds working state from the persisted tables: accounts from
+ gl_accounts, balances by replaying every line in gl_journal_lines.
+ Parent, control, and bank flags and per-line metadata are not yet
+ persisted; the rebuild restores exactly what the trial balance and
+ statements need. The atype column only ever holds the five names
+ account-type-name produces; anything else reads back as Asset.
+
+  val-text-at : RowData, Integer -> Text
+  val-text-at (row) (i) = when list-at (row.values) i is ValText (t) -> t is otherwise -> ""
+
+  val-int-at : RowData, Integer -> Integer
+  val-int-at (row) (i) = when list-at (row.values) i is ValInteger (n) -> n is otherwise -> 0
+
+  account-type-from-name : Text -> AccountType
+  account-type-from-name (t) =
+    if t == "Liability" then Liability
+    else if t == "Equity" then Equity
+    else if t == "Revenue" then Revenue
+    else if t == "Expense" then Expense
+    else Asset
+
+  rebuild-accounts : List RowData, List GlAccount, Integer -> List GlAccount
+  rebuild-accounts (rows) (acc) (i) =
+    if i >= list-length rows then acc
+    else let r = list-at rows i
+    in let a = GlAccount { gl-number = val-text-at r 0, gl-name = val-text-at r 1, gl-type = account-type-from-name (val-text-at r 2), gl-parent = "", gl-company = val-text-at r 3, gl-currency = "USD", gl-is-control = False, gl-is-bank = False, gl-active = True }
+    in rebuild-accounts rows (list-push acc a) (i + 1)
+
+  rebuild-lines : List RowData, List JournalLine, Integer -> List JournalLine
+  rebuild-lines (rows) (acc) (i) =
+    if i >= list-length rows then acc
+    else let r = list-at rows i
+    in let l = JournalLine { jl-account = val-text-at r 1, jl-debit = val-int-at r 2, jl-credit = val-int-at r 3, jl-cost-center = "", jl-description = "", jl-currency = "", jl-fx-amount = 0, jl-fx-rate = 0 }
+    in rebuild-lines rows (list-push acc l) (i + 1)
+
+  gl-rebuild-from-db : DbServer, Text -> GlState
+  gl-rebuild-from-db (db) (company) =
+    let acct-qr = query (db.db-catalog) (RelScan "gl_accounts")
+    in let accounts = rebuild-accounts (acct-qr.qr-rows) [] 0
+    in let line-qr = query (db.db-catalog) (RelScan "gl_journal_lines")
+    in let lines = rebuild-lines (line-qr.qr-rows) [] 0
+    in let st0 = GlState {
+      gl-db = db,
+      gl-log = logger-new 256 log-info,
+      gl-accounts = accounts,
+      gl-periods = [],
+      gl-journals = [],
+      gl-balances = hamt-empty,
+      gl-next-id = 100000,
+      gl-company = company
+    }
+    in update-balances st0 lines
+
+Section: Trial Balance
+
+  TrialBalanceLine = record {
+    tb-account : Text,
+    tb-name : Text,
+    tb-debit : Integer,
+    tb-credit : Integer
+  }
+
+  trial-balance : GlState -> List TrialBalanceLine
+  trial-balance (st) = build-tb (st.gl-accounts) (st.gl-balances) [] 0
+
+  build-tb : List GlAccount, HamtMap Integer, List TrialBalanceLine, Integer -> List TrialBalanceLine
+  build-tb (accts) (balances) (acc) (i) =
+    if i >= list-length accts then acc
+    else let a = list-at accts i
+    in let bal = when hamt-get balances (a.gl-number) is Just (v) -> v is None -> 0
+    in let line = if bal >= 0 then TrialBalanceLine { tb-account = a.gl-number, tb-name = a.gl-name, tb-debit = bal, tb-credit = 0 }
+      else TrialBalanceLine { tb-account = a.gl-number, tb-name = a.gl-name, tb-debit = 0, tb-credit = 0 - bal }
+    in if bal /= 0 then build-tb accts balances (list-push acc line) (i + 1)
+    else build-tb accts balances acc (i + 1)
+
+  tb-total-debits : List TrialBalanceLine -> Integer
+  tb-total-debits (lines) = sum-tb-d lines 0 0
+
+  sum-tb-d : List TrialBalanceLine, Integer, Integer -> Integer
+  sum-tb-d (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else sum-tb-d lines (i + 1) (acc + (list-at lines i).tb-debit)
+
+  tb-total-credits : List TrialBalanceLine -> Integer
+  tb-total-credits (lines) = sum-tb-c lines 0 0
+
+  sum-tb-c : List TrialBalanceLine, Integer, Integer -> Integer
+  sum-tb-c (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else sum-tb-c lines (i + 1) (acc + (list-at lines i).tb-credit)
+
+Section: Financial Statements
+
+  balance-by-type : GlState, AccountType -> Integer
+  balance-by-type (st) (atype) = sum-by-type (st.gl-accounts) (st.gl-balances) atype 0 0
+
+  sum-by-type : List GlAccount, HamtMap Integer, AccountType, Integer, Integer -> Integer
+  sum-by-type (accts) (bals) (atype) (i) (acc) =
+    if i >= list-length accts then acc
+    else let a = list-at accts i
+    in let bal = when hamt-get bals (a.gl-number) is Just (v) -> v is None -> 0
+    in let matches = when atype
+      is Asset -> when a.gl-type is Asset -> True is otherwise -> False
+      is Liability -> when a.gl-type is Liability -> True is otherwise -> False
+      is Equity -> when a.gl-type is Equity -> True is otherwise -> False
+      is Revenue -> when a.gl-type is Revenue -> True is otherwise -> False
+      is Expense -> when a.gl-type is Expense -> True is otherwise -> False
+    in if matches then sum-by-type accts bals atype (i + 1) (acc + bal)
+    else sum-by-type accts bals atype (i + 1) acc
+
+  total-assets : GlState -> Integer
+  total-assets (st) = balance-by-type st Asset
+
+  total-liabilities : GlState -> Integer
+  total-liabilities (st) = 0 - balance-by-type st Liability
+
+  total-equity : GlState -> Integer
+  total-equity (st) = 0 - balance-by-type st Equity
+
+  total-revenue : GlState -> Integer
+  total-revenue (st) = 0 - balance-by-type st Revenue
+
+  total-expenses : GlState -> Integer
+  total-expenses (st) = balance-by-type st Expense
+
+  net-income : GlState -> Integer
+  net-income (st) = total-revenue st - total-expenses st

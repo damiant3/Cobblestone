@@ -1,0 +1,391 @@
+Chapter: SyncProvider
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ResourceModel
+  cites Foreword chapter Maybe
+
+ Abstract sync and data provider framework. Every external data
+ source — a CalDAV server, a Google API, a plant database, an auto
+ parts catalog, an ISBN lookup — is a Provider with a connection
+ state, a sync schedule, and a conflict resolution strategy. The
+ framework handles auth tokens, rate limiting, retry, and offline
+ queuing. Individual apps cite this and specialize it.
+
+Section: Auth
+
+  AuthMethod =
+    | AuthNone
+    | AuthApiKey (Text)
+    | AuthOAuth2 (Text) (Text)
+    | AuthBasic (Text) (Text)
+    | AuthToken (Text)
+
+  auth-label : AuthMethod -> Text
+  auth-label (a) = when a
+    is AuthNone -> "none"
+    is AuthApiKey (key) -> "api-key"
+    is AuthOAuth2 (client) (token) -> "oauth2"
+    is AuthBasic (user) (pass) -> "basic"
+    is AuthToken (tok) -> "bearer"
+
+  auth-is-configured : AuthMethod -> Boolean
+  auth-is-configured (a) = when a
+    is AuthNone -> True
+    is AuthApiKey (key) -> text-length key > 0
+    is AuthOAuth2 (client) (token) -> text-length token > 0
+    is AuthBasic (user) (pass) -> text-length user > 0
+    is AuthToken (tok) -> text-length tok > 0
+
+Section: Sync Direction
+
+  SyncDirection =
+    | SyncPull
+    | SyncPush
+    | SyncBidirectional
+
+  sync-dir-label : SyncDirection -> Text
+  sync-dir-label (d) = when d
+    is SyncPull -> "pull"
+    is SyncPush -> "push"
+    is SyncBidirectional -> "bidirectional"
+
+Section: Conflict Resolution
+
+  ConflictStrategy =
+    | ConflictLocalWins
+    | ConflictRemoteWins
+    | ConflictNewestWins
+    | ConflictManual
+    | ConflictMerge
+
+  conflict-label : ConflictStrategy -> Text
+  conflict-label (c) = when c
+    is ConflictLocalWins -> "local wins"
+    is ConflictRemoteWins -> "remote wins"
+    is ConflictNewestWins -> "newest wins"
+    is ConflictManual -> "manual"
+    is ConflictMerge -> "merge"
+
+Section: Sync State
+
+  SyncStatus =
+    | SyncIdle
+    | SyncInProgress (Integer)
+    | SyncComplete (Integer) (Integer)
+    | SyncError (Text)
+    | SyncOffline
+
+  sync-status-label : SyncStatus -> Text
+  sync-status-label (s) = when s
+    is SyncIdle -> "idle"
+    is SyncInProgress (pct) -> "syncing " & show pct & "%"
+    is SyncComplete (added) (updated) -> "done +" & show added & " ~" & show updated
+    is SyncError (msg) -> "error: " & msg
+    is SyncOffline -> "offline"
+
+  SyncLog = record {
+    sl-timestamp : Integer,
+    sl-direction : SyncDirection,
+    sl-added : Integer,
+    sl-updated : Integer,
+    sl-deleted : Integer,
+    sl-conflicts : Integer,
+    sl-errors : Integer,
+    sl-duration-ms : Integer
+  }
+
+Section: Provider
+
+  ProviderKind =
+    | PkCalDav
+    | PkCardDav
+    | PkGoogle
+    | PkMicrosoft
+    | PkApple
+    | PkRest (Text)
+    | PkIsbn
+    | PkPlantDb
+    | PkAutoDb
+    | PkRecipeDb
+    | PkFitness
+    | PkWeather
+    | PkCustom (Text)
+
+  pk-label : ProviderKind -> Text
+  pk-label (p) = when p
+    is PkCalDav -> "CalDAV"
+    is PkCardDav -> "CardDAV"
+    is PkGoogle -> "Google"
+    is PkMicrosoft -> "Microsoft"
+    is PkApple -> "Apple"
+    is PkRest (url) -> "REST: " & url
+    is PkIsbn -> "ISBN Lookup"
+    is PkPlantDb -> "Plant Database"
+    is PkAutoDb -> "Auto Service DB"
+    is PkRecipeDb -> "Recipe Database"
+    is PkFitness -> "Fitness API"
+    is PkWeather -> "Weather"
+    is PkCustom (name) -> name
+
+  Provider = record {
+    prov-id : Text,
+    prov-name : Text,
+    prov-kind : ProviderKind,
+    prov-url : Text,
+    prov-auth : AuthMethod,
+    prov-direction : SyncDirection,
+    prov-conflict : ConflictStrategy,
+    prov-status : SyncStatus,
+    prov-enabled : Boolean,
+    prov-auto-sync : Boolean,
+    prov-sync-interval-sec : Integer,
+    prov-last-sync : Integer,
+    prov-sync-count : Integer,
+    prov-error-count : Integer,
+    prov-rate-limit-rpm : Integer,
+    prov-rate-remaining : Integer,
+    prov-offline-queue : Integer,
+    prov-history : List SyncLog,
+    prov-history-count : Integer
+  }
+
+  provider-new : Text, Text, ProviderKind, Text -> Provider
+  provider-new (id) (name) (kind) (url) = Provider {
+    prov-id = id, prov-name = name, prov-kind = kind, prov-url = url,
+    prov-auth = AuthNone,
+    prov-direction = SyncPull,
+    prov-conflict = ConflictRemoteWins,
+    prov-status = SyncIdle,
+    prov-enabled = True,
+    prov-auto-sync = False,
+    prov-sync-interval-sec = 3600,
+    prov-last-sync = 0,
+    prov-sync-count = 0,
+    prov-error-count = 0,
+    prov-rate-limit-rpm = 60,
+    prov-rate-remaining = 60,
+    prov-offline-queue = 0,
+    prov-history = [],
+    prov-history-count = 0
+  }
+
+  prov-set-auth : Provider, AuthMethod -> Provider
+  prov-set-auth (p) (a) = __record-set p "prov-auth" a
+
+  prov-set-direction : Provider, SyncDirection -> Provider
+  prov-set-direction (p) (d) = __record-set p "prov-direction" d
+
+  prov-set-auto-sync : Provider, Integer -> Provider
+  prov-set-auto-sync (p) (interval) =
+    __record-set (__record-set p "prov-auto-sync" True) "prov-sync-interval-sec" interval
+
+  prov-is-due : Provider, Integer -> Boolean
+  prov-is-due (p) (now) =
+    if p.prov-enabled then
+      if p.prov-auto-sync then now - p.prov-last-sync >= p.prov-sync-interval-sec
+      else False
+    else False
+
+  prov-can-request : Provider -> Boolean
+  prov-can-request (p) = p.prov-rate-remaining > 0
+
+  prov-record-sync : Provider, SyncLog -> Provider
+  prov-record-sync (p) (log) =
+    Provider {
+      prov-id = p.prov-id, prov-name = p.prov-name, prov-kind = p.prov-kind,
+      prov-url = p.prov-url, prov-auth = p.prov-auth,
+      prov-direction = p.prov-direction, prov-conflict = p.prov-conflict,
+      prov-status = SyncComplete (log.sl-added) (log.sl-updated),
+      prov-enabled = p.prov-enabled, prov-auto-sync = p.prov-auto-sync,
+      prov-sync-interval-sec = p.prov-sync-interval-sec,
+      prov-last-sync = log.sl-timestamp,
+      prov-sync-count = p.prov-sync-count + 1,
+      prov-error-count = p.prov-error-count + log.sl-errors,
+      prov-rate-limit-rpm = p.prov-rate-limit-rpm,
+      prov-rate-remaining = p.prov-rate-remaining - 1,
+      prov-offline-queue = 0,
+      prov-history = list-push (p.prov-history) log,
+      prov-history-count = p.prov-history-count + 1
+    }
+
+  prov-record-error : Provider, Text -> Provider
+  prov-record-error (p) (msg) =
+    __record-set (__record-set p "prov-status" (SyncError msg)) "prov-error-count" (p.prov-error-count + 1)
+
+  prov-queue-offline : Provider -> Provider
+  prov-queue-offline (p) =
+    __record-set (__record-set p "prov-status" SyncOffline) "prov-offline-queue" (p.prov-offline-queue + 1)
+
+Section: Provider Registry
+
+  ProviderRegistry = record {
+    pr-providers : List Provider,
+    pr-count : Integer,
+    pr-selected : Text
+  }
+
+  provider-registry-new : ProviderRegistry
+  provider-registry-new = ProviderRegistry { pr-providers = [], pr-count = 0, pr-selected = "" }
+
+  pr-add : ProviderRegistry, Provider -> ProviderRegistry
+  pr-add (reg) (p) =
+    __record-set (__record-set reg "pr-providers" (list-push (reg.pr-providers) p)) "pr-count" (reg.pr-count + 1)
+
+  pr-find : ProviderRegistry, Text -> Maybe Provider
+  pr-find (reg) (id) = pr-find-loop (reg.pr-providers) id 0 (reg.pr-count)
+
+  pr-find-loop : List Provider, Text, Integer, Integer -> Maybe Provider
+  pr-find-loop (provs) (id) (i) (n) =
+    if i >= n then None
+    else let p = list-at provs i
+    in if p.prov-id == id then Just p
+    else pr-find-loop provs id (i + 1) n
+
+  pr-due-providers : ProviderRegistry, Integer -> List Provider
+  pr-due-providers (reg) (now) =
+    pr-due-loop (reg.pr-providers) now 0 (reg.pr-count) []
+
+  pr-due-loop : List Provider, Integer, Integer, Integer, List Provider -> List Provider
+  pr-due-loop (provs) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at provs i
+    in if prov-is-due p now then pr-due-loop provs now (i + 1) n (list-push acc p)
+    else pr-due-loop provs now (i + 1) n acc
+
+  pr-enabled-count : ProviderRegistry -> Integer
+  pr-enabled-count (reg) = pr-en-loop (reg.pr-providers) 0 (reg.pr-count) 0
+
+  pr-en-loop : List Provider, Integer, Integer, Integer -> Integer
+  pr-en-loop (provs) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if (list-at provs i).prov-enabled then 1 else 0
+    in pr-en-loop provs (i + 1) n (acc + delta)
+
+  pr-error-count : ProviderRegistry -> Integer
+  pr-error-count (reg) = pr-err-loop (reg.pr-providers) 0 (reg.pr-count) 0
+
+  pr-err-loop : List Provider, Integer, Integer, Integer -> Integer
+  pr-err-loop (provs) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at provs i
+    in let delta = when p.prov-status is SyncError (msg) -> 1 is otherwise -> 0
+    in pr-err-loop provs (i + 1) n (acc + delta)
+
+Section: Search Query
+
+  SearchQuery = record {
+    sq-text : Text,
+    sq-provider : Text,
+    sq-category : Text,
+    sq-max-results : Integer,
+    sq-page : Integer
+  }
+
+  search-query : Text -> SearchQuery
+  search-query (text) = SearchQuery {
+    sq-text = text, sq-provider = "", sq-category = "",
+    sq-max-results = 25, sq-page = 1
+  }
+
+  sq-with-provider : SearchQuery, Text -> SearchQuery
+  sq-with-provider (q) (prov) = __record-set q "sq-provider" prov
+
+  sq-with-category : SearchQuery, Text -> SearchQuery
+  sq-with-category (q) (cat) = __record-set q "sq-category" cat
+
+Section: Search Result
+
+  SearchResult = record {
+    sr-id : Text,
+    sr-title : Text,
+    sr-subtitle : Text,
+    sr-description : Text,
+    sr-source : Text,
+    sr-url : Text,
+    sr-thumbnail : Text,
+    sr-properties : List Property,
+    sr-prop-count : Integer,
+    sr-relevance : Integer,
+    sr-importable : Boolean
+  }
+
+  search-result-new : Text, Text, Text, Text -> SearchResult
+  search-result-new (id) (title) (subtitle) (source) = SearchResult {
+    sr-id = id, sr-title = title, sr-subtitle = subtitle,
+    sr-description = "", sr-source = source, sr-url = "",
+    sr-thumbnail = "", sr-properties = [], sr-prop-count = 0,
+    sr-relevance = 0, sr-importable = True
+  }
+
+  sr-add-prop : SearchResult, Property -> SearchResult
+  sr-add-prop (r) (p) =
+    __record-set (__record-set r "sr-properties" (list-push (r.sr-properties) p)) "sr-prop-count" (r.sr-prop-count + 1)
+
+  SearchResults = record {
+    srs-results : List SearchResult,
+    srs-count : Integer,
+    srs-total : Integer,
+    srs-page : Integer,
+    srs-query : Text,
+    srs-source : Text
+  }
+
+  search-results-empty : Text -> SearchResults
+  search-results-empty (query) = SearchResults {
+    srs-results = [], srs-count = 0, srs-total = 0,
+    srs-page = 1, srs-query = query, srs-source = ""
+  }
+
+Section: Import Mapping
+
+  FieldMapping = record {
+    fm-source-field : Text,
+    fm-target-field : Text,
+    fm-transform : Text,
+    fm-default : Text
+  }
+
+  ImportMapping = record {
+    im-name : Text,
+    im-provider : Text,
+    im-target-table : Text,
+    im-fields : List FieldMapping,
+    im-field-count : Integer,
+    im-dedup-field : Text,
+    im-update-on-conflict : Boolean
+  }
+
+  import-mapping-new : Text, Text, Text -> ImportMapping
+  import-mapping-new (name) (provider) (table) = ImportMapping {
+    im-name = name, im-provider = provider, im-target-table = table,
+    im-fields = [], im-field-count = 0,
+    im-dedup-field = "id", im-update-on-conflict = True
+  }
+
+  im-add-field : ImportMapping, Text, Text -> ImportMapping
+  im-add-field (m) (src) (dst) =
+    let field = FieldMapping { fm-source-field = src, fm-target-field = dst, fm-transform = "", fm-default = "" }
+    in __record-set (__record-set m "im-fields" (list-push (m.im-fields) field)) "im-field-count" (m.im-field-count + 1)
+
+Section: Widget Building
+
+  prov-row : Provider -> WidgetNode
+  prov-row (p) =
+    let name = widget-label (p.prov-id & "-name") (p.prov-name)
+    in let kind = widget-label (p.prov-id & "-kind") (pk-label (p.prov-kind))
+    in let dir = widget-label (p.prov-id & "-dir") (sync-dir-label (p.prov-direction))
+    in let status = widget-label (p.prov-id & "-status") (sync-status-label (p.prov-status))
+    in let syncs = widget-label (p.prov-id & "-syncs") (show (p.prov-sync-count) & " syncs")
+    in let auth-lbl = widget-label (p.prov-id & "-auth") (auth-label (p.prov-auth))
+    in let sync-btn = widget-button (p.prov-id & "-sync") "Sync Now"
+    in let cfg-btn = widget-button (p.prov-id & "-cfg") "Configure"
+    in widget-panel p.prov-id DirRow 8 [name, kind, dir, status, syncs, auth-lbl, sync-btn, cfg-btn]
+
+  sr-result-row : SearchResult -> WidgetNode
+  sr-result-row (r) =
+    let title = widget-label (r.sr-id & "-title") (r.sr-title)
+    in let sub = widget-label (r.sr-id & "-sub") (r.sr-subtitle)
+    in let src = widget-label (r.sr-id & "-src") (r.sr-source)
+    in let import-btn = if r.sr-importable then widget-button (r.sr-id & "-import") "Import" else widget-label (r.sr-id & "-noimport") ""
+    in widget-panel r.sr-id DirRow 8 [title, sub, src, import-btn]
+
+Page 1

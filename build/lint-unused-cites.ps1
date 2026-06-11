@@ -18,20 +18,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-
-$QuireDirs = @{
-    'Foreword' = 'codex\foreword\core'; 'Kernel' = 'codex\os\kernel'; 'OS' = 'codex\os\core'
-    'Works' = 'apps\works'; 'Trust' = 'codex\os\trust'; 'Net' = 'codex\os\net'
-    'Verify' = 'codex\os\verify'; 'Replay' = 'codex\os\replay'; 'Sched' = 'codex\os\sched'
-    'Observe' = 'codex\os\observe'; 'Game' = 'codex\foreword\game'
-    'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'
-    'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'
-    'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
-    'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
-    'Magic' = 'apps\games\magic'; 'Games' = 'apps\games\classic'
-    'Spark' = 'apps\spark'; 'Data' = 'apps\data'
-    'Explorer' = 'apps\explorer'
-}
+. (Join-Path $PSScriptRoot 'quire-map.ps1')
 
 $CitePat = '^\s*cites\s+(\w+)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
 $DefPat = '^\s{2}(\S+)\s*[:=(|]'

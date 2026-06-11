@@ -1,0 +1,201 @@
+Chapter: CvmmTypes
+  cites Foreword chapter Maybe
+
+ Shared types for the Codex Virtual Machine Manager. Every managed
+ resource in the system — files, disks, USB devices, services, network
+ ports, fleet nodes — shares a common status vocabulary. This keeps the
+ UI consistent: a stopped service and a disconnected NIC both show the
+ same red indicator.
+
+Section: Resource Status
+
+  ResourceStatus =
+    | StatusOnline
+    | StatusOffline
+    | StatusDegraded
+    | StatusUnknown
+    | StatusBusy
+    | StatusError (Text)
+
+  status-label : ResourceStatus -> Text
+  status-label (s) = when s
+    is StatusOnline -> "online"
+    is StatusOffline -> "offline"
+    is StatusDegraded -> "degraded"
+    is StatusUnknown -> "unknown"
+    is StatusBusy -> "busy"
+    is StatusError (msg) -> "error"
+
+  status-is-healthy : ResourceStatus -> Boolean
+  status-is-healthy (s) = when s
+    is StatusOnline -> True
+    is StatusBusy -> True
+    is otherwise -> False
+
+  status-color : ResourceStatus -> Integer
+  status-color (s) = when s
+    is StatusOnline -> 4308039
+    is StatusOffline -> 9934743
+    is StatusDegraded -> 16750848
+    is StatusBusy -> 4369920
+    is StatusUnknown -> 8421504
+    is StatusError (msg) -> 16007990
+
+Section: Device Identity
+
+  DeviceId = record {
+    dev-uuid : Text,
+    dev-name : Text,
+    dev-kind : DeviceKind
+  }
+
+  DeviceKind =
+    | DevVirtualMachine
+    | DevPhysicalPC
+    | DevPhone
+    | DevTablet
+    | DevServer
+    | DevEmbedded
+
+  device-kind-label : DeviceKind -> Text
+  device-kind-label (k) = when k
+    is DevVirtualMachine -> "vm"
+    is DevPhysicalPC -> "pc"
+    is DevPhone -> "phone"
+    is DevTablet -> "tablet"
+    is DevServer -> "server"
+    is DevEmbedded -> "embedded"
+
+Section: Network Endpoint
+
+  Endpoint = record {
+    ep-host : Text,
+    ep-port : Integer,
+    ep-protocol : Protocol
+  }
+
+  Protocol =
+    | ProtoTcp
+    | ProtoUdp
+    | ProtoHttp
+    | ProtoHttps
+    | ProtoWs
+    | ProtoWss
+
+  protocol-label : Protocol -> Text
+  protocol-label (p) = when p
+    is ProtoTcp -> "tcp"
+    is ProtoUdp -> "udp"
+    is ProtoHttp -> "http"
+    is ProtoHttps -> "https"
+    is ProtoWs -> "ws"
+    is ProtoWss -> "wss"
+
+  format-endpoint : Endpoint -> Text
+  format-endpoint (ep) =
+    protocol-label (ep.ep-protocol) & "://" & ep.ep-host & ":" & show (ep.ep-port)
+
+Section: Byte Size Formatting
+
+  ByteSize = record { bs-bytes : Integer }
+
+  bytes : Integer -> ByteSize
+  bytes (n) = ByteSize { bs-bytes = n }
+
+  kilobytes : Integer -> ByteSize
+  kilobytes (n) = ByteSize { bs-bytes = n * 1024 }
+
+  megabytes : Integer -> ByteSize
+  megabytes (n) = ByteSize { bs-bytes = n * 1048576 }
+
+  gigabytes : Integer -> ByteSize
+  gigabytes (n) = ByteSize { bs-bytes = n * 1073741824 }
+
+  format-bytes : ByteSize -> Text
+  format-bytes (sz) =
+    if sz.bs-bytes >= 1073741824 then show (sz.bs-bytes / 1073741824) & " GB"
+    else if sz.bs-bytes >= 1048576 then show (sz.bs-bytes / 1048576) & " MB"
+    else if sz.bs-bytes >= 1024 then show (sz.bs-bytes / 1024) & " KB"
+    else show (sz.bs-bytes) & " B"
+
+  byte-size-percent : ByteSize, ByteSize -> Integer
+  byte-size-percent (used) (total) =
+    if total.bs-bytes == 0 then 0
+    else used.bs-bytes * 100 / total.bs-bytes
+
+Section: Time
+
+  Uptime = record { ut-seconds : Integer }
+
+  format-uptime : Uptime -> Text
+  format-uptime (u) =
+    let total = u.ut-seconds
+    in let days = total / 86400
+    in let hours = (total - days * 86400) / 3600
+    in let mins = (total - days * 86400 - hours * 3600) / 60
+    in if days > 0 then show days & "d " & show hours & "h " & show mins & "m"
+    else if hours > 0 then show hours & "h " & show mins & "m"
+    else show mins & "m"
+
+  Timestamp = record { ts-epoch : Integer }
+
+Section: Notification
+
+  NotifLevel =
+    | NotifInfo
+    | NotifWarning
+    | NotifError
+    | NotifSuccess
+
+  Notification = record {
+    notif-id : Integer,
+    notif-level : NotifLevel,
+    notif-title : Text,
+    notif-body : Text,
+    notif-time : Integer,
+    notif-read : Boolean
+  }
+
+  notif-level-label : NotifLevel -> Text
+  notif-level-label (l) = when l
+    is NotifInfo -> "info"
+    is NotifWarning -> "warning"
+    is NotifError -> "error"
+    is NotifSuccess -> "success"
+
+Section: Sorting and Filtering
+
+  SortDir =
+    | SortAsc
+    | SortDesc
+
+  SortDir-flip : SortDir -> SortDir
+  SortDir-flip (d) = when d
+    is SortAsc -> SortDesc
+    is SortDesc -> SortAsc
+
+Section: Pagination
+
+  PageInfo = record {
+    pg-offset : Integer,
+    pg-limit : Integer,
+    pg-total : Integer
+  }
+
+  page-count : PageInfo -> Integer
+  page-count (pg) =
+    if pg.pg-limit == 0 then 1
+    else (pg.pg-total + pg.pg-limit - 1) / pg.pg-limit
+
+  page-current : PageInfo -> Integer
+  page-current (pg) =
+    if pg.pg-limit == 0 then 1
+    else pg.pg-offset / pg.pg-limit + 1
+
+  page-has-next : PageInfo -> Boolean
+  page-has-next (pg) = pg.pg-offset + pg.pg-limit < pg.pg-total
+
+  page-has-prev : PageInfo -> Boolean
+  page-has-prev (pg) = pg.pg-offset > 0
+
+Page 1

@@ -1,0 +1,231 @@
+Chapter: Notes
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Rich notes with folders, tags, search, and pinning. Each note has
+ a title, body, creation/modified timestamps, color label, and a
+ list of tags. Notes live in folders. Full-text search across all
+ notes. Sort by date, title, or size. The text editor is line-based
+ for now — a proper rich text editor comes when the foreword
+ RichText chapter is wired in.
+
+Section: Note
+
+  NoteColor =
+    | NcDefault
+    | NcRed
+    | NcOrange
+    | NcYellow
+    | NcGreen
+    | NcBlue
+    | NcPurple
+
+  nc-label : NoteColor -> Text
+  nc-label (c) = when c
+    is NcDefault -> "default"
+    is NcRed -> "red"
+    is NcOrange -> "orange"
+    is NcYellow -> "yellow"
+    is NcGreen -> "green"
+    is NcBlue -> "blue"
+    is NcPurple -> "purple"
+
+  nc-to-int : NoteColor -> Integer
+  nc-to-int (c) = when c
+    is NcDefault -> 2105376
+    is NcRed -> 9502720
+    is NcOrange -> 10046464
+    is NcYellow -> 9930240
+    is NcGreen -> 2263842
+    is NcBlue -> 2244974
+    is NcPurple -> 6160486
+
+  Note = record {
+    note-id : Integer,
+    note-title : Text,
+    note-body : Text,
+    note-folder : Text,
+    note-tags : List Text,
+    note-tag-count : Integer,
+    note-color : NoteColor,
+    note-pinned : Boolean,
+    note-archived : Boolean,
+    note-created : Integer,
+    note-modified : Integer,
+    note-word-count : Integer,
+    note-char-count : Integer
+  }
+
+  note-new : Integer, Text, Integer -> Note
+  note-new (id) (title) (ts) = Note {
+    note-id = id, note-title = title, note-body = "",
+    note-folder = "Inbox", note-tags = [], note-tag-count = 0,
+    note-color = NcDefault, note-pinned = False, note-archived = False,
+    note-created = ts, note-modified = ts,
+    note-word-count = 0, note-char-count = 0
+  }
+
+  note-set-body : Note, Text, Integer -> Note
+  note-set-body (n) (body) (ts) =
+    let wc = note-count-words body 0 (text-length body) 0 False
+    in __record-set (__record-set (__record-set (__record-set n "note-body" body) "note-modified" ts) "note-word-count" wc) "note-char-count" (text-length body)
+
+  note-count-words : Text, Integer, Integer, Integer, Boolean -> Integer
+  note-count-words (s) (i) (len) (count) (in-word) =
+    if i >= len then if in-word then count + 1 else count
+    else let c = char-code (char-at s i)
+    in if c == 32 then if in-word then note-count-words s (i + 1) len (count + 1) False else note-count-words s (i + 1) len count False
+    else if c == 10 then if in-word then note-count-words s (i + 1) len (count + 1) False else note-count-words s (i + 1) len count False
+    else note-count-words s (i + 1) len count True
+
+  note-add-tag : Note, Text -> Note
+  note-add-tag (n) (tag) =
+    __record-set (__record-set n "note-tags" (list-push (n.note-tags) tag)) "note-tag-count" (n.note-tag-count + 1)
+
+  note-set-folder : Note, Text -> Note
+  note-set-folder (n) (folder) = __record-set n "note-folder" folder
+
+  note-toggle-pin : Note -> Note
+  note-toggle-pin (n) = __record-set n "note-pinned" (if n.note-pinned then False else True)
+
+  note-archive : Note -> Note
+  note-archive (n) = __record-set n "note-archived" True
+
+  note-preview : Note, Integer -> Text
+  note-preview (n) (max-len) =
+    if text-length (n.note-body) <= max-len then n.note-body
+    else text-slice (n.note-body) 0 max-len & "..."
+
+Section: Notebook State
+
+  NotebookState = record {
+    nb-notes : List Note,
+    nb-count : Integer,
+    nb-selected : Integer,
+    nb-folders : List Text,
+    nb-folder-count : Integer,
+    nb-active-folder : Text,
+    nb-filter : Text,
+    nb-filter-tag : Text,
+    nb-show-archived : Boolean,
+    nb-sort-field : Text,
+    nb-next-id : Integer
+  }
+
+  notebook-new : NotebookState
+  notebook-new = NotebookState {
+    nb-notes = [],
+    nb-count = 0,
+    nb-selected = -1,
+    nb-folders = ["Inbox", "Personal", "Work", "Ideas"],
+    nb-folder-count = 4,
+    nb-active-folder = "",
+    nb-filter = "",
+    nb-filter-tag = "",
+    nb-show-archived = False,
+    nb-sort-field = "modified",
+    nb-next-id = 1
+  }
+
+  nb-create : NotebookState, Text, Integer -> NotebookState
+  nb-create (st) (title) (ts) =
+    let n = note-new (st.nb-next-id) title ts
+    in NotebookState {
+      nb-notes = list-push (st.nb-notes) n,
+      nb-count = st.nb-count + 1,
+      nb-selected = st.nb-count,
+      nb-folders = st.nb-folders,
+      nb-folder-count = st.nb-folder-count,
+      nb-active-folder = st.nb-active-folder,
+      nb-filter = st.nb-filter,
+      nb-filter-tag = st.nb-filter-tag,
+      nb-show-archived = st.nb-show-archived,
+      nb-sort-field = st.nb-sort-field,
+      nb-next-id = st.nb-next-id + 1
+    }
+
+  nb-find : NotebookState, Integer -> Maybe Note
+  nb-find (st) (id) = nb-find-loop (st.nb-notes) id 0 (st.nb-count)
+
+  nb-find-loop : List Note, Integer, Integer, Integer -> Maybe Note
+  nb-find-loop (notes) (id) (i) (n) =
+    if i >= n then None
+    else let note = list-at notes i
+    in if note.note-id == id then Just note
+    else nb-find-loop notes id (i + 1) n
+
+  nb-visible : NotebookState -> List Note
+  nb-visible (st) =
+    nb-vis-loop (st.nb-notes) (st.nb-filter) (st.nb-active-folder) (st.nb-filter-tag) (st.nb-show-archived) 0 (st.nb-count) []
+
+  nb-vis-loop : List Note, Text, Text, Text, Boolean, Integer, Integer, List Note -> List Note
+  nb-vis-loop (notes) (filter) (folder) (tag) (show-arch) (i) (n) (acc) =
+    if i >= n then acc
+    else let note = list-at notes i
+    in let arch-ok = if show-arch then True else if note.note-archived then False else True
+    in let folder-ok = if text-length folder == 0 then True else note.note-folder == folder
+    in let text-ok = if text-length filter == 0 then True else text-contains (note.note-title) filter
+    in let tag-ok = if text-length tag == 0 then True else nb-has-tag note tag
+    in if arch-ok then if folder-ok then if text-ok then if tag-ok then
+      nb-vis-loop notes filter folder tag show-arch (i + 1) n (list-push acc note)
+    else nb-vis-loop notes filter folder tag show-arch (i + 1) n acc
+    else nb-vis-loop notes filter folder tag show-arch (i + 1) n acc
+    else nb-vis-loop notes filter folder tag show-arch (i + 1) n acc
+    else nb-vis-loop notes filter folder tag show-arch (i + 1) n acc
+
+  nb-has-tag : Note, Text -> Boolean
+  nb-has-tag (n) (tag) = nb-tag-search (n.note-tags) tag 0 (n.note-tag-count)
+
+  nb-tag-search : List Text, Text, Integer, Integer -> Boolean
+  nb-tag-search (tags) (target) (i) (n) =
+    if i >= n then False
+    else if list-at tags i == target then True
+    else nb-tag-search tags target (i + 1) n
+
+  nb-all-tags : NotebookState -> List Text
+  nb-all-tags (st) = nb-collect-tags (st.nb-notes) 0 (st.nb-count) []
+
+  nb-collect-tags : List Note, Integer, Integer, List Text -> List Text
+  nb-collect-tags (notes) (i) (n) (acc) =
+    if i >= n then acc
+    else let note = list-at notes i
+    in nb-collect-tags notes (i + 1) n (nb-merge-tags acc (note.note-tags) 0 (note.note-tag-count))
+
+  nb-merge-tags : List Text, List Text, Integer, Integer -> List Text
+  nb-merge-tags (acc) (tags) (i) (n) =
+    if i >= n then acc
+    else let tag = list-at tags i
+    in if nb-tag-search acc tag 0 (list-length acc) then nb-merge-tags acc tags (i + 1) n
+    else nb-merge-tags (list-push acc tag) tags (i + 1) n
+
+Section: Widget Building
+
+  nb-note-row : Note -> WidgetNode
+  nb-note-row (n) =
+    let title = widget-label ("n-t-" & show (n.note-id)) (n.note-title)
+    in let preview = widget-label ("n-p-" & show (n.note-id)) (note-preview n 40)
+    in let folder = widget-label ("n-f-" & show (n.note-id)) (n.note-folder)
+    in let wc = widget-label ("n-wc-" & show (n.note-id)) (show (n.note-word-count) & " words")
+    in let pin = if n.note-pinned then widget-label ("n-pin-" & show (n.note-id)) "[pinned]" else widget-label ("n-pin-" & show (n.note-id)) ""
+    in widget-panel ("note-" & show (n.note-id)) DirRow 8 [pin, title, preview, folder, wc]
+
+  nb-widget : NotebookState -> WidgetNode
+  nb-widget (st) =
+    let title = widget-label "nb-title" "Notes"
+    in let summary = widget-label "nb-summary" (show (st.nb-count) & " notes")
+    in let filter = widget-input "nb-filter" (st.nb-filter) (text-length (st.nb-filter))
+    in let new-btn = widget-button "nb-new" "New Note"
+    in let toolbar = widget-toolbar "nb-toolbar" [filter, new-btn]
+    in let folder-tabs = widget-tabs "nb-folders" (st.nb-folders) 0
+    in let visible = nb-visible st
+    in let rows = nb-rows visible 0 (list-length visible) []
+    in widget-panel "notebook" DirColumn 4 ([title, summary, toolbar, folder-tabs] & rows)
+
+  nb-rows : List Note, Integer, Integer, List WidgetNode -> List WidgetNode
+  nb-rows (notes) (i) (n) (acc) =
+    if i >= n then acc
+    else nb-rows notes (i + 1) n (list-push acc (nb-note-row (list-at notes i)))
+
+Page 1

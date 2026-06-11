@@ -1,0 +1,127 @@
+Chapter: DesignerExport
+  cites Designer chapter DesignerWidgets
+
+ Generates Codex source code from the widget tree.
+ Walks widgets sequentially and emits build-panel function code.
+
+ We say:
+
+Section: Export
+
+  export-codex : Integer
+  export-codex =
+    let count = rd designer-state-addr
+    in let p = write-export-str 0 "  build-my-panel : Integer -> Integer\n  build-my-panel (pos) =\n"
+    in let p1 = export-widgets p count 0
+    in let p2 = write-export-str p1 "    p" in let p3 = export-write-int p2 (if count > 0 then count - 1 else 0)
+    in let p4 = write-export-str p3 "\n"
+    in set-export-length p4
+
+  export-widgets : Integer, Integer, Integer -> Integer
+  export-widgets (pos) (count) (i) =
+    if i >= count then pos
+    else let p = export-one-widget pos i
+    in export-widgets p count (i + 1)
+
+  export-one-widget : Integer, Integer -> Integer
+  export-one-widget (pos) (idx) =
+    let t = rd (widget-addr idx)
+    in let p0 = write-export-str pos "    let p"
+    in let p1 = export-write-int p0 idx
+    in let p2 = write-export-str p1 " = "
+    in let p3 = if t == 0 then export-section-code p2 idx
+      else if t == 1 then export-button-code p2 idx
+      else if t == 7 then export-grid-open-code p2 idx
+      else if t == 10 then export-spacer-code p2 idx
+      else if t == 4 then export-input-code p2 idx
+      else if t == 5 then export-slider-code p2 idx
+      else export-generic-code p2 idx
+    in write-export-str p3 "\n"
+
+  export-section-code : Integer, Integer -> Integer
+  export-section-code (pos) (idx) =
+    let p = write-export-str pos "html-section "
+    in let p1 = export-prev-ref p idx
+    in let p2 = write-export-str p1 " \""
+    in let p3 = export-widget-text p2 idx
+    in write-export-str p3 "\""
+
+  export-button-code : Integer, Integer -> Integer
+  export-button-code (pos) (idx) =
+    let p = write-export-str pos "html-btn "
+    in let p1 = export-prev-ref p idx
+    in let p2 = write-export-str p1 " \""
+    in let p3 = export-widget-text p2 idx
+    in let p4 = write-export-str p3 "\" \""
+    in let p5 = export-widget-onclick p4 idx
+    in write-export-str p5 "\""
+
+  export-grid-open-code : Integer, Integer -> Integer
+  export-grid-open-code (pos) (idx) =
+    let cols = rd (widget-addr idx + 60)
+    in let cls = if cols == 3 then "img-grid-3" else "img-grid"
+    in let p = write-export-str pos "hw "
+    in let p1 = export-prev-ref p idx
+    in let p2 = write-export-str p1 " \"<div class=\\\""
+    in let p3 = write-export-str p2 cls
+    in write-export-str p3 "\\\">\""
+
+  export-spacer-code : Integer, Integer -> Integer
+  export-spacer-code (pos) (idx) =
+    let p = write-export-str pos "hw "
+    in let p1 = export-prev-ref p idx
+    in write-export-str p1 " \"<div style=\\\"height:8px\\\"></div>\""
+
+  export-input-code : Integer, Integer -> Integer
+  export-input-code (pos) (idx) =
+    let p = write-export-str pos "hw "
+    in let p1 = export-prev-ref p idx
+    in write-export-str p1 " \"<input class=\\\"cad-input\\\" value=\\\"\\\">\""
+
+  export-slider-code : Integer, Integer -> Integer
+  export-slider-code (pos) (idx) =
+    let p = write-export-str pos "hw "
+    in let p1 = export-prev-ref p idx
+    in write-export-str p1 " \"<input type=\\\"range\\\" class=\\\"prop-slider\\\">\""
+
+  export-generic-code : Integer, Integer -> Integer
+  export-generic-code (pos) (idx) =
+    let p = write-export-str pos "hw "
+    in let p1 = export-prev-ref p idx
+    in let p2 = write-export-str p1 " \"<div>"
+    in let p3 = export-widget-text p2 idx
+    in write-export-str p3 "</div>\""
+
+  export-prev-ref : Integer, Integer -> Integer
+  export-prev-ref (pos) (idx) =
+    if idx == 0 then write-export-str pos "pos"
+    else let p = write-export-str pos "p"
+    in export-write-int p (idx - 1)
+
+  export-widget-text : Integer, Integer -> Integer
+  export-widget-text (pos) (idx) =
+    let tlen = rd (widget-addr idx + 36)
+    in let toff = rd (widget-addr idx + 32)
+    in export-pool-chars pos toff 0 tlen
+
+  export-widget-onclick : Integer, Integer -> Integer
+  export-widget-onclick (pos) (idx) =
+    let olen = rd (widget-addr idx + 44)
+    in let ooff = rd (widget-addr idx + 40)
+    in export-pool-chars pos ooff 0 olen
+
+  export-pool-chars : Integer, Integer, Integer, Integer -> Integer
+  export-pool-chars (pos) (off) (i) (len) =
+    if i >= len then pos + len
+    else let ch = pool-read-char off i
+    in let a = w32 (export-buf-addr + 4 + pos + i) ch
+    in export-pool-chars pos off (i + 1) len
+
+  export-write-int : Integer, Integer -> Integer
+  export-write-int (pos) (n) =
+    if n < 0 then let p = write-export-byte pos 45 in export-write-int p (0 - n)
+    else if n < 10 then write-export-byte pos (48 + n)
+    else let p = export-write-int pos (n / 10)
+    in write-export-byte p (48 + int-mod n 10)
+
+Page 1

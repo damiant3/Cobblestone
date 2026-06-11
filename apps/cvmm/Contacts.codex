@@ -1,0 +1,161 @@
+Chapter: Contacts
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProductivityDb
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Contact manager backed by the productivity database. Contacts have
+ names, emails, phones, addresses, birthdays, and notes. Groups
+ organize contacts. Favorites pin to the top. Full-text search
+ across all fields. Used by the party planner for guest lists.
+
+Section: Contact (in-memory view)
+
+  Contact = record {
+    ct-id : Integer,
+    ct-first : Text,
+    ct-last : Text,
+    ct-nickname : Text,
+    ct-company : Text,
+    ct-title : Text,
+    ct-email : Text,
+    ct-phone : Text,
+    ct-phone2 : Text,
+    ct-address : Text,
+    ct-city : Text,
+    ct-state : Text,
+    ct-zip : Text,
+    ct-country : Text,
+    ct-birthday : Integer,
+    ct-notes : Text,
+    ct-group : Text,
+    ct-favorite : Boolean,
+    ct-created : Integer,
+    ct-modified : Integer
+  }
+
+  ct-full-name : Contact -> Text
+  ct-full-name (c) =
+    if text-length (c.ct-last) == 0 then c.ct-first
+    else c.ct-first & " " & c.ct-last
+
+  ct-display-name : Contact -> Text
+  ct-display-name (c) =
+    if text-length (c.ct-nickname) > 0 then c.ct-nickname
+    else ct-full-name c
+
+  ct-initials : Contact -> Text
+  ct-initials (c) =
+    let first-init = if text-length (c.ct-first) > 0 then text-slice (c.ct-first) 0 1 else ""
+    in let last-init = if text-length (c.ct-last) > 0 then text-slice (c.ct-last) 0 1 else ""
+    in first-init & last-init
+
+  ct-has-address : Contact -> Boolean
+  ct-has-address (c) = text-length (c.ct-address) > 0
+
+  ct-full-address : Contact -> Text
+  ct-full-address (c) =
+    let line1 = c.ct-address
+    in let line2 = c.ct-city & (if text-length (c.ct-state) > 0 then ", " & c.ct-state else "") & " " & c.ct-zip
+    in let line3 = c.ct-country
+    in line1 & "\n" & line2 & (if text-length line3 > 0 then "\n" & line3 else "")
+
+Section: Contact App State
+
+  ContactAppState = record {
+    ca-contacts : List Contact,
+    ca-count : Integer,
+    ca-selected : Integer,
+    ca-groups : List Text,
+    ca-group-count : Integer,
+    ca-active-group : Text,
+    ca-filter : Text,
+    ca-favorites-only : Boolean,
+    ca-sort-field : Text
+  }
+
+  contact-app-new : ContactAppState
+  contact-app-new = ContactAppState {
+    ca-contacts = [],
+    ca-count = 0,
+    ca-selected = -1,
+    ca-groups = ["Family", "Friends", "Work", "Neighbors"],
+    ca-group-count = 4,
+    ca-active-group = "",
+    ca-filter = "",
+    ca-favorites-only = False,
+    ca-sort-field = "last"
+  }
+
+  ca-visible : ContactAppState -> List Contact
+  ca-visible (st) =
+    ca-vis-loop (st.ca-contacts) (st.ca-filter) (st.ca-active-group) (st.ca-favorites-only) 0 (st.ca-count) []
+
+  ca-vis-loop : List Contact, Text, Text, Boolean, Integer, Integer, List Contact -> List Contact
+  ca-vis-loop (contacts) (filter) (group) (fav-only) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at contacts i
+    in let text-ok = if text-length filter == 0 then True else text-contains (ct-full-name c) filter
+    in let group-ok = if text-length group == 0 then True else c.ct-group == group
+    in let fav-ok = if fav-only then c.ct-favorite else True
+    in if text-ok then if group-ok then if fav-ok then
+      ca-vis-loop contacts filter group fav-only (i + 1) n (list-push acc c)
+    else ca-vis-loop contacts filter group fav-only (i + 1) n acc
+    else ca-vis-loop contacts filter group fav-only (i + 1) n acc
+    else ca-vis-loop contacts filter group fav-only (i + 1) n acc
+
+Section: Widget Building
+
+  ct-row-widget : Contact -> WidgetNode
+  ct-row-widget (c) =
+    let initials = widget-label ("ci-" & show (c.ct-id)) (ct-initials c)
+    in let name = widget-label ("cn-" & show (c.ct-id)) (ct-full-name c)
+    in let email-lbl = widget-label ("ce-" & show (c.ct-id)) (c.ct-email)
+    in let phone-lbl = widget-label ("cp-" & show (c.ct-id)) (c.ct-phone)
+    in let group-lbl = widget-label ("cg-" & show (c.ct-id)) (c.ct-group)
+    in let fav = if c.ct-favorite then widget-label ("cf-" & show (c.ct-id)) "*" else widget-label ("cf-" & show (c.ct-id)) ""
+    in widget-panel ("contact-" & show (c.ct-id)) DirRow 8 [fav, initials, name, email-lbl, phone-lbl, group-lbl]
+
+  ct-detail-widget : Contact -> WidgetNode
+  ct-detail-widget (c) =
+    widget-panel "ct-detail" DirColumn 4 [
+      widget-label "ctd-name" (ct-full-name c),
+      widget-label "ctd-nick" (if text-length (c.ct-nickname) > 0 then "aka " & c.ct-nickname else ""),
+      widget-label "ctd-company" (if text-length (c.ct-company) > 0 then c.ct-company & (if text-length (c.ct-title) > 0 then " - " & c.ct-title else "") else ""),
+      widget-separator "ctd-sep1",
+      widget-label "ctd-email" ("Email: " & c.ct-email),
+      widget-label "ctd-phone" ("Phone: " & c.ct-phone),
+      widget-label "ctd-phone2" (if text-length (c.ct-phone2) > 0 then "Phone 2: " & c.ct-phone2 else ""),
+      widget-separator "ctd-sep2",
+      widget-label "ctd-addr" (if ct-has-address c then ct-full-address c else "No address"),
+      widget-separator "ctd-sep3",
+      widget-label "ctd-group" ("Group: " & c.ct-group),
+      widget-label "ctd-notes" (if text-length (c.ct-notes) > 0 then "Notes: " & c.ct-notes else ""),
+      widget-toolbar "ctd-btns" [
+        widget-button "ctd-edit" "Edit",
+        widget-button "ctd-fav" (if c.ct-favorite then "Unfavorite" else "Favorite"),
+        widget-button "ctd-delete" "Delete"
+      ]
+    ]
+
+  contacts-widget : ContactAppState -> WidgetNode
+  contacts-widget (st) =
+    let title = widget-label "ca-title" "Contacts"
+    in let summary = widget-label "ca-summary" (show (st.ca-count) & " contacts")
+    in let filter = widget-input "ca-filter" (st.ca-filter) (text-length (st.ca-filter))
+    in let fav-btn = widget-button "ca-fav" (if st.ca-favorites-only then "Show All" else "Favorites")
+    in let new-btn = widget-button "ca-new" "New Contact"
+    in let toolbar = widget-toolbar "ca-toolbar" [filter, fav-btn, new-btn]
+    in let group-tabs = widget-tabs "ca-groups" (["All"] & st.ca-groups) 0
+    in let visible = ca-visible st
+    in let rows = ct-rows visible 0 (list-length visible) []
+    in widget-panel "contacts-app" DirColumn 4 ([title, summary, toolbar, group-tabs] & rows)
+
+  ct-rows : List Contact, Integer, Integer, List WidgetNode -> List WidgetNode
+  ct-rows (contacts) (i) (n) (acc) =
+    if i >= n then acc
+    else ct-rows contacts (i + 1) n (list-push acc (ct-row-widget (list-at contacts i)))
+
+Page 1

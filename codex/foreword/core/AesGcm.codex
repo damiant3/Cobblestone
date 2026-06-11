@@ -24,11 +24,9 @@ Section: Encrypt
   aesgcm-encrypt : List Integer, List Integer, List Integer, List Integer -> AesGcmResult
   aesgcm-encrypt (key) (nonce) (plaintext) (aad) =
     let ks = aes-expand-key-128 key
-    in let h = aes-encrypt-block ks (gcm-zeros 16 0 [])
-    in let j0 = gcm-make-j0 nonce
-    in let ctr = gcm-inc32 j0
-    in let ct = gcm-ctr-encrypt ks ctr plaintext 0 (list-length plaintext) []
-    in let tag = gcm-compute-tag ks h j0 aad ct
+    in let h = aes-encrypt-block (gcm-zeros 16 0 []) ks
+    in let ct = gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) plaintext 0 (list-length plaintext) []
+    in let tag = gcm-compute-tag ks h (gcm-make-j0 nonce) aad ct
     in AesGcmResult { ciphertext = ct, tag = tag }
 
 Section: Decrypt
@@ -36,12 +34,10 @@ Section: Decrypt
   aesgcm-decrypt : List Integer, List Integer, List Integer, List Integer, List Integer -> Maybe (List Integer)
   aesgcm-decrypt (key) (nonce) (ciphertext) (aad) (tag) =
     let ks = aes-expand-key-128 key
-    in let h = aes-encrypt-block ks (gcm-zeros 16 0 [])
-    in let j0 = gcm-make-j0 nonce
-    in let expected = gcm-compute-tag ks h j0 aad ciphertext
+    in let h = aes-encrypt-block (gcm-zeros 16 0 []) ks
+    in let expected = gcm-compute-tag ks h (gcm-make-j0 nonce) aad ciphertext
     in if gcm-tags-equal expected tag then
-      let ctr = gcm-inc32 j0
-      in Just (gcm-ctr-encrypt ks ctr ciphertext 0 (list-length ciphertext) [])
+      Just (gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) ciphertext 0 (list-length ciphertext) [])
     else None
 
 Section: CTR Mode
@@ -49,7 +45,7 @@ Section: CTR Mode
   gcm-ctr-encrypt : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
   gcm-ctr-encrypt (ks) (ctr) (input) (i) (len) (acc) =
     if i >= len then acc
-    else let block = aes-encrypt-block ks ctr
+    else let block = aes-encrypt-block ctr ks
     in let chunk-len = if len - i < 16 then len - i else 16
     in let xored = gcm-xor-chunk block input i chunk-len 0 []
     in gcm-ctr-encrypt ks (gcm-inc32 ctr) input (i + chunk-len) len (acc & xored)
@@ -69,7 +65,7 @@ Section: GHASH
     in let len-block = gcm-len-block (list-length aad) (list-length ct)
     in let data = aad-padded & ct-padded & len-block
     in let ghash = gcm-ghash h data 0 (list-length data) (gcm-zeros 16 0 [])
-    in let e-j0 = aes-encrypt-block ks j0
+    in let e-j0 = aes-encrypt-block j0 ks
     in gcm-xor-blocks ghash e-j0
 
   gcm-ghash : List Integer, List Integer, Integer, Integer, List Integer -> List Integer

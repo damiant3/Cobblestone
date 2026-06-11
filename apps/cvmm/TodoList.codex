@@ -1,0 +1,154 @@
+Chapter: TodoList
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProductivityDb
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Todo list manager backed by the productivity database. Multiple
+ named lists with color coding. Todos have priority (1-4), due
+ dates, reminders, and repeat schedules. Drag to reorder. Completed
+ items can be shown/hidden. Overdue items are highlighted.
+
+Section: Priority
+
+  TodoPriority =
+    | PriUrgent
+    | PriHigh
+    | PriMedium
+    | PriLow
+
+  pri-label : TodoPriority -> Text
+  pri-label (p) = when p
+    is PriUrgent -> "Urgent"
+    is PriHigh -> "High"
+    is PriMedium -> "Medium"
+    is PriLow -> "Low"
+
+  pri-to-int : TodoPriority -> Integer
+  pri-to-int (p) = when p
+    is PriUrgent -> 1
+    is PriHigh -> 2
+    is PriMedium -> 3
+    is PriLow -> 4
+
+  int-to-pri : Integer -> TodoPriority
+  int-to-pri (n) =
+    if n <= 1 then PriUrgent
+    else if n == 2 then PriHigh
+    else if n == 3 then PriMedium
+    else PriLow
+
+Section: Todo Item (in-memory view)
+
+  TodoItem = record {
+    ti-id : Integer,
+    ti-title : Text,
+    ti-description : Text,
+    ti-list : Text,
+    ti-completed : Boolean,
+    ti-priority : TodoPriority,
+    ti-due : Integer,
+    ti-reminder : Integer,
+    ti-sort : Integer,
+    ti-created : Integer,
+    ti-completed-date : Integer,
+    ti-repeat : Text,
+    ti-overdue : Boolean
+  }
+
+  todo-is-overdue : TodoItem, Integer -> Boolean
+  todo-is-overdue (t) (now) =
+    if t.ti-completed then False
+    else if t.ti-due == 0 then False
+    else t.ti-due < now
+
+Section: Todo App State
+
+  TodoAppState = record {
+    ta-lists : List Text,
+    ta-list-count : Integer,
+    ta-active-list : Text,
+    ta-show-completed : Boolean,
+    ta-filter : Text,
+    ta-sort-field : Text,
+    ta-items : List TodoItem,
+    ta-item-count : Integer,
+    ta-selected : Integer
+  }
+
+  todo-app-new : TodoAppState
+  todo-app-new = TodoAppState {
+    ta-lists = ["Inbox", "Today", "Work", "Shopping", "Someday"],
+    ta-list-count = 5,
+    ta-active-list = "",
+    ta-show-completed = False,
+    ta-filter = "",
+    ta-sort-field = "priority",
+    ta-items = [],
+    ta-item-count = 0,
+    ta-selected = -1
+  }
+
+  ta-visible : TodoAppState, Integer -> List TodoItem
+  ta-visible (st) (now) =
+    ta-vis-loop (st.ta-items) (st.ta-active-list) (st.ta-show-completed) (st.ta-filter) now 0 (st.ta-item-count) []
+
+  ta-vis-loop : List TodoItem, Text, Boolean, Text, Integer, Integer, Integer, List TodoItem -> List TodoItem
+  ta-vis-loop (items) (list-name) (show-done) (filter) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let t = list-at items i
+    in let list-ok = if text-length list-name == 0 then True else t.ti-list == list-name
+    in let done-ok = if show-done then True else if t.ti-completed then False else True
+    in let text-ok = if text-length filter == 0 then True else text-contains (t.ti-title) filter
+    in if list-ok then if done-ok then if text-ok then
+      let with-overdue = __record-set t "ti-overdue" (todo-is-overdue t now)
+      in ta-vis-loop items list-name show-done filter now (i + 1) n (list-push acc with-overdue)
+    else ta-vis-loop items list-name show-done filter now (i + 1) n acc
+    else ta-vis-loop items list-name show-done filter now (i + 1) n acc
+    else ta-vis-loop items list-name show-done filter now (i + 1) n acc
+
+  ta-stats : TodoAppState -> Text
+  ta-stats (st) =
+    let done = ta-count-done (st.ta-items) 0 (st.ta-item-count) 0
+    in let pending = st.ta-item-count - done
+    in show pending & " pending, " & show done & " done"
+
+  ta-count-done : List TodoItem, Integer, Integer, Integer -> Integer
+  ta-count-done (items) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if (list-at items i).ti-completed then 1 else 0
+    in ta-count-done items (i + 1) n (acc + delta)
+
+Section: Widget Building
+
+  todo-item-widget : TodoItem -> WidgetNode
+  todo-item-widget (t) =
+    let check = widget-checkbox ("td-chk-" & show (t.ti-id)) (t.ti-completed)
+    in let title = widget-label ("td-t-" & show (t.ti-id)) (t.ti-title)
+    in let pri = widget-label ("td-p-" & show (t.ti-id)) (pri-label (t.ti-priority))
+    in let due-lbl = if t.ti-due > 0 then widget-label ("td-d-" & show (t.ti-id)) ("due: " & show (t.ti-due)) else widget-label ("td-d-" & show (t.ti-id)) ""
+    in let overdue-lbl = if t.ti-overdue then widget-label ("td-o-" & show (t.ti-id)) "OVERDUE" else widget-label ("td-o-" & show (t.ti-id)) ""
+    in let row = widget-panel ("todo-" & show (t.ti-id)) DirRow 8 [check, title, pri, due-lbl, overdue-lbl]
+    in if t.ti-overdue then widget-set-state row 2 else if t.ti-completed then widget-set-state row 3 else row
+
+  todo-widget : TodoAppState -> WidgetNode
+  todo-widget (st) =
+    let title = widget-label "ta-title" "Todos"
+    in let stats = widget-label "ta-stats" (ta-stats st)
+    in let filter = widget-input "ta-filter" (st.ta-filter) (text-length (st.ta-filter))
+    in let new-btn = widget-button "ta-new" "New Todo"
+    in let done-btn = widget-button "ta-done-toggle" (if st.ta-show-completed then "Hide Done" else "Show Done")
+    in let toolbar = widget-toolbar "ta-toolbar" [filter, new-btn, done-btn]
+    in let list-tabs = widget-tabs "ta-lists" (st.ta-lists) 0
+    in let items = ta-visible st 0
+    in let rows = ta-item-rows items 0 (list-length items) []
+    in widget-panel "todo-app" DirColumn 4 ([title, stats, toolbar, list-tabs] & rows)
+
+  ta-item-rows : List TodoItem, Integer, Integer, List WidgetNode -> List WidgetNode
+  ta-item-rows (items) (i) (n) (acc) =
+    if i >= n then acc
+    else ta-item-rows items (i + 1) n (list-push acc (todo-item-widget (list-at items i)))
+
+Page 1

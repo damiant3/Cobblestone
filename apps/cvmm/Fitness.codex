@@ -1,0 +1,168 @@
+Chapter: Fitness
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProductivityDb
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Fitness tracker. Logs workouts with type (run, bike, swim, lift,
+ walk, yoga, HIIT), duration, calories, and distance. Body log
+ tracks weight, body fat, resting HR, blood pressure, sleep, steps,
+ and water intake. Weekly/monthly trends via the monitor panels.
+
+Section: Workout Types
+
+  WorkoutType =
+    | WtRun
+    | WtBike
+    | WtSwim
+    | WtLift
+    | WtWalk
+    | WtYoga
+    | WtHiit
+    | WtStretch
+    | WtHike
+    | WtOther (Text)
+
+  wt-label : WorkoutType -> Text
+  wt-label (w) = when w
+    is WtRun -> "Run"
+    is WtBike -> "Bike"
+    is WtSwim -> "Swim"
+    is WtLift -> "Lift"
+    is WtWalk -> "Walk"
+    is WtYoga -> "Yoga"
+    is WtHiit -> "HIIT"
+    is WtStretch -> "Stretch"
+    is WtHike -> "Hike"
+    is WtOther (name) -> name
+
+  wt-icon : WorkoutType -> Text
+  wt-icon (w) = when w
+    is WtRun -> "[R]"
+    is WtBike -> "[B]"
+    is WtSwim -> "[S]"
+    is WtLift -> "[L]"
+    is WtWalk -> "[W]"
+    is WtYoga -> "[Y]"
+    is WtHiit -> "[H]"
+    is WtStretch -> "[X]"
+    is WtHike -> "[K]"
+    is WtOther (name) -> "[?]"
+
+  wt-calories-per-min : WorkoutType -> Integer
+  wt-calories-per-min (w) = when w
+    is WtRun -> 12
+    is WtBike -> 10
+    is WtSwim -> 11
+    is WtLift -> 8
+    is WtWalk -> 5
+    is WtYoga -> 4
+    is WtHiit -> 14
+    is WtStretch -> 3
+    is WtHike -> 7
+    is WtOther (name) -> 6
+
+Section: Workout (in-memory view)
+
+  Workout = record {
+    wo-id : Integer,
+    wo-date : Integer,
+    wo-type : WorkoutType,
+    wo-title : Text,
+    wo-duration-min : Integer,
+    wo-calories : Integer,
+    wo-distance-m : Integer,
+    wo-notes : Text,
+    wo-rating : Integer
+  }
+
+  wo-pace-per-km : Workout -> Integer
+  wo-pace-per-km (w) =
+    if w.wo-distance-m == 0 then 0
+    else w.wo-duration-min * 1000 / w.wo-distance-m
+
+Section: Body Log Entry
+
+  BodyLog = record {
+    bl-id : Integer,
+    bl-date : Integer,
+    bl-weight-g : Integer,
+    bl-fat-pct-x10 : Integer,
+    bl-resting-hr : Integer,
+    bl-bp-sys : Integer,
+    bl-bp-dia : Integer,
+    bl-sleep-min : Integer,
+    bl-steps : Integer,
+    bl-water-ml : Integer,
+    bl-notes : Text
+  }
+
+  bl-weight-display : BodyLog -> Text
+  bl-weight-display (b) =
+    let lbs-x10 = b.bl-weight-g * 10 / 454
+    in show (lbs-x10 / 10) & "." & show (lbs-x10 - (lbs-x10 / 10) * 10) & " lbs"
+
+  bl-bmi : BodyLog, Integer -> Integer
+  bl-bmi (b) (height-cm) =
+    if height-cm == 0 then 0
+    else b.bl-weight-g * 10000 / (height-cm * height-cm)
+
+Section: Fitness App State
+
+  FitnessAppState = record {
+    fit-workouts : List Workout,
+    fit-workout-count : Integer,
+    fit-body-logs : List BodyLog,
+    fit-body-count : Integer,
+    fit-active-tab : Integer,
+    fit-filter-type : Text,
+    fit-total-duration : Integer,
+    fit-total-calories : Integer,
+    fit-total-distance : Integer,
+    fit-streak-days : Integer
+  }
+
+  fitness-app-new : FitnessAppState
+  fitness-app-new = FitnessAppState {
+    fit-workouts = [], fit-workout-count = 0,
+    fit-body-logs = [], fit-body-count = 0,
+    fit-active-tab = 0, fit-filter-type = "",
+    fit-total-duration = 0, fit-total-calories = 0,
+    fit-total-distance = 0, fit-streak-days = 0
+  }
+
+Section: Widget Building
+
+  wo-row : Workout -> WidgetNode
+  wo-row (w) =
+    let icon = widget-label ("wo-i-" & show (w.wo-id)) (wt-icon (w.wo-type))
+    in let title-lbl = widget-label ("wo-t-" & show (w.wo-id)) (if text-length (w.wo-title) > 0 then w.wo-title else wt-label (w.wo-type))
+    in let dur = widget-label ("wo-d-" & show (w.wo-id)) (show (w.wo-duration-min) & "m")
+    in let cal = widget-label ("wo-c-" & show (w.wo-id)) (show (w.wo-calories) & " cal")
+    in let dist = if w.wo-distance-m > 0 then widget-label ("wo-dist-" & show (w.wo-id)) (show (w.wo-distance-m / 1000) & "." & show ((w.wo-distance-m - (w.wo-distance-m / 1000) * 1000) / 100) & " km") else widget-label ("wo-dist-" & show (w.wo-id)) ""
+    in let stars = widget-gauge ("wo-r-" & show (w.wo-id)) (w.wo-rating) 5
+    in widget-panel ("workout-" & show (w.wo-id)) DirRow 8 [icon, title-lbl, dur, cal, dist, stars]
+
+  bl-row : BodyLog -> WidgetNode
+  bl-row (b) =
+    let date-lbl = widget-label ("bl-d-" & show (b.bl-id)) (show (b.bl-date))
+    in let weight = widget-label ("bl-w-" & show (b.bl-id)) (bl-weight-display b)
+    in let hr = widget-label ("bl-hr-" & show (b.bl-id)) (show (b.bl-resting-hr) & " bpm")
+    in let bp = widget-label ("bl-bp-" & show (b.bl-id)) (show (b.bl-bp-sys) & "/" & show (b.bl-bp-dia))
+    in let sleep = widget-label ("bl-sl-" & show (b.bl-id)) (show (b.bl-sleep-min / 60) & "h " & show (b.bl-sleep-min - (b.bl-sleep-min / 60) * 60) & "m")
+    in let steps = widget-label ("bl-st-" & show (b.bl-id)) (show (b.bl-steps) & " steps")
+    in let water = widget-label ("bl-wa-" & show (b.bl-id)) (show (b.bl-water-ml) & " ml")
+    in widget-panel ("body-" & show (b.bl-id)) DirRow 8 [date-lbl, weight, hr, bp, sleep, steps, water]
+
+  fitness-widget : FitnessAppState -> WidgetNode
+  fitness-widget (st) =
+    let title = widget-label "fit-title" "Fitness"
+    in let summary = widget-label "fit-summary" (show (st.fit-workout-count) & " workouts | " & show (st.fit-total-duration) & "m | " & show (st.fit-total-calories) & " cal | " & show (st.fit-streak-days) & " day streak")
+    in let tabs = widget-tabs "fit-tabs" ["Workouts", "Body Log"] (st.fit-active-tab)
+    in let log-btn = widget-button "fit-log" "Log Workout"
+    in let body-btn = widget-button "fit-body" "Log Body"
+    in let toolbar = widget-toolbar "fit-toolbar" [log-btn, body-btn]
+    in widget-panel "fitness-app" DirColumn 4 [title, summary, tabs, toolbar]
+
+Page 1

@@ -1,0 +1,107 @@
+Chapter: TestDriveManager
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter DriveManager
+  cites Foreword chapter Maybe
+
+ Unit tests for the drive manager: disk/partition model, capacity math,
+ mount state, and partition filtering.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) =
+    if val then "PASS " & label
+    else "FAIL " & label & ": expected True"
+
+Section: Disk Tests
+
+  test-disk-creation : Text
+  test-disk-creation =
+    let d = physical-disk-new "disk0" "Test Disk" BusIde 536870912
+    in let t1 = assert-eq-text "disk-id" "disk0" (d.pd-id)
+    in let t2 = assert-eq-text "disk-model" "Test Disk" (d.pd-model)
+    in let t3 = assert-eq-text "disk-bus" "IDE" (disk-bus-label (d.pd-bus))
+    in let t4 = assert-eq-text "disk-cap" "512 MB" (format-bytes (d.pd-capacity))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Partition Tests
+
+  test-partition-usage : Text
+  test-partition-usage =
+    let p = Partition {
+      pt-id = "p0", pt-disk-id = "disk0", pt-index = 0, pt-label = "root",
+      pt-fs-type = FsCdxFs, pt-capacity = bytes 1073741824, pt-used = bytes 536870912,
+      pt-mount-point = "/", pt-mounted = True, pt-bootable = True
+    }
+    in let t1 = assert-eq-int "50-percent-used" 50 (partition-usage-percent p)
+    in let p-empty = partition-new "p1" "disk0" 1 FsFat32 1048576
+    in let t2 = assert-eq-int "0-percent-empty" 0 (partition-usage-percent p-empty)
+    in t1 & "\n" & t2
+
+Section: Manager State Tests
+
+  test-dm-state : Text
+  test-dm-state =
+    let st = drive-manager-new
+    in let disk = physical-disk-new "disk0" "IDE Drive" BusIde 536870912
+    in let st1 = dm-add-disk st disk
+    in let t1 = assert-eq-int "one-disk" 1 (st1.dm-disk-count)
+    in let p0 = partition-new "disk0p0" "disk0" 0 FsFat32 104857600
+    in let p1 = partition-new "disk0p1" "disk0" 1 FsCdxFs 429496729
+    in let st2 = dm-add-partition (dm-add-partition st1 p0) p1
+    in let t2 = assert-eq-int "two-partitions" 2 (st2.dm-partition-count)
+    in let parts = dm-partitions-for-disk st2 "disk0"
+    in let t3 = assert-eq-int "parts-for-disk0" 2 (list-length parts)
+    in let no-parts = dm-partitions-for-disk st2 "disk99"
+    in let t4 = assert-eq-int "no-parts-disk99" 0 (list-length no-parts)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Find Tests
+
+  test-dm-find : Text
+  test-dm-find =
+    let disk = physical-disk-new "disk0" "IDE" BusIde 536870912
+    in let st = dm-add-disk drive-manager-new disk
+    in let found = dm-find-disk st "disk0"
+    in let t1 = when found
+      is Just (d) -> assert-eq-text "found-model" "IDE" (d.pd-model)
+      is None -> "FAIL find-disk0: not found"
+    in let not-found = dm-find-disk st "disk99"
+    in let t2 = when not-found
+      is Just (d) -> "FAIL find-disk99: should not exist"
+      is None -> "PASS find-disk99-missing"
+    in t1 & "\n" & t2
+
+Section: FS Type Labels
+
+  test-fs-labels : Text
+  test-fs-labels =
+    let t1 = assert-eq-text "fat32" "FAT32" (fs-type-label FsFat32)
+    in let t2 = assert-eq-text "cdxfs" "CdxFS" (fs-type-label FsCdxFs)
+    in let t3 = assert-eq-text "ext4" "ext4" (fs-type-label FsExt4)
+    in let t4 = assert-eq-text "raw" "raw" (fs-type-label FsRaw)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== DriveManager Tests ==="
+    print-line-uni test-disk-creation
+    print-line-uni test-partition-usage
+    print-line-uni test-dm-state
+    print-line-uni test-dm-find
+    print-line-uni test-fs-labels
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

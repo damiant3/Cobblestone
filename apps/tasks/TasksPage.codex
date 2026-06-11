@@ -1,0 +1,205 @@
+Chapter: TasksPage
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebTheme
+  cites WebApp chapter WebWidgets
+
+ Kanban task board with columns and drag-style cards.
+
+ We say:
+
+Section: Theme
+
+  tasks-theme : Theme
+  tasks-theme =
+    let p = Palette { pal-bg = 1250067, pal-fg = 14211288, pal-primary = 6865407, pal-secondary = 1776411, pal-accent = 6865407, pal-muted = 7829367, pal-error = 15486256, pal-success = 4304718, pal-warning = 16750848, pal-border = 2500134 }
+    in let base = ws (p.pal-bg) (p.pal-fg) (bdr 0 0 CornerSharp) (eu 0) (eu 0)
+    in let btn = ws (p.pal-secondary) (p.pal-fg) (bdr 0 0 (CornerRound 6)) (exy 12 6) (eu 0)
+    in let lbl = ws 0 (p.pal-fg) bn ez (eu 0)
+    in Theme { th-name = "tasks-dark", th-palette = p, th-panel = ss-flat base, th-button = StateStyles { ss-normal = btn, ss-hover = btn, ss-pressed = btn, ss-disabled = btn, ss-focused = btn }, th-label = ss-flat lbl, th-input = ss-flat base, th-gauge = ss-flat base, th-separator = ss-flat base }
+
+Section: CSS
+
+  tasks-css : Text
+  tasks-css =
+    "*{margin:0;padding:0;box-sizing:border-box}body{background:#131320;color:#d8d8d8;font-family:system-ui,sans-serif;height:100vh;overflow:hidden}#app{display:flex;flex-direction:column;height:100vh}"
+    & ".board-hdr{padding:16px 24px;background:#1a1a2e;border-bottom:1px solid #262640;display:flex;align-items:center;gap:16px}"
+    & ".board-hdr h1{font-size:20px;font-weight:600;color:#d8d8d8}"
+    & ".board-hdr .wk-btn,.board-hdr button{background:#6868ff;color:#fff;border:none;padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer}"
+    & ".board{flex:1;display:flex;gap:16px;padding:20px 24px;overflow-x:auto}"
+    & ".column{width:300px;flex-shrink:0;background:#1a1a2e;border-radius:12px;display:flex;flex-direction:column;max-height:100%}"
+    & ".col-hdr{padding:14px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #262640}"
+    & ".col-title{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px}"
+    & ".col-count{background:#262640;color:#888;font-size:11px;padding:2px 8px;border-radius:10px}"
+    & ".col-cards{flex:1;padding:8px;overflow-y:auto;display:flex;flex-direction:column;gap:8px}"
+    & ".card{background:#222240;border-radius:8px;padding:12px;cursor:pointer;transition:background .15s,transform .15s;border-left:3px solid transparent}"
+    & ".card:hover{background:#2a2a4a;transform:translateY(-1px)}"
+    & ".card.priority-high{border-left-color:#e74c3c}"
+    & ".card.priority-med{border-left-color:#f0a030}"
+    & ".card.priority-low{border-left-color:#3c8c5f}"
+    & ".card-title{font-size:13px;font-weight:600;margin-bottom:6px}"
+    & ".card-desc{font-size:12px;color:#888;line-height:1.4;margin-bottom:8px}"
+    & ".card-footer{display:flex;align-items:center;justify-content:space-between}"
+    & ".card-tag{font-size:10px;padding:2px 8px;border-radius:4px;background:#262640;color:#aaa}"
+    & ".card-avatar{width:24px;height:24px;border-radius:50%;background:#6868ff;font-size:10px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:bold}"
+    & ".add-card{padding:8px 16px;color:#666;font-size:13px;cursor:pointer;text-align:center;border-radius:6px;transition:background .15s}"
+    & ".add-card:hover{background:#222240;color:#aaa}"
+    & "dialog.wk-dialog{background:#1a1a2e;color:#d8d8d8;border:1px solid #333;border-radius:12px;padding:24px;max-width:400px;width:90%}"
+    & "dialog.wk-dialog::backdrop{background:rgba(0,0,0,.7)}"
+    & "dialog.wk-dialog h3{margin-bottom:8px}dialog.wk-dialog p{color:#999;margin-bottom:16px;font-size:14px}"
+    & "dialog.wk-dialog input{width:100%;background:#222240;border:1px solid #333;border-radius:8px;padding:10px;color:#d8d8d8;font-size:14px;outline:none;margin-bottom:8px}"
+    & "dialog.wk-dialog .wk-row{display:flex}dialog.wk-dialog .wk-btn{padding:8px 20px;border-radius:6px;border:none;cursor:pointer;font-size:14px;background:#6868ff;color:#fff;margin-left:8px}"
+    & "dialog.wk-dialog .wk-btn:first-child{background:#333;color:#d8d8d8}"
+
+Section: Tree
+
+  page-tree : Integer -> WidgetNode
+  page-tree (x) =
+    widget-panel "root" DirColumn 0 [
+      widget-box "board-hdr" "board-hdr" [
+        widget-label "title" "CodexTasks",
+        widget-button "add-task" "+ New Task"
+      ],
+      widget-box "board" "board" [
+        column-tree "backlog" "Backlog" 0,
+        column-tree "todo" "To Do" 1,
+        column-tree "progress" "In Progress" 2,
+        column-tree "review" "Review" 3,
+        column-tree "done" "Done" 4
+      ]
+    ]
+
+  column-tree : Text, Text, Integer -> WidgetNode
+  column-tree (id) (title) (col-idx) =
+    let count = state-get ("col-count-" & show col-idx)
+    in widget-box id "column" [
+      widget-box (id & "-hdr") "col-hdr" [
+        widget-box (id & "-t") "col-title" [
+          widget-label (id & "-tl") title,
+          widget-label (id & "-c") (show count)
+        ]
+      ],
+      widget-box (id & "-cards") "col-cards" (build-cards col-idx 0 count []),
+      widget-box-click (id & "-add") "add-card" [ widget-label (id & "-al") "+ Add card" ]
+    ]
+
+  build-cards : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  build-cards (col) (i) (count) (acc) =
+    if i >= count then acc
+    else let key = show col & "-" & show i
+    in let title = state-get-text ("task-title-" & key)
+    in let desc = state-get-text ("task-desc-" & key)
+    in let tag = state-get-text ("task-tag-" & key)
+    in let pri = state-get-text ("task-pri-" & key)
+    in let item = widget-box ("card-" & key) ("card priority-" & pri) [
+      widget-label ("ct-" & key) title,
+      widget-label ("cd-" & key) desc,
+      widget-box ("cf-" & key) "card-footer" [
+        widget-label ("cg-" & key) tag,
+        widget-add-child (widget-custom ("cv-" & key) "box:card-avatar" 0 0) (widget-label ("cvl-" & key) "D")
+      ]
+    ]
+    in build-cards col (i + 1) count (list-push acc item)
+
+Section: Sample Data
+
+  load-sample-tasks : Integer -> Integer
+  load-sample-tasks (x) =
+    let s0 = state-set "col-count-0" 2
+    in let s1 = state-set "col-count-1" 3
+    in let s2 = state-set "col-count-2" 2
+    in let s3 = state-set "col-count-3" 1
+    in let s4 = state-set "col-count-4" 2
+    in let t1 = state-set-text "task-title-0-0" "Research WebRTC signaling"
+    in let t2 = state-set-text "task-desc-0-0" "Investigate STUN/TURN for peer connection"
+    in let t3 = state-set-text "task-tag-0-0" "research"
+    in let t4 = state-set-text "task-pri-0-0" "low"
+    in let t5 = state-set-text "task-title-0-1" "Design login flow"
+    in let t6 = state-set-text "task-desc-0-1" "OAuth2 vs custom auth with Ed25519"
+    in let t7 = state-set-text "task-tag-0-1" "design"
+    in let t8 = state-set-text "task-pri-0-1" "med"
+    in let t9 = state-set-text "task-title-1-0" "Fix CSS const ordering"
+    in let t10 = state-set-text "task-desc-1-0" "Move css-landing before magic-layout-css"
+    in let t11 = state-set-text "task-tag-1-0" "bug"
+    in let t12 = state-set-text "task-pri-1-0" "high"
+    in let t13 = state-set-text "task-title-1-1" "Build chat server"
+    in let t14 = state-set-text "task-desc-1-1" "CDX server for auth, keys, routing"
+    in let t15 = state-set-text "task-tag-1-1" "feature"
+    in let t16 = state-set-text "task-pri-1-1" "high"
+    in let t17 = state-set-text "task-title-1-2" "Add color swatch backgrounds"
+    in let t18 = state-set-text "task-desc-1-2" "Inline background-color for swatches"
+    in let t19 = state-set-text "task-tag-1-2" "enhancement"
+    in let t20 = state-set-text "task-pri-1-2" "med"
+    in let t21 = state-set-text "task-title-2-0" "E2E crypto module"
+    in let t22 = state-set-text "task-desc-2-0" "X3DH + Double Ratchet for chat"
+    in let t23 = state-set-text "task-tag-2-0" "crypto"
+    in let t24 = state-set-text "task-pri-2-0" "high"
+    in let t25 = state-set-text "task-title-2-1" "Parallax welcome sections"
+    in let t26 = state-set-text "task-desc-2-1" "Full viewport sections with scene backgrounds"
+    in let t27 = state-set-text "task-tag-2-1" "ui"
+    in let t28 = state-set-text "task-pri-2-1" "med"
+    in let t29 = state-set-text "task-title-3-0" "HTML entity rendering"
+    in let t30 = state-set-text "task-desc-3-0" "Labels use innerHTML when text contains &"
+    in let t31 = state-set-text "task-tag-3-0" "review"
+    in let t32 = state-set-text "task-pri-3-0" "med"
+    in let t33 = state-set-text "task-title-4-0" "Self-hosting compiler"
+    in let t34 = state-set-text "task-desc-4-0" "CDX fixed point verified"
+    in let t35 = state-set-text "task-tag-4-0" "milestone"
+    in let t36 = state-set-text "task-pri-4-0" "high"
+    in let t37 = state-set-text "task-title-4-1" "Test battery 105/105"
+    in let t38 = state-set-text "task-desc-4-1" "All tests pass including poison build"
+    in let t39 = state-set-text "task-tag-4-1" "test"
+    in let t40 = state-set-text "task-pri-4-1" "high"
+    in 0
+
+Section: Handlers
+
+  tasks-click : Text -> Integer
+  tasks-click (id) =
+    if id == "add-task" then show-prompt "New Task" "Task title:" "task name" add-cb-1
+    else if id == "backlog-add" then show-prompt "Add to Backlog" "Task title:" "task name" add-cb-0
+    else if id == "todo-add" then show-prompt "Add to To Do" "Task title:" "task name" add-cb-1
+    else if id == "progress-add" then show-prompt "Add to In Progress" "Task title:" "task name" add-cb-2
+    else if id == "review-add" then show-prompt "Add to Review" "Task title:" "task name" add-cb-3
+    else if id == "done-add" then show-prompt "Add to Done" "Task title:" "task name" add-cb-4
+    else 0
+
+  add-to-col : Integer, Text -> Integer
+  add-to-col (col) (name) =
+    if name == "" then 0
+    else let count = state-get ("col-count-" & show col)
+    in let key = show col & "-" & show count
+    in let s1 = state-set-text ("task-title-" & key) name
+    in let s2 = state-set-text ("task-desc-" & key) ""
+    in let s3 = state-set-text ("task-tag-" & key) "new"
+    in let s4 = state-set-text ("task-pri-" & key) "med"
+    in let s5 = state-set-render ("col-count-" & show col) (count + 1)
+    in 0
+
+  add-cb-0 : Text -> Integer
+  add-cb-0 (name) = add-to-col 0 name
+  add-cb-1 : Text -> Integer
+  add-cb-1 (name) = add-to-col 1 name
+  add-cb-2 : Text -> Integer
+  add-cb-2 (name) = add-to-col 2 name
+  add-cb-3 : Text -> Integer
+  add-cb-3 (name) = add-to-col 3 name
+  add-cb-4 : Text -> Integer
+  add-cb-4 (name) = add-to-col 4 name
+
+Section: Entry
+
+  render-tasks : Integer -> Integer
+  render-tasks (x) = mount-widget-themed tasks-theme (page-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = inject-app-style tasks-theme tasks-css
+    in let s = set-render render-tasks
+    in let h = register-handlers no-pick tasks-click
+    in let d = load-sample-tasks 0
+    in render-tasks 0
+  end
+
+Page 1

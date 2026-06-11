@@ -1,0 +1,875 @@
+Chapter: CvmmPersist
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Parse
+  cites Encode chapter Json
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Kernel chapter AppLog
+  cites Cvmm chapter Notes
+  cites Cvmm chapter Recipes
+  cites Cvmm chapter Contacts
+  cites Cvmm chapter Calendar
+  cites Cvmm chapter Budget
+  cites Cvmm chapter CarMaintenance
+  cites Cvmm chapter Fitness
+  cites Cvmm chapter Garden
+  cites Cvmm chapter HomeProjects
+  cites Cvmm chapter ReadingList
+  cites Cvmm chapter TodoList
+
+ Persistent storage for all CVMM productivity mini-utilities.
+ Each domain serializes to JSON and is stored as a DiskFacts
+ entry with its own kind ID.
+
+Section: Kind Constants
+
+  pk-notes : Integer = 28
+  pk-recipes : Integer = 29
+  pk-contacts : Integer = 30
+  pk-calendar : Integer = 31
+  pk-budget : Integer = 32
+  pk-car : Integer = 33
+  pk-fitness : Integer = 34
+  pk-garden : Integer = 35
+  pk-home : Integer = 36
+  pk-reading : Integer = 37
+  pk-todo : Integer = 38
+
+Section: Notes
+
+  note-to-jv : Note -> JsonValue
+  note-to-jv (n) = json-object [
+    json-pair "id" (json-int n.note-id),
+    json-pair "title" (json-str n.note-title),
+    json-pair "body" (json-str n.note-body),
+    json-pair "folder" (json-str n.note-folder),
+    json-pair "pinned" (json-bool n.note-pinned),
+    json-pair "archived" (json-bool n.note-archived),
+    json-pair "created" (json-int n.note-created),
+    json-pair "modified" (json-int n.note-modified)
+  ]
+
+  note-from-jv : JsonValue -> Note
+  note-from-jv (jv) = Note {
+    note-id = json-get-int jv "id" 0,
+    note-title = json-get-str jv "title" "",
+    note-body = json-get-str jv "body" "",
+    note-folder = json-get-str jv "folder" "Inbox",
+    note-tags = [], note-tag-count = 0,
+    note-color = NcDefault,
+    note-pinned = json-get-bool jv "pinned" False,
+    note-archived = json-get-bool jv "archived" False,
+    note-created = json-get-int jv "created" 0,
+    note-modified = json-get-int jv "modified" 0,
+    note-word-count = 0, note-char-count = 0
+  }
+
+  notes-save : DiskFactStore, List Note, Integer -> DiskFactStore
+  notes-save (store) (notes) (ts) =
+    let j = json-emit (json-array (list-map note-to-jv notes))
+    in app-log-info (app-write-and-checkpoint store pk-notes j ts) "notes" ("Saved " & show (list-length notes) & " notes") ts
+
+  notes-load : DiskFactStore -> List Note
+  notes-load (store) =
+    let found = app-scan-last store pk-notes
+    in when found
+      is Nothing -> []
+      is Just (txt) -> parse-jv-array txt note-from-jv
+
+Section: Recipes
+
+  recipe-to-jv : RecipeDetail -> JsonValue
+  recipe-to-jv (r) = json-object [
+    json-pair "id" (json-int r.rd-id),
+    json-pair "title" (json-str r.rd-title),
+    json-pair "desc" (json-str r.rd-description),
+    json-pair "cat" (json-str r.rd-category),
+    json-pair "cuisine" (json-str r.rd-cuisine),
+    json-pair "prep" (json-int r.rd-prep-min),
+    json-pair "cook" (json-int r.rd-cook-min),
+    json-pair "servings" (json-int r.rd-servings),
+    json-pair "diff" (json-str r.rd-difficulty),
+    json-pair "rating" (json-int r.rd-rating),
+    json-pair "source" (json-str r.rd-source),
+    json-pair "fav" (json-bool r.rd-favorite),
+    json-pair "cooked" (json-int r.rd-times-cooked),
+    json-pair "ings" (json-array (list-map ing-to-jv r.rd-ingredients)),
+    json-pair "steps" (json-array (list-map step-to-jv r.rd-steps))
+  ]
+
+  ing-to-jv : Ingredient -> JsonValue
+  ing-to-jv (i) = json-object [
+    json-pair "n" (json-str i.ing-name),
+    json-pair "q" (json-str i.ing-quantity),
+    json-pair "u" (json-str i.ing-unit),
+    json-pair "o" (json-bool i.ing-optional),
+    json-pair "s" (json-int i.ing-sort)
+  ]
+
+  step-to-jv : RecipeStep -> JsonValue
+  step-to-jv (s) = json-object [
+    json-pair "n" (json-int s.rs-num),
+    json-pair "i" (json-str s.rs-instruction),
+    json-pair "d" (json-int s.rs-duration-min)
+  ]
+
+  recipe-from-jv : JsonValue -> RecipeDetail
+  recipe-from-jv (jv) = RecipeDetail {
+    rd-id = json-get-int jv "id" 0,
+    rd-title = json-get-str jv "title" "",
+    rd-description = json-get-str jv "desc" "",
+    rd-category = json-get-str jv "cat" "Other",
+    rd-cuisine = json-get-str jv "cuisine" "",
+    rd-prep-min = json-get-int jv "prep" 0,
+    rd-cook-min = json-get-int jv "cook" 0,
+    rd-servings = json-get-int jv "servings" 4,
+    rd-difficulty = json-get-str jv "diff" "Easy",
+    rd-rating = json-get-int jv "rating" 0,
+    rd-source = json-get-str jv "source" "",
+    rd-favorite = json-get-bool jv "fav" False,
+    rd-times-cooked = json-get-int jv "cooked" 0,
+    rd-ingredients = parse-jv-sub jv "ings" ing-from-jv,
+    rd-ingredient-count = 0,
+    rd-steps = parse-jv-sub jv "steps" step-from-jv,
+    rd-step-count = 0,
+    rd-tags = [], rd-tag-count = 0
+  }
+
+  ing-from-jv : JsonValue -> Ingredient
+  ing-from-jv (jv) = Ingredient {
+    ing-name = json-get-str jv "n" "",
+    ing-quantity = json-get-str jv "q" "",
+    ing-unit = json-get-str jv "u" "",
+    ing-optional = json-get-bool jv "o" False,
+    ing-sort = json-get-int jv "s" 0
+  }
+
+  step-from-jv : JsonValue -> RecipeStep
+  step-from-jv (jv) = RecipeStep {
+    rs-num = json-get-int jv "n" 0,
+    rs-instruction = json-get-str jv "i" "",
+    rs-duration-min = json-get-int jv "d" 0
+  }
+
+  recipes-save : DiskFactStore, List RecipeDetail, Integer -> DiskFactStore
+  recipes-save (store) (recipes) (ts) =
+    let j = json-emit (json-array (list-map recipe-to-jv recipes))
+    in app-log-info (app-write-and-checkpoint store pk-recipes j ts) "recipes" ("Saved " & show (list-length recipes) & " recipes") ts
+
+  recipes-load : DiskFactStore -> List RecipeDetail
+  recipes-load (store) =
+    let found = app-scan-last store pk-recipes
+    in when found
+      is Nothing -> []
+      is Just (txt) -> parse-jv-array txt recipe-from-jv
+
+Section: Contacts
+
+  contact-to-jv : Contact -> JsonValue
+  contact-to-jv (c) = json-object [
+    json-pair "id" (json-int c.ct-id),
+    json-pair "first" (json-str c.ct-first),
+    json-pair "last" (json-str c.ct-last),
+    json-pair "nick" (json-str c.ct-nickname),
+    json-pair "company" (json-str c.ct-company),
+    json-pair "title" (json-str c.ct-title),
+    json-pair "email" (json-str c.ct-email),
+    json-pair "phone" (json-str c.ct-phone),
+    json-pair "phone2" (json-str c.ct-phone2),
+    json-pair "addr" (json-str c.ct-address),
+    json-pair "city" (json-str c.ct-city),
+    json-pair "state" (json-str c.ct-state),
+    json-pair "zip" (json-str c.ct-zip),
+    json-pair "country" (json-str c.ct-country),
+    json-pair "bday" (json-int c.ct-birthday),
+    json-pair "notes" (json-str c.ct-notes),
+    json-pair "group" (json-str c.ct-group),
+    json-pair "fav" (json-bool c.ct-favorite),
+    json-pair "created" (json-int c.ct-created),
+    json-pair "modified" (json-int c.ct-modified)
+  ]
+
+  contact-from-jv : JsonValue -> Contact
+  contact-from-jv (jv) = Contact {
+    ct-id = json-get-int jv "id" 0,
+    ct-first = json-get-str jv "first" "",
+    ct-last = json-get-str jv "last" "",
+    ct-nickname = json-get-str jv "nick" "",
+    ct-company = json-get-str jv "company" "",
+    ct-title = json-get-str jv "title" "",
+    ct-email = json-get-str jv "email" "",
+    ct-phone = json-get-str jv "phone" "",
+    ct-phone2 = json-get-str jv "phone2" "",
+    ct-address = json-get-str jv "addr" "",
+    ct-city = json-get-str jv "city" "",
+    ct-state = json-get-str jv "state" "",
+    ct-zip = json-get-str jv "zip" "",
+    ct-country = json-get-str jv "country" "",
+    ct-birthday = json-get-int jv "bday" 0,
+    ct-notes = json-get-str jv "notes" "",
+    ct-group = json-get-str jv "group" "All",
+    ct-favorite = json-get-bool jv "fav" False,
+    ct-created = json-get-int jv "created" 0,
+    ct-modified = json-get-int jv "modified" 0
+  }
+
+  contacts-save : DiskFactStore, List Contact, Integer -> DiskFactStore
+  contacts-save (store) (contacts) (ts) =
+    let j = json-emit (json-array (list-map contact-to-jv contacts))
+    in app-log-info (app-write-and-checkpoint store pk-contacts j ts) "contacts" ("Saved " & show (list-length contacts) & " contacts") ts
+
+  contacts-load : DiskFactStore -> List Contact
+  contacts-load (store) =
+    let found = app-scan-last store pk-contacts
+    in when found
+      is Nothing -> []
+      is Just (txt) -> parse-jv-array txt contact-from-jv
+
+Section: Calendar
+
+  event-to-jv : CalEvent -> JsonValue
+  event-to-jv (e) = json-object [
+    json-pair "id" (json-int e.ev-id),
+    json-pair "title" (json-str e.ev-title),
+    json-pair "desc" (json-str e.ev-description),
+    json-pair "start" (json-int e.ev-start),
+    json-pair "end" (json-int e.ev-end),
+    json-pair "allDay" (json-bool e.ev-all-day),
+    json-pair "loc" (json-str e.ev-location),
+    json-pair "cal" (json-str e.ev-calendar),
+    json-pair "color" (json-str e.ev-color),
+    json-pair "recur" (json-str e.ev-recurrence),
+    json-pair "remind" (json-int e.ev-reminder-min)
+  ]
+
+  event-from-jv : JsonValue -> CalEvent
+  event-from-jv (jv) = CalEvent {
+    ev-id = json-get-int jv "id" 0,
+    ev-title = json-get-str jv "title" "",
+    ev-description = json-get-str jv "desc" "",
+    ev-start = json-get-int jv "start" 0,
+    ev-end = json-get-int jv "end" 0,
+    ev-all-day = json-get-bool jv "allDay" False,
+    ev-location = json-get-str jv "loc" "",
+    ev-calendar = json-get-str jv "cal" "Default",
+    ev-color = json-get-str jv "color" "#4285f4",
+    ev-recurrence = json-get-str jv "recur" "",
+    ev-reminder-min = json-get-int jv "remind" 0
+  }
+
+  calendar-save : DiskFactStore, List CalEvent, Integer -> DiskFactStore
+  calendar-save (store) (events) (ts) =
+    let j = json-emit (json-array (list-map event-to-jv events))
+    in app-log-info (app-write-and-checkpoint store pk-calendar j ts) "calendar" ("Saved " & show (list-length events) & " events") ts
+
+  calendar-load : DiskFactStore -> List CalEvent
+  calendar-load (store) =
+    let found = app-scan-last store pk-calendar
+    in when found
+      is Nothing -> []
+      is Just (txt) -> parse-jv-array txt event-from-jv
+
+Section: Budget
+
+  budget-cat-to-jv : BudgetCategory -> JsonValue
+  budget-cat-to-jv (c) = json-object [
+    json-pair "id" (json-int c.bc-id),
+    json-pair "name" (json-str c.bc-name),
+    json-pair "parent" (json-int c.bc-parent-id),
+    json-pair "budget" (json-int c.bc-budget-cents),
+    json-pair "spent" (json-int c.bc-spent-cents),
+    json-pair "color" (json-str c.bc-color),
+    json-pair "income" (json-bool c.bc-is-income)
+  ]
+
+  budget-txn-to-jv : BudgetTransaction -> JsonValue
+  budget-txn-to-jv (t) = json-object [
+    json-pair "id" (json-int t.bt-id),
+    json-pair "date" (json-int t.bt-date),
+    json-pair "desc" (json-str t.bt-description),
+    json-pair "amt" (json-int t.bt-amount-cents),
+    json-pair "catId" (json-int t.bt-category-id),
+    json-pair "catName" (json-str t.bt-category-name),
+    json-pair "acct" (json-str t.bt-account),
+    json-pair "notes" (json-str t.bt-notes),
+    json-pair "income" (json-bool t.bt-is-income)
+  ]
+
+  budget-cat-from-jv : JsonValue -> BudgetCategory
+  budget-cat-from-jv (jv) = BudgetCategory {
+    bc-id = json-get-int jv "id" 0,
+    bc-name = json-get-str jv "name" "",
+    bc-parent-id = json-get-int jv "parent" 0,
+    bc-budget-cents = json-get-int jv "budget" 0,
+    bc-spent-cents = json-get-int jv "spent" 0,
+    bc-color = json-get-str jv "color" "#888",
+    bc-is-income = json-get-bool jv "income" False
+  }
+
+  budget-txn-from-jv : JsonValue -> BudgetTransaction
+  budget-txn-from-jv (jv) = BudgetTransaction {
+    bt-id = json-get-int jv "id" 0,
+    bt-date = json-get-int jv "date" 0,
+    bt-description = json-get-str jv "desc" "",
+    bt-amount-cents = json-get-int jv "amt" 0,
+    bt-category-id = json-get-int jv "catId" 0,
+    bt-category-name = json-get-str jv "catName" "",
+    bt-account = json-get-str jv "acct" "default",
+    bt-notes = json-get-str jv "notes" "",
+    bt-is-income = json-get-bool jv "income" False
+  }
+
+  budget-save : DiskFactStore, List BudgetCategory, List BudgetTransaction, Integer -> DiskFactStore
+  budget-save (store) (cats) (txns) (ts) =
+    let j = json-emit (json-object [
+      json-pair "cats" (json-array (list-map budget-cat-to-jv cats)),
+      json-pair "txns" (json-array (list-map budget-txn-to-jv txns))
+    ])
+    in app-log-info (app-write-and-checkpoint store pk-budget j ts) "budget" "Budget saved" ts
+
+  budget-load-cats : DiskFactStore -> List BudgetCategory
+  budget-load-cats (store) =
+    let found = app-scan-last store pk-budget
+    in when found
+      is Nothing -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is Nothing -> []
+          is Just (jv) -> parse-jv-sub jv "cats" budget-cat-from-jv
+
+  budget-load-txns : DiskFactStore -> List BudgetTransaction
+  budget-load-txns (store) =
+    let found = app-scan-last store pk-budget
+    in when found
+      is Nothing -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is Nothing -> []
+          is Just (jv) -> parse-jv-sub jv "txns" budget-txn-from-jv
+
+Section: Car Maintenance
+
+  vehicle-to-jv : Vehicle -> JsonValue
+  vehicle-to-jv (v) = json-object [
+    json-pair "id" (json-int v.vh-id),
+    json-pair "make" (json-str v.vh-make),
+    json-pair "model" (json-str v.vh-model),
+    json-pair "year" (json-int v.vh-year),
+    json-pair "color" (json-str v.vh-color),
+    json-pair "vin" (json-str v.vh-vin),
+    json-pair "plate" (json-str v.vh-plate),
+    json-pair "odo" (json-int v.vh-odometer),
+    json-pair "pdate" (json-int v.vh-purchase-date),
+    json-pair "price" (json-int v.vh-purchase-price)
+  ]
+
+  maint-to-jv : MaintRecord -> JsonValue
+  maint-to-jv (m) = json-object [
+    json-pair "id" (json-int m.mr-id),
+    json-pair "vid" (json-int m.mr-vehicle-id),
+    json-pair "svc" (json-str m.mr-service),
+    json-pair "desc" (json-str m.mr-description),
+    json-pair "date" (json-int m.mr-date),
+    json-pair "odo" (json-int m.mr-odometer),
+    json-pair "cost" (json-int m.mr-cost-cents),
+    json-pair "shop" (json-str m.mr-shop),
+    json-pair "nextMi" (json-int m.mr-next-due-miles),
+    json-pair "nextDt" (json-int m.mr-next-due-date)
+  ]
+
+  fuel-to-jv : FuelRecord -> JsonValue
+  fuel-to-jv (f) = json-object [
+    json-pair "id" (json-int f.fr-id),
+    json-pair "vid" (json-int f.fr-vehicle-id),
+    json-pair "date" (json-int f.fr-date),
+    json-pair "odo" (json-int f.fr-odometer),
+    json-pair "gal" (json-int f.fr-gallons-x100),
+    json-pair "cost" (json-int f.fr-cost-cents),
+    json-pair "sta" (json-str f.fr-station),
+    json-pair "full" (json-bool f.fr-full-tank)
+  ]
+
+  vehicle-from-jv : JsonValue -> Vehicle
+  vehicle-from-jv (jv) = Vehicle {
+    vh-id = json-get-int jv "id" 0,
+    vh-make = json-get-str jv "make" "",
+    vh-model = json-get-str jv "model" "",
+    vh-year = json-get-int jv "year" 0,
+    vh-color = json-get-str jv "color" "",
+    vh-vin = json-get-str jv "vin" "",
+    vh-plate = json-get-str jv "plate" "",
+    vh-odometer = json-get-int jv "odo" 0,
+    vh-purchase-date = json-get-int jv "pdate" 0,
+    vh-purchase-price = json-get-int jv "price" 0
+  }
+
+  maint-from-jv : JsonValue -> MaintRecord
+  maint-from-jv (jv) = MaintRecord {
+    mr-id = json-get-int jv "id" 0,
+    mr-vehicle-id = json-get-int jv "vid" 0,
+    mr-service = json-get-str jv "svc" "",
+    mr-description = json-get-str jv "desc" "",
+    mr-date = json-get-int jv "date" 0,
+    mr-odometer = json-get-int jv "odo" 0,
+    mr-cost-cents = json-get-int jv "cost" 0,
+    mr-shop = json-get-str jv "shop" "",
+    mr-next-due-miles = json-get-int jv "nextMi" 0,
+    mr-next-due-date = json-get-int jv "nextDt" 0
+  }
+
+  fuel-from-jv : JsonValue -> FuelRecord
+  fuel-from-jv (jv) = FuelRecord {
+    fr-id = json-get-int jv "id" 0,
+    fr-vehicle-id = json-get-int jv "vid" 0,
+    fr-date = json-get-int jv "date" 0,
+    fr-odometer = json-get-int jv "odo" 0,
+    fr-gallons-x100 = json-get-int jv "gal" 0,
+    fr-cost-cents = json-get-int jv "cost" 0,
+    fr-station = json-get-str jv "sta" "",
+    fr-full-tank = json-get-bool jv "full" True
+  }
+
+  car-save : DiskFactStore, List Vehicle, List MaintRecord, List FuelRecord, Integer -> DiskFactStore
+  car-save (store) (vehicles) (maint) (fuel) (ts) =
+    let j = json-emit (json-object [
+      json-pair "v" (json-array (list-map vehicle-to-jv vehicles)),
+      json-pair "m" (json-array (list-map maint-to-jv maint)),
+      json-pair "f" (json-array (list-map fuel-to-jv fuel))
+    ])
+    in app-log-info (app-write-and-checkpoint store pk-car j ts) "car" "Maintenance log saved" ts
+
+  car-load-vehicles : DiskFactStore -> List Vehicle
+  car-load-vehicles (store) =
+    let found = app-scan-last store pk-car
+    in when found
+      is Nothing -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is Nothing -> []
+          is Just (jv) -> parse-jv-sub jv "v" vehicle-from-jv
+
+  car-load-maint : DiskFactStore -> List MaintRecord
+  car-load-maint (store) =
+    let found = app-scan-last store pk-car
+    in when found
+      is Nothing -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is Nothing -> []
+          is Just (jv) -> parse-jv-sub jv "m" maint-from-jv
+
+  car-load-fuel : DiskFactStore -> List FuelRecord
+  car-load-fuel (store) =
+    let found = app-scan-last store pk-car
+    in when found
+      is Nothing -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is Nothing -> []
+          is Just (jv) -> parse-jv-sub jv "f" fuel-from-jv
+
+Section: Fitness
+
+  workout-to-jv : Workout -> JsonValue
+  workout-to-jv (w) = json-object [
+    json-pair "id" (json-int w.wo-id),
+    json-pair "date" (json-int w.wo-date),
+    json-pair "type" (json-str (wt-label w.wo-type)),
+    json-pair "title" (json-str w.wo-title),
+    json-pair "dur" (json-int w.wo-duration-min),
+    json-pair "cal" (json-int w.wo-calories),
+    json-pair "dist" (json-int w.wo-distance-m),
+    json-pair "notes" (json-str w.wo-notes),
+    json-pair "rating" (json-int w.wo-rating)
+  ]
+
+  bodylog-to-jv : BodyLog -> JsonValue
+  bodylog-to-jv (b) = json-object [
+    json-pair "id" (json-int b.bl-id),
+    json-pair "date" (json-int b.bl-date),
+    json-pair "wt" (json-int b.bl-weight-g),
+    json-pair "fat" (json-int b.bl-fat-pct-x10),
+    json-pair "hr" (json-int b.bl-resting-hr),
+    json-pair "sys" (json-int b.bl-bp-sys),
+    json-pair "dia" (json-int b.bl-bp-dia),
+    json-pair "sleep" (json-int b.bl-sleep-min),
+    json-pair "steps" (json-int b.bl-steps),
+    json-pair "water" (json-int b.bl-water-ml),
+    json-pair "notes" (json-str b.bl-notes)
+  ]
+
+  label-to-wt : Text -> WorkoutType
+  label-to-wt (s) =
+    if s == "Run" then WtRun
+    else if s == "Bike" then WtBike
+    else if s == "Swim" then WtSwim
+    else if s == "Lift" then WtLift
+    else if s == "Walk" then WtWalk
+    else if s == "Yoga" then WtYoga
+    else if s == "HIIT" then WtHiit
+    else if s == "Stretch" then WtStretch
+    else if s == "Hike" then WtHike
+    else WtOther s
+
+  workout-from-jv : JsonValue -> Workout
+  workout-from-jv (jv) = Workout {
+    wo-id = json-get-int jv "id" 0,
+    wo-date = json-get-int jv "date" 0,
+    wo-type = label-to-wt (json-get-str jv "type" "Other"),
+    wo-title = json-get-str jv "title" "",
+    wo-duration-min = json-get-int jv "dur" 0,
+    wo-calories = json-get-int jv "cal" 0,
+    wo-distance-m = json-get-int jv "dist" 0,
+    wo-notes = json-get-str jv "notes" "",
+    wo-rating = json-get-int jv "rating" 0
+  }
+
+  bodylog-from-jv : JsonValue -> BodyLog
+  bodylog-from-jv (jv) = BodyLog {
+    bl-id = json-get-int jv "id" 0,
+    bl-date = json-get-int jv "date" 0,
+    bl-weight-g = json-get-int jv "wt" 0,
+    bl-fat-pct-x10 = json-get-int jv "fat" 0,
+    bl-resting-hr = json-get-int jv "hr" 0,
+    bl-bp-sys = json-get-int jv "sys" 0,
+    bl-bp-dia = json-get-int jv "dia" 0,
+    bl-sleep-min = json-get-int jv "sleep" 0,
+    bl-steps = json-get-int jv "steps" 0,
+    bl-water-ml = json-get-int jv "water" 0,
+    bl-notes = json-get-str jv "notes" ""
+  }
+
+  fitness-save : DiskFactStore, List Workout, List BodyLog, Integer -> DiskFactStore
+  fitness-save (store) (workouts) (logs) (ts) =
+    let j = json-emit (json-object [
+      json-pair "w" (json-array (list-map workout-to-jv workouts)),
+      json-pair "b" (json-array (list-map bodylog-to-jv logs))
+    ])
+    in app-log-info (app-write-and-checkpoint store pk-fitness j ts) "fitness" "Fitness data saved" ts
+
+  fitness-load-workouts : DiskFactStore -> List Workout
+  fitness-load-workouts (store) =
+    let found = app-scan-last store pk-fitness
+    in when found
+      is Nothing -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is Nothing -> []
+          is Just (jv) -> parse-jv-sub jv "w" workout-from-jv
+
+  fitness-load-body : DiskFactStore -> List BodyLog
+  fitness-load-body (store) =
+    let found = app-scan-last store pk-fitness
+    in when found
+      is Nothing -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is Nothing -> []
+          is Just (jv) -> parse-jv-sub jv "b" bodylog-from-jv
+
+Section: Garden
+
+  plant-to-jv : Plant -> JsonValue
+  plant-to-jv (p) = json-object [
+    json-pair "id" (json-int p.pl-id),
+    json-pair "name" (json-str p.pl-name),
+    json-pair "var" (json-str p.pl-variety),
+    json-pair "loc" (json-str p.pl-location),
+    json-pair "planted" (json-int p.pl-planted),
+    json-pair "waterDays" (json-int p.pl-water-days),
+    json-pair "sun" (json-str p.pl-sun),
+    json-pair "notes" (json-str p.pl-notes),
+    json-pair "alive" (json-bool p.pl-alive),
+    json-pair "lastWater" (json-int p.pl-last-watered),
+    json-pair "lastAction" (json-str p.pl-last-action),
+    json-pair "logCount" (json-int p.pl-log-count)
+  ]
+
+  garden-log-to-jv : GardenLogEntry -> JsonValue
+  garden-log-to-jv (g) = json-object [
+    json-pair "pid" (json-int g.gl-plant-id),
+    json-pair "date" (json-int g.gl-date),
+    json-pair "action" (json-str (ga-label g.gl-action)),
+    json-pair "notes" (json-str g.gl-notes)
+  ]
+
+  plant-from-jv : JsonValue -> Plant
+  plant-from-jv (jv) = Plant {
+    pl-id = json-get-int jv "id" 0,
+    pl-name = json-get-str jv "name" "",
+    pl-variety = json-get-str jv "var" "",
+    pl-location = json-get-str jv "loc" "",
+    pl-planted = json-get-int jv "planted" 0,
+    pl-water-days = json-get-int jv "waterDays" 7,
+    pl-sun = json-get-str jv "sun" "Full Sun",
+    pl-notes = json-get-str jv "notes" "",
+    pl-alive = json-get-bool jv "alive" True,
+    pl-last-watered = json-get-int jv "lastWater" 0,
+    pl-last-action = json-get-str jv "lastAction" "",
+    pl-log-count = json-get-int jv "logCount" 0
+  }
+
+  garden-log-from-jv : JsonValue -> GardenLogEntry
+  garden-log-from-jv (jv) = GardenLogEntry {
+    gl-plant-id = json-get-int jv "pid" 0,
+    gl-date = json-get-int jv "date" 0,
+    gl-action = label-to-ga (json-get-str jv "action" "Water"),
+    gl-notes = json-get-str jv "notes" ""
+  }
+
+  label-to-ga : Text -> GardenAction
+  label-to-ga (s) =
+    if s == "Water" then GaWater
+    else if s == "Fertilize" then GaFertilize
+    else if s == "Prune" then GaPrune
+    else if s == "Harvest" then GaHarvest
+    else if s == "Repot" then GaRepot
+    else if s == "Weed" then GaWeedControl
+    else if s == "Pest Control" then GaPestControl
+    else GaObservation
+
+  garden-save : DiskFactStore, List Plant, List GardenLogEntry, Integer -> DiskFactStore
+  garden-save (store) (plants) (logs) (ts) =
+    let j = json-emit (json-object [
+      json-pair "p" (json-array (list-map plant-to-jv plants)),
+      json-pair "l" (json-array (list-map garden-log-to-jv logs))
+    ])
+    in app-log-info (app-write-and-checkpoint store pk-garden j ts) "garden" "Garden data saved" ts
+
+  garden-load-plants : DiskFactStore -> List Plant
+  garden-load-plants (store) =
+    let found = app-scan-last store pk-garden
+    in when found
+      is Nothing -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is Nothing -> []
+          is Just (jv) -> parse-jv-sub jv "p" plant-from-jv
+
+  garden-load-logs : DiskFactStore -> List GardenLogEntry
+  garden-load-logs (store) =
+    let found = app-scan-last store pk-garden
+    in when found
+      is Nothing -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is Nothing -> []
+          is Just (jv) -> parse-jv-sub jv "l" garden-log-from-jv
+
+Section: Home Projects
+
+  project-to-jv : HomeProject -> JsonValue
+  project-to-jv (p) = json-object [
+    json-pair "id" (json-int p.hp-id),
+    json-pair "title" (json-str p.hp-title),
+    json-pair "desc" (json-str p.hp-description),
+    json-pair "room" (json-str p.hp-room),
+    json-pair "cat" (json-str (pj-cat-label p.hp-category)),
+    json-pair "status" (json-str (pj-status-label p.hp-status)),
+    json-pair "pri" (json-int p.hp-priority),
+    json-pair "budget" (json-int p.hp-budget-cents),
+    json-pair "spent" (json-int p.hp-spent-cents),
+    json-pair "start" (json-int p.hp-start-date),
+    json-pair "end" (json-int p.hp-end-date),
+    json-pair "created" (json-int p.hp-created),
+    json-pair "mats" (json-array (list-map material-to-jv p.hp-materials))
+  ]
+
+  material-to-jv : Material -> JsonValue
+  material-to-jv (m) = json-object [
+    json-pair "name" (json-str m.mat-name),
+    json-pair "qty" (json-int m.mat-quantity),
+    json-pair "cost" (json-int m.mat-cost-cents),
+    json-pair "bought" (json-bool m.mat-purchased),
+    json-pair "store" (json-str m.mat-store)
+  ]
+
+  label-to-pj-cat : Text -> ProjectCategory
+  label-to-pj-cat (s) =
+    if s == "Repair" then PjRepair
+    else if s == "Renovation" then PjRenovation
+    else if s == "Landscaping" then PjLandscaping
+    else if s == "Cleaning" then PjCleaning
+    else if s == "Organization" then PjOrganization
+    else if s == "Decor" then PjDecor
+    else PjMaintenance
+
+  label-to-pj-status : Text -> ProjectStatus
+  label-to-pj-status (s) =
+    if s == "Planning" then PjPlanning
+    else if s == "In Progress" then PjInProgress
+    else if s == "On Hold" then PjOnHold
+    else if s == "Complete" then PjComplete
+    else PjCancelled
+
+  project-from-jv : JsonValue -> HomeProject
+  project-from-jv (jv) = HomeProject {
+    hp-id = json-get-int jv "id" 0,
+    hp-title = json-get-str jv "title" "",
+    hp-description = json-get-str jv "desc" "",
+    hp-room = json-get-str jv "room" "",
+    hp-category = label-to-pj-cat (json-get-str jv "cat" "Repair"),
+    hp-status = label-to-pj-status (json-get-str jv "status" "Planning"),
+    hp-priority = json-get-int jv "pri" 3,
+    hp-budget-cents = json-get-int jv "budget" 0,
+    hp-spent-cents = json-get-int jv "spent" 0,
+    hp-start-date = json-get-int jv "start" 0,
+    hp-end-date = json-get-int jv "end" 0,
+    hp-created = json-get-int jv "created" 0,
+    hp-materials = parse-jv-sub jv "mats" material-from-jv
+  }
+
+  material-from-jv : JsonValue -> Material
+  material-from-jv (jv) = Material {
+    mat-name = json-get-str jv "name" "",
+    mat-quantity = json-get-int jv "qty" 1,
+    mat-cost-cents = json-get-int jv "cost" 0,
+    mat-purchased = json-get-bool jv "bought" False,
+    mat-store = json-get-str jv "store" ""
+  }
+
+  home-save : DiskFactStore, List HomeProject, Integer -> DiskFactStore
+  home-save (store) (projects) (ts) =
+    let j = json-emit (json-array (list-map project-to-jv projects))
+    in app-log-info (app-write-and-checkpoint store pk-home j ts) "home" ("Saved " & show (list-length projects) & " projects") ts
+
+  home-load : DiskFactStore -> List HomeProject
+  home-load (store) =
+    let found = app-scan-last store pk-home
+    in when found
+      is Nothing -> []
+      is Just (txt) -> parse-jv-array txt project-from-jv
+
+Section: Reading List
+
+  book-to-jv : Book -> JsonValue
+  book-to-jv (b) = json-object [
+    json-pair "id" (json-int b.bk-id),
+    json-pair "title" (json-str b.bk-title),
+    json-pair "author" (json-str b.bk-author),
+    json-pair "isbn" (json-str b.bk-isbn),
+    json-pair "genre" (json-str b.bk-genre),
+    json-pair "pages" (json-int b.bk-pages),
+    json-pair "cur" (json-int b.bk-current-page),
+    json-pair "status" (json-int (bs-to-int b.bk-status)),
+    json-pair "rating" (json-int b.bk-rating),
+    json-pair "started" (json-int b.bk-started),
+    json-pair "finished" (json-int b.bk-finished),
+    json-pair "notes" (json-str b.bk-notes),
+    json-pair "created" (json-int b.bk-created)
+  ]
+
+  bs-to-int : BookStatus -> Integer
+  bs-to-int (s) = when s
+    is BsWantToRead -> 0
+    is BsReading -> 1
+    is BsRead -> 2
+    is BsAbandoned -> 3
+
+  int-to-bs : Integer -> BookStatus
+  int-to-bs (n) =
+    if n == 0 then BsWantToRead
+    else if n == 1 then BsReading
+    else if n == 2 then BsRead
+    else BsAbandoned
+
+  book-from-jv : JsonValue -> Book
+  book-from-jv (jv) = Book {
+    bk-id = json-get-int jv "id" 0,
+    bk-title = json-get-str jv "title" "",
+    bk-author = json-get-str jv "author" "",
+    bk-isbn = json-get-str jv "isbn" "",
+    bk-genre = json-get-str jv "genre" "",
+    bk-pages = json-get-int jv "pages" 0,
+    bk-current-page = json-get-int jv "cur" 0,
+    bk-status = int-to-bs (json-get-int jv "status" 0),
+    bk-rating = json-get-int jv "rating" 0,
+    bk-started = json-get-int jv "started" 0,
+    bk-finished = json-get-int jv "finished" 0,
+    bk-notes = json-get-str jv "notes" "",
+    bk-created = json-get-int jv "created" 0
+  }
+
+  reading-save : DiskFactStore, List Book, Integer -> DiskFactStore
+  reading-save (store) (books) (ts) =
+    let j = json-emit (json-array (list-map book-to-jv books))
+    in app-log-info (app-write-and-checkpoint store pk-reading j ts) "reading" ("Saved " & show (list-length books) & " books") ts
+
+  reading-load : DiskFactStore -> List Book
+  reading-load (store) =
+    let found = app-scan-last store pk-reading
+    in when found
+      is Nothing -> []
+      is Just (txt) -> parse-jv-array txt book-from-jv
+
+Section: Todo List
+
+  todo-to-jv : TodoItem -> JsonValue
+  todo-to-jv (t) = json-object [
+    json-pair "id" (json-int t.ti-id),
+    json-pair "title" (json-str t.ti-title),
+    json-pair "desc" (json-str t.ti-description),
+    json-pair "list" (json-str t.ti-list),
+    json-pair "done" (json-bool t.ti-completed),
+    json-pair "pri" (json-int (pri-to-int t.ti-priority)),
+    json-pair "due" (json-int t.ti-due),
+    json-pair "remind" (json-int t.ti-reminder),
+    json-pair "sort" (json-int t.ti-sort),
+    json-pair "created" (json-int t.ti-created),
+    json-pair "doneAt" (json-int t.ti-completed-date),
+    json-pair "repeat" (json-str t.ti-repeat)
+  ]
+
+  todo-from-jv : JsonValue -> TodoItem
+  todo-from-jv (jv) = TodoItem {
+    ti-id = json-get-int jv "id" 0,
+    ti-title = json-get-str jv "title" "",
+    ti-description = json-get-str jv "desc" "",
+    ti-list = json-get-str jv "list" "Inbox",
+    ti-completed = json-get-bool jv "done" False,
+    ti-priority = int-to-pri (json-get-int jv "pri" 3),
+    ti-due = json-get-int jv "due" 0,
+    ti-reminder = json-get-int jv "remind" 0,
+    ti-sort = json-get-int jv "sort" 0,
+    ti-created = json-get-int jv "created" 0,
+    ti-completed-date = json-get-int jv "doneAt" 0,
+    ti-repeat = json-get-str jv "repeat" "",
+    ti-overdue = False
+  }
+
+  todo-save : DiskFactStore, List TodoItem, Integer -> DiskFactStore
+  todo-save (store) (todos) (ts) =
+    let j = json-emit (json-array (list-map todo-to-jv todos))
+    in app-log-info (app-write-and-checkpoint store pk-todo j ts) "todo" ("Saved " & show (list-length todos) & " items") ts
+
+  todo-load : DiskFactStore -> List TodoItem
+  todo-load (store) =
+    let found = app-scan-last store pk-todo
+    in when found
+      is Nothing -> []
+      is Just (txt) -> parse-jv-array txt todo-from-jv
+
+Section: JSON Array Parse Helpers
+
+  parse-jv-array : Text, (JsonValue -> a) -> List a
+  parse-jv-array (txt) (convert) =
+    let parsed = json-parse txt
+    in when parsed
+      is Nothing -> []
+      is Just (arr) -> parse-jv-items arr convert 0
+
+  parse-jv-items : JsonValue, (JsonValue -> a), Integer -> List a
+  parse-jv-items (arr) (convert) (i) =
+    let item = json-array-at arr i
+    in when item
+      is Nothing -> []
+      is Just (jv) -> convert jv :: parse-jv-items arr convert (i + 1)
+
+  parse-jv-sub : JsonValue, Text, (JsonValue -> a) -> List a
+  parse-jv-sub (parent) (key) (convert) =
+    let sub = json-get parent key
+    in when sub
+      is Nothing -> []
+      is Just (arr) -> parse-jv-items arr convert 0

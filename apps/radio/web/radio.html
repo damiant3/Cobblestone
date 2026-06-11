@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex Radio</title>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a14;--surface:#101020;--panel:#14142a;--deck:#0d0d1e;--border:#222244;--text:#d0d0e8;--dim:#5050a0;--accent:#00d4ff;--accent2:#7b61ff;--hot:#ff5f57;--green:#28c840;--yellow:#febc2e;--font:'Cascadia Code','JetBrains Mono',monospace}
+body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh;overflow:hidden}
+.app{display:flex;flex-direction:column;height:100vh}
+
+/* Header */
+.header{height:36px;display:flex;align-items:center;padding:0 12px;background:var(--surface);border-bottom:1px solid var(--border);gap:8px;flex-shrink:0}
+.logo{font-size:0.8em;font-weight:300;letter-spacing:0.25em;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hdr-sep{width:1px;height:18px;background:var(--border)}
+.on-air{padding:3px 10px;font-size:0.55em;letter-spacing:0.15em;border-radius:3px;border:1px solid var(--hot);color:var(--hot);cursor:pointer;animation:none}
+.on-air.live{background:var(--hot);color:#fff;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.7}}
+.now-playing{flex:1;text-align:center;font-size:0.58em;color:var(--dim);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.listeners{font-size:0.55em;color:var(--dim)}
+
+/* Main layout */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.decks-row{display:flex;flex:1;min-height:0}
+.deck{flex:1;display:flex;flex-direction:column;background:var(--deck);border:1px solid var(--border);margin:4px;border-radius:6px;overflow:hidden}
+.deck-head{height:24px;display:flex;align-items:center;padding:0 8px;font-size:0.55em;color:var(--dim);border-bottom:1px solid var(--border);justify-content:space-between}
+.deck-label{font-weight:bold;color:var(--accent);font-size:1.1em}
+.deck-b .deck-label{color:var(--accent2)}
+.deck-track{padding:6px 8px;font-size:0.6em}
+.deck-title{color:var(--text);font-size:1.1em;margin-bottom:2px}
+.deck-artist{color:var(--dim);font-size:0.9em}
+.waveform{height:64px;background:#08081a;border:1px solid var(--border);margin:4px 8px;border-radius:3px;position:relative;cursor:pointer;overflow:hidden}
+.waveform canvas{width:100%;height:100%}
+.waveform .playhead{position:absolute;top:0;width:2px;height:100%;background:var(--accent);pointer-events:none}
+.deck-b .waveform .playhead{background:var(--accent2)}
+.deck-controls{display:flex;align-items:center;gap:4px;padding:4px 8px;flex-wrap:wrap}
+.btn{padding:4px 8px;border:1px solid var(--border);background:transparent;color:var(--dim);font-family:var(--font);font-size:0.55em;cursor:pointer;border-radius:3px;transition:0.08s}
+.btn:hover{color:var(--text);background:rgba(255,255,255,0.04)}
+.btn.active{color:var(--accent);border-color:var(--accent)}
+.btn.play{color:var(--green);border-color:var(--green)}
+.btn.play:hover{background:rgba(40,200,64,0.1)}
+.btn.stop{color:var(--hot)}
+.deck-time{font-size:0.65em;color:var(--text);font-variant-numeric:tabular-nums;min-width:80px;text-align:center}
+.deck-bpm{font-size:0.5em;color:var(--yellow);margin-left:auto}
+
+/* Volume/EQ sliders */
+.slider-row{display:flex;align-items:center;gap:4px;padding:2px 8px;font-size:0.5em;color:var(--dim)}
+.slider-label{width:28px}
+.slider{-webkit-appearance:none;flex:1;height:3px;border-radius:2px;background:var(--border);outline:none}
+.slider::-webkit-slider-thumb{-webkit-appearance:none;width:10px;height:10px;border-radius:50%;background:var(--accent);cursor:pointer}
+.deck-b .slider::-webkit-slider-thumb{background:var(--accent2)}
+.slider-val{width:24px;text-align:right}
+
+/* Mixer strip (center) */
+.mixer{width:120px;display:flex;flex-direction:column;align-items:center;background:var(--panel);border:1px solid var(--border);margin:4px 0;border-radius:6px;padding:8px 4px;gap:6px;flex-shrink:0}
+.mixer-title{font-size:0.5em;color:var(--dim);letter-spacing:0.12em}
+.xfader{writing-mode:bt-lr;-webkit-appearance:none;width:100px;height:4px;border-radius:2px;background:linear-gradient(90deg,var(--accent),var(--accent2));outline:none}
+.xfader::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;cursor:pointer;border:2px solid var(--border)}
+.master-vol{-webkit-appearance:slider-vertical;width:4px;height:80px;background:var(--border)}
+.vu-meter{width:8px;height:80px;background:var(--border);border-radius:2px;position:relative;overflow:hidden}
+.vu-fill{position:absolute;bottom:0;width:100%;background:linear-gradient(0deg,var(--green),var(--yellow),var(--hot));transition:height 0.1s}
+.vu-row{display:flex;gap:3px;align-items:flex-end}
+
+/* Bottom panels */
+.bottom{height:200px;display:flex;border-top:1px solid var(--border);flex-shrink:0}
+.panel{flex:1;display:flex;flex-direction:column;border-right:1px solid var(--border);overflow:hidden}
+.panel:last-child{border-right:none}
+.panel-head{height:22px;display:flex;align-items:center;padding:0 8px;font-size:0.5em;color:var(--dim);letter-spacing:0.1em;border-bottom:1px solid var(--border);background:rgba(255,255,255,0.01);gap:6px}
+.panel-head .btn{font-size:0.9em;padding:2px 6px}
+.panel-body{flex:1;overflow-y:auto}
+.pl-item{display:flex;align-items:center;gap:6px;padding:3px 8px;font-size:0.55em;cursor:pointer;border-left:2px solid transparent}
+.pl-item:hover{background:rgba(255,255,255,0.03)}
+.pl-item.playing{border-left-color:var(--green);color:var(--green)}
+.pl-item .num{width:18px;color:var(--dim);text-align:right}
+.pl-item .title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pl-item .dur{color:var(--dim)}
+.pl-item .load-btn{opacity:0;font-size:0.85em;color:var(--accent);cursor:pointer}
+.pl-item:hover .load-btn{opacity:0.7}
+.drop-zone{padding:16px;text-align:center;font-size:0.55em;color:var(--dim);border:2px dashed var(--border);margin:8px;border-radius:6px;cursor:pointer}
+.drop-zone:hover,.drop-zone.drag-over{border-color:var(--accent);color:var(--accent)}
+.chat-msg{padding:2px 8px;font-size:0.52em}
+.chat-msg .user{color:var(--accent)}
+.chat-msg .text{color:var(--text)}
+.chat-input{display:flex;padding:4px;border-top:1px solid var(--border)}
+.chat-input input{flex:1;background:rgba(255,255,255,0.04);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:0.55em;padding:3px 6px;border-radius:3px;outline:none}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <span class="logo">CODEX RADIO</span>
+    <div class="hdr-sep"></div>
+    <button class="on-air" id="on-air">ON AIR</button>
+    <div class="now-playing" id="now-playing">Drop audio files to get started</div>
+    <span class="listeners" id="listeners">0 listeners</span>
+  </div>
+  <div class="main">
+    <div class="decks-row">
+      <!-- Deck A -->
+      <div class="deck deck-a" id="deck-a">
+        <div class="deck-head"><span class="deck-label">A</span><span class="deck-bpm" id="bpm-a">-- BPM</span></div>
+        <div class="deck-track"><div class="deck-title" id="title-a">No track loaded</div><div class="deck-artist" id="artist-a"></div></div>
+        <div class="waveform" id="wave-a"><canvas id="wave-canvas-a"></canvas><div class="playhead" id="playhead-a"></div></div>
+        <div class="deck-controls">
+          <button class="btn play" id="play-a">PLAY</button>
+          <button class="btn" id="cue-a">CUE</button>
+          <button class="btn" id="loop-a">LOOP</button>
+          <span class="deck-time" id="time-a">0:00 / 0:00</span>
+        </div>
+        <div class="slider-row"><span class="slider-label">VOL</span><input type="range" class="slider" id="vol-a" min="0" max="100" value="80"><span class="slider-val" id="vol-a-val">80</span></div>
+        <div class="slider-row"><span class="slider-label">LOW</span><input type="range" class="slider" id="eq-lo-a" min="-12" max="12" value="0"><span class="slider-val" id="eq-lo-a-val">0</span></div>
+        <div class="slider-row"><span class="slider-label">MID</span><input type="range" class="slider" id="eq-mid-a" min="-12" max="12" value="0"><span class="slider-val" id="eq-mid-a-val">0</span></div>
+        <div class="slider-row"><span class="slider-label">HI</span><input type="range" class="slider" id="eq-hi-a" min="-12" max="12" value="0"><span class="slider-val" id="eq-hi-a-val">0</span></div>
+      </div>
+
+      <!-- Mixer -->
+      <div class="mixer">
+        <span class="mixer-title">MIXER</span>
+        <div class="vu-row"><div class="vu-meter"><div class="vu-fill" id="vu-l" style="height:20%"></div></div><div class="vu-meter"><div class="vu-fill" id="vu-r" style="height:15%"></div></div></div>
+        <span style="font-size:0.45em;color:var(--dim)">MASTER</span>
+        <input type="range" class="slider" id="master-vol" min="0" max="100" value="80" style="width:90px">
+        <span style="font-size:0.45em;color:var(--dim)">CROSSFADER</span>
+        <input type="range" class="xfader" id="crossfader" min="0" max="100" value="50">
+        <span style="font-size:0.4em;color:var(--dim)">A &larr;&rarr; B</span>
+        <button class="btn" id="auto-xfade" style="font-size:0.45em">AUTO</button>
+      </div>
+
+      <!-- Deck B -->
+      <div class="deck deck-b" id="deck-b">
+        <div class="deck-head"><span class="deck-label">B</span><span class="deck-bpm" id="bpm-b">-- BPM</span></div>
+        <div class="deck-track"><div class="deck-title" id="title-b">No track loaded</div><div class="deck-artist" id="artist-b"></div></div>
+        <div class="waveform" id="wave-b"><canvas id="wave-canvas-b"></canvas><div class="playhead" id="playhead-b"></div></div>
+        <div class="deck-controls">
+          <button class="btn play" id="play-b">PLAY</button>
+          <button class="btn" id="cue-b">CUE</button>
+          <button class="btn" id="loop-b">LOOP</button>
+          <span class="deck-time" id="time-b">0:00 / 0:00</span>
+        </div>
+        <div class="slider-row"><span class="slider-label">VOL</span><input type="range" class="slider" id="vol-b" min="0" max="100" value="80"><span class="slider-val" id="vol-b-val">80</span></div>
+        <div class="slider-row"><span class="slider-label">LOW</span><input type="range" class="slider" id="eq-lo-b" min="-12" max="12" value="0"><span class="slider-val" id="eq-lo-b-val">0</span></div>
+        <div class="slider-row"><span class="slider-label">MID</span><input type="range" class="slider" id="eq-mid-b" min="-12" max="12" value="0"><span class="slider-val" id="eq-mid-b-val">0</span></div>
+        <div class="slider-row"><span class="slider-label">HI</span><input type="range" class="slider" id="eq-hi-b" min="-12" max="12" value="0"><span class="slider-val" id="eq-hi-b-val">0</span></div>
+      </div>
+    </div>
+
+    <!-- Bottom: Playlist + Library + Chat -->
+    <div class="bottom">
+      <div class="panel">
+        <div class="panel-head">PLAYLIST<span style="flex:1"></span><button class="btn" id="clear-pl">Clear</button></div>
+        <div class="panel-body" id="playlist"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">LIBRARY<span style="flex:1"></span><span id="lib-count" style="color:var(--dim)">0 tracks</span></div>
+        <div class="panel-body" id="library">
+          <div class="drop-zone" id="drop-zone">Drop audio files here or click to browse<br><input type="file" id="file-input" multiple accept="audio/*" style="display:none"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">CHAT</div>
+        <div class="panel-body" id="chat-log"></div>
+        <div class="chat-input"><input id="chat-input" placeholder="Type a message..."></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Codex Radio — DJ Console with Web Audio API
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const masterGain = audioCtx.createGain();
+masterGain.gain.value = 0.8;
+masterGain.connect(audioCtx.destination);
+
+// Analyser for VU meters
+const analyserL = audioCtx.createAnalyser(); analyserL.fftSize = 256;
+const analyserR = audioCtx.createAnalyser(); analyserR.fftSize = 256;
+const splitter = audioCtx.createChannelSplitter(2);
+masterGain.connect(splitter);
+splitter.connect(analyserL, 0);
+splitter.connect(analyserR, 1);
+
+class Deck {
+  constructor(id) {
+    this.id = id;
+    this.gain = audioCtx.createGain();
+    this.eqLow = audioCtx.createBiquadFilter(); this.eqLow.type = 'lowshelf'; this.eqLow.frequency.value = 200;
+    this.eqMid = audioCtx.createBiquadFilter(); this.eqMid.type = 'peaking'; this.eqMid.frequency.value = 1000; this.eqMid.Q.value = 1;
+    this.eqHigh = audioCtx.createBiquadFilter(); this.eqHigh.type = 'highshelf'; this.eqHigh.frequency.value = 5000;
+    this.eqLow.connect(this.eqMid); this.eqMid.connect(this.eqHigh); this.eqHigh.connect(this.gain);
+    this.gain.connect(masterGain);
+    this.source = null; this.buffer = null; this.startTime = 0; this.pauseOffset = 0;
+    this.playing = false; this.waveformData = null; this.duration = 0;
+    this.title = ''; this.artist = ''; this.looping = false;
+  }
+
+  async load(file) {
+    const arrayBuf = await file.arrayBuffer();
+    this.buffer = await audioCtx.decodeAudioData(arrayBuf);
+    this.duration = this.buffer.duration;
+    this.pauseOffset = 0;
+    this.title = file.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
+    this.artist = '';
+    this.buildWaveform();
+    this.updateUI();
+  }
+
+  buildWaveform() {
+    if (!this.buffer) return;
+    const data = this.buffer.getChannelData(0);
+    const canvas = document.getElementById('wave-canvas-' + this.id);
+    const W = canvas.parentElement.clientWidth * devicePixelRatio;
+    const H = canvas.parentElement.clientHeight * devicePixelRatio;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    const step = Math.max(1, Math.floor(data.length / W));
+    const color = this.id === 'a' ? '#00d4ff' : '#7b61ff';
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = color;
+    for (let i = 0; i < W; i++) {
+      let min = 1, max = -1;
+      for (let j = 0; j < step; j++) {
+        const v = data[i * step + j] || 0;
+        if (v < min) min = v; if (v > max) max = v;
+      }
+      const y1 = (1 + min) * H / 2, y2 = (1 + max) * H / 2;
+      ctx.globalAlpha = 0.6;
+      ctx.fillRect(i, y1, 1, y2 - y1 || 1);
+    }
+  }
+
+  play() {
+    if (!this.buffer) return;
+    if (this.source) { try { this.source.stop(); } catch(e) {} }
+    audioCtx.resume();
+    this.source = audioCtx.createBufferSource();
+    this.source.buffer = this.buffer;
+    this.source.loop = this.looping;
+    this.source.connect(this.eqLow);
+    this.source.start(0, this.pauseOffset);
+    this.startTime = audioCtx.currentTime - this.pauseOffset;
+    this.playing = true;
+    this.source.onended = () => { if (this.playing && !this.looping) { this.playing = false; this.pauseOffset = 0; autoNext(this.id); } };
+  }
+
+  pause() {
+    if (!this.playing) return;
+    this.pauseOffset = audioCtx.currentTime - this.startTime;
+    if (this.source) { try { this.source.stop(); } catch(e) {} }
+    this.playing = false;
+  }
+
+  cue() {
+    this.pauseOffset = 0;
+    if (this.playing) { this.pause(); this.play(); }
+  }
+
+  toggleLoop() {
+    this.looping = !this.looping;
+    if (this.source) this.source.loop = this.looping;
+  }
+
+  getCurrentTime() {
+    if (this.playing) return audioCtx.currentTime - this.startTime;
+    return this.pauseOffset;
+  }
+
+  setVolume(v) { this.gain.gain.value = v / 100; }
+  setEqLow(v) { this.eqLow.gain.value = v; }
+  setEqMid(v) { this.eqMid.gain.value = v; }
+  setEqHigh(v) { this.eqHigh.gain.value = v; }
+
+  updateUI() {
+    document.getElementById('title-' + this.id).textContent = this.title || 'No track loaded';
+    document.getElementById('artist-' + this.id).textContent = this.artist;
+  }
+}
+
+const deckA = new Deck('a'), deckB = new Deck('b');
+let library = [], playlist = [], broadcasting = false;
+
+function formatTime(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function updateCrossfader() {
+  const v = document.getElementById('crossfader').value / 100;
+  const volA = Math.cos(v * Math.PI / 2);
+  const volB = Math.sin(v * Math.PI / 2);
+  deckA.gain.gain.value = volA * (document.getElementById('vol-a').value / 100);
+  deckB.gain.gain.value = volB * (document.getElementById('vol-b').value / 100);
+}
+
+function autoNext(deckId) {
+  if (playlist.length === 0) return;
+  const entry = playlist.shift();
+  const deck = deckId === 'a' ? deckA : deckB;
+  deck.load(entry.file).then(() => { deck.play(); renderPlaylist(); });
+}
+
+// File handling
+function addFiles(files) {
+  for (const f of files) {
+    if (!f.type.startsWith('audio/')) continue;
+    library.push({name: f.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '), file: f, duration: 0});
+    playlist.push({name: f.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '), file: f});
+  }
+  renderLibrary();
+  renderPlaylist();
+  document.getElementById('lib-count').textContent = library.length + ' tracks';
+}
+
+function renderLibrary() {
+  const el = document.getElementById('library');
+  const dz = document.getElementById('drop-zone');
+  el.innerHTML = '';
+  if (dz) el.appendChild(dz);
+  library.forEach((t, i) => {
+    const div = document.createElement('div');
+    div.className = 'pl-item';
+    div.innerHTML = `<span class="num">${i+1}</span><span class="title">${t.name}</span>
+      <span class="load-btn" data-deck="a" data-idx="${i}">A</span>
+      <span class="load-btn" data-deck="b" data-idx="${i}">B</span>`;
+    div.querySelectorAll('.load-btn').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const deck = btn.dataset.deck === 'a' ? deckA : deckB;
+        deck.load(library[btn.dataset.idx].file).then(() => deck.updateUI());
+      });
+    });
+    div.addEventListener('click', () => {
+      playlist.push({name: t.name, file: t.file});
+      renderPlaylist();
+    });
+    el.appendChild(div);
+  });
+}
+
+function renderPlaylist() {
+  const el = document.getElementById('playlist');
+  el.innerHTML = '';
+  playlist.forEach((t, i) => {
+    const div = document.createElement('div');
+    div.className = 'pl-item';
+    div.innerHTML = `<span class="num">${i+1}</span><span class="title">${t.name}</span>`;
+    el.appendChild(div);
+  });
+}
+
+// Drop zone
+const dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('click', () => document.getElementById('file-input').click());
+document.getElementById('file-input').addEventListener('change', e => addFiles(e.target.files));
+document.body.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+document.body.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+document.body.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); addFiles(e.dataTransfer.files); });
+
+// Deck controls
+document.getElementById('play-a').addEventListener('click', () => { if (deckA.playing) deckA.pause(); else deckA.play(); });
+document.getElementById('play-b').addEventListener('click', () => { if (deckB.playing) deckB.pause(); else deckB.play(); });
+document.getElementById('cue-a').addEventListener('click', () => deckA.cue());
+document.getElementById('cue-b').addEventListener('click', () => deckB.cue());
+document.getElementById('loop-a').addEventListener('click', () => { deckA.toggleLoop(); document.getElementById('loop-a').classList.toggle('active'); });
+document.getElementById('loop-b').addEventListener('click', () => { deckB.toggleLoop(); document.getElementById('loop-b').classList.toggle('active'); });
+
+// Volume + EQ
+['a','b'].forEach(d => {
+  document.getElementById('vol-'+d).addEventListener('input', e => { document.getElementById('vol-'+d+'-val').textContent=e.target.value; updateCrossfader(); });
+  document.getElementById('eq-lo-'+d).addEventListener('input', e => { document.getElementById('eq-lo-'+d+'-val').textContent=e.target.value; (d==='a'?deckA:deckB).setEqLow(+e.target.value); });
+  document.getElementById('eq-mid-'+d).addEventListener('input', e => { document.getElementById('eq-mid-'+d+'-val').textContent=e.target.value; (d==='a'?deckA:deckB).setEqMid(+e.target.value); });
+  document.getElementById('eq-hi-'+d).addEventListener('input', e => { document.getElementById('eq-hi-'+d+'-val').textContent=e.target.value; (d==='a'?deckA:deckB).setEqHigh(+e.target.value); });
+});
+
+document.getElementById('crossfader').addEventListener('input', updateCrossfader);
+document.getElementById('master-vol').addEventListener('input', e => { masterGain.gain.value = e.target.value / 100; });
+
+// On Air
+document.getElementById('on-air').addEventListener('click', () => {
+  broadcasting = !broadcasting;
+  document.getElementById('on-air').classList.toggle('live');
+  document.getElementById('on-air').textContent = broadcasting ? 'LIVE' : 'ON AIR';
+});
+
+// Auto crossfade
+let autoXfading = false, xfadeDir = 1, xfadeTimer = null;
+document.getElementById('auto-xfade').addEventListener('click', () => {
+  autoXfading = !autoXfading;
+  document.getElementById('auto-xfade').classList.toggle('active');
+  if (autoXfading) {
+    xfadeTimer = setInterval(() => {
+      const el = document.getElementById('crossfader');
+      let v = +el.value + xfadeDir;
+      if (v >= 100 || v <= 0) xfadeDir *= -1;
+      el.value = Math.max(0, Math.min(100, v));
+      updateCrossfader();
+    }, 80);
+  } else { clearInterval(xfadeTimer); }
+});
+
+// Waveform click to seek
+['a','b'].forEach(d => {
+  document.getElementById('wave-'+d).addEventListener('click', e => {
+    const deck = d === 'a' ? deckA : deckB;
+    if (!deck.buffer) return;
+    const rect = e.target.getBoundingClientRect();
+    const frac = (e.clientX - rect.left) / rect.width;
+    deck.pauseOffset = frac * deck.duration;
+    if (deck.playing) { deck.pause(); deck.play(); }
+  });
+});
+
+// Clear playlist
+document.getElementById('clear-pl').addEventListener('click', () => { playlist = []; renderPlaylist(); });
+
+// Chat
+document.getElementById('chat-input').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const input = e.target;
+  if (!input.value.trim()) return;
+  const msg = document.createElement('div');
+  msg.className = 'chat-msg';
+  msg.innerHTML = `<span class="user">DJ: </span><span class="text">${input.value}</span>`;
+  document.getElementById('chat-log').appendChild(msg);
+  document.getElementById('chat-log').scrollTop = 99999;
+  input.value = '';
+});
+
+// Animation loop — update playheads, times, VU meters
+function tick() {
+  ['a','b'].forEach(d => {
+    const deck = d === 'a' ? deckA : deckB;
+    const t = deck.getCurrentTime();
+    const dur = deck.duration || 1;
+    document.getElementById('playhead-' + d).style.left = (t / dur * 100) + '%';
+    document.getElementById('time-' + d).textContent = formatTime(t) + ' / ' + formatTime(dur);
+    document.getElementById('play-' + d).textContent = deck.playing ? 'PAUSE' : 'PLAY';
+  });
+
+  // VU meters
+  const bufL = new Uint8Array(analyserL.frequencyBinCount);
+  const bufR = new Uint8Array(analyserR.frequencyBinCount);
+  analyserL.getByteFrequencyData(bufL);
+  analyserR.getByteFrequencyData(bufR);
+  let sumL = 0, sumR = 0;
+  for (let i = 0; i < bufL.length; i++) { sumL += bufL[i]; sumR += bufR[i]; }
+  document.getElementById('vu-l').style.height = (sumL / bufL.length / 255 * 100) + '%';
+  document.getElementById('vu-r').style.height = (sumR / bufR.length / 255 * 100) + '%';
+
+  // Now playing
+  const cf = document.getElementById('crossfader').value;
+  const np = cf < 30 ? (deckA.title || '---') : cf > 70 ? (deckB.title || '---') : (deckA.title || '?') + ' x ' + (deckB.title || '?');
+  document.getElementById('now-playing').textContent = (broadcasting ? 'LIVE: ' : '') + np;
+
+  requestAnimationFrame(tick);
+}
+tick();
+</script>
+</body>
+</html>

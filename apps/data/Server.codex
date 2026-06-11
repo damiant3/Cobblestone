@@ -22,7 +22,7 @@ Section: Server State
   DbServer = record {
     db-catalog : Catalog,
     db-txn-mgr : TxnManager,
-    db-lock-table : LockTable,
+    db-lock-table : LockState,
     db-sessions : HamtMap SessionState,
     db-next-session : Integer,
     db-name : Text
@@ -136,60 +136,5 @@ Section: Statistics
     & " " & txn-stats (srv.db-txn-mgr)
     & " " & lock-stats (srv.db-lock-table)
     & " sessions=" & show (hamt-size (srv.db-sessions))
-
-Section: Demo Entry Point
-
-  opening : [Console] Nothing = act
-    let srv = db-server-new "codex"
-    in let emp-schema = table-def "employees" [
-      col-def-not-null "id" ColInteger,
-      col-def-not-null "name" ColText,
-      col-def "department" ColText,
-      col-def "salary" ColInteger
-    ]
-    in let srv2 = db-create-table srv emp-schema
-    in let schema = table-schema emp-schema
-    in let row1 = row-new schema [ValInteger 1, ValText "Alice", ValText "Engineering", ValInteger 95000]
-    in let row2 = row-new schema [ValInteger 2, ValText "Bob", ValText "Engineering", ValInteger 88000]
-    in let row3 = row-new schema [ValInteger 3, ValText "Carol", ValText "Sales", ValInteger 72000]
-    in let row4 = row-new schema [ValInteger 4, ValText "Dave", ValText "Sales", ValInteger 68000]
-    in let srv3 = db-insert srv2 "employees" row1
-    in let srv4 = db-insert srv3 "employees" row2
-    in let srv5 = db-insert srv4 "employees" row3
-    in let srv6 = db-insert srv5 "employees" row4
-    in let scan-result = execute (srv6.db-catalog) (RelScan "employees")
-    in let filter-result = execute (srv6.db-catalog) (RelFilter (RelScan "employees") (PredColCmp "department" CmpEq (ValText "Engineering")))
-    in let group-result = execute (srv6.db-catalog) (RelGroup (RelScan "employees") ["department"] [AggSpec { agg-func = AggCount, agg-alias = "count" }, AggSpec { agg-func = AggSum "salary", agg-alias = "total-salary" }])
-    in print-line-uni ("Codex DB v0.1")
-    in print-line-uni (db-stats srv6)
-    in print-line-uni ("scan: " & show (scan-result.qr-count) & " rows")
-    in print-line-uni ("filter(Engineering): " & show (filter-result.qr-count) & " rows")
-    in print-line-uni ("group-by(department): " & show (group-result.qr-count) & " groups")
-    in print-line-uni (db-format-rows scan-result)
-    in print-line-uni (db-format-rows filter-result)
-    in print-line-uni (db-format-rows group-result)
-  end
-
-  db-format-rows : QueryResult -> Text
-  db-format-rows (qr) =
-    if qr.qr-ok == False then "ERROR: " & qr.qr-msg
-    else db-fmt-loop (qr.qr-rows) 0 (qr.qr-count) ""
-
-  db-fmt-loop : List RowData, Integer, Integer, Text -> Text
-  db-fmt-loop (rows) (i) (len) (acc) =
-    if i >= len then acc
-    else let row = list-at rows i
-    in let line = db-fmt-row row
-    in db-fmt-loop rows (i + 1) len (acc & line & "\n")
-
-  db-fmt-row : RowData -> Text
-  db-fmt-row (row) = db-fmt-vals (row.values) 0 (list-length (row.values)) ""
-
-  db-fmt-vals : List ColumnValue, Integer, Integer, Text -> Text
-  db-fmt-vals (vals) (i) (len) (acc) =
-    if i >= len then acc
-    else let v = list-at vals i
-    in let sep = if i > 0 then " | " else ""
-    in db-fmt-vals vals (i + 1) len (acc & sep & val-to-text v)
 
 Page 1

@@ -1,0 +1,285 @@
+Chapter: HelmTypes
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+
+ Core data types for Helm — scalable chat (The River) and
+ hierarchical voice (The Bridge).
+
+Section: Chat Types
+
+  Message = record {
+    msg-id : Integer,
+    msg-author : Text,
+    msg-content : Text,
+    msg-timestamp : Integer,
+    msg-room : Text
+  }
+
+  Sentiment =
+    | SentPositive (Integer)
+    | SentNegative (Integer)
+    | SentNeutral
+    | SentSplit (Integer) (Integer)
+    | SentMixed
+
+  sentiment-label : Sentiment -> Text
+  sentiment-label (s) = when s
+    is SentPositive (n) -> show n & "% positive"
+    is SentNegative (n) -> show n & "% negative"
+    is SentNeutral -> "neutral"
+    is SentSplit (pos) (neg) -> show pos & " for / " & show neg & " against"
+    is SentMixed -> "mixed"
+
+  AttentionScore = record {
+    as-participants : Integer,
+    as-clicks : Integer,
+    as-recency : Integer,
+    as-velocity : Integer
+  }
+
+  attention-total : AttentionScore -> Integer
+  attention-total (a) =
+    a.as-participants * 10 + a.as-clicks * 5 + a.as-recency * 3 + a.as-velocity * 2
+
+  Current = record {
+    cur-id : Integer,
+    cur-topic : Text,
+    cur-summary : Text,
+    cur-messages : List Message,
+    cur-count : Integer,
+    cur-attention : AttentionScore,
+    cur-sentiment : Sentiment,
+    cur-sub-currents : List Integer,
+    cur-sub-count : Integer,
+    cur-started : Integer,
+    cur-last-active : Integer,
+    cur-decay : Integer
+  }
+
+  TimeBand = record {
+    tb-start : Integer,
+    tb-end : Integer,
+    tb-currents : List Integer,
+    tb-current-count : Integer,
+    tb-participant-count : Integer
+  }
+
+Section: Voice Types
+
+  Rank =
+    | Admiral
+    | Captain
+    | Lieutenant
+    | Crew
+
+  rank-label : Rank -> Text
+  rank-label (r) = when r
+    is Admiral -> "Admiral"
+    is Captain -> "Captain"
+    is Lieutenant -> "Lieutenant"
+    is Crew -> "Crew"
+
+  rank-ordinal : Rank -> Integer
+  rank-ordinal (r) = when r
+    is Admiral -> 0
+    is Captain -> 1
+    is Lieutenant -> 2
+    is Crew -> 3
+
+  rank-color : Rank -> Integer
+  rank-color (r) = when r
+    is Admiral -> 16766720
+    is Captain -> 15763518
+    is Lieutenant -> 5809919
+    is Crew -> 9147550
+
+  RankTemplate =
+    | TplNaval
+    | TplMilitary
+    | TplCorporate
+    | TplGaming
+    | TplEvent
+
+  template-labels : RankTemplate -> List Text
+  template-labels (t) = when t
+    is TplNaval -> ["Admiral", "Captain", "Crew"]
+    is TplMilitary -> ["Commander", "Squad Lead", "Soldier"]
+    is TplCorporate -> ["Director", "Manager", "Team"]
+    is TplGaming -> ["Raid Lead", "Group Lead", "Player"]
+    is TplEvent -> ["Host", "Moderator", "Attendee"]
+
+  VoiceNode = record {
+    vn-id : Text,
+    vn-name : Text,
+    vn-rank : Rank,
+    vn-parent : Text,
+    vn-children : List Text,
+    vn-child-count : Integer,
+    vn-muted : Boolean,
+    vn-listening-up : Boolean,
+    vn-speaking : Boolean
+  }
+
+  JointChannel = record {
+    jc-id : Integer,
+    jc-name : Text,
+    jc-wings : List Text,
+    jc-wing-count : Integer,
+    jc-created-by : Text,
+    jc-active : Boolean,
+    jc-started : Integer
+  }
+
+  EmergencyBroadcast = record {
+    eb-id : Integer,
+    eb-speaker : Text,
+    eb-message : Text,
+    eb-timestamp : Integer,
+    eb-reached : List Text,
+    eb-reached-count : Integer
+  }
+
+Section: Voice Activity
+
+  VoiceActivity =
+    | VaSilent
+    | VaSpeaking
+    | VaHighPriority
+    | VaEmergency
+
+  va-color : VoiceActivity -> Integer
+  va-color (a) = when a
+    is VaSilent -> 4738904
+    is VaSpeaking -> 4176208
+    is VaHighPriority -> 16766720
+    is VaEmergency -> 16273737
+
+Section: Room
+
+  RoomMode =
+    | RmSequential
+    | RmClustered
+
+  Room = record {
+    rm-id : Text,
+    rm-name : Text,
+    rm-mode : RoomMode,
+    rm-currents : List Current,
+    rm-current-count : Integer,
+    rm-time-bands : List TimeBand,
+    rm-band-count : Integer,
+    rm-message-count : Integer,
+    rm-participant-count : Integer,
+    rm-band-minutes : Integer,
+    rm-cluster-threshold : Integer,
+    rm-next-current-id : Integer,
+    rm-next-msg-id : Integer,
+    rm-senders : List Text,
+    rm-sender-count : Integer,
+    rm-pinned-currents : List Integer,
+    rm-muted-currents : List Integer
+  }
+
+Section: Room Settings
+
+  RoomSettings = record {
+    rs-cluster-threshold : Integer,
+    rs-band-minutes : Integer,
+    rs-mode-switch-msg-rate : Integer,
+    rs-mode-switch-min-senders : Integer,
+    rs-decay-fast-sec : Integer,
+    rs-decay-slow-sec : Integer,
+    rs-max-currents : Integer,
+    rs-max-messages-per-current : Integer
+  }
+
+  rs-default : RoomSettings
+  rs-default = RoomSettings {
+    rs-cluster-threshold = 30,
+    rs-band-minutes = 5,
+    rs-mode-switch-msg-rate = 10,
+    rs-mode-switch-min-senders = 10,
+    rs-decay-fast-sec = 30,
+    rs-decay-slow-sec = 300,
+    rs-max-currents = 100,
+    rs-max-messages-per-current = 500
+  }
+
+  rs-live-event : RoomSettings
+  rs-live-event = RoomSettings {
+    rs-cluster-threshold = 20,
+    rs-band-minutes = 1,
+    rs-mode-switch-msg-rate = 5,
+    rs-mode-switch-min-senders = 5,
+    rs-decay-fast-sec = 15,
+    rs-decay-slow-sec = 120,
+    rs-max-currents = 50,
+    rs-max-messages-per-current = 1000
+  }
+
+  rs-meeting : RoomSettings
+  rs-meeting = RoomSettings {
+    rs-cluster-threshold = 50,
+    rs-band-minutes = 15,
+    rs-mode-switch-msg-rate = 20,
+    rs-mode-switch-min-senders = 15,
+    rs-decay-fast-sec = 60,
+    rs-decay-slow-sec = 600,
+    rs-max-currents = 200,
+    rs-max-messages-per-current = 200
+  }
+
+Section: Voice Settings
+
+  VoiceSettings = record {
+    vs-template : RankTemplate,
+    vs-vol-commander : Integer,
+    vs-vol-peer : Integer,
+    vs-vol-squad : Integer,
+    vs-vol-joint : Integer,
+    vs-vol-emergency : Integer,
+    vs-vol-listen-up : Integer,
+    vs-emergency-duration-sec : Integer,
+    vs-require-request-above : Rank
+  }
+
+  vs-default : VoiceSettings
+  vs-default = VoiceSettings {
+    vs-template = TplNaval,
+    vs-vol-commander = 100,
+    vs-vol-peer = 80,
+    vs-vol-squad = 90,
+    vs-vol-joint = 70,
+    vs-vol-emergency = 100,
+    vs-vol-listen-up = 60,
+    vs-emergency-duration-sec = 10,
+    vs-require-request-above = Captain
+  }
+
+Section: Compose State
+
+  ComposeState = record {
+    cmp-text : Text,
+    cmp-cursor : Integer,
+    cmp-active : Boolean
+  }
+
+  compose-new : ComposeState
+  compose-new = ComposeState { cmp-text = "", cmp-cursor = 0, cmp-active = False }
+
+  compose-insert : ComposeState, Text -> ComposeState
+  compose-insert (c) (ch) =
+    let new-text = text-take c.cmp-text c.cmp-cursor & ch & text-drop c.cmp-text c.cmp-cursor
+    in ComposeState { cmp-text = new-text, cmp-cursor = c.cmp-cursor + 1, cmp-active = True }
+
+  compose-backspace : ComposeState -> ComposeState
+  compose-backspace (c) =
+    if c.cmp-cursor == 0 then c
+    else let new-text = text-take c.cmp-text (c.cmp-cursor - 1) & text-drop c.cmp-text c.cmp-cursor
+    in ComposeState { cmp-text = new-text, cmp-cursor = c.cmp-cursor - 1, cmp-active = True }
+
+  compose-submit : ComposeState -> ComposeState
+  compose-submit (c) = ComposeState { cmp-text = "", cmp-cursor = 0, cmp-active = False }
+
+  compose-content : ComposeState -> Text
+  compose-content (c) = c.cmp-text

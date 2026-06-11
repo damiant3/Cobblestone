@@ -3,16 +3,15 @@ Chapter: Engine
   cites CodexMagic chapter Card
   cites CodexMagic chapter GameState
   cites CodexMagic chapter Turn
-  cites CodexMagic chapter Stack
   cites CodexMagic chapter Combat
   cites CodexMagic chapter Action
   cites CodexMagic chapter General
   cites CodexMagic chapter Supervisor
 
  Top-level game loop. Drives the turn state machine, dispatches
- phase actions through the AI Supervisor, calls SBA checks, and
- resolves the stack. Each turn: untap, upkeep, draw, main, combat,
- main, end, cleanup. Both players are AI-driven via their Generals.
+ phase actions through the AI Supervisor. Each turn: upkeep (gain
+ ray, untap gems, refresh prismatic), draw, main, combat, main,
+ end, cleanup. Both players are AI-driven via their Generals.
 
  We say:
 
@@ -34,28 +33,28 @@ Section: Game Loop
     in let gen-template = get-general gs player
     in let p = get-player gs player
     in let stance = effective-stance posture-default gen-template (p.general)
-    in let gs1 = do-untap gs
+    in let gs1 = do-upkeep gs
     in let gs2 = do-draw gs1
-    in let gs3 = ai-play-land gs2 player
-    in let gs4 = ai-tap-lands gs3 player
-    in let gs5 = ai-cast-spells gs4 player stance
-    in let gs6 = ai-combat-phase gs5 player stance gen-template
-    in let gs7 = ai-tap-lands gs6 player
-    in let gs8 = ai-cast-spells gs7 player stance
-    in do-cleanup gs8
+    in let gs3 = ai-play-gem gs2 player
+    in let gs4 = ai-cast-spells gs3 player stance
+    in let gs5 = ai-combat-phase gs4 player stance gen-template
+    in let gs6 = ai-cast-spells gs5 player stance
+    in do-cleanup gs6
 
-Section: Untap
+Section: Upkeep
 
-  do-untap : GameState -> GameState
-  do-untap (gs) =
+  do-upkeep : GameState -> GameState
+  do-upkeep (gs) =
     let p = get-player gs (gs.active-player)
-    in let p2 = player-reset-land-drop p
-    in let p3 = PlayerState { general = general-untap (p2.general), mana-pool = p2.mana-pool, library = p2.library, hand = p2.hand, graveyard = p2.graveyard, exile = p2.exile, land-drop-used = p2.land-drop-used, land-drops-per-turn = p2.land-drops-per-turn }
-    in let gs2 = set-player gs (gs.active-player) p3
+    in let p2 = player-reset-gem-drop p
+    in let p3 = player-gain-ray p2
+    in let p4 = player-refresh-prismatic p3
+    in let p5 = PlayerState { general = general-untap (p4.general), prismatic = p4.prismatic, library = p4.library, hand = p4.hand, graveyard = p4.graveyard, exile = p4.exile, gem-drop-used = p4.gem-drop-used }
+    in let gs2 = set-player gs (gs.active-player) p5
     in untap-all-permanents gs2 (gs.active-player)
 
   untap-all-permanents : GameState, Integer -> GameState
-  untap-all-permanents (gs) (player-idx) = GameState { players = gs.players, generals = gs.generals, battlefield = untap-player-perms (gs.battlefield) player-idx 0 (list-length (gs.battlefield)) [], stack = gs.stack, active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
+  untap-all-permanents (gs) (player-idx) = GameState { players = gs.players, generals = gs.generals, battlefield = untap-player-perms (gs.battlefield) player-idx 0 (list-length (gs.battlefield)) [], active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
 
   untap-player-perms : List Permanent, Integer, Integer, Integer, List Permanent -> List Permanent
   untap-player-perms (perms) (player-idx) (i) (len) (acc) =
@@ -77,16 +76,10 @@ Section: Cleanup
 
   do-cleanup : GameState -> GameState
   do-cleanup (gs) =
-    let gs2 = clear-all-damage gs
-    in let p0 = get-player gs2 0
-    in let p1 = get-player gs2 1
-    in let p0b = player-empty-pool p0
-    in let p1b = player-empty-pool p1
-    in let gs3 = set-player gs2 0 p0b
-    in set-player gs3 1 p1b
+    clear-all-damage gs
 
   clear-all-damage : GameState -> GameState
-  clear-all-damage (gs) = GameState { players = clear-general-damage (gs.players) 0 (list-length (gs.players)) [], generals = gs.generals, battlefield = clear-perm-damage (gs.battlefield) 0 (list-length (gs.battlefield)) [], stack = gs.stack, active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
+  clear-all-damage (gs) = GameState { players = clear-general-damage (gs.players) 0 (list-length (gs.players)) [], generals = gs.generals, battlefield = clear-perm-damage (gs.battlefield) 0 (list-length (gs.battlefield)) [], active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
 
   clear-perm-damage : List Permanent, Integer, Integer, List Permanent -> List Permanent
   clear-perm-damage (perms) (i) (len) (acc) =
@@ -98,7 +91,7 @@ Section: Cleanup
   clear-general-damage (players) (i) (len) (acc) =
     if i >= len then acc
     else let p = list-at players i
-    in let p2 = PlayerState { general = general-clear-damage (p.general), mana-pool = p.mana-pool, library = p.library, hand = p.hand, graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in let p2 = PlayerState { general = general-clear-damage (p.general), prismatic = p.prismatic, library = p.library, hand = p.hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used }
     in clear-general-damage players (i + 1) len (list-push acc p2)
 
 Page 1

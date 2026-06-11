@@ -7,7 +7,7 @@ and platform constraints for the Codex bare-metal compiler.
 
 The bare-metal system occupies a single flat physical address space.
 All addresses are identity-mapped (virtual = physical). The single
-governing constant is `bare-metal-ram-size` (2 GB) in
+governing constant is `bare-metal-ram-size` (3 GB) in
 `codex/Emit/X86_64State.codex`. Every other memory value derives from
 it.
 
@@ -29,7 +29,7 @@ Address              Size       Region
      │                           (phase decks + bivy, ~150-200 MB for selfhost)
      │
      │                           ◄── Stack grows DOWN
-0x80000000 (2 GB)     ────      Stack top (bare-metal-stack-top = ram-size)
+0xC0000000 (3 GB)     ────      Stack top (bare-metal-stack-top = ram-size)
 ```
 
 ### Kernel Metadata Cells (0x7000 region)
@@ -81,8 +81,8 @@ Defined in `codex/Emit/X86_64State.codex`:
 |----------|-------|---------|
 | bare-metal-load-addr | 0x100000 (1 MB) | Binary load address |
 | bare-metal-heap-base | 0x600000 (6 MB) | R10 initial value |
-| bare-metal-ram-size | 0x80000000 (2 GB) | Total physical memory |
-| bare-metal-stack-top | 0x80000000 (2 GB) | RSP initial value |
+| bare-metal-ram-size | 0xC0000000 (3 GB) | Total physical memory |
+| bare-metal-stack-top | 0xC0000000 (3 GB) | RSP initial value |
 
 The CDX header heap field and ELF segment memsz are both computed as
 `bare-metal-ram-size - bare-metal-heap-base` in
@@ -310,10 +310,10 @@ base     Phase decks (sealed, read-only)         Bivy
           │  in emit-all-defs loop               │
           └──────────────────────────────────────┘
                               ▲
-                              │ gap (~1.8 GB for 2 GB RAM)
+                              │ gap (~2.8 GB for 3 GB RAM)
                               ▼
           ┌──────────────────────────────────────┐
-0x80000000│  Stack top (grows downward)          │
+0xC0000000│  Stack top (grows downward)          │
           │  ~1 MB typical usage for selfhost    │
           └──────────────────────────────────────┘
 ```
@@ -400,7 +400,7 @@ PE, GPT/FAT images) are produced by plug CDX binaries in `codex/plugs/`.
 ## Heap and Stack
 
 Heap and stack share the arena between `bare-metal-heap-base` (6 MB) and
-`bare-metal-stack-top` (= ram-size, 2 GB). The heap grows upward via
+`bare-metal-stack-top` (= ram-size, 3 GB). The heap grows upward via
 register R10; the stack grows downward via RSP. See the Register
 Convention table above for the full register map.
 
@@ -468,8 +468,12 @@ physical addresses in the MMIO window are not usable as RAM. RAM above
 
 Codex does not currently support non-contiguous physical memory or
 addresses above 4 GB. The practical ceiling for `bare-metal-ram-size`
-is approximately 3 GB (0xC0000000). Setting it to 2 GB (0x80000000)
-avoids the issue entirely with ample margin.
+is 3 GB (0xC0000000) -- and as of the 2026-06-10 memory ceiling raise,
+ram-size sits exactly at that ceiling. There is no margin left in the
+contiguous low map: reaching the real 8 GB+ on modern machines
+requires non-contiguous physical memory support (relocated RAM above
+0x100000000), tracked in docs/PM/BACKLOG.md. Low-RAM (sub-3GB)
+machines are a USB-validation concern, also tracked there.
 
 ### Code Buffer Ceiling
 
@@ -485,3 +489,33 @@ The stack starts at `bare-metal-stack-top` and grows downward. Typical
 self-compilation uses approximately 1 MB of stack. The prologue
 collision check (`cmp rsp, r10`) is the only protection against stack
 overflow. There is no guard page.
+
+## Codegen Quality vs C and the JITs
+
+Function-body x86-64 instruction counts for the four micro-benchmarks
+in `bench/` (build + compare with `bench/compare.ps1`). Measured
+2026-06-10, seed E9E869A8. Full optimization history and per-CL
+breakdown: `docs/Designs/Compiler/Active/CodegenAnalysis.md`.
+
+| Bench | Codex | C /Od | C /O2 | C# JIT | F# JIT |
+|-------|------:|------:|------:|-------:|-------:|
+| fib   | 23    | 19    | 20    | 21     | 21     |
+| fact  | 17    | 16    | 15    | 16     | 15     |
+| gcd   | 23    | 18    | 14    | 11     | 9      |
+| sum   | 14    | 20    | 23    | 9      | 4      |
+
+Campaign start (CL 3091): fib 107, fact 79, gcd 79, sum 82. The
+structural changes that closed the gap, in order: destination-driven
+emission, immediate operands, TCO parallel-move arg shuffle (sum loop
+at F# JIT density: add/lea/jmp), R8/R9-staged binary operands (binary
+expressions consume zero locals), minimal and near-leaf frame elision
+(pure leaves skip the frame pointer AND the stack guard -- a call-free
+function cannot grow the stack; near-leaves keep the guard because the
+guard chain through recursive calls is the heap-collision detector),
+and IrRemInt with the leaf inliner (math-mod sites become inline
+idiv/RDX).
+
+sum-to-N beats C at both optimization levels. The remaining gaps are
+frame discipline the C compilers do not pay (the guard pair on
+recursive functions) and the registers the JITs win through full
+linear-scan allocation of named bindings -- the next frontier.

@@ -15,8 +15,8 @@ $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Push-Location $Repo
 
-$QuireDirs = @{ 'Foreword' = 'codex\foreword\core'; 'Kernel' = 'codex\os\kernel'; 'OS' = 'codex\os\core'; 'Works' = 'apps\works'; 'Trust' = 'codex\os\trust'; 'Net' = 'codex\os\net'; 'Verify' = 'codex\os\verify'; 'Replay' = 'codex\os\replay'; 'Sched' = 'codex\os\sched'; 'Observe' = 'codex\os\observe'; 'Game' = 'codex\foreword\game'; 'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'; 'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'; 'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'; 'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'; 'Magic' = 'apps\games\magic'; 'CodexMagic' = 'apps\games\codexmagic'; 'Games' = 'apps\games\classic'; 'Spark' = 'apps\spark'; 'Data' = 'apps\data'; 'Explorer' = 'apps\explorer' }
-$citePat = '^\s*cites\s+(Codex|Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev|Magic|CodexMagic|Games|Spark|Data|Explorer)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
+. (Join-Path $PSScriptRoot 'quire-map.ps1')
+$citePat = New-CitePattern -ExtraQuires @('Codex')
 
 # Index codex/compiler chapters (Codex quire) by chapter Title -> file path,
 # since they live in subdirs (Core/Emit/IR/Semantics/Syntax/Types/Ast).
@@ -26,42 +26,20 @@ foreach ($f in Get-ChildItem (Join-Path $Repo 'codex\compiler') -Recurse -Filter
         if ($l -match '^Chapter:\s*(.+?)\s*$') { $codexIndex[$matches[1].Trim()] = $f.FullName; break }
     }
 }
-$queue = [System.Collections.Generic.Queue[hashtable]]::new()
-$seen = @{}
-foreach ($line in [System.IO.File]::ReadAllLines($Src)) {
-    if ($line -match '^Chapter:\s*(\w+)--(.+?)\s*$') { $seen["$($matches[1])::$($matches[2])"] = $true }
-    if ($line -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
+$srcLines = [System.IO.File]::ReadAllLines($Src)
+$seedSeen = @{}
+foreach ($line in $srcLines) {
+    if ($line -match '^Chapter:\s*(\w+)--(.+?)\s*$') { $seedSeen["$($matches[1])::$($matches[2])"] = $true }
 }
-$ordered = @()
-while ($queue.Count -gt 0) {
-    $cite = $queue.Dequeue(); $key = "$($cite.Quire)::$($cite.Name)"
-    if ($seen[$key]) { continue }
-    $seen[$key] = $true
-    $fwPath = if ($cite.Quire -eq 'Codex') { $codexIndex[$cite.Name] } else { Join-Path $QuireDirs[$cite.Quire] "$($cite.Name).codex" }
-    if (-not $fwPath -or -not (Test-Path -PathType Leaf $fwPath)) { Write-Host "MISSING cite: $($cite.Quire) $($cite.Name)"; continue }
-    $lines = [System.IO.File]::ReadAllLines($fwPath)
-    foreach ($l in $lines) { if ($l -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) } }
-    $ordered += @{ Quire = $cite.Quire; Name = $cite.Name; Lines = $lines }
-}
-[array]::Reverse($ordered)
-$emitted = @{}
+$ordered = Resolve-CiteOrder -RootLines $srcLines -Repo $Repo -Pattern $citePat -SeedSeen $seedSeen -OnMissing skip `
+    -PathOverride { param($quire, $name) if ($quire -eq 'Codex') { $codexIndex[$name] } else { $null } }
 $sb = [System.Text.StringBuilder]::new(2097152)
 $mode = 'TEXT'
 if ($Survey) { $mode = "$mode survey=$Survey" }
 [void]$sb.Append("$mode`n")
 $bodySb = [System.Text.StringBuilder]::new(2097152)
-foreach ($entry in $ordered) {
-    $key = "$($entry.Quire)::$($entry.Name)"
-    if ($emitted[$key]) { continue }
-    $emitted[$key] = $true
-    $renamed = $false
-    foreach ($l in $entry.Lines) {
-        if (-not $renamed -and $l -match '^Chapter:\s*(.+?)\s*$') { [void]$bodySb.Append("Chapter: $($entry.Quire)--$($matches[1])`n"); $renamed = $true }
-        else { [void]$bodySb.Append($l + "`n") }
-    }
-    [void]$bodySb.Append("`n`n")
-}
-foreach ($line in [System.IO.File]::ReadAllLines($Src)) { [void]$bodySb.Append($line + "`n") }
+foreach ($l in (Format-CiteChapters -Ordered $ordered)) { [void]$bodySb.Append($l + "`n") }
+foreach ($line in $srcLines) { [void]$bodySb.Append($line + "`n") }
 $body = $bodySb.ToString()
 [void]$sb.Append($body); [void]$sb.Append([char]4)
 

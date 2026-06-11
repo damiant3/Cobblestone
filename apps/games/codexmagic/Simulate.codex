@@ -30,8 +30,8 @@ Section: Per-Game Metrics
     screw-events-b : Integer,
     flood-events-a : Integer,
     flood-events-b : Integer,
-    discards-for-mana : Integer,
-    lands-pitched : Integer,
+    discards-for-ray : Integer,
+    gems-pitched : Integer,
     creatures-played : Integer,
     spells-cast : Integer
   }
@@ -59,7 +59,7 @@ Section: Aggregate Results
 
   aggregate-add : SimAggregate, GameMetrics, Integer -> SimAggregate
   aggregate-add (agg) (m) (turn-cap) =
-    SimAggregate { total-games = agg.total-games + 1, p0-wins = agg.p0-wins + (if m.winner == 0 then 1 else 0), p1-wins = agg.p1-wins + (if m.winner == 1 then 1 else 0), draws = agg.draws + (if m.winner < 0 then 1 else 0), first-player-wins = agg.first-player-wins + (if m.first-player-won then 1 else 0), total-turns = agg.total-turns + m.turns, total-screw = agg.total-screw + m.screw-events-a + m.screw-events-b, total-flood = agg.total-flood + m.flood-events-a + m.flood-events-b, total-discards = agg.total-discards + m.discards-for-mana, total-pitches = agg.total-pitches + m.lands-pitched, total-creatures = agg.total-creatures + m.creatures-played, total-spells = agg.total-spells + m.spells-cast, sudden-death-games = agg.sudden-death-games + (if m.turns > turn-cap then 1 else 0) }
+    SimAggregate { total-games = agg.total-games + 1, p0-wins = agg.p0-wins + (if m.winner == 0 then 1 else 0), p1-wins = agg.p1-wins + (if m.winner == 1 then 1 else 0), draws = agg.draws + (if m.winner < 0 then 1 else 0), first-player-wins = agg.first-player-wins + (if m.first-player-won then 1 else 0), total-turns = agg.total-turns + m.turns, total-screw = agg.total-screw + m.screw-events-a + m.screw-events-b, total-flood = agg.total-flood + m.flood-events-a + m.flood-events-b, total-discards = agg.total-discards + m.discards-for-ray, total-pitches = agg.total-pitches + m.gems-pitched, total-creatures = agg.total-creatures + m.creatures-played, total-spells = agg.total-spells + m.spells-cast, sudden-death-games = agg.sudden-death-games + (if m.turns > turn-cap then 1 else 0) }
 
 Section: Single Game Simulation
 
@@ -89,18 +89,18 @@ Section: Single Game Simulation
     else let player = gs.active-player
     in let p = get-player gs player
     in let stance = effective-stance posture-default (if player == 0 then gen-a else gen-b) (p.general)
-    in let lands-in-hand = count-lands-in-hand (p.hand) (gs.templates) 0 (list-length (p.hand)) 0
+    in let gems-in-hand = count-gems-in-hand (p.hand) (gs.templates) 0 (list-length (p.hand)) 0
     in let hand-size = list-length (p.hand)
-    in let new-screw-a = screw-a + (if player == 0 then (if lands-in-hand == 0 then 1 else 0) else 0)
-    in let new-screw-b = screw-b + (if player == 1 then (if lands-in-hand == 0 then 1 else 0) else 0)
-    in let new-flood-a = flood-a + (if player == 0 then (if lands-in-hand >= 3 then 1 else 0) else 0)
-    in let new-flood-b = flood-b + (if player == 1 then (if lands-in-hand >= 3 then 1 else 0) else 0)
+    in let new-screw-a = screw-a + (if player == 0 then (if gems-in-hand == 0 then 1 else 0) else 0)
+    in let new-screw-b = screw-b + (if player == 1 then (if gems-in-hand == 0 then 1 else 0) else 0)
+    in let new-flood-a = flood-a + (if player == 0 then (if gems-in-hand >= 3 then 1 else 0) else 0)
+    in let new-flood-b = flood-b + (if player == 1 then (if gems-in-hand >= 3 then 1 else 0) else 0)
     in let gs2 = apply-sudden-death gs rules
     in let gs3 = check-state-based-actions gs2
     in if gs3.game-over then make-metrics gs3 new-screw-a new-screw-b new-flood-a new-flood-b discards pitches creatures
     else let gs4 = apply-screw-fix gs3 rules player
     in let gs5 = apply-flood-fix gs4 rules player
-    in let new-discards = discards + (if mana-pool-total (get-player gs5 player).mana-pool > mana-pool-total (get-player gs4 player).mana-pool then 1 else 0)
+    in let new-discards = discards
     in let new-pitches = pitches + (if list-length (get-player gs5 player).hand < list-length (get-player gs4 player).hand then 1 else 0)
     in let bf-before = list-length (gs5.battlefield)
     in let gs6 = run-turn gs5
@@ -114,7 +114,7 @@ Section: Single Game Simulation
   make-metrics (gs) (sa) (sb) (fa) (fb) (disc) (pitch) (creatures) =
     let p0 = get-player gs 0
     in let p1 = get-player gs 1
-    in GameMetrics { winner = gs.winner, turns = gs.turn-number, first-player-won = gs.winner == 0, life-a = p0.general.life, life-b = p1.general.life, loyalty-a = army-loyalty gs 0, loyalty-b = army-loyalty gs 1, screw-events-a = sa, screw-events-b = sb, flood-events-a = fa, flood-events-b = fb, discards-for-mana = disc, lands-pitched = pitch, creatures-played = creatures, spells-cast = 0 }
+    in GameMetrics { winner = gs.winner, turns = gs.turn-number, first-player-won = gs.winner == 0, life-a = p0.general.life, life-b = p1.general.life, loyalty-a = army-loyalty gs 0, loyalty-b = army-loyalty gs 1, screw-events-a = sa, screw-events-b = sb, flood-events-a = fa, flood-events-b = fb, discards-for-ray = disc, gems-pitched = pitch, creatures-played = creatures, spells-cast = 0 }
 
 Section: Batch Simulation
 
@@ -142,7 +142,7 @@ Section: Batch Simulation
   load-deck-for-sim (gs) (player) (cards) (i) =
     if i >= list-length cards then gs
     else let p = get-player gs player
-    in let p2 = PlayerState { general = p.general, mana-pool = p.mana-pool, library = list-push (p.library) (list-at cards i), hand = p.hand, graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in let p2 = PlayerState { general = p.general, prismatic = p.prismatic, library = list-push (p.library) (list-at cards i), hand = p.hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used }
     in let gs2 = set-player gs player p2
     in load-deck-for-sim gs2 player cards (i + 1)
 

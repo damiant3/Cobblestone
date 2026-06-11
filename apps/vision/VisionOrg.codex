@@ -1,0 +1,156 @@
+Chapter: VisionOrg
+  cites Vision chapter VisionTypes
+  cites Foreword chapter Maybe
+  cites Foreword chapter TextSearch
+
+ Org graph management. People, roles, reporting chains, and
+ domain ownership. Used by the cascade engine to route signals
+ to the right person and enforce skip-level prevention.
+
+Section: Org Graph
+
+  OrgGraph = record {
+    og-people : List Person,
+    og-people-count : Integer,
+    og-domains : List Domain,
+    og-domain-count : Integer
+  }
+
+  org-new : OrgGraph
+  org-new = OrgGraph { og-people = [], og-people-count = 0, og-domains = [], og-domain-count = 0 }
+
+Section: People Management
+
+  org-add-person : OrgGraph, Person -> OrgGraph
+  org-add-person (g) (p) =
+    OrgGraph {
+      og-people = list-push g.og-people p,
+      og-people-count = g.og-people-count + 1,
+      og-domains = g.og-domains,
+      og-domain-count = g.og-domain-count
+    }
+
+  org-find-person : OrgGraph, Text -> Maybe Person
+  org-find-person (g) (id) = org-find-loop g.og-people id 0 g.og-people-count
+
+  org-find-loop : List Person, Text, Integer, Integer -> Maybe Person
+  org-find-loop (people) (id) (i) (len) =
+    if i >= len then Nothing
+    else let p = list-at people i
+    in if p.per-id == id then Just p
+    else org-find-loop people id (i + 1) len
+
+  org-direct-reports : OrgGraph, Text -> List Person
+  org-direct-reports (g) (manager-id) =
+    org-reports-loop g.og-people manager-id 0 g.og-people-count []
+
+  org-reports-loop : List Person, Text, Integer, Integer, List Person -> List Person
+  org-reports-loop (people) (mgr) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at people i
+    in if p.per-reports-to == mgr
+      then org-reports-loop people mgr (i + 1) len (list-push acc p)
+      else org-reports-loop people mgr (i + 1) len acc
+
+  org-chain-up : OrgGraph, Text -> List Person
+  org-chain-up (g) (person-id) =
+    org-chain-loop g person-id []
+
+  org-chain-loop : OrgGraph, Text, List Person -> List Person
+  org-chain-loop (g) (id) (acc) =
+    let found = org-find-person g id
+    in when found
+      is Nothing -> acc
+      is Just (p) ->
+        if text-length p.per-reports-to == 0 then list-push acc p
+        else org-chain-loop g p.per-reports-to (list-push acc p)
+
+Section: Domain Management
+
+  org-add-domain : OrgGraph, Domain -> OrgGraph
+  org-add-domain (g) (d) =
+    OrgGraph {
+      og-people = g.og-people,
+      og-people-count = g.og-people-count,
+      og-domains = list-push g.og-domains d,
+      og-domain-count = g.og-domain-count + 1
+    }
+
+  org-find-domain : OrgGraph, Text -> Maybe Domain
+  org-find-domain (g) (id) = org-find-domain-loop g.og-domains id 0 g.og-domain-count
+
+  org-find-domain-loop : List Domain, Text, Integer, Integer -> Maybe Domain
+  org-find-domain-loop (domains) (id) (i) (len) =
+    if i >= len then Nothing
+    else let d = list-at domains i
+    in if d.dom-id == id then Just d
+    else org-find-domain-loop domains id (i + 1) len
+
+Section: Domain Routing
+
+  org-route-signal : OrgGraph, Text, Text -> List Person
+  org-route-signal (g) (domain-hint) (content) =
+    if text-length domain-hint > 0
+    then org-route-by-domain g domain-hint
+    else org-route-by-keywords g content
+
+  org-route-by-domain : OrgGraph, Text -> List Person
+  org-route-by-domain (g) (domain) =
+    let dom = org-find-domain g domain
+    in when dom
+      is Nothing -> org-route-by-keywords g domain
+      is Just (d) ->
+        let owner = org-find-person g d.dom-owner
+        in when owner
+          is Nothing -> []
+          is Just (p) -> [p]
+
+  org-route-by-keywords : OrgGraph, Text -> List Person
+  org-route-by-keywords (g) (content) =
+    org-keyword-match g.og-domains g content 0 g.og-domain-count []
+
+  org-keyword-match : List Domain, OrgGraph, Text, Integer, Integer, List Person -> List Person
+  org-keyword-match (domains) (g) (content) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = list-at domains i
+    in if domain-matches-content d content
+      then let owner = org-find-person g d.dom-owner
+        in when owner
+          is Nothing -> org-keyword-match domains g content (i + 1) len acc
+          is Just (p) -> org-keyword-match domains g content (i + 1) len (list-push acc p)
+      else org-keyword-match domains g content (i + 1) len acc
+
+  domain-matches-content : Domain, Text -> Boolean
+  domain-matches-content (d) (content) =
+    keyword-scan d.dom-keywords content 0 (list-length d.dom-keywords)
+
+  keyword-scan : List Text, Text, Integer, Integer -> Boolean
+  keyword-scan (keywords) (content) (i) (len) =
+    if i >= len then False
+    else if text-contains content (list-at keywords i) then True
+    else keyword-scan keywords content (i + 1) len
+
+Section: Skip-Level Prevention
+
+  org-is-direct-report : OrgGraph, Text, Text -> Boolean
+  org-is-direct-report (g) (manager-id) (person-id) =
+    let person = org-find-person g person-id
+    in when person
+      is Nothing -> False
+      is Just (p) -> p.per-reports-to == manager-id
+
+  org-tier-distance : OrgGraph, Text, Text -> Integer
+  org-tier-distance (g) (from-id) (to-id) =
+    let from-person = org-find-person g from-id
+    in let to-person = org-find-person g to-id
+    in when from-person
+      is Nothing -> (-1)
+      is Just (fp) -> when to-person
+        is Nothing -> (-1)
+        is Just (tp) -> role-tier tp.per-role - role-tier fp.per-role
+
+Section: Tier-1 Feed
+
+  org-tier-1-for : OrgGraph, Text -> List Person
+  org-tier-1-for (g) (author-id) =
+    org-direct-reports g author-id

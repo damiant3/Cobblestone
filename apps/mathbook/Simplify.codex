@@ -1,0 +1,150 @@
+Chapter: Simplify
+  cites Mathbook chapter Expr
+
+ Algebraic simplification engine. Applies rewrite rules repeatedly
+ until a fixed point (the expression stops changing). Rules include
+ constant folding, identity elimination, commutativity normalization,
+ power rules, log/exp cancellation, and trigonometric identities.
+ Each rule is a pattern match on the expression tree.
+
+Section: Constant Folding
+
+  fold-constants : Expr -> Expr
+  fold-constants (e) = when e
+    is ExAdd (ExInt a) (ExInt b) -> ExInt (a + b)
+    is ExSub (ExInt a) (ExInt b) -> ExInt (a - b)
+    is ExMul (ExInt a) (ExInt b) -> ExInt (a * b)
+    is ExDiv (ExInt a) (ExInt b) -> if b == 0 then ExUndefined else ex-ratio a b
+    is ExPow (ExInt a) (ExInt b) -> if b >= 0 then ExInt (ex-int-pow a b) else ex-ratio 1 (ex-int-pow a (negate b))
+    is ExNeg (ExInt n) -> ExInt (negate n)
+    is ExAdd (ExRatio n1 d1) (ExRatio n2 d2) -> ex-ratio (n1 * d2 + n2 * d1) (d1 * d2)
+    is ExMul (ExRatio n1 d1) (ExRatio n2 d2) -> ex-ratio (n1 * n2) (d1 * d2)
+    is ExAdd (ExInt a) (ExRatio n d) -> ex-ratio (a * d + n) d
+    is ExAdd (ExRatio n d) (ExInt b) -> ex-ratio (n + b * d) d
+    is ExMul (ExInt a) (ExRatio n d) -> ex-ratio (a * n) d
+    is ExMul (ExRatio n d) (ExInt b) -> ex-ratio (n * b) d
+    is otherwise -> e
+
+Section: Identity Rules
+
+  fold-identities : Expr -> Expr
+  fold-identities (e) = when e
+    is ExAdd (ExInt 0) (b) -> b
+    is ExAdd (a) (ExInt 0) -> a
+    is ExSub (a) (ExInt 0) -> a
+    is ExMul (ExInt 0) (b) -> ExInt 0
+    is ExMul (a) (ExInt 0) -> ExInt 0
+    is ExMul (ExInt 1) (b) -> b
+    is ExMul (a) (ExInt 1) -> a
+    is ExMul (ExInt (-1)) (b) -> ExNeg b
+    is ExMul (a) (ExInt (-1)) -> ExNeg a
+    is ExDiv (a) (ExInt 1) -> a
+    is ExDiv (ExInt 0) (b) -> ExInt 0
+    is ExPow (a) (ExInt 0) -> ExInt 1
+    is ExPow (a) (ExInt 1) -> a
+    is ExPow (ExInt 0) (b) -> ExInt 0
+    is ExPow (ExInt 1) (b) -> ExInt 1
+    is ExNeg (ExNeg a) -> a
+    is ExNeg (ExInt 0) -> ExInt 0
+    is ExSqrt (ExPow a (ExInt 2)) -> ExAbs a
+    is ExPow (ExSqrt a) (ExInt 2) -> a
+    is otherwise -> e
+
+Section: Algebraic Rules
+
+  fold-algebraic : Expr -> Expr
+  fold-algebraic (e) = when e
+    is ExSub (a) (b) -> if ex-equal a b then ExInt 0 else e
+    is ExDiv (a) (b) -> if ex-equal a b then ExInt 1 else e
+    is ExAdd (a) (a2) -> if ex-equal a a2 then ExMul (ExInt 2) a else e
+    is ExMul (ExPow base (ExInt n)) (ExPow base2 (ExInt m)) ->
+      if ex-equal base base2 then ExPow base (ExInt (n + m)) else e
+    is ExDiv (ExPow base (ExInt n)) (ExPow base2 (ExInt m)) ->
+      if ex-equal base base2 then ExPow base (ExInt (n - m)) else e
+    is ExPow (ExPow base (ExInt n)) (ExInt m) -> ExPow base (ExInt (n * m))
+    is otherwise -> e
+
+Section: Function Rules
+
+  fold-functions : Expr -> Expr
+  fold-functions (e) = when e
+    is ExFn ("ln") (args) ->
+      if list-length args == 1 then when list-at args 0
+        is ExE -> ExInt 1
+        is ExInt (1) -> ExInt 0
+        is ExPow (ExE) (x) -> x
+        is otherwise -> e
+      else e
+    is ExPow (ExE) (ExFn ("ln") (args)) ->
+      if list-length args == 1 then list-at args 0 else e
+    is ExFn ("sin") (args) ->
+      if list-length args == 1 then when list-at args 0
+        is ExInt (0) -> ExInt 0
+        is ExPi -> ExInt 0
+        is otherwise -> e
+      else e
+    is ExFn ("cos") (args) ->
+      if list-length args == 1 then when list-at args 0
+        is ExInt (0) -> ExInt 1
+        is ExPi -> ExInt (negate 1)
+        is otherwise -> e
+      else e
+    is ExFn ("factorial") (args) ->
+      if list-length args == 1 then when list-at args 0
+        is ExInt (0) -> ExInt 1
+        is ExInt (1) -> ExInt 1
+        is ExInt (n) -> if n > 1 then ExInt (ex-factorial n) else e
+        is otherwise -> e
+      else e
+    is otherwise -> e
+
+  ex-factorial : Integer -> Integer
+  ex-factorial (n) = if n <= 1 then 1 else n * ex-factorial (n - 1)
+
+Section: Recursive Simplification
+
+  simplify-children : Expr -> Expr
+  simplify-children (e) = when e
+    is ExAdd (a) (b) -> ExAdd (simplify a) (simplify b)
+    is ExSub (a) (b) -> ExSub (simplify a) (simplify b)
+    is ExMul (a) (b) -> ExMul (simplify a) (simplify b)
+    is ExDiv (a) (b) -> ExDiv (simplify a) (simplify b)
+    is ExPow (a) (b) -> ExPow (simplify a) (simplify b)
+    is ExNeg (a) -> ExNeg (simplify a)
+    is ExAbs (a) -> ExAbs (simplify a)
+    is ExSqrt (a) -> ExSqrt (simplify a)
+    is ExFn (name) (args) -> ExFn name (simplify-list args 0 (list-length args) [])
+    is ExEq (a) (b) -> ExEq (simplify a) (simplify b)
+    is ExDeriv (body) (var) -> ExDeriv (simplify body) var
+    is ExIntegral (body) (var) -> ExIntegral (simplify body) var
+    is otherwise -> e
+
+  simplify-list : List Expr, Integer, Integer, List Expr -> List Expr
+  simplify-list (exprs) (i) (n) (acc) =
+    if i >= n then acc
+    else simplify-list exprs (i + 1) n (list-push acc (simplify (list-at exprs i)))
+
+Section: Main Simplify Loop
+
+  simplify-step : Expr -> Expr
+  simplify-step (e) =
+    let e1 = simplify-children e
+    in let e2 = fold-constants e1
+    in let e3 = fold-identities e2
+    in let e4 = fold-algebraic e3
+    in fold-functions e4
+
+  simplify : Expr -> Expr
+  simplify (e) =
+    let result = simplify-step e
+    in if ex-equal result e then result
+    else simplify result
+
+  simplify-n : Expr, Integer -> Expr
+  simplify-n (e) (max-steps) =
+    if max-steps <= 0 then e
+    else let result = simplify-step e
+    in if ex-equal result e then result
+    else simplify-n result (max-steps - 1)
+
+Page 1

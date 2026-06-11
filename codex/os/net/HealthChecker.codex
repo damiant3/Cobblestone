@@ -1,0 +1,241 @@
+Chapter: HealthChecker
+  cites Net chapter GroupMembership
+  cites Foreword chapter Maybe
+
+ Active health checking for services and backends. Goes beyond
+ heartbeat-based liveness — actively probes endpoints with HTTP
+ GET, TCP connect, or custom scripts. Tracks health history,
+ computes rolling success rate, and transitions services between
+ healthy/degraded/unhealthy states with hysteresis.
+
+Section: Check Types
+
+  CheckType =
+    | HcHttpGet (Text) (Integer)
+    | HcHttpPost (Text) (Text) (Integer)
+    | HcTcpConnect (Integer)
+    | HcGrpc (Text) (Integer)
+    | HcCommand (Text)
+    | HcDns (Text)
+    | HcPing
+
+  hc-type-label : CheckType -> Text
+  hc-type-label (c) = when c
+    is HcHttpGet (path) (expect) -> "HTTP GET " & path & " expect=" & show expect
+    is HcHttpPost (path) (body) (expect) -> "HTTP POST " & path
+    is HcTcpConnect (timeout) -> "TCP connect timeout=" & show timeout & "ms"
+    is HcGrpc (method) (timeout) -> "gRPC " & method
+    is HcCommand (cmd) -> "cmd: " & cmd
+    is HcDns (name) -> "DNS " & name
+    is HcPing -> "ICMP ping"
+
+Section: Check Result
+
+  CheckResult =
+    | CrHealthy (Integer)
+    | CrDegraded (Integer) (Text)
+    | CrUnhealthy (Text)
+    | CrTimeout
+    | CrError (Text)
+
+  cr-is-healthy : CheckResult -> Boolean
+  cr-is-healthy (r) = when r
+    is CrHealthy (latency) -> True
+    is otherwise -> False
+
+  cr-latency : CheckResult -> Integer
+  cr-latency (r) = when r
+    is CrHealthy (lat) -> lat
+    is CrDegraded (lat) (msg) -> lat
+    is otherwise -> 0
+
+  cr-label : CheckResult -> Text
+  cr-label (r) = when r
+    is CrHealthy (lat) -> "healthy " & show lat & "ms"
+    is CrDegraded (lat) (msg) -> "degraded " & show lat & "ms: " & msg
+    is CrUnhealthy (msg) -> "unhealthy: " & msg
+    is CrTimeout -> "timeout"
+    is CrError (msg) -> "error: " & msg
+
+Section: Health State Machine
+
+  HealthState =
+    | HsHealthy
+    | HsDegraded (Integer)
+    | HsUnhealthy (Integer)
+
+  hs-label : HealthState -> Text
+  hs-label (s) = when s
+    is HsHealthy -> "healthy"
+    is HsDegraded (since) -> "degraded"
+    is HsUnhealthy (since) -> "unhealthy"
+
+Section: Check Definition
+
+  HealthCheck = record {
+    hck-id : Text,
+    hck-target : Text,
+    hck-service : Text,
+    hck-check : CheckType,
+    hck-interval-sec : Integer,
+    hck-timeout-ms : Integer,
+    hck-healthy-threshold : Integer,
+    hck-unhealthy-threshold : Integer,
+    hck-state : HealthState,
+    hck-consecutive-ok : Integer,
+    hck-consecutive-fail : Integer,
+    hck-total-checks : Integer,
+    hck-total-ok : Integer,
+    hck-total-fail : Integer,
+    hck-last-check : Integer,
+    hck-last-result : CheckResult,
+    hck-avg-latency : Integer,
+    hck-history : List CheckResult,
+    hck-history-count : Integer,
+    hck-max-history : Integer
+  }
+
+  health-check-new : Text, Text, Text, CheckType -> HealthCheck
+  health-check-new (id) (target) (service) (check) = HealthCheck {
+    hck-id = id, hck-target = target, hck-service = service,
+    hck-check = check,
+    hck-interval-sec = 10, hck-timeout-ms = 5000,
+    hck-healthy-threshold = 3, hck-unhealthy-threshold = 3,
+    hck-state = HsUnhealthy 0,
+    hck-consecutive-ok = 0, hck-consecutive-fail = 0,
+    hck-total-checks = 0, hck-total-ok = 0, hck-total-fail = 0,
+    hck-last-check = 0, hck-last-result = CrError "not yet checked",
+    hck-avg-latency = 0,
+    hck-history = [], hck-history-count = 0, hck-max-history = 100
+  }
+
+  hck-record-result : HealthCheck, CheckResult, Integer -> HealthCheck
+  hck-record-result (hc) (result) (now) =
+    let is-ok = cr-is-healthy result
+    in let new-ok = if is-ok then hc.hck-consecutive-ok + 1 else 0
+    in let new-fail = if is-ok then 0 else hc.hck-consecutive-fail + 1
+    in let new-state = hck-transition (hc.hck-state) new-ok new-fail (hc.hck-healthy-threshold) (hc.hck-unhealthy-threshold) now
+    in let new-total-ok = hc.hck-total-ok + (if is-ok then 1 else 0)
+    in let new-total-fail = hc.hck-total-fail + (if is-ok then 0 else 1)
+    in let lat = cr-latency result
+    in let new-avg = if hc.hck-total-checks == 0 then lat else (hc.hck-avg-latency * hc.hck-total-checks + lat) / (hc.hck-total-checks + 1)
+    in let new-hist = if hc.hck-history-count >= hc.hck-max-history then list-push (hck-drop-oldest (hc.hck-history) (hc.hck-history-count)) result else list-push (hc.hck-history) result
+    in HealthCheck {
+      hck-id = hc.hck-id, hck-target = hc.hck-target, hck-service = hc.hck-service,
+      hck-check = hc.hck-check,
+      hck-interval-sec = hc.hck-interval-sec, hck-timeout-ms = hc.hck-timeout-ms,
+      hck-healthy-threshold = hc.hck-healthy-threshold, hck-unhealthy-threshold = hc.hck-unhealthy-threshold,
+      hck-state = new-state,
+      hck-consecutive-ok = new-ok, hck-consecutive-fail = new-fail,
+      hck-total-checks = hc.hck-total-checks + 1,
+      hck-total-ok = new-total-ok, hck-total-fail = new-total-fail,
+      hck-last-check = now, hck-last-result = result,
+      hck-avg-latency = new-avg,
+      hck-history = new-hist,
+      hck-history-count = if hc.hck-history-count >= hc.hck-max-history then hc.hck-history-count else hc.hck-history-count + 1,
+      hck-max-history = hc.hck-max-history
+    }
+
+  hck-transition : HealthState, Integer, Integer, Integer, Integer, Integer -> HealthState
+  hck-transition (current) (consecutive-ok) (consecutive-fail) (healthy-t) (unhealthy-t) (now) =
+    when current
+      is HsHealthy ->
+        if consecutive-fail >= unhealthy-t then HsUnhealthy now
+        else if consecutive-fail > 0 then HsDegraded now
+        else HsHealthy
+      is HsDegraded (since) ->
+        if consecutive-ok >= healthy-t then HsHealthy
+        else if consecutive-fail >= unhealthy-t then HsUnhealthy now
+        else HsDegraded since
+      is HsUnhealthy (since) ->
+        if consecutive-ok >= healthy-t then HsHealthy
+        else HsUnhealthy since
+
+  hck-drop-oldest : List CheckResult, Integer -> List CheckResult
+  hck-drop-oldest (history) (count) =
+    if count <= 1 then []
+    else hck-drop-loop history 1 count []
+
+  hck-drop-loop : List CheckResult, Integer, Integer, List CheckResult -> List CheckResult
+  hck-drop-loop (history) (i) (n) (acc) =
+    if i >= n then acc
+    else hck-drop-loop history (i + 1) n (list-push acc (list-at history i))
+
+  hck-is-due : HealthCheck, Integer -> Boolean
+  hck-is-due (hc) (now) = now - hc.hck-last-check >= hc.hck-interval-sec
+
+  hck-success-rate : HealthCheck -> Integer
+  hck-success-rate (hc) =
+    if hc.hck-total-checks == 0 then 0
+    else hc.hck-total-ok * 1000 / hc.hck-total-checks
+
+  hck-is-healthy : HealthCheck -> Boolean
+  hck-is-healthy (hc) = when hc.hck-state is HsHealthy -> True is otherwise -> False
+
+Section: Health Checker Service
+
+  HealthCheckerState = record {
+    hcs-checks : List HealthCheck,
+    hcs-count : Integer,
+    hcs-interval : Integer,
+    hcs-last-run : Integer,
+    hcs-total-healthy : Integer,
+    hcs-total-unhealthy : Integer
+  }
+
+  health-checker-new : HealthCheckerState
+  health-checker-new = HealthCheckerState {
+    hcs-checks = [], hcs-count = 0,
+    hcs-interval = 10, hcs-last-run = 0,
+    hcs-total-healthy = 0, hcs-total-unhealthy = 0
+  }
+
+  hcs-add-check : HealthCheckerState, HealthCheck -> HealthCheckerState
+  hcs-add-check (st) (hc) =
+    __record-set (__record-set st "hcs-checks" (list-push (st.hcs-checks) hc)) "hcs-count" (st.hcs-count + 1)
+
+  hcs-find-check : HealthCheckerState, Text -> Maybe HealthCheck
+  hcs-find-check (st) (id) = hcs-find-loop (st.hcs-checks) id 0 (st.hcs-count)
+
+  hcs-find-loop : List HealthCheck, Text, Integer, Integer -> Maybe HealthCheck
+  hcs-find-loop (checks) (id) (i) (n) =
+    if i >= n then None
+    else let hc = list-at checks i
+    in if hc.hck-id == id then Just hc
+    else hcs-find-loop checks id (i + 1) n
+
+  hcs-due-checks : HealthCheckerState, Integer -> List HealthCheck
+  hcs-due-checks (st) (now) = hcs-due-loop (st.hcs-checks) now 0 (st.hcs-count) []
+
+  hcs-due-loop : List HealthCheck, Integer, Integer, Integer, List HealthCheck -> List HealthCheck
+  hcs-due-loop (checks) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let hc = list-at checks i
+    in if hck-is-due hc now then hcs-due-loop checks now (i + 1) n (list-push acc hc)
+    else hcs-due-loop checks now (i + 1) n acc
+
+  hcs-healthy-count : HealthCheckerState -> Integer
+  hcs-healthy-count (st) = hcs-healthy-loop (st.hcs-checks) 0 (st.hcs-count) 0
+
+  hcs-healthy-loop : List HealthCheck, Integer, Integer, Integer -> Integer
+  hcs-healthy-loop (checks) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if hck-is-healthy (list-at checks i) then 1 else 0
+    in hcs-healthy-loop checks (i + 1) n (acc + delta)
+
+  hcs-checks-for-service : HealthCheckerState, Text -> List HealthCheck
+  hcs-checks-for-service (st) (svc) = hcs-svc-loop (st.hcs-checks) svc 0 (st.hcs-count) []
+
+  hcs-svc-loop : List HealthCheck, Text, Integer, Integer, List HealthCheck -> List HealthCheck
+  hcs-svc-loop (checks) (svc) (i) (n) (acc) =
+    if i >= n then acc
+    else let hc = list-at checks i
+    in if hc.hck-service == svc then hcs-svc-loop checks svc (i + 1) n (list-push acc hc)
+    else hcs-svc-loop checks svc (i + 1) n acc
+
+  hcs-status : HealthCheckerState -> Text
+  hcs-status (st) =
+    let healthy = hcs-healthy-count st
+    in show healthy & "/" & show (st.hcs-count) & " healthy"
+
+Page 1

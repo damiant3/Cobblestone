@@ -1,0 +1,283 @@
+Chapter: Clock
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Clock, timer, stopwatch, and alarm. The system tray clock shows
+ current time. Timers count down to zero and fire a notification.
+ Stopwatch counts up with lap support. Alarms fire at a set time.
+ All four share a common widget. Time zones are stored as UTC
+ offsets.
+
+Section: Time Display
+
+  TimeOfDay = record { tod-hour : Integer, tod-minute : Integer, tod-second : Integer }
+
+  format-time : TimeOfDay -> Text
+  format-time (t) =
+    let h = if t.tod-hour < 10 then "0" & show (t.tod-hour) else show (t.tod-hour)
+    in let m = if t.tod-minute < 10 then "0" & show (t.tod-minute) else show (t.tod-minute)
+    in let s = if t.tod-second < 10 then "0" & show (t.tod-second) else show (t.tod-second)
+    in h & ":" & m & ":" & s
+
+  format-time-12h : TimeOfDay -> Text
+  format-time-12h (t) =
+    let period = if t.tod-hour >= 12 then " PM" else " AM"
+    in let h12 = if t.tod-hour == 0 then 12 else if t.tod-hour > 12 then t.tod-hour - 12 else t.tod-hour
+    in let h = if h12 < 10 then "0" & show h12 else show h12
+    in let m = if t.tod-minute < 10 then "0" & show (t.tod-minute) else show (t.tod-minute)
+    in h & ":" & m & period
+
+  epoch-to-tod : Integer, Integer -> TimeOfDay
+  epoch-to-tod (epoch) (utc-offset-hours) =
+    let adjusted = epoch + utc-offset-hours * 3600
+    in let day-secs = adjusted - (adjusted / 86400) * 86400
+    in TimeOfDay {
+      tod-hour = day-secs / 3600,
+      tod-minute = (day-secs - (day-secs / 3600) * 3600) / 60,
+      tod-second = day-secs - (day-secs / 60) * 60
+    }
+
+Section: Timer
+
+  TimerState =
+    | TimerIdle
+    | TimerRunning (Integer)
+    | TimerPaused (Integer)
+    | TimerDone
+
+  TimerEntry = record {
+    te-id : Text,
+    te-label : Text,
+    te-duration-secs : Integer,
+    te-remaining-secs : Integer,
+    te-state : TimerState
+  }
+
+  timer-new : Text, Text, Integer -> TimerEntry
+  timer-new (id) (label) (duration) = TimerEntry {
+    te-id = id, te-label = label,
+    te-duration-secs = duration, te-remaining-secs = duration,
+    te-state = TimerIdle
+  }
+
+  timer-start : TimerEntry, Integer -> TimerEntry
+  timer-start (t) (now) = __record-set t "te-state" (TimerRunning now)
+
+  timer-pause : TimerEntry -> TimerEntry
+  timer-pause (t) = when t.te-state
+    is TimerRunning (started) -> __record-set t "te-state" (TimerPaused (t.te-remaining-secs))
+    is otherwise -> t
+
+  timer-tick : TimerEntry, Integer -> TimerEntry
+  timer-tick (t) (elapsed) = when t.te-state
+    is TimerRunning (started) ->
+      let remaining = t.te-remaining-secs - elapsed
+      in if remaining <= 0 then __record-set (__record-set t "te-remaining-secs" 0) "te-state" TimerDone
+      else __record-set t "te-remaining-secs" remaining
+    is otherwise -> t
+
+  timer-reset : TimerEntry -> TimerEntry
+  timer-reset (t) =
+    __record-set (__record-set t "te-remaining-secs" (t.te-duration-secs)) "te-state" TimerIdle
+
+  timer-format-remaining : TimerEntry -> Text
+  timer-format-remaining (t) =
+    let total = t.te-remaining-secs
+    in let m = total / 60
+    in let s = total - m * 60
+    in let ms = if m < 10 then "0" & show m else show m
+    in let ss = if s < 10 then "0" & show s else show s
+    in ms & ":" & ss
+
+Section: Stopwatch
+
+  Lap = record { lap-num : Integer, lap-time-ms : Integer, lap-split-ms : Integer }
+
+  StopwatchState = record {
+    sw-running : Boolean,
+    sw-elapsed-ms : Integer,
+    sw-laps : List Lap,
+    sw-lap-count : Integer,
+    sw-last-lap-ms : Integer
+  }
+
+  stopwatch-new : StopwatchState
+  stopwatch-new = StopwatchState {
+    sw-running = False,
+    sw-elapsed-ms = 0,
+    sw-laps = [],
+    sw-lap-count = 0,
+    sw-last-lap-ms = 0
+  }
+
+  sw-start : StopwatchState -> StopwatchState
+  sw-start (sw) = __record-set sw "sw-running" True
+
+  sw-stop : StopwatchState -> StopwatchState
+  sw-stop (sw) = __record-set sw "sw-running" False
+
+  sw-tick : StopwatchState, Integer -> StopwatchState
+  sw-tick (sw) (delta-ms) =
+    if sw.sw-running then __record-set sw "sw-elapsed-ms" (sw.sw-elapsed-ms + delta-ms)
+    else sw
+
+  sw-lap : StopwatchState -> StopwatchState
+  sw-lap (sw) =
+    let split = sw.sw-elapsed-ms - sw.sw-last-lap-ms
+    in let lap = Lap { lap-num = sw.sw-lap-count + 1, lap-time-ms = sw.sw-elapsed-ms, lap-split-ms = split }
+    in StopwatchState {
+      sw-running = sw.sw-running,
+      sw-elapsed-ms = sw.sw-elapsed-ms,
+      sw-laps = list-push (sw.sw-laps) lap,
+      sw-lap-count = sw.sw-lap-count + 1,
+      sw-last-lap-ms = sw.sw-elapsed-ms
+    }
+
+  sw-reset : StopwatchState -> StopwatchState
+  sw-reset (sw) = stopwatch-new
+
+  sw-format-elapsed : StopwatchState -> Text
+  sw-format-elapsed (sw) =
+    let total-ms = sw.sw-elapsed-ms
+    in let mins = total-ms / 60000
+    in let secs = (total-ms - mins * 60000) / 1000
+    in let ms = (total-ms - mins * 60000 - secs * 1000) / 10
+    in let m-str = if mins < 10 then "0" & show mins else show mins
+    in let s-str = if secs < 10 then "0" & show secs else show secs
+    in let ms-str = if ms < 10 then "0" & show ms else show ms
+    in m-str & ":" & s-str & "." & ms-str
+
+Section: Alarm
+
+  AlarmEntry = record {
+    al-id : Text,
+    al-label : Text,
+    al-hour : Integer,
+    al-minute : Integer,
+    al-enabled : Boolean,
+    al-repeat-days : Integer,
+    al-fired : Boolean
+  }
+
+  alarm-new : Text, Text, Integer, Integer -> AlarmEntry
+  alarm-new (id) (label) (hour) (minute) = AlarmEntry {
+    al-id = id, al-label = label, al-hour = hour, al-minute = minute,
+    al-enabled = True, al-repeat-days = 0, al-fired = False
+  }
+
+  alarm-is-due : AlarmEntry, TimeOfDay -> Boolean
+  alarm-is-due (a) (now) =
+    if a.al-enabled then
+      if a.al-hour == now.tod-hour then a.al-minute == now.tod-minute
+      else False
+    else False
+
+  alarm-format : AlarmEntry -> Text
+  alarm-format (a) =
+    let h = if a.al-hour < 10 then "0" & show (a.al-hour) else show (a.al-hour)
+    in let m = if a.al-minute < 10 then "0" & show (a.al-minute) else show (a.al-minute)
+    in h & ":" & m & " " & a.al-label & (if a.al-enabled then "" else " (off)")
+
+Section: Clock State
+
+  ClockTab =
+    | ClockTabClock
+    | ClockTabTimers
+    | ClockTabStopwatch
+    | ClockTabAlarms
+
+  ClockState = record {
+    clk-epoch : Integer,
+    clk-utc-offset : Integer,
+    clk-use-24h : Boolean,
+    clk-tab : ClockTab,
+    clk-timers : List TimerEntry,
+    clk-timer-count : Integer,
+    clk-stopwatch : StopwatchState,
+    clk-alarms : List AlarmEntry,
+    clk-alarm-count : Integer
+  }
+
+  clock-new : ClockState
+  clock-new = ClockState {
+    clk-epoch = 0,
+    clk-utc-offset = 0,
+    clk-use-24h = True,
+    clk-tab = ClockTabClock,
+    clk-timers = [],
+    clk-timer-count = 0,
+    clk-stopwatch = stopwatch-new,
+    clk-alarms = [],
+    clk-alarm-count = 0
+  }
+
+  clk-set-tab : ClockState, ClockTab -> ClockState
+  clk-set-tab (st) (tab) = __record-set st "clk-tab" tab
+
+  clk-current-time : ClockState -> TimeOfDay
+  clk-current-time (st) = epoch-to-tod (st.clk-epoch) (st.clk-utc-offset)
+
+  clk-format-current : ClockState -> Text
+  clk-format-current (st) =
+    let tod = clk-current-time st
+    in if st.clk-use-24h then format-time tod else format-time-12h tod
+
+  clk-add-timer : ClockState, TimerEntry -> ClockState
+  clk-add-timer (st) (t) =
+    __record-set (__record-set st "clk-timers" (list-push (st.clk-timers) t)) "clk-timer-count" (st.clk-timer-count + 1)
+
+  clk-add-alarm : ClockState, AlarmEntry -> ClockState
+  clk-add-alarm (st) (a) =
+    __record-set (__record-set st "clk-alarms" (list-push (st.clk-alarms) a)) "clk-alarm-count" (st.clk-alarm-count + 1)
+
+Section: Widget Building
+
+  clk-widget : ClockState -> WidgetNode
+  clk-widget (st) =
+    let tabs = widget-tabs "clk-tabs" ["Clock", "Timers", "Stopwatch", "Alarms"] (when st.clk-tab is ClockTabClock -> 0 is ClockTabTimers -> 1 is ClockTabStopwatch -> 2 is ClockTabAlarms -> 3)
+    in let body = when st.clk-tab
+      is ClockTabClock -> widget-panel "clk-face" DirColumn 8 [
+        widget-label "clk-time" (clk-format-current st),
+        widget-label "clk-utc" ("UTC" & (if st.clk-utc-offset >= 0 then "+" else "") & show (st.clk-utc-offset)),
+        widget-button "clk-toggle-fmt" (if st.clk-use-24h then "Switch to 12h" else "Switch to 24h")
+      ]
+      is ClockTabTimers -> let rows = clk-timer-rows (st.clk-timers) 0 (st.clk-timer-count) []
+        in widget-panel "clk-timers" DirColumn 4 ([widget-button "clk-add-timer" "New Timer"] & rows)
+      is ClockTabStopwatch -> widget-panel "clk-sw" DirColumn 4 [
+        widget-label "sw-elapsed" (sw-format-elapsed (st.clk-stopwatch)),
+        widget-toolbar "sw-btns" [
+          widget-button "sw-start" (if (st.clk-stopwatch).sw-running then "Stop" else "Start"),
+          widget-button "sw-lap" "Lap",
+          widget-button "sw-reset" "Reset"
+        ],
+        widget-label "sw-laps" (show (st.clk-stopwatch).sw-lap-count & " laps")
+      ]
+      is ClockTabAlarms -> let rows = clk-alarm-rows (st.clk-alarms) 0 (st.clk-alarm-count) []
+        in widget-panel "clk-alarms" DirColumn 4 ([widget-button "clk-add-alarm" "New Alarm"] & rows)
+    in widget-panel "clock" DirColumn 4 [tabs, body]
+
+  clk-timer-rows : List TimerEntry, Integer, Integer, List WidgetNode -> List WidgetNode
+  clk-timer-rows (timers) (i) (n) (acc) =
+    if i >= n then acc
+    else let t = list-at timers i
+    in let row = widget-panel (t.te-id) DirRow 8 [
+      widget-label (t.te-id & "-label") (t.te-label),
+      widget-label (t.te-id & "-rem") (timer-format-remaining t),
+      widget-button (t.te-id & "-start") "Start",
+      widget-button (t.te-id & "-reset") "Reset"
+    ]
+    in clk-timer-rows timers (i + 1) n (list-push acc row)
+
+  clk-alarm-rows : List AlarmEntry, Integer, Integer, List WidgetNode -> List WidgetNode
+  clk-alarm-rows (alarms) (i) (n) (acc) =
+    if i >= n then acc
+    else let a = list-at alarms i
+    in let row = widget-panel (a.al-id) DirRow 8 [
+      widget-label (a.al-id & "-fmt") (alarm-format a),
+      widget-button (a.al-id & "-toggle") (if a.al-enabled then "Disable" else "Enable"),
+      widget-button (a.al-id & "-delete") "Delete"
+    ]
+    in clk-alarm-rows alarms (i + 1) n (list-push acc row)
+
+Page 1

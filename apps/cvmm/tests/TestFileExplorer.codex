@@ -1,0 +1,157 @@
+Chapter: TestFileExplorer
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter FileExplorer
+
+ Unit tests for the file explorer: path operations, breadcrumbs,
+ navigation, selection, filtering, and view modes.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) =
+    if val then "PASS " & label
+    else "FAIL " & label & ": expected True"
+
+Section: Path Operation Tests
+
+  test-path-join : Text
+  test-path-join =
+    let t1 = assert-eq-text "join-root" "/foo" (path-join "/" "foo")
+    in let t2 = assert-eq-text "join-dir" "/home/user" (path-join "/home" "user")
+    in let t3 = assert-eq-text "join-trailing" "/home/user" (path-join "/home/" "user")
+    in let t4 = assert-eq-text "join-empty" "bar" (path-join "" "bar")
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-path-parent : Text
+  test-path-parent =
+    let t1 = assert-eq-text "parent-root" "/" (path-parent "/")
+    in let t2 = assert-eq-text "parent-file" "/home" (path-parent "/home/user")
+    in let t3 = assert-eq-text "parent-deep" "/a/b" (path-parent "/a/b/c")
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-path-filename : Text
+  test-path-filename =
+    let t1 = assert-eq-text "filename-simple" "file.txt" (path-filename "/home/file.txt")
+    in let t2 = assert-eq-text "filename-deep" "data.json" (path-filename "/a/b/c/data.json")
+    in t1 & "\n" & t2
+
+  test-file-extension : Text
+  test-file-extension =
+    let t1 = assert-eq-text "ext-txt" "txt" (file-extension "readme.txt")
+    in let t2 = assert-eq-text "ext-codex" "codex" (file-extension "Main.codex")
+    in let t3 = assert-eq-text "ext-none" "" (file-extension "Makefile")
+    in let t4 = assert-eq-text "ext-double" "gz" (file-extension "archive.tar.gz")
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Navigation Tests
+
+  test-navigation : Text
+  test-navigation =
+    let entries = [
+      file-entry-new "src" "/src" FkDirectory 0,
+      file-entry-new "README.md" "/README.md" FkFile 2048
+    ]
+    in let st = explorer-navigate explorer-new "/" entries
+    in let t1 = assert-eq-text "cwd-root" "/" (st.ex-cwd)
+    in let t2 = assert-eq-int "entry-count" 2 (st.ex-entry-count)
+    in let t3 = assert-eq-text "go-up-from-sub" "/" (explorer-go-up (explorer-navigate st "/src" []))
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Selection Tests
+
+  test-selection : Text
+  test-selection =
+    let entries = [
+      file-entry-new "a.txt" "/a.txt" FkFile 100,
+      file-entry-new "b.txt" "/b.txt" FkFile 200,
+      file-entry-new "c.txt" "/c.txt" FkFile 300
+    ]
+    in let st = explorer-navigate explorer-new "/" entries
+    in let st1 = explorer-toggle-select st 0
+    in let t1 = assert-eq-int "select-one" 1 (st1.ex-selected-count)
+    in let st2 = explorer-toggle-select st1 2
+    in let t2 = assert-eq-int "select-two" 2 (st2.ex-selected-count)
+    in let st3 = explorer-toggle-select st2 0
+    in let t3 = assert-eq-int "deselect-one" 1 (st3.ex-selected-count)
+    in let st4 = explorer-select-all st
+    in let t4 = assert-eq-int "select-all" 3 (st4.ex-selected-count)
+    in let st5 = explorer-deselect-all st4
+    in let t5 = assert-eq-int "deselect-all" 0 (st5.ex-selected-count)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Filter Tests
+
+  test-filter : Text
+  test-filter =
+    let entries = [
+      file-entry-new "hello.txt" "/hello.txt" FkFile 100,
+      file-entry-new ".hidden" "/.hidden" FkFile 50,
+      file-entry-new "world.codex" "/world.codex" FkFile 200
+    ]
+    in let st = explorer-navigate explorer-new "/" entries
+    in let visible-no-hidden = explorer-visible-entries st
+    in let t1 = assert-eq-int "no-hidden" 2 (list-length visible-no-hidden)
+    in let st-show = explorer-toggle-hidden st
+    in let visible-with-hidden = explorer-visible-entries st-show
+    in let t2 = assert-eq-int "with-hidden" 3 (list-length visible-with-hidden)
+    in let st-filter = explorer-set-filter st "hello"
+    in let visible-filtered = explorer-visible-entries st-filter
+    in let t3 = assert-eq-int "filtered" 1 (list-length visible-filtered)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Clipboard Tests
+
+  test-clipboard : Text
+  test-clipboard =
+    let entries = [
+      file-entry-new "a.txt" "/a.txt" FkFile 100,
+      file-entry-new "b.txt" "/b.txt" FkFile 200
+    ]
+    in let st = explorer-navigate explorer-new "/" entries
+    in let st1 = explorer-select-all st
+    in let st2 = explorer-copy-selected st1
+    in let t1 = assert-eq-int "clipboard-count" 2 (list-length (st2.ex-clipboard))
+    in let t2 = assert-true "not-cut" (if st2.ex-clipboard-cut then False else True)
+    in let st3 = explorer-cut-selected st1
+    in let t3 = assert-true "is-cut" (st3.ex-clipboard-cut)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: View Mode Tests
+
+  test-view-modes : Text
+  test-view-modes =
+    let st = explorer-new
+    in let t1 = assert-eq-text "default-list" "List" (view-mode-label (st.ex-view-mode))
+    in let st2 = explorer-set-view st ViewIcons
+    in let t2 = assert-eq-text "set-icons" "Icons" (view-mode-label (st2.ex-view-mode))
+    in let st3 = explorer-set-view st ViewDetails
+    in let t3 = assert-eq-text "set-details" "Details" (view-mode-label (st3.ex-view-mode))
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== FileExplorer Tests ==="
+    print-line-uni test-path-join
+    print-line-uni test-path-parent
+    print-line-uni test-path-filename
+    print-line-uni test-file-extension
+    print-line-uni test-navigation
+    print-line-uni test-selection
+    print-line-uni test-filter
+    print-line-uni test-clipboard
+    print-line-uni test-view-modes
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

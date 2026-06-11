@@ -1,0 +1,343 @@
+Chapter: HelmVoice
+  cites Helm chapter HelmTypes
+  cites Foreword chapter Maybe
+
+ Hierarchical voice system (The Bridge). Rank determines who
+ hears whom. Downward is free, upward is gated. Supports
+ peer channels, joint deployments, and emergency override.
+
+Section: List Utilities
+
+  list-map : (a -> b), List a -> List b
+  list-map (f) (xs) = list-map-loop f xs 0 (list-length xs) []
+
+  list-map-loop : (a -> b), List a, Integer, Integer, List b -> List b
+  list-map-loop (f) (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else list-map-loop f xs (i + 1) n (list-push acc (f (list-at xs i)))
+
+Section: Voice Hierarchy
+
+  VoiceHierarchy = record {
+    vh-nodes : List VoiceNode,
+    vh-node-count : Integer,
+    vh-joints : List JointChannel,
+    vh-joint-count : Integer,
+    vh-emergencies : List EmergencyBroadcast,
+    vh-emergency-count : Integer,
+    vh-template : RankTemplate,
+    vh-next-joint-id : Integer,
+    vh-next-emergency-id : Integer
+  }
+
+  hierarchy-new : RankTemplate -> VoiceHierarchy
+  hierarchy-new (template) = VoiceHierarchy {
+    vh-nodes = [],
+    vh-node-count = 0,
+    vh-joints = [],
+    vh-joint-count = 0,
+    vh-emergencies = [],
+    vh-emergency-count = 0,
+    vh-template = template,
+    vh-next-joint-id = 1,
+    vh-next-emergency-id = 1
+  }
+
+Section: Node Management
+
+  vh-add-node : VoiceHierarchy, Text, Text, Rank, Text -> VoiceHierarchy
+  vh-add-node (h) (id) (name) (rank) (parent) =
+    let node = VoiceNode {
+      vn-id = id,
+      vn-name = name,
+      vn-rank = rank,
+      vn-parent = parent,
+      vn-children = [],
+      vn-child-count = 0,
+      vn-muted = False,
+      vn-listening-up = True,
+      vn-speaking = False
+    }
+    in let with-node = __record-set (__record-set h "vh-nodes" (list-push h.vh-nodes node)) "vh-node-count" (h.vh-node-count + 1)
+    in if text-length parent > 0
+      then vh-add-child with-node parent id
+      else with-node
+
+  vh-add-child : VoiceHierarchy, Text, Text -> VoiceHierarchy
+  vh-add-child (h) (parent-id) (child-id) =
+    __record-set h "vh-nodes" (list-map (add-child-if parent-id child-id) h.vh-nodes)
+
+  add-child-if : Text, Text -> VoiceNode -> VoiceNode
+  add-child-if (parent-id) (child-id) (node) =
+    if node.vn-id == parent-id
+    then __record-set (__record-set node "vn-children" (list-push node.vn-children child-id)) "vn-child-count" (node.vn-child-count + 1)
+    else node
+
+  vh-find-node : VoiceHierarchy, Text -> Maybe VoiceNode
+  vh-find-node (h) (id) = vh-find-loop h.vh-nodes id 0 h.vh-node-count
+
+  vh-find-loop : List VoiceNode, Text, Integer, Integer -> Maybe VoiceNode
+  vh-find-loop (nodes) (id) (i) (len) =
+    if i >= len then None
+    else let n = list-at nodes i
+    in if n.vn-id == id then Just n
+    else vh-find-loop nodes id (i + 1) len
+
+Section: Speaking Rules
+
+  can-hear : VoiceHierarchy, Text, Text -> Boolean
+  can-hear (h) (listener-id) (speaker-id) =
+    let listener = vh-find-node h listener-id
+    in let speaker = vh-find-node h speaker-id
+    in when listener
+      is None -> False
+      is Just (l) -> when speaker
+        is None -> False
+        is Just (s) ->
+          if s.vn-muted then False
+          else if rank-ordinal s.vn-rank < rank-ordinal l.vn-rank then True
+          else if s.vn-parent == l.vn-id then True
+          else if l.vn-parent == s.vn-parent then
+            if rank-ordinal s.vn-rank <= rank-ordinal l.vn-rank then True
+            else False
+          else False
+
+  vh-set-speaking : VoiceHierarchy, Text, Boolean -> VoiceHierarchy
+  vh-set-speaking (h) (id) (speaking) =
+    __record-set h "vh-nodes" (list-map (set-speaking-if id speaking) h.vh-nodes)
+
+  set-speaking-if : Text, Boolean -> VoiceNode -> VoiceNode
+  set-speaking-if (id) (speaking) (node) =
+    if node.vn-id == id then __record-set node "vn-speaking" speaking else node
+
+  vh-set-muted : VoiceHierarchy, Text, Boolean -> VoiceHierarchy
+  vh-set-muted (h) (id) (muted) =
+    __record-set h "vh-nodes" (list-map (set-muted-if id muted) h.vh-nodes)
+
+  set-muted-if : Text, Boolean -> VoiceNode -> VoiceNode
+  set-muted-if (id) (muted) (node) =
+    if node.vn-id == id then __record-set node "vn-muted" muted else node
+
+  vh-toggle-listen-up : VoiceHierarchy, Text -> VoiceHierarchy
+  vh-toggle-listen-up (h) (id) =
+    __record-set h "vh-nodes" (list-map (toggle-listen-if id) h.vh-nodes)
+
+  toggle-listen-if : Text -> VoiceNode -> VoiceNode
+  toggle-listen-if (id) (node) =
+    if node.vn-id == id
+    then __record-set node "vn-listening-up" (if node.vn-listening-up then False else True)
+    else node
+
+Section: Joint Channels
+
+  vh-create-joint : VoiceHierarchy, Text, List Text, Text, Integer -> VoiceHierarchy
+  vh-create-joint (h) (name) (wings) (created-by) (now) =
+    let jc = JointChannel {
+      jc-id = h.vh-next-joint-id,
+      jc-name = name,
+      jc-wings = wings,
+      jc-wing-count = list-length wings,
+      jc-created-by = created-by,
+      jc-active = True,
+      jc-started = now
+    }
+    in __record-set (__record-set (__record-set h "vh-joints" (list-push h.vh-joints jc)) "vh-joint-count" (h.vh-joint-count + 1)) "vh-next-joint-id" (h.vh-next-joint-id + 1)
+
+  vh-close-joint : VoiceHierarchy, Integer -> VoiceHierarchy
+  vh-close-joint (h) (id) =
+    __record-set h "vh-joints" (list-map (close-joint-if id) h.vh-joints)
+
+  close-joint-if : Integer -> JointChannel -> JointChannel
+  close-joint-if (id) (jc) =
+    if jc.jc-id == id then __record-set jc "jc-active" False else jc
+
+  vh-active-joints : VoiceHierarchy -> List JointChannel
+  vh-active-joints (h) = vh-filter-joints h.vh-joints 0 h.vh-joint-count []
+
+  vh-filter-joints : List JointChannel, Integer, Integer, List JointChannel -> List JointChannel
+  vh-filter-joints (joints) (i) (len) (acc) =
+    if i >= len then acc
+    else let j = list-at joints i
+    in if j.jc-active
+      then vh-filter-joints joints (i + 1) len (list-push acc j)
+      else vh-filter-joints joints (i + 1) len acc
+
+Section: Emergency Override
+
+  vh-emergency : VoiceHierarchy, Text, Text, Integer -> VoiceHierarchy
+  vh-emergency (h) (speaker) (message) (now) =
+    let all-ids = vh-all-ids h.vh-nodes 0 h.vh-node-count []
+    in let eb = EmergencyBroadcast {
+      eb-id = h.vh-next-emergency-id,
+      eb-speaker = speaker,
+      eb-message = message,
+      eb-timestamp = now,
+      eb-reached = all-ids,
+      eb-reached-count = list-length all-ids
+    }
+    in __record-set (__record-set (__record-set h "vh-emergencies" (list-push h.vh-emergencies eb)) "vh-emergency-count" (h.vh-emergency-count + 1)) "vh-next-emergency-id" (h.vh-next-emergency-id + 1)
+
+  vh-all-ids : List VoiceNode, Integer, Integer, List Text -> List Text
+  vh-all-ids (nodes) (i) (len) (acc) =
+    if i >= len then acc
+    else vh-all-ids nodes (i + 1) len (list-push acc (list-at nodes i).vn-id)
+
+Section: Hierarchy Queries
+
+  vh-squad-of : VoiceHierarchy, Text -> List VoiceNode
+  vh-squad-of (h) (captain-id) =
+    vh-children-loop h.vh-nodes captain-id 0 h.vh-node-count []
+
+  vh-children-loop : List VoiceNode, Text, Integer, Integer, List VoiceNode -> List VoiceNode
+  vh-children-loop (nodes) (parent) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = list-at nodes i
+    in if n.vn-parent == parent
+      then vh-children-loop nodes parent (i + 1) len (list-push acc n)
+      else vh-children-loop nodes parent (i + 1) len acc
+
+  vh-admirals : VoiceHierarchy -> List VoiceNode
+  vh-admirals (h) = vh-rank-filter h.vh-nodes Admiral 0 h.vh-node-count []
+
+  vh-captains : VoiceHierarchy -> List VoiceNode
+  vh-captains (h) = vh-rank-filter h.vh-nodes Captain 0 h.vh-node-count []
+
+  vh-rank-filter : List VoiceNode, Rank, Integer, Integer, List VoiceNode -> List VoiceNode
+  vh-rank-filter (nodes) (rank) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = list-at nodes i
+    in if rank-ordinal n.vn-rank == rank-ordinal rank
+      then vh-rank-filter nodes rank (i + 1) len (list-push acc n)
+      else vh-rank-filter nodes rank (i + 1) len acc
+
+  vh-speakers : VoiceHierarchy -> List VoiceNode
+  vh-speakers (h) = vh-speaking-filter h.vh-nodes 0 h.vh-node-count []
+
+  vh-speaking-filter : List VoiceNode, Integer, Integer, List VoiceNode -> List VoiceNode
+  vh-speaking-filter (nodes) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = list-at nodes i
+    in if n.vn-speaking
+      then vh-speaking-filter nodes (i + 1) len (list-push acc n)
+      else vh-speaking-filter nodes (i + 1) len acc
+
+Section: Request to Speak
+
+  SpeakRequest = record {
+    sr-requester : Text,
+    sr-target-rank : Rank,
+    sr-message : Text,
+    sr-timestamp : Integer,
+    sr-granted : Boolean
+  }
+
+  vh-request-speak : VoiceHierarchy, Text, Rank, Text, Integer -> VoiceHierarchy
+  vh-request-speak (h) (requester) (target-rank) (message) (now) =
+    let req = SpeakRequest {
+      sr-requester = requester,
+      sr-target-rank = target-rank,
+      sr-message = message,
+      sr-timestamp = now,
+      sr-granted = False
+    }
+    in h
+
+  vh-grant-speak : VoiceHierarchy, Text -> VoiceHierarchy
+  vh-grant-speak (h) (requester) = vh-set-speaking h requester True
+
+Section: Admiral Controls
+
+  vh-broadcast-all : VoiceHierarchy, Text -> VoiceHierarchy
+  vh-broadcast-all (h) (admiral-id) =
+    vh-set-speaking h admiral-id True
+
+  vh-mute-all-incoming : VoiceHierarchy, Text -> VoiceHierarchy
+  vh-mute-all-incoming (h) (admiral-id) =
+    __record-set h "vh-nodes" (list-map (mute-if-child-of admiral-id) h.vh-nodes)
+
+  mute-if-child-of : Text -> VoiceNode -> VoiceNode
+  mute-if-child-of (parent-id) (node) =
+    if node.vn-parent == parent-id
+    then __record-set node "vn-muted" True
+    else node
+
+  vh-unmute-all : VoiceHierarchy, Text -> VoiceHierarchy
+  vh-unmute-all (h) (admiral-id) =
+    __record-set h "vh-nodes" (list-map (unmute-if-child-of admiral-id) h.vh-nodes)
+
+  unmute-if-child-of : Text -> VoiceNode -> VoiceNode
+  unmute-if-child-of (parent-id) (node) =
+    if node.vn-parent == parent-id
+    then __record-set node "vn-muted" False
+    else node
+
+Section: Voice Event Log
+
+  VoiceEvent =
+    | VeStartSpeaking
+    | VeStopSpeaking
+    | VeMuted
+    | VeUnmuted
+    | VeJointCreated
+    | VeJointClosed
+    | VeEmergencyTriggered
+    | VeRankChanged
+
+  VoiceLogEntry = record {
+    vle-actor : Text,
+    vle-event : VoiceEvent,
+    vle-detail : Text,
+    vle-timestamp : Integer
+  }
+
+  ve-label : VoiceEvent -> Text
+  ve-label (e) = when e
+    is VeStartSpeaking -> "Started speaking"
+    is VeStopSpeaking -> "Stopped speaking"
+    is VeMuted -> "Muted"
+    is VeUnmuted -> "Unmuted"
+    is VeJointCreated -> "Joint channel created"
+    is VeJointClosed -> "Joint channel closed"
+    is VeEmergencyTriggered -> "Emergency broadcast"
+    is VeRankChanged -> "Rank changed"
+
+Section: Hierarchy Statistics
+
+  HierarchyStats = record {
+    hs-total-nodes : Integer,
+    hs-admirals : Integer,
+    hs-captains : Integer,
+    hs-crew : Integer,
+    hs-speaking : Integer,
+    hs-muted : Integer,
+    hs-active-joints : Integer
+  }
+
+  vh-stats : VoiceHierarchy -> HierarchyStats
+  vh-stats (h) =
+    vh-stats-loop h.vh-nodes 0 h.vh-node-count 0 0 0 0 0
+
+  vh-stats-loop : List VoiceNode, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> HierarchyStats
+  vh-stats-loop (nodes) (i) (len) (admirals) (captains) (crew) (speaking) (muted) =
+    if i >= len then HierarchyStats {
+      hs-total-nodes = len,
+      hs-admirals = admirals,
+      hs-captains = captains,
+      hs-crew = crew,
+      hs-speaking = speaking,
+      hs-muted = muted,
+      hs-active-joints = 0
+    }
+    else let n = list-at nodes i
+    in let a = when n.vn-rank is Admiral -> 1 is otherwise -> 0
+    in let c = when n.vn-rank is Captain -> 1 is otherwise -> 0
+    in let cr = when n.vn-rank is Crew -> 1 is Lieutenant -> 1 is otherwise -> 0
+    in let s = if n.vn-speaking then 1 else 0
+    in let m = if n.vn-muted then 1 else 0
+    in vh-stats-loop nodes (i + 1) len (admirals + a) (captains + c) (crew + cr) (speaking + s) (muted + m)
+
+Section: Rank Template Switching
+
+  vh-apply-template : VoiceHierarchy, RankTemplate -> VoiceHierarchy
+  vh-apply-template (h) (template) =
+    __record-set h "vh-template" template

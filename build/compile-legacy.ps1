@@ -138,7 +138,7 @@ try {
     }
 
     # Launch VM + connect (4 retry attempts on bind/listen failure).
-    $run = Start-VmRun -Kernel $bootKernel -ConnectTimeoutSec 30 -MemMB 2048 -PCore $PCore -ExtraArgs $vmExtra
+    $run = Start-VmRun -Kernel $bootKernel -ConnectTimeoutSec 30 -MemMB 3072 -PCore $PCore -ExtraArgs $vmExtra
     if (-not $run) {
         "FAIL: VM did not listen after 4 attempts" | Set-Content -Path $Log -Encoding UTF8
         exit 3

@@ -51,7 +51,7 @@ $Stage0 = Join-Path $root 'build-output\bare-metal\Codex.cdx'
 if (-not (Test-Path $Stage0)) { Write-Host "FAIL: no compiler CDX at $Stage0"; exit 1 }
 
 $diskArgs = @('-drive', "file=$imgOut,format=raw,if=ide,index=0")
-$run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 10 -MemMB 2048 -PCore $PCore -ExtraArgs $diskArgs
+$run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 10 -MemMB 3072 -PCore $PCore -ExtraArgs $diskArgs
 if (-not $run) { Write-Host "FAIL: VM did not start"; exit 1 }
 
 try {

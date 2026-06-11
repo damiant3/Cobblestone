@@ -1,0 +1,126 @@
+Chapter: TestTypes
+  cites Cvmm chapter CvmmTypes
+
+ Unit tests for CvmmTypes. Validates resource status transitions,
+ byte formatting, endpoint formatting, uptime formatting, and
+ pagination math.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) =
+    if val then "PASS " & label
+    else "FAIL " & label & ": expected True"
+
+  assert-false : Text, Boolean -> Text
+  assert-false (label) (val) =
+    if val then "FAIL " & label & ": expected False"
+    else "PASS " & label
+
+Section: Status Tests
+
+  test-status-labels : Text
+  test-status-labels =
+    let t1 = assert-eq-text "status-online" "online" (status-label StatusOnline)
+    in let t2 = assert-eq-text "status-offline" "offline" (status-label StatusOffline)
+    in let t3 = assert-eq-text "status-degraded" "degraded" (status-label StatusDegraded)
+    in let t4 = assert-eq-text "status-error" "error" (status-label (StatusError "oops"))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-status-healthy : Text
+  test-status-healthy =
+    let t1 = assert-true "online-healthy" (status-is-healthy StatusOnline)
+    in let t2 = assert-true "busy-healthy" (status-is-healthy StatusBusy)
+    in let t3 = assert-false "offline-not-healthy" (status-is-healthy StatusOffline)
+    in let t4 = assert-false "error-not-healthy" (status-is-healthy (StatusError "x"))
+    in let t5 = assert-false "degraded-not-healthy" (status-is-healthy StatusDegraded)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Byte Size Tests
+
+  test-format-bytes : Text
+  test-format-bytes =
+    let t1 = assert-eq-text "bytes-512" "512 B" (format-bytes (bytes 512))
+    in let t2 = assert-eq-text "bytes-1k" "1 KB" (format-bytes (kilobytes 1))
+    in let t3 = assert-eq-text "bytes-1m" "1 MB" (format-bytes (megabytes 1))
+    in let t4 = assert-eq-text "bytes-2g" "2 GB" (format-bytes (gigabytes 2))
+    in let t5 = assert-eq-text "bytes-0" "0 B" (format-bytes (bytes 0))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+  test-byte-percent : Text
+  test-byte-percent =
+    let t1 = assert-eq-int "50-percent" 50 (byte-size-percent (megabytes 512) (megabytes 1024))
+    in let t2 = assert-eq-int "0-of-0" 0 (byte-size-percent (bytes 0) (bytes 0))
+    in let t3 = assert-eq-int "100-percent" 100 (byte-size-percent (megabytes 1024) (megabytes 1024))
+    in let t4 = assert-eq-int "25-percent" 25 (byte-size-percent (megabytes 256) (megabytes 1024))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Uptime Tests
+
+  test-format-uptime : Text
+  test-format-uptime =
+    let t1 = assert-eq-text "5-minutes" "5m" (format-uptime (Uptime { ut-seconds = 300 }))
+    in let t2 = assert-eq-text "2-hours" "2h 0m" (format-uptime (Uptime { ut-seconds = 7200 }))
+    in let t3 = assert-eq-text "1-day" "1d 0h 0m" (format-uptime (Uptime { ut-seconds = 86400 }))
+    in let t4 = assert-eq-text "1d-2h-30m" "1d 2h 30m" (format-uptime (Uptime { ut-seconds = 95400 }))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Endpoint Tests
+
+  test-format-endpoint : Text
+  test-format-endpoint =
+    let ep1 = Endpoint { ep-host = "localhost", ep-port = 8080, ep-protocol = ProtoHttp }
+    in let ep2 = Endpoint { ep-host = "10.0.2.15", ep-port = 9100, ep-protocol = ProtoTcp }
+    in let t1 = assert-eq-text "http-ep" "http://localhost:8080" (format-endpoint ep1)
+    in let t2 = assert-eq-text "tcp-ep" "tcp://10.0.2.15:9100" (format-endpoint ep2)
+    in t1 & "\n" & t2
+
+Section: Pagination Tests
+
+  test-pagination : Text
+  test-pagination =
+    let pg = PageInfo { pg-offset = 50, pg-limit = 25, pg-total = 100 }
+    in let t1 = assert-eq-int "page-count" 4 (page-count pg)
+    in let t2 = assert-eq-int "page-current" 3 (page-current pg)
+    in let t3 = assert-true "has-next" (page-has-next pg)
+    in let t4 = assert-true "has-prev" (page-has-prev pg)
+    in let pg-end = PageInfo { pg-offset = 75, pg-limit = 25, pg-total = 100 }
+    in let t5 = assert-false "no-next-at-end" (page-has-next pg-end)
+    in let pg-start = PageInfo { pg-offset = 0, pg-limit = 25, pg-total = 100 }
+    in let t6 = assert-false "no-prev-at-start" (page-has-prev pg-start)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5 & "\n" & t6
+
+Section: Sort Tests
+
+  test-sort-dir-flip : Text
+  test-sort-dir-flip =
+    let t1 = assert-eq-text "flip-asc" "SortDesc" (when SortDir-flip SortAsc is SortDesc -> "SortDesc" is SortAsc -> "SortAsc")
+    in let t2 = assert-eq-text "flip-desc" "SortAsc" (when SortDir-flip SortDesc is SortDesc -> "SortDesc" is SortAsc -> "SortAsc")
+    in t1 & "\n" & t2
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== CvmmTypes Tests ==="
+    print-line-uni test-status-labels
+    print-line-uni test-status-healthy
+    print-line-uni test-format-bytes
+    print-line-uni test-byte-percent
+    print-line-uni test-format-uptime
+    print-line-uni test-format-endpoint
+    print-line-uni test-pagination
+    print-line-uni test-sort-dir-flip
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

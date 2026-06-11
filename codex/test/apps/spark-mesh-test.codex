@@ -1,0 +1,91 @@
+Chapter: SparkMeshTest
+  cites Math chapter Quaternion
+  cites Math chapter Geometry
+
+ Tests mesh operations: construction, vertex access, face access.
+ Inlines TriMesh to avoid Spark quire dependency.
+
+Section: Types
+
+  TriFace = record { tf-v0 : Integer, tf-v1 : Integer, tf-v2 : Integer }
+
+  TriMesh = record {
+    tm-verts : List Vec3,
+    tm-uvs : List Vec2,
+    tm-normals : List Vec3,
+    tm-faces : List TriFace,
+    tm-vert-count : Integer,
+    tm-face-count : Integer
+  }
+
+Section: Construction
+
+  tm-empty : TriMesh
+  tm-empty = TriMesh { tm-verts = [], tm-uvs = [], tm-normals = [], tm-faces = [], tm-vert-count = 0, tm-face-count = 0 }
+
+  tm-add-vert : TriMesh, Vec3, Vec2, Vec3 -> TriMesh
+  tm-add-vert (m) (pos) (uv) (normal) =
+    let nv = list-push (m.tm-verts) pos in let nu = list-push (m.tm-uvs) uv in let nn = list-push (m.tm-normals) normal
+    in TriMesh { tm-verts = nv, tm-uvs = nu, tm-normals = nn, tm-faces = m.tm-faces, tm-vert-count = m.tm-vert-count + 1, tm-face-count = m.tm-face-count }
+
+  tm-add-face : TriMesh, Integer, Integer, Integer -> TriMesh
+  tm-add-face (m) (v0) (v1) (v2) =
+    let nf = list-push (m.tm-faces) (TriFace { tf-v0 = v0, tf-v1 = v1, tf-v2 = v2 })
+    in TriMesh { tm-verts = m.tm-verts, tm-uvs = m.tm-uvs, tm-normals = m.tm-normals, tm-faces = nf, tm-vert-count = m.tm-vert-count, tm-face-count = m.tm-face-count + 1 }
+
+Section: Operations
+
+  tm-vert : TriMesh, Integer -> Vec3
+  tm-vert (m) (i) = list-at (m.tm-verts) i
+
+  tm-normal : TriMesh, Integer -> Vec3
+  tm-normal (m) (i) = list-at (m.tm-normals) i
+
+  tm-face : TriMesh, Integer -> TriFace
+  tm-face (m) (i) = list-at (m.tm-faces) i
+
+  translate-verts : List Vec3, Vec3, Integer, Integer, List Vec3 -> List Vec3
+  translate-verts (verts) (off) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at verts i
+    in translate-verts verts off (i + 1) n (list-push acc (vec3-add v off))
+
+  tm-translate : TriMesh, Vec3 -> TriMesh
+  tm-translate (m) (offset) =
+    let nv = translate-verts (m.tm-verts) offset 0 (m.tm-vert-count) []
+    in TriMesh { tm-verts = nv, tm-uvs = m.tm-uvs, tm-normals = m.tm-normals, tm-faces = m.tm-faces, tm-vert-count = m.tm-vert-count, tm-face-count = m.tm-face-count }
+
+  tm-merge : TriMesh, TriMesh -> Integer
+  tm-merge (a) (b) = a.tm-vert-count + b.tm-vert-count
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    let uv0 = vec2-new 0 0 in let n = vec3-new 0 1000 0
+    in let m = tm-empty
+    in let m1 = tm-add-vert m (vec3-new 0 0 0) uv0 n
+    in let m2 = tm-add-vert m1 (vec3-new 1000 0 0) uv0 n
+    in let m3 = tm-add-vert m2 (vec3-new 500 1000 0) uv0 n
+    in let m4 = tm-add-face m3 0 1 2
+    in print-line-uni ("tri verts: " & show (m4.tm-vert-count))
+    print-line-uni ("tri faces: " & show (m4.tm-face-count))
+
+    let v0 = tm-vert m4 0
+    in print-line-uni ("v0 x: " & show (v0.vx))
+
+    let v2 = tm-vert m4 2
+    in print-line-uni ("v2 y: " & show (v2.vy))
+
+    let f0 = tm-face m4 0
+    in print-line-uni ("f0 v1: " & show (f0.tf-v1))
+
+    let moved = tm-translate m4 (vec3-new 100 200 300)
+    in let mv0 = tm-vert moved 0
+    in print-line-uni ("moved x: " & show (mv0.vx))
+    print-line-uni ("moved y: " & show (mv0.vy))
+
+    let merged = tm-merge m4 m4
+    in print-line-uni ("merged count: " & show merged)
+
+    print-line-uni "mesh ok"
+  end

@@ -1,0 +1,79 @@
+Chapter: OrgPage
+  cites Vision chapter VisionTypes
+  cites Vision chapter VisionOrg
+  cites Vision chapter VisionTheme
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Org graph visualization. Shows the reporting hierarchy with
+ domain ownership annotations. Signal flow indicators show
+ which paths are active.
+
+Section: Org View
+
+  org-view-widget : OrgGraph -> WidgetNode
+  org-view-widget (g) =
+    let title = widget-label "org-title" "Organization"
+    in let stats = widget-label "org-stats"
+          (show g.og-people-count & " people, " & show g.og-domain-count & " domains")
+    in let people-section = people-list-widget g
+    in let domain-section = domain-list-widget g
+    in widget-panel "org-view" DirColumn 8
+      [title, stats, people-section, domain-section]
+
+Section: People List
+
+  people-list-widget : OrgGraph -> WidgetNode
+  people-list-widget (g) =
+    let title = widget-label "ppl-title" "People"
+    in let rows = person-rows g.og-people 0 g.og-people-count []
+    in widget-panel "people-list" DirColumn 2 (title :: rows)
+
+  person-rows : List Person, Integer, Integer, List WidgetNode -> List WidgetNode
+  person-rows (people) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at people i
+    in let row = person-row-widget p
+    in person-rows people (i + 1) len (list-push acc row)
+
+  person-row-widget : Person -> WidgetNode
+  person-row-widget (p) =
+    let role-lbl = widget-label ("per-role-" & p.per-id) (role-label p.per-role)
+    in let name-lbl = widget-label ("per-name-" & p.per-id) p.per-name
+    in let domain-lbl = widget-label ("per-dom-" & p.per-id) ("[" & p.per-domain & "]")
+    in let reports-lbl = widget-label ("per-rpt-" & p.per-id)
+          (if text-length p.per-reports-to > 0 then "reports to " & p.per-reports-to else "top level")
+    in widget-panel ("per-" & p.per-id) DirRow 8
+      [role-lbl, name-lbl, domain-lbl, reports-lbl]
+
+Section: Domain List
+
+  domain-list-widget : OrgGraph -> WidgetNode
+  domain-list-widget (g) =
+    let title = widget-label "dom-title" "Domains"
+    in let rows = domain-rows g.og-domains 0 g.og-domain-count []
+    in widget-panel "domain-list" DirColumn 2 (title :: rows)
+
+  domain-rows : List Domain, Integer, Integer, List WidgetNode -> List WidgetNode
+  domain-rows (domains) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = list-at domains i
+    in let row = domain-row-widget d
+    in domain-rows domains (i + 1) len (list-push acc row)
+
+  domain-row-widget : Domain -> WidgetNode
+  domain-row-widget (d) =
+    let name-lbl = widget-label ("dom-n-" & d.dom-id) d.dom-name
+    in let owner-lbl = widget-label ("dom-o-" & d.dom-id) ("Owner: " & d.dom-owner)
+    in let kw-lbl = widget-label ("dom-kw-" & d.dom-id)
+          ("Keywords: " & join-keywords d.dom-keywords)
+    in widget-panel ("dom-" & d.dom-id) DirRow 8 [name-lbl, owner-lbl, kw-lbl]
+
+  join-keywords : List Text -> Text
+  join-keywords (kws) = jk-loop kws 0 (list-length kws) ""
+
+  jk-loop : List Text, Integer, Integer, Text -> Text
+  jk-loop (kws) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else ", "
+    in jk-loop kws (i + 1) len (acc & sep & list-at kws i)

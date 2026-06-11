@@ -1,0 +1,183 @@
+Chapter: Solver
+  cites Mathbook chapter Expr
+  cites Mathbook chapter Simplify
+  cites Foreword chapter Maybe
+
+ Equation and system solver. Solves linear equations, quadratic
+ equations, and simple polynomial equations symbolically. Also
+ provides Newton's method for numerical roots. Systems of linear
+ equations are solved via Gaussian elimination.
+
+Section: Linear Solver (ax + b = 0)
+
+  solve-linear : Expr, Text -> Maybe Expr
+  solve-linear (eq) (var) = when eq
+    is ExEq (lhs) (rhs) ->
+      let moved = simplify (ExSub lhs rhs)
+      in solve-linear-expr moved var
+    is otherwise -> solve-linear-expr (simplify eq) var
+
+  solve-linear-expr : Expr, Text -> Maybe Expr
+  solve-linear-expr (e) (var) =
+    let coeff = extract-coefficient e var
+    in let constant = extract-constant e var
+    in if coeff == 0 then None
+    else Just (simplify (ExDiv (ExNeg (ExInt constant)) (ExInt coeff)))
+
+  extract-coefficient : Expr, Text -> Integer
+  extract-coefficient (e) (var) = when e
+    is ExVar (name) -> if name == var then 1 else 0
+    is ExMul (ExInt n) (ExVar name) -> if name == var then n else 0
+    is ExMul (ExVar name) (ExInt n) -> if name == var then n else 0
+    is ExNeg (inner) -> negate (extract-coefficient inner var)
+    is ExAdd (a) (b) -> extract-coefficient a var + extract-coefficient b var
+    is ExSub (a) (b) -> extract-coefficient a var - extract-coefficient b var
+    is otherwise -> 0
+
+  extract-constant : Expr, Text -> Integer
+  extract-constant (e) (var) = when e
+    is ExInt (n) -> n
+    is ExRatio (n) (d) -> n / d
+    is ExVar (name) -> 0
+    is ExMul (ExInt n) (ExVar name) -> 0
+    is ExNeg (inner) -> negate (extract-constant inner var)
+    is ExAdd (a) (b) -> extract-constant a var + extract-constant b var
+    is ExSub (a) (b) -> extract-constant a var - extract-constant b var
+    is otherwise -> 0
+
+Section: Quadratic Solver (ax^2 + bx + c = 0)
+
+  QuadraticSolution =
+    | QuadTwoReal (Expr) (Expr)
+    | QuadOneReal (Expr)
+    | QuadTwoComplex (Expr) (Expr)
+    | QuadNoSolution
+
+  solve-quadratic : Integer, Integer, Integer -> QuadraticSolution
+  solve-quadratic (a) (b) (c) =
+    if a == 0 then QuadNoSolution
+    else let disc = b * b - 4 * a * c
+    in if disc > 0 then
+      let sqrt-disc = ExSqrt (ExInt disc)
+      in QuadTwoReal (simplify (ExDiv (ExAdd (ExNeg (ExInt b)) sqrt-disc) (ExInt (2 * a)))) (simplify (ExDiv (ExSub (ExNeg (ExInt b)) sqrt-disc) (ExInt (2 * a))))
+    else if disc == 0 then
+      QuadOneReal (simplify (ExDiv (ExNeg (ExInt b)) (ExInt (2 * a))))
+    else QuadTwoComplex (simplify (ExDiv (ExNeg (ExInt b)) (ExInt (2 * a)))) (simplify (ExDiv (ExSqrt (ExInt (negate disc))) (ExInt (2 * a))))
+
+  quad-solution-text : QuadraticSolution -> Text
+  quad-solution-text (sol) = when sol
+    is QuadTwoReal (r1) (r2) -> "x = " & ex-print r1 & " or x = " & ex-print r2
+    is QuadOneReal (r) -> "x = " & ex-print r
+    is QuadTwoComplex (real) (imag) -> "x = " & ex-print real & " +/- " & ex-print imag & "i"
+    is QuadNoSolution -> "no solution"
+
+Section: Newton's Method
+
+  newton-step : Expr, Expr, Text, Integer -> Integer
+  newton-step (f) (df) (var) (x) =
+    let fx = ex-to-int (ex-eval (ex-subst f var (ExInt x)))
+    in let dfx = ex-to-int (ex-eval (ex-subst df var (ExInt x)))
+    in if dfx == 0 then x
+    else x - fx / dfx
+
+  newton-solve : Expr, Text, Integer, Integer -> Integer
+  newton-solve (f) (var) (initial) (iterations) =
+    let df = differentiate f var
+    in newton-loop f df var initial iterations
+
+  newton-loop : Expr, Expr, Text, Integer, Integer -> Integer
+  newton-loop (f) (df) (var) (x) (remaining) =
+    if remaining <= 0 then x
+    else let next = newton-step f df var x
+    in if next == x then x
+    else newton-loop f df var next (remaining - 1)
+
+Section: Polynomial Operations
+
+  PolynomialCoeffs = record {
+    pc-coeffs : List Integer,
+    pc-degree : Integer,
+    pc-var : Text
+  }
+
+  poly-new : List Integer, Text -> PolynomialCoeffs
+  poly-new (coeffs) (var) = PolynomialCoeffs {
+    pc-coeffs = coeffs,
+    pc-degree = list-length coeffs - 1,
+    pc-var = var
+  }
+
+  poly-eval : PolynomialCoeffs, Integer -> Integer
+  poly-eval (p) (x) = poly-eval-loop (p.pc-coeffs) x (p.pc-degree) 0
+
+  poly-eval-loop : List Integer, Integer, Integer, Integer -> Integer
+  poly-eval-loop (coeffs) (x) (i) (acc) =
+    if i < 0 then acc
+    else poly-eval-loop coeffs x (i - 1) (acc * x + list-at coeffs i)
+
+  poly-to-expr : PolynomialCoeffs -> Expr
+  poly-to-expr (p) = poly-expr-loop (p.pc-coeffs) (p.pc-var) 0 (p.pc-degree + 1) (ExInt 0)
+
+  poly-expr-loop : List Integer, Text, Integer, Integer, Expr -> Expr
+  poly-expr-loop (coeffs) (var) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at coeffs i
+    in let term = if c == 0 then ExInt 0
+      else if i == 0 then ExInt c
+      else if i == 1 then ExMul (ExInt c) (ExVar var)
+      else ExMul (ExInt c) (ExPow (ExVar var) (ExInt i))
+    in poly-expr-loop coeffs var (i + 1) n (ex-add acc term)
+
+  poly-add : PolynomialCoeffs, PolynomialCoeffs -> PolynomialCoeffs
+  poly-add (a) (b) =
+    let max-deg = ex-max-int (a.pc-degree) (b.pc-degree)
+    in let coeffs = poly-add-coeffs (a.pc-coeffs) (b.pc-coeffs) (a.pc-degree + 1) (b.pc-degree + 1) 0 (max-deg + 1) []
+    in poly-new coeffs (a.pc-var)
+
+  poly-add-coeffs : List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  poly-add-coeffs (ac) (bc) (alen) (blen) (i) (n) (result) =
+    if i >= n then result
+    else let av = if i < alen then list-at ac i else 0
+    in let bv = if i < blen then list-at bc i else 0
+    in poly-add-coeffs ac bc alen blen (i + 1) n (list-push result (av + bv))
+
+  poly-derivative : PolynomialCoeffs -> PolynomialCoeffs
+  poly-derivative (p) =
+    if p.pc-degree <= 0 then poly-new [0] (p.pc-var)
+    else let coeffs = poly-deriv-coeffs (p.pc-coeffs) 1 (p.pc-degree + 1) []
+    in poly-new coeffs (p.pc-var)
+
+  poly-deriv-coeffs : List Integer, Integer, Integer, List Integer -> List Integer
+  poly-deriv-coeffs (coeffs) (i) (n) (acc) =
+    if i >= n then acc
+    else poly-deriv-coeffs coeffs (i + 1) n (list-push acc (i * list-at coeffs i))
+
+Section: Expression-to-Polynomial
+
+  ex-to-poly : Expr, Text -> Maybe PolynomialCoeffs
+  ex-to-poly (e) (var) =
+    let simplified = simplify e
+    in ex-to-poly-inner simplified var
+
+  ex-to-poly-inner : Expr, Text -> Maybe PolynomialCoeffs
+  ex-to-poly-inner (e) (var) = when e
+    is ExInt (n) -> Just (poly-new [n] var)
+    is ExVar (name) -> if name == var then Just (poly-new [0, 1] var) else Just (poly-new [0] var)
+    is ExPow (ExVar name) (ExInt n) ->
+      if name == var then Just (poly-from-term 1 n var)
+      else None
+    is ExMul (ExInt c) (ExVar name) -> if name == var then Just (poly-new [0, c] var) else None
+    is ExMul (ExInt c) (ExPow (ExVar name) (ExInt n)) -> if name == var then Just (poly-from-term c n var) else None
+    is otherwise -> None
+
+  poly-from-term : Integer, Integer, Text -> PolynomialCoeffs
+  poly-from-term (coeff) (degree) (var) =
+    let coeffs = poly-zeros degree []
+    in poly-new (list-push coeffs coeff) var
+
+  poly-zeros : Integer, List Integer -> List Integer
+  poly-zeros (n) (acc) =
+    if n <= 0 then acc
+    else poly-zeros (n - 1) (list-push acc 0)
+
+Page 1

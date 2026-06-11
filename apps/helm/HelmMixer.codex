@@ -1,0 +1,126 @@
+Chapter: HelmMixer
+  cites Helm chapter HelmTypes
+  cites Helm chapter HelmVoice
+  cites Foreword chapter Maybe
+
+ Audio mixing rules for The Bridge. Determines who hears whom
+ at what volume based on rank hierarchy, joint channels, and
+ emergency state.
+
+Section: Mix Rule
+
+  MixRule = record {
+    mr-listener : Text,
+    mr-speaker : Text,
+    mr-volume : Integer,
+    mr-reason : MixReason
+  }
+
+  MixReason =
+    | MrDownward
+    | MrPeer
+    | MrSquadInternal
+    | MrJointChannel
+    | MrEmergency
+    | MrListeningUp
+
+  mix-reason-label : MixReason -> Text
+  mix-reason-label (r) = when r
+    is MrDownward -> "downward"
+    is MrPeer -> "peer"
+    is MrSquadInternal -> "squad"
+    is MrJointChannel -> "joint"
+    is MrEmergency -> "emergency"
+    is MrListeningUp -> "listening up"
+
+Section: Volume Levels
+
+  vol-commander : Integer = 100
+  vol-peer : Integer = 80
+  vol-squad : Integer = 90
+  vol-joint : Integer = 70
+  vol-emergency : Integer = 100
+  vol-listen-up : Integer = 60
+
+Section: Mix Computation
+
+  compute-mix : VoiceHierarchy, Text -> List MixRule
+  compute-mix (h) (listener-id) =
+    let node = vh-find-node h listener-id
+    in when node
+      is None -> []
+      is Just (listener) ->
+        let speakers = vh-speakers h
+        in compute-rules-for h listener speakers 0 (list-length speakers) []
+
+  compute-rules-for : VoiceHierarchy, VoiceNode, List VoiceNode, Integer, Integer, List MixRule -> List MixRule
+  compute-rules-for (h) (listener) (speakers) (i) (len) (acc) =
+    if i >= len then acc
+    else let speaker = list-at speakers i
+    in if speaker.vn-id == listener.vn-id then compute-rules-for h listener speakers (i + 1) len acc
+    else let rule = compute-one-rule h listener speaker
+    in when rule
+      is None -> compute-rules-for h listener speakers (i + 1) len acc
+      is Just (r) -> compute-rules-for h listener speakers (i + 1) len (list-push acc r)
+
+  compute-one-rule : VoiceHierarchy, VoiceNode, VoiceNode -> Maybe MixRule
+  compute-one-rule (h) (listener) (speaker) =
+    if rank-ordinal speaker.vn-rank < rank-ordinal listener.vn-rank
+    then Just (MixRule { mr-listener = listener.vn-id, mr-speaker = speaker.vn-id, mr-volume = vol-commander, mr-reason = MrDownward })
+    else if speaker.vn-parent == listener.vn-id
+    then Just (MixRule { mr-listener = listener.vn-id, mr-speaker = speaker.vn-id, mr-volume = vol-squad, mr-reason = MrSquadInternal })
+    else if speaker.vn-parent == listener.vn-parent
+    then if rank-ordinal speaker.vn-rank == rank-ordinal listener.vn-rank
+      then Just (MixRule { mr-listener = listener.vn-id, mr-speaker = speaker.vn-id, mr-volume = vol-peer, mr-reason = MrPeer })
+      else None
+    else if listener.vn-listening-up
+    then if rank-ordinal speaker.vn-rank < rank-ordinal listener.vn-rank
+      then Just (MixRule { mr-listener = listener.vn-id, mr-speaker = speaker.vn-id, mr-volume = vol-listen-up, mr-reason = MrListeningUp })
+      else None
+    else None
+
+Section: Joint Channel Mixing
+
+  joint-mix-rules : VoiceHierarchy, JointChannel, Text -> List MixRule
+  joint-mix-rules (h) (jc) (listener-id) =
+    let listener = vh-find-node h listener-id
+    in when listener
+      is None -> []
+      is Just (l) ->
+        if is-in-joint-wings jc.jc-wings l.vn-id 0 jc.jc-wing-count == False then []
+        else joint-speaker-rules h jc l
+
+  is-in-joint-wings : List Text, Text, Integer, Integer -> Boolean
+  is-in-joint-wings (wings) (id) (i) (len) =
+    if i >= len then False
+    else if list-at wings i == id then True
+    else is-in-joint-wings wings id (i + 1) len
+
+  joint-speaker-rules : VoiceHierarchy, JointChannel, VoiceNode -> List MixRule
+  joint-speaker-rules (h) (jc) (listener) =
+    let captains = vh-captains h
+    in jsr-loop h jc listener captains 0 (list-length captains) []
+
+  jsr-loop : VoiceHierarchy, JointChannel, VoiceNode, List VoiceNode, Integer, Integer, List MixRule -> List MixRule
+  jsr-loop (h) (jc) (listener) (captains) (i) (len) (acc) =
+    if i >= len then acc
+    else let cap = list-at captains i
+    in if cap.vn-id /= listener.vn-id
+      then if is-in-joint-wings jc.jc-wings cap.vn-id 0 jc.jc-wing-count
+        then if cap.vn-speaking
+          then let rule = MixRule { mr-listener = listener.vn-id, mr-speaker = cap.vn-id, mr-volume = vol-joint, mr-reason = MrJointChannel }
+          in jsr-loop h jc listener captains (i + 1) len (list-push acc rule)
+          else jsr-loop h jc listener captains (i + 1) len acc
+        else jsr-loop h jc listener captains (i + 1) len acc
+      else jsr-loop h jc listener captains (i + 1) len acc
+
+Section: Emergency Mix
+
+  emergency-mix-rule : Text, EmergencyBroadcast -> MixRule
+  emergency-mix-rule (listener-id) (eb) =
+    MixRule {
+      mr-listener = listener-id,
+      mr-speaker = eb.eb-speaker,
+      mr-volume = vol-emergency,
+      mr-reason = MrEmergency
+    }

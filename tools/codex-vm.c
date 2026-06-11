@@ -2233,7 +2233,7 @@ static void vga_start(void) {
 #define LOAD_ADDR       0x100000
 #define STACK_TOP       0x7FFE00
 #define PAGE_TABLE_ADDR 0xC00000
-#define MAX_MEM         (2ULL*1024*1024*1024)
+#define MAX_MEM         (16ULL*1024*1024*1024)
 
 /* Memory-mapped I/O.
    Input: pre-loaded at 0x500000 (2 MB). Output: guest writes to ring
@@ -2245,7 +2245,7 @@ static void vga_start(void) {
             0x700000  Output ring buffer (2 MB)
             0x900000  Heap                                             */
 #define INPUT_BUF_ADDR        0x500000
-#define INPUT_BUF_MAX         0x200000  /* 2 MB */
+#define INPUT_BUF_MAX         0x1000000  /* 16 MB */
 #define GUEST_RING_SIZE       0x100000  /* 1 MB — must match seed's serial-ring-buf-size */
 #define GUEST_RING_MASK       0x0FFFFF
 

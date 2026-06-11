@@ -1,0 +1,259 @@
+Chapter: IsInsurance
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Insurance: policy administration, premium calculation, claims
+ processing, reserves, reinsurance, actuarial tables, agent/broker
+ management, and regulatory reporting.
+
+Section: Policy Administration
+
+  Policy = record {
+    pol-id : Text,
+    pol-number : Text,
+    pol-holder-id : Text,
+    pol-product : Text,
+    pol-line : InsuranceLine,
+    pol-effective : Integer,
+    pol-expiry : Integer,
+    pol-premium : Integer,
+    pol-deductible : Integer,
+    pol-limit : Integer,
+    pol-aggregate-limit : Integer,
+    pol-status : PolicyStatus,
+    pol-endorsements : List Endorsement,
+    pol-agent-id : Text,
+    pol-underwriter : Text,
+    pol-risk-class : Text,
+    pol-territory : Text
+  }
+
+  InsuranceLine =
+    | PersonalAuto
+    | CommercialAuto
+    | Homeowners
+    | CommercialProperty
+    | GeneralLiability
+    | ProfessionalLiability
+    | WorkersComp
+    | LifeInsurance2
+    | HealthInsurance2
+    | Umbrella
+    | InlandMarine
+    | CyberLiability
+
+  PolicyStatus =
+    | PolBound
+    | PolActive2
+    | PolRenewal
+    | PolCancelled
+    | PolExpired2
+    | PolLapsed
+    | PolNonRenewed
+
+  Endorsement = record {
+    end-id : Text,
+    end-type : Text,
+    end-description : Text,
+    end-premium-adj : Integer,
+    end-effective : Integer
+  }
+
+Section: Premium Calculation
+
+  RatingFactor = record {
+    rf-name : Text,
+    rf-value : Integer,
+    rf-multiplier-x1000 : Integer
+  }
+
+  calc-premium : Integer, List RatingFactor -> Integer
+  calc-premium (base-rate) (factors) = apply-factors base-rate factors 0
+
+  apply-factors : Integer, List RatingFactor, Integer -> Integer
+  apply-factors (current) (factors) (i) =
+    if i >= list-length factors then current
+    else let f = list-at factors i
+    in apply-factors (current * f.rf-multiplier-x1000 / 1000) factors (i + 1)
+
+  auto-rating-factors : Integer, Integer, Integer, Boolean -> List RatingFactor
+  auto-rating-factors (age) (years-licensed) (violations) (good-student) = [
+    RatingFactor { rf-name = "age", rf-value = age,
+      rf-multiplier-x1000 = if age < 25 then 1400 else if age > 65 then 1100 else 1000 },
+    RatingFactor { rf-name = "experience", rf-value = years-licensed,
+      rf-multiplier-x1000 = if years-licensed < 3 then 1300 else if years-licensed < 5 then 1100 else 1000 },
+    RatingFactor { rf-name = "violations", rf-value = violations,
+      rf-multiplier-x1000 = if violations == 0 then 900 else if violations == 1 then 1100 else 1400 },
+    RatingFactor { rf-name = "good-student", rf-value = 0,
+      rf-multiplier-x1000 = if good-student then 950 else 1000 }
+  ]
+
+Section: Claims
+
+  Claim = record {
+    clm-id : Text,
+    clm-policy-id : Text,
+    clm-claimant-id : Text,
+    clm-loss-date : Integer,
+    clm-report-date : Integer,
+    clm-type : ClaimType,
+    clm-status : ClaimStatus,
+    clm-adjuster : Text,
+    clm-reserve : Integer,
+    clm-paid : Integer,
+    clm-recoveries : Integer,
+    clm-description : Text,
+    clm-cause-code : Text,
+    clm-litigation : Boolean,
+    clm-catastrophe-code : Text,
+    clm-subrogation : Boolean
+  }
+
+  ClaimType =
+    | FirstParty
+    | ThirdParty
+    | BodilyInjury
+    | PropertyDamage
+    | CompClaim
+    | CollisionClaim
+
+  ClaimStatus =
+    | ClmOpen
+    | ClmInvestigation
+    | ClmReserved
+    | ClmSettled
+    | ClmClosed
+    | ClmReopened
+    | ClmDenied
+    | ClmSubrogation
+
+  clm-incurred : Claim -> Integer
+  clm-incurred (c) = c.clm-reserve + c.clm-paid - c.clm-recoveries
+
+Section: Reserves
+
+  ReserveType =
+    | CaseReserve
+    | BulkReserve
+    | IBNR
+    | ALAE
+    | ULAE
+
+  Reserve = record {
+    res-claim-id : Text,
+    res-type : ReserveType,
+    res-amount : Integer,
+    res-set-by : Text,
+    res-set-date : Integer,
+    res-prior-amount : Integer,
+    res-reason : Text
+  }
+
+  LossTriangle = record {
+    lt-origin-year : Integer,
+    lt-development : List Integer,
+    lt-ultimate : Integer,
+    lt-ibnr : Integer
+  }
+
+  development-factor : Integer, Integer -> Integer
+  development-factor (current) (prior) =
+    if prior == 0 then 10000
+    else current * 10000 / prior
+
+Section: Reinsurance
+
+  ReinsuranceType =
+    | QuotaShare (Integer)
+    | SurplusShare (Integer)
+    | ExcessOfLoss (Integer) (Integer)
+    | StopLoss (Integer)
+    | CatastropheXL (Integer) (Integer)
+
+  Treaty = record {
+    treaty-id : Text,
+    treaty-name : Text,
+    treaty-reinsurer : Text,
+    treaty-type : ReinsuranceType,
+    treaty-effective : Integer,
+    treaty-expiry : Integer,
+    treaty-premium-ceded : Integer,
+    treaty-losses-ceded : Integer,
+    treaty-commission-pct : Integer
+  }
+
+  ceded-premium : Treaty, Integer -> Integer
+  ceded-premium (t) (gross) =
+    when t.treaty-type
+      is QuotaShare (pct) -> gross * pct / 100
+      is otherwise -> 0
+
+  ceded-loss : Treaty, Integer -> Integer
+  ceded-loss (t) (gross-loss) =
+    when t.treaty-type
+      is QuotaShare (pct) -> gross-loss * pct / 100
+      is ExcessOfLoss (retention) (limit) ->
+        if gross-loss <= retention then 0
+        else if gross-loss - retention > limit then limit
+        else gross-loss - retention
+      is StopLoss (attachment) ->
+        if gross-loss <= attachment then 0
+        else gross-loss - attachment
+      is CatastropheXL (retention) (limit) ->
+        if gross-loss <= retention then 0
+        else if gross-loss - retention > limit then limit
+        else gross-loss - retention
+      is otherwise -> 0
+
+ SurplusShare ceding requires the per-risk retained line, which the
+ Treaty record does not carry; the otherwise arm keeps SurplusShare
+ at zero until the treaty model grows per-risk data.
+
+Section: Agent/Broker
+
+  Agent2 = record {
+    agt-id : Text,
+    agt-name : Text,
+    agt-license : Text,
+    agt-type : AgentType,
+    agt-commission-pct : Integer,
+    agt-policies-count : Integer,
+    agt-premium-volume : Integer,
+    agt-loss-ratio-pct : Integer,
+    agt-active : Boolean
+  }
+
+  AgentType =
+    | CaptiveAgent
+    | IndependentAgent
+    | Broker
+    | GeneralAgent
+    | ManagingGeneral
+
+Section: Loss Ratios
+
+  LossRatio = record {
+    lr-line : Text,
+    lr-earned-premium : Integer,
+    lr-incurred-losses : Integer,
+    lr-loss-ratio-pct : Integer,
+    lr-expense-ratio-pct : Integer,
+    lr-combined-ratio-pct : Integer,
+    lr-period : Integer
+  }
+
+  calc-loss-ratio : Integer, Integer, Integer -> LossRatio
+  calc-loss-ratio (earned) (losses) (expenses) =
+    let lr = if earned == 0 then 0 else losses * 100 / earned
+    in let er = if earned == 0 then 0 else expenses * 100 / earned
+    in LossRatio {
+      lr-line = "", lr-earned-premium = earned,
+      lr-incurred-losses = losses, lr-loss-ratio-pct = lr,
+      lr-expense-ratio-pct = er, lr-combined-ratio-pct = lr + er,
+      lr-period = 0
+    }
+
+  is-profitable : LossRatio -> Boolean
+  is-profitable (lr) = lr.lr-combined-ratio-pct < 100

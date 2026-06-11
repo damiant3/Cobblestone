@@ -10,58 +10,28 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
+[Environment]::CurrentDirectory = (Get-Location).Path
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 
 $sources = @(Get-Content -Path $ListFile | Where-Object { $_.Trim() -ne '' })
 if ($sources.Count -eq 0) { exit 0 }
 
-$citePat = '^\s*cites\s+(Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev|Magic|CodexMagic|Games|Spark|Data|Explorer)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
-$QuireDirs = @{
-    'Foreword' = 'codex\foreword\core'; 'Kernel' = 'codex\os\kernel'; 'OS' = 'codex\os\core'
-    'Works' = 'apps\works'; 'Trust' = 'codex\os\trust'; 'Net' = 'codex\os\net'
-    'Verify' = 'codex\os\verify'; 'Replay' = 'codex\os\replay'; 'Sched' = 'codex\os\sched'
-    'Observe' = 'codex\os\observe'; 'Game' = 'codex\foreword\game'
-    'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'
-    'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'
-    'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
-    'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
-    'Magic' = 'apps\games\magic'; 'CodexMagic' = 'apps\games\codexmagic'; 'Games' = 'apps\games\classic'
-    'Spark' = 'apps\spark'; 'Data' = 'apps\data'; 'Explorer' = 'apps\explorer'
-}
+. (Join-Path $PSScriptRoot 'quire-map.ps1')
 
 function Resolve-Source {
     param([string]$SrcPath)
     $lines = [System.IO.File]::ReadAllLines($SrcPath)
-    $queue = [System.Collections.Generic.Queue[hashtable]]::new()
-    $seen = @{}; $embPat = '^Chapter:\s*(\w+)--(.+?)\s*$'
+    $seedSeen = @{}; $embPat = '^Chapter:\s*(\w+)--(.+?)\s*$'
     foreach ($l in $lines) {
-        if ($l -match $script:citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
-        if ($l -match $embPat) { $seen["$($matches[1])::$($matches[2])"] = $true }
+        if ($l -match $embPat) { $seedSeen["$($matches[1])::$($matches[2])"] = $true }
     }
-    $ordered = @()
-    while ($queue.Count -gt 0) {
-        $cite = $queue.Dequeue()
-        $key = "$($cite.Quire)::$($cite.Name)"
-        if ($seen[$key]) { continue }; $seen[$key] = $true
-        $fwPath = Join-Path $script:QuireDirs[$cite.Quire] "$($cite.Name).codex"
-        if (-not (Test-Path -PathType Leaf $fwPath)) { return $null }
-        $fwLines = [System.IO.File]::ReadAllLines($fwPath)
-        foreach ($l in $fwLines) { if ($l -match $script:citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) } }
-        $ordered += @{ Quire = $cite.Quire; Name = $cite.Name; Lines = $fwLines }
+    try {
+        $ordered = Resolve-CiteOrder -RootLines $lines -Repo '.' -SeedSeen $seedSeen
+    } catch {
+        return $null
     }
-    [array]::Reverse($ordered)
-    $emitted = @{}; $sb = [System.Text.StringBuilder]::new(524288)
-    foreach ($entry in $ordered) {
-        $key = "$($entry.Quire)::$($entry.Name)"
-        if ($emitted[$key]) { continue }; $emitted[$key] = $true
-        $renamed = $false
-        foreach ($l in $entry.Lines) {
-            if (-not $renamed -and $l -match '^Chapter:\s*(.+?)\s*$') {
-                [void]$sb.Append("Chapter: $($entry.Quire)--$($matches[1])`n"); $renamed = $true
-            } else { [void]$sb.Append($l + "`n") }
-        }
-        [void]$sb.Append("`n`n")
-    }
+    $sb = [System.Text.StringBuilder]::new(524288)
+    foreach ($l in (Format-CiteChapters -Ordered $ordered)) { [void]$sb.Append($l + "`n") }
     foreach ($l in $lines) { [void]$sb.Append($l + "`n") }
     return $sb.ToString()
 }
@@ -95,7 +65,7 @@ $Stage0 = Join-Path (Split-Path $PSScriptRoot) 'build-output\bare-metal\Codex.cd
 if (-not (Test-Path -PathType Leaf $Stage0)) { Write-Error "MISSING: $Stage0"; exit 2 }
 
 $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @(
-    '-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '2048', '-headless'
+    '-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '3072', '-headless'
 ) -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 $proc.WaitForExit(1800000)
 if (-not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force } catch {} }

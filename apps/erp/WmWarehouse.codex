@@ -1,0 +1,230 @@
+Chapter: WmWarehouse
+  cites ERP chapter ErpTypes
+  cites ERP chapter MmProcurement
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Warehouse Management: bin-level inventory, putaway strategies,
+ picking strategies, wave planning, cycle counting, cross-docking,
+ task management, and RF/barcode integration.
+
+Section: Warehouse Structure
+
+  StorageBin = record {
+    bin-id : Text,
+    bin-warehouse : Text,
+    bin-aisle : Text,
+    bin-rack : Text,
+    bin-level : Text,
+    bin-position : Text,
+    bin-type : BinType,
+    bin-max-weight : Integer,
+    bin-max-volume : Integer,
+    bin-current-weight : Integer,
+    bin-current-volume : Integer,
+    bin-material-id : Text,
+    bin-quantity : Integer,
+    bin-mixed-ok : Boolean,
+    bin-pick-sequence : Integer
+  }
+
+  BinType =
+    | BinBulk
+    | BinPick
+    | BinReserve
+    | BinStaging
+    | BinDock
+    | BinQualityHold
+    | BinReturns
+    | BinDamaged
+
+  bin-available-weight : StorageBin -> Integer
+  bin-available-weight (b) = b.bin-max-weight - b.bin-current-weight
+
+  bin-utilization-pct : StorageBin -> Integer
+  bin-utilization-pct (b) =
+    if b.bin-max-volume == 0 then 0
+    else b.bin-current-volume * 100 / b.bin-max-volume
+
+Section: Putaway
+
+  PutawayStrategy =
+    | FixedBin
+    | NextEmpty
+    | NearestEmpty
+    | Consolidate
+    | ClassBased (Text)
+    | Random
+
+  PutawayTask = record {
+    pat-id : Text,
+    pat-material-id : Text,
+    pat-quantity : Integer,
+    pat-from-bin : Text,
+    pat-to-bin : Text,
+    pat-status : TaskStatus,
+    pat-assigned-to : Text,
+    pat-priority : Integer,
+    pat-created : Integer
+  }
+
+  TaskStatus =
+    | TskCreated
+    | TskAssigned
+    | TskStarted
+    | TskConfirmed
+    | TskCancelled4
+
+  suggest-putaway-bin : List StorageBin, Text, Integer, PutawayStrategy -> Maybe Text
+  suggest-putaway-bin (bins) (material) (qty) (strategy) =
+    when strategy
+      is FixedBin -> find-fixed-bin bins material 0
+      is NextEmpty -> find-empty-bin bins 0
+      is Consolidate -> find-consolidate-bin bins material 0
+      is otherwise -> find-empty-bin bins 0
+
+  find-fixed-bin : List StorageBin, Text, Integer -> Maybe Text
+  find-fixed-bin (bins) (mat) (i) =
+    if i >= list-length bins then None
+    else let b = list-at bins i
+    in if b.bin-material-id == mat then if b.bin-quantity == 0 then Just (b.bin-id) else if b.bin-mixed-ok then Just (b.bin-id) else find-fixed-bin bins mat (i + 1)
+    else find-fixed-bin bins mat (i + 1)
+
+  find-empty-bin : List StorageBin, Integer -> Maybe Text
+  find-empty-bin (bins) (i) =
+    if i >= list-length bins then None
+    else let b = list-at bins i
+    in if b.bin-quantity == 0 then Just (b.bin-id)
+    else find-empty-bin bins (i + 1)
+
+  find-consolidate-bin : List StorageBin, Text, Integer -> Maybe Text
+  find-consolidate-bin (bins) (mat) (i) =
+    if i >= list-length bins then find-empty-bin bins 0
+    else let b = list-at bins i
+    in if b.bin-material-id == mat then if bin-available-weight b > 0 then Just (b.bin-id) else find-consolidate-bin bins mat (i + 1)
+    else find-consolidate-bin bins mat (i + 1)
+
+Section: Picking
+
+  PickStrategy =
+    | Fifo
+    | Lifo
+    | Fefo
+    | ShortestPath
+    | ZonePick
+    | BatchPick
+
+  PickTask = record {
+    pkt-id : Text,
+    pkt-wave-id : Text,
+    pkt-material-id : Text,
+    pkt-quantity : Integer,
+    pkt-from-bin : Text,
+    pkt-to-staging : Text,
+    pkt-order-ref : Text,
+    pkt-status : TaskStatus,
+    pkt-assigned-to : Text,
+    pkt-picked-qty : Integer,
+    pkt-short-qty : Integer
+  }
+
+  PickWave = record {
+    pw-id : Text,
+    pw-warehouse : Text,
+    pw-tasks : List PickTask,
+    pw-status : Text,
+    pw-created : Integer,
+    pw-released : Integer,
+    pw-completed : Integer
+  }
+
+  pw-total-lines : PickWave -> Integer
+  pw-total-lines (w) = list-length (w.pw-tasks)
+
+  pw-completion-pct : PickWave -> Integer
+  pw-completion-pct (w) =
+    let total = list-length (w.pw-tasks)
+    in if total == 0 then 0
+    else count-confirmed-tasks (w.pw-tasks) 0 0 * 100 / total
+
+  count-confirmed-tasks : List PickTask, Integer, Integer -> Integer
+  count-confirmed-tasks (tasks) (i) (acc) =
+    if i >= list-length tasks then acc
+    else when (list-at tasks i).pkt-status
+      is TskConfirmed -> count-confirmed-tasks tasks (i + 1) (acc + 1)
+      is otherwise -> count-confirmed-tasks tasks (i + 1) acc
+
+Section: Cycle Counting
+
+  CycleCountPlan = record {
+    ccp-id : Text,
+    ccp-warehouse : Text,
+    ccp-method : CountMethod,
+    ccp-frequency-days : Integer,
+    ccp-last-count : Integer,
+    ccp-next-count : Integer,
+    ccp-abc-class : Text
+  }
+
+  CountMethod =
+    | FullCount
+    | AbcCount
+    | RandomSample (Integer)
+
+  CycleCountResult = record {
+    ccr-id : Text,
+    ccr-bin-id : Text,
+    ccr-material-id : Text,
+    ccr-system-qty : Integer,
+    ccr-counted-qty : Integer,
+    ccr-variance : Integer,
+    ccr-variance-pct : Integer,
+    ccr-adjusted : Boolean,
+    ccr-counter : Text,
+    ccr-date : Integer
+  }
+
+  ccr-has-variance : CycleCountResult -> Boolean
+  ccr-has-variance (r) = r.ccr-system-qty /= r.ccr-counted-qty
+
+  count-accuracy-pct : List CycleCountResult -> Integer
+  count-accuracy-pct (results) =
+    let total = list-length results
+    in if total == 0 then 100
+    else let accurate = count-accurate results 0 0
+    in accurate * 100 / total
+
+  count-accurate : List CycleCountResult, Integer, Integer -> Integer
+  count-accurate (results) (i) (acc) =
+    if i >= list-length results then acc
+    else let r = list-at results i
+    in count-accurate results (i + 1) (if r.ccr-system-qty == r.ccr-counted-qty then acc + 1 else acc)
+
+Section: Cross-Docking
+
+  CrossDockOrder = record {
+    cd-id : Text,
+    cd-inbound-ref : Text,
+    cd-outbound-ref : Text,
+    cd-material-id : Text,
+    cd-quantity : Integer,
+    cd-dock-bin : Text,
+    cd-status : Text,
+    cd-created : Integer
+  }
+
+Section: Warehouse KPIs
+
+  WarehouseKpi = record {
+    wkpi-warehouse : Text,
+    wkpi-period : Integer,
+    wkpi-total-receipts : Integer,
+    wkpi-total-shipments : Integer,
+    wkpi-pick-accuracy-pct : Integer,
+    wkpi-count-accuracy-pct : Integer,
+    wkpi-utilization-pct : Integer,
+    wkpi-avg-putaway-hrs : Integer,
+    wkpi-avg-pick-hrs : Integer,
+    wkpi-backorders : Integer,
+    wkpi-dock-to-stock-hrs : Integer
+  }

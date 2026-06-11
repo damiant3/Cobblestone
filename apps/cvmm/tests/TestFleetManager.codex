@@ -1,0 +1,148 @@
+Chapter: TestFleetManager
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter FleetManager
+  cites Foreword chapter Maybe
+
+ Unit tests for the fleet manager: node discovery, grouping, health
+ rollup, capability search, and find operations.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) =
+    if val then "PASS " & label
+    else "FAIL " & label & ": expected True"
+
+  assert-false : Text, Boolean -> Text
+  assert-false (label) (val) =
+    if val then "FAIL " & label & ": expected False"
+    else "PASS " & label
+
+Section: Sample Data
+
+  dev-vm1 : DeviceId
+  dev-vm1 = DeviceId { dev-uuid = "vm-001", dev-name = "test-vm-1", dev-kind = DevVirtualMachine }
+
+  dev-vm2 : DeviceId
+  dev-vm2 = DeviceId { dev-uuid = "vm-002", dev-name = "test-vm-2", dev-kind = DevVirtualMachine }
+
+  dev-pc : DeviceId
+  dev-pc = DeviceId { dev-uuid = "pc-001", dev-name = "workstation", dev-kind = DevPhysicalPC }
+
+  ep1 : Endpoint
+  ep1 = Endpoint { ep-host = "10.0.2.15", ep-port = 9100, ep-protocol = ProtoTcp }
+
+  ep2 : Endpoint
+  ep2 = Endpoint { ep-host = "10.0.2.16", ep-port = 9100, ep-protocol = ProtoTcp }
+
+  ep3 : Endpoint
+  ep3 = Endpoint { ep-host = "192.168.1.50", ep-port = 9100, ep-protocol = ProtoTcp }
+
+Section: Add/Remove Tests
+
+  test-add-remove : Text
+  test-add-remove =
+    let st = fleet-manager-new
+    in let node1 = __record-set (fleet-node-new dev-vm1 ep1) "fn-status" StatusOnline
+    in let node2 = __record-set (fleet-node-new dev-vm2 ep2) "fn-status" StatusOffline
+    in let st1 = fm-add-node st node1
+    in let t1 = assert-eq-int "add-one" 1 (st1.fm-node-count)
+    in let st2 = fm-add-node st1 node2
+    in let t2 = assert-eq-int "add-two" 2 (st2.fm-node-count)
+    in let st3 = fm-remove-node st2 "vm-001"
+    in let t3 = assert-eq-int "remove-one" 1 (st3.fm-node-count)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Health Tests
+
+  test-health : Text
+  test-health =
+    let node1 = __record-set (fleet-node-new dev-vm1 ep1) "fn-status" StatusOnline
+    in let node2 = __record-set (fleet-node-new dev-vm2 ep2) "fn-status" StatusOffline
+    in let node3 = __record-set (fleet-node-new dev-pc ep3) "fn-status" StatusOnline
+    in let st = fm-add-node (fm-add-node (fm-add-node fleet-manager-new node1) node2) node3
+    in let t1 = assert-eq-int "healthy-count" 2 (fm-healthy-count st)
+    in let t2 = assert-true "node1-healthy" (fleet-node-healthy node1)
+    in let t3 = assert-false "node2-not-healthy" (fleet-node-healthy node2)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Group Tests
+
+  test-groups : Text
+  test-groups =
+    let node1 = __record-set (fleet-node-new dev-vm1 ep1) "fn-group" "prod"
+    in let node2 = __record-set (fleet-node-new dev-vm2 ep2) "fn-group" "dev"
+    in let node3 = __record-set (fleet-node-new dev-pc ep3) "fn-group" "prod"
+    in let st = fm-add-node (fm-add-node (fm-add-node fleet-manager-new node1) node2) node3
+    in let prod = fm-nodes-in-group st "prod"
+    in let dev = fm-nodes-in-group st "dev"
+    in let t1 = assert-eq-int "prod-count" 2 (list-length prod)
+    in let t2 = assert-eq-int "dev-count" 1 (list-length dev)
+    in let empty = fm-nodes-in-group st "staging"
+    in let t3 = assert-eq-int "staging-empty" 0 (list-length empty)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Find Tests
+
+  test-find : Text
+  test-find =
+    let node1 = fleet-node-new dev-vm1 ep1
+    in let st = fm-add-node fleet-manager-new node1
+    in let found = fm-find-node st "vm-001"
+    in let t1 = when found
+      is Just (n) -> assert-eq-text "found-name" "test-vm-1" ((n.fn-device).dev-name)
+      is None -> "FAIL find-vm-001: not found"
+    in let not-found = fm-find-node st "vm-999"
+    in let t2 = when not-found
+      is Just (n) -> "FAIL find-vm-999: should not exist"
+      is None -> "PASS find-vm-999-missing"
+    in t1 & "\n" & t2
+
+Section: Capability Tests
+
+  test-capabilities : Text
+  test-capabilities =
+    let node = fleet-node-new dev-pc ep3
+    in let node-with-caps = __record-set (__record-set node "fn-capabilities" [CapCompute, CapGpu, CapStorage]) "fn-cap-count" 3
+    in let t1 = assert-true "has-compute" (fleet-node-has-cap node-with-caps CapCompute)
+    in let t2 = assert-true "has-gpu" (fleet-node-has-cap node-with-caps CapGpu)
+    in let t3 = assert-false "no-audio" (fleet-node-has-cap node-with-caps CapAudio)
+    in let t4 = assert-false "empty-caps" (fleet-node-has-cap (fleet-node-new dev-vm1 ep1) CapCompute)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Discovery Toggle
+
+  test-discovery : Text
+  test-discovery =
+    let st = fleet-manager-new
+    in let t1 = assert-false "initial-off" (st.fm-discovery-active)
+    in let st2 = fm-toggle-discovery st
+    in let t2 = assert-true "toggled-on" (st2.fm-discovery-active)
+    in let st3 = fm-toggle-discovery st2
+    in let t3 = assert-false "toggled-off" (st3.fm-discovery-active)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== FleetManager Tests ==="
+    print-line-uni test-add-remove
+    print-line-uni test-health
+    print-line-uni test-groups
+    print-line-uni test-find
+    print-line-uni test-capabilities
+    print-line-uni test-discovery
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

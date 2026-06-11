@@ -42,6 +42,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
+[Environment]::CurrentDirectory = (Get-Location).Path
 $env:USE_QEMU = '1'
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 
@@ -109,7 +110,7 @@ try {
     $savedAccel = $script:FallbackAccelFlags
     $script:FallbackAccelFlags = @('-accel', $Accel)
     Write-Host "[1/4] Starting QEMU ($Accel mode) with GDB stub on :1234..."
-    $run = Start-VmRun -Kernel $Kernel -ConnectTimeoutSec 30 -MemMB 2048 -ExtraArgs @('-gdb', 'tcp::1234', '-S')
+    $run = Start-VmRun -Kernel $Kernel -ConnectTimeoutSec 30 -MemMB 3072 -ExtraArgs @('-gdb', 'tcp::1234', '-S')
     $script:FallbackAccelFlags = $savedAccel
     if (-not $run) { Write-Error "QEMU failed to start"; exit 3 }
     Write-Host "  PID=$($run.Process.Id)"

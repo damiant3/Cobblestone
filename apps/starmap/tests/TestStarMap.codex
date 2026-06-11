@@ -1,0 +1,129 @@
+Chapter: TestStarMap
+  cites Starmap chapter CelestialTypes
+  cites Starmap chapter StarCatalog
+  cites Starmap chapter StarMapScene
+  cites Starmap chapter StarDb
+  cites Starmap chapter Constellations
+  cites Foreword chapter Maybe
+
+ Tests for the star map system.
+
+Section: Harness
+
+  assert-eq : Text, Text, Text -> Text
+  assert-eq (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-int : Text, Integer, Integer -> Text
+  assert-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) = if val then "PASS " & label else "FAIL " & label
+
+Section: Types
+
+  test-types : Text
+  test-types =
+    let t1 = assert-eq "star-kind" "Star" (ck-label CkStar)
+    in let t2 = assert-eq "galaxy-kind" "Galaxy" (ck-label CkGalaxy)
+    in let t3 = assert-eq "nebula-kind" "Diffuse Nebula" (ck-label CkDiffuseNebula)
+    in let t4 = assert-eq "sp-g" "G" (sp-label SpG)
+    in let t5 = assert-eq "sp-o" "O" (sp-label SpO)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Color Index
+
+  test-colors : Text
+  test-colors =
+    let t1 = assert-true "blue-star" (bv-to-r (-300) < 200)
+    in let t2 = assert-true "red-star" (bv-to-r 1500 > 200)
+    in let t3 = assert-true "yellow-star" (bv-to-g 500 > 100)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Catalog
+
+  test-catalog : Text
+  test-catalog =
+    let stars = catalog-stars
+    in let t1 = assert-int "star-count" 50 (list-length stars)
+    in let sol = list-at stars 0
+    in let t2 = assert-eq "sol-name" "Sol" (sol.co-name)
+    in let t3 = assert-int "sol-x" 0 (sol.co-x)
+    in let sirius = list-at stars 1
+    in let t4 = assert-eq "sirius-name" "Sirius" (sirius.co-name)
+    in let t5 = assert-eq "sirius-con" "CMa" (sirius.co-constellation)
+    in let messier = catalog-messier
+    in let t6 = assert-int "messier-count" 22 (list-length messier)
+    in let m42 = list-at messier 10
+    in let t7 = assert-eq "m42-name" "M42 Orion Nebula" (m42.co-name)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5 & "\n" & t6 & "\n" & t7
+
+Section: Scene
+
+  test-scene : Text
+  test-scene =
+    let s = scene-new
+    in let t1 = assert-true "scene-has-stars" (s.ss-catalog-count > 0)
+    in let t2 = assert-eq "cam-target" "Sol" (s.ss-camera.sc-target-name)
+    in let s2 = scene-add-objects s catalog-messier
+    in let t3 = assert-true "added-messier" (s2.ss-catalog-count > s.ss-catalog-count)
+    in let results = scene-search s "Sirius"
+    in let t4 = assert-true "search-sirius" (list-length results > 0)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Camera
+
+  test-camera : Text
+  test-camera =
+    let cam = camera-new
+    in let t1 = assert-int "cam-init-dist" 100000 (cam.sc-dist)
+    in let cam2 = camera-orbit cam 5000 3000
+    in let t2 = assert-int "cam-yaw" 5000 (cam2.sc-yaw)
+    in let t3 = assert-int "cam-pitch" 3000 (cam2.sc-pitch)
+    in let cam3 = camera-zoom cam (-50000)
+    in let t4 = assert-int "cam-zoom-min" 100 (cam3.sc-dist)
+    in let cam4 = camera-goto cam 1000 2000 3000 "Test"
+    in let t5 = assert-eq "cam-goto" "Test" (cam4.sc-target-name)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Database
+
+  test-db : Text
+  test-db =
+    let db = sdb-new
+    in let db2 = sdb-bulk-load db catalog-stars 0 (list-length catalog-stars)
+    in let t1 = assert-int "db-count" 50 (db2.sdb-count)
+    in let nearest = sdb-nearest db2 0 0 0
+    in let t2 = when nearest
+      is Just (obj) -> assert-eq "nearest-sol" "Sol" (obj.co-name)
+      is None -> "FAIL nearest-not-found"
+    in let bright = sdb-by-magnitude db2 1000
+    in let t3 = assert-true "bright-stars" (list-length bright > 5)
+    in let galaxies = sdb-by-kind db2 CkGalaxy
+    in let t4 = assert-int "no-galaxies-in-stars" 0 (list-length galaxies)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Constellations
+
+  test-constellations : Text
+  test-constellations =
+    let t1 = assert-int "con-count" 13 constellation-count
+    in let orion = con-orion
+    in let t2 = assert-eq "orion-name" "Orion" (orion.cd-name)
+    in let t3 = assert-eq "orion-abbr" "Ori" (orion.cd-abbr)
+    in let t4 = assert-true "orion-lines" (orion.cd-line-count > 0)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Distance Formatting
+
+  test-distance : Text
+  test-distance =
+    let t1 = assert-eq "ly-small" "32 ly" (format-dist-ly 10000)
+    in let t2 = assert-eq "ly-kilo" "32 kly" (format-dist-ly 10000000)
+    in let t3 = assert-eq "pc-small" "10000 pc" (format-dist-pc 10000)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Page 1

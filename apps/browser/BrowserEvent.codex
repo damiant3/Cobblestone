@@ -1,0 +1,217 @@
+Chapter: BrowserEvent
+  cites Foreword chapter Event
+  cites Foreword chapter Console
+
+ Browser-level event routing. Maps raw keyboard and mouse events
+ to browser actions. Keyboard shortcuts follow standard browser
+ conventions adapted for Codex.
+
+Section: Types
+
+  BrowserAction =
+    | ActionNone
+    | ActionNewTab
+    | ActionCloseTab
+    | ActionFocusAddress
+    | ActionReload
+    | ActionBack
+    | ActionForward
+    | ActionNextTab
+    | ActionPrevTab
+    | ActionStop
+    | ActionNavigate (Text)
+    | ActionSwitchTab (Integer)
+    | ActionAddressKey (Event)
+    | ActionPageEvent (Event)
+    | ActionScrollUp
+    | ActionScrollDown
+    | ActionPageUp
+    | ActionPageDown
+    | ActionHome
+    | ActionEnd
+
+Section: Modifier Constants
+
+  mod-ctrl : Integer
+  mod-ctrl = 1
+
+  mod-alt : Integer
+  mod-alt = 2
+
+  mod-shift : Integer
+  mod-shift = 4
+
+Section: Key Code Constants
+
+  key-enter : Integer
+  key-enter = 13
+
+  key-escape : Integer
+  key-escape = 27
+
+  key-backspace : Integer
+  key-backspace = 8
+
+  key-tab-key : Integer
+  key-tab-key = 9
+
+  key-space : Integer
+  key-space = 32
+
+  key-left : Integer
+  key-left = 37
+
+  key-up : Integer
+  key-up = 38
+
+  key-right : Integer
+  key-right = 39
+
+  key-down : Integer
+  key-down = 40
+
+  key-f5 : Integer
+  key-f5 = 116
+
+  key-page-up : Integer
+  key-page-up = 33
+
+  key-page-down : Integer
+  key-page-down = 34
+
+  key-home : Integer
+  key-home = 36
+
+  key-end : Integer
+  key-end = 35
+
+  key-t : Integer
+  key-t = 84
+
+  key-w : Integer
+  key-w = 87
+
+  key-l : Integer
+  key-l = 76
+
+  key-r : Integer
+  key-r = 82
+
+Section: Key Mapping
+
+  map-key-event : Event -> BrowserAction
+  map-key-event (ev) =
+    let k = ev.ev-key
+    in let mods = ev.ev-modifiers
+    in if has-mod mods mod-ctrl
+      then map-ctrl-key k mods
+      else if has-mod mods mod-alt
+      then map-alt-key k
+      else map-plain-key k
+
+  has-mod : Integer, Integer -> Boolean
+  has-mod (mods) (flag) =
+    int-mod (mods / flag) 2 == 1
+
+  map-ctrl-key : Integer, Integer -> BrowserAction
+  map-ctrl-key (k) (mods) =
+    if k == key-t then ActionNewTab
+    else if k == key-w then ActionCloseTab
+    else if k == key-l then ActionFocusAddress
+    else if k == key-r then ActionReload
+    else if k == key-tab-key then
+      if has-mod mods mod-shift
+      then ActionPrevTab
+      else ActionNextTab
+    else ActionNone
+
+  map-alt-key : Integer -> BrowserAction
+  map-alt-key (k) =
+    if k == key-left then ActionBack
+    else if k == key-right then ActionForward
+    else ActionNone
+
+  map-plain-key : Integer -> BrowserAction
+  map-plain-key (k) =
+    if k == key-f5 then ActionReload
+    else if k == key-escape then ActionStop
+    else if k == key-up then ActionScrollUp
+    else if k == key-down then ActionScrollDown
+    else if k == key-page-up then ActionPageUp
+    else if k == key-page-down then ActionPageDown
+    else if k == key-home then ActionHome
+    else if k == key-end then ActionEnd
+    else ActionNone
+
+Section: Event Polling
+
+ In the bare-metal environment, events come from the UEFI
+ keyboard service (uefi-read-key) and the kernel mouse module.
+ uefi-read-key returns a CCE scan code as an Integer, or 0 if
+ no key is pending. The scan code encodes the key identity.
+
+ For the MVP, we poll the keyboard. Mouse support requires the
+ kernel Mouse module (PS/2 or USB HID).
+
+  browser-poll-event : [Console] Event
+  browser-poll-event = act
+    let scan = uefi-read-key
+    in if scan == 0
+      then pure (event-timer "tick" 0)
+      else let key-code = scan-to-key-code scan
+        in pure (event-key-down key-code 0 0)
+  end
+
+  scan-to-key-code : Integer -> Integer
+  scan-to-key-code (scan) =
+    if scan >= 32 then if scan <= 126 then scan else 0
+    else if scan == 10 then key-enter
+    else if scan == 8 then key-backspace
+    else if scan == 9 then key-tab-key
+    else if scan == 27 then key-escape
+    else 0
+
+Section: Event Classification
+
+  is-navigation-action : BrowserAction -> Boolean
+  is-navigation-action (action) =
+    when action
+      is ActionBack -> True
+      is ActionForward -> True
+      is ActionReload -> True
+      is ActionNavigate (_) -> True
+      is otherwise -> False
+
+  is-tab-action : BrowserAction -> Boolean
+  is-tab-action (action) =
+    when action
+      is ActionNewTab -> True
+      is ActionCloseTab -> True
+      is ActionNextTab -> True
+      is ActionPrevTab -> True
+      is ActionSwitchTab (_) -> True
+      is otherwise -> False
+
+  action-name : BrowserAction -> Text
+  action-name (action) =
+    when action
+      is ActionNone -> "none"
+      is ActionNewTab -> "new-tab"
+      is ActionCloseTab -> "close-tab"
+      is ActionFocusAddress -> "focus-address"
+      is ActionReload -> "reload"
+      is ActionBack -> "back"
+      is ActionForward -> "forward"
+      is ActionNextTab -> "next-tab"
+      is ActionPrevTab -> "prev-tab"
+      is ActionStop -> "stop"
+      is ActionNavigate (addr) -> "navigate:" & addr
+      is ActionSwitchTab (id) -> "switch-tab:" & show id
+      is ActionAddressKey (_) -> "address-key"
+      is ActionPageEvent (_) -> "page-event"
+      is ActionScrollUp -> "scroll-up"
+      is ActionScrollDown -> "scroll-down"
+      is ActionPageUp -> "page-up"
+      is ActionPageDown -> "page-down"
+      is ActionHome -> "home"
+      is ActionEnd -> "end"

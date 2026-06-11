@@ -1,218 +1,266 @@
 Chapter: Mana
   cites Foreword chapter Maybe
 
- Mana colors, pools, costs, and payment logic. Five colors plus
- colorless. Pools empty at phase boundaries. Payment subtracts
- colored requirements first, then generic from surplus.
+ Prismatic mana system. Six colors (RYB primaries + OGP secondaries)
+ plus white (unfiltered light). Resources are two-axis: rays (budget,
+ grows 1/turn) and gemstones (color capacity, drawn from deck).
+ Diamond doubles chain output. Obsidian activates fluorescence.
+ Purple has no gemstone - must mix Ruby + Sapphire.
 
  We say:
 
 Section: Colors
 
-  ManaColor =
-   | White
-   | Blue
-   | Black
+  GemColor =
    | Red
+   | Yellow
+   | Blue
+   | Orange
    | Green
+   | Purple
    | Colorless
 
-  color-name : ManaColor -> Text
-  color-name (c) =
+  gem-color-name : GemColor -> Text
+  gem-color-name (c) =
     when c
-      is White -> "White"
-      is Blue -> "Blue"
-      is Black -> "Black"
       is Red -> "Red"
+      is Yellow -> "Yellow"
+      is Blue -> "Blue"
+      is Orange -> "Orange"
       is Green -> "Green"
+      is Purple -> "Purple"
       is Colorless -> "Colorless"
 
-  color-symbol : ManaColor -> Text
-  color-symbol (c) =
+  gem-color-symbol : GemColor -> Text
+  gem-color-symbol (c) =
     when c
-      is White -> "W"
-      is Blue -> "U"
-      is Black -> "B"
       is Red -> "R"
+      is Yellow -> "Y"
+      is Blue -> "B"
+      is Orange -> "O"
       is Green -> "G"
-      is Colorless -> "C"
+      is Purple -> "P"
+      is Colorless -> "W"
 
 Section: Color Set
 
   ColorSet = record {
-    white : Boolean,
-    blue : Boolean,
-    black : Boolean,
     red : Boolean,
-    green : Boolean
+    yellow : Boolean,
+    blue : Boolean,
+    orange : Boolean,
+    green : Boolean,
+    purple : Boolean
   }
 
   color-set-empty : ColorSet
-  color-set-empty = ColorSet { white = False, blue = False, black = False, red = False, green = False }
+  color-set-empty = ColorSet { red = False, yellow = False, blue = False, orange = False, green = False, purple = False }
 
-  color-set-mono : ManaColor -> ColorSet
+  color-set-mono : GemColor -> ColorSet
   color-set-mono (c) =
     when c
-      is White -> ColorSet { white = True, blue = False, black = False, red = False, green = False }
-      is Blue -> ColorSet { white = False, blue = True, black = False, red = False, green = False }
-      is Black -> ColorSet { white = False, blue = False, black = True, red = False, green = False }
-      is Red -> ColorSet { white = False, blue = False, black = False, red = True, green = False }
-      is Green -> ColorSet { white = False, blue = False, black = False, red = False, green = True }
+      is Red -> ColorSet { red = True, yellow = False, blue = False, orange = False, green = False, purple = False }
+      is Yellow -> ColorSet { red = False, yellow = True, blue = False, orange = False, green = False, purple = False }
+      is Blue -> ColorSet { red = False, yellow = False, blue = True, orange = False, green = False, purple = False }
+      is Orange -> ColorSet { red = False, yellow = False, blue = False, orange = True, green = False, purple = False }
+      is Green -> ColorSet { red = False, yellow = False, blue = False, orange = False, green = True, purple = False }
+      is Purple -> ColorSet { red = False, yellow = False, blue = False, orange = False, green = False, purple = True }
       is Colorless -> color-set-empty
 
-  color-set-has : ColorSet, ManaColor -> Boolean
+  color-set-has : ColorSet, GemColor -> Boolean
   color-set-has (cs) (c) =
     when c
-      is White -> cs.white
-      is Blue -> cs.blue
-      is Black -> cs.black
       is Red -> cs.red
+      is Yellow -> cs.yellow
+      is Blue -> cs.blue
+      is Orange -> cs.orange
       is Green -> cs.green
+      is Purple -> cs.purple
       is Colorless -> False
 
   color-count : ColorSet -> Integer
   color-count (cs) =
-    let w = if cs.white then 1 else 0
-    in let u = if cs.blue then 1 else 0
-    in let b = if cs.black then 1 else 0
-    in let r = if cs.red then 1 else 0
+    let r = if cs.red then 1 else 0
+    in let y = if cs.yellow then 1 else 0
+    in let b = if cs.blue then 1 else 0
+    in let o = if cs.orange then 1 else 0
     in let g = if cs.green then 1 else 0
-    in w + u + b + r + g
+    in let p = if cs.purple then 1 else 0
+    in r + y + b + o + g + p
 
-Section: Mana Cost
+Section: Light Cost
 
-  ManaCost = record {
-    white : Integer,
-    blue : Integer,
-    black : Integer,
+  LightCost = record {
     red : Integer,
+    yellow : Integer,
+    blue : Integer,
+    orange : Integer,
     green : Integer,
-    generic : Integer
+    purple : Integer,
+    white : Integer
   }
 
-  mana-cost-zero : ManaCost
-  mana-cost-zero = ManaCost { white = 0, blue = 0, black = 0, red = 0, green = 0, generic = 0 }
+  light-cost-zero : LightCost
+  light-cost-zero = LightCost { red = 0, yellow = 0, blue = 0, orange = 0, green = 0, purple = 0, white = 0 }
 
-  mana-cost-w : Integer -> ManaCost
-  mana-cost-w (n) = ManaCost { white = n, blue = 0, black = 0, red = 0, green = 0, generic = 0 }
+  light-cost-r : Integer -> LightCost
+  light-cost-r (n) = LightCost { red = n, yellow = 0, blue = 0, orange = 0, green = 0, purple = 0, white = 0 }
 
-  mana-cost-u : Integer -> ManaCost
-  mana-cost-u (n) = ManaCost { white = 0, blue = n, black = 0, red = 0, green = 0, generic = 0 }
+  light-cost-y : Integer -> LightCost
+  light-cost-y (n) = LightCost { red = 0, yellow = n, blue = 0, orange = 0, green = 0, purple = 0, white = 0 }
 
-  mana-cost-b : Integer -> ManaCost
-  mana-cost-b (n) = ManaCost { white = 0, blue = 0, black = n, red = 0, green = 0, generic = 0 }
+  light-cost-b : Integer -> LightCost
+  light-cost-b (n) = LightCost { red = 0, yellow = 0, blue = n, orange = 0, green = 0, purple = 0, white = 0 }
 
-  mana-cost-r : Integer -> ManaCost
-  mana-cost-r (n) = ManaCost { white = 0, blue = 0, black = 0, red = n, green = 0, generic = 0 }
+  light-cost-o : Integer -> LightCost
+  light-cost-o (n) = LightCost { red = 0, yellow = 0, blue = 0, orange = n, green = 0, purple = 0, white = 0 }
 
-  mana-cost-g : Integer -> ManaCost
-  mana-cost-g (n) = ManaCost { white = 0, blue = 0, black = 0, red = 0, green = n, generic = 0 }
+  light-cost-g : Integer -> LightCost
+  light-cost-g (n) = LightCost { red = 0, yellow = 0, blue = 0, orange = 0, green = n, purple = 0, white = 0 }
 
-  mana-cost-generic : Integer -> ManaCost
-  mana-cost-generic (n) = ManaCost { white = 0, blue = 0, black = 0, red = 0, green = 0, generic = n }
+  light-cost-p : Integer -> LightCost
+  light-cost-p (n) = LightCost { red = 0, yellow = 0, blue = 0, orange = 0, green = 0, purple = n, white = 0 }
 
-  mana-cost-add : ManaCost, ManaCost -> ManaCost
-  mana-cost-add (a) (b) = ManaCost {
-    white = a.white + b.white,
-    blue = a.blue + b.blue,
-    black = a.black + b.black,
+  light-cost-w : Integer -> LightCost
+  light-cost-w (n) = LightCost { red = 0, yellow = 0, blue = 0, orange = 0, green = 0, purple = 0, white = n }
+
+  light-cost-add : LightCost, LightCost -> LightCost
+  light-cost-add (a) (b) = LightCost {
     red = a.red + b.red,
+    yellow = a.yellow + b.yellow,
+    blue = a.blue + b.blue,
+    orange = a.orange + b.orange,
     green = a.green + b.green,
-    generic = a.generic + b.generic
+    purple = a.purple + b.purple,
+    white = a.white + b.white
   }
 
-  cmc : ManaCost -> Integer
-  cmc (cost) = cost.white + cost.blue + cost.black + cost.red + cost.green + cost.generic
+  total-rays : LightCost -> Integer
+  total-rays (cost) = cost.red + cost.yellow + cost.blue + cost.orange + cost.green + cost.purple + cost.white
 
-  cost-colors : ManaCost -> ColorSet
+  colored-rays : LightCost -> Integer
+  colored-rays (cost) = cost.red + cost.yellow + cost.blue + cost.orange + cost.green + cost.purple
+
+  cost-colors : LightCost -> ColorSet
   cost-colors (cost) = ColorSet {
-    white = cost.white > 0,
-    blue = cost.blue > 0,
-    black = cost.black > 0,
     red = cost.red > 0,
-    green = cost.green > 0
+    yellow = cost.yellow > 0,
+    blue = cost.blue > 0,
+    orange = cost.orange > 0,
+    green = cost.green > 0,
+    purple = cost.purple > 0
   }
 
-Section: Mana Pool
+Section: Gem Stone Types
 
-  ManaPool = record {
-    white : Integer,
-    blue : Integer,
-    black : Integer,
-    red : Integer,
-    green : Integer,
-    colorless : Integer
+  GemStoneType =
+   | GemRuby
+   | GemTopaz
+   | GemSapphire
+   | GemCarnelian
+   | GemEmerald
+   | GemDiamond
+   | GemObsidian
+
+  gem-stone-color : GemStoneType -> GemColor
+  gem-stone-color (g) =
+    when g
+      is GemRuby -> Red
+      is GemTopaz -> Yellow
+      is GemSapphire -> Blue
+      is GemCarnelian -> Orange
+      is GemEmerald -> Green
+      is GemDiamond -> Colorless
+      is GemObsidian -> Colorless
+
+  gem-stone-hardness : GemStoneType -> Integer
+  gem-stone-hardness (g) =
+    when g
+      is GemRuby -> 9
+      is GemTopaz -> 8
+      is GemSapphire -> 9
+      is GemCarnelian -> 7
+      is GemEmerald -> 7
+      is GemDiamond -> 10
+      is GemObsidian -> 5
+
+Section: Prismatic State
+
+  PrismaticState = record {
+    rays-total : Integer,
+    rays-used : Integer,
+    fluorescence-active : Boolean,
+    committed-rays : Integer
   }
 
-  mana-pool-empty : ManaPool
-  mana-pool-empty = ManaPool { white = 0, blue = 0, black = 0, red = 0, green = 0, colorless = 0 }
+  prismatic-new : PrismaticState
+  prismatic-new = PrismaticState { rays-total = 0, rays-used = 0, fluorescence-active = False, committed-rays = 0 }
 
-  mana-pool-add : ManaPool, ManaColor, Integer -> ManaPool
-  mana-pool-add (pool) (color) (amount) =
-    when color
-      is White -> ManaPool { white = pool.white + amount, blue = pool.blue, black = pool.black, red = pool.red, green = pool.green, colorless = pool.colorless }
-      is Blue -> ManaPool { white = pool.white, blue = pool.blue + amount, black = pool.black, red = pool.red, green = pool.green, colorless = pool.colorless }
-      is Black -> ManaPool { white = pool.white, blue = pool.blue, black = pool.black + amount, red = pool.red, green = pool.green, colorless = pool.colorless }
-      is Red -> ManaPool { white = pool.white, blue = pool.blue, black = pool.black, red = pool.red + amount, green = pool.green, colorless = pool.colorless }
-      is Green -> ManaPool { white = pool.white, blue = pool.blue, black = pool.black, red = pool.red, green = pool.green + amount, colorless = pool.colorless }
-      is Colorless -> ManaPool { white = pool.white, blue = pool.blue, black = pool.black, red = pool.red, green = pool.green, colorless = pool.colorless + amount }
+  prismatic-available-rays : PrismaticState -> Integer
+  prismatic-available-rays (ps) = ps.rays-total - ps.rays-used - ps.committed-rays
 
-  mana-pool-total : ManaPool -> Integer
-  mana-pool-total (pool) = pool.white + pool.blue + pool.black + pool.red + pool.green + pool.colorless
+  prismatic-gain-ray : PrismaticState -> PrismaticState
+  prismatic-gain-ray (ps) = PrismaticState { rays-total = ps.rays-total + 1, rays-used = 0, fluorescence-active = False, committed-rays = ps.committed-rays }
+
+  prismatic-spend-rays : PrismaticState, Integer -> PrismaticState
+  prismatic-spend-rays (ps) (n) = PrismaticState { rays-total = ps.rays-total, rays-used = ps.rays-used + n, fluorescence-active = ps.fluorescence-active, committed-rays = ps.committed-rays }
+
+  prismatic-activate-fluorescence : PrismaticState -> PrismaticState
+  prismatic-activate-fluorescence (ps) = PrismaticState { rays-total = ps.rays-total, rays-used = ps.rays-used + 1, fluorescence-active = True, committed-rays = ps.committed-rays }
+
+  prismatic-commit-rays : PrismaticState, Integer -> PrismaticState
+  prismatic-commit-rays (ps) (n) = PrismaticState { rays-total = ps.rays-total, rays-used = ps.rays-used, fluorescence-active = ps.fluorescence-active, committed-rays = ps.committed-rays + n }
+
+  prismatic-uncommit-rays : PrismaticState, Integer -> PrismaticState
+  prismatic-uncommit-rays (ps) (n) = PrismaticState { rays-total = ps.rays-total, rays-used = ps.rays-used, fluorescence-active = ps.fluorescence-active, committed-rays = if ps.committed-rays > n then ps.committed-rays - n else 0 }
+
+  prismatic-refresh : PrismaticState -> PrismaticState
+  prismatic-refresh (ps) = PrismaticState { rays-total = ps.rays-total, rays-used = 0, fluorescence-active = False, committed-rays = ps.committed-rays }
 
 Section: Payment
 
-  can-pay : ManaPool, ManaCost -> Boolean
-  can-pay (pool) (cost) =
-    if pool.white < cost.white then False
-    else if pool.blue < cost.blue then False
-    else if pool.black < cost.black then False
-    else if pool.red < cost.red then False
-    else if pool.green < cost.green then False
-    else let remaining = mana-pool-total pool - cost.white - cost.blue - cost.black - cost.red - cost.green
-    in remaining >= cost.generic
+  can-afford : PrismaticState, LightCost, Integer, Integer -> Boolean
+  can-afford (ps) (cost) (gems-available) (gems-for-color) =
+    let rays-needed = total-rays cost
+    in let avail = prismatic-available-rays ps
+    in if rays-needed > avail then False
+    else gems-for-color >= colored-rays cost
 
-  pay-cost : ManaPool, ManaCost -> ManaPool
-  pay-cost (pool) (cost) =
-    let after-colored = ManaPool {
-      white = pool.white - cost.white,
-      blue = pool.blue - cost.blue,
-      black = pool.black - cost.black,
-      red = pool.red - cost.red,
-      green = pool.green - cost.green,
-      colorless = pool.colorless
-    }
-    in pay-generic after-colored (cost.generic)
+  stone-cost : LightCost -> Integer
+  stone-cost (cost) =
+    let base = cost.red + cost.yellow + cost.blue + cost.orange + cost.green
+    in base + cost.purple * 2
 
-  pay-generic : ManaPool, Integer -> ManaPool
-  pay-generic (pool) (amount) =
-    if amount <= 0 then pool
-    else if pool.colorless > 0 then pay-generic (ManaPool { white = pool.white, blue = pool.blue, black = pool.black, red = pool.red, green = pool.green, colorless = pool.colorless - 1 }) (amount - 1)
-    else if pool.white > 0 then pay-generic (ManaPool { white = pool.white - 1, blue = pool.blue, black = pool.black, red = pool.red, green = pool.green, colorless = pool.colorless }) (amount - 1)
-    else if pool.blue > 0 then pay-generic (ManaPool { white = pool.white, blue = pool.blue - 1, black = pool.black, red = pool.red, green = pool.green, colorless = pool.colorless }) (amount - 1)
-    else if pool.black > 0 then pay-generic (ManaPool { white = pool.white, blue = pool.blue, black = pool.black - 1, red = pool.red, green = pool.green, colorless = pool.colorless }) (amount - 1)
-    else if pool.red > 0 then pay-generic (ManaPool { white = pool.white, blue = pool.blue, black = pool.black, red = pool.red - 1, green = pool.green, colorless = pool.colorless }) (amount - 1)
-    else pay-generic (ManaPool { white = pool.white, blue = pool.blue, black = pool.black, red = pool.red, green = pool.green - 1, colorless = pool.colorless }) (amount - 1)
+Section: Disruption Contest
+
+  disruption-chance : Integer, Integer -> Integer
+  disruption-chance (focus) (disruption) =
+    let raw = 90 + (disruption - focus) * 4
+    in if raw < 5 then 5
+    else if raw > 100 then 100
+    else raw
 
 Section: Formatting
 
-  format-mana-cost : ManaCost -> Text
-  format-mana-cost (cost) =
-    let g-part = if cost.generic > 0 then "{" & show (cost.generic) & "}" else ""
-    in let w-part = repeat-symbol "W" (cost.white)
-    in let u-part = repeat-symbol "U" (cost.blue)
-    in let b-part = repeat-symbol "B" (cost.black)
+  format-light-cost : LightCost -> Text
+  format-light-cost (cost) =
+    let w-part = if cost.white > 0 then "{" & show (cost.white) & "}" else ""
     in let r-part = repeat-symbol "R" (cost.red)
-    in let g2-part = repeat-symbol "G" (cost.green)
-    in g-part & w-part & u-part & b-part & r-part & g2-part
+    in let y-part = repeat-symbol "Y" (cost.yellow)
+    in let b-part = repeat-symbol "B" (cost.blue)
+    in let o-part = repeat-symbol "O" (cost.orange)
+    in let g-part = repeat-symbol "G" (cost.green)
+    in let p-part = repeat-symbol "P" (cost.purple)
+    in w-part & r-part & y-part & b-part & o-part & g-part & p-part
 
   repeat-symbol : Text, Integer -> Text
   repeat-symbol (sym) (n) =
     if n <= 0 then ""
     else "{" & sym & "}" & repeat-symbol sym (n - 1)
 
-  format-mana-pool : ManaPool -> Text
-  format-mana-pool (pool) =
-    "W:" & show (pool.white) & " U:" & show (pool.blue) & " B:" & show (pool.black) & " R:" & show (pool.red) & " G:" & show (pool.green) & " C:" & show (pool.colorless)
+  format-prismatic : PrismaticState -> Text
+  format-prismatic (ps) =
+    "Rays:" & show (prismatic-available-rays ps) & "/" & show (ps.rays-total) &
+    if ps.fluorescence-active then " [FLUOR]" else ""
 
 Page 1

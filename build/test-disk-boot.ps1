@@ -13,7 +13,7 @@ if (-not (Test-Path $Img)) { throw "Image not found: $Img" }
 Write-Host "Disk boot test" -ForegroundColor Cyan
 
 if ($script:UseCodexVm) {
-    $run = Start-CodexVmRun -Kernel $Img -ConnectTimeoutSec 30 -MemMB 2048
+    $run = Start-CodexVmRun -Kernel $Img -ConnectTimeoutSec 30 -MemMB 3072
     if (-not $run) { Write-Host "FAIL: codex-vm did not start" -ForegroundColor Red; exit 1 }
     $conn = $run.Conn; $proc = $run.Process
     $stdoutFile = $run.StdoutFile; $stderrFile = $run.StderrFile
