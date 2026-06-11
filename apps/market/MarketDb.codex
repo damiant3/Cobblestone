@@ -1,0 +1,163 @@
+Chapter: MarketDb
+  cites Market chapter MarketTypes
+  cites Data chapter Server
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Catalog
+  cites Data chapter Transaction
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Database layer for Market. Defines the schema (products, variants,
+ users, orders, carts, sessions) and provides typed CRUD operations
+ on top of Codex.Data's relational engine.
+
+Section: Schema Setup
+
+  market-schema : DbServer -> DbServer
+  market-schema (srv) =
+    let s1 = create-table srv "products" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "name" ColText,
+      col-def-not-null "slug" ColText,
+      col-def "desc" ColText,
+      col-def-not-null "price_cents" ColInteger,
+      col-def-not-null "currency" ColText,
+      col-def-not-null "status" ColText,
+      col-def "tags" ColText,
+      col-def "image_url" ColText,
+      col-def "weight_grams" ColInteger,
+      col-def-not-null "created" ColInteger,
+      col-def-not-null "updated" ColInteger
+    ]
+    in let s2 = create-table s1 "options" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "product_id" ColText,
+      col-def-not-null "name" ColText,
+      col-def-not-null "sort_order" ColInteger
+    ]
+    in let s3 = create-table s2 "option_choices" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "option_id" ColText,
+      col-def-not-null "label" ColText,
+      col-def "swatch" ColText,
+      col-def "price_adj" ColInteger
+    ]
+    in let s4 = create-table s3 "variants" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "product_id" ColText,
+      col-def-not-null "sku" ColText,
+      col-def "price_cents" ColInteger,
+      col-def-not-null "stock" ColInteger,
+      col-def "weight_grams" ColInteger,
+      col-def "choices_json" ColText
+    ]
+    in let s5 = create-table s4 "users" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "email" ColText,
+      col-def-not-null "name" ColText,
+      col-def-not-null "pass_hash" ColText,
+      col-def-not-null "role" ColText,
+      col-def-not-null "created" ColInteger,
+      col-def "last_login" ColInteger
+    ]
+    in let s6 = create-table s5 "sessions" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "user_id" ColText,
+      col-def-not-null "role" ColText,
+      col-def-not-null "created" ColInteger,
+      col-def-not-null "expires" ColInteger
+    ]
+    in let s7 = create-table s6 "carts" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "user_id" ColText,
+      col-def-not-null "created" ColInteger,
+      col-def-not-null "updated" ColInteger
+    ]
+    in let s8 = create-table s7 "cart_items" [
+      col-def-not-null "cart_id" ColText,
+      col-def-not-null "product_id" ColText,
+      col-def-not-null "variant_id" ColText,
+      col-def-not-null "quantity" ColInteger,
+      col-def-not-null "unit_price_cents" ColInteger
+    ]
+    in let s9 = create-table s8 "orders" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "user_id" ColText,
+      col-def-not-null "subtotal_cents" ColInteger,
+      col-def-not-null "tax_cents" ColInteger,
+      col-def-not-null "total_cents" ColInteger,
+      col-def-not-null "status" ColText,
+      col-def "payment_id" ColText,
+      col-def "ship_line1" ColText,
+      col-def "ship_city" ColText,
+      col-def "ship_state" ColText,
+      col-def "ship_zip" ColText,
+      col-def "ship_country" ColText,
+      col-def-not-null "created" ColInteger,
+      col-def "updated" ColInteger
+    ]
+    in create-table s9 "order_items" [
+      col-def-not-null "order_id" ColText,
+      col-def-not-null "product_id" ColText,
+      col-def-not-null "variant_id" ColText,
+      col-def-not-null "quantity" ColInteger,
+      col-def-not-null "unit_price_cents" ColInteger,
+      col-def "product_name" ColText
+    ]
+
+  create-table : DbServer, Text, List ColumnDef -> DbServer
+  create-table (srv) (name) (cols) =
+    let (srv2, sess) = db-connect srv
+    in let tdef = table-def name cols
+    in let result = catalog-create-table (srv2.db-catalog) tdef
+    in when result
+      is Just (cat2) -> DbServer {
+        db-catalog = cat2,
+        db-txn-mgr = srv2.db-txn-mgr,
+        db-lock-table = srv2.db-lock-table,
+        db-sessions = srv2.db-sessions,
+        db-next-session = srv2.db-next-session,
+        db-name = srv2.db-name
+      }
+      is None -> srv2
+
+Section: Market State
+
+  MarketState = record {
+    mkt-db : DbServer,
+    mkt-log : LogState,
+    mkt-config : StoreConfig,
+    mkt-next-id : Integer
+  }
+
+  market-init : StoreConfig -> MarketState
+  market-init (cfg) =
+    let db = db-server-new "market"
+    in let db2 = market-schema db
+    in let log = log-new
+    in let log2 = log-info-msg log "market" "initialized" 0
+    in MarketState {
+      mkt-db = db2,
+      mkt-log = log2,
+      mkt-config = cfg,
+      mkt-next-id = 1000
+    }
+
+  market-gen-id : MarketState, Text -> (MarketState, Text)
+  market-gen-id (st) (prefix) =
+    let id = prefix & "-" & show (st.mkt-next-id)
+    in let st2 = __record-set st "mkt-next-id" (st.mkt-next-id + 1)
+    in (st2, id)
+
+Section: Table Helpers
+
+  table-def : Text, List ColumnDef -> TableDef
+  table-def (name) (cols) = TableDef {
+    tbl-name = name,
+    tbl-columns = cols,
+    tbl-primary-key = [],
+    tbl-indexes = [],
+    tbl-constraints = []
+  }

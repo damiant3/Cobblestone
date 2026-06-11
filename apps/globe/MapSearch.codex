@@ -1,0 +1,227 @@
+Chapter: MapSearch
+  cites Globe chapter GlobeTypes
+  cites Globe chapter MapTypes
+  cites Foreword chapter Maybe
+  cites Foreword chapter TextSearch
+  cites Math chapter Geodesic
+
+ Geocoding, POI search, and spatial queries. Finds places
+ by name, searches POIs within a radius, and provides
+ address/coordinate conversion.
+
+Section: POI Store
+
+  PoiStore = record {
+    ps-pois : List PointOfInterest,
+    ps-count : Integer,
+    ps-next-id : Integer
+  }
+
+  poi-store-new : PoiStore
+  poi-store-new = PoiStore { ps-pois = [], ps-count = 0, ps-next-id = 1 }
+
+  ps-add : PoiStore, Text, PoiCategory, Integer, Integer, Text -> PoiStore
+  ps-add (store) (name) (cat) (lat) (lon) (address) =
+    let poi = PointOfInterest {
+      poi-id = store.ps-next-id,
+      poi-name = name,
+      poi-category = cat,
+      poi-lat = lat,
+      poi-lon = lon,
+      poi-address = address,
+      poi-phone = "",
+      poi-rating = 0,
+      poi-open-now = True
+    }
+    in PoiStore {
+      ps-pois = list-push store.ps-pois poi,
+      ps-count = store.ps-count + 1,
+      ps-next-id = store.ps-next-id + 1
+    }
+
+Section: Search by Name
+
+  ps-search : PoiStore, Text -> List PointOfInterest
+  ps-search (store) (query) =
+    ps-search-loop store.ps-pois query 0 store.ps-count []
+
+  ps-search-loop : List PointOfInterest, Text, Integer, Integer, List PointOfInterest -> List PointOfInterest
+  ps-search-loop (pois) (query) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pois i
+    in if text-contains p.poi-name query
+      then ps-search-loop pois query (i + 1) len (list-push acc p)
+      else ps-search-loop pois query (i + 1) len acc
+
+Section: Search by Category
+
+  ps-by-category : PoiStore, PoiCategory -> List PointOfInterest
+  ps-by-category (store) (cat) =
+    ps-cat-loop store.ps-pois cat 0 store.ps-count []
+
+  ps-cat-loop : List PointOfInterest, PoiCategory, Integer, Integer, List PointOfInterest -> List PointOfInterest
+  ps-cat-loop (pois) (cat) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pois i
+    in if poi-label p.poi-category == poi-label cat
+      then ps-cat-loop pois cat (i + 1) len (list-push acc p)
+      else ps-cat-loop pois cat (i + 1) len acc
+
+Section: Search by Radius
+
+  ps-within-radius : PoiStore, Integer, Integer, Integer -> List PointOfInterest
+  ps-within-radius (store) (lat) (lon) (radius-m) =
+    ps-radius-loop store.ps-pois lat lon radius-m 0 store.ps-count []
+
+  ps-radius-loop : List PointOfInterest, Integer, Integer, Integer, Integer, Integer, List PointOfInterest -> List PointOfInterest
+  ps-radius-loop (pois) (lat) (lon) (radius) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pois i
+    in let dlat = p.poi-lat - lat
+    in let dlon = p.poi-lon - lon
+    in let approx-dist = geo-approx-distance dlat dlon
+    in if approx-dist <= radius
+      then ps-radius-loop pois lat lon radius (i + 1) len (list-push acc p)
+      else ps-radius-loop pois lat lon radius (i + 1) len acc
+
+  geo-approx-distance : Integer, Integer -> Integer
+  geo-approx-distance (dlat) (dlon) =
+    let lat-m = dlat * 111
+    in let lon-m = dlon * 85
+    in let d2 = lat-m * lat-m + lon-m * lon-m
+    in geo-isqrt d2
+
+  geo-isqrt : Integer -> Integer
+  geo-isqrt (n) =
+    if n <= 0 then 0
+    else isqrt-loop n (n / 2 + 1)
+
+  isqrt-loop : Integer, Integer -> Integer
+  isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess
+    else isqrt-loop n next
+
+Section: Search Along Route
+
+  ps-along-route : PoiStore, List RouteStep, PoiCategory, Integer -> List PointOfInterest
+  ps-along-route (store) (steps) (cat) (corridor-m) =
+    ps-route-loop store steps cat corridor-m 0 (list-length steps) []
+
+  ps-route-loop : PoiStore, List RouteStep, PoiCategory, Integer, Integer, Integer, List PointOfInterest -> List PointOfInterest
+  ps-route-loop (store) (steps) (cat) (corridor) (i) (len) (acc) =
+    if i >= len then acc
+    else let step = list-at steps i
+    in let nearby = ps-within-radius store step.rst-start-lat step.rst-start-lon corridor
+    in let filtered = filter-category nearby cat 0 (list-length nearby) []
+    in let merged = merge-unique acc filtered
+    in ps-route-loop store steps cat corridor (i + 1) len merged
+
+  filter-category : List PointOfInterest, PoiCategory, Integer, Integer, List PointOfInterest -> List PointOfInterest
+  filter-category (pois) (cat) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pois i
+    in if poi-label p.poi-category == poi-label cat
+      then filter-category pois cat (i + 1) len (list-push acc p)
+      else filter-category pois cat (i + 1) len acc
+
+  merge-unique : List PointOfInterest, List PointOfInterest -> List PointOfInterest
+  merge-unique (existing) (new-items) =
+    mu-loop existing new-items 0 (list-length new-items)
+
+  mu-loop : List PointOfInterest, List PointOfInterest, Integer, Integer -> List PointOfInterest
+  mu-loop (acc) (items) (i) (len) =
+    if i >= len then acc
+    else let p = list-at items i
+    in if poi-id-exists acc p.poi-id 0 (list-length acc)
+      then mu-loop acc items (i + 1) len
+      else mu-loop (list-push acc p) items (i + 1) len
+
+  poi-id-exists : List PointOfInterest, Integer, Integer, Integer -> Boolean
+  poi-id-exists (pois) (id) (i) (len) =
+    if i >= len then False
+    else if (list-at pois i).poi-id == id then True
+    else poi-id-exists pois id (i + 1) len
+
+Section: Geocode (City Lookup)
+
+  geocode : Text, List CityPoint -> List GeocodeResult
+  geocode (query) (cities) =
+    geocode-loop cities query 0 (list-length cities) []
+
+  geocode-loop : List CityPoint, Text, Integer, Integer, List GeocodeResult -> List GeocodeResult
+  geocode-loop (cities) (query) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at cities i
+    in if text-contains c.cp-name query
+      then let result = GeocodeResult {
+        gcr-name = c.cp-name,
+        gcr-display = c.cp-name & " (pop " & show c.cp-pop & "K)",
+        gcr-lat = c.cp-lat,
+        gcr-lon = c.cp-lon,
+        gcr-type = "city",
+        gcr-confidence = 90
+      }
+      in geocode-loop cities query (i + 1) len (list-push acc result)
+      else geocode-loop cities query (i + 1) len acc
+
+Section: Bookmark Store
+
+  BookmarkStore = record {
+    bs-bookmarks : List MapBookmark,
+    bs-count : Integer,
+    bs-next-id : Integer
+  }
+
+  bookmark-store-new : BookmarkStore
+  bookmark-store-new = BookmarkStore { bs-bookmarks = [], bs-count = 0, bs-next-id = 1 }
+
+  bs-add : BookmarkStore, Text, Integer, Integer, Integer, Text -> BookmarkStore
+  bs-add (store) (name) (lat) (lon) (zoom) (notes) =
+    let bm = MapBookmark {
+      mb-id = store.bs-next-id,
+      mb-name = name,
+      mb-lat = lat,
+      mb-lon = lon,
+      mb-zoom = zoom,
+      mb-category = "",
+      mb-notes = notes,
+      mb-created = 0
+    }
+    in BookmarkStore {
+      bs-bookmarks = list-push store.bs-bookmarks bm,
+      bs-count = store.bs-count + 1,
+      bs-next-id = store.bs-next-id + 1
+    }
+
+  bs-search : BookmarkStore, Text -> List MapBookmark
+  bs-search (store) (query) =
+    bs-search-loop store.bs-bookmarks query 0 store.bs-count []
+
+  bs-search-loop : List MapBookmark, Text, Integer, Integer, List MapBookmark -> List MapBookmark
+  bs-search-loop (bms) (query) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bms i
+    in if text-contains b.mb-name query
+      then bs-search-loop bms query (i + 1) len (list-push acc b)
+      else bs-search-loop bms query (i + 1) len acc
+
+Section: Sample POIs
+
+  sample-pois : PoiStore
+  sample-pois =
+    let s = poi-store-new
+    in let s1 = ps-add s "JFK Airport" PoiAirport 40641 (-73778) "Queens, NY"
+    in let s2 = ps-add s1 "LaGuardia Airport" PoiAirport 40777 (-73874) "Queens, NY"
+    in let s3 = ps-add s2 "Grand Central Terminal" PoiTrainStation 40753 (-73977) "89 E 42nd St"
+    in let s4 = ps-add s3 "Penn Station" PoiTrainStation 40750 (-73994) "7th Ave & 32nd St"
+    in let s5 = ps-add s4 "Central Park" PoiPark 40785 (-73968) "Manhattan, NY"
+    in let s6 = ps-add s5 "Metropolitan Museum" PoiMuseum 40779 (-73963) "1000 5th Ave"
+    in let s7 = ps-add s6 "Times Square" PoiViewpoint 40758 (-73986) "Manhattan, NY"
+    in let s8 = ps-add s7 "Brooklyn Bridge" PoiViewpoint 40706 (-73997) "Manhattan/Brooklyn"
+    in let s9 = ps-add s8 "Statue of Liberty" PoiViewpoint 40689 (-74045) "Liberty Island"
+    in let s10 = ps-add s9 "One World Trade" PoiViewpoint 40713 (-74013) "285 Fulton St"
+    in let s11 = ps-add s10 "Bellevue Hospital" PoiHospital 40739 (-73975) "462 1st Ave"
+    in let s12 = ps-add s11 "NYU Langone" PoiHospital 40742 (-73974) "550 1st Ave"
+    in let s13 = ps-add s12 "Columbia University" PoiSchool 40808 (-73962) "116th & Broadway"
+    in ps-add s13 "NYU" PoiSchool 40729 (-73997) "Washington Square"

@@ -1,0 +1,505 @@
+Chapter: WorkflowTypes
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Core types for a generic long-running business process engine.
+ Processes are directed graphs of steps connected by conditional
+ transitions. Each step collects data via forms, routes work to
+ participants via assignment rules, and enforces deadlines via SLAs.
+ Process state is a key-value data bag that accumulates across steps.
+
+Section: Process Definition
+
+ A ProcessDef is a template — the blueprint for a class of work
+ (e.g. "Title Search", "Auto Claim"). ProcessInstance is a running
+ case (e.g. "Claim #4821 for John Smith").
+
+  ProcessDef = record {
+    pd-id : Text,
+    pd-name : Text,
+    pd-version : Integer,
+    pd-description : Text,
+    pd-category : Text,
+    pd-steps : List StepDef,
+    pd-transitions : List TransitionDef,
+    pd-start-step : Text,
+    pd-roles : List RoleDef,
+    pd-sla-defaults : SlaDef,
+    pd-data-schema : List FieldSpec,
+    pd-active : Boolean
+  }
+
+  ProcessStatus =
+    | ProcActive
+    | ProcSuspended
+    | ProcCompleted
+    | ProcCancelled
+    | ProcErrored (Text)
+
+  proc-status-name : ProcessStatus -> Text
+  proc-status-name (s) =
+    when s
+      is ProcActive -> "active"
+      is ProcSuspended -> "suspended"
+      is ProcCompleted -> "completed"
+      is ProcCancelled -> "cancelled"
+      is ProcErrored (msg) -> "error: " & msg
+
+  ProcessInstance = record {
+    pi-id : Text,
+    pi-def-id : Text,
+    pi-name : Text,
+    pi-status : ProcessStatus,
+    pi-current-step : Text,
+    pi-data : List DataEntry,
+    pi-history : List StepEvent,
+    pi-documents : List Document,
+    pi-participants : List Participant,
+    pi-priority : Integer,
+    pi-created : Integer,
+    pi-updated : Integer,
+    pi-due-date : Integer,
+    pi-completed-date : Integer,
+    pi-parent-id : Text,
+    pi-tags : List Text
+  }
+
+Section: Steps
+
+  StepType =
+    | HumanTask
+    | AutomatedAction
+    | ApprovalGate
+    | DocumentGate
+    | SubProcess (Text)
+    | ParallelSplit
+    | ParallelJoin
+    | TimerWait (Integer)
+    | ConditionalBranch
+    | Notification
+
+  step-type-name : StepType -> Text
+  step-type-name (t) =
+    when t
+      is HumanTask -> "human-task"
+      is AutomatedAction -> "automated"
+      is ApprovalGate -> "approval"
+      is DocumentGate -> "document-gate"
+      is SubProcess (id) -> "sub-process: " & id
+      is ParallelSplit -> "parallel-split"
+      is ParallelJoin -> "parallel-join"
+      is TimerWait (secs) -> "timer: " & show secs & "s"
+      is ConditionalBranch -> "conditional"
+      is Notification -> "notification"
+
+  StepDef = record {
+    sd-id : Text,
+    sd-name : Text,
+    sd-type : StepType,
+    sd-description : Text,
+    sd-form : Maybe FormDef,
+    sd-assignment : AssignmentRule,
+    sd-sla : Maybe SlaDef,
+    sd-actions : List ActionDef,
+    sd-required-docs : List Text,
+    sd-x : Integer,
+    sd-y : Integer
+  }
+
+  StepStatus =
+    | StepPending
+    | StepAssigned (Text)
+    | StepInProgress (Text)
+    | StepAwaitingApproval
+    | StepAwaitingDocs
+    | StepCompleted
+    | StepSkipped
+    | StepEscalated (Text)
+    | StepTimedOut
+
+  step-status-name : StepStatus -> Text
+  step-status-name (s) =
+    when s
+      is StepPending -> "pending"
+      is StepAssigned (who) -> "assigned: " & who
+      is StepInProgress (who) -> "in progress: " & who
+      is StepAwaitingApproval -> "awaiting approval"
+      is StepAwaitingDocs -> "awaiting documents"
+      is StepCompleted -> "completed"
+      is StepSkipped -> "skipped"
+      is StepEscalated (to) -> "escalated: " & to
+      is StepTimedOut -> "timed out"
+
+Section: Transitions
+
+  ConditionOp =
+    | Equals (Text) (Text)
+    | NotEquals (Text) (Text)
+    | GreaterThan (Text) (Integer)
+    | LessThan (Text) (Integer)
+    | Contains (Text) (Text)
+    | IsSet (Text)
+    | IsNotSet (Text)
+    | And (ConditionOp) (ConditionOp)
+    | Or (ConditionOp) (ConditionOp)
+    | Not (ConditionOp)
+    | Always
+
+  TransitionDef = record {
+    td-id : Text,
+    td-from-step : Text,
+    td-to-step : Text,
+    td-condition : ConditionOp,
+    td-label : Text,
+    td-priority : Integer
+  }
+
+  transition : Text, Text, Text, ConditionOp, Text -> TransitionDef
+  transition (id) (from) (to) (cond) (label) = TransitionDef {
+    td-id = id,
+    td-from-step = from,
+    td-to-step = to,
+    td-condition = cond,
+    td-label = label,
+    td-priority = 0
+  }
+
+  always-transition : Text, Text, Text -> TransitionDef
+  always-transition (id) (from) (to) = transition id from to Always ""
+
+Section: Forms
+
+  FieldSpec = record {
+    fs-id : Text,
+    fs-label : Text,
+    fs-type : FieldInputType,
+    fs-required : Boolean,
+    fs-default : Text,
+    fs-validation : Text,
+    fs-group : Text,
+    fs-help-text : Text,
+    fs-options : List Text
+  }
+
+  FieldInputType =
+    | InputText
+    | InputTextArea
+    | InputNumber
+    | InputCurrency
+    | InputDate
+    | InputDateTime
+    | InputCheckbox
+    | InputSelect
+    | InputRadio
+    | InputFile
+    | InputAddress
+    | InputPhone
+    | InputEmail
+    | InputSsn
+    | InputEin
+
+  field-input-name : FieldInputType -> Text
+  field-input-name (t) =
+    when t
+      is InputText -> "text"
+      is InputTextArea -> "textarea"
+      is InputNumber -> "number"
+      is InputCurrency -> "currency"
+      is InputDate -> "date"
+      is InputDateTime -> "datetime"
+      is InputCheckbox -> "checkbox"
+      is InputSelect -> "select"
+      is InputRadio -> "radio"
+      is InputFile -> "file"
+      is InputAddress -> "address"
+      is InputPhone -> "phone"
+      is InputEmail -> "email"
+      is InputSsn -> "ssn"
+      is InputEin -> "ein"
+
+  FormDef = record {
+    form-id : Text,
+    form-title : Text,
+    form-fields : List FieldSpec,
+    form-instructions : Text
+  }
+
+  field-spec : Text, Text, FieldInputType, Boolean -> FieldSpec
+  field-spec (id) (label) (ftype) (required) = FieldSpec {
+    fs-id = id,
+    fs-label = label,
+    fs-type = ftype,
+    fs-required = required,
+    fs-default = "",
+    fs-validation = "",
+    fs-group = "",
+    fs-help-text = "",
+    fs-options = []
+  }
+
+  field-select : Text, Text, List Text, Boolean -> FieldSpec
+  field-select (id) (label) (opts) (required) = FieldSpec {
+    fs-id = id,
+    fs-label = label,
+    fs-type = InputSelect,
+    fs-required = required,
+    fs-default = "",
+    fs-validation = "",
+    fs-group = "",
+    fs-help-text = "",
+    fs-options = opts
+  }
+
+Section: Data Bag
+
+  DataEntry = record {
+    de-key : Text,
+    de-value : Text,
+    de-step-id : Text,
+    de-set-by : Text,
+    de-set-at : Integer
+  }
+
+  data-entry : Text, Text, Text, Text, Integer -> DataEntry
+  data-entry (k) (v) (step) (who) (ts) = DataEntry {
+    de-key = k, de-value = v, de-step-id = step, de-set-by = who, de-set-at = ts
+  }
+
+  get-data : List DataEntry, Text -> Text
+  get-data (entries) (key) = get-data-loop entries key 0
+
+  get-data-loop : List DataEntry, Text, Integer -> Text
+  get-data-loop (entries) (key) (i) =
+    if i >= list-length entries then ""
+    else let e = list-at entries i
+    in if e.de-key == key then e.de-value
+    else get-data-loop entries key (i + 1)
+
+  set-data : List DataEntry, Text, Text, Text, Text, Integer -> List DataEntry
+  set-data (entries) (key) (val) (step) (who) (ts) =
+    list-push entries (data-entry key val step who ts)
+
+  has-data : List DataEntry, Text -> Boolean
+  has-data (entries) (key) = text-length (get-data entries key) > 0
+
+Section: Documents
+
+  DocStatus =
+    | DocRequired
+    | DocUploaded
+    | DocVerified
+    | DocRejected (Text)
+    | DocExpired
+
+  doc-status-name : DocStatus -> Text
+  doc-status-name (s) =
+    when s
+      is DocRequired -> "required"
+      is DocUploaded -> "uploaded"
+      is DocVerified -> "verified"
+      is DocRejected (reason) -> "rejected: " & reason
+      is DocExpired -> "expired"
+
+  Document = record {
+    doc-id : Text,
+    doc-name : Text,
+    doc-type : Text,
+    doc-status : DocStatus,
+    doc-url : Text,
+    doc-uploaded-by : Text,
+    doc-uploaded-at : Integer,
+    doc-verified-by : Text,
+    doc-verified-at : Integer,
+    doc-expires : Integer
+  }
+
+Section: Assignments and Roles
+
+  RoleDef = record {
+    rd-id : Text,
+    rd-name : Text,
+    rd-description : Text,
+    rd-can-approve : Boolean,
+    rd-can-assign : Boolean,
+    rd-max-concurrent : Integer
+  }
+
+  AssignmentRule =
+    | AssignToRole (Text)
+    | AssignToUser (Text)
+    | AssignToInitiator
+    | AssignRoundRobin (Text)
+    | AssignLeastLoaded (Text)
+    | AssignByData (Text) (Text)
+    | AssignEscalate (Text) (Integer)
+    | Unassigned
+
+  assignment-rule-name : AssignmentRule -> Text
+  assignment-rule-name (r) =
+    when r
+      is AssignToRole (role) -> "role: " & role
+      is AssignToUser (user) -> "user: " & user
+      is AssignToInitiator -> "initiator"
+      is AssignRoundRobin (role) -> "round-robin: " & role
+      is AssignLeastLoaded (role) -> "least-loaded: " & role
+      is AssignByData (field) (role) -> "by-data: " & field
+      is AssignEscalate (to) (after) -> "escalate to " & to & " after " & show after & "s"
+      is Unassigned -> "unassigned"
+
+  Participant = record {
+    part-user-id : Text,
+    part-role : Text,
+    part-assigned-step : Text,
+    part-assigned-at : Integer
+  }
+
+Section: SLA and Escalation
+
+  SlaDef = record {
+    sla-warn-secs : Integer,
+    sla-deadline-secs : Integer,
+    sla-escalate-to : Text,
+    sla-auto-action : SlaAction
+  }
+
+  SlaAction =
+    | SlaNotify
+    | SlaEscalate
+    | SlaReassign (Text)
+    | SlaCancel
+    | SlaSkip
+
+  sla-action-name : SlaAction -> Text
+  sla-action-name (a) =
+    when a
+      is SlaNotify -> "notify"
+      is SlaEscalate -> "escalate"
+      is SlaReassign (to) -> "reassign to " & to
+      is SlaCancel -> "cancel"
+      is SlaSkip -> "skip"
+
+  default-sla : SlaDef
+  default-sla = SlaDef {
+    sla-warn-secs = 172800,
+    sla-deadline-secs = 604800,
+    sla-escalate-to = "supervisor",
+    sla-auto-action = SlaEscalate
+  }
+
+  rush-sla : SlaDef
+  rush-sla = SlaDef {
+    sla-warn-secs = 3600,
+    sla-deadline-secs = 28800,
+    sla-escalate-to = "manager",
+    sla-auto-action = SlaEscalate
+  }
+
+Section: Actions
+
+  ActionDef =
+    | SendEmail (Text) (Text)
+    | SendNotification (Text)
+    | SetDataField (Text) (Text)
+    | CallWebhook (Text)
+    | StartSubProcess (Text)
+    | GenerateDocument (Text)
+    | UpdateExternalSystem (Text) (Text)
+    | LogAudit (Text)
+
+  action-name : ActionDef -> Text
+  action-name (a) =
+    when a
+      is SendEmail (to) (tmpl) -> "email: " & to
+      is SendNotification (msg) -> "notify: " & msg
+      is SetDataField (k) (v) -> "set: " & k & "=" & v
+      is CallWebhook (url) -> "webhook: " & url
+      is StartSubProcess (id) -> "sub-process: " & id
+      is GenerateDocument (tmpl) -> "gen-doc: " & tmpl
+      is UpdateExternalSystem (sys) (action2) -> "external: " & sys
+      is LogAudit (msg) -> "audit: " & msg
+
+Section: Audit Trail
+
+  StepEvent = record {
+    se-id : Text,
+    se-step-id : Text,
+    se-event-type : EventType,
+    se-user-id : Text,
+    se-timestamp : Integer,
+    se-details : Text,
+    se-data-snapshot : List DataEntry
+  }
+
+  EventType =
+    | EvStepEntered
+    | EvStepAssigned
+    | EvStepStarted
+    | EvStepCompleted
+    | EvStepSkipped
+    | EvStepEscalated
+    | EvStepTimedOut
+    | EvDocUploaded
+    | EvDocVerified
+    | EvDocRejected
+    | EvApprovalGranted
+    | EvApprovalDenied
+    | EvDataChanged
+    | EvCommentAdded
+    | EvProcessStarted
+    | EvProcessCompleted
+    | EvProcessCancelled
+    | EvSlaWarning
+    | EvSlaBreached
+
+  event-type-name : EventType -> Text
+  event-type-name (t) =
+    when t
+      is EvStepEntered -> "step-entered"
+      is EvStepAssigned -> "step-assigned"
+      is EvStepStarted -> "step-started"
+      is EvStepCompleted -> "step-completed"
+      is EvStepSkipped -> "step-skipped"
+      is EvStepEscalated -> "step-escalated"
+      is EvStepTimedOut -> "step-timed-out"
+      is EvDocUploaded -> "doc-uploaded"
+      is EvDocVerified -> "doc-verified"
+      is EvDocRejected -> "doc-rejected"
+      is EvApprovalGranted -> "approval-granted"
+      is EvApprovalDenied -> "approval-denied"
+      is EvDataChanged -> "data-changed"
+      is EvCommentAdded -> "comment-added"
+      is EvProcessStarted -> "process-started"
+      is EvProcessCompleted -> "process-completed"
+      is EvProcessCancelled -> "process-cancelled"
+      is EvSlaWarning -> "sla-warning"
+      is EvSlaBreached -> "sla-breached"
+
+Section: Comments
+
+  Comment = record {
+    cmt-id : Text,
+    cmt-process-id : Text,
+    cmt-step-id : Text,
+    cmt-user-id : Text,
+    cmt-text : Text,
+    cmt-internal : Boolean,
+    cmt-created : Integer
+  }
+
+Section: Dashboard Metrics
+
+  WorkflowMetrics = record {
+    wm-total-active : Integer,
+    wm-total-completed : Integer,
+    wm-avg-completion-secs : Integer,
+    wm-sla-breach-count : Integer,
+    wm-by-step : List StepMetric
+  }
+
+  StepMetric = record {
+    sm-step-id : Text,
+    sm-pending-count : Integer,
+    sm-in-progress-count : Integer,
+    sm-avg-duration-secs : Integer,
+    sm-breach-count : Integer
+  }

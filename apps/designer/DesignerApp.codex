@@ -1,0 +1,236 @@
+Chapter: DesignerApp
+  cites Designer chapter DesignerWidgets
+  cites Designer chapter DesignerExport
+  cites Designer chapter DesignerRender
+
+ Main application logic for the Codex UI Designer.
+
+ Designer state at designer-state-addr (0x220000):
+   [0]  widget-count   i32
+   [4]  selected       i32 (-1 = none)
+   [8]  pool-ptr       i32 (next free offset in string pool)
+   [12] drag-active    i32
+   [16] drag-idx       i32
+   [20] drag-ox        i32 (drag offset x)
+   [24] drag-oy        i32
+
+ We say:
+
+Section: State
+
+  widget-count : Integer = rd designer-state-addr
+  selected-widget : Integer = rd (designer-state-addr + 4)
+
+  set-selected : Integer -> Integer
+  set-selected (idx) = w32 (designer-state-addr + 4) idx
+
+Section: Init
+
+  designer-init : Integer =
+    let a = w32 designer-state-addr 0
+    in let b2 = w32 (designer-state-addr + 4) (0 - 1)
+    in let c = w32 (designer-state-addr + 8) 0
+    in let d = w32 (designer-state-addr + 12) 0
+    in 0
+
+Section: Add Widget
+
+  add-widget : Integer, Integer, Integer -> Integer
+  add-widget (wtype) (x) (y) =
+    let count = widget-count
+    in if count >= max-widgets then 0 - 1
+    else let idx = count
+    in let a = wgt-set-type idx wtype
+    in let b2 = wgt-set-pos idx x y
+    in let c = wgt-set-size idx (widget-default-w wtype) (widget-default-h wtype)
+    in let d = wgt-set-parent idx (0 - 1)
+    in let e = wgt-set-first-child idx (0 - 1)
+    in let f2 = wgt-set-next-sibling idx (0 - 1)
+    in let toff = pool-write-text (widget-type-name wtype)
+    in let g2 = wgt-set-text idx toff (text-length (widget-type-name wtype))
+    in let h = wgt-set-onclick idx 0 0
+    in let k = wgt-set-flags idx 0
+    in let l = wgt-set-grid-cols idx (if wtype == 7 then 2 else 0)
+    in let m = w32 designer-state-addr (count + 1)
+    in idx
+
+Section: Delete Widget
+
+  delete-widget : Integer -> Integer
+  delete-widget (idx) =
+    if idx < 0 then 0
+    else if idx >= widget-count then 0
+    else let last = widget-count - 1
+    in if idx == last then
+      let a = w32 designer-state-addr last
+      in if selected-widget == idx then set-selected (0 - 1) else 0
+    else let a = copy-widget last idx
+    in let b2 = w32 designer-state-addr last
+    in if selected-widget == last then set-selected idx
+    else if selected-widget == idx then set-selected (0 - 1)
+    else 0
+
+  copy-widget : Integer, Integer -> Integer
+  copy-widget (src) (dst) =
+    copy-widget-loop src dst 0
+
+  copy-widget-loop : Integer, Integer, Integer -> Integer
+  copy-widget-loop (src) (dst) (off) =
+    if off >= widget-stride then 0
+    else let a = w32 (widget-addr dst + off) (rd (widget-addr src + off))
+    in copy-widget-loop src dst (off + 4)
+
+Section: Move and Resize
+
+  move-widget : Integer, Integer, Integer -> Integer
+  move-widget (idx) (dx) (dy) =
+    if idx < 0 then 0
+    else let a = wgt-set-pos idx (wgt-x idx + dx) (wgt-y idx + dy)
+    in 0
+
+  resize-widget : Integer, Integer, Integer -> Integer
+  resize-widget (idx) (dw) (dh) =
+    if idx < 0 then 0
+    else let nw = wgt-w idx + dw in let nh = wgt-h idx + dh
+    in let cw = if nw < 20 then 20 else nw
+    in let ch = if nh < 12 then 12 else nh
+    in wgt-set-size idx cw ch
+
+Section: Select
+
+  select-widget : Integer -> Integer
+  select-widget (idx) = set-selected idx
+
+Section: Reparent
+
+  reparent-widget : Integer, Integer -> Integer
+  reparent-widget (idx) (new-parent) =
+    if idx < 0 then 0
+    else if idx == new-parent then 0
+    else let a = wgt-set-parent idx new-parent
+    in if new-parent >= 0 then
+      let fc = wgt-first-child new-parent
+      in if fc < 0 then wgt-set-first-child new-parent idx
+      else append-sibling fc idx
+    else 0
+
+  append-sibling : Integer, Integer -> Integer
+  append-sibling (cur) (new-idx) =
+    let ns = wgt-next-sibling cur
+    in if ns < 0 then wgt-set-next-sibling cur new-idx
+    else append-sibling ns new-idx
+
+Section: Set Widget Text
+
+  set-widget-text-str : Integer, Text -> Integer
+  set-widget-text-str (idx) (s) =
+    let off = pool-write-text s
+    in wgt-set-text idx off (text-length s)
+
+  set-widget-onclick-str : Integer, Text -> Integer
+  set-widget-onclick-str (idx) (s) =
+    let off = pool-write-text s
+    in wgt-set-onclick idx off (text-length s)
+
+Section: Query
+
+  get-widget-count : Integer = widget-count
+
+  get-widget-type : Integer -> Integer
+  get-widget-type (idx) = if idx < 0 then 0 - 1 else wgt-type idx
+
+  get-widget-x : Integer -> Integer
+  get-widget-x (idx) = if idx < 0 then 0 else wgt-x idx
+
+  get-widget-y : Integer -> Integer
+  get-widget-y (idx) = if idx < 0 then 0 else wgt-y idx
+
+  get-widget-w : Integer -> Integer
+  get-widget-w (idx) = if idx < 0 then 0 else wgt-w idx
+
+  get-widget-h : Integer -> Integer
+  get-widget-h (idx) = if idx < 0 then 0 else wgt-h idx
+
+  get-widget-parent : Integer -> Integer
+  get-widget-parent (idx) = if idx < 0 then 0 - 1 else wgt-parent idx
+
+  get-widget-flags : Integer -> Integer
+  get-widget-flags (idx) = if idx < 0 then 0 else wgt-flags idx
+
+  get-widget-grid-cols : Integer -> Integer
+  get-widget-grid-cols (idx) = if idx < 0 then 0 else wgt-grid-cols idx
+
+  get-widget-text-char : Integer, Integer -> Integer
+  get-widget-text-char (idx) (ci) =
+    if idx < 0 then 0
+    else if ci >= wgt-text-len idx then 0
+    else pool-read-char (wgt-text-off idx) ci
+
+  get-widget-text-len : Integer -> Integer
+  get-widget-text-len (idx) = if idx < 0 then 0 else wgt-text-len idx
+
+  get-widget-onclick-char : Integer, Integer -> Integer
+  get-widget-onclick-char (idx) (ci) =
+    if idx < 0 then 0
+    else if ci >= wgt-onclick-len idx then 0
+    else pool-read-char (wgt-onclick-off idx) ci
+
+  get-widget-onclick-len : Integer -> Integer
+  get-widget-onclick-len (idx) = if idx < 0 then 0 else wgt-onclick-len idx
+
+  get-selected-widget : Integer = selected-widget
+
+Section: Export Buffer
+
+  export-buf-addr : Integer = 7340032
+  export-buf-max : Integer = 524288
+
+  write-export-byte : Integer, Integer -> Integer
+  write-export-byte (pos) (ch) =
+    let a = w32 (export-buf-addr + 4 + pos) ch
+    in pos + 1
+
+  write-export-str : Integer, Text -> Integer
+  write-export-str (pos) (s) =
+    write-export-str-loop pos s 0 (text-length s)
+
+  write-export-str-loop : Integer, Text, Integer, Integer -> Integer
+  write-export-str-loop (pos) (s) (i) (len) =
+    if i >= len then pos + len
+    else let a = w32 (export-buf-addr + 4 + pos + i) (char-code (char-at s i))
+    in write-export-str-loop pos s (i + 1) len
+
+  set-export-length : Integer -> Integer
+  set-export-length (len) = w32 export-buf-addr len
+
+  get-export-length : Integer -> Integer
+  get-export-length (d) = rd export-buf-addr
+
+  get-export-byte : Integer -> Integer
+  get-export-byte (idx) = rd (export-buf-addr + 4 + idx)
+
+Section: Opening
+
+  opening : [Console] Nothing = act
+    let a = designer-init
+    in let b2 = add-widget 0 0 0 in let c = add-widget 1 0 0
+    in let d = get-widget-count in let e = get-widget-type 0
+    in let f2 = get-widget-x 0 in let g2 = get-widget-y 0
+    in let h = get-widget-w 0 in let k = get-widget-h 0
+    in let l = get-widget-parent 0 in let m = get-widget-flags 0
+    in let n2 = get-widget-grid-cols 0
+    in let o = get-widget-text-char 0 0 in let p = get-widget-text-len 0
+    in let q = get-widget-onclick-char 0 0 in let r = get-widget-onclick-len 0
+    in let s = get-selected-widget
+    in let t = select-widget 0 in let u = move-widget 0 10 10
+    in let v = resize-widget 0 10 10 in let w2 = delete-widget (0 - 1)
+    in let x = reparent-widget 0 (0 - 1)
+    in let y = set-widget-text-str 0 "test" in let z = set-widget-onclick-str 0 "test()"
+    in let aa = export-codex
+    in let bb = get-export-length 0 in let cc = get-export-byte 0
+    in let dd = render-canvas 0 in let ee = render-preview 0
+    in let ff = render-tree 0 in let gg = render-props 0
+    in print-line-uni "Codex Designer"
+  end
+
+Page 1

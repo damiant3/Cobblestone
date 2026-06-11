@@ -1,0 +1,203 @@
+Chapter: DistributedConfig
+  cites Net chapter RaftConsensus
+  cites Foreword chapter KvStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+
+ Distributed configuration store. Key-value pairs replicated across
+ the mesh via Raft consensus. Versioned — every update bumps the
+ version. Watchers get notified on change. Supports namespaced keys
+ (service.setting), TTL expiry, and atomic compare-and-swap. This
+ is etcd/Consul KV for codex.OS.
+
+Section: Config Entry
+
+  ConfigEntry = record {
+    ce-key : Text,
+    ce-value : Text,
+    ce-version : Integer,
+    ce-created : Integer,
+    ce-modified : Integer,
+    ce-ttl-sec : Integer,
+    ce-expires : Integer,
+    ce-namespace : Text
+  }
+
+  config-entry-new : Text, Text, Integer, Integer -> ConfigEntry
+  config-entry-new (key) (value) (version) (ts) = ConfigEntry {
+    ce-key = key, ce-value = value,
+    ce-version = version,
+    ce-created = ts, ce-modified = ts,
+    ce-ttl-sec = 0, ce-expires = 0,
+    ce-namespace = config-namespace key
+  }
+
+  config-namespace : Text -> Text
+  config-namespace (key) = cn-loop key 0 (text-length key)
+
+  cn-loop : Text, Integer, Integer -> Text
+  cn-loop (key) (i) (len) =
+    if i >= len then ""
+    else if char-code (char-at key i) == 46 then text-slice key 0 i
+    else cn-loop key (i + 1) len
+
+  ce-is-expired : ConfigEntry, Integer -> Boolean
+  ce-is-expired (ce) (now) =
+    if ce.ce-ttl-sec == 0 then False
+    else now >= ce.ce-expires
+
+Section: Watch
+
+  ConfigWatch = record {
+    cw-id : Integer,
+    cw-prefix : Text,
+    cw-callback : Text,
+    cw-last-version : Integer
+  }
+
+Section: Config Store (backed by foreword KvStore/HAMT)
+
+  ConfigStore = record {
+    cs-values : KvStore,
+    cs-meta : List ConfigEntry,
+    cs-meta-count : Integer,
+    cs-version : Integer,
+    cs-watches : List ConfigWatch,
+    cs-watch-count : Integer,
+    cs-next-watch-id : Integer
+  }
+
+  config-store-new : ConfigStore
+  config-store-new = ConfigStore {
+    cs-values = kv-empty, cs-meta = [], cs-meta-count = 0,
+    cs-version = 0,
+    cs-watches = [], cs-watch-count = 0, cs-next-watch-id = 1
+  }
+
+  cs-set : ConfigStore, Text, Text, Integer -> ConfigStore
+  cs-set (st) (key) (value) (ts) =
+    let new-version = st.cs-version + 1
+    in let new-values = kv-put (st.cs-values) key value
+    in let existing = cs-find-meta (st.cs-meta) key 0 (st.cs-meta-count)
+    in let new-meta = when existing
+      is Just (idx) ->
+        let old = list-at (st.cs-meta) idx
+        in let updated = ConfigEntry { ce-key = key, ce-value = value, ce-version = new-version, ce-created = old.ce-created, ce-modified = ts, ce-ttl-sec = old.ce-ttl-sec, ce-expires = if old.ce-ttl-sec > 0 then ts + old.ce-ttl-sec else 0, ce-namespace = old.ce-namespace }
+        in list-set-at (st.cs-meta) idx updated
+      is None -> list-push (st.cs-meta) (config-entry-new key value new-version ts)
+    in let new-count = when existing is Just (idx) -> st.cs-meta-count is None -> st.cs-meta-count + 1
+    in ConfigStore {
+      cs-values = new-values, cs-meta = new-meta, cs-meta-count = new-count,
+      cs-version = new-version,
+      cs-watches = st.cs-watches, cs-watch-count = st.cs-watch-count,
+      cs-next-watch-id = st.cs-next-watch-id
+    }
+
+  cs-find-meta : List ConfigEntry, Text, Integer, Integer -> Maybe Integer
+  cs-find-meta (entries) (key) (i) (n) =
+    if i >= n then None
+    else if (list-at entries i).ce-key == key then Just i
+    else cs-find-meta entries key (i + 1) n
+
+  cs-get : ConfigStore, Text -> Maybe ConfigEntry
+  cs-get (st) (key) =
+    when kv-get (st.cs-values) key
+      is Just (val) -> cs-get-meta (st.cs-meta) key 0 (st.cs-meta-count)
+      is None -> None
+
+  cs-get-meta : List ConfigEntry, Text, Integer, Integer -> Maybe ConfigEntry
+  cs-get-meta (entries) (key) (i) (n) =
+    if i >= n then None
+    else let e = list-at entries i
+    in if e.ce-key == key then Just e
+    else cs-get-meta entries key (i + 1) n
+
+  cs-get-value : ConfigStore, Text, Text -> Text
+  cs-get-value (st) (key) (default-val) = kv-get-or (st.cs-values) key default-val
+
+  cs-delete : ConfigStore, Text -> ConfigStore
+  cs-delete (st) (key) =
+    let new-values = kv-delete (st.cs-values) key
+    in let filtered = cs-delete-meta (st.cs-meta) key 0 (st.cs-meta-count) []
+    in ConfigStore {
+      cs-values = new-values, cs-meta = filtered, cs-meta-count = list-length filtered,
+      cs-version = st.cs-version + 1,
+      cs-watches = st.cs-watches, cs-watch-count = st.cs-watch-count,
+      cs-next-watch-id = st.cs-next-watch-id
+    }
+
+  cs-delete-meta : List ConfigEntry, Text, Integer, Integer, List ConfigEntry -> List ConfigEntry
+  cs-delete-meta (entries) (key) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if e.ce-key == key then cs-delete-meta entries key (i + 1) n acc
+    else cs-delete-meta entries key (i + 1) n (list-push acc e)
+
+  cs-cas : ConfigStore, Text, Text, Text, Integer -> ConfigStore
+  cs-cas (st) (key) (expected) (new-value) (ts) =
+    let current = kv-get-or (st.cs-values) key ""
+    in if current == expected then cs-set st key new-value ts
+    else if text-length expected == 0 then
+      when kv-get (st.cs-values) key
+        is None -> cs-set st key new-value ts
+        is Just (v) -> st
+    else st
+
+  cs-list-prefix : ConfigStore, Text -> List ConfigEntry
+  cs-list-prefix (st) (prefix) = cs-prefix-loop (st.cs-meta) prefix 0 (st.cs-meta-count) []
+
+  cs-prefix-loop : List ConfigEntry, Text, Integer, Integer, List ConfigEntry -> List ConfigEntry
+  cs-prefix-loop (entries) (prefix) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if text-starts-with (e.ce-key) prefix then cs-prefix-loop entries prefix (i + 1) n (list-push acc e)
+    else cs-prefix-loop entries prefix (i + 1) n acc
+
+  cs-list-namespace : ConfigStore, Text -> List ConfigEntry
+  cs-list-namespace (st) (ns) = cs-ns-loop (st.cs-meta) ns 0 (st.cs-meta-count) []
+
+  cs-ns-loop : List ConfigEntry, Text, Integer, Integer, List ConfigEntry -> List ConfigEntry
+  cs-ns-loop (entries) (ns) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if e.ce-namespace == ns then cs-ns-loop entries ns (i + 1) n (list-push acc e)
+    else cs-ns-loop entries ns (i + 1) n acc
+
+  cs-add-watch : ConfigStore, Text, Text -> ConfigStore
+  cs-add-watch (st) (prefix) (callback) =
+    let w = ConfigWatch { cw-id = st.cs-next-watch-id, cw-prefix = prefix, cw-callback = callback, cw-last-version = st.cs-version }
+    in __record-set (__record-set (__record-set st "cs-watches" (list-push (st.cs-watches) w)) "cs-watch-count" (st.cs-watch-count + 1)) "cs-next-watch-id" (st.cs-next-watch-id + 1)
+
+  cs-expire : ConfigStore, Integer -> ConfigStore
+  cs-expire (st) (now) =
+    let filtered = cs-expire-loop (st.cs-entries) now 0 (st.cs-count) []
+    in __record-set (__record-set st "cs-entries" filtered) "cs-count" (list-length filtered)
+
+  cs-expire-loop : List ConfigEntry, Integer, Integer, Integer, List ConfigEntry -> List ConfigEntry
+  cs-expire-loop (entries) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if ce-is-expired e now then cs-expire-loop entries now (i + 1) n acc
+    else cs-expire-loop entries now (i + 1) n (list-push acc e)
+
+  cs-namespaces : ConfigStore -> List Text
+  cs-namespaces (st) = cs-ns-uniq (st.cs-entries) 0 (st.cs-count) []
+
+  cs-ns-uniq : List ConfigEntry, Integer, Integer, List Text -> List Text
+  cs-ns-uniq (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else let ns = (list-at entries i).ce-namespace
+    in if cs-ns-in acc ns 0 (list-length acc) then cs-ns-uniq entries (i + 1) n acc
+    else cs-ns-uniq entries (i + 1) n (list-push acc ns)
+
+  cs-ns-in : List Text, Text, Integer, Integer -> Boolean
+  cs-ns-in (items) (target) (i) (n) =
+    if i >= n then False
+    else if list-at items i == target then True
+    else cs-ns-in items target (i + 1) n
+
+  cs-status : ConfigStore -> Text
+  cs-status (st) =
+    "config version=" & show (st.cs-version) & " entries=" & show (st.cs-count) & " watches=" & show (st.cs-watch-count)
+
+Page 1

@@ -1,0 +1,427 @@
+Chapter: GroupMembership
+  cites Net chapter Tcp
+  cites Trust chapter TrustLattice
+  cites Trust chapter TrustNode
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+
+ Mesh group membership. Machines form a group by announcing
+ themselves and exchanging membership lists. No permanent domain
+ controller — the group is peer-to-peer with a soft leader.
+ Membership is authenticated through the trust lattice: a machine
+ must have a trust score above threshold to join.
+
+ The protocol:
+ 1. New node broadcasts JOIN with its identity and public key
+ 2. Existing members verify trust score and respond with ACCEPT/REJECT
+ 3. Accepted nodes receive the full membership list
+ 4. Members exchange HEARTBEAT on an interval
+ 5. Missing heartbeats trigger SUSPECT, then DEAD after timeout
+ 6. Rejoining nodes get WELCOME with current state
+
+Section: Member State
+
+  MemberStatus =
+    | MsAlive
+    | MsSuspect (Integer)
+    | MsDead
+    | MsLeaving
+
+  ms-label : MemberStatus -> Text
+  ms-label (s) = when s
+    is MsAlive -> "alive"
+    is MsSuspect (since) -> "suspect"
+    is MsDead -> "dead"
+    is MsLeaving -> "leaving"
+
+  MemberRole =
+    | RoleLeader
+    | RoleMember
+    | RoleObserver
+
+  role-label : MemberRole -> Text
+  role-label (r) = when r
+    is RoleLeader -> "leader"
+    is RoleMember -> "member"
+    is RoleObserver -> "observer"
+
+Section: Group Member
+
+  GroupMember = record {
+    gm-id : Text,
+    gm-name : Text,
+    gm-address : Text,
+    gm-port : Integer,
+    gm-public-key : List Integer,
+    gm-trust-score : Integer,
+    gm-status : MemberStatus,
+    gm-role : MemberRole,
+    gm-join-time : Integer,
+    gm-last-heartbeat : Integer,
+    gm-sequence : Integer,
+    gm-generation : Integer,
+    gm-services : List Text,
+    gm-service-count : Integer,
+    gm-metadata : List Text,
+    gm-metadata-count : Integer
+  }
+
+  member-new : Text, Text, Text, Integer, List Integer -> GroupMember
+  member-new (id) (name) (addr) (port) (key) = GroupMember {
+    gm-id = id, gm-name = name, gm-address = addr, gm-port = port,
+    gm-public-key = key, gm-trust-score = 0,
+    gm-status = MsAlive, gm-role = RoleMember,
+    gm-join-time = 0, gm-last-heartbeat = 0,
+    gm-sequence = 0, gm-generation = 1,
+    gm-services = [], gm-service-count = 0,
+    gm-metadata = [], gm-metadata-count = 0
+  }
+
+  member-is-alive : GroupMember -> Boolean
+  member-is-alive (m) = when m.gm-status
+    is MsAlive -> True
+    is otherwise -> False
+
+  member-is-reachable : GroupMember -> Boolean
+  member-is-reachable (m) = when m.gm-status
+    is MsAlive -> True
+    is MsSuspect (since) -> True
+    is otherwise -> False
+
+  member-add-service : GroupMember, Text -> GroupMember
+  member-add-service (m) (svc) =
+    __record-set (__record-set m "gm-services" (list-push (m.gm-services) svc)) "gm-service-count" (m.gm-service-count + 1)
+
+Section: Group Protocol Messages
+
+  GroupMsg =
+    | MsgJoin (Text) (Text) (Integer) (List Integer)
+    | MsgAccept (Text) (Integer)
+    | MsgReject (Text) (Text)
+    | MsgHeartbeat (Text) (Integer) (Integer)
+    | MsgSuspect (Text) (Text)
+    | MsgDead (Text) (Text)
+    | MsgLeave (Text)
+    | MsgMemberList (List GroupMember)
+    | MsgElection (Text) (Integer)
+    | MsgLeaderClaim (Text) (Integer)
+    | MsgLeaderYield (Text) (Text)
+    | MsgServiceAnnounce (Text) (Text) (Text) (Integer)
+    | MsgServiceQuery (Text) (Text)
+    | MsgServiceResponse (Text) (List ServiceLocation)
+
+  msg-label : GroupMsg -> Text
+  msg-label (m) = when m
+    is MsgJoin (id) (addr) (port) (key) -> "JOIN " & id
+    is MsgAccept (id) (gen) -> "ACCEPT " & id
+    is MsgReject (id) (reason) -> "REJECT " & id & ": " & reason
+    is MsgHeartbeat (id) (seq) (gen) -> "HB " & id & " #" & show seq
+    is MsgSuspect (reporter) (suspect) -> "SUSPECT " & suspect & " by " & reporter
+    is MsgDead (reporter) (dead) -> "DEAD " & dead & " by " & reporter
+    is MsgLeave (id) -> "LEAVE " & id
+    is MsgMemberList (members) -> "MEMBERS (" & show (list-length members) & ")"
+    is MsgElection (id) (priority) -> "ELECTION " & id & " pri=" & show priority
+    is MsgLeaderClaim (id) (gen) -> "LEADER " & id & " gen=" & show gen
+    is MsgLeaderYield (old-leader) (new-leader) -> "YIELD " & old-leader & " -> " & new-leader
+    is MsgServiceAnnounce (member) (svc) (version) (port) -> "SVC-ANN " & svc & "@" & member
+    is MsgServiceQuery (requester) (svc-name) -> "SVC-QRY " & svc-name
+    is MsgServiceResponse (responder) (locations) -> "SVC-RSP (" & show (list-length locations) & ")"
+
+Section: Service Location
+
+  ServiceLocation = record {
+    sl-service : Text,
+    sl-version : Text,
+    sl-member-id : Text,
+    sl-address : Text,
+    sl-port : Integer,
+    sl-role : ServiceRole,
+    sl-health : Integer,
+    sl-load : Integer,
+    sl-registered : Integer,
+    sl-last-check : Integer
+  }
+
+  ServiceRole =
+    | SrPrimary
+    | SrHotBackup
+    | SrLoadBalanced
+    | SrReadReplica
+    | SrCanary
+
+  sr-label : ServiceRole -> Text
+  sr-label (r) = when r
+    is SrPrimary -> "primary"
+    is SrHotBackup -> "hot-backup"
+    is SrLoadBalanced -> "load-balanced"
+    is SrReadReplica -> "read-replica"
+    is SrCanary -> "canary"
+
+  svc-location-new : Text, Text, Text, Text, Integer, ServiceRole -> ServiceLocation
+  svc-location-new (svc) (version) (member) (addr) (port) (role) = ServiceLocation {
+    sl-service = svc, sl-version = version, sl-member-id = member,
+    sl-address = addr, sl-port = port, sl-role = role,
+    sl-health = 10000, sl-load = 0, sl-registered = 0, sl-last-check = 0
+  }
+
+  svc-is-healthy : ServiceLocation -> Boolean
+  svc-is-healthy (loc) = loc.sl-health > 5000
+
+Section: Group State
+
+  GroupState = record {
+    gs-group-name : Text,
+    gs-self-id : Text,
+    gs-generation : Integer,
+    gs-members : List GroupMember,
+    gs-member-count : Integer,
+    gs-leader-id : Text,
+    gs-is-leader : Boolean,
+    gs-join-threshold : Integer,
+    gs-heartbeat-interval : Integer,
+    gs-suspect-timeout : Integer,
+    gs-dead-timeout : Integer,
+    gs-services : List ServiceLocation,
+    gs-service-count : Integer,
+    gs-election-in-progress : Boolean,
+    gs-msg-log : List GroupMsg,
+    gs-msg-log-count : Integer
+  }
+
+  group-new : Text, Text -> GroupState
+  group-new (name) (self-id) = GroupState {
+    gs-group-name = name, gs-self-id = self-id,
+    gs-generation = 1,
+    gs-members = [], gs-member-count = 0,
+    gs-leader-id = self-id, gs-is-leader = True,
+    gs-join-threshold = 5000,
+    gs-heartbeat-interval = 5,
+    gs-suspect-timeout = 15,
+    gs-dead-timeout = 30,
+    gs-services = [], gs-service-count = 0,
+    gs-election-in-progress = False,
+    gs-msg-log = [], gs-msg-log-count = 0
+  }
+
+Section: Membership Operations
+
+  gs-add-member : GroupState, GroupMember -> GroupState
+  gs-add-member (st) (m) =
+    __record-set (__record-set st "gs-members" (list-push (st.gs-members) m)) "gs-member-count" (st.gs-member-count + 1)
+
+  gs-remove-member : GroupState, Text -> GroupState
+  gs-remove-member (st) (id) =
+    let filtered = gs-filter-members (st.gs-members) id 0 (st.gs-member-count) []
+    in __record-set (__record-set st "gs-members" filtered) "gs-member-count" (list-length filtered)
+
+  gs-filter-members : List GroupMember, Text, Integer, Integer, List GroupMember -> List GroupMember
+  gs-filter-members (members) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let m = list-at members i
+    in if m.gm-id == id then gs-filter-members members id (i + 1) n acc
+    else gs-filter-members members id (i + 1) n (list-push acc m)
+
+  gs-find-member : GroupState, Text -> Maybe GroupMember
+  gs-find-member (st) (id) = gs-find-loop (st.gs-members) id 0 (st.gs-member-count)
+
+  gs-find-loop : List GroupMember, Text, Integer, Integer -> Maybe GroupMember
+  gs-find-loop (members) (id) (i) (n) =
+    if i >= n then None
+    else let m = list-at members i
+    in if m.gm-id == id then Just m
+    else gs-find-loop members id (i + 1) n
+
+  gs-alive-count : GroupState -> Integer
+  gs-alive-count (st) = gs-count-alive (st.gs-members) 0 (st.gs-member-count) 0
+
+  gs-count-alive : List GroupMember, Integer, Integer, Integer -> Integer
+  gs-count-alive (members) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if member-is-alive (list-at members i) then 1 else 0
+    in gs-count-alive members (i + 1) n (acc + delta)
+
+Section: Heartbeat Processing
+
+  gs-process-heartbeat : GroupState, Text, Integer, Integer -> GroupState
+  gs-process-heartbeat (st) (member-id) (seq) (now) =
+    let updated = gs-update-member (st.gs-members) member-id seq now 0 (st.gs-member-count) []
+    in __record-set st "gs-members" updated
+
+  gs-update-member : List GroupMember, Text, Integer, Integer, Integer, Integer, List GroupMember -> List GroupMember
+  gs-update-member (members) (id) (seq) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let m = list-at members i
+    in if m.gm-id == id then
+      let updated = __record-set (__record-set (__record-set m "gm-last-heartbeat" now) "gm-sequence" seq) "gm-status" MsAlive
+      in gs-update-member members id seq now (i + 1) n (list-push acc updated)
+    else gs-update-member members id seq now (i + 1) n (list-push acc m)
+
+  gs-check-timeouts : GroupState, Integer -> GroupState
+  gs-check-timeouts (st) (now) =
+    let updated = gs-timeout-loop (st.gs-members) now (st.gs-suspect-timeout) (st.gs-dead-timeout) 0 (st.gs-member-count) []
+    in __record-set st "gs-members" updated
+
+  gs-timeout-loop : List GroupMember, Integer, Integer, Integer, Integer, Integer, List GroupMember -> List GroupMember
+  gs-timeout-loop (members) (now) (suspect-t) (dead-t) (i) (n) (acc) =
+    if i >= n then acc
+    else let m = list-at members i
+    in let elapsed = now - m.gm-last-heartbeat
+    in let new-status = when m.gm-status
+      is MsAlive -> if elapsed > dead-t then MsDead else if elapsed > suspect-t then MsSuspect now else MsAlive
+      is MsSuspect (since) -> if elapsed > dead-t then MsDead else MsSuspect since
+      is otherwise -> m.gm-status
+    in gs-timeout-loop members now suspect-t dead-t (i + 1) n (list-push acc (__record-set m "gm-status" new-status))
+
+Section: Trust-Gated Join
+
+  gs-evaluate-join : GroupState, TrustLattice, Text, List Integer -> Boolean
+  gs-evaluate-join (st) (lattice) (candidate-id) (candidate-key) =
+    let score = lattice-score lattice candidate-id
+    in score >= st.gs-join-threshold
+
+  lattice-score : TrustLattice, Text -> Integer
+  lattice-score (lat) (agent) =
+    let entry = hamt-get (lat.entries) agent
+    in when entry
+      is Just (e) -> e.direct-score
+      is None -> 0
+
+Section: Leader Election (Bully algorithm with trust-weighted priority)
+
+  gs-start-election : GroupState, Integer -> GroupState
+  gs-start-election (st) (now) =
+    __record-set st "gs-election-in-progress" True
+
+  gs-election-priority : GroupMember -> Integer
+  gs-election-priority (m) =
+    let trust-weight = m.gm-trust-score / 100
+    in let tenure = m.gm-join-time
+    in let gen = m.gm-generation * 1000
+    in trust-weight + gen - tenure
+
+  gs-elect-leader : GroupState -> GroupState
+  gs-elect-leader (st) =
+    let alive = gs-alive-members (st.gs-members) 0 (st.gs-member-count) []
+    in let winner = gs-highest-priority alive 0 (list-length alive) "" (negate 1)
+    in let is-self = winner == st.gs-self-id
+    in GroupState {
+      gs-group-name = st.gs-group-name,
+      gs-self-id = st.gs-self-id,
+      gs-generation = st.gs-generation + 1,
+      gs-members = st.gs-members,
+      gs-member-count = st.gs-member-count,
+      gs-leader-id = winner,
+      gs-is-leader = is-self,
+      gs-join-threshold = st.gs-join-threshold,
+      gs-heartbeat-interval = st.gs-heartbeat-interval,
+      gs-suspect-timeout = st.gs-suspect-timeout,
+      gs-dead-timeout = st.gs-dead-timeout,
+      gs-services = st.gs-services,
+      gs-service-count = st.gs-service-count,
+      gs-election-in-progress = False,
+      gs-msg-log = st.gs-msg-log,
+      gs-msg-log-count = st.gs-msg-log-count
+    }
+
+  gs-alive-members : List GroupMember, Integer, Integer, List GroupMember -> List GroupMember
+  gs-alive-members (members) (i) (n) (acc) =
+    if i >= n then acc
+    else let m = list-at members i
+    in if member-is-alive m then gs-alive-members members (i + 1) n (list-push acc m)
+    else gs-alive-members members (i + 1) n acc
+
+  gs-highest-priority : List GroupMember, Integer, Integer, Text, Integer -> Text
+  gs-highest-priority (members) (i) (n) (best-id) (best-pri) =
+    if i >= n then best-id
+    else let m = list-at members i
+    in let pri = gs-election-priority m
+    in if pri > best-pri then gs-highest-priority members (i + 1) n (m.gm-id) pri
+    else gs-highest-priority members (i + 1) n best-id best-pri
+
+Section: Leader Yield (returning leader reclaims)
+
+  gs-leader-return : GroupState, Text, Integer -> GroupState
+  gs-leader-return (st) (original-leader) (now) =
+    when gs-find-member st original-leader
+      is Just (m) ->
+        if member-is-alive m then
+          __record-set (__record-set (__record-set st "gs-leader-id" original-leader) "gs-is-leader" (original-leader == st.gs-self-id)) "gs-generation" (st.gs-generation + 1)
+        else st
+      is None -> st
+
+Section: Service Registry
+
+  gs-register-service : GroupState, ServiceLocation -> GroupState
+  gs-register-service (st) (loc) =
+    let deduped = gs-dedup-service (st.gs-services) (loc.sl-service) (loc.sl-member-id) 0 (st.gs-service-count) []
+    in __record-set (__record-set st "gs-services" (list-push deduped loc)) "gs-service-count" (list-length deduped + 1)
+
+  gs-dedup-service : List ServiceLocation, Text, Text, Integer, Integer, List ServiceLocation -> List ServiceLocation
+  gs-dedup-service (svcs) (svc-name) (member) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at svcs i
+    in if s.sl-service == svc-name then if s.sl-member-id == member then gs-dedup-service svcs svc-name member (i + 1) n acc
+      else gs-dedup-service svcs svc-name member (i + 1) n (list-push acc s)
+    else gs-dedup-service svcs svc-name member (i + 1) n (list-push acc s)
+
+  gs-find-service : GroupState, Text -> List ServiceLocation
+  gs-find-service (st) (svc-name) =
+    gs-svc-filter (st.gs-services) svc-name 0 (st.gs-service-count) []
+
+  gs-svc-filter : List ServiceLocation, Text, Integer, Integer, List ServiceLocation -> List ServiceLocation
+  gs-svc-filter (svcs) (name) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at svcs i
+    in if s.sl-service == name then gs-svc-filter svcs name (i + 1) n (list-push acc s)
+    else gs-svc-filter svcs name (i + 1) n acc
+
+  gs-find-primary : GroupState, Text -> Maybe ServiceLocation
+  gs-find-primary (st) (svc-name) =
+    gs-primary-loop (gs-find-service st svc-name) 0
+
+  gs-primary-loop : List ServiceLocation, Integer -> Maybe ServiceLocation
+  gs-primary-loop (locs) (i) =
+    if i >= list-length locs then None
+    else let loc = list-at locs i
+    in when loc.sl-role
+      is SrPrimary -> Just loc
+      is otherwise -> gs-primary-loop locs (i + 1)
+
+  gs-pick-load-balanced : GroupState, Text -> Maybe ServiceLocation
+  gs-pick-load-balanced (st) (svc-name) =
+    let candidates = gs-find-service st svc-name
+    in let healthy = gs-healthy-svcs candidates 0 (list-length candidates) []
+    in if list-length healthy == 0 then None
+    else gs-lowest-load healthy 0 (list-length healthy) None 999999
+
+  gs-healthy-svcs : List ServiceLocation, Integer, Integer, List ServiceLocation -> List ServiceLocation
+  gs-healthy-svcs (locs) (i) (n) (acc) =
+    if i >= n then acc
+    else let loc = list-at locs i
+    in if svc-is-healthy loc then gs-healthy-svcs locs (i + 1) n (list-push acc loc)
+    else gs-healthy-svcs locs (i + 1) n acc
+
+  gs-lowest-load : List ServiceLocation, Integer, Integer, Maybe ServiceLocation, Integer -> Maybe ServiceLocation
+  gs-lowest-load (locs) (i) (n) (best) (best-load) =
+    if i >= n then best
+    else let loc = list-at locs i
+    in if loc.sl-load < best-load then gs-lowest-load locs (i + 1) n (Just loc) (loc.sl-load)
+    else gs-lowest-load locs (i + 1) n best best-load
+
+  gs-unique-services : GroupState -> List Text
+  gs-unique-services (st) = gs-uniq-svc (st.gs-services) 0 (st.gs-service-count) []
+
+  gs-uniq-svc : List ServiceLocation, Integer, Integer, List Text -> List Text
+  gs-uniq-svc (svcs) (i) (n) (acc) =
+    if i >= n then acc
+    else let name = (list-at svcs i).sl-service
+    in if gs-svc-in acc name 0 (list-length acc) then gs-uniq-svc svcs (i + 1) n acc
+    else gs-uniq-svc svcs (i + 1) n (list-push acc name)
+
+  gs-svc-in : List Text, Text, Integer, Integer -> Boolean
+  gs-svc-in (names) (target) (i) (n) =
+    if i >= n then False
+    else if list-at names i == target then True
+    else gs-svc-in names target (i + 1) n
+
+Page 1

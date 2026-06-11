@@ -14,7 +14,7 @@ param(
     [Parameter(Mandatory=$true)] [string]$Out,
     [Parameter(Mandatory=$true)] [string]$Log,
     [int]$PCore = 1,
-    [int]$MemMB = 2048,
+    [int]$MemMB = 3072,
     [switch]$IrUni,
     [switch]$IrCce,
     [switch]$Prose,
@@ -72,34 +72,21 @@ $inputFile = $null
 $outputFile = $null
 $stderrFile = $null
 
-$QuireDirs = @{ 'Foreword' = 'codex\foreword\core'; 'Kernel' = 'codex\os\kernel'; 'OS' = 'codex\os\core'; 'Works' = 'apps\works'; 'Trust' = 'codex\os\trust'; 'Net' = 'codex\os\net'; 'Verify' = 'codex\os\verify'; 'Replay' = 'codex\os\replay'; 'Sched' = 'codex\os\sched'; 'Observe' = 'codex\os\observe'; 'Game' = 'codex\foreword\game'; 'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'; 'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'; 'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'; 'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'; 'Magic' = 'apps\games\magic'; 'CodexMagic' = 'apps\games\codexmagic'; 'Games' = 'apps\games\classic'; 'Spark' = 'apps\spark'; 'Data' = 'apps\data'; 'Explorer' = 'apps\explorer' }
+. (Join-Path $PSScriptRoot 'quire-map.ps1')
 
 try {
-    $citePat = '^\s*cites\s+(Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev|Magic|CodexMagic|Games|Spark|Data|Explorer)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
-    $queue = [System.Collections.Generic.Queue[hashtable]]::new()
-    $seen = @{}
+    $seedSeen = @{}
     $embeddedPat = '^Chapter:\s*(\w+)--(.+?)\s*$'
-    foreach ($line in [System.IO.File]::ReadAllLines($Src)) {
-        if ($line -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
-        if ($line -match $embeddedPat) { $seen["$($matches[1])::$($matches[2])"] = $true }
+    $srcLines = [System.IO.File]::ReadAllLines($Src)
+    foreach ($line in $srcLines) {
+        if ($line -match $embeddedPat) { $seedSeen["$($matches[1])::$($matches[2])"] = $true }
     }
-    $ordered = @()
-    while ($queue.Count -gt 0) {
-        $cite = $queue.Dequeue()
-        $key = "$($cite.Quire)::$($cite.Name)"
-        if ($seen[$key]) { continue }
-        $seen[$key] = $true
-        $fwPath = Join-Path $QuireDirs[$cite.Quire] "$($cite.Name).codex"
-        if (-not (Test-Path -PathType Leaf $fwPath)) {
-            "error 3010: Cited $($cite.Quire) chapter '$($cite.Name)' not found (expected $fwPath)" | Set-Content -Path $Log -Encoding UTF8
-            exit 8
-        }
-        $lines = [System.IO.File]::ReadAllLines($fwPath)
-        foreach ($l in $lines) { if ($l -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) } }
-        $ordered += @{ Quire = $cite.Quire; Name = $cite.Name; Lines = $lines }
+    try {
+        $ordered = Resolve-CiteOrder -RootLines $srcLines -Repo '.' -SeedSeen $seedSeen
+    } catch {
+        "error 3010: $($_.Exception.Message)" | Set-Content -Path $Log -Encoding UTF8
+        exit 8
     }
-    [array]::Reverse($ordered)
-    $emitted = @{}
     $sb = [System.Text.StringBuilder]::new(524288)
 
     # Mode header
@@ -115,20 +102,8 @@ try {
     if ($Survey) { $mode = "$mode survey=$Survey" }
     [void]$sb.Append("$mode`n")
 
-    foreach ($entry in $ordered) {
-        $key = "$($entry.Quire)::$($entry.Name)"
-        if ($emitted[$key]) { continue }
-        $emitted[$key] = $true
-        $renamed = $false
-        foreach ($l in $entry.Lines) {
-            if (-not $renamed -and $l -match '^Chapter:\s*(.+?)\s*$') {
-                [void]$sb.Append("Chapter: $($entry.Quire)--$($matches[1])`n")
-                $renamed = $true
-            } else { [void]$sb.Append($l + "`n") }
-        }
-        [void]$sb.Append("`n`n")
-    }
-    foreach ($line in [System.IO.File]::ReadAllLines($Src)) { [void]$sb.Append($line + "`n") }
+    foreach ($l in (Format-CiteChapters -Ordered $ordered)) { [void]$sb.Append($l + "`n") }
+    foreach ($line in $srcLines) { [void]$sb.Append($line + "`n") }
     [void]$sb.Append([char]4)  # EOT
 
     $inputFile = [System.IO.Path]::GetTempFileName()

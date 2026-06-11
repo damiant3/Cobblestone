@@ -1,0 +1,189 @@
+Chapter: ColorPicker
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Color picker utility. Converts between RGB, HSL, and hex formats.
+ Stores a palette of saved colors and recent picks. Used by the
+ theme editor and any place a color value is needed.
+
+Section: Color Representation
+
+  RgbColor = record { rgb-r : Integer, rgb-g : Integer, rgb-b : Integer }
+  HslColor = record { hsl-h : Integer, hsl-s : Integer, hsl-l : Integer }
+
+  rgb-from-int : Integer -> RgbColor
+  rgb-from-int (n) = RgbColor {
+    rgb-r = bit-and (bit-shru n 16) 255,
+    rgb-g = bit-and (bit-shru n 8) 255,
+    rgb-b = bit-and n 255
+  }
+
+  rgb-to-int : RgbColor -> Integer
+  rgb-to-int (c) = bit-or (bit-shl (c.rgb-r) 16) (bit-or (bit-shl (c.rgb-g) 8) (c.rgb-b))
+
+  rgb-to-hex : RgbColor -> Text
+  rgb-to-hex (c) =
+    "#" & hex-byte (c.rgb-r) & hex-byte (c.rgb-g) & hex-byte (c.rgb-b)
+
+  hex-byte : Integer -> Text
+  hex-byte (n) =
+    let hi = n / 16
+    in let lo = n - hi * 16
+    in hex-digit hi & hex-digit lo
+
+  hex-digit : Integer -> Text
+  hex-digit (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+  format-rgb : RgbColor -> Text
+  format-rgb (c) = "rgb(" & show (c.rgb-r) & ", " & show (c.rgb-g) & ", " & show (c.rgb-b) & ")"
+
+  format-hsl : HslColor -> Text
+  format-hsl (c) = "hsl(" & show (c.hsl-h) & ", " & show (c.hsl-s) & "%, " & show (c.hsl-l) & "%)"
+
+Section: Color Math
+
+  rgb-brightness : RgbColor -> Integer
+  rgb-brightness (c) = (c.rgb-r * 299 + c.rgb-g * 587 + c.rgb-b * 114) / 1000
+
+  rgb-is-light : RgbColor -> Boolean
+  rgb-is-light (c) = rgb-brightness c > 128
+
+  rgb-contrast-text : RgbColor -> Integer
+  rgb-contrast-text (c) = if rgb-is-light c then 0 else 16777215
+
+  rgb-lerp : RgbColor, RgbColor, Integer -> RgbColor
+  rgb-lerp (a) (b) (t) =
+    let inv = 100 - t
+    in RgbColor {
+      rgb-r = (a.rgb-r * inv + b.rgb-r * t) / 100,
+      rgb-g = (a.rgb-g * inv + b.rgb-g * t) / 100,
+      rgb-b = (a.rgb-b * inv + b.rgb-b * t) / 100
+    }
+
+  rgb-lighten : RgbColor, Integer -> RgbColor
+  rgb-lighten (c) (amount) =
+    let white = RgbColor { rgb-r = 255, rgb-g = 255, rgb-b = 255 }
+    in rgb-lerp c white amount
+
+  rgb-darken : RgbColor, Integer -> RgbColor
+  rgb-darken (c) (amount) =
+    let black = RgbColor { rgb-r = 0, rgb-g = 0, rgb-b = 0 }
+    in rgb-lerp c black amount
+
+  rgb-invert : RgbColor -> RgbColor
+  rgb-invert (c) = RgbColor { rgb-r = 255 - c.rgb-r, rgb-g = 255 - c.rgb-g, rgb-b = 255 - c.rgb-b }
+
+  rgb-grayscale : RgbColor -> RgbColor
+  rgb-grayscale (c) =
+    let v = rgb-brightness c
+    in RgbColor { rgb-r = v, rgb-g = v, rgb-b = v }
+
+  rgb-distance : RgbColor, RgbColor -> Integer
+  rgb-distance (a) (b) =
+    let dr = a.rgb-r - b.rgb-r
+    in let dg = a.rgb-g - b.rgb-g
+    in let db = a.rgb-b - b.rgb-b
+    in dr * dr + dg * dg + db * db
+
+Section: Palette
+
+  PaletteEntry = record {
+    pe-name : Text,
+    pe-color : Integer,
+    pe-pinned : Boolean
+  }
+
+  ColorPickerState = record {
+    cp-current : Integer,
+    cp-r : Integer,
+    cp-g : Integer,
+    cp-b : Integer,
+    cp-palette : List PaletteEntry,
+    cp-palette-count : Integer,
+    cp-recent : List Integer,
+    cp-recent-count : Integer,
+    cp-recent-max : Integer
+  }
+
+  color-picker-new : ColorPickerState
+  color-picker-new = ColorPickerState {
+    cp-current = 4886754,
+    cp-r = 74, cp-g = 138, cp-b = 98,
+    cp-palette = [],
+    cp-palette-count = 0,
+    cp-recent = [],
+    cp-recent-count = 0,
+    cp-recent-max = 20
+  }
+
+  cp-set-rgb : ColorPickerState, Integer, Integer, Integer -> ColorPickerState
+  cp-set-rgb (st) (r) (g) (b) =
+    let color = bit-or (bit-shl r 16) (bit-or (bit-shl g 8) b)
+    in ColorPickerState {
+      cp-current = color, cp-r = r, cp-g = g, cp-b = b,
+      cp-palette = st.cp-palette, cp-palette-count = st.cp-palette-count,
+      cp-recent = st.cp-recent, cp-recent-count = st.cp-recent-count,
+      cp-recent-max = st.cp-recent-max
+    }
+
+  cp-set-color : ColorPickerState, Integer -> ColorPickerState
+  cp-set-color (st) (color) =
+    let c = rgb-from-int color
+    in cp-set-rgb st (c.rgb-r) (c.rgb-g) (c.rgb-b)
+
+  cp-pick : ColorPickerState -> ColorPickerState
+  cp-pick (st) =
+    let new-recent = if st.cp-recent-count >= st.cp-recent-max then
+      [st.cp-current] & cp-trim-recent (st.cp-recent) (st.cp-recent-count) (st.cp-recent-max - 1)
+    else [st.cp-current] & st.cp-recent
+    in __record-set (__record-set st "cp-recent" new-recent) "cp-recent-count" (if st.cp-recent-count >= st.cp-recent-max then st.cp-recent-count else st.cp-recent-count + 1)
+
+  cp-trim-recent : List Integer, Integer, Integer -> List Integer
+  cp-trim-recent (recent) (count) (keep) =
+    cp-trim-loop recent 0 (if count < keep then count else keep) []
+
+  cp-trim-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  cp-trim-loop (items) (i) (n) (acc) =
+    if i >= n then acc
+    else cp-trim-loop items (i + 1) n (list-push acc (list-at items i))
+
+  cp-save-to-palette : ColorPickerState, Text -> ColorPickerState
+  cp-save-to-palette (st) (name) =
+    let entry = PaletteEntry { pe-name = name, pe-color = st.cp-current, pe-pinned = False }
+    in __record-set (__record-set st "cp-palette" (list-push (st.cp-palette) entry)) "cp-palette-count" (st.cp-palette-count + 1)
+
+Section: Widget Building
+
+  cp-widget : ColorPickerState -> WidgetNode
+  cp-widget (st) =
+    let rgb = rgb-from-int (st.cp-current)
+    in let preview = widget-custom "cp-preview" "color-swatch" 64 64
+    in let hex-label = widget-label "cp-hex" (rgb-to-hex rgb)
+    in let rgb-label = widget-label "cp-rgb" (format-rgb rgb)
+    in let r-slider = widget-slider "cp-r" (st.cp-r) 0 255
+    in let g-slider = widget-slider "cp-g" (st.cp-g) 0 255
+    in let b-slider = widget-slider "cp-b" (st.cp-b) 0 255
+    in let r-label = widget-label "cp-rl" ("R: " & show (st.cp-r))
+    in let g-label = widget-label "cp-gl" ("G: " & show (st.cp-g))
+    in let b-label = widget-label "cp-bl" ("B: " & show (st.cp-b))
+    in let pick-btn = widget-button "cp-pick" "Pick"
+    in let save-btn = widget-button "cp-save" "Save to Palette"
+    in let sliders = widget-panel "cp-sliders" DirColumn 4 [
+      widget-panel "cp-r-row" DirRow 8 [r-label, r-slider],
+      widget-panel "cp-g-row" DirRow 8 [g-label, g-slider],
+      widget-panel "cp-b-row" DirRow 8 [b-label, b-slider]
+    ]
+    in let info = widget-panel "cp-info" DirColumn 4 [hex-label, rgb-label]
+    in let actions = widget-toolbar "cp-actions" [pick-btn, save-btn]
+    in let recent-label = widget-label "cp-recent-lbl" ("Recent: " & show (st.cp-recent-count))
+    in let palette-label = widget-label "cp-pal-lbl" ("Palette: " & show (st.cp-palette-count))
+    in widget-panel "color-picker" DirColumn 8 [preview, info, sliders, actions, recent-label, palette-label]
+
+Page 1

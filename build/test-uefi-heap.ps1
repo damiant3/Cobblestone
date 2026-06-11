@@ -21,7 +21,7 @@ function Invoke-InternalImgCompile {
     param([string]$Src, [string]$Out, [string]$Log, [string]$Mode)
     $Stage0 = Join-Path $root 'build-output\bare-metal\Codex.cdx'
     if (-not (Test-Path $Stage0)) { Write-Host "FAIL: no $Stage0"; exit 1 }
-    $run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 30 -MemMB 2048 -PCore $PCore
+    $run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 30 -MemMB 3072 -PCore $PCore
     if (-not $run) { Write-Host "FAIL: VM did not start"; exit 1 }
     try {
         if (-not (Read-VmReady -Conn $run.Conn -TimeoutSec 30)) { Write-Host "FAIL: no READY"; exit 1 }

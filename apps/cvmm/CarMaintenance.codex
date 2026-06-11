@@ -1,0 +1,212 @@
+Chapter: CarMaintenance
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProductivityDb
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Vehicle maintenance tracker. Tracks multiple vehicles with make,
+ model, year, odometer. Logs oil changes, tire rotations, brake
+ service, inspections, and any custom service with cost, shop, and
+ next-due mileage. Fuel log computes MPG per fill-up and lifetime
+ average. Alerts when maintenance is due by mileage or date.
+
+Section: Service Types
+
+  ServiceType =
+    | SvOilChange
+    | SvTireRotation
+    | SvBrakes
+    | SvInspection
+    | SvTransmission
+    | SvCoolant
+    | SvBattery
+    | SvAlignment
+    | SvTires
+    | SvWipers
+    | SvAirFilter
+    | SvSparkPlugs
+    | SvBelts
+    | SvOther (Text)
+
+  sv-type-label : ServiceType -> Text
+  sv-type-label (s) = when s
+    is SvOilChange -> "Oil Change"
+    is SvTireRotation -> "Tire Rotation"
+    is SvBrakes -> "Brakes"
+    is SvInspection -> "Inspection"
+    is SvTransmission -> "Transmission"
+    is SvCoolant -> "Coolant"
+    is SvBattery -> "Battery"
+    is SvAlignment -> "Alignment"
+    is SvTires -> "Tires"
+    is SvWipers -> "Wipers"
+    is SvAirFilter -> "Air Filter"
+    is SvSparkPlugs -> "Spark Plugs"
+    is SvBelts -> "Belts"
+    is SvOther (name) -> name
+
+  sv-default-interval-miles : ServiceType -> Integer
+  sv-default-interval-miles (s) = when s
+    is SvOilChange -> 5000
+    is SvTireRotation -> 7500
+    is SvBrakes -> 40000
+    is SvInspection -> 12000
+    is SvTransmission -> 60000
+    is SvCoolant -> 30000
+    is SvBattery -> 50000
+    is SvAlignment -> 15000
+    is SvTires -> 50000
+    is SvWipers -> 12000
+    is SvAirFilter -> 15000
+    is SvSparkPlugs -> 60000
+    is SvBelts -> 60000
+    is SvOther (name) -> 10000
+
+Section: Vehicle (in-memory view)
+
+  Vehicle = record {
+    vh-id : Integer,
+    vh-make : Text,
+    vh-model : Text,
+    vh-year : Integer,
+    vh-color : Text,
+    vh-vin : Text,
+    vh-plate : Text,
+    vh-odometer : Integer,
+    vh-purchase-date : Integer,
+    vh-purchase-price : Integer
+  }
+
+  vh-display : Vehicle -> Text
+  vh-display (v) = show (v.vh-year) & " " & v.vh-make & " " & v.vh-model
+
+  vh-format-odometer : Vehicle -> Text
+  vh-format-odometer (v) =
+    let miles = v.vh-odometer
+    in if miles >= 1000 then show (miles / 1000) & "," & odometer-pad (miles - (miles / 1000) * 1000) else show miles
+
+  odometer-pad : Integer -> Text
+  odometer-pad (n) =
+    if n < 10 then "00" & show n
+    else if n < 100 then "0" & show n
+    else show n
+
+Section: Maintenance Record
+
+  MaintRecord = record {
+    mr-id : Integer,
+    mr-vehicle-id : Integer,
+    mr-service : Text,
+    mr-description : Text,
+    mr-date : Integer,
+    mr-odometer : Integer,
+    mr-cost-cents : Integer,
+    mr-shop : Text,
+    mr-next-due-miles : Integer,
+    mr-next-due-date : Integer
+  }
+
+  mr-is-due : MaintRecord, Integer, Integer -> Boolean
+  mr-is-due (r) (current-odo) (now) =
+    if r.mr-next-due-miles > 0 then current-odo >= r.mr-next-due-miles
+    else if r.mr-next-due-date > 0 then now >= r.mr-next-due-date
+    else False
+
+  mr-miles-until-due : MaintRecord, Integer -> Integer
+  mr-miles-until-due (r) (current-odo) =
+    if r.mr-next-due-miles > 0 then r.mr-next-due-miles - current-odo
+    else 0
+
+Section: Fuel Record
+
+  FuelRecord = record {
+    fr-id : Integer,
+    fr-vehicle-id : Integer,
+    fr-date : Integer,
+    fr-odometer : Integer,
+    fr-gallons-x100 : Integer,
+    fr-cost-cents : Integer,
+    fr-station : Text,
+    fr-full-tank : Boolean
+  }
+
+  fr-mpg-x10 : FuelRecord, Integer -> Integer
+  fr-mpg-x10 (f) (prev-odometer) =
+    if f.fr-gallons-x100 == 0 then 0
+    else let miles = f.fr-odometer - prev-odometer
+    in miles * 1000 / f.fr-gallons-x100
+
+  fr-cost-per-gallon : FuelRecord -> Integer
+  fr-cost-per-gallon (f) =
+    if f.fr-gallons-x100 == 0 then 0
+    else f.fr-cost-cents * 100 / f.fr-gallons-x100
+
+Section: Car App State
+
+  CarAppState = record {
+    car-vehicles : List Vehicle,
+    car-vehicle-count : Integer,
+    car-selected-vehicle : Integer,
+    car-maint-records : List MaintRecord,
+    car-maint-count : Integer,
+    car-fuel-records : List FuelRecord,
+    car-fuel-count : Integer,
+    car-active-tab : Integer,
+    car-total-cost : Integer,
+    car-avg-mpg-x10 : Integer
+  }
+
+  car-app-new : CarAppState
+  car-app-new = CarAppState {
+    car-vehicles = [], car-vehicle-count = 0,
+    car-selected-vehicle = -1,
+    car-maint-records = [], car-maint-count = 0,
+    car-fuel-records = [], car-fuel-count = 0,
+    car-active-tab = 0,
+    car-total-cost = 0, car-avg-mpg-x10 = 0
+  }
+
+  car-due-services : CarAppState, Integer, Integer -> List MaintRecord
+  car-due-services (st) (odometer) (now) =
+    car-due-loop (st.car-maint-records) odometer now 0 (st.car-maint-count) []
+
+  car-due-loop : List MaintRecord, Integer, Integer, Integer, Integer, List MaintRecord -> List MaintRecord
+  car-due-loop (records) (odo) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at records i
+    in if mr-is-due r odo now then car-due-loop records odo now (i + 1) n (list-push acc r)
+    else car-due-loop records odo now (i + 1) n acc
+
+Section: Widget Building
+
+  vh-card : Vehicle -> WidgetNode
+  vh-card (v) =
+    let name = widget-label ("vh-n-" & show (v.vh-id)) (vh-display v)
+    in let odo = widget-label ("vh-o-" & show (v.vh-id)) (vh-format-odometer v & " mi")
+    in let plate = widget-label ("vh-p-" & show (v.vh-id)) (v.vh-plate)
+    in widget-panel ("vehicle-" & show (v.vh-id)) DirRow 8 [name, odo, plate]
+
+  mr-row : MaintRecord -> WidgetNode
+  mr-row (r) =
+    let svc = widget-label ("mr-s-" & show (r.mr-id)) (r.mr-service)
+    in let date-lbl = widget-label ("mr-d-" & show (r.mr-id)) (show (r.mr-date))
+    in let odo = widget-label ("mr-o-" & show (r.mr-id)) (show (r.mr-odometer) & " mi")
+    in let cost = widget-label ("mr-c-" & show (r.mr-id)) (cents-display (r.mr-cost-cents))
+    in let shop = widget-label ("mr-sh-" & show (r.mr-id)) (r.mr-shop)
+    in let due = widget-label ("mr-du-" & show (r.mr-id)) (if r.mr-next-due-miles > 0 then "next: " & show (r.mr-next-due-miles) & " mi" else "")
+    in widget-panel ("maint-" & show (r.mr-id)) DirRow 8 [svc, date-lbl, odo, cost, shop, due]
+
+  car-widget : CarAppState -> WidgetNode
+  car-widget (st) =
+    let title = widget-label "car-title" "Car Maintenance"
+    in let summary = widget-label "car-summary" (show (st.car-vehicle-count) & " vehicles | Total: " & cents-display (st.car-total-cost) & " | Avg: " & show (st.car-avg-mpg-x10 / 10) & "." & show (st.car-avg-mpg-x10 - (st.car-avg-mpg-x10 / 10) * 10) & " MPG")
+    in let tabs = widget-tabs "car-tabs" ["Vehicles", "Service Log", "Fuel Log", "Due Services"] (st.car-active-tab)
+    in let add-btn = widget-button "car-add" "Add Vehicle"
+    in let log-btn = widget-button "car-log" "Log Service"
+    in let fuel-btn = widget-button "car-fuel" "Log Fuel"
+    in let toolbar = widget-toolbar "car-toolbar" [add-btn, log-btn, fuel-btn]
+    in widget-panel "car-app" DirColumn 4 [title, summary, tabs, toolbar]
+
+Page 1

@@ -1,0 +1,219 @@
+Chapter: MessageQueue
+  cites Foreword chapter ConsistentHash
+  cites Foreword chapter Maybe
+
+ In-process message queue for async service-to-service communication.
+ Topics with publish/subscribe. Messages are durably queued (in-memory
+ with overflow to disk backing in the future). Consumer groups with
+ at-least-once delivery: messages stay in the queue until acknowledged.
+ Dead letter queue for failed processing. Partition-based ordering
+ within a topic.
+
+Section: Message
+
+  QueueMessage = record {
+    qm-id : Integer,
+    qm-topic : Text,
+    qm-partition : Integer,
+    qm-key : Text,
+    qm-body : Text,
+    qm-headers : List Text,
+    qm-header-count : Integer,
+    qm-timestamp : Integer,
+    qm-attempts : Integer,
+    qm-max-attempts : Integer,
+    qm-acknowledged : Boolean,
+    qm-dead-lettered : Boolean
+  }
+
+  qm-new : Integer, Text, Integer, Text, Text, Integer -> QueueMessage
+  qm-new (id) (topic) (partition) (key) (body) (ts) = QueueMessage {
+    qm-id = id, qm-topic = topic, qm-partition = partition,
+    qm-key = key, qm-body = body,
+    qm-headers = [], qm-header-count = 0,
+    qm-timestamp = ts, qm-attempts = 0, qm-max-attempts = 5,
+    qm-acknowledged = False, qm-dead-lettered = False
+  }
+
+  qm-ack : QueueMessage -> QueueMessage
+  qm-ack (m) = __record-set m "qm-acknowledged" True
+
+  qm-retry : QueueMessage -> QueueMessage
+  qm-retry (m) =
+    let new-attempts = m.qm-attempts + 1
+    in if new-attempts >= m.qm-max-attempts then __record-set (__record-set m "qm-attempts" new-attempts) "qm-dead-lettered" True
+    else __record-set m "qm-attempts" new-attempts
+
+  qm-age : QueueMessage, Integer -> Integer
+  qm-age (m) (now) = now - m.qm-timestamp
+
+Section: Topic
+
+  TopicConfig = record {
+    tc-name : Text,
+    tc-partitions : Integer,
+    tc-retention-sec : Integer,
+    tc-max-size : Integer,
+    tc-compact : Boolean
+  }
+
+  topic-config-new : Text, Integer -> TopicConfig
+  topic-config-new (name) (partitions) = TopicConfig {
+    tc-name = name, tc-partitions = partitions,
+    tc-retention-sec = 86400, tc-max-size = 100000,
+    tc-compact = False
+  }
+
+  Topic = record {
+    tp-config : TopicConfig,
+    tp-messages : List QueueMessage,
+    tp-count : Integer,
+    tp-next-id : Integer,
+    tp-total-published : Integer,
+    tp-total-consumed : Integer,
+    tp-total-dead : Integer
+  }
+
+  topic-new : TopicConfig -> Topic
+  topic-new (config) = Topic {
+    tp-config = config,
+    tp-messages = [], tp-count = 0, tp-next-id = 1,
+    tp-total-published = 0, tp-total-consumed = 0, tp-total-dead = 0
+  }
+
+  tp-publish : Topic, Text, Text, Integer -> Topic
+  tp-publish (tp) (key) (body) (ts) =
+    let partition = tp-hash-partition key (tp.tp-config).tc-partitions
+    in let msg = qm-new (tp.tp-next-id) (tp.tp-config).tc-name partition key body ts
+    in Topic {
+      tp-config = tp.tp-config,
+      tp-messages = list-push (tp.tp-messages) msg,
+      tp-count = tp.tp-count + 1,
+      tp-next-id = tp.tp-next-id + 1,
+      tp-total-published = tp.tp-total-published + 1,
+      tp-total-consumed = tp.tp-total-consumed,
+      tp-total-dead = tp.tp-total-dead
+    }
+
+  tp-hash-partition : Text, Integer -> Integer
+  tp-hash-partition (key) (num-partitions) =
+    if num-partitions <= 1 then 0
+    else let hash = chr-hash-key key
+    in let abs-hash = if hash < 0 then negate hash else hash
+    in abs-hash - (abs-hash / num-partitions) * num-partitions
+
+  tp-pending-count : Topic -> Integer
+  tp-pending-count (tp) = tp-pending-loop (tp.tp-messages) 0 (tp.tp-count) 0
+
+  tp-pending-loop : List QueueMessage, Integer, Integer, Integer -> Integer
+  tp-pending-loop (msgs) (i) (n) (acc) =
+    if i >= n then acc
+    else let m = list-at msgs i
+    in let delta = if m.qm-acknowledged then 0 else if m.qm-dead-lettered then 0 else 1
+    in tp-pending-loop msgs (i + 1) n (acc + delta)
+
+  tp-dead-letter-count : Topic -> Integer
+  tp-dead-letter-count (tp) = tp-dl-loop (tp.tp-messages) 0 (tp.tp-count) 0
+
+  tp-dl-loop : List QueueMessage, Integer, Integer, Integer -> Integer
+  tp-dl-loop (msgs) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if (list-at msgs i).qm-dead-lettered then 1 else 0
+    in tp-dl-loop msgs (i + 1) n (acc + delta)
+
+Section: Consumer Group
+
+  ConsumerGroup = record {
+    cg-name : Text,
+    cg-topic : Text,
+    cg-offsets : List Integer,
+    cg-partition-count : Integer,
+    cg-members : List Text,
+    cg-member-count : Integer
+  }
+
+  consumer-group-new : Text, Text, Integer -> ConsumerGroup
+  consumer-group-new (name) (topic) (partitions) = ConsumerGroup {
+    cg-name = name, cg-topic = topic,
+    cg-offsets = cg-init-offsets partitions 0 [],
+    cg-partition-count = partitions,
+    cg-members = [], cg-member-count = 0
+  }
+
+  cg-init-offsets : Integer, Integer, List Integer -> List Integer
+  cg-init-offsets (n) (i) (acc) =
+    if i >= n then acc
+    else cg-init-offsets n (i + 1) (list-push acc 0)
+
+  cg-add-member : ConsumerGroup, Text -> ConsumerGroup
+  cg-add-member (cg) (member) =
+    __record-set (__record-set cg "cg-members" (list-push (cg.cg-members) member)) "cg-member-count" (cg.cg-member-count + 1)
+
+  cg-commit-offset : ConsumerGroup, Integer, Integer -> ConsumerGroup
+  cg-commit-offset (cg) (partition) (offset) =
+    if partition < 0 then cg
+    else if partition >= cg.cg-partition-count then cg
+    else __record-set cg "cg-offsets" (list-set-at (cg.cg-offsets) partition offset)
+
+  cg-get-offset : ConsumerGroup, Integer -> Integer
+  cg-get-offset (cg) (partition) =
+    if partition < 0 then 0
+    else if partition >= cg.cg-partition-count then 0
+    else list-at (cg.cg-offsets) partition
+
+  cg-total-lag : ConsumerGroup, Topic -> Integer
+  cg-total-lag (cg) (tp) =
+    let latest = tp.tp-next-id - 1
+    in cg-lag-loop (cg.cg-offsets) 0 (cg.cg-partition-count) 0 latest
+
+  cg-lag-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  cg-lag-loop (offsets) (i) (n) (acc) (latest) =
+    if i >= n then acc
+    else let lag = latest - list-at offsets i
+    in cg-lag-loop offsets (i + 1) n (acc + (if lag > 0 then lag else 0)) latest
+
+Section: Queue Broker State
+
+  QueueBroker = record {
+    qb-topics : List Topic,
+    qb-topic-count : Integer,
+    qb-groups : List ConsumerGroup,
+    qb-group-count : Integer,
+    qb-total-published : Integer,
+    qb-total-consumed : Integer
+  }
+
+  queue-broker-new : QueueBroker
+  queue-broker-new = QueueBroker {
+    qb-topics = [], qb-topic-count = 0,
+    qb-groups = [], qb-group-count = 0,
+    qb-total-published = 0, qb-total-consumed = 0
+  }
+
+  qb-create-topic : QueueBroker, TopicConfig -> QueueBroker
+  qb-create-topic (qb) (config) =
+    __record-set (__record-set qb "qb-topics" (list-push (qb.qb-topics) (topic-new config))) "qb-topic-count" (qb.qb-topic-count + 1)
+
+  qb-find-topic : QueueBroker, Text -> Maybe Topic
+  qb-find-topic (qb) (name) = qb-find-loop (qb.qb-topics) name 0 (qb.qb-topic-count)
+
+  qb-find-loop : List Topic, Text, Integer, Integer -> Maybe Topic
+  qb-find-loop (topics) (name) (i) (n) =
+    if i >= n then None
+    else let t = list-at topics i
+    in if (t.tp-config).tc-name == name then Just t
+    else qb-find-loop topics name (i + 1) n
+
+  qb-total-pending : QueueBroker -> Integer
+  qb-total-pending (qb) = qb-pend-loop (qb.qb-topics) 0 (qb.qb-topic-count) 0
+
+  qb-pend-loop : List Topic, Integer, Integer, Integer -> Integer
+  qb-pend-loop (topics) (i) (n) (acc) =
+    if i >= n then acc
+    else qb-pend-loop topics (i + 1) n (acc + tp-pending-count (list-at topics i))
+
+  qb-status : QueueBroker -> Text
+  qb-status (qb) =
+    "broker topics=" & show (qb.qb-topic-count) & " groups=" & show (qb.qb-group-count) & " pending=" & show (qb-total-pending qb)
+
+Page 1

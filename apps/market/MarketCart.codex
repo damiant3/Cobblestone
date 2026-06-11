@@ -1,0 +1,126 @@
+Chapter: MarketCart
+  cites Market chapter MarketTypes
+  cites Market chapter MarketDb
+  cites Market chapter MarketTax
+  cites Market chapter MarketPayment
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+
+ Shopping cart and checkout flow. Add/remove items, calculate totals
+ with tax, process payment, create order.
+
+Section: Cart Operations
+
+  add-to-cart : Cart, Text, Text, Money, Integer, Integer -> Cart
+  add-to-cart (cart) (product-id) (variant-id) (unit-price) (qty) (ts) =
+    let existing = find-cart-item (cart.cart-items) product-id variant-id
+    in let new-items = when existing
+      is Just (idx) -> update-cart-item-qty (cart.cart-items) idx qty
+      is None -> list-push (cart.cart-items) (CartItem {
+        ci-product-id = product-id,
+        ci-variant-id = variant-id,
+        ci-quantity = qty,
+        ci-unit-price = unit-price
+      })
+    in let c2 = __record-set cart "cart-items" new-items
+    in __record-set c2 "cart-updated" ts
+
+  remove-from-cart : Cart, Text, Text, Integer -> Cart
+  remove-from-cart (cart) (product-id) (variant-id) (ts) =
+    let new-items = filter-cart-items (cart.cart-items) product-id variant-id []
+    in let c2 = __record-set cart "cart-items" new-items
+    in __record-set c2 "cart-updated" ts
+
+  update-cart-qty : Cart, Text, Text, Integer, Integer -> Cart
+  update-cart-qty (cart) (product-id) (variant-id) (new-qty) (ts) =
+    if new-qty <= 0 then remove-from-cart cart product-id variant-id ts
+    else let new-items = set-cart-item-qty (cart.cart-items) product-id variant-id new-qty []
+    in let c2 = __record-set cart "cart-items" new-items
+    in __record-set c2 "cart-updated" ts
+
+  clear-cart : Cart, Integer -> Cart
+  clear-cart (cart) (ts) =
+    let c2 = __record-set cart "cart-items" []
+    in __record-set c2 "cart-updated" ts
+
+Section: Cart Item Helpers
+
+  find-cart-item : List CartItem, Text, Text -> Maybe Integer
+  find-cart-item (items) (pid) (vid) = find-cart-item-loop items pid vid 0
+
+  find-cart-item-loop : List CartItem, Text, Text, Integer -> Maybe Integer
+  find-cart-item-loop (items) (pid) (vid) (i) =
+    if i >= list-length items then None
+    else let item = list-at items i
+    in if item.ci-product-id == pid then if item.ci-variant-id == vid then Just i
+      else find-cart-item-loop items pid vid (i + 1)
+    else find-cart-item-loop items pid vid (i + 1)
+
+  update-cart-item-qty : List CartItem, Integer, Integer -> List CartItem
+  update-cart-item-qty (items) (idx) (add-qty) =
+    let item = list-at items idx
+    in let new-item = __record-set item "ci-quantity" (item.ci-quantity + add-qty)
+    in list-set-at items idx new-item
+
+  set-cart-item-qty : List CartItem, Text, Text, Integer, List CartItem -> List CartItem
+  set-cart-item-qty (items) (pid) (vid) (qty) (acc) =
+    if list-length items == 0 then acc
+    else let item = list-at items 0
+    in if item.ci-product-id == pid then if item.ci-variant-id == vid then
+      set-cart-item-qty (list-tail items) pid vid qty (list-push acc (__record-set item "ci-quantity" qty))
+    else set-cart-item-qty (list-tail items) pid vid qty (list-push acc item)
+    else set-cart-item-qty (list-tail items) pid vid qty (list-push acc item)
+
+  filter-cart-items : List CartItem, Text, Text, List CartItem -> List CartItem
+  filter-cart-items (items) (pid) (vid) (acc) =
+    if list-length items == 0 then acc
+    else let item = list-at items 0
+    in if item.ci-product-id == pid then if item.ci-variant-id == vid then
+      filter-cart-items (list-tail items) pid vid acc
+    else filter-cart-items (list-tail items) pid vid (list-push acc item)
+    else filter-cart-items (list-tail items) pid vid (list-push acc item)
+
+Section: Checkout
+
+  CheckoutRequest = record {
+    co-cart : Cart,
+    co-shipping : Address,
+    co-payment-token : Text,
+    co-tax-region : Text
+  }
+
+  CheckoutResult =
+    | CheckoutSuccess (Order)
+    | CheckoutFailed (Text)
+
+  checkout : MarketState, CheckoutRequest, ProcessorConfig, Integer -> (MarketState, CheckoutResult)
+  checkout (st) (req) (proc) (ts) =
+    let subtotal = cart-subtotal (req.co-cart)
+    in let tax = calc-tax (st.mkt-config.store-tax-rules) subtotal (req.co-tax-region)
+    in let total = money-add subtotal (tax.tax-amount)
+    in let pay-result = pay-charge proc total (req.co-payment-token)
+    in when pay-result.pay-status
+      is PayCaptured ->
+        let (st2, oid) = market-gen-id st "ord"
+        in let order = Order {
+          order-id = oid,
+          order-user-id = req.co-cart.cart-user-id,
+          order-items = req.co-cart.cart-items,
+          order-subtotal = subtotal,
+          order-tax = tax,
+          order-total = total,
+          order-status = Paid,
+          order-payment-id = pay-result.pay-processor-ref,
+          order-shipping-addr = req.co-shipping,
+          order-created = ts,
+          order-updated = ts
+        }
+        in let log2 = log-info-msg (st2.mkt-log) "checkout" ("order " & oid & " placed, total " & format-money total) ts
+        in let st3 = __record-set st2 "mkt-log" log2
+        in (st3, CheckoutSuccess order)
+      is PayFailed (msg) ->
+        let log2 = log-warn-msg (st.mkt-log) "checkout" ("payment failed: " & msg) ts
+        in let st2 = __record-set st "mkt-log" log2
+        in (st2, CheckoutFailed ("Payment failed: " & msg))
+      is otherwise ->
+        (st, CheckoutFailed "Unexpected payment status")

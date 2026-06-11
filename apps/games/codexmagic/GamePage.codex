@@ -1,0 +1,126 @@
+Chapter: GamePage
+  cites CodexMagic chapter MagicTheme
+  cites UI chapter Layout
+
+ Game board. Pure widget tree.
+
+ We say:
+
+Section: State
+
+  sk-g-active : Text = "g-active"
+  sk-g-turn : Text = "g-turn"
+  sk-g-phase : Text = "g-phase"
+  sk-g-p0-life : Text = "g-p0-life"
+  sk-g-p1-life : Text = "g-p1-life"
+  sk-g-p0-name : Text = "g-p0-name"
+  sk-g-p1-name : Text = "g-p1-name"
+  sk-g-rays : Text = "g-rays"
+  sk-g-lib : Text = "g-lib"
+  sk-g-over : Text = "g-over"
+  sk-g-winner : Text = "g-winner"
+
+Section: Tree
+
+  game-tree : Integer -> WidgetNode
+  game-tree (x) =
+    let active = state-get sk-g-active
+    in let content = if active == 0 then game-idle-tree 0 else game-active-tree 0
+    in widget-panel "g-page" DirColumn 0 [magic-nav-widget "Game", widget-box "g-wrap" "page" [content]]
+
+  game-idle-tree : Integer -> WidgetNode
+  game-idle-tree (x) =
+    widget-panel "g-idle" DirColumn 16 [
+      widget-label "g-title" "CodexMagic Arena",
+      widget-button "g-new" "New Game"
+    ]
+
+  game-active-tree : Integer -> WidgetNode
+  game-active-tree (x) =
+    let turn = state-get sk-g-turn
+    in let phase = state-get-text sk-g-phase
+    in let p0-life = state-get sk-g-p0-life
+    in let p1-life = state-get sk-g-p1-life
+    in let p0-name = state-get-text sk-g-p0-name
+    in let p1-name = state-get-text sk-g-p1-name
+    in let rays = state-get-text sk-g-rays
+    in let lib = state-get sk-g-lib
+    in let over = state-get sk-g-over
+    in let winner = state-get-text sk-g-winner
+    in widget-panel "g-board" DirColumn 8 [
+      widget-panel "g-controls" DirRow 8 [
+        widget-button "g-step" "Step",
+        widget-button "g-auto" "Auto",
+        widget-label "g-phase" phase,
+        widget-label "g-turn-lbl" ("Turn " & show turn)
+      ],
+      widget-separator "g-s1",
+      widget-label "g-opp" (p1-name & " | Life: " & show p1-life),
+      widget-separator "g-s2",
+      widget-label "g-field" "Battlefield",
+      widget-separator "g-s3",
+      widget-label "g-player" (p0-name & " | Life: " & show p0-life),
+      widget-separator "g-s4",
+      widget-label "g-status" ("Rays: " & rays & " | Library: " & show lib),
+      if over == 1 then widget-label "g-over" ("Game Over! Winner: " & winner) else widget-label "g-over" ""
+    ]
+
+Section: Handlers
+
+  g-click : Text -> Integer
+  g-click (id) =
+    if id == "g-new" then start-game 0
+    else if id == "g-step" then step-game 0
+    else if id == "g-auto" then auto-game 0
+    else 0
+
+  start-game : Integer -> Integer
+  start-game (x) =
+    fetch-get-then "/api/magic/game/new?seed=42" new-game-cb
+
+  new-game-cb : Text -> Integer
+  new-game-cb (resp) =
+    let obj = json-parse-obj resp
+    in let s1 = state-set sk-g-active 1
+    in let s2 = state-set sk-g-turn 1
+    in let s3 = state-set-text sk-g-phase "Untap"
+    in let s4 = state-set sk-g-over 0
+    in request-render 0
+
+  step-game : Integer -> Integer
+  step-game (x) =
+    fetch-get-then "/api/magic/game/step" step-cb
+
+  step-cb : Text -> Integer
+  step-cb (resp) =
+    let obj = json-parse-obj resp
+    in let s1 = state-set-text sk-g-turn (json-obj-field obj "turn")
+    in let s2 = state-set-text sk-g-phase (json-obj-field obj "step")
+    in let go = json-obj-field obj "game-over"
+    in let s3 = state-set sk-g-over (if go == "true" then 1 else 0)
+    in let s4 = state-set-text sk-g-winner (json-obj-field obj "winner")
+    in request-render 0
+
+  auto-game : Integer -> Integer
+  auto-game (x) =
+    let over = state-get sk-g-over
+    in if over == 1 then 0
+    else let s = step-game 0
+    in let s2 = set-timeout auto-game 600
+    in 0
+
+Section: Entry
+
+  render-g : Integer -> Integer
+  render-g (x) = mount-widget-themed magic-theme (game-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = init-magic-theme 0
+    in let s1 = state-set sk-g-active 0
+    in let s2 = set-render render-g
+    in let h = register-handlers no-pick g-click
+    in render-g 0
+  end
+
+Page 1

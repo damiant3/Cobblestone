@@ -1,0 +1,390 @@
+Chapter: MeshRoles
+  cites Net chapter GroupMembership
+  cites Foreword chapter Maybe
+
+ Role-based mesh orchestration. Each node in the mesh has a role that
+ determines what traffic it handles and what services it runs. Roles
+ form a tiered architecture: edge nodes handle inbound traffic
+ (DDoS mitigation, session management, rate limiting), service nodes
+ run application logic, data nodes own storage, and orchestrator
+ nodes manage scaling and routing. A node can hold multiple roles.
+
+ When load increases, the orchestrator spins up a new VM, assigns it
+ a role, and the mesh absorbs it — the new node joins the group,
+ announces its services, and the edge layer starts routing to it.
+ When load decreases, nodes drain and shut down.
+
+Section: Node Roles
+
+  NodeRole =
+    | REdge
+    | RService
+    | RData
+    | ROrchestrator
+    | RMonitor
+    | RGateway
+    | RWorker
+    | RCache
+    | RQueue
+    | RCustom (Text)
+
+  nr-label : NodeRole -> Text
+  nr-label (r) = when r
+    is REdge -> "edge"
+    is RService -> "service"
+    is RData -> "data"
+    is ROrchestrator -> "orchestrator"
+    is RMonitor -> "monitor"
+    is RGateway -> "gateway"
+    is RWorker -> "worker"
+    is RCache -> "cache"
+    is RQueue -> "queue"
+    is RCustom (name) -> name
+
+  nr-tier : NodeRole -> Integer
+  nr-tier (r) = when r
+    is REdge -> 0
+    is RGateway -> 0
+    is RCache -> 1
+    is RQueue -> 1
+    is RService -> 2
+    is RWorker -> 2
+    is RData -> 3
+    is RMonitor -> 4
+    is ROrchestrator -> 5
+    is RCustom (name) -> 2
+
+  nr-is-edge : NodeRole -> Boolean
+  nr-is-edge (r) = nr-tier r == 0
+
+  nr-is-compute : NodeRole -> Boolean
+  nr-is-compute (r) = when r
+    is RService -> True
+    is RWorker -> True
+    is otherwise -> False
+
+Section: Role Assignment
+
+  RoleAssignment = record {
+    ra-node-id : Text,
+    ra-roles : List NodeRole,
+    ra-role-count : Integer,
+    ra-primary-role : NodeRole,
+    ra-capacity : Integer,
+    ra-current-load : Integer,
+    ra-max-connections : Integer,
+    ra-active-connections : Integer,
+    ra-assigned-at : Integer,
+    ra-draining : Boolean
+  }
+
+  role-assignment-new : Text, NodeRole -> RoleAssignment
+  role-assignment-new (node-id) (role) = RoleAssignment {
+    ra-node-id = node-id,
+    ra-roles = [role],
+    ra-role-count = 1,
+    ra-primary-role = role,
+    ra-capacity = 100,
+    ra-current-load = 0,
+    ra-max-connections = 10000,
+    ra-active-connections = 0,
+    ra-assigned-at = 0,
+    ra-draining = False
+  }
+
+  ra-add-role : RoleAssignment, NodeRole -> RoleAssignment
+  ra-add-role (ra) (role) =
+    __record-set (__record-set ra "ra-roles" (list-push (ra.ra-roles) role)) "ra-role-count" (ra.ra-role-count + 1)
+
+  ra-has-role : RoleAssignment, NodeRole -> Boolean
+  ra-has-role (ra) (target) =
+    let target-text = nr-label target
+    in ra-role-search (ra.ra-roles) target-text 0 (ra.ra-role-count)
+
+  ra-role-search : List NodeRole, Text, Integer, Integer -> Boolean
+  ra-role-search (roles) (target) (i) (n) =
+    if i >= n then False
+    else if nr-label (list-at roles i) == target then True
+    else ra-role-search roles target (i + 1) n
+
+  ra-load-pct : RoleAssignment -> Integer
+  ra-load-pct (ra) =
+    if ra.ra-capacity == 0 then 100
+    else ra.ra-current-load * 100 / ra.ra-capacity
+
+  ra-connection-pct : RoleAssignment -> Integer
+  ra-connection-pct (ra) =
+    if ra.ra-max-connections == 0 then 100
+    else ra.ra-active-connections * 100 / ra.ra-max-connections
+
+  ra-is-overloaded : RoleAssignment -> Boolean
+  ra-is-overloaded (ra) = ra-load-pct ra > 85
+
+  ra-is-idle : RoleAssignment -> Boolean
+  ra-is-idle (ra) = ra-load-pct ra < 10
+
+  ra-start-drain : RoleAssignment -> RoleAssignment
+  ra-start-drain (ra) = __record-set ra "ra-draining" True
+
+  ra-is-drained : RoleAssignment -> Boolean
+  ra-is-drained (ra) = ra.ra-draining then ra.ra-active-connections == 0 else False
+
+Section: Tier Topology
+
+  TierDef = record {
+    td-tier : Integer,
+    td-name : Text,
+    td-min-nodes : Integer,
+    td-max-nodes : Integer,
+    td-target-load : Integer,
+    td-scale-up-threshold : Integer,
+    td-scale-down-threshold : Integer,
+    td-roles : List NodeRole,
+    td-role-count : Integer
+  }
+
+  tier-edge : TierDef
+  tier-edge = TierDef {
+    td-tier = 0, td-name = "Edge",
+    td-min-nodes = 1, td-max-nodes = 10,
+    td-target-load = 60, td-scale-up-threshold = 80, td-scale-down-threshold = 20,
+    td-roles = [REdge, RGateway], td-role-count = 2
+  }
+
+  tier-service : TierDef
+  tier-service = TierDef {
+    td-tier = 2, td-name = "Service",
+    td-min-nodes = 1, td-max-nodes = 50,
+    td-target-load = 70, td-scale-up-threshold = 80, td-scale-down-threshold = 30,
+    td-roles = [RService, RWorker], td-role-count = 2
+  }
+
+  tier-data : TierDef
+  tier-data = TierDef {
+    td-tier = 3, td-name = "Data",
+    td-min-nodes = 1, td-max-nodes = 10,
+    td-target-load = 50, td-scale-up-threshold = 70, td-scale-down-threshold = 20,
+    td-roles = [RData], td-role-count = 1
+  }
+
+  tier-cache : TierDef
+  tier-cache = TierDef {
+    td-tier = 1, td-name = "Cache",
+    td-min-nodes = 0, td-max-nodes = 10,
+    td-target-load = 60, td-scale-up-threshold = 75, td-scale-down-threshold = 25,
+    td-roles = [RCache], td-role-count = 1
+  }
+
+  default-tiers : List TierDef
+  default-tiers = [tier-edge, tier-cache, tier-service, tier-data]
+
+Section: Scaling Decisions
+
+  ScaleAction =
+    | ScaleUp (Text) (NodeRole) (Integer)
+    | ScaleDown (Text)
+    | ScaleDrain (Text)
+    | ScaleNone
+
+  scale-action-label : ScaleAction -> Text
+  scale-action-label (a) = when a
+    is ScaleUp (tier) (role) (count) -> "scale-up " & tier & " +" & show count & " " & nr-label role
+    is ScaleDown (node) -> "scale-down " & node
+    is ScaleDrain (node) -> "drain " & node
+    is ScaleNone -> "none"
+
+  evaluate-tier-scaling : TierDef, List RoleAssignment, Integer -> ScaleAction
+  evaluate-tier-scaling (tier) (assignments) (count) =
+    if count == 0 then
+      if tier.td-min-nodes > 0 then ScaleUp (tier.td-name) (list-at (tier.td-roles) 0) (tier.td-min-nodes)
+      else ScaleNone
+    else let avg-load = tier-avg-load assignments count
+    in if avg-load > tier.td-scale-up-threshold then
+      if count < tier.td-max-nodes then ScaleUp (tier.td-name) (list-at (tier.td-roles) 0) 1
+      else ScaleNone
+    else if avg-load < tier.td-scale-down-threshold then
+      if count > tier.td-min-nodes then tier-find-drain-candidate assignments count
+      else ScaleNone
+    else ScaleNone
+
+  tier-avg-load : List RoleAssignment, Integer -> Integer
+  tier-avg-load (assignments) (count) =
+    if count == 0 then 0
+    else tier-load-sum assignments 0 count 0 / count
+
+  tier-load-sum : List RoleAssignment, Integer, Integer, Integer -> Integer
+  tier-load-sum (assignments) (i) (n) (acc) =
+    if i >= n then acc
+    else tier-load-sum assignments (i + 1) n (acc + ra-load-pct (list-at assignments i))
+
+  tier-find-drain-candidate : List RoleAssignment, Integer -> ScaleAction
+  tier-find-drain-candidate (assignments) (count) =
+    tier-drain-loop assignments 0 count "" 101
+
+  tier-drain-loop : List RoleAssignment, Integer, Integer, Text, Integer -> ScaleAction
+  tier-drain-loop (assignments) (i) (n) (best-id) (best-load) =
+    if i >= n then if text-length best-id > 0 then ScaleDrain best-id else ScaleNone
+    else let ra = list-at assignments i
+    in if ra.ra-draining then tier-drain-loop assignments (i + 1) n best-id best-load
+    else let load = ra-load-pct ra
+    in if load < best-load then tier-drain-loop assignments (i + 1) n (ra.ra-node-id) load
+    else tier-drain-loop assignments (i + 1) n best-id best-load
+
+Section: VM Lifecycle
+
+  VmState =
+    | VmProvisioning
+    | VmBooting
+    | VmJoining
+    | VmReady
+    | VmDraining
+    | VmShuttingDown
+    | VmTerminated
+    | VmFailed (Text)
+
+  vm-state-label : VmState -> Text
+  vm-state-label (s) = when s
+    is VmProvisioning -> "provisioning"
+    is VmBooting -> "booting"
+    is VmJoining -> "joining"
+    is VmReady -> "ready"
+    is VmDraining -> "draining"
+    is VmShuttingDown -> "shutting-down"
+    is VmTerminated -> "terminated"
+    is VmFailed (msg) -> "failed: " & msg
+
+  ManagedVm = record {
+    mvm-id : Text,
+    mvm-node-id : Text,
+    mvm-address : Text,
+    mvm-state : VmState,
+    mvm-role : NodeRole,
+    mvm-tier : Text,
+    mvm-created : Integer,
+    mvm-ready-at : Integer,
+    mvm-cpu-cores : Integer,
+    mvm-memory-mb : Integer,
+    mvm-auto-scaled : Boolean,
+    mvm-scale-reason : Text
+  }
+
+  managed-vm-new : Text, NodeRole, Text, Integer -> ManagedVm
+  managed-vm-new (id) (role) (tier) (ts) = ManagedVm {
+    mvm-id = id, mvm-node-id = "",
+    mvm-address = "", mvm-state = VmProvisioning,
+    mvm-role = role, mvm-tier = tier,
+    mvm-created = ts, mvm-ready-at = 0,
+    mvm-cpu-cores = 1, mvm-memory-mb = 2048,
+    mvm-auto-scaled = True,
+    mvm-scale-reason = ""
+  }
+
+  mvm-set-ready : ManagedVm, Text, Text, Integer -> ManagedVm
+  mvm-set-ready (vm) (node-id) (addr) (ts) =
+    __record-set (__record-set (__record-set (__record-set vm "mvm-node-id" node-id) "mvm-address" addr) "mvm-state" VmReady) "mvm-ready-at" ts
+
+  mvm-start-drain : ManagedVm -> ManagedVm
+  mvm-start-drain (vm) = __record-set vm "mvm-state" VmDraining
+
+  mvm-terminate : ManagedVm -> ManagedVm
+  mvm-terminate (vm) = __record-set vm "mvm-state" VmTerminated
+
+Section: Orchestrator State
+
+  OrchestratorState = record {
+    orch-tiers : List TierDef,
+    orch-tier-count : Integer,
+    orch-assignments : List RoleAssignment,
+    orch-assignment-count : Integer,
+    orch-vms : List ManagedVm,
+    orch-vm-count : Integer,
+    orch-scale-log : List ScaleAction,
+    orch-scale-log-count : Integer,
+    orch-auto-scale : Boolean,
+    orch-eval-interval : Integer,
+    orch-last-eval : Integer
+  }
+
+  orchestrator-new : OrchestratorState
+  orchestrator-new = OrchestratorState {
+    orch-tiers = default-tiers,
+    orch-tier-count = 4,
+    orch-assignments = [],
+    orch-assignment-count = 0,
+    orch-vms = [],
+    orch-vm-count = 0,
+    orch-scale-log = [],
+    orch-scale-log-count = 0,
+    orch-auto-scale = True,
+    orch-eval-interval = 30,
+    orch-last-eval = 0
+  }
+
+  orch-add-assignment : OrchestratorState, RoleAssignment -> OrchestratorState
+  orch-add-assignment (st) (ra) =
+    __record-set (__record-set st "orch-assignments" (list-push (st.orch-assignments) ra)) "orch-assignment-count" (st.orch-assignment-count + 1)
+
+  orch-add-vm : OrchestratorState, ManagedVm -> OrchestratorState
+  orch-add-vm (st) (vm) =
+    __record-set (__record-set st "orch-vms" (list-push (st.orch-vms) vm)) "orch-vm-count" (st.orch-vm-count + 1)
+
+  orch-find-assignment : OrchestratorState, Text -> Maybe RoleAssignment
+  orch-find-assignment (st) (node-id) = orch-find-ra (st.orch-assignments) node-id 0 (st.orch-assignment-count)
+
+  orch-find-ra : List RoleAssignment, Text, Integer, Integer -> Maybe RoleAssignment
+  orch-find-ra (ras) (id) (i) (n) =
+    if i >= n then None
+    else let ra = list-at ras i
+    in if ra.ra-node-id == id then Just ra
+    else orch-find-ra ras id (i + 1) n
+
+  orch-assignments-for-tier : OrchestratorState, Text -> List RoleAssignment
+  orch-assignments-for-tier (st) (tier-name) =
+    orch-tier-filter (st.orch-assignments) tier-name 0 (st.orch-assignment-count) []
+
+  orch-tier-filter : List RoleAssignment, Text, Integer, Integer, List RoleAssignment -> List RoleAssignment
+  orch-tier-filter (ras) (tier) (i) (n) (acc) =
+    if i >= n then acc
+    else let ra = list-at ras i
+    in if nr-label (ra.ra-primary-role) == tier then orch-tier-filter ras tier (i + 1) n (list-push acc ra)
+    else orch-tier-filter ras tier (i + 1) n acc
+
+  orch-nodes-by-role : OrchestratorState, NodeRole -> List RoleAssignment
+  orch-nodes-by-role (st) (role) =
+    orch-role-filter (st.orch-assignments) role 0 (st.orch-assignment-count) []
+
+  orch-role-filter : List RoleAssignment, NodeRole, Integer, Integer, List RoleAssignment -> List RoleAssignment
+  orch-role-filter (ras) (role) (i) (n) (acc) =
+    if i >= n then acc
+    else let ra = list-at ras i
+    in if ra-has-role ra role then orch-role-filter ras role (i + 1) n (list-push acc ra)
+    else orch-role-filter ras role (i + 1) n acc
+
+  orch-overloaded-count : OrchestratorState -> Integer
+  orch-overloaded-count (st) = orch-over-loop (st.orch-assignments) 0 (st.orch-assignment-count) 0
+
+  orch-over-loop : List RoleAssignment, Integer, Integer, Integer -> Integer
+  orch-over-loop (ras) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if ra-is-overloaded (list-at ras i) then 1 else 0
+    in orch-over-loop ras (i + 1) n (acc + delta)
+
+  orch-idle-count : OrchestratorState -> Integer
+  orch-idle-count (st) = orch-idle-loop (st.orch-assignments) 0 (st.orch-assignment-count) 0
+
+  orch-idle-loop : List RoleAssignment, Integer, Integer, Integer -> Integer
+  orch-idle-loop (ras) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if ra-is-idle (list-at ras i) then 1 else 0
+    in orch-idle-loop ras (i + 1) n (acc + delta)
+
+  orch-ready-vm-count : OrchestratorState -> Integer
+  orch-ready-vm-count (st) = orch-rvm-loop (st.orch-vms) 0 (st.orch-vm-count) 0
+
+  orch-rvm-loop : List ManagedVm, Integer, Integer, Integer -> Integer
+  orch-rvm-loop (vms) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = when (list-at vms i).mvm-state is VmReady -> 1 is otherwise -> 0
+    in orch-rvm-loop vms (i + 1) n (acc + delta)
+
+Page 1

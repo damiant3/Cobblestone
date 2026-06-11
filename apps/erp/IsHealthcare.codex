@@ -1,0 +1,256 @@
+Chapter: IsHealthcare
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Healthcare: patient administration, clinical orders, encounter
+ management, diagnosis/procedure coding (ICD-10/CPT), charge
+ capture, claims submission, ERA processing, patient billing,
+ and compliance tracking.
+
+Section: Patient
+
+  Patient = record {
+    pat-id : Text,
+    pat-mrn : Text,
+    pat-first-name : Text,
+    pat-last-name : Text,
+    pat-dob : Integer,
+    pat-gender : Text,
+    pat-ssn : Text,
+    pat-address : Text,
+    pat-phone : Text,
+    pat-email : Text,
+    pat-primary-insurance : InsuranceCoverage,
+    pat-secondary-insurance : Maybe InsuranceCoverage,
+    pat-pcp : Text,
+    pat-allergies : List Text,
+    pat-status : Text,
+    pat-created : Integer
+  }
+
+  InsuranceCoverage = record {
+    ic-payer-id : Text,
+    ic-payer-name : Text,
+    ic-plan : Text,
+    ic-member-id : Text,
+    ic-group-number : Text,
+    ic-effective : Integer,
+    ic-termination : Integer,
+    ic-copay : Integer,
+    ic-deductible : Integer,
+    ic-deductible-met : Integer,
+    ic-coinsurance-pct : Integer,
+    ic-oop-max : Integer,
+    ic-oop-met : Integer
+  }
+
+Section: Encounters
+
+  Encounter = record {
+    enc-id : Text,
+    enc-patient-id : Text,
+    enc-type : EncounterType,
+    enc-provider-id : Text,
+    enc-facility : Text,
+    enc-admit-date : Integer,
+    enc-discharge-date : Integer,
+    enc-diagnoses : List Diagnosis,
+    enc-procedures : List Procedure,
+    enc-orders : List ClinicalOrder,
+    enc-charges : List Charge,
+    enc-status : EncounterStatus,
+    enc-drg : Text,
+    enc-los : Integer
+  }
+
+  EncounterType =
+    | Outpatient
+    | Inpatient
+    | Emergency
+    | Observation
+    | Telehealth
+    | SurgeryDay
+
+  EncounterStatus =
+    | EncRegistered
+    | EncInProgress
+    | EncDischarged
+    | EncCoded
+    | EncBilled
+    | EncClosed2
+
+Section: Diagnosis and Procedure Coding
+
+  Diagnosis = record {
+    dx-code : Text,
+    dx-description : Text,
+    dx-type : DxType,
+    dx-poa : Boolean
+  }
+
+  DxType =
+    | PrimaryDx
+    | SecondaryDx
+    | AdmittingDx
+    | ExternalCause
+
+  Procedure = record {
+    px-code : Text,
+    px-description : Text,
+    px-type : PxCodeType,
+    px-date : Integer,
+    px-provider : Text,
+    px-modifier : Text
+  }
+
+  PxCodeType =
+    | CptCode
+    | HcpcsCode
+    | Icd10Pcs
+    | RevenueCode
+
+  ClinicalOrder = record {
+    co-id : Text,
+    co-type : OrderType2,
+    co-description : Text,
+    co-provider : Text,
+    co-priority : Text,
+    co-status : Text,
+    co-ordered : Integer,
+    co-completed : Integer
+  }
+
+  OrderType2 =
+    | LabOrder
+    | RadiologyOrder
+    | MedicationOrder
+    | ProcedureOrder
+    | ConsultOrder
+    | DietOrder
+    | ActivityOrder
+
+Section: Charge Capture
+
+  Charge = record {
+    chg-id : Text,
+    chg-encounter-id : Text,
+    chg-cpt-code : Text,
+    chg-revenue-code : Text,
+    chg-description : Text,
+    chg-quantity : Integer,
+    chg-unit-charge : Integer,
+    chg-total-charge : Integer,
+    chg-modifier : Text,
+    chg-provider : Text,
+    chg-date : Integer
+  }
+
+  encounter-total-charges : Encounter -> Integer
+  encounter-total-charges (enc) = sum-charges (enc.enc-charges) 0 0
+
+  sum-charges : List Charge, Integer, Integer -> Integer
+  sum-charges (charges) (i) (acc) =
+    if i >= list-length charges then acc
+    else sum-charges charges (i + 1) (acc + (list-at charges i).chg-total-charge)
+
+Section: Claims
+
+  HealthClaim = record {
+    hc-id : Text,
+    hc-encounter-id : Text,
+    hc-patient-id : Text,
+    hc-payer-id : Text,
+    hc-type : ClaimForm,
+    hc-total-charges : Integer,
+    hc-allowed-amount : Integer,
+    hc-paid-amount : Integer,
+    hc-patient-resp : Integer,
+    hc-adjustment : Integer,
+    hc-status : HealthClaimStatus,
+    hc-submitted : Integer,
+    hc-adjudicated : Integer,
+    hc-denial-code : Text,
+    hc-timely-filing : Boolean
+  }
+
+  ClaimForm =
+    | Ub04
+    | Cms1500
+
+  HealthClaimStatus =
+    | HcSubmitted
+    | HcAccepted
+    | HcAdjudicated
+    | HcPaid2
+    | HcDenied2
+    | HcAppealed
+    | HcVoided2
+
+  calc-patient-responsibility : InsuranceCoverage, Integer -> Integer
+  calc-patient-responsibility (ins) (allowed) =
+    let after-deductible = if ins.ic-deductible-met >= ins.ic-deductible then allowed
+      else let remaining-ded = ins.ic-deductible - ins.ic-deductible-met
+      in if remaining-ded >= allowed then 0 else allowed - remaining-ded
+    in let coins = after-deductible * ins.ic-coinsurance-pct / 100
+    in let copay = ins.ic-copay
+    in let total-resp = coins + copay + (allowed - after-deductible)
+    in let oop-remaining = ins.ic-oop-max - ins.ic-oop-met
+    in if total-resp > oop-remaining then if oop-remaining > 0 then oop-remaining else 0 else total-resp
+
+Section: Remittance (ERA/835)
+
+  RemittanceAdvice = record {
+    era-id : Text,
+    era-payer : Text,
+    era-check-number : Text,
+    era-total-paid : Integer,
+    era-claims : List EraClaimLine,
+    era-date : Integer
+  }
+
+  EraClaimLine = record {
+    ecl-claim-id : Text,
+    ecl-charged : Integer,
+    ecl-allowed : Integer,
+    ecl-paid : Integer,
+    ecl-adjustment : Integer,
+    ecl-patient-resp : Integer,
+    ecl-adjustment-codes : List Text
+  }
+
+Section: Compliance
+
+  ComplianceCheck = record {
+    cc2-id : Text,
+    cc2-type : ComplianceType,
+    cc2-entity : Text,
+    cc2-status : Text,
+    cc2-last-check : Integer,
+    cc2-next-due : Integer,
+    cc2-findings : Text
+  }
+
+  ComplianceType =
+    | HipaaPrivacy
+    | HipaaSecurity
+    | StarkLaw
+    | AntiKickback
+    | EmtalaCompliance
+    | MeaningfulUse
+    | MacraQuality
+
+Section: Revenue Cycle KPIs
+
+  RevCycleKpi = record {
+    rck-days-in-ar : Integer,
+    rck-clean-claim-pct : Integer,
+    rck-denial-rate-pct : Integer,
+    rck-collection-rate-pct : Integer,
+    rck-cost-to-collect : Integer,
+    rck-net-collection-pct : Integer,
+    rck-point-of-service-pct : Integer,
+    rck-bad-debt-pct : Integer,
+    rck-charge-lag-days : Integer
+  }

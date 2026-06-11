@@ -1,0 +1,237 @@
+Chapter: PackageManager
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ResourceModel
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Package manager. Installs, updates, and removes software packages.
+ Each package has a name, version, size, dependencies, and install
+ state. The repository is a list of available packages; the installed
+ set is the local state. Supports search, version comparison, and
+ dependency resolution. This is apt/brew/pacman for codex.OS.
+
+Section: Version
+
+  SemVer = record { sv-major : Integer, sv-minor : Integer, sv-patch : Integer }
+
+  semver-new : Integer, Integer, Integer -> SemVer
+  semver-new (major) (minor) (patch) = SemVer { sv-major = major, sv-minor = minor, sv-patch = patch }
+
+  semver-format : SemVer -> Text
+  semver-format (v) = show (v.sv-major) & "." & show (v.sv-minor) & "." & show (v.sv-patch)
+
+  semver-compare : SemVer, SemVer -> Integer
+  semver-compare (a) (b) =
+    if a.sv-major /= b.sv-major then a.sv-major - b.sv-major
+    else if a.sv-minor /= b.sv-minor then a.sv-minor - b.sv-minor
+    else a.sv-patch - b.sv-patch
+
+  semver-is-newer : SemVer, SemVer -> Boolean
+  semver-is-newer (a) (b) = semver-compare a b > 0
+
+Section: Package
+
+  PackageState =
+    | PkgAvailable
+    | PkgInstalled
+    | PkgUpdateAvailable
+    | PkgInstalling
+    | PkgRemoving
+    | PkgBroken (Text)
+
+  pkg-state-label : PackageState -> Text
+  pkg-state-label (s) = when s
+    is PkgAvailable -> "available"
+    is PkgInstalled -> "installed"
+    is PkgUpdateAvailable -> "update available"
+    is PkgInstalling -> "installing"
+    is PkgRemoving -> "removing"
+    is PkgBroken (msg) -> "broken"
+
+  PackageCategory =
+    | PcSystem
+    | PcLibrary
+    | PcApp
+    | PcDriver
+    | PcTool
+    | PcFont
+    | PcTheme
+
+  pkg-cat-label : PackageCategory -> Text
+  pkg-cat-label (c) = when c
+    is PcSystem -> "system"
+    is PcLibrary -> "library"
+    is PcApp -> "application"
+    is PcDriver -> "driver"
+    is PcTool -> "tool"
+    is PcFont -> "font"
+    is PcTheme -> "theme"
+
+  Package = record {
+    pkg-id : Text,
+    pkg-name : Text,
+    pkg-description : Text,
+    pkg-version : SemVer,
+    pkg-latest : SemVer,
+    pkg-category : PackageCategory,
+    pkg-size : ByteSize,
+    pkg-installed-size : ByteSize,
+    pkg-state : PackageState,
+    pkg-author : Text,
+    pkg-license : Text,
+    pkg-dependencies : List Text,
+    pkg-dep-count : Integer,
+    pkg-dependents : List Text,
+    pkg-dependent-count : Integer,
+    pkg-install-date : Integer,
+    pkg-update-date : Integer
+  }
+
+  package-new : Text, Text, SemVer, PackageCategory -> Package
+  package-new (id) (name) (version) (cat) = Package {
+    pkg-id = id,
+    pkg-name = name,
+    pkg-description = "",
+    pkg-version = version,
+    pkg-latest = version,
+    pkg-category = cat,
+    pkg-size = bytes 0,
+    pkg-installed-size = bytes 0,
+    pkg-state = PkgAvailable,
+    pkg-author = "",
+    pkg-license = "",
+    pkg-dependencies = [],
+    pkg-dep-count = 0,
+    pkg-dependents = [],
+    pkg-dependent-count = 0,
+    pkg-install-date = 0,
+    pkg-update-date = 0
+  }
+
+  pkg-has-update : Package -> Boolean
+  pkg-has-update (p) = semver-is-newer (p.pkg-latest) (p.pkg-version)
+
+  pkg-is-installed : Package -> Boolean
+  pkg-is-installed (p) = when p.pkg-state
+    is PkgInstalled -> True
+    is PkgUpdateAvailable -> True
+    is otherwise -> False
+
+Section: Package Manager State
+
+  PackageManagerState = record {
+    pkm-packages : List Package,
+    pkm-count : Integer,
+    pkm-installed-count : Integer,
+    pkm-update-count : Integer,
+    pkm-selected : Text,
+    pkm-filter : Text,
+    pkm-filter-cat : Text,
+    pkm-show-installed : Boolean,
+    pkm-repo-url : Text,
+    pkm-last-sync : Integer
+  }
+
+  pkg-manager-new : PackageManagerState
+  pkg-manager-new = PackageManagerState {
+    pkm-packages = [],
+    pkm-count = 0,
+    pkm-installed-count = 0,
+    pkm-update-count = 0,
+    pkm-selected = "",
+    pkm-filter = "",
+    pkm-filter-cat = "",
+    pkm-show-installed = False,
+    pkm-repo-url = "",
+    pkm-last-sync = 0
+  }
+
+  pkm-add : PackageManagerState, Package -> PackageManagerState
+  pkm-add (st) (pkg) =
+    let new-pkgs = list-push (st.pkm-packages) pkg
+    in let inst-delta = if pkg-is-installed pkg then 1 else 0
+    in let upd-delta = if pkg-has-update pkg then 1 else 0
+    in PackageManagerState {
+      pkm-packages = new-pkgs,
+      pkm-count = st.pkm-count + 1,
+      pkm-installed-count = st.pkm-installed-count + inst-delta,
+      pkm-update-count = st.pkm-update-count + upd-delta,
+      pkm-selected = st.pkm-selected,
+      pkm-filter = st.pkm-filter,
+      pkm-filter-cat = st.pkm-filter-cat,
+      pkm-show-installed = st.pkm-show-installed,
+      pkm-repo-url = st.pkm-repo-url,
+      pkm-last-sync = st.pkm-last-sync
+    }
+
+  pkm-find : PackageManagerState, Text -> Maybe Package
+  pkm-find (st) (id) = pkm-find-loop (st.pkm-packages) id 0 (st.pkm-count)
+
+  pkm-find-loop : List Package, Text, Integer, Integer -> Maybe Package
+  pkm-find-loop (pkgs) (id) (i) (n) =
+    if i >= n then None
+    else let p = list-at pkgs i
+    in if p.pkg-id == id then Just p
+    else pkm-find-loop pkgs id (i + 1) n
+
+  pkm-visible : PackageManagerState -> List Package
+  pkm-visible (st) =
+    pkm-vis-loop (st.pkm-packages) (st.pkm-filter) (st.pkm-filter-cat) (st.pkm-show-installed) 0 (st.pkm-count) []
+
+  pkm-vis-loop : List Package, Text, Text, Boolean, Integer, Integer, List Package -> List Package
+  pkm-vis-loop (pkgs) (filter) (cat) (inst-only) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at pkgs i
+    in let text-ok = if text-length filter == 0 then True else text-contains (p.pkg-name) filter
+    in let cat-ok = if text-length cat == 0 then True else pkg-cat-label (p.pkg-category) == cat
+    in let inst-ok = if inst-only then pkg-is-installed p else True
+    in if text-ok then if cat-ok then if inst-ok then
+      pkm-vis-loop pkgs filter cat inst-only (i + 1) n (list-push acc p)
+    else pkm-vis-loop pkgs filter cat inst-only (i + 1) n acc
+    else pkm-vis-loop pkgs filter cat inst-only (i + 1) n acc
+    else pkm-vis-loop pkgs filter cat inst-only (i + 1) n acc
+
+  pkm-total-installed-size : PackageManagerState -> ByteSize
+  pkm-total-installed-size (st) = pkm-size-loop (st.pkm-packages) 0 (st.pkm-count) 0
+
+  pkm-size-loop : List Package, Integer, Integer, Integer -> ByteSize
+  pkm-size-loop (pkgs) (i) (n) (acc) =
+    if i >= n then bytes acc
+    else let p = list-at pkgs i
+    in let delta = if pkg-is-installed p then (p.pkg-installed-size).bs-bytes else 0
+    in pkm-size-loop pkgs (i + 1) n (acc + delta)
+
+Section: Widget Building
+
+  pkm-pkg-row : Package -> WidgetNode
+  pkm-pkg-row (p) =
+    let name = widget-label (p.pkg-id & "-name") (p.pkg-name)
+    in let ver = widget-label (p.pkg-id & "-ver") (semver-format (p.pkg-version))
+    in let cat = widget-label (p.pkg-id & "-cat") (pkg-cat-label (p.pkg-category))
+    in let state-lbl = widget-label (p.pkg-id & "-state") (pkg-state-label (p.pkg-state))
+    in let size = widget-label (p.pkg-id & "-size") (format-bytes (p.pkg-size))
+    in let action = if pkg-is-installed p then
+      if pkg-has-update p then widget-button (p.pkg-id & "-update") "Update"
+      else widget-button (p.pkg-id & "-remove") "Remove"
+    else widget-button (p.pkg-id & "-install") "Install"
+    in widget-panel p.pkg-id DirRow 8 [name, ver, cat, state-lbl, size, action]
+
+  pkm-widget : PackageManagerState -> WidgetNode
+  pkm-widget (st) =
+    let title = widget-label "pkm-title" "Packages"
+    in let summary = widget-label "pkm-summary" (show (st.pkm-installed-count) & " installed, " & show (st.pkm-update-count) & " updates, " & format-bytes (pkm-total-installed-size st) & " used")
+    in let filter = widget-input "pkm-filter" (st.pkm-filter) (text-length (st.pkm-filter))
+    in let inst-btn = widget-button "pkm-inst-only" (if st.pkm-show-installed then "Show All" else "Installed Only")
+    in let sync-btn = widget-button "pkm-sync" "Sync Repository"
+    in let toolbar = widget-toolbar "pkm-toolbar" [filter, inst-btn, sync-btn]
+    in let visible = pkm-visible st
+    in let rows = pkm-rows visible 0 (list-length visible) []
+    in widget-panel "packages" DirColumn 4 ([title, summary, toolbar] & rows)
+
+  pkm-rows : List Package, Integer, Integer, List WidgetNode -> List WidgetNode
+  pkm-rows (pkgs) (i) (n) (acc) =
+    if i >= n then acc
+    else pkm-rows pkgs (i + 1) n (list-push acc (pkm-pkg-row (list-at pkgs i)))
+
+Page 1

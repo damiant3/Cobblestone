@@ -1,0 +1,159 @@
+Chapter: TrustManager
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Browser chapter ContentAddress
+
+ The trust manager maintains the user's trust decisions and
+ verifies publisher signatures. Trust flows through the lattice,
+ not through a hierarchy of certificate authorities.
+
+ A publisher is an Ed25519 keypair. The public key IS the
+ identity. Trust decisions are scoped by capability tier and
+ can expire.
+
+Section: Types
+
+  CapabilityTier =
+    | TierStatic
+    | TierConnected
+    | TierInteractive
+    | TierSensor
+    | TierSystem
+
+  TrustDecision = record {
+    td-publisher : List Integer,
+    td-max-tier  : CapabilityTier,
+    td-granted   : Integer,
+    td-expires   : Maybe Integer,
+    td-vouched   : Maybe (List Integer)
+  }
+
+  TrustStore = record {
+    ts-decisions : List TrustDecision,
+    ts-own-key   : List Integer
+  }
+
+  PageCapabilities = record {
+    pc-effects : List Text,
+    pc-tier    : CapabilityTier
+  }
+
+Section: Tier Operations
+
+  tier-level : CapabilityTier -> Integer
+  tier-level (t) =
+    when t
+      is TierStatic -> 0
+      is TierConnected -> 1
+      is TierInteractive -> 2
+      is TierSensor -> 3
+      is TierSystem -> 4
+
+  tier-name : CapabilityTier -> Text
+  tier-name (t) =
+    when t
+      is TierStatic -> "Static"
+      is TierConnected -> "Connected"
+      is TierInteractive -> "Interactive"
+      is TierSensor -> "Sensor"
+      is TierSystem -> "System"
+
+  trust-tier-color : CapabilityTier -> Integer
+  trust-tier-color (t) =
+    when t
+      is TierStatic -> 0x50FA7B
+      is TierConnected -> 0x8BE9FD
+      is TierInteractive -> 0xF1FA8C
+      is TierSensor -> 0xFFB86C
+      is TierSystem -> 0xFF5555
+
+  tier-allows : CapabilityTier, CapabilityTier -> Boolean
+  tier-allows (granted) (requested) =
+    tier-level granted >= tier-level requested
+
+Section: Trust Store
+
+  trust-store-new : List Integer -> TrustStore
+  trust-store-new (own-key) =
+    TrustStore {
+      ts-decisions = [],
+      ts-own-key = own-key
+    }
+
+  trust-store-grant : TrustStore, List Integer, CapabilityTier, Integer -> TrustStore
+  trust-store-grant (store) (publisher) (tier) (now) =
+    let decision = TrustDecision {
+      td-publisher = publisher,
+      td-max-tier = tier,
+      td-granted = now,
+      td-expires = Nothing,
+      td-vouched = Nothing
+    }
+    in __record-set store
+      "ts-decisions" (list-push store.ts-decisions decision)
+
+  trust-store-lookup : TrustStore, List Integer -> Maybe TrustDecision
+  trust-store-lookup (store) (publisher) =
+    trust-find-decision store.ts-decisions publisher
+
+  trust-find-decision : List TrustDecision, List Integer -> Maybe TrustDecision
+  trust-find-decision (decisions) (publisher) =
+    when decisions
+      is [] -> Nothing
+      is otherwise ->
+        let head = list-at decisions 0
+        in if bytes-to-hex head.td-publisher == bytes-to-hex publisher
+          then Just head
+          else trust-find-decision (list-drop decisions 1) publisher
+
+Section: Capability Checking
+
+  check-page-trust : TrustStore, List Integer, PageCapabilities -> TrustVerdict
+  check-page-trust (store) (publisher) (caps) =
+    let decision = trust-store-lookup store publisher
+    in when decision
+      is Nothing -> TrustNeeded caps.pc-tier
+      is Just (td) ->
+        if tier-allows td.td-max-tier caps.pc-tier
+        then TrustGranted
+        else TrustEscalation caps.pc-tier td.td-max-tier
+
+  TrustVerdict =
+    | TrustGranted
+    | TrustNeeded (CapabilityTier)
+    | TrustEscalation (CapabilityTier, CapabilityTier)
+
+Section: Signature Verification
+
+  verify-publisher-signature : List Integer, List Integer, List Integer -> Boolean
+  verify-publisher-signature (pub-key) (content) (signature) =
+    ed25519-verify pub-key content signature
+
+  verify-name-record : NameRecord -> Boolean
+  verify-name-record (nr) =
+    let payload = content-hash-to-bytes nr.nr-hash
+    in verify-publisher-signature nr.nr-publisher payload nr.nr-signature
+
+Section: Effects Classification
+
+  effects-to-tier : List Text -> CapabilityTier
+  effects-to-tier (effects) =
+    if list-any effects (text-eq "FileSystem") then TierSystem
+    else if list-any effects (text-eq "Camera") then TierSensor
+    else if list-any effects (text-eq "Microphone") then TierSensor
+    else if list-any effects (text-eq "Storage") then TierInteractive
+    else if list-any effects (text-eq "Network") then TierConnected
+    else TierStatic
+
+  text-eq : Text -> Text -> Boolean
+  text-eq (a) (b) = a == b
+
+  list-any : List Text, (Text -> Boolean) -> Boolean
+  list-any (xs) (pred) =
+    when xs
+      is [] -> False
+      is otherwise ->
+        if pred (list-at xs 0)
+        then True
+        else list-any (list-drop xs 1) pred

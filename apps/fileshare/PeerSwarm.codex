@@ -1,0 +1,244 @@
+Chapter: PeerSwarm
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+
+ Peer swarm management. A swarm is the set of peers that have
+ (or want) a particular content manifest. Peers are identified
+ by Ed25519 public key and network address.
+
+Section: Types
+
+  PeerState =
+    | PeerConnecting
+    | PeerHandshaking
+    | PeerActive
+    | PeerChoked
+    | PeerDisconnected
+
+  Peer = record {
+    pr-id          : List Integer,
+    pr-address     : List Integer,
+    pr-port        : Integer,
+    pr-state       : PeerState,
+    pr-pieces      : List Boolean,
+    pr-up-bytes    : Integer,
+    pr-down-bytes  : Integer,
+    pr-up-rate     : Integer,
+    pr-down-rate   : Integer,
+    pr-interested  : Boolean,
+    pr-choking-us  : Boolean,
+    pr-we-choke    : Boolean,
+    pr-we-interest : Boolean,
+    pr-trust-score : Integer,
+    pr-last-active : Integer
+  }
+
+  Swarm = record {
+    sw-content-hash : List Integer,
+    sw-peers        : List Peer,
+    sw-max-peers    : Integer,
+    sw-up-total     : Integer,
+    sw-down-total   : Integer,
+    sw-seed-count   : Integer,
+    sw-leech-count  : Integer
+  }
+
+Section: Construction
+
+  swarm-new : List Integer, Integer -> Swarm
+  swarm-new (content-hash) (max-peers) =
+    Swarm {
+      sw-content-hash = content-hash,
+      sw-peers = [],
+      sw-max-peers = max-peers,
+      sw-up-total = 0,
+      sw-down-total = 0,
+      sw-seed-count = 0,
+      sw-leech-count = 0
+    }
+
+  peer-new : List Integer, List Integer, Integer -> Peer
+  peer-new (id) (address) (port) =
+    Peer {
+      pr-id = id,
+      pr-address = address,
+      pr-port = port,
+      pr-state = PeerConnecting,
+      pr-pieces = [],
+      pr-up-bytes = 0,
+      pr-down-bytes = 0,
+      pr-up-rate = 0,
+      pr-down-rate = 0,
+      pr-interested = False,
+      pr-choking-us = True,
+      pr-we-choke = True,
+      pr-we-interest = False,
+      pr-trust-score = 50,
+      pr-last-active = 0
+    }
+
+Section: Swarm Operations
+
+  swarm-add-peer : Swarm, Peer -> Swarm
+  swarm-add-peer (sw) (peer) =
+    if list-length sw.sw-peers >= sw.sw-max-peers then sw
+    else if swarm-has-peer sw peer.pr-id then sw
+    else __record-set sw "sw-peers" (list-push sw.sw-peers peer)
+
+  swarm-remove-peer : Swarm, List Integer -> Swarm
+  swarm-remove-peer (sw) (peer-id) =
+    __record-set sw "sw-peers" (list-filter sw.sw-peers (peer-id-neq peer-id))
+
+  swarm-has-peer : Swarm, List Integer -> Boolean
+  swarm-has-peer (sw) (peer-id) =
+    swarm-find-peer-in sw.sw-peers peer-id
+
+  swarm-find-peer-in : List Peer, List Integer -> Boolean
+  swarm-find-peer-in (peers) (id) =
+    when peers
+      is [] -> False
+      is otherwise ->
+        if sha256-to-hex (list-at peers 0).pr-id == sha256-to-hex id then True
+        else swarm-find-peer-in (list-drop peers 1) id
+
+  peer-id-neq : List Integer -> Peer -> Boolean
+  peer-id-neq (id) (p) = sha256-to-hex p.pr-id /= sha256-to-hex id
+
+  swarm-get-peer : Swarm, List Integer -> Maybe Peer
+  swarm-get-peer (sw) (peer-id) =
+    find-peer-by-id sw.sw-peers peer-id
+
+  find-peer-by-id : List Peer, List Integer -> Maybe Peer
+  find-peer-by-id (peers) (id) =
+    when peers
+      is [] -> Nothing
+      is otherwise ->
+        let head = list-at peers 0
+        in if sha256-to-hex head.pr-id == sha256-to-hex id then Just head
+        else find-peer-by-id (list-drop peers 1) id
+
+Section: Peer State Updates
+
+  peer-set-active : Peer -> Peer
+  peer-set-active (p) = __record-set p "pr-state" PeerActive
+
+  peer-set-choked : Peer -> Peer
+  peer-set-choked (p) = __record-set p "pr-state" PeerChoked
+
+  peer-disconnect : Peer -> Peer
+  peer-disconnect (p) = __record-set p "pr-state" PeerDisconnected
+
+  peer-set-pieces : Peer, List Boolean -> Peer
+  peer-set-pieces (p) (pieces) = __record-set p "pr-pieces" pieces
+
+  peer-has-piece : Peer, Integer -> Boolean
+  peer-has-piece (p) (index) =
+    if index >= list-length p.pr-pieces then False
+    else list-at p.pr-pieces index
+
+  peer-record-upload : Peer, Integer -> Peer
+  peer-record-upload (p) (bytes) =
+    __record-set p "pr-up-bytes" (p.pr-up-bytes + bytes)
+
+  peer-record-download : Peer, Integer -> Peer
+  peer-record-download (p) (bytes) =
+    __record-set p "pr-down-bytes" (p.pr-down-bytes + bytes)
+
+  peer-update-trust : Peer, Integer -> Peer
+  peer-update-trust (p) (delta) =
+    let new-score = p.pr-trust-score + delta
+    in let clamped = if new-score < 0 then 0 else if new-score > 100 then 100 else new-score
+    in __record-set p "pr-trust-score" clamped
+
+Section: Peer Selection
+
+  swarm-active-peers : Swarm -> List Peer
+  swarm-active-peers (sw) =
+    filter-active sw.sw-peers []
+
+  filter-active : List Peer, List Peer -> List Peer
+  filter-active (peers) (acc) =
+    when peers
+      is [] -> acc
+      is otherwise ->
+        let head = list-at peers 0
+        in when head.pr-state
+          is PeerActive -> filter-active (list-drop peers 1) (list-push acc head)
+          is otherwise -> filter-active (list-drop peers 1) acc
+
+  swarm-peers-with-piece : Swarm, Integer -> List Peer
+  swarm-peers-with-piece (sw) (index) =
+    filter-has-piece sw.sw-peers index []
+
+  filter-has-piece : List Peer, Integer, List Peer -> List Peer
+  filter-has-piece (peers) (index) (acc) =
+    when peers
+      is [] -> acc
+      is otherwise ->
+        let head = list-at peers 0
+        in if peer-has-piece head index
+          then filter-has-piece (list-drop peers 1) index (list-push acc head)
+          else filter-has-piece (list-drop peers 1) index acc
+
+  best-peer-for-piece : Swarm, Integer -> Maybe Peer
+  best-peer-for-piece (sw) (index) =
+    let candidates = swarm-peers-with-piece sw index
+    in pick-best-peer candidates Nothing
+
+  pick-best-peer : List Peer, Maybe Peer -> Maybe Peer
+  pick-best-peer (peers) (best) =
+    when peers
+      is [] -> best
+      is otherwise ->
+        let head = list-at peers 0
+        in let better = when best
+              is Nothing -> True
+              is Just (b) -> head.pr-trust-score > b.pr-trust-score
+        in if better
+          then pick-best-peer (list-drop peers 1) (Just head)
+          else pick-best-peer (list-drop peers 1) best
+
+Section: Swarm Statistics
+
+  swarm-update-counts : Swarm -> Swarm
+  swarm-update-counts (sw) =
+    let seeds = count-seeds sw.sw-peers 0
+    in let leeches = list-length sw.sw-peers - seeds
+    in __record-set (__record-set sw "sw-seed-count" seeds) "sw-leech-count" leeches
+
+  count-seeds : List Peer, Integer -> Integer
+  count-seeds (peers) (acc) =
+    when peers
+      is [] -> acc
+      is otherwise ->
+        let head = list-at peers 0
+        in if all-pieces head
+          then count-seeds (list-drop peers 1) (acc + 1)
+          else count-seeds (list-drop peers 1) acc
+
+  all-pieces : Peer -> Boolean
+  all-pieces (p) =
+    if list-length p.pr-pieces == 0 then False
+    else all-true p.pr-pieces 0
+
+  all-true : List Boolean, Integer -> Boolean
+  all-true (bs) (i) =
+    if i >= list-length bs then True
+    else if list-at bs i == False then False
+    else all-true bs (i + 1)
+
+  format-swarm : Swarm -> Text
+  format-swarm (sw) =
+    "Peers: " & show (list-length sw.sw-peers)
+    & " | Seeds: " & show sw.sw-seed-count
+    & " | Leeches: " & show sw.sw-leech-count
+    & " | Up: " & format-bytes sw.sw-up-total
+    & " | Down: " & format-bytes sw.sw-down-total
+
+  format-bytes : Integer -> Text
+  format-bytes (b) =
+    if b >= 1073741824 then show (b / 1073741824) & " GB"
+    else if b >= 1048576 then show (b / 1048576) & " MB"
+    else if b >= 1024 then show (b / 1024) & " KB"
+    else show b & " B"

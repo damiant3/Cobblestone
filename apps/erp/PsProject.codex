@@ -1,0 +1,259 @@
+Chapter: PsProject
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Project System: WBS elements, project planning, resource scheduling,
+ milestone billing, earned value analysis, time recording, and
+ project settlement to cost centers or assets.
+
+Section: Project Definition
+
+  Project = record {
+    prj-id : Text,
+    prj-name : Text,
+    prj-company : Text,
+    prj-manager : Text,
+    prj-customer-id : Text,
+    prj-type : ProjectType,
+    prj-status : ProjectStatus,
+    prj-start-date : Integer,
+    prj-end-date : Integer,
+    prj-budget : Integer,
+    prj-actual-cost : Integer,
+    prj-committed-cost : Integer,
+    prj-billed : Integer,
+    prj-wbs : List WbsElement,
+    prj-cost-center : Text,
+    prj-settlement : SettlementRule,
+    prj-created : Integer
+  }
+
+  ProjectType =
+    | PrjCustomer
+    | PrjInternal
+    | PrjCapital
+    | PrjResearch
+
+  ProjectStatus =
+    | PrjCreated
+    | PrjPlanned
+    | PrjReleased
+    | PrjActive
+    | PrjTechComplete
+    | PrjClosed
+    | PrjCancelled
+
+  prj-status-name : ProjectStatus -> Text
+  prj-status-name (s) =
+    when s
+      is PrjCreated -> "created"
+      is PrjPlanned -> "planned"
+      is PrjReleased -> "released"
+      is PrjActive -> "active"
+      is PrjTechComplete -> "technically complete"
+      is PrjClosed -> "closed"
+      is PrjCancelled -> "cancelled"
+
+  SettlementRule =
+    | SettleToCostCenter (Text)
+    | SettleToAsset (Text)
+    | SettleToOrder (Text)
+    | SettleProportional (List SettleLine)
+
+  SettleLine = record {
+    stl-receiver : Text,
+    stl-pct : Integer
+  }
+
+Section: WBS Elements
+
+  WbsElement = record {
+    wbs-id : Text,
+    wbs-name : Text,
+    wbs-parent : Text,
+    wbs-level : Integer,
+    wbs-responsible : Text,
+    wbs-start-date : Integer,
+    wbs-end-date : Integer,
+    wbs-budget : Integer,
+    wbs-actual-cost : Integer,
+    wbs-pct-complete : Integer,
+    wbs-milestone : Boolean,
+    wbs-billable : Boolean
+  }
+
+  wbs-remaining : WbsElement -> Integer
+  wbs-remaining (w) = w.wbs-budget - w.wbs-actual-cost
+
+  wbs-over-budget : WbsElement -> Boolean
+  wbs-over-budget (w) = w.wbs-actual-cost > w.wbs-budget
+
+Section: Resource Planning
+
+  ProjectResource = record {
+    pr-id : Text,
+    pr-project-id : Text,
+    pr-wbs-id : Text,
+    pr-employee-id : Text,
+    pr-role : Text,
+    pr-planned-hrs : Integer,
+    pr-actual-hrs : Integer,
+    pr-rate : Integer,
+    pr-start-date : Integer,
+    pr-end-date : Integer
+  }
+
+  pr-planned-cost : ProjectResource -> Integer
+  pr-planned-cost (r) = r.pr-planned-hrs * r.pr-rate / 100
+
+  pr-actual-cost : ProjectResource -> Integer
+  pr-actual-cost (r) = r.pr-actual-hrs * r.pr-rate / 100
+
+  pr-utilization-pct : ProjectResource -> Integer
+  pr-utilization-pct (r) =
+    if r.pr-planned-hrs == 0 then 0
+    else r.pr-actual-hrs * 100 / r.pr-planned-hrs
+
+  ResourceDemand = record {
+    rd-role : Text,
+    rd-project : Text,
+    rd-wbs : Text,
+    rd-hrs-needed : Integer,
+    rd-start : Integer,
+    rd-end : Integer,
+    rd-filled : Boolean
+  }
+
+Section: Time Recording
+
+  ProjectTimeEntry = record {
+    pte-id : Text,
+    pte-project-id : Text,
+    pte-wbs-id : Text,
+    pte-employee-id : Text,
+    pte-date : Integer,
+    pte-hours-x100 : Integer,
+    pte-activity : Text,
+    pte-description : Text,
+    pte-billable : Boolean,
+    pte-approved : Boolean
+  }
+
+  pte-cost : ProjectTimeEntry, Integer -> Integer
+  pte-cost (te) (rate) = te.pte-hours-x100 * rate / 10000
+
+Section: Milestone Billing
+
+  Milestone = record {
+    ms-id : Text,
+    ms-project-id : Text,
+    ms-wbs-id : Text,
+    ms-name : Text,
+    ms-planned-date : Integer,
+    ms-actual-date : Integer,
+    ms-billing-amount : Integer,
+    ms-billing-pct : Integer,
+    ms-billed : Boolean,
+    ms-completed : Boolean
+  }
+
+  ms-overdue : Milestone, Integer -> Boolean
+  ms-overdue (m) (now) =
+    if m.ms-completed then False
+    else now > m.ms-planned-date
+
+  total-milestones-value : List Milestone -> Integer
+  total-milestones-value (milestones) = sum-ms-value milestones 0 0
+
+  sum-ms-value : List Milestone, Integer, Integer -> Integer
+  sum-ms-value (ms) (i) (acc) =
+    if i >= list-length ms then acc
+    else sum-ms-value ms (i + 1) (acc + (list-at ms i).ms-billing-amount)
+
+  billed-milestones-value : List Milestone -> Integer
+  billed-milestones-value (milestones) = sum-billed-ms milestones 0 0
+
+  sum-billed-ms : List Milestone, Integer, Integer -> Integer
+  sum-billed-ms (ms) (i) (acc) =
+    if i >= list-length ms then acc
+    else let m = list-at ms i
+    in sum-billed-ms ms (i + 1) (if m.ms-billed then acc + m.ms-billing-amount else acc)
+
+Section: Earned Value Analysis
+
+ SPI and CPI are x100 ratios per the ErpTypes scaling conventions:
+ 100 means exactly on plan. The health thresholds below are on the
+ same scale: 95 means a 0.95 index and 80 means 0.80.
+
+  EarnedValueMetrics = record {
+    ev-project-id : Text,
+    ev-bac : Integer,
+    ev-pv : Integer,
+    ev-ev : Integer,
+    ev-ac : Integer,
+    ev-sv : Integer,
+    ev-cv : Integer,
+    ev-spi-x100 : Integer,
+    ev-cpi-x100 : Integer,
+    ev-eac : Integer,
+    ev-etc : Integer,
+    ev-vac : Integer
+  }
+
+  calc-earned-value : Text, Integer, Integer, Integer, Integer -> EarnedValueMetrics
+  calc-earned-value (project-id) (bac) (pv) (ev) (ac) =
+    let sv = ev - pv
+    in let cv = ev - ac
+    in let spi = if pv == 0 then 100 else ev * 100 / pv
+    in let cpi = if ac == 0 then 100 else ev * 100 / ac
+    in let eac = if cpi == 0 then bac else bac * 100 / cpi
+    in let etc = eac - ac
+    in let vac = bac - eac
+    in EarnedValueMetrics {
+      ev-project-id = project-id,
+      ev-bac = bac,
+      ev-pv = pv,
+      ev-ev = ev,
+      ev-ac = ac,
+      ev-sv = sv,
+      ev-cv = cv,
+      ev-spi-x100 = spi,
+      ev-cpi-x100 = cpi,
+      ev-eac = eac,
+      ev-etc = etc,
+      ev-vac = vac
+    }
+
+  ev-on-schedule : EarnedValueMetrics -> Boolean
+  ev-on-schedule (m) = m.ev-spi-x100 >= 95
+
+  ev-on-budget : EarnedValueMetrics -> Boolean
+  ev-on-budget (m) = m.ev-cpi-x100 >= 95
+
+Section: Project Reporting
+
+  ProjectSummary = record {
+    ps-id : Text,
+    ps-name : Text,
+    ps-status : Text,
+    ps-pct-complete : Integer,
+    ps-budget : Integer,
+    ps-actual : Integer,
+    ps-forecast : Integer,
+    ps-variance : Integer,
+    ps-spi : Integer,
+    ps-cpi : Integer,
+    ps-overdue-milestones : Integer,
+    ps-open-issues : Integer
+  }
+
+  project-health : ProjectSummary -> Text
+  project-health (ps) =
+    if ps.ps-cpi < 80 then "red"
+    else if ps.ps-cpi < 95 then "yellow"
+    else if ps.ps-spi < 80 then "red"
+    else if ps.ps-spi < 95 then "yellow"
+    else "green"

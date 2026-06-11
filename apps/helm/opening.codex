@@ -1,0 +1,203 @@
+Chapter: Opening
+  cites Helm chapter HelmTypes
+  cites Helm chapter HelmCluster
+  cites Helm chapter HelmAttention
+  cites Helm chapter HelmVoice
+  cites Helm chapter HelmMixer
+  cites Helm chapter HelmStore
+  cites Helm chapter HelmTheme
+  cites Helm chapter RiverPage
+  cites Helm chapter BridgePage
+  cites UI chapter Event
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppLog
+
+ Entry point for Helm with message composition, voice controls,
+ and persistent state.
+
+Section: App State
+
+  HelmView =
+    | HvRiver
+    | HvBridge
+    | HvSettings
+    | HvHistory
+
+  HelmAppState = record {
+    ha-room : Room,
+    ha-voice : VoiceHierarchy,
+    ha-disk : DiskFactStore,
+    ha-view : HelmView,
+    ha-compose : ComposeState,
+    ha-user-id : Text,
+    ha-user-name : Text,
+    ha-expanded-current : Integer,
+    ha-room-settings : RoomSettings,
+    ha-voice-settings : VoiceSettings
+  }
+
+Section: Entry Point
+
+  opening : [Console] Nothing
+  opening = act
+    let disk = disk-load
+    in let room = room-new "main" "General"
+    in let voice = sample-hierarchy
+    in let disk2 = app-log-info disk "helm" "Helm started" 0
+    in let state = HelmAppState {
+          ha-room = room,
+          ha-voice = voice,
+          ha-disk = disk2,
+          ha-view = HvRiver,
+          ha-compose = compose-new,
+          ha-user-id = "user",
+          ha-user-name = "You",
+          ha-expanded-current = (-1),
+          ha-room-settings = rs-default,
+          ha-voice-settings = vs-default
+        }
+    in print-line "Codex Helm v0.1"
+    in print-line ("  Room: " & room.rm-name)
+    in print-line ("  Voice: " & show voice.vh-node-count & " nodes")
+    in print-line "  Keys: 1=River 2=Bridge 3=Settings"
+    in print-line "  Type to compose, Enter to send"
+    in helm-event-loop state
+  end
+
+Section: Sample Hierarchy
+
+  sample-hierarchy : VoiceHierarchy
+  sample-hierarchy =
+    let h = hierarchy-new TplNaval
+    in let h1 = vh-add-node h "admiral" "Admiral" Admiral ""
+    in let h2 = vh-add-node h1 "capt-a" "Captain Alpha" Captain "admiral"
+    in let h3 = vh-add-node h2 "capt-b" "Captain Beta" Captain "admiral"
+    in let h4 = vh-add-node h3 "capt-c" "Captain Charlie" Captain "admiral"
+    in let h5 = vh-add-node h4 "lt-a1" "Lt. Aria" Lieutenant "capt-a"
+    in let h6 = vh-add-node h5 "lt-a2" "Lt. Atlas" Lieutenant "capt-a"
+    in let h7 = vh-add-node h6 "p1" "Pilot Nova" Crew "lt-a1"
+    in let h8 = vh-add-node h7 "p2" "Pilot Orion" Crew "lt-a1"
+    in let h9 = vh-add-node h8 "p3" "Pilot Vega" Crew "lt-a2"
+    in let h10 = vh-add-node h9 "p4" "Pilot Luna" Crew "capt-b"
+    in let h11 = vh-add-node h10 "p5" "Pilot Mars" Crew "capt-b"
+    in let h12 = vh-add-node h11 "p6" "Pilot Sol" Crew "capt-c"
+    in vh-add-node h12 "p7" "Pilot Echo" Crew "capt-c"
+
+Section: Event Loop
+
+  helm-event-loop : HelmAppState -> [Console] Nothing
+  helm-event-loop (state) = act
+    let scan = uefi-read-key
+    in let ev = if scan == 0
+          then event-timer "tick" 0
+          else event-key-down scan 0 0
+    in let handled = helm-handle-event state ev
+    in helm-event-loop handled
+  end
+
+Section: Event Dispatch
+
+  helm-handle-event : HelmAppState, Event -> HelmAppState
+  helm-handle-event (state) (ev) =
+    when ev.ev-kind
+      is EvKeyDown (k) (mods) -> helm-handle-key state k mods
+      is EvTimer (name) -> helm-tick state
+      is otherwise -> state
+
+  helm-tick : HelmAppState -> HelmAppState
+  helm-tick (state) =
+    let decayed = room-apply-decay state.ha-room 0
+    in __record-set state "ha-room" decayed
+
+Section: Key Handling
+
+  helm-handle-key : HelmAppState, Integer, Integer -> HelmAppState
+  helm-handle-key (state) (k) (mods) =
+    let ctrl = int-mod (mods / 1) 2 == 1
+    in if ctrl then helm-ctrl-key state k
+    else if state.ha-compose.cmp-active then helm-compose-key state k
+    else helm-normal-key state k
+
+  helm-normal-key : HelmAppState, Integer -> HelmAppState
+  helm-normal-key (state) (k) =
+    if k == 49 then __record-set state "ha-view" HvRiver
+    else if k == 50 then __record-set state "ha-view" HvBridge
+    else if k == 51 then __record-set state "ha-view" HvSettings
+    else if k == 52 then __record-set state "ha-view" HvHistory
+    else if k >= 32 then helm-start-compose state k
+    else if k == 27 then __record-set state "ha-expanded-current" (-1)
+    else state
+
+  helm-ctrl-key : HelmAppState, Integer -> HelmAppState
+  helm-ctrl-key (state) (k) =
+    if k == 77 then helm-toggle-mute state
+    else if k == 83 then helm-toggle-speak state
+    else if k == 74 then helm-create-joint state
+    else if k == 69 then helm-emergency state
+    else if k == 80 then helm-pin-current state
+    else state
+
+Section: Message Composition
+
+  helm-start-compose : HelmAppState, Integer -> HelmAppState
+  helm-start-compose (state) (k) =
+    let ch = char-to-text (code-to-char (from-unicode k))
+    in __record-set state "ha-compose" (compose-insert compose-new ch)
+
+  helm-compose-key : HelmAppState, Integer -> HelmAppState
+  helm-compose-key (state) (k) =
+    if k == 13 then helm-send-message state
+    else if k == 27 then __record-set state "ha-compose" compose-new
+    else if k == 8 then __record-set state "ha-compose" (compose-backspace state.ha-compose)
+    else if k >= 32
+      then let ch = char-to-text (code-to-char (from-unicode k))
+        in __record-set state "ha-compose" (compose-insert state.ha-compose ch)
+    else state
+
+  helm-send-message : HelmAppState -> HelmAppState
+  helm-send-message (state) =
+    let content = compose-content state.ha-compose
+    in if text-length content == 0 then state
+    else let room = room-add-message state.ha-room state.ha-user-name content 0
+    in let room2 = room-track-sender room state.ha-user-name
+    in let disk = app-log-debug state.ha-disk "helm" ("Message sent: " & text-take content 40) 0
+    in __record-set (__record-set (__record-set state "ha-room" room2) "ha-compose" (compose-submit state.ha-compose)) "ha-disk" disk
+
+Section: Voice Controls
+
+  helm-toggle-mute : HelmAppState -> HelmAppState
+  helm-toggle-mute (state) =
+    let node = vh-find-node state.ha-voice state.ha-user-id
+    in when node
+      is None -> state
+      is Just (n) ->
+        __record-set state "ha-voice" (vh-set-muted state.ha-voice state.ha-user-id (if n.vn-muted then False else True))
+
+  helm-toggle-speak : HelmAppState -> HelmAppState
+  helm-toggle-speak (state) =
+    let node = vh-find-node state.ha-voice state.ha-user-id
+    in when node
+      is None -> state
+      is Just (n) ->
+        __record-set state "ha-voice" (vh-set-speaking state.ha-voice state.ha-user-id (if n.vn-speaking then False else True))
+
+  helm-create-joint : HelmAppState -> HelmAppState
+  helm-create-joint (state) =
+    let voice = vh-create-joint state.ha-voice "Joint Op" ["capt-a", "capt-b"] state.ha-user-id 0
+    in let disk = app-log-info state.ha-disk "helm" "Joint channel created" 0
+    in __record-set (__record-set state "ha-voice" voice) "ha-disk" disk
+
+  helm-emergency : HelmAppState -> HelmAppState
+  helm-emergency (state) =
+    let voice = vh-emergency state.ha-voice state.ha-user-id "Emergency broadcast!" 0
+    in let disk = app-log-warn state.ha-disk "helm" ("Emergency by " & state.ha-user-name) 0
+    in __record-set (__record-set state "ha-voice" voice) "ha-disk" disk
+
+  helm-pin-current : HelmAppState -> HelmAppState
+  helm-pin-current (state) =
+    if state.ha-expanded-current < 0 then state
+    else __record-set state "ha-room" (room-pin-current state.ha-room state.ha-expanded-current)

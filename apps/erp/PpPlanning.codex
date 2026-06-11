@@ -1,0 +1,290 @@
+Chapter: PpPlanning
+  cites ERP chapter ErpTypes
+  cites ERP chapter MmProcurement
+  cites ERP chapter FinControlling
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Production Planning: MRP, capacity planning, shop floor control,
+ production orders, demand forecasting, and master scheduling.
+ Drives procurement (MM) and costing (CO) based on demand.
+
+Section: Bill of Materials
+
+  BomHeader = record {
+    bh-id : Text,
+    bh-material-id : Text,
+    bh-name : Text,
+    bh-base-qty : Integer,
+    bh-valid-from : Integer,
+    bh-valid-to : Integer,
+    bh-status : Text,
+    bh-components : List BomComponent
+  }
+
+  bom-total-material-cost : BomHeader -> Integer
+  bom-total-material-cost (bh) = sum-bom-cost (bh.bh-components) 0 0
+
+  explode-bom : BomHeader, Integer -> List BomExplosionLine
+  explode-bom (bh) (qty) = explode-loop (bh.bh-components) qty (bh.bh-base-qty) [] 0
+
+  BomExplosionLine = record {
+    bel-material-id : Text,
+    bel-required-qty : Integer,
+    bel-with-scrap : Integer,
+    bel-unit-cost : Integer,
+    bel-total-cost : Integer
+  }
+
+  explode-loop : List BomComponent, Integer, Integer, List BomExplosionLine, Integer -> List BomExplosionLine
+  explode-loop (comps) (order-qty) (base-qty) (acc) (i) =
+    if i >= list-length comps then acc
+    else let c = list-at comps i
+    in let required = c.bom-quantity-x1000 * order-qty / base-qty / 1000
+    in let with-scrap = required * (100 + c.bom-scrap-pct) / 100
+    in let line = BomExplosionLine {
+      bel-material-id = c.bom-material-id,
+      bel-required-qty = required,
+      bel-with-scrap = with-scrap,
+      bel-unit-cost = c.bom-unit-cost,
+      bel-total-cost = with-scrap * c.bom-unit-cost
+    }
+    in explode-loop comps order-qty base-qty (list-push acc line) (i + 1)
+
+Section: Work Centers and Routing
+
+  WorkCenter = record {
+    wc-id : Text,
+    wc-name : Text,
+    wc-plant : Text,
+    wc-capacity-hrs : Integer,
+    wc-labor-rate : Integer,
+    wc-machine-rate : Integer,
+    wc-efficiency-pct : Integer,
+    wc-queue-days : Integer,
+    wc-num-machines : Integer
+  }
+
+  wc-available-hrs : WorkCenter, Integer -> Integer
+  wc-available-hrs (wc) (days) =
+    wc.wc-capacity-hrs * days * wc.wc-efficiency-pct / 100
+
+  RoutingHeader = record {
+    rh-id : Text,
+    rh-material-id : Text,
+    rh-operations : List RoutingOp
+  }
+
+  RoutingOp = record {
+    ro-seq : Integer,
+    ro-work-center : Text,
+    ro-description : Text,
+    ro-setup-hrs-x100 : Integer,
+    ro-run-hrs-x100 : Integer,
+    ro-move-days : Integer,
+    ro-overlap-pct : Integer
+  }
+
+  routing-total-hrs : RoutingHeader, Integer -> Integer
+  routing-total-hrs (rh) (qty) = sum-routing-hrs (rh.rh-operations) qty 0 0
+
+  sum-routing-hrs : List RoutingOp, Integer, Integer, Integer -> Integer
+  sum-routing-hrs (ops) (qty) (i) (acc) =
+    if i >= list-length ops then acc
+    else let op = list-at ops i
+    in let hrs = op.ro-setup-hrs-x100 + op.ro-run-hrs-x100 * qty
+    in sum-routing-hrs ops qty (i + 1) (acc + hrs)
+
+Section: Production Orders
+
+  ProdOrderStatus =
+    | PoCreated2
+    | PoPlanned
+    | PoReleased
+    | PoInProgress
+    | PoConfirmed
+    | PoDelivered
+    | PoClosed2
+    | PoCancelled2
+
+  po-status-name2 : ProdOrderStatus -> Text
+  po-status-name2 (s) =
+    when s
+      is PoCreated2 -> "created"
+      is PoPlanned -> "planned"
+      is PoReleased -> "released"
+      is PoInProgress -> "in progress"
+      is PoConfirmed -> "confirmed"
+      is PoDelivered -> "delivered"
+      is PoClosed2 -> "closed"
+      is PoCancelled2 -> "cancelled"
+
+  ProductionOrder = record {
+    prod-id : Text,
+    prod-material-id : Text,
+    prod-plant : Text,
+    prod-bom-id : Text,
+    prod-routing-id : Text,
+    prod-order-qty : Integer,
+    prod-confirmed-qty : Integer,
+    prod-scrap-qty : Integer,
+    prod-planned-start : Integer,
+    prod-planned-end : Integer,
+    prod-actual-start : Integer,
+    prod-actual-end : Integer,
+    prod-status : ProdOrderStatus,
+    prod-priority : Integer,
+    prod-cost-center : Text,
+    prod-planned-cost : Integer,
+    prod-actual-cost : Integer
+  }
+
+  prod-yield-pct : ProductionOrder -> Integer
+  prod-yield-pct (po) =
+    if po.prod-order-qty == 0 then 0
+    else po.prod-confirmed-qty * 100 / po.prod-order-qty
+
+  prod-variance : ProductionOrder -> Integer
+  prod-variance (po) = po.prod-planned-cost - po.prod-actual-cost
+
+Section: MRP (Material Requirements Planning)
+
+  MrpResult = record {
+    mrp-material-id : Text,
+    mrp-gross-req : Integer,
+    mrp-scheduled-receipts : Integer,
+    mrp-on-hand : Integer,
+    mrp-net-req : Integer,
+    mrp-planned-orders : List PlannedOrder,
+    mrp-messages : List MrpMessage
+  }
+
+  PlannedOrder = record {
+    plo-material-id : Text,
+    plo-quantity : Integer,
+    plo-start-date : Integer,
+    plo-due-date : Integer,
+    plo-type : PlannedOrderType
+  }
+
+  PlannedOrderType =
+    | PloPurchase
+    | PloProduction
+    | PloTransfer
+
+  MrpMessage = record {
+    mrpm-material-id : Text,
+    mrpm-type : MrpMessageType,
+    mrpm-description : Text,
+    mrpm-date : Integer
+  }
+
+  MrpMessageType =
+    | MrpNew
+    | MrpRescheduleIn
+    | MrpRescheduleOut
+    | MrpCancel
+    | MrpExpedite
+    | MrpBelowSafety
+
+  run-mrp : Text, Integer, Integer, Integer, Integer, Integer -> MrpResult
+  run-mrp (mat-id) (gross-req) (scheduled) (on-hand) (reorder-pt) (reorder-qty) =
+    let net = gross-req - scheduled - on-hand
+    in let planned = if net > 0 then
+      let order-qty = if net > reorder-qty then net else reorder-qty
+      in [PlannedOrder { plo-material-id = mat-id, plo-quantity = order-qty, plo-start-date = 0, plo-due-date = 0, plo-type = PloPurchase }]
+    else []
+    in let messages = if on-hand < reorder-pt then
+      [MrpMessage { mrpm-material-id = mat-id, mrpm-type = MrpBelowSafety, mrpm-description = "Stock below reorder point", mrpm-date = 0 }]
+    else []
+    in MrpResult {
+      mrp-material-id = mat-id,
+      mrp-gross-req = gross-req,
+      mrp-scheduled-receipts = scheduled,
+      mrp-on-hand = on-hand,
+      mrp-net-req = if net > 0 then net else 0,
+      mrp-planned-orders = planned,
+      mrp-messages = messages
+    }
+
+Section: Capacity Planning
+
+  CapacityLoad = record {
+    cl-work-center : Text,
+    cl-period-start : Integer,
+    cl-period-end : Integer,
+    cl-available-hrs : Integer,
+    cl-loaded-hrs : Integer,
+    cl-utilization-pct : Integer,
+    cl-overloaded : Boolean
+  }
+
+  calc-capacity-load : WorkCenter, Integer, Integer, Integer -> CapacityLoad
+  calc-capacity-load (wc) (loaded) (period-start) (period-days) =
+    let avail = wc-available-hrs wc period-days
+    in let util = if avail == 0 then 0 else loaded * 100 / avail
+    in CapacityLoad {
+      cl-work-center = wc.wc-id,
+      cl-period-start = period-start,
+      cl-period-end = period-start + period-days * 86400,
+      cl-available-hrs = avail,
+      cl-loaded-hrs = loaded,
+      cl-utilization-pct = util,
+      cl-overloaded = util > 100
+    }
+
+Section: Demand Forecasting
+
+  ForecastMethod =
+    | MovingAverage (Integer)
+    | ExponentialSmoothing (Integer)
+    | SeasonalIndex
+    | ManualForecast
+
+  DemandForecast = record {
+    df-material-id : Text,
+    df-period : Integer,
+    df-forecast-qty : Integer,
+    df-actual-qty : Integer,
+    df-method : ForecastMethod,
+    df-error-pct : Integer
+  }
+
+  moving-avg-forecast : List Integer, Integer -> Integer
+  moving-avg-forecast (history) (periods) =
+    if periods == 0 then 0
+    else if list-length history == 0 then 0
+    else let n = if periods > list-length history then list-length history else periods
+    in sum-last-n history n 0 0 / n
+
+  sum-last-n : List Integer, Integer, Integer, Integer -> Integer
+  sum-last-n (vals) (n) (i) (acc) =
+    if i >= n then acc
+    else let idx = list-length vals - n + i
+    in if idx < 0 then sum-last-n vals n (i + 1) acc
+    else sum-last-n vals n (i + 1) (acc + list-at vals idx)
+
+Section: Shop Floor Control
+
+  ShopFloorConfirmation = record {
+    sfc-id : Text,
+    sfc-prod-order : Text,
+    sfc-operation : Integer,
+    sfc-work-center : Text,
+    sfc-qty-confirmed : Integer,
+    sfc-qty-scrap : Integer,
+    sfc-setup-hrs : Integer,
+    sfc-machine-hrs : Integer,
+    sfc-labor-hrs : Integer,
+    sfc-worker-id : Text,
+    sfc-date : Integer
+  }
+
+  sfc-labor-cost : ShopFloorConfirmation, Integer -> Integer
+  sfc-labor-cost (sfc) (rate) = sfc.sfc-labor-hrs * rate / 100
+
+  sfc-yield-pct : ShopFloorConfirmation -> Integer
+  sfc-yield-pct (sfc) =
+    if sfc.sfc-qty-confirmed + sfc.sfc-qty-scrap == 0 then 0
+    else sfc.sfc-qty-confirmed * 100 / (sfc.sfc-qty-confirmed + sfc.sfc-qty-scrap)

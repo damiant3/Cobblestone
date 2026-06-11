@@ -2,16 +2,20 @@ Chapter: WebServer
   cites Net chapter NetIO
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
+  cites Works chapter Http
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
 
  Reusable web-server scaffolding. A webapp cites this, writes one
- route function `(Text -> Text)` mapping a request path to a JSON
- body, and calls `web-serve route`. The standard health/admin
+ route function `(HttpRequest -> HttpResponse)` mapping a request to
+ a response, and calls `web-serve route`. The standard health/admin
  endpoints (/api/health, /api/status) are handled here so every app
- gets them for free. Transport is framed TCP over the NE2K NIC: the
- guest connects out to host:9100, then answers framed requests — no
- serial anywhere.
+ gets them for free.
+
+ Transport: the guest connects out to host via NE2K NIC, then serves
+ raw HTTP/1.0 over that TCP connection. The host-side proxy forwards
+ browser HTTP to this connection. No framing protocol — just HTTP
+ request/response pairs on a persistent connection.
 
  We say:
 
@@ -28,33 +32,24 @@ Section: JSON Helpers
   jstr (s) = "\"" & s & "\""
 
   json-ok : Text -> Text
-  json-ok (body) = "200 application/json " & body
+  json-ok (body) = body
 
   web-not-found : Text -> Text
   web-not-found (path) = "{\"error\":\"not found\",\"path\":" & jstr path & "}"
 
-Section: Request Path
-
-  extract-path : Text -> Text
-  extract-path (line) =
-    let parts = text-split line " "
-    in if list-length parts < 2 then "/"
-    else list-at parts 1
-
 Section: Standard Routes + Dispatch
 
-  web-standard : WebState, Text -> Maybe Text
+  web-standard : WebState, Text -> Maybe HttpResponse
   web-standard (st) (path) =
-    if path == "/api/health" then Just "{\"status\":\"ok\"}"
-    else if path == "/api/status" then Just ("{\"requests\":" & show (st.request-count) & ",\"mode\":\"tcp\"}")
+    if path == "/api/health" then Just (http-json "{\"status\":\"ok\"}")
+    else if path == "/api/status" then Just (http-json ("{\"requests\":" & show (st.request-count) & ",\"mode\":\"http\"}"))
     else None
 
-  web-dispatch : (Text -> Text), WebState, Text -> Text
-  web-dispatch (route) (st) (line) =
-    let path = extract-path line
-    in when web-standard st path
+  web-dispatch : (HttpRequest -> HttpResponse), WebState, HttpRequest -> HttpResponse
+  web-dispatch (route) (st) (req) =
+    when web-standard st (req.path)
       is Just (resp) -> resp
-      is None -> route path
+      is None -> route req
 
 Section: Byte Codec (Unicode wire <-> CCE)
 
@@ -81,43 +76,89 @@ Section: Byte Codec (Unicode wire <-> CCE)
     else let cce = from-unicode (list-at bs i)
     in bytes-to-text-chunk bs (i + 1) stop (acc & char-to-text (code-to-char cce))
 
-Section: Framed TCP Serve Loop
+Section: HTTP JSON Response
 
-  web-send : TcpTransportState, Text -> TcpTransportState
-  web-send (ts) (response) =
-    let body = json-ok response
-    in let body-bytes = text-to-bytes body 0 (text-length body) []
-    in net-io-send ts 1 body-bytes
+  http-json : Text -> HttpResponse
+  http-json (body) = HttpResponse { status = http-200, content-type = "application/json", body = body }
+
+  http-json-cors : Text -> HttpResponse
+  http-json-cors (body) = HttpResponse { status = http-200, content-type = "application/json", body = body }
+
+Section: HTTP Serve Loop
+
+  web-send-http : TcpTransportState, HttpResponse -> TcpTransportState
+  web-send-http (ts) (resp) =
+    let response-bytes = http-encode resp
+    in net-io-send-raw ts response-bytes
 
   WebLoop = record { server : WebState, transport : TcpTransportState }
 
-  web-handle : (Text -> Text), WebLoop, TransportRecvResult -> WebLoop
-  web-handle (route) (ls) (recv) =
-    let request-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
-    in let ns = WebState { request-count = (ls.server).request-count + 1 }
-    in let response = web-dispatch route ns request-text
-    in let ts2 = web-send (recv.transport) response
+  web-handle-http : (HttpRequest -> HttpResponse), WebLoop, List Integer -> WebLoop
+  web-handle-http (route) (ls) (raw-bytes) =
+    let req = http-parse-request raw-bytes
+    in if req.valid == False then
+      let err-resp = http-error "Bad request"
+      in let ts2 = web-send-http (ls.transport) err-resp
+      in WebLoop { server = ls.server, transport = ts2 }
+    else let ns = WebState { request-count = (ls.server).request-count + 1 }
+    in let response = web-dispatch route ns req
+    in let ts2 = web-send-http (ls.transport) response
     in WebLoop { server = ns, transport = ts2 }
 
-  web-loop : (Text -> Text), WebLoop -> [Console] Integer
-  web-loop (route) (ls) = act
-    let recv = net-io-recv-loop (ls.transport) 0
-    in if recv.has-message then act
-      let next = web-handle route ls recv
-      in web-loop route next
+  web-loop-http : (HttpRequest -> HttpResponse), WebLoop -> [Console] Integer
+  web-loop-http (route) (ls) = act
+    let recv = net-io-recv-raw (ls.transport) 0
+    in if recv.has-data then act
+      let next = web-handle-http route ls (recv.data)
+      in web-loop-http route next
     end
     else act
       0
     end
   end
 
-  web-serve : (Text -> Text) -> [Console] Integer
+  web-serve : (HttpRequest -> HttpResponse) -> [Console] Integer
   web-serve (route) =
+    let sess = net-session-new local-mac local-ip gateway-ip 49152 9200 host-ip 1000
+    in let ts = transport-new sess
+    in let ts1 = net-io-connect ts
+    in act
+      web-loop-http route (WebLoop { server = web-new, transport = ts1 })
+    end
+
+Section: Legacy Framed Serve (for backward compat)
+
+  web-serve-framed : (Text -> Text) -> [Console] Integer
+  web-serve-framed (route) =
     let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
     in let ts = transport-new sess
     in let ts1 = net-io-connect ts
     in act
-      web-loop route (WebLoop { server = web-new, transport = ts1 })
+      web-loop-framed route (WebLoop { server = web-new, transport = ts1 })
     end
+
+  web-loop-framed : (Text -> Text), WebLoop -> [Console] Integer
+  web-loop-framed (route) (ls) = act
+    let recv = net-io-recv-loop (ls.transport) 0
+    in if recv.has-message then act
+      let request-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
+      in let ns = WebState { request-count = (ls.server).request-count + 1 }
+      in let path = extract-web-path request-text
+      in let response = route path
+      in let body = "200 application/json " & response
+      in let body-bytes = text-to-bytes body 0 (text-length body) []
+      in let ts2 = net-io-send (ls.transport) 1 body-bytes
+      in web-loop-framed route (WebLoop { server = ns, transport = ts2 })
+    end
+    else act
+      0
+    end
+  end
+
+  extract-web-path : Text -> Text
+  extract-web-path (line) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then "/"
+    else list-at parts 1
 
 Page 1

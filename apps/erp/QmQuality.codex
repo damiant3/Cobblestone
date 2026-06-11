@@ -1,0 +1,277 @@
+Chapter: QmQuality
+  cites ERP chapter ErpTypes
+  cites ERP chapter MmProcurement
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Quality Management: inspection lots, quality plans, defect tracking,
+ SPC (statistical process control), vendor quality scoring, quality
+ certificates, and nonconformance reporting.
+
+Section: Quality Plans
+
+  QualityPlan = record {
+    qp-id : Text,
+    qp-name : Text,
+    qp-material-id : Text,
+    qp-trigger : InspectionTrigger,
+    qp-characteristics : List Characteristic,
+    qp-sample-size : Integer,
+    qp-sample-pct : Integer,
+    qp-aql-pct : Integer,
+    qp-active : Boolean
+  }
+
+  InspectionTrigger =
+    | OnGoodsReceipt
+    | OnProductionEnd
+    | OnShipment
+    | OnReturn
+    | Periodic (Integer)
+
+  trigger-name : InspectionTrigger -> Text
+  trigger-name (t) =
+    when t
+      is OnGoodsReceipt -> "goods receipt"
+      is OnProductionEnd -> "production end"
+      is OnShipment -> "shipment"
+      is OnReturn -> "return"
+      is Periodic (days) -> "every " & show days & " days"
+
+  Characteristic = record {
+    chr-id : Text,
+    chr-name : Text,
+    chr-type : CharType,
+    chr-nominal : Integer,
+    chr-upper-limit : Integer,
+    chr-lower-limit : Integer,
+    chr-unit : Text,
+    chr-method : Text,
+    chr-instrument : Text
+  }
+
+  CharType =
+    | Quantitative
+    | Qualitative
+    | Attribute
+
+Section: Inspection Lots
+
+  InspectionLot = record {
+    il-id : Text,
+    il-plan-id : Text,
+    il-material-id : Text,
+    il-lot-size : Integer,
+    il-sample-size : Integer,
+    il-origin : Text,
+    il-ref-doc : Text,
+    il-results : List InspectionResult,
+    il-decision : LotDecision,
+    il-inspector : Text,
+    il-date : Integer
+  }
+
+  InspectionResult = record {
+    ir-characteristic-id : Text,
+    ir-measured-value : Integer,
+    ir-in-spec : Boolean,
+    ir-defect-code : Text
+  }
+
+  LotDecision =
+    | LotAccepted
+    | LotRejected
+    | LotConditional (Text)
+    | LotPending
+
+  lot-defect-rate : InspectionLot -> Integer
+  lot-defect-rate (il) =
+    let total = list-length (il.il-results)
+    in if total == 0 then 0
+    else let defects = count-defects (il.il-results) 0 0
+    in defects * 10000 / total
+
+  count-defects : List InspectionResult, Integer, Integer -> Integer
+  count-defects (results) (i) (acc) =
+    if i >= list-length results then acc
+    else let r = list-at results i
+    in count-defects results (i + 1) (if r.ir-in-spec then acc else acc + 1)
+
+Section: Nonconformance Reports
+
+  NcrSeverity =
+    | NcrCritical
+    | NcrMajor
+    | NcrMinor
+    | NcrObservation
+
+  NonconformanceReport = record {
+    ncr-id : Text,
+    ncr-lot-id : Text,
+    ncr-material-id : Text,
+    ncr-severity : NcrSeverity,
+    ncr-description : Text,
+    ncr-root-cause : Text,
+    ncr-corrective-action : Text,
+    ncr-preventive-action : Text,
+    ncr-disposition : Disposition,
+    ncr-cost : Integer,
+    ncr-assigned-to : Text,
+    ncr-status : NcrStatus,
+    ncr-created : Integer,
+    ncr-closed : Integer
+  }
+
+  Disposition =
+    | UseAsIs
+    | Rework
+    | Scrap
+    | ReturnToVendor
+    | Downgrade
+
+  NcrStatus =
+    | NcrOpen
+    | NcrInvestigating
+    | NcrActionTaken
+    | NcrVerified
+    | NcrClosed2
+
+Section: Vendor Quality
+
+  VendorQualityScore = record {
+    vqs-vendor-id : Text,
+    vqs-total-lots : Integer,
+    vqs-accepted-lots : Integer,
+    vqs-rejected-lots : Integer,
+    vqs-avg-defect-rate : Integer,
+    vqs-on-time-pct : Integer,
+    vqs-overall-score : Integer,
+    vqs-grade : VendorGrade,
+    vqs-last-audit : Integer
+  }
+
+  VendorGrade =
+    | GradeA
+    | GradeB
+    | GradeC
+    | GradeD
+    | GradeBlocked
+
+  grade-name : VendorGrade -> Text
+  grade-name (g) =
+    when g
+      is GradeA -> "A - Preferred"
+      is GradeB -> "B - Acceptable"
+      is GradeC -> "C - Conditional"
+      is GradeD -> "D - Probation"
+      is GradeBlocked -> "Blocked"
+
+  calc-vendor-grade : Integer -> VendorGrade
+  calc-vendor-grade (score) =
+    if score >= 90 then GradeA
+    else if score >= 75 then GradeB
+    else if score >= 60 then GradeC
+    else if score >= 40 then GradeD
+    else GradeBlocked
+
+  calc-vendor-score : Integer, Integer, Integer, Integer -> Integer
+  calc-vendor-score (accept-pct) (defect-rate-inv) (on-time-pct) (audit-score) =
+    accept-pct * 30 / 100 + defect-rate-inv * 30 / 100 + on-time-pct * 25 / 100 + audit-score * 15 / 100
+
+Section: Statistical Process Control
+
+  SpcChart = record {
+    spc-characteristic : Text,
+    spc-mean : Integer,
+    spc-ucl : Integer,
+    spc-lcl : Integer,
+    spc-readings : List Integer,
+    spc-out-of-control : List Integer,
+    spc-rule-violations : List SpcViolation
+  }
+
+  SpcViolation =
+    | OutsideLimits (Integer)
+    | Run7Above
+    | Run7Below
+    | Trend6Up
+    | Trend6Down
+    | TwoOfThreeBeyond2Sigma
+
+  calc-spc-limits : List Integer, Integer -> SpcChart
+  calc-spc-limits (readings) (characteristic-id) =
+    let n = list-length readings
+    in let mean = if n == 0 then 0 else sum-list readings 0 0 / n
+    in let sigma = calc-std-dev readings mean n
+    in SpcChart {
+      spc-characteristic = show characteristic-id,
+      spc-mean = mean,
+      spc-ucl = mean + 3 * sigma,
+      spc-lcl = mean - 3 * sigma,
+      spc-readings = readings,
+      spc-out-of-control = find-ooc readings (mean + 3 * sigma) (mean - 3 * sigma) [] 0,
+      spc-rule-violations = []
+    }
+
+  sum-list : List Integer, Integer, Integer -> Integer
+  sum-list (vals) (i) (acc) =
+    if i >= list-length vals then acc
+    else sum-list vals (i + 1) (acc + list-at vals i)
+
+  calc-std-dev : List Integer, Integer, Integer -> Integer
+  calc-std-dev (vals) (mean) (n) =
+    if n <= 1 then 0
+    else let variance = sum-sq-diff vals mean 0 0 / (n - 1)
+    in isqrt variance
+
+  sum-sq-diff : List Integer, Integer, Integer, Integer -> Integer
+  sum-sq-diff (vals) (mean) (i) (acc) =
+    if i >= list-length vals then acc
+    else let diff = list-at vals i - mean
+    in sum-sq-diff vals mean (i + 1) (acc + diff * diff)
+
+  isqrt : Integer -> Integer
+  isqrt (n) = if n <= 0 then 0 else isqrt-loop n (n / 2 + 1) 0
+
+  isqrt-loop : Integer, Integer, Integer -> Integer
+  isqrt-loop (n) (guess) (iter) =
+    if iter > 30 then guess
+    else let next = (guess + n / guess) / 2
+    in if next >= guess then guess
+    else isqrt-loop n next (iter + 1)
+
+  find-ooc : List Integer, Integer, Integer, List Integer, Integer -> List Integer
+  find-ooc (readings) (ucl) (lcl) (acc) (i) =
+    if i >= list-length readings then acc
+    else let v = list-at readings i
+    in if v > ucl then find-ooc readings ucl lcl (list-push acc i) (i + 1)
+    else if v < lcl then find-ooc readings ucl lcl (list-push acc i) (i + 1)
+    else find-ooc readings ucl lcl acc (i + 1)
+
+Section: Quality Certificates
+
+  QualityCert = record {
+    qc-id : Text,
+    qc-lot-id : Text,
+    qc-material-id : Text,
+    qc-vendor-id : Text,
+    qc-cert-type : CertType,
+    qc-results : List CertResult,
+    qc-issued : Integer,
+    qc-valid-until : Integer,
+    qc-signed-by : Text
+  }
+
+  CertType =
+    | CertOfAnalysis
+    | CertOfConformance
+    | CertOfCompliance
+    | MillCert
+    | TestReport
+
+  CertResult = record {
+    ctr-parameter : Text,
+    ctr-specification : Text,
+    ctr-actual : Text,
+    ctr-pass : Boolean
+  }

@@ -1,0 +1,351 @@
+Chapter: SdSales
+  cites ERP chapter ErpTypes
+  cites ERP chapter ErpConfig
+  cites ERP chapter FinGL
+  cites ERP chapter MmProcurement
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Sales and Distribution: the order-to-cash cycle. Sales quotes,
+ sales orders, delivery, billing, credit management, and pricing.
+ Integrates with FI for AR postings, MM for inventory reservations,
+ and CO for profitability analysis.
+
+Section: Customer Master Extensions
+
+  CustomerCredit = record {
+    ccr-customer-id : Text,
+    ccr-credit-limit : Integer,
+    ccr-credit-used : Integer,
+    ccr-credit-available : Integer,
+    ccr-risk-category : Text,
+    ccr-last-review : Integer,
+    ccr-blocked : Boolean,
+    ccr-block-reason : Text
+  }
+
+  credit-check : CustomerCredit, Integer -> Boolean
+  credit-check (cc) (order-amount) =
+    if cc.ccr-blocked then False
+    else cc.ccr-credit-available >= order-amount
+
+Section: Pricing
+
+  PricingCondition = record {
+    prc-type : PriceType,
+    prc-amount : Integer,
+    prc-currency : Text,
+    prc-per-unit : Boolean,
+    prc-from-date : Integer,
+    prc-to-date : Integer
+  }
+
+  PriceType =
+    | BasePrice
+    | CustomerDiscount
+    | VolumeDiscount (Integer) (Integer)
+    | Surcharge
+    | Freight
+    | Tax
+
+  price-type-name : PriceType -> Text
+  price-type-name (t) =
+    when t
+      is BasePrice -> "base price"
+      is CustomerDiscount -> "customer discount"
+      is VolumeDiscount (min) (pct) -> "volume discount " & show pct & "% over " & show min
+      is Surcharge -> "surcharge"
+      is Freight -> "freight"
+      is Tax -> "tax"
+
+  PricingResult = record {
+    prr-base : Integer,
+    prr-discounts : Integer,
+    prr-surcharges : Integer,
+    prr-freight : Integer,
+    prr-tax : Integer,
+    prr-net : Integer,
+    prr-lines : List PricingLine
+  }
+
+  PricingLine = record {
+    prl2-type : Text,
+    prl2-amount : Integer
+  }
+
+  calc-pricing : Integer, Integer, List PricingCondition -> PricingResult
+  calc-pricing (base-price) (qty) (conditions) =
+    let line-base = base-price * qty
+    in apply-conditions line-base qty conditions (PricingResult {
+      prr-base = line-base, prr-discounts = 0, prr-surcharges = 0,
+      prr-freight = 0, prr-tax = 0, prr-net = line-base, prr-lines = []
+    }) 0
+
+  apply-conditions : Integer, Integer, List PricingCondition, PricingResult, Integer -> PricingResult
+  apply-conditions (base) (qty) (conds) (result) (i) =
+    if i >= list-length conds then result
+    else let c = list-at conds i
+    in let r2 = apply-one-condition base qty c result
+    in apply-conditions base qty conds r2 (i + 1)
+
+  apply-one-condition : Integer, Integer, PricingCondition, PricingResult -> PricingResult
+  apply-one-condition (base) (qty) (cond) (r) =
+    when cond.prc-type
+      is BasePrice -> r
+      is CustomerDiscount ->
+        let disc = base * cond.prc-amount / 10000
+        in __record-set (__record-set r "prr-discounts" (r.prr-discounts + disc)) "prr-net" (r.prr-net - disc)
+      is VolumeDiscount (min-qty) (pct) ->
+        if qty >= min-qty then
+          let disc = base * pct / 100
+          in __record-set (__record-set r "prr-discounts" (r.prr-discounts + disc)) "prr-net" (r.prr-net - disc)
+        else r
+      is Surcharge ->
+        let s = cond.prc-amount
+        in __record-set (__record-set r "prr-surcharges" (r.prr-surcharges + s)) "prr-net" (r.prr-net + s)
+      is Freight ->
+        let f = cond.prc-amount
+        in __record-set (__record-set r "prr-freight" (r.prr-freight + f)) "prr-net" (r.prr-net + f)
+      is Tax ->
+        let t = r.prr-net * cond.prc-amount / 10000
+        in __record-set (__record-set r "prr-tax" (r.prr-tax + t)) "prr-net" (r.prr-net + t)
+
+Section: Sales Quote
+
+  SalesQuote = record {
+    sq-id : Text,
+    sq-customer-id : Text,
+    sq-company : Text,
+    sq-lines : List SalesLine,
+    sq-total : Integer,
+    sq-valid-until : Integer,
+    sq-status : QuoteStatus,
+    sq-created : Integer
+  }
+
+  QuoteStatus =
+    | QuoteOpen
+    | QuoteAccepted
+    | QuoteRejected
+    | QuoteExpired
+
+Section: Sales Order
+
+  SalesOrder = record {
+    so-id : Text,
+    so-customer-id : Text,
+    so-company : Text,
+    so-quote-ref : Text,
+    so-lines : List SalesLine,
+    so-pricing : PricingResult,
+    so-status : SoStatus,
+    so-ship-to : Text,
+    so-requested-date : Integer,
+    so-credit-checked : Boolean,
+    so-created : Integer
+  }
+
+  SalesLine = record {
+    sl-line-num : Integer,
+    sl-material-id : Text,
+    sl-description : Text,
+    sl-quantity : Integer,
+    sl-unit-price : Integer,
+    sl-discount-pct : Integer,
+    sl-net-amount : Integer,
+    sl-delivered-qty : Integer,
+    sl-invoiced-qty : Integer,
+    sl-cost-center : Text
+  }
+
+  sl-line-total : SalesLine -> Integer
+  sl-line-total (l) =
+    let gross = l.sl-quantity * l.sl-unit-price
+    in gross - gross * l.sl-discount-pct / 100
+
+  SoStatus =
+    | SoOpen
+    | SoPartialDelivery
+    | SoFullyDelivered
+    | SoPartialBilled
+    | SoFullyBilled
+    | SoComplete
+    | SoCancelled
+
+  so-total : SalesOrder -> Integer
+  so-total (so) = sum-so-lines (so.so-lines) 0 0
+
+  sum-so-lines : List SalesLine, Integer, Integer -> Integer
+  sum-so-lines (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else sum-so-lines lines (i + 1) (acc + sl-line-total (list-at lines i))
+
+Section: Delivery
+
+  Delivery = record {
+    del-id : Text,
+    del-so-id : Text,
+    del-company : Text,
+    del-warehouse : Text,
+    del-lines : List DeliveryLine,
+    del-ship-date : Integer,
+    del-carrier : Text,
+    del-tracking : Text,
+    del-status : DeliveryStatus,
+    del-picked-by : Text,
+    del-packed-by : Text,
+    del-shipped-by : Text
+  }
+
+  DeliveryLine = record {
+    dll-so-line : Integer,
+    dll-material-id : Text,
+    dll-quantity : Integer,
+    dll-picked-qty : Integer,
+    dll-bin-location : Text,
+    dll-serial-numbers : List Text
+  }
+
+  DeliveryStatus =
+    | DelCreated
+    | DelPicked
+    | DelPacked
+    | DelShipped
+    | DelDelivered
+    | DelPartial
+
+ Cost of goods sold values each delivered line at the material
+ master's standard cost. A material missing from the master values at
+ zero, which the scenario gates catch as an inventory imbalance.
+
+  delivery-gl : Delivery, List Material, ErpConfig -> JournalEntry
+  delivery-gl (del) (materials) (cfg) =
+    let am = cfg.cfg-accounts
+    in let cogs = delivery-cogs-value (del.del-lines) materials 0 0
+    in JournalEntry {
+      je-id = "DEL-" & del.del-id,
+      je-company = del.del-company, je-date = del.del-ship-date,
+      je-period = cfg.cfg-period, je-year = cfg.cfg-year,
+      je-description = "Delivery " & del.del-id & " for SO " & del.del-so-id,
+      je-lines = [
+        journal-line-debit (am.am-cogs) cogs "" "Cost of goods sold",
+        journal-line-credit (am.am-inventory) cogs "" "Inventory"
+      ],
+      je-source = SrcInventory, je-posted = False, je-reversed = False,
+      je-reversal-of = "", je-created-by = "sd-system", je-approved-by = "", je-created = del.del-ship-date
+    }
+
+  delivery-cogs-value : List DeliveryLine, List Material, Integer, Integer -> Integer
+  delivery-cogs-value (del-lines) (materials) (i) (acc) =
+    if i >= list-length del-lines then acc
+    else let dl = list-at del-lines i
+    in let unit-cost = material-standard-cost materials (dl.dll-material-id) 0
+    in delivery-cogs-value del-lines materials (i + 1) (acc + dl.dll-quantity * unit-cost)
+
+  material-standard-cost : List Material, Text, Integer -> Integer
+  material-standard-cost (mats) (mat-id) (i) =
+    if i >= list-length mats then 0
+    else let m = list-at mats i
+    in if m.mat-id == mat-id then m.mat-standard-cost
+    else material-standard-cost mats mat-id (i + 1)
+
+Section: Billing
+
+  BillingDoc = record {
+    bill-id : Text,
+    bill-so-id : Text,
+    bill-delivery-id : Text,
+    bill-customer-id : Text,
+    bill-company : Text,
+    bill-lines : List BillingLine,
+    bill-subtotal : Integer,
+    bill-tax : Integer,
+    bill-total : Integer,
+    bill-date : Integer,
+    bill-due-date : Integer,
+    bill-status : Text
+  }
+
+  BillingLine = record {
+    bll-so-line : Integer,
+    bll-material-id : Text,
+    bll-description : Text,
+    bll-quantity : Integer,
+    bll-unit-price : Integer,
+    bll-discount-pct : Integer,
+    bll-net-amount : Integer
+  }
+
+  billing-to-ar : BillingDoc -> ArInvoice
+  billing-to-ar (bill) =
+    ArInvoice {
+      ari-id = "AR-" & bill.bill-id,
+      ari-customer-id = bill.bill-customer-id,
+      ari-company = bill.bill-company,
+      ari-invoice-num = bill.bill-id,
+      ari-date = bill.bill-date,
+      ari-due-date = bill.bill-due-date,
+      ari-amount = bill.bill-subtotal,
+      ari-tax-amount = bill.bill-tax,
+      ari-currency = "USD",
+      ari-lines = [],
+      ari-status = ArOpen,
+      ari-so-ref = bill.bill-so-id,
+      ari-payment-received = 0,
+      ari-created = bill.bill-date
+    }
+
+Section: Returns and Credits
+
+  ReturnOrder = record {
+    ret-id : Text,
+    ret-so-id : Text,
+    ret-customer-id : Text,
+    ret-company : Text,
+    ret-lines : List ReturnLine,
+    ret-reason : Text,
+    ret-status : ReturnStatus,
+    ret-credit-amount : Integer,
+    ret-created : Integer
+  }
+
+  ReturnLine = record {
+    rl-material-id : Text,
+    rl-quantity : Integer,
+    rl-reason-code : Text,
+    rl-condition : Text,
+    rl-restock : Boolean
+  }
+
+  ReturnStatus =
+    | RetRequested
+    | RetApproved
+    | RetReceived
+    | RetInspected
+    | RetCredited
+    | RetRejected
+
+Section: Sales Analytics
+
+  SalesSummary = record {
+    ss-total-orders : Integer,
+    ss-total-revenue : Integer,
+    ss-total-cogs : Integer,
+    ss-gross-margin : Integer,
+    ss-avg-order-value : Integer,
+    ss-return-rate-pct : Integer,
+    ss-top-customers : List Text,
+    ss-top-products : List Text
+  }
+
+  CustomerSummary = record {
+    cs-customer-id : Text,
+    cs-name : Text,
+    cs-total-orders : Integer,
+    cs-total-revenue : Integer,
+    cs-total-returns : Integer,
+    cs-avg-days-to-pay : Integer,
+    cs-credit-used : Integer,
+    cs-credit-limit : Integer
+  }

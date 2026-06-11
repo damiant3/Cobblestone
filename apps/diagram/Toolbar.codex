@@ -1,0 +1,142 @@
+Chapter: Toolbar
+  cites Foreword chapter Widget
+  cites Foreword chapter Maybe
+  cites UI chapter Layout
+  cites Diagram chapter DiagramModel
+  cites Diagram chapter ShapeLibrary
+  cites Diagram chapter DiagramTheme
+
+ The editor toolbar: tool selector, shape palette, and
+ property panel.
+
+Section: Types
+
+  EditorTool =
+    | ToolSelect
+    | ToolConnect
+    | ToolAddNode (ShapeDef)
+    | ToolText
+    | ToolPan
+
+  ToolbarState = record {
+    tb-active-tool  : EditorTool,
+    tb-diagram-type : DiagramType,
+    tb-show-props   : Boolean,
+    tb-show-palette : Boolean
+  }
+
+Section: Construction
+
+  toolbar-new : DiagramType -> ToolbarState
+  toolbar-new (dtype) =
+    ToolbarState {
+      tb-active-tool = ToolSelect,
+      tb-diagram-type = dtype,
+      tb-show-props = True,
+      tb-show-palette = True
+    }
+
+Section: Tool Selection
+
+  toolbar-set-tool : ToolbarState, EditorTool -> ToolbarState
+  toolbar-set-tool (tb) (tool) =
+    __record-set tb "tb-active-tool" tool
+
+  toolbar-set-type : ToolbarState, DiagramType -> ToolbarState
+  toolbar-set-type (tb) (dtype) =
+    __record-set tb "tb-diagram-type" dtype
+
+  toolbar-toggle-props : ToolbarState -> ToolbarState
+  toolbar-toggle-props (tb) =
+    __record-set tb "tb-show-props" (if tb.tb-show-props then False else True)
+
+  toolbar-toggle-palette : ToolbarState -> ToolbarState
+  toolbar-toggle-palette (tb) =
+    __record-set tb "tb-show-palette" (if tb.tb-show-palette then False else True)
+
+Section: Rendering
+
+  toolbar-render-top : ToolbarState -> WidgetNode
+  toolbar-render-top (tb) =
+    let select-btn = tool-button "tool-select" "Select" (is-select tb.tb-active-tool)
+    in let connect-btn = tool-button "tool-connect" "Connect" (is-connect tb.tb-active-tool)
+    in let text-btn = tool-button "tool-text" "Text" (is-text tb.tb-active-tool)
+    in let pan-btn = tool-button "tool-pan" "Pan" (is-pan tb.tb-active-tool)
+    in let sep = widget-separator "tool-sep"
+    in let type-label = widget-label "type-label" (diagram-type-name tb.tb-diagram-type)
+    in let grid-btn = widget-button "toggle-grid" "Grid"
+    in let snap-btn = widget-button "toggle-snap" "Snap"
+    in let zoom-in = widget-button "zoom-in" "+"
+    in let zoom-out = widget-button "zoom-out" "-"
+    in let zoom-reset = widget-button "zoom-reset" "100%"
+    in widget-panel "toolbar" DirRow spacing-sm [
+      select-btn, connect-btn, text-btn, pan-btn,
+      sep, type-label, sep,
+      grid-btn, snap-btn,
+      sep, zoom-out, zoom-reset, zoom-in
+    ]
+
+  tool-button : Text, Text, Boolean -> WidgetNode
+  tool-button (id) (label) (active) =
+    let btn = widget-button id label
+    in if active then widget-set-state btn 1 else btn
+
+  is-select : EditorTool -> Boolean
+  is-select (t) = when t is ToolSelect -> True is otherwise -> False
+
+  is-connect : EditorTool -> Boolean
+  is-connect (t) = when t is ToolConnect -> True is otherwise -> False
+
+  is-text : EditorTool -> Boolean
+  is-text (t) = when t is ToolText -> True is otherwise -> False
+
+  is-pan : EditorTool -> Boolean
+  is-pan (t) = when t is ToolPan -> True is otherwise -> False
+
+Section: Shape Palette
+
+  toolbar-render-palette : ToolbarState -> WidgetNode
+  toolbar-render-palette (tb) =
+    if tb.tb-show-palette == False
+    then widget-panel "palette" DirColumn 0 []
+    else let shapes = shapes-for-type tb.tb-diagram-type
+    in let shape-btns = list-map render-shape-button shapes
+    in widget-panel "palette" DirColumn spacing-xs shape-btns
+
+  render-shape-button : ShapeDef -> WidgetNode
+  render-shape-button (sd) =
+    widget-button ("shape-" & sd.sd-name) sd.sd-name
+
+Section: Property Panel
+
+  toolbar-render-props : ToolbarState, Maybe DiagramNode, Maybe DiagramEdge -> WidgetNode
+  toolbar-render-props (tb) (selected-node) (selected-edge) =
+    if tb.tb-show-props == False
+    then widget-panel "props" DirColumn 0 []
+    else when selected-node
+      is Just (n) -> render-node-props n
+      is Nothing -> when selected-edge
+        is Just (e) -> render-edge-props e
+        is Nothing -> widget-label "props-empty" "No selection"
+
+  render-node-props : DiagramNode -> WidgetNode
+  render-node-props (n) =
+    let id-label = widget-label "prop-id" ("ID: " & show n.dn-id)
+    in let label-input = widget-input "prop-label" n.dn-label 0
+    in let pos-label = widget-label "prop-pos" ("Pos: " & show n.dn-x & ", " & show n.dn-y)
+    in let size-label = widget-label "prop-size" ("Size: " & show n.dn-width & "x" & show n.dn-height)
+    in widget-panel "node-props" DirColumn spacing-xs [
+      widget-label "props-title" "Node Properties",
+      id-label, label-input, pos-label, size-label
+    ]
+
+  render-edge-props : DiagramEdge -> WidgetNode
+  render-edge-props (e) =
+    let id-label = widget-label "prop-id" ("ID: " & show e.de-id)
+    in let src-label = widget-label "prop-src" ("From: " & show e.de-source)
+    in let tgt-label = widget-label "prop-tgt" ("To: " & show e.de-target)
+    in let label-input = widget-input "prop-label" e.de-label 0
+    in widget-panel "edge-props" DirColumn spacing-xs [
+      widget-label "props-title" "Edge Properties",
+      id-label, src-label, tgt-label, label-input
+    ]

@@ -1,0 +1,105 @@
+Chapter: MarketplacePage
+  cites CodexMagic chapter MagicTheme
+  cites UI chapter Layout
+
+ Marketplace. Pure widget tree.
+
+ We say:
+
+Section: State
+
+  sk-m-tab : Text = "m-tab"
+  sk-m-count : Text = "m-count"
+  sk-m-msg : Text = "m-msg"
+
+Section: Tree
+
+  market-tree : Integer -> WidgetNode
+  market-tree (x) =
+    let tab = state-get sk-m-tab
+    in let msg = state-get-text sk-m-msg
+    in widget-panel "m-page" DirColumn 0 [
+      magic-nav-widget "Market",
+      widget-box "m-root" "page" [
+      widget-h1 "Marketplace",
+      widget-tab-bar "m-tabs" [
+        widget-tab-btn "m-t-browse" "Browse" (tab == 0),
+        widget-tab-btn "m-t-sell" "Sell" (tab == 1),
+        widget-tab-btn "m-t-mine" "My Listings" (tab == 2),
+        widget-tab-btn "m-t-history" "History" (tab == 3)
+      ],
+      widget-separator "m-s1",
+      if tab == 0 then browse-tree 0
+      else if tab == 1 then sell-tree 0
+      else if tab == 2 then widget-label "m-mine" "My listings..."
+      else history-tree 0,
+      widget-label "m-msg" msg
+    ]]
+
+  browse-tree : Integer -> WidgetNode
+  browse-tree (x) =
+    let count = state-get sk-m-count
+    in if count == 0 then widget-label "m-empty" "No listings"
+    else widget-panel "m-browse" DirColumn 8 (listing-items 0 count [])
+
+  listing-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  listing-items (i) (count) (acc) =
+    if i >= count then acc
+    else let name = state-get-text ("ml-name-" & show i)
+    in let price = state-get-text ("ml-price-" & show i)
+    in let item = widget-panel ("ml-" & show i) DirRow 8 [
+      widget-label ("mln-" & show i) name,
+      widget-label ("mlp-" & show i) (price & " MC"),
+      widget-button ("ml-buy-" & show i) "Buy"
+    ]
+    in listing-items (i + 1) count (list-push acc item)
+
+  sell-tree : Integer -> WidgetNode
+  sell-tree (x) =
+    widget-panel "m-sell" DirColumn 8 [
+      widget-label "m-sell-hdr" "Create Listing",
+      widget-input "m-sell-price" "100" 0,
+      widget-button "m-sell-btn" "List for Sale"
+    ]
+
+  history-tree : Integer -> WidgetNode
+  history-tree (x) = widget-label "m-hist" "Transaction history..."
+
+Section: Handlers
+
+  m-click : Text -> Integer
+  m-click (id) =
+    if id == "m-t-browse" then let s = state-set-render sk-m-tab 0 in load-listings 0
+    else if id == "m-t-sell" then let s = state-set-render sk-m-tab 1 in 0
+    else if id == "m-t-mine" then let s = state-set-render sk-m-tab 2 in 0
+    else if id == "m-t-history" then let s = state-set-render sk-m-tab 3 in 0
+    else 0
+
+  load-listings : Integer -> Integer
+  load-listings (x) =
+    let tok = state-get-text "cx_token"
+    in fetch-get-then ("/api/market/listings?t=" & url-encode tok) listings-cb
+
+  listings-cb : Text -> Integer
+  listings-cb (resp) =
+    let s = state-set-text sk-m-msg "Listings loaded"
+    in request-render 0
+
+Section: Entry
+
+  render-m : Integer -> Integer
+  render-m (x) = mount-widget-themed magic-theme (market-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = init-magic-theme 0
+    in let tok = local-storage-get "cx_tok"
+    in let s1 = state-set-text "cx_token" tok
+    in let s2 = state-set sk-m-tab 0
+    in let s3 = set-render render-m
+    in let h = register-handlers no-pick m-click
+    in let r = render-m 0
+    in load-listings 0
+  end
+
+Page 1

@@ -1,0 +1,177 @@
+Chapter: PomodoroPage
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebTheme
+  cites WebApp chapter WebWidgets
+
+ Pomodoro focus timer with work/break cycles, session history, and statistics.
+
+ We say:
+
+Section: Theme
+
+  pomodoro-theme : Theme
+  pomodoro-theme =
+    let p = Palette { pal-bg = 921102, pal-fg = 14803425, pal-primary = 14502713, pal-secondary = 1381653, pal-accent = 14502713, pal-muted = 7829367, pal-error = 15486256, pal-success = 4304718, pal-warning = 16750848, pal-border = 1973806 }
+    in let base = ws (p.pal-bg) (p.pal-fg) (bdr 0 0 CornerSharp) (eu 0) (eu 0)
+    in let btn = ws (p.pal-secondary) (p.pal-fg) (bdr 0 0 (CornerRound 6)) (exy 12 8) (eu 0)
+    in let lbl = ws 0 (p.pal-fg) bn ez (eu 0)
+    in Theme { th-name = "pomodoro-dark", th-palette = p, th-panel = ss-flat base, th-button = StateStyles { ss-normal = btn, ss-hover = btn, ss-pressed = btn, ss-disabled = btn, ss-focused = btn }, th-label = ss-flat lbl, th-input = ss-flat base, th-gauge = ss-flat base, th-separator = ss-flat base }
+
+Section: CSS
+
+  pomodoro-css : Text
+  pomodoro-css =
+    "*{margin:0;padding:0;box-sizing:border-box}body{background:#0e0e0e;color:#e1e1e1;font-family:system-ui,sans-serif;min-height:100vh}#app{display:contents}"
+    & ".pomodoro{max-width:480px;margin:0 auto;padding:32px 24px;display:flex;flex-direction:column;align-items:center;min-height:100vh}"
+    & ".pom-brand{font-size:16px;font-weight:700;color:#dd4b39;letter-spacing:2px;margin-bottom:32px;text-transform:uppercase}"
+    & ".mode-tabs{display:flex;gap:4px;background:#1a1a1a;border-radius:10px;padding:4px;margin-bottom:40px}"
+    & ".mode-tab{padding:8px 20px;border-radius:8px;font-size:13px;color:#888;cursor:pointer;border:none;background:none;transition:all .15s}"
+    & ".mode-tab:hover{color:#ddd}"
+    & ".mode-tab.active{background:#dd4b39;color:#fff;font-weight:600}"
+    & ".timer-ring{width:280px;height:280px;border-radius:50%;border:4px solid #1a1a1a;display:flex;align-items:center;justify-content:center;flex-direction:column;position:relative;margin-bottom:32px;background:conic-gradient(#dd4b39 0deg,#dd4b39 0deg,#1a1a1a 0deg)"
+    & ".timer-ring::before{content:'';position:absolute;inset:8px;border-radius:50%;background:#0e0e0e}"
+    & ".timer-inner{position:relative;z-index:1;text-align:center}"
+    & ".timer-time{font-size:64px;font-weight:200;font-variant-numeric:tabular-nums;letter-spacing:2px;color:#fff}"
+    & ".timer-label{font-size:13px;color:#888;margin-top:4px;text-transform:uppercase;letter-spacing:2px}"
+    & ".timer-controls{display:flex;gap:16px;margin-bottom:40px}"
+    & ".ctrl-btn{width:56px;height:56px;border-radius:50%;border:2px solid #333;background:none;color:#ccc;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:20px;transition:all .15s}"
+    & ".ctrl-btn:hover{border-color:#dd4b39;color:#dd4b39}"
+    & ".ctrl-play{width:72px;height:72px;background:#dd4b39;border-color:#dd4b39;color:#fff;font-size:24px}"
+    & ".ctrl-play:hover{background:#c4392a;border-color:#c4392a;color:#fff}"
+    & ".session-dots{display:flex;gap:8px;margin-bottom:32px}"
+    & ".session-dot{width:12px;height:12px;border-radius:50%;background:#222}"
+    & ".session-dot.done{background:#dd4b39}"
+    & ".session-dot.active{background:#dd4b39;box-shadow:0 0 8px rgba(221,75,57,.5)}"
+    & ".session-dot.break-done{background:#30d158}"
+    & ".stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;width:100%;margin-bottom:28px}"
+    & ".pom-stat{background:#161616;border-radius:10px;padding:14px;text-align:center}"
+    & ".pom-stat-val{font-size:22px;font-weight:700;color:#dd4b39;margin-bottom:2px}"
+    & ".pom-stat-lbl{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px}"
+    & ".task-input{width:100%;background:#161616;border:1px solid #222;border-radius:10px;padding:12px 16px;color:#ccc;font-size:14px;margin-bottom:20px;text-align:center;outline:none}"
+    & ".task-input:focus{border-color:#dd4b39}"
+    & ".task-input::placeholder{color:#444}"
+    & ".history{width:100%;margin-top:auto}"
+    & ".hist-title{font-size:13px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}"
+    & ".hist-item{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #161616}"
+    & ".hist-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}"
+    & ".hist-info{flex:1}"
+    & ".hist-task{font-size:13px;margin-bottom:2px}"
+    & ".hist-time{font-size:11px;color:#555}"
+    & ".hist-dur{font-size:12px;color:#888;flex-shrink:0}"
+
+Section: Tree
+
+  page-tree : Integer -> WidgetNode
+  page-tree (x) =
+    let mode = state-get "mode"
+    in widget-box "pomodoro" "pomodoro" [
+      widget-label "brand" "CODEXFOCUS",
+      mode-tabs mode,
+      timer-display mode,
+      timer-controls 0,
+      session-progress 0,
+      widget-label "task-input" "What are you working on?",
+      stats-section 0,
+      history-section 0
+    ]
+
+  mode-tabs : Integer -> WidgetNode
+  mode-tabs (mode) =
+    widget-box "modes" "mode-tabs" [
+      widget-button "m-focus" "Focus",
+      widget-button "m-short" "Short Break",
+      widget-button "m-long" "Long Break"
+    ]
+
+  timer-display : Integer -> WidgetNode
+  timer-display (mode) =
+    let time-text = if mode == 1 then "05:00" else if mode == 2 then "15:00" else "25:00"
+    in let label-text = if mode == 1 then "SHORT BREAK" else if mode == 2 then "LONG BREAK" else "FOCUS TIME"
+    in widget-box "timer" "timer-ring" [
+      widget-box "timer-inner" "timer-inner" [
+        widget-label "timer-time" time-text,
+        widget-label "timer-lbl" label-text
+      ]
+    ]
+
+  timer-controls : Integer -> WidgetNode
+  timer-controls (x) =
+    widget-box "controls" "timer-controls" [
+      widget-button "btn-reset" "&#x21BA;",
+      widget-button "btn-play" "&#x25B6;",
+      widget-button "btn-skip" "&#x23ED;"
+    ]
+
+  session-progress : Integer -> WidgetNode
+  session-progress (x) =
+    widget-box "sessions" "session-dots" [
+      widget-label "s0" "",
+      widget-label "s1" "",
+      widget-label "s2" "",
+      widget-label "s3" ""
+    ]
+
+  stats-section : Integer -> WidgetNode
+  stats-section (x) =
+    widget-box "stats" "stats-grid" [
+      pom-stat "st-done" "12" "Completed",
+      pom-stat "st-hours" "5.0" "Hours",
+      pom-stat "st-streak" "3" "Day Streak"
+    ]
+
+  pom-stat : Text, Text, Text -> WidgetNode
+  pom-stat (id) (val) (lbl) =
+    widget-box id "pom-stat" [
+      widget-label (id & "v") val,
+      widget-label (id & "l") lbl
+    ]
+
+  history-section : Integer -> WidgetNode
+  history-section (x) =
+    widget-box "history" "history" [
+      widget-label "hist-hdr" "Today's Sessions",
+      hist-item "h0" "#dd4b39" "Implement auth flow" "2:30 PM" "25 min",
+      hist-item "h1" "#30d158" "Break" "2:55 PM" "5 min",
+      hist-item "h2" "#dd4b39" "Write unit tests" "3:00 PM" "25 min",
+      hist-item "h3" "#30d158" "Break" "3:25 PM" "5 min",
+      hist-item "h4" "#dd4b39" "Code review" "3:30 PM" "25 min",
+      hist-item "h5" "#30d158" "Break" "3:55 PM" "5 min",
+      hist-item "h6" "#dd4b39" "Fix merge conflicts" "4:00 PM" "25 min"
+    ]
+
+  hist-item : Text, Text, Text, Text, Text -> WidgetNode
+  hist-item (id) (color) (task) (time) (dur) =
+    widget-box id "hist-item" [
+      widget-label (id & "d") "&#x25CF;",
+      widget-box (id & "i") "hist-info" [
+        widget-label (id & "t") task,
+        widget-label (id & "tm") time
+      ],
+      widget-label (id & "dur") dur
+    ]
+
+Section: Handlers
+
+  pomodoro-click : Text -> Integer
+  pomodoro-click (id) =
+    if id == "m-focus" then let s = state-set-render "mode" 0 in 0
+    else if id == "m-short" then let s = state-set-render "mode" 1 in 0
+    else if id == "m-long" then let s = state-set-render "mode" 2 in 0
+    else 0
+
+Section: Entry
+
+  render-pomodoro : Integer -> Integer
+  render-pomodoro (x) = mount-widget-themed pomodoro-theme (page-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = inject-app-style pomodoro-theme pomodoro-css
+    in let s = set-render render-pomodoro
+    in let h = register-handlers no-pick pomodoro-click
+    in render-pomodoro 0
+  end
+
+Page 1

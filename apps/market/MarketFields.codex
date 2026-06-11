@@ -1,0 +1,231 @@
+Chapter: MarketFields
+  cites Market chapter MarketTypes
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Custom field system for flexible product metadata. A store defines
+ field templates (wine: vintage, region, grape; electronics: wattage,
+ connector; art: medium, dimensions, framing). Products reference
+ templates and store values. Fields render in listings, detail pages,
+ and filter panels automatically.
+
+Section: Field Group
+
+ Fields are organized into groups for rendering. A "Wine" template
+ might have groups "Details" (vintage, region, grape, ABV) and
+ "Tasting Notes" (aroma, palate, finish).
+
+  FieldGroup = record {
+    fg-id : Text,
+    fg-name : Text,
+    fg-fields : List CustomFieldDef,
+    fg-sort-order : Integer
+  }
+
+  field-group : Text, Text, List CustomFieldDef -> FieldGroup
+  field-group (id) (name) (fields) = FieldGroup {
+    fg-id = id,
+    fg-name = name,
+    fg-fields = fields,
+    fg-sort-order = 0
+  }
+
+Section: Product Template
+
+ A template is a named collection of field groups that applies to a
+ product category. When you add a product to "Wine", it gets all the
+ wine fields. Templates are additive: a product can have multiple.
+
+  ProductTemplate = record {
+    pt-id : Text,
+    pt-name : Text,
+    pt-groups : List FieldGroup,
+    pt-option-presets : List OptionDef
+  }
+
+  product-template : Text, Text, List FieldGroup -> ProductTemplate
+  product-template (id) (name) (groups) = ProductTemplate {
+    pt-id = id,
+    pt-name = name,
+    pt-groups = groups,
+    pt-option-presets = []
+  }
+
+Section: Field Value Operations
+
+  get-field-value : List CustomFieldValue, Text -> Maybe Text
+  get-field-value (vals) (field-id) = find-field-value vals field-id 0
+
+  find-field-value : List CustomFieldValue, Text, Integer -> Maybe Text
+  find-field-value (vals) (fid) (i) =
+    if i >= list-length vals then None
+    else let v = list-at vals i
+    in if v.cfv-field-id == fid then Just (v.cfv-value)
+    else find-field-value vals fid (i + 1)
+
+  set-field-value : List CustomFieldValue, Text, Text -> List CustomFieldValue
+  set-field-value (vals) (fid) (value) =
+    set-field-loop vals fid value [] False
+
+  set-field-loop : List CustomFieldValue, Text, Text, List CustomFieldValue, Boolean -> List CustomFieldValue
+  set-field-loop (vals) (fid) (value) (acc) (found) =
+    if list-length vals == 0 then
+      if found then acc
+      else list-push acc (field-val fid value)
+    else let v = list-at vals 0
+    in if v.cfv-field-id == fid then
+      set-field-loop (list-tail vals) fid value (list-push acc (field-val fid value)) True
+    else set-field-loop (list-tail vals) fid value (list-push acc v) found
+
+Section: Field HTML Rendering
+
+  render-field-groups : List FieldGroup, List CustomFieldValue -> Text
+  render-field-groups (groups) (vals) = render-fg-loop groups vals 0
+
+  render-fg-loop : List FieldGroup, List CustomFieldValue, Integer -> Text
+  render-fg-loop (groups) (vals) (i) =
+    if i >= list-length groups then ""
+    else let g = list-at groups i
+    in "<div class=\"section-title\" style=\"font-size:1em;margin-top:16px\">" & g.fg-name & "</div>" &
+    render-fields (g.fg-fields) vals &
+    render-fg-loop groups vals (i + 1)
+
+  render-fields : List CustomFieldDef, List CustomFieldValue -> Text
+  render-fields (fields) (vals) = render-field-loop fields vals 0
+
+  render-field-loop : List CustomFieldDef, List CustomFieldValue, Integer -> Text
+  render-field-loop (fields) (vals) (i) =
+    if i >= list-length fields then ""
+    else let f = list-at fields i
+    in let value = when get-field-value vals (f.cfd-id)
+      is Just (v) -> v
+      is None -> ""
+    in "<div class=\"prop-row\" style=\"padding:4px 0\"><span style=\"font-size:0.85em;font-weight:600;min-width:120px;display:inline-block\">" & f.cfd-name & "</span>" &
+    render-field-value f value &
+    "</div>" &
+    render-field-loop fields vals (i + 1)
+
+  render-field-value : CustomFieldDef, Text -> Text
+  render-field-value (f) (value) =
+    when f.cfd-type
+      is FieldColor ->
+        if text-length value > 0 then "<span style=\"display:inline-flex;align-items:center;gap:6px\"><span class=\"swatch\" style=\"background:" & value & "\"></span>" & value & "</span>"
+        else "<span style=\"color:#999\">Not set</span>"
+      is FieldBoolean ->
+        if value == "true" then "<span style=\"color:#16a34a\">\x2713 Yes</span>"
+        else "<span style=\"color:#999\">\x2717 No</span>"
+      is FieldUrl ->
+        if text-length value > 0 then "<a href=\"" & value & "\" style=\"color:#2563eb\">" & value & "</a>"
+        else "<span style=\"color:#999\">Not set</span>"
+      is otherwise ->
+        if text-length value > 0 then "<span>" & value & "</span>"
+        else "<span style=\"color:#999\">Not set</span>"
+
+  render-field-edit : CustomFieldDef, Text -> Text
+  render-field-edit (f) (value) =
+    "<div class=\"form-group\">" &
+    "<label>" & f.cfd-name & (if f.cfd-required then " <span style=\"color:#dc2626\">*</span>" else "") & "</label>" &
+    (when f.cfd-type
+      is FieldText -> "<input class=\"form-input\" name=\"cf-" & f.cfd-id & "\" value=\"" & value & "\">"
+      is FieldNumber -> "<input class=\"form-input\" type=\"number\" name=\"cf-" & f.cfd-id & "\" value=\"" & value & "\">"
+      is FieldBoolean -> "<select class=\"form-input\" name=\"cf-" & f.cfd-id & "\"><option value=\"false\">No</option><option value=\"true\"" & (if value == "true" then " selected" else "") & ">Yes</option></select>"
+      is FieldColor -> "<input class=\"form-input\" type=\"color\" name=\"cf-" & f.cfd-id & "\" value=\"" & (if text-length value > 0 then value else "#000000") & "\">"
+      is FieldUrl -> "<input class=\"form-input\" type=\"url\" name=\"cf-" & f.cfd-id & "\" value=\"" & value & "\" placeholder=\"https://...\">"
+      is FieldDate -> "<input class=\"form-input\" type=\"date\" name=\"cf-" & f.cfd-id & "\" value=\"" & value & "\">"
+      is FieldSelect (opts) -> "<select class=\"form-input\" name=\"cf-" & f.cfd-id & "\">" & select-options opts value 0 & "</select>") &
+    "</div>"
+
+  select-options : List Text, Text, Integer -> Text
+  select-options (opts) (selected) (i) =
+    if i >= list-length opts then ""
+    else let opt = list-at opts i
+    in "<option value=\"" & opt & "\"" & (if opt == selected then " selected" else "") & ">" & opt & "</option>" &
+    select-options opts selected (i + 1)
+
+Section: Preset Templates
+
+  wine-template : ProductTemplate
+  wine-template = product-template "wine" "Wine" [
+    field-group "details" "Details" [
+      custom-field "vintage" "Vintage" FieldNumber,
+      custom-field "region" "Region" FieldText,
+      custom-field "grape" "Grape Variety" (FieldSelect ["Cabernet Sauvignon", "Merlot", "Pinot Noir", "Chardonnay", "Sauvignon Blanc", "Riesling", "Syrah", "Zinfandel"]),
+      custom-field "abv" "ABV %" FieldNumber,
+      custom-field "organic" "Organic" FieldBoolean
+    ],
+    field-group "tasting" "Tasting Notes" [
+      custom-field "aroma" "Aroma" FieldText,
+      custom-field "palate" "Palate" FieldText,
+      custom-field "finish" "Finish" FieldText,
+      custom-field "pairing" "Food Pairing" FieldText
+    ]
+  ]
+
+  electronics-template : ProductTemplate
+  electronics-template = product-template "electronics" "Electronics" [
+    field-group "specs" "Specifications" [
+      custom-field "wattage" "Wattage" FieldNumber,
+      custom-field "voltage" "Voltage" (FieldSelect ["110V", "220V", "Universal"]),
+      custom-field "connector" "Connector" (FieldSelect ["USB-A", "USB-C", "Lightning", "Micro-USB", "Barrel", "None"]),
+      custom-field "wireless" "Wireless" FieldBoolean,
+      custom-field "bluetooth" "Bluetooth" (FieldSelect ["None", "4.2", "5.0", "5.1", "5.2", "5.3"]),
+      custom-field "weight-display" "Weight" FieldText
+    ],
+    field-group "warranty" "Warranty" [
+      custom-field "warranty-months" "Warranty (months)" FieldNumber,
+      custom-field "warranty-url" "Warranty Info" FieldUrl
+    ]
+  ]
+
+  clothing-template : ProductTemplate
+  clothing-template = product-template "clothing" "Clothing" [
+    field-group "details" "Details" [
+      custom-field "material" "Material" (FieldSelect ["Cotton", "Polyester", "Linen", "Wool", "Silk", "Denim", "Leather", "Synthetic Blend"]),
+      custom-field "fit" "Fit" (FieldSelect ["Slim", "Regular", "Relaxed", "Oversized"]),
+      custom-field "care" "Care" FieldText,
+      custom-field "origin" "Made In" FieldText,
+      custom-field "sustainable" "Sustainable" FieldBoolean
+    ]
+  ]
+
+  art-template : ProductTemplate
+  art-template = product-template "art" "Art & Prints" [
+    field-group "artwork" "Artwork Details" [
+      custom-field "medium" "Medium" (FieldSelect ["Oil on Canvas", "Acrylic", "Watercolor", "Digital Print", "Giclee", "Screen Print", "Lithograph", "Photography"]),
+      custom-field "dimensions" "Dimensions" FieldText,
+      custom-field "framed" "Framed" FieldBoolean,
+      custom-field "edition" "Edition" FieldText,
+      custom-field "signed" "Signed" FieldBoolean,
+      custom-field "year" "Year" FieldNumber,
+      custom-field "artist" "Artist" FieldText
+    ]
+  ]
+
+  furniture-template : ProductTemplate
+  furniture-template = product-template "furniture" "Furniture" [
+    field-group "specs" "Specifications" [
+      custom-field "material-primary" "Primary Material" (FieldSelect ["Solid Wood", "Plywood", "MDF", "Metal", "Glass", "Marble", "Bamboo", "Rattan"]),
+      custom-field "finish" "Finish" (FieldSelect ["Natural", "Walnut", "Oak", "Matte Black", "White", "Chrome", "Brass"]),
+      custom-field "dims-w" "Width" FieldText,
+      custom-field "dims-h" "Height" FieldText,
+      custom-field "dims-d" "Depth" FieldText,
+      custom-field "weight-kg" "Weight (kg)" FieldNumber,
+      custom-field "assembly" "Assembly Required" FieldBoolean,
+      custom-field "indoor-outdoor" "Indoor/Outdoor" (FieldSelect ["Indoor", "Outdoor", "Both"])
+    ]
+  ]
+
+  food-template : ProductTemplate
+  food-template = product-template "food" "Food & Beverage" [
+    field-group "nutrition" "Nutrition & Details" [
+      custom-field "ingredients" "Ingredients" FieldText,
+      custom-field "allergens" "Allergens" FieldText,
+      custom-field "serving-size" "Serving Size" FieldText,
+      custom-field "calories" "Calories" FieldNumber,
+      custom-field "organic-cert" "Organic Certified" FieldBoolean,
+      custom-field "vegan" "Vegan" FieldBoolean,
+      custom-field "gluten-free" "Gluten Free" FieldBoolean,
+      custom-field "shelf-life" "Shelf Life" FieldText,
+      custom-field "storage" "Storage" (FieldSelect ["Room Temp", "Refrigerate", "Freeze"])
+    ]
+  ]

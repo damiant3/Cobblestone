@@ -1,0 +1,110 @@
+Chapter: MathbookPersist
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Encode chapter Json
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Kernel chapter AppLog
+  cites Mathbook chapter Notebook
+  cites Mathbook chapter Expr
+
+ Persistent storage for math notebooks. Serializes cell inputs
+ and symbol bindings to JSON (kind 39). Parsed expressions and
+ computed results are regenerated on load.
+
+Section: Kind Constants
+
+  pk-notebook : Integer = 39
+
+Section: Cell Serialization
+
+  cell-to-jv : NotebookCell -> JsonValue
+  cell-to-jv (c) = json-object [
+    json-pair "id" (json-int c.nc-id),
+    json-pair "kind" (json-str (ck-label c.nc-kind)),
+    json-pair "input" (json-str c.nc-input),
+    json-pair "collapsed" (json-bool c.nc-collapsed)
+  ]
+
+  label-to-ck : Text -> CellKind
+  label-to-ck (s) =
+    if s == "expr" then CellExpr
+    else if s == "plot" then CellPlot
+    else if s == "text" then CellText
+    else CellTable
+
+  cell-from-jv : JsonValue -> NotebookCell
+  cell-from-jv (jv) = NotebookCell {
+    nc-id = json-get-int jv "id" 0,
+    nc-kind = label-to-ck (json-get-str jv "kind" "expr"),
+    nc-input = json-get-str jv "input" "",
+    nc-expr = ExUndefined,
+    nc-result = result-empty,
+    nc-collapsed = json-get-bool jv "collapsed" False,
+    nc-focused = False
+  }
+
+Section: Binding Serialization
+
+  binding-to-jv : Binding -> JsonValue
+  binding-to-jv (b) = json-object [
+    json-pair "name" (json-str b.bind-name),
+    json-pair "value" (json-str (ex-print b.bind-value))
+  ]
+
+Section: Notebook Serialization
+
+  notebook-to-json : NotebookState -> Text
+  notebook-to-json (nb) =
+    json-emit (json-object [
+      json-pair "title" (json-str nb.nb-title),
+      json-pair "nextId" (json-int nb.nb-next-id),
+      json-pair "cells" (json-array (list-map cell-to-jv nb.nb-cells))
+    ])
+
+  notebook-from-json : Text -> Maybe NotebookState
+  notebook-from-json (txt) =
+    let parsed = json-parse txt
+    in when parsed
+      is Nothing -> Nothing
+      is Just (jv) ->
+        let title = json-get-str jv "title" "Untitled"
+        in let next-id = json-get-int jv "nextId" 1
+        in let cells = nb-parse-cells jv
+        in Just (NotebookState {
+          nb-cells = cells,
+          nb-cell-count = list-length cells,
+          nb-focused-cell = -1,
+          nb-env = symtab-new,
+          nb-next-id = next-id,
+          nb-title = title,
+          nb-modified = False
+        })
+
+  nb-parse-cells : JsonValue -> List NotebookCell
+  nb-parse-cells (parent) =
+    let sub = json-get parent "cells"
+    in when sub
+      is Nothing -> []
+      is Just (arr) -> nb-parse-cell-loop arr 0
+
+  nb-parse-cell-loop : JsonValue, Integer -> List NotebookCell
+  nb-parse-cell-loop (arr) (i) =
+    let item = json-array-at arr i
+    in when item
+      is Nothing -> []
+      is Just (jv) -> cell-from-jv jv :: nb-parse-cell-loop arr (i + 1)
+
+Section: Save and Load
+
+  notebook-persist-save : DiskFactStore, NotebookState, Integer -> DiskFactStore
+  notebook-persist-save (store) (nb) (ts) =
+    let json = notebook-to-json nb
+    in app-log-info (app-write-and-checkpoint store pk-notebook json ts) "mathbook" ("Notebook saved: " & nb.nb-title & ", " & show nb.nb-cell-count & " cells") ts
+
+  notebook-persist-load : DiskFactStore -> Maybe NotebookState
+  notebook-persist-load (store) =
+    let found = app-scan-last store pk-notebook
+    in when found
+      is Nothing -> Nothing
+      is Just (txt) -> notebook-from-json txt

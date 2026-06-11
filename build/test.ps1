@@ -38,6 +38,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
+[Environment]::CurrentDirectory = (Get-Location).Path
 $Scope = if ($ErrorsOnly) { 'errors' } elseif ($NoErrors) { 'positive' } else { 'both' }
 $OutRoot     = 'test-output'
 $ResultsDir  = Join-Path $OutRoot '_results'

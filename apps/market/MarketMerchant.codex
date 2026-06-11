@@ -1,0 +1,296 @@
+Chapter: MarketMerchant
+  cites Market chapter MarketTypes
+  cites Market chapter MarketDb
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+
+ Merchant, drop-ship, and content creator management. Handles
+ onboarding, commission tracking, payouts, supplier integration,
+ and creator profiles with follower/tip support.
+
+Section: Merchant Onboarding
+
+  create-merchant : MarketState, Text, Text, Text, Integer -> (MarketState, Merchant)
+  create-merchant (st) (user-id) (store-name) (desc) (ts) =
+    let (st2, mid) = market-gen-id st "merch"
+    in let slug = text-to-slug store-name
+    in let m = Merchant {
+      merch-id = mid,
+      merch-user-id = user-id,
+      merch-store-name = store-name,
+      merch-store-slug = slug,
+      merch-description = desc,
+      merch-logo-url = "",
+      merch-banner-url = "",
+      merch-status = MerchantPending,
+      merch-commission-bps = 1000,
+      merch-rating-x10 = 0,
+      merch-review-count = 0,
+      merch-total-sales = 0,
+      merch-total-revenue = money-zero USD,
+      merch-joined = ts,
+      merch-verified = False,
+      merch-policies = default-merchant-policies
+    }
+    in let log2 = log-info-msg (st2.mkt-log) "merchant" ("onboarding " & store-name & " (" & mid & ")") ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, m)
+
+  approve-merchant : Merchant -> Merchant
+  approve-merchant (m) = __record-set m "merch-status" MerchantApproved
+
+  suspend-merchant : Merchant -> Merchant
+  suspend-merchant (m) = __record-set m "merch-status" MerchantSuspended
+
+  verify-merchant : Merchant -> Merchant
+  verify-merchant (m) = __record-set m "merch-verified" True
+
+Section: Commission and Payouts
+
+  record-sale : Merchant, Money -> Merchant
+  record-sale (m) (sale-amount) =
+    let m2 = __record-set m "merch-total-sales" (m.merch-total-sales + 1)
+    in __record-set m2 "merch-total-revenue" (money-add (m.merch-total-revenue) sale-amount)
+
+  create-payout : MarketState, Text, Money, Integer, Integer, Integer -> (MarketState, Payout)
+  create-payout (st) (merchant-id) (amount) (period-start) (period-end) (ts) =
+    let (st2, pid) = market-gen-id st "po"
+    in let po = Payout {
+      po-id = pid,
+      po-merchant-id = merchant-id,
+      po-amount = amount,
+      po-status = PayoutPending,
+      po-period-start = period-start,
+      po-period-end = period-end,
+      po-line-items = 0,
+      po-created = ts
+    }
+    in let log2 = log-info-msg (st2.mkt-log) "payout" ("created " & pid & " for " & merchant-id & " " & format-money amount) ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, po)
+
+Section: Drop-Ship Operations
+
+  create-supplier : MarketState, Text, Text, Text, Integer -> (MarketState, Supplier)
+  create-supplier (st) (name) (api-endpoint) (api-key) (lead-days) =
+    let (st2, sid) = market-gen-id st "sup"
+    in let sup = Supplier {
+      sup-id = sid,
+      sup-name = name,
+      sup-api-endpoint = api-endpoint,
+      sup-api-key = api-key,
+      sup-lead-time-days = lead-days,
+      sup-countries = ["US"],
+      sup-active = True
+    }
+    in (st2, sup)
+
+  create-dropship-listing : MarketState, Text, Text, Text, Money, Money -> (MarketState, DropShipListing)
+  create-dropship-listing (st) (supplier-id) (supplier-sku) (product-id) (cost) (retail) =
+    let (st2, did) = market-gen-id st "dsl"
+    in let dsl = DropShipListing {
+      dsl-id = did,
+      dsl-supplier-id = supplier-id,
+      dsl-supplier-sku = supplier-sku,
+      dsl-product-id = product-id,
+      dsl-cost = cost,
+      dsl-retail-price = retail,
+      dsl-auto-order = True,
+      dsl-stock-sync = True,
+      dsl-last-synced = 0
+    }
+    in let log2 = log-info-msg (st2.mkt-log) "dropship" ("listed " & supplier-sku & " from " & supplier-id & " margin " & show (dropship-margin-pct dsl) & "%") 0
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, dsl)
+
+Section: Content Creator Operations
+
+  create-creator : MarketState, Text, Text, Text, Integer -> (MarketState, Creator)
+  create-creator (st) (merchant-id) (display-name) (bio) (ts) =
+    let (st2, cid) = market-gen-id st "cr"
+    in let cr = Creator {
+      cr-id = cid,
+      cr-merchant-id = merchant-id,
+      cr-display-name = display-name,
+      cr-bio = bio,
+      cr-avatar-url = "",
+      cr-cover-url = "",
+      cr-tier = CreatorFree,
+      cr-follower-count = 0,
+      cr-total-tips = money-zero USD,
+      cr-social-links = [],
+      cr-featured-products = [],
+      cr-verified = False
+    }
+    in let log2 = log-info-msg (st2.mkt-log) "creator" ("profile created for " & display-name) ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, cr)
+
+  add-social-link : Creator, Text, Text, Text -> Creator
+  add-social-link (cr) (platform) (url) (display) =
+    __record-set cr "cr-social-links" (list-push (cr.cr-social-links) (social-link platform url display))
+
+  record-tip : MarketState, Creator, Text, Money, Text, Integer -> (MarketState, Tip, Creator)
+  record-tip (st) (creator) (from-user) (amount) (message) (ts) =
+    let (st2, tid) = market-gen-id st "tip"
+    in let tip = Tip {
+      tip-id = tid,
+      tip-from-user = from-user,
+      tip-to-creator = creator.cr-id,
+      tip-amount = amount,
+      tip-message = message,
+      tip-created = ts
+    }
+    in let cr2 = __record-set creator "cr-total-tips" (money-add (creator.cr-total-tips) amount)
+    in let log2 = log-info-msg (st2.mkt-log) "creator" (from-user & " tipped " & creator.cr-display-name & " " & format-money amount) ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, tip, cr2)
+
+  create-content : MarketState, Text, ContentType, Text, Text, Text, Integer -> (MarketState, ContentItem)
+  create-content (st) (creator-id) (ctype) (title) (body) (media-url) (ts) =
+    let (st2, cid) = market-gen-id st "cnt"
+    in let item = ContentItem {
+      ci-id = cid,
+      ci-creator-id = creator-id,
+      ci-type = ctype,
+      ci-title = title,
+      ci-body = body,
+      ci-media-url = media-url,
+      ci-product-ids = [],
+      ci-likes = 0,
+      ci-created = ts
+    }
+    in let log2 = log-info-msg (st2.mkt-log) "content" (creator-id & " posted " & content-type-name ctype & " " & title) ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, item)
+
+Section: Affiliate Operations
+
+  create-affiliate : MarketState, Text, Text, Integer, Integer -> (MarketState, Affiliate)
+  create-affiliate (st) (user-id) (code) (commission-bps) (ts) =
+    let (st2, aid) = market-gen-id st "aff"
+    in let aff = Affiliate {
+      aff-id = aid,
+      aff-user-id = user-id,
+      aff-code = code,
+      aff-commission-bps = commission-bps,
+      aff-total-earned = money-zero USD,
+      aff-total-clicks = 0,
+      aff-total-conversions = 0,
+      aff-created = ts
+    }
+    in (st2, aff)
+
+  record-affiliate-click : Affiliate, Text, Text, Integer -> (Affiliate, AffiliateClick)
+  record-affiliate-click (aff) (product-id) (referrer) (ts) =
+    let aff2 = __record-set aff "aff-total-clicks" (aff.aff-total-clicks + 1)
+    in let click = AffiliateClick {
+      ac-affiliate-id = aff.aff-id,
+      ac-product-id = product-id,
+      ac-referrer = referrer,
+      ac-converted = False,
+      ac-order-id = "",
+      ac-timestamp = ts
+    }
+    in (aff2, click)
+
+Section: Merchant HTML
+
+  render-merchant-storefront : Merchant, List Product -> Text
+  render-merchant-storefront (m) (products) =
+    "<div style=\"position:relative\">" &
+    (if text-length (m.merch-banner-url) > 0 then "<img src=\"" & m.merch-banner-url & "\" style=\"width:100%;height:200px;object-fit:cover;border-radius:8px\">" else "<div style=\"height:200px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:8px\"></div>") &
+    "<div style=\"display:flex;gap:16px;align-items:flex-end;margin-top:-40px;padding:0 20px\">" &
+    "<div style=\"width:80px;height:80px;border-radius:50%;background:#fff;border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:2em\">" &
+    (if text-length (m.merch-logo-url) > 0 then "<img src=\"" & m.merch-logo-url & "\" style=\"width:100%;height:100%;border-radius:50%;object-fit:cover\">" else "\x1f3ea") &
+    "</div><div><h1 style=\"font-size:1.5em;margin:0\">" & m.merch-store-name &
+    (if m.merch-verified then " <span style=\"color:#2563eb\" title=\"Verified\">\x2713</span>" else "") &
+    "</h1><span style=\"font-size:0.85em;color:#666\">" & show (m.merch-total-sales) & " sales" &
+    (if m.merch-rating-x10 > 0 then " | " & show (m.merch-rating-x10 / 10) & "." & show (m.merch-rating-x10 - (m.merch-rating-x10 / 10) * 10) & " stars" else "") &
+    "</span></div></div></div>" &
+    "<p style=\"margin-top:16px;color:#666\">" & m.merch-description & "</p>" &
+    "<div style=\"margin-top:24px\">" & product-grid products & "</div>"
+
+  render-creator-profile : Creator, List ContentItem -> Text
+  render-creator-profile (cr) (content) =
+    "<div style=\"text-align:center;padding:32px 0\">" &
+    "<div style=\"width:100px;height:100px;border-radius:50%;margin:0 auto;background:#f0f0f0;display:flex;align-items:center;justify-content:center;font-size:3em\">" &
+    (if text-length (cr.cr-avatar-url) > 0 then "<img src=\"" & cr.cr-avatar-url & "\" style=\"width:100%;height:100%;border-radius:50%;object-fit:cover\">" else "\x1f464") &
+    "</div>" &
+    "<h1 style=\"font-size:1.5em;margin-top:12px\">" & cr.cr-display-name &
+    (if cr.cr-verified then " <span style=\"color:#2563eb\">\x2713</span>" else "") &
+    "</h1>" &
+    "<span class=\"badge\">" & creator-tier-name (cr.cr-tier) & "</span>" &
+    "<p style=\"color:#666;margin-top:8px;max-width:500px;margin-left:auto;margin-right:auto\">" & cr.cr-bio & "</p>" &
+    "<div style=\"display:flex;justify-content:center;gap:24px;margin-top:16px\">" &
+    "<div><strong>" & show (cr.cr-follower-count) & "</strong> <span style=\"color:#666\">followers</span></div>" &
+    "<div><strong>" & format-money (cr.cr-total-tips) & "</strong> <span style=\"color:#666\">tips</span></div>" &
+    "</div>" &
+    render-social-links (cr.cr-social-links) &
+    "<div style=\"margin-top:16px\"><button class=\"btn\">Follow</button> <button class=\"btn btn-outline\">Tip</button></div>" &
+    "</div>" &
+    "<div class=\"section-title\" style=\"margin-top:32px\">Content</div>" &
+    render-content-feed content 0
+
+  render-social-links : List SocialLink -> Text
+  render-social-links (links) =
+    if list-length links == 0 then ""
+    else "<div style=\"display:flex;justify-content:center;gap:12px;margin-top:12px\">" & render-social-loop links 0 & "</div>"
+
+  render-social-loop : List SocialLink, Integer -> Text
+  render-social-loop (links) (i) =
+    if i >= list-length links then ""
+    else let lnk = list-at links i
+    in "<a href=\"" & lnk.sl-url & "\" class=\"nav-link\" style=\"font-size:0.85em\">" & lnk.sl-platform & "</a>" & render-social-loop links (i + 1)
+
+  render-content-feed : List ContentItem, Integer -> Text
+  render-content-feed (items) (i) =
+    if i >= list-length items then ""
+    else render-content-card (list-at items i) & render-content-feed items (i + 1)
+
+  render-content-card : ContentItem -> Text
+  render-content-card (c) =
+    "<div class=\"card\" style=\"margin-bottom:16px\">" &
+    (if text-length (c.ci-media-url) > 0 then "<img src=\"" & c.ci-media-url & "\" style=\"width:100%;max-height:400px;object-fit:cover\">" else "") &
+    "<div style=\"padding:16px\">" &
+    "<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:8px\">" &
+    "<span class=\"badge\">" & content-type-name (c.ci-type) & "</span>" &
+    "<span style=\"font-size:0.8em;color:#666\">" & show (c.ci-likes) & " likes</span></div>" &
+    "<h3 style=\"margin-bottom:8px\">" & c.ci-title & "</h3>" &
+    "<p style=\"color:#666;line-height:1.6\">" & c.ci-body & "</p>" &
+    render-tagged-products (c.ci-product-ids) &
+    "</div></div>"
+
+  render-tagged-products : List Text -> Text
+  render-tagged-products (ids) =
+    if list-length ids == 0 then ""
+    else "<div style=\"margin-top:12px;padding-top:12px;border-top:1px solid #f0f0f0;font-size:0.85em\">" &
+    "<span style=\"color:#666\">Tagged products: </span>" &
+    render-product-tags ids 0 & "</div>"
+
+  render-product-tags : List Text, Integer -> Text
+  render-product-tags (ids) (i) =
+    if i >= list-length ids then ""
+    else let sep = if i > 0 then ", " else ""
+    in sep & "<a href=\"/product/" & list-at ids i & "\">" & list-at ids i & "</a>" & render-product-tags ids (i + 1)
+
+Section: Drop-Ship Dashboard
+
+  render-dropship-dashboard : List DropShipListing, List Supplier -> Text
+  render-dropship-dashboard (listings) (suppliers) =
+    "<div class=\"section-title\">Drop-Ship Listings</div>" &
+    "<table class=\"table\"><thead><tr><th>SKU</th><th>Supplier</th><th>Cost</th><th>Retail</th><th>Margin</th><th>Auto-Order</th></tr></thead><tbody>" &
+    render-dropship-rows listings 0 &
+    "</tbody></table>"
+
+  render-dropship-rows : List DropShipListing, Integer -> Text
+  render-dropship-rows (listings) (i) =
+    if i >= list-length listings then ""
+    else let d = list-at listings i
+    in "<tr><td>" & d.dsl-supplier-sku & "</td>" &
+    "<td>" & d.dsl-supplier-id & "</td>" &
+    "<td>" & format-money (d.dsl-cost) & "</td>" &
+    "<td>" & format-money (d.dsl-retail-price) & "</td>" &
+    "<td style=\"color:#16a34a;font-weight:600\">" & show (dropship-margin-pct d) & "%</td>" &
+    "<td>" & (if d.dsl-auto-order then "\x2713" else "\x2717") & "</td></tr>" &
+    render-dropship-rows listings (i + 1)

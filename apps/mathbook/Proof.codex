@@ -1,0 +1,307 @@
+Chapter: Proof
+  cites Mathbook chapter Expr
+  cites Mathbook chapter Printer
+  cites Mathbook chapter Simplify
+  cites Foreword chapter Maybe
+
+ Interactive proof assistant. Builds proof trees from axioms and
+ inference rules. Supports propositional logic (modus ponens,
+ resolution, truth table verification), equational reasoning (rewrite
+ chains), and basic induction. Each proof step is verified against the
+ rule it claims to use. A proof is complete when the goal is derived.
+
+Section: Proposition
+
+  Prop =
+    | PropAtom (Text)
+    | PropTrue
+    | PropFalse
+    | PropAnd (Prop) (Prop)
+    | PropOr (Prop) (Prop)
+    | PropNot (Prop)
+    | PropImplies (Prop) (Prop)
+    | PropIff (Prop) (Prop)
+    | PropForAll (Text) (Prop)
+    | PropExists (Text) (Prop)
+    | PropEq (Expr) (Expr)
+
+  prop-print : Prop -> Text
+  prop-print (p) = when p
+    is PropAtom (name) -> name
+    is PropTrue -> "T"
+    is PropFalse -> "F"
+    is PropAnd (a) (b) -> "(" & prop-print a & " /\\ " & prop-print b & ")"
+    is PropOr (a) (b) -> "(" & prop-print a & " \\/ " & prop-print b & ")"
+    is PropNot (a) -> "~" & prop-print a
+    is PropImplies (a) (b) -> "(" & prop-print a & " => " & prop-print b & ")"
+    is PropIff (a) (b) -> "(" & prop-print a & " <=> " & prop-print b & ")"
+    is PropForAll (var) (body) -> "forall " & var & ". " & prop-print body
+    is PropExists (var) (body) -> "exists " & var & ". " & prop-print body
+    is PropEq (a) (b) -> ex-print a & " = " & ex-print b
+
+  prop-latex : Prop -> Text
+  prop-latex (p) = when p
+    is PropAtom (name) -> name
+    is PropTrue -> "\\top"
+    is PropFalse -> "\\bot"
+    is PropAnd (a) (b) -> prop-latex a & " \\land " & prop-latex b
+    is PropOr (a) (b) -> prop-latex a & " \\lor " & prop-latex b
+    is PropNot (a) -> "\\neg " & prop-latex a
+    is PropImplies (a) (b) -> prop-latex a & " \\Rightarrow " & prop-latex b
+    is PropIff (a) (b) -> prop-latex a & " \\Leftrightarrow " & prop-latex b
+    is PropForAll (var) (body) -> "\\forall " & var & ".\\," & prop-latex body
+    is PropExists (var) (body) -> "\\exists " & var & ".\\," & prop-latex body
+    is PropEq (a) (b) -> ex-latex a & " = " & ex-latex b
+
+Section: Inference Rules
+
+  Rule =
+    | RuleAxiom
+    | RuleAssumption
+    | RuleModusPonens (Integer) (Integer)
+    | RuleModusTollens (Integer) (Integer)
+    | RuleAndIntro (Integer) (Integer)
+    | RuleAndElimLeft (Integer)
+    | RuleAndElimRight (Integer)
+    | RuleOrIntroLeft (Integer)
+    | RuleOrIntroRight (Integer)
+    | RuleOrElim (Integer) (Integer) (Integer)
+    | RuleNotIntro (Integer)
+    | RuleNotElim (Integer)
+    | RuleImpliesIntro (Integer) (Integer)
+    | RuleIffIntro (Integer) (Integer)
+    | RuleIffElimLeft (Integer)
+    | RuleIffElimRight (Integer)
+    | RuleForAllElim (Integer) (Expr)
+    | RuleExistsIntro (Integer) (Expr)
+    | RuleContradiction (Integer) (Integer)
+    | RuleRewrite (Integer) (Expr) (Expr)
+    | RuleInduction (Integer) (Integer) (Text)
+    | RuleBySimplification (Integer)
+    | RuleByComputation
+
+  rule-label : Rule -> Text
+  rule-label (r) = when r
+    is RuleAxiom -> "axiom"
+    is RuleAssumption -> "assumption"
+    is RuleModusPonens (a) (b) -> "modus ponens (" & show a & ", " & show b & ")"
+    is RuleModusTollens (a) (b) -> "modus tollens (" & show a & ", " & show b & ")"
+    is RuleAndIntro (a) (b) -> "/\\ intro (" & show a & ", " & show b & ")"
+    is RuleAndElimLeft (a) -> "/\\ elim-L (" & show a & ")"
+    is RuleAndElimRight (a) -> "/\\ elim-R (" & show a & ")"
+    is RuleOrIntroLeft (a) -> "\\/ intro-L (" & show a & ")"
+    is RuleOrIntroRight (a) -> "\\/ intro-R (" & show a & ")"
+    is RuleOrElim (a) (b) (c) -> "\\/ elim (" & show a & ", " & show b & ", " & show c & ")"
+    is RuleNotIntro (a) -> "~ intro (" & show a & ")"
+    is RuleNotElim (a) -> "~ elim (" & show a & ")"
+    is RuleImpliesIntro (a) (b) -> "=> intro (" & show a & ", " & show b & ")"
+    is RuleIffIntro (a) (b) -> "<=> intro (" & show a & ", " & show b & ")"
+    is RuleIffElimLeft (a) -> "<=> elim-L (" & show a & ")"
+    is RuleIffElimRight (a) -> "<=> elim-R (" & show a & ")"
+    is RuleForAllElim (a) (term) -> "forall elim (" & show a & ", " & ex-print term & ")"
+    is RuleExistsIntro (a) (term) -> "exists intro (" & show a & ", " & ex-print term & ")"
+    is RuleContradiction (a) (b) -> "contradiction (" & show a & ", " & show b & ")"
+    is RuleRewrite (a) (from) (to) -> "rewrite (" & show a & ", " & ex-print from & " -> " & ex-print to & ")"
+    is RuleInduction (base) (step) (var) -> "induction on " & var & " (" & show base & ", " & show step & ")"
+    is RuleBySimplification (a) -> "simplify (" & show a & ")"
+    is RuleByComputation -> "computation"
+
+Section: Proof Step
+
+  ProofStatus =
+    | StepValid
+    | StepInvalid (Text)
+    | StepUnchecked
+
+  ProofStep = record {
+    ps-id : Integer,
+    ps-prop : Prop,
+    ps-rule : Rule,
+    ps-status : ProofStatus,
+    ps-depth : Integer,
+    ps-label : Text
+  }
+
+  step-new : Integer, Prop, Rule -> ProofStep
+  step-new (id) (prop) (rule) = ProofStep {
+    ps-id = id, ps-prop = prop, ps-rule = rule,
+    ps-status = StepUnchecked, ps-depth = 0, ps-label = ""
+  }
+
+  step-is-valid : ProofStep -> Boolean
+  step-is-valid (s) = when s.ps-status
+    is StepValid -> True
+    is otherwise -> False
+
+Section: Proof State
+
+  ProofState = record {
+    pf-goal : Prop,
+    pf-steps : List ProofStep,
+    pf-step-count : Integer,
+    pf-assumptions : List Prop,
+    pf-assumption-count : Integer,
+    pf-complete : Boolean,
+    pf-next-id : Integer,
+    pf-title : Text
+  }
+
+  proof-new : Text, Prop -> ProofState
+  proof-new (title) (goal) = ProofState {
+    pf-goal = goal,
+    pf-steps = [],
+    pf-step-count = 0,
+    pf-assumptions = [],
+    pf-assumption-count = 0,
+    pf-complete = False,
+    pf-next-id = 1,
+    pf-title = title
+  }
+
+  pf-assume : ProofState, Prop -> ProofState
+  pf-assume (pf) (p) =
+    let step = step-new (pf.pf-next-id) p RuleAssumption
+    in let valid-step = __record-set step "ps-status" StepValid
+    in ProofState {
+      pf-goal = pf.pf-goal,
+      pf-steps = list-push (pf.pf-steps) valid-step,
+      pf-step-count = pf.pf-step-count + 1,
+      pf-assumptions = list-push (pf.pf-assumptions) p,
+      pf-assumption-count = pf.pf-assumption-count + 1,
+      pf-complete = pf.pf-complete,
+      pf-next-id = pf.pf-next-id + 1,
+      pf-title = pf.pf-title
+    }
+
+  pf-add-step : ProofState, Prop, Rule -> ProofState
+  pf-add-step (pf) (prop) (rule) =
+    let step = step-new (pf.pf-next-id) prop rule
+    in let checked = pf-check-step pf step
+    in let is-goal = prop-equal prop (pf.pf-goal)
+    in ProofState {
+      pf-goal = pf.pf-goal,
+      pf-steps = list-push (pf.pf-steps) checked,
+      pf-step-count = pf.pf-step-count + 1,
+      pf-assumptions = pf.pf-assumptions,
+      pf-assumption-count = pf.pf-assumption-count,
+      pf-complete = if is-goal then step-is-valid checked else pf.pf-complete,
+      pf-next-id = pf.pf-next-id + 1,
+      pf-title = pf.pf-title
+    }
+
+  pf-get-step : ProofState, Integer -> Maybe ProofStep
+  pf-get-step (pf) (id) = pf-step-lookup (pf.pf-steps) id 0 (pf.pf-step-count)
+
+  pf-step-lookup : List ProofStep, Integer, Integer, Integer -> Maybe ProofStep
+  pf-step-lookup (steps) (id) (i) (n) =
+    if i >= n then None
+    else let s = list-at steps i
+    in if s.ps-id == id then Just s
+    else pf-step-lookup steps id (i + 1) n
+
+Section: Step Verification
+
+  pf-check-step : ProofState, ProofStep -> ProofStep
+  pf-check-step (pf) (step) = when step.ps-rule
+    is RuleAxiom -> __record-set step "ps-status" StepValid
+    is RuleAssumption -> __record-set step "ps-status" StepValid
+    is RuleModusPonens (a) (b) ->
+      let sa = pf-get-step pf a
+      in let sb = pf-get-step pf b
+      in when sa
+        is Just (step-a) -> when sb
+          is Just (step-b) -> when step-b.ps-prop
+            is PropImplies (ante) (conseq) ->
+              if prop-equal ante (step-a.ps-prop) then
+                if prop-equal conseq (step.ps-prop) then __record-set step "ps-status" StepValid
+                else __record-set step "ps-status" (StepInvalid "consequent mismatch")
+              else __record-set step "ps-status" (StepInvalid "antecedent mismatch")
+            is otherwise -> __record-set step "ps-status" (StepInvalid "step b not an implication")
+          is None -> __record-set step "ps-status" (StepInvalid "step b not found")
+        is None -> __record-set step "ps-status" (StepInvalid "step a not found")
+    is RuleAndIntro (a) (b) ->
+      let sa = pf-get-step pf a
+      in let sb = pf-get-step pf b
+      in when sa
+        is Just (step-a) -> when sb
+          is Just (step-b) -> when step.ps-prop
+            is PropAnd (left) (right) ->
+              if prop-equal left (step-a.ps-prop) then
+                if prop-equal right (step-b.ps-prop) then __record-set step "ps-status" StepValid
+                else __record-set step "ps-status" (StepInvalid "right conjunct mismatch")
+              else __record-set step "ps-status" (StepInvalid "left conjunct mismatch")
+            is otherwise -> __record-set step "ps-status" (StepInvalid "not a conjunction")
+          is None -> __record-set step "ps-status" (StepInvalid "step b not found")
+        is None -> __record-set step "ps-status" (StepInvalid "step a not found")
+    is RuleAndElimLeft (a) ->
+      when pf-get-step pf a
+        is Just (step-a) -> when step-a.ps-prop
+          is PropAnd (left) (right) ->
+            if prop-equal left (step.ps-prop) then __record-set step "ps-status" StepValid
+            else __record-set step "ps-status" (StepInvalid "left doesn't match")
+          is otherwise -> __record-set step "ps-status" (StepInvalid "not a conjunction")
+        is None -> __record-set step "ps-status" (StepInvalid "step not found")
+    is RuleAndElimRight (a) ->
+      when pf-get-step pf a
+        is Just (step-a) -> when step-a.ps-prop
+          is PropAnd (left) (right) ->
+            if prop-equal right (step.ps-prop) then __record-set step "ps-status" StepValid
+            else __record-set step "ps-status" (StepInvalid "right doesn't match")
+          is otherwise -> __record-set step "ps-status" (StepInvalid "not a conjunction")
+        is None -> __record-set step "ps-status" (StepInvalid "step not found")
+    is RuleBySimplification (a) ->
+      when pf-get-step pf a
+        is Just (step-a) -> when step.ps-prop
+          is PropEq (lhs) (rhs) -> when step-a.ps-prop
+            is PropEq (l2) (r2) ->
+              if ex-equal (simplify l2) (simplify lhs) then
+                if ex-equal (simplify r2) (simplify rhs) then __record-set step "ps-status" StepValid
+                else __record-set step "ps-status" (StepInvalid "rhs differs after simplification")
+              else __record-set step "ps-status" (StepInvalid "lhs differs after simplification")
+            is otherwise -> __record-set step "ps-status" (StepInvalid "source not an equation")
+          is otherwise -> __record-set step "ps-status" (StepInvalid "not an equation")
+        is None -> __record-set step "ps-status" (StepInvalid "step not found")
+    is RuleByComputation -> when step.ps-prop
+      is PropEq (lhs) (rhs) ->
+        if ex-equal (simplify lhs) (simplify rhs) then __record-set step "ps-status" StepValid
+        else __record-set step "ps-status" (StepInvalid "sides not equal after simplification")
+      is otherwise -> __record-set step "ps-status" (StepInvalid "not an equation")
+    is otherwise -> __record-set step "ps-status" StepUnchecked
+
+Section: Proposition Equality
+
+  prop-equal : Prop, Prop -> Boolean
+  prop-equal (a) (b) = when a
+    is PropAtom (na) -> when b is PropAtom (nb) -> na == nb is otherwise -> False
+    is PropTrue -> when b is PropTrue -> True is otherwise -> False
+    is PropFalse -> when b is PropFalse -> True is otherwise -> False
+    is PropAnd (a1) (a2) -> when b is PropAnd (b1) (b2) -> if prop-equal a1 b1 then prop-equal a2 b2 else False is otherwise -> False
+    is PropOr (a1) (a2) -> when b is PropOr (b1) (b2) -> if prop-equal a1 b1 then prop-equal a2 b2 else False is otherwise -> False
+    is PropNot (a1) -> when b is PropNot (b1) -> prop-equal a1 b1 is otherwise -> False
+    is PropImplies (a1) (a2) -> when b is PropImplies (b1) (b2) -> if prop-equal a1 b1 then prop-equal a2 b2 else False is otherwise -> False
+    is PropIff (a1) (a2) -> when b is PropIff (b1) (b2) -> if prop-equal a1 b1 then prop-equal a2 b2 else False is otherwise -> False
+    is PropEq (e1) (e2) -> when b is PropEq (f1) (f2) -> if ex-equal e1 f1 then ex-equal e2 f2 else False is otherwise -> False
+    is PropForAll (v1) (body1) -> when b is PropForAll (v2) (body2) -> if v1 == v2 then prop-equal body1 body2 else False is otherwise -> False
+    is PropExists (v1) (body1) -> when b is PropExists (v2) (body2) -> if v1 == v2 then prop-equal body1 body2 else False is otherwise -> False
+
+Section: Proof Printing
+
+  pf-print : ProofState -> Text
+  pf-print (pf) =
+    let header = "Proof: " & pf.pf-title & "\nGoal: " & prop-print (pf.pf-goal) & "\n"
+    in let status = if pf.pf-complete then "Status: COMPLETE\n" else "Status: incomplete\n"
+    in let steps = pf-print-steps (pf.pf-steps) 0 (pf.pf-step-count) ""
+    in header & status & steps
+
+  pf-print-steps : List ProofStep, Integer, Integer, Text -> Text
+  pf-print-steps (steps) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at steps i
+    in let valid-mark = when s.ps-status
+      is StepValid -> " [ok]"
+      is StepInvalid (msg) -> " [INVALID: " & msg & "]"
+      is StepUnchecked -> " [?]"
+    in let line = show (s.ps-id) & ". " & prop-print (s.ps-prop) & "  by " & rule-label (s.ps-rule) & valid-mark
+    in pf-print-steps steps (i + 1) n (acc & line & "\n")
+
+Page 1

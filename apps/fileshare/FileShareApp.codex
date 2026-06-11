@@ -1,0 +1,493 @@
+Chapter: FileShareApp
+  cites Foreword chapter Widget
+  cites Foreword chapter Event
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites UI chapter Layout
+  cites FileShare chapter ContentChunker
+  cites FileShare chapter PeerSwarm
+  cites FileShare chapter PieceManager
+  cites FileShare chapter TransferProtocol
+  cites FileShare chapter PeerDiscovery
+
+ The file sharing application. Lists active transfers, shows
+ swarm status, and manages content sharing.
+
+Section: Types
+
+  TransferDirection =
+    | Downloading
+    | Seeding
+    | Paused
+
+  Transfer = record {
+    tf-id         : Integer,
+    tf-name       : Text,
+    tf-manifest   : ContentManifest,
+    tf-tracker    : PieceTracker,
+    tf-swarm      : Swarm,
+    tf-direction  : TransferDirection,
+    tf-up-bytes   : Integer,
+    tf-down-bytes : Integer,
+    tf-started    : Integer
+  }
+
+  FileShareState = record {
+    fs-transfers   : List Transfer,
+    fs-dht         : DhtRoutingTable,
+    fs-announces   : AnnounceStore,
+    fs-identity    : List Integer,
+    fs-next-id     : Integer,
+    fs-width       : Integer,
+    fs-height      : Integer,
+    fs-selected    : Integer,
+    fs-status      : Text,
+    fs-view        : ShareView
+  }
+
+  ShareView =
+    | ViewTransferList
+    | ViewTransferDetail (Integer)
+    | ViewAddContent
+    | ViewPeers
+    | ViewDht
+
+Section: Initialization
+
+  fileshare-app-init : Integer, Integer -> FileShareState
+  fileshare-app-init (w) (h) =
+    let identity = sha256 (text-to-bytes "codex-fileshare-node")
+    in FileShareState {
+      fs-transfers = [],
+      fs-dht = dht-new identity,
+      fs-announces = announce-store-new 10000,
+      fs-identity = identity,
+      fs-next-id = 1,
+      fs-width = w,
+      fs-height = h,
+      fs-selected = 0,
+      fs-status = "Ready",
+      fs-view = ViewTransferList
+    }
+
+Section: Adding Content
+
+  fileshare-add-download : FileShareState, ContentManifest -> FileShareState
+  fileshare-add-download (fs) (manifest) =
+    let id = fs.fs-next-id
+    in let transfer = Transfer {
+      tf-id = id,
+      tf-name = manifest.cm-name,
+      tf-manifest = manifest,
+      tf-tracker = tracker-from-manifest manifest,
+      tf-swarm = swarm-new manifest.cm-root-hash 50,
+      tf-direction = Downloading,
+      tf-up-bytes = 0,
+      tf-down-bytes = 0,
+      tf-started = 0
+    }
+    in __record-set (__record-set (__record-set fs
+      "fs-transfers" (list-push fs.fs-transfers transfer))
+      "fs-next-id" (id + 1))
+      "fs-status" ("Added: " & manifest.cm-name)
+
+  fileshare-add-seed : FileShareState, List Integer, Text, Text -> FileShareState
+  fileshare-add-seed (fs) (data) (name) (mime) =
+    let manifest = chunk-content data name mime
+    in let id = fs.fs-next-id
+    in let tracker = tracker-new manifest.cm-piece-count
+    in let seeding-tracker = mark-all-verified tracker manifest.cm-piece-count 0
+    in let transfer = Transfer {
+      tf-id = id,
+      tf-name = name,
+      tf-manifest = manifest,
+      tf-tracker = seeding-tracker,
+      tf-swarm = swarm-new manifest.cm-root-hash 50,
+      tf-direction = Seeding,
+      tf-up-bytes = 0,
+      tf-down-bytes = 0,
+      tf-started = 0
+    }
+    in __record-set (__record-set (__record-set fs
+      "fs-transfers" (list-push fs.fs-transfers transfer))
+      "fs-next-id" (id + 1))
+      "fs-status" ("Sharing: " & name & " (" & show manifest.cm-piece-count & " pieces)")
+
+  mark-all-verified : PieceTracker, Integer, Integer -> PieceTracker
+  mark-all-verified (pt) (count) (i) =
+    if i >= count then pt
+    else mark-all-verified (tracker-mark-verified pt i) count (i + 1)
+
+Section: Transfer Management
+
+  fileshare-pause : FileShareState, Integer -> FileShareState
+  fileshare-pause (fs) (transfer-id) =
+    __record-set fs "fs-transfers" (list-map (pause-one transfer-id) fs.fs-transfers)
+
+  pause-one : Integer -> Transfer -> Transfer
+  pause-one (id) (t) =
+    if t.tf-id == id then __record-set t "tf-direction" Paused else t
+
+  fileshare-resume : FileShareState, Integer -> FileShareState
+  fileshare-resume (fs) (transfer-id) =
+    __record-set fs "fs-transfers" (list-map (resume-one transfer-id) fs.fs-transfers)
+
+  resume-one : Integer -> Transfer -> Transfer
+  resume-one (id) (t) =
+    if t.tf-id == id
+    then __record-set t "tf-direction" (if tracker-is-complete t.tf-tracker then Seeding else Downloading)
+    else t
+
+  fileshare-remove : FileShareState, Integer -> FileShareState
+  fileshare-remove (fs) (transfer-id) =
+    __record-set fs "fs-transfers" (list-filter fs.fs-transfers (transfer-id-neq transfer-id))
+
+  transfer-id-neq : Integer -> Transfer -> Boolean
+  transfer-id-neq (id) (t) = t.tf-id /= id
+
+  fileshare-find-transfer : FileShareState, Integer -> Maybe Transfer
+  fileshare-find-transfer (fs) (id) =
+    find-transfer fs.fs-transfers id
+
+  find-transfer : List Transfer, Integer -> Maybe Transfer
+  find-transfer (transfers) (id) =
+    when transfers
+      is [] -> Nothing
+      is otherwise ->
+        let head = list-at transfers 0
+        in if head.tf-id == id then Just head
+        else find-transfer (list-drop transfers 1) id
+
+Section: Piece Processing
+
+  fileshare-receive-piece : FileShareState, Integer, Integer, List Integer -> FileShareState
+  fileshare-receive-piece (fs) (transfer-id) (piece-idx) (data) =
+    let transfer = fileshare-find-transfer fs transfer-id
+    in when transfer
+      is Nothing -> fs
+      is Just (t) ->
+        if verify-piece-data data piece-idx t.tf-manifest
+        then let updated-tracker = tracker-mark-verified t.tf-tracker piece-idx
+          in let updated-transfer = __record-set (__record-set t
+                "tf-tracker" updated-tracker)
+                "tf-down-bytes" (t.tf-down-bytes + list-length data)
+          in let completed = tracker-is-complete updated-tracker
+          in let final-transfer = if completed
+                then __record-set updated-transfer "tf-direction" Seeding
+                else updated-transfer
+          in __record-set fs "fs-transfers" (replace-transfer fs.fs-transfers final-transfer)
+        else let failed-tracker = tracker-mark-failed t.tf-tracker piece-idx
+          in let failed-transfer = __record-set t "tf-tracker" failed-tracker
+          in __record-set fs "fs-transfers" (replace-transfer fs.fs-transfers failed-transfer)
+
+  replace-transfer : List Transfer, Transfer -> List Transfer
+  replace-transfer (transfers) (updated) =
+    list-map (replace-one-transfer updated) transfers
+
+  replace-one-transfer : Transfer -> Transfer -> Transfer
+  replace-one-transfer (updated) (t) =
+    if t.tf-id == updated.tf-id then updated else t
+
+Section: Rendering
+
+  fileshare-render : FileShareState -> WidgetNode
+  fileshare-render (fs) =
+    when fs.fs-view
+      is ViewTransferList -> render-transfer-list fs
+      is ViewTransferDetail (id) -> render-transfer-detail fs id
+      is otherwise -> render-transfer-list fs
+
+  render-transfer-list : FileShareState -> WidgetNode
+  render-transfer-list (fs) =
+    let header = widget-panel "header" DirRow 8 [
+          widget-label "title" "Codex FileShare",
+          widget-button "add" "+ Share",
+          widget-label "dht-status" (format-dht fs.fs-dht),
+          widget-label "status" fs.fs-status
+        ]
+    in let rows = list-map render-transfer-row fs.fs-transfers
+    in let list-panel = widget-panel "transfers" DirColumn 2 rows
+    in widget-panel "app" DirColumn 0 [
+      header,
+      widget-separator "sep",
+      widget-set-flex list-panel 1
+    ]
+
+  render-transfer-row : Transfer -> WidgetNode
+  render-transfer-row (t) =
+    let dir-icon = when t.tf-direction
+          is Downloading -> "[D]"
+          is Seeding -> "[S]"
+          is Paused -> "[P]"
+    in let name = widget-label ("name-" & show t.tf-id) t.tf-name
+    in let icon = widget-label ("dir-" & show t.tf-id) dir-icon
+    in let progress = widget-progress ("prog-" & show t.tf-id)
+          (tracker-progress-pct t.tf-tracker) 100
+    in let pct = widget-label ("pct-" & show t.tf-id)
+          (show (tracker-progress-pct t.tf-tracker) & "%")
+    in let peers = widget-label ("peers-" & show t.tf-id)
+          (show (list-length t.tf-swarm.sw-peers) & " peers")
+    in let speed = widget-label ("speed-" & show t.tf-id)
+          (format-bytes t.tf-down-bytes & " / " & format-bytes t.tf-up-bytes)
+    in widget-panel ("row-" & show t.tf-id) DirRow 8 [
+      icon, widget-set-flex name 1, widget-set-flex progress 2, pct, peers, speed
+    ]
+
+  render-transfer-detail : FileShareState, Integer -> WidgetNode
+  render-transfer-detail (fs) (id) =
+    let transfer = fileshare-find-transfer fs id
+    in when transfer
+      is Nothing -> widget-label "not-found" "Transfer not found"
+      is Just (t) ->
+        let header = widget-label "detail-title" t.tf-name
+        in let manifest-info = widget-panel "manifest" DirColumn 4 [
+              widget-label "m-size" ("Size: " & format-bytes t.tf-manifest.cm-total-size),
+              widget-label "m-pieces" ("Pieces: " & show t.tf-manifest.cm-piece-count & " x " & format-bytes t.tf-manifest.cm-piece-size),
+              widget-label "m-hash" ("Hash: " & sha256-to-hex t.tf-manifest.cm-root-hash)
+            ]
+        in let progress-info = widget-label "progress" (format-tracker t.tf-tracker)
+        in let swarm-info = widget-label "swarm" (format-swarm t.tf-swarm)
+        in let transfer-info = widget-panel "transfer" DirColumn 4 [
+              widget-label "t-up" ("Uploaded: " & format-bytes t.tf-up-bytes),
+              widget-label "t-down" ("Downloaded: " & format-bytes t.tf-down-bytes)
+            ]
+        in let buttons = widget-panel "buttons" DirRow 8 [
+              widget-button "pause" "Pause",
+              widget-button "resume" "Resume",
+              widget-button "remove" "Remove",
+              widget-button "back" "Back"
+            ]
+        in widget-panel "detail" DirColumn 8 [
+          header, widget-separator "sep1",
+          manifest-info, widget-separator "sep2",
+          progress-info, swarm-info, widget-separator "sep3",
+          transfer-info, buttons
+        ]
+
+Section: File Reassembly
+
+  reassemble-file : Transfer, List (List Integer) -> Maybe (List Integer)
+  reassemble-file (t) (piece-store) =
+    if tracker-is-complete t.tf-tracker == False then Nothing
+    else Just (assemble-pieces piece-store t.tf-manifest.cm-piece-count 0 [])
+
+  assemble-pieces : List (List Integer), Integer, Integer, List Integer -> List Integer
+  assemble-pieces (pieces) (count) (i) (acc) =
+    if i >= count then acc
+    else if i >= list-length pieces then acc
+    else assemble-pieces pieces count (i + 1) (acc & list-at pieces i)
+
+  verify-reassembled : List Integer, ContentManifest -> Boolean
+  verify-reassembled (data) (manifest) =
+    let rebuilt = chunk-content data manifest.cm-name manifest.cm-mime-type
+    in sha256-to-hex rebuilt.cm-root-hash == sha256-to-hex manifest.cm-root-hash
+
+Section: Choking Algorithm
+
+  choke-round : Swarm, Integer -> Swarm
+  choke-round (sw) (optimistic-seed) =
+    let active = swarm-active-peers sw
+    in let ranked = sort-peers-by-download active
+    in let top-4 = list-take ranked 4
+    in let top-ids = list-map peer-get-id top-4
+    in let optimistic = pick-optimistic active optimistic-seed top-ids
+    in let unchoke-ids = when optimistic
+          is Nothing -> top-ids
+          is Just (p) -> list-push top-ids p.pr-id
+    in __record-set sw "sw-peers" (list-map (apply-choke unchoke-ids) sw.sw-peers)
+
+  peer-get-id : Peer -> List Integer
+  peer-get-id (p) = p.pr-id
+
+  sort-peers-by-download : List Peer -> List Peer
+  sort-peers-by-download (peers) =
+    when peers
+      is [] -> []
+      is otherwise ->
+        let pivot = list-at peers 0
+        in let rest = list-drop peers 1
+        in let faster = filter-peers-above rest pivot.pr-down-bytes
+        in let slower = filter-peers-below rest pivot.pr-down-bytes
+        in sort-peers-by-download faster & [pivot] & sort-peers-by-download slower
+
+  filter-peers-above : List Peer, Integer -> List Peer
+  filter-peers-above (peers) (threshold) =
+    when peers
+      is [] -> []
+      is otherwise ->
+        let h = list-at peers 0
+        in if h.pr-down-bytes > threshold
+          then h :: filter-peers-above (list-drop peers 1) threshold
+          else filter-peers-above (list-drop peers 1) threshold
+
+  filter-peers-below : List Peer, Integer -> List Peer
+  filter-peers-below (peers) (threshold) =
+    when peers
+      is [] -> []
+      is otherwise ->
+        let h = list-at peers 0
+        in if h.pr-down-bytes <= threshold
+          then h :: filter-peers-below (list-drop peers 1) threshold
+          else filter-peers-below (list-drop peers 1) threshold
+
+  pick-optimistic : List Peer, Integer, List (List Integer) -> Maybe Peer
+  pick-optimistic (peers) (seed) (already) =
+    let choked = filter-not-in-ids peers already
+    in if list-length choked == 0 then Nothing
+    else Just (list-at choked (int-mod seed (list-length choked)))
+
+  filter-not-in-ids : List Peer, List (List Integer) -> List Peer
+  filter-not-in-ids (peers) (ids) =
+    when peers
+      is [] -> []
+      is otherwise ->
+        let h = list-at peers 0
+        in if id-in-list h.pr-id ids
+          then filter-not-in-ids (list-drop peers 1) ids
+          else h :: filter-not-in-ids (list-drop peers 1) ids
+
+  id-in-list : List Integer, List (List Integer) -> Boolean
+  id-in-list (needle) (haystack) =
+    when haystack
+      is [] -> False
+      is otherwise ->
+        if sha256-to-hex (list-at haystack 0) == sha256-to-hex needle then True
+        else id-in-list needle (list-drop haystack 1)
+
+  apply-choke : List (List Integer) -> Peer -> Peer
+  apply-choke (unchoke-ids) (p) =
+    __record-set p "pr-we-choke" (if id-in-list p.pr-id unchoke-ids then False else True)
+
+Section: Manifest Serialization
+
+  manifest-to-json : ContentManifest -> Text
+  manifest-to-json (m) =
+    json-emit (json-object [
+      json-pair "name" (json-str m.cm-name),
+      json-pair "mime" (json-str m.cm-mime-type),
+      json-pair "size" (json-int m.cm-total-size),
+      json-pair "pieceSize" (json-int m.cm-piece-size),
+      json-pair "pieceCount" (json-int m.cm-piece-count),
+      json-pair "rootHash" (json-str (sha256-to-hex m.cm-root-hash)),
+      json-pair "pieceHashes" (json-array (list-map hash-to-json-val m.cm-piece-hashes))
+    ])
+
+  hash-to-json-val : List Integer -> JsonValue
+  hash-to-json-val (h) = json-str (sha256-to-hex h)
+
+  manifest-from-json : Text -> Maybe ContentManifest
+  manifest-from-json (text) =
+    let parsed = json-parse text
+    in when parsed
+      is Nothing -> Nothing
+      is Just (jv) ->
+        Just (ContentManifest {
+          cm-root-hash = text-to-bytes (json-get-str jv "rootHash" ""),
+          cm-total-size = json-get-int jv "size" 0,
+          cm-piece-count = json-get-int jv "pieceCount" 0,
+          cm-piece-size = json-get-int jv "pieceSize" piece-size,
+          cm-piece-hashes = [],
+          cm-merkle = build-merkle-tree [],
+          cm-name = json-get-str jv "name" "",
+          cm-mime-type = json-get-str jv "mime" ""
+        })
+
+Section: Tick Processing
+
+  fileshare-tick : FileShareState -> FileShareState
+  fileshare-tick (fs) =
+    __record-set fs "fs-transfers" (list-map tick-transfer fs.fs-transfers)
+
+  tick-transfer : Transfer -> Transfer
+  tick-transfer (t) =
+    when t.tf-direction
+      is Downloading ->
+        let next = tracker-next-piece t.tf-tracker
+        in when next
+          is Nothing -> t
+          is Just (idx) ->
+            let peer = best-peer-for-piece t.tf-swarm idx
+            in when peer
+              is Nothing -> t
+              is Just (p) -> __record-set t "tf-tracker" (tracker-mark-requested t.tf-tracker idx p.pr-id)
+      is Seeding ->
+        __record-set t "tf-swarm" (choke-round t.tf-swarm t.tf-id)
+      is Paused -> t
+
+Section: Event Handling
+
+  fileshare-handle-event : FileShareState, Event -> FileShareState
+  fileshare-handle-event (fs) (ev) =
+    when ev.ev-kind
+      is EvKeyDown -> fileshare-handle-key fs ev
+      is EvTimer -> fileshare-tick fs
+      is otherwise -> fs
+
+  fileshare-handle-key : FileShareState, Event -> FileShareState
+  fileshare-handle-key (fs) (ev) =
+    let k = ev.ev-key
+    in let ctrl = int-mod (ev.ev-modifiers / 1) 2 == 1
+    in if ctrl then fileshare-ctrl-key fs k
+    else fileshare-plain-key fs k
+
+  fileshare-ctrl-key : FileShareState, Integer -> FileShareState
+  fileshare-ctrl-key (fs) (k) =
+    if k == 78 then __record-set fs "fs-view" ViewAddContent
+    else if k == 80 then if fs.fs-selected > 0 then fileshare-pause fs fs.fs-selected else fs
+    else if k == 82 then if fs.fs-selected > 0 then fileshare-resume fs fs.fs-selected else fs
+    else fs
+
+  fileshare-plain-key : FileShareState, Integer -> FileShareState
+  fileshare-plain-key (fs) (k) =
+    if k == 27 then __record-set fs "fs-view" ViewTransferList
+    else if k == 127 then if fs.fs-selected > 0 then fileshare-remove fs fs.fs-selected else fs
+    else if k == 13 then if fs.fs-selected > 0 then __record-set fs "fs-view" (ViewTransferDetail fs.fs-selected) else fs
+    else if k == 38 then fileshare-select-prev fs
+    else if k == 40 then fileshare-select-next fs
+    else fs
+
+  fileshare-select-next : FileShareState -> FileShareState
+  fileshare-select-next (fs) =
+    if list-length fs.fs-transfers == 0 then fs
+    else let idx = find-tf-idx fs.fs-transfers fs.fs-selected 0
+    in let next = if idx + 1 >= list-length fs.fs-transfers then 0 else idx + 1
+    in __record-set fs "fs-selected" (list-at fs.fs-transfers next).tf-id
+
+  fileshare-select-prev : FileShareState -> FileShareState
+  fileshare-select-prev (fs) =
+    if list-length fs.fs-transfers == 0 then fs
+    else let idx = find-tf-idx fs.fs-transfers fs.fs-selected 0
+    in let prev = if idx <= 0 then list-length fs.fs-transfers - 1 else idx - 1
+    in __record-set fs "fs-selected" (list-at fs.fs-transfers prev).tf-id
+
+  find-tf-idx : List Transfer, Integer, Integer -> Integer
+  find-tf-idx (transfers) (id) (i) =
+    if i >= list-length transfers then 0
+    else if (list-at transfers i).tf-id == id then i
+    else find-tf-idx transfers id (i + 1)
+
+Section: Main Loop
+
+  fileshare-app-run : FileShareState -> [Console] Nothing
+  fileshare-app-run (fs) = act
+    print-line ("  Identity: " & sha256-to-hex fs.fs-identity)
+    print-line ("  DHT: " & format-dht fs.fs-dht)
+    print-line "  Ready."
+    fileshare-event-loop fs
+  end
+
+  fileshare-event-loop : FileShareState -> [Console] Nothing
+  fileshare-event-loop (fs) = act
+    ev <- fileshare-poll-event
+    let handled = fileshare-handle-event fs ev
+    in fileshare-event-loop handled
+  end
+
+  fileshare-poll-event : [Console] Event
+  fileshare-poll-event = act
+    let scan = uefi-read-key
+    in if scan == 0
+      then pure (event-timer "tick" 0)
+      else pure (event-key-down scan 0 0)
+  end

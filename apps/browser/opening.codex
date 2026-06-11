@@ -1,0 +1,73 @@
+Chapter: Opening
+  cites Browser chapter Browser
+  cites Browser chapter BrowserTheme
+  cites Browser chapter BrowserEvent
+  cites Browser chapter BrowserPersist
+  cites Browser chapter Display
+  cites Browser chapter History
+  cites Browser chapter TrustManager
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter Event
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppLog
+
+ Entry point for the Codex Browser with disk persistence.
+ History and trust decisions are loaded from DiskFacts on startup
+ and persisted after every navigation or trust grant.
+
+Section: Entry Point
+
+  opening : [Console] Nothing
+  opening = act
+    let disk = disk-load
+    in let width = 1024
+    in let height = 768
+    in let ds = display-init width height
+    in let theme = browser-theme-default
+    in let state = browser-init width height theme ds
+    in let hist = browser-persist-load-history disk 500
+    in let trust = browser-persist-load-trust disk []
+    in let restored = __record-set (__record-set state
+          "bs-history" hist)
+          "bs-trust-store" trust
+    in let disk2 = app-log-info disk "browser" ("Browser started, " & show (history-count hist) & " history entries") 0
+    in print-line "Codex Browser v0.1"
+    in print-line ("  Disk: " & show (disk-fact-count disk2) & " facts")
+    in print-line ("  History: " & show (history-count hist) & " entries")
+    in print-line ("  Display: " & format-display ds)
+    in browser-run-persistent restored disk2
+  end
+
+Section: Persistent Event Loop
+
+  BrowserPersistState = record {
+    bps-browser : BrowserState,
+    bps-disk : DiskFactStore
+  }
+
+  browser-run-persistent : BrowserState, DiskFactStore -> [Console] Nothing
+  browser-run-persistent (state) (disk) = act
+    let ticked = browser-tick-media state 16
+    in let presented = if ticked.bs-dirty
+          then let fb = browser-render-frame ticked
+            in let w = browser-present ticked fb
+            in __record-set ticked "bs-dirty" False
+          else ticked
+    in ev <- browser-poll-event
+    in let handled = browser-dispatch-event presented ev
+    in let persisted = browser-check-persist handled disk state
+    in browser-run-persistent (persisted.bps-browser) (persisted.bps-disk)
+  end
+
+  browser-check-persist : BrowserState, DiskFactStore, BrowserState -> BrowserPersistState
+  browser-check-persist (after) (disk) (before) =
+    let nav-changed = history-count after.bs-history /= history-count before.bs-history
+    in let trust-changed = list-length after.bs-trust-store.ts-decisions /= list-length before.bs-trust-store.ts-decisions
+    in if nav-changed | trust-changed
+      then let new-disk = browser-persist-save disk after.bs-history after.bs-trust-store 0
+        in let logged = if nav-changed
+              then app-log-info new-disk "browser" "Navigation recorded" 0
+              else app-log-info new-disk "browser" "Trust decision saved" 0
+        in BrowserPersistState { bps-browser = after, bps-disk = logged }
+      else BrowserPersistState { bps-browser = after, bps-disk = disk }

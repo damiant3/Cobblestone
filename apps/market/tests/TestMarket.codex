@@ -1,0 +1,158 @@
+Chapter: TestMarket
+  cites Market chapter MarketTypes
+  cites Market chapter MarketDb
+  cites Market chapter MarketAuth
+  cites Market chapter MarketCatalog
+  cites Market chapter MarketCart
+  cites Market chapter MarketTax
+  cites Market chapter MarketPayment
+  cites Market chapter MarketHtml
+  cites Market chapter MarketWeb
+  cites Foreword chapter Maybe
+
+ Test suite for the Market e-commerce modules.
+
+Section: Test Helpers
+
+  assert-eq : Text, Integer, Integer -> Text
+  assert-eq (name) (expected) (actual) =
+    if expected == actual then "PASS: " & name
+    else "FAIL: " & name & " (expected " & show expected & ", got " & show actual & ")"
+
+  assert-true : Text, Boolean -> Text
+  assert-true (name) (val) =
+    if val then "PASS: " & name
+    else "FAIL: " & name
+
+  assert-text-eq : Text, Text, Text -> Text
+  assert-text-eq (name) (expected) (actual) =
+    if expected == actual then "PASS: " & name
+    else "FAIL: " & name & " (expected " & expected & ", got " & actual & ")"
+
+Section: Money Tests
+
+  test-money : Text
+  test-money =
+    let m1 = money-usd 1999
+    in let m2 = money-usd 500
+    in let sum = money-add m1 m2
+    in let mul = money-mul m1 3
+    in assert-eq "money-add" 2499 (sum.amount) & "\n" &
+    assert-eq "money-mul" 5997 (mul.amount) & "\n" &
+    assert-text-eq "format-money" "USD 19.99" (format-money m1)
+
+Section: Tax Tests
+
+  test-tax : Text
+  test-tax =
+    let rules = [tax-rule "US" 800 "Sales Tax"]
+    in let subtotal = money-usd 10000
+    in let result = calc-tax rules subtotal "US"
+    in assert-eq "tax-amount" 800 (result.tax-amount.amount) & "\n" &
+    assert-eq "tax-lines" 1 (list-length (result.tax-lines))
+
+Section: Cart Tests
+
+  test-cart : Text
+  test-cart =
+    let c = cart-new "c1" "user1" 100
+    in let c2 = add-to-cart c "prod1" "var1" (money-usd 2999) 2 100
+    in let c3 = add-to-cart c2 "prod2" "var2" (money-usd 1500) 1 100
+    in let subtotal = cart-subtotal c3
+    in assert-eq "cart-items" 2 (list-length (c3.cart-items)) & "\n" &
+    assert-eq "cart-subtotal" 7498 (subtotal.amount) & "\n" &
+    assert-eq "cart-item-count" 3 (cart-item-count c3) & "\n" &
+    let c4 = remove-from-cart c3 "prod1" "var1" 100
+    in assert-eq "cart-after-remove" 1 (list-length (c4.cart-items))
+
+Section: Catalog Tests
+
+  test-catalog : Text
+  test-catalog =
+    let st = market-init default-store-config
+    in let (st2, prod) = create-product st "Test Widget" "A test product." (money-usd 999) 0
+    in assert-true "product-created" (text-length (prod.product-id) > 0) & "\n" &
+    assert-text-eq "product-name" "Test Widget" (prod.product-name) & "\n" &
+    let prod2 = add-option-to-product prod (color-option standard-colors)
+    in assert-eq "options-count" 1 (list-length (prod2.product-options)) & "\n" &
+    let opt = list-at (prod2.product-options) 0
+    in assert-eq "colors-count" 5 (list-length (opt.option-choices)) & "\n" &
+    let prod3 = add-option-to-product prod2 (size-option standard-sizes)
+    in assert-eq "two-options" 2 (list-length (prod3.product-options))
+
+Section: Payment Tests
+
+  test-payment : Text
+  test-payment =
+    let cfg = test-processor
+    in let result = pay-charge cfg (money-usd 5000) "tok-valid"
+    in assert-true "pay-success" (when result.pay-status is PayCaptured -> True is otherwise -> False) & "\n" &
+    assert-eq "pay-amount" 5000 (result.pay-amount.amount) & "\n" &
+    let fail = pay-charge cfg (money-usd 1000) "fail-card"
+    in assert-true "pay-declined" (when fail.pay-status is PayFailed (m) -> True is otherwise -> False)
+
+Section: Checkout Tests
+
+  test-checkout : Text
+  test-checkout =
+    let st = market-init default-store-config
+    in let cart = cart-new "c1" "user1" 100
+    in let cart2 = add-to-cart cart "prod1" "var1" (money-usd 5000) 1 100
+    in let req = CheckoutRequest {
+      co-cart = cart2,
+      co-shipping = address-empty,
+      co-payment-token = "tok-ok",
+      co-tax-region = "US"
+    }
+    in let (st2, result) = checkout st req test-processor 100
+    in when result
+      is CheckoutSuccess (order) ->
+        assert-text-eq "order-status" "paid" (order-status-name (order.order-status)) & "\n" &
+        assert-eq "order-total" 5400 (order.order-total.amount)
+      is CheckoutFailed (msg) -> "FAIL: checkout should succeed: " & msg
+
+Section: HTML Tests
+
+  test-html : Text
+  test-html =
+    let cfg = default-store-config
+    in let p = Product {
+      product-id = "p1", product-name = "Widget", product-slug = "widget",
+      product-desc = "A widget", product-price = money-usd 999,
+      product-status = Active, product-options = [color-option standard-colors],
+      product-tags = [], product-image-url = "", product-weight-grams = 100,
+      product-created = 0, product-updated = 0
+    }
+    in let card = product-card p
+    in assert-true "card-has-name" (text-contains card "Widget") & "\n" &
+    assert-true "card-has-price" (text-contains card "9.99") & "\n" &
+    assert-true "card-has-colors" (text-contains card "5 Color")
+
+Section: Run All
+
+  opening : [Console] Nothing = act
+    print-line "=== Market Test Suite ==="
+    print-line ""
+    print-line "--- Money ---"
+    print-line test-money
+    print-line ""
+    print-line "--- Tax ---"
+    print-line test-tax
+    print-line ""
+    print-line "--- Cart ---"
+    print-line test-cart
+    print-line ""
+    print-line "--- Catalog ---"
+    print-line test-catalog
+    print-line ""
+    print-line "--- Payment ---"
+    print-line test-payment
+    print-line ""
+    print-line "--- Checkout ---"
+    print-line test-checkout
+    print-line ""
+    print-line "--- HTML ---"
+    print-line test-html
+    print-line ""
+    print-line "=== Done ==="
+  end

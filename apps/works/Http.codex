@@ -31,6 +31,30 @@ Section: Response Building
   http-error : Text -> HttpResponse
   http-error (msg) = HttpResponse { status = http-500, content-type = "text/plain", body = msg }
 
+Section: Binary Response
+
+  HttpBinaryResponse = record {
+    status : Text,
+    content-type : Text,
+    body-bytes : List Integer,
+    body-length : Integer
+  }
+
+  http-binary : Text, List Integer -> HttpBinaryResponse
+  http-binary (content-type) (bytes) = HttpBinaryResponse { status = http-200, content-type = content-type, body-bytes = bytes, body-length = list-length bytes }
+
+  http-binary-not-found : HttpBinaryResponse
+  http-binary-not-found = HttpBinaryResponse { status = http-404, content-type = "text/plain", body-bytes = http-text-to-ascii "404 Not Found", body-length = 13 }
+
+  http-encode-binary : HttpBinaryResponse -> List Integer
+  http-encode-binary (resp) =
+    let status-line = http-text-to-ascii ("HTTP/1.0 " & resp.status) & [13, 10]
+    in let h1 = http-text-to-ascii ("Content-Type: " & resp.content-type) & [13, 10]
+    in let h2 = http-text-to-ascii ("Content-Length: " & show (resp.body-length)) & [13, 10]
+    in let h3 = http-text-to-ascii "Connection: close" & [13, 10]
+    in let blank = [13, 10]
+    in status-line & h1 & h2 & h3 & blank & resp.body-bytes
+
 Section: Serialize Response
   http-encode : HttpResponse -> List Integer
   http-encode (resp) =
@@ -46,9 +70,16 @@ Section: Serialize Response
   http-text-to-ascii (s) = text-to-unicode-bytes s
 
 Section: Request Parsing
+
+ The body is everything after the CRLF CRLF blank line that ends the
+ header block, empty when the request has no body or no blank line.
+ Bare-LF requests are not recognized; senders must use CRLF per the
+ HTTP specification.
+
   HttpRequest = record {
     method : Text,
     path : Text,
+    body : Text,
     valid : Boolean
   }
 
@@ -56,10 +87,24 @@ Section: Request Parsing
   http-parse-request (bs) =
     let len = list-length bs
     in let sp1 = http-find-byte bs 32 0 len
-    in if sp1 >= len then HttpRequest { method = "", path = "", valid = False }
+    in if sp1 >= len then HttpRequest { method = "", path = "", body = "", valid = False }
     else let sp2 = http-find-byte bs 32 (sp1 + 1) len
     in let path-stop = if sp2 >= len then http-find-line-stop bs (sp1 + 1) len else sp2
-    in HttpRequest { method = http-bytes-to-text bs 0 sp1, path = http-bytes-to-text bs (sp1 + 1) path-stop, valid = True }
+    in let body-start = http-find-blank-line bs 0 len
+    in let body-text = if body-start >= len then "" else http-bytes-to-text bs body-start len
+    in HttpRequest { method = http-bytes-to-text bs 0 sp1, path = http-bytes-to-text bs (sp1 + 1) path-stop, body = body-text, valid = True }
+
+  http-find-blank-line : List Integer, Integer, Integer -> Integer
+  http-find-blank-line (bs) (i) (len) =
+    if i + 3 >= len then len
+    else if list-at bs i == 13 then
+      if list-at bs (i + 1) == 10 then
+        if list-at bs (i + 2) == 13 then
+          if list-at bs (i + 3) == 10 then i + 4
+          else http-find-blank-line bs (i + 1) len
+        else http-find-blank-line bs (i + 1) len
+      else http-find-blank-line bs (i + 1) len
+    else http-find-blank-line bs (i + 1) len
 
   http-find-byte : List Integer, Integer, Integer, Integer -> Integer
   http-find-byte (bs) (target) (i) (len) =

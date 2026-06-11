@@ -1,0 +1,146 @@
+Chapter: Screenshot
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter CvmmDisplay
+  cites Foreword chapter Maybe
+
+ Screenshot utility. Captures the current display framebuffer (or a
+ selected region) and stores it as an image. Supports full-screen,
+ region selection, window capture, and timed delay. Captured images
+ go into a gallery with metadata (timestamp, dimensions, source
+ window). This is the Snipping Tool of codex.OS.
+
+Section: Capture Mode
+
+  CaptureMode =
+    | CaptureFullScreen
+    | CaptureRegion (Integer) (Integer) (Integer) (Integer)
+    | CaptureWindow (Text)
+    | CaptureDelayed (Integer)
+
+  capture-mode-label : CaptureMode -> Text
+  capture-mode-label (m) = when m
+    is CaptureFullScreen -> "full screen"
+    is CaptureRegion (x) (y) (w) (h) -> "region " & show w & "x" & show h
+    is CaptureWindow (id) -> "window: " & id
+    is CaptureDelayed (secs) -> show secs & "s delay"
+
+Section: Screenshot Entry
+
+  ScreenshotEntry = record {
+    ss-id : Integer,
+    ss-width : Integer,
+    ss-height : Integer,
+    ss-mode : CaptureMode,
+    ss-timestamp : Integer,
+    ss-size : ByteSize,
+    ss-path : Text,
+    ss-thumbnail : Text
+  }
+
+  screenshot-new : Integer, Integer, Integer, CaptureMode, Integer -> ScreenshotEntry
+  screenshot-new (id) (w) (h) (mode) (ts) = ScreenshotEntry {
+    ss-id = id,
+    ss-width = w,
+    ss-height = h,
+    ss-mode = mode,
+    ss-timestamp = ts,
+    ss-size = bytes (w * h * 4),
+    ss-path = "/tmp/screenshot-" & show id & ".png",
+    ss-thumbnail = ""
+  }
+
+  ss-pixel-count : ScreenshotEntry -> Integer
+  ss-pixel-count (s) = s.ss-width * s.ss-height
+
+  ss-aspect : ScreenshotEntry -> Text
+  ss-aspect (s) =
+    let g = ss-gcd (s.ss-width) (s.ss-height)
+    in if g == 0 then "0:0"
+    else show (s.ss-width / g) & ":" & show (s.ss-height / g)
+
+  ss-gcd : Integer, Integer -> Integer
+  ss-gcd (a) (b) = if b == 0 then a else ss-gcd b (a - (a / b) * b)
+
+Section: Screenshot Gallery
+
+  ScreenshotGallery = record {
+    sg-entries : List ScreenshotEntry,
+    sg-count : Integer,
+    sg-next-id : Integer,
+    sg-selected : Integer,
+    sg-total-size : ByteSize
+  }
+
+  gallery-new : ScreenshotGallery
+  gallery-new = ScreenshotGallery {
+    sg-entries = [],
+    sg-count = 0,
+    sg-next-id = 1,
+    sg-selected = -1,
+    sg-total-size = bytes 0
+  }
+
+  gallery-capture : ScreenshotGallery, Integer, Integer, CaptureMode, Integer -> ScreenshotGallery
+  gallery-capture (g) (w) (h) (mode) (ts) =
+    let entry = screenshot-new (g.sg-next-id) w h mode ts
+    in ScreenshotGallery {
+      sg-entries = list-push (g.sg-entries) entry,
+      sg-count = g.sg-count + 1,
+      sg-next-id = g.sg-next-id + 1,
+      sg-selected = g.sg-count,
+      sg-total-size = bytes ((g.sg-total-size).bs-bytes + (entry.ss-size).bs-bytes)
+    }
+
+  gallery-delete : ScreenshotGallery, Integer -> ScreenshotGallery
+  gallery-delete (g) (id) =
+    let filtered = sg-filter (g.sg-entries) id 0 (g.sg-count) [] 0
+    in ScreenshotGallery {
+      sg-entries = filtered.sgf-entries,
+      sg-count = list-length (filtered.sgf-entries),
+      sg-next-id = g.sg-next-id,
+      sg-selected = if g.sg-selected >= list-length (filtered.sgf-entries) then -1 else g.sg-selected,
+      sg-total-size = bytes (filtered.sgf-size)
+    }
+
+  SgFilterResult = record { sgf-entries : List ScreenshotEntry, sgf-size : Integer }
+
+  sg-filter : List ScreenshotEntry, Integer, Integer, Integer, List ScreenshotEntry, Integer -> SgFilterResult
+  sg-filter (entries) (id) (i) (n) (acc) (size) =
+    if i >= n then SgFilterResult { sgf-entries = acc, sgf-size = size }
+    else let e = list-at entries i
+    in if e.ss-id == id then sg-filter entries id (i + 1) n acc size
+    else sg-filter entries id (i + 1) n (list-push acc e) (size + (e.ss-size).bs-bytes)
+
+  gallery-select : ScreenshotGallery, Integer -> ScreenshotGallery
+  gallery-select (g) (idx) = __record-set g "sg-selected" idx
+
+Section: Widget Building
+
+  ss-entry-widget : ScreenshotEntry, Integer -> WidgetNode
+  ss-entry-widget (e) (idx) =
+    let dims = widget-label ("ss-dim-" & show idx) (show (e.ss-width) & "x" & show (e.ss-height))
+    in let mode = widget-label ("ss-mode-" & show idx) (capture-mode-label (e.ss-mode))
+    in let size = widget-label ("ss-size-" & show idx) (format-bytes (e.ss-size))
+    in let del-btn = widget-button ("ss-del-" & show (e.ss-id)) "Delete"
+    in let copy-btn = widget-button ("ss-copy-" & show (e.ss-id)) "Copy"
+    in widget-panel ("ss-" & show idx) DirRow 8 [dims, mode, size, del-btn, copy-btn]
+
+  gallery-widget : ScreenshotGallery -> WidgetNode
+  gallery-widget (g) =
+    let title = widget-label "ss-title" "Screenshots"
+    in let summary = widget-label "ss-summary" (show (g.sg-count) & " captures, " & format-bytes (g.sg-total-size))
+    in let capture-btns = widget-toolbar "ss-toolbar" [
+      widget-button "ss-full" "Full Screen",
+      widget-button "ss-region" "Region",
+      widget-button "ss-window" "Window",
+      widget-button "ss-delay" "Delayed (3s)"
+    ]
+    in let rows = ss-rows (g.sg-entries) 0 (g.sg-count) []
+    in widget-panel "screenshots" DirColumn 4 ([title, summary, capture-btns] & rows)
+
+  ss-rows : List ScreenshotEntry, Integer, Integer, List WidgetNode -> List WidgetNode
+  ss-rows (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else ss-rows entries (i + 1) n (list-push acc (ss-entry-widget (list-at entries i) i))
+
+Page 1

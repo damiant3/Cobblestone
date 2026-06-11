@@ -1,0 +1,64 @@
+Chapter: MarketTax
+  cites Market chapter MarketTypes
+  cites Foreword chapter List
+
+ Tax calculation engine. Applies region-based tax rules to a cart
+ subtotal. Rates are in basis points (100 bps = 1%). Supports
+ multiple tax lines (state + county + city) and category exemptions.
+
+Section: Tax Calculation
+
+  calc-tax : List TaxRule, Money, Text -> TaxResult
+  calc-tax (rules) (subtotal) (region) =
+    let lines = apply-rules rules subtotal region []
+    in let total-tax = sum-tax-lines lines (money-zero (subtotal.currency))
+    in TaxResult { tax-amount = total-tax, tax-lines = lines }
+
+  apply-rules : List TaxRule, Money, Text, List TaxLine -> List TaxLine
+  apply-rules (rules) (subtotal) (region) (acc) =
+    if list-length rules == 0 then acc
+    else let rule = list-at rules 0
+    in let rest = list-tail rules
+    in if rule-matches rule region then
+      let amt = subtotal.amount * rule.tax-rate-bps / 10000
+      in let line = TaxLine {
+        tl-name = rule.tax-name,
+        tl-rate-bps = rule.tax-rate-bps,
+        tl-amount = money amt (subtotal.currency)
+      }
+      in apply-rules rest subtotal region (list-push acc line)
+    else apply-rules rest subtotal region acc
+
+  rule-matches : TaxRule, Text -> Boolean
+  rule-matches (rule) (region) =
+    if rule.tax-region == "all" then True
+    else rule.tax-region == region
+
+  sum-tax-lines : List TaxLine, Money -> Money
+  sum-tax-lines (lines) (acc) =
+    if list-length lines == 0 then acc
+    else sum-tax-lines (list-tail lines) (money-add acc (list-at lines 0).tl-amount)
+
+Section: Common Tax Presets
+
+  us-tax-rules : List TaxRule
+  us-tax-rules = [
+    tax-rule "US-CA" 725 "CA Sales Tax",
+    tax-rule "US-TX" 625 "TX Sales Tax",
+    tax-rule "US-NY" 800 "NY Sales Tax",
+    tax-rule "US-FL" 600 "FL Sales Tax",
+    tax-rule "US-WA" 650 "WA Sales Tax",
+    tax-rule "US-OR" 0 "OR No Sales Tax"
+  ]
+
+  eu-vat-rules : List TaxRule
+  eu-vat-rules = [
+    tax-rule "EU-DE" 1900 "DE VAT",
+    tax-rule "EU-FR" 2000 "FR TVA",
+    tax-rule "EU-NL" 2100 "NL BTW",
+    tax-rule "EU-ES" 2100 "ES IVA",
+    tax-rule "EU-IT" 2200 "IT IVA"
+  ]
+
+  simple-flat-tax : Integer, Text -> List TaxRule
+  simple-flat-tax (bps) (name) = [tax-rule "all" bps name]

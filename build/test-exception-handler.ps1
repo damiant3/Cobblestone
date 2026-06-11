@@ -46,7 +46,7 @@ foreach ($s in $samples) {
         continue
     }
 
-    $run = Start-VmRun -Kernel $cdx -ConnectTimeoutSec 5 -MemMB 2048
+    $run = Start-VmRun -Kernel $cdx -ConnectTimeoutSec 5 -MemMB 3072
     if (-not $run) {
         Write-Host "FAIL (vm start)"
         $fail++

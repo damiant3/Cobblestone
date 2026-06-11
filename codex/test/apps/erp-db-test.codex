@@ -1,0 +1,65 @@
+Chapter: ErpDbTest
+  cites Codex chapter General
+  cites Foreword chapter Tuple
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+
+ Kill-and-rebuild: builds a ledger, posts entries through the
+ write-through path, then reconstructs a fresh ledger from the
+ persisted Codex DB tables alone and requires the rebuilt trial
+ balance to reproduce the original exactly. The test stays on the
+ FinGL closure; the full scenario closure does not fit the batch
+ compiler's 2048 MB heap.
+
+Section: Setup
+
+  db-je : Text, Text, Text, Integer -> JournalEntry
+  db-je (id) (debit-acct) (credit-acct) (amount) =
+    JournalEntry {
+      je-id = id, je-company = "DEMO", je-date = 20260615,
+      je-period = 6, je-year = 2026, je-description = id,
+      je-lines = [journal-line-debit debit-acct amount "" "d", journal-line-credit credit-acct amount "" "c"],
+      je-source = SrcManual, je-posted = False, je-reversed = False,
+      je-reversal-of = "", je-created-by = "test", je-approved-by = "",
+      je-created = 0
+    }
+
+  post-one : GlState, JournalEntry -> GlState
+  post-one (st) (je) =
+    when post-journal st je
+      is (st2, r) -> st2
+
+  built-state : GlState =
+    let st = gl-init "DEMO"
+    in let st2 = load-standard-coa st
+    in let st3 = __record-set st2 "gl-periods" [FiscalPeriod { fp-year = 2026, fp-period = 6, fp-company = "DEMO", fp-start-date = 20260601, fp-end-date = 20260630, fp-status = PeriodOpen }]
+    in let st4 = post-one st3 (db-je "JE-1" "1000" "3000" 250000)
+    in let st5 = post-one st4 (db-je "JE-2" "1000" "4000" 90000)
+    in post-one st5 (db-je "JE-3" "6200" "1000" 30000)
+
+Section: Body
+
+  bool-word : Boolean -> Text
+  bool-word (b) = if b then "True" else "False"
+
+  tb-report : Text, GlState -> Text
+  tb-report (label) (st) =
+    let tb = trial-balance st
+    in let head = label & ": lines=" & show (list-length tb)
+    in head & " debits=" & show (tb-total-debits tb) & " credits=" & show (tb-total-credits tb)
+
+  opening : [Console] Nothing = act
+    let st = built-state
+    in let rebuilt = gl-rebuild-from-db (st.gl-db) "DEMO"
+    in let tb1 = trial-balance st
+    in let tb2 = trial-balance rebuilt
+    in let same-totals = tb-total-debits tb1 == tb-total-debits tb2 & tb-total-credits tb1 == tb-total-credits tb2
+    in let same-lines = list-length tb1 == list-length tb2
+    in let same-cash = get-balance st "1000" == get-balance rebuilt "1000"
+    in let same-rent = get-balance st "6200" == get-balance rebuilt "6200"
+    in act
+      print-line-uni (tb-report "original" st)
+      print-line-uni (tb-report "rebuilt" rebuilt)
+      print-line-uni ("identical: totals=" & bool-word same-totals & " lines=" & bool-word same-lines & " cash=" & bool-word same-cash & " rent=" & bool-word same-rent)
+    end
+  end

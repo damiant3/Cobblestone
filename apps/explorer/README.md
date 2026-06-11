@@ -1,158 +1,32 @@
 # Codex Explorer
 
-Data-driven web applications on the Codex platform. Users own
-their theme and layout — we provide the widgets, they arrange them.
+A data-driven, browser-based world-building and game-asset design suite. Users design fantasy items, characters, settings, and worlds; the compiler — not hand-written JavaScript — produces all client-side logic. The bare-metal server compiles to a CDX binary.
 
-## Architecture
+## Modules
 
-```
-Codex source (.codex)
-    |
-    v
-Compiler (IR-CCE mode)
-    |
-    v
-HTML plug CDX (codex/plugs/html/)
-    |
-    v
-Self-contained HTML page
-    |  - Theme CSS from inject-theme-css
-    |  - Widget tree from mount-widget-themed
-    |  - AJAX via fetch-then / fetch-get-then
-    |  - Events via dom-on-click / dom-on-input / dom-on-key
-    |  - Reactive rendering via set-render / state-set-render
-    |  - Dialogs via show-alert / show-confirm / show-prompt
-    |  - Animation via css-animate-spin / pulse / bounce
-    |  - Accessibility via dom-set-role / dom-set-aria
-    v
-Browser
-```
+- **ExplorerTheme** — Shared dark-gold theme; derives all CSS from a Theme record at runtime
+- **ExplorerData** — Single source of truth for all content: 31 item types, materials, rarities, races, classes, biomes, enchantments
+- **ExplorerStore** — Custom binary paged store (4 KB pages, CCE-native, little-endian) for the bare-metal server
+- **ExplorerDb** — Relational schema (7 tables) declared with the Codex Data quire
+- **ExplorerServer** — Bare-metal CDX HTTP server with JSON API, per-user creations (save/delete/remix/export-md), Accounts auth
+- **AuthClient** — Reusable login/register/logout widget compiled to JavaScript
+- **ItemDesignerApp** — 8-dimension item prompt builder
+- **CharDesignerApp** — 5-dimension character prompt builder
+- **SettingDesignerApp** — 5-dimension setting/world prompt builder
+- **CardDesignerApp + CardEmitter** — Card dimension explorer; lowers WorldModel entities into CardTemplate objects
+- **WorldModel + Emitters** — System-neutral game-entity abstraction; emitters lower to Stable Diffusion prompt, D&D 5e stat block, and MTG card
+- **ExcaliburSlice** — Vertical demo slice: Excalibur and Merlin rendered through all three emitters
+- **NameForge** — Seeded deterministic name generator for people, settlements, kingdoms, regions, and natural features
+- **StoryGraph** — Procedural branching story generator: archetype x motif x seed = deterministic saga graph
+- **WorldForge** — Browser SPA: picks seed + archetype + motif, runs NameForge and StoryGraph client-side
+- **CreationsApp** — Account-owned world builder + community gallery
+- **WorkflowExporter** — Builds ComfyUI multi-node pipeline JSON for layered image generation
+- **VoiceStudio** — Voice synthesis UI with character voice profiles and emotion controls
 
-## File Inventory
+## Completeness
 
-### Shared Chapters
+70% — The core pipeline is functional end-to-end: server compiles and serves, designer apps are DB-backed, NameForge/StoryGraph/WorldForge run in the browser, AuthClient and the creations API work. The ExcaliburSlice demo is complete. Gaps: VoiceStudio has no TTS backend, WorkflowExporter download/launch path not integrated, CardDesignerApp interactive flow partially wired, no test harness.
 
-| File | Purpose |
-|------|---------|
-| `ExplorerTheme.codex` | Theme types (inlined from foreword UI), dark-gold theme, DOM stubs, CSS components, shared nav/dropdown builders |
-| `ExplorerData.codex` | All content data — items, materials, rarities, races, classes, biomes, etc. |
-| `ExplorerDb.codex` | Database schema (7 tables), bootstrap, seed rows |
+## Codex Conformance
 
-### Page Files (compiled through the HTML plug)
-
-| File | Purpose |
-|------|---------|
-| `ItemDesignerApp.codex` | Item prompt builder, 8-dimension mega-menu |
-| `CharDesignerApp.codex` | Character prompt builder, 5-dimension controls |
-| `SettingDesignerApp.codex` | Setting prompt builder, 5-dimension controls |
-| `CardDesignerPage.codex` | Card dimension explorer |
-| `WidgetDemo.codex` | End-to-end demo of the widget stack |
-
-### Server
-
-| File | Purpose |
-|------|---------|
-| `ExplorerServer.codex` | Bare-metal CDX server, JSON API over serial |
-| `server.ps1` | PowerShell HTTP bridge, SD API proxy |
-
-## How to Build a Page
-
-### 1. Create your .codex file
-
-```codex
-Chapter: MyPage
-  cites Explorer chapter ExplorerTheme
-  cites Explorer chapter ExplorerData
-```
-
-Cite `ExplorerTheme` for the theme, DOM stubs, widget constructors,
-and CSS components. Cite `ExplorerData` for content data.
-
-### 2. Build through the HTML plug
-
-```powershell
-# Build the plug CDX (once)
-pwsh codex/plugs/html/build.ps1
-
-# Build your page
-pwsh codex/plugs/html/run.ps1 -Src apps/explorer/MyPage.codex -Out pages/my-page.html
-```
-
-### 3. Use the widget stack
-
-```codex
-  opening : [Console] Nothing = act
-    let theme = inject-theme-css dark-gold
-    in let s = set-render (my-render)
-    in let r = my-render 0
-    in print-line ""
-  end
-
-  my-render : Integer -> Integer
-  my-render (x) =
-    let tree = widget-panel "root" DirColumn 8 [
-      widget-label "title" "My App",
-      widget-button "go" "Click Me"
-    ]
-    in let m = mount-widget-themed dark-gold tree
-    in let btn = dom-get "go"
-    in let b2 = dom-on-click btn (on-go)
-    in 0
-
-  on-go : Text -> Integer
-  on-go (id) = show-alert "Hi" "Button clicked!" (done)
-
-  done : Text -> Integer
-  done (r) = 0
-```
-
-## Available Builtins
-
-### DOM
-`dom-get`, `dom-create`, `dom-set-attr`, `dom-set-text`,
-`dom-set-html`, `dom-get-value`, `dom-set-value`, `dom-append`,
-`dom-prepend`, `dom-remove`, `dom-add-class`, `dom-remove-class`,
-`dom-set-style`, `dom-on`, `dom-query`, `dom-body`
-
-### Widget Rendering
-`mount-widget`, `mount-widget-themed`, `widget-panel`,
-`widget-label`, `widget-button`, `widget-input`, `widget-gauge`,
-`widget-separator`
-
-### Events
-`dom-on-click` (callback receives element ID),
-`dom-on-input` (callback receives current value),
-`dom-on-key` (callback receives key name)
-
-### AJAX
-`fetch-json` (returns Promise), `fetch-then` (callback-based),
-`fetch-get-then`, `json-stringify`, `json-parse`
-
-### State + Reactive Rendering
-`state-get`, `state-set`, `state-get-text`, `state-set-text`,
-`set-render` (register render function),
-`state-set-render` (set + trigger render),
-`state-set-text-render`, `request-render`
-
-### Dialogs
-`show-alert` (title, message, callback),
-`show-confirm` (title, message, callback — result "ok" or "cancel"),
-`show-prompt` (title, message, placeholder, callback — result is input text or ""),
-`close-dialog`
-
-### Animation
-`css-animate-spin` (element, period-ms),
-`css-animate-pulse`, `css-animate-bounce`,
-`css-transition` (element, property, duration-ms)
-
-### Accessibility
-`dom-set-role` (element, role string),
-`dom-set-aria` (element, attribute name, value)
-
-### Theme
-`inject-theme-css` (Theme record — generates CSS custom properties),
-`theme-to-css` (Theme → CSS text), `int-to-css-color` (Integer → hex)
-
-### Other
-`random-int`, `set-timeout`, `local-storage-get`, `local-storage-set`,
-`next-card-id`, `generate-image`, `check-sd-status`
+Full — All modules are written in Codex. Client-side logic is emitted through the HTML plug CDX. The bare-metal server is a CDX binary. No hand-written JavaScript; backend and browser implementations derive from the same Codex source.

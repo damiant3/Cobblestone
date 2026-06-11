@@ -1,0 +1,514 @@
+Chapter: ChatPage
+  cites Chat chapter ChatTheme
+  cites UI chapter Layout
+
+ Main chat interface. Left sidebar with conversation list,
+ right panel with messages and compose bar.
+
+ We say:
+
+Section: State Keys
+
+  sk-view : Text = "view"
+  sk-my-name : Text = "my-name"
+  sk-active-conv : Text = "active-conv"
+  sk-conv-count : Text = "conv-count"
+  sk-msg-count : Text = "msg-count"
+  sk-compose : Text = "compose-text"
+  sk-ws-status : Text = "ws-status"
+  sk-contact-count : Text = "contact-count"
+  sk-call-active : Text = "call-active"
+  sk-call-name : Text = "call-name"
+  sk-call-state : Text = "call-state"
+
+Section: Sidebar
+
+  sidebar-tree : Integer -> WidgetNode
+  sidebar-tree (x) =
+    let view = state-get sk-view
+    in widget-box "sidebar" "sidebar" [
+      widget-box "sidebar-hdr" "sidebar-hdr" [
+        widget-add-child (widget-custom "brand" "box:brand" 0 0) (widget-label "brand-t" "CodexChat"),
+        widget-button "new-conv" "+"
+      ],
+      widget-box "search-box" "sidebar-search" [
+        widget-add-child (widget-custom "search" "input" 0 0) (widget-label "search-p" "Search...")
+      ],
+      conv-list-or-contacts view,
+      nav-tabs view
+    ]
+
+  conv-list-or-contacts : Integer -> WidgetNode
+  conv-list-or-contacts (view) =
+    if view == 1 then contacts-list 0
+    else if view == 2 then settings-panel 0
+    else conv-list 0
+
+  conv-list : Integer -> WidgetNode
+  conv-list (x) =
+    let count = state-get sk-conv-count
+    in if count == 0 then widget-box "conv-list" "conv-list" [
+        widget-label "no-convs" "No conversations yet"
+      ]
+    else widget-box "conv-list" "conv-list" (build-conv-items 0 count [])
+
+  build-conv-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  build-conv-items (i) (count) (acc) =
+    if i >= count then acc
+    else let name = state-get-text ("conv-name-" & show i)
+    in let preview = state-get-text ("conv-preview-" & show i)
+    in let time = state-get-text ("conv-time-" & show i)
+    in let unread = state-get ("conv-unread-" & show i)
+    in let active = state-get sk-active-conv
+    in let item = widget-box ("conv-" & show i) (if active == i then "conv-item active" else "conv-item") [
+      widget-add-child (widget-custom ("ca-" & show i) "box:conv-avatar" 0 0) (widget-label ("cai-" & show i) (text-take name 1)),
+      widget-box ("ci-" & show i) "conv-info" [
+        widget-label ("cn-" & show i) name,
+        widget-label ("cp-" & show i) preview
+      ],
+      widget-box ("cm-" & show i) "conv-meta" [
+        widget-label ("ct-" & show i) time
+      ]
+    ]
+    in build-conv-items (i + 1) count (list-push acc item)
+
+  text-take : Text, Integer -> Text
+  text-take (s) (n) = if text-length s < n then s else text-sub s 0 n
+
+  text-sub : Text, Integer, Integer -> Text
+  text-sub (s) (start) (len) = text-sub-loop s start (start + len) ""
+
+  text-sub-loop : Text, Integer, Integer, Text -> Text
+  text-sub-loop (s) (i) (stop) (acc) =
+    if i >= stop then acc
+    else if i >= text-length s then acc
+    else text-sub-loop s (i + 1) stop (acc & char-to-text (char-at s i))
+
+  contacts-list : Integer -> WidgetNode
+  contacts-list (x) =
+    let count = state-get sk-contact-count
+    in widget-box "contact-list" "conv-list" (build-contact-items 0 count [])
+
+  build-contact-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  build-contact-items (i) (count) (acc) =
+    if i >= count then acc
+    else let name = state-get-text ("ct-name-" & show i)
+    in let online = state-get ("ct-online-" & show i)
+    in let item = widget-box ("ct-" & show i) "contact-item" [
+      widget-add-child (widget-custom ("cta-" & show i) "box:conv-avatar" 0 0) (widget-label ("ctai-" & show i) (text-take name 1)),
+      widget-label ("ctn-" & show i) name,
+      widget-add-child (widget-custom ("cts-" & show i) ("box:contact-status " & if online == 1 then "online" else "offline") 0 0) (widget-label ("ctsl-" & show i) "")
+    ]
+    in build-contact-items (i + 1) count (list-push acc item)
+
+  settings-panel : Integer -> WidgetNode
+  settings-panel (x) =
+    let name = state-get-text sk-my-name
+    in widget-box "settings" "conv-list" [
+      widget-box "s-profile" "settings-section" [
+        widget-label "s-title" "Profile",
+        widget-label "s-name" name
+      ],
+      widget-box "s-security" "settings-section" [
+        widget-label "ss-title" "Security",
+        widget-label "ss-desc" "Messages are end-to-end encrypted.",
+        widget-label "ss-fp" "Your identity key fingerprint will appear here."
+      ],
+      widget-box "s-about" "settings-section" [
+        widget-label "sa-title" "About",
+        widget-label "sa-ver" "CodexChat v0.1.0",
+        widget-label "sa-info" "Built on Codex. No borrowed runtime."
+      ]
+    ]
+
+  nav-tabs : Integer -> WidgetNode
+  nav-tabs (view) =
+    widget-box "nav" "nav-tabs" [
+      widget-set-state (widget-button "nav-chats" "&#x1F4AC;") (if view == 0 then 2 else 0),
+      widget-set-state (widget-button "nav-contacts" "&#x1F464;") (if view == 1 then 2 else 0),
+      widget-set-state (widget-button "nav-settings" "&#x2699;") (if view == 2 then 2 else 0)
+    ]
+
+Section: Chat Area
+
+  chat-area-tree : Integer -> WidgetNode
+  chat-area-tree (x) =
+    let active = state-get sk-active-conv
+    in if active < 0 then empty-chat 0
+    else let name = state-get-text ("conv-name-" & show active)
+    in widget-box "chat-area" "chat-area" [
+      chat-header name,
+      messages-area 0,
+      compose-bar 0
+    ]
+
+  empty-chat : Integer -> WidgetNode
+  empty-chat (x) =
+    widget-box "chat-area" "chat-area" [
+      widget-box "empty" "empty-chat" [
+        widget-label "empty-icon" "&#x1F512;",
+        widget-label "empty-h" "CodexChat",
+        widget-label "empty-p" "End-to-end encrypted messaging. Select a conversation or start a new one."
+      ]
+    ]
+
+  chat-header : Text -> WidgetNode
+  chat-header (name) =
+    widget-box "chat-hdr" "chat-hdr" [
+      widget-add-child (widget-custom "ch-avatar" "box:chat-hdr-avatar" 0 0) (widget-label "ch-ai" (text-take name 1)),
+      widget-box "ch-info" "chat-hdr-info" [
+        widget-label "ch-name" name,
+        widget-label "ch-status" "online"
+      ],
+      widget-box "ch-actions" "chat-hdr-actions" [
+        widget-button "call-voice" "&#x1F4DE;",
+        widget-button "call-video" "&#x1F4F9;",
+        widget-button "chat-menu" "&#x22EE;"
+      ]
+    ]
+
+  messages-area : Integer -> WidgetNode
+  messages-area (x) =
+    let count = state-get sk-msg-count
+    in widget-box "messages" "messages" (
+      [widget-label "enc-notice" "Messages are end-to-end encrypted. No one outside of this chat can read them."]
+      & build-msg-items 0 count []
+    )
+
+  build-msg-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  build-msg-items (i) (count) (acc) =
+    if i >= count then acc
+    else let body = state-get-text ("msg-body-" & show i)
+    in let sender = state-get-text ("msg-sender-" & show i)
+    in let time = state-get-text ("msg-time-" & show i)
+    in let is-me = state-get ("msg-mine-" & show i)
+    in let row = widget-box ("mr-" & show i) (if is-me == 1 then "msg-row sent" else "msg-row recv") [
+      widget-box ("mb-" & show i) "msg-bubble" [
+        widget-label ("mt-" & show i) body
+      ],
+      widget-label ("mti-" & show i) time
+    ]
+    in build-msg-items (i + 1) count (list-push acc row)
+
+  compose-bar : Integer -> WidgetNode
+  compose-bar (x) =
+    widget-box "compose" "compose" [
+      widget-add-child (widget-custom "msg-input" "input" 0 0) (widget-label "msg-placeholder" "Message"),
+      widget-button "send-btn" "&#x27A4;"
+    ]
+
+Section: Call Overlay
+
+  call-overlay : Integer -> WidgetNode
+  call-overlay (x) =
+    let active = state-get sk-call-active
+    in if active == 0 then widget-label "no-call" ""
+    else let name = state-get-text sk-call-name
+    in let call-state = state-get-text sk-call-state
+    in widget-box "call-screen" "call-screen" [
+      widget-add-child (widget-custom "call-av" "box:call-avatar" 0 0) (widget-label "call-avi" (text-take name 1)),
+      widget-label "call-name" name,
+      widget-label "call-status" call-state,
+      widget-box "call-btns" "call-actions" [
+        widget-button "call-mute" "&#x1F507;",
+        widget-button "call-end" "&#x1F534;",
+        widget-button "call-vid" "&#x1F4F7;"
+      ]
+    ]
+
+Section: Root
+
+  page-tree : Integer -> WidgetNode
+  page-tree (x) =
+    widget-panel "root" DirRow 0 [
+      sidebar-tree 0,
+      chat-area-tree 0,
+      call-overlay 0
+    ]
+
+Section: Handlers
+
+  chat-click : Text -> Integer
+  chat-click (id) =
+    if id == "nav-chats" then let s = state-set-render sk-view 0 in 0
+    else if id == "nav-contacts" then let s = state-set-render sk-view 1 in 0
+    else if id == "nav-settings" then let s = state-set-render sk-view 2 in 0
+    else if id == "send-btn" then send-message 0
+    else if id == "new-conv" then new-conversation 0
+    else if id == "call-voice" then start-call "audio"
+    else if id == "call-video" then start-call "video"
+    else if id == "call-end" then end-call 0
+    else if id == "call-mute" then toggle-mute 0
+    else if text-starts-with id "conv-" then select-conv id
+    else if text-starts-with id "ct-" then select-contact id
+    else 0
+
+  text-starts-with : Text, Text -> Boolean
+  text-starts-with (s) (p) =
+    if text-length p > text-length s then False
+    else text-sub s 0 (text-length p) == p
+
+  send-message : Integer -> Integer
+  send-message (x) =
+    let msg = state-get-text sk-compose
+    in if msg == "" then 0
+    else let active = state-get sk-active-conv
+    in if active < 0 then 0
+    else let conv-id = state-get-text ("conv-id-" & show active)
+    in let body = url-encode msg
+    in let tok = state-get-text "token"
+    in let r = fetch-then ("/api/chat/send?t=" & tok & "&to=" & conv-id & "&body=" & body) "POST" "" send-cb
+    in let s = state-set-text-render sk-compose ""
+    in 0
+
+  send-cb : Text -> Integer
+  send-cb (resp) =
+    let r = load-messages 0
+    in request-render 0
+
+  new-conversation : Integer -> Integer
+  new-conversation (x) =
+    show-prompt "New Conversation" "Enter username:" "username" new-conv-cb
+
+  new-conv-cb : Text -> Integer
+  new-conv-cb (name) =
+    if name == "" then 0
+    else let tok = state-get-text "token"
+    in let r = fetch-get-then ("/api/chat/start?t=" & tok & "&with=" & url-encode name) start-conv-cb
+    in 0
+
+  start-conv-cb : Text -> Integer
+  start-conv-cb (resp) =
+    let r = load-conversations 0
+    in request-render 0
+
+  select-conv : Text -> Integer
+  select-conv (id) =
+    let idx-text = text-sub id 5 (text-length id - 5)
+    in let idx = text-to-int idx-text
+    in let s = state-set-render sk-active-conv idx
+    in load-messages 0
+
+  text-to-int : Text -> Integer
+  text-to-int (s) = text-to-int-loop s 0 0
+
+  text-to-int-loop : Text, Integer, Integer -> Integer
+  text-to-int-loop (s) (i) (acc) =
+    if i >= text-length s then acc
+    else let c = char-code (char-at s i)
+    in if c >= 48 then if c <= 57 then text-to-int-loop s (i + 1) (acc * 10 + c - 48) else acc
+    else acc
+
+  select-contact : Text -> Integer
+  select-contact (id) = 0
+
+  start-call : Text -> Integer
+  start-call (call-type) =
+    let active = state-get sk-active-conv
+    in if active < 0 then 0
+    else let name = state-get-text ("conv-name-" & show active)
+    in let s1 = state-set-text sk-call-name name
+    in let s2 = state-set-text sk-call-state "Calling..."
+    in let s3 = state-set-render sk-call-active 1
+    in 0
+
+  end-call : Integer -> Integer
+  end-call (x) =
+    let s = state-set-render sk-call-active 0
+    in 0
+
+  toggle-mute : Integer -> Integer
+  toggle-mute (x) = 0
+
+Section: Data Loading
+
+  load-conversations : Integer -> Integer
+  load-conversations (x) =
+    let tok = state-get-text "token"
+    in fetch-get-then ("/api/chat/conversations?t=" & tok) convs-cb
+
+  convs-cb : Text -> Integer
+  convs-cb (resp) =
+    let obj = json-parse-obj resp
+    in let count-str = json-obj-field obj "count"
+    in let count = text-to-int count-str
+    in let s = state-set sk-conv-count count
+    in load-conv-details 0 count resp
+
+  load-conv-details : Integer, Integer, Text -> Integer
+  load-conv-details (i) (count) (resp) =
+    if i >= count then request-render 0
+    else let obj = json-parse-obj resp
+    in let name = json-obj-field obj ("name-" & show i)
+    in let preview = json-obj-field obj ("preview-" & show i)
+    in let time = json-obj-field obj ("time-" & show i)
+    in let conv-id = json-obj-field obj ("id-" & show i)
+    in let s1 = state-set-text ("conv-name-" & show i) name
+    in let s2 = state-set-text ("conv-preview-" & show i) preview
+    in let s3 = state-set-text ("conv-time-" & show i) time
+    in let s4 = state-set-text ("conv-id-" & show i) conv-id
+    in load-conv-details (i + 1) count resp
+
+  load-messages : Integer -> Integer
+  load-messages (x) =
+    let active = state-get sk-active-conv
+    in if active < 0 then 0
+    else let tok = state-get-text "token"
+    in let conv-id = state-get-text ("conv-id-" & show active)
+    in fetch-get-then ("/api/chat/messages?t=" & tok & "&conv=" & conv-id) msgs-cb
+
+  msgs-cb : Text -> Integer
+  msgs-cb (resp) =
+    let obj = json-parse-obj resp
+    in let count-str = json-obj-field obj "count"
+    in let count = text-to-int count-str
+    in let s = state-set sk-msg-count count
+    in load-msg-details 0 count resp
+
+  load-msg-details : Integer, Integer, Text -> Integer
+  load-msg-details (i) (count) (resp) =
+    if i >= count then request-render 0
+    else let obj = json-parse-obj resp
+    in let body = json-obj-field obj ("body-" & show i)
+    in let sender = json-obj-field obj ("sender-" & show i)
+    in let time = json-obj-field obj ("time-" & show i)
+    in let mine = json-obj-field obj ("mine-" & show i)
+    in let s1 = state-set-text ("msg-body-" & show i) body
+    in let s2 = state-set-text ("msg-sender-" & show i) sender
+    in let s3 = state-set-text ("msg-time-" & show i) time
+    in let s4 = state-set ("msg-mine-" & show i) (if mine == "1" then 1 else 0)
+    in load-msg-details (i + 1) count resp
+
+  load-contacts : Integer -> Integer
+  load-contacts (x) =
+    let tok = state-get-text "token"
+    in fetch-get-then ("/api/chat/contacts?t=" & tok) contacts-cb
+
+  contacts-cb : Text -> Integer
+  contacts-cb (resp) =
+    let obj = json-parse-obj resp
+    in let count-str = json-obj-field obj "count"
+    in let count = text-to-int count-str
+    in let s = state-set sk-contact-count count
+    in load-contact-details 0 count resp
+
+  load-contact-details : Integer, Integer, Text -> Integer
+  load-contact-details (i) (count) (resp) =
+    if i >= count then request-render 0
+    else let obj = json-parse-obj resp
+    in let name = json-obj-field obj ("name-" & show i)
+    in let s1 = state-set-text ("ct-name-" & show i) name
+    in let s2 = state-set ("ct-online-" & show i) 0
+    in load-contact-details (i + 1) count resp
+
+Section: Auth
+
+  check-auth : Integer -> Integer
+  check-auth (x) =
+    let tok = local-storage-get "chat_token"
+    in if tok == "" then show-login 0
+    else let s = state-set-text "token" tok
+    in let r = fetch-get-then ("/api/chat/me?t=" & url-encode tok) me-cb
+    in 0
+
+  me-cb : Text -> Integer
+  me-cb (resp) =
+    let obj = json-parse-obj resp
+    in let name = json-obj-field obj "name"
+    in let err = json-obj-field obj "error"
+    in if name == "" then show-login 0
+    else let s = state-set-text sk-my-name name
+    in let r = load-conversations 0
+    in let r2 = load-contacts 0
+    in request-render 0
+
+  show-login : Integer -> Integer
+  show-login (x) =
+    show-prompt "Welcome to CodexChat" "Choose a username:" "your name" login-cb
+
+  login-cb : Text -> Integer
+  login-cb (name) =
+    if name == "" then show-login 0
+    else let r = fetch-get-then ("/api/chat/register?name=" & url-encode name) register-cb
+    in 0
+
+  register-cb : Text -> Integer
+  register-cb (resp) =
+    let obj = json-parse-obj resp
+    in let tok = json-obj-field obj "token"
+    in if tok == "" then show-login 0
+    else let s1 = local-storage-set "chat_token" tok
+    in let s2 = state-set-text "token" tok
+    in let r = check-auth 0
+    in 0
+
+Section: Entry
+
+  wire-compose : Integer -> Integer
+  wire-compose (x) =
+    let el = dom-get "msg-input"
+    in let w = dom-on-input el on-compose-input
+    in let el2 = dom-on-key el on-compose-key
+    in 0
+
+  on-compose-input : Text -> Integer
+  on-compose-input (val) =
+    let s = state-set-text sk-compose val
+    in 0
+
+  on-compose-key : Text -> Integer
+  on-compose-key (key) =
+    if key == "Enter" then send-message 0
+    else 0
+
+  wire-conv-clicks : Integer -> Integer
+  wire-conv-clicks (x) =
+    let count = state-get sk-conv-count
+    in wire-conv-click-loop 0 count
+
+  wire-conv-click-loop : Integer, Integer -> Integer
+  wire-conv-click-loop (i) (count) =
+    if i >= count then 0
+    else let el = dom-get ("conv-" & show i)
+    in let w = dom-on-click el on-conv-list-click
+    in wire-conv-click-loop (i + 1) count
+
+  on-conv-list-click : Text -> Integer
+  on-conv-list-click (id) =
+    if text-starts-with id "conv-" then select-conv id
+    else 0
+
+  scroll-messages : Integer -> Integer
+  scroll-messages (x) =
+    let el = dom-get "messages"
+    in let s = dom-set-style el "scrollBehavior" "smooth"
+    in 0
+
+  render-chat : Integer -> Integer
+  render-chat (x) =
+    let m = mount-widget-themed chat-theme (page-tree 0)
+    in let w = wire-compose 0
+    in let w2 = wire-conv-clicks 0
+    in let sc = scroll-messages 0
+    in 0
+
+  poll-messages : Integer -> Integer
+  poll-messages (x) =
+    let active = state-get sk-active-conv
+    in if active < 0 then set-timeout poll-messages 3000
+    else let r = load-messages 0
+    in set-timeout poll-messages 3000
+
+  opening : [Console] Integer
+  opening = act
+    let t = init-chat-theme 0
+    in let s1 = state-set sk-active-conv (-1)
+    in let s2 = state-set sk-view 0
+    in let s3 = set-render render-chat
+    in let h = register-handlers no-pick chat-click
+    in let r = render-chat 0
+    in let p = set-timeout poll-messages 3000
+    in check-auth 0
+  end
+
+Page 1

@@ -1,0 +1,142 @@
+Chapter: MarketMaui
+  cites Market chapter MarketTypes
+  cites Market chapter MarketHtml
+
+ MAUI rendering for Market. Generates XAML/C# for the .NET MAUI
+ cross-platform app. Shares the same data model and business logic
+ as the web frontend — only the rendering differs.
+
+ The MAUI plug compiles these functions to C# via the MauiEmitter.
+ Each page is a ContentPage with a ScrollView containing VerticalStackLayouts.
+
+Section: XAML Generation
+
+  xaml-page : Text, Text -> Text
+  xaml-page (title) (content) =
+    "<ContentPage Title=\"" & title & "\" xmlns=\"http://schemas.microsoft.com/dotnet/2021/maui\" xmlns:x=\"http://schemas.microsoft.com/winfx/2009/xaml\">" &
+    "<ScrollView><VerticalStackLayout Padding=\"16\" Spacing=\"12\">" &
+    content &
+    "</VerticalStackLayout></ScrollView></ContentPage>"
+
+  xaml-label : Text, Text, Text -> Text
+  xaml-label (text) (size) (color) =
+    "<Label Text=\"" & text & "\" FontSize=\"" & size & "\" TextColor=\"" & color & "\" />"
+
+  xaml-button : Text, Text -> Text
+  xaml-button (text) (command) =
+    "<Button Text=\"" & text & "\" Command=\"{Binding " & command & "}\" BackgroundColor=\"#2563eb\" TextColor=\"White\" CornerRadius=\"6\" />"
+
+  xaml-entry : Text, Text -> Text
+  xaml-entry (placeholder) (binding) =
+    "<Entry Placeholder=\"" & placeholder & "\" Text=\"{Binding " & binding & "}\" />"
+
+  xaml-frame : Text -> Text
+  xaml-frame (content) =
+    "<Frame Padding=\"12\" CornerRadius=\"8\" BorderColor=\"#e5e5e5\" HasShadow=\"False\">" & content & "</Frame>"
+
+Section: Product Card (MAUI)
+
+  maui-product-card : Product -> Text
+  maui-product-card (p) =
+    xaml-frame (
+      "<VerticalStackLayout Spacing=\"8\">" &
+      "<BoxView HeightRequest=\"200\" BackgroundColor=\"#f0f0f0\" CornerRadius=\"4\" />" &
+      xaml-label (p.product-name) "16" "#1a1a1a" &
+      xaml-label (format-money (p.product-price)) "18" "#2563eb" &
+      maui-option-badges (p.product-options) &
+      "</VerticalStackLayout>"
+    )
+
+  maui-option-badges : List OptionDef -> Text
+  maui-option-badges (opts) = maui-option-badges-loop opts 0
+
+  maui-option-badges-loop : List OptionDef, Integer -> Text
+  maui-option-badges-loop (opts) (i) =
+    if i >= list-length opts then ""
+    else let opt = list-at opts i
+    in "<Frame Padding=\"2,4\" CornerRadius=\"12\" BorderColor=\"#e5e5e5\" HasShadow=\"False\" HorizontalOptions=\"Start\">" &
+    "<Label Text=\"" & show (list-length (opt.option-choices)) & " " & opt.option-name & "\" FontSize=\"12\" TextColor=\"#666\" />" &
+    "</Frame>" & maui-option-badges-loop opts (i + 1)
+
+Section: Product Grid (MAUI)
+
+  maui-product-grid : List Product -> Text
+  maui-product-grid (products) =
+    "<CollectionView ItemsLayout=\"VerticalGrid, 2\" Margin=\"0,12\">" &
+    "<CollectionView.ItemTemplate><DataTemplate>" &
+    maui-product-card-template &
+    "</DataTemplate></CollectionView.ItemTemplate></CollectionView>"
+
+  maui-product-card-template : Text =
+    "<Frame Padding=\"8\" CornerRadius=\"8\" BorderColor=\"#e5e5e5\" Margin=\"4\">" &
+    "<VerticalStackLayout Spacing=\"6\">" &
+    "<BoxView HeightRequest=\"150\" BackgroundColor=\"#f0f0f0\" CornerRadius=\"4\" />" &
+    "<Label Text=\"{Binding Name}\" FontSize=\"14\" FontAttributes=\"Bold\" />" &
+    "<Label Text=\"{Binding PriceFormatted}\" FontSize=\"16\" TextColor=\"#2563eb\" FontAttributes=\"Bold\" />" &
+    "</VerticalStackLayout></Frame>"
+
+Section: Cart Page (MAUI)
+
+  maui-cart-page : Cart, StoreConfig -> Text
+  maui-cart-page (cart) (cfg) =
+    xaml-page (cfg.store-name & " - Cart") (
+      xaml-label "Shopping Cart" "22" "#1a1a1a" &
+      (if list-length (cart.cart-items) == 0 then
+        xaml-label "Your cart is empty" "16" "#666"
+      else
+        maui-cart-items (cart.cart-items) 0 &
+        "<BoxView HeightRequest=\"1\" BackgroundColor=\"#e5e5e5\" Margin=\"0,12\" />" &
+        "<HorizontalStackLayout Spacing=\"8\">" &
+        xaml-label "Subtotal:" "18" "#1a1a1a" &
+        xaml-label (format-money (cart-subtotal cart)) "18" "#2563eb" &
+        "</HorizontalStackLayout>" &
+        xaml-button "Checkout" "CheckoutCommand"
+      )
+    )
+
+  maui-cart-items : List CartItem, Integer -> Text
+  maui-cart-items (items) (i) =
+    if i >= list-length items then ""
+    else let item = list-at items i
+    in xaml-frame (
+      "<HorizontalStackLayout Spacing=\"12\">" &
+      "<VerticalStackLayout HorizontalOptions=\"FillAndExpand\">" &
+      xaml-label (item.ci-product-id) "14" "#1a1a1a" &
+      xaml-label (item.ci-variant-id) "12" "#666" &
+      "</VerticalStackLayout>" &
+      "<VerticalStackLayout HorizontalOptions=\"End\">" &
+      xaml-label (format-money (item.ci-unit-price) & " x " & show (item.ci-quantity)) "12" "#666" &
+      xaml-label (format-money (money-mul (item.ci-unit-price) (item.ci-quantity))) "14" "#1a1a1a" &
+      "</VerticalStackLayout></HorizontalStackLayout>"
+    ) & maui-cart-items items (i + 1)
+
+Section: Login Page (MAUI)
+
+  maui-login-page : Text -> Text
+  maui-login-page (store-name) =
+    xaml-page (store-name & " - Login") (
+      "<VerticalStackLayout Spacing=\"16\" MaximumWidthRequest=\"400\" HorizontalOptions=\"Center\" Padding=\"0,40\">" &
+      xaml-label "Login" "22" "#1a1a1a" &
+      xaml-entry "Email" "Email" &
+      xaml-entry "Password" "Password" &
+      xaml-button "Login" "LoginCommand" &
+      xaml-label "No account? Register" "14" "#2563eb" &
+      "</VerticalStackLayout>"
+    )
+
+Section: Home Page (MAUI)
+
+  maui-home-page : StoreConfig, List Product -> Text
+  maui-home-page (cfg) (products) =
+    xaml-page (cfg.store-name) (
+      "<VerticalStackLayout Spacing=\"8\" Padding=\"0,20\">" &
+      xaml-label (cfg.store-name) "28" "#1a1a1a" &
+      xaml-label "Welcome to our store" "16" "#666" &
+      "</VerticalStackLayout>" &
+      maui-product-list products 0
+    )
+
+  maui-product-list : List Product, Integer -> Text
+  maui-product-list (products) (i) =
+    if i >= list-length products then ""
+    else maui-product-card (list-at products i) & maui-product-list products (i + 1)

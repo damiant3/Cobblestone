@@ -1,0 +1,149 @@
+Chapter: VisionStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Encode chapter Json
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Kernel chapter AppLog
+  cites Vision chapter VisionTypes
+  cites Vision chapter VisionSignal
+  cites Vision chapter VisionCascade
+  cites Vision chapter VisionOrg
+  cites Vision chapter VisionPortfolio
+  cites Vision chapter VisionConfig
+
+ Persistence for the Vision app. Saves and loads the full
+ app state to DiskFacts (kind 42 = signals+cascade,
+ kind 43 = org graph, kind 44 = portfolio).
+
+Section: Kind Constants
+
+  pk-vision-signals : Integer = 42
+  pk-vision-org : Integer = 43
+  pk-vision-portfolio : Integer = 44
+
+Section: Vision App State
+
+  VisionAppState = record {
+    va-signals : SignalStore,
+    va-cascade : CascadeState,
+    va-org : OrgGraph,
+    va-portfolio : PortfolioState,
+    va-disk : DiskFactStore,
+    va-view : VisionView,
+    va-selected-signal : Integer,
+    va-selected-project : Integer,
+    va-config : VisionConfig,
+    va-filter : SignalFilter,
+    va-sort : SignalSort,
+    va-status : Text
+  }
+
+  VisionView =
+    | VvSignalFeed
+    | VvSignalDetail (Integer)
+    | VvPortfolio
+    | VvTimeline
+    | VvOrg
+    | VvOpenBoard
+
+  vision-app-new : DiskFactStore -> VisionAppState
+  vision-app-new (disk) = VisionAppState {
+    va-signals = signal-store-new,
+    va-cascade = cascade-new,
+    va-org = org-new,
+    va-portfolio = portfolio-new,
+    va-disk = disk,
+    va-view = VvSignalFeed,
+    va-selected-signal = 0,
+    va-selected-project = 0,
+    va-config = config-default,
+    va-filter = filter-empty,
+    va-sort = SortByWeight,
+    va-status = "Ready"
+  }
+
+Section: Signal Serialization
+
+  signal-to-jv : Signal -> JsonValue
+  signal-to-jv (s) = json-object [
+    json-pair "id" (json-int s.sig-id),
+    json-pair "author" (json-str s.sig-author),
+    json-pair "weight" (json-int (weight-ordinal s.sig-weight)),
+    json-pair "domain" (json-str s.sig-domain),
+    json-pair "content" (json-str s.sig-content),
+    json-pair "state" (json-str (sig-state-label s.sig-state)),
+    json-pair "created" (json-int s.sig-created),
+    json-pair "window" (json-int s.sig-response-window),
+    json-pair "closed" (json-int s.sig-closed-at)
+  ]
+
+  int-to-weight : Integer -> SignalWeight
+  int-to-weight (n) =
+    if n == 0 then Musing
+    else if n == 1 then Suggestion
+    else if n == 2 then Directive
+    else Mandate
+
+  label-to-sig-state : Text -> SignalState
+  label-to-sig-state (s) =
+    if s == "New" then SigNew
+    else if s == "Picked Up" then SigPickedUp
+    else if s == "Pushed" then SigPushed
+    else if s == "Responded" then SigResponded
+    else if s == "Closed" then SigClosed
+    else SigExpired
+
+  signal-from-jv : JsonValue -> Signal
+  signal-from-jv (jv) = Signal {
+    sig-id = json-get-int jv "id" 0,
+    sig-author = json-get-str jv "author" "",
+    sig-weight = int-to-weight (json-get-int jv "weight" 0),
+    sig-domain = json-get-str jv "domain" "",
+    sig-content = json-get-str jv "content" "",
+    sig-state = label-to-sig-state (json-get-str jv "state" "New"),
+    sig-type = SigCascade,
+    sig-created = json-get-int jv "created" 0,
+    sig-response-window = json-get-int jv "window" 0,
+    sig-closed-at = json-get-int jv "closed" 0
+  }
+
+Section: Save and Load
+
+  vision-save-signals : DiskFactStore, SignalStore -> DiskFactStore
+  vision-save-signals (disk) (store) =
+    let j = json-emit (json-array (list-map signal-to-jv store.ss-signals))
+    in app-log-info (app-write-and-checkpoint disk pk-vision-signals j 0) "vision" ("Saved " & show store.ss-count & " signals") 0
+
+  vision-load-signals : DiskFactStore -> SignalStore
+  vision-load-signals (disk) =
+    let found = app-scan-last disk pk-vision-signals
+    in when found
+      is Nothing -> signal-store-new
+      is Just (txt) -> let signals = vs-parse-array txt
+        in SignalStore {
+          ss-signals = signals,
+          ss-count = list-length signals,
+          ss-next-id = vs-max-id signals 0 (list-length signals) 0 + 1
+        }
+
+  vs-parse-array : Text -> List Signal
+  vs-parse-array (txt) =
+    let parsed = json-parse txt
+    in when parsed
+      is Nothing -> []
+      is Just (arr) -> vs-parse-items arr 0
+
+  vs-parse-items : JsonValue, Integer -> List Signal
+  vs-parse-items (arr) (i) =
+    let item = json-array-at arr i
+    in when item
+      is Nothing -> []
+      is Just (jv) -> signal-from-jv jv :: vs-parse-items arr (i + 1)
+
+  vs-max-id : List Signal, Integer, Integer, Integer -> Integer
+  vs-max-id (signals) (i) (len) (max-val) =
+    if i >= len then max-val
+    else let s = list-at signals i
+    in let new-max = if s.sig-id > max-val then s.sig-id else max-val
+    in vs-max-id signals (i + 1) len new-max

@@ -4,7 +4,7 @@ Chapter: Combat
   cites CodexMagic chapter GameState
 
  Combat phase logic: declaring attackers and blockers, damage
- assignment with defense threshold, first strike, trample, lifelink,
+ assignment with defense threshold, initiative, splash, lifelink,
  deathtouch. Unblocked attackers hit the opposing General. Defense
  absorbs damage per-source - if power is at or below defense, zero
  damage is dealt.
@@ -50,8 +50,8 @@ Section: Declare Attackers
   can-attack : Permanent, KeywordSet -> Boolean
   can-attack (perm) (kws) =
     if perm.tapped then False
-    else if has-keyword kws Defender then True == False
-    else if perm.summoning-sick then has-keyword kws Haste
+    else if has-keyword kws Stalwart then True == False
+    else if perm.summoning-sick then has-keyword kws Alacrity
     else True
 
   declare-attacker : CombatState, Integer -> CombatState
@@ -79,7 +79,6 @@ Section: Declare Attackers
     players = gs.players,
     generals = gs.generals,
     battlefield = tap-in-list (gs.battlefield) perm-id 0 (list-length (gs.battlefield)) [],
-    stack = gs.stack,
     active-player = gs.active-player,
     priority-player = gs.priority-player,
     turn-number = gs.turn-number,
@@ -106,7 +105,7 @@ Section: Declare Blockers
     if blocker.tapped then False
     else if has-keyword attacker-kws Flying then
       if has-keyword blocker-kws Flying then True
-      else has-keyword blocker-kws Reach
+      else has-keyword blocker-kws Ranged
     else True
 
   declare-blocker : CombatState, Integer, Integer -> CombatState
@@ -162,22 +161,21 @@ Section: Damage Resolution
     let defending = if attacking-player == 0 then 1 else 0
     in let gen-template = get-general gs defending
     in let gen-defense = gen-template.defense
-    in let has-dt = has-keyword kws Deathtouch
+    in let has-dt = has-keyword kws Exsanguinate
     in if combat-damage-with-deathtouch power gen-defense has-dt
       then let p = get-player gs defending
       in let new-general = general-deal-damage (p.general) power
       in let new-player = PlayerState {
         general = new-general,
-        mana-pool = p.mana-pool,
+        prismatic = p.prismatic,
         library = p.library,
         hand = p.hand,
         graveyard = p.graveyard,
         exile = p.exile,
-        land-drop-used = p.land-drop-used,
-        land-drops-per-turn = p.land-drops-per-turn
+        gem-drop-used = p.gem-drop-used
       }
       in let gs2 = set-player gs defending new-player
-      in let gained = if has-keyword kws Lifelink then power else 0
+      in let gained = if has-keyword kws DrainLife then power else 0
       in DamageResult { game = gs2, life-gained = gained }
       else DamageResult { game = gs, life-gained = 0 }
 
@@ -195,7 +193,7 @@ Section: Damage Resolution
     in let blocker-perm = find-permanent (gs.battlefield) blocker-id 0 (list-length (gs.battlefield))
     in let blocker-template = get-template gs (blocker-perm.template-id)
     in let blocker-defense = blocker-template.defense + blocker-perm.defense-mod
-    in let has-dt = has-keyword kws Deathtouch
+    in let has-dt = has-keyword kws Exsanguinate
     in if combat-damage-with-deathtouch total-power blocker-defense has-dt
       then let blocker-toughness = blocker-template.toughness + blocker-perm.toughness-mod
       in let lethal = if has-dt then 1 else blocker-toughness - blocker-perm.damage-marked
@@ -214,7 +212,7 @@ Section: Damage Resolution
     in let attacker-perm = find-permanent (gs.battlefield) attacker-id 0 (list-length (gs.battlefield))
     in let attacker-template = get-template gs (attacker-perm.template-id)
     in let attacker-defense = attacker-template.defense + attacker-perm.defense-mod
-    in let has-dt = has-keyword (blocker-perm.keywords) Deathtouch
+    in let has-dt = has-keyword (blocker-perm.keywords) Exsanguinate
     in if combat-damage-with-deathtouch blocker-power attacker-defense has-dt
       then let gs2 = if has-dt then deal-damage-to-permanent-dt gs attacker-id blocker-power else deal-damage-to-permanent gs attacker-id blocker-power
       in assign-blocker-damage-to-attacker gs2 attacker-id blocker-ids (i + 1) len
@@ -225,7 +223,6 @@ Section: Damage Resolution
     players = gs.players,
     generals = gs.generals,
     battlefield = damage-in-list (gs.battlefield) perm-id amount 0 (list-length (gs.battlefield)) [],
-    stack = gs.stack,
     active-player = gs.active-player,
     priority-player = gs.priority-player,
     turn-number = gs.turn-number,
@@ -246,7 +243,7 @@ Section: Damage Resolution
     in damage-in-list perms target amount (i + 1) len (list-push acc updated)
 
   deal-damage-to-permanent-dt : GameState, Integer, Integer -> GameState
-  deal-damage-to-permanent-dt (gs) (perm-id) (amount) = GameState { players = gs.players, generals = gs.generals, battlefield = damage-and-mark-dt (gs.battlefield) perm-id amount 0 (list-length (gs.battlefield)) [], stack = gs.stack, active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
+  deal-damage-to-permanent-dt (gs) (perm-id) (amount) = GameState { players = gs.players, generals = gs.generals, battlefield = damage-and-mark-dt (gs.battlefield) perm-id amount 0 (list-length (gs.battlefield)) [], active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
 
   damage-and-mark-dt : List Permanent, Integer, Integer, Integer, Integer, List Permanent -> List Permanent
   damage-and-mark-dt (perms) (target) (amount) (i) (len) (acc) =

@@ -19,65 +19,14 @@ if (-not (Test-Path $PlugCdx)) { Write-Error "MISSING: $PlugCdx (run build.ps1 f
 . (Join-Path $Repo 'build' 'vm-config.ps1')
 
 # -- Cite resolution (same pattern as build.ps1) --
-$QuireDirs = @{
-    'Foreword' = 'codex\foreword\core'; 'Kernel' = 'codex\os\kernel'; 'OS' = 'codex\os\core'
-    'Works' = 'apps\works'; 'Trust' = 'codex\os\trust'; 'Net' = 'codex\os\net'
-    'Verify' = 'codex\os\verify'; 'Replay' = 'codex\os\replay'; 'Sched' = 'codex\os\sched'
-    'Observe' = 'codex\os\observe'; 'Game' = 'codex\foreword\game'
-    'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'
-    'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'
-    'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
-    'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
-    'Spark' = 'apps\spark'
-}
-
-$citePat = '^\s*cites\s+(Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev|Spark)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
-
+. (Join-Path $Repo 'codex\plugs\common\plug-build-lib.ps1')
 $srcLines = [System.IO.File]::ReadAllLines((Resolve-Path $Src).Path)
-
-$queue = [System.Collections.Generic.Queue[hashtable]]::new()
-$seen = @{}
-foreach ($l in $srcLines) {
-    if ($l -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
-}
-$ordered = @()
-while ($queue.Count -gt 0) {
-    $cite = $queue.Dequeue()
-    $key = "$($cite.Quire)::$($cite.Name)"
-    if ($seen[$key]) { continue }
-    $seen[$key] = $true
-    $fwPath = Join-Path $Repo (Join-Path $QuireDirs[$cite.Quire] "$($cite.Name).codex")
-    if (-not (Test-Path -PathType Leaf $fwPath)) {
-        Write-Error "MISSING: cited $($cite.Quire) chapter '$($cite.Name)' (expected $fwPath)"
-        exit 3
-    }
-    foreach ($l in [System.IO.File]::ReadAllLines($fwPath)) {
-        if ($l -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
-    }
-    $ordered += @{ Quire = $cite.Quire; Name = $cite.Name; Path = $fwPath }
-}
-[array]::Reverse($ordered)
-
-$preLines = [System.Collections.Generic.List[string]]::new()
-$emitted = @{}
-foreach ($entry in $ordered) {
-    $key = "$($entry.Quire)::$($entry.Name)"
-    if ($emitted[$key]) { continue }
-    $emitted[$key] = $true
-    $renamed = $false
-    foreach ($l in [System.IO.File]::ReadAllLines($entry.Path)) {
-        if ((-not $renamed) -and $l -match '^Chapter:\s*(.+?)\s*$') {
-            $preLines.Add("Chapter: $($entry.Quire)--$($matches[1])")
-            $renamed = $true
-        } else { $preLines.Add($l) }
-    }
-    $preLines.Add(''); $preLines.Add('')
-}
+$preLines = Resolve-PlugForewords -Lines $srcLines
 
 $bundleSrc = Join-Path $OutDir 'spark-bundle.codex'
 $body = (($preLines + [System.Collections.Generic.List[string]]::new($srcLines)) -join "`n") + "`n"
 [System.IO.File]::WriteAllText($bundleSrc, $body, [System.Text.UTF8Encoding]::new($false))
-Write-Host "[spark] bundled $($preLines.Count + $srcLines.Length) lines ($($body.Length) bytes), $($ordered.Count) cited chapters"
+Write-Host "[spark] bundled $($preLines.Count + $srcLines.Length) lines ($($body.Length) bytes)"
 
 # -- Phase 1: source -> IR-CCE --
 $IrFile = Join-Path $OutDir 'spark.ir'
@@ -113,7 +62,7 @@ $vmBin = Join-Path $Repo 'tools\codex-vm.exe'
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
 $proc = Start-Process -FilePath $vmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$inputFile,'-output',$outFile,'-mem','4096','-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
-$proc.WaitForExit(300000)
+$proc.WaitForExit(1200000)
 if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force; Write-Error "FAIL: plug timeout"; exit 5 }
 
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
@@ -145,6 +94,25 @@ if (-not $WatOnly) {
         Write-Host "[spark] wat2wasm not found; WAT ready at $watFile"
         Write-Host "  Install: npm install -g wabt  (or download from github.com/WebAssembly/wabt)"
     }
+}
+
+# -- Phase 4: Assemble HTML from template + CSS + JS --
+$sparkRoot = Join-Path $Repo 'apps' 'spark'
+$templateFile = Join-Path $sparkRoot 'spark-page.template'
+$jsFile = Join-Path $sparkRoot 'spark-app.js'
+$cssFile = Join-Path $sparkRoot 'spark-studio.css'
+$htmlOut = Join-Path $OutDir 'spark-webgpu.html'
+
+if ((Test-Path $templateFile) -and (Test-Path $jsFile) -and (Test-Path $cssFile)) {
+    $template = [System.IO.File]::ReadAllText($templateFile)
+    $css = [System.IO.File]::ReadAllText($cssFile)
+    $js = [System.IO.File]::ReadAllText($jsFile)
+    $html = $template.Replace('{{CSS}}', $css).Replace('{{JS}}', $js)
+    if (Test-Path $htmlOut) { try { Set-ItemProperty $htmlOut -Name IsReadOnly -Value $false } catch {} }
+    [System.IO.File]::WriteAllText($htmlOut, $html, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "[spark] HTML: $htmlOut (assembled from template + CSS + JS)"
+} else {
+    Write-Host "[spark] HTML: skipped (missing template, CSS, or JS source)"
 }
 
 Write-Host "[spark] done"

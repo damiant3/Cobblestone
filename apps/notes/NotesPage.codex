@@ -1,0 +1,185 @@
+Chapter: NotesPage
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebTheme
+  cites WebApp chapter WebWidgets
+
+ Note-taking app with folders, rich text, and local persistence.
+
+ We say:
+
+Section: Theme
+
+  notes-theme : Theme
+  notes-theme =
+    let p = Palette { pal-bg = 1710618, pal-fg = 14211288, pal-primary = 16436287, pal-secondary = 2236962, pal-accent = 16436287, pal-muted = 7829367, pal-error = 15486256, pal-success = 4304718, pal-warning = 16436287, pal-border = 2763306 }
+    in let base = ws (p.pal-bg) (p.pal-fg) (bdr 0 0 CornerSharp) (eu 0) (eu 0)
+    in let btn = ws 2236962 (p.pal-fg) (bdr 0 0 (CornerRound 6)) (exy 12 6) (eu 0)
+    in let lbl = ws 0 (p.pal-fg) bn ez (eu 0)
+    in Theme { th-name = "notes-dark", th-palette = p, th-panel = ss-flat base, th-button = StateStyles { ss-normal = btn, ss-hover = btn, ss-pressed = btn, ss-disabled = btn, ss-focused = btn }, th-label = ss-flat lbl, th-input = ss-flat base, th-gauge = ss-flat base, th-separator = ss-flat base }
+
+Section: CSS
+
+  notes-css : Text
+  notes-css =
+    "*{margin:0;padding:0;box-sizing:border-box}html,body{height:100%;overflow:hidden}body{background:#1a1a1a;color:#d8d8d8;font-family:'Georgia',serif}#app{display:flex;height:100vh}"
+    & ".sidebar{width:260px;background:#1e1e1e;border-right:1px solid #2a2a2a;display:flex;flex-direction:column}"
+    & ".sidebar-hdr{padding:16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #2a2a2a}"
+    & ".sidebar-hdr h2{font-size:16px;color:#fac53f}"
+    & ".note-list{flex:1;overflow-y:auto}"
+    & ".note-item{padding:12px 16px;cursor:pointer;border-bottom:1px solid #222;transition:background .15s}"
+    & ".note-item:hover,.note-item.active{background:#262626}"
+    & ".note-title{font-size:14px;font-weight:600;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+    & ".note-date{font-size:11px;color:#666}"
+    & ".note-snip{font-size:12px;color:#777;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+    & ".editor{flex:1;display:flex;flex-direction:column}"
+    & ".editor-toolbar{padding:8px 16px;border-bottom:1px solid #2a2a2a;display:flex;gap:4px;background:#1e1e1e}"
+    & ".editor-toolbar .wk-btn,.editor-toolbar button{background:none;border:none;color:#888;padding:6px 10px;cursor:pointer;border-radius:4px;font-size:14px}"
+    & ".editor-toolbar .wk-btn:hover,.editor-toolbar button:hover{background:#333;color:#ddd}"
+    & ".editor-body{flex:1;padding:32px 48px;font-size:16px;line-height:1.8;color:#ccc;overflow-y:auto;max-width:800px;margin:0 auto;width:100%}"
+    & ".editor-body h1{font-size:28px;color:#fac53f;margin-bottom:16px;font-weight:600;border:none;outline:none}"
+    & ".editor-body p{margin-bottom:12px}"
+    & ".empty-editor{flex:1;display:flex;align-items:center;justify-content:center;color:#555}"
+    & ".folder-item{padding:8px 16px;cursor:pointer;font-size:13px;color:#999;display:flex;align-items:center;gap:8px;transition:background .15s}"
+    & ".folder-item:hover{background:#262626;color:#ddd}"
+    & ".folder-item.active{color:#fac53f}"
+    & ".folders{padding:12px 0;border-bottom:1px solid #2a2a2a}"
+
+Section: Tree
+
+  page-tree : Integer -> WidgetNode
+  page-tree (x) =
+    widget-panel "root" DirRow 0 [
+      sidebar-tree 0,
+      editor-tree 0
+    ]
+
+  sidebar-tree : Integer -> WidgetNode
+  sidebar-tree (x) =
+    let count = state-get "note-count"
+    in widget-box "sidebar" "sidebar" [
+      widget-box "sidebar-hdr" "sidebar-hdr" [
+        widget-label "brand" "CodexNotes",
+        widget-button "new-note" "+"
+      ],
+      widget-box "folders" "folders" [
+        widget-box-click "f-all" (if state-get "folder" == 0 then "folder-item active" else "folder-item") [ widget-label "fa-i" "&#x1F4C4;", widget-label "fa-l" "All Notes" ],
+        widget-box-click "f-fav" (if state-get "folder" == 1 then "folder-item active" else "folder-item") [ widget-label "ff-i" "&#x2B50;", widget-label "ff-l" "Favorites" ],
+        widget-box-click "f-arc" (if state-get "folder" == 2 then "folder-item active" else "folder-item") [ widget-label "fc-i" "&#x1F4E6;", widget-label "fc-l" "Archive" ]
+      ],
+      widget-box "note-list" "note-list" (build-note-items 0 count [])
+    ]
+
+  build-note-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  build-note-items (i) (count) (acc) =
+    if i >= count then acc
+    else let title = state-get-text ("n-title-" & show i)
+    in let date = state-get-text ("n-date-" & show i)
+    in let snip = state-get-text ("n-snip-" & show i)
+    in let active = state-get "active-note"
+    in let item = widget-box-click ("note-" & show i) (if active == i then "note-item active" else "note-item") [
+      widget-label ("nt-" & show i) title,
+      widget-label ("nd-" & show i) date,
+      widget-label ("ns-" & show i) snip
+    ]
+    in build-note-items (i + 1) count (list-push acc item)
+
+  editor-tree : Integer -> WidgetNode
+  editor-tree (x) =
+    let active = state-get "active-note"
+    in if active < 0 then widget-box "editor" "empty-editor" [ widget-label "emp" "Select a note or create a new one" ]
+    else let title = state-get-text ("n-title-" & show active)
+    in let body = state-get-text ("n-body-" & show active)
+    in widget-box "editor" "editor" [
+      widget-box "toolbar" "editor-toolbar" [
+        widget-button "tb-bold" "B",
+        widget-button "tb-italic" "I",
+        widget-button "tb-h1" "H1",
+        widget-button "tb-h2" "H2",
+        widget-button "tb-list" "&#x2022;",
+        widget-button "tb-code" "&lt;/&gt;",
+        widget-separator "tb-sep",
+        widget-button "tb-del" "&#x1F5D1;"
+      ],
+      widget-box "editor-body" "editor-body" [
+        wk-attach (widget-custom "ed-title" "input" 0 0) [widget-label "ed-tv" title, widget-label "ed-tp" "Untitled"] 0 2,
+        wk-attach (widget-custom "ed-body" "textarea" 0 0) [widget-label "ed-bv" body] 0 1
+      ]
+    ]
+
+Section: Sample Data
+
+  load-sample-notes : Integer -> Integer
+  load-sample-notes (x) =
+    let s0 = state-set "note-count" 5
+    in let s1 = state-set-text "n-title-0" "Project Ideas"
+    in let s2 = state-set-text "n-date-0" "Today"
+    in let s3 = state-set-text "n-snip-0" "Build a self-hosting compiler..."
+    in let s4 = state-set-text "n-body-0" "Build a self-hosting compiler that reads like a book. The language should have dependent types, linear types, and algebraic effects. Every program is a chapter in a larger story."
+    in let s5 = state-set-text "n-title-1" "Meeting Notes"
+    in let s6 = state-set-text "n-date-1" "Yesterday"
+    in let s7 = state-set-text "n-snip-1" "Discussed the memory model..."
+    in let s8 = state-set-text "n-body-1" "Discussed the memory model for the bare-metal compiler. Key decisions:\n\n1. Deck allocator for phase-durable data\n2. Bivy for scratch allocations\n3. Phase compaction between stages\n4. Survey-before-allocate discipline"
+    in let s9 = state-set-text "n-title-2" "Reading List"
+    in let s10 = state-set-text "n-date-2" "Jun 6"
+    in let s11 = state-set-text "n-snip-2" "Papers to read on type theory..."
+    in let s12 = state-set-text "n-body-2" "Papers to read:\n\n- Dunfield & Krishnaswami: Bidirectional Typing\n- Bernardy et al.: Linear Haskell\n- Pretnar: Algebraic Effects\n- Chlipala: Certified Programming with Dependent Types"
+    in let s13 = state-set-text "n-title-3" "Recipe: Sourdough"
+    in let s14 = state-set-text "n-date-3" "Jun 4"
+    in let s15 = state-set-text "n-snip-3" "500g flour, 350g water..."
+    in let s16 = state-set-text "n-body-3" "Sourdough Bread\n\n500g bread flour\n350g water\n100g starter\n10g salt\n\nMix flour and water, rest 30 min. Add starter and salt. Stretch and fold every 30 min for 2 hours. Bulk ferment 4-6 hours. Shape, cold retard overnight. Bake at 500F in dutch oven."
+    in let s17 = state-set-text "n-title-4" "Workout Plan"
+    in let s18 = state-set-text "n-date-4" "Jun 1"
+    in let s19 = state-set-text "n-snip-4" "Mon: Push, Tue: Pull, Wed: Legs..."
+    in let s20 = state-set-text "n-body-4" "Weekly Split:\n\nMonday: Push (bench, OHP, dips)\nTuesday: Pull (deadlift, rows, pullups)\nWednesday: Legs (squat, lunges, RDL)\nThursday: Rest\nFriday: Upper (bench, rows, curls)\nSaturday: Lower (squat, leg press)\nSunday: Rest"
+    in 0
+
+Section: Handlers
+
+  notes-click : Text -> Integer
+  notes-click (id) =
+    if id == "new-note" then new-note 0
+    else if id == "f-all" then let s = state-set-render "folder" 0 in 0
+    else if id == "f-fav" then let s = state-set-render "folder" 1 in 0
+    else if id == "f-arc" then let s = state-set-render "folder" 2 in 0
+    else if id == "tb-del" then let s = state-set-render "active-note" (-1) in 0
+    else if text-starts-with id "note-" then let s = state-set-render "active-note" (id-num id) in 0
+    else 0
+
+  new-note : Integer -> Integer
+  new-note (x) =
+    let count = state-get "note-count"
+    in let s1 = state-set-text ("n-title-" & show count) "Untitled"
+    in let s2 = state-set-text ("n-date-" & show count) "Now"
+    in let s3 = state-set-text ("n-snip-" & show count) ""
+    in let s4 = state-set-text ("n-body-" & show count) ""
+    in let s5 = state-set "note-count" (count + 1)
+    in let s6 = state-set-render "active-note" count
+    in 0
+
+  notes-input : Text, Text -> Integer
+  notes-input (id) (value) =
+    let active = state-get "active-note"
+    in if active < 0 then 0
+    else if id == "ed-title" then let s = state-set-text ("n-title-" & show active) value in 0
+    else if id == "ed-body" then let s = state-set-text ("n-body-" & show active) value in 0
+    else 0
+
+Section: Entry
+
+  render-notes : Integer -> Integer
+  render-notes (x) = mount-widget-themed notes-theme (page-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = inject-app-style notes-theme notes-css
+    in let s = state-set "active-note" (-1)
+    in let s2 = set-render render-notes
+    in let h = register-handlers no-pick notes-click
+    in let hi = register-input-handler notes-input
+    in let d = load-sample-notes 0
+    in render-notes 0
+  end
+
+Page 1

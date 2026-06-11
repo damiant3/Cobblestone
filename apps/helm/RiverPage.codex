@@ -1,0 +1,72 @@
+Chapter: RiverPage
+  cites Helm chapter HelmTypes
+  cites Helm chapter HelmCluster
+  cites Helm chapter HelmAttention
+  cites Helm chapter HelmTheme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter StringUtils
+
+ The River — clustered chat view. Shows currents ranked by
+ attention score. Each current displays participant count,
+ sentiment, sample messages, and decay indicator. Clicking
+ expands to show individual messages.
+
+Section: River View
+
+  river-widget : Room -> WidgetNode
+  river-widget (room) =
+    let title = widget-label "rv-title" ("The River: " & room.rm-name)
+    in let mode-lbl = widget-label "rv-mode" (when room.rm-mode is RmSequential -> "Sequential" is RmClustered -> "Clustered")
+    in let stats = widget-label "rv-stats" (show room.rm-message-count & " messages, " & show room.rm-current-count & " currents, " & show room.rm-participant-count & " participants")
+    in let sorted = room-sorted-currents room
+    in let current-widgets = current-list sorted 0 (list-length sorted) []
+    in widget-panel "river" DirColumn 4 ([title, mode-lbl, stats] & current-widgets)
+
+Section: Current List
+
+  current-list : List Current, Integer, Integer, List WidgetNode -> List WidgetNode
+  current-list (currents) (i) (len) (acc) =
+    if i >= len then acc
+    else let cur = list-at currents i
+    in let w = current-card cur
+    in current-list currents (i + 1) len (list-push acc w)
+
+Section: Current Card
+
+  current-card : Current -> WidgetNode
+  current-card (cur) =
+    let attn = attention-total cur.cur-attention
+    in let bar-width = if attn > 1000 then 20
+          else if attn > 100 then attn / 50
+          else 2
+    in let bar = widget-label ("cur-bar-" & show cur.cur-id) (repeat-char bar-width)
+    in let topic-lbl = widget-label ("cur-topic-" & show cur.cur-id) (cur.cur-topic & " (" & show cur.cur-count & " people)")
+    in let sentiment-lbl = widget-label ("cur-sent-" & show cur.cur-id) (sentiment-label cur.cur-sentiment)
+    in let preview = widget-label ("cur-prev-" & show cur.cur-id) (text-take cur.cur-summary 60)
+    in let decay-lbl = widget-label ("cur-decay-" & show cur.cur-id) (if cur.cur-decay > 75 then "active" else if cur.cur-decay > 25 then "fading" else "faded")
+    in let header = widget-panel ("cur-hdr-" & show cur.cur-id) DirRow 4 [bar, topic-lbl, sentiment-lbl, decay-lbl]
+    in widget-panel ("cur-" & show cur.cur-id) DirColumn 2 [header, preview]
+
+  repeat-char : Integer -> Text
+  repeat-char (n) = rc-loop n 0 ""
+
+  rc-loop : Integer, Integer, Text -> Text
+  rc-loop (n) (i) (acc) =
+    if i >= n then acc
+    else rc-loop n (i + 1) (acc & "#")
+
+Section: Time Band View
+
+  band-list-widget : Room -> WidgetNode
+  band-list-widget (room) =
+    let title = widget-label "tb-title" "Time Bands"
+    in let rows = band-rows room.rm-time-bands 0 room.rm-band-count []
+    in widget-panel "time-bands" DirColumn 4 (title :: rows)
+
+  band-rows : List TimeBand, Integer, Integer, List WidgetNode -> List WidgetNode
+  band-rows (bands) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bands i
+    in let row = widget-label ("tb-" & show i) (tb-summary b)
+    in band-rows bands (i + 1) len (list-push acc row)

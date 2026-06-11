@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 
-$run = Start-VmRun -Kernel $Kernel -ConnectTimeoutSec 30 -MemMB 2048 -PCore $PCore -ExtraArgs @('-drive', "file=$Disk,format=raw,if=ide,index=0")
+$run = Start-VmRun -Kernel $Kernel -ConnectTimeoutSec 30 -MemMB 3072 -PCore $PCore -ExtraArgs @('-drive', "file=$Disk,format=raw,if=ide,index=0")
 if (-not $run) { Write-Host 'FAIL: VM did not start with disk'; exit 1 }
 
 try {

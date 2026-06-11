@@ -1,0 +1,232 @@
+Chapter: Calculator
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Desktop calculator. Evaluates arithmetic expressions with operator
+ precedence. Supports basic ops (+, -, *, /), parentheses, and a
+ running history of computations. The expression is built up as a
+ list of tokens, evaluated when the user presses equals. Memory
+ slots (M+, MR, MC) store intermediate values.
+
+Section: Token
+
+  CalcToken =
+    | TkNum (Integer)
+    | TkOp (Text)
+    | TkOpen
+    | TkClose
+
+  tk-label : CalcToken -> Text
+  tk-label (t) = when t
+    is TkNum (n) -> show n
+    is TkOp (op) -> op
+    is TkOpen -> "("
+    is TkClose -> ")"
+
+Section: Calculator State
+
+  CalcState = record {
+    calc-display : Text,
+    calc-tokens : List CalcToken,
+    calc-token-count : Integer,
+    calc-result : Integer,
+    calc-memory : Integer,
+    calc-history : List Text,
+    calc-history-count : Integer,
+    calc-error : Text,
+    calc-building-num : Boolean,
+    calc-current-num : Text
+  }
+
+  calculator-new : CalcState
+  calculator-new = CalcState {
+    calc-display = "0",
+    calc-tokens = [],
+    calc-token-count = 0,
+    calc-result = 0,
+    calc-memory = 0,
+    calc-history = [],
+    calc-history-count = 0,
+    calc-error = "",
+    calc-building-num = False,
+    calc-current-num = ""
+  }
+
+Section: Input
+
+  calc-digit : CalcState, Integer -> CalcState
+  calc-digit (st) (d) =
+    let digit-text = show d
+    in let new-num = if st.calc-building-num then st.calc-current-num & digit-text else digit-text
+    in CalcState {
+      calc-display = new-num,
+      calc-tokens = st.calc-tokens,
+      calc-token-count = st.calc-token-count,
+      calc-result = st.calc-result,
+      calc-memory = st.calc-memory,
+      calc-history = st.calc-history,
+      calc-history-count = st.calc-history-count,
+      calc-error = "",
+      calc-building-num = True,
+      calc-current-num = new-num
+    }
+
+  calc-op : CalcState, Text -> CalcState
+  calc-op (st) (op) =
+    let with-num = if st.calc-building-num then calc-flush-num st else st
+    in let new-tokens = list-push (with-num.calc-tokens) (TkOp op)
+    in CalcState {
+      calc-display = with-num.calc-display & " " & op & " ",
+      calc-tokens = new-tokens,
+      calc-token-count = with-num.calc-token-count + 1,
+      calc-result = with-num.calc-result,
+      calc-memory = with-num.calc-memory,
+      calc-history = with-num.calc-history,
+      calc-history-count = with-num.calc-history-count,
+      calc-error = "",
+      calc-building-num = False,
+      calc-current-num = ""
+    }
+
+  calc-flush-num : CalcState -> CalcState
+  calc-flush-num (st) =
+    if text-length (st.calc-current-num) == 0 then st
+    else let val = text-to-int (st.calc-current-num)
+    in __record-set (__record-set (__record-set (__record-set st "calc-tokens" (list-push (st.calc-tokens) (TkNum val))) "calc-token-count" (st.calc-token-count + 1)) "calc-building-num" False) "calc-current-num" ""
+
+  text-to-int : Text -> Integer
+  text-to-int (s) = tti-loop s 0 (text-length s) 0 (if text-length s > 0 then if char-code (char-at s 0) == 45 then True else False else False)
+
+  tti-loop : Text, Integer, Integer, Integer, Boolean -> Integer
+  tti-loop (s) (i) (len) (acc) (neg) =
+    if i >= len then if neg then negate acc else acc
+    else let c = char-code (char-at s i)
+    in if c >= 48 then if c <= 57 then tti-loop s (i + 1) len (acc * 10 + c - 48) neg
+    else tti-loop s (i + 1) len acc neg
+    else tti-loop s (i + 1) len acc neg
+
+Section: Evaluation
+
+  calc-equals : CalcState -> CalcState
+  calc-equals (st) =
+    let with-num = if st.calc-building-num then calc-flush-num st else st
+    in let result = calc-eval-tokens (with-num.calc-tokens) (with-num.calc-token-count)
+    in let expr = calc-tokens-text (with-num.calc-tokens) 0 (with-num.calc-token-count) ""
+    in let entry = expr & " = " & show result
+    in CalcState {
+      calc-display = show result,
+      calc-tokens = [],
+      calc-token-count = 0,
+      calc-result = result,
+      calc-memory = with-num.calc-memory,
+      calc-history = list-push (with-num.calc-history) entry,
+      calc-history-count = with-num.calc-history-count + 1,
+      calc-error = "",
+      calc-building-num = False,
+      calc-current-num = ""
+    }
+
+  calc-tokens-text : List CalcToken, Integer, Integer, Text -> Text
+  calc-tokens-text (tokens) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else " "
+    in calc-tokens-text tokens (i + 1) n (acc & sep & tk-label (list-at tokens i))
+
+  calc-eval-tokens : List CalcToken, Integer -> Integer
+  calc-eval-tokens (tokens) (count) =
+    if count == 0 then 0
+    else if count == 1 then when list-at tokens 0
+      is TkNum (n) -> n
+      is otherwise -> 0
+    else calc-eval-additive tokens 0 count
+
+  calc-eval-additive : List CalcToken, Integer, Integer -> Integer
+  calc-eval-additive (tokens) (pos) (count) =
+    let left = calc-eval-term tokens pos count
+    in calc-add-loop tokens (left.ce-pos) count (left.ce-val)
+
+  CalcEvalResult = record { ce-val : Integer, ce-pos : Integer }
+
+  calc-eval-term : List CalcToken, Integer, Integer -> CalcEvalResult
+  calc-eval-term (tokens) (pos) (count) =
+    if pos >= count then CalcEvalResult { ce-val = 0, ce-pos = pos }
+    else when list-at tokens pos
+      is TkNum (n) -> CalcEvalResult { ce-val = n, ce-pos = pos + 1 }
+      is otherwise -> CalcEvalResult { ce-val = 0, ce-pos = pos + 1 }
+
+  calc-add-loop : List CalcToken, Integer, Integer, Integer -> Integer
+  calc-add-loop (tokens) (pos) (count) (acc) =
+    if pos >= count then acc
+    else when list-at tokens pos
+      is TkOp ("+") -> let right = calc-eval-term tokens (pos + 1) count
+        in calc-add-loop tokens (right.ce-pos) count (acc + right.ce-val)
+      is TkOp ("-") -> let right = calc-eval-term tokens (pos + 1) count
+        in calc-add-loop tokens (right.ce-pos) count (acc - right.ce-val)
+      is TkOp ("*") -> let right = calc-eval-term tokens (pos + 1) count
+        in calc-add-loop tokens (right.ce-pos) count (acc * right.ce-val)
+      is TkOp ("/") -> let right = calc-eval-term tokens (pos + 1) count
+        in if right.ce-val == 0 then acc
+        else calc-add-loop tokens (right.ce-pos) count (acc / right.ce-val)
+      is otherwise -> acc
+
+Section: Memory
+
+  calc-mem-add : CalcState -> CalcState
+  calc-mem-add (st) = __record-set st "calc-memory" (st.calc-memory + st.calc-result)
+
+  calc-mem-recall : CalcState -> CalcState
+  calc-mem-recall (st) =
+    __record-set (__record-set (__record-set st "calc-display" (show (st.calc-memory))) "calc-building-num" True) "calc-current-num" (show (st.calc-memory))
+
+  calc-mem-clear : CalcState -> CalcState
+  calc-mem-clear (st) = __record-set st "calc-memory" 0
+
+  calc-clear : CalcState -> CalcState
+  calc-clear (st) = CalcState {
+    calc-display = "0",
+    calc-tokens = [], calc-token-count = 0,
+    calc-result = 0, calc-memory = st.calc-memory,
+    calc-history = st.calc-history, calc-history-count = st.calc-history-count,
+    calc-error = "", calc-building-num = False, calc-current-num = ""
+  }
+
+Section: Widget Building
+
+  calc-widget : CalcState -> WidgetNode
+  calc-widget (st) =
+    let display = widget-label "calc-display" (st.calc-display)
+    in let mem-indicator = widget-label "calc-mem" (if st.calc-memory /= 0 then "M=" & show (st.calc-memory) else "")
+    in let digit-row-1 = widget-panel "calc-r1" DirRow 4 [
+      widget-button "calc-7" "7", widget-button "calc-8" "8",
+      widget-button "calc-9" "9", widget-button "calc-div" "/"
+    ]
+    in let digit-row-2 = widget-panel "calc-r2" DirRow 4 [
+      widget-button "calc-4" "4", widget-button "calc-5" "5",
+      widget-button "calc-6" "6", widget-button "calc-mul" "*"
+    ]
+    in let digit-row-3 = widget-panel "calc-r3" DirRow 4 [
+      widget-button "calc-1" "1", widget-button "calc-2" "2",
+      widget-button "calc-3" "3", widget-button "calc-sub" "-"
+    ]
+    in let digit-row-4 = widget-panel "calc-r4" DirRow 4 [
+      widget-button "calc-0" "0", widget-button "calc-eq" "=",
+      widget-button "calc-c" "C", widget-button "calc-add" "+"
+    ]
+    in let mem-row = widget-panel "calc-mem-row" DirRow 4 [
+      widget-button "calc-mc" "MC", widget-button "calc-mr" "MR", widget-button "calc-mp" "M+"
+    ]
+    in let history-panel = calc-history-widget (st.calc-history) (st.calc-history-count)
+    in widget-panel "calculator" DirColumn 4 [display, mem-indicator, digit-row-1, digit-row-2, digit-row-3, digit-row-4, mem-row, history-panel]
+
+  calc-history-widget : List Text, Integer -> WidgetNode
+  calc-history-widget (history) (count) =
+    let start = if count > 10 then count - 10 else 0
+    in let rows = calc-hist-rows history start count []
+    in widget-panel "calc-hist" DirColumn 1 rows
+
+  calc-hist-rows : List Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  calc-hist-rows (history) (i) (n) (acc) =
+    if i >= n then acc
+    else calc-hist-rows history (i + 1) n (list-push acc (widget-label ("ch-" & show i) (list-at history i)))
+
+Page 1

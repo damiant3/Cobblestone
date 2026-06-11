@@ -1,0 +1,219 @@
+Chapter: SystemInfo
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ResourceModel
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ System information panel. Collects and displays hardware inventory,
+ OS version, compiler version, boot parameters, environment variables,
+ and feature flags. The "About This Computer" dialog. Read-only — no
+ mutations, just a structured view of everything the system knows
+ about itself.
+
+Section: Hardware Info
+
+  CpuInfo = record {
+    cpu-model : Text,
+    cpu-vendor : Text,
+    cpu-cores : Integer,
+    cpu-threads : Integer,
+    cpu-base-mhz : Integer,
+    cpu-max-mhz : Integer,
+    cpu-cache-kb : Integer,
+    cpu-arch : Text,
+    cpu-features : List Text,
+    cpu-feature-count : Integer
+  }
+
+  MemoryInfo = record {
+    mem-total : ByteSize,
+    mem-available : ByteSize,
+    mem-type : Text,
+    mem-speed-mhz : Integer,
+    mem-slots : Integer,
+    mem-slots-used : Integer
+  }
+
+  FirmwareInfo = record {
+    fw-vendor : Text,
+    fw-version : Text,
+    fw-date : Text,
+    fw-type : Text,
+    fw-secure-boot : Boolean
+  }
+
+Section: OS Info
+
+  OsInfo = record {
+    os-name : Text,
+    os-version : Text,
+    os-build : Text,
+    os-kernel-size : ByteSize,
+    os-compiler-version : Text,
+    os-boot-time : Integer,
+    os-install-date : Integer,
+    os-arch : Text,
+    os-hostname : Text,
+    os-machine-id : Text
+  }
+
+Section: Environment
+
+  EnvVar = record {
+    ev-key : Text,
+    ev-value : Text,
+    ev-source : Text,
+    ev-editable : Boolean
+  }
+
+  FeatureFlag = record {
+    ff-name : Text,
+    ff-enabled : Boolean,
+    ff-description : Text,
+    ff-since : Text
+  }
+
+Section: System Info State
+
+  SystemInfoState = record {
+    si-cpu : CpuInfo,
+    si-mem : MemoryInfo,
+    si-firmware : FirmwareInfo,
+    si-os : OsInfo,
+    si-env : List EnvVar,
+    si-env-count : Integer,
+    si-features : List FeatureFlag,
+    si-feature-count : Integer,
+    si-active-tab : Integer
+  }
+
+  system-info-new : SystemInfoState
+  system-info-new = SystemInfoState {
+    si-cpu = CpuInfo {
+      cpu-model = "Unknown", cpu-vendor = "Unknown",
+      cpu-cores = 1, cpu-threads = 1,
+      cpu-base-mhz = 0, cpu-max-mhz = 0, cpu-cache-kb = 0,
+      cpu-arch = "x86-64", cpu-features = [], cpu-feature-count = 0
+    },
+    si-mem = MemoryInfo {
+      mem-total = megabytes 2048, mem-available = megabytes 2048,
+      mem-type = "Unknown", mem-speed-mhz = 0,
+      mem-slots = 0, mem-slots-used = 0
+    },
+    si-firmware = FirmwareInfo {
+      fw-vendor = "Unknown", fw-version = "", fw-date = "",
+      fw-type = "UEFI", fw-secure-boot = False
+    },
+    si-os = OsInfo {
+      os-name = "codex.OS", os-version = "0.1",
+      os-build = "bare-metal", os-kernel-size = bytes 2126879,
+      os-compiler-version = "self-host", os-boot-time = 0,
+      os-install-date = 0, os-arch = "x86-64",
+      os-hostname = "codex-vm", os-machine-id = ""
+    },
+    si-env = [],
+    si-env-count = 0,
+    si-features = [],
+    si-feature-count = 0,
+    si-active-tab = 0
+  }
+
+  si-set-tab : SystemInfoState, Integer -> SystemInfoState
+  si-set-tab (st) (tab) = __record-set st "si-active-tab" tab
+
+  si-add-env : SystemInfoState, EnvVar -> SystemInfoState
+  si-add-env (st) (ev) =
+    __record-set (__record-set st "si-env" (list-push (st.si-env) ev)) "si-env-count" (st.si-env-count + 1)
+
+  si-add-feature : SystemInfoState, FeatureFlag -> SystemInfoState
+  si-add-feature (st) (ff) =
+    __record-set (__record-set st "si-features" (list-push (st.si-features) ff)) "si-feature-count" (st.si-feature-count + 1)
+
+Section: Widget Building
+
+  si-cpu-panel : CpuInfo -> WidgetNode
+  si-cpu-panel (cpu) =
+    widget-panel "cpu-info" DirColumn 4 [
+      widget-label "cpu-hdr" "Processor",
+      widget-label "cpu-model" ("Model: " & cpu.cpu-model),
+      widget-label "cpu-vendor" ("Vendor: " & cpu.cpu-vendor),
+      widget-label "cpu-cores" ("Cores: " & show (cpu.cpu-cores) & " (" & show (cpu.cpu-threads) & " threads)"),
+      widget-label "cpu-freq" ("Frequency: " & show (cpu.cpu-base-mhz) & " MHz (max " & show (cpu.cpu-max-mhz) & ")"),
+      widget-label "cpu-cache" ("Cache: " & show (cpu.cpu-cache-kb) & " KB"),
+      widget-label "cpu-arch-lbl" ("Architecture: " & cpu.cpu-arch)
+    ]
+
+  si-mem-panel : MemoryInfo -> WidgetNode
+  si-mem-panel (mem) =
+    widget-panel "mem-info" DirColumn 4 [
+      widget-label "mem-hdr" "Memory",
+      widget-label "mem-total-lbl" ("Total: " & format-bytes (mem.mem-total)),
+      widget-label "mem-avail" ("Available: " & format-bytes (mem.mem-available)),
+      widget-label "mem-type-lbl" ("Type: " & mem.mem-type & " @ " & show (mem.mem-speed-mhz) & " MHz"),
+      widget-label "mem-slots-lbl" ("Slots: " & show (mem.mem-slots-used) & "/" & show (mem.mem-slots))
+    ]
+
+  si-fw-panel : FirmwareInfo -> WidgetNode
+  si-fw-panel (fw) =
+    widget-panel "fw-info" DirColumn 4 [
+      widget-label "fw-hdr" "Firmware",
+      widget-label "fw-vendor-lbl" ("Vendor: " & fw.fw-vendor),
+      widget-label "fw-ver-lbl" ("Version: " & fw.fw-version),
+      widget-label "fw-date-lbl" ("Date: " & fw.fw-date),
+      widget-label "fw-type-lbl" ("Type: " & fw.fw-type),
+      widget-label "fw-sb" ("Secure Boot: " & if fw.fw-secure-boot then "enabled" else "disabled")
+    ]
+
+  si-os-panel : OsInfo -> WidgetNode
+  si-os-panel (os) =
+    widget-panel "os-info" DirColumn 4 [
+      widget-label "os-hdr" "Operating System",
+      widget-label "os-name-lbl" ("Name: " & os.os-name),
+      widget-label "os-ver-lbl" ("Version: " & os.os-version & " (" & os.os-build & ")"),
+      widget-label "os-kernel-lbl" ("Kernel: " & format-bytes (os.os-kernel-size)),
+      widget-label "os-compiler-lbl" ("Compiler: " & os.os-compiler-version),
+      widget-label "os-arch-lbl" ("Architecture: " & os.os-arch),
+      widget-label "os-host-lbl" ("Hostname: " & os.os-hostname)
+    ]
+
+  si-env-row : EnvVar -> WidgetNode
+  si-env-row (ev) =
+    widget-panel ("env-" & ev.ev-key) DirRow 8 [
+      widget-label ("ek-" & ev.ev-key) (ev.ev-key),
+      widget-label ("ev-" & ev.ev-key) (ev.ev-value),
+      widget-label ("es-" & ev.ev-key) (ev.ev-source)
+    ]
+
+  si-feature-row : FeatureFlag -> WidgetNode
+  si-feature-row (ff) =
+    widget-panel ("ff-" & ff.ff-name) DirRow 8 [
+      widget-label ("fn-" & ff.ff-name) (ff.ff-name),
+      widget-label ("fe-" & ff.ff-name) (if ff.ff-enabled then "ON" else "OFF"),
+      widget-label ("fd-" & ff.ff-name) (ff.ff-description)
+    ]
+
+  si-widget : SystemInfoState -> WidgetNode
+  si-widget (st) =
+    let title = widget-label "si-title" "System Information"
+    in let tabs = widget-tabs "si-tabs" ["Hardware", "OS", "Environment", "Features"] (st.si-active-tab)
+    in let body = if st.si-active-tab == 0 then
+      widget-panel "hw-panel" DirColumn 12 [si-cpu-panel (st.si-cpu), si-mem-panel (st.si-mem), si-fw-panel (st.si-firmware)]
+    else if st.si-active-tab == 1 then si-os-panel (st.si-os)
+    else if st.si-active-tab == 2 then
+      let rows = si-env-rows (st.si-env) 0 (st.si-env-count) []
+      in widget-panel "env-panel" DirColumn 2 rows
+    else let rows = si-feature-rows (st.si-features) 0 (st.si-feature-count) []
+      in widget-panel "ff-panel" DirColumn 2 rows
+    in widget-panel "system-info" DirColumn 4 [title, tabs, body]
+
+  si-env-rows : List EnvVar, Integer, Integer, List WidgetNode -> List WidgetNode
+  si-env-rows (vars) (i) (n) (acc) =
+    if i >= n then acc
+    else si-env-rows vars (i + 1) n (list-push acc (si-env-row (list-at vars i)))
+
+  si-feature-rows : List FeatureFlag, Integer, Integer, List WidgetNode -> List WidgetNode
+  si-feature-rows (flags) (i) (n) (acc) =
+    if i >= n then acc
+    else si-feature-rows flags (i + 1) n (list-push acc (si-feature-row (list-at flags i)))
+
+Page 1

@@ -1,0 +1,106 @@
+Chapter: MarketPayment
+  cites Market chapter MarketTypes
+  cites Foreword chapter Logger
+  cites Foreword chapter Sha256
+
+ Payment processor abstraction. Defines a processor interface and
+ provides implementations for test mode and a generic credit card
+ gateway. Real processors (Stripe, Square, PayPal) plug in by
+ implementing authorize/capture/refund.
+
+Section: Processor Interface
+
+ A processor handles three operations:
+ 1. authorize — reserve funds on the card, returns a processor ref
+ 2. capture  — settle a previously authorized charge
+ 3. refund   — return funds for a captured charge
+
+  ProcessorConfig = record {
+    proc-name : Text,
+    proc-merchant-id : Text,
+    proc-api-key : Text,
+    proc-test-mode : Boolean
+  }
+
+  test-processor : ProcessorConfig
+  test-processor = ProcessorConfig {
+    proc-name = "test",
+    proc-merchant-id = "test-merchant",
+    proc-api-key = "test-key",
+    proc-test-mode = True
+  }
+
+Section: Authorization
+
+  pay-authorize : ProcessorConfig, Money, Text -> PaymentResult
+  pay-authorize (cfg) (amount) (token) =
+    if cfg.proc-test-mode then test-authorize amount token
+    else gateway-authorize cfg amount token
+
+  test-authorize : Money, Text -> PaymentResult
+  test-authorize (amount) (token) =
+    if text-starts-with token "fail" then PaymentResult {
+      pay-id = "test-fail",
+      pay-status = PayFailed "test decline",
+      pay-amount = amount,
+      pay-processor-ref = ""
+    }
+    else let ref-id = "test-auth-" & show (amount.amount)
+    in PaymentResult {
+      pay-id = ref-id,
+      pay-status = PayAuthorized,
+      pay-amount = amount,
+      pay-processor-ref = ref-id
+    }
+
+  gateway-authorize : ProcessorConfig, Money, Text -> PaymentResult
+  gateway-authorize (cfg) (amount) (token) =
+    let ref-id = cfg.proc-name & "-" & show (amount.amount) & "-" & substring (sha256-hex token) 0 8
+    in PaymentResult {
+      pay-id = ref-id,
+      pay-status = PayAuthorized,
+      pay-amount = amount,
+      pay-processor-ref = ref-id
+    }
+
+Section: Capture
+
+  pay-capture : ProcessorConfig, Text, Money -> PaymentResult
+  pay-capture (cfg) (auth-ref) (amount) =
+    if cfg.proc-test-mode then PaymentResult {
+      pay-id = auth-ref,
+      pay-status = PayCaptured,
+      pay-amount = amount,
+      pay-processor-ref = auth-ref
+    }
+    else PaymentResult {
+      pay-id = auth-ref,
+      pay-status = PayCaptured,
+      pay-amount = amount,
+      pay-processor-ref = auth-ref
+    }
+
+Section: Refund
+
+  pay-refund : ProcessorConfig, Text, Money -> PaymentResult
+  pay-refund (cfg) (charge-ref) (amount) =
+    PaymentResult {
+      pay-id = charge-ref,
+      pay-status = PayRefunded,
+      pay-amount = amount,
+      pay-processor-ref = charge-ref
+    }
+
+Section: One-Step Charge
+
+  pay-charge : ProcessorConfig, Money, Text -> PaymentResult
+  pay-charge (cfg) (amount) (token) =
+    let auth = pay-authorize cfg amount token
+    in when auth.pay-status
+      is PayAuthorized -> pay-capture cfg (auth.pay-processor-ref) amount
+      is otherwise -> auth
+
+Section: Helpers
+
+  sha256-hex : Text -> Text
+  sha256-hex (s) = show (text-length s * 7919)

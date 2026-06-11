@@ -1,0 +1,237 @@
+Chapter: FleetManager
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Fleet discovery and management. A fleet is a set of codex.OS devices
+ on a network — VMs, physical machines, phones, embedded boards. Each
+ device reports its identity, status, capabilities, and resource usage.
+ The fleet manager discovers peers, groups them, deploys to them, and
+ presents a unified health dashboard. This is how you manage a network
+ of codex.OS instances from any browser.
+
+Section: Device Capabilities
+
+  DeviceCapability =
+    | CapCompute
+    | CapStorage
+    | CapNetwork
+    | CapDisplay
+    | CapAudio
+    | CapUsb
+    | CapGpu
+    | CapTpm
+
+  capability-label : DeviceCapability -> Text
+  capability-label (c) = when c
+    is CapCompute -> "compute"
+    is CapStorage -> "storage"
+    is CapNetwork -> "network"
+    is CapDisplay -> "display"
+    is CapAudio -> "audio"
+    is CapUsb -> "usb"
+    is CapGpu -> "gpu"
+    is CapTpm -> "tpm"
+
+Section: Fleet Node
+
+  FleetNode = record {
+    fn-device : DeviceId,
+    fn-endpoint : Endpoint,
+    fn-status : ResourceStatus,
+    fn-uptime : Uptime,
+    fn-cpu-percent : Integer,
+    fn-mem-used : ByteSize,
+    fn-mem-total : ByteSize,
+    fn-disk-used : ByteSize,
+    fn-disk-total : ByteSize,
+    fn-os-version : Text,
+    fn-compiler-version : Text,
+    fn-capabilities : List DeviceCapability,
+    fn-cap-count : Integer,
+    fn-group : Text,
+    fn-tags : List Text,
+    fn-tag-count : Integer,
+    fn-last-seen : Integer,
+    fn-latency-ms : Integer,
+    fn-services : Integer,
+    fn-managed-servers : Integer
+  }
+
+  fleet-node-new : DeviceId, Endpoint -> FleetNode
+  fleet-node-new (dev) (ep) = FleetNode {
+    fn-device = dev,
+    fn-endpoint = ep,
+    fn-status = StatusUnknown,
+    fn-uptime = Uptime { ut-seconds = 0 },
+    fn-cpu-percent = 0,
+    fn-mem-used = bytes 0,
+    fn-mem-total = bytes 0,
+    fn-disk-used = bytes 0,
+    fn-disk-total = bytes 0,
+    fn-os-version = "",
+    fn-compiler-version = "",
+    fn-capabilities = [],
+    fn-cap-count = 0,
+    fn-group = "default",
+    fn-tags = [],
+    fn-tag-count = 0,
+    fn-last-seen = 0,
+    fn-latency-ms = 0,
+    fn-services = 0,
+    fn-managed-servers = 0
+  }
+
+  fleet-node-healthy : FleetNode -> Boolean
+  fleet-node-healthy (n) = status-is-healthy (n.fn-status)
+
+  fleet-node-has-cap : FleetNode, DeviceCapability -> Boolean
+  fleet-node-has-cap (n) (cap) =
+    let target = capability-label cap
+    in fn-cap-search (n.fn-capabilities) target 0 (n.fn-cap-count)
+
+  fn-cap-search : List DeviceCapability, Text, Integer, Integer -> Boolean
+  fn-cap-search (caps) (target) (i) (n) =
+    if i >= n then False
+    else if capability-label (list-at caps i) == target then True
+    else fn-cap-search caps target (i + 1) n
+
+Section: Fleet Group
+
+  FleetGroup = record {
+    fg-name : Text,
+    fg-node-count : Integer,
+    fg-healthy-count : Integer,
+    fg-description : Text
+  }
+
+Section: Fleet Manager State
+
+  FleetManagerState = record {
+    fm-nodes : List FleetNode,
+    fm-node-count : Integer,
+    fm-groups : List FleetGroup,
+    fm-group-count : Integer,
+    fm-selected-node : Text,
+    fm-selected-group : Text,
+    fm-filter : Text,
+    fm-discovery-active : Boolean
+  }
+
+  fleet-manager-new : FleetManagerState
+  fleet-manager-new = FleetManagerState {
+    fm-nodes = [],
+    fm-node-count = 0,
+    fm-groups = [],
+    fm-group-count = 0,
+    fm-selected-node = "",
+    fm-selected-group = "",
+    fm-filter = "",
+    fm-discovery-active = False
+  }
+
+Section: Actions
+
+  fm-add-node : FleetManagerState, FleetNode -> FleetManagerState
+  fm-add-node (st) (n) =
+    __record-set (__record-set st "fm-nodes" (list-push (st.fm-nodes) n)) "fm-node-count" (st.fm-node-count + 1)
+
+  fm-remove-node : FleetManagerState, Text -> FleetManagerState
+  fm-remove-node (st) (uuid) =
+    let filtered = fm-filter-nodes (st.fm-nodes) uuid 0 (st.fm-node-count) []
+    in __record-set (__record-set st "fm-nodes" filtered) "fm-node-count" (list-length filtered)
+
+  fm-filter-nodes : List FleetNode, Text, Integer, Integer, List FleetNode -> List FleetNode
+  fm-filter-nodes (nodes) (uuid) (i) (n) (acc) =
+    if i >= n then acc
+    else let nd = list-at nodes i
+    in if (nd.fn-device).dev-uuid == uuid then fm-filter-nodes nodes uuid (i + 1) n acc
+    else fm-filter-nodes nodes uuid (i + 1) n (list-push acc nd)
+
+  fm-select-node : FleetManagerState, Text -> FleetManagerState
+  fm-select-node (st) (uuid) = __record-set st "fm-selected-node" uuid
+
+  fm-find-node : FleetManagerState, Text -> Maybe FleetNode
+  fm-find-node (st) (uuid) = fm-find-loop (st.fm-nodes) uuid 0 (st.fm-node-count)
+
+  fm-find-loop : List FleetNode, Text, Integer, Integer -> Maybe FleetNode
+  fm-find-loop (nodes) (uuid) (i) (n) =
+    if i >= n then None
+    else let nd = list-at nodes i
+    in if (nd.fn-device).dev-uuid == uuid then Just nd
+    else fm-find-loop nodes uuid (i + 1) n
+
+  fm-healthy-count : FleetManagerState -> Integer
+  fm-healthy-count (st) = fm-count-healthy (st.fm-nodes) 0 (st.fm-node-count) 0
+
+  fm-count-healthy : List FleetNode, Integer, Integer, Integer -> Integer
+  fm-count-healthy (nodes) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if fleet-node-healthy (list-at nodes i) then 1 else 0
+    in fm-count-healthy nodes (i + 1) n (acc + delta)
+
+  fm-nodes-in-group : FleetManagerState, Text -> List FleetNode
+  fm-nodes-in-group (st) (group) =
+    fm-group-filter (st.fm-nodes) group 0 (st.fm-node-count) []
+
+  fm-group-filter : List FleetNode, Text, Integer, Integer, List FleetNode -> List FleetNode
+  fm-group-filter (nodes) (group) (i) (n) (acc) =
+    if i >= n then acc
+    else let nd = list-at nodes i
+    in if nd.fn-group == group then fm-group-filter nodes group (i + 1) n (list-push acc nd)
+    else fm-group-filter nodes group (i + 1) n acc
+
+  fm-toggle-discovery : FleetManagerState -> FleetManagerState
+  fm-toggle-discovery (st) =
+    __record-set st "fm-discovery-active" (if st.fm-discovery-active then False else True)
+
+Section: Widget Building
+
+  fm-node-row : FleetNode -> WidgetNode
+  fm-node-row (n) =
+    let kind = widget-label ((n.fn-device).dev-uuid & "-kind") (device-kind-label ((n.fn-device).dev-kind))
+    in let name = widget-label ((n.fn-device).dev-uuid & "-name") ((n.fn-device).dev-name)
+    in let ep = widget-label ((n.fn-device).dev-uuid & "-ep") (format-endpoint (n.fn-endpoint))
+    in let status-lbl = widget-label ((n.fn-device).dev-uuid & "-st") (status-label (n.fn-status))
+    in let cpu = widget-gauge ((n.fn-device).dev-uuid & "-cpu") (n.fn-cpu-percent) 100
+    in let mem = widget-label ((n.fn-device).dev-uuid & "-mem") (format-bytes (n.fn-mem-used) & "/" & format-bytes (n.fn-mem-total))
+    in let latency = widget-label ((n.fn-device).dev-uuid & "-lat") (show (n.fn-latency-ms) & " ms")
+    in let group = widget-label ((n.fn-device).dev-uuid & "-grp") (n.fn-group)
+    in widget-panel (n.fn-device).dev-uuid DirRow 8 [kind, name, ep, status-lbl, cpu, mem, latency, group]
+
+  fm-widget : FleetManagerState -> WidgetNode
+  fm-widget (st) =
+    let title = widget-label "fm-title" "Fleet"
+    in let healthy = fm-healthy-count st
+    in let summary = widget-label "fm-summary" (show healthy & "/" & show (st.fm-node-count) & " healthy")
+    in let discover-btn = widget-button "fm-discover" (if st.fm-discovery-active then "Stop Discovery" else "Discover")
+    in let filter = widget-input "fm-filter" (st.fm-filter) (text-length (st.fm-filter))
+    in let toolbar = widget-toolbar "fm-toolbar" [discover-btn, filter]
+    in let rows = fm-node-rows (st.fm-nodes) 0 (st.fm-node-count) []
+    in widget-panel "fleet-manager" DirColumn 4 ([title, summary, toolbar] & rows)
+
+  fm-node-rows : List FleetNode, Integer, Integer, List WidgetNode -> List WidgetNode
+  fm-node-rows (nodes) (i) (n) (acc) =
+    if i >= n then acc
+    else fm-node-rows nodes (i + 1) n (list-push acc (fm-node-row (list-at nodes i)))
+
+Section: JSON
+
+  fleet-node-to-json : FleetNode -> Text
+  fleet-node-to-json (n) =
+    "{\"uuid\":\"" & (n.fn-device).dev-uuid
+    & "\",\"name\":\"" & (n.fn-device).dev-name
+    & "\",\"kind\":\"" & device-kind-label ((n.fn-device).dev-kind)
+    & "\",\"endpoint\":\"" & format-endpoint (n.fn-endpoint)
+    & "\",\"status\":\"" & status-label (n.fn-status)
+    & "\",\"cpu\":" & show (n.fn-cpu-percent)
+    & ",\"memUsed\":" & show (n.fn-mem-used).bs-bytes
+    & ",\"memTotal\":" & show (n.fn-mem-total).bs-bytes
+    & ",\"uptime\":" & show (n.fn-uptime).ut-seconds
+    & ",\"latency\":" & show (n.fn-latency-ms)
+    & ",\"group\":\"" & n.fn-group
+    & "\",\"services\":" & show (n.fn-services)
+    & "}"
+
+Page 1

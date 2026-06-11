@@ -1,0 +1,332 @@
+Chapter: ProcessManager
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Task manager. Shows all running processes with CPU usage, memory
+ footprint, thread count, and state. Supports kill, priority change,
+ and affinity. Sorts by any column. This is the view into the
+ preemptive scheduler in codex.os.sched.
+
+Section: Process Types
+
+  ProcessState =
+    | ProcRunning
+    | ProcSleeping
+    | ProcBlocked
+    | ProcZombie
+    | ProcStopped
+
+  proc-state-label : ProcessState -> Text
+  proc-state-label (s) = when s
+    is ProcRunning -> "running"
+    is ProcSleeping -> "sleeping"
+    is ProcBlocked -> "blocked"
+    is ProcZombie -> "zombie"
+    is ProcStopped -> "stopped"
+
+  ProcPriority =
+    | PrioRealtime
+    | PrioHigh
+    | PrioNormal
+    | PrioLow
+    | PrioIdle
+
+  proc-priority-label : ProcPriority -> Text
+  proc-priority-label (p) = when p
+    is PrioRealtime -> "realtime"
+    is PrioHigh -> "high"
+    is PrioNormal -> "normal"
+    is PrioLow -> "low"
+    is PrioIdle -> "idle"
+
+Section: Process Entry
+
+  ProcessEntry = record {
+    proc-pid : Integer,
+    proc-name : Text,
+    proc-state : ProcessState,
+    proc-cpu-percent : Integer,
+    proc-mem-bytes : ByteSize,
+    proc-threads : Integer,
+    proc-priority : ProcPriority,
+    proc-parent-pid : Integer,
+    proc-user : Text,
+    proc-uptime : Integer,
+    proc-open-files : Integer,
+    proc-affinity : Integer
+  }
+
+  process-new : Integer, Text -> ProcessEntry
+  process-new (pid) (name) = ProcessEntry {
+    proc-pid = pid,
+    proc-name = name,
+    proc-state = ProcRunning,
+    proc-cpu-percent = 0,
+    proc-mem-bytes = bytes 0,
+    proc-threads = 1,
+    proc-priority = PrioNormal,
+    proc-parent-pid = 0,
+    proc-user = "system",
+    proc-uptime = 0,
+    proc-open-files = 0,
+    proc-affinity = 1
+  }
+
+Section: Sort Fields
+
+  ProcSortField =
+    | ProcSortPid
+    | ProcSortName
+    | ProcSortCpu
+    | ProcSortMem
+    | ProcSortState
+    | ProcSortThreads
+
+  proc-sort-label : ProcSortField -> Text
+  proc-sort-label (f) = when f
+    is ProcSortPid -> "PID"
+    is ProcSortName -> "Name"
+    is ProcSortCpu -> "CPU"
+    is ProcSortMem -> "Memory"
+    is ProcSortState -> "State"
+    is ProcSortThreads -> "Threads"
+
+Section: Process Manager State
+
+  ProcessManagerState = record {
+    pm-processes : List ProcessEntry,
+    pm-count : Integer,
+    pm-sort-field : ProcSortField,
+    pm-sort-dir : SortDir,
+    pm-filter : Text,
+    pm-selected-pid : Integer,
+    pm-total-cpu : Integer,
+    pm-total-mem : ByteSize,
+    pm-total-threads : Integer
+  }
+
+  proc-manager-new : ProcessManagerState
+  proc-manager-new = ProcessManagerState {
+    pm-processes = [],
+    pm-count = 0,
+    pm-sort-field = ProcSortCpu,
+    pm-sort-dir = SortDesc,
+    pm-filter = "",
+    pm-selected-pid = -1,
+    pm-total-cpu = 0,
+    pm-total-mem = bytes 0,
+    pm-total-threads = 0
+  }
+
+Section: Actions
+
+  pm-update-processes : ProcessManagerState, List ProcessEntry -> ProcessManagerState
+  pm-update-processes (st) (procs) =
+    let count = list-length procs
+    in let totals = pm-compute-totals procs 0 count 0 0 0
+    in ProcessManagerState {
+      pm-processes = procs,
+      pm-count = count,
+      pm-sort-field = st.pm-sort-field,
+      pm-sort-dir = st.pm-sort-dir,
+      pm-filter = st.pm-filter,
+      pm-selected-pid = st.pm-selected-pid,
+      pm-total-cpu = totals.pmt-cpu,
+      pm-total-mem = bytes (totals.pmt-mem),
+      pm-total-threads = totals.pmt-threads
+    }
+
+  ProcTotals = record { pmt-cpu : Integer, pmt-mem : Integer, pmt-threads : Integer }
+
+  pm-compute-totals : List ProcessEntry, Integer, Integer, Integer, Integer, Integer -> ProcTotals
+  pm-compute-totals (procs) (i) (n) (cpu) (mem) (threads) =
+    if i >= n then ProcTotals { pmt-cpu = cpu, pmt-mem = mem, pmt-threads = threads }
+    else let p = list-at procs i
+    in pm-compute-totals procs (i + 1) n (cpu + p.proc-cpu-percent) (mem + (p.proc-mem-bytes).bs-bytes) (threads + p.proc-threads)
+
+  pm-select : ProcessManagerState, Integer -> ProcessManagerState
+  pm-select (st) (pid) = __record-set st "pm-selected-pid" pid
+
+  pm-set-sort : ProcessManagerState, ProcSortField -> ProcessManagerState
+  pm-set-sort (st) (field) =
+    if field == st.pm-sort-field then __record-set st "pm-sort-dir" (SortDir-flip (st.pm-sort-dir))
+    else __record-set (__record-set st "pm-sort-field" field) "pm-sort-dir" SortDesc
+
+  pm-set-filter : ProcessManagerState, Text -> ProcessManagerState
+  pm-set-filter (st) (f) = __record-set st "pm-filter" f
+
+  pm-find : ProcessManagerState, Integer -> Maybe ProcessEntry
+  pm-find (st) (pid) = pm-find-loop (st.pm-processes) pid 0 (st.pm-count)
+
+  pm-find-loop : List ProcessEntry, Integer, Integer, Integer -> Maybe ProcessEntry
+  pm-find-loop (procs) (pid) (i) (n) =
+    if i >= n then None
+    else let p = list-at procs i
+    in if p.proc-pid == pid then Just p
+    else pm-find-loop procs pid (i + 1) n
+
+  pm-visible : ProcessManagerState -> List ProcessEntry
+  pm-visible (st) =
+    if text-length (st.pm-filter) == 0 then st.pm-processes
+    else pm-filter-loop (st.pm-processes) (st.pm-filter) 0 (st.pm-count) []
+
+  pm-filter-loop : List ProcessEntry, Text, Integer, Integer, List ProcessEntry -> List ProcessEntry
+  pm-filter-loop (procs) (filter) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at procs i
+    in if text-contains (p.proc-name) filter then pm-filter-loop procs filter (i + 1) n (list-push acc p)
+    else pm-filter-loop procs filter (i + 1) n acc
+
+Section: Widget Building
+
+  pm-header-widget : ProcessManagerState -> WidgetNode
+  pm-header-widget (st) =
+    let pid-col = widget-button "sort-pid" "PID"
+    in let name-col = widget-button "sort-name" "Name"
+    in let cpu-col = widget-button "sort-cpu" "CPU%"
+    in let mem-col = widget-button "sort-mem" "Memory"
+    in let state-col = widget-button "sort-state" "State"
+    in let threads-col = widget-button "sort-threads" "Threads"
+    in widget-panel "pm-header" DirRow 8 [pid-col, name-col, cpu-col, mem-col, state-col, threads-col]
+
+  pm-process-row : ProcessEntry -> WidgetNode
+  pm-process-row (p) =
+    let pid-label = widget-label ("pid-" & show (p.proc-pid)) (show (p.proc-pid))
+    in let name-label = widget-label ("pname-" & show (p.proc-pid)) (p.proc-name)
+    in let cpu-gauge = widget-gauge ("cpu-" & show (p.proc-pid)) (p.proc-cpu-percent) 100
+    in let mem-label = widget-label ("pmem-" & show (p.proc-pid)) (format-bytes (p.proc-mem-bytes))
+    in let state-label = widget-label ("pstate-" & show (p.proc-pid)) (proc-state-label (p.proc-state))
+    in let thr-label = widget-label ("pthr-" & show (p.proc-pid)) (show (p.proc-threads))
+    in let kill-btn = widget-button ("kill-" & show (p.proc-pid)) "Kill"
+    in widget-panel ("proc-" & show (p.proc-pid)) DirRow 8 [pid-label, name-label, cpu-gauge, mem-label, state-label, thr-label, kill-btn]
+
+  pm-widget : ProcessManagerState -> WidgetNode
+  pm-widget (st) =
+    let title = widget-label "pm-title" "Process Manager"
+    in let summary = widget-label "pm-summary" (show (st.pm-count) & " processes, " & show (st.pm-total-cpu) & "% CPU, " & format-bytes (st.pm-total-mem) & " memory")
+    in let filter-input = widget-input "pm-filter" (st.pm-filter) (text-length (st.pm-filter))
+    in let header = pm-header-widget st
+    in let visible = pm-visible st
+    in let rows = pm-rows visible 0 (list-length visible) []
+    in widget-panel "process-manager" DirColumn 4 ([title, summary, filter-input, header] & rows)
+
+  pm-rows : List ProcessEntry, Integer, Integer, List WidgetNode -> List WidgetNode
+  pm-rows (procs) (i) (n) (acc) =
+    if i >= n then acc
+    else pm-rows procs (i + 1) n (list-push acc (pm-process-row (list-at procs i)))
+
+Section: Process Tree
+
+  ProcessTreeNode = record {
+    ptn-process : ProcessEntry,
+    ptn-children : List ProcessTreeNode,
+    ptn-child-count : Integer,
+    ptn-depth : Integer
+  }
+
+  pm-build-tree : ProcessManagerState -> List ProcessTreeNode
+  pm-build-tree (st) =
+    pm-tree-roots (st.pm-processes) (st.pm-processes) 0 (st.pm-count) []
+
+  pm-tree-roots : List ProcessEntry, List ProcessEntry, Integer, Integer, List ProcessTreeNode -> List ProcessTreeNode
+  pm-tree-roots (procs) (all-procs) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at procs i
+    in if p.proc-parent-pid == 0 then
+      let children = pm-tree-children all-procs (p.proc-pid) 0 (list-length all-procs) [] 1
+      in let node = ProcessTreeNode { ptn-process = p, ptn-children = children, ptn-child-count = list-length children, ptn-depth = 0 }
+      in pm-tree-roots procs all-procs (i + 1) n (list-push acc node)
+    else pm-tree-roots procs all-procs (i + 1) n acc
+
+  pm-tree-children : List ProcessEntry, Integer, Integer, Integer, List ProcessTreeNode, Integer -> List ProcessTreeNode
+  pm-tree-children (all) (parent-pid) (i) (n) (acc) (depth) =
+    if i >= n then acc
+    else let p = list-at all i
+    in if p.proc-parent-pid == parent-pid then
+      let children = pm-tree-children all (p.proc-pid) 0 n [] (depth + 1)
+      in let node = ProcessTreeNode { ptn-process = p, ptn-children = children, ptn-child-count = list-length children, ptn-depth = depth }
+      in pm-tree-children all parent-pid (i + 1) n (list-push acc node) depth
+    else pm-tree-children all parent-pid (i + 1) n acc depth
+
+  pm-tree-row : ProcessTreeNode -> WidgetNode
+  pm-tree-row (node) =
+    let p = node.ptn-process
+    in let indent = pm-indent-text (node.ptn-depth)
+    in let name-label = widget-label ("ptree-" & show (p.proc-pid)) (indent & p.proc-name & " (" & show (p.proc-pid) & ")")
+    in let cpu-gauge = widget-gauge ("ptcpu-" & show (p.proc-pid)) (p.proc-cpu-percent) 100
+    in let mem-label = widget-label ("ptmem-" & show (p.proc-pid)) (format-bytes (p.proc-mem-bytes))
+    in widget-panel ("ptrow-" & show (p.proc-pid)) DirRow 8 [name-label, cpu-gauge, mem-label]
+
+  pm-indent-text : Integer -> Text
+  pm-indent-text (depth) =
+    if depth <= 0 then ""
+    else "  " & pm-indent-text (depth - 1)
+
+  pm-flatten-tree : List ProcessTreeNode, Integer, Integer, List WidgetNode -> List WidgetNode
+  pm-flatten-tree (nodes) (i) (n) (acc) =
+    if i >= n then acc
+    else let node = list-at nodes i
+    in let row = pm-tree-row node
+    in let with-children = pm-flatten-tree (node.ptn-children) 0 (node.ptn-child-count) (list-push acc row)
+    in pm-flatten-tree nodes (i + 1) n with-children
+
+  pm-tree-widget : ProcessManagerState -> WidgetNode
+  pm-tree-widget (st) =
+    let roots = pm-build-tree st
+    in let rows = pm-flatten-tree roots 0 (list-length roots) []
+    in widget-panel "process-tree" DirColumn 1 rows
+
+Section: Process Detail
+
+  ProcessDetail = record {
+    pd-entry : ProcessEntry,
+    pd-child-count : Integer,
+    pd-env-vars : Integer,
+    pd-command-line : Text,
+    pd-cwd : Text
+  }
+
+  proc-detail-new : ProcessEntry -> ProcessDetail
+  proc-detail-new (p) = ProcessDetail {
+    pd-entry = p,
+    pd-child-count = 0,
+    pd-env-vars = 0,
+    pd-command-line = p.proc-name,
+    pd-cwd = "/"
+  }
+
+  proc-detail-widget : ProcessDetail -> WidgetNode
+  proc-detail-widget (d) =
+    let p = d.pd-entry
+    in let pid-label = widget-label "pd-pid" ("PID: " & show (p.proc-pid))
+    in let name-label = widget-label "pd-name" ("Name: " & p.proc-name)
+    in let state-label = widget-label "pd-state" ("State: " & proc-state-label (p.proc-state))
+    in let cpu-label = widget-label "pd-cpu" ("CPU: " & show (p.proc-cpu-percent) & "%")
+    in let mem-label = widget-label "pd-mem" ("Memory: " & format-bytes (p.proc-mem-bytes))
+    in let threads-label = widget-label "pd-threads" ("Threads: " & show (p.proc-threads))
+    in let prio-label = widget-label "pd-prio" ("Priority: " & proc-priority-label (p.proc-priority))
+    in let parent-label = widget-label "pd-parent" ("Parent PID: " & show (p.proc-parent-pid))
+    in let user-label = widget-label "pd-user" ("User: " & p.proc-user)
+    in let uptime-label = widget-label "pd-uptime" ("Uptime: " & format-uptime (Uptime { ut-seconds = p.proc-uptime }))
+    in let files-label = widget-label "pd-files" ("Open files: " & show (p.proc-open-files))
+    in let cmd-label = widget-label "pd-cmd" ("Command: " & d.pd-command-line)
+    in let cwd-label = widget-label "pd-cwd" ("CWD: " & d.pd-cwd)
+    in let kill-btn = widget-button "pd-kill" "Kill Process"
+    in widget-panel "proc-detail" DirColumn 4 [pid-label, name-label, state-label, cpu-label, mem-label, threads-label, prio-label, parent-label, user-label, uptime-label, files-label, cmd-label, cwd-label, kill-btn]
+
+Section: JSON
+
+  process-to-json : ProcessEntry -> Text
+  process-to-json (p) =
+    "{\"pid\":" & show (p.proc-pid)
+    & ",\"name\":\"" & p.proc-name
+    & "\",\"state\":\"" & proc-state-label (p.proc-state)
+    & "\",\"cpu\":" & show (p.proc-cpu-percent)
+    & ",\"mem\":" & show (p.proc-mem-bytes).bs-bytes
+    & ",\"threads\":" & show (p.proc-threads)
+    & ",\"priority\":\"" & proc-priority-label (p.proc-priority)
+    & "\",\"user\":\"" & p.proc-user & "\"}"
+
+Page 1

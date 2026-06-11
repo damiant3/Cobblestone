@@ -1,63 +1,92 @@
 # Common plug build library. Source this from plug build scripts.
-# Provides: Resolve-PlugForewords, Build-PlugCdx
+# Provides: Resolve-PlugForewords, Build-PlugCdx, Add-PlugChapter,
+#           Bundle-PlugSource, Build-TranspilerPlug
 
 $script:PlugBuildRepo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 . (Join-Path $script:PlugBuildRepo 'build' 'vm-config.ps1')
 
-$script:QuireDirs = @{
-    'Foreword' = 'codex\foreword\core'; 'Kernel' = 'codex\os\kernel'; 'OS' = 'codex\os\core'
-    'Works' = 'apps\works'; 'Trust' = 'codex\os\trust'; 'Net' = 'codex\os\net'
-    'Verify' = 'codex\os\verify'; 'Replay' = 'codex\os\replay'; 'Sched' = 'codex\os\sched'
-    'Observe' = 'codex\os\observe'; 'Game' = 'codex\foreword\game'
-    'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'
-    'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'
-    'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
-    'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
-    'Magic' = 'apps\games\magic'; 'Games' = 'apps\games\classic'
-    'Spark' = 'apps\spark'; 'Data' = 'apps\data'
+$script:QuireDirs = @{}
+$script:QuireOverrides = @{ 'codex\foreword\core' = 'Foreword'; 'codex\os\core' = 'OS'; 'apps\erp' = 'ERP' }
+foreach ($root in @('codex\foreword', 'codex\os', 'apps', 'apps\games')) {
+    $rootPath = Join-Path $script:PlugBuildRepo $root
+    if (-not (Test-Path $rootPath)) { continue }
+    foreach ($d in Get-ChildItem $rootPath -Directory) {
+        $rel = $d.FullName.Substring($script:PlugBuildRepo.Length + 1)
+        if (-not (Get-ChildItem $d.FullName -Filter '*.codex' -File -ErrorAction SilentlyContinue | Select-Object -First 1)) { continue }
+        if ($script:QuireOverrides[$rel]) {
+            $qname = $script:QuireOverrides[$rel]
+        } else {
+            $seg = $d.Name
+            $qname = $seg.Substring(0,1).ToUpper() + $seg.Substring(1)
+        }
+        if (-not $script:QuireDirs[$qname]) { $script:QuireDirs[$qname] = $rel }
+    }
 }
-$script:CitePat = '^\s*cites\s+(Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev|Magic|Games|Spark|Data)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
+$script:CitePat = '^\s*cites\s+(' + (($script:QuireDirs.Keys | Sort-Object) -join '|') + ')\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
+
+function Add-PlugChapter {
+    param(
+        [System.Collections.Generic.List[string]]$Lines,
+        [string]$Path,
+        [string[]]$StripCites = @()
+    )
+    foreach ($l in [System.IO.File]::ReadAllLines($Path)) {
+        $skip = $false
+        foreach ($sc in $StripCites) { if ($l -match "cites.*$sc") { $skip = $true } }
+        if (-not $skip) { $Lines.Add($l) }
+    }
+    $Lines.Add(''); $Lines.Add('')
+}
 
 function Resolve-PlugForewords {
     param([System.Collections.Generic.List[string]]$Lines)
-    $queue = [System.Collections.Generic.Queue[hashtable]]::new()
-    $seen = @{}
-    foreach ($l in $Lines) {
-        if ($l -match $script:CitePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
-    }
-    $ordered = @()
-    while ($queue.Count -gt 0) {
-        $cite = $queue.Dequeue()
-        $key = "$($cite.Quire)::$($cite.Name)"
-        if ($seen[$key]) { continue }
-        $seen[$key] = $true
-        $fwPath = Join-Path $script:PlugBuildRepo (Join-Path $script:QuireDirs[$cite.Quire] "$($cite.Name).codex")
+    $visiting = @{}
+    $visited  = @{}
+    $ordered  = [System.Collections.Generic.List[hashtable]]::new()
+    function Resolve-PlugCite([string]$quire, [string]$name) {
+        $key = "${quire}::${name}"
+        if ($visited[$key]) { return }
+        if ($visiting[$key]) { return }
+        $visiting[$key] = $true
+        $fwPath = Join-Path $script:PlugBuildRepo (Join-Path $script:QuireDirs[$quire] "$name.codex")
         if (-not (Test-Path -PathType Leaf $fwPath)) {
-            [Console]::Error.WriteLine("MISSING: cited $($cite.Quire) chapter '$($cite.Name)' (expected $fwPath)")
+            [Console]::Error.WriteLine("MISSING: cited $quire chapter '$name' (expected $fwPath)")
             exit 3
         }
         foreach ($l in [System.IO.File]::ReadAllLines($fwPath)) {
-            if ($l -match $script:CitePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
+            if ($l -match $script:CitePat) { Resolve-PlugCite $matches[1] $matches[2] }
         }
-        $ordered += @{ Quire = $cite.Quire; Name = $cite.Name; Path = $fwPath }
+        [void]$visiting.Remove($key)
+        $visited[$key] = $true
+        [void]$ordered.Add(@{ Quire = $quire; Name = $name; Path = $fwPath })
     }
-    [array]::Reverse($ordered)
-    $emitted = @{}
+    foreach ($l in $Lines) {
+        if ($l -match $script:CitePat) { Resolve-PlugCite $matches[1] $matches[2] }
+    }
     $preLines = [System.Collections.Generic.List[string]]::new()
     foreach ($entry in $ordered) {
-        $key = "$($entry.Quire)::$($entry.Name)"
-        if ($emitted[$key]) { continue }
-        $emitted[$key] = $true
         $renamed = $false
         foreach ($l in [System.IO.File]::ReadAllLines($entry.Path)) {
             if ((-not $renamed) -and $l -match '^Chapter:\s*(.+?)\s*$') {
-                $preLines.Add("Chapter: $($entry.Quire)--$($matches[1])")
+                [void]$preLines.Add("Chapter: $($entry.Quire)--$($matches[1])")
                 $renamed = $true
-            } else { $preLines.Add($l) }
+            } else { [void]$preLines.Add($l) }
         }
-        $preLines.Add(''); $preLines.Add('')
+        [void]$preLines.Add(''); [void]$preLines.Add('')
     }
-    return $preLines
+    return ,$preLines
+}
+
+function Bundle-PlugSource {
+    param(
+        [System.Collections.Generic.List[string]]$PreLines,
+        [System.Collections.Generic.List[string]]$Lines,
+        [string]$BundleSrc,
+        [string]$PlugName
+    )
+    $body = (($PreLines + $Lines) -join "`n") + "`n"
+    [System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "[$PlugName] bundled $($PreLines.Count + $Lines.Count) lines, $($body.Length) bytes"
 }
 
 function Build-PlugCdx {
@@ -65,10 +94,13 @@ function Build-PlugCdx {
         [string]$BundleSrc,
         [string]$OutFile,
         [string]$LogFile,
-        [string]$PlugName
+        [string]$PlugName,
+        [string]$Survey = ''
     )
     $compileScript = Join-Path $script:PlugBuildRepo 'build' 'compile.ps1'
-    & pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $OutFile -Log $LogFile 2>&1 | Out-Null
+    $compileArgs = @('-NoProfile', '-File', $compileScript, '-Src', $BundleSrc, '-Out', $OutFile, '-Log', $LogFile)
+    if ($Survey) { $compileArgs += @('-Survey', $Survey) }
+    & pwsh @compileArgs 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("FAIL: compile errors; see $LogFile")
         Get-Content $LogFile -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { [Console]::Error.WriteLine("  $_") }
@@ -76,4 +108,29 @@ function Build-PlugCdx {
     }
     $sz = (Get-Item $OutFile).Length
     Write-Host "[$PlugName] OK: $OutFile ($sz bytes)"
+}
+
+function Build-TranspilerPlug {
+    param(
+        [string]$PlugDir,
+        [string]$PlugName,
+        [string[]]$Chapters,
+        [string]$Survey = ''
+    )
+    $outDir    = Join-Path $PlugDir 'build-output'
+    $outFile   = Join-Path $outDir "$PlugName-plug.cdx"
+    $bundleSrc = Join-Path $outDir 'plug-source.codex'
+    $logFile   = Join-Path $outDir 'build.log'
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\PlugTypes.codex')
+    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\IRTextParser.codex')
+    foreach ($ch in $Chapters) {
+        Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir "$ch.codex")
+    }
+
+    $preLines = Resolve-PlugForewords $lines
+    Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc $bundleSrc -PlugName "$PlugName-plug"
+    Build-PlugCdx -BundleSrc $bundleSrc -OutFile $outFile -LogFile $logFile -PlugName "$PlugName-plug" -Survey $Survey
 }

@@ -1,0 +1,259 @@
+Chapter: Tab
+  cites Foreword chapter Widget
+  cites Foreword chapter Scroll
+  cites Foreword chapter RichText
+  cites Foreword chapter Maybe
+  cites Browser chapter ContentAddress
+  cites Browser chapter TrustManager
+  cites Browser chapter MediaPlayer
+
+ A tab represents a single browsing context: an address, a page
+ widget tree, scroll state, navigation history, and trust state.
+ Each tab is independent — tabs do not share state.
+
+Section: Types
+
+  TabStatus =
+    | TabEmpty
+    | TabLoading
+    | TabReady
+    | TabError (Text)
+
+  Tab = record {
+    tab-id        : Integer,
+    tab-title     : Text,
+    tab-address   : Text,
+    tab-status    : TabStatus,
+    tab-content   : Maybe WidgetNode,
+    tab-scroll    : ScrollState,
+    tab-history   : List Text,
+    tab-hist-pos  : Integer,
+    tab-trust     : Maybe TrustDecision,
+    tab-caps      : Maybe PageCapabilities,
+    tab-load-tick : Integer,
+    tab-player    : Maybe PlayerState
+  }
+
+Section: Construction
+
+  tab-new : Integer, Text, Text -> Tab
+  tab-new (id) (title) (address) =
+    Tab {
+      tab-id = id,
+      tab-title = title,
+      tab-address = address,
+      tab-status = TabEmpty,
+      tab-content = Nothing,
+      tab-scroll = scroll-new 0 0 800 600,
+      tab-history = [address],
+      tab-hist-pos = 0,
+      tab-trust = Nothing,
+      tab-caps = Nothing,
+      tab-load-tick = 0,
+      tab-player = Nothing
+    }
+
+Section: Navigation
+
+  tab-navigate : Tab, Text -> Tab
+  tab-navigate (t) (address) =
+    let trimmed-history = list-take t.tab-history (t.tab-hist-pos + 1)
+    in let history = list-push trimmed-history address
+    in __record-set (__record-set (__record-set (__record-set (__record-set t
+      "tab-address" address)
+      "tab-status" TabLoading)
+      "tab-history" history)
+      "tab-hist-pos" (list-length history - 1))
+      "tab-scroll" (scroll-to-top t.tab-scroll)
+
+  tab-go-back : Tab -> Tab
+  tab-go-back (t) =
+    if t.tab-hist-pos > 0
+    then let pos = t.tab-hist-pos - 1
+      in let addr = list-at t.tab-history pos
+      in __record-set (__record-set (__record-set (__record-set t
+        "tab-hist-pos" pos)
+        "tab-address" addr)
+        "tab-status" TabLoading)
+        "tab-scroll" (scroll-to-top t.tab-scroll)
+    else t
+
+  tab-go-forward : Tab -> Tab
+  tab-go-forward (t) =
+    if t.tab-hist-pos < (list-length t.tab-history - 1)
+    then let pos = t.tab-hist-pos + 1
+      in let addr = list-at t.tab-history pos
+      in __record-set (__record-set (__record-set (__record-set t
+        "tab-hist-pos" pos)
+        "tab-address" addr)
+        "tab-status" TabLoading)
+        "tab-scroll" (scroll-to-top t.tab-scroll)
+    else t
+
+  tab-can-go-back : Tab -> Boolean
+  tab-can-go-back (t) = t.tab-hist-pos > 0
+
+  tab-can-go-forward : Tab -> Boolean
+  tab-can-go-forward (t) = t.tab-hist-pos < (list-length t.tab-history - 1)
+
+Section: Content Management
+
+  tab-set-content : Tab, WidgetNode, Text -> Tab
+  tab-set-content (t) (tree) (title) =
+    __record-set (__record-set (__record-set t
+      "tab-content" (Just tree))
+      "tab-status" TabReady)
+      "tab-title" title
+
+  tab-set-error : Tab, Text -> Tab
+  tab-set-error (t) (msg) =
+    __record-set (__record-set (__record-set t
+      "tab-content" (Just (render-error-page msg t.tab-address)))
+      "tab-status" (TabError msg))
+      "tab-title" "Error"
+
+  tab-set-capabilities : Tab, PageCapabilities -> Tab
+  tab-set-capabilities (t) (caps) =
+    __record-set t "tab-caps" (Just caps)
+
+Section: Scrolling
+
+  tab-scroll-by : Tab, Integer, Integer -> Tab
+  tab-scroll-by (t) (dx) (dy) =
+    __record-set t "tab-scroll" (scroll-by t.tab-scroll dx dy)
+
+  tab-scroll-page-up : Tab -> Tab
+  tab-scroll-page-up (t) =
+    __record-set t "tab-scroll" (scroll-page-up t.tab-scroll)
+
+  tab-scroll-page-down : Tab -> Tab
+  tab-scroll-page-down (t) =
+    __record-set t "tab-scroll" (scroll-page-down t.tab-scroll)
+
+  tab-scroll-to-top : Tab -> Tab
+  tab-scroll-to-top (t) =
+    __record-set t "tab-scroll" (scroll-to-top t.tab-scroll)
+
+Section: Rendering
+
+  tab-render-label : Tab -> WidgetNode
+  tab-render-label (t) =
+    let label-text = if text-length t.tab-title > 18
+          then text-take t.tab-title 15 & "..."
+          else t.tab-title
+    in let status-prefix = when t.tab-status
+          is TabLoading -> "... "
+          is TabError (_) -> "! "
+          is otherwise -> ""
+    in widget-button ("tab-" & show t.tab-id) (status-prefix & label-text)
+
+  tab-render-content : Tab -> WidgetNode
+  tab-render-content (t) =
+    when t.tab-status
+      is TabEmpty -> render-empty-page
+      is TabLoading -> render-loading-page t.tab-address
+      is TabReady -> when t.tab-content
+        is Just (tree) -> tree
+        is Nothing -> render-empty-page
+      is TabError (msg) -> when t.tab-content
+        is Just (tree) -> tree
+        is Nothing -> render-error-page msg t.tab-address
+
+  tab-trust-color : Tab -> Integer
+  tab-trust-color (t) =
+    when t.tab-caps
+      is Just (caps) -> trust-tier-color caps.pc-tier
+      is Nothing -> when t.tab-trust
+        is Just (td) -> trust-tier-color td.td-max-tier
+        is Nothing -> 0x808080
+
+Section: Built-In Page Templates
+
+  render-empty-page : WidgetNode
+  render-empty-page =
+    let heading = widget-label "empty-title" "New Tab"
+    in let hint = widget-label "empty-hint" "Enter a codex:// address to navigate"
+    in widget-panel "empty-page" DirColumn 16 [heading, hint]
+
+  render-loading-page : Text -> WidgetNode
+  render-loading-page (address) =
+    let heading = widget-label "loading-title" "Loading..."
+    in let addr-label = widget-label "loading-addr" address
+    in let spinner = widget-progress "spinner" 0 100
+    in widget-panel "loading-page" DirColumn 8 [heading, addr-label, spinner]
+
+  render-error-page : Text, Text -> WidgetNode
+  render-error-page (msg) (address) =
+    let heading = widget-label "error-title" "Page Error"
+    in let addr-label = widget-label "error-addr" ("Address: " & address)
+    in let error-msg = widget-label "error-msg" msg
+    in let retry-btn = widget-button "error-retry" "Retry"
+    in let home-btn = widget-button "error-home" "New Tab"
+    in let buttons = widget-panel "error-buttons" DirRow 8 [retry-btn, home-btn]
+    in widget-panel "error-page" DirColumn 8 [
+      heading,
+      widget-separator "error-sep",
+      addr-label,
+      error-msg,
+      widget-separator "error-sep2",
+      buttons
+    ]
+
+Section: Media Player Integration
+
+  tab-has-player : Tab -> Boolean
+  tab-has-player (t) =
+    when t.tab-player
+      is Just (_) -> True
+      is Nothing -> False
+
+  tab-init-player : Tab, MediaInfo -> Tab
+  tab-init-player (t) (info) =
+    __record-set t "tab-player" (Just (player-with-info info))
+
+  tab-media-event : Tab, MediaEvent -> Tab
+  tab-media-event (t) (ev) =
+    when t.tab-player
+      is Nothing -> t
+      is Just (ps) ->
+        __record-set t "tab-player" (Just (player-handle-event ps ev))
+
+  tab-media-tick : Tab, Integer -> Tab
+  tab-media-tick (t) (elapsed-ms) =
+    when t.tab-player
+      is Nothing -> t
+      is Just (ps) ->
+        __record-set t "tab-player" (Just (player-tick ps elapsed-ms))
+
+  tab-player-state : Tab -> Maybe PlayerState
+  tab-player-state (t) = t.tab-player
+
+Section: List Operations
+
+  tab-find-by-id : List Tab, Integer -> Maybe Tab
+  tab-find-by-id (tabs) (id) =
+    when tabs
+      is [] -> Nothing
+      is otherwise ->
+        let head = list-at tabs 0
+        in if head.tab-id == id
+          then Just head
+          else tab-find-by-id (list-drop tabs 1) id
+
+  tab-remove : List Tab, Integer -> List Tab
+  tab-remove (tabs) (id) =
+    list-filter tabs (tab-id-not-eq id)
+
+  tab-id-not-eq : Integer -> Tab -> Boolean
+  tab-id-not-eq (id) (t) = t.tab-id /= id
+
+  tab-replace : List Tab, Tab -> List Tab
+  tab-replace (tabs) (updated) =
+    list-map (tab-replace-one updated) tabs
+
+  tab-replace-one : Tab -> Tab -> Tab
+  tab-replace-one (updated) (t) =
+    if t.tab-id == updated.tab-id then updated else t
+
+  tab-count : List Tab -> Integer
+  tab-count (tabs) = list-length tabs

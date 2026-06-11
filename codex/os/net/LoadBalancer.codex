@@ -1,0 +1,260 @@
+Chapter: LoadBalancer
+  cites Net chapter GroupMembership
+  cites Net chapter HealthChecker
+  cites Foreword chapter ConsistentHash
+  cites Foreword chapter Maybe
+
+ Load balancing algorithms and backend pool management. Selects
+ which backend handles each request. Algorithms: round-robin,
+ least-connections, weighted round-robin, consistent hashing
+ (for cache-friendly routing), random, and power-of-two-choices.
+ Backends have weights, connection counts, and health state.
+
+Section: Backend
+
+  BackendState =
+    | BkHealthy
+    | BkDraining
+    | BkDown
+    | BkWarmup (Integer)
+
+  bk-label : BackendState -> Text
+  bk-label (s) = when s
+    is BkHealthy -> "healthy"
+    is BkDraining -> "draining"
+    is BkDown -> "down"
+    is BkWarmup (pct) -> "warmup " & show pct & "%"
+
+  Backend = record {
+    be-id : Text,
+    be-address : Text,
+    be-port : Integer,
+    be-weight : Integer,
+    be-state : BackendState,
+    be-active-conns : Integer,
+    be-total-conns : Integer,
+    be-total-errors : Integer,
+    be-avg-latency : Integer,
+    be-last-used : Integer
+  }
+
+  backend-new : Text, Text, Integer -> Backend
+  backend-new (id) (addr) (port) = Backend {
+    be-id = id, be-address = addr, be-port = port,
+    be-weight = 100, be-state = BkHealthy,
+    be-active-conns = 0, be-total-conns = 0,
+    be-total-errors = 0, be-avg-latency = 0,
+    be-last-used = 0
+  }
+
+  be-is-available : Backend -> Boolean
+  be-is-available (be) = when be.be-state
+    is BkHealthy -> True
+    is BkWarmup (pct) -> True
+    is otherwise -> False
+
+  be-effective-weight : Backend -> Integer
+  be-effective-weight (be) = when be.be-state
+    is BkHealthy -> be.be-weight
+    is BkWarmup (pct) -> be.be-weight * pct / 100
+    is otherwise -> 0
+
+  be-error-rate : Backend -> Integer
+  be-error-rate (be) =
+    if be.be-total-conns == 0 then 0
+    else be.be-total-errors * 1000 / be.be-total-conns
+
+  be-record-use : Backend, Integer, Integer -> Backend
+  be-record-use (be) (latency) (now) =
+    let new-avg = if be.be-total-conns == 0 then latency else (be.be-avg-latency * be.be-total-conns + latency) / (be.be-total-conns + 1)
+    in Backend {
+      be-id = be.be-id, be-address = be.be-address, be-port = be.be-port,
+      be-weight = be.be-weight, be-state = be.be-state,
+      be-active-conns = be.be-active-conns + 1,
+      be-total-conns = be.be-total-conns + 1,
+      be-total-errors = be.be-total-errors,
+      be-avg-latency = new-avg,
+      be-last-used = now
+    }
+
+  be-release : Backend -> Backend
+  be-release (be) =
+    __record-set be "be-active-conns" (if be.be-active-conns > 0 then be.be-active-conns - 1 else 0)
+
+  be-record-error : Backend -> Backend
+  be-record-error (be) =
+    __record-set be "be-total-errors" (be.be-total-errors + 1)
+
+Section: Algorithm Selection
+
+  LbAlgorithm =
+    | LbRoundRobin
+    | LbLeastConnections
+    | LbWeightedRoundRobin
+    | LbConsistentHash
+    | LbRandom
+    | LbPowerOfTwo
+
+  lb-algo-label : LbAlgorithm -> Text
+  lb-algo-label (a) = when a
+    is LbRoundRobin -> "round-robin"
+    is LbLeastConnections -> "least-connections"
+    is LbWeightedRoundRobin -> "weighted-round-robin"
+    is LbConsistentHash -> "consistent-hash"
+    is LbRandom -> "random"
+    is LbPowerOfTwo -> "power-of-two"
+
+Section: Backend Pool
+
+  BackendPool = record {
+    bp-name : Text,
+    bp-backends : List Backend,
+    bp-count : Integer,
+    bp-algorithm : LbAlgorithm,
+    bp-rr-index : Integer,
+    bp-total-requests : Integer,
+    bp-total-errors : Integer,
+    bp-max-conns-per-backend : Integer,
+    bp-drain-timeout-sec : Integer
+  }
+
+  pool-new : Text, LbAlgorithm -> BackendPool
+  pool-new (name) (algo) = BackendPool {
+    bp-name = name, bp-backends = [], bp-count = 0,
+    bp-algorithm = algo, bp-rr-index = 0,
+    bp-total-requests = 0, bp-total-errors = 0,
+    bp-max-conns-per-backend = 1000,
+    bp-drain-timeout-sec = 30
+  }
+
+  pool-add : BackendPool, Backend -> BackendPool
+  pool-add (p) (be) =
+    __record-set (__record-set p "bp-backends" (list-push (p.bp-backends) be)) "bp-count" (p.bp-count + 1)
+
+  pool-remove : BackendPool, Text -> BackendPool
+  pool-remove (p) (id) =
+    let filtered = pool-filter (p.bp-backends) id 0 (p.bp-count) []
+    in __record-set (__record-set p "bp-backends" filtered) "bp-count" (list-length filtered)
+
+  pool-filter : List Backend, Text, Integer, Integer, List Backend -> List Backend
+  pool-filter (bes) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let be = list-at bes i
+    in if be.be-id == id then pool-filter bes id (i + 1) n acc
+    else pool-filter bes id (i + 1) n (list-push acc be)
+
+  pool-available : BackendPool -> List Backend
+  pool-available (p) = pool-avail-loop (p.bp-backends) 0 (p.bp-count) []
+
+  pool-avail-loop : List Backend, Integer, Integer, List Backend -> List Backend
+  pool-avail-loop (bes) (i) (n) (acc) =
+    if i >= n then acc
+    else let be = list-at bes i
+    in if be-is-available be then pool-avail-loop bes (i + 1) n (list-push acc be)
+    else pool-avail-loop bes (i + 1) n acc
+
+  pool-available-count : BackendPool -> Integer
+  pool-available-count (p) = list-length (pool-available p)
+
+Section: Selection Algorithms
+
+  pool-select : BackendPool, Text -> Maybe Text
+  pool-select (p) (key) =
+    let available = pool-available p
+    in let count = list-length available
+    in if count == 0 then None
+    else when p.bp-algorithm
+      is LbRoundRobin -> Just (pool-rr-pick available count (p.bp-rr-index))
+      is LbLeastConnections -> Just (pool-lc-pick available count)
+      is LbWeightedRoundRobin -> Just (pool-wrr-pick available count (p.bp-rr-index))
+      is LbConsistentHash -> Just (pool-hash-pick available count key)
+      is LbRandom -> Just (pool-rr-pick available count (p.bp-total-requests))
+      is LbPowerOfTwo -> Just (pool-p2-pick available count (p.bp-total-requests))
+
+  pool-rr-pick : List Backend, Integer, Integer -> Text
+  pool-rr-pick (available) (count) (index) =
+    let idx = index - (index / count) * count
+    in (list-at available idx).be-id
+
+  pool-lc-pick : List Backend, Integer -> Text
+  pool-lc-pick (available) (count) =
+    pool-lc-loop available 1 count (list-at available 0).be-id ((list-at available 0).be-active-conns)
+
+  pool-lc-loop : List Backend, Integer, Integer, Text, Integer -> Text
+  pool-lc-loop (bes) (i) (n) (best-id) (best-conns) =
+    if i >= n then best-id
+    else let be = list-at bes i
+    in if be.be-active-conns < best-conns then pool-lc-loop bes (i + 1) n (be.be-id) (be.be-active-conns)
+    else pool-lc-loop bes (i + 1) n best-id best-conns
+
+  pool-wrr-pick : List Backend, Integer, Integer -> Text
+  pool-wrr-pick (available) (count) (index) =
+    let total-weight = pool-total-weight available 0 count 0
+    in let target = (index * 997) - ((index * 997) / total-weight) * total-weight
+    in pool-wrr-walk available 0 count target 0
+
+  pool-total-weight : List Backend, Integer, Integer, Integer -> Integer
+  pool-total-weight (bes) (i) (n) (acc) =
+    if i >= n then acc
+    else pool-total-weight bes (i + 1) n (acc + be-effective-weight (list-at bes i))
+
+  pool-wrr-walk : List Backend, Integer, Integer, Integer, Integer -> Text
+  pool-wrr-walk (bes) (i) (n) (target) (cumulative) =
+    if i >= n then (list-at bes (n - 1)).be-id
+    else let be = list-at bes i
+    in let cum = cumulative + be-effective-weight be
+    in if cum > target then be.be-id
+    else pool-wrr-walk bes (i + 1) n target cum
+
+  pool-hash-pick : List Backend, Integer, Text -> Text
+  pool-hash-pick (available) (count) (key) =
+    let hash = chr-hash-key key
+    in let abs-hash = if hash < 0 then negate hash else hash
+    in let idx = abs-hash - (abs-hash / count) * count
+    in (list-at available idx).be-id
+
+  pool-p2-pick : List Backend, Integer, Integer -> Text
+  pool-p2-pick (available) (count) (seed) =
+    if count < 2 then (list-at available 0).be-id
+    else let i1 = seed - (seed / count) * count
+    in let i2 = (seed * 997 + 1) - (((seed * 997 + 1) / count) * count)
+    in let be1 = list-at available i1
+    in let be2 = list-at available (if i2 == i1 then (i1 + 1) - (((i1 + 1) / count) * count) else i2)
+    in if be1.be-active-conns <= be2.be-active-conns then be1.be-id else be2.be-id
+
+  pool-advance-rr : BackendPool -> BackendPool
+  pool-advance-rr (p) = __record-set p "bp-rr-index" (p.bp-rr-index + 1)
+
+  pool-record-request : BackendPool -> BackendPool
+  pool-record-request (p) = __record-set p "bp-total-requests" (p.bp-total-requests + 1)
+
+Section: Pool Diagnostics
+
+  pool-error-rate : BackendPool -> Integer
+  pool-error-rate (p) =
+    if p.bp-total-requests == 0 then 0
+    else p.bp-total-errors * 1000 / p.bp-total-requests
+
+  pool-total-active : BackendPool -> Integer
+  pool-total-active (p) = pool-active-loop (p.bp-backends) 0 (p.bp-count) 0
+
+  pool-active-loop : List Backend, Integer, Integer, Integer -> Integer
+  pool-active-loop (bes) (i) (n) (acc) =
+    if i >= n then acc
+    else pool-active-loop bes (i + 1) n (acc + (list-at bes i).be-active-conns)
+
+  pool-avg-latency : BackendPool -> Integer
+  pool-avg-latency (p) =
+    if p.bp-count == 0 then 0
+    else pool-lat-sum (p.bp-backends) 0 (p.bp-count) 0 / p.bp-count
+
+  pool-lat-sum : List Backend, Integer, Integer, Integer -> Integer
+  pool-lat-sum (bes) (i) (n) (acc) =
+    if i >= n then acc
+    else pool-lat-sum bes (i + 1) n (acc + (list-at bes i).be-avg-latency)
+
+  pool-status : BackendPool -> Text
+  pool-status (p) =
+    p.bp-name & " " & lb-algo-label (p.bp-algorithm) & " backends=" & show (pool-available-count p) & "/" & show (p.bp-count) & " active=" & show (pool-total-active p) & " requests=" & show (p.bp-total-requests)
+
+Page 1

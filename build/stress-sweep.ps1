@@ -11,6 +11,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 Set-Location (Join-Path $PSScriptRoot '..')
+[Environment]::CurrentDirectory = (Get-Location).Path
 
 $sweepScript = Join-Path $PSScriptRoot 'test.ps1'
 $null = New-Item -ItemType Directory -Force -Path (Split-Path $LogPath)

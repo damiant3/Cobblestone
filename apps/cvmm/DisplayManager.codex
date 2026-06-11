@@ -1,0 +1,243 @@
+Chapter: DisplayManager
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Display and GPU manager. Enumerates monitors (physical or virtual),
+ GPUs, and their capabilities. Supports resolution change, DPI
+ scaling, multi-monitor layout configuration, and refresh rate
+ selection. Today this manages the codex-vm Bochs VBE display.
+ Tomorrow it drives real GPUs with real monitor EDID data.
+
+Section: GPU Types
+
+  GpuVendor =
+    | GpuIntel
+    | GpuAmd
+    | GpuNvidia
+    | GpuVirtual
+    | GpuSoftware
+
+  gpu-vendor-label : GpuVendor -> Text
+  gpu-vendor-label (v) = when v
+    is GpuIntel -> "Intel"
+    is GpuAmd -> "AMD"
+    is GpuNvidia -> "NVIDIA"
+    is GpuVirtual -> "Virtual"
+    is GpuSoftware -> "Software"
+
+  GpuInfo = record {
+    gpu-id : Text,
+    gpu-name : Text,
+    gpu-vendor : GpuVendor,
+    gpu-vram : ByteSize,
+    gpu-driver : Text,
+    gpu-temperature : Integer,
+    gpu-utilization : Integer,
+    gpu-clock-mhz : Integer,
+    gpu-mem-clock-mhz : Integer,
+    gpu-power-watts : Integer,
+    gpu-status : ResourceStatus
+  }
+
+  gpu-new : Text, Text, GpuVendor, Integer -> GpuInfo
+  gpu-new (id) (name) (vendor) (vram-bytes) = GpuInfo {
+    gpu-id = id,
+    gpu-name = name,
+    gpu-vendor = vendor,
+    gpu-vram = bytes vram-bytes,
+    gpu-driver = "",
+    gpu-temperature = 0,
+    gpu-utilization = 0,
+    gpu-clock-mhz = 0,
+    gpu-mem-clock-mhz = 0,
+    gpu-power-watts = 0,
+    gpu-status = StatusOnline
+  }
+
+Section: Monitor Types
+
+  MonitorConn =
+    | ConnHdmi
+    | ConnDp
+    | ConnVga
+    | ConnDvi
+    | ConnUsbc
+    | ConnVirtual
+
+  monitor-conn-label : MonitorConn -> Text
+  monitor-conn-label (c) = when c
+    is ConnHdmi -> "HDMI"
+    is ConnDp -> "DisplayPort"
+    is ConnVga -> "VGA"
+    is ConnDvi -> "DVI"
+    is ConnUsbc -> "USB-C"
+    is ConnVirtual -> "Virtual"
+
+  Resolution = record {
+    res-width : Integer,
+    res-height : Integer,
+    res-refresh : Integer
+  }
+
+  format-resolution : Resolution -> Text
+  format-resolution (r) =
+    show (r.res-width) & "x" & show (r.res-height) & "@" & show (r.res-refresh) & "Hz"
+
+  Monitor = record {
+    mon-id : Text,
+    mon-name : Text,
+    mon-gpu-id : Text,
+    mon-connection : MonitorConn,
+    mon-resolution : Resolution,
+    mon-available-res : List Resolution,
+    mon-res-count : Integer,
+    mon-dpi : Integer,
+    mon-scale-percent : Integer,
+    mon-pos-x : Integer,
+    mon-pos-y : Integer,
+    mon-primary : Boolean,
+    mon-rotation : Integer,
+    mon-status : ResourceStatus
+  }
+
+  monitor-new : Text, Text, MonitorConn -> Monitor
+  monitor-new (id) (name) (conn) = Monitor {
+    mon-id = id,
+    mon-name = name,
+    mon-gpu-id = "",
+    mon-connection = conn,
+    mon-resolution = Resolution { res-width = 1920, res-height = 1080, res-refresh = 60 },
+    mon-available-res = [],
+    mon-res-count = 0,
+    mon-dpi = 96,
+    mon-scale-percent = 100,
+    mon-pos-x = 0,
+    mon-pos-y = 0,
+    mon-primary = False,
+    mon-rotation = 0,
+    mon-status = StatusOnline
+  }
+
+  monitor-pixel-count : Monitor -> Integer
+  monitor-pixel-count (m) = (m.mon-resolution).res-width * (m.mon-resolution).res-height
+
+  monitor-aspect-ratio : Monitor -> Text
+  monitor-aspect-ratio (m) =
+    let w = (m.mon-resolution).res-width
+    in let h = (m.mon-resolution).res-height
+    in let g = gcd-simple w h
+    in show (w / g) & ":" & show (h / g)
+
+  gcd-simple : Integer, Integer -> Integer
+  gcd-simple (a) (b) =
+    if b == 0 then a
+    else gcd-simple b (a - (a / b) * b)
+
+Section: Display Manager State
+
+  DisplayManagerState = record {
+    disp-gpus : List GpuInfo,
+    disp-gpu-count : Integer,
+    disp-monitors : List Monitor,
+    disp-monitor-count : Integer,
+    disp-selected-monitor : Text,
+    disp-selected-gpu : Text,
+    disp-total-pixels : Integer
+  }
+
+  display-manager-new : DisplayManagerState
+  display-manager-new = DisplayManagerState {
+    disp-gpus = [],
+    disp-gpu-count = 0,
+    disp-monitors = [],
+    disp-monitor-count = 0,
+    disp-selected-monitor = "",
+    disp-selected-gpu = "",
+    disp-total-pixels = 0
+  }
+
+Section: Actions
+
+  disp-add-gpu : DisplayManagerState, GpuInfo -> DisplayManagerState
+  disp-add-gpu (st) (g) =
+    __record-set (__record-set st "disp-gpus" (list-push (st.disp-gpus) g)) "disp-gpu-count" (st.disp-gpu-count + 1)
+
+  disp-add-monitor : DisplayManagerState, Monitor -> DisplayManagerState
+  disp-add-monitor (st) (m) =
+    let new-mons = list-push (st.disp-monitors) m
+    in let new-count = st.disp-monitor-count + 1
+    in let total = disp-sum-pixels new-mons 0 new-count 0
+    in DisplayManagerState {
+      disp-gpus = st.disp-gpus,
+      disp-gpu-count = st.disp-gpu-count,
+      disp-monitors = new-mons,
+      disp-monitor-count = new-count,
+      disp-selected-monitor = st.disp-selected-monitor,
+      disp-selected-gpu = st.disp-selected-gpu,
+      disp-total-pixels = total
+    }
+
+  disp-sum-pixels : List Monitor, Integer, Integer, Integer -> Integer
+  disp-sum-pixels (mons) (i) (n) (acc) =
+    if i >= n then acc
+    else disp-sum-pixels mons (i + 1) n (acc + monitor-pixel-count (list-at mons i))
+
+  disp-select-monitor : DisplayManagerState, Text -> DisplayManagerState
+  disp-select-monitor (st) (id) = __record-set st "disp-selected-monitor" id
+
+  disp-find-monitor : DisplayManagerState, Text -> Maybe Monitor
+  disp-find-monitor (st) (id) = disp-find-mon-loop (st.disp-monitors) id 0 (st.disp-monitor-count)
+
+  disp-find-mon-loop : List Monitor, Text, Integer, Integer -> Maybe Monitor
+  disp-find-mon-loop (mons) (id) (i) (n) =
+    if i >= n then None
+    else let m = list-at mons i
+    in if m.mon-id == id then Just m
+    else disp-find-mon-loop mons id (i + 1) n
+
+Section: Widget Building
+
+  disp-gpu-row : GpuInfo -> WidgetNode
+  disp-gpu-row (g) =
+    let name = widget-label (g.gpu-id & "-name") (g.gpu-name)
+    in let vendor = widget-label (g.gpu-id & "-vendor") (gpu-vendor-label (g.gpu-vendor))
+    in let vram = widget-label (g.gpu-id & "-vram") (format-bytes (g.gpu-vram))
+    in let util = widget-gauge (g.gpu-id & "-util") (g.gpu-utilization) 100
+    in let temp = widget-label (g.gpu-id & "-temp") (show (g.gpu-temperature) & " C")
+    in let power = widget-label (g.gpu-id & "-power") (show (g.gpu-power-watts) & " W")
+    in widget-panel g.gpu-id DirRow 8 [name, vendor, vram, util, temp, power]
+
+  disp-monitor-row : Monitor -> WidgetNode
+  disp-monitor-row (m) =
+    let name = widget-label (m.mon-id & "-name") (m.mon-name)
+    in let res = widget-label (m.mon-id & "-res") (format-resolution (m.mon-resolution))
+    in let conn = widget-label (m.mon-id & "-conn") (monitor-conn-label (m.mon-connection))
+    in let dpi = widget-label (m.mon-id & "-dpi") (show (m.mon-dpi) & " DPI")
+    in let scale = widget-label (m.mon-id & "-scale") (show (m.mon-scale-percent) & "%")
+    in let pos = widget-label (m.mon-id & "-pos") ("(" & show (m.mon-pos-x) & "," & show (m.mon-pos-y) & ")")
+    in let primary = widget-label (m.mon-id & "-primary") (if m.mon-primary then "Primary" else "")
+    in widget-panel m.mon-id DirRow 8 [name, res, conn, dpi, scale, pos, primary]
+
+  disp-widget : DisplayManagerState -> WidgetNode
+  disp-widget (st) =
+    let title = widget-label "disp-title" "Display & GPU"
+    in let summary = widget-label "disp-summary" (show (st.disp-gpu-count) & " GPUs, " & show (st.disp-monitor-count) & " monitors, " & show (st.disp-total-pixels) & " total pixels")
+    in let gpu-title = widget-label "gpu-title" "GPUs"
+    in let gpu-rows = disp-gpu-rows (st.disp-gpus) 0 (st.disp-gpu-count) []
+    in let mon-title = widget-label "mon-title" "Monitors"
+    in let mon-rows = disp-mon-rows (st.disp-monitors) 0 (st.disp-monitor-count) []
+    in widget-panel "display-manager" DirColumn 8 ([title, summary, gpu-title] & gpu-rows & [mon-title] & mon-rows)
+
+  disp-gpu-rows : List GpuInfo, Integer, Integer, List WidgetNode -> List WidgetNode
+  disp-gpu-rows (gpus) (i) (n) (acc) =
+    if i >= n then acc
+    else disp-gpu-rows gpus (i + 1) n (list-push acc (disp-gpu-row (list-at gpus i)))
+
+  disp-mon-rows : List Monitor, Integer, Integer, List WidgetNode -> List WidgetNode
+  disp-mon-rows (mons) (i) (n) (acc) =
+    if i >= n then acc
+    else disp-mon-rows mons (i + 1) n (list-push acc (disp-monitor-row (list-at mons i)))
+
+Page 1

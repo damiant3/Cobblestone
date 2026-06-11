@@ -1,0 +1,242 @@
+Chapter: MarketAuction
+  cites Market chapter MarketTypes
+  cites Market chapter MarketDb
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+
+ Auction engine. Handles bid placement, proxy bidding, snipe
+ protection, reserve enforcement, buy-it-now, Dutch auction price
+ drops, and Vickrey second-price resolution.
+
+Section: Auction Creation
+
+  create-auction : MarketState, Text, Text, AuctionType, Money, Integer, Integer, Integer -> (MarketState, Auction)
+  create-auction (st) (product-id) (seller-id) (auc-type) (start-price) (duration-secs) (bid-inc) (ts) =
+    let (st2, aid) = market-gen-id st "auc"
+    in let auc = Auction {
+      auc-id = aid,
+      auc-product-id = product-id,
+      auc-seller-id = seller-id,
+      auc-type = auc-type,
+      auc-start-price = start-price,
+      auc-reserve-price = None,
+      auc-buy-now-price = None,
+      auc-bid-increment = bid-inc,
+      auc-current-bid = start-price,
+      auc-bid-count = 0,
+      auc-high-bidder = "",
+      auc-start-time = ts,
+      auc-end-time = ts + duration-secs,
+      auc-snipe-extend-secs = 300,
+      auc-status = AuctionLive,
+      auc-auto-relist = False
+    }
+    in let log2 = log-info-msg (st2.mkt-log) "auction" ("created " & aid & " for " & product-id & " starting at " & format-money start-price) ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, auc)
+
+  set-reserve : Auction, Money -> Auction
+  set-reserve (auc) (reserve) = __record-set auc "auc-reserve-price" (Just reserve)
+
+  set-buy-now : Auction, Money -> Auction
+  set-buy-now (auc) (price) = __record-set auc "auc-buy-now-price" (Just price)
+
+  set-snipe-protect : Auction, Integer -> Auction
+  set-snipe-protect (auc) (secs) = __record-set auc "auc-snipe-extend-secs" secs
+
+Section: Bid Placement
+
+  BidResult =
+    | BidAccepted (Auction, Bid)
+    | BidOutbid (Money, Text)
+    | BidTooLow (Money)
+    | BidAuctionClosed
+    | BidOnOwnItem
+    | BidBuyNowCompleted (Auction)
+
+  place-bid : MarketState, Auction, Text, Money, Maybe Money, Integer -> (MarketState, BidResult)
+  place-bid (st) (auc) (user-id) (amount) (max-bid) (ts) =
+    if is-auction-closed auc ts then (st, BidAuctionClosed)
+    else if user-id == auc.auc-seller-id then (st, BidOnOwnItem)
+    else let min-bid = next-min-bid auc
+    in if amount.amount < min-bid.amount then (st, BidTooLow min-bid)
+    else let (st2, bid-id) = market-gen-id st "bid"
+    in let bid = Bid {
+      bid-id = bid-id,
+      bid-auction-id = auc.auc-id,
+      bid-user-id = user-id,
+      bid-amount = amount,
+      bid-max-amount = max-bid,
+      bid-time = ts,
+      bid-is-proxy = False,
+      bid-is-auto = False
+    }
+    in let auc2 = apply-bid auc bid ts
+    in let auc3 = snipe-protect auc2 ts
+    in let log2 = log-info-msg (st2.mkt-log) "auction" (user-id & " bid " & format-money amount & " on " & auc.auc-id) ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, BidAccepted auc3 bid)
+
+  apply-bid : Auction, Bid, Integer -> Auction
+  apply-bid (auc) (bid) (ts) =
+    let a2 = __record-set auc "auc-current-bid" (bid.bid-amount)
+    in let a3 = __record-set a2 "auc-high-bidder" (bid.bid-user-id)
+    in __record-set a3 "auc-bid-count" (auc.auc-bid-count + 1)
+
+  next-min-bid : Auction -> Money
+  next-min-bid (auc) =
+    if auc.auc-bid-count == 0 then auc.auc-start-price
+    else money (auc.auc-current-bid.amount + auc.auc-bid-increment) (auc.auc-current-bid.currency)
+
+  is-auction-closed : Auction, Integer -> Boolean
+  is-auction-closed (auc) (now) =
+    when auc.auc-status
+      is AuctionLive -> now >= auc.auc-end-time
+      is AuctionScheduled -> False
+      is otherwise -> True
+
+Section: Snipe Protection
+
+  snipe-protect : Auction, Integer -> Auction
+  snipe-protect (auc) (bid-time) =
+    let remaining = auc.auc-end-time - bid-time
+    in if remaining < auc.auc-snipe-extend-secs then
+      __record-set auc "auc-end-time" (bid-time + auc.auc-snipe-extend-secs)
+    else auc
+
+Section: Proxy Bidding
+
+  proxy-bid : MarketState, Auction, Text, Money, Integer -> (MarketState, BidResult)
+  proxy-bid (st) (auc) (user-id) (max-amount) (ts) =
+    let current = next-min-bid auc
+    in if max-amount.amount < current.amount then (st, BidTooLow current)
+    else let bid-amount = current
+    in place-bid st auc user-id bid-amount (Just max-amount) ts
+
+  auto-outbid : Auction, Bid, Bid -> Maybe Money
+  auto-outbid (auc) (new-bid) (existing-proxy) =
+    when existing-proxy.bid-max-amount
+      is Just (max) ->
+        let needed = new-bid.bid-amount.amount + auc.auc-bid-increment
+        in if needed <= max.amount then Just (money needed (max.currency))
+        else None
+      is None -> None
+
+Section: Buy It Now
+
+  buy-now : MarketState, Auction, Text, Integer -> (MarketState, BidResult)
+  buy-now (st) (auc) (user-id) (ts) =
+    when auc.auc-buy-now-price
+      is Just (price) ->
+        if is-auction-closed auc ts then (st, BidAuctionClosed)
+        else let a2 = __record-set auc "auc-status" (AuctionSold user-id)
+        in let a3 = __record-set a2 "auc-current-bid" price
+        in let a4 = __record-set a3 "auc-high-bidder" user-id
+        in let log2 = log-info-msg (st.mkt-log) "auction" (user-id & " bought now " & auc.auc-id & " for " & format-money price) ts
+        in let st2 = __record-set st "mkt-log" log2
+        in (st2, BidBuyNowCompleted a4)
+      is None -> (st, BidAuctionClosed)
+
+Section: Auction Resolution
+
+  resolve-auction : MarketState, Auction, Integer -> (MarketState, Auction)
+  resolve-auction (st) (auc) (ts) =
+    if ts < auc.auc-end-time then (st, auc)
+    else if auc.auc-bid-count == 0 then
+      let a2 = __record-set auc "auc-status" AuctionEnded
+      in let log2 = log-info-msg (st.mkt-log) "auction" (auc.auc-id & " ended with no bids") ts
+      in (__record-set st "mkt-log" log2, a2)
+    else let reserve-met = check-reserve auc
+    in if reserve-met == False then
+      let a2 = __record-set auc "auc-status" AuctionEnded
+      in let log2 = log-info-msg (st.mkt-log) "auction" (auc.auc-id & " ended, reserve not met") ts
+      in (__record-set st "mkt-log" log2, a2)
+    else let a2 = __record-set auc "auc-status" (AuctionSold (auc.auc-high-bidder))
+    in let log2 = log-info-msg (st.mkt-log) "auction" (auc.auc-id & " sold to " & auc.auc-high-bidder & " for " & format-money (auc.auc-current-bid)) ts
+    in (__record-set st "mkt-log" log2, a2)
+
+  check-reserve : Auction -> Boolean
+  check-reserve (auc) =
+    when auc.auc-reserve-price
+      is Just (reserve) -> auc.auc-current-bid.amount >= reserve.amount
+      is None -> True
+
+  winning-price-vickrey : Auction, List Bid -> Money
+  winning-price-vickrey (auc) (bids) =
+    if list-length bids < 2 then auc.auc-start-price
+    else second-highest-bid bids (money-zero (auc.auc-start-price.currency)) (money-zero (auc.auc-start-price.currency))
+
+  second-highest-bid : List Bid, Money, Money -> Money
+  second-highest-bid (bids) (first) (second) =
+    if list-length bids == 0 then second
+    else let b = list-at bids 0
+    in if b.bid-amount.amount > first.amount then second-highest-bid (list-tail bids) (b.bid-amount) first
+    else if b.bid-amount.amount > second.amount then second-highest-bid (list-tail bids) first (b.bid-amount)
+    else second-highest-bid (list-tail bids) first second
+
+Section: Auction HTML
+
+  render-auction-card : Auction, Product, Integer -> Text
+  render-auction-card (auc) (prod) (now) =
+    let remaining = auc.auc-end-time - now
+    in let time-str = if remaining <= 0 then "Ended"
+      else if remaining < 3600 then show (remaining / 60) & "m left"
+      else if remaining < 86400 then show (remaining / 3600) & "h left"
+      else show (remaining / 86400) & "d left"
+    in "<div class=\"card\">" &
+    "<div class=\"product-img\" style=\"position:relative\">" &
+    (if text-length (prod.product-image-url) > 0 then "<img src=\"" & prod.product-image-url & "\" style=\"width:100%;height:100%;object-fit:cover\">" else "\x1f3a8") &
+    "<span style=\"position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.7);color:#fff;padding:2px 8px;border-radius:12px;font-size:0.75em\">" & time-str & "</span>" &
+    "</div><div class=\"product-info\">" &
+    "<div class=\"product-name\">" & prod.product-name & "</div>" &
+    "<div style=\"display:flex;justify-content:space-between;align-items:baseline;margin-top:4px\">" &
+    "<div><div style=\"font-size:0.75em;color:#666\">Current bid</div>" &
+    "<div class=\"product-price\">" & format-money (auc.auc-current-bid) & "</div></div>" &
+    "<div style=\"text-align:right\"><span style=\"font-size:0.8em;color:#666\">" & show (auc.auc-bid-count) & " bids</span></div></div>" &
+    (when auc.auc-buy-now-price is Just (bn) -> "<div style=\"margin-top:8px\"><button class=\"btn btn-outline\" style=\"width:100%;font-size:0.85em\">Buy Now " & format-money bn & "</button></div>" is None -> "") &
+    "</div></div>"
+
+  render-auction-detail : Auction, Product, List Bid, Integer -> Text
+  render-auction-detail (auc) (prod) (bids) (now) =
+    let remaining = auc.auc-end-time - now
+    in "<div style=\"display:flex;gap:32px;flex-wrap:wrap\">" &
+    "<div style=\"flex:1;min-width:300px\"><div class=\"product-img\" style=\"font-size:6em;border-radius:8px\">\x1f3a8</div></div>" &
+    "<div style=\"flex:1;min-width:300px\">" &
+    "<h1 style=\"font-size:1.8em;margin-bottom:8px\">" & prod.product-name & "</h1>" &
+    "<div style=\"background:#f8fafc;padding:16px;border-radius:8px;margin-bottom:16px\">" &
+    "<div style=\"display:flex;justify-content:space-between\">" &
+    "<div><div style=\"font-size:0.8em;color:#666\">Current Bid</div>" &
+    "<div style=\"font-size:1.8em;font-weight:700;color:#2563eb\">" & format-money (auc.auc-current-bid) & "</div></div>" &
+    "<div style=\"text-align:right\"><div style=\"font-size:0.8em;color:#666\">Time Remaining</div>" &
+    "<div style=\"font-size:1.2em;font-weight:600\">" & format-remaining remaining & "</div></div></div>" &
+    "<div style=\"display:flex;gap:8px;margin-top:8px\"><span class=\"badge\">" & show (auc.auc-bid-count) & " bids</span>" &
+    (when auc.auc-reserve-price is Just (r) -> if auc.auc-current-bid.amount >= r.amount then "<span class=\"badge badge-active\">Reserve met</span>" else "<span class=\"badge badge-draft\">Reserve not met</span>" is None -> "") &
+    "</div></div>" &
+    "<div style=\"display:flex;gap:8px\">" &
+    "<input class=\"form-input\" type=\"number\" placeholder=\"" & format-money (next-min-bid auc) & " or more\" style=\"flex:1\">" &
+    "<button class=\"btn\">Place Bid</button></div>" &
+    "<div style=\"font-size:0.8em;color:#666;margin-top:4px\">Minimum bid: " & format-money (next-min-bid auc) & "</div>" &
+    (when auc.auc-buy-now-price is Just (bn) -> "<div style=\"margin-top:12px\"><button class=\"btn btn-outline\" style=\"width:100%\">Buy It Now for " & format-money bn & "</button></div>" is None -> "") &
+    "<div style=\"margin-top:24px\">" & render-bid-history bids 0 & "</div>" &
+    "</div></div>"
+
+  format-remaining : Integer -> Text
+  format-remaining (secs) =
+    if secs <= 0 then "Ended"
+    else if secs < 60 then show secs & "s"
+    else if secs < 3600 then show (secs / 60) & "m " & show (secs - (secs / 60) * 60) & "s"
+    else if secs < 86400 then show (secs / 3600) & "h " & show ((secs - (secs / 3600) * 3600) / 60) & "m"
+    else show (secs / 86400) & "d " & show ((secs - (secs / 86400) * 86400) / 3600) & "h"
+
+  render-bid-history : List Bid, Integer -> Text
+  render-bid-history (bids) (i) =
+    if i == 0 then "<div class=\"section-title\" style=\"font-size:1em\">Bid History</div><table class=\"table\"><thead><tr><th>Bidder</th><th>Amount</th><th>Type</th></tr></thead><tbody>" & render-bid-rows bids 0 & "</tbody></table>"
+    else ""
+
+  render-bid-rows : List Bid, Integer -> Text
+  render-bid-rows (bids) (i) =
+    if i >= list-length bids then ""
+    else let b = list-at bids i
+    in "<tr><td>" & b.bid-user-id & "</td><td>" & format-money (b.bid-amount) & "</td><td>" &
+    (if b.bid-is-proxy then "<span class=\"badge\">proxy</span>" else if b.bid-is-auto then "<span class=\"badge\">auto</span>" else "manual") &
+    "</td></tr>" & render-bid-rows bids (i + 1)

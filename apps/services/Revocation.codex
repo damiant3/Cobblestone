@@ -1,0 +1,340 @@
+Chapter: Revocation
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Foreword chapter DateTime
+
+ Capability and identity revocation for the trust lattice.
+ Replaces the legacy web's CRL/OCSP infrastructure with signed
+ revocation records propagated through the trust lattice.
+
+ A revocation record is:
+   - Signed by the revoking identity (the authority)
+   - Content-addressed (SHA-256 hash)
+   - Timestamped
+   - Scoped (what is being revoked and since when)
+
+ Revocation types:
+   1. Key compromise — "my key was compromised, do not trust
+      signatures made after date X"
+   2. Trust withdrawal — "I no longer vouch for identity X"
+   3. Capability revocation — "identity X no longer has
+      capability Y" (team member removed, access expired)
+   4. Content retraction — "content at hash X should not be
+      served" (publisher retracting their own content)
+
+ There are no certificate revocation lists. Revocation is event-
+ based: a revocation record is a signed fact in the trust lattice,
+ propagated the same way name records propagate.
+
+Section: Types
+
+  RevocationType =
+    | RevokeKeyCompromise
+    | RevokeTrustWithdrawal
+    | RevokeCapability
+    | RevokeContent
+    | RevokeTeamMember
+    | RevokeAllCapabilities
+
+  RevocationScope =
+    | ScopeIdentity (List Integer)
+    | ScopeContentHash (List Integer)
+    | ScopeCapability (Text)
+    | ScopeVaultAccess (Text)
+
+  RevocationRecord = record {
+    rr-id          : List Integer,
+    rr-type        : RevocationType,
+    rr-scope       : RevocationScope,
+    rr-authority   : List Integer,
+    rr-timestamp   : Integer,
+    rr-effective   : Integer,
+    rr-reason      : Text,
+    rr-signature   : List Integer,
+    rr-supersedes  : Maybe (List Integer)
+  }
+
+  RevocationStore = record {
+    rs-records     : List RevocationRecord,
+    rs-count       : Integer,
+    rs-last-check  : Integer
+  }
+
+Section: Construction
+
+  revocation-store-new : RevocationStore
+  revocation-store-new =
+    RevocationStore {
+      rs-records = [],
+      rs-count = 0,
+      rs-last-check = 0
+    }
+
+Section: Creating Revocation Records
+
+  revoke-key-compromise : List Integer, List Integer, Integer, Integer, Text -> RevocationRecord
+  revoke-key-compromise (authority-pub) (compromised-key) (now) (effective-since) (reason) =
+    let rec = build-revocation RevokeKeyCompromise (ScopeIdentity compromised-key) authority-pub now effective-since reason
+    in rec
+
+  revoke-trust : List Integer, List Integer, Integer, Text -> RevocationRecord
+  revoke-trust (authority-pub) (target-identity) (now) (reason) =
+    build-revocation RevokeTrustWithdrawal (ScopeIdentity target-identity) authority-pub now now reason
+
+  revoke-capability : List Integer, List Integer, Text, Integer, Text -> RevocationRecord
+  revoke-capability (authority-pub) (target-identity) (capability) (now) (reason) =
+    build-revocation RevokeCapability (ScopeCapability capability) authority-pub now now reason
+
+  revoke-content : List Integer, List Integer, Integer, Text -> RevocationRecord
+  revoke-content (publisher-pub) (content-hash) (now) (reason) =
+    build-revocation RevokeContent (ScopeContentHash content-hash) publisher-pub now now reason
+
+  revoke-team-member : List Integer, List Integer, Text, Integer, Text -> RevocationRecord
+  revoke-team-member (admin-pub) (member-pub) (vault-id) (now) (reason) =
+    build-revocation RevokeTeamMember (ScopeVaultAccess vault-id) admin-pub now now reason
+
+  revoke-all : List Integer, List Integer, Integer, Text -> RevocationRecord
+  revoke-all (authority-pub) (target-identity) (now) (reason) =
+    build-revocation RevokeAllCapabilities (ScopeIdentity target-identity) authority-pub now now reason
+
+  build-revocation : RevocationType, RevocationScope, List Integer, Integer, Integer, Text -> RevocationRecord
+  build-revocation (rtype) (scope) (authority) (now) (effective) (reason) =
+    let rec = RevocationRecord {
+      rr-id = [],
+      rr-type = rtype,
+      rr-scope = scope,
+      rr-authority = authority,
+      rr-timestamp = now,
+      rr-effective = effective,
+      rr-reason = reason,
+      rr-signature = [],
+      rr-supersedes = Nothing
+    }
+    in let id = sha256 (revocation-signing-payload rec)
+    in __record-set rec "rr-id" id
+
+Section: Signing
+
+  sign-revocation : RevocationRecord, List Integer -> RevocationRecord
+  sign-revocation (rec) (authority-private) =
+    let payload = revocation-signing-payload rec
+    in let sig = ed25519-sign authority-private rec.rr-authority payload
+    in __record-set rec "rr-signature" sig
+
+  verify-revocation : RevocationRecord -> Boolean
+  verify-revocation (rec) =
+    if list-length rec.rr-signature == 0 then False
+    else let payload = revocation-signing-payload rec
+    in ed25519-verify rec.rr-authority payload rec.rr-signature
+
+  revocation-signing-payload : RevocationRecord -> List Integer
+  revocation-signing-payload (rec) =
+    text-to-bytes "codex-revoke:"
+    & text-to-bytes (revocation-type-name rec.rr-type)
+    & text-to-bytes ":"
+    & scope-to-bytes rec.rr-scope
+    & text-to-bytes ":"
+    & text-to-bytes (show rec.rr-timestamp)
+    & text-to-bytes ":"
+    & text-to-bytes (show rec.rr-effective)
+
+  scope-to-bytes : RevocationScope -> List Integer
+  scope-to-bytes (scope) =
+    when scope
+      is ScopeIdentity (key) -> text-to-bytes "id:" & key
+      is ScopeContentHash (hash) -> text-to-bytes "hash:" & hash
+      is ScopeCapability (cap) -> text-to-bytes "cap:" & text-to-bytes cap
+      is ScopeVaultAccess (vid) -> text-to-bytes "vault:" & text-to-bytes vid
+
+Section: Store Operations
+
+  revocation-add : RevocationStore, RevocationRecord -> RevocationStore
+  revocation-add (store) (rec) =
+    if verify-revocation rec == False then store
+    else if revocation-exists store rec.rr-id then store
+    else __record-set (__record-set store
+      "rs-records" (list-push store.rs-records rec))
+      "rs-count" (store.rs-count + 1)
+
+  revocation-exists : RevocationStore, List Integer -> Boolean
+  revocation-exists (store) (id) =
+    rev-exists-loop store.rs-records id
+
+  rev-exists-loop : List RevocationRecord, List Integer -> Boolean
+  rev-exists-loop (records) (id) =
+    when records
+      is [] -> False
+      is otherwise ->
+        let head = list-at records 0
+        in if sha256-to-hex head.rr-id == sha256-to-hex id then True
+        else rev-exists-loop (list-drop records 1) id
+
+Section: Checking Revocation Status
+
+  is-identity-revoked : RevocationStore, List Integer -> Boolean
+  is-identity-revoked (store) (identity) =
+    check-identity-revoked store.rs-records identity
+
+  check-identity-revoked : List RevocationRecord, List Integer -> Boolean
+  check-identity-revoked (records) (identity) =
+    when records
+      is [] -> False
+      is otherwise ->
+        let head = list-at records 0
+        in if identity-matches-scope head.rr-scope identity
+          then True
+          else check-identity-revoked (list-drop records 1) identity
+
+  identity-matches-scope : RevocationScope, List Integer -> Boolean
+  identity-matches-scope (scope) (identity) =
+    when scope
+      is ScopeIdentity (key) -> sha256-to-hex key == sha256-to-hex identity
+      is otherwise -> False
+
+  is-content-revoked : RevocationStore, List Integer -> Boolean
+  is-content-revoked (store) (content-hash) =
+    check-content-revoked store.rs-records content-hash
+
+  check-content-revoked : List RevocationRecord, List Integer -> Boolean
+  check-content-revoked (records) (hash) =
+    when records
+      is [] -> False
+      is otherwise ->
+        let head = list-at records 0
+        in when head.rr-scope
+          is ScopeContentHash (h) -> if sha256-to-hex h == sha256-to-hex hash then True else check-content-revoked (list-drop records 1) hash
+          is otherwise -> check-content-revoked (list-drop records 1) hash
+
+  is-capability-revoked : RevocationStore, List Integer, Text -> Boolean
+  is-capability-revoked (store) (identity) (capability) =
+    check-cap-revoked store.rs-records identity capability
+
+  check-cap-revoked : List RevocationRecord, List Integer, Text -> Boolean
+  check-cap-revoked (records) (identity) (capability) =
+    when records
+      is [] -> False
+      is otherwise ->
+        let head = list-at records 0
+        in let matches = when head.rr-scope
+              is ScopeCapability (cap) -> cap == capability
+              is otherwise -> False
+        in if matches then True
+        else check-cap-revoked (list-drop records 1) identity capability
+
+  is-vault-access-revoked : RevocationStore, List Integer, Text -> Boolean
+  is-vault-access-revoked (store) (member-pub) (vault-id) =
+    check-vault-revoked store.rs-records member-pub vault-id
+
+  check-vault-revoked : List RevocationRecord, List Integer, Text -> Boolean
+  check-vault-revoked (records) (member) (vault-id) =
+    when records
+      is [] -> False
+      is otherwise ->
+        let head = list-at records 0
+        in when head.rr-scope
+          is ScopeVaultAccess (vid) ->
+            if vid == vault-id then True
+            else check-vault-revoked (list-drop records 1) member vault-id
+          is otherwise -> check-vault-revoked (list-drop records 1) member vault-id
+
+Section: Key Compromise Window
+
+  signatures-before-compromise : RevocationStore, List Integer -> Maybe Integer
+  signatures-before-compromise (store) (identity) =
+    find-compromise-effective store.rs-records identity
+
+  find-compromise-effective : List RevocationRecord, List Integer -> Maybe Integer
+  find-compromise-effective (records) (identity) =
+    when records
+      is [] -> Nothing
+      is otherwise ->
+        let head = list-at records 0
+        in when head.rr-type
+          is RevokeKeyCompromise ->
+            if identity-matches-scope head.rr-scope identity
+            then Just head.rr-effective
+            else find-compromise-effective (list-drop records 1) identity
+          is otherwise -> find-compromise-effective (list-drop records 1) identity
+
+  is-signature-trustworthy : RevocationStore, List Integer, Integer -> Boolean
+  is-signature-trustworthy (store) (signer) (signed-at) =
+    let compromise = signatures-before-compromise store signer
+    in when compromise
+      is Nothing -> if is-identity-revoked store signer then False else True
+      is Just (effective) -> signed-at < effective
+
+Section: Revocation for Active Sessions
+
+  revoke-active-sessions : RevocationStore, List Integer -> List RevocationRecord
+  revoke-active-sessions (store) (identity) =
+    filter-for-identity store.rs-records identity []
+
+  filter-for-identity : List RevocationRecord, List Integer, List RevocationRecord -> List RevocationRecord
+  filter-for-identity (records) (identity) (acc) =
+    when records
+      is [] -> acc
+      is otherwise ->
+        let head = list-at records 0
+        in if identity-matches-scope head.rr-scope identity
+          then filter-for-identity (list-drop records 1) identity (list-push acc head)
+          else filter-for-identity (list-drop records 1) identity acc
+
+Section: Wire Format
+
+ Revocation records are serialized for transmission over
+ data channels or storage in the fact store.
+
+  revocation-to-bytes : RevocationRecord -> List Integer
+  revocation-to-bytes (rec) =
+    let type-byte = revocation-type-byte rec.rr-type
+    in let scope-bytes = scope-to-bytes rec.rr-scope
+    in let scope-len = list-length scope-bytes
+    in [1, type-byte]
+    & write-rev-u32 rec.rr-timestamp
+    & write-rev-u32 rec.rr-effective
+    & write-rev-u16 scope-len
+    & scope-bytes
+    & rec.rr-authority
+    & rec.rr-signature
+
+  revocation-type-byte : RevocationType -> Integer
+  revocation-type-byte (rt) =
+    when rt
+      is RevokeKeyCompromise -> 1
+      is RevokeTrustWithdrawal -> 2
+      is RevokeCapability -> 3
+      is RevokeContent -> 4
+      is RevokeTeamMember -> 5
+      is RevokeAllCapabilities -> 6
+
+  write-rev-u32 : Integer -> List Integer
+  write-rev-u32 (n) =
+    [bit-and n 255, bit-and (n / 256) 255, bit-and (n / 65536) 255, bit-and (n / 16777216) 255]
+
+  write-rev-u16 : Integer -> List Integer
+  write-rev-u16 (n) =
+    [bit-and n 255, bit-and (n / 256) 255]
+
+Section: Formatting
+
+  revocation-type-name : RevocationType -> Text
+  revocation-type-name (rt) =
+    when rt
+      is RevokeKeyCompromise -> "key-compromise"
+      is RevokeTrustWithdrawal -> "trust-withdrawal"
+      is RevokeCapability -> "capability"
+      is RevokeContent -> "content"
+      is RevokeTeamMember -> "team-member"
+      is RevokeAllCapabilities -> "all-capabilities"
+
+  format-revocation : RevocationRecord -> Text
+  format-revocation (rec) =
+    revocation-type-name rec.rr-type
+    & " at " & show rec.rr-timestamp
+    & " effective " & show rec.rr-effective
+    & (if text-length rec.rr-reason > 0 then " reason: " & rec.rr-reason else "")
+
+  format-revocation-store : RevocationStore -> Text
+  format-revocation-store (store) =
+    "Revocations: " & show store.rs-count & " records"

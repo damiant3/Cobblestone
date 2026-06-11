@@ -1,0 +1,242 @@
+Chapter: CvmmShell
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter CvmmState
+  cites Cvmm chapter CvmmTheme
+  cites Cvmm chapter CvmmDashboard
+  cites Cvmm chapter FileExplorer
+  cites Cvmm chapter DriveManager
+  cites Cvmm chapter UsbManager
+  cites Cvmm chapter ProcessManager
+  cites Cvmm chapter ServiceManager
+  cites Cvmm chapter PortMonitor
+  cites Cvmm chapter NetworkManager
+  cites Cvmm chapter DisplayManager
+  cites Cvmm chapter ServerManager
+  cites Cvmm chapter FleetManager
+  cites Cvmm chapter DeployManager
+  cites Cvmm chapter MeshBridge
+  cites Cvmm chapter LogViewer
+  cites Cvmm chapter Terminal
+  cites Cvmm chapter Monitor
+  cites Net chapter GroupMembership
+  cites Net chapter HealthChecker
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+
+ The desktop shell. Composes the sidebar navigation, the header bar,
+ the notification tray, and the active view into a unified workspace.
+ This is the top-level widget tree that gets mounted. On a phone it
+ collapses to a bottom nav + full-screen views. On a multi-monitor PC
+ it tiles views across displays. For now: sidebar + content.
+
+Section: Sidebar Navigation Items
+
+  NavItem = record {
+    ni-view : ViewId,
+    ni-label : Text,
+    ni-icon : Text
+  }
+
+  nav-items : List NavItem
+  nav-items = [
+    NavItem { ni-view = ViewDashboard, ni-label = "Dashboard", ni-icon = "D" },
+    NavItem { ni-view = ViewFileExplorer, ni-label = "Files", ni-icon = "F" },
+    NavItem { ni-view = ViewDriveManager, ni-label = "Drives", ni-icon = "H" },
+    NavItem { ni-view = ViewUsbManager, ni-label = "USB", ni-icon = "U" },
+    NavItem { ni-view = ViewProcessManager, ni-label = "Processes", ni-icon = "P" },
+    NavItem { ni-view = ViewServiceManager, ni-label = "Services", ni-icon = "S" },
+    NavItem { ni-view = ViewPortMonitor, ni-label = "Ports", ni-icon = "O" },
+    NavItem { ni-view = ViewNetworkManager, ni-label = "Network", ni-icon = "N" },
+    NavItem { ni-view = ViewDisplayManager, ni-label = "Display", ni-icon = "M" },
+    NavItem { ni-view = ViewServerManager, ni-label = "Servers", ni-icon = "V" },
+    NavItem { ni-view = ViewFleetManager, ni-label = "Fleet", ni-icon = "L" },
+    NavItem { ni-view = ViewDeployManager, ni-label = "Deploy", ni-icon = "Y" },
+    NavItem { ni-view = ViewMonitor, ni-label = "Monitor", ni-icon = "~" },
+    NavItem { ni-view = ViewMesh, ni-label = "Mesh", ni-icon = "#" },
+    NavItem { ni-view = ViewLogViewer, ni-label = "Logs", ni-icon = "W" },
+    NavItem { ni-view = ViewTerminal, ni-label = "Terminal", ni-icon = ">" },
+    NavItem { ni-view = ViewSettings, ni-label = "Settings", ni-icon = "G" }
+  ]
+
+Section: Sidebar Widget
+
+  shell-sidebar-item : NavItem, ViewId -> WidgetNode
+  shell-sidebar-item (item) (active-view) =
+    let btn = widget-button ("nav-" & view-id-icon (item.ni-view)) (item.ni-icon & " " & item.ni-label)
+    in if item.ni-view == active-view then widget-set-state btn 4
+    else btn
+
+  shell-sidebar-items : List NavItem, ViewId, Integer, Integer, List WidgetNode -> List WidgetNode
+  shell-sidebar-items (items) (active) (i) (n) (acc) =
+    if i >= n then acc
+    else shell-sidebar-items items active (i + 1) n (list-push acc (shell-sidebar-item (list-at items i) active))
+
+  shell-sidebar : AppState -> WidgetNode
+  shell-sidebar (st) =
+    let logo = widget-label "logo" "CVMM"
+    in let hostname = widget-label "hostname" (st.app-summary).sys-hostname
+    in let sep = widget-separator "nav-sep"
+    in let items = shell-sidebar-items nav-items (st.app-view) 0 (list-length nav-items) []
+    in let notif-badge = widget-label "notif-badge" (show (st.app-notif-count) & " notifications")
+    in let bottom = widget-panel "sidebar-bottom" DirColumn 4 [notif-badge]
+    in widget-panel "sidebar" DirColumn 2 ([logo, hostname, sep] & items & [bottom])
+
+Section: Header Bar
+
+  shell-header : AppState -> WidgetNode
+  shell-header (st) =
+    let title = widget-label "view-title" (view-id-label (st.app-view))
+    in let back-btn = if st.app-nav-depth > 0 then widget-button "nav-back" "Back" else widget-label "nav-back" ""
+    in let toggle-btn = widget-button "toggle-sidebar" (if st.app-sidebar-open then "<<" else ">>")
+    in let status-indicator = widget-label "sys-status" (status-label (st.app-summary).sys-status)
+    in let cpu = widget-gauge "sys-cpu" ((st.app-summary).sys-cpu-percent) 100
+    in let mem-pct = byte-size-percent ((st.app-summary).sys-mem-used) ((st.app-summary).sys-mem-total)
+    in let mem = widget-gauge "sys-mem" mem-pct 100
+    in widget-panel "header" DirRow 12 [toggle-btn, back-btn, title, status-indicator, cpu, mem]
+
+Section: Content Area
+
+  ManagerViews = record {
+    mv-file : ExplorerState,
+    mv-drive : DriveManagerState,
+    mv-usb : UsbManagerState,
+    mv-proc : ProcessManagerState,
+    mv-service : ServiceManagerState,
+    mv-port : PortMonitorState,
+    mv-net : NetworkManagerState,
+    mv-display : DisplayManagerState,
+    mv-server : ServerManagerState,
+    mv-fleet : FleetManagerState,
+    mv-deploy : DeployManagerState,
+    mv-log : LogViewerState,
+    mv-terminal : TerminalState,
+    mv-monitor : MonitorState,
+    mv-mesh-group : GroupState,
+    mv-mesh-health : HealthCheckerState
+  }
+
+  manager-views-new : ManagerViews
+  manager-views-new = ManagerViews {
+    mv-file = explorer-new,
+    mv-drive = drive-manager-new,
+    mv-usb = usb-manager-new,
+    mv-proc = proc-manager-new,
+    mv-service = svc-manager-new,
+    mv-port = port-monitor-new,
+    mv-net = net-manager-new,
+    mv-display = display-manager-new,
+    mv-server = server-manager-new,
+    mv-fleet = fleet-manager-new,
+    mv-deploy = deploy-manager-new,
+    mv-log = log-viewer-new,
+    mv-terminal = terminal-new 25 80,
+    mv-monitor = mon-add-layout (mon-add-layout (mon-add-layout monitor-new mon-preset-system) mon-preset-network) mon-preset-fleet,
+    mv-mesh-group = group-new "codex-mesh" "local",
+    mv-mesh-health = health-checker-new
+  }
+
+  shell-content : AppState, ManagerViews -> WidgetNode
+  shell-content (st) (views) = when st.app-view
+    is ViewDashboard -> dashboard-widget (st.app-summary)
+    is ViewFileExplorer -> explorer-widget (views.mv-file)
+    is ViewDriveManager -> dm-widget (views.mv-drive)
+    is ViewUsbManager -> um-widget (views.mv-usb)
+    is ViewProcessManager -> pm-widget (views.mv-proc)
+    is ViewServiceManager -> sm-widget (views.mv-service)
+    is ViewPortMonitor -> portmon-widget (views.mv-port)
+    is ViewNetworkManager -> nm-widget (views.mv-net)
+    is ViewDisplayManager -> disp-widget (views.mv-display)
+    is ViewServerManager -> svr-widget (views.mv-server)
+    is ViewFleetManager -> fm-widget (views.mv-fleet)
+    is ViewDeployManager -> dpm-widget (views.mv-deploy)
+    is ViewMonitor -> mon-widget (views.mv-monitor)
+    is ViewMesh -> shell-mesh-widget (views.mv-mesh-group) (views.mv-mesh-health) (views.mv-fleet)
+    is ViewLogViewer -> lv-widget (views.mv-log)
+    is ViewTerminal -> term-widget (views.mv-terminal)
+    is ViewSettings -> shell-settings-widget st
+
+Section: Mesh View
+
+  shell-mesh-widget : GroupState, HealthCheckerState, FleetManagerState -> WidgetNode
+  shell-mesh-widget (gs) (hcs) (fm) =
+    let summary = mesh-summary gs hcs
+    in let title = widget-label "mesh-title" "Service Mesh"
+    in let status = widget-label "mesh-status" (mesh-summary-text summary)
+    in let leader = widget-label "mesh-leader" ("Leader: " & mesh-leader-uuid gs)
+    in let members-label = widget-label "mesh-members-hdr" "Members"
+    in let member-rows = shell-mesh-member-rows (gs.gs-members) 0 (gs.gs-member-count) []
+    in let health-label = widget-label "mesh-health-hdr" "Health Checks"
+    in let health-summary = widget-label "mesh-health-sum" (hcs-status hcs)
+    in let health-rows = shell-mesh-check-rows (hcs.hcs-checks) 0 (hcs.hcs-count) []
+    in let fleet-label = widget-label "mesh-fleet-hdr" "Fleet (synced from mesh)"
+    in let synced-fm = mesh-sync-fleet gs fm
+    in let fleet-count = widget-label "mesh-fleet-count" (show (synced-fm.fm-node-count) & " nodes, " & show (fm-healthy-count synced-fm) & " healthy")
+    in let sync-btn = widget-button "mesh-sync" "Sync Fleet"
+    in let toolbar = widget-toolbar "mesh-toolbar" [sync-btn]
+    in widget-panel "mesh-view" DirColumn 8
+      ([title, status, leader, toolbar, members-label] & member-rows &
+       [health-label, health-summary] & health-rows &
+       [fleet-label, fleet-count])
+
+  shell-mesh-member-rows : List GroupMember, Integer, Integer, List WidgetNode -> List WidgetNode
+  shell-mesh-member-rows (members) (i) (n) (acc) =
+    if i >= n then acc
+    else let m = list-at members i
+    in let row = widget-panel ("mesh-m-" & m.gm-id) DirRow 5
+      [ widget-label ("mesh-m-id-" & m.gm-id) (m.gm-id),
+        widget-label ("mesh-m-name-" & m.gm-id) (m.gm-name),
+        widget-label ("mesh-m-addr-" & m.gm-id) (m.gm-address & ":" & show (m.gm-port)),
+        widget-label ("mesh-m-status-" & m.gm-id) (ms-label (m.gm-status)),
+        widget-label ("mesh-m-role-" & m.gm-id) (role-label (m.gm-role)) ]
+    in shell-mesh-member-rows members (i + 1) n (list-push acc row)
+
+  shell-mesh-check-rows : List HealthCheck, Integer, Integer, List WidgetNode -> List WidgetNode
+  shell-mesh-check-rows (checks) (i) (n) (acc) =
+    if i >= n then acc
+    else let hc = list-at checks i
+    in let row = widget-panel ("mesh-hc-" & hc.hck-id) DirRow 5
+      [ widget-label ("mesh-hc-id-" & hc.hck-id) (hc.hck-id),
+        widget-label ("mesh-hc-tgt-" & hc.hck-id) (hc.hck-target),
+        widget-label ("mesh-hc-state-" & hc.hck-id) (hs-label (hc.hck-state)),
+        widget-label ("mesh-hc-rate-" & hc.hck-id) (show (hck-success-rate hc) & "/1000"),
+        widget-label ("mesh-hc-lat-" & hc.hck-id) (show (hc.hck-avg-latency) & "ms") ]
+    in shell-mesh-check-rows checks (i + 1) n (list-push acc row)
+
+Section: Settings View
+
+  shell-settings-widget : AppState -> WidgetNode
+  shell-settings-widget (st) =
+    let title = widget-label "settings-title" "Settings"
+    in let theme-label = widget-label "theme-label" ("Theme: " & st.app-theme-name)
+    in let theme-toggle = widget-button "theme-toggle" "Toggle Theme"
+    in let hostname = widget-input "hostname" ((st.app-summary).sys-hostname) (text-length (st.app-summary).sys-hostname)
+    in widget-panel "settings" DirColumn 8 [title, theme-label, theme-toggle, hostname]
+
+Section: Shell Layout
+
+  shell-widget : AppState, ManagerViews -> WidgetNode
+  shell-widget (st) (views) =
+    let header = shell-header st
+    in let content = shell-content st views
+    in if st.app-sidebar-open then
+      let sidebar = shell-sidebar st
+      in let main = widget-panel "main" DirColumn 0 [header, content]
+      in let main-flex = widget-set-flex main 1
+      in widget-panel "shell" DirRow 0 [sidebar, main-flex]
+    else
+      widget-panel "shell" DirColumn 0 [header, content]
+
+Section: Shell JSON State
+
+  shell-state-to-json : AppState -> Text
+  shell-state-to-json (st) =
+    "{\"view\":\"" & view-id-label (st.app-view)
+    & "\",\"navDepth\":" & show (st.app-nav-depth)
+    & ",\"notifications\":" & show (st.app-notif-count)
+    & ",\"sidebarOpen\":" & if st.app-sidebar-open then "true" else "false"
+    & ",\"theme\":\"" & st.app-theme-name
+    & "\",\"hostname\":\"" & (st.app-summary).sys-hostname
+    & "\"}"
+
+Page 1

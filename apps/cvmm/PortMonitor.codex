@@ -1,0 +1,364 @@
+Chapter: PortMonitor
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Network port monitor. Shows listening ports, active connections,
+ and firewall rules. Each listening port is linked to its owning
+ service/process. Connections show remote endpoint, state, and
+ bytes transferred. The unified view lets you see everything
+ the machine is talking to.
+
+Section: Connection State
+
+  ConnState =
+    | ConnListening
+    | ConnEstablished
+    | ConnTimeWait
+    | ConnCloseWait
+    | ConnSynSent
+    | ConnSynRecv
+    | ConnFinWait
+    | ConnClosed
+
+  conn-state-label : ConnState -> Text
+  conn-state-label (s) = when s
+    is ConnListening -> "LISTEN"
+    is ConnEstablished -> "ESTABLISHED"
+    is ConnTimeWait -> "TIME_WAIT"
+    is ConnCloseWait -> "CLOSE_WAIT"
+    is ConnSynSent -> "SYN_SENT"
+    is ConnSynRecv -> "SYN_RECV"
+    is ConnFinWait -> "FIN_WAIT"
+    is ConnClosed -> "CLOSED"
+
+Section: Listener
+
+  PortListener = record {
+    pl-port : Integer,
+    pl-protocol : Protocol,
+    pl-bind-addr : Text,
+    pl-service-id : Text,
+    pl-service-name : Text,
+    pl-pid : Integer,
+    pl-connections : Integer,
+    pl-bytes-in : ByteSize,
+    pl-bytes-out : ByteSize
+  }
+
+  port-listener-new : Integer, Protocol, Text -> PortListener
+  port-listener-new (port) (proto) (service) = PortListener {
+    pl-port = port,
+    pl-protocol = proto,
+    pl-bind-addr = "0.0.0.0",
+    pl-service-id = service,
+    pl-service-name = service,
+    pl-pid = 0,
+    pl-connections = 0,
+    pl-bytes-in = bytes 0,
+    pl-bytes-out = bytes 0
+  }
+
+Section: Connection
+
+  NetConnection = record {
+    nc-id : Text,
+    nc-local-port : Integer,
+    nc-remote-addr : Text,
+    nc-remote-port : Integer,
+    nc-protocol : Protocol,
+    nc-state : ConnState,
+    nc-bytes-in : ByteSize,
+    nc-bytes-out : ByteSize,
+    nc-pid : Integer,
+    nc-duration : Integer
+  }
+
+  net-connection-new : Text, Integer, Text, Integer, Protocol -> NetConnection
+  net-connection-new (id) (local-port) (remote-addr) (remote-port) (proto) = NetConnection {
+    nc-id = id,
+    nc-local-port = local-port,
+    nc-remote-addr = remote-addr,
+    nc-remote-port = remote-port,
+    nc-protocol = proto,
+    nc-state = ConnEstablished,
+    nc-bytes-in = bytes 0,
+    nc-bytes-out = bytes 0,
+    nc-pid = 0,
+    nc-duration = 0
+  }
+
+Section: Firewall Rule
+
+  FirewallAction =
+    | FwAllow
+    | FwDeny
+    | FwLog
+
+  fw-action-label : FirewallAction -> Text
+  fw-action-label (a) = when a
+    is FwAllow -> "allow"
+    is FwDeny -> "deny"
+    is FwLog -> "log"
+
+  FirewallDir =
+    | FwInbound
+    | FwOutbound
+    | FwBoth
+
+  fw-dir-label : FirewallDir -> Text
+  fw-dir-label (d) = when d
+    is FwInbound -> "inbound"
+    is FwOutbound -> "outbound"
+    is FwBoth -> "both"
+
+  FirewallRule = record {
+    fw-id : Text,
+    fw-name : Text,
+    fw-action : FirewallAction,
+    fw-direction : FirewallDir,
+    fw-protocol : Protocol,
+    fw-port : Integer,
+    fw-remote-addr : Text,
+    fw-enabled : Boolean,
+    fw-hit-count : Integer
+  }
+
+Section: Port Monitor State
+
+  PortMonitorState = record {
+    pm-listeners : List PortListener,
+    pm-listener-count : Integer,
+    pm-connections : List NetConnection,
+    pm-connection-count : Integer,
+    pm-rules : List FirewallRule,
+    pm-rule-count : Integer,
+    pm-selected-port : Integer,
+    pm-show-closed : Boolean,
+    pm-active-tab : Integer
+  }
+
+  port-monitor-new : PortMonitorState
+  port-monitor-new = PortMonitorState {
+    pm-listeners = [],
+    pm-listener-count = 0,
+    pm-connections = [],
+    pm-connection-count = 0,
+    pm-rules = [],
+    pm-rule-count = 0,
+    pm-selected-port = -1,
+    pm-show-closed = False,
+    pm-active-tab = 0
+  }
+
+Section: Actions
+
+  portmon-add-listener : PortMonitorState, PortListener -> PortMonitorState
+  portmon-add-listener (st) (l) =
+    __record-set (__record-set st "pm-listeners" (list-push (st.pm-listeners) l)) "pm-listener-count" (st.pm-listener-count + 1)
+
+  portmon-add-connection : PortMonitorState, NetConnection -> PortMonitorState
+  portmon-add-connection (st) (c) =
+    __record-set (__record-set st "pm-connections" (list-push (st.pm-connections) c)) "pm-connection-count" (st.pm-connection-count + 1)
+
+  portmon-add-rule : PortMonitorState, FirewallRule -> PortMonitorState
+  portmon-add-rule (st) (r) =
+    __record-set (__record-set st "pm-rules" (list-push (st.pm-rules) r)) "pm-rule-count" (st.pm-rule-count + 1)
+
+  portmon-select : PortMonitorState, Integer -> PortMonitorState
+  portmon-select (st) (port) = __record-set st "pm-selected-port" port
+
+  portmon-set-tab : PortMonitorState, Integer -> PortMonitorState
+  portmon-set-tab (st) (tab) = __record-set st "pm-active-tab" tab
+
+  portmon-connections-for-port : PortMonitorState, Integer -> List NetConnection
+  portmon-connections-for-port (st) (port) =
+    portmon-conn-filter (st.pm-connections) port 0 (st.pm-connection-count) []
+
+  portmon-conn-filter : List NetConnection, Integer, Integer, Integer, List NetConnection -> List NetConnection
+  portmon-conn-filter (conns) (port) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at conns i
+    in if c.nc-local-port == port then portmon-conn-filter conns port (i + 1) n (list-push acc c)
+    else portmon-conn-filter conns port (i + 1) n acc
+
+  portmon-active-connections : PortMonitorState -> Integer
+  portmon-active-connections (st) =
+    portmon-count-active (st.pm-connections) 0 (st.pm-connection-count) 0
+
+  portmon-count-active : List NetConnection, Integer, Integer, Integer -> Integer
+  portmon-count-active (conns) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at conns i
+    in let active = when c.nc-state
+      is ConnEstablished -> 1
+      is ConnSynSent -> 1
+      is ConnSynRecv -> 1
+      is otherwise -> 0
+    in portmon-count-active conns (i + 1) n (acc + active)
+
+Section: Widget Building
+
+  portmon-listener-row : PortListener -> WidgetNode
+  portmon-listener-row (l) =
+    let port-label = widget-label ("port-" & show (l.pl-port)) (show (l.pl-port))
+    in let proto-label = widget-label ("proto-" & show (l.pl-port)) (protocol-label (l.pl-protocol))
+    in let bind-label = widget-label ("bind-" & show (l.pl-port)) (l.pl-bind-addr)
+    in let svc-label = widget-label ("svc-" & show (l.pl-port)) (l.pl-service-name)
+    in let conns-label = widget-label ("conns-" & show (l.pl-port)) (show (l.pl-connections) & " conns")
+    in let in-label = widget-label ("in-" & show (l.pl-port)) ("in: " & format-bytes (l.pl-bytes-in))
+    in let out-label = widget-label ("out-" & show (l.pl-port)) ("out: " & format-bytes (l.pl-bytes-out))
+    in widget-panel ("listener-" & show (l.pl-port)) DirRow 8 [port-label, proto-label, bind-label, svc-label, conns-label, in-label, out-label]
+
+  portmon-connection-row : NetConnection -> WidgetNode
+  portmon-connection-row (c) =
+    let remote = widget-label (c.nc-id & "-remote") (c.nc-remote-addr & ":" & show (c.nc-remote-port))
+    in let state-label = widget-label (c.nc-id & "-state") (conn-state-label (c.nc-state))
+    in let in-label = widget-label (c.nc-id & "-in") (format-bytes (c.nc-bytes-in))
+    in let out-label = widget-label (c.nc-id & "-out") (format-bytes (c.nc-bytes-out))
+    in let dur-label = widget-label (c.nc-id & "-dur") (format-uptime (Uptime { ut-seconds = c.nc-duration }))
+    in widget-panel c.nc-id DirRow 8 [remote, state-label, in-label, out-label, dur-label]
+
+  portmon-widget : PortMonitorState -> WidgetNode
+  portmon-widget (st) =
+    let title = widget-label "portmon-title" "Port Monitor"
+    in let active = portmon-active-connections st
+    in let summary = widget-label "portmon-summary" (show (st.pm-listener-count) & " listeners, " & show active & " active connections")
+    in let tabs = widget-tabs "portmon-tabs" ["Listeners", "Connections", "Firewall"] (st.pm-active-tab)
+    in let body = if st.pm-active-tab == 0 then portmon-listeners-panel st
+      else if st.pm-active-tab == 1 then portmon-connections-panel st
+      else portmon-firewall-panel st
+    in widget-panel "port-monitor" DirColumn 4 [title, summary, tabs, body]
+
+  portmon-listeners-panel : PortMonitorState -> WidgetNode
+  portmon-listeners-panel (st) =
+    let rows = portmon-listener-rows (st.pm-listeners) 0 (st.pm-listener-count) []
+    in widget-panel "listeners" DirColumn 2 rows
+
+  portmon-listener-rows : List PortListener, Integer, Integer, List WidgetNode -> List WidgetNode
+  portmon-listener-rows (ls) (i) (n) (acc) =
+    if i >= n then acc
+    else portmon-listener-rows ls (i + 1) n (list-push acc (portmon-listener-row (list-at ls i)))
+
+  portmon-connections-panel : PortMonitorState -> WidgetNode
+  portmon-connections-panel (st) =
+    let rows = portmon-conn-rows (st.pm-connections) 0 (st.pm-connection-count) []
+    in widget-panel "connections" DirColumn 2 rows
+
+  portmon-conn-rows : List NetConnection, Integer, Integer, List WidgetNode -> List WidgetNode
+  portmon-conn-rows (cs) (i) (n) (acc) =
+    if i >= n then acc
+    else portmon-conn-rows cs (i + 1) n (list-push acc (portmon-connection-row (list-at cs i)))
+
+  portmon-firewall-panel : PortMonitorState -> WidgetNode
+  portmon-firewall-panel (st) =
+    let rows = portmon-fw-rows (st.pm-rules) 0 (st.pm-rule-count) []
+    in widget-panel "firewall" DirColumn 2 rows
+
+  portmon-fw-rows : List FirewallRule, Integer, Integer, List WidgetNode -> List WidgetNode
+  portmon-fw-rows (rules) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rules i
+    in let row = widget-panel (r.fw-id) DirRow 8 [
+      widget-label (r.fw-id & "-name") (r.fw-name),
+      widget-label (r.fw-id & "-action") (fw-action-label (r.fw-action)),
+      widget-label (r.fw-id & "-dir") (fw-dir-label (r.fw-direction)),
+      widget-label (r.fw-id & "-port") (show (r.fw-port)),
+      widget-label (r.fw-id & "-hits") (show (r.fw-hit-count) & " hits"),
+      widget-button (r.fw-id & "-toggle") (if r.fw-enabled then "Disable" else "Enable")
+    ]
+    in portmon-fw-rows rules (i + 1) n (list-push acc row)
+
+Section: Listener Detail
+
+  ListenerDetail = record {
+    ld-listener : PortListener,
+    ld-connections : List NetConnection,
+    ld-conn-count : Integer,
+    ld-active-count : Integer,
+    ld-avg-duration : Integer,
+    ld-total-bytes : ByteSize
+  }
+
+  listener-detail : PortMonitorState, PortListener -> ListenerDetail
+  listener-detail (st) (l) =
+    let conns = portmon-connections-for-port st (l.pl-port)
+    in let count = list-length conns
+    in let active = ld-count-active conns 0 count 0
+    in let avg-dur = ld-avg-dur conns 0 count 0
+    in let total = ld-total-bytes-sum conns 0 count 0
+    in ListenerDetail {
+      ld-listener = l,
+      ld-connections = conns,
+      ld-conn-count = count,
+      ld-active-count = active,
+      ld-avg-duration = avg-dur,
+      ld-total-bytes = bytes total
+    }
+
+  ld-count-active : List NetConnection, Integer, Integer, Integer -> Integer
+  ld-count-active (conns) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at conns i
+    in let delta = when c.nc-state
+      is ConnEstablished -> 1
+      is otherwise -> 0
+    in ld-count-active conns (i + 1) n (acc + delta)
+
+  ld-avg-dur : List NetConnection, Integer, Integer, Integer -> Integer
+  ld-avg-dur (conns) (i) (n) (total) =
+    if i >= n then if n > 0 then total / n else 0
+    else ld-avg-dur conns (i + 1) n (total + (list-at conns i).nc-duration)
+
+  ld-total-bytes-sum : List NetConnection, Integer, Integer, Integer -> Integer
+  ld-total-bytes-sum (conns) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at conns i
+    in ld-total-bytes-sum conns (i + 1) n (acc + (c.nc-bytes-in).bs-bytes + (c.nc-bytes-out).bs-bytes)
+
+  listener-detail-widget : ListenerDetail -> WidgetNode
+  listener-detail-widget (d) =
+    let l = d.ld-listener
+    in let port-label = widget-label "ld-port" ("Port " & show (l.pl-port) & " (" & protocol-label (l.pl-protocol) & ")")
+    in let svc-label = widget-label "ld-svc" ("Service: " & l.pl-service-name)
+    in let bind-label = widget-label "ld-bind" ("Bind: " & l.pl-bind-addr)
+    in let conn-label = widget-label "ld-conns" (show (d.ld-active-count) & "/" & show (d.ld-conn-count) & " connections active")
+    in let avg-label = widget-label "ld-avg" ("Avg duration: " & format-uptime (Uptime { ut-seconds = d.ld-avg-duration }))
+    in let bw-label = widget-label "ld-bw" ("Total traffic: " & format-bytes (d.ld-total-bytes))
+    in let in-label = widget-label "ld-in" ("Inbound: " & format-bytes (l.pl-bytes-in))
+    in let out-label = widget-label "ld-out" ("Outbound: " & format-bytes (l.pl-bytes-out))
+    in let conn-rows = portmon-conn-rows (d.ld-connections) 0 (d.ld-conn-count) []
+    in widget-panel "listener-detail" DirColumn 4 ([port-label, svc-label, bind-label, conn-label, avg-label, bw-label, in-label, out-label] & conn-rows)
+
+Section: Bandwidth Summary
+
+  portmon-total-in : PortMonitorState -> ByteSize
+  portmon-total-in (st) = portmon-sum-in (st.pm-listeners) 0 (st.pm-listener-count) 0
+
+  portmon-sum-in : List PortListener, Integer, Integer, Integer -> ByteSize
+  portmon-sum-in (ls) (i) (n) (acc) =
+    if i >= n then bytes acc
+    else portmon-sum-in ls (i + 1) n (acc + (list-at ls i).pl-bytes-in.bs-bytes)
+
+  portmon-total-out : PortMonitorState -> ByteSize
+  portmon-total-out (st) = portmon-sum-out (st.pm-listeners) 0 (st.pm-listener-count) 0
+
+  portmon-sum-out : List PortListener, Integer, Integer, Integer -> ByteSize
+  portmon-sum-out (ls) (i) (n) (acc) =
+    if i >= n then bytes acc
+    else portmon-sum-out ls (i + 1) n (acc + (list-at ls i).pl-bytes-out.bs-bytes)
+
+Section: JSON
+
+  port-listener-to-json : PortListener -> Text
+  port-listener-to-json (l) =
+    "{\"port\":" & show (l.pl-port)
+    & ",\"protocol\":\"" & protocol-label (l.pl-protocol)
+    & "\",\"bind\":\"" & l.pl-bind-addr
+    & "\",\"service\":\"" & l.pl-service-name
+    & "\",\"connections\":" & show (l.pl-connections)
+    & ",\"bytesIn\":" & show (l.pl-bytes-in).bs-bytes
+    & ",\"bytesOut\":" & show (l.pl-bytes-out).bs-bytes & "}"
+
+Page 1

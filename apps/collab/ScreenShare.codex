@@ -1,0 +1,158 @@
+Chapter: ScreenShare
+  cites Collab chapter CollabTypes
+  cites Foreword chapter Maybe
+
+ Screen sharing and whiteboard. Manages share sessions with
+ source selection, annotation overlays, remote control, and
+ quality settings. Whiteboard provides collaborative drawing.
+
+Section: Share Session
+
+  ShareSession = record {
+    shs-share : ScreenShare,
+    shs-annotations : List Annotation,
+    shs-annotation-count : Integer,
+    shs-next-ann-id : Integer,
+    shs-viewers : List Text,
+    shs-viewer-count : Integer,
+    shs-cursor-x : Integer,
+    shs-cursor-y : Integer
+  }
+
+  share-session-new : Text, ShareSource, Integer -> ShareSession
+  share-session-new (presenter) (source) (now) =
+    ShareSession {
+      shs-share = ScreenShare {
+        shr-presenter = presenter,
+        shr-source = source,
+        shr-active = True,
+        shr-started = now,
+        shr-annotations-on = True,
+        shr-remote-control = Nothing,
+        shr-fps = 15,
+        shr-quality = SqAuto
+      },
+      shs-annotations = [],
+      shs-annotation-count = 0,
+      shs-next-ann-id = 1,
+      shs-viewers = [],
+      shs-viewer-count = 0,
+      shs-cursor-x = 0,
+      shs-cursor-y = 0
+    }
+
+Section: Annotations
+
+  AnnotationType =
+    | AnnPointer
+    | AnnCircle
+    | AnnArrow
+    | AnnText
+    | AnnHighlight
+    | AnnFreehand
+
+  Annotation = record {
+    ann-id : Integer,
+    ann-type : AnnotationType,
+    ann-author : Text,
+    ann-x : Integer,
+    ann-y : Integer,
+    ann-width : Integer,
+    ann-height : Integer,
+    ann-color : Integer,
+    ann-text : Text,
+    ann-timestamp : Integer
+  }
+
+  shs-add-annotation : ShareSession, AnnotationType, Text, Integer, Integer, Integer, Integer, Integer, Text, Integer -> ShareSession
+  shs-add-annotation (sess) (atype) (author) (x) (y) (w) (h) (color) (text) (now) =
+    let ann = Annotation {
+      ann-id = sess.shs-next-ann-id,
+      ann-type = atype,
+      ann-author = author,
+      ann-x = x, ann-y = y,
+      ann-width = w, ann-height = h,
+      ann-color = color,
+      ann-text = text,
+      ann-timestamp = now
+    }
+    in __record-set (__record-set (__record-set sess
+      "shs-annotations" (list-push sess.shs-annotations ann))
+      "shs-annotation-count" (sess.shs-annotation-count + 1))
+      "shs-next-ann-id" (sess.shs-next-ann-id + 1)
+
+  shs-clear-annotations : ShareSession -> ShareSession
+  shs-clear-annotations (sess) =
+    __record-set (__record-set sess "shs-annotations" []) "shs-annotation-count" 0
+
+Section: Remote Control
+
+  shs-grant-control : ShareSession, Text -> ShareSession
+  shs-grant-control (sess) (user-id) =
+    __record-set sess "shs-share"
+      (__record-set sess.shs-share "shr-remote-control" (Just user-id))
+
+  shs-revoke-control : ShareSession -> ShareSession
+  shs-revoke-control (sess) =
+    __record-set sess "shs-share"
+      (__record-set sess.shs-share "shr-remote-control" Nothing)
+
+Section: Quality Settings
+
+  shs-set-quality : ShareSession, ShareQuality -> ShareSession
+  shs-set-quality (sess) (q) =
+    __record-set sess "shs-share" (__record-set sess.shs-share "shr-quality" q)
+
+  shs-set-fps : ShareSession, Integer -> ShareSession
+  shs-set-fps (sess) (fps) =
+    __record-set sess "shs-share" (__record-set sess.shs-share "shr-fps" fps)
+
+  sq-label : ShareQuality -> Text
+  sq-label (q) = when q
+    is SqAuto -> "Auto"
+    is SqHigh -> "High (1080p)"
+    is SqMedium -> "Medium (720p)"
+    is SqLow -> "Low (480p)"
+    is SqTextOptimized -> "Text Optimized"
+
+Section: Whiteboard Operations
+
+  wb-new : Integer, Integer -> Whiteboard
+  wb-new (w) (h) = Whiteboard {
+    wb-strokes = [],
+    wb-stroke-count = 0,
+    wb-next-id = 1,
+    wb-bg-color = 0xFFFFFF,
+    wb-width = w,
+    wb-height = h
+  }
+
+  wb-add-stroke : Whiteboard, WhiteboardTool, Integer, Integer, List Integer, Text -> Whiteboard
+  wb-add-stroke (board) (tool) (color) (width) (points) (author) =
+    let stroke = WhiteboardStroke {
+      ws-id = board.wb-next-id,
+      ws-tool = tool,
+      ws-color = color,
+      ws-width = width,
+      ws-points = points,
+      ws-point-count = list-length points,
+      ws-author = author
+    }
+    in __record-set (__record-set (__record-set board
+      "wb-strokes" (list-push board.wb-strokes stroke))
+      "wb-stroke-count" (board.wb-stroke-count + 1))
+      "wb-next-id" (board.wb-next-id + 1)
+
+  wb-clear : Whiteboard -> Whiteboard
+  wb-clear (board) =
+    __record-set (__record-set board "wb-strokes" []) "wb-stroke-count" 0
+
+  wb-undo-last : Whiteboard -> Whiteboard
+  wb-undo-last (board) =
+    if board.wb-stroke-count == 0 then board
+    else __record-set (__record-set board
+      "wb-strokes" (list-take board.wb-strokes (board.wb-stroke-count - 1)))
+      "wb-stroke-count" (board.wb-stroke-count - 1)
+
+  wb-set-bg : Whiteboard, Integer -> Whiteboard
+  wb-set-bg (board) (color) = __record-set board "wb-bg-color" color

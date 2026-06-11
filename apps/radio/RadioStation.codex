@@ -1,0 +1,180 @@
+Chapter: RadioStation
+  cites Radio chapter RadioTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Station state management. The radio app has two decks, a mixer,
+ a playlist queue, station metadata, and chat. The DJ controls
+ everything; listeners receive the mixed audio output.
+
+Section: App State
+
+  RadioApp = record {
+    ra-deck-a : DeckState,
+    ra-deck-b : DeckState,
+    ra-mixer : MixerState,
+    ra-station : StationState,
+    ra-playlist : List PlaylistEntry,
+    ra-playlist-count : Integer,
+    ra-history : List PlaylistEntry,
+    ra-history-count : Integer,
+    ra-chat : List ChatMessage,
+    ra-chat-count : Integer,
+    ra-library-count : Integer,
+    ra-show-library : Boolean,
+    ra-show-chat : Boolean,
+    ra-show-effects : Boolean
+  }
+
+  radio-app-new : Text, Text -> RadioApp
+  radio-app-new (station-name) (dj-name) = RadioApp {
+    ra-deck-a = deck-new DeckA,
+    ra-deck-b = deck-new DeckB,
+    ra-mixer = mixer-new,
+    ra-station = station-new station-name dj-name,
+    ra-playlist = [], ra-playlist-count = 0,
+    ra-history = [], ra-history-count = 0,
+    ra-chat = [], ra-chat-count = 0,
+    ra-library-count = 0,
+    ra-show-library = True,
+    ra-show-chat = False,
+    ra-show-effects = False
+  }
+
+Section: Deck Actions
+
+  ra-load-to-deck : RadioApp, DeckId, Track -> RadioApp
+  ra-load-to-deck (app) (deck-id) (track) =
+    when deck-id
+      is DeckA -> __record-set app "ra-deck-a" (__record-set (app.ra-deck-a) "dk-track" track)
+      is DeckB -> __record-set app "ra-deck-b" (__record-set (app.ra-deck-b) "dk-track" track)
+
+  ra-set-volume : RadioApp, DeckId, Integer -> RadioApp
+  ra-set-volume (app) (deck-id) (vol) =
+    let clamped = if vol > 1000 then 1000 else if vol < 0 then 0 else vol
+    in when deck-id
+      is DeckA -> __record-set app "ra-deck-a" (__record-set (app.ra-deck-a) "dk-volume" clamped)
+      is DeckB -> __record-set app "ra-deck-b" (__record-set (app.ra-deck-b) "dk-volume" clamped)
+
+  ra-set-crossfader : RadioApp, Integer -> RadioApp
+  ra-set-crossfader (app) (pos) =
+    let clamped = if pos > 1000 then 1000 else if pos < 0 then 0 else pos
+    in __record-set app "ra-mixer" (__record-set (app.ra-mixer) "mx-crossfader" clamped)
+
+Section: Playlist
+
+  ra-add-to-playlist : RadioApp, PlaylistEntry -> RadioApp
+  ra-add-to-playlist (app) (entry) =
+    __record-set (__record-set app "ra-playlist" (list-push (app.ra-playlist) entry)) "ra-playlist-count" (app.ra-playlist-count + 1)
+
+  ra-next-track : RadioApp -> Maybe PlaylistEntry
+  ra-next-track (app) =
+    if app.ra-playlist-count == 0 then None
+    else Just (list-at (app.ra-playlist) 0)
+
+Section: Chat
+
+  ra-add-chat : RadioApp, ChatMessage -> RadioApp
+  ra-add-chat (app) (msg) =
+    let new-chat = list-push (app.ra-chat) msg
+    in let trimmed = if app.ra-chat-count >= 200 then ra-trim-chat new-chat (app.ra-chat-count + 1) else new-chat
+    in __record-set (__record-set app "ra-chat" trimmed) "ra-chat-count" (if app.ra-chat-count >= 200 then 200 else app.ra-chat-count + 1)
+
+  ra-trim-chat : List ChatMessage, Integer -> List ChatMessage
+  ra-trim-chat (msgs) (count) =
+    if count <= 200 then msgs
+    else ra-trim-loop msgs 1 count []
+
+  ra-trim-loop : List ChatMessage, Integer, Integer, List ChatMessage -> List ChatMessage
+  ra-trim-loop (msgs) (i) (n) (acc) =
+    if i >= n then acc
+    else ra-trim-loop msgs (i + 1) n (list-push acc (list-at msgs i))
+
+Section: Broadcast
+
+  ra-toggle-broadcast : RadioApp -> RadioApp
+  ra-toggle-broadcast (app) =
+    let stn = app.ra-station
+    in let toggled = __record-set stn "stn-broadcasting" (if stn.stn-broadcasting then False else True)
+    in __record-set app "ra-station" toggled
+
+  ra-now-playing : RadioApp -> Text
+  ra-now-playing (app) =
+    let a = app.ra-deck-a
+    in let b = app.ra-deck-b
+    in let cf = (app.ra-mixer).mx-crossfader
+    in if cf < 300 then
+      if text-length (a.dk-track).trk-title > 0 then (a.dk-track).trk-artist & " - " & (a.dk-track).trk-title
+      else "No track loaded"
+    else if cf > 700 then
+      if text-length (b.dk-track).trk-title > 0 then (b.dk-track).trk-artist & " - " & (b.dk-track).trk-title
+      else "No track loaded"
+    else
+      let at = if text-length (a.dk-track).trk-title > 0 then (a.dk-track).trk-title else "?"
+      in let bt = if text-length (b.dk-track).trk-title > 0 then (b.dk-track).trk-title else "?"
+      in at & " x " & bt
+
+Section: Deck Widget
+
+  deck-widget : DeckState -> WidgetNode
+  deck-widget (dk) =
+    let id = deck-label (dk.dk-id)
+    in let title-lbl = widget-label ("dk-title-" & id) ((dk.dk-track).trk-title)
+    in let artist-lbl = widget-label ("dk-artist-" & id) ((dk.dk-track).trk-artist)
+    in let state-lbl = widget-label ("dk-state-" & id) (ts-label (dk.dk-track).trk-state)
+    in let time-lbl = widget-label ("dk-time-" & id) (format-time (dk.dk-track).trk-position & " / " & format-time (dk.dk-track).trk-duration)
+    in let play-btn = widget-button ("dk-play-" & id) "Play"
+    in let cue-btn = widget-button ("dk-cue-" & id) "Cue"
+    in let loop-btn = widget-button ("dk-loop-" & id) (if dk.dk-loop-active then "Loop ON" else "Loop")
+    in let vol-slider = widget-gauge ("dk-vol-" & id) (dk.dk-volume / 10) 100
+    in let eq-lo = widget-gauge ("dk-eq-lo-" & id) ((dk.dk-eq).eq-low + 12) 24
+    in let eq-mid = widget-gauge ("dk-eq-mid-" & id) ((dk.dk-eq).eq-mid + 12) 24
+    in let eq-hi = widget-gauge ("dk-eq-hi-" & id) ((dk.dk-eq).eq-high + 12) 24
+    in let info = widget-panel ("dk-info-" & id) DirColumn 2 [title-lbl, artist-lbl]
+    in let controls = widget-panel ("dk-ctrl-" & id) DirRow 4 [play-btn, cue-btn, loop-btn, time-lbl]
+    in let eq-panel = widget-panel ("dk-eq-" & id) DirRow 4 [
+      widget-label ("dk-lo-" & id) "LO", eq-lo,
+      widget-label ("dk-mid-" & id) "MID", eq-mid,
+      widget-label ("dk-hi-" & id) "HI", eq-hi
+    ]
+    in widget-panel ("deck-" & id) DirColumn 4 [state-lbl, info, controls, vol-slider, eq-panel]
+
+Section: Mixer Widget
+
+  mixer-widget : MixerState -> WidgetNode
+  mixer-widget (mx) =
+    let xfader = widget-gauge "mx-xfader" (mx.mx-crossfader / 10) 100
+    in let master = widget-gauge "mx-master" (mx.mx-master-vol / 10) 100
+    in let xf-label = widget-label "mx-xf-lbl" "A <-> B"
+    in let master-label = widget-label "mx-master-lbl" "Master"
+    in let auto-btn = widget-button "mx-auto" (if mx.mx-auto-crossfade then "Auto ON" else "Auto")
+    in widget-panel "mixer" DirColumn 4 [master-label, master, xf-label, xfader, auto-btn]
+
+Section: Station Widget
+
+  station-widget : RadioApp -> WidgetNode
+  station-widget (app) =
+    let stn = app.ra-station
+    in let name-lbl = widget-label "stn-name" (stn.stn-name)
+    in let dj-lbl = widget-label "stn-dj" ("DJ: " & stn.stn-dj-name)
+    in let now = widget-label "stn-now" ("Now: " & ra-now-playing app)
+    in let status = widget-label "stn-status" (if stn.stn-broadcasting then "LIVE" else "OFF AIR")
+    in let listeners = widget-label "stn-listeners" (show (stn.stn-listener-count) & " listeners")
+    in let broadcast-btn = widget-button "stn-broadcast" (if stn.stn-broadcasting then "Stop" else "Go Live")
+    in widget-panel "station-info" DirColumn 4 [name-lbl, dj-lbl, now, status, listeners, broadcast-btn]
+
+Section: Full Console Widget
+
+  radio-console-widget : RadioApp -> WidgetNode
+  radio-console-widget (app) =
+    let deck-a = deck-widget (app.ra-deck-a)
+    in let deck-b = deck-widget (app.ra-deck-b)
+    in let mixer = mixer-widget (app.ra-mixer)
+    in let station = station-widget app
+    in let decks-row = widget-panel "decks-row" DirRow 4 [deck-a, mixer, deck-b]
+    in let playlist-label = widget-label "pl-title" ("Playlist (" & show (app.ra-playlist-count) & ")")
+    in let pl-panel = widget-panel "playlist" DirColumn 2 [playlist-label]
+    in widget-panel "radio-console" DirColumn 8 [station, decks-row, pl-panel]
+
+Page 1

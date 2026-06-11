@@ -1,0 +1,120 @@
+Chapter: BridgePage
+  cites Helm chapter HelmTypes
+  cites Helm chapter HelmVoice
+  cites Helm chapter HelmMixer
+  cites Helm chapter HelmTheme
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ The Bridge — voice command dashboard. Shows the hierarchy
+ tree with voice activity indicators, admiral controls,
+ captain squad views, joint channels, and emergency log.
+
+Section: Bridge View
+
+  bridge-widget : VoiceHierarchy -> WidgetNode
+  bridge-widget (h) =
+    let title = widget-label "br-title" "The Bridge"
+    in let stats = widget-label "br-stats" (show h.vh-node-count & " nodes, " & show h.vh-joint-count & " joints, " & show h.vh-emergency-count & " emergencies")
+    in let admirals = vh-admirals h
+    in let admiral-panels = admiral-panels-build h admirals 0 (list-length admirals) []
+    in let joints = vh-active-joints h
+    in let joint-panel = joint-list-widget joints
+    in let emergency-panel = emergency-list-widget h.vh-emergencies h.vh-emergency-count
+    in widget-panel "bridge" DirColumn 8 ([title, stats] & admiral-panels & [joint-panel, emergency-panel])
+
+Section: Admiral Panel
+
+  admiral-panels-build : VoiceHierarchy, List VoiceNode, Integer, Integer, List WidgetNode -> List WidgetNode
+  admiral-panels-build (h) (admirals) (i) (len) (acc) =
+    if i >= len then acc
+    else let adm = list-at admirals i
+    in let panel = admiral-panel h adm
+    in admiral-panels-build h admirals (i + 1) len (list-push acc panel)
+
+  admiral-panel : VoiceHierarchy, VoiceNode -> WidgetNode
+  admiral-panel (h) (adm) =
+    let name-lbl = widget-label ("adm-name-" & adm.vn-id) ("FLEET: " & adm.vn-name)
+    in let activity = voice-indicator adm
+    in let captains = vh-squad-of h adm.vn-id
+    in let squad-panels = captain-panels h captains 0 (list-length captains) []
+    in let controls = widget-panel ("adm-ctrl-" & adm.vn-id) DirRow 8 [
+          widget-button ("adm-broadcast-" & adm.vn-id) "Broadcast All",
+          widget-button ("adm-mute-" & adm.vn-id) "Mute Incoming"
+        ]
+    in widget-panel ("adm-" & adm.vn-id) DirColumn 4 ([name-lbl, activity, controls] & squad-panels)
+
+Section: Captain Panel
+
+  captain-panels : VoiceHierarchy, List VoiceNode, Integer, Integer, List WidgetNode -> List WidgetNode
+  captain-panels (h) (captains) (i) (len) (acc) =
+    if i >= len then acc
+    else let cap = list-at captains i
+    in let panel = captain-panel h cap
+    in captain-panels h captains (i + 1) len (list-push acc panel)
+
+  captain-panel : VoiceHierarchy, VoiceNode -> WidgetNode
+  captain-panel (h) (cap) =
+    let name-lbl = widget-label ("cap-name-" & cap.vn-id) cap.vn-name
+    in let activity = voice-indicator cap
+    in let crew = vh-squad-of h cap.vn-id
+    in let crew-widgets = crew-list crew 0 (list-length crew) []
+    in let controls = widget-panel ("cap-ctrl-" & cap.vn-id) DirRow 4 [
+          widget-button ("cap-listen-" & cap.vn-id) "Listen",
+          widget-button ("cap-hail-" & cap.vn-id) "Hail"
+        ]
+    in widget-panel ("cap-" & cap.vn-id) DirColumn 2 ([name-lbl, activity, controls] & crew-widgets)
+
+Section: Crew List
+
+  crew-list : List VoiceNode, Integer, Integer, List WidgetNode -> List WidgetNode
+  crew-list (nodes) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = list-at nodes i
+    in let w = crew-widget n
+    in crew-list nodes (i + 1) len (list-push acc w)
+
+  crew-widget : VoiceNode -> WidgetNode
+  crew-widget (n) =
+    let indicator = voice-indicator n
+    in let name-lbl = widget-label ("crew-name-" & n.vn-id) n.vn-name
+    in widget-panel ("crew-" & n.vn-id) DirRow 4 [indicator, name-lbl]
+
+Section: Voice Indicator
+
+  voice-indicator : VoiceNode -> WidgetNode
+  voice-indicator (n) =
+    let status = if n.vn-muted then "M"
+          else if n.vn-speaking then "*"
+          else "."
+    in widget-label ("vi-" & n.vn-id) ("[" & status & "]")
+
+Section: Joint Channel List
+
+  joint-list-widget : List JointChannel -> WidgetNode
+  joint-list-widget (joints) =
+    let title = widget-label "jc-title" "Joint Channels"
+    in let rows = joint-rows joints 0 (list-length joints) []
+    in widget-panel "joint-list" DirColumn 4 (title :: rows)
+
+  joint-rows : List JointChannel, Integer, Integer, List WidgetNode -> List WidgetNode
+  joint-rows (joints) (i) (len) (acc) =
+    if i >= len then acc
+    else let jc = list-at joints i
+    in let row = widget-label ("jc-" & show jc.jc-id) (jc.jc-name & " (" & show jc.jc-wing-count & " wings)")
+    in joint-rows joints (i + 1) len (list-push acc row)
+
+Section: Emergency Log
+
+  emergency-list-widget : List EmergencyBroadcast, Integer -> WidgetNode
+  emergency-list-widget (emergencies) (count) =
+    let title = widget-label "em-title" ("Emergency Log (" & show count & ")")
+    in let rows = emergency-rows emergencies 0 count []
+    in widget-panel "emergency-list" DirColumn 4 (title :: rows)
+
+  emergency-rows : List EmergencyBroadcast, Integer, Integer, List WidgetNode -> List WidgetNode
+  emergency-rows (ebs) (i) (len) (acc) =
+    if i >= len then acc
+    else let eb = list-at ebs i
+    in let row = widget-label ("em-" & show eb.eb-id) ("[!] " & eb.eb-speaker & ": " & eb.eb-message & " (reached " & show eb.eb-reached-count & ")")
+    in emergency-rows ebs (i + 1) len (list-push acc row)

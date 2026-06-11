@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CVMM Display</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; background: #000; overflow: hidden; }
+    #display-canvas {
+      display: block;
+      margin: auto;
+      image-rendering: pixelated;
+      cursor: none;
+    }
+    #overlay {
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      background: rgba(0,0,0,0.7);
+      color: #e0e0e0;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font: 12px monospace;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    body:hover #overlay { opacity: 1; }
+  </style>
+</head>
+<body>
+  <canvas id="display-canvas" width="1024" height="768"></canvas>
+  <div id="overlay">
+    <span id="res">1024x768</span> |
+    <span id="fps">0</span> fps |
+    <span id="bw">0 KB/s</span>
+  </div>
+  <script>
+    const canvas = document.getElementById('display-canvas');
+    const ctx = canvas.getContext('2d');
+    const overlay = { res: document.getElementById('res'), fps: document.getElementById('fps'), bw: document.getElementById('bw') };
+    let ws = null;
+    let frameCount = 0;
+    let byteCount = 0;
+    let lastStatTime = performance.now();
+
+    function fitCanvas() {
+      const w = window.innerWidth, h = window.innerHeight;
+      const scaleX = w / canvas.width, scaleY = h / canvas.height;
+      const scale = Math.min(scaleX, scaleY);
+      canvas.style.width = (canvas.width * scale) + 'px';
+      canvas.style.height = (canvas.height * scale) + 'px';
+      canvas.style.marginTop = ((h - canvas.height * scale) / 2) + 'px';
+    }
+    window.addEventListener('resize', fitCanvas);
+    fitCanvas();
+
+    // Stats update
+    setInterval(function() {
+      const now = performance.now();
+      const dt = (now - lastStatTime) / 1000;
+      overlay.fps.textContent = Math.round(frameCount / dt);
+      overlay.bw.textContent = Math.round(byteCount / dt / 1024) + ' KB/s';
+      frameCount = 0;
+      byteCount = 0;
+      lastStatTime = now;
+    }, 1000);
+
+    // Keyboard capture
+    function scancodeFromKey(key, code) {
+      // Simplified scancode mapping
+      const map = {
+        'Escape':1,'Digit1':2,'Digit2':3,'Digit3':4,'Digit4':5,'Digit5':6,
+        'Digit6':7,'Digit7':8,'Digit8':9,'Digit9':10,'Digit0':11,
+        'Minus':12,'Equal':13,'Backspace':14,'Tab':15,
+        'KeyQ':16,'KeyW':17,'KeyE':18,'KeyR':19,'KeyT':20,'KeyY':21,
+        'KeyU':22,'KeyI':23,'KeyO':24,'KeyP':25,'BracketLeft':26,'BracketRight':27,
+        'Enter':28,'ControlLeft':29,'KeyA':30,'KeyS':31,'KeyD':32,'KeyF':33,
+        'KeyG':34,'KeyH':35,'KeyJ':36,'KeyK':37,'KeyL':38,'Semicolon':39,
+        'Quote':40,'Backquote':41,'ShiftLeft':42,'Backslash':43,
+        'KeyZ':44,'KeyX':45,'KeyC':46,'KeyV':47,'KeyB':48,'KeyN':49,
+        'KeyM':50,'Comma':51,'Period':52,'Slash':53,'ShiftRight':54,
+        'Space':57,'CapsLock':58,
+        'F1':59,'F2':60,'F3':61,'F4':62,'F5':63,'F6':64,'F7':65,
+        'F8':66,'F9':67,'F10':68,'F11':87,'F12':88,
+        'ArrowUp':72,'ArrowLeft':75,'ArrowRight':77,'ArrowDown':80,
+        'Home':71,'End':79,'PageUp':73,'PageDown':81,
+        'Insert':82,'Delete':83
+      };
+      return map[code] || 0;
+    }
+
+    function modByte(e) {
+      return (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+    }
+
+    document.addEventListener('keydown', function(e) {
+      e.preventDefault();
+      if (!ws || ws.readyState !== 1) return;
+      const sc = scancodeFromKey(e.key, e.code);
+      const buf = new ArrayBuffer(4);
+      const dv = new DataView(buf);
+      dv.setUint16(0, sc, true);
+      dv.setUint8(2, modByte(e));
+      dv.setUint8(3, 0x20); // tag: keydown
+      ws.send(buf);
+    });
+
+    document.addEventListener('keyup', function(e) {
+      e.preventDefault();
+      if (!ws || ws.readyState !== 1) return;
+      const sc = scancodeFromKey(e.key, e.code);
+      const buf = new ArrayBuffer(4);
+      const dv = new DataView(buf);
+      dv.setUint16(0, sc, true);
+      dv.setUint8(2, modByte(e));
+      dv.setUint8(3, 0x21); // tag: keyup
+      ws.send(buf);
+    });
+
+    // Mouse capture
+    canvas.addEventListener('mousemove', function(e) {
+      if (!ws || ws.readyState !== 1) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.round((e.clientX - rect.left) * canvas.width / rect.width);
+      const y = Math.round((e.clientY - rect.top) * canvas.height / rect.height);
+      const buf = new ArrayBuffer(5);
+      const dv = new DataView(buf);
+      dv.setUint16(0, x, true);
+      dv.setUint16(2, y, true);
+      dv.setUint8(4, 0x22); // tag: mousemove
+      ws.send(buf);
+    });
+
+    canvas.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      if (!ws || ws.readyState !== 1) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.round((e.clientX - rect.left) * canvas.width / rect.width);
+      const y = Math.round((e.clientY - rect.top) * canvas.height / rect.height);
+      const buf = new ArrayBuffer(6);
+      const dv = new DataView(buf);
+      dv.setUint16(0, x, true);
+      dv.setUint16(2, y, true);
+      dv.setUint8(4, e.button);
+      dv.setUint8(5, 0x23); // tag: mousedown
+      ws.send(buf);
+    });
+
+    canvas.addEventListener('mouseup', function(e) {
+      e.preventDefault();
+      if (!ws || ws.readyState !== 1) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.round((e.clientX - rect.left) * canvas.width / rect.width);
+      const y = Math.round((e.clientY - rect.top) * canvas.height / rect.height);
+      const buf = new ArrayBuffer(6);
+      const dv = new DataView(buf);
+      dv.setUint16(0, x, true);
+      dv.setUint16(2, y, true);
+      dv.setUint8(4, e.button);
+      dv.setUint8(5, 0x24); // tag: mouseup
+      ws.send(buf);
+    });
+
+    canvas.addEventListener('wheel', function(e) {
+      e.preventDefault();
+      if (!ws || ws.readyState !== 1) return;
+      const buf = new ArrayBuffer(5);
+      const dv = new DataView(buf);
+      dv.setInt16(0, Math.sign(e.deltaX), true);
+      dv.setInt16(2, Math.sign(e.deltaY), true);
+      dv.setUint8(4, 0x25); // tag: scroll
+      ws.send(buf);
+    }, { passive: false });
+
+    canvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+    // WebSocket connection for display frames
+    function connectDisplay() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(proto + '//' + location.host + '/ws/display');
+      ws.binaryType = 'arraybuffer';
+
+      ws.onmessage = function(e) {
+        if (!(e.data instanceof ArrayBuffer)) return;
+        const dv = new DataView(e.data);
+        const tag = dv.getUint8(0);
+        byteCount += e.data.byteLength;
+
+        if (tag === 0x10) { // FullFrame
+          const w = dv.getUint16(1, true);
+          const h = dv.getUint16(3, true);
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
+            overlay.res.textContent = w + 'x' + h;
+            fitCanvas();
+          }
+          const pixels = new Uint8ClampedArray(e.data, 5);
+          const imgData = new ImageData(pixels, w, h);
+          ctx.putImageData(imgData, 0, 0);
+          frameCount++;
+        } else if (tag === 0x11) { // DirtyRect
+          const x = dv.getUint16(1, true);
+          const y = dv.getUint16(3, true);
+          const w = dv.getUint16(5, true);
+          const hh = dv.getUint16(7, true);
+          const pixels = new Uint8ClampedArray(e.data, 9);
+          const imgData = new ImageData(pixels, w, hh);
+          ctx.putImageData(imgData, x, y);
+          frameCount++;
+        } else if (tag === 0x14) { // Resize
+          const w = dv.getUint16(1, true);
+          const h = dv.getUint16(3, true);
+          canvas.width = w;
+          canvas.height = h;
+          overlay.res.textContent = w + 'x' + h;
+          fitCanvas();
+        }
+      };
+
+      ws.onclose = function() {
+        setTimeout(connectDisplay, 2000);
+      };
+
+      ws.onerror = function() {
+        ws.close();
+      };
+    }
+
+    // Only connect if running with display support
+    // For now, show a placeholder
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#4a8a62';
+    ctx.font = '24px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('CVMM Display', canvas.width/2, canvas.height/2 - 20);
+    ctx.fillStyle = '#666';
+    ctx.font = '14px monospace';
+    ctx.fillText('Waiting for display connection...', canvas.width/2, canvas.height/2 + 20);
+    ctx.fillText('Connect via WebSocket at /ws/display', canvas.width/2, canvas.height/2 + 44);
+  </script>
+</body>
+</html>

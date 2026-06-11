@@ -1,0 +1,245 @@
+Chapter: ContentAddress
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Encode chapter Uri
+
+ Content-addressed identifiers for the Codex web. Adapted from
+ IPFS CID v1 with Codex-specific codecs.
+
+ Binary format (38 bytes):
+   byte 0:     version (0x01)
+   byte 1:     codec (0xC0 source, 0xC1 cdx, 0xC2 bundle)
+   byte 2:     hash function (0x12 = SHA-256)
+   byte 3:     digest length (0x20 = 32)
+   bytes 4-35: SHA-256 digest
+
+ Display format: hex-encoded digest with codec prefix
+   codex-src:a1b2c3d4...
+   codex-cdx:a1b2c3d4...
+
+Section: Types
+
+  ContentCodec =
+    | CodecCodexSource
+    | CodecCdxBinary
+    | CodecCodexBundle
+
+  ContentHash = record {
+    ch-version : Integer,
+    ch-codec   : ContentCodec,
+    ch-digest  : List Integer
+  }
+
+  NameRecord = record {
+    nr-name      : Text,
+    nr-hash      : ContentHash,
+    nr-sequence  : Integer,
+    nr-ttl       : Integer,
+    nr-publisher : List Integer,
+    nr-signature : List Integer
+  }
+
+  CodexAddress =
+    | HashAddress (ContentHash)
+    | NamedAddress (Text, Text, Maybe Integer)
+    | LocalAddress (Text)
+
+Section: Content Hashing
+
+  content-hash : ContentCodec, List Integer -> ContentHash
+  content-hash (codec) (bytes) =
+    ContentHash {
+      ch-version = 1,
+      ch-codec = codec,
+      ch-digest = sha256 bytes
+    }
+
+  content-hash-source : List Integer -> ContentHash
+  content-hash-source (bytes) =
+    content-hash CodecCodexSource bytes
+
+  content-hash-cdx : List Integer -> ContentHash
+  content-hash-cdx (bytes) =
+    content-hash CodecCdxBinary bytes
+
+  content-hash-bundle : List Integer -> ContentHash
+  content-hash-bundle (bytes) =
+    content-hash CodecCodexBundle bytes
+
+Section: Codec Mapping
+
+  codec-byte : ContentCodec -> Integer
+  codec-byte (c) =
+    when c
+      is CodecCodexSource -> 192
+      is CodecCdxBinary -> 193
+      is CodecCodexBundle -> 194
+
+  codec-from-byte : Integer -> Maybe ContentCodec
+  codec-from-byte (b) =
+    when b
+      is 192 -> Just CodecCodexSource
+      is 193 -> Just CodecCdxBinary
+      is 194 -> Just CodecCodexBundle
+      is otherwise -> Nothing
+
+  codec-name : ContentCodec -> Text
+  codec-name (c) =
+    when c
+      is CodecCodexSource -> "codex-src"
+      is CodecCdxBinary -> "codex-cdx"
+      is CodecCodexBundle -> "codex-pkg"
+
+Section: Binary Encoding
+
+  content-hash-to-bytes : ContentHash -> List Integer
+  content-hash-to-bytes (ch) =
+    [ch.ch-version, codec-byte ch.ch-codec, 18, 32] & ch.ch-digest
+
+  content-hash-from-bytes : List Integer -> Maybe ContentHash
+  content-hash-from-bytes (bs) =
+    if list-length bs < 36 then Nothing
+    else let version = list-at bs 0
+      in let codec-b = list-at bs 1
+      in let hash-fn = list-at bs 2
+      in let digest-len = list-at bs 3
+      in if version /= 1 then Nothing
+      else if hash-fn /= 18 then Nothing
+      else if digest-len /= 32 then Nothing
+      else when codec-from-byte codec-b
+        is Nothing -> Nothing
+        is Just (codec) ->
+          let digest = list-slice-range bs 4 36
+          in Just (ContentHash {
+            ch-version = 1,
+            ch-codec = codec,
+            ch-digest = digest
+          })
+
+  list-slice-range : List Integer, Integer, Integer -> List Integer
+  list-slice-range (xs) (start) (end-idx) =
+    list-take (list-drop xs start) (end-idx - start)
+
+Section: Display Format
+
+  content-hash-to-hex : ContentHash -> Text
+  content-hash-to-hex (ch) =
+    sha256-to-hex ch.ch-digest
+
+  content-hash-display : ContentHash -> Text
+  content-hash-display (ch) =
+    codec-name ch.ch-codec & ":" & content-hash-to-hex ch
+
+  content-hash-short : ContentHash -> Text
+  content-hash-short (ch) =
+    let hex = content-hash-to-hex ch
+    in codec-name ch.ch-codec & ":" & text-take hex 12 & "..."
+
+Section: Comparison
+
+  content-hash-eq : ContentHash, ContentHash -> Boolean
+  content-hash-eq (a) (b) =
+    a.ch-version == b.ch-version
+    & (codec-byte a.ch-codec == codec-byte b.ch-codec)
+    & (digest-eq a.ch-digest b.ch-digest 0)
+
+  digest-eq : List Integer, List Integer, Integer -> Boolean
+  digest-eq (a) (b) (idx) =
+    if idx >= 32 then True
+    else if list-at a idx /= list-at b idx then False
+    else digest-eq a b (idx + 1)
+
+Section: Address Parsing
+
+  parse-codex-address : Text -> Maybe CodexAddress
+  parse-codex-address (raw) =
+    if text-starts-with raw "codex://local/"
+    then let name = text-drop raw 14
+      in Just (LocalAddress name)
+    else if text-starts-with raw "codex://sha256:"
+    then let hex = text-drop raw 15
+      in Nothing
+    else if text-starts-with raw "codex://"
+    then let rest = text-drop raw 8
+      in let slash-idx = text-index-of rest "/"
+      in if slash-idx < 0
+        then Just (NamedAddress (rest, "", Nothing))
+        else let host = text-take rest slash-idx
+          in let path-and-version = text-drop rest (slash-idx + 1)
+          in let at-idx = text-index-of path-and-version "@"
+          in if at-idx < 0
+            then Just (NamedAddress (host, path-and-version, Nothing))
+            else let path = text-take path-and-version at-idx
+              in let version-str = text-drop path-and-version (at-idx + 1)
+              in Just (NamedAddress (host, path, Nothing))
+    else Nothing
+
+  text-index-of : Text, Text -> Integer
+  text-index-of (haystack) (needle) =
+    text-index-of-at haystack needle 0
+
+  text-index-of-at : Text, Text, Integer -> Integer
+  text-index-of-at (haystack) (needle) (pos) =
+    if pos > text-length haystack - text-length needle
+    then (-1)
+    else if text-take (text-drop haystack pos) (text-length needle) == needle
+    then pos
+    else text-index-of-at haystack needle (pos + 1)
+
+Section: Address Display
+
+  format-address : CodexAddress -> Text
+  format-address (addr) =
+    when addr
+      is HashAddress (ch) ->
+        "codex://sha256:" & content-hash-to-hex ch
+      is NamedAddress (host, path, ver) ->
+        "codex://" & host & "/" & path & format-version ver
+      is LocalAddress (name) ->
+        "codex://local/" & name
+
+  format-version : Maybe Integer -> Text
+  format-version (v) =
+    when v
+      is Just (n) -> "@" & show n
+      is Nothing -> ""
+
+Section: Content Verification
+
+  verify-content : ContentHash, List Integer -> Boolean
+  verify-content (expected) (bytes) =
+    let actual = sha256 bytes
+    in digest-eq expected.ch-digest actual 0
+
+Section: Name Record Operations
+
+  name-record-create : Text, ContentHash, Integer, Integer, List Integer -> NameRecord
+  name-record-create (name) (hash) (seq) (ttl) (publisher) =
+    NameRecord {
+      nr-name = name,
+      nr-hash = hash,
+      nr-sequence = seq,
+      nr-ttl = ttl,
+      nr-publisher = publisher,
+      nr-signature = []
+    }
+
+  name-record-sign : NameRecord, List Integer -> NameRecord
+  name-record-sign (nr) (private-key) =
+    let payload = name-record-signing-payload nr
+    in let sig = ed25519-sign private-key nr.nr-publisher payload
+    in __record-set nr "nr-signature" sig
+
+  name-record-verify : NameRecord -> Boolean
+  name-record-verify (nr) =
+    let payload = name-record-signing-payload nr
+    in ed25519-verify nr.nr-publisher payload nr.nr-signature
+
+  name-record-signing-payload : NameRecord -> List Integer
+  name-record-signing-payload (nr) =
+    text-to-bytes "codex-name:" & text-to-bytes nr.nr-name
+    & content-hash-to-bytes nr.nr-hash
+
+  name-record-is-newer : NameRecord, NameRecord -> Boolean
+  name-record-is-newer (a) (b) =
+    a.nr-sequence > b.nr-sequence

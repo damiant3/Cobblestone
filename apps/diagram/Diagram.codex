@@ -1,0 +1,493 @@
+Chapter: Diagram
+  cites Foreword chapter Widget
+  cites Foreword chapter Event
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites Game chapter Rasterizer
+  cites Diagram chapter DiagramModel
+  cites Diagram chapter DiagramRenderer
+  cites Diagram chapter ShapeLibrary
+  cites Diagram chapter SelectionManager
+  cites Diagram chapter CommandHistory
+  cites Diagram chapter Canvas
+  cites Diagram chapter Toolbar
+  cites Diagram chapter DiagramTheme
+  cites Diagram chapter DiagramSerializer
+
+ The main diagram editor. Owns the app state, handles events,
+ renders the UI, and drives the interaction loop.
+
+Section: State
+
+  DiagramAppState = record {
+    da-diagram    : Diagram,
+    da-canvas     : CanvasState,
+    da-toolbar    : ToolbarState,
+    da-selection  : SelectionState,
+    da-history    : CommandStack,
+    da-width      : Integer,
+    da-height     : Integer,
+    da-dirty      : Boolean,
+    da-connecting : Maybe ConnectState,
+    da-editing    : Maybe EditState,
+    da-status     : Text
+  }
+
+  ConnectState = record {
+    cn-source-id : Integer,
+    cn-mouse-x   : Integer,
+    cn-mouse-y   : Integer
+  }
+
+  EditState = record {
+    ed-node-id   : Integer,
+    ed-text      : Text,
+    ed-cursor    : Integer
+  }
+
+Section: Initialization
+
+  diagram-app-init : Integer, Integer, Integer -> DiagramAppState
+  diagram-app-init (w) (h) (theme) =
+    let canvas-w = w - palette-width
+    in let canvas-h = h - toolbar-height - status-height
+    in DiagramAppState {
+      da-diagram = diagram-new "Untitled" Flowchart,
+      da-canvas = canvas-new canvas-w canvas-h,
+      da-toolbar = toolbar-new Flowchart,
+      da-selection = selection-empty,
+      da-history = command-stack-new 50,
+      da-width = w,
+      da-height = h,
+      da-dirty = True,
+      da-connecting = Nothing,
+      da-editing = Nothing,
+      da-status = "Ready"
+    }
+
+Section: Event Handling
+
+  diagram-handle-event : DiagramAppState, Event -> DiagramAppState
+  diagram-handle-event (state) (ev) =
+    when ev.ev-kind
+      is EvKeyDown -> diagram-handle-key state ev
+      is EvMouseDown -> diagram-handle-mouse-down state ev.ev-x ev.ev-y ev.ev-modifiers
+      is EvMouseUp -> diagram-handle-mouse-up state ev.ev-x ev.ev-y
+      is EvMouseMove -> diagram-handle-mouse-move state ev.ev-x ev.ev-y
+      is EvScroll -> diagram-handle-scroll state ev.ev-dy
+      is otherwise -> state
+
+Section: Key Handling
+
+  diagram-handle-key : DiagramAppState, Event -> DiagramAppState
+  diagram-handle-key (state) (ev) =
+    when state.da-editing
+      is Just (ed) -> diagram-handle-edit-key state ed ev
+      is Nothing -> diagram-handle-normal-key state ev
+
+  diagram-handle-normal-key : DiagramAppState, Event -> DiagramAppState
+  diagram-handle-normal-key (state) (ev) =
+    let k = ev.ev-key
+    in let mods = ev.ev-modifiers
+    in let ctrl = int-mod (mods / 1) 2 == 1
+    in if ctrl
+      then diagram-handle-ctrl-key state k
+      else diagram-handle-plain-key state k
+
+  diagram-handle-ctrl-key : DiagramAppState, Integer -> DiagramAppState
+  diagram-handle-ctrl-key (state) (k) =
+    if k == 90 then diagram-undo state
+    else if k == 89 then diagram-redo state
+    else if k == 65 then diagram-select-all state
+    else if k == 83 then diagram-save state
+    else if k == 78 then diagram-new-diagram state
+    else state
+
+  diagram-handle-plain-key : DiagramAppState, Integer -> DiagramAppState
+  diagram-handle-plain-key (state) (k) =
+    if k == 127 then diagram-delete-selected state
+    else if k == 8 then diagram-delete-selected state
+    else if k == 27 then diagram-escape state
+    else if k == 71 then diagram-toggle-grid state
+    else if k == 83 then diagram-toggle-snap state
+    else if k == 61 then __record-set (__record-set state "da-canvas" (canvas-zoom-in state.da-canvas)) "da-dirty" True
+    else if k == 45 then __record-set (__record-set state "da-canvas" (canvas-zoom-out state.da-canvas)) "da-dirty" True
+    else if k == 37 then diagram-nudge state (-1) 0
+    else if k == 38 then diagram-nudge state 0 (-1)
+    else if k == 39 then diagram-nudge state 1 0
+    else if k == 40 then diagram-nudge state 0 1
+    else state
+
+Section: Mouse Handling
+
+  diagram-handle-mouse-down : DiagramAppState, Integer, Integer, Integer -> DiagramAppState
+  diagram-handle-mouse-down (state) (mx) (my) (mods) =
+    if my < toolbar-height
+    then diagram-handle-toolbar-click state mx
+    else if mx < palette-width
+    then diagram-handle-palette-click state my
+    else let cx = mx - palette-width
+    in let cy = my - toolbar-height
+    in let dx = screen-to-diagram-x state.da-canvas cx
+    in let dy = screen-to-diagram-y state.da-canvas cy
+    in let shift = int-mod (mods / 4) 2 == 1
+    in diagram-handle-canvas-click state dx dy shift
+
+  diagram-handle-canvas-click : DiagramAppState, Integer, Integer, Boolean -> DiagramAppState
+  diagram-handle-canvas-click (state) (dx) (dy) (shift) =
+    when state.da-toolbar.tb-active-tool
+      is ToolSelect -> diagram-select-at state dx dy shift
+      is ToolConnect -> diagram-start-connect state dx dy
+      is ToolAddNode (shape-def) -> diagram-place-node state shape-def dx dy
+      is ToolPan -> __record-set state "da-canvas" (canvas-start-pan state.da-canvas dx dy)
+      is ToolText -> diagram-start-edit-at state dx dy
+
+  diagram-handle-mouse-up : DiagramAppState, Integer, Integer -> DiagramAppState
+  diagram-handle-mouse-up (state) (mx) (my) =
+    let state2 = if state.da-selection.sel-dragging
+          then diagram-end-drag state
+          else state
+    in let state3 = when state2.da-connecting
+          is Just (cn) -> diagram-finish-connect state2 mx my
+          is Nothing -> state2
+    in if state3.da-canvas.cv-panning
+      then __record-set state3 "da-canvas" (canvas-end-pan state3.da-canvas)
+      else if state3.da-selection.sel-marquee
+      then __record-set (__record-set state3
+        "da-selection" (selection-end-marquee state3.da-selection state3.da-diagram))
+        "da-dirty" True
+      else state3
+
+  diagram-handle-mouse-move : DiagramAppState, Integer, Integer -> DiagramAppState
+  diagram-handle-mouse-move (state) (mx) (my) =
+    if state.da-selection.sel-dragging
+    then let dx = screen-to-diagram-x state.da-canvas (mx - palette-width)
+      in let dy = screen-to-diagram-y state.da-canvas (my - toolbar-height)
+      in __record-set (__record-set state
+        "da-selection" (selection-update-drag state.da-selection dx dy))
+        "da-dirty" True
+    else if state.da-canvas.cv-panning
+    then __record-set (__record-set state
+      "da-canvas" (canvas-update-pan state.da-canvas mx my))
+      "da-dirty" True
+    else if state.da-selection.sel-marquee
+    then let dx = screen-to-diagram-x state.da-canvas (mx - palette-width)
+      in let dy = screen-to-diagram-y state.da-canvas (my - toolbar-height)
+      in __record-set (__record-set state
+        "da-selection" (selection-update-marquee state.da-selection dx dy))
+        "da-dirty" True
+    else when state.da-connecting
+      is Just (cn) -> __record-set state "da-connecting"
+            (Just (__record-set (__record-set cn "cn-mouse-x" mx) "cn-mouse-y" my))
+      is Nothing -> state
+
+Section: Selection
+
+  diagram-select-at : DiagramAppState, Integer, Integer, Boolean -> DiagramAppState
+  diagram-select-at (state) (dx) (dy) (shift) =
+    let hit = node-at-point state.da-diagram dx dy
+    in when hit
+      is Nothing ->
+        if shift then state
+        else __record-set (__record-set (__record-set state
+          "da-selection" (selection-start-marquee (selection-clear state.da-selection) dx dy))
+          "da-status" "Marquee select")
+          "da-dirty" True
+      is Just (n) ->
+        let sel = if shift
+              then selection-toggle state.da-selection n.dn-id
+              else selection-select state.da-selection n.dn-id
+        in let dragging = selection-start-drag sel dx dy
+        in __record-set (__record-set (__record-set state
+          "da-selection" dragging)
+          "da-status" ("Selected: " & n.dn-label))
+          "da-dirty" True
+
+  diagram-select-all : DiagramAppState -> DiagramAppState
+  diagram-select-all (state) =
+    __record-set (__record-set state
+      "da-selection" (selection-select-all state.da-selection state.da-diagram))
+      "da-dirty" True
+
+  diagram-escape : DiagramAppState -> DiagramAppState
+  diagram-escape (state) =
+    __record-set (__record-set (__record-set (__record-set state
+      "da-selection" (selection-clear state.da-selection))
+      "da-connecting" Nothing)
+      "da-editing" Nothing)
+      "da-dirty" True
+
+Section: Drag
+
+  diagram-end-drag : DiagramAppState -> DiagramAppState
+  diagram-end-drag (state) =
+    let delta = selection-drag-delta state.da-selection
+    in let dx = delta.v2x
+    in let dy = delta.v2y
+    in if dx == 0 & dy == 0 then __record-set state "da-selection" (__record-set state.da-selection "sel-dragging" False)
+    else let saved = command-push state.da-history state.da-diagram
+    in let moved = move-selected-nodes state.da-diagram state.da-selection.sel-ids dx dy
+    in __record-set (__record-set (__record-set (__record-set state
+      "da-diagram" moved)
+      "da-selection" (__record-set state.da-selection "sel-dragging" False))
+      "da-history" saved)
+      "da-dirty" True
+
+  move-selected-nodes : Diagram, List Integer, Integer, Integer -> Diagram
+  move-selected-nodes (dg) (ids) (dx) (dy) =
+    move-selected-loop dg ids dx dy 0
+
+  move-selected-loop : Diagram, List Integer, Integer, Integer, Integer -> Diagram
+  move-selected-loop (dg) (ids) (dx) (dy) (i) =
+    if i >= list-length ids then dg
+    else let id = list-at ids i
+    in let node = diagram-find-node dg id
+    in let moved = when node
+          is Nothing -> dg
+          is Just (n) -> diagram-move-node dg id (n.dn-x + dx) (n.dn-y + dy)
+    in move-selected-loop moved ids dx dy (i + 1)
+
+Section: Node Placement
+
+  diagram-place-node : DiagramAppState, ShapeDef, Integer, Integer -> DiagramAppState
+  diagram-place-node (state) (sd) (x) (y) =
+    let saved = command-push state.da-history state.da-diagram
+    in let dg = diagram-add-node state.da-diagram sd.sd-shape x y sd.sd-width sd.sd-height sd.sd-name
+    in let new-id = dg.dg-next-id - 1
+    in __record-set (__record-set (__record-set (__record-set (__record-set state
+      "da-diagram" dg)
+      "da-selection" (selection-select state.da-selection new-id))
+      "da-history" saved)
+      "da-toolbar" (toolbar-set-tool state.da-toolbar ToolSelect))
+      "da-dirty" True
+
+Section: Connections
+
+  diagram-start-connect : DiagramAppState, Integer, Integer -> DiagramAppState
+  diagram-start-connect (state) (dx) (dy) =
+    let hit = node-at-point state.da-diagram dx dy
+    in when hit
+      is Nothing -> state
+      is Just (n) ->
+        __record-set (__record-set state
+          "da-connecting" (Just (ConnectState { cn-source-id = n.dn-id, cn-mouse-x = dx, cn-mouse-y = dy })))
+          "da-status" ("Connecting from: " & n.dn-label)
+
+  diagram-finish-connect : DiagramAppState, Integer, Integer -> DiagramAppState
+  diagram-finish-connect (state) (mx) (my) =
+    when state.da-connecting
+      is Nothing -> state
+      is Just (cn) ->
+        let dx = screen-to-diagram-x state.da-canvas (mx - palette-width)
+        in let dy = screen-to-diagram-y state.da-canvas (my - toolbar-height)
+        in let hit = node-at-point state.da-diagram dx dy
+        in when hit
+          is Nothing ->
+            __record-set (__record-set state "da-connecting" Nothing) "da-dirty" True
+          is Just (tgt) ->
+            if tgt.dn-id == cn.cn-source-id
+            then __record-set (__record-set state "da-connecting" Nothing) "da-dirty" True
+            else let saved = command-push state.da-history state.da-diagram
+              in let dg = diagram-add-edge state.da-diagram cn.cn-source-id tgt.dn-id ""
+              in __record-set (__record-set (__record-set (__record-set (__record-set state
+                "da-diagram" dg)
+                "da-history" saved)
+                "da-connecting" Nothing)
+                "da-status" "Edge added")
+                "da-dirty" True
+
+Section: Text Editing
+
+  diagram-start-edit-at : DiagramAppState, Integer, Integer -> DiagramAppState
+  diagram-start-edit-at (state) (dx) (dy) =
+    let hit = node-at-point state.da-diagram dx dy
+    in when hit
+      is Nothing -> state
+      is Just (n) ->
+        __record-set state "da-editing" (Just (EditState {
+          ed-node-id = n.dn-id,
+          ed-text = n.dn-label,
+          ed-cursor = text-length n.dn-label
+        }))
+
+  diagram-handle-edit-key : DiagramAppState, EditState, Event -> DiagramAppState
+  diagram-handle-edit-key (state) (ed) (ev) =
+    let k = ev.ev-key
+    in if k == 13
+      then let saved = command-push state.da-history state.da-diagram
+        in let dg = diagram-set-label state.da-diagram ed.ed-node-id ed.ed-text
+        in __record-set (__record-set (__record-set state
+          "da-diagram" dg)
+          "da-editing" Nothing)
+          "da-history" saved
+      else if k == 27
+      then __record-set state "da-editing" Nothing
+      else if k == 8
+      then if ed.ed-cursor > 0
+        then let new-text = text-take ed.ed-text (ed.ed-cursor - 1)
+                & text-drop ed.ed-text ed.ed-cursor
+          in __record-set (__record-set state "da-editing"
+            (Just (__record-set (__record-set ed "ed-text" new-text) "ed-cursor" (ed.ed-cursor - 1))))
+            "da-dirty" True
+        else state
+      else if k >= 32
+      then let ch = char-to-text (code-to-char (from-unicode k))
+        in let new-text = text-take ed.ed-text ed.ed-cursor & ch & text-drop ed.ed-text ed.ed-cursor
+        in __record-set (__record-set state "da-editing"
+          (Just (__record-set (__record-set ed "ed-text" new-text) "ed-cursor" (ed.ed-cursor + 1))))
+          "da-dirty" True
+      else state
+
+Section: Delete
+
+  diagram-delete-selected : DiagramAppState -> DiagramAppState
+  diagram-delete-selected (state) =
+    if selection-is-empty state.da-selection then state
+    else let saved = command-push state.da-history state.da-diagram
+    in let dg = delete-ids state.da-diagram state.da-selection.sel-ids
+    in __record-set (__record-set (__record-set (__record-set state
+      "da-diagram" dg)
+      "da-selection" (selection-clear state.da-selection))
+      "da-history" saved)
+      "da-dirty" True
+
+  delete-ids : Diagram, List Integer -> Diagram
+  delete-ids (dg) (ids) =
+    when ids
+      is [] -> dg
+      is otherwise ->
+        let id = list-at ids 0
+        in delete-ids (diagram-delete-node dg id) (list-drop ids 1)
+
+Section: Undo/Redo
+
+  diagram-undo : DiagramAppState -> DiagramAppState
+  diagram-undo (state) =
+    if command-can-undo state.da-history == False then state
+    else let result = command-undo state.da-history state.da-diagram
+    in when result
+      is (new-hist, prev-dg) ->
+        __record-set (__record-set (__record-set state
+          "da-diagram" prev-dg)
+          "da-history" new-hist)
+          "da-dirty" True
+
+  diagram-redo : DiagramAppState -> DiagramAppState
+  diagram-redo (state) =
+    if command-can-redo state.da-history == False then state
+    else let result = command-redo state.da-history state.da-diagram
+    in when result
+      is (new-hist, next-dg) ->
+        __record-set (__record-set (__record-set state
+          "da-diagram" next-dg)
+          "da-history" new-hist)
+          "da-dirty" True
+
+Section: Nudge
+
+  diagram-nudge : DiagramAppState, Integer, Integer -> DiagramAppState
+  diagram-nudge (state) (dx) (dy) =
+    if selection-is-empty state.da-selection then state
+    else let grid = state.da-diagram.dg-grid
+    in let step-x = if state.da-diagram.dg-snap then dx * grid else dx
+    in let step-y = if state.da-diagram.dg-snap then dy * grid else dy
+    in let saved = command-push state.da-history state.da-diagram
+    in let moved = move-selected-nodes state.da-diagram state.da-selection.sel-ids step-x step-y
+    in __record-set (__record-set (__record-set state
+      "da-diagram" moved)
+      "da-history" saved)
+      "da-dirty" True
+
+Section: Toggle Operations
+
+  diagram-toggle-grid : DiagramAppState -> DiagramAppState
+  diagram-toggle-grid (state) =
+    let new-grid = if state.da-diagram.dg-grid > 0 then 0 else 20
+    in __record-set (__record-set state
+      "da-diagram" (__record-set state.da-diagram "dg-grid" new-grid))
+      "da-dirty" True
+
+  diagram-toggle-snap : DiagramAppState -> DiagramAppState
+  diagram-toggle-snap (state) =
+    __record-set (__record-set state
+      "da-diagram" (__record-set state.da-diagram "dg-snap" (if state.da-diagram.dg-snap then False else True)))
+      "da-dirty" True
+
+Section: New/Save
+
+  diagram-new-diagram : DiagramAppState -> DiagramAppState
+  diagram-new-diagram (state) =
+    __record-set (__record-set (__record-set state
+      "da-diagram" (diagram-new "Untitled" state.da-toolbar.tb-diagram-type))
+      "da-selection" (selection-clear state.da-selection))
+      "da-dirty" True
+
+  diagram-save : DiagramAppState -> DiagramAppState
+  diagram-save (state) =
+    __record-set state "da-status" "Saving..."
+
+Section: Toolbar Clicks
+
+  diagram-handle-toolbar-click : DiagramAppState, Integer -> DiagramAppState
+  diagram-handle-toolbar-click (state) (mx) =
+    let btn-width = 60
+    in let btn-index = mx / btn-width
+    in if btn-index == 0 then __record-set state "da-toolbar" (toolbar-set-tool state.da-toolbar ToolSelect)
+    else if btn-index == 1 then __record-set state "da-toolbar" (toolbar-set-tool state.da-toolbar ToolConnect)
+    else if btn-index == 2 then __record-set state "da-toolbar" (toolbar-set-tool state.da-toolbar ToolText)
+    else if btn-index == 3 then __record-set state "da-toolbar" (toolbar-set-tool state.da-toolbar ToolPan)
+    else state
+
+  diagram-handle-palette-click : DiagramAppState, Integer -> DiagramAppState
+  diagram-handle-palette-click (state) (my) =
+    let shapes = shapes-for-type state.da-toolbar.tb-diagram-type
+    in let btn-height = 32
+    in let idx = (my - toolbar-height) / btn-height
+    in if idx >= 0 then if idx < list-length shapes
+      then let sd = list-at shapes idx
+        in __record-set (__record-set state
+          "da-toolbar" (toolbar-set-tool state.da-toolbar (ToolAddNode sd)))
+          "da-status" ("Place: " & sd.sd-name)
+      else state
+    else state
+
+Section: Scroll
+
+  diagram-handle-scroll : DiagramAppState, Integer -> DiagramAppState
+  diagram-handle-scroll (state) (dy) =
+    __record-set (__record-set state
+      "da-canvas" (canvas-scroll-by state.da-canvas 0 (dy * 30)))
+      "da-dirty" True
+
+Section: Rendering
+
+  diagram-render-frame : DiagramAppState -> Framebuf
+  diagram-render-frame (state) =
+    canvas-render state.da-canvas state.da-diagram state.da-selection.sel-ids
+
+Section: Main Loop
+
+  diagram-app-run : DiagramAppState -> [Console] Nothing
+  diagram-app-run (state) = act
+    print-line ("  Type: " & diagram-type-name state.da-diagram.dg-type)
+    print-line ("  Canvas: " & format-canvas state.da-canvas)
+    print-line "  Ready."
+    diagram-event-loop state
+  end
+
+  diagram-event-loop : DiagramAppState -> [Console] Nothing
+  diagram-event-loop (state) = act
+    ev <- diagram-poll-event
+    let handled = diagram-handle-event state ev
+    in diagram-event-loop handled
+  end
+
+  diagram-poll-event : [Console] Event
+  diagram-poll-event = act
+    let scan = uefi-read-key
+    in if scan == 0
+      then pure (event-timer "tick" 0)
+      else pure (event-key-down scan 0 0)
+  end

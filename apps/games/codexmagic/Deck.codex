@@ -5,7 +5,7 @@ Chapter: Deck
 
  Deck construction and validation. Decks must meet format rules:
  minimum size, max copies per card, color identity must match the
- General. Shuffle uses Fisher-Yates on an RNG seed.
+ General. Gemstones replace lands as the resource base.
 
  We say:
 
@@ -115,27 +115,32 @@ Section: Validation
 
   color-outside-identity : ColorSet, ColorSet -> Boolean
   color-outside-identity (card) (gen) =
-    if card.white then if gen.white == False then True else check-rest-colors card gen
-    else check-rest-colors card gen
+    if card.red then if gen.red == False then True else check-yb-colors card gen
+    else check-yb-colors card gen
 
-  check-rest-colors : ColorSet, ColorSet -> Boolean
-  check-rest-colors (card) (gen) =
-    if card.blue then if gen.blue == False then True else check-br-colors card gen
-    else check-br-colors card gen
+  check-yb-colors : ColorSet, ColorSet -> Boolean
+  check-yb-colors (card) (gen) =
+    if card.yellow then if gen.yellow == False then True else check-bogp-colors card gen
+    else check-bogp-colors card gen
 
-  check-br-colors : ColorSet, ColorSet -> Boolean
-  check-br-colors (card) (gen) =
-    if card.black then if gen.black == False then True else check-rg-colors card gen
-    else check-rg-colors card gen
+  check-bogp-colors : ColorSet, ColorSet -> Boolean
+  check-bogp-colors (card) (gen) =
+    if card.blue then if gen.blue == False then True else check-ogp-colors card gen
+    else check-ogp-colors card gen
 
-  check-rg-colors : ColorSet, ColorSet -> Boolean
-  check-rg-colors (card) (gen) =
-    if card.red then if gen.red == False then True else check-g-color card gen
-    else check-g-color card gen
+  check-ogp-colors : ColorSet, ColorSet -> Boolean
+  check-ogp-colors (card) (gen) =
+    if card.orange then if gen.orange == False then True else check-gp-colors card gen
+    else check-gp-colors card gen
 
-  check-g-color : ColorSet, ColorSet -> Boolean
-  check-g-color (card) (gen) =
-    if card.green then if gen.green == False then True else False
+  check-gp-colors : ColorSet, ColorSet -> Boolean
+  check-gp-colors (card) (gen) =
+    if card.green then if gen.green == False then True else check-p-color card gen
+    else check-p-color card gen
+
+  check-p-color : ColorSet, ColorSet -> Boolean
+  check-p-color (card) (gen) =
+    if card.purple then if gen.purple == False then True else False
     else False
 
   check-no-general-in-deck : DeckList, List CardTemplate -> ValidationResult
@@ -182,66 +187,50 @@ Section: Starter Deck Generation
   gen-starter-deck : GeneralTemplate, List CardTemplate, Integer -> DeckList
   gen-starter-deck (general) (templates) (seed) =
     let r = rng-new seed
-    in let lands = pick-lands-for-general general templates 24
+    in let gems = pick-gems-for-general general templates 24
     in let spells = pick-spells-for-general general templates r 36 0 []
-    in let all-cards = append-int-lists lands spells
+    in let all-cards = append-int-lists gems spells
     in make-deck (general.id) all-cards FormatStandard
 
-  pick-lands-for-general : GeneralTemplate, List CardTemplate, Integer -> List Integer
-  pick-lands-for-general (general) (templates) (count) =
-    let land-id = find-basic-land-for-color templates (primary-color (general.color)) 0 (list-length templates)
-    in if land-id >= 0 then add-n-copies [] land-id count
+  pick-gems-for-general : GeneralTemplate, List CardTemplate, Integer -> List Integer
+  pick-gems-for-general (general) (templates) (count) =
+    let gem-id = find-basic-gem-for-color templates (primary-color (general.color)) 0 (list-length templates)
+    in if gem-id >= 0 then add-n-copies [] gem-id count
     else add-n-copies [] 0 count
 
-  primary-color : ColorSet -> ManaColor
+  primary-color : ColorSet -> GemColor
   primary-color (cs) =
-    if cs.white then White
+    if cs.red then Red
+    else if cs.yellow then Yellow
     else if cs.blue then Blue
-    else if cs.black then Black
-    else if cs.red then Red
+    else if cs.orange then Orange
     else if cs.green then Green
+    else if cs.purple then Purple
     else Colorless
 
-  find-basic-land-for-color : List CardTemplate, ManaColor, Integer, Integer -> Integer
-  find-basic-land-for-color (templates) (color) (i) (len) =
+  find-basic-gem-for-color : List CardTemplate, GemColor, Integer, Integer -> Integer
+  find-basic-gem-for-color (templates) (color) (i) (len) =
     if i >= len then -1
     else let t = list-at templates i
     in when t.card-type
-      is Land ->
+      is Gemstone ->
         if t.is-basic then
-          if has-mana-ability-for-color (t.abilities) color 0 (list-length (t.abilities)) then t.id
-          else find-basic-land-for-color templates color (i + 1) len
-        else find-basic-land-for-color templates color (i + 1) len
-      is otherwise -> find-basic-land-for-color templates color (i + 1) len
+          if t.gem-stone >= 0 then
+            if gem-stone-color-matches t color then t.id
+            else find-basic-gem-for-color templates color (i + 1) len
+          else find-basic-gem-for-color templates color (i + 1) len
+        else find-basic-gem-for-color templates color (i + 1) len
+      is otherwise -> find-basic-gem-for-color templates color (i + 1) len
 
-  has-mana-ability-for-color : List Ability, ManaColor, Integer, Integer -> Boolean
-  has-mana-ability-for-color (abs) (color) (i) (len) =
-    if i >= len then False
-    else when list-at abs i
-      is ManaAbility (cost) (c) (amount) -> mana-color-eq c color
-      is otherwise -> has-mana-ability-for-color abs color (i + 1) len
-
-  mana-color-eq : ManaColor, ManaColor -> Boolean
-  mana-color-eq (a) (b) =
-    when a
-      is White -> when b
-        is White -> True
-        is otherwise -> False
-      is Blue -> when b
-        is Blue -> True
-        is otherwise -> False
-      is Black -> when b
-        is Black -> True
-        is otherwise -> False
-      is Red -> when b
-        is Red -> True
-        is otherwise -> False
-      is Green -> when b
-        is Green -> True
-        is otherwise -> False
-      is Colorless -> when b
-        is Colorless -> True
-        is otherwise -> False
+  gem-stone-color-matches : CardTemplate, GemColor -> Boolean
+  gem-stone-color-matches (t) (target) =
+    when target
+      is Red -> t.color.red
+      is Yellow -> t.color.yellow
+      is Blue -> t.color.blue
+      is Orange -> t.color.orange
+      is Green -> t.color.green
+      is otherwise -> False
 
   pick-spells-for-general : GeneralTemplate, List CardTemplate, Rng, Integer, Integer, List Integer -> List Integer
   pick-spells-for-general (general) (templates) (r) (target) (picked) (acc) =
@@ -249,11 +238,19 @@ Section: Starter Deck Generation
     else let idx = rng-mod (rng-value r) (list-length templates)
     in let t = list-at templates idx
     in when t.card-type
-      is Land -> pick-spells-for-general general templates (rng-next r) target picked acc
+      is Gemstone -> pick-spells-for-general general templates (rng-next r) target picked acc
       is General -> pick-spells-for-general general templates (rng-next r) target picked acc
       is otherwise ->
         if t.is-token then pick-spells-for-general general templates (rng-next r) target picked acc
         else if color-outside-identity (t.color) (general.color) then pick-spells-for-general general templates (rng-next r) target picked acc
         else pick-spells-for-general general templates (rng-next r) target (picked + 1) (list-push acc (t.id))
+
+  append-int-lists : List Integer, List Integer -> List Integer
+  append-int-lists (a) (b) = append-int-lists-loop a b 0 (list-length b)
+
+  append-int-lists-loop : List Integer, List Integer, Integer, Integer -> List Integer
+  append-int-lists-loop (acc) (src) (i) (len) =
+    if i >= len then acc
+    else append-int-lists-loop (list-push acc (list-at src i)) src (i + 1) len
 
 Page 1

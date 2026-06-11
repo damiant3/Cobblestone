@@ -1,0 +1,303 @@
+Chapter: Terminal
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Terminal emulator. Provides a scrollback buffer of character cells
+ with foreground/background color, a cursor position, and an input
+ line. This is the serial console for the VM: kernel output, boot
+ messages, and interactive command entry all flow through here. On
+ real hardware it becomes the system shell. Supports ANSI-ish color
+ codes (simplified to 16 colors) and basic cursor movement.
+
+Section: Cell
+
+  Cell = record {
+    cell-char : Integer,
+    cell-fg : Integer,
+    cell-bg : Integer,
+    cell-bold : Boolean
+  }
+
+  cell-blank : Cell
+  cell-blank = Cell { cell-char = 32, cell-fg = 14737632, cell-bg = 0, cell-bold = False }
+
+  cell-new : Integer, Integer, Integer -> Cell
+  cell-new (ch) (fg) (bg) = Cell { cell-char = ch, cell-fg = fg, cell-bg = bg, cell-bold = False }
+
+Section: Terminal Buffer
+
+  TermLine = record {
+    tl-cells : List Cell,
+    tl-length : Integer,
+    tl-dirty : Boolean
+  }
+
+  term-line-new : Integer -> TermLine
+  term-line-new (cols) = TermLine {
+    tl-cells = term-blank-cells cols 0 [],
+    tl-length = cols,
+    tl-dirty = True
+  }
+
+  term-blank-cells : Integer, Integer, List Cell -> List Cell
+  term-blank-cells (n) (i) (acc) =
+    if i >= n then acc
+    else term-blank-cells n (i + 1) (list-push acc cell-blank)
+
+  term-line-set : TermLine, Integer, Cell -> TermLine
+  term-line-set (line) (col) (c) =
+    if col < 0 then line
+    else if col >= line.tl-length then line
+    else TermLine {
+      tl-cells = list-set-at (line.tl-cells) col c,
+      tl-length = line.tl-length,
+      tl-dirty = True
+    }
+
+  term-line-get : TermLine, Integer -> Cell
+  term-line-get (line) (col) =
+    if col < 0 then cell-blank
+    else if col >= line.tl-length then cell-blank
+    else list-at (line.tl-cells) col
+
+  term-line-to-text : TermLine -> Text
+  term-line-to-text (line) =
+    tl-to-text-loop (line.tl-cells) 0 (line.tl-length) ""
+
+  tl-to-text-loop : List Cell, Integer, Integer, Text -> Text
+  tl-to-text-loop (cells) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at cells i
+    in tl-to-text-loop cells (i + 1) n (acc & char-to-text (code-to-char (c.cell-char)))
+
+Section: Terminal State
+
+  TerminalState = record {
+    term-lines : List TermLine,
+    term-rows : Integer,
+    term-cols : Integer,
+    term-cursor-row : Integer,
+    term-cursor-col : Integer,
+    term-scroll-top : Integer,
+    term-scroll-bottom : Integer,
+    term-fg : Integer,
+    term-bg : Integer,
+    term-bold : Boolean,
+    term-input-line : Text,
+    term-input-cursor : Integer,
+    term-history : List Text,
+    term-history-count : Integer,
+    term-history-pos : Integer,
+    term-scrollback : List TermLine,
+    term-scrollback-count : Integer,
+    term-scrollback-max : Integer,
+    term-title : Text
+  }
+
+  terminal-new : Integer, Integer -> TerminalState
+  terminal-new (rows) (cols) = TerminalState {
+    term-lines = term-init-lines rows cols 0 [],
+    term-rows = rows,
+    term-cols = cols,
+    term-cursor-row = 0,
+    term-cursor-col = 0,
+    term-scroll-top = 0,
+    term-scroll-bottom = rows - 1,
+    term-fg = 14737632,
+    term-bg = 0,
+    term-bold = False,
+    term-input-line = "",
+    term-input-cursor = 0,
+    term-history = [],
+    term-history-count = 0,
+    term-history-pos = -1,
+    term-scrollback = [],
+    term-scrollback-count = 0,
+    term-scrollback-max = 5000,
+    term-title = "Terminal"
+  }
+
+  term-init-lines : Integer, Integer, Integer, List TermLine -> List TermLine
+  term-init-lines (rows) (cols) (i) (acc) =
+    if i >= rows then acc
+    else term-init-lines rows cols (i + 1) (list-push acc (term-line-new cols))
+
+Section: Output (write characters to the buffer)
+
+  term-put-char : TerminalState, Integer -> TerminalState
+  term-put-char (ts) (ch) =
+    if ch == 10 then term-newline ts
+    else if ch == 13 then __record-set ts "term-cursor-col" 0
+    else if ch == 8 then term-backspace ts
+    else let c = cell-new ch (ts.term-fg) (ts.term-bg)
+    in let line = list-at (ts.term-lines) (ts.term-cursor-row)
+    in let updated = term-line-set line (ts.term-cursor-col) c
+    in let lines2 = list-set-at (ts.term-lines) (ts.term-cursor-row) updated
+    in let col2 = ts.term-cursor-col + 1
+    in if col2 >= ts.term-cols then term-newline (__record-set (__record-set ts "term-lines" lines2) "term-cursor-col" 0)
+    else __record-set (__record-set ts "term-lines" lines2) "term-cursor-col" col2
+
+  term-put-text : TerminalState, Text, Integer, Integer -> TerminalState
+  term-put-text (ts) (s) (i) (len) =
+    if i >= len then ts
+    else term-put-text (term-put-char ts (char-code (char-at s i))) s (i + 1) len
+
+  term-write : TerminalState, Text -> TerminalState
+  term-write (ts) (s) = term-put-text ts s 0 (text-length s)
+
+  term-writeln : TerminalState, Text -> TerminalState
+  term-writeln (ts) (s) = term-newline (term-write ts s)
+
+  term-newline : TerminalState -> TerminalState
+  term-newline (ts) =
+    if ts.term-cursor-row >= ts.term-scroll-bottom then term-scroll-up ts
+    else __record-set (__record-set ts "term-cursor-row" (ts.term-cursor-row + 1)) "term-cursor-col" 0
+
+  term-scroll-up : TerminalState -> TerminalState
+  term-scroll-up (ts) =
+    let top-line = list-at (ts.term-lines) (ts.term-scroll-top)
+    in let scrollback2 = if ts.term-scrollback-count >= ts.term-scrollback-max then
+      list-push (log-drop-oldest (ts.term-scrollback) (ts.term-scrollback-count)) top-line
+    else list-push (ts.term-scrollback) top-line
+    in let sb-count = if ts.term-scrollback-count >= ts.term-scrollback-max then ts.term-scrollback-count else ts.term-scrollback-count + 1
+    in let shifted = term-shift-lines (ts.term-lines) (ts.term-scroll-top) (ts.term-scroll-bottom) (ts.term-cols)
+    in __record-set (__record-set (__record-set (__record-set ts "term-lines" shifted) "term-cursor-col" 0) "term-scrollback" scrollback2) "term-scrollback-count" sb-count
+
+  term-shift-lines : List TermLine, Integer, Integer, Integer -> List TermLine
+  term-shift-lines (lines) (top) (bottom) (cols) =
+    term-shift-loop lines top bottom cols top []
+
+  term-shift-loop : List TermLine, Integer, Integer, Integer, Integer, List TermLine -> List TermLine
+  term-shift-loop (lines) (top) (bottom) (cols) (i) (acc) =
+    if i > bottom then term-rebuild-lines lines acc 0 (list-length lines) top bottom
+    else if i == bottom then term-shift-loop lines top bottom cols (i + 1) (list-push acc (term-line-new cols))
+    else term-shift-loop lines top bottom cols (i + 1) (list-push acc (list-at lines (i + 1)))
+
+  term-rebuild-lines : List TermLine, List TermLine, Integer, Integer, Integer, Integer -> List TermLine
+  term-rebuild-lines (orig) (shifted) (i) (n) (top) (bottom) =
+    if i >= n then []
+    else let line = if i >= top then if i <= bottom then list-at shifted (i - top) else list-at orig i
+      else list-at orig i
+    in [line] & term-rebuild-lines orig shifted (i + 1) n top bottom
+
+  term-backspace : TerminalState -> TerminalState
+  term-backspace (ts) =
+    if ts.term-cursor-col > 0 then
+      let col = ts.term-cursor-col - 1
+      in let line = list-at (ts.term-lines) (ts.term-cursor-row)
+      in let updated = term-line-set line col cell-blank
+      in __record-set (__record-set (__record-set ts "term-lines" (list-set-at (ts.term-lines) (ts.term-cursor-row) updated)) "term-cursor-col" col) "term-cursor-col" col
+    else ts
+
+Section: Input (command line editing)
+
+  term-input-char : TerminalState, Integer -> TerminalState
+  term-input-char (ts) (ch) =
+    let new-line = text-insert-at (ts.term-input-line) (ts.term-input-cursor) (char-to-text (code-to-char ch))
+    in __record-set (__record-set ts "term-input-line" new-line) "term-input-cursor" (ts.term-input-cursor + 1)
+
+  term-input-backspace : TerminalState -> TerminalState
+  term-input-backspace (ts) =
+    if ts.term-input-cursor <= 0 then ts
+    else let new-line = text-remove-at (ts.term-input-line) (ts.term-input-cursor - 1)
+    in __record-set (__record-set ts "term-input-line" new-line) "term-input-cursor" (ts.term-input-cursor - 1)
+
+  term-input-submit : TerminalState -> TerminalState
+  term-input-submit (ts) =
+    let line = ts.term-input-line
+    in let ts2 = term-writeln (term-write ts ("> " & line)) ""
+    in __record-set (__record-set (__record-set (__record-set ts2 "term-input-line" "") "term-input-cursor" 0) "term-history" (list-push (ts.term-history) line)) "term-history-count" (ts.term-history-count + 1)
+
+  term-input-history-up : TerminalState -> TerminalState
+  term-input-history-up (ts) =
+    if ts.term-history-count == 0 then ts
+    else let pos = if ts.term-history-pos < 0 then ts.term-history-count - 1 else if ts.term-history-pos > 0 then ts.term-history-pos - 1 else 0
+    in let line = list-at (ts.term-history) pos
+    in __record-set (__record-set (__record-set ts "term-history-pos" pos) "term-input-line" line) "term-input-cursor" (text-length line)
+
+  term-input-left : TerminalState -> TerminalState
+  term-input-left (ts) =
+    if ts.term-input-cursor > 0 then __record-set ts "term-input-cursor" (ts.term-input-cursor - 1)
+    else ts
+
+  term-input-right : TerminalState -> TerminalState
+  term-input-right (ts) =
+    if ts.term-input-cursor < text-length (ts.term-input-line) then __record-set ts "term-input-cursor" (ts.term-input-cursor + 1)
+    else ts
+
+  term-input-home : TerminalState -> TerminalState
+  term-input-home (ts) = __record-set ts "term-input-cursor" 0
+
+  term-input-end : TerminalState -> TerminalState
+  term-input-end (ts) = __record-set ts "term-input-cursor" (text-length (ts.term-input-line))
+
+Section: Color
+
+  term-default-fg : Integer = 14737632
+  term-default-bg : Integer = 1184274
+
+  term-ansi-color : Integer -> Integer
+  term-ansi-color (code) =
+    if code == 0 then 0
+    else if code == 1 then 11141120
+    else if code == 2 then 43520
+    else if code == 3 then 11184640
+    else if code == 4 then 170
+    else if code == 5 then 11141290
+    else if code == 6 then 43690
+    else if code == 7 then 11184810
+    else if code == 8 then 5592405
+    else if code == 9 then 16733525
+    else if code == 10 then 5635925
+    else if code == 11 then 16777045
+    else if code == 12 then 5592575
+    else if code == 13 then 16733695
+    else if code == 14 then 5636095
+    else if code == 15 then 16777215
+    else 14737632
+
+  term-set-fg : TerminalState, Integer -> TerminalState
+  term-set-fg (ts) (color) = __record-set ts "term-fg" color
+
+  term-set-bg : TerminalState, Integer -> TerminalState
+  term-set-bg (ts) (color) = __record-set ts "term-bg" color
+
+  term-reset-attrs : TerminalState -> TerminalState
+  term-reset-attrs (ts) = __record-set (__record-set (__record-set ts "term-fg" term-default-fg) "term-bg" term-default-bg) "term-bold" False
+
+Section: Screen Content
+
+  term-screen-text : TerminalState -> Text
+  term-screen-text (ts) = term-screen-loop (ts.term-lines) 0 (ts.term-rows) ""
+
+  term-screen-loop : List TermLine, Integer, Integer, Text -> Text
+  term-screen-loop (lines) (i) (n) (acc) =
+    if i >= n then acc
+    else let line-text = term-line-to-text (list-at lines i)
+    in let sep = if i + 1 < n then "\n" else ""
+    in term-screen-loop lines (i + 1) n (acc & line-text & sep)
+
+Section: Widget Building
+
+  term-widget : TerminalState -> WidgetNode
+  term-widget (ts) =
+    let title = widget-label "term-title" (ts.term-title)
+    in let screen = widget-custom "term-screen" "terminal" (ts.term-cols * 8) (ts.term-rows * 16)
+    in let input-field = widget-input "term-input" (ts.term-input-line) (ts.term-input-cursor)
+    in let status = widget-label "term-status" (show (ts.term-cursor-row) & "," & show (ts.term-cursor-col) & " | " & show (ts.term-scrollback-count) & " scrollback | " & show (ts.term-history-count) & " history")
+    in widget-panel "terminal" DirColumn 0 [title, screen, input-field, status]
+
+Section: JSON
+
+  terminal-state-to-json : TerminalState -> Text
+  terminal-state-to-json (ts) =
+    "{\"rows\":" & show (ts.term-rows)
+    & ",\"cols\":" & show (ts.term-cols)
+    & ",\"cursorRow\":" & show (ts.term-cursor-row)
+    & ",\"cursorCol\":" & show (ts.term-cursor-col)
+    & ",\"scrollback\":" & show (ts.term-scrollback-count)
+    & ",\"history\":" & show (ts.term-history-count)
+    & ",\"inputLine\":\"" & ts.term-input-line & "\"}"
+
+Page 1

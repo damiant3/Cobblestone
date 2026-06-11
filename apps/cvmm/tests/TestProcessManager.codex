@@ -1,0 +1,107 @@
+Chapter: TestProcessManager
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProcessManager
+  cites Foreword chapter Maybe
+
+ Unit tests for the process manager: state updates, totals computation,
+ sorting, filtering, and find operations.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) =
+    if val then "PASS " & label
+    else "FAIL " & label & ": expected True"
+
+Section: Sample Data
+
+  sample-procs : List ProcessEntry
+  sample-procs = [
+    ProcessEntry { proc-pid = 1, proc-name = "kernel", proc-state = ProcRunning, proc-cpu-percent = 10, proc-mem-bytes = megabytes 16, proc-threads = 4, proc-priority = PrioRealtime, proc-parent-pid = 0, proc-user = "system", proc-uptime = 100, proc-open-files = 0, proc-affinity = 1 },
+    ProcessEntry { proc-pid = 2, proc-name = "net-stack", proc-state = ProcRunning, proc-cpu-percent = 25, proc-mem-bytes = megabytes 32, proc-threads = 2, proc-priority = PrioHigh, proc-parent-pid = 1, proc-user = "system", proc-uptime = 99, proc-open-files = 8, proc-affinity = 1 },
+    ProcessEntry { proc-pid = 3, proc-name = "idle", proc-state = ProcSleeping, proc-cpu-percent = 0, proc-mem-bytes = megabytes 1, proc-threads = 1, proc-priority = PrioIdle, proc-parent-pid = 1, proc-user = "system", proc-uptime = 100, proc-open-files = 0, proc-affinity = 1 }
+  ]
+
+Section: Update Tests
+
+  test-update : Text
+  test-update =
+    let st = pm-update-processes proc-manager-new sample-procs
+    in let t1 = assert-eq-int "count" 3 (st.pm-count)
+    in let t2 = assert-eq-int "total-cpu" 35 (st.pm-total-cpu)
+    in let t3 = assert-eq-int "total-threads" 7 (st.pm-total-threads)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Find Tests
+
+  test-find : Text
+  test-find =
+    let st = pm-update-processes proc-manager-new sample-procs
+    in let found = pm-find st 2
+    in let t1 = when found
+      is Just (p) -> assert-eq-text "find-name" "net-stack" (p.proc-name)
+      is None -> "FAIL find-pid-2: not found"
+    in let not-found = pm-find st 999
+    in let t2 = when not-found
+      is Just (p) -> "FAIL find-999: should not exist"
+      is None -> "PASS find-999-missing"
+    in t1 & "\n" & t2
+
+Section: Filter Tests
+
+  test-process-filter : Text
+  test-process-filter =
+    let st = pm-update-processes proc-manager-new sample-procs
+    in let st-filtered = pm-set-filter st "net"
+    in let visible = pm-visible st-filtered
+    in let t1 = assert-eq-int "filter-net" 1 (list-length visible)
+    in let st-all = pm-set-filter st ""
+    in let all-visible = pm-visible st-all
+    in let t2 = assert-eq-int "filter-empty" 3 (list-length all-visible)
+    in t1 & "\n" & t2
+
+Section: Sort Tests
+
+  test-sort-toggle : Text
+  test-sort-toggle =
+    let st = proc-manager-new
+    in let st1 = pm-set-sort st ProcSortCpu
+    in let t1 = assert-eq-text "sort-cpu-default-desc" "SortDesc" (when st1.pm-sort-dir is SortDesc -> "SortDesc" is SortAsc -> "SortAsc")
+    in let st2 = pm-set-sort st1 ProcSortCpu
+    in let t2 = assert-eq-text "sort-cpu-toggle-asc" "SortAsc" (when st2.pm-sort-dir is SortDesc -> "SortDesc" is SortAsc -> "SortAsc")
+    in let st3 = pm-set-sort st2 ProcSortName
+    in let t3 = assert-eq-text "sort-name-resets-desc" "SortDesc" (when st3.pm-sort-dir is SortDesc -> "SortDesc" is SortAsc -> "SortAsc")
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Select Tests
+
+  test-select : Text
+  test-select =
+    let st = pm-update-processes proc-manager-new sample-procs
+    in let st1 = pm-select st 2
+    in let t1 = assert-eq-int "selected-pid" 2 (st1.pm-selected-pid)
+    in t1
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== ProcessManager Tests ==="
+    print-line-uni test-update
+    print-line-uni test-find
+    print-line-uni test-process-filter
+    print-line-uni test-sort-toggle
+    print-line-uni test-select
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

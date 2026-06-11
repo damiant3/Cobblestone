@@ -1,0 +1,134 @@
+Chapter: Display
+  cites Foreword chapter Widget
+  cites UI chapter Render
+  cites UI chapter Surface
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Kernel chapter VgaGraphics
+  cites Kernel chapter BitmapFont
+
+ Display integration for the browser. Bridges the UI foreword's
+ Framebuf (in-memory pixel buffer) to the VBE framebuffer
+ (memory-mapped display hardware).
+
+ The UI rendering pipeline produces a Framebuf via render-tree.
+ This module copies the Framebuf contents to the VBE linear
+ framebuffer for display.
+
+Section: Types
+
+  DisplayState = record {
+    ds-gfx-mode   : GfxMode,
+    ds-width      : Integer,
+    ds-height     : Integer,
+    ds-active     : Boolean
+  }
+
+Section: Initialization
+
+  display-init : Integer, Integer -> DisplayState
+  display-init (width) (height) =
+    let mode = gfx-set-mode width height 32
+    in DisplayState {
+      ds-gfx-mode = mode,
+      ds-width = width,
+      ds-height = height,
+      ds-active = gfx-is-active mode
+    }
+
+  display-init-text-fallback : DisplayState
+  display-init-text-fallback =
+    DisplayState {
+      ds-gfx-mode = gfx-text-mode,
+      ds-width = 80,
+      ds-height = 25,
+      ds-active = False
+    }
+
+Section: Framebuf to VBE Transfer
+
+ Copy the in-memory Framebuf to the VBE hardware framebuffer.
+ Each pixel in Framebuf is a packed 32-bit XRGB value; VBE
+ expects the same format at the fb-base address.
+
+  display-present : DisplayState, Framebuf -> Integer
+  display-present (ds) (fb) =
+    if ds.ds-active
+    then display-blit-rows ds fb 0
+    else 0
+
+  display-blit-rows : DisplayState, Framebuf, Integer -> Integer
+  display-blit-rows (ds) (fb) (y) =
+    if y >= ds.ds-height then 0
+    else let w = display-blit-cols ds fb 0 y
+    in display-blit-rows ds fb (y + 1)
+
+  display-blit-cols : DisplayState, Framebuf, Integer, Integer -> Integer
+  display-blit-cols (ds) (fb) (x) (y) =
+    if x >= ds.ds-width then 0
+    else let pixel = fb-get fb x y
+    in let r = bit-and (bit-shru pixel 16) 255
+    in let g = bit-and (bit-shru pixel 8) 255
+    in let b = bit-and pixel 255
+    in let w = gfx-put-pixel ds.ds-gfx-mode x y (rgb r g b)
+    in display-blit-cols ds fb (x + 1) y
+
+Section: Dirty-Rect Transfer
+
+ Optimized transfer that only writes changed pixels within a
+ bounding rectangle.
+
+  display-present-rect : DisplayState, Framebuf, Integer, Integer, Integer, Integer -> Integer
+  display-present-rect (ds) (fb) (rx) (ry) (rw) (rh) =
+    if ds.ds-active
+    then display-blit-rect-rows ds fb rx ry (rx + rw) (ry + rh) ry
+    else 0
+
+  display-blit-rect-rows : DisplayState, Framebuf, Integer, Integer, Integer, Integer, Integer -> Integer
+  display-blit-rect-rows (ds) (fb) (x0) (y0) (x1) (y1) (y) =
+    if y >= y1 then 0
+    else let w = display-blit-rect-cols ds fb x0 y x1
+    in display-blit-rect-rows ds fb x0 y0 x1 y1 (y + 1)
+
+  display-blit-rect-cols : DisplayState, Framebuf, Integer, Integer, Integer -> Integer
+  display-blit-rect-cols (ds) (fb) (x) (y) (x1) =
+    if x >= x1 then 0
+    else let pixel = fb-get fb x y
+    in let r = bit-and (bit-shru pixel 16) 255
+    in let g = bit-and (bit-shru pixel 8) 255
+    in let b = bit-and pixel 255
+    in let w = gfx-put-pixel ds.ds-gfx-mode x y (rgb r g b)
+    in display-blit-rect-cols ds fb (x + 1) y x1
+
+Section: Text Fallback
+
+ When graphics mode is unavailable, render the browser in text
+ mode using VGA text output.
+
+  display-text-line : DisplayState, Integer, Text -> Integer
+  display-text-line (ds) (y) (text) =
+    if ds.ds-active then 0
+    else let vga-base = 753664
+    in let row-offset = y * 160
+    in display-write-text-chars vga-base row-offset text 0
+
+  display-write-text-chars : Integer, Integer, Text, Integer -> Integer
+  display-write-text-chars (base) (row-off) (text) (i) =
+    if i >= text-length text then 0
+    else if i >= 80 then 0
+    else let ch = char-code (char-at text i)
+    in let offset = row-off + i * 2
+    in let w1 = poke-byte base offset ch
+    in let w2 = poke-byte base (offset + 1) 7
+    in display-write-text-chars base row-off text (i + 1)
+
+Section: Queries
+
+  display-is-graphical : DisplayState -> Boolean
+  display-is-graphical (ds) = ds.ds-active
+
+  format-display : DisplayState -> Text
+  format-display (ds) =
+    if ds.ds-active
+    then show ds.ds-width & "x" & show ds.ds-height & " (VBE 32bpp)"
+    else "text mode (no VBE)"

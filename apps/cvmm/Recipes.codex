@@ -1,0 +1,209 @@
+Chapter: Recipes
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProductivityDb
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Recipe manager backed by the productivity database. Recipes have
+ ingredients (with quantities and units), numbered steps, tags,
+ difficulty ratings, prep/cook times, and a cook history. Categories
+ and cuisines are searchable. Favorite recipes pin to the top.
+
+Section: View Types
+
+  RecipeView =
+    | RvBrowse
+    | RvDetail (Integer)
+    | RvEdit (Integer)
+    | RvNewRecipe
+
+  MealCategory =
+    | McBreakfast
+    | McLunch
+    | McDinner
+    | McDessert
+    | McSnack
+    | McBeverage
+    | McSauce
+    | McOther
+
+  mc-label : MealCategory -> Text
+  mc-label (c) = when c
+    is McBreakfast -> "Breakfast"
+    is McLunch -> "Lunch"
+    is McDinner -> "Dinner"
+    is McDessert -> "Dessert"
+    is McSnack -> "Snack"
+    is McBeverage -> "Beverage"
+    is McSauce -> "Sauce"
+    is McOther -> "Other"
+
+  Difficulty =
+    | DiffEasy
+    | DiffMedium
+    | DiffHard
+    | DiffExpert
+
+  diff-label : Difficulty -> Text
+  diff-label (d) = when d
+    is DiffEasy -> "Easy"
+    is DiffMedium -> "Medium"
+    is DiffHard -> "Hard"
+    is DiffExpert -> "Expert"
+
+Section: Ingredient
+
+  Ingredient = record {
+    ing-name : Text,
+    ing-quantity : Text,
+    ing-unit : Text,
+    ing-optional : Boolean,
+    ing-sort : Integer
+  }
+
+  ingredient-new : Text, Text, Text, Integer -> Ingredient
+  ingredient-new (name) (qty) (unit) (sort) = Ingredient {
+    ing-name = name, ing-quantity = qty, ing-unit = unit,
+    ing-optional = False, ing-sort = sort
+  }
+
+  ingredient-label : Ingredient -> Text
+  ingredient-label (i) =
+    i.ing-quantity & " " & i.ing-unit & " " & i.ing-name & (if i.ing-optional then " (optional)" else "")
+
+Section: Recipe Step
+
+  RecipeStep = record {
+    rs-num : Integer,
+    rs-instruction : Text,
+    rs-duration-min : Integer
+  }
+
+  step-new : Integer, Text, Integer -> RecipeStep
+  step-new (num) (instruction) (dur) = RecipeStep {
+    rs-num = num, rs-instruction = instruction, rs-duration-min = dur
+  }
+
+Section: Recipe (in-memory view from DB rows)
+
+  RecipeDetail = record {
+    rd-id : Integer,
+    rd-title : Text,
+    rd-description : Text,
+    rd-category : Text,
+    rd-cuisine : Text,
+    rd-prep-min : Integer,
+    rd-cook-min : Integer,
+    rd-servings : Integer,
+    rd-difficulty : Text,
+    rd-rating : Integer,
+    rd-source : Text,
+    rd-favorite : Boolean,
+    rd-times-cooked : Integer,
+    rd-ingredients : List Ingredient,
+    rd-ingredient-count : Integer,
+    rd-steps : List RecipeStep,
+    rd-step-count : Integer,
+    rd-tags : List Text,
+    rd-tag-count : Integer
+  }
+
+  rd-total-time : RecipeDetail -> Integer
+  rd-total-time (r) = r.rd-prep-min + r.rd-cook-min
+
+  rd-format-time : RecipeDetail -> Text
+  rd-format-time (r) =
+    let total = rd-total-time r
+    in if total >= 60 then show (total / 60) & "h " & show (total - (total / 60) * 60) & "m"
+    else show total & "m"
+
+Section: Recipe App State
+
+  RecipeAppState = record {
+    ra-view : RecipeView,
+    ra-filter : Text,
+    ra-filter-cat : Text,
+    ra-filter-cuisine : Text,
+    ra-favorites-only : Boolean,
+    ra-sort-field : Text
+  }
+
+  recipe-app-new : RecipeAppState
+  recipe-app-new = RecipeAppState {
+    ra-view = RvBrowse,
+    ra-filter = "",
+    ra-filter-cat = "",
+    ra-filter-cuisine = "",
+    ra-favorites-only = False,
+    ra-sort-field = "title"
+  }
+
+  ra-set-view : RecipeAppState, RecipeView -> RecipeAppState
+  ra-set-view (st) (v) = __record-set st "ra-view" v
+
+Section: Widget Building
+
+  recipe-card : Integer, Text, Text, Text, Integer, Integer, Integer, Boolean -> WidgetNode
+  recipe-card (id) (title) (category) (cuisine) (total-min) (rating) (times) (fav) =
+    let title-lbl = widget-label ("rc-t-" & show id) title
+    in let meta = widget-label ("rc-m-" & show id) (category & " | " & cuisine & " | " & show total-min & "m")
+    in let stars = widget-gauge ("rc-r-" & show id) rating 5
+    in let cooked = widget-label ("rc-c-" & show id) ("Cooked " & show times & "x")
+    in let fav-btn = widget-button ("rc-fav-" & show id) (if fav then "Unfavorite" else "Favorite")
+    in let view-btn = widget-button ("rc-view-" & show id) "View"
+    in widget-panel ("recipe-" & show id) DirColumn 4 [title-lbl, meta, stars, cooked, widget-panel ("rc-btns-" & show id) DirRow 4 [fav-btn, view-btn]]
+
+  recipe-detail-widget : RecipeDetail -> WidgetNode
+  recipe-detail-widget (r) =
+    let header = widget-panel "rd-header" DirColumn 4 [
+      widget-label "rd-title" (r.rd-title),
+      widget-label "rd-meta" (r.rd-category & " | " & r.rd-cuisine & " | " & r.rd-difficulty),
+      widget-label "rd-time" ("Prep: " & show (r.rd-prep-min) & "m | Cook: " & show (r.rd-cook-min) & "m | Total: " & rd-format-time r),
+      widget-label "rd-servings" ("Serves " & show (r.rd-servings)),
+      widget-gauge "rd-rating" (r.rd-rating) 5
+    ]
+    in let ing-title = widget-label "rd-ing-title" "Ingredients"
+    in let ing-rows = rd-ing-rows (r.rd-ingredients) 0 (r.rd-ingredient-count) []
+    in let step-title = widget-label "rd-step-title" "Steps"
+    in let step-rows = rd-step-rows (r.rd-steps) 0 (r.rd-step-count) []
+    in let back-btn = widget-button "rd-back" "Back"
+    in let cook-btn = widget-button "rd-cook" "Mark Cooked"
+    in let edit-btn = widget-button "rd-edit" "Edit"
+    in let btns = widget-toolbar "rd-btns" [back-btn, cook-btn, edit-btn]
+    in widget-panel "recipe-detail" DirColumn 8 ([header, btns, ing-title] & ing-rows & [step-title] & step-rows)
+
+  rd-ing-rows : List Ingredient, Integer, Integer, List WidgetNode -> List WidgetNode
+  rd-ing-rows (ings) (i) (n) (acc) =
+    if i >= n then acc
+    else let ing = list-at ings i
+    in let row = widget-panel ("ing-" & show i) DirRow 8 [
+      widget-label ("iq-" & show i) (ing.ing-quantity & " " & ing.ing-unit),
+      widget-label ("in-" & show i) (ing.ing-name),
+      widget-label ("io-" & show i) (if ing.ing-optional then "(optional)" else "")
+    ]
+    in rd-ing-rows ings (i + 1) n (list-push acc row)
+
+  rd-step-rows : List RecipeStep, Integer, Integer, List WidgetNode -> List WidgetNode
+  rd-step-rows (steps) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at steps i
+    in let row = widget-panel ("step-" & show i) DirRow 8 [
+      widget-label ("sn-" & show i) (show (s.rs-num) & "."),
+      widget-label ("si-" & show i) (s.rs-instruction),
+      widget-label ("sd-" & show i) (if s.rs-duration-min > 0 then show (s.rs-duration-min) & "m" else "")
+    ]
+    in rd-step-rows steps (i + 1) n (list-push acc row)
+
+  recipe-app-widget : RecipeAppState -> WidgetNode
+  recipe-app-widget (st) =
+    let title = widget-label "ra-title" "Recipes"
+    in let filter = widget-input "ra-filter" (st.ra-filter) (text-length (st.ra-filter))
+    in let fav-btn = widget-button "ra-fav-only" (if st.ra-favorites-only then "Show All" else "Favorites")
+    in let new-btn = widget-button "ra-new" "New Recipe"
+    in let toolbar = widget-toolbar "ra-toolbar" [filter, fav-btn, new-btn]
+    in widget-panel "recipe-app" DirColumn 4 [title, toolbar]
+
+Page 1

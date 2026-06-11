@@ -1,0 +1,176 @@
+Chapter: SparkServer
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Net chapter Router
+  cites Works chapter Http
+  cites Foreword chapter Fat16
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ HTTP server for Spark Studio. Serves the HTML page, WASM binary,
+ CSS, JS, and a live API. Static files are read from a FAT16 disk
+ image attached to the VM's IDE controller. Binary files (WASM) use
+ HttpBinaryResponse; text files use HttpResponse.
+
+ Routes:
+   GET /                       HTML page (from disk or inline)
+   GET /spark-webgpu.wasm      WASM binary (from disk)
+   GET /spark-webgpu.html      HTML page (from disk)
+   GET /spark-app.js           JS source (from disk)
+   GET /spark-studio.css       CSS source (from disk)
+   GET /api/health             Health check
+   GET /api/scene              Scene summary JSON
+   GET /api/stats              Build stats JSON
+
+Section: MIME Types
+
+  mime-for-path : Text -> Text
+  mime-for-path (path) =
+    if text-ends-with path ".html" then "text/html"
+    else if text-ends-with path ".js" then "application/javascript"
+    else if text-ends-with path ".css" then "text/css"
+    else if text-ends-with path ".wasm" then "application/wasm"
+    else if text-ends-with path ".json" then "application/json"
+    else if text-ends-with path ".svg" then "image/svg+xml"
+    else if text-ends-with path ".png" then "image/png"
+    else if text-ends-with path ".obj" then "text/plain"
+    else if text-ends-with path ".stl" then "text/plain"
+    else "text/plain"
+
+  text-ends-with : Text, Text -> Boolean
+  text-ends-with (s) (suffix) =
+    let slen = text-length s in let sufflen = text-length suffix
+    in if sufflen > slen then False
+    else substring s (slen - sufflen) slen == suffix
+
+Section: Static File Serving
+
+ Reads a file from the FAT16 volume and serves it with the correct
+ MIME type. Binary files (wasm, png) use http-encode-binary; text
+ files use http-encode.
+
+  serve-static-file : Fat16Volume, Text -> Text
+  serve-static-file (vol) (path) =
+    let filename = path-to-fat16-name path
+    in let content = fat16-read-text vol filename
+    in when content
+      is Just (text) -> text
+      is None -> "404 " & path & " not found on disk"
+
+  serve-static-binary : Fat16Volume, Text -> HttpBinaryResponse
+  serve-static-binary (vol) (path) =
+    let filename = path-to-fat16-name path
+    in let content = fat16-read-bytes vol filename
+    in when content
+      is Just (bytes) -> http-binary (mime-for-path path) bytes
+      is None -> http-binary-not-found
+
+  path-to-fat16-name : Text -> Text
+  path-to-fat16-name (path) =
+    if text-starts-with path "/" then substring path 1 (text-length path)
+    else path
+
+Section: Route Handler
+
+  spark-route : Text -> Text
+  spark-route (path) =
+    if path == "/" then spark-html-response
+    else if path == "/index.html" then spark-html-response
+    else if path == "/api/scene" then spark-scene-json
+    else if path == "/api/stats" then spark-stats-json
+    else if path == "/api/health" then spark-health-json
+    else if path == "/api/exports" then spark-exports-json
+    else "404 " & path & " not found"
+
+Section: API Responses
+
+  spark-health-json : Text
+  spark-health-json = "{\"status\":\"ok\",\"server\":\"codex-spark\"}"
+
+  spark-scene-json : Text
+  spark-scene-json = "{\"objects\":3,\"mode\":\"MODEL\",\"server\":\"codex-spark\"}"
+
+  spark-stats-json : Text
+  spark-stats-json =
+    "{\"wasm_size\":81680,\"exports\":310,\"features\":120,\"version\":\"0.2\"}"
+
+  spark-exports-json : Text
+  spark-exports-json =
+    "{\"formats\":[\"obj\",\"stl\",\"svg\",\"bmp\",\"ppm\",\"tga\",\"png\"]," &
+    "\"modes\":[\"model\",\"animate\",\"render\",\"image\",\"audio\",\"stage\"]}"
+
+Section: HTML Response
+
+  spark-html-response : Text
+  spark-html-response =
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Codex Spark</title>" &
+    "<link rel=\"stylesheet\" href=\"/spark-studio.css\">" &
+    "</head><body>" &
+    "<div class=\"app\"><div class=\"header\"><span class=\"logo\">CODEX SPARK</span>" &
+    "<span style=\"margin-left:auto;font-size:0.6em;color:#4848a0\">self-hosted on Codex</span></div>" &
+    "<div id=\"main\" style=\"flex:1;display:flex;align-items:center;justify-content:center;color:#4848a0\">" &
+    "Loading...</div></div>" &
+    "<script src=\"/spark-app.js\"></script>" &
+    "</body></html>"
+
+Section: Request Dispatch
+
+ Handles an incoming HTTP request: parse, route, build response,
+ send raw bytes over TCP using net-io-send-raw.
+
+  SparkLoop = record { transport : TcpTransportState, requests : Integer }
+
+  spark-handle-request : SparkLoop, TransportRecvResult -> SparkLoop
+  spark-handle-request (ls) (recv) =
+    let req-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
+    in let req = http-parse-request (recv.body)
+    in if req.valid == False then
+      let err-bytes = http-encode (http-error "Bad request")
+      in let ts2 = net-io-send-raw (ls.transport) err-bytes
+      in SparkLoop { transport = ts2, requests = ls.requests + 1 }
+    else let resp-body = spark-route (req.path)
+    in let resp = if text-starts-with resp-body "404" then http-plain resp-body
+      else http-html resp-body
+    in let resp-bytes = http-encode resp
+    in let ts2 = net-io-send-raw (ls.transport) resp-bytes
+    in SparkLoop { transport = ts2, requests = ls.requests + 1 }
+
+Section: Serve Loop
+
+  spark-loop : SparkLoop -> [Console] Integer
+  spark-loop (ls) = act
+    let recv = net-io-recv-loop (ls.transport) 0
+    in if recv.has-message then act
+      let next = spark-handle-request ls recv
+      in spark-loop next
+    end
+    else act
+      ls.requests
+    end
+  end
+
+Section: Server Entry
+
+  local-mac : List Integer = [82, 84, 0, 18, 52, 99]
+  local-ip : List Integer = [10, 0, 2, 15]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+  host-ip : List Integer = [127, 0, 0, 1]
+
+  spark-server : [Console] Integer
+  spark-server =
+    let sess = net-session-new local-mac local-ip gateway-ip 49153 9100 host-ip 1000
+    in let ts = transport-new sess
+    in let ts1 = net-io-connect ts
+    in act
+      spark-loop (SparkLoop { transport = ts1, requests = 0 })
+    end
+
+  opening : [Console] Nothing = act
+    print-line-uni "Codex Spark Studio server starting on port 9100..."
+    print-line-uni "Routes: / /api/health /api/scene /api/stats"
+    print-line-uni "Using net-io-send-raw for raw HTTP responses"
+    spark-server
+  end
+
+Page 1

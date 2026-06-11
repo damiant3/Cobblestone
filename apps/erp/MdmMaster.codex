@@ -1,0 +1,201 @@
+Chapter: MdmMaster
+  cites ERP chapter ErpTypes
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+  cites Foreword chapter Hamt
+
+ Master Data Management: golden record creation, data quality rules,
+ duplicate detection, cross-system synchronization, data governance,
+ and change request workflows.
+
+Section: Master Data Domains
+
+  MasterDomain =
+    | DomCustomer
+    | DomVendor
+    | DomMaterial
+    | DomEmployee
+    | DomAccount
+    | DomCostCenter
+    | DomAsset
+
+  domain-name : MasterDomain -> Text
+  domain-name (d) =
+    when d
+      is DomCustomer -> "Customer"
+      is DomVendor -> "Vendor"
+      is DomMaterial -> "Material"
+      is DomEmployee -> "Employee"
+      is DomAccount -> "Account"
+      is DomCostCenter -> "Cost Center"
+      is DomAsset -> "Asset"
+
+  MasterRecord = record {
+    mdr-id : Text,
+    mdr-domain : MasterDomain,
+    mdr-key : Text,
+    mdr-fields : List MdrField,
+    mdr-source-systems : List Text,
+    mdr-golden : Boolean,
+    mdr-quality-score : Integer,
+    mdr-last-updated : Integer,
+    mdr-created : Integer
+  }
+
+  MdrField = record {
+    mf-name : Text,
+    mf-value : Text,
+    mf-source : Text,
+    mf-confidence : Integer,
+    mf-last-verified : Integer
+  }
+
+Section: Data Quality Rules
+
+  QualityRule = record {
+    qr-id : Text,
+    qr-name : Text,
+    qr-domain : MasterDomain,
+    qr-field : Text,
+    qr-type : QualityRuleType,
+    qr-severity : Text,
+    qr-active : Boolean
+  }
+
+  QualityRuleType =
+    | Required
+    | UniqueCheck
+    | FormatCheck (Text)
+    | RangeCheck (Integer) (Integer)
+    | ReferenceCheck (Text)
+    | ConsistencyCheck (Text) (Text)
+    | CompletenessCheck (Integer)
+    | CustomRule (Text)
+
+  QualityResult = record {
+    qres-record-id : Text,
+    qres-rule-id : Text,
+    qres-passed : Boolean,
+    qres-message : Text,
+    qres-checked : Integer
+  }
+
+  standard-quality-rules : List QualityRule
+  standard-quality-rules = [
+    QualityRule { qr-id = "cust-name-req", qr-name = "Customer name required", qr-domain = DomCustomer, qr-field = "name", qr-type = Required, qr-severity = "critical", qr-active = True },
+    QualityRule { qr-id = "cust-email-fmt", qr-name = "Customer email format", qr-domain = DomCustomer, qr-field = "email", qr-type = FormatCheck "email", qr-severity = "high", qr-active = True },
+    QualityRule { qr-id = "vnd-taxid-unq", qr-name = "Vendor tax ID unique", qr-domain = DomVendor, qr-field = "tax_id", qr-type = UniqueCheck, qr-severity = "critical", qr-active = True },
+    QualityRule { qr-id = "mat-cost-rng", qr-name = "Material cost range", qr-domain = DomMaterial, qr-field = "standard_cost", qr-type = RangeCheck 0 100000000, qr-severity = "medium", qr-active = True },
+    QualityRule { qr-id = "emp-complete", qr-name = "Employee 80% complete", qr-domain = DomEmployee, qr-field = "*", qr-type = CompletenessCheck 80, qr-severity = "high", qr-active = True }
+  ]
+
+  calc-quality-score : List QualityResult -> Integer
+  calc-quality-score (results) =
+    let total = list-length results
+    in if total == 0 then 100
+    else let passed = count-passed-rules results 0 0
+    in passed * 100 / total
+
+  count-passed-rules : List QualityResult, Integer, Integer -> Integer
+  count-passed-rules (results) (i) (acc) =
+    if i >= list-length results then acc
+    else count-passed-rules results (i + 1) (if (list-at results i).qres-passed then acc + 1 else acc)
+
+Section: Duplicate Detection
+
+  DuplicateCandidate = record {
+    dc-record-a : Text,
+    dc-record-b : Text,
+    dc-confidence : Integer,
+    dc-matched-fields : List Text,
+    dc-status : DupStatus
+  }
+
+  DupStatus =
+    | DupPending
+    | DupConfirmed
+    | DupRejected
+    | DupMerged
+
+  MatchStrategy =
+    | ExactMatch
+    | FuzzyMatch (Integer)
+    | PhoneticMatch
+    | AddressMatch
+    | CompositeMatch (List MatchStrategy)
+
+Section: Cross-System Sync
+
+  SourceSystem = record {
+    ss-id : Text,
+    ss-name : Text,
+    ss-type : Text,
+    ss-endpoint : Text,
+    ss-api-key : Text,
+    ss-last-sync : Integer,
+    ss-sync-direction : SyncDirection,
+    ss-active : Boolean
+  }
+
+  SyncDirection =
+    | Inbound
+    | Outbound
+    | Bidirectional
+
+  SyncJob = record {
+    sj-id : Text,
+    sj-source : Text,
+    sj-domain : MasterDomain,
+    sj-records-processed : Integer,
+    sj-records-created : Integer,
+    sj-records-updated : Integer,
+    sj-records-errored : Integer,
+    sj-started : Integer,
+    sj-completed : Integer,
+    sj-status : Text
+  }
+
+Section: Change Requests
+
+  ChangeRequest = record {
+    cr2-id : Text,
+    cr2-domain : MasterDomain,
+    cr2-record-id : Text,
+    cr2-field : Text,
+    cr2-old-value : Text,
+    cr2-new-value : Text,
+    cr2-reason : Text,
+    cr2-requested-by : Text,
+    cr2-approved-by : Text,
+    cr2-status : CrStatus,
+    cr2-created : Integer,
+    cr2-approved-date : Integer
+  }
+
+  CrStatus =
+    | CrPending
+    | CrApproved
+    | CrRejected
+    | CrApplied
+
+Section: Data Stewardship
+
+  DataSteward = record {
+    ds-user-id : Text,
+    ds-domains : List MasterDomain,
+    ds-assigned-records : Integer,
+    ds-resolved-issues : Integer,
+    ds-avg-resolution-days : Integer
+  }
+
+  DataGovernanceKpi = record {
+    dgk-domain : Text,
+    dgk-total-records : Integer,
+    dgk-golden-pct : Integer,
+    dgk-quality-score : Integer,
+    dgk-duplicate-pct : Integer,
+    dgk-completeness-pct : Integer,
+    dgk-timeliness-pct : Integer,
+    dgk-pending-changes : Integer
+  }

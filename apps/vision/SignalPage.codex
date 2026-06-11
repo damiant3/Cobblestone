@@ -1,0 +1,112 @@
+Chapter: SignalPage
+  cites Vision chapter VisionTypes
+  cites Vision chapter VisionSignal
+  cites Vision chapter VisionCascade
+  cites Vision chapter VisionTheme
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Signal feed page. Shows active signals sorted by weight and
+ recency. Each signal card displays author, weight badge, domain,
+ content preview, cascade status, and age. Clicking a signal
+ shows its full cascade chain with holds and responses.
+
+Section: Signal Feed
+
+  signal-feed-widget : SignalStore, CascadeState, Integer -> WidgetNode
+  signal-feed-widget (store) (cascade) (now) =
+    let active = ss-active store
+    in let title = widget-label "sf-title" "Signal Feed"
+    in let count-lbl = widget-label "sf-count" (show (list-length active) & " active signals")
+    in let cards = signal-cards active cascade now 0 (list-length active) []
+    in widget-panel "signal-feed" DirColumn 4 ([title, count-lbl] & cards)
+
+  signal-cards : List Signal, CascadeState, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  signal-cards (signals) (cascade) (now) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at signals i
+    in let card = signal-card s cascade now
+    in signal-cards signals cascade now (i + 1) len (list-push acc card)
+
+Section: Signal Card
+
+  signal-card : Signal, CascadeState, Integer -> WidgetNode
+  signal-card (s) (cascade) (now) =
+    let weight-badge = widget-label ("sig-w-" & show s.sig-id)
+          (weight-label s.sig-weight)
+    in let author-lbl = widget-label ("sig-a-" & show s.sig-id)
+          s.sig-author
+    in let domain-lbl = widget-label ("sig-d-" & show s.sig-id)
+          (if text-length s.sig-domain > 0 then "[" & s.sig-domain & "]" else "")
+    in let content-preview = widget-label ("sig-c-" & show s.sig-id)
+          (text-take s.sig-content 80)
+    in let age-lbl = widget-label ("sig-age-" & show s.sig-id)
+          (show (signal-age-days s now) & "d ago")
+    in let state-lbl = widget-label ("sig-st-" & show s.sig-id)
+          (sig-state-label s.sig-state)
+    in let holds = cascade-holds-for-signal cascade s.sig-id
+    in let hold-lbl = widget-label ("sig-h-" & show s.sig-id)
+          (show (list-length holds) & " holds")
+    in let header = widget-panel ("sig-hdr-" & show s.sig-id) DirRow 8
+          [weight-badge, author-lbl, domain-lbl, age-lbl]
+    in let body = widget-panel ("sig-body-" & show s.sig-id) DirRow 8
+          [content-preview]
+    in let footer = widget-panel ("sig-ftr-" & show s.sig-id) DirRow 8
+          [state-lbl, hold-lbl]
+    in widget-panel ("sig-" & show s.sig-id) DirColumn 2 [header, body, footer]
+
+Section: Signal Detail
+
+  signal-detail-widget : Signal, CascadeState, Integer -> WidgetNode
+  signal-detail-widget (s) (cascade) (now) =
+    let header = widget-label "sd-title" (weight-label s.sig-weight & ": " & text-take s.sig-content 60)
+    in let author = widget-label "sd-author" ("From: " & s.sig-author)
+    in let domain = widget-label "sd-domain" ("Domain: " & s.sig-domain)
+    in let state = widget-label "sd-state" ("Status: " & sig-state-label s.sig-state)
+    in let content = widget-label "sd-content" s.sig-content
+    in let holds = cascade-holds-for-signal cascade s.sig-id
+    in let hold-widgets = hold-list-widgets holds now 0 (list-length holds) []
+    in let responses = cascade-responses-for cascade s.sig-id
+    in let resp-widgets = response-list-widgets responses 0 (list-length responses) []
+    in let cascade-section = widget-panel "sd-cascade" DirColumn 4
+          (widget-label "sd-cascade-title" "Cascade" :: hold-widgets)
+    in let response-section = widget-panel "sd-responses" DirColumn 4
+          (widget-label "sd-resp-title" "Responses" :: resp-widgets)
+    in widget-panel "signal-detail" DirColumn 8
+      [header, author, domain, state, content, cascade-section, response-section]
+
+Section: Hold List
+
+  hold-list-widgets : List Hold, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  hold-list-widgets (holds) (now) (i) (len) (acc) =
+    if i >= len then acc
+    else let h = list-at holds i
+    in let w = hold-widget h now
+    in hold-list-widgets holds now (i + 1) len (list-push acc w)
+
+  hold-widget : Hold, Integer -> WidgetNode
+  hold-widget (h) (now) =
+    let holder-lbl = widget-label ("hld-who-" & show h.hld-id) h.hld-holder
+    in let tier-lbl = widget-label ("hld-tier-" & show h.hld-id) ("Tier " & show h.hld-tier)
+    in let action-lbl = widget-label ("hld-act-" & show h.hld-id) (hold-action-label h.hld-action)
+    in let overdue = if hold-is-overdue h now
+          then widget-label ("hld-od-" & show h.hld-id) (show (hold-days-overdue h now) & "d overdue")
+          else widget-label ("hld-od-" & show h.hld-id) ""
+    in widget-panel ("hld-" & show h.hld-id) DirRow 8 [tier-lbl, holder-lbl, action-lbl, overdue]
+
+Section: Response List
+
+  response-list-widgets : List Response, Integer, Integer, List WidgetNode -> List WidgetNode
+  response-list-widgets (rsps) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at rsps i
+    in let w = response-widget r
+    in response-list-widgets rsps (i + 1) len (list-push acc w)
+
+  response-widget : Response -> WidgetNode
+  response-widget (r) =
+    let kind-lbl = widget-label ("rsp-k-" & show r.rsp-id) (rsp-kind-label r.rsp-kind)
+    in let author-lbl = widget-label ("rsp-a-" & show r.rsp-id) r.rsp-author
+    in let summary-lbl = widget-label ("rsp-s-" & show r.rsp-id) r.rsp-summary
+    in let conf-lbl = widget-label ("rsp-c-" & show r.rsp-id) ("Confidence: " & show r.rsp-confidence & "%")
+    in widget-panel ("rsp-" & show r.rsp-id) DirColumn 2 [kind-lbl, author-lbl, summary-lbl, conf-lbl]

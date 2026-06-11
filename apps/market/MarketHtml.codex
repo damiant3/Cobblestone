@@ -1,0 +1,300 @@
+Chapter: MarketHtml
+  cites Market chapter MarketTypes
+  cites Foreword chapter List
+
+ HTML generation for the Market storefront and admin panel. Every
+ page is rendered server-side as complete HTML. The same rendering
+ functions are called by the MAUI plug to produce native UI.
+
+Section: Page Shell
+
+  html-page : Text, Text, Text, Text -> Text
+  html-page (title) (accent) (nav) (body) =
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" & title & "</title><style>" & market-css accent & "</style></head><body>" & nav & "<main>" & body & "</main></body></html>"
+
+  market-css : Text -> Text
+  market-css (accent) =
+    "*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,system-ui,sans-serif;background:#fafafa;color:#1a1a1a;line-height:1.5}" &
+    "a{color:" & accent & ";text-decoration:none}a:hover{text-decoration:underline}" &
+    "main{max-width:1200px;margin:0 auto;padding:24px}" &
+    ".nav{background:#fff;border-bottom:1px solid #e5e5e5;padding:12px 24px;display:flex;align-items:center;gap:24px}" &
+    ".nav-brand{font-size:1.2em;font-weight:700;color:" & accent & "}" &
+    ".nav-link{font-size:0.9em;color:#666}.nav-link:hover{color:" & accent & "}" &
+    ".nav-right{margin-left:auto;display:flex;gap:16px;align-items:center}" &
+    ".btn{display:inline-block;padding:8px 20px;background:" & accent & ";color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.9em}.btn:hover{opacity:0.9}" &
+    ".btn-outline{background:transparent;color:" & accent & ";border:1px solid " & accent & "}" &
+    ".card{background:#fff;border-radius:8px;border:1px solid #e5e5e5;overflow:hidden}" &
+    ".card:hover{box-shadow:0 4px 12px rgba(0,0,0,0.08)}" &
+    ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:20px}" &
+    ".product-img{width:100%;aspect-ratio:1;background:#f0f0f0;display:flex;align-items:center;justify-content:center;font-size:3em;color:#ccc}" &
+    ".product-info{padding:16px}" &
+    ".product-name{font-size:1em;font-weight:600;margin-bottom:4px}" &
+    ".product-price{font-size:1.1em;font-weight:700;color:" & accent & "}" &
+    ".product-desc{font-size:0.85em;color:#666;margin-top:8px}" &
+    ".badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:0.75em;background:#e5e5e5}" &
+    ".badge-active{background:#dcfce7;color:#166534}" &
+    ".badge-draft{background:#fef3c7;color:#92400e}" &
+    ".form-group{margin-bottom:16px}.form-group label{display:block;font-size:0.85em;font-weight:600;margin-bottom:4px}" &
+    ".form-input{width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:0.9em}" &
+    ".table{width:100%;border-collapse:collapse}.table th,.table td{padding:10px 12px;text-align:left;border-bottom:1px solid #e5e5e5}" &
+    ".table th{font-size:0.8em;text-transform:uppercase;color:#666;font-weight:600}" &
+    ".swatch{display:inline-block;width:20px;height:20px;border-radius:50%;border:2px solid #e5e5e5;cursor:pointer}" &
+    ".swatch.active{border-color:" & accent & "}" &
+    ".option-row{display:flex;gap:8px;align-items:center;margin:8px 0}" &
+    ".option-label{font-size:0.85em;font-weight:600;min-width:60px}" &
+    ".cart-item{display:flex;gap:16px;padding:16px 0;border-bottom:1px solid #e5e5e5}" &
+    ".cart-summary{background:#fff;padding:20px;border-radius:8px;border:1px solid #e5e5e5}" &
+    ".section-title{font-size:1.3em;font-weight:700;margin-bottom:16px}" &
+    ".admin-sidebar{width:220px;background:#fff;border-right:1px solid #e5e5e5;padding:16px;min-height:100vh}" &
+    ".admin-body{flex:1;padding:24px}.admin-layout{display:flex}" &
+    "footer{text-align:center;padding:40px;font-size:0.8em;color:#999}"
+
+Section: Navigation
+
+  nav-bar : StoreConfig, Maybe Session -> Text
+  nav-bar (cfg) (sess) =
+    "<nav class=\"nav\"><span class=\"nav-brand\">" & cfg.store-name & "</span>" &
+    "<a class=\"nav-link\" href=\"/\">Shop</a>" &
+    "<a class=\"nav-link\" href=\"/catalog\">Catalog</a>" &
+    "<div class=\"nav-right\">" &
+    "<a class=\"nav-link\" href=\"/cart\">Cart</a>" &
+    (when sess
+      is Just (s) ->
+        "<a class=\"nav-link\" href=\"/account\">" & s.sess-user-id & "</a>" &
+        (if s.sess-role == RoleAdmin then "<a class=\"nav-link\" href=\"/admin\">Admin</a>" else "") &
+        "<a class=\"nav-link\" href=\"/logout\">Logout</a>"
+      is None -> "<a class=\"nav-link\" href=\"/login\">Login</a><a class=\"nav-link\" href=\"/register\">Register</a>") &
+    "</div></nav>"
+
+Section: Product Card
+
+  product-card : Product -> Text
+  product-card (p) =
+    "<div class=\"card\"><a href=\"/product/" & p.product-slug & "\">" &
+    "<div class=\"product-img\">" &
+    (if text-length (p.product-image-url) > 0 then "<img src=\"" & p.product-image-url & "\" style=\"width:100%;height:100%;object-fit:cover\">" else "\x1f4e6") &
+    "</div><div class=\"product-info\">" &
+    "<div class=\"product-name\">" & p.product-name & "</div>" &
+    "<div class=\"product-price\">" & format-money (p.product-price) & "</div>" &
+    option-summary (p.product-options) &
+    "</div></a></div>"
+
+  option-summary : List OptionDef -> Text
+  option-summary (opts) =
+    if list-length opts == 0 then ""
+    else "<div style=\"margin-top:6px\">" & option-summary-loop opts 0 & "</div>"
+
+  option-summary-loop : List OptionDef, Integer -> Text
+  option-summary-loop (opts) (i) =
+    if i >= list-length opts then ""
+    else let opt = list-at opts i
+    in let count = list-length (opt.option-choices)
+    in "<span class=\"badge\">" & show count & " " & opt.option-name & "</span> " & option-summary-loop opts (i + 1)
+
+Section: Product Grid
+
+  product-grid : List Product -> Text
+  product-grid (products) =
+    "<div class=\"grid\">" & product-grid-loop products 0 & "</div>"
+
+  product-grid-loop : List Product, Integer -> Text
+  product-grid-loop (products) (i) =
+    if i >= list-length products then ""
+    else product-card (list-at products i) & product-grid-loop products (i + 1)
+
+Section: Product Detail Page
+
+  product-detail : Product, List Variant -> Text
+  product-detail (p) (variants) =
+    "<div style=\"display:flex;gap:32px;flex-wrap:wrap\">" &
+    "<div style=\"flex:1;min-width:300px\"><div class=\"product-img\" style=\"font-size:6em;border-radius:8px\">" &
+    (if text-length (p.product-image-url) > 0 then "<img src=\"" & p.product-image-url & "\" style=\"width:100%;height:100%;object-fit:cover;border-radius:8px\">" else "\x1f4e6") &
+    "</div></div>" &
+    "<div style=\"flex:1;min-width:300px\">" &
+    "<h1 style=\"font-size:1.8em;margin-bottom:8px\">" & p.product-name & "</h1>" &
+    "<div class=\"product-price\" style=\"font-size:1.5em;margin-bottom:16px\">" & format-money (p.product-price) & "</div>" &
+    "<p class=\"product-desc\" style=\"font-size:1em;margin-bottom:24px\">" & p.product-desc & "</p>" &
+    render-options (p.product-options) &
+    "<div style=\"margin-top:24px;display:flex;gap:12px\">" &
+    "<button class=\"btn\" onclick=\"addToCart('" & p.product-id & "')\">Add to Cart</button>" &
+    "<button class=\"btn btn-outline\">Wishlist</button>" &
+    "</div>" &
+    variant-table variants &
+    "</div></div>"
+
+  render-options : List OptionDef -> Text
+  render-options (opts) = render-options-loop opts 0
+
+  render-options-loop : List OptionDef, Integer -> Text
+  render-options-loop (opts) (i) =
+    if i >= list-length opts then ""
+    else render-one-option (list-at opts i) & render-options-loop opts (i + 1)
+
+  render-one-option : OptionDef -> Text
+  render-one-option (opt) =
+    "<div class=\"option-row\"><span class=\"option-label\">" & opt.option-name & "</span>" &
+    render-choices (opt.option-choices) (opt.option-id) &
+    "</div>"
+
+  render-choices : List OptionChoice, Text -> Text
+  render-choices (choices) (opt-id) = render-choices-loop choices opt-id 0
+
+  render-choices-loop : List OptionChoice, Text, Integer -> Text
+  render-choices-loop (choices) (opt-id) (i) =
+    if i >= list-length choices then ""
+    else let ch = list-at choices i
+    in (if text-length (ch.choice-swatch) > 0 then
+      "<span class=\"swatch\" style=\"background:" & ch.choice-swatch & "\" title=\"" & ch.choice-label & "\" onclick=\"selectOption('" & opt-id & "','" & ch.choice-id & "')\"></span>"
+    else
+      "<button class=\"btn btn-outline\" style=\"padding:4px 12px;font-size:0.8em\" onclick=\"selectOption('" & opt-id & "','" & ch.choice-id & "')\">" & ch.choice-label &
+      (if ch.choice-price-adj /= 0 then " (+" & format-money (money-usd (ch.choice-price-adj)) & ")" else "") &
+      "</button>") &
+    render-choices-loop choices opt-id (i + 1)
+
+  variant-table : List Variant -> Text
+  variant-table (vars) =
+    if list-length vars == 0 then ""
+    else "<div style=\"margin-top:24px\"><div class=\"section-title\">Variants</div>" &
+    "<table class=\"table\"><thead><tr><th>SKU</th><th>Stock</th><th>Price</th></tr></thead><tbody>" &
+    variant-rows vars 0 &
+    "</tbody></table></div>"
+
+  variant-rows : List Variant, Integer -> Text
+  variant-rows (vars) (i) =
+    if i >= list-length vars then ""
+    else let v = list-at vars i
+    in "<tr><td>" & v.variant-sku & "</td><td>" & show (v.variant-stock) & "</td><td>" &
+    (when v.variant-price-override is Just (p) -> format-money p is None -> "base") &
+    "</td></tr>" & variant-rows vars (i + 1)
+
+Section: Cart Page
+
+  cart-page : Cart, StoreConfig -> Text
+  cart-page (cart) (cfg) =
+    "<div class=\"section-title\">Shopping Cart</div>" &
+    (if list-length (cart.cart-items) == 0 then
+      "<p style=\"color:#666;padding:40px 0;text-align:center\">Your cart is empty. <a href=\"/\">Start shopping</a></p>"
+    else
+      "<div>" & cart-items-html (cart.cart-items) 0 &
+      "<div class=\"cart-summary\" style=\"margin-top:20px\">" &
+      "<div style=\"display:flex;justify-content:space-between;font-size:1.1em\"><span>Subtotal</span><span style=\"font-weight:700\">" & format-money (cart-subtotal cart) & "</span></div>" &
+      "<div style=\"margin-top:16px\"><a class=\"btn\" href=\"/checkout\">Proceed to Checkout</a></div>" &
+      "</div></div>")
+
+  cart-items-html : List CartItem, Integer -> Text
+  cart-items-html (items) (i) =
+    if i >= list-length items then ""
+    else let item = list-at items i
+    in "<div class=\"cart-item\">" &
+    "<div style=\"flex:1\"><div style=\"font-weight:600\">" & item.ci-product-id & "</div>" &
+    "<div style=\"font-size:0.85em;color:#666\">" & item.ci-variant-id & "</div></div>" &
+    "<div style=\"text-align:right\">" &
+    "<div>" & format-money (item.ci-unit-price) & " x " & show (item.ci-quantity) & "</div>" &
+    "<div style=\"font-weight:700\">" & format-money (money-mul (item.ci-unit-price) (item.ci-quantity)) & "</div>" &
+    "</div></div>" &
+    cart-items-html items (i + 1)
+
+Section: Login / Register Forms
+
+  login-page : Text -> Text
+  login-page (error-msg) =
+    "<div style=\"max-width:400px;margin:60px auto\">" &
+    "<div class=\"section-title\">Login</div>" &
+    (if text-length error-msg > 0 then "<div style=\"color:#dc2626;margin-bottom:12px\">" & error-msg & "</div>" else "") &
+    "<form method=\"POST\" action=\"/login\">" &
+    "<div class=\"form-group\"><label>Email</label><input class=\"form-input\" name=\"email\" type=\"email\" required></div>" &
+    "<div class=\"form-group\"><label>Password</label><input class=\"form-input\" name=\"password\" type=\"password\" required></div>" &
+    "<button class=\"btn\" type=\"submit\">Login</button>" &
+    "</form>" &
+    "<p style=\"margin-top:16px;font-size:0.9em\">No account? <a href=\"/register\">Register</a></p>" &
+    "</div>"
+
+  register-page : Text -> Text
+  register-page (error-msg) =
+    "<div style=\"max-width:400px;margin:60px auto\">" &
+    "<div class=\"section-title\">Create Account</div>" &
+    (if text-length error-msg > 0 then "<div style=\"color:#dc2626;margin-bottom:12px\">" & error-msg & "</div>" else "") &
+    "<form method=\"POST\" action=\"/register\">" &
+    "<div class=\"form-group\"><label>Name</label><input class=\"form-input\" name=\"name\" required></div>" &
+    "<div class=\"form-group\"><label>Email</label><input class=\"form-input\" name=\"email\" type=\"email\" required></div>" &
+    "<div class=\"form-group\"><label>Password</label><input class=\"form-input\" name=\"password\" type=\"password\" required></div>" &
+    "<button class=\"btn\" type=\"submit\">Register</button>" &
+    "</form>" &
+    "<p style=\"margin-top:16px;font-size:0.9em\">Already have an account? <a href=\"/login\">Login</a></p>" &
+    "</div>"
+
+Section: Admin Dashboard
+
+  admin-page : Text, Text -> Text
+  admin-page (sidebar) (content) =
+    "<div class=\"admin-layout\">" &
+    "<div class=\"admin-sidebar\">" &
+    "<div style=\"font-weight:700;margin-bottom:16px\">Admin</div>" &
+    "<a class=\"nav-link\" href=\"/admin\" style=\"display:block;padding:6px 0\">Dashboard</a>" &
+    "<a class=\"nav-link\" href=\"/admin/products\" style=\"display:block;padding:6px 0\">Products</a>" &
+    "<a class=\"nav-link\" href=\"/admin/orders\" style=\"display:block;padding:6px 0\">Orders</a>" &
+    "<a class=\"nav-link\" href=\"/admin/users\" style=\"display:block;padding:6px 0\">Users</a>" &
+    "<a class=\"nav-link\" href=\"/admin/settings\" style=\"display:block;padding:6px 0\">Settings</a>" &
+    sidebar &
+    "</div>" &
+    "<div class=\"admin-body\">" & content & "</div>" &
+    "</div>"
+
+  admin-dashboard : Integer, Integer, Money -> Text
+  admin-dashboard (order-count) (product-count) (revenue) =
+    "<div class=\"section-title\">Dashboard</div>" &
+    "<div class=\"grid\" style=\"grid-template-columns:repeat(3,1fr)\">" &
+    stat-card "Orders" (show order-count) &
+    stat-card "Products" (show product-count) &
+    stat-card "Revenue" (format-money revenue) &
+    "</div>"
+
+  stat-card : Text, Text -> Text
+  stat-card (label) (value) =
+    "<div class=\"card\" style=\"padding:20px;text-align:center\">" &
+    "<div style=\"font-size:2em;font-weight:700;color:#2563eb\">" & value & "</div>" &
+    "<div style=\"font-size:0.85em;color:#666;margin-top:4px\">" & label & "</div></div>"
+
+  admin-product-list : List Product -> Text
+  admin-product-list (products) =
+    "<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:20px\">" &
+    "<div class=\"section-title\" style=\"margin-bottom:0\">Products</div>" &
+    "<a class=\"btn\" href=\"/admin/products/new\">+ New Product</a></div>" &
+    "<table class=\"table\"><thead><tr><th>Name</th><th>Price</th><th>Status</th><th>Options</th><th>Actions</th></tr></thead><tbody>" &
+    admin-product-rows products 0 &
+    "</tbody></table>"
+
+  admin-product-rows : List Product, Integer -> Text
+  admin-product-rows (products) (i) =
+    if i >= list-length products then ""
+    else let p = list-at products i
+    in let status-badge = when p.product-status
+      is Active -> "<span class=\"badge badge-active\">Active</span>"
+      is Draft -> "<span class=\"badge badge-draft\">Draft</span>"
+      is Archived -> "<span class=\"badge\">Archived</span>"
+    in "<tr><td><a href=\"/admin/products/" & p.product-id & "\">" & p.product-name & "</a></td>" &
+    "<td>" & format-money (p.product-price) & "</td>" &
+    "<td>" & status-badge & "</td>" &
+    "<td>" & show (list-length (p.product-options)) & " options</td>" &
+    "<td><a href=\"/admin/products/" & p.product-id & "/edit\">Edit</a></td></tr>" &
+    admin-product-rows products (i + 1)
+
+Section: Order List
+
+  admin-order-list : List Order -> Text
+  admin-order-list (orders) =
+    "<div class=\"section-title\">Orders</div>" &
+    "<table class=\"table\"><thead><tr><th>Order</th><th>Customer</th><th>Total</th><th>Status</th><th>Date</th></tr></thead><tbody>" &
+    admin-order-rows orders 0 &
+    "</tbody></table>"
+
+  admin-order-rows : List Order, Integer -> Text
+  admin-order-rows (orders) (i) =
+    if i >= list-length orders then ""
+    else let o = list-at orders i
+    in "<tr><td><a href=\"/admin/orders/" & o.order-id & "\">" & o.order-id & "</a></td>" &
+    "<td>" & o.order-user-id & "</td>" &
+    "<td>" & format-money (o.order-total) & "</td>" &
+    "<td><span class=\"badge\">" & order-status-name (o.order-status) & "</span></td>" &
+    "<td>" & show (o.order-created) & "</td></tr>" &
+    admin-order-rows orders (i + 1)

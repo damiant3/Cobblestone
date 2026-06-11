@@ -1,0 +1,225 @@
+Chapter: ServerManager
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Managed server orchestration. Deploy and control web servers, reverse
+ proxies, DNS servers, DHCP servers, and custom services. Each managed
+ server has a configuration, an endpoint, health checks, and logs.
+ This is how you run infrastructure on codex.OS — not by editing
+ config files but by declaring intent through the manager.
+
+Section: Server Type
+
+  ManagedServerType =
+    | MsWebServer
+    | MsReverseProxy
+    | MsDnsServer
+    | MsDhcpServer
+    | MsFileServer
+    | MsCustom (Text)
+
+  ms-type-label : ManagedServerType -> Text
+  ms-type-label (t) = when t
+    is MsWebServer -> "Web Server"
+    is MsReverseProxy -> "Reverse Proxy"
+    is MsDnsServer -> "DNS Server"
+    is MsDhcpServer -> "DHCP Server"
+    is MsFileServer -> "File Server"
+    is MsCustom (name) -> name
+
+Section: Health Check
+
+  HealthCheckType =
+    | HcHttp (Text)
+    | HcTcp (Integer)
+    | HcPing
+    | HcCustom (Text)
+
+  hc-type-label : HealthCheckType -> Text
+  hc-type-label (h) = when h
+    is HcHttp (path) -> "HTTP " & path
+    is HcTcp (port) -> "TCP " & show port
+    is HcPing -> "Ping"
+    is HcCustom (cmd) -> cmd
+
+  HealthCheckResult = record {
+    hcr-ok : Boolean,
+    hcr-latency-ms : Integer,
+    hcr-message : Text,
+    hcr-timestamp : Integer
+  }
+
+Section: Proxy Route
+
+  ProxyRoute = record {
+    pr-path : Text,
+    pr-upstream : Text,
+    pr-method : Text,
+    pr-strip-prefix : Boolean,
+    pr-timeout-ms : Integer,
+    pr-request-count : Integer
+  }
+
+Section: Managed Server
+
+  ManagedServer = record {
+    ms-id : Text,
+    ms-name : Text,
+    ms-type : ManagedServerType,
+    ms-endpoint : Endpoint,
+    ms-status : ResourceStatus,
+    ms-pid : Integer,
+    ms-uptime : Integer,
+    ms-request-count : Integer,
+    ms-error-count : Integer,
+    ms-health-check : HealthCheckType,
+    ms-last-health : HealthCheckResult,
+    ms-config : List Text,
+    ms-config-count : Integer,
+    ms-routes : List ProxyRoute,
+    ms-route-count : Integer,
+    ms-log-lines : List Text,
+    ms-log-count : Integer,
+    ms-auto-restart : Boolean,
+    ms-max-connections : Integer
+  }
+
+  managed-server-new : Text, Text, ManagedServerType, Endpoint -> ManagedServer
+  managed-server-new (id) (name) (stype) (ep) = ManagedServer {
+    ms-id = id,
+    ms-name = name,
+    ms-type = stype,
+    ms-endpoint = ep,
+    ms-status = StatusOffline,
+    ms-pid = 0,
+    ms-uptime = 0,
+    ms-request-count = 0,
+    ms-error-count = 0,
+    ms-health-check = HcTcp (ep.ep-port),
+    ms-last-health = HealthCheckResult { hcr-ok = False, hcr-latency-ms = 0, hcr-message = "", hcr-timestamp = 0 },
+    ms-config = [],
+    ms-config-count = 0,
+    ms-routes = [],
+    ms-route-count = 0,
+    ms-log-lines = [],
+    ms-log-count = 0,
+    ms-auto-restart = True,
+    ms-max-connections = 1000
+  }
+
+  ms-add-route : ManagedServer, ProxyRoute -> ManagedServer
+  ms-add-route (s) (r) =
+    __record-set (__record-set s "ms-routes" (list-push (s.ms-routes) r)) "ms-route-count" (s.ms-route-count + 1)
+
+  ms-add-log : ManagedServer, Text -> ManagedServer
+  ms-add-log (s) (line) =
+    __record-set (__record-set s "ms-log-lines" (list-push (s.ms-log-lines) line)) "ms-log-count" (s.ms-log-count + 1)
+
+  ms-error-rate : ManagedServer -> Integer
+  ms-error-rate (s) =
+    if s.ms-request-count == 0 then 0
+    else s.ms-error-count * 100 / s.ms-request-count
+
+Section: Server Manager State
+
+  ServerManagerState = record {
+    svr-servers : List ManagedServer,
+    svr-count : Integer,
+    svr-selected : Text,
+    svr-filter : Text
+  }
+
+  server-manager-new : ServerManagerState
+  server-manager-new = ServerManagerState {
+    svr-servers = [],
+    svr-count = 0,
+    svr-selected = "",
+    svr-filter = ""
+  }
+
+Section: Actions
+
+  svr-add : ServerManagerState, ManagedServer -> ServerManagerState
+  svr-add (st) (s) =
+    __record-set (__record-set st "svr-servers" (list-push (st.svr-servers) s)) "svr-count" (st.svr-count + 1)
+
+  svr-select : ServerManagerState, Text -> ServerManagerState
+  svr-select (st) (id) = __record-set st "svr-selected" id
+
+  svr-find : ServerManagerState, Text -> Maybe ManagedServer
+  svr-find (st) (id) = svr-find-loop (st.svr-servers) id 0 (st.svr-count)
+
+  svr-find-loop : List ManagedServer, Text, Integer, Integer -> Maybe ManagedServer
+  svr-find-loop (svrs) (id) (i) (n) =
+    if i >= n then None
+    else let s = list-at svrs i
+    in if s.ms-id == id then Just s
+    else svr-find-loop svrs id (i + 1) n
+
+  svr-update-status : ServerManagerState, Text, ResourceStatus -> ServerManagerState
+  svr-update-status (st) (id) (status) =
+    let updated = svr-update-loop (st.svr-servers) id status 0 (st.svr-count) []
+    in __record-set st "svr-servers" updated
+
+  svr-update-loop : List ManagedServer, Text, ResourceStatus, Integer, Integer, List ManagedServer -> List ManagedServer
+  svr-update-loop (svrs) (id) (status) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at svrs i
+    in if s.ms-id == id then svr-update-loop svrs id status (i + 1) n (list-push acc (__record-set s "ms-status" status))
+    else svr-update-loop svrs id status (i + 1) n (list-push acc s)
+
+  svr-healthy-count : ServerManagerState -> Integer
+  svr-healthy-count (st) = svr-count-healthy (st.svr-servers) 0 (st.svr-count) 0
+
+  svr-count-healthy : List ManagedServer, Integer, Integer, Integer -> Integer
+  svr-count-healthy (svrs) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if status-is-healthy ((list-at svrs i).ms-status) then 1 else 0
+    in svr-count-healthy svrs (i + 1) n (acc + delta)
+
+Section: Widget Building
+
+  svr-row : ManagedServer -> WidgetNode
+  svr-row (s) =
+    let name = widget-label (s.ms-id & "-name") (s.ms-name)
+    in let stype = widget-label (s.ms-id & "-type") (ms-type-label (s.ms-type))
+    in let ep = widget-label (s.ms-id & "-ep") (format-endpoint (s.ms-endpoint))
+    in let status-lbl = widget-label (s.ms-id & "-status") (status-label (s.ms-status))
+    in let reqs = widget-label (s.ms-id & "-reqs") (show (s.ms-request-count) & " reqs")
+    in let errs = widget-label (s.ms-id & "-errs") (show (ms-error-rate s) & "% err")
+    in let up = widget-label (s.ms-id & "-up") (format-uptime (Uptime { ut-seconds = s.ms-uptime }))
+    in let start-btn = widget-button (s.ms-id & "-start") "Start"
+    in let stop-btn = widget-button (s.ms-id & "-stop") "Stop"
+    in widget-panel s.ms-id DirRow 8 [name, stype, ep, status-lbl, reqs, errs, up, start-btn, stop-btn]
+
+  svr-widget : ServerManagerState -> WidgetNode
+  svr-widget (st) =
+    let title = widget-label "svr-title" "Servers"
+    in let healthy = svr-healthy-count st
+    in let summary = widget-label "svr-summary" (show healthy & "/" & show (st.svr-count) & " healthy")
+    in let add-btn = widget-button "svr-add" "Deploy New"
+    in let rows = svr-rows (st.svr-servers) 0 (st.svr-count) []
+    in widget-panel "server-manager" DirColumn 4 ([title, summary, add-btn] & rows)
+
+  svr-rows : List ManagedServer, Integer, Integer, List WidgetNode -> List WidgetNode
+  svr-rows (svrs) (i) (n) (acc) =
+    if i >= n then acc
+    else svr-rows svrs (i + 1) n (list-push acc (svr-row (list-at svrs i)))
+
+Section: JSON
+
+  managed-server-to-json : ManagedServer -> Text
+  managed-server-to-json (s) =
+    "{\"id\":\"" & s.ms-id & "\",\"name\":\"" & s.ms-name
+    & "\",\"type\":\"" & ms-type-label (s.ms-type)
+    & "\",\"endpoint\":\"" & format-endpoint (s.ms-endpoint)
+    & "\",\"status\":\"" & status-label (s.ms-status)
+    & "\",\"requests\":" & show (s.ms-request-count)
+    & ",\"errors\":" & show (s.ms-error-count)
+    & ",\"uptime\":" & show (s.ms-uptime)
+    & ",\"autoRestart\":" & if s.ms-auto-restart then "true" else "false"
+    & "}"
+
+Page 1

@@ -96,6 +96,8 @@ Section: Record Types
    vm-profile : VmProfile,
    poison-alloc : Boolean,
    trace-alloc : Boolean,
+   stack-guard : Boolean,
+   omit-frame-pointer : Boolean,
    stype-sites : List Integer
   }
 
@@ -168,7 +170,7 @@ Section: Constants
 
   bare-metal-load-addr : Integer = 1048576
 
-  bare-metal-ram-size : Integer = 2147483648
+  bare-metal-ram-size : Integer = 3221225472
 
   bare-metal-stack-top : Integer = bare-metal-ram-size
 
@@ -341,6 +343,8 @@ Section: State Helpers
     vm-profile = st.vm-profile,
     poison-alloc = st.poison-alloc,
     trace-alloc = st.trace-alloc,
+    stack-guard = st.stack-guard,
+    omit-frame-pointer = st.omit-frame-pointer,
     stype-sites = st.stype-sites
    }
 
@@ -394,6 +398,8 @@ Section: Register Allocation
   store-local (st) (local) (value-reg) =
    if local < spill-base then if local == value-reg then st
    else st-append-code st (mov-rr local value-reg)
+   else if st.omit-frame-pointer then let offset = (local - spill-base) * 8
+   in st-append-code st (mov-store reg-rsp value-reg offset)
    else let offset = -((local - spill-base + 1) * 8 + 32)
    in st-append-code st (mov-store reg-rbp value-reg offset)
 
@@ -411,8 +417,10 @@ Section: Register Allocation
    reg = local
   }
    else let scratch = load-local-scratch-for (st.load-local-toggle)
-   in let offset = -((local - spill-base + 1) * 8 + 32)
-   in let st1 = st-append-code st (mov-load scratch reg-rbp offset)
+   in let offset = if st.omit-frame-pointer then (local - spill-base) * 8
+   else -((local - spill-base + 1) * 8 + 32)
+   in let base-reg = if st.omit-frame-pointer then reg-rsp else reg-rbp
+   in let st1 = st-append-code st (mov-load scratch base-reg offset)
    in EmitResult {
    state = __record-set st1 "load-local-toggle" (st.load-local-toggle + 1),
    reg = scratch

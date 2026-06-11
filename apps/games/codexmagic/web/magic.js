@@ -40,7 +40,7 @@ async function ensureAccount() {
     authToken = tok;
     var me = await authCall('/me?t=' + encodeURIComponent(tok));
     if (me && me.handle) {
-      currentAccount = { name: me.display || me.handle, handle: me.handle, 'account-id': me.id || 0, admin: me.admin === true || me.admin === 'true', rating: 1000, rank: 'Bronze', balance: 0 };
+      currentAccount = { name: me.adorned || me.display || me.handle, handle: me.handle, 'account-id': me.id || 0, admin: !!me.admin, rating: 1000, rank: 'Bronze', balance: 0 };
       updateAccountBar();
       await refreshProfile();
       return currentAccount;
@@ -171,9 +171,13 @@ async function doRegister() {
   var r = await authCall('/register?u=' + encodeURIComponent(h) + '&d=' + encodeURIComponent(d) + '&p=' + encodeURIComponent(p));
   if (r && r.token) {
     setStoredToken(r.token);
-    currentAccount = { name: r.display || d, handle: r.handle || h, 'account-id': r.id || 0, 'pw-score': r['pw-score'], tfa: r.tfa, rating: 1000, rank: 'Bronze', balance: 0 };
+    currentAccount = { name: r.display || d, handle: r.handle || h, 'account-id': r.id || 0, 'pw-score': r['pw-score'], tfa: r.tfa, rating: 1000, rank: 'Bronze', balance: r.starterBalance || 0 };
     document.getElementById('login-overlay').remove();
     updateAccountBar();
+    if (r.starterGrant) {
+      setTimeout(function() { alert('Welcome to CodexMagic!\n\nYou received:\n  500 Mana Coin\n  ' + (r.starterCards || 15) + ' starter cards\n\nVisit the Store to buy more packs, or check your Collection!'); }, 200);
+    }
+    await refreshBalance();
     if (typeof onAccountReady === 'function') onAccountReady();
   } else {
     msg.textContent = (r && r.error) || 'Registration failed';
@@ -188,7 +192,10 @@ var _headerPages = [
   { href: '/game.html', label: 'Game' },
   { href: '/collection.html', label: 'Collection' },
   { href: '/store.html', label: 'Store' },
-  { href: '/queue.html', label: 'Queue' }
+  { href: '/marketplace.html', label: 'Market' },
+  { href: '/clan.html', label: 'Clan' },
+  { href: '/queue.html', label: 'Queue' },
+  { href: '/decktest.html', label: 'Test' }
 ];
 
 function buildHeader() {
@@ -239,12 +246,13 @@ async function refreshProfile() {
   if (data && data.handle) {
     currentAccount.balance = data.balance || 0;
     currentAccount.subscription = data.subscription || 'Free';
+    currentAccount.name = data.adorned || data.display || currentAccount.handle;
     currentAccount.tokens = data.tokens || 0;
     currentAccount.wins = data.wins || 0;
     currentAccount.losses = data.losses || 0;
     currentAccount.rating = data.rating || 1000;
     currentAccount.rank = data.rank || 'Bronze';
-    currentAccount.admin = data.admin === true || data.admin === 'true';
+    currentAccount.admin = !!data.admin;
     currentAccount['pw-score'] = data['pw-score'];
     currentAccount['pw-label'] = data['pw-label'];
     updateAccountBar();
@@ -268,14 +276,22 @@ function lifeClass(life, max) {
   return 'critical';
 }
 
+var _phaseNames = null;
 function phaseName(step) {
-  var names = {
-    0: 'Untap', 1: 'Upkeep', 2: 'Draw',
-    3: 'Pre-combat Main', 4: 'Declare Attackers', 5: 'Declare Blockers',
-    6: 'Combat Damage', 7: 'End Combat', 8: 'Post-combat Main',
-    9: 'Cleanup'
-  };
-  return names[step] || 'Unknown';
+  if (!_phaseNames) {
+    _phaseNames = {
+      0: 'Untap', 1: 'Upkeep', 2: 'Draw',
+      3: 'Pre-combat Main', 4: 'Declare Attackers', 5: 'Declare Blockers',
+      6: 'Combat Damage', 7: 'End Combat', 8: 'Post-combat Main',
+      9: 'Cleanup'
+    };
+  }
+  return _phaseNames[step] || 'Unknown';
+}
+function loadPhaseNames(phases) {
+  if (!phases) return;
+  _phaseNames = {};
+  phases.forEach(function(p) { _phaseNames[p.step] = p.name; });
 }
 
 function addLog(msg, cls) {

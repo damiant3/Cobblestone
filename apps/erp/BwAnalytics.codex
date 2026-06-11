@@ -1,0 +1,296 @@
+Chapter: BwAnalytics
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+  cites ERP chapter FinControlling
+  cites ERP chapter SdSales
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+  cites Foreword chapter Hamt
+
+ Business Warehouse / Analytics: OLAP-style reporting, KPI
+ dashboards, data extraction, star-schema modeling, and executive
+ summaries across all ERP modules.
+
+Section: Star Schema
+
+  Dimension = record {
+    dim-id : Text,
+    dim-name : Text,
+    dim-hierarchy : List DimLevel,
+    dim-members : List DimMember
+  }
+
+  DimLevel = record {
+    dl-name : Text,
+    dl-sort-order : Integer
+  }
+
+  DimMember = record {
+    dm-key : Text,
+    dm-label : Text,
+    dm-parent : Text,
+    dm-level : Text,
+    dm-attributes : List DimAttr
+  }
+
+  DimAttr = record {
+    da-name : Text,
+    da-value : Text
+  }
+
+  FactTable = record {
+    ft-name : Text,
+    ft-dimensions : List Text,
+    ft-measures : List MeasureDef,
+    ft-rows : List FactRow
+  }
+
+  MeasureDef = record {
+    md-name : Text,
+    md-type : MeasureType,
+    md-format : Text
+  }
+
+  MeasureType =
+    | MsSum
+    | MsCount
+    | MsAvg
+    | MsMin
+    | MsMax
+
+  FactRow = record {
+    fr-dim-keys : List Text,
+    fr-measures : List Integer
+  }
+
+Section: Standard Dimensions
+
+  time-dimension : Dimension
+  time-dimension = Dimension {
+    dim-id = "time",
+    dim-name = "Time",
+    dim-hierarchy = [
+      DimLevel { dl-name = "Year", dl-sort-order = 1 },
+      DimLevel { dl-name = "Quarter", dl-sort-order = 2 },
+      DimLevel { dl-name = "Month", dl-sort-order = 3 }
+    ],
+    dim-members = []
+  }
+
+  company-dimension : Dimension
+  company-dimension = Dimension {
+    dim-id = "company",
+    dim-name = "Company",
+    dim-hierarchy = [DimLevel { dl-name = "Company", dl-sort-order = 1 }],
+    dim-members = []
+  }
+
+  product-dimension : Dimension
+  product-dimension = Dimension {
+    dim-id = "product",
+    dim-name = "Product",
+    dim-hierarchy = [
+      DimLevel { dl-name = "Category", dl-sort-order = 1 },
+      DimLevel { dl-name = "Product", dl-sort-order = 2 }
+    ],
+    dim-members = []
+  }
+
+  region-dimension : Dimension
+  region-dimension = Dimension {
+    dim-id = "region",
+    dim-name = "Region",
+    dim-hierarchy = [
+      DimLevel { dl-name = "Country", dl-sort-order = 1 },
+      DimLevel { dl-name = "State", dl-sort-order = 2 },
+      DimLevel { dl-name = "City", dl-sort-order = 3 }
+    ],
+    dim-members = []
+  }
+
+Section: KPI Definitions
+
+  KpiDef = record {
+    kd-id : Text,
+    kd-name : Text,
+    kd-category : KpiCategory,
+    kd-formula : Text,
+    kd-unit : Text,
+    kd-target : Integer,
+    kd-threshold-green : Integer,
+    kd-threshold-yellow : Integer,
+    kd-direction : KpiDirection
+  }
+
+  KpiCategory =
+    | KcFinancial
+    | KcOperational
+    | KcCustomer
+    | KcEmployee
+    | KcQuality
+    | KcSupplyChain
+
+  KpiDirection =
+    | HigherBetter
+    | LowerBetter
+    | TargetBetter
+
+  KpiValue = record {
+    kv-kpi-id : Text,
+    kv-value : Integer,
+    kv-target : Integer,
+    kv-prior-value : Integer,
+    kv-trend : Trend,
+    kv-status : KpiStatus,
+    kv-period : Integer
+  }
+
+  Trend =
+    | TrendUp
+    | TrendDown
+    | TrendFlat
+
+  KpiStatus =
+    | KpiGreen
+    | KpiYellow
+    | KpiRed
+
+  eval-kpi-status : KpiDef, Integer -> KpiStatus
+  eval-kpi-status (def) (value) =
+    when def.kd-direction
+      is HigherBetter ->
+        if value >= def.kd-threshold-green then KpiGreen
+        else if value >= def.kd-threshold-yellow then KpiYellow
+        else KpiRed
+      is LowerBetter ->
+        if value <= def.kd-threshold-green then KpiGreen
+        else if value <= def.kd-threshold-yellow then KpiYellow
+        else KpiRed
+      is TargetBetter ->
+        let diff = if value >= def.kd-target then value - def.kd-target else def.kd-target - value
+        in if diff * 100 / (if def.kd-target == 0 then 1 else def.kd-target) <= 5 then KpiGreen
+        else if diff * 100 / (if def.kd-target == 0 then 1 else def.kd-target) <= 15 then KpiYellow
+        else KpiRed
+
+Section: Standard KPIs
+
+  financial-kpis : List KpiDef
+  financial-kpis = [
+    KpiDef { kd-id = "revenue", kd-name = "Revenue", kd-category = KcFinancial, kd-formula = "sum(sales)", kd-unit = "USD", kd-target = 10000000, kd-threshold-green = 9000000, kd-threshold-yellow = 7500000, kd-direction = HigherBetter },
+    KpiDef { kd-id = "gross-margin", kd-name = "Gross Margin %", kd-category = KcFinancial, kd-formula = "(revenue-cogs)/revenue*100", kd-unit = "%", kd-target = 45, kd-threshold-green = 40, kd-threshold-yellow = 30, kd-direction = HigherBetter },
+    KpiDef { kd-id = "net-income", kd-name = "Net Income", kd-category = KcFinancial, kd-formula = "revenue-expenses", kd-unit = "USD", kd-target = 2000000, kd-threshold-green = 1500000, kd-threshold-yellow = 1000000, kd-direction = HigherBetter },
+    KpiDef { kd-id = "dso", kd-name = "Days Sales Outstanding", kd-category = KcFinancial, kd-formula = "ar/daily-sales", kd-unit = "days", kd-target = 30, kd-threshold-green = 35, kd-threshold-yellow = 45, kd-direction = LowerBetter },
+    KpiDef { kd-id = "current-ratio", kd-name = "Current Ratio", kd-category = KcFinancial, kd-formula = "current-assets/current-liab", kd-unit = "x", kd-target = 200, kd-threshold-green = 150, kd-threshold-yellow = 100, kd-direction = HigherBetter }
+  ]
+
+  operational-kpis : List KpiDef
+  operational-kpis = [
+    KpiDef { kd-id = "otd", kd-name = "On-Time Delivery %", kd-category = KcOperational, kd-formula = "on-time-shipments/total-shipments*100", kd-unit = "%", kd-target = 95, kd-threshold-green = 93, kd-threshold-yellow = 88, kd-direction = HigherBetter },
+    KpiDef { kd-id = "inventory-turns", kd-name = "Inventory Turns", kd-category = KcSupplyChain, kd-formula = "cogs/avg-inventory", kd-unit = "x", kd-target = 8, kd-threshold-green = 6, kd-threshold-yellow = 4, kd-direction = HigherBetter },
+    KpiDef { kd-id = "fill-rate", kd-name = "Order Fill Rate %", kd-category = KcSupplyChain, kd-formula = "filled-lines/total-lines*100", kd-unit = "%", kd-target = 98, kd-threshold-green = 96, kd-threshold-yellow = 92, kd-direction = HigherBetter },
+    KpiDef { kd-id = "oee", kd-name = "OEE %", kd-category = KcOperational, kd-formula = "availability*performance*quality", kd-unit = "%", kd-target = 85, kd-threshold-green = 80, kd-threshold-yellow = 70, kd-direction = HigherBetter },
+    KpiDef { kd-id = "scrap-rate", kd-name = "Scrap Rate %", kd-category = KcQuality, kd-formula = "scrap-qty/total-qty*100", kd-unit = "%", kd-target = 1, kd-threshold-green = 2, kd-threshold-yellow = 5, kd-direction = LowerBetter }
+  ]
+
+Section: Executive Dashboard
+
+  ExecDashboard = record {
+    ed-company : Text,
+    ed-period : Text,
+    ed-revenue : Integer,
+    ed-gross-margin-pct : Integer,
+    ed-net-income : Integer,
+    ed-cash-position : Integer,
+    ed-ar-balance : Integer,
+    ed-ap-balance : Integer,
+    ed-inventory-value : Integer,
+    ed-headcount : Integer,
+    ed-open-orders : Integer,
+    ed-kpis : List KpiValue,
+    ed-alerts : List DashboardAlert
+  }
+
+  DashboardAlert = record {
+    dal-severity : Text,
+    dal-module : Text,
+    dal-message : Text
+  }
+
+  build-exec-dashboard : GlState, Integer, Integer, Integer, Integer, Integer, Integer, List KpiValue -> ExecDashboard
+  build-exec-dashboard (gl) (cash) (ar) (ap) (inv-val) (headcount) (open-orders) (kpis) =
+    ExecDashboard {
+      ed-company = gl.gl-company,
+      ed-period = "",
+      ed-revenue = total-revenue gl,
+      ed-gross-margin-pct = if total-revenue gl == 0 then 0 else (total-revenue gl - total-expenses gl) * 100 / total-revenue gl,
+      ed-net-income = net-income gl,
+      ed-cash-position = cash,
+      ed-ar-balance = ar,
+      ed-ap-balance = ap,
+      ed-inventory-value = inv-val,
+      ed-headcount = headcount,
+      ed-open-orders = open-orders,
+      ed-kpis = kpis,
+      ed-alerts = []
+    }
+
+Section: Report Definitions
+
+  ReportDef = record {
+    rpt-id : Text,
+    rpt-name : Text,
+    rpt-category : Text,
+    rpt-columns : List ReportColumn,
+    rpt-filters : List ReportFilter,
+    rpt-sort-by : Text,
+    rpt-group-by : Text
+  }
+
+  ReportColumn = record {
+    rc-field : Text,
+    rc-label : Text,
+    rc-width : Integer,
+    rc-format : Text,
+    rc-align : Text
+  }
+
+  ReportFilter = record {
+    rf-field : Text,
+    rf-operator : Text,
+    rf-value : Text
+  }
+
+  standard-reports : List ReportDef
+  standard-reports = [
+    ReportDef { rpt-id = "trial-balance", rpt-name = "Trial Balance", rpt-category = "FI",
+      rpt-columns = [ReportColumn { rc-field = "account", rc-label = "Account", rc-width = 120, rc-format = "text", rc-align = "left" }, ReportColumn { rc-field = "name", rc-label = "Name", rc-width = 200, rc-format = "text", rc-align = "left" }, ReportColumn { rc-field = "debit", rc-label = "Debit", rc-width = 120, rc-format = "currency", rc-align = "right" }, ReportColumn { rc-field = "credit", rc-label = "Credit", rc-width = 120, rc-format = "currency", rc-align = "right" }],
+      rpt-filters = [], rpt-sort-by = "account", rpt-group-by = "" },
+    ReportDef { rpt-id = "ap-aging", rpt-name = "AP Aging Summary", rpt-category = "FI",
+      rpt-columns = [ReportColumn { rc-field = "vendor", rc-label = "Vendor", rc-width = 200, rc-format = "text", rc-align = "left" }, ReportColumn { rc-field = "current", rc-label = "Current", rc-width = 100, rc-format = "currency", rc-align = "right" }, ReportColumn { rc-field = "30", rc-label = "1-30", rc-width = 100, rc-format = "currency", rc-align = "right" }, ReportColumn { rc-field = "60", rc-label = "31-60", rc-width = 100, rc-format = "currency", rc-align = "right" }, ReportColumn { rc-field = "90", rc-label = "61-90", rc-width = 100, rc-format = "currency", rc-align = "right" }, ReportColumn { rc-field = "over90", rc-label = "90+", rc-width = 100, rc-format = "currency", rc-align = "right" }],
+      rpt-filters = [], rpt-sort-by = "vendor", rpt-group-by = "" },
+    ReportDef { rpt-id = "sales-by-product", rpt-name = "Sales by Product", rpt-category = "SD",
+      rpt-columns = [ReportColumn { rc-field = "product", rc-label = "Product", rc-width = 200, rc-format = "text", rc-align = "left" }, ReportColumn { rc-field = "qty", rc-label = "Qty Sold", rc-width = 80, rc-format = "number", rc-align = "right" }, ReportColumn { rc-field = "revenue", rc-label = "Revenue", rc-width = 120, rc-format = "currency", rc-align = "right" }, ReportColumn { rc-field = "margin", rc-label = "Margin %", rc-width = 80, rc-format = "percent", rc-align = "right" }],
+      rpt-filters = [], rpt-sort-by = "revenue", rpt-group-by = "product" }
+  ]
+
+Section: Data Extraction
+
+  ExtractDef = record {
+    ext-id : Text,
+    ext-source : Text,
+    ext-schedule : Text,
+    ext-last-run : Integer,
+    ext-row-count : Integer,
+    ext-status : Text
+  }
+
+  ExtractLog = record {
+    el-extract-id : Text,
+    el-run-date : Integer,
+    el-rows-extracted : Integer,
+    el-rows-loaded : Integer,
+    el-duration-secs : Integer,
+    el-status : Text,
+    el-error-msg : Text
+  }

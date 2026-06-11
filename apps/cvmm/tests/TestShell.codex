@@ -1,0 +1,109 @@
+Chapter: TestShell
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter CvmmState
+
+ Unit tests for the shell: navigation, notifications, sidebar toggle,
+ and state transitions.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) =
+    if val then "PASS " & label
+    else "FAIL " & label & ": expected True"
+
+  assert-false : Text, Boolean -> Text
+  assert-false (label) (val) =
+    if val then "FAIL " & label & ": expected False"
+    else "PASS " & label
+
+Section: Navigation Tests
+
+  test-navigate : Text
+  test-navigate =
+    let st = app-state-new
+    in let t1 = assert-eq-text "initial-view" "Dashboard" (view-id-label (st.app-view))
+    in let st2 = app-navigate st ViewFileExplorer
+    in let t2 = assert-eq-text "nav-files" "Files" (view-id-label (st2.app-view))
+    in let t3 = assert-eq-int "nav-depth-1" 1 (st2.app-nav-depth)
+    in let st3 = app-navigate st2 ViewProcessManager
+    in let t4 = assert-eq-text "nav-procs" "Processes" (view-id-label (st3.app-view))
+    in let t5 = assert-eq-int "nav-depth-2" 2 (st3.app-nav-depth)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+  test-go-back : Text
+  test-go-back =
+    let st = app-state-new
+    in let st2 = app-navigate st ViewFileExplorer
+    in let st3 = app-navigate st2 ViewDriveManager
+    in let st4 = app-go-back st3
+    in let t1 = assert-eq-text "back-to-files" "Files" (view-id-label (st4.app-view))
+    in let t2 = assert-eq-int "back-depth" 1 (st4.app-nav-depth)
+    in let st5 = app-go-back st4
+    in let t3 = assert-eq-text "back-to-dash" "Dashboard" (view-id-label (st5.app-view))
+    in let st6 = app-go-back st5
+    in let t4 = assert-eq-text "back-at-root" "Dashboard" (view-id-label (st6.app-view))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Notification Tests
+
+  test-notifications : Text
+  test-notifications =
+    let st = app-state-new
+    in let t1 = assert-eq-int "no-notifs" 0 (st.app-notif-count)
+    in let st2 = app-notify st NotifInfo "Test" "Hello"
+    in let t2 = assert-eq-int "one-notif" 1 (st2.app-notif-count)
+    in let st3 = app-notify st2 NotifError "Error" "Oh no"
+    in let t3 = assert-eq-int "two-notifs" 2 (st3.app-notif-count)
+    in let st4 = app-dismiss-notif st3 1
+    in let t4 = assert-eq-int "dismissed-one" 1 (st4.app-notif-count)
+    in let st5 = app-dismiss-notif st4 999
+    in let t5 = assert-eq-int "dismiss-nonexistent" 1 (st5.app-notif-count)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Sidebar Tests
+
+  test-sidebar : Text
+  test-sidebar =
+    let st = app-state-new
+    in let t1 = assert-true "sidebar-open-default" (st.app-sidebar-open)
+    in let st2 = app-toggle-sidebar st
+    in let t2 = assert-false "sidebar-closed" (st2.app-sidebar-open)
+    in let st3 = app-toggle-sidebar st2
+    in let t3 = assert-true "sidebar-reopened" (st3.app-sidebar-open)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: View ID Labels
+
+  test-view-labels : Text
+  test-view-labels =
+    let t1 = assert-eq-text "dashboard-label" "Dashboard" (view-id-label ViewDashboard)
+    in let t2 = assert-eq-text "files-label" "Files" (view-id-label ViewFileExplorer)
+    in let t3 = assert-eq-text "drives-label" "Drives" (view-id-label ViewDriveManager)
+    in let t4 = assert-eq-text "fleet-label" "Fleet" (view-id-label ViewFleetManager)
+    in let t5 = assert-eq-text "settings-label" "Settings" (view-id-label ViewSettings)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== Shell Tests ==="
+    print-line-uni test-navigate
+    print-line-uni test-go-back
+    print-line-uni test-notifications
+    print-line-uni test-sidebar
+    print-line-uni test-view-labels
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

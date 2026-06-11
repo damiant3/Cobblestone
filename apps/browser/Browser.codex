@@ -1,0 +1,763 @@
+Chapter: Browser
+  cites Foreword chapter Widget
+  cites Foreword chapter Layout
+  cites Foreword chapter Render
+  cites Foreword chapter Surface
+  cites Foreword chapter Event
+  cites Foreword chapter Window
+  cites Foreword chapter Scroll
+  cites Foreword chapter RichText
+  cites Foreword chapter TextField
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites UI chapter Theme
+  cites Browser chapter Tab
+  cites Browser chapter AddressBar
+  cites Browser chapter BrowserTheme
+  cites Browser chapter BrowserEvent
+  cites Browser chapter ContentAddress
+  cites Browser chapter PageRuntime
+  cites Browser chapter TrustManager
+  cites Browser chapter PageSandbox
+  cites Browser chapter ContentCache
+  cites Browser chapter Display
+  cites Browser chapter MediaPlayer
+  cites Browser chapter AudioOutput
+  cites Browser chapter History
+  cites Foreword chapter CCE
+  cites Foreword chapter Parse
+  cites Game chapter Rasterizer
+
+ The main browser module. Owns the full browser state, renders
+ the chrome (tab bar, address bar, trust indicator, page viewport),
+ composes surfaces, dispatches events, and drives the render loop.
+
+Section: State
+
+  BrowserState = record {
+    bs-tabs          : List Tab,
+    bs-active-tab    : Integer,
+    bs-address-bar   : AddressBarState,
+    bs-window-width  : Integer,
+    bs-window-height : Integer,
+    bs-theme         : Theme,
+    bs-compositor    : Compositor,
+    bs-next-tab-id   : Integer,
+    bs-trust-store   : TrustStore,
+    bs-sandbox       : SandboxConfig,
+    bs-cache         : ContentCacheState,
+    bs-focus         : BrowserFocus,
+    bs-dirty         : Boolean,
+    bs-show-trust-prompt : Boolean,
+    bs-pending-trust : Maybe PendingTrust,
+    bs-display       : DisplayState,
+    bs-history       : BrowsingHistory
+  }
+
+  BrowserFocus =
+    | FocusAddressBar
+    | FocusPageContent
+    | FocusTrustPrompt
+    | FocusTabBar
+
+  PendingTrust = record {
+    pt-address   : Text,
+    pt-publisher : Maybe (List Integer),
+    pt-tier      : CapabilityTier,
+    pt-effects   : List Text
+  }
+
+Section: Initialization
+
+  browser-init : Integer, Integer, Theme, DisplayState -> BrowserState
+  browser-init (w) (h) (theme) (ds) =
+    let comp = compositor-new w h browser-bg
+    in let first-tab = tab-new 1 "New Tab" "codex://local/newtab"
+    in let addr-bar = address-bar-set-text (address-bar-new w) "codex://local/newtab"
+    in let trust = trust-store-new []
+    in let sandbox = sandbox-default-config
+    in let cache = cache-new 64
+    in let loaded = load-new-tab-content first-tab sandbox trust cache w h
+    in BrowserState {
+      bs-tabs = [loaded],
+      bs-active-tab = 1,
+      bs-address-bar = addr-bar,
+      bs-window-width = w,
+      bs-window-height = h,
+      bs-theme = theme,
+      bs-compositor = comp,
+      bs-next-tab-id = 2,
+      bs-trust-store = trust,
+      bs-sandbox = sandbox,
+      bs-cache = cache,
+      bs-focus = FocusPageContent,
+      bs-dirty = True,
+      bs-show-trust-prompt = False,
+      bs-pending-trust = Nothing,
+      bs-display = ds,
+      bs-history = history-new 500
+    }
+
+  load-new-tab-content : Tab, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer -> Tab
+  load-new-tab-content (t) (sandbox) (trust) (cache) (vw) (vh) =
+    let vp-h = vh - chrome-height
+    in let result = resolve-and-load t.tab-address sandbox trust cache vw vp-h
+    in when result
+      is PageLoaded (tree, title, caps) ->
+        tab-set-content t tree title
+      is PageCompileError (msg) ->
+        tab-set-error t ("Compile error: " & msg)
+      is PageFetchError (msg) ->
+        tab-set-error t msg
+      is PageTrustDenied (tier) ->
+        tab-set-error t ("Trust denied for tier: " & tier-name tier)
+      is PageSizeDenied (size) ->
+        tab-set-error t ("Page too large: " & show size & " bytes")
+
+Section: Chrome Layout
+
+ The browser chrome is a vertical stack: tab bar (32px), address
+ bar (28px), page viewport (remainder). The trust prompt overlays
+ the viewport when shown.
+
+  chrome-tab-bar-height : Integer
+  chrome-tab-bar-height = 32
+
+  chrome-address-bar-height : Integer
+  chrome-address-bar-height = 28
+
+  chrome-height : Integer
+  chrome-height = chrome-tab-bar-height + chrome-address-bar-height
+
+  page-viewport-rect : BrowserState -> LayoutRect
+  page-viewport-rect (state) =
+    layout-rect 0 chrome-height state.bs-window-width (state.bs-window-height - chrome-height)
+
+  tab-bar-rect : BrowserState -> LayoutRect
+  tab-bar-rect (state) =
+    layout-rect 0 0 state.bs-window-width chrome-tab-bar-height
+
+  address-bar-rect : BrowserState -> LayoutRect
+  address-bar-rect (state) =
+    layout-rect 0 chrome-tab-bar-height state.bs-window-width chrome-address-bar-height
+
+Section: Rendering
+
+  browser-render : BrowserState -> WidgetNode
+  browser-render (state) =
+    let tab-bar = browser-render-tab-bar state
+    in let addr-bar = browser-render-address-bar state
+    in let viewport = browser-render-viewport state
+    in let chrome = widget-panel "chrome" DirColumn 0 [
+          widget-set-min tab-bar state.bs-window-width chrome-tab-bar-height,
+          widget-set-min addr-bar state.bs-window-width chrome-address-bar-height,
+          widget-set-flex viewport 1
+        ]
+    in if state.bs-show-trust-prompt
+      then let overlay = browser-render-trust-prompt state
+        in widget-panel "root" DirColumn 0 [chrome, overlay]
+      else chrome
+
+  browser-render-tab-bar : BrowserState -> WidgetNode
+  browser-render-tab-bar (state) =
+    let tab-widgets = render-tab-buttons state.bs-active-tab state.bs-tabs
+    in let new-tab-btn = widget-button "new-tab" "+"
+    in let close-btn = widget-button "close-tab" "x"
+    in widget-panel "tab-bar" DirRow 2
+      (list-push (list-push tab-widgets new-tab-btn) close-btn)
+
+  render-tab-button : Integer -> Tab -> WidgetNode
+  render-tab-button (active-id) (t) =
+    let label = if text-length t.tab-title > 18
+          then text-take t.tab-title 15 & "..."
+          else t.tab-title
+    in let btn = widget-button ("tab-" & show t.tab-id) label
+    in if t.tab-id == active-id
+      then widget-set-state btn 1
+      else btn
+
+  render-tab-buttons : Integer, List Tab -> List WidgetNode
+  render-tab-buttons (active-id) (tabs) =
+    list-map (render-tab-button active-id) tabs
+
+  browser-render-address-bar : BrowserState -> WidgetNode
+  browser-render-address-bar (state) =
+    let active = browser-active-tab state
+    in let trust-color = when active
+          is Just (t) -> tab-trust-color t
+          is Nothing -> 0x808080
+    in let focused = when state.bs-focus
+          is FocusAddressBar -> True
+          is otherwise -> False
+    in let ab = if focused
+          then address-bar-focus state.bs-address-bar
+          else address-bar-blur state.bs-address-bar
+    in address-bar-render ab trust-color
+
+  browser-render-viewport : BrowserState -> WidgetNode
+  browser-render-viewport (state) =
+    let active = browser-active-tab state
+    in when active
+      is Just (t) ->
+        when t.tab-player
+          is Just (ps) ->
+            let vp = page-viewport-rect state
+            in player-render-widget ps vp.lr-w vp.lr-h
+          is Nothing -> tab-render-content t
+      is Nothing -> widget-label "viewport" "No tab selected"
+
+Section: Trust Prompt Rendering
+
+  browser-render-trust-prompt : BrowserState -> WidgetNode
+  browser-render-trust-prompt (state) =
+    when state.bs-pending-trust
+      is Nothing ->
+        widget-label "trust-prompt" "No pending trust decision"
+      is Just (pt) ->
+        let title = widget-label "trust-title"
+              ("Page requests " & tier-name pt.pt-tier & " capabilities")
+        in let addr-label = widget-label "trust-addr" ("Address: " & pt.pt-address)
+        in let pub-label = widget-label "trust-pub" (
+              when pt.pt-publisher
+                is Just (pk) -> "Publisher: " & bytes-to-hex pk
+                is Nothing -> "Publisher: Unknown")
+        in let effects-label = widget-label "trust-effects"
+              ("Effects: " & join-effects pt.pt-effects)
+        in let tier-label = widget-label "trust-tier"
+              ("Tier: " & tier-name pt.pt-tier)
+        in let allow-btn = widget-button "trust-allow" "Allow Once"
+        in let trust-btn = widget-button "trust-always" "Trust Publisher"
+        in let deny-btn = widget-button "trust-deny" "Deny"
+        in let buttons = widget-panel "trust-buttons" DirRow 8 [allow-btn, trust-btn, deny-btn]
+        in widget-panel "trust-prompt" DirColumn 6 [
+          title, addr-label, pub-label, effects-label, tier-label,
+          widget-separator "trust-sep",
+          buttons
+        ]
+
+  join-effects : List Text -> Text
+  join-effects (effects) =
+    when effects
+      is [] -> "none"
+      is otherwise -> join-with-comma effects
+
+  join-with-comma : List Text -> Text
+  join-with-comma (xs) =
+    when xs
+      is [] -> ""
+      is otherwise ->
+        let head = list-at xs 0
+        in let tail = list-drop xs 1
+        in when tail
+          is [] -> head
+          else head & ", " & join-with-comma tail
+
+Section: Tab Management
+
+  browser-active-tab : BrowserState -> Maybe Tab
+  browser-active-tab (state) =
+    tab-find-by-id state.bs-tabs state.bs-active-tab
+
+  browser-new-tab : BrowserState -> BrowserState
+  browser-new-tab (state) =
+    let id = state.bs-next-tab-id
+    in let t = tab-new id "New Tab" "codex://local/newtab"
+    in let loaded = load-new-tab-content t state.bs-sandbox state.bs-trust-store state.bs-cache
+          state.bs-window-width state.bs-window-height
+    in __record-set (__record-set (__record-set (__record-set (__record-set state
+      "bs-tabs" (list-push state.bs-tabs loaded))
+      "bs-active-tab" id)
+      "bs-next-tab-id" (id + 1))
+      "bs-address-bar" (address-bar-set-text state.bs-address-bar "codex://local/newtab"))
+      "bs-dirty" True
+
+  browser-close-tab : BrowserState, Integer -> BrowserState
+  browser-close-tab (state) (id) =
+    let remaining = tab-remove state.bs-tabs id
+    in if list-length remaining == 0
+      then browser-new-tab (__record-set state "bs-tabs" [])
+      else let new-active = if state.bs-active-tab == id
+            then (list-at remaining 0).tab-id
+            else state.bs-active-tab
+        in let active-tab = tab-find-by-id remaining new-active
+        in let addr = when active-tab
+              is Just (t) -> t.tab-address
+              is Nothing -> ""
+        in __record-set (__record-set (__record-set state
+          "bs-tabs" remaining)
+          "bs-active-tab" new-active)
+          "bs-address-bar" (address-bar-set-text state.bs-address-bar addr)
+
+  browser-switch-tab : BrowserState, Integer -> BrowserState
+  browser-switch-tab (state) (id) =
+    let tab = tab-find-by-id state.bs-tabs id
+    in let addr = when tab
+          is Just (t) -> t.tab-address
+          is Nothing -> ""
+    in __record-set (__record-set (__record-set state
+      "bs-active-tab" id)
+      "bs-address-bar" (address-bar-set-text state.bs-address-bar addr))
+      "bs-dirty" True
+
+  browser-next-tab : BrowserState -> BrowserState
+  browser-next-tab (state) =
+    let idx = find-tab-index state.bs-tabs state.bs-active-tab
+    in let next-idx = int-mod (idx + 1) (list-length state.bs-tabs)
+    in let next-id = (list-at state.bs-tabs next-idx).tab-id
+    in browser-switch-tab state next-id
+
+  browser-prev-tab : BrowserState -> BrowserState
+  browser-prev-tab (state) =
+    let idx = find-tab-index state.bs-tabs state.bs-active-tab
+    in let count = list-length state.bs-tabs
+    in let prev-idx = int-mod (idx - 1 + count) count
+    in let prev-id = (list-at state.bs-tabs prev-idx).tab-id
+    in browser-switch-tab state prev-id
+
+  find-tab-index : List Tab, Integer -> Integer
+  find-tab-index (tabs) (id) =
+    find-tab-index-at tabs id 0
+
+  find-tab-index-at : List Tab, Integer, Integer -> Integer
+  find-tab-index-at (tabs) (id) (idx) =
+    if idx >= list-length tabs then 0
+    else if (list-at tabs idx).tab-id == id then idx
+    else find-tab-index-at tabs id (idx + 1)
+
+Section: Navigation
+
+  browser-navigate : BrowserState, Text -> BrowserState
+  browser-navigate (state) (address) =
+    let active = browser-active-tab state
+    in when active
+      is Just (t) ->
+        let navigated = tab-navigate t address
+        in let loaded = load-new-tab-content navigated
+              state.bs-sandbox state.bs-trust-store state.bs-cache
+              state.bs-window-width state.bs-window-height
+        in let title = loaded.tab-title
+        in let hist = history-visit state.bs-history address title 0
+        in __record-set (__record-set (__record-set (__record-set state
+          "bs-tabs" (tab-replace state.bs-tabs loaded))
+          "bs-address-bar" (address-bar-set-text state.bs-address-bar address))
+          "bs-history" hist)
+          "bs-dirty" True
+      is Nothing -> state
+
+  browser-go-back : BrowserState -> BrowserState
+  browser-go-back (state) =
+    let active = browser-active-tab state
+    in when active
+      is Just (t) ->
+        let backed = tab-go-back t
+        in if backed.tab-address /= t.tab-address
+          then let loaded = load-new-tab-content backed
+                  state.bs-sandbox state.bs-trust-store state.bs-cache
+                  state.bs-window-width state.bs-window-height
+            in __record-set (__record-set (__record-set state
+              "bs-tabs" (tab-replace state.bs-tabs loaded))
+              "bs-address-bar" (address-bar-set-text state.bs-address-bar backed.tab-address))
+              "bs-dirty" True
+          else state
+      is Nothing -> state
+
+  browser-go-forward : BrowserState -> BrowserState
+  browser-go-forward (state) =
+    let active = browser-active-tab state
+    in when active
+      is Just (t) ->
+        let forwarded = tab-go-forward t
+        in if forwarded.tab-address /= t.tab-address
+          then let loaded = load-new-tab-content forwarded
+                  state.bs-sandbox state.bs-trust-store state.bs-cache
+                  state.bs-window-width state.bs-window-height
+            in __record-set (__record-set (__record-set state
+              "bs-tabs" (tab-replace state.bs-tabs loaded))
+              "bs-address-bar" (address-bar-set-text state.bs-address-bar forwarded.tab-address))
+              "bs-dirty" True
+          else state
+      is Nothing -> state
+
+  browser-reload : BrowserState -> BrowserState
+  browser-reload (state) =
+    let active = browser-active-tab state
+    in when active
+      is Just (t) ->
+        let reloaded = __record-set t "tab-status" TabLoading
+        in let loaded = load-new-tab-content reloaded
+              state.bs-sandbox state.bs-trust-store state.bs-cache
+              state.bs-window-width state.bs-window-height
+        in __record-set (__record-set state
+          "bs-tabs" (tab-replace state.bs-tabs loaded))
+          "bs-dirty" True
+      is Nothing -> state
+
+Section: Trust Prompt Flow
+
+  browser-show-trust-prompt : BrowserState, Text, Maybe (List Integer), CapabilityTier, List Text -> BrowserState
+  browser-show-trust-prompt (state) (address) (publisher) (tier) (effects) =
+    let pending = PendingTrust {
+      pt-address = address,
+      pt-publisher = publisher,
+      pt-tier = tier,
+      pt-effects = effects
+    }
+    in __record-set (__record-set (__record-set (__record-set state
+      "bs-show-trust-prompt" True)
+      "bs-pending-trust" (Just pending))
+      "bs-focus" FocusTrustPrompt)
+      "bs-dirty" True
+
+  browser-trust-allow-once : BrowserState -> BrowserState
+  browser-trust-allow-once (state) =
+    when state.bs-pending-trust
+      is Nothing -> browser-dismiss-trust state
+      is Just (pt) ->
+        let dismissed = browser-dismiss-trust state
+        in browser-navigate dismissed pt.pt-address
+
+  browser-trust-always : BrowserState -> BrowserState
+  browser-trust-always (state) =
+    when state.bs-pending-trust
+      is Nothing -> browser-dismiss-trust state
+      is Just (pt) ->
+        when pt.pt-publisher
+          is Nothing -> browser-trust-allow-once state
+          is Just (pub-key) ->
+            let updated-store = trust-store-grant state.bs-trust-store pub-key pt.pt-tier 0
+            in let dismissed = __record-set (browser-dismiss-trust state)
+                  "bs-trust-store" updated-store
+            in browser-navigate dismissed pt.pt-address
+
+  browser-trust-deny : BrowserState -> BrowserState
+  browser-trust-deny (state) =
+    let dismissed = browser-dismiss-trust state
+    in let active = browser-active-tab dismissed
+    in when active
+      is Just (t) ->
+        let denied = tab-set-error t "Trust denied by user"
+        in __record-set dismissed "bs-tabs" (tab-replace dismissed.bs-tabs denied)
+      is Nothing -> dismissed
+
+  browser-dismiss-trust : BrowserState -> BrowserState
+  browser-dismiss-trust (state) =
+    __record-set (__record-set (__record-set state
+      "bs-show-trust-prompt" False)
+      "bs-pending-trust" Nothing)
+      "bs-focus" FocusPageContent
+
+Section: Mouse Hit Testing
+
+  browser-handle-mouse-click : BrowserState, Integer, Integer -> BrowserState
+  browser-handle-mouse-click (state) (mx) (my) =
+    if my < chrome-tab-bar-height
+    then browser-handle-tab-bar-click state mx my
+    else if my < chrome-height
+    then browser-handle-address-bar-click state mx my
+    else if state.bs-show-trust-prompt
+    then browser-handle-trust-click state mx my
+    else browser-handle-page-click state mx my
+
+  browser-handle-tab-bar-click : BrowserState, Integer, Integer -> BrowserState
+  browser-handle-tab-bar-click (state) (mx) (my) =
+    let tab-count = list-length state.bs-tabs
+    in let tab-width = 120
+    in let click-index = mx / tab-width
+    in if click-index < tab-count
+      then let clicked-tab = list-at state.bs-tabs click-index
+        in browser-switch-tab state clicked-tab.tab-id
+      else if click-index == tab-count
+      then browser-new-tab state
+      else state
+
+  browser-handle-address-bar-click : BrowserState, Integer, Integer -> BrowserState
+  browser-handle-address-bar-click (state) (mx) (my) =
+    let nav-btn-width = 28
+    in if mx < nav-btn-width
+      then browser-go-back state
+      else if mx < nav-btn-width * 2
+      then browser-go-forward state
+      else if mx < nav-btn-width * 3
+      then browser-reload state
+      else __record-set (__record-set state
+        "bs-focus" FocusAddressBar)
+        "bs-dirty" True
+
+  browser-handle-trust-click : BrowserState, Integer, Integer -> BrowserState
+  browser-handle-trust-click (state) (mx) (my) =
+    let vp = page-viewport-rect state
+    in let prompt-y = vp.lr-y + vp.lr-h / 4
+    in let prompt-h = vp.lr-h / 2
+    in let button-y = prompt-y + prompt-h - 40
+    in if my >= button-y
+      then let btn-width = state.bs-window-width / 3
+        in if mx < btn-width
+          then browser-trust-allow-once state
+          else if mx < btn-width * 2
+          then browser-trust-always state
+          else browser-trust-deny state
+      else state
+
+  browser-handle-page-click : BrowserState, Integer, Integer -> BrowserState
+  browser-handle-page-click (state) (mx) (my) =
+    let active = browser-active-tab state
+    in when active
+      is Just (t) ->
+        let target = widget-click-target t mx (my - chrome-height)
+        in when target
+          is Just (widget-id) ->
+            if text-starts-with widget-id "link-"
+            then let addr = widget-link-address widget-id
+              in browser-navigate state addr
+            else if text-starts-with widget-id "media-"
+            then browser-handle-media-click state t widget-id
+            else __record-set state "bs-focus" FocusPageContent
+          is Nothing -> __record-set state "bs-focus" FocusPageContent
+      is Nothing -> state
+
+  browser-handle-media-click : BrowserState, Tab, Text -> BrowserState
+  browser-handle-media-click (state) (t) (widget-id) =
+    let ev = media-click-to-event widget-id
+    in when ev
+      is Nothing -> state
+      is Just (mev) ->
+        let updated = tab-media-event t mev
+        in __record-set (__record-set state
+          "bs-tabs" (tab-replace state.bs-tabs updated))
+          "bs-dirty" True
+
+  media-click-to-event : Text -> Maybe MediaEvent
+  media-click-to-event (widget-id) =
+    if widget-id == "media-play" then Just MediaPlay
+    else if widget-id == "media-pause" then Just MediaPause
+    else if widget-id == "media-stop" then Just MediaStop
+    else if widget-id == "media-back" then Just MediaSkipBack
+    else if widget-id == "media-fwd" then Just MediaSkipForward
+    else if widget-id == "media-mute" then Just MediaToggleMute
+    else if widget-id == "media-vol-up" then Just MediaVolumeUp
+    else if widget-id == "media-vol-down" then Just MediaVolumeDown
+    else if widget-id == "media-fs" then Just MediaToggleFullscreen
+    else Nothing
+
+  widget-click-target : Tab, Integer, Integer -> Maybe Text
+  widget-click-target (t) (mx) (my) =
+    when t.tab-content
+      is Just (tree) -> widget-find-at-point tree mx my
+      is Nothing -> Nothing
+
+  widget-find-at-point : WidgetNode, Integer, Integer -> Maybe Text
+  widget-find-at-point (node) (x) (y) =
+    if rect-contains node.wn-bounds x y
+    then if widget-is-leaf node
+      then Just node.wn-id
+      else find-child-at-point node.wn-children x y node.wn-id
+    else Nothing
+
+  find-child-at-point : List WidgetNode, Integer, Integer, Text -> Maybe Text
+  find-child-at-point (children) (x) (y) (parent-id) =
+    when children
+      is [] -> Just parent-id
+      is otherwise ->
+        let head = list-at children 0
+        in let hit = widget-find-at-point head x y
+        in when hit
+          is Just (id) -> Just id
+          is Nothing -> find-child-at-point (list-drop children 1) x y parent-id
+
+  widget-link-address : Text -> Text
+  widget-link-address (widget-id) =
+    if widget-id == "link-hello" then "codex://local/hello"
+    else if widget-id == "link-about" then "codex://local/about"
+    else if widget-id == "link-dash" then "codex://local/dashboard"
+    else if widget-id == "link-trust" then "codex://local/trust"
+    else if widget-id == "link-settings" then "codex://local/settings"
+    else if widget-id == "link-media" then "codex://local/media"
+    else ""
+
+Section: Address Bar Key Handling
+
+  browser-handle-address-key : BrowserState, Event -> BrowserState
+  browser-handle-address-key (state) (ev) =
+    let k = ev.ev-key
+    in if k == 13
+      then let address = address-bar-submit state.bs-address-bar
+        in __record-set (browser-navigate state address) "bs-focus" FocusPageContent
+      else if k == 27
+      then __record-set state "bs-focus" FocusPageContent
+      else if k == 8
+      then __record-set (__record-set state
+        "bs-address-bar" (address-bar-backspace state.bs-address-bar))
+        "bs-dirty" True
+      else if k >= 32
+      then let ch = char-from-code k
+        in __record-set (__record-set state
+          "bs-address-bar" (address-bar-insert-char state.bs-address-bar ch))
+          "bs-dirty" True
+      else state
+
+  char-from-code : Integer -> Text
+  char-from-code (k) =
+    char-to-text (code-to-char (from-unicode k))
+
+Section: Page Key Handling
+
+  browser-handle-page-key : BrowserState, Event -> BrowserState
+  browser-handle-page-key (state) (ev) =
+    let active = browser-active-tab state
+    in when active
+      is Nothing ->
+        let action = map-key-event ev
+        in browser-apply-action state action
+      is Just (t) ->
+        if tab-has-player t
+        then let media-ev = map-media-key ev.ev-key
+          in when media-ev
+            is Just (mev) ->
+              let updated = tab-media-event t mev
+              in __record-set (__record-set state
+                "bs-tabs" (tab-replace state.bs-tabs updated))
+                "bs-dirty" True
+            is Nothing ->
+              let action = map-key-event ev
+              in browser-apply-action state action
+        else let action = map-key-event ev
+          in browser-apply-action state action
+
+Section: Media Tick
+
+  browser-tick-media : BrowserState, Integer -> BrowserState
+  browser-tick-media (state) (elapsed-ms) =
+    let active = browser-active-tab state
+    in when active
+      is Nothing -> state
+      is Just (t) ->
+        if tab-has-player t
+        then let ticked = tab-media-tick t elapsed-ms
+          in let needs-repaint = when ticked.tab-player
+                is Just (ps) -> player-is-playing ps
+                is Nothing -> False
+          in if needs-repaint
+            then __record-set (__record-set state
+              "bs-tabs" (tab-replace state.bs-tabs ticked))
+              "bs-dirty" True
+            else __record-set state
+              "bs-tabs" (tab-replace state.bs-tabs ticked)
+        else state
+
+Section: Page Scroll Handling
+
+  browser-scroll-page : BrowserState, Integer -> BrowserState
+  browser-scroll-page (state) (delta) =
+    let active = browser-active-tab state
+    in when active
+      is Just (t) ->
+        let scrolled = tab-scroll-by t 0 (delta * 24)
+        in __record-set (__record-set state
+          "bs-tabs" (tab-replace state.bs-tabs scrolled))
+          "bs-dirty" True
+      is Nothing -> state
+
+Section: Render Pipeline
+
+  browser-render-frame : BrowserState -> Framebuf
+  browser-render-frame (state) =
+    let tree = browser-render state
+    in let full-rect = layout-rect 0 0 state.bs-window-width state.bs-window-height
+    in let laid-out = widget-layout tree state.bs-theme full-rect
+    in let fb = fb-new state.bs-window-width state.bs-window-height browser-bg
+    in render-tree laid-out state.bs-theme fb
+
+  browser-present : BrowserState, Framebuf -> Integer
+  browser-present (state) (fb) =
+    display-present state.bs-display fb
+
+Section: Main Loop
+
+  browser-run : BrowserState -> [Console] Nothing
+  browser-run (state) = act
+    print-line "Codex Browser v0.1"
+    print-line ("  Window: " & show state.bs-window-width & "x" & show state.bs-window-height)
+    print-line ("  Tabs: " & show (list-length state.bs-tabs))
+    print-line ("  Cache: " & show (cache-size state.bs-cache) & " entries")
+    print-line "  Ready."
+    browser-event-loop state
+  end
+
+  browser-event-loop : BrowserState -> [Console] Nothing
+  browser-event-loop (state) = act
+    let ticked = browser-tick-media state 16
+    in let presented = if ticked.bs-dirty
+          then let fb = browser-render-frame ticked
+            in let w = browser-present ticked fb
+            in __record-set ticked "bs-dirty" False
+          else ticked
+    in ev <- browser-poll-event
+    in let handled = browser-dispatch-event presented ev
+    in browser-event-loop handled
+  end
+
+  browser-dispatch-event : BrowserState, Event -> BrowserState
+  browser-dispatch-event (state) (ev) =
+    when ev.ev-kind
+      is EvKeyDown ->
+        when state.bs-focus
+          is FocusAddressBar -> browser-handle-address-key state ev
+          is FocusTrustPrompt -> browser-handle-trust-key state ev
+          is FocusPageContent -> browser-handle-page-key state ev
+          is otherwise ->
+            let action = map-key-event ev
+            in browser-apply-action state action
+      is EvMouseDown ->
+        browser-handle-mouse-click state ev.ev-x ev.ev-y
+      is EvScroll ->
+        browser-scroll-page state ev.ev-dy
+      is EvResize ->
+        __record-set (__record-set (__record-set state
+          "bs-window-width" ev.ev-w)
+          "bs-window-height" ev.ev-h)
+          "bs-dirty" True
+      is otherwise -> state
+
+  browser-handle-trust-key : BrowserState, Event -> BrowserState
+  browser-handle-trust-key (state) (ev) =
+    let k = ev.ev-key
+    in if k == 27 then browser-trust-deny state
+      else if k == 13 then browser-trust-allow-once state
+      else state
+
+  browser-apply-action : BrowserState, BrowserAction -> BrowserState
+  browser-apply-action (state) (action) =
+    when action
+      is ActionNone -> state
+      is ActionNewTab -> browser-new-tab state
+      is ActionCloseTab -> browser-close-tab state state.bs-active-tab
+      is ActionFocusAddress ->
+        __record-set (__record-set state "bs-focus" FocusAddressBar) "bs-dirty" True
+      is ActionReload -> browser-reload state
+      is ActionBack -> browser-go-back state
+      is ActionForward -> browser-go-forward state
+      is ActionNextTab -> browser-next-tab state
+      is ActionPrevTab -> browser-prev-tab state
+      is ActionStop -> state
+      is ActionNavigate (addr) -> browser-navigate state addr
+      is ActionSwitchTab (id) -> browser-switch-tab state id
+      is ActionAddressKey (ev) -> browser-handle-address-key state ev
+      is ActionPageEvent (ev) -> state
+      is ActionScrollUp -> browser-scroll-page state (-3)
+      is ActionScrollDown -> browser-scroll-page state 3
+      is ActionPageUp ->
+        let active = browser-active-tab state
+        in when active
+          is Just (t) -> __record-set state "bs-tabs" (tab-replace state.bs-tabs (tab-scroll-page-up t))
+          is Nothing -> state
+      is ActionPageDown ->
+        let active = browser-active-tab state
+        in when active
+          is Just (t) -> __record-set state "bs-tabs" (tab-replace state.bs-tabs (tab-scroll-page-down t))
+          is Nothing -> state
+      is ActionHome ->
+        let active = browser-active-tab state
+        in when active
+          is Just (t) -> __record-set state "bs-tabs" (tab-replace state.bs-tabs (tab-scroll-to-top t))
+          is Nothing -> state
+      is ActionEnd -> state

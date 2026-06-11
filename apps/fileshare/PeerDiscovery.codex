@@ -1,0 +1,207 @@
+Chapter: PeerDiscovery
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+  cites FileShare chapter PeerSwarm
+
+ Peer discovery via a distributed hash table (Kademlia-inspired).
+ Peers announce what content they have; seekers query the DHT to
+ find peers for a content hash.
+
+ Also supports trust-weighted discovery: peers vouched by
+ identities in your trust lattice are preferred.
+
+Section: Types
+
+  DhtNode = record {
+    dht-id      : List Integer,
+    dht-address : List Integer,
+    dht-port    : Integer,
+    dht-last-seen : Integer
+  }
+
+  DhtBucket = record {
+    db-nodes   : List DhtNode,
+    db-max     : Integer
+  }
+
+  DhtRoutingTable = record {
+    drt-self-id  : List Integer,
+    drt-buckets  : List DhtBucket,
+    drt-k        : Integer
+  }
+
+  AnnounceRecord = record {
+    an-content-hash : List Integer,
+    an-peer-id      : List Integer,
+    an-address      : List Integer,
+    an-port         : Integer,
+    an-timestamp    : Integer,
+    an-signature    : List Integer
+  }
+
+Section: Constants
+
+  dht-k : Integer
+  dht-k = 20
+
+  dht-bucket-count : Integer
+  dht-bucket-count = 256
+
+  dht-announce-ttl : Integer
+  dht-announce-ttl = 3600
+
+Section: Routing Table
+
+  dht-new : List Integer -> DhtRoutingTable
+  dht-new (self-id) =
+    DhtRoutingTable {
+      drt-self-id = self-id,
+      drt-buckets = init-buckets dht-bucket-count dht-k 0 [],
+      drt-k = dht-k
+    }
+
+  init-buckets : Integer, Integer, Integer, List DhtBucket -> List DhtBucket
+  init-buckets (count) (k) (i) (acc) =
+    if i >= count then acc
+    else init-buckets count k (i + 1) (list-push acc (DhtBucket { db-nodes = [], db-max = k }))
+
+  dht-add-node : DhtRoutingTable, DhtNode -> DhtRoutingTable
+  dht-add-node (rt) (node) =
+    let bucket-idx = dht-bucket-index rt.drt-self-id node.dht-id
+    in let bucket = list-at rt.drt-buckets bucket-idx
+    in if list-length bucket.db-nodes >= bucket.db-max then rt
+    else let updated-bucket = __record-set bucket "db-nodes" (list-push bucket.db-nodes node)
+    in __record-set rt "drt-buckets" (list-set-at rt.drt-buckets bucket-idx updated-bucket)
+
+  dht-bucket-index : List Integer, List Integer -> Integer
+  dht-bucket-index (self) (other) =
+    let xor-dist = xor-distance self other
+    in leading-zeros xor-dist
+
+  xor-distance : List Integer, List Integer -> List Integer
+  xor-distance (a) (b) =
+    xor-bytes a b 0 []
+
+  xor-bytes : List Integer, List Integer, Integer, List Integer -> List Integer
+  xor-bytes (a) (b) (i) (acc) =
+    if i >= list-length a then acc
+    else if i >= list-length b then acc
+    else let x = bit-xor (list-at a i) (list-at b i)
+    in xor-bytes a b (i + 1) (list-push acc x)
+
+  leading-zeros : List Integer -> Integer
+  leading-zeros (bytes) =
+    lz-loop bytes 0
+
+  lz-loop : List Integer, Integer -> Integer
+  lz-loop (bytes) (i) =
+    if i >= list-length bytes then i * 8
+    else let b = list-at bytes i
+    in if b == 0 then lz-loop bytes (i + 1)
+    else i * 8 + byte-leading-zeros b
+
+  byte-leading-zeros : Integer -> Integer
+  byte-leading-zeros (b) =
+    if bit-and b 128 /= 0 then 0
+    else if bit-and b 64 /= 0 then 1
+    else if bit-and b 32 /= 0 then 2
+    else if bit-and b 16 /= 0 then 3
+    else if bit-and b 8 /= 0 then 4
+    else if bit-and b 4 /= 0 then 5
+    else if bit-and b 2 /= 0 then 6
+    else if bit-and b 1 /= 0 then 7
+    else 8
+
+Section: Closest Nodes
+
+  dht-find-closest : DhtRoutingTable, List Integer, Integer -> List DhtNode
+  dht-find-closest (rt) (target) (count) =
+    let all-nodes = collect-all-nodes rt.drt-buckets 0 []
+    in list-take all-nodes count
+
+  collect-all-nodes : List DhtBucket, Integer, List DhtNode -> List DhtNode
+  collect-all-nodes (buckets) (i) (acc) =
+    if i >= list-length buckets then acc
+    else let bucket = list-at buckets i
+    in collect-all-nodes buckets (i + 1) (acc & bucket.db-nodes)
+
+Section: Announce
+
+  build-announce : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> AnnounceRecord
+  build-announce (content-hash) (peer-id) (address) (port) (timestamp) (private-key) =
+    let payload = content-hash & peer-id & address & write-announce-u32 port & write-announce-u32 timestamp
+    in let sig = ed25519-sign private-key peer-id payload
+    in AnnounceRecord {
+      an-content-hash = content-hash,
+      an-peer-id = peer-id,
+      an-address = address,
+      an-port = port,
+      an-timestamp = timestamp,
+      an-signature = sig
+    }
+
+  verify-announce : AnnounceRecord -> Boolean
+  verify-announce (rec) =
+    let payload = rec.an-content-hash & rec.an-peer-id & rec.an-address & write-announce-u32 rec.an-port & write-announce-u32 rec.an-timestamp
+    in ed25519-verify rec.an-peer-id payload rec.an-signature
+
+  announce-is-fresh : AnnounceRecord, Integer -> Boolean
+  announce-is-fresh (rec) (now) =
+    now - rec.an-timestamp < dht-announce-ttl
+
+  write-announce-u32 : Integer -> List Integer
+  write-announce-u32 (n) =
+    [bit-and n 255, bit-and (n / 256) 255, bit-and (n / 65536) 255, bit-and (n / 16777216) 255]
+
+Section: Announce Store
+
+  AnnounceStore = record {
+    as-records : List AnnounceRecord,
+    as-max     : Integer
+  }
+
+  announce-store-new : Integer -> AnnounceStore
+  announce-store-new (max-records) =
+    AnnounceStore { as-records = [], as-max = max-records }
+
+  announce-store-add : AnnounceStore, AnnounceRecord -> AnnounceStore
+  announce-store-add (store) (rec) =
+    if verify-announce rec == False then store
+    else let filtered = list-filter store.as-records (announce-not-dup rec)
+    in let added = list-push filtered rec
+    in let trimmed = if list-length added > store.as-max then list-drop added 1 else added
+    in __record-set store "as-records" trimmed
+
+  announce-not-dup : AnnounceRecord -> AnnounceRecord -> Boolean
+  announce-not-dup (new-rec) (existing) =
+    sha256-to-hex new-rec.an-peer-id /= sha256-to-hex existing.an-peer-id
+    | sha256-to-hex new-rec.an-content-hash /= sha256-to-hex existing.an-content-hash
+
+  announce-lookup : AnnounceStore, List Integer, Integer -> List AnnounceRecord
+  announce-lookup (store) (content-hash) (now) =
+    announce-filter store.as-records content-hash now []
+
+  announce-filter : List AnnounceRecord, List Integer, Integer, List AnnounceRecord -> List AnnounceRecord
+  announce-filter (records) (hash) (now) (acc) =
+    when records
+      is [] -> acc
+      is otherwise ->
+        let head = list-at records 0
+        in if sha256-to-hex head.an-content-hash == sha256-to-hex hash
+          then if announce-is-fresh head now
+            then announce-filter (list-drop records 1) hash now (list-push acc head)
+            else announce-filter (list-drop records 1) hash now acc
+          else announce-filter (list-drop records 1) hash now acc
+
+Section: Format
+
+  format-dht : DhtRoutingTable -> Text
+  format-dht (rt) =
+    let total = count-all-dht-nodes rt.drt-buckets 0 0
+    in "DHT: " & show total & " nodes in " & show dht-bucket-count & " buckets"
+
+  count-all-dht-nodes : List DhtBucket, Integer, Integer -> Integer
+  count-all-dht-nodes (buckets) (i) (acc) =
+    if i >= list-length buckets then acc
+    else count-all-dht-nodes buckets (i + 1) (acc + list-length (list-at buckets i).db-nodes)

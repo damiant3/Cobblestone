@@ -357,9 +357,11 @@ Section: Tail Call Optimization
     is IrWildPat (sp) -> "            {\n" & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
     is IrVarPat (name) (ty) (sp) -> "            {\n                " & cs-type-or-dynamic ty & " " & sanitize name & " = " & s-var & ";\n" & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
     is IrCtorPat (name) (subs) (ty) (sp) ->
-     let keyword = if is-first then "if" else "else if"
-     in let match-var = tco-match-var depth idx
-     in "            " & keyword & " (" & s-var & " is " & sanitize name & extract-ctor-type-args ty & " " & match-var & ")\n            {\n" & emit-tco-ctor-bindings subs match-var 0 & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
+     if is-mktup-name name
+     then "            {\n" & emit-tco-tup-let-bindings subs s-var 0 & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
+     else let keyword = if is-first then "if" else "else if"
+          in let match-var = tco-match-var depth idx
+          in "            " & keyword & " (" & s-var & " is " & sanitize name & extract-ctor-type-args ty & " " & match-var & ")\n            {\n" & emit-tco-ctor-bindings subs match-var 0 & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
     is IrLitPat (text) (ty) (sp) ->
      let keyword = if is-first then "if" else "else if"
      in "            " & keyword & " (object.Equals(" & s-var & ", " & text & "))\n            {\n" & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
@@ -384,6 +386,15 @@ Section: Tail Call Optimization
    when sub
     is IrVarPat (name) (ty) (sp) -> "                " & cs-type-or-dynamic ty & " " & sanitize name & " = " & match-var & ".Field" & integer-to-text i & ";\n"
     is otherwise -> ""
+
+  emit-tco-tup-let-bindings : List IRPat, Text, Integer -> Text
+  emit-tco-tup-let-bindings (subs) (scrut-var) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let binding = when sub
+       is IrVarPat (name) (ty) (sp) -> "                var " & sanitize name & " = " & scrut-var & ".Item" & integer-to-text (i + 1) & ";\n"
+       is otherwise -> ""
+   in binding & emit-tco-tup-let-bindings subs scrut-var (i + 1)
 
   emit-tco-jump : IRExpr, List IRParam, List ArityEntry -> Text
   emit-tco-jump (e) (params) (arities) =

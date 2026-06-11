@@ -1,0 +1,370 @@
+Chapter: DesignerRender
+  cites Designer chapter DesignerWidgets
+
+ Renders the widget tree to HTML for canvas, preview, and tree views.
+ All layout composition happens here in Codex — JS just displays the result.
+ This is the box model: containers compute child layout, emit nested HTML.
+
+ We say:
+
+Section: Shared Output
+
+  render-buf-addr : Integer = 7340032
+
+  render-write-str : Integer, Text, Integer, Integer -> Integer
+  render-write-str (pos) (s) (i) (len) =
+    if i >= len then pos + len
+    else let a = poke-32 0 (render-buf-addr + 4 + pos + i) (char-code (char-at s i))
+    in render-write-str pos s (i + 1) len
+
+  rw : Integer, Text -> Integer
+  rw (pos) (s) = render-write-str pos s 0 (text-length s)
+
+  ri : Integer, Integer -> Integer
+  ri (pos) (n) =
+    if n < 0 then let p = render-write-byte pos 45 in ri p (0 - n)
+    else if n < 10 then render-write-byte pos (48 + n)
+    else let p = ri pos (n / 10) in render-write-byte p (48 + int-mod n 10)
+
+  render-write-byte : Integer, Integer -> Integer
+  render-write-byte (pos) (ch) =
+    let a = poke-32 0 (render-buf-addr + 4 + pos) ch
+    in pos + 1
+
+  render-set-length : Integer -> Integer
+  render-set-length (len) = poke-32 0 render-buf-addr len
+
+  render-pool-str : Integer, Integer, Integer -> Integer
+  render-pool-str (pos) (off) (len) =
+    render-pool-loop pos off 0 len
+
+  render-pool-loop : Integer, Integer, Integer, Integer -> Integer
+  render-pool-loop (pos) (off) (i) (len) =
+    if i >= len then pos + len
+    else let ch = peek-32 0 (string-pool-base + off + i)
+    in let a = poke-32 0 (render-buf-addr + 4 + pos + i) ch
+    in render-pool-loop pos off (i + 1) len
+
+Section: Widget Queries (read from flat memory)
+
+  w-count : Integer = peek-32 0 designer-state-addr
+  w-selected : Integer = peek-32 0 (designer-state-addr + 4)
+
+  w-field : Integer, Integer -> Integer
+  w-field (idx) (off) = peek-32 0 (widget-base + idx * widget-stride + off)
+
+  w-type : Integer -> Integer
+  w-type (idx) = w-field idx 0
+  w-x : Integer -> Integer
+  w-x (idx) = w-field idx 4
+  w-y : Integer -> Integer
+  w-y (idx) = w-field idx 8
+  w-w : Integer -> Integer
+  w-w (idx) = w-field idx 12
+  w-h : Integer -> Integer
+  w-h (idx) = w-field idx 16
+  w-parent : Integer -> Integer
+  w-parent (idx) = w-field idx 20
+  w-text-off : Integer -> Integer
+  w-text-off (idx) = w-field idx 32
+  w-text-len : Integer -> Integer
+  w-text-len (idx) = w-field idx 36
+  w-onclick-off : Integer -> Integer
+  w-onclick-off (idx) = w-field idx 40
+  w-onclick-len : Integer -> Integer
+  w-onclick-len (idx) = w-field idx 44
+  w-flags : Integer -> Integer
+  w-flags (idx) = w-field idx 56
+  w-grid-cols : Integer -> Integer
+  w-grid-cols (idx) = w-field idx 60
+
+  is-container : Integer -> Integer
+  is-container (t) = if t == 7 then 1 else if t == 8 then 1 else if t == 9 then 1 else 0
+
+Section: Canvas Render
+
+ Renders the positioned canvas view. Root widgets are absolute-positioned.
+ Children within containers use flow layout.
+
+  render-canvas : Integer -> Integer
+  render-canvas (dummy) =
+    let p = render-canvas-roots 0 0
+    in render-set-length p
+
+  render-canvas-roots : Integer, Integer -> Integer
+  render-canvas-roots (pos) (i) =
+    if i >= w-count then pos
+    else if w-parent i >= 0 then render-canvas-roots pos (i + 1)
+    else let p = render-canvas-widget pos i
+    in render-canvas-roots p (i + 1)
+
+  render-canvas-widget : Integer, Integer -> Integer
+  render-canvas-widget (pos) (idx) =
+    let t = w-type idx in let sel = w-selected
+    in let cls-sel = if idx == sel then " selected" else ""
+    in let p = rw pos "<div class=\"dsg-cw"
+    in let p1 = rw p cls-sel
+    in let p2 = rw p1 "\" data-idx=\""
+    in let p3 = ri p2 idx
+    in let p4 = rw p3 "\" style=\"left:"
+    in let p5 = ri p4 (w-x idx) in let p6 = rw p5 "px;top:"
+    in let p7 = ri p6 (w-y idx) in let p8 = rw p7 "px;width:"
+    in let p9 = ri p8 (w-w idx) in let p10 = rw p9 "px;"
+    in let p11 = if is-container t == 0 then
+        let pa = rw p10 "height:" in let pb = ri pa (w-h idx) in rw pb "px;"
+      else p10
+    in let p12 = rw p11 "\">"
+    in let p13 = rw p12 "<span class=\"dsg-cw-label\">"
+    in let p14 = render-type-name p13 t
+    in let p15 = rw p14 " #" in let p16 = ri p15 idx
+    in let p17 = rw p16 "</span>"
+    in let p18 = render-widget-preview p17 idx t
+    in let p19 = if is-container t == 1 then render-container-children p18 idx t else p18
+    in let p20 = if idx == sel then
+        let pa = rw p19 "<div class=\"dsg-resize\" data-ridx=\""
+        in let pb = ri pa idx in rw pb "\"></div>"
+      else p19
+    in rw p20 "</div>"
+
+  render-container-children : Integer, Integer, Integer -> Integer
+  render-container-children (pos) (parent-idx) (parent-type) =
+    let grid-cls = if parent-type == 7 then
+        let cols = w-grid-cols parent-idx
+        in if cols == 3 then " is-grid cols-3" else " is-grid cols-2"
+      else ""
+    in let p = rw pos "<div class=\"dsg-container"
+    in let p1 = rw p grid-cls
+    in let p2 = rw p1 "\">"
+    in let p3 = render-children p2 parent-idx
+    in let p4 = if count-children parent-idx 0 0 == 0 then
+        rw p3 "<div style=\"padding:8px;font-size:0.45em;color:var(--dim);text-align:center;opacity:0.5\">Drop here</div>"
+      else p3
+    in rw p4 "</div>"
+
+  render-children : Integer, Integer -> Integer
+  render-children (pos) (parent-idx) =
+    render-children-loop pos parent-idx 0
+
+  render-children-loop : Integer, Integer, Integer -> Integer
+  render-children-loop (pos) (parent-idx) (i) =
+    if i >= w-count then pos
+    else if w-parent i /= parent-idx then render-children-loop pos parent-idx (i + 1)
+    else let p = render-child-widget pos i
+    in render-children-loop p parent-idx (i + 1)
+
+  render-child-widget : Integer, Integer -> Integer
+  render-child-widget (pos) (idx) =
+    let t = w-type idx in let sel = w-selected
+    in let cls-sel = if idx == sel then " selected" else ""
+    in let p = rw pos "<div class=\"dsg-cw"
+    in let p1 = rw p cls-sel
+    in let p2 = rw p1 "\" data-idx=\""
+    in let p3 = ri p2 idx
+    in let p4 = rw p3 "\" style=\"position:relative\">"
+    in let p5 = render-widget-preview p4 idx t
+    in let p6 = if is-container t == 1 then render-container-children p5 idx t else p5
+    in rw p6 "</div>"
+
+  count-children : Integer, Integer, Integer -> Integer
+  count-children (parent-idx) (i) (acc) =
+    if i >= w-count then acc
+    else if w-parent i == parent-idx then count-children parent-idx (i + 1) (acc + 1)
+    else count-children parent-idx (i + 1) acc
+
+Section: Widget Preview (renders as actual Spark component)
+
+  render-widget-preview : Integer, Integer, Integer -> Integer
+  render-widget-preview (pos) (idx) (t) =
+    if t == 0 then render-preview-section pos idx
+    else if t == 1 then render-preview-button pos idx
+    else if t == 2 then render-preview-toggle pos idx
+    else if t == 3 then render-preview-proprow pos idx
+    else if t == 4 then rw pos "<input class=\"dsg-p-input\" disabled>"
+    else if t == 5 then rw pos "<input type=\"range\" class=\"dsg-p-slider\" disabled>"
+    else if t == 6 then rw pos "<div class=\"dsg-p-color\"></div>"
+    else if t == 7 then pos
+    else if t == 8 then rw pos "<div class=\"dsg-p-tabs\"><span>Tab 1</span><span>Tab 2</span><span>Tab 3</span></div>"
+    else if t == 9 then let p = rw pos "<div style=\"font-size:0.45em;color:var(--dim);padding:2px 4px;letter-spacing:0.08em\">"
+      in let p1 = render-pool-str p (w-text-off idx) (w-text-len idx) in rw p1 "</div>"
+    else if t == 10 then rw pos "<div class=\"dsg-p-spacer\"></div>"
+    else rw pos "<div style=\"font-size:0.5em;color:var(--dim);padding:4px\">widget</div>"
+
+  render-preview-section : Integer, Integer -> Integer
+  render-preview-section (pos) (idx) =
+    let p = rw pos "<div class=\"dsg-p-section\">"
+    in let p1 = render-pool-str p (w-text-off idx) (w-text-len idx)
+    in rw p1 "</div>"
+
+  render-preview-button : Integer, Integer -> Integer
+  render-preview-button (pos) (idx) =
+    let p = rw pos "<div class=\"dsg-p-button\">"
+    in let p1 = render-pool-str p (w-text-off idx) (w-text-len idx)
+    in rw p1 "</div>"
+
+  render-preview-toggle : Integer, Integer -> Integer
+  render-preview-toggle (pos) (idx) =
+    let p = rw pos "<div class=\"dsg-p-toggle\">"
+    in let p1 = render-pool-str p (w-text-off idx) (w-text-len idx)
+    in rw p1 "</div>"
+
+  render-preview-proprow : Integer, Integer -> Integer
+  render-preview-proprow (pos) (idx) =
+    let p = rw pos "<div class=\"dsg-p-proprow\"><span class=\"lbl\">"
+    in let p1 = render-pool-str p (w-text-off idx) (w-text-len idx)
+    in rw p1 "</span><span class=\"val\">value</span></div>"
+
+Section: Type Names
+
+  render-type-name : Integer, Integer -> Integer
+  render-type-name (pos) (t) =
+    if t == 0 then rw pos "Section"
+    else if t == 1 then rw pos "Button"
+    else if t == 2 then rw pos "Toggle"
+    else if t == 3 then rw pos "PropRow"
+    else if t == 4 then rw pos "Input"
+    else if t == 5 then rw pos "Slider"
+    else if t == 6 then rw pos "Color"
+    else if t == 7 then rw pos "Grid"
+    else if t == 8 then rw pos "Tabs"
+    else if t == 9 then rw pos "Panel"
+    else if t == 10 then rw pos "Spacer"
+    else rw pos "?"
+
+Section: Preview Render (flow layout, no absolute positioning)
+
+  render-preview : Integer -> Integer
+  render-preview (dummy) =
+    let p = rw 0 "<div class=\"dsg-preview-head\">LIVE PREVIEW</div>"
+    in let p1 = rw p "<div style=\"background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:2px;min-height:200px\">"
+    in let p2 = render-preview-roots p1 0
+    in let p3 = rw p2 "</div>"
+    in render-set-length p3
+
+  render-preview-roots : Integer, Integer -> Integer
+  render-preview-roots (pos) (i) =
+    if i >= w-count then pos
+    else if w-parent i >= 0 then render-preview-roots pos (i + 1)
+    else let p = render-preview-node pos i
+    in render-preview-roots p (i + 1)
+
+  render-preview-node : Integer, Integer -> Integer
+  render-preview-node (pos) (idx) =
+    let t = w-type idx
+    in let p = render-widget-preview pos idx t
+    in if is-container t == 1 then
+      let grid-cls = if t == 7 then
+          let cols = w-grid-cols idx
+          in if cols == 3 then " is-grid cols-3" else " is-grid cols-2"
+        else ""
+      in let p1 = rw p "<div class=\"dsg-container"
+      in let p2 = rw p1 grid-cls
+      in let p3 = rw p2 "\">"
+      in let p4 = render-preview-children p3 idx
+      in rw p4 "</div>"
+    else p
+
+  render-preview-children : Integer, Integer -> Integer
+  render-preview-children (pos) (parent) =
+    render-preview-children-loop pos parent 0
+
+  render-preview-children-loop : Integer, Integer, Integer -> Integer
+  render-preview-children-loop (pos) (parent) (i) =
+    if i >= w-count then pos
+    else if w-parent i /= parent then render-preview-children-loop pos parent (i + 1)
+    else let p = render-preview-node pos i
+    in render-preview-children-loop p parent (i + 1)
+
+Section: Tree Render
+
+  render-tree : Integer -> Integer
+  render-tree (dummy) =
+    let p = rw 0 "<div class=\"dsg-tree-head\">WIDGET TREE</div>"
+    in let p1 = if w-count == 0 then
+        rw p "<div style=\"padding:8px;font-size:0.48em;color:var(--dim);opacity:0.5;text-align:center\">Drag widgets from palette</div>"
+      else render-tree-roots p 0
+    in render-set-length p1
+
+  render-tree-roots : Integer, Integer -> Integer
+  render-tree-roots (pos) (i) =
+    if i >= w-count then pos
+    else if w-parent i >= 0 then render-tree-roots pos (i + 1)
+    else let p = render-tree-node pos i 0
+    in render-tree-roots p (i + 1)
+
+  render-tree-node : Integer, Integer, Integer -> Integer
+  render-tree-node (pos) (idx) (depth) =
+    let t = w-type idx in let sel = w-selected
+    in let cls = if idx == sel then " sel" else ""
+    in let indent = depth * 12
+    in let p = rw pos "<div class=\"dsg-tree-item"
+    in let p1 = rw p cls
+    in let p2 = rw p1 "\" data-idx=\""
+    in let p3 = ri p2 idx
+    in let p4 = rw p3 "\"><span class=\"indent\" style=\"width:"
+    in let p5 = ri p4 indent
+    in let p6 = rw p5 "px\"></span><span class=\"icon\">"
+    in let p7 = render-type-name p6 t
+    in let p8 = rw p7 "</span><span class=\"nm\">"
+    in let p9 = if w-text-len idx > 0 then render-pool-str p8 (w-text-off idx) (w-text-len idx)
+      else render-type-name p8 t
+    in let p10 = rw p9 " #" in let p11 = ri p10 idx
+    in let p12 = rw p11 "</span></div>"
+    in if is-container t == 1 then render-tree-children p12 idx (depth + 1) else p12
+
+  render-tree-children : Integer, Integer, Integer -> Integer
+  render-tree-children (pos) (parent) (depth) =
+    render-tree-children-loop pos parent depth 0
+
+  render-tree-children-loop : Integer, Integer, Integer, Integer -> Integer
+  render-tree-children-loop (pos) (parent) (depth) (i) =
+    if i >= w-count then pos
+    else if w-parent i /= parent then render-tree-children-loop pos parent depth (i + 1)
+    else let p = render-tree-node pos i depth
+    in render-tree-children-loop p parent depth (i + 1)
+
+Section: Properties Render
+
+  render-props : Integer -> Integer
+  render-props (dummy) =
+    let sel = w-selected
+    in if sel < 0 then
+      let p = rw 0 "<div class=\"dsg-props-section\">PROPERTIES</div>"
+      in let p1 = rw p "<div style=\"padding:12px 8px;font-size:0.5em;color:var(--dim);opacity:0.5;text-align:center\">Select a widget</div>"
+      in render-set-length p1
+    else render-props-for sel
+
+  render-props-for : Integer -> Integer
+  render-props-for (idx) =
+    let t = w-type idx
+    in let p = rw 0 "<div class=\"dsg-props-section\">"
+    in let p1 = render-type-name p t
+    in let p2 = rw p1 " #" in let p3 = ri p2 idx
+    in let p4 = rw p3 "</div>"
+    in let p5 = rw p4 "<div class=\"dsg-props-row\"><label>Text</label><input value=\""
+    in let p6 = render-pool-str p5 (w-text-off idx) (w-text-len idx)
+    in let p7 = rw p6 "\" onchange=\"setWidgetText("
+    in let p8 = ri p7 idx in let p9 = rw p8 ",this.value)\"></div>"
+    in let p10 = rw p9 "<div class=\"dsg-props-row\"><label>Action</label><textarea onchange=\"setWidgetOnclick("
+    in let p11 = ri p10 idx in let p12 = rw p11 ",this.value)\">"
+    in let p13 = render-pool-str p12 (w-onclick-off idx) (w-onclick-len idx)
+    in let p14 = rw p13 "</textarea></div>"
+    in let p15 = rw p14 "<div class=\"dsg-props-section\">LAYOUT</div>"
+    in let p16 = rw p15 "<div class=\"dsg-props-row\"><label>X</label><input type=\"number\" class=\"dsg-num\" value=\""
+    in let p17 = ri p16 (w-x idx) in let p18 = rw p17 "\" onchange=\"setProp("
+    in let p19 = ri p18 idx in let p20 = rw p19 ",'x',this.value)\"><label>Y</label><input type=\"number\" class=\"dsg-num\" value=\""
+    in let p21 = ri p20 (w-y idx) in let p22 = rw p21 "\" onchange=\"setProp("
+    in let p23 = ri p22 idx in let p24 = rw p23 ",'y',this.value)\"></div>"
+    in let p25 = rw p24 "<div class=\"dsg-props-row\"><label>W</label><input type=\"number\" class=\"dsg-num\" value=\""
+    in let p26 = ri p25 (w-w idx) in let p27 = rw p26 "\" onchange=\"setProp("
+    in let p28 = ri p27 idx in let p29 = rw p28 ",'w',this.value)\"><label>H</label><input type=\"number\" class=\"dsg-num\" value=\""
+    in let p30 = ri p29 (w-h idx) in let p31 = rw p30 "\" onchange=\"setProp("
+    in let p32 = ri p31 idx in let p33 = rw p32 ",'h',this.value)\"></div>"
+    in let p34 = rw p33 "<div class=\"dsg-props-section\">ACTIONS</div>"
+    in let p35 = rw p34 "<div class=\"dsg-props-row\" style=\"gap:4px\"><button class=\"dsg-copy-btn\" style=\"flex:1\" onclick=\"dupWidget("
+    in let p36 = ri p35 idx
+    in let p37 = rw p36 ")\">Dup</button><button class=\"dsg-copy-btn\" style=\"flex:1;color:var(--warn)\" onclick=\"call('delete_widget',"
+    in let p38 = ri p37 idx
+    in let p39 = rw p38 ");renderAll()\">Del</button></div>"
+    in render-set-length p39
+
+Page 1

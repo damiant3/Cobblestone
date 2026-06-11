@@ -1,0 +1,74 @@
+Chapter: TimelinePage
+  cites Vision chapter VisionTypes
+  cites Vision chapter VisionPortfolio
+  cites Vision chapter VisionTheme
+  cites UI chapter Widget
+  cites UI chart Layout
+
+ Gantt-like timeline with cascade overlay. Projects shown as
+ horizontal bars with milestones as markers. Dependencies drawn
+ as connecting lines. Signal cascade overlaid as weight-colored
+ arrows.
+
+Section: Timeline View
+
+  timeline-widget : PortfolioState, Integer, Integer -> WidgetNode
+  timeline-widget (pf) (now) (view-weeks) =
+    let title = widget-label "tl-title" "Timeline"
+    in let active = pf-active-projects pf
+    in let rows = timeline-rows active now view-weeks 0 (list-length active) []
+    in widget-panel "timeline" DirColumn 2 (title :: rows)
+
+  timeline-rows : List Project, Integer, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  timeline-rows (projects) (now) (weeks) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at projects i
+    in let row = timeline-project-row p now weeks
+    in timeline-rows projects now weeks (i + 1) len (list-push acc row)
+
+Section: Project Row
+
+  timeline-project-row : Project, Integer, Integer -> WidgetNode
+  timeline-project-row (p) (now) (weeks) =
+    let name-lbl = widget-label ("tl-n-" & show p.proj-id) p.proj-name
+    in let status-lbl = widget-label ("tl-s-" & show p.proj-id) (proj-status-label p.proj-status)
+    in let ms-markers = milestone-markers p.proj-milestones now 0 p.proj-milestone-count []
+    in let bar = widget-panel ("tl-bar-" & show p.proj-id) DirRow 2 ms-markers
+    in widget-panel ("tl-row-" & show p.proj-id) DirRow 8 [name-lbl, status-lbl, bar]
+
+Section: Milestone Markers
+
+  milestone-markers : List Milestone, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  milestone-markers (milestones) (now) (i) (len) (acc) =
+    if i >= len then acc
+    else let ms = list-at milestones i
+    in let marker = milestone-marker ms now
+    in milestone-markers milestones now (i + 1) len (list-push acc marker)
+
+  milestone-marker : Milestone, Integer -> WidgetNode
+  milestone-marker (ms) (now) =
+    let status-char = when ms.ms-status
+          is ProjComplete -> "[*]"
+          is ProjBlocked -> "[!]"
+          is otherwise -> if ms.ms-due < now then "[X]" else "[ ]"
+    in let weeks-out = (ms.ms-due - now) / 604800
+    in let label = ms.ms-name & " " & status-char & " (" & show weeks-out & "w)"
+    in widget-label ("tl-ms-" & show ms.ms-id) label
+
+Section: Dependency Lines
+
+  dependency-summary : PortfolioState -> WidgetNode
+  dependency-summary (pf) =
+    let title = widget-label "dep-title" "Dependencies"
+    in let rows = dep-rows pf.pf-dependencies 0 pf.pf-dep-count []
+    in widget-panel "dep-summary" DirColumn 4 (title :: rows)
+
+  dep-rows : List Dependency, Integer, Integer, List WidgetNode -> List WidgetNode
+  dep-rows (deps) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = list-at deps i
+    in let row = widget-label ("dep-" & show i)
+          ("P" & show d.dep-from-project & ".M" & show d.dep-from-milestone
+          & " -> P" & show d.dep-to-project & ".M" & show d.dep-to-milestone
+          & ": " & d.dep-description)
+    in dep-rows deps (i + 1) len (list-push acc row)

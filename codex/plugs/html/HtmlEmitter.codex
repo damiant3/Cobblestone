@@ -431,7 +431,8 @@ Section: Chapter Emission
    in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (Math.trunc(a)^Math.trunc(b));}\nfunction bit_and(a,b){return (Math.trunc(a)&Math.trunc(b));}\nfunction bit_or(a,b){return (Math.trunc(a)|Math.trunc(b));}\nfunction bit_shl(a,n){return (Math.trunc(a)<<n);}\nfunction bit_shr(a,n){return (Math.trunc(a)>>n);}\nfunction bit_shru(a,n){return (Math.trunc(a)>>>n);}\nfunction bit_not(a){return (~Math.trunc(a));}\n\n"
    in let types-text = emit-js-type-defs type-defs 0
    in let defs-text = emit-js-defs (m.defs) 0 arities
-   in let entry = "// Entry\ntry { opening(); } catch(e) { console.error(e); }\n"
+   in let arity = lookup-arity arities "opening"
+   in let entry = if arity > 0 then "// Entry\ntry { opening(); } catch(e) { console.error(e); }\n" else "// Entry: opening evaluated as const\n"
    in let dom-bi = emit-dom-builtins
    in let js = builtins & dom-bi & types-text & defs-text & entry
    in emit-html-page title (emit-default-css) js
@@ -460,6 +461,8 @@ Section: Chapter Emission
    & "function dom_body(){return document.body;}\n"
    & "function random_int(lo,hi){return lo+Math.floor(Math.random()*(hi-lo+1));}\n"
    & "function set_timeout(fn,ms){return setTimeout(fn,ms);}\n"
+   & "var _actx=null;function _audioctx(){if(!_actx){try{_actx=new (window.AudioContext||window.webkitAudioContext)()}catch(e){return null}}if(_actx.state==='suspended'){try{_actx.resume()}catch(e){}}return _actx}\n"
+   & "function play_tone(freq,ms,wave){try{var c=_audioctx();if(!c)return 0;var o=c.createOscillator();var g=c.createGain();o.type=wave===1?'triangle':wave===2?'square':wave===3?'sawtooth':'sine';o.frequency.value=freq;o.connect(g);g.connect(c.destination);var t=c.currentTime;var d=ms/1000;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.25,t+0.01);g.gain.exponentialRampToValueAtTime(0.0001,t+d);o.start(t);o.stop(t+d+0.02)}catch(e){}return 0}\n"
    & "function local_storage_get(k){try{return localStorage.getItem(k)||'';}catch(e){return'';}}\n"
    & "function local_storage_set(k,v){try{localStorage.setItem(k,v);}catch(e){}return 0;}\n"
    & "var _cc=0;function next_card_id(x){_cc++;return 'c'+_cc;}\n"
@@ -647,8 +650,9 @@ Section: Chapter Emission
 
   emit-dom-widget-style : Text
   emit-dom-widget-style =
-   "var _wkTheme=null,_wkOnPick=null,_wkOnClick=null;\n"
+   "var _wkTheme=null,_wkOnPick=null,_wkOnClick=null,_wkOnInput=null;\n"
    & "function register_handlers(p,c){_wkOnPick=p;_wkOnClick=c;return 0}\n"
+   & "function register_input_handler(f){_wkOnInput=f;return 0}\n"
    & "function _wkStyle(ws,el){if(!ws)return;"
    & "if(ws.ws_bg)el.style.background=_c(ws.ws_bg);"
    & "if(ws.ws_fg)el.style.color=_c(ws.ws_fg);"
@@ -674,13 +678,15 @@ Section: Chapter Emission
    "function _wk(n){var k=n.wn_kind,el;"
    & "if(k._tag==='WkCustom')return _wkCustom(n,k._0||'');"
    & "if(k._tag==='WkPanel')el=document.createElement('div');"
-   & "else if(k._tag==='WkLabel'){el=document.createElement('span');el.textContent=k._0}"
-   & "else if(k._tag==='WkButton'){el=document.createElement('button');el.textContent=k._0}"
+   & "else if(k._tag==='WkLabel'){el=document.createElement('span');if(k._0&&k._0.indexOf('&')>=0)el.innerHTML=k._0;else el.textContent=k._0}"
+   & "else if(k._tag==='WkButton'){el=document.createElement('button');if(k._0&&k._0.indexOf('&')>=0)el.innerHTML=k._0;else el.textContent=k._0}"
    & "else if(k._tag==='WkInput'){el=document.createElement('input');el.value=k._0}"
    & "else if(k._tag==='WkGauge'){el=document.createElement('progress');el.value=k._0;el.max=k._1}"
    & "else if(k._tag==='WkSeparator')el=document.createElement('hr');"
    & "else{el=document.createElement('div');el.dataset.custom=k._0||''}"
    & "if(n.wn_id)el.id=n.wn_id;"
+   & "if(k._tag==='WkButton')el.addEventListener('click',function(e){e.stopPropagation();if(_wkOnClick)_wkOnClick(n.wn_id||'')});"
+   & "if(k._tag==='WkInput')el.addEventListener('input',function(){if(_wkOnInput)_wkOnInput(n.wn_id||'',el.value)});"
    & "var t=k._tag;el.classList.add('wk-'+(t==='WkPanel'?'panel':t==='WkLabel'?'label':"
    & "t==='WkButton'?'btn':t==='WkInput'?'input':t==='WkGauge'?'gauge':t==='WkSeparator'?'sep':'panel'));"
    & "var d=n.wn_layout_dir;if(d){if(d._tag==='DirRow')el.classList.add('wk-row');"
@@ -700,6 +706,7 @@ Section: Chapter Emission
    & "var id=n.wn_id||'',st=n.wn_state||0,ch=n.wn_children||[];"
    & "function lbl(i){var c=ch[i];if(!c)return '';var kk=c.wn_kind;return (kk&&kk._0!==undefined&&kk._0!==null)?kk._0:'';}"
    & "if(tag.indexOf('box:')===0){var el=document.createElement('div');var cls=tag.slice(4);if(cls)el.className=cls;if(id)el.id=id;for(var i=0;i<ch.length;i++)el.appendChild(_wk(ch[i]));return el;}"
+   & "if(tag.indexOf('boxc:')===0){var el=document.createElement('div');var cls=tag.slice(5);if(cls)el.className=cls;if(id)el.id=id;el.style.cursor='pointer';el.addEventListener('click',function(e){e.stopPropagation();if(_wkOnClick)_wkOnClick(id)});for(var i=0;i<ch.length;i++)el.appendChild(_wk(ch[i]));return el;}"
    & "if(tag==='h1'){var h=document.createElement('h1');h.textContent=lbl(0);return h;}"
    & "if(tag==='nav'){var nv=document.createElement('nav');nv.className='nv';"
    & "var pages=[['/item','item','Items'],['/character','character','Characters'],['/setting','setting','Settings'],['/card','card','Cards'],['/mine','mine','My Creations']];"
@@ -782,12 +789,14 @@ Section: Chapter Emission
    & "if(tag==='section-title'){var s=document.createElement('div');s.className='section-title';s.id=id;s.textContent=lbl(0);return s;}"
    & "if(tag==='msg'){var m=document.createElement('div');m.className='msg';m.id=id;return m;}"
    & "if(tag==='log-box'){var l=document.createElement('div');l.className='log-box';l.id=id;l.textContent='No entries yet.';return l;}"
-   & "if(tag==='input'){var inp=document.createElement('input');inp.id=id;inp.placeholder=lbl(0);return inp;}"
+   & "if(tag==='input'){var inp=document.createElement('input');inp.id=id;if(ch.length>1){inp.value=lbl(0);inp.placeholder=lbl(1)}else inp.placeholder=lbl(0);inp.addEventListener('input',function(){if(_wkOnInput)_wkOnInput(id,inp.value)});return inp;}"
+   & "if(tag==='textarea'){var ta=document.createElement('textarea');ta.id=id;ta.value=lbl(0);if(ch.length>1)ta.placeholder=lbl(1);ta.addEventListener('input',function(){if(_wkOnInput)_wkOnInput(id,ta.value)});return ta;}"
    & "if(tag==='select'){var s=document.createElement('select');s.id=id;for(var i=0;i<ch.length;i++)s.appendChild(_wk(ch[i]));return s;}"
    & "if(tag==='option'){var o=document.createElement('option');o.value=id;o.textContent=lbl(0);return o;}"
    & "if(tag==='th'){var t=document.createElement('th');t.textContent=lbl(0);return t;}"
    & "if(tag==='thead'){var t=document.createElement('tr');for(var i=0;i<ch.length;i++)t.appendChild(_wk(ch[i]));return t;}"
    & "if(tag==='tbody'){var t=document.createElement('tbody');t.id=id;for(var i=0;i<ch.length;i++)t.appendChild(_wk(ch[i]));return t;}"
+   & "if(tag==='color-swatch'){var s=document.createElement('div');s.className='color-swatch';s.id=id;s.style.background=lbl(1);var lb=document.createElement('span');lb.className='wk-lbl';lb.textContent=lbl(0);s.appendChild(lb);return s;}"
 
   emit-dom-widget-magic-c : Text
   emit-dom-widget-magic-c =

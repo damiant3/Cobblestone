@@ -1,0 +1,211 @@
+Chapter: DataBinding
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ResourceModel
+  cites Cvmm chapter Monitor
+  cites Foreword chapter Maybe
+
+ Reactive data binding. A Binding connects a DataSource to a target
+ (a monitor panel, a widget, or a route endpoint). When the source
+ updates, the binding propagates the new value. Bindings can
+ transform values through a pipeline of steps: map, threshold,
+ format, aggregate.
+
+ This is what makes the monitor composable — you don't wire each
+ panel to a specific API call, you wire it to a binding that knows
+ how to extract the value from whatever state slice owns it.
+
+Section: Transform
+
+  Transform =
+    | TxIdentity
+    | TxToPercent (Integer)
+    | TxToBytes
+    | TxToDuration
+    | TxFormat (Text)
+    | TxThreshold (Integer) (Integer)
+    | TxClamp (Integer) (Integer)
+    | TxScale (Integer) (Integer)
+    | TxDelta
+    | TxRate (Integer)
+    | TxAverage (Integer)
+    | TxMax
+    | TxMin
+    | TxCount
+    | TxSum
+
+  tx-label : Transform -> Text
+  tx-label (t) = when t
+    is TxIdentity -> "identity"
+    is TxToPercent (max-val) -> "to-percent(" & show max-val & ")"
+    is TxToBytes -> "to-bytes"
+    is TxToDuration -> "to-duration"
+    is TxFormat (fmt) -> "format(" & fmt & ")"
+    is TxThreshold (warn) (crit) -> "threshold(" & show warn & "," & show crit & ")"
+    is TxClamp (lo) (hi) -> "clamp(" & show lo & "," & show hi & ")"
+    is TxScale (num) (den) -> "scale(" & show num & "/" & show den & ")"
+    is TxDelta -> "delta"
+    is TxRate (interval) -> "rate(" & show interval & "s)"
+    is TxAverage (window) -> "avg(" & show window & ")"
+    is TxMax -> "max"
+    is TxMin -> "min"
+    is TxCount -> "count"
+    is TxSum -> "sum"
+
+  tx-apply : Transform, PropValue, PropValue -> PropValue
+  tx-apply (t) (current) (previous) = when t
+    is TxIdentity -> current
+    is TxToPercent (max-val) ->
+      if max-val == 0 then PvPercent 0
+      else PvPercent (pv-to-int current * 100 / max-val)
+    is TxToBytes -> PvBytes (bytes (pv-to-int current))
+    is TxToDuration -> PvDuration (pv-to-int current)
+    is TxFormat (fmt) -> PvText (pv-to-text current)
+    is TxThreshold (warn) (crit) ->
+      let val = pv-to-int current
+      in if val >= crit then PvStatus (StatusError "critical")
+      else if val >= warn then PvStatus StatusDegraded
+      else PvStatus StatusOnline
+    is TxClamp (lo) (hi) ->
+      let val = pv-to-int current
+      in let clamped = if val < lo then lo else if val > hi then hi else val
+      in PvInt clamped
+    is TxScale (num) (den) ->
+      if den == 0 then PvInt 0
+      else PvInt (pv-to-int current * num / den)
+    is TxDelta -> PvInt (pv-to-int current - pv-to-int previous)
+    is TxRate (interval) ->
+      if interval == 0 then PvInt 0
+      else PvInt ((pv-to-int current - pv-to-int previous) / interval)
+    is TxAverage (window) -> current
+    is TxMax -> if pv-to-int current > pv-to-int previous then current else previous
+    is TxMin -> if pv-to-int current < pv-to-int previous then current else previous
+    is TxCount -> PvInt (pv-to-int previous + 1)
+    is TxSum -> PvInt (pv-to-int previous + pv-to-int current)
+
+Section: Binding
+
+  Binding = record {
+    bind-id : Text,
+    bind-source : DataSourceKind,
+    bind-target : Text,
+    bind-transforms : List Transform,
+    bind-transform-count : Integer,
+    bind-interval-ms : Integer,
+    bind-last-raw : PropValue,
+    bind-last-output : PropValue,
+    bind-update-count : Integer,
+    bind-error-count : Integer,
+    bind-active : Boolean
+  }
+
+  binding-new : Text, DataSourceKind, Text -> Binding
+  binding-new (id) (source) (target) = Binding {
+    bind-id = id,
+    bind-source = source,
+    bind-target = target,
+    bind-transforms = [],
+    bind-transform-count = 0,
+    bind-interval-ms = 2000,
+    bind-last-raw = PvNone,
+    bind-last-output = PvNone,
+    bind-update-count = 0,
+    bind-error-count = 0,
+    bind-active = True
+  }
+
+  bind-add-transform : Binding, Transform -> Binding
+  bind-add-transform (b) (t) =
+    __record-set (__record-set b "bind-transforms" (list-push (b.bind-transforms) t)) "bind-transform-count" (b.bind-transform-count + 1)
+
+  bind-set-interval : Binding, Integer -> Binding
+  bind-set-interval (b) (ms) = __record-set b "bind-interval-ms" ms
+
+  bind-pause : Binding -> Binding
+  bind-pause (b) = __record-set b "bind-active" False
+
+  bind-resume : Binding -> Binding
+  bind-resume (b) = __record-set b "bind-active" True
+
+Section: Binding Evaluation
+
+  bind-evaluate : Binding, PropValue -> Binding
+  bind-evaluate (b) (raw-value) =
+    let output = bind-apply-chain (b.bind-transforms) raw-value (b.bind-last-raw) 0 (b.bind-transform-count)
+    in Binding {
+      bind-id = b.bind-id,
+      bind-source = b.bind-source,
+      bind-target = b.bind-target,
+      bind-transforms = b.bind-transforms,
+      bind-transform-count = b.bind-transform-count,
+      bind-interval-ms = b.bind-interval-ms,
+      bind-last-raw = raw-value,
+      bind-last-output = output,
+      bind-update-count = b.bind-update-count + 1,
+      bind-error-count = b.bind-error-count,
+      bind-active = b.bind-active
+    }
+
+  bind-apply-chain : List Transform, PropValue, PropValue, Integer, Integer -> PropValue
+  bind-apply-chain (transforms) (current) (previous) (i) (n) =
+    if i >= n then current
+    else let tx = list-at transforms i
+    in let result = tx-apply tx current previous
+    in bind-apply-chain transforms result previous (i + 1) n
+
+Section: Binding Registry
+
+  BindingRegistry = record {
+    br-bindings : List Binding,
+    br-count : Integer
+  }
+
+  binding-registry-new : BindingRegistry
+  binding-registry-new = BindingRegistry { br-bindings = [], br-count = 0 }
+
+  br-add : BindingRegistry, Binding -> BindingRegistry
+  br-add (reg) (b) =
+    __record-set (__record-set reg "br-bindings" (list-push (reg.br-bindings) b)) "br-count" (reg.br-count + 1)
+
+  br-remove : BindingRegistry, Text -> BindingRegistry
+  br-remove (reg) (id) =
+    let filtered = br-filter (reg.br-bindings) id 0 (reg.br-count) []
+    in __record-set (__record-set reg "br-bindings" filtered) "br-count" (list-length filtered)
+
+  br-filter : List Binding, Text, Integer, Integer, List Binding -> List Binding
+  br-filter (bs) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = list-at bs i
+    in if b.bind-id == id then br-filter bs id (i + 1) n acc
+    else br-filter bs id (i + 1) n (list-push acc b)
+
+  br-find : BindingRegistry, Text -> Maybe Binding
+  br-find (reg) (id) = br-find-loop (reg.br-bindings) id 0 (reg.br-count)
+
+  br-find-loop : List Binding, Text, Integer, Integer -> Maybe Binding
+  br-find-loop (bs) (id) (i) (n) =
+    if i >= n then None
+    else let b = list-at bs i
+    in if b.bind-id == id then Just b
+    else br-find-loop bs id (i + 1) n
+
+  br-bindings-for-target : BindingRegistry, Text -> List Binding
+  br-bindings-for-target (reg) (target) =
+    br-target-loop (reg.br-bindings) target 0 (reg.br-count) []
+
+  br-target-loop : List Binding, Text, Integer, Integer, List Binding -> List Binding
+  br-target-loop (bs) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = list-at bs i
+    in if b.bind-target == target then br-target-loop bs target (i + 1) n (list-push acc b)
+    else br-target-loop bs target (i + 1) n acc
+
+  br-active-count : BindingRegistry -> Integer
+  br-active-count (reg) = br-active-loop (reg.br-bindings) 0 (reg.br-count) 0
+
+  br-active-loop : List Binding, Integer, Integer, Integer -> Integer
+  br-active-loop (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if (list-at bs i).bind-active then 1 else 0
+    in br-active-loop bs (i + 1) n (acc + delta)
+
+Page 1

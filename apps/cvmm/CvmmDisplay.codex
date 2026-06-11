@@ -1,0 +1,383 @@
+Chapter: CvmmDisplay
+  cites Cvmm chapter CvmmTypes
+  cites Foreword chapter Maybe
+
+ Display streaming protocol. Encodes framebuffer data into framed
+ messages for transmission over TCP. Supports full-frame and dirty-rect
+ updates. Decodes input events (keyboard, mouse) from the remote
+ client. This is the bridge between the OS compositor and the browser
+ canvas.
+
+Section: Frame Tags
+
+  tag-full-frame : Integer = 16
+  tag-dirty-rect : Integer = 17
+  tag-cursor : Integer = 18
+  tag-bell : Integer = 19
+  tag-resize : Integer = 20
+
+  tag-key-down : Integer = 32
+  tag-key-up : Integer = 33
+  tag-mouse-move : Integer = 34
+  tag-mouse-down : Integer = 35
+  tag-mouse-up : Integer = 36
+  tag-mouse-scroll : Integer = 37
+  tag-clipboard : Integer = 38
+
+Section: Frame Header
+
+  FrameHeader = record {
+    fh-tag : Integer,
+    fh-length : Integer
+  }
+
+Section: Dirty Rect
+
+  DirtyRect = record {
+    dr-x : Integer,
+    dr-y : Integer,
+    dr-w : Integer,
+    dr-h : Integer,
+    dr-pixel-count : Integer
+  }
+
+  dirty-rect-new : Integer, Integer, Integer, Integer -> DirtyRect
+  dirty-rect-new (x) (y) (w) (h) = DirtyRect {
+    dr-x = x, dr-y = y, dr-w = w, dr-h = h,
+    dr-pixel-count = w * h
+  }
+
+  dirty-rect-byte-size : DirtyRect -> Integer
+  dirty-rect-byte-size (r) = r.dr-pixel-count * 4
+
+  dirty-rects-overlap : DirtyRect, DirtyRect -> Boolean
+  dirty-rects-overlap (a) (b) =
+    if a.dr-x + a.dr-w <= b.dr-x then False
+    else if b.dr-x + b.dr-w <= a.dr-x then False
+    else if a.dr-y + a.dr-h <= b.dr-y then False
+    else if b.dr-y + b.dr-h <= a.dr-y then False
+    else True
+
+  dirty-rects-merge : DirtyRect, DirtyRect -> DirtyRect
+  dirty-rects-merge (a) (b) =
+    let x1 = if a.dr-x < b.dr-x then a.dr-x else b.dr-x
+    in let y1 = if a.dr-y < b.dr-y then a.dr-y else b.dr-y
+    in let x2a = a.dr-x + a.dr-w
+    in let x2b = b.dr-x + b.dr-w
+    in let x2 = if x2a > x2b then x2a else x2b
+    in let y2a = a.dr-y + a.dr-h
+    in let y2b = b.dr-y + b.dr-h
+    in let y2 = if y2a > y2b then y2a else y2b
+    in dirty-rect-new x1 y1 (x2 - x1) (y2 - y1)
+
+  dirty-rect-area : DirtyRect -> Integer
+  dirty-rect-area (r) = r.dr-w * r.dr-h
+
+Section: Dirty Rect Tracker
+
+  DirtyTracker = record {
+    dt-rects : List DirtyRect,
+    dt-count : Integer,
+    dt-max-rects : Integer,
+    dt-screen-w : Integer,
+    dt-screen-h : Integer
+  }
+
+  dirty-tracker-new : Integer, Integer -> DirtyTracker
+  dirty-tracker-new (w) (h) = DirtyTracker {
+    dt-rects = [],
+    dt-count = 0,
+    dt-max-rects = 16,
+    dt-screen-w = w,
+    dt-screen-h = h
+  }
+
+  dt-mark-dirty : DirtyTracker, Integer, Integer, Integer, Integer -> DirtyTracker
+  dt-mark-dirty (dt) (x) (y) (w) (h) =
+    let rect = dirty-rect-new x y w h
+    in let merged = dt-try-merge (dt.dt-rects) rect 0 (dt.dt-count)
+    in when merged
+      is Just (result) -> __record-set dt "dt-rects" result
+      is None ->
+        if dt.dt-count >= dt.dt-max-rects then
+          dt-coalesce dt rect
+        else __record-set (__record-set dt "dt-rects" (list-push (dt.dt-rects) rect)) "dt-count" (dt.dt-count + 1)
+
+  dt-try-merge : List DirtyRect, DirtyRect, Integer, Integer -> Maybe (List DirtyRect)
+  dt-try-merge (rects) (new-rect) (i) (n) =
+    if i >= n then None
+    else let existing = list-at rects i
+    in if dirty-rects-overlap existing new-rect then
+      let merged = dirty-rects-merge existing new-rect
+      in Just (list-set-at rects i merged)
+    else dt-try-merge rects new-rect (i + 1) n
+
+  dt-coalesce : DirtyTracker, DirtyRect -> DirtyTracker
+  dt-coalesce (dt) (new-rect) =
+    let full = dirty-rect-new 0 0 (dt.dt-screen-w) (dt.dt-screen-h)
+    in DirtyTracker {
+      dt-rects = [full],
+      dt-count = 1,
+      dt-max-rects = dt.dt-max-rects,
+      dt-screen-w = dt.dt-screen-w,
+      dt-screen-h = dt.dt-screen-h
+    }
+
+  dt-clear : DirtyTracker -> DirtyTracker
+  dt-clear (dt) = __record-set (__record-set dt "dt-rects" []) "dt-count" 0
+
+  dt-is-full-frame : DirtyTracker -> Boolean
+  dt-is-full-frame (dt) =
+    if dt.dt-count == 1 then
+      let r = list-at (dt.dt-rects) 0
+      in r.dr-x == 0 then if r.dr-y == 0 then
+        if r.dr-w == dt.dt-screen-w then r.dr-h == dt.dt-screen-h
+        else False
+      else False
+      else False
+    else False
+
+  dt-total-pixels : DirtyTracker -> Integer
+  dt-total-pixels (dt) = dt-sum-pixels (dt.dt-rects) 0 (dt.dt-count) 0
+
+  dt-sum-pixels : List DirtyRect, Integer, Integer, Integer -> Integer
+  dt-sum-pixels (rects) (i) (n) (acc) =
+    if i >= n then acc
+    else dt-sum-pixels rects (i + 1) n (acc + dirty-rect-area (list-at rects i))
+
+Section: Input Events
+
+  KeyModifiers = record {
+    km-shift : Boolean,
+    km-ctrl : Boolean,
+    km-alt : Boolean,
+    km-meta : Boolean
+  }
+
+  no-modifiers : KeyModifiers
+  no-modifiers = KeyModifiers { km-shift = False, km-ctrl = False, km-alt = False, km-meta = False }
+
+  modifiers-to-byte : KeyModifiers -> Integer
+  modifiers-to-byte (m) =
+    let s = if m.km-shift then 1 else 0
+    in let c = if m.km-ctrl then 2 else 0
+    in let a = if m.km-alt then 4 else 0
+    in let mt = if m.km-meta then 8 else 0
+    in s + c + a + mt
+
+  byte-to-modifiers : Integer -> KeyModifiers
+  byte-to-modifiers (b) = KeyModifiers {
+    km-shift = bit-and b 1 == 1,
+    km-ctrl = bit-and b 2 == 2,
+    km-alt = bit-and b 4 == 4,
+    km-meta = bit-and b 8 == 8
+  }
+
+  MouseButton =
+    | BtnLeft
+    | BtnRight
+    | BtnMiddle
+
+  mouse-button-to-byte : MouseButton -> Integer
+  mouse-button-to-byte (b) = when b
+    is BtnLeft -> 0
+    is BtnRight -> 1
+    is BtnMiddle -> 2
+
+  byte-to-mouse-button : Integer -> MouseButton
+  byte-to-mouse-button (b) =
+    if b == 1 then BtnRight
+    else if b == 2 then BtnMiddle
+    else BtnLeft
+
+  InputEvent =
+    | EvKeyDown (Integer) (KeyModifiers)
+    | EvKeyUp (Integer) (KeyModifiers)
+    | EvMouseMove (Integer) (Integer)
+    | EvMouseDown (Integer) (Integer) (MouseButton)
+    | EvMouseUp (Integer) (Integer) (MouseButton)
+    | EvMouseScroll (Integer) (Integer)
+    | EvClipboard (Text)
+
+  input-event-tag : InputEvent -> Integer
+  input-event-tag (e) = when e
+    is EvKeyDown (sc) (m) -> tag-key-down
+    is EvKeyUp (sc) (m) -> tag-key-up
+    is EvMouseMove (x) (y) -> tag-mouse-move
+    is EvMouseDown (x) (y) (b) -> tag-mouse-down
+    is EvMouseUp (x) (y) (b) -> tag-mouse-up
+    is EvMouseScroll (dx) (dy) -> tag-mouse-scroll
+    is EvClipboard (t) -> tag-clipboard
+
+Section: Display State
+
+  DisplayState = record {
+    ds-width : Integer,
+    ds-height : Integer,
+    ds-tracker : DirtyTracker,
+    ds-cursor-x : Integer,
+    ds-cursor-y : Integer,
+    ds-cursor-shape : Integer,
+    ds-frame-count : Integer,
+    ds-bytes-sent : ByteSize,
+    ds-connected : Boolean
+  }
+
+  display-state-new : Integer, Integer -> DisplayState
+  display-state-new (w) (h) = DisplayState {
+    ds-width = w,
+    ds-height = h,
+    ds-tracker = dirty-tracker-new w h,
+    ds-cursor-x = 0,
+    ds-cursor-y = 0,
+    ds-cursor-shape = 0,
+    ds-frame-count = 0,
+    ds-bytes-sent = bytes 0,
+    ds-connected = False
+  }
+
+  display-mark-dirty : DisplayState, Integer, Integer, Integer, Integer -> DisplayState
+  display-mark-dirty (ds) (x) (y) (w) (h) =
+    __record-set ds "ds-tracker" (dt-mark-dirty (ds.ds-tracker) x y w h)
+
+  display-mark-full : DisplayState -> DisplayState
+  display-mark-full (ds) =
+    display-mark-dirty ds 0 0 (ds.ds-width) (ds.ds-height)
+
+  display-clear-dirty : DisplayState -> DisplayState
+  display-clear-dirty (ds) =
+    __record-set ds "ds-tracker" (dt-clear (ds.ds-tracker))
+
+  display-resize : DisplayState, Integer, Integer -> DisplayState
+  display-resize (ds) (w) (h) =
+    DisplayState {
+      ds-width = w,
+      ds-height = h,
+      ds-tracker = dirty-tracker-new w h,
+      ds-cursor-x = ds.ds-cursor-x,
+      ds-cursor-y = ds.ds-cursor-y,
+      ds-cursor-shape = ds.ds-cursor-shape,
+      ds-frame-count = ds.ds-frame-count,
+      ds-bytes-sent = ds.ds-bytes-sent,
+      ds-connected = ds.ds-connected
+    }
+
+  display-move-cursor : DisplayState, Integer, Integer -> DisplayState
+  display-move-cursor (ds) (x) (y) =
+    __record-set (__record-set ds "ds-cursor-x" x) "ds-cursor-y" y
+
+  display-set-connected : DisplayState, Boolean -> DisplayState
+  display-set-connected (ds) (c) = __record-set ds "ds-connected" c
+
+  display-inc-frame : DisplayState -> DisplayState
+  display-inc-frame (ds) = __record-set ds "ds-frame-count" (ds.ds-frame-count + 1)
+
+  display-add-bytes-sent : DisplayState, Integer -> DisplayState
+  display-add-bytes-sent (ds) (n) =
+    __record-set ds "ds-bytes-sent" (bytes ((ds.ds-bytes-sent).bs-bytes + n))
+
+Section: Frame Header Encoding
+
+  encode-u16-le : Integer -> List Integer
+  encode-u16-le (n) = [bit-and n 255, bit-and (bit-shru n 8) 255]
+
+  encode-i16-le : Integer -> List Integer
+  encode-i16-le (n) =
+    let unsigned = if n < 0 then 65536 + n else n
+    in encode-u16-le unsigned
+
+  encode-u32-le : Integer -> List Integer
+  encode-u32-le (n) = [
+    bit-and n 255,
+    bit-and (bit-shru n 8) 255,
+    bit-and (bit-shru n 16) 255,
+    bit-and (bit-shru n 24) 255
+  ]
+
+  decode-u16-le : List Integer, Integer -> Integer
+  decode-u16-le (buf) (off) =
+    bit-or (list-at buf off) (bit-shl (list-at buf (off + 1)) 8)
+
+  decode-i16-le : List Integer, Integer -> Integer
+  decode-i16-le (buf) (off) =
+    let raw = decode-u16-le buf off
+    in if raw >= 32768 then raw - 65536 else raw
+
+  decode-u32-le : List Integer, Integer -> Integer
+  decode-u32-le (buf) (off) =
+    bit-or (bit-or (list-at buf off) (bit-shl (list-at buf (off + 1)) 8))
+      (bit-or (bit-shl (list-at buf (off + 2)) 16) (bit-shl (list-at buf (off + 3)) 24))
+
+Section: Frame Construction
+
+  frame-header-bytes : Integer, Integer -> List Integer
+  frame-header-bytes (tag) (body-len) =
+    let total = 1 + body-len
+    in encode-u32-le total & [tag]
+
+  frame-resize-bytes : Integer, Integer -> List Integer
+  frame-resize-bytes (w) (h) =
+    frame-header-bytes tag-resize 4 & encode-u16-le w & encode-u16-le h
+
+  frame-cursor-bytes : Integer, Integer, Integer -> List Integer
+  frame-cursor-bytes (x) (y) (shape) =
+    frame-header-bytes tag-cursor 5 & encode-u16-le x & encode-u16-le y & [shape]
+
+  frame-bell-bytes : List Integer
+  frame-bell-bytes = frame-header-bytes tag-bell 0
+
+  frame-dirty-rect-header : DirtyRect -> List Integer
+  frame-dirty-rect-header (r) =
+    let body-len = 8 + r.dr-pixel-count * 4
+    in frame-header-bytes tag-dirty-rect body-len & encode-u16-le (r.dr-x) & encode-u16-le (r.dr-y) & encode-u16-le (r.dr-w) & encode-u16-le (r.dr-h)
+
+Section: Input Event Decoding
+
+  decode-input-event : List Integer -> InputEvent
+  decode-input-event (buf) =
+    let tag = list-at buf 0
+    in if tag == tag-key-down then
+      EvKeyDown (decode-u16-le buf 1) (byte-to-modifiers (list-at buf 3))
+    else if tag == tag-key-up then
+      EvKeyUp (decode-u16-le buf 1) (byte-to-modifiers (list-at buf 3))
+    else if tag == tag-mouse-move then
+      EvMouseMove (decode-u16-le buf 1) (decode-u16-le buf 3)
+    else if tag == tag-mouse-down then
+      EvMouseDown (decode-u16-le buf 1) (decode-u16-le buf 3) (byte-to-mouse-button (list-at buf 5))
+    else if tag == tag-mouse-up then
+      EvMouseUp (decode-u16-le buf 1) (decode-u16-le buf 3) (byte-to-mouse-button (list-at buf 5))
+    else if tag == tag-mouse-scroll then
+      EvMouseScroll (decode-i16-le buf 1) (decode-i16-le buf 3)
+    else EvClipboard ""
+
+Section: Display Statistics
+
+  DisplayStats = record {
+    dstat-fps : Integer,
+    dstat-bandwidth-kbps : Integer,
+    dstat-dirty-percent : Integer,
+    dstat-total-frames : Integer
+  }
+
+  display-stats : DisplayState, Integer -> DisplayStats
+  display-stats (ds) (elapsed-seconds) =
+    let fps = if elapsed-seconds > 0 then ds.ds-frame-count / elapsed-seconds else 0
+    in let bw = if elapsed-seconds > 0 then (ds.ds-bytes-sent).bs-bytes / elapsed-seconds / 1024 else 0
+    in let total-pixels = ds.ds-width * ds.ds-height
+    in let dirty-pixels = dt-total-pixels (ds.ds-tracker)
+    in let dirty-pct = if total-pixels > 0 then dirty-pixels * 100 / total-pixels else 0
+    in DisplayStats {
+      dstat-fps = fps,
+      dstat-bandwidth-kbps = bw,
+      dstat-dirty-percent = dirty-pct,
+      dstat-total-frames = ds.ds-frame-count
+    }
+
+  display-stats-to-json : DisplayStats -> Text
+  display-stats-to-json (s) =
+    "{\"fps\":" & show (s.dstat-fps)
+    & ",\"bandwidthKbps\":" & show (s.dstat-bandwidth-kbps)
+    & ",\"dirtyPercent\":" & show (s.dstat-dirty-percent)
+    & ",\"totalFrames\":" & show (s.dstat-total-frames) & "}"
+
+Page 1

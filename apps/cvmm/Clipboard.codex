@@ -1,0 +1,185 @@
+Chapter: Clipboard
+  cites Cvmm chapter CvmmTypes
+  cites Foreword chapter Maybe
+
+ System clipboard. Stores a history of copied items with type
+ information. Supports text, file paths, images (as byte size
+ references), and structured data. The clipboard is shared across
+ all managers — copy a file path in the file explorer, paste it in
+ the terminal. History lets you pick from recent copies.
+
+Section: Clip Types
+
+  ClipKind =
+    | ClipText
+    | ClipFilePaths
+    | ClipImage
+    | ClipRichText
+    | ClipData (Text)
+
+  clip-kind-label : ClipKind -> Text
+  clip-kind-label (k) = when k
+    is ClipText -> "text"
+    is ClipFilePaths -> "files"
+    is ClipImage -> "image"
+    is ClipRichText -> "rich text"
+    is ClipData (fmt) -> fmt
+
+Section: Clip Entry
+
+  ClipEntry = record {
+    ce-id : Integer,
+    ce-kind : ClipKind,
+    ce-text : Text,
+    ce-paths : List Text,
+    ce-path-count : Integer,
+    ce-size : ByteSize,
+    ce-timestamp : Integer,
+    ce-source : Text,
+    ce-pinned : Boolean
+  }
+
+  clip-text : Integer, Text, Integer, Text -> ClipEntry
+  clip-text (id) (content) (ts) (source) = ClipEntry {
+    ce-id = id, ce-kind = ClipText, ce-text = content,
+    ce-paths = [], ce-path-count = 0,
+    ce-size = bytes (text-length content),
+    ce-timestamp = ts, ce-source = source, ce-pinned = False
+  }
+
+  clip-files : Integer, List Text, Integer, Text -> ClipEntry
+  clip-files (id) (paths) (ts) (source) = ClipEntry {
+    ce-id = id, ce-kind = ClipFilePaths, ce-text = "",
+    ce-paths = paths, ce-path-count = list-length paths,
+    ce-size = bytes 0,
+    ce-timestamp = ts, ce-source = source, ce-pinned = False
+  }
+
+  clip-preview : ClipEntry -> Text
+  clip-preview (e) = when e.ce-kind
+    is ClipText -> if text-length (e.ce-text) > 60 then text-slice (e.ce-text) 0 60 & "..." else e.ce-text
+    is ClipFilePaths -> show (e.ce-path-count) & " file(s)"
+    is ClipImage -> "image (" & format-bytes (e.ce-size) & ")"
+    is ClipRichText -> "rich text"
+    is ClipData (fmt) -> fmt & " data"
+
+Section: Clipboard State
+
+  ClipboardState = record {
+    cb-entries : List ClipEntry,
+    cb-count : Integer,
+    cb-max : Integer,
+    cb-next-id : Integer,
+    cb-selected : Integer
+  }
+
+  clipboard-new : Integer -> ClipboardState
+  clipboard-new (max-size) = ClipboardState {
+    cb-entries = [],
+    cb-count = 0,
+    cb-max = max-size,
+    cb-next-id = 1,
+    cb-selected = 0
+  }
+
+  cb-copy-text : ClipboardState, Text, Integer, Text -> ClipboardState
+  cb-copy-text (st) (content) (ts) (source) =
+    let entry = clip-text (st.cb-next-id) content ts source
+    in cb-push st entry
+
+  cb-copy-files : ClipboardState, List Text, Integer, Text -> ClipboardState
+  cb-copy-files (st) (paths) (ts) (source) =
+    let entry = clip-files (st.cb-next-id) paths ts source
+    in cb-push st entry
+
+  cb-push : ClipboardState, ClipEntry -> ClipboardState
+  cb-push (st) (entry) =
+    let trimmed = if st.cb-count >= st.cb-max then cb-trim (st.cb-entries) (st.cb-count) (st.cb-max) else st.cb-entries
+    in let new-count = if st.cb-count >= st.cb-max then st.cb-count else st.cb-count + 1
+    in ClipboardState {
+      cb-entries = [entry] & trimmed,
+      cb-count = new-count,
+      cb-max = st.cb-max,
+      cb-next-id = st.cb-next-id + 1,
+      cb-selected = 0
+    }
+
+  cb-trim : List ClipEntry, Integer, Integer -> List ClipEntry
+  cb-trim (entries) (count) (max-size) =
+    let keep = max-size - 1
+    in cb-trim-loop entries 0 (if count < keep then count else keep) []
+
+  cb-trim-loop : List ClipEntry, Integer, Integer, List ClipEntry -> List ClipEntry
+  cb-trim-loop (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if e.ce-pinned then cb-trim-loop entries (i + 1) n (list-push acc e)
+    else if i < n - 1 then cb-trim-loop entries (i + 1) n (list-push acc e)
+    else cb-trim-loop entries (i + 1) n acc
+
+  cb-current : ClipboardState -> Maybe ClipEntry
+  cb-current (st) =
+    if st.cb-count == 0 then None
+    else Just (list-at (st.cb-entries) (st.cb-selected))
+
+  cb-current-text : ClipboardState -> Text
+  cb-current-text (st) =
+    when cb-current st
+      is Just (e) -> e.ce-text
+      is None -> ""
+
+  cb-select : ClipboardState, Integer -> ClipboardState
+  cb-select (st) (idx) =
+    if idx < 0 then st
+    else if idx >= st.cb-count then st
+    else __record-set st "cb-selected" idx
+
+  cb-pin : ClipboardState, Integer -> ClipboardState
+  cb-pin (st) (id) =
+    let updated = cb-pin-loop (st.cb-entries) id 0 (st.cb-count) []
+    in __record-set st "cb-entries" updated
+
+  cb-pin-loop : List ClipEntry, Integer, Integer, Integer, List ClipEntry -> List ClipEntry
+  cb-pin-loop (entries) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if e.ce-id == id then cb-pin-loop entries id (i + 1) n (list-push acc (__record-set e "ce-pinned" (if e.ce-pinned then False else True)))
+    else cb-pin-loop entries id (i + 1) n (list-push acc e)
+
+  cb-clear-unpinned : ClipboardState -> ClipboardState
+  cb-clear-unpinned (st) =
+    let kept = cb-keep-pinned (st.cb-entries) 0 (st.cb-count) []
+    in __record-set (__record-set st "cb-entries" kept) "cb-count" (list-length kept)
+
+  cb-keep-pinned : List ClipEntry, Integer, Integer, List ClipEntry -> List ClipEntry
+  cb-keep-pinned (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if e.ce-pinned then cb-keep-pinned entries (i + 1) n (list-push acc e)
+    else cb-keep-pinned entries (i + 1) n acc
+
+Section: Widget Building
+
+  cb-entry-row : ClipEntry, Integer -> WidgetNode
+  cb-entry-row (e) (idx) =
+    let kind = widget-label ("cb-k-" & show idx) (clip-kind-label (e.ce-kind))
+    in let preview = widget-label ("cb-p-" & show idx) (clip-preview e)
+    in let source = widget-label ("cb-s-" & show idx) (e.ce-source)
+    in let pin-btn = widget-button ("cb-pin-" & show (e.ce-id)) (if e.ce-pinned then "Unpin" else "Pin")
+    in let paste-btn = widget-button ("cb-paste-" & show idx) "Paste"
+    in widget-panel ("cb-" & show idx) DirRow 8 [kind, preview, source, pin-btn, paste-btn]
+
+  cb-widget : ClipboardState -> WidgetNode
+  cb-widget (st) =
+    let title = widget-label "cb-title" "Clipboard"
+    in let summary = widget-label "cb-summary" (show (st.cb-count) & " items")
+    in let clear-btn = widget-button "cb-clear" "Clear History"
+    in let rows = cb-rows (st.cb-entries) 0 (st.cb-count) []
+    in widget-panel "clipboard" DirColumn 4 ([title, summary, clear-btn] & rows)
+
+  cb-rows : List ClipEntry, Integer, Integer, List WidgetNode -> List WidgetNode
+  cb-rows (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else cb-rows entries (i + 1) n (list-push acc (cb-entry-row (list-at entries i) i))
+
+Page 1
