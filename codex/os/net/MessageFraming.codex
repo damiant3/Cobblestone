@@ -1,272 +1,136 @@
 Chapter: MessageFraming
-
   cites Foreword chapter Sha256
 
-
-
  Length-prefixed deterministic serialization for trust network
-
  messages. Encodes integers as little-endian, text and byte arrays
-
  as length-prefixed, and frames each message with a type tag.
-
-
 
  We say:
 
-
-
 Section: Wire Format
 
-
-
  Length-prefixed deterministic serialization for trust network messages.
-
  Format: [4 bytes: length][1 byte: type tag][N bytes: fields]
-
  All integers are little-endian. Text is length-prefixed (4 bytes len + bytes).
-
  Byte arrays (keys, hashes, signatures) are length-prefixed.
 
-
-
   frame-encode : Integer, List Integer -> List Integer
-
   frame-encode (type-tag) (body) =
-
     let total = 1 + list-length body
-
     in frame-le32 total & [type-tag] & body
 
-
-
   frame-decode-length : List Integer -> Integer
-
   frame-decode-length (bs) =
-
     list-at bs 0 + bit-shl (list-at bs 1) 8
-
     + bit-shl (list-at bs 2) 16 + bit-shl (list-at bs 3) 24
 
-
-
   frame-decode-tag : List Integer -> Integer
-
   frame-decode-tag (bs) = list-at bs 4
 
-
-
   frame-decode-body : List Integer -> List Integer
-
   frame-decode-body (bs) =
-
     let len = frame-decode-length bs
-
     in frame-slice bs 5 (4 + len)
-
-
 
 Section: Serialization Primitives
 
-
-
   frame-le32 : Integer -> List Integer
-
   frame-le32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
 
-
-
   frame-le64 : Integer -> List Integer
-
   frame-le64 (v) = frame-le32 v & frame-le32 (bit-shru v 32)
 
-
-
   frame-encode-text : Text -> List Integer
-
   frame-encode-text (s) =
-
     let bytes = frame-text-bytes s 0 (text-length s) []
-
     in frame-le32 (list-length bytes) & bytes
 
-
-
   frame-text-bytes : Text, Integer, Integer, List Integer -> List Integer
-
   frame-text-bytes (s) (i) (len) (acc) =
-
     if i == len then acc
-
     else frame-text-bytes s (i + 1) len (list-push acc (char-code (char-at s i)))
 
-
-
   frame-decode-text : List Integer, Integer -> FrameTextResult
-
   frame-decode-text (bs) (offset) =
-
     let len = frame-read-le32 bs offset
-
     in let text = frame-bytes-to-text bs (offset + 4) len ""
-
     in FrameTextResult { value = text, next-offset = offset + 4 + len }
 
-
-
   FrameTextResult = record {
-
     value : Text,
-
     next-offset : Integer between 0 and 4294967295
-
   }
-
-
 
   frame-bytes-to-text : List Integer, Integer, Integer, Text -> Text
-
   frame-bytes-to-text (bs) (i) (remaining) (acc) =
-
     if remaining <= 0 then acc
-
     else frame-bytes-to-text bs (i + 1) (remaining - 1) (acc & char-to-text (code-to-char (list-at bs i)))
 
-
-
   frame-read-le32 : List Integer, Integer -> Integer
-
   frame-read-le32 (bs) (off) =
-
     list-at bs off + bit-shl (list-at bs (off + 1)) 8
-
     + bit-shl (list-at bs (off + 2)) 16 + bit-shl (list-at bs (off + 3)) 24
 
-
-
   frame-read-le64 : List Integer, Integer -> Integer
-
   frame-read-le64 (bs) (off) =
-
     frame-read-le32 bs off + bit-shl (frame-read-le32 bs (off + 4)) 32
 
-
-
   frame-encode-bytes : List Integer -> List Integer
-
   frame-encode-bytes (bs) = frame-le32 (list-length bs) & bs
 
-
-
   frame-decode-bytes : List Integer, Integer -> FrameBytesResult
-
   frame-decode-bytes (bs) (offset) =
-
     let len = frame-read-le32 bs offset
-
     in FrameBytesResult { value = frame-slice bs (offset + 4) (offset + 4 + len), next-offset = offset + 4 + len }
 
-
-
   FrameBytesResult = record {
-
     value : List Integer,
-
     next-offset : Integer between 0 and 4294967295
-
   }
-
-
 
 Section: Message Type Tags
 
-
-
   tag-propose : Integer = 1
-
-
 
   tag-grant : Integer = 2
 
-
-
   tag-deny : Integer = 3
-
-
 
   tag-explain : Integer = 4
 
-
-
   tag-narrate : Integer = 5
-
-
 
   tag-interrupt : Integer = 6
 
-
-
   tag-handoff : Integer = 7
-
-
 
   tag-hello : Integer = 8
 
-
-
   tag-challenge : Integer = 9
-
-
 
   tag-prove : Integer = 10
 
-
-
   tag-accept : Integer = 11
-
-
 
   tag-annotate : Integer = 12
 
-
-
   tag-verdict : Integer = 13
-
-
 
   tag-reject : Integer = 14
 
-
-
 Section: Content Hashing
 
-
-
   frame-content-hash : List Integer -> List Integer
-
   frame-content-hash (body) = sha256 body
-
-
 
 Section: Helpers
 
-
-
   frame-slice : List Integer, Integer, Integer -> List Integer
-
   frame-slice (xs) (start) (stop) = frame-slice-loop xs start stop []
 
-
-
   frame-slice-loop : List Integer, Integer, Integer, List Integer -> List Integer
-
   frame-slice-loop (xs) (i) (stop) (acc) =
-
     if i >= stop then acc
-
     else frame-slice-loop xs (i + 1) stop (list-push acc (list-at xs i))
 
-
-
 Page 1
-

@@ -1,0 +1,104 @@
+Chapter: Pi4Board
+  cites Foreword chapter Board
+
+ Board constants for Raspberry Pi 4 (BCM2711, ARM Cortex-A72).
+ Register addresses from the BCM2711 ARM Peripherals document.
+ Peripheral base at 0xFE000000 (low-peripheral mode).
+ GPIO memory-mapped, PL011 UART, SPI0, BSC I2C.
+
+Section: Core Addresses
+
+  pi4-periph-base : Integer = #FE000000
+  pi4-ram-base : Integer = 0
+  pi4-kernel-load : Integer = #80000
+
+Section: GPIO
+
+  pi4-gpio-base : Integer = #FE200000
+  pi4-gpio-fsel0 : Integer = #FE200000
+  pi4-gpio-set0 : Integer = #FE20001C
+  pi4-gpio-clr0 : Integer = #FE200028
+  pi4-gpio-lev0 : Integer = #FE200034
+  pi4-gpio-pup-pdn0 : Integer = #FE2000E4
+
+  pi4-gpio-set-output : Integer -> Nothing
+  pi4-gpio-set-output (pin) =
+   let reg = pi4-gpio-fsel0 + pin / 10 * 4
+   in let shift = (int-mod pin 10) * 3
+   in let fsel = mmio-read-32 reg
+   in let cleared = bit-and fsel (bit-xor (bit-shl 7 shift) (0 - 1))
+   in mmio-write-32 reg (bit-or cleared (bit-shl 1 shift))
+
+  pi4-gpio-set : Integer -> Nothing
+  pi4-gpio-set (pin) =
+   let reg = pi4-gpio-set0 + pin / 32 * 4
+   in mmio-write-32 reg (bit-shl 1 (int-mod pin 32))
+
+  pi4-gpio-clear : Integer -> Nothing
+  pi4-gpio-clear (pin) =
+   let reg = pi4-gpio-clr0 + pin / 32 * 4
+   in mmio-write-32 reg (bit-shl 1 (int-mod pin 32))
+
+  pi4-gpio-read : Integer -> Boolean
+  pi4-gpio-read (pin) =
+   let reg = pi4-gpio-lev0 + pin / 32 * 4
+   in let val = mmio-read-32 reg
+   in bit-and val (bit-shl 1 (int-mod pin 32)) /= 0
+
+Section: UART (PL011)
+
+  pi4-uart0-base : Integer = #FE201000
+  pi4-uart-dr : Integer = #FE201000
+  pi4-uart-fr : Integer = #FE201018
+  pi4-uart-ibrd : Integer = #FE201024
+  pi4-uart-fbrd : Integer = #FE201028
+  pi4-uart-lcrh : Integer = #FE20102C
+  pi4-uart-cr : Integer = #FE201030
+
+  pi4-uart-fr-txff : Integer = #20
+  pi4-uart-fr-rxfe : Integer = #10
+
+  pi4-uart-putc : Integer -> Nothing
+  pi4-uart-putc (c) = mmio-write-8 pi4-uart-dr c
+
+  pi4-uart-puts : Text -> Nothing
+  pi4-uart-puts (s) = pi4-uart-puts-loop s 0 (text-length s)
+
+  pi4-uart-puts-loop : Text, Integer, Integer -> Nothing
+  pi4-uart-puts-loop (s) (i) (len) =
+   if i >= len then Nothing
+   else let c = char-code (char-at s i)
+   in let w = pi4-uart-putc c
+   in pi4-uart-puts-loop s (i + 1) len
+
+Section: SPI0
+
+  pi4-spi0-base : Integer = #FE204000
+  pi4-spi-cs : Integer = #FE204000
+  pi4-spi-fifo : Integer = #FE204004
+  pi4-spi-clk : Integer = #FE204008
+  pi4-spi-dlen : Integer = #FE20400C
+
+Section: I2C (BSC1)
+
+  pi4-bsc1-base : Integer = #FE804000
+  pi4-bsc-c : Integer = #FE804000
+  pi4-bsc-s : Integer = #FE804004
+  pi4-bsc-dlen : Integer = #FE804008
+  pi4-bsc-a : Integer = #FE80400C
+  pi4-bsc-fifo : Integer = #FE804010
+
+Section: Activity LED (GPIO 42 active-low on Pi 4)
+
+  pi4-led-pin : Integer = 42
+
+  pi4-led-init : Nothing
+  pi4-led-init = pi4-gpio-set-output pi4-led-pin
+
+  pi4-led-on : Nothing
+  pi4-led-on = pi4-gpio-clear pi4-led-pin
+
+  pi4-led-off : Nothing
+  pi4-led-off = pi4-gpio-set pi4-led-pin
+
+Page 1

@@ -234,7 +234,7 @@ Section: Builtin Emission
    in let st1 = store-local (loc.state) (loc.reg) (r0.reg)
    in let r1 = emit-expr st1 (list-at args 1)
    in let text-loaded = load-local (r1.state) (loc.reg)
-   in let rd = alloc-temp (text-loaded.state)
+   in let rd = alloc-temp-avoiding (text-loaded.state) (r1.reg)
    in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) (text-loaded.reg))
    in let st3 = st-append-code st2 (add-rr (rd.reg) (r1.reg))
    in let st4 = st-append-code st3 (movzx-byte (rd.reg) (rd.reg) 8)
@@ -360,7 +360,7 @@ Section: Builtin Emission
    in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
    in let r1 = emit-expr st1 (list-at args 1)
    in let ld0 = load-local (r1.state) (loc0.reg)
-   in let rd = alloc-temp (ld0.state)
+   in let rd = alloc-temp-avoiding (ld0.state) (r1.reg)
    in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) (ld0.reg))
    in let st3 = st-append-code st2 (cmp-rr (rd.reg) (r1.reg))
    in let jle-pos = st3.code-len
@@ -379,7 +379,7 @@ Section: Builtin Emission
    in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
    in let r1 = emit-expr st1 (list-at args 1)
    in let ld0 = load-local (r1.state) (loc0.reg)
-   in let rd = alloc-temp (ld0.state)
+   in let rd = alloc-temp-avoiding (ld0.state) (r1.reg)
    in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) (ld0.reg))
    in let st3 = st-append-code st2 (cmp-rr (rd.reg) (r1.reg))
    in let jge-pos = st3.code-len
@@ -787,7 +787,7 @@ Section: Builtin Emission
   emit-deck-set-builtin : CodegenState, List IRExpr -> EmitResult
   emit-deck-set-builtin (st) (args) =
    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
-   in let addr-tmp = alloc-temp (r.state)
+   in let addr-tmp = alloc-temp-avoiding (r.state) (r.reg)
    in let st1 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
    in let st2 = st-append-code st1 (mov-store (addr-tmp.reg) (r.reg) 0)
    in let rd = alloc-temp st2
@@ -799,11 +799,11 @@ Section: Builtin Emission
   emit-deck-alloc-builtin : CodegenState, List IRExpr -> EmitResult
   emit-deck-alloc-builtin (st) (args) =
    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
-   in let addr-tmp = alloc-temp (r.state)
+   in let addr-tmp = alloc-temp-avoiding (r.state) (r.reg)
    in let st1 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
-   in let rd = alloc-temp st1
+   in let rd = alloc-temp-avoiding st1 (r.reg)
    in let st2 = st-append-code (rd.state) (mov-load (rd.reg) (addr-tmp.reg) 0)
-   in let new-tmp = alloc-temp st2
+   in let new-tmp = alloc-temp-avoiding st2 (r.reg)
    in let st3 = st-append-code (new-tmp.state) (mov-rr (new-tmp.reg) (rd.reg))
    in let st4 = st-append-code st3 (add-rr (new-tmp.reg) (r.reg))
    in EmitResult {
@@ -867,14 +867,14 @@ Section: Builtin Emission
 
   emit-list-with-capacity-builtin-bivy : CodegenState, Integer -> EmitResult
   emit-list-with-capacity-builtin-bivy (st) (cap-reg) =
-   let rd = alloc-temp st
+   let rd = alloc-temp-avoiding st cap-reg
    in let st1 = st-append-code (rd.state) (mov-store reg-r10 cap-reg 0)
    in let st2 = st-append-code st1 (add-ri reg-r10 8)
    in let st3 = st-append-code st2 (mov-rr (rd.reg) reg-r10)
-   in let zero-tmp = alloc-temp st3
+   in let zero-tmp = alloc-temp-avoiding st3 cap-reg
    in let st4 = st-append-code (zero-tmp.state) (li (zero-tmp.reg) 0)
    in let st5 = st-append-code st4 (mov-store reg-r10 (zero-tmp.reg) 0)
-   in let adv-tmp = alloc-temp st5
+   in let adv-tmp = alloc-temp-avoiding st5 cap-reg
    in let st6 = st-append-code (adv-tmp.state) (mov-rr (adv-tmp.reg) cap-reg)
    in let st7 = st-append-code st6 (shl-ri (adv-tmp.reg) 3)
    in let st8 = st-append-code st7 (add-ri (adv-tmp.reg) 8)
@@ -885,18 +885,18 @@ Section: Builtin Emission
 
   emit-list-with-capacity-builtin-deck : CodegenState, Integer -> EmitResult
   emit-list-with-capacity-builtin-deck (st) (cap-reg) =
-   let addr-tmp = alloc-temp st
+   let addr-tmp = alloc-temp-avoiding st cap-reg
    in let st0 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
-   in let deckp-tmp = alloc-temp st0
+   in let deckp-tmp = alloc-temp-avoiding st0 cap-reg
    in let st1 = st-append-code (deckp-tmp.state) (mov-load (deckp-tmp.reg) (addr-tmp.reg) 0)
    in let st2 = st-append-code st1 (mov-store (deckp-tmp.reg) cap-reg 0)
    in let st3 = st-append-code st2 (add-ri (deckp-tmp.reg) 8)
-   in let rd = alloc-temp st3
+   in let rd = alloc-temp-avoiding st3 cap-reg
    in let st4 = st-append-code (rd.state) (mov-rr (rd.reg) (deckp-tmp.reg))
-   in let zero-tmp = alloc-temp st4
+   in let zero-tmp = alloc-temp-avoiding st4 cap-reg
    in let st5 = st-append-code (zero-tmp.state) (li (zero-tmp.reg) 0)
    in let st6 = st-append-code st5 (mov-store (deckp-tmp.reg) (zero-tmp.reg) 0)
-   in let adv-tmp = alloc-temp st6
+   in let adv-tmp = alloc-temp-avoiding st6 cap-reg
    in let st7 = st-append-code (adv-tmp.state) (mov-rr (adv-tmp.reg) cap-reg)
    in let st8 = st-append-code st7 (shl-ri (adv-tmp.reg) 3)
    in let st9 = st-append-code st8 (add-ri (adv-tmp.reg) 8)
@@ -981,7 +981,7 @@ Section: Builtin Emission
    in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
    in let r1 = emit-expr st1 (list-at args 1)
    in let ld0 = load-local (r1.state) (loc0.reg)
-   in let rd = alloc-temp (ld0.state)
+   in let rd = alloc-temp-avoiding (ld0.state) (r1.reg)
    in EmitResult {
     state = st-append-code (rd.state) (mov-rr (rd.reg) (ld0.reg) & op-bytes (rd.reg) (r1.reg)),
     reg = rd.reg

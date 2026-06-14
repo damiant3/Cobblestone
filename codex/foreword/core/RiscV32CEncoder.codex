@@ -1,0 +1,168 @@
+Chapter: RiscV32CEncoder
+  cites Foreword chapter RiscVEncoder
+
+ RISC-V C extension (RV32C / RV64C) compressed instruction encoder.
+ 16-bit instructions for code density on ESP32-C6 (RV32IMC).
+ Each encoder returns a List Integer (2 bytes, little-endian).
+ The base RV32IM instructions use the full-width RiscVEncoder.
+
+ Also includes rv-li-32, the 32-bit-only Li materializer that
+ refuses values outside the signed 32-bit range.
+
+Section: RV32 Li
+
+  rv-li-32 : Integer, Integer -> List Integer
+  rv-li-32 (rd) (value) =
+    if value >= -2048 then if value <= 2047 then rv-addi rd 0 value
+    else if value >= -2147483648 then if value <= 2147483647
+    then let hi20 = (value + #800) / 4096
+      in let lo12 = value - hi20 * 4096
+      in if lo12 == 0 then rv-lui rd hi20
+      else rv-lui rd hi20 & rv-addi rd rd lo12
+    else []
+    else []
+    else if value >= -2147483648
+    then let hi20 = (value + #800) / 4096
+      in let lo12 = value - hi20 * 4096
+      in if lo12 == 0 then rv-lui rd hi20
+      else rv-lui rd hi20 & rv-addi rd rd lo12
+    else []
+
+Section: Compressed Encoding Helper
+
+  rv-c-encode : Integer -> List Integer
+  rv-c-encode (hw) =
+    [bit-and hw 255, bit-and (bit-shru hw 8) 255]
+
+Section: Quadrant 0 (CR/CI/CSS/CIW/CL/CS/CB/CJ with op=00)
+
+  rv-c-lw : Integer, Integer, Integer -> List Integer
+  rv-c-lw (rdp) (rs1p) (offset) =
+    let off = bit-and offset #7C
+    in let bit6 = bit-and (bit-shru off 6) 1
+    in let bit2 = bit-and (bit-shru off 2) 1
+    in let bits5-3 = bit-and (bit-shru off 3) 7
+    in rv-c-encode (bit-or (bit-or (bit-or (bit-or 0 (bit-shl bit6 5)) (bit-shl bits5-3 10)) (bit-or (bit-shl (bit-and rs1p 7) 7) (bit-shl (bit-and rdp 7) 2))) (bit-or (bit-shl bit2 6) (bit-shl 2 13)))
+
+  rv-c-sw : Integer, Integer, Integer -> List Integer
+  rv-c-sw (rs1p) (rs2p) (offset) =
+    let off = bit-and offset #7C
+    in let bit6 = bit-and (bit-shru off 6) 1
+    in let bit2 = bit-and (bit-shru off 2) 1
+    in let bits5-3 = bit-and (bit-shru off 3) 7
+    in rv-c-encode (bit-or (bit-or (bit-or (bit-or #C000 (bit-shl bit6 5)) (bit-shl bits5-3 10)) (bit-or (bit-shl (bit-and rs1p 7) 7) (bit-shl (bit-and rs2p 7) 2))) (bit-shl bit2 6))
+
+Section: Quadrant 1 (op=01)
+
+  rv-c-nop : List Integer = rv-c-encode 1
+
+  rv-c-addi : Integer, Integer -> List Integer
+  rv-c-addi (rd) (imm) =
+    let imm5 = bit-and imm #1F
+    in let bit5 = bit-and (bit-shru imm 5) 1
+    in rv-c-encode (bit-or (bit-or (bit-or 1 (bit-shl imm5 2)) (bit-shl rd 7)) (bit-shl bit5 12))
+
+  rv-c-li : Integer, Integer -> List Integer
+  rv-c-li (rd) (imm) =
+    let imm5 = bit-and imm #1F
+    in let bit5 = bit-and (bit-shru imm 5) 1
+    in rv-c-encode (bit-or (bit-or (bit-or 1 (bit-shl imm5 2)) (bit-shl rd 7)) (bit-or (bit-shl 2 13) (bit-shl bit5 12)))
+
+  rv-c-lui : Integer, Integer -> List Integer
+  rv-c-lui (rd) (nzimm) =
+    let imm5 = bit-and nzimm #1F
+    in let bit5 = bit-and (bit-shru nzimm 5) 1
+    in rv-c-encode (bit-or (bit-or (bit-or 1 (bit-shl imm5 2)) (bit-shl rd 7)) (bit-or (bit-shl 3 13) (bit-shl bit5 12)))
+
+  rv-c-addi16sp : Integer -> List Integer
+  rv-c-addi16sp (imm) =
+    let nzimm = bit-and (imm / 16) #3F
+    in let bits4-0 = bit-and nzimm #1F
+    in let bit5 = bit-and (bit-shru nzimm 5) 1
+    in rv-c-encode (bit-or (bit-or (bit-or 1 (bit-shl bits4-0 2)) (bit-shl 2 7)) (bit-or (bit-shl 3 13) (bit-shl bit5 12)))
+
+  rv-c-j : Integer -> List Integer
+  rv-c-j (offset) =
+    let imm = bit-and offset #FFE
+    in let bit5 = bit-and (bit-shru imm 5) 1
+    in let bits3-1 = bit-and (bit-shru imm 1) 7
+    in let bit7 = bit-and (bit-shru imm 7) 1
+    in let bit6 = bit-and (bit-shru imm 6) 1
+    in let bit10 = bit-and (bit-shru imm 10) 1
+    in let bits9-8 = bit-and (bit-shru imm 8) 3
+    in let bit4 = bit-and (bit-shru imm 4) 1
+    in let bit11 = bit-and (bit-shru imm 11) 1
+    in rv-c-encode (bit-or (bit-or (bit-or (bit-or (bit-or (bit-or (bit-or (bit-or 1 (bit-shl bit5 2)) (bit-shl bits3-1 3)) (bit-shl bit7 6)) (bit-shl bit6 7)) (bit-shl bit10 8)) (bit-shl bits9-8 9)) (bit-shl bit4 11)) (bit-or (bit-shl bit11 12) (bit-shl 5 13)))
+
+  rv-c-beqz : Integer, Integer -> List Integer
+  rv-c-beqz (rs1p) (offset) =
+    let off = bit-and offset #1FE
+    in let bit5 = bit-and (bit-shru off 5) 1
+    in let bits2-1 = bit-and (bit-shru off 1) 3
+    in let bits4-3 = bit-and (bit-shru off 3) 3
+    in let bits7-6 = bit-and (bit-shru off 6) 3
+    in let bit8 = bit-and (bit-shru off 8) 1
+    in rv-c-encode (bit-or (bit-or (bit-or (bit-or (bit-or (bit-or 1 (bit-shl bit5 2)) (bit-shl bits2-1 3)) (bit-shl (bit-and rs1p 7) 7)) (bit-shl bits4-3 10)) (bit-shl bits7-6 5)) (bit-or (bit-shl bit8 12) (bit-shl 6 13)))
+
+  rv-c-bnez : Integer, Integer -> List Integer
+  rv-c-bnez (rs1p) (offset) =
+    let off = bit-and offset #1FE
+    in let bit5 = bit-and (bit-shru off 5) 1
+    in let bits2-1 = bit-and (bit-shru off 1) 3
+    in let bits4-3 = bit-and (bit-shru off 3) 3
+    in let bits7-6 = bit-and (bit-shru off 6) 3
+    in let bit8 = bit-and (bit-shru off 8) 1
+    in rv-c-encode (bit-or (bit-or (bit-or (bit-or (bit-or (bit-or 1 (bit-shl bit5 2)) (bit-shl bits2-1 3)) (bit-shl (bit-and rs1p 7) 7)) (bit-shl bits4-3 10)) (bit-shl bits7-6 5)) (bit-or (bit-shl bit8 12) (bit-shl 7 13)))
+
+  rv-c-sub : Integer, Integer -> List Integer
+  rv-c-sub (rdp) (rs2p) =
+    rv-c-encode (bit-or (bit-or (bit-or #8C01 (bit-shl (bit-and rdp 7) 7)) (bit-shl (bit-and rs2p 7) 2)) 0)
+
+  rv-c-or : Integer, Integer -> List Integer
+  rv-c-or (rdp) (rs2p) =
+    rv-c-encode (bit-or (bit-or #8C41 (bit-shl (bit-and rdp 7) 7)) (bit-shl (bit-and rs2p 7) 2))
+
+  rv-c-and : Integer, Integer -> List Integer
+  rv-c-and (rdp) (rs2p) =
+    rv-c-encode (bit-or (bit-or #8C61 (bit-shl (bit-and rdp 7) 7)) (bit-shl (bit-and rs2p 7) 2))
+
+  rv-c-xor : Integer, Integer -> List Integer
+  rv-c-xor (rdp) (rs2p) =
+    rv-c-encode (bit-or (bit-or #8C21 (bit-shl (bit-and rdp 7) 7)) (bit-shl (bit-and rs2p 7) 2))
+
+Section: Quadrant 2 (op=10)
+
+  rv-c-lwsp : Integer, Integer -> List Integer
+  rv-c-lwsp (rd) (offset) =
+    let bit5 = bit-and (bit-shru offset 5) 1
+    in let bits4-2 = bit-and (bit-shru offset 2) 7
+    in let bits7-6 = bit-and (bit-shru offset 6) 3
+    in rv-c-encode (bit-or (bit-or (bit-or 2 (bit-shl bits7-6 2)) (bit-shl bits4-2 4)) (bit-or (bit-shl rd 7) (bit-shl bit5 12)))
+
+  rv-c-swsp : Integer, Integer -> List Integer
+  rv-c-swsp (rs2) (offset) =
+    let bits5-2 = bit-and (bit-shru offset 2) #F
+    in let bits7-6 = bit-and (bit-shru offset 6) 3
+    in rv-c-encode (bit-or (bit-or #C002 (bit-shl rs2 2)) (bit-or (bit-shl bits7-6 7) (bit-shl bits5-2 9)))
+
+  rv-c-mv : Integer, Integer -> List Integer
+  rv-c-mv (rd) (rs2) =
+    rv-c-encode (bit-or (bit-or 2 (bit-shl rs2 2)) (bit-shl rd 7))
+
+  rv-c-add : Integer, Integer -> List Integer
+  rv-c-add (rd) (rs2) =
+    rv-c-encode (bit-or (bit-or (bit-or 2 (bit-shl rs2 2)) (bit-shl rd 7)) (bit-shl 1 12))
+
+  rv-c-jr : Integer -> List Integer
+  rv-c-jr (rs1) =
+    rv-c-encode (bit-or 2 (bit-shl rs1 7))
+
+  rv-c-jalr : Integer -> List Integer
+  rv-c-jalr (rs1) =
+    rv-c-encode (bit-or (bit-or 2 (bit-shl rs1 7)) (bit-shl 1 12))
+
+Section: Pseudo-Instructions
+
+  rv-c-ret : List Integer = rv-c-jr rv-ra
+
+Page 1

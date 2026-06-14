@@ -1,0 +1,169 @@
+Chapter: Board
+
+ Hardware abstraction layer for IoT targets. Peripherals are linear
+ resources: open them, use them, close them. The type system prevents
+ leaving a bus half-configured, double-releasing a peripheral, or
+ sleeping with a transaction in flight.
+
+ This chapter defines the effect interfaces and configuration types.
+ Register-level implementations live in board-specific chapters
+ (Stm32F4Board, Esp32C6Board, Pi4Board, QemuVirtBoard).
+
+Section: Pin Modes
+
+  PinMode =
+    | PinInput
+    | PinOutput
+    | PinAlternate (Integer)
+    | PinAnalog
+
+  PinPull =
+    | NoPull
+    | PullUp
+    | PullDown
+
+  PinSpeed =
+    | SpeedLow
+    | SpeedMedium
+    | SpeedHigh
+    | SpeedVeryHigh
+
+Section: UART Configuration
+
+  Parity =
+    | ParityNone
+    | ParityEven
+    | ParityOdd
+
+  StopBits =
+    | Stop1
+    | Stop2
+
+  UartConfig = record {
+   baud : Integer between 300 and 4000000,
+   data-bits : Integer between 7 and 9,
+   parity : Parity,
+   stop-bits : StopBits
+  }
+
+  default-uart-config : UartConfig
+  default-uart-config = UartConfig {
+   baud = 115200,
+   data-bits = 8,
+   parity = ParityNone,
+   stop-bits = Stop1
+  }
+
+Section: SPI Configuration
+
+  SpiClockPolarity =
+    | SpiIdleLow
+    | SpiIdleHigh
+
+  SpiClockPhase =
+    | SpiSampleLeading
+    | SpiSampleTrailing
+
+  SpiConfig = record {
+   clock-hz : Integer between 100 and 80000000,
+   polarity : SpiClockPolarity,
+   phase : SpiClockPhase,
+   bits-per-word : Integer between 4 and 16
+  }
+
+  default-spi-config : SpiConfig
+  default-spi-config = SpiConfig {
+   clock-hz = 1000000,
+   polarity = SpiIdleLow,
+   phase = SpiSampleLeading,
+   bits-per-word = 8
+  }
+
+Section: I2C Configuration
+
+  I2cConfig = record {
+   clock-hz : Integer between 10000 and 3400000,
+   address-bits : Integer between 7 and 10
+  }
+
+  default-i2c-config : I2cConfig
+  default-i2c-config = I2cConfig {
+   clock-hz = 100000,
+   address-bits = 7
+  }
+
+Section: ADC Configuration
+
+  AdcConfig = record {
+   resolution-bits : Integer between 6 and 16,
+   sample-cycles : Integer between 1 and 480
+  }
+
+  default-adc-config : AdcConfig
+  default-adc-config = AdcConfig {
+   resolution-bits = 12,
+   sample-cycles = 84
+  }
+
+Section: Board Identity
+
+  BoardTarget =
+    | TargetStm32F4
+    | TargetStm32H7
+    | TargetEsp32C6
+    | TargetPi4
+    | TargetPi5
+    | TargetQemuArm64Virt
+    | TargetQemuRiscV64Virt
+
+Section: MMIO Primitives
+
+  mmio-read-32 : Integer -> Integer
+  mmio-read-32 (addr) = __peek-qword addr
+
+  mmio-write-32 : Integer, Integer -> Nothing
+  mmio-write-32 (addr) (value) = __poke-qword addr value
+
+  mmio-read-8 : Integer -> Integer
+  mmio-read-8 (addr) = bit-and (__peek-qword addr) 255
+
+  mmio-write-8 : Integer, Integer -> Nothing
+  mmio-write-8 (addr) (value) = __poke-qword addr (bit-and value 255)
+
+Section: UART Polled I/O (Platform-Independent)
+
+  uart-poll-send-byte : Integer, Integer -> Nothing
+  uart-poll-send-byte (uart-data-reg) (byte) =
+   mmio-write-8 uart-data-reg byte
+
+  uart-poll-send-bytes : Integer, List Integer, Integer, Integer -> Nothing
+  uart-poll-send-bytes (uart-data-reg) (bytes) (i) (len) =
+   if i >= len then Nothing
+   else let w = uart-poll-send-byte uart-data-reg (list-at bytes i)
+   in uart-poll-send-bytes uart-data-reg bytes (i + 1) len
+
+  uart-poll-send-text : Integer, Text, Integer, Integer -> Nothing
+  uart-poll-send-text (uart-data-reg) (text) (i) (len) =
+   if i >= len then Nothing
+   else let c = char-code (char-at text i)
+   in let w = uart-poll-send-byte uart-data-reg c
+   in uart-poll-send-text uart-data-reg text (i + 1) len
+
+Section: GPIO Helpers
+
+  gpio-set : Integer, Integer -> Nothing
+  gpio-set (gpio-bsrr-reg) (pin) =
+   mmio-write-32 gpio-bsrr-reg (bit-shl 1 pin)
+
+  gpio-clear : Integer, Integer -> Nothing
+  gpio-clear (gpio-bsrr-reg) (pin) =
+   mmio-write-32 gpio-bsrr-reg (bit-shl 1 (pin + 16))
+
+  gpio-toggle : Integer, Integer, Integer -> Nothing
+  gpio-toggle (gpio-odr-reg) (gpio-bsrr-reg) (pin) =
+   let current = mmio-read-32 gpio-odr-reg
+   in if bit-and current (bit-shl 1 pin) == 0
+    then gpio-set gpio-bsrr-reg pin
+    else gpio-clear gpio-bsrr-reg pin
+
+Page 1

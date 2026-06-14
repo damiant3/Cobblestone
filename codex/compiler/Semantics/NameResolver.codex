@@ -30,8 +30,8 @@ Section: Scope
  16 KB copy. With locals on their own list, the main `names` is never
  touched after chapter-scope construction.
 
- **Locals linearity**: `scope-add-local` uses `__record-set` which is
- in-place mutation on bare metal. That means *sibling* iterations
+ **Locals linearity**: `scope-add-local` uses mutable field assignment
+ which is in-place mutation on bare metal. That means *sibling* iterations
  (sibling defs in `resolve-all-defs`, sibling arms in
  `resolve-match-arms`, sibling clauses in `resolve-handle-clauses`)
  cannot share a Scope — one sibling's additions would leak into the
@@ -65,11 +65,13 @@ Section: Scope
 
   scope-add : Scope, Text -> Scope
   scope-add (sc) (name) =
-   __record-set sc "names" (skip-list-text-insert (sc.names) name)
+   let __seq = sc.names = skip-list-text-insert (sc.names) name
+   in sc
 
   scope-add-local : Scope, Text -> Scope
   scope-add-local (sc) (name) =
-   __record-set sc "locals" (skip-list-text-insert (sc.locals) name)
+   let __seq = sc.locals = skip-list-text-insert (sc.locals) name
+   in sc
 
 Section: Built-in Names
   builtin-names : List Text
@@ -189,6 +191,10 @@ Section: Collect Names
      is ARecordTypeDef (name) (params) (fields) (is-mut) (s) ->
       let dup-check = check-type-name-dup type-acc (name.value) s errs
    in collect-ctor-names type-defs (i + 1) len (dup-check.type-acc) ctor-acc (dup-check.errors)
+     is AUnitTypeDef (name) (base) (s) ->
+      let dup-check = check-type-name-dup type-acc (name.value) s errs
+   in let unit-ctor-acc = skip-list-text-insert ctor-acc (name.value)
+   in collect-ctor-names type-defs (i + 1) len (dup-check.type-acc) unit-ctor-acc (dup-check.errors)
 
   CtorCollectResult = record {
    type-names : SkipListText,
@@ -203,6 +209,7 @@ Section: Collect Names
    in let c = when td
       is AVariantTypeDef (name) (params) (ctors) (s) -> list-length ctors
       is ARecordTypeDef (name) (params) (fields) (is-mut) (s) -> 1
+      is AUnitTypeDef (name) (base) (s) -> 1
    in count-typecheck-units tds (i + 1) n (acc + c)
 
   TypeNameDupResult = record {

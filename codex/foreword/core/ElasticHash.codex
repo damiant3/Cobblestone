@@ -1,0 +1,256 @@
+Chapter: ElasticHash
+
+  cites Foreword chapter Maybe
+  cites Foreword chapter MathLib
+  cites Foreword chapter ListUtils
+
+ An open-addressing hash table that never moves elements after insertion
+ and achieves O(1) amortized expected probe complexity. Based on the
+ elastic hashing construction of Farach-Colton, Krapivin, and Kuszmaul
+ (2025), which proved that reordering (Robin Hood, cuckoo) is unnecessary
+ for constant-time search — overturning 40 years of conventional wisdom.
+
+ The key insight is a two-dimensional probe sequence h(i,j)(x) mapped
+ to a one-dimensional slot via an injection phi(i,j) that grows slowly
+ in the search dimension i but freely in the insertion dimension j.
+ This decouples insertion cost from search cost: an element may require
+ many probes to place, but its search path remains short.
+
+ The table is partitioned into hierarchically halving subarrays
+ A1, A2, ..., A(log n). Insertions proceed in batches, maintaining
+ load balance across levels. Elements placed in level i are found by
+ probing at most O(i) slots — and most elements land in level 1.
+
+ An ElasticEntry is one of:
+   Occupied — carries the key and value for a live entry.
+   Vacant — an empty slot.
+
+ An ElasticTable is a record containing:
+   slots       -- flat array of ElasticEntry values.
+   level-starts -- start index of each level within slots.
+   level-sizes  -- number of slots in each level.
+   num-levels   -- number of levels.
+   capacity     -- total number of slots.
+   count        -- number of entries inserted.
+
+ To elastic-new gives ElasticTable, creating an empty table sized to
+ hold at least the given number of entries.
+
+ To elastic-get gives Maybe a, looking up a key with O(1) amortized
+ expected probes.
+
+ To elastic-put gives ElasticTable, inserting or updating a key-value
+ pair without moving any existing element.
+
+ To elastic-has gives Boolean, True when the key exists in the table.
+
+ To elastic-size gives Integer, the number of entries in the table.
+
+ To elastic-capacity gives Integer, the total number of slots.
+
+ We say:
+
+Section: Types
+
+  ElasticEntry a =
+    | Occupied (Text) (a)
+    | Vacant
+
+  ElasticTable a = record {
+    slots : List (ElasticEntry a),
+    level-starts : List Integer,
+    level-sizes : List Integer,
+    num-levels : Integer between 2 and 64,
+    capacity : Integer between 8 and 4294967295,
+    count : Integer between 0 and 4294967295
+  }
+
+Section: Hash Functions
+
+  elastic-hash : Text, Integer -> Integer
+  elastic-hash (key) (seed) =
+    let h = elastic-hash-loop key 0 (text-length key) (seed * 2654435761 + 17)
+    in let h2 = bit-xor h (bit-shru h 16)
+    in let h3 = h2 * 2246822519
+    in let h4 = bit-xor h3 (bit-shru h3 13)
+    in let h5 = h4 * 3266489917
+    in bit-and (bit-xor h5 (bit-shru h5 16)) 2147483647
+
+  elastic-hash-loop : Text, Integer, Integer, Integer -> Integer
+  elastic-hash-loop (s) (i) (len) (h) =
+    if i >= len then h
+    else elastic-hash-loop s (i + 1) len (h * 31 + char-code (char-at s i))
+
+  elastic-phi : Integer, Integer -> Integer
+  elastic-phi (i) (j) = i * (j * j + j) / 2 + j
+
+  elastic-probe-slot : Text, Integer, Integer, Integer -> Integer
+  elastic-probe-slot (key) (level) (probe) (level-size) =
+    let h = elastic-hash key (elastic-phi level probe)
+    in h - (h / level-size) * level-size
+
+Section: Construction
+
+  elastic-new : Integer -> ElasticTable a
+  elastic-new (n) =
+    let safe-n = if n < 8 then 8 else n
+    in let total = safe-n + safe-n / 4 + 4
+    in let nl = elastic-count-levels total 0
+    in let sizes = elastic-make-sizes total nl []
+    in let starts = elastic-make-starts sizes 0 0 []
+    in let actual = elastic-sum sizes 0 (list-length sizes) 0
+    in let empty = elastic-make-empty actual 0 []
+    in ElasticTable {
+      slots = empty,
+      level-starts = starts,
+      level-sizes = sizes,
+      num-levels = nl,
+      capacity = actual,
+      count = 0
+    }
+
+  elastic-count-levels : Integer, Integer -> Integer
+  elastic-count-levels (n) (acc) =
+    if n <= 4 then math-max 2 (acc + 1)
+    else elastic-count-levels (n / 2) (acc + 1)
+
+  elastic-make-sizes : Integer, Integer, List Integer -> List Integer
+  elastic-make-sizes (remaining) (levels-left) (acc) =
+    if levels-left <= 1 then list-push acc (math-max 4 remaining)
+    else let this-size = math-max 4 (remaining / 2)
+      in elastic-make-sizes (remaining - this-size) (levels-left - 1) (list-push acc this-size)
+
+  elastic-make-starts : List Integer, Integer, Integer, List Integer -> List Integer
+  elastic-make-starts (sizes) (i) (offset) (acc) =
+    if i >= list-length sizes then acc
+    else elastic-make-starts sizes (i + 1) (offset + list-at sizes i) (list-push acc offset)
+
+  elastic-sum : List Integer, Integer, Integer, Integer -> Integer
+  elastic-sum (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else elastic-sum xs (i + 1) len (acc + list-at xs i)
+
+  elastic-make-empty : Integer, Integer, List (ElasticEntry a) -> List (ElasticEntry a)
+  elastic-make-empty (n) (i) (acc) =
+    if i >= n then acc
+    else elastic-make-empty n (i + 1) (list-push acc Vacant)
+
+Section: Lookup
+
+  elastic-get : ElasticTable a, Text -> Maybe a
+  elastic-get (t) (key) =
+    elastic-get-level t key 0
+
+  elastic-get-level : ElasticTable a, Text, Integer -> Maybe a
+  elastic-get-level (t) (key) (level) =
+    if level >= t.num-levels then None
+    else let budget = elastic-search-budget level
+      in let result = elastic-get-probes t key level 0 budget
+      in when result
+        is Just (v) -> Just v
+        is None -> elastic-get-level t key (level + 1)
+
+  elastic-search-budget : Integer -> Integer
+  elastic-search-budget (level) =
+    math-max 4 ((level + 1) * 4)
+
+  elastic-get-probes : ElasticTable a, Text, Integer, Integer, Integer -> Maybe a
+  elastic-get-probes (t) (key) (level) (probe) (budget) =
+    if probe >= budget then None
+    else let lv-start = list-at (t.level-starts) level
+      in let lv-size = list-at (t.level-sizes) level
+      in let idx = lv-start + elastic-probe-slot key level probe lv-size
+      in let slot = list-at (t.slots) idx
+      in when slot
+        is Vacant -> None
+        is Occupied (k) (v) ->
+          if k == key then Just v
+          else elastic-get-probes t key level (probe + 1) budget
+
+Section: Insert
+
+  elastic-put : ElasticTable a, Text, a -> ElasticTable a
+  elastic-put (t) (key) (value) =
+    let existing = elastic-find-existing t key 0
+    in when existing
+      is Just (idx) ->
+        ElasticTable {
+          slots = list-set-at (t.slots) idx (Occupied key value),
+          level-starts = t.level-starts,
+          level-sizes = t.level-sizes,
+          num-levels = t.num-levels,
+          capacity = t.capacity,
+          count = t.count
+        }
+      is None -> elastic-insert-new t key value 0
+
+  elastic-find-existing : ElasticTable a, Text, Integer -> Maybe Integer
+  elastic-find-existing (t) (key) (level) =
+    if level >= t.num-levels then None
+    else let budget = elastic-search-budget level
+      in let result = elastic-find-in-level t key level 0 budget
+      in when result
+        is Just (idx) -> Just idx
+        is None -> elastic-find-existing t key (level + 1)
+
+  elastic-find-in-level : ElasticTable a, Text, Integer, Integer, Integer -> Maybe Integer
+  elastic-find-in-level (t) (key) (level) (probe) (budget) =
+    if probe >= budget then None
+    else let lv-start = list-at (t.level-starts) level
+      in let lv-size = list-at (t.level-sizes) level
+      in let idx = lv-start + elastic-probe-slot key level probe lv-size
+      in let slot = list-at (t.slots) idx
+      in when slot
+        is Vacant -> None
+        is Occupied (k) (v) ->
+          if k == key then Just idx
+          else elastic-find-in-level t key level (probe + 1) budget
+
+  elastic-insert-new : ElasticTable a, Text, a, Integer -> ElasticTable a
+  elastic-insert-new (t) (key) (value) (level) =
+    if level >= t.num-levels then t
+    else let insert-budget = elastic-insert-budget level
+      in let result = elastic-try-level t key value level 0 insert-budget
+      in when result
+        is Just (new-table) -> new-table
+        is None -> elastic-insert-new t key value (level + 1)
+
+  elastic-insert-budget : Integer -> Integer
+  elastic-insert-budget (level) =
+    math-max 8 ((level + 1) * (level + 1) * 4)
+
+  elastic-try-level : ElasticTable a, Text, a, Integer, Integer, Integer -> Maybe (ElasticTable a)
+  elastic-try-level (t) (key) (value) (level) (probe) (budget) =
+    if probe >= budget then None
+    else let lv-start = list-at (t.level-starts) level
+      in let lv-size = list-at (t.level-sizes) level
+      in let idx = lv-start + elastic-probe-slot key level probe lv-size
+      in let slot = list-at (t.slots) idx
+      in when slot
+        is Vacant ->
+          Just (ElasticTable {
+            slots = list-set-at (t.slots) idx (Occupied key value),
+            level-starts = t.level-starts,
+            level-sizes = t.level-sizes,
+            num-levels = t.num-levels,
+            capacity = t.capacity,
+            count = t.count + 1
+          })
+        is Occupied (k) (v) ->
+          elastic-try-level t key value level (probe + 1) budget
+
+Section: Queries
+
+  elastic-has : ElasticTable a, Text -> Boolean
+  elastic-has (t) (key) =
+    when elastic-get t key
+      is Just (v) -> True
+      is None -> False
+
+  elastic-size : ElasticTable a -> Integer
+  elastic-size (t) = t.count
+
+  elastic-capacity : ElasticTable a -> Integer
+  elastic-capacity (t) = t.capacity
+
+Page 1

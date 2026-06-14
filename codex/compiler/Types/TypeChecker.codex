@@ -25,6 +25,10 @@ Section: Resolve Type Expression
    let resolved = resolve-type-expr tdm base
    in when resolved
     is IntegerTy (b-lo) (b-hi) (b-mode) -> deck-record (IntegerTy lo hi mode)
+    is UnitTy (name) (inner) ->
+     when inner
+      is IntegerTy (b-lo) (b-hi) (b-mode) -> deck-record (UnitTy name (deck-record (IntegerTy lo hi mode)))
+      is otherwise -> ErrorTy
     is otherwise -> ErrorTy
 
   resolve-applied-type : List TypeBinding, ATypeExpr, List ATypeExpr -> CodexType
@@ -412,6 +416,8 @@ Section: Check Chapter
      else register-mutable-markers env tdefs (i + 1) len
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      register-mutable-markers env tdefs (i + 1) len
+    is AUnitTypeDef (name) (base) (s) ->
+     register-mutable-markers env tdefs (i + 1) len
 
   collect-mutable-names : List ATypeDef, Integer, Integer, List Text -> List Text
   collect-mutable-names (tdefs) (i) (len) (acc) =
@@ -423,6 +429,82 @@ Section: Check Chapter
      else collect-mutable-names tdefs (i + 1) len acc
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      collect-mutable-names tdefs (i + 1) len acc
+    is AUnitTypeDef (name) (base) (s) ->
+     collect-mutable-names tdefs (i + 1) len acc
+  is-rt-name : List Text, Text, Integer, Integer -> Boolean
+  is-rt-name (names) (target) (i) (len) =
+   if i >= len then False
+   else if list-at names i == target then True
+   else is-rt-name names target (i + 1) len
+
+  check-rt-no-lambda : UnificationState, AExpr, Text -> UnificationState
+  check-rt-no-lambda (st) (expr) (fn) =
+   when expr
+    is ALambdaExpr (ps) (b) (s) -> __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-closure ("[HardRealtime] function '" & fn & "' contains a lambda") s))
+    is AIfExpr (c) (t) (e) (s) -> check-rt-no-lambda (check-rt-no-lambda (check-rt-no-lambda st c fn) t fn) e fn
+    is ALetExpr (bs) (b) (s) -> check-rt-no-lambda st b fn
+    is AApplyExpr (f) (a) (s) -> check-rt-no-lambda (check-rt-no-lambda st f fn) a fn
+    is ABinaryExpr (l) (op) (r) (s) -> check-rt-no-lambda (check-rt-no-lambda st l fn) r fn
+    is AMatchExpr (sc) (arms) (s) -> check-rt-no-lambda st sc fn
+    is AActExpr (stmts) (s) -> st
+    is otherwise -> st
+
+  is-rt-unsafe-name : Text -> Boolean
+  is-rt-unsafe-name (n) =
+   n == "__alloc" | n == "list-push" | n == "list-concat" | n == "__list-with-capacity" | n == "__linked-list-push"
+
+  is-rt-safe-builtin : Text -> Boolean
+  is-rt-safe-builtin (n) =
+   n == "list-at" | n == "list-length" | n == "show" | n == "integer-to-text" | n == "text-length" | n == "text-at" | n == "text-starts-with" | n == "text-compare" | n == "array-at" | n == "array-length"
+
+  check-rt-calls : UnificationState, AExpr, Text, List Text -> UnificationState
+  check-rt-calls (st) (expr) (fn) (rt-names) =
+   when expr
+    is AApplyExpr (f) (a) (s) -> let st1 = check-rt-calls st a fn rt-names in when f is ANameExpr (n) (ns) -> if is-rt-name rt-names (n.value) 0 (list-length rt-names) | is-rt-safe-builtin (n.value) then st1 else __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-calls-unsafe ("[HardRealtime] function '" & fn & "' calls '" & n.value & "' which is not @hard-realtime") ns)) is otherwise -> check-rt-calls st1 f fn rt-names
+    is AIfExpr (c) (t) (e) (s) -> check-rt-calls (check-rt-calls (check-rt-calls st c fn rt-names) t fn rt-names) e fn rt-names
+    is ALetExpr (bs) (b) (s) -> check-rt-calls st b fn rt-names
+    is ABinaryExpr (l) (op) (r) (s) -> check-rt-calls (check-rt-calls st l fn rt-names) r fn rt-names
+    is AMatchExpr (sc) (arms) (s) -> check-rt-calls st sc fn rt-names
+    is otherwise -> st
+
+  check-rt-no-alloc : UnificationState, AExpr, Text -> UnificationState
+  check-rt-no-alloc (st) (expr) (fn) =
+   when expr
+    is ANameExpr (n) (s) -> if is-rt-unsafe-name (n.value) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses heap-allocating builtin '" & n.value & "'") s)) else st
+    is ABinaryExpr (l) (op) (r) (s) -> let st1 = check-rt-no-alloc (check-rt-no-alloc st l fn) r fn in when op is OpAppend -> __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses text concatenation (&)") s)) is otherwise -> st1
+    is AIfExpr (c) (t) (e) (s) -> check-rt-no-alloc (check-rt-no-alloc (check-rt-no-alloc st c fn) t fn) e fn
+    is ALetExpr (bs) (b) (s) -> check-rt-no-alloc st b fn
+    is AApplyExpr (f) (a) (s) -> check-rt-no-alloc (check-rt-no-alloc st f fn) a fn
+    is AMatchExpr (sc) (arms) (s) -> check-rt-no-alloc st sc fn
+    is otherwise -> st
+
+  is-rt-unsafe-effect : Text -> Boolean
+  is-rt-unsafe-effect (e) =
+   e == "Console" | e == "FileSystem" | e == "Network"
+
+  check-rt-effects : UnificationState, CodexType, Text, SourceSpan -> UnificationState
+  check-rt-effects (st) (ty) (fn) (span) =
+   let effs = extract-effects ty
+   in check-rt-effects-loop st effs fn span 0 (list-length effs)
+
+  check-rt-effects-loop : UnificationState, List Name, Text, SourceSpan, Integer, Integer -> UnificationState
+  check-rt-effects-loop (st) (effs) (fn) (span) (i) (len) =
+   if i >= len then st
+   else let e = list-at effs i
+   in if is-rt-unsafe-effect (e.value) then check-rt-effects-loop (__record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-bare-io ("punctual function '" & fn & "' declares unbounded I/O effect '" & e.value & "'") span))) effs fn span (i + 1) len
+   else check-rt-effects-loop st effs fn span (i + 1) len
+
+  has-self-call : AExpr, Text -> Boolean
+  has-self-call (expr) (fn) =
+   when expr
+    is ANameExpr (n) (s) -> n.value == fn
+    is AApplyExpr (f) (a) (s) -> has-self-call f fn | has-self-call a fn
+    is AIfExpr (c) (t) (e) (s) -> has-self-call c fn | has-self-call t fn | has-self-call e fn
+    is ALetExpr (bs) (b) (s) -> has-self-call b fn
+    is ABinaryExpr (l) (op) (r) (s) -> has-self-call l fn | has-self-call r fn
+    is AMatchExpr (sc) (arms) (s) -> has-self-call sc fn
+    is otherwise -> False
+
   check-chapter : AChapter, List RenameEntry, SkipListText, List ChapterAssignment -> ChapterResult
   check-chapter (mod) (renames) (colliding) (assignments) =
    let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
@@ -444,7 +526,7 @@ Section: Check Chapter
    in let acc0 = deck-record (__list-with-capacity def-count)
    in let slug-cache = for a in assignments -> slugify (a.chapter-slug)
    in let exit = __deck-exit
-   in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" []
+   in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" [] (mod.rt-names)
    in let enter = __deck-enter
    in result
 
@@ -541,8 +623,8 @@ Section: Check Chapter
   empty-type-bindings : List TypeBinding
   empty-type-bindings = []
 
-  check-all-defs : UnificationState, TypeEnv, List ADef, Integer, Integer, List TypeBinding, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry -> ChapterResult
-  check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) =
+  check-all-defs : UnificationState, TypeEnv, List ADef, Integer, Integer, List TypeBinding, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text -> ChapterResult
+  check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) =
    if i == len then let final-st = deck-record (UnificationState {
     substitutions = copy-list-with-headroom (st.substitutions) 0,
     next-id = st.next-id,
@@ -560,12 +642,16 @@ Section: Check Chapter
    in let fresh-env = __record-set (__record-set env "locals" empty-type-bindings) "chapter-renames" chapter-rn
    in let r = check-def st fresh-env def renames
    in let lin-st = check-linearity-def def fresh-env (r.state)
-   in let resolved = deep-resolve lin-st (r.inferred-type)
+   in let rt-chk = is-rt-name rt-names (def.name.value) 0 (list-length rt-names)
+   in let rt-st1 = if rt-chk then check-rt-calls (check-rt-no-alloc (check-rt-no-lambda lin-st (def.body) (def.name.value)) (def.body) (def.name.value)) (def.body) (def.name.value) rt-names else lin-st
+   in let rt-st2 = if rt-chk & has-self-call (def.body) (def.name.value) then __record-set rt-st1 "bag" (bag-add (rt-st1.bag) (make-error cdx-rt-unbounded-recursion ("punctual function '" & def.name.value & "' is self-recursive") (aexpr-span (def.body)))) else rt-st1
+   in let rt-st = if rt-chk then check-rt-effects rt-st2 (strip-fun-args (r.inferred-type)) (def.name.value) (aexpr-span (def.body)) else rt-st2
+   in let resolved = deep-resolve rt-st (r.inferred-type)
    in let entry = deck-record (TypeBinding {
     name = resolve-def-name renames (def.name.value) (def.chapter-slug),
     bound-type = resolved
    })
-   in check-all-defs lin-st env defs (i + 1) len (list-push acc entry) renames colliding assignments citations slug-cache (def.chapter-slug) chapter-rn
+   in check-all-defs rt-st env defs (i + 1) len (list-push acc entry) renames colliding assignments citations slug-cache (def.chapter-slug) chapter-rn rt-names
 
 Section: Linearity Checking
 
@@ -914,6 +1000,12 @@ Section: Register Type Definitions
          name = name.value,
          bound-type = deck-record (RecordTy name ty-args rec-fields)
         })
+       is AUnitTypeDef (name) (base-texpr) (s) ->
+        let resolved-base = resolve-type-expr acc base-texpr
+   in deck-record (TypeBinding {
+         name = name.value,
+         bound-type = deck-record (UnitTy name resolved-base)
+        })
    in build-type-def-map tdefs (i + 1) len (list-insert-at acc (bsearch-text-pos acc (entry.name) 0 (list-length acc)) entry)
 
   build-sum-ctors : List ATypeDef, List AVariantCtorDef, Integer, Integer, List SumCtor, List TypeBinding -> List SumCtor
@@ -970,6 +1062,13 @@ Section: Register Type Definitions
      in LetBindResult {
       state = pr.state,
       env = env-bind env (name.value) (pr.parameterized)
+     }
+    is AUnitTypeDef (name) (base-texpr) (s) ->
+     let unit-ty = lookup-type-def tdm (name.value)
+     in let ctor-ty = deck-record (FunTy (resolve-type-expr tdm base-texpr) unit-ty)
+     in LetBindResult {
+      state = st,
+      env = env-bind env (name.value) ctor-ty
      }
 
   lookup-record-field : List RecordField, Text -> CodexType
@@ -1077,6 +1176,7 @@ Section: Type Arity Check
    when td
     is AVariantTypeDef (name) (type-params) (ctors) (s) -> check-arity-in-variant-ctors tdm ctors 0 (list-length ctors) acc
     is ARecordTypeDef (name) (type-params) (fields) (is-mut) (s) -> check-arity-in-record-fields tdm fields 0 (list-length fields) acc
+    is AUnitTypeDef (name) (base) (s) -> check-arity-in-expr tdm base acc
 
   check-arity-in-def : List TypeBinding, ADef, List Diagnostic -> List Diagnostic
   check-arity-in-def (tdm) (def) (acc) =

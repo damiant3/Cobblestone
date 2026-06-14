@@ -43,8 +43,9 @@ Section: Fresh Variables
   advance-id (st) =
    let new-subs = list-push (st.substitutions) (deck-record (TypeVar (st.next-id)))
    in let new-id = st.next-id + 1
-   in let st1 = __record-set st "substitutions" new-subs
-   in __record-set st1 "next-id" new-id
+   in let __seq = st.substitutions = new-subs
+   in let __seq = st.next-id = new-id
+   in st
 
   fresh-and-advance : UnificationState -> (CodexType, UnificationState)
   fresh-and-advance (st) =
@@ -84,7 +85,8 @@ Section: Resolve
 Section: Add Substitution
   add-subst : UnificationState, Integer, CodexType -> UnificationState
   add-subst (st) (var-id) (ty) =
-   __record-set st "substitutions" (list-set-at (st.substitutions) var-id ty)
+   let __seq = st.substitutions = list-set-at (st.substitutions) var-id ty
+   in st
 
 Section: Expr Types
 
@@ -112,7 +114,8 @@ Section: Expr Types
   record-expr-type (st) (sp) (ty) =
    if is-synthetic-span sp then st
    else let k = expr-type-key sp
-   in __record-set st "expr-types" (list-push (st.expr-types) (deck-record (ExprTypeEntry { key = k, ty = ty })))
+   in let __seq = st.expr-types = list-push (st.expr-types) (deck-record (ExprTypeEntry { key = k, ty = ty }))
+   in st
 
   compare-expr-type-keys : ExprTypeEntry, ExprTypeEntry -> Integer
   compare-expr-type-keys (a) (b) =
@@ -137,7 +140,8 @@ Section: Expr Types
 Section: Add Error
   add-unify-error : UnificationState, Integer, Text, SourceSpan -> UnificationState
   add-unify-error (st) (code) (msg) (span) =
-   __record-set st "bag" (bag-add (st.bag) (make-error code msg span))
+   let __seq = st.bag = bag-add (st.bag) (make-error code msg span)
+   in st
 
   add-fuel-error : UnificationState, Text, SourceSpan -> UnificationState
   add-fuel-error (st) (op) (span) =
@@ -226,6 +230,9 @@ Section: Unify
     is ErrorTy -> when b
      is ErrorTy -> True
      is otherwise -> False
+    is UnitTy (na) (inner-a) -> when b
+     is UnitTy (nb) (inner-b) -> na.value == nb.value & types-equal inner-a inner-b
+     is otherwise -> False
     is otherwise -> False
 
   unify-rhs : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
@@ -244,6 +251,7 @@ Section: Unify
       if a-lo >= b-lo & a-hi <= b-hi then (True, st)
       else if b-lo >= a-lo & b-hi <= a-hi then (True, st)
       else unify-mismatch st a b span
+     is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1)
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is NumberTy -> when b
@@ -315,7 +323,14 @@ Section: Unify
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ForAllTy (id) (body) -> unify-at st body b span (depth + 1)
+    is UnitTy (na) (inner-a) -> when b
+     is UnitTy (nb) (inner-b) ->
+      if na.value == nb.value then unify-at st inner-a inner-b span (depth + 1)
+      else unify-mismatch st a b span
+     is ErrorTy -> (True, st)
+     is otherwise -> unify-at st inner-a b span (depth + 1)
     is otherwise -> when b
+     is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1)
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
 
@@ -362,6 +377,7 @@ Section: Unify
                                           else "Rec:" & name.value & "[" & type-desc-args args 0 & "]"
     is SumTy (name) (args) (ctors) -> if list-length args == 0 then "Sum:" & name.value
                                        else "Sum:" & name.value & "[" & type-desc-args args 0 & "]"
+    is UnitTy (name) (inner) -> "Unit:" & name.value
 
   type-desc-args : List CodexType, Integer -> Text
   type-desc-args (args) (i) =

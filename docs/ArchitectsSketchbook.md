@@ -193,33 +193,51 @@ All phase work runs inside `deck-record(...)`, so R10 points at the
 deck during phase execution. Bivy usage is near-zero (only the 16-byte
 `PhaseStart` record per phase).
 
-### Phase Deck Layout (selfhost, ~1.17 MB source)
+### Phase Deck Layout (selfhost, ~1.39 MB source)
 
-Deck heights are computed from source length (S bytes) using survey
-multipliers in `codex/opening.codex`. The pipeline has 6 TEXT-mode
-frontend phases plus emit. CDX mode adds RESOLVE and LIFT between
-LOWER and EMIT (CL 2429 split the frontend so TEXT skips those).
-ConstructedTy resolution and lambda lifting were moved out of the
-emitter into their own phases (CLs 2135, 2169), each with an
-independent `phase-compact` cycle so bivy scratch is reclaimed
-between passes.
+Deck heights are computed from source length (S bytes), token count,
+or def count using survey multipliers in `codex/compiler/Core/BuildSettings.codex`.
+The pipeline has 6 TEXT-mode frontend phases plus emit. CDX mode adds
+RESOLVE, LIFT, and INLINE between LOWER and EMIT (CL 2429 split the
+frontend so TEXT skips those). ConstructedTy resolution and lambda
+lifting run in their own phases (CLs 2135, 2169), each with an
+independent `phase-compact` cycle so bivy scratch is reclaimed.
 
-Measured deck and bivy usage (CL 2454, TEXT-mode selfhost,
-S = 1,174,861 bytes):
+Three phases use the **reservation-copy pattern** (CLs 3805, 3849,
+3894): a keep deck is reserved FIRST, a bounded scratch deck is built
+above it, and a deep-copy walk moves survivors into the reservation.
+One `phase-compact` then reclaims the scratch, bivy, and unused
+reservation tail. This means the heap does NOT monotonically stack --
+dead decks are reclaimed at phase boundaries:
 
-| Phase | Deck Usage | Bivy HWM | Survey |
-|-------|-----------|----------|--------|
-| LEX | 13.2 MB | 21.9 MB | S × 40 + 1 MB |
-| PARSE | 5.4 MB | 25.4 MB | tokens × 265 + 1 MB |
-| DESUGAR | 19.2 MB | 0.04 MB | S × 21 + 1 MB |
-| SCOPE | 11.6 MB | 31.7 MB | S × 52 + 1 MB |
-| CHECK | 66.1 MB | ~0 | S × 400 + 1 MB |
-| LOWER | 92.5 MB | ~0 | S × 300 + 1 MB |
-| RESOLVE | — | — | S × 200 + 1 MB (CDX only) |
-| LIFT | — | — | S × 200 + 1 MB (CDX only) |
-| EMIT | ~48 MB | per-func | defs × 64 KB + 16 MB |
+- **Frontend keep deck** (CL 3894): reserved below everything in
+  `compile-checked` (S x 40 + 2 MB). At the desugar boundary,
+  `copy-as-*` copies the AChapter, assignments, colliding, bags,
+  heap-marks, and phase-metrics into the reservation. One compact
+  reclaims the LEX deck, PARSE keep deck, and DESUGAR deck together.
+  SCOPE starts at ~57 MB instead of ~146 MB.
 
-Cumulative deck (TEXT): ~208 MB. Gap to stack: ~1,834 MB.
+- **PARSE keep deck** (CL 3849): reserved below the parse scratch
+  (tokens x 160 + 1 MB). `copy-sx-*` copies the Document and
+  assignments into the reservation; one compact reclaims the scratch.
+
+- **LOWER scratch reclamation** (CL 3805): RESOLVE deck reserved
+  first, bounded LOWER scratch above it, `rewrite-ir-chapter`
+  deep-copies survivors into the reservation.
+
+| Phase | Survey | Pattern |
+|-------|--------|---------|
+| LEX | S x 40 + 1 MB | standard deck+compact |
+| PARSE keep | tokens x 160 + 1 MB | reservation-copy |
+| PARSE scratch | tokens x 265 + 1 MB | reclaimed at keep boundary |
+| DESUGAR | S x 21 + 1 MB | reclaimed at frontend keep boundary |
+| SCOPE | S x 52 + 1 MB | standard (starts at ~57 MB) |
+| CHECK | S x 400 + units x 296000 + 1 MB | standard |
+| LOWER | defs x 42200 + 8 MB | reservation-copy |
+| RESOLVE | S x 20000 + 8 MB (CDX only) | standard |
+| LIFT | S x 7600 + 8 MB (CDX only) | standard |
+| INLINE | S x 5000 + 8 MB (CDX only) | standard |
+| EMIT | per-func | streaming (CL 3793) |
 
 ### CHECK Deck Overflow (CL 2574/2596)
 
@@ -260,49 +278,43 @@ within ~2 MB of the CL 2169 baseline — proportional to source growth
 (1,174 KB vs 1,158 KB).
 
 ```
-Heap
-base     Phase decks (sealed, read-only)         Bivy
-(R10) ──►┌──────────────────────────────────────┐  (reclaimed
-0x600000  │  init-phase-allocator (mountain base)│   after each
-          ├──────────────────────────────────────┤   phase)
-          │  LEX deck                  13.2 MB   │
-          │  Survey: S × 40 + 1 MB               │
-          │  Tokens, offset table                │
+Heap (after desugar boundary compact, CDX selfhost)
+
+base     Reservation-copy pattern means dead decks are reclaimed.
+(R10) ──►┌──────────────────────────────────────┐
+0x600000  │  init-phase-allocator (mountain base)│
           ├──────────────────────────────────────┤
-          │  PARSE deck                 5.4 MB   │
-          │  Survey: tokens × 265 + 1 MB         │
-          │  AST nodes, chapter index, def list  │
-          ├──────────────────────────────────────┤
-          │  DESUGAR deck              19.2 MB   │
-          │  Survey: S × 21 + 1 MB               │
-          │  Desugared AST                       │
-          ├──────────────────────────────────────┤
-          │  SCOPE deck                11.6 MB   │
+          │  Frontend keep deck      ~25 MB      │  Copied survivors:
+          │  Survey: S × 40 + 2 MB               │  AChapter, assignments,
+          │  (LEX, PARSE-keep, DESUGAR decks     │  colliding, bags,
+          │   were above -- RECLAIMED at the     │  heap-marks, metrics
+          │   desugar boundary by phase-compact) │
+          ├──────────────────────────────────────┤  deck-origin ~57 MB
+          │  SCOPE deck                12.3 MB   │
           │  Survey: S × 52 + 1 MB               │
           │  Name bindings, slug-mangled names   │
           ├──────────────────────────────────────┤
-          │  CHECK deck                66.1 MB   │
-          │  Survey: S × 95 + 1 MB               │
+          │  CHECK deck                69.4 MB   │
+          │  Survey: S × 400 + units × 296K + 1M │
           │  Type environment, resolved types    │
           ├──────────────────────────────────────┤
-          │  LOWER deck                92.5 MB   │
-          │  Survey: S × 300 + 1 MB              │
-          │  IR defs, IR expressions             │
+          │  LOWER survivors (reservation-copy)  │
+          │  Survey: defs × 42200 + 8 MB         │
+          │  (LOWER scratch RECLAIMED at the     │
+          │   RESOLVE reservation boundary)      │
           ├──────────────────────────────────────┤
           │  RESOLVE deck        (CDX only)      │
-          │  Survey: S × 200 + 1 MB              │
-          │  ConstructedTy → RecordTy/SumTy,     │
-          │  sorted type bindings                │
+          │  Survey: S × 20000 + 8 MB            │
           ├──────────────────────────────────────┤
           │  LIFT deck           (CDX only)      │
-          │  Survey: S × 200 + 1 MB              │
-          │  Lambda-lifted defs                  │
+          │  Survey: S × 7600 + 8 MB             │
           ├──────────────────────────────────────┤
-          │  EMIT deck                ~48 MB     │
-          │  Survey: defs × 64 KB + 16 MB        │
-          │  EmitWorkspace (code + data bufs)    │
+          │  INLINE deck         (CDX only)      │
+          │  Survey: S × 5000 + 8 MB             │
+          ├──────────────────────────────────────┤
+          │  EMIT (streaming, CL 3793)           │
+          │  EmitWorkspace (code 8 MB + data 2M) │
           │  Accumulator lists (11 × 32K cap)    │
-          │  User arities                        │
           │  Per-function CodegenState            │
           ├──────────────────────────────────────┤
           │  (bivy: per-function scratch)        │
@@ -330,7 +342,7 @@ allocates in this order (all on the deck):
 Emit deck
 ──────────────────────────────────────────────────────────────
 1. bare-metal-trampoline        ~100 bytes   Boot stub
-2. init-emit-workspace          4.5 MB       Code buf (4 MB) + data buf (512 KB)
+2. init-emit-workspace          10 MB        Code buf (8 MB) + data buf (2 MB)
 3. CodegenState                 ~300 bytes   With 11 pre-allocated accumulator lists:
      fo-names, fo-offsets          2 × 256 KB   Function offset table
      cp-offsets, cp-targets        2 × 1 MB     Call patch table (4× capacity)
@@ -371,10 +383,9 @@ stays within capacity. The `accum-at-capacity` guard in
 | Buffer | Size | Contents |
 |--------|------|----------|
 | code-buffer | 8 MB (`code-buffer-size`) | x86-64 machine code; written sequentially via `st-append-code` |
-| data-buffer | 512 KB (`data-buffer-size`) | String literals, CCE tables, static data |
+| data-buffer | 2 MB (`data-buffer-size`) | String literals, CCE tables, static data |
 
-Current selfhost binary: ~2.1 MB code, ~100 KB data. The 4 MB code
-buffer has ~1.9 MB headroom.
+Current selfhost binary: ~2.1 MB code, ~100 KB data.
 
 ## Emit Allocator
 
@@ -385,7 +396,7 @@ two large contiguous buffers for the output binary:
   `code-buffer-size` in `codex/Core/BuildSettings.codex` (currently 8 MB).
 - **data-buffer**: Static data (string literals, CCE tables). Capacity
   set by `data-buffer-size` in `codex/Core/BuildSettings.codex`
-  (currently 512 KB).
+  (currently 2 MB).
 
 `init-emit-workspace(text-cap, data-cap)` allocates both buffers from
 the heap and returns an `EmitWorkspace` record with base addresses and
@@ -494,12 +505,12 @@ overflow. There is no guard page.
 
 Function-body x86-64 instruction counts for the four micro-benchmarks
 in `bench/` (build + compare with `bench/compare.ps1`). Measured
-2026-06-10, seed E9E869A8. Full optimization history and per-CL
+2026-06-12, seed F5F85EF6. Full optimization history and per-CL
 breakdown: `docs/Designs/Compiler/Active/CodegenAnalysis.md`.
 
 | Bench | Codex | C /Od | C /O2 | C# JIT | F# JIT |
 |-------|------:|------:|------:|-------:|-------:|
-| fib   | 23    | 19    | 20    | 21     | 21     |
+| fib   | 21    | 19    | 20    | 21     | 21     |
 | fact  | 17    | 16    | 15    | 16     | 15     |
 | gcd   | 23    | 18    | 14    | 11     | 9      |
 | sum   | 14    | 20    | 23    | 9      | 4      |
@@ -512,8 +523,9 @@ expressions consume zero locals), minimal and near-leaf frame elision
 (pure leaves skip the frame pointer AND the stack guard -- a call-free
 function cannot grow the stack; near-leaves keep the guard because the
 guard chain through recursive calls is the heap-collision detector),
-and IrRemInt with the leaf inliner (math-mod sites become inline
-idiv/RDX).
+IrRemInt with the leaf inliner (math-mod sites become inline
+idiv/RDX), and commutative both-complex shortcut (pop+op replaces
+mov+pop+mov+op for tree-recursive add/mul).
 
 sum-to-N beats C at both optimization levels. The remaining gaps are
 frame discipline the C compilers do not pay (the guard pair on

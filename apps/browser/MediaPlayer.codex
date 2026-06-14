@@ -211,7 +211,7 @@ Section: Video Frame Reception
   player-receive-video (ps) (timestamp) (packet-data) =
     let parsed = parse-video-packet packet-data
     in when parsed
-      is Nothing -> __record-set ps "ps-dropped" (ps.ps-dropped + 1)
+      is None -> __record-set ps "ps-dropped" (ps.ps-dropped + 1)
       is Just (frame-type, payload) ->
         let decoded-pixels = decode-video-payload frame-type payload ps.ps-prev-pixels ps.ps-video-width ps.ps-video-height
         in let fb = pixels-to-framebuf decoded-pixels ps.ps-video-width ps.ps-video-height
@@ -254,7 +254,7 @@ Section: Audio Packet Reception
   player-receive-audio (ps) (timestamp) (packet-data) =
     let parsed = parse-audio-packet packet-data
     in when parsed
-      is Nothing -> ps
+      is None -> ps
       is Just (codec-tag, payload) ->
         let pcm = decode-audio-payload codec-tag payload
         in __record-set (__record-set ps
@@ -355,7 +355,7 @@ Section: Video Rendering
   player-render-video : PlayerState, Integer, Integer -> Maybe Framebuf
   player-render-video (ps) (vw) (vh) =
     when ps.ps-video-frame
-      is Nothing -> Nothing
+      is None -> None
       is Just (frame) ->
         if ps.ps-fullscreen
         then Just (scale-frame frame ps.ps-video-width ps.ps-video-height vw vh)
@@ -387,18 +387,18 @@ Section: Packet Parsing
 
   parse-video-packet : List Integer -> Maybe (Integer, List Integer)
   parse-video-packet (data) =
-    if list-length data < 9 then Nothing
+    if list-length data < 9 then None
     else let frame-type = list-at data 0
     in let payload-len = read-pkt-u32 data 5
-    in if list-length data < 9 + payload-len then Nothing
+    in if list-length data < 9 + payload-len then None
     else Just (frame-type, list-take (list-drop data 9) payload-len)
 
   parse-audio-packet : List Integer -> Maybe (Integer, List Integer)
   parse-audio-packet (data) =
-    if list-length data < 9 then Nothing
+    if list-length data < 9 then None
     else let codec-tag = list-at data 0
     in let payload-len = read-pkt-u32 data 5
-    in if list-length data < 9 + payload-len then Nothing
+    in if list-length data < 9 + payload-len then None
     else Just (codec-tag, list-take (list-drop data 9) payload-len)
 
   read-pkt-u32 : List Integer, Integer -> Integer
@@ -498,7 +498,7 @@ Section: Media Keyboard Shortcuts
     else if key-code == 40 then Just MediaVolumeDown
     else if key-code == 77 then Just MediaToggleMute
     else if key-code == 70 then Just MediaToggleFullscreen
-    else Nothing
+    else None
 
 Section: Channel Integration
 
@@ -529,7 +529,7 @@ Section: Channel Integration
         let head = list-at packets 0
         in let parsed = parse-video-packet head
         in let updated = when parsed
-              is Nothing -> ps
+              is None -> ps
               is Just (frame-type, payload) ->
                 player-receive-video ps 0 head
         in process-video-packets updated (list-drop packets 1)

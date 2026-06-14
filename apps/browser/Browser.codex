@@ -185,7 +185,7 @@ Section: Rendering
     let active = browser-active-tab state
     in let trust-color = when active
           is Just (t) -> tab-trust-color t
-          is Nothing -> 0x808080
+          is None -> #808080
     in let focused = when state.bs-focus
           is FocusAddressBar -> True
           is otherwise -> False
@@ -203,15 +203,15 @@ Section: Rendering
           is Just (ps) ->
             let vp = page-viewport-rect state
             in player-render-widget ps vp.lr-w vp.lr-h
-          is Nothing -> tab-render-content t
-      is Nothing -> widget-label "viewport" "No tab selected"
+          is None -> tab-render-content t
+      is None -> widget-label "viewport" "No tab selected"
 
 Section: Trust Prompt Rendering
 
   browser-render-trust-prompt : BrowserState -> WidgetNode
   browser-render-trust-prompt (state) =
     when state.bs-pending-trust
-      is Nothing ->
+      is None ->
         widget-label "trust-prompt" "No pending trust decision"
       is Just (pt) ->
         let title = widget-label "trust-title"
@@ -220,7 +220,7 @@ Section: Trust Prompt Rendering
         in let pub-label = widget-label "trust-pub" (
               when pt.pt-publisher
                 is Just (pk) -> "Publisher: " & bytes-to-hex pk
-                is Nothing -> "Publisher: Unknown")
+                is None -> "Publisher: Unknown")
         in let effects-label = widget-label "trust-effects"
               ("Effects: " & join-effects pt.pt-effects)
         in let tier-label = widget-label "trust-tier"
@@ -282,7 +282,7 @@ Section: Tab Management
         in let active-tab = tab-find-by-id remaining new-active
         in let addr = when active-tab
               is Just (t) -> t.tab-address
-              is Nothing -> ""
+              is None -> ""
         in __record-set (__record-set (__record-set state
           "bs-tabs" remaining)
           "bs-active-tab" new-active)
@@ -293,7 +293,7 @@ Section: Tab Management
     let tab = tab-find-by-id state.bs-tabs id
     in let addr = when tab
           is Just (t) -> t.tab-address
-          is Nothing -> ""
+          is None -> ""
     in __record-set (__record-set (__record-set state
       "bs-active-tab" id)
       "bs-address-bar" (address-bar-set-text state.bs-address-bar addr))
@@ -342,7 +342,7 @@ Section: Navigation
           "bs-address-bar" (address-bar-set-text state.bs-address-bar address))
           "bs-history" hist)
           "bs-dirty" True
-      is Nothing -> state
+      is None -> state
 
   browser-go-back : BrowserState -> BrowserState
   browser-go-back (state) =
@@ -359,7 +359,7 @@ Section: Navigation
               "bs-address-bar" (address-bar-set-text state.bs-address-bar backed.tab-address))
               "bs-dirty" True
           else state
-      is Nothing -> state
+      is None -> state
 
   browser-go-forward : BrowserState -> BrowserState
   browser-go-forward (state) =
@@ -376,7 +376,7 @@ Section: Navigation
               "bs-address-bar" (address-bar-set-text state.bs-address-bar forwarded.tab-address))
               "bs-dirty" True
           else state
-      is Nothing -> state
+      is None -> state
 
   browser-reload : BrowserState -> BrowserState
   browser-reload (state) =
@@ -390,7 +390,7 @@ Section: Navigation
         in __record-set (__record-set state
           "bs-tabs" (tab-replace state.bs-tabs loaded))
           "bs-dirty" True
-      is Nothing -> state
+      is None -> state
 
 Section: Trust Prompt Flow
 
@@ -411,7 +411,7 @@ Section: Trust Prompt Flow
   browser-trust-allow-once : BrowserState -> BrowserState
   browser-trust-allow-once (state) =
     when state.bs-pending-trust
-      is Nothing -> browser-dismiss-trust state
+      is None -> browser-dismiss-trust state
       is Just (pt) ->
         let dismissed = browser-dismiss-trust state
         in browser-navigate dismissed pt.pt-address
@@ -419,10 +419,10 @@ Section: Trust Prompt Flow
   browser-trust-always : BrowserState -> BrowserState
   browser-trust-always (state) =
     when state.bs-pending-trust
-      is Nothing -> browser-dismiss-trust state
+      is None -> browser-dismiss-trust state
       is Just (pt) ->
         when pt.pt-publisher
-          is Nothing -> browser-trust-allow-once state
+          is None -> browser-trust-allow-once state
           is Just (pub-key) ->
             let updated-store = trust-store-grant state.bs-trust-store pub-key pt.pt-tier 0
             in let dismissed = __record-set (browser-dismiss-trust state)
@@ -437,7 +437,7 @@ Section: Trust Prompt Flow
       is Just (t) ->
         let denied = tab-set-error t "Trust denied by user"
         in __record-set dismissed "bs-tabs" (tab-replace dismissed.bs-tabs denied)
-      is Nothing -> dismissed
+      is None -> dismissed
 
   browser-dismiss-trust : BrowserState -> BrowserState
   browser-dismiss-trust (state) =
@@ -512,14 +512,14 @@ Section: Mouse Hit Testing
             else if text-starts-with widget-id "media-"
             then browser-handle-media-click state t widget-id
             else __record-set state "bs-focus" FocusPageContent
-          is Nothing -> __record-set state "bs-focus" FocusPageContent
-      is Nothing -> state
+          is None -> __record-set state "bs-focus" FocusPageContent
+      is None -> state
 
   browser-handle-media-click : BrowserState, Tab, Text -> BrowserState
   browser-handle-media-click (state) (t) (widget-id) =
     let ev = media-click-to-event widget-id
     in when ev
-      is Nothing -> state
+      is None -> state
       is Just (mev) ->
         let updated = tab-media-event t mev
         in __record-set (__record-set state
@@ -537,13 +537,13 @@ Section: Mouse Hit Testing
     else if widget-id == "media-vol-up" then Just MediaVolumeUp
     else if widget-id == "media-vol-down" then Just MediaVolumeDown
     else if widget-id == "media-fs" then Just MediaToggleFullscreen
-    else Nothing
+    else None
 
   widget-click-target : Tab, Integer, Integer -> Maybe Text
   widget-click-target (t) (mx) (my) =
     when t.tab-content
       is Just (tree) -> widget-find-at-point tree mx my
-      is Nothing -> Nothing
+      is None -> None
 
   widget-find-at-point : WidgetNode, Integer, Integer -> Maybe Text
   widget-find-at-point (node) (x) (y) =
@@ -551,7 +551,7 @@ Section: Mouse Hit Testing
     then if widget-is-leaf node
       then Just node.wn-id
       else find-child-at-point node.wn-children x y node.wn-id
-    else Nothing
+    else None
 
   find-child-at-point : List WidgetNode, Integer, Integer, Text -> Maybe Text
   find-child-at-point (children) (x) (y) (parent-id) =
@@ -562,7 +562,7 @@ Section: Mouse Hit Testing
         in let hit = widget-find-at-point head x y
         in when hit
           is Just (id) -> Just id
-          is Nothing -> find-child-at-point (list-drop children 1) x y parent-id
+          is None -> find-child-at-point (list-drop children 1) x y parent-id
 
   widget-link-address : Text -> Text
   widget-link-address (widget-id) =
@@ -605,7 +605,7 @@ Section: Page Key Handling
   browser-handle-page-key (state) (ev) =
     let active = browser-active-tab state
     in when active
-      is Nothing ->
+      is None ->
         let action = map-key-event ev
         in browser-apply-action state action
       is Just (t) ->
@@ -617,7 +617,7 @@ Section: Page Key Handling
               in __record-set (__record-set state
                 "bs-tabs" (tab-replace state.bs-tabs updated))
                 "bs-dirty" True
-            is Nothing ->
+            is None ->
               let action = map-key-event ev
               in browser-apply-action state action
         else let action = map-key-event ev
@@ -629,13 +629,13 @@ Section: Media Tick
   browser-tick-media (state) (elapsed-ms) =
     let active = browser-active-tab state
     in when active
-      is Nothing -> state
+      is None -> state
       is Just (t) ->
         if tab-has-player t
         then let ticked = tab-media-tick t elapsed-ms
           in let needs-repaint = when ticked.tab-player
                 is Just (ps) -> player-is-playing ps
-                is Nothing -> False
+                is None -> False
           in if needs-repaint
             then __record-set (__record-set state
               "bs-tabs" (tab-replace state.bs-tabs ticked))
@@ -655,7 +655,7 @@ Section: Page Scroll Handling
         in __record-set (__record-set state
           "bs-tabs" (tab-replace state.bs-tabs scrolled))
           "bs-dirty" True
-      is Nothing -> state
+      is None -> state
 
 Section: Render Pipeline
 
@@ -749,15 +749,15 @@ Section: Main Loop
         let active = browser-active-tab state
         in when active
           is Just (t) -> __record-set state "bs-tabs" (tab-replace state.bs-tabs (tab-scroll-page-up t))
-          is Nothing -> state
+          is None -> state
       is ActionPageDown ->
         let active = browser-active-tab state
         in when active
           is Just (t) -> __record-set state "bs-tabs" (tab-replace state.bs-tabs (tab-scroll-page-down t))
-          is Nothing -> state
+          is None -> state
       is ActionHome ->
         let active = browser-active-tab state
         in when active
           is Just (t) -> __record-set state "bs-tabs" (tab-replace state.bs-tabs (tab-scroll-to-top t))
-          is Nothing -> state
+          is None -> state
       is ActionEnd -> state

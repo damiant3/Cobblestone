@@ -39,7 +39,8 @@ Section: Expressions
   MatchArm = record {
    pattern : Pat,
    body : Expr,
-   guard : Expr
+   guard : Expr,
+   alt-group : Integer
   }
 
   RecordFieldExpr = record {
@@ -134,6 +135,7 @@ Section: Definitions
   TypeBody =
    | RecordBody (List RecordFieldDef)
    | VariantBody (List VariantCtorDef)
+   | UnitBody (TypeExpr)
 
   TypeDef = record {
    name : Token,
@@ -195,6 +197,376 @@ Section: Document
    prose-blocks : List ProseBlock,
    annotations : List AnnotationNode,
    parse-bag : DiagnosticBag
+  }
+
+Section: Deck Copies
+
+ The parser allocates the Document in PARSE's scratch region. To let
+ the parse phase compact, compile-parse copies the Document into a
+ deck reservation built below the scratch; everything the copy does
+ not reach is reclaimed. The sharing rule is positional, not
+ structural: a value whose address sits below the reservation base
+ survives the compact and is shared; anything at or above it is
+ scratch and must be copied. Every copier threads the base as its
+ first argument. Lexer tokens (and their kind cells) live in the LEX
+ deck below and are shared wholesale -- this avoids duplicating the
+ token store. Parser-synthesized tokens land in parse scratch and are
+ rebuilt, including their kind cells, because constructor cells are
+ heap values that dangle like any other. Texts are shared when
+ durable and rematerialized through substring when they live in
+ scratch -- substring copies bytes, so the rebuilt text does not
+ point into the reclaimed region.
+
+  copy-sx-text : Integer, Text -> Text
+  copy-sx-text (b) (t) =
+   if address-of t < b then t
+   else substring t 0 (text-length t)
+
+  copy-sx-texts : Integer, List Text -> List Text
+  copy-sx-texts (b) (ts) = for t in ts -> copy-sx-text b t
+
+  copy-sx-kind : TokenKind -> TokenKind
+  copy-sx-kind (k) =
+   when k
+    is EndOfFile -> EndOfFile
+    is Newline -> Newline
+    is Indent -> Indent
+    is Dedent -> Dedent
+    is IntegerLiteral -> IntegerLiteral
+    is NumberLiteral -> NumberLiteral
+    is TextLiteral -> TextLiteral
+    is CharLiteral -> CharLiteral
+    is TrueKeyword -> TrueKeyword
+    is FalseKeyword -> FalseKeyword
+    is Identifier -> Identifier
+    is TypeIdentifier -> TypeIdentifier
+    is ProseText -> ProseText
+    is ChapterHeader -> ChapterHeader
+    is SectionHeader -> SectionHeader
+    is LetKeyword -> LetKeyword
+    is InKeyword -> InKeyword
+    is BetweenKeyword -> BetweenKeyword
+    is IfKeyword -> IfKeyword
+    is IsKeyword -> IsKeyword
+    is OtherwiseKeyword -> OtherwiseKeyword
+    is ThenKeyword -> ThenKeyword
+    is ElseKeyword -> ElseKeyword
+    is WhenKeyword -> WhenKeyword
+    is WhereKeyword -> WhereKeyword
+    is SuchThatKeyword -> SuchThatKeyword
+    is ActKeyword -> ActKeyword
+    is EndKeyword -> EndKeyword
+    is RecordKeyword -> RecordKeyword
+    is CitesKeyword -> CitesKeyword
+    is ClaimKeyword -> ClaimKeyword
+    is ProofKeyword -> ProofKeyword
+    is QedKeyword -> QedKeyword
+    is InductionKeyword -> InductionKeyword
+    is ForAllKeyword -> ForAllKeyword
+    is ThereExistsKeyword -> ThereExistsKeyword
+    is LinearKeyword -> LinearKeyword
+    is MutableKeyword -> MutableKeyword
+    is PunctualKeyword -> PunctualKeyword
+    is EffectKeyword -> EffectKeyword
+    is ClassKeyword -> ClassKeyword
+    is InstanceKeyword -> InstanceKeyword
+    is WithKeyword -> WithKeyword
+    is WithTimeoutKeyword -> WithTimeoutKeyword
+    is TryingKeyword -> TryingKeyword
+    is LazyKeyword -> LazyKeyword
+    is ForKeyword -> ForKeyword
+    is Equals -> Equals
+    is Colon -> Colon
+    is Arrow -> Arrow
+    is LeftArrow -> LeftArrow
+    is Pipe -> Pipe
+    is PipeForward -> PipeForward
+    is Ampersand -> Ampersand
+    is Plus -> Plus
+    is Minus -> Minus
+    is Star -> Star
+    is Slash -> Slash
+    is Caret -> Caret
+    is PlusPlus -> PlusPlus
+    is ColonColon -> ColonColon
+    is DoubleEquals -> DoubleEquals
+    is NotEquals -> NotEquals
+    is LessThan -> LessThan
+    is GreaterThan -> GreaterThan
+    is LessOrEqual -> LessOrEqual
+    is GreaterOrEqual -> GreaterOrEqual
+    is TripleEquals -> TripleEquals
+    is FatArrow -> FatArrow
+    is Turnstile -> Turnstile
+    is LinearProduct -> LinearProduct
+    is ForAllSymbol -> ForAllSymbol
+    is ExistsSymbol -> ExistsSymbol
+    is LeftParen -> LeftParen
+    is RightParen -> RightParen
+    is LeftBracket -> LeftBracket
+    is RightBracket -> RightBracket
+    is LeftBrace -> LeftBrace
+    is RightBrace -> RightBrace
+    is Comma -> Comma
+    is Dot -> Dot
+    is DotDot -> DotDot
+    is DashGreater -> DashGreater
+    is Underscore -> Underscore
+    is Backslash -> Backslash
+    is AtSign -> AtSign
+    is ErrorToken -> ErrorToken
+    is UnitKeyword -> UnitKeyword
+
+  copy-sx-token : Integer, Token -> Token
+  copy-sx-token (b) (t) =
+   if address-of t < b then t
+   else Token {
+    kind = copy-sx-kind (t.kind),
+    source = copy-sx-text b (t.source),
+    offset = t.offset,
+    length = t.length,
+    line = t.line,
+    column = t.column,
+    file-id = t.file-id
+   }
+
+  copy-sx-tokens : Integer, List Token -> List Token
+  copy-sx-tokens (b) (ts) = for t in ts -> copy-sx-token b t
+
+  copy-sx-prov : Provenance -> Provenance
+  copy-sx-prov (p) =
+   when p
+    is ProvParsed -> ProvParsed
+    is ProvDesugared -> ProvDesugared
+    is ProvSynthetic -> ProvSynthetic
+
+  copy-sx-pos : SourcePosition -> SourcePosition
+  copy-sx-pos (p) = SourcePosition { line = p.line, column = p.column, offset = p.offset }
+
+  copy-sx-span : Integer, SourceSpan -> SourceSpan
+  copy-sx-span (b) (s) =
+   if address-of s < b then s
+   else SourceSpan {
+    start = copy-sx-pos (s.start),
+    end = copy-sx-pos (s.end),
+    file-id = s.file-id,
+    provenance = copy-sx-prov (s.provenance)
+   }
+
+  copy-sx-ov : OverflowMode -> OverflowMode
+  copy-sx-ov (m) =
+   when m
+    is OvError -> OvError
+    is OvWrapping -> OvWrapping
+    is OvClamping -> OvClamping
+
+  copy-sx-typeexpr : Integer, TypeExpr -> TypeExpr
+  copy-sx-typeexpr (b) (t) =
+   when t
+    is NamedType (tok) -> NamedType (copy-sx-token b tok)
+    is FunType (a) (r) -> FunType (copy-sx-typeexpr b a) (copy-sx-typeexpr b r)
+    is AppType (f) (args) -> AppType (copy-sx-typeexpr b f) (for a in args -> copy-sx-typeexpr b a)
+    is ParenType (inner) -> ParenType (copy-sx-typeexpr b inner)
+    is ListType (el) -> ListType (copy-sx-typeexpr b el)
+    is LinearTypeExpr (inner) -> LinearTypeExpr (copy-sx-typeexpr b inner)
+    is EffectTypeExpr (effs) (caps) (inner) -> EffectTypeExpr (copy-sx-tokens b effs) (copy-sx-tokens b caps) (copy-sx-typeexpr b inner)
+    is BoundedIntType (inner) (lo) (hi) (mode) -> BoundedIntType (copy-sx-typeexpr b inner) lo hi (copy-sx-ov mode)
+    is PropEqType (l) (r) (sp) -> PropEqType (copy-sx-typeexpr b l) (copy-sx-typeexpr b r) (copy-sx-span b sp)
+    is ConstrainedType (inner) (c) -> ConstrainedType (copy-sx-typeexpr b inner) (copy-sx-typeexpr b c)
+    is TupleType (els) -> TupleType (for el in els -> copy-sx-typeexpr b el)
+
+  copy-sx-pat : Integer, Pat -> Pat
+  copy-sx-pat (b) (p) =
+   when p
+    is VarPat (tok) -> VarPat (copy-sx-token b tok)
+    is LitPat (tok) -> LitPat (copy-sx-token b tok)
+    is CtorPat (tok) (args) -> CtorPat (copy-sx-token b tok) (for a in args -> copy-sx-pat b a)
+    is WildPat (tok) -> WildPat (copy-sx-token b tok)
+    is TuplePat (els) -> TuplePat (for el in els -> copy-sx-pat b el)
+
+  copy-sx-letbind : Integer, LetBind -> LetBind
+  copy-sx-letbind (b) (lb) = LetBind { name = copy-sx-token b (lb.name), value = copy-sx-expr b (lb.value) }
+
+  copy-sx-matcharm : Integer, MatchArm -> MatchArm
+  copy-sx-matcharm (b) (a) = MatchArm {
+   pattern = copy-sx-pat b (a.pattern),
+   body = copy-sx-expr b (a.body),
+   guard = copy-sx-expr b (a.guard),
+   alt-group = a.alt-group
+  }
+
+  copy-sx-fieldexpr : Integer, RecordFieldExpr -> RecordFieldExpr
+  copy-sx-fieldexpr (b) (f) = RecordFieldExpr { name = copy-sx-token b (f.name), value = copy-sx-expr b (f.value) }
+
+  copy-sx-actstmt : Integer, ActStmt -> ActStmt
+  copy-sx-actstmt (b) (s) =
+   when s
+    is ActBindStmt (tok) (e) -> ActBindStmt (copy-sx-token b tok) (copy-sx-expr b e)
+    is ActExprStmt (e) -> ActExprStmt (copy-sx-expr b e)
+
+  copy-sx-handleclause : Integer, HandleClause -> HandleClause
+  copy-sx-handleclause (b) (c) = HandleClause {
+   op-name = copy-sx-token b (c.op-name),
+   params = copy-sx-tokens b (c.params),
+   resume-name = copy-sx-token b (c.resume-name),
+   body = copy-sx-expr b (c.body)
+  }
+
+  copy-sx-expr : Integer, Expr -> Expr
+  copy-sx-expr (b) (e) =
+   when e
+    is LitExpr (tok) -> LitExpr (copy-sx-token b tok)
+    is NameExpr (tok) -> NameExpr (copy-sx-token b tok)
+    is AppExpr (f) (a) -> AppExpr (copy-sx-expr b f) (copy-sx-expr b a)
+    is BinExpr (l) (op) (r) -> BinExpr (copy-sx-expr b l) (copy-sx-token b op) (copy-sx-expr b r)
+    is UnaryExpr (op) (inner) -> UnaryExpr (copy-sx-token b op) (copy-sx-expr b inner)
+    is IfExpr (c) (t) (f) -> IfExpr (copy-sx-expr b c) (copy-sx-expr b t) (copy-sx-expr b f)
+    is LetExpr (binds) (body) -> LetExpr (for lb in binds -> copy-sx-letbind b lb) (copy-sx-expr b body)
+    is MatchExpr (scrut) (arms) -> MatchExpr (copy-sx-expr b scrut) (for a in arms -> copy-sx-matcharm b a)
+    is ListExpr (els) -> ListExpr (for el in els -> copy-sx-expr b el)
+    is RecordExpr (name) (fields) -> RecordExpr (copy-sx-token b name) (for f in fields -> copy-sx-fieldexpr b f)
+    is FieldExpr (rec) (field) -> FieldExpr (copy-sx-expr b rec) (copy-sx-token b field)
+    is ParenExpr (inner) -> ParenExpr (copy-sx-expr b inner)
+    is TupleExpr (els) -> TupleExpr (for el in els -> copy-sx-expr b el)
+    is ActExpr (stmts) -> ActExpr (for s in stmts -> copy-sx-actstmt b s)
+    is HandleExpr (tok) (body) (clauses) -> HandleExpr (copy-sx-token b tok) (copy-sx-expr b body) (for c in clauses -> copy-sx-handleclause b c)
+    is WithTimeoutExpr (tok) (budget) (handler) (body) -> WithTimeoutExpr (copy-sx-token b tok) (copy-sx-tokens b budget) (copy-sx-tokens b handler) (copy-sx-expr b body)
+    is LambdaExpr (params) (body) -> LambdaExpr (copy-sx-tokens b params) (copy-sx-expr b body)
+    is TryExpr (tok) (t-stmts) (c-stmts) (f-stmts) -> TryExpr (copy-sx-token b tok) (for ts in t-stmts -> copy-sx-actstmt b ts) (for cs in c-stmts -> copy-sx-actstmt b cs) (for fs in f-stmts -> copy-sx-actstmt b fs)
+    is FieldAssignExpr (target) (field) (value) -> FieldAssignExpr (copy-sx-expr b target) (copy-sx-token b field) (copy-sx-expr b value)
+    is SeqExpr (first) (second) -> SeqExpr (copy-sx-expr b first) (copy-sx-expr b second)
+    is LazyExpr (inner) -> LazyExpr (copy-sx-expr b inner)
+    is ForExpr (var) (coll) (body) -> ForExpr (copy-sx-token b var) (copy-sx-expr b coll) (copy-sx-expr b body)
+    is ErrExpr (tok) -> ErrExpr (copy-sx-token b tok)
+
+  copy-sx-typeann : Integer, TypeAnn -> TypeAnn
+  copy-sx-typeann (b) (a) = TypeAnn { name = copy-sx-token b (a.name), type-expr = copy-sx-typeexpr b (a.type-expr) }
+
+  copy-sx-def : Integer, Def -> Def
+  copy-sx-def (b) (d) = Def {
+   name = copy-sx-token b (d.name),
+   params = copy-sx-tokens b (d.params),
+   ann = for a in (d.ann) -> copy-sx-typeann b a,
+   body = copy-sx-expr b (d.body),
+   chapter-slug = copy-sx-text b (d.chapter-slug)
+  }
+
+  copy-sx-fielddef : Integer, RecordFieldDef -> RecordFieldDef
+  copy-sx-fielddef (b) (f) = RecordFieldDef { name = copy-sx-token b (f.name), type-expr = copy-sx-typeexpr b (f.type-expr) }
+
+  copy-sx-ctordef : Integer, VariantCtorDef -> VariantCtorDef
+  copy-sx-ctordef (b) (c) = VariantCtorDef { name = copy-sx-token b (c.name), fields = for f in (c.fields) -> copy-sx-typeexpr b f }
+
+  copy-sx-typebody : Integer, TypeBody -> TypeBody
+  copy-sx-typebody (b) (body) =
+   when body
+    is RecordBody (fields) -> RecordBody (for f in fields -> copy-sx-fielddef b f)
+    is VariantBody (ctors) -> VariantBody (for c in ctors -> copy-sx-ctordef b c)
+    is UnitBody (base) -> UnitBody (copy-sx-typeexpr b base)
+
+  copy-sx-typedef : Integer, TypeDef -> TypeDef
+  copy-sx-typedef (b) (d) = TypeDef {
+   name = copy-sx-token b (d.name),
+   type-params = copy-sx-tokens b (d.type-params),
+   body = copy-sx-typebody b (d.body),
+   is-mutable = d.is-mutable,
+   deriving = copy-sx-tokens b (d.deriving)
+  }
+
+  copy-sx-opdef : Integer, EffectOpDef -> EffectOpDef
+  copy-sx-opdef (b) (o) = EffectOpDef { name = copy-sx-token b (o.name), type-expr = copy-sx-typeexpr b (o.type-expr) }
+
+  copy-sx-effectdef : Integer, EffectDef -> EffectDef
+  copy-sx-effectdef (b) (d) = EffectDef { name = copy-sx-token b (d.name), ops = for o in (d.ops) -> copy-sx-opdef b o }
+
+  copy-sx-classdef : Integer, ClassDef -> ClassDef
+  copy-sx-classdef (b) (d) = ClassDef { name = copy-sx-token b (d.name), methods = for m in (d.methods) -> copy-sx-opdef b m }
+
+  copy-sx-imethod : Integer, InstanceMethodDef -> InstanceMethodDef
+  copy-sx-imethod (b) (m) = InstanceMethodDef {
+   name = copy-sx-token b (m.name),
+   params = copy-sx-tokens b (m.params),
+   body = copy-sx-expr b (m.body)
+  }
+
+  copy-sx-instancedef : Integer, InstanceDef -> InstanceDef
+  copy-sx-instancedef (b) (d) = InstanceDef {
+   class-name = copy-sx-token b (d.class-name),
+   type-name = copy-sx-token b (d.type-name),
+   methods = for m in (d.methods) -> copy-sx-imethod b m
+  }
+
+  copy-sx-citesdecl : Integer, CitesDecl -> CitesDecl
+  copy-sx-citesdecl (b) (c) = CitesDecl {
+   quire = copy-sx-token b (c.quire),
+   chapter-name = copy-sx-text b (c.chapter-name),
+   selected-names = copy-sx-tokens b (c.selected-names),
+   citing-chapter = copy-sx-text b (c.citing-chapter)
+  }
+
+  copy-sx-ptrans : ProseTransition -> ProseTransition
+  copy-sx-ptrans (t) =
+   when t
+    is PtNone -> PtNone
+    is PtWeSay -> PtWeSay
+    is PtThisIsWritten -> PtThisIsWritten
+
+  copy-sx-ptemplate : Integer, ProseTemplate -> ProseTemplate
+  copy-sx-ptemplate (b) (t) =
+   when t
+    is PtNoTemplate -> PtNoTemplate
+    is PtRecordTemplate (n) -> PtRecordTemplate (copy-sx-text b n)
+    is PtVariantTemplate (n) -> PtVariantTemplate (copy-sx-text b n)
+    is PtFunctionTemplate (n) -> PtFunctionTemplate (copy-sx-text b n)
+    is PtConstraintTemplate -> PtConstraintTemplate
+    is PtProofTemplate -> PtProofTemplate
+    is PtProcedureTemplate -> PtProcedureTemplate
+    is PtQuantifiedTemplate -> PtQuantifiedTemplate
+
+  copy-sx-proseblock : Integer, ProseBlock -> ProseBlock
+  copy-sx-proseblock (b) (p) = ProseBlock {
+   text = copy-sx-text b (p.text),
+   transition = copy-sx-ptrans (p.transition),
+   template = copy-sx-ptemplate b (p.template)
+  }
+
+  copy-sx-annotation : Integer, AnnotationNode -> AnnotationNode
+  copy-sx-annotation (b) (a) = AnnotationNode {
+   kind = copy-sx-text b (a.kind),
+   target = copy-sx-text b (a.target),
+   body = copy-sx-text b (a.body)
+  }
+
+  copy-sx-diag : Integer, Diagnostic -> Diagnostic
+  copy-sx-diag (b) (d) = Diagnostic {
+   code = d.code,
+   message = copy-sx-text b (d.message),
+   severity = d.severity,
+   span = copy-sx-span b (d.span),
+   related-spans = for s in (d.related-spans) -> copy-sx-span b s
+  }
+
+  copy-sx-bag : Integer, DiagnosticBag -> DiagnosticBag
+  copy-sx-bag (b) (bag) = DiagnosticBag {
+   diagnostics = for d in (bag.diagnostics) -> copy-sx-diag b d,
+   error-count = bag.error-count,
+   truncated = bag.truncated
+  }
+
+  copy-sx-document : Integer, Document -> Document
+  copy-sx-document (b) (d) = Document {
+   defs = for fd in (d.defs) -> copy-sx-def b fd,
+   type-defs = for t in (d.type-defs) -> copy-sx-typedef b t,
+   effect-defs = for e in (d.effect-defs) -> copy-sx-effectdef b e,
+   class-defs = for c in (d.class-defs) -> copy-sx-classdef b c,
+   instance-defs = for i in (d.instance-defs) -> copy-sx-instancedef b i,
+   citations = for c in (d.citations) -> copy-sx-citesdecl b c,
+   chapter-title = copy-sx-text b (d.chapter-title),
+   section-titles = copy-sx-texts b (d.section-titles),
+   prose = copy-sx-text b (d.prose),
+   prose-blocks = for p in (d.prose-blocks) -> copy-sx-proseblock b p,
+   annotations = for a in (d.annotations) -> copy-sx-annotation b a,
+   parse-bag = copy-sx-bag b (d.parse-bag)
   }
 
 Section: Definition Headers (for streaming)

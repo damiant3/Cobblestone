@@ -20,6 +20,8 @@ Section: Type Definition Emission
      in mut-prefix & name.value & emit-tparams tparams 0 & " = record {" & emit-record-field-defs fields 0 & "\n}\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      name.value & emit-tparams tparams 0 & " =\n" & emit-variant-ctors ctors 0
+    is AUnitTypeDef (name) (base) (s) ->
+     name.value & " = unit " & emit-type-expr base
 
   emit-tparams : List Name, Integer -> Text
   emit-tparams (tparams) (i) =
@@ -185,6 +187,7 @@ Section: CodexType Emission
      else if list-length args == 0 then name.value
      else name.value & emit-type-args args 0
     is EffectfulTy (effs) (sc) (ret) -> "[" & emit-type-effect-names effs 0 & "] " & emit-type ret
+    is UnitTy (name) (inner) -> name.value
     is otherwise -> "Unknown"
 
   emit-fun-params : CodexType, CodexType -> Text
@@ -561,7 +564,7 @@ Section: Match
    else let b = list-at branches i
    in let body-text = emit-expr (b.body) ctors (indent + 1)
    in let guard-text = emit-guard-suffix (b.guard) ctors (indent + 1)
-   in let group-end = find-group-end branches ctors indent body-text guard-text (i + 1) len
+   in let group-end = find-group-end branches ctors indent body-text guard-text (b.alt-group) (i + 1) len
    in let pat-text = emit-group-pats-tail branches (i + 1) group-end (emit-pattern (b.pattern))
    in emit-branches-acc branches ctors indent group-end len (list-push acc ("\n" & make-indent (indent + 1) & "is " & pat-text & guard-text & " -> " & body-text))
 
@@ -571,14 +574,22 @@ Section: Match
     is IrBoolLit (v) (sp) -> if v then "" else " when False"
     is otherwise -> " when " & emit-expr guard ctors indent
 
-  find-group-end : List IRBranch, List Text, Integer, Text, Text, Integer, Integer -> Integer
-  find-group-end (branches) (ctors) (indent) (body-text) (guard-text) (i) (len) =
+ A branch joins the group only when it carries the same non-negative
+ alt-group as the group head: alternatives expanded from one source
+ or-pattern share the head pattern's source offset, while distinct
+ source arms (and synthesized arms, tagged -1) never re-merge even
+ with identical bodies.
+
+  find-group-end : List IRBranch, List Text, Integer, Text, Text, Integer, Integer, Integer -> Integer
+  find-group-end (branches) (ctors) (indent) (body-text) (guard-text) (group) (i) (len) =
    if i >= len then i
+   else if group < 0 then i
    else let b = list-at branches i
-   in let next-body = emit-expr (b.body) ctors (indent + 1)
+   in if b.alt-group /= group then i
+   else let next-body = emit-expr (b.body) ctors (indent + 1)
    in let next-guard = emit-guard-suffix (b.guard) ctors (indent + 1)
    in if next-body == body-text & next-guard == guard-text
-      then find-group-end branches ctors indent body-text guard-text (i + 1) len
+      then find-group-end branches ctors indent body-text guard-text group (i + 1) len
       else i
 
   emit-group-pats-tail : List IRBranch, Integer, Integer, Text -> Text

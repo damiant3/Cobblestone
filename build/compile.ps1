@@ -130,9 +130,9 @@ try {
     }
 
     if (-not (Test-Path $outputFile) -or (Get-Item $outputFile).Length -eq 0) {
-        if ($attempt -lt $maxAttempts -and $curMem -lt 4096) {
-            [Console]::Error.WriteLine("  compile: no output with ${curMem}MB, retrying with 4096MB")
-            $curMem = 4096; continue compile_loop
+        if ($attempt -lt $maxAttempts -and $curMem -lt 3584) {
+            [Console]::Error.WriteLine("  compile: no output with ${curMem}MB, retrying with 3584MB")
+            $curMem = 3584; continue compile_loop
         }
         "FAIL: no output" | Set-Content -Path $Log -Encoding UTF8
         if (Test-Path $stderrFile) { Add-Content -Path $Log -Value (Get-Content $stderrFile -Raw) -Encoding UTF8 }
@@ -164,9 +164,9 @@ try {
         }
         if ($line.StartsWith('!EXC')) {
             Add-Content -Path $Log -Value $line -Encoding UTF8
-            if ($attempt -lt $maxAttempts -and $curMem -lt 4096) {
-                [Console]::Error.WriteLine("  compile: crash with ${curMem}MB, retrying with 4096MB")
-                $curMem = 4096; $hitExc = $true; break
+            if ($attempt -lt $maxAttempts -and $curMem -lt 3584) {
+                [Console]::Error.WriteLine("  compile: crash with ${curMem}MB, retrying with 3584MB")
+                $curMem = 3584; $hitExc = $true; break
             }
             exit 4
         }

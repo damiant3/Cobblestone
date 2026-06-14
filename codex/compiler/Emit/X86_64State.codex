@@ -98,7 +98,8 @@ Section: Record Types
    trace-alloc : Boolean,
    stack-guard : Boolean,
    omit-frame-pointer : Boolean,
-   stype-sites : List Integer
+   stype-sites : List Integer,
+   insn-count : Integer between 0 and 4294967295
   }
 
   EffectOpAddr = record {
@@ -117,7 +118,10 @@ Section: Record Types
   }
 
   EmitChapterResult = record {
-   bytes : List Integer,
+   header-bytes : List Integer,
+   content-buf : Integer,
+   content-len : Integer,
+   tail-bytes : List Integer,
    bag : DiagnosticBag,
    symbol-map : List Text
   }
@@ -177,6 +181,8 @@ Section: Constants
   bare-metal-pd-count : Integer = (bare-metal-ram-size + 1073741823) / 1073741824
 
   bare-metal-page-count : Integer = (bare-metal-ram-size + 2097151) / 2097152
+
+  bare-metal-nx-boundary : Integer = 3
 
 Section: CCE Table (inlined from Foreword CCE to avoid duplicate-definition conflict during self-compilation)
   cce-to-unicode-table : List Integer
@@ -269,7 +275,8 @@ Section: State Helpers
    deck-bound = False,
    vm-profile = vm-profile-spec,
    poison-alloc = False,
-   stype-sites = []
+   stype-sites = [],
+   insn-count = 0
   }
 
   st-add-error : CodegenState, Integer, Text, SourceSpan -> CodegenState
@@ -279,6 +286,10 @@ Section: State Helpers
   st-add-info : CodegenState, Integer, Text, SourceSpan -> CodegenState
   st-add-info (st) (code) (msg) (sp) =
    __record-set st "bag" (bag-add (st.bag) (make-info code msg sp))
+
+  st-add-warning : CodegenState, Integer, Text, SourceSpan -> CodegenState
+  st-add-warning (st) (code) (msg) (sp) =
+   __record-set st "bag" (bag-add (st.bag) (make-warning code msg sp))
 
   emit-fuel-exhausted : CodegenState -> Boolean
   emit-fuel-exhausted (st) = st.emit-work >= max-emit-work
@@ -293,7 +304,7 @@ Section: State Helpers
   st-append-code : CodegenState, List Integer -> CodegenState
   st-append-code (st) (bytes) =
    let new-len = __buf-write-bytes (st.workspace.code-buffer) (st.code-len) bytes
-   in __record-set st "code-len" new-len
+   in __record-set (__record-set st "code-len" new-len) "insn-count" (st.insn-count + 1)
 
 
   record-func-offset : CodegenState, Text -> CodegenState
@@ -345,7 +356,8 @@ Section: State Helpers
     trace-alloc = st.trace-alloc,
     stack-guard = st.stack-guard,
     omit-frame-pointer = st.omit-frame-pointer,
-    stype-sites = st.stype-sites
+    stype-sites = st.stype-sites,
+    insn-count = st.insn-count
    }
 
   reset-func-state : CodegenState, Text -> CodegenState
@@ -379,6 +391,20 @@ Section: Register Allocation
    state = __record-set st "next-temp" (st.next-temp + 1),
    reg = reg
   }
+
+ When a value is still live in a temp register, every temp allocated
+ before its last read must skip that register, or the rotation can
+ hand the live register back and the new temp's first write destroys
+ the operand. The collision is phase-dependent (it appears only when
+ the surrounding expression has consumed the right number of temps),
+ which is how bit-xor of three calls shipped computing x ^ x = 0.
+
+  alloc-temp-avoiding : CodegenState, Integer -> EmitResult
+  alloc-temp-avoiding (st) (avoid) =
+   let idx = int-mod (st.next-temp) 6
+   in if list-at temp-regs idx == avoid
+      then alloc-temp (__record-set st "next-temp" (st.next-temp + 1))
+      else alloc-temp st
 
   alloc-local : CodegenState -> EmitResult
   alloc-local (st) =

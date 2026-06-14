@@ -40,10 +40,18 @@ Section: Compile Target
 Section: Frontend
 
  Two frontend builders: compile-frontend (TEXT/IR/MEASURE — LOWER on
- deck, no RESOLVE/LIFT) and compile-frontend-cdx (CDX — LOWER on
- deck, then RESOLVE on deck, then LIFT on deck). Both paths wrap
- lower-chapter in deck-record; rewrite-ir-defs does not deep-copy
- all referenced type data, so bivy placement is unsafe (CL 2968).
+ deck, no RESOLVE/LIFT) and compile-frontend-cdx (CDX). The CDX path
+ reserves the RESOLVE deck first, then a bounded scratch deck above
+ it where lower-chapter, fold-constants, and inline-leaf-calls run
+ (the scratch deck must sit strictly below the bivy: pointing the
+ deck at the bivy frontier makes every deck-exit rewind R10 over the
+ deck's own allocations). The deck is then pointed back at the
+ reservation and filled by rewrite-ir-chapter — a full deep copy of
+ every node, type, span, and text (adopting only sorted-type-defs
+ entries, which live below on the same deck). One compact then
+ reclaims the scratch deck and bivy together. The deep copy is what
+ makes this safe; the old sharing rewrite made bivy placement unsafe
+ (CL 2968).
 
   CompileFrontend = record {
    type-defs : List ATypeDef,
@@ -132,6 +140,9 @@ Section: Frontend
       chapter-title = "",
       prose = "",
       section-titles = [],
+      rt-names = [],
+      rt-budgets = [],
+      conversions = [],
       span = synthetic-span
     },
     all-bindings = [],
@@ -235,72 +246,128 @@ Section: Frontend
    in let sealed = phase-compact
    in result
 
+ The parse phase historically never compacted: the Document lived in
+ its bivy, so the entire parse scratch region stayed buried under
+ every later phase. compile-parse now uses the reservation pattern
+ from the LOWER rewrite: a keep deck is reserved FIRST, a bounded
+ scratch deck is built above it, and scan/parse run there exactly as
+ before. The deck is then pointed back at the reservation and the
+ survivors are copied in: copy-sx-document rebuilds the CST (sharing
+ lexer tokens from the LEX deck below, rebuilding parser-synthesized
+ nodes and scratch texts), the assignments are re-recorded with their
+ texts rematerialized, and the colliding set is rebuilt through its
+ list round-trip. One phase-compact then reclaims the scratch deck,
+ the bivy, and the unused tail of the reservation. The scratch deck
+ must sit strictly below the bivy, and the keep deck strictly below
+ the scratch, or deck-exit rewinds R10 over live allocations. The
+ error path returns scratch references without compacting -- the
+ compile halts there, so nothing above it ever allocates.
+
   compile-parse : List Token, Text, Integer, List PhaseMetrics, CompileFlags -> ParseResult
   compile-parse (tokens) (source) (h0) (prior-metrics) (flags) =
    let h1 = __heap-save
-   in let parse-deck-height = list-length tokens * (flags.survey.parse-mul) + survey-parse-base
-   in let parse-base = build parse-deck-height
+   in let parse-keep-height = list-length tokens * survey-parse-keep-mul * (flags.survey.headroom) / 100 + survey-parse-base
+   in let parse-base = build parse-keep-height
+   in let parse-scratch-height = list-length tokens * (flags.survey.parse-mul) + survey-parse-base
+   in let scratch-base = build parse-scratch-height
    in let parse-phase = phase-start
    in let st = make-parse-state tokens source
    in let scan = scan-document st
    in let h2 = __heap-save
-   in let assignments = deck-record (build-all-assignments source (scan.def-headers) 0 [])
-   in let colliding = deck-record (find-colliding-names assignments)
+   in let assignments-s = deck-record (build-all-assignments source (scan.def-headers) 0 [])
+   in let colliding-s = deck-record (find-colliding-names assignments-s)
    in let h3 = __heap-save
-   in let entry-dup-bag = bag-from-list (check-entry-point-duplicate assignments)
+   in let entry-dup-bag = bag-from-list (check-entry-point-duplicate assignments-s)
    in let doc = parse-document (make-parse-state tokens source)
    in let prose-diags = if flags.prose then check-prose-consistency doc & check-prose-banned doc else []
    in let h4 = __heap-save
    in let parse-bag = deck-record (bag-merge-all [doc.parse-bag, entry-dup-bag, bag-from-list prose-diags])
    in if bag-has-errors parse-bag
-      then ParseResult { doc = doc, colliding = colliding, assignments = assignments, parse-bag = parse-bag, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = prior-metrics }
+      then ParseResult { doc = doc, colliding = colliding-s, assignments = assignments-s, parse-bag = parse-bag, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = prior-metrics }
       else let parse-metrics = phase-measure parse-phase
-   in let parse-ov = check-deck-overflow (parse-metrics.deck-end - parse-metrics.deck-origin) parse-deck-height
+   in let parse-ov = check-deck-overflow (parse-metrics.deck-end - parse-metrics.deck-origin) parse-scratch-height
+   in let dset-keep = __deck-set parse-base
+   in let keep-phase = phase-start
+   in let doc2 = deck-record (copy-sx-document parse-base doc)
+   in let assignments = deck-record (for a in assignments-s -> deck-record (ChapterAssignment { def-name = copy-sx-text parse-base (a.def-name), chapter-slug = copy-sx-text parse-base (a.chapter-slug) }))
+   in let colliding-names = skip-list-text-to-list colliding-s
+   in let colliding = deck-record (skip-list-text-from-list (copy-sx-texts parse-base colliding-names))
+   in let parse-bag-d = deck-record (copy-sx-bag parse-base parse-bag)
+   in let keep-metrics = phase-measure keep-phase
+   in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) parse-keep-height
+   in let parse-metrics-d = deck-record (PhaseMetrics {
+    bivy-origin = parse-metrics.bivy-origin,
+    bivy-hwm = parse-metrics.bivy-hwm,
+    deck-origin = parse-metrics.deck-origin,
+    deck-end = parse-metrics.deck-end
+   })
+   in let scratch-top = if parse-metrics.deck-end > parse-metrics.bivy-hwm then parse-metrics.deck-end else parse-metrics.bivy-hwm
+   in let keep-esc-metrics = PhaseMetrics {
+    bivy-origin = parse-metrics.deck-origin,
+    bivy-hwm = scratch-top,
+    deck-origin = keep-metrics.deck-origin,
+    deck-end = keep-metrics.deck-end
+   }
+   in let keep-esc-bag = deck-record (escape-check-bag (flags.escape-check) keep-esc-metrics "PARSE")
+   in let parse-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of doc2) "Document" keep-esc-metrics "PARSE")
    in let parse-ov-bag = if parse-ov == 1 then deck-overflow-bag "PARSE" else no-overflow-bag
-   in let parse-esc-bag = escape-check-bag (flags.escape-check) parse-metrics "PARSE"
-   in let parse-precise-bag = precise-escape-bag (flags.escape-check) (address-of doc) "Document" parse-metrics "PARSE"
-   in let parse-bag2 = deck-record (bag-merge-all [parse-bag, parse-ov-bag, parse-esc-bag, parse-precise-bag])
-   in let parse-phase-metrics = deck-record (list-push prior-metrics parse-metrics)
-   in let result = deck-record (ParseResult { doc = doc, colliding = colliding, assignments = assignments, parse-bag = parse-bag2, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = parse-phase-metrics })
+   in let keep-ov-bag = if keep-ov == 1 then deck-overflow-bag "PARSE-KEEP" else no-overflow-bag
+   in let parse-bag2 = deck-record (bag-merge-all [parse-bag-d, parse-ov-bag, keep-ov-bag, keep-esc-bag, parse-precise-bag])
+   in let parse-phase-metrics = deck-record (list-push prior-metrics parse-metrics-d)
+   in let result = deck-record (ParseResult { doc = doc2, colliding = colliding, assignments = assignments, parse-bag = parse-bag2, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = parse-phase-metrics })
+   in let sealed = phase-compact
    in result
 
-  compile-desugar-and-scope : Text, ParseResult, Text, CompileFlags -> ScopeResult
-  compile-desugar-and-scope (source) (pr) (chapter-name) (flags) =
+  compile-desugar-and-scope : Text, ParseResult, Text, CompileFlags, Integer, Integer -> ScopeResult
+  compile-desugar-and-scope (source) (pr) (chapter-name) (flags) (fk-base) (fk-height) =
    let desugar-deck-height = text-length source * (flags.survey.desugar-mul) + survey-desugar-base
    in let desugar-base = build desugar-deck-height
    in let desugar-phase = phase-start
    in let ast = desugar-document source (pr.doc) chapter-name
    in let desugar-metrics = phase-measure desugar-phase
    in let desugar-ov = check-deck-overflow (desugar-metrics.deck-end - desugar-metrics.deck-origin) desugar-deck-height
+   in let dset-keep = __deck-set fk-base
+   in let keep-phase = phase-start
+   in let ast2 = deck-record (copy-as-chapter fk-base ast)
+   in let assignments = deck-record (for a in (pr.assignments) -> deck-record (ChapterAssignment { def-name = copy-sx-text fk-base (a.def-name), chapter-slug = copy-sx-text fk-base (a.chapter-slug) }))
+   in let colliding-names = skip-list-text-to-list (pr.colliding)
+   in let colliding = deck-record (skip-list-text-from-list (copy-sx-texts fk-base colliding-names))
+   in let parse-bag-d = deck-record (copy-sx-bag fk-base (pr.parse-bag))
+   in let heap-marks-d = deck-record (for h in (pr.heap-marks) -> h)
+   in let desugar-metrics-d = deck-record (PhaseMetrics { bivy-origin = desugar-metrics.bivy-origin, bivy-hwm = desugar-metrics.bivy-hwm, deck-origin = desugar-metrics.deck-origin, deck-end = desugar-metrics.deck-end })
+   in let phase-metrics-d = deck-record (for m in (pr.phase-metrics) -> deck-record (PhaseMetrics { bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
+   in let keep-metrics = phase-measure keep-phase
+   in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) fk-height
+   in let desugar-ov-bag = deck-record (if desugar-ov == 1 then deck-overflow-bag "DESUGAR" else no-overflow-bag)
+   in let keep-ov-bag = deck-record (if keep-ov == 1 then deck-overflow-bag "DESUGAR-KEEP" else no-overflow-bag)
+   in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
    in let desugar-sealed = phase-compact
    in let h5 = __heap-save
    in let scope-deck-height = text-length source * (flags.survey.scope-mul) + survey-scope-base
    in let scope-base = build scope-deck-height
    in let scope-phase = phase-start
-   in let scoped = scope-achapter ast (pr.colliding) (pr.assignments)
+   in let scoped = scope-achapter ast2 colliding assignments
    in let h6 = __heap-save
    in let cite-bag = deck-record (check-duplicate-cites (scoped.citations))
-   in let resolve-result = resolve-chapter scoped (pr.colliding) (pr.assignments)
-   in let desugar-ov-bag = if desugar-ov == 1 then deck-overflow-bag "DESUGAR" else no-overflow-bag
-   in let desugar-esc-bag = escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR"
-   in let resolve-bag = deck-record (bag-merge-all [pr.parse-bag, cite-bag, resolve-result.bag, desugar-ov-bag, desugar-esc-bag, pmap-selftest-bag (flags.escape-check)])
+   in let resolve-result = resolve-chapter scoped colliding assignments
+   in let resolve-bag = deck-record (bag-merge-all [parse-bag-d, cite-bag, resolve-result.bag, desugar-ov-bag, keep-ov-bag, desugar-esc-bag, pmap-selftest-bag (flags.escape-check)])
    in let scope-metrics = phase-measure scope-phase
    in let scope-ov = check-deck-overflow (scope-metrics.deck-end - scope-metrics.deck-origin) scope-deck-height
    in let scope-ov-bag = if scope-ov == 1 then deck-overflow-bag "SCOPE" else no-overflow-bag
    in let scope-esc-bag = escape-check-bag (flags.escape-check) scope-metrics "SCOPE"
    in let scope-precise-bag = precise-escape-bag (flags.escape-check) (address-of scoped) "AChapter" scope-metrics "SCOPE"
    in let resolve-bag2 = deck-record (bag-merge-all [resolve-bag, scope-ov-bag, scope-esc-bag, scope-precise-bag])
-   in let hm1 = deck-record (list-push (pr.heap-marks) h5)
+   in let hm1 = deck-record (list-push heap-marks-d h5)
    in let scope-heap-marks = deck-record (list-push hm1 h6)
-   in let pm1 = deck-record (list-push (pr.phase-metrics) desugar-metrics)
+   in let pm1 = deck-record (list-push phase-metrics-d desugar-metrics-d)
    in let scope-phase-metrics = deck-record (list-push pm1 scope-metrics)
-   in let global-renames = deck-record (build-global-rename-table (pr.assignments) (pr.colliding))
+   in let global-renames = deck-record (build-global-rename-table assignments colliding)
    in let result = deck-record (ScopeResult {
     scoped = scoped,
     ctor-names = resolve-result.ctor-names,
     renames = global-renames,
-    colliding = pr.colliding,
-    assignments = pr.assignments,
+    colliding = colliding,
+    assignments = assignments,
     resolve-bag = resolve-bag2,
     heap-marks = scope-heap-marks,
     phase-metrics = scope-phase-metrics
@@ -353,14 +420,16 @@ Section: Frontend
 
   compile-checked : Text, Text, CompileFlags -> CompileChecked
   compile-checked (source) (chapter-name) (flags) =
-   let h0 = __heap-save
+   let fk-height = text-length source * survey-frontend-keep-mul * (flags.survey.headroom) / 100 + survey-frontend-keep-base
+   in let fk-base = build fk-height
+   in let h0 = __heap-save
    in let lr = compile-lex source h0 flags
    in if bag-has-errors (lr.bag)
       then halted-checked (lr.bag) (lr.heap-marks)
       else let pr = compile-parse (lr.tokens) source h0 (lr.phase-metrics) flags
    in if bag-has-errors (pr.parse-bag)
       then halted-checked (pr.parse-bag) (pr.heap-marks)
-      else let sr = compile-desugar-and-scope source pr chapter-name flags
+      else let sr = compile-desugar-and-scope source pr chapter-name flags fk-base fk-height
    in if bag-has-errors (sr.resolve-bag)
       then halted-checked (sr.resolve-bag) (sr.heap-marks)
       else compile-type-check sr (text-length source) flags
@@ -405,32 +474,41 @@ Section: Frontend
   compile-frontend-cdx (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
-   in let lower-base = build lower-deck-height
+   else let resolve-deck-height = list-length (checked.scoped.defs) * (flags.survey.resolve-mul) * (flags.survey.headroom) / 100 + survey-resolve-base
+   in let resolve-base = build resolve-deck-height
+   in let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
+   in let scratch-base = build lower-deck-height
    in let lower-phase = phase-start
    in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
    in let ir = deck-record (inline-leaf-calls-in-chapter (fold-constants-in-chapter ir-raw))
    in let lower-metrics = phase-measure lower-phase
    in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
-   in let lower-sealed = phase-compact
-   in let resolve-deck-height = list-length (ir.defs) * (flags.survey.resolve-mul) * (flags.survey.headroom) / 100 + survey-resolve-base
-   in let resolve-base = build resolve-deck-height
+   in let dset-resolve = __deck-set resolve-base
    in let resolve-phase = phase-start
    in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
    in let stds = deck-record (sort-bindings (type-map & checked.all-bindings))
-   in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs))
+   in let resolved-chapter = deck-record (rewrite-ir-chapter stds ir)
    in let resolve-metrics = phase-measure resolve-phase
    in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
+   in let lower-metrics-d = deck-record (PhaseMetrics {
+    bivy-origin = lower-metrics.bivy-origin,
+    bivy-hwm = lower-metrics.bivy-hwm,
+    deck-origin = lower-metrics.deck-origin,
+    deck-end = lower-metrics.deck-end
+   })
+   in let scratch-top = if lower-metrics.deck-end > lower-metrics.bivy-hwm then lower-metrics.deck-end else lower-metrics.bivy-hwm
+   in let resolve-esc-metrics = PhaseMetrics {
+    bivy-origin = lower-metrics.deck-origin,
+    bivy-hwm = scratch-top,
+    deck-origin = resolve-metrics.deck-origin,
+    deck-end = resolve-metrics.deck-end
+   }
+   in let resolve-esc-bag = deck-record (escape-check-bag (flags.escape-check) resolve-esc-metrics "RESOLVE")
    in let resolve-sealed = phase-compact
-   in let lift-deck-height = list-length resolved-defs * (flags.survey.lift-mul) * (flags.survey.headroom) / 100 + survey-lift-base
+   in let lift-deck-height = list-length (resolved-chapter.defs) * (flags.survey.lift-mul) * (flags.survey.headroom) / 100 + survey-lift-base
    in let lift-base = build lift-deck-height
    in let lift-phase = phase-start
-   in let cdx-chapter = deck-record (lift-lambdas (IRChapter {
-    name = ir.name,
-    defs = resolved-defs,
-    effect-op-names = ir.effect-op-names,
-    span = ir.span
-   }))
+   in let cdx-chapter = deck-record (lift-lambdas resolved-chapter)
    in let lift-metrics = phase-measure lift-phase
    in let lift-ov = check-deck-overflow (lift-metrics.deck-end - lift-metrics.deck-origin) lift-deck-height
    in let tm = deck-record (IRTextMeta {
@@ -439,17 +517,15 @@ Section: Frontend
     section-titles = checked.scoped.section-titles,
     ctor-names = checked.ctor-names
    })
-   in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
-   in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
+   in let blank-ir = IRChapter { name = resolved-chapter.name, defs = [], effect-op-names = resolved-chapter.effect-op-names, span = resolved-chapter.span }
+   in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics-d)
    in let pm2 = deck-record (list-push pm1 resolve-metrics)
    in let pm3 = deck-record (list-push pm2 lift-metrics)
    in let lower-ov-bag = if lower-ov == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
    in let resolve-ov-bag = if resolve-ov == 1 then deck-overflow-bag "RESOLVE" else no-overflow-bag
    in let lift-ov-bag = if lift-ov == 1 then deck-overflow-bag "LIFT" else no-overflow-bag
-   in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
-   in let resolve-esc-bag = escape-check-bag (flags.escape-check) resolve-metrics "RESOLVE"
    in let lift-esc-bag = escape-check-bag (flags.escape-check) lift-metrics "LIFT"
-   in let fe-bag = deck-record (bag-merge-all [checked.bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag])
+   in let fe-bag = deck-record (bag-merge-all [checked.bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, resolve-esc-bag, lift-esc-bag])
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
@@ -638,10 +714,13 @@ Section: Binary Compilation
 
   compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean -> EmitChapterResult
   compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) =
-   if bag-has-errors (fe.bag) then EmitChapterResult { bytes = [], bag = fe.bag, symbol-map = [] }
+   if bag-has-errors (fe.bag) then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = fe.bag, symbol-map = [] }
    else let emit-result = x86-64-emit-cdx-with-exit-mode (fe.cdx-ir) (fe.sorted-type-defs) exit-mode poison False
     in EmitChapterResult {
-     bytes = emit-result.bytes,
+     header-bytes = emit-result.header-bytes,
+     content-buf = emit-result.content-buf,
+     content-len = emit-result.content-len,
+     tail-bytes = emit-result.tail-bytes,
      bag = bag-merge-all [fe.bag, emit-result.bag],
      symbol-map = emit-result.symbol-map
     }
@@ -705,14 +784,6 @@ Section: Expr-Type Pre-Resolution
    else let b = list-at bindings i
    in let resolved = deck-record (TypeBinding { name = b.name, bound-type = deep-resolve st (b.bound-type) })
    in resolve-all-bindings st bindings (i + 1) len (list-push acc resolved)
-
-Section: Whitespace Normalization
-
-  normalize-whitespace : Text -> Text
-  normalize-whitespace (s) =
-   let r = text-replace s "\n\n\n" "\n\n"
-   in if text-length r == text-length s then s
-      else normalize-whitespace r
 
 Section: Codegen Diagnostics
 
@@ -825,20 +896,40 @@ Section: Entry Point
     end
    end
 
+  emit-binary-size : EmitChapterResult -> Integer
+  emit-binary-size (result) =
+   list-length (result.header-bytes) + result.content-len + list-length (result.tail-bytes)
+
+  write-binary-buf-chunks : Integer, Integer, Integer -> [FileSystem] Nothing
+  write-binary-buf-chunks (buf) (off) (remaining) =
+   if remaining == 0 then write-binary []
+   else let chunk = if remaining > 65536 then 65536 else remaining
+   in let hp = __heap-save
+   in let data = __buf-read-bytes buf off chunk
+   in act
+    write-binary data
+    let restored = __heap-restore hp
+    in write-binary-buf-chunks buf (off + chunk) (remaining - chunk)
+   end
+
   emit-binary-tail : EmitChapterResult -> [Console, FileSystem] Nothing
   emit-binary-tail (result) =
    if bag-has-errors (result.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
    else act
-    print-line-uni ("SIZE:" & integer-to-text (list-length (result.bytes)))
-    write-binary (result.bytes)
+    print-line-uni ("SIZE:" & integer-to-text (emit-binary-size result))
+    write-binary (result.header-bytes)
+    write-binary-buf-chunks (result.content-buf) 0 (result.content-len)
+    write-binary (result.tail-bytes)
    end
 
   emit-binary-tail-with-map : EmitChapterResult -> [Console, FileSystem] Nothing
   emit-binary-tail-with-map (result) =
    if bag-has-errors (result.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
    else act
-    print-line-uni ("SIZE:" & integer-to-text (list-length (result.bytes)))
-    write-binary (result.bytes)
+    print-line-uni ("SIZE:" & integer-to-text (emit-binary-size result))
+    write-binary (result.header-bytes)
+    write-binary-buf-chunks (result.content-buf) 0 (result.content-len)
+    write-binary (result.tail-bytes)
     emit-symbol-map (result.symbol-map) 0 (list-length (result.symbol-map))
    end
 
@@ -1005,8 +1096,7 @@ Section: Entry Point
           let foreword-prefix = disk-resolve-forewords vol source
           in let full = foreword-prefix & source
           in let flags = parse-mode-flags mode
-          in let clean = normalize-whitespace full
-          in emit-cdx clean mode flags
+          in emit-cdx full mode flags
         is None -> print-line-uni ("DISK: file not found: " & path)
     is None -> print-line-uni "DISK: no path on stdin"
   end
@@ -1018,12 +1108,11 @@ Section: Entry Point
    else act
     source <- read-file-uni mode
     let flags = parse-mode-flags mode
-    in let clean = normalize-whitespace source
-    in if cmd == "CDX" then emit-cdx clean mode flags
-       else if cmd == "IR-UNI" then emit-ir-uni clean flags
-       else if cmd == "IR-CCE" then emit-ir-cce clean flags
-       else if cmd == "MEASURE" then emit-measure clean flags
-       else emit-text-streaming clean flags
+    in if cmd == "CDX" then emit-cdx source mode flags
+       else if cmd == "IR-UNI" then emit-ir-uni source flags
+       else if cmd == "IR-CCE" then emit-ir-cce source flags
+       else if cmd == "MEASURE" then emit-measure source flags
+       else emit-text-streaming source flags
    end
   end
 

@@ -104,7 +104,7 @@ Section: Expression Parsing
    in if is-left-paren (next-tok.kind) | is-left-bracket (next-tok.kind)
       then if next-tok.line > last-tok.line
            then let span = span-at (next-tok.line) (next-tok.column) (next-tok.offset) (next-tok.length) (next-tok.file-id)
-                in __record-set st "bag" (bag-add (st.bag) (make-warning cdx-multiline-application ("Application ended at newline; '" & token-text next-tok & "' on line " & integer-to-text (next-tok.line) & " is not parsed as an argument (column " & integer-to-text (next-tok.column) & ", application started at column " & integer-to-text app-col & "). Place all arguments on one line or wrap in parentheses.") span))
+                in __record-set st "bag" (bag-add (st.bag) (make-error cdx-multiline-application ("Application ended at newline; '" & token-text next-tok & "' on line " & integer-to-text (next-tok.line) & " is not parsed as an argument (column " & integer-to-text (next-tok.column) & ", application started at column " & integer-to-text app-col & "). Place all arguments on one line, wrap the application in parentheses, or bind the value with a let.") span))
            else st
       else st
 
@@ -390,7 +390,7 @@ Section: Compound Expression Parsing
 
   finish-let-pattern : LinkedList LetBind, Pat, Expr, Expr, ParseState -> ParseExprResult
   finish-let-pattern (acc) (pat) (val) (body) (st) =
-   let arm = deck-record (MatchArm { pattern = pat, body = body, guard = make-true-guard st })
+   let arm = deck-record (MatchArm { pattern = pat, body = body, guard = make-true-guard st, alt-group = pat-offset pat })
    in let m = deck-record (MatchExpr val (deck-record [arm]))
    in let binds = deck-record (__linked-list-to-list acc)
    in if list-length binds == 0 then ExprOk m st
@@ -436,7 +436,7 @@ Section: Compound Expression Parsing
         in let st3 = expect-coded Arrow cdx-match-no-arrow "Expected '->' after guard" (gp.state)
         in let st4 = skip-newlines st3
         in let bp = extract-guard-pair (parse-expr-col st4 col)
-        in let arm = deck-record (MatchArm { pattern = p, body = bp.expr, guard = gp.expr })
+        in let arm = deck-record (MatchArm { pattern = p, body = bp.expr, guard = gp.expr, alt-group = pat-offset p })
         in let st5 = skip-newlines (bp.state)
         in parse-match-branches scrut (__linked-list-push acc arm) col ln st5
    else let st2 = expect-coded Arrow cdx-match-no-arrow "Expected '->' in match arm" st
@@ -499,13 +499,24 @@ Section: Compound Expression Parsing
    let tok = current st
    in deck-record (LitExpr (deck-record (Token { kind = deck-record TrueKeyword, source = "True", offset = 0, length = 4, line = tok.line, column = tok.column, file-id = tok.file-id })))
 
+  pat-offset : Pat -> Integer
+  pat-offset (p) =
+   when p
+    is VarPat (t) | LitPat (t) | CtorPat (t) (subs) | WildPat (t) -> t.offset
+    is TuplePat (pats) -> if list-length pats == 0 then 0 else pat-offset (list-at pats 0)
+
+ Alternatives expanded from one source arm share the first pattern's
+ source offset as their alt-group, so the text emitter can re-merge
+ exactly the arms the author wrote as an or-pattern and no others.
+
   push-alt-arms : LinkedList MatchArm, List Pat, Expr, Expr, Integer, Integer -> LinkedList MatchArm
   push-alt-arms (acc) (pats) (b) (g) (i) (len) =
    if i >= len then acc
    else let arm = deck-record (MatchArm {
          pattern = list-at pats i,
          body = b,
-         guard = g
+         guard = g,
+         alt-group = pat-offset (list-at pats 0)
         })
         in push-alt-arms (__linked-list-push acc arm) pats b g (i + 1) len
 
@@ -514,7 +525,8 @@ Section: Compound Expression Parsing
    let arm = deck-record (MatchArm {
     pattern = p,
     body = b,
-    guard = make-true-guard st
+    guard = make-true-guard st,
+    alt-group = pat-offset p
    })
    in let st2 = skip-newlines st
    in parse-match-branches scrut (__linked-list-push acc arm) col ln st2

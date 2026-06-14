@@ -122,6 +122,9 @@ Section: Function Application
                          else let is-local-sum = lookup-local (st.locals) (flat.func-name) >= 0
                          in if is-local-sum then emit-indirect-call st flat
                          else emit-direct-call st flat
+                     is UnitTy (uname) (inner) ->
+                      if flat.func-name == uname.value & list-length (flat.args) == 1 then emit-expr st (list-at (flat.args) 0)
+                      else emit-direct-call st flat
                      is FunTy (pt) (rt) ->
                       let is-local = lookup-local (st.locals) (flat.func-name) >= 0
               in if is-local then emit-indirect-call st flat
@@ -697,12 +700,14 @@ Section: Record Emission
    when ty
     is IntegerTy (lo) (hi) (mode) -> hw-width-bytes (bounds-to-hw-width lo hi)
     is BooleanTy -> 1
+    is UnitTy (n) (inner) -> field-byte-width inner
     is otherwise -> 8
 
   field-byte-signed : CodexType -> Boolean
   field-byte-signed (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> hw-width-signed (bounds-to-hw-width lo hi)
+    is UnitTy (n) (inner) -> field-byte-signed inner
     is otherwise -> False
 
   round-up-to-8 : Integer -> Integer
@@ -817,6 +822,7 @@ Section: Narrow-store with overflow-mode dispatch
           then emit-clamping-checked-store st lo hi width rd rs offset
           else st-append-code st (emit-narrow-store width rd rs offset)
          is otherwise -> st-append-code st (emit-narrow-store width rd rs offset)
+       is UnitTy (n) (inner) -> emit-narrow-store-checked st inner rd rs offset
        is otherwise -> st-append-code st (emit-narrow-store width rd rs offset)
 
   bound-fits-i32 : Integer -> Boolean
@@ -1093,6 +1099,7 @@ Section: Self-Type-Table Emission
     is EffectfulTy (e) (s) (r) -> let c = emit-const-codextype buf len vaddr r (fuel - 1) in const-box buf (c.len) 16 [0, 0, vaddr + c.off]
     is ProofTy -> const-box buf len 17 []
     is PropEqTy (a) (b) -> const-box buf len 18 [0, 0]
+    is UnitTy (n) (inner) -> let nm = emit-const-name buf len vaddr n in let c = emit-const-codextype buf (nm.len) vaddr inner (fuel - 1) in const-box buf (c.len) 19 [vaddr + nm.off, vaddr + c.off]
 
   emit-const-codextype-top : Integer, Integer, Integer, CodexType -> ConstEmit
   emit-const-codextype-top (buf) (len) (vaddr) (ty) =
@@ -1521,7 +1528,7 @@ Section: Pattern Matching
       next-branch-patch = jcc-pos
      }
     is IrLitPat (value) (ty) (sp) ->
-     let int-value = text-to-integer value
+     let int-value = lit-text-to-integer value
      in let scrut-load = load-local st scrut-loc
      in let st1 = st-append-code (scrut-load.state) (cmp-ri (scrut-load.reg) int-value)
      in let jcc-pos = st1.code-len

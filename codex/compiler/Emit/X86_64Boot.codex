@@ -971,20 +971,25 @@ Section: Process Management
    in let st3 = st-append-code st2 (li reg-rax 0)
    in st-append-code st3 [72, 243, 171]
 
-  emit-pd-entries : CodegenState, Integer, Integer -> CodegenState
-  emit-pd-entries (st) (i) (n) =
+  emit-pd-entries : CodegenState, Integer, Integer, Boolean -> CodegenState
+  emit-pd-entries (st) (i) (n) (nx) =
    let count = n - i
    in if count <= 0 then st
    else let phys-start = i * 2097152
    in let st1 = st-append-code st (li reg-rax (phys-start + 131))
-   in let st2 = st-append-code st1 (li reg-rcx count)
-   in let loop-start = st2.code-len
-   in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
-   in let st4 = st-append-code st3 (add-ri reg-rdi 8)
-   in let st5 = st-append-code st4 (add-ri reg-rax 2097152)
-   in let st6 = st-append-code st5 (sub-ri reg-rcx 1)
-   in let cur = st6.code-len
-   in st-append-code st6 (jcc cc-ne (loop-start - (cur + 6)))
+   in let st2 = if nx
+     then let st1a = st-append-code st1 (li reg-r11 1)
+       in let st1b = st-append-code st1a (shl-ri reg-r11 63)
+       in st-append-code st1b (or-rr reg-rax reg-r11)
+     else st1
+   in let st3 = st-append-code st2 (li reg-rcx count)
+   in let loop-start = st3.code-len
+   in let st4 = st-append-code st3 (mov-store reg-rdi reg-rax 0)
+   in let st5 = st-append-code st4 (add-ri reg-rdi 8)
+   in let st6 = st-append-code st5 (add-ri reg-rax 2097152)
+   in let st7 = st-append-code st6 (sub-ri reg-rcx 1)
+   in let cur = st7.code-len
+   in st-append-code st7 (jcc cc-ne (loop-start - (cur + 6)))
 
   emit-pdpt-entries : CodegenState, Integer, Integer, Integer -> CodegenState
   emit-pdpt-entries (st) (pdpt-addr) (pml4-addr) (i) =
@@ -1000,9 +1005,17 @@ Section: Process Management
    else let pd-addr = pml4-addr + 8192 + i * 4096
     in let page-start = i * 512
     in let page-end = if (i + 1) * 512 > bare-metal-page-count then bare-metal-page-count else (i + 1) * 512
+    in let code-end = if bare-metal-nx-boundary < page-start then page-start
+      else if bare-metal-nx-boundary > page-end then page-end
+      else bare-metal-nx-boundary
     in let st1 = st-append-code st (li reg-rdi pd-addr)
-    in let st2 = emit-pd-entries st1 page-start page-end
-    in emit-fill-pds st2 pml4-addr (i + 1)
+    in let st2 = emit-pd-entries st1 page-start code-end False
+    in let nx-start-offset = (code-end - page-start) * 8
+    in let st3 = if code-end < page-end
+      then let st2a = st-append-code st2 (li reg-rdi (pd-addr + nx-start-offset))
+        in emit-pd-entries st2a code-end page-end True
+      else st2
+    in emit-fill-pds st3 pml4-addr (i + 1)
 
   emit-build-process-page-tables : CodegenState, Integer, Integer -> CodegenState
   emit-build-process-page-tables (st) (pml4-addr) (heap-phys) =

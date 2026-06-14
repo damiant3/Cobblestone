@@ -1,0 +1,471 @@
+Chapter: RISC-V Runtime
+  cites Foreword chapter RiscVEncoder
+
+ Runtime helpers for RISC-V codegen. QEMU virt NS16550A UART
+ at 0x10000000. Heap pointer in S1 (x9).
+
+ Register plan for helpers (no caller/callee confusion):
+   s0=fp  s1=heap  s2-s7=helper locals  s8-s11=codegen locals
+   t0-t6=scratch (28-31 ARE t3-t6, do NOT use raw 28-31)
+   a0-a7=args/return
+
+Section: Helper Infrastructure
+
+  rv-rt-emit : List Integer, List Integer -> List Integer
+  rv-rt-emit (acc) (insn) = acc & insn
+
+Section: __str_eq (with prologue)
+
+  rv-rt-str-eq : List Integer
+  rv-rt-str-eq =
+   let i = []
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp (0 - 48))
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-ra 40)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s0 32)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s2 24)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s3 16)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s4 8)
+   in let i = rv-rt-emit i (rv-mv rv-s0 rv-sp)
+   in let i = rv-rt-emit i (rv-ld rv-s2 rv-a0 0)
+   in let i = rv-rt-emit i (rv-ld rv-s3 rv-a1 0)
+   in let i = rv-rt-emit i (rv-sub rv-t0 rv-s2 rv-s3)
+   in let bne-len = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-addi rv-a0 rv-a0 8)
+   in let i = rv-rt-emit i (rv-addi rv-a1 rv-a1 8)
+   in let i = rv-rt-emit i (rv-mv rv-s4 rv-a0)
+   in let i = rv-rt-emit i (rv-mv rv-s5 rv-a1)
+   in let i = rv-rt-emit i (rv-mv rv-t0 rv-zero)
+   in let loop = list-length i / 4
+   in let bge-done = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-add rv-t1 rv-s4 rv-t0)
+   in let i = rv-rt-emit i (rv-lb rv-t1 rv-t1 0)
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-s5 rv-t0)
+   in let i = rv-rt-emit i (rv-lb rv-t2 rv-t2 0)
+   in let i = rv-rt-emit i (rv-sub rv-t3 rv-t1 rv-t2)
+   in let bne-byte = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 1)
+   in let i = rv-rt-emit i (rv-j ((loop - list-length i / 4) * 4))
+   in let equal-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-addi rv-a0 rv-zero 1)
+   in let jmp-end1 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let not-eq-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-zero)
+   in let end-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-ld rv-s4 rv-sp 8)
+   in let i = rv-rt-emit i (rv-ld rv-s3 rv-sp 16)
+   in let i = rv-rt-emit i (rv-ld rv-s2 rv-sp 24)
+   in let i = rv-rt-emit i (rv-ld rv-s0 rv-sp 32)
+   in let i = rv-rt-emit i (rv-ld rv-ra rv-sp 40)
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp 48)
+   in let i = rv-rt-emit i rv-ret
+   in let i = rv-patch-insn-raw i bne-len (rv-bne rv-t0 rv-zero ((not-eq-label - bne-len) * 4))
+   in let i = rv-patch-insn-raw i bge-done (rv-bge rv-t0 rv-s2 ((equal-label - bge-done) * 4))
+   in let i = rv-patch-insn-raw i bne-byte (rv-bne rv-t3 rv-zero ((not-eq-label - bne-byte) * 4))
+   in rv-patch-insn-raw i jmp-end1 (rv-j ((end-label - jmp-end1) * 4))
+
+Section: __str_concat (with prologue)
+
+  rv-rt-str-concat : List Integer
+  rv-rt-str-concat =
+   let i = []
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp (0 - 64))
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-ra 56)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s0 48)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s2 40)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s3 32)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s4 24)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s5 16)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s6 8)
+   in let i = rv-rt-emit i (rv-mv rv-s0 rv-sp)
+   in let i = rv-rt-emit i (rv-ld rv-s2 rv-a0 0)
+   in let i = rv-rt-emit i (rv-ld rv-s3 rv-a1 0)
+   in let i = rv-rt-emit i (rv-mv rv-s4 rv-a0)
+   in let i = rv-rt-emit i (rv-mv rv-s5 rv-a1)
+   in let i = rv-rt-emit i (rv-add rv-s6 rv-s2 rv-s3)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-s1)
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-s6 15)
+   in let i = rv-rt-emit i (rv-srli rv-t0 rv-t0 3)
+   in let i = rv-rt-emit i (rv-slli rv-t0 rv-t0 3)
+   in let i = rv-rt-emit i (rv-add rv-s1 rv-s1 rv-t0)
+   in let i = rv-rt-emit i (rv-sd rv-a0 rv-s6 0)
+   in let i = rv-rt-emit i (rv-addi rv-t1 rv-a0 8)
+   in let i = rv-rt-emit i (rv-addi rv-t2 rv-s4 8)
+   in let i = rv-rt-emit i (rv-mv rv-t3 rv-zero)
+   in let loop1 = list-length i / 4
+   in let exit1 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-add rv-t4 rv-t2 rv-t3)
+   in let i = rv-rt-emit i (rv-lb rv-t4 rv-t4 0)
+   in let i = rv-rt-emit i (rv-add rv-t5 rv-t1 rv-t3)
+   in let i = rv-rt-emit i (rv-sb rv-t5 rv-t4 0)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t3 1)
+   in let i = rv-rt-emit i (rv-j ((loop1 - list-length i / 4) * 4))
+   in let exit1-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-add rv-t1 rv-t1 rv-s2)
+   in let i = rv-rt-emit i (rv-addi rv-t2 rv-s5 8)
+   in let i = rv-rt-emit i (rv-mv rv-t3 rv-zero)
+   in let loop2 = list-length i / 4
+   in let exit2 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-add rv-t4 rv-t2 rv-t3)
+   in let i = rv-rt-emit i (rv-lb rv-t4 rv-t4 0)
+   in let i = rv-rt-emit i (rv-add rv-t5 rv-t1 rv-t3)
+   in let i = rv-rt-emit i (rv-sb rv-t5 rv-t4 0)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t3 1)
+   in let i = rv-rt-emit i (rv-j ((loop2 - list-length i / 4) * 4))
+   in let exit2-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-ld rv-s6 rv-sp 8)
+   in let i = rv-rt-emit i (rv-ld rv-s5 rv-sp 16)
+   in let i = rv-rt-emit i (rv-ld rv-s4 rv-sp 24)
+   in let i = rv-rt-emit i (rv-ld rv-s3 rv-sp 32)
+   in let i = rv-rt-emit i (rv-ld rv-s2 rv-sp 40)
+   in let i = rv-rt-emit i (rv-ld rv-s0 rv-sp 48)
+   in let i = rv-rt-emit i (rv-ld rv-ra rv-sp 56)
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp 64)
+   in let i = rv-rt-emit i rv-ret
+   in let i = rv-patch-insn-raw i exit1 (rv-bge rv-t3 rv-s2 ((exit1-label - exit1) * 4))
+   in rv-patch-insn-raw i exit2 (rv-bge rv-t3 rv-s3 ((exit2-label - exit2) * 4))
+
+Section: __itoa (with prologue)
+
+  rv-rt-itoa : List Integer
+  rv-rt-itoa =
+   let i = []
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp (0 - 48))
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-ra 40)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s0 32)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s2 24)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s3 16)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s4 8)
+   in let i = rv-rt-emit i (rv-mv rv-s0 rv-sp)
+   in let i = rv-rt-emit i (rv-mv rv-s2 rv-a0)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-s1)
+   in let i = rv-rt-emit i (rv-addi rv-s1 rv-s1 32)
+   in let i = rv-rt-emit i (rv-mv rv-s3 rv-a0)
+   in let i = rv-rt-emit i (rv-mv rv-s4 rv-zero)
+   in let bge-pos = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-sub rv-s2 rv-zero rv-s2)
+   in let i = rv-rt-emit i (rv-addi rv-s4 rv-s4 1)
+   in let pos-label = list-length i / 4
+   in let loop = list-length i / 4
+   in let beq-done = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-zero 10)
+   in let i = rv-rt-emit i (rv-div rv-t1 rv-s2 rv-t0)
+   in let i = rv-rt-emit i (rv-mul rv-t2 rv-t1 rv-t0)
+   in let i = rv-rt-emit i (rv-sub rv-t3 rv-s2 rv-t2)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t3 48)
+   in let i = rv-rt-emit i (rv-add rv-t0 rv-s3 rv-s4)
+   in let i = rv-rt-emit i (rv-sb rv-t0 rv-t3 8)
+   in let i = rv-rt-emit i (rv-addi rv-s4 rv-s4 1)
+   in let i = rv-rt-emit i (rv-mv rv-s2 rv-t1)
+   in let i = rv-rt-emit i (rv-j ((loop - list-length i / 4) * 4))
+   in let done-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-sd rv-s3 rv-s4 0)
+   in let i = rv-rt-emit i (rv-mv rv-t0 rv-zero)
+   in let i = rv-rt-emit i (rv-addi rv-t1 rv-s4 (0 - 1))
+   in let rev-loop = list-length i / 4
+   in let rev-exit = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-s3 rv-t0)
+   in let i = rv-rt-emit i (rv-lb rv-t3 rv-t2 8)
+   in let i = rv-rt-emit i (rv-add rv-t4 rv-s3 rv-t1)
+   in let i = rv-rt-emit i (rv-lb rv-t5 rv-t4 8)
+   in let i = rv-rt-emit i (rv-sb rv-t2 rv-t5 8)
+   in let i = rv-rt-emit i (rv-sb rv-t4 rv-t3 8)
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 1)
+   in let i = rv-rt-emit i (rv-addi rv-t1 rv-t1 (0 - 1))
+   in let i = rv-rt-emit i (rv-j ((rev-loop - list-length i / 4) * 4))
+   in let rev-exit-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-s3)
+   in let i = rv-rt-emit i (rv-ld rv-s4 rv-sp 8)
+   in let i = rv-rt-emit i (rv-ld rv-s3 rv-sp 16)
+   in let i = rv-rt-emit i (rv-ld rv-s2 rv-sp 24)
+   in let i = rv-rt-emit i (rv-ld rv-s0 rv-sp 32)
+   in let i = rv-rt-emit i (rv-ld rv-ra rv-sp 40)
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp 48)
+   in let i = rv-rt-emit i rv-ret
+   in let i = rv-patch-insn-raw i bge-pos (rv-bge rv-s2 rv-zero ((pos-label - bge-pos) * 4))
+   in let i = rv-patch-insn-raw i beq-done (rv-beq rv-s2 rv-zero ((done-label - beq-done) * 4))
+   in rv-patch-insn-raw i rev-exit (rv-bge rv-t0 rv-t1 ((rev-exit-label - rev-exit) * 4))
+
+Section: __list_cons
+
+  rv-rt-list-cons : List Integer
+  rv-rt-list-cons =
+   let i = []
+   in let i = rv-rt-emit i (rv-mv rv-t0 rv-a0)
+   in let i = rv-rt-emit i (rv-ld rv-t1 rv-t0 0)
+   in let i = rv-rt-emit i (rv-addi rv-t2 rv-t1 1)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-s1)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t2 1)
+   in let i = rv-rt-emit i (rv-slli rv-t3 rv-t3 3)
+   in let i = rv-rt-emit i (rv-add rv-s1 rv-s1 rv-t3)
+   in let i = rv-rt-emit i (rv-sd rv-a0 rv-t2 0)
+   in let i = rv-rt-emit i (rv-sd rv-a0 rv-a1 8)
+   in let i = rv-rt-emit i (rv-mv rv-t3 rv-zero)
+   in let loop = list-length i / 4
+   in let exit = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-slli rv-t4 rv-t3 3)
+   in let i = rv-rt-emit i (rv-add rv-t5 rv-t0 rv-t4)
+   in let i = rv-rt-emit i (rv-ld rv-t6 rv-t5 8)
+   in let i = rv-rt-emit i (rv-add rv-t5 rv-a0 rv-t4)
+   in let i = rv-rt-emit i (rv-sd rv-t5 rv-t6 16)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t3 1)
+   in let i = rv-rt-emit i (rv-j ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in let i = rv-rt-emit i rv-ret
+   in rv-patch-insn-raw i exit (rv-bge rv-t3 rv-t1 ((exit-label - exit) * 4))
+
+Section: __list_append
+
+  rv-rt-list-append : List Integer
+  rv-rt-list-append =
+   let i = []
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp (0 - 48))
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-ra 40)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s0 32)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s2 24)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s3 16)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s4 8)
+   in let i = rv-rt-emit i (rv-mv rv-s0 rv-sp)
+   in let i = rv-rt-emit i (rv-ld rv-s2 rv-a0 0)
+   in let i = rv-rt-emit i (rv-ld rv-s3 rv-a1 0)
+   in let i = rv-rt-emit i (rv-add rv-s4 rv-s2 rv-s3)
+   in let i = rv-rt-emit i (rv-mv rv-a2 rv-s1)
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-s4 1)
+   in let i = rv-rt-emit i (rv-slli rv-t0 rv-t0 3)
+   in let i = rv-rt-emit i (rv-add rv-s1 rv-s1 rv-t0)
+   in let i = rv-rt-emit i (rv-sd rv-a2 rv-s4 0)
+   in let i = rv-rt-emit i (rv-mv rv-t0 rv-zero)
+   in let loop1 = list-length i / 4
+   in let exit1 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-slli rv-t1 rv-t0 3)
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-a0 rv-t1)
+   in let i = rv-rt-emit i (rv-ld rv-t3 rv-t2 8)
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-a2 rv-t1)
+   in let i = rv-rt-emit i (rv-sd rv-t2 rv-t3 8)
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 1)
+   in let i = rv-rt-emit i (rv-j ((loop1 - list-length i / 4) * 4))
+   in let exit1-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-mv rv-t0 rv-zero)
+   in let loop2 = list-length i / 4
+   in let exit2 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-slli rv-t1 rv-t0 3)
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-a1 rv-t1)
+   in let i = rv-rt-emit i (rv-ld rv-t3 rv-t2 8)
+   in let i = rv-rt-emit i (rv-add rv-t1 rv-s2 rv-t0)
+   in let i = rv-rt-emit i (rv-slli rv-t1 rv-t1 3)
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-a2 rv-t1)
+   in let i = rv-rt-emit i (rv-sd rv-t2 rv-t3 8)
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 1)
+   in let i = rv-rt-emit i (rv-j ((loop2 - list-length i / 4) * 4))
+   in let exit2-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-a2)
+   in let i = rv-rt-emit i (rv-ld rv-s4 rv-sp 8)
+   in let i = rv-rt-emit i (rv-ld rv-s3 rv-sp 16)
+   in let i = rv-rt-emit i (rv-ld rv-s2 rv-sp 24)
+   in let i = rv-rt-emit i (rv-ld rv-s0 rv-sp 32)
+   in let i = rv-rt-emit i (rv-ld rv-ra rv-sp 40)
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp 48)
+   in let i = rv-rt-emit i rv-ret
+   in let i = rv-patch-insn-raw i exit1 (rv-bge rv-t0 rv-s2 ((exit1-label - exit1) * 4))
+   in rv-patch-insn-raw i exit2 (rv-bge rv-t0 rv-s3 ((exit2-label - exit2) * 4))
+
+Section: __list_push
+
+  rv-rt-list-push : List Integer
+  rv-rt-list-push =
+   let i = []
+   in let i = rv-rt-emit i (rv-mv rv-t0 rv-a0)
+   in let i = rv-rt-emit i (rv-ld rv-t1 rv-t0 0)
+   in let i = rv-rt-emit i (rv-addi rv-t2 rv-t1 1)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-s1)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t2 1)
+   in let i = rv-rt-emit i (rv-slli rv-t3 rv-t3 3)
+   in let i = rv-rt-emit i (rv-add rv-s1 rv-s1 rv-t3)
+   in let i = rv-rt-emit i (rv-sd rv-a0 rv-t2 0)
+   in let i = rv-rt-emit i (rv-mv rv-t3 rv-zero)
+   in let loop = list-length i / 4
+   in let exit = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-slli rv-t4 rv-t3 3)
+   in let i = rv-rt-emit i (rv-add rv-t5 rv-t0 rv-t4)
+   in let i = rv-rt-emit i (rv-ld rv-t6 rv-t5 8)
+   in let i = rv-rt-emit i (rv-add rv-t5 rv-a0 rv-t4)
+   in let i = rv-rt-emit i (rv-sd rv-t5 rv-t6 8)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t3 1)
+   in let i = rv-rt-emit i (rv-j ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-slli rv-t4 rv-t1 3)
+   in let i = rv-rt-emit i (rv-add rv-t5 rv-a0 rv-t4)
+   in let i = rv-rt-emit i (rv-sd rv-t5 rv-a1 8)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-a0)
+   in let i = rv-rt-emit i rv-ret
+   in rv-patch-insn-raw i exit (rv-bge rv-t3 rv-t1 ((exit-label - exit) * 4))
+
+Section: __list_empty
+
+  rv-rt-list-empty : List Integer
+  rv-rt-list-empty =
+   let i = []
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-s1)
+   in let i = rv-rt-emit i (rv-sd rv-s1 rv-zero 0)
+   in let i = rv-rt-emit i (rv-addi rv-s1 rv-s1 8)
+   in rv-rt-emit i rv-ret
+
+Section: print-line-uni (NS16550A UART at 0x10000000)
+
+  rv-rt-uart-base : Integer = #10000000
+
+  rv-rt-print-line-uni : List Integer
+  rv-rt-print-line-uni =
+   let i = []
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp (0 - 48))
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-ra 40)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s0 32)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s2 24)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s3 16)
+   in let i = rv-rt-emit i (rv-sd rv-sp rv-s4 8)
+   in let i = rv-rt-emit i (rv-mv rv-s0 rv-sp)
+   in let i = rv-rt-emit i (rv-mv rv-s2 rv-a0)
+   in let i = rv-rt-emit i (rv-ld rv-s3 rv-s2 0)
+   in let i = i & rv-li rv-s4 rv-rt-uart-base
+   in let i = rv-rt-emit i (rv-mv rv-t0 rv-zero)
+   in let loop = list-length i / 4
+   in let exit = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-add rv-t1 rv-s2 rv-t0)
+   in let i = rv-rt-emit i (rv-lb rv-t1 rv-t1 8)
+   in let i = rv-rt-emit i (rv-sb rv-s4 rv-t1 0)
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 1)
+   in let i = rv-rt-emit i (rv-j ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-zero 10)
+   in let i = rv-rt-emit i (rv-sb rv-s4 rv-t0 0)
+   in let i = rv-rt-emit i (rv-ld rv-s4 rv-sp 8)
+   in let i = rv-rt-emit i (rv-ld rv-s3 rv-sp 16)
+   in let i = rv-rt-emit i (rv-ld rv-s2 rv-sp 24)
+   in let i = rv-rt-emit i (rv-ld rv-s0 rv-sp 32)
+   in let i = rv-rt-emit i (rv-ld rv-ra rv-sp 40)
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp 48)
+   in let i = rv-rt-emit i rv-ret
+   in rv-patch-insn-raw i exit (rv-bge rv-t0 rv-s3 ((exit-label - exit) * 4))
+
+Section: int-mod
+
+  rv-rt-int-mod : List Integer
+  rv-rt-int-mod =
+   rv-rem rv-a0 rv-a0 rv-a1 & rv-ret
+
+Section: Builtin Helpers
+
+  rv-rt-text-length : List Integer
+  rv-rt-text-length =
+   rv-ld rv-a0 rv-a0 0 & rv-ret
+
+  rv-rt-list-at : List Integer
+  rv-rt-list-at =
+   let i = []
+   in let i = rv-rt-emit i (rv-slli rv-t0 rv-a1 3)
+   in let i = rv-rt-emit i (rv-add rv-t0 rv-a0 rv-t0)
+   in let i = rv-rt-emit i (rv-ld rv-a0 rv-t0 8)
+   in rv-rt-emit i rv-ret
+
+  rv-rt-char-at : List Integer
+  rv-rt-char-at =
+   let i = []
+   in let i = rv-rt-emit i (rv-add rv-t0 rv-a0 rv-a1)
+   in let i = rv-rt-emit i (rv-lb rv-a0 rv-t0 8)
+   in rv-rt-emit i rv-ret
+
+  rv-rt-char-to-text : List Integer
+  rv-rt-char-to-text =
+   let i = []
+   in let i = rv-rt-emit i (rv-mv rv-t0 rv-a0)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-s1)
+   in let i = rv-rt-emit i (rv-addi rv-s1 rv-s1 16)
+   in let i = rv-rt-emit i (rv-addi rv-t1 rv-zero 1)
+   in let i = rv-rt-emit i (rv-sd rv-a0 rv-t1 0)
+   in let i = rv-rt-emit i (rv-sb rv-a0 rv-t0 8)
+   in rv-rt-emit i rv-ret
+
+Section: Patching Helper
+
+  rv-patch-insn-raw : List Integer, Integer, List Integer -> List Integer
+  rv-patch-insn-raw (code) (insn-index) (new-bytes) =
+   let byte-offset = insn-index * 4
+   in rv-patch-raw-4 code byte-offset new-bytes 0 (list-length code) []
+
+  rv-patch-raw-4 : List Integer, Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  rv-patch-raw-4 (code) (pos) (new-bytes) (i) (len) (acc) =
+   if i >= len then acc
+   else if i >= pos & i < pos + 4 then rv-patch-raw-4 code pos new-bytes (i + 1) len (list-push acc (list-at new-bytes (i - pos)))
+   else rv-patch-raw-4 code pos new-bytes (i + 1) len (list-push acc (list-at code i))
+
+Section: Emit All Runtime Helpers
+
+  rv-emit-runtime : RvState -> RvState
+  rv-emit-runtime (st) =
+   let st1 = rv-record-func st "__start"
+   in let st2 = rv-emit-li st1 rv-sp #84000000
+   in let st3 = rv-emit-li st2 rv-s1 #80100000
+   in let st4 = rv-add-call-patch st3 "opening"
+   in let st5 = rv-emit st4 rv-nop
+   in let st6 = rv-emit st5 rv-ebreak
+   in let st7 = rv-record-func st6 "print-line-uni"
+   in let st8 = rv-emit st7 rv-rt-print-line-uni
+   in let st9 = rv-record-func st8 "__str_eq"
+   in let st10 = rv-emit st9 rv-rt-str-eq
+   in let st11 = rv-record-func st10 "__str_concat"
+   in let st12 = rv-emit st11 rv-rt-str-concat
+   in let st13 = rv-record-func st12 "__itoa"
+   in let st14 = rv-emit st13 rv-rt-itoa
+   in let st15 = rv-record-func st14 "__list_cons"
+   in let st16 = rv-emit st15 rv-rt-list-cons
+   in let st17 = rv-record-func st16 "__list_append"
+   in let st18 = rv-emit st17 rv-rt-list-append
+   in let st19 = rv-record-func st18 "__list_push"
+   in let st20 = rv-emit st19 rv-rt-list-push
+   in let st21 = rv-record-func st20 "__list_empty"
+   in let st22 = rv-emit st21 rv-rt-list-empty
+   in let st23 = rv-record-func st22 "integer-to-text"
+   in let st24 = rv-emit st23 rv-rt-itoa
+   in let st25 = rv-record-func st24 "text-length"
+   in let st26 = rv-emit st25 rv-rt-text-length
+   in let st27 = rv-record-func st26 "list-length"
+   in let st28 = rv-emit st27 rv-rt-text-length
+   in let st29 = rv-record-func st28 "list-at"
+   in let st30 = rv-emit st29 rv-rt-list-at
+   in let st31 = rv-record-func st30 "char-at"
+   in let st32 = rv-emit st31 rv-rt-char-at
+   in let st33 = rv-record-func st32 "char-code"
+   in let st34 = rv-emit st33 rv-ret
+   in let st35 = rv-record-func st34 "code-to-char"
+   in let st36 = rv-emit st35 rv-ret
+   in let st37 = rv-record-func st36 "char-to-text"
+   in let st38 = rv-emit st37 rv-rt-char-to-text
+   in let st39 = rv-record-func st38 "show"
+   in let st40 = rv-emit st39 rv-rt-itoa
+   in let st41 = rv-record-func st40 "int-mod"
+   in let st42 = rv-emit st41 rv-rt-int-mod
+   in let st43 = rv-record-func st42 "bit-and"
+   in let st44 = rv-emit st43 (rv-and rv-a0 rv-a0 rv-a1 & rv-ret)
+   in let st45 = rv-record-func st44 "bit-or"
+   in let st46 = rv-emit st45 (rv-or rv-a0 rv-a0 rv-a1 & rv-ret)
+   in let st47 = rv-record-func st46 "bit-xor"
+   in let st48 = rv-emit st47 (rv-xor rv-a0 rv-a0 rv-a1 & rv-ret)
+   in let st49 = rv-record-func st48 "bit-shl"
+   in let st50 = rv-emit st49 (rv-sll rv-a0 rv-a0 rv-a1 & rv-ret)
+   in let st51 = rv-record-func st50 "bit-shru"
+   in rv-emit st51 (rv-srl rv-a0 rv-a0 rv-a1 & rv-ret)
+
+Page 1

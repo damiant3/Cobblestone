@@ -1,0 +1,172 @@
+Chapter: ErpServer
+  cites ERP chapter ErpTypes
+  cites ERP chapter ErpConfig
+  cites ERP chapter FinGL
+  cites ERP chapter FinApAr
+  cites Works chapter Http
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+  cites Foreword chapter Tuple
+  cites Foreword chapter List
+
+ JSON API over the ERP suite, on the MarketWeb route pattern: a pure
+ function from state and request to state and response. No sockets
+ live here; a transport hands erp-route the parsed request and writes
+ back the encoded response, and tests call it directly.
+
+Section: Server State
+
+  ErpState = record {
+    erp-gl : GlState,
+    erp-cfg : ErpConfig,
+    erp-ap : List ApInvoice,
+    erp-ar : List ArInvoice
+  }
+
+  erp-state-new : Integer, Integer -> ErpState
+  erp-state-new (period) (year) =
+    let st = gl-init "CODEX"
+    in let st2 = load-standard-coa st
+    in let st3 = __record-set st2 "gl-periods" [FiscalPeriod { fp-year = year, fp-period = period, fp-company = "CODEX", fp-start-date = year * 10000 + period * 100 + 1, fp-end-date = year * 10000 + period * 100 + 31, fp-status = PeriodOpen }]
+    in ErpState {
+      erp-gl = st3,
+      erp-cfg = standard-config period year,
+      erp-ap = [],
+      erp-ar = []
+    }
+
+Section: Response Helpers
+
+  erp-json : Text -> HttpResponse
+  erp-json (body) = HttpResponse { status = "200 OK", content-type = "application/json", body = body }
+
+  erp-bad-request : Text -> HttpResponse
+  erp-bad-request (msg) = HttpResponse { status = "400 Bad Request", content-type = "application/json", body = json-emit (json-object [json-pair "error" (json-str msg)]) }
+
+Section: Route Dispatch
+
+  erp-route : ErpState, HttpRequest -> (ErpState, HttpResponse)
+  erp-route (st) (req) =
+    let path = req.path
+    in if path == "/health" then (st, http-plain "ok")
+    else if path == "/api/gl/accounts" then (st, accounts-response st)
+    else if path == "/api/gl/trial-balance" then (st, tb-response st)
+    else if path == "/api/gl/journal" then
+      if req.method == "POST" then handle-post-journal st req
+      else (st, erp-bad-request "POST a journal entry to this route")
+    else if path == "/api/ap/aging" then (st, aging-response (calc-ap-aging (st.erp-ap) 0))
+    else if path == "/api/ar/aging" then (st, aging-response (calc-ar-aging (st.erp-ar) 0))
+    else if path == "/api/kpi/dashboard" then (st, kpi-response st)
+    else (st, http-not-found)
+
+Section: GL Routes
+
+  account-json : GlState, GlAccount -> JsonValue
+  account-json (gl) (a) =
+    json-object [
+      json-pair "number" (json-str (a.gl-number)),
+      json-pair "name" (json-str (a.gl-name)),
+      json-pair "type" (json-str (account-type-name (a.gl-type))),
+      json-pair "balance" (json-int (get-balance gl (a.gl-number)))
+    ]
+
+  accounts-json-loop : GlState, List GlAccount, List JsonValue, Integer -> List JsonValue
+  accounts-json-loop (gl) (accts) (acc) (i) =
+    if i >= list-length accts then acc
+    else accounts-json-loop gl accts (list-push acc (account-json gl (list-at accts i))) (i + 1)
+
+  accounts-response : ErpState -> HttpResponse
+  accounts-response (st) =
+    let gl = st.erp-gl
+    in erp-json (json-emit (json-array (accounts-json-loop gl (gl.gl-accounts) [] 0)))
+
+  tb-line-json : TrialBalanceLine -> JsonValue
+  tb-line-json (l) =
+    json-object [
+      json-pair "account" (json-str (l.tb-account)),
+      json-pair "name" (json-str (l.tb-name)),
+      json-pair "debit" (json-int (l.tb-debit)),
+      json-pair "credit" (json-int (l.tb-credit))
+    ]
+
+  tb-lines-json : List TrialBalanceLine, List JsonValue, Integer -> List JsonValue
+  tb-lines-json (lines) (acc) (i) =
+    if i >= list-length lines then acc
+    else tb-lines-json lines (list-push acc (tb-line-json (list-at lines i))) (i + 1)
+
+  tb-response : ErpState -> HttpResponse
+  tb-response (st) =
+    let tb = trial-balance (st.erp-gl)
+    in let body = json-object [
+      json-pair "debits" (json-int (tb-total-debits tb)),
+      json-pair "credits" (json-int (tb-total-credits tb)),
+      json-pair "lines" (json-array (tb-lines-json tb [] 0))
+    ]
+    in erp-json (json-emit body)
+
+Section: Journal Posting Route
+
+ The POST body is a single balanced movement: debit account, credit
+ account, amount, and an id. Multi-line entries arrive in a later
+ phase; one pair covers the manual-correction use case the dashboard
+ needs.
+
+  handle-post-journal : ErpState, HttpRequest -> (ErpState, HttpResponse)
+  handle-post-journal (st) (req) =
+    when json-parse (req.body)
+      is None -> (st, erp-bad-request "body is not valid JSON")
+      is Just (j) ->
+        let id = json-get-str j "id" ""
+        in let debit = json-get-str j "debit" ""
+        in let credit = json-get-str j "credit" ""
+        in let amount = json-get-int j "amount" 0
+        in if id == "" then (st, erp-bad-request "missing id")
+        else if debit == "" then (st, erp-bad-request "missing debit")
+        else if credit == "" then (st, erp-bad-request "missing credit")
+        else if amount <= 0 then (st, erp-bad-request "amount must be positive")
+        else post-pair st id debit credit amount
+
+  post-pair : ErpState, Text, Text, Text, Integer -> (ErpState, HttpResponse)
+  post-pair (st) (id) (debit) (credit) (amount) =
+    let cfg = st.erp-cfg
+    in let je = JournalEntry {
+      je-id = id, je-company = (st.erp-gl).gl-company, je-date = 0,
+      je-period = cfg.cfg-period, je-year = cfg.cfg-year,
+      je-description = "API journal " & id,
+      je-lines = [journal-line-debit debit amount "" "api", journal-line-credit credit amount "" "api"],
+      je-source = SrcManual, je-posted = False, je-reversed = False,
+      je-reversal-of = "", je-created-by = "api", je-approved-by = "",
+      je-created = 0
+    }
+    in when post-journal (st.erp-gl) je
+      is (gl2, r) ->
+        let st2 = __record-set st "erp-gl" gl2
+        in when r
+          is PostSuccess (je2) -> (st2, erp-json (json-emit (json-object [json-pair "posted" (json-bool True), json-pair "id" (json-str (je2.je-id))])))
+          is PostFailed (msg) -> (st2, erp-bad-request msg)
+
+Section: Aging and KPI Routes
+
+  aging-response : AgingBucket -> HttpResponse
+  aging-response (b) =
+    erp-json (json-emit (json-object [
+      json-pair "current" (json-int (b.ab-current)),
+      json-pair "days30" (json-int (b.ab-30)),
+      json-pair "days60" (json-int (b.ab-60)),
+      json-pair "days90" (json-int (b.ab-90)),
+      json-pair "over90" (json-int (b.ab-over-90)),
+      json-pair "total" (json-int (b.ab-total))
+    ]))
+
+  kpi-response : ErpState -> HttpResponse
+  kpi-response (st) =
+    let gl = st.erp-gl
+    in erp-json (json-emit (json-object [
+      json-pair "revenue" (json-int (total-revenue gl)),
+      json-pair "expenses" (json-int (total-expenses gl)),
+      json-pair "net-income" (json-int (net-income gl)),
+      json-pair "cash" (json-int (get-balance gl "1000")),
+      json-pair "assets" (json-int (total-assets gl)),
+      json-pair "liabilities" (json-int (total-liabilities gl)),
+      json-pair "equity" (json-int (total-equity gl))
+    ]))

@@ -6,7 +6,7 @@ A foreword quire is a library package marked `"foreword": true` in its
 `codex.project.json`. Foreword modules compile before user code and
 make their types and functions automatically available.
 
-### codex.foreword (92 modules) — Core
+### codex.foreword (99 modules) — Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -14,7 +14,7 @@ data structures, networking, and system utilities.
 | Category | Modules |
 |----------|---------|
 | Core types | List, Maybe, Result, Either, Pair, State |
-| Collections | Set, Deque, Queue, PriorityQueue, RingBuffer, CircularBuffer, Hamt, BPlusTree, SkipListText, Trie, IntervalTree, Graph, UnionFind |
+| Collections | Set, Deque, Queue, PriorityQueue, RingBuffer, CircularBuffer, Hamt, BPlusTree, SkipListText, Trie, IntervalTree, Graph, UnionFind, ElasticHash, FunnelHash, ElasticBloom |
 | Text | StringBuilder, StringUtils, TextScan, TextSearch, TextWrap, TabComplete, Format, Parse, Pattern, Regex, EditDistance |
 | Crypto | Aes, AesGcm, ChaCha20, Sha256, Sha512, Hmac, Hkdf, Pbkdf, Ed25519, DiffieHellman, ProofOfWork |
 | Math/Stats | MathLib, Decimal, NumberTheory, Probability, Statistics |

@@ -63,7 +63,8 @@ Section: Expressions
    pattern : APat,
    body : AExpr,
    guard : AExpr,
-   span : SourceSpan
+   span : SourceSpan,
+   alt-group : Integer
   }
 
   AFieldExpr = record {
@@ -108,7 +109,7 @@ Section: Definitions
    span : SourceSpan
   }
 
-  ADef = record {
+  mutable ADef = record {
    name : Name,
    params : List AParam,
    declared-type : List ATypeExpr,
@@ -132,6 +133,7 @@ Section: Definitions
   ATypeDef =
    | ARecordTypeDef (Name) (List Name) (List ARecordFieldDef) (Boolean) (SourceSpan)
    | AVariantTypeDef (Name) (List Name) (List AVariantCtorDef) (SourceSpan)
+   | AUnitTypeDef (Name) (ATypeExpr) (SourceSpan)
 
   AEffectOpDef = record {
    name : Name,
@@ -185,6 +187,9 @@ Section: Chapter
    chapter-title : Text,
    prose : Text,
    section-titles : List Text,
+   rt-names : List Text,
+   rt-budgets : List Integer,
+   conversions : List Text,
    span : SourceSpan
   }
 
@@ -193,5 +198,202 @@ Section: Span Accessor
   aexpr-span (e) =
    when e
     is ALitExpr (t) (k) (s) | ANameExpr (n) (s) | AApplyExpr (f) (a) (s) | ABinaryExpr (l) (op) (r) (s) | AUnaryExpr (x) (s) | AIfExpr (c) (t) (el) (s) | ALetExpr (bs) (b) (s) | ALambdaExpr (ps) (b) (s) | AMatchExpr (sc) (arms) (s) | AListExpr (es) (s) | ARecordExpr (n) (fs) (s) | AFieldAccess (r) (f) (s) | AActExpr (ss) (s) | AHandleExpr (eff) (b) (cs) (s) | AWithTimeoutExpr (timeout) (effs) (scopes) (b) (s) | ATryExpr (max) (body) (fb) (fail) (s) | AFieldAssignExpr (r) (f) (v) (s) | ALazyExpr (inner) (s) | AErrorExpr (m) (s) -> s
+
+Section: Deck Copies
+
+ Deep-copy functions for the AST, used by the frontend keep deck
+ to copy desugared survivors below the dead LEX/PARSE/DESUGAR
+ decks. Same positional sharing rule as the CST copiers: values
+ at or below the reservation base b are already in the keep
+ region and shared in place; values above b are rebuilt. Leaf
+ copiers (copy-sx-text, copy-sx-span, copy-sx-ov) live in
+ SyntaxNodes. Enums (LiteralKind, BinaryOp) are nullary sums
+ that heap-box, so they are rebuilt unconditionally.
+
+  copy-as-name : Integer, Name -> Name
+  copy-as-name (b) (n) = Name { value = copy-sx-text b (n.value) }
+
+  copy-as-names : Integer, List Name -> List Name
+  copy-as-names (b) (ns) = for n in ns -> copy-as-name b n
+
+  copy-as-litk : LiteralKind -> LiteralKind
+  copy-as-litk (k) =
+   when k
+    is IntLit -> IntLit
+    is NumLit -> NumLit
+    is TextLit -> TextLit
+    is CharLit -> CharLit
+    is BoolLit -> BoolLit
+
+  copy-as-binop : BinaryOp -> BinaryOp
+  copy-as-binop (op) =
+   when op
+    is OpAdd -> OpAdd
+    is OpSub -> OpSub
+    is OpMul -> OpMul
+    is OpDiv -> OpDiv
+    is OpPow -> OpPow
+    is OpEq -> OpEq
+    is OpNotEq -> OpNotEq
+    is OpLt -> OpLt
+    is OpGt -> OpGt
+    is OpLtEq -> OpLtEq
+    is OpGtEq -> OpGtEq
+    is OpDefEq -> OpDefEq
+    is OpAppend -> OpAppend
+    is OpCons -> OpCons
+    is OpAnd -> OpAnd
+    is OpOr -> OpOr
+
+  copy-as-actstmt : Integer, AActStmt -> AActStmt
+  copy-as-actstmt (b) (s) =
+   when s
+    is AActBindStmt (n) (e) (sp) -> AActBindStmt (copy-as-name b n) (copy-as-expr b e) (copy-sx-span b sp)
+    is AActExprStmt (e) (sp) -> AActExprStmt (copy-as-expr b e) (copy-sx-span b sp)
+
+  copy-as-letbind : Integer, ALetBind -> ALetBind
+  copy-as-letbind (b) (lb) = ALetBind { name = copy-as-name b (lb.name), value = copy-as-expr b (lb.value), span = copy-sx-span b (lb.span) }
+
+  copy-as-pat : Integer, APat -> APat
+  copy-as-pat (b) (p) =
+   when p
+    is AVarPat (n) (sp) -> AVarPat (copy-as-name b n) (copy-sx-span b sp)
+    is ALitPat (t) (k) (sp) -> ALitPat (copy-sx-text b t) (copy-as-litk k) (copy-sx-span b sp)
+    is ACtorPat (n) (args) (sp) -> ACtorPat (copy-as-name b n) (for a in args -> copy-as-pat b a) (copy-sx-span b sp)
+    is AWildPat (sp) -> AWildPat (copy-sx-span b sp)
+
+  copy-as-matcharm : Integer, AMatchArm -> AMatchArm
+  copy-as-matcharm (b) (a) = AMatchArm {
+   pattern = copy-as-pat b (a.pattern),
+   body = copy-as-expr b (a.body),
+   guard = copy-as-expr b (a.guard),
+   span = copy-sx-span b (a.span),
+   alt-group = a.alt-group
+  }
+
+  copy-as-fieldexpr : Integer, AFieldExpr -> AFieldExpr
+  copy-as-fieldexpr (b) (f) = AFieldExpr { name = copy-as-name b (f.name), value = copy-as-expr b (f.value), span = copy-sx-span b (f.span) }
+
+  copy-as-handleclause : Integer, AHandleClause -> AHandleClause
+  copy-as-handleclause (b) (c) = AHandleClause {
+   op-name = copy-as-name b (c.op-name),
+   params = copy-as-names b (c.params),
+   resume-name = copy-as-name b (c.resume-name),
+   body = copy-as-expr b (c.body),
+   span = copy-sx-span b (c.span)
+  }
+
+  copy-as-expr : Integer, AExpr -> AExpr
+  copy-as-expr (b) (e) =
+   when e
+    is ALitExpr (t) (k) (sp) -> ALitExpr (copy-sx-text b t) (copy-as-litk k) (copy-sx-span b sp)
+    is ANameExpr (n) (sp) -> ANameExpr (copy-as-name b n) (copy-sx-span b sp)
+    is AApplyExpr (f) (a) (sp) -> AApplyExpr (copy-as-expr b f) (copy-as-expr b a) (copy-sx-span b sp)
+    is ABinaryExpr (l) (op) (r) (sp) -> ABinaryExpr (copy-as-expr b l) (copy-as-binop op) (copy-as-expr b r) (copy-sx-span b sp)
+    is AUnaryExpr (x) (sp) -> AUnaryExpr (copy-as-expr b x) (copy-sx-span b sp)
+    is AIfExpr (c) (t) (el) (sp) -> AIfExpr (copy-as-expr b c) (copy-as-expr b t) (copy-as-expr b el) (copy-sx-span b sp)
+    is ALetExpr (bs) (body) (sp) -> ALetExpr (for lb in bs -> copy-as-letbind b lb) (copy-as-expr b body) (copy-sx-span b sp)
+    is ALambdaExpr (ps) (body) (sp) -> ALambdaExpr (copy-as-names b ps) (copy-as-expr b body) (copy-sx-span b sp)
+    is AMatchExpr (sc) (arms) (sp) -> AMatchExpr (copy-as-expr b sc) (for a in arms -> copy-as-matcharm b a) (copy-sx-span b sp)
+    is AListExpr (es) (sp) -> AListExpr (for el in es -> copy-as-expr b el) (copy-sx-span b sp)
+    is ARecordExpr (n) (fs) (sp) -> ARecordExpr (copy-as-name b n) (for f in fs -> copy-as-fieldexpr b f) (copy-sx-span b sp)
+    is AFieldAccess (rec) (fld) (sp) -> AFieldAccess (copy-as-expr b rec) (copy-as-name b fld) (copy-sx-span b sp)
+    is AActExpr (stmts) (sp) -> AActExpr (for s in stmts -> copy-as-actstmt b s) (copy-sx-span b sp)
+    is AHandleExpr (eff) (body) (cs) (sp) -> AHandleExpr (copy-as-name b eff) (copy-as-expr b body) (for c in cs -> copy-as-handleclause b c) (copy-sx-span b sp)
+    is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (sp) -> AWithTimeoutExpr (copy-sx-text b timeout) (copy-as-names b effs) (copy-sx-texts b scopes) (copy-as-expr b body) (copy-sx-span b sp)
+    is ATryExpr (max) (t-stmts) (c-stmts) (f-stmts) (sp) -> ATryExpr max (for ts in t-stmts -> copy-as-actstmt b ts) (for cs in c-stmts -> copy-as-actstmt b cs) (for fs in f-stmts -> copy-as-actstmt b fs) (copy-sx-span b sp)
+    is AFieldAssignExpr (rec) (fld) (val) (sp) -> AFieldAssignExpr (copy-as-expr b rec) (copy-as-name b fld) (copy-as-expr b val) (copy-sx-span b sp)
+    is ALazyExpr (inner) (sp) -> ALazyExpr (copy-as-expr b inner) (copy-sx-span b sp)
+    is AErrorExpr (m) (sp) -> AErrorExpr (copy-sx-text b m) (copy-sx-span b sp)
+
+  copy-as-typeexpr : Integer, ATypeExpr -> ATypeExpr
+  copy-as-typeexpr (b) (t) =
+   when t
+    is ANamedType (n) (sp) -> ANamedType (copy-as-name b n) (copy-sx-span b sp)
+    is AFunType (a) (r) (sp) -> AFunType (copy-as-typeexpr b a) (copy-as-typeexpr b r) (copy-sx-span b sp)
+    is AAppType (f) (args) (sp) -> AAppType (copy-as-typeexpr b f) (for a in args -> copy-as-typeexpr b a) (copy-sx-span b sp)
+    is AEffectType (effs) (caps) (inner) (sp) -> AEffectType (copy-as-names b effs) (copy-sx-texts b caps) (copy-as-typeexpr b inner) (copy-sx-span b sp)
+    is ABoundedIntType (inner) (lo) (hi) (mode) (sp) -> ABoundedIntType (copy-as-typeexpr b inner) lo hi (copy-sx-ov mode) (copy-sx-span b sp)
+    is APropEqType (l) (r) (sp) -> APropEqType (copy-as-typeexpr b l) (copy-as-typeexpr b r) (copy-sx-span b sp)
+    is AConstrainedType (cls) (param) (inner) (sp) -> AConstrainedType (copy-as-name b cls) (copy-as-name b param) (copy-as-typeexpr b inner) (copy-sx-span b sp)
+    is ALinearType (inner) (sp) -> ALinearType (copy-as-typeexpr b inner) (copy-sx-span b sp)
+
+  copy-as-param : Integer, AParam -> AParam
+  copy-as-param (b) (p) = AParam { name = copy-as-name b (p.name), span = copy-sx-span b (p.span) }
+
+  copy-as-def : Integer, ADef -> ADef
+  copy-as-def (b) (d) = ADef {
+   name = copy-as-name b (d.name),
+   params = for p in (d.params) -> copy-as-param b p,
+   declared-type = for t in (d.declared-type) -> copy-as-typeexpr b t,
+   body = copy-as-expr b (d.body),
+   chapter-slug = copy-sx-text b (d.chapter-slug),
+   span = copy-sx-span b (d.span)
+  }
+
+  copy-as-recordfielddef : Integer, ARecordFieldDef -> ARecordFieldDef
+  copy-as-recordfielddef (b) (f) = ARecordFieldDef { name = copy-as-name b (f.name), type-expr = copy-as-typeexpr b (f.type-expr), span = copy-sx-span b (f.span) }
+
+  copy-as-variantctordef : Integer, AVariantCtorDef -> AVariantCtorDef
+  copy-as-variantctordef (b) (c) = AVariantCtorDef { name = copy-as-name b (c.name), fields = for f in (c.fields) -> copy-as-typeexpr b f, span = copy-sx-span b (c.span) }
+
+  copy-as-typedef : Integer, ATypeDef -> ATypeDef
+  copy-as-typedef (b) (d) =
+   when d
+    is ARecordTypeDef (n) (ps) (fs) (m) (sp) -> ARecordTypeDef (copy-as-name b n) (copy-as-names b ps) (for f in fs -> copy-as-recordfielddef b f) m (copy-sx-span b sp)
+    is AVariantTypeDef (n) (ps) (cs) (sp) -> AVariantTypeDef (copy-as-name b n) (copy-as-names b ps) (for c in cs -> copy-as-variantctordef b c) (copy-sx-span b sp)
+    is AUnitTypeDef (n) (base) (sp) -> AUnitTypeDef (copy-as-name b n) (copy-as-typeexpr b base) (copy-sx-span b sp)
+
+  copy-as-effectopdef : Integer, AEffectOpDef -> AEffectOpDef
+  copy-as-effectopdef (b) (o) = AEffectOpDef { name = copy-as-name b (o.name), type-expr = copy-as-typeexpr b (o.type-expr), span = copy-sx-span b (o.span) }
+
+  copy-as-effectdef : Integer, AEffectDef -> AEffectDef
+  copy-as-effectdef (b) (d) = AEffectDef { name = copy-as-name b (d.name), ops = for o in (d.ops) -> copy-as-effectopdef b o, span = copy-sx-span b (d.span) }
+
+  copy-as-classdef : Integer, AClassDef -> AClassDef
+  copy-as-classdef (b) (d) = AClassDef { name = copy-as-name b (d.name), methods = for m in (d.methods) -> copy-as-effectopdef b m, span = copy-sx-span b (d.span) }
+
+  copy-as-instmethod : Integer, AInstanceMethodDef -> AInstanceMethodDef
+  copy-as-instmethod (b) (m) = AInstanceMethodDef {
+   name = copy-as-name b (m.name),
+   params = copy-as-names b (m.params),
+   body = copy-as-expr b (m.body),
+   span = copy-sx-span b (m.span)
+  }
+
+  copy-as-instancedef : Integer, AInstanceDef -> AInstanceDef
+  copy-as-instancedef (b) (d) = AInstanceDef {
+   class-name = copy-as-name b (d.class-name),
+   type-name = copy-as-name b (d.type-name),
+   methods = for m in (d.methods) -> copy-as-instmethod b m,
+   span = copy-sx-span b (d.span)
+  }
+
+  copy-as-citesdecl : Integer, ACitesDecl -> ACitesDecl
+  copy-as-citesdecl (b) (c) = ACitesDecl {
+   quire = copy-as-name b (c.quire),
+   chapter-name = copy-as-name b (c.chapter-name),
+   selected-names = copy-as-names b (c.selected-names),
+   citing-chapter = copy-sx-text b (c.citing-chapter),
+   span = copy-sx-span b (c.span)
+  }
+
+  copy-as-chapter : Integer, AChapter -> AChapter
+  copy-as-chapter (b) (ch) = AChapter {
+   name = copy-as-name b (ch.name),
+   defs = for d in (ch.defs) -> copy-as-def b d,
+   type-defs = for t in (ch.type-defs) -> copy-as-typedef b t,
+   effect-defs = for e in (ch.effect-defs) -> copy-as-effectdef b e,
+   class-defs = for c in (ch.class-defs) -> copy-as-classdef b c,
+   instance-defs = for i in (ch.instance-defs) -> copy-as-instancedef b i,
+   citations = for c in (ch.citations) -> copy-as-citesdecl b c,
+   chapter-title = copy-sx-text b (ch.chapter-title),
+   prose = copy-sx-text b (ch.prose),
+   section-titles = copy-sx-texts b (ch.section-titles),
+   rt-names = copy-sx-texts b (ch.rt-names),
+   rt-budgets = ch.rt-budgets,
+   conversions = ch.conversions,
+   span = copy-sx-span b (ch.span)
+  }
 
 Page 1

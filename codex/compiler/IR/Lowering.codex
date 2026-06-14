@@ -90,7 +90,7 @@ Section: Expression Lowering
     is AHandleExpr (eff) (body) (clauses) (s) -> lower-handle eff body clauses ty ctx s
     is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (s) ->
      let body-ir = lower-expr body ty ctx
-     in deck-record (IrWithTimeout (text-to-integer timeout) (map-list name-value effs) scopes body-ir ty s)
+     in deck-record (IrWithTimeout (lit-text-to-integer timeout) (map-list name-value effs) scopes body-ir ty s)
     is ATryExpr (max) (body) (fb) (fail) (s) ->
      let body-ir = lower-act-stmts-loop body ty ctx 0 (list-length body)
      in let fb-ir = lower-act-stmts-loop fb ty ctx 0 (list-length fb)
@@ -241,7 +241,7 @@ Section: Expression Lowering
   lower-literal : Text, LiteralKind, SourceSpan -> IRExpr
   lower-literal (text) (kind) (sp) =
    when kind
-    is IntLit -> deck-record (IrIntLit (text-to-integer text) sp)
+    is IntLit -> deck-record (IrIntLit (lit-text-to-integer text) sp)
     is NumLit -> deck-record (IrNumLit (text-to-double-bits text) sp)
     is TextLit -> deck-record (IrTextLit text sp)
     is CharLit -> deck-record (IrCharLit (text-to-integer text) sp)
@@ -560,7 +560,8 @@ Section: Match Lowering
     pattern = lower-pattern (arm.pattern) scrut-ty,
     body = lower-expr (arm.body) ty arm-ctx,
     guard = lower-expr (arm.guard) BooleanTy arm-ctx,
-    span = arm.span
+    span = arm.span,
+    alt-group = arm.alt-group
    })))
 
   bind-pattern-to-ctx : LowerCtx, APat, CodexType -> LowerCtx
@@ -943,6 +944,8 @@ Section: Definition Lowering
     type-val = full-type,
     body = lower-expr (d.body) ret-type ctx,
     chapter-slug = d.chapter-slug,
+    is-punctual = False,
+    wcet-budget = 0,
     span = d.span
    })
 
@@ -1009,7 +1012,7 @@ Section: Definition Lowering
    let slug-cache = for a in assignments -> slugify (a.chapter-slug)
    in deck-record (IRChapter {
     name = m.name,
-    defs = lower-defs (m.defs) all-types ust 0 renames colliding assignments (m.citations) slug-cache "" [],
+    defs = lower-defs (m.defs) all-types ust 0 renames colliding assignments (m.citations) slug-cache "" [] (m.rt-names) (m.rt-budgets),
     effect-op-names = collect-effect-op-names (m.effect-defs) 0 (list-length (m.effect-defs)) [],
     span = m.span
    })
@@ -1020,17 +1023,31 @@ Section: Definition Lowering
    else let e = list-at effs i
    in collect-effect-op-names effs (i + 1) len (acc & (for op in (e.ops) -> op.name.value))
 
-  lower-defs : List ADef, List TypeBinding, UnificationState, Integer, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry -> List IRDef
-  lower-defs (defs) (types) (ust) (i) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) =
-   lower-defs-acc defs types ust i [] renames colliding assignments citations slug-cache cur-slug cur-chapter-rn
+  lower-defs : List ADef, List TypeBinding, UnificationState, Integer, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer -> List IRDef
+  lower-defs (defs) (types) (ust) (i) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) =
+   lower-defs-acc defs types ust i [] renames colliding assignments citations slug-cache cur-slug cur-chapter-rn rt-names rt-budgets
 
-  lower-defs-acc : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry -> List IRDef
-  lower-defs-acc (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) =
+  is-in-rt-names : List Text, Text, Integer, Integer -> Boolean
+  is-in-rt-names (names) (target) (i) (len) =
+   if i >= len then False
+   else if list-at names i == target then True
+   else is-in-rt-names names target (i + 1) len
+
+  find-rt-budget : List Text, List Integer, Text, Integer, Integer -> Integer
+  find-rt-budget (names) (budgets) (target) (i) (len) =
+   if i >= len then 0
+   else if list-at names i == target then if i < list-length budgets then list-at budgets i else 0
+   else find-rt-budget names budgets target (i + 1) len
+
+  lower-defs-acc : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer -> List IRDef
+  lower-defs-acc (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) =
    if i == list-length defs then acc
    else let d = list-at defs i
    in let chapter-rn = if d.chapter-slug == cur-slug then cur-chapter-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments slug-cache (d.chapter-slug) 0
-   in lower-defs-acc defs types ust (i + 1) (list-push acc (lower-def d types ust renames chapter-rn)) renames colliding assignments citations slug-cache (d.chapter-slug) chapter-rn
+   in let ir-def = lower-def d types ust renames chapter-rn
+   in let tagged = if is-in-rt-names rt-names (d.name.value) 0 (list-length rt-names) then __record-set (__record-set ir-def "is-punctual" True) "wcet-budget" (find-rt-budget rt-names rt-budgets (d.name.value) 0 (list-length rt-names)) else ir-def
+   in lower-defs-acc defs types ust (i + 1) (list-push acc tagged) renames colliding assignments citations slug-cache (d.chapter-slug) chapter-rn rt-names rt-budgets
 
 Section: Constant Folding
 
@@ -1051,7 +1068,7 @@ Section: Constant Folding
      in when fx
       is IrIntLit (v) (ls) -> deck-record (IrIntLit (-v) sp)
       is otherwise -> deck-record (IrNegate fx sp)
-    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (fold-expr sc) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = fold-expr (b.body), guard = fold-expr (b.guard), span = b.span })) ty sp)
+    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (fold-expr sc) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = fold-expr (b.body), guard = fold-expr (b.guard), span = b.span, alt-group = b.alt-group })) ty sp)
     is IrAct (ss) (ty) (sp) -> deck-record (IrAct (for stmt in ss -> when stmt is IrDoBind (n) (sty) (v) (ssp) -> deck-record (IrDoBind n sty (fold-expr v) ssp) is IrDoExec (ev) (esp) -> deck-record (IrDoExec (fold-expr ev) esp)) ty sp)
     is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (fold-expr (fv.value)))) ty sp)
     is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (fold-expr r) f ty sp)
@@ -1381,7 +1398,7 @@ Section: Leaf Inlining
     is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (inline-expr v cands bound) (inline-expr b cands (list-push bound n)) sp)
     is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (inline-expr b cands (push-param-names bound ps 0)) ty sp)
     is IrNegate (x) (sp) -> deck-record (IrNegate (inline-expr x cands bound) sp)
-    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (inline-expr sc cands bound) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = inline-expr (b.body) cands (push-pat-names bound (b.pattern)), guard = inline-expr (b.guard) cands (push-pat-names bound (b.pattern)), span = b.span })) ty sp)
+    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (inline-expr sc cands bound) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = inline-expr (b.body) cands (push-pat-names bound (b.pattern)), guard = inline-expr (b.guard) cands (push-pat-names bound (b.pattern)), span = b.span, alt-group = b.alt-group })) ty sp)
     is IrAct (ss) (ty) (sp) -> deck-record (IrAct (inline-act-stmts ss cands bound 0 []) ty sp)
     is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (inline-expr (fv.value) cands bound))) ty sp)
     is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (inline-expr r cands bound) f ty sp)

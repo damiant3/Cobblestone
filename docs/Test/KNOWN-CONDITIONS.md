@@ -5,24 +5,27 @@ re-investigate. Last updated: 2026-06-10.
 
 ## Compiler
 
-### Text emitter merges same-body adjacent arms; sem-equiv coupling
+### Text emitter merges same-body adjacent arms — RESOLVED (or-group tag)
 
-The TEXT emitter canonicalizes ADJACENT SAME-BODY `when` arms into a
-single or-pattern arm, including across constructors of different
-field counts. Source written in the split form fails sem-equiv
-(source /= stage1); write the canonical or-pattern form, or route one
-case through a helper so bodies differ (see leaf-arg-simple /
-ir-is-int-lit in Lowering.codex).
+Was: the TEXT emitter canonicalized ADJACENT SAME-BODY `when` arms
+into a single or-pattern arm, because or-patterns desugar to
+duplicated branches at parse time and the IR carried no marker of
+which branches came from one source arm — re-merging was a same-body
+heuristic. Source written in the split form failed sem-equiv.
 
-CORRECTION (same day): an earlier version of this entry claimed
-mixed-arity or-patterns MISCOMPILE. Wrong attribution. The battery
-failures observed alongside the sem-equiv mismatch were present with
-and without the or-pattern; they track the leaf-inliner pass being
-active in the SELF-COMPILED compiler (stage1), which only the gate
-battery tests (build.ps1 sets the battery kernel to stage1). Lesson
-recorded for IR-pass work: a pre-gate battery against an
-old-seed-compiled SUT does NOT exercise self-application; run the
-battery against your own stage1 before declaring an IR pass green.
+Fix: MatchArm/AMatchArm/IRBranch carry `alt-group` (the source offset
+of the arm's first pattern). Alternatives expanded from one or-pattern
+share it; distinct source arms differ; synthesized arms (derived
+eq/cmp/show) are tagged -1 and never merge. `find-group-end` in
+CodexEmitter merges only equal non-negative groups (body/guard text
+equality kept as a second check). Split-form same-body arms now
+survive the text round trip verbatim; or-patterns still re-merge.
+Regression sample: codex/test/or-pattern-split-arms.codex.
+
+Still true (lesson from the same investigation): a pre-gate battery
+against an old-seed-compiled SUT does NOT exercise self-application;
+run the battery against your own stage1 before declaring an IR pass
+green (build.ps1 does this).
 ## Apps
 
 ### FishTankPage crashes the compiler at IR emit — SKIPPED IN build-apps.ps1
@@ -38,14 +41,46 @@ text literals — likely related to long `&` chains / IR size, not the
 WebApp quire (fishtank was never ported). `build-apps.ps1` skips it via
 its `$Skip` table. Remove the skip after a clean repro + fix.
 
-### cvmm server chapters fail compile with 21 reserved-keyword errors — PRE-EXISTING
+### cvmm server build — RESOLVED (CL 3768)
 
-`apps/cvmm/build.ps1` (server CDX build) fails with 21 errors:
-`CDX1060: 'record' is a reserved keyword` (plus knock-on CDX1000/1023)
-in UI--Widget-adjacent code paths of the cvmm bundle. Verified identical
-error set with the pre-2026-06-10 depot build script, so not caused by
-the shared quire map. The cvmm sources predate `record` becoming
-reserved. The cvmm dashboard HTML path (`build-app.ps1`) is unaffected.
+Was: 21 errors starting with `CDX1060: 'record' is a reserved keyword`.
+The original entry attributed them to "UI--Widget-adjacent code paths";
+that was a mis-mapping — compiler diagnostic line numbers refer to the
+full VM input stream (compile.ps1's resolved-cites prelude + bundle),
+not the bundle file, and they drift further by source region. Map
+diagnostics by CONTENT, not by line arithmetic against the bundle.
+
+The error cap (CDX0001 at 21) hid five layers, all fixed in CL 3768:
+1. `let record` bindings (Command.codex) — reserved keyword.
+2. Multi-line application continuations dropped at newline
+   (CvmmShell widget lists; CvmmDisplay decode-u32-le, which silently
+   lost its high-16-bits argument), a missing `if` after `in` in
+   dt-is-full-frame, and CvmmServer's opening mixing `<-` into a
+   let-chain (needs `in act ... end`, and web-serve-framed for a
+   Text -> Text route).
+3. Double inclusion: build.ps1 bundled app chapters with PLAIN
+   `Chapter: Name` headers; compile.ps1's embedded-chapter detection
+   only recognizes `Chapter: Quire--Name`, so it re-pulled every
+   intra-quire-cited chapter into its prelude (CDX3001 duplicates).
+   Bundlers must render app chapters through Format-CiteChapters.
+4. Name collisions with library chapters (names resolve globally
+   across chapters): cvmm Capability vs Trust--AgentProtocol (renamed
+   ResourceCap), HcPing vs Net--HealthChecker (renamed HcIcmp),
+   monitor-new defined in both DisplayManager and Monitor (renamed
+   display-monitor-new), hc-type-label vs Net (renamed
+   ms-hc-type-label). Plus calls to nonexistent foreword functions
+   (text-slice/text-insert-at/text-remove-at -> text-take/text-drop
+   forms) and missing StringUtils cites, and stale UI constructor
+   names (EdgeInsets -> Edges, StateSet -> StateStyles).
+5. Library bug exposed: TrustNode node-msg-capability was
+   non-exhaustive after AgentMessage grew MsgAnnotate/MsgVerdict
+   (arms added).
+
+`apps/cvmm/build.ps1` now produces cvmm-server.cdx cleanly. Runtime
+behavior of the server is still unexercised (no battery test cites
+Cvmm). The cvmm dashboard HTML path (`build-app.ps1`) still bundles
+plain headers but its three chapters have no intra-quire cites, so
+the double-inclusion does not bite there.
 
 ## Codegen
 

@@ -1,0 +1,800 @@
+Chapter: RISC-V Code Generator
+  cites Foreword chapter RiscVEncoder
+  cites Plug chapter Plug Types
+  cites Plug chapter Plug Chain (FuncEntry, FuncTable, bare-metal-load-addr)
+  cites Foreword chapter CCE (cce-to-unicode-table)
+
+ RISC-V RV64IM code generator for the plug pipeline.
+ Receives parsed IR, emits machine code bytes and metadata
+ in the wire format for chaining to ELF plugs.
+ Transliterated from old/src/Codex.Emit.RiscV/RiscVCodeGen.cs.
+
+Section: Register Constants
+
+  rv-heap-reg : Integer = 28
+
+Section: Codegen State
+
+  RvLocal = record {
+   name : Text,
+   reg : Integer between 0 and 63
+  }
+
+  RvTcoState = record {
+   active : Boolean,
+   in-tail-pos : Boolean,
+   loop-top : Integer,
+   param-locals : List Integer,
+   temp-locals : List Integer,
+   current-func : Text,
+   saved-next-local : Integer,
+   saved-next-temp : Integer
+  }
+
+  RvState = record {
+   code : List Integer,
+   data : List Integer,
+   insn-count : Integer,
+   func-names : List Text,
+   func-offsets : List Integer,
+   call-patches : List RvCallPatch,
+   func-addr-fixups : List RvFuncAddrFixup,
+   rodata-fixups : List RvRodataFixup,
+   locals : List RvLocal,
+   next-temp : Integer,
+   next-local : Integer,
+   spill-count : Integer,
+   prologue-index : Integer,
+   current-func : Text,
+   tco : RvTcoState,
+   string-offsets : List RvStringEntry,
+   type-defs : List ATypeDef
+  }
+
+  RvCallPatch = record {
+   insn-index : Integer,
+   target : Text
+  }
+
+  RvFuncAddrFixup = record {
+   insn-index : Integer,
+   rd : Integer,
+   target : Text
+  }
+
+  RvRodataFixup = record {
+   insn-index : Integer,
+   rd : Integer,
+   rodata-offset : Integer
+  }
+
+  RvStringEntry = record {
+   value : Text,
+   offset : Integer
+  }
+
+  RvEmitResult = record {
+   state : RvState,
+   reg : Integer
+  }
+
+Section: State Constructors
+
+  default-rv-tco : RvTcoState
+  default-rv-tco = RvTcoState {
+   active = False,
+   in-tail-pos = False,
+   loop-top = 0,
+   param-locals = [],
+   temp-locals = [],
+   current-func = "",
+   saved-next-local = 0,
+   saved-next-temp = 0
+  }
+
+  empty-rv-state : RvState
+  empty-rv-state = RvState {
+   code = [],
+   data = [],
+   insn-count = 0,
+   func-names = [],
+   func-offsets = [],
+   call-patches = [],
+   func-addr-fixups = [],
+   rodata-fixups = [],
+   locals = [],
+   next-temp = rv-t3,
+   next-local = rv-s2,
+   spill-count = 0,
+   prologue-index = 0 - 1,
+   current-func = "",
+   tco = default-rv-tco,
+   string-offsets = [],
+   type-defs = []
+  }
+
+Section: Emit Helpers
+
+  rv-emit : RvState, List Integer -> RvState
+  rv-emit (st) (insn-bytes) =
+   __record-set (__record-set st "code" (st.code & insn-bytes)) "insn-count" (st.insn-count + list-length insn-bytes / 4)
+
+  rv-record-func : RvState, Text -> RvState
+  rv-record-func (st) (name) =
+   let st1 = __record-set st "func-names" (list-push (st.func-names) name)
+   in __record-set st1 "func-offsets" (list-push (st.func-offsets) (st.insn-count))
+
+  rv-add-call-patch : RvState, Text -> RvState
+  rv-add-call-patch (st) (target) =
+   __record-set st "call-patches" (list-push (st.call-patches) (RvCallPatch { insn-index = st.insn-count, target = target }))
+
+  rv-add-func-addr-fixup : RvState, Integer, Text -> RvState
+  rv-add-func-addr-fixup (st) (rd) (target) =
+   __record-set st "func-addr-fixups" (list-push (st.func-addr-fixups) (RvFuncAddrFixup { insn-index = st.insn-count, rd = rd, target = target }))
+
+  rv-add-rodata-fixup : RvState, Integer, Integer -> RvState
+  rv-add-rodata-fixup (st) (rd) (rodata-offset) =
+   __record-set st "rodata-fixups" (list-push (st.rodata-fixups) (RvRodataFixup { insn-index = st.insn-count, rd = rd, rodata-offset = rodata-offset }))
+
+Section: Register Allocation
+
+  rv-spill-base : Integer = 64
+
+  rv-temp-regs : List Integer = [rv-t3, rv-t4, rv-t5, rv-t6]
+
+  rv-alloc-temp : RvState -> RvEmitResult
+  rv-alloc-temp (st) =
+   let idx = int-mod (st.next-temp - rv-t3) 4
+   in let reg = list-at rv-temp-regs idx
+   in RvEmitResult {
+    state = __record-set st "next-temp" (st.next-temp + 1),
+    reg = reg
+   }
+
+  rv-alloc-local : RvState -> RvEmitResult
+  rv-alloc-local (st) =
+   if st.next-local <= rv-s11
+   then RvEmitResult {
+    state = __record-set st "next-local" (st.next-local + 1),
+    reg = st.next-local
+   }
+   else let slot = rv-spill-base + st.spill-count
+   in RvEmitResult {
+    state = __record-set (__record-set st "next-local" (st.next-local + 1)) "spill-count" (st.spill-count + 1),
+    reg = slot
+   }
+
+  rv-store-local : RvState, Integer, Integer -> RvState
+  rv-store-local (st) (local) (value-reg) =
+   if local < rv-spill-base then
+    if local == value-reg then st
+    else rv-emit st (rv-mv local value-reg)
+   else let offset = (local - rv-spill-base) * 8 + 112
+   in rv-emit st (rv-sd rv-s0 value-reg offset)
+
+  rv-load-local : RvState, Integer -> RvEmitResult
+  rv-load-local (st) (local) =
+   if local < rv-spill-base then RvEmitResult { state = st, reg = local }
+   else let scratch = rv-t0
+   in let offset = (local - rv-spill-base) * 8 + 112
+   in RvEmitResult {
+    state = rv-emit st (rv-ld scratch rv-s0 offset),
+    reg = scratch
+   }
+
+  rv-bind-local : RvState, Text, Integer -> RvState
+  rv-bind-local (st) (name) (reg) =
+   __record-set st "locals" (list-push (st.locals) (RvLocal { name = name, reg = reg }))
+
+  rv-lookup-local : List RvLocal, Text, Integer -> Integer
+  rv-lookup-local (locals) (name) (i) =
+   if i >= list-length locals then 0 - 1
+   else if (list-at locals i).name == name then (list-at locals i).reg
+   else rv-lookup-local locals name (i + 1)
+
+Section: Function Emission
+
+  rv-reset-func-state : RvState, Text -> RvState
+  rv-reset-func-state (st) (name) =
+   let st1 = rv-record-func st name
+   in let st2 = __record-set st1 "current-func" name
+   in let st3 = __record-set st2 "locals" []
+   in let st4 = __record-set st3 "next-temp" rv-t3
+   in let st5 = __record-set st4 "next-local" rv-s2
+   in let st6 = __record-set st5 "spill-count" 0
+   in __record-set st6 "prologue-index" (st1.insn-count)
+
+  rv-emit-prologue : RvState -> RvState
+  rv-emit-prologue (st) =
+   let st1 = rv-emit st (rv-addi rv-sp rv-sp (0 - 112))
+   in let st2 = rv-emit st1 rv-nop
+   in let st3 = rv-emit st2 rv-nop
+   in let st4 = rv-emit st3 (rv-sd rv-sp rv-ra 104)
+   in let st5 = rv-emit st4 (rv-sd rv-sp rv-s0 96)
+   in let st6 = rv-emit st5 rv-nop
+   in let st7 = rv-emit st6 (rv-sd rv-sp rv-s2 80)
+   in let st8 = rv-emit st7 (rv-sd rv-sp rv-s3 72)
+   in let st9 = rv-emit st8 (rv-sd rv-sp rv-s4 64)
+   in let st10 = rv-emit st9 (rv-sd rv-sp rv-s5 56)
+   in let st11 = rv-emit st10 (rv-sd rv-sp rv-s6 48)
+   in let st12 = rv-emit st11 (rv-sd rv-sp rv-s7 40)
+   in let st13 = rv-emit st12 (rv-sd rv-sp rv-s8 32)
+   in let st14 = rv-emit st13 (rv-sd rv-sp rv-s9 24)
+   in let st15 = rv-emit st14 (rv-sd rv-sp rv-s10 16)
+   in let st16 = rv-emit st15 (rv-sd rv-sp rv-s11 8)
+   in rv-emit st16 (rv-mv rv-s0 rv-sp)
+
+  rv-emit-epilogue : RvState, Integer -> RvState
+  rv-emit-epilogue (st) (frame-size) =
+   let st1 = rv-emit st (rv-ld rv-s11 rv-sp 8)
+   in let st2 = rv-emit st1 (rv-ld rv-s10 rv-sp 16)
+   in let st3 = rv-emit st2 (rv-ld rv-s9 rv-sp 24)
+   in let st4 = rv-emit st3 (rv-ld rv-s8 rv-sp 32)
+   in let st5 = rv-emit st4 (rv-ld rv-s7 rv-sp 40)
+   in let st6 = rv-emit st5 (rv-ld rv-s6 rv-sp 48)
+   in let st7 = rv-emit st6 (rv-ld rv-s5 rv-sp 56)
+   in let st8 = rv-emit st7 (rv-ld rv-s4 rv-sp 64)
+   in let st9 = rv-emit st8 (rv-ld rv-s3 rv-sp 72)
+   in let st10 = rv-emit st9 (rv-ld rv-s2 rv-sp 80)
+   in let st11 = rv-emit st10 rv-nop
+   in let st12 = rv-emit st11 (rv-ld rv-s0 rv-sp 96)
+   in let st13 = rv-emit st12 (rv-ld rv-ra rv-sp 104)
+   in let st14 = rv-emit st13 (rv-addi rv-sp rv-sp frame-size)
+   in rv-emit st14 rv-ret
+
+  rv-compute-frame-size : Integer -> Integer
+  rv-compute-frame-size (spill-count) =
+   let raw = 112 + spill-count * 8
+   in if int-mod raw 16 == 0 then raw else raw + 8
+
+Section: Call Emission
+
+  rv-emit-call-to : RvState, Text -> RvState
+  rv-emit-call-to (st) (target) =
+   let st1 = rv-add-call-patch st target
+   in rv-emit st1 rv-nop
+
+  rv-emit-li : RvState, Integer, Integer -> RvState
+  rv-emit-li (st) (rd) (value) =
+   let insns = rv-li rd value
+   in rv-emit-insn-list st insns 0
+
+  rv-emit-insn-list : RvState, List Integer, Integer -> RvState
+  rv-emit-insn-list (st) (insns) (i) =
+   if i >= list-length insns then st
+   else let chunk = [list-at insns i, list-at insns (i + 1), list-at insns (i + 2), list-at insns (i + 3)]
+   in rv-emit-insn-list (rv-emit st chunk) insns (i + 4)
+
+Section: Expression Emission
+
+  rv-emit-expr : RvState, IRExpr -> RvEmitResult
+  rv-emit-expr (st) (expr) =
+   when expr
+    is IrIntLit (value) (s) -> rv-emit-int-lit st value
+    is IrBoolLit (value) (s) -> rv-emit-int-lit st (if value then 1 else 0)
+    is IrTextLit (value) (s) -> rv-emit-text-lit st value
+    is IrName (name) (ty) (s) -> rv-emit-name st name ty
+    is IrBinary (op) (left) (right) (ty) (s) -> rv-emit-binary st op left right ty
+    is IrNegate (operand) (s) -> rv-emit-negate st operand
+    is IrIf (cond) (th) (el) (ty) (s) -> rv-emit-if st cond th el
+    is IrLet (name) (ty) (value) (body) (s) -> rv-emit-let st name value body
+    is IrApply (func) (arg) (ty) (s) -> rv-emit-apply st expr ty
+    is IrAct (stmts) (ty) (s) -> rv-emit-act st stmts
+    is IrRecord (name) (fields) (ty) (s) -> rv-emit-record st fields ty
+    is IrFieldAccess (rec) (field) (ty) (s) -> rv-emit-field-access st rec field ty
+    is IrMatch (scrut) (branches) (ty) (s) -> rv-emit-match st scrut branches
+    is IrList (elems) (ty) (s) -> rv-emit-list st elems
+    is IrError (msg) (ty) (s) -> rv-emit-int-lit st 0
+    is otherwise -> rv-emit-int-lit st 0
+
+  rv-emit-int-lit : RvState, Integer -> RvEmitResult
+  rv-emit-int-lit (st) (value) =
+   let tr = rv-alloc-temp st
+   in RvEmitResult {
+    state = rv-emit-li (tr.state) (tr.reg) value,
+    reg = tr.reg
+   }
+
+  rv-emit-text-lit : RvState, Text -> RvEmitResult
+  rv-emit-text-lit (st) (value) =
+   let existing = rv-find-string (st.string-offsets) value 0
+   in let rodata-offset = if existing >= 0 then existing else list-length (st.data)
+   in let st1 = if existing >= 0 then st
+    else let len-bytes = write-i64-le (text-length value)
+    in let text-bytes = text-to-ascii-bytes value
+    in let padded = rv-pad-to-8 (len-bytes & text-bytes)
+    in __record-set (__record-set st "data" (st.data & padded)) "string-offsets" (list-push (st.string-offsets) (RvStringEntry { value = value, offset = rodata-offset }))
+   in let tr = rv-alloc-temp st1
+   in let st2 = rv-add-rodata-fixup (tr.state) (tr.reg) rodata-offset
+   in RvEmitResult {
+    state = rv-emit (rv-emit st2 rv-nop) rv-nop,
+    reg = tr.reg
+   }
+
+  rv-find-string : List RvStringEntry, Text, Integer -> Integer
+  rv-find-string (entries) (value) (i) =
+   if i >= list-length entries then 0 - 1
+   else if (list-at entries i).value == value then (list-at entries i).offset
+   else rv-find-string entries value (i + 1)
+
+  rv-pad-to-8 : List Integer -> List Integer
+  rv-pad-to-8 (bs) =
+   let r = int-mod (list-length bs) 8
+   in if r == 0 then bs
+   else rv-pad-zeros bs (8 - r)
+
+  rv-pad-zeros : List Integer, Integer -> List Integer
+  rv-pad-zeros (bs) (n) =
+   if n <= 0 then bs
+   else rv-pad-zeros (list-push bs 0) (n - 1)
+
+  text-to-ascii-bytes : Text -> List Integer
+  text-to-ascii-bytes (s) = text-to-ascii-bytes-loop s 0 (text-length s) []
+
+  text-to-ascii-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  text-to-ascii-bytes-loop (s) (i) (len) (acc) =
+   if i >= len then acc
+   else let cce = char-code (char-at s i)
+   in let ascii = if cce < list-length cce-to-unicode-table then list-at cce-to-unicode-table cce else 63
+   in text-to-ascii-bytes-loop s (i + 1) len (list-push acc (bit-and ascii 255))
+
+  write-i64-le : Integer -> List Integer
+  write-i64-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255,
+    bit-and (bit-shru v 32) 255, bit-and (bit-shru v 40) 255, bit-and (bit-shru v 48) 255, bit-and (bit-shru v 56) 255]
+
+  write-i32-le : Integer -> List Integer
+  write-i32-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  write-i16-le : Integer -> List Integer
+  write-i16-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+Section: Name Emission
+
+  rv-emit-name : RvState, Text, CodexType -> RvEmitResult
+  rv-emit-name (st) (name) (ty) =
+   let local-reg = rv-lookup-local (st.locals) name 0
+   in if local-reg >= 0 then rv-load-local st local-reg
+   else let tr = rv-alloc-temp st
+   in let st1 = rv-emit-call-to (tr.state) name
+   in RvEmitResult {
+    state = rv-emit st1 (rv-mv (tr.reg) rv-a0),
+    reg = tr.reg
+   }
+
+Section: Binary Emission
+
+  rv-emit-binary : RvState, IRBinaryOp, IRExpr, IRExpr, CodexType -> RvEmitResult
+  rv-emit-binary (st) (op) (left) (right) (ty) =
+   let lr = rv-emit-expr st left
+   in let saved = rv-alloc-local (lr.state)
+   in let st1 = rv-store-local (saved.state) (saved.reg) (lr.reg)
+   in let rr = rv-emit-expr st1 right
+   in let ll = rv-load-local (rr.state) (saved.reg)
+   in let rd-r = rv-alloc-temp (ll.state)
+   in let st2 = rd-r.state
+   in let left-reg = ll.reg
+   in let right-reg = rr.reg
+   in let rd = rd-r.reg
+   in when op
+    is IrAddInt -> RvEmitResult { state = rv-emit st2 (rv-add rd left-reg right-reg), reg = rd }
+    is IrSubInt -> RvEmitResult { state = rv-emit st2 (rv-sub rd left-reg right-reg), reg = rd }
+    is IrMulInt -> RvEmitResult { state = rv-emit st2 (rv-mul rd left-reg right-reg), reg = rd }
+    is IrDivInt -> RvEmitResult { state = rv-emit st2 (rv-div rd left-reg right-reg), reg = rd }
+    is IrEq ->
+     let st3 = rv-emit st2 (rv-sub rd left-reg right-reg)
+     in let st4 = rv-emit st3 (rv-sltu rd rv-zero rd)
+     in RvEmitResult { state = rv-emit st4 (rv-xori rd rd 1), reg = rd }
+    is IrNotEq ->
+     let st3 = rv-emit st2 (rv-sub rd left-reg right-reg)
+     in RvEmitResult { state = rv-emit st3 (rv-sltu rd rv-zero rd), reg = rd }
+    is IrLt -> RvEmitResult { state = rv-emit st2 (rv-slt rd left-reg right-reg), reg = rd }
+    is IrGt -> RvEmitResult { state = rv-emit st2 (rv-slt rd right-reg left-reg), reg = rd }
+    is IrLtEq ->
+     let st3 = rv-emit st2 (rv-slt rd right-reg left-reg)
+     in RvEmitResult { state = rv-emit st3 (rv-xori rd rd 1), reg = rd }
+    is IrGtEq ->
+     let st3 = rv-emit st2 (rv-slt rd left-reg right-reg)
+     in RvEmitResult { state = rv-emit st3 (rv-xori rd rd 1), reg = rd }
+    is IrAnd -> RvEmitResult { state = rv-emit st2 (rv-and rd left-reg right-reg), reg = rd }
+    is IrOr -> RvEmitResult { state = rv-emit st2 (rv-or rd left-reg right-reg), reg = rd }
+    is IrAppendText ->
+     let st3 = rv-emit st2 (rv-mv rv-a0 left-reg)
+     in let st4 = rv-emit st3 (rv-mv rv-a1 right-reg)
+     in let st5 = rv-emit-call-to st4 "__str_concat"
+     in RvEmitResult { state = rv-emit st5 (rv-mv rd rv-a0), reg = rd }
+    is IrConsList ->
+     let st3 = rv-emit st2 (rv-mv rv-a0 left-reg)
+     in let st4 = rv-emit st3 (rv-mv rv-a1 right-reg)
+     in let st5 = rv-emit-call-to st4 "__list_cons"
+     in RvEmitResult { state = rv-emit st5 (rv-mv rd rv-a0), reg = rd }
+    is IrAppendList ->
+     let st3 = rv-emit st2 (rv-mv rv-a0 left-reg)
+     in let st4 = rv-emit st3 (rv-mv rv-a1 right-reg)
+     in let st5 = rv-emit-call-to st4 "__list_append"
+     in RvEmitResult { state = rv-emit st5 (rv-mv rd rv-a0), reg = rd }
+    is otherwise -> RvEmitResult { state = st2, reg = rd }
+
+Section: Control Flow
+
+  rv-emit-negate : RvState, IRExpr -> RvEmitResult
+  rv-emit-negate (st) (operand) =
+   let or = rv-emit-expr st operand
+   in let tr = rv-alloc-temp (or.state)
+   in RvEmitResult {
+    state = rv-emit (tr.state) (rv-sub (tr.reg) rv-zero (or.reg)),
+    reg = tr.reg
+   }
+
+  rv-emit-if : RvState, IRExpr, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-if (st) (cond) (th) (el) =
+   let cr = rv-emit-expr st cond
+   in let beq-index = cr.state.insn-count
+   in let st1 = rv-emit (cr.state) rv-nop
+   in let tr = rv-emit-expr st1 th
+   in let result-loc = rv-alloc-local (tr.state)
+   in let st2 = rv-store-local (result-loc.state) (result-loc.reg) (tr.reg)
+   in let jmp-end-index = st2.insn-count
+   in let st3 = rv-emit st2 rv-nop
+   in let else-start = st3.insn-count
+   in let er = rv-emit-expr st3 el
+   in let st4 = rv-store-local (er.state) (result-loc.reg) (er.reg)
+   in let end-index = st4.insn-count
+   in let st5 = rv-patch-insn st4 beq-index (rv-beq (cr.reg) rv-zero ((else-start - beq-index) * 4))
+   in let st6 = rv-patch-insn st5 jmp-end-index (rv-j ((end-index - jmp-end-index) * 4))
+   in rv-load-local st6 (result-loc.reg)
+
+  rv-emit-let : RvState, Text, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-let (st) (name) (value) (body) =
+   let vr = rv-emit-expr st value
+   in let loc = rv-alloc-local (vr.state)
+   in let st1 = rv-store-local (loc.state) (loc.reg) (vr.reg)
+   in let st2 = rv-bind-local st1 name (loc.reg)
+   in rv-emit-expr st2 body
+
+  rv-emit-act : RvState, List IRActStmt -> RvEmitResult
+  rv-emit-act (st) (stmts) =
+   rv-emit-act-loop st stmts 0 rv-zero
+
+  rv-emit-act-loop : RvState, List IRActStmt, Integer, Integer -> RvEmitResult
+  rv-emit-act-loop (st) (stmts) (i) (last-reg) =
+   if i >= list-length stmts then RvEmitResult { state = st, reg = last-reg }
+   else when list-at stmts i
+    is IrDoExec (expr) (s) ->
+     let er = rv-emit-expr st expr
+     in rv-emit-act-loop (er.state) stmts (i + 1) (er.reg)
+    is IrDoBind (name) (ty) (expr) (s) ->
+     let er = rv-emit-expr st expr
+     in let loc = rv-alloc-local (er.state)
+     in let st1 = rv-store-local (loc.state) (loc.reg) (er.reg)
+     in let st2 = rv-bind-local st1 name (loc.reg)
+     in rv-emit-act-loop st2 stmts (i + 1) (loc.reg)
+
+Section: Apply
+
+  rv-emit-apply : RvState, IRExpr, CodexType -> RvEmitResult
+  rv-emit-apply (st) (expr) (ty) =
+   let chain = collect-apply-chain expr []
+   in let func = chain.root
+   in let args = chain.args
+   in when func
+    is IrName (name) (fty) (s) ->
+     let local-reg = rv-lookup-local (st.locals) name 0
+     in if local-reg >= 0
+      then rv-emit-closure-call st local-reg args
+      else rv-emit-direct-call st name args
+    is otherwise -> rv-emit-int-lit st 0
+
+  rv-emit-direct-call : RvState, Text, List IRExpr -> RvEmitResult
+  rv-emit-direct-call (st) (name) (args) =
+   let saved = rv-save-args st args 0 []
+   in let st1 = rv-move-args-to-regs (saved.state) (saved.locals) 0
+   in let st2 = rv-emit-call-to st1 name
+   in let tr = rv-alloc-temp st2
+   in RvEmitResult {
+    state = rv-emit (tr.state) (rv-mv (tr.reg) rv-a0),
+    reg = tr.reg
+   }
+
+  rv-emit-closure-call : RvState, Integer, List IRExpr -> RvEmitResult
+  rv-emit-closure-call (st) (closure-local) (args) =
+   let saved = rv-save-args st args 0 []
+   in let st1 = rv-move-args-to-regs (saved.state) (saved.locals) 0
+   in let cl = rv-load-local st1 closure-local
+   in let st2 = rv-emit (cl.state) (rv-mv rv-t2 (cl.reg))
+   in let st3 = rv-emit st2 (rv-ld rv-t1 rv-t2 0)
+   in let st4 = rv-emit st3 (rv-jalr rv-ra rv-t1 0)
+   in let tr = rv-alloc-temp st4
+   in RvEmitResult {
+    state = rv-emit (tr.state) (rv-mv (tr.reg) rv-a0),
+    reg = tr.reg
+   }
+
+  RvSavedArgs = record {
+   state : RvState,
+   locals : List Integer
+  }
+
+  rv-save-args : RvState, List IRExpr, Integer, List Integer -> RvSavedArgs
+  rv-save-args (st) (args) (i) (acc) =
+   if i >= list-length args then RvSavedArgs { state = st, locals = acc }
+   else let er = rv-emit-expr st (list-at args i)
+   in let loc = rv-alloc-local (er.state)
+   in let st1 = rv-store-local (loc.state) (loc.reg) (er.reg)
+   in rv-save-args st1 args (i + 1) (list-push acc (loc.reg))
+
+  rv-move-args-to-regs : RvState, List Integer, Integer -> RvState
+  rv-move-args-to-regs (st) (locals) (i) =
+   if i >= list-length locals then st
+   else if i >= 8 then st
+   else let lr = rv-load-local st (list-at locals i)
+   in let st1 = if lr.reg == rv-a0 + i then lr.state
+    else rv-emit (lr.state) (rv-mv (rv-a0 + i) (lr.reg))
+   in rv-move-args-to-regs st1 locals (i + 1)
+
+Section: Records and Sum Types
+
+  rv-emit-record : RvState, List IRFieldVal, CodexType -> RvEmitResult
+  rv-emit-record (st) (fields) (ty) =
+   let saved = rv-eval-record-fields st fields 0 []
+   in let total-size = list-length fields * 8
+   in let ptr-r = rv-alloc-temp (saved.state)
+   in let st1 = rv-emit (ptr-r.state) (rv-mv (ptr-r.reg) rv-heap-reg)
+   in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg total-size)
+   in let st3 = rv-store-record-fields st2 (saved.locals) (ptr-r.reg) 0
+   in RvEmitResult { state = st3, reg = ptr-r.reg }
+
+  rv-eval-record-fields : RvState, List IRFieldVal, Integer, List Integer -> RvSavedArgs
+  rv-eval-record-fields (st) (fields) (i) (acc) =
+   if i >= list-length fields then RvSavedArgs { state = st, locals = acc }
+   else let er = rv-emit-expr st ((list-at fields i).value)
+   in let loc = rv-alloc-local (er.state)
+   in let st1 = rv-store-local (loc.state) (loc.reg) (er.reg)
+   in rv-eval-record-fields st1 fields (i + 1) (list-push acc (loc.reg))
+
+  rv-store-record-fields : RvState, List Integer, Integer, Integer -> RvState
+  rv-store-record-fields (st) (locals) (ptr-reg) (i) =
+   if i >= list-length locals then st
+   else let lr = rv-load-local st (list-at locals i)
+   in let st1 = rv-emit (lr.state) (rv-sd ptr-reg (lr.reg) (i * 8))
+   in rv-store-record-fields st1 locals ptr-reg (i + 1)
+
+  rv-emit-field-access : RvState, IRExpr, Text, CodexType -> RvEmitResult
+  rv-emit-field-access (st) (rec-expr) (field-name) (ty) =
+   let br = rv-emit-expr st rec-expr
+   in let field-index = rv-find-field-index (ir-expr-type rec-expr) field-name
+   in let tr = rv-alloc-temp (br.state)
+   in RvEmitResult {
+    state = rv-emit (tr.state) (rv-ld (tr.reg) (br.reg) (field-index * 8)),
+    reg = tr.reg
+   }
+
+  rv-find-field-index : CodexType, Text -> Integer
+  rv-find-field-index (ty) (name) =
+   when ty
+    is RecordTy (rn) (tvars) (fields) -> rv-find-field-in-list fields name 0
+    is otherwise -> 0
+
+  rv-find-field-in-list : List RecordField, Text, Integer -> Integer
+  rv-find-field-in-list (fields) (name) (i) =
+   if i >= list-length fields then 0
+   else if (list-at fields i).name.value == name then i
+   else rv-find-field-in-list fields name (i + 1)
+
+Section: Match
+
+  rv-emit-match : RvState, IRExpr, List IRBranch -> RvEmitResult
+  rv-emit-match (st) (scrut-expr) (branches) =
+   let sr = rv-emit-expr st scrut-expr
+   in let saved = rv-alloc-local (sr.state)
+   in let st1 = rv-store-local (saved.state) (saved.reg) (sr.reg)
+   in let result-r = rv-alloc-temp st1
+   in let st2 = rv-emit-match-branches (result-r.state) branches (saved.reg) (result-r.reg) 0
+   in RvEmitResult { state = st2, reg = result-r.reg }
+
+  rv-emit-match-branches : RvState, List IRBranch, Integer, Integer, Integer -> RvState
+  rv-emit-match-branches (st) (branches) (scrut-reg) (result-reg) (i) =
+   if i >= list-length branches then st
+   else let branch = list-at branches i
+   in when (branch.pattern)
+    is IrWildPat (s) ->
+     let br = rv-emit-expr st (branch.body)
+     in rv-store-local (br.state) result-reg (br.reg)
+    is IrVarPat (name) (ty) (s) ->
+     let loc = rv-alloc-local st
+     in let lr = rv-load-local (loc.state) scrut-reg
+     in let st1 = rv-store-local (lr.state) (loc.reg) (lr.reg)
+     in let st2 = rv-bind-local st1 name (loc.reg)
+     in let br = rv-emit-expr st2 (branch.body)
+     in rv-store-local (br.state) result-reg (br.reg)
+    is IrCtorPat (ctor-name) (sub-pats) (ctor-ty) (s) ->
+     let tag-r = rv-alloc-temp st
+     in let lr = rv-load-local (tag-r.state) scrut-reg
+     in let st1 = rv-emit (lr.state) (rv-ld (tag-r.reg) (lr.reg) 0)
+     in let expected-tag = rv-find-ctor-tag ctor-ty ctor-name
+     in let exp-r = rv-alloc-temp st1
+     in let st2 = rv-emit-li (exp-r.state) (exp-r.reg) expected-tag
+     in let bne-index = st2.insn-count
+     in let st3 = rv-emit st2 rv-nop
+     in let st4 = rv-bind-ctor-fields st3 sub-pats scrut-reg 0
+     in let br = rv-emit-expr st4 (branch.body)
+     in let st5 = rv-store-local (br.state) result-reg (br.reg)
+     in let jmp-end-index = st5.insn-count
+     in let st6 = rv-emit st5 rv-nop
+     in let next-start = st6.insn-count
+     in let st7 = rv-emit-match-branches st6 branches scrut-reg result-reg (i + 1)
+     in let end-index = st7.insn-count
+     in let st8 = rv-patch-insn st7 bne-index (rv-bne (tag-r.reg) (exp-r.reg) ((next-start - bne-index) * 4))
+     in rv-patch-insn st8 jmp-end-index (rv-j ((end-index - jmp-end-index) * 4))
+    is IrLitPat (value) (ty) (s) ->
+     rv-emit-match-branches st branches scrut-reg result-reg (i + 1)
+
+  rv-find-ctor-tag : CodexType, Text -> Integer
+  rv-find-ctor-tag (ty) (name) =
+   when ty
+    is SumTy (tn) (tvars) (ctors) -> rv-find-ctor-in-list ctors name 0
+    is otherwise -> 0
+
+  rv-find-ctor-in-list : List SumCtor, Text, Integer -> Integer
+  rv-find-ctor-in-list (ctors) (name) (i) =
+   if i >= list-length ctors then 0
+   else if (list-at ctors i).name.value == name then i
+   else rv-find-ctor-in-list ctors name (i + 1)
+
+  rv-bind-ctor-fields : RvState, List IRPat, Integer, Integer -> RvState
+  rv-bind-ctor-fields (st) (pats) (scrut-reg) (i) =
+   if i >= list-length pats then st
+   else when list-at pats i
+    is IrVarPat (name) (ty) (s) ->
+     let loc = rv-alloc-local st
+     in let lr = rv-load-local (loc.state) scrut-reg
+     in let st1 = rv-emit (lr.state) (rv-ld (loc.reg) (lr.reg) ((i + 1) * 8))
+     in let st2 = rv-bind-local st1 name (loc.reg)
+     in rv-bind-ctor-fields st2 pats scrut-reg (i + 1)
+    is otherwise -> rv-bind-ctor-fields st pats scrut-reg (i + 1)
+
+Section: List Emission
+
+  rv-emit-list : RvState, List IRExpr -> RvEmitResult
+  rv-emit-list (st) (elems) =
+   let st1 = rv-emit st (rv-mv rv-a0 rv-zero)
+   in let st2 = rv-emit-call-to st1 "__list_empty"
+   in let result-loc = rv-alloc-local st2
+   in let st3 = rv-store-local (result-loc.state) (result-loc.reg) rv-a0
+   in rv-emit-list-elems st3 elems (result-loc.reg) 0
+
+  rv-emit-list-elems : RvState, List IRExpr, Integer, Integer -> RvEmitResult
+  rv-emit-list-elems (st) (elems) (list-local) (i) =
+   if i >= list-length elems then rv-load-local st list-local
+   else let er = rv-emit-expr st (list-at elems i)
+   in let lr = rv-load-local (er.state) list-local
+   in let st1 = rv-emit (lr.state) (rv-mv rv-a0 (lr.reg))
+   in let st2 = rv-emit st1 (rv-mv rv-a1 (er.reg))
+   in let st3 = rv-emit-call-to st2 "__list_push"
+   in let st4 = rv-store-local st3 list-local rv-a0
+   in rv-emit-list-elems st4 elems list-local (i + 1)
+
+Section: Instruction Patching
+
+  rv-patch-insn : RvState, Integer, List Integer -> RvState
+  rv-patch-insn (st) (insn-index) (new-bytes) =
+   let byte-offset = insn-index * 4
+   in __record-set st "code" (rv-patch-4 (st.code) byte-offset new-bytes)
+
+  rv-patch-4 : List Integer, Integer, List Integer -> List Integer
+  rv-patch-4 (code) (pos) (new-bytes) =
+   rv-patch-4-loop code pos new-bytes 0 (list-length code) []
+
+  rv-patch-4-loop : List Integer, Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  rv-patch-4-loop (code) (pos) (new-bytes) (i) (len) (acc) =
+   if i >= len then acc
+   else if i >= pos & i < pos + 4 then rv-patch-4-loop code pos new-bytes (i + 1) len (list-push acc (list-at new-bytes (i - pos)))
+   else rv-patch-4-loop code pos new-bytes (i + 1) len (list-push acc (list-at code i))
+
+Section: Module Emission
+
+  rv-emit-function : RvState, IRDef -> RvState
+  rv-emit-function (st) (def) =
+   let st1 = rv-reset-func-state st (def.name)
+   in let st2 = rv-emit-prologue st1
+   in let st3 = rv-bind-params st2 (def.params) 0
+   in let er = rv-emit-expr st3 (def.body)
+   in let st4 = if er.reg == rv-a0 then er.state
+    else rv-emit (er.state) (rv-mv rv-a0 (er.reg))
+   in let frame-size = rv-compute-frame-size (st4.spill-count)
+   in let st5 = rv-patch-frame st4 frame-size
+   in rv-emit-epilogue st5 frame-size
+
+  rv-bind-params : RvState, List IRParam, Integer -> RvState
+  rv-bind-params (st) (params) (i) =
+   if i >= list-length params then st
+   else if i >= 8 then st
+   else let loc = rv-alloc-local st
+   in let st1 = rv-store-local (loc.state) (loc.reg) (rv-a0 + i)
+   in let st2 = rv-bind-local st1 ((list-at params i).name) (loc.reg)
+   in rv-bind-params st2 params (i + 1)
+
+  rv-patch-frame : RvState, Integer -> RvState
+  rv-patch-frame (st) (frame-size) =
+   rv-patch-insn st (st.prologue-index) (rv-addi rv-sp rv-sp (0 - frame-size))
+
+  rv-emit-module : RvState, IRChapter, List ATypeDef -> RvState
+  rv-emit-module (st) (chapter) (tdefs) =
+   let st1 = __record-set st "type-defs" tdefs
+   in let st2 = rv-emit-runtime st1
+   in let st3 = rv-emit-all-defs st2 (chapter.defs) 0
+   in let st4 = rv-patch-calls st3
+   in rv-patch-rodata st4
+
+  rv-patch-calls : RvState -> RvState
+  rv-patch-calls (st) =
+   rv-patch-calls-loop st (st.call-patches) 0
+
+  rv-patch-calls-loop : RvState, List RvCallPatch, Integer -> RvState
+  rv-patch-calls-loop (st) (patches) (i) =
+   if i >= list-length patches then st
+   else let patch = list-at patches i
+   in let target-offset = rv-find-func-offset (st.func-names) (st.func-offsets) (patch.target) 0
+   in if target-offset >= 0
+    then let rel = (target-offset - patch.insn-index) * 4
+    in let st1 = rv-patch-insn st (patch.insn-index) (rv-jal rv-ra rel)
+    in rv-patch-calls-loop st1 patches (i + 1)
+    else rv-patch-calls-loop st patches (i + 1)
+
+  rv-find-func-offset : List Text, List Integer, Text, Integer -> Integer
+  rv-find-func-offset (names) (offsets) (target) (i) =
+   if i >= list-length names then 0 - 1
+   else if list-at names i == target then list-at offsets i
+   else rv-find-func-offset names offsets target (i + 1)
+
+  rv-load-base : Integer = #80000000
+
+  rv-align-8 : Integer -> Integer
+  rv-align-8 (n) = let r = int-mod n 8 in if r == 0 then n else n + 8 - r
+
+  rv-patch-rodata : RvState -> RvState
+  rv-patch-rodata (st) =
+   let code-bytes = list-length (st.code)
+   in let rodata-byte-off = rv-align-8 code-bytes
+   in rv-patch-rodata-loop st (st.rodata-fixups) rodata-byte-off 0
+
+  rv-patch-rodata-loop : RvState, List RvRodataFixup, Integer, Integer -> RvState
+  rv-patch-rodata-loop (st) (fixups) (rodata-byte-off) (i) =
+   if i >= list-length fixups then st
+   else let fixup = list-at fixups i
+   in let pc-byte = fixup.insn-index * 4
+   in let target-byte = rodata-byte-off + fixup.rodata-offset
+   in let offset = target-byte - pc-byte
+   in let hi20 = (offset + #800) / 4096
+   in let lo12 = offset - hi20 * 4096
+   in let st1 = rv-patch-insn st (fixup.insn-index) (rv-auipc (fixup.rd) hi20)
+   in let st2 = rv-patch-insn st1 (fixup.insn-index + 1) (rv-addi (fixup.rd) (fixup.rd) lo12)
+   in rv-patch-rodata-loop st2 fixups rodata-byte-off (i + 1)
+
+  rv-emit-all-defs : RvState, List IRDef, Integer -> RvState
+  rv-emit-all-defs (st) (defs) (i) =
+   if i >= list-length defs then st
+   else rv-emit-all-defs (rv-emit-function st (list-at defs i)) defs (i + 1)
+
+Section: Wire Output
+
+  rv-build-wire-output : RvState -> List Integer
+  rv-build-wire-output (st) =
+   let code-len-bytes = write-i32-le (list-length (st.code))
+   in let data-len-bytes = write-i32-le (list-length (st.data))
+   in let func-count-bytes = write-i32-le (list-length (st.func-names))
+   in let func-table = rv-build-func-table (st.func-names) (st.func-offsets) 0
+   in code-len-bytes & data-len-bytes & func-count-bytes & st.code & st.data & func-table
+
+  rv-build-func-table : List Text, List Integer, Integer -> List Integer
+  rv-build-func-table (names) (offsets) (i) =
+   if i >= list-length names then []
+   else let name = list-at names i
+   in let name-bytes = text-to-ascii-bytes name
+   in let name-len-bytes = write-i16-le (list-length name-bytes)
+   in let offset-bytes = write-i32-le ((list-at offsets i) * 4)
+   in name-len-bytes & name-bytes & offset-bytes & rv-build-func-table names offsets (i + 1)
+
+Page 1
