@@ -17,7 +17,7 @@ Section: Codegen State
 
   RvLocal = record {
    name : Text,
-   reg : Integer between 0 and 63
+   reg : Integer between 0 and 255
   }
 
   RvTcoState = record {
@@ -153,14 +153,15 @@ Section: Register Allocation
 
   rv-alloc-local : RvState -> RvEmitResult
   rv-alloc-local (st) =
-   if st.next-local <= rv-s11
+   let nl = st.next-local
+   in if nl <= rv-s11
    then RvEmitResult {
-    state = __record-set st "next-local" (st.next-local + 1),
-    reg = st.next-local
+    state = __record-set st "next-local" (nl + 1),
+    reg = nl
    }
    else let slot = rv-spill-base + st.spill-count
    in RvEmitResult {
-    state = __record-set (__record-set st "next-local" (st.next-local + 1)) "spill-count" (st.spill-count + 1),
+    state = __record-set (__record-set st "next-local" (nl + 1)) "spill-count" (st.spill-count + 1),
     reg = slot
    }
 
@@ -461,10 +462,13 @@ Section: Control Flow
   rv-emit-act-loop : RvState, List IRActStmt, Integer, Integer -> RvEmitResult
   rv-emit-act-loop (st) (stmts) (i) (last-reg) =
    if i >= list-length stmts then RvEmitResult { state = st, reg = last-reg }
-   else when list-at stmts i
+   else let saved-next-local = st.next-local
+   in let saved-next-temp = st.next-temp
+   in when list-at stmts i
     is IrDoExec (expr) (s) ->
      let er = rv-emit-expr st expr
-     in rv-emit-act-loop (er.state) stmts (i + 1) (er.reg)
+     in let st1 = __record-set (__record-set (er.state) "next-local" saved-next-local) "next-temp" saved-next-temp
+     in rv-emit-act-loop st1 stmts (i + 1) (er.reg)
     is IrDoBind (name) (ty) (expr) (s) ->
      let er = rv-emit-expr st expr
      in let loc = rv-alloc-local (er.state)

@@ -58,15 +58,15 @@ Section: Append
 Section: Range Query
 
   ts-range : TsSeries, Integer, Integer -> List TsPoint
-  ts-range (series) (start) (end) =
-    ts-range-loop (series.tss-points) start end 0 (series.tss-count) []
+  ts-range (series) (start) (finish) =
+    ts-range-loop (series.tss-points) start finish 0 (series.tss-count) []
 
   ts-range-loop : List TsPoint, Integer, Integer, Integer, Integer, List TsPoint -> List TsPoint
-  ts-range-loop (points) (start) (end) (i) (len) (acc) =
+  ts-range-loop (points) (start) (finish) (i) (len) (acc) =
     if i >= len then acc
     else let p = list-at points i
-    in if p.ts-time >= start & p.ts-time <= end then ts-range-loop points start end (i + 1) len (list-push acc p)
-    else ts-range-loop points start end (i + 1) len acc
+    in if p.ts-time >= start & p.ts-time <= finish then ts-range-loop points start finish (i + 1) len (list-push acc p)
+    else ts-range-loop points start finish (i + 1) len acc
 
   ts-last-n : TsSeries, Integer -> List TsPoint
   ts-last-n (series) (n) =
@@ -91,12 +91,12 @@ Section: Windowed Aggregation
   }
 
   ts-window-aggregate : TsSeries, Integer, Integer, Integer -> List TsWindowResult
-  ts-window-aggregate (series) (start) (end) (window-size) =
-    ts-window-loop (series.tss-points) start end window-size start (series.tss-count) []
+  ts-window-aggregate (series) (start) (finish) (window-size) =
+    ts-window-loop (series.tss-points) start finish window-size start (series.tss-count) []
 
   ts-window-loop : List TsPoint, Integer, Integer, Integer, Integer, Integer, List TsWindowResult -> List TsWindowResult
-  ts-window-loop (points) (start) (end) (win-size) (win-start) (len) (acc) =
-    if win-start >= end then acc
+  ts-window-loop (points) (start) (finish) (win-size) (win-start) (len) (acc) =
+    if win-start >= finish then acc
     else let win-end = win-start + win-size
     in let agg = ts-agg-window points win-start win-end 0 len 0 0 2147483647 0
     in let result = TsWindowResult {
@@ -108,7 +108,7 @@ Section: Windowed Aggregation
       tw-max = agg.twa-max,
       tw-avg = if agg.twa-count == 0 then 0 else agg.twa-sum / agg.twa-count
     }
-    in ts-window-loop points start end win-size win-end len (list-push acc result)
+    in ts-window-loop points start finish win-size win-end len (list-push acc result)
 
   TsWindowAcc = record {
     twa-sum : Integer,
@@ -261,11 +261,11 @@ Section: Multi-Series Store
       is Just (series) -> TsStore { tsst-series = hamt-set (store.tsst-series) name (ts-append series point), tsst-count = store.tsst-count }
 
   ts-store-query : TsStore, Text, Integer, Integer -> List TsPoint
-  ts-store-query (store) (name) (start) (end) =
+  ts-store-query (store) (name) (start) (finish) =
     let found = hamt-get (store.tsst-series) name
     in when found
       is None -> []
-      is Just (series) -> ts-range series start end
+      is Just (series) -> ts-range series start finish
 
   ts-store-downsample : TsStore, Text, Integer -> TsStore
   ts-store-downsample (store) (name) (bucket) =

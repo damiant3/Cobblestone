@@ -3,6 +3,7 @@ Chapter: AddressBar
   cites Foreword chapter RichText
   cites Foreword chapter TextField
   cites Foreword chapter Maybe
+  cites Foreword chapter Pair
   cites Browser chapter ContentAddress
   cites Browser chapter BrowserTheme
 
@@ -17,7 +18,7 @@ Section: Types
     ab-focused    : Boolean,
     ab-width      : Integer,
     ab-cursor     : Integer,
-    ab-selection  : Maybe (Integer, Integer),
+    ab-selection  : Maybe (Pair Integer Integer),
     ab-suggestions : List Text,
     ab-show-suggestions : Boolean,
     ab-selected-suggestion : Integer
@@ -32,7 +33,7 @@ Section: Construction
       ab-focused = False,
       ab-width = width,
       ab-cursor = 0,
-      ab-selection = Nothing,
+      ab-selection = None,
       ab-suggestions = [],
       ab-show-suggestions = False,
       ab-selected-suggestion = 0
@@ -51,18 +52,18 @@ Section: State Updates
   address-bar-focus (ab) =
     __record-set (__record-set ab
       "ab-focused" True)
-      "ab-selection" (Just (0, text-length ab.ab-text))
+      "ab-selection" (Just (make-pair 0 (text-length ab.ab-text)))
 
   address-bar-blur : AddressBarState -> AddressBarState
   address-bar-blur (ab) =
     __record-set (__record-set (__record-set ab
       "ab-focused" False)
-      "ab-selection" Nothing)
+      "ab-selection" None)
       "ab-show-suggestions" False
 
   address-bar-select-all : AddressBarState -> AddressBarState
   address-bar-select-all (ab) =
-    __record-set ab "ab-selection" (Just (0, text-length ab.ab-text))
+    __record-set ab "ab-selection" (Just (make-pair 0 (text-length ab.ab-text)))
 
 Section: Text Editing
 
@@ -80,7 +81,7 @@ Section: Text Editing
   address-bar-backspace : AddressBarState -> AddressBarState
   address-bar-backspace (ab) =
     when ab.ab-selection
-      is Just (_, _) -> address-bar-clear-selection ab
+      is Just (_) -> address-bar-clear-selection ab
       is None ->
         if ab.ab-cursor > 0
         then let before = text-take ab.ab-text (ab.ab-cursor - 1)
@@ -94,7 +95,7 @@ Section: Text Editing
   address-bar-delete : AddressBarState -> AddressBarState
   address-bar-delete (ab) =
     when ab.ab-selection
-      is Just (_, _) -> address-bar-clear-selection ab
+      is Just (_) -> address-bar-clear-selection ab
       is None ->
         if ab.ab-cursor < text-length ab.ab-text
         then let before = text-take ab.ab-text ab.ab-cursor
@@ -106,13 +107,15 @@ Section: Text Editing
   address-bar-clear-selection (ab) =
     when ab.ab-selection
       is None -> ab
-      is Just (start, end-pos) ->
-        let before = text-take ab.ab-text start
+      is Just (sel) ->
+        let start = pair-fst sel
+        in let end-pos = pair-snd sel
+        in let before = text-take ab.ab-text start
         in let after = text-drop ab.ab-text end-pos
         in __record-set (__record-set (__record-set ab
           "ab-text" (before & after))
           "ab-cursor" start)
-          "ab-selection" Nothing
+          "ab-selection" None
 
 Section: Cursor Movement
 
@@ -121,7 +124,7 @@ Section: Cursor Movement
     if ab.ab-cursor > 0
     then __record-set (__record-set ab
       "ab-cursor" (ab.ab-cursor - 1))
-      "ab-selection" Nothing
+      "ab-selection" None
     else ab
 
   address-bar-move-right : AddressBarState -> AddressBarState
@@ -129,18 +132,18 @@ Section: Cursor Movement
     if ab.ab-cursor < text-length ab.ab-text
     then __record-set (__record-set ab
       "ab-cursor" (ab.ab-cursor + 1))
-      "ab-selection" Nothing
+      "ab-selection" None
     else ab
 
   address-bar-move-home : AddressBarState -> AddressBarState
   address-bar-move-home (ab) =
-    __record-set (__record-set ab "ab-cursor" 0) "ab-selection" Nothing
+    __record-set (__record-set ab "ab-cursor" 0) "ab-selection" None
 
   address-bar-move-end : AddressBarState -> AddressBarState
   address-bar-move-end (ab) =
     __record-set (__record-set ab
       "ab-cursor" (text-length ab.ab-text))
-      "ab-selection" Nothing
+      "ab-selection" None
 
 Section: Submission
 
@@ -188,10 +191,8 @@ Section: Suggestions
 
   filter-prefix : List Text, Text -> List Text
   filter-prefix (items) (prefix) =
-    when items
-      is [] -> []
-      is otherwise ->
-        let head = list-at items 0
+    if list-length items == 0 then []
+    else let head = list-at items 0
         in let tail = list-drop items 1
         in if text-contains head prefix
           then head :: filter-prefix tail prefix
@@ -247,10 +248,8 @@ Section: Rendering
 
   render-suggestion-items : List Text, Integer, Integer -> List WidgetNode
   render-suggestion-items (suggestions) (selected) (idx) =
-    when suggestions
-      is [] -> []
-      is otherwise ->
-        let head = list-at suggestions 0
+    if list-length suggestions == 0 then []
+    else let head = list-at suggestions 0
         in let tail = list-drop suggestions 1
         in let item = widget-button ("suggestion-" & show idx) head
         in let styled = if idx == selected

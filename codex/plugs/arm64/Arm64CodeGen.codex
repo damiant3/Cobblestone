@@ -47,7 +47,7 @@ Section: Codegen State
 
   A64Local = record {
    name : Text,
-   reg : Integer between 0 and 63
+   reg : Integer between 0 and 255
   }
 
   A64TcoState = record {
@@ -180,14 +180,15 @@ Section: Register Allocation
 
   a64-alloc-local : A64State -> A64EmitResult
   a64-alloc-local (st) =
-   if st.next-local <= a64-x27
+   let nl = st.next-local
+   in if nl <= a64-x27
    then A64EmitResult {
-    state = __record-set st "next-local" (st.next-local + 1),
-    reg = st.next-local
+    state = __record-set st "next-local" (nl + 1),
+    reg = nl
    }
    else let slot = a64-spill-base + st.spill-count
    in A64EmitResult {
-    state = __record-set (__record-set st "next-local" (st.next-local + 1)) "spill-count" (st.spill-count + 1),
+    state = __record-set (__record-set st "next-local" (nl + 1)) "spill-count" (st.spill-count + 1),
     reg = slot
    }
 
@@ -513,10 +514,13 @@ Section: Control Flow
   a64-emit-act-loop : A64State, List IRActStmt, Integer, Integer -> A64EmitResult
   a64-emit-act-loop (st) (stmts) (i) (last-reg) =
    if i >= list-length stmts then A64EmitResult { state = st, reg = last-reg }
-   else when list-at stmts i
+   else let saved-next-local = st.next-local
+   in let saved-next-temp = st.next-temp
+   in when list-at stmts i
     is IrDoExec (expr) (s) ->
      let er = a64-emit-expr st expr
-     in a64-emit-act-loop (er.state) stmts (i + 1) (er.reg)
+     in let st1 = __record-set (__record-set (er.state) "next-local" saved-next-local) "next-temp" saved-next-temp
+     in a64-emit-act-loop st1 stmts (i + 1) (er.reg)
     is IrDoBind (name) (ty) (expr) (s) ->
      let er = a64-emit-expr st expr
      in let loc = a64-alloc-local (er.state)

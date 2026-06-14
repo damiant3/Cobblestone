@@ -66,6 +66,8 @@ requires spaces: `x - 1` (expression), not `x-1` (identifier).
 | Maybe | `Maybe Text` |
 | Bounded integer | `Integer between 0 and 255` |
 | Bounded + overflow | `Integer between 0 and 255 wrapping` |
+| Unit type | `Second = unit Integer` |
+| Bounded + unit | `Second between 0 and 3600` |
 | Linear | `linear FileHandle` |
 
 ## Definitions
@@ -285,6 +287,77 @@ into a bounded slot. Use `__narrow` to assert the value is in range
   make-byte (n) = Byte { val = __narrow n }
 ```
 
+## Unit Types
+
+A `unit` declaration creates a distinct type wrapping another type.
+The compiler erases the wrapper at codegen — zero runtime overhead.
+
+```
+  Second = unit Integer
+  Meter = unit Integer
+```
+
+Construction: `Second 42` creates a Second value.
+Arithmetic preserves units: `Second 42 + Second 8 = 50`.
+Scalar multiplication: `Second 42 * 3 = 126`.
+Cross-unit is a type error: `Second + Meter` does not compile.
+
+Unit types are transparent to their inner type at assignment
+boundaries: a `Second` can be passed where `Integer` is expected.
+But different unit types do not mix.
+
+Bounded + unit composition works: `Second between 0 and 3600`
+creates a bounded unit type.
+
+Conversion declarations are parsed but not yet auto-applied:
+
+```
+  1 Minute = 60 Second
+```
+
+Write conversion functions manually:
+
+```
+  minute-to-second : Minute -> Second
+  minute-to-second (m) = Second (m * 60)
+```
+
+## Punctual Functions
+
+A function marked `punctual` is proven to have bounded execution
+at compile time. The compiler enforces five structural restrictions:
+
+| CDX Code | Restriction |
+|----------|------------|
+| CDX6001 | Cannot call non-punctual or non-safe-builtin functions |
+| CDX6002 | Cannot use heap allocation |
+| CDX6003 | Cannot use closures or lambdas |
+| CDX6004 | Cannot perform bare I/O (Console, FileSystem, Network) |
+| CDX6005 | Cannot use self-recursion |
+
+```
+  punctual classify-threat : SensorReading -> ThreatLevel
+  classify-threat (s) = ...
+```
+
+The emitter counts instructions per punctual function and reports
+the count as CDX6010. An optional instruction budget warns when
+exceeded (CDX6011):
+
+```
+  punctual 128 fast-handler : Integer -> Integer
+  fast-handler (n) = n + 1
+```
+
+Default budget is 256 instructions. Budget is architecture-independent
+(instruction count, not bytes or cycles). The compiler does not claim
+to know wall-clock time — that depends on clock speed and pipeline,
+which is the system integrator's responsibility.
+
+See `docs/Designs/OS/Active/HardRealtime.md` for the full design and
+prior art survey. See `codex/test/examples/missile-warning.codex` for
+a real-world example with Ada/Ravenscar side-by-side comparison.
+
 ## Proofs and Dependent Types
 
 Codex has dependent types: types that carry values. The `===` operator
@@ -490,7 +563,7 @@ with CDX3014.
 
 ```
 let  in  if  then  else  when  is  otherwise  act  end
-record  mutable  punctual  cites  claim  proof  qed  forall  exists  induction
+record  mutable  punctual  unit  cites  claim  proof  qed  forall  exists  induction
 linear  effect  where  with  between  and  such  that
 class  instance  lazy
 True  False

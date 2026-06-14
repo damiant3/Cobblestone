@@ -727,9 +727,10 @@ Section: Infer Expression (dispatch)
      in let (inst-ty, inst-st) = instantiate-type st ctor-raw
      in let result-type = strip-fun-args inst-ty
      in let st2 = infer-and-unify-record-fields inst-st env fields result-type 0 (list-length fields)
+     in let st3 = check-mutation-in-ctor-fields (record-expr-type st2 s result-type) fields 0 (list-length fields)
      in CheckResult {
       inferred-type = result-type,
-      state = record-expr-type st2 s result-type
+      state = st3
      }
     is AHandleExpr (eff) (body) (clauses) (s) ->
      let handled-env = strip-effect-from-env env (eff.value)
@@ -784,6 +785,33 @@ Section: Infer Expression (dispatch)
      inferred-type = ErrorTy,
      state = st
     }
+
+  check-mutation-in-ctor-fields : UnificationState, List AFieldExpr, Integer, Integer -> UnificationState
+  check-mutation-in-ctor-fields (st) (fields) (i) (len) =
+   if i >= len then st
+   else let f = list-at fields i
+     in let st2 = if aexpr-mentions-record-set (f.value) then __record-set st "bag" (bag-add (st.bag) (make-warning cdx-mutation-in-constructor ("Field '" & f.name.value & "' contains __record-set, which mutates in place. Other fields reading the same record will see the mutated value. Bind the __record-set result to a let before the constructor, or use revised.") (f.span)))
+       else st
+     in check-mutation-in-ctor-fields st2 fields (i + 1) len
+
+  aexpr-mentions-record-set : AExpr -> Boolean
+  aexpr-mentions-record-set (e) =
+   when e
+    is ANameExpr (n) (s) -> n.value == "__record-set"
+    is AApplyExpr (f) (a) (s) -> aexpr-mentions-record-set f | aexpr-mentions-record-set a
+    is ABinaryExpr (l) (op) (r) (s) -> aexpr-mentions-record-set l | aexpr-mentions-record-set r
+    is AIfExpr (c) (t) (el) (s) -> aexpr-mentions-record-set c | aexpr-mentions-record-set t | aexpr-mentions-record-set el
+    is ALetExpr (binds) (body) (s) -> aexpr-mentions-record-set body | aexpr-list-mentions-record-set-binds binds 0 (list-length binds)
+    is AMatchExpr (scrut) (arms) (s) -> aexpr-mentions-record-set scrut
+    is AFieldAccess (obj) (f) (s) -> aexpr-mentions-record-set obj
+    is otherwise -> False
+
+  aexpr-list-mentions-record-set-binds : List ALetBind, Integer, Integer -> Boolean
+  aexpr-list-mentions-record-set-binds (binds) (i) (len) =
+   if i >= len then False
+   else let b = list-at binds i
+     in if aexpr-mentions-record-set (b.value) then True
+     else aexpr-list-mentions-record-set-binds binds (i + 1) len
 
   strip-effect-from-env : TypeEnv, Text -> TypeEnv
   strip-effect-from-env (env) (eff-name) =

@@ -43,7 +43,7 @@ As of 2026-06-13:
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
   byte-identical. The compiler reproduces itself on bare metal.
-- **331 library modules** (238 foreword + 93 OS) across 24 quires: data structures, crypto,
+- **348 library modules** (255 foreword + 93 OS) across 24 quires: data structures, crypto,
   networking (full TCP/IP + UDP/ICMP/DNS/DHCP/NTP/Syslog/TFTP), game
   engine (A*, hex maps, ECS, physics, Voronoi, Perlin), AI inference
   (tensors, neural nets, GGUF model loading, genetic algorithms),
@@ -679,10 +679,114 @@ CDX and Codex-text are the load-bearing pair. The ELF is a derived artifact.
 
 ---
 
+## IoT Platform
+
+Codex targets the IoT market as the first platform where the compiler
+proves firmware meets EU Cyber Resilience Act requirements by
+construction. The IoT stack is orthogonal to the cross-architecture
+codegen plugs — it runs on the hosted VM today and cross-compiles to
+real hardware as the ARM64 and RISC-V backends mature.
+
+### Board Drivers
+
+Three target boards with full register-level GPIO, UART, SPI, and I2C
+drivers, all using the Board HAL's `mmio-read-32`/`mmio-write-32`
+primitives. Each driver has a smoke test that compiles and runs on the
+hosted VM (MMIO stubs return 0; fuel-bounded polling loops terminate
+immediately).
+
+| Board | MCU | GPIO | UART | SPI | I2C | Test |
+|-------|-----|------|------|-----|-----|------|
+| **STM32F4** (Discovery) | Cortex-M4F @ 168 MHz | mode, alt-func, pull, speed, read/write/toggle | USART2, baud config, print/println | SPI1 master, full-duplex transfer | I2C1 100 kHz, write-reg/read-reg | PASS (6) |
+| **ESP32-C6** (DevKit) | RISC-V RV32IMC @ 160 MHz | output/input, pull, read/toggle | UART0, 40 MHz APB clock divisor | SPI2 cmd-based, 8-bit transfer | I2C0 cmd-based, write-reg/read-reg | PASS (6) |
+| **Raspberry Pi 4** | Cortex-A72 @ 1.5 GHz | FSEL, alt-func (AF0-5), PUP/PDN | PL011, 48 MHz UARTCLK, fractional baud | SPI0, FIFO-based, clock divider | BSC1, burst read/write | PASS (6) |
+| **QEMU virt** | AArch64 + RISC-V | -- | PL011 (A64) + 16550 (RV) putc/puts | -- | -- | PASS (6) |
+
+Board register addresses are from the official reference manuals
+(RM0090 for STM32, ESP32-C6 TRM, BCM2711 ARM Peripherals).
+
+### IoT Protocol Stack
+
+| Protocol | Module | Status | Coverage |
+|----------|--------|--------|----------|
+| **MQTT v5.0** | `codex/foreword/encode/Mqtt.codex` | Implemented | CONNECT, PUBLISH, SUBSCRIBE, PINGREQ, DISCONNECT, QoS 0-2, variable-byte encoding. Test: PASS (7). |
+| **CoAP (RFC 7252)** | `codex/foreword/encode/Coap.codex` | Implemented | GET, POST, PUT, DELETE, ACK, 13 content-formats, option encoding with delta/length nibbles. Test: PASS (6). |
+| **LwM2M** | `codex/foreword/encode/Lwm2m.codex` | Implemented | Object/resource IDs (Device/3, Firmware/5, Temperature/3303), TLV encoding, registration, URI builders. Test: PASS (9). |
+| **OTA Update** | `codex/foreword/core/OtaUpdate.codex` | Implemented | Two-gate verification (Gate A streaming, Gate B 5-phase), A/B boot slots, anti-rollback, abort/rollback state machine. Test: PASS (11, 6 paths). |
+
+### EU Compliance (CRA / ETSI / NIST)
+
+The `ComplianceEvidence` module maps 17 regulatory requirements across
+CRA Annex I, ETSI EN 303 645, and NISTIR 8259A to the Codex features
+that satisfy each one -- linear types, effect types, signed CDX
+binaries, capability manifests, LwM2M OTA, and the fact-store audit
+trail. The `generate-evidence-report` function produces a text
+compliance summary as a build artifact. Test: PASS (8).
+
+### Punctual Functions (Hard Real-Time)
+
+The `punctual` keyword enforces bounded execution at compile time --
+per-function, opt-in, with instruction-count reporting. Five
+structural checks fire as compile errors:
+
+| Check | CDX Code | Enforces |
+|-------|----------|----------|
+| No heap allocation | CDX6002 | No `list-push`, no record construction in hot path |
+| No recursion | CDX6005 | Tail calls only (proven termination) |
+| No unsafe calls | CDX6001 | Cannot call non-punctual functions |
+| No closures | CDX6003 | No lambda capture (unpredictable allocation) |
+| No bare I/O | CDX6004 | I/O must go through `with-timeout` |
+
+The emitter counts instructions per punctual function and reports
+them (CDX6010). An optional `@budget N` annotation warns when the
+count exceeds the threshold (CDX6011).
+
+```
+punctual classify-threat : SensorReading -> ThreatLevel
+```
+
+The compiler reports: `classify-threat: 115 instructions (44% of
+budget 256)`. No production language has this combination -- Ada
+Ravenscar restricts globally and needs external WCET tools (aiT,
+RapiTime); Rust and MISRA-C have no compile-time execution bound
+mechanism. A full survey of 10 languages and frameworks is in
+`docs/Designs/OS/Active/HardRealtime.md`.
+
+### Codegen Performance
+
+The self-hosted compiler compiles itself (29,000 lines, 53 files) in
+22 seconds on bare metal (codex-vm, x86-64, 3 GB RAM). The full gate
+run -- CDX build, sign, canary, text round-trip, semantic equivalence,
+CDX fixed point, and BVT -- completes in under 140 seconds. The BVT
+(16 tests exercising language features beyond the self-compile) runs
+in 18 seconds.
+
+| Phase | Time |
+|-------|-----:|
+| CDX build (seed to SUT) | 22s |
+| Sign (Ed25519) | 3s |
+| Canary (factorial) | 3s |
+| Text stage 1 + 2 | 48s |
+| Semantic equivalence | 20s |
+| CDX fixed point | 22s |
+| BVT (16 tests) | 18s |
+| **Total** | **~140s** |
+
+The seed is a 2.16 MB CDX binary (content hash
+`F868A9D75F91ED805C16A628E0E909D18200D7F85A186AB4DED2AD3EC3CBB1FE`).
+The compiler is a hard fixed point of itself -- the output of
+self-compilation compiled by itself is byte-identical to itself.
+
+---
+
 ## CCE — Codex Character Encoding
 
-Codex has its own character encoding (128 codepoints, one byte each),
-frequency-sorted for computation:
+Codex has its own character encoding, designed for computation rather
+than compatibility. Two tiers are implemented:
+
+### Tier 0 (128 codepoints, 1 byte each)
+
+Frequency-sorted for fast arithmetic classification:
 
 | Range | Category | Count |
 |-------|----------|------:|
@@ -694,19 +798,52 @@ frequency-sorted for computation:
 | 97-112 | Accented Latin | 16 |
 | 113-127 | Cyrillic | 15 |
 
-Character classification is arithmetic, not table lookup:
+Classification is arithmetic, not table lookup:
 - `is-letter (c)` = `char-code c >= 13 && char-code c <= 64`
 - `is-digit (c)` = `char-code c >= 3 && char-code c <= 12`
 - `to-upper (c)` = `code-to-char (char-code c + 26)` (case shift is `+26`)
 
+### Tier 1 (2048 codepoints, 2 bytes each)
+
+Multi-byte framing identical to UTF-8 (`110xxxxx 10xxxxxx`). Covers
+every character needed for all 27 EU member state languages — required
+for IoT deployment under the Cyber Resilience Act, where literate
+source must be readable by non-English regulatory reviewers.
+
+| Slice | CCE Range | Script | Coverage |
+|-------|-----------|--------|----------|
+| 0-1 | 128-383 | Latin Extended | FR DE ES PT IT PL CZ SK HU HR TR RO SE NO DK |
+| 2 | 384-511 | Cyrillic Extended | RU UK BG SR MK |
+| 3 | 512-639 | Greek | EL |
+| 4 | 640-767 | Arabic | AR FA UR |
+| 5 | 768-895 | Hebrew | HE YI |
+| 6 | 896-1023 | Devanagari | HI SA MR NE |
+| 7 | 1024-1151 | Thai + Lao | TH LA |
+| 8 | 1152-1279 | Korean Hangul jamo | KO |
+| 9-12 | 1280-1791 | Top CJK | ZH (75% coverage) |
+| 13-14 | 1792-2047 | Japanese kana | JA |
+| 15 | 2048-2175 | Math symbols | Technical |
+
+Unicode conversion uses a 16-entry block-offset table (~48 bytes
+rodata). Lookup: `unicode = slice-base[offset >> 7] + (offset & 127)`.
+No large tables. The lexer accepts Tier 1 characters in identifiers
+and prose with one extra branch per byte (fast path unchanged for
+Tier 0).
+
+### Design Principles
+
 Unicode exists only at I/O boundaries. Internally, everything is CCE.
+The compiler's own source uses only Tier 0 — the fixed-point property
+is preserved because the input is identical regardless of Tier 1
+support. Existing source files remain valid; new source with Tier 1
+characters requires the updated compiler.
 
 ---
 
 ## Library Quires
 
 Code outside the compiler is organized into **24 quires** (library namespaces)
-with **331 library modules** (238 foreword + 93 OS); **1,126 modules** in the depot including the 54-file compiler, 113 plug files, and 628 application modules:
+with **348 library modules** (255 foreword + 93 OS); **1,211 modules** in the depot including the 54-file compiler, 126 plug files, and 629 application modules:
 
 | Quire | Directory | Count | Highlights |
 |-------|-----------|------:|------------|
@@ -830,7 +967,7 @@ apps/                     46 applications, 628 modules (see Applications)
 annotations/              On-disk annotation sidecars (JSON facts)
 build/                    Build/test harness (PowerShell)
 tools/                    codex-vm, status server, USB writer, VS extensions
-seed/                     Bootstrap seed CDX (~2.1 MB) + UEFI disk image (8 MB)
+seed/                     Bootstrap seed CDX (2.16 MB) + UEFI disk image (8 MB)
 docs/                     Design documents, plans, stories
 old/                      Retired C# reference compiler — historical only
 ```

@@ -504,6 +504,35 @@ Section: Type Definition Parsing
    else if is-ident (current-kind st) then parse-type-params (advance st) (__linked-list-push acc (current st))
    else st
 
+  parse-unit-family : Token, List Token, ParseState -> ParseTypeDefResult
+  parse-unit-family (name-tok) (tparams) (st) =
+   let base-tok = current st
+   in let st2 = skip-newlines (advance st)
+   in let (members, st3) = parse-family-members st2 []
+   in ParseTypeDefResult {
+    maybe-type-def = Just (deck-record (TypeDef {
+     name = name-tok,
+     type-params = tparams,
+     body = UnitFamilyBody base-tok members,
+     is-mutable = False,
+     deriving = []
+    })),
+    state = st3
+   }
+
+  parse-family-members : ParseState, LinkedList UnitFamilyMember -> (List UnitFamilyMember, ParseState)
+  parse-family-members (st) (acc) =
+   if is-done st then (deck-record (__linked-list-to-list acc), st)
+   else if is-type-ident (current-kind st) then let mem-tok = current st
+     in let st2 = advance st
+     in if is-equals (current-kind st2) then let st3 = advance st2
+       in if current-kind st3 == IntegerLiteral then let factor = lit-text-to-integer (token-text (current st3))
+         in let member = deck-record (UnitFamilyMember { member-name = mem-tok, factor = factor })
+         in parse-family-members (skip-newlines (advance st3)) (__linked-list-push acc member)
+       else (deck-record (__linked-list-to-list acc), st)
+     else (deck-record (__linked-list-to-list acc), st)
+   else (deck-record (__linked-list-to-list acc), st)
+
   collect-type-params : ParseState, LinkedList Token -> List Token
   collect-type-params (st) (acc) =
    if is-paren-type-param st then collect-type-params (advance (advance (advance st))) (__linked-list-push acc (list-at (st.tokens) (st.pos + 1)))
@@ -523,7 +552,9 @@ Section: Type Definition Parsing
      in let tparams = collect-type-params st2 []
      in let st3 = parse-type-params st2 []
      in if is-equals (current-kind st3) then let st4 = skip-newlines (advance st3)
-     in if is-unit-keyword (current-kind st4) then when parse-type (advance st4)
+     in if is-unit-keyword (current-kind st4) then let st-after-unit = advance st4
+            in if is-ident (current-kind st-after-unit) & token-text (current st-after-unit) == "family" then parse-unit-family name-tok tparams (advance st-after-unit)
+            else when parse-type st-after-unit
             is TypeOk (base-te) (st5) -> ParseTypeDefResult {
              maybe-type-def = Just (deck-record (TypeDef {
               name = name-tok,
@@ -920,7 +951,7 @@ Section: Document Parsing
    in let st3 = if is-done st2 then st2 else advance st2
    in let to-unit = if is-done st3 then from-unit else token-text (current st3)
    in let factor = text-to-integer to-val / text-to-integer from-val
-   in deck-record (AnnotationNode { kind = "conversion", target = from-unit, body = to-unit })
+   in deck-record (AnnotationNode { kind = "conversion", target = from-unit, body = integer-to-text factor & " " & to-unit })
 
   parse-top-level : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
   parse-top-level (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
@@ -1019,14 +1050,14 @@ Section: Document Parsing
     class-defs = deck-record (__linked-list-to-list cacc),
     instance-defs = deck-record (__linked-list-to-list iacc)
    }
-   else if is-class-keyword (current-kind st) then let st1 = advance st
+   else if is-class-keyword (current-kind st) & (is-ident (peek-kind st 1) | is-type-ident (peek-kind st 1)) then let st1 = advance st
     in let name-tok = current st1
     in let st2 = advance st1
     in let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
     in let (ops-list, ops-st) = parse-effect-ops st3 []
     in let cd = deck-record (ClassDef { name = name-tok, methods = ops-list })
     in scan-class-instance-defs (skip-newlines ops-st) (__linked-list-push cacc cd) iacc
-   else if is-instance-keyword (current-kind st) then let st1 = advance st
+   else if is-instance-keyword (current-kind st) & is-type-ident (peek-kind st 1) then let st1 = advance st
     in let class-tok = current st1
     in let st2 = advance st1
     in let (it-head, it-st) = parse-instance-type-head st2
