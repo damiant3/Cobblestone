@@ -401,6 +401,34 @@ Section: Function Emission
      else True
     is otherwise -> True
 
+  tails-all-direct : IRExpr, Boolean, Text, List Text -> Boolean
+  tails-all-direct (e) (tail) (fname) (pnames) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     if tails-all-direct t tail fname pnames then tails-all-direct el tail fname pnames else False
+    is IrLet (n) (ty) (v) (b) (sp) -> tails-all-direct b tail fname pnames
+    is IrMatch (s) (bs) (t) (sp) -> tails-all-direct-branches bs fname pnames 0
+    is IrAct (stmts) (t) (sp) -> tails-all-direct-act stmts fname pnames
+    is IrApply (f) (a) (ty) (sp) ->
+     if tail then
+      if is-self-call e fname then leaf-tail-call-ok e pnames pnames else True
+     else True
+    is otherwise -> True
+
+  tails-all-direct-branches : List IRBranch, Text, List Text, Integer -> Boolean
+  tails-all-direct-branches (branches) (fname) (pnames) (i) =
+   if i == list-length branches then True
+   else let b = list-at branches i
+   in if tails-all-direct (b.body) True fname pnames then tails-all-direct-branches branches fname pnames (i + 1) else False
+
+  tails-all-direct-act : List IRActStmt, Text, List Text -> Boolean
+  tails-all-direct-act (stmts) (fname) (pnames) =
+   let len = list-length stmts
+   in if len == 0 then True
+   else when list-at stmts (len - 1)
+    is IrDoExec (e) (sp) -> tails-all-direct e True fname pnames
+    is otherwise -> True
+
   LeafProfile = record {
    lp-ok : Boolean,
    lp-locals : Integer between 0 and 65535,
@@ -497,7 +525,10 @@ Section: Function Emission
    in let st3 = st-append-code st2 (emit-sub-rsp-imm32 0)
    in let st4 = bind-params st3 (def.params) 0
    in let is-tco = should-tco def
-   in let st5 = if is-tco then let tco-alloc = pre-alloc-tco-temps st4 0 (list-length (def.params)) []
+   in let pnames = for p in (def.params) -> p.name
+   in let needs-temps = if is-tco & list-length (def.params) <= 4 then tails-all-direct (def.body) True (def.name) pnames == False else is-tco
+   in let st5 = if is-tco then let tco-alloc = if needs-temps then pre-alloc-tco-temps st4 0 (list-length (def.params)) []
+    else TcoAllocResult { alloc-state = st4, alloc-locals = [] }
    in let st-a = tco-alloc.alloc-state
    in let p-locals = collect-param-locals (st-a.locals) (def.params) 0 []
    in __record-set st-a "tco" (TcoState {
@@ -557,14 +588,25 @@ Section: Function Emission
    else if is-proof-def (list-at defs i) then let erased = list-at defs i
     in let st1 = st-add-info st cdx-claim-recognized ("proof '" & erased.name & "' erased (compile-time only)") (erased.span)
     in emit-all-defs st1 defs (i + 1)
-   else let h = __heap-save
-   in let func-st = emit-function st (list-at defs i)
+   else let def = list-at defs i
+   in let start-insn = st.insn-count
+   in let h = __heap-save
+   in let func-st = emit-function st def
    in let new-code-len = func-st.code-len
    in let new-data-len = func-st.data-len
    in let new-emit-work = func-st.emit-work
+   in let insn-delta = func-st.insn-count - start-insn
    in let restored = __heap-restore h
    in let next-st = deck-record (codegen-carry-forward st new-code-len new-data-len new-emit-work)
-   in emit-all-defs next-st defs (i + 1)
+   in let wcet-st = if def.is-punctual then emit-wcet-check next-st def insn-delta else next-st
+   in emit-all-defs wcet-st defs (i + 1)
+
+  emit-wcet-check : CodegenState, IRDef, Integer -> CodegenState
+  emit-wcet-check (st) (def) (insn-count) =
+   let budget = if def.wcet-budget > 0 then def.wcet-budget else 256
+   in let st2 = st-add-info st cdx-rt-wcet-report ("[WCET] punctual '" & def.name & "': " & show insn-count & " instructions (" & show (insn-count * 100 / budget) & "% of budget " & show budget & ")") (def.span)
+   in if insn-count > budget then st-add-warning st2 cdx-rt-wcet-exceeded ("[WCET] punctual '" & def.name & "' exceeds budget: " & show insn-count & " / " & show budget & " instructions") (def.span)
+   else st2
 
 Section: Local Variable Management
   lookup-local : List LocalBinding, Text -> Integer
@@ -1354,7 +1396,13 @@ Section: Expression Emission
      let slot = lookup-local (st.locals) n
      in if slot >= 0 & slot < spill-base then emit-binary-reg-right st op left slot right
      else emit-binary-or-standard st op left right
-    is otherwise -> emit-binary-or-standard st op left right
+    is otherwise ->
+     when left
+      is IrName (ln) (lty) (lsp) ->
+       let lslot = lookup-local (st.locals) ln
+       in if lslot >= 0 & lslot < spill-base then emit-binary-reg-left st op left lslot lty right
+       else emit-binary-or-standard st op left right
+      is otherwise -> emit-binary-or-standard st op left right
 
  Staged binary emission. The standard path parks both operands in
  alloc-locals, which are anonymous and never released: each binary
@@ -1427,9 +1475,19 @@ Section: Expression Emission
        let l = emit-expr (st-set-tail-pos st False) left
        in let st1 = st-append-code (l.state) (push-r (l.reg))
        in let r = emit-expr st1 right
-       in let st2 = st-append-code (r.state) (mov-rr reg-r9 (r.reg))
-       in let st3 = st-append-code st2 (pop-r reg-r8)
-       in emit-binary-op st3 op reg-r8 reg-r9 operand-ty
+       in when op
+        is IrAddInt ->
+         let pop-reg = if r.reg == reg-r8 then reg-r9 else reg-r8
+         in let st2 = st-append-code (r.state) (pop-r pop-reg & add-rr (r.reg) pop-reg)
+         in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
+        is IrMulInt ->
+         let pop-reg = if r.reg == reg-r8 then reg-r9 else reg-r8
+         in let st2 = st-append-code (r.state) (pop-r pop-reg & imul-rr (r.reg) pop-reg)
+         in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
+        is otherwise ->
+         let st2 = st-append-code (r.state) (mov-rr reg-r9 (r.reg))
+         in let st3 = st-append-code st2 (pop-r reg-r8)
+         in emit-binary-op st3 op reg-r8 reg-r9 operand-ty
 
   emit-binary-add-imm : CodegenState, IRExpr, Integer -> EmitResult
   emit-binary-add-imm (st) (left) (imm) =
@@ -1476,6 +1534,20 @@ Section: Expression Emission
     in emit-binary-op (l.state) op (l.reg) right-reg (ir-expr-type left)
    else emit-binary-or-standard st op left right
 
+  is-safe-for-reg-left : CodegenState, IRBinaryOp, IRExpr -> Boolean
+  is-safe-for-reg-left (st) (op) (right) =
+   when op
+    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrLt | IrGt | IrLtEq | IrGtEq -> True
+    is IrEq | IrNotEq -> is-fusable-int-comparison st op right
+    is otherwise -> False
+
+  emit-binary-reg-left : CodegenState, IRBinaryOp, IRExpr, Integer, CodexType, IRExpr -> EmitResult
+  emit-binary-reg-left (st) (op) (left) (left-reg) (lty) (right) =
+   if is-safe-for-reg-left st op right then
+    let r = emit-expr (st-set-tail-pos st False) right
+    in emit-binary-op (r.state) op left-reg (r.reg) lty
+   else emit-binary-or-standard st op left right
+
   emit-append-list : CodegenState, IRExpr, IRExpr -> EmitResult
   emit-append-list (st) (left) (right) =
    let chain = flatten-append-chain left [right]
@@ -1509,9 +1581,17 @@ Section: Expression Emission
      in let operand-ty = ir-expr-type left
      in emit-binary-op (r-load.state) op (l-load.reg) (r-load.reg) operand-ty
 
+ The destination temp must avoid r-reg: the register ops write rd
+ before reading r-reg (mov rd, l-reg destroys a colliding right
+ operand, and rd + rd doubles the left). Colliding with l-reg is
+ harmless -- the mov becomes a self-move. A call result rides in
+ a rotation register, so any caller whose right operand contains a
+ call can collide; geometry-test's perimeter accumulator caught
+ this when emit-binary-reg-left passed a register local as l-reg.
+
   emit-binary-op : CodegenState, IRBinaryOp, Integer, Integer, CodexType -> EmitResult
   emit-binary-op (st) (op) (l-reg) (r-reg) (operand-ty) =
-   let rd = alloc-temp st
+   let rd = alloc-temp-avoiding st r-reg
    in when op
     is IrAddInt -> EmitResult {
      state = st-append-code (rd.state) (mov-rr (rd.reg) l-reg & add-rr (rd.reg) r-reg),
@@ -1525,12 +1605,20 @@ Section: Expression Emission
      state = st-append-code (rd.state) (mov-rr (rd.reg) l-reg & imul-rr (rd.reg) r-reg),
      reg = rd.reg
     }
-    is IrDivInt -> EmitResult {
-     state = st-append-code (rd.state) (mov-rr reg-rax l-reg & cqo & idiv-r r-reg & mov-rr (rd.reg) reg-rax),
+    is IrDivInt -> let div-reg = if r-reg == reg-rdx then reg-r11
+      else if r-reg == reg-rax then reg-r11 else r-reg
+     in let save = if r-reg == reg-rdx then mov-rr reg-r11 reg-rdx
+      else if r-reg == reg-rax then mov-rr reg-r11 reg-rax else []
+     in EmitResult {
+     state = st-append-code (rd.state) (save & mov-rr reg-rax l-reg & cqo & idiv-r div-reg & mov-rr (rd.reg) reg-rax),
      reg = rd.reg
     }
-    is IrRemInt -> EmitResult {
-     state = st-append-code (rd.state) (mov-rr reg-rax l-reg & cqo & idiv-r r-reg & mov-rr (rd.reg) reg-rdx),
+    is IrRemInt -> let div-reg = if r-reg == reg-rdx then reg-r11
+      else if r-reg == reg-rax then reg-r11 else r-reg
+     in let save = if r-reg == reg-rdx then mov-rr reg-r11 reg-rdx
+      else if r-reg == reg-rax then mov-rr reg-r11 reg-rax else []
+     in EmitResult {
+     state = st-append-code (rd.state) (save & mov-rr reg-rax l-reg & cqo & idiv-r div-reg & mov-rr (rd.reg) reg-rdx),
      reg = rd.reg
     }
     is IrAddNum -> emit-num-arith st l-reg r-reg 88
@@ -1752,6 +1840,9 @@ Section: Expression Emission
      let operand-ty = resolve-to-sum-with-defs st (ir-expr-type left)
      in when operand-ty
       is IntegerTy (lo) (hi) (mode) | BooleanTy | CharTy -> True
+      is UnitTy (n) (inner) -> when inner
+       is IntegerTy (lo2) (hi2) (m2) | BooleanTy | CharTy -> True
+       is otherwise -> False
       is otherwise -> False
     is otherwise -> False
 

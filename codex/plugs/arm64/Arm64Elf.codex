@@ -1,0 +1,104 @@
+Chapter: Arm64 ELF Writer
+
+ Produces AArch64 ELF64 executables from the wire protocol output
+ of the ARM64 codegen plug. Standalone — does not chain through
+ the x86 ELF plug.
+
+Section: ELF64 Constants
+
+  elf64-magic : List Integer = [127, 69, 76, 70]
+  elf64-class : Integer = 2
+  elf64-lsb : Integer = 1
+  elf64-version : Integer = 1
+  elf64-type-exec : Integer = 2
+  elf64-machine-aarch64 : Integer = 183
+  elf64-header-size : Integer = 64
+  elf64-phdr-size : Integer = 56
+  elf64-pt-load : Integer = 1
+  elf64-pf-rx : Integer = 5
+  elf64-pf-rw : Integer = 6
+  elf64-page-size : Integer = 65536
+
+Section: Byte Writers
+
+  elf-write-i16 : Integer -> List Integer
+  elf-write-i16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  elf-write-i32 : Integer -> List Integer
+  elf-write-i32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  elf-write-i64 : Integer -> List Integer
+  elf-write-i64 (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255,
+    bit-and (bit-shru v 32) 255, bit-and (bit-shru v 40) 255, bit-and (bit-shru v 48) 255, bit-and (bit-shru v 56) 255]
+
+  elf-pad-zeros : Integer -> List Integer
+  elf-pad-zeros (n) = elf-pad-zeros-loop n []
+
+  elf-pad-zeros-loop : Integer, List Integer -> List Integer
+  elf-pad-zeros-loop (n) (acc) =
+   if n <= 0 then acc
+   else elf-pad-zeros-loop (n - 1) (list-push acc 0)
+
+  elf-align-up : Integer, Integer -> Integer
+  elf-align-up (v) (align) =
+   let r = int-mod v align
+   in if r == 0 then v else v + align - r
+
+Section: ELF64 Header
+
+  elf64-header : Integer, Integer, Integer, Integer -> List Integer
+  elf64-header (entry) (phoff) (phnum) (machine) =
+   elf64-magic
+   & [elf64-class, elf64-lsb, elf64-version]
+   & elf-pad-zeros 9
+   & elf-write-i16 elf64-type-exec
+   & elf-write-i16 machine
+   & elf-write-i32 elf64-version
+   & elf-write-i64 entry
+   & elf-write-i64 phoff
+   & elf-write-i64 0
+   & elf-write-i32 0
+   & elf-write-i16 elf64-header-size
+   & elf-write-i16 elf64-phdr-size
+   & elf-write-i16 phnum
+   & elf-write-i16 0
+   & elf-write-i16 0
+   & elf-write-i16 0
+
+Section: Program Header
+
+  elf64-phdr : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  elf64-phdr (p-type) (flags) (offset) (vaddr) (paddr) (filesz) (memsz) (align) =
+   elf-write-i32 p-type
+   & elf-write-i32 flags
+   & elf-write-i64 offset
+   & elf-write-i64 vaddr
+   & elf-write-i64 paddr
+   & elf-write-i64 filesz
+   & elf-write-i64 memsz
+   & elf-write-i64 align
+
+Section: Build ELF
+
+  arm64-build-elf : List Integer, List Integer, Integer -> List Integer
+  arm64-build-elf (code) (data) (entry-offset) =
+   let load-addr = #400000
+   in let headers-end = elf64-header-size + elf64-phdr-size * 2
+   in let text-start = elf-align-up headers-end 16
+   in let code-len = list-length code
+   in let data-len = list-length data
+   in let text-end = text-start + code-len
+   in let rodata-start = elf-align-up text-end 8
+   in let loadable-end = rodata-start + data-len
+   in let entry = load-addr + text-start + entry-offset
+   in let seg-filesz = loadable-end - text-start
+   in let seg-memsz = seg-filesz + #1000000
+   in let hdr = elf64-header entry elf64-header-size 2 elf64-machine-aarch64
+   in let ph-text = elf64-phdr elf64-pt-load elf64-pf-rx text-start (load-addr + text-start) (load-addr + text-start) code-len code-len elf64-page-size
+   in let ph-data = elf64-phdr elf64-pt-load elf64-pf-rw rodata-start (load-addr + rodata-start) (load-addr + rodata-start) data-len (data-len + #1000000) 8
+   in let padding = elf-pad-zeros (text-start - headers-end)
+   in let rodata-padding = elf-pad-zeros (rodata-start - text-end)
+   in hdr & ph-text & ph-data & padding & code & rodata-padding & data
+
+Page 1

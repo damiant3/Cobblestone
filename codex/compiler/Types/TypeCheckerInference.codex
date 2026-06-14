@@ -36,6 +36,62 @@ Section: Infer Literal
      state = st
     }
 
+Section: Literal Range
+
+ An integer literal wider than 64 bits would silently wrap in
+ lit-text-to-integer at lowering, so the checker rejects it here from
+ the digit text alone: skip underscores and leading zeros, then a
+ significant-digit count beyond nineteen always overflows, and at
+ exactly nineteen a digit-wise compare against the maximum decides.
+ A hash literal is a raw bit pattern, so its bound is simpler: up
+ to sixteen significant hex digits fill 64 bits exactly, and more
+ always overflow. No conversion, no allocation.
+
+  int-lit-first-sig : Text, Integer, Integer -> Integer
+  int-lit-first-sig (val) (i) (len) =
+   if i >= len then len
+   else let c = char-code-at val i
+   in if c == 48 | c == 95 then int-lit-first-sig val (i + 1) len
+      else i
+
+  int-lit-sig-digits : Text, Integer, Integer, Integer -> Integer
+  int-lit-sig-digits (val) (i) (len) (acc) =
+   if i >= len then acc
+   else if char-code-at val i == 95 then int-lit-sig-digits val (i + 1) len acc
+   else int-lit-sig-digits val (i + 1) len (acc + 1)
+
+  int-lit-exceeds : Text, Integer, Integer, Text, Integer -> Boolean
+  int-lit-exceeds (val) (i) (len) (max-text) (j) =
+   if i >= len then False
+   else let c = char-code-at val i
+   in if c == 95 then int-lit-exceeds val (i + 1) len max-text j
+      else let m = char-code-at max-text j
+      in if c > m then True
+         else if c < m then False
+         else int-lit-exceeds val (i + 1) len max-text (j + 1)
+
+  int-lit-out-of-range : Text -> Boolean
+  int-lit-out-of-range (val) =
+   let len = text-length val
+   in if is-hex-literal-text val then
+       let start = int-lit-first-sig val 1 len
+       in int-lit-sig-digits val start len 0 > 16
+      else
+       let start = int-lit-first-sig val 0 len
+       in let sig = int-lit-sig-digits val start len 0
+       in if sig < 19 then False
+          else if sig > 19 then True
+          else int-lit-exceeds val start len "9223372036854775807" 0
+
+  check-int-lit-range : UnificationState, Text, LiteralKind, SourceSpan -> UnificationState
+  check-int-lit-range (st) (val) (kind) (span) =
+   when kind
+    is IntLit ->
+     if int-lit-out-of-range val
+     then __record-set st "bag" (bag-add (st.bag) (make-error cdx-int-literal-overflow ("Integer literal '" & val & "' exceeds 64 bits (decimal max 9223372036854775807, hash form max 16 hex digits) and would be silently truncated") span))
+     else st
+    is otherwise -> st
+
 Section: Infer Name
   infer-name : UnificationState, TypeEnv, Text, SourceSpan -> CheckResult
   infer-name (st) (env) (name) (span) =
@@ -92,20 +148,33 @@ Section: Infer Binary
 
   infer-arithmetic : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-arithmetic (st) (lt) (rt) (span) =
-   let (_, u-st) = unify st lt rt span
-   in let resolved-l = resolve-silent u-st lt
-   in let resolved-r = resolve-silent u-st rt
-   in let st2 = if is-arithmetic-type resolved-l & is-arithmetic-type resolved-r then u-st
-                else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Number" span
-   in CheckResult {
-    inferred-type = lt,
-    state = st2
-   }
+   when lt
+    is UnitTy (ln) (li) ->
+     when rt
+      is UnitTy (rn) (ri) ->
+       let (_, u-st) = unify st lt rt span
+       in let st2 = if is-arithmetic-type lt & is-arithmetic-type rt then u-st
+                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Number" span
+       in CheckResult { inferred-type = lt, state = st2 }
+      is otherwise ->
+       let (_, u-st) = unify st li rt span
+       in CheckResult { inferred-type = lt, state = u-st }
+    is otherwise ->
+     when rt
+      is UnitTy (rn) (ri) ->
+       let (_, u-st) = unify st lt ri span
+       in CheckResult { inferred-type = rt, state = u-st }
+      is otherwise ->
+       let (_, u-st) = unify st lt rt span
+       in let st2 = if is-arithmetic-type lt & is-arithmetic-type rt then u-st
+                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Number" span
+       in CheckResult { inferred-type = lt, state = st2 }
 
   is-arithmetic-type : CodexType -> Boolean
   is-arithmetic-type (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) | NumberTy | TypeVar (id) | ErrorTy -> True
+    is UnitTy (n) (inner) -> is-arithmetic-type inner
     is otherwise -> False
 
   infer-comparison : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
@@ -307,7 +376,7 @@ Section: Infer Application
   infer-application (st) (env) (func) (arg) (span) =
    let fr = infer-expr st env func
    in let ar = when arg
-       is ALitExpr (val) (kind) (s) -> infer-int-lit-arg (fr.state) (fr.inferred-type) val kind
+       is ALitExpr (val) (kind) (s) -> infer-int-lit-arg (check-int-lit-range (fr.state) val kind s) (fr.inferred-type) val kind
        is otherwise -> infer-expr (fr.state) env arg
    in let (ret-ty, ret-st) = fresh-and-advance (ar.state)
    in let (ok, r-st) = unify ret-st (fr.inferred-type) (deck-record (FunTy (ar.inferred-type) ret-ty)) span
@@ -392,7 +461,7 @@ Section: Lint __record-set narrowing
         is ALitExpr (val-text) (kind) (s) ->
          when kind
           is IntLit ->
-           let n = text-to-integer val-text
+           let n = lit-text-to-integer val-text
            in if n >= f-lo & n <= f-hi then st
            else __record-set st "bag" (bag-add (st.bag) (make-error cdx-narrowing-record-set-literal ("Field '" & field-name & "' has bound " & integer-to-text f-lo & ".." & integer-to-text f-hi & " but assigned literal " & integer-to-text n & " is out of range") span))
           is otherwise -> st
@@ -414,7 +483,7 @@ Section: Lint __record-set narrowing
       is FunTy (param-ty) (ret-ty) ->
        when param-ty
         is IntegerTy (lo) (hi) (mode) ->
-         let n = text-to-integer val
+         let n = lit-text-to-integer val
          in if n >= lo & n <= hi then CheckResult {
           inferred-type = deck-record (IntegerTy lo hi mode),
           state = st
@@ -538,10 +607,14 @@ Section: Infer Match
      env = env
     }
     is ACtorPat (ctor-name) (sub-pats) (s) ->
-     let (ctor-ty, ctor-st) = instantiate-type st (env-lookup env (ctor-name.value))
-     in let ctor-ret = strip-fun-args ctor-ty
-     in let (ok, unified-st) = unify ctor-st ctor-ret ty s
-     in bind-ctor-sub-patterns unified-st env sub-pats ctor-ty 0 (list-length sub-pats)
+     if env-has env (ctor-name.value) == False
+     then let err-st = __record-set st "bag" (bag-add (st.bag) (make-error cdx-unknown-pattern-ctor ("Pattern constructor '" & ctor-name.value & "' is not in scope; this arm could never match. Check the constructor names of the scrutinee's type.") s))
+      in bind-ctor-sub-patterns err-st env sub-pats ErrorTy 0 (list-length sub-pats)
+     else
+      let (ctor-ty, ctor-st) = instantiate-type st (env-lookup env (ctor-name.value))
+      in let ctor-ret = strip-fun-args ctor-ty
+      in let (ok, unified-st) = unify ctor-st ctor-ret ty s
+      in bind-ctor-sub-patterns unified-st env sub-pats ctor-ty 0 (list-length sub-pats)
 
   bind-ctor-sub-patterns : UnificationState, TypeEnv, List APat, CodexType, Integer, Integer -> PatBindResult
   bind-ctor-sub-patterns (st) (env) (sub-pats) (ctor-ty) (i) (len) =
@@ -593,7 +666,7 @@ Section: Infer Expression (dispatch)
     state = add-unify-error st cdx-resource-exhausted ("compiler resource exhausted in type-checker.infer-expr (budget " & integer-to-text max-recursion-depth & ")") (aexpr-span expr)
    }
    else when expr
-    is ALitExpr (val) (kind) (s) -> infer-literal st kind
+    is ALitExpr (val) (kind) (s) -> infer-literal (check-int-lit-range st val kind s) kind
     is ANameExpr (name) (s) -> infer-name st env (name.value) s
     is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right s
     is AUnaryExpr (operand) (s) ->

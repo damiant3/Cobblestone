@@ -2,6 +2,7 @@ Chapter: Terminal
   cites Cvmm chapter CvmmTypes
   cites UI chapter Widget
   cites UI chapter Layout
+  cites Foreword chapter StringUtils
 
  Terminal emulator. Provides a scrollback buffer of character cells
  with foreground/background color, a cursor position, and an input
@@ -20,7 +21,7 @@ Section: Cell
   }
 
   cell-blank : Cell
-  cell-blank = Cell { cell-char = 32, cell-fg = 14737632, cell-bg = 0, cell-bold = False }
+  cell-blank = Cell { cell-char = 32, cell-fg = #E0E0E0, cell-bg = 0, cell-bold = False }
 
   cell-new : Integer, Integer, Integer -> Cell
   cell-new (ch) (fg) (bg) = Cell { cell-char = ch, cell-fg = fg, cell-bg = bg, cell-bold = False }
@@ -104,7 +105,7 @@ Section: Terminal State
     term-cursor-col = 0,
     term-scroll-top = 0,
     term-scroll-bottom = rows - 1,
-    term-fg = 14737632,
+    term-fg = #E0E0E0,
     term-bg = 0,
     term-bold = False,
     term-input-line = "",
@@ -158,11 +159,21 @@ Section: Output (write characters to the buffer)
   term-scroll-up (ts) =
     let top-line = list-at (ts.term-lines) (ts.term-scroll-top)
     in let scrollback2 = if ts.term-scrollback-count >= ts.term-scrollback-max then
-      list-push (log-drop-oldest (ts.term-scrollback) (ts.term-scrollback-count)) top-line
+      list-push (term-drop-oldest (ts.term-scrollback) (ts.term-scrollback-count)) top-line
     else list-push (ts.term-scrollback) top-line
     in let sb-count = if ts.term-scrollback-count >= ts.term-scrollback-max then ts.term-scrollback-count else ts.term-scrollback-count + 1
     in let shifted = term-shift-lines (ts.term-lines) (ts.term-scroll-top) (ts.term-scroll-bottom) (ts.term-cols)
     in __record-set (__record-set (__record-set (__record-set ts "term-lines" shifted) "term-cursor-col" 0) "term-scrollback" scrollback2) "term-scrollback-count" sb-count
+
+  term-drop-oldest : List TermLine, Integer -> List TermLine
+  term-drop-oldest (lines) (count) =
+    if count <= 1 then []
+    else term-drop-loop lines 1 count []
+
+  term-drop-loop : List TermLine, Integer, Integer, List TermLine -> List TermLine
+  term-drop-loop (lines) (i) (n) (acc) =
+    if i >= n then acc
+    else term-drop-loop lines (i + 1) n (list-push acc (list-at lines i))
 
   term-shift-lines : List TermLine, Integer, Integer, Integer -> List TermLine
   term-shift-lines (lines) (top) (bottom) (cols) =
@@ -191,6 +202,12 @@ Section: Output (write characters to the buffer)
     else ts
 
 Section: Input (command line editing)
+
+  text-insert-at : Text, Integer, Text -> Text
+  text-insert-at (s) (pos) (ins) = text-take s pos & ins & text-drop s pos
+
+  text-remove-at : Text, Integer -> Text
+  text-remove-at (s) (pos) = text-take s pos & text-drop s (pos + 1)
 
   term-input-char : TerminalState, Integer -> TerminalState
   term-input-char (ts) (ch) =
@@ -234,8 +251,8 @@ Section: Input (command line editing)
 
 Section: Color
 
-  term-default-fg : Integer = 14737632
-  term-default-bg : Integer = 1184274
+  term-default-fg : Integer = #E0E0E0
+  term-default-bg : Integer = #121212
 
   term-ansi-color : Integer -> Integer
   term-ansi-color (code) =
@@ -254,8 +271,8 @@ Section: Color
     else if code == 12 then 5592575
     else if code == 13 then 16733695
     else if code == 14 then 5636095
-    else if code == 15 then 16777215
-    else 14737632
+    else if code == 15 then #FFFFFF
+    else #E0E0E0
 
   term-set-fg : TerminalState, Integer -> TerminalState
   term-set-fg (ts) (color) = __record-set ts "term-fg" color

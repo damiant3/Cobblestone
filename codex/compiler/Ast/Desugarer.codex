@@ -57,7 +57,7 @@ Section: Expression Desugaring
     is HandleExpr (eff-tok) (body) (clauses) -> deck-record (AHandleExpr (make-name (token-text eff-tok)) (desugar-expr-at body (depth + 1)) (map-list desugar-handle-clause clauses) (token-span eff-tok))
     is WithTimeoutExpr (timeout-tok) (effs) (scopes) (body) -> deck-record (AWithTimeoutExpr (token-text timeout-tok) (map-list make-type-param-name effs) (map-list extract-scope-text scopes) (desugar-expr-at body (depth + 1)) (token-span timeout-tok))
     is LambdaExpr (params) (body) -> deck-record (ALambdaExpr (map-list desugar-lambda-param params) (desugar-expr-at body (depth + 1)) synthetic-span)
-    is TryExpr (count-tok) (body) (fb) (fail) -> deck-record (ATryExpr (text-to-integer (token-text count-tok)) (map-list desugar-act-stmt body) (map-list desugar-act-stmt fb) (map-list desugar-act-stmt fail) (token-span count-tok))
+    is TryExpr (count-tok) (body) (fb) (fail) -> deck-record (ATryExpr (lit-text-to-integer (token-text count-tok)) (map-list desugar-act-stmt body) (map-list desugar-act-stmt fb) (map-list desugar-act-stmt fail) (token-span count-tok))
     is FieldAssignExpr (lhs) (field-tok) (rhs) ->
      let dr = desugar-expr-at rhs (depth + 1)
      in when lhs
@@ -139,7 +139,8 @@ Section: Expression Desugaring
     pattern = dp,
     body = desugar-expr (arm.body),
     guard = desugar-expr (arm.guard),
-    span = apat-span dp
+    span = apat-span dp,
+    alt-group = arm.alt-group
    })
 
   desugar-field-expr : RecordFieldExpr -> AFieldExpr
@@ -310,6 +311,7 @@ Section: Definition Desugaring
    when td.body
     is RecordBody (fields) -> deck-record (ARecordTypeDef (make-name (token-text (td.name))) (map-list make-type-param-name (td.type-params)) (map-list desugar-record-field-def fields) (td.is-mutable) (token-span (td.name)))
     is VariantBody (ctors) -> deck-record (AVariantTypeDef (make-name (token-text (td.name))) (map-list make-type-param-name (td.type-params)) (map-list desugar-variant-ctor-def ctors) (token-span (td.name)))
+    is UnitBody (base) -> deck-record (AUnitTypeDef (make-name (token-text (td.name))) (desugar-type-expr base) (token-span (td.name)))
 
   make-type-param-name : Token -> Name
   make-type-param-name (tok) =
@@ -359,6 +361,62 @@ Section: Document Desugaring
    if i >= len then acc
    else desugar-cites-ll src (i + 1) len (__linked-list-push acc (desugar-cite (list-at src i)))
 
+  collect-rt-names : List AnnotationNode, Integer, Integer, List Text -> List Text
+  collect-rt-names (anns) (i) (len) (acc) =
+   if i >= len then acc
+   else let a = list-at anns i
+   in if a.kind == "hard-realtime" then collect-rt-names anns (i + 1) len (list-push acc (a.target))
+   else collect-rt-names anns (i + 1) len acc
+
+  parse-rt-budget : Text -> Integer
+  parse-rt-budget (body) =
+   if text-length body == 0 then 0
+   else let sp = find-space body 0 (text-length body)
+   in if sp == text-length body then text-to-integer body
+   else text-to-integer (substring body 0 sp)
+
+  find-space : Text, Integer, Integer -> Integer
+  find-space (t) (i) (len) =
+   if i >= len then len
+   else if char-code-at t i == char-code ' ' then i
+   else find-space t (i + 1) len
+
+  collect-rt-budgets : List AnnotationNode, Integer, Integer, List Integer -> List Integer
+  collect-rt-budgets (anns) (i) (len) (acc) =
+   if i >= len then acc
+   else let a = list-at anns i
+   in if a.kind == "hard-realtime" then collect-rt-budgets anns (i + 1) len (list-push acc (parse-rt-budget (a.body)))
+   else collect-rt-budgets anns (i + 1) len acc
+
+  collect-conversions : List AnnotationNode, Integer, Integer, List Text -> List Text
+  collect-conversions (anns) (i) (len) (acc) =
+   if i >= len then acc
+   else let a = list-at anns i
+   in if a.kind == "conversion" then collect-conversions anns (i + 1) len (list-push acc (a.target & " " & a.body))
+   else collect-conversions anns (i + 1) len acc
+
+  synth-conversion-defs : List AnnotationNode, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  synth-conversion-defs (anns) (i) (len) (acc) =
+   if i >= len then acc
+   else let a = list-at anns i
+   in if a.kind == "conversion" then synth-conversion-defs anns (i + 1) len (synth-one-conversion (a.target) (a.body) acc)
+   else synth-conversion-defs anns (i + 1) len acc
+
+  synth-one-conversion : Text, Text, LinkedList ADef -> LinkedList ADef
+  synth-one-conversion (fname-text) (factor-text) (acc) =
+   let pname = make-name "__cv"
+   in let fname = make-name fname-text
+   in let mul-expr = deck-record (ABinaryExpr (deck-record (ANameExpr pname synthetic-span)) OpMul (deck-record (ALitExpr factor-text IntLit synthetic-span)) synthetic-span)
+   in let fwd-def = deck-record (ADef {
+    name = fname,
+    params = [deck-record (AParam { name = pname, span = synthetic-span })],
+    declared-type = [],
+    body = mul-expr,
+    chapter-slug = "",
+    span = synthetic-span
+   })
+   in __linked-list-push acc fwd-def
+
   desugar-document : Text, Document, Text -> AChapter
   desugar-document (source) (doc) (chapter-name) =
    let raw-defs0 = desugar-defs-ll (doc.defs) 0 (list-length (doc.defs)) []
@@ -383,6 +441,9 @@ Section: Document Desugaring
     chapter-title = doc.chapter-title,
     prose = doc.prose,
     section-titles = doc.section-titles,
+    rt-names = collect-rt-names (doc.annotations) 0 (list-length (doc.annotations)) [],
+    rt-budgets = collect-rt-budgets (doc.annotations) 0 (list-length (doc.annotations)) [],
+    conversions = collect-conversions (doc.annotations) 0 (list-length (doc.annotations)) [],
     span = synthetic-span
    })
 
@@ -454,6 +515,7 @@ Section: Document Desugaring
    when body
     is VariantBody (ctors) -> deck-record (AMatchExpr (deck-record (ANameExpr xn synthetic-span)) (gen-cmp-x-arms ctors yn 0 (list-length ctors) []) synthetic-span)
     is RecordBody (fields) -> gen-cmp-lex (rec-accessors fields xn 0 (list-length fields) []) (rec-accessors fields yn 0 (list-length fields) []) 0 (list-length fields)
+    is UnitBody (base) -> deck-record (AApplyExpr (deck-record (ANameExpr (make-name "compare") synthetic-span)) (deck-record (ANameExpr xn synthetic-span)) synthetic-span)
 
   gen-cmp-x-arms : List VariantCtorDef, Name, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
   gen-cmp-x-arms (ctors) (yn) (i) (len) (acc) =
@@ -469,7 +531,8 @@ Section: Document Desugaring
     pattern = deck-record (ACtorPat (make-name cname) (gen-var-pats xvars 0 (list-length xvars) []) synthetic-span),
     body = deck-record (AMatchExpr (deck-record (ANameExpr yn synthetic-span)) (gen-cmp-y-arms ctors i xvars 0 (list-length ctors) []) synthetic-span),
     guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
-    span = synthetic-span
+    span = synthetic-span,
+    alt-group = -1
    })
 
   gen-cmp-y-arms : List VariantCtorDef, Integer, List Name, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
@@ -487,13 +550,15 @@ Section: Document Desugaring
         pattern = deck-record (ACtorPat (make-name cname) (gen-var-pats yvars 0 nf []) synthetic-span),
         body = gen-cmp-lex (vars-to-exprs xvars 0 (list-length xvars) []) (vars-to-exprs yvars 0 nf []) 0 nf,
         guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
-        span = synthetic-span
+        span = synthetic-span,
+        alt-group = -1
        })
       else deck-record (AMatchArm {
         pattern = deck-record (ACtorPat (make-name cname) (gen-wild-pats nf 0 []) synthetic-span),
         body = if i < j then deck-record (AUnaryExpr (deck-record (ALitExpr "1" IntLit synthetic-span)) synthetic-span) else deck-record (ALitExpr "1" IntLit synthetic-span),
         guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
-        span = synthetic-span
+        span = synthetic-span,
+        alt-group = -1
        })
 
   gen-field-vars-pre : Text, Integer, Integer, LinkedList Name -> List Name
@@ -521,6 +586,7 @@ Section: Document Desugaring
    when body
     is VariantBody (ctors) -> deck-record (AMatchExpr (deck-record (ANameExpr xn synthetic-span)) (gen-eq-x-arms ctors yn 0 (list-length ctors) []) synthetic-span)
     is RecordBody (fields) -> gen-eq-record fields xn yn 1 (list-length fields) (gen-record-eq0 fields xn yn)
+    is UnitBody (base) -> deck-record (ABinaryExpr (deck-record (ANameExpr xn synthetic-span)) OpEq (deck-record (ANameExpr yn synthetic-span)) synthetic-span)
 
   gen-eq-x-arms : List VariantCtorDef, Name, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
   gen-eq-x-arms (ctors) (yn) (i) (len) (acc) =
@@ -535,7 +601,8 @@ Section: Document Desugaring
     pattern = deck-record (ACtorPat (make-name cname) (gen-var-pats xvars 0 (list-length xvars) []) synthetic-span),
     body = gen-eq-y-match cname xvars yn,
     guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
-    span = synthetic-span
+    span = synthetic-span,
+    alt-group = -1
    })
 
   gen-eq-y-match : Text, List Name, Name -> AExpr
@@ -545,13 +612,15 @@ Section: Document Desugaring
        pattern = deck-record (ACtorPat (make-name cname) (gen-var-pats yvars 0 (list-length yvars) []) synthetic-span),
        body = gen-field-eq xvars yvars,
        guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
-       span = synthetic-span
+       span = synthetic-span,
+       alt-group = -1
       })
    in let else-arm = deck-record (AMatchArm {
        pattern = deck-record (AWildPat synthetic-span),
        body = deck-record (ALitExpr "False" BoolLit synthetic-span),
        guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
-       span = synthetic-span
+       span = synthetic-span,
+       alt-group = -1
       })
    in deck-record (AMatchExpr (deck-record (ANameExpr yn synthetic-span)) [match-arm, else-arm] synthetic-span)
 
@@ -600,6 +669,7 @@ Section: Document Desugaring
    when body
     is VariantBody (ctors) -> deck-record (AMatchExpr (deck-record (ANameExpr pname synthetic-span)) (gen-show-arms ctors 0 (list-length ctors) []) synthetic-span)
     is RecordBody (fields) -> gen-show-record fields pname 0 (list-length fields) (deck-record (ALitExpr "{" TextLit synthetic-span))
+    is UnitBody (base) -> deck-record (AApplyExpr (deck-record (ANameExpr (make-name "show") synthetic-span)) (deck-record (ANameExpr pname synthetic-span)) synthetic-span)
 
   gen-show-arms : List VariantCtorDef, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
   gen-show-arms (ctors) (i) (len) (acc) =
@@ -614,7 +684,8 @@ Section: Document Desugaring
     pattern = deck-record (ACtorPat (make-name cname) (gen-var-pats vars 0 (list-length vars) []) synthetic-span),
     body = gen-show-arm-body cname vars,
     guard = deck-record (ALitExpr "True" BoolLit synthetic-span),
-    span = synthetic-span
+    span = synthetic-span,
+    alt-group = -1
    })
 
   gen-field-vars : Integer, Integer, LinkedList Name -> List Name
@@ -804,7 +875,7 @@ Section: Document Desugaring
   rewrite-derived-arms (arms) (method) (dict-param) (i) (len) (acc) =
    if i >= len then acc
    else let a = list-at arms i
-   in let na = deck-record (AMatchArm { pattern = a.pattern, body = rewrite-derived-method-calls (a.body) method dict-param, guard = a.guard, span = a.span })
+   in let na = deck-record (AMatchArm { pattern = a.pattern, body = rewrite-derived-method-calls (a.body) method dict-param, guard = a.guard, span = a.span, alt-group = a.alt-group })
    in rewrite-derived-arms arms method dict-param (i + 1) len (list-push acc na)
 
   rewrite-derived-stmts : List AActStmt, Text, Text, Integer, Integer, List AActStmt -> List AActStmt
@@ -883,7 +954,7 @@ Section: Document Desugaring
   rewrite-derived-arms-scoped (arms) (method) (dict-param) (tvp) (i) (len) (acc) =
    if i >= len then acc
    else let a = list-at arms i
-   in let na = deck-record (AMatchArm { pattern = a.pattern, body = rewrite-derived-method-calls-scoped (a.body) method dict-param tvp, guard = a.guard, span = a.span })
+   in let na = deck-record (AMatchArm { pattern = a.pattern, body = rewrite-derived-method-calls-scoped (a.body) method dict-param tvp, guard = a.guard, span = a.span, alt-group = a.alt-group })
    in rewrite-derived-arms-scoped arms method dict-param tvp (i + 1) len (list-push acc na)
 
   rewrite-derived-stmts-scoped : List AActStmt, Text, Text, List Text, Integer, Integer, List AActStmt -> List AActStmt

@@ -1,0 +1,327 @@
+Chapter: Thumb2Encoder
+
+ ARMv7-M Thumb-2 instruction encoder for Cortex-M targets
+ (STM32F4/H7). Mixed 16/32-bit encoding. 16-bit instructions
+ return 2-byte lists; 32-bit instructions return 4-byte lists
+ (big-endian halfword order per ARM convention: high halfword
+ first, then low halfword, each in little-endian byte order).
+
+ Registers: R0-R12 general purpose, R13=SP, R14=LR, R15=PC.
+ Cortex-M executes Thumb-2 exclusively (no ARM mode).
+
+Section: Register Constants
+
+  t2-r0 : Integer = 0
+  t2-r1 : Integer = 1
+  t2-r2 : Integer = 2
+  t2-r3 : Integer = 3
+  t2-r4 : Integer = 4
+  t2-r5 : Integer = 5
+  t2-r6 : Integer = 6
+  t2-r7 : Integer = 7
+  t2-r8 : Integer = 8
+  t2-r9 : Integer = 9
+  t2-r10 : Integer = 10
+  t2-r11 : Integer = 11
+  t2-r12 : Integer = 12
+  t2-sp : Integer = 13
+  t2-lr : Integer = 14
+  t2-pc : Integer = 15
+
+Section: Encoding Helpers
+
+  t2-encode-16 : Integer -> List Integer
+  t2-encode-16 (hw) =
+    [bit-and hw 255, bit-and (bit-shru hw 8) 255]
+
+  t2-encode-32 : Integer, Integer -> List Integer
+  t2-encode-32 (hi16) (lo16) =
+    [bit-and hi16 255, bit-and (bit-shru hi16 8) 255,
+     bit-and lo16 255, bit-and (bit-shru lo16 8) 255]
+
+Section: 16-bit Thumb Instructions
+
+  t2-mov-lo : Integer, Integer -> List Integer
+  t2-mov-lo (rd) (rs) =
+    t2-encode-16 (bit-or #4600 (bit-or (bit-shl (bit-and (bit-shru rd 3) 1) 7) (bit-or (bit-shl (bit-and rs 15) 3) (bit-and rd 7))))
+
+  t2-add-lo : Integer, Integer, Integer -> List Integer
+  t2-add-lo (rd) (rn) (rm) =
+    t2-encode-16 (bit-or #1800 (bit-or (bit-shl rm 6) (bit-or (bit-shl rn 3) rd)))
+
+  t2-sub-lo : Integer, Integer, Integer -> List Integer
+  t2-sub-lo (rd) (rn) (rm) =
+    t2-encode-16 (bit-or #1A00 (bit-or (bit-shl rm 6) (bit-or (bit-shl rn 3) rd)))
+
+  t2-add-imm3 : Integer, Integer, Integer -> List Integer
+  t2-add-imm3 (rd) (rn) (imm3) =
+    t2-encode-16 (bit-or #1C00 (bit-or (bit-shl (bit-and imm3 7) 6) (bit-or (bit-shl rn 3) rd)))
+
+  t2-sub-imm3 : Integer, Integer, Integer -> List Integer
+  t2-sub-imm3 (rd) (rn) (imm3) =
+    t2-encode-16 (bit-or #1E00 (bit-or (bit-shl (bit-and imm3 7) 6) (bit-or (bit-shl rn 3) rd)))
+
+  t2-mov-imm8 : Integer, Integer -> List Integer
+  t2-mov-imm8 (rd) (imm8) =
+    t2-encode-16 (bit-or #2000 (bit-or (bit-shl rd 8) (bit-and imm8 255)))
+
+  t2-cmp-imm8 : Integer, Integer -> List Integer
+  t2-cmp-imm8 (rn) (imm8) =
+    t2-encode-16 (bit-or #2800 (bit-or (bit-shl rn 8) (bit-and imm8 255)))
+
+  t2-add-imm8 : Integer, Integer -> List Integer
+  t2-add-imm8 (rdn) (imm8) =
+    t2-encode-16 (bit-or #3000 (bit-or (bit-shl rdn 8) (bit-and imm8 255)))
+
+  t2-sub-imm8 : Integer, Integer -> List Integer
+  t2-sub-imm8 (rdn) (imm8) =
+    t2-encode-16 (bit-or #3800 (bit-or (bit-shl rdn 8) (bit-and imm8 255)))
+
+  t2-ldr-sp : Integer, Integer -> List Integer
+  t2-ldr-sp (rt) (offset) =
+    t2-encode-16 (bit-or #9800 (bit-or (bit-shl rt 8) (bit-and (offset / 4) 255)))
+
+  t2-str-sp : Integer, Integer -> List Integer
+  t2-str-sp (rt) (offset) =
+    t2-encode-16 (bit-or #9000 (bit-or (bit-shl rt 8) (bit-and (offset / 4) 255)))
+
+  t2-ldr-imm5 : Integer, Integer, Integer -> List Integer
+  t2-ldr-imm5 (rt) (rn) (offset) =
+    t2-encode-16 (bit-or #6800 (bit-or (bit-shl (bit-and (offset / 4) #1F) 6) (bit-or (bit-shl rn 3) rt)))
+
+  t2-str-imm5 : Integer, Integer, Integer -> List Integer
+  t2-str-imm5 (rt) (rn) (offset) =
+    t2-encode-16 (bit-or #6000 (bit-or (bit-shl (bit-and (offset / 4) #1F) 6) (bit-or (bit-shl rn 3) rt)))
+
+  t2-push : List Integer -> List Integer
+  t2-push (regs) =
+    let mask = t2-reg-mask regs 0 0
+    in let lr-bit = if t2-list-contains regs t2-lr then #100 else 0
+    in t2-encode-16 (bit-or #B400 (bit-or lr-bit (bit-and mask #FF)))
+
+  t2-pop : List Integer -> List Integer
+  t2-pop (regs) =
+    let mask = t2-reg-mask regs 0 0
+    in let pc-bit = if t2-list-contains regs t2-pc then #100 else 0
+    in t2-encode-16 (bit-or #BC00 (bit-or pc-bit (bit-and mask #FF)))
+
+  t2-reg-mask : List Integer, Integer, Integer -> Integer
+  t2-reg-mask (regs) (i) (acc) =
+    if i >= list-length regs then acc
+    else let r = list-at regs i
+    in t2-reg-mask regs (i + 1) (bit-or acc (bit-shl 1 r))
+
+  t2-list-contains : List Integer, Integer -> Boolean
+  t2-list-contains (xs) (v) =
+    t2-list-contains-loop xs v 0
+
+  t2-list-contains-loop : List Integer, Integer, Integer -> Boolean
+  t2-list-contains-loop (xs) (v) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == v then True
+    else t2-list-contains-loop xs v (i + 1)
+
+  t2-cmp-reg : Integer, Integer -> List Integer
+  t2-cmp-reg (rn) (rm) =
+    t2-encode-16 (bit-or #4280 (bit-or (bit-shl rm 3) rn))
+
+  t2-and-reg : Integer, Integer -> List Integer
+  t2-and-reg (rdn) (rm) =
+    t2-encode-16 (bit-or #4000 (bit-or (bit-shl rm 3) rdn))
+
+  t2-or-reg : Integer, Integer -> List Integer
+  t2-or-reg (rdn) (rm) =
+    t2-encode-16 (bit-or #4300 (bit-or (bit-shl rm 3) rdn))
+
+  t2-xor-reg : Integer, Integer -> List Integer
+  t2-xor-reg (rdn) (rm) =
+    t2-encode-16 (bit-or #4040 (bit-or (bit-shl rm 3) rdn))
+
+  t2-mul-reg : Integer, Integer -> List Integer
+  t2-mul-reg (rdn) (rm) =
+    t2-encode-16 (bit-or #4340 (bit-or (bit-shl rm 3) rdn))
+
+  t2-neg-reg : Integer, Integer -> List Integer
+  t2-neg-reg (rd) (rm) =
+    t2-encode-16 (bit-or #4240 (bit-or (bit-shl rm 3) rd))
+
+  t2-lsl-imm5 : Integer, Integer, Integer -> List Integer
+  t2-lsl-imm5 (rd) (rm) (imm5) =
+    t2-encode-16 (bit-or (bit-shl (bit-and imm5 #1F) 6) (bit-or (bit-shl rm 3) rd))
+
+  t2-lsr-imm5 : Integer, Integer, Integer -> List Integer
+  t2-lsr-imm5 (rd) (rm) (imm5) =
+    t2-encode-16 (bit-or #0800 (bit-or (bit-shl (bit-and imm5 #1F) 6) (bit-or (bit-shl rm 3) rd)))
+
+  t2-nop : List Integer = t2-encode-16 #BF00
+
+  t2-bx : Integer -> List Integer
+  t2-bx (rm) = t2-encode-16 (bit-or #4700 (bit-shl rm 3))
+
+  t2-blx : Integer -> List Integer
+  t2-blx (rm) = t2-encode-16 (bit-or #4780 (bit-shl rm 3))
+
+  t2-b-short : Integer -> List Integer
+  t2-b-short (offset) =
+    let imm11 = bit-and (offset / 2) #7FF
+    in t2-encode-16 (bit-or #E000 imm11)
+
+  t2-beq-short : Integer -> List Integer
+  t2-beq-short (offset) =
+    let imm8 = bit-and (offset / 2) #FF
+    in t2-encode-16 (bit-or #D000 imm8)
+
+  t2-bne-short : Integer -> List Integer
+  t2-bne-short (offset) =
+    let imm8 = bit-and (offset / 2) #FF
+    in t2-encode-16 (bit-or #D100 imm8)
+
+  t2-blt-short : Integer -> List Integer
+  t2-blt-short (offset) =
+    let imm8 = bit-and (offset / 2) #FF
+    in t2-encode-16 (bit-or #DB00 imm8)
+
+  t2-bgt-short : Integer -> List Integer
+  t2-bgt-short (offset) =
+    let imm8 = bit-and (offset / 2) #FF
+    in t2-encode-16 (bit-or #DC00 imm8)
+
+  t2-ble-short : Integer -> List Integer
+  t2-ble-short (offset) =
+    let imm8 = bit-and (offset / 2) #FF
+    in t2-encode-16 (bit-or #DD00 imm8)
+
+  t2-bge-short : Integer -> List Integer
+  t2-bge-short (offset) =
+    let imm8 = bit-and (offset / 2) #FF
+    in t2-encode-16 (bit-or #DA00 imm8)
+
+  t2-add-sp-imm7 : Integer -> List Integer
+  t2-add-sp-imm7 (imm) =
+    t2-encode-16 (bit-or #B000 (bit-and (imm / 4) #7F))
+
+  t2-sub-sp-imm7 : Integer -> List Integer
+  t2-sub-sp-imm7 (imm) =
+    t2-encode-16 (bit-or #B080 (bit-and (imm / 4) #7F))
+
+Section: 32-bit Thumb-2 Instructions
+
+  t2-movw : Integer, Integer -> List Integer
+  t2-movw (rd) (imm16) =
+    let imm4 = bit-and (bit-shru imm16 12) #F
+    in let i = bit-and (bit-shru imm16 11) 1
+    in let imm3 = bit-and (bit-shru imm16 8) 7
+    in let imm8 = bit-and imm16 #FF
+    in t2-encode-32 (bit-or (bit-or #F240 (bit-shl i 10)) imm4) (bit-or (bit-or (bit-shl imm3 12) (bit-shl rd 8)) imm8)
+
+  t2-movt : Integer, Integer -> List Integer
+  t2-movt (rd) (imm16) =
+    let imm4 = bit-and (bit-shru imm16 12) #F
+    in let i = bit-and (bit-shru imm16 11) 1
+    in let imm3 = bit-and (bit-shru imm16 8) 7
+    in let imm8 = bit-and imm16 #FF
+    in t2-encode-32 (bit-or (bit-or #F2C0 (bit-shl i 10)) imm4) (bit-or (bit-or (bit-shl imm3 12) (bit-shl rd 8)) imm8)
+
+  t2-add-w : Integer, Integer, Integer -> List Integer
+  t2-add-w (rd) (rn) (rm) =
+    t2-encode-32 (bit-or #EB00 rn) (bit-or (bit-shl rd 8) rm)
+
+  t2-sub-w : Integer, Integer, Integer -> List Integer
+  t2-sub-w (rd) (rn) (rm) =
+    t2-encode-32 (bit-or #EBA0 rn) (bit-or (bit-shl rd 8) rm)
+
+  t2-mul-w : Integer, Integer, Integer -> List Integer
+  t2-mul-w (rd) (rn) (rm) =
+    t2-encode-32 (bit-or #FB00 rn) (bit-or (bit-or (bit-shl #F 12) (bit-shl rd 8)) rm)
+
+  t2-sdiv-w : Integer, Integer, Integer -> List Integer
+  t2-sdiv-w (rd) (rn) (rm) =
+    t2-encode-32 (bit-or #FB90 rn) (bit-or (bit-or (bit-shl #F 12) (bit-shl rd 8)) rm)
+
+  t2-udiv-w : Integer, Integer, Integer -> List Integer
+  t2-udiv-w (rd) (rn) (rm) =
+    t2-encode-32 (bit-or #FBB0 rn) (bit-or (bit-or (bit-shl #F 12) (bit-shl rd 8)) rm)
+
+  t2-and-w : Integer, Integer, Integer -> List Integer
+  t2-and-w (rd) (rn) (rm) =
+    t2-encode-32 (bit-or #EA00 rn) (bit-or (bit-shl rd 8) rm)
+
+  t2-or-w : Integer, Integer, Integer -> List Integer
+  t2-or-w (rd) (rn) (rm) =
+    t2-encode-32 (bit-or #EA40 rn) (bit-or (bit-shl rd 8) rm)
+
+  t2-xor-w : Integer, Integer, Integer -> List Integer
+  t2-xor-w (rd) (rn) (rm) =
+    t2-encode-32 (bit-or #EA80 rn) (bit-or (bit-shl rd 8) rm)
+
+  t2-cmp-w : Integer, Integer -> List Integer
+  t2-cmp-w (rn) (rm) =
+    t2-encode-32 (bit-or #EBB0 rn) (bit-or (bit-shl #F 8) rm)
+
+  t2-ldr-w : Integer, Integer, Integer -> List Integer
+  t2-ldr-w (rt) (rn) (offset) =
+    t2-encode-32 (bit-or #F8D0 rn) (bit-or (bit-shl rt 12) (bit-and offset #FFF))
+
+  t2-str-w : Integer, Integer, Integer -> List Integer
+  t2-str-w (rt) (rn) (offset) =
+    t2-encode-32 (bit-or #F8C0 rn) (bit-or (bit-shl rt 12) (bit-and offset #FFF))
+
+  t2-bl : Integer -> List Integer
+  t2-bl (offset) =
+    let s = bit-and (bit-shru offset 24) 1
+    in let imm10 = bit-and (bit-shru offset 12) #3FF
+    in let j1 = bit-xor (bit-and (bit-shru offset 23) 1) (bit-xor s 1)
+    in let j2 = bit-xor (bit-and (bit-shru offset 22) 1) (bit-xor s 1)
+    in let imm11 = bit-and (bit-shru offset 1) #7FF
+    in t2-encode-32 (bit-or (bit-or #F000 (bit-shl s 10)) imm10) (bit-or (bit-or (bit-or #D000 (bit-shl j1 13)) (bit-shl j2 11)) imm11)
+
+  t2-b-w : Integer -> List Integer
+  t2-b-w (offset) =
+    let s = bit-and (bit-shru offset 24) 1
+    in let imm10 = bit-and (bit-shru offset 12) #3FF
+    in let j1 = bit-xor (bit-and (bit-shru offset 23) 1) (bit-xor s 1)
+    in let j2 = bit-xor (bit-and (bit-shru offset 22) 1) (bit-xor s 1)
+    in let imm11 = bit-and (bit-shru offset 1) #7FF
+    in t2-encode-32 (bit-or (bit-or #F000 (bit-shl s 10)) imm10) (bit-or (bit-or (bit-or #9000 (bit-shl j1 13)) (bit-shl j2 11)) imm11)
+
+  t2-add-sp-imm12 : Integer, Integer -> List Integer
+  t2-add-sp-imm12 (rd) (imm12) =
+    let i = bit-and (bit-shru imm12 11) 1
+    in let imm3 = bit-and (bit-shru imm12 8) 7
+    in let imm8 = bit-and imm12 #FF
+    in t2-encode-32 (bit-or #F20D (bit-shl i 10)) (bit-or (bit-or (bit-shl imm3 12) (bit-shl rd 8)) imm8)
+
+  t2-sub-sp-imm12 : Integer, Integer -> List Integer
+  t2-sub-sp-imm12 (rd) (imm12) =
+    let i = bit-and (bit-shru imm12 11) 1
+    in let imm3 = bit-and (bit-shru imm12 8) 7
+    in let imm8 = bit-and imm12 #FF
+    in t2-encode-32 (bit-or #F2AD (bit-shl i 10)) (bit-or (bit-or (bit-shl imm3 12) (bit-shl rd 8)) imm8)
+
+  t2-stmdb : Integer, Integer -> List Integer
+  t2-stmdb (rn) (reg-list) =
+    t2-encode-32 (bit-or #E900 rn) reg-list
+
+  t2-ldmia : Integer, Integer -> List Integer
+  t2-ldmia (rn) (reg-list) =
+    t2-encode-32 (bit-or #E890 rn) reg-list
+
+Section: Pseudo-Instructions
+
+  t2-ret : List Integer = t2-bx t2-lr
+
+  t2-mov : Integer, Integer -> List Integer
+  t2-mov (rd) (rs) =
+    if rd <= 7 then if rs <= 7 then t2-add-imm3 rd rs 0
+    else t2-mov-lo rd rs
+    else t2-mov-lo rd rs
+
+  t2-li : Integer, Integer -> List Integer
+  t2-li (rd) (value) =
+    if value >= 0 then if value <= 255 then t2-mov-imm8 rd value
+    else if value <= 65535 then t2-movw rd value
+    else t2-movw rd (bit-and value #FFFF) & t2-movt rd (bit-and (bit-shru value 16) #FFFF)
+    else if value >= -128 then t2-mov-imm8 rd 0 & t2-sub-imm8 rd (0 - value)
+    else t2-movw rd (bit-and value #FFFF) & t2-movt rd (bit-and (bit-shru value 16) #FFFF)
+
+Page 1

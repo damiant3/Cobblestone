@@ -101,11 +101,22 @@ byte-identical binary (hard fixed point), plus the smoke battery. Every
 change that touches codegen must pass all gates before it is done. If
 any gate is red, shelve changes, notify Damian, and re-evaluate.
 
+**Zero failures before copy-up.** Do not copy up to main with any
+test failures — whether the CL carries a seed, source, or both.
+"Pre-existing" is not an excuse — verify it. Check the battery count
+from the last known-good CL on main. If your battery has MORE
+failures than that baseline, the regression is yours and you must
+investigate before shipping. Other agents inherit main through
+merge-down; a failure you wave through becomes their debugging
+detour. The cost of checking is two minutes; the cost of polluting
+three workstreams is hours.
+
 ```powershell
 build/test.ps1                      # Sample battery (~2-5s per sample)
 build/test.ps1 -Jobs 4              # Parallel test
 build/build.ps1                     # Text round-trip + CDX fixed-point (all gates)
-build/compile.ps1 -Src X -Out Y     # Compile a single .codex file (was test-compile.ps1)
+build/compile.ps1 -Src X -Out Y -Log Z   # Compile one .codex file. -Log is MANDATORY:
+                                         # omitting it hangs headless on a parameter prompt
 ```
 
 Container formats (ELF, PE, GPT/FAT disk images) are produced by

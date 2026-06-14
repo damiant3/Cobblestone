@@ -246,6 +246,25 @@ Negative literals in argument position must be parenthesized:
 The compiler folds `-(literal)` into `IrIntLit` at IR level.
 There is also a `negate` builtin but the unary operator is preferred.
 
+## Hex Literals
+
+`#` followed by hex digits is an integer literal denoting a raw 64-bit
+bit pattern. Underscores group digits. Case-insensitive.
+
+```
+  #FF                  -- 255
+  #C8E6FF              -- a color, CSS notation verbatim
+  #DEAD_BEEF           -- 3735928559
+  #FFFFFFFFFFFFFFFF    -- all ones = -1 (bit-pattern semantics)
+```
+
+Up to 16 significant hex digits; more is CDX2071 (same code as a
+decimal literal beyond the 64-bit range — the compiler never silently
+truncates a literal). Hash literals work anywhere an integer literal
+does: expressions, pattern arms, `between` bounds. Use them for bit
+masks, magic numbers, and colors — domains whose references are
+written in hex. Plain quantities stay decimal.
+
 ## Bounded Integers
 
 ```
@@ -471,7 +490,7 @@ with CDX3014.
 
 ```
 let  in  if  then  else  when  is  otherwise  act  end
-record  mutable  cites  claim  proof  qed  forall  exists  induction
+record  mutable  punctual  cites  claim  proof  qed  forall  exists  induction
 linear  effect  where  with  between  and  such  that
 class  instance  lazy
 True  False
@@ -595,6 +614,41 @@ creates a deep IR tree. Break long chains into named helpers.
 
 **Deeply nested lets.** A function with 20+ chained let bindings
 creates deep scope nesting. Split into smaller functions.
+
+**`in` inside `else` binds to the wrong `let`.**  When an `if`/`else`
+is nested inside a `let ... in` chain, multi-line `else` branches that
+introduce their own `let ... in` create a parse ambiguity. The `in`
+token after `else let X = val` at the same indent as the outer
+`let Y = ... in (if ...)` can bind to the outer `let` instead of the
+inner one, silently putting `X` out of scope. The result: the compiler
+generates code that reads from an unallocated local slot, producing
+EXC=06 (Invalid Opcode) deep inside an unrelated function.
+
+Wrong — the `in` on line 4 is ambiguous (outer `let reuse`'s chain, or
+inner `let loc`'s chain?):
+
+```
+  let reuse = find-slot st name
+  in if reuse >= 0 then
+    let st1 = emit-store st reuse in emit-expr st1 body
+  else let loc = alloc-local st
+  in let st1 = emit-store st loc
+  in emit-expr st1 body
+```
+
+Right — extract branches into named functions, keep the dispatch on one
+line:
+
+```
+  let reuse = find-slot st name
+  in if reuse >= 0 then emit-let-reuse st name value body reuse
+  else emit-let-fresh st name value body
+```
+
+The fix is always the same: keep if/else as a single-line dispatch and
+move each branch's logic into its own function. This is safe because a
+top-level if/else (not nested inside a `let ... in`) has no competing
+`let` to steal the `in` token.
 
 ## Seed Rebuild Procedure
 

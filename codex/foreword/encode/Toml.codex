@@ -121,7 +121,7 @@ Section: Parsing
 
   toml-parse-kv : Text -> TomlPair
   toml-parse-kv (line) =
-    let eq-pos = toml-find-char line 61 0 (text-length line)
+    let eq-pos = toml-find-char line 77 0 (text-length line)
     in if eq-pos < 0 then TomlPair { tp-key = line, tp-value = TomlString "" }
     else let key = toml-trim (substring line 0 eq-pos)
     in let val-str = toml-trim (substring line (eq-pos + 1) (text-length line - eq-pos - 1))
@@ -134,12 +134,13 @@ Section: Parsing
     else if toml-starts-with s "'" then TomlString (toml-unquote-literal s)
     else if s == "true" then TomlBool True
     else if s == "false" then TomlBool False
-    else TomlInteger (text-to-integer s)
+    else if toml-looks-like-int s then TomlInteger (text-to-integer s)
+    else TomlString s
 
   toml-extract-table-name : Text -> Text
   toml-extract-table-name (line) =
     let start = 1
-    in let end-pos = toml-find-char line 93 start (text-length line)
+    in let end-pos = toml-find-char line 89 start (text-length line)
     in if end-pos < 0 then ""
     else toml-trim (substring line start (end-pos - start))
 
@@ -181,20 +182,29 @@ Section: Emission
 
 Section: Helpers
 
+  toml-looks-like-int : Text -> Boolean
+  toml-looks-like-int (s) =
+    if text-length s == 0 then False
+    else let first = char-code (char-at s 0)
+    in if first >= 3 then if first <= 12 then True else False
+    else if first == 73 then if text-length s > 1 then True else False
+    else if first == 76 then if text-length s > 1 then True else False
+    else False
+
   toml-trim : Text -> Text
   toml-trim (s) = toml-trim-left (toml-trim-right s)
 
   toml-trim-left : Text -> Text
   toml-trim-left (s) =
     if text-length s == 0 then s
-    else if char-code (char-at s 0) == 32 then toml-trim-left (substring s 1 (text-length s - 1))
+    else if char-code (char-at s 0) == 2 then toml-trim-left (substring s 1 (text-length s - 1))
     else s
 
   toml-trim-right : Text -> Text
   toml-trim-right (s) =
     let len = text-length s
     in if len == 0 then s
-    else if char-code (char-at s (len - 1)) == 32 then toml-trim-right (substring s 0 (len - 1))
+    else if char-code (char-at s (len - 1)) == 2 then toml-trim-right (substring s 0 (len - 1))
     else s
 
   toml-starts-with : Text, Text -> Boolean

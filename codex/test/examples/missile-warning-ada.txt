@@ -1,0 +1,91 @@
+-- Ada / Ravenscar Profile — Missile Warning Receiver
+-- This is how you'd write it today in a fighter jet.
+
+pragma Profile(Ravenscar);
+pragma Restrictions(No_Recursion);
+pragma Restrictions(No_Allocators);
+
+with Ada.Real_Time; use Ada.Real_Time;
+
+package Missile_Warning is
+
+   type Threat_Level is (None, Low, Medium, High, Critical);
+
+   type Sensor_Reading is record
+      Bearing   : Integer range 0 .. 359;
+      Range_M   : Integer range 0 .. 100_000;
+      Velocity  : Integer range 0 .. 5_000;
+      IR_Signal : Integer range 0 .. 1023;
+   end record;
+
+   type Countermeasure is (No_Action, Chaff, Flare, Jam, Evade);
+
+   function Classify_Threat(S : Sensor_Reading) return Threat_Level;
+   function Select_Response(T : Threat_Level; S : Sensor_Reading) return Countermeasure;
+
+   -- NO WAY TO SAY: "Classify_Threat must complete in bounded time"
+   -- The compiler doesn't check this. You hope the Ravenscar restrictions
+   -- plus external WCET tool (aiT, RapiTime) cover you.
+   -- The restrictions are GLOBAL — every function in the program is
+   -- restricted, not just the critical ones.
+
+end Missile_Warning;
+
+package body Missile_Warning is
+
+   function Classify_Threat(S : Sensor_Reading) return Threat_Level is
+      Score : Integer := 0;
+   begin
+      -- Closer = more dangerous
+      if S.Range_M < 1_000 then
+         Score := Score + 40;
+      elsif S.Range_M < 5_000 then
+         Score := Score + 25;
+      elsif S.Range_M < 20_000 then
+         Score := Score + 10;
+      end if;
+
+      -- Faster = more dangerous
+      if S.Velocity > 3_000 then
+         Score := Score + 30;
+      elsif S.Velocity > 1_500 then
+         Score := Score + 20;
+      elsif S.Velocity > 500 then
+         Score := Score + 10;
+      end if;
+
+      -- Strong IR = active seeker
+      if S.IR_Signal > 800 then
+         Score := Score + 30;
+      elsif S.IR_Signal > 400 then
+         Score := Score + 15;
+      end if;
+
+      if Score >= 80 then return Critical;
+      elsif Score >= 60 then return High;
+      elsif Score >= 35 then return Medium;
+      elsif Score >= 15 then return Low;
+      else return None;
+      end if;
+   end Classify_Threat;
+
+   function Select_Response(T : Threat_Level; S : Sensor_Reading)
+      return Countermeasure is
+   begin
+      case T is
+         when Critical =>
+            if S.IR_Signal > 600 then return Flare;    -- IR seeker: flare
+            else return Evade;                          -- Radar: evade
+            end if;
+         when High     => return Jam;
+         when Medium   => return Chaff;
+         when Low      => return No_Action;
+         when None     => return No_Action;
+      end case;
+   end Select_Response;
+
+end Missile_Warning;
+
+-- To get WCET: run aiT ($50,000+ license) on the compiled binary.
+-- The Ada compiler itself has NO IDEA how long these functions take.
+-- Ravenscar ensures no tasking surprises, but the timing is trust-me.

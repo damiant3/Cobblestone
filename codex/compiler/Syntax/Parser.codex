@@ -47,9 +47,9 @@ Section: Type Parsing
   parse-bound-int (st) =
    if is-minus (current-kind st) then
     let st1 = advance st
-    in if is-literal (current-kind st1) then (-(text-to-integer (token-text (current st1))), advance st1)
+    in if is-literal (current-kind st1) then (-(lit-text-to-integer (token-text (current st1))), advance st1)
     else (0, report-bound-int-error st1)
-   else if is-literal (current-kind st) then (text-to-integer (token-text (current st)), advance st)
+   else if is-literal (current-kind st) then (lit-text-to-integer (token-text (current st)), advance st)
    else (0, report-bound-int-error st)
 
   report-bound-int-error : ParseState -> ParseState
@@ -288,6 +288,7 @@ Section: Pattern Parsing
    else if is-type-ident (current-kind st-fueled) then let tok = current st-fueled
        in parse-ctor-pattern-fields tok [] (advance st-fueled)
    else if is-ident (current-kind st-fueled) then PatOk (deck-record (VarPat (current st-fueled))) (advance st-fueled)
+   else if is-keyword (current-kind st-fueled) then PatOk (deck-record (VarPat (current st-fueled))) (advance (report-reserved-keyword "a pattern variable" st-fueled))
    else if is-left-paren (current-kind st-fueled) then parse-tuple-pattern (advance st-fueled)
        else PatOk (deck-record (WildPat (current st-fueled))) (advance st-fueled)
 
@@ -522,7 +523,18 @@ Section: Type Definition Parsing
      in let tparams = collect-type-params st2 []
      in let st3 = parse-type-params st2 []
      in if is-equals (current-kind st3) then let st4 = skip-newlines (advance st3)
-     in if is-record-keyword (current-kind st4) then attach-deriving (parse-record-type name-tok tparams is-mut st4)
+     in if is-unit-keyword (current-kind st4) then when parse-type (advance st4)
+            is TypeOk (base-te) (st5) -> ParseTypeDefResult {
+             maybe-type-def = Just (deck-record (TypeDef {
+              name = name-tok,
+              type-params = tparams,
+              body = UnitBody base-te,
+              is-mutable = False,
+              deriving = []
+             })),
+             state = st5
+            }
+            else if is-record-keyword (current-kind st4) then attach-deriving (parse-record-type name-tok tparams is-mut st4)
             else if is-pipe (current-kind st4) then attach-deriving (parse-variant-type name-tok tparams st4)
             else if is-type-ident (current-kind st4) & looks-like-variant st4 then attach-deriving (parse-variant-type name-tok tparams st4)
             else ParseTypeDefResult { maybe-type-def = None, state = st }
@@ -888,6 +900,28 @@ Section: Document Parsing
    in let body-text = if is-done st3 then "" else token-text (current st3)
    in deck-record (AnnotationNode { kind = kind-text, target = target-text, body = body-text })
 
+  is-conversion-decl : ParseState -> Boolean
+  is-conversion-decl (st) =
+   if current-kind st == IntegerLiteral then let st1 = advance st
+   in if is-done st1 then False
+   else if is-type-ident (current-kind st1) then let st2 = advance st1
+     in if is-done st2 then False
+     else is-equals (current-kind st2)
+   else False
+   else False
+
+  parse-conversion-decl : ParseState -> AnnotationNode
+  parse-conversion-decl (st) =
+   let from-val = token-text (current st)
+   in let st1 = advance st
+   in let from-unit = token-text (current st1)
+   in let st2 = advance (advance st1)
+   in let to-val = if is-done st2 then "1" else token-text (current st2)
+   in let st3 = if is-done st2 then st2 else advance st2
+   in let to-unit = if is-done st3 then from-unit else token-text (current st3)
+   in let factor = text-to-integer to-val / text-to-integer from-val
+   in deck-record (AnnotationNode { kind = "conversion", target = from-unit, body = to-unit })
+
   parse-top-level : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
   parse-top-level (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
    if is-done st then let prose-text = deck-record (text-concat-list (deck-record (__linked-list-to-list prose)))
@@ -932,6 +966,18 @@ Section: Document Parsing
     else let claim-ann = parse-claim-annotation st
      in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns claim-ann) (skip-to-next-line st)
    else if is-proof-keyword (current-kind st) then try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (advance st)
+   else if is-punctual-keyword (current-kind st) then let pst = advance st
+     in if is-done pst then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns pst
+     else if current-kind pst == IntegerLiteral then let budget-text = token-text (current pst)
+       in let pst2 = advance pst
+       in let pname = if is-done pst2 then "" else token-text (current pst2)
+       in let pann = deck-record (AnnotationNode { kind = "hard-realtime", target = pname, body = budget-text })
+       in try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns pann) pst2
+     else let pname = token-text (current pst)
+     in let pann = deck-record (AnnotationNode { kind = "hard-realtime", target = pname, body = "" })
+     in try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns pann) pst
+   else if is-conversion-decl st then let conv-ann = parse-conversion-decl st
+     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns conv-ann) (skip-to-next-line st)
    else if is-prose-line st then let pr = collect-prose-with-text st prose blocks
      in parse-top-level defs type-defs effect-defs imports ch-title sec-titles (pr.lines) (pr.blocks) anns (pr.state)
    else if (current st).column > 3 then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-to-next-line st)

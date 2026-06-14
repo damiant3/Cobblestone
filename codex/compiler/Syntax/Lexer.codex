@@ -40,6 +40,7 @@ Section: Character Code Constants
   cc-lower-t : Integer = char-code 't'
   cc-lower-z : Integer = char-code 'z'
   cc-at : Integer = char-code '@'
+  cc-hash : Integer = char-code '#'
   cc-left-brace : Integer = char-code '{'
   cc-pipe : Integer = char-code '|'
   cc-right-brace : Integer = char-code '}'
@@ -88,7 +89,8 @@ Section: Lexer State
 
   add-lex-error : LexState, Integer, Text, SourceSpan -> LexState
   add-lex-error (st) (code) (msg) (span) =
-   __record-set st "errors" (__linked-list-push (st.errors) (make-error code msg span))
+   let __seq = st.errors = __linked-list-push (st.errors) (make-error code msg span)
+   in st
 
   is-at-end : LexState -> Boolean
   is-at-end (st) =
@@ -133,8 +135,9 @@ Section: Whitespace
    in let stop = skip-spaces-end (st.source) (st.offset) len
    in if stop == st.offset then st
       else let new-col = st.column + (stop - st.offset)
-      in let st1 = __record-set st "offset" stop
-      in __record-set st1 "column" new-col
+      in let __seq = st.offset = stop
+      in let __seq = st.column = new-col
+      in st
 
 Section: Character Scanning
   scan-ident-end : Text, Integer, Integer -> Integer
@@ -160,8 +163,9 @@ Section: Character Scanning
    in let stop = scan-ident-end (st.source) (st.offset) len
    in if stop == st.offset then st
       else let new-col = st.column + (stop - st.offset)
-      in let st1 = __record-set st "offset" stop
-      in __record-set st1 "column" new-col
+      in let __seq = st.offset = stop
+      in let __seq = st.column = new-col
+      in st
 
   scan-digits-end : Text, Integer, Integer -> Integer
   scan-digits-end (source) (offset) (len) =
@@ -177,8 +181,27 @@ Section: Character Scanning
    in let stop = scan-digits-end (st.source) (st.offset) len
    in if stop == st.offset then st
       else let new-col = st.column + (stop - st.offset)
-      in let st1 = __record-set st "offset" stop
-      in __record-set st1 "column" new-col
+      in let __seq = st.offset = stop
+      in let __seq = st.column = new-col
+      in st
+
+  scan-hex-end : Text, Integer, Integer -> Integer
+  scan-hex-end (source) (offset) (len) =
+   if offset >= len then offset
+   else let c = char-code-at source offset
+   in if hex-digit-value c >= 0 then scan-hex-end source (offset + 1) len
+      else if c == cc-underscore then scan-hex-end source (offset + 1) len
+      else offset
+
+  scan-hex-digits : LexState -> LexState
+  scan-hex-digits (st) =
+   let len = text-length (st.source)
+   in let stop = scan-hex-end (st.source) (st.offset) len
+   in if stop == st.offset then st
+      else let new-col = st.column + (stop - st.offset)
+      in let __seq = st.offset = stop
+      in let __seq = st.column = new-col
+      in st
 
   scan-string-end : Text, Integer, Integer -> Integer
   scan-string-end (source) (offset) (len) =
@@ -195,13 +218,14 @@ Section: Character Scanning
    in let stop = scan-string-end (st.source) (st.offset) len
    in if stop == st.offset then st
       else let new-col = st.column + (stop - st.offset)
-      in let st1 = __record-set st "offset" stop
-      in let st2 = __record-set st1 "column" new-col
+      in let __seq = st.offset = stop
+      in let __seq = st.column = new-col
       in let terminated = stop <= len & stop > 0 & char-code-at (st.source) (stop - 1) == cc-double-quote
-      in if terminated then st2
+      in if terminated then st
          else let open-span = span-at (st.line) (st.column - 1) (st.offset - 1) 1 (st.file-id)
          in let err = make-error cdx-unterminated-text "Unterminated text literal: hit end of line before closing '\"'" open-span
-         in __record-set st2 "errors" (__linked-list-push (st2.errors) err)
+         in let __seq = st.errors = __linked-list-push (st.errors) err
+         in st
 
   validate-escapes-into : Text, Integer, Integer, Integer, Integer, LinkedList Diagnostic -> LinkedList Diagnostic
   validate-escapes-into (s) (base-line) (base-col) (base-off) (fid) (errs) =
@@ -263,6 +287,8 @@ Section: Keyword Classification
     else if w == "exists" then ThereExistsKeyword
     else if w == "linear" then LinearKeyword
     else if w == "mutable" then MutableKeyword
+    else if w == "punctual" then PunctualKeyword
+    else if w == "unit" then UnitKeyword
     else if w == "effect" then EffectKeyword
     else if w == "class" then ClassKeyword
     else if w == "instance" then InstanceKeyword
@@ -313,19 +339,18 @@ Section: Single Token Scanning
    in let tok-len = stop - s.offset
    in if tok-len == 0 then LexToken (make-token (deck-record ProseText) 0 s) s
       else let new-col = s.column + tok-len
-   in let s1 = __record-set s "offset" stop
-   in let s2 = __record-set s1 "column" new-col
-   in LexToken (make-token (deck-record ProseText) tok-len s) s2
+   in let __seq = s.offset = stop
+   in let __seq = s.column = new-col
+   in LexToken (make-token (deck-record ProseText) tok-len s) s
 
   skip-prose-line : LexState -> LexStep
   skip-prose-line (s) =
    let len = text-length (s.source)
    in let stop = scan-to-eol-end (s.source) (s.offset) len
-   in let tok-len = stop - s.offset
-   in let new-col = s.column + tok-len
-   in let s1 = __record-set s "offset" stop
-   in let s2 = __record-set s1 "column" new-col
-   in scan-token s2
+   in let new-col = s.column + (stop - s.offset)
+   in let __seq = s.offset = stop
+   in let __seq = s.column = new-col
+   in scan-token s
 
   scan-token : LexState -> LexStep
   scan-token (st) =
@@ -334,9 +359,8 @@ Section: Single Token Scanning
    else let c = peek-code s
    in if c == cc-cr then scan-token (advance-char s)
          else if s.column == 2 & c /= cc-newline then
-          if s.prose-mode then
-           if c == cc-at then LexToken (make-token (deck-record AtSign) 1 s) (advance-char s)
-           else scan-prose-text s
+          if c == cc-at then LexToken (make-token (deck-record AtSign) 1 s) (advance-char s)
+          else if s.prose-mode then scan-prose-text s
           else skip-prose-line s
          else if c == cc-newline then LexToken (make-token (deck-record Newline) 1 s) (advance-char s)
          else if c == cc-double-quote then let start = s.offset + 1
@@ -345,8 +369,8 @@ Section: Single Token Scanning
    in let safe-len = if body-len < 0 then 0 else body-len
    in let raw = substring (s.source) start safe-len
    in let merged-errs = validate-escapes-into raw (s.line) (s.column + 1) start (s.file-id) (after.errors)
-   in let after-with-errs = __record-set after "errors" merged-errs
-   in LexToken (make-token (deck-record TextLiteral) (after.offset - s.offset) s) after-with-errs
+   in let __seq = after.errors = merged-errs
+   in LexToken (make-token (deck-record TextLiteral) (after.offset - s.offset) s) after
          else if c == cc-single-quote then scan-char-literal s
          else if is-letter-code c then let start = s.offset
    in let after = scan-ident-rest (advance-char s)
@@ -367,13 +391,18 @@ Section: Single Token Scanning
                      else let after2 = scan-digits after-dot
                           in LexToken (make-token (deck-record NumberLiteral) (after2.offset - start) s) after2
                 else LexToken (make-token (deck-record IntegerLiteral) (after.offset - start) s) after
+         else if c == cc-hash then let start = s.offset
+   in let after = scan-hex-digits (advance-char s)
+   in if after.offset - start == 1 then LexToken (make-token (deck-record ErrorToken) 1 s) after
+      else LexToken (make-token (deck-record IntegerLiteral) (after.offset - start) s) after
          else scan-operator s
 
   scan-operator : LexState -> LexStep
   scan-operator (s) =
    let c = peek-code s
    in let next = advance-char s
-   in if c == cc-left-paren then LexToken (make-token (deck-record LeftParen) 1 s) next
+   in if c == cc-at then LexToken (make-token (deck-record AtSign) 1 s) next
+      else if c == cc-left-paren then LexToken (make-token (deck-record LeftParen) 1 s) next
       else if c == cc-right-paren then LexToken (make-token (deck-record RightParen) 1 s) next
       else if c == cc-left-bracket then LexToken (make-token (deck-record LeftBracket) 1 s) next
       else if c == cc-right-bracket then LexToken (make-token (deck-record RightBracket) 1 s) next

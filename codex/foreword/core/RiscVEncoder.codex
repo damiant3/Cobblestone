@@ -1,0 +1,254 @@
+Chapter: RiscVEncoder
+
+ RISC-V instruction encoding for RV64IM (and RV32IM via word-width
+ parameter). All six instruction formats: R, I, S, B, U, J.
+ Each encoder returns a List Integer (4 bytes, little-endian).
+ Transliterated from old/src/Codex.Emit.RiscV/RiscVEncoder.cs.
+
+Section: Register Constants
+
+  rv-zero : Integer = 0
+  rv-ra : Integer = 1
+  rv-sp : Integer = 2
+  rv-gp : Integer = 3
+  rv-tp : Integer = 4
+  rv-t0 : Integer = 5
+  rv-t1 : Integer = 6
+  rv-t2 : Integer = 7
+  rv-s0 : Integer = 8
+  rv-s1 : Integer = 9
+  rv-a0 : Integer = 10
+  rv-a1 : Integer = 11
+  rv-a2 : Integer = 12
+  rv-a3 : Integer = 13
+  rv-a4 : Integer = 14
+  rv-a5 : Integer = 15
+  rv-a6 : Integer = 16
+  rv-a7 : Integer = 17
+  rv-s2 : Integer = 18
+  rv-s3 : Integer = 19
+  rv-s4 : Integer = 20
+  rv-s5 : Integer = 21
+  rv-s6 : Integer = 22
+  rv-s7 : Integer = 23
+  rv-s8 : Integer = 24
+  rv-s9 : Integer = 25
+  rv-s10 : Integer = 26
+  rv-s11 : Integer = 27
+  rv-t3 : Integer = 28
+  rv-t4 : Integer = 29
+  rv-t5 : Integer = 30
+  rv-t6 : Integer = 31
+
+Section: Encoding Helpers
+
+  rv-encode : Integer -> List Integer
+  rv-encode (w) =
+    [bit-and w 255, bit-and (bit-shru w 8) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 24) 255]
+
+  rv-r-type : Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  rv-r-type (opcode) (rd) (funct3) (rs1) (rs2) (funct7) =
+    rv-encode (bit-or (bit-or (bit-or (bit-or (bit-or opcode (bit-shl rd 7)) (bit-shl funct3 12)) (bit-shl rs1 15)) (bit-shl rs2 20)) (bit-shl funct7 25))
+
+  rv-i-type : Integer, Integer, Integer, Integer, Integer -> List Integer
+  rv-i-type (opcode) (rd) (funct3) (rs1) (imm12) =
+    rv-encode (bit-or (bit-or (bit-or (bit-or opcode (bit-shl rd 7)) (bit-shl funct3 12)) (bit-shl rs1 15)) (bit-shl (bit-and imm12 #FFF) 20))
+
+  rv-s-type : Integer, Integer, Integer, Integer, Integer -> List Integer
+  rv-s-type (opcode) (funct3) (rs1) (rs2) (imm12) =
+    let imm = bit-and imm12 #FFF
+    in let lo5 = bit-and imm #1F
+    in let hi7 = bit-and (bit-shru imm 5) #7F
+    in rv-encode (bit-or (bit-or (bit-or (bit-or (bit-or opcode (bit-shl lo5 7)) (bit-shl funct3 12)) (bit-shl rs1 15)) (bit-shl rs2 20)) (bit-shl hi7 25))
+
+  rv-b-type : Integer, Integer, Integer, Integer, Integer -> List Integer
+  rv-b-type (opcode) (funct3) (rs1) (rs2) (imm13) =
+    let imm = bit-and imm13 #1FFE
+    in let bit11 = bit-and (bit-shru imm 11) 1
+    in let bits4-1 = bit-and (bit-shru imm 1) #F
+    in let bits10-5 = bit-and (bit-shru imm 5) #3F
+    in let bit12 = bit-and (bit-shru imm 12) 1
+    in rv-encode (bit-or (bit-or (bit-or (bit-or (bit-or (bit-or opcode (bit-shl bit11 7)) (bit-shl bits4-1 8)) (bit-shl funct3 12)) (bit-shl rs1 15)) (bit-shl rs2 20)) (bit-or (bit-shl bits10-5 25) (bit-shl bit12 31)))
+
+  rv-u-type : Integer, Integer, Integer -> List Integer
+  rv-u-type (opcode) (rd) (imm20) =
+    rv-encode (bit-or (bit-or opcode (bit-shl rd 7)) (bit-shl (bit-and imm20 #FFFFF) 12))
+
+  rv-j-type : Integer, Integer, Integer -> List Integer
+  rv-j-type (opcode) (rd) (imm21) =
+    let imm = bit-and imm21 #1FFFFF
+    in let bits19-12 = bit-and (bit-shru imm 12) #FF
+    in let bit11 = bit-and (bit-shru imm 11) 1
+    in let bits10-1 = bit-and (bit-shru imm 1) #3FF
+    in let bit20 = bit-and (bit-shru imm 20) 1
+    in rv-encode (bit-or (bit-or (bit-or (bit-or opcode (bit-shl rd 7)) (bit-shl bits19-12 12)) (bit-shl bit11 20)) (bit-or (bit-shl bits10-1 21) (bit-shl bit20 31)))
+
+Section: Integer Arithmetic (RV64I + M)
+
+  rv-add : Integer, Integer, Integer -> List Integer
+  rv-add (rd) (rs1) (rs2) = rv-r-type #33 rd 0 rs1 rs2 0
+
+  rv-sub : Integer, Integer, Integer -> List Integer
+  rv-sub (rd) (rs1) (rs2) = rv-r-type #33 rd 0 rs1 rs2 #20
+
+  rv-mul : Integer, Integer, Integer -> List Integer
+  rv-mul (rd) (rs1) (rs2) = rv-r-type #33 rd 0 rs1 rs2 1
+
+  rv-div : Integer, Integer, Integer -> List Integer
+  rv-div (rd) (rs1) (rs2) = rv-r-type #33 rd 4 rs1 rs2 1
+
+  rv-rem : Integer, Integer, Integer -> List Integer
+  rv-rem (rd) (rs1) (rs2) = rv-r-type #33 rd 6 rs1 rs2 1
+
+  rv-and : Integer, Integer, Integer -> List Integer
+  rv-and (rd) (rs1) (rs2) = rv-r-type #33 rd 7 rs1 rs2 0
+
+  rv-or : Integer, Integer, Integer -> List Integer
+  rv-or (rd) (rs1) (rs2) = rv-r-type #33 rd 6 rs1 rs2 0
+
+  rv-xor : Integer, Integer, Integer -> List Integer
+  rv-xor (rd) (rs1) (rs2) = rv-r-type #33 rd 4 rs1 rs2 0
+
+  rv-sll : Integer, Integer, Integer -> List Integer
+  rv-sll (rd) (rs1) (rs2) = rv-r-type #33 rd 1 rs1 rs2 0
+
+  rv-srl : Integer, Integer, Integer -> List Integer
+  rv-srl (rd) (rs1) (rs2) = rv-r-type #33 rd 5 rs1 rs2 0
+
+  rv-sra : Integer, Integer, Integer -> List Integer
+  rv-sra (rd) (rs1) (rs2) = rv-r-type #33 rd 5 rs1 rs2 #20
+
+  rv-slt : Integer, Integer, Integer -> List Integer
+  rv-slt (rd) (rs1) (rs2) = rv-r-type #33 rd 2 rs1 rs2 0
+
+  rv-sltu : Integer, Integer, Integer -> List Integer
+  rv-sltu (rd) (rs1) (rs2) = rv-r-type #33 rd 3 rs1 rs2 0
+
+Section: Immediate Arithmetic
+
+  rv-addi : Integer, Integer, Integer -> List Integer
+  rv-addi (rd) (rs1) (imm) = rv-i-type #13 rd 0 rs1 imm
+
+  rv-andi : Integer, Integer, Integer -> List Integer
+  rv-andi (rd) (rs1) (imm) = rv-i-type #13 rd 7 rs1 imm
+
+  rv-ori : Integer, Integer, Integer -> List Integer
+  rv-ori (rd) (rs1) (imm) = rv-i-type #13 rd 6 rs1 imm
+
+  rv-xori : Integer, Integer, Integer -> List Integer
+  rv-xori (rd) (rs1) (imm) = rv-i-type #13 rd 4 rs1 imm
+
+  rv-slti : Integer, Integer, Integer -> List Integer
+  rv-slti (rd) (rs1) (imm) = rv-i-type #13 rd 2 rs1 imm
+
+  rv-slli : Integer, Integer, Integer -> List Integer
+  rv-slli (rd) (rs1) (shamt) = rv-i-type #13 rd 1 rs1 (bit-and shamt #3F)
+
+  rv-srli : Integer, Integer, Integer -> List Integer
+  rv-srli (rd) (rs1) (shamt) = rv-i-type #13 rd 5 rs1 (bit-and shamt #3F)
+
+  rv-addiw : Integer, Integer, Integer -> List Integer
+  rv-addiw (rd) (rs1) (imm) = rv-i-type #1B rd 0 rs1 imm
+
+Section: Loads
+
+  rv-ld : Integer, Integer, Integer -> List Integer
+  rv-ld (rd) (rs1) (offset) = rv-i-type 3 rd 3 rs1 offset
+
+  rv-lw : Integer, Integer, Integer -> List Integer
+  rv-lw (rd) (rs1) (offset) = rv-i-type 3 rd 2 rs1 offset
+
+  rv-lb : Integer, Integer, Integer -> List Integer
+  rv-lb (rd) (rs1) (offset) = rv-i-type 3 rd 0 rs1 offset
+
+  rv-lbu : Integer, Integer, Integer -> List Integer
+  rv-lbu (rd) (rs1) (offset) = rv-i-type 3 rd 4 rs1 offset
+
+Section: Stores
+
+  rv-sd : Integer, Integer, Integer -> List Integer
+  rv-sd (rs1) (rs2) (offset) = rv-s-type #23 3 rs1 rs2 offset
+
+  rv-sw : Integer, Integer, Integer -> List Integer
+  rv-sw (rs1) (rs2) (offset) = rv-s-type #23 2 rs1 rs2 offset
+
+  rv-sb : Integer, Integer, Integer -> List Integer
+  rv-sb (rs1) (rs2) (offset) = rv-s-type #23 0 rs1 rs2 offset
+
+Section: Branches
+
+  rv-beq : Integer, Integer, Integer -> List Integer
+  rv-beq (rs1) (rs2) (offset) = rv-b-type #63 0 rs1 rs2 offset
+
+  rv-bne : Integer, Integer, Integer -> List Integer
+  rv-bne (rs1) (rs2) (offset) = rv-b-type #63 1 rs1 rs2 offset
+
+  rv-blt : Integer, Integer, Integer -> List Integer
+  rv-blt (rs1) (rs2) (offset) = rv-b-type #63 4 rs1 rs2 offset
+
+  rv-bge : Integer, Integer, Integer -> List Integer
+  rv-bge (rs1) (rs2) (offset) = rv-b-type #63 5 rs1 rs2 offset
+
+Section: Upper Immediate
+
+  rv-lui : Integer, Integer -> List Integer
+  rv-lui (rd) (imm20) = rv-u-type #37 rd imm20
+
+  rv-auipc : Integer, Integer -> List Integer
+  rv-auipc (rd) (imm20) = rv-u-type #17 rd imm20
+
+Section: Jumps
+
+  rv-jal : Integer, Integer -> List Integer
+  rv-jal (rd) (offset) = rv-j-type #6F rd offset
+
+  rv-jalr : Integer, Integer, Integer -> List Integer
+  rv-jalr (rd) (rs1) (offset) = rv-i-type #67 rd 0 rs1 offset
+
+Section: System
+
+  rv-ecall : List Integer = rv-i-type #73 0 0 0 0
+  rv-ebreak : List Integer = rv-i-type #73 0 0 0 1
+
+Section: Pseudo-Instructions
+
+  rv-nop : List Integer = rv-addi 0 0 0
+  rv-mv : Integer, Integer -> List Integer
+  rv-mv (rd) (rs) = rv-addi rd rs 0
+
+  rv-ret : List Integer = rv-jalr 0 rv-ra 0
+
+  rv-j : Integer -> List Integer
+  rv-j (offset) = rv-jal 0 offset
+
+  rv-call : Integer -> List Integer
+  rv-call (offset) = rv-jal rv-ra offset
+
+  rv-li : Integer, Integer -> List Integer
+  rv-li (rd) (value) =
+    if value >= -2048 then if value <= 2047 then rv-addi rd 0 value
+    else rv-li-large rd value
+    else rv-li-large rd value
+
+  rv-li-large : Integer, Integer -> List Integer
+  rv-li-large (rd) (value) =
+    if value >= -2147483648 then if value <= 2147483647
+    then let hi20 = (value + #800) / 4096
+      in let lo12 = value - hi20 * 4096
+      in if lo12 == 0 then rv-lui rd hi20
+      else rv-lui rd hi20 & rv-addiw rd rd lo12
+    else rv-li-64 rd value
+    else rv-li-64 rd value
+
+  rv-li-64 : Integer, Integer -> List Integer
+  rv-li-64 (rd) (value) =
+    let lo32 = bit-and value #FFFFFFFF
+    in let lo32-signed = if lo32 >= #80000000 then lo32 - #100000000 else lo32
+    in let hi32 = bit-shru value 32
+    in let hi32-adj = if lo32-signed < 0 then hi32 + 1 else hi32
+    in let hi-insns = rv-li rd hi32-adj
+    in let shifted = hi-insns & rv-slli rd rd 32
+    in if lo32 == 0 then shifted
+    else shifted & rv-li rv-t0 lo32-signed & rv-add rd rd rv-t0
+
+Page 1

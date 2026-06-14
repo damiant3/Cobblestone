@@ -38,7 +38,7 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-06-10:
+As of 2026-06-13:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
@@ -117,6 +117,19 @@ As of 2026-06-10:
 - **Fuzz corpus**: 44 adversarial inputs (binary garbage, huge
   identifiers, deep nesting, unclosed syntax, 100KB lines, recursive
   types, keyword abuse) — 0 crashes.
+- **Punctual functions (hard real-time)**: `punctual` keyword enforces
+  bounded execution at compile time. No heap (CDX6002), no recursion
+  (CDX6005), no unsafe calls (CDX6001), no closures (CDX6003), no bare
+  I/O (CDX6004). Instruction count reported at CDX6010; optional budget
+  with CDX6011 warning. No production language has this combination --
+  Ada Ravenscar is global and needs external WCET tools; Rust has nothing;
+  MISRA-C is external linters. See `docs/Designs/OS/Active/HardRealtime.md`.
+- **Unit types**: `Second = unit Integer` declares a distinct type with
+  zero runtime overhead (erased at codegen). Arithmetic preserves units
+  (`Second + Second = Second`, `Second * Integer = Second`). Cross-unit
+  assignment is a type error. Bounded + unit composition
+  (`Second between 0 and 3600`). Conversion declarations parsed
+  (`1 Minute = 60 Second`).
 - **Mutable records**: `mutable` keyword with in-place field
   assignment, type-checked immutability enforcement (CDX2060).
 - **Repository restructure**: 31 top-level dirs to 8. codex-vm
@@ -138,9 +151,10 @@ As of 2026-06-10:
 - **For-expressions**: `for x in xs do f x` syntactic sugar for map
   loops. Desugars to `list-map` with a lambda. Dogfooded across ~50
   call sites in 19 files.
-- **Sample battery**: 212 samples; 202 pass, 0 fail in the gate battery
-  (10 skipped: fatal or platform-specific) -- run against stage1, the
-  self-applied compiler.
+- **Sample battery**: 137 smoke tests (consolidated from 232 individual
+  tests); 127 pass, 0 fail (10 skipped: fatal or platform-specific) --
+  run against stage1, the self-applied compiler. BVT mode: 10-test
+  subset, full build in ~113s.
 - **Native-class codegen**: sixteen-CL optimization campaign. sum-to-N
   compiles to 14 x86-64 instructions -- below C at /Od (20) and /O2
   (23); fact within 1 of C /Od; fib within 2 of the .NET JITs. TCO
@@ -657,6 +671,8 @@ remains in the depot as historical record only.
 | **CDX binary** | **Full support** | **Self-sustaining target.** Signed, verified, bootable. The canonical seed. |
 | **Codex-text** | **Full support** | Bootstrap 2. Re-emits self as Codex source. |
 | **x86-64 bare metal (ELF)** | **Full support** | Derived from CDX. Maintained less frequently. |
+| **ARM64 (AArch64)** | Early | ELF64 plug, QEMU virt board, Thumb-2 encoder, 29 runtime functions. Cross-arch test 8/10 content lines. |
+| **RISC-V (RV32IMC/RV64)** | Early | ELF plug, QEMU virt board, RV32C compressed. Cross-arch test 10/10 perfect. |
 | C#, .NET IL, JS, Wasm, others | Legacy | Research/sample targets, may not track current features. |
 
 CDX and Codex-text are the load-bearing pair. The ELF is a derived artifact.
@@ -846,6 +862,7 @@ old/                      Retired C# reference compiler — historical only
 | **x86-64 codegen optimization** | **Comparison folding, preamble elision, store-load elimination, immediate ops, single-arg mov — fib(35) cut from 107 to 53 instructions. WASM backend + WebGPU 3D. Spark Studio. CodexMagic web platform.** | **2026-06-06** |
 | **Native-class codegen** | **TCO parallel-move shuffle, R8/R9-staged operands, leaf/near-leaf frame elision, IrRemInt + inliner — sum 14 insns (beats C /O2), fact 17, fib 23, gcd 23. Self-verifying fixed point at every step.** | **2026-06-10** |
 | **Application wave** | **628 app modules across 46 apps: ERP suite + 5 verticals, Market e-commerce, Browser, FileShare, Secrets, Diagram, Globe GIS, Star Atlas, MathBook CAS, CVMM desktop, mesh OS (Raft/SWIM), 20 page apps on WebApp template.** | **2026-06-10** |
+| **punctual + unit types + cross-arch** | **Per-function bounded-execution keyword (novel -- no production language has this). Unit types with zero-overhead erasure. ARM64 + RISC-V backend plugs (Hello World on QEMU). IoT protocol stack (MQTT v5, CoAP). Test consolidation (232 -> 137 tests, BVT in 113s).** | **2026-06-13** |
 
 Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 

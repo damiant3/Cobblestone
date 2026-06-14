@@ -15,22 +15,6 @@ $LogFile   = Join-Path $OutDir 'build.log'
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-$lines = [System.Collections.Generic.List[string]]::new()
-
-function Add-Chapter {
-    param([string]$Path, [string[]]$StripCites = @())
-    if (-not (Test-Path -PathType Leaf $Path)) {
-        [Console]::Error.WriteLine("MISSING: $Path")
-        exit 3
-    }
-    foreach ($l in [System.IO.File]::ReadAllLines($Path)) {
-        $skip = $false
-        foreach ($sc in $StripCites) { if ($l -match "cites.*$sc") { $skip = $true } }
-        if (-not $skip) { $lines.Add($l) }
-    }
-    $lines.Add(''); $lines.Add('')
-}
-
 # App chapters in dependency order (leaf deps first, entry point last)
 $AppChapters = @(
     'CvmmTypes',
@@ -62,13 +46,24 @@ $AppChapters = @(
     'CvmmServer'
 )
 
+# App chapters render through Format-CiteChapters so their headers carry
+# the Cvmm-- prefix; compile.ps1's embedded-chapter detection only matches
+# that form, and plain headers make it re-pull every Cvmm chapter into its
+# own prelude (duplicate-definition CDX3001s).
+. (Join-Path $Repo 'build\quire-map.ps1')
+$appOrdered = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($ch in $AppChapters) {
-    Add-Chapter -Path (Join-Path $AppDir "$ch.codex")
+    $path = Join-Path $AppDir "$ch.codex"
+    if (-not (Test-Path -PathType Leaf $path)) {
+        [Console]::Error.WriteLine("MISSING: $path")
+        exit 3
+    }
+    $appOrdered.Add(@{ Quire = 'Cvmm'; Name = $ch; Path = $path; Lines = [System.IO.File]::ReadAllLines($path) })
 }
+$lines = Format-CiteChapters -Ordered $appOrdered
 
 # -- Resolve foreword/OS cites -------------------------------------------
 # Cvmm intra-quire cites are already bundled above -- skip them
-. (Join-Path $Repo 'build\quire-map.ps1')
 try {
     $ordered = Resolve-CiteOrder -RootLines $lines -Repo $Repo -ExcludeQuires @('Cvmm')
 } catch {
@@ -77,7 +72,7 @@ try {
 }
 $preLines = Format-CiteChapters -Ordered $ordered
 
-$body = (($preLines + $lines) -join "`n") + "`n"
+$body = (@($preLines) + @($lines) -join "`n") + "`n"
 [System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))
 Write-Host "[cvmm] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes"
 

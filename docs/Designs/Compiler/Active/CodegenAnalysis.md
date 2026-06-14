@@ -8,7 +8,7 @@ with modulo), and sum-to-N (tail-recursive accumulator).
 
 All compilers produce correct results on all benchmarks.
 
-Updated: 2026-06-10 (post staged binary operands, CL 3663)
+Updated: 2026-06-12 (post commutative both-complex shortcut, CL 3845)
 
 ## Instruction Counts
 
@@ -20,7 +20,7 @@ the bytecode count.
 
 | Bench | Codex | C /Od | C /O2 | C# JIT | F# JIT | Py 3.11 |
 |-------|-------|-------|-------|--------|--------|---------|
-| fib   | 23    | 19    | 20    | 21     | 21     | 21 bc   |
+| fib   | 21    | 19    | 20    | 21     | 21     | 21 bc   |
 | fact  | 17    | 16    | 15    | 16     | 15     | 16 bc   |
 | gcd   | 23    | 18    | 14    | 11     | 9      | 15 bc   |
 | sum   | 14    | 20    | 23    | 9      | 4      | 17 bc   |
@@ -29,12 +29,14 @@ the bytecode count.
 
 | Bench | Codex | Best native | Gap   | Target |
 |-------|-------|-------------|-------|--------|
-| fib   | 23    | 20 (C /O2)  | +15%  | ~22    |
+| fib   | 21    | 20 (C /O2)  | +5%   | ~20    |
 | fact  | 17    | 15 (C/F#)   | +13%  | ~18    |
 | gcd   | 23    | 9 (F# JIT)  | +156% | ~14    |
 | sum   | 14    | 4 (F# JIT)  | +250% | ~8     |
 
-sum is now below C /Od AND C /O2 (14 vs 20 and 23;
+fib matches C# JIT (21) and is 1 instruction above C /O2 (20). The
+remaining gap is the stack guard (cmp rsp, r10 + jb) that C doesn't
+emit. sum is below C /Od AND C /O2 (14 vs 20 and 23;
 the loop body itself is add/lea/jmp, matching the F# JIT's density --
 the rest is prologue/epilogue and the entry branch).
 
@@ -88,8 +90,10 @@ Starting point (CL 3091): fib 107, fact 79, gcd 79, sum 82.
 | 3695 | minimal leaf emission (no frame ceremony) | 31 | 25 | 30 | 14 | +2373 B |
 | 3702 | near-leaf emission (calls allowed, guard kept) | 23 | 17 | 24 | 14 | +3714 B |
 | 3746 | IrRemInt + leaf inliner (math-mod inline) | 23 | 17 | 23 | 14 | +20346 B |
+| 3839 | tails-all-direct TCO temp elision | 23 | 17 | 23 | 14 | +1426 B |
+| 3845 | commutative both-complex shortcut (pop+op) | 21 | 17 | 23 | 14 | +408 B |
 
-Seed: 2,191,873 (start) -> 2,074,257 (current) = -117,616 bytes total (-5.4%). The 3695 delta is positive: the leaf-profile pass costs more code than the ceremony it removes statically; the win is sum at 14 and 5-9 fewer executed instructions per eligible leaf call.
+Seed: 2,191,873 (start) -> 2,114,168 (current) = -77,705 bytes total (-3.5%). The 3695 delta is positive: the leaf-profile pass costs more code than the ceremony it removes statically; the win is sum at 14 and 5-9 fewer executed instructions per eligible leaf call.
 
 Note: fib/fact/gcd/sum function-body instruction counts plateaued at
 CL 3400. The later CLs (mul-imm, cmp-imm, reg-right) reduce seed size
@@ -384,3 +388,22 @@ read what the builtin actually emits. An exact rewrite needs a
 truncated-remainder op (IrRemInt) that emits RDX directly; that adds
 a node kind to post-inline IR, which plugs consume, so it needs a
 plug protocol review first.
+
+### Commutative Both-Complex Shortcut (CL 3845, LANDED)
+
+When both operands of IrAddInt or IrMulInt are complex (neither is a
+literal nor a local name), the staged binary path was: eval left, push,
+eval right, mov r9 rax, pop r8, then emit-binary-op (alloc-temp-avoiding
++ mov rd r8 + add rd r9) -- 4 instructions after the second eval. For
+commutative ops the result is independent of operand order, so: eval
+left, push, eval right, pop r8, add rax r8 -- 2 instructions. The pop
+target is r8 (not in the temp cycle) unless r.reg == r8 (rare:
+load-local scratch from nested IrIf), in which case r9 is used.
+
+fib 23 -> 21, matching C# JIT. fact/gcd/sum unchanged (no both-complex
+binary sites). Seed +408 bytes (the when/is dispatch for IrAddInt and
+IrMulInt in emit-binary-staged). The both-complex case is rare in the
+compiler's own code (~2600 functions, most binary expressions have at
+least one local or literal operand), so the machinery cost exceeds its
+seed savings. The win is in user programs with tree recursion or nested
+call arithmetic.

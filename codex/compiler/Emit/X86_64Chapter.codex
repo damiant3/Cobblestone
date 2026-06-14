@@ -223,6 +223,7 @@ Section: Bare-Metal Start
      in emit-opening-print-sum st resolved cargs reg-rax
     is SumTy (sname) (sargs) (ctors) ->
      emit-opening-print-sum st (st.opening-ret-type) sargs reg-rax
+    is UnitTy (n) (inner) -> emit-opening-result-print (__record-set st "opening-ret-type" inner)
     is otherwise -> st
 
   emit-opening-print-sum : CodegenState, CodexType, List CodexType, Integer -> CodegenState
@@ -296,6 +297,7 @@ Section: Bare-Metal Start
      let st1 = st-append-code st (mov-rr reg-rdi reg-rax)
      in let st2 = emit-call-to st1 "__number_to_text"
      in emit-print-text-no-newline st2 reg-rax
+    is UnitTy (n) (inner) -> emit-opening-print-field st inner
     is otherwise -> emit-inline-itoa-and-print st
 
   emit-print-bool-no-newline : CodegenState, Integer -> CodegenState
@@ -733,24 +735,35 @@ Section: Finalize
    in let w-direct = apply-direct-addr-patches-direct (st2d.workspace.code-buffer) (st2d.da-poffsets) (st2d.da-offsets) bare-metal-load-addr 0
    in let code-len = st2d.code-len
    in let data-len = tbl.len
-   in let text-bytes = __buf-read-bytes (st2d.workspace.code-buffer) 0 code-len
-   in let rodata-bytes = __buf-read-bytes (st2d.workspace.data-buffer) 0 data-len
    in let text-aligned = align-up code-len 8
-   in let pad-len = text-aligned - code-len
-   in let padding = cdx-zeros pad-len
-   in let content = text-bytes & padding & rodata-bytes
-   in let content-hash = sha256 content
+   in let content-len = text-aligned + data-len
+   in if content-len > st2d.workspace.code-capacity
+      then let st-err = st-add-error st2d cdx-resource-exhausted ("CDX content (" & integer-to-text content-len & " bytes) exceeds code-buffer capacity; raise code-buffer-size") synthetic-span
+       in EmitChapterResult {
+        header-bytes = [],
+        content-buf = 0,
+        content-len = 0,
+        tail-bytes = [],
+        bag = st-err.bag,
+        symbol-map = []
+       }
+   else let zpad = __buf-write-bytes (st2d.workspace.code-buffer) code-len (cdx-zeros (text-aligned - code-len))
+   in let cpy = buf-copy-chunked (st2d.workspace.code-buffer) text-aligned (st2d.workspace.data-buffer) 0 data-len
+   in let content-hash = sha256-buf (st2d.workspace.code-buffer) 0 content-len
    in let cdx-header-size = 224
    in let cap-size = 0
    in let text-offset = cdx-header-size + cap-size
    in let rodata-offset = text-offset + text-aligned
    in let func-count = list-length (st2d.fo-names)
    in let debug-map = build-debug-map (st2d.fo-names) (st2d.fo-offsets) code-len func-count
-   in let debug-off = if func-count > 0 then cdx-header-size + list-length content else 0
+   in let debug-off = if func-count > 0 then cdx-header-size + content-len else 0
    in let header = cdx-build-header content-hash text-offset code-len rodata-offset data-len start-offset debug-off
    in let smap = build-symbol-map (st2d.fo-names) (st2d.fo-offsets) bare-metal-load-addr code-len 0 func-count []
    in EmitChapterResult {
-    bytes = header & content & debug-map,
+    header-bytes = header,
+    content-buf = st2d.workspace.code-buffer,
+    content-len = content-len,
+    tail-bytes = debug-map,
     bag = st2d.bag,
     symbol-map = smap
    }
@@ -893,7 +906,7 @@ Section: Binary Debug Map (MAP1)
 
   x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean -> EmitChapterResult
   x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) =
-   let emit-deck = emit-build (list-length (m.defs) * 65536 + 16777216)
+   let emit-deck = emit-build (list-length (m.defs) * 65536 + 25165824)
    in let de = __deck-enter
    in let tramp = bare-metal-trampoline
    in let st0 = x86-64-init-codegen-sorted tdefs
