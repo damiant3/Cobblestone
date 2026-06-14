@@ -47,7 +47,20 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Phase 3: parse wire protocol and build ELF64
-$wireBytes = [System.IO.File]::ReadAllBytes($WireFile)
+$rawWire = [System.IO.File]::ReadAllBytes($WireFile)
+# Skip leading serial preamble (find the wire header: first byte where
+# a plausible code-len int32 lives)
+$wireOff = 0
+for ($wi = 0; $wi -lt [Math]::Min(64, $rawWire.Length - 12); $wi++) {
+    $cl = [BitConverter]::ToInt32($rawWire, $wi)
+    $dl = [BitConverter]::ToInt32($rawWire, $wi + 4)
+    $fc = [BitConverter]::ToInt32($rawWire, $wi + 8)
+    if ($cl -gt 0 -and $cl -lt 1000000 -and $dl -ge 0 -and $dl -lt 100000 -and $fc -gt 0 -and $fc -lt 200 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64) {
+        $wireOff = $wi; break
+    }
+}
+$wireBytes = New-Object byte[] ($rawWire.Length - $wireOff)
+[Array]::Copy($rawWire, $wireOff, $wireBytes, 0, $wireBytes.Length)
 $codeLen = [BitConverter]::ToInt32($wireBytes, 0)
 $dataLen = [BitConverter]::ToInt32($wireBytes, 4)
 $funcCount = [BitConverter]::ToInt32($wireBytes, 8)

@@ -440,14 +440,26 @@ Section: Check Chapter
   check-rt-no-lambda : UnificationState, AExpr, Text -> UnificationState
   check-rt-no-lambda (st) (expr) (fn) =
    when expr
-    is ALambdaExpr (ps) (b) (s) -> __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-closure ("[HardRealtime] function '" & fn & "' contains a lambda") s))
+    is ALambdaExpr (ps) (b) (s) -> __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-closure ("punctual function '" & fn & "' contains a lambda or closure") s))
     is AIfExpr (c) (t) (e) (s) -> check-rt-no-lambda (check-rt-no-lambda (check-rt-no-lambda st c fn) t fn) e fn
-    is ALetExpr (bs) (b) (s) -> check-rt-no-lambda st b fn
+    is ALetExpr (bs) (b) (s) -> check-rt-no-lambda (check-rt-let-binds st bs fn 0 (list-length bs)) b fn
     is AApplyExpr (f) (a) (s) -> check-rt-no-lambda (check-rt-no-lambda st f fn) a fn
     is ABinaryExpr (l) (op) (r) (s) -> check-rt-no-lambda (check-rt-no-lambda st l fn) r fn
-    is AMatchExpr (sc) (arms) (s) -> check-rt-no-lambda st sc fn
+    is AMatchExpr (sc) (arms) (s) -> check-rt-no-lambda-arms (check-rt-no-lambda st sc fn) arms fn 0 (list-length arms)
     is AActExpr (stmts) (s) -> st
     is otherwise -> st
+
+  check-rt-let-binds : UnificationState, List ALetBind, Text, Integer, Integer -> UnificationState
+  check-rt-let-binds (st) (bs) (fn) (i) (len) =
+   if i >= len then st
+   else let b = list-at bs i
+   in check-rt-let-binds (check-rt-no-lambda st (b.value) fn) bs fn (i + 1) len
+
+  check-rt-no-lambda-arms : UnificationState, List AMatchArm, Text, Integer, Integer -> UnificationState
+  check-rt-no-lambda-arms (st) (arms) (fn) (i) (len) =
+   if i >= len then st
+   else let arm = list-at arms i
+   in check-rt-no-lambda-arms (check-rt-no-lambda st (arm.body) fn) arms fn (i + 1) len
 
   is-rt-unsafe-name : Text -> Boolean
   is-rt-unsafe-name (n) =
@@ -460,12 +472,24 @@ Section: Check Chapter
   check-rt-calls : UnificationState, AExpr, Text, List Text -> UnificationState
   check-rt-calls (st) (expr) (fn) (rt-names) =
    when expr
-    is AApplyExpr (f) (a) (s) -> let st1 = check-rt-calls st a fn rt-names in when f is ANameExpr (n) (ns) -> if is-rt-name rt-names (n.value) 0 (list-length rt-names) | is-rt-safe-builtin (n.value) then st1 else __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-calls-unsafe ("[HardRealtime] function '" & fn & "' calls '" & n.value & "' which is not @hard-realtime") ns)) is otherwise -> check-rt-calls st1 f fn rt-names
+    is AApplyExpr (f) (a) (s) -> let st1 = check-rt-calls st a fn rt-names in when f is ANameExpr (n) (ns) -> if is-rt-name rt-names (n.value) 0 (list-length rt-names) | is-rt-safe-builtin (n.value) then st1 else __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-calls-unsafe ("punctual function '" & fn & "' calls '" & n.value & "' which is not punctual") ns)) is otherwise -> check-rt-calls st1 f fn rt-names
     is AIfExpr (c) (t) (e) (s) -> check-rt-calls (check-rt-calls (check-rt-calls st c fn rt-names) t fn rt-names) e fn rt-names
-    is ALetExpr (bs) (b) (s) -> check-rt-calls st b fn rt-names
+    is ALetExpr (bs) (b) (s) -> check-rt-calls (check-rt-calls-let-binds st bs fn rt-names 0 (list-length bs)) b fn rt-names
     is ABinaryExpr (l) (op) (r) (s) -> check-rt-calls (check-rt-calls st l fn rt-names) r fn rt-names
-    is AMatchExpr (sc) (arms) (s) -> check-rt-calls st sc fn rt-names
+    is AMatchExpr (sc) (arms) (s) -> check-rt-calls-match-arms (check-rt-calls st sc fn rt-names) arms fn rt-names 0 (list-length arms)
     is otherwise -> st
+
+  check-rt-calls-let-binds : UnificationState, List ALetBind, Text, List Text, Integer, Integer -> UnificationState
+  check-rt-calls-let-binds (st) (bs) (fn) (rt-names) (i) (len) =
+   if i >= len then st
+   else let b = list-at bs i
+   in check-rt-calls-let-binds (check-rt-calls st (b.value) fn rt-names) bs fn rt-names (i + 1) len
+
+  check-rt-calls-match-arms : UnificationState, List AMatchArm, Text, List Text, Integer, Integer -> UnificationState
+  check-rt-calls-match-arms (st) (arms) (fn) (rt-names) (i) (len) =
+   if i >= len then st
+   else let arm = list-at arms i
+   in check-rt-calls-match-arms (check-rt-calls st (arm.body) fn rt-names) arms fn rt-names (i + 1) len
 
   check-rt-no-alloc : UnificationState, AExpr, Text -> UnificationState
   check-rt-no-alloc (st) (expr) (fn) =
@@ -473,10 +497,22 @@ Section: Check Chapter
     is ANameExpr (n) (s) -> if is-rt-unsafe-name (n.value) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses heap-allocating builtin '" & n.value & "'") s)) else st
     is ABinaryExpr (l) (op) (r) (s) -> let st1 = check-rt-no-alloc (check-rt-no-alloc st l fn) r fn in when op is OpAppend -> __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses text concatenation (&)") s)) is otherwise -> st1
     is AIfExpr (c) (t) (e) (s) -> check-rt-no-alloc (check-rt-no-alloc (check-rt-no-alloc st c fn) t fn) e fn
-    is ALetExpr (bs) (b) (s) -> check-rt-no-alloc st b fn
+    is ALetExpr (bs) (b) (s) -> check-rt-no-alloc (check-rt-alloc-let-binds st bs fn 0 (list-length bs)) b fn
     is AApplyExpr (f) (a) (s) -> check-rt-no-alloc (check-rt-no-alloc st f fn) a fn
-    is AMatchExpr (sc) (arms) (s) -> check-rt-no-alloc st sc fn
+    is AMatchExpr (sc) (arms) (s) -> check-rt-alloc-match-arms (check-rt-no-alloc st sc fn) arms fn 0 (list-length arms)
     is otherwise -> st
+
+  check-rt-alloc-let-binds : UnificationState, List ALetBind, Text, Integer, Integer -> UnificationState
+  check-rt-alloc-let-binds (st) (bs) (fn) (i) (len) =
+   if i >= len then st
+   else let b = list-at bs i
+   in check-rt-alloc-let-binds (check-rt-no-alloc st (b.value) fn) bs fn (i + 1) len
+
+  check-rt-alloc-match-arms : UnificationState, List AMatchArm, Text, Integer, Integer -> UnificationState
+  check-rt-alloc-match-arms (st) (arms) (fn) (i) (len) =
+   if i >= len then st
+   else let arm = list-at arms i
+   in check-rt-alloc-match-arms (check-rt-no-alloc st (arm.body) fn) arms fn (i + 1) len
 
   is-rt-unsafe-effect : Text -> Boolean
   is-rt-unsafe-effect (e) =

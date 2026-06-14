@@ -1,6 +1,7 @@
 Chapter: RateLimiter
   cites Foreword chapter Maybe
   cites Foreword chapter ListUtils
+  cites Foreword chapter DateTime (Timestamp, MilliStamp)
 
  A TokenBucket is a record containing tb-tokens, tb-capacity, tb-refill-rate, and tb-last-refill.
  A SlidingWindow is a record containing sw-counts, sw-slots, sw-window-ms, sw-limit, and sw-current-slot.
@@ -22,24 +23,24 @@ Section: Token Bucket
     tb-tokens : Integer,
     tb-capacity : Integer,
     tb-refill-rate : Integer,
-    tb-last-refill : Integer
+    tb-last-refill : Timestamp
   }
 
   tb-new : Integer, Integer -> TokenBucket
   tb-new (capacity) (refill-per-second) = TokenBucket { tb-tokens = capacity, tb-capacity = capacity, tb-refill-rate = refill-per-second, tb-last-refill = 0 }
 
-  tb-try-consume : TokenBucket, Integer, Integer -> TokenBucket
+  tb-try-consume : TokenBucket, Integer, Timestamp -> TokenBucket
   tb-try-consume (bucket) (count) (now) =
     let refilled = tb-refill bucket now
     in if refilled.tb-tokens >= count then TokenBucket { tb-tokens = refilled.tb-tokens - count, tb-capacity = refilled.tb-capacity, tb-refill-rate = refilled.tb-refill-rate, tb-last-refill = refilled.tb-last-refill }
     else refilled
 
-  tb-can-consume : TokenBucket, Integer, Integer -> Boolean
+  tb-can-consume : TokenBucket, Integer, Timestamp -> Boolean
   tb-can-consume (bucket) (count) (now) =
     let refilled = tb-refill bucket now
     in refilled.tb-tokens >= count
 
-  tb-refill : TokenBucket, Integer -> TokenBucket
+  tb-refill : TokenBucket, Timestamp -> TokenBucket
   tb-refill (bucket) (now) =
     let elapsed = now - bucket.tb-last-refill
     in let new-tokens = elapsed * bucket.tb-refill-rate / 1000
@@ -47,22 +48,22 @@ Section: Token Bucket
     in let capped = if total > bucket.tb-capacity then bucket.tb-capacity else total
     in TokenBucket { tb-tokens = capped, tb-capacity = bucket.tb-capacity, tb-refill-rate = bucket.tb-refill-rate, tb-last-refill = now }
 
-  tb-available : TokenBucket, Integer -> Integer
+  tb-available : TokenBucket, Timestamp -> Integer
   tb-available (bucket) (now) = (tb-refill bucket now).tb-tokens
 
 Section: Sliding Window
   SlidingWindow = record {
     sw-counts : List Integer,
     sw-slots : Integer,
-    sw-window-ms : Integer,
+    sw-window-ms : Timestamp,
     sw-limit : Integer,
     sw-current-slot : Integer
   }
 
-  sw-new : Integer, Integer, Integer -> SlidingWindow
+  sw-new : Timestamp, Integer, Integer -> SlidingWindow
   sw-new (window-ms) (slots) (limit) = SlidingWindow { sw-counts = list-zeros slots, sw-slots = slots, sw-window-ms = window-ms, sw-limit = limit, sw-current-slot = 0 }
 
-  sw-record : SlidingWindow, Integer -> SlidingWindow
+  sw-record : SlidingWindow, Timestamp -> SlidingWindow
   sw-record (w) (now) =
     let slot = sw-slot-for w now
     in let advanced = sw-advance w slot

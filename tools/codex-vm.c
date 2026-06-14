@@ -36,7 +36,9 @@ static WHV_PARTITION_HANDLE partition;
 static HANDLE whp_mutex;
 static void whp_lock(void) {
     if (!whp_mutex) whp_mutex = CreateMutexA(NULL, FALSE, "Global\\CodexVmWhpMutex");
-    if (whp_mutex) WaitForSingleObject(whp_mutex, 30000);
+    if (!whp_mutex) { fprintf(stderr, "FATAL: CreateMutex failed (%lu)\n", GetLastError()); exit(99); }
+    DWORD r = WaitForSingleObject(whp_mutex, INFINITE);
+    if (r == WAIT_FAILED) { fprintf(stderr, "FATAL: WHP mutex wait failed (%lu)\n", GetLastError()); exit(99); }
 }
 static void whp_unlock(void) {
     if (whp_mutex) ReleaseMutex(whp_mutex);
@@ -2350,7 +2352,7 @@ static void ne2k_handle_out(int port, int val, int io_size) {
         switch (off) {
         case 0x01: ne2k.pstart = val; break;
         case 0x02: ne2k.pstop = val; break;
-        case 0x03: ne2k.bnry = val; break;
+        case 0x03: ne2k.bnry = val; ne2k_inject_rx(); break;
         case 0x04: ne2k.tpsr = val; break;
         case 0x05: ne2k.tbcr = (ne2k.tbcr & 0xFF00) | (val & 0xFF); break;
         case 0x06: ne2k.tbcr = (ne2k.tbcr & 0x00FF) | ((val & 0xFF) << 8); break;

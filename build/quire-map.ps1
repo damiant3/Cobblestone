@@ -53,6 +53,12 @@ $QuireDirs = @{
     'Helm' = 'apps\helm'
     'WebApp' = 'apps\webapp'
     'ERP' = 'apps\erp'
+    'Vision' = 'apps\vision'
+    'Collab' = 'apps\collab'
+    'Services' = 'apps\services'
+    'Market' = 'apps\market'
+    'Workflow' = 'apps\workflow'
+    'Boards' = 'codex\boards'
 }
 
 function New-CitePattern {

@@ -92,8 +92,8 @@ Section: Types
     | MediaVolumeDown
     | MediaToggleMute
     | MediaToggleFullscreen
-    | MediaVideoFrame (Integer, List Integer)
-    | MediaAudioPacket (Integer, List Integer)
+    | MediaVideoFrame (Integer) (List Integer)
+    | MediaAudioPacket (Integer) (List Integer)
     | MediaEnded
     | MediaError (Text)
     | MediaSkipForward
@@ -105,13 +105,13 @@ Section: Construction
   player-new =
     PlayerState {
       ps-playback = Stopped,
-      ps-media-info = Nothing,
+      ps-media-info = None,
       ps-position-ms = 0,
       ps-duration-ms = 0,
       ps-volume = 80,
       ps-muted = False,
       ps-fullscreen = False,
-      ps-video-frame = Nothing,
+      ps-video-frame = None,
       ps-prev-pixels = [],
       ps-audio-buffer = [],
       ps-audio-out = audio-output-new,
@@ -156,9 +156,9 @@ Section: Playback Control
         __record-set ps "ps-muted" (if ps.ps-muted then False else True)
       is MediaToggleFullscreen ->
         __record-set ps "ps-fullscreen" (if ps.ps-fullscreen then False else True)
-      is MediaVideoFrame (ts, data) ->
+      is MediaVideoFrame (ts) (data) ->
         player-receive-video ps ts data
-      is MediaAudioPacket (ts, data) ->
+      is MediaAudioPacket (ts) (data) ->
         player-receive-audio ps ts data
       is MediaEnded -> __record-set ps "ps-playback" Ended
       is MediaError (msg) -> __record-set ps "ps-playback" Stopped
@@ -230,10 +230,8 @@ Section: Video Frame Reception
 
   apply-delta-list : List Integer, List PixelDelta -> List Integer
   apply-delta-list (pixels) (deltas) =
-    when deltas
-      is [] -> pixels
-      is otherwise ->
-        let head = list-at deltas 0
+    if list-length deltas == 0 then pixels
+    else let head = list-at deltas 0
         in apply-delta-list (list-set-at pixels head.pd-offset head.pd-color) (list-drop deltas 1)
 
   decode-delta-list : List Integer -> List PixelDelta
@@ -523,10 +521,8 @@ Section: Channel Integration
 
   process-video-packets : PlayerState, List (List Integer) -> PlayerState
   process-video-packets (ps) (packets) =
-    when packets
-      is [] -> ps
-      is otherwise ->
-        let head = list-at packets 0
+    if list-length packets == 0 then ps
+    else let head = list-at packets 0
         in let parsed = parse-video-packet head
         in let updated = when parsed
               is None -> ps
@@ -536,10 +532,8 @@ Section: Channel Integration
 
   process-audio-packets : PlayerState, List (List Integer) -> PlayerState
   process-audio-packets (ps) (packets) =
-    when packets
-      is [] -> ps
-      is otherwise ->
-        let head = list-at packets 0
+    if list-length packets == 0 then ps
+    else let head = list-at packets 0
         in let updated = player-receive-audio ps 0 head
         in process-audio-packets updated (list-drop packets 1)
 

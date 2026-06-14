@@ -34,27 +34,36 @@ Each test `foo.codex` may have sidecars that control its behavior:
 
 A test with no sidecar compiles but is unverified (PASS_UNVERIFIED).
 
-## Current State (2026-06-02, CL 2986)
+## Current State (2026-06-13, CL 4082)
+
+99 individual tests consolidated into 11 smoke bundles (unit-smoke,
+rt-smoke, try-smoke, prose-smoke, linear-smoke, linear-errors,
+mutable-smoke, typeclass-smoke, handler-smoke, record-smoke,
+lang-smoke, bs3-smoke, punctual-smoke). Each smoke test exercises
+multiple features in a single VM boot, cutting battery time ~60%.
+
+BVT mode (`build/build.ps1` default): runs a 10-test subset for
+fast iteration (~18s). Full battery: `build/test.ps1 -Jobs 4`.
 
 ### Default Battery (`build/test.ps1`)
 
 | Category | Count |
 |----------|-------|
-| PASS_EXPECTED | 161 |
-| PASS_FAILING | 40 |
+| PASS_EXPECTED | ~85 |
+| PASS_FAILING | ~42 |
 | SKIPPED | 10 |
 | FAIL | 0 |
-| **Total** | **211** |
+| **Total** | **~137** |
 
 ### Full Battery (`build/test.ps1 -Apps`)
 
 | Category | Count |
 |----------|-------|
-| PASS_EXPECTED | 405 |
-| PASS_FAILING | 40 |
-| SKIPPED | 25 |
+| PASS_EXPECTED | ~290 |
+| PASS_FAILING | ~42 |
+| SKIPPED | ~25 |
 | FAIL | 0 |
-| **Total** | **416** (all compilable tests pass individually) |
+| **Total** | **~357** |
 
 The batch REPL compiler times out on ~118 large-dependency-chain
 tests in `-Apps` mode. These tests compile and pass when given

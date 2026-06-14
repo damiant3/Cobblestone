@@ -2,6 +2,8 @@ Chapter: PageSandbox
   cites Foreword chapter Maybe
   cites Browser chapter TrustManager
   cites Browser chapter ContentAddress
+  cites Foreword chapter ListUtils
+  cites Foreword chapter StringUtils
 
  The capability gate. Verifies a page's declared effect profile
  against the user's trust decisions before allowing execution.
@@ -20,7 +22,7 @@ Section: Types
 
   SandboxVerdict =
     | SandboxAllow
-    | SandboxPrompt (CapabilityTier, List Text)
+    | SandboxPrompt (CapabilityTier) (List Text)
     | SandboxDeny (Text)
 
   SandboxConfig = record {
@@ -46,16 +48,16 @@ Section: Verification
     if caps.pc-tier == TierStatic
     then if config.sb-auto-trust-static
       then SandboxAllow
-      else SandboxPrompt (TierStatic, caps.pc-effects)
+      else SandboxPrompt (TierStatic) (caps.pc-effects)
     else when publisher
-      is None -> SandboxPrompt (caps.pc-tier, caps.pc-effects)
+      is None -> SandboxPrompt (caps.pc-tier) (caps.pc-effects)
       is Just (pub-key) ->
         let verdict = check-page-trust store pub-key caps
         in when verdict
           is TrustGranted -> SandboxAllow
-          is TrustNeeded (tier) -> SandboxPrompt (tier, caps.pc-effects)
-          is TrustEscalation (requested, granted) ->
-            SandboxPrompt (requested, caps.pc-effects)
+          is TrustNeeded (tier) -> SandboxPrompt (tier) (caps.pc-effects)
+          is TrustEscalation (requested) (granted) ->
+            SandboxPrompt (requested) (caps.pc-effects)
 
 Section: Source Size Gate
 
@@ -89,10 +91,8 @@ Section: Embedding Capabilities
 
   all-grants-within-parent : List Text, List CapabilityGrant -> Boolean
   all-grants-within-parent (parent-effects) (grants) =
-    when grants
-      is [] -> True
-      is otherwise ->
-        let head = list-at grants 0
+    if list-length grants == 0 then True
+    else let head = list-at grants 0
         in if list-any parent-effects (text-eq head.cg-effect)
           then all-grants-within-parent parent-effects (list-drop grants 1)
           else False

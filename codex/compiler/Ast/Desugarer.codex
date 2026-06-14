@@ -67,6 +67,14 @@ Section: Expression Desugaring
      let ds = desugar-expr-at stmt (depth + 1)
      in let dr = desugar-expr-at rest (depth + 1)
      in deck-record (ALetExpr [deck-record (ALetBind { name = make-name "__seq", value = ds, span = aexpr-span ds })] dr (desugared-span (aexpr-span dr)))
+    is RevisedExpr (base) (fields) ->
+     let dbase = desugar-expr-at base (depth + 1)
+     in let rev-name = make-name "__rev"
+     in let rev-ref = deck-record (ANameExpr rev-name synthetic-span)
+     in let rev-vals = desugar-revised-vals fields 0 (depth + 1)
+     in let rev-chain = desugar-revised-chain rev-ref fields 0 (list-length fields)
+     in let bind-vals = desugar-revised-val-binds rev-vals rev-chain 0 (list-length rev-vals)
+     in deck-record (ALetExpr [deck-record (ALetBind { name = rev-name, value = dbase, span = synthetic-span })] bind-vals (desugared-span synthetic-span))
     is LazyExpr (inner) -> deck-record (ALazyExpr (desugar-expr-at inner (depth + 1)) synthetic-span)
     is ForExpr (var-tok) (list-expr) (body) ->
      let dlist = desugar-expr-at list-expr (depth + 1)
@@ -150,6 +158,33 @@ Section: Expression Desugaring
     value = desugar-expr (f.value),
     span = token-span (f.name)
    })
+
+  desugar-revised-vals : List RecordFieldExpr, Integer, Integer -> List AExpr
+  desugar-revised-vals (fields) (i) (depth) =
+   if i >= list-length fields then []
+   else let f = list-at fields i
+     in [desugar-expr-at (f.value) depth] & desugar-revised-vals fields (i + 1) depth
+
+  desugar-revised-chain : AExpr, List RecordFieldExpr, Integer, Integer -> AExpr
+  desugar-revised-chain (acc) (fields) (i) (len) =
+   if i >= len then acc
+   else let f = list-at fields i
+     in let val-name = make-name ("__rv" & integer-to-text i)
+     in let val-ref = deck-record (ANameExpr val-name synthetic-span)
+     in let field-text = token-text (f.name)
+     in let rs = deck-record (ANameExpr (make-name "__record-set") synthetic-span)
+     in let a1 = deck-record (AApplyExpr rs acc synthetic-span)
+     in let a2 = deck-record (AApplyExpr a1 (deck-record (ALitExpr field-text TextLit synthetic-span)) synthetic-span)
+     in let a3 = deck-record (AApplyExpr a2 val-ref synthetic-span)
+     in desugar-revised-chain a3 fields (i + 1) len
+
+  desugar-revised-val-binds : List AExpr, AExpr, Integer, Integer -> AExpr
+  desugar-revised-val-binds (vals) (body) (i) (len) =
+   if i >= len then body
+   else let val-name = make-name ("__rv" & integer-to-text i)
+     in let val-expr = list-at vals i
+     in let rest = desugar-revised-val-binds vals body (i + 1) len
+     in deck-record (ALetExpr [deck-record (ALetBind { name = val-name, value = val-expr, span = synthetic-span })] rest (desugared-span synthetic-span))
 
   desugar-act-stmt : ActStmt -> AActStmt
   desugar-act-stmt (s) =
@@ -312,6 +347,10 @@ Section: Definition Desugaring
     is RecordBody (fields) -> deck-record (ARecordTypeDef (make-name (token-text (td.name))) (map-list make-type-param-name (td.type-params)) (map-list desugar-record-field-def fields) (td.is-mutable) (token-span (td.name)))
     is VariantBody (ctors) -> deck-record (AVariantTypeDef (make-name (token-text (td.name))) (map-list make-type-param-name (td.type-params)) (map-list desugar-variant-ctor-def ctors) (token-span (td.name)))
     is UnitBody (base) -> deck-record (AUnitTypeDef (make-name (token-text (td.name))) (desugar-type-expr base) (token-span (td.name)))
+    is UnitFamilyBody (base-tok) (members) -> deck-record (AUnitTypeDef (make-name (token-text (td.name))) (deck-record (ANamedType (make-name "Integer") synthetic-span)) (token-span (td.name)))
+
+  desugar-family-as-unit-body : UnitFamilyMember -> TypeBody
+  desugar-family-as-unit-body (m) = UnitBody (deck-record (NamedType (m.member-name)))
 
   make-type-param-name : Token -> Name
   make-type-param-name (tok) =
@@ -403,24 +442,88 @@ Section: Document Desugaring
    else synth-conversion-defs anns (i + 1) len acc
 
   synth-one-conversion : Text, Text, LinkedList ADef -> LinkedList ADef
-  synth-one-conversion (fname-text) (factor-text) (acc) =
-   let pname = make-name "__cv"
-   in let fname = make-name fname-text
+  synth-one-conversion (from-unit) (body) (acc) =
+   let sp = find-space body 0 (text-length body)
+   in if sp >= text-length body then acc
+   else let factor-text = substring body 0 sp
+   in let to-unit = substring body (sp + 1) (text-length body - sp - 1)
+   in let pname = make-name "__cv"
+   in let fname = make-name (from-unit & "-to-" & to-unit)
+   in let from-ty = deck-record (ANamedType (make-name from-unit) synthetic-span)
+   in let to-ty = deck-record (ANamedType (make-name to-unit) synthetic-span)
+   in let sig = deck-record (AFunType from-ty to-ty synthetic-span)
    in let mul-expr = deck-record (ABinaryExpr (deck-record (ANameExpr pname synthetic-span)) OpMul (deck-record (ALitExpr factor-text IntLit synthetic-span)) synthetic-span)
+   in let ctor-call = deck-record (AApplyExpr (deck-record (ANameExpr (make-name to-unit) synthetic-span)) mul-expr synthetic-span)
    in let fwd-def = deck-record (ADef {
     name = fname,
     params = [deck-record (AParam { name = pname, span = synthetic-span })],
-    declared-type = [],
-    body = mul-expr,
+    declared-type = [sig],
+    body = ctor-call,
     chapter-slug = "",
     span = synthetic-span
    })
    in __linked-list-push acc fwd-def
 
+  synth-family-member-defs : List TypeDef, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  synth-family-member-defs (tds) (i) (len) (acc) =
+   if i >= len then acc
+   else let td = list-at tds i
+   in when td.body
+    is UnitFamilyBody (base-tok) (members) -> synth-family-member-defs tds (i + 1) len (synth-family-members (token-text (td.name)) members 0 (list-length members) acc)
+    is otherwise -> synth-family-member-defs tds (i + 1) len acc
+
+  synth-family-members : Text, List UnitFamilyMember, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  synth-family-members (family-name) (members) (i) (len) (acc) =
+   if i >= len then acc
+   else let m = list-at members i
+   in let member-name = token-text (m.member-name)
+   in let acc2 = synth-family-ctor family-name member-name (m.factor) acc
+   in let acc3 = synth-family-extract family-name member-name (m.factor) acc2
+   in synth-family-members family-name members (i + 1) len acc3
+
+  synth-family-ctor : Text, Text, Integer, LinkedList ADef -> LinkedList ADef
+  synth-family-ctor (family-name) (member-name) (factor) (acc) =
+   let pname = make-name "__fv"
+   in let fname = make-name member-name
+   in let family-ty = deck-record (ANamedType (make-name family-name) synthetic-span)
+   in let int-ty = deck-record (ANamedType (make-name "Integer") synthetic-span)
+   in let sig = deck-record (AFunType int-ty family-ty synthetic-span)
+   in let body = if factor == 1 then deck-record (AApplyExpr (deck-record (ANameExpr (make-name family-name) synthetic-span)) (deck-record (ANameExpr pname synthetic-span)) synthetic-span)
+     else let mul = deck-record (ABinaryExpr (deck-record (ANameExpr pname synthetic-span)) OpMul (deck-record (ALitExpr (integer-to-text factor) IntLit synthetic-span)) synthetic-span)
+     in deck-record (AApplyExpr (deck-record (ANameExpr (make-name family-name) synthetic-span)) mul synthetic-span)
+   in __linked-list-push acc (deck-record (ADef {
+    name = fname,
+    params = [deck-record (AParam { name = pname, span = synthetic-span })],
+    declared-type = [sig],
+    body = body,
+    chapter-slug = "",
+    span = synthetic-span
+   }))
+
+  synth-family-extract : Text, Text, Integer, LinkedList ADef -> LinkedList ADef
+  synth-family-extract (family-name) (member-name) (factor) (acc) =
+   let pname = make-name "__fv"
+   in let fname = make-name (family-name & "-to-" & member-name)
+   in let family-ty = deck-record (ANamedType (make-name family-name) synthetic-span)
+   in let int-ty = deck-record (ANamedType (make-name "Integer") synthetic-span)
+   in let sig = deck-record (AFunType family-ty int-ty synthetic-span)
+   in let body = if factor == 1 then deck-record (ANameExpr pname synthetic-span)
+     else deck-record (ABinaryExpr (deck-record (ANameExpr pname synthetic-span)) OpDiv (deck-record (ALitExpr (integer-to-text factor) IntLit synthetic-span)) synthetic-span)
+   in __linked-list-push acc (deck-record (ADef {
+    name = fname,
+    params = [deck-record (AParam { name = pname, span = synthetic-span })],
+    declared-type = [sig],
+    body = body,
+    chapter-slug = "",
+    span = synthetic-span
+   }))
+
   desugar-document : Text, Document, Text -> AChapter
   desugar-document (source) (doc) (chapter-name) =
    let raw-defs0 = desugar-defs-ll (doc.defs) 0 (list-length (doc.defs)) []
-   in let raw-defs = synth-derived-defs (doc.type-defs) 0 (list-length (doc.type-defs)) raw-defs0
+   in let raw-defs-fam = synth-family-member-defs (doc.type-defs) 0 (list-length (doc.type-defs)) raw-defs0
+   in let raw-defs-conv = synth-conversion-defs (doc.annotations) 0 (list-length (doc.annotations)) raw-defs-fam
+   in let raw-defs = synth-derived-defs (doc.type-defs) 0 (list-length (doc.type-defs)) raw-defs-conv
    in let raw-tds = desugar-type-defs-ll (doc.type-defs) 0 (list-length (doc.type-defs)) []
    in let raw-eds = desugar-effect-defs-ll (doc.effect-defs) 0 (list-length (doc.effect-defs)) []
    in let raw-cites = desugar-cites-ll (doc.citations) 0 (list-length (doc.citations)) []
@@ -516,6 +619,7 @@ Section: Document Desugaring
     is VariantBody (ctors) -> deck-record (AMatchExpr (deck-record (ANameExpr xn synthetic-span)) (gen-cmp-x-arms ctors yn 0 (list-length ctors) []) synthetic-span)
     is RecordBody (fields) -> gen-cmp-lex (rec-accessors fields xn 0 (list-length fields) []) (rec-accessors fields yn 0 (list-length fields) []) 0 (list-length fields)
     is UnitBody (base) -> deck-record (AApplyExpr (deck-record (ANameExpr (make-name "compare") synthetic-span)) (deck-record (ANameExpr xn synthetic-span)) synthetic-span)
+    is UnitFamilyBody (bt) (ms) -> deck-record (AApplyExpr (deck-record (ANameExpr (make-name "compare") synthetic-span)) (deck-record (ANameExpr xn synthetic-span)) synthetic-span)
 
   gen-cmp-x-arms : List VariantCtorDef, Name, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
   gen-cmp-x-arms (ctors) (yn) (i) (len) (acc) =
@@ -587,6 +691,7 @@ Section: Document Desugaring
     is VariantBody (ctors) -> deck-record (AMatchExpr (deck-record (ANameExpr xn synthetic-span)) (gen-eq-x-arms ctors yn 0 (list-length ctors) []) synthetic-span)
     is RecordBody (fields) -> gen-eq-record fields xn yn 1 (list-length fields) (gen-record-eq0 fields xn yn)
     is UnitBody (base) -> deck-record (ABinaryExpr (deck-record (ANameExpr xn synthetic-span)) OpEq (deck-record (ANameExpr yn synthetic-span)) synthetic-span)
+    is UnitFamilyBody (bt) (ms) -> deck-record (ABinaryExpr (deck-record (ANameExpr xn synthetic-span)) OpEq (deck-record (ANameExpr yn synthetic-span)) synthetic-span)
 
   gen-eq-x-arms : List VariantCtorDef, Name, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
   gen-eq-x-arms (ctors) (yn) (i) (len) (acc) =
@@ -670,6 +775,7 @@ Section: Document Desugaring
     is VariantBody (ctors) -> deck-record (AMatchExpr (deck-record (ANameExpr pname synthetic-span)) (gen-show-arms ctors 0 (list-length ctors) []) synthetic-span)
     is RecordBody (fields) -> gen-show-record fields pname 0 (list-length fields) (deck-record (ALitExpr "{" TextLit synthetic-span))
     is UnitBody (base) -> deck-record (AApplyExpr (deck-record (ANameExpr (make-name "show") synthetic-span)) (deck-record (ANameExpr pname synthetic-span)) synthetic-span)
+    is UnitFamilyBody (bt) (ms) -> deck-record (AApplyExpr (deck-record (ANameExpr (make-name "show") synthetic-span)) (deck-record (ANameExpr pname synthetic-span)) synthetic-span)
 
   gen-show-arms : List VariantCtorDef, Integer, Integer, LinkedList AMatchArm -> List AMatchArm
   gen-show-arms (ctors) (i) (len) (acc) =

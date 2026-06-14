@@ -143,7 +143,37 @@ Section: Expression Parsing
      in if is-equals (current-kind st3) then finish-field-assign fe field st3
         else parse-field-access fe st3
         else ExprOk node st-fueled
+    else if is-revised-keyword (current-kind st-fueled) then parse-revised-body node (advance st-fueled)
     else ExprOk node st-fueled
+
+  parse-revised-body : Expr, ParseState -> ParseExprResult
+  parse-revised-body (base) (st) =
+   let st2 = skip-newlines st
+   in if is-left-brace (current-kind st2)
+     then let st3 = skip-newlines (advance st2)
+       in parse-revised-fields base [] st3
+     else ExprOk base (__record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-expected-token-kind ("Expected '{' after 'revised' (got '" & token-text (current st2) & "')") (token-to-span (current st2)))))
+
+  parse-revised-fields : Expr, LinkedList RecordFieldExpr, ParseState -> ParseExprResult
+  parse-revised-fields (base) (acc) (st) =
+   if is-right-brace (current-kind st) then ExprOk (deck-record (RevisedExpr base (deck-record (__linked-list-to-list acc)))) (advance st)
+   else if is-field-name-token (current-kind st) then parse-revised-field base acc st
+   else ExprOk (deck-record (RevisedExpr base (deck-record (__linked-list-to-list acc)))) (__record-set st "bag" (bag-add (st.bag) (make-error cdx-bad-field-syntax "Expected field name in revised expression" (token-to-span (current st)))))
+
+  parse-revised-field : Expr, LinkedList RecordFieldExpr, ParseState -> ParseExprResult
+  parse-revised-field (base) (acc) (st) =
+   let field-name = current st
+   in let st2 = advance st
+   in let st3 = expect Equals st2
+   in let val-result = parse-expr st3
+   in unwrap-expr-ok val-result (finish-revised-field base acc field-name)
+
+  finish-revised-field : Expr, LinkedList RecordFieldExpr, Token, Expr, ParseState -> ParseExprResult
+  finish-revised-field (base) (acc) (field-name) (v) (st) =
+   let field = deck-record (RecordFieldExpr { name = field-name, value = v })
+   in let st2 = skip-newlines st
+   in if is-comma (current-kind st2) then parse-revised-fields base (__linked-list-push acc field) (skip-newlines (advance st2))
+      else parse-revised-fields base (__linked-list-push acc field) st2
 
   finish-field-assign : Expr, Token, ParseState -> ParseExprResult
   finish-field-assign (lhs) (field) (st) =

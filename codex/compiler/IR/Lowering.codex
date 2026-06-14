@@ -361,13 +361,28 @@ Section: Expression Lowering
     is ErrorTy -> ""
     is otherwise -> spec-rn
 
+  try-unit-convert : IRExpr, CodexType, SourceSpan -> IRExpr
+  try-unit-convert (arg-ir) (expected-ty) (sp) =
+   let arg-actual = ir-expr-type arg-ir
+   in when arg-actual
+    is UnitTy (from-name) (from-inner) ->
+     when expected-ty
+      is UnitTy (to-name) (to-inner) ->
+       if from-name.value == to-name.value then arg-ir
+       else let conv-name = from-name.value & "-to-" & to-name.value
+       in let conv-fn-ty = deck-record (FunTy arg-actual expected-ty)
+       in deck-record (IrApply (deck-record (IrName conv-name conv-fn-ty sp)) arg-ir expected-ty sp)
+      is otherwise -> arg-ir
+    is otherwise -> arg-ir
+
   lower-apply-normal : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-apply-normal (f) (a) (ty) (ctx) (sp) =
    let func-ir = lower-expr f ErrorTy ctx
    in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
    in let arg-ty = peel-fun-param func-ty
    in let ret-ty = peel-fun-return func-ty
-   in let arg-ir = lower-expr a arg-ty ctx
+   in let raw-arg-ir = lower-expr a arg-ty ctx
+   in let arg-ir = try-unit-convert raw-arg-ir arg-ty sp
    in let resolved-ret = subst-type-vars-from-arg arg-ty (ir-expr-type arg-ir) ret-ty
    in let actual-ret = when resolved-ret
       is ErrorTy -> ty
