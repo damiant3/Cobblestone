@@ -26,6 +26,18 @@ Still true (lesson from the same investigation): a pre-gate battery
 against an old-seed-compiled SUT does NOT exercise self-application;
 run the battery against your own stage1 before declaring an IR pass
 green (build.ps1 does this).
+### IrLambda variant present in IRExpr but unreachable at emission
+
+LambdaLifting.codex eliminates all IrLambda nodes before IR reaches
+the emitter -- every lambda becomes a top-level def + closure site.
+The IrLambda variant still exists in the IRExpr type, so the emitter
+dispatch has 25 variants but only 24 can appear. All three backends
+(x86-64, ARM64, RISC-V) fall through to a default case for IrLambda.
+Cleanup: either remove IrLambda from IRExpr (touches every pipeline
+stage that constructs/matches it) or add an explicit trap case in the
+emitters so a lifting failure produces a loud error instead of silent
+zero.
+
 ## Apps
 
 ### FishTankPage crashes the compiler at IR emit — SKIPPED IN build-apps.ps1
@@ -81,6 +93,39 @@ behavior of the server is still unexercised (no battery test cites
 Cvmm). The cvmm dashboard HTML path (`build-app.ps1`) still bundles
 plain headers but its three chapters have no intra-quire cites, so
 the double-inclusion does not bite there.
+
+### `__record-set` silently fails on high-numbered fields (19th+) — WORKAROUND: sub-records
+
+Discovered 2026-06-15 (CL 4395) while adding `result-dest` as the
+19th field of the RISC-V plug's `RvState` record. Setting the field
+via `__record-set st "result-dest" value` returns a record where
+`.result-dest` still reads the old value. No error, no diagnostic —
+the write is silently dropped.
+
+**Confirmed scope:**
+- Fails: field 19 of a 19-field record (RvState).
+- Works: fields 1–15 of the same record. Fields 1–8 of a 9-field
+  sub-record (RvTcoState) accessed via nested `__record-set`.
+
+**Root cause:** Unknown. Likely a buffer size or field-index limit in
+the compiler's `__record-set` implementation (`codex/compiler/Emit/`
+or `codex/compiler/Core/`). `__record-set` uses the field name for
+lookup — the limit is on the field's ordinal position in the record
+definition, not on the name.
+
+**Workaround:** Move the field into a sub-record with fewer fields.
+Access via `st.tco.result-dest` instead of `st.result-dest`. Write
+via a helper that does nested `__record-set`:
+
+```
+rv-set-result-dest (st) (d) =
+ __record-set st "tco" (__record-set (st.tco) "result-dest" d)
+```
+
+**Guidance:** Keep record field count under ~15. If a record grows
+beyond that, group related fields into sub-records. When adding a
+field to a large record, verify `__record-set` on the new field
+actually persists by reading the value back in a test.
 
 ## Codegen
 

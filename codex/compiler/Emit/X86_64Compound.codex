@@ -456,12 +456,13 @@ Section: Function Application
     is IrBinary (op) (left) (right) (ty) (sp) -> emit-direct-tail-binop st arg op left right target
     is otherwise -> eval-tail-arg-standard st arg target
 
-  eval-complex-tail-args : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
-  eval-complex-tail-args (st) (args) (temp-locals) (param-locals) (i) =
+  eval-complex-tail-args : CodegenState, List IRExpr, List Integer, List Integer, Integer, Integer -> CodegenState
+  eval-complex-tail-args (st) (args) (temp-locals) (param-locals) (i) (ci) =
    if i == list-length args then st
-   else let st1 = if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then st
-        else eval-tail-arg-direct st (list-at args i) (list-at temp-locals i)
-   in eval-complex-tail-args st1 args temp-locals param-locals (i + 1)
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then
+    eval-complex-tail-args st args temp-locals param-locals (i + 1) ci
+   else let st1 = eval-tail-arg-direct st (list-at args i) (list-at temp-locals ci)
+   in eval-complex-tail-args st1 args temp-locals param-locals (i + 1) (ci + 1)
 
   emit-direct-tail-moves : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
   emit-direct-tail-moves (st) (args) (param-locals) (order) (k) =
@@ -469,22 +470,24 @@ Section: Function Application
    else let st1 = emit-direct-tail-arg st (list-at args (list-at order k)) (list-at param-locals (list-at order k))
    in emit-direct-tail-moves st1 args param-locals order (k + 1)
 
-  copy-complex-temps : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
-  copy-complex-temps (st) (args) (temp-locals) (param-locals) (i) =
+  copy-complex-temps : CodegenState, List IRExpr, List Integer, List Integer, Integer, Integer -> CodegenState
+  copy-complex-temps (st) (args) (temp-locals) (param-locals) (i) (ci) =
    if i == list-length args then st
-   else let st1 = if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then st
-        else let loaded = load-local st (list-at temp-locals i)
-        in store-local (loaded.state) (list-at param-locals i) (loaded.reg)
-   in copy-complex-temps st1 args temp-locals param-locals (i + 1)
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then
+    copy-complex-temps st args temp-locals param-locals (i + 1) ci
+   else let loaded = load-local st (list-at temp-locals ci)
+   in let st1 = store-local (loaded.state) (list-at param-locals i) (loaded.reg)
+   in copy-complex-temps st1 args temp-locals param-locals (i + 1) (ci + 1)
 
   emit-tail-call : CodegenState, IRExpr, IRExpr -> EmitResult
   emit-tail-call (st) (func-expr) (arg-expr) =
    let args = flatten-tail-args func-expr [arg-expr]
    in let plan = tco-shuffle-plan st args (st.tco.param-locals)
    in let st2 = if plan.ok then
-       let st-c = eval-complex-tail-args st args (st.tco.temp-locals) (st.tco.param-locals) 0
-       in let st-d = emit-direct-tail-moves st-c args (st.tco.param-locals) (plan.order) 0
-       in copy-complex-temps st-d args (st.tco.temp-locals) (st.tco.param-locals) 0
+       let ci = tco-find-complex st args (st.tco.param-locals) 0
+       in if ci >= 0 & tco-find-complex st args (st.tco.param-locals) (ci + 1) < 0 & list-length (st.tco.temp-locals) == 0
+        then emit-tail-single-complex st args (st.tco.param-locals) (plan.order) ci
+       else emit-tail-call-general-shuffle st args (st.tco.temp-locals) (st.tco.param-locals) (plan.order)
       else if list-length (st.tco.temp-locals) == 0 then
        st-add-error st cdx-ir-error ("tail shuffle plan failed with no temps in '" & (st.tco.current-func) & "'") (ir-expr-span func-expr)
       else
