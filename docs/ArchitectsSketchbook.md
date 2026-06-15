@@ -511,8 +511,9 @@ breakdown: `docs/Designs/Compiler/Active/CodegenAnalysis.md`.
 | Bench | Codex | C /Od | C /O2 | C# JIT | F# JIT |
 |-------|------:|------:|------:|-------:|-------:|
 | fib   | 21    | 19    | 20    | 21     | 21     |
-| fact  | 17    | 16    | 15    | 16     | 15     |
-| gcd   | 23    | 18    | 14    | 11     | 9      |
+| fact  | 15    | 16    | 15    | 16     | 15     |
+
+| gcd   | 17    | 18    | 14    | 11     | 9      |
 | sum   | 14    | 20    | 23    | 9      | 4      |
 
 Campaign start (CL 3091): fib 107, fact 79, gcd 79, sum 82. The

@@ -272,6 +272,68 @@ Section: Function Emission
    else if leaf-tail-args-direct args binders pnames 0 == False then False
    else leaf-order-ok args pnames [] (list-length args + 1)
 
+  tco-max-complex : IRExpr, Text, List Text, Integer -> Integer
+  tco-max-complex (e) (fname) (pnames) (best) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     tco-max-complex el fname pnames (tco-max-complex t fname pnames best)
+    is IrLet (n) (ty) (v) (b) (sp) -> tco-max-complex b fname pnames best
+    is IrApply (f) (a) (ty) (sp) ->
+     if is-self-call e fname then
+      let args = flatten-tail-args e []
+      in let n = list-length args
+      in if n /= list-length pnames then if n > best then n else best
+      else let d = leaf-tail-args-direct args pnames pnames 0
+      in let c = if d then 0 else n - tco-direct-count-leaf args pnames pnames 0 0
+      in let ct = if c <= 1 then 0 else c
+      in if ct > best then ct else best
+     else best
+    is otherwise -> best
+
+  tco-direct-count-leaf : List IRExpr, List Text, List Text, Integer, Integer -> Integer
+  tco-direct-count-leaf (args) (binders) (pnames) (i) (acc) =
+   if i == list-length args then acc
+   else if leaf-direct-tail-arg (list-at args i) binders (list-at pnames i)
+        then tco-direct-count-leaf args binders pnames (i + 1) (acc + 1)
+   else tco-direct-count-leaf args binders pnames (i + 1) acc
+
+  tco-result-conflicts : Integer, List Integer, Integer -> Boolean
+  tco-result-conflicts (r) (pls) (i) =
+   if i == list-length pls then False
+   else if list-at pls i == r then True
+   else tco-result-conflicts r pls (i + 1)
+
+  tco-find-complex : CodegenState, List IRExpr, List Integer, Integer -> Integer
+  tco-find-complex (st) (args) (param-locals) (i) =
+   if i == list-length args then 0 - 1
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then tco-find-complex st args param-locals (i + 1)
+   else i
+
+  emit-tail-single-safe : CodegenState, EmitResult, List IRExpr, List Integer, List Integer, Integer -> CodegenState
+  emit-tail-single-safe (st) (er) (args) (param-locals) (order) (ci) =
+   let st-d = emit-direct-tail-moves (er.state) args param-locals order 0
+   in store-local st-d (list-at param-locals ci) (er.reg)
+
+  emit-tail-single-conflict : CodegenState, EmitResult, List IRExpr, List Integer, List Integer, Integer -> CodegenState
+  emit-tail-single-conflict (st) (er) (args) (param-locals) (order) (ci) =
+   let loc = alloc-local (er.state)
+   in let st-s = store-local (loc.state) (loc.reg) (er.reg)
+   in let st-d = emit-direct-tail-moves st-s args param-locals order 0
+   in let loaded = load-local st-d (loc.reg)
+   in store-local (loaded.state) (list-at param-locals ci) (loaded.reg)
+
+  emit-tail-call-general-shuffle : CodegenState, List IRExpr, List Integer, List Integer, List Integer -> CodegenState
+  emit-tail-call-general-shuffle (st) (args) (temp-locals) (param-locals) (order) =
+   let st-c = eval-complex-tail-args st args temp-locals param-locals 0 0
+   in let st-d = emit-direct-tail-moves st-c args param-locals order 0
+   in copy-complex-temps st-d args temp-locals param-locals 0 0
+
+  emit-tail-single-complex : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
+  emit-tail-single-complex (st) (args) (param-locals) (order) (ci) =
+   let er = emit-expr (st-set-tail-pos st False) (list-at args ci)
+   in if tco-result-conflicts (er.reg) param-locals 0 then emit-tail-single-conflict st er args param-locals order ci
+   else emit-tail-single-safe st er args param-locals order ci
+
   leaf-tail-args-direct : List IRExpr, List Text, List Text, Integer -> Boolean
   leaf-tail-args-direct (args) (binders) (pnames) (i) =
    if i == list-length args then True
@@ -450,8 +512,8 @@ Section: Function Emission
    in let lets = leaf-walk st (def.body) True True pnames (def.name) pnames 0
    in if lets < 0 then leaf-profile-fail
    else let temps = if should-tco def then
-       if leaf-tails-all-direct (def.body) True (def.name) pnames then 0
-       else list-length pnames
+       if tails-all-direct (def.body) True (def.name) pnames then 0
+       else tco-max-complex (def.body) (def.name) pnames 0
       else 0
    in let total = list-length pnames + lets + temps
    in LeafProfile {
@@ -488,7 +550,7 @@ Section: Function Emission
    in let st2g = if prof.lp-has-calls then emit-minimal-guard st2 else st2
    in let st3 = bind-params st2g (def.params) 0
    in let st4 = if should-tco def then
-       let tco-alloc = if prof.lp-temps > 0 then pre-alloc-tco-temps st3 0 (list-length (def.params)) []
+       let tco-alloc = if prof.lp-temps > 0 then pre-alloc-tco-temps st3 0 prof.lp-temps []
         else TcoAllocResult { alloc-state = st3, alloc-locals = [] }
        in let st-a = tco-alloc.alloc-state
        in __record-set st-a "tco" (TcoState {
@@ -1618,8 +1680,8 @@ Section: Expression Emission
      in let save = if r-reg == reg-rdx then mov-rr reg-r11 reg-rdx
       else if r-reg == reg-rax then mov-rr reg-r11 reg-rax else []
      in EmitResult {
-     state = st-append-code (rd.state) (save & mov-rr reg-rax l-reg & cqo & idiv-r div-reg & mov-rr (rd.reg) reg-rdx),
-     reg = rd.reg
+     state = st-append-code (rd.state) (save & mov-rr reg-rax l-reg & cqo & idiv-r div-reg),
+     reg = reg-rdx
     }
     is IrAddNum -> emit-num-arith st l-reg r-reg 88
     is IrSubNum -> emit-num-arith st l-reg r-reg 92
