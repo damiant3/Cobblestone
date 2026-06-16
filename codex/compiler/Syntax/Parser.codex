@@ -1141,15 +1141,17 @@ Section: Document Parsing
 
 Section: Prose-Notation Consistency
 
-  check-prose-record : Text, List RecordFieldDef, Integer, Integer, List Diagnostic -> List Diagnostic
-  check-prose-record (template-name) (fields) (i) (len) (acc) =
-   if i >= len then acc
-   else check-prose-record template-name fields (i + 1) len acc
+  find-type-def-named : List TypeDef, Text, Integer -> Integer
+  find-type-def-named (type-defs) (name) (i) =
+   if i >= list-length type-defs then 0 - 1
+   else if token-text ((list-at type-defs i).name) == name then i
+   else find-type-def-named type-defs name (i + 1)
 
-  check-prose-variant : Text, List VariantCtorDef, Integer, Integer, List Diagnostic -> List Diagnostic
-  check-prose-variant (template-name) (ctors) (i) (len) (acc) =
-   if i >= len then acc
-   else check-prose-variant template-name ctors (i + 1) len acc
+  check-prose-type-name : Text, List TypeDef, Integer, Text, List Diagnostic -> List Diagnostic
+  check-prose-type-name (template-name) (type-defs) (diag-code) (kind) (acc) =
+   let found = find-type-def-named type-defs template-name 0
+   in if found < 0 then list-push acc (make-warning diag-code ("Prose declares " & kind & " '" & template-name & "' but no type definition with that name exists") synthetic-span)
+   else acc
 
   check-prose-function : Text, List Def, List Diagnostic -> List Diagnostic
   check-prose-function (template-name) (defs) (acc) =
@@ -1163,7 +1165,9 @@ Section: Prose-Notation Consistency
   check-prose-block-against-defs (block) (defs) (type-defs) (acc) =
    when (block.template)
     is PtFunctionTemplate (name) -> check-prose-function name defs acc
-    is PtRecordTemplate (name) | PtVariantTemplate (name) | PtNoTemplate | PtConstraintTemplate | PtProofTemplate | PtProcedureTemplate | PtQuantifiedTemplate -> acc
+    is PtRecordTemplate (name) -> check-prose-type-name name type-defs cdx-prose-record-field-mismatch "record" acc
+    is PtVariantTemplate (name) -> check-prose-type-name name type-defs cdx-prose-variant-ctor-mismatch "variant" acc
+    is PtNoTemplate | PtConstraintTemplate | PtProofTemplate | PtProcedureTemplate | PtQuantifiedTemplate -> acc
 
   check-prose-consistency : Document -> List Diagnostic
   check-prose-consistency (doc) =

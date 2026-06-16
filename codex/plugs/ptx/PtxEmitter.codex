@@ -1,0 +1,568 @@
+Chapter: PTX Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter CCE
+
+ Generates NVIDIA PTX assembly from the Codex typed IR.
+ Target: PTX ISA 7.x, sm_89 (Ada Lovelace) default.
+
+Section: Name Sanitization
+
+  ptx-sanitize : Text -> Text
+  ptx-sanitize (name) =
+   text-replace name "-" "_"
+
+Section: PTX Type Mapping
+
+  ptx-type-for : CodexType -> Text
+  ptx-type-for (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (ov) -> ".s64"
+    is RealTy -> ".f64"
+    is BooleanTy -> ".pred"
+    is CharTy -> ".u32"
+    is TextTy -> ".u64"
+    is VoidTy -> ".u64"
+    is NothingTy -> ".u64"
+    is otherwise -> ".s64"
+
+  ptx-reg-prefix : CodexType -> Text
+  ptx-reg-prefix (ty) =
+   when ty
+    is RealTy -> "%fd"
+    is BooleanTy -> "%p"
+    is otherwise -> "%rd"
+
+Section: Register Allocation
+
+  PtxCtx = record {
+   next-reg : Integer,
+   type-defs : List ATypeDef,
+   arities : List PtxArityEntry,
+   indent : Text
+  }
+
+  PtxArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255
+  }
+
+  empty-ptx-ctx : List ATypeDef -> PtxCtx
+  empty-ptx-ctx (tds) =
+   PtxCtx {
+    next-reg = 0,
+    type-defs = tds,
+    arities = [],
+    indent = "    "
+   }
+
+  ptx-fresh-reg : PtxCtx -> Text
+  ptx-fresh-reg (ctx) =
+   "%rd" & integer-to-text (ctx.next-reg)
+
+  ptx-bump-reg : PtxCtx -> PtxCtx
+  ptx-bump-reg (ctx) =
+   PtxCtx {
+    next-reg = ctx.next-reg + 1,
+    type-defs = ctx.type-defs,
+    arities = ctx.arities,
+    indent = ctx.indent
+   }
+
+Section: Arity Map
+
+  ptx-sorted-insert-arity : List PtxArityEntry, PtxArityEntry -> List PtxArityEntry
+  ptx-sorted-insert-arity (xs) (e) =
+   ptx-sorted-insert-loop xs e 0
+
+  ptx-sorted-insert-loop : List PtxArityEntry, PtxArityEntry, Integer -> List PtxArityEntry
+  ptx-sorted-insert-loop (xs) (e) (i) =
+   if i >= list-length xs then list-push xs e
+   else if text-compare (e.name) ((list-at xs i).name) <= 0 then list-insert-at xs i e
+   else ptx-sorted-insert-loop xs e (i + 1)
+
+  ptx-build-arity-map : List IRDef, Integer, List PtxArityEntry -> List PtxArityEntry
+  ptx-build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in ptx-build-arity-map defs (i + 1) (ptx-sorted-insert-arity acc (PtxArityEntry {
+    name = d.name,
+    arity = list-length (d.params)
+   }))
+
+  ptx-lookup-arity : List PtxArityEntry, Text -> Integer
+  ptx-lookup-arity (entries) (name) =
+   ptx-lookup-arity-loop entries name 0
+
+  ptx-lookup-arity-loop : List PtxArityEntry, Text, Integer -> Integer
+  ptx-lookup-arity-loop (entries) (name) (i) =
+   if i >= list-length entries then -1
+   else let e = list-at entries i
+   in if e.name == name then e.arity
+   else ptx-lookup-arity-loop entries name (i + 1)
+
+Section: Binary Op Emission
+
+  ptx-bin-instr : IRBinaryOp -> Text
+  ptx-bin-instr (op) =
+   when op
+    is IrAddInt -> "add.s64"
+    is IrSubInt -> "sub.s64"
+    is IrMulInt -> "mul.lo.s64"
+    is IrDivInt -> "div.s64"
+    is IrRemInt -> "rem.s64"
+    is IrPowInt -> "mul.lo.s64"
+    is IrAddNum -> "add.f64"
+    is IrSubNum -> "sub.f64"
+    is IrMulNum -> "mul.f64"
+    is IrDivNum -> "div.rn.f64"
+    is IrEq -> "setp.eq.s64"
+    is IrNotEq -> "setp.ne.s64"
+    is IrLt -> "setp.lt.s64"
+    is IrGt -> "setp.gt.s64"
+    is IrLtEq -> "setp.le.s64"
+    is IrGtEq -> "setp.ge.s64"
+    is IrAnd -> "and.b64"
+    is IrOr -> "or.b64"
+    is IrAppendText -> "add.u64"
+    is IrAppendList -> "add.u64"
+    is IrConsList -> "add.u64"
+    is IrApproxEq -> "setp.eq.s64"
+    is IrApproxEqExact -> "setp.eq.s64"
+
+  ptx-is-comparison : IRBinaryOp -> Boolean
+  ptx-is-comparison (op) =
+   when op
+    is IrEq -> True
+    is IrNotEq -> True
+    is IrLt -> True
+    is IrGt -> True
+    is IrLtEq -> True
+    is IrGtEq -> True
+    is IrApproxEq -> True
+    is IrApproxEqExact -> True
+    is otherwise -> False
+
+Section: Expression Emission
+
+  PtxResult = record {
+   code : Text,
+   result-reg : Text,
+   ctx : PtxCtx
+  }
+
+  ptx-emit-expr : PtxCtx, IRExpr -> PtxResult
+  ptx-emit-expr (ctx) (e) = ptx-emit-expr-at ctx e 0
+
+  ptx-emit-expr-at : PtxCtx, IRExpr, Integer -> PtxResult
+  ptx-emit-expr-at (ctx) (e) (depth) =
+   if depth >= 256 then PtxResult { code = "", result-reg = "%rd0", ctx = ctx }
+   else when e
+    is IrIntLit (n) (sp) ->
+     let r = ptx-fresh-reg ctx
+     in let c = ptx-bump-reg ctx
+     in PtxResult { code = ctx.indent & "mov.s64 " & r & ", " & integer-to-text n & ";\n", result-reg = r, ctx = c }
+    is IrNumLit (n) (sp) ->
+     let r = "%fd" & integer-to-text (ctx.next-reg)
+     in let c = ptx-bump-reg ctx
+     in PtxResult { code = ctx.indent & "mov.f64 " & r & ", 0d" & integer-to-text n & ";\n", result-reg = r, ctx = c }
+    is IrBoolLit (b) (sp) ->
+     let r = ptx-fresh-reg ctx
+     in let c = ptx-bump-reg ctx
+     in PtxResult { code = ctx.indent & "mov.s64 " & r & ", " & (if b then "1" else "0") & ";\n", result-reg = r, ctx = c }
+    is IrCharLit (n) (sp) ->
+     let r = ptx-fresh-reg ctx
+     in let c = ptx-bump-reg ctx
+     in PtxResult { code = ctx.indent & "mov.s64 " & r & ", " & integer-to-text n & ";\n", result-reg = r, ctx = c }
+    is IrTextLit (s) (sp) ->
+     let r = ptx-fresh-reg ctx
+     in let c = ptx-bump-reg ctx
+     in PtxResult { code = ctx.indent & "mov.u64 " & r & ", 0; // text: \"" & s & "\"\n", result-reg = r, ctx = c }
+    is IrName (n) (ty) (sp) ->
+     if n == "True" then
+      let r = ptx-fresh-reg ctx
+      in let c = ptx-bump-reg ctx
+      in PtxResult { code = ctx.indent & "mov.s64 " & r & ", 1;\n", result-reg = r, ctx = c }
+     else if n == "False" then
+      let r = ptx-fresh-reg ctx
+      in let c = ptx-bump-reg ctx
+      in PtxResult { code = ctx.indent & "mov.s64 " & r & ", 0;\n", result-reg = r, ctx = c }
+     else if n == "Nothing" then
+      let r = ptx-fresh-reg ctx
+      in let c = ptx-bump-reg ctx
+      in PtxResult { code = ctx.indent & "mov.s64 " & r & ", 0;\n", result-reg = r, ctx = c }
+     else PtxResult { code = "", result-reg = "%rd_" & ptx-sanitize n, ctx = ctx }
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     ptx-emit-binary ctx op l r depth
+    is IrNegate (operand) (sp) ->
+     let sub = ptx-emit-expr-at ctx operand (depth + 1)
+     in let r = ptx-fresh-reg (sub.ctx)
+     in let c = ptx-bump-reg (sub.ctx)
+     in PtxResult { code = sub.code & c.indent & "neg.s64 " & r & ", " & sub.result-reg & ";\n", result-reg = r, ctx = c }
+    is IrIf (cond) (th) (el) (ty) (sp) ->
+     ptx-emit-if ctx cond th el ty depth
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     let vr = ptx-emit-expr-at ctx val (depth + 1)
+     in let mv = vr.code & (vr.ctx).indent & "mov.s64 %rd_" & ptx-sanitize name & ", " & vr.result-reg & ";\n"
+     in let br = ptx-emit-expr-at (vr.ctx) body (depth + 1)
+     in PtxResult { code = mv & br.code, result-reg = br.result-reg, ctx = br.ctx }
+    is IrApply (f) (a) (ty) (sp) ->
+     ptx-emit-apply ctx e depth
+    is IrLambda (params) (body) (ty) (sp) ->
+     ptx-emit-expr-at ctx body (depth + 1)
+    is IrList (elems) (ty) (sp) ->
+     let r = ptx-fresh-reg ctx
+     in let c = ptx-bump-reg ctx
+     in PtxResult { code = ctx.indent & "mov.u64 " & r & ", 0; // list literal\n", result-reg = r, ctx = c }
+    is IrMatch (scrut) (branches) (ty) (sp) ->
+     ptx-emit-match ctx scrut branches depth
+    is IrAct (stmts) (ty) (sp) ->
+     ptx-emit-act ctx stmts depth
+    is IrHandle (eff) (body) (clauses) (ty) (sp) ->
+     ptx-emit-expr-at ctx body (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) ->
+     ptx-emit-expr-at ctx body (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) ->
+     let r = ptx-fresh-reg ctx
+     in let c = ptx-bump-reg ctx
+     in PtxResult { code = ctx.indent & "mov.u64 " & r & ", 0; // record " & name & "\n", result-reg = r, ctx = c }
+    is IrFieldAccess (rec) (field) (ty) (sp) ->
+     let sub = ptx-emit-expr-at ctx rec (depth + 1)
+     in let r = ptx-fresh-reg (sub.ctx)
+     in let c = ptx-bump-reg (sub.ctx)
+     in PtxResult { code = sub.code & c.indent & "ld.global.u64 " & r & ", [" & sub.result-reg & "]; // ." & field & "\n", result-reg = r, ctx = c }
+    is IrFieldStore (rec) (field) (val) (ty) (sp) ->
+     let sr = ptx-emit-expr-at ctx rec (depth + 1)
+     in let sv = ptx-emit-expr-at (sr.ctx) val (depth + 1)
+     in PtxResult { code = sr.code & sv.code & (sv.ctx).indent & "st.global.u64 [" & sr.result-reg & "], " & sv.result-reg & "; // ." & field & "\n", result-reg = sr.result-reg, ctx = sv.ctx }
+    is IrFork (body) (ty) (sp) ->
+     ptx-emit-expr-at ctx body (depth + 1)
+    is IrAwait (task) (ty) (sp) ->
+     ptx-emit-expr-at ctx task (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) ->
+     ptx-emit-act ctx body depth
+    is IrError (msg) (ty) (sp) ->
+     let r = ptx-fresh-reg ctx
+     in let c = ptx-bump-reg ctx
+     in PtxResult { code = ctx.indent & "trap; // error: " & msg & "\n", result-reg = r, ctx = c }
+
+Section: Binary Op Helpers
+
+  ptx-emit-binary : PtxCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> PtxResult
+  ptx-emit-binary (ctx) (op) (l) (r) (depth) =
+   let lr = ptx-emit-expr-at ctx l (depth + 1)
+   in let rr = ptx-emit-expr-at (lr.ctx) r (depth + 1)
+   in if ptx-is-comparison op then
+    let p = "%p" & integer-to-text ((rr.ctx).next-reg)
+    in let c = ptx-bump-reg (rr.ctx)
+    in let out = ptx-fresh-reg c
+    in let c2 = ptx-bump-reg c
+    in PtxResult {
+     code = lr.code & rr.code & c2.indent & ptx-bin-instr op & " " & p & ", " & lr.result-reg & ", " & rr.result-reg & ";\n" & c2.indent & "selp.s64 " & out & ", 1, 0, " & p & ";\n",
+     result-reg = out,
+     ctx = c2
+    }
+   else
+    let out = ptx-fresh-reg (rr.ctx)
+    in let c = ptx-bump-reg (rr.ctx)
+    in PtxResult {
+     code = lr.code & rr.code & c.indent & ptx-bin-instr op & " " & out & ", " & lr.result-reg & ", " & rr.result-reg & ";\n",
+     result-reg = out,
+     ctx = c
+    }
+
+Section: Control Flow
+
+  ptx-emit-if : PtxCtx, IRExpr, IRExpr, IRExpr, CodexType, Integer -> PtxResult
+  ptx-emit-if (ctx) (cond) (th) (el) (ty) (depth) =
+   let cr = ptx-emit-expr-at ctx cond (depth + 1)
+   in let p = "%p" & integer-to-text ((cr.ctx).next-reg)
+   in let c1 = ptx-bump-reg (cr.ctx)
+   in let label-then = "LBB_then_" & integer-to-text (c1.next-reg)
+   in let label-end = "LBB_end_" & integer-to-text (c1.next-reg)
+   in let c2 = ptx-bump-reg c1
+   in let tr = ptx-emit-expr-at c2 th (depth + 1)
+   in let out = ptx-fresh-reg (tr.ctx)
+   in let c3 = ptx-bump-reg (tr.ctx)
+   in let er = ptx-emit-expr-at c3 el (depth + 1)
+   in let c4 = er.ctx
+   in PtxResult {
+    code = cr.code
+     & c4.indent & "setp.ne.s64 " & p & ", " & cr.result-reg & ", 0;\n"
+     & c4.indent & "@" & p & " bra " & label-then & ";\n"
+     & er.code
+     & c4.indent & "mov.s64 " & out & ", " & er.result-reg & ";\n"
+     & c4.indent & "bra " & label-end & ";\n"
+     & label-then & ":\n"
+     & tr.code
+     & c4.indent & "mov.s64 " & out & ", " & tr.result-reg & ";\n"
+     & label-end & ":\n",
+    result-reg = out,
+    ctx = c4
+   }
+
+  ptx-emit-match : PtxCtx, IRExpr, List IRBranch, Integer -> PtxResult
+  ptx-emit-match (ctx) (scrut) (branches) (depth) =
+   let sr = ptx-emit-expr-at ctx scrut (depth + 1)
+   in let out = ptx-fresh-reg (sr.ctx)
+   in let c = ptx-bump-reg (sr.ctx)
+   in ptx-emit-match-branches c sr.result-reg branches out 0 depth
+
+  ptx-emit-match-branches : PtxCtx, Text, List IRBranch, Text, Integer, Integer -> PtxResult
+  ptx-emit-match-branches (ctx) (scrut-reg) (branches) (out-reg) (i) (depth) =
+   if i >= list-length branches then
+    PtxResult { code = ctx.indent & "trap; // match exhaustion\n", result-reg = out-reg, ctx = ctx }
+   else let b = list-at branches i
+   in ptx-emit-match-arm ctx scrut-reg (b.pattern) (b.body) branches out-reg i depth
+
+  ptx-emit-match-arm : PtxCtx, Text, IRPat, IRExpr, List IRBranch, Text, Integer, Integer -> PtxResult
+  ptx-emit-match-arm (ctx) (scrut-reg) (pat) (body) (branches) (out-reg) (i) (depth) =
+   when pat
+    is IrWildPat (sp) ->
+     let br = ptx-emit-expr-at ctx body (depth + 1)
+     in PtxResult { code = br.code & (br.ctx).indent & "mov.s64 " & out-reg & ", " & br.result-reg & ";\n", result-reg = out-reg, ctx = br.ctx }
+    is IrVarPat (name) (ty) (sp) ->
+     let mv = ctx.indent & "mov.s64 %rd_" & ptx-sanitize name & ", " & scrut-reg & ";\n"
+     in let br = ptx-emit-expr-at ctx body (depth + 1)
+     in PtxResult { code = mv & br.code & (br.ctx).indent & "mov.s64 " & out-reg & ", " & br.result-reg & ";\n", result-reg = out-reg, ctx = br.ctx }
+    is IrLitPat (text) (ty) (sp) ->
+     let p = "%p" & integer-to-text (ctx.next-reg)
+     in let c1 = ptx-bump-reg ctx
+     in let lbl-next = "LBB_case_" & integer-to-text (c1.next-reg)
+     in let c2 = ptx-bump-reg c1
+     in let br = ptx-emit-expr-at c2 body (depth + 1)
+     in let rest = ptx-emit-match-branches (br.ctx) scrut-reg branches out-reg (i + 1) depth
+     in PtxResult {
+      code = c2.indent & "setp.eq.s64 " & p & ", " & scrut-reg & ", " & text & ";\n"
+       & c2.indent & "@!" & p & " bra " & lbl-next & ";\n"
+       & br.code
+       & (br.ctx).indent & "mov.s64 " & out-reg & ", " & br.result-reg & ";\n"
+       & (br.ctx).indent & "bra LBB_match_end_" & integer-to-text i & ";\n"
+       & lbl-next & ":\n"
+       & rest.code
+       & "LBB_match_end_" & integer-to-text i & ":\n",
+      result-reg = out-reg,
+      ctx = rest.ctx
+     }
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     let br = ptx-emit-expr-at ctx body (depth + 1)
+     in PtxResult { code = br.code & (br.ctx).indent & "mov.s64 " & out-reg & ", " & br.result-reg & ";\n", result-reg = out-reg, ctx = br.ctx }
+
+Section: Act Block Emission
+
+  ptx-emit-act : PtxCtx, List IRActStmt, Integer -> PtxResult
+  ptx-emit-act (ctx) (stmts) (depth) =
+   ptx-emit-act-loop ctx stmts 0 depth
+
+  ptx-emit-act-loop : PtxCtx, List IRActStmt, Integer, Integer -> PtxResult
+  ptx-emit-act-loop (ctx) (stmts) (i) (depth) =
+   if i >= list-length stmts then
+    PtxResult { code = "", result-reg = "%rd0", ctx = ctx }
+   else let s = list-at stmts i
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) ->
+     let vr = ptx-emit-expr-at ctx val (depth + 1)
+     in let mv = vr.code & (vr.ctx).indent & "mov.s64 %rd_" & ptx-sanitize name & ", " & vr.result-reg & ";\n"
+     in let rest = ptx-emit-act-loop (vr.ctx) stmts (i + 1) depth
+     in PtxResult { code = mv & rest.code, result-reg = rest.result-reg, ctx = rest.ctx }
+    is IrDoExec (e) (sp) ->
+     let vr = ptx-emit-expr-at ctx e (depth + 1)
+     in let rest = ptx-emit-act-loop (vr.ctx) stmts (i + 1) depth
+     in if i == list-length stmts - 1 then vr
+     else PtxResult { code = vr.code & rest.code, result-reg = rest.result-reg, ctx = rest.ctx }
+
+Section: Apply Emission
+
+  ptx-emit-apply : PtxCtx, IRExpr, Integer -> PtxResult
+  ptx-emit-apply (ctx) (e) (depth) =
+   let chain = collect-apply-chain e []
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     ptx-emit-call ctx n (chain.args) depth
+    is otherwise ->
+     let r = ptx-fresh-reg ctx
+     in let c = ptx-bump-reg ctx
+     in PtxResult { code = ctx.indent & "mov.s64 " & r & ", 0; // indirect call\n", result-reg = r, ctx = c }
+
+  ptx-emit-call : PtxCtx, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-call (ctx) (name) (args) (depth) =
+   let ar = ptx-emit-args ctx args depth
+   in let out = ptx-fresh-reg (ar.ctx)
+   in let c = ptx-bump-reg (ar.ctx)
+   in PtxResult {
+    code = ar.code & c.indent & "call (" & out & "), " & ptx-sanitize name & ", (" & ar.result-reg & ");\n",
+    result-reg = out,
+    ctx = c
+   }
+
+  ptx-emit-args : PtxCtx, List IRExpr, Integer -> PtxResult
+  ptx-emit-args (ctx) (args) (depth) =
+   ptx-emit-args-loop ctx args 0 "" depth
+
+  ptx-emit-args-loop : PtxCtx, List IRExpr, Integer, Text, Integer -> PtxResult
+  ptx-emit-args-loop (ctx) (args) (i) (regs) (depth) =
+   if i >= list-length args then
+    PtxResult { code = "", result-reg = regs, ctx = ctx }
+   else let ar = ptx-emit-expr-at ctx (list-at args i) (depth + 1)
+   in let sep = if i == 0 then "" else ", "
+   in let rest = ptx-emit-args-loop (ar.ctx) args (i + 1) (regs & sep & ar.result-reg) depth
+   in PtxResult { code = ar.code & rest.code, result-reg = rest.result-reg, ctx = rest.ctx }
+
+Section: Collect Locals
+
+  ptx-collect-locals-expr : IRExpr, List Text -> List Text
+  ptx-collect-locals-expr (e) (acc) =
+   when e
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     ptx-collect-locals-expr body (ptx-collect-locals-expr val (ptx-locals-add acc (ptx-sanitize name)))
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     ptx-collect-locals-expr el (ptx-collect-locals-expr t (ptx-collect-locals-expr c acc))
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     ptx-collect-locals-expr r (ptx-collect-locals-expr l acc)
+    is IrNegate (operand) (sp) -> ptx-collect-locals-expr operand acc
+    is IrApply (f) (a) (ty) (sp) ->
+     ptx-collect-locals-expr a (ptx-collect-locals-expr f acc)
+    is IrLambda (params) (body) (ty) (sp) -> ptx-collect-locals-expr body acc
+    is IrList (elems) (ty) (sp) -> ptx-collect-locals-list elems acc
+    is IrMatch (scrut) (branches) (ty) (sp) ->
+     ptx-collect-locals-branches branches (ptx-collect-locals-expr scrut acc)
+    is IrAct (stmts) (ty) (sp) -> ptx-collect-locals-stmts stmts acc
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> ptx-collect-locals-expr body acc
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> ptx-collect-locals-expr body acc
+    is IrRecord (name) (fields) (ty) (sp) -> ptx-collect-locals-fields fields acc
+    is IrFieldAccess (rec) (field) (ty) (sp) -> ptx-collect-locals-expr rec acc
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> ptx-collect-locals-expr val (ptx-collect-locals-expr rec acc)
+    is IrFork (body) (ty) (sp) -> ptx-collect-locals-expr body acc
+    is IrAwait (task) (ty) (sp) -> ptx-collect-locals-expr task acc
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> ptx-collect-locals-stmts fail-stmts (ptx-collect-locals-stmts fb (ptx-collect-locals-stmts body acc))
+    is otherwise -> acc
+
+  ptx-collect-locals-list : List IRExpr, List Text -> List Text
+  ptx-collect-locals-list (xs) (acc) =
+   ptx-collect-locals-list-loop xs acc 0
+
+  ptx-collect-locals-list-loop : List IRExpr, List Text, Integer -> List Text
+  ptx-collect-locals-list-loop (xs) (acc) (i) =
+   if i >= list-length xs then acc
+   else ptx-collect-locals-list-loop xs (ptx-collect-locals-expr (list-at xs i) acc) (i + 1)
+
+  ptx-collect-locals-branches : List IRBranch, List Text -> List Text
+  ptx-collect-locals-branches (bs) (acc) =
+   ptx-collect-locals-branches-loop bs acc 0
+
+  ptx-collect-locals-branches-loop : List IRBranch, List Text, Integer -> List Text
+  ptx-collect-locals-branches-loop (bs) (acc) (i) =
+   if i >= list-length bs then acc
+   else let b = list-at bs i
+   in let acc1 = ptx-collect-locals-pat (b.pattern) acc
+   in ptx-collect-locals-branches-loop bs (ptx-collect-locals-expr (b.body) acc1) (i + 1)
+
+  ptx-collect-locals-pat : IRPat, List Text -> List Text
+  ptx-collect-locals-pat (p) (acc) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> ptx-locals-add acc (ptx-sanitize name)
+    is IrCtorPat (name) (subs) (ty) (sp) -> ptx-collect-locals-pats subs acc
+    is IrLitPat (text) (ty) (sp) -> acc
+    is IrWildPat (sp) -> acc
+
+  ptx-collect-locals-pats : List IRPat, List Text -> List Text
+  ptx-collect-locals-pats (ps) (acc) =
+   ptx-collect-locals-pats-loop ps acc 0
+
+  ptx-collect-locals-pats-loop : List IRPat, List Text, Integer -> List Text
+  ptx-collect-locals-pats-loop (ps) (acc) (i) =
+   if i >= list-length ps then acc
+   else ptx-collect-locals-pats-loop ps (ptx-collect-locals-pat (list-at ps i) acc) (i + 1)
+
+  ptx-collect-locals-stmts : List IRActStmt, List Text -> List Text
+  ptx-collect-locals-stmts (ss) (acc) =
+   ptx-collect-locals-stmts-loop ss acc 0
+
+  ptx-collect-locals-stmts-loop : List IRActStmt, List Text, Integer -> List Text
+  ptx-collect-locals-stmts-loop (ss) (acc) (i) =
+   if i >= list-length ss then acc
+   else let s = list-at ss i
+   in let acc1 = when s
+    is IrDoBind (name) (ty) (val) (sp) -> ptx-collect-locals-expr val (ptx-locals-add acc (ptx-sanitize name))
+    is IrDoExec (e) (sp) -> ptx-collect-locals-expr e acc
+   in ptx-collect-locals-stmts-loop ss acc1 (i + 1)
+
+  ptx-collect-locals-fields : List IRFieldVal, List Text -> List Text
+  ptx-collect-locals-fields (fs) (acc) =
+   ptx-collect-locals-fields-loop fs acc 0
+
+  ptx-collect-locals-fields-loop : List IRFieldVal, List Text, Integer -> List Text
+  ptx-collect-locals-fields-loop (fs) (acc) (i) =
+   if i >= list-length fs then acc
+   else ptx-collect-locals-fields-loop fs (ptx-collect-locals-expr ((list-at fs i).value) acc) (i + 1)
+
+  ptx-locals-add : List Text, Text -> List Text
+  ptx-locals-add (xs) (name) =
+   ptx-locals-add-loop xs name 0
+
+  ptx-locals-add-loop : List Text, Text, Integer -> List Text
+  ptx-locals-add-loop (xs) (name) (i) =
+   if i >= list-length xs then list-push xs name
+   else if list-at xs i == name then xs
+   else ptx-locals-add-loop xs name (i + 1)
+
+Section: Function Emission
+
+  ptx-emit-param-decls : List IRParam, Integer -> Text
+  ptx-emit-param-decls (params) (i) =
+   if i >= list-length params then ""
+   else let p = list-at params i
+   in let sep = if i == 0 then "" else ", "
+   in sep & ".param .s64 " & ptx-sanitize (p.name) & ptx-emit-param-decls params (i + 1)
+
+  ptx-emit-param-loads : List IRParam, Integer -> Text
+  ptx-emit-param-loads (params) (i) =
+   if i >= list-length params then ""
+   else let p = list-at params i
+   in "    ld.param.s64 %rd_" & ptx-sanitize (p.name) & ", [" & ptx-sanitize (p.name) & "];\n" & ptx-emit-param-loads params (i + 1)
+
+  ptx-emit-local-decls : List Text, Integer -> Text
+  ptx-emit-local-decls (names) (i) =
+   if i >= list-length names then ""
+   else "    .reg .s64 %rd_" & list-at names i & ";\n" & ptx-emit-local-decls names (i + 1)
+
+  ptx-emit-def : PtxCtx, IRDef -> Text
+  ptx-emit-def (ctx) (d) =
+   let locals = ptx-collect-locals-expr (d.body) []
+   in let max-regs = 64 + list-length locals
+   in let body-result = ptx-emit-expr-at ctx (d.body) 0
+   in let header = ".visible .func (.param .s64 retval) " & ptx-sanitize (d.name) & " (" & ptx-emit-param-decls (d.params) 0 & ")\n{\n"
+   in let reg-decls = "    .reg .s64 %rd<" & integer-to-text max-regs & ">;\n"
+                    & "    .reg .f64 %fd<16>;\n"
+                    & "    .reg .pred %p<16>;\n"
+   in let local-decls = ptx-emit-local-decls locals 0
+   in let param-loads = ptx-emit-param-loads (d.params) 0
+   in let ret = "    st.param.s64 [retval], " & body-result.result-reg & ";\n    ret;\n"
+   in header & reg-decls & local-decls & param-loads & body-result.code & ret & "}\n\n"
+
+Section: Chapter Emission
+
+  emit-ptx-chapter : IRChapter, List ATypeDef -> Text
+  emit-ptx-chapter (ch) (tds) =
+   let header = ".version 7.8\n.target sm_89\n.address_size 64\n\n"
+   in let ctx = PtxCtx {
+    next-reg = 0,
+    type-defs = tds,
+    arities = ptx-build-arity-map (ch.defs) 0 [],
+    indent = "    "
+   }
+   in header & ptx-emit-defs ctx (ch.defs) 0
+
+  ptx-emit-defs : PtxCtx, List IRDef, Integer -> Text
+  ptx-emit-defs (ctx) (defs) (i) =
+   if i >= list-length defs then ""
+   else let fresh-ctx = PtxCtx {
+    next-reg = 0,
+    type-defs = ctx.type-defs,
+    arities = ctx.arities,
+    indent = "    "
+   }
+   in ptx-emit-def fresh-ctx (list-at defs i) & ptx-emit-defs ctx defs (i + 1)
+
+Page 1

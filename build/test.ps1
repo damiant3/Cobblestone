@@ -211,7 +211,7 @@ foreach ($src in $toCompile) {
 # Phase 2: Run tests with .expected files (individual VM per test)
 # ===========================================================================
 if ($needsRun.Count -gt 0) {
-    Write-Host "Phase 2: running $($needsRun.Count) tests with expected output ($Jobs parallel)..."
+    Write-Host "Phase 2: running $($needsRun.Count) tests with expected output, $Jobs parallel..."
 
     $coreQueue = [System.Collections.Concurrent.ConcurrentQueue[int]]::new()
     for ($i = 0; $i -lt $Jobs; $i++) { $coreQueue.Enqueue(($i + 1) % 8) }
@@ -290,7 +290,7 @@ $unexpected = $buckets.FAIL_COMPILE.Count + $buckets.FAIL_EXPECTED_BUT_COMPILED.
 Write-Host "total=$total  pass=$passed  fail=$unexpected  skip=$($buckets.SKIPPED.Count)"
 
 if ($unexpected -gt 0) {
-    function Show-Failures { param([string]$Label, [object[]]$Items); if ($Items.Count -gt 0) { Write-Host "$Label`:"; foreach ($i in $Items) { Write-Host "  $i" } } }
+    function Show-Failures { param([string]$Label, [object[]]$Items); if ($Items.Count -gt 0) { Write-Host "${Label}:"; foreach ($i in $Items) { Write-Host "  $i" } } }
     Show-Failures 'compile failed'              $buckets.FAIL_COMPILE
     Show-Failures 'expected error but compiled' $buckets.FAIL_EXPECTED_BUT_COMPILED
     Show-Failures 'wrong diagnostic'            $buckets.FAIL_WRONG_DIAGNOSTIC

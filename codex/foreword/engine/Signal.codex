@@ -1,0 +1,124 @@
+Chapter: Signal
+
+ Typed observer pattern (inspired by Godot signals). Nodes emit
+ named signals; connected receivers are invoked automatically.
+ Connections are scoped to emitter lifetime — when a node is
+ removed, its connections are severed. No global event bus.
+
+ Signals carry an integer payload (entity ID, value, etc.).
+ The signal table is a flat list of connections indexed by
+ signal name hash. Fixed capacity per entity.
+
+ We say:
+
+Section: Types
+
+  SignalConnection = record {
+    sc-signal-name : Text,
+    sc-emitter : Integer,
+    sc-receiver : Integer,
+    sc-active : Boolean
+  }
+
+  SignalTable = record {
+    st-connections : List SignalConnection,
+    st-count : Integer,
+    st-capacity : Integer
+  }
+
+Section: Construction
+
+  signal-table-new : Integer -> SignalTable
+  signal-table-new (capacity) = SignalTable { st-connections = [], st-count = 0, st-capacity = capacity }
+
+  signal-table-default : SignalTable
+  signal-table-default = signal-table-new 256
+
+Section: Connection Management
+
+  signal-connect : SignalTable, Text, Integer, Integer -> SignalTable
+  signal-connect (tbl) (name) (emitter) (receiver) =
+    if tbl.st-count >= tbl.st-capacity then tbl
+    else let conn = SignalConnection { sc-signal-name = name, sc-emitter = emitter, sc-receiver = receiver, sc-active = True }
+    in SignalTable { st-connections = list-push (tbl.st-connections) conn, st-count = tbl.st-count + 1, st-capacity = tbl.st-capacity }
+
+  signal-disconnect : SignalTable, Text, Integer, Integer -> SignalTable
+  signal-disconnect (tbl) (name) (emitter) (receiver) =
+    sig-disconnect-loop tbl name emitter receiver 0 (tbl.st-count)
+
+  sig-disconnect-loop : SignalTable, Text, Integer, Integer, Integer, Integer -> SignalTable
+  sig-disconnect-loop (tbl) (name) (emitter) (receiver) (i) (n) =
+    if i >= n then tbl
+    else let conn = list-at (tbl.st-connections) i
+    in if conn.sc-signal-name == name then
+      if conn.sc-emitter == emitter then
+        if conn.sc-receiver == receiver then
+          let deactivated = SignalConnection { sc-signal-name = conn.sc-signal-name, sc-emitter = conn.sc-emitter, sc-receiver = conn.sc-receiver, sc-active = False }
+          in SignalTable { st-connections = list-set-at (tbl.st-connections) i deactivated, st-count = tbl.st-count, st-capacity = tbl.st-capacity }
+        else sig-disconnect-loop tbl name emitter receiver (i + 1) n
+      else sig-disconnect-loop tbl name emitter receiver (i + 1) n
+    else sig-disconnect-loop tbl name emitter receiver (i + 1) n
+
+  signal-disconnect-all : SignalTable, Integer -> SignalTable
+  signal-disconnect-all (tbl) (entity) = sig-disc-all-loop tbl entity 0 (tbl.st-count)
+
+  sig-disc-all-loop : SignalTable, Integer, Integer, Integer -> SignalTable
+  sig-disc-all-loop (tbl) (entity) (i) (n) =
+    if i >= n then tbl
+    else let conn = list-at (tbl.st-connections) i
+    in let tbl2 = if conn.sc-emitter == entity then
+      let deactivated = SignalConnection { sc-signal-name = conn.sc-signal-name, sc-emitter = conn.sc-emitter, sc-receiver = conn.sc-receiver, sc-active = False }
+      in SignalTable { st-connections = list-set-at (tbl.st-connections) i deactivated, st-count = tbl.st-count, st-capacity = tbl.st-capacity }
+    else if conn.sc-receiver == entity then
+      let deactivated = SignalConnection { sc-signal-name = conn.sc-signal-name, sc-emitter = conn.sc-emitter, sc-receiver = conn.sc-receiver, sc-active = False }
+      in SignalTable { st-connections = list-set-at (tbl.st-connections) i deactivated, st-count = tbl.st-count, st-capacity = tbl.st-capacity }
+    else tbl
+    in sig-disc-all-loop tbl2 entity (i + 1) n
+
+Section: Emission
+
+  SignalEvent = record {
+    se-signal : Text,
+    se-emitter : Integer,
+    se-receiver : Integer,
+    se-payload : Integer
+  }
+
+  signal-emit : SignalTable, Text, Integer, Integer -> List SignalEvent
+  signal-emit (tbl) (name) (emitter) (payload) =
+    sig-emit-loop (tbl.st-connections) name emitter payload 0 (tbl.st-count) []
+
+  sig-emit-loop : List SignalConnection, Text, Integer, Integer, Integer, Integer, List SignalEvent -> List SignalEvent
+  sig-emit-loop (conns) (name) (emitter) (payload) (i) (n) (acc) =
+    if i >= n then acc
+    else let conn = list-at conns i
+    in if conn.sc-active then
+      if conn.sc-signal-name == name then
+        if conn.sc-emitter == emitter then
+          let ev = SignalEvent { se-signal = name, se-emitter = emitter, se-receiver = conn.sc-receiver, se-payload = payload }
+          in sig-emit-loop conns name emitter payload (i + 1) n (list-push acc ev)
+        else sig-emit-loop conns name emitter payload (i + 1) n acc
+      else sig-emit-loop conns name emitter payload (i + 1) n acc
+    else sig-emit-loop conns name emitter payload (i + 1) n acc
+
+Section: Queries
+
+  signal-count-connections : SignalTable, Text, Integer -> Integer
+  signal-count-connections (tbl) (name) (emitter) = sig-count-loop (tbl.st-connections) name emitter 0 (tbl.st-count) 0
+
+  sig-count-loop : List SignalConnection, Text, Integer, Integer, Integer, Integer -> Integer
+  sig-count-loop (conns) (name) (emitter) (i) (n) (count) =
+    if i >= n then count
+    else let conn = list-at conns i
+    in let inc = if conn.sc-active then if conn.sc-signal-name == name then if conn.sc-emitter == emitter then 1 else 0 else 0 else 0
+    in sig-count-loop conns name emitter (i + 1) n (count + inc)
+
+Section: Formatting
+
+  format-signal-table : SignalTable -> Text
+  format-signal-table (tbl) = "SignalTable(" & show (tbl.st-count) & "/" & show (tbl.st-capacity) & ")"
+
+  format-signal-event : SignalEvent -> Text
+  format-signal-event (ev) = ev.se-signal & " from " & show (ev.se-emitter) & " -> " & show (ev.se-receiver) & " val=" & show (ev.se-payload)
+
+Page 1

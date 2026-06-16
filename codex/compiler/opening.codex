@@ -4,7 +4,7 @@ Chapter: Opening
   cites Codex chapter Text
   cites Codex chapter Lists
   cites Codex chapter Runtime
-  cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-compact, PhaseStart, PhaseMetrics)
+  cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-compact, phase-compact-poison, PhaseStart, PhaseMetrics)
   cites Foreword chapter Maybe
   cites Foreword chapter Fat16
 
@@ -21,11 +21,27 @@ Section: Compile Flags
   CompileFlags = record {
    prose : Boolean,
    escape-check : Boolean,
+   poison-compact : Boolean,
    survey : SurveyConfig
   }
 
   compile-flags-default : CompileFlags
-  compile-flags-default = CompileFlags { prose = False, escape-check = False, survey = survey-config-default }
+  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, survey = survey-config-default }
+
+  poison-lex : Integer = 161
+  poison-parse : Integer = 162
+  poison-desugar : Integer = 163
+  poison-scope : Integer = 164
+  poison-check : Integer = 165
+  poison-lower : Integer = 166
+  poison-resolve : Integer = 167
+  poison-lift : Integer = 168
+  poison-frontend : Integer = 169
+
+  compact-phase : CompileFlags, Integer -> Nothing
+  compact-phase (flags) (byte) =
+   if flags.poison-compact then phase-compact-poison byte
+   else phase-compact
 
 Section: Compile Target
 
@@ -40,18 +56,10 @@ Section: Compile Target
 Section: Frontend
 
  Two frontend builders: compile-frontend (TEXT/IR/MEASURE — LOWER on
- deck, no RESOLVE/LIFT) and compile-frontend-cdx (CDX). The CDX path
- reserves the RESOLVE deck first, then a bounded scratch deck above
- it where lower-chapter, fold-constants, and inline-leaf-calls run
- (the scratch deck must sit strictly below the bivy: pointing the
- deck at the bivy frontier makes every deck-exit rewind R10 over the
- deck's own allocations). The deck is then pointed back at the
- reservation and filled by rewrite-ir-chapter — a full deep copy of
- every node, type, span, and text (adopting only sorted-type-defs
- entries, which live below on the same deck). One compact then
- reclaims the scratch deck and bivy together. The deep copy is what
- makes this safe; the old sharing rewrite made bivy placement unsafe
- (CL 2968).
+ deck, no RESOLVE/LIFT) and compile-frontend-cdx (CDX — LOWER on
+ deck, then RESOLVE on deck, then LIFT on deck). Both paths wrap
+ lower-chapter in deck-record; rewrite-ir-defs does not deep-copy
+ all referenced type data, so bivy placement is unsafe (CL 2968).
 
   CompileFrontend = record {
    type-defs : List ATypeDef,
@@ -243,7 +251,7 @@ Section: Frontend
    in let lex-esc-bag = escape-check-bag (flags.escape-check) lex-metrics "LEX"
    in let lex-bag2 = deck-record (bag-merge-all [lex-bag, lex-ov-bag, lex-esc-bag])
    in let result = deck-record (LexResult { tokens = tokens, bag = lex-bag2, heap-marks = [h0], phase-metrics = [lex-metrics] })
-   in let sealed = phase-compact
+   in let sealed = compact-phase flags poison-lex
    in result
 
  The parse phase historically never compacted: the Document lived in
@@ -315,7 +323,7 @@ Section: Frontend
    in let parse-bag2 = deck-record (bag-merge-all [parse-bag-d, parse-ov-bag, keep-ov-bag, keep-esc-bag, parse-precise-bag])
    in let parse-phase-metrics = deck-record (list-push prior-metrics parse-metrics-d)
    in let result = deck-record (ParseResult { doc = doc2, colliding = colliding, assignments = assignments, parse-bag = parse-bag2, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = parse-phase-metrics })
-   in let sealed = phase-compact
+   in let sealed = compact-phase flags poison-parse
    in result
 
   compile-desugar-and-scope : Text, ParseResult, Text, CompileFlags, Integer, Integer -> ScopeResult
@@ -341,7 +349,7 @@ Section: Frontend
    in let desugar-ov-bag = deck-record (if desugar-ov == 1 then deck-overflow-bag "DESUGAR" else no-overflow-bag)
    in let keep-ov-bag = deck-record (if keep-ov == 1 then deck-overflow-bag "DESUGAR-KEEP" else no-overflow-bag)
    in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
-   in let desugar-sealed = phase-compact
+   in let desugar-sealed = compact-phase flags poison-desugar
    in let h5 = __heap-save
    in let scope-deck-height = text-length source * (flags.survey.scope-mul) + survey-scope-base
    in let scope-base = build scope-deck-height
@@ -372,7 +380,7 @@ Section: Frontend
     heap-marks = scope-heap-marks,
     phase-metrics = scope-phase-metrics
    })
-   in let sealed = phase-compact
+   in let sealed = compact-phase flags poison-scope
    in result
 
   compile-type-check : ScopeResult, Integer, CompileFlags -> CompileChecked
@@ -415,7 +423,7 @@ Section: Frontend
        heap-marks = check-heap-marks,
        phase-metrics = check-phase-metrics
       })
-   in let sealed = phase-compact
+   in let sealed = compact-phase flags poison-check
    in result
 
   compile-checked : Text, Text, CompileFlags -> CompileChecked
@@ -450,7 +458,7 @@ Section: Frontend
    })
    in let lower-metrics = phase-measure lower-phase
    in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
-   in let lower-sealed = phase-compact
+   in let lower-sealed = compact-phase flags poison-lower
    in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
    in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
    in let lower-ov-bag = if lower-ov == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
@@ -467,48 +475,38 @@ Section: Frontend
     heap-marks = checked.heap-marks,
     phase-metrics = pm1
    })
-   in let sealed = phase-compact
+   in let sealed = compact-phase flags poison-frontend
    in result
 
   compile-frontend-cdx : Text, Text, CompileFlags -> CompileFrontend
   compile-frontend-cdx (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let resolve-deck-height = list-length (checked.scoped.defs) * (flags.survey.resolve-mul) * (flags.survey.headroom) / 100 + survey-resolve-base
-   in let resolve-base = build resolve-deck-height
-   in let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
-   in let scratch-base = build lower-deck-height
+   else let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
+   in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
    in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
    in let ir = deck-record (inline-leaf-calls-in-chapter (fold-constants-in-chapter ir-raw))
    in let lower-metrics = phase-measure lower-phase
    in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
-   in let dset-resolve = __deck-set resolve-base
+   in let lower-sealed = compact-phase flags poison-lower
+   in let resolve-deck-height = list-length (ir.defs) * (flags.survey.resolve-mul) * (flags.survey.headroom) / 100 + survey-resolve-base
+   in let resolve-base = build resolve-deck-height
    in let resolve-phase = phase-start
    in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
    in let stds = deck-record (sort-bindings (type-map & checked.all-bindings))
-   in let resolved-chapter = deck-record (rewrite-ir-chapter stds ir)
+   in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs))
    in let resolve-metrics = phase-measure resolve-phase
    in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
-   in let lower-metrics-d = deck-record (PhaseMetrics {
-    bivy-origin = lower-metrics.bivy-origin,
-    bivy-hwm = lower-metrics.bivy-hwm,
-    deck-origin = lower-metrics.deck-origin,
-    deck-end = lower-metrics.deck-end
-   })
-   in let scratch-top = if lower-metrics.deck-end > lower-metrics.bivy-hwm then lower-metrics.deck-end else lower-metrics.bivy-hwm
-   in let resolve-esc-metrics = PhaseMetrics {
-    bivy-origin = lower-metrics.deck-origin,
-    bivy-hwm = scratch-top,
-    deck-origin = resolve-metrics.deck-origin,
-    deck-end = resolve-metrics.deck-end
-   }
-   in let resolve-esc-bag = deck-record (escape-check-bag (flags.escape-check) resolve-esc-metrics "RESOLVE")
-   in let resolve-sealed = phase-compact
-   in let lift-deck-height = list-length (resolved-chapter.defs) * (flags.survey.lift-mul) * (flags.survey.headroom) / 100 + survey-lift-base
+   in let lift-deck-height = list-length resolved-defs * (flags.survey.lift-mul) * (flags.survey.headroom) / 100 + survey-lift-base
    in let lift-base = build lift-deck-height
    in let lift-phase = phase-start
-   in let cdx-chapter = deck-record (lift-lambdas resolved-chapter)
+   in let cdx-chapter = deck-record (lift-lambdas (IRChapter {
+    name = ir.name,
+    defs = resolved-defs,
+    effect-op-names = ir.effect-op-names,
+    span = ir.span
+   }))
    in let lift-metrics = phase-measure lift-phase
    in let lift-ov = check-deck-overflow (lift-metrics.deck-end - lift-metrics.deck-origin) lift-deck-height
    in let tm = deck-record (IRTextMeta {
@@ -517,15 +515,17 @@ Section: Frontend
     section-titles = checked.scoped.section-titles,
     ctor-names = checked.ctor-names
    })
-   in let blank-ir = IRChapter { name = resolved-chapter.name, defs = [], effect-op-names = resolved-chapter.effect-op-names, span = resolved-chapter.span }
-   in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics-d)
+   in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
+   in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
    in let pm2 = deck-record (list-push pm1 resolve-metrics)
    in let pm3 = deck-record (list-push pm2 lift-metrics)
    in let lower-ov-bag = if lower-ov == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
    in let resolve-ov-bag = if resolve-ov == 1 then deck-overflow-bag "RESOLVE" else no-overflow-bag
    in let lift-ov-bag = if lift-ov == 1 then deck-overflow-bag "LIFT" else no-overflow-bag
+   in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
+   in let resolve-esc-bag = escape-check-bag (flags.escape-check) resolve-metrics "RESOLVE"
    in let lift-esc-bag = escape-check-bag (flags.escape-check) lift-metrics "LIFT"
-   in let fe-bag = deck-record (bag-merge-all [checked.bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, resolve-esc-bag, lift-esc-bag])
+   in let fe-bag = deck-record (bag-merge-all [checked.bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag])
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
@@ -537,7 +537,7 @@ Section: Frontend
     heap-marks = checked.heap-marks,
     phase-metrics = pm3
    })
-   in let sealed = phase-compact
+   in let sealed = compact-phase flags poison-frontend
    in result
 
 Section: Library Loading
@@ -572,6 +572,7 @@ Section: Library Loading
    else if q == "Sim" then True
    else if q == "AI" then True
    else if q == "UI" then True
+   else if q == "Punctual" then True
    else if q == "Dev" then True
    else False
 
@@ -595,6 +596,7 @@ Section: Library Loading
    else if q == "Sim" then "foreword.sim/"
    else if q == "AI" then "foreword.ai/"
    else if q == "UI" then "foreword.ui/"
+   else if q == "Punctual" then "foreword.punctual/"
    else if q == "Dev" then "os.dev/"
    else "foreword/"
 
@@ -1040,7 +1042,7 @@ Section: Entry Point
 
   parse-mode-flags : Text -> CompileFlags
   parse-mode-flags (mode) =
-   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", survey = parse-survey-config mode }
+   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", survey = parse-survey-config mode }
 
   parse-survey-config : Text -> SurveyConfig
   parse-survey-config (mode) =

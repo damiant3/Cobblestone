@@ -1,0 +1,491 @@
+Chapter: SPIRV Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter CCE
+
+ Generates SPIR-V assembly text (readable disassembly format) from
+ the Codex typed IR. Target: SPIR-V 1.5 (Vulkan 1.2 compute).
+ Emits text that matches spirv-as input format for validation.
+
+Section: Name Sanitization
+
+  spv-sanitize : Text -> Text
+  spv-sanitize (name) =
+   "%" & text-replace name "-" "_"
+
+  spv-func-name : Text -> Text
+  spv-func-name (name) =
+   "%func_" & text-replace name "-" "_"
+
+Section: SSA ID Allocation
+
+  SpvCtx = record {
+   next-id : Integer,
+   type-defs : List ATypeDef,
+   arities : List SpvArityEntry,
+   indent : Text
+  }
+
+  SpvArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255
+  }
+
+  empty-spv-ctx : List ATypeDef -> SpvCtx
+  empty-spv-ctx (tds) =
+   SpvCtx {
+    next-id = 100,
+    type-defs = tds,
+    arities = [],
+    indent = "    "
+   }
+
+  spv-fresh-id : SpvCtx -> Text
+  spv-fresh-id (ctx) =
+   "%t" & integer-to-text (ctx.next-id)
+
+  spv-bump-id : SpvCtx -> SpvCtx
+  spv-bump-id (ctx) =
+   SpvCtx {
+    next-id = ctx.next-id + 1,
+    type-defs = ctx.type-defs,
+    arities = ctx.arities,
+    indent = ctx.indent
+   }
+
+Section: Arity Map
+
+  spv-sorted-insert-arity : List SpvArityEntry, SpvArityEntry -> List SpvArityEntry
+  spv-sorted-insert-arity (xs) (e) =
+   spv-sorted-insert-loop xs e 0
+
+  spv-sorted-insert-loop : List SpvArityEntry, SpvArityEntry, Integer -> List SpvArityEntry
+  spv-sorted-insert-loop (xs) (e) (i) =
+   if i >= list-length xs then list-push xs e
+   else if text-compare (e.name) ((list-at xs i).name) <= 0 then list-insert-at xs i e
+   else spv-sorted-insert-loop xs e (i + 1)
+
+  spv-build-arity-map : List IRDef, Integer, List SpvArityEntry -> List SpvArityEntry
+  spv-build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in spv-build-arity-map defs (i + 1) (spv-sorted-insert-arity acc (SpvArityEntry {
+    name = d.name,
+    arity = list-length (d.params)
+   }))
+
+  spv-lookup-arity : List SpvArityEntry, Text -> Integer
+  spv-lookup-arity (entries) (name) =
+   spv-lookup-arity-loop entries name 0
+
+  spv-lookup-arity-loop : List SpvArityEntry, Text, Integer -> Integer
+  spv-lookup-arity-loop (entries) (name) (i) =
+   if i >= list-length entries then -1
+   else let e = list-at entries i
+   in if e.name == name then e.arity
+   else spv-lookup-arity-loop entries name (i + 1)
+
+Section: Binary Op Mapping
+
+  spv-bin-op : IRBinaryOp -> Text
+  spv-bin-op (op) =
+   when op
+    is IrAddInt -> "OpIAdd"
+    is IrSubInt -> "OpISub"
+    is IrMulInt -> "OpIMul"
+    is IrDivInt -> "OpSDiv"
+    is IrRemInt -> "OpSRem"
+    is IrPowInt -> "OpIMul"
+    is IrAddNum -> "OpFAdd"
+    is IrSubNum -> "OpFSub"
+    is IrMulNum -> "OpFMul"
+    is IrDivNum -> "OpFDiv"
+    is IrEq -> "OpIEqual"
+    is IrNotEq -> "OpINotEqual"
+    is IrLt -> "OpSLessThan"
+    is IrGt -> "OpSGreaterThan"
+    is IrLtEq -> "OpSLessThanEqual"
+    is IrGtEq -> "OpSGreaterThanEqual"
+    is IrAnd -> "OpBitwiseAnd"
+    is IrOr -> "OpBitwiseOr"
+    is IrAppendText -> "OpIAdd"
+    is IrAppendList -> "OpIAdd"
+    is IrConsList -> "OpIAdd"
+    is IrApproxEq -> "OpIEqual"
+    is IrApproxEqExact -> "OpIEqual"
+
+  spv-is-comparison : IRBinaryOp -> Boolean
+  spv-is-comparison (op) =
+   when op
+    is IrEq -> True
+    is IrNotEq -> True
+    is IrLt -> True
+    is IrGt -> True
+    is IrLtEq -> True
+    is IrGtEq -> True
+    is IrApproxEq -> True
+    is IrApproxEqExact -> True
+    is otherwise -> False
+
+Section: Expression Emission
+
+  SpvResult = record {
+   code : Text,
+   result-id : Text,
+   ctx : SpvCtx
+  }
+
+  spv-emit-expr : SpvCtx, IRExpr -> SpvResult
+  spv-emit-expr (ctx) (e) = spv-emit-expr-at ctx e 0
+
+  spv-emit-expr-at : SpvCtx, IRExpr, Integer -> SpvResult
+  spv-emit-expr-at (ctx) (e) (depth) =
+   if depth >= 256 then SpvResult { code = "", result-id = "%zero", ctx = ctx }
+   else when e
+    is IrIntLit (n) (sp) ->
+     let id = spv-fresh-id ctx
+     in let c = spv-bump-id ctx
+     in SpvResult { code = ctx.indent & id & " = OpConstant %i64 " & integer-to-text n & "\n", result-id = id, ctx = c }
+    is IrNumLit (n) (sp) ->
+     let id = spv-fresh-id ctx
+     in let c = spv-bump-id ctx
+     in SpvResult { code = ctx.indent & id & " = OpConstant %f64 " & integer-to-text n & "\n", result-id = id, ctx = c }
+    is IrBoolLit (b) (sp) ->
+     let id = spv-fresh-id ctx
+     in let c = spv-bump-id ctx
+     in SpvResult { code = ctx.indent & id & " = OpConstant %i64 " & (if b then "1" else "0") & "\n", result-id = id, ctx = c }
+    is IrCharLit (n) (sp) ->
+     let id = spv-fresh-id ctx
+     in let c = spv-bump-id ctx
+     in SpvResult { code = ctx.indent & id & " = OpConstant %i64 " & integer-to-text n & "\n", result-id = id, ctx = c }
+    is IrTextLit (s) (sp) ->
+     let id = spv-fresh-id ctx
+     in let c = spv-bump-id ctx
+     in SpvResult { code = ctx.indent & id & " = OpConstant %i64 0 ; text: \"" & s & "\"\n", result-id = id, ctx = c }
+    is IrName (n) (ty) (sp) ->
+     if n == "True" then
+      let id = spv-fresh-id ctx
+      in let c = spv-bump-id ctx
+      in SpvResult { code = ctx.indent & id & " = OpConstant %i64 1\n", result-id = id, ctx = c }
+     else if n == "False" then
+      let id = spv-fresh-id ctx
+      in let c = spv-bump-id ctx
+      in SpvResult { code = ctx.indent & id & " = OpConstant %i64 0\n", result-id = id, ctx = c }
+     else if n == "Nothing" then
+      let id = spv-fresh-id ctx
+      in let c = spv-bump-id ctx
+      in SpvResult { code = ctx.indent & id & " = OpConstant %i64 0\n", result-id = id, ctx = c }
+     else SpvResult { code = "", result-id = spv-sanitize n, ctx = ctx }
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     spv-emit-binary ctx op l r depth
+    is IrNegate (operand) (sp) ->
+     let sub = spv-emit-expr-at ctx operand (depth + 1)
+     in let id = spv-fresh-id (sub.ctx)
+     in let c = spv-bump-id (sub.ctx)
+     in SpvResult { code = sub.code & c.indent & id & " = OpSNegate %i64 " & sub.result-id & "\n", result-id = id, ctx = c }
+    is IrIf (cond) (th) (el) (ty) (sp) ->
+     spv-emit-if ctx cond th el ty depth
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     let vr = spv-emit-expr-at ctx val (depth + 1)
+     in let mv = vr.code & (vr.ctx).indent & "; let " & name & " = " & vr.result-id & "\n"
+     in let br = spv-emit-expr-at (vr.ctx) body (depth + 1)
+     in SpvResult { code = mv & br.code, result-id = br.result-id, ctx = br.ctx }
+    is IrApply (f) (a) (ty) (sp) ->
+     spv-emit-apply ctx e depth
+    is IrLambda (params) (body) (ty) (sp) ->
+     spv-emit-expr-at ctx body (depth + 1)
+    is IrList (elems) (ty) (sp) ->
+     let id = spv-fresh-id ctx
+     in let c = spv-bump-id ctx
+     in SpvResult { code = ctx.indent & id & " = OpConstant %i64 0 ; list literal\n", result-id = id, ctx = c }
+    is IrMatch (scrut) (branches) (ty) (sp) ->
+     spv-emit-match ctx scrut branches depth
+    is IrAct (stmts) (ty) (sp) ->
+     spv-emit-act ctx stmts depth
+    is IrHandle (eff) (body) (clauses) (ty) (sp) ->
+     spv-emit-expr-at ctx body (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) ->
+     spv-emit-expr-at ctx body (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) ->
+     let id = spv-fresh-id ctx
+     in let c = spv-bump-id ctx
+     in SpvResult { code = ctx.indent & id & " = OpConstant %i64 0 ; record " & name & "\n", result-id = id, ctx = c }
+    is IrFieldAccess (rec) (field) (ty) (sp) ->
+     let sub = spv-emit-expr-at ctx rec (depth + 1)
+     in let id = spv-fresh-id (sub.ctx)
+     in let c = spv-bump-id (sub.ctx)
+     in SpvResult { code = sub.code & c.indent & id & " = OpLoad %i64 " & sub.result-id & " ; ." & field & "\n", result-id = id, ctx = c }
+    is IrFieldStore (rec) (field) (val) (ty) (sp) ->
+     let sr = spv-emit-expr-at ctx rec (depth + 1)
+     in let sv = spv-emit-expr-at (sr.ctx) val (depth + 1)
+     in SpvResult { code = sr.code & sv.code & (sv.ctx).indent & "OpStore " & sr.result-id & " " & sv.result-id & " ; ." & field & "\n", result-id = sr.result-id, ctx = sv.ctx }
+    is IrFork (body) (ty) (sp) ->
+     spv-emit-expr-at ctx body (depth + 1)
+    is IrAwait (task) (ty) (sp) ->
+     spv-emit-expr-at ctx task (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) ->
+     spv-emit-act ctx body depth
+    is IrError (msg) (ty) (sp) ->
+     let id = spv-fresh-id ctx
+     in let c = spv-bump-id ctx
+     in SpvResult { code = ctx.indent & "; error: " & msg & "\n" & ctx.indent & id & " = OpConstant %i64 0\n", result-id = id, ctx = c }
+
+Section: Binary Op Helpers
+
+  spv-emit-binary : SpvCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> SpvResult
+  spv-emit-binary (ctx) (op) (l) (r) (depth) =
+   let lr = spv-emit-expr-at ctx l (depth + 1)
+   in let rr = spv-emit-expr-at (lr.ctx) r (depth + 1)
+   in if spv-is-comparison op then
+    let pb = spv-fresh-id (rr.ctx)
+    in let c1 = spv-bump-id (rr.ctx)
+    in let id = spv-fresh-id c1
+    in let c2 = spv-bump-id c1
+    in SpvResult {
+     code = lr.code & rr.code
+      & c2.indent & pb & " = " & spv-bin-op op & " %bool " & lr.result-id & " " & rr.result-id & "\n"
+      & c2.indent & id & " = OpSelect %i64 " & pb & " %one %zero\n",
+     result-id = id,
+     ctx = c2
+    }
+   else
+    let id = spv-fresh-id (rr.ctx)
+    in let c = spv-bump-id (rr.ctx)
+    in SpvResult {
+     code = lr.code & rr.code & c.indent & id & " = " & spv-bin-op op & " %i64 " & lr.result-id & " " & rr.result-id & "\n",
+     result-id = id,
+     ctx = c
+    }
+
+Section: Control Flow
+
+  spv-emit-if : SpvCtx, IRExpr, IRExpr, IRExpr, CodexType, Integer -> SpvResult
+  spv-emit-if (ctx) (cond) (th) (el) (ty) (depth) =
+   let cr = spv-emit-expr-at ctx cond (depth + 1)
+   in let pb = spv-fresh-id (cr.ctx)
+   in let c1 = spv-bump-id (cr.ctx)
+   in let lbl-then = spv-fresh-id c1
+   in let c2 = spv-bump-id c1
+   in let lbl-else = spv-fresh-id c2
+   in let c3 = spv-bump-id c2
+   in let lbl-merge = spv-fresh-id c3
+   in let c4 = spv-bump-id c3
+   in let tr = spv-emit-expr-at c4 th (depth + 1)
+   in let er = spv-emit-expr-at (tr.ctx) el (depth + 1)
+   in let phi = spv-fresh-id (er.ctx)
+   in let c5 = spv-bump-id (er.ctx)
+   in SpvResult {
+    code = cr.code
+     & c5.indent & pb & " = OpINotEqual %bool " & cr.result-id & " %zero\n"
+     & c5.indent & "OpSelectionMerge " & lbl-merge & " None\n"
+     & c5.indent & "OpBranchConditional " & pb & " " & lbl-then & " " & lbl-else & "\n"
+     & c5.indent & lbl-then & " = OpLabel\n"
+     & tr.code
+     & c5.indent & "OpBranch " & lbl-merge & "\n"
+     & c5.indent & lbl-else & " = OpLabel\n"
+     & er.code
+     & c5.indent & "OpBranch " & lbl-merge & "\n"
+     & c5.indent & lbl-merge & " = OpLabel\n"
+     & c5.indent & phi & " = OpPhi %i64 " & tr.result-id & " " & lbl-then & " " & er.result-id & " " & lbl-else & "\n",
+    result-id = phi,
+    ctx = c5
+   }
+
+  spv-emit-match : SpvCtx, IRExpr, List IRBranch, Integer -> SpvResult
+  spv-emit-match (ctx) (scrut) (branches) (depth) =
+   let sr = spv-emit-expr-at ctx scrut (depth + 1)
+   in spv-emit-match-branches (sr.ctx) sr.result-id branches 0 depth
+
+  spv-emit-match-branches : SpvCtx, Text, List IRBranch, Integer, Integer -> SpvResult
+  spv-emit-match-branches (ctx) (scrut-id) (branches) (i) (depth) =
+   if i >= list-length branches then
+    let id = spv-fresh-id ctx
+    in let c = spv-bump-id ctx
+    in SpvResult { code = ctx.indent & "; match exhaustion\n" & ctx.indent & id & " = OpConstant %i64 0\n", result-id = id, ctx = c }
+   else let b = list-at branches i
+   in spv-emit-match-arm ctx scrut-id (b.pattern) (b.body) branches i depth
+
+  spv-emit-match-arm : SpvCtx, Text, IRPat, IRExpr, List IRBranch, Integer, Integer -> SpvResult
+  spv-emit-match-arm (ctx) (scrut-id) (pat) (body) (branches) (i) (depth) =
+   when pat
+    is IrWildPat (sp) ->
+     spv-emit-expr-at ctx body (depth + 1)
+    is IrVarPat (name) (ty) (sp) ->
+     let mv = ctx.indent & "; bind " & name & " = " & scrut-id & "\n"
+     in let br = spv-emit-expr-at ctx body (depth + 1)
+     in SpvResult { code = mv & br.code, result-id = br.result-id, ctx = br.ctx }
+    is IrLitPat (text) (ty) (sp) ->
+     let br = spv-emit-expr-at ctx body (depth + 1)
+     in let rest = spv-emit-match-branches (br.ctx) scrut-id branches (i + 1) depth
+     in SpvResult { code = ctx.indent & "; case " & text & "\n" & br.code & rest.code, result-id = br.result-id, ctx = rest.ctx }
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     let br = spv-emit-expr-at ctx body (depth + 1)
+     in SpvResult { code = ctx.indent & "; ctor " & name & "\n" & br.code, result-id = br.result-id, ctx = br.ctx }
+
+Section: Act Block Emission
+
+  spv-emit-act : SpvCtx, List IRActStmt, Integer -> SpvResult
+  spv-emit-act (ctx) (stmts) (depth) =
+   spv-emit-act-loop ctx stmts 0 depth
+
+  spv-emit-act-loop : SpvCtx, List IRActStmt, Integer, Integer -> SpvResult
+  spv-emit-act-loop (ctx) (stmts) (i) (depth) =
+   if i >= list-length stmts then
+    SpvResult { code = "", result-id = "%zero", ctx = ctx }
+   else let s = list-at stmts i
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) ->
+     let vr = spv-emit-expr-at ctx val (depth + 1)
+     in let mv = vr.code & (vr.ctx).indent & "; bind " & name & " = " & vr.result-id & "\n"
+     in let rest = spv-emit-act-loop (vr.ctx) stmts (i + 1) depth
+     in SpvResult { code = mv & rest.code, result-id = rest.result-id, ctx = rest.ctx }
+    is IrDoExec (e) (sp) ->
+     let vr = spv-emit-expr-at ctx e (depth + 1)
+     in let rest = spv-emit-act-loop (vr.ctx) stmts (i + 1) depth
+     in if i == list-length stmts - 1 then vr
+     else SpvResult { code = vr.code & rest.code, result-id = rest.result-id, ctx = rest.ctx }
+
+Section: Apply Emission
+
+  spv-emit-apply : SpvCtx, IRExpr, Integer -> SpvResult
+  spv-emit-apply (ctx) (e) (depth) =
+   let chain = collect-apply-chain e []
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     spv-emit-call ctx n (chain.args) depth
+    is otherwise ->
+     let id = spv-fresh-id ctx
+     in let c = spv-bump-id ctx
+     in SpvResult { code = ctx.indent & id & " = OpConstant %i64 0 ; indirect call\n", result-id = id, ctx = c }
+
+  spv-emit-call : SpvCtx, Text, List IRExpr, Integer -> SpvResult
+  spv-emit-call (ctx) (name) (args) (depth) =
+   let ar = spv-emit-args ctx args depth
+   in let id = spv-fresh-id (ar.ctx)
+   in let c = spv-bump-id (ar.ctx)
+   in SpvResult {
+    code = ar.code & c.indent & id & " = OpFunctionCall %i64 " & spv-func-name name & " " & ar.result-id & "\n",
+    result-id = id,
+    ctx = c
+   }
+
+  spv-emit-args : SpvCtx, List IRExpr, Integer -> SpvResult
+  spv-emit-args (ctx) (args) (depth) =
+   spv-emit-args-loop ctx args 0 "" depth
+
+  spv-emit-args-loop : SpvCtx, List IRExpr, Integer, Text, Integer -> SpvResult
+  spv-emit-args-loop (ctx) (args) (i) (ids) (depth) =
+   if i >= list-length args then
+    SpvResult { code = "", result-id = ids, ctx = ctx }
+   else let ar = spv-emit-expr-at ctx (list-at args i) (depth + 1)
+   in let sep = if i == 0 then "" else " "
+   in let rest = spv-emit-args-loop (ar.ctx) args (i + 1) (ids & sep & ar.result-id) depth
+   in SpvResult { code = ar.code & rest.code, result-id = rest.result-id, ctx = rest.ctx }
+
+Section: Function Emission
+
+  spv-emit-param-types : List IRParam, Integer -> Text
+  spv-emit-param-types (params) (i) =
+   if i >= list-length params then ""
+   else "%i64 " & spv-emit-param-types params (i + 1)
+
+  spv-emit-param-decls : SpvCtx, List IRParam, Integer -> SpvResult
+  spv-emit-param-decls (ctx) (params) (i) =
+   if i >= list-length params then SpvResult { code = "", result-id = "", ctx = ctx }
+   else let p = list-at params i
+   in let id = spv-sanitize (p.name)
+   in let rest = spv-emit-param-decls ctx params (i + 1)
+   in SpvResult {
+    code = ctx.indent & id & " = OpFunctionParameter %i64\n" & rest.code,
+    result-id = rest.result-id,
+    ctx = rest.ctx
+   }
+
+  spv-emit-def : SpvCtx, IRDef -> Text
+  spv-emit-def (ctx) (d) =
+   let fname = spv-func-name (d.name)
+   in let nparams = list-length (d.params)
+   in let ftype-id = "%ftype_" & integer-to-text nparams
+   in let header = fname & " = OpFunction %i64 None " & ftype-id & "\n"
+   in let entry-lbl = spv-fresh-id ctx
+   in let c1 = spv-bump-id ctx
+   in let entry = c1.indent & entry-lbl & " = OpLabel\n"
+   in let params = spv-emit-param-decls c1 (d.params) 0
+   in let body-result = spv-emit-expr-at (params.ctx) (d.body) 0
+   in let ret = (body-result.ctx).indent & "OpReturnValue " & body-result.result-id & "\n"
+   in header & params.code & entry & body-result.code & ret & "OpFunctionEnd\n\n"
+
+Section: Chapter Emission
+
+  spv-emit-header : IRChapter -> Text
+  spv-emit-header (ch) =
+   "; SPIR-V\n"
+   & "; Version: 1.5\n"
+   & "; Generator: Codex SPIR-V Plug\n"
+   & "; Schema: 0\n"
+   & "OpCapability Shader\n"
+   & "OpCapability Int64\n"
+   & "OpCapability Float64\n"
+   & "OpMemoryModel Logical GLSL450\n"
+   & "\n"
+   & "; Type declarations\n"
+   & "%void = OpTypeVoid\n"
+   & "%bool = OpTypeBool\n"
+   & "%i64 = OpTypeInt 64 1\n"
+   & "%u64 = OpTypeInt 64 0\n"
+   & "%f64 = OpTypeFloat 64\n"
+   & "%ptr_i64 = OpTypePointer Function %i64\n"
+   & "%ptr_i64_storage = OpTypePointer StorageBuffer %i64\n"
+   & "\n"
+   & "; Constants\n"
+   & "%zero = OpConstant %i64 0\n"
+   & "%one = OpConstant %i64 1\n"
+   & "\n"
+
+  spv-emit-func-types : Integer -> Text
+  spv-emit-func-types (max-arity) =
+   spv-emit-func-types-loop 0 max-arity
+
+  spv-emit-func-types-loop : Integer, Integer -> Text
+  spv-emit-func-types-loop (n) (max) =
+   if n > max then "\n"
+   else let args = spv-repeat-type n
+   in "%ftype_" & integer-to-text n & " = OpTypeFunction %i64 " & args & "\n" & spv-emit-func-types-loop (n + 1) max
+
+  spv-repeat-type : Integer -> Text
+  spv-repeat-type (n) =
+   if n <= 0 then ""
+   else "%i64 " & spv-repeat-type (n - 1)
+
+  spv-max-arity : List IRDef, Integer, Integer -> Integer
+  spv-max-arity (defs) (i) (mx) =
+   if i >= list-length defs then mx
+   else let n = list-length ((list-at defs i).params)
+   in spv-max-arity defs (i + 1) (if n > mx then n else mx)
+
+  emit-spirv-chapter : IRChapter, List ATypeDef -> Text
+  emit-spirv-chapter (ch) (tds) =
+   let header = spv-emit-header ch
+   in let max-ar = spv-max-arity (ch.defs) 0 0
+   in let ftypes = spv-emit-func-types max-ar
+   in let ctx = SpvCtx {
+    next-id = 100,
+    type-defs = tds,
+    arities = spv-build-arity-map (ch.defs) 0 [],
+    indent = "    "
+   }
+   in header & ftypes & spv-emit-defs ctx (ch.defs) 0
+
+  spv-emit-defs : SpvCtx, List IRDef, Integer -> Text
+  spv-emit-defs (ctx) (defs) (i) =
+   if i >= list-length defs then ""
+   else let fresh-ctx = SpvCtx {
+    next-id = 100,
+    type-defs = ctx.type-defs,
+    arities = ctx.arities,
+    indent = "    "
+   }
+   in spv-emit-def fresh-ctx (list-at defs i) & spv-emit-defs ctx defs (i + 1)
+
+Page 1

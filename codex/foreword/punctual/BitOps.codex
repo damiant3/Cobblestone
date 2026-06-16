@@ -1,0 +1,112 @@
+Chapter: BitOps
+
+ Bit manipulation primitives safe for real-time contexts. Every
+ function is punctual: no heap, no recursion, bounded instruction
+ count. Widths are 64-bit (Integer) unless noted.
+
+ To bit-popcount gives the number of set bits in an integer.
+ To bit-clz gives the count of leading zero bits.
+ To bit-ctz gives the count of trailing zero bits.
+ To is-power-of-two gives True when the integer is a power of two.
+ To next-power-of-two gives the smallest power of two >= the input.
+ To bit-rotate-left gives a 64-bit left rotation.
+ To bit-rotate-right gives a 64-bit right rotation.
+ To byte-swap-32 gives the byte-reversed form of a 32-bit value.
+ To byte-swap-64 gives the byte-reversed form of a 64-bit value.
+ To extract-byte gives the n-th byte (0 = least significant).
+
+ We say:
+
+Section: Population Count
+
+  punctual bit-popcount : Integer -> Integer
+  bit-popcount (x) =
+    let m1 = 6148914691236517205
+    in let m2 = 3689348814741910323
+    in let m4 = 1085102592571150095
+    in let h01 = 72340172838076673
+    in let a = x - bit-and (bit-shru x 1) m1
+    in let b = bit-and a m2 + bit-and (bit-shru a 2) m2
+    in let c = bit-and (b + bit-shru b 4) m4
+    in bit-shru (c * h01) 56
+
+Section: Leading and Trailing Zeros
+
+  punctual bit-clz : Integer -> Integer
+  bit-clz (x) =
+    if x == 0 then 64
+    else let n0 = 0
+    in let x1 = if bit-and x (0 - 4294967296) == 0 then bit-shl x 32 else x
+    in let n1 = if bit-and x (0 - 4294967296) == 0 then n0 + 32 else n0
+    in let x2 = if bit-and x1 (0 - 281474976710656) == 0 then bit-shl x1 16 else x1
+    in let n2 = if bit-and x1 (0 - 281474976710656) == 0 then n1 + 16 else n1
+    in let x3 = if bit-and x2 (0 - 72057594037927936) == 0 then bit-shl x2 8 else x2
+    in let n3 = if bit-and x2 (0 - 72057594037927936) == 0 then n2 + 8 else n2
+    in let x4 = if bit-and x3 (0 - 1152921504606846976) == 0 then bit-shl x3 4 else x3
+    in let n4 = if bit-and x3 (0 - 1152921504606846976) == 0 then n3 + 4 else n3
+    in let x5 = if bit-and x4 (0 - 4611686018427387904) == 0 then bit-shl x4 2 else x4
+    in let n5 = if bit-and x4 (0 - 4611686018427387904) == 0 then n4 + 2 else n4
+    in if bit-shru x5 63 == 0 then n5 + 1 else n5
+
+  punctual bit-ctz : Integer -> Integer
+  bit-ctz (x) =
+    if x == 0 then 64
+    else bit-popcount (bit-and (x - 1) (bit-not x))
+
+Section: Power of Two
+
+  punctual is-power-of-two : Integer -> Boolean
+  is-power-of-two (x) = x > 0 & bit-and x (x - 1) == 0
+
+  punctual next-power-of-two : Integer -> Integer
+  next-power-of-two (x) =
+    if x <= 1 then 1
+    else let v = x - 1
+    in let v1 = bit-or v (bit-shru v 1)
+    in let v2 = bit-or v1 (bit-shru v1 2)
+    in let v3 = bit-or v2 (bit-shru v2 4)
+    in let v4 = bit-or v3 (bit-shru v3 8)
+    in let v5 = bit-or v4 (bit-shru v4 16)
+    in let v6 = bit-or v5 (bit-shru v5 32)
+    in v6 + 1
+
+Section: Rotation
+
+  punctual bit-rotate-left : Integer, Integer -> Integer
+  bit-rotate-left (x) (n) =
+    let s = bit-and n 63
+    in bit-or (bit-shl x s) (bit-shru x (64 - s))
+
+  punctual bit-rotate-right : Integer, Integer -> Integer
+  bit-rotate-right (x) (n) =
+    let s = bit-and n 63
+    in bit-or (bit-shru x s) (bit-shl x (64 - s))
+
+Section: Byte Swap
+
+  punctual byte-swap-32 : Integer -> Integer
+  byte-swap-32 (x) =
+    let b0 = bit-and x 255
+    in let b1 = bit-and (bit-shru x 8) 255
+    in let b2 = bit-and (bit-shru x 16) 255
+    in let b3 = bit-and (bit-shru x 24) 255
+    in bit-or (bit-or (bit-shl b0 24) (bit-shl b1 16)) (bit-or (bit-shl b2 8) b3)
+
+  punctual byte-swap-64 : Integer -> Integer
+  byte-swap-64 (x) =
+    let b0 = bit-and x 255
+    in let b1 = bit-and (bit-shru x 8) 255
+    in let b2 = bit-and (bit-shru x 16) 255
+    in let b3 = bit-and (bit-shru x 24) 255
+    in let b4 = bit-and (bit-shru x 32) 255
+    in let b5 = bit-and (bit-shru x 40) 255
+    in let b6 = bit-and (bit-shru x 48) 255
+    in let b7 = bit-and (bit-shru x 56) 255
+    in bit-or (bit-or (bit-or (bit-shl b0 56) (bit-shl b1 48)) (bit-or (bit-shl b2 40) (bit-shl b3 32))) (bit-or (bit-or (bit-shl b4 24) (bit-shl b5 16)) (bit-or (bit-shl b6 8) b7))
+
+Section: Byte Extraction
+
+  punctual extract-byte : Integer, Integer -> Integer
+  extract-byte (x) (n) = bit-and (bit-shru x (n * 8)) 255
+
+Page 1

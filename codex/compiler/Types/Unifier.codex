@@ -202,8 +202,8 @@ Section: Unify
     is IntegerTy (a-lo) (a-hi) (a-mode) -> when b
      is IntegerTy (b-lo) (b-hi) (b-mode) -> a-lo == b-lo & a-hi == b-hi
      is otherwise -> False
-    is NumberTy -> when b
-     is NumberTy -> True
+    is RealTy -> when b
+     is RealTy -> True
      is otherwise -> False
     is TextTy -> when b
      is TextTy -> True
@@ -233,6 +233,12 @@ Section: Unify
     is UnitTy (na) (inner-a) -> when b
      is UnitTy (nb) (inner-b) -> na.value == nb.value & types-equal inner-a inner-b
      is otherwise -> False
+    is VectorTy (na) (ta) -> when b
+     is VectorTy (nb) (tb) -> na == nb & types-equal ta tb
+     is otherwise -> False
+    is VectorMaskTy (na) -> when b
+     is VectorMaskTy (nb) -> na == nb
+     is otherwise -> False
     is otherwise -> False
 
   unify-rhs : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
@@ -255,8 +261,8 @@ Section: Unify
      is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1)
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
-    is NumberTy -> when b
-     is NumberTy | ErrorTy -> (True, st)
+    is RealTy -> when b
+     is RealTy | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is TextTy -> when b
      is TextTy | ErrorTy -> (True, st)
@@ -329,6 +335,18 @@ Section: Unify
       unify-at st inner-a inner-b span (depth + 1)
      is ErrorTy -> (True, st)
      is otherwise -> unify-at st inner-a b span (depth + 1)
+    is VectorTy (na) (ta) -> when b
+     is VectorTy (nb) (tb) ->
+      if na == nb then unify-at st ta tb span (depth + 1)
+      else unify-mismatch st a b span
+     is ErrorTy -> (True, st)
+     is otherwise -> unify-mismatch st a b span
+    is VectorMaskTy (na) -> when b
+     is VectorMaskTy (nb) ->
+      if na == nb then (True, st)
+      else unify-mismatch st a b span
+     is ErrorTy -> (True, st)
+     is otherwise -> unify-mismatch st a b span
     is otherwise -> when b
      is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1)
      is ErrorTy -> (True, st)
@@ -356,7 +374,7 @@ Section: Unify
   type-desc (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> "Integer"
-    is NumberTy -> "Number"
+    is RealTy -> "Real"
     is TextTy -> "Text"
     is BooleanTy -> "Boolean"
     is CharTy -> "Char"
@@ -378,6 +396,8 @@ Section: Unify
     is SumTy (name) (args) (ctors) -> if list-length args == 0 then "Sum:" & name.value
                                        else "Sum:" & name.value & "[" & type-desc-args args 0 & "]"
     is UnitTy (name) (inner) -> "Unit:" & name.value
+    is VectorTy (vn) (vt) -> "Vector " & integer-to-text vn & " " & type-desc vt
+    is VectorMaskTy (n) -> "VectorMask " & integer-to-text n
 
   type-desc-args : List CodexType, Integer -> Text
   type-desc-args (args) (i) =

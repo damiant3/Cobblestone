@@ -144,8 +144,8 @@ builds every time.
 ### 4. One thing at a time
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
-Do not "while I'm here." The compiler is ~29,000 lines of Codex across
-53 files. A wrong change in one place surfaces as a silent corruption
+Do not "while I'm here." The compiler is ~28,000 lines of Codex across
+54 files. A wrong change in one place surfaces as a silent corruption
 three pipeline stages later.
 
 ### 5. CCE is the internal encoding

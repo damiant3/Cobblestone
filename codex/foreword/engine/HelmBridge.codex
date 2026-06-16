@@ -1,0 +1,242 @@
+Chapter: HelmBridge
+  cites Engine chapter Scene3D
+  cites Engine chapter GameLoop
+  cites Engine chapter Input
+  cites Game chapter ECS
+  cites Foreword chapter Maybe
+
+ Bridge between the game engine and the Helm communication platform.
+ Maps engine entities to Helm player slots, translates game events
+ (kills, objectives, phase changes) to Helm voice/chat events, and
+ drives the Helm voice hierarchy rank assignments from game roles.
+
+ The engine produces HelmEvents. The Helm app consumes them to
+ update its River (chat clustering) and Bridge (voice hierarchy).
+ This decouples the engine from Helm's UI — the engine does not
+ import Helm types directly.
+
+ We say:
+
+Section: Player Mapping
+
+  EnginePlayer = record {
+    ep-entity : Integer,
+    ep-name : Text,
+    ep-team : Integer,
+    ep-role : PlayerRole,
+    ep-alive : Boolean,
+    ep-score : Integer
+  }
+
+  PlayerRole =
+    | RoleLeader
+    | RoleOfficer
+    | RoleMember
+    | RoleSpectator
+
+Section: Game Session
+
+  EngineSession = record {
+    es-players : List EnginePlayer,
+    es-player-count : Integer,
+    es-phase : GameSessionPhase,
+    es-time : Integer,
+    es-team-count : Integer,
+    es-events : List HelmEvent,
+    es-event-count : Integer
+  }
+
+  GameSessionPhase =
+    | PhaseLobby
+    | PhaseLoading
+    | PhasePlaying
+    | PhasePaused
+    | PhaseOvertime
+    | PhasePostGame
+
+  session-new : EngineSession
+  session-new = EngineSession {
+    es-players = [],
+    es-player-count = 0,
+    es-phase = PhaseLobby,
+    es-time = 0,
+    es-team-count = 2,
+    es-events = [],
+    es-event-count = 0
+  }
+
+Section: Helm Events
+
+  HelmEvent =
+    | HelmKill (Text) (Text)
+    | HelmDeath (Text)
+    | HelmObjective (Text) (Integer)
+    | HelmPhaseChange (GameSessionPhase)
+    | HelmTeamWipe (Integer)
+    | HelmVictory (Integer)
+    | HelmPlayerJoin (Text) (Integer)
+    | HelmPlayerLeave (Text)
+    | HelmEmergency (Text)
+    | HelmChat (Text) (Text)
+
+  HelmEventPriority =
+    | PrioNormal
+    | PrioHigh
+    | PrioCritical
+
+  helm-event-priority : HelmEvent -> HelmEventPriority
+  helm-event-priority (ev) = when ev
+    is HelmKill (k) (v) -> PrioNormal
+    is HelmDeath (p) -> PrioNormal
+    is HelmObjective (n) (t) -> PrioHigh
+    is HelmPhaseChange (ph) -> PrioHigh
+    is HelmTeamWipe (t) -> PrioCritical
+    is HelmVictory (t) -> PrioCritical
+    is HelmPlayerJoin (n) (t) -> PrioNormal
+    is HelmPlayerLeave (n) -> PrioNormal
+    is HelmEmergency (msg) -> PrioCritical
+    is HelmChat (s) (m) -> PrioNormal
+
+Section: Player Management
+
+  session-add-player : EngineSession, Text, Integer, PlayerRole -> EngineSession
+  session-add-player (s) (name) (team) (role) =
+    let entity = s.es-player-count
+    in let player = EnginePlayer { ep-entity = entity, ep-name = name, ep-team = team, ep-role = role, ep-alive = True, ep-score = 0 }
+    in let s2 = EngineSession {
+      es-players = list-push (s.es-players) player,
+      es-player-count = s.es-player-count + 1,
+      es-phase = s.es-phase,
+      es-time = s.es-time,
+      es-team-count = s.es-team-count,
+      es-events = s.es-events,
+      es-event-count = s.es-event-count
+    }
+    in session-emit s2 (HelmPlayerJoin name team)
+
+Section: Event Emission
+
+  session-emit : EngineSession, HelmEvent -> EngineSession
+  session-emit (s) (ev) = EngineSession {
+    es-players = s.es-players,
+    es-player-count = s.es-player-count,
+    es-phase = s.es-phase,
+    es-time = s.es-time,
+    es-team-count = s.es-team-count,
+    es-events = list-push (s.es-events) ev,
+    es-event-count = s.es-event-count + 1
+  }
+
+  session-kill : EngineSession, Text, Text -> EngineSession
+  session-kill (s) (killer) (victim) =
+    let s2 = session-emit s (HelmKill killer victim)
+    in session-emit s2 (HelmDeath victim)
+
+  session-objective : EngineSession, Text, Integer -> EngineSession
+  session-objective (s) (name) (team) = session-emit s (HelmObjective name team)
+
+  session-phase : EngineSession, GameSessionPhase -> EngineSession
+  session-phase (s) (phase) =
+    let s2 = __record-set s "es-phase" phase
+    in session-emit s2 (HelmPhaseChange phase)
+
+  session-team-wipe : EngineSession, Integer -> EngineSession
+  session-team-wipe (s) (team) = session-emit s (HelmTeamWipe team)
+
+  session-victory : EngineSession, Integer -> EngineSession
+  session-victory (s) (team) = session-emit s (HelmVictory team)
+
+Section: Rank Derivation
+
+  HelmRank =
+    | RankAdmiral
+    | RankCaptain
+    | RankLieutenant
+    | RankCrew
+
+  role-to-rank : PlayerRole -> HelmRank
+  role-to-rank (role) = when role
+    is RoleLeader -> RankAdmiral
+    is RoleOfficer -> RankCaptain
+    is RoleMember -> RankCrew
+    is RoleSpectator -> RankCrew
+
+Section: Voice Hierarchy Builder
+
+  VoiceSlot = record {
+    vs-name : Text,
+    vs-rank : HelmRank,
+    vs-team : Integer,
+    vs-muted : Boolean
+  }
+
+  session-voice-slots : EngineSession -> List VoiceSlot
+  session-voice-slots (s) = helm-build-slots (s.es-players) 0 (s.es-player-count) []
+
+  helm-build-slots : List EnginePlayer, Integer, Integer, List VoiceSlot -> List VoiceSlot
+  helm-build-slots (players) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at players i
+    in let slot = VoiceSlot { vs-name = p.ep-name, vs-rank = role-to-rank (p.ep-role), vs-team = p.ep-team, vs-muted = False }
+    in helm-build-slots players (i + 1) n (list-push acc slot)
+
+Section: Event Drain
+
+  session-drain-events : EngineSession -> EngineSession
+  session-drain-events (s) = EngineSession {
+    es-players = s.es-players,
+    es-player-count = s.es-player-count,
+    es-phase = s.es-phase,
+    es-time = s.es-time,
+    es-team-count = s.es-team-count,
+    es-events = [],
+    es-event-count = 0
+  }
+
+  session-has-critical : EngineSession -> Boolean
+  session-has-critical (s) = helm-check-critical (s.es-events) 0 (s.es-event-count)
+
+  helm-check-critical : List HelmEvent, Integer, Integer -> Boolean
+  helm-check-critical (events) (i) (n) =
+    if i >= n then False
+    else let prio = helm-event-priority (list-at events i)
+    in when prio
+      is PrioCritical -> True
+      is otherwise -> helm-check-critical events (i + 1) n
+
+Section: Formatting
+
+  format-session : EngineSession -> Text
+  format-session (s) =
+    let phase = when s.es-phase
+      is PhaseLobby -> "lobby"
+      is PhaseLoading -> "loading"
+      is PhasePlaying -> "playing"
+      is PhasePaused -> "paused"
+      is PhaseOvertime -> "overtime"
+      is PhasePostGame -> "postgame"
+    in "Session(" & show (s.es-player-count) & " players, " & phase & ", " & show (s.es-event-count) & " events)"
+
+  format-helm-event : HelmEvent -> Text
+  format-helm-event (ev) = when ev
+    is HelmKill (k) (v) -> k & " killed " & v
+    is HelmDeath (p) -> p & " died"
+    is HelmObjective (n) (t) -> "team " & show t & " captured " & n
+    is HelmPhaseChange (ph) -> "phase changed"
+    is HelmTeamWipe (t) -> "TEAM " & show t & " WIPED"
+    is HelmVictory (t) -> "TEAM " & show t & " WINS"
+    is HelmPlayerJoin (n) (t) -> n & " joined team " & show t
+    is HelmPlayerLeave (n) -> n & " left"
+    is HelmEmergency (msg) -> "EMERGENCY: " & msg
+    is HelmChat (s) (m) -> s & ": " & m
+
+  format-voice-slot : VoiceSlot -> Text
+  format-voice-slot (vs) =
+    let rank-name = when vs.vs-rank
+      is RankAdmiral -> "Admiral"
+      is RankCaptain -> "Captain"
+      is RankLieutenant -> "Lieutenant"
+      is RankCrew -> "Crew"
+    in vs.vs-name & " [" & rank-name & " T" & show (vs.vs-team) & "]"
+
+Page 1
