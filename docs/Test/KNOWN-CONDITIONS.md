@@ -26,6 +26,35 @@ Still true (lesson from the same investigation): a pre-gate battery
 against an old-seed-compiled SUT does NOT exercise self-application;
 run the battery against your own stage1 before declaring an IR pass
 green (build.ps1 does this).
+### Self-compilation source-size ceiling — CRASH adding any definition
+
+As of CL 4439 (2026-06-15), the compiler source (1,507,407 bytes
+concatenated, ~29,500 lines, ~2,600 definitions) is at its
+self-compilation ceiling. Adding even one trivial function
+(`foo (x) = x + 1`) to ANY chapter crashes the seed during CDX
+build of the new source.
+
+**Symptom**: `!EXC=0d` in `is-in-list` during the frontend phase.
+R12/R14 contain CCE text data (e.g., `131c1c101f490f16`) used as a
+pointer — a type confusion from an internal table overflow. Survey
+raises do not help (tested lex-mul:60, parse-mul:400, scope-mul:80,
+check-mul:600, headroom:150). The crash is consistent across files
+and chapters.
+
+**Root cause**: Unknown. The `is-in-list` crash with text-as-pointer
+suggests a fixed-size lookup table (possibly in scope resolution or
+name lookup) that overflows when the definition count increases,
+causing a later read to pick up CCE text bytes from an adjacent
+allocation instead of a list pointer.
+
+**Workaround**: To add a new function, remove or consolidate an
+existing one to keep the total definition count constant. Adding net
+new definitions requires finding and raising the overflowing table.
+
+**Impact**: Blocks ALL new compiler features until the table is
+found and raised. Known blocked work: prose parameter checking
+(CDX1102), x86 gcd further optimization.
+
 ### IrLambda variant present in IRExpr but unreachable at emission
 
 LambdaLifting.codex eliminates all IrLambda nodes before IR reaches

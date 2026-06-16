@@ -432,6 +432,35 @@ performs two checks:
 There is no guard page or MMU-based protection. The check is a software
 compare on every function entry.
 
+---
+
+## Vector / SIMD Register Allocation
+
+Vector registers (XMM0–XMM15 on x86-64) are a separate allocation pool
+from integer registers. The two domains never compete for the same
+physical register.
+
+| Role | Registers | Notes |
+|------|-----------|-------|
+| Vector temps | XMM0–XMM7 | Rotation scheme, like integer `alloc-temp` |
+| Vector locals | XMM8–XMM15 | Callee-saved in our convention |
+| Scalar float | XMM0/XMM1 | Pre-SIMD usage for `Real` arithmetic |
+
+SSE2 packed instructions use 128-bit XMM registers. `Vector 2 Real`
+(2 × f64 = 128 bits) fills one XMM register. `Vector 4 (Real approximate)`
+(4 × f32 = 128 bits) also fits in one XMM.
+
+### Alignment
+
+Vector values carry natural alignment: `N * sizeof(T)` rounded up to
+the next power of two, minimum 16 bytes. The bump allocator (`__alloc`)
+rounds R10 up before allocation. Stack spill slots for vectors must also
+respect alignment — the prologue already aligns RSP to 16 bytes (SSE2
+minimum).
+
+Future AVX/AVX2 (YMM, 256-bit) requires 32-byte alignment. AVX-512
+(ZMM, 512-bit) requires 64-byte alignment. These are Phase 2/3 concerns.
+
 ### Heap High-Water Mark
 
 `heap-hwm-addr` stores the highest value R10 has reached. Updated by

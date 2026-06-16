@@ -6,7 +6,7 @@ A foreword quire is a library package marked `"foreword": true` in its
 `codex.project.json`. Foreword modules compile before user code and
 make their types and functions automatically available.
 
-### codex.foreword (99 modules) — Core
+### codex.foreword (106 modules) — Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -38,7 +38,7 @@ Activation, SparseLattice
 
 Deflate, Gzip, Brotli, Zstd, Lz4, Lz77, Huffman, Rle
 
-### codex.foreword.encode (32 modules) — Encoding and Codecs
+### codex.foreword.encode (35 modules) — Encoding and Codecs
 
 Data formats, image codecs, audio codecs, video codecs, protocols.
 
@@ -74,6 +74,25 @@ MusicTheory, Noise, Perlin, Pitch, Resample, Convolution, Wavelet
 Physics, Kinematics, Collision, Constraint, ParticleSystem,
 SpatialHash, Steering
 
+### codex.foreword.punctual (8 modules) — Real-Time Primitives
+
+IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian
+
+Every function is `punctual`: no heap, no recursion, bounded
+instruction count. Safe to call from real-time, embedded, and
+interrupt contexts.
+
+### codex.foreword.engine (21 modules) — 3D Game Engine
+
+Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling,
+PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags,
+AbilitySystem, Signal, DebugDraw, TimeOfDay, AssetTable, EdgeMesh,
+HelmBridge
+
+3D rendering pipeline, scene management, materials, LOD/culling,
+post-processing, spatial audio, input handling, gameplay systems,
+and edge mesh networking for multiplayer.
+
 ### codex.foreword.ui (28 modules) — User Interface
 
 Widget, Window, Surface, Theme, Font, Icon, Event, Layout, Animation,
@@ -91,7 +110,7 @@ The self-hosted compiler. Subdirectories: Ast, Core, Emit, IR,
 Semantics, Syntax, Types. Do not modify without reading the code first
 and passing both gates (sample battery + pingpong).
 
-### codex.kernel (22 modules) — Hardware Drivers
+### codex.kernel (24 modules) — Hardware Drivers
 
 Bare-metal hardware interfaces: BitmapFont, Console, DiagnosticShell,
 DiskFacts, DriveManager, GpuBridge, IdentityManager, Ivshmem,
@@ -106,7 +125,7 @@ Split across sub-quires:
 |-----------|---------|---------|
 | codex.os | 4 | Core OS abstractions |
 | codex.os.dev | 5 | Device management |
-| codex.os.kernel | 22 | Hardware drivers (PCI, xHCI, NE2K, VGA, IDE, HDA, etc.) |
+| codex.os.kernel | 24 | Hardware drivers (PCI, xHCI, NE2K, VGA, IDE, HDA, etc.) |
 | codex.os.net | 18 | Networking stack |
 | codex.os.observe | 7 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
@@ -114,11 +133,11 @@ Split across sub-quires:
 | codex.os.trust | 11 | Trust lattice |
 | codex.os.verify | 5 | Verification |
 
-### codex.plugs (113 modules) — Transpiler Plugs
+### codex.plugs (133 modules) — Transpiler Plugs
 
-48 transpiler plugs (Ada to Zig, 14 UI frameworks, 4 binary
-formats) plus WASM and HTML backends. Each plug receives IR or CDX
-over TCP and produces the target format.
+53 transpiler plugs (Ada to Zig, 14 UI frameworks, GPU PTX + SPIR-V,
+4 binary formats) plus WASM and HTML backends. Each plug receives IR
+or CDX over TCP and produces the target format.
 
 ## Library Rules
 

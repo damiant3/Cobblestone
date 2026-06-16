@@ -1,6 +1,6 @@
 # Backlog — Outstanding Work
 
-**Updated**: 2026-06-13
+**Updated**: 2026-06-15
 
 ## Active — Ongoing
 
@@ -31,14 +31,20 @@ needs either a compiler feature, a mechanical rewrite, or deletion.
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | **Hex sites need rewriting to `#` notation** | Language decision made 2026-06-12: `#RRGGBB`-style hash literals (CL 3837), not C's `0x`. The 178 app sites (browser 47, diagram 44, vision 32, collab 23, globe 15, fileshare 11, secrets 5, explorer 1) still spell `0x...` and need a mechanical `0x` -> `#` pass once CL 3837 lands. |
+| 1 | **Hex sites — mostly done** | Original 178 app `.codex` sites are cleaned up. Remaining `0x` in `.codex` files are inside string literals (embedded JS in SparkBridge) or `NxM` dimension strings, not hex integer literals. The JS/HTML/PS1 files use JavaScript's native `0x` notation which is correct for those languages. Consider closed for Codex source. |
 | 2 | **Bare `list-map` callers** | Not in the foreword; per-file sweep overcounts because cross-chapter defs resolve via cites — needs a compile-based count, not grep. |
 
 ### Encoding
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | **CCE multilingual coverage (tiers beyond 1)** | Tier 1 is 128 codes with 16 accented + 15 Cyrillic slots — a simplifying assumption, not a writing system. Getting the rest of the world's languages in means the compiler accepting CCE tiers greater than 1 (wider code space), not remapping tier-1 slots. Touches lexer, Text representation, the I/O boundary converters, and `cce-to-unicode-table` (foreword/core/CCE.codex). |
+| 1 | **CCE Tiers 2+ (CJK, rare scripts, emoji)** | Tier 1 (2048 two-byte codes, all EU languages) shipped CL 4248. Tier 2 (3 bytes) covers CJK, emoji, rare scripts. Same pattern: foreword encode/decode, lexer acceptance, I/O converters, block assignment table. Not needed for EU IoT deployment; needed for global reach. |
+
+### GPU Compute
+
+| # | Item | Notes |
+|---|------|-------|
+| 1 | **Dual-target GPU compilation (PTX + SPIR-V)** | Design complete (CL 4424). PTX and SPIR-V plugs built and compiling (CL 4432, 157KB/152KB CDX). Full IR expression coverage. Next: K0-K2 from GpuKernels.md (`[Device]`/`[Gpu]` effects, type-checker post-pass, IR partition) then end-to-end kernel test. |
 
 ### Tooling — Host Stability
 

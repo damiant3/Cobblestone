@@ -1,0 +1,221 @@
+Chapter: Skinning
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+  cites Engine chapter Mesh
+
+ Skeletal animation. Bone hierarchy with parent-child transforms,
+ keyframe interpolation, and linear-blend vertex skinning (up to
+ 4 bone influences per vertex). Fixed-point (scale 1000).
+
+ We say:
+
+Section: Bone
+
+  Bone = record {
+    bone-name : Text,
+    bone-parent : Integer,
+    bone-bind-pose : Mat4,
+    bone-inv-bind : Mat4
+  }
+
+  Skeleton = record {
+    skel-bones : List Bone,
+    skel-count : Integer
+  }
+
+  skel-new : Skeleton
+  skel-new = Skeleton { skel-bones = [], skel-count = 0 }
+
+  skel-add-bone : Skeleton, Text, Integer, Mat4 -> Skeleton
+  skel-add-bone (skel) (name) (parent) (bind-pose) =
+    let inv = mat4-inverse bind-pose
+    in let bone = Bone { bone-name = name, bone-parent = parent, bone-bind-pose = bind-pose, bone-inv-bind = inv }
+    in Skeleton { skel-bones = list-push (skel.skel-bones) bone, skel-count = skel.skel-count + 1 }
+
+  skel-add-root : Skeleton, Text -> Skeleton
+  skel-add-root (skel) (name) = skel-add-bone skel name (-1) mat4-identity
+
+  skel-add-child : Skeleton, Text, Integer, Vec3 -> Skeleton
+  skel-add-child (skel) (name) (parent) (offset) =
+    let bind = mat4-translate (offset.vx) (offset.vy) (offset.vz)
+    in skel-add-bone skel name parent bind
+
+Section: Pose
+
+  BonePose = record {
+    bp-pos : Vec3,
+    bp-rot : Quat,
+    bp-scale : Vec3
+  }
+
+  bp-identity : BonePose
+  bp-identity = BonePose { bp-pos = vec3-zero, bp-rot = quat-identity, bp-scale = vec3-new 1000 1000 1000 }
+
+  bp-to-mat4 : BonePose -> Mat4
+  bp-to-mat4 (p) =
+    let rot = mat4-from-quat (p.bp-rot)
+    in let scale = mat4-scale (p.bp-scale.vx) (p.bp-scale.vy) (p.bp-scale.vz)
+    in let trans = mat4-translate (p.bp-pos.vx) (p.bp-pos.vy) (p.bp-pos.vz)
+    in mat4-mul trans (mat4-mul rot scale)
+
+  bp-lerp : BonePose, BonePose, Integer -> BonePose
+  bp-lerp (a) (b) (t) =
+    let inv-t = 1000 - t
+    in let lerp-pos = vec3-new (a.bp-pos.vx * inv-t / 1000 + b.bp-pos.vx * t / 1000) (a.bp-pos.vy * inv-t / 1000 + b.bp-pos.vy * t / 1000) (a.bp-pos.vz * inv-t / 1000 + b.bp-pos.vz * t / 1000)
+    in let lerp-rot = quat-slerp (a.bp-rot) (b.bp-rot) t
+    in let lerp-scl = vec3-new (a.bp-scale.vx * inv-t / 1000 + b.bp-scale.vx * t / 1000) (a.bp-scale.vy * inv-t / 1000 + b.bp-scale.vy * t / 1000) (a.bp-scale.vz * inv-t / 1000 + b.bp-scale.vz * t / 1000)
+    in BonePose { bp-pos = lerp-pos, bp-rot = lerp-rot, bp-scale = lerp-scl }
+
+Section: Keyframe Animation
+
+  Keyframe = record {
+    kf-time : Integer,
+    kf-poses : List BonePose
+  }
+
+  AnimClip = record {
+    ac-name : Text,
+    ac-keyframes : List Keyframe,
+    ac-frame-count : Integer,
+    ac-duration : Integer,
+    ac-looping : Boolean
+  }
+
+  clip-new : Text, Boolean -> AnimClip
+  clip-new (name) (loop) = AnimClip { ac-name = name, ac-keyframes = [], ac-frame-count = 0, ac-duration = 0, ac-looping = loop }
+
+  clip-add-keyframe : AnimClip, Keyframe -> AnimClip
+  clip-add-keyframe (clip) (kf) = AnimClip {
+    ac-name = clip.ac-name,
+    ac-keyframes = list-push (clip.ac-keyframes) kf,
+    ac-frame-count = clip.ac-frame-count + 1,
+    ac-duration = if kf.kf-time > clip.ac-duration then kf.kf-time else clip.ac-duration,
+    ac-looping = clip.ac-looping
+  }
+
+Section: Animation Playback
+
+  AnimState = record {
+    as-clip : AnimClip,
+    as-time : Integer,
+    as-speed : Integer,
+    as-playing : Boolean
+  }
+
+  anim-play : AnimClip -> AnimState
+  anim-play (clip) = AnimState { as-clip = clip, as-time = 0, as-speed = 1000, as-playing = True }
+
+  anim-tick : AnimState, Integer -> AnimState
+  anim-tick (st) (dt) =
+    if st.as-playing then
+      let new-time = st.as-time + dt * st.as-speed / 1000
+      in let duration = st.as-clip.ac-duration
+      in let wrapped = if st.as-clip.ac-looping then skin-imod new-time duration
+        else if new-time >= duration then duration else new-time
+      in AnimState { as-clip = st.as-clip, as-time = wrapped, as-speed = st.as-speed, as-playing = if st.as-clip.ac-looping then True else new-time < duration }
+    else st
+
+  anim-sample : AnimState, Integer -> List BonePose
+  anim-sample (st) (bone-count) =
+    let clip = st.as-clip
+    in if clip.ac-frame-count == 0 then skin-default-poses bone-count 0 []
+    else if clip.ac-frame-count == 1 then (list-at (clip.ac-keyframes) 0).kf-poses
+    else let pair = skin-find-keyframes clip (st.as-time) 0
+    in let kf-a = list-at (clip.ac-keyframes) (pair.skp-a)
+    in let kf-b = list-at (clip.ac-keyframes) (pair.skp-b)
+    in let span = kf-b.kf-time - kf-a.kf-time
+    in let t = if span == 0 then 0 else (st.as-time - kf-a.kf-time) * 1000 / span
+    in skin-lerp-poses (kf-a.kf-poses) (kf-b.kf-poses) t bone-count 0 []
+
+  SkinKeyPair = record { skp-a : Integer, skp-b : Integer }
+
+  skin-find-keyframes : AnimClip, Integer, Integer -> SkinKeyPair
+  skin-find-keyframes (clip) (time) (i) =
+    if i + 1 >= clip.ac-frame-count then SkinKeyPair { skp-a = clip.ac-frame-count - 1, skp-b = clip.ac-frame-count - 1 }
+    else let next-kf = list-at (clip.ac-keyframes) (i + 1)
+    in if time < next-kf.kf-time then SkinKeyPair { skp-a = i, skp-b = i + 1 }
+    else skin-find-keyframes clip time (i + 1)
+
+  skin-lerp-poses : List BonePose, List BonePose, Integer, Integer, Integer, List BonePose -> List BonePose
+  skin-lerp-poses (a) (b) (t) (n) (i) (acc) =
+    if i >= n then acc
+    else let pa = list-at a i
+    in let pb = list-at b i
+    in skin-lerp-poses a b t n (i + 1) (list-push acc (bp-lerp pa pb t))
+
+  skin-default-poses : Integer, Integer, List BonePose -> List BonePose
+  skin-default-poses (n) (i) (acc) =
+    if i >= n then acc
+    else skin-default-poses n (i + 1) (list-push acc bp-identity)
+
+Section: Skinning Matrix Palette
+
+  skin-compute-palette : Skeleton, List BonePose -> List Mat4
+  skin-compute-palette (skel) (poses) =
+    let world-mats = skin-world-matrices skel poses 0 (skel.skel-count) []
+    in skin-final-palette skel world-mats 0 (skel.skel-count) []
+
+  skin-world-matrices : Skeleton, List BonePose, Integer, Integer, List Mat4 -> List Mat4
+  skin-world-matrices (skel) (poses) (i) (n) (acc) =
+    if i >= n then acc
+    else let bone = list-at (skel.skel-bones) i
+    in let local = bp-to-mat4 (list-at poses i)
+    in let world = if bone.bone-parent < 0 then local
+      else mat4-mul (list-at acc (bone.bone-parent)) local
+    in skin-world-matrices skel poses (i + 1) n (list-push acc world)
+
+  skin-final-palette : Skeleton, List Mat4, Integer, Integer, List Mat4 -> List Mat4
+  skin-final-palette (skel) (world-mats) (i) (n) (acc) =
+    if i >= n then acc
+    else let bone = list-at (skel.skel-bones) i
+    in let final = mat4-mul (list-at world-mats i) (bone.bone-inv-bind)
+    in skin-final-palette skel world-mats (i + 1) n (list-push acc final)
+
+Section: Vertex Skinning (4 influences)
+
+  SkinWeight = record {
+    sw-bone0 : Integer, sw-weight0 : Integer,
+    sw-bone1 : Integer, sw-weight1 : Integer,
+    sw-bone2 : Integer, sw-weight2 : Integer,
+    sw-bone3 : Integer, sw-weight3 : Integer
+  }
+
+  sw-single : Integer -> SkinWeight
+  sw-single (bone) = SkinWeight { sw-bone0 = bone, sw-weight0 = 1000, sw-bone1 = 0, sw-weight1 = 0, sw-bone2 = 0, sw-weight2 = 0, sw-bone3 = 0, sw-weight3 = 0 }
+
+  sw-dual : Integer, Integer, Integer -> SkinWeight
+  sw-dual (b0) (b1) (w0) = SkinWeight { sw-bone0 = b0, sw-weight0 = w0, sw-bone1 = b1, sw-weight1 = 1000 - w0, sw-bone2 = 0, sw-weight2 = 0, sw-bone3 = 0, sw-weight3 = 0 }
+
+  skin-vertex : Vertex, SkinWeight, List Mat4 -> Vertex
+  skin-vertex (v) (sw) (palette) =
+    let pos = vec3-new (v.vp-x) (v.vp-y) (v.vp-z)
+    in let p0 = skin-weighted-transform pos (list-at palette (sw.sw-bone0)) (sw.sw-weight0)
+    in let p1 = skin-weighted-transform pos (list-at palette (sw.sw-bone1)) (sw.sw-weight1)
+    in let p2 = skin-weighted-transform pos (list-at palette (sw.sw-bone2)) (sw.sw-weight2)
+    in let p3 = skin-weighted-transform pos (list-at palette (sw.sw-bone3)) (sw.sw-weight3)
+    in let result = vec3-new (p0.vx + p1.vx + p2.vx + p3.vx) (p0.vy + p1.vy + p2.vy + p3.vy) (p0.vz + p1.vz + p2.vz + p3.vz)
+    in Vertex { vp-x = result.vx, vp-y = result.vy, vp-z = result.vz, vn-x = v.vn-x, vn-y = v.vn-y, vn-z = v.vn-z, vu = v.vu, vv = v.vv, v-color = v.v-color }
+
+  skin-weighted-transform : Vec3, Mat4, Integer -> Vec3
+  skin-weighted-transform (pos) (mat) (weight) =
+    if weight == 0 then vec3-zero
+    else let transformed = mat4-transform-point mat pos
+    in vec3-new (transformed.vx * weight / 1000) (transformed.vy * weight / 1000) (transformed.vz * weight / 1000)
+
+Section: Helpers
+
+  skin-imod : Integer, Integer -> Integer
+  skin-imod (a) (b) =
+    if b <= 0 then 0
+    else let m = a - (a / b) * b
+    in if m < 0 then m + b else m
+
+Section: Formatting
+
+  format-skeleton : Skeleton -> Text
+  format-skeleton (skel) = "Skeleton(" & show (skel.skel-count) & " bones)"
+
+  format-anim-state : AnimState -> Text
+  format-anim-state (st) = "Anim(" & st.as-clip.ac-name & " t=" & show (st.as-time) & "/" & show (st.as-clip.ac-duration) & ")"
+
+Page 1

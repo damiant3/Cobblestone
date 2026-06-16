@@ -20,7 +20,7 @@ Section: Infer Literal
      state = st
     }
     is NumLit -> CheckResult {
-     inferred-type = NumberTy,
+     inferred-type = RealTy,
      state = st
     }
     is TextLit -> CheckResult {
@@ -135,11 +135,25 @@ Section: Infer Binary
    in let rr = infer-expr (lr.state) env right
    in infer-binary-op (rr.state) (lr.inferred-type) (rr.inferred-type) op span
 
+  is-real-type : CodexType -> Boolean
+  is-real-type (ty) =
+   when ty
+    is RealTy -> True
+    is otherwise -> False
+
   infer-binary-op : UnificationState, CodexType, CodexType, BinaryOp, SourceSpan -> CheckResult
   infer-binary-op (st) (lt) (rt) (op) (span) =
    when op
     is OpAdd | OpSub | OpMul | OpDiv | OpPow -> infer-arithmetic st lt rt span
-    is OpEq | OpNotEq | OpLt | OpGt | OpLtEq | OpGtEq -> infer-comparison st lt rt span
+    is OpEq | OpNotEq ->
+     let result = infer-comparison st lt rt span
+     in if is-real-type lt | is-real-type rt
+      then CheckResult {
+       inferred-type = BooleanTy,
+       state = add-unify-error (result.state) cdx-real-equality-banned "Floating-point equality is not safe. Use the ~ operator: x ~ y (approximately equal, 4 ULP tolerance), x ~0 y (bitwise exact, if you are certain)" span
+      }
+      else result
+    is OpLt | OpGt | OpLtEq | OpGtEq | OpApproxEq | OpApproxEqExact -> infer-comparison st lt rt span
     is OpAnd -> infer-and st lt rt span
     is OpOr -> infer-logical st lt rt span
     is OpAppend -> infer-append st lt rt span
@@ -154,7 +168,7 @@ Section: Infer Binary
       is UnitTy (rn) (ri) ->
        let (_, u-st) = unify st lt rt span
        in let st2 = if is-arithmetic-type lt & is-arithmetic-type rt then u-st
-                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Number" span
+                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Real" span
        in CheckResult { inferred-type = lt, state = st2 }
       is otherwise ->
        let (_, u-st) = unify st li rt span
@@ -167,23 +181,28 @@ Section: Infer Binary
       is otherwise ->
        let (_, u-st) = unify st lt rt span
        in let st2 = if is-arithmetic-type lt & is-arithmetic-type rt then u-st
-                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Number" span
+                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Real" span
        in CheckResult { inferred-type = lt, state = st2 }
 
   is-arithmetic-type : CodexType -> Boolean
   is-arithmetic-type (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) | NumberTy | TypeVar (id) | ErrorTy -> True
+    is IntegerTy (lo) (hi) (mode) | RealTy | VectorTy (vn) (vt) | TypeVar (id) | ErrorTy -> True
     is UnitTy (n) (inner) -> is-arithmetic-type inner
     is otherwise -> False
 
   infer-comparison : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-comparison (st) (lt) (rt) (span) =
    let (_, u-st) = unify st lt rt span
-   in CheckResult {
-    inferred-type = BooleanTy,
-    state = u-st
-   }
+   in when lt
+    is VectorTy (n) (et) -> CheckResult {
+     inferred-type = VectorMaskTy n,
+     state = u-st
+    }
+    is otherwise -> CheckResult {
+     inferred-type = BooleanTy,
+     state = u-st
+    }
 
   infer-logical : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-logical (st) (lt) (rt) (span) =

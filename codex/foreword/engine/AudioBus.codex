@@ -1,0 +1,132 @@
+Chapter: AudioBus
+
+ DAW-style audio bus mixer (inspired by Godot). Audio sources route
+ to named buses (Master, SFX, Music, Voice, Ambient). Each bus has
+ a volume fader and an effects chain. Buses feed into a parent bus
+ (default: Master). Spatial audio areas can override bus routing.
+ Fixed-point (scale 1000 for volumes, 0-1000 = 0-100%).
+
+ We say:
+
+Section: Bus
+
+  AudioBus = record {
+    ab-name : Text,
+    ab-volume : Integer,
+    ab-muted : Boolean,
+    ab-solo : Boolean,
+    ab-parent : Integer,
+    ab-effects : List BusEffect
+  }
+
+  BusEffect =
+    | FxReverb (Integer) (Integer)
+    | FxCompressor (Integer) (Integer) (Integer)
+    | FxEqualizer (Integer) (Integer) (Integer)
+    | FxDelay (Integer) (Integer)
+    | FxChorus (Integer) (Integer)
+    | FxNone
+
+Section: Bus Layout
+
+  BusLayout = record {
+    bl-buses : List AudioBus,
+    bl-count : Integer
+  }
+
+  bus-layout-new : BusLayout
+  bus-layout-new = BusLayout { bl-buses = [], bl-count = 0 }
+
+  bus-add : BusLayout, Text, Integer, Integer -> BusLayout
+  bus-add (layout) (name) (volume) (parent) =
+    let bus = AudioBus { ab-name = name, ab-volume = volume, ab-muted = False, ab-solo = False, ab-parent = parent, ab-effects = [] }
+    in BusLayout { bl-buses = list-push (layout.bl-buses) bus, bl-count = layout.bl-count + 1 }
+
+  bus-default-layout : BusLayout
+  bus-default-layout =
+    let l0 = bus-add bus-layout-new "Master" 1000 (-1)
+    in let l1 = bus-add l0 "SFX" 800 0
+    in let l2 = bus-add l1 "Music" 600 0
+    in let l3 = bus-add l2 "Voice" 900 0
+    in bus-add l3 "Ambient" 500 0
+
+Section: Bus Operations
+
+  bus-set-volume : BusLayout, Integer, Integer -> BusLayout
+  bus-set-volume (layout) (bus-idx) (vol) =
+    if bus-idx < 0 then layout
+    else if bus-idx >= layout.bl-count then layout
+    else let bus = list-at (layout.bl-buses) bus-idx
+    in let updated = AudioBus { ab-name = bus.ab-name, ab-volume = vol, ab-muted = bus.ab-muted, ab-solo = bus.ab-solo, ab-parent = bus.ab-parent, ab-effects = bus.ab-effects }
+    in BusLayout { bl-buses = list-set-at (layout.bl-buses) bus-idx updated, bl-count = layout.bl-count }
+
+  bus-mute : BusLayout, Integer, Boolean -> BusLayout
+  bus-mute (layout) (bus-idx) (muted) =
+    if bus-idx < 0 then layout
+    else if bus-idx >= layout.bl-count then layout
+    else let bus = list-at (layout.bl-buses) bus-idx
+    in let updated = AudioBus { ab-name = bus.ab-name, ab-volume = bus.ab-volume, ab-muted = muted, ab-solo = bus.ab-solo, ab-parent = bus.ab-parent, ab-effects = bus.ab-effects }
+    in BusLayout { bl-buses = list-set-at (layout.bl-buses) bus-idx updated, bl-count = layout.bl-count }
+
+  bus-add-fx : BusLayout, Integer, BusEffect -> BusLayout
+  bus-add-fx (layout) (bus-idx) (fx) =
+    if bus-idx < 0 then layout
+    else if bus-idx >= layout.bl-count then layout
+    else let bus = list-at (layout.bl-buses) bus-idx
+    in let updated = AudioBus { ab-name = bus.ab-name, ab-volume = bus.ab-volume, ab-muted = bus.ab-muted, ab-solo = bus.ab-solo, ab-parent = bus.ab-parent, ab-effects = list-push (bus.ab-effects) fx }
+    in BusLayout { bl-buses = list-set-at (layout.bl-buses) bus-idx updated, bl-count = layout.bl-count }
+
+Section: Volume Resolution
+
+  bus-effective-volume : BusLayout, Integer -> Integer
+  bus-effective-volume (layout) (bus-idx) =
+    if bus-idx < 0 then 1000
+    else if bus-idx >= layout.bl-count then 0
+    else let bus = list-at (layout.bl-buses) bus-idx
+    in if bus.ab-muted then 0
+    else let parent-vol = bus-effective-volume layout (bus.ab-parent)
+    in bus.ab-volume * parent-vol / 1000
+
+  bus-find-by-name : BusLayout, Text -> Integer
+  bus-find-by-name (layout) (name) = bus-find-loop (layout.bl-buses) name 0 (layout.bl-count)
+
+  bus-find-loop : List AudioBus, Text, Integer, Integer -> Integer
+  bus-find-loop (buses) (name) (i) (n) =
+    if i >= n then 0 - 1
+    else if (list-at buses i).ab-name == name then i
+    else bus-find-loop buses name (i + 1) n
+
+Section: Spatial Override
+
+  AudioArea = record {
+    aa-bus-idx : Integer,
+    aa-min-x : Integer, aa-min-y : Integer, aa-min-z : Integer,
+    aa-max-x : Integer, aa-max-y : Integer, aa-max-z : Integer,
+    aa-reverb : Integer,
+    aa-priority : Integer
+  }
+
+  area-contains : AudioArea, Integer, Integer, Integer -> Boolean
+  area-contains (area) (x) (y) (z) =
+    x >= area.aa-min-x & x <= area.aa-max-x &
+    y >= area.aa-min-y & y <= area.aa-max-y &
+    z >= area.aa-min-z & z <= area.aa-max-z
+
+  area-resolve-bus : List AudioArea, Integer, Integer, Integer, Integer, Integer -> Integer
+  area-resolve-bus (areas) (x) (y) (z) (i) (n) =
+    if i >= n then 0 - 1
+    else let area = list-at areas i
+    in if area-contains area x y z then area.aa-bus-idx
+    else area-resolve-bus areas x y z (i + 1) n
+
+Section: Formatting
+
+  format-bus-layout : BusLayout -> Text
+  format-bus-layout (layout) = "BusLayout(" & show (layout.bl-count) & " buses)"
+
+  format-bus : AudioBus -> Text
+  format-bus (b) =
+    let mute-str = if b.ab-muted then " [MUTED]" else ""
+    in b.ab-name & " vol=" & show (b.ab-volume) & mute-str
+
+Page 1

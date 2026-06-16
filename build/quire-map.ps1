@@ -12,6 +12,7 @@ $QuireDirs = @{
     'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'
     'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'
     'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
+    'Engine' = 'codex\foreword\engine'
     'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
     'Magic' = 'apps\games\magic'; 'Games' = 'apps\games\classic'
     'Spark' = 'apps\spark'; 'Data' = 'apps\data'

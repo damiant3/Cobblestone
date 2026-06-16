@@ -100,7 +100,13 @@ Section: Binary Op Lowering
   is-number-type : CodexType -> Boolean
   is-number-type (ty) =
    when ty
-    is NumberTy -> True
+    is RealTy -> True
+    is otherwise -> False
+
+  is-vector-type : CodexType -> Boolean
+  is-vector-type (ty) =
+   when ty
+    is VectorTy (n) (t) -> True
     is otherwise -> False
 
   is-boolean-type : CodexType -> Boolean
@@ -112,27 +118,32 @@ Section: Binary Op Lowering
   lower-bin-op : BinaryOp, CodexType -> IRBinaryOp
   lower-bin-op (op) (ty) =
    when op
-    is OpAdd -> if is-number-type ty then IrAddNum else IrAddInt
-    is OpSub -> if is-number-type ty then IrSubNum else IrSubInt
-    is OpMul -> if is-number-type ty then IrMulNum else IrMulInt
-    is OpDiv -> if is-number-type ty then IrDivNum else IrDivInt
+    is OpAdd -> if is-vector-type ty then IrAddVec else if is-number-type ty then IrAddNum else IrAddInt
+    is OpSub -> if is-vector-type ty then IrSubVec else if is-number-type ty then IrSubNum else IrSubInt
+    is OpMul -> if is-vector-type ty then IrMulVec else if is-number-type ty then IrMulNum else IrMulInt
+    is OpDiv -> if is-vector-type ty then IrDivVec else if is-number-type ty then IrDivNum else IrDivInt
     is OpPow -> IrPowInt
     is OpEq -> IrEq
     is OpNotEq -> IrNotEq
-    is OpLt -> IrLt
-    is OpGt -> IrGt
-    is OpLtEq -> IrLtEq
-    is OpGtEq -> IrGtEq
+    is OpLt -> if is-vector-type ty then IrLtVec else IrLt
+    is OpGt -> if is-vector-type ty then IrGtVec else IrGt
+    is OpLtEq -> if is-vector-type ty then IrLtEqVec else IrLtEq
+    is OpGtEq -> if is-vector-type ty then IrGtEqVec else IrGtEq
     is OpDefEq -> IrEq
     is OpAppend -> if is-text-type ty then IrAppendText else IrAppendList
     is OpCons -> IrConsList
     is OpAnd -> if is-text-type ty then IrAppendText else if is-boolean-type ty then IrAnd else IrAppendList
     is OpOr -> IrOr
+    is OpApproxEq -> IrApproxEq
+    is OpApproxEqExact -> IrApproxEqExact
 
   binary-result-type : BinaryOp, CodexType, CodexType -> CodexType
   binary-result-type (op) (left-ty) (expected-ty) =
    when op
-    is OpEq | OpNotEq | OpLt | OpGt | OpLtEq | OpGtEq | OpDefEq -> BooleanTy
+    is OpEq | OpNotEq | OpLt | OpGt | OpLtEq | OpGtEq | OpDefEq | OpApproxEq | OpApproxEqExact ->
+     when left-ty
+      is VectorTy (n) (et) -> VectorMaskTy n
+      is otherwise -> BooleanTy
     is OpAnd -> if is-boolean-type left-ty then BooleanTy
            else if is-text-type left-ty then TextTy
            else left-ty

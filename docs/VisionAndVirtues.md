@@ -87,7 +87,9 @@ phases.
 Error messages are part of the user interface. Every diagnostic must
 state what went wrong, show where, suggest a fix, and use language a
 programmer would understand. `cannot unify ?a with Integer` is a bug.
-The compiler emits ~120 numbered diagnostics (CDX1xxx–CDX4xxx).
+The compiler emits numbered diagnostics (CDX1xxx–CDX9xxx) covering
+lexer, parser, type system, codegen, proofs, punctual enforcement,
+and memory safety.
 
 ### 5. Immutability by Default
 
@@ -120,7 +122,7 @@ reaching for it prematurely.
 ### 9. One Thing at a Time
 
 Each file does one thing. Each Chapter does one thing. Each CL does
-one thing. The compiler is ~32,000 lines across 54 files. A wrong
+one thing. The compiler is ~28,000 lines across 54 files. A wrong
 change in one place surfaces as a silent corruption three pipeline
 stages later.
 
