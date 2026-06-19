@@ -114,3 +114,22 @@ Detailed development timeline. See [README.md](../../README.md) for highlights.
 | **Number → Real rename** | **`Number` renamed to `Real` across compiler, all plugs, and tests. Confidence-level qualifiers (`Real`, `Real approximate`, `Real guess`).** | **2026-06-16** |
 | **VectorMaskTy + comparisons** | **`VectorMask N` type, vector comparison operators, `vec-select` per-lane conditional. SSE2 CMPPD/MOVMSKPD codegen.** | **2026-06-16** |
 | **377 library modules** | **26 quires (11 foreword + 9 OS sub-quires), 54 compiler files, seed `24FEA310`** | **2026-06-16** |
+| **SMP Phase 1-2** | **Atomic builtins, LAPIC emulation, `-smp` flag, per-core bootstrap** | **2026-06-17** |
+| Globe demo | NASA texture, GPU rasterizer, icosphere, relativistic effects | 2026-06-17 |
+| Black hole ray marcher | Real-time ray marching demo | 2026-06-17 |
+| Foreword test coverage | 305/305 foreword tests passing | 2026-06-17 |
+| Phantom General cite removal | 100+ test fixes removing phantom cites | 2026-06-17 |
+| **SMP Phase 3-5** | **Work-stealing scheduler, per-core heap, IPI, lock-free channels** | **2026-06-18** |
+| **8 GB RAM** | **bare-metal-ram-size 3 GB → 8 GB, seed rebuilt** | **2026-06-18** |
+| **GPU K5-K8** | **Warp, shared memory, atomics, math, verifier, vecadd E2E** | **2026-06-18** |
+| **CCE Tier 2** | **CJK/Hangul/Kana/Emoji codepoint coverage** | **2026-06-18** |
+| **Browser (3 phases)** | **Network fetch + page compiler** | **2026-06-18** |
+| **HKT + GADTs + session types** | **Higher-kinded types, type class forwarding, GADTs, session types, length-indexed vectors** | **2026-06-18** |
+| Trust protocol | LeaseManager, PeerDiscovery, Forensics | 2026-06-18 |
+| DiskFacts log compaction | Log compaction for on-disk fact store | 2026-06-18 |
+| Library gap analysis | 50/50 gap analysis complete | 2026-06-18 |
+| BigInt foreword | BigInt module added to foreword | 2026-06-18 |
+| Test stub fill | 99 blank test stubs filled with real tests | 2026-06-18 |
+| Explicit list-map cites | 22 files updated with explicit cites | 2026-06-18 |
+| Poison-compact fix | Stale pointer fix for poison-compact | 2026-06-18 |
+| **425 library modules** | **28 quires, 54 compiler files, 53 plugs, 742 test files, seed 2.30 MB `6F75DBC7`** | **2026-06-18** |

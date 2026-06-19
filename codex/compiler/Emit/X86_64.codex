@@ -723,6 +723,10 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> emit-await st task
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-handle st eff body clauses ty
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-try st max body fb fail
+    is IrLambda (params) (body) (ty) (sp) -> EmitResult {
+     state = st-add-error st cdx-ir-error "IrLambda survived lambda lifting" sp,
+     reg = reg-rax
+    }
     is otherwise -> EmitResult {
      state = st,
      reg = reg-rax
@@ -1119,7 +1123,22 @@ Section: Expression Emission
     is TextTy -> emit-expr (st-set-tail-pos st False) arg
     is BooleanTy -> emit-show-bool st arg
     is RealTy -> emit-helper-call-1 st args "__real_to_text"
+    is RealApproxTy -> emit-show-real-approx st args
+    is RealSaturatingTy -> emit-helper-call-1 st args "__real_to_text"
     is otherwise -> emit-helper-call-1 st args "__itoa"
+
+  emit-show-real-approx : CodegenState, List IRExpr -> EmitResult
+  emit-show-real-approx (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (val.state)
+   in let st1 = st-append-code (rd.state) (movq-to-xmm 0 (val.reg) & cvtss2sd-xmm 0 0 & movq-from-xmm (rd.reg) 0)
+   in let st2 = st-append-code st1 (mov-rr reg-rdi (rd.reg))
+   in let st3 = emit-call-to st2 "__real_to_text"
+   in let tmp = alloc-temp st3
+   in EmitResult {
+    state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
+    reg = tmp.reg
+   }
 
   emit-show-bool : CodegenState, IRExpr -> EmitResult
   emit-show-bool (st) (arg) =
@@ -1206,6 +1225,50 @@ Section: Expression Emission
     movq-to-xmm 0 l-reg
     & movq-to-xmm 1 r-reg
     & [242, 15, sse-op, modrm 3 0 1]
+    & movq-from-xmm (rd.reg) 0
+   ),
+   reg = rd.reg
+  }
+
+  emit-real-approx-arith : CodegenState, Integer, Integer, List Integer -> EmitResult
+  emit-real-approx-arith (st) (l-reg) (r-reg) (sse-insn) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-code (rd.state) (
+    movq-to-xmm 0 l-reg
+    & movq-to-xmm 1 r-reg
+    & sse-insn
+    & movq-from-xmm (rd.reg) 0
+   ),
+   reg = rd.reg
+  }
+
+  emit-real-trapping-arith : CodegenState, Integer, Integer, Integer -> EmitResult
+  emit-real-trapping-arith (st) (l-reg) (r-reg) (sse-op) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-code (rd.state) (
+    movq-to-xmm 0 l-reg
+    & movq-to-xmm 1 r-reg
+    & [242, 15, sse-op, modrm 3 0 1]
+    & movq-from-xmm (rd.reg) 0
+    & ucomisd-xmm 0 0
+    & [123, 2, 15, 11]
+   ),
+   reg = rd.reg
+  }
+
+  emit-real-saturating-arith : CodegenState, Integer, Integer, Integer -> EmitResult
+  emit-real-saturating-arith (st) (l-reg) (r-reg) (sse-op) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-code (rd.state) (
+    movq-to-xmm 0 l-reg
+    & movq-to-xmm 1 r-reg
+    & [242, 15, sse-op, modrm 3 0 1]
+    & ucomisd-xmm 0 0
+    & [123, 3]
+    & xorps-xmm 0 0
     & movq-from-xmm (rd.reg) 0
    ),
    reg = rd.reg
@@ -1645,7 +1708,7 @@ Section: Expression Emission
   is-safe-for-reg-right : CodegenState, IRBinaryOp, IRExpr -> Boolean
   is-safe-for-reg-right (st) (op) (left) =
    when op
-    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrAddVec | IrSubVec | IrMulVec | IrDivVec | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec | IrAppendText | IrConsList | IrLt | IrGt | IrLtEq | IrGtEq | IrApproxEq | IrApproxEqExact -> True
+    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox | IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping | IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating | IrAddVec | IrSubVec | IrMulVec | IrDivVec | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec | IrAppendText | IrConsList | IrLt | IrGt | IrLtEq | IrGtEq | IrApproxEq | IrApproxEqExact -> True
     is IrEq | IrNotEq -> is-fusable-int-comparison st op left
     is otherwise -> False
 
@@ -1659,7 +1722,7 @@ Section: Expression Emission
   is-safe-for-reg-left : CodegenState, IRBinaryOp, IRExpr -> Boolean
   is-safe-for-reg-left (st) (op) (right) =
    when op
-    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrAddVec | IrSubVec | IrMulVec | IrDivVec | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec | IrLt | IrGt | IrLtEq | IrGtEq -> True
+    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox | IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping | IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating | IrAddVec | IrSubVec | IrMulVec | IrDivVec | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec | IrLt | IrGt | IrLtEq | IrGtEq -> True
     is IrEq | IrNotEq -> is-fusable-int-comparison st op right
     is otherwise -> False
 
@@ -1711,6 +1774,32 @@ Section: Expression Emission
  call can collide; geometry-test's perimeter accumulator caught
  this when emit-binary-reg-left passed a register local as l-reg.
 
+  is-int-vector : CodexType -> Boolean
+  is-int-vector (ty) =
+   when ty
+    is VectorTy (n) (t) -> when t
+     is IntegerTy (lo) (hi) (m) -> True
+     is otherwise -> False
+    is otherwise -> False
+
+  is-f32-vector : CodexType -> Boolean
+  is-f32-vector (ty) =
+   when ty
+    is VectorTy (n) (t) -> when t
+     is RealApproxTy -> True
+     is otherwise -> False
+    is otherwise -> False
+
+  emit-vec-op : CodegenState, Integer, Integer, CodexType, List Integer, List Integer, List Integer -> EmitResult
+  emit-vec-op (st) (l-reg) (r-reg) (operand-ty) (f64-insn) (int-insn) (f32-insn) =
+   let insn = if is-f32-vector operand-ty then f32-insn else if is-int-vector operand-ty then int-insn else f64-insn
+   in let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & insn)
+   in let alloc = emit-bivy-alloc st1 16
+   in let p1 = load-local (alloc.state) (alloc.ptr-loc)
+   in let st2 = st-append-code (p1.state) (movupd-store (p1.reg) 0 0)
+   in let result = load-local st2 (alloc.ptr-loc)
+   in EmitResult { state = result.state, reg = result.reg }
+
   emit-binary-op : CodegenState, IRBinaryOp, Integer, Integer, CodexType -> EmitResult
   emit-binary-op (st) (op) (l-reg) (r-reg) (operand-ty) =
    let rd = alloc-temp-avoiding st r-reg
@@ -1747,62 +1836,26 @@ Section: Expression Emission
     is IrSubNum -> emit-num-arith st l-reg r-reg 92
     is IrMulNum -> emit-num-arith st l-reg r-reg 89
     is IrDivNum -> emit-num-arith st l-reg r-reg 94
-    is IrAddVec ->
-     let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & addpd-xmm 0 1)
-     in let alloc = emit-bivy-alloc st1 16
-     in let p1 = load-local (alloc.state) (alloc.ptr-loc)
-     in let st2 = st-append-code (p1.state) (movupd-store (p1.reg) 0 0)
-     in let result = load-local st2 (alloc.ptr-loc)
-     in EmitResult { state = result.state, reg = result.reg }
-    is IrSubVec ->
-     let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & subpd-xmm 0 1)
-     in let alloc = emit-bivy-alloc st1 16
-     in let p1 = load-local (alloc.state) (alloc.ptr-loc)
-     in let st2 = st-append-code (p1.state) (movupd-store (p1.reg) 0 0)
-     in let result = load-local st2 (alloc.ptr-loc)
-     in EmitResult { state = result.state, reg = result.reg }
-    is IrMulVec ->
-     let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & mulpd-xmm 0 1)
-     in let alloc = emit-bivy-alloc st1 16
-     in let p1 = load-local (alloc.state) (alloc.ptr-loc)
-     in let st2 = st-append-code (p1.state) (movupd-store (p1.reg) 0 0)
-     in let result = load-local st2 (alloc.ptr-loc)
-     in EmitResult { state = result.state, reg = result.reg }
-    is IrDivVec ->
-     let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & divpd-xmm 0 1)
-     in let alloc = emit-bivy-alloc st1 16
-     in let p1 = load-local (alloc.state) (alloc.ptr-loc)
-     in let st2 = st-append-code (p1.state) (movupd-store (p1.reg) 0 0)
-     in let result = load-local st2 (alloc.ptr-loc)
-     in EmitResult { state = result.state, reg = result.reg }
-    is IrLtVec ->
-     let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & cmppd-xmm 0 1 1)
-     in let alloc = emit-bivy-alloc st1 16
-     in let p1 = load-local (alloc.state) (alloc.ptr-loc)
-     in let st2 = st-append-code (p1.state) (movupd-store (p1.reg) 0 0)
-     in let result = load-local st2 (alloc.ptr-loc)
-     in EmitResult { state = result.state, reg = result.reg }
-    is IrLtEqVec ->
-     let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & cmppd-xmm 0 1 2)
-     in let alloc = emit-bivy-alloc st1 16
-     in let p1 = load-local (alloc.state) (alloc.ptr-loc)
-     in let st2 = st-append-code (p1.state) (movupd-store (p1.reg) 0 0)
-     in let result = load-local st2 (alloc.ptr-loc)
-     in EmitResult { state = result.state, reg = result.reg }
-    is IrGtVec ->
-     let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & cmppd-xmm 0 1 6)
-     in let alloc = emit-bivy-alloc st1 16
-     in let p1 = load-local (alloc.state) (alloc.ptr-loc)
-     in let st2 = st-append-code (p1.state) (movupd-store (p1.reg) 0 0)
-     in let result = load-local st2 (alloc.ptr-loc)
-     in EmitResult { state = result.state, reg = result.reg }
-    is IrGtEqVec ->
-     let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & cmppd-xmm 0 1 5)
-     in let alloc = emit-bivy-alloc st1 16
-     in let p1 = load-local (alloc.state) (alloc.ptr-loc)
-     in let st2 = st-append-code (p1.state) (movupd-store (p1.reg) 0 0)
-     in let result = load-local st2 (alloc.ptr-loc)
-     in EmitResult { state = result.state, reg = result.reg }
+    is IrAddRealApprox -> emit-real-approx-arith st l-reg r-reg (addss-xmm 0 1)
+    is IrSubRealApprox -> emit-real-approx-arith st l-reg r-reg (subss-xmm 0 1)
+    is IrMulRealApprox -> emit-real-approx-arith st l-reg r-reg (mulss-xmm 0 1)
+    is IrDivRealApprox -> emit-real-approx-arith st l-reg r-reg (divss-xmm 0 1)
+    is IrAddRealTrapping -> emit-real-trapping-arith st l-reg r-reg 88
+    is IrSubRealTrapping -> emit-real-trapping-arith st l-reg r-reg 92
+    is IrMulRealTrapping -> emit-real-trapping-arith st l-reg r-reg 89
+    is IrDivRealTrapping -> emit-real-trapping-arith st l-reg r-reg 94
+    is IrAddRealSaturating -> emit-real-saturating-arith st l-reg r-reg 88
+    is IrSubRealSaturating -> emit-real-saturating-arith st l-reg r-reg 92
+    is IrMulRealSaturating -> emit-real-saturating-arith st l-reg r-reg 89
+    is IrDivRealSaturating -> emit-real-saturating-arith st l-reg r-reg 94
+    is IrAddVec -> emit-vec-op st l-reg r-reg operand-ty (addpd-xmm 0 1) (paddq-xmm 0 1) (addps-xmm 0 1)
+    is IrSubVec -> emit-vec-op st l-reg r-reg operand-ty (subpd-xmm 0 1) (psubq-xmm 0 1) (subps-xmm 0 1)
+    is IrMulVec -> emit-vec-op st l-reg r-reg operand-ty (mulpd-xmm 0 1) (mulpd-xmm 0 1) (mulps-xmm 0 1)
+    is IrDivVec -> emit-vec-op st l-reg r-reg operand-ty (divpd-xmm 0 1) (divpd-xmm 0 1) (divps-xmm 0 1)
+    is IrLtVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 1) (cmppd-xmm 0 1 1) (cmpps-xmm 0 1 1)
+    is IrLtEqVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 2) (cmppd-xmm 0 1 2) (cmpps-xmm 0 1 2)
+    is IrGtVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 6) (cmppd-xmm 0 1 6) (cmpps-xmm 0 1 6)
+    is IrGtEqVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 5) (cmppd-xmm 0 1 5) (cmpps-xmm 0 1 5)
     is IrApproxEq -> emit-approx-eq st l-reg r-reg
     is IrApproxEqExact -> emit-approx-eq-exact st l-reg r-reg
     is IrEq -> emit-eq-op st l-reg r-reg operand-ty

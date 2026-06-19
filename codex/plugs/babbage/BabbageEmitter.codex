@@ -228,25 +228,12 @@ Section: Expression Emission
      state = st
     }
     is IrPowInt -> bab-emit-pow-to-store l r target st arities
-    is IrAddInt -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrSubInt -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrMulInt -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrDivInt -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrRemInt -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrAddNum -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrSubNum -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrMulNum -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrDivNum -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrEq -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrNotEq -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrLt -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrGt -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrLtEq -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrGtEq -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrApproxEq -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrApproxEqExact -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrAnd -> bab-emit-simple-binary-to-store op l r target st arities
-    is IrOr -> bab-emit-simple-binary-to-store op l r target st arities
+    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt -> bab-emit-simple-binary-to-store op l r target st arities
+    is IrAddNum | IrSubNum | IrMulNum | IrDivNum -> bab-emit-simple-binary-to-store op l r target st arities
+    is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> bab-emit-simple-binary-to-store op l r target st arities
+    is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq -> bab-emit-simple-binary-to-store op l r target st arities
+    is IrApproxEq | IrApproxEqExact -> bab-emit-simple-binary-to-store op l r target st arities
+    is IrAnd | IrOr -> bab-emit-simple-binary-to-store op l r target st arities
 
   bab-emit-simple-binary-to-store : IRBinaryOp, IRExpr, IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-simple-binary-to-store (op) (l) (r) (target) (st) (arities) =
@@ -344,32 +331,50 @@ Section: Expression Emission
     is IrTry (mx) (bd) (fb) (fs) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrError (m) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
 
+  bab-builtin-names : List Text
+  bab-builtin-names = ["abs", "bit-and", "bit-not", "bit-or", "bit-xor",
+   "int-mod", "max", "min", "negate", "print-line-uni", "show"]
+
+  bab-bsearch-builtin : List Text, Text, Integer, Integer -> Integer
+  bab-bsearch-builtin (names) (target) (lo) (hi) =
+   if lo >= hi then -1
+   else let mid = lo + (hi - lo) / 2
+   in let cmp = text-compare target (list-at names mid)
+   in if cmp == 0 then mid
+      else if cmp < 0 then bab-bsearch-builtin names target lo mid
+      else bab-bsearch-builtin names target (mid + 1) hi
+
   bab-emit-apply-named : Text, List IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-apply-named (n) (args) (target) (st) (arities) =
-   if n == "negate" then bab-emit-builtin-negate (list-at args 0) target st arities
-   else if n == "abs" then bab-emit-builtin-abs (list-at args 0) target st arities
-   else if n == "min" then bab-emit-builtin-min (list-at args 0) (list-at args 1) target st arities
-   else if n == "max" then bab-emit-builtin-max (list-at args 0) (list-at args 1) target st arities
-   else if n == "int-mod" then bab-emit-builtin-mod (list-at args 0) (list-at args 1) target st arities
-   else if n == "bit-and" then BabEmitResult {
+   let idx = bab-bsearch-builtin bab-builtin-names n 0 (list-length bab-builtin-names)
+   in if idx >= 0 then bab-emit-builtin-by-idx idx args target st arities
+      else bab-emit-call-def n args target st arities
+
+  bab-emit-builtin-by-idx : Integer, List IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
+  bab-emit-builtin-by-idx (idx) (args) (target) (st) (arities) =
+   if idx == 0 then bab-emit-builtin-abs (list-at args 0) target st arities
+   else if idx == 1 then BabEmitResult {
     text = ". bit-and not supported on Analytical Engine\nN000\nS" & bab-format-col target & "\n",
     state = st
    }
-   else if n == "bit-or" then BabEmitResult {
-    text = ". bit-or not supported on Analytical Engine\nN000\nS" & bab-format-col target & "\n",
-    state = st
-   }
-   else if n == "bit-xor" then BabEmitResult {
-    text = ". bit-xor not supported on Analytical Engine\nN000\nS" & bab-format-col target & "\n",
-    state = st
-   }
-   else if n == "bit-not" then BabEmitResult {
+   else if idx == 2 then BabEmitResult {
     text = ". bit-not not supported on Analytical Engine\nN000\nS" & bab-format-col target & "\n",
     state = st
    }
-   else if n == "print-line-uni" then bab-emit-builtin-print (list-at args 0) target st arities
-   else if n == "show" then bab-emit-to-store (list-at args 0) target st arities
-   else bab-emit-call-def n args target st arities
+   else if idx == 3 then BabEmitResult {
+    text = ". bit-or not supported on Analytical Engine\nN000\nS" & bab-format-col target & "\n",
+    state = st
+   }
+   else if idx == 4 then BabEmitResult {
+    text = ". bit-xor not supported on Analytical Engine\nN000\nS" & bab-format-col target & "\n",
+    state = st
+   }
+   else if idx == 5 then bab-emit-builtin-mod (list-at args 0) (list-at args 1) target st arities
+   else if idx == 6 then bab-emit-builtin-max (list-at args 0) (list-at args 1) target st arities
+   else if idx == 7 then bab-emit-builtin-min (list-at args 0) (list-at args 1) target st arities
+   else if idx == 8 then bab-emit-builtin-negate (list-at args 0) target st arities
+   else if idx == 9 then bab-emit-builtin-print (list-at args 0) target st arities
+   else bab-emit-to-store (list-at args 0) target st arities
 
   bab-emit-call-def : Text, List IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-call-def (n) (args) (target) (st) (arities) =
@@ -490,29 +495,15 @@ Section: Expression Emission
   bab-bin-op-card : IRBinaryOp -> Text
   bab-bin-op-card (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
-    is IrDivInt -> "/"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrPowInt -> "*"
+    is IrDivInt | IrDivNum | IrDivVec -> "/"
     is IrRemInt -> "%"
-    is IrPowInt -> "*"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
-    is IrEq -> "-"
-    is IrNotEq -> "-"
-    is IrLt -> "-"
-    is IrGt -> "-"
-    is IrLtEq -> "-"
-    is IrGtEq -> "-"
-    is IrApproxEq -> "-"
-    is IrApproxEqExact -> "-"
+    is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq -> "-"
+    is IrApproxEq | IrApproxEqExact -> "-"
     is IrAnd -> "*"
-    is IrOr -> "+"
-    is IrAppendText -> "+"
-    is IrAppendList -> "+"
-    is IrConsList -> "+"
+    is IrOr | IrAppendText | IrAppendList | IrConsList -> "+"
 
 Section: List, Match, Act, Record Emission
 

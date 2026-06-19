@@ -68,7 +68,7 @@ Section: Expression Emission
   emit-go-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-go-expr (e) (arities) (indent) =
    when e
-    is IrIntLit (n) (sp) -> show n
+    is IrIntLit (n) (sp) -> integer-to-text n
     is IrNumLit (n) (sp) -> "math.Float64frombits(uint64(" & show n & "))"
     is IrTextLit (s) (sp) -> "\"" & go-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
@@ -95,6 +95,10 @@ Section: Expression Emission
 
 Section: Binary Operators
 
+  go-vec-ewise : Text, Text, Text -> Text
+  go-vec-ewise (lhs) (rhs) (opsym) =
+   "func() interface{} { _l := " & lhs & ".([]interface{}); _r := " & rhs & ".([]interface{}); _v := make([]interface{}, len(_l)); for _i := range _l { _v[_i] = _l[_i].(float64) " & opsym & " _r[_i].(float64) }; return _v }()"
+
   emit-go-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-go-binary (op) (l) (r) (arities) (indent) =
    let lhs = emit-go-expr l arities indent
@@ -110,6 +114,10 @@ Section: Binary Operators
     is IrSubNum -> "(" & lhs & ".(float64) - " & rhs & ".(float64))"
     is IrMulNum -> "(" & lhs & ".(float64) * " & rhs & ".(float64))"
     is IrDivNum -> "(" & lhs & ".(float64) / " & rhs & ".(float64))"
+    is IrAddVec -> go-vec-ewise lhs rhs "+"
+    is IrSubVec -> go-vec-ewise lhs rhs "-"
+    is IrMulVec -> go-vec-ewise lhs rhs "*"
+    is IrDivVec -> go-vec-ewise lhs rhs "/"
     is IrEq -> "(" & lhs & " == " & rhs & ")"
     is IrNotEq -> "(" & lhs & " != " & rhs & ")"
     is IrLt -> "(" & lhs & ".(int) < " & rhs & ".(int))"
@@ -123,6 +131,88 @@ Section: Binary Operators
     is IrAppendText -> "(" & lhs & ".(string) + " & rhs & ".(string))"
     is IrAppendList -> "append(" & lhs & ".([]interface{}), " & rhs & ".([]interface{})...)"
     is IrConsList -> "append([]interface{}{" & lhs & "}, " & rhs & ".([]interface{})...)"
+
+Section: Builtin Emitter
+
+  GoBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry, Integer -> Text
+  }
+
+  bsearch-go-builtin-pos : List GoBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-go-builtin-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-go-builtin-pos entries name lo mid
+      else bsearch-go-builtin-pos entries name (mid + 1) hi
+
+  sort-go-builtins : List GoBuiltinEmitter -> List GoBuiltinEmitter
+  sort-go-builtins (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  go-builtin-emitters : List GoBuiltinEmitter =
+   sort-go-builtins [
+    GoBuiltinEmitter { name = "abs", emit = \args arities indent ->
+     "func() interface{} { _v := " & emit-go-expr (list-at args 0) arities indent & ".(int); if _v < 0 { return -_v }; return _v }()" },
+    GoBuiltinEmitter { name = "char-at", emit = \args arities indent ->
+     "string(" & emit-go-expr (list-at args 0) arities indent & ".(string)[" & emit-go-expr (list-at args 1) arities indent & ".(int)])" },
+    GoBuiltinEmitter { name = "char-code-at", emit = \args arities indent ->
+     "int(" & emit-go-expr (list-at args 0) arities indent & ".(string)[" & emit-go-expr (list-at args 1) arities indent & ".(int)])" },
+    GoBuiltinEmitter { name = "file-exists", emit = \args arities indent ->
+     "func() interface{} { _, _e := os.Stat(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return _e == nil }()" },
+    GoBuiltinEmitter { name = "int-mod", emit = \args arities indent ->
+     "(" & emit-go-expr (list-at args 0) arities indent & ".(int) % " & emit-go-expr (list-at args 1) arities indent & ".(int))" },
+    GoBuiltinEmitter { name = "integer-to-text", emit = \args arities indent ->
+     "fmt.Sprintf(\"%v\", " & emit-go-expr (list-at args 0) arities indent & ")" },
+    GoBuiltinEmitter { name = "list-at", emit = \args arities indent ->
+     emit-go-expr (list-at args 0) arities indent & ".([]interface{})[" & emit-go-expr (list-at args 1) arities indent & ".(int)]" },
+    GoBuiltinEmitter { name = "list-length", emit = \args arities indent ->
+     "len(" & emit-go-expr (list-at args 0) arities indent & ".([]interface{}))" },
+    GoBuiltinEmitter { name = "list-snoc", emit = \args arities indent ->
+     "append(" & emit-go-expr (list-at args 0) arities indent & ".([]interface{}), " & emit-go-expr (list-at args 1) arities indent & ")" },
+    GoBuiltinEmitter { name = "max", emit = \args arities indent ->
+     "func() interface{} { _a := " & emit-go-expr (list-at args 0) arities indent & ".(int); _b := " & emit-go-expr (list-at args 1) arities indent & ".(int); if _a > _b { return _a }; return _b }()" },
+    GoBuiltinEmitter { name = "min", emit = \args arities indent ->
+     "func() interface{} { _a := " & emit-go-expr (list-at args 0) arities indent & ".(int); _b := " & emit-go-expr (list-at args 1) arities indent & ".(int); if _a < _b { return _a }; return _b }()" },
+    GoBuiltinEmitter { name = "negate", emit = \args arities indent ->
+     "(-((" & emit-go-expr (list-at args 0) arities indent & ").(int)))" },
+    GoBuiltinEmitter { name = "print-error-uni", emit = \args arities indent ->
+     "func() interface{} { fmt.Fprintln(os.Stderr, " & emit-go-expr (list-at args 0) arities indent & "); return nil }()" },
+    GoBuiltinEmitter { name = "print-line-uni", emit = \args arities indent ->
+     "func() interface{} { fmt.Println(" & emit-go-expr (list-at args 0) arities indent & "); return nil }()" },
+    GoBuiltinEmitter { name = "read-file", emit = \args arities indent ->
+     "func() interface{} { _b, _ := os.ReadFile(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return string(_b) }()" },
+    GoBuiltinEmitter { name = "read-line", emit = \args arities indent ->
+     "func() interface{} { _r := bufio.NewReader(os.Stdin); _s, _ := _r.ReadString('\\n'); return strings.TrimRight(_s, \"\\n\") }()" },
+    GoBuiltinEmitter { name = "show", emit = \args arities indent ->
+     "fmt.Sprintf(\"%v\", " & emit-go-expr (list-at args 0) arities indent & ")" },
+    GoBuiltinEmitter { name = "substring", emit = \args arities indent ->
+     "func() interface{} { _s := " & emit-go-expr (list-at args 0) arities indent & ".(string); _start := " & emit-go-expr (list-at args 1) arities indent & ".(int); _len := " & emit-go-expr (list-at args 2) arities indent & ".(int); return _s[_start:_start+_len] }()" },
+    GoBuiltinEmitter { name = "text-compare", emit = \args arities indent ->
+     "strings.Compare(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
+    GoBuiltinEmitter { name = "text-contains", emit = \args arities indent ->
+     "strings.Contains(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
+    GoBuiltinEmitter { name = "text-length", emit = \args arities indent ->
+     "len(" & emit-go-expr (list-at args 0) arities indent & ".(string))" },
+    GoBuiltinEmitter { name = "text-replace", emit = \args arities indent ->
+     "strings.ReplaceAll(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string), " & emit-go-expr (list-at args 2) arities indent & ".(string))" },
+    GoBuiltinEmitter { name = "text-split", emit = \args arities indent ->
+     "func() interface{} { _parts := strings.Split(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string)); _r := make([]interface{}, len(_parts)); for _i, _p := range _parts { _r[_i] = _p }; return _r }()" },
+    GoBuiltinEmitter { name = "text-starts-with", emit = \args arities indent ->
+     "strings.HasPrefix(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
+    GoBuiltinEmitter { name = "text-to-integer", emit = \args arities indent ->
+     "func() interface{} { _v, _ := strconv.Atoi(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return _v }()" },
+    GoBuiltinEmitter { name = "write-file", emit = \args arities indent ->
+     "func() interface{} { os.WriteFile(" & emit-go-expr (list-at args 0) arities indent & ".(string), []byte(" & emit-go-expr (list-at args 1) arities indent & ".(string)), 0644); return nil }()" }
+   ]
+
+  lookup-go-builtin : Text, List IRExpr, List ArityEntry, Integer -> Text
+  lookup-go-builtin (name) (args) (arities) (indent) =
+   let len = list-length go-builtin-emitters
+   in let pos = bsearch-go-builtin-pos go-builtin-emitters name 0 len
+   in if pos >= len then ""
+      else let e = list-at go-builtin-emitters pos
+      in if e.name == name then e.emit args arities indent else ""
 
 Section: Apply and Helpers
 
@@ -145,6 +235,8 @@ Section: Apply and Helpers
    in when root
     is IrName (n) (ty) (sp) ->
      if is-mktup-name n then "[]interface{}{" & emit-go-apply-args args arities indent 0 & "}"
+     else let builtin = lookup-go-builtin n args arities indent
+     in if text-length builtin > 0 then builtin
      else let func = emit-go-expr root arities indent
      in func & ".(func(" & emit-go-any-params (list-length args) 0 & ") interface{})(" & emit-go-apply-args args arities indent 0 & ")"
     is otherwise ->
@@ -302,12 +394,11 @@ Section: Go Module Assembly
   emit-go-chapter : IRChapter, List ATypeDef -> Text
   emit-go-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "package main\n\nimport (\n    \"fmt\"\n    \"math\"\n)\n\nvar _ = math.Pi\n\n"
-   in let builtins = "func print_line_uni(s interface{}) interface{} { fmt.Println(s); return nil }\nfunc show(n interface{}) interface{} { return fmt.Sprintf(\"%v\", n) }\nfunc text_length(s interface{}) interface{} { return len(s.(string)) }\nfunc integer_to_text(n interface{}) interface{} { return fmt.Sprintf(\"%v\", n) }\nfunc negate(n interface{}) interface{} { return -(n.(int)) }\nfunc list_length(xs interface{}) interface{} { return len(xs.([]interface{})) }\nfunc list_at(xs interface{}, i interface{}) interface{} { return xs.([]interface{})[i.(int)] }\n\n"
+   in let header = "package main\n\nimport (\n    \"bufio\"\n    \"fmt\"\n    \"math\"\n    \"os\"\n    \"strconv\"\n    \"strings\"\n)\n\nvar _ = math.Pi\nvar _ = strconv.Atoi\n\n"
    in let types-text = emit-go-type-defs type-defs 0
    in let defs-text = emit-go-defs (m.defs) 0 arities
    in let main-func = "func main() {\n    opening()\n}\n"
-   in header & builtins & types-text & defs-text & main-func
+   in header & types-text & defs-text & main-func
 
   emit-go-tup-binds : List IRPat, Text, Integer -> Text
   emit-go-tup-binds (subs) (scrut) (i) =

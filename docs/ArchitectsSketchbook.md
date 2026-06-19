@@ -7,7 +7,7 @@ and platform constraints for the Codex bare-metal compiler.
 
 The bare-metal system occupies a single flat physical address space.
 All addresses are identity-mapped (virtual = physical). The single
-governing constant is `bare-metal-ram-size` (3 GB) in
+governing constant is `bare-metal-ram-size` (8 GB) in
 `codex/Emit/X86_64State.codex`. Every other memory value derives from
 it.
 
@@ -20,7 +20,7 @@ Address              Size       Region
 0x00005000 (20 KB)    4 KB      Process table (16 entries × 256 bytes)
 0x00006000 (24 KB)    4 KB      IDT (Interrupt Descriptor Table)
 0x00007000 (28 KB)    4 KB      Kernel metadata cells (see table below)
-0x00008000 (32 KB)   32 KB      Runtime page tables (PML4 + PDPT + PDs)
+0x00008000 (32 KB)   40 KB      Runtime page tables (PML4 + PDPT + 8 PDs)
 0x00100000 (1 MB)     4 MB      Binary code segment (bare-metal-load-addr)
                                   Current seed: ~2.1 MB of 4 MB headroom
 0x00500000 (5 MB)     1 MB      Serial ring buffer (serial-ring-buf-addr)
@@ -29,7 +29,7 @@ Address              Size       Region
      │                           (phase decks + bivy, ~150-200 MB for selfhost)
      │
      │                           ◄── Stack grows DOWN
-0xC0000000 (3 GB)     ────      Stack top (bare-metal-stack-top = ram-size)
+0x200000000 (8 GB)    ────      Stack top (bare-metal-stack-top = ram-size)
 ```
 
 ### Kernel Metadata Cells (0x7000 region)
@@ -81,11 +81,11 @@ Defined in `codex/Emit/X86_64State.codex`:
 |----------|-------|---------|
 | bare-metal-load-addr | 0x100000 (1 MB) | Binary load address |
 | bare-metal-heap-base | 0x600000 (6 MB) | R10 initial value |
-| bare-metal-ram-size | 0xC0000000 (3 GB) | Total physical memory |
-| bare-metal-stack-top | 0xC0000000 (3 GB) | RSP initial value |
+| bare-metal-ram-size | 0x200000000 (8 GB) | Total physical memory |
+| bare-metal-stack-top | 0x200000000 (8 GB) | RSP initial value |
 
 The CDX header heap field and ELF segment memsz are both computed as
-`bare-metal-ram-size - bare-metal-heap-base` in
+`bare-metal-ram-size - bare-metal-heap-base` (~8 GB minus 6 MB) in
 `codex/Emit/X86_64Chapter.codex`.
 
 ## Register Convention
@@ -322,10 +322,10 @@ base     Reservation-copy pattern means dead decks are reclaimed.
           │  in emit-all-defs loop               │
           └──────────────────────────────────────┘
                               ▲
-                              │ gap (~2.8 GB for 3 GB RAM)
+                              │ gap (~7.8 GB for 8 GB RAM)
                               ▼
           ┌──────────────────────────────────────┐
-0xC0000000│  Stack top (grows downward)          │
+0x200000000│ Stack top (grows downward)          │
           │  ~1 MB typical usage for selfhost    │
           └──────────────────────────────────────┘
 ```
@@ -411,7 +411,7 @@ PE, GPT/FAT images) are produced by plug CDX binaries in `codex/plugs/`.
 ## Heap and Stack
 
 Heap and stack share the arena between `bare-metal-heap-base` (6 MB) and
-`bare-metal-stack-top` (= ram-size, 3 GB). The heap grows upward via
+`bare-metal-stack-top` (= ram-size, 8 GB). The heap grows upward via
 register R10; the stack grows downward via RSP. See the Register
 Convention table above for the full register map.
 
@@ -491,6 +491,9 @@ builds identity-mapping page tables sized to `bare-metal-ram-size`:
 - PDPT at pml4-addr + 4096 (bare-metal-pd-count entries, one per GB)
 - PD pages at pml4-addr + 8192 onward (512 entries each, 2 MB pages)
 
+With 8 GB RAM: 8 PDs = (2 + 8) * 4096 = 40 KB total, from 0x8000 to
+0x12000.
+
 The runtime tables replace the trampoline tables via `mov cr3, rax`
 during `emit-process-setup`. After this point, only memory up to
 `bare-metal-ram-size` is mapped. Accessing addresses above this will
@@ -498,22 +501,21 @@ page-fault.
 
 ## Known Platform Constraints
 
-### 4 GB Barrier
+### 4 GB Barrier and MMIO Hole
 
 Physical addresses 0xC0000000–0xFFFFFFFF (the top 1 GB of the 32-bit
 address space) are reserved for PCI MMIO on x86 platforms. Both
-codex-vm and QEMU respect this: `-m 4096` provides 4 GB of RAM, but
+codex-vm and QEMU respect this: `-m 8192` provides 8 GB of RAM, but
 physical addresses in the MMIO window are not usable as RAM. RAM above
 4 GB is relocated to physical addresses starting at 0x100000000.
 
-Codex does not currently support non-contiguous physical memory or
-addresses above 4 GB. The practical ceiling for `bare-metal-ram-size`
-is 3 GB (0xC0000000) -- and as of the 2026-06-10 memory ceiling raise,
-ram-size sits exactly at that ceiling. There is no margin left in the
-contiguous low map: reaching the real 8 GB+ on modern machines
-requires non-contiguous physical memory support (relocated RAM above
-0x100000000), tracked in docs/PM/BACKLOG.md. Low-RAM (sub-3GB)
-machines are a USB-validation concern, also tracked there.
+As of the 2026-06-18 memory ceiling raise, `bare-metal-ram-size` is
+8 GB (0x200000000). The page tables map 8 GB of physical address
+space, spanning the MMIO hole at 0xC0000000–0xFFFFFFFF. codex-vm
+(`-mem 8192`) and QEMU relocate RAM above 4 GB to physical addresses
+starting at 0x100000000; the identity map covers this range.
+Low-RAM machines are a USB-validation concern, tracked in
+docs/PM/BACKLOG.md.
 
 ### Code Buffer Ceiling
 

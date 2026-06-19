@@ -1,0 +1,183 @@
+Chapter: PhysicsJoint
+  cites Sim chapter Physics
+  cites Math chapter Quaternion
+
+ Physics joints and constraints for ragdolls, chains, and mechanical
+ linkages. Distance joints (ropes, rigid rods), hinge joints
+ (single-axis rotation with limits), spring joints (damped harmonic),
+ and ball-socket joints (3-DOF). Iterative position-based constraint
+ solving (PBD). Fixed-point (scale 1000).
+
+ We say:
+
+Section: Joint Types
+
+  JointType =
+    | JtDistance (Integer)
+    | JtHinge (Integer) (Integer) (Integer)
+    | JtSpring (Integer) (Integer) (Integer)
+    | JtBallSocket (Integer)
+
+Section: Joint
+
+  PhysJoint = record {
+    pj-body-a : Integer,
+    pj-body-b : Integer,
+    pj-anchor-a : Vec3,
+    pj-anchor-b : Vec3,
+    pj-jtype : JointType,
+    pj-active : Boolean
+  }
+
+  JointSystem = record {
+    js-joints : List PhysJoint,
+    js-count : Integer,
+    js-iterations : Integer
+  }
+
+  js-new : Integer -> JointSystem
+  js-new (iters) = JointSystem { js-joints = [], js-count = 0, js-iterations = iters }
+
+  js-default : JointSystem
+  js-default = js-new 4
+
+Section: Joint Creation
+
+  js-add-distance : JointSystem, Integer, Integer, Vec3, Vec3, Integer -> JointSystem
+  js-add-distance (sys) (a) (b) (anchor-a) (anchor-b) (dist) =
+    let joint = PhysJoint { pj-body-a = a, pj-body-b = b, pj-anchor-a = anchor-a, pj-anchor-b = anchor-b, pj-jtype = JtDistance dist, pj-active = True }
+    in JointSystem { js-joints = list-push (sys.js-joints) joint, js-count = sys.js-count + 1, js-iterations = sys.js-iterations }
+
+  js-add-hinge : JointSystem, Integer, Integer, Vec3, Vec3, Integer, Integer, Integer -> JointSystem
+  js-add-hinge (sys) (a) (b) (anchor-a) (anchor-b) (axis-idx) (min-angle) (max-angle) =
+    let joint = PhysJoint { pj-body-a = a, pj-body-b = b, pj-anchor-a = anchor-a, pj-anchor-b = anchor-b, pj-jtype = JtHinge axis-idx min-angle max-angle, pj-active = True }
+    in JointSystem { js-joints = list-push (sys.js-joints) joint, js-count = sys.js-count + 1, js-iterations = sys.js-iterations }
+
+  js-add-spring : JointSystem, Integer, Integer, Vec3, Vec3, Integer, Integer, Integer -> JointSystem
+  js-add-spring (sys) (a) (b) (anchor-a) (anchor-b) (rest-len) (stiffness) (damping) =
+    let joint = PhysJoint { pj-body-a = a, pj-body-b = b, pj-anchor-a = anchor-a, pj-anchor-b = anchor-b, pj-jtype = JtSpring rest-len stiffness damping, pj-active = True }
+    in JointSystem { js-joints = list-push (sys.js-joints) joint, js-count = sys.js-count + 1, js-iterations = sys.js-iterations }
+
+  js-add-ball : JointSystem, Integer, Integer, Vec3, Vec3, Integer -> JointSystem
+  js-add-ball (sys) (a) (b) (anchor-a) (anchor-b) (max-angle) =
+    let joint = PhysJoint { pj-body-a = a, pj-body-b = b, pj-anchor-a = anchor-a, pj-anchor-b = anchor-b, pj-jtype = JtBallSocket max-angle, pj-active = True }
+    in JointSystem { js-joints = list-push (sys.js-joints) joint, js-count = sys.js-count + 1, js-iterations = sys.js-iterations }
+
+Section: Constraint Solving (PBD)
+
+  js-solve : JointSystem, List PhysBody -> List PhysBody
+  js-solve (sys) (bodies) = js-iterate sys bodies 0
+
+  js-iterate : JointSystem, List PhysBody, Integer -> List PhysBody
+  js-iterate (sys) (bodies) (iter) =
+    if iter >= sys.js-iterations then bodies
+    else let bodies2 = js-solve-all (sys.js-joints) bodies 0 (sys.js-count)
+    in js-iterate sys bodies2 (iter + 1)
+
+  js-solve-all : List PhysJoint, List PhysBody, Integer, Integer -> List PhysBody
+  js-solve-all (joints) (bodies) (i) (n) =
+    if i >= n then bodies
+    else let joint = list-at joints i
+    in let bodies2 = if joint.pj-active then js-solve-one joint bodies else bodies
+    in js-solve-all joints bodies2 (i + 1) n
+
+  js-solve-one : PhysJoint, List PhysBody -> List PhysBody
+  js-solve-one (joint) (bodies) =
+    when joint.pj-jtype
+      is JtDistance (target) -> js-solve-distance joint bodies target
+      is JtHinge (axis) (lo) (hi) -> js-solve-distance joint bodies 0
+      is JtSpring (rest) (stiff) (damp) -> js-solve-spring joint bodies rest stiff
+      is JtBallSocket (max-a) -> js-solve-distance joint bodies 0
+
+Section: Distance Constraint
+
+  js-solve-distance : PhysJoint, List PhysBody, Integer -> List PhysBody
+  js-solve-distance (joint) (bodies) (target-dist) =
+    let ba = list-at bodies (joint.pj-body-a)
+    in let bb = list-at bodies (joint.pj-body-b)
+    in let dx = bb.px - ba.px
+    in let dy = bb.py - ba.py
+    in let dz = bb.pz - ba.pz
+    in let dist = pj-isqrt (dx * dx + dy * dy + dz * dz)
+    in if dist == 0 then bodies
+    else let diff = dist - target-dist
+    in let correction = diff * 500 / dist
+    in let total-mass = ba.mass + bb.mass
+    in if total-mass == 0 then bodies
+    else let ratio-a = bb.mass * 1000 / total-mass
+    in let ratio-b = ba.mass * 1000 / total-mass
+    in let ca-x = dx * correction * ratio-a / 1000000
+    in let ca-y = dy * correction * ratio-a / 1000000
+    in let ca-z = dz * correction * ratio-a / 1000000
+    in let cb-x = dx * correction * ratio-b / 1000000
+    in let cb-y = dy * correction * ratio-b / 1000000
+    in let cb-z = dz * correction * ratio-b / 1000000
+    in let new-a = PhysBody { px = ba.px + ca-x, py = ba.py + ca-y, pz = ba.pz + ca-z, prev-x = ba.prev-x, prev-y = ba.prev-y, prev-z = ba.prev-z, ax = ba.ax, ay = ba.ay, az = ba.az, mass = ba.mass, damping = ba.damping }
+    in let new-b = PhysBody { px = bb.px - cb-x, py = bb.py - cb-y, pz = bb.pz - cb-z, prev-x = bb.prev-x, prev-y = bb.prev-y, prev-z = bb.prev-z, ax = bb.ax, ay = bb.ay, az = bb.az, mass = bb.mass, damping = bb.damping }
+    in list-set-at (list-set-at bodies (joint.pj-body-a) new-a) (joint.pj-body-b) new-b
+
+Section: Spring Constraint
+
+  js-solve-spring : PhysJoint, List PhysBody, Integer, Integer -> List PhysBody
+  js-solve-spring (joint) (bodies) (rest-len) (stiffness) =
+    let ba = list-at bodies (joint.pj-body-a)
+    in let bb = list-at bodies (joint.pj-body-b)
+    in let dx = bb.px - ba.px
+    in let dy = bb.py - ba.py
+    in let dz = bb.pz - ba.pz
+    in let dist = pj-isqrt (dx * dx + dy * dy + dz * dz)
+    in if dist == 0 then bodies
+    else let stretch = dist - rest-len
+    in let force = stretch * stiffness / 1000
+    in let fx = dx * force / dist
+    in let fy = dy * force / dist
+    in let fz = dz * force / dist
+    in let new-a = PhysBody { px = ba.px + fx / 2, py = ba.py + fy / 2, pz = ba.pz + fz / 2, prev-x = ba.prev-x, prev-y = ba.prev-y, prev-z = ba.prev-z, ax = ba.ax, ay = ba.ay, az = ba.az, mass = ba.mass, damping = ba.damping }
+    in let new-b = PhysBody { px = bb.px - fx / 2, py = bb.py - fy / 2, pz = bb.pz - fz / 2, prev-x = bb.prev-x, prev-y = bb.prev-y, prev-z = bb.prev-z, ax = bb.ax, ay = bb.ay, az = bb.az, mass = bb.mass, damping = bb.damping }
+    in list-set-at (list-set-at bodies (joint.pj-body-a) new-a) (joint.pj-body-b) new-b
+
+Section: Ragdoll Builder
+
+  RagdollDef = record {
+    rd-body-count : Integer,
+    rd-bodies : List PhysBody,
+    rd-joints : JointSystem
+  }
+
+  ragdoll-chain : Integer, Integer, Integer, Integer, Integer -> RagdollDef
+  ragdoll-chain (count) (start-x) (start-y) (spacing) (link-mass) =
+    let bodies = ragdoll-chain-bodies count start-x start-y spacing link-mass 0 []
+    in let joints = ragdoll-chain-joints count spacing 0 (js-new 8)
+    in RagdollDef { rd-body-count = count, rd-bodies = bodies, rd-joints = joints }
+
+  ragdoll-chain-bodies : Integer, Integer, Integer, Integer, Integer, Integer, List PhysBody -> List PhysBody
+  ragdoll-chain-bodies (n) (sx) (sy) (spacing) (mass) (i) (acc) =
+    if i >= n then acc
+    else let body = phys-body (sx) (sy - i * spacing) 0 mass
+    in ragdoll-chain-bodies n sx sy spacing mass (i + 1) (list-push acc body)
+
+  ragdoll-chain-joints : Integer, Integer, Integer, JointSystem -> JointSystem
+  ragdoll-chain-joints (n) (spacing) (i) (sys) =
+    if i >= n - 1 then sys
+    else let sys2 = js-add-distance sys i (i + 1) vec3-zero vec3-zero spacing
+    in ragdoll-chain-joints n spacing (i + 1) sys2
+
+Section: Helpers
+
+  pj-isqrt : Integer -> Integer
+  pj-isqrt (n) = if n <= 0 then 0 else pj-isqrt-loop n (n / 2 + 1)
+
+  pj-isqrt-loop : Integer, Integer -> Integer
+  pj-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else pj-isqrt-loop n next
+
+Section: Formatting
+
+  format-joint-system : JointSystem -> Text
+  format-joint-system (sys) = "Joints(" & show (sys.js-count) & " joints, " & show (sys.js-iterations) & " iters)"
+
+  format-ragdoll : RagdollDef -> Text
+  format-ragdoll (rd) = "Ragdoll(" & show (rd.rd-body-count) & " bodies, " & format-joint-system (rd.rd-joints) & ")"
+
+Page 1

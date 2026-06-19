@@ -1,0 +1,119 @@
+Chapter: Fog
+  cites Game chapter Color
+  cites Game chapter Rasterizer
+
+ Distance fog and height fog. Applied per-pixel after 3D rendering
+ by blending the fragment color with a fog color based on depth
+ and/or altitude. Exponential falloff for distance, linear falloff
+ for height. Fixed-point (scale 1000).
+
+ We say:
+
+Section: Fog Config
+
+  FogMode =
+    | FogLinear (Integer) (Integer)
+    | FogExponential (Integer)
+    | FogExponentialSq (Integer)
+    | FogHeight (Integer) (Integer) (Integer)
+
+  FogConfig = record {
+    fog-mode : FogMode,
+    fog-color : Rgb,
+    fog-enabled : Boolean
+  }
+
+  fog-linear : Integer, Integer, Rgb -> FogConfig
+  fog-linear (near) (far) (color) = FogConfig { fog-mode = FogLinear near far, fog-color = color, fog-enabled = True }
+
+  fog-exp : Integer, Rgb -> FogConfig
+  fog-exp (density) (color) = FogConfig { fog-mode = FogExponential density, fog-color = color, fog-enabled = True }
+
+  fog-height : Integer, Integer, Integer, Rgb -> FogConfig
+  fog-height (density) (floor-y) (ceiling-y) (color) = FogConfig { fog-mode = FogHeight density floor-y ceiling-y, fog-color = color, fog-enabled = True }
+
+  fog-none : FogConfig
+  fog-none = FogConfig { fog-mode = FogLinear 0 1000000, fog-color = rgb 200 200 220, fog-enabled = False }
+
+Section: Fog Factor Computation
+
+  fog-factor : FogConfig, Integer, Integer -> Integer
+  fog-factor (cfg) (depth) (world-y) =
+    if cfg.fog-enabled then fog-factor-mode (cfg.fog-mode) depth world-y
+    else 0
+
+  fog-factor-mode : FogMode, Integer, Integer -> Integer
+  fog-factor-mode (mode) (depth) (world-y) =
+    when mode
+      is FogLinear (near) (far) -> fog-linear-factor depth near far
+      is FogExponential (density) -> fog-exp-factor depth density
+      is FogExponentialSq (density) -> fog-exp-sq-factor depth density
+      is FogHeight (density) (floor-y) (ceiling-y) -> fog-height-factor world-y density floor-y ceiling-y
+
+  fog-linear-factor : Integer, Integer, Integer -> Integer
+  fog-linear-factor (depth) (near) (far) =
+    if depth <= near then 0
+    else if depth >= far then 1000
+    else (depth - near) * 1000 / (far - near)
+
+  fog-exp-factor : Integer, Integer -> Integer
+  fog-exp-factor (depth) (density) =
+    let exponent = depth * density / 1000
+    in fog-clamp (exponent * exponent / 1000) 0 1000
+
+  fog-exp-sq-factor : Integer, Integer -> Integer
+  fog-exp-sq-factor (depth) (density) =
+    let d = depth * density / 1000
+    in let sq = d * d / 1000
+    in fog-clamp (sq * sq / 1000) 0 1000
+
+  fog-height-factor : Integer, Integer, Integer, Integer -> Integer
+  fog-height-factor (world-y) (density) (floor-y) (ceiling-y) =
+    if world-y >= ceiling-y then 0
+    else if world-y <= floor-y then density
+    else let range = ceiling-y - floor-y
+    in let height-frac = (ceiling-y - world-y) * 1000 / range
+    in density * height-frac / 1000
+
+Section: Apply Fog to Framebuffer
+
+  fog-apply : Framebuf, List Integer, FogConfig, Integer, Integer -> Framebuf
+  fog-apply (fb) (depth-data) (cfg) (width) (height) =
+    if cfg.fog-enabled then fog-apply-loop fb depth-data cfg width height 0 0
+    else fb
+
+  fog-apply-loop : Framebuf, List Integer, FogConfig, Integer, Integer, Integer, Integer -> Framebuf
+  fog-apply-loop (fb) (depths) (cfg) (w) (h) (x) (y) =
+    if y >= h then fb
+    else if x >= w then fog-apply-loop fb depths cfg w h 0 (y + 1)
+    else let depth = list-at depths (y * w + x)
+    in let factor = fog-factor cfg depth 0
+    in if factor <= 0 then fog-apply-loop fb depths cfg w h (x + 1) y
+    else let pixel = fb-get fb x y
+    in let fogged = fog-blend pixel (cfg.fog-color) factor
+    in fog-apply-loop (fb-set fb x y fogged) depths cfg w h (x + 1) y
+
+  fog-blend : Integer, Rgb, Integer -> Integer
+  fog-blend (pixel) (fog-col) (factor) =
+    let inv = 1000 - factor
+    in let pr = bit-and (bit-shru pixel 16) 255
+    in let pg = bit-and (bit-shru pixel 8) 255
+    in let pb = bit-and pixel 255
+    in let r = (pr * inv + fog-col.cr * factor) / 1000
+    in let g = (pg * inv + fog-col.cg * factor) / 1000
+    in let b = (pb * inv + fog-col.cb * factor) / 1000
+    in bit-or (bit-shl r 16) (bit-or (bit-shl g 8) b)
+
+Section: Helpers
+
+  fog-clamp : Integer, Integer, Integer -> Integer
+  fog-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Formatting
+
+  format-fog : FogConfig -> Text
+  format-fog (cfg) =
+    if cfg.fog-enabled then "Fog(on)"
+    else "Fog(off)"
+
+Page 1

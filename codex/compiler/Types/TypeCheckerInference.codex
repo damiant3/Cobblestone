@@ -138,7 +138,7 @@ Section: Infer Binary
   is-real-type : CodexType -> Boolean
   is-real-type (ty) =
    when ty
-    is RealTy -> True
+    is RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy -> True
     is otherwise -> False
 
   infer-binary-op : UnificationState, CodexType, CodexType, BinaryOp, SourceSpan -> CheckResult
@@ -187,7 +187,7 @@ Section: Infer Binary
   is-arithmetic-type : CodexType -> Boolean
   is-arithmetic-type (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) | RealTy | VectorTy (vn) (vt) | TypeVar (id) | ErrorTy -> True
+    is IntegerTy (lo) (hi) (mode) | RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy | VectorTy (vn) (vt) | TypeVar (id) | ErrorTy -> True
     is UnitTy (n) (inner) -> is-arithmetic-type inner
     is otherwise -> False
 
@@ -401,10 +401,33 @@ Section: Infer Application
    in let (ok, r-st) = unify ret-st (fr.inferred-type) (deck-record (FunTy (ar.inferred-type) ret-ty)) span
    in let st-cls = check-class-op-app r-st env func (ar.inferred-type) span
    in let st-final = lint-record-set st-cls env func arg (ar.inferred-type) ret-ty span
+   in let refined-ty = refine-vec-result st-final func (ar.inferred-type) ret-ty
    in CheckResult {
-    inferred-type = ret-ty,
+    inferred-type = refined-ty,
     state = st-final
    }
+
+  refine-vec-result : UnificationState, AExpr, CodexType, CodexType -> CodexType
+  refine-vec-result (st) (func) (arg-ty) (ret-ty) =
+   let rr = deep-resolve st ret-ty
+   in when rr
+    is VectorTy (rn) (rt) -> if rn >= 0 then ret-ty else refine-vec-op st func arg-ty rt ret-ty
+    is otherwise -> ret-ty
+
+  refine-vec-op : UnificationState, AExpr, CodexType, CodexType, CodexType -> CodexType
+  refine-vec-op (st) (func) (arg-ty) (elem-ty) (fallback) =
+   let ra = deep-resolve st arg-ty
+   in let arg-len = when ra is VectorTy (an) (at) -> an is otherwise -> 0 - 1
+   in when func
+    is ANameExpr (n) (s) ->
+     if n.value == "vec-tail" & arg-len > 0 then deck-record (VectorTy (arg-len - 1) elem-ty)
+     else if n.value == "vec-map" & arg-len >= 0 then deck-record (VectorTy arg-len elem-ty)
+     else fallback
+    is AApplyExpr (inner) (first-arg) (s) ->
+     let inner-name = when inner is ANameExpr (n2) (s2) -> n2.value is otherwise -> ""
+     in if inner-name == "vec-cons" & arg-len >= 0 then deck-record (VectorTy (arg-len + 1) elem-ty)
+     else fallback
+    is otherwise -> fallback
 
 Section: Lint __record-set narrowing
 
@@ -538,27 +561,56 @@ Section: Infer List
    in unify-list-elems u-st env elems elem-ty (i + 1) len
 
 Section: Infer Match
+  is-gadt-type : UnificationState, CodexType -> Boolean
+  is-gadt-type (st) (ty) =
+   let resolved = deep-resolve st ty
+   in when resolved
+    is SumTy (name) (args) (ctors) -> any-ctor-has-return-type ctors 0 (list-length ctors)
+    is otherwise -> False
+
+  any-ctor-has-return-type : List SumCtor, Integer, Integer -> Boolean
+  any-ctor-has-return-type (ctors) (i) (len) =
+   if i >= len then False
+   else if list-length ((list-at ctors i).return-type) > 0 then True
+   else any-ctor-has-return-type ctors (i + 1) len
+
   infer-match : UnificationState, TypeEnv, AExpr, List AMatchArm -> CheckResult
   infer-match (st) (env) (scrutinee) (arms) =
    let sr = infer-expr st env scrutinee
    in let (fr-ty, fr-st) = fresh-and-advance (sr.state)
-   in let st2 = infer-match-arms fr-st env (sr.inferred-type) fr-ty arms 0 (list-length arms)
+   in let gadt = is-gadt-type fr-st (sr.inferred-type)
+   in let st2 = infer-match-arms fr-st env (sr.inferred-type) fr-ty arms 0 (list-length arms) gadt
    in let st3 = check-match-exhaustiveness st2 (sr.inferred-type) arms (aexpr-span scrutinee)
    in CheckResult {
     inferred-type = fr-ty,
     state = st3
    }
 
-  infer-match-arms : UnificationState, TypeEnv, CodexType, CodexType, List AMatchArm, Integer, Integer -> UnificationState
-  infer-match-arms (st) (env) (scrut-ty) (result-ty) (arms) (i) (len) =
+  infer-match-arms : UnificationState, TypeEnv, CodexType, CodexType, List AMatchArm, Integer, Integer, Boolean -> UnificationState
+  infer-match-arms (st) (env) (scrut-ty) (result-ty) (arms) (i) (len) (is-gadt) =
    if i == len then st
    else let arm = list-at arms i
+   in if is-gadt then infer-gadt-arm st env scrut-ty result-ty arm arms (i + 1) len else infer-plain-arm st env scrut-ty result-ty arm arms (i + 1) len is-gadt
+
+  infer-plain-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, Boolean -> UnificationState
+  infer-plain-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) (is-gadt) =
+   let pr = bind-pattern st env (arm.pattern) scrut-ty
+   in let gr = infer-expr (pr.state) (pr.env) (arm.guard)
+   in let (_, gu-st) = unify (gr.state) (gr.inferred-type) BooleanTy (aexpr-span (arm.guard))
+   in let br = infer-expr gu-st (pr.env) (arm.body)
+   in let (_, u-st) = unify (br.state) (br.inferred-type) result-ty (aexpr-span (arm.body))
+   in infer-match-arms u-st env scrut-ty result-ty arms next len is-gadt
+
+  infer-gadt-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer -> UnificationState
+  infer-gadt-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) =
+   let saved = snapshot-substitutions st
    in let pr = bind-pattern st env (arm.pattern) scrut-ty
    in let gr = infer-expr (pr.state) (pr.env) (arm.guard)
    in let (_, gu-st) = unify (gr.state) (gr.inferred-type) BooleanTy (aexpr-span (arm.guard))
    in let br = infer-expr gu-st (pr.env) (arm.body)
    in let (_, u-st) = unify (br.state) (br.inferred-type) result-ty (aexpr-span (arm.body))
-   in infer-match-arms u-st env scrut-ty result-ty arms (i + 1) len
+   in let restored = restore-substitutions u-st saved
+   in infer-match-arms restored env scrut-ty result-ty arms next len True
 
   check-match-exhaustiveness : UnificationState, CodexType, List AMatchArm, SourceSpan -> UnificationState
   check-match-exhaustiveness (st) (scrut-ty) (arms) (span) =
@@ -625,6 +677,9 @@ Section: Infer Match
      state = st,
      env = env
     }
+    is AVecPat (sub-pats) (s) ->
+     let elem-ty = when ty is VectorTy (n) (t) -> t is otherwise -> ErrorTy
+     in bind-vec-sub-patterns st env sub-pats elem-ty 0 (list-length sub-pats)
     is ACtorPat (ctor-name) (sub-pats) (s) ->
      if env-has env (ctor-name.value) == False
      then let err-st = __record-set st "bag" (bag-add (st.bag) (make-error cdx-unknown-pattern-ctor ("Pattern constructor '" & ctor-name.value & "' is not in scope; this arm could never match. Check the constructor names of the scrutinee's type.") s))
@@ -649,6 +704,15 @@ Section: Infer Match
       let (fr-ty, fr-st) = fresh-and-advance st
       in let pr = bind-pattern fr-st env (list-at sub-pats i) fr-ty
       in bind-ctor-sub-patterns (pr.state) (pr.env) sub-pats ctor-ty (i + 1) len
+
+  bind-vec-sub-patterns : UnificationState, TypeEnv, List APat, CodexType, Integer, Integer -> PatBindResult
+  bind-vec-sub-patterns (st) (env) (sub-pats) (elem-ty) (i) (len) =
+   if i == len then PatBindResult {
+    state = st,
+    env = env
+   }
+   else let pr = bind-pattern st env (list-at sub-pats i) elem-ty
+   in bind-vec-sub-patterns (pr.state) (pr.env) sub-pats elem-ty (i + 1) len
 
 Section: Infer Act
   infer-act : UnificationState, TypeEnv, List AActStmt -> CheckResult

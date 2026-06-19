@@ -2,6 +2,7 @@ Chapter: Perl Emitter
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Foreword chapter Sort
 
  Generates Perl 5 source code from the IR.
 
@@ -162,15 +163,22 @@ Section: Expression Emission
     is IrPowInt -> "(" & emit-pl-expr l arities & " ** " & emit-pl-expr r arities & ")"
     is IrDivInt -> "int(" & emit-pl-expr l arities & " / " & emit-pl-expr r arities & ")"
     is IrRemInt -> "(" & emit-pl-expr l arities & " % " & emit-pl-expr r arities & ")"
+    is IrAddVec -> "[map { " & emit-pl-expr l arities & "->[$_] + " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
+    is IrSubVec -> "[map { " & emit-pl-expr l arities & "->[$_] - " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
+    is IrMulVec -> "[map { " & emit-pl-expr l arities & "->[$_] * " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
+    is IrDivVec -> "[map { " & emit-pl-expr l arities & "->[$_] / " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
     is otherwise -> "(" & emit-pl-expr l arities & " " & pl-bin-op op & " " & emit-pl-expr r arities & ")"
 
   pl-bin-op : IRBinaryOp -> Text
   pl-bin-op (op) =
    when op
-    is IrAddInt -> "+"  is IrSubInt -> "-"  is IrMulInt -> "*"  is IrDivInt -> "/"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec -> "*"
+    is IrDivInt | IrDivNum | IrDivVec -> "/"
     is IrRemInt -> "%"
-    is IrPowInt -> "**"  is IrAddNum -> "+"  is IrSubNum -> "-"  is IrMulNum -> "*"
-    is IrDivNum -> "/"  is IrEq -> "=="  is IrNotEq -> "!="
+    is IrPowInt -> "**"
+    is IrEq -> "=="  is IrNotEq -> "!="
     is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
     is IrApproxEq -> "=="  is IrApproxEqExact -> "=="
     is IrAnd -> "&&"  is IrOr -> "||"  is IrAppendText -> "."
@@ -257,27 +265,58 @@ Section: Apply Emission
    else if i == list-length args - 1 then emit-pl-expr (list-at args i) arities
         else emit-pl-expr (list-at args i) arities & ", " & emit-pl-apply-args args arities (i + 1)
 
+  PlBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-pl-emitter-pos : List PlBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-pl-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-pl-emitter-pos entries name lo mid
+      else bsearch-pl-emitter-pos entries name (mid + 1) hi
+
+  sort-pl-emitters : List PlBuiltinEmitter -> List PlBuiltinEmitter
+  sort-pl-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  pl-builtin-emitters : List PlBuiltinEmitter = sort-pl-emitters [
+   PlBuiltinEmitter { name = "char-at", emit = \args arities -> "ord(substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", 1))" },
+   PlBuiltinEmitter { name = "char-code", emit = \args arities -> emit-pl-expr (list-at args 0) arities },
+   PlBuiltinEmitter { name = "char-to-text", emit = \args arities -> "chr(" & emit-pl-expr (list-at args 0) arities & ")" },
+   PlBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-pl-expr (list-at args 0) arities & " % " & emit-pl-expr (list-at args 1) arities & ")" },
+   PlBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "\"\" . " & emit-pl-expr (list-at args 0) arities },
+   PlBuiltinEmitter { name = "list-at", emit = \args arities -> emit-pl-expr (list-at args 0) arities & "->[" & emit-pl-expr (list-at args 1) arities & "]" },
+   PlBuiltinEmitter { name = "list-length", emit = \args arities -> "scalar(@{" & emit-pl-expr (list-at args 0) arities & "})" },
+   PlBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-pl-expr (list-at args 0) arities & ")" },
+   PlBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "say " & emit-pl-expr (list-at args 0) arities },
+   PlBuiltinEmitter { name = "process-exit", emit = \args arities -> "exit(" & emit-pl-expr (list-at args 0) arities & ")" },
+   PlBuiltinEmitter { name = "read-file", emit = \args arities -> "(sub { local $/; open my $fh, '<', " & emit-pl-expr (list-at args 0) arities & "; <$fh> })->()" },
+   PlBuiltinEmitter { name = "show", emit = \args arities -> "\"\" . " & emit-pl-expr (list-at args 0) arities },
+   PlBuiltinEmitter { name = "substring", emit = \args arities -> "substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", " & emit-pl-expr (list-at args 2) arities & ")" },
+   PlBuiltinEmitter { name = "text-contains", emit = \args arities -> "(index(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ") >= 0)" },
+   PlBuiltinEmitter { name = "text-length", emit = \args arities -> "length(" & emit-pl-expr (list-at args 0) arities & ")" },
+   PlBuiltinEmitter { name = "text-replace", emit = \args arities -> "(sub { my $s = " & emit-pl-expr (list-at args 0) arities & "; $s =~ s/\\Q" & emit-pl-expr (list-at args 1) arities & "\\E/" & emit-pl-expr (list-at args 2) arities & "/g; $s })->()" },
+   PlBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "int(" & emit-pl-expr (list-at args 0) arities & ")" },
+   PlBuiltinEmitter { name = "write-file", emit = \args arities -> "(sub { open my $fh, '>', " & emit-pl-expr (list-at args 0) arities & "; print $fh " & emit-pl-expr (list-at args 1) arities & " })->()" }
+  ]
+
+  is-pl-builtin-name : Text -> Boolean
+  is-pl-builtin-name (n) =
+   let len = list-length pl-builtin-emitters
+   in let pos = bsearch-pl-emitter-pos pl-builtin-emitters n 0 len
+   in if pos >= len then False
+      else (list-at pl-builtin-emitters pos).name == n
+
   pl-try-builtin : Text, List IRExpr, List ArityEntry -> Text
   pl-try-builtin (n) (args) (arities) =
-   if n == "print-line-uni" then "say " & emit-pl-expr (list-at args 0) arities
-   else if n == "show" then "\"\" . " & emit-pl-expr (list-at args 0) arities
-   else if n == "integer-to-text" then "\"\" . " & emit-pl-expr (list-at args 0) arities
-   else if n == "text-to-integer" then "int(" & emit-pl-expr (list-at args 0) arities & ")"
-   else if n == "text-length" then "length(" & emit-pl-expr (list-at args 0) arities & ")"
-   else if n == "list-length" then "scalar(@{" & emit-pl-expr (list-at args 0) arities & "})"
-   else if n == "list-at" then emit-pl-expr (list-at args 0) arities & "->[" & emit-pl-expr (list-at args 1) arities & "]"
-   else if n == "char-at" then "ord(substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", 1))"
-   else if n == "char-code" then emit-pl-expr (list-at args 0) arities
-   else if n == "char-to-text" then "chr(" & emit-pl-expr (list-at args 0) arities & ")"
-   else if n == "substring" then "substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", " & emit-pl-expr (list-at args 2) arities & ")"
-   else if n == "text-replace" then "(sub { my $s = " & emit-pl-expr (list-at args 0) arities & "; $s =~ s/\\Q" & emit-pl-expr (list-at args 1) arities & "\\E/" & emit-pl-expr (list-at args 2) arities & "/g; $s })->()"
-   else if n == "text-contains" then "(index(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ") >= 0)"
-   else if n == "read-file" then "(sub { local $/; open my $fh, '<', " & emit-pl-expr (list-at args 0) arities & "; <$fh> })->()"
-   else if n == "write-file" then "(sub { open my $fh, '>', " & emit-pl-expr (list-at args 0) arities & "; print $fh " & emit-pl-expr (list-at args 1) arities & " })->()"
-   else if n == "process-exit" then "exit(" & emit-pl-expr (list-at args 0) arities & ")"
-   else if n == "int-mod" then "(" & emit-pl-expr (list-at args 0) arities & " % " & emit-pl-expr (list-at args 1) arities & ")"
-   else if n == "negate" then "(-" & emit-pl-expr (list-at args 0) arities & ")"
-   else ""
+   let len = list-length pl-builtin-emitters
+   in let pos = bsearch-pl-emitter-pos pl-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at pl-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
 
 Section: Definition Emission
 

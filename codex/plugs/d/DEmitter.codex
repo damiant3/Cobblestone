@@ -2,6 +2,7 @@ Chapter: D Emitter
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Foreword chapter Sort
 
  Generates D language source code from the IR.
 
@@ -180,13 +181,22 @@ Section: Expression Emission
   d-bin-op : IRBinaryOp -> Text
   d-bin-op (op) =
    when op
-    is IrAddInt -> "+"  is IrSubInt -> "-"  is IrMulInt -> "*"  is IrDivInt -> "/"
-    is IrRemInt -> "%"  is IrPowInt -> "^^"  is IrAddNum -> "+"  is IrSubNum -> "-"  is IrMulNum -> "*"
-    is IrDivNum -> "/"  is IrEq -> "=="  is IrNotEq -> "!="
-    is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
-    is IrApproxEq -> "=="  is IrApproxEqExact -> "=="
-    is IrAnd -> "&&"  is IrOr -> "||"  is IrAppendText -> "~"
-    is IrAppendList -> "~"  is IrConsList -> "~"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec -> "*"
+    is IrDivInt | IrDivNum | IrDivVec -> "/"
+    is IrRemInt -> "%"
+    is IrPowInt -> "^^"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt -> "<"
+    is IrGt -> ">"
+    is IrLtEq -> "<="
+    is IrGtEq -> ">="
+    is IrApproxEq | IrApproxEqExact -> "=="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText | IrAppendList | IrConsList -> "~"
 
   emit-d-lambda-params : List IRParam, Integer -> Text
   emit-d-lambda-params (params) (i) =
@@ -266,26 +276,50 @@ Section: Apply Emission
    else if i == list-length args - 1 then emit-d-expr (list-at args i) arities
         else emit-d-expr (list-at args i) arities & ", " & emit-d-apply-args args arities (i + 1)
 
+  DBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-d-emitter-pos : List DBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-d-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-d-emitter-pos entries name lo mid
+      else bsearch-d-emitter-pos entries name (mid + 1) hi
+
+  sort-d-emitters : List DBuiltinEmitter -> List DBuiltinEmitter
+  sort-d-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  d-builtin-emitters : List DBuiltinEmitter = sort-d-emitters [
+   DBuiltinEmitter { name = "char-at", emit = \args arities -> "cast(long)" & emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & "]" },
+   DBuiltinEmitter { name = "char-code", emit = \args arities -> emit-d-expr (list-at args 0) arities },
+   DBuiltinEmitter { name = "char-to-text", emit = \args arities -> "to!string(cast(char)" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-d-expr (list-at args 0) arities & " % " & emit-d-expr (list-at args 1) arities & ")" },
+   DBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "to!string(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "list-at", emit = \args arities -> emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & "]" },
+   DBuiltinEmitter { name = "list-length", emit = \args arities -> "cast(long)" & emit-d-expr (list-at args 0) arities & ".length" },
+   DBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "writeln(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "process-exit", emit = \args arities -> "exit(cast(int)" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "read-file", emit = \args arities -> "readText(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "show", emit = \args arities -> "to!string(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "substring", emit = \args arities -> emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & " .. cast(size_t)(" & emit-d-expr (list-at args 1) arities & " + " & emit-d-expr (list-at args 2) arities & ")]" },
+   DBuiltinEmitter { name = "text-contains", emit = \args arities -> "(" & emit-d-expr (list-at args 0) arities & ".canFind(" & emit-d-expr (list-at args 1) arities & "))" },
+   DBuiltinEmitter { name = "text-length", emit = \args arities -> "cast(long)" & emit-d-expr (list-at args 0) arities & ".length" },
+   DBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "to!long(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "write-file", emit = \args arities -> "std.file.write(" & emit-d-expr (list-at args 0) arities & ", " & emit-d-expr (list-at args 1) arities & ")" }
+  ]
+
   d-try-builtin : Text, List IRExpr, List ArityEntry -> Text
   d-try-builtin (n) (args) (arities) =
-   if n == "print-line-uni" then "writeln(" & emit-d-expr (list-at args 0) arities & ")"
-   else if n == "show" then "to!string(" & emit-d-expr (list-at args 0) arities & ")"
-   else if n == "integer-to-text" then "to!string(" & emit-d-expr (list-at args 0) arities & ")"
-   else if n == "text-to-integer" then "to!long(" & emit-d-expr (list-at args 0) arities & ")"
-   else if n == "text-length" then "cast(long)" & emit-d-expr (list-at args 0) arities & ".length"
-   else if n == "list-length" then "cast(long)" & emit-d-expr (list-at args 0) arities & ".length"
-   else if n == "list-at" then emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & "]"
-   else if n == "char-at" then "cast(long)" & emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & "]"
-   else if n == "char-code" then emit-d-expr (list-at args 0) arities
-   else if n == "char-to-text" then "to!string(cast(char)" & emit-d-expr (list-at args 0) arities & ")"
-   else if n == "substring" then emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & " .. cast(size_t)(" & emit-d-expr (list-at args 1) arities & " + " & emit-d-expr (list-at args 2) arities & ")]"
-   else if n == "text-contains" then "(" & emit-d-expr (list-at args 0) arities & ".canFind(" & emit-d-expr (list-at args 1) arities & "))"
-   else if n == "read-file" then "readText(" & emit-d-expr (list-at args 0) arities & ")"
-   else if n == "write-file" then "std.file.write(" & emit-d-expr (list-at args 0) arities & ", " & emit-d-expr (list-at args 1) arities & ")"
-   else if n == "process-exit" then "exit(cast(int)" & emit-d-expr (list-at args 0) arities & ")"
-   else if n == "int-mod" then "(" & emit-d-expr (list-at args 0) arities & " % " & emit-d-expr (list-at args 1) arities & ")"
-   else if n == "negate" then "(-" & emit-d-expr (list-at args 0) arities & ")"
-   else ""
+   let len = list-length d-builtin-emitters
+   in let pos = bsearch-d-emitter-pos d-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at d-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
 
 Section: Definition Emission
 

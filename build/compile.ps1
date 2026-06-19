@@ -14,12 +14,13 @@ param(
     [Parameter(Mandatory=$true)] [string]$Out,
     [Parameter(Mandatory=$true)] [string]$Log,
     [int]$PCore = 1,
-    [int]$MemMB = 3072,
+    [int]$MemMB = 8192,
     [switch]$IrUni,
     [switch]$IrCce,
     [switch]$Prose,
     [switch]$Repl,
     [switch]$Poison,
+    [switch]$PoisonCompact,
     [switch]$DebugMode,
     [switch]$Profile,
     [switch]$Trace,
@@ -94,6 +95,7 @@ try {
     if ($Prose) { $mode = "$mode prose" }
     if ($Repl) { $mode = "$mode repl" }
     if ($Poison) { $mode = "$mode poison" }
+    if ($PoisonCompact) { $mode = "$mode poison-compact" }
     if ($DebugMode) { $mode = "$mode debug" }
     if ($Profile) { $mode = "$mode profile" }
     if ($Trace) { $mode = "$mode trace" }
@@ -130,9 +132,9 @@ try {
     }
 
     if (-not (Test-Path $outputFile) -or (Get-Item $outputFile).Length -eq 0) {
-        if ($attempt -lt $maxAttempts -and $curMem -lt 3584) {
+        if ($attempt -lt $maxAttempts -and $curMem -lt 8192) {
             [Console]::Error.WriteLine("  compile: no output with ${curMem}MB, retrying with 3584MB")
-            $curMem = 3584; continue compile_loop
+            $curMem = 8192; continue compile_loop
         }
         "FAIL: no output" | Set-Content -Path $Log -Encoding UTF8
         if (Test-Path $stderrFile) { Add-Content -Path $Log -Value (Get-Content $stderrFile -Raw) -Encoding UTF8 }
@@ -164,9 +166,9 @@ try {
         }
         if ($line.StartsWith('!EXC')) {
             Add-Content -Path $Log -Value $line -Encoding UTF8
-            if ($attempt -lt $maxAttempts -and $curMem -lt 3584) {
+            if ($attempt -lt $maxAttempts -and $curMem -lt 8192) {
                 [Console]::Error.WriteLine("  compile: crash with ${curMem}MB, retrying with 3584MB")
-                $curMem = 3584; $hitExc = $true; break
+                $curMem = 8192; $hitExc = $true; break
             }
             exit 4
         }

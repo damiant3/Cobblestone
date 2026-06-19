@@ -1,8 +1,10 @@
 # Run the WPF plug over a Codex source file via TCP.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)] [string]$Src,
-    [Parameter(Mandatory=$true)] [string]$Out
+    [string]$Src,
+    [Parameter(Mandatory=$true)] [string]$Out,
+    [string]$Ir,
+    [int]$MemMB = 4096
 )
 
 Set-StrictMode -Version Latest
@@ -22,45 +24,111 @@ if (-not (Test-Path -PathType Leaf $PlugCdx)) {
     exit 2
 }
 
-# -- Phase 1: Codex source -> IR text --------------------------------
-$compileScript = Join-Path $Repo 'build' 'compile.ps1'
-& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IrFile)) {
-    [Console]::Error.WriteLine("FAIL: IR compile failed; see $LogFile")
-    exit 4
+# -- Phase 1: obtain IR text -----------------------------------------
+if ($Ir) {
+    if (-not (Test-Path -PathType Leaf $Ir)) {
+        [Console]::Error.WriteLine("MISSING: -Ir $Ir")
+        exit 3
+    }
+    $IrFile = (Resolve-Path $Ir).Path
+} elseif ($Src) {
+    $compileScript = Join-Path $Repo 'build\compile.ps1'
+    & pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine("FAIL: IR emit step exited $LASTEXITCODE; see $LogFile")
+        exit 3
+    }
+} else {
+    [Console]::Error.WriteLine("FAIL: provide -Src <source.codex> or -Ir <prebuilt.ir>")
+    exit 1
 }
-# -- Phase 2: IR text -> WPF via plug -------------------------------
+$irBytes = [System.IO.File]::ReadAllBytes($IrFile)
+Write-Host "[wpf-run] IR: $($irBytes.Length) bytes"
+
+# -- Phase 2: Start TCP listener -------------------------------------
+$plugPort = 9100
+$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)
+$listener.Start()
+Write-Host "[wpf-run] Listening on port $plugPort"
+
+# -- Phase 3: Boot plug CDX ------------------------------------------
 $stderrFile = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '2048', '-headless') `
+$wpfOutFile = Join-Path $IrDir 'plug-wpf.out'
+Remove-Item -Force $wpfOutFile -ErrorAction SilentlyContinue
+$proc = $null
+try {
+    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', "$MemMB", '-headless', '-output', $wpfOutFile) `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
-    # Send IR over TCP to plug
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9100)
-    $listener.Start()
-    $deadline = (Get-Date).AddSeconds(30)
-    while (-not $listener.Pending() -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
-    if (-not $listener.Pending()) { [Console]::Error.WriteLine("FAIL: plug did not connect"); exit 7 }
-    $client = $listener.AcceptTcpClient()
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (-not $listener.Pending()) {
+        if ([DateTime]::UtcNow -gt $deadline) {
+            [Console]::Error.WriteLine("FAIL: plug did not connect within 30s")
+            exit 5
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    $tcpClient = $listener.AcceptTcpClient()
+    $tcpStream = $tcpClient.GetStream()
     $listener.Stop()
-    $ns = $client.GetStream()
-    $irData = [System.IO.File]::ReadAllBytes($IrFile)
-    $ns.Write($irData, 0, $irData.Length)
-    $ns.Flush()
-    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
-    # Read response
+    Write-Host "[wpf-run] Plug connected"
+
+    # -- Phase 4: Send IR as framed message (tag=1) ------------------
+    $msgLen = $irBytes.Length + 1
+    $header = [BitConverter]::GetBytes([int]$msgLen)
+    $tcpClient.NoDelay = $true
+    $tcpStream.Write($header, 0, 4)
+    $tcpStream.WriteByte(1)
+    $chunk = 16384
+    $off = 0
+    while ($off -lt $irBytes.Length) {
+        $len = [Math]::Min($chunk, $irBytes.Length - $off)
+        $tcpStream.Write($irBytes, $off, $len)
+        $tcpStream.Flush()
+        $off += $len
+        Start-Sleep -Milliseconds 3
+    }
+    $tcpClient.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+    Write-Host "[wpf-run] Sent IR ($($irBytes.Length) bytes)"
+
+    # -- Phase 5: read WPF output from TCP -----
     $resp = [System.Collections.Generic.List[byte]]::new()
     $buf = New-Object byte[] 65536
-    while ($true) {
-        try { $n = $ns.Read($buf, 0, $buf.Length) } catch { break }
-        if ($n -le 0) { break }
-        for ($i = 0; $i -lt $n; $i++) { $resp.Add($buf[$i]) }
+    $deadline2 = [DateTime]::UtcNow.AddSeconds(120)
+    while ([DateTime]::UtcNow -lt $deadline2) {
+        if ($tcpStream.DataAvailable) {
+            try {
+                $n = $tcpStream.Read($buf, 0, $buf.Length)
+                if ($n -le 0) { break }
+                for ($j = 0; $j -lt $n; $j++) { $resp.Add($buf[$j]) }
+            } catch { break }
+        } elseif ($proc.HasExited) {
+            Start-Sleep -Milliseconds 100
+            if ($tcpStream.DataAvailable) { continue }
+            break
+        } else {
+            Start-Sleep -Milliseconds 50
+        }
     }
-    $client.Close()
-    if ($resp.Count -eq 0) { [Console]::Error.WriteLine("FAIL: empty response from plug"); exit 8 }
-    [System.IO.File]::WriteAllBytes($Out, $resp.ToArray())
-    Write-Host "[wpf-plug] OK: $Out ($($resp.Count) bytes)"
+    $tcpClient.Close()
+    $wpfText = [System.Text.Encoding]::UTF8.GetString($resp.ToArray())
+    Write-Host "[wpf-run] Received $($resp.Count) bytes from plug"
+
+    # -- Phase 6: Split multi-file output into directory -----
+    New-Item -ItemType Directory -Force -Path $Out | Out-Null
+    $files = $wpfText -split '<<<FILE:([^>]+)>>>\r?\n'
+    for ($i = 1; $i -lt $files.Count; $i += 2) {
+        $fname = $files[$i]
+        $content = $files[$i + 1]
+        $fpath = Join-Path $Out $fname
+        [System.IO.File]::WriteAllText($fpath, $content, [System.Text.UTF8Encoding]::new($false))
+        Write-Host "[wpf-run] Wrote: $fname ($($content.Length) chars)"
+    }
+    Write-Host "[wpf-run] OK: $Out"
+
 } finally {
     if ($proc -and -not $proc.HasExited) {
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
     }
+    try { Copy-Item -Force $stderrFile (Join-Path $IrDir 'vm-stderr.log') -ErrorAction Stop } catch {}
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
 }

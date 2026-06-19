@@ -120,7 +120,36 @@ Section: Builtin Detection
    "vec-mul",
    "vec-div",
    "vec-reduce-add",
-   "vec-select"
+   "vec-select",
+   "mask-any",
+   "mask-all",
+   "mask-none",
+   "mask-count",
+   "to-real-approx",
+   "from-real-approx",
+   "to-real-trapping",
+   "from-real-trapping",
+   "to-real-saturating",
+   "from-real-saturating",
+   "vec4-splat",
+   "vec4-extract",
+   "suggested-vector-width",
+   "atomic-load",
+   "atomic-store",
+   "atomic-cas",
+   "atomic-add",
+   "atomic-exchange",
+   "memory-fence",
+   "vec-cons",
+   "vec-empty",
+   "vec-head",
+   "vec-length",
+   "vec-singleton",
+   "s-close",
+   "s-new",
+   "s-recv",
+   "s-recv-value",
+   "s-send"
   ])
 
   is-builtin : SkipListText, Text -> Boolean
@@ -219,6 +248,23 @@ Section: Builtin Emission
    state = st-append-code (rd.state) (mov-load (rd.reg) (addr.reg) 8),
    reg = rd.reg
   }
+
+  emit-vec-empty-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-vec-empty-builtin (st) (args) =
+   let rd = alloc-temp st
+   in EmitResult { state = st-append-code (rd.state) (li (rd.reg) 0), reg = rd.reg }
+
+  emit-vec-head-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-vec-head-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in EmitResult { state = st-append-code (rd.state) (mov-load (rd.reg) (r.reg) 8), reg = rd.reg }
+
+  emit-vec-singleton-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-vec-singleton-builtin (st) (args) = emit-helper-call-1 st args "__list_snoc_new"
+
+  emit-session-new-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-session-new-builtin (st) (args) = emit-helper-call-0 st args "chan-kern-create"
 
   emit-char-at-builtin : CodegenState, List IRExpr -> EmitResult
   emit-char-at-builtin (st) (args) =
@@ -1201,6 +1247,222 @@ Section: State Effect
     reg = result.reg
    }
 
+  emit-vec4-splat-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-vec4-splat-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = st-append-code (val.state) (movq-to-xmm 0 (val.reg) & shufps-xmm 0 0 0)
+   in let alloc = emit-bivy-alloc st1 16
+   in let p1 = load-local (alloc.state) (alloc.ptr-loc)
+   in let st2 = st-append-code (p1.state) (movups-store (p1.reg) 0 0)
+   in let result = load-local st2 (alloc.ptr-loc)
+   in EmitResult {
+    state = result.state,
+    reg = result.reg
+   }
+
+  emit-vec4-extract-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-vec4-extract-builtin (st) (args) =
+   let vec = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let vec-loc = alloc-local (vec.state)
+   in let st1 = store-local (vec-loc.state) (vec-loc.reg) (vec.reg)
+   in let idx = emit-expr st1 (list-at args 1)
+   in let vld = load-local (idx.state) (vec-loc.reg)
+   in let rd = alloc-temp (vld.state)
+   in let st2 = st-append-code (rd.state) (
+    shl-ri (idx.reg) 2
+    & add-rr (idx.reg) (vld.reg)
+    & mov-load-u32 (rd.reg) (idx.reg) 0
+   )
+   in EmitResult {
+    state = st2,
+    reg = rd.reg
+   }
+
+  emit-suggested-vector-width-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-suggested-vector-width-builtin (st) (args) =
+   let arg-ty = ir-expr-type (list-at args 0)
+   in let width = when arg-ty
+    is RealApproxTy -> 4
+    is otherwise -> 2
+   in let rd = alloc-temp st
+   in EmitResult {
+    state = st-append-code (rd.state) (li (rd.reg) width),
+    reg = rd.reg
+   }
+
+  emit-atomic-load-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-atomic-load-builtin (st) (args) =
+   let addr-r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (addr-r.state)
+   in EmitResult {
+    state = st-append-code (rd.state) (mov-load (rd.reg) (addr-r.reg) 0),
+    reg = rd.reg
+   }
+
+  emit-atomic-store-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-atomic-store-builtin (st) (args) =
+   let addr-r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let addr-loc = alloc-local (addr-r.state)
+   in let st1 = store-local (addr-loc.state) (addr-loc.reg) (addr-r.reg)
+   in let val-r = emit-expr st1 (list-at args 1)
+   in let addr-reload = load-local (val-r.state) (addr-loc.reg)
+   in let st2 = st-append-code (addr-reload.state) (xchg-mem (val-r.reg) (addr-reload.reg) 0)
+   in let rd = alloc-temp st2
+   in EmitResult {
+    state = st-append-code (rd.state) (li (rd.reg) 0),
+    reg = rd.reg
+   }
+
+  emit-atomic-cas-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-atomic-cas-builtin (st) (args) =
+   let addr-r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let addr-loc = alloc-local (addr-r.state)
+   in let st1 = store-local (addr-loc.state) (addr-loc.reg) (addr-r.reg)
+   in let expected-r = emit-expr st1 (list-at args 1)
+   in let expected-loc = alloc-local (expected-r.state)
+   in let st2 = store-local (expected-loc.state) (expected-loc.reg) (expected-r.reg)
+   in let desired-r = emit-expr st2 (list-at args 2)
+   in let desired-loc = alloc-local (desired-r.state)
+   in let st3 = store-local (desired-loc.state) (desired-loc.reg) (desired-r.reg)
+   in let rax-load = load-local st3 (expected-loc.reg)
+   in let st4 = st-append-code (rax-load.state) (mov-rr reg-rax (rax-load.reg))
+   in let src-load = load-local st4 (desired-loc.reg)
+   in let addr-reload = load-local (src-load.state) (addr-loc.reg)
+   in let st5 = st-append-code (addr-reload.state) (lock-cmpxchg-mem (src-load.reg) (addr-reload.reg) 0)
+   in let rd = alloc-temp st5
+   in EmitResult {
+    state = st-append-code (st-append-code (rd.state) (setcc cc-e (rd.reg))) (movzx-byte-self (rd.reg)),
+    reg = rd.reg
+   }
+
+  emit-atomic-add-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-atomic-add-builtin (st) (args) =
+   let addr-r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let addr-loc = alloc-local (addr-r.state)
+   in let st1 = store-local (addr-loc.state) (addr-loc.reg) (addr-r.reg)
+   in let val-r = emit-expr st1 (list-at args 1)
+   in let val-loc = alloc-local (val-r.state)
+   in let st2 = store-local (val-loc.state) (val-loc.reg) (val-r.reg)
+   in let val-reload = load-local st2 (val-loc.reg)
+   in let addr-reload = load-local (val-reload.state) (addr-loc.reg)
+   in let st3 = st-append-code (addr-reload.state) (lock-xadd-mem (val-reload.reg) (addr-reload.reg) 0)
+   in let rd = alloc-temp st3
+   in EmitResult {
+    state = st-append-code (rd.state) (mov-rr (rd.reg) (val-reload.reg)),
+    reg = rd.reg
+   }
+
+  emit-atomic-exchange-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-atomic-exchange-builtin (st) (args) =
+   let addr-r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let addr-loc = alloc-local (addr-r.state)
+   in let st1 = store-local (addr-loc.state) (addr-loc.reg) (addr-r.reg)
+   in let val-r = emit-expr st1 (list-at args 1)
+   in let addr-reload = load-local (val-r.state) (addr-loc.reg)
+   in let st2 = st-append-code (addr-reload.state) (xchg-mem (val-r.reg) (addr-reload.reg) 0)
+   in let rd = alloc-temp st2
+   in EmitResult {
+    state = st-append-code (rd.state) (mov-rr (rd.reg) (val-r.reg)),
+    reg = rd.reg
+   }
+
+  emit-memory-fence-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-memory-fence-builtin (st) (args) =
+   let rd = alloc-temp st
+   in EmitResult {
+    state = st-append-code (st-append-code (rd.state) mfence) (li (rd.reg) 0),
+    reg = rd.reg
+   }
+
+  emit-to-real-approx-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-to-real-approx-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (val.state)
+   in EmitResult {
+    state = st-append-code (rd.state) (movq-to-xmm 1 (val.reg) & xorps-xmm 0 0 & cvtsd2ss-xmm 0 1 & movq-from-xmm (rd.reg) 0),
+    reg = rd.reg
+   }
+
+  emit-from-real-approx-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-from-real-approx-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (val.state)
+   in EmitResult {
+    state = st-append-code (rd.state) (movq-to-xmm 0 (val.reg) & cvtss2sd-xmm 0 0 & movq-from-xmm (rd.reg) 0),
+    reg = rd.reg
+   }
+
+  emit-to-real-trapping-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-to-real-trapping-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in EmitResult {
+    state = val.state,
+    reg = val.reg
+   }
+
+  emit-from-real-trapping-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-from-real-trapping-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in EmitResult {
+    state = val.state,
+    reg = val.reg
+   }
+
+  emit-to-real-saturating-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-to-real-saturating-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in EmitResult {
+    state = val.state,
+    reg = val.reg
+   }
+
+  emit-from-real-saturating-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-from-real-saturating-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in EmitResult {
+    state = val.state,
+    reg = val.reg
+   }
+
+  emit-mask-extract : CodegenState, List IRExpr -> (CodegenState, Integer)
+  emit-mask-extract (st) (args) =
+   let mask = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc = alloc-local (mask.state)
+   in let st1 = store-local (loc.state) (loc.reg) (mask.reg)
+   in let mld = load-local st1 (loc.reg)
+   in let st2 = st-append-code (mld.state) (movupd-load 0 (mld.reg) 0)
+   in let rd = alloc-temp st2
+   in let st3 = st-append-code (rd.state) (movmskpd (rd.reg) 0)
+   in (st3, rd.reg)
+
+  emit-mask-any-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-mask-any-builtin (st) (args) =
+   let (st1, bits-reg) = emit-mask-extract st args
+   in let rd = alloc-temp st1
+   in let st2 = st-append-code (rd.state) (test-rr bits-reg bits-reg & setcc cc-ne (rd.reg) & movzx-byte-self (rd.reg))
+   in EmitResult { state = st2, reg = rd.reg }
+
+  emit-mask-all-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-mask-all-builtin (st) (args) =
+   let (st1, bits-reg) = emit-mask-extract st args
+   in let rd = alloc-temp st1
+   in let st2 = st-append-code (rd.state) (cmp-ri bits-reg 3 & setcc cc-e (rd.reg) & movzx-byte-self (rd.reg))
+   in EmitResult { state = st2, reg = rd.reg }
+
+  emit-mask-none-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-mask-none-builtin (st) (args) =
+   let (st1, bits-reg) = emit-mask-extract st args
+   in let rd = alloc-temp st1
+   in let st2 = st-append-code (rd.state) (test-rr bits-reg bits-reg & setcc cc-e (rd.reg) & movzx-byte-self (rd.reg))
+   in EmitResult { state = st2, reg = rd.reg }
+
+  emit-mask-count-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-mask-count-builtin (st) (args) =
+   let (st1, bits-reg) = emit-mask-extract st args
+   in let rd = alloc-temp st1
+   in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) bits-reg & shr-ri (rd.reg) 1 & and-ri bits-reg 1 & add-rr (rd.reg) bits-reg)
+   in EmitResult { state = st2, reg = rd.reg }
+
 Section: Builtin Registry
   BuiltinX86Emitter = record {
    name : Text,
@@ -1321,7 +1583,36 @@ Section: Builtin Registry
    BuiltinX86Emitter { name = "vec-mul", emit = \s a -> emit-vec-mul-builtin s a },
    BuiltinX86Emitter { name = "vec-div", emit = \s a -> emit-vec-div-builtin s a },
    BuiltinX86Emitter { name = "vec-reduce-add", emit = \s a -> emit-vec-reduce-add-builtin s a },
-   BuiltinX86Emitter { name = "vec-select", emit = \s a -> emit-vec-select-builtin s a }
+   BuiltinX86Emitter { name = "vec-select", emit = \s a -> emit-vec-select-builtin s a },
+   BuiltinX86Emitter { name = "mask-any", emit = \s a -> emit-mask-any-builtin s a },
+   BuiltinX86Emitter { name = "mask-all", emit = \s a -> emit-mask-all-builtin s a },
+   BuiltinX86Emitter { name = "mask-none", emit = \s a -> emit-mask-none-builtin s a },
+   BuiltinX86Emitter { name = "mask-count", emit = \s a -> emit-mask-count-builtin s a },
+   BuiltinX86Emitter { name = "to-real-approx", emit = \s a -> emit-to-real-approx-builtin s a },
+   BuiltinX86Emitter { name = "from-real-approx", emit = \s a -> emit-from-real-approx-builtin s a },
+   BuiltinX86Emitter { name = "to-real-trapping", emit = \s a -> emit-to-real-trapping-builtin s a },
+   BuiltinX86Emitter { name = "from-real-trapping", emit = \s a -> emit-from-real-trapping-builtin s a },
+   BuiltinX86Emitter { name = "to-real-saturating", emit = \s a -> emit-to-real-saturating-builtin s a },
+   BuiltinX86Emitter { name = "from-real-saturating", emit = \s a -> emit-from-real-saturating-builtin s a },
+   BuiltinX86Emitter { name = "vec4-splat", emit = \s a -> emit-vec4-splat-builtin s a },
+   BuiltinX86Emitter { name = "vec4-extract", emit = \s a -> emit-vec4-extract-builtin s a },
+   BuiltinX86Emitter { name = "suggested-vector-width", emit = \s a -> emit-suggested-vector-width-builtin s a },
+   BuiltinX86Emitter { name = "atomic-load", emit = \s a -> emit-atomic-load-builtin s a },
+   BuiltinX86Emitter { name = "atomic-store", emit = \s a -> emit-atomic-store-builtin s a },
+   BuiltinX86Emitter { name = "atomic-cas", emit = \s a -> emit-atomic-cas-builtin s a },
+   BuiltinX86Emitter { name = "atomic-add", emit = \s a -> emit-atomic-add-builtin s a },
+   BuiltinX86Emitter { name = "atomic-exchange", emit = \s a -> emit-atomic-exchange-builtin s a },
+   BuiltinX86Emitter { name = "memory-fence", emit = \s a -> emit-memory-fence-builtin s a },
+   BuiltinX86Emitter { name = "vec-cons", emit = \s a -> emit-helper-call-2 s a "__list_snoc" },
+   BuiltinX86Emitter { name = "vec-empty", emit = \s a -> emit-vec-empty-builtin s a },
+   BuiltinX86Emitter { name = "vec-head", emit = \s a -> emit-vec-head-builtin s a },
+   BuiltinX86Emitter { name = "vec-length", emit = \s a -> emit-list-length-builtin s a },
+   BuiltinX86Emitter { name = "vec-singleton", emit = \s a -> emit-helper-call-1 s a "__list_cons" },
+   BuiltinX86Emitter { name = "s-close", emit = \s a -> emit-helper-call-1 s a "chan-kern-close" },
+   BuiltinX86Emitter { name = "s-new", emit = \s a -> emit-helper-call-0 s a "chan-kern-create" },
+   BuiltinX86Emitter { name = "s-recv", emit = \s a -> emit-helper-call-1 s a "chan-kern-recv-block" },
+   BuiltinX86Emitter { name = "s-recv-value", emit = \s a -> emit-helper-call-1 s a "chan-kern-recv-block" },
+   BuiltinX86Emitter { name = "s-send", emit = \s a -> emit-helper-call-2 s a "chan-kern-send-block" }
   ])
 
   emit-builtin : CodegenState, Text, List IRExpr -> EmitResult

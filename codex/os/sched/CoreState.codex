@@ -1,0 +1,269 @@
+Chapter: CoreState
+  cites Sched chapter TaskQueue
+  cites Foreword chapter Maybe
+
+ Per-core state for SMP scheduling. Each core has its own run
+ queue, stack region, and idle counter. The core table is a
+ fixed-size array indexed by core ID (0 = BSP, 1..N-1 = APs).
+ Single-core systems use only slot 0.
+
+ We say:
+
+Section: Per-Core State
+
+  CoreInfo = record {
+    core-id : Integer between 0 and 255,
+    run-queue : TaskQueue,
+    current-task-id : Integer,
+    idle-ticks : Integer between 0 and 4294967295,
+    stack-base : Integer,
+    stack-top : Integer,
+    active : Boolean
+  }
+
+  CoreTable = record {
+    cores : List CoreInfo,
+    count : Integer between 0 and 255,
+    max-cores : Integer between 0 and 255
+  }
+
+Section: Initialization
+
+  core-info-new : Integer, Integer, Integer -> CoreInfo
+  core-info-new (id) (sbase) (stop) = CoreInfo {
+    core-id = id,
+    run-queue = task-queue-empty,
+    current-task-id = 0,
+    idle-ticks = 0,
+    stack-base = sbase,
+    stack-top = stop,
+    active = False
+  }
+
+  core-table-new : Integer -> CoreTable
+  core-table-new (max) =
+    CoreTable { cores = core-table-init-loop [] 0 max, count = 0, max-cores = max }
+
+  core-table-init-loop : List CoreInfo, Integer, Integer -> List CoreInfo
+  core-table-init-loop (acc) (i) (max) =
+    if i >= max then acc
+    else core-table-init-loop (list-push acc (core-info-new i 0 0)) (i + 1) max
+
+Section: Core Registration
+
+  core-activate : CoreTable, Integer, Integer, Integer -> CoreTable
+  core-activate (table) (core-id) (sbase) (stop) =
+    if core-id >= table.max-cores then table
+    else let info = CoreInfo {
+      core-id = core-id,
+      run-queue = task-queue-empty,
+      current-task-id = 0,
+      idle-ticks = 0,
+      stack-base = sbase,
+      stack-top = stop,
+      active = True
+    }
+    in CoreTable { cores = list-set-at (table.cores) core-id info, count = table.count + 1, max-cores = table.max-cores }
+
+  core-deactivate : CoreTable, Integer -> CoreTable
+  core-deactivate (table) (core-id) =
+    if core-id >= table.max-cores then table
+    else let old = list-at (table.cores) core-id
+    in let info = CoreInfo {
+      core-id = core-id,
+      run-queue = old.run-queue,
+      current-task-id = 0,
+      idle-ticks = old.idle-ticks,
+      stack-base = old.stack-base,
+      stack-top = old.stack-top,
+      active = False
+    }
+    in CoreTable { cores = list-set-at (table.cores) core-id info, count = table.count - 1, max-cores = table.max-cores }
+
+Section: Task Distribution
+
+  core-enqueue-task : CoreTable, Integer, Text, TaskPriority -> CoreTable
+  core-enqueue-task (table) (core-id) (name) (prio) =
+    if core-id >= table.max-cores then table
+    else let info = list-at (table.cores) core-id
+    in let q = task-enqueue (info.run-queue) name prio
+    in let info1 = CoreInfo {
+      core-id = info.core-id, run-queue = q, current-task-id = info.current-task-id,
+      idle-ticks = info.idle-ticks, stack-base = info.stack-base,
+      stack-top = info.stack-top, active = info.active
+    }
+    in CoreTable { cores = list-set-at (table.cores) core-id info1, count = table.count, max-cores = table.max-cores }
+
+  core-shortest-queue : CoreTable -> Integer
+  core-shortest-queue (table) = core-shortest-loop (table.cores) 0 (table.max-cores) 0 999999
+
+  core-shortest-loop : List CoreInfo, Integer, Integer, Integer, Integer -> Integer
+  core-shortest-loop (cores) (i) (max) (best-id) (best-len) =
+    if i >= max then best-id
+    else let info = list-at cores i
+    in if info.active & task-queue-count (info.run-queue) < best-len
+      then core-shortest-loop cores (i + 1) max i (task-queue-count (info.run-queue))
+    else core-shortest-loop cores (i + 1) max best-id best-len
+
+  core-enqueue-balanced : CoreTable, Text, TaskPriority -> CoreTable
+  core-enqueue-balanced (table) (name) (prio) =
+    let target = core-shortest-queue table
+    in core-enqueue-task table target name prio
+
+Section: Dequeue
+
+  CoreDequeueResult = record {
+    table : CoreTable,
+    task : Task,
+    has-task : Boolean
+  }
+
+  core-dequeue : CoreTable, Integer -> CoreDequeueResult
+  core-dequeue (table) (core-id) =
+    if core-id >= table.max-cores then CoreDequeueResult { table = table, task = Task { id = 0, name = "", priority = TaskNormal, status = TaskPending }, has-task = False }
+    else let info = list-at (table.cores) core-id
+    in let dr = task-dequeue (info.run-queue)
+    in if dr.has-task == False then CoreDequeueResult { table = table, task = dr.task, has-task = False }
+    else let info1 = CoreInfo {
+      core-id = info.core-id, run-queue = dr.queue,
+      current-task-id = dr.task.id,
+      idle-ticks = 0,
+      stack-base = info.stack-base, stack-top = info.stack-top,
+      active = info.active
+    }
+    in CoreDequeueResult {
+      table = CoreTable { cores = list-set-at (table.cores) core-id info1, count = table.count, max-cores = table.max-cores },
+      task = dr.task,
+      has-task = True
+    }
+
+Section: Work Stealing
+
+  core-longest-other : CoreTable, Integer -> Integer
+  core-longest-other (table) (exclude) =
+    core-longest-other-loop (table.cores) 0 (table.max-cores) exclude (table.max-cores) 0
+
+  core-longest-other-loop : List CoreInfo, Integer, Integer, Integer, Integer, Integer -> Integer
+  core-longest-other-loop (cores) (i) (max) (exclude) (best-id) (best-len) =
+    if i >= max then best-id
+    else if i == exclude then core-longest-other-loop cores (i + 1) max exclude best-id best-len
+    else let info = list-at cores i
+    in let len = task-queue-count (info.run-queue)
+    in if info.active & len > best-len
+      then core-longest-other-loop cores (i + 1) max exclude i len
+    else core-longest-other-loop cores (i + 1) max exclude best-id best-len
+
+  core-steal : CoreTable, Integer -> CoreDequeueResult
+  core-steal (table) (thief-id) =
+    let victim-id = core-longest-other table thief-id
+    in if victim-id >= table.max-cores then CoreDequeueResult { table = table, task = Task { id = 0, name = "", priority = TaskNormal, status = TaskPending }, has-task = False }
+    else let victim = list-at (table.cores) victim-id
+    in let dr = task-dequeue (victim.run-queue)
+    in if dr.has-task == False then CoreDequeueResult { table = table, task = dr.task, has-task = False }
+    else let victim1 = CoreInfo {
+      core-id = victim.core-id, run-queue = dr.queue,
+      current-task-id = victim.current-task-id,
+      idle-ticks = victim.idle-ticks,
+      stack-base = victim.stack-base, stack-top = victim.stack-top,
+      active = victim.active
+    }
+    in let thief = list-at (table.cores) thief-id
+    in let thief-q = task-enqueue (thief.run-queue) (dr.task.name) (dr.task.priority)
+    in let thief1 = CoreInfo {
+      core-id = thief.core-id, run-queue = thief-q,
+      current-task-id = thief.current-task-id,
+      idle-ticks = 0,
+      stack-base = thief.stack-base, stack-top = thief.stack-top,
+      active = thief.active
+    }
+    in let cores1 = list-set-at (table.cores) victim-id victim1
+    in let cores2 = list-set-at cores1 thief-id thief1
+    in CoreDequeueResult {
+      table = CoreTable { cores = cores2, count = table.count, max-cores = table.max-cores },
+      task = dr.task,
+      has-task = True
+    }
+
+Section: Schedule Step
+
+  ScheduleResult = record {
+    table : CoreTable,
+    task : Task,
+    has-task : Boolean,
+    stolen : Boolean
+  }
+
+  core-schedule : CoreTable, Integer -> ScheduleResult
+  core-schedule (table) (core-id) =
+    let local = core-dequeue table core-id
+    in if local.has-task then ScheduleResult { table = local.table, task = local.task, has-task = True, stolen = False }
+    else let steal = core-steal table core-id
+    in if steal.has-task then
+      let dr = core-dequeue (steal.table) core-id
+      in ScheduleResult { table = dr.table, task = dr.task, has-task = dr.has-task, stolen = True }
+    else ScheduleResult { table = core-tick-idle table core-id, task = local.task, has-task = False, stolen = False }
+
+Section: Queries
+
+  core-get : CoreTable, Integer -> CoreInfo
+  core-get (table) (core-id) = list-at (table.cores) core-id
+
+  core-is-active : CoreTable, Integer -> Boolean
+  core-is-active (table) (core-id) =
+    if core-id >= table.max-cores then False
+    else (list-at (table.cores) core-id).active
+
+  core-active-count : CoreTable -> Integer
+  core-active-count (table) = table.count
+
+  core-total-pending : CoreTable -> Integer
+  core-total-pending (table) = core-pending-loop (table.cores) 0 (table.max-cores) 0
+
+  core-pending-loop : List CoreInfo, Integer, Integer, Integer -> Integer
+  core-pending-loop (cores) (i) (max) (acc) =
+    if i >= max then acc
+    else let info = list-at cores i
+    in core-pending-loop cores (i + 1) max (acc + task-queue-count (info.run-queue))
+
+Section: Idle Tracking
+
+  core-tick-idle : CoreTable, Integer -> CoreTable
+  core-tick-idle (table) (core-id) =
+    if core-id >= table.max-cores then table
+    else let info = list-at (table.cores) core-id
+    in let info1 = CoreInfo {
+      core-id = info.core-id, run-queue = info.run-queue,
+      current-task-id = info.current-task-id,
+      idle-ticks = info.idle-ticks + 1,
+      stack-base = info.stack-base, stack-top = info.stack-top,
+      active = info.active
+    }
+    in CoreTable { cores = list-set-at (table.cores) core-id info1, count = table.count, max-cores = table.max-cores }
+
+  core-reset-idle : CoreTable, Integer -> CoreTable
+  core-reset-idle (table) (core-id) =
+    if core-id >= table.max-cores then table
+    else let info = list-at (table.cores) core-id
+    in let info1 = CoreInfo {
+      core-id = info.core-id, run-queue = info.run-queue,
+      current-task-id = info.current-task-id,
+      idle-ticks = 0,
+      stack-base = info.stack-base, stack-top = info.stack-top,
+      active = info.active
+    }
+    in CoreTable { cores = list-set-at (table.cores) core-id info1, count = table.count, max-cores = table.max-cores }
+
+Section: Formatting
+
+  format-core-info : CoreInfo -> Text
+  format-core-info (c) =
+    "core=" & show (c.core-id) & " active=" & show (c.active)
+    & " tasks=" & show (task-queue-count (c.run-queue))
+    & " idle=" & show (c.idle-ticks)
+
+  core-table-stats : CoreTable -> Text
+  core-table-stats (table) =
+    "cores=" & show (table.count) & "/" & show (table.max-cores)
+    & " pending=" & show (core-total-pending table)
+
+Page 1

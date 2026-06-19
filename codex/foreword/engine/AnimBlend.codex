@@ -1,0 +1,119 @@
+Chapter: AnimBlend
+  cites Engine chapter Skinning
+  cites Math chapter Quaternion
+  cites Foreword chapter Maybe
+
+ Animation blend trees and state machines (inspired by Unreal
+ Animation Blueprints and Godot AnimationTree). Blend nodes
+ combine poses: Lerp blends two poses by weight, Additive layers
+ a delta pose on top of a base, and Selector picks one of N poses
+ by index. State machines transition between states with crossfade.
+ Pose is the universal currency — every node outputs a pose.
+
+ We say:
+
+Section: Blend Node
+
+  BlendNode =
+    | BnClip (AnimClip)
+    | BnLerp (Integer)
+    | BnAdditive (Integer)
+    | BnSelector (Integer)
+
+Section: Pose Operations
+
+  pose-lerp : List BonePose, List BonePose, Integer, Integer -> List BonePose
+  pose-lerp (a) (b) (weight) (count) = pose-lerp-loop a b weight count 0 []
+
+  pose-lerp-loop : List BonePose, List BonePose, Integer, Integer, Integer, List BonePose -> List BonePose
+  pose-lerp-loop (a) (b) (w) (n) (i) (acc) =
+    if i >= n then acc
+    else let pa = list-at a i
+    in let pb = list-at b i
+    in pose-lerp-loop a b w n (i + 1) (list-push acc (bp-lerp pa pb w))
+
+  pose-additive : List BonePose, List BonePose, Integer, Integer -> List BonePose
+  pose-additive (base) (add) (weight) (count) = pose-add-loop base add weight count 0 []
+
+  pose-add-loop : List BonePose, List BonePose, Integer, Integer, Integer, List BonePose -> List BonePose
+  pose-add-loop (base) (add) (w) (n) (i) (acc) =
+    if i >= n then acc
+    else let pb = list-at base i
+    in let pa = list-at add i
+    in let blended-pos = vec3-new (pb.bp-pos.vx + pa.bp-pos.vx * w / 1000) (pb.bp-pos.vy + pa.bp-pos.vy * w / 1000) (pb.bp-pos.vz + pa.bp-pos.vz * w / 1000)
+    in let blended = BonePose { bp-pos = blended-pos, bp-rot = pb.bp-rot, bp-scale = pb.bp-scale }
+    in pose-add-loop base add w n (i + 1) (list-push acc blended)
+
+Section: Animation State Machine
+
+  AnimTransition = record {
+    at-from : Integer,
+    at-to : Integer,
+    at-duration : Integer,
+    at-condition : Integer
+  }
+
+  AnimStateMachine = record {
+    asm-states : List AnimClip,
+    asm-transitions : List AnimTransition,
+    asm-current : Integer,
+    asm-target : Integer,
+    asm-blend-time : Integer,
+    asm-blend-duration : Integer,
+    asm-state-count : Integer,
+    asm-trans-count : Integer
+  }
+
+  asm-new : AnimStateMachine
+  asm-new = AnimStateMachine { asm-states = [], asm-transitions = [], asm-current = 0, asm-target = 0, asm-blend-time = 0, asm-blend-duration = 0, asm-state-count = 0, asm-trans-count = 0 }
+
+  asm-add-state : AnimStateMachine, AnimClip -> AnimStateMachine
+  asm-add-state (sm) (clip) = AnimStateMachine { asm-states = list-push (sm.asm-states) clip, asm-transitions = sm.asm-transitions, asm-current = sm.asm-current, asm-target = sm.asm-target, asm-blend-time = sm.asm-blend-time, asm-blend-duration = sm.asm-blend-duration, asm-state-count = sm.asm-state-count + 1, asm-trans-count = sm.asm-trans-count }
+
+  asm-add-transition : AnimStateMachine, Integer, Integer, Integer, Integer -> AnimStateMachine
+  asm-add-transition (sm) (from) (to) (duration) (cond) =
+    let tr = AnimTransition { at-from = from, at-to = to, at-duration = duration, at-condition = cond }
+    in AnimStateMachine { asm-states = sm.asm-states, asm-transitions = list-push (sm.asm-transitions) tr, asm-current = sm.asm-current, asm-target = sm.asm-target, asm-blend-time = sm.asm-blend-time, asm-blend-duration = sm.asm-blend-duration, asm-state-count = sm.asm-state-count, asm-trans-count = sm.asm-trans-count + 1 }
+
+Section: State Transitions
+
+  asm-trigger : AnimStateMachine, Integer -> AnimStateMachine
+  asm-trigger (sm) (condition) =
+    let found = asm-find-transition (sm.asm-transitions) (sm.asm-current) condition 0 (sm.asm-trans-count)
+    in when found
+      is None -> sm
+      is Just (tr) -> AnimStateMachine { asm-states = sm.asm-states, asm-transitions = sm.asm-transitions, asm-current = sm.asm-current, asm-target = tr.at-to, asm-blend-time = 0, asm-blend-duration = tr.at-duration, asm-state-count = sm.asm-state-count, asm-trans-count = sm.asm-trans-count }
+
+  asm-find-transition : List AnimTransition, Integer, Integer, Integer, Integer -> Maybe AnimTransition
+  asm-find-transition (trans) (current) (cond) (i) (n) =
+    if i >= n then None
+    else let tr = list-at trans i
+    in if tr.at-from == current then if tr.at-condition == cond then Just tr else asm-find-transition trans current cond (i + 1) n
+    else asm-find-transition trans current cond (i + 1) n
+
+Section: State Machine Update
+
+  asm-tick : AnimStateMachine, Integer -> AnimStateMachine
+  asm-tick (sm) (dt) =
+    if sm.asm-current == sm.asm-target then sm
+    else let new-time = sm.asm-blend-time + dt
+    in if new-time >= sm.asm-blend-duration then AnimStateMachine { asm-states = sm.asm-states, asm-transitions = sm.asm-transitions, asm-current = sm.asm-target, asm-target = sm.asm-target, asm-blend-time = 0, asm-blend-duration = 0, asm-state-count = sm.asm-state-count, asm-trans-count = sm.asm-trans-count }
+    else AnimStateMachine { asm-states = sm.asm-states, asm-transitions = sm.asm-transitions, asm-current = sm.asm-current, asm-target = sm.asm-target, asm-blend-time = new-time, asm-blend-duration = sm.asm-blend-duration, asm-state-count = sm.asm-state-count, asm-trans-count = sm.asm-trans-count }
+
+  asm-blend-weight : AnimStateMachine -> Integer
+  asm-blend-weight (sm) =
+    if sm.asm-current == sm.asm-target then 0
+    else if sm.asm-blend-duration == 0 then 0
+    else sm.asm-blend-time * 1000 / sm.asm-blend-duration
+
+  asm-is-transitioning : AnimStateMachine -> Boolean
+  asm-is-transitioning (sm) = sm.asm-current /= sm.asm-target
+
+Section: Formatting
+
+  format-asm : AnimStateMachine -> Text
+  format-asm (sm) =
+    if asm-is-transitioning sm then "ASM(state " & show (sm.asm-current) & " -> " & show (sm.asm-target) & " " & show (asm-blend-weight sm / 10) & "%)"
+    else "ASM(state " & show (sm.asm-current) & ")"
+
+Page 1

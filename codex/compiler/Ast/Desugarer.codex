@@ -237,7 +237,7 @@ Section: Pattern Desugaring
   apat-span : APat -> SourceSpan
   apat-span (p) =
    when p
-    is AVarPat (n) (s) | ALitPat (t) (k) (s) | ACtorPat (n) (sub) (s) | AWildPat (s) -> s
+    is AVarPat (n) (s) | ALitPat (t) (k) (s) | ACtorPat (n) (sub) (s) | AWildPat (s) | AVecPat (sub) (s) -> s
 
   desugar-pattern : Pat -> APat
   desugar-pattern (p) = desugar-pattern-at p 0
@@ -250,6 +250,7 @@ Section: Pattern Desugaring
     is LitPat (tok) -> deck-record (ALitPat (literal-value-text tok) (classify-literal (tok.kind)) (token-span tok))
     is CtorPat (tok) (subs) -> deck-record (ACtorPat (make-name (token-text tok)) (map-list desugar-pattern subs) (token-span tok))
     is WildPat (tok) -> deck-record (AWildPat (token-span tok))
+    is VecPat (pats) -> deck-record (AVecPat (for p in pats -> desugar-pattern p) synthetic-span)
     is TuplePat (pats) -> deck-record (ACtorPat (make-name ("MkTup" & integer-to-text (list-length pats))) (map-list desugar-pattern pats) synthetic-span)
 
 Section: Type Desugaring
@@ -378,6 +379,7 @@ Section: Definition Desugaring
    deck-record (AVariantCtorDef {
     name = make-name (token-text (c.name)),
     fields = map-list desugar-type-expr (c.fields),
+    return-type = map-list desugar-type-expr (c.return-type),
     span = token-span (c.name)
    })
 
@@ -863,7 +865,15 @@ Section: Document Desugaring
    if i >= len then acc
    else let cd = list-at cds i
    in let dict-name = make-name (token-text (cd.name) & "Dict")
-   in let fields = synth-class-fields (cd.methods) 0 (list-length (cd.methods)) []
+   in let method-fields = synth-class-fields (cd.methods) 0 (list-length (cd.methods)) []
+   in let fields = if text-length (cd.superclass) > 0
+     then let super-field = deck-record (ARecordFieldDef {
+       name = make-name ("__super-" & (cd.superclass)),
+       type-expr = deck-record (ANamedType (make-name ((cd.superclass) & "Dict")) synthetic-span),
+       span = synthetic-span
+      })
+     in list-insert-at method-fields 0 super-field
+     else method-fields
    in let tparams = if count-class-instances ids (token-text (cd.name)) 0 (list-length ids) 0 > 1 then [make-name "a"] else []
    in let td = deck-record (ARecordTypeDef dict-name tparams fields False synthetic-span)
    in synth-class-type-defs cds ids (i + 1) len (__linked-list-push acc td)

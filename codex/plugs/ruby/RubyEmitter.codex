@@ -84,6 +84,69 @@ Section: Arity Map
       else let e = list-at entries pos
       in if e.name == name then e.arity else -1
 
+Section: Builtin Dispatch
+
+  RbBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-rb-emitter-pos : List RbBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-rb-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-rb-emitter-pos entries name lo mid
+      else bsearch-rb-emitter-pos entries name (mid + 1) hi
+
+  sort-rb-emitters : List RbBuiltinEmitter -> List RbBuiltinEmitter
+  sort-rb-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  rb-builtin-emitters : List RbBuiltinEmitter = sort-rb-emitters [
+   RbBuiltinEmitter { name = "abs", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").abs" },
+   RbBuiltinEmitter { name = "char-at", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & "]" },
+   RbBuiltinEmitter { name = "char-code-at", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & "].ord" },
+   RbBuiltinEmitter { name = "file-exists", emit = \args arities -> "File.exist?(" & emit-rb-expr (list-at args 0) arities & ")" },
+   RbBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " % " & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").to_s" },
+   RbBuiltinEmitter { name = "list-at", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & "]" },
+   RbBuiltinEmitter { name = "list-length", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".length" },
+   RbBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " + [" & emit-rb-expr (list-at args 1) arities & "])" },
+   RbBuiltinEmitter { name = "max", emit = \args arities -> "[" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & "].max" },
+   RbBuiltinEmitter { name = "min", emit = \args arities -> "[" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & "].min" },
+   RbBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-rb-expr (list-at args 0) arities & "))" },
+   RbBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "$stderr.puts(" & emit-rb-expr (list-at args 0) arities & ")" },
+   RbBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "puts " & emit-rb-expr (list-at args 0) arities },
+   RbBuiltinEmitter { name = "read-file", emit = \args arities -> "File.read(" & emit-rb-expr (list-at args 0) arities & ")" },
+   RbBuiltinEmitter { name = "read-line", emit = \args arities -> "gets.chomp" },
+   RbBuiltinEmitter { name = "show", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").to_s" },
+   RbBuiltinEmitter { name = "substring", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & ", " & emit-rb-expr (list-at args 2) arities & "]" },
+   RbBuiltinEmitter { name = "text-compare", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " <=> " & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "text-contains", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".include?(" & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "text-length", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".length" },
+   RbBuiltinEmitter { name = "text-replace", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".gsub(" & emit-rb-expr (list-at args 1) arities & ", " & emit-rb-expr (list-at args 2) arities & ")" },
+   RbBuiltinEmitter { name = "text-split", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".split(" & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "text-starts-with", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".start_with?(" & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").to_i" },
+   RbBuiltinEmitter { name = "write-file", emit = \args arities -> "File.write(" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & ")" }
+  ]
+
+  is-rb-builtin-name : Text -> Boolean
+  is-rb-builtin-name (n) =
+   let len = list-length rb-builtin-emitters
+   in let pos = bsearch-rb-emitter-pos rb-builtin-emitters n 0 len
+   in if pos >= len then False
+      else (list-at rb-builtin-emitters pos).name == n
+
+  emit-rb-builtin : Text, List IRExpr, List ArityEntry -> Text
+  emit-rb-builtin (n) (args) (arities) =
+   let len = list-length rb-builtin-emitters
+   in let pos = bsearch-rb-emitter-pos rb-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at rb-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
+
 Section: Apply Chain
 
   is-upper-letter : Integer -> Boolean
@@ -179,9 +242,11 @@ Section: Expression Emission
   emit-rb-name (n) (ty) (arities) =
    if n == "read-line" then "gets.chomp"
    else if n == "show" then "method(:to_s)"
+   else if n == "negate" then "lambda { |x| -x }"
    else if n == "True" then "true"
    else if n == "False" then "false"
    else if n == "Nothing" then "nil"
+   else if is-rb-builtin-name n then rb-sanitize n
    else rb-sanitize n
 
   emit-rb-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
@@ -195,21 +260,22 @@ Section: Expression Emission
     is IrPowInt -> "(" & emit-rb-expr l arities & " ** " & emit-rb-expr r arities & ")"
     is IrAnd -> "(" & emit-rb-expr l arities & " && " & emit-rb-expr r arities & ")"
     is IrOr -> "(" & emit-rb-expr l arities & " || " & emit-rb-expr r arities & ")"
+    is IrAddVec -> emit-rb-expr l arities & ".zip(" & emit-rb-expr r arities & ").map { |a, b| a + b }"
+    is IrSubVec -> emit-rb-expr l arities & ".zip(" & emit-rb-expr r arities & ").map { |a, b| a - b }"
+    is IrMulVec -> emit-rb-expr l arities & ".zip(" & emit-rb-expr r arities & ").map { |a, b| a * b }"
+    is IrDivVec -> emit-rb-expr l arities & ".zip(" & emit-rb-expr r arities & ").map { |a, b| a / b }"
     is otherwise -> "(" & emit-rb-expr l arities & " " & rb-bin-op-symbol op & " " & emit-rb-expr r arities & ")"
 
   rb-bin-op-symbol : IRBinaryOp -> Text
   rb-bin-op-symbol (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec -> "*"
     is IrDivInt -> "/"
     is IrRemInt -> "%"
     is IrPowInt -> "**"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
+    is IrDivNum | IrDivVec -> "/"
     is IrEq -> "=="
     is IrNotEq -> "!="
     is IrLt -> "<"
@@ -287,7 +353,7 @@ Section: Apply Emission
    in let args = chain.args
    in when root
     is IrName (n) (ty) (sp) ->
-     if n == "print-line-uni" then "puts " & emit-rb-expr (list-at args 0) arities
+     if is-rb-builtin-name n then emit-rb-builtin n args arities
      else if is-mktup-name n then "[" & emit-rb-apply-args args arities 0 & "]"
      else rb-sanitize n & "(" & emit-rb-apply-args args arities 0 & ")"
     is otherwise -> emit-rb-expr-curried e arities

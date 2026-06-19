@@ -1,0 +1,413 @@
+Chapter: Stm32L4Board
+  cites Foreword chapter Board
+  cites Foreword chapter Units (Duration, Frequency)
+
+ Board support for STM32L476 (ARM Cortex-M4F @ 80 MHz, ultra-low-power).
+ Register addresses from RM0351 (STM32L4x6 reference manual).
+ Flash at 0x08000000, SRAM at 0x20000000 (96 KB SRAM1 + 32 KB SRAM2).
+ Peripherals at 0x40000000+.
+
+ Key difference from STM32F4: MSI clock (100 kHz - 48 MHz), low-power
+ modes (Stop 0/1/2, Standby, Shutdown), LPTIM for wakeup.
+
+Section: Core Addresses
+
+  l4-flash-base : Integer = #08000000
+  l4-sram-base : Integer = #20000000
+  l4-sram-size : Integer = #20000
+  l4-periph-base : Integer = #40000000
+
+Section: RCC (0x40021000)
+
+  l4-rcc-base : Integer = #40021000
+  l4-rcc-cr-off : Integer = #00
+  l4-rcc-cfgr-off : Integer = #08
+  l4-rcc-ahb2enr-off : Integer = #4C
+  l4-rcc-apb1enr1-off : Integer = #58
+  l4-rcc-apb2enr-off : Integer = #60
+  l4-rcc-ccipr-off : Integer = #88
+
+  l4-rcc-gpioa-en : Integer = 1
+  l4-rcc-gpiob-en : Integer = 2
+  l4-rcc-gpioc-en : Integer = 4
+  l4-rcc-usart2-en : Integer = #20000
+  l4-rcc-spi1-en : Integer = #1000
+  l4-rcc-i2c1-en : Integer = #200000
+  l4-rcc-lptim1-en : Integer = #80000000
+  l4-rcc-pwr-en : Integer = #10000000
+
+  l4-rcc-cr-msion : Integer = 1
+  l4-rcc-cr-msirange-mask : Integer = #F0
+  l4-rcc-cr-msirgsel : Integer = #08
+
+  l4-rcc-enable-port : Integer -> Integer
+  l4-rcc-enable-port (port-bit) =
+   let ahb2 = mmio-read-32 (l4-rcc-base + l4-rcc-ahb2enr-off)
+   in mmio-write-32 (l4-rcc-base + l4-rcc-ahb2enr-off) (bit-or ahb2 port-bit)
+
+  l4-rcc-set-msi-range : Integer -> Integer
+  l4-rcc-set-msi-range (range) =
+   let cr = mmio-read-32 (l4-rcc-base + l4-rcc-cr-off)
+   in let cleared = bit-and cr (bit-xor l4-rcc-cr-msirange-mask (0 - 1))
+   in mmio-write-32 (l4-rcc-base + l4-rcc-cr-off) (bit-or (bit-or cleared (bit-shl range 4)) l4-rcc-cr-msirgsel)
+
+Section: GPIO (same register layout as STM32F4, different bases)
+
+  l4-gpioa-base : Integer = #48000000
+  l4-gpiob-base : Integer = #48000400
+  l4-gpioc-base : Integer = #48000800
+
+  l4-gpio-moder-off : Integer = #00
+  l4-gpio-ospeedr-off : Integer = #08
+  l4-gpio-pupdr-off : Integer = #0C
+  l4-gpio-idr-off : Integer = #10
+  l4-gpio-odr-off : Integer = #14
+  l4-gpio-bsrr-off : Integer = #18
+  l4-gpio-afrl-off : Integer = #20
+  l4-gpio-afrh-off : Integer = #24
+
+  l4-gpio-set-mode : Integer, Integer, Integer -> Integer
+  l4-gpio-set-mode (gpio-base) (pin) (mode) =
+   let addr = gpio-base + l4-gpio-moder-off
+   in let moder = mmio-read-32 addr
+   in let shift = pin * 2
+   in let cleared = bit-and moder (bit-xor (bit-shl 3 shift) (0 - 1))
+   in mmio-write-32 addr (bit-or cleared (bit-shl mode shift))
+
+  l4-gpio-set-output : Integer, Integer -> Integer
+  l4-gpio-set-output (gpio-base) (pin) = l4-gpio-set-mode gpio-base pin 1
+
+  l4-gpio-set-input : Integer, Integer -> Integer
+  l4-gpio-set-input (gpio-base) (pin) = l4-gpio-set-mode gpio-base pin 0
+
+  l4-gpio-set-alternate : Integer, Integer, Integer -> Integer
+  l4-gpio-set-alternate (gpio-base) (pin) (af) =
+   let m = l4-gpio-set-mode gpio-base pin 2
+   in let af-reg = if pin < 8 then gpio-base + l4-gpio-afrl-off else gpio-base + l4-gpio-afrh-off
+   in let af-pin = if pin < 8 then pin else pin - 8
+   in let shift = af-pin * 4
+   in let val = mmio-read-32 af-reg
+   in let cleared = bit-and val (bit-xor (bit-shl #F shift) (0 - 1))
+   in mmio-write-32 af-reg (bit-or cleared (bit-shl af shift))
+
+  l4-gpio-set-pull : Integer, Integer, Integer -> Integer
+  l4-gpio-set-pull (gpio-base) (pin) (pull) =
+   let addr = gpio-base + l4-gpio-pupdr-off
+   in let val = mmio-read-32 addr
+   in let shift = pin * 2
+   in let cleared = bit-and val (bit-xor (bit-shl 3 shift) (0 - 1))
+   in mmio-write-32 addr (bit-or cleared (bit-shl pull shift))
+
+  l4-gpio-write : Integer, Integer, Boolean -> Integer
+  l4-gpio-write (gpio-base) (pin) (high) =
+   let bsrr = gpio-base + l4-gpio-bsrr-off
+   in if high then mmio-write-32 bsrr (bit-shl 1 pin)
+      else mmio-write-32 bsrr (bit-shl 1 (pin + 16))
+
+  l4-gpio-read : Integer, Integer -> Boolean
+  l4-gpio-read (gpio-base) (pin) =
+   bit-and (bit-shru (mmio-read-32 (gpio-base + l4-gpio-idr-off)) pin) 1 == 1
+
+  l4-gpio-toggle : Integer, Integer -> Integer
+  l4-gpio-toggle (gpio-base) (pin) =
+   let odr = mmio-read-32 (gpio-base + l4-gpio-odr-off)
+   in let bit = bit-and (bit-shru odr pin) 1
+   in let bsrr = gpio-base + l4-gpio-bsrr-off
+   in if bit == 1 then mmio-write-32 bsrr (bit-shl 1 (pin + 16))
+      else mmio-write-32 bsrr (bit-shl 1 pin)
+
+Section: USART2 (0x40004400)
+
+  l4-usart2-base : Integer = #40004400
+  l4-usart-cr1-off : Integer = #00
+  l4-usart-brr-off : Integer = #0C
+  l4-usart-isr-off : Integer = #1C
+  l4-usart-tdr-off : Integer = #28
+
+  l4-usart-cr1-ue : Integer = 1
+  l4-usart-cr1-te : Integer = #08
+  l4-usart-cr1-re : Integer = #04
+  l4-usart-isr-txe : Integer = #80
+
+  l4-uart-init : Frequency -> Integer
+  l4-uart-init (baud) =
+   let en-port = l4-rcc-enable-port l4-rcc-gpioa-en
+   in let en-usart = let apb1 = mmio-read-32 (l4-rcc-base + l4-rcc-apb1enr1-off) in mmio-write-32 (l4-rcc-base + l4-rcc-apb1enr1-off) (bit-or apb1 l4-rcc-usart2-en)
+   in let af-tx = l4-gpio-set-alternate l4-gpioa-base 2 7
+   in let af-rx = l4-gpio-set-alternate l4-gpioa-base 3 7
+   in let brr = 4000000 / baud
+   in let w-brr = mmio-write-32 (l4-usart2-base + l4-usart-brr-off) brr
+   in mmio-write-32 (l4-usart2-base + l4-usart-cr1-off) (bit-or (bit-or l4-usart-cr1-ue l4-usart-cr1-te) l4-usart-cr1-re)
+
+  l4-uart-send-byte : Integer -> Integer
+  l4-uart-send-byte (byte) =
+   let w = l4-uart-wait-tx 10000
+   in mmio-write-32 (l4-usart2-base + l4-usart-tdr-off) (bit-and byte #FF)
+
+  l4-uart-wait-tx : Integer -> Integer
+  l4-uart-wait-tx (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 (l4-usart2-base + l4-usart-isr-off)) l4-usart-isr-txe > 0 then 1
+   else l4-uart-wait-tx (fuel - 1)
+
+  l4-uart-print : Text -> Integer
+  l4-uart-print (s) = l4-uart-send-text s 0 (text-length s)
+
+  l4-uart-send-text : Text, Integer, Integer -> Integer
+  l4-uart-send-text (s) (i) (len) =
+   if i >= len then 0
+   else let b = l4-uart-send-byte (char-code (char-at s i))
+     in l4-uart-send-text s (i + 1) len
+
+  l4-uart-println : Text -> Integer
+  l4-uart-println (s) =
+   let p = l4-uart-print s
+   in let cr = l4-uart-send-byte 13
+   in l4-uart-send-byte 10
+
+Section: SPI1 (0x40013000)
+
+  l4-spi1-base : Integer = #40013000
+  l4-spi-cr1-off : Integer = #00
+  l4-spi-cr2-off : Integer = #04
+  l4-spi-sr-off : Integer = #08
+  l4-spi-dr-off : Integer = #0C
+
+  l4-spi-cr1-spe : Integer = #40
+  l4-spi-cr1-mstr : Integer = #04
+  l4-spi-cr1-br-div8 : Integer = #10
+  l4-spi-sr-txe : Integer = #02
+  l4-spi-sr-rxne : Integer = #01
+
+  l4-spi-init : Integer
+  l4-spi-init =
+   let en-port = l4-rcc-enable-port l4-rcc-gpioa-en
+   in let en-spi = let apb2 = mmio-read-32 (l4-rcc-base + l4-rcc-apb2enr-off) in mmio-write-32 (l4-rcc-base + l4-rcc-apb2enr-off) (bit-or apb2 l4-rcc-spi1-en)
+   in let af-sck = l4-gpio-set-alternate l4-gpioa-base 5 5
+   in let af-miso = l4-gpio-set-alternate l4-gpioa-base 6 5
+   in let af-mosi = l4-gpio-set-alternate l4-gpioa-base 7 5
+   in mmio-write-32 (l4-spi1-base + l4-spi-cr1-off) (bit-or (bit-or l4-spi-cr1-mstr l4-spi-cr1-br-div8) l4-spi-cr1-spe)
+
+  l4-spi-transfer : Integer -> Integer
+  l4-spi-transfer (byte) =
+   let w = l4-spi-wait-txe 10000
+   in let wr = mmio-write-32 (l4-spi1-base + l4-spi-dr-off) (bit-and byte #FF)
+   in let r = l4-spi-wait-rxne 10000
+   in bit-and (mmio-read-32 (l4-spi1-base + l4-spi-dr-off)) #FF
+
+  l4-spi-wait-txe : Integer -> Integer
+  l4-spi-wait-txe (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 (l4-spi1-base + l4-spi-sr-off)) l4-spi-sr-txe > 0 then 1
+   else l4-spi-wait-txe (fuel - 1)
+
+  l4-spi-wait-rxne : Integer -> Integer
+  l4-spi-wait-rxne (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 (l4-spi1-base + l4-spi-sr-off)) l4-spi-sr-rxne > 0 then 1
+   else l4-spi-wait-rxne (fuel - 1)
+
+Section: I2C1 (0x40005400)
+
+  l4-i2c1-base : Integer = #40005400
+  l4-i2c-cr1-off : Integer = #00
+  l4-i2c-cr2-off : Integer = #04
+  l4-i2c-isr-off : Integer = #18
+  l4-i2c-txdr-off : Integer = #28
+  l4-i2c-rxdr-off : Integer = #24
+  l4-i2c-timingr-off : Integer = #10
+
+  l4-i2c-cr1-pe : Integer = 1
+  l4-i2c-cr2-start : Integer = #2000
+  l4-i2c-cr2-stop : Integer = #4000
+  l4-i2c-cr2-autoend : Integer = #2000000
+  l4-i2c-cr2-rd-wrn : Integer = #400
+  l4-i2c-isr-txis : Integer = #02
+  l4-i2c-isr-rxne : Integer = #04
+  l4-i2c-isr-tc : Integer = #40
+  l4-i2c-isr-stopf : Integer = #20
+
+  l4-i2c-init : Integer
+  l4-i2c-init =
+   let en-port = l4-rcc-enable-port l4-rcc-gpiob-en
+   in let en-i2c = let apb1 = mmio-read-32 (l4-rcc-base + l4-rcc-apb1enr1-off) in mmio-write-32 (l4-rcc-base + l4-rcc-apb1enr1-off) (bit-or apb1 l4-rcc-i2c1-en)
+   in let af-scl = l4-gpio-set-alternate l4-gpiob-base 6 4
+   in let af-sda = l4-gpio-set-alternate l4-gpiob-base 7 4
+   in let timing = mmio-write-32 (l4-i2c1-base + l4-i2c-timingr-off) #00303D5B
+   in mmio-write-32 (l4-i2c1-base + l4-i2c-cr1-off) l4-i2c-cr1-pe
+
+  l4-i2c-write-reg : Integer, Integer, Integer -> Integer
+  l4-i2c-write-reg (dev-addr) (reg) (value) =
+   let cr2 = bit-or (bit-or (bit-shl dev-addr 1) (bit-shl 2 16)) (bit-or l4-i2c-cr2-start l4-i2c-cr2-autoend)
+   in let w-cr2 = mmio-write-32 (l4-i2c1-base + l4-i2c-cr2-off) cr2
+   in let w1 = l4-i2c-wait-flag l4-i2c-isr-txis 10000
+   in let w-reg = mmio-write-32 (l4-i2c1-base + l4-i2c-txdr-off) reg
+   in let w2 = l4-i2c-wait-flag l4-i2c-isr-txis 10000
+   in mmio-write-32 (l4-i2c1-base + l4-i2c-txdr-off) value
+
+  l4-i2c-read-reg : Integer, Integer -> Integer
+  l4-i2c-read-reg (dev-addr) (reg) =
+   let cr2-w = bit-or (bit-shl dev-addr 1) (bit-or (bit-shl 1 16) l4-i2c-cr2-start)
+   in let w-cr2 = mmio-write-32 (l4-i2c1-base + l4-i2c-cr2-off) cr2-w
+   in let w1 = l4-i2c-wait-flag l4-i2c-isr-txis 10000
+   in let w-reg = mmio-write-32 (l4-i2c1-base + l4-i2c-txdr-off) reg
+   in let w2 = l4-i2c-wait-flag l4-i2c-isr-tc 10000
+   in let cr2-r = bit-or (bit-or (bit-shl dev-addr 1) l4-i2c-cr2-rd-wrn) (bit-or (bit-shl 1 16) (bit-or l4-i2c-cr2-start l4-i2c-cr2-autoend))
+   in let w-cr2r = mmio-write-32 (l4-i2c1-base + l4-i2c-cr2-off) cr2-r
+   in let w3 = l4-i2c-wait-flag l4-i2c-isr-rxne 10000
+   in bit-and (mmio-read-32 (l4-i2c1-base + l4-i2c-rxdr-off)) #FF
+
+  l4-i2c-wait-flag : Integer, Integer -> Integer
+  l4-i2c-wait-flag (flag) (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 (l4-i2c1-base + l4-i2c-isr-off)) flag > 0 then 1
+   else l4-i2c-wait-flag flag (fuel - 1)
+
+Section: PWR (Power Control, 0x40007000)
+
+  l4-pwr-base : Integer = #40007000
+  l4-pwr-cr1-off : Integer = #00
+  l4-pwr-cr2-off : Integer = #04
+  l4-pwr-sr1-off : Integer = #10
+  l4-pwr-sr2-off : Integer = #14
+  l4-pwr-scr-off : Integer = #18
+
+  l4-pwr-cr1-lpms-stop0 : Integer = #000
+  l4-pwr-cr1-lpms-stop1 : Integer = #001
+  l4-pwr-cr1-lpms-stop2 : Integer = #002
+  l4-pwr-cr1-lpms-standby : Integer = #003
+  l4-pwr-cr1-lpms-shutdown : Integer = #004
+  l4-pwr-cr1-lpms-mask : Integer = #007
+
+  l4-pwr-enable : Integer
+  l4-pwr-enable =
+   let apb1 = mmio-read-32 (l4-rcc-base + l4-rcc-apb1enr1-off)
+   in mmio-write-32 (l4-rcc-base + l4-rcc-apb1enr1-off) (bit-or apb1 l4-rcc-pwr-en)
+
+  l4-pwr-set-mode : Integer -> Integer
+  l4-pwr-set-mode (mode) =
+   let cr1 = mmio-read-32 (l4-pwr-base + l4-pwr-cr1-off)
+   in let cleared = bit-and cr1 (bit-xor l4-pwr-cr1-lpms-mask (0 - 1))
+   in mmio-write-32 (l4-pwr-base + l4-pwr-cr1-off) (bit-or cleared mode)
+
+  l4-pwr-get-mode : Integer
+  l4-pwr-get-mode =
+   bit-and (mmio-read-32 (l4-pwr-base + l4-pwr-cr1-off)) l4-pwr-cr1-lpms-mask
+
+Section: LPTIM1 (Low-Power Timer, 0x40007C00)
+
+  l4-lptim1-base : Integer = #40007C00
+  l4-lptim-isr-off : Integer = #00
+  l4-lptim-icr-off : Integer = #04
+  l4-lptim-cr-off : Integer = #10
+  l4-lptim-cmp-off : Integer = #14
+  l4-lptim-arr-off : Integer = #18
+  l4-lptim-cfgr-off : Integer = #0C
+
+  l4-lptim-cr-enable : Integer = 1
+  l4-lptim-cr-sngstrt : Integer = 2
+
+  l4-lptim-init : Integer
+  l4-lptim-init =
+   let en = let apb1 = mmio-read-32 (l4-rcc-base + l4-rcc-apb1enr1-off) in mmio-write-32 (l4-rcc-base + l4-rcc-apb1enr1-off) (bit-or apb1 l4-rcc-lptim1-en)
+   in mmio-write-32 (l4-lptim1-base + l4-lptim-cr-off) l4-lptim-cr-enable
+
+  l4-lptim-set-autoreload : Integer -> Integer
+  l4-lptim-set-autoreload (value) =
+   mmio-write-32 (l4-lptim1-base + l4-lptim-arr-off) value
+
+  l4-lptim-set-compare : Integer -> Integer
+  l4-lptim-set-compare (value) =
+   mmio-write-32 (l4-lptim1-base + l4-lptim-cmp-off) value
+
+  l4-lptim-start-single : Integer
+  l4-lptim-start-single =
+   let cr = mmio-read-32 (l4-lptim1-base + l4-lptim-cr-off)
+   in mmio-write-32 (l4-lptim1-base + l4-lptim-cr-off) (bit-or cr l4-lptim-cr-sngstrt)
+
+Section: Sleep Entry Sequence
+
+ Full sleep preparation per RM0351 §5.3. On real hardware the
+ final step is WFI (Wait For Interrupt), which halts the CPU until
+ an interrupt fires. Everything before WFI is register setup that
+ we can test; WFI itself is a single ARM instruction that would
+ halt the VM, so we stop one step short.
+
+  l4-scb-base : Integer = #E000ED00
+  l4-scb-scr-off : Integer = #10
+  l4-scb-scr-sleepdeep : Integer = #04
+  l4-scb-scr-sleeponexit : Integer = #02
+
+  l4-pwr-scr-cwuf : Integer = #1F
+
+  SleepMode =
+    | SleepStop0
+    | SleepStop1
+    | SleepStop2
+    | SleepStandby
+    | SleepShutdown
+
+  l4-sleep-mode-code : SleepMode -> Integer
+  l4-sleep-mode-code (m) =
+   when m
+    is SleepStop0 -> l4-pwr-cr1-lpms-stop0
+    is SleepStop1 -> l4-pwr-cr1-lpms-stop1
+    is SleepStop2 -> l4-pwr-cr1-lpms-stop2
+    is SleepStandby -> l4-pwr-cr1-lpms-standby
+    is SleepShutdown -> l4-pwr-cr1-lpms-shutdown
+
+  l4-sleep-prepare : SleepMode, Integer -> Integer
+  l4-sleep-prepare (mode) (lptim-wakeup-ticks) =
+   let pwr = l4-pwr-enable
+   in let set-mode = l4-pwr-set-mode (l4-sleep-mode-code mode)
+   in let clear-wuf = mmio-write-32 (l4-pwr-base + l4-pwr-scr-off) l4-pwr-scr-cwuf
+   in let scr = mmio-read-32 (l4-scb-base + l4-scb-scr-off)
+   in let set-deep = mmio-write-32 (l4-scb-base + l4-scb-scr-off) (bit-or scr l4-scb-scr-sleepdeep)
+   in let timer = l4-lptim-init
+   in let arr = l4-lptim-set-autoreload lptim-wakeup-ticks
+   in let cmp = l4-lptim-set-compare (lptim-wakeup-ticks / 2)
+   in let start = l4-lptim-start-single
+   in 1
+
+  l4-sleep-restore : Integer
+  l4-sleep-restore =
+   let scr = mmio-read-32 (l4-scb-base + l4-scb-scr-off)
+   in let clr-deep = mmio-write-32 (l4-scb-base + l4-scb-scr-off) (bit-and scr (bit-xor l4-scb-scr-sleepdeep (0 - 1)))
+   in let restore-clock = l4-rcc-set-msi-range 6
+   in 1
+
+  l4-sleep-mode-name : SleepMode -> Text
+  l4-sleep-mode-name (m) =
+   when m
+    is SleepStop0 -> "Stop0"
+    is SleepStop1 -> "Stop1"
+    is SleepStop2 -> "Stop2"
+    is SleepStandby -> "Standby"
+    is SleepShutdown -> "Shutdown"
+
+Section: LED (Nucleo-L476RG: PA5)
+
+  l4-led-pin : Integer = 5
+
+  l4-led-init : Integer
+  l4-led-init =
+   let en = l4-rcc-enable-port l4-rcc-gpioa-en
+   in l4-gpio-set-output l4-gpioa-base l4-led-pin
+
+  l4-led-on : Integer
+  l4-led-on = l4-gpio-write l4-gpioa-base l4-led-pin True
+
+  l4-led-off : Integer
+  l4-led-off = l4-gpio-write l4-gpioa-base l4-led-pin False
+
+Section: Delay
+
+  l4-delay-loops : Integer, Integer -> Integer
+  l4-delay-loops (n) (i) =
+   if i >= n then 0
+   else l4-delay-loops n (i + 1)
+
+  l4-delay-ms : Duration -> Integer
+  l4-delay-ms (ms) = l4-delay-loops (ms * 2000) 0
+
+Page 1

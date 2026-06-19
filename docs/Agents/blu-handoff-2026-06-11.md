@@ -57,28 +57,26 @@ Mountain is fully synced with main in both directions.
 
 ## Known Issues
 
-### Spark WASM Build Blocked
+### Spark WASM Build — PLUG SCALING RESOLVED (2026-06-18)
 
-The full Spark build (build-spark.ps1) compiles IR fine (2.4MB from
-562KB source) but wasm-plug.cdx hangs 600+ seconds on the large IR
-with no output. The plug works for small inputs (demo.wasm 2.4KB,
-viewport.wasm 4.2KB). Likely an emitter scaling issue -- check
-WasmEmitter.codex / WasmPlug.codex for large-input behavior.
-Stderr from a manual run may be in
-codex/plugs/wasm/build-output/spark-plug-err.txt.
+The plug hang is fixed. build-spark.ps1 now processes 2.47MB IR and
+produces 1.39MB WAT successfully. The remaining issue is a code bug:
+wat2wasm rejects the WAT due to undefined function `$AbsorbedDose`
+(a unit type from the punctual foreword not emitted by the plug).
+See CurrentPlan.md gap 9 item m.
+
+### FishTankPage Compiler Crash — STILL OPEN
+
+FishTankPage (~75 KB bundle) GPFs the seed at IR emit. Skipped in
+build-apps.ps1. Unrelated to the plug scaling issue.
 
 ## What's Next
 
-1. **Spark plug debugging** -- the main blocker for getting fishtank
-   running as a native WASM app instead of just the JS viewer.
+1. **Fix AbsorbedDose undefined** in WASM plug WAT output (gap 9m).
 
 2. **Fish visual polish** -- TripoSR single-view artifacts remain
-   (front/back symmetry). Multi-view reconstruction or mesh editing
-   in Spark (once it builds) would improve quality.
+   (front/back symmetry). Cosmetic, not blocking.
 
-3. **Swim animation verification** -- spineT maps X 0->1 from minX
-   to maxX. Depending on reference image orientation, tail flex may
-   be at the wrong end. Check visually and flip if needed.
+3. **Swim animation verification** -- spineT axis mapping. Cosmetic.
 
-4. **Fishtank roadmap** -- see apps/fishtank/docs/ROADMAP.md for the
-   full plan.
+4. **Fishtank roadmap** -- see apps/fishtank/docs/ROADMAP.md.

@@ -156,23 +156,37 @@ Section: Expression Emission
     is IrConsList -> "(cons " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
     is IrDivInt -> "(quotient " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
     is IrRemInt -> "(remainder " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
-    is IrEq -> "(equal? " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "(equal? " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
     is IrNotEq -> "(not (equal? " & emit-scm-expr l arities & " " & emit-scm-expr r arities & "))"
     is IrAnd -> "(and " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
     is IrOr -> "(or " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
+    is IrAddVec -> "(map + " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
+    is IrSubVec -> "(map - " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
+    is IrMulVec -> "(map * " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
+    is IrDivVec -> "(map / " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
     is otherwise -> "(" & scm-bin-op op & " " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
 
   scm-bin-op : IRBinaryOp -> Text
   scm-bin-op (op) =
    when op
-    is IrAddInt -> "+"  is IrSubInt -> "-"  is IrMulInt -> "*"  is IrDivInt -> "quotient"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec -> "*"
+    is IrDivInt -> "quotient"
     is IrRemInt -> "remainder"
-    is IrPowInt -> "expt"  is IrAddNum -> "+"  is IrSubNum -> "-"  is IrMulNum -> "*"
-    is IrDivNum -> "/"  is IrEq -> "equal?"  is IrNotEq -> "not-equal?"
-    is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
-    is IrApproxEq -> "equal?"  is IrApproxEqExact -> "equal?"
-    is IrAnd -> "and"  is IrOr -> "or"  is IrAppendText -> "string-append"
-    is IrAppendList -> "append"  is IrConsList -> "cons"
+    is IrPowInt -> "expt"
+    is IrDivNum | IrDivVec -> "/"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "equal?"
+    is IrNotEq -> "not-equal?"
+    is IrLt -> "<"
+    is IrGt -> ">"
+    is IrLtEq -> "<="
+    is IrGtEq -> ">="
+    is IrAnd -> "and"
+    is IrOr -> "or"
+    is IrAppendText -> "string-append"
+    is IrAppendList -> "append"
+    is IrConsList -> "cons"
 
   emit-scm-lambda-params : List IRParam, Integer -> Text
   emit-scm-lambda-params (params) (i) =
@@ -255,29 +269,71 @@ Section: Apply Emission
    else if i == list-length args - 1 then emit-scm-expr (list-at args i) arities
         else emit-scm-expr (list-at args i) arities & " " & emit-scm-apply-args args arities (i + 1)
 
+  ScmBuiltinEntry = record {
+   bname : Text,
+   tag : Integer between 0 and 255
+  }
+
+  scm-builtin-table : List ScmBuiltinEntry =
+   [ScmBuiltinEntry { bname = "abs",              tag = 1 },
+    ScmBuiltinEntry { bname = "char-at",           tag = 2 },
+    ScmBuiltinEntry { bname = "char-code",         tag = 3 },
+    ScmBuiltinEntry { bname = "char-to-text",      tag = 4 },
+    ScmBuiltinEntry { bname = "int-mod",           tag = 5 },
+    ScmBuiltinEntry { bname = "integer-to-text",   tag = 6 },
+    ScmBuiltinEntry { bname = "list-at",           tag = 7 },
+    ScmBuiltinEntry { bname = "list-length",       tag = 8 },
+    ScmBuiltinEntry { bname = "max",               tag = 9 },
+    ScmBuiltinEntry { bname = "min",               tag = 10 },
+    ScmBuiltinEntry { bname = "negate",            tag = 11 },
+    ScmBuiltinEntry { bname = "print-line-uni",    tag = 12 },
+    ScmBuiltinEntry { bname = "process-exit",      tag = 13 },
+    ScmBuiltinEntry { bname = "read-file",         tag = 14 },
+    ScmBuiltinEntry { bname = "show",              tag = 15 },
+    ScmBuiltinEntry { bname = "substring",         tag = 16 },
+    ScmBuiltinEntry { bname = "text-compare",      tag = 17 },
+    ScmBuiltinEntry { bname = "text-contains",     tag = 18 },
+    ScmBuiltinEntry { bname = "text-length",       tag = 19 },
+    ScmBuiltinEntry { bname = "text-to-integer",   tag = 20 },
+    ScmBuiltinEntry { bname = "write-file",        tag = 21 }]
+
+  bsearch-scm-builtin : List ScmBuiltinEntry, Text, Integer, Integer -> Integer
+  bsearch-scm-builtin (tbl) (name) (lo) (hi) =
+   if lo >= hi then -1
+   else let mid = lo + (hi - lo) / 2
+   in let cmp = text-compare name (list-at tbl mid).bname
+   in if cmp == 0 then (list-at tbl mid).tag
+      else if cmp < 0 then bsearch-scm-builtin tbl name lo mid
+      else bsearch-scm-builtin tbl name (mid + 1) hi
+
+  scm-lookup-builtin : Text -> Integer
+  scm-lookup-builtin (name) =
+   bsearch-scm-builtin scm-builtin-table name 0 (list-length scm-builtin-table)
+
   scm-try-builtin : Text, List IRExpr, List ArityEntry -> Text
   scm-try-builtin (n) (args) (arities) =
-   if n == "print-line-uni" then "(begin (display " & emit-scm-expr (list-at args 0) arities & ") (newline))"
-   else if n == "show" then "(number->string " & emit-scm-expr (list-at args 0) arities & ")"
-   else if n == "integer-to-text" then "(number->string " & emit-scm-expr (list-at args 0) arities & ")"
-   else if n == "text-to-integer" then "(string->number " & emit-scm-expr (list-at args 0) arities & ")"
-   else if n == "text-length" then "(string-length " & emit-scm-expr (list-at args 0) arities & ")"
-   else if n == "list-length" then "(length " & emit-scm-expr (list-at args 0) arities & ")"
-   else if n == "list-at" then "(list-ref " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
-   else if n == "char-at" then "(char->integer (string-ref " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & "))"
-   else if n == "char-code" then emit-scm-expr (list-at args 0) arities
-   else if n == "char-to-text" then "(string (integer->char " & emit-scm-expr (list-at args 0) arities & "))"
-   else if n == "substring" then "(substring " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & " (+ " & emit-scm-expr (list-at args 1) arities & " " & emit-scm-expr (list-at args 2) arities & "))"
-   else if n == "text-compare" then "(if (string<? " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ") -1 (if (string=? " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ") 0 1))"
-   else if n == "text-contains" then "(if (string-contains " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ") #t #f)"
-   else if n == "read-file" then "(call-with-input-file " & emit-scm-expr (list-at args 0) arities & " (lambda (p) (read-string #f p)))"
-   else if n == "write-file" then "(call-with-output-file " & emit-scm-expr (list-at args 0) arities & " (lambda (p) (write-string " & emit-scm-expr (list-at args 1) arities & " p)))"
-   else if n == "process-exit" then "(exit " & emit-scm-expr (list-at args 0) arities & ")"
-   else if n == "int-mod" then "(modulo " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
-   else if n == "negate" then "(- " & emit-scm-expr (list-at args 0) arities & ")"
-   else if n == "min" then "(min " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
-   else if n == "max" then "(max " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
-   else if n == "abs" then "(abs " & emit-scm-expr (list-at args 0) arities & ")"
+   let tag = scm-lookup-builtin n
+   in if tag == 1 then "(abs " & emit-scm-expr (list-at args 0) arities & ")"
+   else if tag == 2 then "(char->integer (string-ref " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & "))"
+   else if tag == 3 then emit-scm-expr (list-at args 0) arities
+   else if tag == 4 then "(string (integer->char " & emit-scm-expr (list-at args 0) arities & "))"
+   else if tag == 5 then "(modulo " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
+   else if tag == 6 then "(number->string " & emit-scm-expr (list-at args 0) arities & ")"
+   else if tag == 7 then "(list-ref " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
+   else if tag == 8 then "(length " & emit-scm-expr (list-at args 0) arities & ")"
+   else if tag == 9 then "(max " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
+   else if tag == 10 then "(min " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
+   else if tag == 11 then "(- " & emit-scm-expr (list-at args 0) arities & ")"
+   else if tag == 12 then "(begin (display " & emit-scm-expr (list-at args 0) arities & ") (newline))"
+   else if tag == 13 then "(exit " & emit-scm-expr (list-at args 0) arities & ")"
+   else if tag == 14 then "(call-with-input-file " & emit-scm-expr (list-at args 0) arities & " (lambda (p) (read-string #f p)))"
+   else if tag == 15 then "(number->string " & emit-scm-expr (list-at args 0) arities & ")"
+   else if tag == 16 then "(substring " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & " (+ " & emit-scm-expr (list-at args 1) arities & " " & emit-scm-expr (list-at args 2) arities & "))"
+   else if tag == 17 then "(if (string<? " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ") -1 (if (string=? " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ") 0 1))"
+   else if tag == 18 then "(if (string-contains " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ") #t #f)"
+   else if tag == 19 then "(string-length " & emit-scm-expr (list-at args 0) arities & ")"
+   else if tag == 20 then "(string->number " & emit-scm-expr (list-at args 0) arities & ")"
+   else if tag == 21 then "(call-with-output-file " & emit-scm-expr (list-at args 0) arities & " (lambda (p) (write-string " & emit-scm-expr (list-at args 1) arities & " p)))"
    else ""
 
 Section: Definition Emission

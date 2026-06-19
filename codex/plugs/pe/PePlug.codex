@@ -9,11 +9,12 @@ Chapter: PePlug
   cites Kernel chapter Ne2k
 
  Plug entry. Connects to host TCP server on port 9100,
- receives CDX bytes, builds a PE32+ UEFI binary, sends it back.
- Wire protocol: tag=4 for CDX-to-PE conversion.
- First byte of body = mode (0=kernel, 1=app).
- For app mode, bytes 1-4 = heap-pages (LE).
- Remaining bytes = CDX binary.
+ receives bytes, builds a PE32+ UEFI binary, sends it back.
+ Wire protocol: tag=4 for PE conversion.
+ First byte of body = mode:
+   0 = x86 kernel (CDX input)
+   1 = x86 app (CDX input, bytes 1-4 = heap-pages LE)
+   2 = ARM64 (wire protocol input: code+data+func table)
 
 Section: Network Config
 
@@ -38,10 +39,8 @@ Section: Streaming Send
   send-buf-loop (ts) (buf) (off) (remaining) =
    if remaining <= 0 then ts
    else let chunk = if remaining > 1400 then 1400 else remaining
-   in let hp = __heap-save
    in let bs = __buf-read-bytes buf off chunk
    in let r = net-send (ts.session) bs
-   in let restored = __heap-restore hp
    in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
    in let ts2 = flush-transport-outbox ts1
    in let w = spin-wait 0 10000000
@@ -66,11 +65,15 @@ Section: Body
    in if recv.has-message then
     let payload = recv.body
     in let payload-len = list-length payload
-    in let mode = list-at payload 0
-    in let cdx-off = if mode == 0 then 1 else 5
+    in let payload-buf = __heap-save
+    in let padv = __heap-advance payload-len
+    in let pcopy = __buf-write-bytes payload-buf 0 payload
+    in let mode = peek-byte payload-buf 0
+    in let pe = if mode == 2 then build-arm64-pe-from-buf payload-buf 1
+    else let cdx-off = if mode == 0 then 1 else 5
     in let heap-pages = if mode == 0 then 0 else list-at payload 1 + list-at payload 2 * 256 + list-at payload 3 * 65536 + list-at payload 4 * 16777216
     in let cdx = slice-bytes payload cdx-off payload-len
-    in let pe = if mode == 0 then build-pe-from-cdx cdx else build-uefi-app-pe-from-cdx cdx heap-pages
+    in if mode == 0 then build-pe-from-cdx cdx else build-uefi-app-pe-from-cdx cdx heap-pages
     in let pe-len = list-length pe
     in let pe-buf = __heap-save
     in let pa = __heap-advance pe-len
@@ -78,9 +81,63 @@ Section: Body
     in let ts5 = send-buf-loop (recv.transport) pe-buf 0 pe-len
     in let ts6 = net-io-close ts5
     in let drained = drain-wait ts6 0
-    in act print-line-uni ("OK pe=" & show (pe-len + drained - drained)) end
+    in let flushed = spin-wait 0 500000000
+    in act
+     print-line-uni ("OK mode=" & show mode & " pe=" & show pe-len & " payload=" & show payload-len)
+    end
    else act print-line-uni "FAIL" end
   end
+
+Section: ARM64 Wire Parser
+
+  build-arm64-pe-from-buf : Integer, Integer -> List Integer
+  build-arm64-pe-from-buf (buf) (wire-off) =
+   let code-len = peek-byte buf wire-off + peek-byte buf (wire-off + 1) * 256 + peek-byte buf (wire-off + 2) * 65536 + peek-byte buf (wire-off + 3) * 16777216
+   in let data-len = peek-byte buf (wire-off + 4) + peek-byte buf (wire-off + 5) * 256 + peek-byte buf (wire-off + 6) * 65536 + peek-byte buf (wire-off + 7) * 16777216
+   in let func-count = peek-byte buf (wire-off + 8) + peek-byte buf (wire-off + 9) * 256 + peek-byte buf (wire-off + 10) * 65536 + peek-byte buf (wire-off + 11) * 16777216
+   in let code-off = wire-off + 12
+   in let func-table-off = wire-off + 12 + code-len + data-len
+   in let opening-offset = buf-find-opening buf func-table-off func-count
+   in a64pe-build-pe-from-buf buf code-off code-len data-len opening-offset
+
+  buf-find-opening : Integer, Integer, Integer -> Integer
+  buf-find-opening (buf) (off) (count) = buf-find-opening-loop buf off count 0
+
+  buf-find-opening-loop : Integer, Integer, Integer, Integer -> Integer
+  buf-find-opening-loop (buf) (off) (count) (i) =
+   if i >= count then 0
+   else let name-len = peek-byte buf off + peek-byte buf (off + 1) * 256
+   in let func-off = peek-byte buf (off + 2 + name-len) + peek-byte buf (off + 3 + name-len) * 256 + peek-byte buf (off + 4 + name-len) * 65536 + peek-byte buf (off + 5 + name-len) * 16777216
+   in if name-len == 7 then
+     if peek-byte buf (off + 2) == 111 & peek-byte buf (off + 3) == 112 & peek-byte buf (off + 4) == 101 & peek-byte buf (off + 5) == 110 & peek-byte buf (off + 6) == 105 & peek-byte buf (off + 7) == 110 & peek-byte buf (off + 8) == 103 then func-off
+     else buf-find-opening-loop buf (off + 2 + name-len + 4) count (i + 1)
+   else buf-find-opening-loop buf (off + 2 + name-len + 4) count (i + 1)
+
+  wire-le32 : List Integer, Integer -> Integer
+  wire-le32 (bs) (off) =
+   list-at bs off + list-at bs (off + 1) * 256 + list-at bs (off + 2) * 65536 + list-at bs (off + 3) * 16777216
+
+  wire-find-start : List Integer, Integer, Integer -> Integer
+  wire-find-start (wire) (off) (count) = wire-find-start-loop wire off count 0
+
+  wire-find-start-loop : List Integer, Integer, Integer, Integer -> Integer
+  wire-find-start-loop (wire) (off) (count) (i) =
+   if i >= count then 0
+   else let name-len = list-at wire off + list-at wire (off + 1) * 256
+   in let name = wire-read-name wire (off + 2) name-len
+   in let func-off = wire-le32 wire (off + 2 + name-len)
+   in if name == "__start" then func-off
+   else wire-find-start-loop wire (off + 2 + name-len + 4) count (i + 1)
+
+  wire-read-name : List Integer, Integer, Integer -> Text
+  wire-read-name (wire) (off) (len) = wire-read-name-loop wire off 0 len ""
+
+  wire-read-name-loop : List Integer, Integer, Integer, Integer, Text -> Text
+  wire-read-name-loop (wire) (off) (i) (len) (acc) =
+   if i >= len then acc
+   else wire-read-name-loop wire off (i + 1) len (acc & char-to-text (code-to-char (list-at wire (off + i))))
+
+Section: Byte Slicing
 
   slice-bytes : List Integer, Integer, Integer -> List Integer
   slice-bytes (bs) (from) (to) = slice-bytes-loop bs from to []

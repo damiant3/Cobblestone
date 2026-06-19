@@ -39,6 +39,13 @@ Section: Resolve Type Expression
        else deck-record (ListTy ErrorTy)
       else if name.value == "LinkedList" then if list-length args == 1 then deck-record (LinkedListTy (resolve-type-expr tdm (list-at args 0)))
        else deck-record (LinkedListTy ErrorTy)
+      else if name.value == "Real" then if list-length args == 1 then
+       let qual = when (list-at args 0) is ANamedType (qt) (qs) -> qt.value is otherwise -> ""
+       in if qual == "approximate" then RealApproxTy
+       else if qual == "trapping" then RealTrappingTy
+       else if qual == "saturating" then RealSaturatingTy
+       else deck-record (ConstructedTy name (for a in args -> resolve-type-expr tdm a))
+       else deck-record (ConstructedTy name (for a in args -> resolve-type-expr tdm a))
       else if name.value == "Vector" then if list-length args == 2 then
        let n-text = when (list-at args 0) is ANamedType (nt) (ns) -> nt.value is otherwise -> "0"
        in deck-record (VectorTy (lit-text-to-integer n-text) (resolve-type-expr tdm (list-at args 1)))
@@ -115,14 +122,10 @@ Section: Parameterize Type
     is IntegerTy (lo) (hi) (mode) | RealTy | TextTy | BooleanTy | NothingTy | VoidTy | ProofTy | ErrorTy ->
      WalkResult { walked = ty, entries = entries, state = st }
     is ConstructedTy (name) (args) ->
-     if list-length args == 0 & is-value-name (name.value)
+     if is-value-name (name.value)
       then
        let looked = find-param-entry entries (name.value) 0 (list-length entries)
-       in if looked >= 0 then WalkResult {
-        walked = TypeVar looked,
-        entries = entries,
-        state = st
-       }
+       in if looked >= 0 then if list-length args == 0 then WalkResult { walked = TypeVar looked, entries = entries, state = st } else let ar = parameterize-walk st entries (list-at args 0) in WalkResult { walked = deck-record (TypeApply (TypeVar looked) (ar.walked)), entries = ar.entries, state = ar.state }
        else let (fr-ty, fr-st) = fresh-and-advance st
        in when fr-ty
           is TypeVar (new-id) ->
@@ -130,11 +133,7 @@ Section: Parameterize Type
             param-name = name.value,
             var-id = new-id
            }
-       in WalkResult {
-            walked = fr-ty,
-            entries = list-push entries new-entry,
-            state = fr-st
-           }
+       in if list-length args == 0 then WalkResult { walked = fr-ty, entries = list-push entries new-entry, state = fr-st } else let ar = parameterize-walk fr-st (list-push entries new-entry) (list-at args 0) in WalkResult { walked = deck-record (TypeApply fr-ty (ar.walked)), entries = ar.entries, state = ar.state }
           is otherwise -> WalkResult {
            walked = ty,
            entries = entries,
@@ -206,6 +205,10 @@ Section: Parameterize Type
       entries = ctors-r.entries,
       state = ctors-r.state
      }
+    is TypeApply (tf) (ta) ->
+     let fr = parameterize-walk st entries tf
+     in let ar = parameterize-walk (fr.state) (fr.entries) ta
+     in WalkResult { walked = deck-record (TypeApply (fr.walked) (ar.walked)), entries = ar.entries, state = ar.state }
     is otherwise -> WalkResult {
      walked = ty,
      entries = entries,
@@ -245,8 +248,9 @@ Section: Parameterize Type
    }
    else let c = list-at ctors i
    in let r = parameterize-walk-list st entries (c.fields) 0 (list-length (c.fields)) []
-   in let c2 = deck-record (SumCtor { name = c.name, fields = r.walked-list })
-   in parameterize-walk-sum-ctors (r.state) (r.entries) ctors (i + 1) len (list-push acc c2)
+   in let rr = parameterize-walk-list (r.state) (r.entries) (c.return-type) 0 (list-length (c.return-type)) []
+   in let c2 = deck-record (SumCtor { name = c.name, fields = r.walked-list, return-type = rr.walked-list })
+   in parameterize-walk-sum-ctors (rr.state) (rr.entries) ctors (i + 1) len (list-push acc c2)
 
   find-param-entry : List ParamEntry, Text, Integer, Integer -> Integer
   find-param-entry (entries) (name) (i) (len) =
@@ -737,6 +741,7 @@ Section: Linearity Checking
    when p
     is AVarPat (n) (s) -> (n.value) == v
     is ACtorPat (n) (subs) (s) -> apat-list-binds-name subs v 0 (list-length subs)
+    is AVecPat (subs) (s) -> apat-list-binds-name subs v 0 (list-length subs)
     is otherwise -> False
 
   apat-list-binds-name : List APat, Text, Integer, Integer -> Boolean
@@ -1053,9 +1058,11 @@ Section: Register Type Definitions
    if i == len then acc
    else let c = list-at ctors i
    in let field-types = resolve-type-expr-list-for-map tdefs (c.fields) 0 (list-length (c.fields)) [] partial-tdm
+   in let ret-types = resolve-type-expr-list-for-map tdefs (c.return-type) 0 (list-length (c.return-type)) [] partial-tdm
    in let sc = deck-record (SumCtor {
     name = c.name,
-    fields = field-types
+    fields = field-types,
+    return-type = ret-types
    })
    in build-sum-ctors tdefs ctors (i + 1) len (list-push acc sc) partial-tdm
 
@@ -1132,7 +1139,8 @@ Section: Register Type Definitions
     env = env
    }
    else let ctor = list-at ctors i
-   in let ctor-ty = build-ctor-type tdm (ctor.fields) result-ty 0 (list-length (ctor.fields))
+   in let ctor-result = if list-length (ctor.return-type) > 0 then resolve-type-expr tdm (list-at (ctor.return-type) 0) else result-ty
+   in let ctor-ty = build-ctor-type tdm (ctor.fields) ctor-result 0 (list-length (ctor.fields))
    in let pr = parameterize-type st ctor-ty
    in let env2 = env-bind env (ctor.name.value) (pr.parameterized)
    in register-variant-ctors (pr.state) env2 tdm ctors result-ty (i + 1) len
@@ -1241,7 +1249,7 @@ Section: Type Arity Check
 Section: Capability Checker
 
   granted-capabilities : List Text
-  granted-capabilities = ["Console", "Console.Read", "Console.Write", "FileSystem", "FileSystem.Read", "FileSystem.Write", "Network", "Network.Read", "Network.Write", "Concurrent"]
+  granted-capabilities = ["Console", "Console.Read", "Console.Write", "FileSystem", "FileSystem.Read", "FileSystem.Write", "Network", "Network.Read", "Network.Write", "Concurrent", "Device", "Gpu", "Gpu.Compute", "Gpu.Memory"]
 
   check-opening-capabilities : List TypeBinding -> List Diagnostic
   check-opening-capabilities (types) =

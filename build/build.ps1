@@ -62,7 +62,7 @@ function Invoke-BuildText {
         [System.IO.File]::WriteAllText($inputFile2, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
 
         $vmBin = Join-Path (Split-Path $PSScriptRoot) 'tools\codex-vm.exe'
-        $vmArgs = @('-kernel', $stage0, '-input', $inputFile2, '-output', $outputFile, '-mem', '3072', '-headless')
+        $vmArgs = @('-kernel', $stage0, '-input', $inputFile2, '-output', $outputFile, '-mem', '8192', '-headless')
         $proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
         $proc.WaitForExit(600000)
         if (-not $proc.HasExited) {

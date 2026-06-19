@@ -156,6 +156,7 @@ Section: Occurs Check
     is TypeVar (id) -> id == var-id
     is FunTy (param) (ret) -> occurs-in st var-id param (depth + 1) | occurs-in st var-id ret (depth + 1)
     is ListTy (elem) | LinkedListTy (elem) -> occurs-in st var-id elem (depth + 1)
+    is TypeApply (tf) (ta) -> occurs-in st var-id tf (depth + 1) | occurs-in st var-id ta (depth + 1)
     is otherwise -> False
 
 Section: Unify
@@ -205,6 +206,15 @@ Section: Unify
     is RealTy -> when b
      is RealTy -> True
      is otherwise -> False
+    is RealApproxTy -> when b
+     is RealApproxTy -> True
+     is otherwise -> False
+    is RealTrappingTy -> when b
+     is RealTrappingTy -> True
+     is otherwise -> False
+    is RealSaturatingTy -> when b
+     is RealSaturatingTy -> True
+     is otherwise -> False
     is TextTy -> when b
      is TextTy -> True
      is otherwise -> False
@@ -239,6 +249,12 @@ Section: Unify
     is VectorMaskTy (na) -> when b
      is VectorMaskTy (nb) -> na == nb
      is otherwise -> False
+    is TypeCon (na) -> when b
+     is TypeCon (nb) -> na.value == nb.value
+     is otherwise -> False
+    is TypeApply (fa) (aa) -> when b
+     is TypeApply (fb) (ab) -> types-equal fa fb & types-equal aa ab
+     is otherwise -> False
     is otherwise -> False
 
   unify-rhs : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
@@ -263,6 +279,15 @@ Section: Unify
      is otherwise -> unify-mismatch st a b span
     is RealTy -> when b
      is RealTy | ErrorTy -> (True, st)
+     is otherwise -> unify-mismatch st a b span
+    is RealApproxTy -> when b
+     is RealApproxTy | ErrorTy -> (True, st)
+     is otherwise -> unify-mismatch st a b span
+    is RealTrappingTy -> when b
+     is RealTrappingTy | ErrorTy -> (True, st)
+     is otherwise -> unify-mismatch st a b span
+    is RealSaturatingTy -> when b
+     is RealSaturatingTy | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is TextTy -> when b
      is TextTy | ErrorTy -> (True, st)
@@ -293,10 +318,12 @@ Section: Unify
      is otherwise -> unify-mismatch st a b span
     is ListTy (ea) -> when b
      is ListTy (eb) | LinkedListTy (eb) -> unify-at st ea eb span (depth + 1)
+     is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st (deck-record (TypeCon (Name { value = "List" }))) fb span (depth + 1) in if ok1 then unify-at st1 ea ab span (depth + 1) else (ok1, st1)
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is LinkedListTy (ea) -> when b
      is LinkedListTy (eb) | ListTy (eb) -> unify-at st ea eb span (depth + 1)
+     is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st (deck-record (TypeCon (Name { value = "LinkedList" }))) fb span (depth + 1) in if ok1 then unify-at st1 ea ab span (depth + 1) else (ok1, st1)
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ConstructedTy (na) (args-a) -> when b
@@ -309,6 +336,7 @@ Section: Unify
      is RecordTy (rb-name) (rb-args) (rb-fields) ->
       if na.value == rb-name.value then unify-constructed-args st args-a rb-args 0 (list-length args-a) span depth
       else unify-mismatch st a b span
+     is TypeApply (fb) (ab) -> if list-length args-a == 1 then let (ok1, st1) = unify-at st (deck-record (TypeCon na)) fb span (depth + 1) in if ok1 then unify-at st1 (list-at args-a 0) ab span (depth + 1) else (ok1, st1) else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is SumTy (sa-name) (sa-args) (sa-ctors) -> when b
@@ -318,6 +346,7 @@ Section: Unify
      is ConstructedTy (nb) (args-b) ->
       if sa-name.value == nb.value then unify-constructed-args st sa-args args-b 0 (list-length sa-args) span depth
       else unify-mismatch st a b span
+     is TypeApply (fb) (ab) -> if list-length sa-args == 1 then let (ok1, st1) = unify-at st (deck-record (TypeCon sa-name)) fb span (depth + 1) in if ok1 then unify-at st1 (list-at sa-args 0) ab span (depth + 1) else (ok1, st1) else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is RecordTy (ra-name) (ra-args) (ra-fields) -> when b
@@ -327,6 +356,7 @@ Section: Unify
      is ConstructedTy (nb) (args-b) ->
       if ra-name.value == nb.value then unify-constructed-args st ra-args args-b 0 (list-length ra-args) span depth
       else unify-mismatch st a b span
+     is TypeApply (fb) (ab) -> if list-length ra-args == 1 then let (ok1, st1) = unify-at st (deck-record (TypeCon ra-name)) fb span (depth + 1) in if ok1 then unify-at st1 (list-at ra-args 0) ab span (depth + 1) else (ok1, st1) else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ForAllTy (id) (body) -> unify-at st body b span (depth + 1)
@@ -337,7 +367,7 @@ Section: Unify
      is otherwise -> unify-at st inner-a b span (depth + 1)
     is VectorTy (na) (ta) -> when b
      is VectorTy (nb) (tb) ->
-      if na == nb then unify-at st ta tb span (depth + 1)
+      if na == nb | na < 0 | nb < 0 then unify-at st ta tb span (depth + 1)
       else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
@@ -347,8 +377,22 @@ Section: Unify
       else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
+    is TypeCon (na) -> when b
+     is TypeCon (nb) -> if na.value == nb.value then (True, st) else unify-mismatch st a b span
+     is ErrorTy -> (True, st)
+     is otherwise -> unify-mismatch st a b span
+    is TypeApply (fa) (aa) -> when b
+     is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st fa fb span (depth + 1) in if ok1 then unify-at st1 aa ab span (depth + 1) else (ok1, st1)
+     is ListTy (eb) -> let (ok1, st1) = unify-at st fa (deck-record (TypeCon (Name { value = "List" }))) span (depth + 1) in if ok1 then unify-at st1 aa eb span (depth + 1) else (ok1, st1)
+     is LinkedListTy (eb) -> let (ok1, st1) = unify-at st fa (deck-record (TypeCon (Name { value = "LinkedList" }))) span (depth + 1) in if ok1 then unify-at st1 aa eb span (depth + 1) else (ok1, st1)
+     is ConstructedTy (nb) (args-b) -> if list-length args-b == 1 then let (ok1, st1) = unify-at st fa (deck-record (TypeCon nb)) span (depth + 1) in if ok1 then unify-at st1 aa (list-at args-b 0) span (depth + 1) else (ok1, st1) else unify-mismatch st a b span
+     is SumTy (sb-name) (sb-args) (sb-ctors) -> if list-length sb-args == 1 then let (ok1, st1) = unify-at st fa (deck-record (TypeCon sb-name)) span (depth + 1) in if ok1 then unify-at st1 aa (list-at sb-args 0) span (depth + 1) else (ok1, st1) else unify-mismatch st a b span
+     is RecordTy (rb-name) (rb-args) (rb-fields) -> if list-length rb-args == 1 then let (ok1, st1) = unify-at st fa (deck-record (TypeCon rb-name)) span (depth + 1) in if ok1 then unify-at st1 aa (list-at rb-args 0) span (depth + 1) else (ok1, st1) else unify-mismatch st a b span
+     is ErrorTy -> (True, st)
+     is otherwise -> unify-mismatch st a b span
     is otherwise -> when b
      is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1)
+     is TypeApply (fb) (ab) -> unify-at st b a span (depth + 1)
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
 
@@ -375,6 +419,9 @@ Section: Unify
    when ty
     is IntegerTy (lo) (hi) (mode) -> "Integer"
     is RealTy -> "Real"
+    is RealApproxTy -> "Real approximate"
+    is RealTrappingTy -> "Real trapping"
+    is RealSaturatingTy -> "Real saturating"
     is TextTy -> "Text"
     is BooleanTy -> "Boolean"
     is CharTy -> "Char"
@@ -398,6 +445,8 @@ Section: Unify
     is UnitTy (name) (inner) -> "Unit:" & name.value
     is VectorTy (vn) (vt) -> "Vector " & integer-to-text vn & " " & type-desc vt
     is VectorMaskTy (n) -> "VectorMask " & integer-to-text n
+    is TypeCon (name) -> "TCon:" & name.value
+    is TypeApply (f) (a) -> "App[" & type-desc f & " " & type-desc a & "]"
 
   type-desc-args : List CodexType, Integer -> Text
   type-desc-args (args) (i) =
@@ -435,7 +484,14 @@ Section: Deep Resolve
    in if ty-has-typevars resolved == False then resolved
    else when resolved
     is SumTy (name) (args) (ctors) -> deck-record (SumTy name (for a in args -> deep-resolve-at st a (depth + 1)) ctors)
+    is TypeApply (tf) (ta) -> reduce-type-apply (deep-resolve-at st tf (depth + 1)) (deep-resolve-at st ta (depth + 1))
     is otherwise -> codex-type-map-children (\c -> deep-resolve-at st c (depth + 1)) resolved
+
+  reduce-type-apply : CodexType, CodexType -> CodexType
+  reduce-type-apply (f) (a) =
+   when f
+    is TypeCon (name) -> if name.value == "List" then deck-record (ListTy a) else if name.value == "LinkedList" then deck-record (LinkedListTy a) else deck-record (ConstructedTy name [a])
+    is otherwise -> deck-record (TypeApply f a)
 
 Section: List Pre-Allocation
 
@@ -449,6 +505,14 @@ Section: List Pre-Allocation
   copy-list-loop (src) (dst) (i) (len) =
    if i == len then dst
    else copy-list-loop src (list-push dst (list-at src i)) (i + 1) len
+
+Section: GADT Snapshot
+
+  snapshot-substitutions : UnificationState -> List CodexType
+  snapshot-substitutions (st) = copy-list-with-headroom (st.substitutions) 16
+
+  restore-substitutions : UnificationState, List CodexType -> UnificationState
+  restore-substitutions (st) (saved) = let __seq = __record-set st "substitutions" saved in st
 
 Page 1
 

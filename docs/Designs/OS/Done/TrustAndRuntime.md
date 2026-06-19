@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-31
 **Status**: Design
-**Depends on**: Agent Contract (RuntimeTrust.txt), Capability Refinement, Crypto Primitives (TBD)
+**Depends on**: Agent Contract (RuntimeTrust.txt), Capability Refinement, Crypto Primitives (DONE — Ed25519, SHA-256, ChaCha20, AES-GCM, HKDF, X25519 implemented and audited)
 **Prior art**: `docs/Codex.OS/DistributedAgentOS.txt`, `docs/Designs/Codex.OS/TrustAndRuntime.md`
 
 ---
@@ -287,7 +287,7 @@ Messages on the wire are length-prefixed serialized facts:
 ```
 
 The serialized fact is the canonical byte encoding of the message record
-(deterministic field ordering, no padding, integer encoding TBD). The
+(deterministic field ordering, no padding, little-endian integers per MessageFraming.codex). The
 `FactHash` is `SHA-256(serialized fact body, excluding the signature field)`.
 The signature is `Ed25519(sender_private_key, FactHash)`.
 
@@ -387,22 +387,22 @@ system. One mechanism instead of seven.
 | **Fact store** | Replay deduplication, message persistence, forensic record |
 | **Forensics layer** | Every network exchange is a forensic chain |
 | **Policy contract** | Network access policies compiled from prose |
-| **Crypto primitives** | Ed25519 signatures, SHA-256 hashing (design TBD) |
+| **Crypto primitives** | Ed25519 signatures, SHA-256 hashing (DONE — constant-time implementations in foreword) |
 
 ---
 
 ## Implementation Order
 
-| Step | What | Effort | Depends on |
-|------|------|--------|------------|
-| 1 | Define framing format (length-prefixed, deterministic serialization) | Small | Core types |
-| 2 | Signature verification + trust score check (the trust layer) | Medium | Crypto primitives |
-| 3 | Replay deduplication (fact hash store) | Small | Step 1 |
-| 4 | First-contact handshake (proof-of-work + challenge/prove) | Medium | Steps 1-2 |
-| 5 | TCP transport binding (connect, send, receive, disconnect) | Medium | Step 1 + bare metal networking |
-| 6 | Rate limiting (per-key, per-trust-tier) | Small | Steps 2, 5 |
-| 7 | Peer discovery (vouch-based, registry, local broadcast) | Medium | Steps 4-5 |
-| 8 | Peer reputation (trust score decrement on bad behavior) | Small | Steps 2, 6 |
+| Step | What | Effort | Depends on | Status |
+|------|------|--------|------------|--------|
+| 1 | Define framing format (length-prefixed, deterministic serialization) | Small | Core types | DONE — MessageFraming.codex |
+| 2 | Signature verification + trust score check (the trust layer) | Medium | Crypto primitives | DONE — TrustLattice.codex, Ed25519.codex |
+| 3 | Replay deduplication (fact hash store) | Small | Step 1 | DONE — TrustNode.codex sequence numbers |
+| 4 | First-contact handshake (proof-of-work + challenge/prove) | Medium | Steps 1-2 | DONE — Handshake.codex, TrustTransport.codex |
+| 5 | TCP transport binding (connect, send, receive, disconnect) | Medium | Step 1 + bare metal networking | DONE — TrustTransport.codex |
+| 6 | Rate limiting (per-key, per-trust-tier) | Small | Steps 2, 5 | Remaining |
+| 7 | Peer discovery (vouch-based, registry, local broadcast) | Medium | Steps 4-5 | DONE — PeerDiscovery.codex |
+| 8 | Peer reputation (trust score decrement on bad behavior) | Small | Steps 2, 6 | Remaining |
 
 Steps 1-4 can be built and tested in-process with no networking — two
 agents in the same process exchanging serialized byte arrays through
@@ -705,19 +705,18 @@ These are capability-gated like all other effects.
 
 ## Implementation Order
 
-| Step | What | Effort | Depends on |
-|------|------|--------|------------|
-| 1 | Define message types as Codex records | Small | Core type system |
-| 2 | Fact serialization for messages (hash + sign) | Medium | FactStore |
-| 3 | Local agent message loop (in-process, for testing) | Medium | Step 1-2 |
-| 4 | Lease expiry timer + auto-revoke | Medium | Step 3 + bare metal tick counter |
-| 5 | `[Negotiate]` and `[Supervise]` effects | Small | BuiltinEffects |
-| 6 | Cross-device transport (serial, TCP, BLE) | Large | Step 3 + Codex.OS networking |
-| 7 | Adversarial resistance (replay protection, nonce) | Medium | Step 6 |
+| Step | What | Effort | Depends on | Status |
+|------|------|--------|------------|--------|
+| 1 | Define message types as Codex records | Small | Core type system | DONE — AgentProtocol.codex (7+2 msg types) |
+| 2 | Fact serialization for messages (hash + sign) | Medium | FactStore | DONE — TrustTransport.codex encode/decode |
+| 3 | Local agent message loop (in-process, for testing) | Medium | Step 1-2 | DONE — TrustService.codex dispatch loop |
+| 4 | Lease expiry timer + auto-revoke | Medium | Step 3 + bare metal tick counter | DONE — LeaseManager.codex |
+| 5 | `[Negotiate]` and `[Supervise]` effects | Small | BuiltinEffects | Remaining |
+| 6 | Cross-device transport (serial, TCP, BLE) | Large | Step 3 + Codex.OS networking | DONE (TCP) — TrustTransport.codex |
+| 7 | Adversarial resistance (replay protection, nonce) | Medium | Step 6 | DONE — TrustNode.codex seq numbers |
 
-Steps 1-5 can be built and tested entirely in-process. No networking required.
-The agent protocol works locally first — two agents in the same process
-negotiating capabilities. Networking is a transport detail added later.
+Steps 1-4 and 6-7 are implemented and tested in-process. Step 5 (Negotiate/Supervise
+effects) requires compiler changes to add new built-in effects.
 ```
 
 ---
@@ -1407,20 +1406,19 @@ explanation a non-engineer can read."
 
 ## Implementation Order
 
-| Step | What | Effort | Depends on |
-|------|------|--------|------------|
-| 1 | Define Percept, Belief, PolicySnapshot, ActionRecord, Outcome, Anomaly records | Small | Core types |
-| 2 | Chain construction: link percept → belief → policy → action → outcome | Medium | Step 1 |
-| 3 | Confidence propagation rules | Small | Step 2 |
-| 4 | Anomaly detection (confidence threshold, no-matching-policy, contradiction) | Medium | Step 3 |
-| 5 | Safe-mode fallback trigger on anomaly | Medium | Step 4 + bare metal capability bits |
-| 6 | Replay engine (re-derive chain from percepts, compare) | Medium | Step 2 |
-| 7 | Narration generation from forensic chain | Medium | Step 6 + V2 narration layer |
-| 8 | Integration with Agent Contract (Explain/Narrate messages) | Medium | Step 7 + Agent Contract |
+| Step | What | Effort | Depends on | Status |
+|------|------|--------|------------|--------|
+| 1 | Define Percept, Belief, PolicySnapshot, ActionRecord, Outcome, Anomaly records | Small | Core types | DONE — Forensics.codex |
+| 2 | Chain construction: link percept → belief → policy → action → outcome | Medium | Step 1 | DONE — chain-add-* functions |
+| 3 | Confidence propagation rules | Small | Step 2 | DONE — chain-min-confidence, link-confidence |
+| 4 | Anomaly detection (confidence threshold, no-matching-policy, contradiction) | Medium | Step 3 | DONE — assess-chain, EscalationLevel |
+| 5 | Safe-mode fallback trigger on anomaly | Medium | Step 4 + bare metal capability bits | Remaining (needs kernel integration) |
+| 6 | Replay engine (re-derive chain from percepts, compare) | Medium | Step 2 | Remaining |
+| 7 | Narration generation from forensic chain | Medium | Step 6 + V2 narration layer | Remaining |
+| 8 | Integration with Agent Contract (Explain/Narrate messages) | Medium | Step 7 + Agent Contract | Remaining |
 
-Steps 1-4 can be built and tested with synthetic percepts in-process.
-No sensors, no hardware, no networking. The forensic chain works the
-same whether the percept comes from a camera or a unit test.
+Steps 1-4 are implemented and tested with synthetic percepts in-process.
+Steps 5-8 require kernel integration, replay infrastructure, and narration layer.
 ```
 
 Design Review:

@@ -119,3 +119,72 @@ Section: Scan for All Facts of a Given Kind
       let txt = app-read-content sector clen
       in app-scan-all-loop kind (sector + nsec) end-sec (list-push acc txt)
     else app-scan-all-loop kind (sector + nsec) end-sec acc
+
+Section: Log Compaction
+
+  CompactEntry = record {
+    ce-kind : Integer,
+    ce-sector : Integer,
+    ce-clen : Integer,
+    ce-timestamp : Integer
+  }
+
+  compact-scan : Integer, Integer, List CompactEntry -> List CompactEntry
+  compact-scan (sector) (end-sec) (acc) =
+    if sector >= end-sec then acc
+    else let buf = block-read-sector sector
+    in let k = unpack-u16-le buf 32
+    in let clen = unpack-u32-le buf 74
+    in if clen == 0 then compact-scan (sector + 1) end-sec acc
+    else let nsec = app-sectors clen
+    in let ts = unpack-u64-le buf 66
+    in let entry = CompactEntry { ce-kind = k, ce-sector = sector, ce-clen = clen, ce-timestamp = ts }
+    in compact-scan (sector + nsec) end-sec (list-push acc entry)
+
+  compact-has-kind : List CompactEntry, Integer, Integer, Integer -> Boolean
+  compact-has-kind (kept) (kind) (i) (len) =
+    if i >= len then False
+    else if (list-at kept i).ce-kind == kind then True
+    else compact-has-kind kept kind (i + 1) len
+
+  compact-dedup : List CompactEntry -> List CompactEntry
+  compact-dedup (entries) =
+    compact-dedup-loop entries (list-length entries - 1) []
+
+  compact-dedup-loop : List CompactEntry, Integer, List CompactEntry -> List CompactEntry
+  compact-dedup-loop (entries) (i) (kept) =
+    if i < 0 then kept
+    else let e = list-at entries i
+    in if compact-has-kind kept (e.ce-kind) 0 (list-length kept)
+      then compact-dedup-loop entries (i - 1) kept
+      else compact-dedup-loop entries (i - 1) (list-push kept e)
+
+  compact-rewrite : List CompactEntry, Integer, Integer, Integer -> Integer
+  compact-rewrite (kept) (write-sector) (i) (len) =
+    if i >= len then write-sector
+    else let e = list-at kept i
+    in let nsec = app-sectors (e.ce-clen)
+    in let src-buf = alloc-bytes (nsec * app-sec-size)
+    in let loaded = app-load-sectors (e.ce-sector) nsec src-buf 0
+    in let written = write-fact-sectors src-buf write-sector nsec 0
+    in compact-rewrite kept (write-sector + nsec) (i + 1) len
+
+  disk-compact : DiskFactStore -> DiskFactStore
+  disk-compact (store) =
+    let sb = store.superblock
+    in if sb.fact-count <= 1 then store
+    else let entries = compact-scan fact-log-start (sb.log-head) []
+    in let kept = compact-dedup entries
+    in let kept-count = list-length kept
+    in if kept-count >= sb.fact-count then store
+    else let new-head = compact-rewrite kept fact-log-start 0 kept-count
+    in let new-sb = Superblock {
+        log-head = new-head,
+        fact-count = kept-count,
+        index-gen = sb.index-gen + 1
+      }
+    in let written = write-superblock new-sb
+    in DiskFactStore {
+        superblock = new-sb,
+        mem = store.mem
+      }

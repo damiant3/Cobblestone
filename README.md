@@ -38,12 +38,12 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-06-16:
+As of 2026-06-18:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
   byte-identical. The compiler reproduces itself on bare metal.
-- **377 library modules** (284 foreword + 93 OS) across 26 quires: data structures, crypto,
+- **425 library modules** (284 foreword + 93 OS) across 28 quires: data structures, crypto,
   networking (full TCP/IP + UDP/ICMP/DNS/DHCP/NTP/Syslog/TFTP), game
   engine (A*, hex maps, ECS, physics, Voronoi, Perlin), 3D engine
   (renderer, scene graph, LOD, culling, materials, skinning, audio,
@@ -70,7 +70,15 @@ As of 2026-06-16:
   SPIR-V (Vulkan/OpenCL) plugs built and compiling (157KB/152KB CDX).
   Shared-memory proxy protocol for host-side dispatch. Device IR
   emission from compiler; plugs parse IR and emit target format.
+  Kernels K5-K8 complete: warp primitives, shared memory, atomics,
+  math intrinsics, and a kernel verifier. New `codex.foreword.gpu`
+  quire (10 modules). End-to-end vecadd test passes.
   Design: `docs/Designs/Backends/Active/DualTargetGpuCompilation.md`.
+- **SMP (symmetric multiprocessing)**: all 5 phases complete for x86-64
+  — atomics (lock-prefixed CAS/XADD/XCHG), per-core bootstrap (AP
+  startup via SIPI), work-stealing scheduler, per-core heap isolation,
+  and IPI + lock-free channels for cross-core communication. codex-vm
+  supports `-smp N` flag for multi-core guests.
 - **Signed CDX seed**: Ed25519-signed, self-verified, UEFI-bootable
   GPT disk image.
 - **VMX hypervisor**: codex-vm.exe (WHP-based VM host), DevHypervisor,
@@ -214,11 +222,11 @@ As of 2026-06-16:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,306,711 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (2,408,997 bytes) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 (file) | `24FEA310F1A60A870A6B12E54F47284EC9782A1E23EB8816874B1FD9720BF2A6` |
+| SHA-256 (file) | `6F75DBC7CDF63F48C0B7B58A0188F0C2E87CBEB095FA3214A09D288C9D7C39E3` |
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
@@ -689,47 +697,68 @@ runs — `__narrow` is intent, not a cast.
 ## Compilation Pipeline
 
 ```
-Source (.codex)
-    → Lexer         token stream
-    → Parser        concrete syntax tree
-    → Desugarer     abstract syntax tree
-    → ChapterScoper namespace scoping across chapters
-    → NameResolver  resolved names + citations
-    → TypeChecker   bidirectional type inference
-    → Lowering      typed intermediate representation
-    → Resolve       ConstructedTy → concrete RecordTy/SumTy (CDX path)
-    → LambdaLifting nested lambdas → top-level defs (CDX path)
-    → Emitter       target source code / machine code
+                            Source (.codex)
+                                  │
+                 ┌────────────────┼────────────────┐
+                 │          FRONTEND               │
+                 │                                 │
+                 │  Lexer ─────── token stream     │
+                 │  Parser ────── syntax tree      │
+                 │  Desugarer ─── abstract syntax   │
+                 │  ChapterScoper namespace scope   │
+                 │  NameResolver  resolved names    │
+                 │  TypeChecker ─ typed AST         │
+                 │  Lowering ──── IR                │
+                 │                                 │
+                 └────────────────┼────────────────┘
+                                  │
+            ┌─────────────────────┼─────────────────────┐
+            │                     │                     │
+       Codex text            IR text               CDX path
+       emitter               emitter               (Resolve +
+            │                     │                LambdaLifting)
+            ▼                     │                     │
+       Codex source               │                CDX emitter
+       (bootstrap                 │                (x86-64)
+        round-trip)               │                     │
+                                  │        ┌──────┬─────┼──────┐
+                                  │        │      │     │      │
+                                  │        ▼      ▼     ▼      ▼
+                                  │      CDX    ELF   PE    IMG
+                                  │    (boot-  (x86  (UEFI (GPT/
+                                  │     able)   -64)  PE+)  FAT)
+                                  │
+                 ┌──────────┬─────┼─────┬──────────┐
+                 │          │     │     │          │
+                 ▼          ▼     ▼     ▼          ▼
+              ARM64      RISC-V  WASM  Transpilers GPU plugs
+              ELF64      ELF     WAT   (29 langs)  ├─ PTX
+              (AArch64)  (RV32/  (brow- ├─ Ada,Go, │  (NVIDIA)
+                          RV64)  ser)   │  Java,Py, └─ SPIR-V
+                                        │  Rust,TS     (Vulkan)
+                                        └─ React,
+                                           Svelte,
+                                           Vue,WPF
+
 ```
+
+The compiler frontend (lexer through lowering) is shared across all
+targets. From IR, three paths fan out:
+
+- **Codex text** re-emits the compiler's own source for bootstrap
+  verification (byte-identical round-trip).
+- **IR text** serializes the typed IR as S-expressions. All plugs
+  consume this: ARM64, RISC-V, WASM, the 29 transpiler plugs, and
+  the GPU plugs (PTX for NVIDIA, SPIR-V for Vulkan). Each plug is
+  a standalone CDX binary that receives IR over TCP.
+- **CDX path** adds Resolve (concrete types) and LambdaLifting,
+  then emits x86-64 machine code as a signed CDX binary. Container
+  plugs derive ELF, PE, and GPT disk images from the CDX.
 
 The pipeline lives in `codex/` — the self-hosted compiler,
 ~28,000 lines across 54 `.codex` files. Each phase has its own deck
 allocation and `phase-compact` cycle; cumulative deck ~208 MB, peak
-working set ~210 MB for selfhost. This is the only path that is
-maintained, exercised, and load-bearing.
-
-The original C# reference implementation under `old/src/` was the
-scaffolding that bootstrapped the language. It is **retired** and
-remains in the depot as historical record only.
-
----
-
-## Backends
-
-| Backend | Status | Role |
-|---------|--------|------|
-| **CDX binary** | **Full support** | **Self-sustaining target.** Signed, verified, bootable. The canonical seed. SSE2 packed SIMD (Vector types). |
-| **Codex-text** | **Full support** | Bootstrap 2. Re-emits self as Codex source. |
-| **x86-64 bare metal (ELF)** | **Full support** | Derived from CDX. Maintained less frequently. |
-| **ARM64 (AArch64)** | Early | ELF64 plug, QEMU virt board. All 4 micro-benchmarks meet or beat GCC -O0. |
-| **RISC-V (RV32IMC/RV64)** | Early | ELF plug, QEMU virt board, RV32C compressed. All 4 micro-benchmarks meet or beat GCC -O0. |
-| **PTX (NVIDIA GPU)** | Plug built | Device IR → PTX text via `ptx-plug`. Target: sm_89 (Ada Lovelace). |
-| **SPIR-V (Vulkan/OpenCL GPU)** | Plug built | Device IR → SPIR-V binary via `spirv-plug`. Target: Vulkan 1.2+. ARM Mali, Qualcomm Adreno, Intel iGPU. |
-| C#, .NET IL, JS, Wasm, others | Legacy | Research/sample targets, may not track current features. |
-
-CDX and Codex-text are the load-bearing pair. The ELF is a derived artifact.
-PTX and SPIR-V are GPU compute targets via the plug architecture — the
-compiler emits device IR; plugs produce the final GPU format.
+working set ~210 MB for selfhost.
 
 ---
 
@@ -743,21 +772,24 @@ real hardware as the ARM64 and RISC-V backends mature.
 
 ### Board Drivers
 
-Three target boards with full register-level GPIO, UART, SPI, and I2C
-drivers, all using the Board HAL's `mmio-read-32`/`mmio-write-32`
-primitives. Each driver has a smoke test that compiles and runs on the
-hosted VM (MMIO stubs return 0; fuel-bounded polling loops terminate
-immediately).
+Nine target boards with register-level drivers using the Board HAL's
+`mmio-read-32`/`mmio-write-32` primitives. Each driver has a smoke test
+on the hosted VM (MMIO stubs; fuel-bounded polling terminates immediately).
+Full details: `docs/TinkersToolbox.md`.
 
-| Board | MCU | GPIO | UART | SPI | I2C | Test |
-|-------|-----|------|------|-----|-----|------|
-| **STM32F4** (Discovery) | Cortex-M4F @ 168 MHz | mode, alt-func, pull, speed, read/write/toggle | USART2, baud config, print/println | SPI1 master, full-duplex transfer | I2C1 100 kHz, write-reg/read-reg | PASS (6) |
-| **ESP32-C6** (DevKit) | RISC-V RV32IMC @ 160 MHz | output/input, pull, read/toggle | UART0, 40 MHz APB clock divisor | SPI2 cmd-based, 8-bit transfer | I2C0 cmd-based, write-reg/read-reg | PASS (6) |
-| **Raspberry Pi 4** | Cortex-A72 @ 1.5 GHz | FSEL, alt-func (AF0-5), PUP/PDN | PL011, 48 MHz UARTCLK, fractional baud | SPI0, FIFO-based, clock divider | BSC1, burst read/write | PASS (6) |
-| **QEMU virt** | AArch64 + RISC-V | -- | PL011 (A64) + 16550 (RV) putc/puts | -- | -- | PASS (6) |
+| Board | MCU | Arch | Sub-tests | Highlights |
+|-------|-----|------|----------:|-----------|
+| **STM32F4** | Cortex-M4F 168 MHz | ARM | 6 | GPIO, USART2, SPI1, I2C1 |
+| **ESP32-C6** | RV32IMC 160 MHz | RISC-V | 6 | GPIO, UART0, SPI2, I2C0 |
+| **Raspberry Pi 4** | Cortex-A72 1.5 GHz | ARM | 6 | GPIO, PL011, SPI0, BSC1 |
+| **QEMU virt** | AArch64 + RV | Both | 6 | PL011 + 16550 UART |
+| **nRF52840** | Cortex-M4F 64 MHz | ARM | 17 | CLOCK, SAADC, RADIO, **BLE beacon PDU** |
+| **RP2040 (Pico)** | Dual M0+ 133 MHz | ARM | 14 | Atomic GPIO, ADC, PIO, **WS2812 NeoPixel** |
+| **nRF9160** | Cortex-M33 64 MHz | ARM | 17 | IPC (modem), **AT command/response round-trip** |
+| **STM32L4** | Cortex-M4F 80 MHz | ARM | 9 | MSI clock, **PWR modes**, LPTIM |
+| **FE310 (HiFive1)** | RV32IMAC 320 MHz | RISC-V | 7 | IOF select, PWM, **PLIC** |
 
-Board register addresses are from the official reference manuals
-(RM0090 for STM32, ESP32-C6 TRM, BCM2711 ARM Peripherals).
+88 sub-tests. Register addresses from official reference manuals.
 
 ### IoT Protocol Stack
 
@@ -770,12 +802,13 @@ Board register addresses are from the official reference manuals
 
 ### EU Compliance (CRA / ETSI / NIST)
 
-The `ComplianceEvidence` module maps 17 regulatory requirements across
-CRA Annex I, ETSI EN 303 645, and NISTIR 8259A to the Codex features
-that satisfy each one -- linear types, effect types, signed CDX
-binaries, capability manifests, LwM2M OTA, and the fact-store audit
-trail. The `generate-evidence-report` function produces a text
-compliance summary as a build artifact. Test: PASS (8).
+The `ComplianceEvidence` module maps 60 regulatory requirements across
+CRA Annex I (8), ETSI EN 303 645 (40), NISTIR 8259A (5), and IEC 62443
+(7) to the Codex features that satisfy each one -- linear types, effect
+types, signed CDX binaries, capability manifests, LwM2M OTA, punctual
+bounded execution, and the fact-store audit trail. The
+`generate-evidence-report` function produces a text compliance summary
+as a build artifact. Test: PASS (8).
 
 ### Punctual Functions (Hard Real-Time)
 
@@ -809,7 +842,7 @@ mechanism. A full survey of 10 languages and frameworks is in
 ### Codegen Performance
 
 The self-hosted compiler compiles itself (28,000 lines, 54 files) in
-22 seconds on bare metal (codex-vm, x86-64, 3 GB RAM). The full gate
+22 seconds on bare metal (codex-vm, x86-64, 8 GB RAM). The full gate
 run -- CDX build, sign, canary, text round-trip, semantic equivalence,
 CDX fixed point, and BVT -- completes in under 140 seconds. The BVT
 (16 tests exercising language features beyond the self-compile) runs
@@ -826,8 +859,8 @@ in 18 seconds.
 | BVT (16 tests) | 18s |
 | **Total** | **~140s** |
 
-The seed is a 2.20 MB CDX binary (content hash
-`24FEA310F1A60A870A6B12E54F47284EC9782A1E23EB8816874B1FD9720BF2A6`).
+The seed is a 2.30 MB CDX binary (content hash
+`6F75DBC7CDF63F48C0B7B58A0188F0C2E87CBEB095FA3214A09D288C9D7C39E3`).
 The compiler is a hard fixed point of itself -- the output of
 self-compilation compiled by itself is byte-identical to itself.
 
@@ -876,7 +909,7 @@ beat GCC -O0 -- fact and sum beat GCC on both cross-targets.
 ## CCE — Codex Character Encoding
 
 Codex has its own character encoding, designed for computation rather
-than compatibility. Two tiers are implemented:
+than compatibility. Three tiers are implemented:
 
 ### Tier 0 (128 codepoints, 1 byte each)
 
@@ -924,6 +957,13 @@ No large tables. The lexer accepts Tier 1 characters in identifiers
 and prose with one extra branch per byte (fast path unchanged for
 Tier 0).
 
+### Tier 2 (3-byte encoding)
+
+CJK unified ideographs, full Hangul syllables, Japanese kana extensions,
+and Emoji. 3-byte framing (`1110xxxx 10xxxxxx 10xxxxxx`) covers the
+remaining scripts needed for global deployment. Tier 2 characters are
+accepted in string literals and prose; identifiers remain Tier 0 + Tier 1.
+
 ### Design Principles
 
 Unicode exists only at I/O boundaries. Internally, everything is CCE.
@@ -936,8 +976,8 @@ characters requires the updated compiler.
 
 ## Library Quires
 
-Code outside the compiler is organized into **26 quires** (library namespaces)
-with **377 library modules** (284 foreword + 93 OS); **1,194 modules** in the depot including the 54-file compiler, 133 plug files, and 630 application modules:
+Code outside the compiler is organized into **28 quires** (library namespaces)
+with **425 library modules** (284 foreword + 93 OS); **1,194 modules** in the depot including the 54-file compiler, 133 plug files, and 630 application modules:
 
 | Quire | Directory | Count | Highlights |
 |-------|-----------|------:|------------|
@@ -952,6 +992,8 @@ with **377 library modules** (284 foreword + 93 OS); **1,194 modules** in the de
 | **Sim** | `codex/foreword/sim/` | 7 | Verlet Physics, Collision, ParticleSystem, Steering, SpatialHash |
 | **Punctual** | `codex/foreword/punctual/` | 8 | IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian — every function is `punctual` (no heap, no recursion, bounded instruction count) |
 | **Engine** | `codex/foreword/engine/` | 21 | Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags, AbilitySystem, Signal, DebugDraw, TimeOfDay, AssetTable, EdgeMesh, HelmBridge |
+| **GPU** | `codex/foreword/gpu/` | 10 | Warp primitives, shared memory, atomics, math intrinsics, kernel verifier, vecadd end-to-end test |
+| **Boards** | `codex/foreword/boards/` | 38 | STM32F4, ESP32-C6, RPi4, nRF52840, RP2040, nRF9160, STM32L4, FE310, QEMU virt — register-level HAL drivers |
 | **Net** | `codex/os/net/` | 16 | Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, Syslog, TFTP, HttpClient, Tls (AesGcm + X25519) |
 | **Kernel** | `codex/os/kernel/` | 24 | DiskFacts, DriveManager, Vga, VgaGraphics, Pci, Keyboard, Mouse, BitmapFont, Console, DiagnosticShell, GpuBridge, IdentityManager, Ivshmem, Ne2k, SystemDb, Usb, UsbAudio, UsbMassStorage, UsbVideo, Xhci, VmSerial, VmIde |
 | **OS** | `codex/os/*/` | 81 | Trust lattice, verifier, scheduler, IPC, identity, shell, clarifier, replay, observability, dev tools |
@@ -980,7 +1022,7 @@ framebuffer UI foreword.
 | **CVMM** | 66 | OS desktop environment: window manager, system monitors, productivity suite, sync providers |
 | **Works** | 54 | Dev platform: DevConsole, UEFI console, editor, first-boot wizard, agent runtime/coordinator, HTTP server |
 | **Explorer** | 25 | Parameter explorer: card/character/item designers, settings, workflow exporter |
-| **Browser** | 22 | Content-addressed browser: trust model, media player, data channels |
+| **Browser** | 19 | Bare-metal browser: network fetch, page compiler, trust model (all 3 phases complete, 5162 lines) |
 | **Helm** | 12 | Operations bridge console: cluster view, mixer, attention routing, voice |
 | **Collab** | 8 | Collaborative editing |
 | **Secrets** | 8 | AES-GCM vaults, PBKDF2, hash-chained audit, team sharing, generator |
@@ -1051,7 +1093,7 @@ codex/
     trust/                Trust — lattice, policy, sessions (11 modules)
     verify/               Verification — 5-phase CDX verifier (5 modules)
   plugs/                  Plug architecture — IR-text-driven emitters
-  test/                   Compiler samples + OS integration tests (543 tests)
+  test/                   Compiler samples + OS integration tests (742 tests)
 apps/                     47 applications, 630 modules (see Applications)
   works/                  Console, agents, VM tools, first boot (54 modules)
   games/                  CodexMagic — card platform, classic games, web portal (128 modules)
@@ -1065,7 +1107,7 @@ apps/                     47 applications, 630 modules (see Applications)
 annotations/              On-disk annotation sidecars (JSON facts)
 build/                    Build/test harness (PowerShell)
 tools/                    codex-vm, status server, USB writer, VS extensions
-seed/                     Bootstrap seed CDX (2.20 MB) + UEFI disk image (8 MB)
+seed/                     Bootstrap seed CDX (2.30 MB) + UEFI disk image (8 MB)
 docs/                     Design documents, plans, stories
 old/                      Retired C# reference compiler — historical only
 ```
@@ -1106,6 +1148,8 @@ old/                      Retired C# reference compiler — historical only
 | **Poisoned compact** | **`__memset` builtin + per-phase poison bytes. Reclaimed memory is poisoned to catch stale-pointer reads immediately instead of silently reading garbage.** | **2026-06-16** |
 | **Number → Real rename** | **`Number` renamed to `Real` across compiler, all plugs, and tests. Qualifier communicates confidence (`Real`, `Real approximate`, `Real guess`), not bit width.** | **2026-06-16** |
 | **VectorMaskTy + comparisons** | **`VectorMask N` type, vector comparison operators (`<`, `>`, `<=`, `>=`), `vec-select` (per-lane conditional). SSE2 CMPPD/MOVMSKPD codegen.** | **2026-06-16** |
+| **SMP + GPU kernels** | **SMP all 5 phases (atomics, per-core bootstrap, work-stealing scheduler, per-core heap, IPI + lock-free channels). GPU K5-K8 (warp, shared memory, atomics, math intrinsics, verifier). `codex.foreword.gpu` quire (10 modules). CCE Tier 2 (CJK/Hangul/Kana/Emoji, 3-byte encoding). Browser all 3 phases (network fetch + page compiler, 19 modules, 5162 lines). 742 tests.** | **2026-06-17** |
+| **Update 25** | **Seed 2.30 MB, 425 library modules across 28 quires (added gpu, boards). VM default 8 GB RAM. Public push.** | **2026-06-18** |
 
 Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 
@@ -1123,6 +1167,7 @@ Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 - [docs/ExaminersAssay.md](docs/ExaminersAssay.md) — Test infrastructure, coverage, known results
 - [docs/TheShimmeringPortal.md](docs/TheShimmeringPortal.md) — Web developer's guide to the UI-to-browser pipeline
 - [docs/KingsAndCourts.md](docs/KingsAndCourts.md) — Hard real-time, EU compliance (CRA/ETSI/IEC), IoT regulatory story
+- [docs/TinkersToolbox.md](docs/TinkersToolbox.md) — Board support package: 9 boards, peripheral drivers, connectivity coverage
 - [docs/Apps.md](docs/Apps.md) — Application catalog with descriptions and READMEs
 
 ---
@@ -1159,7 +1204,7 @@ client code or unconnected wiring gaps.
 | [explorer](apps/explorer/) | World-building and game-asset design suite with CDX server | 70% | Full |
 | [fishtank](apps/fishtank/) | WebGPU aquarium: boids AI, procedural 3D fish, volumetric lighting, particles | 70% | Partial |
 | [nettool](apps/nettool/) | Network admin toolkit: packet capture, port scanning, mesh admin | 70% | Full |
-| [browser](apps/browser/) | Bare-metal web browser: content-addressed pages, capability tiers, HDA audio | 65% | Full |
+| [browser](apps/browser/) | Bare-metal web browser: network fetch, page compiler, content-addressed pages, capability tiers (all 3 phases complete, 19 modules, 5162 lines) | 65% | Full |
 | [erp](apps/erp/) | Enterprise resource planning: GL, AP/AR, HR, manufacturing, compliance | 65% | Full |
 | [market](apps/market/) | Self-hosted e-commerce: catalog, cart, checkout, multi-vendor, auctions | 65% | Partial |
 | [secrets](apps/secrets/) | Encrypted password manager: AES-GCM vaults, PBKDF2, team sharing via DH | 65% | Full |

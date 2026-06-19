@@ -110,11 +110,16 @@ We are close. Not there.
 - **Cross-arch GCC parity** (CLs 4280–4410): ARM64 + RISC-V codegen
   meets or beats GCC -O0 on all 4 micro-benchmarks. 24 optimization
   CLs. No optimizer — all emitter-level.
-- **SIMD / Vector types** (CLs 4392–4464): `Vector N T` first-class type
-  with dependent lane count. SSE2 packed codegen (ADDPD, SUBPD, MULPD,
-  DIVPD). `~` approximate equality operator. CDX2085 (no == on Real).
-  vec-splat, vec-extract, vec-reduce-add builtins. Vector operator
-  overloading.
+- **SIMD / Vector types — Phase 1 complete** (CLs 4392–4580):
+  `Vector N T` first-class type with dependent lane count. SSE2
+  packed codegen for f64 (ADDPD/SUBPD/MULPD/DIVPD) and f32
+  (ADDPS/SUBPS/MULPS/DIVPS/CMPPS). `~` approximate equality,
+  CDX2085 (no == on Real). vec-splat, vec-extract, vec-reduce-add,
+  vec-select builtins. VectorMask N type with vector comparisons.
+  Vector pattern matching (PCMPEQ + PMOVMSKB). Integer vectors
+  (PADDQ/PSUBQ). Real approximate (f32) scalar + packed. Real
+  trapping + saturating safety modes. suggested-vector-width
+  comptime builtin. Number renamed to Real across compiler + plugs.
 - **GPU plugs** (CLs 4424–4468): PTX plug (NVIDIA) + SPIR-V plug
   (Vulkan/OpenCL) built and compiling (157KB/152KB CDX). Full IR
   expression coverage. Design: `DualTargetGpuCompilation.md`.
@@ -268,11 +273,11 @@ editing, materials, audio, CAD) compiled to WASM and running in the
 browser via WebGPU. The studio is the first Codex application visible
 to non-Codex users — a working demo of the language and tools.
 
-161KB WASM, 400+ exports, 28-second build. WASM tail-call optimization
-enabled (CL 3504): 255 self-recursive functions compile to WASM loop/br
-instead of call, eliminating stack overflow for deep recursion (canvas
-clear at 1024x1024 = 1M iterations works in 0.4ms). Also includes
-Codex Designer (12.5KB WASM, WYSIWYG UI builder).
+89 modules, 578KB source, 2.47MB IR, 1.39MB WAT. WASM tail-call
+optimization enabled (CL 3504): 255 self-recursive functions compile
+to WASM loop/br instead of call, eliminating stack overflow for deep
+recursion (canvas clear at 1024x1024 = 1M iterations works in 0.4ms).
+Also includes Codex Designer (12.5KB WASM, WYSIWYG UI builder).
 
 **Completed** (CLs 3130–3504):
 - All animation, image editor, 3D, and audio items (a–r below) done
@@ -288,6 +293,12 @@ Codex Designer (12.5KB WASM, WYSIWYG UI builder).
   rendering in Codex, code generation (CLs 3441–3458)
 
 **Remaining:**
+
+m. **wat2wasm undefined function** — `build-spark.ps1` produces WAT
+   successfully (1.39MB) but `wat2wasm` rejects it: `undefined function
+   variable "$AbsorbedDose"`. A unit type from the punctual foreword
+   is referenced but not emitted by the WASM plug. Likely missing from
+   the plug's function export table.
 
 n. **Mesh operations** — CSG booleans exist in Codex (mesh-bool-union,
    intersect, difference) but not fully wired through UI. Mesh

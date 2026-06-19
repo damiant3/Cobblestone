@@ -1,0 +1,583 @@
+Chapter: GlobeDemo
+  cites Foreword chapter Console
+  cites Globe chapter GlobeTypes
+  cites Globe chapter TerrainGen
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Engine chapter Scene3D
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+  cites Game chapter Color
+
+ GPU-accelerated planet globe. Icosphere (subdivided icosahedron)
+ with runtime texture switching. Supports Earth (file texture or
+ procedural), Mars (procedural), and random planets (procedural).
+ Press E=Earth, M=Mars, R=Random to switch at runtime.
+ No pole seams — uniform triangles everywhere.
+
+ We say:
+
+Section: Constants
+
+  gpu-cmd : Integer = #BE000000
+  sw : Integer = 640
+  sh : Integer = 480
+  kb-addr : Integer = 28680
+  mouse-addr : Integer = 28684
+  earth-r : Integer = 3000
+  ico-subdivisions : Integer = 3
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (globe-main gpu-cmd)
+  end
+
+  globe-main : Integer -> Text
+  globe-main (cmd) =
+    let sphere = globe-icosphere ico-subdivisions earth-r
+    in let loaded = tg-load-earth-image
+    in let tex = if loaded == 0 then tg-generate PkEarth 42 else 1
+    in let w = globe-frame cmd sphere 0 200 9000
+    in globe-loop cmd sphere 0 200 9000 0
+
+Section: Icosphere
+
+  IcoTri = record {
+    t-ax : Integer, t-ay : Integer, t-az : Integer,
+    t-bx : Integer, t-by : Integer, t-bz : Integer,
+    t-cx : Integer, t-cy : Integer, t-cz : Integer
+  }
+
+  globe-icosphere : Integer, Integer -> Mesh
+  globe-icosphere (subdivisions) (radius) =
+    let base = ico-base-tris radius
+    in let subdivided = ico-subdivide-n base subdivisions radius
+    in ico-to-mesh subdivided radius
+
+  ico-subdivide-n : List IcoTri, Integer, Integer -> List IcoTri
+  ico-subdivide-n (tris) (n) (radius) =
+    if n <= 0 then tris
+    else ico-subdivide-n (ico-subdivide-all tris radius []) (n - 1) radius
+
+  ico-subdivide-all : List IcoTri, Integer, List IcoTri -> List IcoTri
+  ico-subdivide-all (tris) (radius) (acc) =
+    ico-subdivide-idx tris radius acc 0 (list-length tris)
+
+  ico-subdivide-idx : List IcoTri, Integer, List IcoTri, Integer, Integer -> List IcoTri
+  ico-subdivide-idx (tris) (radius) (acc) (i) (n) =
+    if i >= n then acc
+    else let tri = list-at tris i
+    in let sub = ico-subdivide-tri tri radius
+    in ico-subdivide-idx tris radius (list-push (list-push (list-push (list-push acc (list-at sub 0)) (list-at sub 1)) (list-at sub 2)) (list-at sub 3)) (i + 1) n
+
+  ico-subdivide-tri : IcoTri, Integer -> List IcoTri
+  ico-subdivide-tri (tri) (r) =
+    let mab = ico-midpoint tri.t-ax tri.t-ay tri.t-az tri.t-bx tri.t-by tri.t-bz r
+    in let mbc = ico-midpoint tri.t-bx tri.t-by tri.t-bz tri.t-cx tri.t-cy tri.t-cz r
+    in let mca = ico-midpoint tri.t-cx tri.t-cy tri.t-cz tri.t-ax tri.t-ay tri.t-az r
+    in let mab-x = list-at mab 0
+    in let mab-y = list-at mab 1
+    in let mab-z = list-at mab 2
+    in let mbc-x = list-at mbc 0
+    in let mbc-y = list-at mbc 1
+    in let mbc-z = list-at mbc 2
+    in let mca-x = list-at mca 0
+    in let mca-y = list-at mca 1
+    in let mca-z = list-at mca 2
+    in [
+      IcoTri { t-ax = tri.t-ax, t-ay = tri.t-ay, t-az = tri.t-az, t-bx = mab-x, t-by = mab-y, t-bz = mab-z, t-cx = mca-x, t-cy = mca-y, t-cz = mca-z },
+      IcoTri { t-ax = mab-x, t-ay = mab-y, t-az = mab-z, t-bx = tri.t-bx, t-by = tri.t-by, t-bz = tri.t-bz, t-cx = mbc-x, t-cy = mbc-y, t-cz = mbc-z },
+      IcoTri { t-ax = mca-x, t-ay = mca-y, t-az = mca-z, t-bx = mbc-x, t-by = mbc-y, t-bz = mbc-z, t-cx = tri.t-cx, t-cy = tri.t-cy, t-cz = tri.t-cz },
+      IcoTri { t-ax = mab-x, t-ay = mab-y, t-az = mab-z, t-bx = mbc-x, t-by = mbc-y, t-bz = mbc-z, t-cx = mca-x, t-cy = mca-y, t-cz = mca-z }
+    ]
+
+  ico-midpoint : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  ico-midpoint (ax) (ay) (az) (bx) (by) (bz) (r) =
+    let mx = (ax + bx) / 2
+    in let my = (ay + by) / 2
+    in let mz = (az + bz) / 2
+    in let len = gc-isqrt (mx * mx + my * my + mz * mz)
+    in if len == 0 then [0, r, 0]
+    else [mx * r / len, my * r / len, mz * r / len]
+
+  ico-to-mesh : List IcoTri, Integer -> Mesh
+  ico-to-mesh (tris) (radius) =
+    let n = list-length tris
+    in let pair = ico-emit-idx tris radius [] [] 0 0 n
+    in mesh-new (list-at-pair-a pair) (list-at-pair-b pair)
+
+  ico-emit-idx : List IcoTri, Integer, List Vertex, List Integer, Integer, Integer, Integer -> IcoPair
+  ico-emit-idx (tris) (r) (verts) (indices) (vi) (i) (n) =
+    if i >= n then IcoPair { ip-verts = verts, ip-indices = indices }
+    else let tri = list-at tris i
+    in let va = ico-make-vert tri.t-ax tri.t-ay tri.t-az r
+    in let vb = ico-make-vert tri.t-bx tri.t-by tri.t-bz r
+    in let vc = ico-make-vert tri.t-cx tri.t-cy tri.t-cz r
+    in let fixed = ico-fix-seam va vb vc
+    in let fa = list-at fixed 0
+    in let fb = list-at fixed 1
+    in let fc = list-at fixed 2
+    in let new-verts = list-push (list-push (list-push verts fa) fb) fc
+    in let new-indices = list-push (list-push (list-push indices vi) (vi + 1)) (vi + 2)
+    in ico-emit-idx tris r new-verts new-indices (vi + 3) (i + 1) n
+
+  ico-fix-seam : Vertex, Vertex, Vertex -> List Vertex
+  ico-fix-seam (a) (b) (c) =
+    let pa = ico-fix-pole a b c
+    in let pb = ico-fix-pole b a c
+    in let pc = ico-fix-pole c a b
+    in let ua = pa.vu
+    in let ub = pb.vu
+    in let uc = pc.vu
+    in let max-u = gc-max3 ua ub uc
+    in let min-u = gc-min3 ua ub uc
+    in if max-u - min-u > 500 then
+      let fa = if max-u - ua > 500 then ico-wrap-u pa else pa
+      in let fb = if max-u - ub > 500 then ico-wrap-u pb else pb
+      in let fc = if max-u - uc > 500 then ico-wrap-u pc else pc
+      in [fa, fb, fc]
+    else [pa, pb, pc]
+
+  ico-fix-pole : Vertex, Vertex, Vertex -> Vertex
+  ico-fix-pole (v) (n1) (n2) =
+    let any = if v.vn-y > 950 then 1 else if v.vn-y < -950 then 1 else 0
+    in if any == 1 then
+      let avg-u = (n1.vu + n2.vu) / 2
+      in vertex (v.vp-x) (v.vp-y) (v.vp-z) (v.vn-x) (v.vn-y) (v.vn-z) avg-u (v.vv) (v.v-color)
+    else v
+
+  ico-wrap-u : Vertex -> Vertex
+  ico-wrap-u (v) = vertex (v.vp-x) (v.vp-y) (v.vp-z) (v.vn-x) (v.vn-y) (v.vn-z) (v.vu + 1000) (v.vv) (v.v-color)
+
+  gc-max3 : Integer, Integer, Integer -> Integer
+  gc-max3 (a) (b) (c) = if a > b then (if a > c then a else c) else (if b > c then b else c)
+
+  gc-min3 : Integer, Integer, Integer -> Integer
+  gc-min3 (a) (b) (c) = if a < b then (if a < c then a else c) else (if b < c then b else c)
+
+  IcoPair = record {
+    ip-verts : List Vertex,
+    ip-indices : List Integer
+  }
+
+  list-at-pair-a : IcoPair -> List Vertex
+  list-at-pair-a (p) = p.ip-verts
+
+  list-at-pair-b : IcoPair -> List Integer
+  list-at-pair-b (p) = p.ip-indices
+
+  ico-make-vert : Integer, Integer, Integer, Integer -> Vertex
+  ico-make-vert (x) (y) (z) (r) =
+    let len = gc-isqrt (x * x + y * y + z * z)
+    in let nx = if len == 0 then 0 else x * 1000 / len
+    in let ny = if len == 0 then 1000 else y * 1000 / len
+    in let nz = if len == 0 then 0 else z * 1000 / len
+    in let lat-deg = gc-asin-deg ny
+    in let lon-deg = gc-atan2-deg nz nx
+    in let u = (lon-deg + 180) * 1000 / 360
+    in let v = (lat-deg + 90) * 1000 / 180
+    in let color = earth-color lat-deg lon-deg
+    in vertex x y z nx ny nz u v color
+
+  gc-asin-deg : Integer -> Integer
+  gc-asin-deg (x) =
+    let clamped = gc-clamp x (-1000) 1000
+    in let cos-part = gc-isqrt (1000000 - clamped * clamped)
+    in let mrad = gc-atan2-mrad clamped cos-part
+    in mrad * 180 / 3141
+
+  gc-atan2-deg : Integer, Integer -> Integer
+  gc-atan2-deg (y) (x) =
+    let mrad = gc-atan2-mrad y x
+    in mrad * 180 / 3141
+
+  gc-atan2-mrad : Integer, Integer -> Integer
+  gc-atan2-mrad (y) (x) =
+    if x == 0 then
+      if y > 0 then 1571 else if y < 0 then -1571 else 0
+    else let r = gc-isqrt (x * x + y * y)
+    in let denom = r + x
+    in if denom <= 0 then
+      if y >= 0 then 3141 else -3141
+    else let ay = if y < 0 then 0 - y else y
+    in if denom >= ay then
+      let t = y * 1000 / (denom + 1)
+      in 2 * gc-atan-poly t
+    else let inv = denom * 1000 / (ay + 1)
+    in let a = 1571 - gc-atan-poly inv
+    in if y >= 0 then 2 * a else 0 - 2 * a
+
+  gc-atan-poly : Integer -> Integer
+  gc-atan-poly (t) =
+    let neg = t < 0
+    in let at = if neg then 0 - t else t
+    in let t2 = at * at / 1000
+    in let result = at * (15000 + 4 * t2) / (15000 + 9 * t2)
+    in if neg then 0 - result else result
+
+Section: Icosahedron Base
+
+  ico-base-tris : Integer -> List IcoTri
+  ico-base-tris (r) =
+    let t = 851 * r / 1000
+    in let o = 526 * r / 1000
+    in let v0 = vec3-new (0 - o) t 0
+    in let v1 = vec3-new o t 0
+    in let v2 = vec3-new (0 - o) (0 - t) 0
+    in let v3 = vec3-new o (0 - t) 0
+    in let v4 = vec3-new 0 (0 - o) t
+    in let v5 = vec3-new 0 o t
+    in let v6 = vec3-new 0 (0 - o) (0 - t)
+    in let v7 = vec3-new 0 o (0 - t)
+    in let v8 = vec3-new t 0 (0 - o)
+    in let v9 = vec3-new t 0 o
+    in let v10 = vec3-new (0 - t) 0 (0 - o)
+    in let v11 = vec3-new (0 - t) 0 o
+    in [
+      ico-tri-from v0 v11 v5,
+      ico-tri-from v0 v5 v1,
+      ico-tri-from v0 v1 v7,
+      ico-tri-from v0 v7 v10,
+      ico-tri-from v0 v10 v11,
+      ico-tri-from v1 v5 v9,
+      ico-tri-from v5 v11 v4,
+      ico-tri-from v11 v10 v2,
+      ico-tri-from v10 v7 v6,
+      ico-tri-from v7 v1 v8,
+      ico-tri-from v3 v9 v4,
+      ico-tri-from v3 v4 v2,
+      ico-tri-from v3 v2 v6,
+      ico-tri-from v3 v6 v8,
+      ico-tri-from v3 v8 v9,
+      ico-tri-from v4 v9 v5,
+      ico-tri-from v2 v4 v11,
+      ico-tri-from v6 v2 v10,
+      ico-tri-from v8 v6 v7,
+      ico-tri-from v9 v8 v1
+    ]
+
+  ico-tri-from : Vec3, Vec3, Vec3 -> IcoTri
+  ico-tri-from (a) (b) (c) =
+    IcoTri { t-ax = a.vx, t-ay = a.vy, t-az = a.vz, t-bx = b.vx, t-by = b.vy, t-bz = b.vz, t-cx = c.vx, t-cy = c.vy, t-cz = c.vz }
+
+Section: Continental Color
+
+  earth-color : Integer, Integer -> Integer
+  earth-color (lat) (lon) =
+    let base = if lat > 72 then #F0F8FF
+      else if lat < -67 then #ECF4FF
+      else if lat > 65 then #E0ECFA
+      else if lat < -60 then #D8E8F8
+      else if earth-is-land lat lon then earth-land-color lat lon
+      else earth-ocean-color lat
+    in let cloud = cloud-cover lat lon
+    in if cloud > 0 then cloud-blend base cloud else base
+
+  cloud-cover : Integer, Integer -> Integer
+  cloud-cover (lat) (lon) =
+    let h1 = gc-hash (lat / 6) (lon / 10)
+    in let h2 = gc-hash (lat / 14 + 37) (lon / 20 + 53)
+    in let h3 = gc-hash (lat / 3 + 71) (lon / 5 + 97)
+    in let band = gc-cloud-band lat
+    in let noise = (h1 + h2 + h3) / 3
+    in let cov = noise * band / 255
+    in if cov > 500 then gc-clamp ((cov - 500) * 255 / 500) 0 200 else 0
+
+  gc-cloud-band : Integer -> Integer
+  gc-cloud-band (lat) =
+    let abs-lat = if lat < 0 then 0 - lat else lat
+    in if abs-lat < 10 then 900
+    else if abs-lat < 20 then 500
+    else if abs-lat < 35 then 700
+    else if abs-lat < 55 then 800
+    else 600
+
+  gc-hash : Integer, Integer -> Integer
+  gc-hash (a) (b) =
+    let x = (a * 12289 + b * 51349 + 32749) * 65537
+    in let y = if x < 0 then 0 - x else x
+    in let z = y / 256
+    in z - z / 256 * 256
+
+  cloud-blend : Integer, Integer -> Integer
+  cloud-blend (base) (amount) =
+    let br = base / 65536
+    in let bg = base / 256 - br * 256
+    in let bb = base - base / 256 * 256
+    in let r = gc-clamp (br + (255 - br) * amount / 255) 0 255
+    in let g = gc-clamp (bg + (255 - bg) * amount / 255) 0 255
+    in let b = gc-clamp (bb + (255 - bb) * amount / 255) 0 255
+    in r * 65536 + g * 256 + b
+
+  earth-land-color : Integer, Integer -> Integer
+  earth-land-color (lat) (lon) =
+    let abs-lat = if lat < 0 then 0 - lat else lat
+    in if abs-lat > 58 then #A0C098
+    else if abs-lat > 48 then #4A9838
+    else if abs-lat > 38 then #6AAC50
+    else if abs-lat > 25 then #C8B068
+    else if abs-lat > 15 then #60B048
+    else #389830
+
+  earth-ocean-color : Integer -> Integer
+  earth-ocean-color (lat) =
+    let abs-lat = if lat < 0 then 0 - lat else lat
+    in if abs-lat > 55 then #3870B8
+    else if abs-lat > 35 then #2058B8
+    else #1850C0
+
+  earth-is-land : Integer, Integer -> Boolean
+  earth-is-land (lat) (lon) =
+    if earth-na lat lon then True
+    else if earth-sa lat lon then True
+    else if earth-eu lat lon then True
+    else if earth-af lat lon then True
+    else if earth-as lat lon then True
+    else if earth-oc lat lon then True
+    else False
+
+  earth-na : Integer, Integer -> Boolean
+  earth-na (lat) (lon) =
+    if earth-in-rect lat lon 50 72 (-145) (-55) then True
+    else if earth-in-rect lat lon 48 55 (-130) (-55) then True
+    else if earth-in-rect lat lon 40 50 (-128) (-66) then True
+    else if earth-in-rect lat lon 30 40 (-122) (-75) then True
+    else if earth-in-rect lat lon 25 30 (-115) (-80) then True
+    else if earth-in-rect lat lon 30 48 (-75) (-52) then True
+    else if earth-in-rect lat lon 15 25 (-105) (-80) then True
+    else if earth-in-rect lat lon 8 18 (-90) (-77) then True
+    else if earth-in-rect lat lon 60 72 (-168) (-140) then True
+    else if earth-in-rect lat lon 18 25 (-80) (-72) then True
+    else if earth-in-rect lat lon 20 24 (-110) (-105) then True
+    else if earth-in-rect lat lon 45 55 (-55) (-52) then True
+    else False
+
+  earth-sa : Integer, Integer -> Boolean
+  earth-sa (lat) (lon) =
+    if earth-in-rect lat lon 0 12 (-80) (-60) then True
+    else if earth-in-rect lat lon (-5) 0 (-80) (-50) then True
+    else if earth-in-rect lat lon (-15) (-5) (-78) (-38) then True
+    else if earth-in-rect lat lon (-24) (-15) (-70) (-36) then True
+    else if earth-in-rect lat lon (-34) (-24) (-70) (-48) then True
+    else if earth-in-rect lat lon (-40) (-34) (-72) (-56) then True
+    else if earth-in-rect lat lon (-55) (-40) (-74) (-64) then True
+    else if earth-in-rect lat lon (-22) (-2) (-50) (-35) then True
+    else if earth-in-rect lat lon (-2) 5 (-52) (-44) then True
+    else if earth-in-rect lat lon (-10) 0 (-60) (-50) then True
+    else False
+
+  earth-eu : Integer, Integer -> Boolean
+  earth-eu (lat) (lon) =
+    if earth-in-rect lat lon 48 60 (-10) 40 then True
+    else if earth-in-rect lat lon 43 48 (-9) 30 then True
+    else if earth-in-rect lat lon 60 72 5 30 then True
+    else if earth-in-rect lat lon 55 65 (-12) 5 then True
+    else if earth-in-rect lat lon 36 43 (-9) 3 then True
+    else if earth-in-rect lat lon 36 43 8 28 then True
+    else if earth-in-rect lat lon 38 42 28 44 then True
+    else if earth-in-rect lat lon 56 72 30 42 then True
+    else if earth-in-rect lat lon 64 72 15 30 then True
+    else if earth-in-rect lat lon 36 40 22 30 then True
+    else False
+
+  earth-af : Integer, Integer -> Boolean
+  earth-af (lat) (lon) =
+    if earth-in-rect lat lon 20 37 (-17) 12 then True
+    else if earth-in-rect lat lon 10 20 (-17) 18 then True
+    else if earth-in-rect lat lon 4 10 (-12) 15 then True
+    else if earth-in-rect lat lon 0 4 5 15 then True
+    else if earth-in-rect lat lon (-5) 0 10 32 then True
+    else if earth-in-rect lat lon (-15) (-5) 12 42 then True
+    else if earth-in-rect lat lon 0 12 25 42 then True
+    else if earth-in-rect lat lon 12 25 32 52 then True
+    else if earth-in-rect lat lon (-25) (-15) 20 40 then True
+    else if earth-in-rect lat lon (-35) (-25) 22 34 then True
+    else if earth-in-rect lat lon (-12) 0 42 48 then True
+    else False
+
+  earth-as : Integer, Integer -> Boolean
+  earth-as (lat) (lon) =
+    if earth-in-rect lat lon 50 70 42 140 then True
+    else if earth-in-rect lat lon 42 50 44 135 then True
+    else if earth-in-rect lat lon 55 72 140 175 then True
+    else if earth-in-rect lat lon 30 42 44 82 then True
+    else if earth-in-rect lat lon 22 30 48 75 then True
+    else if earth-in-rect lat lon 25 42 82 128 then True
+    else if earth-in-rect lat lon 10 25 93 108 then True
+    else if earth-in-rect lat lon 30 45 128 142 then True
+    else if earth-in-rect lat lon (-8) 10 100 118 then True
+    else if earth-in-rect lat lon 5 20 118 128 then True
+    else if earth-in-rect lat lon 35 42 125 132 then True
+    else False
+
+  earth-oc : Integer, Integer -> Boolean
+  earth-oc (lat) (lon) =
+    if earth-in-rect lat lon (-28) (-12) 114 154 then True
+    else if earth-in-rect lat lon (-38) (-28) 115 150 then True
+    else if earth-in-rect lat lon (-12) (-5) 130 150 then True
+    else if earth-in-rect lat lon (-47) (-34) 166 178 then True
+    else if earth-in-rect lat lon (-38) (-34) 145 178 then True
+    else if earth-in-rect lat lon (-34) (-25) 150 170 then True
+    else False
+
+  earth-in-rect : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  earth-in-rect (lat) (lon) (lat-lo) (lat-hi) (lon-lo) (lon-hi) =
+    lat >= lat-lo & lat <= lat-hi & lon >= lon-lo & lon <= lon-hi
+
+Section: Render Frame
+
+  globe-frame : Integer, Mesh, Integer, Integer, Integer -> Integer
+  globe-frame (cmd) (sphere) (yaw) (pitch) (dist) =
+    let cam = gorbit yaw pitch dist
+    in let vp = camera3d-vp cam
+    in let eye = cam.c3-eye
+    in let light = gnorm eye
+    in let wlx = port-out-32 1028 (light.vx)
+    in let wly = port-out-32 1029 (light.vy)
+    in let wlz = port-out-32 1030 (light.vz)
+    in let wex = port-out-32 1031 (light.vx)
+    in let tri-count = gtris sphere vp light eye cmd 0 (mesh-triangle-count sphere * 3) 0
+    in let w1 = port-out-32 1025 #020412
+    in let w2 = port-out-32 1026 0
+    in port-out-32 1024 tri-count
+
+  gtris : Mesh, Mat4, Vec3, Vec3, Integer, Integer, Integer, Integer -> Integer
+  gtris (mesh) (vp) (light) (eye) (cmd) (i) (n) (tri-idx) =
+    if i >= n then tri-idx
+    else if tri-idx >= 16384 then tri-idx
+    else let v0 = mesh-vertex-at mesh (mesh-index-at mesh i)
+    in let v1 = mesh-vertex-at mesh (mesh-index-at mesh (i + 1))
+    in let v2 = mesh-vertex-at mesh (mesh-index-at mesh (i + 2))
+    in let p0 = gproj v0 vp
+    in let p1 = gproj v1 vp
+    in let p2 = gproj v2 vp
+    in let area = (p1.gp-sx - p0.gp-sx) * (p2.gp-sy - p0.gp-sy) - (p1.gp-sy - p0.gp-sy) * (p2.gp-sx - p0.gp-sx)
+    in if area >= 0 then gtris mesh vp light eye cmd (i + 3) n tri-idx
+    else let off = tri-idx * 72
+    in let c0 = glit-color v0 light
+    in let c1 = glit-color v1 light
+    in let c2 = glit-color v2 light
+    in let wa = poke-32 cmd off (p0.gp-sx)
+    in let wb = poke-32 cmd (off + 4) (p0.gp-sy)
+    in let wc = poke-32 cmd (off + 8) (p1.gp-sx)
+    in let wd = poke-32 cmd (off + 12) (p1.gp-sy)
+    in let we = poke-32 cmd (off + 16) (p2.gp-sx)
+    in let wf = poke-32 cmd (off + 20) (p2.gp-sy)
+    in let wg = poke-32 cmd (off + 24) c0
+    in let wh = poke-32 cmd (off + 28) c1
+    in let wi = poke-32 cmd (off + 32) c2
+    in let wj = poke-32 cmd (off + 36) (p0.gp-depth)
+    in let wk = poke-32 cmd (off + 40) (p1.gp-depth)
+    in let wl = poke-32 cmd (off + 44) (p2.gp-depth)
+    in let wm = poke-32 cmd (off + 48) (v0.vu)
+    in let wn = poke-32 cmd (off + 52) (v0.vv)
+    in let wo = poke-32 cmd (off + 56) (v1.vu)
+    in let wp = poke-32 cmd (off + 60) (v1.vv)
+    in let wq = poke-32 cmd (off + 64) (v2.vu)
+    in let wr = poke-32 cmd (off + 68) (v2.vv)
+    in gtris mesh vp light eye cmd (i + 3) n (tri-idx + 1)
+
+  glit-color : Vertex, Vec3 -> Integer
+  glit-color (v) (light) = #FFFFFF
+
+Section: Projection
+
+  GProj = record { gp-sx : Integer, gp-sy : Integer, gp-depth : Integer }
+
+  gproj : Vertex, Mat4 -> GProj
+  gproj (v) (mvp) =
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vp-x, v4y = v.vp-y, v4z = v.vp-z, v4w = 1000 })
+    in if clip.v4w <= 0 then GProj { gp-sx = -9999, gp-sy = -9999, gp-depth = 999999 }
+    else GProj { gp-sx = sw / 2 + clip.v4x * sw / 2 / clip.v4w, gp-sy = sh / 2 - clip.v4y * sh / 2 / clip.v4w, gp-depth = (clip.v4z + clip.v4w) * 500000 / clip.v4w }
+
+Section: Animation
+
+  globe-loop : Integer, Mesh, Integer, Integer, Integer, Integer -> Text
+  globe-loop (cmd) (sphere) (yaw) (pitch) (dist) (frame) =
+    let dummy = port-in-byte 96
+    in let sc = peek-byte kb-addr 0
+    in let mflags = peek-byte mouse-addr 0
+    in let mdx = peek-byte mouse-addr 1
+    in let mdy = peek-byte mouse-addr 2
+    in let mc0 = poke-byte mouse-addr 0 0
+    in let mc1 = poke-byte mouse-addr 1 0
+    in let mc2 = poke-byte mouse-addr 2 0
+    in let mouse-dx = if mdx > 127 then mdx - 256 else mdx
+    in let mouse-dy = if mdy > 127 then mdy - 256 else mdy
+    in let dragging = mflags / 1 - mflags / 2 * 2
+    in let yaw2 = if dragging == 1 then yaw - mouse-dx * 8 else yaw + 3
+    in let pitch2 = if dragging == 1 then gc-clamp (pitch + mouse-dy * 8) (-1400) 1400 else pitch
+    in if sc /= 0 then
+      let w = poke-byte kb-addr 0 0
+      in if sc == 16 then "quit"
+      else if sc == 1 then "quit"
+      else if sc == 18 then
+        let gen = tg-generate PkEarth 42
+        in globe-loop cmd sphere yaw2 pitch2 dist (frame + 1)
+      else if sc == 50 then
+        let gen = tg-generate PkMars 77
+        in globe-loop cmd sphere yaw2 pitch2 dist (frame + 1)
+      else if sc == 19 then
+        let gen = tg-generate PkRandom (frame * 7 + 1337)
+        in globe-loop cmd sphere yaw2 pitch2 dist (frame + 1)
+      else let y3 = if sc == 75 then yaw2 - 120 else if sc == 77 then yaw2 + 120 else yaw2
+      in let p2 = if sc == 72 then gc-clamp (pitch2 + 60) (-1400) 1400 else if sc == 80 then gc-clamp (pitch2 - 60) (-1400) 1400 else pitch2
+      in let d2 = if sc == 78 then gc-clamp (dist - 300) 4000 25000 else if sc == 74 then gc-clamp (dist + 300) 4000 25000 else dist
+      in let hp = __heap-save
+      in let w2 = globe-frame cmd sphere y3 p2 d2
+      in let restored = __heap-restore hp
+      in globe-loop cmd sphere y3 p2 d2 (frame + 1)
+    else let hp = __heap-save
+    in let w2 = globe-frame cmd sphere yaw2 pitch2 dist
+    in let restored = __heap-restore hp
+    in globe-loop cmd sphere yaw2 pitch2 dist (frame + 1)
+
+Section: Camera
+
+  gorbit : Integer, Integer, Integer -> Camera3D
+  gorbit (yaw) (pitch) (dist) =
+    let sy = gc-sin (gc-wrap yaw)
+    in let cy = gc-cos (gc-wrap yaw)
+    in let sp = gc-sin (gc-wrap pitch)
+    in let cp = gc-cos (gc-wrap pitch)
+    in camera3d-new (vec3-new (sy * cp * dist / 1000000) (sp * dist / 1000) (cy * cp * dist / 1000000)) vec3-zero 785
+
+Section: Helpers
+
+  gnorm : Vec3 -> Vec3
+  gnorm (v) =
+    let len = gc-isqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
+    in if len == 0 then vec3-zero else vec3-new (v.vx * 1000 / len) (v.vy * 1000 / len) (v.vz * 1000 / len)
+
+  gc-isqrt : Integer -> Integer
+  gc-isqrt (n) = if n <= 0 then 0 else gc-isq n (n / 2 + 1)
+
+  gc-isq : Integer, Integer -> Integer
+  gc-isq (n) (g) = let next = (g + n / g) / 2 in if next >= g then g else gc-isq n next
+
+  gc-sin : Integer -> Integer
+  gc-sin (raw) =
+    let a = gc-wrap raw
+    in if a <= 1570 then gc-sin-core a
+    else if a <= 3141 then gc-sin-core (3141 - a)
+    else if a <= 4712 then 0 - gc-sin-core (a - 3141)
+    else 0 - gc-sin-core (6283 - a)
+
+  gc-cos : Integer -> Integer
+  gc-cos (raw) = gc-sin (raw + 1570)
+
+  gc-sin-core : Integer -> Integer
+  gc-sin-core (x) =
+    let x2 = x * x / 1000
+    in let x3 = x2 * x / 1000
+    in let x5 = x3 * x2 / 1000
+    in x - x3 / 6 + x5 / 120
+
+  gc-wrap : Integer -> Integer
+  gc-wrap (a) = let m = a - (a / 6283) * 6283 in if m < 0 then m + 6283 else m
+
+  gc-clamp : Integer, Integer, Integer -> Integer
+  gc-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Page 1

@@ -27,6 +27,7 @@
 static void *guest_mem;
 static size_t guest_mem_size;
 static WHV_PARTITION_HANDLE partition;
+static int smp_cores;  /* 0 or 1 = single-core (default); 2-16 = multi-core */
 
 /* System-wide mutex: serialize WHP partition create/destroy across all
    codex-vm instances.  vid.sys on Win11 26100 corrupts its kernel heap
@@ -1170,6 +1171,148 @@ static void ioapic_write(unsigned long long offset, unsigned int val) {
     }
 }
 
+/* ══ LAPIC ══ */
+#define LAPIC_BAR       0xFEE00000ULL
+#define LAPIC_BAR_SIZE  0x1000
+#define SMP_MAX_CORES   16
+
+static struct {
+    unsigned int id;
+    unsigned int sivr;
+    unsigned int icr_lo;
+    unsigned int icr_hi;
+    unsigned int eoi;
+    int ap_count;
+    volatile int ap_running[SMP_MAX_CORES];
+    HANDLE ap_threads[SMP_MAX_CORES];
+} lapic_state;
+
+static unsigned int lapic_read(unsigned long long offset) {
+    if (offset == 0x20) return lapic_state.id << 24;
+    if (offset == 0x30) return 0x00050014;
+    if (offset == 0xF0) return lapic_state.sivr;
+    if (offset == 0x300) return lapic_state.icr_lo;
+    if (offset == 0x310) return lapic_state.icr_hi;
+    return 0;
+}
+
+static void ap_thread_func(void *arg);
+
+static void lapic_write(unsigned long long offset, unsigned int val) {
+    if (offset == 0xB0) { lapic_state.eoi = 0; return; }
+    if (offset == 0xF0) { lapic_state.sivr = val; return; }
+    if (offset == 0x310) { lapic_state.icr_hi = val; return; }
+    if (offset == 0x300) {
+        lapic_state.icr_lo = val;
+        int deliv = (val >> 8) & 7;
+        int dest = (val >> 18) & 3;
+        int vector = val & 0xFF;
+        if (deliv == 6 && dest == 3) {
+            unsigned long long *entry_ptr = (unsigned long long *)((unsigned char *)guest_mem + 0x1000);
+            unsigned long long ap_entry = *entry_ptr;
+            unsigned long long *stack_table = (unsigned long long *)((unsigned char *)guest_mem + 0xF00);
+            if (ap_entry == 0) {
+                fprintf(stderr, "SMP: SIPI but no AP entry at 0x1000, ignoring\n");
+                return;
+            }
+            for (int i = 1; i < SMP_MAX_CORES && i <= lapic_state.ap_count; i++) {
+                if (lapic_state.ap_running[i]) continue;
+                lapic_state.ap_running[i] = 1;
+                HRESULT hr = WHvCreateVirtualProcessor(partition, i, 0);
+                if (FAILED(hr)) {
+                    fprintf(stderr, "WHvCreateVirtualProcessor(%d): 0x%lx\n", i, hr);
+                    lapic_state.ap_running[i] = 0;
+                    continue;
+                }
+                unsigned long long ap_stack = stack_table[i];
+                if (ap_stack == 0) ap_stack = 0xC0000000ULL - (unsigned long long)i * 0x10000;
+                WHV_REGISTER_NAME ap_names[] = {
+                    WHvX64RegisterRip, WHvX64RegisterRsp, WHvX64RegisterRflags,
+                    WHvX64RegisterCs, WHvX64RegisterDs, WHvX64RegisterEs,
+                    WHvX64RegisterSs, WHvX64RegisterFs, WHvX64RegisterGs,
+                    WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4,
+                    WHvX64RegisterEfer, WHvX64RegisterGdtr, WHvX64RegisterRdi
+                };
+                WHV_REGISTER_VALUE ap_vals[15];
+                memset(ap_vals, 0, sizeof(ap_vals));
+                ap_vals[0].Reg64 = ap_entry;
+                ap_vals[1].Reg64 = ap_stack;
+                ap_vals[2].Reg64 = 2;
+                ap_vals[3].Segment.Selector = 0x08;
+                ap_vals[3].Segment.Base = 0;
+                ap_vals[3].Segment.Limit = 0xFFFFFFFF;
+                ap_vals[3].Segment.Attributes = 0xA09B;
+                for (int s = 4; s <= 9; s++) {
+                    ap_vals[s].Segment.Selector = 0x10;
+                    ap_vals[s].Segment.Base = 0;
+                    ap_vals[s].Segment.Limit = 0xFFFFFFFF;
+                    ap_vals[s].Segment.Attributes = 0xC093;
+                }
+                ap_vals[10].Reg64 = 0x80000011;
+                ap_vals[11].Reg64 = 0x8000;
+                ap_vals[12].Reg64 = 0x620;
+                ap_vals[13].Table.Base = 0x100000 + 232;
+                ap_vals[13].Table.Limit = 23;
+                ap_vals[14].Reg64 = (unsigned long long)i;
+                WHvSetVirtualProcessorRegisters(partition, i, ap_names, 15, ap_vals);
+                fprintf(stderr, "SMP: AP %d started, entry=0x%llx stack=0x%llx\n",
+                    i, ap_entry, ap_stack);
+                lapic_state.ap_threads[i] = CreateThread(NULL, 0,
+                    (LPTHREAD_START_ROUTINE)ap_thread_func,
+                    (void*)(intptr_t)i, 0, NULL);
+            }
+        }
+        return;
+    }
+}
+
+static void ap_thread_func(void *arg) {
+    int cpu_id = (int)(intptr_t)arg;
+    WHV_RUN_VP_EXIT_CONTEXT ctx;
+    fprintf(stderr, "SMP: AP %d thread started\n", cpu_id);
+    for (;;) {
+        HRESULT hr = WHvRunVirtualProcessor(partition, cpu_id, &ctx, sizeof(ctx));
+        if (FAILED(hr)) {
+            fprintf(stderr, "SMP: AP %d run failed: 0x%lx\n", cpu_id, hr);
+            break;
+        }
+        switch (ctx.ExitReason) {
+        case WHvRunVpExitReasonX64Halt:
+            Sleep(100);
+            break;
+        case WHvRunVpExitReasonMemoryAccess:
+            if (ctx.MemoryAccess.Gpa >= LAPIC_BAR && ctx.MemoryAccess.Gpa < LAPIC_BAR + LAPIC_BAR_SIZE) {
+                unsigned long long off = ctx.MemoryAccess.Gpa - LAPIC_BAR;
+                WHV_REGISTER_NAME rn[2] = { WHvX64RegisterRax, WHvX64RegisterRip };
+                WHV_REGISTER_VALUE rv[2];
+                WHvGetVirtualProcessorRegisters(partition, cpu_id, rn, 2, rv);
+                if (ctx.MemoryAccess.AccessInfo.AccessType == 0) rv[0].Reg64 = lapic_read(off);
+                else lapic_write(off, (unsigned int)rv[0].Reg64);
+                rv[1].Reg64 += ctx.VpContext.InstructionLength ? ctx.VpContext.InstructionLength : 2;
+                WHvSetVirtualProcessorRegisters(partition, cpu_id, rn, 2, rv);
+            }
+            break;
+        case WHvRunVpExitReasonX64IoPortAccess:
+            {
+                WHV_REGISTER_NAME rn = WHvX64RegisterRip;
+                WHV_REGISTER_VALUE rv;
+                WHvGetVirtualProcessorRegisters(partition, cpu_id, &rn, 1, &rv);
+                rv.Reg64 += ctx.VpContext.InstructionLength ? ctx.VpContext.InstructionLength : 1;
+                WHvSetVirtualProcessorRegisters(partition, cpu_id, &rn, 1, &rv);
+            }
+            break;
+        case WHvRunVpExitReasonCanceled:
+            break;
+        default:
+            fprintf(stderr, "SMP: AP %d exit reason %d at RIP=0x%llx\n",
+                cpu_id, ctx.ExitReason, ctx.VpContext.Rip);
+            goto ap_done;
+        }
+    }
+ap_done:
+    fprintf(stderr, "SMP: AP %d thread exiting\n", cpu_id);
+}
+
 /* ══ ACPI Tables ══ */
 #define ACPI_BASE 0xE0000ULL  /* RSDP in the E-segment (ROM shadow area) */
 
@@ -1241,9 +1384,10 @@ static void acpi_setup_tables(void *mem) {
     memcpy(dsdt + 16, "CODEXVM ", 8);
     dsdt[9] = acpi_checksum(dsdt, 36);
 
-    /* MADT at +0x400 (header + LAPIC + IOAPIC = 36+8+12 = 56 bytes) */
+    /* MADT at +0x400 */
     unsigned char *madt = base + madt_addr;
-    int madt_len = 44 + 8 + 12;  /* header(44) + LAPIC(8) + IOAPIC(12) */
+    int num_cpus = smp_cores > 1 ? smp_cores : 1;
+    int madt_len = 44 + num_cpus * 8 + 12;
     memset(madt, 0, madt_len);
     memcpy(madt, "APIC", 4);
     *(unsigned int *)(madt + 4) = madt_len;
@@ -1252,18 +1396,16 @@ static void acpi_setup_tables(void *mem) {
     memcpy(madt + 16, "CODEXVM ", 8);
     *(unsigned int *)(madt + 36) = 0xFEE00000;  /* local APIC address */
     *(unsigned int *)(madt + 40) = 1;           /* flags: PCAT_COMPAT */
-    /* Entry 0: Processor Local APIC */
-    madt[44] = 0;     /* type: processor local APIC */
-    madt[45] = 8;     /* length */
-    madt[46] = 0;     /* processor ID */
-    madt[47] = 0;     /* APIC ID */
-    *(unsigned int *)(madt + 48) = 1;  /* flags: enabled */
-    /* Entry 1: I/O APIC */
-    madt[52] = 1;     /* type: I/O APIC */
-    madt[53] = 12;    /* length */
-    madt[54] = 0;     /* I/O APIC ID */
-    *(unsigned int *)(madt + 56) = 0xFEC00000;  /* I/O APIC address */
-    *(unsigned int *)(madt + 60) = 0;           /* global system interrupt base */
+    for (int i = 0; i < num_cpus; i++) {
+        int off = 44 + i * 8;
+        madt[off] = 0; madt[off+1] = 8;
+        madt[off+2] = (unsigned char)i; madt[off+3] = (unsigned char)i;
+        *(unsigned int *)(madt + off + 4) = 1;
+    }
+    int io_off = 44 + num_cpus * 8;
+    madt[io_off] = 1; madt[io_off+1] = 12; madt[io_off+2] = 0;
+    *(unsigned int *)(madt + io_off + 4) = 0xFEC00000;
+    *(unsigned int *)(madt + io_off + 8) = 0;
     madt[9] = acpi_checksum(madt, madt_len);
 
     fprintf(stderr, "ACPI: RSDP=0x%llx RSDT=0x%x FADT=0x%x MADT=0x%x DSDT=0x%x\n",
@@ -1364,6 +1506,9 @@ static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     } else if (gpa >= IOAPIC_BAR && gpa < IOAPIC_BAR + IOAPIC_BAR_SIZE) {
         offset = gpa - IOAPIC_BAR;
         read_fn = ioapic_read; write_fn = ioapic_write;
+    } else if (gpa >= LAPIC_BAR && gpa < LAPIC_BAR + LAPIC_BAR_SIZE) {
+        offset = gpa - LAPIC_BAR;
+        read_fn = lapic_read; write_fn = lapic_write;
     }
 
     if (read_fn) {
@@ -1383,7 +1528,7 @@ static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
 }
 
 /* GOP (Graphics Output Protocol) state */
-#define GOP_FB_ADDR       0x40000000ULL  /* guest physical address of framebuffer (1 GB) */
+#define GOP_FB_ADDR       0xBF000000ULL  /* guest physical address of framebuffer (3GB - 16MB, in RAM — fast writes, no MMIO trap) */
 #define GOP_MAX_W         1024
 #define GOP_MAX_H         768
 #define GOP_FB_SIZE       (GOP_MAX_W * GOP_MAX_H * 4)  /* 3 MB max */
@@ -1815,16 +1960,28 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     case UEFI_TRAP_BOOT_GET_MEMMAP: {
         /* GetMemoryMap — ASUS TUF (AMI Aptio V) compatible memory map
            RCX=&MapSize, RDX=MemoryMap, R8=&MapKey, R9=&DescSize
-           Stack: [RSP+40]=&DescVersion */
-        struct { unsigned int type; unsigned long long phys; unsigned long long virt; unsigned long long pages; unsigned long long attr; } entries[] = {
-            { 0,  0x00000, 0x00000, 1, 0 },          /* Reserved: IVT+BDA (4 KB) */
-            { 7,  0x01000, 0x01000, 0x9E, 0 },        /* Conventional: 0x1000-0x9EFFF (631 KB) */
-            { 0,  0x9F000, 0x9F000, 1, 0 },           /* Reserved: EBDA (4 KB) */
-            { 0,  0xA0000, 0xA0000, 0x20, 0 },        /* Reserved: VGA (128 KB) */
-            { 0,  0xC0000, 0xC0000, 0x40, 0 },        /* Reserved: ROM shadow (256 KB) */
-            { 7,  0x100000, 0x100000, (guest_mem_size - 0x100000) / 4096, 0 }, /* Conventional: main RAM */
-        };
-        int num_entries = 6;
+           Stack: [RSP+40]=&DescVersion
+           For >3GB guests, splits RAM around the PCI MMIO hole
+           (0xC0000000-0xFFFFFFFF) and reports high RAM above 4GB. */
+        struct { unsigned int type; unsigned long long phys; unsigned long long virt; unsigned long long pages; unsigned long long attr; } entries[8];
+        int num_entries = 0;
+        #define MMAP_ENT(t,p,pg) do { entries[num_entries].type=(t); entries[num_entries].phys=(p); \
+            entries[num_entries].virt=(p); entries[num_entries].pages=(pg); \
+            entries[num_entries].attr=0; num_entries++; } while(0)
+        MMAP_ENT(0, 0x00000, 1);            /* Reserved: IVT+BDA */
+        MMAP_ENT(7, 0x01000, 0x9E);         /* Conventional: low 631 KB */
+        MMAP_ENT(0, 0x9F000, 1);            /* Reserved: EBDA */
+        MMAP_ENT(0, 0xA0000, 0x20);         /* Reserved: VGA */
+        MMAP_ENT(0, 0xC0000, 0x40);         /* Reserved: ROM shadow */
+        if (guest_mem_size <= 0xC0000000ULL) {
+            MMAP_ENT(7, 0x100000, (unsigned int)((guest_mem_size - 0x100000) / 4096));
+        } else {
+            MMAP_ENT(7, 0x100000, (unsigned int)((0xC0000000ULL - 0x100000) / 4096));
+            if (guest_mem_size > 0x100000000ULL) {
+                MMAP_ENT(7, 0x100000000ULL, (unsigned int)((guest_mem_size - 0x100000000ULL) / 4096));
+            }
+        }
+        #undef MMAP_ENT
         unsigned long long desc_size = 48;
         unsigned long long map_size = (unsigned long long)num_entries * desc_size;
         if (rcx > 0 && rcx + 8 <= guest_mem_size)
@@ -2074,6 +2231,20 @@ static HFONT vga_font;
 static int vga_headless = 0;
 static volatile int vga_running = 1;
 
+static const char *screenshot_path = NULL;
+static int screenshot_delay_ms = 3000;
+static int gpu_frame_count = 0;
+static int gpu_last_tri_count = 0;
+static float gpu_light[3] = {0, 0, -1};
+static float gpu_eye[3] = {0, 0, -1};
+static unsigned long long gpu_tex_guest_addr = 0;
+static int gpu_tex_upload_w = 0, gpu_tex_upload_h = 0;
+static unsigned long long asset_path_addr = 0;
+static unsigned long long asset_dest_addr = 0;
+static unsigned long long asset_last_size = 0;
+static unsigned char *earth_tex_data = NULL;
+static int earth_tex_w = 0, earth_tex_h = 0;
+
 /* Shadow buffers: the VGA thread reads ONLY from these, never from guest_mem.
    The main loop copies guest_mem -> shadow between VP exits.  This avoids
    concurrent host/guest access to WHP-mapped pages (triggers vid.sys 0xD1). */
@@ -2087,6 +2258,45 @@ static const COLORREF vga_palette[16] = {
     RGB(85,85,85),    RGB(85,85,255),   RGB(85,255,85),   RGB(85,255,255),
     RGB(255,85,85),   RGB(255,85,255),  RGB(255,255,85),  RGB(255,255,255)
 };
+
+static void save_screenshot_bmp(const char *path) {
+    if (!shadow_gop || shadow_gop_w <= 0 || shadow_gop_h <= 0) {
+        fprintf(stderr, "Screenshot: no GOP framebuffer active\n");
+        return;
+    }
+    int w = shadow_gop_w, h = shadow_gop_h, stride = shadow_gop_stride;
+    int row_bytes = w * 3;
+    int pad = (4 - (row_bytes % 4)) % 4;
+    int padded_row = row_bytes + pad;
+    int pixel_size = padded_row * h;
+    int file_size = 54 + pixel_size;
+    FILE *f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "Screenshot: cannot open %s\n", path); return; }
+    unsigned char hdr[54];
+    memset(hdr, 0, sizeof(hdr));
+    hdr[0] = 'B'; hdr[1] = 'M';
+    *(int*)(hdr+2) = file_size;
+    *(int*)(hdr+10) = 54;
+    *(int*)(hdr+14) = 40;
+    *(int*)(hdr+18) = w;
+    *(int*)(hdr+22) = h;
+    *(short*)(hdr+26) = 1;
+    *(short*)(hdr+28) = 24;
+    *(int*)(hdr+34) = pixel_size;
+    fwrite(hdr, 1, 54, f);
+    unsigned char padding[4] = {0,0,0,0};
+    for (int y = h - 1; y >= 0; y--) {
+        unsigned int *row = (unsigned int*)(shadow_gop + y * stride * 4);
+        for (int x = 0; x < w; x++) {
+            unsigned int px = row[x];
+            unsigned char bgr[3] = { px & 0xFF, (px >> 8) & 0xFF, (px >> 16) & 0xFF };
+            fwrite(bgr, 1, 3, f);
+        }
+        if (pad > 0) fwrite(padding, 1, pad, f);
+    }
+    fclose(f);
+    fprintf(stderr, "Screenshot saved: %s (%dx%d)\n", path, w, h);
+}
 
 static void vga_paint(HWND hwnd) {
     PAINTSTRUCT ps;
@@ -2216,7 +2426,7 @@ static DWORD WINAPI vga_thread(LPVOID param) {
     vga_font = CreateFontA(CHAR_H, CHAR_W, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         OEM_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
-    SetTimer(vga_hwnd, VGA_TIMER_ID, 50, NULL);  /* refresh 20Hz */
+    SetTimer(vga_hwnd, VGA_TIMER_ID, 16, NULL);  /* refresh ~60Hz */
     MSG msg;
     while (vga_running && GetMessageA(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
@@ -3942,7 +4152,7 @@ static void create_vm(size_t mem_mb) {
 
     WHV_PARTITION_PROPERTY prop;
     memset(&prop, 0, sizeof(prop));
-    prop.ProcessorCount = 1;
+    prop.ProcessorCount = smp_cores > 1 ? (smp_cores > SMP_MAX_CORES ? SMP_MAX_CORES : smp_cores) : 1;
     WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeProcessorCount, &prop, sizeof(prop));
 
     /* Enable I/O port and CPUID exits. MSR exits handled selectively. */
@@ -3970,6 +4180,11 @@ static void create_vm(size_t mem_mb) {
 
     hr = WHvCreateVirtualProcessor(partition, 0, 0);
     if (FAILED(hr)) { fprintf(stderr, "WHvCreateVirtualProcessor: 0x%lx\n", hr); exit(1); }
+    memset(&lapic_state, 0, sizeof(lapic_state));
+    lapic_state.ap_count = smp_cores > 1 ? smp_cores - 1 : 0;
+    lapic_state.ap_running[0] = 1;
+    lapic_state.sivr = 0xFF;
+    if (smp_cores > 1) fprintf(stderr, "SMP: enabled, %d cores (%d APs)\n", smp_cores, lapic_state.ap_count);
     whp_unlock();
 
     if (uefi_mode) {
@@ -4437,6 +4652,14 @@ static int handle_watch_write(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     return 1;
 }
 
+/* forward declarations for GPU rasterizer */
+static void gpu_clear_fb(int color);
+static void gpu_clear_depth(void);
+static void gpu_rasterize_triangles(int count);
+static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char *cmd,
+                                int w, int h, int count, int band_y0, int band_y1);
+static void gpu_atmosphere_glow(void);
+
 /* ── I/O dispatch ──────────────────────────────────────────────────── */
 
 static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
@@ -4577,6 +4800,91 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 fprintf(stderr, "VBE: mode set %dx%d fb=0x%llx\n", w, h, (unsigned long long)VBE_FB_ADDR);
             }
         }
+        /* GPU triangle rasterizer commands */
+        else if (port == 0x400) {
+            gpu_rasterize_triangles(val);
+            gpu_atmosphere_glow();
+        }
+        else if (port == 0x401) {
+            gpu_clear_fb(val);
+        }
+        else if (port == 0x402) {
+            gpu_clear_depth();
+        }
+        else if (port == 0x404) {
+            gpu_light[0] = (float)(int)val / 1000.0f;
+        }
+        else if (port == 0x405) {
+            gpu_light[1] = (float)(int)val / 1000.0f;
+        }
+        else if (port == 0x406) {
+            gpu_light[2] = (float)(int)val / 1000.0f;
+        }
+        else if (port == 0x407) {
+            gpu_eye[0] = (float)(int)val / 1000.0f;
+            gpu_eye[1] = gpu_light[1]; gpu_eye[2] = gpu_light[2];
+        }
+        else if (port == 0x408) {
+            gpu_tex_guest_addr = (unsigned long long)val;
+        }
+        else if (port == 0x409) {
+            gpu_tex_upload_w = (int)val;
+        }
+        else if (port == 0x40A) {
+            gpu_tex_upload_h = (int)val;
+        }
+        else if (port == 0x40B) {
+            /* Commit: copy texture from guest RAM to rasterizer */
+            if (gpu_tex_upload_w > 0 && gpu_tex_upload_h > 0) {
+                unsigned long long sz = (unsigned long long)gpu_tex_upload_w * gpu_tex_upload_h * 3;
+                if (gpu_tex_guest_addr + sz <= guest_mem_size) {
+                    unsigned char *src = (unsigned char *)guest_mem + gpu_tex_guest_addr;
+                    if (earth_tex_data) free(earth_tex_data);
+                    earth_tex_data = (unsigned char *)malloc(sz);
+                    if (earth_tex_data) {
+                        memcpy(earth_tex_data, src, sz);
+                        earth_tex_w = gpu_tex_upload_w;
+                        earth_tex_h = gpu_tex_upload_h;
+                        fprintf(stderr, "GPU texture uploaded from guest 0x%llx (%dx%d)\n",
+                                gpu_tex_guest_addr, earth_tex_w, earth_tex_h);
+                    }
+                }
+            }
+        }
+        else if (port == 0x40C) {
+            asset_path_addr = (unsigned long long)val;
+        }
+        else if (port == 0x40D) {
+            asset_dest_addr = (unsigned long long)val;
+        }
+        else if (port == 0x40E) {
+            /* Execute asset load: read file from host into guest RAM */
+            asset_last_size = 0;
+            if (asset_path_addr < guest_mem_size && asset_dest_addr < guest_mem_size) {
+                char path[256];
+                int pi = 0;
+                while (pi < 255 && asset_path_addr + pi < guest_mem_size) {
+                    char ch = (char)*((unsigned char *)guest_mem + asset_path_addr + pi);
+                    if (ch == 0) break;
+                    path[pi++] = ch;
+                }
+                path[pi] = 0;
+                FILE *fp = fopen(path, "rb");
+                if (fp) {
+                    fseek(fp, 0, SEEK_END);
+                    long sz = ftell(fp);
+                    fseek(fp, 0, SEEK_SET);
+                    if (asset_dest_addr + (unsigned long long)sz <= guest_mem_size) {
+                        fread((unsigned char *)guest_mem + asset_dest_addr, 1, sz, fp);
+                        asset_last_size = (unsigned long long)sz;
+                        fprintf(stderr, "Asset loaded: %s (%ld bytes -> guest 0x%llx)\n", path, sz, asset_dest_addr);
+                    }
+                    fclose(fp);
+                } else {
+                    fprintf(stderr, "Asset not found: %s\n", path);
+                }
+            }
+        }
         /* PCI Configuration Space */
         else if (port == 0xCF8) {
             pci_config_addr = (unsigned int)val;
@@ -4694,6 +5002,16 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         /* Bochs VBE */
         else if (port == VBE_DATA_PORT) {
             result = vbe_regs[vbe_index];
+        }
+        /* GPU capability check */
+        else if (port == 0x403) {
+            result = 1;  /* GPU rasterizer present */
+        }
+        else if (port == 0x40E) {
+            result = (unsigned int)(asset_last_size & 0xFFFFFFFF);
+        }
+        else if (port == 0x40F) {
+            result = (unsigned int)((asset_last_size >> 32) & 0xFFFFFFFF);
         }
         /* PCI Configuration Space */
         else if (port >= 0xCFC && port <= 0xCFF) {
@@ -4887,6 +5205,534 @@ static int try_inject_serial_interrupt(void) {
 
 /* (monitor thread removed — page protection provides precise trapping) */
 
+/* ── GPU triangle rasterizer (host-side, native speed) ──────────────── */
+/*
+ * Command buffer at GPU_CMD_ADDR in guest RAM.  Each triangle is 8 ints:
+ *   [0] x0  [1] y0  [2] x1  [3] y1  [4] x2  [5] y2  [6] color  [7] depth
+ * Port 0x400 OUT: value = triangle count, rasterize all triangles
+ * Port 0x401 OUT: value = XRGB color, clear framebuffer
+ * Port 0x402 OUT: value = 0, clear depth buffer
+ * Port 0x403 IN:  returns 1 (GPU present capability check)
+ */
+#define GPU_CMD_ADDR   0xBE000000ULL
+#define GPU_CMD_SIZE   (16384 * 72)
+#define GPU_DEPTH_ADDR 0xBE800000ULL
+#define GPU_DEPTH_FAR  999999
+
+static void gpu_clear_fb(int color) {
+    if (!gop_active || GOP_FB_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
+    unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
+    int total = gop_width * gop_height;
+    for (int i = 0; i < total; i++) fb[i] = (unsigned int)color;
+}
+
+static void gpu_clear_depth(void) {
+    if (GPU_DEPTH_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
+    unsigned int *db = (unsigned int *)((unsigned char *)guest_mem + GPU_DEPTH_ADDR);
+    int total = gop_width * gop_height;
+    for (int i = 0; i < total; i++) db[i] = GPU_DEPTH_FAR;
+}
+
+static inline int gpu_edge(int ax, int ay, int bx, int by, int px, int py) {
+    return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+}
+
+/*
+ * Gouraud triangle rasterizer with per-vertex color, depth, and UV interpolation.
+ * Command format: 72 bytes per triangle (18 ints):
+ *   [0] x0 [1] y0 [2] x1 [3] y1 [4] x2 [5] y2
+ *   [6] color0 [7] color1 [8] color2
+ *   [9] depth0 [10] depth1 [11] depth2
+ *   [12] u0*1000 [13] v0*1000 [14] u1*1000 [15] v1*1000 [16] u2*1000 [17] v2*1000
+ * If u0==0 && v0==0 && u1==0 && v1==0: use vertex colors (Gouraud mode)
+ * Otherwise: sample procedural Earth texture from interpolated UV
+ */
+
+/* ── Procedural Earth texture ─────────────────────────────────────── */
+#include <math.h>
+
+static int land_shape(float lat, float lon, float clat, float clon_base, float clon_slope,
+                      float w_base, float w_slope, float w_center, float lat_lo, float lat_hi, float cn) {
+    if (lat < lat_lo || lat > lat_hi) return 0;
+    float clon = clon_base + lat * clon_slope;
+    float w = w_base - fabsf(lat - w_center) * w_slope + cn * 1.2f;
+    if (w < 3) w = 3;
+    return (lon > clon - w && lon < clon + w) ? 1 : 0;
+}
+
+static int earth_is_land(float lat, float lon) {
+    float cn = noise_smooth(lon * 0.35f + 50, lat * 0.45f + 50) * 2.0f - 1.0f;
+    /* North America */
+    if (lat > 25 && lat < 72 && lon > -170 && lon < -52) {
+        float clon = -97 + (lat - 45) * 0.15f;
+        float w = 25 - fabsf(lat - 42) * 0.4f + cn * 1.2f;
+        if (lat > 60) w = 35 + cn;
+        if (lat < 32) { clon = -102; w = 10 + cn * 0.8f; }
+        if (w < 4) w = 4;
+        if (lon > clon - w && lon < clon + w) return 1;
+    }
+    /* Central America */
+    if (lat > 7 && lat < 25 && lon > -92 && lon < -77) {
+        float w = 6 - fabsf(lat - 15) * 0.4f + cn * 0.8f;
+        if (w > 0 && lon > -85 - w && lon < -85 + w) return 1;
+    }
+    /* Greenland */
+    if (lat > 60 && lat < 83 && lon > -58 && lon < -12) {
+        float w = 18 - fabsf(lat - 72) * 1.2f + cn;
+        if (w > 0 && lon > -42 - w && lon < -42 + w) return 1;
+    }
+    /* South America */
+    if (land_shape(lat, lon, 0, -57, 0.15f, 20, 0.38f, -15, -56, 13, cn)) return 1;
+    /* Europe */
+    if (lat > 36 && lat < 71 && lon > -12 && lon < 42) {
+        float clon = 15 + (lat - 50) * 0.3f;
+        float w = 20 - fabsf(lat - 50) * 0.45f + cn * 1.2f;
+        if (lat < 40) { clon = 5; w = 10 + cn; }
+        if (lat > 62) { clon = 18; w = 10 + cn; }
+        if (w < 4) w = 4;
+        if (lon > clon - w && lon < clon + w) return 1;
+    }
+    /* British Isles / Iceland */
+    if (lat > 50 && lat < 66 && lon > -25 && lon < -4) {
+        float w = 6 - fabsf(lat - 56) * 0.4f + cn * 0.5f;
+        if (w > 0 && lon > -10 - w && lon < -10 + w) return 1;
+    }
+    /* Africa */
+    if (land_shape(lat, lon, 0, 18, 0.05f, 28, 0.42f, 5, -35, 37, cn)) return 1;
+    /* Arabian peninsula */
+    if (lat > 12 && lat < 32 && lon > 34 && lon < 60) {
+        float w = 10 - fabsf(lat - 22) * 0.5f + cn * 0.8f;
+        if (w > 0 && lon > 47 - w && lon < 47 + w) return 1;
+    }
+    /* India */
+    if (lat > 8 && lat < 35 && lon > 68 && lon < 90) {
+        float clon = 79; float w = 10 - fabsf(lat - 22) * 0.5f + cn;
+        if (w < 3) w = 3;
+        if (lon > clon - w && lon < clon + w) return 1;
+    }
+    /* Asia mainland */
+    if (lat > 25 && lat < 55 && lon > 60 && lon < 140) {
+        float clon = 95 + (lat - 40) * 0.3f;
+        float w = 32 - fabsf(lat - 40) * 0.5f + cn * 1.5f;
+        if (w < 6) w = 6;
+        if (lon > clon - w && lon < clon + w) return 1;
+    }
+    /* Siberia */
+    if (lat > 50 && lat < 73 && lon > 42 && lon < 175) {
+        float w = 55 - (lat - 58) * 2.5f;
+        if (w < 5) w = 5;
+        if (w > 0 && lon > 105 - w && lon < 105 + w) return 1;
+    }
+    /* Southeast Asia + Indonesia */
+    if (lat > -8 && lat < 20 && lon > 95 && lon < 135) {
+        float w = 15 - fabsf(lat - 8) * 0.7f + cn;
+        if (w > 0 && lon > 110 - w && lon < 110 + w) return 1;
+    }
+    /* Japan */
+    if (lat > 30 && lat < 45 && lon > 129 && lon < 145) {
+        float w = 4 - fabsf(lat - 37) * 0.3f + cn * 0.5f;
+        if (w > 0 && lon > 137 - w && lon < 137 + w) return 1;
+    }
+    /* Australia */
+    if (lat > -40 && lat < -10 && lon > 113 && lon < 154) {
+        float clon = 134; float w = 18 - fabsf(lat + 25) * 0.5f + cn * 1.2f;
+        if (w < 5) w = 5;
+        if (lon > clon - w && lon < clon + w) return 1;
+    }
+    /* New Zealand */
+    if (lat > -47 && lat < -34 && lon > 166 && lon < 179) {
+        float w = 3 + cn * 0.3f;
+        if (w > 0 && lon > 173 - w && lon < 173 + w) return 1;
+    }
+    return 0;
+}
+
+/* ── Smooth value noise for natural-looking textures ──────────────── */
+
+static float noise_hash(int ix, int iy) {
+    unsigned int n = (unsigned int)(ix * 1619 + iy * 31337 + 1013904223);
+    n = (n >> 13) ^ n;
+    n = n * (n * n * 60493 + 19990303) + 1376312589;
+    return (float)(n & 0x7FFFFFFF) / (float)0x7FFFFFFF;
+}
+
+static float noise_smooth(float x, float y) {
+    int ix = (x >= 0) ? (int)x : (int)x - 1;
+    int iy = (y >= 0) ? (int)y : (int)y - 1;
+    float fx = x - ix, fy = y - iy;
+    fx = fx * fx * (3 - 2 * fx);
+    fy = fy * fy * (3 - 2 * fy);
+    float a = noise_hash(ix, iy), b = noise_hash(ix+1, iy);
+    float c = noise_hash(ix, iy+1), d = noise_hash(ix+1, iy+1);
+    float top = a + (b - a) * fx;
+    float bot = c + (d - c) * fx;
+    return top + (bot - top) * fy;
+}
+
+static float fbm(float x, float y, int octaves) {
+    float val = 0, amp = 0.5f, freq = 1.0f, max_val = 0;
+    for (int i = 0; i < octaves; i++) {
+        val += noise_smooth(x * freq, y * freq) * amp;
+        max_val += amp;
+        amp *= 0.5f;
+        freq *= 2.0f;
+    }
+    return val / max_val;
+}
+
+static float cloud_coverage(float lat, float lon) {
+    float n = fbm(lon * 0.08f + 200, lat * 0.12f + 100, 4);
+    float abs_lat = fabsf(lat);
+    float band;
+    if (abs_lat < 10) band = 0.75f;
+    else if (abs_lat < 20) band = 0.35f;
+    else if (abs_lat < 35) band = 0.50f;
+    else if (abs_lat < 55) band = 0.65f;
+    else band = 0.45f;
+    float detail = fbm(lon * 0.3f + 500, lat * 0.4f + 300, 3) * 0.25f;
+    float cov = (n + detail) * band;
+    cov = (cov - 0.32f) * 2.5f;
+    if (cov < 0) cov = 0; if (cov > 1) cov = 1;
+    return cov * cov;
+}
+
+static unsigned int color_lerp(unsigned int c0, unsigned int c1, float t) {
+    if (t <= 0) return c0; if (t >= 1.0f) return c1;
+    int r0 = (c0>>16)&0xFF, g0 = (c0>>8)&0xFF, b0 = c0&0xFF;
+    int r1 = (c1>>16)&0xFF, g1 = (c1>>8)&0xFF, b1 = c1&0xFF;
+    int r = (int)(r0 + (r1-r0)*t), g = (int)(g0 + (g1-g0)*t), b = (int)(b0 + (b1-b0)*t);
+    return ((unsigned int)r<<16)|((unsigned int)g<<8)|(unsigned int)b;
+}
+
+static unsigned int earth_texel(float lat, float lon) {
+    float abs_lat = fabsf(lat);
+    unsigned int base;
+    float terrain_n = fbm(lon * 0.12f, lat * 0.12f, 4);
+    float fine_n = fbm(lon * 0.4f + 1000, lat * 0.5f + 1000, 4);
+    float micro_n = noise_smooth(lon * 1.5f + 2000, lat * 1.8f + 2000);
+
+    if (abs_lat > 58) {
+        float ice = (abs_lat - 58) / 24.0f;
+        if (ice > 1) ice = 1;
+        float snow_var = fine_n * 0.08f;
+        int w = (int)(210 + 40 * ice + snow_var * 200);
+        if (w > 255) w = 255; if (w < 180) w = 180;
+        unsigned int ice_col = ((unsigned int)w << 16) | ((unsigned int)(w-3) << 8) | (unsigned int)(w+5>255?255:w+5);
+        if (ice < 0.4f) {
+            /* Blend with underlying biome at ice edge */
+            unsigned int under = earth_is_land(lat, lon) ? 0x8AAA88 : 0x1A3A68;
+            base = color_lerp(under, ice_col, ice / 0.4f);
+        } else {
+            base = ice_col;
+        }
+    } else if (earth_is_land(lat, lon)) {
+        float elev = terrain_n * 0.35f + fine_n * 0.15f + micro_n * 0.08f;
+        /* Biome colors: pairs of (dark, light) for elevation variation */
+        unsigned int c_tundra   = color_lerp(0x7A9A78, 0x96B094, elev);
+        unsigned int c_boreal   = color_lerp(0x2A6A28, 0x4A8A40, elev);
+        unsigned int c_temper   = color_lerp(0x3A7A32, 0x68A858, elev);
+        unsigned int c_jungle   = color_lerp(0x1A6818, 0x3A8830, elev);
+        unsigned int c_equator  = color_lerp(0x146414, 0x2A7A28, elev);
+        unsigned int c_desert;
+        if (lon > -20 && lon < 65) c_desert = color_lerp(0xC8A850, 0xD8C070, elev);
+        else if (lon > 65 && lon < 92) c_desert = color_lerp(0xBEA048, 0xCCB060, elev);
+        else c_desert = color_lerp(0x5A9A42, 0x78B060, elev);
+        /* Smooth blending between biome zones */
+        unsigned int land;
+        if (abs_lat > 65) { land = c_tundra; }
+        else if (abs_lat > 55) { float t = (abs_lat - 55) / 10.0f; land = color_lerp(c_boreal, c_tundra, t); }
+        else if (abs_lat > 42) { float t = (abs_lat - 42) / 13.0f; land = color_lerp(c_temper, c_boreal, t); }
+        else if (abs_lat > 30) { float t = (abs_lat - 30) / 12.0f; land = color_lerp(c_desert, c_temper, t); }
+        else if (abs_lat > 18) { float t = (abs_lat - 18) / 12.0f; land = color_lerp(c_jungle, c_desert, t); }
+        else if (abs_lat > 8)  { float t = (abs_lat - 8)  / 10.0f; land = color_lerp(c_equator, c_jungle, t); }
+        else { land = c_equator; }
+        base = land;
+    } else {
+        float ocean_n = noise_smooth(lon * 0.04f + 700, lat * 0.06f + 400) * 0.7f + micro_n * 0.3f;
+        unsigned int c_arctic  = color_lerp(0x142848, 0x1A3860, ocean_n);
+        unsigned int c_cold    = color_lerp(0x123060, 0x1A4880, ocean_n);
+        unsigned int c_mid     = color_lerp(0x103868, 0x1858A0, ocean_n);
+        unsigned int c_tropic  = color_lerp(0x0E3870, 0x1860B0, ocean_n);
+        if (abs_lat > 55) { float t = (abs_lat-55)/15.0f; if(t>1)t=1; base = color_lerp(c_cold, c_arctic, t); }
+        else if (abs_lat > 35) { float t = (abs_lat-35)/20.0f; base = color_lerp(c_mid, c_cold, t); }
+        else if (abs_lat > 15) { float t = (abs_lat-15)/20.0f; base = color_lerp(c_tropic, c_mid, t); }
+        else { base = c_tropic; }
+    }
+
+    float cl = cloud_coverage(lat, lon);
+    if (cl > 0.01f) {
+        unsigned int white = 0xF0F4F8;
+        base = color_lerp(base, white, cl);
+    }
+    return base;
+}
+
+static unsigned int gpu_sample_texture(int u1000, int v1000) {
+    if (!earth_tex_data) return 0x1A4888;
+    float fu = 1.0f - u1000 / 1000.0f, fv = 1.0f - v1000 / 1000.0f;
+    fu = fu - floorf(fu);
+    if (fv < 0) fv = 0; if (fv > 1) fv = 1;
+    /* Bilinear interpolation */
+    float px = fu * (earth_tex_w - 1), py = fv * (earth_tex_h - 1);
+    int ix = (int)px, iy = (int)py;
+    float fx = px - ix, fy = py - iy;
+    int ix1 = ix + 1 < earth_tex_w ? ix + 1 : 0;
+    int iy1 = iy + 1 < earth_tex_h ? iy + 1 : iy;
+    unsigned char *p00 = earth_tex_data + (iy * earth_tex_w + ix) * 3;
+    unsigned char *p10 = earth_tex_data + (iy * earth_tex_w + ix1) * 3;
+    unsigned char *p01 = earth_tex_data + (iy1 * earth_tex_w + ix) * 3;
+    unsigned char *p11 = earth_tex_data + (iy1 * earth_tex_w + ix1) * 3;
+    int r = (int)((p00[0]*(1-fx)*(1-fy) + p10[0]*fx*(1-fy) + p01[0]*(1-fx)*fy + p11[0]*fx*fy));
+    int g = (int)((p00[1]*(1-fx)*(1-fy) + p10[1]*fx*(1-fy) + p01[1]*(1-fx)*fy + p11[1]*fx*fy));
+    int b = (int)((p00[2]*(1-fx)*(1-fy) + p10[2]*fx*(1-fy) + p01[2]*(1-fx)*fy + p11[2]*fx*fy));
+    return ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
+}
+
+static unsigned int gpu_sample_earth(int u1000, int v1000) {
+    if (earth_tex_data) return gpu_sample_texture(u1000, v1000);
+    float lon = -180.0f + (u1000 / 1000.0f) * 360.0f;
+    float lat = 90.0f - (v1000 / 1000.0f) * 180.0f;
+    return earth_texel(lat, lon);
+}
+static inline unsigned int gpu_lerp_color(unsigned int c0, unsigned int c1, unsigned int c2,
+                                           int w0, int w1, int w2, int area) {
+    int r0 = (c0 >> 16) & 0xFF, g0 = (c0 >> 8) & 0xFF, b0 = c0 & 0xFF;
+    int r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
+    int r2 = (c2 >> 16) & 0xFF, g2 = (c2 >> 8) & 0xFF, b2 = c2 & 0xFF;
+    int r = (r0 * w0 + r1 * w1 + r2 * w2) / area;
+    int g = (g0 * w0 + g1 * w1 + g2 * w2) / area;
+    int b = (b0 * w0 + b1 * w1 + b2 * w2) / area;
+    if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+    if (r < 0) r = 0; if (g < 0) g = 0; if (b < 0) b = 0;
+    return ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
+}
+
+#define GPU_MAX_THREADS 16
+typedef struct {
+    unsigned int *fb;
+    unsigned int *db;
+    unsigned char *cmd;
+    int w, h, count;
+    int band_y0, band_y1;
+    HANDLE done_event;
+} GpuBand;
+
+static GpuBand gpu_bands[GPU_MAX_THREADS];
+static HANDLE gpu_threads[GPU_MAX_THREADS];
+static HANDLE gpu_start_events[GPU_MAX_THREADS];
+static int gpu_thread_count = 0;
+static volatile int gpu_threads_running = 1;
+
+static DWORD WINAPI gpu_band_thread(LPVOID param) {
+    int id = (int)(intptr_t)param;
+    while (gpu_threads_running) {
+        WaitForSingleObject(gpu_start_events[id], INFINITE);
+        if (!gpu_threads_running) break;
+        GpuBand *b = &gpu_bands[id];
+        gpu_rasterize_band(b->fb, b->db, b->cmd, b->w, b->h, b->count, b->band_y0, b->band_y1);
+        SetEvent(b->done_event);
+    }
+    return 0;
+}
+
+static void gpu_init_threads(void) {
+    if (gpu_thread_count > 0) return;
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    gpu_thread_count = si.dwNumberOfProcessors;
+    if (gpu_thread_count > GPU_MAX_THREADS) gpu_thread_count = GPU_MAX_THREADS;
+    if (gpu_thread_count < 2) gpu_thread_count = 2;
+    for (int i = 0; i < gpu_thread_count; i++) {
+        gpu_start_events[i] = CreateEventA(NULL, FALSE, FALSE, NULL);
+        gpu_bands[i].done_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+        gpu_threads[i] = CreateThread(NULL, 0, gpu_band_thread, (LPVOID)(intptr_t)i, 0, NULL);
+    }
+    fprintf(stderr, "GPU: %d rasterizer threads\n", gpu_thread_count);
+}
+
+static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char *cmd,
+                                int w, int h, int count, int band_y0, int band_y1) {
+    for (int t = 0; t < count && t < 16384; t++) {
+        int *tri = (int *)(cmd + t * 72);
+        int x0 = tri[0], y0 = tri[1], x1 = tri[2], y1 = tri[3], x2 = tri[4], y2 = tri[5];
+        unsigned int c0 = (unsigned int)tri[6], c1 = (unsigned int)tri[7], c2 = (unsigned int)tri[8];
+        int d0 = tri[9], d1 = tri[10], d2 = tri[11];
+        int u0 = tri[12], v0t = tri[13], u1 = tri[14], v1t = tri[15], u2 = tri[16], v2t = tri[17];
+        int use_texture = (u0 | v0t | u1 | v1t | u2 | v2t) != 0;
+        int minx = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
+        int miny = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
+        int maxx = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
+        int maxy = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
+        if (minx < 0) minx = 0; if (miny < 0) miny = 0;
+        if (maxx >= w) maxx = w - 1; if (maxy >= h) maxy = h - 1;
+        /* Skip triangles entirely outside this band */
+        if (maxy < band_y0 || miny > band_y1) continue;
+        if (miny < band_y0) miny = band_y0;
+        if (maxy > band_y1) maxy = band_y1;
+        int area = gpu_edge(x0, y0, x1, y1, x2, y2);
+        if (area == 0) continue;
+        int sign = area > 0 ? 1 : -1;
+        int abs_area = area > 0 ? area : -area;
+        for (int y = miny; y <= maxy; y++) {
+            for (int x = minx; x <= maxx; x++) {
+                int bw0 = gpu_edge(x1, y1, x2, y2, x, y) * sign;
+                int bw1 = gpu_edge(x2, y2, x0, y0, x, y) * sign;
+                int bw2 = gpu_edge(x0, y0, x1, y1, x, y) * sign;
+                if (bw0 >= 0 && bw1 >= 0 && bw2 >= 0) {
+                    int depth = (d0 * bw0 + d1 * bw1 + d2 * bw2) / abs_area;
+                    int idx = y * w + x;
+                    if ((unsigned int)depth < db[idx]) {
+                        unsigned int pixel;
+                        if (use_texture) {
+                            int u_interp = (u0 * bw0 + u1 * bw1 + u2 * bw2) / abs_area;
+                            int v_interp = (v0t * bw0 + v1t * bw1 + v2t * bw2) / abs_area;
+                            unsigned int tex;
+                            if (v_interp < 140 || v_interp > 860) {
+                                float pole_t = (v_interp < 140) ? v_interp / 140.0f : (1000 - v_interp) / 140.0f;
+                                int u_fixed = (int)(500 + (u_interp - 500) * pole_t);
+                                int v_edge = v_interp < 140 ? (int)(v_interp + (140 - v_interp) * (1.0f - pole_t)) : (int)(v_interp - (v_interp - 860) * (1.0f - pole_t));
+                                unsigned int sampled = gpu_sample_earth(u_fixed, v_edge);
+                                if (pole_t < 0.3f) {
+                                    unsigned int ice = 0xD8E0EC;
+                                    tex = color_lerp(ice, sampled, pole_t / 0.3f);
+                                } else {
+                                    tex = sampled;
+                                }
+                            } else {
+                                tex = gpu_sample_earth(u_interp, v_interp);
+                            }
+                            /* Per-pixel normal from UV (sphere) */
+                            float px_lon = -3.14159f + (u_interp / 1000.0f) * 6.28318f;
+                            float px_lat = 1.5708f - (v_interp / 1000.0f) * 3.14159f;
+                            float clat = cosf(px_lat), slat = sinf(px_lat);
+                            float clon = cosf(px_lon), slon = sinf(px_lon);
+                            float nx = clat * clon, ny = slat, nz = clat * slon;
+                            /* Diffuse lighting */
+                            float ndl = nx*gpu_light[0] + ny*gpu_light[1] + nz*gpu_light[2];
+                            float wrap = (ndl + 0.5f) / 1.5f;
+                            if (wrap < 0) wrap = 0;
+                            float intensity = 0.22f + wrap * 1.1f;
+                            if (intensity > 1.4f) intensity = 1.4f;
+                            /* View dot for Fresnel */
+                            float nde = nx*gpu_eye[0] + ny*gpu_eye[1] + nz*gpu_eye[2];
+                            if (nde < 0) nde = 0;
+                            float fresnel = 1.0f - nde;
+                            if (fresnel < 0) fresnel = 0;
+                            float rim = fresnel * fresnel * fresnel;
+                            /* Specular on water (detect by blue dominance in texture) */
+                            float spec = 0;
+                            int is_water = ((tex & 0xFF) > ((tex >> 16) & 0xFF) + 15);
+                            if (is_water && ndl > 0) {
+                                float hx = gpu_light[0]+gpu_eye[0], hy = gpu_light[1]+gpu_eye[1], hz = gpu_light[2]+gpu_eye[2];
+                                float hlen = sqrtf(hx*hx+hy*hy+hz*hz);
+                                if (hlen > 0.001f) { hx/=hlen; hy/=hlen; hz/=hlen; }
+                                float ndh = nx*hx + ny*hy + nz*hz;
+                                if (ndh > 0) {
+                                    float s4 = ndh*ndh*ndh*ndh;
+                                    float sharp = s4*s4*s4*s4; sharp *= 0.7f;
+                                    float broad = s4 * 0.12f;
+                                    spec = sharp + broad;
+                                }
+                            }
+                            /* Combine */
+                            float lat_abs = fabsf(px_lat * 57.2958f);
+                            float rim_scale = (lat_abs > 65) ? 0.0f : (lat_abs > 45) ? (65 - lat_abs) / 20.0f : 1.0f;
+                            int tr = (int)(((tex>>16)&0xFF) * intensity + spec * 255 + rim * rim_scale * 40);
+                            int tg = (int)(((tex>>8)&0xFF) * intensity + spec * 255 + rim * rim_scale * 70);
+                            int tb = (int)((tex&0xFF) * intensity + spec * 255 + rim * rim_scale * 140);
+                            if (tr > 255) tr = 255; if (tg > 255) tg = 255; if (tb > 255) tb = 255;
+                            if (tr < 0) tr = 0; if (tg < 0) tg = 0; if (tb < 0) tb = 0;
+                            pixel = ((unsigned int)tr << 16) | ((unsigned int)tg << 8) | (unsigned int)tb;
+                        } else {
+                            pixel = gpu_lerp_color(c0, c1, c2, bw0, bw1, bw2, abs_area);
+                        }
+                        fb[idx] = pixel;
+                        db[idx] = (unsigned int)depth;
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void gpu_rasterize_triangles(int count) {
+    if (!gop_active) return;
+    gpu_frame_count++;
+    gpu_last_tri_count = count;
+    if (GPU_CMD_ADDR + (unsigned long long)count * 72 > guest_mem_size) return;
+    if (GOP_FB_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
+    unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
+    unsigned int *db = (unsigned int *)((unsigned char *)guest_mem + GPU_DEPTH_ADDR);
+    int w = gop_width, h = gop_height;
+    unsigned char *cmd = (unsigned char *)guest_mem + GPU_CMD_ADDR;
+    gpu_init_threads();
+    int band_h = h / gpu_thread_count;
+    HANDLE done_events[GPU_MAX_THREADS];
+    for (int i = 0; i < gpu_thread_count; i++) {
+        gpu_bands[i].fb = fb;
+        gpu_bands[i].db = db;
+        gpu_bands[i].cmd = cmd;
+        gpu_bands[i].w = w;
+        gpu_bands[i].h = h;
+        gpu_bands[i].count = count;
+        gpu_bands[i].band_y0 = i * band_h;
+        gpu_bands[i].band_y1 = (i == gpu_thread_count - 1) ? h - 1 : (i + 1) * band_h - 1;
+        done_events[i] = gpu_bands[i].done_event;
+        SetEvent(gpu_start_events[i]);
+    }
+    WaitForMultipleObjects(gpu_thread_count, done_events, TRUE, INFINITE);
+}
+
+static unsigned char *glow_dist = NULL;
+static int glow_valid = 0;
+
+static void gpu_atmosphere_glow(void) {
+    if (!gop_active) return;
+    int w = gop_width, h = gop_height;
+    if (GOP_FB_ADDR + (unsigned long long)w * h * 4 > guest_mem_size) return;
+    unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
+    int total = w * h;
+    if (!glow_dist) glow_dist = (unsigned char *)calloc(1, GOP_MAX_W * GOP_MAX_H);
+    int glow_radius = 16;
+    /* Recompute distance field every 8 frames */
+    if ((gpu_frame_count & 3) == 1 || !glow_valid) {
+        unsigned int bg = fb[0];
+        for (int i = 0; i < total; i++)
+            glow_dist[i] = (fb[i] == bg) ? 255 : 0;
+        for (int pass = 0; pass < 2; pass++) {
+            for (int y = 0; y < h; y++) {
+                int row = y * w;
+                for (int x = 1; x < w; x++)
+                    if (glow_dist[row+x] > glow_dist[row+x-1] + 1)
+                        glow_dist[row+x] = glow_dist[row+x-1] + 1;
+                for (int x = w - 2; x >= 0; x--)
+                    if (glow_dist[row+x] > glow_dist[row+x+1] + 1)
+                        glow_dist[row+x] = glow_dist[row+x+1] + 1;
+            }
+            for (int x = 0; x < w; x++) {
+                for (int y = 1; y < h; y++)
+                    if (glow_dist[y*w+x] > glow_dist[(y-1)*w+x] + 1)
+                        glow_dist[y*w+x] = glow_dist[(y-1)*w+x] + 1;
+                for (int y = h - 2; y >= 0; y--)
+                    if (glow_dist[y*w+x] > glow_dist[(y+1)*w+x] + 1)
+                        glow_dist[y*w+x] = glow_dist[(y+1)*w+x] + 1;
+            }
+        }
+        glow_valid = 1;
+    }
+    for (int i = 0; i < total; i++) {
+        int d = glow_dist[i];
+        if (d > 0 && d < glow_radius) {
+            float t = 1.0f - (float)d / glow_radius;
+            float glow = t * t * t;
+            int r = (fb[i] >> 16) & 0xFF, g = (fb[i] >> 8) & 0xFF, b = fb[i] & 0xFF;
+            r = (int)(r + glow * 25); if (r > 255) r = 255;
+            g = (int)(g + glow * 55); if (g > 255) g = 255;
+            b = (int)(b + glow * 150); if (b > 255) b = 255;
+            fb[i] = ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
+        }
+    }
+}
+
 /* ── Shadow buffer sync (main thread only, between VP exits) ───────── */
 
 static void sync_shadow_buffers(void) {
@@ -4945,6 +5791,17 @@ int main(int argc, char **argv) {
         }
         else if (!strcmp(argv[i], "-map") && i+1 < argc) map_file_path = argv[++i];
         else if (!strcmp(argv[i], "-headless")) vga_headless = 1;
+        else if (!strcmp(argv[i], "-smp")) {
+            if (i+1 < argc && argv[i+1][0] >= '0' && argv[i+1][0] <= '9') {
+                smp_cores = atoi(argv[++i]);
+                if (smp_cores < 1) smp_cores = 1;
+                if (smp_cores > SMP_MAX_CORES) smp_cores = SMP_MAX_CORES;
+            } else {
+                smp_cores = 4;
+            }
+        }
+        else if (!strcmp(argv[i], "-screenshot") && i+1 < argc) screenshot_path = argv[++i];
+        else if (!strcmp(argv[i], "-screenshot-delay") && i+1 < argc) screenshot_delay_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-uefi")) uefi_mode = 1;
         else if (!strcmp(argv[i], "-gop")) { gop_active = 1; }
         else if (!strcmp(argv[i], "-gop-width") && i+1 < argc) { gop_width = atoi(argv[++i]); gop_stride = gop_width; gop_active = 1; }
@@ -4986,7 +5843,7 @@ int main(int argc, char **argv) {
     xhci_init();
 
     /* Register PCI devices */
-    pci_add_device(0x1234, 0x1111, 0x03, 0x00, 0x00, (unsigned int)GOP_FB_ADDR, 0);  /* slot 0: Bochs VGA (FB at GOP_FB_ADDR) */
+    pci_add_device(0x1234, 0x1111, 0x03, 0x00, 0x00, 0xFD000000, 0);  /* slot 0: Bochs VGA (BAR at high MMIO, FB read from RAM at GOP_FB_ADDR) */
     pci_add_device(0x1033, 0x0194, 0x0C, 0x03, 0x30, 0xFE800000, 10);  /* slot 1: xHCI (NEC/Renesas) */
     pci_add_device(0x8086, 0x2668, 0x04, 0x03, 0x00, 0xFE000000, 11);  /* slot 2: Intel HDA */
 
@@ -4995,6 +5852,10 @@ int main(int argc, char **argv) {
     smbios_setup_tables(guest_mem);
     load_kernel(kernel);
     set_initial_regs();
+
+    /* Write requested core count to ap-core-count-addr (GPA 0xFF8 = 4088).
+       The boot code reads this; if <= 1, SMP init is skipped entirely. */
+    *(unsigned int *)((unsigned char *)guest_mem + 0xFF8) = smp_cores > 1 ? smp_cores : 0;
 
     /* Write boot args string to guest memory at 0x4800 (CCE-encoded).
        Format: 8-byte length prefix + string bytes, like a Codex Text value. */
@@ -5045,6 +5906,9 @@ int main(int argc, char **argv) {
 
     QueryPerformanceFrequency(&perf_freq);
     QueryPerformanceCounter(&last_tick);
+
+    LARGE_INTEGER screenshot_start;
+    QueryPerformanceCounter(&screenshot_start);
 
     if (watch_addr) watch_init();
 
@@ -5416,6 +6280,22 @@ int main(int argc, char **argv) {
             int all_fed = !input_overflow || input_overflow_pos >= input_overflow_len;
             if (wpos > 0 && rpos >= wpos && all_fed)
                 *(unsigned long long *)((unsigned char *)guest_mem + 28920) = 1ULL;
+        }
+
+        /* Screenshot timer */
+        if (screenshot_path) {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            double elapsed_ms = (double)(now.QuadPart - screenshot_start.QuadPart) * 1000.0 / perf_freq.QuadPart;
+            if (elapsed_ms >= screenshot_delay_ms) {
+                double fps = (elapsed_ms > 0) ? gpu_frame_count * 1000.0 / elapsed_ms : 0;
+                fprintf(stderr, "DIAG: frames=%d elapsed=%.0fms fps=%.1f tris/frame=%d slices=%d stacks=%d\n",
+                    gpu_frame_count, elapsed_ms, fps, gpu_last_tri_count,
+                    0, 0);
+                save_screenshot_bmp(screenshot_path);
+                debug_exit_code = 0;
+                goto done;
+            }
         }
 
         /* Ctrl+C/Break handler sets shutdown_requested */

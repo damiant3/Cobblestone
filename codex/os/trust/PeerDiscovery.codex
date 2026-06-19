@@ -1,0 +1,167 @@
+Chapter: PeerDiscovery
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Peer discovery for the trust network. Agents find each other
+ through four mechanisms: direct address (manual), vouch-based
+ (a trusted peer advertises another), registry query (a well-known
+ index agent), and local broadcast beacons. All discovery results
+ are verified through the trust lattice before use.
+
+ We say:
+
+Section: Peer Address
+
+  TransportKind =
+    | TransportTcp
+    | TransportSerial
+    | TransportBle
+    | TransportLocal
+
+  PeerAddress = record {
+    agent-key : List Integer,
+    transport : TransportKind,
+    address : Text,
+    port : Integer between 0 and 65535
+  }
+
+  PeerVouch = record {
+    peer : PeerAddress,
+    vouched-by : List Integer,
+    vouch-score : Integer between 0 and 65535,
+    timestamp : Integer
+  }
+
+Section: Discovery Table
+
+  DiscoveryTable = record {
+    entries : HamtMap PeerVouch,
+    count : Integer between 0 and 65535
+  }
+
+  discovery-empty : DiscoveryTable
+  discovery-empty = DiscoveryTable { entries = hamt-empty, count = 0 }
+
+Section: Direct Registration
+
+  discovery-add-direct : DiscoveryTable, PeerAddress, Integer -> DiscoveryTable
+  discovery-add-direct (table) (addr) (now) =
+    let key = peer-address-key addr
+    in let vouch = PeerVouch { peer = addr, vouched-by = [], vouch-score = trust-max, timestamp = now }
+    in DiscoveryTable { entries = hamt-set (table.entries) key vouch, count = table.count + 1 }
+
+Section: Vouch-Based Discovery
+
+  discovery-add-vouch : DiscoveryTable, PeerAddress, List Integer, Integer, TrustLattice, Integer -> DiscoveryTable
+  discovery-add-vouch (table) (addr) (voucher-key) (vouch-score) (lattice) (now) =
+    let voucher-hex = bytes-to-hex voucher-key
+    in let voucher-trust = lattice-trust-score lattice voucher-hex
+    in if voucher-trust == trust-none then table
+    else let key = peer-address-key addr
+    in let existing = hamt-get (table.entries) key
+    in when existing
+      is None ->
+        let vouch = PeerVouch { peer = addr, vouched-by = voucher-key, vouch-score = vouch-score, timestamp = now }
+        in DiscoveryTable { entries = hamt-set (table.entries) key vouch, count = table.count + 1 }
+      is Just (prev) ->
+        if vouch-score > prev.vouch-score then
+          let vouch = PeerVouch { peer = addr, vouched-by = voucher-key, vouch-score = vouch-score, timestamp = now }
+          in DiscoveryTable { entries = hamt-set (table.entries) key vouch, count = table.count }
+        else table
+
+Section: Lookup
+
+  discovery-lookup : DiscoveryTable, List Integer -> Maybe PeerVouch
+  discovery-lookup (table) (agent-key) =
+    let key = bytes-to-hex agent-key
+    in hamt-get (table.entries) key
+
+  discovery-has : DiscoveryTable, List Integer -> Boolean
+  discovery-has (table) (agent-key) =
+    let key = bytes-to-hex agent-key
+    in hamt-contains (table.entries) key
+
+Section: Removal and Expiry
+
+  discovery-remove : DiscoveryTable, List Integer -> DiscoveryTable
+  discovery-remove (table) (agent-key) =
+    let key = bytes-to-hex agent-key
+    in if hamt-contains (table.entries) key
+      then DiscoveryTable { entries = hamt-remove (table.entries) key, count = table.count - 1 }
+    else table
+
+  discovery-expire : DiscoveryTable, Integer, Integer -> DiscoveryTable
+  discovery-expire (table) (now) (max-age) =
+    table
+
+Section: Beacon Messages
+
+  DiscoveryBeacon = record {
+    sender-key : List Integer,
+    transport : TransportKind,
+    address : Text,
+    port : Integer between 0 and 65535,
+    capabilities : List Text,
+    timestamp : Integer,
+    signature : List Integer
+  }
+
+  beacon-create : List Integer, TransportKind, Text, Integer, List Text, Integer -> DiscoveryBeacon
+  beacon-create (key) (transport) (addr) (port) (caps) (now) =
+    DiscoveryBeacon { sender-key = key, transport = transport, address = addr, port = port, capabilities = caps, timestamp = now, signature = [] }
+
+  beacon-to-peer-address : DiscoveryBeacon -> PeerAddress
+  beacon-to-peer-address (b) =
+    PeerAddress { agent-key = b.sender-key, transport = b.transport, address = b.address, port = b.port }
+
+  discovery-process-beacon : DiscoveryTable, DiscoveryBeacon, TrustLattice, Integer -> DiscoveryTable
+  discovery-process-beacon (table) (beacon) (lattice) (now) =
+    let addr = beacon-to-peer-address beacon
+    in let sender-hex = bytes-to-hex (beacon.sender-key)
+    in let sender-trust = lattice-trust-score lattice sender-hex
+    in if sender-trust == trust-none then table
+    else discovery-add-direct table addr now
+
+Section: Key Helpers
+
+  peer-address-key : PeerAddress -> Text
+  peer-address-key (addr) = bytes-to-hex (addr.agent-key)
+
+  bytes-to-hex : List Integer -> Text
+  bytes-to-hex (bs) = bytes-to-hex-loop bs 0 (list-length bs) ""
+
+  bytes-to-hex-loop : List Integer, Integer, Integer, Text -> Text
+  bytes-to-hex-loop (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bs i
+    in bytes-to-hex-loop bs (i + 1) len (acc & hex-nibble (bit-shru b 4) & hex-nibble (bit-and b 15))
+
+  hex-nibble : Integer -> Text
+  hex-nibble (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+Section: Queries
+
+  discovery-count : DiscoveryTable -> Integer
+  discovery-count (table) = table.count
+
+  discovery-stats : DiscoveryTable -> Text
+  discovery-stats (table) = "peers=" & show (table.count)
+
+  format-peer-address : PeerAddress -> Text
+  format-peer-address (addr) =
+    let kind = when addr.transport
+      is TransportTcp -> "tcp"
+      is TransportSerial -> "serial"
+      is TransportBle -> "ble"
+      is TransportLocal -> "local"
+    in kind & ":" & addr.address & ":" & show (addr.port)
+
+Page 1

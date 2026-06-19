@@ -15,6 +15,7 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $lines = [System.Collections.Generic.List[string]]::new()
 Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\ByteHelpers.codex')
 Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir 'PeWriter.codex')
+Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir 'Arm64PeWriter.codex')
 Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir 'PePlug.codex')
 
 $preLines = Resolve-PlugForewords $lines
