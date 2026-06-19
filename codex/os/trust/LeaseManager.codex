@@ -1,0 +1,189 @@
+Chapter: LeaseManager
+  cites Trust chapter AgentProtocol
+  cites Foreword chapter Maybe
+
+ Lease tracking and auto-revocation for capability grants. Each
+ active grant or handoff carries an expiry tick. The lease manager
+ holds the set of active leases, checks expiry on demand, and
+ produces revocation records when leases lapse. Lease IDs are
+ stored as hex text for structural equality.
+
+ We say:
+
+Section: Lease Records
+
+  Lease = record {
+    id : Text,
+    holder : AgentIdentity,
+    capability : Capability,
+    scope : Scope,
+    granted-at : Integer,
+    expires : Integer,
+    audit-required : Boolean
+  }
+
+  LeaseStore = record {
+    leases : List Lease,
+    count : Integer between 0 and 65535,
+    revoked-count : Integer between 0 and 65535
+  }
+
+  RevocationRecord = record {
+    lease-id : Text,
+    holder : AgentIdentity,
+    capability : Capability,
+    revoked-at : Integer,
+    reason : Text
+  }
+
+  SweepResult = record {
+    store : LeaseStore,
+    revoked : List RevocationRecord,
+    revoked-count : Integer between 0 and 65535
+  }
+
+Section: Store Operations
+
+  lease-store-empty : LeaseStore
+  lease-store-empty = LeaseStore { leases = [], count = 0, revoked-count = 0 }
+
+  lease-grant : LeaseStore, GrantMsg, Integer -> LeaseStore
+  lease-grant (store) (g) (now) =
+    let l = Lease {
+      id = lease-bytes-to-hex (g.id),
+      holder = g.from,
+      capability = g.capability,
+      scope = g.scope,
+      granted-at = now,
+      expires = g.expires,
+      audit-required = False
+    }
+    in LeaseStore { leases = list-push (store.leases) l, count = store.count + 1, revoked-count = store.revoked-count }
+
+  lease-handoff : LeaseStore, HandoffMsg, Integer -> LeaseStore
+  lease-handoff (store) (h) (now) =
+    let l = Lease {
+      id = lease-bytes-to-hex (h.id),
+      holder = h.to,
+      capability = h.capability,
+      scope = h.scope,
+      granted-at = now,
+      expires = h.expires,
+      audit-required = h.audit-required
+    }
+    in let store1 = if h.revoke-from
+      then lease-revoke-by-holder store (h.from) (h.capability).name now
+      else store
+    in LeaseStore { leases = list-push (store1.leases) l, count = store1.count + 1, revoked-count = store1.revoked-count }
+
+Section: Expiry Sweep
+
+  lease-sweep : LeaseStore, Integer -> SweepResult
+  lease-sweep (store) (now) =
+    lease-sweep-loop (store.leases) 0 (store.count) now [] 0 [] 0
+
+  lease-sweep-loop : List Lease, Integer, Integer, Integer, List Lease, Integer, List RevocationRecord, Integer -> SweepResult
+  lease-sweep-loop (leases) (i) (len) (now) (kept) (kept-count) (revoked) (rev-count) =
+    if i >= len then SweepResult {
+      store = LeaseStore { leases = kept, count = kept-count, revoked-count = rev-count },
+      revoked = revoked,
+      revoked-count = rev-count
+    }
+    else let l = list-at leases i
+    in if now > l.expires then
+      let rr = RevocationRecord {
+        lease-id = l.id,
+        holder = l.holder,
+        capability = l.capability,
+        revoked-at = now,
+        reason = "lease expired"
+      }
+      in lease-sweep-loop leases (i + 1) len now kept kept-count (list-push revoked rr) (rev-count + 1)
+    else lease-sweep-loop leases (i + 1) len now (list-push kept l) (kept-count + 1) revoked rev-count
+
+Section: Manual Revocation
+
+  lease-revoke : LeaseStore, Text, Integer -> LeaseStore
+  lease-revoke (store) (lease-id) (now) =
+    lease-revoke-loop (store.leases) 0 (store.count) lease-id now [] 0 0
+
+  lease-revoke-loop : List Lease, Integer, Integer, Text, Integer, List Lease, Integer, Integer -> LeaseStore
+  lease-revoke-loop (leases) (i) (len) (target-id) (now) (kept) (kept-count) (removed) =
+    if i >= len then LeaseStore { leases = kept, count = kept-count, revoked-count = removed }
+    else let l = list-at leases i
+    in if l.id == target-id then lease-revoke-loop leases (i + 1) len target-id now kept kept-count (removed + 1)
+    else lease-revoke-loop leases (i + 1) len target-id now (list-push kept l) (kept-count + 1) removed
+
+  lease-revoke-by-holder : LeaseStore, AgentIdentity, Text, Integer -> LeaseStore
+  lease-revoke-by-holder (store) (holder) (cap-name) (now) =
+    lease-revoke-holder-loop (store.leases) 0 (store.count) (lease-bytes-to-hex (holder.public-key)) cap-name now [] 0 0
+
+  lease-revoke-holder-loop : List Lease, Integer, Integer, Text, Text, Integer, List Lease, Integer, Integer -> LeaseStore
+  lease-revoke-holder-loop (leases) (i) (len) (holder-hex) (cap-name) (now) (kept) (kept-count) (removed) =
+    if i >= len then LeaseStore { leases = kept, count = kept-count, revoked-count = removed }
+    else let l = list-at leases i
+    in if lease-bytes-to-hex ((l.holder).public-key) == holder-hex & (l.capability).name == cap-name
+      then lease-revoke-holder-loop leases (i + 1) len holder-hex cap-name now kept kept-count (removed + 1)
+    else lease-revoke-holder-loop leases (i + 1) len holder-hex cap-name now (list-push kept l) (kept-count + 1) removed
+
+Section: Queries
+
+  lease-is-active : LeaseStore, Text, Integer -> Boolean
+  lease-is-active (store) (lease-id) (now) =
+    lease-is-active-loop (store.leases) 0 (store.count) lease-id now
+
+  lease-is-active-loop : List Lease, Integer, Integer, Text, Integer -> Boolean
+  lease-is-active-loop (leases) (i) (len) (target-id) (now) =
+    if i >= len then False
+    else let l = list-at leases i
+    in if l.id == target-id & now <= l.expires then True
+    else lease-is-active-loop leases (i + 1) len target-id now
+
+  lease-count : LeaseStore -> Integer
+  lease-count (store) = store.count
+
+  lease-find : LeaseStore, Text -> Maybe Lease
+  lease-find (store) (lease-id) = lease-find-loop (store.leases) 0 (store.count) lease-id
+
+  lease-find-loop : List Lease, Integer, Integer, Text -> Maybe Lease
+  lease-find-loop (leases) (i) (len) (target-id) =
+    if i >= len then None
+    else let l = list-at leases i
+    in if l.id == target-id then Just l
+    else lease-find-loop leases (i + 1) len target-id
+
+  lease-time-remaining : Lease, Integer -> Integer
+  lease-time-remaining (l) (now) =
+    if now > l.expires then 0
+    else l.expires - now
+
+Section: Hex Encoding
+
+  lease-bytes-to-hex : List Integer -> Text
+  lease-bytes-to-hex (bs) = lease-hex-loop bs 0 (list-length bs) ""
+
+  lease-hex-loop : List Integer, Integer, Integer, Text -> Text
+  lease-hex-loop (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bs i
+    in lease-hex-loop bs (i + 1) len (acc & lease-nibble (bit-shru b 4) & lease-nibble (bit-and b 15))
+
+  lease-nibble : Integer -> Text
+  lease-nibble (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+Section: Formatting
+
+  format-lease : Lease -> Text
+  format-lease (l) =
+    "lease=" & (l.capability).name & " expires=" & show (l.expires) & " audit=" & show (l.audit-required)
+
+  lease-store-stats : LeaseStore -> Text
+  lease-store-stats (store) = "active=" & show (store.count) & " revoked=" & show (store.revoked-count)
+
+Page 1

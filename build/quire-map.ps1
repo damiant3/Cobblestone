@@ -13,6 +13,8 @@ $QuireDirs = @{
     'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'
     'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
     'Engine' = 'codex\foreword\engine'
+    'Punctual' = 'codex\foreword\punctual'
+    'Gpu' = 'codex\foreword\gpu'
     'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
     'Magic' = 'apps\games\magic'; 'Games' = 'apps\games\classic'
     'Spark' = 'apps\spark'; 'Data' = 'apps\data'
@@ -59,6 +61,7 @@ $QuireDirs = @{
     'Services' = 'apps\services'
     'Market' = 'apps\market'
     'Workflow' = 'apps\workflow'
+    'Site' = 'apps\site'
     'Boards' = 'codex\boards'
 }
 

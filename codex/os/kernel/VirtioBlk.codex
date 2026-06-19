@@ -1,0 +1,100 @@
+Chapter: VirtioBlk
+  cites Kernel chapter VirtioPci
+
+ VirtIO block device driver. Uses VirtioPci transport with a
+ single virtqueue for read/write requests.
+
+ VirtIO block request format (in device memory):
+   Bytes 0-3:   type (0=read, 1=write)
+   Bytes 4-7:   reserved
+   Bytes 8-15:  sector number
+   Then:        data buffer (512 bytes per sector)
+   Last byte:   status (0=ok, 1=ioerr, 2=unsupported)
+
+Section: Constants
+
+  vblk-queue : Integer = 0
+  vblk-sector-size : Integer = 512
+  vblk-req-read : Integer = 0
+  vblk-req-write : Integer = 1
+  vblk-buf-base : Integer = #300000
+  vblk-queue-region : Integer = #310000
+  vblk-req-base : Integer = #320000
+
+Section: Device State
+
+  VirtioBlkState = record {
+    device : VirtioDevice,
+    queue : VirtqueueState,
+    capacity : Integer
+  }
+
+Section: Init
+
+  virtio-blk-init : Arm64PciDevice -> VirtioBlkState
+  virtio-blk-init (pci-dev) =
+   let vd = virtio-init-device pci-dev
+   in let features = virtio-negotiate vd 0
+   in let q = virtio-setup-queue vd vblk-queue vblk-queue-region
+   in let s = virtio-set-status vd virtio-status-driver-ok
+   in let cap = if (vd.device-cfg-base) > 0 then peek-qword (vd.device-cfg-base) 0 else 0
+   in VirtioBlkState { device = vd, queue = q, capacity = cap }
+
+Section: Read Sectors
+
+  virtio-blk-read-sector : VirtioBlkState, Integer -> VirtioBlkReadResult
+  virtio-blk-read-sector (st) (sector) =
+   virtio-blk-read-sectors st sector 1
+
+  virtio-blk-read-sectors : VirtioBlkState, Integer, Integer -> VirtioBlkReadResult
+  virtio-blk-read-sectors (st) (start-sector) (count) =
+   let data-len = count * vblk-sector-size
+   in let req-addr = vblk-req-base
+   in let zero = virtio-zero-mem req-addr 16
+   in let w1 = poke-32 req-addr 0 vblk-req-read
+   in let w2 = poke-32 req-addr 4 0
+   in let w3 = mmio-write-64 req-addr 8 start-sector
+   in let data-addr = vblk-buf-base
+   in let status-addr = data-addr + data-len
+   in let w4 = poke-byte status-addr 0 #FF
+   in let q = st.queue
+   in let head = q.free-head
+   in let d0 = (q.desc-base) + head * 16
+   in let w5 = mmio-write-64 d0 0 req-addr
+   in let w6 = poke-32 d0 8 16
+   in let w7 = poke-16 d0 12 vq-desc-f-next
+   in let d1-idx = bit-and (peek-16 d0 14) #FFFF
+   in let d1 = (q.desc-base) + d1-idx * 16
+   in let w8 = mmio-write-64 d1 0 data-addr
+   in let w9 = poke-32 d1 8 data-len
+   in let w10 = poke-16 d1 12 (bit-or vq-desc-f-write vq-desc-f-next)
+   in let d2-idx = bit-and (peek-16 d1 14) #FFFF
+   in let d2 = (q.desc-base) + d2-idx * 16
+   in let w11 = mmio-write-64 d2 0 status-addr
+   in let w12 = poke-32 d2 8 1
+   in let w13 = poke-16 d2 12 vq-desc-f-write
+   in let next-free = bit-and (peek-16 d2 14) #FFFF
+   in let aidx = q.avail-idx
+   in let ring-off = (q.avail-base) + 4 + bit-and aidx ((q.queue-size) - 1) * 2
+   in let w14 = poke-16 ring-off 0 head
+   in let new-aidx = aidx + 1
+   in let bar = mmio-barrier
+   in let w15 = poke-16 (q.avail-base) 2 new-aidx
+   in let notified = virtio-notify (VirtqueueState { desc-base = q.desc-base, avail-base = q.avail-base, used-base = q.used-base, queue-size = q.queue-size, free-head = next-free, avail-idx = new-aidx, last-used-idx = q.last-used-idx, notify-addr = q.notify-addr })
+   in let q1 = virtio-poll-used (VirtqueueState { desc-base = q.desc-base, avail-base = q.avail-base, used-base = q.used-base, queue-size = q.queue-size, free-head = next-free, avail-idx = new-aidx, last-used-idx = q.last-used-idx, notify-addr = q.notify-addr })
+   in let status = peek-byte status-addr 0
+   in let data = virtio-blk-read-buf data-addr data-len 0 []
+   in VirtioBlkReadResult { state = VirtioBlkState { device = st.device, queue = q1, capacity = st.capacity }, data = data, ok = status == 0 }
+
+  VirtioBlkReadResult = record {
+    state : VirtioBlkState,
+    data : List Integer,
+    ok : Boolean
+  }
+
+  virtio-blk-read-buf : Integer, Integer, Integer, List Integer -> List Integer
+  virtio-blk-read-buf (addr) (len) (i) (acc) =
+   if i >= len then acc
+   else virtio-blk-read-buf addr len (i + 1) (list-push acc (peek-byte addr i))
+
+Page 1

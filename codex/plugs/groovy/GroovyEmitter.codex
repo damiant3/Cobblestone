@@ -157,19 +157,27 @@ Section: Expression Emission
     is IrRemInt -> "(" & emit-gvy-expr l arities & " % " & emit-gvy-expr r arities & ")"
     is IrAnd -> "(" & emit-gvy-expr l arities & " && " & emit-gvy-expr r arities & ")"
     is IrOr -> "(" & emit-gvy-expr l arities & " || " & emit-gvy-expr r arities & ")"
+    is IrAddVec -> "[" & emit-gvy-expr l arities & ", " & emit-gvy-expr r arities & "].transpose().collect { it[0] + it[1] }"
+    is IrSubVec -> "[" & emit-gvy-expr l arities & ", " & emit-gvy-expr r arities & "].transpose().collect { it[0] - it[1] }"
+    is IrMulVec -> "[" & emit-gvy-expr l arities & ", " & emit-gvy-expr r arities & "].transpose().collect { it[0] * it[1] }"
+    is IrDivVec -> "[" & emit-gvy-expr l arities & ", " & emit-gvy-expr r arities & "].transpose().collect { it[0] / it[1] }"
     is otherwise -> "(" & emit-gvy-expr l arities & " " & gvy-bin-op op & " " & emit-gvy-expr r arities & ")"
 
   gvy-bin-op : IRBinaryOp -> Text
   gvy-bin-op (op) =
    when op
-    is IrAddInt -> "+"  is IrSubInt -> "-"  is IrMulInt -> "*"  is IrDivInt -> "/"
+    is IrAddInt | IrAddNum -> "+"
+    is IrSubInt | IrSubNum -> "-"
+    is IrMulInt | IrMulNum -> "*"
+    is IrDivInt | IrDivNum -> "/"
     is IrRemInt -> "%"
-    is IrPowInt -> "**"  is IrAddNum -> "+"  is IrSubNum -> "-"  is IrMulNum -> "*"
-    is IrDivNum -> "/"  is IrEq -> "=="  is IrNotEq -> "!="
+    is IrPowInt -> "**"
+    is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> "+"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "=="
+    is IrNotEq -> "!="
     is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
-    is IrApproxEq -> "=="  is IrApproxEqExact -> "=="
-    is IrAnd -> "&&"  is IrOr -> "||"  is IrAppendText -> "+"
-    is IrAppendList -> "+"  is IrConsList -> "+"
+    is IrAnd -> "&&"  is IrOr -> "||"
+    is IrAppendText | IrAppendList | IrConsList -> "+"
 
   emit-gvy-lambda-params : List IRParam, Integer -> Text
   emit-gvy-lambda-params (params) (i) =
@@ -249,29 +257,84 @@ Section: Apply Emission
    else if i == list-length args - 1 then emit-gvy-expr (list-at args i) arities
         else emit-gvy-expr (list-at args i) arities & ", " & emit-gvy-apply-args args arities (i + 1)
 
+  BuiltinEntry = record {
+   name : Text,
+   tag : Integer between 0 and 255
+  }
+
+  --- Sorted builtin table (alphabetical by name).
+  --- Tags: 0=abs 1=char-at 2=char-code 3=char-to-text 4=int-mod
+  ---       5=integer-to-text 6=list-at 7=list-length 8=max 9=min
+  ---       10=negate 11=print-line-uni 12=process-exit 13=read-file
+  ---       14=show 15=substring 16=text-contains 17=text-length
+  ---       18=text-replace 19=text-to-integer 20=write-file
+
+  gvy-builtin-table : List BuiltinEntry =
+   [BuiltinEntry { name = "abs", tag = 0 },
+    BuiltinEntry { name = "char-at", tag = 1 },
+    BuiltinEntry { name = "char-code", tag = 2 },
+    BuiltinEntry { name = "char-to-text", tag = 3 },
+    BuiltinEntry { name = "int-mod", tag = 4 },
+    BuiltinEntry { name = "integer-to-text", tag = 5 },
+    BuiltinEntry { name = "list-at", tag = 6 },
+    BuiltinEntry { name = "list-length", tag = 7 },
+    BuiltinEntry { name = "max", tag = 8 },
+    BuiltinEntry { name = "min", tag = 9 },
+    BuiltinEntry { name = "negate", tag = 10 },
+    BuiltinEntry { name = "print-line-uni", tag = 11 },
+    BuiltinEntry { name = "process-exit", tag = 12 },
+    BuiltinEntry { name = "read-file", tag = 13 },
+    BuiltinEntry { name = "show", tag = 14 },
+    BuiltinEntry { name = "substring", tag = 15 },
+    BuiltinEntry { name = "text-contains", tag = 16 },
+    BuiltinEntry { name = "text-length", tag = 17 },
+    BuiltinEntry { name = "text-replace", tag = 18 },
+    BuiltinEntry { name = "text-to-integer", tag = 19 },
+    BuiltinEntry { name = "write-file", tag = 20 }]
+
+  bsearch-builtin : List BuiltinEntry, Text, Integer, Integer -> Integer
+  bsearch-builtin (tbl) (name) (lo) (hi) =
+   if lo >= hi then -1
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at tbl mid).name
+   in if mid-name == name then (list-at tbl mid).tag
+      else if text-compare name mid-name < 0 then bsearch-builtin tbl name lo mid
+      else bsearch-builtin tbl name (mid + 1) hi
+
+  gvy-lookup-builtin : Text -> Integer
+  gvy-lookup-builtin (name) =
+   bsearch-builtin gvy-builtin-table name 0 (list-length gvy-builtin-table)
+
   gvy-try-builtin : Text, List IRExpr, List ArityEntry -> Text
   gvy-try-builtin (n) (args) (arities) =
-   if n == "print-line-uni" then "println(" & emit-gvy-expr (list-at args 0) arities & ")"
-   else if n == "show" then "\"${" & emit-gvy-expr (list-at args 0) arities & "}\""
-   else if n == "integer-to-text" then "\"${" & emit-gvy-expr (list-at args 0) arities & "}\""
-   else if n == "text-to-integer" then "Long.parseLong(" & emit-gvy-expr (list-at args 0) arities & ")"
-   else if n == "text-length" then emit-gvy-expr (list-at args 0) arities & ".length()"
-   else if n == "list-length" then emit-gvy-expr (list-at args 0) arities & ".size()"
-   else if n == "list-at" then emit-gvy-expr (list-at args 0) arities & "[" & emit-gvy-expr (list-at args 1) arities & "]"
-   else if n == "char-at" then "(int)" & emit-gvy-expr (list-at args 0) arities & ".charAt(" & emit-gvy-expr (list-at args 1) arities & ")"
-   else if n == "char-code" then emit-gvy-expr (list-at args 0) arities
-   else if n == "char-to-text" then "((char)" & emit-gvy-expr (list-at args 0) arities & ").toString()"
-   else if n == "substring" then emit-gvy-expr (list-at args 0) arities & ".substring((int)" & emit-gvy-expr (list-at args 1) arities & ", (int)(" & emit-gvy-expr (list-at args 1) arities & " + " & emit-gvy-expr (list-at args 2) arities & "))"
-   else if n == "text-replace" then emit-gvy-expr (list-at args 0) arities & ".replace(" & emit-gvy-expr (list-at args 1) arities & ", " & emit-gvy-expr (list-at args 2) arities & ")"
-   else if n == "text-contains" then emit-gvy-expr (list-at args 0) arities & ".contains(" & emit-gvy-expr (list-at args 1) arities & ")"
-   else if n == "read-file" then "new File(" & emit-gvy-expr (list-at args 0) arities & ").text"
-   else if n == "write-file" then "new File(" & emit-gvy-expr (list-at args 0) arities & ").text = " & emit-gvy-expr (list-at args 1) arities
-   else if n == "process-exit" then "System.exit((int)" & emit-gvy-expr (list-at args 0) arities & ")"
-   else if n == "int-mod" then "(" & emit-gvy-expr (list-at args 0) arities & " % " & emit-gvy-expr (list-at args 1) arities & ")"
-   else if n == "negate" then "(-" & emit-gvy-expr (list-at args 0) arities & ")"
-   else if n == "min" then "Math.min(" & emit-gvy-expr (list-at args 0) arities & ", " & emit-gvy-expr (list-at args 1) arities & ")"
-   else if n == "max" then "Math.max(" & emit-gvy-expr (list-at args 0) arities & ", " & emit-gvy-expr (list-at args 1) arities & ")"
-   else if n == "abs" then "Math.abs(" & emit-gvy-expr (list-at args 0) arities & ")"
+   let tag = gvy-lookup-builtin n
+   in if tag == -1 then ""
+   else gvy-emit-builtin tag args arities
+
+  gvy-emit-builtin : Integer, List IRExpr, List ArityEntry -> Text
+  gvy-emit-builtin (tag) (args) (arities) =
+   let a0 = emit-gvy-expr (list-at args 0) arities
+   in if tag == 0 then "Math.abs(" & a0 & ")"
+   else if tag == 1 then "(int)" & a0 & ".charAt(" & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 2 then a0
+   else if tag == 3 then "((char)" & a0 & ").toString()"
+   else if tag == 4 then "(" & a0 & " % " & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 5 then "\"${" & a0 & "}\""
+   else if tag == 6 then a0 & "[" & emit-gvy-expr (list-at args 1) arities & "]"
+   else if tag == 7 then a0 & ".size()"
+   else if tag == 8 then "Math.max(" & a0 & ", " & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 9 then "Math.min(" & a0 & ", " & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 10 then "(-" & a0 & ")"
+   else if tag == 11 then "println(" & a0 & ")"
+   else if tag == 12 then "System.exit((int)" & a0 & ")"
+   else if tag == 13 then "new File(" & a0 & ").text"
+   else if tag == 14 then "\"${" & a0 & "}\""
+   else if tag == 15 then a0 & ".substring((int)" & emit-gvy-expr (list-at args 1) arities & ", (int)(" & emit-gvy-expr (list-at args 1) arities & " + " & emit-gvy-expr (list-at args 2) arities & "))"
+   else if tag == 16 then a0 & ".contains(" & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 17 then a0 & ".length()"
+   else if tag == 18 then a0 & ".replace(" & emit-gvy-expr (list-at args 1) arities & ", " & emit-gvy-expr (list-at args 2) arities & ")"
+   else if tag == 19 then "Long.parseLong(" & a0 & ")"
+   else if tag == 20 then "new File(" & a0 & ").text = " & emit-gvy-expr (list-at args 1) arities
    else ""
 
 Section: Definition Emission

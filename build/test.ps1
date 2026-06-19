@@ -104,6 +104,14 @@ foreach ($src in $tests) {
     }
 }
 
+# Sort lightest-first: tests with fewer cites compile smaller source concats
+# and consume less heap, so the batch VM gets through more tests before
+# exhausting the 3GB arena.
+$toCompile = @($toCompile | Sort-Object {
+    $m = Select-String -Path $_ -Pattern '^\s*cites' -ErrorAction SilentlyContinue
+    if ($m) { @($m).Count } else { 0 }
+})
+
 Write-Host "Tests: $($tests.Count) total, $($tests.Count - $toCompile.Count) skipped, $($toCompile.Count) to compile ($Jobs batch slots)"
 
 # ===========================================================================
@@ -150,6 +158,32 @@ foreach ($proc in $compileProcs) {
     }
 }
 Write-Host "Phase 1 (compile) complete."
+
+# ===========================================================================
+# Phase 1a: Retry tests that got exitcode 99 (VM died before test)
+# ===========================================================================
+$retryList = @()
+foreach ($src in $toCompile) {
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($src)
+    $out  = Join-Path $OutRoot $name
+    $exitFile = Join-Path $out '.exitcode'
+    $exitCode = if (Test-Path $exitFile) { (Get-Content -TotalCount 1 $exitFile).Trim() } else { '99' }
+    if ($exitCode -eq '99') { $retryList += @{ Name = $name; Src = $src; Out = $out } }
+}
+if ($retryList.Count -gt 0) {
+    Write-Host "Retrying $($retryList.Count) tests individually (VM died in batch)..."
+    $compileScript2 = Join-Path $PSScriptRoot 'compile.ps1'
+    foreach ($r in $retryList) {
+        $logPath = Join-Path $r.Out 'build.log'
+        $binPath = Join-Path $r.Out "$($r.Name).cdx"
+        $proc2 = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $compileScript2, '-Src', $r.Src, '-Out', $binPath, '-Log', $logPath) -PassThru -WindowStyle Hidden
+        $proc2.WaitForExit(120000) | Out-Null
+        if (-not $proc2.HasExited) { try { Stop-Process -Id $proc2.Id -Force } catch {} }
+        $retryExit = if ($proc2.HasExited) { $proc2.ExitCode } else { 4 }
+        "$retryExit" | Set-Content -Path (Join-Path $r.Out '.exitcode') -Encoding UTF8
+        Write-Host "  retry $($r.Name): exit $retryExit"
+    }
+}
 
 # ===========================================================================
 # Phase 1b: Classify compile results

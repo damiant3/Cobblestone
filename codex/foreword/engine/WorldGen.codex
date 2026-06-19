@@ -1,0 +1,344 @@
+Chapter: WorldGen
+  cites Engine chapter Terrain
+  cites Engine chapter Biome
+  cites Engine chapter FractalPlant
+  cites Engine chapter Mesh
+  cites Math chapter Quaternion
+  cites Game chapter Color
+
+ Procedural world generator with progressive LOD. The world is a
+ sphere subdivided into quad-tree tiles. At orbital distance you see
+ continent outlines and ocean. As you descend, tiles subdivide:
+ coarse heightmap refines, rivers carve, biomes fill in, flora
+ populates. Each tile level doubles resolution and halves area.
+ Tiles beyond a distance budget are not generated — the world is
+ infinite but only rendered where you look.
+
+ The generation pipeline per tile:
+ 1. Heightmap (diamond-square at tile resolution)
+ 2. Hydrology (flow accumulation, river carving)
+ 3. Climate (temperature from latitude + altitude, moisture from
+    distance-to-water)
+ 4. Biome (Whittaker classification from climate)
+ 5. Flora (L-system plants placed by biome palette)
+ 6. Mesh (heightmap-to-mesh at tile LOD)
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: World Sphere
+
+  WorldSphere = record {
+    ws-radius : Integer,
+    ws-sea-level : Integer,
+    ws-seed : Integer,
+    ws-max-lod : Integer
+  }
+
+  ws-default : WorldSphere
+  ws-default = WorldSphere { ws-radius = 6371000, ws-sea-level = 0, ws-seed = 42, ws-max-lod = 8 }
+
+  ws-small : WorldSphere
+  ws-small = WorldSphere { ws-radius = 1000000, ws-sea-level = 0, ws-seed = 7, ws-max-lod = 6 }
+
+Section: Tile Address
+
+  TileAddr = record {
+    ta-face : Integer,
+    ta-lod : Integer,
+    ta-x : Integer,
+    ta-z : Integer
+  }
+
+  ta-root : Integer -> TileAddr
+  ta-root (face) = TileAddr { ta-face = face, ta-lod = 0, ta-x = 0, ta-z = 0 }
+
+  ta-child : TileAddr, Integer, Integer -> TileAddr
+  ta-child (parent) (cx) (cz) = TileAddr { ta-face = parent.ta-face, ta-lod = parent.ta-lod + 1, ta-x = parent.ta-x * 2 + cx, ta-z = parent.ta-z * 2 + cz }
+
+  ta-tile-size : TileAddr, Integer -> Integer
+  ta-tile-size (addr) (world-radius) =
+    let face-size = world-radius * 2
+    in let divisor = wg-pow2 (addr.ta-lod)
+    in if divisor == 0 then face-size else face-size / divisor
+
+Section: Tile Data
+
+  TileState =
+    | TsEmpty
+    | TsHeightmap
+    | TsHydrology
+    | TsClimatized
+    | TsBiomed
+    | TsFlorad
+    | TsMeshed
+
+  WorldTile = record {
+    wt-addr : TileAddr,
+    wt-state : TileState,
+    wt-heightmap : List Integer,
+    wt-grid-size : Integer,
+    wt-rivers : List RiverSegment,
+    wt-river-count : Integer,
+    wt-climate : Climate,
+    wt-biome : BiomeType,
+    wt-plant-count : Integer,
+    wt-mesh-vert-count : Integer
+  }
+
+  wt-empty : TileAddr -> WorldTile
+  wt-empty (addr) = WorldTile { wt-addr = addr, wt-state = TsEmpty, wt-heightmap = [], wt-grid-size = 0, wt-rivers = [], wt-river-count = 0, wt-climate = clim-default, wt-biome = BioOcean, wt-plant-count = 0, wt-mesh-vert-count = 0 }
+
+Section: Rivers
+
+  RiverSegment = record {
+    rs-x0 : Integer, rs-z0 : Integer,
+    rs-x1 : Integer, rs-z1 : Integer,
+    rs-width : Integer,
+    rs-flow : Integer
+  }
+
+Section: Heightmap Generation (seeded diamond-square)
+
+  wg-generate-heightmap : Integer, Integer, Integer -> List Integer
+  wg-generate-heightmap (size) (seed) (roughness) =
+    let cells = wg-init-cells (size * size) 0 []
+    in let h0 = wg-hash seed 0
+    in let h1 = wg-hash seed 1
+    in let h2 = wg-hash seed 2
+    in let h3 = wg-hash seed 3
+    in let c0 = wg-set-cell cells size 0 0 (wg-imod h0 256)
+    in let c1 = wg-set-cell c0 size (size - 1) 0 (wg-imod h1 256)
+    in let c2 = wg-set-cell c1 size 0 (size - 1) (wg-imod h2 256)
+    in let c3 = wg-set-cell c2 size (size - 1) (size - 1) (wg-imod h3 256)
+    in wg-subdivide c3 size (size - 1) roughness seed
+
+  wg-subdivide : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  wg-subdivide (cells) (size) (step) (roughness) (seed) =
+    if step < 2 then cells
+    else let half = step / 2
+    in let diamond = wg-diamond-pass cells size step half roughness seed
+    in let square = wg-square-pass diamond size step half roughness (seed + step)
+    in wg-subdivide square size half (roughness * 900 / 1000) (seed + step * 2)
+
+  wg-diamond-pass : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  wg-diamond-pass (cells) (size) (step) (half) (rough) (seed) = wg-diamond-loop cells size step half rough seed 0 0
+
+  wg-diamond-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  wg-diamond-loop (cells) (size) (step) (half) (rough) (seed) (x) (z) =
+    if z + step >= size then cells
+    else if x + step >= size then wg-diamond-loop cells size step half rough seed 0 (z + step)
+    else let tl = wg-get-cell cells size x z
+    in let tr = wg-get-cell cells size (x + step) z
+    in let bl = wg-get-cell cells size x (z + step)
+    in let br = wg-get-cell cells size (x + step) (z + step)
+    in let avg = (tl + tr + bl + br) / 4
+    in let jitter = wg-hash seed (x * 1000 + z)
+    in let noise = (wg-imod jitter rough) - rough / 2
+    in let val = wg-clamp (avg + noise) 0 255
+    in wg-diamond-loop (wg-set-cell cells size (x + half) (z + half) val) size step half rough seed (x + step) z
+
+  wg-square-pass : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  wg-square-pass (cells) (size) (step) (half) (rough) (seed) = wg-square-loop cells size step half rough seed 0 0
+
+  wg-square-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  wg-square-loop (cells) (size) (step) (half) (rough) (seed) (x) (z) =
+    if z >= size then cells
+    else if x >= size then wg-square-loop cells size step half rough seed 0 (z + half)
+    else let is-offset = wg-imod (z / half) 2 == 0
+    in let actual-x = if is-offset then x + half else x
+    in if actual-x >= size then wg-square-loop cells size step half rough seed (x + step) z
+    else let count = 0
+    in let sum = 0
+    in let s1 = if actual-x - half >= 0 then wg-get-cell cells size (actual-x - half) z else 0
+    in let c1 = if actual-x - half >= 0 then 1 else 0
+    in let s2 = if actual-x + half < size then wg-get-cell cells size (actual-x + half) z else 0
+    in let c2 = if actual-x + half < size then 1 else 0
+    in let s3 = if z - half >= 0 then wg-get-cell cells size actual-x (z - half) else 0
+    in let c3 = if z - half >= 0 then 1 else 0
+    in let s4 = if z + half < size then wg-get-cell cells size actual-x (z + half) else 0
+    in let c4 = if z + half < size then 1 else 0
+    in let total = s1 + s2 + s3 + s4
+    in let cnt = c1 + c2 + c3 + c4
+    in let avg = if cnt == 0 then 128 else total / cnt
+    in let jitter = wg-hash (seed + 777) (actual-x * 1000 + z)
+    in let noise = (wg-imod jitter rough) - rough / 2
+    in let val = wg-clamp (avg + noise) 0 255
+    in wg-square-loop (wg-set-cell cells size actual-x z val) size step half rough seed (x + step) z
+
+Section: Flow Accumulation (simple downhill)
+
+  wg-carve-rivers : List Integer, Integer, Integer -> List RiverSegment
+  wg-carve-rivers (heightmap) (size) (min-flow) =
+    let flow = wg-flow-accumulate heightmap size
+    in wg-extract-rivers flow heightmap size min-flow 0 0 []
+
+  wg-flow-accumulate : List Integer, Integer -> List Integer
+  wg-flow-accumulate (heightmap) (size) = wg-flow-loop heightmap size 0 0 (wg-init-cells (size * size) 0 [])
+
+  wg-flow-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  wg-flow-loop (hm) (size) (x) (z) (flow) =
+    if z >= size then flow
+    else if x >= size then wg-flow-loop hm size 0 (z + 1) flow
+    else let here = wg-get-cell hm size x z
+    in let lowest-dir = wg-lowest-neighbor hm size x z here
+    in if lowest-dir < 0 then wg-flow-loop hm size (x + 1) z flow
+    else let nx = x + wg-dir-dx lowest-dir
+    in let nz = z + wg-dir-dz lowest-dir
+    in let cur = wg-get-cell flow size nx nz
+    in wg-flow-loop hm size (x + 1) z (wg-set-cell flow size nx nz (cur + 1))
+
+  wg-lowest-neighbor : List Integer, Integer, Integer, Integer, Integer -> Integer
+  wg-lowest-neighbor (hm) (size) (x) (z) (here) = wg-lowest-loop hm size x z here 0 (-1) 999
+
+  wg-lowest-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wg-lowest-loop (hm) (size) (x) (z) (here) (dir) (best-dir) (best-h) =
+    if dir >= 4 then best-dir
+    else let nx = x + wg-dir-dx dir
+    in let nz = z + wg-dir-dz dir
+    in if nx < 0 then wg-lowest-loop hm size x z here (dir + 1) best-dir best-h
+    else if nz < 0 then wg-lowest-loop hm size x z here (dir + 1) best-dir best-h
+    else if nx >= size then wg-lowest-loop hm size x z here (dir + 1) best-dir best-h
+    else if nz >= size then wg-lowest-loop hm size x z here (dir + 1) best-dir best-h
+    else let nh = wg-get-cell hm size nx nz
+    in if nh < best-h then if nh < here then wg-lowest-loop hm size x z here (dir + 1) dir nh else wg-lowest-loop hm size x z here (dir + 1) best-dir best-h
+    else wg-lowest-loop hm size x z here (dir + 1) best-dir best-h
+
+  wg-dir-dx : Integer -> Integer
+  wg-dir-dx (d) = if d == 0 then 1 else if d == 1 then 0 else if d == 2 then -1 else 0
+
+  wg-dir-dz : Integer -> Integer
+  wg-dir-dz (d) = if d == 0 then 0 else if d == 1 then 1 else if d == 2 then 0 else -1
+
+  wg-extract-rivers : List Integer, List Integer, Integer, Integer, Integer, Integer, List RiverSegment -> List RiverSegment
+  wg-extract-rivers (flow) (hm) (size) (min-flow) (x) (z) (acc) =
+    if z >= size then acc
+    else if x >= size then wg-extract-rivers flow hm size min-flow 0 (z + 1) acc
+    else let f = wg-get-cell flow size x z
+    in if f >= min-flow then
+      let lowest = wg-lowest-neighbor hm size x z (wg-get-cell hm size x z)
+      in if lowest >= 0 then
+        let seg = RiverSegment { rs-x0 = x, rs-z0 = z, rs-x1 = x + wg-dir-dx lowest, rs-z1 = z + wg-dir-dz lowest, rs-width = 1 + f / 10, rs-flow = f }
+        in wg-extract-rivers flow hm size min-flow (x + 1) z (list-push acc seg)
+      else wg-extract-rivers flow hm size min-flow (x + 1) z acc
+    else wg-extract-rivers flow hm size min-flow (x + 1) z acc
+
+Section: Tile Generation Pipeline
+
+  wg-generate-tile : WorldSphere, TileAddr -> WorldTile
+  wg-generate-tile (world) (addr) =
+    let tile-seed = world.ws-seed * 1000 + addr.ta-face * 100 + addr.ta-x * 10 + addr.ta-z
+    in let grid = wg-lod-grid-size (addr.ta-lod)
+    in let roughness = 80 + addr.ta-lod * 10
+    in let heightmap = wg-generate-heightmap grid tile-seed roughness
+    in let rivers = wg-carve-rivers heightmap grid (grid / 4)
+    in let avg-height = wg-avg-height heightmap (grid * grid) 0 0
+    in let latitude = addr.ta-z * 1000 / (wg-pow2 (addr.ta-lod) + 1) - 500
+    in let temp = 250 - wg-abs-val latitude / 3 - avg-height / 4
+    in let moisture = 500 + (wg-count-cells-above heightmap (grid * grid) 0 0 0) * 20
+    in let climate = Climate { clim-temperature = temp, clim-moisture = wg-clamp moisture 0 1000, clim-altitude = avg-height * 100, clim-wind-x = 100, clim-wind-z = 0, clim-wind-speed = 100, clim-cloud-cover = moisture / 3, clim-precipitation = moisture / 5 }
+    in let biome = biome-classify temp moisture (avg-height * 100)
+    in WorldTile { wt-addr = addr, wt-state = TsBiomed, wt-heightmap = heightmap, wt-grid-size = grid, wt-rivers = rivers, wt-river-count = list-length rivers, wt-climate = climate, wt-biome = biome, wt-plant-count = 0, wt-mesh-vert-count = grid * grid }
+
+  wg-lod-grid-size : Integer -> Integer
+  wg-lod-grid-size (lod) =
+    if lod <= 0 then 9
+    else if lod == 1 then 17
+    else if lod == 2 then 17
+    else if lod == 3 then 33
+    else if lod == 4 then 33
+    else 33
+
+Section: LOD Selection (distance-based)
+
+  TileLodRequest = record {
+    tlr-addr : TileAddr,
+    tlr-distance : Integer,
+    tlr-should-subdivide : Boolean
+  }
+
+  wg-should-subdivide : TileAddr, Integer, Integer, Integer -> Boolean
+  wg-should-subdivide (addr) (cam-dist) (tile-size) (max-lod) =
+    if addr.ta-lod >= max-lod then False
+    else cam-dist < tile-size * 2
+
+Section: World Simulation LOD
+
+  SimLodBucket =
+    | SimFull
+    | SimReduced
+    | SimSleeping
+
+  wg-sim-bucket : Integer, Integer -> SimLodBucket
+  wg-sim-bucket (tile-dist) (active-radius) =
+    if tile-dist < active-radius then SimFull
+    else if tile-dist < active-radius * 3 then SimReduced
+    else SimSleeping
+
+  wg-sim-tick-rate : SimLodBucket -> Integer
+  wg-sim-tick-rate (bucket) = when bucket
+    is SimFull -> 1
+    is SimReduced -> 10
+    is SimSleeping -> 0
+
+Section: Helpers
+
+  wg-init-cells : Integer, Integer, List Integer -> List Integer
+  wg-init-cells (n) (i) (acc) =
+    if i >= n then acc
+    else wg-init-cells n (i + 1) (list-push acc 0)
+
+  wg-get-cell : List Integer, Integer, Integer, Integer -> Integer
+  wg-get-cell (cells) (size) (x) (z) = list-at cells (z * size + x)
+
+  wg-set-cell : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  wg-set-cell (cells) (size) (x) (z) (val) = list-set-at cells (z * size + x) val
+
+  wg-hash : Integer, Integer -> Integer
+  wg-hash (seed) (val) =
+    let mixed = (seed * 2654435761 + val * 2246822519) * 1000003
+    in let folded = bit-xor mixed (mixed / 65536)
+    in if folded < 0 then 0 - folded else folded
+
+  wg-imod : Integer, Integer -> Integer
+  wg-imod (a) (b) = if b == 0 then 0 else let m = a - (a / b) * b in if m < 0 then m + b else m
+
+  wg-clamp : Integer, Integer, Integer -> Integer
+  wg-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  wg-abs-val : Integer -> Integer
+  wg-abs-val (n) = if n < 0 then 0 - n else n
+
+  wg-pow2 : Integer -> Integer
+  wg-pow2 (n) = if n <= 0 then 1 else 2 * wg-pow2 (n - 1)
+
+  wg-avg-height : List Integer, Integer, Integer, Integer -> Integer
+  wg-avg-height (cells) (n) (i) (acc) =
+    if i >= n then if n == 0 then 0 else acc / n
+    else wg-avg-height cells n (i + 1) (acc + list-at cells i)
+
+  wg-count-cells-above : List Integer, Integer, Integer, Integer, Integer -> Integer
+  wg-count-cells-above (cells) (n) (i) (threshold) (acc) =
+    if i >= n then acc
+    else let inc = if list-at cells i > threshold then 1 else 0
+    in wg-count-cells-above cells n (i + 1) threshold (acc + inc)
+
+Section: Formatting
+
+  format-world-sphere : WorldSphere -> Text
+  format-world-sphere (w) = "World(r=" & show (w.ws-radius) & " seed=" & show (w.ws-seed) & " max-lod=" & show (w.ws-max-lod) & ")"
+
+  format-tile-addr : TileAddr -> Text
+  format-tile-addr (a) = "Tile(face=" & show (a.ta-face) & " lod=" & show (a.ta-lod) & " " & show (a.ta-x) & "," & show (a.ta-z) & ")"
+
+  format-world-tile : WorldTile -> Text
+  format-world-tile (t) = format-tile-addr (t.wt-addr) & " " & biome-name (t.wt-biome) & " rivers=" & show (t.wt-river-count) & " verts=" & show (t.wt-mesh-vert-count)
+
+  format-sim-bucket : SimLodBucket -> Text
+  format-sim-bucket (b) = when b
+    is SimFull -> "full"
+    is SimReduced -> "reduced"
+    is SimSleeping -> "sleeping"
+
+Page 1

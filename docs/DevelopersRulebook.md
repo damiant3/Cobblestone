@@ -6,7 +6,7 @@ A foreword quire is a library package marked `"foreword": true` in its
 `codex.project.json`. Foreword modules compile before user code and
 make their types and functions automatically available.
 
-### codex.foreword (106 modules) — Core
+### codex.foreword (107 modules) — Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -82,16 +82,19 @@ Every function is `punctual`: no heap, no recursion, bounded
 instruction count. Safe to call from real-time, embedded, and
 interrupt contexts.
 
-### codex.foreword.engine (21 modules) — 3D Game Engine
+### codex.foreword.engine (42 modules) — 3D Game Engine
 
-Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling,
-PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags,
-AbilitySystem, Signal, DebugDraw, TimeOfDay, AssetTable, EdgeMesh,
-HelmBridge
+AbilitySystem, AnimBlend, AssetTable, Audio3D, AudioBus, Biome,
+ClothSim, Collision3D, Culling, Cutscene, DamageSystem, DebugDraw,
+EdgeMesh, FacialAnim, Fog, FractalPlant, GameLoop, GameplayTags,
+HairSim, HelmBridge, Input, LOD, Material, Mesh, Musculature,
+NavMesh, ParticleRenderer, PhysicsJoint, PostProcess, Renderer3D,
+Scene3D, Signal, Skinning, SkinShader, SoftBody, SplinePath,
+Terrain, Texture, TimeOfDay, Water, WorldGen, WorldHUD
 
 3D rendering pipeline, scene management, materials, LOD/culling,
 post-processing, spatial audio, input handling, gameplay systems,
-and edge mesh networking for multiplayer.
+physics, procedural generation, and edge mesh networking.
 
 ### codex.foreword.ui (28 modules) — User Interface
 
@@ -99,6 +102,17 @@ Widget, Window, Surface, Theme, Font, Icon, Event, Layout, Animation,
 Binding, TextField, RichText, Dialog, Overlay, Orchestrator, Render,
 Accessibility, Focus, Selection, Cursor, Drag, Touch, Scroll, BoxModel,
 Charts, Sound, Clipboard, Vector
+
+### codex.foreword.gpu (10 modules) — GPU Kernel Programming
+
+DeviceEffect, GpuEffect, DeviceBuffer, LaunchConfig, Thread, Warp,
+Shared, Atomic, Barrier, DisjointSlice
+
+GPU kernel programming surface. `[Device]` effect marks code that runs
+on the GPU; `[Gpu]` effect marks host-side kernel launch and buffer
+management. Type-safe thread indexing via `ThreadIndex` witness type,
+scope-encoded atomics, warp shuffles, shared memory, and
+`DisjointSlice` for provably-disjoint parallel writes.
 
 ## Non-Foreword Quires
 

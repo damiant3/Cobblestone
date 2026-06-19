@@ -36,7 +36,7 @@ failure SETS, never exit codes. All 11 erp-* tests PASS_EXPECTED.
 
 ## Pending
 
-- **Copy-up**: CLs 3759 + 3761 are on the stream, not yet on main.
+- **Copy-up**: CLs 3759 + 3761 — DONE (on main via subsequent copy-ups).
 - **Phase 5 (next)**: ErpPage.codex on the WebApp quire (cites
   WebRuntime/WebTheme/WebWidgets; port recipe in
   docs/Designs/Apps/WebApp/Active/BaseTemplate.md), output
@@ -55,11 +55,8 @@ failure SETS, never exit codes. All 11 erp-* tests PASS_EXPECTED.
    batch with `build/test-compile-batch.ps1 -ListFile
    test-output/_batches/batch-N.txt -OutRoot <tmp>` before blaming a
    change. Promote to docs/Test/ on a third sighting.
-2. **`cites Encode chapter Json`** — Json is in the Encode quire.
-   MarketWeb's `cites Foreword chapter Json` is a latent
-   never-compiled error; same class as Dashboard.codex and
-   RuntimeDb.codex still calling nonexistent `execute` (executor entry
-   point is `query`). They bite whoever first links them.
+2. **`cites Encode chapter Json`** — RESOLVED. All 13 app files now
+   use the correct `cites Encode chapter Json`. MarketWeb fixed.
 3. **Closure size**: batch compile slots are 3072 MB; the full
    ErpScenario+Data closure fits since the 3GB seed, but keep new test
    closures lean (erp-db-test deliberately stays on the FinGL closure).

@@ -85,6 +85,69 @@ Section: Arity Map
       else let e = list-at entries pos
       in if e.name == name then e.arity else -1
 
+Section: Builtin Dispatch
+
+  KtBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-kt-emitter-pos : List KtBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-kt-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-kt-emitter-pos entries name lo mid
+      else bsearch-kt-emitter-pos entries name (mid + 1) hi
+
+  sort-kt-emitters : List KtBuiltinEmitter -> List KtBuiltinEmitter
+  sort-kt-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  kt-builtin-emitters : List KtBuiltinEmitter = sort-kt-emitters [
+   KtBuiltinEmitter { name = "abs", emit = \args arities -> "kotlin.math.abs(" & emit-kt-expr (list-at args 0) arities & " as Int)" },
+   KtBuiltinEmitter { name = "char-at", emit = \args arities -> emit-kt-expr (list-at args 0) arities & "[" & emit-kt-expr (list-at args 1) arities & " as Int]" },
+   KtBuiltinEmitter { name = "char-code-at", emit = \args arities -> emit-kt-expr (list-at args 0) arities & "[" & emit-kt-expr (list-at args 1) arities & " as Int].code" },
+   KtBuiltinEmitter { name = "file-exists", emit = \args arities -> "java.io.File(" & emit-kt-expr (list-at args 0) arities & " as String).exists()" },
+   KtBuiltinEmitter { name = "int-mod", emit = \args arities -> "((" & emit-kt-expr (list-at args 0) arities & " as Int) % (" & emit-kt-expr (list-at args 1) arities & " as Int))" },
+   KtBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & ").toString()" },
+   KtBuiltinEmitter { name = "list-at", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as List<*>)[" & emit-kt-expr (list-at args 1) arities & " as Int]" },
+   KtBuiltinEmitter { name = "list-length", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as List<*>).size" },
+   KtBuiltinEmitter { name = "list-snoc", emit = \args arities -> "((" & emit-kt-expr (list-at args 0) arities & " as List<*>) + listOf(" & emit-kt-expr (list-at args 1) arities & "))" },
+   KtBuiltinEmitter { name = "max", emit = \args arities -> "kotlin.math.max(" & emit-kt-expr (list-at args 0) arities & " as Int, " & emit-kt-expr (list-at args 1) arities & " as Int)" },
+   KtBuiltinEmitter { name = "min", emit = \args arities -> "kotlin.math.min(" & emit-kt-expr (list-at args 0) arities & " as Int, " & emit-kt-expr (list-at args 1) arities & " as Int)" },
+   KtBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-kt-expr (list-at args 0) arities & " as Int))" },
+   KtBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "System.err.println(" & emit-kt-expr (list-at args 0) arities & ")" },
+   KtBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "println(" & emit-kt-expr (list-at args 0) arities & ")" },
+   KtBuiltinEmitter { name = "read-file", emit = \args arities -> "java.io.File(" & emit-kt-expr (list-at args 0) arities & " as String).readText()" },
+   KtBuiltinEmitter { name = "read-line", emit = \args arities -> "readLine()!!" },
+   KtBuiltinEmitter { name = "show", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & ").toString()" },
+   KtBuiltinEmitter { name = "substring", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).substring(" & emit-kt-expr (list-at args 1) arities & " as Int, (" & emit-kt-expr (list-at args 1) arities & " as Int) + (" & emit-kt-expr (list-at args 2) arities & " as Int))" },
+   KtBuiltinEmitter { name = "text-compare", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).compareTo(" & emit-kt-expr (list-at args 1) arities & " as String)" },
+   KtBuiltinEmitter { name = "text-contains", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).contains(" & emit-kt-expr (list-at args 1) arities & " as String)" },
+   KtBuiltinEmitter { name = "text-length", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).length" },
+   KtBuiltinEmitter { name = "text-replace", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).replace(" & emit-kt-expr (list-at args 1) arities & " as String, " & emit-kt-expr (list-at args 2) arities & " as String)" },
+   KtBuiltinEmitter { name = "text-split", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).split(" & emit-kt-expr (list-at args 1) arities & " as String)" },
+   KtBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).startsWith(" & emit-kt-expr (list-at args 1) arities & " as String)" },
+   KtBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).toInt()" },
+   KtBuiltinEmitter { name = "write-file", emit = \args arities -> "java.io.File(" & emit-kt-expr (list-at args 0) arities & " as String).writeText(" & emit-kt-expr (list-at args 1) arities & " as String)" }
+  ]
+
+  is-kt-builtin-name : Text -> Boolean
+  is-kt-builtin-name (n) =
+   let len = list-length kt-builtin-emitters
+   in let pos = bsearch-kt-emitter-pos kt-builtin-emitters n 0 len
+   in if pos >= len then False
+      else (list-at kt-builtin-emitters pos).name == n
+
+  emit-kt-builtin : Text, List IRExpr, List ArityEntry -> Text
+  emit-kt-builtin (n) (args) (arities) =
+   let len = list-length kt-builtin-emitters
+   in let pos = bsearch-kt-emitter-pos kt-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at kt-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
+
 Section: Apply Chain
 
   is-upper-letter : Integer -> Boolean
@@ -155,7 +218,7 @@ Section: Expression Emission
    if depth >= kt-max-depth then "null"
    else when e
     is IrIntLit (n) (sp) -> integer-to-text n
-    is IrNumLit (n) (sp) -> integer-to-text n & ".0"
+    is IrNumLit (n) (sp) -> "java.lang.Double.longBitsToDouble(" & integer-to-text n & "L)"
     is IrTextLit (s) (sp) -> "\"" & kt-escape-text s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
@@ -183,9 +246,11 @@ Section: Expression Emission
   emit-kt-name (n) (ty) (arities) =
    if n == "read-line" then "readLine()!!"
    else if n == "show" then "Any::toString"
+   else if n == "negate" then "{ x: Any? -> -(x as Int) }"
    else if n == "True" then "true"
    else if n == "False" then "false"
    else if n == "Nothing" then "null"
+   else if is-kt-builtin-name n then kt-sanitize n
    else kt-sanitize n
 
   emit-kt-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
@@ -198,34 +263,31 @@ Section: Expression Emission
     is IrRemInt -> "(" & emit-kt-expr l arities & " % " & emit-kt-expr r arities & ")"
     is IrAnd -> "(" & emit-kt-expr l arities & " && " & emit-kt-expr r arities & ")"
     is IrOr -> "(" & emit-kt-expr l arities & " || " & emit-kt-expr r arities & ")"
+    is IrAddVec -> "(" & emit-kt-expr l arities & " as List<Double>).zip(" & emit-kt-expr r arities & " as List<Double>).map { (a, b) -> a + b }"
+    is IrSubVec -> "(" & emit-kt-expr l arities & " as List<Double>).zip(" & emit-kt-expr r arities & " as List<Double>).map { (a, b) -> a - b }"
+    is IrMulVec -> "(" & emit-kt-expr l arities & " as List<Double>).zip(" & emit-kt-expr r arities & " as List<Double>).map { (a, b) -> a * b }"
+    is IrDivVec -> "(" & emit-kt-expr l arities & " as List<Double>).zip(" & emit-kt-expr r arities & " as List<Double>).map { (a, b) -> a / b }"
     is otherwise -> "(" & emit-kt-expr l arities & " " & kt-bin-op-symbol op & " " & emit-kt-expr r arities & ")"
 
   kt-bin-op-symbol : IRBinaryOp -> Text
   kt-bin-op-symbol (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
-    is IrDivInt -> "/"
+    is IrAddInt | IrAddNum -> "+"
+    is IrSubInt | IrSubNum -> "-"
+    is IrMulInt | IrMulNum -> "*"
+    is IrDivInt | IrDivNum -> "/"
     is IrRemInt -> "%"
     is IrPowInt -> "pow"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
-    is IrEq -> "=="
+    is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> "+"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "=="
     is IrNotEq -> "!="
     is IrLt -> "<"
     is IrGt -> ">"
     is IrLtEq -> "<="
     is IrGtEq -> ">="
-    is IrApproxEq -> "=="
-    is IrApproxEqExact -> "=="
     is IrAnd -> "&&"
     is IrOr -> "||"
-    is IrAppendText -> "+"
-    is IrAppendList -> "+"
-    is IrConsList -> "+"
+    is IrAppendText | IrAppendList | IrConsList -> "+"
 
   emit-kt-lambda-params : List IRParam, Integer -> Text
   emit-kt-lambda-params (params) (i) =
@@ -290,7 +352,7 @@ Section: Apply Emission
    in let args = chain.args
    in when root
     is IrName (n) (ty) (sp) ->
-     if n == "print-line-uni" then "println(" & emit-kt-expr (list-at args 0) arities & ")"
+     if is-kt-builtin-name n then emit-kt-builtin n args arities
      else if is-mktup-name n then "listOf(" & emit-kt-apply-args args arities 0 & ")"
      else kt-sanitize n & "(" & emit-kt-apply-args args arities 0 & ")"
     is otherwise -> emit-kt-expr-curried e arities

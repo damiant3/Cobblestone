@@ -397,6 +397,188 @@ Section: print-line-uni (PL011 UART output)
    in let i = a64-rt-emit i arm64-ret
    in a64-patch-insn-raw i exit (arm64-b-cond 10 ((exit-label - exit) * 4))
 
+Section: MMIO Helpers
+
+  a64-rt-peek-byte : List Integer
+  a64-rt-peek-byte =
+   arm64-add 0 0 1 & arm64-ldrb 0 0 0 & arm64-ret
+
+  a64-rt-poke-byte : List Integer
+  a64-rt-poke-byte =
+   arm64-add 0 0 1 & arm64-strb 2 0 0 & arm64-movz 0 0 0 & arm64-ret
+
+  a64-rt-peek-32 : List Integer
+  a64-rt-peek-32 =
+   arm64-add 0 0 1 & arm64-ldr-w 0 0 0 & arm64-ret
+
+  a64-rt-poke-32 : List Integer
+  a64-rt-poke-32 =
+   arm64-add 0 0 1 & arm64-str-w 2 0 0 & arm64-movz 0 0 0 & arm64-ret
+
+  a64-rt-peek-qword : List Integer
+  a64-rt-peek-qword =
+   arm64-add 0 0 1 & arm64-ldr 0 0 0 & arm64-ret
+
+  a64-rt-poke-qword : List Integer
+  a64-rt-poke-qword =
+   arm64-add 0 0 1 & arm64-str 2 0 0 & arm64-movz 0 0 0 & arm64-ret
+
+Section: Buffer Helpers
+
+  a64-rt-buf-write-byte : List Integer
+  a64-rt-buf-write-byte =
+   arm64-add 0 0 1 & arm64-strb 2 0 0 & arm64-movz 0 0 0 & arm64-ret
+
+  a64-rt-buf-read-bytes : List Integer
+  a64-rt-buf-read-bytes =
+   let i = []
+   in let i = a64-rt-emit i (arm64-add 9 0 1)
+   in let i = a64-rt-emit i (arm64-mov 10 2)
+   in let i = a64-rt-emit i (arm64-mov 0 28)
+   in let i = a64-rt-emit i (arm64-str 10 0 0)
+   in let i = a64-rt-emit i (arm64-add-imm 11 0 8)
+   in let i = i & arm64-movz 12 0 0
+   in let loop = list-length i / 4
+   in let i = a64-rt-emit i (arm64-cmp 12 10)
+   in let exit-idx = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-add 13 9 12)
+   in let i = a64-rt-emit i (arm64-ldrb 13 13 0)
+   in let i = a64-rt-emit i (arm64-mov 14 12)
+   in let i = i & arm64-lsl-imm 14 14 3
+   in let i = a64-rt-emit i (arm64-add 14 11 14)
+   in let i = a64-rt-emit i (arm64-str 13 14 0)
+   in let i = a64-rt-emit i (arm64-add-imm 12 12 1)
+   in let i = a64-rt-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in let i = a64-rt-emit i (arm64-mov 14 10)
+   in let i = i & arm64-lsl-imm 14 14 3
+   in let i = a64-rt-emit i (arm64-add-imm 14 14 8)
+   in let i = a64-rt-emit i (arm64-add 28 28 14)
+   in a64-patch-insn-raw i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
+
+  a64-rt-buf-write-bytes : List Integer
+  a64-rt-buf-write-bytes =
+   let i = []
+   in let i = a64-rt-emit i (arm64-add 9 0 1)
+   in let i = a64-rt-emit i (arm64-ldr 10 2 0)
+   in let i = i & arm64-movz 11 0 0
+   in let loop = list-length i / 4
+   in let i = a64-rt-emit i (arm64-cmp 11 10)
+   in let exit-idx = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-mov 12 11)
+   in let i = i & arm64-lsl-imm 12 12 3
+   in let i = a64-rt-emit i (arm64-add 12 2 12)
+   in let i = a64-rt-emit i (arm64-ldr 12 12 8)
+   in let i = a64-rt-emit i (arm64-add 13 9 11)
+   in let i = a64-rt-emit i (arm64-strb 12 13 0)
+   in let i = a64-rt-emit i (arm64-add-imm 11 11 1)
+   in let i = a64-rt-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in let i = a64-rt-emit i (arm64-add 0 1 10)
+   in let i = a64-rt-emit i (arm64-mov 0 0)
+   in let i = a64-rt-emit i arm64-ret
+   in a64-patch-insn-raw i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
+
+Section: Heap Management Helpers
+
+  a64-rt-heap-save : List Integer
+  a64-rt-heap-save =
+   arm64-mov 0 28 & arm64-ret
+
+  a64-rt-heap-restore : List Integer
+  a64-rt-heap-restore =
+   arm64-mov 28 0 & arm64-movz 0 0 0 & arm64-ret
+
+  a64-rt-heap-advance : List Integer
+  a64-rt-heap-advance =
+   arm64-add 28 28 0 & arm64-movz 0 0 0 & arm64-ret
+
+  a64-rt-alloc-bytes : List Integer
+  a64-rt-alloc-bytes =
+   arm64-mov 0 28 & arm64-add 28 28 0 & arm64-ret
+
+Section: Barrier Helpers
+
+  a64-rt-dsb : List Integer
+  a64-rt-dsb = arm64-dsb-sy & arm64-ret
+
+  a64-rt-dmb : List Integer
+  a64-rt-dmb = arm64-dmb-sy & arm64-ret
+
+  a64-rt-isb : List Integer
+  a64-rt-isb = arm64-isb & arm64-ret
+
+Section: Memory Operations
+
+  a64-rt-memset : List Integer
+  a64-rt-memset =
+   let i = []
+   in let i = i & arm64-movz 9 0 0
+   in let loop = list-length i / 4
+   in let i = a64-rt-emit i (arm64-cmp 9 2)
+   in let exit-idx = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-add 10 0 9)
+   in let i = a64-rt-emit i (arm64-strb 1 10 0)
+   in let i = a64-rt-emit i (arm64-add-imm 9 9 1)
+   in let i = a64-rt-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in let i = a64-rt-emit i (arm64-movz 0 0 0)
+   in let i = a64-rt-emit i arm64-ret
+   in a64-patch-insn-raw i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
+
+Section: System Register Helpers
+
+  a64-rt-read-sctlr-el1 : List Integer
+  a64-rt-read-sctlr-el1 = arm64-mrs 0 sysreg-sctlr-el1 & arm64-ret
+
+  a64-rt-write-sctlr-el1 : List Integer
+  a64-rt-write-sctlr-el1 = arm64-msr sysreg-sctlr-el1 0 & arm64-isb & arm64-ret
+
+  a64-rt-write-ttbr0-el1 : List Integer
+  a64-rt-write-ttbr0-el1 = arm64-msr sysreg-ttbr0-el1 0 & arm64-isb & arm64-ret
+
+  a64-rt-write-tcr-el1 : List Integer
+  a64-rt-write-tcr-el1 = arm64-msr sysreg-tcr-el1 0 & arm64-isb & arm64-ret
+
+  a64-rt-write-mair-el1 : List Integer
+  a64-rt-write-mair-el1 = arm64-msr sysreg-mair-el1 0 & arm64-isb & arm64-ret
+
+  a64-rt-write-vbar-el1 : List Integer
+  a64-rt-write-vbar-el1 = arm64-msr sysreg-vbar-el1 0 & arm64-isb & arm64-ret
+
+  a64-rt-read-cntfrq-el0 : List Integer
+  a64-rt-read-cntfrq-el0 = arm64-mrs 0 sysreg-cntfrq-el0 & arm64-ret
+
+  a64-rt-write-cntp-tval-el0 : List Integer
+  a64-rt-write-cntp-tval-el0 = arm64-msr sysreg-cntp-tval-el0 0 & arm64-ret
+
+  a64-rt-write-cntp-ctl-el0 : List Integer
+  a64-rt-write-cntp-ctl-el0 = arm64-msr sysreg-cntp-ctl-el0 0 & arm64-ret
+
+  a64-rt-write-icc-pmr-el1 : List Integer
+  a64-rt-write-icc-pmr-el1 = arm64-msr sysreg-icc-pmr-el1 0 & arm64-isb & arm64-ret
+
+  a64-rt-write-icc-igrpen1-el1 : List Integer
+  a64-rt-write-icc-igrpen1-el1 = arm64-msr sysreg-icc-igrpen1-el1 0 & arm64-isb & arm64-ret
+
+  a64-rt-read-icc-iar1-el1 : List Integer
+  a64-rt-read-icc-iar1-el1 = arm64-mrs 0 sysreg-icc-iar1-el1 & arm64-ret
+
+  a64-rt-write-icc-eoir1-el1 : List Integer
+  a64-rt-write-icc-eoir1-el1 = arm64-msr sysreg-icc-eoir1-el1 0 & arm64-ret
+
+  a64-rt-read-currentel : List Integer
+  a64-rt-read-currentel = arm64-mrs 0 sysreg-currentel & arm64-ret
+
+  a64-rt-read-daif : List Integer
+  a64-rt-read-daif = arm64-mrs 0 sysreg-daif & arm64-ret
+
+  a64-rt-write-daif : List Integer
+  a64-rt-write-daif = arm64-msr sysreg-daif 0 & arm64-ret
+
 Section: Emit All Runtime Helpers
 
   a64-emit-runtime : A64State -> A64State
@@ -454,6 +636,72 @@ Section: Emit All Runtime Helpers
    in let st51 = a64-emit st50 (arm64-lsl 0 0 1 & arm64-ret)
    in let st52 = a64-record-func st51 "bit-shru"
    in let st53 = a64-emit st52 (arm64-lsr 0 0 1 & arm64-ret)
-   in a64-emit st53 arm64-ret
+   in let st54 = a64-record-func st53 "peek-byte"
+   in let st55 = a64-emit st54 a64-rt-peek-byte
+   in let st56 = a64-record-func st55 "poke-byte"
+   in let st57 = a64-emit st56 a64-rt-poke-byte
+   in let st58 = a64-record-func st57 "peek-32"
+   in let st59 = a64-emit st58 a64-rt-peek-32
+   in let st60 = a64-record-func st59 "poke-32"
+   in let st61 = a64-emit st60 a64-rt-poke-32
+   in let st62 = a64-record-func st61 "peek-qword"
+   in let st63 = a64-emit st62 a64-rt-peek-qword
+   in let st64 = a64-record-func st63 "poke-qword"
+   in let st65 = a64-emit st64 a64-rt-poke-qword
+   in let st66 = a64-record-func st65 "__buf-write-byte"
+   in let st67 = a64-emit st66 a64-rt-buf-write-byte
+   in let st68 = a64-record-func st67 "__buf-read-bytes"
+   in let st69 = a64-emit st68 a64-rt-buf-read-bytes
+   in let st70 = a64-record-func st69 "__buf-write-bytes"
+   in let st71 = a64-emit st70 a64-rt-buf-write-bytes
+   in let st72 = a64-record-func st71 "__heap-save"
+   in let st73 = a64-emit st72 a64-rt-heap-save
+   in let st74 = a64-record-func st73 "__heap-restore"
+   in let st75 = a64-emit st74 a64-rt-heap-restore
+   in let st76 = a64-record-func st75 "__heap-advance"
+   in let st77 = a64-emit st76 a64-rt-heap-advance
+   in let st78 = a64-record-func st77 "alloc-bytes"
+   in let st79 = a64-emit st78 a64-rt-alloc-bytes
+   in let st80 = a64-record-func st79 "memset"
+   in let st81 = a64-emit st80 a64-rt-memset
+   in let st82 = a64-record-func st81 "dsb"
+   in let st83 = a64-emit st82 a64-rt-dsb
+   in let st84 = a64-record-func st83 "dmb"
+   in let st85 = a64-emit st84 a64-rt-dmb
+   in let st86 = a64-record-func st85 "isb"
+   in let st87 = a64-emit st86 a64-rt-isb
+   in let st88 = a64-record-func st87 "read-sctlr-el1"
+   in let st89 = a64-emit st88 a64-rt-read-sctlr-el1
+   in let st90 = a64-record-func st89 "write-sctlr-el1"
+   in let st91 = a64-emit st90 a64-rt-write-sctlr-el1
+   in let st92 = a64-record-func st91 "write-ttbr0-el1"
+   in let st93 = a64-emit st92 a64-rt-write-ttbr0-el1
+   in let st94 = a64-record-func st93 "write-tcr-el1"
+   in let st95 = a64-emit st94 a64-rt-write-tcr-el1
+   in let st96 = a64-record-func st95 "write-mair-el1"
+   in let st97 = a64-emit st96 a64-rt-write-mair-el1
+   in let st98 = a64-record-func st97 "write-vbar-el1"
+   in let st99 = a64-emit st98 a64-rt-write-vbar-el1
+   in let st100 = a64-record-func st99 "read-cntfrq-el0"
+   in let st101 = a64-emit st100 a64-rt-read-cntfrq-el0
+   in let st102 = a64-record-func st101 "write-cntp-tval-el0"
+   in let st103 = a64-emit st102 a64-rt-write-cntp-tval-el0
+   in let st104 = a64-record-func st103 "write-cntp-ctl-el0"
+   in let st105 = a64-emit st104 a64-rt-write-cntp-ctl-el0
+   in let st106 = a64-record-func st105 "write-icc-pmr-el1"
+   in let st107 = a64-emit st106 a64-rt-write-icc-pmr-el1
+   in let st108 = a64-record-func st107 "write-icc-igrpen1-el1"
+   in let st109 = a64-emit st108 a64-rt-write-icc-igrpen1-el1
+   in let st110 = a64-record-func st109 "read-icc-iar1-el1"
+   in let st111 = a64-emit st110 a64-rt-read-icc-iar1-el1
+   in let st112 = a64-record-func st111 "write-icc-eoir1-el1"
+   in let st113 = a64-emit st112 a64-rt-write-icc-eoir1-el1
+   in let st114 = a64-record-func st113 "read-currentel"
+   in let st115 = a64-emit st114 a64-rt-read-currentel
+   in let st116 = a64-record-func st115 "read-daif"
+   in let st117 = a64-emit st116 a64-rt-read-daif
+   in let st118 = a64-record-func st117 "write-daif"
+   in let st119 = a64-emit st118 a64-rt-write-daif
+   in a64-emit st119 arm64-ret
 
 Page 1

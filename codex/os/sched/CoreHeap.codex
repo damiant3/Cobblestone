@@ -1,0 +1,135 @@
+Chapter: CoreHeap
+  cites Foreword chapter Maybe
+
+ Per-core heap arena management for SMP. In single-core mode the
+ full heap (6MB to 3GB) belongs to core 0. In multi-core mode the
+ heap is split equally among active cores, starting above the AP
+ stack region (7MB). Each core allocates from its own arena via
+ its R10 bump pointer — no contention on the fast path. Cross-core
+ references are safe because all arenas share the same address
+ space and page tables.
+
+ We say:
+
+Section: Constants
+
+  single-core-heap-base : Integer = 6291456
+
+  smp-heap-base : Integer = 7340032
+
+  default-ram-size : Integer = 8589934592
+
+Section: Arena Records
+
+  HeapArena = record {
+    core-id : Integer between 0 and 255,
+    base : Integer,
+    top : Integer,
+    hwm : Integer,
+    active : Boolean
+  }
+
+  HeapLayout = record {
+    arenas : List HeapArena,
+    core-count : Integer between 0 and 255,
+    total-base : Integer,
+    total-top : Integer
+  }
+
+Section: Layout Computation
+
+  compute-heap-layout : Integer, Integer -> HeapLayout
+  compute-heap-layout (cores) (ram-size) =
+    if cores <= 1
+    then let arena = HeapArena {
+        core-id = 0, base = single-core-heap-base, top = ram-size,
+        hwm = single-core-heap-base, active = True
+      }
+      in HeapLayout { arenas = [arena], core-count = 1, total-base = single-core-heap-base, total-top = ram-size }
+    else let heap-start = smp-heap-base
+      in let heap-size = ram-size - heap-start
+      in let per-core = heap-size / cores
+      in let aligned = (per-core / 4096) * 4096
+      in build-arenas [] 0 cores heap-start aligned ram-size
+
+  build-arenas : List HeapArena, Integer, Integer, Integer, Integer, Integer -> HeapLayout
+  build-arenas (acc) (i) (cores) (next-base) (per-core) (ram-size) =
+    if i >= cores then HeapLayout {
+      arenas = acc, core-count = cores, total-base = smp-heap-base, total-top = ram-size
+    }
+    else let arena-top = if i == cores - 1 then ram-size else next-base + per-core
+    in let arena = HeapArena {
+      core-id = i, base = next-base, top = arena-top,
+      hwm = next-base, active = True
+    }
+    in build-arenas (list-push acc arena) (i + 1) cores (next-base + per-core) per-core ram-size
+
+Section: Arena Queries
+
+  arena-for-core : HeapLayout, Integer -> Maybe HeapArena
+  arena-for-core (layout) (core-id) =
+    if core-id >= layout.core-count then None
+    else Just (list-at (layout.arenas) core-id)
+
+  arena-size : HeapArena -> Integer
+  arena-size (a) = a.top - a.base
+
+  arena-used : HeapArena -> Integer
+  arena-used (a) = a.hwm - a.base
+
+  arena-free : HeapArena -> Integer
+  arena-free (a) = a.top - a.hwm
+
+  arena-utilization : HeapArena -> Integer
+  arena-utilization (a) =
+    let size = arena-size a
+    in if size == 0 then 0
+    else arena-used a * 100 / size
+
+Section: High-Water Mark Update
+
+  layout-update-hwm : HeapLayout, Integer, Integer -> HeapLayout
+  layout-update-hwm (layout) (core-id) (new-hwm) =
+    if core-id >= layout.core-count then layout
+    else let arena = list-at (layout.arenas) core-id
+    in let updated = HeapArena {
+      core-id = arena.core-id, base = arena.base, top = arena.top,
+      hwm = new-hwm, active = arena.active
+    }
+    in HeapLayout { arenas = list-set-at (layout.arenas) core-id updated, core-count = layout.core-count, total-base = layout.total-base, total-top = layout.total-top }
+
+  layout-total-used : HeapLayout -> Integer
+  layout-total-used (layout) = layout-used-loop (layout.arenas) 0 (layout.core-count) 0
+
+  layout-used-loop : List HeapArena, Integer, Integer, Integer -> Integer
+  layout-used-loop (arenas) (i) (count) (acc) =
+    if i >= count then acc
+    else let a = list-at arenas i
+    in layout-used-loop arenas (i + 1) count (acc + arena-used a)
+
+  layout-total-free : HeapLayout -> Integer
+  layout-total-free (layout) = layout-free-loop (layout.arenas) 0 (layout.core-count) 0
+
+  layout-free-loop : List HeapArena, Integer, Integer, Integer -> Integer
+  layout-free-loop (arenas) (i) (count) (acc) =
+    if i >= count then acc
+    else let a = list-at arenas i
+    in layout-free-loop arenas (i + 1) count (acc + arena-free a)
+
+Section: Formatting
+
+  format-arena : HeapArena -> Text
+  format-arena (a) =
+    "core=" & show (a.core-id)
+    & " base=" & show (a.base)
+    & " top=" & show (a.top)
+    & " size=" & show (arena-size a)
+    & " used=" & show (arena-used a)
+
+  format-layout : HeapLayout -> Text
+  format-layout (l) =
+    "cores=" & show (l.core-count)
+    & " total-used=" & show (layout-total-used l)
+    & " total-free=" & show (layout-total-free l)
+
+Page 1

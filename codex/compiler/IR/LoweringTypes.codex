@@ -64,6 +64,7 @@ Section: Type Substitution
     is TypeVar (id) -> subst-type-var-in-target target id arg-ty
     is ListTy (pe) -> subst-from-list pe arg-ty target
     is FunTy (pp) (pr) -> subst-from-fun pp pr arg-ty target
+    is TypeApply (pf) (pa) -> when arg-ty is TypeApply (af) (aa) -> let t2 = subst-type-vars-from-arg pf af target in subst-type-vars-from-arg pa aa t2 is otherwise -> target
     is otherwise -> target
 
   subst-from-list : CodexType, CodexType, CodexType -> CodexType
@@ -100,7 +101,25 @@ Section: Binary Op Lowering
   is-number-type : CodexType -> Boolean
   is-number-type (ty) =
    when ty
-    is RealTy -> True
+    is RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy -> True
+    is otherwise -> False
+
+  is-real-approx-type : CodexType -> Boolean
+  is-real-approx-type (ty) =
+   when ty
+    is RealApproxTy -> True
+    is otherwise -> False
+
+  is-real-trapping-type : CodexType -> Boolean
+  is-real-trapping-type (ty) =
+   when ty
+    is RealTrappingTy -> True
+    is otherwise -> False
+
+  is-real-saturating-type : CodexType -> Boolean
+  is-real-saturating-type (ty) =
+   when ty
+    is RealSaturatingTy -> True
     is otherwise -> False
 
   is-vector-type : CodexType -> Boolean
@@ -118,10 +137,10 @@ Section: Binary Op Lowering
   lower-bin-op : BinaryOp, CodexType -> IRBinaryOp
   lower-bin-op (op) (ty) =
    when op
-    is OpAdd -> if is-vector-type ty then IrAddVec else if is-number-type ty then IrAddNum else IrAddInt
-    is OpSub -> if is-vector-type ty then IrSubVec else if is-number-type ty then IrSubNum else IrSubInt
-    is OpMul -> if is-vector-type ty then IrMulVec else if is-number-type ty then IrMulNum else IrMulInt
-    is OpDiv -> if is-vector-type ty then IrDivVec else if is-number-type ty then IrDivNum else IrDivInt
+    is OpAdd -> if is-vector-type ty then IrAddVec else if is-real-saturating-type ty then IrAddRealSaturating else if is-real-trapping-type ty then IrAddRealTrapping else if is-real-approx-type ty then IrAddRealApprox else if is-number-type ty then IrAddNum else IrAddInt
+    is OpSub -> if is-vector-type ty then IrSubVec else if is-real-saturating-type ty then IrSubRealSaturating else if is-real-trapping-type ty then IrSubRealTrapping else if is-real-approx-type ty then IrSubRealApprox else if is-number-type ty then IrSubNum else IrSubInt
+    is OpMul -> if is-vector-type ty then IrMulVec else if is-real-saturating-type ty then IrMulRealSaturating else if is-real-trapping-type ty then IrMulRealTrapping else if is-real-approx-type ty then IrMulRealApprox else if is-number-type ty then IrMulNum else IrMulInt
+    is OpDiv -> if is-vector-type ty then IrDivVec else if is-real-saturating-type ty then IrDivRealSaturating else if is-real-trapping-type ty then IrDivRealTrapping else if is-real-approx-type ty then IrDivRealApprox else if is-number-type ty then IrDivNum else IrDivInt
     is OpPow -> IrPowInt
     is OpEq -> IrEq
     is OpNotEq -> IrNotEq

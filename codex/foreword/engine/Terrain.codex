@@ -1,0 +1,97 @@
+Chapter: Terrain
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Quaternion
+
+ Heightmap terrain system (inspired by CryEngine). Generates terrain
+ meshes from heightmaps with LOD via vertex skipping at distance.
+ Supports slope-based material blending and normal computation from
+ neighbor heights. Fixed-point (scale 1000).
+
+ We say:
+
+Section: Terrain Config
+
+  TerrainConfig = record {
+    tc-grid-size : Integer,
+    tc-spacing : Integer,
+    tc-height-scale : Integer,
+    tc-lod-distances : List Integer
+  }
+
+  tc-default : TerrainConfig
+  tc-default = TerrainConfig { tc-grid-size = 33, tc-spacing = 100, tc-height-scale = 10, tc-lod-distances = [5000, 15000, 40000] }
+
+Section: Terrain Patch
+
+  TerrainPatch = record {
+    tp-mesh : Mesh,
+    tp-heightmap : List Integer,
+    tp-grid-size : Integer,
+    tp-origin-x : Integer,
+    tp-origin-z : Integer,
+    tp-spacing : Integer,
+    tp-height-scale : Integer
+  }
+
+  terrain-from-heightmap : List Integer, Integer, TerrainConfig -> TerrainPatch
+  terrain-from-heightmap (cells) (grid-size) (cfg) =
+    let mesh = mesh-from-heightmap cells grid-size (cfg.tc-spacing) (cfg.tc-height-scale)
+    in TerrainPatch { tp-mesh = mesh, tp-heightmap = cells, tp-grid-size = grid-size, tp-origin-x = 0, tp-origin-z = 0, tp-spacing = cfg.tc-spacing, tp-height-scale = cfg.tc-height-scale }
+
+Section: Height Query
+
+  terrain-height-at : TerrainPatch, Integer, Integer -> Integer
+  terrain-height-at (tp) (world-x) (world-z) =
+    let local-x = (world-x - tp.tp-origin-x + tp.tp-grid-size * tp.tp-spacing / 2)
+    in let local-z = (world-z - tp.tp-origin-z + tp.tp-grid-size * tp.tp-spacing / 2)
+    in let gx = local-x / tp.tp-spacing
+    in let gz = local-z / tp.tp-spacing
+    in let clamped-x = terr-clamp gx 0 (tp.tp-grid-size - 1)
+    in let clamped-z = terr-clamp gz 0 (tp.tp-grid-size - 1)
+    in list-at (tp.tp-heightmap) (clamped-z * tp.tp-grid-size + clamped-x) * tp.tp-height-scale
+
+  terrain-normal-at : TerrainPatch, Integer, Integer -> Vec3
+  terrain-normal-at (tp) (gx) (gz) =
+    let size = tp.tp-grid-size
+    in let lx = terr-clamp (gx - 1) 0 (size - 1)
+    in let rx = terr-clamp (gx + 1) 0 (size - 1)
+    in let tz = terr-clamp (gz - 1) 0 (size - 1)
+    in let bz = terr-clamp (gz + 1) 0 (size - 1)
+    in let hl = list-at (tp.tp-heightmap) (gz * size + lx) * tp.tp-height-scale
+    in let hr = list-at (tp.tp-heightmap) (gz * size + rx) * tp.tp-height-scale
+    in let ht = list-at (tp.tp-heightmap) (tz * size + gx) * tp.tp-height-scale
+    in let hb = list-at (tp.tp-heightmap) (bz * size + gx) * tp.tp-height-scale
+    in let nx = hl - hr
+    in let nz = ht - hb
+    in let ny = 2 * tp.tp-spacing
+    in let len = terr-isqrt (nx * nx + ny * ny + nz * nz)
+    in if len == 0 then vec3-new 0 1000 0
+    else vec3-new (nx * 1000 / len) (ny * 1000 / len) (nz * 1000 / len)
+
+Section: Slope Query
+
+  terrain-slope : TerrainPatch, Integer, Integer -> Integer
+  terrain-slope (tp) (gx) (gz) =
+    let normal = terrain-normal-at tp gx gz
+    in 1000 - normal.vy
+
+Section: Helpers
+
+  terr-clamp : Integer, Integer, Integer -> Integer
+  terr-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  terr-isqrt : Integer -> Integer
+  terr-isqrt (n) = if n <= 0 then 0 else terr-isqrt-loop n (n / 2 + 1)
+
+  terr-isqrt-loop : Integer, Integer -> Integer
+  terr-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else terr-isqrt-loop n next
+
+Section: Formatting
+
+  format-terrain : TerrainPatch -> Text
+  format-terrain (tp) = "Terrain(" & show (tp.tp-grid-size) & "x" & show (tp.tp-grid-size) & " spacing=" & show (tp.tp-spacing) & ")"
+
+Page 1

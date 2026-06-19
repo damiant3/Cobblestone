@@ -159,16 +159,11 @@ text/i18n, and modern-async.
   - `Decimal.codex` — fixed-point decimal arithmetic for currency
     and audit-precision contexts. Bounded `Integer between L and H`
     helps but doesn't replace fractional accuracy.
-  - `Float.codex` — Codex internally uses fixed-point scale-1000
-    in many places. There is no first-class IEEE-754 chapter for
-    code that genuinely needs floats (signal processing, graphics).
-    This is partial — `codex.foreword.math` modules use float-like
-    semantics without naming them.
-  - `BigInt.codex` — promotable arbitrary-precision integers. The
-    bignum behavior currently embedded in `Ed25519.codex` (per
-    `KNOWN-CONDITIONS.md`) is value-dependent-time and tied to that
-    one chapter. A first-class BigInt would let crypto and numerics
-    share a hardened core.
+  - ~~`Float.codex`~~ — RESOLVED: `Real approximate` (f32) landed in
+    SIMD Phase 1 (CL 4557). `Real` is f64, `Real approximate` is f32.
+    Full scalar + packed codegen for both.
+  - ~~`BigInt.codex`~~ — RESOLVED: `codex.foreword.core.BigInt` shipped
+    (CL 4804, fester). Sign + base-10000 limbs, full arithmetic.
 - **Text / i18n**
   - `Locale.codex` — locale identity, locale-aware text comparison.
   - `Format.codex` — printf-style formatter on top of `show` /
@@ -184,9 +179,9 @@ text/i18n, and modern-async.
   - `Hkdf.codex` — HMAC-based key derivation. Required by TLS 1.3
     and most modern key-schedule constructions; not present
     despite `Hmac.codex` existing.
-  - `X25519.codex` — Curve25519 ECDH. We have `DiffieHellman.codex`
-    (likely classic finite-field) and `Ed25519.codex` (signing), but
-    not the modern key-exchange counterpart.
+  - ~~`X25519.codex`~~ — RESOLVED: `DiffieHellman.codex` implements
+    X25519 (RFC 7748) over Curve25519 with Montgomery ladder. Fixed
+    in crypto audit (CL 4474).
   - `AesGcm.codex` — authenticated encryption. `Aes.codex` exists;
     a GCM mode wrapper does not.
 - **Concurrency**

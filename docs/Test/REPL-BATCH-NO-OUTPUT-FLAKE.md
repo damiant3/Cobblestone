@@ -49,7 +49,16 @@ stream issue rather than a per-test one.
 - Host-side splitter losing the final section when the VM exits
   before the last flush.
 
-## Next Steps
+## Mitigation: Retry (CL 4757/4763, 2026-06-18)
+
+Phase 1a in test.ps1: after batch compilation, any test with exitcode
+99 (VM died before reaching it) is retried individually via
+compile.ps1 with its own fresh VM. This handles both heap exhaustion
+(heavy tests at end of batch) and REPL serial desync (intermittent
+no-output). The root cause remains uninvestigated but the retry
+eliminates the user-visible flake.
+
+## Next Steps (if retry is insufficient)
 
 - Instrument test-compile-batch.ps1 to preserve the RAW batch serial
   stream on any missing-output test (currently discarded), so the

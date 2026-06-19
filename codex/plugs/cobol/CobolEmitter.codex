@@ -295,50 +295,27 @@ Section: Expression Emission
   cobol-bin-pic (op) =
    when op
     is IrAppendText -> "PIC X(256)"
-    is IrEq -> "PIC 9(1)"
-    is IrNotEq -> "PIC 9(1)"
-    is IrLt -> "PIC 9(1)"
-    is IrGt -> "PIC 9(1)"
-    is IrLtEq -> "PIC 9(1)"
-    is IrGtEq -> "PIC 9(1)"
-    is IrApproxEq -> "PIC 9(1)"
-    is IrApproxEqExact -> "PIC 9(1)"
-    is IrAnd -> "PIC 9(1)"
-    is IrOr -> "PIC 9(1)"
-    is IrAddInt -> "PIC S9(18)"
-    is IrSubInt -> "PIC S9(18)"
-    is IrMulInt -> "PIC S9(18)"
-    is IrDivInt -> "PIC S9(18)"
-    is IrRemInt -> "PIC S9(18)"
-    is IrPowInt -> "PIC S9(18)"
-    is IrAddNum -> "PIC S9(18)"
-    is IrSubNum -> "PIC S9(18)"
-    is IrMulNum -> "PIC S9(18)"
-    is IrDivNum -> "PIC S9(18)"
-    is IrAppendList -> "PIC S9(18)"
-    is IrConsList -> "PIC S9(18)"
+    is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq -> "PIC 9(1)"
+    is IrApproxEq | IrApproxEqExact -> "PIC 9(1)"
+    is IrAnd | IrOr -> "PIC 9(1)"
+    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrPowInt -> "PIC S9(18)"
+    is IrAddNum | IrSubNum | IrMulNum | IrDivNum -> "PIC S9(18)"
+    is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> "PIC S9(18)"
+    is IrAppendList | IrConsList -> "PIC S9(18)"
 
   cobol-bin-hint : IRBinaryOp -> Text
   cobol-bin-hint (op) =
    when op
-    is IrAddInt -> "SUM"
-    is IrSubInt -> "DIFF"
-    is IrMulInt -> "PROD"
-    is IrDivInt -> "QUOT"
+    is IrAddInt | IrAddNum | IrAddVec -> "SUM"
+    is IrSubInt | IrSubNum | IrSubVec -> "DIFF"
+    is IrMulInt | IrMulNum | IrMulVec -> "PROD"
+    is IrDivInt | IrDivNum | IrDivVec -> "QUOT"
     is IrRemInt -> "REM"
     is IrPowInt -> "POW"
-    is IrAddNum -> "SUM"
-    is IrSubNum -> "DIFF"
-    is IrMulNum -> "PROD"
-    is IrDivNum -> "QUOT"
-    is IrEq -> "EQ"
-    is IrNotEq -> "EQ"
+    is IrEq | IrNotEq -> "EQ"
     is IrApproxEq -> "AEQ"
     is IrApproxEqExact -> "AEQX"
-    is IrLt -> "CMP"
-    is IrGt -> "CMP"
-    is IrLtEq -> "CMP"
-    is IrGtEq -> "CMP"
+    is IrLt | IrGt | IrLtEq | IrGtEq -> "CMP"
     is IrAnd -> "LAND"
     is IrOr -> "LOR"
     is IrAppendText -> "CONCAT"
@@ -348,10 +325,10 @@ Section: Expression Emission
   emit-cobol-bin-stmt : IRBinaryOp, Text, Text, Text -> Text
   emit-cobol-bin-stmt (op) (lv) (rv) (result) =
    when op
-    is IrAddInt -> "           ADD " & lv & " " & rv & " GIVING " & result & "\n"
-    is IrSubInt -> "           SUBTRACT " & rv & " FROM " & lv & " GIVING " & result & "\n"
-    is IrMulInt -> "           MULTIPLY " & lv & " BY " & rv & " GIVING " & result & "\n"
-    is IrDivInt -> "           DIVIDE " & lv & " BY " & rv & " GIVING " & result & "\n"
+    is IrAddInt | IrAddVec -> "           ADD " & lv & " " & rv & " GIVING " & result & "\n"
+    is IrSubInt | IrSubVec -> "           SUBTRACT " & rv & " FROM " & lv & " GIVING " & result & "\n"
+    is IrMulInt | IrMulVec -> "           MULTIPLY " & lv & " BY " & rv & " GIVING " & result & "\n"
+    is IrDivInt | IrDivVec -> "           DIVIDE " & lv & " BY " & rv & " GIVING " & result & "\n"
     is IrRemInt -> "           DIVIDE " & lv & " BY " & rv & " GIVING TEMP-QUOT REMAINDER " & result & "\n"
     is IrPowInt -> "           COMPUTE " & result & " = " & lv & " ** " & rv & "\n"
     is IrAddNum -> "           ADD " & lv & " " & rv & " GIVING " & result & "\n"
@@ -439,29 +416,49 @@ Section: Expression Emission
     is otherwise -> let fallback = emit-cobol-expr-to-var (list-at (chain.args) 0) arities st
      in CobolExprResult { var-name = fallback.var-name, code = fallback.code, state = fallback.state }
 
+  cobol-builtin-names : List Text
+  cobol-builtin-names = ["abs", "bit-and", "bit-or", "bit-xor", "char-at",
+   "int-mod", "integer-to-text", "is-digit", "is-letter", "max", "min",
+   "negate", "print-line-uni", "process-exit", "read-file", "show",
+   "substring", "text-length", "text-to-integer", "write-file"]
+
+  cobol-bsearch-builtin : List Text, Text, Integer, Integer -> Integer
+  cobol-bsearch-builtin (names) (target) (lo) (hi) =
+   if lo >= hi then -1
+   else let mid = lo + (hi - lo) / 2
+   in let cmp = text-compare target (list-at names mid)
+   in if cmp == 0 then mid
+      else if cmp < 0 then cobol-bsearch-builtin names target lo mid
+      else cobol-bsearch-builtin names target (mid + 1) hi
+
   emit-cobol-apply-named : Text, List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-apply-named (n) (args) (arities) (st) =
-   if n == "print-line-uni" then emit-cobol-display args arities st
-   else if n == "show" then emit-cobol-builtin-show args arities st
-   else if n == "integer-to-text" then emit-cobol-builtin-show args arities st
-   else if n == "negate" then emit-cobol-negate-var (list-at args 0) arities st
-   else if n == "text-length" then emit-cobol-builtin-text-length args arities st
-   else if n == "char-at" then emit-cobol-builtin-char-at args arities st
-   else if n == "substring" then emit-cobol-builtin-substring args arities st
-   else if n == "text-to-integer" then emit-cobol-builtin-text-to-integer args arities st
-   else if n == "abs" then emit-cobol-builtin-abs args arities st
-   else if n == "min" then emit-cobol-builtin-min args arities st
-   else if n == "max" then emit-cobol-builtin-max args arities st
-   else if n == "int-mod" then emit-cobol-builtin-int-mod args arities st
-   else if n == "is-letter" then emit-cobol-builtin-is-letter args arities st
-   else if n == "is-digit" then emit-cobol-builtin-is-digit args arities st
-   else if n == "read-file" then emit-cobol-builtin-read-file args arities st
-   else if n == "write-file" then emit-cobol-builtin-write-file args arities st
-   else if n == "process-exit" then emit-cobol-builtin-process-exit args arities st
-   else if n == "bit-and" then emit-cobol-builtin-bit-stub "bit-and" args arities st
-   else if n == "bit-or" then emit-cobol-builtin-bit-stub "bit-or" args arities st
-   else if n == "bit-xor" then emit-cobol-builtin-bit-stub "bit-xor" args arities st
-   else emit-cobol-call-def n args arities st
+   let idx = cobol-bsearch-builtin cobol-builtin-names n 0 (list-length cobol-builtin-names)
+   in if idx >= 0 then emit-cobol-builtin-by-idx idx n args arities st
+      else emit-cobol-call-def n args arities st
+
+  emit-cobol-builtin-by-idx : Integer, Text, List IRExpr, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-builtin-by-idx (idx) (n) (args) (arities) (st) =
+   if idx == 0 then emit-cobol-builtin-abs args arities st
+   else if idx == 1 then emit-cobol-builtin-bit-stub "bit-and" args arities st
+   else if idx == 2 then emit-cobol-builtin-bit-stub "bit-or" args arities st
+   else if idx == 3 then emit-cobol-builtin-bit-stub "bit-xor" args arities st
+   else if idx == 4 then emit-cobol-builtin-char-at args arities st
+   else if idx == 5 then emit-cobol-builtin-int-mod args arities st
+   else if idx == 6 then emit-cobol-builtin-show args arities st
+   else if idx == 7 then emit-cobol-builtin-is-digit args arities st
+   else if idx == 8 then emit-cobol-builtin-is-letter args arities st
+   else if idx == 9 then emit-cobol-builtin-max args arities st
+   else if idx == 10 then emit-cobol-builtin-min args arities st
+   else if idx == 11 then emit-cobol-negate-var (list-at args 0) arities st
+   else if idx == 12 then emit-cobol-display args arities st
+   else if idx == 13 then emit-cobol-builtin-process-exit args arities st
+   else if idx == 14 then emit-cobol-builtin-read-file args arities st
+   else if idx == 15 then emit-cobol-builtin-show args arities st
+   else if idx == 16 then emit-cobol-builtin-substring args arities st
+   else if idx == 17 then emit-cobol-builtin-text-length args arities st
+   else if idx == 18 then emit-cobol-builtin-text-to-integer args arities st
+   else emit-cobol-builtin-write-file args arities st
 
   emit-cobol-display : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-display (args) (arities) (st) =

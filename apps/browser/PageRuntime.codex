@@ -10,6 +10,7 @@ Chapter: PageRuntime
   cites Browser chapter ContentCache
   cites Browser chapter PageFetcher
   cites Browser chapter BrowserTheme
+  cites Browser chapter PageCompiler
 
  The page runtime compiles or loads a page, verifies its
  capability profile, and extracts the widget tree.
@@ -51,7 +52,7 @@ Section: Address Resolution and Loading
       is LocalAddress (name) ->
         load-local-page name vw vh
       is NamedAddress (host) (path) (ver) ->
-        PageFetchError ("Remote loading not yet implemented: " & host & "/" & path)
+        load-remote-page host path config trust vw vh
       is HashAddress (hash) ->
         load-from-cache cache hash config trust vw vh
 
@@ -72,9 +73,44 @@ Section: Local Page Loading
         in let caps = PageCapabilities { pc-effects = ["Display"], pc-tier = TierStatic }
         in PageLoaded (tree) (title) (caps)
       is SourceBytes (bytes) (is-source) ->
-        PageCompileError "Byte loading not yet implemented"
+        let outcome = compile-page bytes is-source vw vh
+        in when outcome
+          is PcSuccess (tree) (title) (effects) ->
+            let caps = PageCapabilities { pc-effects = effects, pc-tier = TierStatic }
+            in PageLoaded tree title caps
+          is PcError (msg) ->
+            PageCompileError msg
       is SourceAddress (host) (path) ->
         PageFetchError ("Network loading requires Phase 2: " & host & "/" & path)
+
+Section: Remote Page Loading
+
+  load-remote-page : Text, Text, SandboxConfig, TrustStore, Integer, Integer
+    -> PageLoadResult
+  load-remote-page (host) (path) (config) (trust) (vw) (vh) =
+    let result = fetch-page-tcp host path fetch-defaults
+    in when result
+      is FetchOk (page) ->
+        load-fetched-page page config trust vw vh
+      is FetchNetworkError (msg) ->
+        PageFetchError ("Network error: " & msg)
+      is FetchHashMismatch (actual) (expected) ->
+        PageFetchError ("Content hash mismatch: " & actual & " vs " & expected)
+      is FetchNotFound ->
+        PageFetchError ("Page not found: " & host & "/" & path)
+      is FetchTimeout ->
+        PageFetchError ("Fetch timed out: " & host & "/" & path)
+
+  load-fetched-page : FetchedPage, SandboxConfig, TrustStore, Integer, Integer
+    -> PageLoadResult
+  load-fetched-page (page) (config) (trust) (vw) (vh) =
+    let size-ok = page.fp-size <= config.sb-max-source-bytes
+    in if size-ok == False
+      then PageSizeDenied (page.fp-size)
+      else let sig-ok = verify-fetched-signature page
+        in if sig-ok == False
+          then PageFetchError "Publisher signature verification failed"
+          else load-page-source (SourceBytes (page.fp-bytes) (page.fp-is-source)) vw vh
 
 Section: Media Demo Page
 

@@ -117,6 +117,10 @@ Section: Binary Op Emission
     is IrSubNum -> "sub.f64"
     is IrMulNum -> "mul.f64"
     is IrDivNum -> "div.rn.f64"
+    is IrAddVec -> "add.f64"
+    is IrSubVec -> "sub.f64"
+    is IrMulVec -> "mul.f64"
+    is IrDivVec -> "div.rn.f64"
     is IrEq -> "setp.eq.s64"
     is IrNotEq -> "setp.ne.s64"
     is IrLt -> "setp.lt.s64"
@@ -180,7 +184,8 @@ Section: Expression Emission
      in let c = ptx-bump-reg ctx
      in PtxResult { code = ctx.indent & "mov.u64 " & r & ", 0; // text: \"" & s & "\"\n", result-reg = r, ctx = c }
     is IrName (n) (ty) (sp) ->
-     if n == "True" then
+     if ptx-is-gpu-intrinsic n then ptx-emit-gpu-intrinsic ctx n
+     else if n == "True" then
       let r = ptx-fresh-reg ctx
       in let c = ptx-bump-reg ctx
       in PtxResult { code = ctx.indent & "mov.s64 " & r & ", 1;\n", result-reg = r, ctx = c }
@@ -372,6 +377,243 @@ Section: Act Block Emission
      in if i == list-length stmts - 1 then vr
      else PtxResult { code = vr.code & rest.code, result-reg = rest.result-reg, ctx = rest.ctx }
 
+Section: GPU Intrinsic Recognition
+
+  ptx-gpu-special-reg : Text -> Text
+  ptx-gpu-special-reg (name) =
+   if name == "thread-idx-x" then "%tid.x"
+   else if name == "thread-idx-y" then "%tid.y"
+   else if name == "thread-idx-z" then "%tid.z"
+   else if name == "block-idx-x" then "%ctaid.x"
+   else if name == "block-idx-y" then "%ctaid.y"
+   else if name == "block-idx-z" then "%ctaid.z"
+   else if name == "block-dim-x" then "%ntid.x"
+   else if name == "block-dim-y" then "%ntid.y"
+   else if name == "block-dim-z" then "%ntid.z"
+   else if name == "grid-dim-x" then "%nctaid.x"
+   else if name == "grid-dim-y" then "%nctaid.y"
+   else if name == "grid-dim-z" then "%nctaid.z"
+   else ""
+
+  ptx-is-gpu-intrinsic : Text -> Boolean
+  ptx-is-gpu-intrinsic (name) =
+   if name == "sync-threads" then True
+   else if name == "thread-fence-block" then True
+   else if name == "thread-fence-device" then True
+   else if name == "thread-fence-system" then True
+   else text-length (ptx-gpu-special-reg name) > 0
+
+  ptx-is-gpu-intrinsic-with-args : Text -> Boolean
+  ptx-is-gpu-intrinsic-with-args (name) =
+   if name == "shuffle-xor" then True
+   else if name == "shuffle-up" then True
+   else if name == "shuffle-down" then True
+   else if name == "shared-load" then True
+   else if name == "shared-store" then True
+   else if name == "device-atomic-add" then True
+   else if name == "device-atomic-cas" then True
+   else if name == "device-atomic-exchange" then True
+   else if name == "block-atomic-add" then True
+   else if name == "mbarrier-init" then True
+   else if name == "mbarrier-arrive" then True
+   else if name == "mbarrier-wait" then True
+   else False
+
+  ptx-emit-gpu-intrinsic : PtxCtx, Text -> PtxResult
+  ptx-emit-gpu-intrinsic (ctx) (name) =
+   if name == "sync-threads" then
+    PtxResult { code = ctx.indent & "bar.sync 0;\n", result-reg = "%rd0", ctx = ctx }
+   else if name == "thread-fence-block" then
+    PtxResult { code = ctx.indent & "membar.cta;\n", result-reg = "%rd0", ctx = ctx }
+   else if name == "thread-fence-device" then
+    PtxResult { code = ctx.indent & "membar.gl;\n", result-reg = "%rd0", ctx = ctx }
+   else if name == "thread-fence-system" then
+    PtxResult { code = ctx.indent & "membar.sys;\n", result-reg = "%rd0", ctx = ctx }
+   else let sreg = ptx-gpu-special-reg name
+   in let tmp = "%rd" & integer-to-text (ctx.next-reg)
+   in let c = ptx-bump-reg ctx
+   in let r = ptx-fresh-reg c
+   in let c2 = ptx-bump-reg c
+   in PtxResult {
+    code = ctx.indent & "mov.u32 " & tmp & ", " & sreg & ";\n" & c2.indent & "cvt.s64.u32 " & r & ", " & tmp & ";\n",
+    result-reg = r,
+    ctx = c2
+   }
+
+  ptx-emit-gpu-intrinsic-call : PtxCtx, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-gpu-intrinsic-call (ctx) (name) (args) (depth) =
+   if name == "shuffle-xor" then ptx-emit-shfl ctx "bfly" args depth
+   else if name == "shuffle-up" then ptx-emit-shfl ctx "up" args depth
+   else if name == "shuffle-down" then ptx-emit-shfl ctx "down" args depth
+   else if name == "shared-load" then ptx-emit-shared-load ctx args depth
+   else if name == "shared-store" then ptx-emit-shared-store ctx args depth
+   else if name == "device-atomic-add" then ptx-emit-atomic ctx "add" "gpu" args depth
+   else if name == "device-atomic-cas" then ptx-emit-atomic-cas ctx "gpu" args depth
+   else if name == "device-atomic-exchange" then ptx-emit-atomic ctx "exch" "gpu" args depth
+   else if name == "block-atomic-add" then ptx-emit-atomic ctx "add" "cta" args depth
+   else if name == "mbarrier-init" then ptx-emit-mbarrier ctx "init" args depth
+   else if name == "mbarrier-arrive" then ptx-emit-mbarrier ctx "arrive" args depth
+   else if name == "mbarrier-wait" then ptx-emit-mbarrier ctx "wait" args depth
+   else PtxResult { code = ctx.indent & "// unknown gpu intrinsic: " & name & "\n", result-reg = "%rd0", ctx = ctx }
+
+Section: Warp Shuffle Emission
+
+  ptx-emit-shfl : PtxCtx, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-shfl (ctx) (mode) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 1) (depth + 1)
+   in let a1 = ptx-emit-expr-at (a0.ctx) (list-at args 2) (depth + 1)
+   in let r = ptx-fresh-reg (a1.ctx)
+   in let c = ptx-bump-reg (a1.ctx)
+   in PtxResult {
+    code = a0.code & a1.code & c.indent & "shfl.sync." & mode & ".b32 " & r & ", " & a0.result-reg & ", " & a1.result-reg & ", 31, -1;\n",
+    result-reg = r,
+    ctx = c
+   }
+
+Section: Shared Memory Emission
+
+  ptx-emit-shared-load : PtxCtx, List IRExpr, Integer -> PtxResult
+  ptx-emit-shared-load (ctx) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+   in let a1 = ptx-emit-expr-at (a0.ctx) (list-at args 1) (depth + 1)
+   in let r = ptx-fresh-reg (a1.ctx)
+   in let c = ptx-bump-reg (a1.ctx)
+   in PtxResult {
+    code = a0.code & a1.code & c.indent & "ld.shared.s64 " & r & ", [" & a0.result-reg & " + " & a1.result-reg & "];\n",
+    result-reg = r,
+    ctx = c
+   }
+
+  ptx-emit-shared-store : PtxCtx, List IRExpr, Integer -> PtxResult
+  ptx-emit-shared-store (ctx) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+   in let a1 = ptx-emit-expr-at (a0.ctx) (list-at args 1) (depth + 1)
+   in let a2 = ptx-emit-expr-at (a1.ctx) (list-at args 2) (depth + 1)
+   in PtxResult {
+    code = a0.code & a1.code & a2.code & (a2.ctx).indent & "st.shared.s64 [" & a0.result-reg & " + " & a1.result-reg & "], " & a2.result-reg & ";\n",
+    result-reg = "%rd0",
+    ctx = a2.ctx
+   }
+
+Section: Atomic Emission
+
+  ptx-emit-atomic : PtxCtx, Text, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-atomic (ctx) (op) (scope) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+   in let a1 = ptx-emit-expr-at (a0.ctx) (list-at args 1) (depth + 1)
+   in let r = ptx-fresh-reg (a1.ctx)
+   in let c = ptx-bump-reg (a1.ctx)
+   in PtxResult {
+    code = a0.code & a1.code & c.indent & "atom." & scope & "." & op & ".s64 " & r & ", [" & a0.result-reg & "], " & a1.result-reg & ";\n",
+    result-reg = r,
+    ctx = c
+   }
+
+  ptx-emit-atomic-cas : PtxCtx, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-atomic-cas (ctx) (scope) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+   in let a1 = ptx-emit-expr-at (a0.ctx) (list-at args 1) (depth + 1)
+   in let a2 = ptx-emit-expr-at (a1.ctx) (list-at args 2) (depth + 1)
+   in let r = ptx-fresh-reg (a2.ctx)
+   in let c = ptx-bump-reg (a2.ctx)
+   in PtxResult {
+    code = a0.code & a1.code & a2.code & c.indent & "atom." & scope & ".cas.b64 " & r & ", [" & a0.result-reg & "], " & a1.result-reg & ", " & a2.result-reg & ";\n",
+    result-reg = r,
+    ctx = c
+   }
+
+Section: Math Intrinsic Emission
+
+  ptx-is-math-intrinsic : Text -> Boolean
+  ptx-is-math-intrinsic (name) =
+   if name == "cordic-sin" then True
+   else if name == "cordic-cos" then True
+   else if name == "cordic-tan" then True
+   else if name == "cordic-atan2" then True
+   else if name == "real-sqrt" then True
+   else if name == "real-abs" then True
+   else if name == "real-min" then True
+   else if name == "real-max" then True
+   else if name == "real-floor" then True
+   else if name == "real-ceil" then True
+   else False
+
+  ptx-emit-math-intrinsic : PtxCtx, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-math-intrinsic (ctx) (name) (args) (depth) =
+   if name == "cordic-sin" then ptx-emit-math-unary ctx "sin.approx.f64" args depth
+   else if name == "cordic-cos" then ptx-emit-math-unary ctx "cos.approx.f64" args depth
+   else if name == "cordic-tan" then ptx-emit-math-tan ctx args depth
+   else if name == "cordic-atan2" then ptx-emit-math-binary ctx "div.rn.f64" args depth
+   else if name == "real-sqrt" then ptx-emit-math-unary ctx "sqrt.rn.f64" args depth
+   else if name == "real-abs" then ptx-emit-math-unary ctx "abs.f64" args depth
+   else if name == "real-min" then ptx-emit-math-binary ctx "min.f64" args depth
+   else if name == "real-max" then ptx-emit-math-binary ctx "max.f64" args depth
+   else if name == "real-floor" then ptx-emit-math-unary ctx "cvt.rmi.f64.f64" args depth
+   else if name == "real-ceil" then ptx-emit-math-unary ctx "cvt.rpi.f64.f64" args depth
+   else PtxResult { code = "", result-reg = "%rd0", ctx = ctx }
+
+  ptx-emit-math-unary : PtxCtx, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-math-unary (ctx) (instr) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+   in let r = "%fd" & integer-to-text ((a0.ctx).next-reg)
+   in let c = ptx-bump-reg (a0.ctx)
+   in PtxResult {
+    code = a0.code & c.indent & instr & " " & r & ", " & a0.result-reg & ";\n",
+    result-reg = r,
+    ctx = c
+   }
+
+  ptx-emit-math-binary : PtxCtx, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-math-binary (ctx) (instr) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+   in let a1 = ptx-emit-expr-at (a0.ctx) (list-at args 1) (depth + 1)
+   in let r = "%fd" & integer-to-text ((a1.ctx).next-reg)
+   in let c = ptx-bump-reg (a1.ctx)
+   in PtxResult {
+    code = a0.code & a1.code & c.indent & instr & " " & r & ", " & a0.result-reg & ", " & a1.result-reg & ";\n",
+    result-reg = r,
+    ctx = c
+   }
+
+  ptx-emit-math-tan : PtxCtx, List IRExpr, Integer -> PtxResult
+  ptx-emit-math-tan (ctx) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+   in let rs = "%fd" & integer-to-text ((a0.ctx).next-reg)
+   in let c1 = ptx-bump-reg (a0.ctx)
+   in let rc = "%fd" & integer-to-text (c1.next-reg)
+   in let c2 = ptx-bump-reg c1
+   in let r = "%fd" & integer-to-text (c2.next-reg)
+   in let c3 = ptx-bump-reg c2
+   in PtxResult {
+    code = a0.code & c3.indent & "sin.approx.f64 " & rs & ", " & a0.result-reg & ";\n" & c3.indent & "cos.approx.f64 " & rc & ", " & a0.result-reg & ";\n" & c3.indent & "div.rn.f64 " & r & ", " & rs & ", " & rc & ";\n",
+    result-reg = r,
+    ctx = c3
+   }
+
+Section: Barrier Emission
+
+  ptx-emit-mbarrier : PtxCtx, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-mbarrier (ctx) (op) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+   in if op == "init" then
+    PtxResult {
+     code = a0.code & ctx.indent & "mbarrier.init.shared.b64 [" & a0.result-reg & "], " & a0.result-reg & ";\n",
+     result-reg = a0.result-reg,
+     ctx = a0.ctx
+    }
+   else if op == "arrive" then
+    PtxResult {
+     code = a0.code & ctx.indent & "mbarrier.arrive.shared.b64 _, [" & a0.result-reg & "];\n",
+     result-reg = a0.result-reg,
+     ctx = a0.ctx
+    }
+   else
+    PtxResult {
+     code = a0.code & ctx.indent & "mbarrier.test_wait.shared.b64 _, [" & a0.result-reg & "], 0;\n",
+     result-reg = a0.result-reg,
+     ctx = a0.ctx
+    }
+
 Section: Apply Emission
 
   ptx-emit-apply : PtxCtx, IRExpr, Integer -> PtxResult
@@ -379,7 +621,10 @@ Section: Apply Emission
    let chain = collect-apply-chain e []
    in when (chain.root)
     is IrName (n) (ty) (sp) ->
-     ptx-emit-call ctx n (chain.args) depth
+     if ptx-is-gpu-intrinsic n then ptx-emit-gpu-intrinsic ctx n
+     else if ptx-is-gpu-intrinsic-with-args n then ptx-emit-gpu-intrinsic-call ctx n (chain.args) depth
+     else if ptx-is-math-intrinsic n then ptx-emit-math-intrinsic ctx n (chain.args) depth
+     else ptx-emit-call ctx n (chain.args) depth
     is otherwise ->
      let r = ptx-fresh-reg ctx
      in let c = ptx-bump-reg ctx
@@ -527,18 +772,30 @@ Section: Function Emission
    if i >= list-length names then ""
    else "    .reg .s64 %rd_" & list-at names i & ";\n" & ptx-emit-local-decls names (i + 1)
 
+  ptx-is-kernel-entry : Text -> Boolean
+  ptx-is-kernel-entry (name) =
+   if text-length name > 7 then
+    substring name 0 7 == "kernel-"
+   else False
+
   ptx-emit-def : PtxCtx, IRDef -> Text
   ptx-emit-def (ctx) (d) =
    let locals = ptx-collect-locals-expr (d.body) []
    in let max-regs = 64 + list-length locals
    in let body-result = ptx-emit-expr-at ctx (d.body) 0
-   in let header = ".visible .func (.param .s64 retval) " & ptx-sanitize (d.name) & " (" & ptx-emit-param-decls (d.params) 0 & ")\n{\n"
+   in let is-kernel = ptx-is-kernel-entry (d.name)
+   in let header = if is-kernel then
+     ".visible .entry " & ptx-sanitize (d.name) & " (" & ptx-emit-param-decls (d.params) 0 & ")\n{\n"
+   else
+     ".visible .func (.param .s64 retval) " & ptx-sanitize (d.name) & " (" & ptx-emit-param-decls (d.params) 0 & ")\n{\n"
    in let reg-decls = "    .reg .s64 %rd<" & integer-to-text max-regs & ">;\n"
+                    & "    .reg .u32 %ru<16>;\n"
                     & "    .reg .f64 %fd<16>;\n"
                     & "    .reg .pred %p<16>;\n"
    in let local-decls = ptx-emit-local-decls locals 0
    in let param-loads = ptx-emit-param-loads (d.params) 0
-   in let ret = "    st.param.s64 [retval], " & body-result.result-reg & ";\n    ret;\n"
+   in let ret = if is-kernel then "    ret;\n"
+   else "    st.param.s64 [retval], " & body-result.result-reg & ";\n    ret;\n"
    in header & reg-decls & local-decls & param-loads & body-result.code & ret & "}\n\n"
 
 Section: Chapter Emission

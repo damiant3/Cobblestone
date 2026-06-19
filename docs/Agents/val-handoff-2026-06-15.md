@@ -84,16 +84,16 @@ Eight CLs implementing the foundation of the SIMD and Real type story:
 
 ## What's Next (Phase 1 Remaining)
 
-From docs/Designs/Features/Active/SIMD.md:
+**ALL ITEMS COMPLETE** (verified 2026-06-18 by blu). Every item below
+shipped in CLs 4463-4580 and passes tests:
 
-- **vec-reduce-add** — horizontal sum (HADDPD or shuffle+ADDSD). Enables dot product: `vec-reduce-add (a * b)`.
-- **Vector comparison** — `~` and `~0` on vectors producing VectorMask N.
-- **VectorMask type** — vec-select for conditional per-lane operations.
-- **Integer vector types** — Vector 4 i32, Vector 16 i8 (different element widths).
-- **Vector pattern matching** — `when v is Vector [0, 0] -> ...` (PCMPEQ + PMOVMSKB).
-- **Real approximate (f32)** — Real approximate type with scalar ADDSS/MULSS and packed ADDPS/MULPS. Doubles lane count.
-- **Number → Real rename** — mechanical, large CL.
-- **Safety modes** — trapping/saturating/checked on Real types.
-- **suggested-vector-width** — comptime builtin returning natural lane count for target.
+- vec-reduce-add (CL 4463, test passes)
+- VectorMask + vector comparisons + vec-select (CL 4557)
+- Vector pattern matching (CL 4571)
+- Integer vectors PADDQ/PSUBQ (CL 4580)
+- Real approximate f32 scalar + f32x4 packed (CLs 4541/4548)
+- suggested-vector-width (CL 4539)
+- Real trapping + Real saturating (CLs 4547/4560/4571)
+- Number → Real rename (CL 4555)
 
-The most impactful next step is vec-reduce-add (completes the dot product story) followed by integer vectors (widens the use cases).
+SIMD Phase 1 is done. Next frontier: Phase 2 (AVX/AVX2) in SIMD.md.

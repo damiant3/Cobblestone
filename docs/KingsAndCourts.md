@@ -227,25 +227,32 @@ library modules:
 
 ### Board Support
 
-Three target boards with full register-level drivers (GPIO, UART, SPI,
-I2C):
+Nine target boards with register-level drivers. Full details in
+`docs/TinkersToolbox.md`. Summary:
 
-| Board | MCU | Status |
-|-------|-----|--------|
-| STM32F4 Discovery | ARM Cortex-M4F @ 168 MHz | All drivers, smoke tests pass |
-| ESP32-C6 DevKit | RISC-V RV32IMC @ 160 MHz | All drivers, smoke tests pass |
-| Raspberry Pi 4 | ARM Cortex-A72 @ 1.5 GHz | All drivers, smoke tests pass |
+| Board | MCU | Arch | Highlights |
+|-------|-----|------|-----------|
+| STM32F4 Discovery | Cortex-M4F 168 MHz | ARM | GPIO, UART, SPI, I2C |
+| ESP32-C6 DevKit | RV32IMC 160 MHz | RISC-V | GPIO, UART, SPI, I2C |
+| Raspberry Pi 4 | Cortex-A72 1.5 GHz | ARM | GPIO, UART, SPI, I2C |
+| QEMU virt | AArch64 + RV | Both | PL011/16550 UART |
+| nRF52840 DK | Cortex-M4F 64 MHz | ARM | BLE beacon PDU, SAADC, RADIO |
+| RP2040 (Pico) | Dual M0+ 133 MHz | ARM | WS2812 NeoPixel via PIO, ADC |
+| nRF9160 DK | Cortex-M33 64 MHz | ARM | Cellular modem IPC, AT parser |
+| STM32L4 Nucleo | Cortex-M4F 80 MHz | ARM | Low-power modes, LPTIM |
+| FE310 (HiFive1) | RV32IMAC 320 MHz | RISC-V | PWM, PLIC |
 
-Board register addresses are from the official reference manuals
-(RM0090, ESP32-C6 TRM, BCM2711 ARM Peripherals).
+88 sub-tests total. All register addresses from official reference
+manuals.
 
 ---
 
 ## 6. The Compliance Evidence Module
 
-`codex/foreword/core/ComplianceEvidence.codex` maps 17 regulatory
-requirements across CRA Annex I, ETSI EN 303 645, and NISTIR 8259A
-to the Codex features that satisfy each one. The
+`codex/foreword/core/ComplianceEvidence.codex` maps 60 regulatory
+requirements across CRA Annex I (8), ETSI EN 303 645 (40), NISTIR
+8259A (5), and IEC 62443 (7) to the Codex features that satisfy each
+one. The
 `generate-evidence-report` function produces a text compliance summary
 as a build artifact — not a separate document that can drift, but a
 function that reads the actual compiler state and produces the actual

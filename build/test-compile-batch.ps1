@@ -50,7 +50,9 @@ for ($i = 0; $i -lt $sources.Count; $i++) {
         continue
     }
     $testNames.Add($name)
-    $mode = "CDX repl`n"
+    $flagsFile = Join-Path ([System.IO.Path]::GetDirectoryName($sources[$i])) "$name.flags"
+    $extraFlags = if (Test-Path -PathType Leaf $flagsFile) { ' ' + (Get-Content -TotalCount 1 $flagsFile).Trim() } else { '' }
+    $mode = "CDX repl$extraFlags`n"
     [void]$inputSb.Append($mode)
     [void]$inputSb.Append($resolved)
     [void]$inputSb.Append([char]4)
@@ -65,7 +67,7 @@ $Stage0 = Join-Path (Split-Path $PSScriptRoot) 'build-output\bare-metal\Codex.cd
 if (-not (Test-Path -PathType Leaf $Stage0)) { Write-Error "MISSING: $Stage0"; exit 2 }
 
 $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @(
-    '-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '3072', '-headless'
+    '-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '8192', '-headless'
 ) -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 $proc.WaitForExit(1800000)
 if (-not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force } catch {} }

@@ -40,6 +40,18 @@ Section: Identifier Atoms
     is IrSubNum -> "sub-num"
     is IrMulNum -> "mul-num"
     is IrDivNum -> "div-num"
+    is IrAddRealApprox -> "add-real-approx"
+    is IrSubRealApprox -> "sub-real-approx"
+    is IrMulRealApprox -> "mul-real-approx"
+    is IrDivRealApprox -> "div-real-approx"
+    is IrAddRealTrapping -> "add-real-trapping"
+    is IrSubRealTrapping -> "sub-real-trapping"
+    is IrMulRealTrapping -> "mul-real-trapping"
+    is IrDivRealTrapping -> "div-real-trapping"
+    is IrAddRealSaturating -> "add-real-saturating"
+    is IrSubRealSaturating -> "sub-real-saturating"
+    is IrMulRealSaturating -> "mul-real-saturating"
+    is IrDivRealSaturating -> "div-real-saturating"
     is IrEq -> "eq"
     is IrNotEq -> "ne"
     is IrLt -> "lt"
@@ -182,6 +194,9 @@ Section: CodexType Emission
    when ty
     is IntegerTy (lo) (hi) (mode) -> ir-emit-int-bounds lo hi mode
     is RealTy -> "real"
+    is RealApproxTy -> "real-approx"
+    is RealTrappingTy -> "real-trapping"
+    is RealSaturatingTy -> "real-saturating"
     is TextTy -> "text"
     is BooleanTy -> "boolean"
     is CharTy -> "char"
@@ -193,8 +208,8 @@ Section: CodexType Emission
     is LinkedListTy (elem) -> "(llist " & ir-emit-type elem & ")"
     is TypeVar (id) -> "(tvar " & integer-to-text id & ")"
     is ForAllTy (id) (body) -> "(forall " & integer-to-text id & " " & ir-emit-type body & ")"
-    is SumTy (name) (args) (ctors) -> "(sum " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & ") (sum-ctors))"
-    is RecordTy (name) (args) (fields) -> "(record-ty " & ir-quote (name.value) & " (args" & (if list-length args > 0 then ir-emit-type-list args 0 else ir-emit-tvar-args (ir-record-field-tvars fields 0 []) 0) & ") (record-fields))"
+    is SumTy (name) (args) (ctors) -> "(sum " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & ") (sum-ctors" & ir-emit-sum-ctors ctors 0 & "))"
+    is RecordTy (name) (args) (fields) -> "(record-ty " & ir-quote (name.value) & " (args" & (if list-length args > 0 then ir-emit-type-list args 0 else ir-emit-tvar-args (ir-record-field-tvars fields 0 []) 0) & ") (record-fields" & ir-emit-record-fields fields 0 & "))"
     is ConstructedTy (name) (args) -> "(ctd " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & "))"
     is EffectfulTy (effs) (sc) (ret) -> "(effectful (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted sc 0 []) & ") " & ir-emit-type ret & ")"
     is UnitTy (name) (inner) -> "(unit " & ir-quote (name.value) & " " & ir-emit-type inner & ")"
@@ -345,6 +360,7 @@ Section: IRPattern Emission
     is IrLitPat (text) (ty) (sp) -> "(lit-pat " & ir-quote text & " " & ir-emit-type ty & ")"
     is IrCtorPat (name) (subs) (ty) (sp) -> "(ctor-pat " & ir-quote name & " (subs" & ir-emit-pat-list subs 0 & ") " & ir-emit-type ty & ")"
     is IrWildPat (sp) -> "wild-pat"
+    is IrVecPat (subs) (ty) (sp) -> "(vec-pat" & ir-emit-pat-list subs 0 & ")"
 
   ir-emit-pat-list : List IRPat, Integer -> Text
   ir-emit-pat-list (xs) (i) =
@@ -543,6 +559,7 @@ Section: IR Dead Code Elimination
     is IrLitPat (text) (ty) (sp) -> list-push acc text
     is IrCtorPat (name) (subs) (ty) (sp) -> ir-dce-collect-pat-list subs 0 (list-push acc name)
     is IrWildPat (sp) -> acc
+    is IrVecPat (subs) (ty) (sp) -> ir-dce-collect-pat-list subs 0 acc
 
   ir-dce-collect-pat-list : List IRPat, Integer, List Text -> List Text
   ir-dce-collect-pat-list (xs) (i) (acc) =

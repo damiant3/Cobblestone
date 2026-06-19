@@ -183,41 +183,38 @@ Section: Expression Emission
   emit-hs-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
   emit-hs-binary (op) (l) (r) (arities) =
    when op
-    is IrAppendText -> "(" & emit-hs-expr l arities & " ++ " & emit-hs-expr r arities & ")"
-    is IrAppendList -> "(" & emit-hs-expr l arities & " ++ " & emit-hs-expr r arities & ")"
+    is IrAppendText | IrAppendList -> "(" & emit-hs-expr l arities & " ++ " & emit-hs-expr r arities & ")"
     is IrConsList -> "(" & emit-hs-expr l arities & " : " & emit-hs-expr r arities & ")"
     is IrDivInt -> "(div " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
     is IrRemInt -> "(rem " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
     is IrPowInt -> "(" & emit-hs-expr l arities & " ^ " & emit-hs-expr r arities & ")"
     is IrAnd -> "(" & emit-hs-expr l arities & " && " & emit-hs-expr r arities & ")"
     is IrOr -> "(" & emit-hs-expr l arities & " || " & emit-hs-expr r arities & ")"
+    is IrAddVec -> "(zipWith (+) " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
+    is IrSubVec -> "(zipWith (-) " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
+    is IrMulVec -> "(zipWith (*) " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
+    is IrDivVec -> "(zipWith (/) " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
     is otherwise -> "(" & emit-hs-expr l arities & " " & hs-bin-op-symbol op & " " & emit-hs-expr r arities & ")"
 
   hs-bin-op-symbol : IRBinaryOp -> Text
   hs-bin-op-symbol (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec -> "*"
     is IrDivInt -> "`div`"
     is IrRemInt -> "`rem`"
     is IrPowInt -> "^"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
-    is IrEq -> "=="
+    is IrDivNum | IrDivVec -> "/"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "=="
     is IrNotEq -> "/="
     is IrLt -> "<"
     is IrGt -> ">"
     is IrLtEq -> "<="
     is IrGtEq -> ">="
-    is IrApproxEq -> "=="
-    is IrApproxEqExact -> "=="
     is IrAnd -> "&&"
     is IrOr -> "||"
-    is IrAppendText -> "++"
-    is IrAppendList -> "++"
+    is IrAppendText | IrAppendList -> "++"
     is IrConsList -> ":"
 
   emit-hs-lambda-params : List IRParam, Integer -> Text
@@ -281,6 +278,62 @@ Section: Expression Emission
     is IrDoBind (name) (ty) (val) (sp) -> hs-sanitize name & " <- " & emit-hs-expr val arities
     is IrDoExec (e) (sp) -> emit-hs-expr e arities) & emit-hs-act-stmts stmts (i + 1) arities
 
+Section: Builtin Emitter
+
+  HsBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-hs-builtin-pos : List HsBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-hs-builtin-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-hs-builtin-pos entries name lo mid
+      else bsearch-hs-builtin-pos entries name (mid + 1) hi
+
+  sort-hs-builtins : List HsBuiltinEmitter -> List HsBuiltinEmitter
+  sort-hs-builtins (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  hs-builtin-emitters : List HsBuiltinEmitter =
+   sort-hs-builtins [
+    HsBuiltinEmitter { name = "abs", emit = \args arities -> "(abs " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "char-at", emit = \args arities -> "(" & emit-hs-expr (list-at args 0) arities & " !! " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "char-code-at", emit = \args arities -> "(Data.Char.ord (" & emit-hs-expr (list-at args 0) arities & " !! " & emit-hs-expr (list-at args 1) arities & "))" },
+    HsBuiltinEmitter { name = "file-exists", emit = \args arities -> "(System.Directory.doesFileExist " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "int-mod", emit = \args arities -> "(mod " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "(show " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "list-at", emit = \args arities -> "(" & emit-hs-expr (list-at args 0) arities & " !! " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "list-length", emit = \args arities -> "(length " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-hs-expr (list-at args 0) arities & " ++ [" & emit-hs-expr (list-at args 1) arities & "])" },
+    HsBuiltinEmitter { name = "max", emit = \args arities -> "(max " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "min", emit = \args arities -> "(min " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "negate", emit = \args arities -> "(negate " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "(System.IO.hPutStrLn System.IO.stderr " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "(putStrLn " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "read-file", emit = \args arities -> "(readFile " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "read-line", emit = \args arities -> "getLine" },
+    HsBuiltinEmitter { name = "show", emit = \args arities -> "(show " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "substring", emit = \args arities -> "(take " & emit-hs-expr (list-at args 2) arities & " (drop " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & "))" },
+    HsBuiltinEmitter { name = "text-compare", emit = \args arities -> "(compare " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "text-contains", emit = \args arities -> "(Data.List.isInfixOf " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "text-length", emit = \args arities -> "(length " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "text-replace", emit = \args arities -> "(Data.Text.unpack (Data.Text.replace (Data.Text.pack " & emit-hs-expr (list-at args 1) arities & ") (Data.Text.pack " & emit-hs-expr (list-at args 2) arities & ") (Data.Text.pack " & emit-hs-expr (list-at args 0) arities & ")))" },
+    HsBuiltinEmitter { name = "text-split", emit = \args arities -> "(Data.List.Split.splitOn " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(Data.List.isPrefixOf " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(read " & emit-hs-expr (list-at args 0) arities & " :: Int)" },
+    HsBuiltinEmitter { name = "write-file", emit = \args arities -> "(writeFile " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" }
+   ]
+
+  lookup-hs-builtin : Text, List IRExpr, List ArityEntry -> Text
+  lookup-hs-builtin (name) (args) (arities) =
+   let len = list-length hs-builtin-emitters
+   in let pos = bsearch-hs-builtin-pos hs-builtin-emitters name 0 len
+   in if pos >= len then ""
+      else let e = list-at hs-builtin-emitters pos
+      in if e.name == name then e.emit args arities else ""
+
 Section: Apply Emission
 
   emit-hs-apply : IRExpr, List ArityEntry -> Text
@@ -290,8 +343,9 @@ Section: Apply Emission
    in let args = chain.args
    in when root
     is IrName (n) (ty) (sp) ->
-     if n == "print-line-uni" then "putStrLn " & emit-hs-expr (list-at args 0) arities
-     else if is-mktup-name n then "(" & emit-hs-tup-args args arities 0 & ")"
+     if is-mktup-name n then "(" & emit-hs-tup-args args arities 0 & ")"
+     else let builtin = lookup-hs-builtin n args arities
+     in if text-length builtin > 0 then builtin
      else "(" & hs-sanitize n & " " & emit-hs-apply-args args arities 0 & ")"
     is otherwise -> emit-hs-expr-curried e arities
 
@@ -330,7 +384,7 @@ Section: Chapter Emission
   emit-haskell-chapter : IRChapter, List ATypeDef -> Text
   emit-haskell-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "import Data.Map (Map)\nimport qualified Data.Map as Map\n\n"
+   in let header = "import Data.Map (Map)\nimport qualified Data.Map as Map\nimport qualified Data.List\nimport qualified Data.List.Split\nimport qualified Data.Text\nimport qualified Data.Char\nimport qualified System.IO\nimport qualified System.Directory\n\n"
    in let types-text = emit-hs-type-defs type-defs 0
    in let defs-text = emit-hs-defs (m.defs) 0 arities
    in header & types-text & defs-text & "main :: IO ()\nmain = " & hs-sanitize opening-entry-point & "\n"

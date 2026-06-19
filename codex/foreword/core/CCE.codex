@@ -223,7 +223,8 @@ Section: Tier 1 Classification
     if cp < 128 then
       let c = cp
       in if c >= 13 then c <= 127 else False
-    else cce-is-letter-ext cp
+    else if cp < 2176 then cce-is-letter-ext cp
+    else cce-is-cjk cp | cce-is-hangul cp | cce-is-kana cp
 
   cce-script : Integer -> Integer
   cce-script (cp) =
@@ -239,6 +240,67 @@ Section: Tier 1 Classification
     else if cce-is-continuation (char-code (char-at s i)) then text-char-count-loop s (i + 1) len count
     else text-char-count-loop s (i + 1) len (count + 1)
 
+Section: Tier 2 Block Tables
+
+  cce-tier2-base : Integer = 2176
+
+  cce-tier2-block-count : Integer = 10
+
+  cce-tier2-block-table : List Integer
+  cce-tier2-block-table = [
+    12288,    64,
+    12352,    96,
+    12448,    96,
+    19968,    20992,
+    13312,    6592,
+    44032,    11172,
+    3584,     256,
+    8192,     512,
+    127744,   1024,
+    9728,     256
+  ]
+
+  cce-tier2-block-unicode-base : Integer -> Integer
+  cce-tier2-block-unicode-base (block) =
+    list-at cce-tier2-block-table (block * 2)
+
+  cce-tier2-block-size : Integer -> Integer
+  cce-tier2-block-size (block) =
+    list-at cce-tier2-block-table (block * 2 + 1)
+
+  cce-tier2-cce-base : Integer -> Integer
+  cce-tier2-cce-base (block) =
+    cce-tier2-cce-base-loop block 0 cce-tier2-base
+
+  cce-tier2-cce-base-loop : Integer, Integer, Integer -> Integer
+  cce-tier2-cce-base-loop (target) (i) (acc) =
+    if i >= target then acc
+    else cce-tier2-cce-base-loop target (i + 1) (acc + cce-tier2-block-size i)
+
+Section: Tier 2 Classification
+
+  cce-is-cjk : Integer -> Boolean
+  cce-is-cjk (cp) =
+    let u = to-unicode cp
+    in if u >= 19968 then u <= 40959
+    else if u >= 13312 then u <= 19903
+    else False
+
+  cce-is-hangul : Integer -> Boolean
+  cce-is-hangul (cp) =
+    let u = to-unicode cp
+    in if u >= 44032 then u <= 55203 else False
+
+  cce-is-kana : Integer -> Boolean
+  cce-is-kana (cp) =
+    let u = to-unicode cp
+    in if u >= 12352 then u <= 12543 else False
+
+  cce-is-emoji : Integer -> Boolean
+  cce-is-emoji (cp) =
+    let u = to-unicode cp
+    in if u >= 127744 then u <= 128767 else False
+
 Section: Unicode Conversion
 
   to-unicode : Integer -> Integer
@@ -249,13 +311,28 @@ Section: Unicode Conversion
       let block = cce-tier1-block cp
       in if block < 0 then 65533
       else cce-tier1-block-unicode-base block + cce-tier1-offset-in-block cp
+    else if cp < 67712 then
+      to-unicode-tier2 cp 0
     else 65533
+
+  to-unicode-tier2 : Integer, Integer -> Integer
+  to-unicode-tier2 (cp) (block) =
+    if block >= cce-tier2-block-count then 65533
+    else let block-base = cce-tier2-cce-base block
+    in let block-size = cce-tier2-block-size block
+    in if cp >= block-base then
+      if cp < block-base + block-size then
+        cce-tier2-block-unicode-base block + (cp - block-base)
+      else to-unicode-tier2 cp (block + 1)
+    else to-unicode-tier2 cp (block + 1)
 
   from-unicode : Integer -> Integer
   from-unicode (u) =
     let t0 = from-unicode-tier0 u 0 128
     in if t0 >= 0 then t0
-    else from-unicode-tier1 u 0
+    else let t1 = from-unicode-tier1 u 0
+    in if t1 >= 0 then t1
+    else from-unicode-tier2 u 0
 
   from-unicode-tier0 : Integer, Integer, Integer -> Integer
   from-unicode-tier0 (u) (i) (len) =
@@ -280,5 +357,15 @@ Section: Unicode Conversion
         else block-start + (u - base)
       else from-unicode-tier1 u (block + 1)
     else from-unicode-tier1 u (block + 1)
+
+  from-unicode-tier2 : Integer, Integer -> Integer
+  from-unicode-tier2 (u) (block) =
+    if block >= cce-tier2-block-count then -1
+    else let base = cce-tier2-block-unicode-base block
+    in let size = cce-tier2-block-size block
+    in if u >= base then
+      if u < base + size then cce-tier2-cce-base block + (u - base)
+      else from-unicode-tier2 u (block + 1)
+    else from-unicode-tier2 u (block + 1)
 
 Page 1

@@ -177,12 +177,16 @@ Section: Expression Emission
   pas-bin-op : IRBinaryOp -> Text
   pas-bin-op (op) =
    when op
-    is IrAddInt -> "+"  is IrSubInt -> "-"  is IrMulInt -> "*"  is IrDivInt -> "div"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec -> "*"
+    is IrDivInt -> "div"
     is IrRemInt -> "mod"
-    is IrPowInt -> "**"  is IrAddNum -> "+"  is IrSubNum -> "-"  is IrMulNum -> "*"
-    is IrDivNum -> "/"  is IrEq -> "="  is IrNotEq -> "<>"
+    is IrPowInt -> "**"
+    is IrDivNum | IrDivVec -> "/"
+    is IrEq -> "="  is IrNotEq -> "<>"
     is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
-    is IrApproxEq -> "="  is IrApproxEqExact -> "="
+    is IrApproxEq | IrApproxEqExact -> "="
     is IrAnd -> "and"  is IrOr -> "or"  is IrAppendText -> "+"
     is IrAppendList -> "+"  is IrConsList -> "+"
 
@@ -245,27 +249,47 @@ Section: Apply Emission
    else if i == list-length args - 1 then emit-pas-expr (list-at args i) arities
         else emit-pas-expr (list-at args i) arities & ", " & emit-pas-apply-args args arities (i + 1)
 
+  pas-builtin-names : List Text
+  pas-builtin-names = ["abs", "char-at", "char-code", "char-to-text",
+   "int-mod", "integer-to-text", "list-at", "list-length", "max", "min",
+   "negate", "print-line-uni", "process-exit", "show", "substring",
+   "text-contains", "text-length", "text-to-integer"]
+
+  pas-bsearch-builtin : List Text, Text, Integer, Integer -> Integer
+  pas-bsearch-builtin (names) (target) (lo) (hi) =
+   if lo >= hi then -1
+   else let mid = lo + (hi - lo) / 2
+   in let cmp = text-compare target (list-at names mid)
+   in if cmp == 0 then mid
+      else if cmp < 0 then pas-bsearch-builtin names target lo mid
+      else pas-bsearch-builtin names target (mid + 1) hi
+
   pas-try-builtin : Text, List IRExpr, List ArityEntry -> Text
   pas-try-builtin (n) (args) (arities) =
-   if n == "print-line-uni" then "WriteLn(" & emit-pas-expr (list-at args 0) arities & ")"
-   else if n == "show" then "IntToStr(" & emit-pas-expr (list-at args 0) arities & ")"
-   else if n == "integer-to-text" then "IntToStr(" & emit-pas-expr (list-at args 0) arities & ")"
-   else if n == "text-to-integer" then "StrToInt(" & emit-pas-expr (list-at args 0) arities & ")"
-   else if n == "text-length" then "Length(" & emit-pas-expr (list-at args 0) arities & ")"
-   else if n == "list-length" then "Length(" & emit-pas-expr (list-at args 0) arities & ")"
-   else if n == "list-at" then emit-pas-expr (list-at args 0) arities & "[" & emit-pas-expr (list-at args 1) arities & " + 1]"
-   else if n == "char-at" then "Ord(" & emit-pas-expr (list-at args 0) arities & "[" & emit-pas-expr (list-at args 1) arities & " + 1])"
-   else if n == "char-code" then emit-pas-expr (list-at args 0) arities
-   else if n == "char-to-text" then "Chr(" & emit-pas-expr (list-at args 0) arities & ")"
-   else if n == "substring" then "Copy(" & emit-pas-expr (list-at args 0) arities & ", " & emit-pas-expr (list-at args 1) arities & " + 1, " & emit-pas-expr (list-at args 2) arities & ")"
-   else if n == "text-contains" then "(Pos(" & emit-pas-expr (list-at args 1) arities & ", " & emit-pas-expr (list-at args 0) arities & ") > 0)"
-   else if n == "process-exit" then "Halt(" & emit-pas-expr (list-at args 0) arities & ")"
-   else if n == "int-mod" then "(" & emit-pas-expr (list-at args 0) arities & " mod " & emit-pas-expr (list-at args 1) arities & ")"
-   else if n == "negate" then "(-" & emit-pas-expr (list-at args 0) arities & ")"
-   else if n == "min" then "Min(" & emit-pas-expr (list-at args 0) arities & ", " & emit-pas-expr (list-at args 1) arities & ")"
-   else if n == "max" then "Max(" & emit-pas-expr (list-at args 0) arities & ", " & emit-pas-expr (list-at args 1) arities & ")"
-   else if n == "abs" then "Abs(" & emit-pas-expr (list-at args 0) arities & ")"
-   else ""
+   let idx = pas-bsearch-builtin pas-builtin-names n 0 (list-length pas-builtin-names)
+   in if idx < 0 then ""
+      else pas-emit-builtin-by-idx idx args arities
+
+  pas-emit-builtin-by-idx : Integer, List IRExpr, List ArityEntry -> Text
+  pas-emit-builtin-by-idx (idx) (args) (arities) =
+   if idx == 0 then "Abs(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if idx == 1 then "Ord(" & emit-pas-expr (list-at args 0) arities & "[" & emit-pas-expr (list-at args 1) arities & " + 1])"
+   else if idx == 2 then emit-pas-expr (list-at args 0) arities
+   else if idx == 3 then "Chr(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if idx == 4 then "(" & emit-pas-expr (list-at args 0) arities & " mod " & emit-pas-expr (list-at args 1) arities & ")"
+   else if idx == 5 then "IntToStr(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if idx == 6 then emit-pas-expr (list-at args 0) arities & "[" & emit-pas-expr (list-at args 1) arities & " + 1]"
+   else if idx == 7 then "Length(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if idx == 8 then "Max(" & emit-pas-expr (list-at args 0) arities & ", " & emit-pas-expr (list-at args 1) arities & ")"
+   else if idx == 9 then "Min(" & emit-pas-expr (list-at args 0) arities & ", " & emit-pas-expr (list-at args 1) arities & ")"
+   else if idx == 10 then "(-" & emit-pas-expr (list-at args 0) arities & ")"
+   else if idx == 11 then "WriteLn(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if idx == 12 then "Halt(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if idx == 13 then "IntToStr(" & emit-pas-expr (list-at args 0) arities & ")"
+   else if idx == 14 then "Copy(" & emit-pas-expr (list-at args 0) arities & ", " & emit-pas-expr (list-at args 1) arities & " + 1, " & emit-pas-expr (list-at args 2) arities & ")"
+   else if idx == 15 then "(Pos(" & emit-pas-expr (list-at args 1) arities & ", " & emit-pas-expr (list-at args 0) arities & ") > 0)"
+   else if idx == 16 then "Length(" & emit-pas-expr (list-at args 0) arities & ")"
+   else "StrToInt(" & emit-pas-expr (list-at args 0) arities & ")"
 
 Section: Definition Emission
 

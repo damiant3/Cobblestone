@@ -150,7 +150,15 @@ diagram save (5 sectors + 1 superblock) takes ~6ms. History/trust
 saves are smaller (1-2 sectors typically). All saves are user-triggered
 (not per-tick), so latency is imperceptible.
 
-**Disk**: DiskFacts is append-only. Repeated saves accumulate in the
-log. A diagram saved 100 times at ~2KB each uses ~200KB. The virtual
-IDE disk is typically 64MB+, so this is not a concern for development
-use. Production use would benefit from log compaction (future work).
+**Disk**: DiskFacts is append-only. Repeated saves accumulate stale
+entries. `disk-compact` (AppPersist.codex) reclaims space by scanning
+the log, keeping only the latest entry per kind, and rewriting the
+log from sector 2. Called at app startup or on demand. Example: the
+browser re-saves all history on every navigation — after 100
+navigations with 50-entry history (~2.5KB each), the log holds 500
+sectors (250KB) of duplicate data. After compaction: 5 sectors.
+
+Compaction rewrites the log in-place and updates the superblock
+atomically (dual-superblock). The window between rewrite and
+superblock update is a crash risk — mitigated by only compacting at
+safe points (startup, explicit save).

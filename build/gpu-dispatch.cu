@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cmath>
 #include <cuda_runtime.h>
+#include <cuda.h>
 #include <cublas_v2.h>
 
 #ifdef _WIN32
@@ -40,6 +41,7 @@ static const int OP_GROUP_NORM = 13;
 static const int OP_SILU = 14;
 static const int OP_UPSAMPLE2X = 15;
 static const int OP_CLAMP = 16;
+static const int OP_LAUNCH_PTX = 32;
 
 static const int HEADER_SIZE = 256;
 static const int BUF_SIZE = 1048576; // 1 MB
@@ -580,6 +582,68 @@ static bool do_softmax(uint8_t* buf, const CmdHeader& h) {
     return true;
 }
 
+static bool do_launch_ptx(uint8_t* buf, const CmdHeader& h) {
+    uint32_t name_len = read_u32(buf, 64);
+    uint32_t ptx_len = read_u32(buf, 68);
+    uint32_t sm_target = read_u32(buf, 72);
+    uint32_t grid_x = read_u32(buf, 76);
+    uint32_t grid_y = read_u32(buf, 80);
+    uint32_t grid_z = read_u32(buf, 84);
+    uint32_t block_x = read_u32(buf, 88);
+    uint32_t block_y = read_u32(buf, 92);
+    uint32_t block_z = read_u32(buf, 96);
+    uint32_t shared_bytes = read_u32(buf, 100);
+    uint32_t arg_count = read_u32(buf, 104);
+
+    if (name_len == 0 || ptx_len == 0 || name_len > 256 || ptx_len > 65536) {
+        fprintf(stderr, "  PTX launch: invalid name_len=%u ptx_len=%u\n", name_len, ptx_len);
+        return false;
+    }
+
+    char kernel_name[257];
+    memcpy(kernel_name, buf + HEADER_SIZE, name_len);
+    kernel_name[name_len] = '\0';
+
+    const char* ptx_src = (const char*)(buf + HEADER_SIZE + name_len);
+
+    CUmodule module;
+    CUresult res = cuModuleLoadData(&module, ptx_src);
+    if (res != CUDA_SUCCESS) {
+        const char* err_str;
+        cuGetErrorString(res, &err_str);
+        fprintf(stderr, "  PTX load failed: %s\n", err_str);
+        return false;
+    }
+
+    CUfunction func;
+    res = cuModuleGetFunction(&func, module, kernel_name);
+    if (res != CUDA_SUCCESS) {
+        fprintf(stderr, "  kernel '%s' not found in PTX module\n", kernel_name);
+        cuModuleUnload(module);
+        return false;
+    }
+
+    res = cuLaunchKernel(func, grid_x, grid_y, grid_z,
+                         block_x, block_y, block_z,
+                         shared_bytes, NULL, NULL, NULL);
+    if (res != CUDA_SUCCESS) {
+        const char* err_str;
+        cuGetErrorString(res, &err_str);
+        fprintf(stderr, "  cuLaunchKernel failed: %s\n", err_str);
+        cuModuleUnload(module);
+        return false;
+    }
+
+    cuCtxSynchronize();
+    printf("  PTX kernel '%s' launched (%ux%ux%u blocks, %ux%ux%u threads)\n",
+           kernel_name, grid_x, grid_y, grid_z, block_x, block_y, block_z);
+
+    write_u32(buf, 32, 1);
+    write_u32(buf, 36, 1);
+    cuModuleUnload(module);
+    return true;
+}
+
 static const char* op_name(uint32_t op) {
     switch (op) {
         case 0: return "MATMUL";
@@ -599,6 +663,7 @@ static const char* op_name(uint32_t op) {
         case 14: return "SILU";
         case 15: return "UPSAMPLE2X";
         case 16: return "CLAMP";
+        case 32: return "LAUNCH_PTX";
         default: return "UNKNOWN";
     }
 }
@@ -718,6 +783,9 @@ int main(int argc, char** argv) {
                 break;
             case OP_CLAMP:
                 ok = do_clamp(buf, h);
+                break;
+            case OP_LAUNCH_PTX:
+                ok = do_launch_ptx(buf, h);
                 break;
             default:
                 fprintf(stderr, " UNSUPPORTED\n");

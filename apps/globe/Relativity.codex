@@ -1,0 +1,322 @@
+Chapter: Relativity
+  cites Math chapter Quaternion
+  cites Math chapter Cordic
+  cites Game chapter Color
+
+ Special-relativistic visual effects, ported from MIT Game Lab's
+ OpenRelativity (A Slower Speed of Light, 2012). Transforms geometry
+ and color for an observer moving at relativistic speeds. Effects:
+ Lorentz contraction, relativistic Doppler shift (with UV/IR
+ spectral mapping), relativistic aberration, Terrell rotation,
+ searchlight brightening, and time dilation.
+
+ All geometry fixed-point scale 1000. Speed of light is parameterized
+ so it can be lowered to walking pace (the "slower speed of light"
+ mechanic). Beta = v/c, gamma = 1/sqrt(1 - beta^2).
+
+ We say:
+
+Section: Types
+
+  RelState = record {
+    rs-c : Integer,
+    rs-c-sqr : Integer,
+    rs-player-vel : Vec3,
+    rs-player-speed : Integer,
+    rs-beta : Integer,
+    rs-gamma : Integer,
+    rs-sqrt-one-minus-beta-sqr : Integer,
+    rs-time-player : Integer,
+    rs-time-world : Integer
+  }
+
+  RelVertex = record {
+    rv-pos : Vec3,
+    rv-color : Integer
+  }
+
+Section: State Construction
+
+  rel-state-new : Integer -> RelState
+  rel-state-new (speed-of-light) = RelState {
+    rs-c = speed-of-light,
+    rs-c-sqr = speed-of-light * speed-of-light / 1000,
+    rs-player-vel = vec3-zero,
+    rs-player-speed = 0,
+    rs-beta = 0,
+    rs-gamma = 1000,
+    rs-sqrt-one-minus-beta-sqr = 1000,
+    rs-time-player = 0,
+    rs-time-world = 0
+  }
+
+  rel-set-velocity : RelState, Vec3 -> RelState
+  rel-set-velocity (st) (vel) =
+    let speed = rel-vec3-length vel
+    in let beta = speed * 1000 / st.rs-c
+    in let beta-sqr = beta * beta / 1000
+    in let one-minus = 1000 - beta-sqr
+    in let sqrt-term = if one-minus <= 0 then 10 else rel-isqrt (one-minus * 1000)
+    in let gamma = if sqrt-term <= 0 then 100000 else 1000000 / sqrt-term
+    in RelState {
+      rs-c = st.rs-c,
+      rs-c-sqr = st.rs-c-sqr,
+      rs-player-vel = vel,
+      rs-player-speed = speed,
+      rs-beta = beta,
+      rs-gamma = gamma,
+      rs-sqrt-one-minus-beta-sqr = sqrt-term,
+      rs-time-player = st.rs-time-player,
+      rs-time-world = st.rs-time-world
+    }
+
+  rel-set-c : RelState, Integer -> RelState
+  rel-set-c (st) (new-c) =
+    let updated = RelState {
+      rs-c = new-c,
+      rs-c-sqr = new-c * new-c / 1000,
+      rs-player-vel = st.rs-player-vel,
+      rs-player-speed = st.rs-player-speed,
+      rs-beta = st.rs-beta,
+      rs-gamma = st.rs-gamma,
+      rs-sqrt-one-minus-beta-sqr = st.rs-sqrt-one-minus-beta-sqr,
+      rs-time-player = st.rs-time-player,
+      rs-time-world = st.rs-time-world
+    }
+    in rel-set-velocity updated st.rs-player-vel
+
+Section: Time Dilation
+
+  rel-tick : RelState, Integer -> RelState
+  rel-tick (st) (dt-player) =
+    let dt-world = if st.rs-sqrt-one-minus-beta-sqr <= 0 then dt-player
+      else dt-player * 1000 / st.rs-sqrt-one-minus-beta-sqr
+    in RelState {
+      rs-c = st.rs-c,
+      rs-c-sqr = st.rs-c-sqr,
+      rs-player-vel = st.rs-player-vel,
+      rs-player-speed = st.rs-player-speed,
+      rs-beta = st.rs-beta,
+      rs-gamma = st.rs-gamma,
+      rs-sqrt-one-minus-beta-sqr = st.rs-sqrt-one-minus-beta-sqr,
+      rs-time-player = st.rs-time-player + dt-player,
+      rs-time-world = st.rs-time-world + dt-world
+    }
+
+Section: Relativistic Velocity Addition
+
+  rel-add-velocity : RelState, Vec3 -> Vec3
+  rel-add-velocity (st) (dv) =
+    let v-old = st.rs-player-vel
+    in let speed-old = st.rs-player-speed
+    in if speed-old < 5 then vec3-add v-old dv
+    else let v-dot = rel-vec3-dot v-old dv
+    in let denom = 1000 + v-dot * 1000 / st.rs-c-sqr
+    in if denom <= 0 then v-old
+    else let v-par = rel-vec3-scale v-old (v-dot * 1000 / (speed-old * speed-old / 1000))
+    in let v-perp = vec3-subtract dv v-par
+    in let scaled-perp = rel-vec3-scale v-perp st.rs-sqrt-one-minus-beta-sqr
+    in let numerator = vec3-add (vec3-add v-old v-par) scaled-perp
+    in rel-vec3-scale numerator (1000000 / denom)
+
+Section: Frame Alignment
+
+  rel-align-to-z : Vec3, Vec3 -> Vec3
+  rel-align-to-z (vel) (pos) =
+    let speed = rel-vec3-length vel
+    in if speed < 5 then pos
+    else let vn = rel-vec3-normalize vel
+    in let forward = vec3-new 0 0 1000
+    in let cos-a = rel-vec3-dot vn forward
+    in let angle = rel-acos cos-a
+    in if rel-abs angle < 5 then pos
+    else let axis = rel-vec3-normalize (vec3-cross vel forward)
+    in rel-rodrigues pos axis (0 - angle)
+
+  rel-unalign-from-z : Vec3, Vec3 -> Vec3
+  rel-unalign-from-z (vel) (pos) =
+    let speed = rel-vec3-length vel
+    in if speed < 5 then pos
+    else let vn = rel-vec3-normalize vel
+    in let forward = vec3-new 0 0 1000
+    in let cos-a = rel-vec3-dot vn forward
+    in let angle = rel-acos cos-a
+    in if rel-abs angle < 5 then pos
+    else let axis = rel-vec3-normalize (vec3-cross vel forward)
+    in rel-rodrigues pos axis angle
+
+Section: Lorentz Contraction
+
+  rel-contract : RelState, Vec3, Vec3 -> Vec3
+  rel-contract (st) (obj-pos) (player-pos) =
+    if st.rs-beta < 5 then obj-pos
+    else let riw = vec3-subtract obj-pos player-pos
+    in let aligned = rel-align-to-z st.rs-player-vel riw
+    in let tisw = rel-light-cone-time st aligned
+    in let contracted-z = aligned.vz + st.rs-player-speed * tisw / 1000
+    in let final-z = contracted-z * 1000 / st.rs-sqrt-one-minus-beta-sqr
+    in let result = vec3-new (aligned.vx) (aligned.vy) final-z
+    in vec3-add player-pos (rel-unalign-from-z st.rs-player-vel result)
+
+Section: Light Cone Intersection
+
+  rel-light-cone-time : RelState, Vec3 -> Integer
+  rel-light-cone-time (st) (riw) =
+    let riw-sqr = rel-vec3-dot riw riw
+    in let viw-dot-riw = riw.vz * st.rs-player-speed / 1000
+    in let a = st.rs-c-sqr - st.rs-player-speed * st.rs-player-speed / 1000
+    in let b = 0 - 2 * viw-dot-riw
+    in let c = 0 - riw-sqr
+    in if a == 0 then 0
+    else let disc = b * b / 1000 - 4 * a * c / 1000
+    in if disc < 0 then 0
+    else let sqrt-disc = rel-isqrt (disc * 1000)
+    in (0 - b - sqrt-disc) * 1000 / (2 * a)
+
+Section: Relativistic Aberration
+
+  rel-aberrate-velocity : RelState, Vec3 -> Vec3
+  rel-aberrate-velocity (st) (obj-vel) =
+    if st.rs-beta < 5 then obj-vel
+    else let vpc = rel-vec3-scale st.rs-player-vel (0 - 1000 / st.rs-c)
+    in let speed = rel-vec3-length vpc
+    in if speed < 5 then obj-vel
+    else let vu-dot = rel-vec3-dot vpc obj-vel
+    in let u-par = rel-vec3-scale vpc (vu-dot * 1000 / (speed * speed / 1000))
+    in let u-perp = vec3-subtract obj-vel u-par
+    in let scaled-perp = rel-vec3-scale u-perp st.rs-sqrt-one-minus-beta-sqr
+    in let num = vec3-subtract (vec3-subtract vpc u-par) scaled-perp
+    in let denom = 1000 + vu-dot
+    in if denom <= 0 then obj-vel
+    else rel-vec3-scale num (1000000 / denom)
+
+Section: Terrell Rotation
+
+  rel-terrell : RelState, Vec3 -> Vec3
+  rel-terrell (st) (pos) =
+    if st.rs-beta < 5 then pos
+    else let vn = rel-vec3-normalize st.rs-player-vel
+    in let vxz = rel-isqrt (vn.vx * vn.vx / 1000 + vn.vy * vn.vy / 1000)
+    in if vxz < 5 then pos
+    else let ux = vn.vy * 1000 / vxz
+    in let uy = 0 - vn.vx * 1000 / vxz
+    in let angle = 0 - rel-acos (0 - vn.vz)
+    in let axis = vec3-new ux uy 0
+    in let rotated = rel-rodrigues pos axis angle
+    in let contracted = vec3-new (rotated.vx) (rotated.vy) (rotated.vz * 1000 / st.rs-sqrt-one-minus-beta-sqr)
+    in rel-rodrigues contracted axis (0 - angle)
+
+Section: Doppler Shift
+
+  rel-doppler-factor : RelState, Vec3, Vec3 -> Integer
+  rel-doppler-factor (st) (pixel-pos) (player-pos) =
+    if st.rs-beta < 5 then 1000
+    else let dir = vec3-subtract pixel-pos player-pos
+    in let dir-len = rel-vec3-length dir
+    in if dir-len < 1 then 1000
+    else let view-dot-vel = rel-vec3-dot dir st.rs-player-vel
+    in let numerator = 1000 - view-dot-vel * 1000 / (dir-len * st.rs-c / 1000)
+    in numerator * 1000 / st.rs-sqrt-one-minus-beta-sqr
+
+  rel-doppler-color : Integer, Integer -> Integer
+  rel-doppler-color (packed-rgb) (shift) =
+    let r = packed-rgb / 65536
+    in let g = packed-rgb / 256 - r * 256
+    in let b = packed-rgb - packed-rgb / 256 * 256
+    in let xyz-x = r * 412 / 1000 + g * 358 / 1000 + b * 180 / 1000
+    in let xyz-y = r * 213 / 1000 + g * 715 / 1000 + b * 72 / 1000
+    in let xyz-z = r * 19 / 1000 + g * 119 / 1000 + b * 950 / 1000
+    in let shifted-x = rel-shift-channel xyz-x shift 615 8
+    in let shifted-y = rel-shift-channel xyz-y shift 550 4
+    in let shifted-z = rel-shift-channel xyz-z shift 463 5
+    in let out-r = rel-clamp8 (shifted-x * 3241 / 1000 - shifted-y * 1537 / 1000 - shifted-z * 499 / 1000)
+    in let out-g = rel-clamp8 (0 - shifted-x * 969 / 1000 + shifted-y * 1876 / 1000 + shifted-z * 42 / 1000)
+    in let out-b = rel-clamp8 (shifted-x * 56 / 1000 - shifted-y * 204 / 1000 + shifted-z * 1057 / 1000)
+    in out-r * 65536 + out-g * 256 + out-b
+
+  rel-shift-channel : Integer, Integer, Integer, Integer -> Integer
+  rel-shift-channel (value) (shift) (center-nm) (width) =
+    let shifted-center = center-nm * shift / 1000
+    in let dist = shifted-center - center-nm
+    in let falloff = dist * dist / (2 * width * width * 1000)
+    in let scale = 1000 - rel-min 1000 falloff
+    in value * scale / 1000
+
+  rel-searchlight : Integer, Integer -> Integer
+  rel-searchlight (packed-rgb) (doppler) =
+    if doppler <= 0 then 0
+    else let bright = doppler * doppler / 1000
+    in let r = rel-clamp8 ((packed-rgb / 65536) * bright / 1000)
+    in let g = rel-clamp8 ((packed-rgb / 256 - (packed-rgb / 65536) * 256) * bright / 1000)
+    in let b = rel-clamp8 ((packed-rgb - packed-rgb / 256 * 256) * bright / 1000)
+    in r * 65536 + g * 256 + b
+
+Section: Combined Transform
+
+  rel-transform-vertex : RelState, Vec3, Vec3, Integer -> RelVertex
+  rel-transform-vertex (st) (obj-pos) (player-pos) (color) =
+    if st.rs-beta < 5 then RelVertex { rv-pos = obj-pos, rv-color = color }
+    else let contracted = rel-contract st obj-pos player-pos
+    in let terrell = rel-terrell st (vec3-subtract contracted player-pos)
+    in let final-pos = vec3-add player-pos terrell
+    in let doppler = rel-doppler-factor st final-pos player-pos
+    in let shifted = rel-doppler-color color doppler
+    in let lit = rel-searchlight shifted doppler
+    in RelVertex { rv-pos = final-pos, rv-color = lit }
+
+Section: Math Helpers
+
+  rel-isqrt : Integer -> Integer
+  rel-isqrt (n) = if n <= 0 then 0 else rel-isqrt-loop n (n / 2 + 1)
+
+  rel-isqrt-loop : Integer, Integer -> Integer
+  rel-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else rel-isqrt-loop n next
+
+  rel-abs : Integer -> Integer
+  rel-abs (x) = if x < 0 then 0 - x else x
+
+  rel-min : Integer, Integer -> Integer
+  rel-min (a) (b) = if a < b then a else b
+
+  rel-clamp8 : Integer -> Integer
+  rel-clamp8 (x) = if x < 0 then 0 else if x > 255 then 255 else x
+
+  rel-vec3-length : Vec3 -> Integer
+  rel-vec3-length (v) =
+    rel-isqrt (v.vx * v.vx / 1000 + v.vy * v.vy / 1000 + v.vz * v.vz / 1000)
+
+  rel-vec3-normalize : Vec3 -> Vec3
+  rel-vec3-normalize (v) =
+    let len = rel-vec3-length v
+    in if len < 1 then vec3-zero
+    else vec3-new (v.vx * 1000 / len) (v.vy * 1000 / len) (v.vz * 1000 / len)
+
+  rel-vec3-dot : Vec3, Vec3 -> Integer
+  rel-vec3-dot (a) (b) = a.vx * b.vx / 1000 + a.vy * b.vy / 1000 + a.vz * b.vz / 1000
+
+  rel-vec3-scale : Vec3, Integer -> Vec3
+  rel-vec3-scale (v) (s) = vec3-new (v.vx * s / 1000) (v.vy * s / 1000) (v.vz * s / 1000)
+
+  rel-acos : Integer -> Integer
+  rel-acos (x) =
+    let clamped = if x < -1000 then -1000 else if x > 1000 then 1000 else x
+    in 1571 - rel-asin-approx clamped
+
+  rel-asin-approx : Integer -> Integer
+  rel-asin-approx (x) =
+    let x3 = x * x / 1000 * x / 1000
+    in let x5 = x3 * x / 1000 * x / 1000
+    in x + x3 / 6 + x5 * 3 / 40
+
+  rel-rodrigues : Vec3, Vec3, Integer -> Vec3
+  rel-rodrigues (v) (axis) (angle) =
+    let c = cordic-cos angle
+    in let s = cordic-sin angle
+    in let k-dot-v = rel-vec3-dot axis v
+    in let k-cross-v = vec3-cross axis v
+    in let term1 = rel-vec3-scale v c
+    in let term2 = rel-vec3-scale k-cross-v s
+    in let term3 = rel-vec3-scale axis (k-dot-v * (1000 - c) / 1000)
+    in vec3-add (vec3-add term1 term2) term3

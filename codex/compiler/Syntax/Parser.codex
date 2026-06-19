@@ -317,7 +317,8 @@ Section: Pattern Parsing
   parse-ctor-pattern-fields (ctor) (acc) (st) =
    if parse-fuel-exhausted st then PatOk (deck-record (CtorPat ctor (deck-record (__linked-list-to-list acc)))) (emit-parse-fuel-error st "parse-ctor-pattern-fields")
    else let st-fueled = consume-parse-fuel st
-   in if is-left-paren (current-kind st-fueled) then let st2 = advance st-fueled
+   in if token-text ctor == "Vector" & is-left-bracket (current-kind st-fueled) then parse-vec-pat-elems [] (advance st-fueled)
+    else if is-left-paren (current-kind st-fueled) then let st2 = advance st-fueled
      in let sub = parse-pattern st2
      in unwrap-pat-ok sub (continue-ctor-fields ctor acc)
     else PatOk (deck-record (CtorPat ctor (deck-record (__linked-list-to-list acc)))) st-fueled
@@ -326,6 +327,18 @@ Section: Pattern Parsing
   continue-ctor-fields (ctor) (acc) (p) (st) =
    let st2 = expect RightParen st
    in parse-ctor-pattern-fields ctor (__linked-list-push acc p) st2
+
+  parse-vec-pat-elems : List Pat, ParseState -> ParsePatResult
+  parse-vec-pat-elems (acc) (st) =
+   if is-right-bracket (current-kind st) then PatOk (deck-record (VecPat acc)) (advance st)
+   else let p = parse-pattern st
+   in unwrap-pat-ok p (after-vec-pat-elem acc)
+
+  after-vec-pat-elem : List Pat, Pat, ParseState -> ParsePatResult
+  after-vec-pat-elem (acc) (p) (st) =
+   let acc2 = list-push acc p
+   in if is-comma (current-kind st) then parse-vec-pat-elems acc2 (advance st)
+   else PatOk (deck-record (VecPat acc2)) (expect RightBracket st)
 
   unwrap-pat-ok : ParsePatResult, (Pat -> ParseState -> ParsePatResult) -> ParsePatResult
   unwrap-pat-ok (r) (f) =
@@ -688,11 +701,7 @@ Section: Type Definition Parsing
    if is-left-paren (current-kind st) then let field-result = parse-type (advance st)
      in unwrap-ctor-field field-result ctor-name fields name-tok tparams acc
     else let st2 = skip-newlines st
-    in let ctor = deck-record (VariantCtorDef {
-      name = ctor-name,
-      fields = deck-record (__linked-list-to-list fields)
-     })
-    in parse-variant-ctors name-tok tparams (__linked-list-push acc ctor) st2
+    in if is-colon (current-kind st2) then let ret-result = parse-type (advance st2) in unwrap-ctor-return ret-result ctor-name fields name-tok tparams acc else let ctor = deck-record (VariantCtorDef { name = ctor-name, fields = deck-record (__linked-list-to-list fields), return-type = [] }) in parse-variant-ctors name-tok tparams (__linked-list-push acc ctor) st2
 
   unwrap-ctor-field : ParseTypeResult, Token, LinkedList TypeExpr, Token, List Token, LinkedList VariantCtorDef -> ParseTypeDefResult
   unwrap-ctor-field (r) (ctor-name) (fields) (name-tok) (tparams) (acc) =
@@ -700,6 +709,11 @@ Section: Type Definition Parsing
     is TypeOk (ty) (st) ->
      let st2 = expect RightParen st
       in parse-ctor-fields ctor-name (__linked-list-push fields ty) st2 name-tok tparams acc
+
+  unwrap-ctor-return : ParseTypeResult, Token, LinkedList TypeExpr, Token, List Token, LinkedList VariantCtorDef -> ParseTypeDefResult
+  unwrap-ctor-return (r) (ctor-name) (fields) (name-tok) (tparams) (acc) =
+   when r
+    is TypeOk (ty) (st) -> let ctor = deck-record (VariantCtorDef { name = ctor-name, fields = deck-record (__linked-list-to-list fields), return-type = [ty] }) in parse-variant-ctors name-tok tparams (__linked-list-push acc ctor) (skip-newlines st)
 
 Section: Document Parsing
   parse-document : ParseState -> Document
@@ -982,7 +996,10 @@ Section: Document Parsing
    else if is-effect-keyword (current-kind st) then parse-top-level-effect defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
    else if is-class-keyword (current-kind st) then let st-c1 = advance st
     in let st-c2 = advance st-c1
-    in let st-c3 = if is-where-keyword (current-kind st-c2) then skip-newlines (advance st-c2) else st-c2
+    in let st-c2b = if is-ident (current-kind st-c2) & is-fat-arrow (peek-kind st-c2 1)
+      then advance (advance (advance st-c2))
+      else st-c2
+    in let st-c3 = if is-where-keyword (current-kind st-c2b) then skip-newlines (advance st-c2b) else st-c2b
     in let (_, ops-st) = parse-effect-ops st-c3 []
     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-newlines ops-st)
    else if is-instance-keyword (current-kind st) then let st-i1 = advance st
@@ -1053,9 +1070,18 @@ Section: Document Parsing
    else if is-class-keyword (current-kind st) & (is-ident (peek-kind st 1) | is-type-ident (peek-kind st 1)) then let st1 = advance st
     in let name-tok = current st1
     in let st2 = advance st1
-    in let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
+    in if is-ident (current-kind st2) & is-fat-arrow (peek-kind st2 1) then
+      let super-name = token-text name-tok
+      in let st3 = advance (advance st2)
+      in let real-name = current st3
+      in let st4 = advance st3
+      in let st5 = if is-where-keyword (current-kind st4) then skip-newlines (advance st4) else st4
+      in let (ops-list, ops-st) = parse-effect-ops st5 []
+      in let cd = deck-record (ClassDef { name = real-name, methods = ops-list, superclass = super-name })
+      in scan-class-instance-defs (skip-newlines ops-st) (__linked-list-push cacc cd) iacc
+    else let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
     in let (ops-list, ops-st) = parse-effect-ops st3 []
-    in let cd = deck-record (ClassDef { name = name-tok, methods = ops-list })
+    in let cd = deck-record (ClassDef { name = name-tok, methods = ops-list, superclass = "" })
     in scan-class-instance-defs (skip-newlines ops-st) (__linked-list-push cacc cd) iacc
    else if is-instance-keyword (current-kind st) & is-type-ident (peek-kind st 1) then let st1 = advance st
     in let class-tok = current st1
@@ -1161,10 +1187,66 @@ Section: Prose-Notation Consistency
    in if template-name == def-name then acc
       else list-push acc (make-warning cdx-prose-function-name-mismatch ("Prose declares function '" & template-name & "' but notation defines '" & def-name & "'") synthetic-span)
 
+  extract-prose-params : Text, Integer, Integer, List Text -> List Text
+  extract-prose-params (line) (i) (len) (acc) =
+   if i >= len then acc
+   else if char-at line i == '(' then extract-prose-param-name line (i + 1) len acc
+   else extract-prose-params line (i + 1) len acc
+
+  extract-prose-param-name : Text, Integer, Integer, List Text -> List Text
+  extract-prose-param-name (line) (i) (len) (acc) =
+   if i >= len then acc
+   else if char-at line i == ')' then
+    let name = extract-prose-param-word line i (i - 1)
+    in extract-prose-params line (i + 1) len (if text-length name > 0 then list-push acc name else acc)
+   else if char-at line i == ':' then
+    let name = extract-prose-param-word line i (i - 1)
+    in let skip = prose-skip-close-paren line (i + 1) len
+    in extract-prose-params line (skip + 1) len (if text-length name > 0 then list-push acc name else acc)
+   else extract-prose-param-name line (i + 1) len acc
+
+  extract-prose-param-word : Text, Integer, Integer -> Text
+  extract-prose-param-word (line) (limit) (j) =
+   if j < 0 then ""
+   else if char-at line j == '(' then substring line (j + 1) (limit - j - 1)
+   else if char-at line j == ' ' then substring line (j + 1) (limit - j - 1)
+   else extract-prose-param-word line limit (j - 1)
+
+  prose-skip-close-paren : Text, Integer, Integer -> Integer
+  prose-skip-close-paren (line) (i) (len) =
+   if i >= len then len
+   else if char-at line i == ')' then i
+   else prose-skip-close-paren line (i + 1) len
+
+  check-prose-params : Text, List Text, List Def, List Diagnostic -> List Diagnostic
+  check-prose-params (template-name) (prose-params) (defs) (acc) =
+   if list-length defs == 0 then acc
+   else let first-def = list-at defs 0
+   in let def-name = token-text (first-def.name)
+   in if template-name == def-name then
+    let def-params = first-def.params
+    in let def-count = list-length def-params
+    in let prose-count = list-length prose-params
+    in if prose-count == 0 then acc
+       else if prose-count == def-count then check-prose-param-names prose-params def-params 0 def-count acc
+       else list-push acc (make-warning cdx-prose-parameter-mismatch ("Prose declares " & show prose-count & " parameters but '" & def-name & "' has " & show def-count) synthetic-span)
+      else acc
+
+  check-prose-param-names : List Text, List Token, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-prose-param-names (prose-params) (def-params) (i) (len) (acc) =
+   if i >= len then acc
+   else let prose-name = list-at prose-params i
+   in let def-name = token-text (list-at def-params i)
+   in if prose-name == def-name then check-prose-param-names prose-params def-params (i + 1) len acc
+      else list-push (check-prose-param-names prose-params def-params (i + 1) len acc) (make-warning cdx-prose-parameter-mismatch ("Prose parameter " & show (i + 1) & " is '" & prose-name & "' but notation has '" & def-name & "'") synthetic-span)
+
   check-prose-block-against-defs : ProseBlock, List Def, List TypeDef, List Diagnostic -> List Diagnostic
   check-prose-block-against-defs (block) (defs) (type-defs) (acc) =
    when (block.template)
-    is PtFunctionTemplate (name) -> check-prose-function name defs acc
+    is PtFunctionTemplate (name) ->
+     let name-diags = check-prose-function name defs acc
+     in let prose-params = extract-prose-params (block.text) 0 (text-length (block.text)) []
+     in check-prose-params name prose-params defs name-diags
     is PtRecordTemplate (name) -> check-prose-type-name name type-defs cdx-prose-record-field-mismatch "record" acc
     is PtVariantTemplate (name) -> check-prose-type-name name type-defs cdx-prose-variant-ctor-mismatch "variant" acc
     is PtNoTemplate | PtConstraintTemplate | PtProofTemplate | PtProcedureTemplate | PtQuantifiedTemplate -> acc
@@ -1259,7 +1341,10 @@ Section: Header Scanning (streaming)
    else if is-effect-keyword (current-kind st) then scan-top-level-effect headers type-defs effect-defs imports cur-chap ch-title sec-titles st
    else if is-class-keyword (current-kind st) then let st-c1 = advance st
     in let st-c2 = advance st-c1
-    in let st-c3 = if is-where-keyword (current-kind st-c2) then skip-newlines (advance st-c2) else st-c2
+    in let st-c2b = if is-ident (current-kind st-c2) & is-fat-arrow (peek-kind st-c2 1)
+      then advance (advance (advance st-c2))
+      else st-c2
+    in let st-c3 = if is-where-keyword (current-kind st-c2b) then skip-newlines (advance st-c2b) else st-c2b
     in let (_, ops-st) = parse-effect-ops st-c3 []
     in scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-newlines ops-st)
    else if is-instance-keyword (current-kind st) then let st-i1 = advance st

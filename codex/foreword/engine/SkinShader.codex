@@ -1,0 +1,133 @@
+Chapter: SkinShader
+  cites Game chapter Color
+  cites Game chapter Rasterizer
+
+ Subsurface scattering approximation for realistic skin rendering.
+ Pre-integrated skin BRDF: diffuse wraps around the terminator,
+ specular has two lobes (narrow gloss + wide sheen), and a sweat/
+ wetness layer adds fresnel-based specular boost. Pore detail via
+ normal perturbation. Fixed-point (scale 1000).
+
+ We say:
+
+Section: Skin Material
+
+  SkinMaterial = record {
+    skm-base-color : Rgb,
+    skm-sss-radius : Integer,
+    skm-sss-color : Rgb,
+    skm-roughness : Integer,
+    skm-specular : Integer,
+    skm-sheen : Integer,
+    skm-wetness : Integer,
+    skm-pore-strength : Integer
+  }
+
+  skm-default : SkinMaterial
+  skm-default = SkinMaterial { skm-base-color = rgb 220 180 160, skm-sss-radius = 300, skm-sss-color = rgb 255 100 80, skm-roughness = 400, skm-specular = 300, skm-sheen = 200, skm-wetness = 0, skm-pore-strength = 100 }
+
+  skm-wet : SkinMaterial
+  skm-wet = SkinMaterial { skm-base-color = rgb 200 165 145, skm-sss-radius = 250, skm-sss-color = rgb 255 90 70, skm-roughness = 200, skm-specular = 500, skm-sheen = 100, skm-wetness = 800, skm-pore-strength = 150 }
+
+  skm-dark : SkinMaterial
+  skm-dark = SkinMaterial { skm-base-color = rgb 120 80 60, skm-sss-radius = 200, skm-sss-color = rgb 180 60 40, skm-roughness = 350, skm-specular = 250, skm-sheen = 300, skm-wetness = 0, skm-pore-strength = 80 }
+
+Section: Pre-Integrated SSS Diffuse
+
+  skin-diffuse : Integer, Integer, SkinMaterial -> Integer
+  skin-diffuse (n-dot-l) (curvature) (mat) =
+    let wrapped = (n-dot-l + mat.skm-sss-radius) * 1000 / (1000 + mat.skm-sss-radius)
+    in let clamped = skin-clamp wrapped 0 1000
+    in let sss-contrib = if n-dot-l < 0 then skin-abs n-dot-l * mat.skm-sss-radius / 1000 else 0
+    in let base-r = mat.skm-base-color.cr * clamped / 1000
+    in let base-g = mat.skm-base-color.cg * clamped / 1000
+    in let base-b = mat.skm-base-color.cb * clamped / 1000
+    in let sss-r = mat.skm-sss-color.cr * sss-contrib / 1000
+    in let sss-g = mat.skm-sss-color.cg * sss-contrib / 1000
+    in let sss-b = mat.skm-sss-color.cb * sss-contrib / 1000
+    in let r = skin-clamp (base-r + sss-r) 0 255
+    in let g = skin-clamp (base-g + sss-g) 0 255
+    in let b = skin-clamp (base-b + sss-b) 0 255
+    in bit-or (bit-shl r 16) (bit-or (bit-shl g 8) b)
+
+Section: Dual-Lobe Specular
+
+  skin-specular : Integer, Integer, SkinMaterial -> Integer
+  skin-specular (n-dot-h) (n-dot-l) (mat) =
+    if n-dot-l <= 0 then 0
+    else let gloss-power = 1000000 / (mat.skm-roughness * mat.skm-roughness / 1000 + 1)
+    in let gloss = skin-pow-approx n-dot-h (gloss-power / 1000) * mat.skm-specular / 1000
+    in let sheen-power = 4
+    in let sheen = skin-pow-approx n-dot-h sheen-power * mat.skm-sheen / 1000
+    in skin-clamp (gloss + sheen) 0 1000
+
+Section: Wetness / Sweat Layer
+
+  skin-wetness-boost : Integer, Integer, SkinMaterial -> Integer
+  skin-wetness-boost (spec-value) (fresnel) (mat) =
+    if mat.skm-wetness <= 0 then spec-value
+    else let wet-spec = spec-value + fresnel * mat.skm-wetness / 1000
+    in skin-clamp wet-spec 0 1000
+
+  skin-fresnel : Integer -> Integer
+  skin-fresnel (n-dot-v) =
+    let inv = 1000 - n-dot-v
+    in let inv2 = inv * inv / 1000
+    in let inv4 = inv2 * inv2 / 1000
+    in 40 + 960 * inv4 / 1000
+
+Section: Pore Normal Perturbation
+
+  skin-perturb-normal : Integer, Integer, Integer, Integer, Integer -> Vec3
+  skin-perturb-normal (nx) (ny) (nz) (pore-val) (strength) =
+    let perturbation = (pore-val - 500) * strength / 1000
+    in let px = nx + perturbation
+    in let py = ny
+    in let pz = nz + perturbation
+    in let len = skin-isqrt (px * px + py * py + pz * pz)
+    in if len == 0 then vec3-new nx ny nz
+    else vec3-new (px * 1000 / len) (py * 1000 / len) (pz * 1000 / len)
+
+Section: Full Skin Shade
+
+  skin-shade : Integer, Integer, Integer, Integer, SkinMaterial -> Integer
+  skin-shade (n-dot-l) (n-dot-h) (n-dot-v) (curvature) (mat) =
+    let diff = skin-diffuse n-dot-l curvature mat
+    in let spec = skin-specular n-dot-h n-dot-l mat
+    in let fresnel = skin-fresnel n-dot-v
+    in let wet-spec = skin-wetness-boost spec fresnel mat
+    in let sr = skin-clamp (bit-and (bit-shru diff 16) 255 + wet-spec * 255 / 1000) 0 255
+    in let sg = skin-clamp (bit-and (bit-shru diff 8) 255 + wet-spec * 200 / 1000) 0 255
+    in let sb = skin-clamp (bit-and diff 255 + wet-spec * 180 / 1000) 0 255
+    in bit-or (bit-shl sr 16) (bit-or (bit-shl sg 8) sb)
+
+Section: Helpers
+
+  skin-clamp : Integer, Integer, Integer -> Integer
+  skin-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  skin-abs : Integer -> Integer
+  skin-abs (n) = if n < 0 then 0 - n else n
+
+  skin-pow-approx : Integer, Integer -> Integer
+  skin-pow-approx (base) (exp) = skin-pow-loop base exp 1000
+
+  skin-pow-loop : Integer, Integer, Integer -> Integer
+  skin-pow-loop (base) (exp) (acc) =
+    if exp <= 0 then acc
+    else skin-pow-loop base (exp - 1) (acc * base / 1000)
+
+  skin-isqrt : Integer -> Integer
+  skin-isqrt (n) = if n <= 0 then 0 else skin-isqrt-loop n (n / 2 + 1)
+
+  skin-isqrt-loop : Integer, Integer -> Integer
+  skin-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else skin-isqrt-loop n next
+
+Section: Formatting
+
+  format-skin-material : SkinMaterial -> Text
+  format-skin-material (m) = "Skin(wet=" & show (m.skm-wetness) & " sss=" & show (m.skm-sss-radius) & " rough=" & show (m.skm-roughness) & ")"
+
+Page 1

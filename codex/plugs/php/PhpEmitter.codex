@@ -193,21 +193,22 @@ Section: Expression Emission
     is IrPowInt -> "(" & emit-php-expr l arities & " ** " & emit-php-expr r arities & ")"
     is IrAnd -> "(" & emit-php-expr l arities & " && " & emit-php-expr r arities & ")"
     is IrOr -> "(" & emit-php-expr l arities & " || " & emit-php-expr r arities & ")"
+    is IrAddVec -> "array_map(fn($a, $b) => $a + $b, " & emit-php-expr l arities & ", " & emit-php-expr r arities & ")"
+    is IrSubVec -> "array_map(fn($a, $b) => $a - $b, " & emit-php-expr l arities & ", " & emit-php-expr r arities & ")"
+    is IrMulVec -> "array_map(fn($a, $b) => $a * $b, " & emit-php-expr l arities & ", " & emit-php-expr r arities & ")"
+    is IrDivVec -> "array_map(fn($a, $b) => $a / $b, " & emit-php-expr l arities & ", " & emit-php-expr r arities & ")"
     is otherwise -> "(" & emit-php-expr l arities & " " & php-bin-op-symbol op & " " & emit-php-expr r arities & ")"
 
   php-bin-op-symbol : IRBinaryOp -> Text
   php-bin-op-symbol (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec -> "*"
     is IrDivInt -> "/"
     is IrRemInt -> "%"
     is IrPowInt -> "**"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
+    is IrDivNum | IrDivVec -> "/"
     is IrEq -> "==="
     is IrNotEq -> "!=="
     is IrLt -> "<"
@@ -275,6 +276,62 @@ Section: Expression Emission
     is IrDoBind (name) (ty) (val) (sp) -> "$" & php-sanitize name & " = " & emit-php-expr val arities & "; "
     is IrDoExec (e) (sp) -> if is-last then "return " & emit-php-expr e arities & "; " else emit-php-expr e arities & "; ") & emit-php-act-stmts stmts (i + 1) arities
 
+Section: Builtin Emitters
+
+  PhpBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-php-emitter-pos : List PhpBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-php-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-php-emitter-pos entries name lo mid
+      else bsearch-php-emitter-pos entries name (mid + 1) hi
+
+  sort-php-emitters : List PhpBuiltinEmitter -> List PhpBuiltinEmitter
+  sort-php-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  php-builtin-emitters : List PhpBuiltinEmitter = sort-php-emitters [
+   PhpBuiltinEmitter { name = "abs", emit = \args arities -> "abs(" & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "char-at", emit = \args arities -> emit-php-expr (list-at args 0) arities & "[" & emit-php-expr (list-at args 1) arities & "]" },
+   PhpBuiltinEmitter { name = "char-code-at", emit = \args arities -> "ord(" & emit-php-expr (list-at args 0) arities & "[" & emit-php-expr (list-at args 1) arities & "])" },
+   PhpBuiltinEmitter { name = "file-exists", emit = \args arities -> "file_exists(" & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-php-expr (list-at args 0) arities & " % " & emit-php-expr (list-at args 1) arities & ")" },
+   PhpBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "strval(" & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "list-at", emit = \args arities -> emit-php-expr (list-at args 0) arities & "[" & emit-php-expr (list-at args 1) arities & "]" },
+   PhpBuiltinEmitter { name = "list-length", emit = \args arities -> "count(" & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "list-snoc", emit = \args arities -> "array_merge(" & emit-php-expr (list-at args 0) arities & ", [" & emit-php-expr (list-at args 1) arities & "])" },
+   PhpBuiltinEmitter { name = "max", emit = \args arities -> "max(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & ")" },
+   PhpBuiltinEmitter { name = "min", emit = \args arities -> "min(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & ")" },
+   PhpBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-php-expr (list-at args 0) arities & "))" },
+   PhpBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "fwrite(STDERR, " & emit-php-expr (list-at args 0) arities & " . \"\\n\")" },
+   PhpBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "echo " & emit-php-expr (list-at args 0) arities & " . \"\\n\"" },
+   PhpBuiltinEmitter { name = "read-file", emit = \args arities -> "file_get_contents(" & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "read-line", emit = \args arities -> "trim(fgets(STDIN))" },
+   PhpBuiltinEmitter { name = "show", emit = \args arities -> "strval(" & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "substring", emit = \args arities -> "substr(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & ", " & emit-php-expr (list-at args 2) arities & ")" },
+   PhpBuiltinEmitter { name = "text-compare", emit = \args arities -> "strcmp(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & ")" },
+   PhpBuiltinEmitter { name = "text-contains", emit = \args arities -> "str_contains(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & ")" },
+   PhpBuiltinEmitter { name = "text-length", emit = \args arities -> "strlen(" & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "text-replace", emit = \args arities -> "str_replace(" & emit-php-expr (list-at args 1) arities & ", " & emit-php-expr (list-at args 2) arities & ", " & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "text-split", emit = \args arities -> "explode(" & emit-php-expr (list-at args 1) arities & ", " & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "str_starts_with(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & ")" },
+   PhpBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "intval(" & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "write-file", emit = \args arities -> "file_put_contents(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & ")" }
+  ]
+
+  php-try-builtin : Text, List IRExpr, List ArityEntry -> Text
+  php-try-builtin (n) (args) (arities) =
+   let len = list-length php-builtin-emitters
+   in let pos = bsearch-php-emitter-pos php-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at php-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
+
 Section: Apply Emission
 
   emit-php-apply : IRExpr, List ArityEntry -> Text
@@ -284,7 +341,8 @@ Section: Apply Emission
    in let args = chain.args
    in when root
     is IrName (n) (ty) (sp) ->
-     if n == "print-line-uni" then "echo " & emit-php-expr (list-at args 0) arities & " . \"\\n\""
+     let bi = php-try-builtin n args arities
+     in if text-length bi > 0 then bi
      else php-sanitize n & "(" & emit-php-apply-args args arities 0 & ")"
     is otherwise -> emit-php-expr-curried e arities
 

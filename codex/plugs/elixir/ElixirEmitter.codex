@@ -154,9 +154,7 @@ Section: Expression Emission
 
   emit-ex-name : Text, CodexType, List ArityEntry -> Text
   emit-ex-name (n) (ty) (arities) =
-   if n == "read-line" then "IO.gets(\"\") |> String.trim()"
-   else if n == "show" then "to_string"
-   else if n == "True" then "true"
+   if n == "True" then "true"
    else if n == "False" then "false"
    else if n == "Nothing" then "nil"
    else ex-sanitize n
@@ -171,29 +169,28 @@ Section: Expression Emission
     is IrRemInt -> "rem(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ")"
     is IrAnd -> "(" & emit-ex-expr l arities & " and " & emit-ex-expr r arities & ")"
     is IrOr -> "(" & emit-ex-expr l arities & " or " & emit-ex-expr r arities & ")"
+    is IrAddVec -> "Enum.zip_with(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ", &Kernel.+/2)"
+    is IrSubVec -> "Enum.zip_with(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ", &Kernel.-/2)"
+    is IrMulVec -> "Enum.zip_with(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ", &Kernel.*/2)"
+    is IrDivVec -> "Enum.zip_with(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ", &Kernel.//2)"
     is otherwise -> "(" & emit-ex-expr l arities & " " & ex-bin-op-symbol op & " " & emit-ex-expr r arities & ")"
 
   ex-bin-op-symbol : IRBinaryOp -> Text
   ex-bin-op-symbol (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec -> "*"
     is IrDivInt -> "div"
     is IrRemInt -> "rem"
     is IrPowInt -> "**"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
-    is IrEq -> "=="
+    is IrDivNum | IrDivVec -> "/"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "=="
     is IrNotEq -> "!="
     is IrLt -> "<"
     is IrGt -> ">"
     is IrLtEq -> "<="
     is IrGtEq -> ">="
-    is IrApproxEq -> "=="
-    is IrApproxEqExact -> "=="
     is IrAnd -> "and"
     is IrOr -> "or"
     is IrAppendText -> "<>"
@@ -253,7 +250,63 @@ Section: Expression Emission
     is IrDoBind (name) (ty) (val) (sp) -> ex-sanitize name & " = " & emit-ex-expr val arities & "; "
     is IrDoExec (e) (sp) -> emit-ex-expr e arities & "; ") & emit-ex-act-stmts stmts (i + 1) arities
 
+Section: Builtin Table
+
+  ex-builtin-names : List Text
+  ex-builtin-names = ["abs", "char-at", "char-code-at", "file-exists",
+   "int-mod", "integer-to-text", "list-at", "list-length", "list-snoc",
+   "max", "min", "negate", "print-error-uni", "print-line-uni",
+   "read-file", "read-line", "show", "substring", "text-compare",
+   "text-contains", "text-length", "text-replace", "text-split",
+   "text-starts-with", "text-to-integer", "write-file"]
+
+  ex-bsearch-builtin : List Text, Text, Integer, Integer -> Integer
+  ex-bsearch-builtin (names) (target) (lo) (hi) =
+   if lo >= hi then -1
+   else let mid = lo + (hi - lo) / 2
+   in let cmp = text-compare target (list-at names mid)
+   in if cmp == 0 then mid
+      else if cmp < 0 then ex-bsearch-builtin names target lo mid
+      else ex-bsearch-builtin names target (mid + 1) hi
+
+  emit-ex-builtin-by-idx : Integer, Text, List IRExpr, List ArityEntry -> Text
+  emit-ex-builtin-by-idx (idx) (n) (args) (arities) =
+   if idx == 0 then "abs(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 1 then "String.at(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 2 then "(fn s, i -> :binary.at(s, i) end).(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 3 then "File.exists?(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 4 then "rem(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 5 then "Integer.to_string(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 6 then "Enum.at(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 7 then "length(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 8 then emit-ex-expr (list-at args 0) arities & " ++ [" & emit-ex-expr (list-at args 1) arities & "]"
+   else if idx == 9 then "max(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 10 then "min(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 11 then "(-" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 12 then "IO.puts(:stderr, " & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 13 then "IO.puts(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 14 then "File.read!(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 15 then "IO.gets(\"\") |> String.trim()"
+   else if idx == 16 then "inspect(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 17 then "String.slice(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ", " & emit-ex-expr (list-at args 2) arities & ")"
+   else if idx == 18 then "(case String.compare(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ") do :lt -> -1; :eq -> 0; :gt -> 1 end)"
+   else if idx == 19 then "String.contains?(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 20 then "String.length(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 21 then "String.replace(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ", " & emit-ex-expr (list-at args 2) arities & ")"
+   else if idx == 22 then "String.split(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 23 then "String.starts_with?(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 24 then "String.to_integer(" & emit-ex-expr (list-at args 0) arities & ")"
+   else "File.write!(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+
 Section: Apply Emission
+
+  emit-ex-apply-named : Text, CodexType, List IRExpr, List ArityEntry, IRExpr -> Text
+  emit-ex-apply-named (n) (ty) (args) (arities) (original) =
+   let idx = ex-bsearch-builtin ex-builtin-names n 0 (list-length ex-builtin-names)
+   in if idx >= 0 then emit-ex-builtin-by-idx idx n args arities
+   else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then ex-sanitize n & ".(" & emit-ex-apply-args args arities 0 & ")"
+        else ex-sanitize n & ".(" & emit-ex-apply-args args arities 0 & ")"
+   else emit-ex-expr-curried original arities
 
   emit-ex-apply : IRExpr, List ArityEntry -> Text
   emit-ex-apply (e) (arities) =
@@ -261,9 +314,7 @@ Section: Apply Emission
    in let root = chain.root
    in let args = chain.args
    in when root
-    is IrName (n) (ty) (sp) ->
-     if n == "print-line-uni" then "IO.puts(" & emit-ex-expr (list-at args 0) arities & ")"
-     else ex-sanitize n & ".(" & emit-ex-apply-args args arities 0 & ")"
+    is IrName (n) (ty) (sp) -> emit-ex-apply-named n ty args arities e
     is otherwise -> emit-ex-expr-curried e arities
 
   emit-ex-apply-args : List IRExpr, List ArityEntry, Integer -> Text

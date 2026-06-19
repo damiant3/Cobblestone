@@ -1,0 +1,55 @@
+Chapter: LeaseManagerTest
+  cites Trust chapter LeaseManager
+  cites Trust chapter AgentProtocol
+  cites Foreword chapter Maybe
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  test-identity : AgentIdentity
+  test-identity = AgentIdentity { public-key = [1, 2, 3] }
+
+  test-cap : Capability
+  test-cap = Capability { name = "Console", direction = 2, scope = "*" }
+
+  test-scope : Scope
+  test-scope = Scope { direction = 2, path = "*", duration = 1000 }
+
+  test-grant : GrantMsg
+  test-grant = GrantMsg { id = [10, 20], proposal = [5], from = test-identity, capability = test-cap, scope = test-scope, expires = 500, conditions = [], signature = [] }
+
+  test-grant2 : GrantMsg
+  test-grant2 = GrantMsg { id = [30, 40], proposal = [6], from = test-identity, capability = test-cap, scope = test-scope, expires = 200, conditions = [], signature = [] }
+
+Section: Body
+  opening : [Console] Nothing =
+    let store = lease-store-empty
+    in let store1 = lease-grant store test-grant 100
+    in let store2 = lease-grant store1 test-grant2 100
+    in act
+      print-line-uni (show (lease-count store))
+      print-line-uni (show (lease-count store2))
+      print-line-uni (show-bool (lease-is-active store2 "0a14" 200))
+      print-line-uni (show-bool (lease-is-active store2 "0a14" 600))
+      print-line-uni (lease-store-stats store2)
+      let sr = lease-sweep store2 300
+      in act
+        print-line-uni (show (lease-count (sr.store)))
+        print-line-uni (show (sr.revoked-count))
+        print-line-uni (show-bool (lease-is-active (sr.store) "0a14" 300))
+        print-line-uni (show-bool (lease-is-active (sr.store) "1e28" 300))
+        let store3 = lease-revoke (sr.store) "0a14" 300
+        in act
+          print-line-uni (show (lease-count store3))
+          print-line-uni (show-bool (lease-is-active store3 "0a14" 300))
+          let found = lease-find store2 "0a14"
+          in act
+            print-line-uni (when found is Just (l) -> format-lease l is None -> "not found")
+            print-line-uni (show (when found is Just (l) -> lease-time-remaining l 400 is None -> -1))
+          end
+        end
+      end
+    end
+
+Page 1

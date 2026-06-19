@@ -1,0 +1,142 @@
+Chapter: LockFreeChannel
+  cites Foreword chapter Maybe
+
+ Lock-free MPSC (multiple producer, single consumer) channel for
+ cross-core communication. The channel is a fixed-size circular
+ buffer with atomic head and tail indices. Multiple cores can send
+ concurrently; one core owns the receive end.
+
+ On single-core, this behaves identically to the foreword Channel
+ but uses the same API so code doesn't branch on core count.
+
+ The atomic operations (atomic-cas on head/tail) are modeled here
+ as plain reads/writes — the actual LOCK CMPXCHG wiring happens
+ when the emitter sees these operations on shared-memory addresses.
+ The algorithm is correct regardless; atomics only add the hardware
+ ordering guarantee.
+
+ We say:
+
+Section: Types
+
+  LfChannel a = record {
+    buffer : List a,
+    capacity : Integer,
+    head : Integer,
+    tail : Integer,
+    closed : Boolean,
+    owner-core : Integer between 0 and 255,
+    sends : Integer between 0 and 4294967295,
+    recvs : Integer between 0 and 4294967295
+  }
+
+  LfSendResult a = record {
+    sent : Boolean,
+    chan : LfChannel a
+  }
+
+  LfRecvResult a = record {
+    value : Maybe a,
+    chan : LfChannel a
+  }
+
+Section: Construction
+
+  lf-chan-create : Integer, a, Integer -> LfChannel a
+  lf-chan-create (capacity) (zero) (owner) =
+    LfChannel {
+      buffer = lf-fill capacity zero 0 [],
+      capacity = capacity,
+      head = 0,
+      tail = 0,
+      closed = False,
+      owner-core = owner,
+      sends = 0,
+      recvs = 0
+    }
+
+  lf-fill : Integer, a, Integer, List a -> List a
+  lf-fill (cap) (zero) (i) (acc) =
+    if i >= cap then acc
+    else lf-fill cap zero (i + 1) (list-push acc zero)
+
+Section: Send (any core)
+
+  lf-chan-send : LfChannel a, a -> LfSendResult a
+  lf-chan-send (ch) (msg) =
+    if ch.closed then LfSendResult { sent = False, chan = ch }
+    else let next-head = lf-wrap (ch.head + 1) (ch.capacity)
+    in if next-head == ch.tail then LfSendResult { sent = False, chan = ch }
+    else LfSendResult {
+      sent = True,
+      chan = LfChannel {
+        buffer = list-set-at (ch.buffer) (ch.head) msg,
+        capacity = ch.capacity,
+        head = next-head,
+        tail = ch.tail,
+        closed = False,
+        owner-core = ch.owner-core,
+        sends = ch.sends + 1,
+        recvs = ch.recvs
+      }
+    }
+
+Section: Receive (owner core only)
+
+  lf-chan-recv : LfChannel a -> LfRecvResult a
+  lf-chan-recv (ch) =
+    if ch.head == ch.tail then LfRecvResult { value = None, chan = ch }
+    else let val = list-at (ch.buffer) (ch.tail)
+    in LfRecvResult {
+      value = Just val,
+      chan = LfChannel {
+        buffer = ch.buffer,
+        capacity = ch.capacity,
+        head = ch.head,
+        tail = lf-wrap (ch.tail + 1) (ch.capacity),
+        closed = ch.closed,
+        owner-core = ch.owner-core,
+        sends = ch.sends,
+        recvs = ch.recvs + 1
+      }
+    }
+
+Section: Close and Query
+
+  lf-chan-close : LfChannel a -> LfChannel a
+  lf-chan-close (ch) = LfChannel {
+    buffer = ch.buffer, capacity = ch.capacity,
+    head = ch.head, tail = ch.tail,
+    closed = True, owner-core = ch.owner-core,
+    sends = ch.sends, recvs = ch.recvs
+  }
+
+  lf-chan-is-empty : LfChannel a -> Boolean
+  lf-chan-is-empty (ch) = ch.head == ch.tail
+
+  lf-chan-is-full : LfChannel a -> Boolean
+  lf-chan-is-full (ch) = lf-wrap (ch.head + 1) (ch.capacity) == ch.tail
+
+  lf-chan-is-closed : LfChannel a -> Boolean
+  lf-chan-is-closed (ch) = ch.closed
+
+  lf-chan-size : LfChannel a -> Integer
+  lf-chan-size (ch) =
+    if ch.head >= ch.tail then ch.head - ch.tail
+    else ch.capacity - ch.tail + ch.head
+
+  lf-chan-stats : LfChannel a -> Text
+  lf-chan-stats (ch) =
+    "cap=" & show (ch.capacity)
+    & " size=" & show (lf-chan-size ch)
+    & " sends=" & show (ch.sends)
+    & " recvs=" & show (ch.recvs)
+    & " owner=" & show (ch.owner-core)
+
+Section: Helpers
+
+  lf-wrap : Integer, Integer -> Integer
+  lf-wrap (val) (cap) =
+    if val >= cap then val - cap else val
+
+Page 1

@@ -157,23 +157,37 @@ Section: Expression Emission
     is IrConsList -> "(into [" & emit-clj-expr l arities & "] " & emit-clj-expr r arities & ")"
     is IrDivInt -> "(quot " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
     is IrRemInt -> "(rem " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
-    is IrEq -> "(= " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "(= " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
     is IrNotEq -> "(not= " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
     is IrAnd -> "(and " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
     is IrOr -> "(or " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrAddVec -> "(mapv + " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrSubVec -> "(mapv - " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrMulVec -> "(mapv * " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrDivVec -> "(mapv / " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
     is otherwise -> "(" & clj-bin-op op & " " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
 
   clj-bin-op : IRBinaryOp -> Text
   clj-bin-op (op) =
    when op
-    is IrAddInt -> "+"  is IrSubInt -> "-"  is IrMulInt -> "*"  is IrDivInt -> "quot"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec -> "*"
+    is IrDivInt -> "quot"
     is IrRemInt -> "rem"
-    is IrPowInt -> "Math/pow"  is IrAddNum -> "+"  is IrSubNum -> "-"  is IrMulNum -> "*"
-    is IrDivNum -> "/"  is IrEq -> "="  is IrNotEq -> "not="
-    is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
-    is IrApproxEq -> "="  is IrApproxEqExact -> "="
-    is IrAnd -> "and"  is IrOr -> "or"  is IrAppendText -> "str"
-    is IrAppendList -> "into"  is IrConsList -> "cons"
+    is IrPowInt -> "Math/pow"
+    is IrDivNum | IrDivVec -> "/"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "="
+    is IrNotEq -> "not="
+    is IrLt -> "<"
+    is IrGt -> ">"
+    is IrLtEq -> "<="
+    is IrGtEq -> ">="
+    is IrAnd -> "and"
+    is IrOr -> "or"
+    is IrAppendText -> "str"
+    is IrAppendList -> "into"
+    is IrConsList -> "cons"
 
   emit-clj-lambda-params : List IRParam, Integer -> Text
   emit-clj-lambda-params (params) (i) =
@@ -256,30 +270,73 @@ Section: Apply Emission
    else if i == list-length args - 1 then emit-clj-expr (list-at args i) arities
         else emit-clj-expr (list-at args i) arities & " " & emit-clj-apply-args args arities (i + 1)
 
+  CljBuiltinEntry = record {
+   bname : Text,
+   tag : Integer between 0 and 255
+  }
+
+  clj-builtin-table : List CljBuiltinEntry =
+   [CljBuiltinEntry { bname = "abs",              tag = 1 },
+    CljBuiltinEntry { bname = "char-at",           tag = 2 },
+    CljBuiltinEntry { bname = "char-code",         tag = 3 },
+    CljBuiltinEntry { bname = "char-to-text",      tag = 4 },
+    CljBuiltinEntry { bname = "int-mod",           tag = 5 },
+    CljBuiltinEntry { bname = "integer-to-text",   tag = 6 },
+    CljBuiltinEntry { bname = "list-at",           tag = 7 },
+    CljBuiltinEntry { bname = "list-length",       tag = 8 },
+    CljBuiltinEntry { bname = "max",               tag = 9 },
+    CljBuiltinEntry { bname = "min",               tag = 10 },
+    CljBuiltinEntry { bname = "negate",            tag = 11 },
+    CljBuiltinEntry { bname = "print-line-uni",    tag = 12 },
+    CljBuiltinEntry { bname = "process-exit",      tag = 13 },
+    CljBuiltinEntry { bname = "read-file",         tag = 14 },
+    CljBuiltinEntry { bname = "show",              tag = 15 },
+    CljBuiltinEntry { bname = "substring",         tag = 16 },
+    CljBuiltinEntry { bname = "text-compare",      tag = 17 },
+    CljBuiltinEntry { bname = "text-contains",     tag = 18 },
+    CljBuiltinEntry { bname = "text-length",       tag = 19 },
+    CljBuiltinEntry { bname = "text-replace",      tag = 20 },
+    CljBuiltinEntry { bname = "text-to-integer",   tag = 21 },
+    CljBuiltinEntry { bname = "write-file",        tag = 22 }]
+
+  bsearch-clj-builtin : List CljBuiltinEntry, Text, Integer, Integer -> Integer
+  bsearch-clj-builtin (tbl) (name) (lo) (hi) =
+   if lo >= hi then -1
+   else let mid = lo + (hi - lo) / 2
+   in let cmp = text-compare name (list-at tbl mid).bname
+   in if cmp == 0 then (list-at tbl mid).tag
+      else if cmp < 0 then bsearch-clj-builtin tbl name lo mid
+      else bsearch-clj-builtin tbl name (mid + 1) hi
+
+  clj-lookup-builtin : Text -> Integer
+  clj-lookup-builtin (name) =
+   bsearch-clj-builtin clj-builtin-table name 0 (list-length clj-builtin-table)
+
   clj-try-builtin : Text, List IRExpr, List ArityEntry -> Text
   clj-try-builtin (n) (args) (arities) =
-   if n == "print-line-uni" then "(println " & emit-clj-expr (list-at args 0) arities & ")"
-   else if n == "show" then "(str " & emit-clj-expr (list-at args 0) arities & ")"
-   else if n == "integer-to-text" then "(str " & emit-clj-expr (list-at args 0) arities & ")"
-   else if n == "text-to-integer" then "(Long/parseLong " & emit-clj-expr (list-at args 0) arities & ")"
-   else if n == "text-length" then "(count " & emit-clj-expr (list-at args 0) arities & ")"
-   else if n == "list-length" then "(count " & emit-clj-expr (list-at args 0) arities & ")"
-   else if n == "list-at" then "(nth " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
-   else if n == "char-at" then "(int (nth " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & "))"
-   else if n == "char-code" then emit-clj-expr (list-at args 0) arities
-   else if n == "char-to-text" then "(str (char " & emit-clj-expr (list-at args 0) arities & "))"
-   else if n == "substring" then "(subs " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & " (+ " & emit-clj-expr (list-at args 1) arities & " " & emit-clj-expr (list-at args 2) arities & "))"
-   else if n == "text-compare" then "(compare " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
-   else if n == "text-replace" then "(clojure.string/replace " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & " " & emit-clj-expr (list-at args 2) arities & ")"
-   else if n == "text-contains" then "(clojure.string/includes? " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
-   else if n == "read-file" then "(slurp " & emit-clj-expr (list-at args 0) arities & ")"
-   else if n == "write-file" then "(spit " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
-   else if n == "process-exit" then "(System/exit " & emit-clj-expr (list-at args 0) arities & ")"
-   else if n == "int-mod" then "(mod " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
-   else if n == "negate" then "(- " & emit-clj-expr (list-at args 0) arities & ")"
-   else if n == "min" then "(min " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
-   else if n == "max" then "(max " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
-   else if n == "abs" then "(Math/abs " & emit-clj-expr (list-at args 0) arities & ")"
+   let tag = clj-lookup-builtin n
+   in if tag == 1 then "(Math/abs " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 2 then "(int (nth " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & "))"
+   else if tag == 3 then emit-clj-expr (list-at args 0) arities
+   else if tag == 4 then "(str (char " & emit-clj-expr (list-at args 0) arities & "))"
+   else if tag == 5 then "(mod " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if tag == 6 then "(str " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 7 then "(nth " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if tag == 8 then "(count " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 9 then "(max " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if tag == 10 then "(min " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if tag == 11 then "(- " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 12 then "(println " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 13 then "(System/exit " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 14 then "(slurp " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 15 then "(str " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 16 then "(subs " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & " (+ " & emit-clj-expr (list-at args 1) arities & " " & emit-clj-expr (list-at args 2) arities & "))"
+   else if tag == 17 then "(compare " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if tag == 18 then "(clojure.string/includes? " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if tag == 19 then "(count " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 20 then "(clojure.string/replace " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & " " & emit-clj-expr (list-at args 2) arities & ")"
+   else if tag == 21 then "(Long/parseLong " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 22 then "(spit " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
    else ""
 
 Section: Definition Emission

@@ -84,6 +84,22 @@ Section: Memory Address Map
   trace-max-entries : Integer = 30000
   serial-ring-buf-addr : Integer = 5242880
 
+  ap-trampoline-addr : Integer = 4096
+  ap-core-count-addr : Integer = 4088
+  ap-ready-count-addr : Integer = 4080
+  ap-stack-table-addr : Integer = 3840
+  smp-max-cores : Integer = 16
+  ap-stack-size : Integer = 65536
+  ap-stacks-base : Integer = 6291456
+
+  lapic-base : Integer = 4276092928
+  lapic-id-reg : Integer = 32
+  lapic-eoi-reg : Integer = 176
+  lapic-sivr-reg : Integer = 240
+  lapic-icr-lo-reg : Integer = 768
+  lapic-icr-hi-reg : Integer = 784
+  lapic-timer-reg : Integer = 832
+
 Section: Size and Threshold Constants
   proc-entry-size : Integer = 256
   identity-entry-size : Integer = 32
@@ -222,6 +238,9 @@ Section: Channel Table Layout
   cap-process-create : Integer = 12
   cap-capability-admin : Integer = 14
   cap-identity : Integer = 15
+  cap-device : Integer = 16
+  cap-gpu-compute : Integer = 17
+  cap-gpu-memory : Integer = 18
 
 Section: PIT and PIC Initialization
   emit-pit-init : CodegenState -> CodegenState
@@ -962,6 +981,100 @@ Section: Interrupt Setup
    in let st27 = st-append-code st26 (li reg-rdi cap-expiry-addr)
    in let st28 = st-append-code st27 (mov-store reg-rdi reg-rax 0)
    in st-append-code st28 sti
+
+Section: SMP Initialization
+
+  emit-lapic-enable : CodegenState -> CodegenState
+  emit-lapic-enable (st) =
+   let st1 = st-append-code st (li reg-rcx 27)
+   in let st2 = st-append-code st1 [15, 50]
+   in let st3 = st-append-code st2 (or-ri reg-rax 2048)
+   in st-append-code st3 [15, 48]
+
+  emit-lapic-write : CodegenState, Integer, Integer -> CodegenState
+  emit-lapic-write (st) (reg-offset) (value) =
+   let st1 = st-append-code st (li reg-rdi (lapic-base + reg-offset))
+   in let st2 = st-append-code st1 (li reg-rax value)
+   in st-append-code st2 (mov-store reg-rdi reg-rax 0)
+
+  emit-lapic-read : CodegenState, Integer -> CodegenState
+  emit-lapic-read (st) (reg-offset) =
+   let st1 = st-append-code st (li reg-rdi (lapic-base + reg-offset))
+   in st-append-code st1 (mov-load reg-rax reg-rdi 0)
+
+  emit-busy-wait-cycles : CodegenState, Integer -> CodegenState
+  emit-busy-wait-cycles (st) (count) =
+   let st1 = st-append-code st (li reg-rcx count)
+   in let loop-top = st1.code-len
+   in let st2 = st-append-code st1 x86-pause
+   in let st3 = st-append-code st2 (sub-ri reg-rcx 1)
+   in st-append-code st3 (jcc cc-ne (loop-top - (st3.code-len + 6)))
+
+  emit-smp-write-stacks : CodegenState, Integer -> CodegenState
+  emit-smp-write-stacks (st) (i) =
+   if i >= smp-max-cores then st
+   else let stack-addr = ap-stacks-base + i * ap-stack-size
+   in let st1 = st-append-code st (li reg-rax stack-addr)
+   in let st2 = st-append-code st1 (li reg-rdi (ap-stack-table-addr + i * 8))
+   in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
+   in emit-smp-write-stacks st3 (i + 1)
+
+  emit-smp-init : CodegenState -> CodegenState
+  emit-smp-init (st) =
+   let g0 = st-append-code st (li reg-rdi ap-core-count-addr)
+   in let g1 = st-append-code g0 (mov-load reg-rax reg-rdi 0)
+   in let g2 = st-append-code g1 (cmp-ri reg-rax 1)
+   in let skip-pos = g2.code-len
+   in let g3 = st-append-code g2 (jcc cc-be 0)
+   in let st0 = st-append-code g3 (li reg-rax 0)
+   in let st1 = st-append-code st0 (li reg-rdi ap-ready-count-addr)
+   in let st2 = st-append-code st1 (mov-store reg-rdi reg-rax 0)
+   in let st5 = emit-smp-write-stacks st2 1
+   in let ap-entry-pos = st5.code-len
+   in let ap0 = st-append-code st5 (li reg-rdi (lapic-base + lapic-id-reg))
+   in let ap1 = st-append-code ap0 (mov-load reg-rax reg-rdi 0)
+   in let ap2 = st-append-code ap1 (shr-ri reg-rax 24)
+   in let ap3 = st-append-code ap2 (mov-rr reg-r15 reg-rax)
+   in let ap4 = st-append-code ap3 (shl-ri reg-rax 3)
+   in let ap5 = st-append-code ap4 (li reg-rdi ap-stack-table-addr)
+   in let ap6 = st-append-code ap5 (add-rr reg-rdi reg-rax)
+   in let ap7 = st-append-code ap6 (mov-load reg-rax reg-rdi 0)
+   in let ap8 = st-append-code ap7 (add-ri reg-rax ap-stack-size)
+   in let ap9 = st-append-code ap8 (mov-rr reg-rsp reg-rax)
+   in let ap10 = st-append-code ap9 (mov-rr reg-rbp reg-rsp)
+   in let ap11 = emit-lapic-write ap10 lapic-sivr-reg 287
+   in let ap12 = st-append-code ap11 (li reg-rdi ap-ready-count-addr)
+   in let ap13 = st-append-code ap12 (li reg-rax 1)
+   in let ap14 = st-append-code ap13 (lock-xadd-mem reg-rax reg-rdi 0)
+   in let hlt-top = ap14.code-len
+   in let ap15 = st-append-code ap14 hlt
+   in let ap16 = st-append-code ap15 (jmp (hlt-top - (ap15.code-len + 5)))
+   in let st6 = st-append-code ap16 (li reg-rax (bare-metal-load-addr + ap-entry-pos))
+   in let st7 = st-append-code st6 (li reg-rdi ap-trampoline-addr)
+   in let st8 = st-append-code st7 (mov-store reg-rdi reg-rax 0)
+   in let st9 = emit-lapic-enable st8
+   in let st10 = emit-lapic-write st9 lapic-sivr-reg 287
+   in let st11 = emit-lapic-write st10 lapic-icr-hi-reg 0
+   in let st12 = emit-lapic-write st11 lapic-icr-lo-reg 804096
+   in let st13 = emit-busy-wait-cycles st12 500000
+   in let st14 = emit-lapic-write st13 lapic-icr-hi-reg 0
+   in let st15 = emit-lapic-write st14 lapic-icr-lo-reg 804353
+   in let st16 = emit-busy-wait-cycles st15 100000
+   in let st17 = emit-lapic-write st16 lapic-icr-hi-reg 0
+   in let st18 = emit-lapic-write st17 lapic-icr-lo-reg 804353
+   in let st19 = emit-busy-wait-cycles st18 200000
+   in let st20 = st-append-code st19 (li reg-rdi ap-core-count-addr)
+   in let st21 = st-append-code st20 (mov-load reg-rcx reg-rdi 0)
+   in let st22 = st-append-code st21 (sub-ri reg-rcx 1)
+   in let wait-top = st22.code-len
+   in let st23 = st-append-code st22 (li reg-rdi ap-ready-count-addr)
+   in let st24 = st-append-code st23 (mov-load reg-rax reg-rdi 0)
+   in let st25 = st-append-code st24 (cmp-rr reg-rax reg-rcx)
+   in let st26 = st-append-code st25 (jcc cc-ae 0)
+   in let st27 = st-append-code st26 x86-pause
+   in let st28 = st-append-code st27 (jmp (wait-top - (st27.code-len + 5)))
+   in let st29 = patch-jcc-at st28 (st25.code-len) (st28.code-len)
+   in patch-jcc-at st29 skip-pos (st29.code-len)
 
 Section: Process Management
   emit-zero-region : CodegenState, Integer, Integer -> CodegenState

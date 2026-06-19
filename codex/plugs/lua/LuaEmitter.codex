@@ -200,21 +200,22 @@ Section: Expression Emission
     is IrPowInt -> "(" & emit-lua-expr l arities & " ^ " & emit-lua-expr r arities & ")"
     is IrAnd -> "(" & emit-lua-expr l arities & " and " & emit-lua-expr r arities & ")"
     is IrOr -> "(" & emit-lua-expr l arities & " or " & emit-lua-expr r arities & ")"
+    is IrAddVec -> "(function() local _l,_r,_o = " & emit-lua-expr l arities & "," & emit-lua-expr r arities & ",{}; for i=1,#_l do _o[i]=_l[i]+_r[i] end; return _o end)()"
+    is IrSubVec -> "(function() local _l,_r,_o = " & emit-lua-expr l arities & "," & emit-lua-expr r arities & ",{}; for i=1,#_l do _o[i]=_l[i]-_r[i] end; return _o end)()"
+    is IrMulVec -> "(function() local _l,_r,_o = " & emit-lua-expr l arities & "," & emit-lua-expr r arities & ",{}; for i=1,#_l do _o[i]=_l[i]*_r[i] end; return _o end)()"
+    is IrDivVec -> "(function() local _l,_r,_o = " & emit-lua-expr l arities & "," & emit-lua-expr r arities & ",{}; for i=1,#_l do _o[i]=_l[i]/_r[i] end; return _o end)()"
     is otherwise -> "(" & emit-lua-expr l arities & " " & lua-bin-op-symbol op & " " & emit-lua-expr r arities & ")"
 
   lua-bin-op-symbol : IRBinaryOp -> Text
   lua-bin-op-symbol (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
+    is IrAddInt | IrAddNum | IrAddVec -> "+"
+    is IrSubInt | IrSubNum | IrSubVec -> "-"
+    is IrMulInt | IrMulNum | IrMulVec -> "*"
     is IrDivInt -> "/"
     is IrRemInt -> "%"
     is IrPowInt -> "^"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
+    is IrDivNum | IrDivVec -> "/"
     is IrEq -> "=="
     is IrNotEq -> "~="
     is IrLt -> "<"
@@ -283,6 +284,62 @@ Section: Expression Emission
     is IrDoBind (name) (ty) (val) (sp) -> "local " & lua-sanitize name & " = " & emit-lua-expr val arities & "; "
     is IrDoExec (e) (sp) -> if is-last then "return " & emit-lua-expr e arities & "; " else emit-lua-expr e arities & "; ") & emit-lua-act-stmts stmts (i + 1) arities
 
+Section: Builtin Emitters
+
+  LuaBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-lua-emitter-pos : List LuaBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-lua-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-lua-emitter-pos entries name lo mid
+      else bsearch-lua-emitter-pos entries name (mid + 1) hi
+
+  sort-lua-emitters : List LuaBuiltinEmitter -> List LuaBuiltinEmitter
+  sort-lua-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  lua-builtin-emitters : List LuaBuiltinEmitter = sort-lua-emitters [
+   LuaBuiltinEmitter { name = "abs", emit = \args arities -> "math.abs(" & emit-lua-expr (list-at args 0) arities & ")" },
+   LuaBuiltinEmitter { name = "char-at", emit = \args arities -> "string.sub(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & " + 1, " & emit-lua-expr (list-at args 1) arities & " + 1)" },
+   LuaBuiltinEmitter { name = "char-code-at", emit = \args arities -> "string.byte(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & " + 1)" },
+   LuaBuiltinEmitter { name = "file-exists", emit = \args arities -> "(function() local f = io.open(" & emit-lua-expr (list-at args 0) arities & ", \"r\"); if f then f:close(); return true else return false end end)()" },
+   LuaBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-lua-expr (list-at args 0) arities & " % " & emit-lua-expr (list-at args 1) arities & ")" },
+   LuaBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "tostring(" & emit-lua-expr (list-at args 0) arities & ")" },
+   LuaBuiltinEmitter { name = "list-at", emit = \args arities -> emit-lua-expr (list-at args 0) arities & "[" & emit-lua-expr (list-at args 1) arities & " + 1]" },
+   LuaBuiltinEmitter { name = "list-length", emit = \args arities -> "#" & emit-lua-expr (list-at args 0) arities },
+   LuaBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(function() local _t = " & emit-lua-expr (list-at args 0) arities & "; _t[#_t + 1] = " & emit-lua-expr (list-at args 1) arities & "; return _t end)()" },
+   LuaBuiltinEmitter { name = "max", emit = \args arities -> "math.max(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ")" },
+   LuaBuiltinEmitter { name = "min", emit = \args arities -> "math.min(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ")" },
+   LuaBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-lua-expr (list-at args 0) arities & "))" },
+   LuaBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "io.stderr:write(tostring(" & emit-lua-expr (list-at args 0) arities & ") .. \"\\n\")" },
+   LuaBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "print(" & emit-lua-expr (list-at args 0) arities & ")" },
+   LuaBuiltinEmitter { name = "read-file", emit = \args arities -> "(function() local f = io.open(" & emit-lua-expr (list-at args 0) arities & ", \"r\"); local c = f:read(\"*a\"); f:close(); return c end)()" },
+   LuaBuiltinEmitter { name = "read-line", emit = \args arities -> "io.read()" },
+   LuaBuiltinEmitter { name = "show", emit = \args arities -> "tostring(" & emit-lua-expr (list-at args 0) arities & ")" },
+   LuaBuiltinEmitter { name = "substring", emit = \args arities -> "string.sub(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & " + 1, " & emit-lua-expr (list-at args 1) arities & " + " & emit-lua-expr (list-at args 2) arities & ")" },
+   LuaBuiltinEmitter { name = "text-compare", emit = \args arities -> "(function() local a, b = " & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & "; if a < b then return -1 elseif a > b then return 1 else return 0 end end)()" },
+   LuaBuiltinEmitter { name = "text-contains", emit = \args arities -> "(string.find(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ", 1, true) ~= nil)" },
+   LuaBuiltinEmitter { name = "text-length", emit = \args arities -> "string.len(" & emit-lua-expr (list-at args 0) arities & ")" },
+   LuaBuiltinEmitter { name = "text-replace", emit = \args arities -> "string.gsub(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ", " & emit-lua-expr (list-at args 2) arities & ")" },
+   LuaBuiltinEmitter { name = "text-split", emit = \args arities -> "(function() local s, d, r = " & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ", {}; for m in (s .. d):gmatch(\"(.-)\" .. d:gsub(\"(%W)\", \"%%%1\")) do r[#r+1] = m end; return r end)()" },
+   LuaBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(string.sub(" & emit-lua-expr (list-at args 0) arities & ", 1, #" & emit-lua-expr (list-at args 1) arities & ") == " & emit-lua-expr (list-at args 1) arities & ")" },
+   LuaBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "tonumber(" & emit-lua-expr (list-at args 0) arities & ")" },
+   LuaBuiltinEmitter { name = "write-file", emit = \args arities -> "(function() local f = io.open(" & emit-lua-expr (list-at args 0) arities & ", \"w\"); f:write(" & emit-lua-expr (list-at args 1) arities & "); f:close() end)()" }
+  ]
+
+  lua-try-builtin : Text, List IRExpr, List ArityEntry -> Text
+  lua-try-builtin (n) (args) (arities) =
+   let len = list-length lua-builtin-emitters
+   in let pos = bsearch-lua-emitter-pos lua-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at lua-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
+
 Section: Apply Emission
 
   emit-lua-apply : IRExpr, List ArityEntry -> Text
@@ -292,8 +349,8 @@ Section: Apply Emission
    in let args = chain.args
    in when root
     is IrName (n) (ty) (sp) ->
-     if n == "print-line-uni" then "print(" & emit-lua-expr (list-at args 0) arities & ")"
-     else if n == "list-at" then emit-lua-expr (list-at args 0) arities & "[" & emit-lua-expr (list-at args 1) arities & " + 1]"
+     let bi = lua-try-builtin n args arities
+     in if text-length bi > 0 then bi
      else if is-mktup-name n then "{" & emit-lua-apply-args args arities 0 & "}"
      else lua-sanitize n & "(" & emit-lua-apply-args args arities 0 & ")"
     is otherwise -> emit-lua-expr-curried e arities
