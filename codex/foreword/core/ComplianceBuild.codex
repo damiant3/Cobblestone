@@ -1,0 +1,107 @@
+Chapter: ComplianceBuild
+  cites Foreword chapter ComplianceEvidence
+
+ Per-build compliance evidence record. Captures the security-relevant
+ properties of a specific compiled binary: hash, punctual function
+ count, bounded field count, effect checking status, capability
+ manifest presence. Paired with the regulatory requirement database
+ from ComplianceEvidence to produce a complete evidence package.
+
+ We say:
+
+Section: Coverage Record
+
+  RegulationCoverage = record {
+    regulation : Text,
+    total : Integer,
+    by-construction : Integer,
+    mechanism : Integer,
+    deployment : Integer,
+    organizational : Integer
+  }
+
+  regulation-coverage : Text, List Requirement -> RegulationCoverage
+  regulation-coverage (name) (reqs) = RegulationCoverage {
+    regulation = name,
+    total = list-length reqs,
+    by-construction = count-by-class reqs ByConstruction 0 0,
+    mechanism = count-by-class reqs Mechanism 0 0,
+    deployment = count-by-class reqs Deployment 0 0,
+    organizational = count-by-class reqs Organizational 0 0
+  }
+
+Section: Build Evidence
+
+  BuildEvidence = record {
+    binary-hash : List Integer,
+    source-hash : List Integer,
+    punctual-count : Integer,
+    bounded-field-count : Integer,
+    effect-checked : Boolean,
+    capability-manifest-present : Boolean,
+    regulation-coverage : List RegulationCoverage
+  }
+
+  build-evidence : List Integer, List Integer, Integer, Integer, Boolean, Boolean -> BuildEvidence
+  build-evidence (bin-hash) (src-hash) (punctual-n) (bounded-n) (effects) (caps) = BuildEvidence {
+    binary-hash = bin-hash,
+    source-hash = src-hash,
+    punctual-count = punctual-n,
+    bounded-field-count = bounded-n,
+    effect-checked = effects,
+    capability-manifest-present = caps,
+    regulation-coverage = [
+      regulation-coverage "CRA" cra-requirements,
+      regulation-coverage "ETSI" etsi-requirements,
+      regulation-coverage "NIST" nist-requirements,
+      regulation-coverage "IEC62443" iec-requirements
+    ]
+  }
+
+Section: Text Formatter
+
+  format-build-evidence : BuildEvidence -> Text
+  format-build-evidence (ev) =
+    "=== CODEX BUILD COMPLIANCE EVIDENCE ===\n" &
+    "binary-hash: " & format-hash (ev.binary-hash) & "\n" &
+    "source-hash: " & format-hash (ev.source-hash) & "\n" &
+    "punctual-functions: " & show (ev.punctual-count) & "\n" &
+    "bounded-fields: " & show (ev.bounded-field-count) & "\n" &
+    "effect-checking: " & if ev.effect-checked then "enabled" else "disabled" & "\n" &
+    "capability-manifest: " & if ev.capability-manifest-present then "present" else "absent" & "\n" &
+    "\n--- Regulation Coverage ---\n" &
+    format-coverage-list (ev.regulation-coverage) 0 (list-length (ev.regulation-coverage))
+
+  format-coverage-list : List RegulationCoverage, Integer, Integer -> Text
+  format-coverage-list (covs) (i) (n) =
+    if i >= n then ""
+    else format-coverage (list-at covs i) & "\n" & format-coverage-list covs (i + 1) n
+
+  format-coverage : RegulationCoverage -> Text
+  format-coverage (c) =
+    c.regulation & ": " & show (c.total) & " total (" &
+    show (c.by-construction) & " by-construction, " &
+    show (c.mechanism) & " mechanism, " &
+    show (c.deployment) & " deployment, " &
+    show (c.organizational) & " organizational)"
+
+  format-hash : List Integer -> Text
+  format-hash (bytes) = format-hash-loop bytes 0 (list-length bytes) ""
+
+  format-hash-loop : List Integer, Integer, Integer, Text -> Text
+  format-hash-loop (bytes) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = list-at bytes i
+    in format-hash-loop bytes (i + 1) n (acc & hex-byte b)
+
+  hex-byte : Integer -> Text
+  hex-byte (b) = hex-nibble (b / 16) & hex-nibble (b - b / 16 * 16)
+
+  hex-nibble : Integer -> Text
+  hex-nibble (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2" else if n == 3 then "3"
+    else if n == 4 then "4" else if n == 5 then "5" else if n == 6 then "6" else if n == 7 then "7"
+    else if n == 8 then "8" else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e" else "f"
+
+Page 1

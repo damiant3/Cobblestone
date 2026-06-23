@@ -1,0 +1,189 @@
+Chapter: Culling
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+  cites Engine chapter Mesh
+
+ Visibility culling. Extracts six frustum planes from the view-
+ projection matrix, tests AABBs against the frustum, and performs
+ backface culling using screen-space winding order. Near-plane
+ triangle clipping via Sutherland-Hodgman in homogeneous coords.
+
+ We say:
+
+Section: Frustum Planes
+
+  FrustumPlane = record {
+    fp-a : Integer,
+    fp-b : Integer,
+    fp-c : Integer,
+    fp-d : Integer
+  }
+
+  Frustum = record {
+    fr-left : FrustumPlane,
+    fr-right : FrustumPlane,
+    fr-bottom : FrustumPlane,
+    fr-top : FrustumPlane,
+    fr-near : FrustumPlane,
+    fr-far : FrustumPlane
+  }
+
+  frustum-extract : Mat4 -> Frustum
+  frustum-extract (vp) =
+    let m00 = mat4-at vp 0 0
+    in let m01 = mat4-at vp 0 1
+    in let m02 = mat4-at vp 0 2
+    in let m03 = mat4-at vp 0 3
+    in let m10 = mat4-at vp 1 0
+    in let m11 = mat4-at vp 1 1
+    in let m12 = mat4-at vp 1 2
+    in let m13 = mat4-at vp 1 3
+    in let m20 = mat4-at vp 2 0
+    in let m21 = mat4-at vp 2 1
+    in let m22 = mat4-at vp 2 2
+    in let m23 = mat4-at vp 2 3
+    in let m30 = mat4-at vp 3 0
+    in let m31 = mat4-at vp 3 1
+    in let m32 = mat4-at vp 3 2
+    in let m33 = mat4-at vp 3 3
+    in Frustum {
+      fr-left = fp-normalize (FrustumPlane { fp-a = m30 + m00, fp-b = m31 + m01, fp-c = m32 + m02, fp-d = m33 + m03 }),
+      fr-right = fp-normalize (FrustumPlane { fp-a = m30 - m00, fp-b = m31 - m01, fp-c = m32 - m02, fp-d = m33 - m03 }),
+      fr-bottom = fp-normalize (FrustumPlane { fp-a = m30 + m10, fp-b = m31 + m11, fp-c = m32 + m12, fp-d = m33 + m13 }),
+      fr-top = fp-normalize (FrustumPlane { fp-a = m30 - m10, fp-b = m31 - m11, fp-c = m32 - m12, fp-d = m33 - m13 }),
+      fr-near = fp-normalize (FrustumPlane { fp-a = m30 + m20, fp-b = m31 + m21, fp-c = m32 + m22, fp-d = m33 + m23 }),
+      fr-far = fp-normalize (FrustumPlane { fp-a = m30 - m20, fp-b = m31 - m21, fp-c = m32 - m22, fp-d = m33 - m23 })
+    }
+
+  fp-normalize : FrustumPlane -> FrustumPlane
+  fp-normalize (p) =
+    let len = cull-isqrt (p.fp-a * p.fp-a + p.fp-b * p.fp-b + p.fp-c * p.fp-c)
+    in if len == 0 then p
+    else FrustumPlane { fp-a = p.fp-a * 1000 / len, fp-b = p.fp-b * 1000 / len, fp-c = p.fp-c * 1000 / len, fp-d = p.fp-d * 1000 / len }
+
+Section: AABB Frustum Test
+
+  FrustumResult =
+    | FrInside
+    | FrIntersect
+    | FrOutside
+
+  frustum-test-aabb : Frustum, MeshBounds -> FrustumResult
+  frustum-test-aabb (fr) (b) =
+    let r0 = fp-test-aabb (fr.fr-left) b
+    in if r0 == 0 - 1 then FrOutside
+    else let r1 = fp-test-aabb (fr.fr-right) b
+    in if r1 == 0 - 1 then FrOutside
+    else let r2 = fp-test-aabb (fr.fr-bottom) b
+    in if r2 == 0 - 1 then FrOutside
+    else let r3 = fp-test-aabb (fr.fr-top) b
+    in if r3 == 0 - 1 then FrOutside
+    else let r4 = fp-test-aabb (fr.fr-near) b
+    in if r4 == 0 - 1 then FrOutside
+    else let r5 = fp-test-aabb (fr.fr-far) b
+    in if r5 == 0 - 1 then FrOutside
+    else if r0 + r1 + r2 + r3 + r4 + r5 == 6 then FrInside
+    else FrIntersect
+
+  fp-test-aabb : FrustumPlane, MeshBounds -> Integer
+  fp-test-aabb (p) (b) =
+    let px = if p.fp-a >= 0 then b.mb-max-x else b.mb-min-x
+    in let py = if p.fp-b >= 0 then b.mb-max-y else b.mb-min-y
+    in let pz = if p.fp-c >= 0 then b.mb-max-z else b.mb-min-z
+    in let nx = if p.fp-a >= 0 then b.mb-min-x else b.mb-max-x
+    in let ny = if p.fp-b >= 0 then b.mb-min-y else b.mb-max-y
+    in let nz = if p.fp-c >= 0 then b.mb-min-z else b.mb-max-z
+    in let d-pos = p.fp-a * px / 1000 + p.fp-b * py / 1000 + p.fp-c * pz / 1000 + p.fp-d
+    in if d-pos < 0 then 0 - 1
+    else let d-neg = p.fp-a * nx / 1000 + p.fp-b * ny / 1000 + p.fp-c * nz / 1000 + p.fp-d
+    in if d-neg >= 0 then 1
+    else 0
+
+Section: Backface Culling
+
+  cull-backface : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  cull-backface (ax) (ay) (bx) (by) (cx) (cy) =
+    let cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    in cross > 0
+
+Section: Near-Plane Clipping (Sutherland-Hodgman)
+
+  ClipVertex = record {
+    cv-x : Integer, cv-y : Integer, cv-z : Integer, cv-w : Integer,
+    cv-nx : Integer, cv-ny : Integer, cv-nz : Integer,
+    cv-u : Integer, cv-v : Integer
+  }
+
+  clip-near-plane : ClipVertex, ClipVertex, ClipVertex -> List ClipVertex
+  clip-near-plane (a) (b) (c) =
+    let a-in = a.cv-w > 0
+    in let b-in = b.cv-w > 0
+    in let c-in = c.cv-w > 0
+    in let count = (if a-in then 1 else 0) + (if b-in then 1 else 0) + (if c-in then 1 else 0)
+    in if count == 3 then [a, b, c]
+    else if count == 0 then []
+    else if count == 1 then clip-one-inside a b c a-in b-in c-in
+    else clip-two-inside a b c a-in b-in c-in
+
+  clip-one-inside : ClipVertex, ClipVertex, ClipVertex, Boolean, Boolean, Boolean -> List ClipVertex
+  clip-one-inside (a) (b) (c) (a-in) (b-in) (c-in) =
+    if a-in then
+      let ab = clip-intersect a b
+      in let ac = clip-intersect a c
+      in [a, ab, ac]
+    else if b-in then
+      let ba = clip-intersect b a
+      in let bc = clip-intersect b c
+      in [ba, b, bc]
+    else let ca = clip-intersect c a
+    in let cb = clip-intersect c b
+    in [ca, cb, c]
+
+  clip-two-inside : ClipVertex, ClipVertex, ClipVertex, Boolean, Boolean, Boolean -> List ClipVertex
+  clip-two-inside (a) (b) (c) (a-in) (b-in) (c-in) =
+    if a-in then if b-in then
+      let bc = clip-intersect b c
+      in let ac = clip-intersect a c
+      in [a, b, bc, a, bc, ac]
+    else let ab = clip-intersect a b
+    in let cb = clip-intersect c b
+    in [a, ab, cb, a, cb, c]
+    else let ba = clip-intersect b a
+    in let ca = clip-intersect c a
+    in [ba, b, c, ba, c, ca]
+
+  clip-intersect : ClipVertex, ClipVertex -> ClipVertex
+  clip-intersect (inside) (outside) =
+    let dw = inside.cv-w - outside.cv-w
+    in let t = if dw == 0 then 500 else inside.cv-w * 1000 / dw
+    in ClipVertex {
+      cv-x = inside.cv-x + (outside.cv-x - inside.cv-x) * t / 1000,
+      cv-y = inside.cv-y + (outside.cv-y - inside.cv-y) * t / 1000,
+      cv-z = inside.cv-z + (outside.cv-z - inside.cv-z) * t / 1000,
+      cv-w = inside.cv-w + (outside.cv-w - inside.cv-w) * t / 1000,
+      cv-nx = inside.cv-nx + (outside.cv-nx - inside.cv-nx) * t / 1000,
+      cv-ny = inside.cv-ny + (outside.cv-ny - inside.cv-ny) * t / 1000,
+      cv-nz = inside.cv-nz + (outside.cv-nz - inside.cv-nz) * t / 1000,
+      cv-u = inside.cv-u + (outside.cv-u - inside.cv-u) * t / 1000,
+      cv-v = inside.cv-v + (outside.cv-v - inside.cv-v) * t / 1000
+    }
+
+Section: Helpers
+
+  cull-isqrt : Integer -> Integer
+  cull-isqrt (n) = if n <= 0 then 0 else cull-isqrt-loop n (n / 2 + 1)
+
+  cull-isqrt-loop : Integer, Integer -> Integer
+  cull-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else cull-isqrt-loop n next
+
+Section: Formatting
+
+  format-frustum-result : FrustumResult -> Text
+  format-frustum-result (r) = when r
+    is FrInside -> "inside"
+    is FrIntersect -> "intersect"
+    is FrOutside -> "outside"
+
+Page 1

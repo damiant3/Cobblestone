@@ -1,0 +1,174 @@
+Chapter: Jwt
+  cites Foreword chapter Maybe
+  cites Encode chapter Base64
+  cites Encode chapter Json
+
+ JSON Web Token decoder (RFC 7519). Splits a JWT into its three
+ dot-separated segments, base64url-decodes header and payload,
+ and parses claims from the JSON. V1 validates structure, expiry,
+ issuer, and audience. Cryptographic signature verification against
+ provider JWKS is deferred to V2.
+
+Section: Types
+
+  JwtHeader = record {
+    jh-alg : Text,
+    jh-typ : Text,
+    jh-kid : Text
+  }
+
+  JwtPayload = record {
+    jp-iss : Text,
+    jp-sub : Text,
+    jp-aud : Text,
+    jp-exp : Integer,
+    jp-iat : Integer,
+    jp-nonce : Text,
+    jp-email : Text,
+    jp-name : Text
+  }
+
+  JwtToken = record {
+    jt-header : JwtHeader,
+    jt-payload : JwtPayload,
+    jt-signature : Text,
+    jt-raw : Text
+  }
+
+  JwtError =
+    | JwtOk (JwtToken)
+    | JwtMalformed (Text)
+
+Section: Decoding
+
+  jwt-decode : Text -> JwtError
+  jwt-decode (raw) =
+    let parts = text-split raw "."
+    in if list-length parts /= 3 then JwtMalformed "expected 3 dot-separated segments"
+    else let header-b64 = list-at parts 0
+    in let payload-b64 = list-at parts 1
+    in let sig-b64 = list-at parts 2
+    in let header-json = b64url-decode-text header-b64
+    in let payload-json = b64url-decode-text payload-b64
+    in let header = jwt-parse-header header-json
+    in let payload = jwt-parse-payload payload-json
+    in JwtOk (JwtToken { jt-header = header, jt-payload = payload, jt-signature = sig-b64, jt-raw = raw })
+
+  jwt-parse-header : Text -> JwtHeader
+  jwt-parse-header (s) =
+    let parsed = json-parse s
+    in when parsed
+      is Just (v) -> JwtHeader {
+        jh-alg = json-get-str v "alg" "",
+        jh-typ = json-get-str v "typ" "",
+        jh-kid = json-get-str v "kid" ""
+      }
+      is None -> JwtHeader { jh-alg = "", jh-typ = "", jh-kid = "" }
+
+  jwt-parse-payload : Text -> JwtPayload
+  jwt-parse-payload (s) =
+    let parsed = json-parse s
+    in when parsed
+      is Just (v) -> JwtPayload {
+        jp-iss = json-get-str v "iss" "",
+        jp-sub = json-get-str v "sub" "",
+        jp-aud = json-get-str v "aud" "",
+        jp-exp = json-get-int v "exp" 0,
+        jp-iat = json-get-int v "iat" 0,
+        jp-nonce = json-get-str v "nonce" "",
+        jp-email = json-get-str v "email" "",
+        jp-name = json-get-str v "name" ""
+      }
+      is None -> jwt-empty-payload
+
+  jwt-empty-payload : JwtPayload
+  jwt-empty-payload = JwtPayload {
+    jp-iss = "", jp-sub = "", jp-aud = "",
+    jp-exp = 0, jp-iat = 0, jp-nonce = "",
+    jp-email = "", jp-name = ""
+  }
+
+Section: Validation
+
+  jwt-validate-claims : JwtToken, Text, Text, Integer -> Boolean
+  jwt-validate-claims (token) (expected-issuer) (expected-audience) (now-epoch) =
+    let p = token.jt-payload
+    in jwt-check-issuer p expected-issuer
+    & jwt-check-audience p expected-audience
+    & jwt-check-expiry p now-epoch
+
+  jwt-check-issuer : JwtPayload, Text -> Boolean
+  jwt-check-issuer (p) (expected) =
+    if text-length expected == 0 then True
+    else p.jp-iss == expected
+
+  jwt-check-audience : JwtPayload, Text -> Boolean
+  jwt-check-audience (p) (expected) =
+    if text-length expected == 0 then True
+    else p.jp-aud == expected
+
+  jwt-check-expiry : JwtPayload, Integer -> Boolean
+  jwt-check-expiry (p) (now) =
+    if p.jp-exp == 0 then True
+    else p.jp-exp > now
+
+Section: Claim Accessors
+
+  jwt-get-email : JwtToken -> Text
+  jwt-get-email (t) = (t.jt-payload).jp-email
+
+  jwt-get-sub : JwtToken -> Text
+  jwt-get-sub (t) = (t.jt-payload).jp-sub
+
+  jwt-get-name : JwtToken -> Text
+  jwt-get-name (t) = (t.jt-payload).jp-name
+
+  jwt-get-issuer : JwtToken -> Text
+  jwt-get-issuer (t) = (t.jt-payload).jp-iss
+
+  jwt-is-expired : JwtToken, Integer -> Boolean
+  jwt-is-expired (t) (now) = (t.jt-payload).jp-exp > 0 & (t.jt-payload).jp-exp <= now
+
+Section: Base64url
+
+  b64url-decode-text : Text -> Text
+  b64url-decode-text (s) =
+    let padded = b64url-pad (b64url-to-std s)
+    in let bytes = base64-decode padded
+    in bytes-to-text bytes 0 (list-length bytes) ""
+
+  b64url-to-std : Text -> Text
+  b64url-to-std (s) = b64url-replace s 0 (text-length s) ""
+
+  b64url-replace : Text, Integer, Integer, Text -> Text
+  b64url-replace (s) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = char-code-at s i
+    in let replaced = if c == 73 then char-to-text (code-to-char 76)
+      else if c == 85 then char-to-text (code-to-char 81)
+      else char-to-text (code-to-char c)
+    in b64url-replace s (i + 1) n (acc & replaced)
+
+  b64url-pad : Text -> Text
+  b64url-pad (s) =
+    let rem = text-length s - (text-length s / 4) * 4
+    in if rem == 0 then s
+    else if rem == 2 then s & "=="
+    else if rem == 3 then s & "="
+    else s
+
+  bytes-to-text : List Integer, Integer, Integer, Text -> Text
+  bytes-to-text (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else bytes-to-text bs (i + 1) n (acc & char-to-text (code-to-char (list-at bs i)))
+
+Section: Formatting
+
+  format-jwt-header : JwtHeader -> Text
+  format-jwt-header (h) = "alg=" & h.jh-alg & " typ=" & h.jh-typ
+
+  format-jwt-payload : JwtPayload -> Text
+  format-jwt-payload (p) =
+    "iss=" & p.jp-iss & " sub=" & p.jp-sub & " email=" & p.jp-email & " exp=" & show (p.jp-exp)
+
+Page 1

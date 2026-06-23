@@ -8,6 +8,19 @@ Chapter: ErpServer
   cites Foreword chapter Maybe
   cites Foreword chapter Tuple
   cites Foreword chapter List
+  cites UI chapter DataTable
+  cites UI chapter Dropdown
+  cites UI chapter SettingsPanel
+  cites UI chapter DetailPane
+  cites UI chapter FilterableList
+  cites UI chapter StatusBadge
+  cites UI chapter SearchBar
+  cites UI chapter Validation
+  cites UI chapter CommandPalette
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Foreword chapter CCE
 
  JSON API over the ERP suite, on the MarketWeb route pattern: a pure
  function from state and request to state and response. No sockets
@@ -170,3 +183,112 @@ Section: Aging and KPI Routes
       json-pair "liabilities" (json-int (total-liabilities gl)),
       json-pair "equity" (json-int (total-equity gl))
     ]))
+
+Section: Sample Data
+
+  erp-seed-vendors : ErpState -> ErpState
+  erp-seed-vendors (st) =
+    let inv1 = ApInvoice {
+      api-id = "AP-001", api-vendor-id = "V-100", api-company = "CODEX",
+      api-invoice-num = "INV-AP-001", api-date = 20260615, api-due-date = 20260715,
+      api-amount = 250000, api-tax-amount = 20000, api-currency = "USD",
+      api-lines = [ApInvoiceLine { apl-gl-account = "5000", apl-amount = 250000, apl-tax-code = "ST", apl-cost-center = "PROD", apl-description = "Component order Q2", apl-quantity = 100, apl-unit-price = 2500 }],
+      api-status = ApApproved, api-po-ref = "PO-001", api-gr-ref = "",
+      api-payment-ref = "", api-three-way-match = False, api-created = 20260615
+    }
+    in let inv2 = ApInvoice {
+      api-id = "AP-002", api-vendor-id = "V-101", api-company = "CODEX",
+      api-invoice-num = "INV-AP-002", api-date = 20260618, api-due-date = 20260801,
+      api-amount = 180000, api-tax-amount = 14400, api-currency = "USD",
+      api-lines = [ApInvoiceLine { apl-gl-account = "5000", apl-amount = 180000, apl-tax-code = "ST", apl-cost-center = "PROD", apl-description = "IC supply", apl-quantity = 500, apl-unit-price = 360 }],
+      api-status = ApPending, api-po-ref = "PO-002", api-gr-ref = "",
+      api-payment-ref = "", api-three-way-match = False, api-created = 20260618
+    }
+    in __record-set st "erp-ap" [inv1, inv2]
+
+  erp-seed-customers : ErpState -> ErpState
+  erp-seed-customers (st) =
+    let inv1 = ArInvoice {
+      ari-id = "AR-001", ari-customer-id = "C-200", ari-company = "CODEX",
+      ari-invoice-num = "INV-AR-001", ari-date = 20260610, ari-due-date = 20260710,
+      ari-amount = 450000, ari-tax-amount = 36000, ari-currency = "USD",
+      ari-lines = [ArInvoiceLine { arl-gl-account = "4000", arl-amount = 450000, arl-tax-code = "ST", arl-description = "License sale", arl-quantity = 5, arl-unit-price = 90000 }],
+      ari-status = ArOpen, ari-so-ref = "SO-001", ari-payment-received = 0, ari-created = 20260610
+    }
+    in let inv2 = ArInvoice {
+      ari-id = "AR-002", ari-customer-id = "C-201", ari-company = "CODEX",
+      ari-invoice-num = "INV-AR-002", ari-date = 20260612, ari-due-date = 20260720,
+      ari-amount = 120000, ari-tax-amount = 9600, ari-currency = "USD",
+      ari-lines = [ArInvoiceLine { arl-gl-account = "4000", arl-amount = 120000, arl-tax-code = "ST", arl-description = "Consulting", arl-quantity = 10, arl-unit-price = 12000 }],
+      ari-status = ArOpen, ari-so-ref = "SO-002", ari-payment-received = 0, ari-created = 20260612
+    }
+    in __record-set st "erp-ar" [inv1, inv2]
+
+  erp-init-with-seed : ErpState -> ErpState
+  erp-init-with-seed (st) =
+    let st2 = erp-seed-vendors st
+    in erp-seed-customers st2
+
+Section: HTTP Transport
+
+  ErpLoop = record {
+    erp-transport : TcpTransportState,
+    erp-state : ErpState,
+    erp-requests : Integer
+  }
+
+  erp-handle-request : ErpLoop, TransportRecvResult -> ErpLoop
+  erp-handle-request (ls) (recv) =
+    let req = http-parse-request (recv.body)
+    in if req.valid == False then
+      let err-bytes = http-encode (erp-bad-request "malformed request")
+      in let ts2 = net-io-send-raw (ls.erp-transport) err-bytes
+      in ErpLoop { erp-transport = ts2, erp-state = ls.erp-state, erp-requests = ls.erp-requests + 1 }
+    else let (st2, resp) = erp-route (ls.erp-state) req
+      in let resp-bytes = http-encode resp
+      in let ts2 = net-io-send-raw (ls.erp-transport) resp-bytes
+      in ErpLoop { erp-transport = ts2, erp-state = st2, erp-requests = ls.erp-requests + 1 }
+
+  erp-loop : ErpLoop -> [Console] Integer
+  erp-loop (ls) = act
+    let recv = net-io-recv-loop (ls.erp-transport) 0
+    in if recv.has-message then act
+      let next = erp-handle-request ls recv
+      in erp-loop next
+    end
+    else act
+      ls.erp-requests
+    end
+  end
+
+  erp-local-mac : List Integer = [82, 84, 0, 18, 52, 100]
+  erp-local-ip : List Integer = [10, 0, 2, 15]
+  erp-gateway-ip : List Integer = [10, 0, 2, 2]
+  erp-host-ip : List Integer = [127, 0, 0, 1]
+
+  erp-server : ErpState -> [Console] Integer
+  erp-server (st) =
+    let sess = net-session-new erp-local-mac erp-local-ip erp-gateway-ip 49154 9200 erp-host-ip 2000
+    in let ts = transport-new sess
+    in let ts1 = net-io-connect ts
+    in act
+      erp-loop (ErpLoop { erp-transport = ts1, erp-state = st, erp-requests = 0 })
+    end
+
+Section: Entry Point
+
+  opening : [Console] None = act
+    print-line-uni "Codex ERP server starting on port 9200..."
+    print-line-uni "Routes:"
+    print-line-uni "  GET  /health              - Health check"
+    print-line-uni "  GET  /api/gl/accounts     - Chart of accounts"
+    print-line-uni "  GET  /api/gl/trial-balance - Trial balance"
+    print-line-uni "  POST /api/gl/journal      - Post journal entry"
+    print-line-uni "  GET  /api/ap/aging        - AP aging buckets"
+    print-line-uni "  GET  /api/ar/aging        - AR aging buckets"
+    print-line-uni "  GET  /api/kpi/dashboard   - KPI dashboard"
+    let st = erp-state-new 6 2026
+    in let st2 = erp-init-with-seed st
+    in print-line-uni ("Initialized: " & show (list-length (st2.erp-gl).gl-accounts) & " accounts, " & show (list-length (st2.erp-ap)) & " AP invoices, " & show (list-length (st2.erp-ar)) & " AR invoices")
+    in erp-server st2
+  end

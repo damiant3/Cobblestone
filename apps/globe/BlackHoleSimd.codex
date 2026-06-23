@@ -1,0 +1,456 @@
+Chapter: BlackHoleSimd
+  cites Game chapter Color
+  cites Game chapter Rasterizer
+
+ SIMD variant of the black hole renderer. Uses Vector 4 Real approximate
+ for all 3-component math (vec3, color), packing xyz into lanes 0-2 with
+ lane 3 zeroed. Compares directly against BlackHole.codex (scalar f32).
+
+ Trade-offs vs scalar:
+  + Single instruction for add/sub/mul/div on 3 components
+  + Dot product via vec-mul + vec-reduce-add (one multiply, one reduce)
+  + Color blending is naturally 4-wide
+  - Lane extraction needed for scalar comparisons (r < RS, branching)
+  - Cross product requires lane shuffling (no native shuffle builtin)
+  - Less readable field access (vec-extract v 0 vs v.x)
+
+ We say:
+
+Section: SIMD Primitives
+
+  V4f = Vector 4 Real approximate
+  Rf = Real approximate
+
+  v4f-xyz : Rf, Rf, Rf -> V4f
+  v4f-xyz (x) (y) (z) =
+    let v = vec-splat 0.0
+    in let v1 = vec-insert v 0 x
+    in let v2 = vec-insert v1 1 y
+    in vec-insert v2 2 z
+
+  v4f-splat3 : Rf -> V4f
+  v4f-splat3 (s) = v4f-xyz s s s
+
+  v4f-x : V4f -> Rf
+  v4f-x (v) = vec-extract v 0
+
+  v4f-y : V4f -> Rf
+  v4f-y (v) = vec-extract v 1
+
+  v4f-z : V4f -> Rf
+  v4f-z (v) = vec-extract v 2
+
+  v4f-zero : V4f
+  v4f-zero = vec-splat 0.0
+
+  v4f-add : V4f, V4f -> V4f
+  v4f-add (a) (b) = vec-add a b
+
+  v4f-sub : V4f, V4f -> V4f
+  v4f-sub (a) (b) = vec-sub a b
+
+  v4f-mul : V4f, V4f -> V4f
+  v4f-mul (a) (b) = vec-mul a b
+
+  v4f-scale : V4f, Rf -> V4f
+  v4f-scale (v) (s) = vec-mul v (vec-splat s)
+
+  v4f-dot : V4f, V4f -> Rf
+  v4f-dot (a) (b) = vec-reduce-add (vec-mul a b)
+
+  v4f-cross : V4f, V4f -> V4f
+  v4f-cross (a) (b) =
+    let ax = v4f-x a
+    in let ay = v4f-y a
+    in let az = v4f-z a
+    in let bx = v4f-x b
+    in let by = v4f-y b
+    in let bz = v4f-z b
+    in v4f-xyz (ay * bz - az * by) (az * bx - ax * bz) (ax * by - ay * bx)
+
+  v4f-length : V4f -> Rf
+  v4f-length (v) = rf-sqrt (v4f-dot v v)
+
+  v4f-normalize : V4f -> V4f
+  v4f-normalize (v) =
+    let len = v4f-length v
+    in if len < 0.0001 then v4f-zero
+    else v4f-scale v (1.0 / len)
+
+Section: Real Approximate Scalar Math (shared with scalar variant)
+
+  rf-abs : Rf -> Rf
+  rf-abs (x) = if x < 0.0 then -x else x
+
+  rf-floor : Rf -> Rf
+  rf-floor (x) =
+    let trunc = __real-approx-from-int (__real-approx-to-int x)
+    in if trunc > x then trunc - 1.0 else trunc
+
+  rf-fract : Rf -> Rf
+  rf-fract (x) = x - rf-floor x
+
+  rf-clamp : Rf, Rf, Rf -> Rf
+  rf-clamp (x) (lo) (hi) = if x < lo then lo else if x > hi then hi else x
+
+  rf-max : Rf, Rf -> Rf
+  rf-max (a) (b) = if a > b then a else b
+
+  rf-min : Rf, Rf -> Rf
+  rf-min (a) (b) = if a < b then a else b
+
+  rf-mix : Rf, Rf, Rf -> Rf
+  rf-mix (a) (b) (t) = a * (1.0 - t) + b * t
+
+  rf-smoothstep : Rf, Rf, Rf -> Rf
+  rf-smoothstep (edge0) (edge1) (x) =
+    if x <= edge0 then 0.0
+    else if x >= edge1 then 1.0
+    else let t = (x - edge0) / (edge1 - edge0)
+    in t * t * (3.0 - 2.0 * t)
+
+  rf-sqrt : Rf -> Rf
+  rf-sqrt (x) =
+    if x <= 0.0 then 0.0
+    else rf-sqrt-newton x (x * 0.5 + 0.5) 0
+
+  rf-sqrt-newton : Rf, Rf, Integer -> Rf
+  rf-sqrt-newton (x) (guess) (i) =
+    if i >= 8 then guess
+    else let next = (guess + x / guess) * 0.5
+    in rf-sqrt-newton x next (i + 1)
+
+  rf-sin : Rf -> Rf
+  rf-sin (x) =
+    let p = x - rf-floor (x / 6.2831853 + 0.5) * 6.2831853
+    in let p3 = p * p * p
+    in let p5 = p3 * p * p
+    in let p7 = p5 * p * p
+    in p - p3 / 6.0 + p5 / 120.0 - p7 / 5040.0
+
+  rf-cos : Rf -> Rf
+  rf-cos (x) = rf-sin (x + 1.5707963)
+
+  rf-pow : Rf, Rf -> Rf
+  rf-pow (base) (exp) =
+    if base <= 0.0 then 0.0
+    else rf-pow-loop base exp 1.0 0
+
+  rf-pow-loop : Rf, Rf, Rf, Integer -> Rf
+  rf-pow-loop (base) (exp) (acc) (i) =
+    if i >= __real-approx-to-int exp then acc
+    else rf-pow-loop base exp (acc * base) (i + 1)
+
+Section: SIMD Color
+
+  v4f-color : Rf, Rf, Rf -> V4f
+  v4f-color (r) (g) (b) = v4f-xyz r g b
+
+  v4f-color-mix : V4f, V4f, Rf -> V4f
+  v4f-color-mix (a) (b) (t) =
+    let inv = vec-splat (1.0 - t)
+    in let tv = vec-splat t
+    in v4f-add (v4f-mul a inv) (v4f-mul b tv)
+
+Section: Constants
+
+  bh-rs : Rf
+  bh-rs = 0.32
+
+  bh-max-dist : Rf
+  bh-max-dist = 25.0
+
+  bh-max-steps : Integer
+  bh-max-steps = 280
+
+Section: Procedural Noise (SIMD-assisted)
+
+  bh-hash-s : V4f -> Rf
+  bh-hash-s (p) =
+    let px = v4f-x p
+    in let py = v4f-y p
+    in let pz = v4f-z p
+    in let fx = rf-fract (px * 443.8975)
+    in let fy = rf-fract (py * 397.2973)
+    in let fz = rf-fract (pz * 491.1871)
+    in let d = fx * (fy + 19.19) + fy * (fz + 19.19) + fz * (fx + 19.19)
+    in rf-fract (fx * fy * fz + d)
+
+  bh-noise-s : V4f -> Rf
+  bh-noise-s (p) =
+    let i = v4f-xyz (rf-floor (v4f-x p)) (rf-floor (v4f-y p)) (rf-floor (v4f-z p))
+    in let f = v4f-sub p i
+    in let fx = v4f-x f
+    in let fy = v4f-y f
+    in let fz = v4f-z f
+    in let sx = fx * fx * (3.0 - 2.0 * fx)
+    in let sy = fy * fy * (3.0 - 2.0 * fy)
+    in let sz = fz * fz * (3.0 - 2.0 * fz)
+    in let ix = v4f-x i
+    in let iy = v4f-y i
+    in let iz = v4f-z i
+    in let c000 = bh-hash-s (v4f-xyz ix iy iz)
+    in let c100 = bh-hash-s (v4f-xyz (ix + 1.0) iy iz)
+    in let c010 = bh-hash-s (v4f-xyz ix (iy + 1.0) iz)
+    in let c110 = bh-hash-s (v4f-xyz (ix + 1.0) (iy + 1.0) iz)
+    in let c001 = bh-hash-s (v4f-xyz ix iy (iz + 1.0))
+    in let c101 = bh-hash-s (v4f-xyz (ix + 1.0) iy (iz + 1.0))
+    in let c011 = bh-hash-s (v4f-xyz ix (iy + 1.0) (iz + 1.0))
+    in let c111 = bh-hash-s (v4f-xyz (ix + 1.0) (iy + 1.0) (iz + 1.0))
+    in let x00 = rf-mix c000 c100 sx
+    in let x10 = rf-mix c010 c110 sx
+    in let x01 = rf-mix c001 c101 sx
+    in let x11 = rf-mix c011 c111 sx
+    in let y0 = rf-mix x00 x10 sy
+    in let y1 = rf-mix x01 x11 sy
+    in rf-mix y0 y1 sz
+
+  bh-fbm-s : V4f -> Rf
+  bh-fbm-s (p) = bh-fbm-s-loop p 0.0 0.5 0
+
+  bh-fbm-s-loop : V4f, Rf, Rf, Integer -> Rf
+  bh-fbm-s-loop (p) (acc) (amp) (i) =
+    if i >= 4 then acc
+    else let n = bh-noise-s p
+    in bh-fbm-s-loop
+      (v4f-add (v4f-scale p 2.0) (vec-splat 100.0))
+      (acc + amp * n)
+      (amp * 0.5)
+      (i + 1)
+
+Section: Camera
+
+  BhCamera = record {
+    cam-yaw : Rf,
+    cam-pitch : Rf,
+    cam-zoom : Rf
+  }
+
+  bh-camera-default : BhCamera
+  bh-camera-default = BhCamera { cam-yaw = 0.0, cam-pitch = 0.14, cam-zoom = 4.4 }
+
+  bh-rotate-s : V4f, Rf, Rf -> V4f
+  bh-rotate-s (v) (yaw) (pitch) =
+    let cy = rf-cos yaw
+    in let sy = rf-sin yaw
+    in let cp = rf-cos pitch
+    in let sp = rf-sin pitch
+    in let vx = v4f-x v
+    in let vy = v4f-y v
+    in let vz = v4f-z v
+    in let x1 = vx * cy + vz * sy
+    in let z1 = vz * cy - vx * sy
+    in let y1 = vy * cp - z1 * sp
+    in let z2 = z1 * cp + vy * sp
+    in v4f-xyz x1 y1 z2
+
+Section: Ray March State (SIMD)
+
+  RayStateS = record {
+    rs-pos : V4f,
+    rs-vel : V4f,
+    rs-color : V4f,
+    rs-opacity : Rf,
+    rs-closest : Rf,
+    rs-swallowed : Boolean
+  }
+
+  ray-state-s-new : V4f, V4f -> RayStateS
+  ray-state-s-new (pos) (vel) = RayStateS {
+    rs-pos = pos, rs-vel = vel,
+    rs-color = v4f-zero, rs-opacity = 0.0,
+    rs-closest = 100.0, rs-swallowed = False
+  }
+
+Section: Gravitational Ray March (SIMD)
+
+  bh-march-s : V4f, V4f, Rf -> RayStateS
+  bh-march-s (pos) (vel) (time) =
+    bh-march-s-loop (ray-state-s-new pos vel) time 0
+
+  bh-march-s-loop : RayStateS, Rf, Integer -> RayStateS
+  bh-march-s-loop (st) (time) (step) =
+    if step >= bh-max-steps then st
+    else if st.rs-swallowed then st
+    else if st.rs-opacity >= 0.99 then st
+    else let r2 = v4f-dot st.rs-pos st.rs-pos
+    in let r = rf-sqrt r2
+    in let closest = rf-min st.rs-closest r
+    in if r < bh-rs then
+      bh-march-s-loop (RayStateS { rs-pos = st.rs-pos, rs-vel = st.rs-vel,
+        rs-color = st.rs-color, rs-opacity = st.rs-opacity,
+        rs-closest = closest, rs-swallowed = True }) time (step + 1)
+    else if r > bh-max-dist then
+      RayStateS { rs-pos = st.rs-pos, rs-vel = st.rs-vel,
+        rs-color = st.rs-color, rs-opacity = st.rs-opacity,
+        rs-closest = closest, rs-swallowed = False }
+    else let dt = rf-clamp (r * 0.04) 0.003 0.05
+    in let h = v4f-cross st.rs-pos st.rs-vel
+    in let h2 = v4f-dot h h
+    in let r5 = r * r * r * r * r
+    in let grav-mag = -1.5 * bh-rs * h2 / (r5 + 0.0000001)
+    in let grav = v4f-scale (v4f-scale st.rs-pos (1.0 / r)) grav-mag
+    in let new-vel = v4f-normalize (v4f-add st.rs-vel (v4f-scale grav dt))
+    in let new-pos = v4f-add st.rs-pos (v4f-scale new-vel dt)
+    in let disk = bh-sample-disk-s new-pos st.rs-vel r dt time st.rs-color st.rs-opacity
+    in bh-march-s-loop (RayStateS {
+      rs-pos = new-pos, rs-vel = new-vel,
+      rs-color = disk.dss-color, rs-opacity = disk.dss-opacity,
+      rs-closest = closest, rs-swallowed = False }) time (step + 1)
+
+Section: Accretion Disk (SIMD)
+
+  DiskSampleS = record {
+    dss-color : V4f,
+    dss-opacity : Rf
+  }
+
+  bh-sample-disk-s : V4f, V4f, Rf, Rf, Rf, V4f, Rf -> DiskSampleS
+  bh-sample-disk-s (pos) (vel) (r) (dt) (time) (color) (opacity) =
+    let px = v4f-x pos
+    in let py = v4f-y pos
+    in let pz = v4f-z pos
+    in let disk-r = rf-sqrt (px * px + pz * pz)
+    in let inner = bh-rs * 1.5
+    in let outer = bh-rs * 8.5
+    in if disk-r <= inner then DiskSampleS { dss-color = color, dss-opacity = opacity }
+    else if disk-r >= outer then DiskSampleS { dss-color = color, dss-opacity = opacity }
+    else let thickness = 0.022 * (disk-r - bh-rs * 1.2)
+    in if rf-abs py >= thickness then DiskSampleS { dss-color = color, dss-opacity = opacity }
+    else let rad-fade = rf-pow (rf-sin ((disk-r - inner) / (bh-rs * 7.0) * 3.14159)) 2.2
+    in let vert-fade = rf-smoothstep thickness 0.0 (rf-abs py)
+    in let spin = time * (1.2 / (disk-r + 0.05))
+    in let cs = rf-cos spin
+    in let ss = rf-sin spin
+    in let nx = px * 5.0 * cs - pz * 5.0 * ss
+    in let nz = px * 5.0 * ss + pz * 5.0 * cs
+    in let gas = rad-fade * vert-fade * bh-fbm-s (v4f-xyz nx py nz) * dt * 5.5
+    in let vx = v4f-x vel
+    in let vz = v4f-z vel
+    in let side = vx * pz - vz * px
+    in let shift-factor = if side > 0.0 then 2.8 else 0.35
+    in let redshift = rf-sqrt (rf-max 0.0 (1.0 - bh-rs / r)) * shift-factor
+    in let hot = v4f-color 1.3 0.8 0.45
+    in let cool = v4f-color 0.9 0.1 0.0
+    in let plasma = v4f-scale (v4f-color-mix cool hot redshift) (redshift * 1.6)
+    in let remain = 1.0 - opacity
+    in let new-color = v4f-add color (v4f-scale plasma (gas * remain))
+    in DiskSampleS { dss-color = new-color, dss-opacity = rf-min (opacity + gas) 1.0 }
+
+Section: Corona (SIMD)
+
+  bh-corona-s : Rf, V4f, Rf -> V4f
+  bh-corona-s (closest) (color) (opacity) =
+    if closest <= bh-rs then color
+    else if closest >= bh-rs * 1.6 then color
+    else let glow = 1.0 - (closest - bh-rs) / (bh-rs * 0.6)
+    in let g3 = rf-max 0.0 (glow * glow * glow)
+    in let corona = v4f-scale (v4f-color 1.0 0.9 0.75) (g3 * 0.45 * (1.0 - opacity))
+    in v4f-add color corona
+
+Section: Background Sky (SIMD)
+
+  bh-sky-s : V4f, V4f, Rf -> V4f
+  bh-sky-s (pos) (dir) (time) =
+    v4f-add (bh-sun-s pos dir time)
+      (v4f-add (bh-planet-s pos dir time) (bh-stars-s dir))
+
+  bh-sun-pos-s : Rf -> V4f
+  bh-sun-pos-s (time) =
+    let angle = time * 0.22
+    in v4f-xyz (rf-cos angle * 6.0) 1.8 (rf-sin angle * 6.0 + 3.5)
+
+  bh-sun-s : V4f, V4f, Rf -> V4f
+  bh-sun-s (pos) (dir) (time) =
+    let sp = bh-sun-pos-s time
+    in let sun-r = 0.8
+    in let oc = v4f-sub pos sp
+    in let b = v4f-dot oc dir
+    in let c = v4f-dot oc oc - sun-r * sun-r
+    in let disc = b * b - c
+    in if disc > 0.0 then
+      let t = -b - rf-sqrt disc
+      in if t > 0.0 then v4f-color 4.8 4.35 3.6
+      else bh-sun-glow-s oc dir sun-r
+    else bh-sun-glow-s oc dir sun-r
+
+  bh-sun-glow-s : V4f, V4f, Rf -> V4f
+  bh-sun-glow-s (oc) (dir) (sun-r) =
+    let approach = v4f-length (v4f-cross oc dir)
+    in if approach < sun-r * 3.0 then
+      let corona = rf-max 0.0 (1.0 - (approach - sun-r) / (sun-r * 2.0))
+      in let c4 = corona * corona * corona * corona
+      in v4f-scale (v4f-color 1.3 0.55 0.1) (c4 * 2.2)
+    else v4f-zero
+
+  bh-planet-s : V4f, V4f, Rf -> V4f
+  bh-planet-s (pos) (dir) (time) =
+    let pp = v4f-xyz 3.2 (-1.4) 6.5
+    in let pr = 0.7
+    in let oc = v4f-sub pos pp
+    in let b = v4f-dot oc dir
+    in let c = v4f-dot oc oc - pr * pr
+    in let disc = b * b - c
+    in if disc <= 0.0 then v4f-zero
+    else let t = -b - rf-sqrt disc
+    in if t <= 0.0 then v4f-zero
+    else let hit = v4f-add pos (v4f-scale dir t)
+    in let n = v4f-normalize (v4f-sub hit pp)
+    in let light = v4f-normalize (v4f-sub (bh-sun-pos-s time) hit)
+    in let diff = rf-max 0.02 (v4f-dot n light)
+    in let band-noise = bh-noise-s (v4f-scale n 2.0)
+    in let bands = rf-smoothstep 0.02 0.04 (rf-abs (rf-sin (v4f-y n * 12.0 + band-noise * 0.5)))
+    in let surface = v4f-color-mix
+      (v4f-color 0.1 0.4 0.75)
+      (v4f-color 0.04 0.2 0.45)
+      bands
+    in v4f-scale surface diff
+
+  bh-stars-s : V4f -> V4f
+  bh-stars-s (dir) =
+    let grid = rf-sin (v4f-x dir * 180.0) * rf-sin (v4f-y dir * 180.0) * rf-sin (v4f-z dir * 180.0)
+    in if grid > 0.9985 then
+      v4f-scale (v4f-color 1.4 1.4 1.4) (rf-smoothstep 0.9985 1.0 grid)
+    else v4f-zero
+
+Section: Pixel Rendering (SIMD)
+
+  bh-render-pixel-s : Integer, Integer, Integer, Integer, BhCamera, Rf -> Rgb
+  bh-render-pixel-s (px) (py) (width) (height) (cam) (time) =
+    let aspect = __real-approx-from-int width / __real-approx-from-int height
+    in let ux = (__real-approx-from-int px * 2.0 / __real-approx-from-int width - 1.0) * aspect
+    in let uy = __real-approx-from-int py * 2.0 / __real-approx-from-int height - 1.0
+    in let cam-pos = bh-rotate-s (v4f-xyz 0.0 0.0 (-cam.cam-zoom)) (cam.cam-yaw) (cam.cam-pitch)
+    in let ray-dir = bh-rotate-s (v4f-normalize (v4f-xyz ux uy 2.4)) (cam.cam-yaw) (cam.cam-pitch)
+    in let st = bh-march-s cam-pos ray-dir time
+    in let with-corona = bh-corona-s st.rs-closest st.rs-color st.rs-opacity
+    in let final = if st.rs-swallowed then
+      v4f-scale with-corona st.rs-opacity
+    else let sky = bh-sky-s st.rs-pos st.rs-vel time
+      in v4f-add with-corona (v4f-scale sky (1.0 - st.rs-opacity))
+    in bh-gamma-s final
+
+  bh-gamma-s : V4f -> Rgb
+  bh-gamma-s (c) =
+    let r = __real-approx-to-int (rf-clamp (rf-pow (rf-max 0.0 (v4f-x c)) 0.4545) 0.0 1.0 * 255.0)
+    in let g = __real-approx-to-int (rf-clamp (rf-pow (rf-max 0.0 (v4f-y c)) 0.4545) 0.0 1.0 * 255.0)
+    in let b = __real-approx-to-int (rf-clamp (rf-pow (rf-max 0.0 (v4f-z c)) 0.4545) 0.0 1.0 * 255.0)
+    in rgb r g b
+
+Section: Full Frame (SIMD)
+
+  bh-render-frame-s : Integer, Integer, BhCamera, Rf -> List Integer
+  bh-render-frame-s (width) (height) (cam) (time) =
+    bh-render-rows-s width height cam time 0 []
+
+  bh-render-rows-s : Integer, Integer, BhCamera, Rf, Integer, List Integer -> List Integer
+  bh-render-rows-s (width) (height) (cam) (time) (y) (acc) =
+    if y >= height then acc
+    else let row = bh-render-row-s width height cam time y 0 acc
+    in bh-render-rows-s width height cam time (y + 1) row
+
+  bh-render-row-s : Integer, Integer, BhCamera, Rf, Integer, Integer, List Integer -> List Integer
+  bh-render-row-s (width) (height) (cam) (time) (y) (x) (acc) =
+    if x >= width then acc
+    else let pixel = bh-render-pixel-s x y width height cam time
+    in bh-render-row-s width height cam time y (x + 1) (list-push acc (rgb-to-packed pixel))

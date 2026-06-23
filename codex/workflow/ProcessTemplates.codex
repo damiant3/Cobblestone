@@ -1,0 +1,448 @@
+Chapter: ProcessTemplates
+  cites Wflow chapter ProcessTypes
+  cites Foreword chapter Maybe
+
+ Pre-built process definitions for common industries. Each template
+ defines steps, transitions, forms, roles, SLAs, and required
+ documents for a specific business process.
+
+Section: Step Builder Helpers
+
+  human-step : Text, Text, Maybe FormDef, AssignmentRule -> StepDef
+  human-step (id) (name) (form) (assign) = StepDef {
+    sd-id = id, sd-name = name, sd-type = HumanTask,
+    sd-description = "", sd-form = form, sd-assignment = assign,
+    sd-sla = None, sd-actions = [], sd-required-docs = [],
+    sd-x = 0, sd-y = 0
+  }
+
+  approval-step : Text, Text, AssignmentRule -> StepDef
+  approval-step (id) (name) (assign) = StepDef {
+    sd-id = id, sd-name = name, sd-type = ApprovalGate,
+    sd-description = "", sd-form = None, sd-assignment = assign,
+    sd-sla = None, sd-actions = [], sd-required-docs = [],
+    sd-x = 0, sd-y = 0
+  }
+
+  doc-gate-step : Text, Text, List Text -> StepDef
+  doc-gate-step (id) (name) (docs) = StepDef {
+    sd-id = id, sd-name = name, sd-type = DocumentGate,
+    sd-description = "", sd-form = None, sd-assignment = Unassigned,
+    sd-sla = None, sd-actions = [], sd-required-docs = docs,
+    sd-x = 0, sd-y = 0
+  }
+
+  auto-step : Text, Text, List ActionDef -> StepDef
+  auto-step (id) (name) (actions) = StepDef {
+    sd-id = id, sd-name = name, sd-type = AutomatedAction,
+    sd-description = "", sd-form = None, sd-assignment = Unassigned,
+    sd-sla = None, sd-actions = actions, sd-required-docs = [],
+    sd-x = 0, sd-y = 0
+  }
+
+  notify-step : Text, Text, Text -> StepDef
+  notify-step (id) (name) (msg) = StepDef {
+    sd-id = id, sd-name = name, sd-type = Notification,
+    sd-description = "", sd-form = None, sd-assignment = Unassigned,
+    sd-sla = None, sd-actions = [SendNotification msg], sd-required-docs = [],
+    sd-x = 0, sd-y = 0
+  }
+
+  with-sla : StepDef, SlaDef -> StepDef
+  with-sla (step) (sla) = __record-set step "sd-sla" (Just sla)
+
+  with-docs : StepDef, List Text -> StepDef
+  with-docs (step) (docs) = __record-set step "sd-required-docs" docs
+
+Section: Title Insurance Process
+
+ A residential title search and insurance workflow. Steps:
+ 1. Order intake — agent enters property and buyer details
+ 2. Title search — examiner searches county records
+ 3. Exception review — underwriter reviews found exceptions
+ 4. Document collection — gather deeds, surveys, payoff letters
+ 5. Commitment issuance — generate title commitment
+ 6. Closing preparation — prepare settlement statement
+ 7. Final review — senior underwriter approval
+ 8. Policy issuance — generate final title policy
+
+  title-insurance-def : ProcessDef
+  title-insurance-def = ProcessDef {
+    pd-id = "title-insurance",
+    pd-name = "Residential Title Insurance",
+    pd-version = 0,
+    pd-description = "End-to-end title search, examination, and policy issuance for residential real estate transactions.",
+    pd-category = "title",
+    pd-steps = [
+      with-sla (human-step "intake" "Order Intake" (Just title-intake-form) (AssignToRole "agent")) (SlaDef { sla-warn-secs = 3600, sla-deadline-secs = 14400, sla-escalate-to = "supervisor", sla-auto-action = SlaNotify }),
+      with-sla (human-step "search" "Title Search" (Just title-search-form) (AssignToRole "examiner")) (SlaDef { sla-warn-secs = 86400, sla-deadline-secs = 259200, sla-escalate-to = "senior-examiner", sla-auto-action = SlaEscalate }),
+      human-step "exception-review" "Exception Review" (Just exception-review-form) (AssignToRole "underwriter"),
+      doc-gate-step "doc-collection" "Document Collection" ["deed", "survey", "payoff-letter", "tax-cert"],
+      auto-step "commitment" "Generate Commitment" [GenerateDocument "title-commitment", SendEmail "buyer" "commitment-ready"],
+      human-step "closing-prep" "Closing Preparation" (Just closing-prep-form) (AssignToRole "closer"),
+      with-sla (approval-step "final-review" "Final Underwriter Review" (AssignToRole "senior-underwriter")) rush-sla,
+      auto-step "policy-issue" "Issue Policy" [GenerateDocument "title-policy", SendEmail "buyer" "policy-issued", LogAudit "policy issued"]
+    ],
+    pd-transitions = [
+      always-transition "t1" "intake" "search",
+      always-transition "t2" "search" "exception-review",
+      transition "t3a" "exception-review" "doc-collection" (Equals "exceptions-clear" "yes") "Clear",
+      transition "t3b" "exception-review" "intake" (Equals "exceptions-clear" "no") "Return to agent",
+      always-transition "t4" "doc-collection" "commitment",
+      always-transition "t5" "commitment" "closing-prep",
+      always-transition "t6" "closing-prep" "final-review",
+      transition "t7a" "final-review" "policy-issue" (Equals "approved" "yes") "Approved",
+      transition "t7b" "final-review" "exception-review" (Equals "approved" "no") "Denied — re-examine"
+    ],
+    pd-start-step = "intake",
+    pd-roles = [
+      RoleDef { rd-id = "agent", rd-name = "Title Agent", rd-description = "Handles order intake and customer communication", rd-can-approve = False, rd-can-assign = False, rd-max-concurrent = 20 },
+      RoleDef { rd-id = "examiner", rd-name = "Title Examiner", rd-description = "Searches county records for liens, easements, encumbrances", rd-can-approve = False, rd-can-assign = False, rd-max-concurrent = 10 },
+      RoleDef { rd-id = "underwriter", rd-name = "Underwriter", rd-description = "Reviews exceptions and determines insurability", rd-can-approve = True, rd-can-assign = True, rd-max-concurrent = 15 },
+      RoleDef { rd-id = "senior-underwriter", rd-name = "Senior Underwriter", rd-description = "Final approval authority", rd-can-approve = True, rd-can-assign = True, rd-max-concurrent = 5 },
+      RoleDef { rd-id = "closer", rd-name = "Closer", rd-description = "Prepares closing documents and settlement statements", rd-can-approve = False, rd-can-assign = False, rd-max-concurrent = 10 }
+    ],
+    pd-sla-defaults = default-sla,
+    pd-data-schema = [],
+    pd-active = True
+  }
+
+  title-intake-form : FormDef
+  title-intake-form = FormDef {
+    form-id = "title-intake",
+    form-title = "Order Intake",
+    form-instructions = "Enter property and transaction details.",
+    form-fields = [
+      field-spec "property-address" "Property Address" InputAddress True,
+      field-spec "county" "County" InputText True,
+      field-spec "state" "State" InputText True,
+      field-spec "parcel-id" "Parcel/APN" InputText False,
+      field-spec "buyer-name" "Buyer Name" InputText True,
+      field-spec "buyer-email" "Buyer Email" InputEmail True,
+      field-spec "buyer-phone" "Buyer Phone" InputPhone False,
+      field-spec "seller-name" "Seller Name" InputText True,
+      field-spec "lender-name" "Lender" InputText False,
+      field-spec "loan-amount" "Loan Amount" InputCurrency False,
+      field-spec "purchase-price" "Purchase Price" InputCurrency True,
+      field-spec "closing-date" "Estimated Closing Date" InputDate True,
+      field-select "transaction-type" "Transaction Type" ["Purchase", "Refinance", "Home Equity", "Construction"] True,
+      field-select "policy-type" "Policy Type" ["Owner's", "Lender's", "Both"] True
+    ]
+  }
+
+  title-search-form : FormDef
+  title-search-form = FormDef {
+    form-id = "title-search",
+    form-title = "Title Search Results",
+    form-instructions = "Record findings from county records search.",
+    form-fields = [
+      field-spec "search-from-year" "Search From Year" InputNumber True,
+      field-spec "search-to-year" "Search To Year" InputNumber True,
+      field-spec "chain-of-title" "Chain of Title Summary" InputTextArea True,
+      field-spec "liens-found" "Liens Found" InputTextArea False,
+      field-spec "easements-found" "Easements Found" InputTextArea False,
+      field-spec "judgments-found" "Judgments Found" InputTextArea False,
+      field-spec "taxes-current" "Taxes Current" InputCheckbox True,
+      field-spec "tax-amount-due" "Tax Amount Due" InputCurrency False,
+      field-spec "legal-description" "Legal Description" InputTextArea True,
+      field-spec "exception-count" "Number of Exceptions" InputNumber True,
+      field-spec "examiner-notes" "Examiner Notes" InputTextArea False
+    ]
+  }
+
+  exception-review-form : FormDef
+  exception-review-form = FormDef {
+    form-id = "exception-review",
+    form-title = "Exception Review",
+    form-instructions = "Review each exception and determine resolution.",
+    form-fields = [
+      field-spec "exception-details" "Exception Details" InputTextArea True,
+      field-select "exception-severity" "Severity" ["Minor — can insure with exception", "Moderate — requires resolution", "Major — cannot insure"] True,
+      field-spec "resolution-plan" "Resolution Plan" InputTextArea False,
+      field-select "exceptions-clear" "Clear to Proceed?" ["yes", "no"] True,
+      field-spec "underwriter-notes" "Underwriter Notes" InputTextArea False
+    ]
+  }
+
+  closing-prep-form : FormDef
+  closing-prep-form = FormDef {
+    form-id = "closing-prep",
+    form-title = "Closing Preparation",
+    form-instructions = "Prepare settlement statement and closing documents.",
+    form-fields = [
+      field-spec "settlement-amount" "Settlement Amount" InputCurrency True,
+      field-spec "prorated-taxes" "Prorated Taxes" InputCurrency False,
+      field-spec "recording-fees" "Recording Fees" InputCurrency False,
+      field-spec "premium-amount" "Insurance Premium" InputCurrency True,
+      field-spec "closing-location" "Closing Location" InputText True,
+      field-spec "closing-date-confirmed" "Confirmed Closing Date" InputDate True,
+      field-spec "closer-notes" "Notes" InputTextArea False
+    ]
+  }
+
+Section: Auto Insurance Claim Process
+
+ A standard auto insurance claims workflow. Steps:
+ 1. FNOL — First Notice of Loss (customer reports claim)
+ 2. Assignment — route to adjuster based on claim type
+ 3. Investigation — adjuster inspects damage, gathers evidence
+ 4. Estimate — prepare repair/replacement estimate
+ 5. Coverage determination — verify policy covers the loss
+ 6. Settlement offer — calculate and present offer
+ 7. Negotiation — handle disputes or accept
+ 8. Payment — issue check or direct deposit
+
+  auto-claim-def : ProcessDef
+  auto-claim-def = ProcessDef {
+    pd-id = "auto-claim",
+    pd-name = "Auto Insurance Claim",
+    pd-version = 0,
+    pd-description = "End-to-end auto insurance claim from FNOL through settlement and payment.",
+    pd-category = "insurance",
+    pd-steps = [
+      with-sla (human-step "fnol" "First Notice of Loss" (Just fnol-form) (AssignToRole "csr")) (SlaDef { sla-warn-secs = 1800, sla-deadline-secs = 7200, sla-escalate-to = "supervisor", sla-auto-action = SlaNotify }),
+      auto-step "assign" "Route to Adjuster" [SetDataField "status" "assigned"],
+      with-sla (human-step "investigate" "Investigation" (Just investigation-form) (AssignLeastLoaded "adjuster")) (SlaDef { sla-warn-secs = 172800, sla-deadline-secs = 432000, sla-escalate-to = "senior-adjuster", sla-auto-action = SlaEscalate }),
+      doc-gate-step "evidence" "Evidence Collection" ["police-report", "photos", "repair-estimate"],
+      human-step "estimate" "Damage Estimate" (Just estimate-form) (AssignToRole "appraiser"),
+      human-step "coverage" "Coverage Determination" (Just coverage-form) (AssignToRole "underwriter"),
+      human-step "settlement" "Settlement Offer" (Just settlement-form) (AssignToRole "adjuster"),
+      human-step "negotiation" "Negotiation" None (AssignToRole "adjuster"),
+      auto-step "payment" "Issue Payment" [SendEmail "claimant" "payment-issued", UpdateExternalSystem "accounting" "issue-check", LogAudit "payment issued"],
+      notify-step "denial" "Claim Denied" "Your claim has been denied. See attached letter for details."
+    ],
+    pd-transitions = [
+      always-transition "c1" "fnol" "assign",
+      always-transition "c2" "assign" "investigate",
+      always-transition "c3" "investigate" "evidence",
+      always-transition "c4" "evidence" "estimate",
+      always-transition "c5" "estimate" "coverage",
+      transition "c6a" "coverage" "settlement" (Equals "coverage-approved" "yes") "Covered",
+      transition "c6b" "coverage" "denial" (Equals "coverage-approved" "no") "Not covered",
+      transition "c7a" "settlement" "payment" (Equals "offer-accepted" "yes") "Accepted",
+      transition "c7b" "settlement" "negotiation" (Equals "offer-accepted" "no") "Disputed",
+      transition "c8a" "negotiation" "payment" (Equals "negotiation-resolved" "yes") "Resolved",
+      transition "c8b" "negotiation" "denial" (Equals "negotiation-resolved" "no") "Unresolved"
+    ],
+    pd-start-step = "fnol",
+    pd-roles = [
+      RoleDef { rd-id = "csr", rd-name = "Customer Service", rd-description = "Handles initial claim intake", rd-can-approve = False, rd-can-assign = False, rd-max-concurrent = 30 },
+      RoleDef { rd-id = "adjuster", rd-name = "Claims Adjuster", rd-description = "Investigates and settles claims", rd-can-approve = False, rd-can-assign = True, rd-max-concurrent = 15 },
+      RoleDef { rd-id = "senior-adjuster", rd-name = "Senior Adjuster", rd-description = "Handles escalated and complex claims", rd-can-approve = True, rd-can-assign = True, rd-max-concurrent = 8 },
+      RoleDef { rd-id = "appraiser", rd-name = "Damage Appraiser", rd-description = "Estimates repair and replacement costs", rd-can-approve = False, rd-can-assign = False, rd-max-concurrent = 10 },
+      RoleDef { rd-id = "underwriter", rd-name = "Coverage Underwriter", rd-description = "Determines policy coverage applicability", rd-can-approve = True, rd-can-assign = False, rd-max-concurrent = 10 }
+    ],
+    pd-sla-defaults = default-sla,
+    pd-data-schema = [],
+    pd-active = True
+  }
+
+  fnol-form : FormDef
+  fnol-form = FormDef {
+    form-id = "fnol",
+    form-title = "First Notice of Loss",
+    form-instructions = "Record the initial claim details from the policyholder.",
+    form-fields = [
+      field-spec "policy-number" "Policy Number" InputText True,
+      field-spec "claimant-name" "Claimant Name" InputText True,
+      field-spec "claimant-phone" "Phone" InputPhone True,
+      field-spec "claimant-email" "Email" InputEmail False,
+      field-spec "loss-date" "Date of Loss" InputDate True,
+      field-spec "loss-time" "Time of Loss" InputText False,
+      field-spec "loss-location" "Location of Loss" InputAddress True,
+      field-select "loss-type" "Type of Loss" ["Collision", "Comprehensive", "Liability", "Uninsured Motorist", "Medical Payments", "Other"] True,
+      field-spec "loss-description" "Description of Loss" InputTextArea True,
+      field-spec "other-party" "Other Party Involved" InputCheckbox False,
+      field-spec "other-party-info" "Other Party Info" InputTextArea False,
+      field-spec "police-report-number" "Police Report Number" InputText False,
+      field-spec "injuries" "Injuries Reported" InputCheckbox False,
+      field-spec "injury-details" "Injury Details" InputTextArea False,
+      field-spec "vehicle-driveable" "Vehicle Driveable" InputCheckbox False,
+      field-spec "tow-needed" "Tow Needed" InputCheckbox False
+    ]
+  }
+
+  investigation-form : FormDef
+  investigation-form = FormDef {
+    form-id = "investigation",
+    form-title = "Investigation Report",
+    form-instructions = "Document findings from the claim investigation.",
+    form-fields = [
+      field-spec "inspection-date" "Inspection Date" InputDate True,
+      field-spec "vehicle-condition" "Vehicle Condition" InputTextArea True,
+      field-spec "damage-description" "Damage Description" InputTextArea True,
+      field-select "fault-determination" "Fault" ["Insured at fault", "Other party at fault", "Shared fault", "No fault", "Under investigation"] True,
+      field-spec "fault-percentage" "Insured Fault %" InputNumber False,
+      field-spec "witness-statements" "Witness Statements" InputTextArea False,
+      field-spec "fraud-indicators" "Fraud Indicators" InputTextArea False,
+      field-select "fraud-flag" "Fraud Flag" ["None", "Low", "Medium", "High — refer to SIU"] False,
+      field-spec "adjuster-notes" "Adjuster Notes" InputTextArea True
+    ]
+  }
+
+  estimate-form : FormDef
+  estimate-form = FormDef {
+    form-id = "estimate",
+    form-title = "Damage Estimate",
+    form-instructions = "Prepare the repair or replacement estimate.",
+    form-fields = [
+      field-select "estimate-type" "Estimate Type" ["Repair", "Total Loss", "Supplement"] True,
+      field-spec "labor-cost" "Labor Cost" InputCurrency True,
+      field-spec "parts-cost" "Parts Cost" InputCurrency True,
+      field-spec "paint-cost" "Paint/Materials" InputCurrency False,
+      field-spec "total-estimate" "Total Estimate" InputCurrency True,
+      field-spec "deductible" "Deductible" InputCurrency True,
+      field-spec "net-payable" "Net Payable" InputCurrency True,
+      field-select "repair-shop" "Preferred Shop" ["Network shop", "Customer choice", "Dealer"] False,
+      field-spec "estimate-notes" "Notes" InputTextArea False
+    ]
+  }
+
+  coverage-form : FormDef
+  coverage-form = FormDef {
+    form-id = "coverage",
+    form-title = "Coverage Determination",
+    form-instructions = "Verify policy coverage for this loss.",
+    form-fields = [
+      field-spec "policy-effective" "Policy Effective Date" InputDate True,
+      field-spec "policy-expiry" "Policy Expiry Date" InputDate True,
+      field-select "coverage-type" "Applicable Coverage" ["Collision", "Comprehensive", "Liability BI", "Liability PD", "UM/UIM", "Med Pay"] True,
+      field-spec "coverage-limit" "Coverage Limit" InputCurrency True,
+      field-spec "prior-claims" "Prior Claims Count" InputNumber False,
+      field-select "coverage-approved" "Coverage Approved" ["yes", "no"] True,
+      field-spec "denial-reason" "Denial Reason" InputTextArea False,
+      field-spec "coverage-notes" "Underwriter Notes" InputTextArea False
+    ]
+  }
+
+  settlement-form : FormDef
+  settlement-form = FormDef {
+    form-id = "settlement",
+    form-title = "Settlement Offer",
+    form-instructions = "Calculate and present settlement offer.",
+    form-fields = [
+      field-spec "offer-amount" "Offer Amount" InputCurrency True,
+      field-spec "deductible-applied" "Deductible Applied" InputCurrency True,
+      field-spec "depreciation" "Depreciation" InputCurrency False,
+      field-spec "net-settlement" "Net Settlement" InputCurrency True,
+      field-select "payment-method" "Payment Method" ["Check", "Direct Deposit", "Pay Shop Directly"] True,
+      field-select "offer-accepted" "Offer Accepted" ["yes", "no"] True,
+      field-spec "dispute-reason" "Dispute Reason" InputTextArea False
+    ]
+  }
+
+Section: Mortgage Origination Process
+
+  mortgage-origination-def : ProcessDef
+  mortgage-origination-def = ProcessDef {
+    pd-id = "mortgage-origination",
+    pd-name = "Mortgage Origination",
+    pd-version = 0,
+    pd-description = "Loan application through funding and closing.",
+    pd-category = "mortgage",
+    pd-steps = [
+      human-step "application" "Loan Application" (Just mortgage-app-form) (AssignToRole "loan-officer"),
+      doc-gate-step "doc-collection" "Document Collection" ["w2", "pay-stubs", "tax-returns", "bank-statements", "id"],
+      auto-step "credit-pull" "Credit Check" [CallWebhook "credit-bureau-api", SetDataField "credit-pulled" "yes"],
+      human-step "processing" "Loan Processing" None (AssignToRole "processor"),
+      human-step "underwriting" "Underwriting" None (AssignToRole "underwriter"),
+      approval-step "approval" "Loan Approval" (AssignToRole "senior-underwriter"),
+      human-step "conditions" "Clear Conditions" None (AssignToRole "processor"),
+      doc-gate-step "closing-docs" "Closing Documents" ["closing-disclosure", "deed-of-trust", "note", "title-policy"],
+      human-step "closing" "Closing" None (AssignToRole "closer"),
+      auto-step "funding" "Funding" [UpdateExternalSystem "wire" "send-funds", LogAudit "loan funded"]
+    ],
+    pd-transitions = [
+      always-transition "m1" "application" "doc-collection",
+      always-transition "m2" "doc-collection" "credit-pull",
+      always-transition "m3" "credit-pull" "processing",
+      always-transition "m4" "processing" "underwriting",
+      always-transition "m5" "underwriting" "approval",
+      transition "m6a" "approval" "conditions" (Equals "approved" "yes") "Approved",
+      transition "m6b" "approval" "application" (Equals "approved" "no") "Denied — revise",
+      always-transition "m7" "conditions" "closing-docs",
+      always-transition "m8" "closing-docs" "closing",
+      always-transition "m9" "closing" "funding"
+    ],
+    pd-start-step = "application",
+    pd-roles = [
+      RoleDef { rd-id = "loan-officer", rd-name = "Loan Officer", rd-description = "Originates and manages loan applications", rd-can-approve = False, rd-can-assign = True, rd-max-concurrent = 20 },
+      RoleDef { rd-id = "processor", rd-name = "Loan Processor", rd-description = "Collects documents and clears conditions", rd-can-approve = False, rd-can-assign = False, rd-max-concurrent = 15 },
+      RoleDef { rd-id = "underwriter", rd-name = "Underwriter", rd-description = "Evaluates risk and creditworthiness", rd-can-approve = True, rd-can-assign = False, rd-max-concurrent = 10 },
+      RoleDef { rd-id = "senior-underwriter", rd-name = "Senior Underwriter", rd-description = "Final loan approval authority", rd-can-approve = True, rd-can-assign = True, rd-max-concurrent = 5 },
+      RoleDef { rd-id = "closer", rd-name = "Closer", rd-description = "Handles closing and document execution", rd-can-approve = False, rd-can-assign = False, rd-max-concurrent = 10 }
+    ],
+    pd-sla-defaults = default-sla,
+    pd-data-schema = [],
+    pd-active = True
+  }
+
+  mortgage-app-form : FormDef
+  mortgage-app-form = FormDef {
+    form-id = "mortgage-app",
+    form-title = "Loan Application (1003)",
+    form-instructions = "Complete the Uniform Residential Loan Application.",
+    form-fields = [
+      field-spec "borrower-name" "Borrower Name" InputText True,
+      field-spec "borrower-ssn" "SSN" InputSsn True,
+      field-spec "borrower-dob" "Date of Birth" InputDate True,
+      field-spec "borrower-phone" "Phone" InputPhone True,
+      field-spec "borrower-email" "Email" InputEmail True,
+      field-spec "employer" "Employer" InputText True,
+      field-spec "annual-income" "Annual Income" InputCurrency True,
+      field-spec "monthly-debts" "Monthly Debts" InputCurrency True,
+      field-spec "property-address" "Property Address" InputAddress True,
+      field-spec "purchase-price" "Purchase Price" InputCurrency True,
+      field-spec "down-payment" "Down Payment" InputCurrency True,
+      field-spec "loan-amount" "Loan Amount" InputCurrency True,
+      field-select "loan-type" "Loan Type" ["Conventional", "FHA", "VA", "USDA", "Jumbo"] True,
+      field-select "loan-term" "Loan Term" ["30-year fixed", "15-year fixed", "7/1 ARM", "5/1 ARM"] True,
+      field-spec "rate" "Interest Rate" InputNumber False,
+      field-select "occupancy" "Occupancy" ["Primary Residence", "Second Home", "Investment"] True
+    ]
+  }
+
+Section: Generic Approval Workflow
+
+  simple-approval-def : Text, Text, List FieldSpec -> ProcessDef
+  simple-approval-def (id) (name) (fields) = ProcessDef {
+    pd-id = id,
+    pd-name = name,
+    pd-version = 0,
+    pd-description = "Simple submit-review-approve workflow.",
+    pd-category = "approval",
+    pd-steps = [
+      human-step "submit" "Submit Request" (Just (FormDef { form-id = "request", form-title = "Request Form", form-fields = fields, form-instructions = "" })) AssignToInitiator,
+      approval-step "review" "Manager Review" (AssignToRole "manager"),
+      auto-step "approved" "Approved" [SendNotification "Your request has been approved.", LogAudit "request approved"],
+      notify-step "rejected" "Rejected" "Your request has been denied."
+    ],
+    pd-transitions = [
+      always-transition "s1" "submit" "review",
+      transition "s2a" "review" "approved" (Equals "approved" "yes") "Approve",
+      transition "s2b" "review" "rejected" (Equals "approved" "no") "Reject"
+    ],
+    pd-start-step = "submit",
+    pd-roles = [
+      RoleDef { rd-id = "manager", rd-name = "Manager", rd-description = "Approves or denies requests", rd-can-approve = True, rd-can-assign = False, rd-max-concurrent = 50 }
+    ],
+    pd-sla-defaults = default-sla,
+    pd-data-schema = fields,
+    pd-active = True
+  }
+
+  expense-approval : ProcessDef
+  expense-approval = simple-approval-def "expense-approval" "Expense Approval" [
+    field-spec "description" "Description" InputText True,
+    field-spec "amount" "Amount" InputCurrency True,
+    field-spec "receipt" "Receipt" InputFile True,
+    field-select "category" "Category" ["Travel", "Meals", "Equipment", "Software", "Training", "Other"] True
+  ]
+
+  pto-request : ProcessDef
+  pto-request = simple-approval-def "pto-request" "PTO Request" [
+    field-spec "start-date" "Start Date" InputDate True,
+    field-spec "end-date" "End Date" InputDate True,
+    field-select "type" "Type" ["Vacation", "Sick", "Personal", "Bereavement"] True,
+    field-spec "notes" "Notes" InputTextArea False
+  ]

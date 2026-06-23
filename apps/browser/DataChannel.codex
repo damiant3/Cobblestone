@@ -5,6 +5,7 @@ Chapter: DataChannel
   cites Encode chapter Json
   cites Foreword chapter CCE
   cites Foreword chapter Sha256
+  cites Foreword chapter ListUtils
 
  Typed data channels for the frame model. The browser opens a
  WebSocket to the server, sends BIND messages declaring typed
@@ -22,7 +23,7 @@ Chapter: DataChannel
    Text:     4-byte length + CCE bytes
    Boolean:  1 byte (0 or 1)
    List T:   4-byte count + elements
-   Maybe T:  1 byte tag (0=Nothing, 1=Just) + payload
+   Maybe T:  1 byte tag (0=None, 1=Just) + payload
    Variant:  1 byte tag + payload
 
 Section: Types
@@ -51,12 +52,12 @@ Section: Types
   }
 
   ChannelMessage =
-    | MsgBind (Text, Text)
+    | MsgBind (Text) (Text)
     | MsgAck (Text)
-    | MsgData (Text, List Integer)
+    | MsgData (Text) (List Integer)
     | MsgClose (Text)
     | MsgUnbind (Text)
-    | MsgError (Text, Text)
+    | MsgError (Text) (Text)
     | MsgUnknown
 
 Section: Channel Manager
@@ -107,14 +108,14 @@ Section: Message Processing
       is MsgAck (name) ->
         __record-set mgr
           "cm-channels" (channel-set-state mgr.cm-channels name ChannelBound)
-      is MsgData (name, payload) ->
+      is MsgData (name) (payload) ->
         __record-set (__record-set mgr
           "cm-channels" (channel-push-data mgr.cm-channels name payload))
           "cm-total-recv" (mgr.cm-total-recv + 1)
       is MsgClose (name) ->
         __record-set mgr
           "cm-channels" (channel-set-state mgr.cm-channels name ChannelClosed)
-      is MsgError (name, reason) ->
+      is MsgError (name) (reason) ->
         __record-set mgr
           "cm-channels" (channel-set-state mgr.cm-channels name (ChannelError reason))
       is otherwise -> mgr
@@ -209,8 +210,8 @@ Section: Protocol Decoding
       is "ERROR" ->
         let space = text-index-of rest " "
         in if space < 0
-          then MsgError (rest, "unknown error")
-          else MsgError (text-take rest space, text-drop rest (space + 1))
+          then MsgError (rest) ("unknown error")
+          else MsgError (text-take rest space) (text-drop rest (space + 1))
       is otherwise -> MsgUnknown
 
   parse-binary-message : List Integer -> ChannelMessage
@@ -224,7 +225,7 @@ Section: Protocol Decoding
           in let payload-len = read-uint32-le payload (3 + name-len)
           in let data-start = 3 + name-len + 4
           in let data = list-slice payload data-start (data-start + payload-len)
-          in MsgData (name, data)
+          in MsgData (name) (data)
 
 Section: Binary Encoding Primitives
 
@@ -313,10 +314,8 @@ Section: Channel Lookup
 
   channel-find-in : List DataChannel, Text -> Maybe DataChannel
   channel-find-in (channels) (name) =
-    when channels
-      is [] -> None
-      is otherwise ->
-        let head = list-at channels 0
+    if list-length channels == 0 then None
+    else let head = list-at channels 0
         in if head.dc-name == name
           then Just head
           else channel-find-in (list-drop channels 1) name

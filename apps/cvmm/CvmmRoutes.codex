@@ -18,7 +18,6 @@ Chapter: CvmmRoutes
   cites Cvmm chapter CvmmDisplay
   cites Cvmm chapter LogViewer
   cites Cvmm chapter Terminal
-  cites Cvmm chapter Monitor
 
  Route dispatch for all CVMM API endpoints. Each manager's routes
  are grouped by prefix. The route function maps a path to a JSON
@@ -55,7 +54,7 @@ Section: Route Dispatch
     else if text-starts-with path "/api/server" then route-server (views.mv-server) path
     else if text-starts-with path "/api/fleet" then route-fleet (views.mv-fleet) path
     else if text-starts-with path "/api/deploy" then route-deploy (views.mv-deploy) path
-    else if text-starts-with path "/api/monitor" then route-monitor (views.mv-monitor) path
+    else if text-starts-with path "/api/monitor" then json-error "monitor temporarily disabled"
     else if text-starts-with path "/api/log" then route-log (views.mv-log) path
     else if text-starts-with path "/api/terminal" then route-terminal (views.mv-terminal) path
     else if text-starts-with path "/api/shell" then route-shell st path
@@ -227,7 +226,8 @@ Section: Fleet Routes
       in json-list jsons 0 (list-length jsons) ""
     else if text-ends-with path "/health" then
       let healthy = fm-healthy-count st
-      in "{\"total\":" & show (st.fm-node-count) & ",\"healthy\":" & show healthy & ",\"discovery\":" & if st.fm-discovery-active then "true" else "false" & "}"
+      in let disc = if st.fm-discovery-active then "true" else "false"
+      in "{\"total\":" & show (st.fm-node-count) & ",\"healthy\":" & show healthy & ",\"discovery\":" & disc & "}"
     else json-error "unknown fleet route"
 
   fm-nodes-json : List FleetNode, Integer, Integer, List Text -> List Text
@@ -242,25 +242,6 @@ Section: Deploy Routes
     if text-ends-with path "/list" then
       "{\"total\":" & show (st.dpm-count) & ",\"active\":" & show (st.dpm-active-count) & "}"
     else json-error "unknown deploy route"
-
-Section: Monitor Routes
-
-  route-monitor : MonitorState, Text -> Text
-  route-monitor (st) (path) =
-    if text-ends-with path "/state" then monitor-state-to-json st
-    else if text-ends-with path "/layout" then
-      when mon-active st
-        is Just (l) -> monitor-layout-to-json l
-        is None -> json-error "no active layout"
-    else if text-ends-with path "/catalog" then
-      mon-catalog-json monitor-catalog 0 (list-length monitor-catalog) ""
-    else json-error "unknown monitor route"
-
-  mon-catalog-json : List CatalogEntry, Integer, Integer, Text -> Text
-  mon-catalog-json (entries) (i) (n) (acc) =
-    if i >= n then "[" & acc & "]"
-    else let sep = if i == 0 then "" else ","
-    in mon-catalog-json entries (i + 1) n (acc & sep & catalog-entry-to-json (list-at entries i))
 
 Section: Log Routes
 

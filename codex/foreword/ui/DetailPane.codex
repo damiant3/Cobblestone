@@ -1,0 +1,152 @@
+Chapter: DetailPane
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Overlay
+  cites UI chapter Markdown
+  cites UI chapter Dropdown
+
+ Reusable detail/inspector pane. Shows a header (title + close),
+ a list of labeled fields (read-only or editable), a description
+ area (Markdown-rendered), and an activity log. Can render inline
+ or as a modal overlay.
+
+ Used by: TrackerApp (issue detail), Explorer (item detail),
+ Diagram (node properties), Collab (participant info), ERP
+ (record detail), WorkflowHtml (step detail).
+
+ We say:
+
+Section: Types
+  DetailField =
+    | DfText (Text) (Text)
+    | DfBadge (Text) (Text) (Integer)
+    | DfDropdown (Text) (DropdownState)
+    | DfWidget (Text) (WidgetNode)
+
+  ActivityEntry = record {
+    ae-user : Text,
+    ae-action : Text,
+    ae-time : Text
+  }
+
+  DetailSpec = record {
+    ds-id : Text,
+    ds-title : Text,
+    ds-subtitle : Text,
+    ds-fields : List DetailField,
+    ds-description : Text,
+    ds-activity : List ActivityEntry,
+    ds-footer : Text
+  }
+
+Section: Construction
+  detail-spec : Text, Text, Text -> DetailSpec
+  detail-spec (id) (title) (subtitle) = DetailSpec {
+    ds-id = id, ds-title = title, ds-subtitle = subtitle,
+    ds-fields = [], ds-description = "", ds-activity = [],
+    ds-footer = ""
+  }
+
+  detail-add-field : DetailSpec, DetailField -> DetailSpec
+  detail-add-field (spec) (field) =
+    __record-set spec "ds-fields" (list-push (spec.ds-fields) field)
+
+  detail-set-description : DetailSpec, Text -> DetailSpec
+  detail-set-description (spec) (desc) = __record-set spec "ds-description" desc
+
+  detail-add-activity : DetailSpec, Text, Text, Text -> DetailSpec
+  detail-add-activity (spec) (user) (action) (time) =
+    let entry = ActivityEntry { ae-user = user, ae-action = action, ae-time = time }
+    in __record-set spec "ds-activity" (list-push (spec.ds-activity) entry)
+
+  detail-set-footer : DetailSpec, Text -> DetailSpec
+  detail-set-footer (spec) (text) = __record-set spec "ds-footer" text
+
+Section: Field Constructors
+  df-text : Text, Text -> DetailField
+  df-text (label) (value) = DfText label value
+
+  df-badge : Text, Text, Integer -> DetailField
+  df-badge (label) (text) (color) = DfBadge label text color
+
+  df-dropdown : Text, DropdownState -> DetailField
+  df-dropdown (label) (dd) = DfDropdown label dd
+
+  df-widget : Text, WidgetNode -> DetailField
+  df-widget (label) (w) = DfWidget label w
+
+Section: Widget Rendering (inline)
+  detail-widget : DetailSpec -> WidgetNode
+  detail-widget (spec) =
+    let header = widget-panel (spec.ds-id & "-hdr") DirRow 8 [
+      widget-label (spec.ds-id & "-sub") (spec.ds-subtitle),
+      widget-set-flex (widget-label (spec.ds-id & "-title") (spec.ds-title)) 1,
+      widget-button (spec.ds-id & "-close") "Close"
+    ]
+    in let sep1 = widget-separator (spec.ds-id & "-sep1")
+    in let fields = dp-render-fields spec 0 (list-length (spec.ds-fields)) []
+    in let desc-section = if text-length (spec.ds-description) > 0 then
+      let sep2 = widget-separator (spec.ds-id & "-sep2")
+      in let desc-hdr = widget-label (spec.ds-id & "-desc-hdr") "Description"
+      in let desc-md = md-document-to-widget (md-parse (spec.ds-description)) (spec.ds-id & "-desc")
+      in [sep2, desc-hdr, desc-md]
+    else []
+    in let activity-section = if list-length (spec.ds-activity) > 0 then
+      let sep3 = widget-separator (spec.ds-id & "-sep3")
+      in let act-hdr = widget-label (spec.ds-id & "-act-hdr") "Activity"
+      in let act-rows = dp-render-activity (spec.ds-activity) (spec.ds-id) 0 (list-length (spec.ds-activity)) []
+      in [sep3, act-hdr] & act-rows
+    else []
+    in let footer-section = if text-length (spec.ds-footer) > 0 then
+      [widget-separator (spec.ds-id & "-sep4"), widget-label (spec.ds-id & "-footer") (spec.ds-footer)]
+    else []
+    in widget-panel (spec.ds-id) DirColumn 4 ([header, sep1] & fields & desc-section & activity-section & footer-section)
+
+  dp-render-fields : DetailSpec, Integer, Integer, List WidgetNode -> List WidgetNode
+  dp-render-fields (spec) (i) (n) (acc) =
+    if i >= n then acc
+    else let field = list-at (spec.ds-fields) i
+    in let w = dp-render-field (spec.ds-id) field i
+    in dp-render-fields spec (i + 1) n (list-push acc w)
+
+  dp-render-field : Text, DetailField, Integer -> WidgetNode
+  dp-render-field (prefix) (field) (idx) =
+    let fid = prefix & "-f" & show idx
+    in when field
+      is DfText (label) (value) ->
+        widget-panel fid DirRow 4 [
+          widget-set-min (widget-label (fid & "-l") label) 80 0,
+          widget-set-flex (widget-label (fid & "-v") value) 1
+        ]
+      is DfBadge (label) (text) (color) ->
+        widget-panel fid DirRow 4 [
+          widget-set-min (widget-label (fid & "-l") label) 80 0,
+          widget-set-flex (widget-label (fid & "-v") text) 1
+        ]
+      is DfDropdown (label) (dd) ->
+        widget-panel fid DirRow 4 [
+          widget-set-min (widget-label (fid & "-l") label) 80 0,
+          widget-set-flex (dropdown-widget dd) 1
+        ]
+      is DfWidget (label) (w) ->
+        widget-panel fid DirRow 4 [
+          widget-set-min (widget-label (fid & "-l") label) 80 0,
+          widget-set-flex w 1
+        ]
+
+  dp-render-activity : List ActivityEntry, Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  dp-render-activity (entries) (prefix) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in let w = widget-panel (prefix & "-act-" & show i) DirRow 4 [
+      widget-set-flex (widget-label (prefix & "-act-" & show i & "-msg") (e.ae-user & " " & e.ae-action)) 1,
+      widget-set-min (widget-label (prefix & "-act-" & show i & "-t") (e.ae-time)) 60 0
+    ]
+    in dp-render-activity entries prefix (i + 1) n (list-push acc w)
+
+Section: Modal Overlay Rendering
+  detail-overlay : DetailSpec, Integer, Integer, Integer, Integer -> Overlay
+  detail-overlay (spec) (x) (y) (w) (h) =
+    overlay-modal (spec.ds-id & "-modal") x y w h (detail-widget spec)
+
+Page 1

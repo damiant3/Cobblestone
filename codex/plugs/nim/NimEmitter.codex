@@ -170,9 +170,7 @@ Section: Expression Emission
 
   emit-nim-name : Text, CodexType, List ArityEntry -> Text
   emit-nim-name (n) (ty) (arities) =
-   if n == "read-line" then "readLine(stdin)"
-   else if n == "show" then "$"
-   else if n == "True" then "true"
+   if n == "True" then "true"
    else if n == "False" then "false"
    else if n == "Nothing" then "nil"
    else nim-sanitize n
@@ -184,6 +182,7 @@ Section: Expression Emission
     is IrAppendList -> "(" & emit-nim-expr l arities & " & " & emit-nim-expr r arities & ")"
     is IrConsList -> "(@[" & emit-nim-expr l arities & "] & " & emit-nim-expr r arities & ")"
     is IrDivInt -> "(" & emit-nim-expr l arities & " div " & emit-nim-expr r arities & ")"
+    is IrRemInt -> "(" & emit-nim-expr l arities & " mod " & emit-nim-expr r arities & ")"
     is IrAnd -> "(" & emit-nim-expr l arities & " and " & emit-nim-expr r arities & ")"
     is IrOr -> "(" & emit-nim-expr l arities & " or " & emit-nim-expr r arities & ")"
     is otherwise -> "(" & emit-nim-expr l arities & " " & nim-bin-op-symbol op & " " & emit-nim-expr r arities & ")"
@@ -191,26 +190,23 @@ Section: Expression Emission
   nim-bin-op-symbol : IRBinaryOp -> Text
   nim-bin-op-symbol (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
     is IrDivInt -> "div"
+    is IrRemInt -> "mod"
     is IrPowInt -> "^"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
     is IrEq -> "=="
     is IrNotEq -> "!="
-    is IrLt -> "<"
-    is IrGt -> ">"
-    is IrLtEq -> "<="
-    is IrGtEq -> ">="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq | IrApproxEqExact -> "=="
     is IrAnd -> "and"
     is IrOr -> "or"
-    is IrAppendText -> "&"
-    is IrAppendList -> "&"
-    is IrConsList -> "&"
+    is IrAppendText | IrAppendList | IrConsList -> "&"
 
   emit-nim-lambda-params : List IRParam, Integer -> Text
   emit-nim-lambda-params (params) (i) =
@@ -251,6 +247,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> "of " & text & ": " & emit-nim-expr body arities & " "
     is IrCtorPat (name) (subs) (ty) (sp) -> "of " & nim-sanitize name & ": " & emit-nim-expr body arities & " "
     is IrVarPat (name) (ty) (sp) -> "else: (let " & nim-sanitize name & " = _s; " & emit-nim-expr body arities & ") "
+    is IrVecPat (pats) (ty) (sp) -> "else: " & emit-nim-expr body arities & " "
     is IrWildPat (sp) -> "else: " & emit-nim-expr body arities & " "
 
   emit-nim-act : List IRActStmt, List ArityEntry -> Text
@@ -265,7 +262,63 @@ Section: Expression Emission
     is IrDoBind (name) (ty) (val) (sp) -> "let " & nim-sanitize name & " = " & emit-nim-expr val arities & "; "
     is IrDoExec (e) (sp) -> emit-nim-expr e arities & "; ") & emit-nim-act-stmts stmts (i + 1) arities
 
+Section: Builtin Table
+
+  nim-builtin-names : List Text
+  nim-builtin-names = ["abs", "char-at", "char-code-at", "file-exists",
+   "int-mod", "integer-to-text", "list-at", "list-length", "list-snoc",
+   "max", "min", "negate", "print-error-uni", "print-line-uni",
+   "read-file", "read-line", "show", "substring", "text-compare",
+   "text-contains", "text-length", "text-replace", "text-split",
+   "text-starts-with", "text-to-integer", "write-file"]
+
+  nim-bsearch-builtin : List Text, Text, Integer, Integer -> Integer
+  nim-bsearch-builtin (names) (target) (lo) (hi) =
+   if lo >= hi then -1
+   else let mid = lo + (hi - lo) / 2
+   in let cmp = text-compare target (list-at names mid)
+   in if cmp == 0 then mid
+      else if cmp < 0 then nim-bsearch-builtin names target lo mid
+      else nim-bsearch-builtin names target (mid + 1) hi
+
+  emit-nim-builtin-by-idx : Integer, Text, List IRExpr, List ArityEntry -> Text
+  emit-nim-builtin-by-idx (idx) (n) (args) (arities) =
+   if idx == 0 then "abs(" & emit-nim-expr (list-at args 0) arities & ")"
+   else if idx == 1 then "ord(" & emit-nim-expr (list-at args 0) arities & "[" & emit-nim-expr (list-at args 1) arities & "])"
+   else if idx == 2 then "ord(" & emit-nim-expr (list-at args 0) arities & "[" & emit-nim-expr (list-at args 1) arities & "])"
+   else if idx == 3 then "fileExists(" & emit-nim-expr (list-at args 0) arities & ")"
+   else if idx == 4 then "(" & emit-nim-expr (list-at args 0) arities & " mod " & emit-nim-expr (list-at args 1) arities & ")"
+   else if idx == 5 then "$(" & emit-nim-expr (list-at args 0) arities & ")"
+   else if idx == 6 then emit-nim-expr (list-at args 0) arities & "[" & emit-nim-expr (list-at args 1) arities & "]"
+   else if idx == 7 then "len(" & emit-nim-expr (list-at args 0) arities & ")"
+   else if idx == 8 then emit-nim-expr (list-at args 0) arities & " & @[" & emit-nim-expr (list-at args 1) arities & "]"
+   else if idx == 9 then "max(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
+   else if idx == 10 then "min(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
+   else if idx == 11 then "(-" & emit-nim-expr (list-at args 0) arities & ")"
+   else if idx == 12 then "stderr.writeLine(" & emit-nim-expr (list-at args 0) arities & ")"
+   else if idx == 13 then "echo " & emit-nim-expr (list-at args 0) arities
+   else if idx == 14 then "readFile(" & emit-nim-expr (list-at args 0) arities & ")"
+   else if idx == 15 then "readLine(stdin)"
+   else if idx == 16 then "$(" & emit-nim-expr (list-at args 0) arities & ")"
+   else if idx == 17 then emit-nim-expr (list-at args 0) arities & "[" & emit-nim-expr (list-at args 1) arities & " ..< " & emit-nim-expr (list-at args 1) arities & " + " & emit-nim-expr (list-at args 2) arities & "]"
+   else if idx == 18 then "cmp(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
+   else if idx == 19 then "contains(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
+   else if idx == 20 then "len(" & emit-nim-expr (list-at args 0) arities & ")"
+   else if idx == 21 then "replace(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ", " & emit-nim-expr (list-at args 2) arities & ")"
+   else if idx == 22 then "split(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
+   else if idx == 23 then "startsWith(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
+   else if idx == 24 then "parseInt(" & emit-nim-expr (list-at args 0) arities & ")"
+   else "writeFile(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
+
 Section: Apply Emission
+
+  emit-nim-apply-named : Text, CodexType, List IRExpr, List ArityEntry, IRExpr -> Text
+  emit-nim-apply-named (n) (ty) (args) (arities) (original) =
+   let idx = nim-bsearch-builtin nim-builtin-names n 0 (list-length nim-builtin-names)
+   in if idx >= 0 then emit-nim-builtin-by-idx idx n args arities
+   else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then nim-sanitize n & "(" & emit-nim-apply-args args arities 0 & ")"
+        else nim-sanitize n & "(" & emit-nim-apply-args args arities 0 & ")"
+   else emit-nim-expr-curried original arities
 
   emit-nim-apply : IRExpr, List ArityEntry -> Text
   emit-nim-apply (e) (arities) =
@@ -273,9 +326,7 @@ Section: Apply Emission
    in let root = chain.root
    in let args = chain.args
    in when root
-    is IrName (n) (ty) (sp) ->
-     if n == "print-line-uni" then "echo " & emit-nim-expr (list-at args 0) arities
-     else nim-sanitize n & "(" & emit-nim-apply-args args arities 0 & ")"
+    is IrName (n) (ty) (sp) -> emit-nim-apply-named n ty args arities e
     is otherwise -> emit-nim-expr-curried e arities
 
   emit-nim-apply-args : List IRExpr, List ArityEntry, Integer -> Text

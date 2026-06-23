@@ -2,6 +2,7 @@ Chapter: MAUI Emitter
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Foreword chapter Sort
 
  Generates .NET MAUI C# from the IR. Targets Android, iOS, macOS,
  Windows via Microsoft's multi-platform UI framework.
@@ -176,31 +177,38 @@ Section: Expression Emission
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-maui-try max body fb fail arities indent
     is IrError (msg) (ty) (sp) -> "throw new Exception(\"" & maui-escape msg & "\")"
 
+  maui-vec-op-symbol : IRBinaryOp -> Text
+  maui-vec-op-symbol (op) =
+   when op
+    is IrAddVec -> "+"
+    is IrSubVec -> "-"
+    is IrMulVec -> "*"
+    is IrDivVec -> "/"
+    is otherwise -> "+"
+
   emit-maui-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-maui-binary (op) (l) (r) (arities) (indent) =
    let lhs = emit-maui-expr l arities indent
    in let rhs = emit-maui-expr r arities indent
    in when op
-    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
+    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt | IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
+    is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
-    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
-    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
-    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
-    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
-    is IrEq -> "object.Equals(" & lhs & ", " & rhs & ")"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "object.Equals(" & lhs & ", " & rhs & ")"
     is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
-    is IrLt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
-    is IrGt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
-    is IrLtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
-    is IrGtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
+    is IrLt | IrLtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
+    is IrGt | IrGtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
+    is IrLtEq | IrLtEqVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
+    is IrGtEq | IrGtEqVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
     is IrAnd -> "(" & lhs & " && " & rhs & ")"
     is IrOr -> "(" & lhs & " || " & rhs & ")"
     is IrAppendText -> "(\"\" + " & lhs & " + " & rhs & ")"
     is IrAppendList -> "((List<dynamic>)" & lhs & ").Concat((List<dynamic>)" & rhs & ").ToList()"
     is IrConsList -> "new List<dynamic> { " & lhs & " }.Concat((List<dynamic>)" & rhs & ").ToList()"
+    is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> "((List<dynamic>)" & lhs & ").Zip((List<dynamic>)" & rhs & ", (a, b) => (dynamic)(a " & maui-vec-op-symbol op & " b)).ToList()"
 
   emit-maui-arg : IRExpr, List ArityEntry, Integer -> Text
   emit-maui-arg (e) (arities) (indent) =
@@ -261,6 +269,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> "object.Equals(" & scrut & ", (dynamic)" & text & ")"
     is IrCtorPat (name) (subs) (ty) (sp) -> "(string)" & scrut & "[\"_tag\"] == \"" & name & "\""
     is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
 
   emit-maui-pat-binds : IRPat, Text -> Text
   emit-maui-pat-binds (p) (scrut) =
@@ -269,6 +278,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> ""
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-maui-ctor-binds subs scrut 0
     is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
 
   emit-maui-ctor-binds : List IRPat, Text, Integer -> Text
   emit-maui-ctor-binds (subs) (scrut) (i) =
@@ -319,64 +329,37 @@ Section: Type Helpers
 
 Section: Builtin Recognition
 
+  maui-builtin-names : List Text =
+   sort-by ["check-sd-status", "close-dialog", "css-animate-bounce",
+    "css-animate-pulse", "css-animate-spin", "css-transition",
+    "download-text", "fetch-get-then", "fetch-json", "fetch-then",
+    "generate-image", "inject-theme-css", "int-to-css-color",
+    "integer-to-text", "json-obj-field", "json-parse", "json-parse-obj",
+    "json-stringify", "list-at", "list-insert-at", "list-length",
+    "list-push", "load-layout", "load-theme", "local-storage-get",
+    "local-storage-set", "mount-widget", "mount-widget-into",
+    "mount-widget-themed", "negate", "next-card-id", "random-int",
+    "register-handlers", "request-render", "save-layout", "save-theme",
+    "set-render", "set-timeout", "show-alert", "show-confirm",
+    "show-prompt", "state-get", "state-get-text", "state-set",
+    "state-set-render", "state-set-text", "state-set-text-render",
+    "text-compare", "text-length", "text-replace", "text-starts-with",
+    "text-substring", "theme-to-css", "url-encode"] (\a b -> text-compare a b)
+
+  bsearch-builtin-name : List Text, Text, Integer, Integer -> Integer
+  bsearch-builtin-name (xs) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare name (list-at xs mid) <= 0 then bsearch-builtin-name xs name lo mid
+      else bsearch-builtin-name xs name (mid + 1) hi
+
   is-maui-builtin : Text -> Boolean
   is-maui-builtin (n) =
    if text-starts-with n "dom-" then True
-   else if n == "mount-widget" then True
-   else if n == "mount-widget-themed" then True
-   else if n == "mount-widget-into" then True
-   else if n == "register-handlers" then True
-   else if n == "state-get" then True
-   else if n == "state-set" then True
-   else if n == "state-get-text" then True
-   else if n == "state-set-text" then True
-   else if n == "state-set-render" then True
-   else if n == "state-set-text-render" then True
-   else if n == "set-render" then True
-   else if n == "request-render" then True
-   else if n == "show-alert" then True
-   else if n == "show-confirm" then True
-   else if n == "show-prompt" then True
-   else if n == "close-dialog" then True
-   else if n == "fetch-json" then True
-   else if n == "fetch-then" then True
-   else if n == "fetch-get-then" then True
-   else if n == "json-stringify" then True
-   else if n == "json-parse" then True
-   else if n == "json-parse-obj" then True
-   else if n == "json-obj-field" then True
-   else if n == "url-encode" then True
-   else if n == "download-text" then True
-   else if n == "random-int" then True
-   else if n == "set-timeout" then True
-   else if n == "local-storage-get" then True
-   else if n == "local-storage-set" then True
-   else if n == "int-to-css-color" then True
-   else if n == "next-card-id" then True
-   else if n == "generate-image" then True
-   else if n == "check-sd-status" then True
-   else if n == "theme-to-css" then True
-   else if n == "inject-theme-css" then True
-   else if n == "save-theme" then True
-   else if n == "load-theme" then True
-   else if n == "save-layout" then True
-   else if n == "load-layout" then True
-   else if n == "css-animate-spin" then True
-   else if n == "css-animate-pulse" then True
-   else if n == "css-animate-bounce" then True
-   else if n == "css-transition" then True
-   else if n == "text-substring" then True
-   else if n == "text-starts-with" then True
-   else if n == "text-length" then True
-   else if n == "text-replace" then True
-   else if n == "text-compare" then True
-   else if n == "integer-to-text" then True
-   else if n == "negate" then True
-   else if n == "list-length" then True
-   else if n == "list-at" then True
-   else if n == "list-push" then True
-   else if n == "list-insert-at" then True
-   else False
+   else let len = list-length maui-builtin-names
+   in let pos = bsearch-builtin-name maui-builtin-names n 0 len
+   in if pos >= len then False
+      else list-at maui-builtin-names pos == n
 
 Section: Definition Emission
 
@@ -739,6 +722,6 @@ Section: MAUI Assembly
    in let runtime = emit-maui-color-runtime & emit-maui-state-runtime & emit-maui-reactive-runtime & emit-maui-widget-runtime & emit-maui-dialog-runtime & emit-maui-net-runtime
    in let types-text = emit-maui-type-defs type-defs 0
    in let defs-text = emit-maui-defs (m.defs) 0 arities
-   in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "_page = this;\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) {\n" & maui-indent 3 & "_output.Add(\"ERROR: \" + ex.GetType().Name + \": \" + ex.Message);\n" & maui-indent 3 & "if (ex.InnerException != null) _output.Add(\"INNER: \" + ex.InnerException.Message);\n" & maui-indent 3 & "_output.Add(ex.StackTrace ?? \"\");\n" & maui-indent 2 & "}\n" & maui-indent 2 & "if (Content == null) {\n" & maui-indent 3 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 3 & "if (_output.Count == 0) _output.Add(\"(no output -- opening() did not set Content)\");\n" & maui-indent 3 & "foreach (var line in _output)\n" & maui-indent 4 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Consolas\", TextColor = Colors.Red, FontSize = 12 });\n" & maui-indent 3 & "Content = new ScrollView { Content = stack };\n" & maui-indent 2 & "}\n" & maui-indent 1 & "}\n"
+   in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "_page = this;\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) {\n" & maui-indent 3 & "_output.Add(\"ERROR: \" + ex.GetType().Name + \": \" + ex.Message);\n" & maui-indent 3 & "if (ex.InnerException != null) _output.Add(\"INNER: \" + ex.InnerException.Message);\n" & maui-indent 3 & "_output.Add(ex.StackTrace ?? \"\");\n" & maui-indent 2 & "}\n" & maui-indent 2 & "if (Content == null) {\n" & maui-indent 3 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 3 & "if (_output.Count == 0) _output.Add(\"(no output -- opening() did not set Content)\");\n" & maui-indent 3 & "foreach (var line in _output)\n" & maui-indent 4 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Courier New\", TextColor = Colors.Red, FontSize = 12 });\n" & maui-indent 3 & "Content = new ScrollView { Content = stack };\n" & maui-indent 2 & "}\n" & maui-indent 1 & "}\n"
    in let footer = "}\n"
    in header & page-ref & builtins & runtime & types-text & defs-text & constructor & footer

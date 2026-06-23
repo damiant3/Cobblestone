@@ -1,0 +1,405 @@
+Chapter: ProcessEngine
+  cites Wflow chapter ProcessTypes
+  cites Data chapter Server
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ State machine engine for workflow execution. Evaluates transitions,
+ advances steps, enforces document gates, checks SLAs, and records
+ every state change to the audit trail. All process state is persisted
+ through Codex.Data.
+
+Section: Engine State
+
+  EngineState = record {
+    eng-db : DbServer,
+    eng-log : LogState,
+    eng-defs : List ProcessDef,
+    eng-next-id : Integer,
+    eng-alerts : List Alert
+  }
+
+  engine-init : EngineState
+  engine-init =
+    let db = db-server-new "workflow"
+    in let db2 = workflow-schema db
+    in let log = logger-new 1000 log-info
+    in let log2 = log-info-msg log "engine" "initialized" 0
+    in EngineState {
+      eng-db = db2,
+      eng-log = log2,
+      eng-defs = [],
+      eng-next-id = 10000,
+      eng-alerts = []
+    }
+
+  engine-gen-id : EngineState, Text -> (EngineState, Text)
+  engine-gen-id (eng) (prefix) =
+    let id = prefix & "-" & show (eng.eng-next-id)
+    in let eng2 = __record-set eng "eng-next-id" (eng.eng-next-id + 1)
+    in (eng2, id)
+
+Section: DB Schema
+
+  workflow-schema : DbServer -> DbServer
+  workflow-schema (srv) =
+    let s1 = wf-create-table srv "process_defs" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "name" ColText,
+      col-def-not-null "version" ColInteger,
+      col-def "category" ColText,
+      col-def-not-null "active" ColBoolean,
+      col-def-not-null "created" ColInteger
+    ]
+    in let s2 = wf-create-table s1 "process_instances" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "def_id" ColText,
+      col-def-not-null "name" ColText,
+      col-def-not-null "status" ColText,
+      col-def-not-null "current_step" ColText,
+      col-def-not-null "priority" ColInteger,
+      col-def-not-null "created" ColInteger,
+      col-def "updated" ColInteger,
+      col-def "due_date" ColInteger,
+      col-def "completed_date" ColInteger,
+      col-def "parent_id" ColText
+    ]
+    in let s3 = wf-create-table s2 "process_data" [
+      col-def-not-null "process_id" ColText,
+      col-def-not-null "key" ColText,
+      col-def-not-null "value" ColText,
+      col-def "step_id" ColText,
+      col-def "set_by" ColText,
+      col-def-not-null "set_at" ColInteger
+    ]
+    in let s4 = wf-create-table s3 "step_events" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "process_id" ColText,
+      col-def-not-null "step_id" ColText,
+      col-def-not-null "event_type" ColText,
+      col-def "user_id" ColText,
+      col-def-not-null "timestamp" ColInteger,
+      col-def "details" ColText
+    ]
+    in let s5 = wf-create-table s4 "documents" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "process_id" ColText,
+      col-def-not-null "name" ColText,
+      col-def-not-null "doc_type" ColText,
+      col-def-not-null "status" ColText,
+      col-def "url" ColText,
+      col-def "uploaded_by" ColText,
+      col-def "uploaded_at" ColInteger,
+      col-def "verified_by" ColText,
+      col-def "expires" ColInteger
+    ]
+    in wf-create-table s5 "comments" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "process_id" ColText,
+      col-def "step_id" ColText,
+      col-def-not-null "user_id" ColText,
+      col-def-not-null "text" ColText,
+      col-def-not-null "internal" ColBoolean,
+      col-def-not-null "created" ColInteger
+    ]
+
+  wf-create-table : DbServer, Text, List ColumnDef -> DbServer
+  wf-create-table (srv) (name) (cols) =
+    let tdef = TableDef { tbl-name = name, tbl-columns = cols, tbl-primary-key = [], tbl-indexes = [], tbl-constraints = [] }
+    in when catalog-create-table (srv.db-catalog) tdef
+      is Just (cat2) -> DbServer {
+        db-catalog = cat2, db-txn-mgr = srv.db-txn-mgr,
+        db-lock-table = srv.db-lock-table, db-sessions = srv.db-sessions,
+        db-next-session = srv.db-next-session, db-name = srv.db-name
+      }
+      is None -> srv
+
+Section: Process Definition Versioning
+
+  register-def : EngineState, ProcessDef -> EngineState
+  register-def (eng) (def) =
+    let existing = find-def-version (eng.eng-defs) (def.pd-id)
+    in let versioned = __record-set def "pd-version" (existing + 1)
+    in let defs2 = list-push (eng.eng-defs) versioned
+    in let log2 = log-info-msg (eng.eng-log) "engine" ("registered " & def.pd-id & " v" & show (existing + 1)) 0
+    in let eng2 = __record-set eng "eng-defs" defs2
+    in __record-set eng2 "eng-log" log2
+
+  find-def-version : List ProcessDef, Text -> Integer
+  find-def-version (defs) (id) = find-def-ver-loop defs id 0 0
+
+  find-def-ver-loop : List ProcessDef, Text, Integer, Integer -> Integer
+  find-def-ver-loop (defs) (id) (i) (max-v) =
+    if i >= list-length defs then max-v
+    else let d = list-at defs i
+    in let new-max = if d.pd-id == id then if d.pd-version > max-v then d.pd-version else max-v else max-v
+    in find-def-ver-loop defs id (i + 1) new-max
+
+  get-latest-def : EngineState, Text -> Maybe ProcessDef
+  get-latest-def (eng) (id) =
+    let max-v = find-def-version (eng.eng-defs) id
+    in if max-v == 0 then None
+    else find-def-at-version (eng.eng-defs) id max-v 0
+
+  find-def-at-version : List ProcessDef, Text, Integer, Integer -> Maybe ProcessDef
+  find-def-at-version (defs) (id) (ver) (i) =
+    if i >= list-length defs then None
+    else let d = list-at defs i
+    in if d.pd-id == id then if d.pd-version == ver then Just d
+      else find-def-at-version defs id ver (i + 1)
+    else find-def-at-version defs id ver (i + 1)
+
+Section: Process Lifecycle
+
+  start-process : EngineState, Text, Text, List DataEntry, Integer -> (EngineState, Maybe ProcessInstance)
+  start-process (eng) (def-id) (name) (initial-data) (ts) =
+    when get-latest-def eng def-id
+      is None -> (eng, None)
+      is Just (def) ->
+        let (eng2, pid) = engine-gen-id eng "proc"
+        in let event = StepEvent {
+          se-id = pid & "-ev0",
+          se-step-id = def.pd-start-step,
+          se-event-type = EvProcessStarted,
+          se-user-id = "system",
+          se-timestamp = ts,
+          se-details = "Process started: " & name,
+          se-data-snapshot = initial-data
+        }
+        in let inst = ProcessInstance {
+          pi-id = pid,
+          pi-def-id = def-id,
+          pi-name = name,
+          pi-status = ProcActive,
+          pi-current-step = def.pd-start-step,
+          pi-data = initial-data,
+          pi-history = [event],
+          pi-documents = [],
+          pi-participants = [],
+          pi-priority = 0,
+          pi-created = ts,
+          pi-updated = ts,
+          pi-due-date = ts + def.pd-sla-defaults.sla-deadline-secs,
+          pi-completed-date = 0,
+          pi-parent-id = "",
+          pi-tags = []
+        }
+        in let log2 = log-info-msg (eng2.eng-log) "engine" ("started " & pid & " (" & name & ") at step " & def.pd-start-step) ts
+        in let eng3 = __record-set eng2 "eng-log" log2
+        in (eng3, Just inst)
+
+  complete-step : EngineState, ProcessInstance, ProcessDef, Text, List DataEntry, Integer -> (EngineState, ProcessInstance)
+  complete-step (eng) (inst) (def) (user-id) (step-data) (ts) =
+    let event = StepEvent {
+      se-id = inst.pi-id & "-ev" & show (list-length (inst.pi-history)),
+      se-step-id = inst.pi-current-step,
+      se-event-type = EvStepCompleted,
+      se-user-id = user-id,
+      se-timestamp = ts,
+      se-details = "Step completed by " & user-id,
+      se-data-snapshot = step-data
+    }
+    in let merged-data = merge-data (inst.pi-data) step-data
+    in let inst2 = __record-set inst "pi-data" merged-data
+    in let inst3 = __record-set inst2 "pi-history" (list-push (inst.pi-history) event)
+    in let inst4 = __record-set inst3 "pi-updated" ts
+    in let next = evaluate-transitions def (inst.pi-current-step) merged-data
+    in when next
+      is Just (next-step) ->
+        let inst5 = __record-set inst4 "pi-current-step" next-step
+        in let enter-event = StepEvent {
+          se-id = inst.pi-id & "-ev" & show (list-length (inst3.pi-history) + 1),
+          se-step-id = next-step,
+          se-event-type = EvStepEntered,
+          se-user-id = "system",
+          se-timestamp = ts,
+          se-details = "Entered step " & next-step,
+          se-data-snapshot = []
+        }
+        in let inst6 = __record-set inst5 "pi-history" (list-push (inst5.pi-history) enter-event)
+        in let log2 = log-info-msg (eng.eng-log) "engine" (inst.pi-id & " -> " & next-step) ts
+        in (__record-set eng "eng-log" log2, inst6)
+      is None ->
+        let inst5 = __record-set inst4 "pi-status" ProcCompleted
+        in let inst6 = __record-set inst5 "pi-completed-date" ts
+        in let final-event = StepEvent {
+          se-id = inst.pi-id & "-evF",
+          se-step-id = inst.pi-current-step,
+          se-event-type = EvProcessCompleted,
+          se-user-id = "system",
+          se-timestamp = ts,
+          se-details = "Process completed",
+          se-data-snapshot = []
+        }
+        in let inst7 = __record-set inst6 "pi-history" (list-push (inst6.pi-history) final-event)
+        in let log2 = log-info-msg (eng.eng-log) "engine" (inst.pi-id & " completed") ts
+        in (__record-set eng "eng-log" log2, inst7)
+
+  merge-data : List DataEntry, List DataEntry -> List DataEntry
+  merge-data (existing) (new-entries) = merge-data-loop existing new-entries 0
+
+  merge-data-loop : List DataEntry, List DataEntry, Integer -> List DataEntry
+  merge-data-loop (existing) (new-entries) (i) =
+    if i >= list-length new-entries then existing
+    else merge-data-loop (list-push existing (list-at new-entries i)) new-entries (i + 1)
+
+Section: Transition Evaluation
+
+  evaluate-transitions : ProcessDef, Text, List DataEntry -> Maybe Text
+  evaluate-transitions (def) (from-step) (data) =
+    find-matching-transition (def.pd-transitions) from-step data 0
+
+  find-matching-transition : List TransitionDef, Text, List DataEntry, Integer -> Maybe Text
+  find-matching-transition (transitions) (from) (data) (i) =
+    if i >= list-length transitions then None
+    else let t = list-at transitions i
+    in if t.td-from-step == from then
+      if eval-condition (t.td-condition) data then Just (t.td-to-step)
+      else find-matching-transition transitions from data (i + 1)
+    else find-matching-transition transitions from data (i + 1)
+
+  eval-condition : ConditionOp, List DataEntry -> Boolean
+  eval-condition (cond) (data) =
+    when cond
+      is Always -> True
+      is Equals (field) (val) -> get-data data field == val
+      is NotEquals (field) (val) -> get-data data field /= val
+      is GreaterThan (field) (n) -> parse-int (get-data data field) > n
+      is LessThan (field) (n) -> parse-int (get-data data field) < n
+      is Contains (field) (substr) -> text-contains (get-data data field) substr
+      is IsSet (field) -> has-data data field
+      is IsNotSet (field) -> has-data data field == False
+      is And (a) (b) -> eval-condition a data & eval-condition b data
+      is Or (a) (b) -> eval-condition a data | eval-condition b data
+      is Not (inner) -> eval-condition inner data == False
+
+  parse-int : Text -> Integer
+  parse-int (s) = if text-length s == 0 then 0 else parse-int-loop s 0 (text-length s) 0
+
+  parse-int-loop : Text, Integer, Integer, Integer -> Integer
+  parse-int-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-code (char-at s i)
+    in if c >= 48 then if c <= 57 then parse-int-loop s (i + 1) len (acc * 10 + c - 48)
+      else acc
+    else acc
+
+Section: Document Gate Checking
+
+  check-document-gate : ProcessInstance, StepDef -> Boolean
+  check-document-gate (inst) (step) =
+    all-docs-verified (inst.pi-documents) (step.sd-required-docs) 0
+
+  all-docs-verified : List Document, List Text, Integer -> Boolean
+  all-docs-verified (docs) (required) (i) =
+    if i >= list-length required then True
+    else let req = list-at required i
+    in if doc-is-verified docs req then all-docs-verified docs required (i + 1)
+    else False
+
+  doc-is-verified : List Document, Text -> Boolean
+  doc-is-verified (docs) (doc-type) = doc-ver-loop docs doc-type 0
+
+  doc-ver-loop : List Document, Text, Integer -> Boolean
+  doc-ver-loop (docs) (dtype) (i) =
+    if i >= list-length docs then False
+    else let d = list-at docs i
+    in if d.doc-type == dtype then when d.doc-status is DocVerified -> True is otherwise -> False
+    else doc-ver-loop docs dtype (i + 1)
+
+Section: SLA Checking
+
+  check-sla : ProcessInstance, StepDef, Integer -> SlaCheckResult
+  check-sla (inst) (step) (now) =
+    when step.sd-sla
+      is None -> SlaOk
+      is Just (sla) ->
+        let step-start = find-step-start-time (inst.pi-history) (step.sd-id) 0
+        in let elapsed = now - step-start
+        in if elapsed >= sla.sla-deadline-secs then SlaBreached
+        else if elapsed >= sla.sla-warn-secs then SlaWarning
+        else SlaOk
+
+  SlaCheckResult =
+    | SlaOk
+    | SlaWarning
+    | SlaBreached
+
+  find-step-start-time : List StepEvent, Text, Integer -> Integer
+  find-step-start-time (events) (step-id) (i) =
+    if i >= list-length events then 0
+    else let e = list-at events i
+    in if e.se-step-id == step-id then when e.se-event-type is EvStepEntered -> e.se-timestamp is otherwise -> find-step-start-time events step-id (i + 1)
+    else find-step-start-time events step-id (i + 1)
+
+Section: Alerts
+
+  AlertSeverity =
+    | AlertInfo
+    | AlertWarning
+    | AlertCritical
+
+  Alert = record {
+    alert-id : Text,
+    alert-process-id : Text,
+    alert-step-id : Text,
+    alert-severity : AlertSeverity,
+    alert-message : Text,
+    alert-created : Integer,
+    alert-acknowledged : Boolean
+  }
+
+  create-alert : EngineState, Text, Text, AlertSeverity, Text, Integer -> EngineState
+  create-alert (eng) (proc-id) (step-id) (sev) (msg) (ts) =
+    let (eng2, aid) = engine-gen-id eng "alert"
+    in let alert = Alert {
+      alert-id = aid,
+      alert-process-id = proc-id,
+      alert-step-id = step-id,
+      alert-severity = sev,
+      alert-message = msg,
+      alert-created = ts,
+      alert-acknowledged = False
+    }
+    in let eng3 = __record-set eng2 "eng-alerts" (list-push (eng2.eng-alerts) alert)
+    in let sev-name = when sev is AlertInfo -> "INFO" is AlertWarning -> "WARN" is AlertCritical -> "CRITICAL"
+    in let log2 = log-warn-msg (eng3.eng-log) "alert" ("[" & sev-name & "] " & msg & " (proc=" & proc-id & " step=" & step-id & ")") ts
+    in __record-set eng3 "eng-log" log2
+
+  sla-check-all : EngineState, List ProcessInstance, Integer -> EngineState
+  sla-check-all (eng) (instances) (now) = sla-check-loop eng instances now 0
+
+  sla-check-loop : EngineState, List ProcessInstance, Integer, Integer -> EngineState
+  sla-check-loop (eng) (instances) (now) (i) =
+    if i >= list-length instances then eng
+    else let inst = list-at instances i
+    in when inst.pi-status
+      is ProcActive ->
+        let def = get-latest-def eng (inst.pi-def-id)
+        in when def
+          is Just (d) ->
+            let step = find-step-def d (inst.pi-current-step)
+            in when step
+              is Just (sd) ->
+                let result = check-sla inst sd now
+                in let eng2 = when result
+                  is SlaBreached -> create-alert eng (inst.pi-id) (inst.pi-current-step) AlertCritical ("SLA breached on step " & sd.sd-name) now
+                  is SlaWarning -> create-alert eng (inst.pi-id) (inst.pi-current-step) AlertWarning ("SLA warning on step " & sd.sd-name) now
+                  is SlaOk -> eng
+                in sla-check-loop eng2 instances now (i + 1)
+              is None -> sla-check-loop eng instances now (i + 1)
+          is None -> sla-check-loop eng instances now (i + 1)
+      is otherwise -> sla-check-loop eng instances now (i + 1)
+
+  find-step-def : ProcessDef, Text -> Maybe StepDef
+  find-step-def (def) (step-id) = find-step-loop (def.pd-steps) step-id 0
+
+  find-step-loop : List StepDef, Text, Integer -> Maybe StepDef
+  find-step-loop (steps) (id) (i) =
+    if i >= list-length steps then None
+    else let s = list-at steps i
+    in if s.sd-id == id then Just s
+    else find-step-loop steps id (i + 1)

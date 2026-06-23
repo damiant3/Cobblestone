@@ -75,7 +75,7 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> emit-sw-expr task arities indent
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-sw-expr body arities indent
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-sw-expr body arities indent
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-sw-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-sw-act body arities indent
     is IrError (msg) (ty) (sp) -> "fatalError(\"" & swift-escape msg & "\")"
 
   emit-sw-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
@@ -87,22 +87,29 @@ Section: Expression Emission
     is IrSubInt -> "((" & lhs & " as! Int) - (" & rhs & " as! Int))"
     is IrMulInt -> "((" & lhs & " as! Int) * (" & rhs & " as! Int))"
     is IrDivInt -> "((" & lhs & " as! Int) / (" & rhs & " as! Int))"
+    is IrRemInt -> "((" & lhs & " as! Int) % (" & rhs & " as! Int))"
     is IrPowInt -> "Int(pow(Double(" & lhs & " as! Int), Double(" & rhs & " as! Int)))"
-    is IrAddNum -> "((" & lhs & " as! Double) + (" & rhs & " as! Double))"
-    is IrSubNum -> "((" & lhs & " as! Double) - (" & rhs & " as! Double))"
-    is IrMulNum -> "((" & lhs & " as! Double) * (" & rhs & " as! Double))"
-    is IrDivNum -> "((" & lhs & " as! Double) / (" & rhs & " as! Double))"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "((" & lhs & " as! Double) + (" & rhs & " as! Double))"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "((" & lhs & " as! Double) - (" & rhs & " as! Double))"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "((" & lhs & " as! Double) * (" & rhs & " as! Double))"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "((" & lhs & " as! Double) / (" & rhs & " as! Double))"
     is IrEq -> "isEqual(" & lhs & ", " & rhs & ")"
     is IrNotEq -> "!isEqual(" & lhs & ", " & rhs & ")"
-    is IrLt -> "isLess(" & lhs & ", " & rhs & ")"
-    is IrGt -> "isLess(" & rhs & ", " & lhs & ")"
-    is IrLtEq -> "!isLess(" & rhs & ", " & lhs & ")"
-    is IrGtEq -> "!isLess(" & lhs & ", " & rhs & ")"
+    is IrLt | IrLtVec -> "isLess(" & lhs & ", " & rhs & ")"
+    is IrGt | IrGtVec -> "isLess(" & rhs & ", " & lhs & ")"
+    is IrLtEq | IrLtEqVec -> "!isLess(" & rhs & ", " & lhs & ")"
+    is IrGtEq | IrGtEqVec -> "!isLess(" & lhs & ", " & rhs & ")"
+    is IrApproxEq -> "isEqual(" & lhs & ", " & rhs & ")"
+    is IrApproxEqExact -> "isEqual(" & lhs & ", " & rhs & ")"
     is IrAnd -> "((" & lhs & " as! Bool) && (" & rhs & " as! Bool))"
     is IrOr -> "((" & lhs & " as! Bool) || (" & rhs & " as! Bool))"
     is IrAppendText -> "(\"\" + (" & lhs & " as! String) + (" & rhs & " as! String))"
     is IrAppendList -> "((" & lhs & " as! [Any]) + (" & rhs & " as! [Any]))"
     is IrConsList -> "[" & lhs & "] + (" & rhs & " as! [Any])"
+    is IrAddVec -> "zip(" & lhs & " as! [Double], " & rhs & " as! [Double]).map(+)"
+    is IrSubVec -> "zip(" & lhs & " as! [Double], " & rhs & " as! [Double]).map(-)"
+    is IrMulVec -> "zip(" & lhs & " as! [Double], " & rhs & " as! [Double]).map(*)"
+    is IrDivVec -> "zip(" & lhs & " as! [Double], " & rhs & " as! [Double]).map(/)"
 
   FlatApply = record { root : IRExpr, args : List IRExpr }
 
@@ -154,6 +161,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> "isEqual(" & scrut & ", " & text & ")"
     is IrCtorPat (name) (subs) (ty) (sp) -> "((" & scrut & " as! [String: Any])[\"_tag\"] as! String) == \"" & name & "\""
     is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
 
   emit-sw-pat-binds : IRPat, Text -> Text
   emit-sw-pat-binds (p) (scrut) =
@@ -162,6 +170,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> ""
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-sw-ctor-binds subs scrut 0
     is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
 
   emit-sw-ctor-binds : List IRPat, Text, Integer -> Text
   emit-sw-ctor-binds (subs) (scrut) (i) =

@@ -78,12 +78,16 @@ Section: Type Emission
   emit-html-type (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> "number"
-    is NumberTy -> "number"
+    is RealTy -> "number"
+    is RealApproxTy -> "number"
+    is RealTrappingTy -> "number"
+    is RealSaturatingTy -> "number"
     is TextTy -> "string"
     is BooleanTy -> "boolean"
     is CharTy -> "string"
     is VoidTy -> "void"
     is NothingTy -> "void"
+    is UnitTy (n) (inner) -> "void"
     is ErrorTy -> "any"
     is FunTy (p) (r) -> "Function"
     is ListTy (elem) -> "Array"
@@ -93,6 +97,7 @@ Section: Type Emission
     is SumTy (name) (ty-args) (ctors) -> name.value
     is RecordTy (name) (args) (fields) -> name.value
     is ConstructedTy (name) (args) -> name.value
+    is VectorTy (vn) (vt) -> "Array"
     is EffectfulTy (effs) (sc) (ret) -> emit-html-type ret
 
 Section: JavaScript Expression Emission
@@ -136,22 +141,29 @@ Section: Binary Operators
     is IrSubInt -> "(" & lhs & " - " & rhs & ")"
     is IrMulInt -> "(" & lhs & " * " & rhs & ")"
     is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
-    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
-    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
-    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
-    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
     is IrEq -> "(" & lhs & " === " & rhs & ")"
     is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
-    is IrLt -> "(" & lhs & " < " & rhs & ")"
-    is IrGt -> "(" & lhs & " > " & rhs & ")"
-    is IrLtEq -> "(" & lhs & " <= " & rhs & ")"
-    is IrGtEq -> "(" & lhs & " >= " & rhs & ")"
+    is IrLt | IrLtVec -> "(" & lhs & " < " & rhs & ")"
+    is IrGt | IrGtVec -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq | IrLtEqVec -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq | IrGtEqVec -> "(" & lhs & " >= " & rhs & ")"
+    is IrApproxEq -> "(" & lhs & " === " & rhs & ")"
+    is IrApproxEqExact -> "(" & lhs & " === " & rhs & ")"
     is IrAnd -> "(" & lhs & " && " & rhs & ")"
     is IrOr -> "(" & lhs & " || " & rhs & ")"
     is IrAppendText -> "(" & lhs & " + " & rhs & ")"
     is IrAppendList -> "(" & lhs & ".concat(" & rhs & "))"
     is IrConsList -> "[" & lhs & ", ..." & rhs & "]"
+    is IrAddVec -> "(" & lhs & ".map((v,i) => v + " & rhs & "[i]))"
+    is IrSubVec -> "(" & lhs & ".map((v,i) => v - " & rhs & "[i]))"
+    is IrMulVec -> "(" & lhs & ".map((v,i) => v * " & rhs & "[i]))"
+    is IrDivVec -> "(" & lhs & ".map((v,i) => v / " & rhs & "[i]))"
 
 Section: Let Bindings
 
@@ -240,6 +252,7 @@ Section: Match
     is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
     is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "true" else scrut & "._tag === \"" & name & "\""
     is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
 
   emit-js-pattern-binds : IRPat, Text, Integer -> Text
   emit-js-pattern-binds (p) (scrut) (indent) =
@@ -248,6 +261,7 @@ Section: Match
     is IrLitPat (text) (ty) (sp) -> ""
     is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then emit-js-tuple-binds subs scrut indent 0 else emit-js-ctor-binds subs scrut indent 0
     is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
 
   emit-js-ctor-binds : List IRPat, Text, Integer, Integer -> Text
   emit-js-ctor-binds (subs) (scrut) (indent) (i) =

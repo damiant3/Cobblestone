@@ -12,7 +12,7 @@
 param(
     [Parameter(Mandatory=$true)] [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
-    [int]$MemMB = 4096
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -60,21 +60,13 @@ $code = New-Object byte[] $codeLen
 $data = New-Object byte[] $dataLen
 [Array]::Copy($wireBytes, $dataStart, $data, 0, $dataLen)
 
-# Parse function table to find entry point
+# Parse function table to find entry point.
+# The first function is always __start (emitted first by rv-emit-runtime).
 $funcOff = $dataStart + $dataLen
 $entryOffset = 0
-$off = $funcOff
-for ($fi = 0; $fi -lt $funcCount; $fi++) {
-    $nameLen = [BitConverter]::ToInt16($wireBytes, $off)
-    $nameChars = [char[]]::new($nameLen)
-    for ($ci = 0; $ci -lt $nameLen; $ci++) {
-        $cce = $wireBytes[$off + 2 + $ci]
-        $nameChars[$ci] = if ($cce -lt $script:CceToUnicode.Length) { [char]$script:CceToUnicode[$cce] } else { [char]63 }
-    }
-    $name = [string]::new($nameChars)
-    $funcOffset = [BitConverter]::ToInt32($wireBytes, $off + 2 + $nameLen)
-    if ($name -eq '__start') { $entryOffset = $funcOffset }
-    $off += 2 + $nameLen + 4
+if ($funcCount -gt 0 -and $funcOff + 6 -le $wireBytes.Length) {
+    $nameLen = [BitConverter]::ToInt16($wireBytes, $funcOff)
+    $entryOffset = [BitConverter]::ToInt32($wireBytes, $funcOff + 2 + $nameLen)
 }
 
 # Build ELF64 for RISC-V

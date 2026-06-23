@@ -2,6 +2,7 @@ Chapter: Swift Emitter
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Foreword chapter Sort
 
  Generates Swift source code from the IR.
 
@@ -188,28 +189,36 @@ Section: Expression Emission
     is IrAppendList -> "(" & emit-sw-expr l arities & " + " & emit-sw-expr r arities & ")"
     is IrConsList -> "([" & emit-sw-expr l arities & "] + " & emit-sw-expr r arities & ")"
     is IrDivInt -> "(" & emit-sw-expr l arities & " / " & emit-sw-expr r arities & ")"
+    is IrRemInt -> "(" & emit-sw-expr l arities & " % " & emit-sw-expr r arities & ")"
     is IrAnd -> "(" & emit-sw-expr l arities & " && " & emit-sw-expr r arities & ")"
     is IrOr -> "(" & emit-sw-expr l arities & " || " & emit-sw-expr r arities & ")"
+    is IrAddVec -> "zip(" & emit-sw-expr l arities & ", " & emit-sw-expr r arities & ").map(+)"
+    is IrSubVec -> "zip(" & emit-sw-expr l arities & ", " & emit-sw-expr r arities & ").map(-)"
+    is IrMulVec -> "zip(" & emit-sw-expr l arities & ", " & emit-sw-expr r arities & ").map(*)"
+    is IrDivVec -> "zip(" & emit-sw-expr l arities & ", " & emit-sw-expr r arities & ").map(/)"
     is otherwise -> "(" & emit-sw-expr l arities & " " & sw-bin-op-symbol op & " " & emit-sw-expr r arities & ")"
 
   sw-bin-op-symbol : IRBinaryOp -> Text
   sw-bin-op-symbol (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
-    is IrDivInt -> "/"
+    is IrAddInt | IrAddVec -> "+"
+    is IrSubInt | IrSubVec -> "-"
+    is IrMulInt | IrMulVec -> "*"
+    is IrDivInt | IrDivVec -> "/"
+    is IrRemInt -> "%"
     is IrPowInt -> "**"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
     is IrEq -> "=="
     is IrNotEq -> "!="
-    is IrLt -> "<"
-    is IrGt -> ">"
-    is IrLtEq -> "<="
-    is IrGtEq -> ">="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq -> "=="
+    is IrApproxEqExact -> "=="
     is IrAnd -> "&&"
     is IrOr -> "||"
     is IrAppendText -> "+"
@@ -258,6 +267,7 @@ Section: Expression Emission
      else "case ." & sw-sanitize name & ": return " & emit-sw-expr body arities & "; "
     is IrVarPat (name) (ty) (sp) -> "default: let " & sw-sanitize name & " = _s; return " & emit-sw-expr body arities & "; "
     is IrWildPat (sp) -> "default: return " & emit-sw-expr body arities & "; "
+    is IrVecPat (pats) (ty) (sp) -> "default: return " & emit-sw-expr body arities & "; "
 
   emit-sw-act : List IRActStmt, List ArityEntry -> Text
   emit-sw-act (stmts) (arities) =
@@ -271,6 +281,62 @@ Section: Expression Emission
     is IrDoBind (name) (ty) (val) (sp) -> "let " & sw-sanitize name & " = " & emit-sw-expr val arities & "; "
     is IrDoExec (e) (sp) -> emit-sw-expr e arities & "; ") & emit-sw-act-stmts stmts (i + 1) arities
 
+Section: Builtin Emitters
+
+  SwBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-sw-emitter-pos : List SwBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-sw-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-sw-emitter-pos entries name lo mid
+      else bsearch-sw-emitter-pos entries name (mid + 1) hi
+
+  sort-sw-emitters : List SwBuiltinEmitter -> List SwBuiltinEmitter
+  sort-sw-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  sw-builtin-emitters : List SwBuiltinEmitter = sort-sw-emitters [
+   SwBuiltinEmitter { name = "abs", emit = \args arities -> "abs(" & emit-sw-expr (list-at args 0) arities & ")" },
+   SwBuiltinEmitter { name = "char-at", emit = \args arities -> "Array(" & emit-sw-expr (list-at args 0) arities & ")[" & emit-sw-expr (list-at args 1) arities & "]" },
+   SwBuiltinEmitter { name = "char-code-at", emit = \args arities -> "Int(Array(" & emit-sw-expr (list-at args 0) arities & ")[" & emit-sw-expr (list-at args 1) arities & "].asciiValue!)" },
+   SwBuiltinEmitter { name = "file-exists", emit = \args arities -> "FileManager.default.fileExists(atPath: " & emit-sw-expr (list-at args 0) arities & " as! String)" },
+   SwBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! Int % " & emit-sw-expr (list-at args 1) arities & " as! Int)" },
+   SwBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "String(" & emit-sw-expr (list-at args 0) arities & " as! Int)" },
+   SwBuiltinEmitter { name = "list-at", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! [Any?])[" & emit-sw-expr (list-at args 1) arities & " as! Int]" },
+   SwBuiltinEmitter { name = "list-length", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! [Any?]).count" },
+   SwBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! [Any?]) + [" & emit-sw-expr (list-at args 1) arities & "]" },
+   SwBuiltinEmitter { name = "max", emit = \args arities -> "max(" & emit-sw-expr (list-at args 0) arities & " as! Int, " & emit-sw-expr (list-at args 1) arities & " as! Int)" },
+   SwBuiltinEmitter { name = "min", emit = \args arities -> "min(" & emit-sw-expr (list-at args 0) arities & " as! Int, " & emit-sw-expr (list-at args 1) arities & " as! Int)" },
+   SwBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-sw-expr (list-at args 0) arities & " as! Int))" },
+   SwBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "FileHandle.standardError.write(String(describing: " & emit-sw-expr (list-at args 0) arities & ").data(using: .utf8)!)" },
+   SwBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "print(" & emit-sw-expr (list-at args 0) arities & ")" },
+   SwBuiltinEmitter { name = "read-file", emit = \args arities -> "try! String(contentsOfFile: " & emit-sw-expr (list-at args 0) arities & " as! String, encoding: .utf8)" },
+   SwBuiltinEmitter { name = "read-line", emit = \args arities -> "readLine()!" },
+   SwBuiltinEmitter { name = "show", emit = \args arities -> "String(describing: " & emit-sw-expr (list-at args 0) arities & ")" },
+   SwBuiltinEmitter { name = "substring", emit = \args arities -> "String(Array(" & emit-sw-expr (list-at args 0) arities & " as! String)[(" & emit-sw-expr (list-at args 1) arities & " as! Int)..<(" & emit-sw-expr (list-at args 1) arities & " as! Int) + (" & emit-sw-expr (list-at args 2) arities & " as! Int)])" },
+   SwBuiltinEmitter { name = "text-compare", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).compare(" & emit-sw-expr (list-at args 1) arities & " as! String).rawValue" },
+   SwBuiltinEmitter { name = "text-contains", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).contains(" & emit-sw-expr (list-at args 1) arities & " as! String)" },
+   SwBuiltinEmitter { name = "text-length", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).count" },
+   SwBuiltinEmitter { name = "text-replace", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).replacingOccurrences(of: " & emit-sw-expr (list-at args 1) arities & " as! String, with: " & emit-sw-expr (list-at args 2) arities & " as! String)" },
+   SwBuiltinEmitter { name = "text-split", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).components(separatedBy: " & emit-sw-expr (list-at args 1) arities & " as! String)" },
+   SwBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).hasPrefix(" & emit-sw-expr (list-at args 1) arities & " as! String)" },
+   SwBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "Int(" & emit-sw-expr (list-at args 0) arities & " as! String)!" },
+   SwBuiltinEmitter { name = "write-file", emit = \args arities -> "try! (" & emit-sw-expr (list-at args 1) arities & " as! String).write(toFile: " & emit-sw-expr (list-at args 0) arities & " as! String, atomically: true, encoding: .utf8)" }
+  ]
+
+  sw-try-builtin : Text, List IRExpr, List ArityEntry -> Text
+  sw-try-builtin (n) (args) (arities) =
+   let len = list-length sw-builtin-emitters
+   in let pos = bsearch-sw-emitter-pos sw-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at sw-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
+
 Section: Apply Emission
 
   emit-sw-apply : IRExpr, List ArityEntry -> Text
@@ -280,7 +346,8 @@ Section: Apply Emission
    in let args = chain.args
    in when root
     is IrName (n) (ty) (sp) ->
-     if n == "print-line-uni" then "print(" & emit-sw-expr (list-at args 0) arities & ")"
+     let bi = sw-try-builtin n args arities
+     in if text-length bi > 0 then bi
      else if is-mktup-name n then "(" & emit-sw-apply-args args arities 0 & ")"
      else sw-sanitize n & "(" & emit-sw-apply-args args arities 0 & ")"
     is otherwise -> emit-sw-expr-curried e arities
@@ -333,6 +400,7 @@ Section: Chapter Emission
    in let nm = when (list-at subs i)
     is IrVarPat (name) (ty) (sp) -> sw-sanitize name
     is IrWildPat (sp) -> "_"
+    is IrVecPat (pats) (ty) (sp) -> "_"
     is otherwise -> "_"
    in sep & nm & emit-sw-tup-pat-names subs (i + 1)
 

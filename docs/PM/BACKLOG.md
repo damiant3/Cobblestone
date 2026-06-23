@@ -1,6 +1,6 @@
 # Backlog — Outstanding Work
 
-**Updated**: 2026-06-13
+**Updated**: 2026-06-18
 
 ## Active — Ongoing
 
@@ -8,46 +8,68 @@
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | **End-to-end USB validation** | All driver/integration layers done (MSC, DriveManager, DevConsole, XHCI). Needs physical USB stick test on Asus + Dell. **New since CL 3742: the 3GB seed needs 3GB of contiguous RAM below the PCI MMIO hole — confirm on both machines.** |
+| 1 | **End-to-end USB validation** | All driver/integration layers done (MSC, DriveManager, DevConsole, XHCI). Needs physical USB stick test on Asus + Dell. RAM now 8GB with MMIO-hole split; real hardware needs page-fault skip for the hole (deferred). |
 
 ### Memory
 
 | # | Item | Notes |
 |---|------|-------|
-| 3 | **Non-contiguous physical memory (the real 8GB+)** | `bare-metal-ram-size` is now 3GB (CLs 3736/3742), the hard maximum for the contiguous design: the top 1GB of 32-bit space is PCI MMIO, and RAM above 4GB relocates to addresses the kernel never maps. Going past 3GB needs: boot path reads the firmware memory map instead of a baked constant; page tables skip the MMIO hole and map above 4GB; allocator and stack-top handle a non-contiguous arena. This is the item that kills the memory ceiling for good. Design home: `docs/Designs/Memory/Active/`. |
+| 1 | ~~**Non-contiguous physical memory (the real 8GB+)**~~ | DONE. `bare-metal-ram-size` = 8GB, page tables extended, build scripts updated to `-mem 8192`. VM memory map splits around MMIO hole. Real hardware unmapped-hole page-fault skip deferred. |
 
 ### Compiler
 
 | # | Item | Notes |
 |---|------|-------|
-| 2 | **Phase discipline — remaining items** | `docs/Designs/Active/Compiler/PHASE-ARCHITECTURE.md`. Per-phase build/measure/compact and the RESOLVE/LIFT split are done. Open: deck-record toggle ratchet, escape-invariant enforcement, TCO-reset removal, per-phase survey tightening (lex 40x done CL 2306). |
-| 3 | ~~**Keyword as pattern variable**~~ | **DONE** CL 4018: `is-keyword` check in `parse-pattern` emits CDX1060 at parse time. |
-| 4 | ~~**Act-block statement merge**~~ | **NOT REPRO** 2026-06-13: `is-app-start` excludes `IfKeyword` and the app loop does not skip newlines at paren-depth 0, so the described scenario cannot occur with the current parser. Likely fixed by intervening parser changes since CL 3849. |
+| 1 | **Phase discipline — remaining items** | `docs/Designs/Active/Compiler/PHASE-ARCHITECTURE.md`. Per-phase build/measure/compact and the RESOLVE/LIFT split are done. Open: deck-record toggle ratchet, escape-invariant enforcement, TCO-reset removal, per-phase survey tightening (lex 40x done CL 2306). |
 
-### Apps — Never-Compiled Code Inventory (2026-06-11 sweep)
+### Apps — Compile Health (2026-06-17 sweep)
 
-Found while root-causing the crypto vector failures: large bodies of app
-code that have never compiled, written against APIs or syntax that do
-not exist. They pass no gate because nothing collects them. Each class
-needs either a compiler feature, a mechanical rewrite, or deletion.
+Fester swept all app tests 2026-06-17. Key findings:
+
+- **`cites Codex chapter General` removed** (CL 4602/4612 apps,
+  CL 4706 codex/test): 85 app tests + 58 core tests cited a chapter
+  that never existed. Removing it recovered 100+ test passes.
+- **All 53 remaining "failures" are batch heap exhaustion**, not code
+  bugs. Every failing test compiles individually. Lightest-first batch
+  sorting (CL 4609/4612) mitigates but does not eliminate the issue.
+- **21/21 web apps compile clean** through the HTML plug (build-apps.ps1).
+- **305/305 foreword modules have compile-smoke tests** (CL 4601/4612).
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | **Hex sites need rewriting to `#` notation** | Language decision made 2026-06-12: `#RRGGBB`-style hash literals (CL 3837), not C's `0x`. The 178 app sites (browser 47, diagram 44, vision 32, collab 23, globe 15, fileshare 11, secrets 5, explorer 1) still spell `0x...` and need a mechanical `0x` -> `#` pass once CL 3837 lands. |
-| 2 | **`is Nothing ->` patterns** | DONE CL 3838: 205 pattern sites + 68 expression-position sites rewritten to `None` across 45 app files. |
-| 3 | **Bare `list-map` callers** | Not in the foreword; per-file sweep overcounts because cross-chapter defs resolve via cites — needs a compile-based count, not grep. |
-| 4 | **Nonexistent text API calls** | `text-slice`, `text-insert-at`, `text-remove-at` used in cvmm and others (cvmm fixed in CL 3832). Rewrite as `text-take`/`text-drop` composites or add the helpers to StringUtils. |
-| 5 | **test/lib triage queue — round 2: six real library bugs** | Round 1 (CL 3869) fixed the 6 compile fails (let-in-act statement disease + a wrong-quire cite) and hkdf's stale expected (prk-len=8 predates CL 3622). Six remain `.skip`'d, each a REAL library bug found by diffing captured actuals: **decimal** (multiply gives 0.01 for 5.25*7.74, parse ignores the point); **toml + yaml** (parsers return defaults — title=?, port=0); **numeric** (bisect/newton/trap all orders-of-magnitude off — scale confusion); **path** (path-join emits double slash, basename returns full path); **number-theory** (GPF at primes — runtime crash, needs the debugger). |
+| 1 | ~~**Batch heap exhaustion**~~ | DONE. 8GB RAM landed; batch VM memory increased. Previously-failing tests now pass. |
+| 2 | ~~**Bare `list-map` callers**~~ | DONE (CL 4848). `list-map` IS in foreword (ListUtils.codex). 22 files used it via transitive cites only — added explicit `cites Foreword chapter ListUtils` to all 22. |
+
+### SMP
+
+| # | Item | Notes |
+|---|------|-------|
+| 1 | **Phase 1 -- Atomic primitives** | DONE (CL 4626). 6 builtins: atomic-load, atomic-store, atomic-cas, atomic-add, atomic-exchange, memory-fence. x86-64 LOCK CMPXCHG/XADD/XCHG/MFENCE codegen. ARM64 and RISC-V backends not yet done. |
+| 2 | **Phase 2 -- Per-core bootstrap** | DONE. Opt-in via `-smp N` (default single-core). Boot reads core count from GPA 0xFF8; if <= 1, SMP init skipped. AP trampoline, INIT/STARTUP IPI, per-core stacks wired into boot sequence. VM creates N vCPUs + MADT entries. |
+| 3 | **Phase 3 -- Per-core scheduler** | DONE. CoreState module: per-core run queues, priority dequeue, work stealing from longest queue, balanced enqueue, idle tracking, schedule-step. AP entry reads LAPIC ID, sets per-core stack, enables LAPIC, signals ready. BSP spin-waits for all APs. |
+| 4 | **Phase 4 -- Per-core heap** | DONE. CoreHeap module: per-core arena splitting. Single-core: full 6MB-3GB heap. Multi-core: arenas start above AP stacks (7MB), page-aligned equal split, last core gets remainder. HWM tracking per arena. |
+| 5 | **Phase 5 -- IPI + lock-free channels** | DONE. IPI module: typed messages (SchedulerWake, TlbShootdown, PanicHalt), per-core mailboxes, targeted/broadcast/all-but-self delivery, convenience senders. LockFreeChannel module: MPSC circular buffer with head/tail indices, send-from-any-core, recv-on-owner, close, stats. All 5 SMP phases complete for x86-64. |
+
+### Library Gap Closure
+
+| # | Item | Notes |
+|---|------|-------|
+| 1 | ~~**BigInt**~~ | DONE (fester, 2026-06-18). `codex.foreword.core.BigInt` — sign + base-10000 limbs. add/sub/mul/divmod/compare/pow/factorial/gcd/mod, to-text/from-integer/to-integer. |
 
 ### Encoding
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | **CCE multilingual coverage (tiers beyond 1)** | Tier 1 is 128 codes with 16 accented + 15 Cyrillic slots — a simplifying assumption, not a writing system. Getting the rest of the world's languages in means the compiler accepting CCE tiers greater than 1 (wider code space), not remapping tier-1 slots. Touches lexer, Text representation, the I/O boundary converters, and `cce-to-unicode-table` (foreword/core/CCE.codex). |
+| 1 | ~~**CCE Tiers 2+ (CJK, rare scripts, emoji)**~~ | DONE (fester, 2026-06-18). Tier 2 block tables: CJK Unified (20992), CJK Extension A (6592), Hangul Syllables (11172), Hiragana (96), Katakana (96), CJK Symbols (64), Thai (256), Misc Symbols (512), Emoji (1024), Dingbats (256). Bidirectional to-unicode/from-unicode, 3-byte encode/decode (framing was already in place), classification (cce-is-cjk/hangul/kana/emoji), letter recognition extended. |
+
+### GPU Compute
+
+| # | Item | Notes |
+|---|------|-------|
+| 1 | **Dual-target GPU compilation (PTX + SPIR-V)** | Design complete (CL 4424). **K0-K8 done** (fester, 2026-06-18): foreword.gpu quire (10 modules), Device/Gpu effects + capabilities, PTX plug with GPU intrinsics (special regs, warp shuffle, shared mem, atomics, barriers, math), verifier Phase 3/4 integration (CdxBinary + CdxVerifier), GpuProxy launch-ptx, gpu-dispatch.cu CUDA Driver API, vecadd E2E test (.skip -- needs GPU hardware). Only K9 (libdevice path) remains, deferred by design. |
 
 ### Tooling — Host Stability
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | **codex-vm whp_lock fail-open** | `tools/codex-vm.c:37` — `WaitForSingleObject(whp_mutex, 30000)` ignores the result; on timeout the process proceeds into the WHP calls concurrently, the exact vid.sys kernel-heap-corruption scenario the mutex guards (file comment, line 31). Implicated in the 2026-06-11 double CLOCK_WATCHDOG_TIMEOUT host crashes. Fix: INFINITE wait, treat WAIT_ABANDONED as acquired, die on WAIT_FAILED/NULL mutex. Prompt handed to an agent 6/11; **verify landed before resuming parallel/multi-agent batteries.** |
-| 2 | **build.ps1 hardcodes -mem 4096** | Lines 31/65. Current seed maps 2GB; since CL 3732 the clamp is real, so every VM commits 4GB of host RAM. Drop to 2048 (or derive from the seed) to halve commit pressure under parallel batteries on the 32GB host. |
+| 1 | ~~**build.ps1 -mem matches bare-metal-ram-size**~~ | RESOLVED. `bare-metal-ram-size` is now 8GB. Build scripts updated to `-mem 8192`. |

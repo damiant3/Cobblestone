@@ -74,7 +74,7 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> "(await " & emit-wf-expr task arities indent & ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-wf-expr body arities indent
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-wf-expr body arities indent
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-wf-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-wf-act body arities indent
     is IrError (msg) (ty) (sp) -> "throw new Exception(\"" & wf-escape msg & "\")"
 
   emit-wf-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
@@ -82,21 +82,20 @@ Section: Expression Emission
    let lhs = emit-wf-expr l arities indent
    in let rhs = emit-wf-expr r arities indent
    in when op
-    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
+    is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
-    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
-    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
-    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
-    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
     is IrEq -> "object.Equals(" & lhs & ", " & rhs & ")"
     is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
-    is IrLt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
-    is IrGt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
-    is IrLtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
-    is IrGtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
+    is IrLt | IrLtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
+    is IrGt | IrGtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
+    is IrLtEq | IrLtEqVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
+    is IrGtEq | IrGtEqVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
+    is IrApproxEq -> "object.Equals(" & lhs & ", " & rhs & ")"
+    is IrApproxEqExact -> "object.Equals(" & lhs & ", " & rhs & ")"
     is IrAnd -> "(" & lhs & " && " & rhs & ")"
     is IrOr -> "(" & lhs & " || " & rhs & ")"
     is IrAppendText -> "(\"\" + " & lhs & " + " & rhs & ")"
@@ -153,6 +152,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> "object.Equals(" & scrut & ", (dynamic)" & text & ")"
     is IrCtorPat (name) (subs) (ty) (sp) -> "(string)" & scrut & "[\"_tag\"] == \"" & name & "\""
     is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
 
   emit-wf-pat-binds : IRPat, Text -> Text
   emit-wf-pat-binds (p) (scrut) =
@@ -161,6 +161,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> ""
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-wf-ctor-binds subs scrut 0
     is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
 
   emit-wf-ctor-binds : List IRPat, Text, Integer -> Text
   emit-wf-ctor-binds (subs) (scrut) (i) =
@@ -231,7 +232,7 @@ Section: WinForms Assembly
    in let builtins = wf-indent 2 & "static readonly List<string> _output = new();\n" & wf-indent 2 & "static void print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); }\n" & wf-indent 2 & "static void print_line(dynamic s) { print_line_uni(s); }\n" & wf-indent 2 & "static string show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & wf-indent 2 & "static long text_length(string s) { return s.Length; }\n" & wf-indent 2 & "static string text_replace(string s, string a, string b) { return s.Replace(a, b); }\n" & wf-indent 2 & "static long text_compare(string a, string b) { return string.Compare(a, b, StringComparison.Ordinal); }\n" & wf-indent 2 & "static long list_length(dynamic xs) { return ((List<dynamic>)xs).Count; }\n" & wf-indent 2 & "static dynamic list_at(dynamic xs, long i) { return ((List<dynamic>)xs)[(int)i]; }\n" & wf-indent 2 & "static List<dynamic> list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & wf-indent 2 & "static string integer_to_text(long n) { return n.ToString(); }\n" & wf-indent 2 & "static long negate(long n) { return -n; }\n\n"
    in let types-text = emit-wf-type-defs type-defs 0
    in let defs-text = emit-wf-defs (m.defs) 0 arities
-   in let constructor = wf-indent 2 & "public MainForm()\n" & wf-indent 2 & "{\n" & wf-indent 3 & "Text = \"" & title & "\";\n" & wf-indent 3 & "Size = new Size(800, 600);\n" & wf-indent 3 & "try { opening(); } catch (Exception ex) { _output.Add(\"ERROR: \" + ex.Message); }\n" & wf-indent 3 & "var tb = new TextBox { Multiline = true, ReadOnly = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, Font = new Font(\"Consolas\", 10) };\n" & wf-indent 3 & "tb.Text = string.Join(Environment.NewLine, _output);\n" & wf-indent 3 & "Controls.Add(tb);\n" & wf-indent 2 & "}\n\n"
+   in let constructor = wf-indent 2 & "public MainForm()\n" & wf-indent 2 & "{\n" & wf-indent 3 & "Text = \"" & title & "\";\n" & wf-indent 3 & "Size = new Size(800, 600);\n" & wf-indent 3 & "try { opening(); } catch (Exception ex) { _output.Add(\"ERROR: \" + ex.Message); }\n" & wf-indent 3 & "var tb = new TextBox { Multiline = true, ReadOnly = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, Font = new Font(\"Courier New\", 10) };\n" & wf-indent 3 & "tb.Text = string.Join(Environment.NewLine, _output);\n" & wf-indent 3 & "Controls.Add(tb);\n" & wf-indent 2 & "}\n\n"
    in let main = wf-indent 2 & "[STAThread]\n" & wf-indent 2 & "static void Main()\n" & wf-indent 2 & "{\n" & wf-indent 3 & "Application.EnableVisualStyles();\n" & wf-indent 3 & "Application.Run(new MainForm());\n" & wf-indent 2 & "}\n"
    in let footer = "    }\n}\n"
    in header & builtins & types-text & defs-text & constructor & main & footer

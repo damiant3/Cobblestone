@@ -182,19 +182,19 @@ Section: Full Page Emit
     & "</div></div>\n"
     & "<div class=\"species-bar\" id=\"species\"></div>\n"
     & "<div class=\"controls\">"
-    & "<button class=\"ctrl-btn\" onclick=\"feedFish()\">Feed</button>"
-    & "<button class=\"ctrl-btn\" onclick=\"tapGlass()\">Tap Glass</button>"
+    & "<button class=\"ctrl-btn\" data-action=\"feed\">Feed</button>"
+    & "<button class=\"ctrl-btn\" data-action=\"tap\">Tap Glass</button>"
     & "<div class=\"ctrl-sep\"></div>"
-    & "<button class=\"ctrl-btn\" onclick=\"toggleLight()\">Light</button>"
+    & "<button class=\"ctrl-btn\" data-action=\"light\">Light</button>"
     & "<div class=\"ctrl-sep\"></div>"
-    & "<button class=\"ctrl-btn\" onclick=\"toggleAddMenu()\">Add Fish</button>"
+    & "<button class=\"ctrl-btn\" data-action=\"add\">Add Fish</button>"
     & "</div>\n"
 
   emit-add-menu : List FishSpecies, Integer -> Text
   emit-add-menu (xs) (i) =
     if i >= list-length xs then ""
     else let sp = list-at xs i
-    in "<div class=\"add-option\" onclick=\"addFishByName('" & sp.sp-name & "');hideAddMenu()\">" & sp.sp-name & "</div>\n"
+    in "<div class=\"add-option\" data-species=\"" & sp.sp-name & "\">" & sp.sp-name & "</div>\n"
     & emit-add-menu xs (i + 1)
 
   emit-html-menu : List FishSpecies -> Text
@@ -202,11 +202,29 @@ Section: Full Page Emit
     "<div class=\"add-menu\" id=\"add-menu\">\n"
     & emit-add-menu xs 0
     & "</div>\n"
-    & "<script>function toggleAddMenu(){document.getElementById('add-menu').classList.toggle('open');}function hideAddMenu(){document.getElementById('add-menu').classList.remove('open');}document.addEventListener('click',function(e){if(!e.target.closest('.add-menu')&&!e.target.closest('[onclick*=\"toggleAddMenu\"]'))hideAddMenu();});</script>\n"
+
+  emit-menu-js : Text
+  emit-menu-js =
+    "<script>\n"
+    & "function toggleAddMenu(){document.getElementById('add-menu').classList.toggle('open');}\n"
+    & "function hideAddMenu(){document.getElementById('add-menu').classList.remove('open');}\n"
+    & "document.querySelector('.controls').addEventListener('click',function(e){\n"
+    & "  var btn=e.target.closest('[data-action]');if(!btn)return;var a=btn.dataset.action;\n"
+    & "  if(a==='feed')feedFish();else if(a==='tap')tapGlass();\n"
+    & "  else if(a==='light')toggleLight();else if(a==='add')toggleAddMenu();\n"
+    & "});\n"
+    & "document.querySelector('.add-menu').addEventListener('click',function(e){\n"
+    & "  var item=e.target.closest('[data-species]');\n"
+    & "  if(item){addFishByName(item.dataset.species);hideAddMenu();}\n"
+    & "});\n"
+    & "document.addEventListener('click',function(e){\n"
+    & "  if(!e.target.closest('.add-menu')&&!e.target.closest('[data-action=\"add\"]'))hideAddMenu();\n"
+    & "});\n"
+    & "</script>\n"
 
 Section: Opening
 
-  opening : [Console] Nothing
+  opening : [Console] None
   opening =
    let scene = aquarium-scene
    in let species = build-species-list scene.aq-profiles 0
@@ -214,6 +232,7 @@ Section: Opening
     print-line-uni emit-html-head
     print-line-uni emit-html-body-start
     print-line-uni (emit-html-menu species)
+    print-line-uni emit-menu-js
     print-line-uni "<script src=\"fishtank.js\"></script>"
     print-line-uni "</body>\n</html>"
    end

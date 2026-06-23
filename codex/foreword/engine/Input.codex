@@ -1,0 +1,170 @@
+Chapter: Input
+  cites Foreword chapter Maybe
+
+ Unified input system. Tracks key state (down, pressed this frame,
+ released this frame), mouse position and delta, and an action
+ mapping layer so game code reads semantic actions rather than raw
+ hardware keys. Reads from kernel metadata cells directly.
+
+ We say:
+
+Section: Key Codes
+
+  KeyCode =
+    | KeyW | KeyA | KeyS | KeyD
+    | KeyQ | KeyE | KeyR | KeyF
+    | KeyUp | KeyDown | KeyLeft | KeyRight
+    | KeySpace | KeyEscape | KeyEnter | KeyTab
+    | KeyShift | KeyCtrl | KeyAlt
+    | Key0 | Key1 | Key2 | Key3 | Key4
+    | Key5 | Key6 | Key7 | Key8 | Key9
+    | KeyF1 | KeyF2 | KeyF3 | KeyF4
+    | KeyF5 | KeyF6 | KeyF7 | KeyF8
+    | KeyF9 | KeyF10 | KeyF11 | KeyF12
+    | KeyBackspace | KeyDelete
+    | KeyMinus | KeyEquals
+
+Section: Input State
+
+  InputState = record {
+    inp-keys-down : List Integer,
+    inp-keys-prev : List Integer,
+    inp-mouse-x : Integer,
+    inp-mouse-y : Integer,
+    inp-mouse-prev-x : Integer,
+    inp-mouse-prev-y : Integer,
+    inp-mouse-buttons : Integer
+  }
+
+  input-new : InputState
+  input-new = InputState {
+    inp-keys-down = inp-zero-keys 256 [],
+    inp-keys-prev = inp-zero-keys 256 [],
+    inp-mouse-x = 0,
+    inp-mouse-y = 0,
+    inp-mouse-prev-x = 0,
+    inp-mouse-prev-y = 0,
+    inp-mouse-buttons = 0
+  }
+
+  inp-zero-keys : Integer, List Integer -> List Integer
+  inp-zero-keys (n) (acc) =
+    if n <= 0 then acc
+    else inp-zero-keys (n - 1) (list-push acc 0)
+
+Section: Key Queries
+
+  input-key-down : InputState, Integer -> Boolean
+  input-key-down (inp) (scancode) =
+    if scancode < 0 then False
+    else if scancode >= 256 then False
+    else list-at (inp.inp-keys-down) scancode == 1
+
+  input-key-pressed : InputState, Integer -> Boolean
+  input-key-pressed (inp) (scancode) =
+    if scancode < 0 then False
+    else if scancode >= 256 then False
+    else let now = list-at (inp.inp-keys-down) scancode
+    in let prev = list-at (inp.inp-keys-prev) scancode
+    in now == 1 & prev == 0
+
+  input-key-released : InputState, Integer -> Boolean
+  input-key-released (inp) (scancode) =
+    if scancode < 0 then False
+    else if scancode >= 256 then False
+    else let now = list-at (inp.inp-keys-down) scancode
+    in let prev = list-at (inp.inp-keys-prev) scancode
+    in now == 0 & prev == 1
+
+Section: Mouse Queries
+
+  input-mouse-dx : InputState -> Integer
+  input-mouse-dx (inp) = inp.inp-mouse-x - inp.inp-mouse-prev-x
+
+  input-mouse-dy : InputState -> Integer
+  input-mouse-dy (inp) = inp.inp-mouse-y - inp.inp-mouse-prev-y
+
+  input-mouse-left : InputState -> Boolean
+  input-mouse-left (inp) = bit-and (inp.inp-mouse-buttons) 1 == 1
+
+  input-mouse-right : InputState -> Boolean
+  input-mouse-right (inp) = bit-and (inp.inp-mouse-buttons) 2 == 2
+
+Section: Update
+
+  input-set-key : InputState, Integer, Integer -> InputState
+  input-set-key (inp) (scancode) (val) =
+    if scancode < 0 then inp
+    else if scancode >= 256 then inp
+    else __record-set inp "inp-keys-down" (list-set-at (inp.inp-keys-down) scancode val)
+
+  input-set-mouse : InputState, Integer, Integer -> InputState
+  input-set-mouse (inp) (x) (y) =
+    let inp2 = __record-set inp "inp-mouse-prev-x" (inp.inp-mouse-x)
+    in let inp3 = __record-set inp2 "inp-mouse-prev-y" (inp.inp-mouse-y)
+    in let inp4 = __record-set inp3 "inp-mouse-x" x
+    in __record-set inp4 "inp-mouse-y" y
+
+  input-frame-advance : InputState -> InputState
+  input-frame-advance (inp) = __record-set inp "inp-keys-prev" (inp.inp-keys-down)
+
+Section: Action Mapping
+
+  InputAction =
+    | ActionMoveForward
+    | ActionMoveBack
+    | ActionMoveLeft
+    | ActionMoveRight
+    | ActionJump
+    | ActionAttack
+    | ActionInteract
+    | ActionPause
+
+  InputBinding = record {
+    ib-action : InputAction,
+    ib-scancode : Integer
+  }
+
+  input-action-down : InputState, List InputBinding, InputAction -> Boolean
+  input-action-down (inp) (bindings) (action) =
+    inp-check-bindings inp bindings action 0 (list-length bindings)
+
+  inp-check-bindings : InputState, List InputBinding, InputAction, Integer, Integer -> Boolean
+  inp-check-bindings (inp) (bindings) (action) (i) (n) =
+    if i >= n then False
+    else let b = list-at bindings i
+    in if inp-action-eq (b.ib-action) action then
+      if input-key-down inp (b.ib-scancode) then True
+      else inp-check-bindings inp bindings action (i + 1) n
+    else inp-check-bindings inp bindings action (i + 1) n
+
+  inp-action-eq : InputAction, InputAction -> Boolean
+  inp-action-eq (a) (b) =
+    when a
+      is ActionMoveForward -> when b is ActionMoveForward -> True is otherwise -> False
+      is ActionMoveBack -> when b is ActionMoveBack -> True is otherwise -> False
+      is ActionMoveLeft -> when b is ActionMoveLeft -> True is otherwise -> False
+      is ActionMoveRight -> when b is ActionMoveRight -> True is otherwise -> False
+      is ActionJump -> when b is ActionJump -> True is otherwise -> False
+      is ActionAttack -> when b is ActionAttack -> True is otherwise -> False
+      is ActionInteract -> when b is ActionInteract -> True is otherwise -> False
+      is ActionPause -> when b is ActionPause -> True is otherwise -> False
+
+Section: Standard WASD Bindings
+
+  wasd-bindings : List InputBinding
+  wasd-bindings = [
+    InputBinding { ib-action = ActionMoveForward, ib-scancode = 17 },
+    InputBinding { ib-action = ActionMoveBack, ib-scancode = 31 },
+    InputBinding { ib-action = ActionMoveLeft, ib-scancode = 30 },
+    InputBinding { ib-action = ActionMoveRight, ib-scancode = 32 },
+    InputBinding { ib-action = ActionJump, ib-scancode = 57 },
+    InputBinding { ib-action = ActionPause, ib-scancode = 1 }
+  ]
+
+Section: Formatting
+
+  format-input : InputState -> Text
+  format-input (inp) = "mouse=(" & show (inp.inp-mouse-x) & "," & show (inp.inp-mouse-y) & ") dx=" & show (input-mouse-dx inp)
+
+Page 1

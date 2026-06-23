@@ -1,0 +1,319 @@
+Chapter: GlyphRasterizer
+  cites Encode chapter TrueType
+
+ Rasterizes TrueType glyph outlines to pixel grids. Pipeline:
+ 1. Scale FUnits to pixel coordinates
+ 2. Expand implicit on-curve midpoints between adjacent off-curve points
+ 3. Flatten quadratic Bezier segments to line segments
+ 4. Scanline fill with non-zero winding rule
+ 5. Optional 4x4 sub-pixel anti-aliasing
+
+ Uses integer arithmetic throughout. Coordinates are scaled by 64
+ (26.6 fixed-point) for sub-pixel precision during rasterization,
+ then divided back to pixel coordinates for output.
+
+Section: Scaled Points
+  ScaledPoint = record {
+    sp-x : Integer,
+    sp-y : Integer,
+    sp-on : Integer
+  }
+
+  sp-new : Integer, Integer, Integer -> ScaledPoint
+  sp-new (x) (y) (on) = ScaledPoint { sp-x = x, sp-y = y, sp-on = on }
+
+Section: Scaling
+  gr-scale-contour : TtfContour, Integer, Integer, Integer, Integer -> List ScaledPoint
+  gr-scale-contour (contour) (ppem) (upem) (x-off) (y-off) =
+    gr-scale-pts (contour.tc-points) ppem upem x-off y-off 0 []
+
+  gr-scale-pts : List TtfPoint, Integer, Integer, Integer, Integer, Integer, List ScaledPoint -> List ScaledPoint
+  gr-scale-pts (pts) (ppem) (upem) (x-off) (y-off) (i) (acc) =
+    if i >= list-length pts then acc
+    else let p = list-at pts i
+    in let sx = (p.tp-x + x-off) * ppem * 64 / upem
+    in let sy = (p.tp-y + y-off) * ppem * 64 / upem
+    in gr-scale-pts pts ppem upem x-off y-off (i + 1) (list-push acc (sp-new sx sy p.tp-on-curve))
+
+Section: Implicit Midpoint Expansion
+  gr-expand-midpoints : List ScaledPoint -> List ScaledPoint
+  gr-expand-midpoints (pts) =
+    let n = list-length pts
+    in if n < 2 then pts
+    else gr-expand-loop pts n 0 []
+
+  gr-expand-loop : List ScaledPoint, Integer, Integer, List ScaledPoint -> List ScaledPoint
+  gr-expand-loop (pts) (n) (i) (acc) =
+    if i >= n then acc
+    else let curr = list-at pts i
+    in let next = list-at pts (gr-wrap (i + 1) n)
+    in if curr.sp-on == 0 then
+      if next.sp-on == 0 then
+        let mid = sp-new ((curr.sp-x + next.sp-x) / 2) ((curr.sp-y + next.sp-y) / 2) 1
+        in gr-expand-loop pts n (i + 1) (list-push (list-push acc curr) mid)
+      else gr-expand-loop pts n (i + 1) (list-push acc curr)
+    else gr-expand-loop pts n (i + 1) (list-push acc curr)
+
+  gr-wrap : Integer, Integer -> Integer
+  gr-wrap (i) (n) = if i >= n then i - n else i
+
+Section: Bezier Flattening
+  Edge = record {
+    e-x0 : Integer,
+    e-y0 : Integer,
+    e-x1 : Integer,
+    e-y1 : Integer
+  }
+
+  gr-flatten-contour : List ScaledPoint -> List Edge
+  gr-flatten-contour (pts) =
+    let n = list-length pts
+    in if n < 2 then []
+    else gr-flatten-loop pts n 0 []
+
+  gr-flatten-loop : List ScaledPoint, Integer, Integer, List Edge -> List Edge
+  gr-flatten-loop (pts) (n) (i) (acc) =
+    if i >= n then acc
+    else let curr = list-at pts i
+    in if curr.sp-on > 0 then
+      let j = gr-wrap (i + 1) n
+      in let next = list-at pts j
+      in if next.sp-on > 0 then
+        let edge = Edge { e-x0 = curr.sp-x, e-y0 = curr.sp-y, e-x1 = next.sp-x, e-y1 = next.sp-y }
+        in gr-flatten-loop pts n (i + 1) (list-push acc edge)
+      else let k = gr-wrap (j + 1) n
+      in let after = list-at pts k
+      in let on-pt = if after.sp-on > 0 then after else sp-new ((next.sp-x + after.sp-x) / 2) ((next.sp-y + after.sp-y) / 2) 1
+      in let new-edges = gr-flatten-quad curr next on-pt 0 acc
+      in gr-flatten-loop pts n (i + 1) new-edges
+    else gr-flatten-loop pts n (i + 1) acc
+
+  gr-flatten-quad : ScaledPoint, ScaledPoint, ScaledPoint, Integer, List Edge -> List Edge
+  gr-flatten-quad (p0) (p1) (p2) (depth) (acc) =
+    let dx = p1.sp-x - (p0.sp-x + p2.sp-x) / 2
+    in let dy = p1.sp-y - (p0.sp-y + p2.sp-y) / 2
+    in let dist = gr-abs dx + gr-abs dy
+    in if dist < 32 then
+      list-push acc (Edge { e-x0 = p0.sp-x, e-y0 = p0.sp-y, e-x1 = p2.sp-x, e-y1 = p2.sp-y })
+    else if depth > 8 then
+      list-push acc (Edge { e-x0 = p0.sp-x, e-y0 = p0.sp-y, e-x1 = p2.sp-x, e-y1 = p2.sp-y })
+    else let m01 = sp-new ((p0.sp-x + p1.sp-x) / 2) ((p0.sp-y + p1.sp-y) / 2) 0
+    in let m12 = sp-new ((p1.sp-x + p2.sp-x) / 2) ((p1.sp-y + p2.sp-y) / 2) 0
+    in let mid = sp-new ((m01.sp-x + m12.sp-x) / 2) ((m01.sp-y + m12.sp-y) / 2) 1
+    in let left = gr-flatten-quad p0 m01 mid (depth + 1) acc
+    in gr-flatten-quad mid m12 p2 (depth + 1) left
+
+  gr-abs : Integer -> Integer
+  gr-abs (x) = if x < 0 then -x else x
+
+Section: Scanline Fill (Non-Zero Winding)
+  gr-render-edges : List Edge, Integer, Integer, Integer, Integer -> List Integer
+  gr-render-edges (edges) (width) (height) (y-min) (y-max) =
+    gr-scanline-loop edges width height y-min y-max y-min (gr-make-row (width * height) 0)
+
+  gr-make-row : Integer, Integer -> List Integer
+  gr-make-row (n) (val) =
+    if n <= 0 then []
+    else list-push (gr-make-row (n - 1) val) val
+
+  gr-scanline-loop : List Edge, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gr-scanline-loop (edges) (width) (height) (y-min) (y-max) (y) (pixels) =
+    if y >= y-max then pixels
+    else let scan-y = y * 64 + 32
+    in let hits = gr-find-intersections edges scan-y 0 []
+    in let sorted = gr-sort-ints hits
+    in let filled = gr-fill-scanline sorted width (y - y-min) pixels 0 0
+    in gr-scanline-loop edges width height y-min y-max (y + 1) filled
+
+  gr-find-intersections : List Edge, Integer, Integer, List Integer -> List Integer
+  gr-find-intersections (edges) (y) (i) (acc) =
+    if i >= list-length edges then acc
+    else let e = list-at edges i
+    in let y0 = e.e-y0
+    in let y1 = e.e-y1
+    in let lo = if y0 < y1 then y0 else y1
+    in let hi = if y0 > y1 then y0 else y1
+    in if y < lo then gr-find-intersections edges y (i + 1) acc
+    else if y >= hi then gr-find-intersections edges y (i + 1) acc
+    else let dy = y1 - y0
+    in if dy == 0 then gr-find-intersections edges y (i + 1) acc
+    else let x = e.e-x0 + (y - y0) * (e.e-x1 - e.e-x0) / dy
+    in gr-find-intersections edges y (i + 1) (list-push acc x)
+
+  gr-fill-scanline : List Integer, Integer, Integer, List Integer, Integer, Integer -> List Integer
+  gr-fill-scanline (hits) (width) (row) (pixels) (i) (winding) =
+    if i >= list-length hits then pixels
+    else let x-fixed = list-at hits i
+    in let x-px = x-fixed / 64
+    in if i + 1 >= list-length hits then pixels
+    else let x2-fixed = list-at hits (i + 1)
+    in let x2-px = x2-fixed / 64
+    in let new-winding = winding + 1
+    in if new-winding /= 0 then
+      let filled = gr-fill-span pixels width row x-px x2-px
+      in gr-fill-scanline hits width row filled (i + 2) 0
+    else gr-fill-scanline hits width row pixels (i + 1) new-winding
+
+  gr-fill-span : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  gr-fill-span (pixels) (width) (row) (x0) (x1) =
+    let lo = if x0 < 0 then 0 else x0
+    in let hi = if x1 >= width then width - 1 else x1
+    in gr-fill-span-loop pixels width row lo hi
+
+  gr-fill-span-loop : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  gr-fill-span-loop (pixels) (width) (row) (x) (x1) =
+    if x > x1 then pixels
+    else gr-fill-span-loop (list-set-at pixels (row * width + x) 255) width row (x + 1) x1
+
+Section: Sort (Insertion Sort for Small Lists)
+  gr-sort-ints : List Integer -> List Integer
+  gr-sort-ints (xs) = gr-sort-loop xs 1
+
+  gr-sort-loop : List Integer, Integer -> List Integer
+  gr-sort-loop (xs) (i) =
+    if i >= list-length xs then xs
+    else let key = list-at xs i
+    in let sorted = gr-insert xs i key (i - 1)
+    in gr-sort-loop sorted (i + 1)
+
+  gr-insert : List Integer, Integer, Integer, Integer -> List Integer
+  gr-insert (xs) (pos) (key) (j) =
+    if j < 0 then list-set-at xs 0 key
+    else if list-at xs j > key then
+      let shifted = list-set-at xs (j + 1) (list-at xs j)
+      in gr-insert shifted pos key (j - 1)
+    else list-set-at xs (j + 1) key
+
+Section: Raster Output
+  RasterGlyph = record {
+    rg-code : Integer,
+    rg-width : Integer,
+    rg-height : Integer,
+    rg-advance : Integer,
+    rg-pixels : List Integer
+  }
+
+Section: Glyph Rendering
+  gr-render-glyph : TtfFont, Integer, Integer -> RasterGlyph
+  gr-render-glyph (font) (codepoint) (ppem) =
+    let g = ttf-glyph-for-char font codepoint
+    in let upem = font.tf-head.th-units-per-em
+    in let x-off = -g.tg-x-min
+    in let y-off = -g.tg-y-min
+    in let w = (g.tg-x-max - g.tg-x-min) * ppem / upem + 1
+    in let h = (g.tg-y-max - g.tg-y-min) * ppem / upem + 1
+    in let adv = g.tg-advance * ppem / upem
+    in if list-length (g.tg-contours) == 0 then
+      RasterGlyph { rg-code = codepoint, rg-width = gr-glyph-max w 1, rg-height = gr-glyph-max h 1, rg-advance = adv, rg-pixels = gr-make-row (gr-glyph-max w 1 * gr-glyph-max h 1) 0 }
+    else let edges = gr-all-contour-edges (g.tg-contours) ppem upem x-off y-off 0 []
+    in let y-min-px = 0
+    in let y-max-px = gr-glyph-max h 1
+    in let pixels = gr-render-edges edges (gr-glyph-max w 1) y-max-px y-min-px y-max-px
+    in let flipped = gr-flip-y pixels (gr-glyph-max w 1) y-max-px
+    in RasterGlyph { rg-code = codepoint, rg-width = gr-glyph-max w 1, rg-height = gr-glyph-max h 1, rg-advance = adv, rg-pixels = flipped }
+
+  gr-glyph-max : Integer, Integer -> Integer
+  gr-glyph-max (a) (b) = if a > b then a else b
+
+  gr-all-contour-edges : List TtfContour, Integer, Integer, Integer, Integer, Integer, List Edge -> List Edge
+  gr-all-contour-edges (contours) (ppem) (upem) (x-off) (y-off) (i) (acc) =
+    if i >= list-length contours then acc
+    else let c = list-at contours i
+    in let scaled = gr-scale-contour c ppem upem x-off y-off
+    in let expanded = gr-expand-midpoints scaled
+    in let edges = gr-flatten-contour expanded
+    in gr-all-contour-edges contours ppem upem x-off y-off (i + 1) (acc & edges)
+
+  gr-flip-y : List Integer, Integer, Integer -> List Integer
+  gr-flip-y (pixels) (width) (height) =
+    gr-flip-y-loop pixels width height 0 []
+
+  gr-flip-y-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gr-flip-y-loop (pixels) (width) (height) (y) (acc) =
+    if y >= height then acc
+    else let src-y = height - 1 - y
+    in let row = gr-copy-row pixels (src-y * width) width 0 []
+    in gr-flip-y-loop pixels width height (y + 1) (acc & row)
+
+  gr-copy-row : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gr-copy-row (pixels) (off) (width) (x) (acc) =
+    if x >= width then acc
+    else gr-copy-row pixels off width (x + 1) (list-push acc (list-at pixels (off + x)))
+
+Section: Batch Rendering
+  gr-render-range : TtfFont, Integer, Integer, Integer, List RasterGlyph -> List RasterGlyph
+  gr-render-range (font) (ppem) (from) (to) (acc) =
+    if from > to then acc
+    else let g = gr-render-glyph font from ppem
+    in gr-render-range font ppem (from + 1) to (list-push acc g)
+
+  gr-render-ascii : TtfFont, Integer -> List RasterGlyph
+  gr-render-ascii (font) (ppem) = gr-render-range font ppem 32 127 []
+
+Section: Anti-Aliased Rendering (4x4 Sub-Pixel)
+  gr-render-glyph-aa : TtfFont, Integer, Integer -> RasterGlyph
+  gr-render-glyph-aa (font) (codepoint) (ppem) =
+    let g = ttf-glyph-for-char font codepoint
+    in let upem = font.tf-head.th-units-per-em
+    in let x-off = -g.tg-x-min
+    in let y-off = -g.tg-y-min
+    in let w = (g.tg-x-max - g.tg-x-min) * ppem / upem + 1
+    in let h = (g.tg-y-max - g.tg-y-min) * ppem / upem + 1
+    in let adv = g.tg-advance * ppem / upem
+    in let gw = gr-glyph-max w 1
+    in let gh = gr-glyph-max h 1
+    in if list-length (g.tg-contours) == 0 then
+      RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = gh, rg-advance = adv, rg-pixels = gr-make-row (gw * gh) 0 }
+    else let edges = gr-all-contour-edges (g.tg-contours) (ppem * 4) upem x-off y-off 0 []
+    in let super-w = gw * 4
+    in let super-h = gh * 4
+    in let super-pixels = gr-render-edges edges super-w super-h 0 super-h
+    in let downsampled = gr-downsample-4x super-pixels super-w super-h gw gh
+    in let flipped = gr-flip-y downsampled gw gh
+    in RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = gh, rg-advance = adv, rg-pixels = flipped }
+
+  gr-downsample-4x : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  gr-downsample-4x (super) (sw) (sh) (w) (h) =
+    gr-ds-row super sw w h 0 []
+
+  gr-ds-row : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gr-ds-row (super) (sw) (w) (h) (y) (acc) =
+    if y >= h then acc
+    else let row = gr-ds-cols super sw w y 0 []
+    in gr-ds-row super sw w h (y + 1) (acc & row)
+
+  gr-ds-cols : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gr-ds-cols (super) (sw) (w) (y) (x) (acc) =
+    if x >= w then acc
+    else let sum = gr-ds-sample super sw x y
+    in let alpha = sum * 255 / 16
+    in gr-ds-cols super sw w y (x + 1) (list-push acc alpha)
+
+  gr-ds-sample : List Integer, Integer, Integer, Integer -> Integer
+  gr-ds-sample (super) (sw) (px) (py) =
+    let sx = px * 4
+    in let sy = py * 4
+    in let r0 = gr-ds-pixel super sw (sx + 0) (sy + 0) + gr-ds-pixel super sw (sx + 1) (sy + 0) + gr-ds-pixel super sw (sx + 2) (sy + 0) + gr-ds-pixel super sw (sx + 3) (sy + 0)
+    in let r1 = gr-ds-pixel super sw (sx + 0) (sy + 1) + gr-ds-pixel super sw (sx + 1) (sy + 1) + gr-ds-pixel super sw (sx + 2) (sy + 1) + gr-ds-pixel super sw (sx + 3) (sy + 1)
+    in let r2 = gr-ds-pixel super sw (sx + 0) (sy + 2) + gr-ds-pixel super sw (sx + 1) (sy + 2) + gr-ds-pixel super sw (sx + 2) (sy + 2) + gr-ds-pixel super sw (sx + 3) (sy + 2)
+    in let r3 = gr-ds-pixel super sw (sx + 0) (sy + 3) + gr-ds-pixel super sw (sx + 1) (sy + 3) + gr-ds-pixel super sw (sx + 2) (sy + 3) + gr-ds-pixel super sw (sx + 3) (sy + 3)
+    in r0 + r1 + r2 + r3
+
+  gr-ds-pixel : List Integer, Integer, Integer, Integer -> Integer
+  gr-ds-pixel (super) (sw) (x) (y) =
+    let idx = y * sw + x
+    in if idx < 0 then 0
+    else if idx >= list-length super then 0
+    else let v = list-at super idx
+    in if v > 0 then 1 else 0
+
+  gr-render-range-aa : TtfFont, Integer, Integer, Integer, List RasterGlyph -> List RasterGlyph
+  gr-render-range-aa (font) (ppem) (from) (to) (acc) =
+    if from > to then acc
+    else let g = gr-render-glyph-aa font from ppem
+    in gr-render-range-aa font ppem (from + 1) to (list-push acc g)
+
+  gr-render-ascii-aa : TtfFont, Integer -> List RasterGlyph
+  gr-render-ascii-aa (font) (ppem) = gr-render-range-aa font ppem 32 127 []
+
+Page 1

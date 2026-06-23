@@ -456,12 +456,13 @@ Section: Function Application
     is IrBinary (op) (left) (right) (ty) (sp) -> emit-direct-tail-binop st arg op left right target
     is otherwise -> eval-tail-arg-standard st arg target
 
-  eval-complex-tail-args : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
-  eval-complex-tail-args (st) (args) (temp-locals) (param-locals) (i) =
+  eval-complex-tail-args : CodegenState, List IRExpr, List Integer, List Integer, Integer, Integer -> CodegenState
+  eval-complex-tail-args (st) (args) (temp-locals) (param-locals) (i) (ci) =
    if i == list-length args then st
-   else let st1 = if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then st
-        else eval-tail-arg-direct st (list-at args i) (list-at temp-locals i)
-   in eval-complex-tail-args st1 args temp-locals param-locals (i + 1)
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then
+    eval-complex-tail-args st args temp-locals param-locals (i + 1) ci
+   else let st1 = eval-tail-arg-direct st (list-at args i) (list-at temp-locals ci)
+   in eval-complex-tail-args st1 args temp-locals param-locals (i + 1) (ci + 1)
 
   emit-direct-tail-moves : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
   emit-direct-tail-moves (st) (args) (param-locals) (order) (k) =
@@ -469,22 +470,24 @@ Section: Function Application
    else let st1 = emit-direct-tail-arg st (list-at args (list-at order k)) (list-at param-locals (list-at order k))
    in emit-direct-tail-moves st1 args param-locals order (k + 1)
 
-  copy-complex-temps : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
-  copy-complex-temps (st) (args) (temp-locals) (param-locals) (i) =
+  copy-complex-temps : CodegenState, List IRExpr, List Integer, List Integer, Integer, Integer -> CodegenState
+  copy-complex-temps (st) (args) (temp-locals) (param-locals) (i) (ci) =
    if i == list-length args then st
-   else let st1 = if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then st
-        else let loaded = load-local st (list-at temp-locals i)
-        in store-local (loaded.state) (list-at param-locals i) (loaded.reg)
-   in copy-complex-temps st1 args temp-locals param-locals (i + 1)
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then
+    copy-complex-temps st args temp-locals param-locals (i + 1) ci
+   else let loaded = load-local st (list-at temp-locals ci)
+   in let st1 = store-local (loaded.state) (list-at param-locals i) (loaded.reg)
+   in copy-complex-temps st1 args temp-locals param-locals (i + 1) (ci + 1)
 
   emit-tail-call : CodegenState, IRExpr, IRExpr -> EmitResult
   emit-tail-call (st) (func-expr) (arg-expr) =
    let args = flatten-tail-args func-expr [arg-expr]
    in let plan = tco-shuffle-plan st args (st.tco.param-locals)
    in let st2 = if plan.ok then
-       let st-c = eval-complex-tail-args st args (st.tco.temp-locals) (st.tco.param-locals) 0
-       in let st-d = emit-direct-tail-moves st-c args (st.tco.param-locals) (plan.order) 0
-       in copy-complex-temps st-d args (st.tco.temp-locals) (st.tco.param-locals) 0
+       let ci = tco-find-complex st args (st.tco.param-locals) 0
+       in if ci >= 0 & tco-find-complex st args (st.tco.param-locals) (ci + 1) < 0 & list-length (st.tco.temp-locals) == 0
+        then emit-tail-single-complex st args (st.tco.param-locals) (plan.order) ci
+       else emit-tail-call-general-shuffle st args (st.tco.temp-locals) (st.tco.param-locals) (plan.order)
       else if list-length (st.tco.temp-locals) == 0 then
        st-add-error st cdx-ir-error ("tail shuffle plan failed with no temps in '" & (st.tco.current-func) & "'") (ir-expr-span func-expr)
       else
@@ -751,15 +754,97 @@ Section: Narrow-store with overflow-mode dispatch
         is IrName (n) (nty) (nsp) ->
          if n == "int-mod" then proven-mod-shallow inner-arg arg
          else if n == "bit-and" then proven-bitand-shallow inner-arg arg
+         else if n == "bit-shru" then proven-shru-shallow inner-arg arg
          else int-ty-default
         is otherwise -> int-ty-default
       is otherwise -> int-ty-default
-    is IrNegate (x) (s) ->
-     let inner = ir-expr-proven-range x
-     in when inner
-      is IntegerTy (lo) (hi) (m) ->
-       if lo == i64-min then int-ty-default
-       else IntegerTy (negate hi) (negate lo) m
+    is IrBinary (op) (left) (right) (ty) (sp) -> proven-binary-range op left right
+    is IrNegate (x) (s) -> proven-negate-range x
+    is IrIf (cond) (then-e) (else-e) (ty) (sp) -> proven-if-range then-e else-e
+    is IrLet (name) (lty) (value) (body) (sp) -> ir-expr-proven-range body
+    is otherwise -> int-ty-default
+
+  proven-negate-range : IRExpr -> CodexType
+  proven-negate-range (x) =
+   let inner = ir-expr-proven-range x
+   in when inner
+    is IntegerTy (lo) (hi) (m) ->
+     if lo == i64-min then int-ty-default
+     else IntegerTy (negate hi) (negate lo) m
+    is otherwise -> int-ty-default
+
+  proven-if-range : IRExpr, IRExpr -> CodexType
+  proven-if-range (then-e) (else-e) =
+   let tr = ir-expr-proven-range then-e
+   in let er = ir-expr-proven-range else-e
+   in when tr
+    is IntegerTy (t-lo) (t-hi) (tm) ->
+     when er
+      is IntegerTy (e-lo) (e-hi) (em) ->
+       let lo = if t-lo <= e-lo then t-lo else e-lo
+       in let hi = if t-hi >= e-hi then t-hi else e-hi
+       in IntegerTy lo hi OvError
+      is otherwise -> int-ty-default
+    is otherwise -> int-ty-default
+
+  proven-binary-range : IRBinaryOp, IRExpr, IRExpr -> CodexType
+  proven-binary-range (op) (left) (right) =
+   let lr = ir-expr-proven-range left
+   in let rr = ir-expr-proven-range right
+   in when lr
+    is IntegerTy (l-lo) (l-hi) (lm) ->
+     when rr
+      is IntegerTy (r-lo) (r-hi) (rm) ->
+       when op
+        is IrAddInt -> proven-add-range l-lo l-hi r-lo r-hi
+        is IrSubInt -> proven-sub-range l-lo l-hi r-lo r-hi
+        is IrMulInt -> proven-mul-range l-lo l-hi r-lo r-hi
+        is IrDivInt -> proven-div-range l-lo l-hi r-lo r-hi
+        is otherwise -> int-ty-default
+      is otherwise -> int-ty-default
+    is otherwise -> int-ty-default
+
+  proven-add-range : Integer, Integer, Integer, Integer -> CodexType
+  proven-add-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo >= 0 & r-lo >= 0
+   then if l-hi <= i64-max - r-hi then IntegerTy (l-lo + r-lo) (l-hi + r-hi) OvError
+        else int-ty-default
+   else int-ty-default
+
+  proven-sub-range : Integer, Integer, Integer, Integer -> CodexType
+  proven-sub-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo >= 0 & r-lo >= 0
+   then IntegerTy (l-lo - r-hi) (l-hi - r-lo) OvError
+   else int-ty-default
+
+  proven-mul-range : Integer, Integer, Integer, Integer -> CodexType
+  proven-mul-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo >= 0 & r-lo >= 0
+   then if l-hi == 0 then IntegerTy 0 0 OvError
+   else if r-hi <= i64-max / l-hi then IntegerTy (l-lo * r-lo) (l-hi * r-hi) OvError
+        else int-ty-default
+   else int-ty-default
+
+  proven-div-range : Integer, Integer, Integer, Integer -> CodexType
+  proven-div-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo >= 0 & r-lo > 0
+   then IntegerTy (l-lo / r-hi) (l-hi / r-lo) OvError
+   else int-ty-default
+
+  proven-shru-range : Integer, Integer, Integer, Integer -> CodexType
+  proven-shru-range (x-lo) (x-hi) (n-lo) (n-hi) =
+   if x-lo >= 0 & n-lo >= 0 & n-hi < 64
+   then IntegerTy (bit-shru x-lo n-hi) (bit-shru x-hi n-lo) OvError
+   else int-ty-default
+
+  proven-shru-shallow : IRExpr, IRExpr -> CodexType
+  proven-shru-shallow (x-expr) (n-expr) =
+   let xr = ir-expr-proven-range x-expr
+   in let nr = ir-expr-proven-range n-expr
+   in when xr
+    is IntegerTy (x-lo) (x-hi) (xm) ->
+     when nr
+      is IntegerTy (n-lo) (n-hi) (nm) -> proven-shru-range x-lo x-hi n-lo n-hi
       is otherwise -> int-ty-default
     is otherwise -> int-ty-default
 
@@ -1083,7 +1168,7 @@ Section: Self-Type-Table Emission
    if fuel <= 0 then const-box buf len 7 []
    else when ty
     is IntegerTy (lo) (hi) (mode) -> const-box buf len 0 [lo, hi, 0]
-    is NumberTy -> const-box buf len 1 []
+    is RealTy -> const-box buf len 1 []
     is TextTy -> const-box buf len 2 []
     is BooleanTy -> const-box buf len 3 []
     is CharTy -> const-box buf len 4 []
@@ -1100,6 +1185,13 @@ Section: Self-Type-Table Emission
     is ProofTy -> const-box buf len 17 []
     is PropEqTy (a) (b) -> const-box buf len 18 [0, 0]
     is UnitTy (n) (inner) -> let nm = emit-const-name buf len vaddr n in let c = emit-const-codextype buf (nm.len) vaddr inner (fuel - 1) in const-box buf (c.len) 19 [vaddr + nm.off, vaddr + c.off]
+    is VectorTy (vn) (vt) -> const-box buf len 20 [vn, 0]
+    is VectorMaskTy (n) -> const-box buf len 21 [n, 0]
+    is RealApproxTy -> const-box buf len 22 []
+    is RealTrappingTy -> const-box buf len 23 []
+    is RealSaturatingTy -> const-box buf len 24 []
+    is TypeCon (n) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) 15 [vaddr + nm.off, 0]
+    is TypeApply (f) (a) -> const-box buf len 7 []
 
   emit-const-codextype-top : Integer, Integer, Integer, CodexType -> ConstEmit
   emit-const-codextype-top (buf) (len) (vaddr) (ty) =
@@ -1537,6 +1629,48 @@ Section: Pattern Matching
       state = st2,
       next-branch-patch = jcc-pos
      }
+    is IrVecPat (sub-pats) (ty) (sp) ->
+     let result-loc = alloc-local st
+     in let acc-reg = alloc-temp (result-loc.state)
+     in let st1 = st-append-code (acc-reg.state) (li (acc-reg.reg) 1)
+     in let st2 = store-local st1 (result-loc.reg) (acc-reg.reg)
+     in let st3 = emit-vec-lane-checks st2 scrut-loc sub-pats (result-loc.reg) 0 (list-length sub-pats)
+     in let res-load = load-local st3 (result-loc.reg)
+     in let st4 = st-append-code (res-load.state) (cmp-ri (res-load.reg) 0)
+     in let jcc-pos = st4.code-len
+     in let st5 = st-append-code st4 (jcc cc-e 0)
+     in EmitPatternResult {
+      state = st5,
+      next-branch-patch = jcc-pos
+     }
+
+  emit-vec-lane-checks : CodegenState, Integer, List IRPat, Integer, Integer, Integer -> CodegenState
+  emit-vec-lane-checks (st) (scrut-loc) (pats) (result-loc) (i) (n) =
+   if i >= n then st
+   else let sub = list-at pats i
+   in when sub
+    is IrLitPat (value) (ty) (sp) ->
+     let int-value = lit-text-to-integer value
+     in let scrut-load = load-local st scrut-loc
+     in let lane-reg = alloc-temp (scrut-load.state)
+     in let st1 = st-append-code (lane-reg.state) (mov-load (lane-reg.reg) (scrut-load.reg) (i * 8))
+     in let st2 = st-append-code st1 (cmp-ri (lane-reg.reg) int-value)
+     in let eq-reg = alloc-temp st2
+     in let st3 = st-append-code (eq-reg.state) (setcc cc-e (eq-reg.reg))
+     in let st4 = st-append-code st3 (movzx-byte-self (eq-reg.reg))
+     in let acc-load = load-local st4 result-loc
+     in let st5 = st-append-code (acc-load.state) (and-rr (acc-load.reg) (eq-reg.reg))
+     in let st6 = store-local st5 result-loc (acc-load.reg)
+     in emit-vec-lane-checks st6 scrut-loc pats result-loc (i + 1) n
+    is IrVarPat (name) (ty) (sp) ->
+     let var-loc = alloc-local st
+     in let scrut-load = load-local (var-loc.state) scrut-loc
+     in let lane-reg = alloc-temp (scrut-load.state)
+     in let st1 = st-append-code (lane-reg.state) (mov-load (lane-reg.reg) (scrut-load.reg) (i * 8))
+     in let st2 = store-local st1 (var-loc.reg) (lane-reg.reg)
+     in emit-vec-lane-checks (add-local st2 name (var-loc.reg)) scrut-loc pats result-loc (i + 1) n
+    is IrWildPat (sp) -> emit-vec-lane-checks st scrut-loc pats result-loc (i + 1) n
+    is otherwise -> emit-vec-lane-checks st scrut-loc pats result-loc (i + 1) n
 
   bind-ctor-fields : CodegenState, Integer, List IRPat, Integer -> CodegenState
   bind-ctor-fields (st) (scrut-loc) (sub-pats) (i) =

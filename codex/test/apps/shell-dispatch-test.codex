@@ -1,112 +1,108 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Chapter: ShellDispatchTest
+  cites Works chapter ShellDispatch
+  cites Works chapter ShellParser
+  cites OS chapter ShellCore
+  cites Works chapter ShellClarifier
+  cites OS chapter ProgramRegistry
+  cites Observe chapter SystemInfo
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites OS chapter Clarifier
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter TextSearch
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Test Data
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  hello-binary : List Integer
+  hello-binary =
+    cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+
+  author-key : Text = read-author-key hello-binary
+
+Section: Setup
+  test-store : BinaryStore
+  test-store = binary-store-add binary-store-empty "hello" hello-binary
+
+  test-state : ShellState
+  test-state =
+    let s0 = shell-init (policy-empty "codex-os") 100
+    in let r1 = execute-cmd (CmdAddRule "allow-console" "Console" 2) s0
+    in let r2 = execute-cmd (CmdTrust author-key 10000) (r1.new-state)
+    in r2.new-state
+
+  installed-state : ShellState
+  installed-state =
+    let dr = dispatch (InputInstall "hello") test-state test-store
+    in dr.new-state
+
+Section: Helpers
+  check-parse : Text -> Text
+  check-parse (line) =
+    let result = parse-command line
+    in when result
+      is ParseOk (cmd) -> "ok"
+      is ParseError (msg) -> "err: " & msg
+
+  dispatch-output : ShellInput, ShellState -> Text
+  dispatch-output (input) (state) =
+    let dr = dispatch input state test-store
+    in dr.output
+
+Section: Tests
+  opening : [Console] Nothing = act
+    print-line-uni (check-parse "install hello")
+    print-line-uni (check-parse "run hello")
+    print-line-uni (check-parse "revoke hello 5")
+    print-line-uni (check-parse "status hello")
+    print-line-uni (check-parse "list")
+    print-line-uni (check-parse "trust alice 9000")
+    print-line-uni (check-parse "untrust alice")
+    print-line-uni (check-parse "rule allow-fs FileSystem 1")
+    print-line-uni (check-parse "help")
+    print-line-uni (check-parse "exit")
+    print-line-uni (check-parse "")
+    print-line-uni (check-parse "bogus")
+    print-line-uni (check-parse "hlp")
+    print-line-uni (check-parse "instal")
+    print-line-uni (check-parse "revoke hello abc")
+    print-line-uni "---"
+    print-line-uni (dispatch-output (InputInstall "hello") test-state)
+    print-line-uni (dispatch-output (InputStatus "hello") installed-state)
+    print-line-uni (dispatch-output (InputRun "hello") installed-state)
+    print-line-uni (dispatch-output InputList test-state)
+    print-line-uni (dispatch-output (InputRun "missing") test-state)
+    print-line-uni (dispatch-output (InputInstall "ghost") test-state)
+    print-line-uni (dispatch-output InputHelp test-state)
+    print-line-uni (dispatch-output InputExit test-state)
+    print-line-uni "---"
+    print-line-uni (check-parse "verify hello")
+    print-line-uni (check-parse "save")
+    print-line-uni (dispatch-output (InputVerify "hello") installed-state)
+    print-line-uni (dispatch-output (InputVerify "ghost") installed-state)
+    print-line-uni (dispatch-output InputSave test-state)
+    print-line-uni (check-parse "info")
+    print-line-uni (dispatch-output InputInfo test-state)
+  end

@@ -1,0 +1,137 @@
+Chapter: CalcApp
+  cites Guios chapter GuiDisplay
+  cites Guios chapter GuiTimer
+
+ Bare-metal calculator. Uses scancodes for reliable input.
+ State in MutWheel meta buffer (zero-alloc).
+
+Section: Operators
+  op-none : Integer = 0
+  op-add : Integer = 1
+  op-sub : Integer = 2
+  op-mul : Integer = 3
+  op-div : Integer = 4
+  op-mod : Integer = 5
+
+Section: Scancode Dispatch
+  calc-key : MutWheel, Integer -> Integer
+  calc-key (w) (sc) =
+    if sc == 2 then calc-digit w 1
+    else if sc == 3 then calc-digit w 2
+    else if sc == 4 then calc-digit w 3
+    else if sc == 5 then calc-digit w 4
+    else if sc == 6 then calc-digit w 5
+    else if sc == 7 then calc-digit w 6
+    else if sc == 8 then calc-digit w 7
+    else if sc == 9 then calc-digit w 8
+    else if sc == 10 then calc-digit w 9
+    else if sc == 11 then calc-digit w 0
+    else if sc == 12 then calc-set-op w op-sub
+    else if sc == 13 then calc-set-op w op-add
+    else if sc == 28 then calc-equals w
+    else if sc == 53 then calc-set-op w op-div
+    else if sc == 55 then calc-set-op w op-mul
+    else if sc == 46 then calc-clear w
+    else 0
+
+Section: Operations
+  calc-digit : MutWheel, Integer -> Integer
+  calc-digit (w) (d) =
+    let cur = mw-get-calc-cur w
+    in mw-set-calc-cur w (cur * 10 + d)
+
+  calc-set-op : MutWheel, Integer -> Integer
+  calc-set-op (w) (new-op) =
+    let d = calc-eval w
+    in mw-set-calc-op w new-op
+
+  calc-eval : MutWheel -> Integer
+  calc-eval (w) =
+    let acc = mw-get-calc-acc w
+    in let cur = mw-get-calc-cur w
+    in let op = mw-get-calc-op w
+    in let result = if op == op-add then acc + cur
+      else if op == op-sub then acc - cur
+      else if op == op-mul then acc * cur
+      else if op == op-div then if cur /= 0 then acc / cur else 0
+      else cur
+    in let d1 = mw-set-calc-acc w result
+    in mw-set-calc-cur w 0
+
+  calc-equals : MutWheel -> Integer
+  calc-equals (w) =
+    let d = calc-eval w
+    in mw-set-calc-op w op-none
+
+  calc-clear : MutWheel -> Integer
+  calc-clear (w) =
+    let d1 = mw-set-calc-acc w 0
+    in let d2 = mw-set-calc-cur w 0
+    in mw-set-calc-op w op-none
+
+Section: Operator Symbol
+  op-sym : Integer -> Text
+  op-sym (op) =
+    if op == op-add then "+"
+    else if op == op-sub then "-"
+    else if op == op-mul then "*"
+    else if op == op-div then "/"
+    else ""
+
+Section: Render
+  calc-draw : GopBuf, MutWheel, Integer, Integer, Integer -> Integer
+  calc-draw (gb) (w) (x) (y) (ww) =
+    let acc = mw-get-calc-acc w
+    in let cur = mw-get-calc-cur w
+    in let op = mw-get-calc-op w
+    in let display-val = if cur > 0 then cur else acc
+    in let dummy = gop-buf-rect gb x y (ww - 4) 50 #0F172A
+    in let dummy2 = gop-buf-put-text-role gb w (x + 12) (y + 18) (show display-val) #F1F5F9 font-role-mono
+    in let dummy3 = if op /= op-none then
+        let dummy-a = gop-buf-put-text-role gb w (x + ww - 40) (y + 18) (op-sym op) #3B82F6 font-role-mono
+        in gop-buf-put-text-role gb w (x + 12) (y + 56) (show acc & " " & op-sym op & " " & show cur) #64748B font-role-serif
+      else gop-buf-put-text-role gb w (x + 12) (y + 56) ("= " & show acc) #64748B font-role-serif
+    in let dummy4 = gop-buf-hline gb x (x + ww - 4) (y + 78) #374151
+    in let gap = 6
+    in let bw = (ww - 4 - gap * 3) / 4
+    in let bh = 40
+    in let row1y = y + 88
+    in let dummy5 = calc-btn gb x row1y bw bh "7"
+    in let dummy6 = calc-btn gb (x + bw + gap) row1y bw bh "8"
+    in let dummy7 = calc-btn gb (x + 2 * bw + 2 * gap) row1y bw bh "9"
+    in let dummy8 = calc-btn-op gb (x + 3 * bw + 3 * gap) row1y bw bh "/"
+    in let row2y = row1y + bh + gap
+    in let dummy9 = calc-btn gb x row2y bw bh "4"
+    in let dummy10 = calc-btn gb (x + bw + gap) row2y bw bh "5"
+    in let dummy11 = calc-btn gb (x + 2 * bw + 2 * gap) row2y bw bh "6"
+    in let dummy12 = calc-btn-op gb (x + 3 * bw + 3 * gap) row2y bw bh "*"
+    in let row3y = row2y + bh + gap
+    in let dummy13 = calc-btn gb x row3y bw bh "1"
+    in let dummy14 = calc-btn gb (x + bw + gap) row3y bw bh "2"
+    in let dummy15 = calc-btn gb (x + 2 * bw + 2 * gap) row3y bw bh "3"
+    in let dummy16 = calc-btn-op gb (x + 3 * bw + 3 * gap) row3y bw bh "-"
+    in let row4y = row3y + bh + gap
+    in let dummy17 = calc-btn gb x row4y (2 * bw + gap) bh "0"
+    in let dummy18 = calc-btn-hi gb (x + 2 * bw + 2 * gap) row4y bw bh "="
+    in let dummy19 = calc-btn-op gb (x + 3 * bw + 3 * gap) row4y bw bh "+"
+    in let dummy20 = gop-buf-hline gb x (x + ww - 4) (row4y + bh + 10) #374151
+    in gop-buf-put-text-role gb w x (row4y + bh + 18) "Keys: 0-9 + - * / Enter=  C=clear" #64748B font-role-serif
+
+  calc-btn : GopBuf, Integer, Integer, Integer, Integer, Text -> Integer
+  calc-btn (gb) (x) (y) (w) (h) (label) =
+    let dummy = gop-buf-rect gb x y w h #1E293B
+    in gop-buf-put-text gb (x + w / 2 - 4) (y + h / 2 - 6) label #F1F5F9
+
+  calc-btn-op : GopBuf, Integer, Integer, Integer, Integer, Text -> Integer
+  calc-btn-op (gb) (x) (y) (w) (h) (label) =
+    let dummy = gop-buf-rect gb x y w h #1D4ED8
+    in gop-buf-put-text gb (x + w / 2 - 4) (y + h / 2 - 6) label #F1F5F9
+
+  calc-btn-hi : GopBuf, Integer, Integer, Integer, Integer, Text -> Integer
+  calc-btn-hi (gb) (x) (y) (w) (h) (label) =
+    let dummy = gop-buf-rect gb x y w h #22C55E
+    in gop-buf-put-text gb (x + w / 2 - 4) (y + h / 2 - 6) label #0F172A
+
+
+
+Page 1

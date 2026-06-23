@@ -44,6 +44,9 @@ docs/PM/IoT/
 - `docs/Designs/Hardware/Active/REAL-HARDWARE-BRINGUP.md` — x86 hardware status
 - `docs/Designs/OS/Active/DistributedAgentOS.md` — agent-centric OS vision
 - `docs/Designs/OS/Active/HardRealtime.md` — [HardRealtime] timing guarantees
+- `docs/Designs/OS/Active/GpuCompute.md` — GPU transport/proxy/firmware
+- `docs/Designs/OS/Active/GpuKernels.md` — Codex-native kernel language ([Device]/[Gpu] effects)
+- `docs/Designs/Backends/Active/DualTargetGpuCompilation.md` — PTX + SPIR-V via plugs
 
 ## Existing Backend Implementations (in old/, read-only)
 

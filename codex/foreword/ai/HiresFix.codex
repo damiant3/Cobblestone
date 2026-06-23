@@ -1,0 +1,204 @@
+Chapter: HiresFix
+  cites AI chapter Tensor
+  cites AI chapter DiffusionPipeline
+  cites AI chapter DiffusionScheduler
+  cites AI chapter UNet
+  cites AI chapter TextEncoder
+  cites AI chapter ImageTensor
+  cites AI chapter VaeDecoder
+  cites AI chapter Sampler
+  cites AI chapter Tokenizer
+  cites Foreword chapter Maybe
+
+ Hires fix / multi-pass upscaling for diffusion models. Generates
+ at a lower resolution first, upscales the latents, then runs a
+ second denoising pass at the target resolution. This produces
+ sharper, more detailed images than generating at high resolution
+ directly (which tends to produce duplicated subjects).
+
+ Also supports latent upscale (upscale in latent space without
+ decoding/re-encoding) and simple nearest/bilinear pixel upscale.
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  HiresConfig = record {
+    hr-upscale-factor : Integer,
+    hr-denoising-strength : Integer,
+    hr-steps : Integer,
+    hr-upscale-method : HiresMethod
+  }
+
+  HiresMethod =
+    | HiresLatentNearest
+    | HiresLatentBilinear
+    | HiresPixelNearest
+
+Section: Default Configuration
+  hires-default : HiresConfig
+  hires-default = HiresConfig {
+    hr-upscale-factor = 2000,
+    hr-denoising-strength = 400,
+    hr-steps = 15,
+    hr-upscale-method = HiresLatentNearest
+  }
+
+  hires-2x : HiresConfig
+  hires-2x = hires-default
+
+  hires-1-5x : HiresConfig
+  hires-1-5x = HiresConfig {
+    hr-upscale-factor = 1500,
+    hr-denoising-strength = 350,
+    hr-steps = 12,
+    hr-upscale-method = HiresLatentNearest
+  }
+
+Section: Hires Fix Pipeline
+  hires-generate : Text, HiresConfig, PipelineState -> PipelineOutput
+  hires-generate (prompt) (hr-cfg) (state) =
+    let cfg = state.ps-config
+    in let first-pass = pipeline-generate prompt state
+    in let first-latent-h = cfg.pc-height / cfg.pc-latent-scale
+    in let first-latent-w = cfg.pc-width / cfg.pc-latent-scale
+    in let target-latent-h = first-latent-h * (hr-cfg.hr-upscale-factor) / 1000
+    in let target-latent-w = first-latent-w * (hr-cfg.hr-upscale-factor) / 1000
+    in let target-h = target-latent-h * cfg.pc-latent-scale
+    in let target-w = target-latent-w * cfg.pc-latent-scale
+    in let first-latents = hr-extract-latents first-pass cfg
+    in let upscaled = hr-upscale-latents first-latents first-latent-h first-latent-w target-latent-h target-latent-w (cfg.pc-latent-channels) (hr-cfg.hr-upscale-method)
+    in let text-cond = te-encode prompt (state.ps-tokenizer) (state.ps-text-encoder)
+    in let uncond = te-encode "" (state.ps-tokenizer) (state.ps-text-encoder)
+    in let start-step = hr-cfg.hr-steps - (hr-cfg.hr-steps * (hr-cfg.hr-denoising-strength) / 1000)
+    in let noise = img-noise-tensor (cfg.pc-latent-channels) target-latent-h target-latent-w (cfg.pc-seed + 1)
+    in let noised = hr-add-noise upscaled noise start-step (state.ps-scheduler) 0 (list-length upscaled) []
+    in let denoised = hr-denoise-loop state noised text-cond uncond target-latent-h target-latent-w (hr-cfg.hr-steps - 1) start-step
+    in let hr-state = hr-adjust-state state target-w target-h
+    in let decoded = pipeline-decode-latents hr-state denoised target-latent-h target-latent-w
+    in PipelineOutput { po-pixels = decoded, po-width = target-w, po-height = target-h, po-steps-completed = cfg.pc-num-steps + hr-cfg.hr-steps - start-step }
+
+Section: Latent Extraction from First Pass
+  hr-extract-latents : PipelineOutput, PipelineConfig -> List Integer
+  hr-extract-latents (output) (cfg) =
+    let lat-h = cfg.pc-height / cfg.pc-latent-scale
+    in let lat-w = cfg.pc-width / cfg.pc-latent-scale
+    in let img-data = output.po-pixels
+    in pipeline-encode-to-latent img-data (cfg.pc-latent-channels) lat-h lat-w
+
+Section: Latent Upscaling
+  hr-upscale-latents : List Integer, Integer, Integer, Integer, Integer, Integer, HiresMethod -> List Integer
+  hr-upscale-latents (latents) (src-h) (src-w) (dst-h) (dst-w) (channels) (method) =
+    when method
+      is HiresLatentNearest -> hr-nearest-upscale latents channels src-h src-w dst-h dst-w
+      is HiresLatentBilinear -> hr-bilinear-upscale latents channels src-h src-w dst-h dst-w
+      is HiresPixelNearest -> hr-nearest-upscale latents channels src-h src-w dst-h dst-w
+
+Section: Nearest Neighbor Upscale
+  hr-nearest-upscale : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  hr-nearest-upscale (data) (ch) (src-h) (src-w) (dst-h) (dst-w) =
+    hr-near-loop data ch src-h src-w dst-h dst-w 0 0 0 []
+
+  hr-near-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  hr-near-loop (data) (ch) (src-h) (src-w) (dst-h) (dst-w) (c) (y) (x) (acc) =
+    if c >= ch then acc
+    else if y >= dst-h then hr-near-loop data ch src-h src-w dst-h dst-w (c + 1) 0 0 acc
+    else if x >= dst-w then hr-near-loop data ch src-h src-w dst-h dst-w c (y + 1) 0 acc
+    else let sy = y * src-h / dst-h
+    in let sx = x * src-w / dst-w
+    in let val = list-at data (c * src-h * src-w + sy * src-w + sx)
+    in hr-near-loop data ch src-h src-w dst-h dst-w c y (x + 1) (list-push acc val)
+
+Section: Bilinear Upscale
+  hr-bilinear-upscale : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  hr-bilinear-upscale (data) (ch) (src-h) (src-w) (dst-h) (dst-w) =
+    hr-blin-loop data ch src-h src-w dst-h dst-w 0 0 0 []
+
+  hr-blin-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  hr-blin-loop (data) (ch) (src-h) (src-w) (dst-h) (dst-w) (c) (y) (x) (acc) =
+    if c >= ch then acc
+    else if y >= dst-h then hr-blin-loop data ch src-h src-w dst-h dst-w (c + 1) 0 0 acc
+    else if x >= dst-w then hr-blin-loop data ch src-h src-w dst-h dst-w c (y + 1) 0 acc
+    else let src-y-fp = y * src-h * 1000 / dst-h
+    in let src-x-fp = x * src-w * 1000 / dst-w
+    in let y0 = src-y-fp / 1000
+    in let x0 = src-x-fp / 1000
+    in let y1 = if y0 + 1 < src-h then y0 + 1 else y0
+    in let x1 = if x0 + 1 < src-w then x0 + 1 else x0
+    in let fy = src-y-fp - y0 * 1000
+    in let fx = src-x-fp - x0 * 1000
+    in let base = c * src-h * src-w
+    in let v00 = list-at data (base + y0 * src-w + x0)
+    in let v01 = list-at data (base + y0 * src-w + x1)
+    in let v10 = list-at data (base + y1 * src-w + x0)
+    in let v11 = list-at data (base + y1 * src-w + x1)
+    in let top = v00 * (1000 - fx) / 1000 + v01 * fx / 1000
+    in let bot = v10 * (1000 - fx) / 1000 + v11 * fx / 1000
+    in let val = top * (1000 - fy) / 1000 + bot * fy / 1000
+    in hr-blin-loop data ch src-h src-w dst-h dst-w c y (x + 1) (list-push acc val)
+
+Section: Hires Denoise Loop
+  hr-denoise-loop : PipelineState, List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  hr-denoise-loop (state) (latents) (text-cond) (uncond) (h) (w) (t) (start-step) =
+    if t < start-step then latents
+    else let cfg = state.ps-config
+    in let noise-pred-cond = unet-forward (state.ps-unet) latents t text-cond h w
+    in let noise-pred-uncond = unet-forward (state.ps-unet) latents t uncond h w
+    in let guided = pipeline-cfg-combine noise-pred-cond noise-pred-uncond (cfg.pc-guidance-scale) 0 (list-length noise-pred-cond) []
+    in let stepped = diffusion-ddim-step latents guided t (t - 1) (state.ps-scheduler)
+    in hr-denoise-loop state stepped text-cond uncond h w (t - 1) start-step
+
+Section: Noise Addition
+  hr-add-noise : List Integer, List Integer, Integer, NoiseSchedule, Integer, Integer, List Integer -> List Integer
+  hr-add-noise (latents) (noise) (t) (schedule) (i) (n) (acc) =
+    if i >= n then acc
+    else let abar = list-at (schedule.ns-alpha-cumprod) t
+    in let sqrt-ab = hr-isqrt (abar * 1000)
+    in let sqrt-om = hr-isqrt ((1000 - abar) * 1000)
+    in let val = list-at latents i * sqrt-ab / 1000 + list-at noise i * sqrt-om / 1000
+    in hr-add-noise latents noise t schedule (i + 1) n (list-push acc val)
+
+Section: State Adjustment
+  hr-adjust-state : PipelineState, Integer, Integer -> PipelineState
+  hr-adjust-state (state) (new-w) (new-h) =
+    PipelineState {
+      ps-config = PipelineConfig {
+        pc-width = new-w,
+        pc-height = new-h,
+        pc-num-steps = (state.ps-config.pc-num-steps),
+        pc-guidance-scale = (state.ps-config.pc-guidance-scale),
+        pc-seed = (state.ps-config.pc-seed),
+        pc-latent-channels = (state.ps-config.pc-latent-channels),
+        pc-latent-scale = (state.ps-config.pc-latent-scale)
+      },
+      ps-text-encoder = state.ps-text-encoder,
+      ps-unet = state.ps-unet,
+      ps-scheduler = state.ps-scheduler,
+      ps-vae-decoder-w = state.ps-vae-decoder-w,
+      ps-vae-decoder-b = state.ps-vae-decoder-b,
+      ps-tokenizer = state.ps-tokenizer
+    }
+
+Section: Helpers
+  hr-isqrt : Integer -> Integer
+  hr-isqrt (n) = if n <= 0 then 0 else hr-isqrt-loop n (n / 2 + 1)
+
+  hr-isqrt-loop : Integer, Integer -> Integer
+  hr-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else hr-isqrt-loop n next
+
+Section: Queries
+  format-hires-config : HiresConfig -> Text
+  format-hires-config (cfg) =
+    "upscale=" & show (cfg.hr-upscale-factor) & "/1000 denoise=" & show (cfg.hr-denoising-strength) & "/1000 steps=" & show (cfg.hr-steps) & " method=" & hr-method-name (cfg.hr-upscale-method)
+
+  hr-method-name : HiresMethod -> Text
+  hr-method-name (m) =
+    when m
+      is HiresLatentNearest -> "latent-nearest"
+      is HiresLatentBilinear -> "latent-bilinear"
+      is HiresPixelNearest -> "pixel-nearest"
+
+Page 1

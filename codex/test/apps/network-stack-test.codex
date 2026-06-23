@@ -1,47 +1,110 @@
+Chapter: NetworkStackTest
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
 
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
 
+Section: Tests
+  local-mac : List Integer = [0, 1, 2, 3, 4, 5]
+  local-ip : List Integer = [10, 0, 0, 2]
+  gateway-ip : List Integer = [10, 0, 0, 1]
+  remote-ip : List Integer = [93, 184, 216, 34]
 
+  test-connect : Text =
+    let sess = net-session-new local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in let r = net-connect sess
+    in "connect: " & r.output & " frames=" & show (net-outbox-count (r.session))
 
+  test-syn-frame : Text =
+    let sess = net-session-new local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in let r = net-connect sess
+    in let frame = net-outbox-frame (r.session) 0
+    in let et = eth-ethertype frame
+    in "syn-ethertype=" & show et
 
+  test-syn-dst : Text =
+    let sess = net-session-new local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in let r = net-connect sess
+    in let frame = net-outbox-frame (r.session) 0
+    in let dst = eth-dst-mac frame
+    in "syn-dst-is-gw=" & show-bool (mac-equal dst mac-broadcast)
 
+  test-handshake : Text =
+    let sess = net-session-new local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in let r1 = net-connect sess
+    in let synack = TcpSegment { src-port = 80, dst-port = 5000, seq-num = 5000, ack-num = 1001, flags = bit-or tcp-flag-syn tcp-flag-ack, window = 8192, payload = [] }
+    in let r2 = net-receive-segment (r1.session) synack
+    in "handshake: " & r2.output
 
+  test-state : Text =
+    let sess = net-session-new local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in let r1 = net-connect sess
+    in let synack = TcpSegment { src-port = 80, dst-port = 5000, seq-num = 5000, ack-num = 1001, flags = bit-or tcp-flag-syn tcp-flag-ack, window = 8192, payload = [] }
+    in let r2 = net-receive-segment (r1.session) synack
+    in "state=" & tcp-state-name ((r2.session).conn.state)
 
+  test-send : Text =
+    let sess = net-session-new local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in let r1 = net-connect sess
+    in let synack = TcpSegment { src-port = 80, dst-port = 5000, seq-num = 5000, ack-num = 1001, flags = bit-or tcp-flag-syn tcp-flag-ack, window = 8192, payload = [] }
+    in let r2 = net-receive-segment (r1.session) synack
+    in let r3 = net-send (r2.session) [72, 101, 108, 108, 111]
+    in "send: " & r3.output & " frames=" & show (net-outbox-count (r3.session))
 
+  test-recv : Text =
+    let sess = net-session-new local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in let r1 = net-connect sess
+    in let synack = TcpSegment { src-port = 80, dst-port = 5000, seq-num = 5000, ack-num = 1001, flags = bit-or tcp-flag-syn tcp-flag-ack, window = 8192, payload = [] }
+    in let r2 = net-receive-segment (r1.session) synack
+    in let r3 = net-send (r2.session) [72, 101, 108, 108, 111]
+    in let data-seg = TcpSegment { src-port = 80, dst-port = 5000, seq-num = 5001, ack-num = 1006, flags = tcp-flag-ack, window = 8192, payload = [79, 75] }
+    in let r4 = net-receive-segment (r3.session) data-seg
+    in "recv: " & r4.output & " len=" & show (list-length (r4.data))
 
+  show-data : List Integer, Integer, Integer, Text -> Text
+  show-data (data) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else " "
+    in show-data data (i + 1) len (acc & sep & show (list-at data i))
 
+  test-recv-data : Text =
+    let sess = net-session-new local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in let r1 = net-connect sess
+    in let synack = TcpSegment { src-port = 80, dst-port = 5000, seq-num = 5000, ack-num = 1001, flags = bit-or tcp-flag-syn tcp-flag-ack, window = 8192, payload = [] }
+    in let r2 = net-receive-segment (r1.session) synack
+    in let r3 = net-send (r2.session) [72, 101, 108, 108, 111]
+    in let data-seg = TcpSegment { src-port = 80, dst-port = 5000, seq-num = 5001, ack-num = 1006, flags = tcp-flag-ack, window = 8192, payload = [79, 75] }
+    in let r4 = net-receive-segment (r3.session) data-seg
+    in "recv-data=" & show-data (r4.data) 0 (list-length (r4.data)) ""
 
+  test-close : Text =
+    let sess = net-session-new local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in let r1 = net-connect sess
+    in let synack = TcpSegment { src-port = 80, dst-port = 5000, seq-num = 5000, ack-num = 1001, flags = bit-or tcp-flag-syn tcp-flag-ack, window = 8192, payload = [] }
+    in let r2 = net-receive-segment (r1.session) synack
+    in let r5 = net-close (r2.session)
+    in "close: " & r5.output
 
+  test-close-state : Text =
+    let sess = net-session-new local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in let r1 = net-connect sess
+    in let synack = TcpSegment { src-port = 80, dst-port = 5000, seq-num = 5000, ack-num = 1001, flags = bit-or tcp-flag-syn tcp-flag-ack, window = 8192, payload = [] }
+    in let r2 = net-receive-segment (r1.session) synack
+    in let r5 = net-close (r2.session)
+    in "close-state=" & tcp-state-name ((r5.session).conn.state)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  opening : [Console] Nothing = act
+    print-line-uni test-connect
+    print-line-uni test-syn-frame
+    print-line-uni test-syn-dst
+    print-line-uni test-handshake
+    print-line-uni test-state
+    print-line-uni test-send
+    print-line-uni test-recv
+    print-line-uni test-recv-data
+    print-line-uni test-close
+    print-line-uni test-close-state
+  end

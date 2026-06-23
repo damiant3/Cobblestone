@@ -17,8 +17,22 @@
 $killed = $false
 
 foreach ($name in 'qemu-system-x86_64', 'codex-vm', 'wsl') {
-    if (Get-Process -Name $name -ErrorAction SilentlyContinue) {
-        Stop-Process -Name $name -Force -ErrorAction SilentlyContinue
+    $procs = Get-Process -Name $name -ErrorAction SilentlyContinue
+    if ($procs) {
+        if ($name -eq 'codex-vm') {
+            foreach ($p in $procs) {
+                $evtName = "Global\CodexVmShutdown_$($p.Id)"
+                try {
+                    $evt = [System.Threading.EventWaitHandle]::OpenExisting($evtName)
+                    $evt.Set() | Out-Null
+                    $evt.Dispose()
+                } catch {}
+            }
+            Start-Sleep -Milliseconds 3000
+        }
+        $procs | Where-Object { -not $_.HasExited } | ForEach-Object {
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
         $killed = $true
     }
 }

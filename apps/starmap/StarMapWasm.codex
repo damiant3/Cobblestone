@@ -157,30 +157,81 @@ Section: Tick (called each frame)
     in let w = write-byte-at (addr + i) c
     in write-name-at addr name (i + 1) len max
 
+Section: Camera State Read/Write
+
+  read-cam-field : Integer -> Integer
+  read-cam-field (offset) = __mem-load-i32 (mem-cam-state + offset)
+
+  read-cam : Integer -> StarCamera
+  read-cam (x) = StarCamera {
+    sc-focus-x = read-cam-field 0,
+    sc-focus-y = read-cam-field 4,
+    sc-focus-z = read-cam-field 8,
+    sc-yaw = read-cam-field 12,
+    sc-pitch = read-cam-field 16,
+    sc-dist = read-cam-field 20,
+    sc-fov = read-cam-field 44,
+    sc-near = 1,
+    sc-far = 100000000000,
+    sc-speed = read-cam-field 40,
+    sc-target-name = ""
+  }
+
+  flush-cam : StarCamera -> Integer
+  flush-cam (cam) =
+    let s = scene-state
+    in write-cam-state cam (s.ss-catalog-count) (s.ss-mag-limit)
+
 Section: Camera Controls
 
   orbit : Integer, Integer -> Integer
-  orbit (dyaw) (dpitch) = 0
+  orbit (dyaw) (dpitch) =
+    let cam = read-cam 0
+    in let updated = camera-orbit cam dyaw dpitch
+    in flush-cam updated
 
   zoom : Integer -> Integer
-  zoom (delta) = 0
+  zoom (delta) =
+    let cam = read-cam 0
+    in let updated = camera-zoom cam delta
+    in flush-cam updated
 
   move-forward : Integer -> Integer
-  move-forward (amount) = 0
+  move-forward (amount) =
+    let cam = read-cam 0
+    in let updated = camera-move-forward cam amount
+    in flush-cam updated
 
   move-right : Integer -> Integer
-  move-right (amount) = 0
+  move-right (amount) =
+    let cam = read-cam 0
+    in let updated = camera-move-right cam amount
+    in flush-cam updated
 
   move-up : Integer -> Integer
-  move-up (amount) = 0
+  move-up (amount) =
+    let cam = read-cam 0
+    in let updated = camera-move-up cam amount
+    in flush-cam updated
 
 Section: Selection
 
   select-obj : Integer -> Integer
-  select-obj (id) = 0
+  select-obj (id) =
+    let p = write-int-at (mem-cam-state + 28) id
+    in id
 
   fly-to : Integer -> Integer
-  fly-to (id) = 0
+  fly-to (id) =
+    let s = scene-state
+    in let target = scene-find-by-id s id
+    in when target
+      is Just (obj) ->
+        let cam = read-cam 0
+        in let updated = camera-goto cam (obj.co-x) (obj.co-y) (obj.co-z) (obj.co-name)
+        in let p = write-int-at (mem-cam-state + 28) id
+        in flush-cam updated
+      is None -> 0
 
 Section: Query
 

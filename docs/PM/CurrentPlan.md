@@ -1,6 +1,6 @@
 # Current Plan — Closing the Toolbox
 
-**Updated**: 2026-06-06 (Spark Studio: 16/18 items complete)
+**Updated**: 2026-06-16
 
 This file is forward-looking only. Past work is in the Perforce log; if
 you want milestones, run `p4 changes -m 100 //Codex/main/...`. Don't
@@ -28,8 +28,8 @@ We are close. Not there.
   `codex-vm.exe` WHP host (CL 1154) replaces QEMU.
 - **OS stack and library shipped**: preemptive scheduler, IPC, identity,
   trust lattice, full TCP/IP, 5-phase verifier, shell, VGA + UEFI
-  consoles, GUI substrate, agent runtime, ~360 library modules across
-  20 quires.
+  consoles, GUI substrate, agent runtime, ~377 library modules across
+  26 quires.
 - **Repository protocol live** (CL 1018; annotations integration H1–H12
   CLs 1221–1243).
 - **New syntax landed** (CL 1315 + DEV_2GB_SYNTAX): `&` replaces `++`,
@@ -56,7 +56,7 @@ We are close. Not there.
 - **Short-circuit `&`/`|`** (CL 1885): `IrAnd`/`IrOr` now emit
   conditional jumps instead of bitwise ops. Eliminates the entire class
   of non-short-circuit guard bugs.
-- **Plug pipeline complete** (CLs 1899–2305): all 48 transpiler plugs
+- **Plug pipeline complete** (CLs 1899–2305): all 53 transpiler plugs
   build. Languages (Ada, Babbage, C#, Clojure, COBOL, D, Elixir,
   Fortran, Go, Groovy, Haskell, Java, JavaScript, Julia, Kotlin, Lua,
   Nim, Objective-C, OCaml, Pascal, Perl, PHP, Python, Ruby, Rust,
@@ -91,6 +91,47 @@ We are close. Not there.
   increased 12x→40x to prevent GPF on token-dense source (CL 2306).
 - **Seed** (CL 2309): 2,191,873 bytes. Hard fixed point. 125 expected
   tests + 2 failing + 5 skipped = 132 total samples.
+- **For-expressions** (CL ~3100): `for x in xs do f x` sugar for
+  map loops. Dogfooded across ~50 call sites.
+- **x86-64 codegen optimization** (CLs 3100–3500): comparison folding,
+  preamble elision, store-load elimination, immediate ops. fib(35)
+  cut from 107 to 53 instructions. WASM backend + WebGPU 3D.
+- **Native-class codegen** (CLs ~3500–3800): TCO parallel-move, R8/R9-
+  staged operands, leaf/near-leaf frame elision, IrRemInt + inliner.
+  sum 14 insns (beats C /O2), fact 17, fib 23.
+- **Application wave** (CLs ~3800–4200): 630 app modules across 47 apps.
+  ERP + 5 verticals, Market, Browser, FileShare, CVMM desktop, 20 page
+  apps on WebApp template.
+- **Punctual functions + unit types** (CLs 4200–4310): `punctual`
+  keyword (novel — no production language has per-function bounded
+  execution). Unit types with zero-overhead erasure. IoT protocol
+  stack (MQTT v5, CoAP, LwM2M, OTA). Board drivers (STM32F4, ESP32-C6,
+  RPi 4). EU compliance evidence module.
+- **Cross-arch GCC parity** (CLs 4280–4410): ARM64 + RISC-V codegen
+  meets or beats GCC -O0 on all 4 micro-benchmarks. 24 optimization
+  CLs. No optimizer — all emitter-level.
+- **SIMD / Vector types — Phase 1 complete** (CLs 4392–4580):
+  `Vector N T` first-class type with dependent lane count. SSE2
+  packed codegen for f64 (ADDPD/SUBPD/MULPD/DIVPD) and f32
+  (ADDPS/SUBPS/MULPS/DIVPS/CMPPS). `~` approximate equality,
+  CDX2085 (no == on Real). vec-splat, vec-extract, vec-reduce-add,
+  vec-select builtins. VectorMask N type with vector comparisons.
+  Vector pattern matching (PCMPEQ + PMOVMSKB). Integer vectors
+  (PADDQ/PSUBQ). Real approximate (f32) scalar + packed. Real
+  trapping + saturating safety modes. suggested-vector-width
+  comptime builtin. Number renamed to Real across compiler + plugs.
+- **GPU plugs** (CLs 4424–4468): PTX plug (NVIDIA) + SPIR-V plug
+  (Vulkan/OpenCL) built and compiling (157KB/152KB CDX). Full IR
+  expression coverage. Design: `DualTargetGpuCompilation.md`.
+- **Punctual foreword** (CL 4446): 8-chapter `codex.foreword.punctual`
+  quire. IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic,
+  Endian. Compiler whitelist fix for builtins.
+- **Game engine foreword** (CL 4468): 21-chapter `codex.foreword.engine`
+  quire. Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD,
+  Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, etc.
+- **Poisoned compact** (CL 4474): `__memset` builtin + per-phase poison
+  bytes. Reclaimed memory is poisoned to catch stale-pointer reads.
+- **Seed** (CL 4474): 2,291,929 bytes. Hard fixed point. 543 tests.
 
 The remaining gap to the vision is the *wiring* — chapters that exist
 but aren't yet the default path, plus a handful of capabilities that
@@ -227,16 +268,16 @@ on lower-RAM boards.
 
 **Updated**: 2026-06-08
 
-Spark is an 86-module creative suite (3D modeling, animation, image
+Spark is an 89-module creative suite (3D modeling, animation, image
 editing, materials, audio, CAD) compiled to WASM and running in the
 browser via WebGPU. The studio is the first Codex application visible
 to non-Codex users — a working demo of the language and tools.
 
-161KB WASM, 400+ exports, 28-second build. WASM tail-call optimization
-enabled (CL 3504): 255 self-recursive functions compile to WASM loop/br
-instead of call, eliminating stack overflow for deep recursion (canvas
-clear at 1024x1024 = 1M iterations works in 0.4ms). Also includes
-Codex Designer (12.5KB WASM, WYSIWYG UI builder).
+89 modules, 578KB source, 2.47MB IR, 1.39MB WAT. WASM tail-call
+optimization enabled (CL 3504): 255 self-recursive functions compile
+to WASM loop/br instead of call, eliminating stack overflow for deep
+recursion (canvas clear at 1024x1024 = 1M iterations works in 0.4ms).
+Also includes Codex Designer (12.5KB WASM, WYSIWYG UI builder).
 
 **Completed** (CLs 3130–3504):
 - All animation, image editor, 3D, and audio items (a–r below) done
@@ -252,6 +293,12 @@ Codex Designer (12.5KB WASM, WYSIWYG UI builder).
   rendering in Codex, code generation (CLs 3441–3458)
 
 **Remaining:**
+
+m. **wat2wasm undefined function** — `build-spark.ps1` produces WAT
+   successfully (1.39MB) but `wat2wasm` rejects it: `undefined function
+   variable "$AbsorbedDose"`. A unit type from the punctual foreword
+   is referenced but not emitted by the WASM plug. Likely missing from
+   the plug's function export table.
 
 n. **Mesh operations** — CSG booleans exist in Codex (mesh-bool-union,
    intersect, difference) but not fully wired through UI. Mesh

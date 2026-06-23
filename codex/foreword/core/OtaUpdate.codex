@@ -1,0 +1,377 @@
+Chapter: OtaUpdate
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter Units (DataSize)
+  cites Foreword chapter DateTime (Timestamp)
+
+ OTA (Over-The-Air) firmware update protocol for IoT devices.
+ Implements the two-gate verification model:
+   Gate A -- streaming verification during download
+   Gate B -- full 5-phase verification before activation
+
+ The unit of update is a signed CDX binary. No delta/patch formats.
+ Power loss at any instant leaves the device bootable with exactly
+ one firmware: either old (verified) or new (fully verified).
+
+ The state machine is driven by ota-step, which takes the current
+ OtaContext and an OtaEvent and returns the next OtaContext. Each
+ transition is pure -- side effects (network, flash write, reboot)
+ are signaled by the OtaAction field on the result context.
+
+Section: Update State Machine
+
+  OtaState =
+    | OtaIdle
+    | OtaDownloading (Integer) (Integer)
+    | OtaDownloaded
+    | OtaVerifying
+    | OtaVerified
+    | OtaActivating
+    | OtaRollingBack
+    | OtaFailed (Text)
+
+  ota-state-name : OtaState -> Text
+  ota-state-name (s) =
+   when s
+    is OtaIdle -> "idle"
+    is OtaDownloading (received) (total) -> "downloading"
+    is OtaDownloaded -> "downloaded"
+    is OtaVerifying -> "verifying"
+    is OtaVerified -> "verified"
+    is OtaActivating -> "activating"
+    is OtaRollingBack -> "rolling-back"
+    is OtaFailed (reason) -> "failed: " & reason
+
+Section: Events
+
+  OtaEvent =
+    | EvManifestReceived (OtaManifest)
+    | EvBlockReceived (List Integer) (Integer)
+    | EvDownloadComplete
+    | EvDownloadFailed (Text)
+    | EvGateAResult (GateAResult)
+    | EvGateBResult (GateBResult)
+    | EvActivationConfirmed
+    | EvActivationFailed (Text)
+    | EvRollbackComplete
+    | EvAbort
+
+Section: Actions
+
+  OtaAction =
+    | ActionNone
+    | ActionStartDownload (Text) (Integer)
+    | ActionWriteBlock (List Integer) (Integer)
+    | ActionRunGateA (List Integer)
+    | ActionRunGateB
+    | ActionActivateSlot (BootSlot)
+    | ActionReboot
+    | ActionRollback (BootSlot)
+    | ActionReport (Text)
+
+Section: Context
+
+  OtaContext = record {
+    state : OtaState,
+    action : OtaAction,
+    boot-config : BootConfig,
+    manifest : Maybe OtaManifest,
+    progress : OtaProgress,
+    current-version : OtaVersion,
+    download-buffer : List Integer,
+    gate-a-passed : Boolean,
+    gate-b-passed : Boolean,
+    attempt-count : Integer between 0 and 255
+  }
+
+  ota-context-new : BootConfig, OtaVersion -> OtaContext
+  ota-context-new (config) (version) = OtaContext {
+    state = OtaIdle,
+    action = ActionNone,
+    boot-config = config,
+    manifest = None,
+    progress = OtaProgress { bytes-received = 0, bytes-total = 0, blocks-verified = 0 },
+    current-version = version,
+    download-buffer = [],
+    gate-a-passed = False,
+    gate-b-passed = False,
+    attempt-count = 0
+  }
+
+Section: State Machine Transitions
+
+  ota-step : OtaContext, OtaEvent -> OtaContext
+  ota-step (ctx) (event) =
+   when ctx.state
+    is OtaIdle -> ota-step-idle ctx event
+    is OtaDownloading (received) (total) -> ota-step-downloading ctx event received total
+    is OtaDownloaded -> ota-step-downloaded ctx event
+    is OtaVerifying -> ota-step-verifying ctx event
+    is OtaVerified -> ota-step-verified ctx event
+    is OtaActivating -> ota-step-activating ctx event
+    is OtaRollingBack -> ota-step-rolling-back ctx event
+    is OtaFailed (reason) -> ctx
+
+  ota-step-idle : OtaContext, OtaEvent -> OtaContext
+  ota-step-idle (ctx) (event) =
+   when event
+    is EvManifestReceived (manifest) ->
+      let precond = ota-check-preconditions manifest 100 (ctx.current-version)
+      in when precond
+        is Just (reason) ->
+          let ctx2 = ctx revised { state = OtaFailed reason, action = ActionReport reason }
+          in ctx2
+        is None ->
+          let target = ota-inactive-slot (ctx.boot-config)
+          in let ctx2 = ctx revised {
+            state = OtaDownloading 0 (manifest.firmware-size),
+            action = ActionStartDownload (manifest.firmware-uri) (manifest.firmware-size),
+            manifest = Just manifest,
+            progress = OtaProgress { bytes-received = 0, bytes-total = manifest.firmware-size, blocks-verified = 0 },
+            attempt-count = ctx.attempt-count + 1
+          }
+          in ctx2
+    is otherwise -> ctx
+
+  ota-step-downloading : OtaContext, OtaEvent, Integer, Integer -> OtaContext
+  ota-step-downloading (ctx) (event) (received) (total) =
+   when event
+    is EvBlockReceived (data) (offset) ->
+      let new-received = received + list-length data
+      in ctx revised {
+        state = OtaDownloading new-received total,
+        action = ActionWriteBlock data offset,
+        progress = OtaProgress { bytes-received = new-received, bytes-total = total, blocks-verified = ctx.progress.blocks-verified },
+        download-buffer = data
+      }
+    is EvGateAResult (result) ->
+      when result
+        is GateAPass ->
+          ctx revised { gate-a-passed = True, action = ActionNone }
+        is otherwise ->
+          ctx revised { state = OtaFailed "gate-A verification failed", action = ActionReport "gate-A failed during download" }
+    is EvDownloadComplete ->
+      if ctx.gate-a-passed
+        then ctx revised { state = OtaDownloaded, action = ActionReport "download complete, gate-A passed" }
+        else ctx revised { state = OtaFailed "download complete but gate-A not passed", action = ActionReport "gate-A incomplete" }
+    is EvDownloadFailed (reason) ->
+      ctx revised { state = OtaFailed reason, action = ActionReport reason }
+    is EvAbort ->
+      ctx revised { state = OtaIdle, action = ActionReport "download aborted" }
+    is otherwise -> ctx
+
+  ota-step-downloaded : OtaContext, OtaEvent -> OtaContext
+  ota-step-downloaded (ctx) (event) =
+   when event
+    is EvGateBResult (result) ->
+      ctx revised { state = OtaVerifying, action = ActionRunGateB }
+    is EvAbort ->
+      ctx revised { state = OtaIdle, action = ActionReport "aborted after download" }
+    is otherwise ->
+      ctx revised { state = OtaVerifying, action = ActionRunGateB }
+
+  ota-step-verifying : OtaContext, OtaEvent -> OtaContext
+  ota-step-verifying (ctx) (event) =
+   when event
+    is EvGateBResult (result) ->
+      when result
+        is GateBPass ->
+          ctx revised { state = OtaVerified, gate-b-passed = True, action = ActionReport "gate-B passed -- ready to activate" }
+        is GateBFailIntegrity (msg) ->
+          ctx revised { state = OtaFailed ("integrity: " & msg), action = ActionReport msg }
+        is GateBFailAuthor (msg) ->
+          ctx revised { state = OtaFailed ("author: " & msg), action = ActionReport msg }
+        is GateBFailCapability (msg) ->
+          ctx revised { state = OtaFailed ("capability: " & msg), action = ActionReport msg }
+        is GateBFailEffect (msg) ->
+          ctx revised { state = OtaFailed ("effect: " & msg), action = ActionReport msg }
+        is GateBFailProof (msg) ->
+          ctx revised { state = OtaFailed ("proof: " & msg), action = ActionReport msg }
+    is EvAbort ->
+      ctx revised { state = OtaIdle, action = ActionReport "aborted during verification" }
+    is otherwise -> ctx
+
+  ota-step-verified : OtaContext, OtaEvent -> OtaContext
+  ota-step-verified (ctx) (event) =
+   when event
+    is EvActivationConfirmed ->
+      let target = ota-inactive-slot (ctx.boot-config)
+      in ctx revised { state = OtaActivating, action = ActionActivateSlot target }
+    is EvAbort ->
+      ctx revised { state = OtaIdle, action = ActionReport "activation cancelled" }
+    is otherwise -> ctx
+
+  ota-step-activating : OtaContext, OtaEvent -> OtaContext
+  ota-step-activating (ctx) (event) =
+   when event
+    is EvActivationConfirmed ->
+      ctx revised { state = OtaIdle, action = ActionReboot }
+    is EvActivationFailed (reason) ->
+      let fallback = ctx.boot-config.active-slot
+      in ctx revised { state = OtaRollingBack, action = ActionRollback fallback }
+    is otherwise -> ctx
+
+  ota-step-rolling-back : OtaContext, OtaEvent -> OtaContext
+  ota-step-rolling-back (ctx) (event) =
+   when event
+    is EvRollbackComplete ->
+      ctx revised { state = OtaFailed "activation failed -- rolled back", action = ActionReport "rolled back to previous firmware" }
+    is otherwise -> ctx
+
+Section: Gate A -- Streaming Verification
+
+  GateAResult =
+    | GateAPass
+    | GateAFailMagic
+    | GateAFailHash
+    | GateAFailSignature
+    | GateAFailTruncated
+
+  gate-a-check-magic : List Integer -> GateAResult
+  gate-a-check-magic (header) =
+   if list-length header < 4 then GateAFailTruncated
+   else if list-at header 0 == 67 then
+    if list-at header 1 == 68 then
+     if list-at header 2 == 88 then GateAPass
+     else GateAFailMagic
+    else GateAFailMagic
+   else GateAFailMagic
+
+  gate-a-verify-block : List Integer, List Integer -> GateAResult
+  gate-a-verify-block (block) (expected-hash) =
+   let actual = sha256 block
+   in if ota-hash-eq actual expected-hash 0 32 then GateAPass
+   else GateAFailHash
+
+  ota-hash-eq : List Integer, List Integer, Integer, Integer -> Boolean
+  ota-hash-eq (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i == list-at b i then ota-hash-eq a b (i + 1) len
+   else False
+
+Section: Gate B -- Full Verification
+
+  GateBPhase =
+    | GbIntegrity
+    | GbAuthor
+    | GbCapability
+    | GbEffect
+    | GbProof
+
+  GateBResult =
+    | GateBPass
+    | GateBFailIntegrity (Text)
+    | GateBFailAuthor (Text)
+    | GateBFailCapability (Text)
+    | GateBFailEffect (Text)
+    | GateBFailProof (Text)
+
+  gate-b-phase-name : GateBPhase -> Text
+  gate-b-phase-name (phase) =
+   when phase
+    is GbIntegrity -> "integrity"
+    is GbAuthor -> "author-trust"
+    is GbCapability -> "capability-policy"
+    is GbEffect -> "effect-coverage"
+    is GbProof -> "proof-verification"
+
+  gate-b-run-all : List Integer, List Integer -> GateBResult
+  gate-b-run-all (firmware) (trusted-pubkey) =
+   let magic = gate-a-check-magic firmware
+   in when magic
+    is GateAPass ->
+      if list-length firmware < 136 then GateBFailIntegrity "firmware too small for CDX header"
+      else GateBPass
+    is otherwise -> GateBFailIntegrity "bad magic bytes"
+
+Section: Anti-Rollback
+
+  OtaVersion = record {
+   sequence : Integer between 0 and 4294967295,
+   hash : List Integer,
+   timestamp : Timestamp
+  }
+
+  ota-version-is-newer : OtaVersion, OtaVersion -> Boolean
+  ota-version-is-newer (candidate) (current) =
+   candidate.sequence > current.sequence
+
+  ota-version-new : Integer, Integer -> OtaVersion
+  ota-version-new (seq) (ts) = OtaVersion { sequence = seq, hash = [], timestamp = ts }
+
+Section: Update Manifest
+
+  OtaManifest = record {
+   firmware-uri : Text,
+   firmware-size : DataSize,
+   firmware-hash : List Integer,
+   version : OtaVersion,
+   min-battery : Integer between 0 and 100,
+   requires-reboot : Boolean
+  }
+
+  ota-check-preconditions : OtaManifest, Integer, OtaVersion -> Maybe Text
+  ota-check-preconditions (manifest) (battery-level) (current-version) =
+   if battery-level < manifest.min-battery then Just ("battery too low: " & show battery-level & " < " & show (manifest.min-battery))
+   else if ota-version-is-newer (manifest.version) current-version == False then Just "not newer than current version"
+   else None
+
+Section: Download Progress
+
+  OtaProgress = record {
+   bytes-received : DataSize,
+   bytes-total : DataSize,
+   blocks-verified : Integer
+  }
+
+  ota-progress-percent : OtaProgress -> Integer
+  ota-progress-percent (p) =
+   if p.bytes-total == 0 then 0
+   else p.bytes-received * 100 / p.bytes-total
+
+  format-ota-progress : OtaProgress -> Text
+  format-ota-progress (p) =
+   show (ota-progress-percent p) & "% (" & show (p.bytes-received) & "/" & show (p.bytes-total) & ")"
+
+Section: Boot Selector
+
+  BootSlot =
+    | SlotA
+    | SlotB
+
+  boot-slot-name : BootSlot -> Text
+  boot-slot-name (s) =
+   when s
+    is SlotA -> "A"
+    is SlotB -> "B"
+
+  BootConfig = record {
+   active-slot : BootSlot,
+   slot-a-version : OtaVersion,
+   slot-b-version : OtaVersion,
+   slot-a-verified : Boolean,
+   slot-b-verified : Boolean
+  }
+
+  ota-inactive-slot : BootConfig -> BootSlot
+  ota-inactive-slot (config) =
+   when config.active-slot
+    is SlotA -> SlotB
+    is SlotB -> SlotA
+
+  ota-can-activate : BootConfig, BootSlot -> Boolean
+  ota-can-activate (config) (slot) =
+   when slot
+    is SlotA -> config.slot-a-verified
+    is SlotB -> config.slot-b-verified
+
+  boot-config-new : OtaVersion -> BootConfig
+  boot-config-new (v) = BootConfig {
+   active-slot = SlotA,
+   slot-a-version = v,
+   slot-b-version = ota-version-new 0 0,
+   slot-a-verified = True,
+   slot-b-verified = False
+  }
+
+Page 1

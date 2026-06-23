@@ -1,0 +1,132 @@
+Chapter: Arm64Boot
+  cites Foreword chapter Arm64Encoder
+
+ ARM64 exception vector table and boot-time hardware setup.
+ Called from the UEFI stub after ExitBootServices, MMU enabled.
+ Runs at EL1 with SP_EL1.
+
+ The ARM64 exception vector table has 16 entries, each 128 bytes
+ (32 instructions). Four groups of four:
+   - Current EL with SP_EL0 (not used, we use SP_EL1)
+   - Current EL with SP_EL1 (our handlers)
+   - Lower EL using AArch64 (not used)
+   - Lower EL using AArch32 (not used)
+ Each group has: Synchronous, IRQ, FIQ, SError.
+
+Section: Vector Table Constants
+
+  arm64-vt-entry-size : Integer = 128
+  arm64-vt-num-entries : Integer = 16
+  arm64-vt-table-size : Integer = 2048
+
+Section: Kernel State Addresses
+
+  arm64-tick-count-addr : Integer = #80000
+  arm64-key-buffer-addr : Integer = #80008
+  arm64-current-proc-addr : Integer = #80010
+  arm64-irq-stack-top : Integer = #90000
+
+Section: Build Vector Table
+
+ Returns a list of bytes (2048 total) for the full vector table.
+ Most entries branch to a hang loop. The IRQ entry for current
+ EL with SP_EL1 (entry index 5) branches to the IRQ handler.
+
+  arm64-build-vector-table : Integer -> List Integer
+  arm64-build-vector-table (irq-handler-offset) =
+   arm64-vt-build-entries 0 irq-handler-offset []
+
+  arm64-vt-build-entries : Integer, Integer, List Integer -> List Integer
+  arm64-vt-build-entries (idx) (irq-offset) (acc) =
+   if idx >= arm64-vt-num-entries then acc
+   else let entry = if idx == 5 then arm64-vt-irq-entry irq-offset
+        else arm64-vt-hang-entry
+   in arm64-vt-build-entries (idx + 1) irq-offset (acc & entry)
+
+  arm64-vt-hang-entry : List Integer
+  arm64-vt-hang-entry =
+   let code = arm64-wfi & arm64-b (0 - 4)
+   in let pad-bytes = arm64-vt-entry-size - list-length code
+   in code & arm64-vt-pad pad-bytes
+
+  arm64-vt-irq-entry : Integer -> List Integer
+  arm64-vt-irq-entry (handler-offset) =
+   let code = arm64-b handler-offset
+   in let pad-bytes = arm64-vt-entry-size - list-length code
+   in code & arm64-vt-pad pad-bytes
+
+  arm64-vt-pad : Integer -> List Integer
+  arm64-vt-pad (n) =
+   if n <= 0 then []
+   else arm64-vt-pad-loop n []
+
+  arm64-vt-pad-loop : Integer, List Integer -> List Integer
+  arm64-vt-pad-loop (remaining) (acc) =
+   if remaining <= 0 then acc
+   else arm64-vt-pad-loop (remaining - 4) (acc & arm64-nop)
+
+Section: IRQ Handler
+
+ Minimal IRQ handler for the Generic Timer (PPI 30).
+ Saves volatile registers, reads IAR, handles timer tick,
+ writes EOI, restores registers, returns via ERET.
+
+  arm64-irq-handler-code : List Integer
+  arm64-irq-handler-code =
+   arm64-sub-imm 31 31 256
+   & arm64-stp 0 1 31 0
+   & arm64-stp 2 3 31 16
+   & arm64-stp 4 5 31 32
+   & arm64-stp 6 7 31 48
+   & arm64-stp 8 9 31 64
+   & arm64-stp 10 11 31 80
+   & arm64-stp 12 13 31 96
+   & arm64-stp 14 15 31 112
+   & arm64-stp 16 17 31 128
+   & arm64-stp 29 30 31 144
+   & arm64-mrs 0 sysreg-icc-iar1-el1
+   & arm64-mov 19 0
+   & arm64-cmp-imm 0 30
+   & arm64-irq-handler-timer-branch
+   & arm64-mov 0 19
+   & arm64-msr sysreg-icc-eoir1-el1 0
+   & arm64-ldp 29 30 31 144
+   & arm64-ldp 16 17 31 128
+   & arm64-ldp 14 15 31 112
+   & arm64-ldp 12 13 31 96
+   & arm64-ldp 10 11 31 80
+   & arm64-ldp 8 9 31 64
+   & arm64-ldp 6 7 31 48
+   & arm64-ldp 4 5 31 32
+   & arm64-ldp 2 3 31 16
+   & arm64-ldp 0 1 31 0
+   & arm64-add-imm 31 31 256
+   & arm64-eret
+
+  arm64-irq-handler-timer-branch : List Integer
+  arm64-irq-handler-timer-branch =
+   let skip = 7 * 4
+   in arm64-b-cond arm64-cond-ne skip
+   & arm64-li 9 arm64-tick-count-addr
+   & arm64-ldr 10 9 0
+   & arm64-add-imm 10 10 1
+   & arm64-str 10 9 0
+   & arm64-mrs 9 sysreg-cntfrq-el0
+   & arm64-msr sysreg-cntp-tval-el0 9
+
+Section: Boot Init Sequence
+
+ Called once from the kernel opening to set up hardware.
+ After this, interrupts are enabled and the timer is ticking.
+
+  arm64-boot-init-sequence : List Integer
+  arm64-boot-init-sequence =
+   arm64-li 9 0
+   & arm64-li 10 arm64-tick-count-addr
+   & arm64-str 9 10 0
+   & arm64-li 10 arm64-key-buffer-addr
+   & arm64-str 9 10 0
+   & arm64-li 10 arm64-current-proc-addr
+   & arm64-str 9 10 0
+
+Page 1

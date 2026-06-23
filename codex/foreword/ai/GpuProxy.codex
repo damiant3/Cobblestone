@@ -20,6 +20,19 @@ Section: Constants
   gpu-op-relu : Integer = 2
   gpu-op-softmax : Integer = 3
   gpu-op-conv1d : Integer = 4
+  gpu-op-elemwise-add : Integer = 5
+  gpu-op-elemwise-mul : Integer = 6
+  gpu-op-transpose : Integer = 7
+  gpu-op-layer-norm : Integer = 8
+  gpu-op-max-pool : Integer = 9
+  gpu-op-gelu : Integer = 10
+  gpu-op-scale : Integer = 11
+  gpu-op-conv2d : Integer = 12
+  gpu-op-group-norm : Integer = 13
+  gpu-op-silu : Integer = 14
+  gpu-op-upsample2x : Integer = 15
+  gpu-op-clamp : Integer = 16
+  gpu-op-launch-ptx : Integer = 32
 
   gpu-header-size : Integer = 256
   gpu-data-start : Integer = 256
@@ -56,6 +69,32 @@ Section: Command Construction
 
   gpu-cmd-softmax : Integer -> GpuCommand
   gpu-cmd-softmax (length) = GpuCommand { gpu-op = gpu-op-softmax, gpu-rows-a = length, gpu-cols-a = 1, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = length * 4 }
+
+Section: PTX Launch Types
+  GpuPtxCommand = record {
+    ptx-kernel-name : Text,
+    ptx-sm-target : Integer,
+    ptx-grid-x : Integer,
+    ptx-grid-y : Integer,
+    ptx-grid-z : Integer,
+    ptx-block-x : Integer,
+    ptx-block-y : Integer,
+    ptx-block-z : Integer,
+    ptx-shared-bytes : Integer,
+    ptx-arg-count : Integer
+  }
+
+  gpu-cmd-launch-ptx : Text, Integer, Integer, Integer -> GpuPtxCommand
+  gpu-cmd-launch-ptx (name) (n) (block-size) (sm) =
+    let grid = (n + block-size - 1) / block-size
+    in GpuPtxCommand {
+      ptx-kernel-name = name,
+      ptx-sm-target = sm,
+      ptx-grid-x = grid, ptx-grid-y = 1, ptx-grid-z = 1,
+      ptx-block-x = block-size, ptx-block-y = 1, ptx-block-z = 1,
+      ptx-shared-bytes = 0,
+      ptx-arg-count = 0
+    }
 
 Section: Buffer Serialization
   gpu-serialize-cmd : GpuCommand -> List Integer
@@ -178,6 +217,69 @@ Section: Queries
     else if op == 2 then "RELU"
     else if op == 3 then "SOFTMAX"
     else if op == 4 then "CONV1D"
+    else if op == 5 then "ELEMWISE_ADD"
+    else if op == 6 then "ELEMWISE_MUL"
+    else if op == 7 then "TRANSPOSE"
+    else if op == 8 then "LAYER_NORM"
+    else if op == 9 then "MAX_POOL"
+    else if op == 10 then "GELU"
+    else if op == 11 then "SCALE"
+    else if op == 12 then "CONV2D"
+    else if op == 13 then "GROUP_NORM"
+    else if op == 14 then "SILU"
+    else if op == 15 then "UPSAMPLE2X"
+    else if op == 16 then "CLAMP"
     else "OP-" & show op
+
+Section: Extended Command Construction
+  gpu-cmd-elemwise-add : Integer -> GpuCommand
+  gpu-cmd-elemwise-add (n) =
+    let size = n * 4
+    in GpuCommand { gpu-op = gpu-op-elemwise-add, gpu-rows-a = n, gpu-cols-a = 1, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = size, gpu-offset-out = size * 2 }
+
+  gpu-cmd-elemwise-mul : Integer -> GpuCommand
+  gpu-cmd-elemwise-mul (n) =
+    let size = n * 4
+    in GpuCommand { gpu-op = gpu-op-elemwise-mul, gpu-rows-a = n, gpu-cols-a = 1, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = size, gpu-offset-out = size * 2 }
+
+  gpu-cmd-transpose : Integer, Integer -> GpuCommand
+  gpu-cmd-transpose (rows) (cols) =
+    let size = rows * cols * 4
+    in GpuCommand { gpu-op = gpu-op-transpose, gpu-rows-a = rows, gpu-cols-a = cols, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = size }
+
+  gpu-cmd-layer-norm : Integer -> GpuCommand
+  gpu-cmd-layer-norm (n) =
+    GpuCommand { gpu-op = gpu-op-layer-norm, gpu-rows-a = n, gpu-cols-a = 1, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = n * 4 }
+
+  gpu-cmd-gelu : Integer -> GpuCommand
+  gpu-cmd-gelu (n) =
+    GpuCommand { gpu-op = gpu-op-gelu, gpu-rows-a = n, gpu-cols-a = 1, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = n * 4 }
+
+  gpu-cmd-scale : Integer, Integer -> GpuCommand
+  gpu-cmd-scale (n) (scale-offset) =
+    GpuCommand { gpu-op = gpu-op-scale, gpu-rows-a = n, gpu-cols-a = 1, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = scale-offset, gpu-offset-out = n * 4 }
+
+  gpu-cmd-conv2d : Integer, Integer, Integer, Integer -> GpuCommand
+  gpu-cmd-conv2d (in-elements) (kernel-elements) (out-channels) (spatial) =
+    let in-size = in-elements * 4
+    in let k-size = kernel-elements * 4
+    in GpuCommand { gpu-op = gpu-op-conv2d, gpu-rows-a = in-elements, gpu-cols-a = out-channels, gpu-cols-b = spatial, gpu-offset-a = 0, gpu-offset-b = in-size, gpu-offset-out = in-size + k-size }
+
+  gpu-cmd-group-norm : Integer, Integer -> GpuCommand
+  gpu-cmd-group-norm (n) (groups) =
+    GpuCommand { gpu-op = gpu-op-group-norm, gpu-rows-a = n, gpu-cols-a = groups, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = n * 4 }
+
+  gpu-cmd-silu : Integer -> GpuCommand
+  gpu-cmd-silu (n) =
+    GpuCommand { gpu-op = gpu-op-silu, gpu-rows-a = n, gpu-cols-a = 1, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = n * 4 }
+
+  gpu-cmd-upsample2x : Integer, Integer, Integer -> GpuCommand
+  gpu-cmd-upsample2x (channels) (h) (w) =
+    let n = channels * h * w
+    in GpuCommand { gpu-op = gpu-op-upsample2x, gpu-rows-a = channels, gpu-cols-a = h, gpu-cols-b = w, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = n * 4 * 4 }
+
+  gpu-cmd-clamp : Integer -> GpuCommand
+  gpu-cmd-clamp (n) =
+    GpuCommand { gpu-op = gpu-op-clamp, gpu-rows-a = n, gpu-cols-a = 1, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = n * 4 }
 
 Page 1

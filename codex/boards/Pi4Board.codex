@@ -1,10 +1,16 @@
 Chapter: Pi4Board
   cites Foreword chapter Board
+  cites Foreword chapter Units (Duration, Frequency)
 
- Board constants for Raspberry Pi 4 (BCM2711, ARM Cortex-A72).
+ Board support for Raspberry Pi 4 (BCM2711, ARM Cortex-A72 @ 1.5 GHz).
  Register addresses from the BCM2711 ARM Peripherals document.
  Peripheral base at 0xFE000000 (low-peripheral mode).
  GPIO memory-mapped, PL011 UART, SPI0, BSC I2C.
+
+ GPIO, UART, SPI, and I2C drivers using MMIO primitives from the
+ Board HAL. Each peripheral is initialized, used, and released
+ through explicit function calls. Fuel-bounded polling loops
+ prevent unbounded spins on bare metal with no OS.
 
 Section: Core Addresses
 
@@ -12,7 +18,7 @@ Section: Core Addresses
   pi4-ram-base : Integer = 0
   pi4-kernel-load : Integer = #80000
 
-Section: GPIO
+Section: GPIO Registers
 
   pi4-gpio-base : Integer = #FE200000
   pi4-gpio-fsel0 : Integer = #FE200000
@@ -21,7 +27,9 @@ Section: GPIO
   pi4-gpio-lev0 : Integer = #FE200034
   pi4-gpio-pup-pdn0 : Integer = #FE2000E4
 
-  pi4-gpio-set-output : Integer -> Nothing
+Section: GPIO Driver
+
+  pi4-gpio-set-output : Integer -> Integer
   pi4-gpio-set-output (pin) =
    let reg = pi4-gpio-fsel0 + pin / 10 * 4
    in let shift = (int-mod pin 10) * 3
@@ -29,12 +37,42 @@ Section: GPIO
    in let cleared = bit-and fsel (bit-xor (bit-shl 7 shift) (0 - 1))
    in mmio-write-32 reg (bit-or cleared (bit-shl 1 shift))
 
-  pi4-gpio-set : Integer -> Nothing
+  pi4-gpio-set-input : Integer -> Integer
+  pi4-gpio-set-input (pin) =
+   let reg = pi4-gpio-fsel0 + pin / 10 * 4
+   in let shift = (int-mod pin 10) * 3
+   in let fsel = mmio-read-32 reg
+   in let cleared = bit-and fsel (bit-xor (bit-shl 7 shift) (0 - 1))
+   in mmio-write-32 reg cleared
+
+  pi4-gpio-set-alternate : Integer, Integer -> Integer
+  pi4-gpio-set-alternate (pin) (af) =
+   let fsel-val = if af == 0 then 4
+                  else if af == 1 then 5
+                  else if af == 2 then 6
+                  else if af == 3 then 7
+                  else if af == 4 then 3
+                  else 2
+   in let reg = pi4-gpio-fsel0 + pin / 10 * 4
+   in let shift = (int-mod pin 10) * 3
+   in let fsel = mmio-read-32 reg
+   in let cleared = bit-and fsel (bit-xor (bit-shl 7 shift) (0 - 1))
+   in mmio-write-32 reg (bit-or cleared (bit-shl fsel-val shift))
+
+  pi4-gpio-set-pull : Integer, Integer -> Integer
+  pi4-gpio-set-pull (pin) (pull) =
+   let reg = pi4-gpio-pup-pdn0 + pin / 16 * 4
+   in let shift = (int-mod pin 16) * 2
+   in let val = mmio-read-32 reg
+   in let cleared = bit-and val (bit-xor (bit-shl 3 shift) (0 - 1))
+   in mmio-write-32 reg (bit-or cleared (bit-shl pull shift))
+
+  pi4-gpio-set : Integer -> Integer
   pi4-gpio-set (pin) =
    let reg = pi4-gpio-set0 + pin / 32 * 4
    in mmio-write-32 reg (bit-shl 1 (int-mod pin 32))
 
-  pi4-gpio-clear : Integer -> Nothing
+  pi4-gpio-clear : Integer -> Integer
   pi4-gpio-clear (pin) =
    let reg = pi4-gpio-clr0 + pin / 32 * 4
    in mmio-write-32 reg (bit-shl 1 (int-mod pin 32))
@@ -45,7 +83,15 @@ Section: GPIO
    in let val = mmio-read-32 reg
    in bit-and val (bit-shl 1 (int-mod pin 32)) /= 0
 
-Section: UART (PL011)
+  pi4-gpio-toggle : Integer -> Integer
+  pi4-gpio-toggle (pin) =
+   let reg = pi4-gpio-lev0 + pin / 32 * 4
+   in let val = mmio-read-32 reg
+   in let bit = bit-and val (bit-shl 1 (int-mod pin 32))
+   in if bit /= 0 then pi4-gpio-clear pin
+      else pi4-gpio-set pin
+
+Section: UART Registers (PL011 UART0)
 
   pi4-uart0-base : Integer = #FE201000
   pi4-uart-dr : Integer = #FE201000
@@ -57,21 +103,83 @@ Section: UART (PL011)
 
   pi4-uart-fr-txff : Integer = #20
   pi4-uart-fr-rxfe : Integer = #10
+  pi4-uart-fr-busy : Integer = #08
 
-  pi4-uart-putc : Integer -> Nothing
-  pi4-uart-putc (c) = mmio-write-8 pi4-uart-dr c
+  pi4-uart-cr-uarten : Integer = 1
+  pi4-uart-cr-txe : Integer = #100
+  pi4-uart-cr-rxe : Integer = #200
 
-  pi4-uart-puts : Text -> Nothing
-  pi4-uart-puts (s) = pi4-uart-puts-loop s 0 (text-length s)
+  pi4-uart-lcrh-fen : Integer = #10
+  pi4-uart-lcrh-wlen8 : Integer = #60
 
-  pi4-uart-puts-loop : Text, Integer, Integer -> Nothing
-  pi4-uart-puts-loop (s) (i) (len) =
-   if i >= len then Nothing
-   else let c = char-code (char-at s i)
-   in let w = pi4-uart-putc c
-   in pi4-uart-puts-loop s (i + 1) len
+Section: UART Driver
 
-Section: SPI0
+ PL011 UART0 on GPIO14 (TX, AF0) / GPIO15 (RX, AF0).
+ UARTCLK = 48 MHz on Pi 4. Baud divisor = 48000000 / (16 * baud).
+ For 115200: IBRD = 26, FBRD = 3.
+
+  pi4-uart-init : Frequency -> Integer
+  pi4-uart-init (baud) =
+   let af-tx = pi4-gpio-set-alternate 14 0
+   in let af-rx = pi4-gpio-set-alternate 15 0
+   in let pull-rx = pi4-gpio-set-pull 15 1
+   in let disable = mmio-write-32 pi4-uart-cr 0
+   in let ibrd = 48000000 / (16 * baud)
+   in let fbrd-full = 48000000 - ibrd * 16 * baud
+   in let fbrd = (fbrd-full * 64 + 16 * baud / 2) / (16 * baud)
+   in let w-ibrd = mmio-write-32 pi4-uart-ibrd ibrd
+   in let w-fbrd = mmio-write-32 pi4-uart-fbrd fbrd
+   in let w-lcrh = mmio-write-32 pi4-uart-lcrh (bit-or pi4-uart-lcrh-fen pi4-uart-lcrh-wlen8)
+   in mmio-write-32 pi4-uart-cr (bit-or (bit-or pi4-uart-cr-uarten pi4-uart-cr-txe) pi4-uart-cr-rxe)
+
+  pi4-uart-tx-ready : Boolean
+  pi4-uart-tx-ready =
+   bit-and (mmio-read-32 pi4-uart-fr) pi4-uart-fr-txff == 0
+
+  pi4-uart-rx-ready : Boolean
+  pi4-uart-rx-ready =
+   bit-and (mmio-read-32 pi4-uart-fr) pi4-uart-fr-rxfe == 0
+
+  pi4-uart-wait-tx : Integer -> Integer
+  pi4-uart-wait-tx (fuel) =
+   if fuel <= 0 then 0
+   else if pi4-uart-tx-ready then 1
+   else pi4-uart-wait-tx (fuel - 1)
+
+  pi4-uart-wait-rx : Integer -> Integer
+  pi4-uart-wait-rx (fuel) =
+   if fuel <= 0 then 0
+   else if pi4-uart-rx-ready then 1
+   else pi4-uart-wait-rx (fuel - 1)
+
+  pi4-uart-send-byte : Integer -> Integer
+  pi4-uart-send-byte (byte) =
+   let w = pi4-uart-wait-tx 10000
+   in mmio-write-32 pi4-uart-dr (bit-and byte #FF)
+
+  pi4-uart-recv-byte : Integer
+  pi4-uart-recv-byte =
+   let w = pi4-uart-wait-rx 100000
+   in if w == 0 then 0 - 1
+   else bit-and (mmio-read-32 pi4-uart-dr) #FF
+
+  pi4-uart-send-text : Text, Integer, Integer -> Integer
+  pi4-uart-send-text (s) (i) (len) =
+   if i >= len then 0
+   else let b = pi4-uart-send-byte (char-code (char-at s i))
+     in pi4-uart-send-text s (i + 1) len
+
+  pi4-uart-print : Text -> Integer
+  pi4-uart-print (s) =
+   pi4-uart-send-text s 0 (text-length s)
+
+  pi4-uart-println : Text -> Integer
+  pi4-uart-println (s) =
+   let p = pi4-uart-print s
+   in let cr = pi4-uart-send-byte 13
+   in pi4-uart-send-byte 10
+
+Section: SPI Registers (SPI0)
 
   pi4-spi0-base : Integer = #FE204000
   pi4-spi-cs : Integer = #FE204000
@@ -79,7 +187,62 @@ Section: SPI0
   pi4-spi-clk : Integer = #FE204008
   pi4-spi-dlen : Integer = #FE20400C
 
-Section: I2C (BSC1)
+  pi4-spi-cs-ta : Integer = #80
+  pi4-spi-cs-done : Integer = #10000
+  pi4-spi-cs-rxd : Integer = #20000
+  pi4-spi-cs-txd : Integer = #40000
+  pi4-spi-cs-clear-rx : Integer = #20
+  pi4-spi-cs-clear-tx : Integer = #10
+
+Section: SPI Driver
+
+ SPI0 on GPIO8 (CE0, AF0) / GPIO9 (MISO, AF0) / GPIO10 (MOSI, AF0) /
+ GPIO11 (SCLK, AF0). Master mode, clock divider sets SPI_CLK = core_clk / CDIV.
+
+  pi4-spi-init : Integer
+  pi4-spi-init =
+   let af-ce0 = pi4-gpio-set-alternate 8 0
+   in let af-miso = pi4-gpio-set-alternate 9 0
+   in let af-mosi = pi4-gpio-set-alternate 10 0
+   in let af-sclk = pi4-gpio-set-alternate 11 0
+   in let w-clk = mmio-write-32 pi4-spi-clk 256
+   in let clear = mmio-write-32 pi4-spi-cs (bit-or pi4-spi-cs-clear-rx pi4-spi-cs-clear-tx)
+   in 0
+
+  pi4-spi-wait-txd : Integer -> Integer
+  pi4-spi-wait-txd (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 pi4-spi-cs) pi4-spi-cs-txd > 0 then 1
+   else pi4-spi-wait-txd (fuel - 1)
+
+  pi4-spi-wait-rxd : Integer -> Integer
+  pi4-spi-wait-rxd (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 pi4-spi-cs) pi4-spi-cs-rxd > 0 then 1
+   else pi4-spi-wait-rxd (fuel - 1)
+
+  pi4-spi-wait-done : Integer -> Integer
+  pi4-spi-wait-done (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 pi4-spi-cs) pi4-spi-cs-done > 0 then 1
+   else pi4-spi-wait-done (fuel - 1)
+
+  pi4-spi-transfer : Integer -> Integer
+  pi4-spi-transfer (byte) =
+   let cs = mmio-read-32 pi4-spi-cs
+   in let start = mmio-write-32 pi4-spi-cs (bit-or cs pi4-spi-cs-ta)
+   in let wt = pi4-spi-wait-txd 10000
+   in let wr = mmio-write-32 pi4-spi-fifo (bit-and byte #FF)
+   in let wd = pi4-spi-wait-done 10000
+   in let result = bit-and (mmio-read-32 pi4-spi-fifo) #FF
+   in let stop = mmio-write-32 pi4-spi-cs (bit-and cs (bit-xor pi4-spi-cs-ta (0 - 1)))
+   in result
+
+  pi4-spi-busy : Boolean
+  pi4-spi-busy =
+   bit-and (mmio-read-32 pi4-spi-cs) pi4-spi-cs-ta > 0
+
+Section: I2C Registers (BSC1)
 
   pi4-bsc1-base : Integer = #FE804000
   pi4-bsc-c : Integer = #FE804000
@@ -88,17 +251,85 @@ Section: I2C (BSC1)
   pi4-bsc-a : Integer = #FE80400C
   pi4-bsc-fifo : Integer = #FE804010
 
+  pi4-bsc-c-i2cen : Integer = #8000
+  pi4-bsc-c-st : Integer = #80
+  pi4-bsc-c-read : Integer = 1
+  pi4-bsc-c-clear : Integer = #30
+
+  pi4-bsc-s-done : Integer = 2
+  pi4-bsc-s-ta : Integer = 1
+  pi4-bsc-s-clkt : Integer = #200
+  pi4-bsc-s-err : Integer = #100
+
+Section: I2C Driver
+
+ BSC1 on GPIO2 (SDA1, AF0) / GPIO3 (SCL1, AF0).
+ Standard mode (100 kHz). Clear status before each transaction.
+
+  pi4-i2c-init : Integer
+  pi4-i2c-init =
+   let af-sda = pi4-gpio-set-alternate 2 0
+   in let af-scl = pi4-gpio-set-alternate 3 0
+   in let pull-sda = pi4-gpio-set-pull 2 1
+   in let pull-scl = pi4-gpio-set-pull 3 1
+   in mmio-write-32 pi4-bsc-c pi4-bsc-c-i2cen
+
+  pi4-i2c-wait-done : Integer -> Integer
+  pi4-i2c-wait-done (fuel) =
+   if fuel <= 0 then 0
+   else let status = mmio-read-32 pi4-bsc-s
+   in if bit-and status pi4-bsc-s-done > 0 then 1
+   else pi4-i2c-wait-done (fuel - 1)
+
+  pi4-i2c-clear-status : Integer
+  pi4-i2c-clear-status =
+   mmio-write-32 pi4-bsc-s (bit-or (bit-or pi4-bsc-s-done pi4-bsc-s-clkt) pi4-bsc-s-err)
+
+  pi4-i2c-write-reg : Integer, Integer, Integer -> Integer
+  pi4-i2c-write-reg (dev-addr) (reg) (value) =
+   let clr = pi4-i2c-clear-status
+   in let w-addr = mmio-write-32 pi4-bsc-a dev-addr
+   in let w-dlen = mmio-write-32 pi4-bsc-dlen 2
+   in let w-fifo1 = mmio-write-32 pi4-bsc-fifo reg
+   in let w-fifo2 = mmio-write-32 pi4-bsc-fifo value
+   in let start = mmio-write-32 pi4-bsc-c (bit-or pi4-bsc-c-i2cen pi4-bsc-c-st)
+   in pi4-i2c-wait-done 100000
+
+  pi4-i2c-read-reg : Integer, Integer -> Integer
+  pi4-i2c-read-reg (dev-addr) (reg) =
+   let clr1 = pi4-i2c-clear-status
+   in let w-addr = mmio-write-32 pi4-bsc-a dev-addr
+   in let w-dlen = mmio-write-32 pi4-bsc-dlen 1
+   in let w-fifo = mmio-write-32 pi4-bsc-fifo reg
+   in let start-w = mmio-write-32 pi4-bsc-c (bit-or pi4-bsc-c-i2cen pi4-bsc-c-st)
+   in let wait-w = pi4-i2c-wait-done 100000
+   in let clr2 = pi4-i2c-clear-status
+   in let w-dlen2 = mmio-write-32 pi4-bsc-dlen 1
+   in let start-r = mmio-write-32 pi4-bsc-c (bit-or (bit-or pi4-bsc-c-i2cen pi4-bsc-c-st) pi4-bsc-c-read)
+   in let wait-r = pi4-i2c-wait-done 100000
+   in bit-and (mmio-read-32 pi4-bsc-fifo) #FF
+
 Section: Activity LED (GPIO 42 active-low on Pi 4)
 
   pi4-led-pin : Integer = 42
 
-  pi4-led-init : Nothing
+  pi4-led-init : Integer
   pi4-led-init = pi4-gpio-set-output pi4-led-pin
 
-  pi4-led-on : Nothing
+  pi4-led-on : Integer
   pi4-led-on = pi4-gpio-clear pi4-led-pin
 
-  pi4-led-off : Nothing
+  pi4-led-off : Integer
   pi4-led-off = pi4-gpio-set pi4-led-pin
+
+Section: Delay
+
+  pi4-delay-loops : Integer, Integer -> Integer
+  pi4-delay-loops (n) (i) =
+   if i >= n then 0
+   else pi4-delay-loops n (i + 1)
+
+  pi4-delay-ms : Duration -> Integer
+  pi4-delay-ms (ms) = pi4-delay-loops (ms * 1500000) 0
 
 Page 1

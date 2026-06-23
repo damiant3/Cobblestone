@@ -1,0 +1,347 @@
+Chapter: Prism
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Works chapter Http
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
+  cites Foreword chapter ListUtils
+
+ Prism -- Codex through every lens. A web application that shows
+ Codex source code alongside the output of every compiler plug.
+
+Section: Source Cache
+
+  SourceEntry = record {
+    path : Text,
+    content : Text
+  }
+
+  prism-source-paths : List Text =
+    ["codex/compiler/opening.codex",
+     "codex/compiler/Syntax/Lexer.codex",
+     "codex/compiler/Syntax/Parser.codex",
+     "codex/compiler/Syntax/ParserCore.codex",
+     "codex/compiler/Types/TypeChecker.codex",
+     "codex/compiler/IR/Lowering.codex",
+     "codex/compiler/IR/IRChapter.codex",
+     "codex/compiler/IR/ResolveTypes.codex",
+     "codex/compiler/IR/LambdaLifting.codex",
+     "codex/compiler/Emit/X86_64.codex",
+     "codex/compiler/Emit/IRTextEmitter.codex",
+     "codex/compiler/Emit/CodexEmitter.codex",
+     "codex/compiler/Core/CdxCodes.codex",
+     "codex/plugs/arm64/Arm64CodeGen.codex",
+     "codex/plugs/riscv/RiscVCodeGen.codex",
+     "codex/plugs/wasm/WasmEmitter.codex",
+     "codex/plugs/python/PythonEmitter.codex",
+     "codex/plugs/rust/RustEmitter.codex",
+     "codex/plugs/javascript/JavaScriptEmitter.codex",
+     "codex/foreword/core/ListUtils.codex",
+     "codex/foreword/core/StringUtils.codex",
+     "codex/os/net/WebServer.codex",
+     "codex/os/net/NetworkStack.codex",
+     "codex/test/punctual-smoke.codex",
+     "codex/test/examples/missile-warning.codex",
+     "apps/prism/Prism.codex"]
+
+  prism-ir-paths : List Text =
+    ["codex/test/punctual-smoke.codex",
+     "codex/test/examples/missile-warning.codex",
+     "codex/foreword/core/ListUtils.codex",
+     "codex/foreword/core/StringUtils.codex",
+     "apps/prism/Prism.codex"]
+
+  prism-ir-file : Text -> Text
+  prism-ir-file (source-path) =
+    let name = prism-basename source-path
+    in "apps/prism/build-output/ir/" & name & ".ir"
+
+  prism-basename : Text -> Text
+  prism-basename (path) =
+    let dot = prism-text-rfind path 46 (text-length path - 1)
+    in let slash = prism-text-rfind path 47 (if dot > 0 then dot else text-length path - 1)
+    in if slash < 0 then if dot < 0 then path else substring path 0 dot
+    else if dot < 0 then text-drop path (slash + 1)
+    else substring path (slash + 1) (dot - slash - 1)
+
+  prism-text-rfind : Text, Integer, Integer -> Integer
+  prism-text-rfind (s) (target) (i) =
+    if i < 0 then 0 - 1
+    else if char-code (char-at s i) == target then i
+    else prism-text-rfind s target (i - 1)
+
+  prism-find-source : List SourceEntry, Text, Integer -> Text
+  prism-find-source (entries) (path) (i) =
+    if i >= list-length entries then ""
+    else let e = list-at entries i
+    in if e.path == path then e.content
+    else prism-find-source entries path (i + 1)
+
+Section: Route Handler
+
+  prism-route : List SourceEntry -> List SourceEntry -> HttpRequest -> HttpResponse
+  prism-route (sources) (ir-cache) (req) =
+    if req.path == "/" then http-html prism-index-page
+    else if req.path == "/api/files" then prism-files-route sources
+    else if text-starts-with (req.path) "/api/source" then prism-source-route sources (req.path)
+    else if req.path == "/api/compile" then prism-compile-route sources ir-cache (req.body)
+    else if req.path == "/api/plugs" then prism-plugs-route
+    else http-not-found
+
+Section: File Listing
+
+  prism-files-route : List SourceEntry -> HttpResponse
+  prism-files-route (sources) =
+    http-json ("{\"files\":[" & prism-file-entries sources 0 & "]}")
+
+  prism-file-entries : List SourceEntry, Integer -> Text
+  prism-file-entries (sources) (i) =
+    if i >= list-length sources then ""
+    else let e = list-at sources i
+    in let entry = "\"" & e.path & "\""
+    in if i + 1 >= list-length sources then entry
+    else entry & "," & prism-file-entries sources (i + 1)
+
+Section: Source Viewer
+
+  prism-source-route : List SourceEntry, Text -> HttpResponse
+  prism-source-route (sources) (url) =
+    let file-path = prism-extract-path url
+    in if text-length file-path == 0 then http-json "{\"error\":\"no path parameter\"}"
+    else let content = prism-find-source sources file-path 0
+    in if text-length content == 0 then http-json ("{\"path\":" & prism-quote file-path & ",\"source\":\"-- File catalogued but not loaded in standalone mode.\\n-- Run with: apps/prism/run.ps1 to enable file loading.\",\"lines\":2}")
+    else http-json ("{\"path\":" & prism-quote file-path & ",\"source\":" & prism-quote content & ",\"lines\":" & show (prism-count-lines content 0 (text-length content) 1) & "}")
+
+  prism-extract-path : Text -> Text
+  prism-extract-path (url) =
+    let prefix = "/api/source?path="
+    in if text-starts-with url prefix then text-drop url (text-length prefix)
+    else ""
+
+  prism-count-lines : Text, Integer, Integer, Integer -> Integer
+  prism-count-lines (s) (i) (len) (count) =
+    if i >= len then count
+    else if char-code (char-at s i) == 10 then prism-count-lines s (i + 1) len (count + 1)
+    else prism-count-lines s (i + 1) len count
+
+Section: Compile Route
+
+  prism-compile-route : List SourceEntry, List SourceEntry, Text -> HttpResponse
+  prism-compile-route (sources) (ir-cache) (body) =
+    let path = prism-json-get-string body "path"
+    in if text-length path == 0 then http-json "{\"error\":\"missing path field\"}"
+    else let content = prism-find-source sources path 0
+    in if text-length content == 0 then http-json ("{\"error\":\"file not found\",\"path\":" & prism-quote path & "}")
+    else let ir = prism-find-source ir-cache path 0
+    in if text-length ir == 0 then http-json ("{\"path\":" & prism-quote path & ",\"status\":\"no-ir\",\"lines\":" & show (prism-count-lines content 0 (text-length content) 1) & ",\"ir\":\"\",\"note\":\"IR not pre-compiled for this file. Run run.ps1 to generate.\"}")
+    else http-json ("{\"path\":" & prism-quote path & ",\"status\":\"ok\",\"lines\":" & show (prism-count-lines content 0 (text-length content) 1) & ",\"ir\":" & prism-quote ir & "}")
+
+  prism-json-get-string : Text, Text -> Text
+  prism-json-get-string (json) (key) =
+    let needle = "\"" & key & "\":\""
+    in let pos = prism-text-find json needle 0
+    in if pos < 0 then ""
+    else let start = pos + text-length needle
+    in prism-text-until json start 34
+
+  prism-text-find : Text, Text, Integer -> Integer
+  prism-text-find (haystack) (needle) (i) =
+    if i + text-length needle > text-length haystack then 0 - 1
+    else if substring haystack i (text-length needle) == needle then i
+    else prism-text-find haystack needle (i + 1)
+
+  prism-text-until : Text, Integer, Integer -> Text
+  prism-text-until (s) (start) (stop-code) =
+    prism-text-until-acc s start (text-length s) stop-code ""
+
+  prism-text-until-acc : Text, Integer, Integer, Integer, Text -> Text
+  prism-text-until-acc (s) (i) (len) (stop-code) (acc) =
+    if i >= len then acc
+    else if char-code (char-at s i) == stop-code then acc
+    else prism-text-until-acc s (i + 1) len stop-code (acc & char-to-text (char-at s i))
+
+Section: Plugs Route
+
+  prism-plugs-route : HttpResponse
+  prism-plugs-route =
+    http-json ("{\"plugs\":[" &
+      "{\"name\":\"x86-64\",\"status\":\"built-in\"}," &
+      "{\"name\":\"ARM64\",\"port\":9101,\"status\":\"sidecar\"}," &
+      "{\"name\":\"RISC-V\",\"port\":9102,\"status\":\"sidecar\"}," &
+      "{\"name\":\"Python\",\"port\":9103,\"status\":\"sidecar\"}," &
+      "{\"name\":\"Rust\",\"port\":9104,\"status\":\"sidecar\"}," &
+      "{\"name\":\"JavaScript\",\"port\":9105,\"status\":\"sidecar\"}," &
+      "{\"name\":\"WASM\",\"port\":9106,\"status\":\"sidecar\"}," &
+      "{\"name\":\"C#\",\"port\":9107,\"status\":\"sidecar\"}," &
+      "{\"name\":\"Go\",\"port\":9108,\"status\":\"sidecar\"}," &
+      "{\"name\":\"Haskell\",\"port\":9109,\"status\":\"sidecar\"}" &
+      "]}")
+
+Section: JSON Encoding
+
+  prism-quote : Text -> Text
+  prism-quote (s) = "\"" & prism-escape s 0 (text-length s) "" & "\""
+
+  prism-escape : Text, Integer, Integer, Text -> Text
+  prism-escape (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-at s i
+    in let code = char-code c
+    in if code == 34 then prism-escape s (i + 1) len (acc & "\\\"")
+    else if code == 92 then prism-escape s (i + 1) len (acc & "\\\\")
+    else if code == 10 then prism-escape s (i + 1) len (acc & "\\n")
+    else if code == 13 then prism-escape s (i + 1) len (acc & "\\r")
+    else if code == 9 then prism-escape s (i + 1) len (acc & "\\t")
+    else prism-escape s (i + 1) len (acc & char-to-text c)
+
+Section: HTML Page
+
+  prism-index-page : Text =
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Prism</title><style>" &
+    prism-css &
+    "</style></head><body>" &
+    "<div id=\"app\">" &
+    "<header><h1>Prism</h1><span class=\"sub\">Codex through every lens</span>" &
+    "<button id=\"compile-btn\" data-action=\"compile-file\" disabled>Compile</button></header>" &
+    "<div class=\"main\">" &
+    "<nav id=\"files\"><h2>Source Files</h2><ul id=\"file-list\"></ul></nav>" &
+    "<div id=\"source\"><div id=\"source-header\"></div><pre id=\"code\">Select a file to view its source.</pre></div>" &
+    "</div>" &
+    "<div id=\"plugs\">" &
+    "<div class=\"plug-header\"><h2>Plug Outputs</h2><span class=\"plug-status\" id=\"plug-status\"></span></div>" &
+    "<div id=\"plug-panels\">" &
+    "<div class=\"plug-tab-bar\" id=\"plug-tabs\"></div>" &
+    "<pre class=\"plug-output\" id=\"plug-output\">Select a file, then click Compile to see output across all targets.</pre>" &
+    "</div></div>" &
+    "</div>" &
+    "<script>" & prism-js & "</script>" &
+    "</body></html>"
+
+  prism-css : Text =
+    "* { margin:0; padding:0; box-sizing:border-box; } " &
+    "body { font-family:'Cascadia Code','Fira Code',monospace; background:#1e1e2e; color:#cdd6f4; } " &
+    "header { padding:10px 20px; background:#181825; border-bottom:1px solid #313244; display:flex; align-items:baseline; gap:12px; } " &
+    "header h1 { font-size:18px; color:#cba6f7; letter-spacing:2px; } " &
+    ".sub { font-size:12px; color:#6c7086; font-style:italic; flex:1; } " &
+    "#compile-btn { padding:4px 16px; font-size:12px; font-family:inherit; background:#313244; color:#cdd6f4; border:1px solid #45475a; border-radius:4px; cursor:pointer; } " &
+    "#compile-btn:hover:not(:disabled) { background:#45475a; color:#cba6f7; } " &
+    "#compile-btn:disabled { opacity:0.4; cursor:default; } " &
+    ".main { display:flex; height:calc(100vh - 220px); } " &
+    "nav { width:260px; padding:10px; overflow-y:auto; border-right:1px solid #313244; background:#11111b; flex-shrink:0; } " &
+    "nav h2 { font-size:13px; color:#a6adc8; margin-bottom:6px; text-transform:uppercase; letter-spacing:1px; } " &
+    "nav ul { list-style:none; } " &
+    "nav li { padding:3px 8px; cursor:pointer; font-size:12px; border-radius:3px; color:#bac2de; } " &
+    "nav li:hover { background:#313244; } " &
+    "nav li.active { background:#45475a; color:#cba6f7; } " &
+    "nav li .dir { color:#6c7086; font-size:11px; } " &
+    "#source { flex:1; overflow:auto; display:flex; flex-direction:column; } " &
+    "#source-header { padding:6px 16px; background:#181825; border-bottom:1px solid #313244; font-size:12px; color:#a6adc8; min-height:28px; } " &
+    "#code { flex:1; padding:12px 16px; font-size:12px; line-height:1.6; white-space:pre; tab-size:2; color:#cdd6f4; overflow:auto; margin:0; } " &
+    ".line-num { color:#45475a; display:inline-block; width:4em; text-align:right; padding-right:1em; user-select:none; } " &
+    ".kw { color:#cba6f7; } .str { color:#a6e3a1; } .num { color:#fab387; } .ty { color:#f9e2af; } .hd { color:#89b4fa; font-weight:bold; } .op { color:#89dceb; } .bool { color:#fab387; font-style:italic; } .eff { color:#f38ba8; } .ann { color:#94e2d5; } " &
+    "#plugs { height:180px; border-top:2px solid #313244; background:#181825; display:flex; flex-direction:column; } " &
+    ".plug-header { padding:6px 20px; display:flex; align-items:baseline; gap:12px; border-bottom:1px solid #313244; } " &
+    ".plug-header h2 { font-size:13px; color:#a6adc8; text-transform:uppercase; letter-spacing:1px; } " &
+    ".plug-status { font-size:11px; color:#6c7086; } " &
+    "#plug-panels { flex:1; overflow:auto; display:flex; flex-direction:column; } " &
+    ".plug-tab-bar { display:flex; gap:2px; padding:4px 16px; background:#11111b; flex-shrink:0; } " &
+    ".plug-tab { padding:3px 10px; font-size:11px; border-radius:3px 3px 0 0; cursor:pointer; color:#6c7086; background:#181825; border:none; font-family:inherit; } " &
+    ".plug-tab.active { color:#cba6f7; background:#1e1e2e; } " &
+    ".plug-output { flex:1; padding:8px 16px; font-size:12px; line-height:1.5; color:#a6adc8; margin:0; overflow:auto; } "
+
+  prism-js : Text =
+    "let sources={},currentPath=null,plugList=[];" &
+    "async function loadFiles(){" &
+    "const r=await fetch('/api/files');const d=await r.json();" &
+    "const ul=document.getElementById('file-list');" &
+    "d.files.forEach(f=>{" &
+    "const li=document.createElement('li');" &
+    "const parts=f.split('/');const name=parts.pop();const dir=parts.join('/')+'/';" &
+    "li.innerHTML='<span class=\"dir\">'+dir+'</span>'+name;" &
+    "li.title=f;li.addEventListener('click',()=>loadSource(f,li));ul.appendChild(li);});" &
+    "}" &
+    "async function loadPlugs(){" &
+    "const r=await fetch('/api/plugs');const d=await r.json();plugList=d.plugs;" &
+    "const bar=document.getElementById('plug-tabs');" &
+    "d.plugs.forEach((p,i)=>{" &
+    "const btn=document.createElement('button');btn.className='plug-tab'+(i===0?' active':'');" &
+    "btn.textContent=p.name;btn.addEventListener('click',()=>selectPlug(p.name,btn));bar.appendChild(btn);});" &
+    "document.getElementById('plug-status').textContent=d.plugs.length+' targets';" &
+    "}" &
+    "function selectPlug(name,btn){" &
+    "document.querySelectorAll('.plug-tab').forEach(b=>b.classList.remove('active'));" &
+    "btn.classList.add('active');" &
+    "const out=document.getElementById('plug-output');" &
+    "out.textContent='Output for '+name+' will appear here after compilation.';" &
+    "}" &
+    "async function loadSource(path,el){" &
+    "document.querySelectorAll('#file-list li').forEach(x=>x.classList.remove('active'));" &
+    "el.classList.add('active');currentPath=path;" &
+    "document.getElementById('compile-btn').disabled=false;" &
+    "document.getElementById('source-header').textContent='Loading...';" &
+    "const r=await fetch('/api/source?path='+encodeURIComponent(path));" &
+    "const d=await r.json();" &
+    "if(d.error){document.getElementById('code').textContent='Error: '+d.error;return;}" &
+    "sources[path]=d.source;" &
+    "const lines=d.source.split('\\n');" &
+    "const html=lines.map((l,i)=>'<span class=\"line-num\">'+(i+1)+'</span>'+hl(l)).join('\\n');" &
+    "document.getElementById('code').innerHTML=html;" &
+    "document.getElementById('source-header').textContent=path+' ('+d.lines+' lines)';" &
+    "}" &
+    "async function compileFile(){" &
+    "if(!currentPath)return;" &
+    "const out=document.getElementById('plug-output');" &
+    "out.textContent='Compiling '+currentPath+'...';" &
+    "const r=await fetch('/api/compile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:currentPath})});" &
+    "const d=await r.json();" &
+    "if(d.error){out.textContent='Error: '+d.error;return;}" &
+    "if(d.status==='no-ir'){out.textContent=d.note;return;}" &
+    "const ir=d.ir||'';" &
+    "out.textContent=ir;" &
+    "document.querySelectorAll('.plug-tab').forEach(b=>b.classList.remove('active'));" &
+    "const tabs=document.getElementById('plug-tabs');" &
+    "if(tabs.children.length>0){tabs.children[0].classList.add('active');}" &
+    "document.getElementById('plug-status').textContent='IR: '+d.lines+' lines -> '+ir.split('\\n').length+' IR lines';" &
+    "}" &
+    "function hl(l){" &
+    "l=l.replace(/&/g,'&amp;').replace(/</g,'&lt;');" &
+    "if(/^(Chapter|Section|Foreword):/.test(l)){var c=l.indexOf(':');return'<span class=\"kw\">'+l.slice(0,c)+'</span>:<span class=\"hd\">'+l.slice(c+1)+'</span>';}" &
+    "if(/^\\s*We say:\\s*$/.test(l))return'<span class=\"kw\">'+l+'</span>';" &
+    "if(/^Page\\s+\\d+/.test(l))return'<span class=\"kw\">'+l+'</span>';" &
+    "var KW=/^(let|in|between|if|then|else|when|where|is|otherwise|act|end|record|cites|effect|with|linear|mutable|punctual|unit|class|instance|lazy|trying|revised|for|claim|proof|qed|forall|exists|induction)$/;" &
+    "var BOOL=/^(True|False|None|Nothing)$/;" &
+    "return l.replace(/(#[0-9a-fA-F][0-9a-fA-F_]*|\"[^\"]*\"|@[a-z][a-z0-9-]*|\\[[A-Z][A-Za-z0-9]*\\]|\\b[A-Z][A-Za-z0-9]*\\b|\\b\\d[\\d_]*(?:\\.\\d[\\d_]*)?\\b|\\b[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*\\b|->|<-|=>|==|\\|>|\\|)/g,function(m){" &
+    "if(m[0]=='\"')return'<span class=\"str\">'+m+'</span>';" &
+    "if(m[0]=='#')return'<span class=\"num\">'+m+'</span>';" &
+    "if(m[0]=='@')return'<span class=\"ann\">'+m+'</span>';" &
+    "if(m[0]=='['&&/^\\[[A-Z]/.test(m))return'<span class=\"eff\">'+m+'</span>';" &
+    "if(BOOL.test(m))return'<span class=\"bool\">'+m+'</span>';" &
+    "if(KW.test(m))return'<span class=\"kw\">'+m+'</span>';" &
+    "if(/^\\d/.test(m))return'<span class=\"num\">'+m+'</span>';" &
+    "if(/^[A-Z]/.test(m))return'<span class=\"ty\">'+m+'</span>';" &
+    "if(/^(->|<-|=>|==|\\|>|\\|)$/.test(m))return'<span class=\"op\">'+m+'</span>';" &
+    "return m;});}" &
+    "loadFiles();loadPlugs();"
+
+Section: Entry
+
+  prism-make-path-entries : List Text, Integer, List SourceEntry -> List SourceEntry
+  prism-make-path-entries (paths) (i) (acc) =
+    if i >= list-length paths then acc
+    else let path = list-at paths i
+    in prism-make-path-entries paths (i + 1) (list-push acc (SourceEntry { path = path, content = "" }))
+
+  opening : [Console] Integer = act
+    let sources = prism-make-path-entries prism-source-paths 0 []
+    in let ir-cache = prism-make-path-entries prism-ir-paths 0 []
+    in act
+      print-line-uni ("[prism] " & show (list-length sources) & " source paths catalogued")
+      print-line-uni "[prism] starting web server on port 9200"
+      web-serve (prism-route sources ir-cache)
+    end
+  end
+
+Page 1

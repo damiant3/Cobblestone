@@ -48,7 +48,7 @@ if ($script:UseCodexVm) {
     $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec 30
     if (-not $conn) {
         Write-Host "FAIL: could not connect to QEMU serial ports" -ForegroundColor Red
-        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Stop-VmGraceful -ProcessId $proc.Id
         exit 1
     }
 }

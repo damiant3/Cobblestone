@@ -1,73 +1,91 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Chapter: ProgramRegistryTest
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  format-install : InstallResult -> Text
+  format-install (r) = when r
+    is InstallOk (reg) -> "ok count=" & show (registry-count reg)
+    is InstallDuplicate -> "duplicate"
+    is InstallDenied (reason) -> "denied: " & reason
+
+Section: Test Data
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  test-binary : List Integer =
+    cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) test-sk
+
+  author-key : Text = read-author-key test-binary
+
+  test-lattice : TrustLattice = lattice-add-direct lattice-empty author-key 10000
+
+  test-policy : Policy = policy-add-rule (policy-empty "test") (rule-allow "allow-all" AlwaysTrue)
+
+Section: Tests
+  test-install : Text =
+    let r = registry-install registry-empty "hello" test-binary test-lattice test-policy fact-store-empty 1000
+    in "install: " & format-install r
+
+  test-duplicate : Text =
+    let r1 = registry-install registry-empty "hello" test-binary test-lattice test-policy fact-store-empty 1000
+    in when r1
+      is InstallOk (reg) ->
+        let r2 = registry-install reg "hello" test-binary test-lattice test-policy fact-store-empty 1000
+        in "duplicate: " & format-install r2
+      is otherwise -> "install failed"
+
+  test-denied : Text =
+    let r = registry-install registry-empty "bad" [0, 0, 0] test-lattice test-policy fact-store-empty 1000
+    in "denied: " & format-install r
+
+  test-lookup : Text =
+    let r = registry-install registry-empty "hello" test-binary test-lattice test-policy fact-store-empty 1000
+    in when r
+      is InstallOk (reg) ->
+        let found = registry-has reg "hello"
+        in let entry = registry-lookup reg "hello"
+        in when entry
+          is Just (e) -> "lookup: " & show-bool found & " caps=" & show (e.cap-bitmask)
+          is None -> "lookup: not found"
+      is otherwise -> "install failed"
+
+  test-remove : Text =
+    let r = registry-install registry-empty "hello" test-binary test-lattice test-policy fact-store-empty 1000
+    in when r
+      is InstallOk (reg) ->
+        let reg2 = registry-remove reg "hello"
+        in "after-remove: " & show-bool (registry-has reg2 "hello") & " count=" & show (registry-count reg2)
+      is otherwise -> "install failed"
+
+  opening : [Console] Nothing = act
+    print-line-uni test-install
+    print-line-uni test-duplicate
+    print-line-uni test-denied
+    print-line-uni test-lookup
+    print-line-uni test-remove
+  end

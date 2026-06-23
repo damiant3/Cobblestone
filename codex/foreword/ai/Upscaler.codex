@@ -1,0 +1,296 @@
+Chapter: Upscaler
+  cites AI chapter Tensor
+  cites AI chapter Conv2d
+  cites AI chapter Normalization
+  cites AI chapter NeuralNet
+  cites AI chapter SafeTensors
+  cites AI chapter ImageTensor
+  cites Foreword chapter Maybe
+
+ Image upscaling models for post-processing. Implements ESRGAN-style
+ super-resolution: a residual-in-residual dense block (RRDB)
+ architecture that upscales 2x or 4x with learned detail recovery.
+
+ Also includes simpler upscale methods for when model quality
+ is not needed: Lanczos-approximated, bilinear, and nearest.
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  UpscaleMethod =
+    | UpscaleNearest
+    | UpscaleBilinear
+    | UpscaleLanczos
+    | UpscaleModel
+
+  UpscaleConfig = record {
+    up-scale : Integer,
+    up-method : UpscaleMethod,
+    up-tile-size : Integer
+  }
+
+  RRDBBlock = record {
+    rrdb-conv1-w : List Integer,
+    rrdb-conv1-b : List Integer,
+    rrdb-conv2-w : List Integer,
+    rrdb-conv2-b : List Integer,
+    rrdb-conv3-w : List Integer,
+    rrdb-conv3-b : List Integer,
+    rrdb-channels : Integer,
+    rrdb-growth : Integer
+  }
+
+  UpscaleModelState = record {
+    ums-first-conv-w : List Integer,
+    ums-first-conv-b : List Integer,
+    ums-rrdb-blocks : List RRDBBlock,
+    ums-upconv1-w : List Integer,
+    ums-upconv1-b : List Integer,
+    ums-upconv2-w : List Integer,
+    ums-upconv2-b : List Integer,
+    ums-hr-conv-w : List Integer,
+    ums-hr-conv-b : List Integer,
+    ums-final-conv-w : List Integer,
+    ums-final-conv-b : List Integer,
+    ums-in-channels : Integer,
+    ums-out-channels : Integer,
+    ums-num-blocks : Integer
+  }
+
+Section: Default Configuration
+  upscale-4x-model : UpscaleConfig
+  upscale-4x-model = UpscaleConfig { up-scale = 4, up-method = UpscaleModel, up-tile-size = 256 }
+
+  upscale-2x-model : UpscaleConfig
+  upscale-2x-model = UpscaleConfig { up-scale = 2, up-method = UpscaleModel, up-tile-size = 512 }
+
+  upscale-4x-lanczos : UpscaleConfig
+  upscale-4x-lanczos = UpscaleConfig { up-scale = 4, up-method = UpscaleLanczos, up-tile-size = 0 }
+
+Section: Unified Upscale
+  upscale-image : ImageData, UpscaleConfig, UpscaleModelState -> ImageData
+  upscale-image (img) (cfg) (model) =
+    let new-w = img.img-width * cfg.up-scale
+    in let new-h = img.img-height * cfg.up-scale
+    in when cfg.up-method
+      is UpscaleNearest -> image-resize img new-w new-h
+      is UpscaleBilinear -> up-bilinear img new-w new-h
+      is UpscaleLanczos -> up-lanczos img new-w new-h
+      is UpscaleModel -> up-esrgan img model cfg
+
+Section: Bilinear Upscale
+  up-bilinear : ImageData, Integer, Integer -> ImageData
+  up-bilinear (img) (new-w) (new-h) =
+    let pixels = up-bilinear-loop img new-w new-h 0 0 []
+    in image-new new-w new-h pixels
+
+  up-bilinear-loop : ImageData, Integer, Integer, Integer, Integer, List Rgb -> List Rgb
+  up-bilinear-loop (img) (nw) (nh) (y) (x) (acc) =
+    if y >= nh then acc
+    else if x >= nw then up-bilinear-loop img nw nh (y + 1) 0 acc
+    else let src-y-fp = y * img.img-height * 1000 / nh
+    in let src-x-fp = x * img.img-width * 1000 / nw
+    in let y0 = src-y-fp / 1000
+    in let x0 = src-x-fp / 1000
+    in let y1 = up-min (y0 + 1) (img.img-height - 1)
+    in let x1 = up-min (x0 + 1) (img.img-width - 1)
+    in let fy = src-y-fp - y0 * 1000
+    in let fx = src-x-fp - x0 * 1000
+    in let p00 = up-px img x0 y0
+    in let p01 = up-px img x1 y0
+    in let p10 = up-px img x0 y1
+    in let p11 = up-px img x1 y1
+    in let r = up-bilerp (p00.cr) (p01.cr) (p10.cr) (p11.cr) fx fy
+    in let g = up-bilerp (p00.cg) (p01.cg) (p10.cg) (p11.cg) fx fy
+    in let b = up-bilerp (p00.cb) (p01.cb) (p10.cb) (p11.cb) fx fy
+    in up-bilinear-loop img nw nh y (x + 1) (list-push acc (Rgb { cr = r, cg = g, cb = b }))
+
+  up-bilerp : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  up-bilerp (v00) (v01) (v10) (v11) (fx) (fy) =
+    let top = v00 * (1000 - fx) / 1000 + v01 * fx / 1000
+    in let bot = v10 * (1000 - fx) / 1000 + v11 * fx / 1000
+    in top * (1000 - fy) / 1000 + bot * fy / 1000
+
+  up-px : ImageData, Integer, Integer -> Rgb
+  up-px (img) (x) (y) =
+    let idx = y * img.img-width + x
+    in if idx < list-length (img.img-pixels) then list-at (img.img-pixels) idx
+    else Rgb { cr = 0, cg = 0, cb = 0 }
+
+Section: Lanczos Approximation (4-tap)
+  up-lanczos : ImageData, Integer, Integer -> ImageData
+  up-lanczos (img) (new-w) (new-h) =
+    let pixels = up-lanczos-loop img new-w new-h 0 0 []
+    in image-new new-w new-h pixels
+
+  up-lanczos-loop : ImageData, Integer, Integer, Integer, Integer, List Rgb -> List Rgb
+  up-lanczos-loop (img) (nw) (nh) (y) (x) (acc) =
+    if y >= nh then acc
+    else if x >= nw then up-lanczos-loop img nw nh (y + 1) 0 acc
+    else let src-y-fp = y * img.img-height * 1000 / nh
+    in let src-x-fp = x * img.img-width * 1000 / nw
+    in let cy = src-y-fp / 1000
+    in let cx = src-x-fp / 1000
+    in let pixel = up-lanczos-sample img cx cy (src-x-fp - cx * 1000) (src-y-fp - cy * 1000)
+    in up-lanczos-loop img nw nh y (x + 1) (list-push acc pixel)
+
+  up-lanczos-sample : ImageData, Integer, Integer, Integer, Integer -> Rgb
+  up-lanczos-sample (img) (cx) (cy) (fx) (fy) =
+    let r = up-lanczos-channel img cx cy fx fy 0
+    in let g = up-lanczos-channel img cx cy fx fy 1
+    in let b = up-lanczos-channel img cx cy fx fy 2
+    in Rgb { cr = up-clamp-byte r, cg = up-clamp-byte g, cb = up-clamp-byte b }
+
+  up-lanczos-channel : ImageData, Integer, Integer, Integer, Integer, Integer -> Integer
+  up-lanczos-channel (img) (cx) (cy) (fx) (fy) (ch) =
+    let sum = up-lk-tap img (cx - 1) (cy - 1) ch fx fy (0 - 1) (0 - 1)
+            + up-lk-tap img cx (cy - 1) ch fx fy 0 (0 - 1)
+            + up-lk-tap img (cx + 1) (cy - 1) ch fx fy 1 (0 - 1)
+            + up-lk-tap img (cx - 1) cy ch fx fy (0 - 1) 0
+            + up-lk-tap img cx cy ch fx fy 0 0
+            + up-lk-tap img (cx + 1) cy ch fx fy 1 0
+            + up-lk-tap img (cx - 1) (cy + 1) ch fx fy (0 - 1) 1
+            + up-lk-tap img cx (cy + 1) ch fx fy 0 1
+            + up-lk-tap img (cx + 1) (cy + 1) ch fx fy 1 1
+    in sum / 1000
+
+  up-lk-tap : ImageData, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  up-lk-tap (img) (sx) (sy) (ch) (fx) (fy) (dx) (dy) =
+    let px = up-px-safe img sx sy
+    in let val = if ch == 0 then px.cr else if ch == 1 then px.cg else px.cb
+    in let wx = up-lanczos-weight (dx * 1000 - fx)
+    in let wy = up-lanczos-weight (dy * 1000 - fy)
+    in val * wx / 1000 * wy / 1000
+
+  up-lanczos-weight : Integer -> Integer
+  up-lanczos-weight (d) =
+    let ad = if d < 0 then 0 - d else d
+    in if ad < 10 then 1000
+    else if ad >= 2000 then 0
+    else let pi-d = ad * 3142 / 1000
+    in let sinc = up-sin-approx pi-d * 1000 / pi-d
+    in let pi-d2 = ad * 3142 / 2000
+    in let window = up-sin-approx pi-d2 * 1000 / pi-d2
+    in sinc * window / 1000
+
+  up-sin-approx : Integer -> Integer
+  up-sin-approx (x) =
+    let x2 = x * x / 1000
+    in x - x * x2 / 6000 + x * x2 * x2 / 120000000
+
+  up-px-safe : ImageData, Integer, Integer -> Rgb
+  up-px-safe (img) (x) (y) =
+    let cx = if x < 0 then 0 else if x >= img.img-width then img.img-width - 1 else x
+    in let cy = if y < 0 then 0 else if y >= img.img-height then img.img-height - 1 else y
+    in list-at (img.img-pixels) (cy * img.img-width + cx)
+
+Section: ESRGAN Model Forward
+  up-esrgan : ImageData, UpscaleModelState, UpscaleConfig -> ImageData
+  up-esrgan (img) (model) (cfg) =
+    let tensor = image-to-tensor-unit img
+    in let h = img.img-height
+    in let w = img.img-width
+    in let conv-in-p = conv2d-params (model.ums-in-channels) 64 3 1 1
+    in let conv-in-l = conv2d-layer conv-in-p (model.ums-first-conv-w) (model.ums-first-conv-b)
+    in let feat = conv2d-forward conv-in-l tensor h w
+    in let trunk = up-run-rrdb (model.ums-rrdb-blocks) feat h w 0 (model.ums-num-blocks)
+    in let trunk-res = up-add-vecs feat trunk 0 (list-length feat) []
+    in let up1-input = up-pixel-shuffle trunk-res 64 h w 2
+    in let up1-p = conv2d-params 64 64 3 1 1
+    in let up1-l = conv2d-layer up1-p (model.ums-upconv1-w) (model.ums-upconv1-b)
+    in let up1 = up-leaky-relu (conv2d-forward up1-l up1-input (h * 2) (w * 2))
+    in let up2-input = up-pixel-shuffle up1 64 (h * 2) (w * 2) 2
+    in let up2-p = conv2d-params 64 64 3 1 1
+    in let up2-l = conv2d-layer up2-p (model.ums-upconv2-w) (model.ums-upconv2-b)
+    in let up2 = up-leaky-relu (conv2d-forward up2-l up2-input (h * 4) (w * 4))
+    in let hr-p = conv2d-params 64 64 3 1 1
+    in let hr-l = conv2d-layer hr-p (model.ums-hr-conv-w) (model.ums-hr-conv-b)
+    in let hr = up-leaky-relu (conv2d-forward hr-l up2 (h * 4) (w * 4))
+    in let out-p = conv2d-params 64 (model.ums-out-channels) 3 1 1
+    in let out-l = conv2d-layer out-p (model.ums-final-conv-w) (model.ums-final-conv-b)
+    in let output = conv2d-forward out-l hr (h * 4) (w * 4)
+    in tensor-to-image-unit output (w * 4) (h * 4)
+
+Section: RRDB Block Forward
+  up-run-rrdb : List RRDBBlock, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  up-run-rrdb (blocks) (feat) (h) (w) (i) (n) =
+    if i >= n then feat
+    else let b = list-at blocks i
+    in let out = up-rrdb-forward b feat h w
+    in up-run-rrdb blocks out h w (i + 1) n
+
+  up-rrdb-forward : RRDBBlock, List Integer, Integer, Integer -> List Integer
+  up-rrdb-forward (block) (input) (h) (w) =
+    let ch = block.rrdb-channels
+    in let conv1-p = conv2d-params ch (block.rrdb-growth) 3 1 1
+    in let conv1-l = conv2d-layer conv1-p (block.rrdb-conv1-w) (block.rrdb-conv1-b)
+    in let h1 = up-leaky-relu (conv2d-forward conv1-l input h w)
+    in let cat1 = input & h1
+    in let conv2-p = conv2d-params (ch + block.rrdb-growth) (block.rrdb-growth) 3 1 1
+    in let conv2-l = conv2d-layer conv2-p (block.rrdb-conv2-w) (block.rrdb-conv2-b)
+    in let h2 = up-leaky-relu (conv2d-forward conv2-l cat1 h w)
+    in let cat2 = cat1 & h2
+    in let conv3-p = conv2d-params (ch + block.rrdb-growth * 2) ch 3 1 1
+    in let conv3-l = conv2d-layer conv3-p (block.rrdb-conv3-w) (block.rrdb-conv3-b)
+    in let h3 = conv2d-forward conv3-l cat2 h w
+    in let scaled = up-scale-residual h3 200 0 (list-length h3) []
+    in up-add-vecs input scaled 0 (list-length input) []
+
+Section: Pixel Shuffle (sub-pixel convolution upscale)
+  up-pixel-shuffle : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  up-pixel-shuffle (data) (channels) (h) (w) (factor) =
+    let out-ch = channels / (factor * factor)
+    in let out-h = h * factor
+    in let out-w = w * factor
+    in up-shuffle-loop data channels h w factor out-ch out-h out-w 0 0 0 []
+
+  up-shuffle-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  up-shuffle-loop (data) (in-ch) (h) (w) (f) (out-ch) (out-h) (out-w) (c) (y) (x) (acc) =
+    if c >= out-ch then acc
+    else if y >= out-h then up-shuffle-loop data in-ch h w f out-ch out-h out-w (c + 1) 0 0 acc
+    else if x >= out-w then up-shuffle-loop data in-ch h w f out-ch out-h out-w c (y + 1) 0 acc
+    else let sy = y / f
+    in let sx = x / f
+    in let dy = y - sy * f
+    in let dx = x - sx * f
+    in let src-ch = c * f * f + dy * f + dx
+    in let val = list-at data (src-ch * h * w + sy * w + sx)
+    in up-shuffle-loop data in-ch h w f out-ch out-h out-w c y (x + 1) (list-push acc val)
+
+Section: Helpers
+  up-leaky-relu : List Integer -> List Integer
+  up-leaky-relu (data) = for v in data -> if v > 0 then v else v * 200 / 1000
+
+  up-scale-residual : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  up-scale-residual (data) (scale) (i) (n) (acc) =
+    if i >= n then acc
+    else up-scale-residual data scale (i + 1) n (list-push acc (list-at data i * scale / 1000))
+
+  up-add-vecs : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  up-add-vecs (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else let bv = if i < list-length b then list-at b i else 0
+    in up-add-vecs a b (i + 1) n (list-push acc (list-at a i + bv))
+
+  up-min : Integer, Integer -> Integer
+  up-min (a) (b) = if a < b then a else b
+
+  up-clamp-byte : Integer -> Integer
+  up-clamp-byte (v) = if v < 0 then 0 else if v > 255 then 255 else v
+
+Section: Queries
+  format-upscale-config : UpscaleConfig -> Text
+  format-upscale-config (cfg) =
+    show (cfg.up-scale) & "x " & up-method-name (cfg.up-method)
+
+  up-method-name : UpscaleMethod -> Text
+  up-method-name (m) =
+    when m
+      is UpscaleNearest -> "nearest"
+      is UpscaleBilinear -> "bilinear"
+      is UpscaleLanczos -> "lanczos"
+      is UpscaleModel -> "esrgan"
+
+Page 1

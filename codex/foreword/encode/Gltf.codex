@@ -1,0 +1,241 @@
+Chapter: Gltf
+  cites Encode chapter Json
+  cites Game chapter Color
+
+ glTF 2.0 binary (.glb) writer. Exports 3D meshes as GLB files
+ containing JSON metadata + binary buffer. Supports positions,
+ normals, UV coordinates, and vertex colors. Single-mesh,
+ single-primitive output suitable for game asset import.
+
+ GLB format:
+   [12 bytes: header (magic, version, total length)]
+   [8 bytes: JSON chunk header (length, type=JSON)]
+   [N bytes: JSON chunk data (padded to 4-byte boundary)]
+   [8 bytes: BIN chunk header (length, type=BIN)]
+   [M bytes: BIN chunk data (padded to 4-byte boundary)]
+
+ We say:
+
+Section: Constants
+  glb-magic : Integer = 1179937895
+  glb-version : Integer = 2
+  glb-json-type : Integer = 1313821514
+  glb-bin-type : Integer = 5130562
+
+  gltf-float : Integer = 5126
+  gltf-ushort : Integer = 5123
+  gltf-uint : Integer = 5125
+  gltf-triangles : Integer = 4
+
+Section: Types
+  GltfVertex = record {
+    gv-px : Integer,
+    gv-py : Integer,
+    gv-pz : Integer,
+    gv-nx : Integer,
+    gv-ny : Integer,
+    gv-nz : Integer,
+    gv-u : Integer,
+    gv-v : Integer
+  }
+
+  GltfMesh = record {
+    gm-vertices : List GltfVertex,
+    gm-indices : List Integer,
+    gm-vertex-count : Integer,
+    gm-index-count : Integer
+  }
+
+Section: Construction
+  gltf-vertex : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> GltfVertex
+  gltf-vertex (px) (py) (pz) (nx) (ny) (nz) (u) (v) =
+    GltfVertex { gv-px = px, gv-py = py, gv-pz = pz, gv-nx = nx, gv-ny = ny, gv-nz = nz, gv-u = u, gv-v = v }
+
+  gltf-mesh : List GltfVertex, List Integer -> GltfMesh
+  gltf-mesh (verts) (indices) =
+    GltfMesh { gm-vertices = verts, gm-indices = indices, gm-vertex-count = list-length verts, gm-index-count = list-length indices }
+
+Section: GLB Export
+  gltf-encode-glb : GltfMesh -> List Integer
+  gltf-encode-glb (mesh) =
+    let bin = gltf-build-bin mesh
+    in let bin-len = list-length bin
+    in let bin-padded = gltf-pad-to-4 bin
+    in let bin-padded-len = list-length bin-padded
+    in let json-text = gltf-build-json mesh bin-len
+    in let json-bytes = gltf-text-to-bytes json-text
+    in let json-padded = gltf-pad-json-to-4 json-bytes
+    in let json-padded-len = list-length json-padded
+    in let total = 12 + 8 + json-padded-len + 8 + bin-padded-len
+    in gltf-header total & gltf-chunk-header json-padded-len glb-json-type & json-padded & gltf-chunk-header bin-padded-len glb-bin-type & bin-padded
+
+Section: Binary Buffer
+  gltf-build-bin : GltfMesh -> List Integer
+  gltf-build-bin (mesh) =
+    let positions = gltf-encode-positions (mesh.gm-vertices) 0 (mesh.gm-vertex-count) []
+    in let normals = gltf-encode-normals (mesh.gm-vertices) 0 (mesh.gm-vertex-count) []
+    in let uvs = gltf-encode-uvs (mesh.gm-vertices) 0 (mesh.gm-vertex-count) []
+    in let indices = gltf-encode-indices (mesh.gm-indices) 0 (mesh.gm-index-count) []
+    in positions & normals & uvs & indices
+
+  gltf-encode-positions : List GltfVertex, Integer, Integer, List Integer -> List Integer
+  gltf-encode-positions (verts) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at verts i
+    in gltf-encode-positions verts (i + 1) n (acc & gltf-write-f32 (v.gv-px) & gltf-write-f32 (v.gv-py) & gltf-write-f32 (v.gv-pz))
+
+  gltf-encode-normals : List GltfVertex, Integer, Integer, List Integer -> List Integer
+  gltf-encode-normals (verts) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at verts i
+    in gltf-encode-normals verts (i + 1) n (acc & gltf-write-f32 (v.gv-nx) & gltf-write-f32 (v.gv-ny) & gltf-write-f32 (v.gv-nz))
+
+  gltf-encode-uvs : List GltfVertex, Integer, Integer, List Integer -> List Integer
+  gltf-encode-uvs (verts) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at verts i
+    in gltf-encode-uvs verts (i + 1) n (acc & gltf-write-f32 (v.gv-u) & gltf-write-f32 (v.gv-v))
+
+  gltf-encode-indices : List Integer, Integer, Integer, List Integer -> List Integer
+  gltf-encode-indices (indices) (i) (n) (acc) =
+    if i >= n then acc
+    else gltf-encode-indices indices (i + 1) n (acc & gltf-write-u32 (list-at indices i))
+
+Section: JSON Metadata
+  gltf-build-json : GltfMesh, Integer -> Text
+  gltf-build-json (mesh) (bin-len) =
+    let pos-bytes = mesh.gm-vertex-count * 12
+    in let norm-bytes = mesh.gm-vertex-count * 12
+    in let uv-bytes = mesh.gm-vertex-count * 8
+    in let idx-bytes = mesh.gm-index-count * 4
+    in let pos-min = gltf-compute-min-pos (mesh.gm-vertices) (mesh.gm-vertex-count)
+    in let pos-max = gltf-compute-max-pos (mesh.gm-vertices) (mesh.gm-vertex-count)
+    in json-emit (json-object [
+      json-pair "asset" (json-object [json-pair "version" (json-str "2.0"), json-pair "generator" (json-str "Codex AssetForge")]),
+      json-pair "scene" (json-int 0),
+      json-pair "scenes" (json-array [json-object [json-pair "nodes" (json-array [json-int 0])]]),
+      json-pair "nodes" (json-array [json-object [json-pair "mesh" (json-int 0)]]),
+      json-pair "meshes" (json-array [json-object [
+        json-pair "primitives" (json-array [json-object [
+          json-pair "attributes" (json-object [
+            json-pair "POSITION" (json-int 0),
+            json-pair "NORMAL" (json-int 1),
+            json-pair "TEXCOORD_0" (json-int 2)
+          ]),
+          json-pair "indices" (json-int 3),
+          json-pair "mode" (json-int gltf-triangles)
+        ]])
+      ]]),
+      json-pair "accessors" (json-array [
+        json-object [json-pair "bufferView" (json-int 0), json-pair "componentType" (json-int gltf-float), json-pair "count" (json-int (mesh.gm-vertex-count)), json-pair "type" (json-str "VEC3"), json-pair "min" (json-array [json-int (pos-min.gv-px), json-int (pos-min.gv-py), json-int (pos-min.gv-pz)]), json-pair "max" (json-array [json-int (pos-max.gv-px), json-int (pos-max.gv-py), json-int (pos-max.gv-pz)])],
+        json-object [json-pair "bufferView" (json-int 1), json-pair "componentType" (json-int gltf-float), json-pair "count" (json-int (mesh.gm-vertex-count)), json-pair "type" (json-str "VEC3")],
+        json-object [json-pair "bufferView" (json-int 2), json-pair "componentType" (json-int gltf-float), json-pair "count" (json-int (mesh.gm-vertex-count)), json-pair "type" (json-str "VEC2")],
+        json-object [json-pair "bufferView" (json-int 3), json-pair "componentType" (json-int gltf-uint), json-pair "count" (json-int (mesh.gm-index-count)), json-pair "type" (json-str "SCALAR")]
+      ]),
+      json-pair "bufferViews" (json-array [
+        json-object [json-pair "buffer" (json-int 0), json-pair "byteOffset" (json-int 0), json-pair "byteLength" (json-int pos-bytes)],
+        json-object [json-pair "buffer" (json-int 0), json-pair "byteOffset" (json-int pos-bytes), json-pair "byteLength" (json-int norm-bytes)],
+        json-object [json-pair "buffer" (json-int 0), json-pair "byteOffset" (json-int (pos-bytes + norm-bytes)), json-pair "byteLength" (json-int uv-bytes)],
+        json-object [json-pair "buffer" (json-int 0), json-pair "byteOffset" (json-int (pos-bytes + norm-bytes + uv-bytes)), json-pair "byteLength" (json-int idx-bytes)]
+      ]),
+      json-pair "buffers" (json-array [json-object [json-pair "byteLength" (json-int bin-len)]])
+    ])
+
+Section: Bounds Computation
+  gltf-compute-min-pos : List GltfVertex, Integer -> GltfVertex
+  gltf-compute-min-pos (verts) (n) =
+    if n == 0 then gltf-vertex 0 0 0 0 0 0 0 0
+    else let first = list-at verts 0
+    in gltf-min-loop verts 1 n (first.gv-px) (first.gv-py) (first.gv-pz)
+
+  gltf-min-loop : List GltfVertex, Integer, Integer, Integer, Integer, Integer -> GltfVertex
+  gltf-min-loop (verts) (i) (n) (mx) (my) (mz) =
+    if i >= n then gltf-vertex mx my mz 0 0 0 0 0
+    else let v = list-at verts i
+    in gltf-min-loop verts (i + 1) n (gltf-min-val mx (v.gv-px)) (gltf-min-val my (v.gv-py)) (gltf-min-val mz (v.gv-pz))
+
+  gltf-compute-max-pos : List GltfVertex, Integer -> GltfVertex
+  gltf-compute-max-pos (verts) (n) =
+    if n == 0 then gltf-vertex 0 0 0 0 0 0 0 0
+    else let first = list-at verts 0
+    in gltf-max-loop verts 1 n (first.gv-px) (first.gv-py) (first.gv-pz)
+
+  gltf-max-loop : List GltfVertex, Integer, Integer, Integer, Integer, Integer -> GltfVertex
+  gltf-max-loop (verts) (i) (n) (mx) (my) (mz) =
+    if i >= n then gltf-vertex mx my mz 0 0 0 0 0
+    else let v = list-at verts i
+    in gltf-max-loop verts (i + 1) n (gltf-max-val mx (v.gv-px)) (gltf-max-val my (v.gv-py)) (gltf-max-val mz (v.gv-pz))
+
+  gltf-min-val : Integer, Integer -> Integer
+  gltf-min-val (a) (b) = if a < b then a else b
+
+  gltf-max-val : Integer, Integer -> Integer
+  gltf-max-val (a) (b) = if a > b then a else b
+
+Section: Float and Integer Encoding
+  gltf-write-f32 : Integer -> List Integer
+  gltf-write-f32 (val) =
+    if val == 0 then [0, 0, 0, 0]
+    else let sign = if val < 0 then 1 else 0
+    in let abs-val = if val < 0 then -val else val
+    in let mant = abs-val * 8388608 / 1000
+    in let exp = 127
+    in let adjusted = gltf-normalize-f32 mant exp
+    in let raw = bit-or (bit-shl sign 31) (bit-or (bit-shl (adjusted.gltf-exp) 23) (bit-and (adjusted.gltf-mant) 8388607))
+    in gltf-write-u32 raw
+
+  GltfF32Parts = record { gltf-mant : Integer, gltf-exp : Integer }
+
+  gltf-normalize-f32 : Integer, Integer -> GltfF32Parts
+  gltf-normalize-f32 (mant) (exp) =
+    if mant >= 16777216 then gltf-normalize-f32 (mant / 2) (exp + 1)
+    else if mant < 8388608 then if mant == 0 then GltfF32Parts { gltf-mant = 0, gltf-exp = 0 }
+      else gltf-normalize-f32 (mant * 2) (exp - 1)
+    else GltfF32Parts { gltf-mant = mant, gltf-exp = exp }
+
+  gltf-write-u32 : Integer -> List Integer
+  gltf-write-u32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+Section: GLB Structure
+  gltf-header : Integer -> List Integer
+  gltf-header (total) =
+    gltf-write-u32 glb-magic & gltf-write-u32 glb-version & gltf-write-u32 total
+
+  gltf-chunk-header : Integer, Integer -> List Integer
+  gltf-chunk-header (len) (chunk-type) =
+    gltf-write-u32 len & gltf-write-u32 chunk-type
+
+Section: Padding
+  gltf-pad-to-4 : List Integer -> List Integer
+  gltf-pad-to-4 (data) =
+    let rem = list-length data - (list-length data / 4 * 4)
+    in if rem == 0 then data
+    else gltf-pad-zeros data (4 - rem)
+
+  gltf-pad-json-to-4 : List Integer -> List Integer
+  gltf-pad-json-to-4 (data) =
+    let rem = list-length data - (list-length data / 4 * 4)
+    in if rem == 0 then data
+    else gltf-pad-spaces data (4 - rem)
+
+  gltf-pad-zeros : List Integer, Integer -> List Integer
+  gltf-pad-zeros (data) (n) =
+    if n <= 0 then data
+    else gltf-pad-zeros (list-push data 0) (n - 1)
+
+  gltf-pad-spaces : List Integer, Integer -> List Integer
+  gltf-pad-spaces (data) (n) =
+    if n <= 0 then data
+    else gltf-pad-spaces (list-push data 32) (n - 1)
+
+Section: Text to Bytes
+  gltf-text-to-bytes : Text -> List Integer
+  gltf-text-to-bytes (s) = gltf-text-to-bytes-loop s 0 (text-length s) []
+
+  gltf-text-to-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  gltf-text-to-bytes-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = to-unicode (char-code (char-at s i))
+    in gltf-text-to-bytes-loop s (i + 1) len (list-push acc (bit-and c 255))
+
+Page 1

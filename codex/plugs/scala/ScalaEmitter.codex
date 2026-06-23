@@ -2,6 +2,7 @@ Chapter: Scala Emitter
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Foreword chapter Sort
 
  Generates Scala 3 source code from the IR.
 
@@ -80,6 +81,69 @@ Section: Arity Map
    in if pos >= len then -1
       else let e = list-at entries pos
       in if e.name == name then e.arity else -1
+
+Section: Builtin Dispatch
+
+  ScBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-sc-emitter-pos : List ScBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-sc-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-sc-emitter-pos entries name lo mid
+      else bsearch-sc-emitter-pos entries name (mid + 1) hi
+
+  sort-sc-emitters : List ScBuiltinEmitter -> List ScBuiltinEmitter
+  sort-sc-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  sc-builtin-emitters : List ScBuiltinEmitter = sort-sc-emitters [
+   ScBuiltinEmitter { name = "abs", emit = \args arities -> "math.abs(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int])" },
+   ScBuiltinEmitter { name = "char-at", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].charAt(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
+   ScBuiltinEmitter { name = "char-code-at", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].charAt(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int]).toInt" },
+   ScBuiltinEmitter { name = "file-exists", emit = \args arities -> "java.io.File(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String]).exists()" },
+   ScBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int] % " & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
+   ScBuiltinEmitter { name = "integer-to-text", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".toString" },
+   ScBuiltinEmitter { name = "list-at", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[List[Any]](" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
+   ScBuiltinEmitter { name = "list-length", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[List[Any]].length" },
+   ScBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[List[Any]] :+ " & emit-sc-expr (list-at args 1) arities & ")" },
+   ScBuiltinEmitter { name = "max", emit = \args arities -> "math.max(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int], " & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
+   ScBuiltinEmitter { name = "min", emit = \args arities -> "math.min(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int], " & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
+   ScBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int]))" },
+   ScBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "System.err.println(" & emit-sc-expr (list-at args 0) arities & ")" },
+   ScBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "println(" & emit-sc-expr (list-at args 0) arities & ")" },
+   ScBuiltinEmitter { name = "read-file", emit = \args arities -> "scala.io.Source.fromFile(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String]).mkString" },
+   ScBuiltinEmitter { name = "read-line", emit = \args arities -> "scala.io.StdIn.readLine()" },
+   ScBuiltinEmitter { name = "show", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".toString" },
+   ScBuiltinEmitter { name = "substring", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].substring(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int], " & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int] + " & emit-sc-expr (list-at args 2) arities & ".asInstanceOf[Int])" },
+   ScBuiltinEmitter { name = "text-compare", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].compareTo(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String])" },
+   ScBuiltinEmitter { name = "text-contains", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].contains(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String])" },
+   ScBuiltinEmitter { name = "text-length", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].length" },
+   ScBuiltinEmitter { name = "text-replace", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].replace(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String], " & emit-sc-expr (list-at args 2) arities & ".asInstanceOf[String])" },
+   ScBuiltinEmitter { name = "text-split", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].split(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String]).toList" },
+   ScBuiltinEmitter { name = "text-starts-with", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].startsWith(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String])" },
+   ScBuiltinEmitter { name = "text-to-integer", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].toInt" },
+   ScBuiltinEmitter { name = "write-file", emit = \args arities -> "{ val _pw = new java.io.PrintWriter(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String]); _pw.write(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String]); _pw.close() }" }
+  ]
+
+  is-sc-builtin-name : Text -> Boolean
+  is-sc-builtin-name (n) =
+   let len = list-length sc-builtin-emitters
+   in let pos = bsearch-sc-emitter-pos sc-builtin-emitters n 0 len
+   in if pos >= len then False
+      else (list-at sc-builtin-emitters pos).name == n
+
+  emit-sc-builtin : Text, List IRExpr, List ArityEntry -> Text
+  emit-sc-builtin (n) (args) (arities) =
+   let len = list-length sc-builtin-emitters
+   in let pos = bsearch-sc-emitter-pos sc-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at sc-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
 
 Section: Apply Chain
 
@@ -177,9 +241,11 @@ Section: Expression Emission
   emit-sc-name (n) (ty) (arities) =
    if n == "read-line" then "scala.io.StdIn.readLine()"
    else if n == "show" then "_.toString"
+   else if n == "negate" then "((x: Any) => -(x.asInstanceOf[Int]))"
    else if n == "True" then "true"
    else if n == "False" then "false"
    else if n == "Nothing" then "null"
+   else if is-sc-builtin-name n then sc-sanitize n
    else sc-sanitize n
 
   emit-sc-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
@@ -189,28 +255,31 @@ Section: Expression Emission
     is IrAppendList -> "(" & emit-sc-expr l arities & " ++ " & emit-sc-expr r arities & ")"
     is IrConsList -> "(" & emit-sc-expr l arities & " :: " & emit-sc-expr r arities & ")"
     is IrDivInt -> "(" & emit-sc-expr l arities & " / " & emit-sc-expr r arities & ")"
+    is IrRemInt -> "(" & emit-sc-expr l arities & " % " & emit-sc-expr r arities & ")"
     is IrAnd -> "(" & emit-sc-expr l arities & " && " & emit-sc-expr r arities & ")"
     is IrOr -> "(" & emit-sc-expr l arities & " || " & emit-sc-expr r arities & ")"
+    is IrAddVec -> emit-sc-expr l arities & ".asInstanceOf[List[Double]].zip(" & emit-sc-expr r arities & ".asInstanceOf[List[Double]]).map { case (a, b) => a + b }"
+    is IrSubVec -> emit-sc-expr l arities & ".asInstanceOf[List[Double]].zip(" & emit-sc-expr r arities & ".asInstanceOf[List[Double]]).map { case (a, b) => a - b }"
+    is IrMulVec -> emit-sc-expr l arities & ".asInstanceOf[List[Double]].zip(" & emit-sc-expr r arities & ".asInstanceOf[List[Double]]).map { case (a, b) => a * b }"
+    is IrDivVec -> emit-sc-expr l arities & ".asInstanceOf[List[Double]].zip(" & emit-sc-expr r arities & ".asInstanceOf[List[Double]]).map { case (a, b) => a / b }"
     is otherwise -> "(" & emit-sc-expr l arities & " " & sc-bin-op-symbol op & " " & emit-sc-expr r arities & ")"
 
   sc-bin-op-symbol : IRBinaryOp -> Text
   sc-bin-op-symbol (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
-    is IrDivInt -> "/"
+    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrRemInt -> "%"
     is IrPowInt -> "^"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
-    is IrEq -> "=="
+    is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> "+"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "=="
     is IrNotEq -> "!="
-    is IrLt -> "<"
-    is IrGt -> ">"
-    is IrLtEq -> "<="
-    is IrGtEq -> ">="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
     is IrAnd -> "&&"
     is IrOr -> "||"
     is IrAppendText -> "+"
@@ -257,6 +326,7 @@ Section: Expression Emission
     is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "case (" & emit-sc-tup-pat-names subs 0 & ") => " & emit-sc-expr body arities & "; " else "case _: " & sc-sanitize name & " => " & emit-sc-expr body arities & "; "
     is IrVarPat (name) (ty) (sp) -> "case " & sc-sanitize name & " => " & emit-sc-expr body arities & "; "
     is IrWildPat (sp) -> "case _ => " & emit-sc-expr body arities & "; "
+    is IrVecPat (pats) (ty) (sp) -> "case _ => " & emit-sc-expr body arities & "; "
 
   emit-sc-act : List IRActStmt, List ArityEntry -> Text
   emit-sc-act (stmts) (arities) =
@@ -279,7 +349,7 @@ Section: Apply Emission
    in let args = chain.args
    in when root
     is IrName (n) (ty) (sp) ->
-     if n == "print-line-uni" then "println(" & emit-sc-expr (list-at args 0) arities & ")"
+     if is-sc-builtin-name n then emit-sc-builtin n args arities
      else if is-mktup-name n then "(" & emit-sc-apply-args args arities 0 & ")"
      else sc-sanitize n & "(" & emit-sc-apply-args args arities 0 & ")"
     is otherwise -> emit-sc-expr-curried e arities
@@ -342,6 +412,7 @@ Section: Tuple Helpers
    in sep & (when sub
     is IrVarPat (name) (ty) (sp) -> sc-sanitize name
     is IrWildPat (sp) -> "_"
+    is IrVecPat (pats) (ty) (sp) -> "_"
     is otherwise -> "_") & emit-sc-tup-pat-names subs (i + 1)
 
 Page 1

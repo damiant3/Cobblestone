@@ -1,0 +1,432 @@
+Chapter: BlackHole
+  cites Game chapter Color
+  cites Game chapter Rasterizer
+
+ General-relativistic black hole renderer. Ray-marches photons through
+ curved spacetime around a Schwarzschild black hole. Volumetric
+ accretion disk with FBM plasma noise, relativistic Doppler beaming,
+ corona glow, orbiting sun, gas giant, and background starfield.
+ All geometry in Real approximate (f32). Color accumulated as f32
+ triplets, gamma-corrected to Rgb at output.
+
+ We say:
+
+Section: Real Approximate Math
+
+  Rf = Real approximate
+
+  rf-abs : Rf -> Rf
+  rf-abs (x) = if x < 0.0 then -x else x
+
+  rf-floor : Rf -> Rf
+  rf-floor (x) =
+    let trunc = __real-approx-from-int (__real-approx-to-int x)
+    in if trunc > x then trunc - 1.0 else trunc
+
+  rf-fract : Rf -> Rf
+  rf-fract (x) = x - rf-floor x
+
+  rf-clamp : Rf, Rf, Rf -> Rf
+  rf-clamp (x) (lo) (hi) = if x < lo then lo else if x > hi then hi else x
+
+  rf-max : Rf, Rf -> Rf
+  rf-max (a) (b) = if a > b then a else b
+
+  rf-min : Rf, Rf -> Rf
+  rf-min (a) (b) = if a < b then a else b
+
+  rf-mix : Rf, Rf, Rf -> Rf
+  rf-mix (a) (b) (t) = a * (1.0 - t) + b * t
+
+  rf-smoothstep : Rf, Rf, Rf -> Rf
+  rf-smoothstep (edge0) (edge1) (x) =
+    if x <= edge0 then 0.0
+    else if x >= edge1 then 1.0
+    else let t = (x - edge0) / (edge1 - edge0)
+    in t * t * (3.0 - 2.0 * t)
+
+  rf-sqrt : Rf -> Rf
+  rf-sqrt (x) =
+    if x <= 0.0 then 0.0
+    else rf-sqrt-newton x (x * 0.5 + 0.5) 0
+
+  rf-sqrt-newton : Rf, Rf, Integer -> Rf
+  rf-sqrt-newton (x) (guess) (i) =
+    if i >= 8 then guess
+    else let next = (guess + x / guess) * 0.5
+    in rf-sqrt-newton x next (i + 1)
+
+  rf-sin : Rf -> Rf
+  rf-sin (x) =
+    let p = x - rf-floor (x / 6.2831853 + 0.5) * 6.2831853
+    in let p3 = p * p * p
+    in let p5 = p3 * p * p
+    in let p7 = p5 * p * p
+    in p - p3 / 6.0 + p5 / 120.0 - p7 / 5040.0
+
+  rf-cos : Rf -> Rf
+  rf-cos (x) = rf-sin (x + 1.5707963)
+
+  rf-pow : Rf, Rf -> Rf
+  rf-pow (base) (exp) =
+    if base <= 0.0 then 0.0
+    else rf-pow-loop base exp 1.0 0
+
+  rf-pow-loop : Rf, Rf, Rf, Integer -> Rf
+  rf-pow-loop (base) (exp) (acc) (i) =
+    if i >= __real-approx-to-int exp then acc
+    else rf-pow-loop base exp (acc * base) (i + 1)
+
+Section: Vec3 — Real Approximate 3-vectors
+
+  RfVec3 = record {
+    x : Rf,
+    y : Rf,
+    z : Rf
+  }
+
+  rv3 : Rf, Rf, Rf -> RfVec3
+  rv3 (x) (y) (z) = RfVec3 { x = x, y = y, z = z }
+
+  rv3-zero : RfVec3
+  rv3-zero = rv3 0.0 0.0 0.0
+
+  rv3-add : RfVec3, RfVec3 -> RfVec3
+  rv3-add (a) (b) = rv3 (a.x + b.x) (a.y + b.y) (a.z + b.z)
+
+  rv3-sub : RfVec3, RfVec3 -> RfVec3
+  rv3-sub (a) (b) = rv3 (a.x - b.x) (a.y - b.y) (a.z - b.z)
+
+  rv3-scale : RfVec3, Rf -> RfVec3
+  rv3-scale (v) (s) = rv3 (v.x * s) (v.y * s) (v.z * s)
+
+  rv3-dot : RfVec3, RfVec3 -> Rf
+  rv3-dot (a) (b) = a.x * b.x + a.y * b.y + a.z * b.z
+
+  rv3-cross : RfVec3, RfVec3 -> RfVec3
+  rv3-cross (a) (b) = rv3
+    (a.y * b.z - a.z * b.y)
+    (a.z * b.x - a.x * b.z)
+    (a.x * b.y - a.y * b.x)
+
+  rv3-length : RfVec3 -> Rf
+  rv3-length (v) = rf-sqrt (rv3-dot v v)
+
+  rv3-normalize : RfVec3 -> RfVec3
+  rv3-normalize (v) =
+    let len = rv3-length v
+    in if len < 0.0001 then rv3-zero
+    else rv3-scale v (1.0 / len)
+
+Section: Color — HDR triplet in Real approximate
+
+  RfColor = record {
+    cr : Rf,
+    cg : Rf,
+    cb : Rf
+  }
+
+  rfc-zero : RfColor
+  rfc-zero = RfColor { cr = 0.0, cg = 0.0, cb = 0.0 }
+
+  rfc-add : RfColor, RfColor -> RfColor
+  rfc-add (a) (b) = RfColor { cr = a.cr + b.cr, cg = a.cg + b.cg, cb = a.cb + b.cb }
+
+  rfc-scale : RfColor, Rf -> RfColor
+  rfc-scale (c) (s) = RfColor { cr = c.cr * s, cg = c.cg * s, cb = c.cb * s }
+
+  rfc-mix : RfColor, RfColor, Rf -> RfColor
+  rfc-mix (a) (b) (t) = RfColor {
+    cr = rf-mix (a.cr) (b.cr) t,
+    cg = rf-mix (a.cg) (b.cg) t,
+    cb = rf-mix (a.cb) (b.cb) t
+  }
+
+Section: Constants
+
+  bh-rs : Rf
+  bh-rs = 0.32
+
+  bh-max-dist : Rf
+  bh-max-dist = 25.0
+
+  bh-max-steps : Integer
+  bh-max-steps = 280
+
+Section: Procedural Noise
+
+  bh-hash : RfVec3 -> Rf
+  bh-hash (p) =
+    let fx = rf-fract (p.x * 443.8975)
+    in let fy = rf-fract (p.y * 397.2973)
+    in let fz = rf-fract (p.z * 491.1871)
+    in let d = fx * (fy + 19.19) + fy * (fz + 19.19) + fz * (fx + 19.19)
+    in rf-fract (fx * fy * fz + d)
+
+  bh-noise : RfVec3 -> Rf
+  bh-noise (p) =
+    let i = rv3 (rf-floor p.x) (rf-floor p.y) (rf-floor p.z)
+    in let f = rv3 (rf-fract p.x) (rf-fract p.y) (rf-fract p.z)
+    in let sx = f.x * f.x * (3.0 - 2.0 * f.x)
+    in let sy = f.y * f.y * (3.0 - 2.0 * f.y)
+    in let sz = f.z * f.z * (3.0 - 2.0 * f.z)
+    in let c000 = bh-hash (rv3 i.x i.y i.z)
+    in let c100 = bh-hash (rv3 (i.x + 1.0) i.y i.z)
+    in let c010 = bh-hash (rv3 i.x (i.y + 1.0) i.z)
+    in let c110 = bh-hash (rv3 (i.x + 1.0) (i.y + 1.0) i.z)
+    in let c001 = bh-hash (rv3 i.x i.y (i.z + 1.0))
+    in let c101 = bh-hash (rv3 (i.x + 1.0) i.y (i.z + 1.0))
+    in let c011 = bh-hash (rv3 i.x (i.y + 1.0) (i.z + 1.0))
+    in let c111 = bh-hash (rv3 (i.x + 1.0) (i.y + 1.0) (i.z + 1.0))
+    in let x00 = rf-mix c000 c100 sx
+    in let x10 = rf-mix c010 c110 sx
+    in let x01 = rf-mix c001 c101 sx
+    in let x11 = rf-mix c011 c111 sx
+    in let y0 = rf-mix x00 x10 sy
+    in let y1 = rf-mix x01 x11 sy
+    in rf-mix y0 y1 sz
+
+  bh-fbm : RfVec3 -> Rf
+  bh-fbm (p) = bh-fbm-loop p 0.0 0.5 0
+
+  bh-fbm-loop : RfVec3, Rf, Rf, Integer -> Rf
+  bh-fbm-loop (p) (acc) (amp) (i) =
+    if i >= 4 then acc
+    else let n = bh-noise p
+    in bh-fbm-loop
+      (rv3 (p.x * 2.0 + 100.0) (p.y * 2.0 + 100.0) (p.z * 2.0 + 100.0))
+      (acc + amp * n)
+      (amp * 0.5)
+      (i + 1)
+
+Section: Camera
+
+  BhCamera = record {
+    cam-yaw : Rf,
+    cam-pitch : Rf,
+    cam-zoom : Rf
+  }
+
+  bh-camera-default : BhCamera
+  bh-camera-default = BhCamera { cam-yaw = 0.0, cam-pitch = 0.14, cam-zoom = 4.4 }
+
+  bh-rotate : RfVec3, Rf, Rf -> RfVec3
+  bh-rotate (v) (yaw) (pitch) =
+    let cy = rf-cos yaw
+    in let sy = rf-sin yaw
+    in let cp = rf-cos pitch
+    in let sp = rf-sin pitch
+    in let x1 = v.x * cy + v.z * sy
+    in let z1 = v.z * cy - v.x * sy
+    in let y1 = v.y * cp - z1 * sp
+    in let z2 = z1 * cp + v.y * sp
+    in rv3 x1 y1 z2
+
+Section: Ray March State
+
+  RayState = record {
+    rs-pos : RfVec3,
+    rs-vel : RfVec3,
+    rs-color : RfColor,
+    rs-opacity : Rf,
+    rs-closest : Rf,
+    rs-swallowed : Boolean
+  }
+
+  ray-state-new : RfVec3, RfVec3 -> RayState
+  ray-state-new (pos) (vel) = RayState {
+    rs-pos = pos, rs-vel = vel,
+    rs-color = rfc-zero, rs-opacity = 0.0,
+    rs-closest = 100.0, rs-swallowed = False
+  }
+
+Section: Gravitational Ray March
+
+  bh-march : RfVec3, RfVec3, Rf -> RayState
+  bh-march (pos) (vel) (time) =
+    bh-march-loop (ray-state-new pos vel) time 0
+
+  bh-march-loop : RayState, Rf, Integer -> RayState
+  bh-march-loop (st) (time) (step) =
+    if step >= bh-max-steps then st
+    else if st.rs-swallowed then st
+    else if st.rs-opacity >= 0.99 then st
+    else let r2 = rv3-dot st.rs-pos st.rs-pos
+    in let r = rf-sqrt r2
+    in let closest = rf-min st.rs-closest r
+    in if r < bh-rs then
+      bh-march-loop (RayState { rs-pos = st.rs-pos, rs-vel = st.rs-vel,
+        rs-color = st.rs-color, rs-opacity = st.rs-opacity,
+        rs-closest = closest, rs-swallowed = True }) time (step + 1)
+    else if r > bh-max-dist then
+      RayState { rs-pos = st.rs-pos, rs-vel = st.rs-vel,
+        rs-color = st.rs-color, rs-opacity = st.rs-opacity,
+        rs-closest = closest, rs-swallowed = False }
+    else let dt = rf-clamp (r * 0.04) 0.003 0.05
+    in let h = rv3-cross st.rs-pos st.rs-vel
+    in let h2 = rv3-dot h h
+    in let r5 = r * r * r * r * r
+    in let grav-mag = -1.5 * bh-rs * h2 / (r5 + 0.0000001)
+    in let grav = rv3-scale (rv3-scale st.rs-pos (1.0 / r)) grav-mag
+    in let new-vel = rv3-normalize (rv3-add st.rs-vel (rv3-scale grav dt))
+    in let new-pos = rv3-add st.rs-pos (rv3-scale new-vel dt)
+    in let disk = bh-sample-disk new-pos st.rs-vel r dt time st.rs-color st.rs-opacity
+    in bh-march-loop (RayState {
+      rs-pos = new-pos, rs-vel = new-vel,
+      rs-color = disk.ds-color, rs-opacity = disk.ds-opacity,
+      rs-closest = closest, rs-swallowed = False }) time (step + 1)
+
+Section: Accretion Disk
+
+  DiskSample = record {
+    ds-color : RfColor,
+    ds-opacity : Rf
+  }
+
+  bh-sample-disk : RfVec3, RfVec3, Rf, Rf, Rf, RfColor, Rf -> DiskSample
+  bh-sample-disk (pos) (vel) (r) (dt) (time) (color) (opacity) =
+    let disk-r = rf-sqrt (pos.x * pos.x + pos.z * pos.z)
+    in let inner = bh-rs * 1.5
+    in let outer = bh-rs * 8.5
+    in if disk-r <= inner then DiskSample { ds-color = color, ds-opacity = opacity }
+    else if disk-r >= outer then DiskSample { ds-color = color, ds-opacity = opacity }
+    else let thickness = 0.022 * (disk-r - bh-rs * 1.2)
+    in if rf-abs pos.y >= thickness then DiskSample { ds-color = color, ds-opacity = opacity }
+    else let rad-fade = rf-pow (rf-sin ((disk-r - inner) / (bh-rs * 7.0) * 3.14159)) 2.2
+    in let vert-fade = rf-smoothstep thickness 0.0 (rf-abs pos.y)
+    in let spin = time * (1.2 / (disk-r + 0.05))
+    in let cs = rf-cos spin
+    in let ss = rf-sin spin
+    in let nx = pos.x * 5.0 * cs - pos.z * 5.0 * ss
+    in let nz = pos.x * 5.0 * ss + pos.z * 5.0 * cs
+    in let gas = rad-fade * vert-fade * bh-fbm (rv3 nx pos.y nz) * dt * 5.5
+    in let side = vel.x * pos.z - vel.z * pos.x
+    in let shift-factor = if side > 0.0 then 2.8 else 0.35
+    in let redshift = rf-sqrt (rf-max 0.0 (1.0 - bh-rs / r)) * shift-factor
+    in let plasma = rfc-scale
+      (rfc-mix (RfColor { cr = 0.9, cg = 0.1, cb = 0.0 })
+               (RfColor { cr = 1.3, cg = 0.8, cb = 0.45 })
+               redshift)
+      (redshift * 1.6)
+    in let remain = 1.0 - opacity
+    in let new-color = rfc-add color (rfc-scale plasma (gas * remain))
+    in DiskSample { ds-color = new-color, ds-opacity = rf-min (opacity + gas) 1.0 }
+
+Section: Corona
+
+  bh-corona : Rf, RfColor, Rf -> RfColor
+  bh-corona (closest) (color) (opacity) =
+    if closest <= bh-rs then color
+    else if closest >= bh-rs * 1.6 then color
+    else let glow = 1.0 - (closest - bh-rs) / (bh-rs * 0.6)
+    in let g3 = rf-max 0.0 (glow * glow * glow)
+    in let corona = rfc-scale (RfColor { cr = 1.0, cg = 0.9, cb = 0.75 }) (g3 * 0.45 * (1.0 - opacity))
+    in rfc-add color corona
+
+Section: Background Sky
+
+  bh-sky : RfVec3, RfVec3, Rf -> RfColor
+  bh-sky (pos) (dir) (time) =
+    rfc-add (bh-sun pos dir time)
+      (rfc-add (bh-planet pos dir time) (bh-stars dir))
+
+  bh-sun-pos : Rf -> RfVec3
+  bh-sun-pos (time) =
+    let angle = time * 0.22
+    in rv3 (rf-cos angle * 6.0) 1.8 (rf-sin angle * 6.0 + 3.5)
+
+  bh-sun : RfVec3, RfVec3, Rf -> RfColor
+  bh-sun (pos) (dir) (time) =
+    let sp = bh-sun-pos time
+    in let sun-r = 0.8
+    in let oc = rv3-sub pos sp
+    in let b = rv3-dot oc dir
+    in let c = rv3-dot oc oc - sun-r * sun-r
+    in let disc = b * b - c
+    in if disc > 0.0 then
+      let t = -b - rf-sqrt disc
+      in if t > 0.0 then RfColor { cr = 4.8, cg = 4.35, cb = 3.6 }
+      else bh-sun-glow oc dir sun-r
+    else bh-sun-glow oc dir sun-r
+
+  bh-sun-glow : RfVec3, RfVec3, Rf -> RfColor
+  bh-sun-glow (oc) (dir) (sun-r) =
+    let approach = rv3-length (rv3-cross oc dir)
+    in if approach < sun-r * 3.0 then
+      let corona = rf-max 0.0 (1.0 - (approach - sun-r) / (sun-r * 2.0))
+      in let c4 = corona * corona * corona * corona
+      in rfc-scale (RfColor { cr = 1.3, cg = 0.55, cb = 0.1 }) (c4 * 2.2)
+    else rfc-zero
+
+  bh-planet : RfVec3, RfVec3, Rf -> RfColor
+  bh-planet (pos) (dir) (time) =
+    let pp = rv3 3.2 (-1.4) 6.5
+    in let pr = 0.7
+    in let oc = rv3-sub pos pp
+    in let b = rv3-dot oc dir
+    in let c = rv3-dot oc oc - pr * pr
+    in let disc = b * b - c
+    in if disc <= 0.0 then rfc-zero
+    else let t = -b - rf-sqrt disc
+    in if t <= 0.0 then rfc-zero
+    else let hit = rv3-add pos (rv3-scale dir t)
+    in let n = rv3-normalize (rv3-sub hit pp)
+    in let light = rv3-normalize (rv3-sub (bh-sun-pos time) hit)
+    in let diff = rf-max 0.02 (rv3-dot n light)
+    in let band-noise = bh-noise (rv3-scale n 2.0)
+    in let bands = rf-smoothstep 0.02 0.04 (rf-abs (rf-sin (n.y * 12.0 + band-noise * 0.5)))
+    in let surface = rfc-mix
+      (RfColor { cr = 0.1, cg = 0.4, cb = 0.75 })
+      (RfColor { cr = 0.04, cg = 0.2, cb = 0.45 })
+      bands
+    in rfc-scale surface diff
+
+  bh-stars : RfVec3 -> RfColor
+  bh-stars (dir) =
+    let grid = rf-sin (dir.x * 180.0) * rf-sin (dir.y * 180.0) * rf-sin (dir.z * 180.0)
+    in if grid > 0.9985 then
+      rfc-scale (RfColor { cr = 1.4, cg = 1.4, cb = 1.4 })
+        (rf-smoothstep 0.9985 1.0 grid)
+    else rfc-zero
+
+Section: Pixel Rendering
+
+  bh-render-pixel : Integer, Integer, Integer, Integer, BhCamera, Rf -> Rgb
+  bh-render-pixel (px) (py) (width) (height) (cam) (time) =
+    let aspect = __real-approx-from-int width / __real-approx-from-int height
+    in let ux = (__real-approx-from-int px * 2.0 / __real-approx-from-int width - 1.0) * aspect
+    in let uy = __real-approx-from-int py * 2.0 / __real-approx-from-int height - 1.0
+    in let cam-pos = bh-rotate (rv3 0.0 0.0 (-cam.cam-zoom)) (cam.cam-yaw) (cam.cam-pitch)
+    in let ray-dir = bh-rotate (rv3-normalize (rv3 ux uy 2.4)) (cam.cam-yaw) (cam.cam-pitch)
+    in let st = bh-march cam-pos ray-dir time
+    in let with-corona = bh-corona st.rs-closest st.rs-color st.rs-opacity
+    in let final = if st.rs-swallowed then
+      rfc-scale with-corona st.rs-opacity
+    else let sky = bh-sky st.rs-pos st.rs-vel time
+      in rfc-add with-corona (rfc-scale sky (1.0 - st.rs-opacity))
+    in bh-gamma final
+
+  bh-gamma : RfColor -> Rgb
+  bh-gamma (c) =
+    let r = __real-approx-to-int (rf-clamp (rf-pow (rf-max 0.0 c.cr) 0.4545) 0.0 1.0 * 255.0)
+    in let g = __real-approx-to-int (rf-clamp (rf-pow (rf-max 0.0 c.cg) 0.4545) 0.0 1.0 * 255.0)
+    in let b = __real-approx-to-int (rf-clamp (rf-pow (rf-max 0.0 c.cb) 0.4545) 0.0 1.0 * 255.0)
+    in rgb r g b
+
+Section: Full Frame
+
+  bh-render-frame : Integer, Integer, BhCamera, Rf -> List Integer
+  bh-render-frame (width) (height) (cam) (time) =
+    bh-render-rows width height cam time 0 []
+
+  bh-render-rows : Integer, Integer, BhCamera, Rf, Integer, List Integer -> List Integer
+  bh-render-rows (width) (height) (cam) (time) (y) (acc) =
+    if y >= height then acc
+    else let row = bh-render-row width height cam time y 0 acc
+    in bh-render-rows width height cam time (y + 1) row
+
+  bh-render-row : Integer, Integer, BhCamera, Rf, Integer, Integer, List Integer -> List Integer
+  bh-render-row (width) (height) (cam) (time) (y) (x) (acc) =
+    if x >= width then acc
+    else let pixel = bh-render-pixel x y width height cam time
+    in bh-render-row width height cam time y (x + 1) (list-push acc (rgb-to-packed pixel))

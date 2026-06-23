@@ -12,6 +12,9 @@ $QuireDirs = @{
     'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'
     'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'
     'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
+    'Engine' = 'codex\foreword\engine'
+    'Punctual' = 'codex\foreword\punctual'
+    'Gpu' = 'codex\foreword\gpu'
     'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
     'Magic' = 'apps\games\magic'; 'Games' = 'apps\games\classic'
     'Spark' = 'apps\spark'; 'Data' = 'apps\data'
@@ -53,6 +56,14 @@ $QuireDirs = @{
     'Helm' = 'apps\helm'
     'WebApp' = 'apps\webapp'
     'ERP' = 'apps\erp'
+    'Vision' = 'apps\vision'
+    'Collab' = 'apps\collab'
+    'Services' = 'apps\services'
+    'Market' = 'apps\market'
+    'Workflow' = 'apps\workflow'
+    'Site' = 'apps\site'
+    'Boards' = 'codex\boards'
+    'Guios' = 'apps\guios'
 }
 
 function New-CitePattern {

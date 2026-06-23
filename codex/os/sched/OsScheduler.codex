@@ -1,5 +1,8 @@
 Chapter: OsScheduler
   cites Sched chapter TaskQueue
+  cites Sched chapter CoreState
+  cites Sched chapter CoreHeap
+  cites Sched chapter IPI
   cites OS chapter ServiceRegistry
   cites Observe chapter HealthCheck
   cites OS chapter ShellCore
@@ -11,8 +14,13 @@ Chapter: OsScheduler
   cites Foreword chapter Maybe
 
  The OsScheduler owns the top-level OS state: service registry,
- task queue, watchdog, and health checks. To os-tick advances
- the scheduler by processing the next pending task.
+ task queue, watchdog, and health checks. In SMP mode it manages
+ a per-core scheduler via CoreTable and dispatches IPI wake
+ signals when idle cores have work available.
+
+ To os-tick advances the scheduler by one step on the given core.
+ To os-tick-bsp advances core 0 (BSP) — the single-core path is
+ unchanged.
 
  We say:
 
@@ -21,19 +29,55 @@ Section: Scheduler State
   OsState = record {
     services : ServiceRegistry,
     tasks : TaskQueue,
+    cores : CoreTable,
+    heap-layout : HeapLayout,
+    ipi : IpiState,
     shell : ShellState,
     tick : Integer between 0 and 4294967295,
-    next-pid : Integer between 1 and 65535
+    next-pid : Integer between 1 and 65535,
+    smp-active : Boolean
   }
 
   os-state-new : ShellState -> OsState
   os-state-new (sh) = OsState {
     services = service-registry-empty,
     tasks = task-queue-empty,
+    cores = core-table-new 1,
+    heap-layout = compute-heap-layout 1 default-ram-size,
+    ipi = ipi-state-new 1,
     shell = sh,
     tick = 0,
-    next-pid = 2
+    next-pid = 2,
+    smp-active = False
   }
+
+  os-state-smp : ShellState, Integer -> OsState
+  os-state-smp (sh) (core-count) =
+    let ct = core-table-new core-count
+    in let ct1 = core-activate ct 0 (single-core-heap-base) (single-core-heap-base + 65536)
+    in OsState {
+      services = service-registry-empty,
+      tasks = task-queue-empty,
+      cores = ct1,
+      heap-layout = compute-heap-layout core-count default-ram-size,
+      ipi = ipi-state-new core-count,
+      shell = sh,
+      tick = 0,
+      next-pid = 2,
+      smp-active = core-count > 1
+    }
+
+Section: Core Registration
+
+  os-register-ap : OsState, Integer, Integer, Integer -> OsState
+  os-register-ap (os) (core-id) (stack-base) (stack-top) =
+    OsState {
+      services = os.services, tasks = os.tasks,
+      cores = core-activate (os.cores) core-id stack-base stack-top,
+      heap-layout = os.heap-layout, ipi = os.ipi,
+      shell = os.shell, tick = os.tick, next-pid = os.next-pid,
+      smp-active = os.smp-active
+    }
 
 Section: Tick
 
@@ -44,17 +88,95 @@ Section: Tick
     health-ok : Boolean
   }
 
-  os-tick : OsState -> TickResult
-  os-tick (os) =
-    let os1 = OsState { services = os.services, tasks = os.tasks, shell = os.shell, tick = os.tick + 1, next-pid = os.next-pid }
-    in let dispatch-result = try-dispatch os1
+  os-tick : OsState, Integer -> TickResult
+  os-tick (os) (core-id) =
+    let os1 = OsState { services = os.services, tasks = os.tasks, cores = os.cores, heap-layout = os.heap-layout, ipi = os.ipi, shell = os.shell, tick = os.tick + 1, next-pid = os.next-pid, smp-active = os.smp-active }
+    in if os1.smp-active then os-tick-smp os1 core-id
+    else os-tick-single os1
+
+  os-tick-bsp : OsState -> TickResult
+  os-tick-bsp (os) = os-tick os 0
+
+Section: Single-Core Tick (unchanged path)
+
+  os-tick-single : OsState -> TickResult
+  os-tick-single (os) =
+    let dispatch-result = try-dispatch os
     in let os2 = dispatch-result.state
     in let wd-result = watchdog-check-all os2
     in let os3 = wd-result.state
     in let health = run-health-check (os3.shell) (os3.services)
     in TickResult { state = os3, dispatched = dispatch-result.count, restarted = wd-result.count, health-ok = is-system-healthy health }
 
-Section: Task Dispatch
+Section: SMP Tick
+
+  os-tick-smp : OsState, Integer -> TickResult
+  os-tick-smp (os) (core-id) =
+    let sr = core-schedule (os.cores) core-id
+    in if sr.has-task then
+      let svc = service-register (os.services) (sr.task.name) (os.next-pid) 0
+      in let os1 = OsState {
+        services = svc, tasks = os.tasks,
+        cores = sr.table, heap-layout = os.heap-layout,
+        ipi = os.ipi, shell = os.shell,
+        tick = os.tick, next-pid = os.next-pid + 1,
+        smp-active = os.smp-active
+      }
+      in let os2 = if sr.stolen then os-wake-idle-cores os1 core-id else os1
+      in TickResult { state = os2, dispatched = 1, restarted = 0, health-ok = True }
+    else let os1 = OsState {
+      services = os.services, tasks = os.tasks,
+      cores = sr.table, heap-layout = os.heap-layout,
+      ipi = os.ipi, shell = os.shell,
+      tick = os.tick, next-pid = os.next-pid,
+      smp-active = os.smp-active
+    }
+    in TickResult { state = os1, dispatched = 0, restarted = 0, health-ok = True }
+
+  os-wake-idle-cores : OsState, Integer -> OsState
+  os-wake-idle-cores (os) (from-core) =
+    os-wake-loop os from-core 0
+
+  os-wake-loop : OsState, Integer, Integer -> OsState
+  os-wake-loop (os) (from-core) (i) =
+    if i >= (os.cores).max-cores then os
+    else if i == from-core then os-wake-loop os from-core (i + 1)
+    else let info = core-get (os.cores) i
+    in if info.active & info.idle-ticks > 0 & task-queue-count (info.run-queue) > 0
+      then let ipi1 = ipi-wake-core (os.ipi) from-core i (os.tick)
+      in let os1 = OsState {
+        services = os.services, tasks = os.tasks,
+        cores = os.cores, heap-layout = os.heap-layout,
+        ipi = ipi1, shell = os.shell,
+        tick = os.tick, next-pid = os.next-pid,
+        smp-active = os.smp-active
+      }
+      in os-wake-loop os1 from-core (i + 1)
+    else os-wake-loop os from-core (i + 1)
+
+Section: Task Submission (SMP-aware)
+
+  os-submit-task : OsState, Text, TaskPriority -> OsState
+  os-submit-task (os) (name) (prio) =
+    if os.smp-active then
+      let cores1 = core-enqueue-balanced (os.cores) name prio
+      in OsState {
+        services = os.services, tasks = os.tasks,
+        cores = cores1, heap-layout = os.heap-layout,
+        ipi = os.ipi, shell = os.shell,
+        tick = os.tick, next-pid = os.next-pid,
+        smp-active = os.smp-active
+      }
+    else OsState {
+      services = os.services,
+      tasks = task-enqueue (os.tasks) name prio,
+      cores = os.cores, heap-layout = os.heap-layout,
+      ipi = os.ipi, shell = os.shell,
+      tick = os.tick, next-pid = os.next-pid,
+      smp-active = os.smp-active
+    }
+
+Section: Legacy Dispatch (single-core)
 
   DispatchCount = record {
     state : OsState,
@@ -68,7 +190,7 @@ Section: Task Dispatch
     else let task = dr.task
     in let q1 = task-mark-running (dr.queue) (task.id) (os.next-pid)
     in let svc = service-register (os.services) (task.name) (os.next-pid) 0
-    in let os1 = OsState { services = svc, tasks = q1, shell = os.shell, tick = os.tick, next-pid = os.next-pid + 1 }
+    in let os1 = OsState { services = svc, tasks = q1, cores = os.cores, heap-layout = os.heap-layout, ipi = os.ipi, shell = os.shell, tick = os.tick, next-pid = os.next-pid + 1, smp-active = os.smp-active }
     in DispatchCount { state = os1, count = 1 }
 
 Section: Watchdog Integration
@@ -92,7 +214,19 @@ Section: Queries
   os-task-count : OsState -> Integer
   os-task-count (os) = task-queue-count (os.tasks)
 
+  os-core-count : OsState -> Integer
+  os-core-count (os) = core-active-count (os.cores)
+
+  os-is-smp : OsState -> Boolean
+  os-is-smp (os) = os.smp-active
+
   os-stats : OsState -> Text
-  os-stats (os) = "tick=" & show (os.tick) & " services=" & show (os-service-count os) & " tasks=" & show (os-task-count os) & " next-pid=" & show (os.next-pid)
+  os-stats (os) =
+    "tick=" & show (os.tick)
+    & " services=" & show (os-service-count os)
+    & " tasks=" & show (os-task-count os)
+    & " cores=" & show (os-core-count os)
+    & " smp=" & show (os.smp-active)
+    & " next-pid=" & show (os.next-pid)
 
 Page 1

@@ -1,0 +1,282 @@
+Chapter: TreeView
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Hierarchical tree view with expand/collapse semantics. Each node
+ carries an id, label, icon, children, and expanded/selected state.
+ The widget builder flattens visible nodes (expanded ancestors only)
+ into indented rows of base widgets. Arrow-right expands, arrow-left
+ collapses or moves to parent.
+
+Section: Tree Node
+
+  TreeNode = record {
+    tn-id : Text,
+    tn-label : Text,
+    tn-icon : Text,
+    tn-children : List TreeNode,
+    tn-child-count : Integer,
+    tn-expanded : Boolean,
+    tn-selected : Boolean,
+    tn-depth : Integer
+  }
+
+  tree-node : Text, Text, Text, List TreeNode -> TreeNode
+  tree-node (id) (label) (icon) (children) = TreeNode {
+    tn-id = id,
+    tn-label = label,
+    tn-icon = icon,
+    tn-children = children,
+    tn-child-count = list-length children,
+    tn-expanded = False,
+    tn-selected = False,
+    tn-depth = 0
+  }
+
+  tree-node-leaf : Text, Text, Text -> TreeNode
+  tree-node-leaf (id) (label) (icon) = TreeNode {
+    tn-id = id,
+    tn-label = label,
+    tn-icon = icon,
+    tn-children = [],
+    tn-child-count = 0,
+    tn-expanded = False,
+    tn-selected = False,
+    tn-depth = 0
+  }
+
+Section: Tree View State
+
+  TreeViewState = record {
+    tv-id : Text,
+    tv-roots : List TreeNode,
+    tv-root-count : Integer,
+    tv-focused-id : Text,
+    tv-multi-select : Boolean,
+    tv-indent-width : Integer
+  }
+
+  tree-view-new : Text, List TreeNode -> TreeViewState
+  tree-view-new (id) (roots) =
+    let depth-set = tv-set-depths roots 0
+    in TreeViewState {
+      tv-id = id,
+      tv-roots = depth-set,
+      tv-root-count = list-length depth-set,
+      tv-focused-id = "",
+      tv-multi-select = False,
+      tv-indent-width = 16
+    }
+
+  tv-set-depths : List TreeNode, Integer -> List TreeNode
+  tv-set-depths (nodes) (d) = tv-set-depths-loop nodes d 0 (list-length nodes) []
+
+  tv-set-depths-loop : List TreeNode, Integer, Integer, Integer, List TreeNode -> List TreeNode
+  tv-set-depths-loop (nodes) (d) (i) (n) (acc) =
+    if i >= n then acc
+    else let node = list-at nodes i
+    in let updated = TreeNode {
+      tn-id = node.tn-id, tn-label = node.tn-label, tn-icon = node.tn-icon,
+      tn-children = tv-set-depths (node.tn-children) (d + 1),
+      tn-child-count = node.tn-child-count,
+      tn-expanded = node.tn-expanded, tn-selected = node.tn-selected,
+      tn-depth = d
+    }
+    in tv-set-depths-loop nodes d (i + 1) n (list-push acc updated)
+
+Section: Actions
+
+  tree-view-toggle : TreeViewState, Text -> TreeViewState
+  tree-view-toggle (tv) (target-id) =
+    __record-set tv "tv-roots" (tv-toggle-in (tv.tv-roots) target-id)
+
+  tv-toggle-in : List TreeNode, Text -> List TreeNode
+  tv-toggle-in (nodes) (target) = tv-toggle-loop nodes target 0 (list-length nodes) []
+
+  tv-toggle-loop : List TreeNode, Text, Integer, Integer, List TreeNode -> List TreeNode
+  tv-toggle-loop (nodes) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let node = list-at nodes i
+    in let updated = if node.tn-id == target then
+      __record-set node "tn-expanded" (if node.tn-expanded then False else True)
+    else __record-set node "tn-children" (tv-toggle-in (node.tn-children) target)
+    in tv-toggle-loop nodes target (i + 1) n (list-push acc updated)
+
+  tree-view-expand-all : TreeViewState -> TreeViewState
+  tree-view-expand-all (tv) =
+    __record-set tv "tv-roots" (tv-set-expanded-all (tv.tv-roots) True)
+
+  tree-view-collapse-all : TreeViewState -> TreeViewState
+  tree-view-collapse-all (tv) =
+    __record-set tv "tv-roots" (tv-set-expanded-all (tv.tv-roots) False)
+
+  tv-set-expanded-all : List TreeNode, Boolean -> List TreeNode
+  tv-set-expanded-all (nodes) (val) = tv-expand-loop nodes val 0 (list-length nodes) []
+
+  tv-expand-loop : List TreeNode, Boolean, Integer, Integer, List TreeNode -> List TreeNode
+  tv-expand-loop (nodes) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let node = list-at nodes i
+    in let updated = __record-set (__record-set node "tn-expanded" val) "tn-children" (tv-set-expanded-all (node.tn-children) val)
+    in tv-expand-loop nodes val (i + 1) n (list-push acc updated)
+
+  tree-view-select : TreeViewState, Text -> TreeViewState
+  tree-view-select (tv) (target-id) =
+    let cleared = if tv.tv-multi-select then tv.tv-roots else tv-clear-selection (tv.tv-roots)
+    in let selected = tv-select-in cleared target-id
+    in __record-set (__record-set tv "tv-roots" selected) "tv-focused-id" target-id
+
+  tv-clear-selection : List TreeNode -> List TreeNode
+  tv-clear-selection (nodes) = tv-clear-loop nodes 0 (list-length nodes) []
+
+  tv-clear-loop : List TreeNode, Integer, Integer, List TreeNode -> List TreeNode
+  tv-clear-loop (nodes) (i) (n) (acc) =
+    if i >= n then acc
+    else let node = list-at nodes i
+    in let cleared = __record-set (__record-set node "tn-selected" False) "tn-children" (tv-clear-selection (node.tn-children))
+    in tv-clear-loop nodes (i + 1) n (list-push acc cleared)
+
+  tv-select-in : List TreeNode, Text -> List TreeNode
+  tv-select-in (nodes) (target) = tv-select-loop nodes target 0 (list-length nodes) []
+
+  tv-select-loop : List TreeNode, Text, Integer, Integer, List TreeNode -> List TreeNode
+  tv-select-loop (nodes) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let node = list-at nodes i
+    in let updated = if node.tn-id == target then __record-set node "tn-selected" True
+      else __record-set node "tn-children" (tv-select-in (node.tn-children) target)
+    in tv-select-loop nodes target (i + 1) n (list-push acc updated)
+
+Section: Visible Nodes
+
+  tree-view-visible-nodes : TreeViewState -> List TreeNode
+  tree-view-visible-nodes (tv) = tv-flatten-visible (tv.tv-roots) []
+
+  tv-flatten-visible : List TreeNode, List TreeNode -> List TreeNode
+  tv-flatten-visible (nodes) (acc) = tv-flatten-loop nodes 0 (list-length nodes) acc
+
+  tv-flatten-loop : List TreeNode, Integer, Integer, List TreeNode -> List TreeNode
+  tv-flatten-loop (nodes) (i) (n) (acc) =
+    if i >= n then acc
+    else let node = list-at nodes i
+    in let acc2 = list-push acc node
+    in let acc3 = if node.tn-expanded then tv-flatten-visible (node.tn-children) acc2 else acc2
+    in tv-flatten-loop nodes (i + 1) n acc3
+
+Section: Keyboard Navigation
+
+  tree-view-nav-down : TreeViewState -> TreeViewState
+  tree-view-nav-down (tv) =
+    let visible = tree-view-visible-nodes tv
+    in let count = list-length visible
+    in let cur-idx = tv-find-focused-idx visible (tv.tv-focused-id) 0 count
+    in let next = cur-idx + 1
+    in if next >= count then tv
+    else let next-node = list-at visible next
+    in __record-set tv "tv-focused-id" (next-node.tn-id)
+
+  tree-view-nav-up : TreeViewState -> TreeViewState
+  tree-view-nav-up (tv) =
+    let visible = tree-view-visible-nodes tv
+    in let count = list-length visible
+    in let cur-idx = tv-find-focused-idx visible (tv.tv-focused-id) 0 count
+    in let prev = cur-idx - 1
+    in if prev < 0 then tv
+    else let prev-node = list-at visible prev
+    in __record-set tv "tv-focused-id" (prev-node.tn-id)
+
+  tv-find-focused-idx : List TreeNode, Text, Integer, Integer -> Integer
+  tv-find-focused-idx (nodes) (target) (i) (n) =
+    if i >= n then 0
+    else if (list-at nodes i).tn-id == target then i
+    else tv-find-focused-idx nodes target (i + 1) n
+
+  tree-view-handle-key : TreeViewState, Integer -> TreeViewState
+  tree-view-handle-key (tv) (key) =
+    if key == 38 then tree-view-nav-up tv
+    else if key == 40 then tree-view-nav-down tv
+    else if key == 39 then tree-view-toggle tv (tv.tv-focused-id)
+    else if key == 37 then tv-collapse-or-parent tv
+    else if key == 13 then tree-view-select tv (tv.tv-focused-id)
+    else tv
+
+  tv-collapse-or-parent : TreeViewState -> TreeViewState
+  tv-collapse-or-parent (tv) =
+    let visible = tree-view-visible-nodes tv
+    in let node = tv-find-node-by-id visible (tv.tv-focused-id) 0 (list-length visible)
+    in if node.tn-expanded then tree-view-toggle tv (tv.tv-focused-id)
+    else if node.tn-depth > 0 then tv-go-parent tv visible
+    else tv
+
+  tv-find-node-by-id : List TreeNode, Text, Integer, Integer -> TreeNode
+  tv-find-node-by-id (nodes) (target) (i) (n) =
+    if i >= n then tree-node-leaf "" "" ""
+    else let node = list-at nodes i
+    in if node.tn-id == target then node
+    else tv-find-node-by-id nodes target (i + 1) n
+
+  tv-go-parent : TreeViewState, List TreeNode -> TreeViewState
+  tv-go-parent (tv) (visible) =
+    let cur-idx = tv-find-focused-idx visible (tv.tv-focused-id) 0 (list-length visible)
+    in let cur-depth = (list-at visible cur-idx).tn-depth
+    in let parent-idx = tv-find-parent visible cur-idx (cur-depth - 1)
+    in if parent-idx < 0 then tv
+    else __record-set tv "tv-focused-id" ((list-at visible parent-idx).tn-id)
+
+  tv-find-parent : List TreeNode, Integer, Integer -> Integer
+  tv-find-parent (visible) (from) (target-depth) =
+    if from <= 0 then -1
+    else let check = from - 1
+    in if (list-at visible check).tn-depth == target-depth then check
+    else tv-find-parent visible check target-depth
+
+Section: Widget Building
+
+  tree-view-widget : TreeViewState -> WidgetNode
+  tree-view-widget (tv) =
+    let visible = tree-view-visible-nodes tv
+    in let rows = tv-build-rows tv visible 0 (list-length visible) []
+    in widget-panel (tv.tv-id) DirColumn 1 rows
+
+  tv-build-rows : TreeViewState, List TreeNode, Integer, Integer, List WidgetNode -> List WidgetNode
+  tv-build-rows (tv) (visible) (i) (n) (acc) =
+    if i >= n then acc
+    else let node = list-at visible i
+    in let row = tv-build-row tv node
+    in tv-build-rows tv visible (i + 1) n (list-push acc row)
+
+  tv-build-row : TreeViewState, TreeNode -> WidgetNode
+  tv-build-row (tv) (node) =
+    let indent = widget-label (node.tn-id & "-indent") (tv-indent-text (node.tn-depth) (tv.tv-indent-width))
+    in let expander = if node.tn-child-count > 0 then
+      widget-button (node.tn-id & "-exp") (if node.tn-expanded then "v" else ">")
+    else widget-label (node.tn-id & "-spc") " "
+    in let icon = widget-label (node.tn-id & "-icon") (node.tn-icon)
+    in let label = widget-label (node.tn-id & "-lbl") (node.tn-label)
+    in let row = widget-panel (node.tn-id & "-row") DirRow 2 [indent, expander, icon, label]
+    in let focused = if node.tn-id == tv.tv-focused-id then widget-set-state row state-focused else row
+    in if node.tn-selected then widget-set-state focused state-pressed else focused
+
+  tv-indent-text : Integer, Integer -> Text
+  tv-indent-text (depth) (width) =
+    let chars = depth * width / 8
+    in tv-spaces chars ""
+
+  tv-spaces : Integer, Text -> Text
+  tv-spaces (n) (acc) =
+    if n <= 0 then acc
+    else tv-spaces (n - 1) (acc & " ")
+
+Section: Formatting
+
+  format-tree-view : TreeViewState -> Text
+  format-tree-view (tv) =
+    tv.tv-id & " roots=" & show (tv.tv-root-count) & " focused=" & tv.tv-focused-id
+
+  format-tree-node : TreeNode -> Text
+  format-tree-node (n) =
+    n.tn-id & " " & n.tn-icon & " " & n.tn-label
+    & (if n.tn-expanded then " [open]" else "")
+    & (if n.tn-selected then " *" else "")
+
+Page 1

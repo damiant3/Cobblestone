@@ -7,4 +7,4 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..' 'common' 'plug-build-lib.ps1')
 
-Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'javascript' -Chapters @('JavaScriptEmitter', 'JavaScriptPlug')
+Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'javascript' -Chapters @('JavaScriptEmitter', 'JavaScriptPlug') -Survey 'lower-mul:120000'

@@ -1,0 +1,170 @@
+Chapter: IPI
+  cites Foreword chapter Maybe
+
+ Inter-Processor Interrupt management for SMP. Provides typed IPI
+ messages and a pending-IPI queue per core. On real hardware, IPI
+ delivery writes to the LAPIC ICR registers; this module models the
+ logical layer above the hardware — message types, target selection,
+ and per-core IPI mailboxes that the interrupt handler drains.
+
+ Three IPI classes:
+   SchedulerWake — wake an idle core to steal work
+   TlbShootdown — invalidate TLB entries after page table change
+   PanicHalt — all cores stop immediately
+
+ We say:
+
+Section: IPI Types
+
+  IpiKind =
+    | SchedulerWake
+    | TlbShootdown (Integer)
+    | PanicHalt (Text)
+
+  IpiTarget =
+    | TargetCore (Integer)
+    | TargetAllButSelf
+    | TargetAll
+
+  IpiMessage = record {
+    kind : IpiKind,
+    source-core : Integer between 0 and 255,
+    target : IpiTarget,
+    timestamp : Integer
+  }
+
+Section: IPI Vectors
+
+  ipi-vector-wake : Integer = 254
+
+  ipi-vector-tlb : Integer = 253
+
+  ipi-vector-panic : Integer = 2
+
+Section: Per-Core Mailbox
+
+  IpiMailbox = record {
+    pending : List IpiMessage,
+    count : Integer between 0 and 255,
+    delivered : Integer between 0 and 4294967295
+  }
+
+  IpiState = record {
+    mailboxes : List IpiMailbox,
+    core-count : Integer between 0 and 255,
+    total-sent : Integer between 0 and 4294967295
+  }
+
+Section: Initialization
+
+  ipi-mailbox-empty : IpiMailbox
+  ipi-mailbox-empty = IpiMailbox { pending = [], count = 0, delivered = 0 }
+
+  ipi-state-new : Integer -> IpiState
+  ipi-state-new (cores) =
+    IpiState { mailboxes = ipi-init-loop [] 0 cores, core-count = cores, total-sent = 0 }
+
+  ipi-init-loop : List IpiMailbox, Integer, Integer -> List IpiMailbox
+  ipi-init-loop (acc) (i) (max) =
+    if i >= max then acc
+    else ipi-init-loop (list-push acc ipi-mailbox-empty) (i + 1) max
+
+Section: Send
+
+  ipi-send : IpiState, IpiMessage -> IpiState
+  ipi-send (state) (msg) =
+    when msg.target
+      is TargetCore (id) -> ipi-deliver-to state msg id
+      is TargetAllButSelf -> ipi-broadcast state msg (msg.source-core)
+      is TargetAll -> ipi-broadcast-all state msg
+
+  ipi-deliver-to : IpiState, IpiMessage, Integer -> IpiState
+  ipi-deliver-to (state) (msg) (core-id) =
+    if core-id >= state.core-count then state
+    else let mb = list-at (state.mailboxes) core-id
+    in let mb1 = IpiMailbox { pending = list-push (mb.pending) msg, count = mb.count + 1, delivered = mb.delivered }
+    in IpiState { mailboxes = list-set-at (state.mailboxes) core-id mb1, core-count = state.core-count, total-sent = state.total-sent + 1 }
+
+  ipi-broadcast : IpiState, IpiMessage, Integer -> IpiState
+  ipi-broadcast (state) (msg) (exclude) =
+    ipi-broadcast-loop state msg exclude 0
+
+  ipi-broadcast-loop : IpiState, IpiMessage, Integer, Integer -> IpiState
+  ipi-broadcast-loop (state) (msg) (exclude) (i) =
+    if i >= state.core-count then state
+    else if i == exclude then ipi-broadcast-loop state msg exclude (i + 1)
+    else ipi-broadcast-loop (ipi-deliver-to state msg i) msg exclude (i + 1)
+
+  ipi-broadcast-all : IpiState, IpiMessage -> IpiState
+  ipi-broadcast-all (state) (msg) = ipi-broadcast-all-loop state msg 0
+
+  ipi-broadcast-all-loop : IpiState, IpiMessage, Integer -> IpiState
+  ipi-broadcast-all-loop (state) (msg) (i) =
+    if i >= state.core-count then state
+    else ipi-broadcast-all-loop (ipi-deliver-to state msg i) msg (i + 1)
+
+Section: Receive
+
+  IpiRecvResult = record {
+    state : IpiState,
+    message : IpiMessage,
+    has-message : Boolean
+  }
+
+  ipi-recv : IpiState, Integer -> IpiRecvResult
+  ipi-recv (state) (core-id) =
+    if core-id >= state.core-count then IpiRecvResult { state = state, message = IpiMessage { kind = SchedulerWake, source-core = 0, target = TargetCore 0, timestamp = 0 }, has-message = False }
+    else let mb = list-at (state.mailboxes) core-id
+    in if mb.count == 0 then IpiRecvResult { state = state, message = IpiMessage { kind = SchedulerWake, source-core = 0, target = TargetCore 0, timestamp = 0 }, has-message = False }
+    else let msg = list-at (mb.pending) 0
+    in let rest = ipi-drop-first (mb.pending) 1 (mb.count) []
+    in let mb1 = IpiMailbox { pending = rest, count = mb.count - 1, delivered = mb.delivered + 1 }
+    in IpiRecvResult { state = IpiState { mailboxes = list-set-at (state.mailboxes) core-id mb1, core-count = state.core-count, total-sent = state.total-sent }, message = msg, has-message = True }
+
+  ipi-drop-first : List IpiMessage, Integer, Integer, List IpiMessage -> List IpiMessage
+  ipi-drop-first (msgs) (i) (len) (acc) =
+    if i >= len then acc
+    else ipi-drop-first msgs (i + 1) len (list-push acc (list-at msgs i))
+
+Section: Convenience Senders
+
+  ipi-wake-core : IpiState, Integer, Integer, Integer -> IpiState
+  ipi-wake-core (state) (from) (target) (ts) =
+    ipi-send state (IpiMessage { kind = SchedulerWake, source-core = from, target = TargetCore target, timestamp = ts })
+
+  ipi-tlb-shootdown : IpiState, Integer, Integer, Integer -> IpiState
+  ipi-tlb-shootdown (state) (from) (addr) (ts) =
+    ipi-send state (IpiMessage { kind = TlbShootdown addr, source-core = from, target = TargetAllButSelf, timestamp = ts })
+
+  ipi-panic : IpiState, Integer, Text, Integer -> IpiState
+  ipi-panic (state) (from) (reason) (ts) =
+    ipi-send state (IpiMessage { kind = PanicHalt reason, source-core = from, target = TargetAll, timestamp = ts })
+
+Section: Queries
+
+  ipi-pending-count : IpiState, Integer -> Integer
+  ipi-pending-count (state) (core-id) =
+    if core-id >= state.core-count then 0
+    else (list-at (state.mailboxes) core-id).count
+
+  ipi-total-delivered : IpiState, Integer -> Integer
+  ipi-total-delivered (state) (core-id) =
+    if core-id >= state.core-count then 0
+    else (list-at (state.mailboxes) core-id).delivered
+
+  ipi-has-pending : IpiState, Integer -> Boolean
+  ipi-has-pending (state) (core-id) =
+    ipi-pending-count state core-id > 0
+
+Section: Formatting
+
+  format-ipi-kind : IpiKind -> Text
+  format-ipi-kind (k) = when k
+    is SchedulerWake -> "wake"
+    is TlbShootdown (addr) -> "tlb-shootdown@" & show addr
+    is PanicHalt (reason) -> "panic:" & reason
+
+  ipi-stats : IpiState -> Text
+  ipi-stats (state) = "cores=" & show (state.core-count) & " sent=" & show (state.total-sent)
+
+Page 1

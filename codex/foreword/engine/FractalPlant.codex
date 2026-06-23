@@ -1,0 +1,198 @@
+Chapter: FractalPlant
+  cites Engine chapter Mesh
+  cites Math chapter Quaternion
+
+ L-system fractal plant generator. Produces branching tree/shrub/
+ fern/grass geometry from production rules. Each plant has a growth
+ phase (seedling, sapling, mature, old, dead) driven by accumulated
+ growth points. Seasonal color changes (spring green, summer deep
+ green, autumn gold/red, winter bare). Deciduous trees lose leaves
+ in autumn. Procedural variation via seed-based rule perturbation.
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: L-System Rules
+
+  LRule = record {
+    lr-symbol : Integer,
+    lr-replacement : List Integer,
+    lr-probability : Integer
+  }
+
+  LSystem = record {
+    ls-axiom : List Integer,
+    ls-rules : List LRule,
+    ls-rule-count : Integer,
+    ls-angle : Integer,
+    ls-length : Integer,
+    ls-length-decay : Integer,
+    ls-thickness : Integer,
+    ls-thickness-decay : Integer
+  }
+
+Section: Symbol Constants
+
+  sym-forward : Integer = 0
+  sym-turn-left : Integer = 1
+  sym-turn-right : Integer = 2
+  sym-pitch-up : Integer = 3
+  sym-pitch-down : Integer = 4
+  sym-push : Integer = 5
+  sym-pop : Integer = 6
+  sym-leaf : Integer = 7
+  sym-flower : Integer = 8
+  sym-branch-a : Integer = 10
+  sym-branch-b : Integer = 11
+
+Section: Presets
+
+  ls-binary-tree : LSystem
+  ls-binary-tree = LSystem { ls-axiom = [sym-branch-a], ls-rules = [LRule { lr-symbol = sym-branch-a, lr-replacement = [sym-forward, sym-push, sym-turn-left, sym-branch-b, sym-pop, sym-branch-b], lr-probability = 1000 }, LRule { lr-symbol = sym-branch-b, lr-replacement = [sym-forward, sym-push, sym-turn-right, sym-branch-a, sym-pop, sym-branch-a], lr-probability = 1000 }], ls-rule-count = 2, ls-angle = 400, ls-length = 200, ls-length-decay = 850, ls-thickness = 50, ls-thickness-decay = 700 }
+
+  ls-fern : LSystem
+  ls-fern = LSystem { ls-axiom = [sym-branch-a], ls-rules = [LRule { lr-symbol = sym-branch-a, lr-replacement = [sym-forward, sym-forward, sym-push, sym-turn-left, sym-branch-a, sym-pop, sym-push, sym-turn-right, sym-branch-a, sym-pop, sym-forward, sym-branch-a], lr-probability = 1000 }], ls-rule-count = 1, ls-angle = 437, ls-length = 100, ls-length-decay = 900, ls-thickness = 20, ls-thickness-decay = 900 }
+
+  ls-bush : LSystem
+  ls-bush = LSystem { ls-axiom = [sym-branch-a], ls-rules = [LRule { lr-symbol = sym-branch-a, lr-replacement = [sym-forward, sym-push, sym-turn-left, sym-leaf, sym-pop, sym-push, sym-turn-right, sym-leaf, sym-pop, sym-forward, sym-branch-a], lr-probability = 1000 }], ls-rule-count = 1, ls-angle = 500, ls-length = 80, ls-length-decay = 920, ls-thickness = 30, ls-thickness-decay = 800 }
+
+Section: L-System Expansion
+
+  ls-expand : LSystem, Integer -> List Integer
+  ls-expand (sys) (iterations) = ls-expand-loop (sys.ls-axiom) (sys.ls-rules) (sys.ls-rule-count) iterations
+
+  ls-expand-loop : List Integer, List LRule, Integer, Integer -> List Integer
+  ls-expand-loop (symbols) (rules) (rule-count) (iter) =
+    if iter <= 0 then symbols
+    else let expanded = ls-apply-rules symbols rules rule-count 0 (list-length symbols) []
+    in ls-expand-loop expanded rules rule-count (iter - 1)
+
+  ls-apply-rules : List Integer, List LRule, Integer, Integer, Integer, List Integer -> List Integer
+  ls-apply-rules (syms) (rules) (rc) (i) (n) (acc) =
+    if i >= n then acc
+    else let sym = list-at syms i
+    in let replacement = ls-find-rule rules rc sym
+    in let acc2 = ls-append-list acc replacement 0 (list-length replacement)
+    in ls-apply-rules syms rules rc (i + 1) n acc2
+
+  ls-find-rule : List LRule, Integer, Integer -> List Integer
+  ls-find-rule (rules) (n) (sym) = ls-find-rule-loop rules n sym 0
+
+  ls-find-rule-loop : List LRule, Integer, Integer, Integer -> List Integer
+  ls-find-rule-loop (rules) (n) (sym) (i) =
+    if i >= n then [sym]
+    else let r = list-at rules i
+    in if r.lr-symbol == sym then r.lr-replacement
+    else ls-find-rule-loop rules n sym (i + 1)
+
+  ls-append-list : List Integer, List Integer, Integer, Integer -> List Integer
+  ls-append-list (acc) (src) (i) (n) =
+    if i >= n then acc
+    else ls-append-list (list-push acc (list-at src i)) src (i + 1) n
+
+Section: Growth Phases
+
+  GrowthPhase =
+    | PhSeedling
+    | PhSapling
+    | PhMature
+    | PhOld
+    | PhDead
+
+  gp-iterations : GrowthPhase -> Integer
+  gp-iterations (p) = when p
+    is PhSeedling -> 1
+    is PhSapling -> 2
+    is PhMature -> 4
+    is PhOld -> 5
+    is PhDead -> 5
+
+  gp-leaf-density : GrowthPhase -> Integer
+  gp-leaf-density (p) = when p
+    is PhSeedling -> 500
+    is PhSapling -> 800
+    is PhMature -> 1000
+    is PhOld -> 600
+    is PhDead -> 0
+
+Section: Seasonal Color
+
+  Season =
+    | SeaSpring
+    | SeaSummer
+    | SeaAutumn
+    | SeaWinter
+
+  season-leaf-color : Season -> Integer
+  season-leaf-color (s) = when s
+    is SeaSpring -> #88CC44
+    is SeaSummer -> #337722
+    is SeaAutumn -> #CC8833
+    is SeaWinter -> #554433
+
+  season-has-leaves : Season, Boolean -> Boolean
+  season-has-leaves (s) (deciduous) =
+    if deciduous then when s
+      is SeaSpring -> True
+      is SeaSummer -> True
+      is SeaAutumn -> True
+      is SeaWinter -> False
+    else True
+
+  season-autumn-blend : Integer -> Integer
+  season-autumn-blend (progress) =
+    let t = progress
+    in let green = 119 * (1000 - t) / 1000 + 51 * t / 1000
+    in let red = 51 * (1000 - t) / 1000 + 204 * t / 1000
+    in bit-or (bit-shl red 16) (bit-or (bit-shl green 8) 34)
+
+Section: Plant Instance
+
+  PlantInstance = record {
+    pi-lsystem : LSystem,
+    pi-phase : GrowthPhase,
+    pi-growth : Integer,
+    pi-growth-target : Integer,
+    pi-season : Season,
+    pi-deciduous : Boolean,
+    pi-seed : Integer,
+    pi-x : Integer, pi-y : Integer, pi-z : Integer
+  }
+
+  plant-new : LSystem, Integer, Integer, Integer, Boolean -> PlantInstance
+  plant-new (sys) (x) (y) (z) (deciduous) = PlantInstance { pi-lsystem = sys, pi-phase = PhSeedling, pi-growth = 0, pi-growth-target = 4000, pi-season = SeaSpring, pi-deciduous = deciduous, pi-seed = x * 31 + z * 17, pi-x = x, pi-y = y, pi-z = z }
+
+  plant-grow : PlantInstance, Integer -> PlantInstance
+  plant-grow (p) (amount) =
+    let new-growth = p.pi-growth + amount
+    in let new-phase = plant-phase-for-growth new-growth (p.pi-growth-target)
+    in PlantInstance { pi-lsystem = p.pi-lsystem, pi-phase = new-phase, pi-growth = new-growth, pi-growth-target = p.pi-growth-target, pi-season = p.pi-season, pi-deciduous = p.pi-deciduous, pi-seed = p.pi-seed, pi-x = p.pi-x, pi-y = p.pi-y, pi-z = p.pi-z }
+
+  plant-set-season : PlantInstance, Season -> PlantInstance
+  plant-set-season (p) (s) = __record-set p "pi-season" s
+
+  plant-phase-for-growth : Integer, Integer -> GrowthPhase
+  plant-phase-for-growth (growth) (target) =
+    let pct = growth * 100 / target
+    in if pct < 10 then PhSeedling
+    else if pct < 30 then PhSapling
+    else if pct < 80 then PhMature
+    else if pct < 120 then PhOld
+    else PhDead
+
+Section: Formatting
+
+  format-plant : PlantInstance -> Text
+  format-plant (p) =
+    let phase-name = when p.pi-phase
+      is PhSeedling -> "seedling"
+      is PhSapling -> "sapling"
+      is PhMature -> "mature"
+      is PhOld -> "old"
+      is PhDead -> "dead"
+    in "Plant(" & phase-name & " growth=" & show (p.pi-growth) & ")"
+
+  format-lsystem : LSystem -> Text
+  format-lsystem (sys) = "LSystem(" & show (sys.ls-rule-count) & " rules, angle=" & show (sys.ls-angle) & ")"
+
+Page 1

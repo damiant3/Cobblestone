@@ -6,7 +6,7 @@ Chapter: MeasureTool
 
  Measurement tools for 3D space: distance between points, angle
  between edges, face area, and mesh volume. Renders measurement
- annotations as overlays on the viewport. Fixed-point scale 1000.
+ annotations as overlays on the viewport.
 
  We say:
 
@@ -19,7 +19,7 @@ Section: Types
 
   Measurement = record {
     msr-kind : MeasureKind,
-    msr-value : Integer,
+    msr-value : Real,
     msr-unit : Text,
     msr-p0 : Vec3,
     msr-p1 : Vec3,
@@ -50,7 +50,7 @@ Section: Distance
     let dx = b.vx - a.vx
     in let dy = b.vy - a.vy
     in let dz = b.vz - a.vz
-    in let dist = mt-isqrt (dx * dx + dy * dy + dz * dz)
+    in let dist = geo-sqrt (dx * dx + dy * dy + dz * dz)
     in Measurement {
       msr-kind = MeasDist,
       msr-value = dist,
@@ -69,9 +69,9 @@ Section: Angle
     in let dot = vec3-dot v1 v2
     in let len1 = mt-v3-length v1
     in let len2 = mt-v3-length v2
-    in let denom = len1 * len2 / 1000
-    in let cos-a = if denom == 0 then 0 else dot * 1000 / denom
-    in let angle = mt-acos-approx (mt-clamp cos-a (-1000) 1000)
+    in let denom = len1 * len2
+    in let cos-a = if denom == 0.0 then 0.0 else dot / denom
+    in let angle = mt-acos-approx (mt-clamp-real cos-a (-1.0) 1.0)
     in Measurement {
       msr-kind = MeasAngle,
       msr-value = angle,
@@ -88,7 +88,7 @@ Section: Face Area
     let e1 = vec3-subtract v1 v0
     in let e2 = vec3-subtract v2 v0
     in let cross = vec3-cross e1 e2
-    in let area = mt-v3-length cross / 2
+    in let area = mt-v3-length cross / 2.0
     in Measurement {
       msr-kind = MeasArea,
       msr-value = area,
@@ -100,11 +100,11 @@ Section: Face Area
 
 Section: Mesh Stats
 
-  measure-mesh-surface-area : TriMesh -> Integer
+  measure-mesh-surface-area : TriMesh -> Real
   measure-mesh-surface-area (mesh) =
-    mt-surface-loop mesh 0 0
+    mt-surface-loop mesh 0 0.0
 
-  mt-surface-loop : TriMesh, Integer, Integer -> Integer
+  mt-surface-loop : TriMesh, Integer, Real -> Real
   mt-surface-loop (mesh) (fi) (acc) =
     if fi >= mesh.tm-face-count then acc
     else let face = tri-mesh-face mesh fi
@@ -114,7 +114,7 @@ Section: Mesh Stats
     in let e1 = vec3-subtract v1 v0
     in let e2 = vec3-subtract v2 v0
     in let cross = vec3-cross e1 e2
-    in let area = mt-v3-length cross / 2
+    in let area = mt-v3-length cross / 2.0
     in mt-surface-loop mesh (fi + 1) (acc + area)
 
   measure-mesh-bounds-size : TriMesh -> Vec3
@@ -169,35 +169,27 @@ Section: Rendering
 
   mt-project-x : Mat4, Vec3, Integer, Integer -> Integer
   mt-project-x (mvp) (v) (vp-w) (vp-h) =
-    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1000 })
-    in if clip.v4w <= 0 then -1
-    else (clip.v4x * 1000 / clip.v4w + 1000) * vp-w / 2000
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1.0 })
+    in if clip.v4w <= 0.0 then -1
+    else real-to-int ((clip.v4x / clip.v4w + 1.0) * real-from-int vp-w / 2.0)
 
   mt-project-y : Mat4, Vec3, Integer, Integer -> Integer
   mt-project-y (mvp) (v) (vp-w) (vp-h) =
-    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1000 })
-    in if clip.v4w <= 0 then -1
-    else (1000 - clip.v4y * 1000 / clip.v4w) * vp-h / 2000
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1.0 })
+    in if clip.v4w <= 0.0 then -1
+    else real-to-int ((1.0 - clip.v4y / clip.v4w) * real-from-int vp-h / 2.0)
 
 Section: Helpers
 
-  mt-isqrt : Integer -> Integer
-  mt-isqrt (n) = if n <= 0 then 0 else mt-isqrt-loop n (n / 2 + 1)
+  mt-v3-length : Vec3 -> Real
+  mt-v3-length (v) = geo-sqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
 
-  mt-isqrt-loop : Integer, Integer -> Integer
-  mt-isqrt-loop (n) (guess) =
-    let next = (guess + n / guess) / 2
-    in if next >= guess then guess else mt-isqrt-loop n next
-
-  mt-v3-length : Vec3 -> Integer
-  mt-v3-length (v) = mt-isqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
-
-  mt-acos-approx : Integer -> Integer
+  mt-acos-approx : Real -> Real
   mt-acos-approx (cos-val) =
-    1571 - cos-val - cos-val * cos-val / 1000 * cos-val / 6000
+    1.571 - cos-val - cos-val * cos-val * cos-val / 6.0
 
-  mt-clamp : Integer, Integer, Integer -> Integer
-  mt-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+  mt-clamp-real : Real, Real, Real -> Real
+  mt-clamp-real (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
 
 Section: Formatting
 

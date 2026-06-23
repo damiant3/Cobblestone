@@ -30,6 +30,7 @@ Section: Expressions
    | LazyExpr (Expr)
    | ForExpr (Token) (Expr) (Expr)
    | ErrExpr (Token)
+   | RevisedExpr (Expr) (List RecordFieldExpr)
 
   LetBind = record {
    name : Token,
@@ -66,6 +67,7 @@ Section: Patterns
    | CtorPat (Token) (List Pat)
    | WildPat (Token)
    | TuplePat (List Pat)
+   | VecPat (List Pat)
 
 Section: Types
   TypeExpr =
@@ -102,7 +104,8 @@ Section: Definitions
 
   VariantCtorDef = record {
    name : Token,
-   fields : List TypeExpr
+   fields : List TypeExpr,
+   return-type : List TypeExpr
   }
 
   EffectOpDef = record {
@@ -117,7 +120,8 @@ Section: Definitions
 
   ClassDef = record {
    name : Token,
-   methods : List EffectOpDef
+   methods : List EffectOpDef,
+   superclass : Text
   }
 
   InstanceMethodDef = record {
@@ -132,10 +136,16 @@ Section: Definitions
    methods : List InstanceMethodDef
   }
 
+  UnitFamilyMember = record {
+   member-name : Token,
+   factor : Integer
+  }
+
   TypeBody =
    | RecordBody (List RecordFieldDef)
    | VariantBody (List VariantCtorDef)
    | UnitBody (TypeExpr)
+   | UnitFamilyBody (Token) (List UnitFamilyMember)
 
   TypeDef = record {
    name : Token,
@@ -218,9 +228,7 @@ Section: Deck Copies
  point into the reclaimed region.
 
   copy-sx-text : Integer, Text -> Text
-  copy-sx-text (b) (t) =
-   if address-of t < b then t
-   else substring t 0 (text-length t)
+  copy-sx-text (b) (t) = substring t 0 (text-length t)
 
   copy-sx-texts : Integer, List Text -> List Text
   copy-sx-texts (b) (ts) = for t in ts -> copy-sx-text b t
@@ -316,6 +324,9 @@ Section: Deck Copies
     is AtSign -> AtSign
     is ErrorToken -> ErrorToken
     is UnitKeyword -> UnitKeyword
+    is RevisedKeyword -> RevisedKeyword
+    is Tilde -> Tilde
+    is TildeZero -> TildeZero
 
   copy-sx-token : Integer, Token -> Token
   copy-sx-token (b) (t) =
@@ -383,6 +394,7 @@ Section: Deck Copies
     is CtorPat (tok) (args) -> CtorPat (copy-sx-token b tok) (for a in args -> copy-sx-pat b a)
     is WildPat (tok) -> WildPat (copy-sx-token b tok)
     is TuplePat (els) -> TuplePat (for el in els -> copy-sx-pat b el)
+    is VecPat (els) -> VecPat (for el in els -> copy-sx-pat b el)
 
   copy-sx-letbind : Integer, LetBind -> LetBind
   copy-sx-letbind (b) (lb) = LetBind { name = copy-sx-token b (lb.name), value = copy-sx-expr b (lb.value) }
@@ -438,6 +450,7 @@ Section: Deck Copies
     is LazyExpr (inner) -> LazyExpr (copy-sx-expr b inner)
     is ForExpr (var) (coll) (body) -> ForExpr (copy-sx-token b var) (copy-sx-expr b coll) (copy-sx-expr b body)
     is ErrExpr (tok) -> ErrExpr (copy-sx-token b tok)
+    is RevisedExpr (base) (fields) -> RevisedExpr (copy-sx-expr b base) (for f in fields -> copy-sx-fieldexpr b f)
 
   copy-sx-typeann : Integer, TypeAnn -> TypeAnn
   copy-sx-typeann (b) (a) = TypeAnn { name = copy-sx-token b (a.name), type-expr = copy-sx-typeexpr b (a.type-expr) }
@@ -455,7 +468,7 @@ Section: Deck Copies
   copy-sx-fielddef (b) (f) = RecordFieldDef { name = copy-sx-token b (f.name), type-expr = copy-sx-typeexpr b (f.type-expr) }
 
   copy-sx-ctordef : Integer, VariantCtorDef -> VariantCtorDef
-  copy-sx-ctordef (b) (c) = VariantCtorDef { name = copy-sx-token b (c.name), fields = for f in (c.fields) -> copy-sx-typeexpr b f }
+  copy-sx-ctordef (b) (c) = VariantCtorDef { name = copy-sx-token b (c.name), fields = for f in (c.fields) -> copy-sx-typeexpr b f, return-type = for r in (c.return-type) -> copy-sx-typeexpr b r }
 
   copy-sx-typebody : Integer, TypeBody -> TypeBody
   copy-sx-typebody (b) (body) =
@@ -463,6 +476,7 @@ Section: Deck Copies
     is RecordBody (fields) -> RecordBody (for f in fields -> copy-sx-fielddef b f)
     is VariantBody (ctors) -> VariantBody (for c in ctors -> copy-sx-ctordef b c)
     is UnitBody (base) -> UnitBody (copy-sx-typeexpr b base)
+    is UnitFamilyBody (base-tok) (members) -> UnitFamilyBody (copy-sx-token b base-tok) (for m in members -> UnitFamilyMember { member-name = copy-sx-token b (m.member-name), factor = m.factor })
 
   copy-sx-typedef : Integer, TypeDef -> TypeDef
   copy-sx-typedef (b) (d) = TypeDef {

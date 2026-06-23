@@ -106,4 +106,87 @@ Section: Rendering
     & " | Anomalies: " & show (chain-has-anomaly c)
     & " | Summary: " & c.summary
 
+Section: Confidence Thresholds
+
+  confidence-default-threshold : Integer = 80
+
+  chain-min-confidence : ForensicChain -> Integer
+  chain-min-confidence (c) = chain-min-confidence-loop (c.links) 0 (list-length (c.links)) 100
+
+  chain-min-confidence-loop : List ForensicLink, Integer, Integer, Integer -> Integer
+  chain-min-confidence-loop (links) (i) (len) (best) =
+    if i >= len then best
+    else let conf = link-confidence (list-at links i)
+    in let next = if conf >= 0 & conf < best then conf else best
+    in chain-min-confidence-loop links (i + 1) len next
+
+  link-confidence : ForensicLink -> Integer
+  link-confidence (link) = when link
+    is FPercept (s) (c) -> c
+    is FBelief (d) (c) (refs) -> c
+    is FPolicy (r) (m) (s) -> -1
+    is FAction (e) (t) (r) -> -1
+    is FAnomaly (e) (o) (g) -> 0
+
+  chain-below-threshold : ForensicChain, Integer -> Boolean
+  chain-below-threshold (c) (threshold) =
+    chain-min-confidence c < threshold
+
+Section: Escalation Assessment
+
+  EscalationLevel =
+    | NoEscalation
+    | Advisory
+    | Escalate
+    | SafeMode
+
+  assess-chain : ForensicChain, Integer -> EscalationLevel
+  assess-chain (c) (threshold) =
+    if chain-has-anomaly c then SafeMode
+    else let min-conf = chain-min-confidence c
+    in if min-conf < threshold / 2 then Escalate
+    else if min-conf < threshold then Advisory
+    else NoEscalation
+
+  escalation-name : EscalationLevel -> Text
+  escalation-name (level) = when level
+    is NoEscalation -> "none"
+    is Advisory -> "advisory"
+    is Escalate -> "escalate"
+    is SafeMode -> "safe-mode"
+
+  should-escalate : EscalationLevel -> Boolean
+  should-escalate (level) = when level
+    is NoEscalation -> False
+    is Advisory -> False
+    is Escalate -> True
+    is SafeMode -> True
+
+  should-enter-safe-mode : EscalationLevel -> Boolean
+  should-enter-safe-mode (level) = when level
+    is SafeMode -> True
+    is otherwise -> False
+
+Section: Anomaly Counting
+
+  chain-anomaly-count : ForensicChain -> Integer
+  chain-anomaly-count (c) = chain-anomaly-count-loop (c.links) 0 (list-length (c.links)) 0
+
+  chain-anomaly-count-loop : List ForensicLink, Integer, Integer, Integer -> Integer
+  chain-anomaly-count-loop (links) (i) (len) (count) =
+    if i >= len then count
+    else when list-at links i
+      is FAnomaly (e) (o) (g) -> chain-anomaly-count-loop links (i + 1) len (count + 1)
+      is otherwise -> chain-anomaly-count-loop links (i + 1) len count
+
+  chain-percept-count : ForensicChain -> Integer
+  chain-percept-count (c) = chain-percept-count-loop (c.links) 0 (list-length (c.links)) 0
+
+  chain-percept-count-loop : List ForensicLink, Integer, Integer, Integer -> Integer
+  chain-percept-count-loop (links) (i) (len) (count) =
+    if i >= len then count
+    else when list-at links i
+      is FPercept (s) (c) -> chain-percept-count-loop links (i + 1) len (count + 1)
+      is otherwise -> chain-percept-count-loop links (i + 1) len count
+
 Page 1

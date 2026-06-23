@@ -1,0 +1,159 @@
+Chapter: LoraLoader
+  cites AI chapter Tensor
+  cites AI chapter SafeTensors
+  cites AI chapter UNet
+  cites AI chapter TextEncoder
+  cites Foreword chapter Maybe
+
+ LoRA (Low-Rank Adaptation) weight loader. Loads LoRA SafeTensors
+ files and merges them into UNet and text encoder weights with
+ configurable alpha scaling. Supports stacking multiple LoRAs.
+
+ LoRA format: SafeTensors with keys like
+   "lora_unet_down_blocks_0_attentions_0_proj_in.lora_down.weight"
+   "lora_unet_down_blocks_0_attentions_0_proj_in.lora_up.weight"
+   "lora_te_text_model_encoder_layers_0_self_attn_q_proj.lora_down.weight"
+
+ The merge: W' = W + alpha * (up @ down)
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  LoraWeight = record {
+    lw-name : Text,
+    lw-down : List Integer,
+    lw-up : List Integer,
+    lw-rank : Integer,
+    lw-in-dim : Integer,
+    lw-out-dim : Integer
+  }
+
+  LoraFile = record {
+    lf-weights : List LoraWeight,
+    lf-weight-count : Integer,
+    lf-alpha : Integer,
+    lf-name : Text
+  }
+
+  LoraStack = record {
+    ls-loras : List LoraFile,
+    ls-count : Integer
+  }
+
+Section: Construction
+  lora-stack-new : LoraStack
+  lora-stack-new = LoraStack { ls-loras = [], ls-count = 0 }
+
+  lora-stack-add : LoraStack, LoraFile -> LoraStack
+  lora-stack-add (stack) (lora) =
+    LoraStack { ls-loras = list-push (stack.ls-loras) lora, ls-count = stack.ls-count + 1 }
+
+Section: Loading
+  lora-load : List Integer, Text, Integer -> LoraFile
+  lora-load (data) (name) (alpha) =
+    let file = st-parse-file data
+    in if file.st-valid == False then LoraFile { lf-weights = [], lf-weight-count = 0, lf-alpha = alpha, lf-name = name }
+    else let weights = lora-parse-pairs file data 0 (file.st-tensor-count) []
+    in LoraFile { lf-weights = weights, lf-weight-count = list-length weights, lf-alpha = alpha, lf-name = name }
+
+  lora-parse-pairs : SafeTensorFile, List Integer, Integer, Integer, List LoraWeight -> List LoraWeight
+  lora-parse-pairs (file) (data) (i) (n) (acc) =
+    if i >= n then acc
+    else let meta = list-at (file.st-tensors) i
+    in if lora-is-down-weight (meta.stm-name) then
+      let base-name = lora-strip-suffix (meta.stm-name) ".lora_down.weight"
+      in let up-name = base-name & ".lora_up.weight"
+      in let up-meta = st-find-tensor file up-name
+      in when up-meta
+        is Just (up-m) ->
+          let down-data = (st-load-tensor data file meta).data
+          in let up-data = (st-load-tensor data file up-m).data
+          in let rank = if meta.stm-ndim >= 2 then list-at (meta.stm-shape) 0 else 1
+          in let in-dim = if meta.stm-ndim >= 2 then list-at (meta.stm-shape) 1 else list-length down-data
+          in let out-dim = if up-m.stm-ndim >= 2 then list-at (up-m.stm-shape) 0 else list-length up-data
+          in let weight = LoraWeight { lw-name = base-name, lw-down = down-data, lw-up = up-data, lw-rank = rank, lw-in-dim = in-dim, lw-out-dim = out-dim }
+          in lora-parse-pairs file data (i + 1) n (list-push acc weight)
+        is None -> lora-parse-pairs file data (i + 1) n acc
+    else lora-parse-pairs file data (i + 1) n acc
+
+Section: Name Matching
+  lora-is-down-weight : Text -> Boolean
+  lora-is-down-weight (name) = text-ends-with name ".lora_down.weight"
+
+  text-ends-with : Text, Text -> Boolean
+  text-ends-with (s) (suffix) =
+    let slen = text-length s
+    in let sufflen = text-length suffix
+    in if slen < sufflen then False
+    else substring s (slen - sufflen) sufflen == suffix
+
+  lora-strip-suffix : Text, Text -> Text
+  lora-strip-suffix (s) (suffix) =
+    let slen = text-length s
+    in let sufflen = text-length suffix
+    in substring s 0 (slen - sufflen)
+
+Section: Weight Merging
+  lora-merge-weights : List Integer, LoraWeight, Integer -> List Integer
+  lora-merge-weights (base) (lw) (alpha) =
+    let delta = lora-compute-delta lw
+    in lora-apply-delta base delta alpha 0 (list-length base) []
+
+  lora-compute-delta : LoraWeight -> List Integer
+  lora-compute-delta (lw) =
+    let down = tensor-from (lw.lw-rank) (lw.lw-in-dim) (lw.lw-down)
+    in let up = tensor-from (lw.lw-out-dim) (lw.lw-rank) (lw.lw-up)
+    in let result = tensor-matmul up down
+    in result.data
+
+  lora-apply-delta : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  lora-apply-delta (base) (delta) (alpha) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = if i < list-length delta then list-at delta i else 0
+    in let val = list-at base i + d * alpha / 1000
+    in lora-apply-delta base delta alpha (i + 1) n (list-push acc val)
+
+Section: Apply LoRA Stack to Weight Set
+  lora-apply-to-weights : List Integer, Text, LoraStack -> List Integer
+  lora-apply-to-weights (base) (weight-name) (stack) =
+    lora-stack-loop base weight-name (stack.ls-loras) 0 (stack.ls-count)
+
+  lora-stack-loop : List Integer, Text, List LoraFile, Integer, Integer -> List Integer
+  lora-stack-loop (weights) (name) (loras) (i) (n) =
+    if i >= n then weights
+    else let lora = list-at loras i
+    in let found = lora-find-weight (lora.lf-weights) name 0 (lora.lf-weight-count)
+    in when found
+      is Just (lw) -> let merged = lora-merge-weights weights lw (lora.lf-alpha)
+        in lora-stack-loop merged name loras (i + 1) n
+      is None -> lora-stack-loop weights name loras (i + 1) n
+
+  lora-find-weight : List LoraWeight, Text, Integer, Integer -> Maybe LoraWeight
+  lora-find-weight (weights) (name) (i) (n) =
+    if i >= n then None
+    else let w = list-at weights i
+    in if lora-name-matches (w.lw-name) name then Just w
+    else lora-find-weight weights name (i + 1) n
+
+  lora-name-matches : Text, Text -> Boolean
+  lora-name-matches (lora-name) (weight-name) =
+    text-contains lora-name weight-name
+
+Section: Queries
+  format-lora-file : LoraFile -> Text
+  format-lora-file (lora) =
+    lora.lf-name & " alpha=" & show (lora.lf-alpha) & " weights=" & show (lora.lf-weight-count)
+
+  format-lora-stack : LoraStack -> Text
+  format-lora-stack (stack) =
+    show (stack.ls-count) & " LoRA(s)" & lora-stack-names (stack.ls-loras) 0 (stack.ls-count) ""
+
+  lora-stack-names : List LoraFile, Integer, Integer, Text -> Text
+  lora-stack-names (loras) (i) (n) (acc) =
+    if i >= n then acc
+    else let lora = list-at loras i
+    in lora-stack-names loras (i + 1) n (acc & " [" & lora.lf-name & ":" & show (lora.lf-alpha) & "]")
+
+Page 1

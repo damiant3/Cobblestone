@@ -1,0 +1,145 @@
+Chapter: GameplayTags
+  cites Foreword chapter StringUtils
+
+ Hierarchical gameplay tag system (inspired by Unreal GAS). Tags are
+ dot-separated hierarchies: "Status.Burning.Fire". Queries test
+ exact match, parent match (has-tag "Status" matches "Status.Burning"),
+ any-of, all-of, and none-of. Tags are integer IDs mapped from a
+ registry for O(1) comparison. Tag containers are sorted lists.
+
+ We say:
+
+Section: Tag
+
+  GameplayTag = record {
+    gt-id : Integer,
+    gt-name : Text,
+    gt-parent : Integer
+  }
+
+Section: Tag Registry
+
+  TagRegistry = record {
+    tr-tags : List GameplayTag,
+    tr-count : Integer
+  }
+
+  tag-registry-new : TagRegistry
+  tag-registry-new = TagRegistry { tr-tags = [], tr-count = 0 }
+
+  tag-register : TagRegistry, Text -> TagRegistry
+  tag-register (reg) (name) =
+    let existing = tag-find-by-name reg name
+    in if existing >= 0 then reg
+    else let parent-id = tag-find-parent-id reg name
+    in let tag = GameplayTag { gt-id = reg.tr-count, gt-name = name, gt-parent = parent-id }
+    in TagRegistry { tr-tags = list-push (reg.tr-tags) tag, tr-count = reg.tr-count + 1 }
+
+  tag-find-by-name : TagRegistry, Text -> Integer
+  tag-find-by-name (reg) (name) = tag-name-loop (reg.tr-tags) name 0 (reg.tr-count)
+
+  tag-name-loop : List GameplayTag, Text, Integer, Integer -> Integer
+  tag-name-loop (tags) (name) (i) (n) =
+    if i >= n then 0 - 1
+    else if (list-at tags i).gt-name == name then (list-at tags i).gt-id
+    else tag-name-loop tags name (i + 1) n
+
+  tag-find-parent-id : TagRegistry, Text -> Integer
+  tag-find-parent-id (reg) (name) =
+    let parent-name = tag-parent-name name 0 (text-length name) (-1)
+    in if parent-name == "" then 0 - 1
+    else tag-find-by-name reg parent-name
+
+  tag-parent-name : Text, Integer, Integer, Integer -> Text
+  tag-parent-name (name) (i) (len) (last-dot) =
+    if i >= len then
+      if last-dot < 0 then ""
+      else text-take name last-dot
+    else if char-code (char-at name i) == 46 then tag-parent-name name (i + 1) len i
+    else tag-parent-name name (i + 1) len last-dot
+
+Section: Tag Container
+
+  TagContainer = record {
+    tc-tags : List Integer,
+    tc-count : Integer
+  }
+
+  tc-empty : TagContainer
+  tc-empty = TagContainer { tc-tags = [], tc-count = 0 }
+
+  tc-add : TagContainer, Integer -> TagContainer
+  tc-add (tc) (tag-id) =
+    if tc-contains tc tag-id then tc
+    else TagContainer { tc-tags = list-push (tc.tc-tags) tag-id, tc-count = tc.tc-count + 1 }
+
+  tc-remove : TagContainer, Integer -> TagContainer
+  tc-remove (tc) (tag-id) = tc-remove-loop (tc.tc-tags) tag-id 0 (tc.tc-count) (TagContainer { tc-tags = [], tc-count = 0 })
+
+  tc-remove-loop : List Integer, Integer, Integer, Integer, TagContainer -> TagContainer
+  tc-remove-loop (tags) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let tid = list-at tags i
+    in if tid == target then tc-remove-loop tags target (i + 1) n acc
+    else tc-remove-loop tags target (i + 1) n (tc-add acc tid)
+
+  tc-contains : TagContainer, Integer -> Boolean
+  tc-contains (tc) (tag-id) = tc-contains-loop (tc.tc-tags) tag-id 0 (tc.tc-count)
+
+  tc-contains-loop : List Integer, Integer, Integer, Integer -> Boolean
+  tc-contains-loop (tags) (target) (i) (n) =
+    if i >= n then False
+    else if list-at tags i == target then True
+    else tc-contains-loop tags target (i + 1) n
+
+Section: Hierarchical Queries
+
+  tc-has-tag-or-parent : TagContainer, TagRegistry, Integer -> Boolean
+  tc-has-tag-or-parent (tc) (reg) (tag-id) =
+    if tc-contains tc tag-id then True
+    else if tag-id < 0 then False
+    else if tag-id >= reg.tr-count then False
+    else let tag = list-at (reg.tr-tags) tag-id
+    in tc-has-tag-or-parent tc reg (tag.gt-parent)
+
+  tc-has-any : TagContainer, TagContainer -> Boolean
+  tc-has-any (tc) (required) = tc-any-loop tc (required.tc-tags) 0 (required.tc-count)
+
+  tc-any-loop : TagContainer, List Integer, Integer, Integer -> Boolean
+  tc-any-loop (tc) (req) (i) (n) =
+    if i >= n then False
+    else if tc-contains tc (list-at req i) then True
+    else tc-any-loop tc req (i + 1) n
+
+  tc-has-all : TagContainer, TagContainer -> Boolean
+  tc-has-all (tc) (required) = tc-all-loop tc (required.tc-tags) 0 (required.tc-count)
+
+  tc-all-loop : TagContainer, List Integer, Integer, Integer -> Boolean
+  tc-all-loop (tc) (req) (i) (n) =
+    if i >= n then True
+    else if tc-contains tc (list-at req i) then tc-all-loop tc req (i + 1) n
+    else False
+
+  tc-has-none : TagContainer, TagContainer -> Boolean
+  tc-has-none (tc) (blocked) = tc-none-loop tc (blocked.tc-tags) 0 (blocked.tc-count)
+
+  tc-none-loop : TagContainer, List Integer, Integer, Integer -> Boolean
+  tc-none-loop (tc) (blk) (i) (n) =
+    if i >= n then True
+    else if tc-contains tc (list-at blk i) then False
+    else tc-none-loop tc blk (i + 1) n
+
+Section: Formatting
+
+  format-tag-container : TagContainer, TagRegistry -> Text
+  format-tag-container (tc) (reg) = "[" & fmt-tc-loop (tc.tc-tags) reg 0 (tc.tc-count) "" & "]"
+
+  fmt-tc-loop : List Integer, TagRegistry, Integer, Integer, Text -> Text
+  fmt-tc-loop (tags) (reg) (i) (n) (acc) =
+    if i >= n then acc
+    else let tid = list-at tags i
+    in let name = if tid >= 0 then if tid < reg.tr-count then (list-at (reg.tr-tags) tid).gt-name else "?" else "?"
+    in let sep = if i == 0 then "" else ","
+    in fmt-tc-loop tags reg (i + 1) n (acc & sep & name)
+
+Page 1

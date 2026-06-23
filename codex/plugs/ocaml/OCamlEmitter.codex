@@ -2,6 +2,7 @@ Chapter: OCaml Emitter
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Foreword chapter Sort
 
  Generates OCaml source code from the IR.
 
@@ -190,6 +191,10 @@ Section: Expression Emission
     is IrConsList -> "(" & emit-ml-expr l arities & " :: " & emit-ml-expr r arities & ")"
     is IrAnd -> "(" & emit-ml-expr l arities & " && " & emit-ml-expr r arities & ")"
     is IrOr -> "(" & emit-ml-expr l arities & " || " & emit-ml-expr r arities & ")"
+    is IrAddVec -> "(Array.map2 (+.) " & emit-ml-expr l arities & " " & emit-ml-expr r arities & ")"
+    is IrSubVec -> "(Array.map2 (-.) " & emit-ml-expr l arities & " " & emit-ml-expr r arities & ")"
+    is IrMulVec -> "(Array.map2 ( *.) " & emit-ml-expr l arities & " " & emit-ml-expr r arities & ")"
+    is IrDivVec -> "(Array.map2 (/.) " & emit-ml-expr l arities & " " & emit-ml-expr r arities & ")"
     is otherwise -> "(" & emit-ml-expr l arities & " " & ml-bin-op-symbol op & " " & emit-ml-expr r arities & ")"
 
   ml-bin-op-symbol : IRBinaryOp -> Text
@@ -199,17 +204,18 @@ Section: Expression Emission
     is IrSubInt -> "-"
     is IrMulInt -> "*"
     is IrDivInt -> "/"
+    is IrRemInt -> "mod"
     is IrPowInt -> "**"
-    is IrAddNum -> "+."
-    is IrSubNum -> "-."
-    is IrMulNum -> "*."
-    is IrDivNum -> "/."
-    is IrEq -> "="
+    is IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+."
+    is IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-."
+    is IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*."
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/."
+    is IrEq | IrApproxEq | IrApproxEqExact -> "="
     is IrNotEq -> "<>"
-    is IrLt -> "<"
-    is IrGt -> ">"
-    is IrLtEq -> "<="
-    is IrGtEq -> ">="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
     is IrAnd -> "&&"
     is IrOr -> "||"
     is IrAppendText -> "^"
@@ -255,6 +261,7 @@ Section: Expression Emission
     is IrCtorPat (name) (subs) (ty) (sp) -> ml-sanitize name & emit-ml-sub-pats subs 0
     is IrVarPat (name) (ty) (sp) -> ml-sanitize name
     is IrWildPat (sp) -> "_"
+    is IrVecPat (pats) (ty) (sp) -> "_"
 
   emit-ml-sub-pats : List IRPat, Integer -> Text
   emit-ml-sub-pats (subs) (i) =
@@ -280,6 +287,62 @@ Section: Expression Emission
     is IrDoBind (name) (ty) (val) (sp) -> "let " & ml-sanitize name & " = " & emit-ml-expr val arities & " in"
     is IrDoExec (e) (sp) -> emit-ml-expr e arities) & emit-ml-act-stmts stmts (i + 1) arities
 
+Section: Builtin Emitter
+
+  OcBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-oc-builtin-pos : List OcBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-oc-builtin-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-oc-builtin-pos entries name lo mid
+      else bsearch-oc-builtin-pos entries name (mid + 1) hi
+
+  sort-oc-builtins : List OcBuiltinEmitter -> List OcBuiltinEmitter
+  sort-oc-builtins (xs) = xs
+
+  oc-builtin-emitters : List OcBuiltinEmitter =
+   sort-oc-builtins [
+    OcBuiltinEmitter { name = "abs", emit = \args arities -> "(abs " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "char-at", emit = \args arities -> "(String.make 1 (String.get " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & "))" },
+    OcBuiltinEmitter { name = "char-code-at", emit = \args arities -> "(Char.code (String.get " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & "))" },
+    OcBuiltinEmitter { name = "file-exists", emit = \args arities -> "(Sys.file_exists " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-ml-expr (list-at args 0) arities & " mod " & emit-ml-expr (list-at args 1) arities & ")" },
+    OcBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "(string_of_int " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "list-at", emit = \args arities -> "(List.nth " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & ")" },
+    OcBuiltinEmitter { name = "list-length", emit = \args arities -> "(List.length " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-ml-expr (list-at args 0) arities & " @ [" & emit-ml-expr (list-at args 1) arities & "])" },
+    OcBuiltinEmitter { name = "max", emit = \args arities -> "(max " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & ")" },
+    OcBuiltinEmitter { name = "min", emit = \args arities -> "(min " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & ")" },
+    OcBuiltinEmitter { name = "negate", emit = \args arities -> "(- " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "(Printf.eprintf \"%s\\n\" " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "(Printf.printf \"%s\\n\" " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "read-file", emit = \args arities -> "(let _ic = open_in " & emit-ml-expr (list-at args 0) arities & " in let _n = in_channel_length _ic in let _s = really_input_string _ic _n in close_in _ic; _s)" },
+    OcBuiltinEmitter { name = "read-line", emit = \args arities -> "(read_line ())" },
+    OcBuiltinEmitter { name = "show", emit = \args arities -> "(string_of_int " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "substring", emit = \args arities -> "(String.sub " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & " " & emit-ml-expr (list-at args 2) arities & ")" },
+    OcBuiltinEmitter { name = "text-compare", emit = \args arities -> "(String.compare " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & ")" },
+    OcBuiltinEmitter { name = "text-contains", emit = \args arities -> "(try ignore (Str.search_forward (Str.regexp_string " & emit-ml-expr (list-at args 1) arities & ") " & emit-ml-expr (list-at args 0) arities & " 0); true with Not_found -> false)" },
+    OcBuiltinEmitter { name = "text-length", emit = \args arities -> "(String.length " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "text-replace", emit = \args arities -> "(Str.global_replace (Str.regexp_string " & emit-ml-expr (list-at args 1) arities & ") " & emit-ml-expr (list-at args 2) arities & " " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "text-split", emit = \args arities -> "(Str.split (Str.regexp_string " & emit-ml-expr (list-at args 1) arities & ") " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(let _s = " & emit-ml-expr (list-at args 0) arities & " in let _p = " & emit-ml-expr (list-at args 1) arities & " in String.length _p <= String.length _s && String.sub _s 0 (String.length _p) = _p)" },
+    OcBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(int_of_string " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "write-file", emit = \args arities -> "(let _oc = open_out " & emit-ml-expr (list-at args 0) arities & " in output_string _oc " & emit-ml-expr (list-at args 1) arities & "; close_out _oc)" }
+   ]
+
+  lookup-oc-builtin : Text, List IRExpr, List ArityEntry -> Text
+  lookup-oc-builtin (name) (args) (arities) =
+   let len = list-length oc-builtin-emitters
+   in let pos = bsearch-oc-builtin-pos oc-builtin-emitters name 0 len
+   in if pos >= len then ""
+      else let e = list-at oc-builtin-emitters pos
+      in if e.name == name then e.emit args arities else ""
+
 Section: Apply Emission
 
   emit-ml-apply : IRExpr, List ArityEntry -> Text
@@ -289,7 +352,8 @@ Section: Apply Emission
    in let args = chain.args
    in when root
     is IrName (n) (ty) (sp) ->
-     if n == "print-line-uni" then "Printf.printf \"%s\\n\" " & emit-ml-expr (list-at args 0) arities
+     let builtin = lookup-oc-builtin n args arities
+     in if text-length builtin > 0 then builtin
      else "(" & ml-sanitize n & " " & emit-ml-apply-args args arities 0 & ")"
     is otherwise -> emit-ml-expr-curried e arities
 

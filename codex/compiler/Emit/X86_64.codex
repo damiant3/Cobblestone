@@ -272,6 +272,68 @@ Section: Function Emission
    else if leaf-tail-args-direct args binders pnames 0 == False then False
    else leaf-order-ok args pnames [] (list-length args + 1)
 
+  tco-max-complex : IRExpr, Text, List Text, Integer -> Integer
+  tco-max-complex (e) (fname) (pnames) (best) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     tco-max-complex el fname pnames (tco-max-complex t fname pnames best)
+    is IrLet (n) (ty) (v) (b) (sp) -> tco-max-complex b fname pnames best
+    is IrApply (f) (a) (ty) (sp) ->
+     if is-self-call e fname then
+      let args = flatten-tail-args e []
+      in let n = list-length args
+      in if n /= list-length pnames then if n > best then n else best
+      else let d = leaf-tail-args-direct args pnames pnames 0
+      in let c = if d then 0 else n - tco-direct-count-leaf args pnames pnames 0 0
+      in let ct = if c <= 1 then 0 else c
+      in if ct > best then ct else best
+     else best
+    is otherwise -> best
+
+  tco-direct-count-leaf : List IRExpr, List Text, List Text, Integer, Integer -> Integer
+  tco-direct-count-leaf (args) (binders) (pnames) (i) (acc) =
+   if i == list-length args then acc
+   else if leaf-direct-tail-arg (list-at args i) binders (list-at pnames i)
+        then tco-direct-count-leaf args binders pnames (i + 1) (acc + 1)
+   else tco-direct-count-leaf args binders pnames (i + 1) acc
+
+  tco-result-conflicts : Integer, List Integer, Integer -> Boolean
+  tco-result-conflicts (r) (pls) (i) =
+   if i == list-length pls then False
+   else if list-at pls i == r then True
+   else tco-result-conflicts r pls (i + 1)
+
+  tco-find-complex : CodegenState, List IRExpr, List Integer, Integer -> Integer
+  tco-find-complex (st) (args) (param-locals) (i) =
+   if i == list-length args then 0 - 1
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then tco-find-complex st args param-locals (i + 1)
+   else i
+
+  emit-tail-single-safe : CodegenState, EmitResult, List IRExpr, List Integer, List Integer, Integer -> CodegenState
+  emit-tail-single-safe (st) (er) (args) (param-locals) (order) (ci) =
+   let st-d = emit-direct-tail-moves (er.state) args param-locals order 0
+   in store-local st-d (list-at param-locals ci) (er.reg)
+
+  emit-tail-single-conflict : CodegenState, EmitResult, List IRExpr, List Integer, List Integer, Integer -> CodegenState
+  emit-tail-single-conflict (st) (er) (args) (param-locals) (order) (ci) =
+   let loc = alloc-local (er.state)
+   in let st-s = store-local (loc.state) (loc.reg) (er.reg)
+   in let st-d = emit-direct-tail-moves st-s args param-locals order 0
+   in let loaded = load-local st-d (loc.reg)
+   in store-local (loaded.state) (list-at param-locals ci) (loaded.reg)
+
+  emit-tail-call-general-shuffle : CodegenState, List IRExpr, List Integer, List Integer, List Integer -> CodegenState
+  emit-tail-call-general-shuffle (st) (args) (temp-locals) (param-locals) (order) =
+   let st-c = eval-complex-tail-args st args temp-locals param-locals 0 0
+   in let st-d = emit-direct-tail-moves st-c args param-locals order 0
+   in copy-complex-temps st-d args temp-locals param-locals 0 0
+
+  emit-tail-single-complex : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
+  emit-tail-single-complex (st) (args) (param-locals) (order) (ci) =
+   let er = emit-expr (st-set-tail-pos st False) (list-at args ci)
+   in if tco-result-conflicts (er.reg) param-locals 0 then emit-tail-single-conflict st er args param-locals order ci
+   else emit-tail-single-safe st er args param-locals order ci
+
   leaf-tail-args-direct : List IRExpr, List Text, List Text, Integer -> Boolean
   leaf-tail-args-direct (args) (binders) (pnames) (i) =
    if i == list-length args then True
@@ -450,8 +512,8 @@ Section: Function Emission
    in let lets = leaf-walk st (def.body) True True pnames (def.name) pnames 0
    in if lets < 0 then leaf-profile-fail
    else let temps = if should-tco def then
-       if leaf-tails-all-direct (def.body) True (def.name) pnames then 0
-       else list-length pnames
+       if tails-all-direct (def.body) True (def.name) pnames then 0
+       else tco-max-complex (def.body) (def.name) pnames 0
       else 0
    in let total = list-length pnames + lets + temps
    in LeafProfile {
@@ -488,7 +550,7 @@ Section: Function Emission
    in let st2g = if prof.lp-has-calls then emit-minimal-guard st2 else st2
    in let st3 = bind-params st2g (def.params) 0
    in let st4 = if should-tco def then
-       let tco-alloc = if prof.lp-temps > 0 then pre-alloc-tco-temps st3 0 (list-length (def.params)) []
+       let tco-alloc = if prof.lp-temps > 0 then pre-alloc-tco-temps st3 0 prof.lp-temps []
         else TcoAllocResult { alloc-state = st3, alloc-locals = [] }
        in let st-a = tco-alloc.alloc-state
        in __record-set st-a "tco" (TcoState {
@@ -661,6 +723,10 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> emit-await st task
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-handle st eff body clauses ty
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-try st max body fb fail
+    is IrLambda (params) (body) (ty) (sp) -> EmitResult {
+     state = st-add-error st cdx-ir-error "IrLambda survived lambda lifting" sp,
+     reg = reg-rax
+    }
     is otherwise -> EmitResult {
      state = st,
      reg = reg-rax
@@ -1042,9 +1108,14 @@ Section: Expression Emission
 
   emit-negate : CodegenState, IRExpr -> EmitResult
   emit-negate (st) (operand) =
-   let r = emit-expr (st-set-tail-pos st False) operand
+   let op-ty = ir-expr-type operand
+   in let r = emit-expr (st-set-tail-pos st False) operand
    in let rd = alloc-temp (r.state)
-   in let st1 = st-append-code (rd.state) (mov-rr (rd.reg) (r.reg))
+   in if is-real-type op-ty then EmitResult {
+    state = st-append-code (rd.state) (movq-to-xmm 0 (r.reg) & xorps-xmm 1 1 & subsd-xmm 1 0 & movq-from-xmm (rd.reg) 1),
+    reg = rd.reg
+   }
+   else let st1 = st-append-code (rd.state) (mov-rr (rd.reg) (r.reg))
    in EmitResult {
    state = st-append-code st1 (neg-r (rd.reg)),
    reg = rd.reg
@@ -1056,8 +1127,23 @@ Section: Expression Emission
    in when ir-expr-type arg
     is TextTy -> emit-expr (st-set-tail-pos st False) arg
     is BooleanTy -> emit-show-bool st arg
-    is NumberTy -> emit-helper-call-1 st args "__number_to_text"
+    is RealTy -> emit-helper-call-1 st args "__real_to_text"
+    is RealApproxTy -> emit-show-real-approx st args
+    is RealSaturatingTy -> emit-helper-call-1 st args "__real_to_text"
     is otherwise -> emit-helper-call-1 st args "__itoa"
+
+  emit-show-real-approx : CodegenState, List IRExpr -> EmitResult
+  emit-show-real-approx (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (val.state)
+   in let st1 = st-append-code (rd.state) (movq-to-xmm 0 (val.reg) & cvtss2sd-xmm 0 0 & movq-from-xmm (rd.reg) 0)
+   in let st2 = st-append-code st1 (mov-rr reg-rdi (rd.reg))
+   in let st3 = emit-call-to st2 "__real_to_text"
+   in let tmp = alloc-temp st3
+   in EmitResult {
+    state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
+    reg = tmp.reg
+   }
 
   emit-show-bool : CodegenState, IRExpr -> EmitResult
   emit-show-bool (st) (arg) =
@@ -1076,6 +1162,66 @@ Section: Expression Emission
    in let st7 = patch-jmp-at st6 jmp-end-pos (st6.code-len)
    in load-local st7 (result-loc.reg)
 
+  float-to-ordinal : Integer, Integer -> List Integer
+  float-to-ordinal (val) (tmp) =
+   mov-rr tmp val
+   & sar-ri tmp 63
+   & push-r tmp
+   & shr-ri tmp 1
+   & xor-rr64 val tmp
+   & pop-r tmp
+   & sub-rr val tmp
+
+  emit-approx-eq : CodegenState, Integer, Integer -> EmitResult
+  emit-approx-eq (st) (l-reg) (r-reg) =
+   let rd = alloc-temp st
+   in let t1 = alloc-temp (rd.state)
+   in EmitResult {
+   state = st-append-code (t1.state) (
+    mov-rr (rd.reg) l-reg
+    & float-to-ordinal (rd.reg) (t1.reg)
+    & push-r (rd.reg)
+    & mov-rr (rd.reg) r-reg
+    & float-to-ordinal (rd.reg) (t1.reg)
+    & mov-rr (t1.reg) (rd.reg)
+    & pop-r (rd.reg)
+    & sub-rr (rd.reg) (t1.reg)
+    & mov-rr (t1.reg) (rd.reg)
+    & sar-ri (t1.reg) 63
+    & xor-rr64 (rd.reg) (t1.reg)
+    & sub-rr (rd.reg) (t1.reg)
+    & cmp-ri (rd.reg) 4
+    & setcc cc-be (rd.reg)
+    & movzx-byte-self (rd.reg)
+   ),
+   reg = rd.reg
+  }
+
+  emit-approx-eq-exact : CodegenState, Integer, Integer -> EmitResult
+  emit-approx-eq-exact (st) (l-reg) (r-reg) =
+   let rd = alloc-temp st
+   in let t1 = alloc-temp (rd.state)
+   in EmitResult {
+   state = st-append-code (t1.state) (
+    mov-rr (rd.reg) l-reg
+    & float-to-ordinal (rd.reg) (t1.reg)
+    & push-r (rd.reg)
+    & mov-rr (rd.reg) r-reg
+    & float-to-ordinal (rd.reg) (t1.reg)
+    & mov-rr (t1.reg) (rd.reg)
+    & pop-r (rd.reg)
+    & sub-rr (rd.reg) (t1.reg)
+    & mov-rr (t1.reg) (rd.reg)
+    & sar-ri (t1.reg) 63
+    & xor-rr64 (rd.reg) (t1.reg)
+    & sub-rr (rd.reg) (t1.reg)
+    & cmp-ri (rd.reg) 0
+    & setcc cc-be (rd.reg)
+    & movzx-byte-self (rd.reg)
+   ),
+   reg = rd.reg
+  }
+
   emit-num-arith : CodegenState, Integer, Integer, Integer -> EmitResult
   emit-num-arith (st) (l-reg) (r-reg) (sse-op) =
    let rd = alloc-temp st
@@ -1084,6 +1230,50 @@ Section: Expression Emission
     movq-to-xmm 0 l-reg
     & movq-to-xmm 1 r-reg
     & [242, 15, sse-op, modrm 3 0 1]
+    & movq-from-xmm (rd.reg) 0
+   ),
+   reg = rd.reg
+  }
+
+  emit-real-approx-arith : CodegenState, Integer, Integer, List Integer -> EmitResult
+  emit-real-approx-arith (st) (l-reg) (r-reg) (sse-insn) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-code (rd.state) (
+    movq-to-xmm 0 l-reg
+    & movq-to-xmm 1 r-reg
+    & sse-insn
+    & movq-from-xmm (rd.reg) 0
+   ),
+   reg = rd.reg
+  }
+
+  emit-real-trapping-arith : CodegenState, Integer, Integer, Integer -> EmitResult
+  emit-real-trapping-arith (st) (l-reg) (r-reg) (sse-op) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-code (rd.state) (
+    movq-to-xmm 0 l-reg
+    & movq-to-xmm 1 r-reg
+    & [242, 15, sse-op, modrm 3 0 1]
+    & movq-from-xmm (rd.reg) 0
+    & ucomisd-xmm 0 0
+    & [123, 2, 15, 11]
+   ),
+   reg = rd.reg
+  }
+
+  emit-real-saturating-arith : CodegenState, Integer, Integer, Integer -> EmitResult
+  emit-real-saturating-arith (st) (l-reg) (r-reg) (sse-op) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-code (rd.state) (
+    movq-to-xmm 0 l-reg
+    & movq-to-xmm 1 r-reg
+    & [242, 15, sse-op, modrm 3 0 1]
+    & ucomisd-xmm 0 0
+    & [123, 3]
+    & xorps-xmm 0 0
     & movq-from-xmm (rd.reg) 0
    ),
    reg = rd.reg
@@ -1523,7 +1713,7 @@ Section: Expression Emission
   is-safe-for-reg-right : CodegenState, IRBinaryOp, IRExpr -> Boolean
   is-safe-for-reg-right (st) (op) (left) =
    when op
-    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrAppendText | IrConsList | IrLt | IrGt | IrLtEq | IrGtEq -> True
+    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox | IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping | IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating | IrAddVec | IrSubVec | IrMulVec | IrDivVec | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec | IrAppendText | IrConsList | IrLt | IrGt | IrLtEq | IrGtEq | IrApproxEq | IrApproxEqExact -> True
     is IrEq | IrNotEq -> is-fusable-int-comparison st op left
     is otherwise -> False
 
@@ -1537,7 +1727,7 @@ Section: Expression Emission
   is-safe-for-reg-left : CodegenState, IRBinaryOp, IRExpr -> Boolean
   is-safe-for-reg-left (st) (op) (right) =
    when op
-    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrLt | IrGt | IrLtEq | IrGtEq -> True
+    is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox | IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping | IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating | IrAddVec | IrSubVec | IrMulVec | IrDivVec | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec | IrLt | IrGt | IrLtEq | IrGtEq -> True
     is IrEq | IrNotEq -> is-fusable-int-comparison st op right
     is otherwise -> False
 
@@ -1589,6 +1779,32 @@ Section: Expression Emission
  call can collide; geometry-test's perimeter accumulator caught
  this when emit-binary-reg-left passed a register local as l-reg.
 
+  is-int-vector : CodexType -> Boolean
+  is-int-vector (ty) =
+   when ty
+    is VectorTy (n) (t) -> when t
+     is IntegerTy (lo) (hi) (m) -> True
+     is otherwise -> False
+    is otherwise -> False
+
+  is-f32-vector : CodexType -> Boolean
+  is-f32-vector (ty) =
+   when ty
+    is VectorTy (n) (t) -> when t
+     is RealApproxTy -> True
+     is otherwise -> False
+    is otherwise -> False
+
+  emit-vec-op : CodegenState, Integer, Integer, CodexType, List Integer, List Integer, List Integer -> EmitResult
+  emit-vec-op (st) (l-reg) (r-reg) (operand-ty) (f64-insn) (int-insn) (f32-insn) =
+   let insn = if is-f32-vector operand-ty then f32-insn else if is-int-vector operand-ty then int-insn else f64-insn
+   in let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & insn)
+   in let alloc = emit-bivy-alloc st1 16
+   in let p1 = load-local (alloc.state) (alloc.ptr-loc)
+   in let st2 = st-append-code (p1.state) (movupd-store (p1.reg) 0 0)
+   in let result = load-local st2 (alloc.ptr-loc)
+   in EmitResult { state = result.state, reg = result.reg }
+
   emit-binary-op : CodegenState, IRBinaryOp, Integer, Integer, CodexType -> EmitResult
   emit-binary-op (st) (op) (l-reg) (r-reg) (operand-ty) =
    let rd = alloc-temp-avoiding st r-reg
@@ -1618,13 +1834,35 @@ Section: Expression Emission
      in let save = if r-reg == reg-rdx then mov-rr reg-r11 reg-rdx
       else if r-reg == reg-rax then mov-rr reg-r11 reg-rax else []
      in EmitResult {
-     state = st-append-code (rd.state) (save & mov-rr reg-rax l-reg & cqo & idiv-r div-reg & mov-rr (rd.reg) reg-rdx),
-     reg = rd.reg
+     state = st-append-code (rd.state) (save & mov-rr reg-rax l-reg & cqo & idiv-r div-reg),
+     reg = reg-rdx
     }
     is IrAddNum -> emit-num-arith st l-reg r-reg 88
     is IrSubNum -> emit-num-arith st l-reg r-reg 92
     is IrMulNum -> emit-num-arith st l-reg r-reg 89
     is IrDivNum -> emit-num-arith st l-reg r-reg 94
+    is IrAddRealApprox -> emit-real-approx-arith st l-reg r-reg (addss-xmm 0 1)
+    is IrSubRealApprox -> emit-real-approx-arith st l-reg r-reg (subss-xmm 0 1)
+    is IrMulRealApprox -> emit-real-approx-arith st l-reg r-reg (mulss-xmm 0 1)
+    is IrDivRealApprox -> emit-real-approx-arith st l-reg r-reg (divss-xmm 0 1)
+    is IrAddRealTrapping -> emit-real-trapping-arith st l-reg r-reg 88
+    is IrSubRealTrapping -> emit-real-trapping-arith st l-reg r-reg 92
+    is IrMulRealTrapping -> emit-real-trapping-arith st l-reg r-reg 89
+    is IrDivRealTrapping -> emit-real-trapping-arith st l-reg r-reg 94
+    is IrAddRealSaturating -> emit-real-saturating-arith st l-reg r-reg 88
+    is IrSubRealSaturating -> emit-real-saturating-arith st l-reg r-reg 92
+    is IrMulRealSaturating -> emit-real-saturating-arith st l-reg r-reg 89
+    is IrDivRealSaturating -> emit-real-saturating-arith st l-reg r-reg 94
+    is IrAddVec -> emit-vec-op st l-reg r-reg operand-ty (addpd-xmm 0 1) (paddq-xmm 0 1) (addps-xmm 0 1)
+    is IrSubVec -> emit-vec-op st l-reg r-reg operand-ty (subpd-xmm 0 1) (psubq-xmm 0 1) (subps-xmm 0 1)
+    is IrMulVec -> emit-vec-op st l-reg r-reg operand-ty (mulpd-xmm 0 1) (mulpd-xmm 0 1) (mulps-xmm 0 1)
+    is IrDivVec -> emit-vec-op st l-reg r-reg operand-ty (divpd-xmm 0 1) (divpd-xmm 0 1) (divps-xmm 0 1)
+    is IrLtVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 1) (cmppd-xmm 0 1 1) (cmpps-xmm 0 1 1)
+    is IrLtEqVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 2) (cmppd-xmm 0 1 2) (cmpps-xmm 0 1 2)
+    is IrGtVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 6) (cmppd-xmm 0 1 6) (cmpps-xmm 0 1 6)
+    is IrGtEqVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 5) (cmppd-xmm 0 1 5) (cmpps-xmm 0 1 5)
+    is IrApproxEq -> emit-approx-eq st l-reg r-reg
+    is IrApproxEqExact -> emit-approx-eq-exact st l-reg r-reg
     is IrEq -> emit-eq-op st l-reg r-reg operand-ty
     is IrNotEq -> emit-neq-op st l-reg r-reg operand-ty
     is IrLt -> emit-comparison st cc-l l-reg r-reg
@@ -1665,7 +1903,7 @@ Section: Expression Emission
    let resolved = resolve-to-sum-with-defs st ty
    in when resolved
     is TextTy -> emit-helper-call-2-regs st l-reg r-reg "__str_eq"
-    is NumberTy -> emit-num-comparison st cc-e l-reg r-reg
+    is RealTy -> emit-num-comparison st cc-e l-reg r-reg
     is SumTy (sn) (args) (cs) ->
      let type-args = (when ty
       is ConstructedTy (cn) (ca) -> ca
@@ -1684,7 +1922,7 @@ Section: Expression Emission
       state = st-append-code (rd.state) (cmp-ri (eq-result.reg) 0 & setcc cc-e (rd.reg) & movzx-byte-self (rd.reg)),
       reg = rd.reg
      }
-    is NumberTy -> emit-num-comparison st cc-ne l-reg r-reg
+    is RealTy -> emit-num-comparison st cc-ne l-reg r-reg
     is SumTy (sn) (args) (cs) ->
      let type-args = (when ty
       is ConstructedTy (cn) (ca) -> ca

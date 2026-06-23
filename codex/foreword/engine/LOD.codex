@@ -1,0 +1,119 @@
+Chapter: LOD
+  cites Engine chapter Mesh
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+
+ Level-of-detail system (inspired by CryEngine dissolve transitions).
+ Meshes have LOD chains — lower-detail versions selected by screen-
+ space projected size. Transitions use a dither dissolve pattern
+ (Bayer matrix) to blend between LOD levels over several frames,
+ avoiding hard geometry pops.
+
+ We say:
+
+Section: LOD Chain
+
+  LodLevel = record {
+    lod-mesh : Mesh,
+    lod-screen-threshold : Integer
+  }
+
+  LodChain = record {
+    lc-levels : List LodLevel,
+    lc-count : Integer
+  }
+
+  lod-chain-new : LodChain
+  lod-chain-new = LodChain { lc-levels = [], lc-count = 0 }
+
+  lod-add-level : LodChain, Mesh, Integer -> LodChain
+  lod-add-level (chain) (mesh) (threshold) =
+    let level = LodLevel { lod-mesh = mesh, lod-screen-threshold = threshold }
+    in LodChain { lc-levels = list-push (chain.lc-levels) level, lc-count = chain.lc-count + 1 }
+
+Section: LOD Selection
+
+  LodSelection = record {
+    ls-current : Integer,
+    ls-target : Integer,
+    ls-blend : Integer,
+    ls-dissolving : Boolean
+  }
+
+  lod-select : LodChain, Integer -> Integer
+  lod-select (chain) (screen-size) = lod-select-loop (chain.lc-levels) screen-size 0 (chain.lc-count)
+
+  lod-select-loop : List LodLevel, Integer, Integer, Integer -> Integer
+  lod-select-loop (levels) (screen-size) (i) (n) =
+    if i >= n then n - 1
+    else let level = list-at levels i
+    in if screen-size >= level.lod-screen-threshold then i
+    else lod-select-loop levels screen-size (i + 1) n
+
+  lod-update : LodSelection, Integer, Integer -> LodSelection
+  lod-update (sel) (target) (blend-speed) =
+    if target == sel.ls-current then
+      if sel.ls-dissolving then
+        let new-blend = sel.ls-blend + blend-speed
+        in if new-blend >= 1000 then LodSelection { ls-current = sel.ls-target, ls-target = sel.ls-target, ls-blend = 0, ls-dissolving = False }
+        else LodSelection { ls-current = sel.ls-current, ls-target = sel.ls-target, ls-blend = new-blend, ls-dissolving = True }
+      else sel
+    else LodSelection { ls-current = sel.ls-current, ls-target = target, ls-blend = 0, ls-dissolving = True }
+
+  lod-init : LodSelection
+  lod-init = LodSelection { ls-current = 0, ls-target = 0, ls-blend = 0, ls-dissolving = False }
+
+Section: Screen-Space Size Estimation
+
+  lod-screen-size : MeshBounds, Mat4, Integer, Integer -> Integer
+  lod-screen-size (bounds) (mvp) (vp-w) (vp-h) =
+    let cx = (bounds.mb-min-x + bounds.mb-max-x) / 2
+    in let cy = (bounds.mb-min-y + bounds.mb-max-y) / 2
+    in let cz = (bounds.mb-min-z + bounds.mb-max-z) / 2
+    in let radius = lod-max3 (bounds.mb-max-x - bounds.mb-min-x) (bounds.mb-max-y - bounds.mb-min-y) (bounds.mb-max-z - bounds.mb-min-z) / 2
+    in let clip = mat4-transform-vec4 mvp (Vec4 { v4x = cx, v4y = cy, v4z = cz, v4w = 1000 })
+    in if clip.v4w <= 0 then 0
+    else let ndc-radius = radius * 1000 / clip.v4w
+    in let pixel-size = ndc-radius * vp-h / 1000
+    in if pixel-size < 0 then 0 - pixel-size else pixel-size
+
+Section: Bayer Dither Matrix (4x4)
+
+  lod-bayer-4x4 : Integer, Integer -> Integer
+  lod-bayer-4x4 (x) (y) =
+    let bx = lod-imod x 4
+    in let by = lod-imod y 4
+    in let idx = by * 4 + bx
+    in list-at lod-bayer-values idx
+
+  lod-bayer-values : List Integer
+  lod-bayer-values = [0, 128, 32, 160, 192, 64, 224, 96, 48, 176, 16, 144, 240, 112, 208, 80]
+
+  lod-dissolve-visible : Integer, Integer, Integer -> Boolean
+  lod-dissolve-visible (x) (y) (blend) =
+    let threshold = lod-bayer-4x4 x y
+    in let blend-byte = blend * 255 / 1000
+    in blend-byte > threshold
+
+Section: Helpers
+
+  lod-max3 : Integer, Integer, Integer -> Integer
+  lod-max3 (a) (b) (c) = if a >= b then if a >= c then a else c else if b >= c then b else c
+
+  lod-imod : Integer, Integer -> Integer
+  lod-imod (a) (b) =
+    if b == 0 then 0
+    else let m = a - (a / b) * b
+    in if m < 0 then m + b else m
+
+Section: Formatting
+
+  format-lod-selection : LodSelection -> Text
+  format-lod-selection (s) =
+    if s.ls-dissolving then "LOD " & show (s.ls-current) & " -> " & show (s.ls-target) & " (" & show (s.ls-blend / 10) & "%)"
+    else "LOD " & show (s.ls-current)
+
+  format-lod-chain : LodChain -> Text
+  format-lod-chain (chain) = "LodChain(" & show (chain.lc-count) & " levels)"
+
+Page 1

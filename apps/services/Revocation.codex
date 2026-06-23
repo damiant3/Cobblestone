@@ -15,13 +15,13 @@ Chapter: Revocation
    - Scoped (what is being revoked and since when)
 
  Revocation types:
-   1. Key compromise — "my key was compromised, do not trust
-      signatures made after date X"
-   2. Trust withdrawal — "I no longer vouch for identity X"
-   3. Capability revocation — "identity X no longer has
-      capability Y" (team member removed, access expired)
-   4. Content retraction — "content at hash X should not be
-      served" (publisher retracting their own content)
+   1. Key compromise -- my key was compromised, do not trust
+      signatures made after date X
+   2. Trust withdrawal -- I no longer vouch for identity X
+   3. Capability revocation -- identity X no longer has
+      capability Y (team member removed, access expired)
+   4. Content retraction -- content at hash X should not be
+      served (publisher retracting their own content)
 
  There are no certificate revocation lists. Revocation is event-
  based: a revocation record is a signed fact in the trust lattice,
@@ -163,12 +163,10 @@ Section: Store Operations
 
   rev-exists-loop : List RevocationRecord, List Integer -> Boolean
   rev-exists-loop (records) (id) =
-    when records
-      is [] -> False
-      is otherwise ->
-        let head = list-at records 0
-        in if sha256-to-hex head.rr-id == sha256-to-hex id then True
-        else rev-exists-loop (list-drop records 1) id
+    if list-length records == 0 then False
+    else let head = list-at records 0
+      in if sha256-to-hex head.rr-id == sha256-to-hex id then True
+      else rev-exists-loop (list-drop records 1) id
 
 Section: Checking Revocation Status
 
@@ -178,13 +176,11 @@ Section: Checking Revocation Status
 
   check-identity-revoked : List RevocationRecord, List Integer -> Boolean
   check-identity-revoked (records) (identity) =
-    when records
-      is [] -> False
-      is otherwise ->
-        let head = list-at records 0
-        in if identity-matches-scope head.rr-scope identity
-          then True
-          else check-identity-revoked (list-drop records 1) identity
+    if list-length records == 0 then False
+    else let head = list-at records 0
+      in if identity-matches-scope head.rr-scope identity
+        then True
+        else check-identity-revoked (list-drop records 1) identity
 
   identity-matches-scope : RevocationScope, List Integer -> Boolean
   identity-matches-scope (scope) (identity) =
@@ -198,13 +194,11 @@ Section: Checking Revocation Status
 
   check-content-revoked : List RevocationRecord, List Integer -> Boolean
   check-content-revoked (records) (hash) =
-    when records
-      is [] -> False
-      is otherwise ->
-        let head = list-at records 0
-        in when head.rr-scope
-          is ScopeContentHash (h) -> if sha256-to-hex h == sha256-to-hex hash then True else check-content-revoked (list-drop records 1) hash
-          is otherwise -> check-content-revoked (list-drop records 1) hash
+    if list-length records == 0 then False
+    else let head = list-at records 0
+      in when head.rr-scope
+        is ScopeContentHash (h) -> if sha256-to-hex h == sha256-to-hex hash then True else check-content-revoked (list-drop records 1) hash
+        is otherwise -> check-content-revoked (list-drop records 1) hash
 
   is-capability-revoked : RevocationStore, List Integer, Text -> Boolean
   is-capability-revoked (store) (identity) (capability) =
@@ -212,15 +206,13 @@ Section: Checking Revocation Status
 
   check-cap-revoked : List RevocationRecord, List Integer, Text -> Boolean
   check-cap-revoked (records) (identity) (capability) =
-    when records
-      is [] -> False
-      is otherwise ->
-        let head = list-at records 0
-        in let matches = when head.rr-scope
-              is ScopeCapability (cap) -> cap == capability
-              is otherwise -> False
-        in if matches then True
-        else check-cap-revoked (list-drop records 1) identity capability
+    if list-length records == 0 then False
+    else let head = list-at records 0
+      in let matches = when head.rr-scope
+            is ScopeCapability (cap) -> cap == capability
+            is otherwise -> False
+      in if matches then True
+      else check-cap-revoked (list-drop records 1) identity capability
 
   is-vault-access-revoked : RevocationStore, List Integer, Text -> Boolean
   is-vault-access-revoked (store) (member-pub) (vault-id) =
@@ -228,15 +220,13 @@ Section: Checking Revocation Status
 
   check-vault-revoked : List RevocationRecord, List Integer, Text -> Boolean
   check-vault-revoked (records) (member) (vault-id) =
-    when records
-      is [] -> False
-      is otherwise ->
-        let head = list-at records 0
-        in when head.rr-scope
-          is ScopeVaultAccess (vid) ->
-            if vid == vault-id then True
-            else check-vault-revoked (list-drop records 1) member vault-id
-          is otherwise -> check-vault-revoked (list-drop records 1) member vault-id
+    if list-length records == 0 then False
+    else let head = list-at records 0
+      in when head.rr-scope
+        is ScopeVaultAccess (vid) ->
+          if vid == vault-id then True
+          else check-vault-revoked (list-drop records 1) member vault-id
+        is otherwise -> check-vault-revoked (list-drop records 1) member vault-id
 
 Section: Key Compromise Window
 
@@ -246,16 +236,14 @@ Section: Key Compromise Window
 
   find-compromise-effective : List RevocationRecord, List Integer -> Maybe Integer
   find-compromise-effective (records) (identity) =
-    when records
-      is [] -> None
-      is otherwise ->
-        let head = list-at records 0
-        in when head.rr-type
-          is RevokeKeyCompromise ->
-            if identity-matches-scope head.rr-scope identity
-            then Just head.rr-effective
-            else find-compromise-effective (list-drop records 1) identity
-          is otherwise -> find-compromise-effective (list-drop records 1) identity
+    if list-length records == 0 then None
+    else let head = list-at records 0
+      in when head.rr-type
+        is RevokeKeyCompromise ->
+          if identity-matches-scope head.rr-scope identity
+          then Just head.rr-effective
+          else find-compromise-effective (list-drop records 1) identity
+        is otherwise -> find-compromise-effective (list-drop records 1) identity
 
   is-signature-trustworthy : RevocationStore, List Integer, Integer -> Boolean
   is-signature-trustworthy (store) (signer) (signed-at) =
@@ -272,13 +260,11 @@ Section: Revocation for Active Sessions
 
   filter-for-identity : List RevocationRecord, List Integer, List RevocationRecord -> List RevocationRecord
   filter-for-identity (records) (identity) (acc) =
-    when records
-      is [] -> acc
-      is otherwise ->
-        let head = list-at records 0
-        in if identity-matches-scope head.rr-scope identity
-          then filter-for-identity (list-drop records 1) identity (list-push acc head)
-          else filter-for-identity (list-drop records 1) identity acc
+    if list-length records == 0 then acc
+    else let head = list-at records 0
+      in if identity-matches-scope head.rr-scope identity
+        then filter-for-identity (list-drop records 1) identity (list-push acc head)
+        else filter-for-identity (list-drop records 1) identity acc
 
 Section: Wire Format
 

@@ -65,11 +65,15 @@ Section: Identifier Helpers
   cs-type (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> "long"
-    is NumberTy -> "double"
+    is RealTy -> "double"
+    is RealApproxTy -> "double"
+    is RealTrappingTy -> "double"
+    is RealSaturatingTy -> "double"
     is TextTy -> "string"
     is BooleanTy -> "bool"
     is CharTy -> "long"
     is VoidTy -> "void"
+    is UnitTy (name) (inner) -> "void"
     is NothingTy -> "object"
     is ErrorTy -> "object"
     is FunTy (p) (r) -> "Func<" & cs-type p & ", " & cs-type r & ">"
@@ -84,6 +88,7 @@ Section: Identifier Helpers
     is ConstructedTy (name) (args) -> if is-tup-type (name.value) then "(" & emit-cs-type-args args 0 & ")"
                                      else if list-length args == 0 then sanitize (name.value)
                                      else sanitize (name.value) & "<" & emit-cs-type-args args 0 & ">"
+    is VectorTy (vn) (vt) -> "List<" & cs-type vt & ">"
     is EffectfulTy (effects) (sc) (ret) -> cs-type ret
 
   emit-cs-type-args : List CodexType, Integer -> Text
@@ -308,7 +313,7 @@ Section: Apply Chain
   sort-emitters : List BuiltinEmitter -> List BuiltinEmitter
   sort-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
 
-  builtin-emitters : List BuiltinEmitter = [
+  builtin-emitters : List BuiltinEmitter = sort-emitters [
 
    BuiltinEmitter { name = "show", emit = \args -> \arities -> \ty -> emit-builtin-show args arities },
    BuiltinEmitter { name = "negate", emit = \args -> \arities -> \ty -> "(-" & emit-expr (list-at args 0) arities & ")" },
@@ -392,13 +397,23 @@ Section: Apply Chain
    BuiltinEmitter { name = "min", emit = \args -> \arities -> \ty -> "Math.Min(" & emit-expr (list-at args 0) arities & ", " & emit-expr (list-at args 1) arities & ")" },
    BuiltinEmitter { name = "max", emit = \args -> \arities -> \ty -> "Math.Max(" & emit-expr (list-at args 0) arities & ", " & emit-expr (list-at args 1) arities & ")" },
    BuiltinEmitter { name = "abs", emit = \args -> \arities -> \ty -> "Math.Abs(" & emit-expr (list-at args 0) arities & ")" },
-   BuiltinEmitter { name = "negate", emit = \args -> \arities -> \ty -> "(0L - " & emit-expr (list-at args 0) arities & ")" },
    BuiltinEmitter { name = "__narrow", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities },
    BuiltinEmitter { name = "fail", emit = \args -> \arities -> \ty -> "((Func<object>)(() => { throw new InvalidOperationException(" & emit-expr (list-at args 0) arities & "); }))()" },
    BuiltinEmitter { name = "set-state", emit = \args -> \arities -> \ty -> "_State.set_state(" & emit-expr (list-at args 0) arities & ")" },
-   BuiltinEmitter { name = "run-state", emit = \args -> \arities -> \ty -> emit-builtin-run-state args arities }
+   BuiltinEmitter { name = "run-state", emit = \args -> \arities -> \ty -> emit-builtin-run-state args arities },
+   BuiltinEmitter { name = "list-push", emit = \args -> \arities -> \ty -> emit-builtin-list-snoc args arities },
+   BuiltinEmitter { name = "write-binary", emit = \args -> \arities -> \ty -> "((Func<object>)(() => { List<long> _bl = (List<long>)" & emit-expr (list-at args 0) arities & "; using System.IO.Stream _s = Console.OpenStandardOutput(); foreach (long _b in _bl) _s.WriteByte((byte)_b); _s.Flush(); return null; }))()" },
+   BuiltinEmitter { name = "peek-byte", emit = \args -> \arities -> \ty -> "0L" },
+   BuiltinEmitter { name = "peek-qword", emit = \args -> \arities -> \ty -> "0L" },
+   BuiltinEmitter { name = "block-read-sector", emit = \args -> \arities -> \ty -> "0L" },
+   BuiltinEmitter { name = "address-of", emit = \args -> \arities -> \ty -> "0L" },
+   BuiltinEmitter { name = "print-line", emit = \args -> \arities -> \ty -> "((Func<object>)(() => { Console.WriteLine(" & emit-expr (list-at args 0) arities & "); return null; }))()" },
+   BuiltinEmitter { name = "ir-text", emit = \args -> \arities -> \ty -> "\"\"" },
+   BuiltinEmitter { name = "read-file-uni", emit = \args -> \arities -> \ty -> "File.ReadAllText(" & emit-expr (list-at args 0) arities & ")" },
+   BuiltinEmitter { name = "to-unicode", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities },
+   BuiltinEmitter { name = "from-unicode", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities }
 
-  ]
+  ])
 
   emit-int-mod : List IRExpr, List ArityEntry -> Text
   emit-int-mod (args) (arities) =
@@ -408,84 +423,25 @@ Section: Apply Chain
 
   is-builtin-name : Text -> Boolean
   is-builtin-name (n) =
-   text-length (emit-builtin-dispatch n [] [] NothingTy) > 0 | n == "show" | n == "negate"
+   lookup-builtin-emitter n >= 0
 
   emit-builtin : Text, List IRExpr, List ArityEntry, CodexType -> Text
   emit-builtin (n) (args) (arities) (result-ty) =
    emit-builtin-dispatch n args arities result-ty
 
+  lookup-builtin-emitter : Text -> Integer
+  lookup-builtin-emitter (name) =
+   let len = list-length builtin-emitters
+   in let pos = bsearch-emitter-pos builtin-emitters name 0 len
+   in if pos >= len then -1
+      else if (list-at builtin-emitters pos).name == name then pos
+      else -1
+
   emit-builtin-dispatch : Text, List IRExpr, List ArityEntry, CodexType -> Text
   emit-builtin-dispatch (n) (args) (arities) (ty) =
-   if n == "show" then emit-builtin-show args arities
-   else if n == "negate" then "(-" & emit-expr (list-at args 0) arities & ")"
-   else if n == "print-line-uni" then emit-builtin-print-line-uni args arities
-   else if n == "print-error-uni" then emit-builtin-print-error-uni args arities
-   else if n == "text-length" then "((long)" & emit-expr (list-at args 0) arities & ".Length)"
-   else if n == "is-letter" then emit-builtin-is-letter args arities
-   else if n == "is-digit" then emit-builtin-is-digit args arities
-   else if n == "is-whitespace" then "(" & emit-expr (list-at args 0) arities & " <= 2L)"
-   else if n == "text-to-integer" then emit-builtin-text-to-integer args arities
-   else if n == "text-to-double-bits" then emit-builtin-text-to-double-bits args arities
-   else if n == "integer-to-text" then emit-builtin-integer-to-text args arities
-   else if n == "char-code" then emit-expr (list-at args 0) arities
-   else if n == "char-code-at" then emit-builtin-char-code-at args arities
-   else if n == "code-to-char" then emit-expr (list-at args 0) arities
-   else if n == "char-to-text" then "((char)" & emit-expr (list-at args 0) arities & ").ToString()"
-   else if n == "char-at" then emit-builtin-char-at args arities
-   else if n == "substring" then emit-builtin-substring args arities
-   else if n == "list-length" then "((long)" & emit-expr (list-at args 0) arities & ".Count)"
-   else if n == "list-at" then emit-builtin-list-at args arities
-   else if n == "list-insert-at" then emit-builtin-list-insert-at args arities
-   else if n == "list-set-at" then emit-builtin-list-set-at args arities
-   else if n == "list-snoc" then emit-builtin-list-snoc args arities
-   else if n == "text-compare" then emit-builtin-text-compare args arities
-   else if n == "text-replace" then emit-builtin-text-replace args arities
-   else if n == "text-concat-list" then "string.Concat(" & emit-expr (list-at args 0) arities & ")"
-   else if n == "text-split" then emit-builtin-text-split args arities
-   else if n == "text-contains" then emit-builtin-text-contains args arities
-   else if n == "text-starts-with" then emit-builtin-text-starts-with args arities
-   else if n == "read-file" then emit-builtin-read-file args arities
-   else if n == "write-file" then emit-builtin-write-file args arities
-   else if n == "file-exists" then emit-builtin-file-exists args arities
-   else if n == "list-files" then emit-builtin-list-files args arities
-   else if n == "get-env" then emit-builtin-get-env args arities
-   else if n == "run-process" then emit-builtin-run-process args arities
-   else if n == "run-process-full" then emit-builtin-run-process-full args arities
-   else if n == "process-exit" then "((Func<object>)(() => { Environment.Exit((int)(long)(" & emit-expr (list-at args 0) arities & ")); return null; }))()"
-   else if n == "set-state" then "_State.set_state(" & emit-expr (list-at args 0) arities & ")"
-   else if n == "run-state" then emit-builtin-run-state args arities
-   else if n == "__record-set" then emit-builtin-record-set args arities
-   else if n == "bit-and" then emit-bit-builtin "bit-and" args arities
-   else if n == "bit-or" then emit-bit-builtin "bit-or" args arities
-   else if n == "bit-xor" then emit-bit-builtin "bit-xor" args arities
-   else if n == "bit-shl" then emit-bit-builtin "bit-shl" args arities
-   else if n == "bit-shr" then emit-bit-builtin "bit-shr" args arities
-   else if n == "bit-shru" then "((long)((ulong)" & emit-expr (list-at args 0) arities & " >> (int)" & emit-expr (list-at args 1) arities & "))"
-   else if n == "bit-not" then emit-bit-builtin "bit-not" args arities
-   else if n == "__narrow" then emit-expr (list-at args 0) arities
-   else if n == "fail" then "((Func<object>)(() => { throw new InvalidOperationException(" & emit-expr (list-at args 0) arities & "); }))()"
-   else if n == "int-mod" then emit-int-mod args arities
-   else if n == "min" then "Math.Min(" & emit-expr (list-at args 0) arities & ", " & emit-expr (list-at args 1) arities & ")"
-   else if n == "max" then "Math.Max(" & emit-expr (list-at args 0) arities & ", " & emit-expr (list-at args 1) arities & ")"
-   else if n == "abs" then "Math.Abs(" & emit-expr (list-at args 0) arities & ")"
-   else if n == "par" then emit-builtin-par args arities
-   else if n == "race" then emit-builtin-race args arities
-   else if n == "fork" then "Task.Run(() => (" & emit-expr (list-at args 0) arities & ")(null))"
-   else if n == "await" then "(" & emit-expr (list-at args 0) arities & ").Result"
-   else if n == "list-push" then emit-builtin-list-snoc args arities
-   else if n == "__linked-list-push" then let et = when ty is LinkedListTy (elem) | ListTy (elem) -> cs-type elem is otherwise -> "object" in "((Func<List<" & et & ">, " & et & ", List<" & et & ">>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(" & emit-expr (list-at args 0) arities & ", " & emit-expr (list-at args 1) arities & ")"
-   else if n == "__linked-list-empty" then let et = when ty is LinkedListTy (elem) | ListTy (elem) -> cs-type elem is otherwise -> "object" in "new List<" & et & ">()"
-   else if n == "__linked-list-to-list" then emit-expr (list-at args 0) arities
-   else if n == "write-binary" then "((Func<object>)(() => { List<long> _bl = (List<long>)" & emit-expr (list-at args 0) arities & "; using System.IO.Stream _s = Console.OpenStandardOutput(); foreach (long _b in _bl) _s.WriteByte((byte)_b); _s.Flush(); return null; }))()"
-   else if n == "peek-byte" then "0L"
-   else if n == "peek-qword" then "0L"
-   else if n == "block-read-sector" then "0L"
-   else if n == "address-of" then "0L"
-   else if n == "print-line" then "((Func<object>)(() => { Console.WriteLine(" & emit-expr (list-at args 0) arities & "); return null; }))()"
-   else if n == "ir-text" then "\"\""
-   else if n == "read-file-uni" then "File.ReadAllText(" & emit-expr (list-at args 0) arities & ")"
-   else if n == "__list-with-capacity" then when ty is ListTy (elem) | LinkedListTy (elem) -> "new List<" & cs-type elem & ">((int)(long)(" & emit-expr (list-at args 0) arities & "))" is otherwise -> emit-buf-call-1 "list-with-capacity" args arities
-   else ""
+   let idx = lookup-builtin-emitter n
+   in if idx >= 0 then (list-at builtin-emitters idx).emit args arities ty
+      else ""
 
   cs-name-for : Text -> Text
   cs-name-for (n) = text-replace n "-" "_"
@@ -851,7 +807,7 @@ Section: Expression Emission
   ty-is-concrete-value (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> True
-    is NumberTy -> True
+    is RealTy -> True
     is TextTy -> True
     is BooleanTy -> True
     is CharTy -> True
@@ -866,21 +822,20 @@ Section: Expression Emission
   emit-bin-op : IRBinaryOp -> Text
   emit-bin-op (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
-    is IrDivInt -> "/"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrRemInt -> "%"
     is IrPowInt -> "^"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
     is IrEq -> "=="
     is IrNotEq -> "!="
-    is IrLt -> "<"
-    is IrGt -> ">"
-    is IrLtEq -> "<="
-    is IrGtEq -> ">="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq -> "=="
+    is IrApproxEqExact -> "=="
     is IrAnd -> "&&"
     is IrOr -> "||"
     is IrAppendText -> "+"
@@ -892,6 +847,7 @@ Section: Expression Emission
    when op
     is IrAppendList -> "Enumerable.Concat(" & emit-expr l arities & ", " & emit-expr r arities & ").ToList()"
     is IrConsList -> "new List<" & cs-type (ir-expr-type l) & "> { " & emit-expr l arities & " }.Concat(" & emit-expr r arities & ").ToList()"
+    is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> emit-expr l arities & ".Zip(" & emit-expr r arities & ", (a, b) => a " & emit-bin-op op & " b).ToList()"
     is otherwise -> "(" & emit-expr l arities & " " & emit-bin-op op & " " & emit-expr r arities & ")"
 
   has-typevar : CodexType -> Boolean
@@ -1037,6 +993,7 @@ Section: Expression Emission
      else if list-length subs == 0 then sanitize name & extract-ctor-type-args ty & " { }"
       else sanitize name & extract-ctor-type-args ty & "(" & emit-sub-patterns subs 0 & ")"
     is IrWildPat (sp) -> "_"
+    is IrVecPat (pats) (ty) (sp) -> "_"
 
   emit-sub-patterns : List IRPat, Integer -> Text
   emit-sub-patterns (subs) (i) =
@@ -1051,6 +1008,7 @@ Section: Expression Emission
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-pattern p
     is IrWildPat (sp) -> "_"
     is IrLitPat (text) (ty) (sp) -> text
+    is IrVecPat (pats) (ty) (sp) -> "_"
 
   emit-cs-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, CodexType, List ArityEntry -> Text
   emit-cs-try (max) (body) (fb) (fail-stmts) (ty) (arities) =

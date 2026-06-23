@@ -1,0 +1,283 @@
+Chapter: Taskbar
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Dev chapter Notification
+  cites Dev chapter AudioControl
+  cites Dev chapter MultiMonitor
+
+ Desktop taskbar. Persistent bar at screen edge with app launcher
+ button, pinned apps, running app buttons, and system tray (clock,
+ volume, network, notifications, workspace indicator). Supports
+ top or bottom positioning and auto-hide.
+
+Section: Position
+
+  TaskbarPosition =
+    | TbBottom
+    | TbTop
+
+Section: Tray Icon
+
+  TrayIcon = record {
+    ti-id : Text,
+    ti-icon : Text,
+    ti-tooltip : Text,
+    ti-badge : Integer,
+    ti-visible : Boolean
+  }
+
+  tray-icon-new : Text, Text, Text -> TrayIcon
+  tray-icon-new (id) (icon) (tip) = TrayIcon {
+    ti-id = id, ti-icon = icon, ti-tooltip = tip,
+    ti-badge = 0, ti-visible = True
+  }
+
+Section: Running App
+
+  TaskbarApp = record {
+    ta-id : Text,
+    ta-name : Text,
+    ta-icon : Text,
+    ta-pinned : Boolean,
+    ta-running : Boolean,
+    ta-focused : Boolean,
+    ta-badge : Integer
+  }
+
+  taskbar-app-new : Text, Text, Text -> TaskbarApp
+  taskbar-app-new (id) (name) (icon) = TaskbarApp {
+    ta-id = id, ta-name = name, ta-icon = icon,
+    ta-pinned = False, ta-running = False, ta-focused = False, ta-badge = 0
+  }
+
+Section: State
+
+  TaskbarState = record {
+    tb-position : TaskbarPosition,
+    tb-height : Integer,
+    tb-auto-hide : Boolean,
+    tb-hidden : Boolean,
+    tb-apps : List TaskbarApp,
+    tb-app-count : Integer,
+    tb-tray-icons : List TrayIcon,
+    tb-tray-count : Integer,
+    tb-clock-text : Text,
+    tb-launcher-open : Boolean,
+    tb-active-workspace : Integer,
+    tb-workspace-count : Integer,
+    tb-screen-width : Integer
+  }
+
+  taskbar-new : Integer -> TaskbarState
+  taskbar-new (screen-w) = TaskbarState {
+    tb-position = TbBottom,
+    tb-height = 40,
+    tb-auto-hide = False,
+    tb-hidden = False,
+    tb-apps = [],
+    tb-app-count = 0,
+    tb-tray-icons = tb-default-tray,
+    tb-tray-count = 5,
+    tb-clock-text = "00:00",
+    tb-launcher-open = False,
+    tb-active-workspace = 1,
+    tb-workspace-count = 1,
+    tb-screen-width = screen-w
+  }
+
+  tb-default-tray : List TrayIcon
+  tb-default-tray = [
+    tray-icon-new "tray-vol" "play" "Volume",
+    tray-icon-new "tray-net" "wifi" "Network",
+    tray-icon-new "tray-bell" "bell" "Notifications",
+    tray-icon-new "tray-kbd" "terminal" "Keyboard",
+    tray-icon-new "tray-power" "power" "Power"
+  ]
+
+Section: App Management
+
+  tb-pin-app : TaskbarState, Text, Text, Text -> TaskbarState
+  tb-pin-app (st) (id) (name) (icon) =
+    let app = TaskbarApp { ta-id = id, ta-name = name, ta-icon = icon, ta-pinned = True, ta-running = False, ta-focused = False, ta-badge = 0 }
+    in __record-set (__record-set st "tb-apps" (list-push (st.tb-apps) app)) "tb-app-count" (st.tb-app-count + 1)
+
+  tb-unpin-app : TaskbarState, Text -> TaskbarState
+  tb-unpin-app (st) (app-id) =
+    let filtered = tb-filter-apps (st.tb-apps) app-id 0 (st.tb-app-count) []
+    in __record-set (__record-set st "tb-apps" filtered) "tb-app-count" (list-length filtered)
+
+  tb-filter-apps : List TaskbarApp, Text, Integer, Integer, List TaskbarApp -> List TaskbarApp
+  tb-filter-apps (apps) (exclude) (i) (n) (acc) =
+    if i >= n then acc
+    else let app = list-at apps i
+    in if app.ta-id == exclude then
+      if app.ta-running then tb-filter-apps apps exclude (i + 1) n (list-push acc (__record-set app "ta-pinned" False))
+      else tb-filter-apps apps exclude (i + 1) n acc
+    else tb-filter-apps apps exclude (i + 1) n (list-push acc app)
+
+  tb-app-launched : TaskbarState, Text, Text, Text -> TaskbarState
+  tb-app-launched (st) (id) (name) (icon) =
+    let existing = tb-find-app st id
+    in when existing
+      is Just (app) -> tb-update-app st id "ta-running" True
+      is None ->
+        let app = TaskbarApp { ta-id = id, ta-name = name, ta-icon = icon, ta-pinned = False, ta-running = True, ta-focused = True, ta-badge = 0 }
+        in __record-set (__record-set st "tb-apps" (list-push (st.tb-apps) app)) "tb-app-count" (st.tb-app-count + 1)
+
+  tb-app-closed : TaskbarState, Text -> TaskbarState
+  tb-app-closed (st) (id) =
+    let app-opt = tb-find-app st id
+    in when app-opt
+      is Just (app) -> if app.ta-pinned then tb-update-app st id "ta-running" False
+        else tb-remove-app st id
+      is None -> st
+
+  tb-app-focused : TaskbarState, Text -> TaskbarState
+  tb-app-focused (st) (id) =
+    let cleared = tb-clear-focus (st.tb-apps) 0 (st.tb-app-count) []
+    in let focused = tb-set-focus cleared id 0 (list-length cleared) []
+    in __record-set st "tb-apps" focused
+
+  tb-clear-focus : List TaskbarApp, Integer, Integer, List TaskbarApp -> List TaskbarApp
+  tb-clear-focus (apps) (i) (n) (acc) =
+    if i >= n then acc
+    else tb-clear-focus apps (i + 1) n (list-push acc (__record-set (list-at apps i) "ta-focused" False))
+
+  tb-set-focus : List TaskbarApp, Text, Integer, Integer, List TaskbarApp -> List TaskbarApp
+  tb-set-focus (apps) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let app = list-at apps i
+    in let updated = if app.ta-id == target then __record-set app "ta-focused" True else app
+    in tb-set-focus apps target (i + 1) n (list-push acc updated)
+
+  tb-find-app : TaskbarState, Text -> Maybe TaskbarApp
+  tb-find-app (st) (id) = tb-find-loop (st.tb-apps) id 0 (st.tb-app-count)
+
+  tb-find-loop : List TaskbarApp, Text, Integer, Integer -> Maybe TaskbarApp
+  tb-find-loop (apps) (target) (i) (n) =
+    if i >= n then None
+    else let app = list-at apps i
+    in if app.ta-id == target then Just app
+    else tb-find-loop apps target (i + 1) n
+
+  tb-update-app : TaskbarState, Text, Text, Boolean -> TaskbarState
+  tb-update-app (st) (id) (field) (val) =
+    let updated = tb-update-loop (st.tb-apps) id field val 0 (st.tb-app-count) []
+    in __record-set st "tb-apps" updated
+
+  tb-update-loop : List TaskbarApp, Text, Text, Boolean, Integer, Integer, List TaskbarApp -> List TaskbarApp
+  tb-update-loop (apps) (target) (field) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let app = list-at apps i
+    in let updated = if app.ta-id == target then __record-set app field val else app
+    in tb-update-loop apps target field val (i + 1) n (list-push acc updated)
+
+  tb-remove-app : TaskbarState, Text -> TaskbarState
+  tb-remove-app (st) (id) =
+    let filtered = tb-remove-loop (st.tb-apps) id 0 (st.tb-app-count) []
+    in __record-set (__record-set st "tb-apps" filtered) "tb-app-count" (list-length filtered)
+
+  tb-remove-loop : List TaskbarApp, Text, Integer, Integer, List TaskbarApp -> List TaskbarApp
+  tb-remove-loop (apps) (exclude) (i) (n) (acc) =
+    if i >= n then acc
+    else let app = list-at apps i
+    in if app.ta-id == exclude then tb-remove-loop apps exclude (i + 1) n acc
+    else tb-remove-loop apps exclude (i + 1) n (list-push acc app)
+
+Section: Tray Management
+
+  tb-set-tray-badge : TaskbarState, Text, Integer -> TaskbarState
+  tb-set-tray-badge (st) (icon-id) (badge) =
+    let updated = tb-update-tray (st.tb-tray-icons) icon-id badge 0 (st.tb-tray-count) []
+    in __record-set st "tb-tray-icons" updated
+
+  tb-update-tray : List TrayIcon, Text, Integer, Integer, Integer, List TrayIcon -> List TrayIcon
+  tb-update-tray (icons) (target) (badge) (i) (n) (acc) =
+    if i >= n then acc
+    else let icon = list-at icons i
+    in let updated = if icon.ti-id == target then __record-set icon "ti-badge" badge else icon
+    in tb-update-tray icons target badge (i + 1) n (list-push acc updated)
+
+  tb-update-clock : TaskbarState, Text -> TaskbarState
+  tb-update-clock (st) (time-text) = __record-set st "tb-clock-text" time-text
+
+  tb-update-workspaces : TaskbarState, Integer, Integer -> TaskbarState
+  tb-update-workspaces (st) (active) (total) =
+    __record-set (__record-set st "tb-active-workspace" active) "tb-workspace-count" total
+
+Section: Visibility
+
+  tb-toggle-auto-hide : TaskbarState -> TaskbarState
+  tb-toggle-auto-hide (st) = __record-set st "tb-auto-hide" (if st.tb-auto-hide then False else True)
+
+  tb-set-position : TaskbarState, TaskbarPosition -> TaskbarState
+  tb-set-position (st) (pos) = __record-set st "tb-position" pos
+
+  tb-toggle-launcher : TaskbarState -> TaskbarState
+  tb-toggle-launcher (st) = __record-set st "tb-launcher-open" (if st.tb-launcher-open then False else True)
+
+  tb-show : TaskbarState -> TaskbarState
+  tb-show (st) = __record-set st "tb-hidden" False
+
+  tb-hide : TaskbarState -> TaskbarState
+  tb-hide (st) = if st.tb-auto-hide then __record-set st "tb-hidden" True else st
+
+Section: Widget Building
+
+  taskbar-widget : TaskbarState -> WidgetNode
+  taskbar-widget (st) =
+    let launcher = widget-button "tb-launcher" ">"
+    in let apps = tb-app-widgets st 0 (st.tb-app-count) []
+    in let spacer = widget-set-flex (widget-label "tb-spacer" "") 1
+    in let tray = tb-tray-widgets st 0 (st.tb-tray-count) []
+    in let ws = tb-workspace-widget st
+    in let clock = widget-label "tb-clock" (st.tb-clock-text)
+    in let bar = widget-panel "taskbar" DirRow 2 ([launcher] & apps & [spacer] & [ws] & tray & [clock])
+    in widget-set-min bar (st.tb-screen-width) (st.tb-height)
+
+  tb-app-widgets : TaskbarState, Integer, Integer, List WidgetNode -> List WidgetNode
+  tb-app-widgets (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let app = list-at (st.tb-apps) i
+    in let visible = app.ta-pinned | app.ta-running
+    in if visible then
+      let btn = widget-button ("tb-app-" & app.ta-id) (app.ta-icon & " " & app.ta-name)
+      in let styled = if app.ta-focused then widget-set-state btn state-pressed
+        else if app.ta-running then widget-set-state btn state-focused
+        else btn
+      in tb-app-widgets st (i + 1) n (list-push acc styled)
+    else tb-app-widgets st (i + 1) n acc
+
+  tb-tray-widgets : TaskbarState, Integer, Integer, List WidgetNode -> List WidgetNode
+  tb-tray-widgets (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let icon = list-at (st.tb-tray-icons) i
+    in if icon.ti-visible then
+      let label = if icon.ti-badge > 0 then icon.ti-icon & "(" & show (icon.ti-badge) & ")" else icon.ti-icon
+      in let btn = widget-button ("tb-" & icon.ti-id) label
+      in tb-tray-widgets st (i + 1) n (list-push acc btn)
+    else tb-tray-widgets st (i + 1) n acc
+
+  tb-workspace-widget : TaskbarState -> WidgetNode
+  tb-workspace-widget (st) =
+    let dots = tb-ws-dots st 1 (st.tb-workspace-count + 1) []
+    in widget-panel "tb-workspaces" DirRow 2 dots
+
+  tb-ws-dots : TaskbarState, Integer, Integer, List WidgetNode -> List WidgetNode
+  tb-ws-dots (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let label = if i == st.tb-active-workspace then "[" & show i & "]" else show i
+    in let btn = widget-button ("tb-ws-" & show i) label
+    in let styled = if i == st.tb-active-workspace then widget-set-state btn state-focused else btn
+    in tb-ws-dots st (i + 1) n (list-push acc styled)
+
+Section: Formatting
+
+  format-taskbar : TaskbarState -> Text
+  format-taskbar (st) =
+    "taskbar apps=" & show (st.tb-app-count) & " tray=" & show (st.tb-tray-count)
+    & " ws=" & show (st.tb-active-workspace) & "/" & show (st.tb-workspace-count)
+    & " clock=" & st.tb-clock-text
+    & (if st.tb-auto-hide then " [auto-hide]" else "")
+
+Page 1

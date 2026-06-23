@@ -1,0 +1,300 @@
+Chapter: TerrainGen
+  cites Globe chapter GlobeTypes
+  cites Foreword chapter CCE
+
+ Procedural planet texture generator. Writes RGB pixels to a guest
+ RAM buffer for GPU texture upload. Generates equirectangular
+ projections at configurable resolution. Uses layered noise for
+ terrain elevation, biome coloring, and cloud cover.
+
+ Texture buffer layout: width * height * 3 bytes, row-major,
+ top-to-bottom (north pole first), RGB per pixel.
+
+ GPU upload sequence:
+   port-out-32 #408 <buffer-address>
+   port-out-32 #409 <width>
+   port-out-32 #40A <height>
+   port-out-32 #40B 0    -- commit
+
+ Asset load from host disk:
+   Write null-terminated path to guest RAM, then:
+   port-out-32 #40C <path-address>
+   port-out-32 #40D <dest-address>
+   port-out-32 #40E 0    -- execute load
+   port-in-32  #40E      -- returns low 32 bits of bytes loaded
+   port-in-32  #40F      -- returns high 32 bits of bytes loaded
+
+ We say:
+
+Section: Constants
+
+  tex-w : Integer = 512
+  tex-h : Integer = 256
+  tex-buf-addr : Integer = #70000000
+  tex-path-addr : Integer = #6FF00000
+
+Section: Asset Loading
+
+  tg-load-file : Text, Integer, Integer -> Integer
+  tg-load-file (path) (dest) (path-buf) =
+    let written = tg-write-path path path-buf 0
+    in let w1 = port-out-32 #40C path-buf
+    in let w2 = port-out-32 #40D dest
+    in let w3 = port-out-32 #40E 0
+    in port-in-32 #40E
+
+  tg-write-path : Text, Integer, Integer -> Integer
+  tg-write-path (s) (addr) (i) =
+    if i >= text-length s then poke-byte addr i 0
+    else let ch = to-unicode (char-code (char-at s i))
+    in let w = poke-byte addr i ch
+    in tg-write-path s addr (i + 1)
+
+  tg-load-earth-image : Integer
+  tg-load-earth-image =
+    let sz = tg-load-file "apps/globe/earth-texture.raw" tex-buf-addr tex-path-addr
+    in if sz > 0 then
+      let w = if sz == 2048 * 1024 * 3 then 2048
+        else if sz == 4096 * 2048 * 3 then 4096
+        else if sz == 1024 * 512 * 3 then 1024
+        else 512
+      in let h = sz / (w * 3)
+      in let wa = port-out-32 #408 tex-buf-addr
+      in let wb = port-out-32 #409 w
+      in let wc = port-out-32 #40A h
+      in let wd = port-out-32 #40B 0
+      in sz
+    else 0
+
+Section: Noise
+
+  tg-hash : Integer, Integer -> Integer
+  tg-hash (a) (b) =
+    let x = (a * 12289 + b * 51349 + 32749) * 65537
+    in let y = if x < 0 then 0 - x else x
+    in let z = y / 1000
+    in z - z / 1000 * 1000
+
+  tg-noise : Integer, Integer -> Integer
+  tg-noise (x) (y) =
+    let ix = if x >= 0 then x / 1000 else x / 1000 - 1
+    in let iy = if y >= 0 then y / 1000 else y / 1000 - 1
+    in let fx = x - ix * 1000
+    in let fy = y - iy * 1000
+    in let sx = fx * fx * (3000 - 2 * fx) / 1000000
+    in let sy = fy * fy * (3000 - 2 * fy) / 1000000
+    in let c00 = tg-hash ix iy
+    in let c10 = tg-hash (ix + 1) iy
+    in let c01 = tg-hash ix (iy + 1)
+    in let c11 = tg-hash (ix + 1) (iy + 1)
+    in let x0 = c00 * (1000 - sx) / 1000 + c10 * sx / 1000
+    in let x1 = c01 * (1000 - sx) / 1000 + c11 * sx / 1000
+    in x0 * (1000 - sy) / 1000 + x1 * sy / 1000
+
+  tg-fbm : Integer, Integer, Integer -> Integer
+  tg-fbm (x) (y) (seed) =
+    let n1 = tg-noise (x + seed * 137) (y + seed * 251)
+    in let n2 = tg-noise (x * 2 + seed * 337 + 50000) (y * 2 + seed * 449 + 50000)
+    in let n3 = tg-noise (x * 4 + seed * 541 + 100000) (y * 4 + seed * 643 + 100000)
+    in let n4 = tg-noise (x * 8 + seed * 751 + 200000) (y * 8 + seed * 853 + 200000)
+    in n1 * 500 / 1000 + n2 * 250 / 1000 + n3 * 125 / 1000 + n4 * 62 / 1000
+
+Section: Earth-like Planet
+
+  tg-earth-pixel : Integer, Integer, Integer -> Integer
+  tg-earth-pixel (lat) (lon) (seed) =
+    let elev = tg-fbm (lon * 3) (lat * 3) seed
+    in let moisture = tg-fbm (lon * 2 + 70000) (lat * 2 + 30000) (seed + 17)
+    in let abs-lat = if lat < 0 then 0 - lat else lat
+    in let temp = 1000 - abs-lat * 1000 / 90 - elev / 4
+    in if abs-lat > 75 then tg-ice-color elev
+    else if elev < 380 then tg-ocean-color elev temp
+    else if elev < 400 then tg-shore-color elev moisture
+    else tg-land-biome elev moisture temp
+
+  tg-ice-color : Integer -> Integer
+  tg-ice-color (elev) =
+    let v = 220 + elev * 35 / 1000
+    in tg-clamp8 v * 65536 + tg-clamp8 (v + 5) * 256 + tg-clamp8 (v + 10)
+
+  tg-ocean-color : Integer, Integer -> Integer
+  tg-ocean-color (elev) (temp) =
+    let depth = 380 - elev
+    in let r = tg-clamp8 (10 + depth / 20)
+    in let g = tg-clamp8 (40 + temp / 20 + depth / 15)
+    in let b = tg-clamp8 (120 + temp / 8)
+    in r * 65536 + g * 256 + b
+
+  tg-shore-color : Integer, Integer -> Integer
+  tg-shore-color (elev) (moisture) =
+    let r = tg-clamp8 (180 + moisture / 20)
+    in let g = tg-clamp8 (170 + moisture / 15)
+    in let b = tg-clamp8 (120)
+    in r * 65536 + g * 256 + b
+
+  tg-land-biome : Integer, Integer, Integer -> Integer
+  tg-land-biome (elev) (moisture) (temp) =
+    if elev > 750 then tg-mountain-color elev
+    else if temp < 300 then tg-tundra-color elev moisture
+    else if moisture > 600 then tg-forest-color elev temp
+    else if temp > 700 then
+      if moisture < 300 then tg-desert-color elev moisture
+      else tg-savanna-color elev moisture
+    else tg-grassland-color elev moisture
+
+  tg-mountain-color : Integer -> Integer
+  tg-mountain-color (elev) =
+    if elev > 900 then
+      let v = 230 + elev / 20
+      in tg-clamp8 v * 65536 + tg-clamp8 v * 256 + tg-clamp8 v
+    else let g = tg-clamp8 (100 + elev / 10)
+    in tg-clamp8 (80 + elev / 15) * 65536 + g * 256 + tg-clamp8 (70 + elev / 20)
+
+  tg-tundra-color : Integer, Integer -> Integer
+  tg-tundra-color (elev) (moisture) =
+    let r = tg-clamp8 (140 + moisture / 20)
+    in let g = tg-clamp8 (155 + moisture / 15)
+    in let b = tg-clamp8 (130 + moisture / 25)
+    in r * 65536 + g * 256 + b
+
+  tg-forest-color : Integer, Integer -> Integer
+  tg-forest-color (elev) (temp) =
+    let r = tg-clamp8 (20 + temp / 30)
+    in let g = tg-clamp8 (80 + temp / 10)
+    in let b = tg-clamp8 (15 + temp / 40)
+    in r * 65536 + g * 256 + b
+
+  tg-desert-color : Integer, Integer -> Integer
+  tg-desert-color (elev) (moisture) =
+    let r = tg-clamp8 (200 + moisture / 20)
+    in let g = tg-clamp8 (175 + moisture / 15)
+    in let b = tg-clamp8 (110 + moisture / 10)
+    in r * 65536 + g * 256 + b
+
+  tg-savanna-color : Integer, Integer -> Integer
+  tg-savanna-color (elev) (moisture) =
+    let r = tg-clamp8 (140 + moisture / 15)
+    in let g = tg-clamp8 (160 + moisture / 10)
+    in let b = tg-clamp8 (60 + moisture / 20)
+    in r * 65536 + g * 256 + b
+
+  tg-grassland-color : Integer, Integer -> Integer
+  tg-grassland-color (elev) (moisture) =
+    let r = tg-clamp8 (80 + moisture / 20)
+    in let g = tg-clamp8 (140 + moisture / 8)
+    in let b = tg-clamp8 (40 + moisture / 25)
+    in r * 65536 + g * 256 + b
+
+Section: Mars
+
+  tg-mars-pixel : Integer, Integer, Integer -> Integer
+  tg-mars-pixel (lat) (lon) (seed) =
+    let elev = tg-fbm (lon * 3) (lat * 3) (seed + 100)
+    in let detail = tg-fbm (lon * 8) (lat * 8) (seed + 200)
+    in let abs-lat = if lat < 0 then 0 - lat else lat
+    in if abs-lat > 78 then tg-mars-cap elev abs-lat
+    else if elev > 650 then tg-mars-highland elev detail
+    else if elev < 300 then tg-mars-lowland elev detail
+    else tg-mars-mid elev detail
+
+  tg-mars-cap : Integer, Integer -> Integer
+  tg-mars-cap (elev) (abs-lat) =
+    let ice = (abs-lat - 78) * 20
+    in let r = tg-clamp8 (200 + ice)
+    in let g = tg-clamp8 (190 + ice)
+    in let b = tg-clamp8 (180 + ice)
+    in r * 65536 + g * 256 + b
+
+  tg-mars-highland : Integer, Integer -> Integer
+  tg-mars-highland (elev) (detail) =
+    let r = tg-clamp8 (180 + detail / 15)
+    in let g = tg-clamp8 (100 + detail / 20)
+    in let b = tg-clamp8 (60 + detail / 30)
+    in r * 65536 + g * 256 + b
+
+  tg-mars-lowland : Integer, Integer -> Integer
+  tg-mars-lowland (elev) (detail) =
+    let r = tg-clamp8 (140 + detail / 12)
+    in let g = tg-clamp8 (80 + detail / 18)
+    in let b = tg-clamp8 (50 + detail / 25)
+    in r * 65536 + g * 256 + b
+
+  tg-mars-mid : Integer, Integer -> Integer
+  tg-mars-mid (elev) (detail) =
+    let r = tg-clamp8 (160 + detail / 12 + elev / 20)
+    in let g = tg-clamp8 (90 + detail / 18 + elev / 30)
+    in let b = tg-clamp8 (55 + detail / 25 + elev / 40)
+    in r * 65536 + g * 256 + b
+
+Section: Texture Generation
+
+  PlanetKind =
+    | PkEarth
+    | PkMars
+    | PkRandom
+
+  tg-generate : PlanetKind, Integer -> Integer
+  tg-generate (kind) (seed) =
+    let written = tg-write-rows kind seed 0
+    in let wa = port-out-32 #408 tex-buf-addr
+    in let wb = port-out-32 #409 tex-w
+    in let wc = port-out-32 #40A tex-h
+    in port-out-32 #40B 0
+
+  tg-write-rows : PlanetKind, Integer, Integer -> Integer
+  tg-write-rows (kind) (seed) (row) =
+    if row >= tex-h then 0
+    else let lat = 90 - row * 180 / tex-h
+    in let written = tg-write-cols kind seed lat row 0
+    in tg-write-rows kind seed (row + 1)
+
+  tg-write-cols : PlanetKind, Integer, Integer, Integer, Integer -> Integer
+  tg-write-cols (kind) (seed) (lat) (row) (col) =
+    if col >= tex-w then 0
+    else let lon = col * 360 / tex-w - 180
+    in let color = tg-pixel kind lat lon seed
+    in let offset = (row * tex-w + col) * 3
+    in let r = color / 65536
+    in let g = color / 256 - r * 256
+    in let b = color - color / 256 * 256
+    in let wr = poke-byte tex-buf-addr offset r
+    in let wg = poke-byte tex-buf-addr (offset + 1) g
+    in let wb = poke-byte tex-buf-addr (offset + 2) b
+    in tg-write-cols kind seed lat row (col + 1)
+
+  tg-pixel : PlanetKind, Integer, Integer, Integer -> Integer
+  tg-pixel (kind) (lat) (lon) (seed) =
+    when kind
+      is PkEarth -> tg-earth-pixel lat lon seed
+      is PkMars -> tg-mars-pixel lat lon seed
+      is PkRandom -> tg-random-pixel lat lon seed
+
+Section: Random Planet
+
+  tg-random-pixel : Integer, Integer, Integer -> Integer
+  tg-random-pixel (lat) (lon) (seed) =
+    let elev = tg-fbm (lon * 3) (lat * 3) seed
+    in let moisture = tg-fbm (lon * 2 + 70000) (lat * 2 + 30000) (seed + 17)
+    in let abs-lat = if lat < 0 then 0 - lat else lat
+    in let base-r = tg-hash seed 1 * 200 / 1000 + 40
+    in let base-g = tg-hash seed 2 * 200 / 1000 + 40
+    in let base-b = tg-hash seed 3 * 200 / 1000 + 40
+    in let ocean-r = tg-hash seed 4 * 80 / 1000 + 10
+    in let ocean-g = tg-hash seed 5 * 80 / 1000 + 20
+    in let ocean-b = tg-hash seed 6 * 150 / 1000 + 80
+    in if abs-lat > 80 then
+      let v = 200 + elev / 20
+      in tg-clamp8 v * 65536 + tg-clamp8 (v + 5) * 256 + tg-clamp8 (v + 10)
+    else if elev < 400 then
+      let depth = 400 - elev
+      in tg-clamp8 (ocean-r + depth / 20) * 65536 + tg-clamp8 (ocean-g + depth / 15) * 256 + tg-clamp8 (ocean-b + depth / 8)
+    else let height = elev - 400
+    in let r = tg-clamp8 (base-r + height / 8 + moisture / 15)
+    in let g = tg-clamp8 (base-g + height / 10 + moisture / 10)
+    in let b = tg-clamp8 (base-b + height / 15)
+    in r * 65536 + g * 256 + b
+
+Section: Helpers
+
+  tg-clamp8 : Integer -> Integer
+  tg-clamp8 (x) = if x < 0 then 0 else if x > 255 then 255 else x

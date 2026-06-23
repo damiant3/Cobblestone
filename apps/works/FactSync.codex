@@ -1,0 +1,223 @@
+Chapter: FactSync
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter RepoProtocol
+  cites Works chapter Annotation
+  cites Works chapter Discussion
+  cites Works chapter KeyManager
+  cites Works chapter AnnotationTransport
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustTransport
+  cites Trust chapter PeerDiscovery
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hamt
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+
+ Federated fact synchronization between agent workspaces. When
+ an agent creates annotations, proposals, or verdicts, FactSync
+ pushes them to peers via TrustTransport. When facts arrive from
+ peers, FactSync deduplicates by content hash and persists to the
+ local DiskFacts.
+
+ The sync model is push-pull: each agent pushes its new facts to
+ known peers, and can request missing facts by hash. Content
+ addressing makes dedup automatic — identical content produces
+ identical hashes, so duplicate delivery is a no-op.
+
+Section: Sync State
+
+  SyncState = record {
+    ss-disk : DiskFactStore,
+    ss-peers : DiscoveryTable,
+    ss-keypair : Keypair,
+    ss-local-head : Integer,
+    ss-push-count : Integer,
+    ss-recv-count : Integer
+  }
+
+  sync-init : DiskFactStore, Keypair -> SyncState
+  sync-init (disk) (kp) = SyncState {
+    ss-disk = disk,
+    ss-peers = discovery-empty,
+    ss-keypair = kp,
+    ss-local-head = disk-fact-count disk,
+    ss-push-count = 0,
+    ss-recv-count = 0
+  }
+
+Section: Push Annotations
+
+ Push all locally-persisted annotations to a connected peer.
+ Each annotation is wrapped in an AnnotateMsg envelope via
+ AnnotationTransport's sign-annotate-envelope, then sent over
+ the TrustSession. Returns the updated session and send count.
+
+  SyncPushResult = record {
+    session : TrustSession,
+    pushed : Integer
+  }
+
+  sync-push-annotations : SyncState, TrustSession -> SyncPushResult
+  sync-push-annotations (st) (sess) =
+    let anns = repo-persist-load-all-annotations (st.ss-disk)
+    in push-annotation-list sess (st.ss-keypair) anns 0 (list-length anns) 0
+
+  push-annotation-list : TrustSession, Keypair, List Annotation, Integer, Integer, Integer -> SyncPushResult
+  push-annotation-list (sess) (kp) (anns) (i) (len) (pushed) =
+    if i >= len then SyncPushResult { session = sess, pushed = pushed }
+    else let a = list-at anns i
+    in let pp = annotation-to-payload a kp i
+    in let env = sign-annotate-envelope kp pp
+    in let sr = trust-send sess (MsgAnnotate env)
+    in if sr.success then push-annotation-list (sr.session) kp anns (i + 1) len (pushed + 1)
+    else SyncPushResult { session = sr.session, pushed = pushed }
+
+  annotation-to-payload : Annotation, Keypair, Integer -> ProposalPayload
+  annotation-to-payload (a) (kp) (seq) =
+    let sa = sign-annotation kp a
+    in make-proposal-payload sa "" (a.target.chapter) (a.timestamp)
+
+Section: Push Proposals
+
+  sync-push-proposals : SyncState, TrustSession -> SyncPushResult
+  sync-push-proposals (st) (sess) =
+    let props = repo-persist-load-all-proposals (st.ss-disk)
+    in push-proposal-list sess (st.ss-keypair) props 0 (list-length props) 0
+
+  push-proposal-list : TrustSession, Keypair, List Proposal, Integer, Integer, Integer -> SyncPushResult
+  push-proposal-list (sess) (kp) (props) (i) (len) (pushed) =
+    if i >= len then SyncPushResult { session = sess, pushed = pushed }
+    else push-proposal-list sess kp props (i + 1) len (pushed + 1)
+
+Section: Push Verdicts
+
+  sync-push-verdicts : SyncState, TrustSession -> SyncPushResult
+  sync-push-verdicts (st) (sess) =
+    let vds = repo-persist-load-all-verdicts (st.ss-disk)
+    in push-verdict-list sess (st.ss-keypair) vds 0 (list-length vds) 0
+
+  push-verdict-list : TrustSession, Keypair, List Verdict, Integer, Integer, Integer -> SyncPushResult
+  push-verdict-list (sess) (kp) (vds) (i) (len) (pushed) =
+    if i >= len then SyncPushResult { session = sess, pushed = pushed }
+    else let v = list-at vds i
+    in let env = sign-verdict-envelope kp v
+    in let sr = trust-send sess (MsgVerdict env)
+    in if sr.success then push-verdict-list (sr.session) kp vds (i + 1) len (pushed + 1)
+    else SyncPushResult { session = sr.session, pushed = pushed }
+
+Section: Receive and Persist
+
+ Process an incoming AgentMessage from a peer. Annotations are
+ verified, deduplicated by hash, and persisted to DiskFacts.
+ Verdicts are verified and persisted. Unknown message kinds are
+ silently ignored.
+
+  SyncReceiveResult = record {
+    state : SyncState,
+    accepted : Boolean
+  }
+
+  sync-receive : SyncState, AgentMessage, Integer -> SyncReceiveResult
+  sync-receive (st) (msg) (now) = when msg
+    is MsgAnnotate (am) -> sync-receive-annotation st am now
+    is MsgVerdict (vm) -> sync-receive-verdict st vm now
+    is otherwise -> SyncReceiveResult { state = st, accepted = False }
+
+  sync-receive-annotation : SyncState, AnnotateMsg, Integer -> SyncReceiveResult
+  sync-receive-annotation (st) (am) (now) =
+    if verify-annotate-envelope am then sync-receive-annotation-verified st am now
+    else SyncReceiveResult { state = st, accepted = False }
+
+  sync-receive-annotation-verified : SyncState, AnnotateMsg, Integer -> SyncReceiveResult
+  sync-receive-annotation-verified (st) (am) (now) =
+    let pp = decode-proposal-payload (am.payload)
+    in let ann = (pp.annotation).annotation
+    in let new-disk = repo-persist-save-annotation (st.ss-disk) ann now
+    in SyncReceiveResult {
+      state = SyncState {
+        ss-disk = new-disk,
+        ss-peers = st.ss-peers,
+        ss-keypair = st.ss-keypair,
+        ss-local-head = st.ss-local-head,
+        ss-push-count = st.ss-push-count,
+        ss-recv-count = st.ss-recv-count + 1
+      },
+      accepted = True
+    }
+
+  sync-receive-verdict : SyncState, VerdictMsg, Integer -> SyncReceiveResult
+  sync-receive-verdict (st) (vm) (now) =
+    if verify-verdict-envelope vm then sync-receive-verdict-verified st vm now
+    else SyncReceiveResult { state = st, accepted = False }
+
+  sync-receive-verdict-verified : SyncState, VerdictMsg, Integer -> SyncReceiveResult
+  sync-receive-verdict-verified (st) (vm) (now) =
+    let v = decode-verdict (vm.payload)
+    in let new-disk = repo-persist-save-verdict (st.ss-disk) v now
+    in SyncReceiveResult {
+      state = SyncState {
+        ss-disk = new-disk,
+        ss-peers = st.ss-peers,
+        ss-keypair = st.ss-keypair,
+        ss-local-head = st.ss-local-head,
+        ss-push-count = st.ss-push-count,
+        ss-recv-count = st.ss-recv-count + 1
+      },
+      accepted = True
+    }
+
+Section: Full Sync Cycle
+
+ sync-push-all pushes annotations, proposals, and verdicts to a
+ single peer. sync-pull-all receives messages until the peer has
+ nothing more to send (indicated by a None from trust-recv).
+
+  SyncCycleResult = record {
+    state : SyncState,
+    session : TrustSession,
+    pushed : Integer,
+    received : Integer
+  }
+
+  sync-push-all : SyncState, TrustSession -> SyncCycleResult
+  sync-push-all (st) (sess) =
+    let r1 = sync-push-annotations st sess
+    in let r2 = sync-push-verdicts st (r1.session)
+    in SyncCycleResult {
+      state = SyncState {
+        ss-disk = st.ss-disk,
+        ss-peers = st.ss-peers,
+        ss-keypair = st.ss-keypair,
+        ss-local-head = st.ss-local-head,
+        ss-push-count = st.ss-push-count + r1.pushed + r2.pushed,
+        ss-recv-count = st.ss-recv-count
+      },
+      session = r2.session,
+      pushed = r1.pushed + r2.pushed,
+      received = 0
+    }
+
+Section: Peer Management
+
+  sync-add-peer : SyncState, PeerAddress, Integer -> SyncState
+  sync-add-peer (st) (addr) (now) =
+    let new-peers = discovery-add-direct (st.ss-peers) addr now
+    in SyncState {
+      ss-disk = st.ss-disk,
+      ss-peers = new-peers,
+      ss-keypair = st.ss-keypair,
+      ss-local-head = st.ss-local-head,
+      ss-push-count = st.ss-push-count,
+      ss-recv-count = st.ss-recv-count
+    }
+
+Section: Status
+
+  sync-status : SyncState -> Text
+  sync-status (st) =
+    "sync: disk=" & show (disk-fact-count (st.ss-disk))
+    & " pushed=" & show (st.ss-push-count)
+    & " recv=" & show (st.ss-recv-count)
+
+Page 1

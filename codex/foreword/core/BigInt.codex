@@ -1,0 +1,302 @@
+Chapter: BigInt
+  cites Foreword chapter Maybe
+
+ Arbitrary-precision integers. A BigInt is a sign and a list of
+ base-10000 limbs, least-significant first. The base is chosen so
+ that limb * limb fits in a 64-bit Integer without overflow.
+
+ To bigint-from-integer gives a BigInt from a machine integer.
+ To bigint-to-integer gives the machine integer if it fits, or None.
+ To bigint-add gives the sum of two BigInts.
+ To bigint-mul gives the product of two BigInts.
+ To bigint-compare gives -1, 0, or 1.
+
+ We say:
+
+Section: Types
+
+  BigInt = record {
+    bi-sign : Integer,
+    bi-limbs : List Integer
+  }
+
+  bigint-base : Integer
+  bigint-base = 10000
+
+Section: Construction
+
+  bigint-zero : BigInt
+  bigint-zero = BigInt { bi-sign = 0, bi-limbs = [0] }
+
+  bigint-one : BigInt
+  bigint-one = BigInt { bi-sign = 1, bi-limbs = [1] }
+
+  bigint-from-integer : Integer -> BigInt
+  bigint-from-integer (n) =
+    if n == 0 then bigint-zero
+    else if n > 0 then BigInt { bi-sign = 1, bi-limbs = bigint-split-limbs n [] }
+    else BigInt { bi-sign = -1, bi-limbs = bigint-split-limbs (-n) [] }
+
+  bigint-split-limbs : Integer, List Integer -> List Integer
+  bigint-split-limbs (n) (acc) =
+    if n == 0 then if list-length acc == 0 then [0] else acc
+    else bigint-split-limbs (n / bigint-base) (list-push acc (n - (n / bigint-base) * bigint-base))
+
+Section: Queries
+
+  bigint-is-zero : BigInt -> Boolean
+  bigint-is-zero (a) = a.bi-sign == 0
+
+  bigint-negate : BigInt -> BigInt
+  bigint-negate (a) =
+    if a.bi-sign == 0 then a
+    else BigInt { bi-sign = -(a.bi-sign), bi-limbs = a.bi-limbs }
+
+  bigint-abs : BigInt -> BigInt
+  bigint-abs (a) =
+    if a.bi-sign >= 0 then a
+    else BigInt { bi-sign = 1, bi-limbs = a.bi-limbs }
+
+Section: Comparison
+
+  bigint-compare : BigInt, BigInt -> Integer
+  bigint-compare (a) (b) =
+    if a.bi-sign < b.bi-sign then -1
+    else if a.bi-sign > b.bi-sign then 1
+    else if a.bi-sign == 0 then 0
+    else if a.bi-sign > 0 then bigint-compare-limbs (a.bi-limbs) (b.bi-limbs)
+    else bigint-compare-limbs (b.bi-limbs) (a.bi-limbs)
+
+  bigint-compare-limbs : List Integer, List Integer -> Integer
+  bigint-compare-limbs (a) (b) =
+    let la = list-length a
+    in let lb = list-length b
+    in if la < lb then -1
+    else if la > lb then 1
+    else bigint-compare-limbs-rev a b (la - 1)
+
+  bigint-compare-limbs-rev : List Integer, List Integer, Integer -> Integer
+  bigint-compare-limbs-rev (a) (b) (i) =
+    if i < 0 then 0
+    else let da = list-at a i
+    in let db = list-at b i
+    in if da < db then -1
+    else if da > db then 1
+    else bigint-compare-limbs-rev a b (i - 1)
+
+  bigint-eq : BigInt, BigInt -> Boolean
+  bigint-eq (a) (b) = bigint-compare a b == 0
+
+  bigint-lt : BigInt, BigInt -> Boolean
+  bigint-lt (a) (b) = bigint-compare a b < 0
+
+  bigint-gt : BigInt, BigInt -> Boolean
+  bigint-gt (a) (b) = bigint-compare a b > 0
+
+Section: Addition
+
+  bigint-add : BigInt, BigInt -> BigInt
+  bigint-add (a) (b) =
+    if a.bi-sign == 0 then b
+    else if b.bi-sign == 0 then a
+    else if a.bi-sign == b.bi-sign then
+      BigInt { bi-sign = a.bi-sign, bi-limbs = bigint-add-limbs (a.bi-limbs) (b.bi-limbs) 0 }
+    else let cmp = bigint-compare-limbs (a.bi-limbs) (b.bi-limbs)
+    in if cmp == 0 then bigint-zero
+    else if cmp > 0 then BigInt { bi-sign = a.bi-sign, bi-limbs = bigint-sub-limbs (a.bi-limbs) (b.bi-limbs) 0 }
+    else BigInt { bi-sign = b.bi-sign, bi-limbs = bigint-sub-limbs (b.bi-limbs) (a.bi-limbs) 0 }
+
+  bigint-add-limbs : List Integer, List Integer, Integer -> List Integer
+  bigint-add-limbs (a) (b) (carry) =
+    bigint-add-limbs-loop a b carry 0 (bigint-max-len a b) []
+
+  bigint-add-limbs-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  bigint-add-limbs-loop (a) (b) (carry) (i) (len) (acc) =
+    if i >= len then
+      if carry > 0 then list-push acc carry else acc
+    else let da = if i < list-length a then list-at a i else 0
+    in let db = if i < list-length b then list-at b i else 0
+    in let s = da + db + carry
+    in bigint-add-limbs-loop a b (s / bigint-base) (i + 1) len (list-push acc (s - (s / bigint-base) * bigint-base))
+
+  bigint-max-len : List Integer, List Integer -> Integer
+  bigint-max-len (a) (b) =
+    let la = list-length a
+    in let lb = list-length b
+    in if la > lb then la else lb
+
+Section: Subtraction
+
+  bigint-sub : BigInt, BigInt -> BigInt
+  bigint-sub (a) (b) = bigint-add a (bigint-negate b)
+
+  bigint-sub-limbs : List Integer, List Integer, Integer -> List Integer
+  bigint-sub-limbs (a) (b) (borrow) =
+    bigint-strip-zeros (bigint-sub-limbs-loop a b borrow 0 (list-length a) [])
+
+  bigint-sub-limbs-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  bigint-sub-limbs-loop (a) (b) (borrow) (i) (len) (acc) =
+    if i >= len then acc
+    else let da = list-at a i
+    in let db = if i < list-length b then list-at b i else 0
+    in let d = da - db - borrow
+    in if d < 0 then bigint-sub-limbs-loop a b 1 (i + 1) len (list-push acc (d + bigint-base))
+    else bigint-sub-limbs-loop a b 0 (i + 1) len (list-push acc d)
+
+  bigint-strip-zeros : List Integer -> List Integer
+  bigint-strip-zeros (limbs) =
+    let len = bigint-find-top limbs (list-length limbs)
+    in if len == list-length limbs then limbs
+    else bigint-copy-limbs limbs 0 len []
+
+  bigint-find-top : List Integer, Integer -> Integer
+  bigint-find-top (limbs) (len) =
+    if len <= 1 then len
+    else if list-at limbs (len - 1) == 0 then bigint-find-top limbs (len - 1)
+    else len
+
+  bigint-copy-limbs : List Integer, Integer, Integer, List Integer -> List Integer
+  bigint-copy-limbs (src) (i) (len) (acc) =
+    if i >= len then acc
+    else bigint-copy-limbs src (i + 1) len (list-push acc (list-at src i))
+
+Section: Multiplication
+
+  bigint-mul : BigInt, BigInt -> BigInt
+  bigint-mul (a) (b) =
+    if a.bi-sign == 0 then bigint-zero
+    else if b.bi-sign == 0 then bigint-zero
+    else BigInt { bi-sign = a.bi-sign * b.bi-sign, bi-limbs = bigint-mul-limbs (a.bi-limbs) (b.bi-limbs) }
+
+  bigint-mul-limbs : List Integer, List Integer -> List Integer
+  bigint-mul-limbs (a) (b) =
+    bigint-mul-outer a b 0 (bigint-make-zeros (list-length a + list-length b))
+
+  bigint-mul-outer : List Integer, List Integer, Integer, List Integer -> List Integer
+  bigint-mul-outer (a) (b) (i) (acc) =
+    if i >= list-length a then bigint-strip-zeros acc
+    else bigint-mul-outer a b (i + 1) (bigint-mul-inner a b i 0 0 acc)
+
+  bigint-mul-inner : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  bigint-mul-inner (a) (b) (i) (j) (carry) (acc) =
+    if j >= list-length b then
+      if carry > 0 then bigint-limb-add acc (i + j) carry
+      else acc
+    else let prod = (list-at a i) * (list-at b j) + (list-at acc (i + j)) + carry
+    in let limb = prod - (prod / bigint-base) * bigint-base
+    in bigint-mul-inner a b i (j + 1) (prod / bigint-base) (list-set-at acc (i + j) limb)
+
+  bigint-limb-add : List Integer, Integer, Integer -> List Integer
+  bigint-limb-add (limbs) (pos) (val) =
+    if pos >= list-length limbs then list-push limbs val
+    else let cur = list-at limbs pos
+    in let s = cur + val
+    in if s < bigint-base then list-set-at limbs pos s
+    else bigint-limb-add (list-set-at limbs pos (s - bigint-base)) (pos + 1) 1
+
+  bigint-make-zeros : Integer -> List Integer
+  bigint-make-zeros (n) = bigint-make-zeros-loop n 0 []
+
+  bigint-make-zeros-loop : Integer, Integer, List Integer -> List Integer
+  bigint-make-zeros-loop (n) (i) (acc) =
+    if i >= n then acc
+    else bigint-make-zeros-loop n (i + 1) (list-push acc 0)
+
+Section: Division
+
+  bigint-divmod : BigInt, BigInt -> BigInt
+  bigint-divmod (a) (b) =
+    if b.bi-sign == 0 then bigint-zero
+    else if a.bi-sign == 0 then bigint-zero
+    else let qa = bigint-abs a
+    in let qb = bigint-abs b
+    in let result = bigint-div-unsigned qa qb
+    in BigInt { bi-sign = a.bi-sign * b.bi-sign, bi-limbs = result.bi-limbs }
+
+  bigint-div-unsigned : BigInt, BigInt -> BigInt
+  bigint-div-unsigned (a) (b) =
+    if bigint-lt a b then bigint-zero
+    else if bigint-eq a b then bigint-one
+    else bigint-div-slow a b bigint-zero
+
+  bigint-div-slow : BigInt, BigInt, BigInt -> BigInt
+  bigint-div-slow (rem) (divisor) (quot) =
+    if bigint-lt rem divisor then quot
+    else bigint-div-slow (bigint-sub rem divisor) divisor (bigint-add quot bigint-one)
+
+Section: Conversion
+
+  bigint-to-integer : BigInt -> Maybe Integer
+  bigint-to-integer (a) =
+    if a.bi-sign == 0 then Just (0)
+    else let val = bigint-limbs-to-int (a.bi-limbs) 0 1 0
+    in if val < 0 then None
+    else if a.bi-sign < 0 then Just (-val)
+    else Just (val)
+
+  bigint-limbs-to-int : List Integer, Integer, Integer, Integer -> Integer
+  bigint-limbs-to-int (limbs) (i) (mult) (acc) =
+    if i >= list-length limbs then acc
+    else bigint-limbs-to-int limbs (i + 1) (mult * bigint-base) (acc + (list-at limbs i) * mult)
+
+  bigint-to-text : BigInt -> Text
+  bigint-to-text (a) =
+    if a.bi-sign == 0 then "0"
+    else let digits = bigint-limbs-to-text (a.bi-limbs) (list-length (a.bi-limbs) - 1) True
+    in if a.bi-sign < 0 then "-" & digits else digits
+
+  bigint-limbs-to-text : List Integer, Integer, Boolean -> Text
+  bigint-limbs-to-text (limbs) (i) (first) =
+    if i < 0 then ""
+    else let limb = list-at limbs i
+    in let s = integer-to-text limb
+    in let padded = if first then s else bigint-pad4 s
+    in padded & bigint-limbs-to-text limbs (i - 1) False
+
+  bigint-pad4 : Text -> Text
+  bigint-pad4 (s) =
+    let len = text-length s
+    in if len >= 4 then s
+    else if len == 3 then "0" & s
+    else if len == 2 then "00" & s
+    else if len == 1 then "000" & s
+    else "0000"
+
+Section: Arithmetic Helpers
+
+  bigint-pow : BigInt, Integer -> BigInt
+  bigint-pow (base) (exp) =
+    if exp <= 0 then bigint-one
+    else if exp == 1 then base
+    else let half = bigint-pow base (exp / 2)
+    in let sq = bigint-mul half half
+    in if exp - (exp / 2) * 2 == 0 then sq
+    else bigint-mul sq base
+
+  bigint-factorial : Integer -> BigInt
+  bigint-factorial (n) =
+    if n <= 1 then bigint-one
+    else bigint-factorial-loop n 2 bigint-one
+
+  bigint-factorial-loop : Integer, Integer, BigInt -> BigInt
+  bigint-factorial-loop (n) (i) (acc) =
+    if i > n then acc
+    else bigint-factorial-loop n (i + 1) (bigint-mul acc (bigint-from-integer i))
+
+  bigint-gcd : BigInt, BigInt -> BigInt
+  bigint-gcd (a) (b) =
+    if bigint-is-zero b then bigint-abs a
+    else let aa = bigint-abs a
+    in let ab = bigint-abs b
+    in bigint-gcd-loop aa ab
+
+  bigint-gcd-loop : BigInt, BigInt -> BigInt
+  bigint-gcd-loop (a) (b) =
+    if bigint-is-zero b then a
+    else bigint-gcd-loop b (bigint-mod a b)
+
+  bigint-mod : BigInt, BigInt -> BigInt
+  bigint-mod (a) (b) =
+    bigint-sub a (bigint-mul (bigint-divmod a b) b)
+
+Page 1

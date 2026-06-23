@@ -1,0 +1,165 @@
+Chapter: FacialAnim
+  cites Engine chapter Skinning
+  cites Math chapter Quaternion
+
+ Facial animation via blend shapes (morph targets) and visemes for
+ lip sync. Each blend shape is a set of vertex deltas from the
+ neutral pose. Multiple shapes blend additively with weights.
+ Viseme sequences drive mouth shapes from phoneme timings.
+ Supports emotion presets (joy, anger, fear, surprise, disgust,
+ sadness) as weighted blend shape combos. Fixed-point (scale 1000).
+
+ We say:
+
+Section: Blend Shape
+
+  BlendShape = record {
+    bs-name : Text,
+    bs-deltas : List Vec3,
+    bs-vertex-count : Integer
+  }
+
+  BlendWeight = record {
+    bw-shape-idx : Integer,
+    bw-weight : Integer
+  }
+
+Section: Facial Rig
+
+  FacialRig = record {
+    fr-shapes : List BlendShape,
+    fr-shape-count : Integer,
+    fr-weights : List Integer,
+    fr-neutral-verts : List Vec3,
+    fr-vert-count : Integer
+  }
+
+  fr-new : List Vec3, Integer -> FacialRig
+  fr-new (neutral) (vert-count) = FacialRig { fr-shapes = [], fr-shape-count = 0, fr-weights = [], fr-neutral-verts = neutral, fr-vert-count = vert-count }
+
+  fr-add-shape : FacialRig, Text, List Vec3 -> FacialRig
+  fr-add-shape (rig) (name) (deltas) = FacialRig { fr-shapes = list-push (rig.fr-shapes) (BlendShape { bs-name = name, bs-deltas = deltas, bs-vertex-count = rig.fr-vert-count }), fr-shape-count = rig.fr-shape-count + 1, fr-weights = list-push (rig.fr-weights) 0, fr-neutral-verts = rig.fr-neutral-verts, fr-vert-count = rig.fr-vert-count }
+
+  fr-set-weight : FacialRig, Integer, Integer -> FacialRig
+  fr-set-weight (rig) (shape-idx) (weight) =
+    if shape-idx < 0 then rig
+    else if shape-idx >= rig.fr-shape-count then rig
+    else __record-set rig "fr-weights" (list-set-at (rig.fr-weights) shape-idx weight)
+
+Section: Evaluate Blended Pose
+
+  fr-evaluate : FacialRig -> List Vec3
+  fr-evaluate (rig) = fr-eval-verts rig 0 (rig.fr-vert-count) []
+
+  fr-eval-verts : FacialRig, Integer, Integer, List Vec3 -> List Vec3
+  fr-eval-verts (rig) (vi) (n) (acc) =
+    if vi >= n then acc
+    else let base = list-at (rig.fr-neutral-verts) vi
+    in let blended = fr-accumulate-shapes rig vi base 0 (rig.fr-shape-count)
+    in fr-eval-verts rig (vi + 1) n (list-push acc blended)
+
+  fr-accumulate-shapes : FacialRig, Integer, Vec3, Integer, Integer -> Vec3
+  fr-accumulate-shapes (rig) (vi) (pos) (si) (n) =
+    if si >= n then pos
+    else let weight = list-at (rig.fr-weights) si
+    in if weight == 0 then fr-accumulate-shapes rig vi pos (si + 1) n
+    else let shape = list-at (rig.fr-shapes) si
+    in let delta = list-at (shape.bs-deltas) vi
+    in let new-pos = vec3-new (pos.vx + delta.vx * weight / 1000) (pos.vy + delta.vy * weight / 1000) (pos.vz + delta.vz * weight / 1000)
+    in fr-accumulate-shapes rig vi new-pos (si + 1) n
+
+Section: Visemes (Lip Sync)
+
+  Viseme =
+    | VisSilent
+    | VisAah
+    | VisEeh
+    | VisIih
+    | VisOoh
+    | VisUuh
+    | VisFf
+    | VisTh
+    | VisMm
+    | VisSs
+    | VisLl
+    | VisWw
+
+  VisemeEvent = record {
+    ve-viseme : Viseme,
+    ve-time : Integer,
+    ve-duration : Integer,
+    ve-intensity : Integer
+  }
+
+  VisemeTrack = record {
+    vt-events : List VisemeEvent,
+    vt-count : Integer
+  }
+
+  vt-new : VisemeTrack
+  vt-new = VisemeTrack { vt-events = [], vt-count = 0 }
+
+  vt-add : VisemeTrack, Viseme, Integer, Integer, Integer -> VisemeTrack
+  vt-add (track) (vis) (time) (dur) (intensity) =
+    let ev = VisemeEvent { ve-viseme = vis, ve-time = time, ve-duration = dur, ve-intensity = intensity }
+    in VisemeTrack { vt-events = list-push (track.vt-events) ev, vt-count = track.vt-count + 1 }
+
+  vt-sample : VisemeTrack, Integer -> Viseme
+  vt-sample (track) (time) = vt-sample-loop (track.vt-events) time 0 (track.vt-count) VisSilent
+
+  vt-sample-loop : List VisemeEvent, Integer, Integer, Integer, Viseme -> Viseme
+  vt-sample-loop (events) (time) (i) (n) (current) =
+    if i >= n then current
+    else let ev = list-at events i
+    in if time >= ev.ve-time then if time < ev.ve-time + ev.ve-duration then vt-sample-loop events time (i + 1) n (ev.ve-viseme) else vt-sample-loop events time (i + 1) n current
+    else vt-sample-loop events time (i + 1) n current
+
+Section: Emotion Presets
+
+  EmotionPreset = record {
+    ep-name : Text,
+    ep-weights : List BlendWeight
+  }
+
+  emotion-joy : List BlendWeight
+  emotion-joy = [BlendWeight { bw-shape-idx = 0, bw-weight = 800 }, BlendWeight { bw-shape-idx = 1, bw-weight = 600 }]
+
+  emotion-anger : List BlendWeight
+  emotion-anger = [BlendWeight { bw-shape-idx = 2, bw-weight = 900 }, BlendWeight { bw-shape-idx = 3, bw-weight = 700 }]
+
+  emotion-fear : List BlendWeight
+  emotion-fear = [BlendWeight { bw-shape-idx = 4, bw-weight = 800 }, BlendWeight { bw-shape-idx = 1, bw-weight = 400 }]
+
+  emotion-surprise : List BlendWeight
+  emotion-surprise = [BlendWeight { bw-shape-idx = 5, bw-weight = 1000 }, BlendWeight { bw-shape-idx = 0, bw-weight = 500 }]
+
+  fr-apply-emotion : FacialRig, List BlendWeight -> FacialRig
+  fr-apply-emotion (rig) (weights) = fr-apply-weights rig weights 0 (list-length weights)
+
+  fr-apply-weights : FacialRig, List BlendWeight, Integer, Integer -> FacialRig
+  fr-apply-weights (rig) (ws) (i) (n) =
+    if i >= n then rig
+    else let bw = list-at ws i
+    in fr-apply-weights (fr-set-weight rig (bw.bw-shape-idx) (bw.bw-weight)) ws (i + 1) n
+
+Section: Formatting
+
+  format-facial-rig : FacialRig -> Text
+  format-facial-rig (rig) = "FacialRig(" & show (rig.fr-shape-count) & " shapes, " & show (rig.fr-vert-count) & " verts)"
+
+  format-viseme : Viseme -> Text
+  format-viseme (v) = when v
+    is VisSilent -> "silent"
+    is VisAah -> "aah"
+    is VisEeh -> "eeh"
+    is VisIih -> "iih"
+    is VisOoh -> "ooh"
+    is VisUuh -> "uuh"
+    is VisFf -> "ff"
+    is VisTh -> "th"
+    is VisMm -> "mm"
+    is VisSs -> "ss"
+    is VisLl -> "ll"
+    is VisWw -> "ww"
+
+Page 1
