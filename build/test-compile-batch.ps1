@@ -67,7 +67,7 @@ $Stage0 = Join-Path (Split-Path $PSScriptRoot) 'build-output\bare-metal\Codex.cd
 if (-not (Test-Path -PathType Leaf $Stage0)) { Write-Error "MISSING: $Stage0"; exit 2 }
 
 $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @(
-    '-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '3072', '-headless'
+    '-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '8192', '-headless'
 ) -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 $proc.WaitForExit(1800000)
 if (-not $proc.HasExited) { Stop-VmGraceful -ProcessId $proc.Id }

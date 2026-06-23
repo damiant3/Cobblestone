@@ -305,6 +305,7 @@ Section: Register Allocation
   a64-store-local (st) (local) (value-reg) =
    if local < a64-spill-base then
     if local == value-reg then st
+    else if a64-can-retarget-last st value-reg then a64-retarget-last-rd st local
     else a64-emit st (arm64-mov local value-reg)
    else let offset = (local - a64-spill-base) * 8 + 96
    in a64-emit st (arm64-str value-reg a64-sp offset)
@@ -455,14 +456,14 @@ Section: Function Emission
 
   a64-emit-epilogue : A64State, Integer -> A64State
   a64-emit-epilogue (st) (frame-size) =
-   let st1 = a64-emit st (arm64-ldp a64-x27 a64-x27 a64-sp 80)
-   in let st2 = a64-emit st1 (arm64-ldp a64-x25 a64-x26 a64-sp 64)
-   in let st3 = a64-emit st2 (arm64-ldp a64-x23 a64-x24 a64-sp 48)
-   in let st4 = a64-emit st3 (arm64-ldp a64-x21 a64-x22 a64-sp 32)
-   in let st5 = a64-emit st4 (arm64-ldp a64-x19 a64-x20 a64-sp 16)
-   in let st6 = a64-emit st5 (arm64-ldp a64-fp a64-lr a64-sp 0)
-   in let st7 = a64-emit-add-sp st6 frame-size
-   in a64-emit st7 arm64-ret
+   let nl = st.next-local
+   in let st1 = if nl > 27 then a64-emit st (arm64-ldp a64-x27 a64-x27 a64-sp 80) else st
+   in let st2 = if nl > 25 then a64-emit st1 (arm64-ldp a64-x25 a64-x26 a64-sp 64) else st1
+   in let st3 = if nl > 23 then a64-emit st2 (arm64-ldp a64-x23 a64-x24 a64-sp 48) else st2
+   in let st4 = if nl > 21 then a64-emit st3 (arm64-ldp a64-x21 a64-x22 a64-sp 32) else st3
+   in let st5 = if nl > 19 then a64-emit st4 (arm64-ldp a64-x19 a64-x20 a64-sp 16) else st4
+   in let st6 = a64-emit st5 (arm64-ldp-post a64-fp a64-lr a64-sp frame-size)
+   in a64-emit st6 arm64-ret
 
   a64-emit-add-sp : A64State, Integer -> A64State
   a64-emit-add-sp (st) (imm) =
@@ -1799,6 +1800,15 @@ Section: Apply
     else a64-emit (er.state) (arm64-mov (a64-x0 + i) (er.reg))
    in a64-emit-trivial-args st1 args locals (i + 1)
 
+  a64-emit-single-arg-call : A64State, Text, IRExpr -> A64EmitResult
+  a64-emit-single-arg-call (st) (name) (arg) =
+   let er = a64-emit-expr st arg
+   in let st1 = if a64-can-retarget-last (er.state) (er.reg) then a64-retarget-last-rd (er.state) a64-x0
+    else if er.reg == a64-x0 then er.state
+    else a64-emit (er.state) (arm64-mov a64-x0 (er.reg))
+   in let st2 = a64-emit-call-to st1 name
+   in A64EmitResult { state = st2, reg = a64-x0 }
+
   a64-emit-direct-call : A64State, Text, List IRExpr -> A64EmitResult
   a64-emit-direct-call (st) (name) (args) =
    if name == "__narrow" & list-length args == 1 then a64-emit-expr st (list-at args 0)
@@ -3120,6 +3130,94 @@ Section: Tail Call Optimization
    in let st2 = __record-set st1 "next-local" saved-nl
    in let offset = (tco.loop-top - st2.insn-count) * 4
    in A64EmitResult { state = a64-emit st2 (arm64-b offset), reg = a64-x0 }
+
+Section: Tail Call Optimization
+
+  a64-is-self-call : IRExpr, Text -> Boolean
+  a64-is-self-call (expr) (func-name) =
+   when expr
+    is IrApply (f) (a) (t) (sp) -> a64-is-self-call f func-name
+    is IrName (n) (t) (sp) -> n == func-name
+    is otherwise -> False
+
+  a64-has-tail-call : IRExpr, Text -> Boolean
+  a64-has-tail-call (expr) (func-name) =
+   when expr
+    is IrIf (c) (th) (el) (t) (sp) -> a64-has-tail-call th func-name | a64-has-tail-call el func-name
+    is IrLet (n) (t) (v) (b) (sp) -> a64-has-tail-call b func-name
+    is IrMatch (s) (bs) (t) (sp) -> a64-has-tail-call-branches bs func-name 0
+    is IrApply (f) (a) (t) (sp) -> a64-is-self-call expr func-name
+    is IrAct (stmts) (t) (sp) -> a64-has-tail-call-act stmts func-name
+    is otherwise -> False
+
+  a64-has-tail-call-branches : List IRBranch, Text, Integer -> Boolean
+  a64-has-tail-call-branches (branches) (func-name) (i) =
+   if i >= list-length branches then False
+   else let b = list-at branches i
+   in if a64-has-tail-call (b.body) func-name then True
+   else a64-has-tail-call-branches branches func-name (i + 1)
+
+  a64-has-tail-call-act : List IRActStmt, Text -> Boolean
+  a64-has-tail-call-act (stmts) (func-name) =
+   let len = list-length stmts
+   in if len == 0 then False
+   else when list-at stmts (len - 1)
+    is IrDoExec (e) (sp) -> a64-has-tail-call e func-name
+    is otherwise -> False
+
+  a64-should-tco : IRDef -> Boolean
+  a64-should-tco (def) =
+   if list-length (def.params) > 0 then a64-has-tail-call (def.body) (def.name)
+   else False
+
+  a64-collect-param-locals : List A64Local, List IRParam, Integer, List Integer -> List Integer
+  a64-collect-param-locals (locals) (params) (i) (acc) =
+   if i >= list-length params then acc
+   else let slot = a64-lookup-local locals ((list-at params i).name) 0
+   in a64-collect-param-locals locals params (i + 1) (list-push acc slot)
+
+  a64-copy-to-params : A64State, List Integer, List Integer, Integer -> A64State
+  a64-copy-to-params (st) (temp-locals) (param-locals) (i) =
+   if i >= list-length temp-locals then st
+   else let lr = a64-load-local st (list-at temp-locals i)
+   in let st1 = a64-store-local (lr.state) (list-at param-locals i) (lr.reg)
+   in a64-copy-to-params st1 temp-locals param-locals (i + 1)
+
+  a64-arg-has-call : IRExpr -> Boolean
+  a64-arg-has-call (e) =
+   when e
+    is IrApply (f) (a) (t) (s) -> True
+    is IrBinary (op) (l) (r) (t) (s) -> a64-arg-has-call l | a64-arg-has-call r
+    is IrNegate (x) (s) -> a64-arg-has-call x
+    is IrIf (c) (th) (el) (t) (s) -> True
+    is otherwise -> False
+
+  a64-emit-arg-to-param : A64State, IRExpr, Integer -> A64State
+  a64-emit-arg-to-param (st) (arg) (param-reg) =
+   let er = a64-emit-expr st arg
+   in if er.reg == param-reg then er.state
+   else if a64-is-temp-reg (er.reg) then a64-retarget-last-rd (er.state) param-reg
+   else a64-emit (er.state) (arm64-mov param-reg (er.reg))
+
+  a64-emit-tail-call : A64State, List IRExpr -> A64EmitResult
+  a64-emit-tail-call (st) (args) =
+   let st-nt = a64-set-tail-pos st False
+   in if list-length args == 2 then
+    if a64-arg-has-call (list-at args 0) | a64-arg-has-call (list-at args 1) then a64-emit-tail-call-general st-nt (st.tco) args
+    else let p0 = list-at (st.tco.param-locals) 0
+    in let p1 = list-at (st.tco.param-locals) 1
+    in let st1 = a64-emit-arg-to-param st-nt (list-at args 1) p1
+    in let st2 = a64-emit-arg-to-param st1 (list-at args 0) p0
+    in let offset = (st.tco.loop-top - st2.insn-count) * 4
+    in A64EmitResult { state = a64-emit st2 (arm64-b offset), reg = a64-x0 }
+   else a64-emit-tail-call-general st-nt (st.tco) args
+
+  a64-emit-tail-call-general : A64State, A64TcoState, List IRExpr -> A64EmitResult
+  a64-emit-tail-call-general (st) (tco) (args) =
+   let saved = a64-save-args st args 0 []
+   in let st1 = a64-copy-to-params (saved.state) (saved.locals) (tco.param-locals) 0
+   in let offset = (tco.loop-top - st1.insn-count) * 4
+   in A64EmitResult { state = a64-emit st1 (arm64-b offset), reg = a64-x0 }
 
 Section: Module Emission
 

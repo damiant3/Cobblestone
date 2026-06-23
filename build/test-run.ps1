@@ -26,7 +26,7 @@ $stderrFile = [System.IO.Path]::GetTempFileName()
 $inputFile = $null
 
 try {
-    $vmArgs = @('-kernel', $Kernel, '-output', $outputFile, '-mem', '3072', '-headless')
+    $vmArgs = @('-kernel', $Kernel, '-output', $outputFile, '-mem', '8192', '-headless')
     if ($StdinFile -and (Test-Path -PathType Leaf $StdinFile)) {
         $inputFile = [System.IO.Path]::GetTempFileName()
         $stdinBytes = [System.IO.File]::ReadAllBytes($StdinFile)

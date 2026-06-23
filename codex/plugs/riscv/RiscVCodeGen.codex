@@ -39,6 +39,32 @@ Section: Architecture Profile
    cycles-branch-not = 1
   }
 
+Section: Architecture Profile
+
+  RvArchProfile = record {
+   name : Text,
+   clock-hz : Integer,
+   cycles-alu : Integer,
+   cycles-mul : Integer,
+   cycles-div : Integer,
+   cycles-load : Integer,
+   cycles-store : Integer,
+   cycles-branch : Integer,
+   cycles-branch-not : Integer
+  }
+
+  rv-esp32-c6 : RvArchProfile = RvArchProfile {
+   name = "ESP32-C6 (RV32IMC @ 160 MHz)",
+   clock-hz = 160000000,
+   cycles-alu = 1,
+   cycles-mul = 5,
+   cycles-div = 35,
+   cycles-load = 2,
+   cycles-store = 1,
+   cycles-branch = 3,
+   cycles-branch-not = 1
+  }
+
 Section: Codegen State
 
   RvLocal = record {
@@ -253,6 +279,7 @@ Section: Register Allocation
   rv-store-local (st) (local) (value-reg) =
    if local < rv-spill-base then
     if local == value-reg then st
+    else if rv-can-retarget-last st value-reg then rv-retarget-last-rd st local
     else rv-emit st (rv-mv local value-reg)
    else let offset = (local - rv-spill-base) * 8 + 112
    in rv-emit st (rv-sd rv-sp value-reg offset)
@@ -1808,6 +1835,26 @@ Section: Apply
     let st1 = if l0.reg == rv-a0 then l0.state else rv-emit (l0.state) (rv-mv rv-a0 (l0.reg))
     in let st2 = if er1.reg == rv-a1 then st1 else rv-emit st1 (rv-mv rv-a1 (er1.reg))
     in let st3 = rv-emit-call-to st2 name
+   in RvEmitResult { state = st3, reg = rv-a0 }
+
+  rv-emit-single-arg-call : RvState, Text, IRExpr -> RvEmitResult
+  rv-emit-single-arg-call (st) (name) (arg) =
+   let er = rv-emit-expr st arg
+   in let st1 = if rv-is-temp-reg (er.reg) then rv-retarget-last-rd (er.state) rv-a0
+    else if er.reg == rv-a0 then er.state
+    else rv-emit (er.state) (rv-mv rv-a0 (er.reg))
+   in let st2 = rv-emit-call-to st1 name
+   in RvEmitResult { state = st2, reg = rv-a0 }
+
+  rv-emit-two-arg-call : RvState, Text, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-two-arg-call (st) (name) (arg0) (arg1) =
+   let er0 = rv-emit-expr st arg0
+   in let s0 = rv-save-if-needed (er0.state) (er0.reg)
+   in let er1 = rv-emit-expr (s0.state) arg1
+   in let l0 = rv-reload-if-needed (er1.state) (s0.reg)
+   in let st1 = if l0.reg == rv-a0 then l0.state else rv-emit (l0.state) (rv-mv rv-a0 (l0.reg))
+   in let st2 = if er1.reg == rv-a1 then st1 else rv-emit st1 (rv-mv rv-a1 (er1.reg))
+   in let st3 = rv-emit-call-to st2 name
    in RvEmitResult { state = st3, reg = rv-a0 }
 
   rv-emit-direct-call : RvState, Text, List IRExpr -> RvEmitResult
