@@ -7,7 +7,7 @@ and platform constraints for the Codex bare-metal compiler.
 
 The bare-metal system occupies a single flat physical address space.
 All addresses are identity-mapped (virtual = physical). The single
-governing constant is `bare-metal-ram-size` (3 GB) in
+governing constant is `bare-metal-ram-size` (8 GB) in
 `codex/Emit/X86_64State.codex`. Every other memory value derives from
 it.
 
@@ -411,7 +411,7 @@ PE, GPT/FAT images) are produced by plug CDX binaries in `codex/plugs/`.
 ## Heap and Stack
 
 Heap and stack share the arena between `bare-metal-heap-base` (6 MB) and
-`bare-metal-stack-top` (= ram-size, 3 GB). The heap grows upward via
+`bare-metal-stack-top` (= ram-size, 8 GB). The heap grows upward via
 register R10; the stack grows downward via RSP. See the Register
 Convention table above for the full register map.
 

@@ -14,7 +14,7 @@ param(
     [Parameter(Mandatory=$true)] [string]$Out,
     [Parameter(Mandatory=$true)] [string]$Log,
     [int]$PCore = 1,
-    [int]$MemMB = 3072,
+    [int]$MemMB = 8192,
     [switch]$IrUni,
     [switch]$IrCce,
     [switch]$Prose,

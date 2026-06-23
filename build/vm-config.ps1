@@ -271,7 +271,7 @@ function Close-Vm {
 function Start-VmRun {
     param(
         [string]$Kernel, [int]$ConnectTimeoutSec = 30,
-        [int]$MemMB = 3072, [int]$PCore = 1, [string[]]$ExtraArgs = @()
+        [int]$MemMB = 8192, [int]$PCore = 1, [string[]]$ExtraArgs = @()
     )
     if ($script:UseCodexVm) { return Start-CodexVmRun @PSBoundParameters }
     if (-not $script:FallbackVmBin) { Write-Host "No fallback VM"; return $null }
@@ -304,7 +304,7 @@ function Start-VmRun {
 function Start-CodexVmRun {
     param(
         [string]$Kernel, [int]$ConnectTimeoutSec = 30,
-        [int]$MemMB = 3072, [int]$PCore = 1, [string[]]$ExtraArgs = @()
+        [int]$MemMB = 8192, [int]$PCore = 1, [string[]]$ExtraArgs = @()
     )
     $stdoutFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
