@@ -1,0 +1,164 @@
+Chapter: PrintManager
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Printer management. Discovery via USB and network (IPP), print
+ queue with job tracking, default printer selection, paper size
+ and quality settings per printer.
+
+Section: Printer Connection
+
+  PrinterConn =
+    | PrnUsb
+    | PrnNetwork (Text)
+    | PrnBluetooth
+
+Section: Paper Size
+
+  PaperSize =
+    | PaperLetter
+    | PaperA4
+    | PaperLegal
+    | PaperA3
+
+  paper-label : PaperSize -> Text
+  paper-label (p) = when p
+    is PaperLetter -> "Letter (8.5x11)"
+    is PaperA4 -> "A4 (210x297mm)"
+    is PaperLegal -> "Legal (8.5x14)"
+    is PaperA3 -> "A3 (297x420mm)"
+
+Section: Print Quality
+
+  PrintQuality =
+    | QualDraft
+    | QualNormal
+    | QualHigh
+    | QualPhoto
+
+Section: Printer
+
+  Printer = record {
+    prn-id : Text,
+    prn-name : Text,
+    prn-connection : PrinterConn,
+    prn-online : Boolean,
+    prn-default : Boolean,
+    prn-paper : PaperSize,
+    prn-quality : PrintQuality,
+    prn-color : Boolean,
+    prn-duplex : Boolean
+  }
+
+  printer-new : Text, Text, PrinterConn -> Printer
+  printer-new (id) (name) (conn) = Printer {
+    prn-id = id, prn-name = name, prn-connection = conn,
+    prn-online = True, prn-default = False, prn-paper = PaperLetter,
+    prn-quality = QualNormal, prn-color = True, prn-duplex = False
+  }
+
+Section: Print Job
+
+  PrintJobStatus =
+    | JobQueued
+    | JobPrinting
+    | JobComplete
+    | JobFailed (Text)
+    | JobCancelled
+
+  PrintJob = record {
+    pj-id : Integer,
+    pj-document : Text,
+    pj-printer : Text,
+    pj-pages : Integer,
+    pj-copies : Integer,
+    pj-status : PrintJobStatus,
+    pj-submitted : Integer
+  }
+
+Section: State
+
+  PrintManagerState = record {
+    pm-printers : List Printer,
+    pm-printer-count : Integer,
+    pm-default-printer : Text,
+    pm-jobs : List PrintJob,
+    pm-job-count : Integer,
+    pm-next-job-id : Integer
+  }
+
+  print-manager-new : PrintManagerState
+  print-manager-new = PrintManagerState {
+    pm-printers = [], pm-printer-count = 0, pm-default-printer = "",
+    pm-jobs = [], pm-job-count = 0, pm-next-job-id = 1
+  }
+
+Section: Actions
+
+  pm-add-printer : PrintManagerState, Printer -> PrintManagerState
+  pm-add-printer (st) (prn) =
+    let st2 = __record-set (__record-set st "pm-printers" (list-push (st.pm-printers) prn)) "pm-printer-count" (st.pm-printer-count + 1)
+    in if text-length (st.pm-default-printer) == 0 then __record-set st2 "pm-default-printer" (prn.prn-id) else st2
+
+  pm-set-default : PrintManagerState, Text -> PrintManagerState
+  pm-set-default (st) (id) = __record-set st "pm-default-printer" id
+
+  pm-submit-job : PrintManagerState, Text, Text, Integer, Integer, Integer -> PrintManagerState
+  pm-submit-job (st) (doc) (printer) (pages) (copies) (ts) =
+    let job = PrintJob { pj-id = st.pm-next-job-id, pj-document = doc, pj-printer = printer, pj-pages = pages, pj-copies = copies, pj-status = JobQueued, pj-submitted = ts }
+    in __record-set (__record-set (__record-set st "pm-jobs" (list-push (st.pm-jobs) job)) "pm-job-count" (st.pm-job-count + 1)) "pm-next-job-id" (st.pm-next-job-id + 1)
+
+  pm-cancel-job : PrintManagerState, Integer -> PrintManagerState
+  pm-cancel-job (st) (job-id) =
+    let updated = pm-update-job-status (st.pm-jobs) job-id JobCancelled 0 (st.pm-job-count) []
+    in __record-set st "pm-jobs" updated
+
+  pm-update-job-status : List PrintJob, Integer, PrintJobStatus, Integer, Integer, List PrintJob -> List PrintJob
+  pm-update-job-status (jobs) (target) (status) (i) (n) (acc) =
+    if i >= n then acc
+    else let job = list-at jobs i
+    in let updated = if job.pj-id == target then __record-set job "pj-status" status else job
+    in pm-update-job-status jobs target status (i + 1) n (list-push acc updated)
+
+Section: Widget
+
+  pm-widget : PrintManagerState -> WidgetNode
+  pm-widget (st) =
+    let title = widget-label "prn-title" "Printers"
+    in let default-label = widget-label "prn-default" ("Default: " & st.pm-default-printer)
+    in let prn-rows = pm-printer-rows st 0 (st.pm-printer-count) []
+    in let queue-title = widget-label "prn-q-title" ("Print Queue (" & show (st.pm-job-count) & ")")
+    in let job-rows = pm-job-rows st 0 (st.pm-job-count) []
+    in widget-panel "prn-panel" DirColumn 4 ([title, default-label] & prn-rows & [queue-title] & job-rows)
+
+  pm-printer-rows : PrintManagerState, Integer, Integer, List WidgetNode -> List WidgetNode
+  pm-printer-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let prn = list-at (st.pm-printers) i
+    in let name = widget-label ("prn-n-" & prn.prn-id) (prn.prn-name)
+    in let status = widget-label ("prn-s-" & prn.prn-id) (if prn.prn-online then "Online" else "Offline")
+    in let def-btn = widget-button ("prn-d-" & prn.prn-id) (if prn.prn-default then "Default" else "Set Default")
+    in let row = widget-panel ("prn-r-" & prn.prn-id) DirRow 4 [name, status, def-btn]
+    in pm-printer-rows st (i + 1) n (list-push acc row)
+
+  pm-job-rows : PrintManagerState, Integer, Integer, List WidgetNode -> List WidgetNode
+  pm-job-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let job = list-at (st.pm-jobs) (n - 1 - i)
+    in let status-text = when job.pj-status
+      is JobQueued -> "Queued"
+      is JobPrinting -> "Printing"
+      is JobComplete -> "Done"
+      is JobFailed (msg) -> "Failed: " & msg
+      is JobCancelled -> "Cancelled"
+    in let row = widget-label ("prn-j-" & show i) (job.pj-document & " | " & show (job.pj-pages) & "p x" & show (job.pj-copies) & " | " & status-text)
+    in pm-job-rows st (i + 1) n (list-push acc row)
+
+Section: Formatting
+
+  format-print-manager : PrintManagerState -> Text
+  format-print-manager (st) =
+    "printers=" & show (st.pm-printer-count) & " default=" & st.pm-default-printer & " jobs=" & show (st.pm-job-count)
+
+Page 1

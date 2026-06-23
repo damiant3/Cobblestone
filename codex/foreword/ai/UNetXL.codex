@@ -1,0 +1,175 @@
+Chapter: UNetXL
+  cites AI chapter Tensor
+  cites AI chapter Conv2d
+  cites AI chapter Normalization
+  cites AI chapter Attention
+  cites AI chapter UNet
+  cites AI chapter SafeTensors
+  cites Foreword chapter Maybe
+
+ SDXL UNet architecture. Wider than SD 1.5 (640/1280/1280 channels
+ vs 320/640/1280/1280), uses two text encoder conditioning inputs
+ concatenated, and adds a crop/size conditioning vector. Shares
+ the ResNet/CrossAttention block types from UNet.codex.
+
+ Key differences from SD 1.5:
+   - 3 down blocks (not 4), channels [640, 1280, 1280]
+   - Cross-attention context dim 2048 (dual CLIP: 768 + 1280)
+   - Time embedding dim 1280 (same)
+   - Added size/crop conditioning (micro-conditioning)
+   - No attention in first down block (only ResNet)
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Configuration
+  UNetXLConfig = record {
+    uxl-in-channels : Integer,
+    uxl-out-channels : Integer,
+    uxl-block-channels : List Integer,
+    uxl-num-res-blocks : Integer,
+    uxl-num-heads : Integer,
+    uxl-context-dim : Integer,
+    uxl-time-embed-dim : Integer,
+    uxl-add-embed-dim : Integer
+  }
+
+  sdxl-unet-config : UNetXLConfig
+  sdxl-unet-config = UNetXLConfig {
+    uxl-in-channels = 4,
+    uxl-out-channels = 4,
+    uxl-block-channels = [640, 1280, 1280],
+    uxl-num-res-blocks = 2,
+    uxl-num-heads = 20,
+    uxl-context-dim = 2048,
+    uxl-time-embed-dim = 1280,
+    uxl-add-embed-dim = 2816
+  }
+
+Section: Micro-Conditioning
+  XLCondition = record {
+    xlc-original-h : Integer,
+    xlc-original-w : Integer,
+    xlc-crop-top : Integer,
+    xlc-crop-left : Integer,
+    xlc-target-h : Integer,
+    xlc-target-w : Integer
+  }
+
+  xl-default-condition : Integer, Integer -> XLCondition
+  xl-default-condition (h) (w) =
+    XLCondition { xlc-original-h = h, xlc-original-w = w, xlc-crop-top = 0, xlc-crop-left = 0, xlc-target-h = h, xlc-target-w = w }
+
+  xl-condition-to-embed : XLCondition, Integer -> List Integer
+  xl-condition-to-embed (cond) (dim) =
+    let half = dim / 2
+    in let vals = [cond.xlc-original-h, cond.xlc-original-w, cond.xlc-crop-top, cond.xlc-crop-left, cond.xlc-target-h, cond.xlc-target-w]
+    in xl-embed-values vals half 0 6 []
+
+  xl-embed-values : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  xl-embed-values (vals) (half-dim) (i) (n) (acc) =
+    if i >= n then acc
+    else let embedded = unet-sinusoidal-embed (list-at vals i) half-dim 0 []
+    in xl-embed-values vals half-dim (i + 1) n (acc & embedded)
+
+Section: SDXL UNet State
+  UNetXLState = record {
+    uxls-config : UNetXLConfig,
+    uxls-input-conv-w : List Integer,
+    uxls-input-conv-b : List Integer,
+    uxls-output-conv-w : List Integer,
+    uxls-output-conv-b : List Integer,
+    uxls-output-norm-gamma : List Integer,
+    uxls-output-norm-beta : List Integer,
+    uxls-time-proj-w1 : List Integer,
+    uxls-time-proj-b1 : List Integer,
+    uxls-time-proj-w2 : List Integer,
+    uxls-time-proj-b2 : List Integer,
+    uxls-add-proj-w : List Integer,
+    uxls-add-proj-b : List Integer,
+    uxls-down-blocks : List UNetDownBlock,
+    uxls-mid-block : UNetMidBlock,
+    uxls-up-blocks : List UNetUpBlock
+  }
+
+Section: SDXL Forward Pass
+  unetxl-forward : UNetXLState, List Integer, Integer, List Integer, XLCondition, Integer, Integer -> List Integer
+  unetxl-forward (state) (noisy-latent) (timestep) (context) (cond) (h) (w) =
+    let cfg = state.uxls-config
+    in let time-emb = unet-time-embed timestep (cfg.uxl-time-embed-dim)
+    in let time-proj = unetxl-time-mlp time-emb state
+    in let add-emb = xl-condition-to-embed cond (cfg.uxl-add-embed-dim)
+    in let add-proj = unetxl-add-mlp add-emb state
+    in let combined-time = unetxl-add-vecs time-proj add-proj 0 (list-length time-proj) []
+    in let conv-in-p = conv2d-params (cfg.uxl-in-channels) (list-at (cfg.uxl-block-channels) 0) 3 1 1
+    in let conv-in-l = conv2d-layer conv-in-p (state.uxls-input-conv-w) (state.uxls-input-conv-b)
+    in let hidden = conv2d-forward conv-in-l noisy-latent h w
+    in let down-result = unet-down-pass (state.uxls-down-blocks) hidden combined-time context h w 0 (list-length (state.uxls-down-blocks)) []
+    in let mid-out = unet-mid-pass (state.uxls-mid-block) (down-result.udr-hidden) combined-time context (down-result.udr-h) (down-result.udr-w)
+    in let up-out = unet-up-pass (state.uxls-up-blocks) mid-out combined-time context (down-result.udr-skips) (down-result.udr-h) (down-result.udr-w) 0 (list-length (state.uxls-up-blocks))
+    in let normed = group-norm (group-norm-params 32 (list-at (cfg.uxl-block-channels) 0) (state.uxls-output-norm-gamma) (state.uxls-output-norm-beta)) (up-out.uur-hidden) (up-out.uur-h) (up-out.uur-w)
+    in let activated = silu-forward normed
+    in let conv-out-p = conv2d-params (list-at (cfg.uxl-block-channels) 0) (cfg.uxl-out-channels) 3 1 1
+    in let conv-out-l = conv2d-layer conv-out-p (state.uxls-output-conv-w) (state.uxls-output-conv-b)
+    in conv2d-forward conv-out-l activated (up-out.uur-h) (up-out.uur-w)
+
+  unetxl-time-mlp : List Integer, UNetXLState -> List Integer
+  unetxl-time-mlp (time-emb) (state) =
+    let h1 = resnet-linear time-emb (state.uxls-time-proj-w1) (state.uxls-time-proj-b1) (list-length time-emb) (list-length (state.uxls-time-proj-b1))
+    in let act = silu-forward h1
+    in resnet-linear act (state.uxls-time-proj-w2) (state.uxls-time-proj-b2) (list-length act) (list-length (state.uxls-time-proj-b2))
+
+  unetxl-add-mlp : List Integer, UNetXLState -> List Integer
+  unetxl-add-mlp (add-emb) (state) =
+    let projected = resnet-linear add-emb (state.uxls-add-proj-w) (state.uxls-add-proj-b) (list-length add-emb) (list-length (state.uxls-add-proj-b))
+    in silu-forward projected
+
+  unetxl-add-vecs : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  unetxl-add-vecs (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else let bv = if i < list-length b then list-at b i else 0
+    in unetxl-add-vecs a b (i + 1) n (list-push acc (list-at a i + bv))
+
+Section: Weight Loading
+  unetxl-load-state : List Integer, SafeTensorFile, UNetXLConfig -> UNetXLState
+  unetxl-load-state (data) (file) (cfg) =
+    UNetXLState {
+      uxls-config = cfg,
+      uxls-input-conv-w = uxl-lw data file "model.diffusion_model.input_blocks.0.0.weight",
+      uxls-input-conv-b = uxl-lw data file "model.diffusion_model.input_blocks.0.0.bias",
+      uxls-output-conv-w = uxl-lw data file "model.diffusion_model.out.2.weight",
+      uxls-output-conv-b = uxl-lw data file "model.diffusion_model.out.2.bias",
+      uxls-output-norm-gamma = uxl-lw data file "model.diffusion_model.out.0.weight",
+      uxls-output-norm-beta = uxl-lw data file "model.diffusion_model.out.0.bias",
+      uxls-time-proj-w1 = uxl-lw data file "model.diffusion_model.time_embed.0.weight",
+      uxls-time-proj-b1 = uxl-lw data file "model.diffusion_model.time_embed.0.bias",
+      uxls-time-proj-w2 = uxl-lw data file "model.diffusion_model.time_embed.2.weight",
+      uxls-time-proj-b2 = uxl-lw data file "model.diffusion_model.time_embed.2.bias",
+      uxls-add-proj-w = uxl-lw data file "model.diffusion_model.label_emb.0.0.weight",
+      uxls-add-proj-b = uxl-lw data file "model.diffusion_model.label_emb.0.0.bias",
+      uxls-down-blocks = [],
+      uxls-mid-block = uxl-empty-mid,
+      uxls-up-blocks = []
+    }
+
+  uxl-empty-mid : UNetMidBlock
+  uxl-empty-mid =
+    let empty-res = ResNetBlock { rn-conv1-weights = [], rn-conv1-bias = [], rn-conv2-weights = [], rn-conv2-bias = [], rn-norm1-gamma = [], rn-norm1-beta = [], rn-norm2-gamma = [], rn-norm2-beta = [], rn-time-proj = [], rn-time-bias = [], rn-in-channels = 1280, rn-out-channels = 1280 }
+    in let empty-skip = ResNetSkipConv { rs-weights = [], rs-bias = [], rs-needed = False }
+    in let empty-attn = CrossAttnBlock { ca-norm-gamma = [], ca-norm-beta = [], ca-q-weight = [], ca-k-weight = [], ca-v-weight = [], ca-out-weight = [], ca-out-bias = [], ca-channels = 1280, ca-context-dim = 2048, ca-num-heads = 20 }
+    in UNetMidBlock { um-resnet1 = empty-res, um-resnet2 = empty-res, um-skip1 = empty-skip, um-skip2 = empty-skip, um-attn = empty-attn }
+
+  uxl-lw : List Integer, SafeTensorFile, Text -> List Integer
+  uxl-lw (data) (file) (name) =
+    let found = st-find-tensor file name
+    in when found
+      is Just (meta) -> (st-load-tensor data file meta).data
+      is None -> []
+
+Section: Queries
+  format-unetxl-config : UNetXLConfig -> Text
+  format-unetxl-config (cfg) =
+    "SDXL in=" & show (cfg.uxl-in-channels) & " out=" & show (cfg.uxl-out-channels) & " heads=" & show (cfg.uxl-num-heads) & " ctx=" & show (cfg.uxl-context-dim) & " add=" & show (cfg.uxl-add-embed-dim)
+
+Page 1

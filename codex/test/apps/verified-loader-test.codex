@@ -1,78 +1,69 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Chapter: VerifiedLoaderTest
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  has-bit : Integer, Integer -> Boolean
+  has-bit (mask) (bit) = bit-and mask (bit-shl 1 bit) > 0
+
+Section: Body
+  opening : [Console] Nothing =
+    let console-w-bin = cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+    in let author-key = read-author-key console-w-bin
+    in let lat = lattice-add-direct lattice-empty author-key 8000
+    in let policy = policy-add-rule (policy-empty "test") (rule-allow "allow-all" AlwaysTrue)
+    in let d1 = evaluate-load console-w-bin lat policy 0 fact-store-empty 100
+    in let b1 = load-bitmask d1
+    in let multi-bin = cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-read, scope = "/", max-duration = 0 },
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 },
+        CdxCapability { cap-id = cdx-cap-network, direction = cdx-dir-read, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console", "Network"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+    in let d2 = evaluate-load multi-bin lat policy 0 fact-store-empty 100
+    in let b2 = load-bitmask d2
+    in let d3 = evaluate-load [1, 2, 3] lat policy 0 fact-store-empty 100
+    in act
+      print-line-uni ("console-write: " & show-bool (load-approved d1) & " bitmask=" & show b1)
+      print-line-uni ("  bit5=" & show-bool (has-bit b1 kern-cap-console-write))
+      print-line-uni ("multi-cap: " & show-bool (load-approved d2) & " bitmask=" & show b2)
+      print-line-uni ("  console-r=" & show-bool (has-bit b2 kern-cap-console-read) & " console-w=" & show-bool (has-bit b2 kern-cap-console-write) & " net-r=" & show-bool (has-bit b2 kern-cap-network-read))
+      print-line-uni ("denied: " & show-bool (load-approved d3) & " " & load-reason d3)
+    end
+
+Page 1

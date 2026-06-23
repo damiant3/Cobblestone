@@ -1,0 +1,185 @@
+Chapter: Texture
+  cites Game chapter Color
+  cites Game chapter Rasterizer
+
+ Software texture storage and sampling. Textures are flat pixel arrays
+ with nearest-neighbor or bilinear sampling. UV coordinates range
+ 0-1000 (fixed-point). Supports wrap, clamp, and mirror address modes.
+ Includes procedural generators for common test textures.
+
+ We say:
+
+Section: Types
+
+  EngineTexture = record {
+    etx-width : Integer,
+    etx-height : Integer,
+    etx-pixels : List Integer
+  }
+
+  SampleMode =
+    | NearestNeighbor
+    | Bilinear
+
+  WrapMode =
+    | WrapRepeat
+    | WrapClamp
+    | WrapMirror
+
+Section: Construction
+
+  etx-new : Integer, Integer, Integer -> EngineTexture
+  etx-new (w) (h) (fill) = EngineTexture { etx-width = w, etx-height = h, etx-pixels = etx-fill (w * h) fill [] }
+
+  etx-fill : Integer, Integer, List Integer -> List Integer
+  etx-fill (n) (val) (acc) =
+    if n <= 0 then acc
+    else etx-fill (n - 1) val (list-push acc val)
+
+  etx-from-pixels : Integer, Integer, List Integer -> EngineTexture
+  etx-from-pixels (w) (h) (pixels) = EngineTexture { etx-width = w, etx-height = h, etx-pixels = pixels }
+
+  etx-set : EngineTexture, Integer, Integer, Integer -> EngineTexture
+  etx-set (tex) (x) (y) (color) =
+    if x < 0 then tex
+    else if y < 0 then tex
+    else if x >= tex.etx-width then tex
+    else if y >= tex.etx-height then tex
+    else EngineTexture { etx-width = tex.etx-width, etx-height = tex.etx-height, etx-pixels = list-set-at (tex.etx-pixels) (y * tex.etx-width + x) color }
+
+  etx-get : EngineTexture, Integer, Integer -> Integer
+  etx-get (tex) (x) (y) =
+    if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= tex.etx-width then 0
+    else if y >= tex.etx-height then 0
+    else list-at (tex.etx-pixels) (y * tex.etx-width + x)
+
+Section: UV Wrapping
+
+  etx-wrap-coord : Integer, Integer, WrapMode -> Integer
+  etx-wrap-coord (uv) (size) (mode) =
+    when mode
+      is WrapRepeat ->
+        let m = etx-imod uv size
+        in if m < 0 then m + size else m
+      is WrapClamp ->
+        if uv < 0 then 0 else if uv >= size then size - 1 else uv
+      is WrapMirror ->
+        let period = size * 2
+        in let m = etx-imod uv period
+        in let pos = if m < 0 then m + period else m
+        in if pos >= size then period - 1 - pos else pos
+
+  etx-imod : Integer, Integer -> Integer
+  etx-imod (a) (b) =
+    if b == 0 then 0
+    else a - (a / b) * b
+
+Section: Sampling
+
+  etx-sample-nearest : EngineTexture, Integer, Integer, WrapMode -> Integer
+  etx-sample-nearest (tex) (u) (v) (wrap) =
+    let px = u * tex.etx-width / 1000
+    in let py = v * tex.etx-height / 1000
+    in let wx = etx-wrap-coord px (tex.etx-width) wrap
+    in let wy = etx-wrap-coord py (tex.etx-height) wrap
+    in etx-get tex wx wy
+
+  etx-sample-bilinear : EngineTexture, Integer, Integer, WrapMode -> Integer
+  etx-sample-bilinear (tex) (u) (v) (wrap) =
+    let fx = u * tex.etx-width
+    in let fy = v * tex.etx-height
+    in let x0 = fx / 1000
+    in let y0 = fy / 1000
+    in let x1 = x0 + 1
+    in let y1 = y0 + 1
+    in let frac-x = fx - x0 * 1000
+    in let frac-y = fy - y0 * 1000
+    in let wx0 = etx-wrap-coord x0 (tex.etx-width) wrap
+    in let wy0 = etx-wrap-coord y0 (tex.etx-height) wrap
+    in let wx1 = etx-wrap-coord x1 (tex.etx-width) wrap
+    in let wy1 = etx-wrap-coord y1 (tex.etx-height) wrap
+    in let c00 = etx-get tex wx0 wy0
+    in let c10 = etx-get tex wx1 wy0
+    in let c01 = etx-get tex wx0 wy1
+    in let c11 = etx-get tex wx1 wy1
+    in etx-bilerp c00 c10 c01 c11 frac-x frac-y
+
+  etx-bilerp : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  etx-bilerp (c00) (c10) (c01) (c11) (fx) (fy) =
+    let inv-fx = 1000 - fx
+    in let inv-fy = 1000 - fy
+    in let r00 = etx-chan-r c00
+    in let g00 = etx-chan-g c00
+    in let b00 = etx-chan-b c00
+    in let r10 = etx-chan-r c10
+    in let g10 = etx-chan-g c10
+    in let b10 = etx-chan-b c10
+    in let r01 = etx-chan-r c01
+    in let g01 = etx-chan-g c01
+    in let b01 = etx-chan-b c01
+    in let r11 = etx-chan-r c11
+    in let g11 = etx-chan-g c11
+    in let b11 = etx-chan-b c11
+    in let r = (r00 * inv-fx + r10 * fx) * inv-fy / 1000 + (r01 * inv-fx + r11 * fx) * fy / 1000
+    in let g = (g00 * inv-fx + g10 * fx) * inv-fy / 1000 + (g01 * inv-fx + g11 * fx) * fy / 1000
+    in let b = (b00 * inv-fx + b10 * fx) * inv-fy / 1000 + (b01 * inv-fx + b11 * fx) * fy / 1000
+    in etx-pack-rgb (r / 1000) (g / 1000) (b / 1000)
+
+Section: Channel Extraction
+
+  etx-chan-r : Integer -> Integer
+  etx-chan-r (packed) = bit-and (bit-shru packed 16) 255
+
+  etx-chan-g : Integer -> Integer
+  etx-chan-g (packed) = bit-and (bit-shru packed 8) 255
+
+  etx-chan-b : Integer -> Integer
+  etx-chan-b (packed) = bit-and packed 255
+
+  etx-pack-rgb : Integer, Integer, Integer -> Integer
+  etx-pack-rgb (r) (g) (b) =
+    let rc = if r > 255 then 255 else if r < 0 then 0 else r
+    in let gc = if g > 255 then 255 else if g < 0 then 0 else g
+    in let bc = if b > 255 then 255 else if b < 0 then 0 else b
+    in bit-or (bit-shl rc 16) (bit-or (bit-shl gc 8) bc)
+
+Section: Procedural Generators
+
+  etx-checkerboard : Integer, Integer, Integer, Integer, Integer -> EngineTexture
+  etx-checkerboard (w) (h) (tile-size) (color-a) (color-b) =
+    etx-checker-build w h tile-size color-a color-b 0 0 []
+
+  etx-checker-build : Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> EngineTexture
+  etx-checker-build (w) (h) (tile) (ca) (cb) (x) (y) (acc) =
+    if y >= h then EngineTexture { etx-width = w, etx-height = h, etx-pixels = acc }
+    else if x >= w then etx-checker-build w h tile ca cb 0 (y + 1) acc
+    else let tx = x / tile
+    in let ty = y / tile
+    in let color = if etx-imod (tx + ty) 2 == 0 then ca else cb
+    in etx-checker-build w h tile ca cb (x + 1) y (list-push acc color)
+
+  etx-gradient-h : Integer, Integer, Integer, Integer -> EngineTexture
+  etx-gradient-h (w) (h) (color-left) (color-right) =
+    etx-grad-build w h color-left color-right 0 0 []
+
+  etx-grad-build : Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> EngineTexture
+  etx-grad-build (w) (h) (cl) (cr) (x) (y) (acc) =
+    if y >= h then EngineTexture { etx-width = w, etx-height = h, etx-pixels = acc }
+    else if x >= w then etx-grad-build w h cl cr 0 (y + 1) acc
+    else let t = x * 1000 / w
+    in let r = etx-lerp-chan (etx-chan-r cl) (etx-chan-r cr) t
+    in let g = etx-lerp-chan (etx-chan-g cl) (etx-chan-g cr) t
+    in let b = etx-lerp-chan (etx-chan-b cl) (etx-chan-b cr) t
+    in etx-grad-build w h cl cr (x + 1) y (list-push acc (etx-pack-rgb r g b))
+
+  etx-lerp-chan : Integer, Integer, Integer -> Integer
+  etx-lerp-chan (a) (b) (t) = a + (b - a) * t / 1000
+
+Section: Formatting
+
+  format-texture : EngineTexture -> Text
+  format-texture (tex) = "Texture(" & show (tex.etx-width) & "x" & show (tex.etx-height) & ")"
+
+Page 1

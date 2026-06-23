@@ -260,26 +260,29 @@ Section: Expression Emission
     is IrAppendList -> "[..." & js-emit-expr l arities & ", ..." & js-emit-expr r arities & "]"
     is IrConsList -> "[" & js-emit-expr l arities & ", ..." & js-emit-expr r arities & "]"
     is IrPowInt -> "(" & js-emit-expr l arities & " ** " & js-emit-expr r arities & ")"
+    is IrAddVec -> "(" & js-emit-expr l arities & ".map((v,i) => v + " & js-emit-expr r arities & "[i]))"
+    is IrSubVec -> "(" & js-emit-expr l arities & ".map((v,i) => v - " & js-emit-expr r arities & "[i]))"
+    is IrMulVec -> "(" & js-emit-expr l arities & ".map((v,i) => v * " & js-emit-expr r arities & "[i]))"
+    is IrDivVec -> "(" & js-emit-expr l arities & ".map((v,i) => v / " & js-emit-expr r arities & "[i]))"
     is otherwise -> "(" & js-emit-expr l arities & " " & js-emit-bin-op op & " " & js-emit-expr r arities & ")"
 
   js-emit-bin-op : IRBinaryOp -> Text
   js-emit-bin-op (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
-    is IrDivInt -> "/"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrRemInt -> "%"
     is IrPowInt -> "**"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
     is IrEq -> "==="
     is IrNotEq -> "!=="
-    is IrLt -> "<"
-    is IrGt -> ">"
-    is IrLtEq -> "<="
-    is IrGtEq -> ">="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq -> "==="
+    is IrApproxEqExact -> "==="
     is IrAnd -> "&&"
     is IrOr -> "||"
     is IrAppendText -> "+"
@@ -351,6 +354,9 @@ Section: Expression Emission
      let sep = if i > 0 then " : " else ""
      in sep & "((" & js-sanitize name & ") => " & js-emit-expr (b.body) arities & ")(_s)" & js-close-parens opens
     is IrWildPat (sp) ->
+     let sep = if i > 0 then " : " else ""
+     in sep & js-emit-expr (b.body) arities & js-close-parens opens
+    is IrVecPat (pats) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
      in sep & js-emit-expr (b.body) arities & js-close-parens opens
 
@@ -516,6 +522,44 @@ Section: Expression Emission
    else if n == "__buf-write-byte" & list-length args == 3 then "0n"
    else if n == "__buf-write-bytes" & list-length args == 3 then "0n"
    else if n == "__buf-read-bytes" & list-length args == 3 then "[]"
+   else if n == "dom-get-by-id" & list-length args == 1 then "document.getElementById(" & js-emit-expr (list-at args 0) arities & ")"
+   else if n == "dom-query" & list-length args == 1 then "document.querySelector(" & js-emit-expr (list-at args 0) arities & ")"
+   else if n == "dom-query-all" & list-length args == 1 then "Array.from(document.querySelectorAll(" & js-emit-expr (list-at args 0) arities & "))"
+   else if n == "dom-create" & list-length args == 1 then "document.createElement(" & js-emit-expr (list-at args 0) arities & ")"
+   else if n == "dom-set-text" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & ".textContent = " & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-set-html" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & ".innerHTML = " & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-get-text" & list-length args == 1 then "(" & js-emit-expr (list-at args 0) arities & ".textContent || \"\")"
+   else if n == "dom-append" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".appendChild(" & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-remove" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".remove()"
+   else if n == "dom-set-attr" & list-length args == 3 then js-emit-expr (list-at args 0) arities & ".setAttribute(" & js-emit-expr (list-at args 1) arities & ", " & js-emit-expr (list-at args 2) arities & ")"
+   else if n == "dom-get-attr" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & ".getAttribute(" & js-emit-expr (list-at args 1) arities & ") || \"\")"
+   else if n == "dom-set-style" & list-length args == 3 then "(" & js-emit-expr (list-at args 0) arities & ".style[" & js-emit-expr (list-at args 1) arities & "] = " & js-emit-expr (list-at args 2) arities & ")"
+   else if n == "dom-add-class" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".classList.add(" & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-remove-class" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".classList.remove(" & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-toggle-class" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".classList.toggle(" & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-has-class" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".classList.contains(" & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-closest" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".closest(" & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-dataset-get" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & ".dataset[" & js-emit-expr (list-at args 1) arities & "] || \"\")"
+   else if n == "dom-on-click" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".addEventListener(\"click\", " & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-on-change" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".addEventListener(\"change\", " & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-on-input" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".addEventListener(\"input\", " & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-on-key" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".addEventListener(\"keydown\", " & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-body" then "document.body"
+   else if n == "dom-get-value" & list-length args == 1 then "(" & js-emit-expr (list-at args 0) arities & ".value || \"\")"
+   else if n == "dom-set-value" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & ".value = " & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-prevent-default" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".preventDefault()"
+   else if n == "dom-stop-propagation" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".stopPropagation()"
+   else if n == "dom-event-target" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".target"
+   else if n == "dom-event-key" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".key"
+   else if n == "set-timeout" & list-length args == 2 then "setTimeout(" & js-emit-expr (list-at args 0) arities & ", Number(" & js-emit-expr (list-at args 1) arities & "))"
+   else if n == "set-interval" & list-length args == 2 then "setInterval(" & js-emit-expr (list-at args 0) arities & ", Number(" & js-emit-expr (list-at args 1) arities & "))"
+   else if n == "clear-interval" & list-length args == 1 then "clearInterval(Number(" & js-emit-expr (list-at args 0) arities & "))"
+   else if n == "json-parse" & list-length args == 1 then "JSON.parse(" & js-emit-expr (list-at args 0) arities & ")"
+   else if n == "json-stringify" & list-length args == 1 then "JSON.stringify(" & js-emit-expr (list-at args 0) arities & ")"
+   else if n == "console-log" & list-length args == 1 then "console.log(" & js-emit-expr (list-at args 0) arities & ")"
+   else if n == "dom-not-null" & list-length args == 1 then "(" & js-emit-expr (list-at args 0) arities & " != null)"
+   else if n == "dom-document" then "document"
+   else if n == "dom-window" then "window"
    else ""
 
   js-emit-record-set : List IRExpr , List ArityEntry -> Text
@@ -642,6 +686,7 @@ Section: Definition Emission
    let s-var = js-tco-scrut-var depth
    in when b.pattern
     is IrWildPat (sp) -> "        {\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
+    is IrVecPat (pats) (ty) (sp) -> "        {\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
     is IrVarPat (name) (ty) (sp) -> "        {\n            const " & js-sanitize name & " = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
     is IrCtorPat (name) (subs) (ty) (sp) ->
      if is-mktup-name name then "        {\n            const [" & js-emit-tuple-pat-names subs 0 & "] = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
@@ -723,6 +768,7 @@ Section: Chapter Emission
     is EffectfulTy (effs) (sc) (inner) -> js-sanitize "opening" & "();\n"
     is NothingTy -> js-sanitize "opening" & "();\n"
     is VoidTy -> js-sanitize "opening" & "();\n"
+    is UnitTy (n) (inner) -> js-sanitize "opening" & "();\n"
     is otherwise -> "console.log(" & js-sanitize "opening" & "());\n"
 
   js-emit-defs-loop : List IRDef , Integer , Integer , List ArityEntry -> Text
@@ -754,6 +800,7 @@ Section: Chapter Emission
    in when (list-at subs i)
     is IrVarPat (name) (ty) (sp) -> sep & js-sanitize name & js-emit-tuple-pat-names subs (i + 1)
     is IrWildPat (sp) -> sep & "_" & js-emit-tuple-pat-names subs (i + 1)
+    is IrVecPat (pats) (ty) (sp) -> sep & "_" & js-emit-tuple-pat-names subs (i + 1)
     is otherwise -> sep & "_" & js-emit-tuple-pat-names subs (i + 1)
 
 Page 1

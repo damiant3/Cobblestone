@@ -6,6 +6,10 @@ Chapter: MapsPage
   cites WebApp chapter WebWidgets
 
  Map viewer with search, layers, and points of interest.
+ Eight US city pins with temperature, elevation, population, and timezone.
+ Search filters pins by name prefix. Zoom tracks magnification level.
+ Compass rotates bearing by 90 degrees on click.
+ Distance calculation between pins uses scaled coordinate approximation.
 
  We say:
 
@@ -30,118 +34,533 @@ Section: CSS
     & ".map-road.h{height:3px;width:100%}.map-road.v{width:3px;height:100%}"
     & ".map-pin{position:absolute;font-size:28px;cursor:pointer;transform:translate(-50%,-100%);transition:transform .15s;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))}"
     & ".map-pin:hover{transform:translate(-50%,-100%) scale(1.3)}"
+    & ".map-pin.hidden{display:none}"
     & ".search-bar{position:absolute;top:16px;left:16px;right:16px;max-width:400px;z-index:10}"
     & ".search-bar input{width:100%;background:rgba(30,30,30,.95);border:1px solid #333;border-radius:24px;padding:12px 20px;color:#d8d8d8;font-size:14px;outline:none;box-shadow:0 4px 12px rgba(0,0,0,.4)}"
     & ".search-bar input:focus{border-color:#4493ff}"
     & ".map-controls{position:absolute;right:16px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:4px;z-index:10}"
     & ".map-controls button,.map-controls .wk-btn{width:40px;height:40px;background:rgba(30,30,30,.95);border:1px solid #333;border-radius:8px;color:#ddd;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}"
     & ".map-controls button:hover,.map-controls .wk-btn:hover{background:#333}"
+    & ".zoom-label{position:absolute;right:16px;top:calc(50% + 100px);background:rgba(30,30,30,.95);border:1px solid #333;border-radius:8px;padding:4px 10px;font-size:11px;color:#aaa;z-index:10;text-align:center}"
     & ".info-panel{position:absolute;bottom:16px;left:16px;width:320px;background:rgba(26,26,26,.95);border:1px solid #333;border-radius:12px;padding:16px;z-index:10;box-shadow:0 4px 16px rgba(0,0,0,.4)}"
     & ".info-panel h3{font-size:16px;font-weight:600;margin-bottom:4px}"
     & ".info-panel .address{font-size:13px;color:#888;margin-bottom:12px}"
-    & ".info-panel .details{display:flex;gap:12px;font-size:12px;color:#aaa}"
+    & ".info-panel .details{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:#aaa}"
     & ".info-panel .detail{display:flex;align-items:center;gap:4px}"
     & ".layer-panel{position:absolute;top:80px;left:16px;width:200px;background:rgba(26,26,26,.95);border:1px solid #333;border-radius:12px;padding:12px;z-index:10}"
     & ".layer-panel h4{font-size:12px;color:#888;text-transform:uppercase;margin-bottom:8px;letter-spacing:.5px}"
     & ".layer-item{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;cursor:pointer}"
     & ".layer-dot{width:10px;height:10px;border-radius:50%}"
-    & ".compass{position:absolute;top:16px;right:16px;width:48px;height:48px;background:rgba(30,30,30,.95);border:1px solid #333;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:bold;color:#e44;z-index:10}"
+    & ".compass{position:absolute;top:16px;right:16px;width:48px;height:48px;background:rgba(30,30,30,.95);border:1px solid #333;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:bold;color:#e44;z-index:10;cursor:pointer;transition:transform .2s}"
+    & ".pin-portland{top:15%;left:21%}"
+    & ".pin-seattle{top:10%;left:22%}"
+    & ".pin-sanfrancisco{top:42%;left:18%}"
+    & ".pin-losangeles{top:52%;left:20%}"
+    & ".pin-denver{top:38%;left:40%}"
+    & ".pin-chicago{top:28%;left:58%}"
+    & ".pin-newyork{top:30%;left:80%}"
+    & ".pin-miami{top:72%;left:78%}"
+    & ".scale-bar{position:absolute;bottom:16px;right:16px;background:rgba(30,30,30,.95);border:1px solid #333;border-radius:8px;padding:6px 12px;font-size:11px;color:#aaa;z-index:10;display:flex;align-items:center;gap:6px}"
+    & ".scale-line{width:40px;height:2px;background:#666}"
+    & ".route-panel{position:absolute;bottom:100px;left:16px;width:320px;background:rgba(26,26,26,.95);border:1px solid #4490ff;border-radius:12px;padding:14px;z-index:10;font-size:13px;color:#ccc}"
+    & ".route-panel h4{font-size:14px;color:#4490ff;margin-bottom:8px}"
+    & ".my-loc{position:absolute;top:50%;left:50%;width:16px;height:16px;background:#4490ff;border:3px solid #fff;border-radius:50%;transform:translate(-50%,-50%);z-index:8;box-shadow:0 0 12px rgba(68,144,255,.6)}"
+    & ".measure-panel{position:absolute;bottom:60px;right:16px;background:rgba(30,30,30,.95);border:1px solid #ff9900;border-radius:8px;padding:10px 14px;font-size:12px;color:#ff9900;z-index:10}"
+    & ".coord-row{display:flex;gap:12px;font-size:11px;color:#999;margin-top:4px}"
+    & ".fav-star{color:#ff9900;cursor:pointer;font-size:14px}"
+    & "#fav-count{position:absolute;top:16px;left:420px;background:rgba(30,30,30,.95);border:1px solid #333;border-radius:16px;padding:6px 14px;font-size:12px;color:#ff9900;z-index:10}"
+
+Section: Data
+
+ Pin data for eight US cities. Each function maps pin index 1..8 to its value.
+
+  pin-count : Integer
+  pin-count = 8
+
+  pin-name : Integer -> Text
+  pin-name (i) =
+    if i == 1 then "Portland, Oregon"
+    else if i == 2 then "Seattle, Washington"
+    else if i == 3 then "San Francisco, California"
+    else if i == 4 then "Los Angeles, California"
+    else if i == 5 then "Denver, Colorado"
+    else if i == 6 then "Chicago, Illinois"
+    else if i == 7 then "New York, New York"
+    else if i == 8 then "Miami, Florida"
+    else "Unknown"
+
+  pin-coords : Integer -> Text
+  pin-coords (i) =
+    if i == 1 then "45.5152&#xB0; N, 122.6784&#xB0; W"
+    else if i == 2 then "47.6062&#xB0; N, 122.3321&#xB0; W"
+    else if i == 3 then "37.7749&#xB0; N, 122.4194&#xB0; W"
+    else if i == 4 then "34.0522&#xB0; N, 118.2437&#xB0; W"
+    else if i == 5 then "39.7392&#xB0; N, 104.9903&#xB0; W"
+    else if i == 6 then "41.8781&#xB0; N, 87.6298&#xB0; W"
+    else if i == 7 then "40.7128&#xB0; N, 74.0060&#xB0; W"
+    else if i == 8 then "25.7617&#xB0; N, 80.1918&#xB0; W"
+    else "0&#xB0;, 0&#xB0;"
+
+  pin-temp : Integer -> Text
+  pin-temp (i) =
+    if i == 1 then "68&#xB0;F"
+    else if i == 2 then "61&#xB0;F"
+    else if i == 3 then "64&#xB0;F"
+    else if i == 4 then "78&#xB0;F"
+    else if i == 5 then "72&#xB0;F"
+    else if i == 6 then "70&#xB0;F"
+    else if i == 7 then "73&#xB0;F"
+    else if i == 8 then "85&#xB0;F"
+    else "0&#xB0;F"
+
+  pin-elev : Integer -> Text
+  pin-elev (i) =
+    if i == 1 then "&#x1F4CF; 50 ft"
+    else if i == 2 then "&#x1F4CF; 175 ft"
+    else if i == 3 then "&#x1F4CF; 52 ft"
+    else if i == 4 then "&#x1F4CF; 285 ft"
+    else if i == 5 then "&#x1F4CF; 5280 ft"
+    else if i == 6 then "&#x1F4CF; 594 ft"
+    else if i == 7 then "&#x1F4CF; 33 ft"
+    else if i == 8 then "&#x1F4CF; 6 ft"
+    else "&#x1F4CF; 0 ft"
+
+  pin-population : Integer -> Text
+  pin-population (i) =
+    if i == 1 then "&#x1F465; 652K"
+    else if i == 2 then "&#x1F465; 737K"
+    else if i == 3 then "&#x1F465; 874K"
+    else if i == 4 then "&#x1F465; 3.9M"
+    else if i == 5 then "&#x1F465; 716K"
+    else if i == 6 then "&#x1F465; 2.7M"
+    else if i == 7 then "&#x1F465; 8.3M"
+    else if i == 8 then "&#x1F465; 450K"
+    else "&#x1F465; 0"
+
+  pin-timezone : Integer -> Text
+  pin-timezone (i) =
+    if i == 1 then "PST (UTC-8)"
+    else if i == 2 then "PST (UTC-8)"
+    else if i == 3 then "PST (UTC-8)"
+    else if i == 4 then "PST (UTC-8)"
+    else if i == 5 then "MST (UTC-7)"
+    else if i == 6 then "CST (UTC-6)"
+    else if i == 7 then "EST (UTC-5)"
+    else if i == 8 then "EST (UTC-5)"
+    else "UTC"
+
+  pin-css-cls : Integer -> Text
+  pin-css-cls (i) =
+    if i == 1 then "pin-portland"
+    else if i == 2 then "pin-seattle"
+    else if i == 3 then "pin-sanfrancisco"
+    else if i == 4 then "pin-losangeles"
+    else if i == 5 then "pin-denver"
+    else if i == 6 then "pin-chicago"
+    else if i == 7 then "pin-newyork"
+    else if i == 8 then "pin-miami"
+    else ""
+
+ Latitude scaled by 1000 for integer distance math.
+
+  pin-lat : Integer -> Integer
+  pin-lat (i) =
+    if i == 1 then 45515
+    else if i == 2 then 47606
+    else if i == 3 then 37775
+    else if i == 4 then 34052
+    else if i == 5 then 39739
+    else if i == 6 then 41878
+    else if i == 7 then 40713
+    else if i == 8 then 25762
+    else 0
+
+  pin-lon : Integer -> Integer
+  pin-lon (i) =
+    if i == 1 then 122678
+    else if i == 2 then 122332
+    else if i == 3 then 122419
+    else if i == 4 then 118244
+    else if i == 5 then 104990
+    else if i == 6 then 87630
+    else if i == 7 then 74006
+    else if i == 8 then 80192
+    else 0
+
+  pin-drive-time : Integer, Integer -> Integer
+  pin-drive-time (a) (b) =
+    let d = pin-distance a b
+    in d * 60 / 55
+
+  drive-time-text : Integer -> Text
+  drive-time-text (minutes) =
+    let hrs = minutes / 60
+    in let mins = minutes - hrs * 60
+    in if hrs == 0 then show mins & " min"
+    else show hrs & "h " & show mins & "m"
+
+  format-lat-decimal : Integer -> Text
+  format-lat-decimal (i) =
+    let whole = pin-lat i / 1000
+    in let frac = pin-lat i - whole * 1000
+    in show whole & "." & show frac & "&#xB0; N"
+
+  format-lon-decimal : Integer -> Text
+  format-lon-decimal (i) =
+    let whole = pin-lon i / 1000
+    in let frac = pin-lon i - whole * 1000
+    in show whole & "." & show frac & "&#xB0; W"
+
+  format-lat-dms : Integer -> Text
+  format-lat-dms (i) =
+    let total = pin-lat i
+    in let deg = total / 1000
+    in let rem = total - deg * 1000
+    in let min-val = rem * 60 / 1000
+    in let sec-rem = rem * 60 - min-val * 1000
+    in let sec-val = sec-rem * 60 / 1000
+    in show deg & "&#xB0;" & show min-val & "'" & show sec-val & "\" N"
+
+  format-lon-dms : Integer -> Text
+  format-lon-dms (i) =
+    let total = pin-lon i
+    in let deg = total / 1000
+    in let rem = total - deg * 1000
+    in let min-val = rem * 60 / 1000
+    in let sec-rem = rem * 60 - min-val * 1000
+    in let sec-val = sec-rem * 60 / 1000
+    in show deg & "&#xB0;" & show min-val & "'" & show sec-val & "\" W"
+
+  pin-is-fav : Integer -> Integer
+  pin-is-fav (i) =
+    if i == 1 then state-get "fav-1"
+    else if i == 2 then state-get "fav-2"
+    else if i == 3 then state-get "fav-3"
+    else if i == 4 then state-get "fav-4"
+    else if i == 5 then state-get "fav-5"
+    else if i == 6 then state-get "fav-6"
+    else if i == 7 then state-get "fav-7"
+    else if i == 8 then state-get "fav-8"
+    else 0
+
+  toggle-fav : Integer -> Integer
+  toggle-fav (i) =
+    let key = "fav-" & show i
+    in let cur = state-get key
+    in let next = if cur == 1 then 0 else 1
+    in let s = state-set-render key next
+    in 0
+
+  fav-count : Integer -> Integer
+  fav-count (x) =
+    pin-is-fav 1 + pin-is-fav 2 + pin-is-fav 3 + pin-is-fav 4 + pin-is-fav 5 + pin-is-fav 6 + pin-is-fav 7 + pin-is-fav 8
+
+  fav-count-text : Integer -> Text
+  fav-count-text (x) =
+    let c = fav-count 0
+    in if c == 0 then "&#x2606; No favorites"
+    else "&#x2B50; " & show c & " favorite" & if c == 1 then "" else "s"
+
+  pin-clustered : Integer -> Integer
+  pin-clustered (i) =
+    let z = let zv = state-get "zoom-level" in if zv == 0 then 100 else zv
+    in if z > 50 then 0
+    else if i == 1 then 0
+    else if i == 2 then 1
+    else if i == 3 then 0
+    else if i == 4 then 1
+    else if i == 5 then 0
+    else if i == 6 then 0
+    else if i == 7 then 0
+    else if i == 8 then 0
+    else 0
+
+  scale-text : Integer -> Text
+  scale-text (z) =
+    if z <= 25 then "40 mi"
+    else if z <= 50 then "20 mi"
+    else if z <= 75 then "15 mi"
+    else if z <= 100 then "10 mi"
+    else if z <= 125 then "8 mi"
+    else if z <= 150 then "5 mi"
+    else if z <= 175 then "3 mi"
+    else "2 mi"
+
+  route-info-text : Integer -> Text
+  route-info-text (x) =
+    let rs = state-get "route-start"
+    in let re = state-get "route-end"
+    in if rs == 0 then "Select start pin"
+    else if re == 0 then "Select end pin"
+    else let d = pin-distance rs re
+    in let t = pin-drive-time rs re
+    in pin-name rs & " to " & pin-name re & ": " & show d & " mi, ~" & drive-time-text t & " drive"
+
+Section: Distance
+
+ Approximate distance between two pins using cosine-adjusted Euclidean
+ distance on lat/lon coordinates (x1000). Latitude: 69 mi/deg,
+ longitude: ~50 mi/deg (cosine factor for US latitudes 30-48N).
+ Formula: sqrt((dlat*69)^2 + (dlon*50)^2) with coords in thousandths.
+
+  pin-distance : Integer, Integer -> Integer
+  pin-distance (a) (b) =
+    let dlat = pin-lat a - pin-lat b
+    in let dlon = pin-lon a - pin-lon b
+    in let lat-mi = dlat * 69
+    in let lon-mi = dlon * 50
+    in let sum = lat-mi * lat-mi + lon-mi * lon-mi
+    in let dist = isqrt sum
+    in dist / 1000
+
+ Integer square root by Newton's method.
+
+  isqrt : Integer -> Integer
+  isqrt (n) =
+    if n <= 0 then 0
+    else if n == 1 then 1
+    else isqrt-step n (n / 2) 0
+
+  isqrt-step : Integer, Integer, Integer -> Integer
+  isqrt-step (n) (x) (iter) =
+    if iter > 30 then x
+    else let next = (x + n / x) / 2
+    in if next >= x then x
+    else isqrt-step n next (iter + 1)
+
+Section: Search
+
+ Check if a pin name starts with the search text (case-sensitive).
+ Returns True if search is empty or pin name matches.
+
+  pin-matches-search : Integer -> Boolean
+  pin-matches-search (i) =
+    let search = state-get-text "search-text"
+    in if text-length search == 0 then True
+    else text-starts-with (pin-name i) search
 
 Section: Tree
 
   page-tree : Integer -> WidgetNode
   page-tree (x) =
-    widget-panel "root" DirColumn 0 [
+    let bearing = state-get "compass-bearing"
+    in let compass-lbl = compass-label bearing
+    in let zoom = let z = state-get "zoom-level" in if z == 0 then 100 else z
+    in let show-loc = state-get "show-my-loc"
+    in let rm = state-get "route-mode"
+    in let mm = state-get "measure-mode"
+    in widget-panel "root" DirColumn 0 [
       widget-box "map-canvas" "map-canvas" [
         widget-box "grid" "map-grid" [],
         widget-box "r1" "map-road h" [],
         widget-box "r2" "map-road h" [],
         widget-box "r3" "map-road v" [],
         widget-box "r4" "map-road v" [],
-        widget-box-click "pin1" (pin-cls 1) [ widget-label "pin1-i" "&#x1F4CD;" ],
-        widget-box-click "pin2" (pin-cls 2) [ widget-label "pin2-i" "&#x1F4CD;" ],
-        widget-box-click "pin3" (pin-cls 3) [ widget-label "pin3-i" "&#x1F4CD;" ],
+        pin-widget 1,
+        pin-widget 2,
+        pin-widget 3,
+        pin-widget 4,
+        pin-widget 5,
+        pin-widget 6,
+        pin-widget 7,
+        pin-widget 8,
+        if show-loc == 1 then widget-box "my-loc" "my-loc" [] else widget-label "no-loc" "",
         widget-box "search" "search-bar" [
-          widget-add-child (widget-custom "search-input" "input" 0 0) (widget-label "search-p" "Search places...")
+          widget-input "search-input" (state-get-text "search-text") 0
         ],
+        widget-label "fav-count" (fav-count-text 0),
         widget-box "controls" "map-controls" [
           widget-button "zoom-in" "+",
           widget-button "zoom-out" "-",
           widget-button "locate" "&#x1F4CD;",
-          widget-button "layers" "&#x1F5FA;"
+          widget-button "layers" "&#x1F5FA;",
+          widget-button "route-btn" "&#x1F6E3;",
+          widget-button "measure-btn" "&#x1F4D0;"
         ],
-        widget-box "compass" "compass" [ widget-label "compass-n" "N" ],
+        widget-label "zoom-lbl" ("Zoom: " & show zoom & "%"),
+        widget-box "scale" "scale-bar" [
+          widget-label "scale-line" "",
+          widget-label "scale-val" (scale-text zoom)
+        ],
+        widget-box-click "compass" "compass" [ widget-label "compass-n" compass-lbl ],
         layer-panel 0,
+        route-panel 0,
+        measure-panel 0,
         info-panel 0
       ]
     ]
 
+ Build a single pin widget. Hides the pin when it does not match the search filter.
+
+  pin-widget : Integer -> WidgetNode
+  pin-widget (i) =
+    let visible = pin-matches-search i
+    in let clustered = pin-clustered i
+    in let show-pin = if visible then (if clustered == 1 then 0 else 1) else 0
+    in let cls = if show-pin == 1 then "map-pin " & pin-css-cls i else "map-pin hidden"
+    in let sel-cls = if state-get "selected-pin" == i then cls & " active" else cls
+    in let fav = pin-is-fav i
+    in let icon = if fav == 1 then "&#x2B50;" else "&#x1F4CD;"
+    in widget-box-click ("pin" & show i) sel-cls [ widget-label ("pin" & show i & "-i") icon ]
+
+ Compass direction label from bearing (0=N, 90=E, 180=S, 270=W).
+
+  compass-label : Integer -> Text
+  compass-label (b) =
+    let norm = b - (b / 360) * 360
+    in if norm == 0 then "&#x2191; N"
+    else if norm == 90 then "&#x2192; E"
+    else if norm == 180 then "&#x2193; S"
+    else if norm == 270 then "&#x2190; W"
+    else show norm & "&#xB0;"
+
   layer-panel : Integer -> WidgetNode
   layer-panel (x) =
-    let show = state-get "show-layers"
-    in if show == 0 then widget-label "no-layers" ""
+    let show-l = state-get "show-layers"
+    in if show-l == 0 then widget-label "no-layers" ""
     else widget-box "layer-panel" "layer-panel" [
       widget-label "lp-title" "MAP LAYERS",
-      widget-box-click "ly-road" (layer-cls 0) [ widget-label "lr-dot" "&#x1F7E2;", widget-label "lr-name" "Roads" ],
-      widget-box-click "ly-sat" (layer-cls 1) [ widget-label "ls-dot" "&#x1F535;", widget-label "ls-name" "Satellite" ],
-      widget-box-click "ly-ter" (layer-cls 2) [ widget-label "lt-dot" "&#x1F7E4;", widget-label "lt-name" "Terrain" ],
-      widget-box-click "ly-trf" (layer-cls 3) [ widget-label "lf-dot" "&#x1F7E1;", widget-label "lf-name" "Traffic" ]
+      widget-box-click "ly-road" (layer-cls 0) [ widget-label "lr-dot" "&#x1F7E2;", widget-label "lr-name" (layer-label 0 "Roads") ],
+      widget-box-click "ly-sat" (layer-cls 1) [ widget-label "ls-dot" "&#x1F535;", widget-label "ls-name" (layer-label 1 "Satellite") ],
+      widget-box-click "ly-ter" (layer-cls 2) [ widget-label "lt-dot" "&#x1F7E4;", widget-label "lt-name" (layer-label 2 "Terrain") ],
+      widget-box-click "ly-trf" (layer-cls 3) [ widget-label "lf-dot" "&#x1F7E1;", widget-label "lf-name" (layer-label 3 "Traffic") ]
     ]
 
   layer-cls : Integer -> Text
   layer-cls (i) =
     if state-get "active-layer" == i then "layer-item active" else "layer-item"
-  pin-cls : Integer -> Text
-  pin-cls (i) =
-    if state-get "selected-pin" == i then "map-pin active" else "map-pin"
+
+  layer-label : Integer, Text -> Text
+  layer-label (i) (name) =
+    if state-get "active-layer" == i then "&#x2713; " & name else name
+
+  route-panel : Integer -> WidgetNode
+  route-panel (x) =
+    let rm = state-get "route-mode"
+    in let rs = state-get "route-start"
+    in let re = state-get "route-end"
+    in if rm == 0 then widget-label "no-route" ""
+    else if rs > 0 then if re > 0 then
+      let d = pin-distance rs re
+      in let t = pin-drive-time rs re
+      in widget-box "route" "route-panel" [
+        widget-label "route-title" "ROUTE",
+        widget-label "route-from" ("&#x1F4CD; From: " & pin-name rs),
+        widget-label "route-to" ("&#x1F3C1; To: " & pin-name re),
+        widget-label "route-dist" ("&#x1F4CF; Distance: " & show d & " mi"),
+        widget-label "route-time" ("&#x23F1; Est. drive: " & drive-time-text t),
+        widget-button "route-clear" "Clear Route"
+      ]
+    else widget-box "route" "route-panel" [
+      widget-label "route-title" "ROUTE",
+      widget-label "route-info" (route-info-text 0),
+      widget-button "route-clear" "Clear Route"
+    ]
+    else widget-box "route" "route-panel" [
+      widget-label "route-title" "ROUTE",
+      widget-label "route-info" (route-info-text 0),
+      widget-button "route-clear" "Clear Route"
+    ]
+
+  measure-panel : Integer -> WidgetNode
+  measure-panel (x) =
+    let mm = state-get "measure-mode"
+    in let ma = state-get "measure-a"
+    in let mb = state-get "measure-b"
+    in if mm == 0 then widget-label "no-measure" ""
+    else if ma == 0 then widget-box "meas" "measure-panel" [ widget-label "meas-info" "Click a pin to set point A" ]
+    else if mb == 0 then widget-box "meas" "measure-panel" [ widget-label "meas-info" ("Point A: " & pin-name ma & " - Click another pin for B") ]
+    else widget-box "meas" "measure-panel" [ widget-label "meas-info" (pin-name ma & " to " & pin-name mb & ": " & show (pin-distance ma mb) & " mi") ]
 
   info-panel : Integer -> WidgetNode
   info-panel (x) =
     let p = let sp = state-get "selected-pin" in if sp == 0 then 1 else sp
+    in let fav = pin-is-fav p
+    in let fav-icon = if fav == 1 then "&#x2B50; Unfavorite" else "&#x2606; Favorite"
     in widget-box "info" "info-panel" [
       widget-label "info-name" (pin-name p),
       widget-label "info-addr" (pin-coords p),
+      widget-box "info-coords" "coord-row" [
+        widget-label "coord-dec" ("Dec: " & format-lat-decimal p & ", " & format-lon-decimal p),
+        widget-label "coord-dms" ("DMS: " & format-lat-dms p & ", " & format-lon-dms p)
+      ],
       widget-box "info-details" "details" [
         widget-box "id1" "detail" [ widget-label "id1-v" ("&#x1F321; " & pin-temp p) ],
         widget-box "id2" "detail" [ widget-label "id2-v" (pin-elev p) ],
-        widget-box "id3" "detail" [ widget-label "id3-v" "&#x1F553; 12:42 PM" ]
-      ]
+        widget-box "id3" "detail" [ widget-label "id3-v" ("&#x1F553; " & pin-timezone p) ],
+        widget-box "id4" "detail" [ widget-label "id4-v" (pin-population p) ]
+      ],
+      widget-button "fav-toggle" fav-icon
     ]
-
-  pin-name : Integer -> Text
-  pin-name (i) =
-    if i == 1 then "Portland, Oregon"
-    else if i == 2 then "Seattle, Washington"
-    else "San Francisco, California"
-  pin-coords : Integer -> Text
-  pin-coords (i) =
-    if i == 1 then "45.5152&#xB0; N, 122.6784&#xB0; W"
-    else if i == 2 then "47.6062&#xB0; N, 122.3321&#xB0; W"
-    else "37.7749&#xB0; N, 122.4194&#xB0; W"
-  pin-temp : Integer -> Text
-  pin-temp (i) =
-    if i == 1 then "68&#xB0;F"
-    else if i == 2 then "61&#xB0;F"
-    else "64&#xB0;F"
-  pin-elev : Integer -> Text
-  pin-elev (i) =
-    if i == 1 then "&#x1F4CF; 50 ft elev"
-    else if i == 2 then "&#x1F4CF; 175 ft elev"
-    else "&#x1F4CF; 52 ft elev"
 
 Section: Handlers
 
   maps-click : Text -> Integer
   maps-click (id) =
     if id == "layers" then let s = state-set-render "show-layers" (if state-get "show-layers" == 1 then 0 else 1) in 0
+    else if id == "zoom-in" then zoom-in 0
+    else if id == "zoom-out" then zoom-out 0
+    else if id == "compass" then rotate-compass 0
+    else if id == "locate" then let s = state-set-render "show-my-loc" (if state-get "show-my-loc" == 1 then 0 else 1) in 0
+    else if id == "route-btn" then
+      let rm = state-get "route-mode"
+      in if rm == 0 then let s = state-set-render "route-mode" 1 in 0
+      else let s1 = state-set "route-mode" 0 in let s2 = state-set "route-start" 0 in let s3 = state-set-render "route-end" 0 in 0
+    else if id == "route-clear" then
+      let s1 = state-set "route-mode" 1 in let s2 = state-set "route-start" 0 in let s3 = state-set-render "route-end" 0 in 0
+    else if id == "measure-btn" then
+      let mm = state-get "measure-mode"
+      in if mm == 0 then let s = state-set-render "measure-mode" 1 in 0
+      else let s1 = state-set "measure-mode" 0 in let s2 = state-set "measure-a" 0 in let s3 = state-set-render "measure-b" 0 in 0
+    else if id == "fav-toggle" then
+      let p = let sp = state-get "selected-pin" in if sp == 0 then 1 else sp
+      in toggle-fav p
     else if id == "ly-road" then let s = state-set-render "active-layer" 0 in 0
     else if id == "ly-sat" then let s = state-set-render "active-layer" 1 in 0
     else if id == "ly-ter" then let s = state-set-render "active-layer" 2 in 0
     else if id == "ly-trf" then let s = state-set-render "active-layer" 3 in 0
-    else if id == "pin1" then let s = state-set-render "selected-pin" 1 in 0
-    else if id == "pin2" then let s = state-set-render "selected-pin" 2 in 0
-    else if id == "pin3" then let s = state-set-render "selected-pin" 3 in 0
+    else if text-starts-with id "pin" then handle-pin-click id
     else 0
+
+  handle-pin-click : Text -> Integer
+  handle-pin-click (id) =
+    let p = if id == "pin1" then 1 else if id == "pin2" then 2 else if id == "pin3" then 3 else if id == "pin4" then 4 else if id == "pin5" then 5 else if id == "pin6" then 6 else if id == "pin7" then 7 else if id == "pin8" then 8 else 0
+    in if p == 0 then 0
+    else let rm = state-get "route-mode"
+    in let mm = state-get "measure-mode"
+    in if rm == 1 then let s1 = state-set "route-start" p in let s2 = state-set-render "route-mode" 2 in 0
+    else if rm == 2 then let s1 = state-set "route-end" p in let s2 = state-set-render "route-mode" 3 in 0
+    else if mm == 1 then
+      let ma = state-get "measure-a"
+      in if ma == 0 then let s = state-set-render "measure-a" p in 0
+      else let s = state-set-render "measure-b" p in 0
+    else let s = state-set-render "selected-pin" p in 0
+
+  maps-input : Text, Text -> Integer
+  maps-input (id) (value) =
+    if id == "search-input" then let s = state-set-text-render "search-text" value in 0
+    else 0
+
+  zoom-in : Integer -> Integer
+  zoom-in (x) =
+    let cur = let z = state-get "zoom-level" in if z == 0 then 100 else z
+    in let next = if cur + 25 > 200 then 200 else cur + 25
+    in let s = state-set-render "zoom-level" next
+    in 0
+
+  zoom-out : Integer -> Integer
+  zoom-out (x) =
+    let cur = let z = state-get "zoom-level" in if z == 0 then 100 else z
+    in let next = if cur - 25 < 25 then 25 else cur - 25
+    in let s = state-set-render "zoom-level" next
+    in 0
+
+  rotate-compass : Integer -> Integer
+  rotate-compass (x) =
+    let cur = state-get "compass-bearing"
+    in let next = let nb = cur + 90 in if nb >= 360 then 0 else nb
+    in let s = state-set-render "compass-bearing" next
+    in 0
 
 Section: Entry
 
@@ -151,8 +570,30 @@ Section: Entry
   opening : [Console] Integer
   opening = act
     let t = inject-app-style maps-theme maps-css
-    in let s = set-render render-maps
+    in let s1 = state-set "zoom-level" 100
+    in let s2 = state-set "compass-bearing" 0
+    in let s4 = state-set "selected-pin" 0
+    in let s5 = state-set "show-layers" 0
+    in let s6 = state-set "route-mode" 0
+    in let s7 = state-set "route-start" 0
+    in let s8 = state-set "route-end" 0
+    in let s9 = state-set "measure-mode" 0
+    in let s10 = state-set "measure-a" 0
+    in let s11 = state-set "measure-b" 0
+    in let s12 = state-set "active-layer" 0
+    in let s13 = state-set "show-my-loc" 0
+    in let s14 = state-set "fav-1" 0
+    in let s15 = state-set "fav-2" 0
+    in let s16 = state-set "fav-3" 0
+    in let s17 = state-set "fav-4" 0
+    in let s18 = state-set "fav-5" 0
+    in let s19 = state-set "fav-6" 0
+    in let s20 = state-set "fav-7" 0
+    in let s21 = state-set "fav-8" 0
+    in let s22 = state-set-text "search-text" ""
+    in let s3 = set-render render-maps
     in let h = register-handlers no-pick maps-click
+    in let hi = register-input-handler maps-input
     in render-maps 0
   end
 

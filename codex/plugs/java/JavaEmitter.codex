@@ -90,7 +90,7 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> "((java.util.concurrent.CompletableFuture<Object>)" & emit-jv-expr task arities indent & ").join()"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-jv-expr body arities indent
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-jv-expr body arities indent
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-jv-expr body arities indent
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-jv-try max body fb fail-stmts arities indent
     is IrError (msg) (ty) (sp) -> "((java.util.function.Supplier<Object>)(() -> { throw new RuntimeException(\"" & jv-escape msg & "\"); })).get()"
 
 Section: Binary Operators
@@ -104,17 +104,24 @@ Section: Binary Operators
     is IrSubInt -> "((int)" & lhs & " - (int)" & rhs & ")"
     is IrMulInt -> "((int)" & lhs & " * (int)" & rhs & ")"
     is IrDivInt -> "((int)" & lhs & " / (int)" & rhs & ")"
+    is IrRemInt -> "((int)" & lhs & " % (int)" & rhs & ")"
     is IrPowInt -> "(int)Math.pow((int)" & lhs & ", (int)" & rhs & ")"
-    is IrAddNum -> "((double)" & lhs & " + (double)" & rhs & ")"
-    is IrSubNum -> "((double)" & lhs & " - (double)" & rhs & ")"
-    is IrMulNum -> "((double)" & lhs & " * (double)" & rhs & ")"
-    is IrDivNum -> "((double)" & lhs & " / (double)" & rhs & ")"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "((double)" & lhs & " + (double)" & rhs & ")"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "((double)" & lhs & " - (double)" & rhs & ")"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "((double)" & lhs & " * (double)" & rhs & ")"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "((double)" & lhs & " / (double)" & rhs & ")"
+    is IrAddVec -> "java.util.stream.IntStream.range(0, ((double[])" & lhs & ").length).mapToDouble(i -> ((double[])" & lhs & ")[i] + ((double[])" & rhs & ")[i]).toArray()"
+    is IrSubVec -> "java.util.stream.IntStream.range(0, ((double[])" & lhs & ").length).mapToDouble(i -> ((double[])" & lhs & ")[i] - ((double[])" & rhs & ")[i]).toArray()"
+    is IrMulVec -> "java.util.stream.IntStream.range(0, ((double[])" & lhs & ").length).mapToDouble(i -> ((double[])" & lhs & ")[i] * ((double[])" & rhs & ")[i]).toArray()"
+    is IrDivVec -> "java.util.stream.IntStream.range(0, ((double[])" & lhs & ").length).mapToDouble(i -> ((double[])" & lhs & ")[i] / ((double[])" & rhs & ")[i]).toArray()"
     is IrEq -> "java.util.Objects.equals(" & lhs & ", " & rhs & ")"
     is IrNotEq -> "!java.util.Objects.equals(" & lhs & ", " & rhs & ")"
-    is IrLt -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") < 0)"
-    is IrGt -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") > 0)"
-    is IrLtEq -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") <= 0)"
-    is IrGtEq -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") >= 0)"
+    is IrLt | IrLtVec -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") < 0)"
+    is IrGt | IrGtVec -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") > 0)"
+    is IrLtEq | IrLtEqVec -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") <= 0)"
+    is IrGtEq | IrGtEqVec -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") >= 0)"
+    is IrApproxEq -> "java.util.Objects.equals(" & lhs & ", " & rhs & ")"
+    is IrApproxEqExact -> "java.util.Objects.equals(" & lhs & ", " & rhs & ")"
     is IrAnd -> "((boolean)" & lhs & " && (boolean)" & rhs & ")"
     is IrOr -> "((boolean)" & lhs & " || (boolean)" & rhs & ")"
     is IrAppendText -> "((String)" & lhs & " + (String)" & rhs & ")"
@@ -209,6 +216,7 @@ Section: Match
     is IrCtorPat (name) (subs) (ty) (sp) ->
      if is-mktup-name name then "true"
      else "java.util.Objects.equals(((java.util.Map<String,Object>)" & scrut & ").get(\"_tag\"), \"" & name & "\")"
+    is IrVecPat (pats) (ty) (sp) -> "true"
     is IrWildPat (sp) -> "true"
 
   emit-jv-pat-binds : IRPat, Text -> Text
@@ -219,6 +227,7 @@ Section: Match
     is IrCtorPat (name) (subs) (ty) (sp) ->
      if is-mktup-name name then emit-jv-tup-binds subs scrut 0
      else emit-jv-ctor-binds subs scrut 0
+    is IrVecPat (pats) (ty) (sp) -> ""
     is IrWildPat (sp) -> ""
 
   emit-jv-ctor-binds : List IRPat, Text, Integer -> Text
@@ -244,6 +253,15 @@ Section: Act Blocks
     is IrDoExec (e) (sp) ->
      if is-last then jv-indent indent & "return (Object)(" & emit-jv-expr e arities indent & ");\n"
      else jv-indent indent & emit-jv-expr e arities indent & ";\n" & emit-jv-act-stmts stmts arities indent (i + 1)
+
+Section: Try
+
+  emit-jv-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, List ArityEntry, Integer -> Text
+  emit-jv-try (max) (body) (fb) (fail-stmts) (arities) (indent) =
+   let body-text = emit-jv-act body arities indent
+   in let fb-text = emit-jv-act fb arities indent
+   in let fail-text = emit-jv-act fail-stmts arities indent
+   in "((java.util.function.Supplier<Object>)(() -> { boolean _try_ok = false; Object _try_result = null; for (int _try_i = 0; _try_i < " & show max & "; _try_i++) { try { _try_result = " & body-text & "; _try_ok = true; break; } catch (Exception _e) {} } if (_try_ok) return _try_result; try { return " & fb-text & "; } catch (Exception _e) { return " & fail-text & "; } })).get()"
 
 Section: Type Definitions
 

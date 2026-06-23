@@ -1,0 +1,204 @@
+Chapter: Biome
+  cites Engine chapter FractalPlant
+  cites Engine chapter Terrain
+  cites Engine chapter TimeOfDay
+  cites Game chapter Color
+
+ World biome, microclimate, and weather system. Biomes are defined
+ by temperature range, moisture range, altitude range, and a plant
+ palette. The world map is a grid of biome cells derived from
+ temperature and moisture maps (Whittaker diagram). Weather systems
+ (rain, snow, fog, wind, storms) move across the map and affect
+ local microclimates. Plants respond to their local climate:
+ growth rate, color, deciduous behavior. Day/night cycle drives
+ temperature. Seasons drive weather patterns. Fixed-point (1000).
+
+ We say:
+
+Section: Climate Parameters
+
+  Climate = record {
+    clim-temperature : Integer,
+    clim-moisture : Integer,
+    clim-altitude : Integer,
+    clim-wind-x : Integer, clim-wind-z : Integer,
+    clim-wind-speed : Integer,
+    clim-cloud-cover : Integer,
+    clim-precipitation : Integer
+  }
+
+  clim-default : Climate
+  clim-default = Climate { clim-temperature = 200, clim-moisture = 500, clim-altitude = 0, clim-wind-x = 100, clim-wind-z = 0, clim-wind-speed = 100, clim-cloud-cover = 300, clim-precipitation = 0 }
+
+Section: Biome Types
+
+  BiomeType =
+    | BioTundra
+    | BioTaiga
+    | BioTemperateForest
+    | BioTemperateGrass
+    | BioTropicalForest
+    | BioSavanna
+    | BioDesert
+    | BioSwamp
+    | BioAlpine
+    | BioOcean
+
+  biome-name : BiomeType -> Text
+  biome-name (b) = when b
+    is BioTundra -> "tundra"
+    is BioTaiga -> "taiga"
+    is BioTemperateForest -> "temperate-forest"
+    is BioTemperateGrass -> "temperate-grassland"
+    is BioTropicalForest -> "tropical-forest"
+    is BioSavanna -> "savanna"
+    is BioDesert -> "desert"
+    is BioSwamp -> "swamp"
+    is BioAlpine -> "alpine"
+    is BioOcean -> "ocean"
+
+  biome-ground-color : BiomeType -> Integer
+  biome-ground-color (b) = when b
+    is BioTundra -> #C0C0C0
+    is BioTaiga -> #4A6741
+    is BioTemperateForest -> #5B8C3A
+    is BioTemperateGrass -> #8DB33A
+    is BioTropicalForest -> #2D7A2D
+    is BioSavanna -> #C4A84A
+    is BioDesert -> #D4B86A
+    is BioSwamp -> #3D5A3D
+    is BioAlpine -> #A0A0B0
+    is BioOcean -> #2255AA
+
+Section: Whittaker Classification
+
+  biome-classify : Integer, Integer, Integer -> BiomeType
+  biome-classify (temp) (moisture) (altitude) =
+    if altitude > 3000 then BioAlpine
+    else if altitude < -500 then BioOcean
+    else if temp < -50 then BioTundra
+    else if temp < 50 then if moisture > 500 then BioTaiga else BioTundra
+    else if temp < 200 then if moisture > 600 then BioTemperateForest else BioTemperateGrass
+    else if temp < 350 then if moisture > 700 then BioTropicalForest else if moisture > 400 then BioSavanna else BioDesert
+    else if moisture > 800 then BioSwamp
+    else BioDesert
+
+Section: Weather
+
+  WeatherType =
+    | WxClear
+    | WxCloudy
+    | WxRain
+    | WxHeavyRain
+    | WxSnow
+    | WxBlizzard
+    | WxFog
+    | WxStorm
+    | WxDrought
+
+  WeatherState = record {
+    ws-current : WeatherType,
+    ws-intensity : Integer,
+    ws-duration : Integer,
+    ws-elapsed : Integer,
+    ws-wind-x : Integer, ws-wind-z : Integer,
+    ws-wind-speed : Integer,
+    ws-temperature-mod : Integer,
+    ws-moisture-mod : Integer
+  }
+
+  ws-clear : WeatherState
+  ws-clear = WeatherState { ws-current = WxClear, ws-intensity = 0, ws-duration = 10000, ws-elapsed = 0, ws-wind-x = 100, ws-wind-z = 0, ws-wind-speed = 50, ws-temperature-mod = 0, ws-moisture-mod = 0 }
+
+  ws-rain : Integer, Integer -> WeatherState
+  ws-rain (intensity) (duration) = WeatherState { ws-current = WxRain, ws-intensity = intensity, ws-duration = duration, ws-elapsed = 0, ws-wind-x = 200, ws-wind-z = 100, ws-wind-speed = 300, ws-temperature-mod = -30, ws-moisture-mod = 200 }
+
+  ws-snow : Integer, Integer -> WeatherState
+  ws-snow (intensity) (duration) = WeatherState { ws-current = WxSnow, ws-intensity = intensity, ws-duration = duration, ws-elapsed = 0, ws-wind-x = 50, ws-wind-z = 50, ws-wind-speed = 150, ws-temperature-mod = -100, ws-moisture-mod = 100 }
+
+  ws-storm : Integer -> WeatherState
+  ws-storm (duration) = WeatherState { ws-current = WxStorm, ws-intensity = 900, ws-duration = duration, ws-elapsed = 0, ws-wind-x = 800, ws-wind-z = 400, ws-wind-speed = 900, ws-temperature-mod = -50, ws-moisture-mod = 400 }
+
+  ws-tick : WeatherState, Integer -> WeatherState
+  ws-tick (ws) (dt) =
+    let new-elapsed = ws.ws-elapsed + dt
+    in if new-elapsed >= ws.ws-duration then ws-clear
+    else __record-set ws "ws-elapsed" new-elapsed
+
+Section: Microclimate
+
+  Microclimate = record {
+    mc-base : Climate,
+    mc-weather : WeatherState,
+    mc-biome : BiomeType,
+    mc-season : Season,
+    mc-effective-temp : Integer,
+    mc-effective-moisture : Integer,
+    mc-growth-rate : Integer
+  }
+
+  mc-compute : Climate, WeatherState, Season -> Microclimate
+  mc-compute (base) (weather) (season) =
+    let season-temp = when season
+      is SeaSpring -> 0
+      is SeaSummer -> 80
+      is SeaAutumn -> -20
+      is SeaWinter -> -120
+    in let eff-temp = base.clim-temperature + weather.ws-temperature-mod + season-temp
+    in let eff-moist = base.clim-moisture + weather.ws-moisture-mod
+    in let biome = biome-classify eff-temp eff-moist (base.clim-altitude)
+    in let growth = mc-growth-rate eff-temp eff-moist
+    in Microclimate { mc-base = base, mc-weather = weather, mc-biome = biome, mc-season = season, mc-effective-temp = eff-temp, mc-effective-moisture = eff-moist, mc-growth-rate = growth }
+
+  mc-growth-rate : Integer, Integer -> Integer
+  mc-growth-rate (temp) (moisture) =
+    let temp-factor = if temp < 0 then 0 else if temp > 350 then 500 - (temp - 350) else temp * 1000 / 350
+    in let moist-factor = if moisture < 100 then moisture * 10 else 1000
+    in bio-clamp (temp-factor * moist-factor / 1000) 0 1000
+
+Section: World Biome Map
+
+  BiomeMap = record {
+    bm-cells : List BiomeType,
+    bm-climates : List Climate,
+    bm-size : Integer
+  }
+
+  bm-new : Integer -> BiomeMap
+  bm-new (size) = BiomeMap { bm-cells = [], bm-climates = [], bm-size = size }
+
+  bm-classify-all : List Climate, Integer, Integer -> List BiomeType
+  bm-classify-all (climates) (i) (n) =
+    if i >= n then []
+    else let c = list-at climates i
+    in let biome = biome-classify (c.clim-temperature) (c.clim-moisture) (c.clim-altitude)
+    in [biome] & bm-classify-all climates (i + 1) n
+
+Section: Helpers
+
+  bio-clamp : Integer, Integer, Integer -> Integer
+  bio-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Formatting
+
+  format-climate : Climate -> Text
+  format-climate (c) = "temp=" & show (c.clim-temperature) & " moist=" & show (c.clim-moisture) & " alt=" & show (c.clim-altitude)
+
+  format-weather : WeatherState -> Text
+  format-weather (ws) =
+    let name = when ws.ws-current
+      is WxClear -> "clear"
+      is WxCloudy -> "cloudy"
+      is WxRain -> "rain"
+      is WxHeavyRain -> "heavy-rain"
+      is WxSnow -> "snow"
+      is WxBlizzard -> "blizzard"
+      is WxFog -> "fog"
+      is WxStorm -> "STORM"
+      is WxDrought -> "drought"
+    in name & " int=" & show (ws.ws-intensity) & " wind=" & show (ws.ws-wind-speed)
+
+  format-microclimate : Microclimate -> Text
+  format-microclimate (mc) = biome-name (mc.mc-biome) & " temp=" & show (mc.mc-effective-temp) & " growth=" & show (mc.mc-growth-rate)
+
+Page 1

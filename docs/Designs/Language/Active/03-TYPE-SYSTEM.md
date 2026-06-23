@@ -323,12 +323,12 @@ Each phase produces a usable language. Phase 1 alone is roughly ML or a simple H
 
 ## Open Questions
 
-1. **Instance resolution** — Type classes need instance resolution. Do we use Haskell-style global instances, Scala-style implicit search, Rust-style explicit impl blocks, or something new? This affects the entire feel of ad-hoc polymorphism.
+1. ~~**Instance resolution**~~ — RESOLVED (CL 4722/4724). Dictionary-passing with implicit resolution from concrete argument types. Polymorphic forwarding threads dictionaries through call chains.
 
 2. **Totality checking** — How aggressive? Idris requires totality for everything by default. We probably want totality for type-level functions and proofs, with general recursion (via `[Diverge]`) for runtime code.
 
 3. **Type-level computation limits** — The normalizer must terminate. How do we bound it? Fuel-based? (Give it N reduction steps and give up?) Or require all type-level functions to be structurally recursive?
 
-4. **Higher-kinded types** — Do we support `Functor`, `Monad`, etc. as type classes over type constructors? Almost certainly yes, but the implementation is non-trivial with dependent types.
+4. ~~**Higher-kinded types**~~ — RESOLVED (CL 4730/4735/4736). TypeCon + TypeApply constructors with symmetric unification. Scope: `* -> *`. Enables Functor, Monad over type constructors.
 
 5. **Row polymorphism for records** — Desired for expressiveness but complex to implement with dependent types. May be a Phase 5+ feature.

@@ -108,19 +108,165 @@ All scripts use `build/vm-config.ps1` for shared VM setup.
 
 ### codex-vm (default)
 
-`tools/codex-vm.exe` — a ~4500-line C program using Windows Hypervisor
-Platform (WHP). Features: shadow register file (WHP GPR corruption
-workaround), NE2000 NIC with NAT, VGA text + GOP framebuffer + Bochs
-VBE display, PS/2 keyboard/mouse, UEFI firmware emulation (LocateProtocol,
-Block I/O, AllocatePages, GetMemoryMap, GetTime, auto-extract PE from GPT),
-PCI config space (3 devices), xHCI USB 3.x controller (mass storage + HID
-keyboard + UVC camera with isochronous transfers), Intel HDA audio with
-host waveOut output, HPET, IOAPIC, ACPI tables, SMBIOS tables, CMOS RTC,
-PC speaker with Beep().
+`tools/codex-vm.exe` — a ~6000-line C program using Windows Hypervisor
+Platform (WHP). Build with `tools/build-vm.ps1`.
 
-```powershell
-# codex-vm is used automatically when tools/codex-vm.exe exists
+#### CLI Flags
+
 ```
+codex-vm -kernel file.cdx [options]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-kernel <file>` | (required) | CDX or multiboot kernel to boot |
+| `-mem <MB>` | 2048 | Guest RAM in megabytes |
+| `-input <file>` | — | Pre-load file into serial ring buffer (source input) |
+| `-output <file>` | — | Capture serial output to file |
+| `-disk <file>` | — | Attach IDE disk image (read/write, flushed to host) |
+| `-headless` | off | Suppress VGA/GOP display window |
+| `-uefi` | off | UEFI firmware mode (ConOut/ConIn, GOP, Block I/O, memory map, runtime services, auto-extract PE from GPT images) |
+| `-gop` | off | Activate GOP framebuffer (default 640x480) |
+| `-gop-width <N>` | 640 | GOP framebuffer width (implies `-gop`) |
+| `-gop-height <N>` | 480 | GOP framebuffer height (implies `-gop`) |
+| `-smp [N]` | 1 | Enable multi-core: N virtual processors (1-16, default 4 if N omitted). Creates WHP VPs, LAPIC, MADT with per-core entries. Core count written to GPA 0xFF8; boot code reads it to decide whether to send INIT/SIPI. |
+| `-portfwd <host:guest>` | — | TCP port forwarding from host to guest NIC (repeatable, max 16). Example: `-portfwd 8080:80` |
+| `-debug` | off | Interactive debugger shell on breakpoints and single-step |
+| `-break <name>` | — | Patch INT3 at named function entry (implies `-debug`, repeatable) |
+| `-map <file>` | auto | Symbol map file for address resolution. Auto-probed: `<kernel>.map`, then `seed/Codex.map` |
+| `-watch <0xADDR>` | — | Hardware watchpoint via page protection |
+| `-watch-size <N>` | 8 | Watchpoint region size (max 64 bytes) |
+| `-screenshot <file>` | — | Save GOP framebuffer as BMP on exit |
+| `-screenshot-delay <ms>` | 0 | Delay before screenshot capture |
+| `-args <string>` | — | Boot arguments string (accessible to guest) |
+| `-trace-file <file>` | — | Write execution trace to file |
+
+Environment: `CODEX_VM_NO_TIMER=1` disables PIT timer interrupts.
+
+#### Emulated Hardware
+
+**CPU and SMP.** WHP-accelerated x86-64 (long mode, full hardware
+virtualization). Shadow register file works around WHP GPR corruption.
+Multi-core via `-smp N`: each AP gets its own WHP virtual processor
+and host thread. INIT/SIPI startup sequence: guest writes AP entry
+address to GPA 0x1000 and per-core stack addresses to a stack table;
+the LAPIC ICR write triggers AP launch. APs start in 64-bit long mode
+with their LAPIC ID in R15.
+
+**LAPIC** (0xFEE00000). Per-core local APIC: ID register, SIVR, EOI,
+ICR (lo/hi). SIPI delivery creates AP threads. Used for SMP boot and
+inter-processor interrupts.
+
+**IOAPIC** (0xFEC00000). 24 redirection entries. IRQ routing from
+PCI devices and ISA sources to the BSP.
+
+**PCI Bus.** 3 devices on bus 0:
+
+| Slot | Device | Class | BAR | IRQ |
+|------|--------|-------|-----|-----|
+| 0 | Bochs VGA (1234:1111) | Display | 0xFD000000 | — |
+| 1 | xHCI USB (1033:0194) | USB 3.0 | 0xFE800000 | 10 |
+| 2 | Intel HDA (8086:2668) | Audio | 0xFE000000 | 11 |
+
+Config space read/write via ports 0xCF8/0xCFC.
+
+**Display.** Three modes:
+- **VGA text** (80x25) via port 0x3D4/0x3D5, text buffer at 0xB8000
+- **Bochs VBE** via ports 0x1CE/0x1CF (index/data), guest-initiated mode switch
+- **GOP framebuffer** at GPA 0xBF000000 (in RAM — fast writes, no MMIO trap). Guest writes 32-bit XRGB pixels directly. The VM renders from a shadow copy to a Win32 window on a separate thread. Three preset modes: 640x480 (0), 800x600 (1), 1024x768 (2). Custom sizes via `-gop-width`/`-gop-height`. Window title changes to "Codex Spark" in GOP mode.
+
+**GPU Triangle Rasterizer.** Host-side native-speed rasterizer
+accessed via I/O ports 0x400-0x40F:
+
+| Port | Direction | Function |
+|------|-----------|----------|
+| 0x400 | OUT | Rasterize N triangles from guest command buffer |
+| 0x401 | OUT | Clear framebuffer to XRGB color |
+| 0x402 | OUT | Clear depth buffer |
+| 0x403-0x405 | OUT | Set light direction (x/y/z, fixed-point /1000) |
+| 0x406 | OUT | Set eye direction X (Y/Z copied from light) |
+| 0x407 | OUT | Set texture guest address |
+| 0x408-0x409 | OUT | Set texture width/height |
+| 0x40A | OUT | Commit texture upload (copy from guest RAM) |
+
+Includes depth buffering, per-vertex normals, diffuse+specular
+lighting, texture mapping with bilinear filtering, procedural Earth
+texture generation, and atmospheric glow post-processing.
+
+**Serial I/O.** Ring buffer at GPA 0x500000 (1 MB). Source input is
+pre-loaded from `-input` file. Output captured from guest UART writes
+to `-output` file. Ports 0x3F8-0x3FD (COM1). Protocol: guest reads
+input from ring buffer; writes output bytes; harness captures until
+EOT or VM exit.
+
+**NE2K NIC.** NE2000-compatible ISA NIC at I/O base 0x300. User-mode
+NAT stack with IP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3. Handles
+ARP (responds for gateway), DHCP (offers 10.0.2.15/24), DNS (forwards
+to host), and TCP/UDP forwarding. Port forwarding via `-portfwd` for
+host-to-guest TCP connections.
+
+**IDE Disk.** PIO-mode IDE controller at ports 0x1F0-0x1F7, 0x3F6.
+Supports IDENTIFY, READ SECTORS, WRITE SECTORS, and FLUSH CACHE.
+Writes are flushed to the host image file (durable disk writes).
+
+**xHCI USB 3.x Controller.** Full command ring, event ring, and
+transfer ring processing. Three device slots:
+- Slot 1: Mass storage (bulk IN/OUT, SCSI READ/WRITE to RAM disk)
+- Slot 2: HID keyboard (interrupt IN, generates scan codes)
+- Slot 3: UVC camera (isochronous transfers, MJPEG frames)
+
+**Intel HDA Audio.** CORB/RIRB command interface, output stream DMA.
+48 kHz 16-bit stereo PCM. Host-side playback via Windows waveOut API.
+
+**HPET.** High Precision Event Timer at 0xFED00000. Main counter
+driven by QueryPerformanceCounter. Comparator 0 with periodic mode
+and interrupt generation.
+
+**Timers and Interrupts.** Dual 8259 PIC (master 0x20, slave 0xA0).
+PIT channel 0 at port 0x40 (host-driven periodic tick). CMOS RTC at
+port 0x70/0x71 (real host time). PC speaker via Windows Beep().
+
+**PS/2 Keyboard and Mouse.** Keyboard at port 0x60/0x64 with scan
+code queue. Mouse data written to GPA 28684 (kernel metadata cell
+`key-buffer-addr + 4`) as 3-byte packet (buttons, dx, dy).
+
+**ACPI.** RSDP at 0xE0000, RSDT, FADT (SCI on port 0x2000, PM timer
+at 0x2004), MADT (LAPIC entries per core + IOAPIC), DSDT stub.
+
+**SMBIOS.** Entry point at 0xF0000. Type 0 (BIOS), Type 1 (System),
+Type 127 (end-of-table). Vendor/product: "Codex"/"codex-vm".
+
+**UEFI Firmware Emulation** (when `-uefi` or booting a GPT image).
+Trap-page dispatch at GPA 0xF1000 (HLT opcodes — guest calls trap,
+VM intercepts the HLT). Supported protocols:
+
+| Protocol | Functions |
+|----------|-----------|
+| ConIn | Reset, ReadKeyStroke, ReadKeyStrokeEx |
+| ConOut | Reset, OutputString, TestString, QueryMode, SetMode, SetAttribute, ClearScreen, SetCursorPosition, EnableCursor |
+| Boot Services | AllocatePages, FreePages, GetMemoryMap, AllocatePool, FreePool, ExitBootServices, Stall, SetWatchdogTimer, HandleProtocol, LocateHandle, LocateProtocol |
+| Runtime Services | GetTime (host RTC) |
+| GOP | QueryMode, SetMode, Blt |
+| Block I/O | Reset, ReadBlocks, WriteBlocks, Flush |
+| Simple File System | OpenVolume, Open, Close, Read, GetInfo, SetPosition |
+
+Auto-extracts PE from GPT images: scans for EFI System Partition,
+locates `EFI/BOOT/BOOTX64.EFI`, loads the PE into memory.
+
+**Guest-to-Host Communication.** Guest reads host-provided values
+from fixed GPAs:
+
+| GPA | Width | Content |
+|-----|-------|---------|
+| 0xFE8 | 8 bytes | Guest RAM size in bytes (for dynamic RSP) |
+| 0xFF0 | 8 bytes | Boot arguments string pointer |
+| 0xFF8 | 4 bytes | SMP core count (0 or 1 = single-core) |
+
+#### Interactive Debugger
+
+Run with `-debug` (and optionally `-break <fn>` and `-map <file>`)
+for a command shell on breakpoints. See the Native Debugging Toolkit
+section for commands and workflows.
 
 ### QEMU (fallback)
 
@@ -132,20 +278,44 @@ $env:USE_QEMU = 1
 build/test.ps1 -Jobs 4
 ```
 
-### Common VM Parameters
+`kernel-irqchip=off` required for bare-metal operation under QEMU.
 
-- Accelerator: WHPX (Windows Hypervisor Platform)
-- Memory: 2048 MB (configurable via MemMB parameter)
-- Serial: dual TCP sockets (data on ch0, control on ch1)
-- Network: NE2K ISA NIC with user-mode NAT (10.0.2.x)
-- Storage: IDE PIO from `-disk` image file
-- USB: xHCI with mass storage, HID keyboard, UVC camera
-- Audio: Intel HDA (48kHz 16-bit stereo) via waveOut
-- Display: VGA text (80x25), GOP (up to 1024x768), Bochs VBE
-- Timers: PIT (host-driven), HPET (QueryPerformanceCounter), CMOS RTC
-- Interrupts: dual 8259 PIC, IOAPIC (24 redirection entries)
-- Platform: PCI config space, ACPI (RSDP/RSDT/FADT/MADT/DSDT), SMBIOS
-- `kernel-irqchip=off` required for bare-metal operation (QEMU only)
+### Renode (cross-architecture board testing)
+
+Renode v1.16.1 provides cycle-accurate simulation for ARM64 and
+RISC-V 64 targets. Install the portable zip to `tools/renode/`.
+
+**Board definitions** (in `tools/renode/codex/`):
+
+| Board | CPU | UART | RAM |
+|---|---|---|---|
+| `codex-arm64.repl` | Cortex-A53 (GICv3) | PL011 @ 0x09000000 | 256MB @ 0x40000000 |
+| `codex-riscv64.repl` | RV64GC (PLIC/CLINT) | NS16550 @ 0x10000000 | 256MB @ 0x80000000 |
+
+**Quick test** (requires plugs built first):
+
+```powershell
+build/test-boards.ps1                    # Both boards
+build/test-boards.ps1 -Arch arm64        # ARM64 only
+build/test-boards.ps1 -Arch riscv64      # RISC-V only
+```
+
+**Pipeline**: source → compile.ps1 (IR) → arm64/riscv plug → wire
+protocol → compile-arm64/riscv.ps1 (ELF) → Renode (UART capture).
+
+**Setup from scratch**:
+1. Download Renode v1.16.1 portable zip from GitHub releases
+2. Extract to `tools/renode/`
+3. Create `tools/renode/codex/` with the `.repl` board files
+4. Build plugs: `codex/plugs/arm64/build.ps1`, `codex/plugs/riscv/build.ps1`
+5. Run `build/test-boards.ps1`
+
+**Key fixes for Renode compatibility** (vs QEMU):
+- ARM64: exception vector table required (VBAR_EL1/EL3), PL011
+  needs explicit UARTLCR_H + UARTCR init, 32-bit UART writes
+- ARM64: all runtime helpers must use `a64-emit-block` (not `a64-emit`)
+- RISC-V: heap register must be S1/x9 (not t3/x28 which collides
+  with temp allocator)
 
 ## Self-Host Compilation Protocol
 

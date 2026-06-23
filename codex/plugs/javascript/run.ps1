@@ -40,7 +40,7 @@ Write-Host "[js-run] Listening on port $plugPort"
 
 # -- Phase 3: Boot plug CDX ------------------------------------------
 $stderrFile = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '4096', '-headless') `
+    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 # Accept TCP connection from plug
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -94,5 +94,3 @@ $stderrFile = [System.IO.Path]::GetTempFileName()
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
     }
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
-}
-}

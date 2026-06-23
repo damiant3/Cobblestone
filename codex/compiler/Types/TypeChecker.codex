@@ -39,6 +39,17 @@ Section: Resolve Type Expression
        else deck-record (ListTy ErrorTy)
       else if name.value == "LinkedList" then if list-length args == 1 then deck-record (LinkedListTy (resolve-type-expr tdm (list-at args 0)))
        else deck-record (LinkedListTy ErrorTy)
+      else if name.value == "Real" then if list-length args == 1 then
+       let qual = when (list-at args 0) is ANamedType (qt) (qs) -> qt.value is otherwise -> ""
+       in if qual == "approximate" then RealApproxTy
+       else if qual == "trapping" then RealTrappingTy
+       else if qual == "saturating" then RealSaturatingTy
+       else deck-record (ConstructedTy name (for a in args -> resolve-type-expr tdm a))
+       else deck-record (ConstructedTy name (for a in args -> resolve-type-expr tdm a))
+      else if name.value == "Vector" then if list-length args == 2 then
+       let n-text = when (list-at args 0) is ANamedType (nt) (ns) -> nt.value is otherwise -> "0"
+       in deck-record (VectorTy (lit-text-to-integer n-text) (resolve-type-expr tdm (list-at args 1)))
+       else deck-record (VectorTy 2 ErrorTy)
       else deck-record (ConstructedTy name (for a in args -> resolve-type-expr tdm a))
     is AAppType (inner-ctor) (inner-args) (s) ->
      resolve-applied-type tdm inner-ctor (inner-args & args)
@@ -47,7 +58,7 @@ Section: Resolve Type Expression
   resolve-type-name : List TypeBinding, Text -> CodexType
   resolve-type-name (tdm) (name) =
    if name == "Integer" then int-ty-default
-   else if name == "Number" then NumberTy
+   else if name == "Real" then RealTy
    else if name == "Text" then TextTy
    else if name == "Boolean" then BooleanTy
    else if name == "Char" then CharTy
@@ -108,17 +119,13 @@ Section: Parameterize Type
   parameterize-walk : UnificationState, List ParamEntry, CodexType -> WalkResult
   parameterize-walk (st) (entries) (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) | NumberTy | TextTy | BooleanTy | NothingTy | VoidTy | ProofTy | ErrorTy ->
+    is IntegerTy (lo) (hi) (mode) | RealTy | TextTy | BooleanTy | NothingTy | VoidTy | ProofTy | ErrorTy ->
      WalkResult { walked = ty, entries = entries, state = st }
     is ConstructedTy (name) (args) ->
-     if list-length args == 0 & is-value-name (name.value)
+     if is-value-name (name.value)
       then
        let looked = find-param-entry entries (name.value) 0 (list-length entries)
-       in if looked >= 0 then WalkResult {
-        walked = TypeVar looked,
-        entries = entries,
-        state = st
-       }
+       in if looked >= 0 then if list-length args == 0 then WalkResult { walked = TypeVar looked, entries = entries, state = st } else let ar = parameterize-walk st entries (list-at args 0) in WalkResult { walked = deck-record (TypeApply (TypeVar looked) (ar.walked)), entries = ar.entries, state = ar.state }
        else let (fr-ty, fr-st) = fresh-and-advance st
        in when fr-ty
           is TypeVar (new-id) ->
@@ -126,11 +133,7 @@ Section: Parameterize Type
             param-name = name.value,
             var-id = new-id
            }
-       in WalkResult {
-            walked = fr-ty,
-            entries = list-push entries new-entry,
-            state = fr-st
-           }
+       in if list-length args == 0 then WalkResult { walked = fr-ty, entries = list-push entries new-entry, state = fr-st } else let ar = parameterize-walk fr-st (list-push entries new-entry) (list-at args 0) in WalkResult { walked = deck-record (TypeApply fr-ty (ar.walked)), entries = ar.entries, state = ar.state }
           is otherwise -> WalkResult {
            walked = ty,
            entries = entries,
@@ -202,6 +205,10 @@ Section: Parameterize Type
       entries = ctors-r.entries,
       state = ctors-r.state
      }
+    is TypeApply (tf) (ta) ->
+     let fr = parameterize-walk st entries tf
+     in let ar = parameterize-walk (fr.state) (fr.entries) ta
+     in WalkResult { walked = deck-record (TypeApply (fr.walked) (ar.walked)), entries = ar.entries, state = ar.state }
     is otherwise -> WalkResult {
      walked = ty,
      entries = entries,
@@ -241,8 +248,9 @@ Section: Parameterize Type
    }
    else let c = list-at ctors i
    in let r = parameterize-walk-list st entries (c.fields) 0 (list-length (c.fields)) []
-   in let c2 = deck-record (SumCtor { name = c.name, fields = r.walked-list })
-   in parameterize-walk-sum-ctors (r.state) (r.entries) ctors (i + 1) len (list-push acc c2)
+   in let rr = parameterize-walk-list (r.state) (r.entries) (c.return-type) 0 (list-length (c.return-type)) []
+   in let c2 = deck-record (SumCtor { name = c.name, fields = r.walked-list, return-type = rr.walked-list })
+   in parameterize-walk-sum-ctors (rr.state) (rr.entries) ctors (i + 1) len (list-push acc c2)
 
   find-param-entry : List ParamEntry, Text, Integer, Integer -> Integer
   find-param-entry (entries) (name) (i) (len) =
@@ -440,14 +448,26 @@ Section: Check Chapter
   check-rt-no-lambda : UnificationState, AExpr, Text -> UnificationState
   check-rt-no-lambda (st) (expr) (fn) =
    when expr
-    is ALambdaExpr (ps) (b) (s) -> __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-closure ("[HardRealtime] function '" & fn & "' contains a lambda") s))
+    is ALambdaExpr (ps) (b) (s) -> __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-closure ("punctual function '" & fn & "' contains a lambda or closure") s))
     is AIfExpr (c) (t) (e) (s) -> check-rt-no-lambda (check-rt-no-lambda (check-rt-no-lambda st c fn) t fn) e fn
-    is ALetExpr (bs) (b) (s) -> check-rt-no-lambda st b fn
+    is ALetExpr (bs) (b) (s) -> check-rt-no-lambda (check-rt-let-binds st bs fn 0 (list-length bs)) b fn
     is AApplyExpr (f) (a) (s) -> check-rt-no-lambda (check-rt-no-lambda st f fn) a fn
     is ABinaryExpr (l) (op) (r) (s) -> check-rt-no-lambda (check-rt-no-lambda st l fn) r fn
-    is AMatchExpr (sc) (arms) (s) -> check-rt-no-lambda st sc fn
+    is AMatchExpr (sc) (arms) (s) -> check-rt-no-lambda-arms (check-rt-no-lambda st sc fn) arms fn 0 (list-length arms)
     is AActExpr (stmts) (s) -> st
     is otherwise -> st
+
+  check-rt-let-binds : UnificationState, List ALetBind, Text, Integer, Integer -> UnificationState
+  check-rt-let-binds (st) (bs) (fn) (i) (len) =
+   if i >= len then st
+   else let b = list-at bs i
+   in check-rt-let-binds (check-rt-no-lambda st (b.value) fn) bs fn (i + 1) len
+
+  check-rt-no-lambda-arms : UnificationState, List AMatchArm, Text, Integer, Integer -> UnificationState
+  check-rt-no-lambda-arms (st) (arms) (fn) (i) (len) =
+   if i >= len then st
+   else let arm = list-at arms i
+   in check-rt-no-lambda-arms (check-rt-no-lambda st (arm.body) fn) arms fn (i + 1) len
 
   is-rt-unsafe-name : Text -> Boolean
   is-rt-unsafe-name (n) =
@@ -455,17 +475,29 @@ Section: Check Chapter
 
   is-rt-safe-builtin : Text -> Boolean
   is-rt-safe-builtin (n) =
-   n == "list-at" | n == "list-length" | n == "show" | n == "integer-to-text" | n == "text-length" | n == "text-at" | n == "text-starts-with" | n == "text-compare" | n == "array-at" | n == "array-length"
+   n == "list-at" | n == "list-length" | n == "show" | n == "integer-to-text" | n == "text-length" | n == "text-at" | n == "text-starts-with" | n == "text-compare" | n == "array-at" | n == "array-length" | n == "bit-and" | n == "bit-or" | n == "bit-xor" | n == "bit-shl" | n == "bit-shr" | n == "bit-shru" | n == "bit-not" | n == "int-mod" | n == "abs" | n == "min" | n == "max"
 
   check-rt-calls : UnificationState, AExpr, Text, List Text -> UnificationState
   check-rt-calls (st) (expr) (fn) (rt-names) =
    when expr
-    is AApplyExpr (f) (a) (s) -> let st1 = check-rt-calls st a fn rt-names in when f is ANameExpr (n) (ns) -> if is-rt-name rt-names (n.value) 0 (list-length rt-names) | is-rt-safe-builtin (n.value) then st1 else __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-calls-unsafe ("[HardRealtime] function '" & fn & "' calls '" & n.value & "' which is not @hard-realtime") ns)) is otherwise -> check-rt-calls st1 f fn rt-names
+    is AApplyExpr (f) (a) (s) -> let st1 = check-rt-calls st a fn rt-names in when f is ANameExpr (n) (ns) -> if is-rt-name rt-names (n.value) 0 (list-length rt-names) | is-rt-safe-builtin (n.value) then st1 else __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-calls-unsafe ("punctual function '" & fn & "' calls '" & n.value & "' which is not punctual") ns)) is otherwise -> check-rt-calls st1 f fn rt-names
     is AIfExpr (c) (t) (e) (s) -> check-rt-calls (check-rt-calls (check-rt-calls st c fn rt-names) t fn rt-names) e fn rt-names
-    is ALetExpr (bs) (b) (s) -> check-rt-calls st b fn rt-names
+    is ALetExpr (bs) (b) (s) -> check-rt-calls (check-rt-calls-let-binds st bs fn rt-names 0 (list-length bs)) b fn rt-names
     is ABinaryExpr (l) (op) (r) (s) -> check-rt-calls (check-rt-calls st l fn rt-names) r fn rt-names
-    is AMatchExpr (sc) (arms) (s) -> check-rt-calls st sc fn rt-names
+    is AMatchExpr (sc) (arms) (s) -> check-rt-calls-match-arms (check-rt-calls st sc fn rt-names) arms fn rt-names 0 (list-length arms)
     is otherwise -> st
+
+  check-rt-calls-let-binds : UnificationState, List ALetBind, Text, List Text, Integer, Integer -> UnificationState
+  check-rt-calls-let-binds (st) (bs) (fn) (rt-names) (i) (len) =
+   if i >= len then st
+   else let b = list-at bs i
+   in check-rt-calls-let-binds (check-rt-calls st (b.value) fn rt-names) bs fn rt-names (i + 1) len
+
+  check-rt-calls-match-arms : UnificationState, List AMatchArm, Text, List Text, Integer, Integer -> UnificationState
+  check-rt-calls-match-arms (st) (arms) (fn) (rt-names) (i) (len) =
+   if i >= len then st
+   else let arm = list-at arms i
+   in check-rt-calls-match-arms (check-rt-calls st (arm.body) fn rt-names) arms fn rt-names (i + 1) len
 
   check-rt-no-alloc : UnificationState, AExpr, Text -> UnificationState
   check-rt-no-alloc (st) (expr) (fn) =
@@ -473,10 +505,22 @@ Section: Check Chapter
     is ANameExpr (n) (s) -> if is-rt-unsafe-name (n.value) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses heap-allocating builtin '" & n.value & "'") s)) else st
     is ABinaryExpr (l) (op) (r) (s) -> let st1 = check-rt-no-alloc (check-rt-no-alloc st l fn) r fn in when op is OpAppend -> __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses text concatenation (&)") s)) is otherwise -> st1
     is AIfExpr (c) (t) (e) (s) -> check-rt-no-alloc (check-rt-no-alloc (check-rt-no-alloc st c fn) t fn) e fn
-    is ALetExpr (bs) (b) (s) -> check-rt-no-alloc st b fn
+    is ALetExpr (bs) (b) (s) -> check-rt-no-alloc (check-rt-alloc-let-binds st bs fn 0 (list-length bs)) b fn
     is AApplyExpr (f) (a) (s) -> check-rt-no-alloc (check-rt-no-alloc st f fn) a fn
-    is AMatchExpr (sc) (arms) (s) -> check-rt-no-alloc st sc fn
+    is AMatchExpr (sc) (arms) (s) -> check-rt-alloc-match-arms (check-rt-no-alloc st sc fn) arms fn 0 (list-length arms)
     is otherwise -> st
+
+  check-rt-alloc-let-binds : UnificationState, List ALetBind, Text, Integer, Integer -> UnificationState
+  check-rt-alloc-let-binds (st) (bs) (fn) (i) (len) =
+   if i >= len then st
+   else let b = list-at bs i
+   in check-rt-alloc-let-binds (check-rt-no-alloc st (b.value) fn) bs fn (i + 1) len
+
+  check-rt-alloc-match-arms : UnificationState, List AMatchArm, Text, Integer, Integer -> UnificationState
+  check-rt-alloc-match-arms (st) (arms) (fn) (i) (len) =
+   if i >= len then st
+   else let arm = list-at arms i
+   in check-rt-alloc-match-arms (check-rt-no-alloc st (arm.body) fn) arms fn (i + 1) len
 
   is-rt-unsafe-effect : Text -> Boolean
   is-rt-unsafe-effect (e) =
@@ -697,6 +741,7 @@ Section: Linearity Checking
    when p
     is AVarPat (n) (s) -> (n.value) == v
     is ACtorPat (n) (subs) (s) -> apat-list-binds-name subs v 0 (list-length subs)
+    is AVecPat (subs) (s) -> apat-list-binds-name subs v 0 (list-length subs)
     is otherwise -> False
 
   apat-list-binds-name : List APat, Text, Integer, Integer -> Boolean
@@ -1013,9 +1058,11 @@ Section: Register Type Definitions
    if i == len then acc
    else let c = list-at ctors i
    in let field-types = resolve-type-expr-list-for-map tdefs (c.fields) 0 (list-length (c.fields)) [] partial-tdm
+   in let ret-types = resolve-type-expr-list-for-map tdefs (c.return-type) 0 (list-length (c.return-type)) [] partial-tdm
    in let sc = deck-record (SumCtor {
     name = c.name,
-    fields = field-types
+    fields = field-types,
+    return-type = ret-types
    })
    in build-sum-ctors tdefs ctors (i + 1) len (list-push acc sc) partial-tdm
 
@@ -1092,7 +1139,8 @@ Section: Register Type Definitions
     env = env
    }
    else let ctor = list-at ctors i
-   in let ctor-ty = build-ctor-type tdm (ctor.fields) result-ty 0 (list-length (ctor.fields))
+   in let ctor-result = if list-length (ctor.return-type) > 0 then resolve-type-expr tdm (list-at (ctor.return-type) 0) else result-ty
+   in let ctor-ty = build-ctor-type tdm (ctor.fields) ctor-result 0 (list-length (ctor.fields))
    in let pr = parameterize-type st ctor-ty
    in let env2 = env-bind env (ctor.name.value) (pr.parameterized)
    in register-variant-ctors (pr.state) env2 tdm ctors result-ty (i + 1) len
@@ -1201,7 +1249,7 @@ Section: Type Arity Check
 Section: Capability Checker
 
   granted-capabilities : List Text
-  granted-capabilities = ["Console", "Console.Read", "Console.Write", "FileSystem", "FileSystem.Read", "FileSystem.Write", "Network", "Network.Read", "Network.Write", "Concurrent"]
+  granted-capabilities = ["Console", "Console.Read", "Console.Write", "FileSystem", "FileSystem.Read", "FileSystem.Write", "Network", "Network.Read", "Network.Write", "Concurrent", "Device", "Gpu", "Gpu.Compute", "Gpu.Memory"]
 
   check-opening-capabilities : List TypeBinding -> List Diagnostic
   check-opening-capabilities (types) =

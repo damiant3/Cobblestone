@@ -23,7 +23,7 @@ Section: Types
     le-size : Integer,
     le-offset-x : Integer,
     le-offset-y : Integer,
-    le-opacity : Integer,
+    le-opacity : Real,
     le-enabled : Boolean
   }
 
@@ -37,7 +37,7 @@ Section: Construction
   effect-stack-new : EffectStack
   effect-stack-new = EffectStack { es-effects = [], es-count = 0 }
 
-  fx-drop-shadow : Integer, Integer, Integer, Integer, Integer -> LayerEffect
+  fx-drop-shadow : Integer, Integer, Integer, Integer, Real -> LayerEffect
   fx-drop-shadow (color) (size) (offset-x) (offset-y) (opacity) = LayerEffect {
     le-kind = FxDropShadow,
     le-color = color,
@@ -48,7 +48,7 @@ Section: Construction
     le-enabled = True
   }
 
-  fx-outer-glow : Integer, Integer, Integer -> LayerEffect
+  fx-outer-glow : Integer, Integer, Real -> LayerEffect
   fx-outer-glow (color) (size) (opacity) = LayerEffect {
     le-kind = FxOuterGlow,
     le-color = color,
@@ -59,7 +59,7 @@ Section: Construction
     le-enabled = True
   }
 
-  fx-inner-glow : Integer, Integer, Integer -> LayerEffect
+  fx-inner-glow : Integer, Integer, Real -> LayerEffect
   fx-inner-glow (color) (size) (opacity) = LayerEffect {
     le-kind = FxInnerGlow,
     le-color = color,
@@ -70,7 +70,7 @@ Section: Construction
     le-enabled = True
   }
 
-  fx-stroke : Integer, Integer, Integer -> LayerEffect
+  fx-stroke : Integer, Integer, Real -> LayerEffect
   fx-stroke (color) (width) (opacity) = LayerEffect {
     le-kind = FxStroke,
     le-color = color,
@@ -158,17 +158,17 @@ Section: Outer Glow
     in let fb2 = if px /= 0 then lfx-glow-ring fb sx sy (fx.le-size) (fx.le-color) (fx.le-opacity) else fb
     in lfx-glow-loop fb2 src fx (i + 1) total w
 
-  lfx-glow-ring : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  lfx-glow-ring : Framebuf, Integer, Integer, Integer, Integer, Real -> Framebuf
   lfx-glow-ring (fb) (cx) (cy) (radius) (color) (opacity) =
     lfx-ring-loop fb cx cy radius color opacity (0 - radius)
 
-  lfx-ring-loop : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  lfx-ring-loop : Framebuf, Integer, Integer, Integer, Integer, Real, Integer -> Framebuf
   lfx-ring-loop (fb) (cx) (cy) (radius) (color) (opacity) (dy) =
     if dy > radius then fb
     else let fb2 = lfx-ring-row fb cx cy radius color opacity dy (0 - radius)
     in lfx-ring-loop fb2 cx cy radius color opacity (dy + 1)
 
-  lfx-ring-row : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  lfx-ring-row : Framebuf, Integer, Integer, Integer, Integer, Real, Integer, Integer -> Framebuf
   lfx-ring-row (fb) (cx) (cy) (radius) (color) (opacity) (dy) (dx) =
     if dx > radius then fb
     else let dist-sq = dx * dx + dy * dy
@@ -177,8 +177,8 @@ Section: Outer Glow
       let x = cx + dx
       in let y = cy + dy
       in if x >= 0 then if x < fb.fb-width then if y >= 0 then if y < fb.fb-height then
-        let falloff = 1000 - dist-sq * 1000 / r-sq
-        in let alpha = opacity * falloff / 1000
+        let falloff = 1.0 - real-from-int dist-sq / real-from-int r-sq
+        in let alpha = opacity * falloff
         in let existing = fb-get fb x y
         in fb-set fb x y (lfx-blend existing color alpha)
       else fb else fb else fb else fb
@@ -216,7 +216,7 @@ Section: Stroke
 
 Section: Color Helpers
 
-  lfx-blend : Integer, Integer, Integer -> Integer
+  lfx-blend : Integer, Integer, Real -> Integer
   lfx-blend (dst) (src) (alpha) =
     let dr = dst / 65536
     in let dg = dst / 256 - dr * 256
@@ -224,9 +224,9 @@ Section: Color Helpers
     in let sr = src / 65536
     in let sg = src / 256 - sr * 256
     in let sb = src - src / 256 * 256
-    in let rr = dr + (sr - dr) * alpha / 1000
-    in let rg = dg + (sg - dg) * alpha / 1000
-    in let rb = db + (sb - db) * alpha / 1000
+    in let rr = dr + real-to-int (real-from-int (sr - dr) * alpha)
+    in let rg = dg + real-to-int (real-from-int (sg - dg) * alpha)
+    in let rb = db + real-to-int (real-from-int (sb - db) * alpha)
     in lfx-clamp rr 0 255 * 65536 + lfx-clamp rg 0 255 * 256 + lfx-clamp rb 0 255
 
   lfx-clamp : Integer, Integer, Integer -> Integer

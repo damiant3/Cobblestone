@@ -20,7 +20,7 @@ Section: Infer Literal
      state = st
     }
     is NumLit -> CheckResult {
-     inferred-type = NumberTy,
+     inferred-type = RealTy,
      state = st
     }
     is TextLit -> CheckResult {
@@ -135,11 +135,25 @@ Section: Infer Binary
    in let rr = infer-expr (lr.state) env right
    in infer-binary-op (rr.state) (lr.inferred-type) (rr.inferred-type) op span
 
+  is-real-type : CodexType -> Boolean
+  is-real-type (ty) =
+   when ty
+    is RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy -> True
+    is otherwise -> False
+
   infer-binary-op : UnificationState, CodexType, CodexType, BinaryOp, SourceSpan -> CheckResult
   infer-binary-op (st) (lt) (rt) (op) (span) =
    when op
     is OpAdd | OpSub | OpMul | OpDiv | OpPow -> infer-arithmetic st lt rt span
-    is OpEq | OpNotEq | OpLt | OpGt | OpLtEq | OpGtEq -> infer-comparison st lt rt span
+    is OpEq | OpNotEq ->
+     let result = infer-comparison st lt rt span
+     in if is-real-type lt | is-real-type rt
+      then CheckResult {
+       inferred-type = BooleanTy,
+       state = add-unify-error (result.state) cdx-real-equality-banned "Floating-point equality is not safe. Use the ~ operator: x ~ y (approximately equal, 4 ULP tolerance), x ~0 y (bitwise exact, if you are certain)" span
+      }
+      else result
+    is OpLt | OpGt | OpLtEq | OpGtEq | OpApproxEq | OpApproxEqExact -> infer-comparison st lt rt span
     is OpAnd -> infer-and st lt rt span
     is OpOr -> infer-logical st lt rt span
     is OpAppend -> infer-append st lt rt span
@@ -154,7 +168,7 @@ Section: Infer Binary
       is UnitTy (rn) (ri) ->
        let (_, u-st) = unify st lt rt span
        in let st2 = if is-arithmetic-type lt & is-arithmetic-type rt then u-st
-                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Number" span
+                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Real" span
        in CheckResult { inferred-type = lt, state = st2 }
       is otherwise ->
        let (_, u-st) = unify st li rt span
@@ -167,23 +181,28 @@ Section: Infer Binary
       is otherwise ->
        let (_, u-st) = unify st lt rt span
        in let st2 = if is-arithmetic-type lt & is-arithmetic-type rt then u-st
-                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Number" span
+                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Real" span
        in CheckResult { inferred-type = lt, state = st2 }
 
   is-arithmetic-type : CodexType -> Boolean
   is-arithmetic-type (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) | NumberTy | TypeVar (id) | ErrorTy -> True
+    is IntegerTy (lo) (hi) (mode) | RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy | VectorTy (vn) (vt) | TypeVar (id) | ErrorTy -> True
     is UnitTy (n) (inner) -> is-arithmetic-type inner
     is otherwise -> False
 
   infer-comparison : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-comparison (st) (lt) (rt) (span) =
    let (_, u-st) = unify st lt rt span
-   in CheckResult {
-    inferred-type = BooleanTy,
-    state = u-st
-   }
+   in when lt
+    is VectorTy (n) (et) -> CheckResult {
+     inferred-type = VectorMaskTy n,
+     state = u-st
+    }
+    is otherwise -> CheckResult {
+     inferred-type = BooleanTy,
+     state = u-st
+    }
 
   infer-logical : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-logical (st) (lt) (rt) (span) =
@@ -382,10 +401,33 @@ Section: Infer Application
    in let (ok, r-st) = unify ret-st (fr.inferred-type) (deck-record (FunTy (ar.inferred-type) ret-ty)) span
    in let st-cls = check-class-op-app r-st env func (ar.inferred-type) span
    in let st-final = lint-record-set st-cls env func arg (ar.inferred-type) ret-ty span
+   in let refined-ty = refine-vec-result st-final func (ar.inferred-type) ret-ty
    in CheckResult {
-    inferred-type = ret-ty,
+    inferred-type = refined-ty,
     state = st-final
    }
+
+  refine-vec-result : UnificationState, AExpr, CodexType, CodexType -> CodexType
+  refine-vec-result (st) (func) (arg-ty) (ret-ty) =
+   let rr = deep-resolve st ret-ty
+   in when rr
+    is VectorTy (rn) (rt) -> if rn >= 0 then ret-ty else refine-vec-op st func arg-ty rt ret-ty
+    is otherwise -> ret-ty
+
+  refine-vec-op : UnificationState, AExpr, CodexType, CodexType, CodexType -> CodexType
+  refine-vec-op (st) (func) (arg-ty) (elem-ty) (fallback) =
+   let ra = deep-resolve st arg-ty
+   in let arg-len = when ra is VectorTy (an) (at) -> an is otherwise -> 0 - 1
+   in when func
+    is ANameExpr (n) (s) ->
+     if n.value == "vec-tail" & arg-len > 0 then deck-record (VectorTy (arg-len - 1) elem-ty)
+     else if n.value == "vec-map" & arg-len >= 0 then deck-record (VectorTy arg-len elem-ty)
+     else fallback
+    is AApplyExpr (inner) (first-arg) (s) ->
+     let inner-name = when inner is ANameExpr (n2) (s2) -> n2.value is otherwise -> ""
+     in if inner-name == "vec-cons" & arg-len >= 0 then deck-record (VectorTy (arg-len + 1) elem-ty)
+     else fallback
+    is otherwise -> fallback
 
 Section: Lint __record-set narrowing
 
@@ -519,27 +561,56 @@ Section: Infer List
    in unify-list-elems u-st env elems elem-ty (i + 1) len
 
 Section: Infer Match
+  is-gadt-type : UnificationState, CodexType -> Boolean
+  is-gadt-type (st) (ty) =
+   let resolved = deep-resolve st ty
+   in when resolved
+    is SumTy (name) (args) (ctors) -> any-ctor-has-return-type ctors 0 (list-length ctors)
+    is otherwise -> False
+
+  any-ctor-has-return-type : List SumCtor, Integer, Integer -> Boolean
+  any-ctor-has-return-type (ctors) (i) (len) =
+   if i >= len then False
+   else if list-length ((list-at ctors i).return-type) > 0 then True
+   else any-ctor-has-return-type ctors (i + 1) len
+
   infer-match : UnificationState, TypeEnv, AExpr, List AMatchArm -> CheckResult
   infer-match (st) (env) (scrutinee) (arms) =
    let sr = infer-expr st env scrutinee
    in let (fr-ty, fr-st) = fresh-and-advance (sr.state)
-   in let st2 = infer-match-arms fr-st env (sr.inferred-type) fr-ty arms 0 (list-length arms)
+   in let gadt = is-gadt-type fr-st (sr.inferred-type)
+   in let st2 = infer-match-arms fr-st env (sr.inferred-type) fr-ty arms 0 (list-length arms) gadt
    in let st3 = check-match-exhaustiveness st2 (sr.inferred-type) arms (aexpr-span scrutinee)
    in CheckResult {
     inferred-type = fr-ty,
     state = st3
    }
 
-  infer-match-arms : UnificationState, TypeEnv, CodexType, CodexType, List AMatchArm, Integer, Integer -> UnificationState
-  infer-match-arms (st) (env) (scrut-ty) (result-ty) (arms) (i) (len) =
+  infer-match-arms : UnificationState, TypeEnv, CodexType, CodexType, List AMatchArm, Integer, Integer, Boolean -> UnificationState
+  infer-match-arms (st) (env) (scrut-ty) (result-ty) (arms) (i) (len) (is-gadt) =
    if i == len then st
    else let arm = list-at arms i
+   in if is-gadt then infer-gadt-arm st env scrut-ty result-ty arm arms (i + 1) len else infer-plain-arm st env scrut-ty result-ty arm arms (i + 1) len is-gadt
+
+  infer-plain-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, Boolean -> UnificationState
+  infer-plain-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) (is-gadt) =
+   let pr = bind-pattern st env (arm.pattern) scrut-ty
+   in let gr = infer-expr (pr.state) (pr.env) (arm.guard)
+   in let (_, gu-st) = unify (gr.state) (gr.inferred-type) BooleanTy (aexpr-span (arm.guard))
+   in let br = infer-expr gu-st (pr.env) (arm.body)
+   in let (_, u-st) = unify (br.state) (br.inferred-type) result-ty (aexpr-span (arm.body))
+   in infer-match-arms u-st env scrut-ty result-ty arms next len is-gadt
+
+  infer-gadt-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer -> UnificationState
+  infer-gadt-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) =
+   let saved = snapshot-substitutions st
    in let pr = bind-pattern st env (arm.pattern) scrut-ty
    in let gr = infer-expr (pr.state) (pr.env) (arm.guard)
    in let (_, gu-st) = unify (gr.state) (gr.inferred-type) BooleanTy (aexpr-span (arm.guard))
    in let br = infer-expr gu-st (pr.env) (arm.body)
    in let (_, u-st) = unify (br.state) (br.inferred-type) result-ty (aexpr-span (arm.body))
-   in infer-match-arms u-st env scrut-ty result-ty arms (i + 1) len
+   in let restored = restore-substitutions u-st saved
+   in infer-match-arms restored env scrut-ty result-ty arms next len True
 
   check-match-exhaustiveness : UnificationState, CodexType, List AMatchArm, SourceSpan -> UnificationState
   check-match-exhaustiveness (st) (scrut-ty) (arms) (span) =
@@ -606,6 +677,9 @@ Section: Infer Match
      state = st,
      env = env
     }
+    is AVecPat (sub-pats) (s) ->
+     let elem-ty = when ty is VectorTy (n) (t) -> t is otherwise -> ErrorTy
+     in bind-vec-sub-patterns st env sub-pats elem-ty 0 (list-length sub-pats)
     is ACtorPat (ctor-name) (sub-pats) (s) ->
      if env-has env (ctor-name.value) == False
      then let err-st = __record-set st "bag" (bag-add (st.bag) (make-error cdx-unknown-pattern-ctor ("Pattern constructor '" & ctor-name.value & "' is not in scope; this arm could never match. Check the constructor names of the scrutinee's type.") s))
@@ -630,6 +704,15 @@ Section: Infer Match
       let (fr-ty, fr-st) = fresh-and-advance st
       in let pr = bind-pattern fr-st env (list-at sub-pats i) fr-ty
       in bind-ctor-sub-patterns (pr.state) (pr.env) sub-pats ctor-ty (i + 1) len
+
+  bind-vec-sub-patterns : UnificationState, TypeEnv, List APat, CodexType, Integer, Integer -> PatBindResult
+  bind-vec-sub-patterns (st) (env) (sub-pats) (elem-ty) (i) (len) =
+   if i == len then PatBindResult {
+    state = st,
+    env = env
+   }
+   else let pr = bind-pattern st env (list-at sub-pats i) elem-ty
+   in bind-vec-sub-patterns (pr.state) (pr.env) sub-pats elem-ty (i + 1) len
 
 Section: Infer Act
   infer-act : UnificationState, TypeEnv, List AActStmt -> CheckResult
@@ -671,7 +754,12 @@ Section: Infer Expression (dispatch)
     is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right s
     is AUnaryExpr (operand) (s) ->
      let r = infer-expr-at st env operand (depth + 1)
-     in let (_, u-st) = unify (r.state) (r.inferred-type) int-ty-default (aexpr-span operand)
+     in let op-ty = r.inferred-type
+     in if is-real-type op-ty then CheckResult {
+      inferred-type = op-ty,
+      state = r.state
+     }
+     else let (_, u-st) = unify (r.state) op-ty int-ty-default (aexpr-span operand)
      in CheckResult {
       inferred-type = int-ty-default,
       state = u-st
@@ -727,9 +815,10 @@ Section: Infer Expression (dispatch)
      in let (inst-ty, inst-st) = instantiate-type st ctor-raw
      in let result-type = strip-fun-args inst-ty
      in let st2 = infer-and-unify-record-fields inst-st env fields result-type 0 (list-length fields)
+     in let st3 = check-mutation-in-ctor-fields (record-expr-type st2 s result-type) fields 0 (list-length fields)
      in CheckResult {
       inferred-type = result-type,
-      state = record-expr-type st2 s result-type
+      state = st3
      }
     is AHandleExpr (eff) (body) (clauses) (s) ->
      let handled-env = strip-effect-from-env env (eff.value)
@@ -784,6 +873,33 @@ Section: Infer Expression (dispatch)
      inferred-type = ErrorTy,
      state = st
     }
+
+  check-mutation-in-ctor-fields : UnificationState, List AFieldExpr, Integer, Integer -> UnificationState
+  check-mutation-in-ctor-fields (st) (fields) (i) (len) =
+   if i >= len then st
+   else let f = list-at fields i
+     in let st2 = if aexpr-mentions-record-set (f.value) then __record-set st "bag" (bag-add (st.bag) (make-warning cdx-mutation-in-constructor ("Field '" & f.name.value & "' contains __record-set, which mutates in place. Other fields reading the same record will see the mutated value. Bind the __record-set result to a let before the constructor, or use revised.") (f.span)))
+       else st
+     in check-mutation-in-ctor-fields st2 fields (i + 1) len
+
+  aexpr-mentions-record-set : AExpr -> Boolean
+  aexpr-mentions-record-set (e) =
+   when e
+    is ANameExpr (n) (s) -> n.value == "__record-set"
+    is AApplyExpr (f) (a) (s) -> aexpr-mentions-record-set f | aexpr-mentions-record-set a
+    is ABinaryExpr (l) (op) (r) (s) -> aexpr-mentions-record-set l | aexpr-mentions-record-set r
+    is AIfExpr (c) (t) (el) (s) -> aexpr-mentions-record-set c | aexpr-mentions-record-set t | aexpr-mentions-record-set el
+    is ALetExpr (binds) (body) (s) -> aexpr-mentions-record-set body | aexpr-list-mentions-record-set-binds binds 0 (list-length binds)
+    is AMatchExpr (scrut) (arms) (s) -> aexpr-mentions-record-set scrut
+    is AFieldAccess (obj) (f) (s) -> aexpr-mentions-record-set obj
+    is otherwise -> False
+
+  aexpr-list-mentions-record-set-binds : List ALetBind, Integer, Integer -> Boolean
+  aexpr-list-mentions-record-set-binds (binds) (i) (len) =
+   if i >= len then False
+   else let b = list-at binds i
+     in if aexpr-mentions-record-set (b.value) then True
+     else aexpr-list-mentions-record-set-binds binds (i + 1) len
 
   strip-effect-from-env : TypeEnv, Text -> TypeEnv
   strip-effect-from-env (env) (eff-name) =

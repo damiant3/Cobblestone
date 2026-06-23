@@ -21,14 +21,14 @@ $Compile   = Join-Path $PSScriptRoot 'compile.ps1'
 $BuildLog  = Join-Path $OutDir 'build.log'
 
 function Invoke-BuildCdx {
-    param([string]$InputFile, [string]$Kernel, [string]$Output)
+    param([string]$InputFile, [string]$Kernel, [string]$Output, [int]$MemMB = 3072)
     $logFile = [System.IO.Path]::GetTempFileName()
     $tmpOut = Join-Path (Split-Path $Output) "build_cdx_tmp.cdx"
     $stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
     New-Item -ItemType Directory -Force -Path (Split-Path $stage0) | Out-Null
     if ($Kernel -ne $stage0) { Copy-Item -Force $Kernel $stage0 }
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & pwsh -NoProfile -File $Compile -Src $InputFile -Out $tmpOut -Log $logFile -Repl -MemMB 3072 2>&1 | Out-Null
+    & pwsh -NoProfile -File $Compile -Src $InputFile -Out $tmpOut -Log $logFile -Repl -MemMB $MemMB 2>&1 | Out-Null
     $ErrorActionPreference = $prev
     $ok = $LASTEXITCODE -eq 0
     if (-not $ok) {
@@ -43,7 +43,7 @@ function Invoke-BuildCdx {
 }
 
 function Invoke-BuildText {
-    param([string]$InputFile, [string]$Kernel, [string]$Output)
+    param([string]$InputFile, [string]$Kernel, [string]$Output, [int]$TextMemMB = 3072)
     $logFile = [System.IO.Path]::GetTempFileName()
     $tmpOut = Join-Path (Split-Path $Output) "build_text_tmp.codex"
     $stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
@@ -62,11 +62,11 @@ function Invoke-BuildText {
         [System.IO.File]::WriteAllText($inputFile2, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
 
         $vmBin = Join-Path (Split-Path $PSScriptRoot) 'tools\codex-vm.exe'
-        $vmArgs = @('-kernel', $stage0, '-input', $inputFile2, '-output', $outputFile, '-mem', '3072', '-headless')
+        $vmArgs = @('-kernel', $stage0, '-input', $inputFile2, '-output', $outputFile, '-mem', "$TextMemMB", '-headless')
         $proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
         $proc.WaitForExit(600000)
         if (-not $proc.HasExited) {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Stop-VmGraceful -ProcessId $proc.Id
             Write-Host ''; Write-Host 'FAIL: TEXT build timed out'; return $false
         }
 
@@ -185,6 +185,8 @@ Write-Host 'begins to wash off in layers.'
 Write-Host ''
 
 # -- sign
+Copy-Item -Force $SutCdx (Join-Path $Repo 'build-output\bare-metal\Codex.cdx')
+
 Measure-Phase 'sign' {
 $SigningKey = 'D:\Projects\signing.key'
 if (Test-Path -PathType Leaf $SigningKey) {

@@ -1,11 +1,15 @@
 Chapter: PageFetcher
   cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
   cites Foreword chapter Maybe
   cites Foreword chapter Console
   cites Encode chapter Uri
   cites Encode chapter Json
   cites Net chapter HttpClient
   cites Net chapter DnsResolver
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter NetIO
   cites Browser chapter ContentAddress
   cites Browser chapter TrustManager
   cites Foreword chapter Parse
@@ -20,7 +24,7 @@ Section: Types
   FetchResult =
     | FetchOk (FetchedPage)
     | FetchNetworkError (Text)
-    | FetchHashMismatch (Text, Text)
+    | FetchHashMismatch (Text) (Text)
     | FetchNotFound
     | FetchTimeout
 
@@ -59,6 +63,27 @@ Section: Fetching
   fetch-page : Text, Text, FetchOptions -> [Console] FetchResult
   fetch-page (host) (path) (opts) = act
     print-line ("FETCH codex://" & host & "/" & path)
+    let result = fetch-page-tcp host path opts
+    in pure result
+  end
+
+  fetch-page-default : Text, Text -> [Console] FetchResult
+  fetch-page-default (host) (path) =
+    fetch-page host path fetch-defaults
+
+Section: Network Configuration
+
+  fetch-local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  fetch-local-ip : List Integer = [10, 0, 2, 15]
+  fetch-gateway-ip : List Integer = [10, 0, 2, 2]
+  fetch-host-ip : List Integer = [10, 0, 2, 2]
+  fetch-local-port : Integer = 49200
+  fetch-remote-port : Integer = 80
+
+Section: TCP Fetch
+
+  fetch-page-tcp : Text, Text, FetchOptions -> FetchResult
+  fetch-page-tcp (host) (path) (opts) =
     let accept = if opts.fo-accept-cdx
           then "application/cdx, application/codex"
           else "application/codex"
@@ -66,14 +91,39 @@ Section: Fetching
           (http-get-request host ("/" & path))
           ("Accept: " & accept)
     in let req-bytes = http-serialize-request req
-    in let resp = http-parse-response req-bytes
-    in let result = process-response resp host path opts
-    in pure result
-  end
+    in let sess = net-session-new fetch-local-mac fetch-local-ip fetch-gateway-ip
+          fetch-local-port fetch-remote-port fetch-host-ip 2000
+    in let ts = transport-new sess
+    in let ts1 = net-io-connect ts
+    in fetch-after-connect ts1 req-bytes host path opts
 
-  fetch-page-default : Text, Text -> [Console] FetchResult
-  fetch-page-default (host) (path) =
-    fetch-page host path fetch-defaults
+  fetch-after-connect : TcpTransportState, List Integer, Text, Text, FetchOptions -> FetchResult
+  fetch-after-connect (ts) (req-bytes) (host) (path) (opts) =
+    when (ts.session).conn.state
+      is TcpEstablished ->
+        let ts2 = net-io-send-raw ts req-bytes
+        in let recv = fetch-recv-response ts2
+        in let ts3 = net-io-close (recv.transport)
+        in if recv.has-data
+          then let resp = http-parse-response (recv.data)
+            in process-response resp host path opts
+          else FetchNetworkError ("No response from: " & host)
+      is otherwise ->
+        FetchNetworkError ("TCP connect failed: " & host)
+
+  fetch-recv-response : TcpTransportState -> RawRecvResult
+  fetch-recv-response (ts) =
+    let first = net-io-recv-raw ts 0
+    in if first.has-data
+      then fetch-recv-more (first.transport) (first.data)
+      else first
+
+  fetch-recv-more : TcpTransportState, List Integer -> RawRecvResult
+  fetch-recv-more (ts) (acc) =
+    let r = net-io-recv-raw ts 49990000
+    in if r.has-data
+      then fetch-recv-more (r.transport) (acc & r.data)
+      else RawRecvResult { transport = r.transport, data = acc, has-data = True }
 
 Section: Response Processing
 
@@ -113,7 +163,7 @@ Section: Response Processing
       then let actual-hex = content-hash-to-hex hash
         in if actual-hex == expected-hex
           then FetchOk (build-page body hash raw is-source size)
-          else FetchHashMismatch (actual-hex, expected-hex)
+          else FetchHashMismatch (actual-hex) (expected-hex)
       else if opts.fo-require-hash
       then FetchNetworkError "Server did not provide Content-Hash header"
       else FetchOk (build-page body hash raw is-source size)
@@ -143,10 +193,8 @@ Section: Header Extraction
 
   find-header-line : List Text, Text -> Text
   find-header-line (lines) (name) =
-    when lines
-      is [] -> ""
-      is otherwise ->
-        let line = list-at lines 0
+    if list-length lines == 0 then ""
+    else let line = list-at lines 0
         in let prefix = name & ": "
         in if text-starts-with line prefix
           then text-drop line (text-length prefix)
@@ -204,7 +252,7 @@ Section: Fetch Result Formatting
         "OK: " & show page.fp-size & " bytes, " & page.fp-content-type
         & ", hash=" & content-hash-short page.fp-content-hash
       is FetchNetworkError (msg) -> "NETWORK ERROR: " & msg
-      is FetchHashMismatch (actual, expected) ->
+      is FetchHashMismatch (actual) (expected) ->
         "HASH MISMATCH: got " & actual & ", expected " & expected
       is FetchNotFound -> "NOT FOUND"
       is FetchTimeout -> "TIMEOUT"

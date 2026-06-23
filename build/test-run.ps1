@@ -43,7 +43,7 @@ try {
 
     if (-not $proc.WaitForExit($wallBudgetMs)) {
         Write-SweepLog "$sample run-fail wall-budget-exceeded pid=$($proc.Id)"
-        try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
+        Stop-VmGraceful -ProcessId $proc.Id
         [System.IO.File]::WriteAllText($OutFile, '', [System.Text.UTF8Encoding]::new($false))
         exit 1
     }
@@ -68,7 +68,7 @@ try {
     exit 0
 } finally {
     if ($proc -and -not $proc.HasExited) {
-        try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
+        Stop-VmGraceful -ProcessId $proc.Id
     }
     Remove-Item -Force $outputFile, $stderrFile -ErrorAction SilentlyContinue
     if ($inputFile) { Remove-Item -Force $inputFile -ErrorAction SilentlyContinue }

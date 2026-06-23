@@ -1,122 +1,47 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Chapter: TrustNetworkE2eTest
+  cites Trust chapter TrustService
+  cites Trust chapter TrustNode
+  cites Trust chapter TrustTransport
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Trust chapter Forensics
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Net chapter MessageFraming
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+Section: Body
+  opening : [Console] Nothing =
+    let lat = lattice-add-direct (lattice-add-direct lattice-empty "alice" 8000) "bob" 4000
+    in let policy = policy-add-rule (policy-empty "e2e") (rule-allow "allow-all" AlwaysTrue)
+    in let sess-a = net-session-new [0, 0, 0, 0, 0, 1] [10, 0, 0, 1] [10, 0, 0, 254] 5000 80 [10, 0, 0, 2] 1000
+    in let ts-a = transport-new sess-a
+    in let trust-a = TrustSession { transport = ts-a, peer-key = [10, 20], peer-trust = 4000, authenticated = True, messages-exchanged = 0 }
+    in let sess-b = net-session-new [0, 0, 0, 0, 0, 2] [10, 0, 0, 2] [10, 0, 0, 254] 5001 81 [10, 0, 0, 1] 2000
+    in let ts-b = transport-new sess-b
+    in let trust-b = TrustSession { transport = ts-b, peer-key = [30, 40], peer-trust = 8000, authenticated = True, messages-exchanged = 0 }
+    in let alice-node = node-add-peer (node-new [1, 2] lat policy) "bob" trust-a
+    in let bob-node = node-add-peer (node-new [3, 4] lat policy) "alice" trust-b
+    in let msg = MsgPropose (ProposeMsg { id = [1], from = AgentIdentity { public-key = [1, 2] }, to = AgentIdentity { public-key = [3, 4] }, capability = Capability { name = "test", direction = 1, scope = "/" }, context = [], expires = 5000000000, signature = [] })
+    in let sr-a = node-send alice-node "bob" msg
+    in let sr-b = node-send bob-node "alice" msg
+    in let svc-alice = trust-service-register (trust-service-register (service-new (sr-a.node)) 1 "propose-handler" 0) 3 "deny-handler" 0
+    in let peer-trust = trust-peer-score trust-a
+    in let sr-b2 = node-send (sr-b.node) "alice" msg
+    in let sr-b3 = node-send (sr-b2.node) "alice" msg
+    in act
+      print-line-uni ("alice-send=" & show-bool (sr-a.success) & " bob-send=" & show-bool (sr-b.success) & " alice-seq=" & show ((sr-a.node).outbound-seq) & " bob-seq=" & show ((sr-b.node).outbound-seq))
+      print-line-uni (service-stats svc-alice)
+      print-line-uni ("peer-trust=" & show peer-trust & " node-peers=" & show (node-peer-count (sr-a.node)))
+      print-line-uni (node-stats (sr-b3.node))
+    end
+
+Page 1

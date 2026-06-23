@@ -1,0 +1,214 @@
+Chapter: Inpainting
+  cites AI chapter Tensor
+  cites AI chapter DiffusionPipeline
+  cites AI chapter DiffusionScheduler
+  cites AI chapter UNet
+  cites AI chapter TextEncoder
+  cites AI chapter ImageTensor
+  cites AI chapter Tokenizer
+  cites Foreword chapter Maybe
+
+ Inpainting pipeline for diffusion models. Takes an image, a binary
+ mask (1 = repaint, 0 = keep), and a text prompt. Noises only the
+ masked region, runs the denoising loop, and composites the result
+ back onto the original image.
+
+ Two modes:
+   - Standard inpainting: UNet sees 9-channel input (4 latent +
+     4 masked latent + 1 mask), requires inpainting-specific model
+   - Naive inpainting: regular UNet, noise/denoise masked region,
+     blend at each step. Works with any model.
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  InpaintMask = record {
+    im-data : List Integer,
+    im-width : Integer,
+    im-height : Integer
+  }
+
+  InpaintConfig = record {
+    ip-strength : Integer,
+    ip-blur-radius : Integer,
+    ip-use-inpaint-model : Boolean
+  }
+
+Section: Default Configuration
+  inpaint-default-config : InpaintConfig
+  inpaint-default-config = InpaintConfig {
+    ip-strength = 800,
+    ip-blur-radius = 4,
+    ip-use-inpaint-model = False
+  }
+
+Section: Mask Construction
+  inpaint-mask-new : Integer, Integer -> InpaintMask
+  inpaint-mask-new (w) (h) =
+    InpaintMask { im-data = ip-zeros (w * h) 0 [], im-width = w, im-height = h }
+
+  inpaint-mask-rect : InpaintMask, Integer, Integer, Integer, Integer -> InpaintMask
+  inpaint-mask-rect (mask) (x) (y) (w) (h) =
+    let new-data = ip-fill-rect (mask.im-data) (mask.im-width) x y w h 0 (list-length (mask.im-data)) []
+    in InpaintMask { im-data = new-data, im-width = mask.im-width, im-height = mask.im-height }
+
+  inpaint-mask-circle : InpaintMask, Integer, Integer, Integer -> InpaintMask
+  inpaint-mask-circle (mask) (cx) (cy) (radius) =
+    let new-data = ip-fill-circle (mask.im-data) (mask.im-width) (mask.im-height) cx cy radius 0 []
+    in InpaintMask { im-data = new-data, im-width = mask.im-width, im-height = mask.im-height }
+
+  ip-fill-rect : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ip-fill-rect (data) (stride) (rx) (ry) (rw) (rh) (i) (n) (acc) =
+    if i >= n then acc
+    else let py = i / stride
+    in let px = i - py * stride
+    in let inside = if px >= rx then if px < rx + rw then if py >= ry then if py < ry + rh then True else False else False else False else False
+    in let val = if inside then 1000 else list-at data i
+    in ip-fill-rect data stride rx ry rw rh (i + 1) n (list-push acc val)
+
+  ip-fill-circle : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ip-fill-circle (data) (w) (h) (cx) (cy) (radius) (i) (acc) =
+    if i >= w * h then acc
+    else let py = i / w
+    in let px = i - py * w
+    in let dx = px - cx
+    in let dy = py - cy
+    in let dist-sq = dx * dx + dy * dy
+    in let inside = dist-sq <= radius * radius
+    in let val = if inside then 1000 else list-at data i
+    in ip-fill-circle data w h cx cy radius (i + 1) (list-push acc val)
+
+Section: Mask to Latent Space
+  inpaint-mask-to-latent : InpaintMask, Integer -> List Integer
+  inpaint-mask-to-latent (mask) (scale) =
+    let lat-w = mask.im-width / scale
+    in let lat-h = mask.im-height / scale
+    in ip-downsample-mask (mask.im-data) (mask.im-width) (mask.im-height) lat-w lat-h scale 0 []
+
+  ip-downsample-mask : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ip-downsample-mask (data) (src-w) (src-h) (dst-w) (dst-h) (scale) (i) (acc) =
+    if i >= dst-w * dst-h then acc
+    else let ly = i / dst-w
+    in let lx = i - ly * dst-w
+    in let sy = ly * scale
+    in let sx = lx * scale
+    in let val = list-at data (sy * src-w + sx)
+    in ip-downsample-mask data src-w src-h dst-w dst-h scale (i + 1) (list-push acc val)
+
+Section: Mask Blur (box blur for soft edges)
+  inpaint-blur-mask : InpaintMask -> InpaintMask
+  inpaint-blur-mask (mask) =
+    let blurred = ip-box-blur (mask.im-data) (mask.im-width) (mask.im-height) 0 []
+    in InpaintMask { im-data = blurred, im-width = mask.im-width, im-height = mask.im-height }
+
+  ip-box-blur : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ip-box-blur (data) (w) (h) (i) (acc) =
+    if i >= w * h then acc
+    else let py = i / w
+    in let px = i - py * w
+    in let sum = ip-sample-kernel data w h px py
+    in ip-box-blur data w h (i + 1) (list-push acc (sum / 9))
+
+  ip-sample-kernel : List Integer, Integer, Integer, Integer, Integer -> Integer
+  ip-sample-kernel (data) (w) (h) (px) (py) =
+    ip-sample-at data w h (px - 1) (py - 1) + ip-sample-at data w h px (py - 1) + ip-sample-at data w h (px + 1) (py - 1)
+    + ip-sample-at data w h (px - 1) py + ip-sample-at data w h px py + ip-sample-at data w h (px + 1) py
+    + ip-sample-at data w h (px - 1) (py + 1) + ip-sample-at data w h px (py + 1) + ip-sample-at data w h (px + 1) (py + 1)
+
+  ip-sample-at : List Integer, Integer, Integer, Integer, Integer -> Integer
+  ip-sample-at (data) (w) (h) (x) (y) =
+    if x < 0 then 0
+    else if x >= w then 0
+    else if y < 0 then 0
+    else if y >= h then 0
+    else list-at data (y * w + x)
+
+Section: Naive Inpainting Pipeline
+  inpaint-generate : Text, ImageData, InpaintMask, InpaintConfig, PipelineState -> PipelineOutput
+  inpaint-generate (prompt) (image) (mask) (config) (state) =
+    let cfg = state.ps-config
+    in let latent-h = cfg.pc-height / cfg.pc-latent-scale
+    in let latent-w = cfg.pc-width / cfg.pc-latent-scale
+    in let blurred = inpaint-blur-mask mask
+    in let lat-mask = inpaint-mask-to-latent blurred (cfg.pc-latent-scale)
+    in let resized = image-resize image (cfg.pc-width) (cfg.pc-height)
+    in let img-tensor = image-to-tensor resized
+    in let init-latents = pipeline-encode-to-latent img-tensor (cfg.pc-latent-channels) latent-h latent-w
+    in let text-cond = te-encode prompt (state.ps-tokenizer) (state.ps-text-encoder)
+    in let uncond = te-encode "" (state.ps-tokenizer) (state.ps-text-encoder)
+    in let start-step = cfg.pc-num-steps - (cfg.pc-num-steps * (config.ip-strength) / 1000)
+    in let noise = img-noise-tensor (cfg.pc-latent-channels) latent-h latent-w (cfg.pc-seed)
+    in let noised = ip-noise-masked init-latents noise lat-mask (cfg.pc-latent-channels) latent-h latent-w start-step (state.ps-scheduler)
+    in let denoised = ip-denoise-loop state noised init-latents lat-mask text-cond uncond (cfg.pc-latent-channels) latent-h latent-w (cfg.pc-num-steps - 1) start-step
+    in let decoded = pipeline-decode-latents state denoised latent-h latent-w
+    in PipelineOutput { po-pixels = decoded, po-width = cfg.pc-width, po-height = cfg.pc-height, po-steps-completed = cfg.pc-num-steps - start-step }
+
+Section: Masked Noise Application
+  ip-noise-masked : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, NoiseSchedule -> List Integer
+  ip-noise-masked (latents) (noise) (mask) (channels) (h) (w) (t) (schedule) =
+    let abar = list-at (schedule.ns-alpha-cumprod) t
+    in let sqrt-ab = ip-isqrt (abar * 1000)
+    in let sqrt-one-minus = ip-isqrt ((1000 - abar) * 1000)
+    in ip-noise-loop latents noise mask channels h w sqrt-ab sqrt-one-minus 0 []
+
+  ip-noise-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ip-noise-loop (latents) (noise) (mask) (ch) (h) (w) (sqrt-ab) (sqrt-om) (i) (acc) =
+    if i >= ch * h * w then acc
+    else let spatial-idx = i - (i / (h * w)) * (h * w)
+    in let m = if spatial-idx < list-length mask then list-at mask spatial-idx else 0
+    in let orig = list-at latents i
+    in let noised = orig * sqrt-ab / 1000 + list-at noise i * sqrt-om / 1000
+    in let val = orig * (1000 - m) / 1000 + noised * m / 1000
+    in ip-noise-loop latents noise mask ch h w sqrt-ab sqrt-om (i + 1) (list-push acc val)
+
+Section: Inpainting Denoise Loop (blend at each step)
+  ip-denoise-loop : PipelineState, List Integer, List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  ip-denoise-loop (state) (latents) (orig-latents) (mask) (text-cond) (uncond) (channels) (h) (w) (t) (start-step) =
+    if t < start-step then latents
+    else let cfg = state.ps-config
+    in let noise-pred-cond = unet-forward (state.ps-unet) latents t text-cond h w
+    in let noise-pred-uncond = unet-forward (state.ps-unet) latents t uncond h w
+    in let guided = pipeline-cfg-combine noise-pred-cond noise-pred-uncond (cfg.pc-guidance-scale) 0 (list-length noise-pred-cond) []
+    in let stepped = diffusion-ddim-step latents guided t (t - 1) (state.ps-scheduler)
+    in let blended = ip-blend-step stepped orig-latents mask channels h w t (state.ps-scheduler)
+    in ip-denoise-loop state blended orig-latents mask text-cond uncond channels h w (t - 1) start-step
+
+  ip-blend-step : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, NoiseSchedule -> List Integer
+  ip-blend-step (denoised) (orig) (mask) (ch) (h) (w) (t) (schedule) =
+    if t <= 0 then denoised
+    else let abar = list-at (schedule.ns-alpha-cumprod) (t - 1)
+    in let sqrt-ab = ip-isqrt (abar * 1000)
+    in ip-blend-loop denoised orig mask ch h w sqrt-ab 0 []
+
+  ip-blend-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ip-blend-loop (denoised) (orig) (mask) (ch) (h) (w) (sqrt-ab) (i) (acc) =
+    if i >= ch * h * w then acc
+    else let spatial-idx = i - (i / (h * w)) * (h * w)
+    in let m = if spatial-idx < list-length mask then list-at mask spatial-idx else 0
+    in let d = list-at denoised i
+    in let o = list-at orig i * sqrt-ab / 1000
+    in let val = o * (1000 - m) / 1000 + d * m / 1000
+    in ip-blend-loop denoised orig mask ch h w sqrt-ab (i + 1) (list-push acc val)
+
+Section: Helpers
+  ip-zeros : Integer, Integer, List Integer -> List Integer
+  ip-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else ip-zeros n (i + 1) (list-push acc 0)
+
+  ip-isqrt : Integer -> Integer
+  ip-isqrt (n) = if n <= 0 then 0 else ip-isqrt-loop n (n / 2 + 1)
+
+  ip-isqrt-loop : Integer, Integer -> Integer
+  ip-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else ip-isqrt-loop n next
+
+Section: Queries
+  format-inpaint-mask : InpaintMask -> Text
+  format-inpaint-mask (mask) =
+    show (mask.im-width) & "x" & show (mask.im-height) & " mask"
+
+Page 1

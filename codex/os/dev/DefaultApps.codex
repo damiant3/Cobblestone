@@ -1,0 +1,226 @@
+Chapter: DefaultApps
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Default application registry. Maps roles (browser, mail, editor,
+ file viewer, terminal, image viewer, media player) and file type
+ associations to application IDs. Users can override defaults per
+ role or per extension.
+
+Section: App Role
+
+  AppRole =
+    | RoleBrowser
+    | RoleMail
+    | RoleEditor
+    | RoleFileViewer
+    | RoleTerminal
+    | RoleImageViewer
+    | RoleMediaPlayer
+    | RoleCalendar
+    | RoleCalculator
+
+  role-label : AppRole -> Text
+  role-label (r) = when r
+    is RoleBrowser -> "Web Browser"
+    is RoleMail -> "Email Client"
+    is RoleEditor -> "Text Editor"
+    is RoleFileViewer -> "File Manager"
+    is RoleTerminal -> "Terminal"
+    is RoleImageViewer -> "Image Viewer"
+    is RoleMediaPlayer -> "Media Player"
+    is RoleCalendar -> "Calendar"
+    is RoleCalculator -> "Calculator"
+
+Section: File Association
+
+  FileAssociation = record {
+    fa-extension : Text,
+    fa-mime-type : Text,
+    fa-app-id : Text,
+    fa-description : Text
+  }
+
+  file-assoc : Text, Text, Text, Text -> FileAssociation
+  file-assoc (ext) (mime) (app) (desc) = FileAssociation {
+    fa-extension = ext, fa-mime-type = mime, fa-app-id = app, fa-description = desc
+  }
+
+Section: Protocol Handler
+
+  ProtocolHandler = record {
+    ph-scheme : Text,
+    ph-app-id : Text,
+    ph-description : Text
+  }
+
+  protocol-handler : Text, Text, Text -> ProtocolHandler
+  protocol-handler (scheme) (app) (desc) = ProtocolHandler {
+    ph-scheme = scheme, ph-app-id = app, ph-description = desc
+  }
+
+Section: Role Assignment
+
+  RoleAssignment = record {
+    ra-role : AppRole,
+    ra-app-id : Text,
+    ra-app-name : Text
+  }
+
+Section: State
+
+  DefaultAppsState = record {
+    da-roles : List RoleAssignment,
+    da-role-count : Integer,
+    da-file-assocs : List FileAssociation,
+    da-file-assoc-count : Integer,
+    da-protocols : List ProtocolHandler,
+    da-protocol-count : Integer
+  }
+
+  default-apps-new : DefaultAppsState
+  default-apps-new = DefaultAppsState {
+    da-roles = da-initial-roles,
+    da-role-count = 9,
+    da-file-assocs = da-initial-assocs,
+    da-file-assoc-count = 10,
+    da-protocols = da-initial-protocols,
+    da-protocol-count = 3
+  }
+
+Section: Initial Defaults
+
+  da-initial-roles : List RoleAssignment
+  da-initial-roles = [
+    RoleAssignment { ra-role = RoleBrowser, ra-app-id = "browser", ra-app-name = "Codex Browser" },
+    RoleAssignment { ra-role = RoleMail, ra-app-id = "mail", ra-app-name = "Codex Mail" },
+    RoleAssignment { ra-role = RoleEditor, ra-app-id = "notes", ra-app-name = "Notes" },
+    RoleAssignment { ra-role = RoleFileViewer, ra-app-id = "file-explorer", ra-app-name = "Files" },
+    RoleAssignment { ra-role = RoleTerminal, ra-app-id = "terminal", ra-app-name = "Terminal" },
+    RoleAssignment { ra-role = RoleImageViewer, ra-app-id = "image-viewer", ra-app-name = "Image Viewer" },
+    RoleAssignment { ra-role = RoleMediaPlayer, ra-app-id = "media-player", ra-app-name = "Media Player" },
+    RoleAssignment { ra-role = RoleCalendar, ra-app-id = "calendar", ra-app-name = "Calendar" },
+    RoleAssignment { ra-role = RoleCalculator, ra-app-id = "calculator", ra-app-name = "Calculator" }
+  ]
+
+  da-initial-assocs : List FileAssociation
+  da-initial-assocs = [
+    file-assoc ".txt" "text/plain" "notes" "Text Document",
+    file-assoc ".codex" "text/x-codex" "notes" "Codex Source",
+    file-assoc ".md" "text/markdown" "notes" "Markdown Document",
+    file-assoc ".json" "application/json" "notes" "JSON File",
+    file-assoc ".png" "image/png" "image-viewer" "PNG Image",
+    file-assoc ".jpg" "image/jpeg" "image-viewer" "JPEG Image",
+    file-assoc ".bmp" "image/bmp" "image-viewer" "Bitmap Image",
+    file-assoc ".wav" "audio/wav" "media-player" "WAV Audio",
+    file-assoc ".mp3" "audio/mpeg" "media-player" "MP3 Audio",
+    file-assoc ".html" "text/html" "browser" "HTML Document"
+  ]
+
+  da-initial-protocols : List ProtocolHandler
+  da-initial-protocols = [
+    protocol-handler "http" "browser" "Web pages",
+    protocol-handler "https" "browser" "Secure web pages",
+    protocol-handler "mailto" "mail" "Email addresses"
+  ]
+
+Section: Role Management
+
+  da-set-role : DefaultAppsState, AppRole, Text, Text -> DefaultAppsState
+  da-set-role (st) (role) (app-id) (app-name) =
+    let updated = da-update-role (st.da-roles) role app-id app-name 0 (st.da-role-count) []
+    in __record-set st "da-roles" updated
+
+  da-update-role : List RoleAssignment, AppRole, Text, Text, Integer, Integer, List RoleAssignment -> List RoleAssignment
+  da-update-role (roles) (target) (app-id) (app-name) (i) (n) (acc) =
+    if i >= n then acc
+    else let ra = list-at roles i
+    in let updated = if role-label (ra.ra-role) == role-label target then
+      RoleAssignment { ra-role = ra.ra-role, ra-app-id = app-id, ra-app-name = app-name }
+    else ra
+    in da-update-role roles target app-id app-name (i + 1) n (list-push acc updated)
+
+  da-get-role-app : DefaultAppsState, AppRole -> Text
+  da-get-role-app (st) (role) = da-role-lookup (st.da-roles) role 0 (st.da-role-count)
+
+  da-role-lookup : List RoleAssignment, AppRole, Integer, Integer -> Text
+  da-role-lookup (roles) (target) (i) (n) =
+    if i >= n then ""
+    else let ra = list-at roles i
+    in if role-label (ra.ra-role) == role-label target then ra.ra-app-id
+    else da-role-lookup roles target (i + 1) n
+
+Section: File Association Management
+
+  da-set-assoc : DefaultAppsState, Text, Text -> DefaultAppsState
+  da-set-assoc (st) (ext) (app-id) =
+    let updated = da-update-assoc (st.da-file-assocs) ext app-id 0 (st.da-file-assoc-count) []
+    in __record-set st "da-file-assocs" updated
+
+  da-update-assoc : List FileAssociation, Text, Text, Integer, Integer, List FileAssociation -> List FileAssociation
+  da-update-assoc (assocs) (ext) (app-id) (i) (n) (acc) =
+    if i >= n then acc
+    else let fa = list-at assocs i
+    in let updated = if fa.fa-extension == ext then __record-set fa "fa-app-id" app-id else fa
+    in da-update-assoc assocs ext app-id (i + 1) n (list-push acc updated)
+
+  da-lookup-ext : DefaultAppsState, Text -> Text
+  da-lookup-ext (st) (ext) = da-ext-loop (st.da-file-assocs) ext 0 (st.da-file-assoc-count)
+
+  da-ext-loop : List FileAssociation, Text, Integer, Integer -> Text
+  da-ext-loop (assocs) (ext) (i) (n) =
+    if i >= n then ""
+    else let fa = list-at assocs i
+    in if fa.fa-extension == ext then fa.fa-app-id
+    else da-ext-loop assocs ext (i + 1) n
+
+Section: Protocol Lookup
+
+  da-lookup-protocol : DefaultAppsState, Text -> Text
+  da-lookup-protocol (st) (scheme) = da-proto-loop (st.da-protocols) scheme 0 (st.da-protocol-count)
+
+  da-proto-loop : List ProtocolHandler, Text, Integer, Integer -> Text
+  da-proto-loop (handlers) (scheme) (i) (n) =
+    if i >= n then ""
+    else let ph = list-at handlers i
+    in if ph.ph-scheme == scheme then ph.ph-app-id
+    else da-proto-loop handlers scheme (i + 1) n
+
+Section: Widget
+
+  da-settings-widget : DefaultAppsState -> WidgetNode
+  da-settings-widget (st) =
+    let title = widget-label "da-title" "Default Applications"
+    in let role-rows = da-role-rows st 0 (st.da-role-count) []
+    in let sep = widget-separator "da-sep"
+    in let assoc-title = widget-label "da-assoc-title" "File Associations"
+    in let assoc-rows = da-assoc-rows st 0 (st.da-file-assoc-count) []
+    in widget-panel "da-settings" DirColumn 4 ([title] & role-rows & [sep, assoc-title] & assoc-rows)
+
+  da-role-rows : DefaultAppsState, Integer, Integer, List WidgetNode -> List WidgetNode
+  da-role-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let ra = list-at (st.da-roles) i
+    in let role-lbl = widget-label ("da-r-role-" & show i) (role-label (ra.ra-role))
+    in let app-btn = widget-button ("da-r-app-" & show i) (ra.ra-app-name)
+    in let row = widget-panel ("da-r-" & show i) DirRow 8 [role-lbl, app-btn]
+    in da-role-rows st (i + 1) n (list-push acc row)
+
+  da-assoc-rows : DefaultAppsState, Integer, Integer, List WidgetNode -> List WidgetNode
+  da-assoc-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let fa = list-at (st.da-file-assocs) i
+    in let ext-lbl = widget-label ("da-a-ext-" & show i) (fa.fa-extension)
+    in let desc-lbl = widget-label ("da-a-desc-" & show i) (fa.fa-description)
+    in let app-btn = widget-button ("da-a-app-" & show i) (fa.fa-app-id)
+    in let row = widget-panel ("da-a-" & show i) DirRow 4 [ext-lbl, desc-lbl, app-btn]
+    in da-assoc-rows st (i + 1) n (list-push acc row)
+
+Section: Formatting
+
+  format-default-apps : DefaultAppsState -> Text
+  format-default-apps (st) =
+    "roles=" & show (st.da-role-count) & " file-assocs=" & show (st.da-file-assoc-count) & " protocols=" & show (st.da-protocol-count)
+
+Page 1

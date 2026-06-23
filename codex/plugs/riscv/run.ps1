@@ -44,7 +44,7 @@ Write-Host "[riscv-run] Listening on port $plugPort"
 
 $stderrFile = [System.IO.Path]::GetTempFileName()
 try {
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '4096', '-headless') `
+    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 
     $deadline = [DateTime]::UtcNow.AddSeconds(30)

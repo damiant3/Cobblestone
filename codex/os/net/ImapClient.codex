@@ -1,0 +1,225 @@
+Chapter: ImapClient
+
+ IMAP4rev1 client (RFC 3501) for email fetch. Supports XOAUTH2
+ authentication (RFC 7628) for OAuth access tokens instead of
+ passwords. Builds IMAP command strings and parses responses.
+ The actual TCP send/receive is done by the caller through the
+ network effect -- this module handles protocol framing only.
+
+Section: Session
+
+  ImapSession = record {
+    im-tag-counter : Integer,
+    im-state : Integer,
+    im-selected-mailbox : Text,
+    im-email : Text,
+    im-authenticated : Boolean
+  }
+
+  imap-state-not-auth : Integer = 0
+  imap-state-auth : Integer = 1
+  imap-state-selected : Integer = 2
+
+  imap-new : ImapSession
+  imap-new = ImapSession {
+    im-tag-counter = 1,
+    im-state = imap-state-not-auth,
+    im-selected-mailbox = "",
+    im-email = "",
+    im-authenticated = False
+  }
+
+Section: Tag Generation
+
+  imap-next-tag : ImapSession -> Text
+  imap-next-tag (s) = "A" & show (s.im-tag-counter)
+
+  imap-advance-tag : ImapSession -> ImapSession
+  imap-advance-tag (s) = __record-set s "im-tag-counter" (s.im-tag-counter + 1)
+
+Section: Commands
+
+  imap-cmd-capability : ImapSession -> Text
+  imap-cmd-capability (s) = imap-next-tag s & " CAPABILITY\r\n"
+
+  imap-cmd-auth-xoauth2 : ImapSession, Text, Text -> Text
+  imap-cmd-auth-xoauth2 (s) (email) (access-token) =
+    let sasl = imap-xoauth2-string email access-token
+    in let encoded = base64-encode (imap-text-to-bytes sasl)
+    in imap-next-tag s & " AUTHENTICATE XOAUTH2 " & encoded & "\r\n"
+
+  imap-xoauth2-string : Text, Text -> Text
+  imap-xoauth2-string (email) (token) =
+    "user=" & email & "\x01auth=Bearer " & token & "\x01\x01"
+
+  imap-cmd-select : ImapSession, Text -> Text
+  imap-cmd-select (s) (mailbox) = imap-next-tag s & " SELECT " & mailbox & "\r\n"
+
+  imap-cmd-examine : ImapSession, Text -> Text
+  imap-cmd-examine (s) (mailbox) = imap-next-tag s & " EXAMINE " & mailbox & "\r\n"
+
+  imap-cmd-list : ImapSession -> Text
+  imap-cmd-list (s) = imap-next-tag s & " LIST \"\" *\r\n"
+
+  imap-cmd-fetch-headers : ImapSession, Integer, Integer -> Text
+  imap-cmd-fetch-headers (s) (from-uid) (to-uid) =
+    imap-next-tag s & " FETCH " & show from-uid & ":" & show to-uid & " (UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])\r\n"
+
+  imap-cmd-fetch-body : ImapSession, Integer -> Text
+  imap-cmd-fetch-body (s) (uid) =
+    imap-next-tag s & " FETCH " & show uid & " BODY[TEXT]\r\n"
+
+  imap-cmd-search-unseen : ImapSession -> Text
+  imap-cmd-search-unseen (s) = imap-next-tag s & " SEARCH UNSEEN\r\n"
+
+  imap-cmd-search-since : ImapSession, Text -> Text
+  imap-cmd-search-since (s) (date) = imap-next-tag s & " SEARCH SINCE " & date & "\r\n"
+
+  imap-cmd-store-seen : ImapSession, Integer -> Text
+  imap-cmd-store-seen (s) (uid) =
+    imap-next-tag s & " STORE " & show uid & " +FLAGS (\\Seen)\r\n"
+
+  imap-cmd-noop : ImapSession -> Text
+  imap-cmd-noop (s) = imap-next-tag s & " NOOP\r\n"
+
+  imap-cmd-logout : ImapSession -> Text
+  imap-cmd-logout (s) = imap-next-tag s & " LOGOUT\r\n"
+
+Section: Mailbox Info
+
+  ImapMailbox = record {
+    mb-name : Text,
+    mb-exists : Integer,
+    mb-recent : Integer,
+    mb-unseen : Integer,
+    mb-uid-next : Integer,
+    mb-uid-validity : Integer
+  }
+
+  imap-mailbox-empty : Text -> ImapMailbox
+  imap-mailbox-empty (name) = ImapMailbox {
+    mb-name = name,
+    mb-exists = 0,
+    mb-recent = 0,
+    mb-unseen = 0,
+    mb-uid-next = 0,
+    mb-uid-validity = 0
+  }
+
+Section: Message
+
+  ImapMessage = record {
+    msg-uid : Integer,
+    msg-flags : Text,
+    msg-date : Text,
+    msg-from : Text,
+    msg-to : Text,
+    msg-subject : Text,
+    msg-preview : Text,
+    msg-seen : Boolean
+  }
+
+  imap-message-new : Integer -> ImapMessage
+  imap-message-new (uid) = ImapMessage {
+    msg-uid = uid,
+    msg-flags = "",
+    msg-date = "",
+    msg-from = "",
+    msg-to = "",
+    msg-subject = "",
+    msg-preview = "",
+    msg-seen = False
+  }
+
+Section: Response Parsing
+
+  ImapResponseKind =
+    | ImapOk (Text)
+    | ImapNo (Text)
+    | ImapBad (Text)
+    | ImapData (Text)
+    | ImapContinuation
+
+  imap-parse-response-kind : Text -> ImapResponseKind
+  imap-parse-response-kind (line) =
+    if text-starts-with line "* " then ImapData (text-drop line 2)
+    else if text-starts-with line "+ " then ImapContinuation
+    else if text-contains line " OK " then ImapOk line
+    else if text-contains line " NO " then ImapNo line
+    else if text-contains line " BAD " then ImapBad line
+    else ImapData line
+
+  imap-parse-exists : Text -> Integer
+  imap-parse-exists (line) =
+    if text-contains line " EXISTS" then imap-extract-number line
+    else 0
+
+  imap-parse-recent : Text -> Integer
+  imap-parse-recent (line) =
+    if text-contains line " RECENT" then imap-extract-number line
+    else 0
+
+  imap-extract-number : Text -> Integer
+  imap-extract-number (line) =
+    imap-num-loop line 0 (text-length line) 0
+
+  imap-num-loop : Text, Integer, Integer, Integer -> Integer
+  imap-num-loop (s) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = char-code-at s i
+    in if c >= 51 then if c <= 61 then imap-num-loop s (i + 1) n (acc * 10 + c - 51) else acc
+    else if acc > 0 then acc
+    else imap-num-loop s (i + 1) n 0
+
+Section: Header Parsing
+
+  imap-parse-header-line : Text -> ImapMessage
+  imap-parse-header-line (line) =
+    let msg = imap-message-new 0
+    in imap-extract-headers line msg
+
+  imap-extract-headers : Text, ImapMessage -> ImapMessage
+  imap-extract-headers (raw) (msg) =
+    let m1 = if text-contains raw "From: " then __record-set msg "msg-from" (imap-after raw "From: ") else msg
+    in let m2 = if text-contains raw "To: " then __record-set m1 "msg-to" (imap-after raw "To: ") else m1
+    in let m3 = if text-contains raw "Subject: " then __record-set m2 "msg-subject" (imap-after raw "Subject: ") else m2
+    in let m4 = if text-contains raw "Date: " then __record-set m3 "msg-date" (imap-after raw "Date: ") else m3
+    in m4
+
+  imap-after : Text, Text -> Text
+  imap-after (line) (prefix) =
+    imap-after-loop line prefix (text-length prefix) 0 (text-length line)
+
+  imap-after-loop : Text, Text, Integer, Integer, Integer -> Text
+  imap-after-loop (line) (prefix) (plen) (i) (n) =
+    if i + plen > n then ""
+    else if text-starts-with (text-drop line i) prefix then text-take (text-drop line (i + plen)) 80
+    else imap-after-loop line prefix plen (i + 1) n
+
+Section: Helpers
+
+  imap-text-to-bytes : Text -> List Integer
+  imap-text-to-bytes (s) = imap-ttb s 0 (text-length s) []
+
+  imap-ttb : Text, Integer, Integer, List Integer -> List Integer
+  imap-ttb (s) (i) (n) (acc) =
+    if i >= n then acc
+    else imap-ttb s (i + 1) n (list-push acc (char-code-at s i))
+
+Section: Formatting
+
+  format-imap-session : ImapSession -> Text
+  format-imap-session (s) =
+    "imap tag=" & show (s.im-tag-counter) & " state=" & show (s.im-state)
+    & " mailbox=" & s.im-selected-mailbox
+    & " auth=" & if s.im-authenticated then "yes" else "no"
+
+  format-imap-mailbox : ImapMailbox -> Text
+  format-imap-mailbox (mb) =
+    mb.mb-name & " exists=" & show (mb.mb-exists) & " recent=" & show (mb.mb-recent) & " unseen=" & show (mb.mb-unseen)
+
+  format-imap-message : ImapMessage -> Text
+  format-imap-message (m) =
+    show (m.msg-uid) & " " & m.msg-from & " | " & m.msg-subject
+
+Page 1

@@ -12,7 +12,7 @@
 param(
     [Parameter(Mandatory=$true)] [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
-    [int]$MemMB = 4096
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -47,7 +47,20 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Phase 3: parse wire protocol and build ELF64
-$wireBytes = [System.IO.File]::ReadAllBytes($WireFile)
+$rawWire = [System.IO.File]::ReadAllBytes($WireFile)
+# Skip leading serial preamble (find the wire header: first byte where
+# a plausible code-len int32 lives)
+$wireOff = 0
+for ($wi = 0; $wi -lt [Math]::Min(64, $rawWire.Length - 12); $wi++) {
+    $cl = [BitConverter]::ToInt32($rawWire, $wi)
+    $dl = [BitConverter]::ToInt32($rawWire, $wi + 4)
+    $fc = [BitConverter]::ToInt32($rawWire, $wi + 8)
+    if ($cl -gt 0 -and $cl -lt 16000000 -and $dl -ge 0 -and $dl -lt 1000000 -and $fc -gt 0 -and $fc -lt 10000 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64) {
+        $wireOff = $wi; break
+    }
+}
+$wireBytes = New-Object byte[] ($rawWire.Length - $wireOff)
+[Array]::Copy($rawWire, $wireOff, $wireBytes, 0, $wireBytes.Length)
 $codeLen = [BitConverter]::ToInt32($wireBytes, 0)
 $dataLen = [BitConverter]::ToInt32($wireBytes, 4)
 $funcCount = [BitConverter]::ToInt32($wireBytes, 8)
@@ -61,21 +74,13 @@ $code = New-Object byte[] $codeLen
 $data = New-Object byte[] $dataLen
 [Array]::Copy($wireBytes, $dataStart, $data, 0, $dataLen)
 
-# Parse function table to find entry point offset
+# Parse function table to find entry point offset.
+# The first function is always __start (emitted first by a64-emit-runtime).
 $funcOff = $dataStart + $dataLen
 $entryOffset = 0
-$off = $funcOff
-for ($fi = 0; $fi -lt $funcCount; $fi++) {
-    $nameLen = [BitConverter]::ToInt16($wireBytes, $off)
-    $nameChars = [char[]]::new($nameLen)
-    for ($ci = 0; $ci -lt $nameLen; $ci++) {
-        $cce = $wireBytes[$off + 2 + $ci]
-        $nameChars[$ci] = if ($cce -lt $script:CceToUnicode.Length) { [char]$script:CceToUnicode[$cce] } else { [char]63 }
-    }
-    $name = [string]::new($nameChars)
-    $funcOffset = [BitConverter]::ToInt32($wireBytes, $off + 2 + $nameLen)
-    if ($name -eq '__start') { $entryOffset = $funcOffset }
-    $off += 2 + $nameLen + 4
+if ($funcCount -gt 0 -and $funcOff + 6 -le $wireBytes.Length) {
+    $nameLen = [BitConverter]::ToInt16($wireBytes, $funcOff)
+    $entryOffset = [BitConverter]::ToInt32($wireBytes, $funcOff + 2 + $nameLen)
 }
 
 # Build ELF64 (minimal: single LOAD segment)

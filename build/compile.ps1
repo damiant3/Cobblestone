@@ -20,6 +20,7 @@ param(
     [switch]$Prose,
     [switch]$Repl,
     [switch]$Poison,
+    [switch]$PoisonCompact,
     [switch]$DebugMode,
     [switch]$Profile,
     [switch]$Trace,
@@ -87,6 +88,14 @@ try {
         "error 3010: $($_.Exception.Message)" | Set-Content -Path $Log -Encoding UTF8
         exit 8
     }
+    if ($ordered.Count -gt 0) {
+        [Console]::Error.WriteLine("WARNING: compile.ps1 resolved $($ordered.Count) chapter(s) not in bundled source:")
+        foreach ($extra in $ordered) {
+            [Console]::Error.WriteLine("  $($extra.Quire)::$($extra.Name) ($($extra.Path))")
+        }
+        [Console]::Error.WriteLine("These chapters are cited by bundled code but missing from the app build script.")
+        [Console]::Error.WriteLine("Add them to the build script's chapter list, or remove the cites.")
+    }
     $sb = [System.Text.StringBuilder]::new(524288)
 
     # Mode header
@@ -94,6 +103,7 @@ try {
     if ($Prose) { $mode = "$mode prose" }
     if ($Repl) { $mode = "$mode repl" }
     if ($Poison) { $mode = "$mode poison" }
+    if ($PoisonCompact) { $mode = "$mode poison-compact" }
     if ($DebugMode) { $mode = "$mode debug" }
     if ($Profile) { $mode = "$mode profile" }
     if ($Trace) { $mode = "$mode trace" }
@@ -124,15 +134,15 @@ try {
     $proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
     $proc.WaitForExit(600000)
     if (-not $proc.HasExited) {
-        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Stop-VmGraceful -ProcessId $proc.Id
         "FAIL: VM timed out" | Set-Content -Path $Log -Encoding UTF8
         exit 3
     }
 
     if (-not (Test-Path $outputFile) -or (Get-Item $outputFile).Length -eq 0) {
-        if ($attempt -lt $maxAttempts -and $curMem -lt 3584) {
-            [Console]::Error.WriteLine("  compile: no output with ${curMem}MB, retrying with 3584MB")
-            $curMem = 3584; continue compile_loop
+        if ($attempt -lt $maxAttempts -and $curMem -lt 3072) {
+            [Console]::Error.WriteLine("  compile: no output with ${curMem}MB, retrying with 3072MB")
+            $curMem = 3072; continue compile_loop
         }
         "FAIL: no output" | Set-Content -Path $Log -Encoding UTF8
         if (Test-Path $stderrFile) { Add-Content -Path $Log -Value (Get-Content $stderrFile -Raw) -Encoding UTF8 }
@@ -164,27 +174,48 @@ try {
         }
         if ($line.StartsWith('!EXC')) {
             Add-Content -Path $Log -Value $line -Encoding UTF8
-            if ($attempt -lt $maxAttempts -and $curMem -lt 3584) {
+            if ($attempt -lt $maxAttempts -and $curMem -lt 8192) {
                 [Console]::Error.WriteLine("  compile: crash with ${curMem}MB, retrying with 3584MB")
-                $curMem = 3584; $hitExc = $true; break
+                $curMem = 8192; $hitExc = $true; break
             }
             exit 4
         }
         if ($line -and -not $line.StartsWith('WD:')) { Add-Content -Path $Log -Value $line -Encoding UTF8 }
     }
 
-    if ($binSize -gt 0) {
+    if ($binStart -ge 0) {
         $sizeLineEnd = 0; $nlCount = 0
         for ($j = 0; $j -lt $outBytes.Length; $j++) {
             if ($outBytes[$j] -eq 10) { $nlCount++; if ($nlCount -eq $binStart) { $sizeLineEnd = $j + 1; break } }
         }
-        if ($sizeLineEnd + $binSize -le $outBytes.Length) {
-            $binBytes = New-Object byte[] $binSize
-            [Array]::Copy($outBytes, $sizeLineEnd, $binBytes, 0, $binSize)
+        # Find end of IR binary data: scan for next LF-terminated line
+        # The IR block ends with a LF from print-line; after that come
+        # heap/stack diagnostic lines. If SIZE carried a byte count, use
+        # it directly; otherwise scan forward for the first diagnostic.
+        $binEnd = $outBytes.Length
+        if ($binSize -gt 0 -and ($sizeLineEnd + $binSize) -le $outBytes.Length) {
+            $binEnd = $sizeLineEnd + $binSize
+        } else {
+            for ($j = $sizeLineEnd; $j -lt $outBytes.Length; $j++) {
+                if ($outBytes[$j] -eq 10) {
+                    $afterNl = $j + 1
+                    if ($afterNl + 3 -le $outBytes.Length) {
+                        $tag = [System.Text.Encoding]::ASCII.GetString($outBytes, $afterNl, [Math]::Min(5, $outBytes.Length - $afterNl))
+                        if ($tag.StartsWith('WD:') -or $tag.StartsWith('HEAP:') -or $tag.StartsWith('STACK:')) {
+                            $binEnd = $j + 1; break
+                        }
+                    }
+                }
+            }
+        }
+        $actSize = $binEnd - $sizeLineEnd
+        if ($actSize -gt 0) {
+            $binBytes = New-Object byte[] $actSize
+            [Array]::Copy($outBytes, $sizeLineEnd, $binBytes, 0, $actSize)
             [System.IO.File]::WriteAllBytes($Out, $binBytes)
 
             # Parse remaining output after binary for MAP and PROF lines
-            $tailStart = $sizeLineEnd + $binSize
+            $tailStart = $binEnd
             if ($tailStart -lt $outBytes.Length) {
                 $tailText = [System.Text.Encoding]::UTF8.GetString($outBytes, $tailStart, $outBytes.Length - $tailStart)
                 $tailLines = $tailText -split "`n"

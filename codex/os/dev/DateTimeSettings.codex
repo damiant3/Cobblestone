@@ -1,0 +1,166 @@
+Chapter: DateTimeSettings
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Date, time, timezone, and format settings. Tracks current time,
+ UTC offset, format preferences, NTP sync state, and calendar
+ first-day-of-week. The OS clock reads hardware RTC; this module
+ manages the display and configuration.
+
+Section: Time Format
+
+  TimeFormat =
+    | Fmt24h
+    | Fmt12h
+
+  time-format-label : TimeFormat -> Text
+  time-format-label (f) = when f
+    is Fmt24h -> "24-hour"
+    is Fmt12h -> "12-hour"
+
+Section: First Day
+
+  FirstDay =
+    | FdSunday
+    | FdMonday
+
+  first-day-label : FirstDay -> Text
+  first-day-label (d) = when d
+    is FdSunday -> "Sunday"
+    is FdMonday -> "Monday"
+
+Section: Timezone
+
+  TimezoneEntry = record {
+    tz-id : Text,
+    tz-label : Text,
+    tz-offset-minutes : Integer
+  }
+
+  tz-utc : TimezoneEntry = TimezoneEntry { tz-id = "UTC", tz-label = "UTC (GMT+0)", tz-offset-minutes = 0 }
+  tz-est : TimezoneEntry = TimezoneEntry { tz-id = "EST", tz-label = "Eastern (GMT-5)", tz-offset-minutes = -300 }
+  tz-cst : TimezoneEntry = TimezoneEntry { tz-id = "CST", tz-label = "Central (GMT-6)", tz-offset-minutes = -360 }
+  tz-mst : TimezoneEntry = TimezoneEntry { tz-id = "MST", tz-label = "Mountain (GMT-7)", tz-offset-minutes = -420 }
+  tz-pst : TimezoneEntry = TimezoneEntry { tz-id = "PST", tz-label = "Pacific (GMT-8)", tz-offset-minutes = -480 }
+  tz-gmt : TimezoneEntry = TimezoneEntry { tz-id = "GMT", tz-label = "London (GMT+0)", tz-offset-minutes = 0 }
+  tz-cet : TimezoneEntry = TimezoneEntry { tz-id = "CET", tz-label = "Central Europe (GMT+1)", tz-offset-minutes = 60 }
+  tz-jst : TimezoneEntry = TimezoneEntry { tz-id = "JST", tz-label = "Japan (GMT+9)", tz-offset-minutes = 540 }
+  tz-aest : TimezoneEntry = TimezoneEntry { tz-id = "AEST", tz-label = "Australia East (GMT+10)", tz-offset-minutes = 600 }
+
+  tz-list-common : List TimezoneEntry
+  tz-list-common = [tz-utc, tz-est, tz-cst, tz-mst, tz-pst, tz-gmt, tz-cet, tz-jst, tz-aest]
+
+Section: State
+
+  DateTimeState = record {
+    dt-year : Integer,
+    dt-month : Integer,
+    dt-day : Integer,
+    dt-hour : Integer,
+    dt-minute : Integer,
+    dt-second : Integer,
+    dt-timezone : TimezoneEntry,
+    dt-format : TimeFormat,
+    dt-first-day : FirstDay,
+    dt-ntp-enabled : Boolean,
+    dt-ntp-server : Text,
+    dt-ntp-last-sync : Integer,
+    dt-ntp-synced : Boolean
+  }
+
+  datetime-new : DateTimeState
+  datetime-new = DateTimeState {
+    dt-year = 2026, dt-month = 1, dt-day = 1,
+    dt-hour = 0, dt-minute = 0, dt-second = 0,
+    dt-timezone = tz-utc, dt-format = Fmt24h, dt-first-day = FdSunday,
+    dt-ntp-enabled = True, dt-ntp-server = "pool.ntp.org",
+    dt-ntp-last-sync = 0, dt-ntp-synced = False
+  }
+
+Section: Updates
+
+  dt-set-time : DateTimeState, Integer, Integer, Integer -> DateTimeState
+  dt-set-time (st) (h) (m) (s) =
+    __record-set (__record-set (__record-set st "dt-hour" h) "dt-minute" m) "dt-second" s
+
+  dt-set-date : DateTimeState, Integer, Integer, Integer -> DateTimeState
+  dt-set-date (st) (y) (m) (d) =
+    __record-set (__record-set (__record-set st "dt-year" y) "dt-month" m) "dt-day" d
+
+  dt-set-timezone : DateTimeState, TimezoneEntry -> DateTimeState
+  dt-set-timezone (st) (tz) = __record-set st "dt-timezone" tz
+
+  dt-toggle-format : DateTimeState -> DateTimeState
+  dt-toggle-format (st) = when st.dt-format
+    is Fmt24h -> __record-set st "dt-format" Fmt12h
+    is Fmt12h -> __record-set st "dt-format" Fmt24h
+
+  dt-toggle-first-day : DateTimeState -> DateTimeState
+  dt-toggle-first-day (st) = when st.dt-first-day
+    is FdSunday -> __record-set st "dt-first-day" FdMonday
+    is FdMonday -> __record-set st "dt-first-day" FdSunday
+
+  dt-toggle-ntp : DateTimeState -> DateTimeState
+  dt-toggle-ntp (st) = __record-set st "dt-ntp-enabled" (if st.dt-ntp-enabled then False else True)
+
+  dt-mark-synced : DateTimeState, Integer -> DateTimeState
+  dt-mark-synced (st) (tick) = __record-set (__record-set st "dt-ntp-synced" True) "dt-ntp-last-sync" tick
+
+  dt-tick : DateTimeState -> DateTimeState
+  dt-tick (st) =
+    let s = st.dt-second + 1
+    in if s >= 60 then dt-advance-minute (__record-set st "dt-second" 0)
+    else __record-set st "dt-second" s
+
+  dt-advance-minute : DateTimeState -> DateTimeState
+  dt-advance-minute (st) =
+    let m = st.dt-minute + 1
+    in if m >= 60 then __record-set (dt-advance-hour st) "dt-minute" 0
+    else __record-set st "dt-minute" m
+
+  dt-advance-hour : DateTimeState -> DateTimeState
+  dt-advance-hour (st) =
+    let h = st.dt-hour + 1
+    in if h >= 24 then __record-set st "dt-hour" 0
+    else __record-set st "dt-hour" h
+
+Section: Display
+
+  dt-format-time : DateTimeState -> Text
+  dt-format-time (st) = when st.dt-format
+    is Fmt24h -> dt-pad2 (st.dt-hour) & ":" & dt-pad2 (st.dt-minute)
+    is Fmt12h ->
+      let h12 = if st.dt-hour == 0 then 12 else if st.dt-hour > 12 then st.dt-hour - 12 else st.dt-hour
+      in let ampm = if st.dt-hour < 12 then " AM" else " PM"
+      in show h12 & ":" & dt-pad2 (st.dt-minute) & ampm
+
+  dt-format-date : DateTimeState -> Text
+  dt-format-date (st) =
+    show (st.dt-year) & "-" & dt-pad2 (st.dt-month) & "-" & dt-pad2 (st.dt-day)
+
+  dt-format-full : DateTimeState -> Text
+  dt-format-full (st) =
+    dt-format-date st & " " & dt-format-time st & " " & (st.dt-timezone).tz-id
+
+  dt-pad2 : Integer -> Text
+  dt-pad2 (n) = if n < 10 then "0" & show n else show n
+
+Section: Widget
+
+  dt-settings-widget : DateTimeState -> WidgetNode
+  dt-settings-widget (st) =
+    let title = widget-label "dt-title" "Date & Time"
+    in let time-display = widget-label "dt-time" (dt-format-full st)
+    in let tz-label = widget-label "dt-tz" ("Timezone: " & (st.dt-timezone).tz-label)
+    in let fmt-btn = widget-button "dt-fmt" ("Format: " & time-format-label (st.dt-format))
+    in let fd-btn = widget-button "dt-fd" ("Week starts: " & first-day-label (st.dt-first-day))
+    in let ntp-btn = widget-button "dt-ntp" (if st.dt-ntp-enabled then "NTP Sync: ON" else "NTP Sync: OFF")
+    in let ntp-status = widget-label "dt-ntp-status" (if st.dt-ntp-synced then "Last sync: ok" else "Not synced")
+    in widget-panel "dt-settings" DirColumn 4 [title, time-display, tz-label, fmt-btn, fd-btn, ntp-btn, ntp-status]
+
+Section: Formatting
+
+  format-datetime-settings : DateTimeState -> Text
+  format-datetime-settings (st) = dt-format-full st & " ntp=" & if st.dt-ntp-synced then "synced" else "pending"
+
+Page 1

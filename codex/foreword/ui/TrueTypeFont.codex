@@ -1,0 +1,94 @@
+Chapter: TrueTypeFont
+  cites Encode chapter TrueType
+  cites Ui chapter Font
+  cites Ui chapter GlyphRasterizer
+
+ Bridge between the TrueType rasterizer and the BitmapFont system.
+ Converts RasterGlyph records to Glyph records and builds a BitmapFont
+ from a parsed TtfFont. This lets existing font-draw-text calls work
+ with TrueType fonts.
+
+ Because TrueType glyphs are proportional (variable width), the
+ BitmapFont bf-glyph-w field holds the maximum glyph width. Individual
+ glyphs may be narrower -- the rendering code in Font.codex uses the
+ per-glyph gl-width for blitting.
+
+Section: Conversion
+  raster-to-glyph : RasterGlyph -> Glyph
+  raster-to-glyph (rg) =
+    Glyph {
+      gl-code = rg.rg-code,
+      gl-width = rg.rg-width,
+      gl-height = rg.rg-height,
+      gl-pixels = rg.rg-pixels
+    }
+
+  raster-list-to-glyphs : List RasterGlyph, Integer, List Glyph -> List Glyph
+  raster-list-to-glyphs (rgs) (i) (acc) =
+    if i >= list-length rgs then acc
+    else raster-list-to-glyphs rgs (i + 1) (list-push acc (raster-to-glyph (list-at rgs i)))
+
+Section: Font Building
+  ttf-to-bitmap-font : TtfFont, Integer, Text -> BitmapFont
+  ttf-to-bitmap-font (font) (ppem) (name) =
+    let rasters = gr-render-ascii font ppem
+    in let glyphs = raster-list-to-glyphs rasters 0 []
+    in let max-w = ttf-bf-max-width glyphs 0 0
+    in let max-h = ttf-bf-max-height glyphs 0 0
+    in BitmapFont {
+      bf-name = name,
+      bf-glyph-w = max-w,
+      bf-glyph-h = max-h,
+      bf-glyphs = glyphs,
+      bf-count = list-length glyphs,
+      bf-spacing = 0
+    }
+
+  ttf-to-bitmap-font-aa : TtfFont, Integer, Text -> BitmapFont
+  ttf-to-bitmap-font-aa (font) (ppem) (name) =
+    let rasters = gr-render-ascii-aa font ppem
+    in let glyphs = raster-list-to-glyphs rasters 0 []
+    in let max-w = ttf-bf-max-width glyphs 0 0
+    in let max-h = ttf-bf-max-height glyphs 0 0
+    in BitmapFont {
+      bf-name = name,
+      bf-glyph-w = max-w,
+      bf-glyph-h = max-h,
+      bf-glyphs = glyphs,
+      bf-count = list-length glyphs,
+      bf-spacing = 0
+    }
+
+  ttf-bf-max-width : List Glyph, Integer, Integer -> Integer
+  ttf-bf-max-width (glyphs) (i) (mx) =
+    if i >= list-length glyphs then
+      if mx < 1 then 1 else mx
+    else let g = list-at glyphs i
+    in let w = g.gl-width
+    in ttf-bf-max-width glyphs (i + 1) (if w > mx then w else mx)
+
+  ttf-bf-max-height : List Glyph, Integer, Integer -> Integer
+  ttf-bf-max-height (glyphs) (i) (mx) =
+    if i >= list-length glyphs then
+      if mx < 1 then 1 else mx
+    else let g = list-at glyphs i
+    in let h = g.gl-height
+    in ttf-bf-max-height glyphs (i + 1) (if h > mx then h else mx)
+
+Section: Quick Load
+  ttf-load-font : List Integer, Integer, Text -> BitmapFont
+  ttf-load-font (bytes) (ppem) (name) =
+    let font = ttf-parse bytes
+    in ttf-to-bitmap-font font ppem name
+
+  ttf-load-font-aa : List Integer, Integer, Text -> BitmapFont
+  ttf-load-font-aa (bytes) (ppem) (name) =
+    let font = ttf-parse bytes
+    in ttf-to-bitmap-font-aa font ppem name
+
+Section: Formatting
+  format-ttf-bitmap-font : BitmapFont -> Text
+  format-ttf-bitmap-font (f) =
+    f.bf-name & " " & show (f.bf-glyph-w) & "x" & show (f.bf-glyph-h) & " glyphs=" & show (f.bf-count)
+
+Page 1

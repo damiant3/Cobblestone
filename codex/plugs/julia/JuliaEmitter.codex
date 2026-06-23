@@ -2,6 +2,7 @@ Chapter: Julia Emitter
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Foreword chapter Sort
 
  Generates Julia source code from the IR.
 
@@ -23,7 +24,7 @@ Section: Keywords and Sanitization
   jl-sanitize : Text -> Text
   jl-sanitize (name) =
    let s = text-replace name "-" "_"
-   in if jl-is-keyword s then s & "_v"
+   in if jl-is-keyword s 0 then s & "_v"
       else s
 
   jl-escape : Text -> Text
@@ -164,19 +165,36 @@ Section: Expression Emission
     is IrAppendList -> "vcat(" & emit-jl-expr l arities & ", " & emit-jl-expr r arities & ")"
     is IrConsList -> "vcat(Any[" & emit-jl-expr l arities & "], " & emit-jl-expr r arities & ")"
     is IrDivInt -> "div(" & emit-jl-expr l arities & ", " & emit-jl-expr r arities & ")"
+    is IrRemInt -> "rem(" & emit-jl-expr l arities & ", " & emit-jl-expr r arities & ")"
     is IrAnd -> "(" & emit-jl-expr l arities & " && " & emit-jl-expr r arities & ")"
     is IrOr -> "(" & emit-jl-expr l arities & " || " & emit-jl-expr r arities & ")"
+    is IrAddVec -> "(" & emit-jl-expr l arities & " .+ " & emit-jl-expr r arities & ")"
+    is IrSubVec -> "(" & emit-jl-expr l arities & " .- " & emit-jl-expr r arities & ")"
+    is IrMulVec -> "(" & emit-jl-expr l arities & " .* " & emit-jl-expr r arities & ")"
+    is IrDivVec -> "(" & emit-jl-expr l arities & " ./ " & emit-jl-expr r arities & ")"
     is otherwise -> "(" & emit-jl-expr l arities & " " & jl-bin-op op & " " & emit-jl-expr r arities & ")"
 
   jl-bin-op : IRBinaryOp -> Text
   jl-bin-op (op) =
    when op
-    is IrAddInt -> "+"  is IrSubInt -> "-"  is IrMulInt -> "*"  is IrDivInt -> "div"
-    is IrPowInt -> "^"  is IrAddNum -> "+"  is IrSubNum -> "-"  is IrMulNum -> "*"
-    is IrDivNum -> "/"  is IrEq -> "=="  is IrNotEq -> "!="
-    is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
-    is IrAnd -> "&&"  is IrOr -> "||"  is IrAppendText -> "*"
-    is IrAppendList -> "+"  is IrConsList -> "+"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt -> "div"
+    is IrRemInt -> "rem"
+    is IrPowInt -> "^"
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq | IrApproxEqExact -> "=="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText -> "*"
+    is IrAppendList | IrConsList -> "+"
 
   emit-jl-lambda-params : List IRParam, Integer -> Text
   emit-jl-lambda-params (params) (i) =
@@ -214,6 +232,7 @@ Section: Expression Emission
     is IrCtorPat (name) (subs) (ty) (sp) -> "(isa(_s, " & jl-sanitize name & ") ? " & emit-jl-ctor-bind subs body arities & " : " & emit-jl-match-body branches (i + 1) arities depth & ")"
     is IrVarPat (name) (ty) (sp) -> "(let " & jl-sanitize name & " = _s; " & emit-jl-expr body arities & " end)"
     is IrWildPat (sp) -> emit-jl-expr body arities
+    is IrVecPat (pats) (ty) (sp) -> emit-jl-expr body arities
 
   emit-jl-ctor-bind : List IRPat, IRExpr, List ArityEntry -> Text
   emit-jl-ctor-bind (subs) (body) (arities) =
@@ -259,39 +278,63 @@ Section: Apply Emission
    else if i == list-length args - 1 then emit-jl-expr (list-at args i) arities
         else emit-jl-expr (list-at args i) arities & ", " & emit-jl-apply-args args arities (i + 1)
 
+  JlBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-jl-emitter-pos : List JlBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-jl-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-jl-emitter-pos entries name lo mid
+      else bsearch-jl-emitter-pos entries name (mid + 1) hi
+
+  sort-jl-emitters : List JlBuiltinEmitter -> List JlBuiltinEmitter
+  sort-jl-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  jl-builtin-emitters : List JlBuiltinEmitter = sort-jl-emitters [
+   JlBuiltinEmitter { name = "abs", emit = \args arities -> "abs(" & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "bit-and", emit = \args arities -> "(" & emit-jl-expr (list-at args 0) arities & " & " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "bit-or", emit = \args arities -> "(" & emit-jl-expr (list-at args 0) arities & " | " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "bit-shl", emit = \args arities -> "(" & emit-jl-expr (list-at args 0) arities & " << " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "bit-shr", emit = \args arities -> "(" & emit-jl-expr (list-at args 0) arities & " >> " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "bit-xor", emit = \args arities -> "xor(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "char-at", emit = \args arities -> "Int64(codepoint(" & emit-jl-expr (list-at args 0) arities & "[" & emit-jl-expr (list-at args 1) arities & " + 1]))" },
+   JlBuiltinEmitter { name = "char-code", emit = \args arities -> emit-jl-expr (list-at args 0) arities },
+   JlBuiltinEmitter { name = "char-to-text", emit = \args arities -> "string(Char(" & emit-jl-expr (list-at args 0) arities & "))" },
+   JlBuiltinEmitter { name = "code-to-char", emit = \args arities -> emit-jl-expr (list-at args 0) arities },
+   JlBuiltinEmitter { name = "file-exists", emit = \args arities -> "isfile(" & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "int-mod", emit = \args arities -> "mod(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "string(" & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "list-at", emit = \args arities -> emit-jl-expr (list-at args 0) arities & "[" & emit-jl-expr (list-at args 1) arities & " + 1]" },
+   JlBuiltinEmitter { name = "list-length", emit = \args arities -> "length(" & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "max", emit = \args arities -> "max(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "min", emit = \args arities -> "min(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "println(" & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "process-exit", emit = \args arities -> "exit(" & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "read-file", emit = \args arities -> "read(" & emit-jl-expr (list-at args 0) arities & ", String)" },
+   JlBuiltinEmitter { name = "show", emit = \args arities -> "string(" & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "substring", emit = \args arities -> emit-jl-expr (list-at args 0) arities & "[" & emit-jl-expr (list-at args 1) arities & "+1:" & emit-jl-expr (list-at args 1) arities & "+" & emit-jl-expr (list-at args 2) arities & "]" },
+   JlBuiltinEmitter { name = "text-compare", emit = \args arities -> "cmp(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "text-contains", emit = \args arities -> "occursin(" & emit-jl-expr (list-at args 1) arities & ", " & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "text-length", emit = \args arities -> "length(" & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "text-replace", emit = \args arities -> "replace(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & " => " & emit-jl-expr (list-at args 2) arities & ")" },
+   JlBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "startswith(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "parse(Int64, " & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "write-file", emit = \args arities -> "write(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" }
+  ]
+
   jl-try-builtin : Text, List IRExpr, List ArityEntry -> Text
   jl-try-builtin (n) (args) (arities) =
-   if n == "print-line-uni" then "println(" & emit-jl-expr (list-at args 0) arities & ")"
-   else if n == "show" then "string(" & emit-jl-expr (list-at args 0) arities & ")"
-   else if n == "integer-to-text" then "string(" & emit-jl-expr (list-at args 0) arities & ")"
-   else if n == "text-to-integer" then "parse(Int64, " & emit-jl-expr (list-at args 0) arities & ")"
-   else if n == "text-length" then "length(" & emit-jl-expr (list-at args 0) arities & ")"
-   else if n == "list-length" then "length(" & emit-jl-expr (list-at args 0) arities & ")"
-   else if n == "list-at" then emit-jl-expr (list-at args 0) arities & "[" & emit-jl-expr (list-at args 1) arities & " + 1]"
-   else if n == "char-at" then "Int64(codepoint(" & emit-jl-expr (list-at args 0) arities & "[" & emit-jl-expr (list-at args 1) arities & " + 1]))"
-   else if n == "char-code" then emit-jl-expr (list-at args 0) arities
-   else if n == "code-to-char" then emit-jl-expr (list-at args 0) arities
-   else if n == "char-to-text" then "string(Char(" & emit-jl-expr (list-at args 0) arities & "))"
-   else if n == "substring" then emit-jl-expr (list-at args 0) arities & "[" & emit-jl-expr (list-at args 1) arities & "+1:" & emit-jl-expr (list-at args 1) arities & "+" & emit-jl-expr (list-at args 2) arities & "]"
-   else if n == "text-compare" then "cmp(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "text-replace" then "replace(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & " => " & emit-jl-expr (list-at args 2) arities & ")"
-   else if n == "text-contains" then "occursin(" & emit-jl-expr (list-at args 1) arities & ", " & emit-jl-expr (list-at args 0) arities & ")"
-   else if n == "text-starts-with" then "startswith(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "read-file" then "read(" & emit-jl-expr (list-at args 0) arities & ", String)"
-   else if n == "write-file" then "write(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "file-exists" then "isfile(" & emit-jl-expr (list-at args 0) arities & ")"
-   else if n == "process-exit" then "exit(" & emit-jl-expr (list-at args 0) arities & ")"
-   else if n == "int-mod" then "mod(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "bit-and" then "(" & emit-jl-expr (list-at args 0) arities & " & " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "bit-or" then "(" & emit-jl-expr (list-at args 0) arities & " | " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "bit-xor" then "xor(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "bit-shl" then "(" & emit-jl-expr (list-at args 0) arities & " << " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "bit-shr" then "(" & emit-jl-expr (list-at args 0) arities & " >> " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "min" then "min(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "max" then "max(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")"
-   else if n == "abs" then "abs(" & emit-jl-expr (list-at args 0) arities & ")"
-   else if n == "negate" then "(-" & emit-jl-expr (list-at args 0) arities & ")"
-   else ""
+   let len = list-length jl-builtin-emitters
+   in let pos = bsearch-jl-emitter-pos jl-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at jl-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
 
 Section: Definition Emission
 

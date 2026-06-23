@@ -66,7 +66,15 @@ requires spaces: `x - 1` (expression), not `x-1` (identifier).
 | Maybe | `Maybe Text` |
 | Bounded integer | `Integer between 0 and 255` |
 | Bounded + overflow | `Integer between 0 and 255 wrapping` |
+| Unit type | `Second = unit Integer` |
+| Bounded + unit | `Second between 0 and 3600` |
 | Linear | `linear FileHandle` |
+| Vector | `Vector 4 Real` |
+| Vector (bounded) | `Vector 16 (Integer between 0 and 255)` |
+| Vector mask | `VectorMask 4` |
+| Real (f64) | `Real` |
+| Real approx (f32) | `Real approximate` |
+| Real + safety | `Real trapping`, `Real saturating`, `Real checked` |
 
 ## Definitions
 
@@ -184,6 +192,15 @@ or `is _ -> ...`. Exhaustiveness checked. Patterns: `VarPat`, `LitPat`,
 
 Always requires `else`. No dangling if.
 
+## For Expressions
+
+```
+  for x in xs do f x
+```
+
+Sugar for `list-map`. The body is a function applied to each element.
+Desugars to `list-map (lambda (x) -> f x) xs`.
+
 ## Effects and Act Blocks
 
 ```
@@ -218,7 +235,8 @@ Effect declarations:
 | Op | Meaning |
 |----|---------|
 | `+` `-` `*` `/` `^` | Arithmetic |
-| `==` `/=` `<` `>` `<=` `>=` | Comparison (note: `/=`, not `!=`) |
+| `==` `/=` `<` `>` `<=` `>=` | Comparison (note: `/=`, not `!=`). `==`/`/=` are errors on Real types (CDX2085). |
+| `~` `~0` | Approximate equality (4 ULP default), bitwise exact (`~0`). For Real and Vector types. |
 | `&` | Text/list append |
 | `\|` | Boolean or |
 | `++` | Text/list append (deprecated, use `&`) |
@@ -284,6 +302,118 @@ into a bounded slot. Use `__narrow` to assert the value is in range
   make-byte : Integer -> Byte
   make-byte (n) = Byte { val = __narrow n }
 ```
+
+## Unit Types
+
+A `unit` declaration creates a distinct type wrapping another type.
+The compiler erases the wrapper at codegen — zero runtime overhead.
+
+```
+  Second = unit Integer
+  Meter = unit Integer
+```
+
+Construction: `Second 42` creates a Second value.
+Arithmetic preserves units: `Second 42 + Second 8 = 50`.
+Scalar multiplication: `Second 42 * 3 = 126`.
+Cross-unit is a type error: `Second + Meter` does not compile.
+
+Unit types are transparent to their inner type at assignment
+boundaries: a `Second` can be passed where `Integer` is expected.
+But different unit types do not mix.
+
+Bounded + unit composition works: `Second between 0 and 3600`
+creates a bounded unit type.
+
+Conversion declarations are parsed but not yet auto-applied:
+
+```
+  1 Minute = 60 Second
+```
+
+Write conversion functions manually:
+
+```
+  minute-to-second : Minute -> Second
+  minute-to-second (m) = Second (m * 60)
+```
+
+## Unit Families
+
+A `unit family` declaration creates a set of related units that share
+a common base and convert automatically at construction time. The
+family name is the type; member constructors multiply by their factor.
+
+```
+  Duration = unit family Nanosecond
+    Nanosecond = 1
+    Microsecond = 1000
+    Millisecond = 1000000
+    Second = 1000000000
+```
+
+Each member becomes a constructor function: `Second 5` produces
+`5000000000` (5 * 1,000,000,000 nanoseconds). The family type
+(`Duration`) is a `unit Integer` at runtime — zero overhead.
+
+```
+  timeout : Duration
+  timeout = Second 5
+
+  precise : Duration
+  precise = Microsecond 250
+```
+
+Extraction functions are synthesized automatically:
+`Duration-to-Second : Duration -> Integer` divides by the factor.
+
+All members share the same underlying type, so arithmetic works
+across units: `Second 1 + Millisecond 500` = `1500000000` nanoseconds.
+
+Families are organized by scale to avoid 64-bit overflow. Human-scale
+durations (nanoseconds through hours) share `Duration`. Calendar-scale
+durations (seconds through centuries) share `LongDuration`. The
+standard families are defined in `codex/foreword/core/Units.codex`.
+
+The desugarer erases `unit family` into a standard `unit Integer`
+type plus constructor and extractor functions. Downstream phases
+(type checker, IR, codegen) see only the erased form.
+
+## Punctual Functions
+
+A function marked `punctual` is proven to have bounded execution
+at compile time. The compiler enforces five structural restrictions:
+
+| CDX Code | Restriction |
+|----------|------------|
+| CDX6001 | Cannot call non-punctual or non-safe-builtin functions |
+| CDX6002 | Cannot use heap allocation |
+| CDX6003 | Cannot use closures or lambdas |
+| CDX6004 | Cannot perform bare I/O (Console, FileSystem, Network) |
+| CDX6005 | Cannot use self-recursion |
+
+```
+  punctual classify-threat : SensorReading -> ThreatLevel
+  classify-threat (s) = ...
+```
+
+The emitter counts instructions per punctual function and reports
+the count as CDX6010. An optional instruction budget warns when
+exceeded (CDX6011):
+
+```
+  punctual 128 fast-handler : Integer -> Integer
+  fast-handler (n) = n + 1
+```
+
+Default budget is 256 instructions. Budget is architecture-independent
+(instruction count, not bytes or cycles). The compiler does not claim
+to know wall-clock time — that depends on clock speed and pipeline,
+which is the system integrator's responsibility.
+
+See `docs/Designs/OS/Active/HardRealtime.md` for the full design and
+prior art survey. See `codex/test/examples/missile-warning.codex` for
+a real-world example with Ada/Ravenscar side-by-side comparison.
 
 ## Proofs and Dependent Types
 
@@ -412,6 +542,73 @@ Diagnostics: CDX2061 (linear used more than once / inconsistent across
 branches), CDX2063 (linear never used — leak), CDX2062 (mutable record
 aliased).
 
+## Vector Types (SIMD)
+
+`Vector N T` is a fixed-width SIMD vector with `N` lanes of element
+type `T`. The lane count is a compile-time integer (power of two,
+1–64). The element type is restricted to numeric primitives.
+
+```
+  v : Vector 2 Real
+  v = vec-splat 3.14
+
+  w : Vector 4 (Integer between 0 and 255)
+```
+
+Arithmetic operators (`+`, `-`, `*`, `/`) are overloaded for vectors
+and operate element-wise. Both operands must have matching `N` and `T`.
+
+```
+  result = v + v              -- element-wise add
+  dot = vec-reduce-add (a * b)   -- dot product
+```
+
+Scalar broadcast is explicit via `vec-splat`, not implicit.
+
+### Construction and Access
+
+```
+  vec-splat : a -> Vector N a           -- fill all lanes
+  vec-extract : Vector N a, Integer -> a  -- extract one lane
+```
+
+### Reduction
+
+```
+  vec-reduce-add : Vector N a -> a      -- horizontal sum
+```
+
+### Approximate Equality
+
+`==` and `/=` are compile errors on Real types (CDX2085). Use `~`:
+
+```
+  x ~ y        -- approximately equal (4 ULP tolerance)
+  x ~0 y       -- bitwise exact (zero tolerance)
+```
+
+The `~` operator works on both scalar Real and `Vector N Real` values.
+On vectors it produces a `VectorMask N`.
+
+### Real Type
+
+`Real` is the floating-point type (f64). `Real approximate` is f32.
+Safety modes compose with precision:
+
+```
+  Real                        -- f64, IEEE 754 default
+  Real approximate            -- f32
+  Real trapping               -- traps on NaN/Inf
+  Real saturating             -- clamps to +-MAX
+  Real checked                -- returns Result Real
+```
+
+### Codegen
+
+On x86-64, `Vector 2 Real` maps to SSE2 packed instructions (ADDPD,
+SUBPD, MULPD, DIVPD). Vector values live in XMM registers. Alignment
+is natural (`N * sizeof(T)` rounded to next power of two, minimum 16).
+
 ## Type Classes
 
 `class` declares an interface; `instance` provides an implementation.
@@ -490,7 +687,7 @@ with CDX3014.
 
 ```
 let  in  if  then  else  when  is  otherwise  act  end
-record  mutable  punctual  cites  claim  proof  qed  forall  exists  induction
+record  mutable  punctual  unit  cites  claim  proof  qed  forall  exists  induction
 linear  effect  where  with  between  and  such  that
 class  instance  lazy
 True  False

@@ -6,7 +6,7 @@ A foreword quire is a library package marked `"foreword": true` in its
 `codex.project.json`. Foreword modules compile before user code and
 make their types and functions automatically available.
 
-### codex.foreword (99 modules) — Core
+### codex.foreword (107 modules) — Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -38,7 +38,7 @@ Activation, SparseLattice
 
 Deflate, Gzip, Brotli, Zstd, Lz4, Lz77, Huffman, Rle
 
-### codex.foreword.encode (32 modules) — Encoding and Codecs
+### codex.foreword.encode (35 modules) — Encoding and Codecs
 
 Data formats, image codecs, audio codecs, video codecs, protocols.
 
@@ -74,12 +74,45 @@ MusicTheory, Noise, Perlin, Pitch, Resample, Convolution, Wavelet
 Physics, Kinematics, Collision, Constraint, ParticleSystem,
 SpatialHash, Steering
 
+### codex.foreword.punctual (8 modules) — Real-Time Primitives
+
+IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian
+
+Every function is `punctual`: no heap, no recursion, bounded
+instruction count. Safe to call from real-time, embedded, and
+interrupt contexts.
+
+### codex.foreword.engine (42 modules) — 3D Game Engine
+
+AbilitySystem, AnimBlend, AssetTable, Audio3D, AudioBus, Biome,
+ClothSim, Collision3D, Culling, Cutscene, DamageSystem, DebugDraw,
+EdgeMesh, FacialAnim, Fog, FractalPlant, GameLoop, GameplayTags,
+HairSim, HelmBridge, Input, LOD, Material, Mesh, Musculature,
+NavMesh, ParticleRenderer, PhysicsJoint, PostProcess, Renderer3D,
+Scene3D, Signal, Skinning, SkinShader, SoftBody, SplinePath,
+Terrain, Texture, TimeOfDay, Water, WorldGen, WorldHUD
+
+3D rendering pipeline, scene management, materials, LOD/culling,
+post-processing, spatial audio, input handling, gameplay systems,
+physics, procedural generation, and edge mesh networking.
+
 ### codex.foreword.ui (28 modules) — User Interface
 
 Widget, Window, Surface, Theme, Font, Icon, Event, Layout, Animation,
 Binding, TextField, RichText, Dialog, Overlay, Orchestrator, Render,
 Accessibility, Focus, Selection, Cursor, Drag, Touch, Scroll, BoxModel,
 Charts, Sound, Clipboard, Vector
+
+### codex.foreword.gpu (10 modules) — GPU Kernel Programming
+
+DeviceEffect, GpuEffect, DeviceBuffer, LaunchConfig, Thread, Warp,
+Shared, Atomic, Barrier, DisjointSlice
+
+GPU kernel programming surface. `[Device]` effect marks code that runs
+on the GPU; `[Gpu]` effect marks host-side kernel launch and buffer
+management. Type-safe thread indexing via `ThreadIndex` witness type,
+scope-encoded atomics, warp shuffles, shared memory, and
+`DisjointSlice` for provably-disjoint parallel writes.
 
 ## Non-Foreword Quires
 
@@ -91,7 +124,7 @@ The self-hosted compiler. Subdirectories: Ast, Core, Emit, IR,
 Semantics, Syntax, Types. Do not modify without reading the code first
 and passing both gates (sample battery + pingpong).
 
-### codex.kernel (22 modules) — Hardware Drivers
+### codex.kernel (24 modules) — Hardware Drivers
 
 Bare-metal hardware interfaces: BitmapFont, Console, DiagnosticShell,
 DiskFacts, DriveManager, GpuBridge, IdentityManager, Ivshmem,
@@ -106,7 +139,7 @@ Split across sub-quires:
 |-----------|---------|---------|
 | codex.os | 4 | Core OS abstractions |
 | codex.os.dev | 5 | Device management |
-| codex.os.kernel | 22 | Hardware drivers (PCI, xHCI, NE2K, VGA, IDE, HDA, etc.) |
+| codex.os.kernel | 24 | Hardware drivers (PCI, xHCI, NE2K, VGA, IDE, HDA, etc.) |
 | codex.os.net | 18 | Networking stack |
 | codex.os.observe | 7 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
@@ -114,11 +147,11 @@ Split across sub-quires:
 | codex.os.trust | 11 | Trust lattice |
 | codex.os.verify | 5 | Verification |
 
-### codex.plugs (113 modules) — Transpiler Plugs
+### codex.plugs (133 modules) — Transpiler Plugs
 
-48 transpiler plugs (Ada to Zig, 14 UI frameworks, 4 binary
-formats) plus WASM and HTML backends. Each plug receives IR or CDX
-over TCP and produces the target format.
+53 transpiler plugs (Ada to Zig, 14 UI frameworks, GPU PTX + SPIR-V,
+4 binary formats) plus WASM and HTML backends. Each plug receives IR
+or CDX over TCP and produces the target format.
 
 ## Library Rules
 

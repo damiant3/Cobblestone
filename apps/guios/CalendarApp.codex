@@ -1,0 +1,96 @@
+Chapter: CalendarApp
+  cites Guios chapter GuiDisplay
+
+ Bare-metal calendar showing the current month from CMOS RTC.
+ All rendering is direct to GopBuf, zero allocation.
+
+Section: RTC Read
+  cal-rtc : Integer -> Integer
+  cal-rtc (reg) = let w = port-out-byte 112 reg in port-in-byte 113
+
+  cal-bcd : Integer -> Integer
+  cal-bcd (v) = (bit-shru v 4) * 10 + bit-and v 15
+
+Section: Date Math
+  cal-is-leap : Integer -> Boolean
+  cal-is-leap (y) =
+    if int-mod y 400 == 0 then True
+    else if int-mod y 100 == 0 then False
+    else int-mod y 4 == 0
+
+  cal-days-in-month : Integer, Integer -> Integer
+  cal-days-in-month (m) (y) =
+    if m == 2 then if cal-is-leap y then 29 else 28
+    else if m == 4 then 30
+    else if m == 6 then 30
+    else if m == 9 then 30
+    else if m == 11 then 30
+    else 31
+
+  cal-dow-jan1 : Integer -> Integer
+  cal-dow-jan1 (y) =
+    let y1 = y - 1
+    in int-mod (1 + y1 + y1 / 4 - y1 / 100 + y1 / 400) 7
+
+  cal-dow-month1 : Integer, Integer -> Integer
+  cal-dow-month1 (m) (y) =
+    cal-dow-offset (cal-dow-jan1 y) 1 m y
+
+  cal-dow-offset : Integer, Integer, Integer, Integer -> Integer
+  cal-dow-offset (dow) (cm) (target-m) (y) =
+    if cm >= target-m then dow
+    else cal-dow-offset (int-mod (dow + cal-days-in-month cm y) 7) (cm + 1) target-m y
+
+  cal-month-name : Integer -> Text
+  cal-month-name (m) =
+    if m == 1 then "January"
+    else if m == 2 then "February"
+    else if m == 3 then "March"
+    else if m == 4 then "April"
+    else if m == 5 then "May"
+    else if m == 6 then "June"
+    else if m == 7 then "July"
+    else if m == 8 then "August"
+    else if m == 9 then "September"
+    else if m == 10 then "October"
+    else if m == 11 then "November"
+    else "December"
+
+Section: Render
+  cal-draw : GopBuf, MutWheel, Integer, Integer, Integer -> Integer
+  cal-draw (gb) (wh) (x) (y) (win-w) =
+    let year = 2000 + cal-bcd (cal-rtc 9)
+    in let month = cal-bcd (cal-rtc 8)
+    in let today = cal-bcd (cal-rtc 7)
+    in let days = cal-days-in-month month year
+    in let dow1 = cal-dow-month1 month year
+    in let dummy = gop-buf-put-text-role gb wh (x + 16) (y + 4) (cal-month-name month & " " & show year) #3B82F6 font-role-sans
+    in let col-w = (win-w - 32) / 7
+    in let dummy2 = cal-draw-header gb wh (x + 16) (y + 26) col-w
+    in cal-draw-days gb wh (x + 16) (y + 46) col-w 1 days dow1 today
+
+  cal-draw-header : GopBuf, MutWheel, Integer, Integer, Integer -> Integer
+  cal-draw-header (gb) (wh) (x) (y) (cw) =
+    let dummy = gop-buf-put-text-role gb wh x y "Su" #64748B font-role-sans
+    in let dummy2 = gop-buf-put-text-role gb wh (x + cw) y "Mo" #64748B font-role-sans
+    in let dummy3 = gop-buf-put-text-role gb wh (x + 2 * cw) y "Tu" #64748B font-role-sans
+    in let dummy4 = gop-buf-put-text-role gb wh (x + 3 * cw) y "We" #64748B font-role-sans
+    in let dummy5 = gop-buf-put-text-role gb wh (x + 4 * cw) y "Th" #64748B font-role-sans
+    in let dummy6 = gop-buf-put-text-role gb wh (x + 5 * cw) y "Fr" #64748B font-role-sans
+    in let dummy7 = gop-buf-put-text-role gb wh (x + 6 * cw) y "Sa" #64748B font-role-sans
+    in gop-buf-hline gb x (x + 7 * cw) (y + 16) #374151
+
+  cal-draw-days : GopBuf, MutWheel, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cal-draw-days (gb) (wh) (x) (y) (cw) (day) (total) (dow1) (today) =
+    if day > total then 0
+    else let col = int-mod (dow1 + day - 1) 7
+    in let row = (dow1 + day - 1) / 7
+    in let px = x + col * cw
+    in let py = y + row * 20
+    in let is-today = day == today
+    in let fg = if is-today then #1D4ED8 else #F1F5F9
+    in let dummy = if is-today then gop-buf-rect gb (px - 2) py (cw - 2) 18 #1E293B else 0
+    in let dummy2 = gop-buf-put-text-role gb wh px (py + 2) (if day < 10 then " " & show day else show day) fg font-role-mono
+    in cal-draw-days gb wh x y cw (day + 1) total dow1 today
+
+Page 1

@@ -1,0 +1,122 @@
+Chapter: VirtioNet
+  cites Kernel chapter VirtioPci
+
+ VirtIO network device driver. Uses VirtioPci transport for
+ send/receive via two virtqueues (RX=0, TX=1).
+
+ Frame buffers are pre-allocated in a fixed region. Each RX
+ buffer is 1526 bytes (10-byte virtio-net header + 1516 MTU).
+ TX buffers are allocated from the same region.
+
+ The driver provides the same interface as Ne2k:
+   virtio-net-send-frame : List Integer -> Integer
+   virtio-net-recv-frame : List Integer
+
+Section: Constants
+
+  vnet-rx-queue : Integer = 0
+  vnet-tx-queue : Integer = 1
+  vnet-hdr-size : Integer = 10
+  vnet-max-frame : Integer = 1526
+  vnet-rx-buf-count : Integer = 32
+  vnet-feature-mac : Integer = 32
+
+Section: Buffer Region
+
+  vnet-buf-base : Integer = #40200000
+  vnet-rx-region : Integer = #40200000
+  vnet-tx-region : Integer = #40210000
+  vnet-queue-region : Integer = #40220000
+
+Section: Device State
+
+  VirtioNetState = record {
+    device : VirtioDevice,
+    rx-queue : VirtqueueState,
+    tx-queue : VirtqueueState,
+    mac : List Integer
+  }
+
+  vnet-state-addr : Integer = #80100
+
+Section: Init
+
+  virtio-net-init : Arm64PciDevice -> VirtioNetState
+  virtio-net-init (pci-dev) =
+   let vd = virtio-init-device pci-dev
+   in let features = virtio-negotiate vd vnet-feature-mac
+   in let rxq = virtio-setup-queue vd vnet-rx-queue vnet-queue-region
+   in let txq = virtio-setup-queue vd vnet-tx-queue (vnet-queue-region + #10000)
+   in let s = virtio-set-status vd virtio-status-driver-ok
+   in let mac = virtio-net-read-mac vd
+   in let rxq1 = virtio-net-fill-rx rxq 0
+   in VirtioNetState { device = vd, rx-queue = rxq1, tx-queue = txq, mac = mac }
+
+  virtio-net-read-mac : VirtioDevice -> List Integer
+  virtio-net-read-mac (vd) =
+   if (vd.device-cfg-base) == 0 then [82, 84, 0, 18, 52, 86]
+   else let base = vd.device-cfg-base
+   in [peek-byte base 0, peek-byte base 1, peek-byte base 2,
+       peek-byte base 3, peek-byte base 4, peek-byte base 5]
+
+Section: RX Buffer Fill
+
+  virtio-net-fill-rx : VirtqueueState, Integer -> VirtqueueState
+  virtio-net-fill-rx (rxq) (i) =
+   if i >= vnet-rx-buf-count then rxq
+   else let buf-addr = vnet-rx-region + i * vnet-max-frame
+   in let rxq1 = virtio-submit-desc rxq buf-addr vnet-max-frame vq-desc-f-write
+   in let notified = virtio-notify rxq1
+   in virtio-net-fill-rx rxq1 (i + 1)
+
+Section: Send Frame
+
+  virtio-net-send-frame : VirtioNetState, List Integer -> VirtioNetState
+  virtio-net-send-frame (st) (frame) =
+   let frame-len = list-length frame
+   in let buf-addr = vnet-tx-region
+   in let hdr-zero = virtio-zero-mem buf-addr vnet-hdr-size
+   in let written = virtio-net-write-frame-bytes buf-addr vnet-hdr-size frame 0 frame-len
+   in let total = vnet-hdr-size + frame-len
+   in let txq = virtio-submit-desc (st.tx-queue) buf-addr total 0
+   in let notified = virtio-notify txq
+   in let txq1 = virtio-poll-used txq
+   in VirtioNetState { device = st.device, rx-queue = st.rx-queue, tx-queue = txq1, mac = st.mac }
+
+  virtio-net-write-frame-bytes : Integer, Integer, List Integer, Integer, Integer -> Integer
+  virtio-net-write-frame-bytes (base) (off) (bs) (i) (len) =
+   if i >= len then 0
+   else let w = poke-byte base (off + i) (list-at bs i)
+   in virtio-net-write-frame-bytes base off bs (i + 1) len
+
+Section: Receive Frame
+
+  virtio-net-poll-frame : VirtioNetState -> VirtioNetRecvResult
+  virtio-net-poll-frame (st) =
+   let bar = mmio-barrier
+   in let used-idx = bit-and (peek-16 ((st.rx-queue).used-base) 2) #FFFF
+   in if used-idx == (st.rx-queue).last-used-idx then
+     VirtioNetRecvResult { state = st, frame = [], has-frame = False }
+   else let ring-off = ((st.rx-queue).used-base) + 4 + bit-and ((st.rx-queue).last-used-idx) (((st.rx-queue).queue-size) - 1) * 8
+   in let used-desc-id = peek-32 ring-off 0
+   in let used-len = peek-32 ring-off 4
+   in let buf-addr = vnet-rx-region + used-desc-id * vnet-max-frame
+   in let data-len = used-len - vnet-hdr-size
+   in let frame = virtio-net-read-frame-bytes buf-addr vnet-hdr-size data-len 0 []
+   in let rxq1 = virtio-submit-desc (st.rx-queue) (vnet-rx-region + used-desc-id * vnet-max-frame) vnet-max-frame vq-desc-f-write
+   in let notified = virtio-notify rxq1
+   in let rxq2 = VirtqueueState { desc-base = (rxq1.desc-base), avail-base = (rxq1.avail-base), used-base = (rxq1.used-base), queue-size = (rxq1.queue-size), free-head = rxq1.free-head, avail-idx = rxq1.avail-idx, last-used-idx = (st.rx-queue).last-used-idx + 1, notify-addr = rxq1.notify-addr }
+   in VirtioNetRecvResult { state = VirtioNetState { device = st.device, rx-queue = rxq2, tx-queue = st.tx-queue, mac = st.mac }, frame = frame, has-frame = True }
+
+  VirtioNetRecvResult = record {
+    state : VirtioNetState,
+    frame : List Integer,
+    has-frame : Boolean
+  }
+
+  virtio-net-read-frame-bytes : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  virtio-net-read-frame-bytes (base) (off) (len) (i) (acc) =
+   if i >= len then acc
+   else virtio-net-read-frame-bytes base off len (i + 1) (list-push acc (peek-byte base (off + i)))
+
+Page 1

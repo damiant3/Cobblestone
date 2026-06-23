@@ -7,4 +7,4 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..' 'common' 'plug-build-lib.ps1')
 
-Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'python' -Chapters @('PythonEmitter', 'PythonPlug')
+Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'python' -Chapters @('PythonEmitter', 'PythonPlug') -Survey 'lower-mul:120000'

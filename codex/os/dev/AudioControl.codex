@@ -1,0 +1,361 @@
+Chapter: AudioControl
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Dev chapter Notification
+
+ System audio control panel. Manages master volume, output/input
+ device selection, per-device mute, microphone on/off, and per-app
+ volume mixing. Provides both programmatic API and widget tree for
+ the OS settings UI. Fires notifications on device connect/disconnect
+ and mic privacy events.
+
+Section: Audio Device
+
+  AudioDeviceKind =
+    | AdkOutput
+    | AdkInput
+    | AdkBoth
+
+  AudioDevice = record {
+    ad-id : Text,
+    ad-name : Text,
+    ad-kind : AudioDeviceKind,
+    ad-connected : Boolean,
+    ad-default : Boolean,
+    ad-volume : Integer between 0 and 100,
+    ad-muted : Boolean,
+    ad-sample-rate : Integer,
+    ad-channels : Integer,
+    ad-bit-depth : Integer
+  }
+
+  audio-device-new : Text, Text, AudioDeviceKind -> AudioDevice
+  audio-device-new (id) (name) (kind) = AudioDevice {
+    ad-id = id,
+    ad-name = name,
+    ad-kind = kind,
+    ad-connected = True,
+    ad-default = False,
+    ad-volume = 80,
+    ad-muted = False,
+    ad-sample-rate = 48000,
+    ad-channels = 2,
+    ad-bit-depth = 16
+  }
+
+  audio-device-kind-label : AudioDeviceKind -> Text
+  audio-device-kind-label (k) = when k
+    is AdkOutput -> "Output"
+    is AdkInput -> "Input"
+    is AdkBoth -> "Input/Output"
+
+Section: App Volume
+
+  AppVolume = record {
+    av-app-id : Text,
+    av-app-name : Text,
+    av-volume : Integer between 0 and 100,
+    av-muted : Boolean
+  }
+
+  app-volume-new : Text, Text -> AppVolume
+  app-volume-new (id) (name) = AppVolume {
+    av-app-id = id,
+    av-app-name = name,
+    av-volume = 100,
+    av-muted = False
+  }
+
+Section: System Audio State
+
+  AudioControlState = record {
+    ac-devices : List AudioDevice,
+    ac-device-count : Integer,
+    ac-default-output : Text,
+    ac-default-input : Text,
+    ac-master-volume : Integer between 0 and 100,
+    ac-master-muted : Boolean,
+    ac-mic-enabled : Boolean,
+    ac-mic-privacy : Boolean,
+    ac-app-volumes : List AppVolume,
+    ac-app-count : Integer,
+    ac-balance : Integer between 0 and 100
+  }
+
+  audio-control-new : AudioControlState
+  audio-control-new = AudioControlState {
+    ac-devices = [],
+    ac-device-count = 0,
+    ac-default-output = "",
+    ac-default-input = "",
+    ac-master-volume = 80,
+    ac-master-muted = False,
+    ac-mic-enabled = True,
+    ac-mic-privacy = False,
+    ac-app-volumes = [],
+    ac-app-count = 0,
+    ac-balance = 50
+  }
+
+Section: Master Volume
+
+  ac-set-volume : AudioControlState, Integer -> AudioControlState
+  ac-set-volume (st) (vol) =
+    let clamped = if vol < 0 then 0 else if vol > 100 then 100 else vol
+    in __record-set st "ac-master-volume" clamped
+
+  ac-volume-up : AudioControlState, Integer -> AudioControlState
+  ac-volume-up (st) (step) = ac-set-volume st (st.ac-master-volume + step)
+
+  ac-volume-down : AudioControlState, Integer -> AudioControlState
+  ac-volume-down (st) (step) = ac-set-volume st (st.ac-master-volume - step)
+
+  ac-toggle-mute : AudioControlState -> AudioControlState
+  ac-toggle-mute (st) =
+    __record-set st "ac-master-muted" (if st.ac-master-muted then False else True)
+
+  ac-set-balance : AudioControlState, Integer -> AudioControlState
+  ac-set-balance (st) (bal) =
+    let clamped = if bal < 0 then 0 else if bal > 100 then 100 else bal
+    in __record-set st "ac-balance" clamped
+
+Section: Microphone
+
+  ac-toggle-mic : AudioControlState -> AudioControlState
+  ac-toggle-mic (st) =
+    __record-set st "ac-mic-enabled" (if st.ac-mic-enabled then False else True)
+
+  ac-set-mic-privacy : AudioControlState, Boolean -> AudioControlState
+  ac-set-mic-privacy (st) (on) = __record-set st "ac-mic-privacy" on
+
+  ac-mic-active : AudioControlState -> Boolean
+  ac-mic-active (st) = if st.ac-mic-privacy then False else st.ac-mic-enabled
+
+Section: Device Management
+
+  ac-add-device : AudioControlState, AudioDevice -> AudioControlState
+  ac-add-device (st) (dev) =
+    let devs = list-push (st.ac-devices) dev
+    in let st2 = __record-set (__record-set st "ac-devices" devs) "ac-device-count" (st.ac-device-count + 1)
+    in ac-auto-default st2 dev
+
+  ac-remove-device : AudioControlState, Text -> AudioControlState
+  ac-remove-device (st) (dev-id) =
+    let filtered = ac-filter-devs (st.ac-devices) dev-id 0 (st.ac-device-count) []
+    in __record-set (__record-set st "ac-devices" filtered) "ac-device-count" (list-length filtered)
+
+  ac-filter-devs : List AudioDevice, Text, Integer, Integer, List AudioDevice -> List AudioDevice
+  ac-filter-devs (devs) (exclude) (i) (n) (acc) =
+    if i >= n then acc
+    else let dev = list-at devs i
+    in if dev.ad-id == exclude then ac-filter-devs devs exclude (i + 1) n acc
+    else ac-filter-devs devs exclude (i + 1) n (list-push acc dev)
+
+  ac-auto-default : AudioControlState, AudioDevice -> AudioControlState
+  ac-auto-default (st) (dev) = when dev.ad-kind
+    is AdkOutput -> if text-length (st.ac-default-output) == 0 then __record-set st "ac-default-output" (dev.ad-id) else st
+    is AdkInput -> if text-length (st.ac-default-input) == 0 then __record-set st "ac-default-input" (dev.ad-id) else st
+    is AdkBoth ->
+      let st2 = if text-length (st.ac-default-output) == 0 then __record-set st "ac-default-output" (dev.ad-id) else st
+      in if text-length (st2.ac-default-input) == 0 then __record-set st2 "ac-default-input" (dev.ad-id) else st2
+
+  ac-set-default-output : AudioControlState, Text -> AudioControlState
+  ac-set-default-output (st) (dev-id) = __record-set st "ac-default-output" dev-id
+
+  ac-set-default-input : AudioControlState, Text -> AudioControlState
+  ac-set-default-input (st) (dev-id) = __record-set st "ac-default-input" dev-id
+
+  ac-set-device-volume : AudioControlState, Text, Integer -> AudioControlState
+  ac-set-device-volume (st) (dev-id) (vol) =
+    let updated = ac-update-dev (st.ac-devices) dev-id "volume" vol 0 (st.ac-device-count) []
+    in __record-set st "ac-devices" updated
+
+  ac-toggle-device-mute : AudioControlState, Text -> AudioControlState
+  ac-toggle-device-mute (st) (dev-id) =
+    let updated = ac-toggle-dev-mute (st.ac-devices) dev-id 0 (st.ac-device-count) []
+    in __record-set st "ac-devices" updated
+
+  ac-update-dev : List AudioDevice, Text, Text, Integer, Integer, Integer, List AudioDevice -> List AudioDevice
+  ac-update-dev (devs) (target) (field) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let dev = list-at devs i
+    in let updated = if dev.ad-id == target then __record-set dev "ad-volume" val else dev
+    in ac-update-dev devs target field val (i + 1) n (list-push acc updated)
+
+  ac-toggle-dev-mute : List AudioDevice, Text, Integer, Integer, List AudioDevice -> List AudioDevice
+  ac-toggle-dev-mute (devs) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let dev = list-at devs i
+    in let updated = if dev.ad-id == target then __record-set dev "ad-muted" (if dev.ad-muted then False else True) else dev
+    in ac-toggle-dev-mute devs target (i + 1) n (list-push acc updated)
+
+Section: Per-App Volume
+
+  ac-register-app : AudioControlState, Text, Text -> AudioControlState
+  ac-register-app (st) (app-id) (app-name) =
+    let av = app-volume-new app-id app-name
+    in __record-set (__record-set st "ac-app-volumes" (list-push (st.ac-app-volumes) av)) "ac-app-count" (st.ac-app-count + 1)
+
+  ac-set-app-volume : AudioControlState, Text, Integer -> AudioControlState
+  ac-set-app-volume (st) (app-id) (vol) =
+    let clamped = if vol < 0 then 0 else if vol > 100 then 100 else vol
+    in let updated = ac-update-app (st.ac-app-volumes) app-id clamped 0 (st.ac-app-count) []
+    in __record-set st "ac-app-volumes" updated
+
+  ac-toggle-app-mute : AudioControlState, Text -> AudioControlState
+  ac-toggle-app-mute (st) (app-id) =
+    let updated = ac-toggle-app-m (st.ac-app-volumes) app-id 0 (st.ac-app-count) []
+    in __record-set st "ac-app-volumes" updated
+
+  ac-update-app : List AppVolume, Text, Integer, Integer, Integer, List AppVolume -> List AppVolume
+  ac-update-app (apps) (target) (vol) (i) (n) (acc) =
+    if i >= n then acc
+    else let av = list-at apps i
+    in let updated = if av.av-app-id == target then __record-set av "av-volume" vol else av
+    in ac-update-app apps target vol (i + 1) n (list-push acc updated)
+
+  ac-toggle-app-m : List AppVolume, Text, Integer, Integer, List AppVolume -> List AppVolume
+  ac-toggle-app-m (apps) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let av = list-at apps i
+    in let updated = if av.av-app-id == target then __record-set av "av-muted" (if av.av-muted then False else True) else av
+    in ac-toggle-app-m apps target (i + 1) n (list-push acc updated)
+
+Section: Effective Volume
+
+  ac-effective-volume : AudioControlState, Text -> Integer
+  ac-effective-volume (st) (app-id) =
+    if st.ac-master-muted then 0
+    else let app-vol = ac-find-app-volume st app-id
+    in st.ac-master-volume * app-vol / 100
+
+  ac-find-app-volume : AudioControlState, Text -> Integer
+  ac-find-app-volume (st) (app-id) =
+    ac-find-app-loop (st.ac-app-volumes) app-id 0 (st.ac-app-count)
+
+  ac-find-app-loop : List AppVolume, Text, Integer, Integer -> Integer
+  ac-find-app-loop (apps) (target) (i) (n) =
+    if i >= n then 100
+    else let av = list-at apps i
+    in if av.av-app-id == target then if av.av-muted then 0 else av.av-volume
+    else ac-find-app-loop apps target (i + 1) n
+
+Section: Queries
+
+  ac-output-devices : AudioControlState -> List AudioDevice
+  ac-output-devices (st) = ac-filter-kind (st.ac-devices) 0 (st.ac-device-count) True []
+
+  ac-input-devices : AudioControlState -> List AudioDevice
+  ac-input-devices (st) = ac-filter-kind (st.ac-devices) 0 (st.ac-device-count) False []
+
+  ac-filter-kind : List AudioDevice, Integer, Integer, Boolean, List AudioDevice -> List AudioDevice
+  ac-filter-kind (devs) (i) (n) (is-output) (acc) =
+    if i >= n then acc
+    else let dev = list-at devs i
+    in let matches = when dev.ad-kind
+      is AdkOutput -> is-output
+      is AdkInput -> if is-output then False else True
+      is AdkBoth -> True
+    in if matches then ac-filter-kind devs (i + 1) n is-output (list-push acc dev)
+    else ac-filter-kind devs (i + 1) n is-output acc
+
+  ac-find-device : AudioControlState, Text -> Maybe AudioDevice
+  ac-find-device (st) (dev-id) = ac-find-dev-loop (st.ac-devices) dev-id 0 (st.ac-device-count)
+
+  ac-find-dev-loop : List AudioDevice, Text, Integer, Integer -> Maybe AudioDevice
+  ac-find-dev-loop (devs) (target) (i) (n) =
+    if i >= n then None
+    else let dev = list-at devs i
+    in if dev.ad-id == target then Just dev else ac-find-dev-loop devs target (i + 1) n
+
+Section: Volume Icon
+
+  ac-volume-icon : AudioControlState -> Text
+  ac-volume-icon (st) =
+    if st.ac-master-muted then "pause"
+    else if st.ac-master-volume == 0 then "pause"
+    else if st.ac-master-volume < 33 then "play"
+    else if st.ac-master-volume < 66 then "play"
+    else "play"
+
+  ac-mic-icon : AudioControlState -> Text
+  ac-mic-icon (st) =
+    if st.ac-mic-privacy then "shield"
+    else if st.ac-mic-enabled then "bell"
+    else "pause"
+
+Section: Widget Building
+
+  ac-volume-widget : AudioControlState -> WidgetNode
+  ac-volume-widget (st) =
+    let icon = widget-label "vol-icon" (ac-volume-icon st)
+    in let slider = widget-gauge "vol-slider" (st.ac-master-volume) 100
+    in let pct = widget-label "vol-pct" (show (st.ac-master-volume) & "%")
+    in let mute-btn = widget-button "vol-mute" (if st.ac-master-muted then "Unmute" else "Mute")
+    in widget-panel "vol-control" DirRow 4 [icon, slider, pct, mute-btn]
+
+  ac-mic-widget : AudioControlState -> WidgetNode
+  ac-mic-widget (st) =
+    let icon = widget-label "mic-icon" (ac-mic-icon st)
+    in let status = widget-label "mic-status" (if ac-mic-active st then "Mic On" else "Mic Off")
+    in let toggle = widget-button "mic-toggle" (if st.ac-mic-enabled then "Disable" else "Enable")
+    in let privacy = widget-button "mic-privacy" (if st.ac-mic-privacy then "Privacy: ON" else "Privacy: OFF")
+    in widget-panel "mic-control" DirRow 4 [icon, status, toggle, privacy]
+
+  ac-mixer-widget : AudioControlState -> WidgetNode
+  ac-mixer-widget (st) =
+    let title = widget-label "mixer-title" "Volume Mixer"
+    in let master = ac-volume-widget st
+    in let mic = ac-mic-widget st
+    in let sep = widget-separator "mixer-sep"
+    in let output-title = widget-label "out-title" ("Output: " & st.ac-default-output)
+    in let input-title = widget-label "in-title" ("Input: " & st.ac-default-input)
+    in let app-rows = ac-app-volume-rows st 0 (st.ac-app-count) []
+    in let app-section = if st.ac-app-count > 0 then [widget-separator "app-sep", widget-label "app-title" "Applications"] & app-rows else []
+    in widget-panel "audio-mixer" DirColumn 4 ([title, master, mic, sep, output-title, input-title] & app-section)
+
+  ac-app-volume-rows : AudioControlState, Integer, Integer, List WidgetNode -> List WidgetNode
+  ac-app-volume-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let av = list-at (st.ac-app-volumes) i
+    in let name = widget-label ("app-name-" & av.av-app-id) (av.av-app-name)
+    in let slider = widget-gauge ("app-vol-" & av.av-app-id) (av.av-volume) 100
+    in let mute = widget-button ("app-mute-" & av.av-app-id) (if av.av-muted then "M" else "O")
+    in let row = widget-panel ("app-row-" & av.av-app-id) DirRow 4 [name, slider, mute]
+    in ac-app-volume-rows st (i + 1) n (list-push acc row)
+
+  ac-device-list-widget : AudioControlState -> WidgetNode
+  ac-device-list-widget (st) =
+    let title = widget-label "dev-title" "Audio Devices"
+    in let rows = ac-device-rows st 0 (st.ac-device-count) []
+    in widget-panel "audio-devices" DirColumn 2 ([title] & rows)
+
+  ac-device-rows : AudioControlState, Integer, Integer, List WidgetNode -> List WidgetNode
+  ac-device-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let dev = list-at (st.ac-devices) i
+    in let name = widget-label ("adev-name-" & dev.ad-id) (dev.ad-name)
+    in let kind = widget-label ("adev-kind-" & dev.ad-id) (audio-device-kind-label (dev.ad-kind))
+    in let status = widget-label ("adev-status-" & dev.ad-id) (if dev.ad-connected then "Connected" else "Disconnected")
+    in let vol = widget-gauge ("adev-vol-" & dev.ad-id) (dev.ad-volume) 100
+    in let is-default = if dev.ad-default then widget-label ("adev-def-" & dev.ad-id) "*" else widget-label ("adev-def-" & dev.ad-id) ""
+    in let row = widget-panel ("adev-row-" & dev.ad-id) DirRow 4 [is-default, name, kind, status, vol]
+    in ac-device-rows st (i + 1) n (list-push acc row)
+
+Section: Formatting
+
+  format-audio-control : AudioControlState -> Text
+  format-audio-control (st) =
+    "vol=" & show (st.ac-master-volume) & "%" & (if st.ac-master-muted then " [MUTED]" else "")
+    & " mic=" & (if ac-mic-active st then "on" else "off")
+    & " devices=" & show (st.ac-device-count)
+    & " apps=" & show (st.ac-app-count)
+
+  format-audio-device : AudioDevice -> Text
+  format-audio-device (dev) =
+    dev.ad-name & " (" & audio-device-kind-label (dev.ad-kind) & ") "
+    & show (dev.ad-volume) & "%" & (if dev.ad-muted then " [MUTED]" else "")
+    & " " & show (dev.ad-sample-rate) & "Hz " & show (dev.ad-channels) & "ch " & show (dev.ad-bit-depth) & "bit"
+
+Page 1

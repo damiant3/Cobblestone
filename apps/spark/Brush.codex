@@ -15,10 +15,10 @@ Section: Types
   BrushSettings = record {
     bs-size : Integer,
     bs-color : Integer,
-    bs-opacity : Integer,
-    bs-hardness : Integer,
+    bs-opacity : Real,
+    bs-hardness : Real,
     bs-shape : BrushShape,
-    bs-spacing : Integer
+    bs-spacing : Real
   }
 
 Section: Construction
@@ -27,20 +27,20 @@ Section: Construction
   brush-default = BrushSettings {
     bs-size = 8,
     bs-color = 0,
-    bs-opacity = 1000,
-    bs-hardness = 1000,
+    bs-opacity = 1.0,
+    bs-hardness = 1.0,
     bs-shape = BrushRound,
-    bs-spacing = 250
+    bs-spacing = 0.25
   }
 
-  brush-new : Integer, Integer, Integer -> BrushSettings
+  brush-new : Integer, Integer, Real -> BrushSettings
   brush-new (size) (color) (opacity) = BrushSettings {
     bs-size = size,
     bs-color = color,
     bs-opacity = opacity,
-    bs-hardness = 1000,
+    bs-hardness = 1.0,
     bs-shape = BrushRound,
-    bs-spacing = 250
+    bs-spacing = 0.25
   }
 
   brush-set-size : BrushSettings, Integer -> BrushSettings
@@ -49,7 +49,7 @@ Section: Construction
   brush-set-color : BrushSettings, Integer -> BrushSettings
   brush-set-color (b) (c) = __record-set b "bs-color" c
 
-  brush-set-hardness : BrushSettings, Integer -> BrushSettings
+  brush-set-hardness : BrushSettings, Real -> BrushSettings
   brush-set-hardness (b) (h) = __record-set b "bs-hardness" h
 
 Section: Stamp
@@ -73,14 +73,14 @@ Section: Stamp
     else let dist-sq = dx * dx + dy * dy
     in let r-sq = r * r
     in let cv2 = if dist-sq <= r-sq then
-        let falloff = if br.bs-hardness >= 1000 then br.bs-opacity
-          else let edge = brush-isqrt (dist-sq * 1000) * 1000 / (if r == 0 then 1 else r)
-          in let soft = 1000 - (edge - br.bs-hardness) * 1000 / (1000 - br.bs-hardness + 1)
-          in let clamped = if soft > br.bs-opacity then br.bs-opacity else if soft < 0 then 0 else soft
+        let falloff = if br.bs-hardness >= 1.0 then br.bs-opacity
+          else let edge = real-sqrt (real-from-int dist-sq) / real-from-int (if r == 0 then 1 else r)
+          in let soft = 1.0 - (edge - br.bs-hardness) / (1.0 - br.bs-hardness + 0.001)
+          in let clamped = if soft > br.bs-opacity then br.bs-opacity else if soft < 0.0 then 0.0 else soft
           in clamped
         in let px = cx + dx
         in let py = cy + dy
-        in if falloff > 0 then brush-apply-pixel cv br px py falloff else cv
+        in if falloff > 0.0 then brush-apply-pixel cv br px py falloff else cv
       else cv
     in brush-stamp-round-row cv2 br cx cy r (dx + 1) dy
 
@@ -98,7 +98,7 @@ Section: Stamp
 
 Section: Pixel Application
 
-  brush-apply-pixel : Canvas2D, BrushSettings, Integer, Integer, Integer -> Canvas2D
+  brush-apply-pixel : Canvas2D, BrushSettings, Integer, Integer, Real -> Canvas2D
   brush-apply-pixel (cv) (br) (x) (y) (alpha) =
     if x < 0 then cv
     else if y < 0 then cv
@@ -108,7 +108,7 @@ Section: Pixel Application
     in let blended = brush-lerp-color existing (br.bs-color) alpha
     in canvas-set-pixel cv x y blended
 
-  brush-lerp-color : Integer, Integer, Integer -> Integer
+  brush-lerp-color : Integer, Integer, Real -> Integer
   brush-lerp-color (dst) (src) (alpha) =
     let dr = dst / 65536
     in let dg = dst / 256 - dr * 256
@@ -116,9 +116,9 @@ Section: Pixel Application
     in let sr = src / 65536
     in let sg = src / 256 - sr * 256
     in let sb = src - src / 256 * 256
-    in let fr = dr + (sr - dr) * alpha / 1000
-    in let fg = dg + (sg - dg) * alpha / 1000
-    in let fb2 = db + (sb - db) * alpha / 1000
+    in let fr = dr + real-to-int (real-from-int (sr - dr) * alpha)
+    in let fg = dg + real-to-int (real-from-int (sg - dg) * alpha)
+    in let fb2 = db + real-to-int (real-from-int (sb - db) * alpha)
     in cv-clamp fr 0 255 * 65536 + cv-clamp fg 0 255 * 256 + cv-clamp fb2 0 255
 
 Section: Stroke
@@ -127,18 +127,18 @@ Section: Stroke
   brush-stroke (cv) (br) (x0) (y0) (x1) (y1) =
     let dx = x1 - x0
     in let dy = y1 - y0
-    in let dist = brush-isqrt ((dx * dx + dy * dy) * 1000)
-    in let step = if br.bs-spacing <= 0 then 1 else br.bs-size * br.bs-spacing / 1000
-    in let actual-step = if step < 1 then 1 else step
-    in let steps = if actual-step == 0 then 1 else dist / actual-step + 1
+    in let dist = real-sqrt (real-from-int (dx * dx + dy * dy))
+    in let step = if br.bs-spacing <= 0.0 then 1.0 else real-from-int br.bs-size * br.bs-spacing
+    in let actual-step = if step < 1.0 then 1.0 else step
+    in let steps = real-to-int (dist / actual-step) + 1
     in brush-stroke-loop cv br x0 y0 dx dy steps 0 dist
 
-  brush-stroke-loop : Canvas2D, BrushSettings, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Canvas2D
+  brush-stroke-loop : Canvas2D, BrushSettings, Integer, Integer, Integer, Integer, Integer, Integer, Real -> Canvas2D
   brush-stroke-loop (cv) (br) (x0) (y0) (dx) (dy) (steps) (i) (dist) =
     if i >= steps then cv
-    else let t = if steps <= 1 then 0 else i * 1000 / (steps - 1)
-    in let px = x0 + dx * t / 1000
-    in let py = y0 + dy * t / 1000
+    else let t = if steps <= 1 then 0.0 else real-from-int i / real-from-int (steps - 1)
+    in let px = x0 + real-to-int (real-from-int dx * t)
+    in let py = y0 + real-to-int (real-from-int dy * t)
     in let cv2 = brush-stamp cv br px py
     in brush-stroke-loop cv2 br x0 y0 dx dy steps (i + 1) dist
 

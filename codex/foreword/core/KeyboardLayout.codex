@@ -1,0 +1,1190 @@
+Chapter: KeyboardLayout
+
+ Keyboard layout tables for international input. Each layout maps PS/2
+ scancode set 1 (XT, 84 keys) to CCE code points for unshifted and
+ shifted states. Dead keys for accented characters use a two-stroke
+ sequence: dead key sets a pending accent, next letter combines.
+
+ Layouts cover the 27 EU languages from CCE Tier 1 plus US English.
+ Each layout is a pair of 84-byte tables (base + shifted) allocated
+ via alloc-bytes and populated with poke-byte.
+
+ We say:
+
+Section: Layout Record
+  KbLayout = record {
+    kbl-name : Text,
+    kbl-base : Integer,
+    kbl-shift : Integer,
+    kbl-dead1 : Integer,
+    kbl-dead2 : Integer
+  }
+
+  kbl-num-keys : Integer = 84
+  kbl-table-size : Integer = 168
+
+  kbl-write : Integer, Integer, Integer -> Integer
+  kbl-write (tbl) (sc) (cce) =
+    let off = sc * 2
+    in let lo = poke-byte tbl off (bit-and cce 255)
+    in poke-byte tbl (off + 1) (bit-and (bit-shru cce 8) 255)
+
+  kbl-lookup : Integer, Integer -> Integer
+  kbl-lookup (tbl) (sc) =
+    if sc >= kbl-num-keys then 0
+    else let off = sc * 2
+    in let lo = peek-byte tbl off
+    in let hi = peek-byte tbl (off + 1)
+    in hi * 256 + lo
+
+Section: Dead Key Support
+  DeadState = record {
+    ds-pending : Integer
+  }
+
+  dead-none : DeadState
+  dead-none = DeadState { ds-pending = 0 }
+
+  dead-combine : DeadState, Integer -> Integer
+  dead-combine (ds) (base-cce) =
+    let accent = ds.ds-pending
+    in if accent == 0 then base-cce
+    else dead-apply accent base-cce
+
+  dead-apply : Integer, Integer -> Integer
+  dead-apply (accent) (base) =
+    if accent == 1 then dead-acute base
+    else if accent == 2 then dead-grave base
+    else if accent == 3 then dead-circumflex base
+    else if accent == 4 then dead-diaeresis base
+    else if accent == 5 then dead-tilde base
+    else if accent == 6 then dead-cedilla base
+    else base
+
+  dead-acute : Integer -> Integer
+  dead-acute (b) =
+    if b == 13 then from-unicode 233
+    else if b == 17 then from-unicode 237
+    else if b == 16 then from-unicode 243
+    else if b == 15 then from-unicode 225
+    else if b == 25 then from-unicode 250
+    else if b == 39 then from-unicode 201
+    else if b == 43 then from-unicode 205
+    else if b == 42 then from-unicode 211
+    else if b == 41 then from-unicode 193
+    else if b == 51 then from-unicode 218
+    else b
+
+  dead-grave : Integer -> Integer
+  dead-grave (b) =
+    if b == 13 then from-unicode 232
+    else if b == 15 then from-unicode 224
+    else if b == 16 then from-unicode 242
+    else if b == 25 then from-unicode 249
+    else if b == 39 then from-unicode 200
+    else if b == 41 then from-unicode 192
+    else if b == 42 then from-unicode 210
+    else if b == 51 then from-unicode 217
+    else b
+
+  dead-circumflex : Integer -> Integer
+  dead-circumflex (b) =
+    if b == 13 then from-unicode 234
+    else if b == 15 then from-unicode 226
+    else if b == 17 then from-unicode 238
+    else if b == 16 then from-unicode 244
+    else if b == 25 then from-unicode 251
+    else if b == 39 then from-unicode 202
+    else if b == 41 then from-unicode 194
+    else if b == 43 then from-unicode 206
+    else if b == 42 then from-unicode 212
+    else if b == 51 then from-unicode 219
+    else b
+
+  dead-diaeresis : Integer -> Integer
+  dead-diaeresis (b) =
+    if b == 13 then from-unicode 235
+    else if b == 15 then from-unicode 228
+    else if b == 17 then from-unicode 239
+    else if b == 16 then from-unicode 246
+    else if b == 25 then from-unicode 252
+    else if b == 39 then from-unicode 203
+    else if b == 41 then from-unicode 196
+    else if b == 43 then from-unicode 207
+    else if b == 42 then from-unicode 214
+    else if b == 51 then from-unicode 220
+    else b
+
+  dead-tilde : Integer -> Integer
+  dead-tilde (b) =
+    if b == 18 then from-unicode 241
+    else if b == 44 then from-unicode 209
+    else if b == 15 then from-unicode 227
+    else if b == 16 then from-unicode 245
+    else if b == 41 then from-unicode 195
+    else if b == 42 then from-unicode 213
+    else b
+
+  dead-cedilla : Integer -> Integer
+  dead-cedilla (b) =
+    if b == 24 then from-unicode 231
+    else if b == 50 then from-unicode 199
+    else b
+
+Section: US English (QWERTY)
+  kbl-us : KbLayout
+  kbl-us =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-us-base base
+    in let s = kbl-build-us-shift shift
+    in KbLayout { kbl-name = "US", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-us-base : Integer -> Integer
+  kbl-build-us-base (t) =
+    let w0 = kbl-write t 2 (from-unicode 49)
+    in let w1 = kbl-write t 3 (from-unicode 50)
+    in let w2 = kbl-write t 4 (from-unicode 51)
+    in let w3 = kbl-write t 5 (from-unicode 52)
+    in let w4 = kbl-write t 6 (from-unicode 53)
+    in let w5 = kbl-write t 7 (from-unicode 54)
+    in let w6 = kbl-write t 8 (from-unicode 55)
+    in let w7 = kbl-write t 9 (from-unicode 56)
+    in let w8 = kbl-write t 10 (from-unicode 57)
+    in let w9 = kbl-write t 11 (from-unicode 48)
+    in let w10 = kbl-write t 12 (from-unicode 45)
+    in let w11 = kbl-write t 13 (from-unicode 61)
+    in let w12 = kbl-write t 28 1
+    in let w13 = kbl-write t 57 2
+    in let w14 = kbl-write t 16 (from-unicode 113)
+    in let w15 = kbl-write t 17 (from-unicode 119)
+    in let w16 = kbl-write t 18 (from-unicode 101)
+    in let w17 = kbl-write t 19 (from-unicode 114)
+    in let w18 = kbl-write t 20 (from-unicode 116)
+    in let w19 = kbl-write t 21 (from-unicode 121)
+    in let w20 = kbl-write t 22 (from-unicode 117)
+    in let w21 = kbl-write t 23 (from-unicode 105)
+    in let w22 = kbl-write t 24 (from-unicode 111)
+    in let w23 = kbl-write t 25 (from-unicode 112)
+    in let w24 = kbl-write t 26 (from-unicode 91)
+    in let w25 = kbl-write t 27 (from-unicode 93)
+    in let w26 = kbl-write t 30 (from-unicode 97)
+    in let w27 = kbl-write t 31 (from-unicode 115)
+    in let w28 = kbl-write t 32 (from-unicode 100)
+    in let w29 = kbl-write t 33 (from-unicode 102)
+    in let w30 = kbl-write t 34 (from-unicode 103)
+    in let w31 = kbl-write t 35 (from-unicode 104)
+    in let w32 = kbl-write t 36 (from-unicode 106)
+    in let w33 = kbl-write t 37 (from-unicode 107)
+    in let w34 = kbl-write t 38 (from-unicode 108)
+    in let w35 = kbl-write t 39 (from-unicode 59)
+    in let w36 = kbl-write t 40 (from-unicode 39)
+    in let w37 = kbl-write t 41 (from-unicode 96)
+    in let w38 = kbl-write t 43 (from-unicode 92)
+    in let w39 = kbl-write t 44 (from-unicode 122)
+    in let w40 = kbl-write t 45 (from-unicode 120)
+    in let w41 = kbl-write t 46 (from-unicode 99)
+    in let w42 = kbl-write t 47 (from-unicode 118)
+    in let w43 = kbl-write t 48 (from-unicode 98)
+    in let w44 = kbl-write t 49 (from-unicode 110)
+    in let w45 = kbl-write t 50 (from-unicode 109)
+    in let w46 = kbl-write t 51 (from-unicode 44)
+    in let w47 = kbl-write t 52 (from-unicode 46)
+    in let w48 = kbl-write t 53 (from-unicode 47)
+    in t
+
+  kbl-build-us-shift : Integer -> Integer
+  kbl-build-us-shift (t) =
+    let w0 = kbl-write t 2 (from-unicode 33)
+    in let w1 = kbl-write t 3 (from-unicode 64)
+    in let w2 = kbl-write t 4 (from-unicode 35)
+    in let w3 = kbl-write t 5 (from-unicode 36)
+    in let w4 = kbl-write t 6 (from-unicode 37)
+    in let w5 = kbl-write t 7 (from-unicode 94)
+    in let w6 = kbl-write t 8 (from-unicode 38)
+    in let w7 = kbl-write t 9 (from-unicode 42)
+    in let w8 = kbl-write t 10 (from-unicode 40)
+    in let w9 = kbl-write t 11 (from-unicode 41)
+    in let w10 = kbl-write t 12 (from-unicode 95)
+    in let w11 = kbl-write t 13 (from-unicode 43)
+    in let w12 = kbl-write t 26 (from-unicode 123)
+    in let w13 = kbl-write t 27 (from-unicode 125)
+    in let w14 = kbl-write t 39 (from-unicode 58)
+    in let w15 = kbl-write t 40 (from-unicode 34)
+    in let w16 = kbl-write t 41 (from-unicode 126)
+    in let w17 = kbl-write t 43 (from-unicode 124)
+    in let w18 = kbl-write t 51 (from-unicode 60)
+    in let w19 = kbl-write t 52 (from-unicode 62)
+    in let w20 = kbl-write t 53 (from-unicode 63)
+    in t
+
+Section: German (QWERTZ)
+  kbl-de : KbLayout
+  kbl-de =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-de-base base
+    in let s = kbl-build-de-shift shift
+    in KbLayout { kbl-name = "DE", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-de-base : Integer -> Integer
+  kbl-build-de-base (t) =
+    let w0 = kbl-write t 2 (from-unicode 49)
+    in let w1 = kbl-write t 3 (from-unicode 50)
+    in let w2 = kbl-write t 4 (from-unicode 51)
+    in let w3 = kbl-write t 5 (from-unicode 52)
+    in let w4 = kbl-write t 6 (from-unicode 53)
+    in let w5 = kbl-write t 7 (from-unicode 54)
+    in let w6 = kbl-write t 8 (from-unicode 55)
+    in let w7 = kbl-write t 9 (from-unicode 56)
+    in let w8 = kbl-write t 10 (from-unicode 57)
+    in let w9 = kbl-write t 11 (from-unicode 48)
+    in let w10 = kbl-write t 12 (from-unicode 223)
+    in let w11 = kbl-write t 28 1
+    in let w12 = kbl-write t 57 2
+    in let w13 = kbl-write t 16 (from-unicode 113)
+    in let w14 = kbl-write t 17 (from-unicode 119)
+    in let w15 = kbl-write t 18 (from-unicode 101)
+    in let w16 = kbl-write t 19 (from-unicode 114)
+    in let w17 = kbl-write t 20 (from-unicode 116)
+    in let w18 = kbl-write t 21 (from-unicode 122)
+    in let w19 = kbl-write t 22 (from-unicode 117)
+    in let w20 = kbl-write t 23 (from-unicode 105)
+    in let w21 = kbl-write t 24 (from-unicode 111)
+    in let w22 = kbl-write t 25 (from-unicode 112)
+    in let w23 = kbl-write t 26 (from-unicode 252)
+    in let w24 = kbl-write t 27 (from-unicode 43)
+    in let w25 = kbl-write t 30 (from-unicode 97)
+    in let w26 = kbl-write t 31 (from-unicode 115)
+    in let w27 = kbl-write t 32 (from-unicode 100)
+    in let w28 = kbl-write t 33 (from-unicode 102)
+    in let w29 = kbl-write t 34 (from-unicode 103)
+    in let w30 = kbl-write t 35 (from-unicode 104)
+    in let w31 = kbl-write t 36 (from-unicode 106)
+    in let w32 = kbl-write t 37 (from-unicode 107)
+    in let w33 = kbl-write t 38 (from-unicode 108)
+    in let w34 = kbl-write t 39 (from-unicode 246)
+    in let w35 = kbl-write t 40 (from-unicode 228)
+    in let w36 = kbl-write t 43 (from-unicode 35)
+    in let w37 = kbl-write t 44 (from-unicode 121)
+    in let w38 = kbl-write t 45 (from-unicode 120)
+    in let w39 = kbl-write t 46 (from-unicode 99)
+    in let w40 = kbl-write t 47 (from-unicode 118)
+    in let w41 = kbl-write t 48 (from-unicode 98)
+    in let w42 = kbl-write t 49 (from-unicode 110)
+    in let w43 = kbl-write t 50 (from-unicode 109)
+    in let w44 = kbl-write t 51 (from-unicode 44)
+    in let w45 = kbl-write t 52 (from-unicode 46)
+    in let w46 = kbl-write t 53 (from-unicode 45)
+    in t
+
+  kbl-build-de-shift : Integer -> Integer
+  kbl-build-de-shift (t) =
+    let w0 = kbl-write t 2 (from-unicode 33)
+    in let w1 = kbl-write t 3 (from-unicode 34)
+    in let w2 = kbl-write t 4 (from-unicode 167)
+    in let w3 = kbl-write t 5 (from-unicode 36)
+    in let w4 = kbl-write t 6 (from-unicode 37)
+    in let w5 = kbl-write t 7 (from-unicode 38)
+    in let w6 = kbl-write t 8 (from-unicode 47)
+    in let w7 = kbl-write t 9 (from-unicode 40)
+    in let w8 = kbl-write t 10 (from-unicode 41)
+    in let w9 = kbl-write t 11 (from-unicode 61)
+    in let w10 = kbl-write t 12 (from-unicode 63)
+    in let w11 = kbl-write t 26 (from-unicode 220)
+    in let w12 = kbl-write t 27 (from-unicode 42)
+    in let w13 = kbl-write t 39 (from-unicode 214)
+    in let w14 = kbl-write t 40 (from-unicode 196)
+    in let w15 = kbl-write t 43 (from-unicode 39)
+    in let w16 = kbl-write t 51 (from-unicode 59)
+    in let w17 = kbl-write t 52 (from-unicode 58)
+    in let w18 = kbl-write t 53 (from-unicode 95)
+    in t
+
+Section: French (AZERTY)
+  kbl-fr : KbLayout
+  kbl-fr =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-fr-base base
+    in let s = kbl-build-fr-shift shift
+    in KbLayout { kbl-name = "FR", kbl-base = base, kbl-shift = shift, kbl-dead1 = 13, kbl-dead2 = 26 }
+
+  kbl-build-fr-base : Integer -> Integer
+  kbl-build-fr-base (t) =
+    let w0 = kbl-write t 2 (from-unicode 38)
+    in let w1 = kbl-write t 3 (from-unicode 233)
+    in let w2 = kbl-write t 4 (from-unicode 34)
+    in let w3 = kbl-write t 5 (from-unicode 39)
+    in let w4 = kbl-write t 6 (from-unicode 40)
+    in let w5 = kbl-write t 7 (from-unicode 45)
+    in let w6 = kbl-write t 8 (from-unicode 232)
+    in let w7 = kbl-write t 9 (from-unicode 95)
+    in let w8 = kbl-write t 10 (from-unicode 231)
+    in let w9 = kbl-write t 11 (from-unicode 224)
+    in let w10 = kbl-write t 12 (from-unicode 41)
+    in let w11 = kbl-write t 13 (from-unicode 61)
+    in let w12 = kbl-write t 28 1
+    in let w13 = kbl-write t 57 2
+    in let w14 = kbl-write t 16 (from-unicode 97)
+    in let w15 = kbl-write t 17 (from-unicode 122)
+    in let w16 = kbl-write t 18 (from-unicode 101)
+    in let w17 = kbl-write t 19 (from-unicode 114)
+    in let w18 = kbl-write t 20 (from-unicode 116)
+    in let w19 = kbl-write t 21 (from-unicode 121)
+    in let w20 = kbl-write t 22 (from-unicode 117)
+    in let w21 = kbl-write t 23 (from-unicode 105)
+    in let w22 = kbl-write t 24 (from-unicode 111)
+    in let w23 = kbl-write t 25 (from-unicode 112)
+    in let w24 = kbl-write t 30 (from-unicode 113)
+    in let w25 = kbl-write t 31 (from-unicode 115)
+    in let w26 = kbl-write t 32 (from-unicode 100)
+    in let w27 = kbl-write t 33 (from-unicode 102)
+    in let w28 = kbl-write t 34 (from-unicode 103)
+    in let w29 = kbl-write t 35 (from-unicode 104)
+    in let w30 = kbl-write t 36 (from-unicode 106)
+    in let w31 = kbl-write t 37 (from-unicode 107)
+    in let w32 = kbl-write t 38 (from-unicode 108)
+    in let w33 = kbl-write t 39 (from-unicode 109)
+    in let w34 = kbl-write t 40 (from-unicode 249)
+    in let w35 = kbl-write t 43 (from-unicode 42)
+    in let w36 = kbl-write t 44 (from-unicode 119)
+    in let w37 = kbl-write t 45 (from-unicode 120)
+    in let w38 = kbl-write t 46 (from-unicode 99)
+    in let w39 = kbl-write t 47 (from-unicode 118)
+    in let w40 = kbl-write t 48 (from-unicode 98)
+    in let w41 = kbl-write t 49 (from-unicode 110)
+    in let w42 = kbl-write t 51 (from-unicode 44)
+    in let w43 = kbl-write t 52 (from-unicode 59)
+    in let w44 = kbl-write t 53 (from-unicode 58)
+    in t
+
+  kbl-build-fr-shift : Integer -> Integer
+  kbl-build-fr-shift (t) =
+    let w0 = kbl-write t 2 (from-unicode 49)
+    in let w1 = kbl-write t 3 (from-unicode 50)
+    in let w2 = kbl-write t 4 (from-unicode 51)
+    in let w3 = kbl-write t 5 (from-unicode 52)
+    in let w4 = kbl-write t 6 (from-unicode 53)
+    in let w5 = kbl-write t 7 (from-unicode 54)
+    in let w6 = kbl-write t 8 (from-unicode 55)
+    in let w7 = kbl-write t 9 (from-unicode 56)
+    in let w8 = kbl-write t 10 (from-unicode 57)
+    in let w9 = kbl-write t 11 (from-unicode 48)
+    in let w10 = kbl-write t 12 (from-unicode 176)
+    in let w11 = kbl-write t 13 (from-unicode 43)
+    in let w12 = kbl-write t 39 (from-unicode 77)
+    in let w13 = kbl-write t 40 (from-unicode 37)
+    in let w14 = kbl-write t 43 (from-unicode 181)
+    in let w15 = kbl-write t 51 (from-unicode 63)
+    in let w16 = kbl-write t 52 (from-unicode 46)
+    in let w17 = kbl-write t 53 (from-unicode 47)
+    in t
+
+Section: Spanish
+  kbl-es : KbLayout
+  kbl-es =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-es-base base
+    in let s = kbl-build-es-shift shift
+    in KbLayout { kbl-name = "ES", kbl-base = base, kbl-shift = shift, kbl-dead1 = 26, kbl-dead2 = 0 }
+
+  kbl-build-es-base : Integer -> Integer
+  kbl-build-es-base (t) =
+    let w0 = kbl-write t 2 (from-unicode 49)
+    in let w1 = kbl-write t 3 (from-unicode 50)
+    in let w2 = kbl-write t 4 (from-unicode 51)
+    in let w3 = kbl-write t 5 (from-unicode 52)
+    in let w4 = kbl-write t 6 (from-unicode 53)
+    in let w5 = kbl-write t 7 (from-unicode 54)
+    in let w6 = kbl-write t 8 (from-unicode 55)
+    in let w7 = kbl-write t 9 (from-unicode 56)
+    in let w8 = kbl-write t 10 (from-unicode 57)
+    in let w9 = kbl-write t 11 (from-unicode 48)
+    in let w10 = kbl-write t 12 (from-unicode 39)
+    in let w11 = kbl-write t 13 (from-unicode 161)
+    in let w12 = kbl-write t 28 1
+    in let w13 = kbl-write t 57 2
+    in let w14 = kbl-write t 16 (from-unicode 113)
+    in let w15 = kbl-write t 17 (from-unicode 119)
+    in let w16 = kbl-write t 18 (from-unicode 101)
+    in let w17 = kbl-write t 19 (from-unicode 114)
+    in let w18 = kbl-write t 20 (from-unicode 116)
+    in let w19 = kbl-write t 21 (from-unicode 121)
+    in let w20 = kbl-write t 22 (from-unicode 117)
+    in let w21 = kbl-write t 23 (from-unicode 105)
+    in let w22 = kbl-write t 24 (from-unicode 111)
+    in let w23 = kbl-write t 25 (from-unicode 112)
+    in let w24 = kbl-write t 30 (from-unicode 97)
+    in let w25 = kbl-write t 31 (from-unicode 115)
+    in let w26 = kbl-write t 32 (from-unicode 100)
+    in let w27 = kbl-write t 33 (from-unicode 102)
+    in let w28 = kbl-write t 34 (from-unicode 103)
+    in let w29 = kbl-write t 35 (from-unicode 104)
+    in let w30 = kbl-write t 36 (from-unicode 106)
+    in let w31 = kbl-write t 37 (from-unicode 107)
+    in let w32 = kbl-write t 38 (from-unicode 108)
+    in let w33 = kbl-write t 39 (from-unicode 241)
+    in let w34 = kbl-write t 44 (from-unicode 122)
+    in let w35 = kbl-write t 45 (from-unicode 120)
+    in let w36 = kbl-write t 46 (from-unicode 99)
+    in let w37 = kbl-write t 47 (from-unicode 118)
+    in let w38 = kbl-write t 48 (from-unicode 98)
+    in let w39 = kbl-write t 49 (from-unicode 110)
+    in let w40 = kbl-write t 50 (from-unicode 109)
+    in let w41 = kbl-write t 51 (from-unicode 44)
+    in let w42 = kbl-write t 52 (from-unicode 46)
+    in let w43 = kbl-write t 53 (from-unicode 45)
+    in t
+
+  kbl-build-es-shift : Integer -> Integer
+  kbl-build-es-shift (t) =
+    let w0 = kbl-write t 2 (from-unicode 33)
+    in let w1 = kbl-write t 3 (from-unicode 34)
+    in let w2 = kbl-write t 4 (from-unicode 183)
+    in let w3 = kbl-write t 5 (from-unicode 36)
+    in let w4 = kbl-write t 6 (from-unicode 37)
+    in let w5 = kbl-write t 7 (from-unicode 38)
+    in let w6 = kbl-write t 8 (from-unicode 47)
+    in let w7 = kbl-write t 9 (from-unicode 40)
+    in let w8 = kbl-write t 10 (from-unicode 41)
+    in let w9 = kbl-write t 11 (from-unicode 61)
+    in let w10 = kbl-write t 12 (from-unicode 63)
+    in let w11 = kbl-write t 13 (from-unicode 191)
+    in let w12 = kbl-write t 39 (from-unicode 209)
+    in let w13 = kbl-write t 51 (from-unicode 59)
+    in let w14 = kbl-write t 52 (from-unicode 58)
+    in let w15 = kbl-write t 53 (from-unicode 95)
+    in t
+
+Section: UK English
+  kbl-uk : KbLayout
+  kbl-uk =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-uk-base base
+    in let s = kbl-build-uk-shift shift
+    in KbLayout { kbl-name = "UK", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-uk-base : Integer -> Integer
+  kbl-build-uk-base (t) =
+    let w0 = kbl-build-us-base t
+    in let w1 = kbl-write t 41 (from-unicode 96)
+    in let w2 = kbl-write t 43 (from-unicode 35)
+    in t
+
+  kbl-build-uk-shift : Integer -> Integer
+  kbl-build-uk-shift (t) =
+    let w0 = kbl-build-us-shift t
+    in let w1 = kbl-write t 3 (from-unicode 34)
+    in let w2 = kbl-write t 4 (from-unicode 163)
+    in let w3 = kbl-write t 41 (from-unicode 172)
+    in let w4 = kbl-write t 40 (from-unicode 64)
+    in let w5 = kbl-write t 43 (from-unicode 126)
+    in t
+
+Section: Portuguese
+  kbl-pt : KbLayout
+  kbl-pt =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-pt-base base
+    in let s = kbl-build-pt-shift shift
+    in KbLayout { kbl-name = "PT", kbl-base = base, kbl-shift = shift, kbl-dead1 = 26, kbl-dead2 = 27 }
+
+  kbl-build-pt-base : Integer -> Integer
+  kbl-build-pt-base (t) =
+    let w0 = kbl-write t 2 (from-unicode 49)
+    in let w1 = kbl-write t 3 (from-unicode 50)
+    in let w2 = kbl-write t 4 (from-unicode 51)
+    in let w3 = kbl-write t 5 (from-unicode 52)
+    in let w4 = kbl-write t 6 (from-unicode 53)
+    in let w5 = kbl-write t 7 (from-unicode 54)
+    in let w6 = kbl-write t 8 (from-unicode 55)
+    in let w7 = kbl-write t 9 (from-unicode 56)
+    in let w8 = kbl-write t 10 (from-unicode 57)
+    in let w9 = kbl-write t 11 (from-unicode 48)
+    in let w10 = kbl-write t 12 (from-unicode 39)
+    in let w11 = kbl-write t 28 1
+    in let w12 = kbl-write t 57 2
+    in let w13 = kbl-write t 16 (from-unicode 113)
+    in let w14 = kbl-write t 17 (from-unicode 119)
+    in let w15 = kbl-write t 18 (from-unicode 101)
+    in let w16 = kbl-write t 19 (from-unicode 114)
+    in let w17 = kbl-write t 20 (from-unicode 116)
+    in let w18 = kbl-write t 21 (from-unicode 121)
+    in let w19 = kbl-write t 22 (from-unicode 117)
+    in let w20 = kbl-write t 23 (from-unicode 105)
+    in let w21 = kbl-write t 24 (from-unicode 111)
+    in let w22 = kbl-write t 25 (from-unicode 112)
+    in let w23 = kbl-write t 26 (from-unicode 43)
+    in let w24 = kbl-write t 30 (from-unicode 97)
+    in let w25 = kbl-write t 31 (from-unicode 115)
+    in let w26 = kbl-write t 32 (from-unicode 100)
+    in let w27 = kbl-write t 33 (from-unicode 102)
+    in let w28 = kbl-write t 34 (from-unicode 103)
+    in let w29 = kbl-write t 35 (from-unicode 104)
+    in let w30 = kbl-write t 36 (from-unicode 106)
+    in let w31 = kbl-write t 37 (from-unicode 107)
+    in let w32 = kbl-write t 38 (from-unicode 108)
+    in let w33 = kbl-write t 39 (from-unicode 231)
+    in let w34 = kbl-write t 43 (from-unicode 126)
+    in let w35 = kbl-write t 44 (from-unicode 122)
+    in let w36 = kbl-write t 45 (from-unicode 120)
+    in let w37 = kbl-write t 46 (from-unicode 99)
+    in let w38 = kbl-write t 47 (from-unicode 118)
+    in let w39 = kbl-write t 48 (from-unicode 98)
+    in let w40 = kbl-write t 49 (from-unicode 110)
+    in let w41 = kbl-write t 50 (from-unicode 109)
+    in let w42 = kbl-write t 51 (from-unicode 44)
+    in let w43 = kbl-write t 52 (from-unicode 46)
+    in let w44 = kbl-write t 53 (from-unicode 45)
+    in t
+
+  kbl-build-pt-shift : Integer -> Integer
+  kbl-build-pt-shift (t) =
+    let w0 = kbl-write t 2 (from-unicode 33)
+    in let w1 = kbl-write t 3 (from-unicode 34)
+    in let w2 = kbl-write t 4 (from-unicode 35)
+    in let w3 = kbl-write t 5 (from-unicode 36)
+    in let w4 = kbl-write t 6 (from-unicode 37)
+    in let w5 = kbl-write t 7 (from-unicode 38)
+    in let w6 = kbl-write t 8 (from-unicode 47)
+    in let w7 = kbl-write t 9 (from-unicode 40)
+    in let w8 = kbl-write t 10 (from-unicode 41)
+    in let w9 = kbl-write t 11 (from-unicode 61)
+    in let w10 = kbl-write t 12 (from-unicode 63)
+    in let w11 = kbl-write t 26 (from-unicode 42)
+    in let w12 = kbl-write t 39 (from-unicode 199)
+    in let w13 = kbl-write t 43 (from-unicode 94)
+    in let w14 = kbl-write t 51 (from-unicode 59)
+    in let w15 = kbl-write t 52 (from-unicode 58)
+    in let w16 = kbl-write t 53 (from-unicode 95)
+    in t
+
+Section: Italian
+  kbl-it : KbLayout
+  kbl-it =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-it-base base
+    in let s = kbl-build-it-shift shift
+    in KbLayout { kbl-name = "IT", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-it-base : Integer -> Integer
+  kbl-build-it-base (t) =
+    let w0 = kbl-build-us-base t
+    in let w1 = kbl-write t 13 (from-unicode 236)
+    in let w2 = kbl-write t 26 (from-unicode 232)
+    in let w3 = kbl-write t 27 (from-unicode 43)
+    in let w4 = kbl-write t 39 (from-unicode 242)
+    in let w5 = kbl-write t 40 (from-unicode 224)
+    in let w6 = kbl-write t 41 (from-unicode 92)
+    in let w7 = kbl-write t 43 (from-unicode 249)
+    in t
+
+  kbl-build-it-shift : Integer -> Integer
+  kbl-build-it-shift (t) =
+    let w0 = kbl-build-us-shift t
+    in let w1 = kbl-write t 3 (from-unicode 34)
+    in let w2 = kbl-write t 4 (from-unicode 163)
+    in let w3 = kbl-write t 8 (from-unicode 47)
+    in let w4 = kbl-write t 13 (from-unicode 94)
+    in let w5 = kbl-write t 26 (from-unicode 233)
+    in let w6 = kbl-write t 27 (from-unicode 42)
+    in let w7 = kbl-write t 39 (from-unicode 231)
+    in let w8 = kbl-write t 40 (from-unicode 176)
+    in let w9 = kbl-write t 41 (from-unicode 124)
+    in let w10 = kbl-write t 43 (from-unicode 167)
+    in t
+
+Section: Swedish / Finnish
+  kbl-se : KbLayout
+  kbl-se =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-se-base base
+    in let s = kbl-build-se-shift shift
+    in KbLayout { kbl-name = "SE", kbl-base = base, kbl-shift = shift, kbl-dead1 = 27, kbl-dead2 = 13 }
+
+  kbl-build-se-base : Integer -> Integer
+  kbl-build-se-base (t) =
+    let w0 = kbl-build-us-base t
+    in let w1 = kbl-write t 12 (from-unicode 43)
+    in let w2 = kbl-write t 26 (from-unicode 229)
+    in let w3 = kbl-write t 39 (from-unicode 246)
+    in let w4 = kbl-write t 40 (from-unicode 228)
+    in let w5 = kbl-write t 43 (from-unicode 39)
+    in let w6 = kbl-write t 53 (from-unicode 45)
+    in t
+
+  kbl-build-se-shift : Integer -> Integer
+  kbl-build-se-shift (t) =
+    let w0 = kbl-build-us-shift t
+    in let w1 = kbl-write t 8 (from-unicode 47)
+    in let w2 = kbl-write t 12 (from-unicode 63)
+    in let w3 = kbl-write t 26 (from-unicode 197)
+    in let w4 = kbl-write t 39 (from-unicode 214)
+    in let w5 = kbl-write t 40 (from-unicode 196)
+    in let w6 = kbl-write t 43 (from-unicode 42)
+    in t
+
+Section: Norwegian / Danish
+  kbl-no : KbLayout
+  kbl-no =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-no-base base
+    in let s = kbl-build-no-shift shift
+    in KbLayout { kbl-name = "NO", kbl-base = base, kbl-shift = shift, kbl-dead1 = 27, kbl-dead2 = 13 }
+
+  kbl-build-no-base : Integer -> Integer
+  kbl-build-no-base (t) =
+    let w0 = kbl-build-se-base t
+    in let w1 = kbl-write t 39 (from-unicode 248)
+    in let w2 = kbl-write t 40 (from-unicode 230)
+    in t
+
+  kbl-build-no-shift : Integer -> Integer
+  kbl-build-no-shift (t) =
+    let w0 = kbl-build-se-shift t
+    in let w1 = kbl-write t 39 (from-unicode 216)
+    in let w2 = kbl-write t 40 (from-unicode 198)
+    in t
+
+Section: Swiss German
+  kbl-ch : KbLayout
+  kbl-ch =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-ch-base base
+    in let s = kbl-build-ch-shift shift
+    in KbLayout { kbl-name = "CH", kbl-base = base, kbl-shift = shift, kbl-dead1 = 13, kbl-dead2 = 27 }
+
+  kbl-build-ch-base : Integer -> Integer
+  kbl-build-ch-base (t) =
+    let w0 = kbl-build-de-base t
+    in let w1 = kbl-write t 12 (from-unicode 39)
+    in t
+
+  kbl-build-ch-shift : Integer -> Integer
+  kbl-build-ch-shift (t) =
+    let w0 = kbl-build-de-shift t
+    in let w1 = kbl-write t 3 (from-unicode 34)
+    in let w2 = kbl-write t 4 (from-unicode 42)
+    in let w3 = kbl-write t 7 (from-unicode 38)
+    in let w4 = kbl-write t 8 (from-unicode 47)
+    in let w5 = kbl-write t 12 (from-unicode 63)
+    in t
+
+Section: Polish (Programmers)
+  kbl-pl : KbLayout
+  kbl-pl =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-us-base base
+    in let s = kbl-build-us-shift shift
+    in KbLayout { kbl-name = "PL", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+Section: Czech (QWERTZ)
+  kbl-cz : KbLayout
+  kbl-cz =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-cz-base base
+    in let s = kbl-build-cz-shift shift
+    in KbLayout { kbl-name = "CZ", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-cz-base : Integer -> Integer
+  kbl-build-cz-base (t) =
+    let w0 = kbl-build-de-base t
+    in let w1 = kbl-write t 2 (from-unicode 43)
+    in let w2 = kbl-write t 3 (from-unicode 283)
+    in let w3 = kbl-write t 4 (from-unicode 353)
+    in let w4 = kbl-write t 5 (from-unicode 269)
+    in let w5 = kbl-write t 6 (from-unicode 345)
+    in let w6 = kbl-write t 7 (from-unicode 382)
+    in let w7 = kbl-write t 8 (from-unicode 253)
+    in let w8 = kbl-write t 9 (from-unicode 225)
+    in let w9 = kbl-write t 10 (from-unicode 237)
+    in let w10 = kbl-write t 11 (from-unicode 233)
+    in let w11 = kbl-write t 12 (from-unicode 61)
+    in let w12 = kbl-write t 26 (from-unicode 250)
+    in t
+
+  kbl-build-cz-shift : Integer -> Integer
+  kbl-build-cz-shift (t) =
+    let w0 = kbl-build-de-shift t
+    in let w1 = kbl-write t 2 (from-unicode 49)
+    in let w2 = kbl-write t 3 (from-unicode 50)
+    in let w3 = kbl-write t 4 (from-unicode 51)
+    in let w4 = kbl-write t 5 (from-unicode 52)
+    in let w5 = kbl-write t 6 (from-unicode 53)
+    in let w6 = kbl-write t 7 (from-unicode 54)
+    in let w7 = kbl-write t 8 (from-unicode 55)
+    in let w8 = kbl-write t 9 (from-unicode 56)
+    in let w9 = kbl-write t 10 (from-unicode 57)
+    in let w10 = kbl-write t 11 (from-unicode 48)
+    in let w11 = kbl-write t 12 (from-unicode 37)
+    in let w12 = kbl-write t 26 (from-unicode 47)
+    in t
+
+Section: Turkish (QWERTY)
+  kbl-tr : KbLayout
+  kbl-tr =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-tr-base base
+    in let s = kbl-build-tr-shift shift
+    in KbLayout { kbl-name = "TR", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-tr-base : Integer -> Integer
+  kbl-build-tr-base (t) =
+    let w0 = kbl-build-us-base t
+    in let w1 = kbl-write t 26 (from-unicode 287)
+    in let w2 = kbl-write t 27 (from-unicode 252)
+    in let w3 = kbl-write t 39 (from-unicode 351)
+    in let w4 = kbl-write t 40 (from-unicode 305)
+    in let w5 = kbl-write t 43 (from-unicode 44)
+    in let w6 = kbl-write t 51 (from-unicode 246)
+    in let w7 = kbl-write t 52 (from-unicode 231)
+    in let w8 = kbl-write t 53 (from-unicode 46)
+    in t
+
+  kbl-build-tr-shift : Integer -> Integer
+  kbl-build-tr-shift (t) =
+    let w0 = kbl-build-us-shift t
+    in let w1 = kbl-write t 26 (from-unicode 286)
+    in let w2 = kbl-write t 27 (from-unicode 220)
+    in let w3 = kbl-write t 39 (from-unicode 350)
+    in let w4 = kbl-write t 40 (from-unicode 73)
+    in let w5 = kbl-write t 43 (from-unicode 59)
+    in let w6 = kbl-write t 51 (from-unicode 214)
+    in let w7 = kbl-write t 52 (from-unicode 199)
+    in let w8 = kbl-write t 53 (from-unicode 47)
+    in t
+
+Section: Hungarian (QWERTZ)
+  kbl-hu : KbLayout
+  kbl-hu =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-hu-base base
+    in let s = kbl-build-hu-shift shift
+    in KbLayout { kbl-name = "HU", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-hu-base : Integer -> Integer
+  kbl-build-hu-base (t) =
+    let w0 = kbl-build-de-base t
+    in let w1 = kbl-write t 12 (from-unicode 252)
+    in let w2 = kbl-write t 13 (from-unicode 243)
+    in let w3 = kbl-write t 26 (from-unicode 337)
+    in let w4 = kbl-write t 27 (from-unicode 250)
+    in let w5 = kbl-write t 39 (from-unicode 233)
+    in let w6 = kbl-write t 40 (from-unicode 225)
+    in let w7 = kbl-write t 43 (from-unicode 369)
+    in t
+
+  kbl-build-hu-shift : Integer -> Integer
+  kbl-build-hu-shift (t) =
+    let w0 = kbl-build-de-shift t
+    in let w1 = kbl-write t 12 (from-unicode 220)
+    in let w2 = kbl-write t 13 (from-unicode 211)
+    in let w3 = kbl-write t 26 (from-unicode 336)
+    in let w4 = kbl-write t 27 (from-unicode 218)
+    in let w5 = kbl-write t 39 (from-unicode 201)
+    in let w6 = kbl-write t 40 (from-unicode 193)
+    in let w7 = kbl-write t 43 (from-unicode 368)
+    in t
+
+Section: Romanian (QWERTY)
+  kbl-ro : KbLayout
+  kbl-ro =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-ro-base base
+    in let s = kbl-build-ro-shift shift
+    in KbLayout { kbl-name = "RO", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-ro-base : Integer -> Integer
+  kbl-build-ro-base (t) =
+    let w0 = kbl-build-us-base t
+    in let w1 = kbl-write t 26 (from-unicode 259)
+    in let w2 = kbl-write t 27 (from-unicode 238)
+    in let w3 = kbl-write t 39 (from-unicode 537)
+    in let w4 = kbl-write t 40 (from-unicode 539)
+    in let w5 = kbl-write t 43 (from-unicode 226)
+    in t
+
+  kbl-build-ro-shift : Integer -> Integer
+  kbl-build-ro-shift (t) =
+    let w0 = kbl-build-us-shift t
+    in let w1 = kbl-write t 26 (from-unicode 258)
+    in let w2 = kbl-write t 27 (from-unicode 206)
+    in let w3 = kbl-write t 39 (from-unicode 536)
+    in let w4 = kbl-write t 40 (from-unicode 538)
+    in let w5 = kbl-write t 43 (from-unicode 194)
+    in t
+
+Section: Croatian / Slovenian (QWERTZ)
+  kbl-hr : KbLayout
+  kbl-hr =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-hr-base base
+    in let s = kbl-build-hr-shift shift
+    in KbLayout { kbl-name = "HR", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-hr-base : Integer -> Integer
+  kbl-build-hr-base (t) =
+    let w0 = kbl-build-de-base t
+    in let w1 = kbl-write t 26 (from-unicode 353)
+    in let w2 = kbl-write t 27 (from-unicode 273)
+    in let w3 = kbl-write t 39 (from-unicode 269)
+    in let w4 = kbl-write t 40 (from-unicode 263)
+    in let w5 = kbl-write t 43 (from-unicode 382)
+    in t
+
+  kbl-build-hr-shift : Integer -> Integer
+  kbl-build-hr-shift (t) =
+    let w0 = kbl-build-de-shift t
+    in let w1 = kbl-write t 26 (from-unicode 352)
+    in let w2 = kbl-write t 27 (from-unicode 272)
+    in let w3 = kbl-write t 39 (from-unicode 268)
+    in let w4 = kbl-write t 40 (from-unicode 262)
+    in let w5 = kbl-write t 43 (from-unicode 381)
+    in t
+
+Section: Slovak (QWERTZ)
+  kbl-sk : KbLayout
+  kbl-sk =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-sk-base base
+    in let s = kbl-build-sk-shift shift
+    in KbLayout { kbl-name = "SK", kbl-base = base, kbl-shift = shift, kbl-dead1 = 13, kbl-dead2 = 0 }
+
+  kbl-build-sk-base : Integer -> Integer
+  kbl-build-sk-base (t) =
+    let w0 = kbl-build-cz-base t
+    in let w1 = kbl-write t 39 (from-unicode 244)
+    in t
+
+  kbl-build-sk-shift : Integer -> Integer
+  kbl-build-sk-shift (t) =
+    let w0 = kbl-build-cz-shift t
+    in let w1 = kbl-write t 39 (from-unicode 34)
+    in t
+
+Section: Estonian
+  kbl-et : KbLayout
+  kbl-et =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-et-base base
+    in let s = kbl-build-et-shift shift
+    in KbLayout { kbl-name = "ET", kbl-base = base, kbl-shift = shift, kbl-dead1 = 27, kbl-dead2 = 13 }
+
+  kbl-build-et-base : Integer -> Integer
+  kbl-build-et-base (t) =
+    let w0 = kbl-build-se-base t
+    in let w1 = kbl-write t 26 (from-unicode 252)
+    in let w2 = kbl-write t 39 (from-unicode 246)
+    in let w3 = kbl-write t 40 (from-unicode 228)
+    in t
+
+  kbl-build-et-shift : Integer -> Integer
+  kbl-build-et-shift (t) =
+    let w0 = kbl-build-se-shift t
+    in let w1 = kbl-write t 26 (from-unicode 220)
+    in let w2 = kbl-write t 39 (from-unicode 214)
+    in let w3 = kbl-write t 40 (from-unicode 196)
+    in t
+
+Section: Latvian
+  kbl-lv : KbLayout
+  kbl-lv =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-us-base base
+    in let s = kbl-build-us-shift shift
+    in KbLayout { kbl-name = "LV", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+Section: Lithuanian
+  kbl-lt : KbLayout
+  kbl-lt =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-us-base base
+    in let s = kbl-build-us-shift shift
+    in KbLayout { kbl-name = "LT", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+Section: Russian (JCUKEN)
+  kbl-ru : KbLayout
+  kbl-ru =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-ru-base base
+    in let s = kbl-build-ru-shift shift
+    in KbLayout { kbl-name = "RU", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-ru-base : Integer -> Integer
+  kbl-build-ru-base (t) =
+    let w0 = kbl-write t 2 (from-unicode 49)
+    in let w1 = kbl-write t 3 (from-unicode 50)
+    in let w2 = kbl-write t 4 (from-unicode 51)
+    in let w3 = kbl-write t 5 (from-unicode 52)
+    in let w4 = kbl-write t 6 (from-unicode 53)
+    in let w5 = kbl-write t 7 (from-unicode 54)
+    in let w6 = kbl-write t 8 (from-unicode 55)
+    in let w7 = kbl-write t 9 (from-unicode 56)
+    in let w8 = kbl-write t 10 (from-unicode 57)
+    in let w9 = kbl-write t 11 (from-unicode 48)
+    in let w10 = kbl-write t 12 (from-unicode 45)
+    in let w11 = kbl-write t 13 (from-unicode 61)
+    in let w12 = kbl-write t 28 1
+    in let w13 = kbl-write t 57 2
+    in let w14 = kbl-write t 16 (from-unicode 1081)
+    in let w15 = kbl-write t 17 (from-unicode 1094)
+    in let w16 = kbl-write t 18 (from-unicode 1091)
+    in let w17 = kbl-write t 19 (from-unicode 1082)
+    in let w18 = kbl-write t 20 (from-unicode 1077)
+    in let w19 = kbl-write t 21 (from-unicode 1085)
+    in let w20 = kbl-write t 22 (from-unicode 1075)
+    in let w21 = kbl-write t 23 (from-unicode 1096)
+    in let w22 = kbl-write t 24 (from-unicode 1097)
+    in let w23 = kbl-write t 25 (from-unicode 1079)
+    in let w24 = kbl-write t 26 (from-unicode 1093)
+    in let w25 = kbl-write t 27 (from-unicode 1098)
+    in let w26 = kbl-write t 30 (from-unicode 1092)
+    in let w27 = kbl-write t 31 (from-unicode 1099)
+    in let w28 = kbl-write t 32 (from-unicode 1074)
+    in let w29 = kbl-write t 33 (from-unicode 1072)
+    in let w30 = kbl-write t 34 (from-unicode 1087)
+    in let w31 = kbl-write t 35 (from-unicode 1088)
+    in let w32 = kbl-write t 36 (from-unicode 1086)
+    in let w33 = kbl-write t 37 (from-unicode 1083)
+    in let w34 = kbl-write t 38 (from-unicode 1076)
+    in let w35 = kbl-write t 39 (from-unicode 1078)
+    in let w36 = kbl-write t 40 (from-unicode 1101)
+    in let w37 = kbl-write t 44 (from-unicode 1103)
+    in let w38 = kbl-write t 45 (from-unicode 1095)
+    in let w39 = kbl-write t 46 (from-unicode 1089)
+    in let w40 = kbl-write t 47 (from-unicode 1084)
+    in let w41 = kbl-write t 48 (from-unicode 1080)
+    in let w42 = kbl-write t 49 (from-unicode 1090)
+    in let w43 = kbl-write t 50 (from-unicode 1100)
+    in let w44 = kbl-write t 51 (from-unicode 1073)
+    in let w45 = kbl-write t 52 (from-unicode 1102)
+    in let w46 = kbl-write t 53 (from-unicode 46)
+    in t
+
+  kbl-build-ru-shift : Integer -> Integer
+  kbl-build-ru-shift (t) =
+    let w0 = kbl-write t 2 (from-unicode 33)
+    in let w1 = kbl-write t 3 (from-unicode 34)
+    in let w2 = kbl-write t 8 (from-unicode 58)
+    in let w3 = kbl-write t 9 (from-unicode 59)
+    in let w4 = kbl-write t 12 (from-unicode 95)
+    in let w5 = kbl-write t 13 (from-unicode 43)
+    in let w6 = kbl-write t 16 (from-unicode 1049)
+    in let w7 = kbl-write t 17 (from-unicode 1062)
+    in let w8 = kbl-write t 18 (from-unicode 1059)
+    in let w9 = kbl-write t 19 (from-unicode 1050)
+    in let w10 = kbl-write t 20 (from-unicode 1045)
+    in let w11 = kbl-write t 21 (from-unicode 1053)
+    in let w12 = kbl-write t 22 (from-unicode 1043)
+    in let w13 = kbl-write t 23 (from-unicode 1064)
+    in let w14 = kbl-write t 24 (from-unicode 1065)
+    in let w15 = kbl-write t 25 (from-unicode 1047)
+    in let w16 = kbl-write t 26 (from-unicode 1061)
+    in let w17 = kbl-write t 27 (from-unicode 1066)
+    in let w18 = kbl-write t 30 (from-unicode 1060)
+    in let w19 = kbl-write t 31 (from-unicode 1067)
+    in let w20 = kbl-write t 32 (from-unicode 1042)
+    in let w21 = kbl-write t 33 (from-unicode 1040)
+    in let w22 = kbl-write t 34 (from-unicode 1055)
+    in let w23 = kbl-write t 35 (from-unicode 1056)
+    in let w24 = kbl-write t 36 (from-unicode 1054)
+    in let w25 = kbl-write t 37 (from-unicode 1051)
+    in let w26 = kbl-write t 38 (from-unicode 1044)
+    in let w27 = kbl-write t 39 (from-unicode 1046)
+    in let w28 = kbl-write t 40 (from-unicode 1069)
+    in let w29 = kbl-write t 44 (from-unicode 1071)
+    in let w30 = kbl-write t 45 (from-unicode 1063)
+    in let w31 = kbl-write t 46 (from-unicode 1057)
+    in let w32 = kbl-write t 47 (from-unicode 1052)
+    in let w33 = kbl-write t 48 (from-unicode 1048)
+    in let w34 = kbl-write t 49 (from-unicode 1058)
+    in let w35 = kbl-write t 50 (from-unicode 1068)
+    in let w36 = kbl-write t 51 (from-unicode 1041)
+    in let w37 = kbl-write t 52 (from-unicode 1070)
+    in let w38 = kbl-write t 53 (from-unicode 44)
+    in t
+
+Section: Ukrainian
+  kbl-ua : KbLayout
+  kbl-ua =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-ua-base base
+    in let s = kbl-build-ua-shift shift
+    in KbLayout { kbl-name = "UA", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-ua-base : Integer -> Integer
+  kbl-build-ua-base (t) =
+    let w0 = kbl-build-ru-base t
+    in let w1 = kbl-write t 23 (from-unicode 1110)
+    in let w2 = kbl-write t 26 (from-unicode 1111)
+    in let w3 = kbl-write t 27 (from-unicode 1169)
+    in let w4 = kbl-write t 40 (from-unicode 1108)
+    in t
+
+  kbl-build-ua-shift : Integer -> Integer
+  kbl-build-ua-shift (t) =
+    let w0 = kbl-build-ru-shift t
+    in let w1 = kbl-write t 23 (from-unicode 1030)
+    in let w2 = kbl-write t 26 (from-unicode 1031)
+    in let w3 = kbl-write t 27 (from-unicode 1168)
+    in let w4 = kbl-write t 40 (from-unicode 1028)
+    in t
+
+Section: Greek
+  kbl-el : KbLayout
+  kbl-el =
+    let base = alloc-bytes kbl-table-size
+    in let shift = alloc-bytes kbl-table-size
+    in let b = kbl-build-el-base base
+    in let s = kbl-build-el-shift shift
+    in KbLayout { kbl-name = "EL", kbl-base = base, kbl-shift = shift, kbl-dead1 = 0, kbl-dead2 = 0 }
+
+  kbl-build-el-base : Integer -> Integer
+  kbl-build-el-base (t) =
+    let w0 = kbl-write t 2 (from-unicode 49)
+    in let w1 = kbl-write t 3 (from-unicode 50)
+    in let w2 = kbl-write t 4 (from-unicode 51)
+    in let w3 = kbl-write t 5 (from-unicode 52)
+    in let w4 = kbl-write t 6 (from-unicode 53)
+    in let w5 = kbl-write t 7 (from-unicode 54)
+    in let w6 = kbl-write t 8 (from-unicode 55)
+    in let w7 = kbl-write t 9 (from-unicode 56)
+    in let w8 = kbl-write t 10 (from-unicode 57)
+    in let w9 = kbl-write t 11 (from-unicode 48)
+    in let w10 = kbl-write t 12 (from-unicode 45)
+    in let w11 = kbl-write t 28 1
+    in let w12 = kbl-write t 57 2
+    in let w13 = kbl-write t 16 (from-unicode 59)
+    in let w14 = kbl-write t 17 (from-unicode 962)
+    in let w15 = kbl-write t 18 (from-unicode 949)
+    in let w16 = kbl-write t 19 (from-unicode 961)
+    in let w17 = kbl-write t 20 (from-unicode 964)
+    in let w18 = kbl-write t 21 (from-unicode 965)
+    in let w19 = kbl-write t 22 (from-unicode 952)
+    in let w20 = kbl-write t 23 (from-unicode 953)
+    in let w21 = kbl-write t 24 (from-unicode 959)
+    in let w22 = kbl-write t 25 (from-unicode 960)
+    in let w23 = kbl-write t 30 (from-unicode 945)
+    in let w24 = kbl-write t 31 (from-unicode 963)
+    in let w25 = kbl-write t 32 (from-unicode 948)
+    in let w26 = kbl-write t 33 (from-unicode 966)
+    in let w27 = kbl-write t 34 (from-unicode 947)
+    in let w28 = kbl-write t 35 (from-unicode 951)
+    in let w29 = kbl-write t 36 (from-unicode 958)
+    in let w30 = kbl-write t 37 (from-unicode 954)
+    in let w31 = kbl-write t 38 (from-unicode 955)
+    in let w32 = kbl-write t 44 (from-unicode 950)
+    in let w33 = kbl-write t 45 (from-unicode 967)
+    in let w34 = kbl-write t 46 (from-unicode 968)
+    in let w35 = kbl-write t 47 (from-unicode 969)
+    in let w36 = kbl-write t 48 (from-unicode 946)
+    in let w37 = kbl-write t 49 (from-unicode 957)
+    in let w38 = kbl-write t 50 (from-unicode 956)
+    in let w39 = kbl-write t 51 (from-unicode 44)
+    in let w40 = kbl-write t 52 (from-unicode 46)
+    in let w41 = kbl-write t 53 (from-unicode 47)
+    in t
+
+  kbl-build-el-shift : Integer -> Integer
+  kbl-build-el-shift (t) =
+    let w0 = kbl-write t 2 (from-unicode 33)
+    in let w1 = kbl-write t 3 (from-unicode 64)
+    in let w2 = kbl-write t 4 (from-unicode 35)
+    in let w3 = kbl-write t 5 (from-unicode 36)
+    in let w4 = kbl-write t 6 (from-unicode 37)
+    in let w5 = kbl-write t 7 (from-unicode 94)
+    in let w6 = kbl-write t 8 (from-unicode 38)
+    in let w7 = kbl-write t 9 (from-unicode 42)
+    in let w8 = kbl-write t 10 (from-unicode 40)
+    in let w9 = kbl-write t 11 (from-unicode 41)
+    in let w10 = kbl-write t 12 (from-unicode 95)
+    in let w11 = kbl-write t 16 (from-unicode 58)
+    in let w12 = kbl-write t 18 (from-unicode 917)
+    in let w13 = kbl-write t 19 (from-unicode 929)
+    in let w14 = kbl-write t 20 (from-unicode 932)
+    in let w15 = kbl-write t 21 (from-unicode 933)
+    in let w16 = kbl-write t 22 (from-unicode 920)
+    in let w17 = kbl-write t 23 (from-unicode 921)
+    in let w18 = kbl-write t 24 (from-unicode 927)
+    in let w19 = kbl-write t 25 (from-unicode 928)
+    in let w20 = kbl-write t 30 (from-unicode 913)
+    in let w21 = kbl-write t 31 (from-unicode 931)
+    in let w22 = kbl-write t 32 (from-unicode 916)
+    in let w23 = kbl-write t 33 (from-unicode 934)
+    in let w24 = kbl-write t 34 (from-unicode 915)
+    in let w25 = kbl-write t 35 (from-unicode 919)
+    in let w26 = kbl-write t 36 (from-unicode 926)
+    in let w27 = kbl-write t 37 (from-unicode 922)
+    in let w28 = kbl-write t 38 (from-unicode 923)
+    in let w29 = kbl-write t 44 (from-unicode 918)
+    in let w30 = kbl-write t 45 (from-unicode 935)
+    in let w31 = kbl-write t 46 (from-unicode 936)
+    in let w32 = kbl-write t 47 (from-unicode 937)
+    in let w33 = kbl-write t 48 (from-unicode 914)
+    in let w34 = kbl-write t 49 (from-unicode 925)
+    in let w35 = kbl-write t 50 (from-unicode 924)
+    in let w36 = kbl-write t 51 (from-unicode 60)
+    in let w37 = kbl-write t 52 (from-unicode 62)
+    in let w38 = kbl-write t 53 (from-unicode 63)
+    in t
+
+Section: Layout Registry
+  kbl-by-name : Text -> KbLayout
+  kbl-by-name (name) =
+    if name == "US" then kbl-us
+    else if name == "UK" then kbl-uk
+    else if name == "DE" then kbl-de
+    else if name == "FR" then kbl-fr
+    else if name == "ES" then kbl-es
+    else if name == "PT" then kbl-pt
+    else if name == "IT" then kbl-it
+    else if name == "SE" then kbl-se
+    else if name == "FI" then kbl-se
+    else if name == "NO" then kbl-no
+    else if name == "DA" then kbl-no
+    else if name == "CH" then kbl-ch
+    else if name == "PL" then kbl-pl
+    else if name == "CZ" then kbl-cz
+    else if name == "SK" then kbl-sk
+    else if name == "HU" then kbl-hu
+    else if name == "RO" then kbl-ro
+    else if name == "HR" then kbl-hr
+    else if name == "SI" then kbl-hr
+    else if name == "TR" then kbl-tr
+    else if name == "ET" then kbl-et
+    else if name == "LV" then kbl-lv
+    else if name == "LT" then kbl-lt
+    else if name == "RU" then kbl-ru
+    else if name == "UA" then kbl-ua
+    else if name == "BG" then kbl-ru
+    else if name == "EL" then kbl-el
+    else kbl-us
+
+  kbl-list-names : List Text
+  kbl-list-names = ["US", "UK", "DE", "FR", "ES", "PT", "IT", "SE", "FI", "NO", "DA", "CH", "PL", "CZ", "SK", "HU", "RO", "HR", "SI", "TR", "ET", "LV", "LT", "RU", "UA", "BG", "EL"]
+
+Section: Formatting
+  format-layout : KbLayout -> Text
+  format-layout (l) = "KbLayout: " & l.kbl-name
+
+Page 1

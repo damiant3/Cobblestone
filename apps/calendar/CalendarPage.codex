@@ -59,20 +59,26 @@ Section: CSS
     & ".day-cell{border:1px solid #1a1a1a;padding:6px 8px;min-height:100px;cursor:pointer;transition:background .1s}"
     & ".day-cell:hover{background:#161616}"
     & ".day-cell.today{background:#0a1a2a}"
+    & ".day-cell.selected-day{background:#0d2240;border-color:#449dff}"
     & ".day-cell.other{opacity:.4}"
     & ".day-num{font-size:12px;font-weight:600;margin-bottom:4px;color:#888}"
     & ".day-cell.today .day-num{color:#449dff;font-weight:700}"
     & ".day-event{font-size:11px;padding:2px 6px;border-radius:4px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}"
     & ".day-event:hover{filter:brightness(1.2)}"
     & ".day-more{font-size:10px;color:#666;padding:2px 6px}"
+    & ".event-badge{font-size:10px;color:#888;padding:2px 6px;font-style:italic}"
     & ".week-grid{display:grid;grid-template-columns:60px repeat(7,1fr);flex:1;overflow-y:auto}"
     & ".time-label{padding:4px 8px;font-size:10px;color:#555;text-align:right;border-right:1px solid #1a1a1a;height:48px}"
     & ".week-col{border-left:1px solid #1a1a1a}"
     & ".week-slot{height:48px;border-bottom:1px solid #111;padding:1px 4px}"
     & ".week-slot:hover{background:#161616}"
+    & ".working-hour{background:#0a1520}"
+    & ".working-hour:hover{background:#0e1d2e}"
     & ".day-view{flex:1;overflow-y:auto;display:grid;grid-template-columns:60px 1fr}"
     & ".day-hour{height:60px;border-bottom:1px solid #111;padding:1px 4px}"
     & ".day-hour:hover{background:#161616}"
+    & ".day-hour.working-hour{background:#0a1520}"
+    & ".day-hour.working-hour:hover{background:#0e1d2e}"
     & ".agenda{flex:1;overflow-y:auto;padding:24px}"
     & ".agenda-date{font-size:14px;font-weight:600;color:#449dff;padding:16px 0 8px;border-bottom:1px solid #1a1a1a;margin-bottom:8px}"
     & ".agenda-event{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid #111;align-items:center}"
@@ -81,15 +87,24 @@ Section: CSS
     & ".agenda-info{flex:1}"
     & ".agenda-title{font-size:14px;font-weight:500;margin-bottom:2px}"
     & ".agenda-loc{font-size:12px;color:#666}"
-
-Section: Constructors
-
-  id-num2 : Text -> Integer
-  id-num2 (id) =
-    let n = text-length id
-    in let ones = char-code-at id (n - 1) - 48
-    in let tc = char-code-at id (n - 2)
-    in if tc >= 48 & tc <= 57 then (tc - 48) * 10 + ones else ones
+    & ".event-form{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:16px;margin:0 16px 16px}"
+    & ".event-form-title{font-size:14px;font-weight:600;color:#fff;margin-bottom:12px}"
+    & ".event-form-field{margin-bottom:10px}"
+    & ".event-form-label{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}"
+    & ".event-form-input{width:100%;padding:8px 10px;background:#222;border:1px solid #333;border-radius:6px;color:#ddd;font-size:13px}"
+    & ".event-form-btns{display:flex;gap:8px;margin-top:12px}"
+    & ".event-form .save-btn{flex:1;padding:8px;background:#449dff;color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer}"
+    & ".event-form .save-btn:hover{background:#3388ee}"
+    & ".event-form .cancel-btn{flex:1;padding:8px;background:#333;color:#ccc;border:none;border-radius:6px;font-size:13px;cursor:pointer}"
+    & ".event-form .cancel-btn:hover{background:#444}"
+    & ".event-detail{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:16px;margin:0 16px 16px}"
+    & ".event-detail-title{font-size:15px;font-weight:600;color:#449dff;margin-bottom:8px}"
+    & ".event-detail-row{font-size:13px;color:#aaa;margin-bottom:6px}"
+    & ".event-detail-close{font-size:12px;color:#888;cursor:pointer;text-align:right;margin-top:8px}"
+    & ".event-detail-close:hover{color:#fff}"
+    & ".toggle-all-btn{margin:8px 0;padding:6px 8px;background:#222;border:1px solid #333;color:#999;border-radius:6px;cursor:pointer;font-size:11px;width:100%;text-align:center}"
+    & ".toggle-all-btn:hover{background:#2a2a2a;color:#ddd}"
+    & ".recurring-icon{font-size:10px;margin-left:2px}"
 
 Section: Date Helpers
 
@@ -116,6 +131,12 @@ Section: Date Helpers
     else if m == 9 then 30
     else if m == 11 then 30
     else 31
+
+  current-title : Integer -> Text
+  current-title (x) =
+    let m = state-get "cur-month"
+    in let y = state-get "cur-year"
+    in month-name m & " " & show y
 
 Section: Mini Calendar Builder
 
@@ -145,20 +166,35 @@ Section: Month Grid Builder
   day-event (id) (title) (color) =
     widget-add-child (widget-custom id "box:day-event" 0 0) (widget-label (id & "t") title)
 
+  day-event-recurring : Text, Text, Text -> WidgetNode
+  day-event-recurring (id) (title) (color) =
+    widget-add-child (widget-custom id "box:day-event" 0 0) (widget-label (id & "t") (title & " &#x1F501;"))
+
+  event-count-badge : Text, Integer -> List WidgetNode
+  event-count-badge (id) (count) =
+    if count >= 2 then [widget-label (id & "badge") (show count & " events")]
+    else []
+
   build-month-days : Integer, Integer, Integer -> List WidgetNode
   build-month-days (day) (max) (i) =
     if day > max then []
     else let id = "dc-" & show i
-    in let cls = if day == 8 then "today" else ""
-    in let evts = if day == 8 then [day-event (id & "e1") "Team Standup" "#449dff", day-event (id & "e2") "Design Review" "#e65100"]
-    else if day == 10 then [day-event (id & "e1") "Sprint Planning" "#2e7d32"]
+    in let sel = state-get "selected-day"
+    in let cls = if day == 8 then (if sel == day then "today selected-day" else "today") else (if sel == day then "selected-day" else "")
+    in let evts = if day == 3 then [day-event (id & "e1") "Doctor Appt" "#e6a817"]
+    else if day == 5 then [day-event (id & "e1") "Team Offsite" "#9c27b0"]
+    else if day == 8 then [day-event-recurring (id & "e1") "Team Standup" "#449dff", day-event (id & "e2") "Design Review" "#e65100"] & event-count-badge id 2
+    else if day == 10 then [day-event-recurring (id & "e1") "Sprint Planning" "#2e7d32"]
     else if day == 12 then [day-event (id & "e1") "Lunch with Sarah" "#e6a817"]
-    else if day == 15 then [day-event (id & "e1") "Product Demo" "#449dff", day-event (id & "e2") "Team Retro" "#9c27b0"]
+    else if day == 15 then [day-event (id & "e1") "Product Demo" "#449dff", day-event (id & "e2") "Team Retro" "#9c27b0"] & event-count-badge id 2
+    else if day == 18 then [day-event (id & "e1") "Board Meeting" "#d32f2f"]
     else if day == 20 then [day-event (id & "e1") "All Hands" "#d32f2f"]
     else if day == 22 then [day-event (id & "e1") "Dentist" "#e6a817"]
-    else if day == 25 then [day-event (id & "e1") "Project Deadline" "#d32f2f", day-event (id & "e2") "Celebration" "#2e7d32"]
+    else if day == 25 then [day-event (id & "e1") "Project Deadline" "#d32f2f", day-event (id & "e2") "Celebration" "#2e7d32"] & event-count-badge id 2
+    else if day == 28 then [day-event (id & "e1") "Code Review Day" "#449dff"]
     else []
-    in build-day-cell id cls (show day) evts :: build-month-days (day + 1) max (i + 1)
+    in let user-evts = user-events-for-day day 0 (state-get "evt-count") id []
+    in build-day-cell id cls (show day) (evts & user-evts) :: build-month-days (day + 1) max (i + 1)
 
 Section: Agenda Builder
 
@@ -173,6 +209,81 @@ Section: Agenda Builder
       ]
     ]
 
+  agenda-entry-recurring : Text, Text, Text, Text, Text, Text -> WidgetNode
+  agenda-entry-recurring (id) (time) (color) (title) (loc) (cal) =
+    widget-box id "agenda-event" [
+      widget-label (id & "t") time,
+      widget-label (id & "d") "",
+      widget-box (id & "i") "agenda-info" [
+        widget-label (id & "n") (title & " &#x1F501;"),
+        widget-label (id & "l") (loc & " &#x2022; " & cal)
+      ]
+    ]
+
+Section: Event Form
+
+  event-form-widget : Integer -> WidgetNode
+  event-form-widget (x) =
+    let sel = state-get "selected-day"
+    in widget-box "evt-form" "event-form" [
+      widget-label "ef-title" "New Event",
+      widget-box "ef-f1" "event-form-field" [
+        widget-label "ef-l1" "TITLE",
+        wk-attach (widget-custom "ef-title-input" "input" 0 0) [widget-label "ef-tv" (state-get-text "new-evt-title"), widget-label "ef-tp" "Event title..."] 0 2
+      ],
+      widget-box "ef-f2" "event-form-field" [
+        widget-label "ef-l2" "TIME",
+        wk-attach (widget-custom "ef-time-input" "input" 0 0) [widget-label "ef-tmv" (state-get-text "new-evt-time"), widget-label "ef-tmp" "e.g. 10:00 AM"] 0 2
+      ],
+      widget-box "ef-f3" "event-form-field" [
+        widget-label "ef-l3" "DATE",
+        widget-label "ef-i3" (if sel > 0 then (current-title 0 & " " & show sel) else current-title 0)
+      ],
+      widget-box "ef-btns" "event-form-btns" [
+        widget-button "save-event" "Save",
+        widget-button "cancel-event" "Cancel"
+      ]
+    ]
+
+Section: Event Detail
+
+  user-event-titles-for-day : Integer, Integer, Integer, Text -> Text
+  user-event-titles-for-day (day) (i) (count) (acc) =
+    if i >= count then acc
+    else let d = state-get ("evt-day-" & show i)
+    in if d == day then let title = state-get-text ("evt-title-" & show i)
+      in let sep = if text-length acc > 0 then ", " else ""
+      in user-event-titles-for-day day (i + 1) count (acc & sep & title)
+    else user-event-titles-for-day day (i + 1) count acc
+
+  event-detail-for-day : Integer -> WidgetNode
+  event-detail-for-day (day) =
+    let builtin-title = if day == 3 then "Doctor Appt"
+      else if day == 5 then "Team Offsite"
+      else if day == 8 then "Team Standup, Design Review"
+      else if day == 10 then "Sprint Planning"
+      else if day == 12 then "Lunch with Sarah"
+      else if day == 15 then "Product Demo, Team Retro"
+      else if day == 18 then "Board Meeting"
+      else if day == 20 then "All Hands"
+      else if day == 22 then "Dentist"
+      else if day == 25 then "Project Deadline, Celebration"
+      else if day == 28 then "Code Review Day"
+      else ""
+    in let user-titles = user-event-titles-for-day day 0 (state-get "evt-count") ""
+    in let all-titles = if text-length builtin-title > 0 then (if text-length user-titles > 0 then builtin-title & ", " & user-titles else builtin-title) else (if text-length user-titles > 0 then user-titles else "No events")
+    in let cal = if day == 3 then "Personal"
+      else if day == 5 then "Work"
+      else if day == 12 then "Personal"
+      else if day == 22 then "Personal"
+      else "Work"
+    in widget-box "evt-detail" "event-detail" [
+      widget-label "ed-title" all-titles,
+      widget-label "ed-day" ("Day: " & show day),
+      widget-label "ed-cal" ("Calendar: " & cal),
+      widget-button "close-detail" "&#x2716; Close"
+    ]
+
 Section: Tree
 
   page-tree : Integer -> WidgetNode
@@ -185,21 +296,26 @@ Section: Tree
 
   sidebar-tree : Integer -> WidgetNode
   sidebar-tree (x) =
-    widget-box "sidebar" "sidebar" [
+    let show-form = state-get "event-form"
+    in let sel = state-get "selected-day"
+    in widget-box "sidebar" "sidebar" ([
       widget-label "brand" "CodexCalendar",
-      widget-button "new-event" "&#x2795; New Event",
-      widget-box "mini" "mini-cal" [
-        widget-label "mini-month" "June 2026",
-        widget-box "mini-grid" "mini-grid" (build-mini-dow 0 & build-mini-days 1 30 8 0)
+      widget-button "new-event" "&#x2795; New Event"]
+      & (if show-form == 1 then [event-form-widget 0] else [])
+      & (if sel > 0 then [event-detail-for-day sel] else [])
+      & [widget-box "mini" "mini-cal" [
+        widget-label "mini-month" (current-title 0),
+        widget-box "mini-grid" "mini-grid" (build-mini-dow 0 & build-mini-days 1 (days-in-month (state-get "cur-month") (state-get "cur-year")) 8 0)
       ],
       widget-box "cals" "cal-list" [
         widget-label "cal-hdr" "Calendars",
+        widget-button "toggle-all-cals" "Show All",
         cal-item "ci-personal" "#449dff" "Personal",
         cal-item "ci-work" "#2e7d32" "Work",
         cal-item "ci-family" "#e6a817" "Family",
         cal-item "ci-holidays" "#d32f2f" "Holidays"
-      ]
-    ]
+      ]]
+    )
 
   cal-item : Text, Text, Text -> WidgetNode
   cal-item (id) (color) (name) =
@@ -224,18 +340,18 @@ Section: Tree
       widget-button "prev" "&#x276E;",
       widget-button "today" "Today",
       widget-button "next" "&#x276F;",
-      widget-label "cal-title" "June 2026",
+      widget-label "cal-title" (current-title 0),
       widget-box "views" "view-btns" [
-        widget-button "v-month" "Month",
-        widget-button "v-week" "Week",
-        widget-button "v-day" "Day",
-        widget-button "v-agenda" "Agenda"
+        widget-box-click "v-month" (if view == 0 then "view-btn active" else "view-btn") [ widget-label "vm-l" "Month" ],
+        widget-box-click "v-week" (if view == 1 then "view-btn active" else "view-btn") [ widget-label "vw-l" "Week" ],
+        widget-box-click "v-day" (if view == 2 then "view-btn active" else "view-btn") [ widget-label "vd-l" "Day" ],
+        widget-box-click "v-agenda" (if view == 3 then "view-btn active" else "view-btn") [ widget-label "va-l" "Agenda" ]
       ]
     ]
 
   month-view : Integer -> WidgetNode
   month-view (x) =
-    widget-box "month" "month-grid" (build-dow-headers 0 & build-month-days 1 30 0)
+    widget-box "month" "month-grid" (build-dow-headers 0 & build-month-days 1 (days-in-month (state-get "cur-month") (state-get "cur-year")) 0)
 
   week-view : Integer -> WidgetNode
   week-view (x) =
@@ -251,7 +367,7 @@ Section: Tree
       widget-label "t-8" "8 AM",
       widget-label "ws-8-0" "", widget-label "ws-8-1" "", widget-label "ws-8-2" "", widget-label "ws-8-3" "", widget-label "ws-8-4" "", widget-label "ws-8-5" "", widget-label "ws-8-6" "",
       widget-label "t-9" "9 AM",
-      widget-label "ws-9-0" "", widget-label "ws-9-1" "Team Standup", widget-label "ws-9-2" "", widget-label "ws-9-3" "", widget-label "ws-9-4" "", widget-label "ws-9-5" "", widget-label "ws-9-6" "",
+      widget-label "ws-9-0" "", widget-label "ws-9-1" "Team Standup &#x1F501;", widget-label "ws-9-2" "", widget-label "ws-9-3" "", widget-label "ws-9-4" "", widget-label "ws-9-5" "", widget-label "ws-9-6" "",
       widget-label "t-10" "10 AM",
       widget-label "ws-10-0" "", widget-label "ws-10-1" "Design Review", widget-label "ws-10-2" "", widget-label "ws-10-3" "", widget-label "ws-10-4" "", widget-label "ws-10-5" "", widget-label "ws-10-6" "",
       widget-label "t-11" "11 AM",
@@ -261,7 +377,7 @@ Section: Tree
       widget-label "t-1" "1 PM",
       widget-label "ws-1-0" "", widget-label "ws-1-1" "", widget-label "ws-1-2" "", widget-label "ws-1-3" "", widget-label "ws-1-4" "", widget-label "ws-1-5" "", widget-label "ws-1-6" "",
       widget-label "t-2" "2 PM",
-      widget-label "ws-2-0" "", widget-label "ws-2-1" "", widget-label "ws-2-2" "", widget-label "ws-2-3" "", widget-label "ws-2-4" "Sprint Planning", widget-label "ws-2-5" "", widget-label "ws-2-6" "",
+      widget-label "ws-2-0" "", widget-label "ws-2-1" "", widget-label "ws-2-2" "", widget-label "ws-2-3" "", widget-label "ws-2-4" "Sprint Planning &#x1F501;", widget-label "ws-2-5" "", widget-label "ws-2-6" "",
       widget-label "t-3" "3 PM",
       widget-label "ws-3-0" "", widget-label "ws-3-1" "", widget-label "ws-3-2" "", widget-label "ws-3-3" "", widget-label "ws-3-4" "", widget-label "ws-3-5" "", widget-label "ws-3-6" "",
       widget-label "t-4" "4 PM",
@@ -275,7 +391,7 @@ Section: Tree
     widget-box "day" "day-view" [
       widget-label "t-7a" "7 AM", widget-label "dh-7" "",
       widget-label "t-8a" "8 AM", widget-label "dh-8" "",
-      widget-label "t-9a" "9 AM", widget-label "dh-9" "Team Standup (9:00 - 9:30)",
+      widget-label "t-9a" "9 AM", widget-label "dh-9" "Team Standup (9:00 - 9:30) &#x1F501;",
       widget-label "t-10a" "10 AM", widget-label "dh-10" "Design Review (10:00 - 11:00)",
       widget-label "t-11a" "11 AM", widget-label "dh-11" "",
       widget-label "t-12p" "12 PM", widget-label "dh-12" "Lunch (12:00 - 1:00)",
@@ -290,28 +406,90 @@ Section: Tree
   agenda-view : Integer -> WidgetNode
   agenda-view (x) =
     widget-box "agenda" "agenda" [
+      widget-label "ag-d0" "Wednesday, June 3",
+      agenda-entry "ag00" "10:00 AM" "#e6a817" "Doctor Appt" "Medical Center" "Personal",
+      widget-label "ag-d0b" "Friday, June 5",
+      agenda-entry "ag01" "9:00 AM" "#9c27b0" "Team Offsite" "Conference Center" "Work",
       widget-label "ag-d1" "Monday, June 8",
-      agenda-entry "ag0" "9:00 AM" "#449dff" "Team Standup" "Conf Room A" "Work",
+      agenda-entry-recurring "ag0" "9:00 AM" "#449dff" "Team Standup" "Conf Room A" "Work",
       agenda-entry "ag1" "10:00 AM" "#e65100" "Design Review" "Virtual" "Work",
       agenda-entry "ag2" "3:00 PM" "#449dff" "Product Demo" "Main Hall" "Work",
       agenda-entry "ag3" "5:00 PM" "#9c27b0" "Team Retro" "Conf Room B" "Work",
       widget-label "ag-d2" "Wednesday, June 10",
-      agenda-entry "ag4" "2:00 PM" "#2e7d32" "Sprint Planning" "Virtual" "Work",
+      agenda-entry-recurring "ag4" "2:00 PM" "#2e7d32" "Sprint Planning" "Virtual" "Work",
       widget-label "ag-d3" "Friday, June 12",
       agenda-entry "ag5" "12:00 PM" "#e6a817" "Lunch with Sarah" "Downtown Cafe" "Personal",
       widget-label "ag-d4" "Monday, June 15",
       agenda-entry "ag6" "3:00 PM" "#449dff" "Product Demo" "Main Hall" "Work",
       agenda-entry "ag7" "5:00 PM" "#9c27b0" "Team Retro" "Conf Room B" "Work",
+      widget-label "ag-d4b" "Thursday, June 18",
+      agenda-entry "ag12" "2:00 PM" "#d32f2f" "Board Meeting" "Board Room" "Work",
       widget-label "ag-d5" "Saturday, June 20",
       agenda-entry "ag8" "10:00 AM" "#d32f2f" "All Hands" "Auditorium" "Work",
       widget-label "ag-d6" "Monday, June 22",
       agenda-entry "ag9" "2:00 PM" "#e6a817" "Dentist" "Dr. Chen's Office" "Personal",
       widget-label "ag-d7" "Thursday, June 25",
       agenda-entry "ag10" "9:00 AM" "#d32f2f" "Project Deadline" "" "Work",
-      agenda-entry "ag11" "6:00 PM" "#2e7d32" "Celebration" "Rooftop Bar" "Work"
+      agenda-entry "ag11" "6:00 PM" "#2e7d32" "Celebration" "Rooftop Bar" "Work",
+      widget-label "ag-d8" "Sunday, June 28",
+      agenda-entry "ag13" "11:00 AM" "#449dff" "Code Review Day" "Virtual" "Work"
     ]
 
+Section: User Events
+
+  user-events-for-day : Integer, Integer, Integer, Text, List WidgetNode -> List WidgetNode
+  user-events-for-day (day) (i) (count) (prefix) (acc) =
+    if i >= count then acc
+    else let d = state-get ("evt-day-" & show i)
+    in if d == day then let title = state-get-text ("evt-title-" & show i)
+      in let evt = day-event (prefix & "u" & show i) title "#41af4e"
+      in user-events-for-day day (i + 1) count prefix (list-push acc evt)
+    else user-events-for-day day (i + 1) count prefix acc
+
+  save-event : Integer -> Integer
+  save-event (x) =
+    let title = state-get-text "new-evt-title"
+    in if text-length title == 0 then 0
+    else let count = state-get "evt-count"
+    in let sel = state-get "selected-day"
+    in let day = if sel > 0 then sel else 1
+    in let s1 = state-set-text ("evt-title-" & show count) title
+    in let s2 = state-set ("evt-day-" & show count) day
+    in let s3 = state-set-text ("evt-time-" & show count) (state-get-text "new-evt-time")
+    in let s4 = state-set-text ("evt-cal-" & show count) "personal"
+    in let s5 = state-set "evt-count" (count + 1)
+    in let s6 = state-set-text "new-evt-title" ""
+    in let s7 = state-set-text "new-evt-time" ""
+    in let s8 = state-set-render "event-form" 0
+    in 0
+
+  calendar-input : Text, Text -> Integer
+  calendar-input (id) (value) =
+    if id == "ef-title-input" then let s = state-set-text "new-evt-title" value in 0
+    else if id == "ef-time-input" then let s = state-set-text "new-evt-time" value in 0
+    else 0
+
 Section: Handlers
+
+  navigate-month : Integer -> Integer
+  navigate-month (dir) =
+    let m = state-get "cur-month"
+    in let y = state-get "cur-year"
+    in let nm = m + dir
+    in if nm < 1 then let s1 = state-set "cur-month" 12 in let s2 = state-set-render "cur-year" (y - 1) in 0
+    else if nm > 12 then let s1 = state-set "cur-month" 1 in let s2 = state-set-render "cur-year" (y + 1) in 0
+    else let s1 = state-set-render "cur-month" nm in 0
+
+  toggle-all-cals : Integer -> Integer
+  toggle-all-cals (x) =
+    let all-off = state-get "all-cals-off"
+    in let val = if all-off == 1 then 0 else 1
+    in let s1 = state-set "ci-personal" val
+    in let s2 = state-set "ci-work" val
+    in let s3 = state-set "ci-family" val
+    in let s4 = state-set "ci-holidays" val
+    in let s5 = state-set-render "all-cals-off" (1 - all-off)
+    in 0
 
   calendar-click : Text -> Integer
   calendar-click (id) =
@@ -319,11 +497,20 @@ Section: Handlers
     else if id == "v-week" then let s = state-set-render "view" 1 in 0
     else if id == "v-day" then let s = state-set-render "view" 2 in 0
     else if id == "v-agenda" then let s = state-set-render "view" 3 in 0
+    else if id == "new-event" then let s = state-set-render "event-form" (1 - state-get "event-form") in 0
+    else if id == "save-event" then save-event 0
+    else if id == "cancel-event" then let s = state-set-render "event-form" 0 in 0
+    else if id == "close-detail" then let s = state-set-render "selected-day" 0 in 0
+    else if id == "today" then let s1 = state-set "selected-day" 8 in let s2 = state-set "cur-month" 6 in let s3 = state-set-render "cur-year" 2026 in 0
+    else if id == "prev" then navigate-month (-1)
+    else if id == "next" then navigate-month 1
+    else if id == "toggle-all-cals" then toggle-all-cals 0
     else if id == "ci-personal" then let s = state-set-render "ci-personal" (1 - state-get "ci-personal") in 0
     else if id == "ci-work" then let s = state-set-render "ci-work" (1 - state-get "ci-work") in 0
     else if id == "ci-family" then let s = state-set-render "ci-family" (1 - state-get "ci-family") in 0
     else if id == "ci-holidays" then let s = state-set-render "ci-holidays" (1 - state-get "ci-holidays") in 0
-    else if text-starts-with id "md-" then let s = state-set-render "mini-selected" (id-num2 id + 1) in 0
+    else if text-starts-with id "md-" then let d = id-num id + 1 in let s1 = state-set "mini-selected" d in let s2 = state-set-render "selected-day" d in 0
+    else if text-starts-with id "dc-" then let d = id-num id + 1 in let s = state-set-render "selected-day" d in 0
     else 0
 
 Section: Entry
@@ -334,8 +521,17 @@ Section: Entry
   opening : [Console] Integer
   opening = act
     let t = inject-app-style calendar-theme calendar-css
+    in let s1 = state-set "cur-month" 6
+    in let s2 = state-set "cur-year" 2026
+    in let s3 = state-set "selected-day" 0
+    in let s4 = state-set "event-form" 0
+    in let s5 = state-set "all-cals-off" 0
+    in let s6 = state-set "evt-count" 0
+    in let s7 = state-set-text "new-evt-title" ""
+    in let s8 = state-set-text "new-evt-time" ""
     in let s = set-render render-calendar
     in let h = register-handlers no-pick calendar-click
+    in let hi = register-input-handler calendar-input
     in render-calendar 0
   end
 

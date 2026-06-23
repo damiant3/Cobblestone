@@ -1,0 +1,164 @@
+Chapter: TimeOfDay
+  cites Game chapter Color
+
+ Time-of-day system (inspired by CryEngine). A single float (hour
+ 0-24000 in milli-hours) drives the entire visual atmosphere. Sky
+ color, sun direction, ambient intensity, fog density, and light
+ color are all interpolated from keyframes on a spline. Fixed-point
+ (scale 1000).
+
+ We say:
+
+Section: Atmosphere Parameters
+
+  AtmosphereParams = record {
+    atm-sky-color : Rgb,
+    atm-sun-color : Rgb,
+    atm-sun-dir-x : Integer,
+    atm-sun-dir-y : Integer,
+    atm-sun-dir-z : Integer,
+    atm-sun-intensity : Integer,
+    atm-ambient : Integer,
+    atm-fog-density : Integer,
+    atm-fog-color : Rgb,
+    atm-exposure : Integer
+  }
+
+Section: Keyframe
+
+  TodKeyframe = record {
+    tk-hour : Integer,
+    tk-params : AtmosphereParams
+  }
+
+  TodCycle = record {
+    tod-keyframes : List TodKeyframe,
+    tod-count : Integer
+  }
+
+Section: Construction
+
+  tod-new : TodCycle
+  tod-new = TodCycle { tod-keyframes = [], tod-count = 0 }
+
+  tod-add-key : TodCycle, TodKeyframe -> TodCycle
+  tod-add-key (cycle) (kf) = TodCycle {
+    tod-keyframes = list-push (cycle.tod-keyframes) kf,
+    tod-count = cycle.tod-count + 1
+  }
+
+Section: Default Cycle
+
+  tod-default-cycle : TodCycle
+  tod-default-cycle =
+    let dawn = TodKeyframe { tk-hour = 6000, tk-params = AtmosphereParams {
+      atm-sky-color = rgb 255 180 120,
+      atm-sun-color = rgb 255 200 150,
+      atm-sun-dir-x = 1000, atm-sun-dir-y = 100, atm-sun-dir-z = 0,
+      atm-sun-intensity = 400,
+      atm-ambient = 300,
+      atm-fog-density = 200,
+      atm-fog-color = rgb 200 160 120,
+      atm-exposure = 800
+    }}
+    in let noon = TodKeyframe { tk-hour = 12000, tk-params = AtmosphereParams {
+      atm-sky-color = rgb 135 206 235,
+      atm-sun-color = rgb 255 255 240,
+      atm-sun-dir-x = 0, atm-sun-dir-y = -1000, atm-sun-dir-z = 0,
+      atm-sun-intensity = 1000,
+      atm-ambient = 500,
+      atm-fog-density = 50,
+      atm-fog-color = rgb 180 200 220,
+      atm-exposure = 1000
+    }}
+    in let dusk = TodKeyframe { tk-hour = 18000, tk-params = AtmosphereParams {
+      atm-sky-color = rgb 255 120 80,
+      atm-sun-color = rgb 255 140 60,
+      atm-sun-dir-x = -1000, atm-sun-dir-y = 100, atm-sun-dir-z = 0,
+      atm-sun-intensity = 500,
+      atm-ambient = 250,
+      atm-fog-density = 300,
+      atm-fog-color = rgb 200 130 80,
+      atm-exposure = 700
+    }}
+    in let midnight = TodKeyframe { tk-hour = 0, tk-params = AtmosphereParams {
+      atm-sky-color = rgb 10 10 30,
+      atm-sun-color = rgb 80 100 140,
+      atm-sun-dir-x = 0, atm-sun-dir-y = 1000, atm-sun-dir-z = 0,
+      atm-sun-intensity = 50,
+      atm-ambient = 80,
+      atm-fog-density = 100,
+      atm-fog-color = rgb 20 20 40,
+      atm-exposure = 300
+    }}
+    in tod-add-key (tod-add-key (tod-add-key (tod-add-key tod-new midnight) dawn) noon) dusk
+
+Section: Sampling
+
+  tod-sample : TodCycle, Integer -> AtmosphereParams
+  tod-sample (cycle) (hour) =
+    if cycle.tod-count == 0 then tod-default-noon
+    else if cycle.tod-count == 1 then (list-at (cycle.tod-keyframes) 0).tk-params
+    else let pair = tod-find-pair cycle hour 0
+    in let kf-a = list-at (cycle.tod-keyframes) (pair.tp-a)
+    in let kf-b = list-at (cycle.tod-keyframes) (pair.tp-b)
+    in let span = tod-hour-span (kf-a.tk-hour) (kf-b.tk-hour)
+    in let elapsed = tod-hour-span (kf-a.tk-hour) hour
+    in let t = if span == 0 then 0 else elapsed * 1000 / span
+    in tod-lerp-params (kf-a.tk-params) (kf-b.tk-params) t
+
+  TodPair = record { tp-a : Integer, tp-b : Integer }
+
+  tod-find-pair : TodCycle, Integer, Integer -> TodPair
+  tod-find-pair (cycle) (hour) (i) =
+    if i + 1 >= cycle.tod-count then TodPair { tp-a = cycle.tod-count - 1, tp-b = 0 }
+    else let next = list-at (cycle.tod-keyframes) (i + 1)
+    in if hour < next.tk-hour then TodPair { tp-a = i, tp-b = i + 1 }
+    else tod-find-pair cycle hour (i + 1)
+
+  tod-hour-span : Integer, Integer -> Integer
+  tod-hour-span (from) (to) =
+    if to >= from then to - from
+    else 24000 - from + to
+
+Section: Interpolation
+
+  tod-lerp-params : AtmosphereParams, AtmosphereParams, Integer -> AtmosphereParams
+  tod-lerp-params (a) (b) (t) =
+    let inv = 1000 - t
+    in AtmosphereParams {
+      atm-sky-color = tod-lerp-rgb (a.atm-sky-color) (b.atm-sky-color) t,
+      atm-sun-color = tod-lerp-rgb (a.atm-sun-color) (b.atm-sun-color) t,
+      atm-sun-dir-x = a.atm-sun-dir-x * inv / 1000 + b.atm-sun-dir-x * t / 1000,
+      atm-sun-dir-y = a.atm-sun-dir-y * inv / 1000 + b.atm-sun-dir-y * t / 1000,
+      atm-sun-dir-z = a.atm-sun-dir-z * inv / 1000 + b.atm-sun-dir-z * t / 1000,
+      atm-sun-intensity = a.atm-sun-intensity * inv / 1000 + b.atm-sun-intensity * t / 1000,
+      atm-ambient = a.atm-ambient * inv / 1000 + b.atm-ambient * t / 1000,
+      atm-fog-density = a.atm-fog-density * inv / 1000 + b.atm-fog-density * t / 1000,
+      atm-fog-color = tod-lerp-rgb (a.atm-fog-color) (b.atm-fog-color) t,
+      atm-exposure = a.atm-exposure * inv / 1000 + b.atm-exposure * t / 1000
+    }
+
+  tod-lerp-rgb : Rgb, Rgb, Integer -> Rgb
+  tod-lerp-rgb (a) (b) (t) =
+    let inv = 1000 - t
+    in rgb (a.cr * inv / 1000 + b.cr * t / 1000) (a.cg * inv / 1000 + b.cg * t / 1000) (a.cb * inv / 1000 + b.cb * t / 1000)
+
+  tod-default-noon : AtmosphereParams
+  tod-default-noon = AtmosphereParams {
+    atm-sky-color = rgb 135 206 235,
+    atm-sun-color = rgb 255 255 240,
+    atm-sun-dir-x = 0, atm-sun-dir-y = -1000, atm-sun-dir-z = 0,
+    atm-sun-intensity = 1000,
+    atm-ambient = 500,
+    atm-fog-density = 50,
+    atm-fog-color = rgb 180 200 220,
+    atm-exposure = 1000
+  }
+
+Section: Formatting
+
+  format-atmosphere : AtmosphereParams -> Text
+  format-atmosphere (a) = "sun=" & show (a.atm-sun-intensity) & " ambient=" & show (a.atm-ambient) & " fog=" & show (a.atm-fog-density) & " exp=" & show (a.atm-exposure)
+
+Page 1

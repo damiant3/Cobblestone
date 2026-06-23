@@ -1,0 +1,575 @@
+Chapter: RepoProtocolPersist
+  cites Foreword chapter Maybe
+  cites Foreword chapter Parse
+  cites Foreword chapter TextSearch
+  cites Encode chapter Hex
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Works chapter RepoProtocol
+  cites Works chapter Annotation
+  cites Works chapter Discussion
+
+ Persistent storage for the Codex repository protocol. Nine
+ fact kinds (30-38) are serialized as pipe-delimited text and
+ stored via DiskFacts, following the ServicesPersist pattern.
+ Pipe characters in field values are not supported.
+
+Section: Kind Constants
+
+  persist-kind-definition : Integer = 30
+  persist-kind-proof : Integer = 31
+  persist-kind-vouch : Integer = 32
+  persist-kind-policy : Integer = 33
+  persist-kind-capability : Integer = 34
+  persist-kind-annotation : Integer = 35
+  persist-kind-proposal : Integer = 36
+  persist-kind-verdict : Integer = 37
+  persist-kind-discussion : Integer = 38
+
+Section: Record Types
+
+ New record types for fact kinds that lack existing application
+ types. Kinds 35-38 serialize existing types from Annotation,
+ RepoProtocol, and Discussion.
+
+  SourceDefinition = record {
+    sd-hash : Text,
+    sd-path : Text,
+    sd-quire : Text,
+    sd-chapter : Text,
+    sd-signer : Text,
+    sd-signature : List Integer
+  }
+
+  RepoProof = record {
+    rp-hash : Text,
+    rp-claim : Text,
+    rp-evidence : Text,
+    rp-author : Text,
+    rp-timestamp : Integer
+  }
+
+  RepoVouch = record {
+    rv-voucher : Text,
+    rv-subject : Text,
+    rv-scope : Text,
+    rv-trust-level : Integer,
+    rv-timestamp : Integer
+  }
+
+  RepoPolicy = record {
+    rpy-name : Text,
+    rpy-target : Text,
+    rpy-rule : Text,
+    rpy-author : Text,
+    rpy-timestamp : Integer
+  }
+
+  RepoCap = record {
+    rc-name : Text,
+    rc-holder : Text,
+    rc-permissions : Text,
+    rc-expiry : Integer,
+    rc-timestamp : Integer
+  }
+
+Section: Helpers
+
+  join-with-comma : List Text, Integer, Integer, Text -> Text
+  join-with-comma (items) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else ","
+    in join-with-comma items (i + 1) len (acc & sep & list-at items i)
+
+  split-comma : Text -> List Text
+  split-comma (txt) =
+    if text-length txt == 0 then []
+    else text-split txt ","
+
+  parse-annotation-kind : Text -> AnnotationKind
+  parse-annotation-kind (s) =
+    if s == "rationale" then Rationale
+    else if s == "invariant" then Invariant
+    else if s == "warning" then Warning
+    else if s == "discovery" then Discovery
+    else if s == "doctrine" then Doctrine
+    else Todo
+
+  proposal-status-to-int : ProposalStatus -> Integer
+  proposal-status-to-int (s) = when s
+    is ProposalOpen -> 0
+    is ProposalAccepted -> 1
+    is ProposalRejected -> 2
+    is ProposalAmended -> 3
+
+  int-to-proposal-status : Integer -> ProposalStatus
+  int-to-proposal-status (n) =
+    if n == 0 then ProposalOpen
+    else if n == 1 then ProposalAccepted
+    else if n == 2 then ProposalRejected
+    else ProposalAmended
+
+  verdict-kind-to-int : VerdictKind -> Integer
+  verdict-kind-to-int (k) = when k
+    is Accept -> 0
+    is Reject -> 1
+    is Amend (note) -> 2
+    is Abstain -> 3
+
+Section: Definition Persistence (Kind 30)
+
+ Format: hash|path|quire|chapter|signer-fp|sig-hex
+ Unsigned entries omit the last two fields (backward compatible).
+
+  source-def-to-text : SourceDefinition -> Text
+  source-def-to-text (d) =
+    let sig-hex = bytes-to-hex d.sd-signature
+    in d.sd-hash & "|" & d.sd-path & "|" & d.sd-quire & "|" & d.sd-chapter
+    & "|" & d.sd-signer & "|" & sig-hex
+
+  source-def-from-text : Text -> Maybe SourceDefinition
+  source-def-from-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 4 then None
+    else let signer = if list-length parts >= 6 then list-at parts 4 else ""
+    in let sig = if list-length parts >= 6 then hex-decode (list-at parts 5) else []
+    in let def = SourceDefinition {
+      sd-hash = list-at parts 0,
+      sd-path = list-at parts 1,
+      sd-quire = list-at parts 2,
+      sd-chapter = list-at parts 3,
+      sd-signer = signer,
+      sd-signature = sig
+    }
+    in Just def
+
+  repo-persist-save-definition : DiskFactStore, SourceDefinition, Integer -> DiskFactStore
+  repo-persist-save-definition (store) (def) (timestamp) =
+    app-write-and-checkpoint store persist-kind-definition (source-def-to-text def) timestamp
+
+  repo-persist-load-last-definition : DiskFactStore -> Maybe SourceDefinition
+  repo-persist-load-last-definition (store) =
+    let found = app-scan-last store persist-kind-definition
+    in when found
+      is None -> None
+      is Just (txt) -> source-def-from-text txt
+
+  repo-persist-load-all-definitions : DiskFactStore -> List SourceDefinition
+  repo-persist-load-all-definitions (store) =
+    let texts = app-scan-all store persist-kind-definition
+    in parse-source-def-list texts 0 (list-length texts) []
+
+  parse-source-def-list : List Text, Integer, Integer, List SourceDefinition -> List SourceDefinition
+  parse-source-def-list (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = source-def-from-text (list-at texts i)
+    in when parsed
+      is Just (d) -> parse-source-def-list texts (i + 1) len (list-push acc d)
+      is None -> parse-source-def-list texts (i + 1) len acc
+
+Section: Proof Persistence (Kind 31)
+
+ Format: hash|claim|author|timestamp|evidence
+
+  repo-proof-to-text : RepoProof -> Text
+  repo-proof-to-text (p) =
+    p.rp-hash & "|" & p.rp-claim & "|"
+    & p.rp-author & "|" & show p.rp-timestamp & "|"
+    & p.rp-evidence
+
+  repo-proof-from-text : Text -> Maybe RepoProof
+  repo-proof-from-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 5 then None
+    else let proof = RepoProof {
+      rp-hash = list-at parts 0,
+      rp-claim = list-at parts 1,
+      rp-evidence = list-at parts 4,
+      rp-author = list-at parts 2,
+      rp-timestamp = parse-decimal-full (list-at parts 3)
+    }
+    in Just proof
+
+  repo-persist-save-proof : DiskFactStore, RepoProof, Integer -> DiskFactStore
+  repo-persist-save-proof (store) (proof) (timestamp) =
+    app-write-and-checkpoint store persist-kind-proof (repo-proof-to-text proof) timestamp
+
+  repo-persist-load-last-proof : DiskFactStore -> Maybe RepoProof
+  repo-persist-load-last-proof (store) =
+    let found = app-scan-last store persist-kind-proof
+    in when found
+      is None -> None
+      is Just (txt) -> repo-proof-from-text txt
+
+  repo-persist-load-all-proofs : DiskFactStore -> List RepoProof
+  repo-persist-load-all-proofs (store) =
+    let texts = app-scan-all store persist-kind-proof
+    in parse-proof-list texts 0 (list-length texts) []
+
+  parse-proof-list : List Text, Integer, Integer, List RepoProof -> List RepoProof
+  parse-proof-list (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = repo-proof-from-text (list-at texts i)
+    in when parsed
+      is Just (p) -> parse-proof-list texts (i + 1) len (list-push acc p)
+      is None -> parse-proof-list texts (i + 1) len acc
+
+Section: Vouch Persistence (Kind 32)
+
+ Format: voucher-fp|subject-fp|scope|trust-level|timestamp
+
+  repo-vouch-to-text : RepoVouch -> Text
+  repo-vouch-to-text (v) =
+    v.rv-voucher & "|" & v.rv-subject & "|"
+    & v.rv-scope & "|" & show v.rv-trust-level & "|"
+    & show v.rv-timestamp
+
+  repo-vouch-from-text : Text -> Maybe RepoVouch
+  repo-vouch-from-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 5 then None
+    else let vouch = RepoVouch {
+      rv-voucher = list-at parts 0,
+      rv-subject = list-at parts 1,
+      rv-scope = list-at parts 2,
+      rv-trust-level = parse-decimal-full (list-at parts 3),
+      rv-timestamp = parse-decimal-full (list-at parts 4)
+    }
+    in Just vouch
+
+  repo-persist-save-vouch : DiskFactStore, RepoVouch, Integer -> DiskFactStore
+  repo-persist-save-vouch (store) (vouch) (timestamp) =
+    app-write-and-checkpoint store persist-kind-vouch (repo-vouch-to-text vouch) timestamp
+
+  repo-persist-load-last-vouch : DiskFactStore -> Maybe RepoVouch
+  repo-persist-load-last-vouch (store) =
+    let found = app-scan-last store persist-kind-vouch
+    in when found
+      is None -> None
+      is Just (txt) -> repo-vouch-from-text txt
+
+  repo-persist-load-all-vouches : DiskFactStore -> List RepoVouch
+  repo-persist-load-all-vouches (store) =
+    let texts = app-scan-all store persist-kind-vouch
+    in parse-vouch-list texts 0 (list-length texts) []
+
+  parse-vouch-list : List Text, Integer, Integer, List RepoVouch -> List RepoVouch
+  parse-vouch-list (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = repo-vouch-from-text (list-at texts i)
+    in when parsed
+      is Just (v) -> parse-vouch-list texts (i + 1) len (list-push acc v)
+      is None -> parse-vouch-list texts (i + 1) len acc
+
+Section: Policy Persistence (Kind 33)
+
+ Format: name|target|author|timestamp|rule
+
+  repo-policy-to-text : RepoPolicy -> Text
+  repo-policy-to-text (p) =
+    p.rpy-name & "|" & p.rpy-target & "|"
+    & p.rpy-author & "|" & show p.rpy-timestamp & "|"
+    & p.rpy-rule
+
+  repo-policy-from-text : Text -> Maybe RepoPolicy
+  repo-policy-from-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 5 then None
+    else let pol = RepoPolicy {
+      rpy-name = list-at parts 0,
+      rpy-target = list-at parts 1,
+      rpy-rule = list-at parts 4,
+      rpy-author = list-at parts 2,
+      rpy-timestamp = parse-decimal-full (list-at parts 3)
+    }
+    in Just pol
+
+  repo-persist-save-policy : DiskFactStore, RepoPolicy, Integer -> DiskFactStore
+  repo-persist-save-policy (store) (pol) (timestamp) =
+    app-write-and-checkpoint store persist-kind-policy (repo-policy-to-text pol) timestamp
+
+  repo-persist-load-last-policy : DiskFactStore -> Maybe RepoPolicy
+  repo-persist-load-last-policy (store) =
+    let found = app-scan-last store persist-kind-policy
+    in when found
+      is None -> None
+      is Just (txt) -> repo-policy-from-text txt
+
+  repo-persist-load-all-policies : DiskFactStore -> List RepoPolicy
+  repo-persist-load-all-policies (store) =
+    let texts = app-scan-all store persist-kind-policy
+    in parse-policy-list texts 0 (list-length texts) []
+
+  parse-policy-list : List Text, Integer, Integer, List RepoPolicy -> List RepoPolicy
+  parse-policy-list (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = repo-policy-from-text (list-at texts i)
+    in when parsed
+      is Just (p) -> parse-policy-list texts (i + 1) len (list-push acc p)
+      is None -> parse-policy-list texts (i + 1) len acc
+
+Section: Capability Persistence (Kind 34)
+
+ Format: name|holder-fp|expiry|timestamp|permissions
+
+  repo-cap-to-text : RepoCap -> Text
+  repo-cap-to-text (c) =
+    c.rc-name & "|" & c.rc-holder & "|"
+    & show c.rc-expiry & "|" & show c.rc-timestamp & "|"
+    & c.rc-permissions
+
+  repo-cap-from-text : Text -> Maybe RepoCap
+  repo-cap-from-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 5 then None
+    else let cap = RepoCap {
+      rc-name = list-at parts 0,
+      rc-holder = list-at parts 1,
+      rc-permissions = list-at parts 4,
+      rc-expiry = parse-decimal-full (list-at parts 2),
+      rc-timestamp = parse-decimal-full (list-at parts 3)
+    }
+    in Just cap
+
+  repo-persist-save-capability : DiskFactStore, RepoCap, Integer -> DiskFactStore
+  repo-persist-save-capability (store) (cap) (timestamp) =
+    app-write-and-checkpoint store persist-kind-capability (repo-cap-to-text cap) timestamp
+
+  repo-persist-load-last-capability : DiskFactStore -> Maybe RepoCap
+  repo-persist-load-last-capability (store) =
+    let found = app-scan-last store persist-kind-capability
+    in when found
+      is None -> None
+      is Just (txt) -> repo-cap-from-text txt
+
+  repo-persist-load-all-capabilities : DiskFactStore -> List RepoCap
+  repo-persist-load-all-capabilities (store) =
+    let texts = app-scan-all store persist-kind-capability
+    in parse-cap-list texts 0 (list-length texts) []
+
+  parse-cap-list : List Text, Integer, Integer, List RepoCap -> List RepoCap
+  parse-cap-list (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = repo-cap-from-text (list-at texts i)
+    in when parsed
+      is Just (c) -> parse-cap-list texts (i + 1) len (list-push acc c)
+      is None -> parse-cap-list texts (i + 1) len acc
+
+Section: Annotation Persistence (Kind 35)
+
+ Format: hash|chapter|path|kind-name|author|timestamp|body
+
+  annotation-to-persist-text : Annotation -> Text
+  annotation-to-persist-text (a) =
+    let t = a.target
+    in a.hash & "|" & t.chapter & "|" & t.path & "|"
+    & annotation-kind-name a.kind & "|" & a.author & "|"
+    & show a.timestamp & "|" & a.body
+
+  annotation-from-persist-text : Text -> Maybe Annotation
+  annotation-from-persist-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 7 then None
+    else let ann = Annotation {
+      hash = list-at parts 0,
+      target = AnnotationTarget {
+        chapter = list-at parts 1,
+        path = list-at parts 2
+      },
+      kind = parse-annotation-kind (list-at parts 3),
+      author = list-at parts 4,
+      timestamp = parse-decimal-full (list-at parts 5),
+      body = list-at parts 6
+    }
+    in Just ann
+
+  repo-persist-save-annotation : DiskFactStore, Annotation, Integer -> DiskFactStore
+  repo-persist-save-annotation (store) (ann) (timestamp) =
+    app-write-and-checkpoint store persist-kind-annotation (annotation-to-persist-text ann) timestamp
+
+  repo-persist-load-last-annotation : DiskFactStore -> Maybe Annotation
+  repo-persist-load-last-annotation (store) =
+    let found = app-scan-last store persist-kind-annotation
+    in when found
+      is None -> None
+      is Just (txt) -> annotation-from-persist-text txt
+
+  repo-persist-load-all-annotations : DiskFactStore -> List Annotation
+  repo-persist-load-all-annotations (store) =
+    let texts = app-scan-all store persist-kind-annotation
+    in parse-annotation-persist-list texts 0 (list-length texts) []
+
+  parse-annotation-persist-list : List Text, Integer, Integer, List Annotation -> List Annotation
+  parse-annotation-persist-list (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = annotation-from-persist-text (list-at texts i)
+    in when parsed
+      is Just (a) -> parse-annotation-persist-list texts (i + 1) len (list-push acc a)
+      is None -> parse-annotation-persist-list texts (i + 1) len acc
+
+Section: Proposal Persistence (Kind 36)
+
+ Format: id|author-fp|chapter|path|timestamp|status-int|sig-hex|changed-csv|description|justification
+
+  proposal-to-persist-text : Proposal -> Text
+  proposal-to-persist-text (p) =
+    let t = p.target
+    in let status-int = proposal-status-to-int p.status
+    in let sig-hex = bytes-to-hex p.signature
+    in let defs-csv = join-with-comma p.changed-definitions 0 (list-length p.changed-definitions) ""
+    in p.id & "|" & p.author-fingerprint & "|"
+    & t.chapter & "|" & t.path & "|"
+    & show p.timestamp & "|" & show status-int & "|"
+    & sig-hex & "|" & defs-csv & "|"
+    & p.description & "|" & p.justification
+
+  proposal-from-persist-text : Text -> Maybe Proposal
+  proposal-from-persist-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 10 then None
+    else let target = AnnotationTarget {
+      chapter = list-at parts 2,
+      path = list-at parts 3
+    }
+    in let prop = Proposal {
+      id = list-at parts 0,
+      author-fingerprint = list-at parts 1,
+      target = target,
+      description = list-at parts 8,
+      justification = list-at parts 9,
+      changed-definitions = split-comma (list-at parts 7),
+      signature = hex-decode (list-at parts 6),
+      timestamp = parse-decimal-full (list-at parts 4),
+      status = int-to-proposal-status (parse-decimal-full (list-at parts 5))
+    }
+    in Just prop
+
+  repo-persist-save-proposal : DiskFactStore, Proposal, Integer -> DiskFactStore
+  repo-persist-save-proposal (store) (prop) (timestamp) =
+    app-write-and-checkpoint store persist-kind-proposal (proposal-to-persist-text prop) timestamp
+
+  repo-persist-load-last-proposal : DiskFactStore -> Maybe Proposal
+  repo-persist-load-last-proposal (store) =
+    let found = app-scan-last store persist-kind-proposal
+    in when found
+      is None -> None
+      is Just (txt) -> proposal-from-persist-text txt
+
+  repo-persist-load-all-proposals : DiskFactStore -> List Proposal
+  repo-persist-load-all-proposals (store) =
+    let texts = app-scan-all store persist-kind-proposal
+    in parse-proposal-list texts 0 (list-length texts) []
+
+  parse-proposal-list : List Text, Integer, Integer, List Proposal -> List Proposal
+  parse-proposal-list (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = proposal-from-persist-text (list-at texts i)
+    in when parsed
+      is Just (p) -> parse-proposal-list texts (i + 1) len (list-push acc p)
+      is None -> parse-proposal-list texts (i + 1) len acc
+
+Section: Verdict Persistence (Kind 37)
+
+ Format: id|proposal-id|author-fp|kind-int|amend-note|sig-hex|timestamp|reason
+
+  verdict-to-persist-text : Verdict -> Text
+  verdict-to-persist-text (v) =
+    let kind-int = verdict-kind-to-int v.kind
+    in let amend-note = when v.kind is Amend (note) -> note is otherwise -> ""
+    in let sig-hex = bytes-to-hex v.signature
+    in v.id & "|" & v.proposal-id & "|" & v.author-fingerprint & "|"
+    & show kind-int & "|" & amend-note & "|"
+    & sig-hex & "|" & show v.timestamp & "|" & v.reason
+
+  verdict-from-persist-text : Text -> Maybe Verdict
+  verdict-from-persist-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 8 then None
+    else let kind-int = parse-decimal-full (list-at parts 3)
+    in let kind = if kind-int == 0 then Accept
+      else if kind-int == 1 then Reject
+      else if kind-int == 2 then Amend (list-at parts 4)
+      else Abstain
+    in let verd = Verdict {
+      id = list-at parts 0,
+      proposal-id = list-at parts 1,
+      author-fingerprint = list-at parts 2,
+      kind = kind,
+      reason = list-at parts 7,
+      signature = hex-decode (list-at parts 5),
+      timestamp = parse-decimal-full (list-at parts 6)
+    }
+    in Just verd
+
+  repo-persist-save-verdict : DiskFactStore, Verdict, Integer -> DiskFactStore
+  repo-persist-save-verdict (store) (verd) (timestamp) =
+    app-write-and-checkpoint store persist-kind-verdict (verdict-to-persist-text verd) timestamp
+
+  repo-persist-load-last-verdict : DiskFactStore -> Maybe Verdict
+  repo-persist-load-last-verdict (store) =
+    let found = app-scan-last store persist-kind-verdict
+    in when found
+      is None -> None
+      is Just (txt) -> verdict-from-persist-text txt
+
+  repo-persist-load-all-verdicts : DiskFactStore -> List Verdict
+  repo-persist-load-all-verdicts (store) =
+    let texts = app-scan-all store persist-kind-verdict
+    in parse-verdict-list texts 0 (list-length texts) []
+
+  parse-verdict-list : List Text, Integer, Integer, List Verdict -> List Verdict
+  parse-verdict-list (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = verdict-from-persist-text (list-at texts i)
+    in when parsed
+      is Just (v) -> parse-verdict-list texts (i + 1) len (list-push acc v)
+      is None -> parse-verdict-list texts (i + 1) len acc
+
+Section: Discussion Persistence (Kind 38)
+
+ Format: hash|thread-id|author|timestamp|parent-hash|body
+
+  post-to-persist-text : Post -> Text
+  post-to-persist-text (p) =
+    p.hash & "|" & p.thread-id & "|" & p.author & "|"
+    & show p.timestamp & "|" & p.parent-hash & "|" & p.body
+
+  post-from-persist-text : Text -> Maybe Post
+  post-from-persist-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 6 then None
+    else let post = Post {
+      hash = list-at parts 0,
+      thread-id = list-at parts 1,
+      author = list-at parts 2,
+      body = list-at parts 5,
+      timestamp = parse-decimal-full (list-at parts 3),
+      parent-hash = list-at parts 4
+    }
+    in Just post
+
+  repo-persist-save-post : DiskFactStore, Post, Integer -> DiskFactStore
+  repo-persist-save-post (store) (post) (timestamp) =
+    app-write-and-checkpoint store persist-kind-discussion (post-to-persist-text post) timestamp
+
+  repo-persist-load-last-post : DiskFactStore -> Maybe Post
+  repo-persist-load-last-post (store) =
+    let found = app-scan-last store persist-kind-discussion
+    in when found
+      is None -> None
+      is Just (txt) -> post-from-persist-text txt
+
+  repo-persist-load-all-posts : DiskFactStore -> List Post
+  repo-persist-load-all-posts (store) =
+    let texts = app-scan-all store persist-kind-discussion
+    in parse-post-list texts 0 (list-length texts) []
+
+  parse-post-list : List Text, Integer, Integer, List Post -> List Post
+  parse-post-list (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = post-from-persist-text (list-at texts i)
+    in when parsed
+      is Just (p) -> parse-post-list texts (i + 1) len (list-push acc p)
+      is None -> parse-post-list texts (i + 1) len acc
+
+Page 1

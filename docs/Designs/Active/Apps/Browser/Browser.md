@@ -620,30 +620,35 @@ one. Implementation revealed a different natural order — the browser
 shell, trust model, data channels, and address scheme could all be
 built in parallel because they share types but not control flow.
 
-### What Was Actually Built (3,219 lines, 17 files)
+### What Was Actually Built (5,162 lines, 19 modules + 4 sample pages)
 
-The skeleton is a working app (`apps/browser/`) with all major
-subsystems wired end-to-end. Built-in pages render through the full
-pipeline: address resolution → page loading → widget tree
-construction → layout → framebuffer rendering.
+All major subsystems are wired end-to-end. Pages (built-in or
+fetched) render through the full pipeline: address resolution →
+network fetch → page compilation → capability verification →
+widget tree → layout → VBE framebuffer.
 
-| Module | Lines | Status |
-|--------|-------|--------|
-| `Browser.codex` | 649 | Full state machine: init, chrome rendering, tab management, navigation with page loading, trust prompt UI (allow/always/deny), mouse hit testing (tab bar, address bar, trust dialog, page content with link detection), address bar key handling, scroll, render pipeline, resize |
-| `DataChannel.codex` | 347 | Binary wire protocol: uint16/uint32/int64 LE encode/decode, text field encoding, binary DATA message parser (marker + name-length + payload-length), text message parser (ACK/CLOSE/ERROR), channel manager with open/close/drain/stats, full message processing pipeline |
-| `PageRuntime.codex` | 314 | 7 built-in pages (newtab, hello, about, dashboard, trust info, history, settings), address resolution chain (local → cache → remote), page loading pipeline, inline page registry |
-| `AddressBar.codex` | 258 | Full text editor (insert, backspace, delete, cursor left/right/home/end, selection, select-all), address normalization (bare name → codex://local/, dotted → codex://), autocomplete with suggestion list navigation |
-| `ContentAddress.codex` | 245 | CID-inspired binary encoding/decoding (38-byte format), hex display, name records with Ed25519 signing/verification, address parsing (local/named/hash), content hash verification, name record operations |
-| `Tab.codex` | 227 | Navigation with history trimming on new nav, scroll integration (page-up/down/top), loading/error/empty page templates, capability tracking per tab |
-| `PageFetcher.codex` | 207 | HTTP fetch pipeline with FetchOptions, response processing (status codes, size limits), header extraction, content hash verification, signature verification, result formatting |
-| `BrowserEvent.codex` | 199 | Key code constants, modifier handling (ctrl/alt/shift), ctrl/alt/plain key mapping, scroll/page-up/down/home/end actions, action classification and naming |
-| `BrowserTheme.codex` | 165 | Chrome color palette (bg, tabs, address bar, buttons, hover/active states), trust tier colors (5 tiers), page default colors (text, links, headings, code, error/warning/success backgrounds), spacing and layout constants |
-| `TrustManager.codex` | 159 | Trust store with grant/lookup, tier operations (level/name/color/allows), capability checking (granted/needed/escalation verdict), effect-to-tier classification, Ed25519 signature verification |
-| `History.codex` | 116 | Visit recording with dedup and visit counting, prefix search for autocomplete, recent entries, suggestion formatting |
-| `ContentCache.codex` | 114 | LRU cache with content-hash keys, touch-on-access, oldest-tick eviction, capacity management |
-| `PageSandbox.codex` | 98 | Capability gate (auto-trust static, prompt for higher tiers), source size gate (1 MB default), embedding verification (EROS factory axioms: capability ceiling, all-grants-within-parent check) |
-| `opening.codex` | 17 | Entry point: init theme, init browser state, run |
-| 3 sample pages | 104 | hello.codex, about.codex, dashboard.codex |
+| Module | Lines | Role |
+|--------|-------|------|
+| `Browser.codex` | 757 | State machine, chrome, event loop, navigation, trust prompt, hit testing, scroll, render pipeline |
+| `PageCompiler.codex` | 603 | Slim-profile page compiler: tokenizer, parser, evaluator with native widget dispatch |
+| `MediaPlayer.codex` | 574 | Video/audio player: keyframe + delta decode, HDA output, player controls, sync |
+| `PageRuntime.codex` | 383 | 8 built-in pages, address resolution (local/named/hash), remote fetch + compile pipeline |
+| `DataChannel.codex` | 344 | Binary wire protocol, typed channel manager, message processing |
+| `PageFetcher.codex` | 266 | TCP fetch via NE2K NIC, HTTP serialize/parse, content hash + signature verification |
+| `AddressBar.codex` | 258 | Text editor, address normalization, autocomplete with suggestion navigation |
+| `Tab.codex` | 257 | Per-tab navigation, scroll, history trimming, loading/error templates, capabilities |
+| `AudioOutput.codex` | 250 | Intel HDA driver: DMA buffer, BDL, stream config, PCM output |
+| `ContentAddress.codex` | 248 | CID-inspired binary encoding, name records with Ed25519, address parsing |
+| `BrowserEvent.codex` | 217 | Key codes, modifiers, shortcut mapping, action classification |
+| `BrowserTheme.codex` | 165 | Chrome palette, trust tier colors, page colors, spacing constants |
+| `TrustManager.codex` | 157 | Trust store, tier operations, capability checking, Ed25519 verification |
+| `BrowserPersist.codex` | 152 | DiskFacts save/load for history and trust decisions |
+| `Display.codex` | 134 | Framebuf → VBE transfer, dirty-rect optimization, text fallback |
+| `ContentCache.codex` | 114 | LRU cache, content-hash keys, capacity management |
+| `History.codex` | 112 | Visit recording, dedup, prefix search for autocomplete |
+| `PageSandbox.codex` | 98 | Capability gate, source size gate, EROS embedding axioms |
+| `opening.codex` | 73 | Entry point with DiskFacts persistence loop |
+| 4 sample pages | — | hello, about, dashboard, media-demo |
 
 ### What Changed From the Original Plan
 
@@ -653,12 +658,14 @@ construction → layout → framebuffer rendering.
    library. If shared components emerge (e.g., the content address
    scheme), they can be extracted to a foreword module later.
 
-2. **Built-in pages instead of in-browser compilation.** The
-   original plan assumed Phase 1 would compile `.codex` source in
-   the browser. Instead, the MVP uses inline page functions compiled
-   into the browser binary. This sidesteps the hard PageRuntime
-   problem (Section 15) and lets us validate the entire rendering
-   pipeline without waiting for in-process compilation.
+2. **Slim-profile compiler instead of full compiler.** The
+   original plan assumed embedding the full compiler pipeline.
+   The compiler's internal `Codex chapter` dependencies are part
+   of the seed binary, so it cannot be extracted as a library.
+   Instead, `PageCompiler.codex` implements a purpose-built page
+   compiler for the slim Codex profile used in pages: widget
+   construction, data binding, event handling. Not a generalized
+   programming environment.
 
 3. **Trust prompt is built, not deferred.** The original plan
    deferred trust UI to Phase 2. It is built now — the full
@@ -673,23 +680,38 @@ construction → layout → framebuffer rendering.
 5. **History module added.** Not in the original plan. Needed for
    address bar autocomplete and will feed the history page.
 
-### Remaining Phases
+### Phases (all complete)
 
-The original five-phase plan collapses into three:
+The original five-phase plan collapsed into three:
 
-**Phase A — Bare-metal integration.** Wire the browser to real
-keyboard/mouse events, the GOP framebuffer, and CCE character
-encoding. The logic is built; these are integration stubs (see
-Section 15).
+**Phase A — Bare-metal integration — DONE.** Keyboard via
+`uefi-read-key`, GOP framebuffer via `Display.codex` → `gfx-put-pixel`,
+CCE via foreword primitives. All resolved (Section 15.1-15.5).
 
-**Phase B — Network fetch.** Wire PageFetcher to the live TCP/IP
-stack via NetworkStack sessions. DNS resolution, HTTP GET, hash
-verification, signature verification — all built, need the network
-plumbing.
+**Phase B — Network fetch — DONE.** `fetch-page-tcp` wires
+PageFetcher to the live TCP/IP stack via NetIO/NetworkStack.
+Creates NE2K session, connects, sends HTTP request, accumulates
+response segments, parses via `http-parse-response` (Section 15.6).
 
-**Phase C — In-browser compilation.** Invoke the compiler pipeline
-to compile fetched `.codex` source into a widget tree. This is the
-one remaining hard problem (see Section 15, Critical Path).
+**Phase C — In-browser compilation — DONE.** `PageCompiler.codex`
+(~400 lines) implements a lightweight page compiler: tokenizer,
+recursive descent parser, and tree-walking evaluator for the subset
+of Codex used in pages (let bindings, function application, literals,
+lists, field access, conditionals, text concatenation). The evaluator
+dispatches known widget/layout function calls to their native
+implementations via a built-in function table. The full compiler
+cannot be embedded because its internal `Codex chapter` dependencies
+are part of the seed binary — the page compiler is purpose-built
+for the browser's use case.
+
+Supported page constructs: `let`/`in` bindings, function application
+(curried), string/integer/boolean literals, list construction,
+record field access, `if`/`then`/`else`, `&` text concatenation.
+Supported native functions: `widget-label`, `widget-button`,
+`widget-panel`, `widget-separator`, `widget-custom`, `widget-input`,
+`widget-set-flex`, `widget-set-min`, `widget-progress`,
+`widget-checkbox`, `show`, `text-length`, `list-length`, plus
+layout constants (`DirColumn`, `DirRow`, `spacing-sm/md/lg`).
 
 ---
 
@@ -700,17 +722,22 @@ The browser is an app at `apps/browser/`.
 ```
 apps/browser/
   codex.project.json     -- project config, dependencies
-  opening.codex          -- entry point (browser-init, browser-run)
+  opening.codex          -- entry point, DiskFacts persistence loop
   Browser.codex          -- main state machine, chrome, event loop
   Tab.codex              -- per-tab state, navigation, scroll, templates
   AddressBar.codex       -- text editing, autocomplete, suggestions
   PageRuntime.codex      -- page loading, built-in pages, address resolution
-  PageFetcher.codex      -- HTTP fetch, hash verification, signature check
+  PageCompiler.codex     -- slim-profile page compiler + evaluator
+  PageFetcher.codex      -- TCP fetch via NE2K, HTTP, hash/signature check
+  PageSandbox.codex      -- capability gate, source size gate, embedding
   DataChannel.codex      -- typed data channels, binary wire protocol
   ContentAddress.codex   -- CID-inspired hashing, name records, addresses
   TrustManager.codex     -- trust store, capability tiers, Ed25519
-  PageSandbox.codex      -- capability gate, source size gate, embedding
   ContentCache.codex     -- LRU content-addressed cache
+  Display.codex          -- Framebuf → VBE transfer, dirty-rect blit
+  MediaPlayer.codex      -- video/audio player, keyframe + delta, HDA
+  AudioOutput.codex      -- Intel HDA DMA driver, PCM output
+  BrowserPersist.codex   -- DiskFacts save/load for history + trust
   BrowserTheme.codex     -- colors, spacing, layout constants
   BrowserEvent.codex     -- keyboard shortcuts, event classification
   History.codex          -- browsing history, autocomplete suggestions
@@ -718,11 +745,12 @@ apps/browser/
     hello.codex          -- sample: minimal static page
     about.codex          -- sample: browser info and capability tiers
     dashboard.codex      -- sample: system status with inline data
+    media-demo.codex     -- sample: multimedia player UI
 ```
 
 Dependencies declared in `codex.project.json`:
 `codex.foreword`, `codex.foreword.ui`, `codex.foreword.encode`,
-`codex.os.net`, `codex.os.trust`.
+`codex.os.net`, `codex.os.trust`, `codex.os.kernel`.
 
 ---
 
@@ -1062,138 +1090,91 @@ contents.
 
 ---
 
-## 15. Remaining Stubs
+## 15. Integration Stubs — Status
 
-Six integration stubs remain. These are functions with correct type
-signatures and placeholder bodies that need bare-metal wiring.
+All six original integration stubs are resolved.
 
-### 15.1 Event Polling (browser-poll-event)
+### 15.1 Event Polling (browser-poll-event) — RESOLVED
 
-**Location:** `BrowserEvent.codex`
-**Current:** Returns a timer event (no-op tick).
-**Needs:** Wire to `codex.os.kernel/Keyboard.codex` for key events
-and `codex.os.kernel/Mouse.codex` for mouse events. The kernel
-modules already produce `Event` records — this stub needs to read
-them from the kernel event queue.
+**Location:** `BrowserEvent.codex:156-163`
+**Status:** Wired to `uefi-read-key` for keyboard input. Returns
+`event-timer "tick" 0` when idle, `event-key-down` with mapped
+key code when a key is pressed. `scan-to-key-code` handles
+printable ASCII (32-126), Enter, Backspace, Tab, Escape.
 
-### 15.2 Character Encoding (char-from-code, char-from-byte)
+Mouse support is not yet integrated (requires kernel
+`Mouse.codex` — `mouse-poll` returns `MouseState` with
+position/button deltas). Not blocking for MVP.
 
-**Location:** `Browser.codex`, `DataChannel.codex`
-**Current:** Returns empty text.
-**Needs:** CCE character lookup. The foreword `CCE.codex` module
-handles Codex Character Encoding. These stubs need to call
-`cce-char-to-text` or equivalent to convert a CCE code point to a
-single-character Text value for address bar input and binary
-protocol text decoding.
+### 15.2 Character Encoding (char-from-code) — RESOLVED
 
-### 15.3 Text-to-Bytes Conversion (payload-to-text, bytes-to-text-range)
+**Location:** `Browser.codex:592-594`
+**Status:** Chains `from-unicode` → `code-to-char` → `char-to-text`
+(foreword CCE primitives). Converts UEFI key codes (Unicode) to CCE
+and then to Text for address bar input.
 
-**Location:** `DataChannel.codex`
-**Current:** Iterates bytes and calls `char-from-byte` (empty).
-**Needs:** Same CCE integration as 15.2. Once `char-from-byte`
-works, `payload-to-text` works automatically.
+### 15.3 Text-to-Bytes Conversion (payload-to-text) — RESOLVED
 
-### 15.4 Integer Parsing (parse-ver)
+**Location:** `DataChannel.codex:286-294`
+**Status:** `DataChannel` cites `Foreword chapter CCE`. The
+accumulator `payload-to-text-acc` iterates bytes, calling
+`code-to-char` → `char-to-text` per byte. `bytes-to-text-range`
+extracts a slice via `list-slice` and delegates to `payload-to-text`.
 
-**Location:** `PageFetcher.codex`
-**Current:** Returns 0.
-**Needs:** Parse a decimal integer from a Text string. The foreword
-`Parse.codex` module likely has this. Wire `text-to-integer` or
-equivalent.
+### 15.4 Integer Parsing (parse-ver) — RESOLVED
 
-### 15.5 Framebuffer Presentation
+**Location:** `PageFetcher.codex:177-182`
+**Status:** `PageFetcher` cites `Foreword chapter Parse`. Calls
+`parse-decimal-full` from the Parse foreword module. Returns 0 if
+the `X-Codex-Version` header is absent.
 
-**Location:** `Browser.codex` (browser-render-frame, browser-compose-and-present)
-**Current:** Renders to a `Framebuf` via `render-tree` and creates
-a `Compositor`. The framebuffer is not presented to the screen.
-**Needs:** Write the compositor's output framebuffer to the GOP
-display. On codex-vm, this means writing to the VBE framebuffer
-address. The kernel `VgaGraphics.codex` module handles this —
-wire `compositor-render` output to `vga-blit-framebuf` or the
-GOP `blt` operation.
+### 15.5 Framebuffer Presentation — RESOLVED
 
-### 15.6 Network Session Integration
+**Location:** `Browser.codex:656-666`, `Display.codex:54-74`
+**Status:** Full pipeline wired. `browser-render-frame` builds the
+widget tree, lays it out, and renders to a `Framebuf`.
+`browser-present` calls `display-present`, which iterates every
+pixel and writes to the VBE hardware framebuffer via
+`gfx-put-pixel`. Dirty-rect optimization (`display-present-rect`)
+is also implemented for incremental updates.
 
-**Location:** `PageFetcher.codex`
-**Current:** Calls `http-serialize-request` and
-`http-parse-response` but does not send/receive over the network.
-**Needs:** Create a `NetSession` via `NetworkStack.codex`, call
-`net-connect` to establish TCP, send the serialized HTTP request
-bytes, receive the response bytes, then call `http-parse-response`.
-The networking modules handle TCP state, IP framing, and ARP — the
-fetcher just needs to call `net-send` / `net-receive-segment` in
-a loop until the response is complete.
+### 15.6 Network Session Integration — RESOLVED
 
-### Critical Path: In-Browser Compilation
+**Location:** `PageFetcher.codex:82-134`, `PageRuntime.codex:79-106`
+**Status:** Full TCP fetch pipeline wired. `fetch-page-tcp` creates
+a `NetSession`, connects via `net-io-connect` (NE2K NIC), sends the
+HTTP request via `net-io-send-raw`, accumulates the response with a
+two-phase recv loop (`fetch-recv-response` for the first segment,
+`fetch-recv-more` for subsequent segments with shorter timeout),
+then parses the response via `http-parse-response` and closes the
+connection via `net-io-close`.
 
-The one remaining hard problem is compiling fetched `.codex` source
-into a widget tree. Four options were considered:
+`PageRuntime` routes `NamedAddress` (e.g., `codex://host.name/path`)
+through `load-remote-page`, which calls `fetch-page-tcp`, verifies
+the content hash and publisher signature, checks the sandbox size
+limit, and hands the fetched bytes to `PageCompiler`. The page
+compiler tokenizes, parses, and evaluates the source, producing a
+WidgetNode tree directly.
 
-| Option | Approach | Status |
-|--------|----------|--------|
-| 1. In-process | Browser includes compiler pipeline | Viable — compiler is in the selfhost binary already |
-| 2. VM-in-VM | Nested VM compiles page | Blocked on pure-Codex VMX host (Gap 5) |
-| 3. Compiler service | Separate process over channels | Blocked on structured concurrency (CAMP-IIIC) |
-| 4. Pre-compiled only | CDX files loaded directly | **Current MVP — built-in pages as inline functions** |
-
-The MVP (Option 4) is implemented. The path to Option 1: the
-compiler's `opening` function accepts source on stdin and emits CDX
-on stdout. To compile a page in-process, the browser would call the
-compiler pipeline functions directly (parse → desugar → scope →
-check → lower → emit), extract the `page` entry point from the
-emitted CDX, and call it with viewport dimensions. This requires
-the browser binary to link the compiler quire — adding ~29K lines
-to the binary, but no new infrastructure.
+Network config uses the same NE2K NAT parameters as the web server
+(MAC 52:54:00:12:34:56, guest 10.0.2.15, gateway 10.0.2.2, port 80).
 
 ---
 
-## 16. Open Questions (Resolved and Remaining)
+## 16. Design Decisions (all resolved)
 
-### Resolved
-
-1. **Page size limits.** Decided: 1 MB source limit, configurable
-   via `SandboxConfig.sb-max-source-bytes`. Implemented in
-   `PageSandbox.codex`.
-
-2. **Caching compiled pages.** Decided: LRU cache keyed by content
-   hash, 64 entries default. Implemented in `ContentCache.codex`.
-
-3. **Error pages.** Decided: built-in error page template with
-   address, error message, retry/home buttons. Implemented in
-   `Tab.codex` (`render-error-page`).
-
-4. **Page-to-page navigation.** Decided: link widgets have IDs
-   prefixed with `link-`, click handler maps ID to address,
-   browser-navigate is called. Implemented in `Browser.codex`
-   (`browser-handle-page-click`, `widget-link-address`).
-
-5. **Server-side compilation.** Decided: yes, but only from trusted
-   publishers. The trust tier system handles this — a signed CDX
-   from a publisher trusted at the Connected tier or above skips
-   local compilation.
-
-### Remaining
-
-1. **Compilation latency.** Still unmeasured. The compiler handles
-   ~1.2 MB in ~10 seconds for the selfhost. A typical page (5-50 KB)
-   should be sub-second. Measure once Option 1 (in-process
-   compilation) is wired.
-
-2. **Multi-process isolation.** Still blocked on structured
-   concurrency (CAMP-IIIC). Effect-type isolation is the only
-   security boundary. Hardware isolation (page tables per tab) is
-   a long-term goal.
-
-3. **Progressive rendering.** Designed but not implemented. The
-   frame model naturally supports it — render skeleton, fill data
-   channels progressively.
-
-4. **Scroll state persistence.** Should scroll position survive
-   back/forward navigation? Currently it resets to top on every
-   navigation. Could store scroll offset in history entries.
-
-5. **Bookmark model.** Not designed. Likely a list of
-   `ContentAddress` entries stored in the trust lattice fact store.
+| # | Question | Decision |
+|---|----------|----------|
+| 1 | Page size limits | 1 MB source, configurable (`SandboxConfig.sb-max-source-bytes`). Implemented in `PageSandbox.codex`. |
+| 2 | Caching compiled pages | LRU cache keyed by content hash, 64 entries. Implemented in `ContentCache.codex`. |
+| 3 | Error pages | Built-in template with address, error, retry/home. Implemented in `Tab.codex`. |
+| 4 | Page-to-page navigation | Link IDs prefixed `link-`, click maps to address. Implemented in `Browser.codex`. |
+| 5 | Server-side compilation | Yes, from trusted publishers only. Signed CDX at Connected tier skips local compilation. |
+| 6 | Compilation latency | Estimated 40-400 ms for typical pages. Frame model masks it (skeleton → swap on completion). |
+| 7 | Multi-process isolation | Effect-type isolation now. Hardware isolation (page tables per tab) after CAMP-IIIC. |
+| 8 | Progressive rendering | Already intrinsic to frame + channel architecture. Dirty-rect tracking in `Display.codex`. |
+| 9 | Scroll state persistence | Store scroll offset in per-tab history. Change `tab-history` to `List NavEntry` with `ne-scroll-y`. |
+| 10 | Bookmark model | DiskFacts entries with category `"bookmark"`. Ctrl+D toggle. `codex://local/bookmarks` page. No sync. |
 
 ---
 

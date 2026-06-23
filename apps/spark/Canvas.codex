@@ -19,7 +19,7 @@ Section: Types
   CanvasLayer = record {
     cl-name : Text,
     cl-pixels : Framebuf,
-    cl-opacity : Integer,
+    cl-opacity : Real,
     cl-visible : Boolean,
     cl-blend : BlendMode,
     cl-locked : Boolean
@@ -41,7 +41,7 @@ Section: Construction
     let base-layer = CanvasLayer {
       cl-name = "Background",
       cl-pixels = fb-new w h bg,
-      cl-opacity = 1000,
+      cl-opacity = 1.0,
       cl-visible = True,
       cl-blend = BlendNormal,
       cl-locked = False
@@ -62,7 +62,7 @@ Section: Layer Management
     let layer = CanvasLayer {
       cl-name = name,
       cl-pixels = fb-new (cv.cv-width) (cv.cv-height) 0,
-      cl-opacity = 1000,
+      cl-opacity = 1.0,
       cl-visible = True,
       cl-blend = BlendNormal,
       cl-locked = False
@@ -91,7 +91,7 @@ Section: Layer Management
     in let updated = __record-set layer "cl-visible" vis
     in __record-set cv "cv-layers" (list-set-at (cv.cv-layers) idx updated)
 
-  canvas-set-layer-opacity : Canvas2D, Integer, Integer -> Canvas2D
+  canvas-set-layer-opacity : Canvas2D, Integer, Real -> Canvas2D
   canvas-set-layer-opacity (cv) (idx) (opacity) =
     let layer = list-at (cv.cv-layers) idx
     in let updated = __record-set layer "cl-opacity" opacity
@@ -126,7 +126,7 @@ Section: Compositing
     in let fb2 = if layer.cl-visible then canvas-composite fb (layer.cl-pixels) (layer.cl-opacity) (layer.cl-blend) 0 (cv.cv-width * cv.cv-height) else fb
     in canvas-flatten-loop cv fb2 (i + 1)
 
-  canvas-composite : Framebuf, Framebuf, Integer, BlendMode, Integer, Integer -> Framebuf
+  canvas-composite : Framebuf, Framebuf, Real, BlendMode, Integer, Integer -> Framebuf
   canvas-composite (dst) (src) (opacity) (mode) (i) (total) =
     if i >= total then dst
     else let sc = list-at (src.fb-pixels) i
@@ -136,7 +136,7 @@ Section: Compositing
       in Framebuf { fb-width = dst.fb-width, fb-height = dst.fb-height, fb-pixels = list-set-at (dst.fb-pixels) i blended }
     in canvas-composite fb2 src opacity mode (i + 1) total
 
-  canvas-blend-pixel : Integer, Integer, Integer, BlendMode -> Integer
+  canvas-blend-pixel : Integer, Integer, Real, BlendMode -> Integer
   canvas-blend-pixel (dst) (src) (opacity) (mode) =
     let sr = src / 65536
     in let sg = src / 256 - sr * 256
@@ -147,9 +147,9 @@ Section: Compositing
     in let br = canvas-blend-channel dr sr mode
     in let bg2 = canvas-blend-channel dg sg mode
     in let bb = canvas-blend-channel db sb mode
-    in let fr = dr + (br - dr) * opacity / 1000
-    in let fg = dg + (bg2 - dg) * opacity / 1000
-    in let fb2 = db + (bb - db) * opacity / 1000
+    in let fr = dr + real-to-int (real-from-int (br - dr) * opacity)
+    in let fg = dg + real-to-int (real-from-int (bg2 - dg) * opacity)
+    in let fb2 = db + real-to-int (real-from-int (bb - db) * opacity)
     in cv-clamp fr 0 255 * 65536 + cv-clamp fg 0 255 * 256 + cv-clamp fb2 0 255
 
   canvas-blend-channel : Integer, Integer, BlendMode -> Integer

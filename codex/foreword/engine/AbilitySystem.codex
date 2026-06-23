@@ -1,0 +1,203 @@
+Chapter: AbilitySystem
+  cites Engine chapter GameplayTags
+  cites Foreword chapter Maybe
+
+ Gameplay ability system (inspired by Unreal GAS). Abilities have
+ activation requirements (required/blocked tags), costs, cooldowns,
+ and apply gameplay effects that modify attributes. Effects can be
+ instant, durational, or infinite, with stacking policies. All
+ gating is tag-based — no hard-coded enums.
+
+ We say:
+
+Section: Attributes
+
+  AttributeSet = record {
+    attr-health : Integer,
+    attr-max-health : Integer,
+    attr-mana : Integer,
+    attr-max-mana : Integer,
+    attr-attack : Integer,
+    attr-defense : Integer,
+    attr-speed : Integer,
+    attr-values : List Integer,
+    attr-count : Integer
+  }
+
+  attr-default : AttributeSet
+  attr-default = AttributeSet {
+    attr-health = 1000, attr-max-health = 1000,
+    attr-mana = 500, attr-max-mana = 500,
+    attr-attack = 100, attr-defense = 50, attr-speed = 100,
+    attr-values = [], attr-count = 0
+  }
+
+  attr-modify : AttributeSet, Integer, Integer -> AttributeSet
+  attr-modify (attrs) (attr-idx) (delta) =
+    when attr-idx
+      is 0 -> let new-hp = gas-clamp (attrs.attr-health + delta) 0 (attrs.attr-max-health) in __record-set attrs "attr-health" new-hp
+      is 1 -> __record-set attrs "attr-max-health" (attrs.attr-max-health + delta)
+      is 2 -> let new-mp = gas-clamp (attrs.attr-mana + delta) 0 (attrs.attr-max-mana) in __record-set attrs "attr-mana" new-mp
+      is 3 -> __record-set attrs "attr-max-mana" (attrs.attr-max-mana + delta)
+      is 4 -> __record-set attrs "attr-attack" (attrs.attr-attack + delta)
+      is 5 -> __record-set attrs "attr-defense" (attrs.attr-defense + delta)
+      is 6 -> __record-set attrs "attr-speed" (attrs.attr-speed + delta)
+      is otherwise -> attrs
+
+Section: Gameplay Effects
+
+  EffectDuration =
+    | Instant
+    | Durational (Integer)
+    | Infinite
+
+  StackPolicy =
+    | StackNone
+    | StackCount (Integer)
+    | StackRefresh
+
+  AttributeModifier = record {
+    am-attr-idx : Integer,
+    am-delta : Integer
+  }
+
+  GameplayEffect = record {
+    ge-name : Text,
+    ge-duration : EffectDuration,
+    ge-stacking : StackPolicy,
+    ge-modifiers : List AttributeModifier,
+    ge-grant-tags : TagContainer,
+    ge-remove-tags : TagContainer
+  }
+
+  ge-instant : Text, List AttributeModifier -> GameplayEffect
+  ge-instant (name) (mods) = GameplayEffect {
+    ge-name = name, ge-duration = Instant, ge-stacking = StackNone,
+    ge-modifiers = mods, ge-grant-tags = tc-empty, ge-remove-tags = tc-empty
+  }
+
+  ge-durational : Text, Integer, List AttributeModifier, TagContainer -> GameplayEffect
+  ge-durational (name) (duration) (mods) (grant) = GameplayEffect {
+    ge-name = name, ge-duration = Durational duration, ge-stacking = StackRefresh,
+    ge-modifiers = mods, ge-grant-tags = grant, ge-remove-tags = tc-empty
+  }
+
+Section: Active Effects
+
+  ActiveEffect = record {
+    ae-effect : GameplayEffect,
+    ae-remaining : Integer,
+    ae-stacks : Integer
+  }
+
+  ActiveEffects = record {
+    aes-list : List ActiveEffect,
+    aes-count : Integer
+  }
+
+  aes-empty : ActiveEffects
+  aes-empty = ActiveEffects { aes-list = [], aes-count = 0 }
+
+  aes-apply : ActiveEffects, AttributeSet, GameplayEffect -> ActiveEffects
+  aes-apply (aes) (attrs) (fx) =
+    when fx.ge-duration
+      is Instant -> aes
+      is Durational (dur) ->
+        let ae = ActiveEffect { ae-effect = fx, ae-remaining = dur, ae-stacks = 1 }
+        in ActiveEffects { aes-list = list-push (aes.aes-list) ae, aes-count = aes.aes-count + 1 }
+      is Infinite ->
+        let ae = ActiveEffect { ae-effect = fx, ae-remaining = -1, ae-stacks = 1 }
+        in ActiveEffects { aes-list = list-push (aes.aes-list) ae, aes-count = aes.aes-count + 1 }
+
+  aes-tick : ActiveEffects, Integer -> ActiveEffects
+  aes-tick (aes) (dt) = gas-tick-loop (aes.aes-list) dt 0 (aes.aes-count) (ActiveEffects { aes-list = [], aes-count = 0 })
+
+  gas-tick-loop : List ActiveEffect, Integer, Integer, Integer, ActiveEffects -> ActiveEffects
+  gas-tick-loop (effects) (dt) (i) (n) (acc) =
+    if i >= n then acc
+    else let ae = list-at effects i
+    in if ae.ae-remaining == -1 then ActiveEffects { aes-list = list-push (acc.aes-list) ae, aes-count = acc.aes-count + 1 }
+    else let new-rem = ae.ae-remaining - dt
+    in if new-rem <= 0 then gas-tick-loop effects dt (i + 1) n acc
+    else let updated = ActiveEffect { ae-effect = ae.ae-effect, ae-remaining = new-rem, ae-stacks = ae.ae-stacks }
+    in gas-tick-loop effects dt (i + 1) n (ActiveEffects { aes-list = list-push (acc.aes-list) updated, aes-count = acc.aes-count + 1 })
+
+Section: Abilities
+
+  GameplayAbility = record {
+    ga-name : Text,
+    ga-required-tags : TagContainer,
+    ga-blocked-tags : TagContainer,
+    ga-cost-mana : Integer,
+    ga-cooldown : Integer,
+    ga-effects : List GameplayEffect
+  }
+
+  AbilityState = record {
+    abs-cooldown-remaining : Integer
+  }
+
+  abs-ready : AbilityState
+  abs-ready = AbilityState { abs-cooldown-remaining = 0 }
+
+  abs-on-cooldown : AbilityState -> Boolean
+  abs-on-cooldown (s) = s.abs-cooldown-remaining > 0
+
+  abs-tick : AbilityState, Integer -> AbilityState
+  abs-tick (s) (dt) =
+    if s.abs-cooldown-remaining <= 0 then s
+    else AbilityState { abs-cooldown-remaining = s.abs-cooldown-remaining - dt }
+
+Section: Activation Check
+
+  ActivationResult =
+    | CanActivate
+    | BlockedByTags
+    | BlockedByCooldown
+    | BlockedByCost
+
+  ability-can-activate : GameplayAbility, TagContainer, AttributeSet, AbilityState -> ActivationResult
+  ability-can-activate (ability) (owner-tags) (attrs) (state) =
+    if abs-on-cooldown state then BlockedByCooldown
+    else if attrs.attr-mana < ability.ga-cost-mana then BlockedByCost
+    else if ability.ga-required-tags.tc-count > 0 then
+      if tc-has-all owner-tags (ability.ga-required-tags) then
+        if ability.ga-blocked-tags.tc-count > 0 then
+          if tc-has-none owner-tags (ability.ga-blocked-tags) then CanActivate
+          else BlockedByTags
+        else CanActivate
+      else BlockedByTags
+    else if ability.ga-blocked-tags.tc-count > 0 then
+      if tc-has-none owner-tags (ability.ga-blocked-tags) then CanActivate
+      else BlockedByTags
+    else CanActivate
+
+Section: Effect Application
+
+  gas-apply-instant : AttributeSet, GameplayEffect -> AttributeSet
+  gas-apply-instant (attrs) (fx) = gas-apply-mods attrs (fx.ge-modifiers) 0 (list-length (fx.ge-modifiers))
+
+  gas-apply-mods : AttributeSet, List AttributeModifier, Integer, Integer -> AttributeSet
+  gas-apply-mods (attrs) (mods) (i) (n) =
+    if i >= n then attrs
+    else let m = list-at mods i
+    in gas-apply-mods (attr-modify attrs (m.am-attr-idx) (m.am-delta)) mods (i + 1) n
+
+Section: Helpers
+
+  gas-clamp : Integer, Integer, Integer -> Integer
+  gas-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Formatting
+
+  format-attrs : AttributeSet -> Text
+  format-attrs (a) = "HP:" & show (a.attr-health) & "/" & show (a.attr-max-health) & " MP:" & show (a.attr-mana) & "/" & show (a.attr-max-mana) & " ATK:" & show (a.attr-attack) & " DEF:" & show (a.attr-defense)
+
+  format-activation : ActivationResult -> Text
+  format-activation (r) = when r
+    is CanActivate -> "ready"
+    is BlockedByTags -> "blocked-by-tags"
+    is BlockedByCooldown -> "on-cooldown"
+    is BlockedByCost -> "no-mana"
+
+Page 1

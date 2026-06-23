@@ -1,0 +1,89 @@
+Chapter: PunctualIoT
+  cites Foreword chapter Console
+  cites Punctual chapter IntOps
+  cites Punctual chapter BitOps
+  cites Punctual chapter Saturate
+  cites Punctual chapter Endian
+
+ Prove that an IoT sensor-read-to-packet-encode path can be
+ entirely punctual: no heap, no recursion, bounded instruction
+ count. Every function here is punctual or calls only punctual
+ functions and safe builtins.
+
+Section: Sensor Processing
+
+  SensorReading = record {
+    raw-adc : Integer between 0 and 4095,
+    channel : Integer between 0 and 7
+  }
+
+  ThreatLevel =
+    | ThreatNone
+    | ThreatLow
+    | ThreatMedium
+    | ThreatHigh
+    | ThreatCritical
+
+  punctual classify-threat : Integer -> ThreatLevel
+  classify-threat (raw) =
+    if raw < 512 then ThreatNone
+    else if raw < 1024 then ThreatLow
+    else if raw < 2048 then ThreatMedium
+    else if raw < 3072 then ThreatHigh
+    else ThreatCritical
+
+  punctual threat-to-integer : ThreatLevel -> Integer
+  threat-to-integer (t) =
+    when t
+      is ThreatNone -> 0
+      is ThreatLow -> 1
+      is ThreatMedium -> 2
+      is ThreatHigh -> 3
+      is ThreatCritical -> 4
+
+  punctual scale-adc-to-celsius : Integer -> Integer
+  scale-adc-to-celsius (raw) =
+    let shifted = raw * 150
+    in shifted / 4095
+
+  punctual encode-telemetry-byte : Integer, Integer, Integer -> Integer
+  encode-telemetry-byte (channel) (temp) (threat) =
+    let ch = bit-and channel 7
+    in let t = int-clamp 0 255 temp
+    in let thr = bit-and threat 7
+    in bit-or (bit-shl ch 5) (bit-or (bit-shl thr 2) (bit-and t 3))
+
+  punctual checksum-byte : Integer, Integer -> Integer
+  checksum-byte (a) (b) = bit-and (a + b) #FF
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+   let raw1 = 2500
+   in let raw2 = 400
+   in let raw3 = 3800
+   in let t1 = classify-threat raw1
+   in let t2 = classify-threat raw2
+   in let t3 = classify-threat raw3
+   in let temp1 = scale-adc-to-celsius raw1
+   in let temp2 = scale-adc-to-celsius raw2
+   in let temp3 = scale-adc-to-celsius raw3
+   in let byte1 = encode-telemetry-byte 0 temp1 (threat-to-integer t1)
+   in let byte2 = encode-telemetry-byte 1 temp2 (threat-to-integer t2)
+   in let byte3 = encode-telemetry-byte 2 temp3 (threat-to-integer t3)
+   in let ck = checksum-byte (checksum-byte byte1 byte2) byte3
+   in act
+    print-line-uni ("threat-2500: " & show (threat-to-integer t1))
+    print-line-uni ("threat-400: " & show (threat-to-integer t2))
+    print-line-uni ("threat-3800: " & show (threat-to-integer t3))
+    print-line-uni ("temp-2500: " & show temp1)
+    print-line-uni ("temp-400: " & show temp2)
+    print-line-uni ("temp-3800: " & show temp3)
+    print-line-uni ("byte1: " & show byte1)
+    print-line-uni ("byte2: " & show byte2)
+    print-line-uni ("byte3: " & show byte3)
+    print-line-uni ("checksum: " & show ck)
+   end
+  end
+
+Page 1

@@ -1,0 +1,227 @@
+Chapter: UsbHid
+  cites Kernel chapter Usb
+
+ USB HID class driver. Scans configuration descriptors for HID
+ interfaces, builds GET_REPORT and SET_REPORT control transfers,
+ and provides raw HID report send/receive for vendor-specific
+ interfaces (QMK raw HID on usage page 0xFF60). The xHCI transfer
+ ring handles actual I/O -- this module builds the protocol framing.
+
+Section: HID Constants
+
+  hid-class : Integer = 3
+  hid-subclass-none : Integer = 0
+  hid-subclass-boot : Integer = 1
+  hid-protocol-keyboard : Integer = 1
+  hid-protocol-mouse : Integer = 2
+
+  hid-desc-type-hid : Integer = 33
+  hid-desc-type-report : Integer = 34
+
+  hid-req-get-report : Integer = 1
+  hid-req-get-idle : Integer = 2
+  hid-req-get-protocol : Integer = 3
+  hid-req-set-report : Integer = 9
+  hid-req-set-idle : Integer = 10
+  hid-req-set-protocol : Integer = 11
+
+  hid-report-type-input : Integer = 1
+  hid-report-type-output : Integer = 2
+  hid-report-type-feature : Integer = 3
+
+Section: HID Interface
+
+  HidInterface = record {
+    hi-number : Integer,
+    hi-subclass : Integer,
+    hi-protocol : Integer,
+    hi-ep-in-addr : Integer,
+    hi-ep-out-addr : Integer,
+    hi-ep-in-max : Integer,
+    hi-ep-out-max : Integer,
+    hi-report-size : Integer
+  }
+
+  hid-interface-empty : HidInterface
+  hid-interface-empty = HidInterface {
+    hi-number = 0, hi-subclass = 0, hi-protocol = 0,
+    hi-ep-in-addr = 0, hi-ep-out-addr = 0,
+    hi-ep-in-max = 0, hi-ep-out-max = 0,
+    hi-report-size = 64
+  }
+
+Section: HID Device
+
+  HidDevice = record {
+    hd-vendor : Integer,
+    hd-product : Integer,
+    hd-slot : Integer,
+    hd-interfaces : List HidInterface,
+    hd-interface-count : Integer,
+    hd-keyboard-if : Integer,
+    hd-raw-if : Integer
+  }
+
+  hid-device-new : Integer, Integer, Integer -> HidDevice
+  hid-device-new (vendor) (product) (slot) = HidDevice {
+    hd-vendor = vendor,
+    hd-product = product,
+    hd-slot = slot,
+    hd-interfaces = [],
+    hd-interface-count = 0,
+    hd-keyboard-if = -1,
+    hd-raw-if = -1
+  }
+
+Section: Interface Scanning
+
+  hid-scan-interfaces : List Integer, Integer -> List HidInterface
+  hid-scan-interfaces (config-desc) (total-len) =
+    hid-scan-loop config-desc 0 total-len [] None
+
+  hid-scan-loop : List Integer, Integer, Integer, List HidInterface, Maybe HidInterface -> List HidInterface
+  hid-scan-loop (desc) (offset) (total) (acc) (current) =
+    if offset >= total then
+      when current is Just (iface) -> list-push acc iface is None -> acc
+    else let desc-len = list-at desc offset
+    in let desc-type = list-at desc (offset + 1)
+    in if desc-len == 0 then acc
+    else if desc-type == 4 then
+      let iface = usb-parse-interface desc offset
+      in if iface.if-class == hid-class then
+        let new-hid = HidInterface {
+          hi-number = iface.if-number,
+          hi-subclass = iface.if-subclass,
+          hi-protocol = iface.if-protocol,
+          hi-ep-in-addr = 0, hi-ep-out-addr = 0,
+          hi-ep-in-max = 0, hi-ep-out-max = 0,
+          hi-report-size = 64
+        }
+        in let acc2 = when current is Just (prev) -> list-push acc prev is None -> acc
+        in hid-scan-loop desc (offset + desc-len) total acc2 (Just new-hid)
+      else hid-scan-loop desc (offset + desc-len) total acc current
+    else if desc-type == 5 then
+      let ep = usb-parse-endpoint desc offset
+      in when current
+        is Just (iface) -> hid-scan-loop desc (offset + desc-len) total acc (Just (hid-add-endpoint iface ep))
+        is None -> hid-scan-loop desc (offset + desc-len) total acc current
+    else hid-scan-loop desc (offset + desc-len) total acc current
+
+  hid-add-endpoint : HidInterface, UsbEndpoint -> HidInterface
+  hid-add-endpoint (iface) (ep) =
+    if ep.ep-direction == usb-ep-dir-in then
+      __record-set (__record-set iface "hi-ep-in-addr" (ep.ep-address)) "hi-ep-in-max" (ep.ep-max-packet)
+    else __record-set (__record-set iface "hi-ep-out-addr" (ep.ep-address)) "hi-ep-out-max" (ep.ep-max-packet)
+
+Section: Interface Classification
+
+  hid-classify-device : HidDevice, List HidInterface -> HidDevice
+  hid-classify-device (dev) (interfaces) =
+    let dev2 = __record-set (__record-set dev "hd-interfaces" interfaces) "hd-interface-count" (list-length interfaces)
+    in hid-classify-loop dev2 interfaces 0 (list-length interfaces)
+
+  hid-classify-loop : HidDevice, List HidInterface, Integer, Integer -> HidDevice
+  hid-classify-loop (dev) (interfaces) (i) (n) =
+    if i >= n then dev
+    else let iface = list-at interfaces i
+    in let dev2 = if iface.hi-protocol == hid-protocol-keyboard then __record-set dev "hd-keyboard-if" i else dev
+    in let dev3 = if iface.hi-subclass == hid-subclass-none then
+      if iface.hi-ep-out-addr > 0 then __record-set dev2 "hd-raw-if" i else dev2
+    else dev2
+    in hid-classify-loop dev3 interfaces (i + 1) n
+
+Section: Control Transfer Setup Packets
+
+  hid-setup-get-report : Integer, Integer, Integer, Integer -> UsbSetupPacket
+  hid-setup-get-report (report-type) (report-id) (interface-num) (length) =
+    UsbSetupPacket {
+      sp-request-type = 161,
+      sp-request = hid-req-get-report,
+      sp-value = bit-or (bit-shl report-type 8) report-id,
+      sp-index = interface-num,
+      sp-length = length
+    }
+
+  hid-setup-set-report : Integer, Integer, Integer, Integer -> UsbSetupPacket
+  hid-setup-set-report (report-type) (report-id) (interface-num) (length) =
+    UsbSetupPacket {
+      sp-request-type = 33,
+      sp-request = hid-req-set-report,
+      sp-value = bit-or (bit-shl report-type 8) report-id,
+      sp-index = interface-num,
+      sp-length = length
+    }
+
+  hid-setup-set-idle : Integer, Integer -> UsbSetupPacket
+  hid-setup-set-idle (interface-num) (duration) =
+    UsbSetupPacket {
+      sp-request-type = 33,
+      sp-request = hid-req-set-idle,
+      sp-value = bit-shl duration 8,
+      sp-index = interface-num,
+      sp-length = 0
+    }
+
+  hid-setup-set-protocol : Integer, Integer -> UsbSetupPacket
+  hid-setup-set-protocol (interface-num) (protocol) =
+    UsbSetupPacket {
+      sp-request-type = 33,
+      sp-request = hid-req-set-protocol,
+      sp-value = protocol,
+      sp-index = interface-num,
+      sp-length = 0
+    }
+
+  hid-setup-get-hid-descriptor : Integer, Integer -> UsbSetupPacket
+  hid-setup-get-hid-descriptor (interface-num) (length) =
+    UsbSetupPacket {
+      sp-request-type = 129,
+      sp-request = usb-req-get-descriptor,
+      sp-value = bit-shl hid-desc-type-report 8,
+      sp-index = interface-num,
+      sp-length = length
+    }
+
+Section: Raw HID Report Building
+
+  hid-raw-report : Integer, List Integer -> List Integer
+  hid-raw-report (size) (data) = hid-pad-report data 0 size []
+
+  hid-pad-report : List Integer, Integer, Integer, List Integer -> List Integer
+  hid-pad-report (data) (i) (size) (acc) =
+    if i >= size then acc
+    else let byte = if i < list-length data then list-at data i else 0
+    in hid-pad-report data (i + 1) size (list-push acc byte)
+
+Section: Queries
+
+  hid-has-keyboard : HidDevice -> Boolean
+  hid-has-keyboard (dev) = dev.hd-keyboard-if >= 0
+
+  hid-has-raw : HidDevice -> Boolean
+  hid-has-raw (dev) = dev.hd-raw-if >= 0
+
+  hid-get-raw-interface : HidDevice -> HidInterface
+  hid-get-raw-interface (dev) =
+    if dev.hd-raw-if < 0 then hid-interface-empty
+    else list-at (dev.hd-interfaces) (dev.hd-raw-if)
+
+  hid-get-keyboard-interface : HidDevice -> HidInterface
+  hid-get-keyboard-interface (dev) =
+    if dev.hd-keyboard-if < 0 then hid-interface-empty
+    else list-at (dev.hd-interfaces) (dev.hd-keyboard-if)
+
+Section: Formatting
+
+  format-hid-interface : HidInterface -> Text
+  format-hid-interface (iface) =
+    "if" & show (iface.hi-number) & " sub=" & show (iface.hi-subclass) & " proto=" & show (iface.hi-protocol)
+    & " ep-in=" & show (iface.hi-ep-in-addr) & " ep-out=" & show (iface.hi-ep-out-addr)
+
+  format-hid-device : HidDevice -> Text
+  format-hid-device (dev) =
+    show (dev.hd-vendor) & ":" & show (dev.hd-product)
+    & " slot=" & show (dev.hd-slot) & " ifs=" & show (dev.hd-interface-count)
+    & " kbd=" & show (dev.hd-keyboard-if) & " raw=" & show (dev.hd-raw-if)
+
+Page 1

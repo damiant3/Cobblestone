@@ -1,0 +1,452 @@
+Chapter: Arm64PeWriter
+  cites Codex chapter Lists
+  cites Common chapter ByteHelpers
+  cites Foreword chapter Arm64Encoder
+
+ ARM64 PE32+ UEFI application builder. Converts ARM64 ELF wire
+ output (code + rodata + function table) into a PE32+ binary
+ bootable on ARM64 UEFI firmware (Oracle Cloud, QEMU AAVMF).
+
+Section: Stub Helpers
+
+  a64pe-emit : List Integer, List Integer -> List Integer
+  a64pe-emit (acc) (insn) = acc & insn
+
+  a64pe-patch-insn : List Integer, Integer, List Integer -> List Integer
+  a64pe-patch-insn (code) (insn-idx) (new-insn) =
+   let byte-off = insn-idx * 4
+   in let b0 = list-at new-insn 0
+   in let b1 = list-at new-insn 1
+   in let b2 = list-at new-insn 2
+   in let b3 = list-at new-insn 3
+   in let c1 = list-set-at code byte-off b0
+   in let c2 = list-set-at c1 (byte-off + 1) b1
+   in let c3 = list-set-at c2 (byte-off + 2) b2
+   in list-set-at c3 (byte-off + 3) b3
+
+ The UEFI entry stub is emitted as ARM64 instructions via the
+ encoder. On entry, UEFI passes x0=ImageHandle, x1=SystemTable.
+ The stub calls ExitBootServices, sets up identity-mapped page
+ tables, configures MAIR/TCR/SCTLR, then jumps to the kernel.
+
+Section: PE Format Constants
+
+  a64pe-machine-arm64 : Integer = 43620
+  a64pe-magic-pe32plus : Integer = 523
+  a64pe-subsystem-efi-app : Integer = 10
+  a64pe-section-code : Integer = 1610612768
+  a64pe-section-idata-read : Integer = 1107296320
+  a64pe-dll-chars-nx : Integer = 352
+  a64pe-file-alignment : Integer = 512
+  a64pe-section-alignment : Integer = 4096
+  a64pe-header-size : Integer = 512
+  a64pe-kernel-base : Integer = #40100000
+
+Section: DOS Header
+
+  a64pe-dos-header : List Integer
+  a64pe-dos-header =
+   [77, 90] & pad-zeros 58 & write-i32 128 & pad-zeros (128 - 64)
+
+Section: COFF Header
+
+  a64pe-coff-header : Integer -> List Integer
+  a64pe-coff-header (optional-hdr-size) =
+   write-i16 a64pe-machine-arm64
+   & write-i16 2
+   & write-i32 0
+   & write-i32 0
+   & write-i32 0
+   & write-i16 optional-hdr-size
+   & write-i16 518
+
+Section: Optional Header
+
+  a64pe-optional-header : Integer, Integer, Integer, Integer, Integer -> List Integer
+  a64pe-optional-header (code-size) (entry-rva) (image-size) (reloc-rva) (reloc-size) =
+   write-i16 a64pe-magic-pe32plus
+   & [0, 0]
+   & write-i32 code-size
+   & write-i32 a64pe-file-alignment
+   & write-i32 0
+   & write-i32 entry-rva
+   & write-i32 a64pe-section-alignment
+   & write-i64 0
+   & write-i32 a64pe-section-alignment
+   & write-i32 a64pe-file-alignment
+   & write-i16 0 & write-i16 0
+   & write-i16 0 & write-i16 0
+   & write-i16 0 & write-i16 0
+   & write-i32 0
+   & write-i32 image-size
+   & write-i32 a64pe-header-size
+   & write-i32 0
+   & write-i16 a64pe-subsystem-efi-app
+   & write-i16 0
+   & pad-zeros 32
+   & write-i32 0
+   & write-i32 16
+   & pad-zeros 40
+   & write-i32 reloc-rva
+   & write-i32 reloc-size
+   & pad-zeros 80
+
+Section: Section Headers
+
+  a64pe-text-section-header : Integer, Integer -> List Integer
+  a64pe-text-section-header (virtual-size) (raw-size) =
+   [46, 116, 101, 120, 116, 0, 0, 0]
+   & write-i32 virtual-size
+   & write-i32 a64pe-section-alignment
+   & write-i32 raw-size
+   & write-i32 a64pe-header-size
+   & write-i32 0
+   & write-i32 0
+   & write-i16 0
+   & write-i16 0
+   & write-i32 a64pe-section-code
+
+  a64pe-reloc-section-header : Integer, Integer, Integer -> List Integer
+  a64pe-reloc-section-header (virtual-size) (rva) (raw-offset) =
+   [46, 114, 101, 108, 111, 99, 0, 0]
+   & write-i32 virtual-size
+   & write-i32 rva
+   & write-i32 a64pe-file-alignment
+   & write-i32 raw-offset
+   & write-i32 0
+   & write-i32 0
+   & write-i16 0
+   & write-i16 0
+   & write-i32 a64pe-section-idata-read
+
+  a64pe-reloc-dummy : List Integer
+  a64pe-reloc-dummy =
+   write-i32 0 & write-i32 8
+
+Section: ARM64 UEFI Entry Stub
+
+ On UEFI entry: x0 = ImageHandle, x1 = SystemTable.
+ SystemTable->BootServices is at offset 96 (0x60).
+ BootServices->GetMemoryMap is at offset 56 (0x38).
+ BootServices->ExitBootServices is at offset 232 (0xE8).
+ BootServices->AllocatePages is at offset 40 (0x28).
+
+ The stub:
+ 1. Saves callee-saved regs and SystemTable
+ 2. Calls AllocatePages for kernel region at 0x100000
+ 3. Copies text + rodata to allocated pages
+ 4. Calls ExitBootServices
+ 5. Sets up identity-mapped page tables (4-level, 4KB granule)
+ 6. Configures MAIR_EL1, TCR_EL1, TTBR0_EL1, SCTLR_EL1
+ 7. Sets SP, x28 (heap), branches to kernel opening
+
+  a64pe-stub-prolog : List Integer
+  a64pe-stub-prolog =
+   arm64-sub-imm 31 31 96
+   & arm64-stp 29 30 31 0
+   & arm64-mov 29 31
+   & arm64-stp 19 20 31 16
+   & arm64-stp 21 22 31 32
+   & arm64-stp 23 24 31 48
+   & arm64-mov 19 0
+   & arm64-mov 20 1
+   & arm64-bl 4
+   & arm64-mov 23 30
+
+  a64pe-stub-print-char : Integer -> List Integer
+  a64pe-stub-print-char (ch) =
+   arm64-sub-imm 31 31 16
+   & arm64-movz 9 ch 0
+   & arm64-strb 9 31 0
+   & arm64-movz 9 0 0
+   & arm64-strb 9 31 1
+   & arm64-strb 9 31 2
+   & arm64-strb 9 31 3
+   & arm64-ldr 0 20 64
+   & arm64-mov 24 0
+   & arm64-mov 1 31
+   & arm64-ldr 9 24 8
+   & arm64-blr 9
+   & arm64-add-imm 31 31 16
+
+  a64pe-stub-save-boot-services : List Integer
+  a64pe-stub-save-boot-services =
+   arm64-ldr 21 20 96
+
+  a64pe-stub-alloc-kernel-pages : Integer -> List Integer
+  a64pe-stub-alloc-kernel-pages (pages) =
+   arm64-sub-imm 31 31 16
+   & arm64-movz 0 2 0
+   & arm64-movz 1 1 0
+   & arm64-li 2 pages
+   & arm64-li 9 a64pe-kernel-base
+   & arm64-str 9 31 0
+   & arm64-mov 3 31
+   & arm64-ldr 9 21 40
+   & arm64-blr 9
+   & arm64-add-imm 31 31 16
+
+  a64pe-stub-copy-text : Integer, Integer, Integer -> List Integer
+  a64pe-stub-copy-text (text-off) (text-size) (bl-off) =
+   arm64-li 9 a64pe-kernel-base
+   & a64pe-stub-adr-self 10 text-off bl-off
+   & arm64-li 11 text-size
+   & a64pe-stub-memcpy 9 10 11
+
+  a64pe-stub-copy-rodata : Integer, Integer, Integer, Integer -> List Integer
+  a64pe-stub-copy-rodata (rodata-off) (rodata-size) (data-vaddr) (bl-off) =
+   if rodata-size == 0 then []
+   else arm64-li 9 data-vaddr
+   & a64pe-stub-adr-self 10 rodata-off bl-off
+   & arm64-li 11 rodata-size
+   & a64pe-stub-memcpy 9 10 11
+
+  a64pe-stub-adr-self : Integer, Integer, Integer -> List Integer
+  a64pe-stub-adr-self (rd) (offset) (bl-off) =
+   arm64-li rd (offset - bl-off)
+   & arm64-add rd rd 23
+
+  a64pe-stub-memcpy : Integer, Integer, Integer -> List Integer
+  a64pe-stub-memcpy (dst) (src) (count) =
+   let i = []
+   in let i = i & arm64-movz 12 0 0
+   in let loop = list-length i / 4
+   in let i = a64pe-emit i (arm64-cmp 12 count)
+   in let exit-idx = list-length i / 4
+   in let i = a64pe-emit i arm64-nop
+   in let i = a64pe-emit i (arm64-ldrb 13 src 0)
+   in let i = a64pe-emit i (arm64-strb 13 dst 0)
+   in let i = a64pe-emit i (arm64-add-imm src src 1)
+   in let i = a64pe-emit i (arm64-add-imm dst dst 1)
+   in let i = a64pe-emit i (arm64-add-imm 12 12 1)
+   in let i = a64pe-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in a64pe-patch-insn i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
+
+  a64pe-stub-exit-boot-services-at : Integer -> List Integer
+  a64pe-stub-exit-boot-services-at (pt-base) =
+   arm64-sub-imm 31 31 32
+   & arm64-li 9 a64pe-pt-size
+   & arm64-str 9 31 0
+   & arm64-mov 0 31
+   & arm64-li 1 pt-base
+   & arm64-add-imm 2 31 8
+   & arm64-add-imm 3 31 16
+   & arm64-add-imm 4 31 24
+   & arm64-ldr 9 21 56
+   & arm64-blr 9
+   & arm64-ldr 1 31 8
+   & arm64-mov 0 19
+   & arm64-ldr 9 21 232
+   & arm64-blr 9
+   & arm64-add-imm 31 31 32
+
+  a64pe-stub-flush-copied-code : Integer, Integer -> List Integer
+  a64pe-stub-flush-copied-code (text-size) (rodata-size) =
+   let i = []
+   in let i = i & arm64-li 9 a64pe-kernel-base
+   in let i = i & arm64-li 10 (a64pe-kernel-base + text-size + rodata-size)
+   in let loop = list-length i / 4
+   in let i = a64pe-emit i (arm64-cmp 9 10)
+   in let exit-idx = list-length i / 4
+   in let i = a64pe-emit i arm64-nop
+   in let i = i & arm64-encode (bit-or #D50B7B20 9)
+   in let i = i & arm64-encode (bit-or #D50B7520 9)
+   in let i = a64pe-emit i (arm64-add-imm 9 9 64)
+   in let i = a64pe-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in let i = a64pe-patch-insn i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
+   in i & arm64-dsb-ish & arm64-isb
+
+Section: Page Table Setup
+
+ Identity-map 0-4GB + ECAM region with 4KB granule, 4-level tables.
+ Uses 0x70000-0x7FFFF for page tables (pre-cleared).
+ PML4 (PGD) at 0x70000: 1 entry -> PUD at 0x71000
+ PUD at 0x71000: 4+1 entries -> PMDs at 0x72000-0x76000
+ PMD 0-3: 512 entries each covering 0-4GB (2MB block descriptors)
+ PMD 4: 512 entries covering 0x40_0000_0000-0x40_3FFF_FFFF (ECAM region)
+
+  a64pe-pt-size : Integer = #10000
+
+  a64pe-stub-setup-page-tables-at : Integer -> List Integer
+  a64pe-stub-setup-page-tables-at (pt-base) =
+   arm64-li 9 pt-base
+   & arm64-li 10 #10000
+   & arm64-movz 11 0 0
+   & a64pe-stub-zero-loop 9 10
+   & arm64-li 9 pt-base
+   & arm64-li 10 (pt-base + #1000 + 3)
+   & arm64-str 10 9 0
+   & arm64-li 9 (pt-base + #1000)
+   & arm64-li 10 (pt-base + #2000 + 3)
+   & arm64-str 10 9 0
+   & arm64-li 10 (pt-base + #3000 + 3)
+   & arm64-str 10 9 8
+   & arm64-li 10 (pt-base + #4000 + 3)
+   & arm64-str 10 9 16
+   & arm64-li 10 (pt-base + #5000 + 3)
+   & arm64-str 10 9 24
+   & arm64-li 10 (pt-base + #6000 + 3)
+   & arm64-str 10 9 (64 * 8)
+   & a64pe-stub-fill-pmd (pt-base + #2000) 0
+   & a64pe-stub-fill-pmd (pt-base + #3000) #40000000
+   & a64pe-stub-fill-pmd (pt-base + #4000) #80000000
+   & a64pe-stub-fill-pmd (pt-base + #5000) #C0000000
+   & a64pe-stub-fill-pmd (pt-base + #6000) #4000000000
+
+  a64pe-stub-zero-loop : Integer, Integer -> List Integer
+  a64pe-stub-zero-loop (base) (count) =
+   let i = []
+   in let i = i & arm64-movz 12 0 0
+   in let loop = list-length i / 4
+   in let i = a64pe-emit i (arm64-cmp 12 count)
+   in let exit-idx = list-length i / 4
+   in let i = a64pe-emit i arm64-nop
+   in let i = a64pe-emit i (arm64-add 13 base 12)
+   in let i = a64pe-emit i (arm64-strb 11 13 0)
+   in let i = a64pe-emit i (arm64-add-imm 12 12 1)
+   in let i = a64pe-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in a64pe-patch-insn i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
+
+  a64pe-stub-fill-pmd : Integer, Integer -> List Integer
+  a64pe-stub-fill-pmd (pmd-base) (phys-base) =
+   let i = []
+   in let i = i & arm64-li 9 pmd-base
+   in let i = i & arm64-li 10 (bit-or phys-base #401)
+   in let i = i & arm64-movz 12 0 0
+   in let i = i & arm64-li 13 512
+   in let loop = list-length i / 4
+   in let i = a64pe-emit i (arm64-cmp 12 13)
+   in let exit-idx = list-length i / 4
+   in let i = a64pe-emit i arm64-nop
+   in let i = a64pe-emit i (arm64-str 10 9 0)
+   in let i = a64pe-emit i (arm64-add-imm 9 9 8)
+   in let i = i & arm64-li 14 #200000
+   in let i = a64pe-emit i (arm64-add 10 10 14)
+   in let i = a64pe-emit i (arm64-add-imm 12 12 1)
+   in let i = a64pe-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in a64pe-patch-insn i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
+
+Section: MMU Configuration
+
+ MAIR_EL1: attr0 = 0xFF (normal write-back cacheable)
+           attr1 = 0x00 (device-nGnRnE for MMIO)
+ TCR_EL1:  T0SZ=16 (48-bit VA), TG0=00 (4KB), SH0=11 (inner),
+           ORGN0=01, IRGN0=01
+ TTBR0_EL1: page table base at 0x70000
+ SCTLR_EL1: enable MMU (bit 0), caches (bits 2,12)
+
+  a64pe-stub-enable-mmu-at : Integer -> List Integer
+  a64pe-stub-enable-mmu-at (pt-base) =
+   arm64-dsb-sy
+   & arm64-li 9 #FF
+   & arm64-msr sysreg-mair-el1 9
+   & arm64-li 9 pt-base
+   & arm64-msr sysreg-ttbr0-el1 9
+   & arm64-encode #D508701F
+   & arm64-dsb-sy
+   & arm64-isb
+
+Section: Jump to Kernel
+
+  a64pe-stub-jump-to-kernel : Integer, Integer, Integer -> List Integer
+  a64pe-stub-jump-to-kernel (start-offset) (heap-base) (stack-top) =
+   arm64-mov 22 31
+   & arm64-li 9 #3C0
+   & arm64-msr sysreg-daif 9
+   & arm64-isb
+   & arm64-li 9 stack-top
+   & arm64-mov 31 9
+   & arm64-li 28 heap-base
+   & arm64-li 9 (a64pe-kernel-base + start-offset)
+   & arm64-blr 9
+   & arm64-mov 31 22
+   & arm64-movz 0 0 0
+   & arm64-ldp 23 24 31 48
+   & arm64-ldp 21 22 31 32
+   & arm64-ldp 19 20 31 16
+   & arm64-ldp 29 30 31 0
+   & arm64-add-imm 31 31 96
+   & arm64-ret
+
+Section: Full Stub Assembly
+
+  a64pe-build-stub : Integer, Integer, Integer, Integer -> List Integer
+  a64pe-build-stub (text-size) (rodata-size) (start-offset) (data-vaddr) =
+   let text-pages = (text-size + rodata-size + 4095) / 4096 + (a64pe-pt-size / 4096) + 8192
+   in let heap-base = a64pe-kernel-base + align-up (text-size + rodata-size) 4096 + a64pe-pt-size
+   in let stub0 = a64pe-build-stub-inner text-size rodata-size start-offset data-vaddr 0 text-pages heap-base
+   in let size1 = list-length stub0
+   in let stub1 = a64pe-build-stub-inner text-size rodata-size start-offset data-vaddr size1 text-pages heap-base
+   in let size2 = list-length stub1
+   in if size1 == size2 then stub1
+   else a64pe-build-stub-inner text-size rodata-size start-offset data-vaddr size2 text-pages heap-base
+
+  a64pe-stub-bl-offset : Integer = 36
+
+  a64pe-build-stub-inner : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  a64pe-build-stub-inner (text-size) (rodata-size) (start-offset) (data-vaddr) (stub-size) (text-pages) (heap-base) =
+   let text-off = stub-size
+   in let rodata-off = stub-size + text-size
+   in let bl = a64pe-stub-bl-offset
+   in let pt-base = heap-base - a64pe-pt-size
+   in let stack-top = a64pe-kernel-base + text-pages * 4096
+   in a64pe-stub-prolog
+   & a64pe-stub-save-boot-services
+   & a64pe-stub-print-char 67
+   & a64pe-stub-alloc-kernel-pages text-pages
+   & a64pe-stub-print-char 49
+   & a64pe-stub-copy-text text-off text-size bl
+   & a64pe-stub-print-char 50
+   & a64pe-stub-copy-rodata rodata-off rodata-size data-vaddr bl
+   & a64pe-stub-print-char 51
+   & a64pe-stub-exit-boot-services-at pt-base
+   & a64pe-stub-flush-copied-code text-size rodata-size
+   & a64pe-stub-jump-to-kernel start-offset heap-base stack-top
+
+Section: Build ARM64 PE from Wire Output
+
+  a64pe-build-pe : List Integer, List Integer, Integer -> List Integer
+  a64pe-build-pe (code) (data) (entry-offset) =
+   let text-size = list-length code
+   in let rodata-size = list-length data
+   in let data-vaddr = a64pe-kernel-base + align-up text-size 8
+   in let stub = a64pe-build-stub text-size rodata-size entry-offset data-vaddr
+   in let full-code = stub & code & data
+   in let code-size = list-length full-code
+   in let code-raw = align-up code-size a64pe-file-alignment
+   in let code-sec-end = align-up code-size a64pe-section-alignment
+   in let reloc-rva = a64pe-section-alignment + code-sec-end
+   in let image-size = align-up (reloc-rva + a64pe-section-alignment) a64pe-section-alignment
+   in let reloc-raw-off = a64pe-header-size + code-raw
+   in let headers = a64pe-dos-header & [80, 69, 0, 0] & a64pe-coff-header 240 & a64pe-optional-header code-raw a64pe-section-alignment image-size reloc-rva 8 & a64pe-text-section-header code-size code-raw & a64pe-reloc-section-header 8 reloc-rva reloc-raw-off
+   in let hdr-len = list-length headers
+   in let header-pad = pad-zeros (a64pe-header-size - hdr-len)
+   in let code-pad = pad-zeros (code-raw - code-size)
+   in let reloc-pad = pad-zeros (a64pe-file-alignment - 8)
+   in headers & header-pad & full-code & code-pad & a64pe-reloc-dummy & reloc-pad
+
+  a64pe-build-pe-from-buf : Integer, Integer, Integer, Integer, Integer -> List Integer
+  a64pe-build-pe-from-buf (buf) (code-off) (code-len) (data-len) (entry-offset) =
+   let data-vaddr = a64pe-kernel-base + align-up code-len 8
+   in let stub = a64pe-build-stub code-len data-len entry-offset data-vaddr
+   in let stub-size = list-length stub
+   in let total-code = stub-size + code-len + data-len
+   in let code-raw = align-up total-code a64pe-file-alignment
+   in let code-sec-end = align-up total-code a64pe-section-alignment
+   in let reloc-rva = a64pe-section-alignment + code-sec-end
+   in let image-size = align-up (reloc-rva + a64pe-section-alignment) a64pe-section-alignment
+   in let reloc-raw-off = a64pe-header-size + code-raw
+   in let headers = a64pe-dos-header & [80, 69, 0, 0] & a64pe-coff-header 240 & a64pe-optional-header code-raw a64pe-section-alignment image-size reloc-rva 8 & a64pe-text-section-header total-code code-raw & a64pe-reloc-section-header 8 reloc-rva reloc-raw-off
+   in let hdr-len = list-length headers
+   in let header-pad = pad-zeros (a64pe-header-size - hdr-len)
+   in let code-bytes = __buf-read-bytes buf code-off code-len
+   in let data-bytes = __buf-read-bytes buf (code-off + code-len) data-len
+   in let code-pad = pad-zeros (code-raw - total-code)
+   in let reloc-pad = pad-zeros (a64pe-file-alignment - 8)
+   in headers & header-pad & stub & code-bytes & data-bytes & code-pad & a64pe-reloc-dummy & reloc-pad
+
+Page 1

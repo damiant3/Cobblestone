@@ -1,0 +1,171 @@
+Chapter: ComplianceEvidence
+
+ Compliance evidence generator for EU CRA, ETSI EN 303 645,
+ and NISTIR 8259. Produces a structured evidence report mapping
+ regulatory requirements to the Codex mechanisms that satisfy them.
+
+ Each requirement is classified:
+   BY-CONSTRUCTION — the language makes violation inexpressible
+   MECHANISM — a runtime mechanism enforces it
+   DEPLOYMENT — satisfied by provisioning/operations
+   ORGANIZATIONAL — process obligation on the manufacturer
+
+Section: Evidence Classes
+
+  EvidenceClass =
+    | ByConstruction
+    | Mechanism
+    | Deployment
+    | Organizational
+
+  evidence-class-name : EvidenceClass -> Text
+  evidence-class-name (c) =
+   when c
+    is ByConstruction -> "BY-CONSTRUCTION"
+    is Mechanism -> "MECHANISM"
+    is Deployment -> "DEPLOYMENT"
+    is Organizational -> "ORGANIZATIONAL"
+
+Section: Requirement Model
+
+  Requirement = record {
+   regulation : Text,
+   section : Text,
+   title : Text,
+   class : EvidenceClass,
+   mechanism : Text,
+   artifact : Text
+  }
+
+  format-requirement : Requirement -> Text
+  format-requirement (r) =
+   "[" & evidence-class-name (r.class) & "] " & r.regulation & " " & r.section & ": " & r.title & " -- " & r.mechanism
+
+Section: EU CRA Annex I Requirements
+
+  cra-requirements : List Requirement
+  cra-requirements = [
+   Requirement { regulation = "CRA", section = "Annex-I-1(a)", title = "No known exploitable vulnerabilities at release", class = ByConstruction, mechanism = "Linear types eliminate use-after-free/double-free (CDX2061/2063); bounded integers prevent overflow (CDX4010); effect types prevent undeclared I/O", artifact = "compile-log" },
+   Requirement { regulation = "CRA", section = "Annex-I-1(b)", title = "Secure default configuration", class = Deployment, mechanism = "Capability manifest declares minimum privileges; template checklist for manufacturer", artifact = "capability-manifest" },
+   Requirement { regulation = "CRA", section = "Annex-I-1(c)", title = "Security updates mechanism", class = Mechanism, mechanism = "OTA via LwM2M Object 5 with streaming Gate A + full Gate B verification; anti-rollback via signed release-fact sequence", artifact = "ota-design" },
+   Requirement { regulation = "CRA", section = "Annex-I-1(d)", title = "Minimize attack surface", class = ByConstruction, mechanism = "No OS kernel, no libc, no POSIX -- bare-metal compilation produces only compiler-emitted code; every byte auditable", artifact = "cdx-binary" },
+   Requirement { regulation = "CRA", section = "Annex-I-1(e)", title = "Protect confidentiality of data", class = Mechanism, mechanism = "AES-GCM-256 + ChaCha20-Poly1305 + X25519 key exchange; effect-typed network channels enforce TLS", artifact = "crypto-suite" },
+   Requirement { regulation = "CRA", section = "Annex-I-1(f)", title = "Protect integrity of data", class = ByConstruction, mechanism = "Every CDX binary is SHA-256 hashed and Ed25519 signed; content-addressed fact store provides immutable audit trail", artifact = "cdx-header" },
+   Requirement { regulation = "CRA", section = "Annex-I-2(a)", title = "Unique device identification", class = Mechanism, mechanism = "Trust lattice identity: Ed25519 keypair per device, capability leases scoped to device identity", artifact = "trust-lattice" },
+   Requirement { regulation = "CRA", section = "Annex-I-2(b)", title = "Vulnerability reporting within 24 hours", class = Organizational, mechanism = "Manufacturer process obligation -- outside toolchain scope", artifact = "none" }
+  ]
+
+Section: ETSI EN 303 645 Requirements
+
+  etsi-requirements : List Requirement
+  etsi-requirements = [
+   Requirement { regulation = "ETSI", section = "5.1-1", title = "No universal default passwords", class = Mechanism, mechanism = "Capability lease model: each device generates unique Ed25519 identity at first boot; no shared secrets", artifact = "trust-lattice" },
+   Requirement { regulation = "ETSI", section = "5.1-2", title = "Implement means to manage credentials", class = Mechanism, mechanism = "Trust lattice key rotation; lease revocation; capability scope narrowing", artifact = "trust-lattice" },
+   Requirement { regulation = "ETSI", section = "5.3-1", title = "Use encryption for sensitive communication", class = Mechanism, mechanism = "TLS 1.3 via effect-typed channels; [Network] effect required for any I/O; AES-GCM + ChaCha20", artifact = "crypto-suite" },
+   Requirement { regulation = "ETSI", section = "5.4-1", title = "Security updates shall not degrade device security", class = Mechanism, mechanism = "OTA Gate B: capability superset check -- new firmware cannot request capabilities not in trust policy", artifact = "ota-design" },
+   Requirement { regulation = "ETSI", section = "5.5-1", title = "Securely communicate", class = ByConstruction, mechanism = "Effect types: a function without [Network] in its effect row cannot perform I/O; compromised library cannot exfiltrate", artifact = "effect-types" },
+   Requirement { regulation = "ETSI", section = "5.6-1", title = "Minimize exposed attack surface", class = ByConstruction, mechanism = "Bare-metal compilation: no OS, no dynamic linking, no shell, no debug ports in production CDX", artifact = "cdx-binary" },
+   Requirement { regulation = "ETSI", section = "5.1-3", title = "Authentication mechanisms use unique per-device credentials", class = Mechanism, mechanism = "Trust lattice: per-device Ed25519 keypair generated at first boot", artifact = "trust-lattice" },
+   Requirement { regulation = "ETSI", section = "5.1-4", title = "User authentication uses best practice", class = Mechanism, mechanism = "Capability lease authentication; no plaintext passwords in capability grants", artifact = "trust-lattice" },
+   Requirement { regulation = "ETSI", section = "5.2-1", title = "Vulnerability disclosure policy", class = Organizational, mechanism = "Manufacturer process obligation: publish coordinated disclosure policy", artifact = "none" },
+   Requirement { regulation = "ETSI", section = "5.3-2", title = "Sufficiently reviewed cryptographic implementation", class = ByConstruction, mechanism = "Codex crypto forewords (AES, ChaCha20, Ed25519, SHA-256) implement published standards; source auditable in single-file chapters", artifact = "crypto-suite" },
+   Requirement { regulation = "ETSI", section = "5.3-3", title = "Cryptographic key uniqueness", class = Mechanism, mechanism = "Ed25519 key generation per device; no shared secrets across devices", artifact = "trust-lattice" },
+   Requirement { regulation = "ETSI", section = "5.3-4", title = "Best practice cryptography", class = Mechanism, mechanism = "AES-256-GCM, ChaCha20-Poly1305, X25519, Ed25519, SHA-512 -- all NIST/IETF approved", artifact = "crypto-suite" },
+   Requirement { regulation = "ETSI", section = "5.3-5", title = "No hard-coded credentials", class = ByConstruction, mechanism = "Capability lease model has no credential constants; keys generated at runtime", artifact = "trust-lattice" },
+   Requirement { regulation = "ETSI", section = "5.3-6", title = "Sensitive data encrypted in transit", class = Mechanism, mechanism = "TLS 1.3 with effect-typed channels; [Network] effect enforces encryption", artifact = "crypto-suite" },
+   Requirement { regulation = "ETSI", section = "5.3-7", title = "Sensitive data encrypted at rest", class = Deployment, mechanism = "Manufacturer must enable AES encryption for persistent storage; toolchain provides AES foreword", artifact = "crypto-suite" },
+   Requirement { regulation = "ETSI", section = "5.3-8", title = "Secure key management", class = Mechanism, mechanism = "Linear types prevent key material aliasing; trust lattice manages key lifecycle", artifact = "trust-lattice" },
+   Requirement { regulation = "ETSI", section = "5.4-2", title = "Verify authenticity of updates", class = Mechanism, mechanism = "OTA Gate A: Ed25519 signature verification before any flash write", artifact = "ota-design" },
+   Requirement { regulation = "ETSI", section = "5.4-3", title = "Update mechanism timely", class = Mechanism, mechanism = "LwM2M Object 5 firmware update with MQTT/CoAP push notification", artifact = "ota-design" },
+   Requirement { regulation = "ETSI", section = "5.4-4", title = "Automatic update mechanism", class = Mechanism, mechanism = "LwM2M registration with server-initiated firmware push; no user action required", artifact = "ota-design" },
+   Requirement { regulation = "ETSI", section = "5.5-2", title = "Minimize unnecessary network exposure", class = ByConstruction, mechanism = "Effect types: only functions with [Network] can access network; no implicit background connections", artifact = "effect-types" },
+   Requirement { regulation = "ETSI", section = "5.5-3", title = "Data collected is necessary", class = Organizational, mechanism = "Manufacturer process obligation: data minimization review", artifact = "none" },
+   Requirement { regulation = "ETSI", section = "5.5-4", title = "No unnecessary pre-installed software", class = ByConstruction, mechanism = "Bare-metal compilation: binary contains only compiler-emitted code; no OS, no shell, no debug agents", artifact = "cdx-binary" },
+   Requirement { regulation = "ETSI", section = "5.5-5", title = "Device hardware not unnecessarily accessible", class = Deployment, mechanism = "Capability manifest restricts peripheral access; manufacturer disables debug interfaces", artifact = "capability-manifest" },
+   Requirement { regulation = "ETSI", section = "5.5-6", title = "Device operates on minimal necessary network services", class = ByConstruction, mechanism = "Effect types restrict network access to declared effects; unused protocols produce zero code", artifact = "effect-types" },
+   Requirement { regulation = "ETSI", section = "5.5-7", title = "Code minimized to necessary functionality", class = ByConstruction, mechanism = "Dead code elimination at compile time; proof erasure removes compile-time-only definitions (CDX4020)", artifact = "cdx-binary" },
+   Requirement { regulation = "ETSI", section = "5.6-2", title = "No unnecessary open ports", class = ByConstruction, mechanism = "Network stack requires explicit [Network] effect; no default listeners; every port binding is a declared effect", artifact = "effect-types" },
+   Requirement { regulation = "ETSI", section = "5.6-3", title = "Disable debug interfaces in production", class = Deployment, mechanism = "Production CDX build excludes debug shell and serial diagnostic; manufacturer build flag", artifact = "cdx-binary" },
+   Requirement { regulation = "ETSI", section = "5.6-4", title = "Secure boot process", class = Mechanism, mechanism = "Signed CDX binary verified at boot via Ed25519; boot loader checks hash before execution", artifact = "cdx-header" },
+   Requirement { regulation = "ETSI", section = "5.7-1", title = "Verify software integrity at boot", class = Mechanism, mechanism = "CDX header SHA-256 hash verified at load time; tampered binary detected before execution", artifact = "cdx-header" },
+   Requirement { regulation = "ETSI", section = "5.7-2", title = "Alert user on failed integrity check", class = Mechanism, mechanism = "Verification failure reported via fact store event; manufacturer configures alert channel", artifact = "fact-store" },
+   Requirement { regulation = "ETSI", section = "5.8-1", title = "Personal data protection", class = ByConstruction, mechanism = "Effect types prevent undeclared data access; linear types prevent data leaks through aliasing", artifact = "effect-types" },
+   Requirement { regulation = "ETSI", section = "5.8-2", title = "Clear user data on request", class = Deployment, mechanism = "Manufacturer implements data erasure command via capability-scoped operation", artifact = "capability-manifest" },
+   Requirement { regulation = "ETSI", section = "5.8-3", title = "User consent for data collection", class = Organizational, mechanism = "Manufacturer process obligation: consent UI/flow", artifact = "none" },
+   Requirement { regulation = "ETSI", section = "5.9-1", title = "Resilience to outages", class = Mechanism, mechanism = "punctual watchdog: bounded execution guarantees system responsiveness; automatic restart on deadline miss", artifact = "punctual-report" },
+   Requirement { regulation = "ETSI", section = "5.9-2", title = "Resilience to data loss", class = Mechanism, mechanism = "Fact store is append-only with CRC framing; power-loss safe by design", artifact = "fact-store" },
+   Requirement { regulation = "ETSI", section = "5.9-3", title = "System recoverable from failure", class = Mechanism, mechanism = "OTA dual-slot A/B partitioning with verified fallback; boot config selects last-known-good", artifact = "ota-design" },
+   Requirement { regulation = "ETSI", section = "5.10-1", title = "Telemetry data examined", class = Organizational, mechanism = "Manufacturer process obligation: review collected telemetry", artifact = "none" },
+   Requirement { regulation = "ETSI", section = "5.11-1", title = "User can delete personal data", class = Deployment, mechanism = "Manufacturer implements user-facing data deletion; fact store supports tombstone entries", artifact = "fact-store" },
+   Requirement { regulation = "ETSI", section = "5.12-1", title = "Simple installation and maintenance", class = Deployment, mechanism = "OTA automatic update; LwM2M bootstrap for zero-touch provisioning", artifact = "ota-design" },
+   Requirement { regulation = "ETSI", section = "5.13-1", title = "Validate input data", class = ByConstruction, mechanism = "Bounded integers validate range at construction (CDX2050/2051); effect types prevent unvalidated I/O reaching core logic", artifact = "compile-log" }
+  ]
+
+Section: NISTIR 8259 Requirements
+
+  nist-requirements : List Requirement
+  nist-requirements = [
+   Requirement { regulation = "NIST", section = "8259A-1", title = "Device identification", class = Mechanism, mechanism = "Ed25519 device identity in trust lattice; device serial in LwM2M Object 3", artifact = "trust-lattice" },
+   Requirement { regulation = "NIST", section = "8259A-2", title = "Device configuration", class = Mechanism, mechanism = "Capability manifest: explicit declaration of all I/O, peripherals, network access; verifier enforces at load", artifact = "capability-manifest" },
+   Requirement { regulation = "NIST", section = "8259A-3", title = "Data protection", class = ByConstruction, mechanism = "Linear types prevent data leaks (resources used exactly once); effect types prevent undeclared data access", artifact = "compile-log" },
+   Requirement { regulation = "NIST", section = "8259A-4", title = "Software update", class = Mechanism, mechanism = "LwM2M Object 5 OTA with dual-gate verification; anti-rollback; power-loss safe", artifact = "ota-design" },
+   Requirement { regulation = "NIST", section = "8259A-5", title = "Cybersecurity state awareness", class = Mechanism, mechanism = "Fact store audit trail: all state changes, firmware updates, trust decisions recorded as content-addressed facts", artifact = "fact-store" }
+  ]
+
+Section: IEC 62443 Requirements
+
+  iec-requirements : List Requirement
+  iec-requirements = [
+   Requirement { regulation = "IEC62443", section = "FR1", title = "Identification and Authentication", class = Mechanism, mechanism = "Trust lattice: Ed25519 keypair per device; capability leases scoped to authenticated identity; no default credentials", artifact = "trust-lattice" },
+   Requirement { regulation = "IEC62443", section = "FR2", title = "Use Control", class = ByConstruction, mechanism = "Capability manifests declare permitted operations; effect types prevent undeclared I/O at compile time (CDX4001)", artifact = "capability-manifest" },
+   Requirement { regulation = "IEC62443", section = "FR3", title = "System Integrity", class = ByConstruction, mechanism = "Every CDX binary is SHA-256 hashed and Ed25519 signed; fact store provides immutable audit trail of all state changes", artifact = "cdx-header" },
+   Requirement { regulation = "IEC62443", section = "FR4", title = "Data Confidentiality", class = Mechanism, mechanism = "AES-GCM-256 + ChaCha20-Poly1305 encryption; TLS 1.3 via effect-typed channels; linear types prevent key material reuse", artifact = "crypto-suite" },
+   Requirement { regulation = "IEC62443", section = "FR5", title = "Restricted Data Flow", class = ByConstruction, mechanism = "Effect types: a function without [Network] cannot perform I/O; capability scope restricts data flow to declared paths", artifact = "effect-types" },
+   Requirement { regulation = "IEC62443", section = "FR6", title = "Timely Response to Events", class = ByConstruction, mechanism = "punctual keyword: compile-time WCET proof via instruction counting (CDX6010); deadline bounds verified before deployment", artifact = "punctual-report" },
+   Requirement { regulation = "IEC62443", section = "FR7", title = "Resource Availability", class = ByConstruction, mechanism = "No GC, no dynamic allocation in punctual paths (CDX6002); bounded integers prevent overflow; stack-heap collision check in every prologue", artifact = "punctual-report" }
+  ]
+
+Section: Evidence Report Generator
+
+  count-by-class : List Requirement, EvidenceClass, Integer, Integer -> Integer
+  count-by-class (reqs) (target) (i) (acc) =
+   if i >= list-length reqs then acc
+   else let r = list-at reqs i
+   in let matched = when r.class
+    is ByConstruction -> when target is ByConstruction -> 1 is otherwise -> 0
+    is Mechanism -> when target is Mechanism -> 1 is otherwise -> 0
+    is Deployment -> when target is Deployment -> 1 is otherwise -> 0
+    is Organizational -> when target is Organizational -> 1 is otherwise -> 0
+   in count-by-class reqs target (i + 1) (acc + matched)
+
+  format-summary : Text, List Requirement -> Text
+  format-summary (regulation) (reqs) =
+   let total = list-length reqs
+   in let by-const = count-by-class reqs ByConstruction 0 0
+   in let mech = count-by-class reqs Mechanism 0 0
+   in let deploy = count-by-class reqs Deployment 0 0
+   in let org = count-by-class reqs Organizational 0 0
+   in regulation & ": " & show total & " requirements -- " & show by-const & " by-construction, " & show mech & " mechanism, " & show deploy & " deployment, " & show org & " organizational"
+
+  format-all-requirements : List Requirement, Integer -> Text
+  format-all-requirements (reqs) (i) =
+   if i >= list-length reqs then ""
+   else format-requirement (list-at reqs i) & "\n" & format-all-requirements reqs (i + 1)
+
+  generate-evidence-report : Text
+  generate-evidence-report =
+   "=== CODEX COMPLIANCE EVIDENCE REPORT ===\n" &
+   format-summary "CRA" cra-requirements & "\n" &
+   format-summary "ETSI" etsi-requirements & "\n" &
+   format-summary "NIST" nist-requirements & "\n" &
+   format-summary "IEC62443" iec-requirements & "\n" &
+   "\n--- CRA Annex I ---\n" &
+   format-all-requirements cra-requirements 0 &
+   "\n--- ETSI EN 303 645 ---\n" &
+   format-all-requirements etsi-requirements 0 &
+   "\n--- NISTIR 8259A ---\n" &
+   format-all-requirements nist-requirements 0 &
+   "\n--- IEC 62443 ---\n" &
+   format-all-requirements iec-requirements 0
+
+Page 1

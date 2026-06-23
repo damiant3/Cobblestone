@@ -90,3 +90,46 @@ Detailed development timeline. See [README.md](../../README.md) for highlights.
 | SCOPE phase discipline | Precise pmap-walk escape check; phase-compact reclaims scope bivy; peak heap -102 MB | 2026-05-30 |
 | CHECK survey | Count-aware reserve (records+ctors); peak heap selfhost 897->405 MB (-55%) | 2026-05-30 |
 | **237 foreword modules** | **24 quires, 54 compiler files, 208 test samples, seed `3C624969`** | **2026-05-31** |
+| **For-expressions** | **`for x in xs do f x` sugar for map loops; dogfooded across ~50 call sites** | **2026-06-02** |
+| CHECK/LOWER heap reduction | Phase-aware deck sizing, EOF settle counter; ~80 MB saved | 2026-06-02 |
+| x86-64 codegen optimization | Comparison folding, preamble elision, store-load elimination, immediate ops — fib(35) cut from 107 to 53 instructions | 2026-06-06 |
+| Spark WebGPU Studio | 161KB WASM, 400+ exports, 28s build. WASM TCO: 255 functions. CAD workbench. UV editor. KvStore. Codex Designer. | 2026-06-06 |
+| CodexMagic web platform | Card game server + web portal, game engine, economy, clans, seasons | 2026-06-06 |
+| **Native-class codegen** | **TCO parallel-move shuffle, R8/R9-staged operands, leaf/near-leaf frame elision, IrRemInt + inliner — sum 14 insns (beats C /O2), fact 17, fib 23, gcd 23** | **2026-06-10** |
+| **Application wave** | **630 app modules across 47 apps: ERP + 5 verticals, Market, Browser, FileShare, Secrets, Diagram, Globe, Star Atlas, MathBook, CVMM, 20 page apps on WebApp template** | **2026-06-10** |
+| **Punctual functions** | **`punctual` keyword: per-function bounded-execution enforcement (novel). CDX6001-6005 compile errors. Instruction count reporting (CDX6010). Optional budget (CDX6011).** | **2026-06-13** |
+| **Unit types** | **`Second = unit Integer` — distinct types with zero runtime overhead. Arithmetic preserves units. Cross-unit is a type error. Bounded + unit composition.** | **2026-06-13** |
+| IoT protocol stack | MQTT v5, CoAP (RFC 7252), LwM2M, OTA updates with A/B slots and anti-rollback | 2026-06-13 |
+| Board drivers | STM32F4, ESP32-C6, Raspberry Pi 4 — GPIO, UART, SPI, I2C with smoke tests | 2026-06-13 |
+| EU compliance evidence | ComplianceEvidence module: 17 CRA/ETSI/NIST requirements mapped to Codex features | 2026-06-13 |
+| CCE Tier 1 | 2048 two-byte codepoints covering all 27 EU languages; block-offset table (~48 bytes rodata) | 2026-06-14 |
+| Test consolidation | 232 → 137 samples; BVT in 113s | 2026-06-13 |
+| **Cross-arch GCC parity** | **ARM64 + RISC-V meet or beat GCC -O0 on all 4 micro-benchmarks. 24 optimization CLs: dest-driven emission, selective pro/epilogue, fused cmp+branch, frameless TCO. No optimizer.** | **2026-06-15** |
+| Prism IDE | Compiler integration for web IDE — dynamic compile, plug facade, syntax highlighting, error display | 2026-06-15 |
+| **SIMD / Vector types** | **`Vector N T` first-class type with dependent lane count. SSE2 packed codegen (ADDPD/SUBPD/MULPD/DIVPD). `~` approximate equality (4 ULP). CDX2085 (no == on Real). vec-splat/extract/reduce-add builtins.** | **2026-06-15** |
+| **GPU plugs (PTX + SPIR-V)** | **Dual-target GPU compilation via plugs. PTX plug (NVIDIA sm_89) + SPIR-V plug (Vulkan 1.2+) built and compiling. Device IR emission. Design: DualTargetGpuCompilation.md.** | **2026-06-15** |
+| **Punctual foreword quire** | **8 chapters: IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian. Every function is `punctual`. Compiler whitelist fix for builtins.** | **2026-06-15** |
+| **Game engine foreword** | **21-chapter `codex.foreword.engine` quire: Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags, AbilitySystem, DebugDraw, EdgeMesh, HelmBridge.** | **2026-06-16** |
+| **Poisoned compact** | **`__memset` builtin + per-phase poison bytes. Reclaimed memory is poisoned to catch stale-pointer reads.** | **2026-06-16** |
+| **Number → Real rename** | **`Number` renamed to `Real` across compiler, all plugs, and tests. Confidence-level qualifiers (`Real`, `Real approximate`, `Real guess`).** | **2026-06-16** |
+| **VectorMaskTy + comparisons** | **`VectorMask N` type, vector comparison operators, `vec-select` per-lane conditional. SSE2 CMPPD/MOVMSKPD codegen.** | **2026-06-16** |
+| **377 library modules** | **26 quires (11 foreword + 9 OS sub-quires), 54 compiler files, seed `24FEA310`** | **2026-06-16** |
+| **SMP Phase 1-2** | **Atomic builtins, LAPIC emulation, `-smp` flag, per-core bootstrap** | **2026-06-17** |
+| Globe demo | NASA texture, GPU rasterizer, icosphere, relativistic effects | 2026-06-17 |
+| Black hole ray marcher | Real-time ray marching demo | 2026-06-17 |
+| Foreword test coverage | 305/305 foreword tests passing | 2026-06-17 |
+| Phantom General cite removal | 100+ test fixes removing phantom cites | 2026-06-17 |
+| **SMP Phase 3-5** | **Work-stealing scheduler, per-core heap, IPI, lock-free channels** | **2026-06-18** |
+| **8 GB RAM** | **bare-metal-ram-size 3 GB → 8 GB, seed rebuilt** | **2026-06-18** |
+| **GPU K5-K8** | **Warp, shared memory, atomics, math, verifier, vecadd E2E** | **2026-06-18** |
+| **CCE Tier 2** | **CJK/Hangul/Kana/Emoji codepoint coverage** | **2026-06-18** |
+| **Browser (3 phases)** | **Network fetch + page compiler** | **2026-06-18** |
+| **HKT + GADTs + session types** | **Higher-kinded types, type class forwarding, GADTs, session types, length-indexed vectors** | **2026-06-18** |
+| Trust protocol | LeaseManager, PeerDiscovery, Forensics | 2026-06-18 |
+| DiskFacts log compaction | Log compaction for on-disk fact store | 2026-06-18 |
+| Library gap analysis | 50/50 gap analysis complete | 2026-06-18 |
+| BigInt foreword | BigInt module added to foreword | 2026-06-18 |
+| Test stub fill | 99 blank test stubs filled with real tests | 2026-06-18 |
+| Explicit list-map cites | 22 files updated with explicit cites | 2026-06-18 |
+| Poison-compact fix | Stale pointer fix for poison-compact | 2026-06-18 |
+| **425 library modules** | **28 quires, 54 compiler files, 53 plugs, 742 test files, seed 2.30 MB `6F75DBC7`** | **2026-06-18** |

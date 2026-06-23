@@ -1,0 +1,447 @@
+Chapter: GuiTimer
+
+ Mutable timing wheel using alloc-bytes. Zero allocation after init.
+ Each slot is 32 bytes: [id:8, deadline:8, tag-id:8, active:8].
+ The fine wheel has 256 slots = 8 KB. Tick, schedule, and fire are
+ all in-place poke-32/peek-32 operations.
+
+Section: Constants
+  mtw-slot-size : Integer = 32
+  mtw-fine-count : Integer = 256
+  mtw-fine-bytes : Integer = 8192
+  mtw-max-timers : Integer = 16
+
+Section: Tag IDs
+  mtw-tag-none : Integer = 0
+  mtw-tag-clock : Integer = 1
+  mtw-tag-heartbeat : Integer = 2
+
+Section: Mutable Wheel
+  MutWheel = record {
+    mw-base : Integer,
+    mw-meta : Integer,
+    mw-notepad : NotepadBuf
+  }
+
+  mw-meta-size : Integer = 256
+  mw-notepad-size : Integer = 2048
+
+Section: Meta Accessors (stored at end of alloc-bytes buffer)
+  mw-get-tick : MutWheel -> Integer
+  mw-get-tick (w) = peek-32 (w.mw-meta) 0
+
+  mw-set-tick : MutWheel, Integer -> Integer
+  mw-set-tick (w) (v) = poke-32 (w.mw-meta) 0 v
+
+  mw-get-next-id : MutWheel -> Integer
+  mw-get-next-id (w) = peek-32 (w.mw-meta) 8
+
+  mw-set-next-id : MutWheel, Integer -> Integer
+  mw-set-next-id (w) (v) = poke-32 (w.mw-meta) 8 v
+
+  mw-get-frame : MutWheel -> Integer
+  mw-get-frame (w) = peek-32 (w.mw-meta) 16
+
+  mw-inc-frame : MutWheel -> Integer
+  mw-inc-frame (w) =
+    let f = peek-32 (w.mw-meta) 16
+    in poke-32 (w.mw-meta) 16 (f + 1)
+
+Section: GUI State Slots (in meta buffer, zero-alloc mutable)
+  mw-get-last-key : MutWheel -> Integer
+  mw-get-last-key (w) = peek-32 (w.mw-meta) 24
+
+  mw-set-last-key : MutWheel, Integer -> Integer
+  mw-set-last-key (w) (v) = poke-32 (w.mw-meta) 24 v
+
+  mw-get-last-sc : MutWheel -> Integer
+  mw-get-last-sc (w) = peek-32 (w.mw-meta) 32
+
+  mw-set-last-sc : MutWheel, Integer -> Integer
+  mw-set-last-sc (w) (v) = poke-32 (w.mw-meta) 32 v
+
+  mw-get-view : MutWheel -> Integer
+  mw-get-view (w) = peek-32 (w.mw-meta) 40
+
+  mw-set-view : MutWheel, Integer -> Integer
+  mw-set-view (w) (v) = poke-32 (w.mw-meta) 40 v
+
+  mw-get-mouse-x : MutWheel -> Integer
+  mw-get-mouse-x (w) = peek-32 (w.mw-meta) 48
+
+  mw-set-mouse-x : MutWheel, Integer -> Integer
+  mw-set-mouse-x (w) (v) = poke-32 (w.mw-meta) 48 v
+
+  mw-get-mouse-y : MutWheel -> Integer
+  mw-get-mouse-y (w) = peek-32 (w.mw-meta) 56
+
+  mw-set-mouse-y : MutWheel, Integer -> Integer
+  mw-set-mouse-y (w) (v) = poke-32 (w.mw-meta) 56 v
+
+  mw-get-kb-shift : MutWheel -> Integer
+  mw-get-kb-shift (w) = peek-32 (w.mw-meta) 64
+
+  mw-set-kb-shift : MutWheel, Integer -> Integer
+  mw-set-kb-shift (w) (v) = poke-32 (w.mw-meta) 64 v
+
+  mw-get-kb-ctrl : MutWheel -> Integer
+  mw-get-kb-ctrl (w) = peek-32 (w.mw-meta) 72
+
+  mw-set-kb-ctrl : MutWheel, Integer -> Integer
+  mw-set-kb-ctrl (w) (v) = poke-32 (w.mw-meta) 72 v
+
+  mw-get-kb-caps : MutWheel -> Integer
+  mw-get-kb-caps (w) = peek-32 (w.mw-meta) 80
+
+  mw-set-kb-caps : MutWheel, Integer -> Integer
+  mw-set-kb-caps (w) (v) = poke-32 (w.mw-meta) 80 v
+
+  mw-get-kb-num : MutWheel -> Integer
+  mw-get-kb-num (w) = peek-32 (w.mw-meta) 88
+
+  mw-set-kb-num : MutWheel, Integer -> Integer
+  mw-set-kb-num (w) (v) = poke-32 (w.mw-meta) 88 v
+
+  mw-get-mouse-btn : MutWheel -> Integer
+  mw-get-mouse-btn (w) = peek-32 (w.mw-meta) 96
+
+  mw-set-mouse-btn : MutWheel, Integer -> Integer
+  mw-set-mouse-btn (w) (v) = poke-32 (w.mw-meta) 96 v
+
+  mw-get-app : MutWheel -> Integer
+  mw-get-app (w) = peek-32 (w.mw-meta) 112
+
+  mw-set-app : MutWheel, Integer -> Integer
+  mw-set-app (w) (v) = poke-32 (w.mw-meta) 112 v
+
+  mw-get-calc-acc : MutWheel -> Integer
+  mw-get-calc-acc (w) = peek-32 (w.mw-meta) 120
+
+  mw-set-calc-acc : MutWheel, Integer -> Integer
+  mw-set-calc-acc (w) (v) = poke-32 (w.mw-meta) 120 v
+
+  mw-get-calc-cur : MutWheel -> Integer
+  mw-get-calc-cur (w) = peek-32 (w.mw-meta) 128
+
+  mw-set-calc-cur : MutWheel, Integer -> Integer
+  mw-set-calc-cur (w) (v) = poke-32 (w.mw-meta) 128 v
+
+  mw-get-calc-op : MutWheel -> Integer
+  mw-get-calc-op (w) = peek-32 (w.mw-meta) 136
+
+  mw-set-calc-op : MutWheel, Integer -> Integer
+  mw-set-calc-op (w) (v) = poke-32 (w.mw-meta) 136 v
+
+  mw-get-font-scale : MutWheel -> Integer
+  mw-get-font-scale (w) =
+    let v = peek-32 (w.mw-meta) 144
+    in if v <= 0 then 1 else v
+
+  mw-set-font-scale : MutWheel, Integer -> Integer
+  mw-set-font-scale (w) (v) = poke-32 (w.mw-meta) 144 v
+
+Section: Font Role Settings
+
+  mw-get-font-role-serif : MutWheel -> Integer
+  mw-get-font-role-serif (w) = peek-32 (w.mw-meta) 148
+
+  mw-set-font-role-serif : MutWheel, Integer -> Integer
+  mw-set-font-role-serif (w) (v) = poke-32 (w.mw-meta) 148 v
+
+  mw-get-font-role-sans : MutWheel -> Integer
+  mw-get-font-role-sans (w) = peek-32 (w.mw-meta) 152
+
+  mw-set-font-role-sans : MutWheel, Integer -> Integer
+  mw-set-font-role-sans (w) (v) = poke-32 (w.mw-meta) 152 v
+
+  mw-get-font-role-mono : MutWheel -> Integer
+  mw-get-font-role-mono (w) = peek-32 (w.mw-meta) 156
+
+  mw-set-font-role-mono : MutWheel, Integer -> Integer
+  mw-set-font-role-mono (w) (v) = poke-32 (w.mw-meta) 156 v
+
+  mw-get-fonts-loaded : MutWheel -> Integer
+  mw-get-fonts-loaded (w) = peek-32 (w.mw-meta) 160
+
+  mw-set-fonts-loaded : MutWheel, Integer -> Integer
+  mw-set-fonts-loaded (w) (v) = poke-32 (w.mw-meta) 160 v
+
+  mw-get-font-picker-cursor : MutWheel -> Integer
+  mw-get-font-picker-cursor (w) = peek-32 (w.mw-meta) 164
+
+  mw-set-font-picker-cursor : MutWheel, Integer -> Integer
+  mw-set-font-picker-cursor (w) (v) = poke-32 (w.mw-meta) 164 v
+
+  mw-get-font-picker-role : MutWheel -> Integer
+  mw-get-font-picker-role (w) = peek-32 (w.mw-meta) 168
+
+  mw-set-font-picker-role : MutWheel, Integer -> Integer
+  mw-set-font-picker-role (w) (v) = poke-32 (w.mw-meta) 168 v
+
+  mw-get-font-serif-base : MutWheel -> Integer
+  mw-get-font-serif-base (w) = peek-32 (w.mw-meta) 172
+
+  mw-set-font-serif-base : MutWheel, Integer -> Integer
+  mw-set-font-serif-base (w) (v) = poke-32 (w.mw-meta) 172 v
+
+  mw-get-font-sans-base : MutWheel -> Integer
+  mw-get-font-sans-base (w) = peek-32 (w.mw-meta) 176
+
+  mw-set-font-sans-base : MutWheel, Integer -> Integer
+  mw-set-font-sans-base (w) (v) = poke-32 (w.mw-meta) 176 v
+
+  mw-get-font-mono-base : MutWheel -> Integer
+  mw-get-font-mono-base (w) = peek-32 (w.mw-meta) 180
+
+  mw-set-font-mono-base : MutWheel, Integer -> Integer
+  mw-set-font-mono-base (w) (v) = poke-32 (w.mw-meta) 180 v
+
+  mw-get-font-serif-w : MutWheel -> Integer
+  mw-get-font-serif-w (w) = peek-32 (w.mw-meta) 184
+
+  mw-set-font-serif-w : MutWheel, Integer -> Integer
+  mw-set-font-serif-w (w) (v) = poke-32 (w.mw-meta) 184 v
+
+  mw-get-font-sans-w : MutWheel -> Integer
+  mw-get-font-sans-w (w) = peek-32 (w.mw-meta) 188
+
+  mw-set-font-sans-w : MutWheel, Integer -> Integer
+  mw-set-font-sans-w (w) (v) = poke-32 (w.mw-meta) 188 v
+
+  mw-get-font-mono-w : MutWheel -> Integer
+  mw-get-font-mono-w (w) = peek-32 (w.mw-meta) 192
+
+  mw-set-font-mono-w : MutWheel, Integer -> Integer
+  mw-set-font-mono-w (w) (v) = poke-32 (w.mw-meta) 192 v
+
+  mw-get-font-glyph-h : MutWheel -> Integer
+  mw-get-font-glyph-h (w) =
+    let v = peek-32 (w.mw-meta) 196
+    in if v <= 0 then 16 else v
+
+  mw-set-font-glyph-h : MutWheel, Integer -> Integer
+  mw-set-font-glyph-h (w) (v) = poke-32 (w.mw-meta) 196 v
+
+  mw-get-font-cache-base : MutWheel -> Integer
+  mw-get-font-cache-base (w) = peek-32 (w.mw-meta) 208
+
+  mw-set-font-cache-base : MutWheel, Integer -> Integer
+  mw-set-font-cache-base (w) (v) = poke-32 (w.mw-meta) 208 v
+
+  mw-get-tab-cursor : MutWheel -> Integer
+  mw-get-tab-cursor (w) = peek-32 (w.mw-meta) 216
+
+  mw-set-tab-cursor : MutWheel, Integer -> Integer
+  mw-set-tab-cursor (w) (v) = poke-32 (w.mw-meta) 216 v
+
+  mw-get-key-repeat-delay : MutWheel -> Integer
+  mw-get-key-repeat-delay (w) =
+    let v = peek-32 (w.mw-meta) 200
+    in if v <= 0 then 5 else v
+
+  mw-set-key-repeat-delay : MutWheel, Integer -> Integer
+  mw-set-key-repeat-delay (w) (v) = poke-32 (w.mw-meta) 200 v
+
+  mw-get-last-key-tick : MutWheel -> Integer
+  mw-get-last-key-tick (w) = peek-32 (w.mw-meta) 204
+
+  mw-set-last-key-tick : MutWheel, Integer -> Integer
+  mw-set-last-key-tick (w) (v) = poke-32 (w.mw-meta) 204 v
+
+Section: Notepad Buffer (alloc-bytes, zero-alloc typed text)
+  NotepadBuf = record { nb-base : Integer }
+
+  notepad-new : NotepadBuf
+  notepad-new =
+    let base = alloc-bytes mw-notepad-size
+    in let d = notepad-zero-loop base 0
+    in NotepadBuf { nb-base = base }
+
+  notepad-zero-loop : Integer, Integer -> Integer
+  notepad-zero-loop (base) (i) =
+    if i >= mw-notepad-size then 0
+    else let d = poke-byte base i 0
+    in notepad-zero-loop base (i + 1)
+
+  mw-get-note-len : MutWheel -> Integer
+  mw-get-note-len (w) = peek-32 (w.mw-meta) 104
+
+  mw-set-note-len : MutWheel, Integer -> Integer
+  mw-set-note-len (w) (v) = poke-32 (w.mw-meta) 104 v
+
+  notepad-append : NotepadBuf, MutWheel, Integer -> Integer
+  notepad-append (nb) (w) (cce) =
+    let pos = mw-get-note-len w
+    in if pos >= mw-notepad-size - 1 then 0
+    else let d = poke-byte (nb.nb-base) pos cce
+    in mw-set-note-len w (pos + 1)
+
+  notepad-backspace : NotepadBuf, MutWheel -> Integer
+  notepad-backspace (nb) (w) =
+    let pos = mw-get-note-len w
+    in if pos <= 0 then 0
+    else let d = poke-byte (nb.nb-base) (pos - 1) 0
+    in mw-set-note-len w (pos - 1)
+
+  notepad-get-char : NotepadBuf, Integer -> Integer
+  notepad-get-char (nb) (i) = peek-byte (nb.nb-base) i
+
+Section: Construction
+  mw-new : MutWheel
+  mw-new =
+    let base = alloc-bytes mtw-fine-bytes
+    in let meta = alloc-bytes mw-meta-size
+    in let dummy = mw-zero-slots base 0
+    in let d2 = poke-32 meta 0 0
+    in let d3 = poke-32 meta 4 0
+    in let d4 = poke-32 meta 8 1
+    in let d5 = poke-32 meta 12 0
+    in let np = notepad-new
+    in MutWheel { mw-base = base, mw-meta = meta, mw-notepad = np }
+
+  mw-zero-slots : Integer, Integer -> Integer
+  mw-zero-slots (base) (i) =
+    if i >= mtw-fine-count then 0
+    else let off = i * mtw-slot-size
+    in let d1 = poke-32 base off 0
+    in let d2 = poke-32 base (off + 4) 0
+    in let d3 = poke-32 base (off + 8) 0
+    in let d4 = poke-32 base (off + 12) 0
+    in let d5 = poke-32 base (off + 16) 0
+    in let d6 = poke-32 base (off + 20) 0
+    in let d7 = poke-32 base (off + 24) 0
+    in let d8 = poke-32 base (off + 28) 0
+    in mw-zero-slots base (i + 1)
+
+Section: Schedule (O(1), in-place)
+  mw-schedule : MutWheel, Integer, Integer -> MutWheel
+  mw-schedule (w) (delay) (tag-id) =
+    let tick = mw-get-tick w
+    in let nid = mw-get-next-id w
+    in let deadline = tick + delay
+    in let slot-idx = mw-mod deadline mtw-fine-count
+    in let off = slot-idx * mtw-slot-size
+    in let d1 = poke-32 (w.mw-base) off nid
+    in let d2 = poke-32 (w.mw-base) (off + 4) 0
+    in let d3 = poke-32 (w.mw-base) (off + 8) deadline
+    in let d4 = poke-32 (w.mw-base) (off + 12) 0
+    in let d5 = poke-32 (w.mw-base) (off + 16) tag-id
+    in let d6 = poke-32 (w.mw-base) (off + 20) 0
+    in let d7 = poke-32 (w.mw-base) (off + 24) 1
+    in let d8 = poke-32 (w.mw-base) (off + 28) 0
+    in let d9 = mw-set-next-id w (nid + 1)
+    in w
+
+Section: Tick (O(1), in-place)
+  mw-tick : MutWheel -> MutWheel
+  mw-tick (w) =
+    let tick = mw-get-tick w
+    in let d = mw-set-tick w (tick + 1)
+    in w
+
+  mw-check-and-fire : MutWheel -> Integer
+  mw-check-and-fire (w) =
+    let slot-idx = mw-mod (mw-get-tick w) mtw-fine-count
+    in let off = slot-idx * mtw-slot-size
+    in let active = peek-32 (w.mw-base) (off + 24)
+    in if active == 0 then 0
+    else let deadline = peek-32 (w.mw-base) (off + 8)
+    in if deadline > mw-get-tick w then 0
+    else let tag = peek-32 (w.mw-base) (off + 16)
+    in let d = poke-32 (w.mw-base) (off + 24) 0
+    in tag
+
+Section: Reschedule (in-place)
+  mw-reschedule : MutWheel, Integer, Integer -> MutWheel
+  mw-reschedule (w) (tag-id) (interval) =
+    mw-schedule w interval tag-id
+
+Section: Compact (clear all expired/inactive slots)
+  mw-compact : MutWheel -> MutWheel
+  mw-compact (w) = let dummy = mw-compact-loop (w.mw-base) (mw-get-tick w) 0
+    in w
+
+  mw-compact-loop : Integer, Integer, Integer -> Integer
+  mw-compact-loop (base) (now) (i) =
+    if i >= mtw-fine-count then 0
+    else let off = i * mtw-slot-size
+    in let active = peek-32 base (off + 24)
+    in if active == 0 then mw-compact-loop base now (i + 1)
+    else let deadline = peek-32 base (off + 8)
+    in if deadline <= now then
+      let d1 = poke-32 base (off + 24) 0
+      in mw-compact-loop base now (i + 1)
+    else mw-compact-loop base now (i + 1)
+
+Section: Active Count
+  mw-active-count : MutWheel -> Integer
+  mw-active-count (w) = mw-count-loop (w.mw-base) 0 0
+
+  mw-count-loop : Integer, Integer, Integer -> Integer
+  mw-count-loop (base) (i) (acc) =
+    if i >= mtw-fine-count then acc
+    else let off = i * mtw-slot-size
+    in let active = peek-32 base (off + 24)
+    in mw-count-loop base (i + 1) (if active == 1 then acc + 1 else acc)
+
+Section: App Shared State (reused per active app, offsets 220-240)
+  mw-get-app-s0 : MutWheel -> Integer
+  mw-get-app-s0 (w) = peek-32 (w.mw-meta) 220
+
+  mw-set-app-s0 : MutWheel, Integer -> Integer
+  mw-set-app-s0 (w) (v) = poke-32 (w.mw-meta) 220 v
+
+  mw-get-app-s1 : MutWheel -> Integer
+  mw-get-app-s1 (w) = peek-32 (w.mw-meta) 224
+
+  mw-set-app-s1 : MutWheel, Integer -> Integer
+  mw-set-app-s1 (w) (v) = poke-32 (w.mw-meta) 224 v
+
+  mw-get-app-s2 : MutWheel -> Integer
+  mw-get-app-s2 (w) = peek-32 (w.mw-meta) 228
+
+  mw-set-app-s2 : MutWheel, Integer -> Integer
+  mw-set-app-s2 (w) (v) = poke-32 (w.mw-meta) 228 v
+
+  mw-get-app-s3 : MutWheel -> Integer
+  mw-get-app-s3 (w) = peek-32 (w.mw-meta) 232
+
+  mw-set-app-s3 : MutWheel, Integer -> Integer
+  mw-set-app-s3 (w) (v) = poke-32 (w.mw-meta) 232 v
+
+  mw-get-app-s4 : MutWheel -> Integer
+  mw-get-app-s4 (w) = peek-32 (w.mw-meta) 236
+
+  mw-set-app-s4 : MutWheel, Integer -> Integer
+  mw-set-app-s4 (w) (v) = poke-32 (w.mw-meta) 236 v
+
+Section: Extended State (offsets 240-252, for apps needing more slots)
+  mw-get-ext-0 : MutWheel -> Integer
+  mw-get-ext-0 (w) = peek-32 (w.mw-meta) 240
+
+  mw-set-ext-0 : MutWheel, Integer -> Integer
+  mw-set-ext-0 (w) (v) = poke-32 (w.mw-meta) 240 v
+
+  mw-get-ext-1 : MutWheel -> Integer
+  mw-get-ext-1 (w) = peek-32 (w.mw-meta) 244
+
+  mw-set-ext-1 : MutWheel, Integer -> Integer
+  mw-set-ext-1 (w) (v) = poke-32 (w.mw-meta) 244 v
+
+  mw-get-ext-2 : MutWheel -> Integer
+  mw-get-ext-2 (w) = peek-32 (w.mw-meta) 248
+
+  mw-set-ext-2 : MutWheel, Integer -> Integer
+  mw-set-ext-2 (w) (v) = poke-32 (w.mw-meta) 248 v
+
+  mw-get-ext-3 : MutWheel -> Integer
+  mw-get-ext-3 (w) = peek-32 (w.mw-meta) 252
+
+  mw-set-ext-3 : MutWheel, Integer -> Integer
+  mw-set-ext-3 (w) (v) = poke-32 (w.mw-meta) 252 v
+
+Section: Helpers
+  mw-mod : Integer, Integer -> Integer
+  mw-mod (a) (b) = a - a / b * b
+
+Page 1

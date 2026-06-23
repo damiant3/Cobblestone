@@ -1,0 +1,209 @@
+Chapter: Bluetooth
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Bluetooth device management. Discovery, pairing, connection state,
+ battery level monitoring for paired devices. Categorizes devices
+ by type (audio, keyboard, mouse, phone, other) for appropriate
+ icon display and settings.
+
+Section: Device Type
+
+  BtDeviceType =
+    | BtAudio
+    | BtKeyboard
+    | BtMouse
+    | BtPhone
+    | BtGamepad
+    | BtOther
+
+  bt-type-label : BtDeviceType -> Text
+  bt-type-label (t) = when t
+    is BtAudio -> "Audio"
+    is BtKeyboard -> "Keyboard"
+    is BtMouse -> "Mouse"
+    is BtPhone -> "Phone"
+    is BtGamepad -> "Gamepad"
+    is BtOther -> "Device"
+
+  bt-type-icon : BtDeviceType -> Text
+  bt-type-icon (t) = when t
+    is BtAudio -> "play"
+    is BtKeyboard -> "terminal"
+    is BtMouse -> "chevron-up"
+    is BtPhone -> "chat"
+    is BtGamepad -> "star"
+    is BtOther -> "link"
+
+Section: Device
+
+  BtDevice = record {
+    bd-address : Text,
+    bd-name : Text,
+    bd-type : BtDeviceType,
+    bd-paired : Boolean,
+    bd-connected : Boolean,
+    bd-battery : Integer,
+    bd-signal : Integer between 0 and 100,
+    bd-trusted : Boolean
+  }
+
+  bt-device-new : Text, Text, BtDeviceType -> BtDevice
+  bt-device-new (addr) (name) (dtype) = BtDevice {
+    bd-address = addr, bd-name = name, bd-type = dtype,
+    bd-paired = False, bd-connected = False, bd-battery = -1,
+    bd-signal = 0, bd-trusted = False
+  }
+
+Section: State
+
+  BluetoothState = record {
+    bt-enabled : Boolean,
+    bt-discoverable : Boolean,
+    bt-discovering : Boolean,
+    bt-devices : List BtDevice,
+    bt-device-count : Integer,
+    bt-paired-count : Integer,
+    bt-connected-count : Integer,
+    bt-adapter-name : Text
+  }
+
+  bluetooth-new : BluetoothState
+  bluetooth-new = BluetoothState {
+    bt-enabled = False, bt-discoverable = False, bt-discovering = False,
+    bt-devices = [], bt-device-count = 0, bt-paired-count = 0,
+    bt-connected-count = 0, bt-adapter-name = "Codex Bluetooth"
+  }
+
+Section: Actions
+
+  bt-toggle : BluetoothState -> BluetoothState
+  bt-toggle (st) = __record-set st "bt-enabled" (if st.bt-enabled then False else True)
+
+  bt-toggle-discoverable : BluetoothState -> BluetoothState
+  bt-toggle-discoverable (st) = __record-set st "bt-discoverable" (if st.bt-discoverable then False else True)
+
+  bt-start-discovery : BluetoothState -> BluetoothState
+  bt-start-discovery (st) = __record-set st "bt-discovering" True
+
+  bt-stop-discovery : BluetoothState -> BluetoothState
+  bt-stop-discovery (st) = __record-set st "bt-discovering" False
+
+  bt-add-device : BluetoothState, BtDevice -> BluetoothState
+  bt-add-device (st) (dev) =
+    __record-set (__record-set st "bt-devices" (list-push (st.bt-devices) dev)) "bt-device-count" (st.bt-device-count + 1)
+
+  bt-pair : BluetoothState, Text -> BluetoothState
+  bt-pair (st) (addr) =
+    let updated = bt-set-field (st.bt-devices) addr "bd-paired" True 0 (st.bt-device-count) []
+    in bt-recount (__record-set st "bt-devices" updated)
+
+  bt-unpair : BluetoothState, Text -> BluetoothState
+  bt-unpair (st) (addr) =
+    let updated = bt-set-field (st.bt-devices) addr "bd-paired" False 0 (st.bt-device-count) []
+    in let updated2 = bt-set-field updated addr "bd-connected" False 0 (list-length updated) []
+    in bt-recount (__record-set st "bt-devices" updated2)
+
+  bt-connect : BluetoothState, Text -> BluetoothState
+  bt-connect (st) (addr) =
+    let updated = bt-set-field (st.bt-devices) addr "bd-connected" True 0 (st.bt-device-count) []
+    in bt-recount (__record-set st "bt-devices" updated)
+
+  bt-disconnect : BluetoothState, Text -> BluetoothState
+  bt-disconnect (st) (addr) =
+    let updated = bt-set-field (st.bt-devices) addr "bd-connected" False 0 (st.bt-device-count) []
+    in bt-recount (__record-set st "bt-devices" updated)
+
+  bt-update-battery : BluetoothState, Text, Integer -> BluetoothState
+  bt-update-battery (st) (addr) (pct) =
+    let updated = bt-set-battery (st.bt-devices) addr pct 0 (st.bt-device-count) []
+    in __record-set st "bt-devices" updated
+
+  bt-set-field : List BtDevice, Text, Text, Boolean, Integer, Integer, List BtDevice -> List BtDevice
+  bt-set-field (devs) (addr) (field) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let dev = list-at devs i
+    in let updated = if dev.bd-address == addr then __record-set dev field val else dev
+    in bt-set-field devs addr field val (i + 1) n (list-push acc updated)
+
+  bt-set-battery : List BtDevice, Text, Integer, Integer, Integer, List BtDevice -> List BtDevice
+  bt-set-battery (devs) (addr) (pct) (i) (n) (acc) =
+    if i >= n then acc
+    else let dev = list-at devs i
+    in let updated = if dev.bd-address == addr then __record-set dev "bd-battery" pct else dev
+    in bt-set-battery devs addr pct (i + 1) n (list-push acc updated)
+
+  bt-recount : BluetoothState -> BluetoothState
+  bt-recount (st) =
+    let paired = bt-count-flag (st.bt-devices) "paired" 0 (st.bt-device-count) 0
+    in let connected = bt-count-flag (st.bt-devices) "connected" 0 (st.bt-device-count) 0
+    in __record-set (__record-set st "bt-paired-count" paired) "bt-connected-count" connected
+
+  bt-count-flag : List BtDevice, Text, Integer, Integer, Integer -> Integer
+  bt-count-flag (devs) (which) (i) (n) (acc) =
+    if i >= n then acc
+    else let dev = list-at devs i
+    in let matches = if which == "paired" then dev.bd-paired else dev.bd-connected
+    in bt-count-flag devs which (i + 1) n (if matches then acc + 1 else acc)
+
+Section: Queries
+
+  bt-find-device : BluetoothState, Text -> Maybe BtDevice
+  bt-find-device (st) (addr) = bt-find-loop (st.bt-devices) addr 0 (st.bt-device-count)
+
+  bt-find-loop : List BtDevice, Text, Integer, Integer -> Maybe BtDevice
+  bt-find-loop (devs) (target) (i) (n) =
+    if i >= n then None
+    else let dev = list-at devs i
+    in if dev.bd-address == target then Just dev
+    else bt-find-loop devs target (i + 1) n
+
+  bt-paired-devices : BluetoothState -> List BtDevice
+  bt-paired-devices (st) = bt-filter-flag (st.bt-devices) True 0 (st.bt-device-count) []
+
+  bt-filter-flag : List BtDevice, Boolean, Integer, Integer, List BtDevice -> List BtDevice
+  bt-filter-flag (devs) (paired) (i) (n) (acc) =
+    if i >= n then acc
+    else let dev = list-at devs i
+    in if dev.bd-paired == paired then bt-filter-flag devs paired (i + 1) n (list-push acc dev)
+    else bt-filter-flag devs paired (i + 1) n acc
+
+Section: Widget
+
+  bt-settings-widget : BluetoothState -> WidgetNode
+  bt-settings-widget (st) =
+    let title = widget-label "bt-title" "Bluetooth"
+    in let toggle = widget-button "bt-toggle" (if st.bt-enabled then "Bluetooth: ON" else "Bluetooth: OFF")
+    in let disc = widget-button "bt-discover" (if st.bt-discovering then "Stop Scan" else "Scan for Devices")
+    in let status = widget-label "bt-status" ("Paired: " & show (st.bt-paired-count) & " | Connected: " & show (st.bt-connected-count))
+    in let paired-title = widget-label "bt-paired-title" "Paired Devices"
+    in let paired-rows = bt-device-rows st True 0 (st.bt-device-count) []
+    in let nearby-title = widget-label "bt-nearby-title" "Nearby Devices"
+    in let nearby-rows = bt-device-rows st False 0 (st.bt-device-count) []
+    in widget-panel "bt-settings" DirColumn 4 ([title, toggle, disc, status, paired-title] & paired-rows & [nearby-title] & nearby-rows)
+
+  bt-device-rows : BluetoothState, Boolean, Integer, Integer, List WidgetNode -> List WidgetNode
+  bt-device-rows (st) (show-paired) (i) (n) (acc) =
+    if i >= n then acc
+    else let dev = list-at (st.bt-devices) i
+    in if dev.bd-paired == show-paired then
+      let icon = widget-label ("bt-d-icon-" & dev.bd-address) (bt-type-icon (dev.bd-type))
+      in let name = widget-label ("bt-d-name-" & dev.bd-address) (dev.bd-name)
+      in let status = widget-label ("bt-d-stat-" & dev.bd-address) (if dev.bd-connected then "Connected" else "")
+      in let bat = if dev.bd-battery >= 0 then widget-label ("bt-d-bat-" & dev.bd-address) (show (dev.bd-battery) & "%") else widget-label ("bt-d-bat-" & dev.bd-address) ""
+      in let action = if dev.bd-paired then widget-button ("bt-d-act-" & dev.bd-address) (if dev.bd-connected then "Disconnect" else "Connect")
+        else widget-button ("bt-d-act-" & dev.bd-address) "Pair"
+      in let row = widget-panel ("bt-d-" & dev.bd-address) DirRow 4 [icon, name, status, bat, action]
+      in bt-device-rows st show-paired (i + 1) n (list-push acc row)
+    else bt-device-rows st show-paired (i + 1) n acc
+
+Section: Formatting
+
+  format-bluetooth : BluetoothState -> Text
+  format-bluetooth (st) =
+    (if st.bt-enabled then "ON" else "OFF")
+    & " paired=" & show (st.bt-paired-count) & " connected=" & show (st.bt-connected-count)
+    & " devices=" & show (st.bt-device-count)
+
+Page 1

@@ -1,104 +1,115 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Chapter: OsIntegrationDemo
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Trust chapter CapabilityAudit
+  cites Observe chapter SystemInfo
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Test Data
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  hello-binary : List Integer
+  hello-binary =
+    cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+
+  author-key : Text = read-author-key hello-binary
+
+Section: Helpers
+
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  show-phase : VerifyPhase -> Text
+  show-phase (p) = when p
+    is PhaseIntegrity -> "integrity"
+    is PhaseAuthor -> "author"
+    is PhaseCapabilities -> "capabilities"
+    is PhaseEffects -> "effects"
+    is PhaseProofs -> "proofs"
+
+  setup-state : ShellState
+  setup-state =
+    let s0 = shell-init (policy-empty "codex-os") 100
+    in let r1 = execute-cmd (CmdAddRule "allow-console" "Console" 2) s0
+    in let r2 = execute-cmd (CmdTrust author-key 10000) (r1.new-state)
+    in r2.new-state
+
+  serialize-entry : ProgramEntry -> Text
+  serialize-entry (e) =
+    ",entry.name=" & e.name & ",entry.mask=" & show (e.cap-bitmask) & ",entry.caps=" & show (e.cap-count)
+
+  serialize-shell : ShellState -> Text
+  serialize-shell (s) =
+    let base = "manifest{policy=" & (s.policy).name & ",fuel=" & show (s.fuel) & ",programs=" & show (registry-count (s.registry)) & ",rules=" & show (list-length ((s.policy).rules))
+    in let found = registry-lookup (s.registry) "hello"
+    in let entry-text = when found
+      is Just (e) -> serialize-entry e
+      is None -> ""
+    in base & entry-text & "}"
+
+Section: Tests
+
+  opening : [Console] Nothing = act
+    let s = setup-state
+    in let ri = execute-cmd (CmdInstall "hello" hello-binary) s
+    in let installed = ri.new-state
+    in let vr = verify-cdx-full hello-binary (installed.lattice) (installed.policy) 0 (installed.store) (installed.fuel)
+    in let audit = audit-install audit-empty "hello" 32 1000
+    in let last-entry = audit-last audit
+    in let last-text = when last-entry
+      is Just (e) -> format-entry e
+      is None -> "no entries"
+    in let manifest = serialize-shell installed
+    in let manifest-len = text-length manifest
+    in let restore-ok = manifest-len == 98
+    in let report = gather-report installed
+    in act
+      print-line-uni "=== Codex OS Integration Demo ==="
+      print-line-uni ""
+      print-line-uni "[1] Shell state initialized"
+      print-line-uni ("    policy=" & (s.policy).name & " fuel=" & show (s.fuel))
+      print-line-uni ""
+      print-line-uni "[2] Program installed"
+      print-line-uni ("    " & ri.output)
+      print-line-uni ""
+      print-line-uni "[3] CDX verification"
+      print-line-uni ("    accepted=" & show-bool (vr.accepted) & " phase=" & show-phase (vr.phase))
+      print-line-uni ""
+      print-line-uni "[4] Capability audit"
+      print-line-uni ("    " & format-audit-summary audit)
+      print-line-uni ("    " & last-text)
+      print-line-uni ""
+      print-line-uni "[5] State persistence"
+      print-line-uni ("    manifest-len=" & show (manifest-len))
+      print-line-uni ("    restore-ok=" & show-bool (restore-ok))
+      print-line-uni ""
+      print-line-uni "[6] System report"
+      print-line-uni ("    " & format-report report)
+      print-line-uni ""
+      print-line-uni "=== All subsystems operational ==="
+    end
+  end

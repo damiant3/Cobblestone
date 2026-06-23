@@ -1,0 +1,603 @@
+Chapter: PageCompiler
+  cites Foreword chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Browser chapter BrowserTheme
+
+ Lightweight page compiler for the Codex Browser. Parses a subset
+ of Codex syntax used in page definitions (let bindings, function
+ application, literals, lists) and evaluates the page function to
+ produce a WidgetNode tree.
+
+ This replaces the full compiler pipeline for in-browser use. The
+ full compiler cannot be embedded because its internal Codex chapter
+ dependencies are part of the seed binary.
+
+Section: Compilation Result
+
+  PageCompileOutcome =
+    | PcSuccess (WidgetNode) (Text) (List Text)
+    | PcError (Text)
+
+Section: Token Types
+
+  PageTok =
+    | TkWord (Text)
+    | TkStr (Text)
+    | TkNum (Integer)
+    | TkLParen
+    | TkRParen
+    | TkLBracket
+    | TkRBracket
+    | TkComma
+    | TkDot
+    | TkEq
+    | TkAmp
+    | TkEof
+
+Section: Tokenizer
+
+  page-tokenize : Text, Integer, Integer, List PageTok -> List PageTok
+  page-tokenize (src) (i) (len) (acc) =
+    if i >= len then list-push acc TkEof
+    else let cc = char-code (char-at src i)
+    in if cc <= 2 then page-tokenize src (i + 1) len acc
+    else if cc == 72 then page-tokenize-string src (i + 1) len "" acc
+    else if cc >= 3 then if cc <= 12 then page-tokenize-number src i len 0 acc
+      else if cc == 65 then page-tokenize src (i + 1) len (list-push acc TkDot)
+      else if cc == 66 then page-tokenize src (i + 1) len (list-push acc TkComma)
+      else if cc == 77 then page-tokenize src (i + 1) len (list-push acc TkEq)
+      else if cc == 74 then page-tokenize src (i + 1) len (list-push acc TkLParen)
+      else if cc == 75 then page-tokenize src (i + 1) len (list-push acc TkRParen)
+      else if cc == 88 then page-tokenize src (i + 1) len (list-push acc TkLBracket)
+      else if cc == 89 then page-tokenize src (i + 1) len (list-push acc TkRBracket)
+      else if cc == 84 then page-tokenize src (i + 1) len (list-push acc TkAmp)
+      else page-tokenize-word src i len "" acc
+    else page-tokenize-word src i len "" acc
+
+  page-tokenize-string : Text, Integer, Integer, Text, List PageTok -> List PageTok
+  page-tokenize-string (src) (i) (len) (acc-str) (acc) =
+    if i >= len then list-push acc (TkStr acc-str)
+    else let cc = char-code (char-at src i)
+    in if cc == 72 then page-tokenize src (i + 1) len (list-push acc (TkStr acc-str))
+    else page-tokenize-string src (i + 1) len (acc-str & char-to-text (char-at src i)) acc
+
+  page-tokenize-number : Text, Integer, Integer, Integer, List PageTok -> List PageTok
+  page-tokenize-number (src) (i) (len) (n) (acc) =
+    if i >= len then list-push acc (TkNum n)
+    else let cc = char-code (char-at src i)
+    in if cc >= 3 then if cc <= 12 then page-tokenize-number src (i + 1) len (n * 10 + cc - 3) acc
+      else page-tokenize src i len (list-push acc (TkNum n))
+    else page-tokenize src i len (list-push acc (TkNum n))
+
+  page-tokenize-word : Text, Integer, Integer, Text, List PageTok -> List PageTok
+  page-tokenize-word (src) (i) (len) (w) (acc) =
+    if i >= len then if text-length w > 0 then list-push acc (TkWord w) else acc
+    else let cc = char-code (char-at src i)
+    in if is-word-char cc
+      then page-tokenize-word src (i + 1) len (w & char-to-text (char-at src i)) acc
+      else if text-length w > 0
+        then page-tokenize src i len (list-push acc (TkWord w))
+        else page-tokenize src (i + 1) len acc
+
+  is-word-char : Integer -> Boolean
+  is-word-char (cc) =
+    if cc >= 13 then if cc <= 64 then True
+      else if cc == 73 then True
+      else if cc == 85 then True
+      else False
+    else if cc >= 3 then cc <= 12
+    else False
+
+Section: Expression AST
+
+  PExpr =
+    | PxText (Text)
+    | PxInt (Integer)
+    | PxBool (Boolean)
+    | PxVar (Text)
+    | PxApp (PExpr) (PExpr)
+    | PxLet (Text) (PExpr) (PExpr)
+    | PxList (List PExpr)
+    | PxField (PExpr) (Text)
+    | PxIf (PExpr) (PExpr) (PExpr)
+    | PxConcat (PExpr) (PExpr)
+    | PxNone
+
+Section: Parser
+
+  PageParse = record {
+    pp-expr : PExpr,
+    pp-pos : Integer
+  }
+
+  tok-at : List PageTok, Integer -> PageTok
+  tok-at (toks) (i) =
+    if i >= list-length toks then TkEof
+    else list-at toks i
+
+  is-tok-word : PageTok, Text -> Boolean
+  is-tok-word (tok) (expected) =
+    when tok
+      is TkWord (w) -> w == expected
+      is otherwise -> False
+
+  page-parse-body : List PageTok, Integer -> PageParse
+  page-parse-body (toks) (pos) =
+    let t = tok-at toks pos
+    in if is-tok-word t "let"
+      then page-parse-let toks (pos + 1)
+      else if is-tok-word t "if"
+      then page-parse-if toks (pos + 1)
+      else page-parse-concat toks pos
+
+  page-parse-let : List PageTok, Integer -> PageParse
+  page-parse-let (toks) (pos) =
+    let name-tok = tok-at toks pos
+    in when name-tok
+      is TkWord (name) ->
+        let eq-pos = pos + 1
+        in let eq-tok = tok-at toks eq-pos
+        in let val = page-parse-concat toks (eq-pos + 1)
+        in let in-pos = val.pp-pos
+        in let in-tok = tok-at toks in-pos
+        in let body = if is-tok-word in-tok "in"
+              then page-parse-body toks (in-pos + 1)
+              else PageParse { pp-expr = PxNone, pp-pos = in-pos }
+        in PageParse { pp-expr = PxLet name (val.pp-expr) (body.pp-expr), pp-pos = body.pp-pos }
+      is otherwise -> PageParse { pp-expr = PxNone, pp-pos = pos }
+
+  page-parse-if : List PageTok, Integer -> PageParse
+  page-parse-if (toks) (pos) =
+    let cond = page-parse-concat toks pos
+    in let then-pos = cond.pp-pos
+    in let then-tok = tok-at toks then-pos
+    in let consequent = if is-tok-word then-tok "then"
+          then page-parse-concat toks (then-pos + 1)
+          else PageParse { pp-expr = PxNone, pp-pos = then-pos }
+    in let else-pos = consequent.pp-pos
+    in let else-tok = tok-at toks else-pos
+    in let alternate = if is-tok-word else-tok "else"
+          then page-parse-body toks (else-pos + 1)
+          else PageParse { pp-expr = PxNone, pp-pos = else-pos }
+    in PageParse { pp-expr = PxIf (cond.pp-expr) (consequent.pp-expr) (alternate.pp-expr), pp-pos = alternate.pp-pos }
+
+  page-parse-concat : List PageTok, Integer -> PageParse
+  page-parse-concat (toks) (pos) =
+    let left = page-parse-app toks pos
+    in let next = tok-at toks (left.pp-pos)
+    in when next
+      is TkAmp ->
+        let right = page-parse-concat toks (left.pp-pos + 1)
+        in PageParse { pp-expr = PxConcat (left.pp-expr) (right.pp-expr), pp-pos = right.pp-pos }
+      is otherwise -> left
+
+  page-parse-app : List PageTok, Integer -> PageParse
+  page-parse-app (toks) (pos) =
+    let head = page-parse-atom toks pos
+    in when head.pp-expr
+      is PxNone -> head
+      is otherwise -> page-parse-app-args toks (head.pp-pos) (head.pp-expr)
+
+  page-parse-app-args : List PageTok, Integer, PExpr -> PageParse
+  page-parse-app-args (toks) (pos) (func) =
+    let next = tok-at toks pos
+    in if is-app-start next
+      then let arg = page-parse-atom toks pos
+        in page-parse-app-args toks (arg.pp-pos) (PxApp func (arg.pp-expr))
+      else PageParse { pp-expr = func, pp-pos = pos }
+
+  is-app-start : PageTok -> Boolean
+  is-app-start (tok) =
+    when tok
+      is TkWord (w) ->
+        if w == "in" then False
+        else if w == "then" then False
+        else if w == "else" then False
+        else if w == "let" then False
+        else if w == "if" then False
+        else True
+      is TkStr (_) -> True
+      is TkNum (_) -> True
+      is TkLParen -> True
+      is TkLBracket -> True
+      is otherwise -> False
+
+  page-parse-atom : List PageTok, Integer -> PageParse
+  page-parse-atom (toks) (pos) =
+    let tok = tok-at toks pos
+    in when tok
+      is TkStr (s) -> PageParse { pp-expr = PxText s, pp-pos = pos + 1 }
+      is TkNum (n) -> PageParse { pp-expr = PxInt n, pp-pos = pos + 1 }
+      is TkWord (w) ->
+        if w == "True" then PageParse { pp-expr = PxBool True, pp-pos = pos + 1 }
+        else if w == "False" then PageParse { pp-expr = PxBool False, pp-pos = pos + 1 }
+        else let next = tok-at toks (pos + 1)
+          in when next
+            is TkDot ->
+              let field-tok = tok-at toks (pos + 2)
+              in when field-tok
+                is TkWord (f) ->
+                  PageParse { pp-expr = PxField (PxVar w) f, pp-pos = pos + 3 }
+                is otherwise ->
+                  PageParse { pp-expr = PxVar w, pp-pos = pos + 1 }
+            is otherwise ->
+              PageParse { pp-expr = PxVar w, pp-pos = pos + 1 }
+      is TkLParen ->
+        let inner = page-parse-body toks (pos + 1)
+        in let close = tok-at toks (inner.pp-pos)
+        in when close
+          is TkRParen -> PageParse { pp-expr = inner.pp-expr, pp-pos = inner.pp-pos + 1 }
+          is otherwise -> inner
+      is TkLBracket ->
+        let items = page-parse-list-items toks (pos + 1) []
+        in PageParse { pp-expr = PxList (items.pp-list), pp-pos = items.pp-pos }
+      is otherwise -> PageParse { pp-expr = PxNone, pp-pos = pos }
+
+  PageListParse = record {
+    pp-list : List PExpr,
+    pp-pos : Integer
+  }
+
+  page-parse-list-items : List PageTok, Integer, List PExpr -> PageListParse
+  page-parse-list-items (toks) (pos) (acc) =
+    let tok = tok-at toks pos
+    in when tok
+      is TkRBracket -> PageListParse { pp-list = acc, pp-pos = pos + 1 }
+      is TkEof -> PageListParse { pp-list = acc, pp-pos = pos }
+      is otherwise ->
+        let item = page-parse-body toks pos
+        in let next = tok-at toks (item.pp-pos)
+        in let skip = when next
+              is TkComma -> item.pp-pos + 1
+              is otherwise -> item.pp-pos
+        in page-parse-list-items toks skip (list-push acc (item.pp-expr))
+
+Section: Runtime Values
+
+  PVal =
+    | PvText (Text)
+    | PvInt (Integer)
+    | PvBool (Boolean)
+    | PvWidget (WidgetNode)
+    | PvList (List PVal)
+    | PvNative (Text) (Integer) (List PVal)
+    | PvNone
+
+  PEnv = record {
+    pe-bindings : List PBinding
+  }
+
+  PBinding = record {
+    pb-name : Text,
+    pb-value : PVal
+  }
+
+  env-empty : PEnv = PEnv { pe-bindings = [] }
+
+  env-bind : PEnv, Text, PVal -> PEnv
+  env-bind (env) (name) (val) =
+    PEnv { pe-bindings = list-push (env.pe-bindings) (PBinding { pb-name = name, pb-value = val }) }
+
+  env-lookup : PEnv, Text -> PVal
+  env-lookup (env) (name) =
+    env-search (env.pe-bindings) name 0 (list-length (env.pe-bindings))
+
+  env-search : List PBinding, Text, Integer, Integer -> PVal
+  env-search (bindings) (name) (i) (len) =
+    if i >= len then PvNone
+    else let b = list-at bindings (len - 1 - i)
+    in if b.pb-name == name then b.pb-value
+    else env-search bindings name (i + 1) len
+
+Section: Value Extractors
+
+  pv-to-text : PVal -> Text
+  pv-to-text (v) =
+    when v
+      is PvText (t) -> t
+      is PvInt (n) -> show n
+      is PvBool (b) -> if b then "True" else "False"
+      is otherwise -> ""
+
+  pv-to-int : PVal -> Integer
+  pv-to-int (v) =
+    when v
+      is PvInt (n) -> n
+      is otherwise -> 0
+
+  pv-to-widget : PVal -> WidgetNode
+  pv-to-widget (v) =
+    when v
+      is PvWidget (w) -> w
+      is otherwise -> widget-label "eval-error" "(type error)"
+
+  pv-to-widget-list : List PVal, Integer, Integer, List WidgetNode -> List WidgetNode
+  pv-to-widget-list (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else let w = pv-to-widget (list-at vals i)
+    in pv-to-widget-list vals (i + 1) len (list-push acc w)
+
+  pv-list-items : PVal -> List PVal
+  pv-list-items (v) =
+    when v
+      is PvList (items) -> items
+      is otherwise -> []
+
+Section: Native Function Dispatch
+
+  page-resolve-name : Text -> PVal
+  page-resolve-name (name) =
+    if name == "widget-label" then PvNative "widget-label" 2 []
+    else if name == "widget-button" then PvNative "widget-button" 2 []
+    else if name == "widget-panel" then PvNative "widget-panel" 4 []
+    else if name == "widget-separator" then PvNative "widget-separator" 1 []
+    else if name == "widget-custom" then PvNative "widget-custom" 4 []
+    else if name == "widget-input" then PvNative "widget-input" 3 []
+    else if name == "widget-set-flex" then PvNative "widget-set-flex" 2 []
+    else if name == "widget-set-min" then PvNative "widget-set-min" 3 []
+    else if name == "widget-progress" then PvNative "widget-progress" 3 []
+    else if name == "widget-checkbox" then PvNative "widget-checkbox" 2 []
+    else if name == "show" then PvNative "show" 1 []
+    else if name == "text-length" then PvNative "text-length" 1 []
+    else if name == "list-length" then PvNative "list-length" 1 []
+    else if name == "DirColumn" then PvInt 1
+    else if name == "DirRow" then PvInt 0
+    else if name == "spacing-sm" then PvInt (spacing-sm)
+    else if name == "spacing-md" then PvInt (spacing-md)
+    else if name == "spacing-lg" then PvInt (spacing-lg)
+    else PvNone
+
+  page-call-native : Text, List PVal -> PVal
+  page-call-native (name) (args) =
+    if name == "widget-label"
+    then let id = pv-to-text (list-at args 0)
+      in let txt = pv-to-text (list-at args 1)
+      in PvWidget (widget-label id txt)
+    else if name == "widget-button"
+    then let id = pv-to-text (list-at args 0)
+      in let txt = pv-to-text (list-at args 1)
+      in PvWidget (widget-button id txt)
+    else if name == "widget-panel"
+    then let id = pv-to-text (list-at args 0)
+      in let dir = pv-to-int (list-at args 1)
+      in let gap = pv-to-int (list-at args 2)
+      in let children = pv-list-items (list-at args 3)
+      in let widgets = pv-to-widget-list children 0 (list-length children) []
+      in PvWidget (widget-panel id (if dir == 1 then DirColumn else DirRow) gap widgets)
+    else if name == "widget-separator"
+    then PvWidget (widget-separator (pv-to-text (list-at args 0)))
+    else if name == "widget-custom"
+    then let id = pv-to-text (list-at args 0)
+      in let tag = pv-to-text (list-at args 1)
+      in let w = pv-to-int (list-at args 2)
+      in let h = pv-to-int (list-at args 3)
+      in PvWidget (widget-custom id tag w h)
+    else if name == "widget-input"
+    then let id = pv-to-text (list-at args 0)
+      in let txt = pv-to-text (list-at args 1)
+      in let cur = pv-to-int (list-at args 2)
+      in PvWidget (widget-input id txt cur)
+    else if name == "widget-set-flex"
+    then let w = pv-to-widget (list-at args 0)
+      in let f = pv-to-int (list-at args 1)
+      in PvWidget (widget-set-flex w f)
+    else if name == "widget-set-min"
+    then let w = pv-to-widget (list-at args 0)
+      in let minw = pv-to-int (list-at args 1)
+      in let minh = pv-to-int (list-at args 2)
+      in PvWidget (widget-set-min w minw minh)
+    else if name == "widget-progress"
+    then let id = pv-to-text (list-at args 0)
+      in let val = pv-to-int (list-at args 1)
+      in let mx = pv-to-int (list-at args 2)
+      in PvWidget (widget-progress id val mx)
+    else if name == "widget-checkbox"
+    then let id = pv-to-text (list-at args 0)
+      in let checked = when (list-at args 1)
+            is PvBool (b) -> b
+            is otherwise -> False
+      in PvWidget (widget-checkbox id checked)
+    else if name == "show"
+    then PvText (pv-to-text (list-at args 0))
+    else if name == "text-length"
+    then PvInt (text-length (pv-to-text (list-at args 0)))
+    else if name == "list-length"
+    then let items = pv-list-items (list-at args 0)
+      in PvInt (list-length items)
+    else PvNone
+
+Section: Evaluator
+
+  page-eval : PExpr, PEnv -> PVal
+  page-eval (expr) (env) =
+    when expr
+      is PxText (s) -> PvText s
+      is PxInt (n) -> PvInt n
+      is PxBool (b) -> PvBool b
+      is PxVar (name) ->
+        let bound = env-lookup env name
+        in when bound
+          is PvNone -> page-resolve-name name
+          is otherwise -> bound
+      is PxLet (name) (val-expr) (body-expr) ->
+        let val = page-eval val-expr env
+        in let env2 = env-bind env name val
+        in page-eval body-expr env2
+      is PxApp (func-expr) (arg-expr) ->
+        let func = page-eval func-expr env
+        in let arg = page-eval arg-expr env
+        in page-eval-apply func arg
+      is PxList (items) ->
+        let vals = page-eval-list items env 0 (list-length items) []
+        in PvList vals
+      is PxField (obj-expr) (field) ->
+        let obj = page-eval obj-expr env
+        in page-eval-field obj field
+      is PxIf (cond-expr) (then-expr) (else-expr) ->
+        let cond = page-eval cond-expr env
+        in when cond
+          is PvBool (True) -> page-eval then-expr env
+          is PvBool (False) -> page-eval else-expr env
+          is otherwise -> page-eval then-expr env
+      is PxConcat (left-expr) (right-expr) ->
+        let left = page-eval left-expr env
+        in let right = page-eval right-expr env
+        in PvText (pv-to-text left & pv-to-text right)
+      is PxNone -> PvNone
+
+  page-eval-apply : PVal, PVal -> PVal
+  page-eval-apply (func) (arg) =
+    when func
+      is PvNative (name) (arity) (args) ->
+        let new-args = list-push args arg
+        in if list-length new-args >= arity
+          then page-call-native name new-args
+          else PvNative name arity new-args
+      is otherwise -> PvNone
+
+  page-eval-list : List PExpr, PEnv, Integer, Integer, List PVal -> List PVal
+  page-eval-list (exprs) (env) (i) (len) (acc) =
+    if i >= len then acc
+    else let val = page-eval (list-at exprs i) env
+    in page-eval-list exprs env (i + 1) len (list-push acc val)
+
+  page-eval-field : PVal, Text -> PVal
+  page-eval-field (obj) (field) =
+    if field == "viewport-width" then when obj
+      is PvInt (n) -> PvInt n
+      is otherwise -> PvInt 0
+    else if field == "viewport-height" then when obj
+      is PvInt (n) -> PvInt n
+      is otherwise -> PvInt 0
+    else PvNone
+
+Section: Source Analysis
+
+  find-page-body : Text -> Text
+  find-page-body (src) =
+    let lines = text-split src "\n"
+    in find-page-in-lines lines 0 (list-length lines) False ""
+
+  find-page-in-lines : List Text, Integer, Integer, Boolean, Text -> Text
+  find-page-in-lines (lines) (i) (len) (found-eq) (acc) =
+    if i >= len then acc
+    else let line = list-at lines i
+    in if found-eq
+      then find-page-in-lines lines (i + 1) len True (acc & " " & text-trim line)
+      else if line-has-page-eq line
+        then let after-eq = text-after-eq line
+          in find-page-in-lines lines (i + 1) len True (text-trim after-eq)
+        else find-page-in-lines lines (i + 1) len False acc
+
+  line-has-page-eq : Text -> Boolean
+  line-has-page-eq (line) =
+    let trimmed = text-trim line
+    in if text-starts-with trimmed "page " then text-contains trimmed "="
+    else if text-starts-with trimmed "app " then text-contains trimmed "="
+    else False
+
+  text-after-eq : Text -> Text
+  text-after-eq (s) = text-after-eq-scan s 0 (text-length s)
+
+  text-after-eq-scan : Text, Integer, Integer -> Text
+  text-after-eq-scan (s) (i) (len) =
+    if i >= len then ""
+    else if char-code (char-at s i) == 77 then text-drop s (i + 1)
+    else text-after-eq-scan s (i + 1) len
+
+  text-trim : Text -> Text
+  text-trim (s) = text-trim-left (text-trim-right s)
+
+  text-trim-left : Text -> Text
+  text-trim-left (s) =
+    if text-length s == 0 then s
+    else let cc = char-code (char-at s 0)
+    in if cc <= 2 then text-trim-left (text-drop s 1)
+    else s
+
+  text-trim-right : Text -> Text
+  text-trim-right (s) =
+    if text-length s == 0 then s
+    else let last = text-length s - 1
+    in let cc = char-code (char-at s last)
+    in if cc <= 2 then text-trim-right (text-take s last)
+    else s
+
+  extract-chapter-title : Text -> Text
+  extract-chapter-title (src) =
+    let lines = text-split src "\n"
+    in find-chapter-line lines 0 (list-length lines)
+
+  find-chapter-line : List Text, Integer, Integer -> Text
+  find-chapter-line (lines) (i) (len) =
+    if i >= len then "Untitled"
+    else let line = list-at lines i
+    in let trimmed = text-trim line
+    in if text-starts-with trimmed "Chapter:"
+      then text-trim (text-drop trimmed 8)
+      else find-chapter-line lines (i + 1) len
+
+  extract-effects : Text -> List Text
+  extract-effects (src) =
+    let lines = text-split src "\n"
+    in find-effect-line lines 0 (list-length lines)
+
+  find-effect-line : List Text, Integer, Integer -> List Text
+  find-effect-line (lines) (i) (len) =
+    if i >= len then ["Display"]
+    else let line = list-at lines i
+    in let trimmed = text-trim line
+    in if text-starts-with trimmed "page :" then extract-bracket-effects trimmed
+    else if text-starts-with trimmed "app :" then extract-bracket-effects trimmed
+    else find-effect-line lines (i + 1) len
+
+  extract-bracket-effects : Text -> List Text
+  extract-bracket-effects (sig) =
+    let start = find-bracket-start sig 0 (text-length sig)
+    in let stop = find-bracket-end sig start (text-length sig)
+    in if start >= stop then ["Display"]
+    else let inner = text-take (text-drop sig (start + 1)) (stop - start - 1)
+    in text-split inner ","
+
+  find-bracket-start : Text, Integer, Integer -> Integer
+  find-bracket-start (s) (i) (len) =
+    if i >= len then len
+    else if char-code (char-at s i) == 88 then i
+    else find-bracket-start s (i + 1) len
+
+  find-bracket-end : Text, Integer, Integer -> Integer
+  find-bracket-end (s) (i) (len) =
+    if i >= len then len
+    else if char-code (char-at s i) == 89 then i
+    else find-bracket-end s (i + 1) len
+
+Section: Byte to Text Conversion
+
+  page-bytes-to-text : List Integer, Integer, Integer, Text -> Text
+  page-bytes-to-text (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else let cce = from-unicode (list-at bs i)
+    in page-bytes-to-text bs (i + 1) len (acc & char-to-text (code-to-char cce))
+
+Section: Entry Point
+
+  compile-page : List Integer, Boolean, Integer, Integer -> PageCompileOutcome
+  compile-page (source-bytes) (is-source) (vw) (vh) =
+    if is-source == False
+    then PcError "CDX cache loading deferred to content-address phase"
+    else let src = page-bytes-to-text source-bytes 0 (list-length source-bytes) ""
+    in let title = extract-chapter-title src
+    in let effects = extract-effects src
+    in let body-text = find-page-body src
+    in if text-length body-text == 0
+      then PcError "No page or app function found in source"
+      else let toks = page-tokenize body-text 0 (text-length body-text) []
+        in let parsed = page-parse-body toks 0
+        in let env = env-bind (env-bind env-empty "vw" (PvInt vw)) "vh" (PvInt vh)
+        in let result = page-eval (parsed.pp-expr) env
+        in when result
+          is PvWidget (tree) -> PcSuccess tree title effects
+          is PvNone -> PcError ("Page function did not produce a widget tree")
+          is otherwise -> PcError ("Page function returned unexpected type")

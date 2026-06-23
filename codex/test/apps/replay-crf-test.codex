@@ -1,70 +1,70 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Chapter: ReplayCrfTest
+  cites Replay chapter ReplayCrf
+  cites Replay chapter ReplayLog
+  cites Net chapter MessageFraming
+  cites Foreword chapter Maybe
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+Section: Test Data
+  simple-session : ReplaySession = session-new "prog1" "ctx1"
+
+  event-session : ReplaySession =
+    let s0 = session-new "myprog" "myctx"
+    in let s1 = record-input s0 5 3 "recv" [10, 20, 30]
+    in let s2 = record-schedule s1 2 7 SchedChanSendBlock
+    in record-exit s2 1 0
+
+Section: Tests
+  test-encode-size : Text =
+    let bs = crf-encode simple-session
+    in "len=" & show (list-length bs) & " magic=" & show (list-at bs 0) & "," & show (list-at bs 1) & "," & show (list-at bs 2) & "," & show (list-at bs 3)
+
+  test-decode-empty : Text =
+    let bs = crf-encode (session-new "myprog" "myctx")
+    in let dr = crf-decode bs
+    in "ok=" & show-bool (dr.success) & " prog=" & dr.session.program-hash & " ctx=" & dr.session.context-hash & " events=" & show (dr.session.event-count)
+
+  test-roundtrip-count : Text =
+    let bs = crf-encode event-session
+    in let dr = crf-decode bs
+    in let s = dr.session
+    in let r1 = replay-next s
+    in let r2 = replay-next (r1.session)
+    in let r3 = replay-next (r2.session)
+    in "events=" & show (s.event-count) & " t1=" & event-type-name (r1.event) & " t2=" & event-type-name (r2.event) & " t3=" & event-type-name (r3.event)
+
+  test-input-event : Text =
+    let bs = crf-encode event-session
+    in let dr = crf-decode bs
+    in let r1 = replay-next (dr.session)
+    in when (r1.event)
+      is InputEvent (agent) (cap) (op) (payload) ->
+        "agent=" & show agent & " cap=" & show cap & " op=" & op & " len=" & show (list-length payload) & " b0=" & show (list-at payload 0)
+      is otherwise -> "unexpected"
+
+  test-schedule-event : Text =
+    let bs = crf-encode event-session
+    in let dr = crf-decode bs
+    in let r1 = replay-next (dr.session)
+    in let r2 = replay-next (r1.session)
+    in when (r2.event)
+      is ScheduleEvent (from) (to) (reason) ->
+        "from=" & show from & " to=" & show to & " reason=" & reason-name reason
+      is otherwise -> "unexpected"
+
+  test-bad-magic : Text =
+    let bs = [0, 0, 0, 0, 0, 0, 0, 0]
+    in let dr = crf-decode bs
+    in "ok=" & show-bool (dr.success) & " err=" & dr.error
+
+  opening : [Console] Nothing = act
+    print-line-uni test-encode-size
+    print-line-uni test-decode-empty
+    print-line-uni test-roundtrip-count
+    print-line-uni test-input-event
+    print-line-uni test-schedule-event
+    print-line-uni test-bad-magic
+  end

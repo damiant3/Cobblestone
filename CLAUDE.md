@@ -68,13 +68,20 @@ The canonical artifact is `seed/Codex.cdx` — a ~2.1 MB
 self-sustaining CDX binary, bootable via codex-vm (or QEMU multiboot).
 The CDX is the root of trust.
 
-`tools/codex-vm.exe` is a ~4500-line C program (WHP hypervisor) that
-emulates: PCI bus, xHCI USB (mass storage + HID keyboard + UVC camera),
-Intel HDA audio with host waveOut, Bochs VBE display, NE2K NIC with
-NAT, IDE disk, HPET, IOAPIC, ACPI/SMBIOS tables, UEFI firmware
-(LocateProtocol, Block I/O, memory map, auto-extract PE from GPT
-images), VGA text, GOP framebuffer, PS/2, CMOS RTC, PC speaker.
-Build with `tools/build-vm.ps1`.
+`tools/codex-vm.exe` is a ~6000-line C program (WHP hypervisor) that
+emulates: PCI bus (3 devices), xHCI USB 3.x (mass storage + HID
+keyboard + UVC camera), Intel HDA audio with host waveOut, Bochs VBE
+display, NE2K NIC with NAT + port forwarding, IDE disk (read/write
+with flush), HPET, IOAPIC (24 entries), LAPIC (per-core, SIPI for
+SMP boot), ACPI/SMBIOS tables, UEFI firmware (ConIn/ConOut, GOP,
+Block I/O, Simple File System, memory map, runtime services,
+auto-extract PE from GPT images), VGA text, GOP framebuffer at GPA
+0xBF000000 (in-RAM, no MMIO trap), host-side GPU triangle rasterizer
+(I/O ports 0x400-0x40F: depth buffer, lighting, texture mapping),
+PS/2 keyboard + mouse, CMOS RTC, PC speaker. Multi-core via `-smp N`
+(1-16 cores, each an independent WHP VP + host thread). Screenshot
+capture via `-screenshot`. Build with `tools/build-vm.ps1`. Full
+CLI reference and device details in `docs/OperatorsManual.md`.
 
 ### Bootstrap History — 2026-04-24: The cord is cut
 
@@ -144,8 +151,8 @@ builds every time.
 ### 4. One thing at a time
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
-Do not "while I'm here." The compiler is ~29,000 lines of Codex across
-53 files. A wrong change in one place surfaces as a silent corruption
+Do not "while I'm here." The compiler is ~28,000 lines of Codex across
+54 files. A wrong change in one place surfaces as a silent corruption
 three pipeline stages later.
 
 ### 5. CCE is the internal encoding
@@ -199,7 +206,6 @@ fails, fix the build scripts.
 Working directory: `D:\Projects\NewRepository-XXX`. Use pwd to find the
 actual XXX value. You are **XXX** — the last 3 characters of your working
 directory name.
-Agent file: `docs/Agents/<your-name>.txt`
 
 ### Perforce `.p4config`
 

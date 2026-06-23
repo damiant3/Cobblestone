@@ -281,7 +281,10 @@ Section: Print Text
    in let st3 = st-append-code (idx2.state) (lea reg-rsi (ptr-l.reg) 8)
    in let st4 = st-append-code st3 (add-rr reg-rsi (idx2.reg))
    in let st5 = st-append-code st4 (movzx-byte reg-rax reg-rsi 0)
-   in let tbl = load-local st5 saved-table
+   in let st5a = st-append-code st5 (cmp-ri reg-rax 128)
+   in let multi-pos = st5a.code-len
+   in let st5b = st-append-code st5a (jcc cc-ge 0)
+   in let tbl = load-local st5b saved-table
    in let st6 = st-append-code (tbl.state) (add-rr reg-rax (tbl.reg))
    in let st7 = st-append-code st6 (movzx-byte reg-rax reg-rax 0)
    in let st8 = emit-serial-wait-thr st7
@@ -291,7 +294,17 @@ Section: Print Text
    in let st11 = st-append-code (idx3.state) (add-ri (idx3.reg) 1)
    in let st12 = store-local st11 saved-idx (idx3.reg)
    in let st13 = st-append-code st12 (jmp (loop-top - (st12.code-len + 5)))
-   in patch-jcc-at st13 done-jump (st13.code-len)
+   in let st14 = patch-jcc-at st13 multi-pos (st13.code-len)
+   in let ptr-m = load-local st14 saved-ptr
+   in let idx-m = load-local (ptr-m.state) saved-idx
+   in let st15 = st-append-code (idx-m.state) (mov-rr reg-rdi (ptr-m.reg))
+   in let st16 = st-append-code st15 (mov-rr reg-rsi (idx-m.reg))
+   in let st17 = emit-call-to st16 "__cce_print_multi"
+   in let idx4 = load-local st17 saved-idx
+   in let st18 = st-append-code (idx4.state) (add-rr (idx4.reg) reg-rax)
+   in let st19 = store-local st18 saved-idx (idx4.reg)
+   in let st20 = st-append-code st19 (jmp (loop-top - (st19.code-len + 5)))
+   in patch-jcc-at st20 done-jump (st20.code-len)
 
   emit-print-text-raw-loop : CodegenState, Integer, Integer, Integer -> CodegenState
   emit-print-text-raw-loop (st) (saved-ptr) (saved-len) (saved-idx) =

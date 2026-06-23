@@ -53,7 +53,7 @@ Section: Expression Lowering
         then lower-expr-at t result-ty ctx (depth + 1)
         else then-ir-0
      in deck-record (IrIf (lower-expr-at c BooleanTy ctx (depth + 1)) then-ir else-ir result-ty s)
-    is ALetExpr (binds) (body) (s) -> lower-let binds body ty ctx s
+    is ALetExpr (binds) (body) (s) -> lower-let binds body ty ctx s depth
     is ALambdaExpr (params) (body) (s) -> lower-lambda params body ty ctx s
     is AMatchExpr (scrut) (arms) (s) -> lower-match scrut arms ty ctx s
     is AListExpr (elems) (s) -> lower-list elems ty ctx s
@@ -108,36 +108,42 @@ Section: Expression Lowering
   lower-lazy : AExpr, CodexType, LowerCtx, SourceSpan, Integer -> IRExpr
   lower-lazy (inner) (ty) (ctx) (s) (depth) =
    let inner-ty = peel-fun-return ty
+   in let sfx = integer-to-text depth
+   in let cell-n = "__lz-cell" & sfx
+   in let unit-n = "__lz-u" & sfx
+   in let val-n = "__lz-v" & sfx
+   in let s1-n = "__lz-s1" & sfx
+   in let s2-n = "__lz-s2" & sfx
    in let df = deck-record (RecordField { name = Name { value = "__lz-done" }, type-val = int-ty-default })
-   in let vf = deck-record (RecordField { name = Name { value = "__lz-val" }, type-val = int-ty-default })
+   in let vf = deck-record (RecordField { name = Name { value = "__lz-val" }, type-val = inner-ty })
    in let cty = deck-record (RecordTy (Name { value = "__LazyCell" }) [] (list-push (list-push [] df) vf))
    in let f1 = deck-record (IRFieldVal { name = "__lz-done", value = deck-record (IrIntLit 0 s), span = s })
    in let f2 = deck-record (IRFieldVal { name = "__lz-val", value = deck-record (IrIntLit 0 s), span = s })
    in let cell-ir = deck-record (IrRecord "__LazyCell" (list-push (list-push [] f1) f2) cty s)
-   in let cell-name = deck-record (IrName "__lz-cell" cty s)
+   in let cell-name = deck-record (IrName cell-n cty s)
    in let lctx = LowerCtx {
-    overlay = OverlayCons (TypeBinding { name = "__lz-u", bound-type = int-ty-default }) (OverlayCons (TypeBinding { name = "__lz-cell", bound-type = cty }) (ctx.overlay)),
+    overlay = OverlayCons (TypeBinding { name = unit-n, bound-type = int-ty-default }) (OverlayCons (TypeBinding { name = cell-n, bound-type = cty }) (ctx.overlay)),
     base = ctx.base,
     ust = ctx.ust,
     local-type-vars = ctx.local-type-vars,
     chapter-renames = ctx.chapter-renames
    }
-   in let body-ir = lower-expr-at inner inner-ty lctx (depth + 1)
+   in let body-ir = lower-expr-at inner inner-ty lctx (depth + 97)
    in let zero = deck-record (IrIntLit 0 s)
    in let one = deck-record (IrIntLit 1 s)
    in let done-read = deck-record (IrFieldAccess cell-name "__lz-done" int-ty-default s)
    in let done-check = deck-record (IrBinary IrEq done-read zero BooleanTy s)
-   in let val-name = deck-record (IrName "__lz-v" inner-ty s)
+   in let val-name = deck-record (IrName val-n inner-ty s)
    in let store-done = deck-record (IrFieldStore cell-name "__lz-done" one cty s)
    in let store-val = deck-record (IrFieldStore cell-name "__lz-val" val-name cty s)
-   in let inner-let2 = deck-record (IrLet "__lz-s2" cty store-val val-name s)
-   in let inner-let1 = deck-record (IrLet "__lz-s1" cty store-done inner-let2 s)
-   in let then-body = deck-record (IrLet "__lz-v" inner-ty body-ir inner-let1 s)
+   in let inner-let2 = deck-record (IrLet s2-n cty store-val val-name s)
+   in let inner-let1 = deck-record (IrLet s1-n cty store-done inner-let2 s)
+   in let then-body = deck-record (IrLet val-n inner-ty body-ir inner-let1 s)
    in let else-body = deck-record (IrFieldAccess cell-name "__lz-val" inner-ty s)
    in let if-expr = deck-record (IrIf done-check then-body else-body inner-ty s)
-   in let param = deck-record (IRParam { name = "__lz-u", type-val = int-ty-default, span = s })
+   in let param = deck-record (IRParam { name = unit-n, type-val = int-ty-default, span = s })
    in let lam = deck-record (IrLambda (list-push [] param) if-expr ty s)
-   in deck-record (IrLet "__lz-cell" cty cell-ir lam s)
+   in deck-record (IrLet cell-n cty cell-ir lam s)
 
   lower-name : Text, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-name (name) (ty) (ctx) (sp) =
@@ -160,13 +166,22 @@ Section: Expression Lowering
    in let cls-dict = type-name-of cand
    in let args = dict-type-args cand
    in let arg-tn = if list-length args > 0 then type-name-of (deep-resolve (ctx.ust) (list-at args 0)) else ""
-   in if text-length arg-tn == 0 then deck-record (IrName name ty sp)
-      else if text-length cls-dict <= 4 then deck-record (IrName name ty sp)
+   in if text-length arg-tn == 0 then dict-placeholder-fallback name ty ctx sp
+      else if text-length cls-dict <= 4 then dict-placeholder-fallback name ty ctx sp
       else let concrete = rename-lookup (ctx.chapter-renames) (substring cls-dict 0 (text-length cls-dict - 4) & "-dict-" & arg-tn)
       in let b = lookup-type-split (ctx.overlay) (ctx.base) concrete
       in when b
-       is ErrorTy -> deck-record (IrName name ty sp)
+       is ErrorTy -> dict-placeholder-fallback name ty ctx sp
        is otherwise -> deck-record (IrName concrete (deep-resolve (ctx.ust) b) sp)
+
+  dict-placeholder-fallback : Text, CodexType, LowerCtx, SourceSpan -> IRExpr
+  dict-placeholder-fallback (name) (ty) (ctx) (sp) =
+   let cls-name = substring name 10 (text-length name - 10)
+   in let param-name = "__" & cls-name & "-dict"
+   in let pb = lookup-type-split (ctx.overlay) (ctx.base) param-name
+   in when pb
+    is ErrorTy -> deck-record (IrName name ty sp)
+    is otherwise -> deck-record (IrName param-name (deep-resolve (ctx.ust) pb) sp)
 
   dict-type-args : CodexType -> List CodexType
   dict-type-args (ty) =
@@ -308,13 +323,21 @@ Section: Expression Lowering
    in let arg-ir = lower-expr a ErrorTy ctx
    in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
    in let dict-rn = constrained-dict-rn pname (type-name-of arg-ty) ctx
-   in if text-length dict-rn == 0
-      then lower-apply-dispatch (deck-record (IrName ("__no-instance-" & substring pname 10 (text-length pname - 10) & "-" & type-name-of arg-ty) ty sp)) arg-ir ty sp
-      else let db = lookup-type-split (ctx.overlay) (ctx.base) dict-rn
+   in if text-length dict-rn > 0
+      then let db = lookup-type-split (ctx.overlay) (ctx.base) dict-rn
       in let dict-ir = deck-record (IrName dict-rn (deep-resolve (ctx.ust) db) sp)
       in let inner-ret = peel-fun-return func-ty
       in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
       in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret)) sp
+      else let cls-name = substring pname 10 (text-length pname - 10)
+      in let param-name = "__" & cls-name & "-dict"
+      in let pb = lookup-type-split (ctx.overlay) (ctx.base) param-name
+      in when pb
+       is ErrorTy -> lower-apply-dispatch (deck-record (IrName ("__no-instance-" & cls-name & "-" & type-name-of arg-ty) ty sp)) arg-ir ty sp
+       is otherwise -> let dict-ir = deck-record (IrName param-name (deep-resolve (ctx.ust) pb) sp)
+        in let inner-ret = peel-fun-return func-ty
+        in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
+        in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret)) sp
 
   lower-derived-apply : AExpr, Text, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-derived-apply (inner-f) (pname) (a) (ty) (ctx) (sp) =
@@ -361,13 +384,28 @@ Section: Expression Lowering
     is ErrorTy -> ""
     is otherwise -> spec-rn
 
+  try-unit-convert : IRExpr, CodexType, SourceSpan -> IRExpr
+  try-unit-convert (arg-ir) (expected-ty) (sp) =
+   let arg-actual = ir-expr-type arg-ir
+   in when arg-actual
+    is UnitTy (from-name) (from-inner) ->
+     when expected-ty
+      is UnitTy (to-name) (to-inner) ->
+       if from-name.value == to-name.value then arg-ir
+       else let conv-name = from-name.value & "-to-" & to-name.value
+       in let conv-fn-ty = deck-record (FunTy arg-actual expected-ty)
+       in deck-record (IrApply (deck-record (IrName conv-name conv-fn-ty sp)) arg-ir expected-ty sp)
+      is otherwise -> arg-ir
+    is otherwise -> arg-ir
+
   lower-apply-normal : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-apply-normal (f) (a) (ty) (ctx) (sp) =
    let func-ir = lower-expr f ErrorTy ctx
    in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
    in let arg-ty = peel-fun-param func-ty
    in let ret-ty = peel-fun-return func-ty
-   in let arg-ir = lower-expr a arg-ty ctx
+   in let raw-arg-ir = lower-expr a arg-ty ctx
+   in let arg-ir = try-unit-convert raw-arg-ir arg-ty sp
    in let resolved-ret = subst-type-vars-from-arg arg-ty (ir-expr-type arg-ir) ret-ty
    in let actual-ret = when resolved-ret
       is ErrorTy -> ty
@@ -418,13 +456,13 @@ Section: Expression Lowering
 
   is-primitive-type-name : Text -> Boolean
   is-primitive-type-name (tn) =
-   tn == "Integer" | tn == "Number" | tn == "Text" | tn == "Boolean" | tn == "Char" | tn == "List" | tn == "Nothing"
+   tn == "Integer" | tn == "Real" | tn == "Text" | tn == "Boolean" | tn == "Char" | tn == "List" | tn == "Nothing"
 
   type-name-of : CodexType -> Text
   type-name-of (ty) =
    when ty
     is IntegerTy (lo) (hi) (m) -> "Integer"
-    is NumberTy -> "Number"
+    is RealTy -> "Real"
     is TextTy -> "Text"
     is BooleanTy -> "Boolean"
     is CharTy -> "Char"
@@ -443,11 +481,11 @@ Section: Expression Lowering
     is otherwise -> deck-record (IrApply func-ir arg-ir ret-ty sp)
 
 Section: Let and Lambda
-  lower-let : List ALetBind, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
-  lower-let (binds) (body) (ty) (ctx) (sp) =
-   if list-length binds == 0 then lower-expr body ty ctx
+  lower-let : List ALetBind, AExpr, CodexType, LowerCtx, SourceSpan, Integer -> IRExpr
+  lower-let (binds) (body) (ty) (ctx) (sp) (depth) =
+   if list-length binds == 0 then lower-expr-at body ty ctx (depth + 1)
    else let b = list-at binds 0
-   in let val-ir = lower-expr (b.value) ErrorTy ctx
+   in let val-ir = lower-expr-at (b.value) ErrorTy ctx (depth + 1)
    in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
    in let ctx2 = LowerCtx {
     overlay = OverlayCons (TypeBinding {
@@ -459,13 +497,13 @@ Section: Let and Lambda
     local-type-vars = ctx.local-type-vars,
     chapter-renames = ctx.chapter-renames
    }
-   in deck-record (IrLet (b.name.value) val-ty val-ir (lower-let-rest binds body ty ctx2 1 sp) sp)
+   in deck-record (IrLet (b.name.value) val-ty val-ir (lower-let-rest binds body ty ctx2 1 sp depth) sp)
 
-  lower-let-rest : List ALetBind, AExpr, CodexType, LowerCtx, Integer, SourceSpan -> IRExpr
-  lower-let-rest (binds) (body) (ty) (ctx) (i) (sp) =
-   if i == list-length binds then lower-expr body ty ctx
+  lower-let-rest : List ALetBind, AExpr, CodexType, LowerCtx, Integer, SourceSpan, Integer -> IRExpr
+  lower-let-rest (binds) (body) (ty) (ctx) (i) (sp) (depth) =
+   if i == list-length binds then lower-expr-at body ty ctx (depth + 1)
    else let b = list-at binds i
-   in let val-ir = lower-expr (b.value) ErrorTy ctx
+   in let val-ir = lower-expr-at (b.value) ErrorTy ctx (depth + 1)
    in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
    in let ctx2 = LowerCtx {
     overlay = OverlayCons (TypeBinding {
@@ -477,7 +515,7 @@ Section: Let and Lambda
     local-type-vars = ctx.local-type-vars,
     chapter-renames = ctx.chapter-renames
    }
-   in deck-record (IrLet (b.name.value) val-ty val-ir (lower-let-rest binds body ty ctx2 (i + 1) sp) sp)
+   in deck-record (IrLet (b.name.value) val-ty val-ir (lower-let-rest binds body ty ctx2 (i + 1) sp depth) sp)
 
   lower-lambda : List Name, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-lambda (params) (body) (ty) (ctx) (sp) =
@@ -585,7 +623,16 @@ Section: Match Lowering
      in let subst = pattern-type-subst ctor-stripped ty
      in let ctor-substituted = apply-ctor-subst subst ctor-stripped
      in bind-ctor-pattern-fields ctx sub-pats ctor-substituted 0 (list-length sub-pats)
+    is AVecPat (sub-pats) (s) ->
+     let elem-ty = when ty is VectorTy (n) (t) -> t is otherwise -> ErrorTy
+     in bind-vec-pattern-fields ctx sub-pats elem-ty 0 (list-length sub-pats)
     is AWildPat (s) | ALitPat (text) (kind) (s) -> ctx
+
+  bind-vec-pattern-fields : LowerCtx, List APat, CodexType, Integer, Integer -> LowerCtx
+  bind-vec-pattern-fields (ctx) (sub-pats) (elem-ty) (i) (len) =
+   if i == len then ctx
+   else let ctx2 = bind-pattern-to-ctx ctx (list-at sub-pats i) elem-ty
+   in bind-vec-pattern-fields ctx2 sub-pats elem-ty (i + 1) len
 
   bind-ctor-pattern-fields : LowerCtx, List APat, CodexType, Integer, Integer -> LowerCtx
   bind-ctor-pattern-fields (ctx) (sub-pats) (ctor-ty) (i) (len) =
@@ -608,6 +655,9 @@ Section: Match Lowering
     is AVarPat (name) (s) -> deck-record (IrVarPat (name.value) scrut-ty s)
     is ALitPat (text) (kind) (s) -> deck-record (IrLitPat text scrut-ty s)
     is ACtorPat (name) (subs) (s) -> deck-record (IrCtorPat (name.value) (lower-ctor-sub-patterns subs scrut-ty (name.value) 0 (depth + 1)) scrut-ty s)
+    is AVecPat (subs) (s) ->
+     let elem-ty = when scrut-ty is VectorTy (n) (t) -> t is otherwise -> ErrorTy
+     in deck-record (IrVecPat (lower-vec-sub-patterns subs elem-ty 0 (depth + 1)) scrut-ty s)
     is AWildPat (s) -> deck-record (IrWildPat s)
 
   lower-ctor-sub-patterns : List APat, CodexType, Text, Integer, Integer -> List IRPat
@@ -619,6 +669,15 @@ Section: Match Lowering
    if i == len then acc
    else let field-ty = lookup-ctor-field-type scrut-ty ctor-name i
    in lower-ctor-sub-patterns-acc subs scrut-ty ctor-name (i + 1) len depth (list-push acc (lower-pattern-at (list-at subs i) field-ty depth))
+
+  lower-vec-sub-patterns : List APat, CodexType, Integer, Integer -> List IRPat
+  lower-vec-sub-patterns (subs) (elem-ty) (i) (depth) =
+   lower-vec-sub-patterns-acc subs elem-ty i (list-length subs) depth []
+
+  lower-vec-sub-patterns-acc : List APat, CodexType, Integer, Integer, Integer, List IRPat -> List IRPat
+  lower-vec-sub-patterns-acc (subs) (elem-ty) (i) (len) (depth) (acc) =
+   if i == len then acc
+   else lower-vec-sub-patterns-acc subs elem-ty (i + 1) len depth (list-push acc (lower-pattern-at (list-at subs i) elem-ty depth))
 
   lookup-ctor-field-type : CodexType, Text, Integer -> CodexType
   lookup-ctor-field-type (ty) (ctor-name) (field-idx) =

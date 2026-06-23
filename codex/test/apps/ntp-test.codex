@@ -1,55 +1,61 @@
+Chapter: NtpTest
+  cites Net chapter Ntp
+  cites Net chapter Udp
+  cites Net chapter Ethernet
 
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
 
+Section: Tests
+  test-request : Text =
+    let req = ntp-build-simple-request
+    in let parsed = ntp-parse-response req
+    in "len=" & show (list-length req) & " ver=" & show (parsed.version) & " mode=" & show (parsed.mode)
 
+  test-parse-response : Text =
+    let tx-ts = NtpTimestamp { seconds = 3953736000, fraction = 0 }
+    in let tx-bytes = ntp-encode-timestamp tx-ts
+    in let resp-data = [36, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] & ntp-zeros 24 & tx-bytes
+    in let r = ntp-parse-response resp-data
+    in "valid=" & show-bool (r.valid) & " ver=" & show (r.version) & " stratum=" & show (r.stratum) & " tx=" & show (r.transmit-ts.seconds) & " unix=" & show (ntp-to-unix (r.transmit-ts))
 
+  test-lengths : Text =
+    let req = ntp-build-simple-request
+    in let ts = ntp-encode-timestamp ntp-timestamp-zero
+    in "reqlen=" & show (list-length req) & " tslen=" & show (list-length ts)
 
+  test-offset-rtt : Text =
+    let t1 = NtpTimestamp { seconds = 100, fraction = 0 }
+    in let t4 = NtpTimestamp { seconds = 102, fraction = 0 }
+    in let recv-ts-bytes = ntp-encode-timestamp (NtpTimestamp { seconds = 101, fraction = 0 })
+    in let tx-ts-bytes = ntp-encode-timestamp (NtpTimestamp { seconds = 101, fraction = 0 })
+    in let resp-data = [36, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] & ntp-zeros 16 & recv-ts-bytes & tx-ts-bytes
+    in let resp = ntp-parse-response resp-data
+    in "offset=" & show (ntp-clock-offset t1 t4 resp) & " rtt=" & show (ntp-round-trip t1 t4 resp)
 
+  test-invalid : Text =
+    let short = [0, 0, 0]
+    in let r = ntp-parse-response short
+    in "valid=" & show-bool (r.valid)
 
+  test-udp-packet : Text =
+    let pkt = ntp-request-udp [10, 0, 0, 1] [10, 0, 0, 2]
+    in "proto=" & show (ip-proto pkt) & " pktlen=" & show (list-length pkt)
 
+  test-frame-parse : Text =
+    let tx-ts = NtpTimestamp { seconds = 3953736000, fraction = 0 }
+    in let tx-bytes = ntp-encode-timestamp tx-ts
+    in let resp-data = [36, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] & ntp-zeros 24 & tx-bytes
+    in let r = ntp-parse-response resp-data
+    in format-ntp-response r
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  opening : [Console] Nothing = act
+    print-line-uni test-request
+    print-line-uni test-parse-response
+    print-line-uni test-lengths
+    print-line-uni test-offset-rtt
+    print-line-uni test-invalid
+    print-line-uni test-udp-packet
+    print-line-uni test-frame-parse
+  end

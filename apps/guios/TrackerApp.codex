@@ -1,0 +1,513 @@
+Chapter: TrackerApp
+  cites Guios chapter GuiDisplay
+  cites Guios chapter GuiTimer
+  cites Guios chapter TrackerDb
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter Theme
+  cites UI chapter Scroll
+  cites UI chapter Focus
+  cites UI chapter Event
+  cites UI chapter Overlay
+  cites UI chapter Render
+  cites UI chapter TextField
+  cites UI chapter Binding
+  cites UI chapter DataTable
+  cites UI chapter Dropdown
+  cites UI chapter Validation
+  cites UI chapter Markdown
+  cites UI chapter TreeView
+  cites UI chapter SettingsPanel
+  cites UI chapter FilterableList
+  cites UI chapter DetailPane
+  cites UI chapter StatusBadge
+  cites UI chapter SearchBar
+  cites UI chapter CommandPalette
+
+ Linear-style issue tracker for GuiOS. Built on the codex.foreword.ui
+ widget system: DataTable for sortable issue lists, Dropdown for
+ status/priority/assignee selectors, Validation for forms, Markdown
+ for description rendering, TreeView for project hierarchy. Plus
+ flex layout, box model, scroll containers, focus ring,
+ overlays, text fields, data binding, and theming.
+
+ All issue data from TrackerDb (DbServer + Catalog). MutWheel holds
+ only UI state (selected index, view mode, detail toggle).
+
+Section: Theme (dark tracker palette mapped to UI theme system)
+  tk-theme : Theme
+  tk-theme =
+    let pal = Palette {
+      pal-bg = #0C0F1A,
+      pal-fg = #E5E7EB,
+      pal-primary = #818CF8,
+      pal-secondary = #6B7280,
+      pal-accent = #3B82F6,
+      pal-muted = #6B7280,
+      pal-error = #EF4444,
+      pal-success = #22C55E,
+      pal-warning = #F59E0B,
+      pal-border = #252B3B
+    }
+    in theme-from-palette "tracker" pal
+
+Section: Status/Priority Colors
+  tk-status-color : Integer -> Integer
+  tk-status-color (s) =
+    if s == 0 then #64748B else if s == 1 then #A78BFA
+    else if s == 2 then #F59E0B else if s == 3 then #3B82F6
+    else if s == 4 then #22C55E else #6B7280
+
+  tk-priority-color : Integer -> Integer
+  tk-priority-color (p) =
+    if p == 0 then #EF4444 else if p == 1 then #F97316
+    else if p == 2 then #F59E0B else if p == 3 then #3B82F6
+    else #6B7280
+
+  tk-label-color : Text -> Integer
+  tk-label-color (label) =
+    if label == "bug" then #EF4444 else if label == "feature" then #8B5CF6
+    else if label == "improve" then #3B82F6 else if label == "docs" then #14B8A6
+    else if label == "perf" then #F97316 else if label == "security" then #EC4899
+    else #6B7280
+
+  tk-status-name : Integer -> Text
+  tk-status-name (s) =
+    if s == 0 then "Backlog" else if s == 1 then "Todo"
+    else if s == 2 then "In Progress" else if s == 3 then "In Review"
+    else if s == 4 then "Done" else "Cancelled"
+
+  tk-priority-name : Integer -> Text
+  tk-priority-name (p) =
+    if p == 0 then "Urgent" else if p == 1 then "High"
+    else if p == 2 then "Medium" else if p == 3 then "Low" else "None"
+
+Section: Widget Tree Construction
+  tk-build-root : DbServer, MutWheel -> WidgetNode
+  tk-build-root (srv) (wh) =
+    let view-mode = mw-get-app-s2 wh
+    in let sel = mw-get-app-s0 wh
+    in let filter = mw-get-app-s3 wh
+    in let showing = mw-get-app-s1 wh
+    in widget-panel "root" DirColumn 0 [
+      tk-build-toolbar wh view-mode filter,
+      widget-panel "body" DirRow 0 [
+        tk-build-sidebar srv,
+        if view-mode == 1 then tk-build-board srv
+        else if view-mode == 2 then tk-build-cycle srv
+        else tk-build-list srv sel filter
+      ]
+    ]
+
+Section: Toolbar Widget
+  tk-build-toolbar : MutWheel, Integer, Integer -> WidgetNode
+  tk-build-toolbar (wh) (view-mode) (filter) =
+    let view-tabs = widget-tabs "view-tabs" ["List", "Board", "Cycle"] view-mode
+    in let filter-tabs = widget-tabs "filter-tabs" ["All", "Active", "Done"] filter
+    in let search = widget-input "search" "" 0
+    in widget-set-min (widget-panel "toolbar" DirRow 8 [
+      view-tabs,
+      widget-separator "tb-sep1",
+      filter-tabs,
+      widget-separator "tb-sep2",
+      widget-set-flex (widget-set-min search 120 0) 1
+    ]) 0 22
+
+Section: Sidebar Widget
+  tk-build-sidebar : DbServer -> WidgetNode
+  tk-build-sidebar (srv) =
+    let open-n = tk-db-count-open srv
+    in let prog-n = tk-db-count-by-status srv 2
+    in let done-n = tk-db-count-by-status srv 4
+    in let total-n = tk-db-issue-count srv
+    in let pct = if total-n == 0 then 0 else done-n * 100 / total-n
+    in widget-set-min (widget-panel "sidebar" DirColumn 2 [
+      widget-label "nav-hdr" "NAVIGATION",
+      widget-button "nav-my" "My Issues",
+      widget-button "nav-all" "All Issues",
+      widget-button "nav-backlog" "Backlog",
+      widget-separator "nav-sep1",
+      widget-label "proj-hdr" "PROJECTS",
+      tree-view-widget (tree-view-new "proj-tree" [
+        tree-node "proj-compiler" "Compiler" ">" [
+          tree-node-leaf "proj-comp-emit" "Emit" "",
+          tree-node-leaf "proj-comp-type" "Types" ""
+        ],
+        tree-node "proj-kernel" "OS Kernel" ">" [
+          tree-node-leaf "proj-kern-drv" "Drivers" "",
+          tree-node-leaf "proj-kern-sched" "Scheduler" ""
+        ],
+        tree-node-leaf "proj-foreword" "Foreword" "",
+        tree-node-leaf "proj-forge" "AssetForge" ""
+      ]),
+      widget-separator "nav-sep2",
+      widget-label "cyc-hdr" "CYCLES",
+      widget-button "cyc-14" "Sprint 14",
+      widget-button "cyc-13" "Sprint 13",
+      widget-separator "nav-sep3",
+      widget-label "stats-hdr" "STATS",
+      widget-label "stat-open" ("Open: " & show open-n),
+      widget-label "stat-prog" ("In Progress: " & show prog-n),
+      widget-label "stat-done" ("Done: " & show done-n),
+      widget-gauge "velocity" pct 100
+    ]) 130 0
+
+Section: Issue DataTable
+  tk-issue-columns : List TableColumn
+  tk-issue-columns = [
+    table-column "key" "ID" 54,
+    table-column "status" "Status" 72,
+    table-column "title" "Title" 140,
+    table-column "priority" "Priority" 56,
+    table-column "label" "Label" 52,
+    table-column "assignee" "Assignee" 60
+  ]
+
+  tk-build-data-table : DbServer, Integer -> DataTableState
+  tk-build-data-table (srv) (filter) =
+    let result = tk-db-all-issues srv
+    in let rows = tk-rows-from-db (result.qr-rows) filter 0 (result.qr-count) []
+    in data-table-new "issues" tk-issue-columns rows
+
+  tk-rows-from-db : List RowData, Integer, Integer, Integer, List TableRow -> List TableRow
+  tk-rows-from-db (rows) (filter) (i) (n) (acc) =
+    if i >= n then acc
+    else let row = list-at rows i
+    in let status = tk-row-int row "status"
+    in let pass = tk-filter-ok filter status
+    in if pass == False then tk-rows-from-db rows filter (i + 1) n acc
+    else let tr = table-row (show (i + 1)) [
+        tk-row-text row "key",
+        tk-status-name status,
+        tk-row-text row "title",
+        tk-priority-name (tk-row-int row "priority"),
+        tk-row-text row "label",
+        tk-row-text row "assignee"
+      ]
+    in tk-rows-from-db rows filter (i + 1) n (list-push acc tr)
+
+Section: List View Widget (DataTable-backed)
+  tk-build-list : DbServer, Integer, Integer -> WidgetNode
+  tk-build-list (srv) (sel) (filter) =
+    let dt = tk-build-data-table srv filter
+    in let dt2 = data-table-select-row dt sel
+    in widget-set-flex (data-table-widget dt2) 1
+
+  tk-filter-ok : Integer, Integer -> Boolean
+  tk-filter-ok (filter) (status) =
+    if filter == 0 then True
+    else if filter == 1 then if status == 4 then False else if status == 5 then False else True
+    else if filter == 2 then status == 4
+    else True
+
+Section: Board View Widget (5-column kanban)
+  tk-build-board : DbServer -> WidgetNode
+  tk-build-board (srv) =
+    widget-set-flex (widget-panel "board" DirRow 2 [
+      tk-build-board-col srv "Backlog" 0,
+      tk-build-board-col srv "Todo" 1,
+      tk-build-board-col srv "In Prog" 2,
+      tk-build-board-col srv "Review" 3,
+      tk-build-board-col srv "Done" 4
+    ]) 1
+
+  tk-build-board-col : DbServer, Text, Integer -> WidgetNode
+  tk-build-board-col (srv) (title) (status) =
+    let result = tk-db-issues-by-status srv status
+    in let col-id = "bcol-" & show status
+    in let header = widget-label (col-id & "-hdr") (title & " (" & show (result.qr-count) & ")")
+    in let cards = tk-build-board-cards (result.qr-rows) status 0 (result.qr-count) []
+    in widget-set-flex (widget-panel col-id DirColumn 4 (list-push cards header)) 1
+
+  tk-build-board-cards : List RowData, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  tk-build-board-cards (rows) (status) (i) (n) (acc) =
+    if i >= n then acc
+    else if i >= 6 then acc
+    else let row = list-at rows i
+    in let card-id = "bcard-" & show status & "-" & show i
+    in let card = widget-panel card-id DirColumn 2 [
+      widget-label (card-id & "-key") (tk-row-text row "key"),
+      widget-label (card-id & "-title") (tk-row-text row "title"),
+      widget-label (card-id & "-lbl") (tk-row-text row "label")
+    ]
+    in tk-build-board-cards rows status (i + 1) n (list-push acc (widget-set-min card 0 48))
+
+Section: Cycle View Widget (sprint dashboard)
+  tk-build-cycle : DbServer -> WidgetNode
+  tk-build-cycle (srv) =
+    let total = tk-db-issue-count srv
+    in let done-n = tk-db-count-by-status srv 4
+    in let prog-n = tk-db-count-by-status srv 2
+    in let todo-n = tk-db-count-by-status srv 1
+    in let pct = if total == 0 then 0 else done-n * 100 / total
+    in let cycle-issues = tk-db-issues-by-cycle srv "Sprint 14"
+    in let issue-list = tk-build-cycle-rows (cycle-issues.qr-rows) 0 (cycle-issues.qr-count) []
+    in widget-set-flex (widget-panel "cycle" DirColumn 4 [
+      widget-panel "cyc-header" DirRow 8 [
+        widget-label "cyc-name" "Sprint 14",
+        widget-label "cyc-dates" "Jun 16 - Jun 29",
+        widget-set-flex (widget-label "cyc-space" "") 1,
+        widget-label "cyc-remain" "8 days left"
+      ],
+      widget-separator "cyc-sep1",
+      widget-panel "cyc-stats" DirRow 16 [
+        widget-label "cyc-total" ("Scope: " & show total),
+        widget-label "cyc-done" ("Done: " & show done-n),
+        widget-label "cyc-prog" ("In Prog: " & show prog-n),
+        widget-label "cyc-todo" ("Todo: " & show todo-n)
+      ],
+      widget-gauge "cyc-bar" pct 100,
+      widget-separator "cyc-sep2",
+      widget-label "cyc-issues-hdr" "Sprint Issues",
+      widget-panel "cyc-issues" DirColumn 0 issue-list
+    ]) 1
+
+  tk-build-cycle-rows : List RowData, Integer, Integer, List WidgetNode -> List WidgetNode
+  tk-build-cycle-rows (rows) (i) (n) (acc) =
+    if i >= n then acc
+    else let row = list-at rows i
+    in let rid = "cyc-row-" & show i
+    in let node = widget-set-min (widget-panel rid DirRow 4 [
+      widget-set-min (widget-custom (rid & "-dot") "status-dot" 8 8) 12 0,
+      widget-set-min (widget-label (rid & "-key") (tk-row-text row "key")) 50 0,
+      widget-set-flex (widget-label (rid & "-title") (tk-row-text row "title")) 1
+    ]) 0 16
+    in tk-build-cycle-rows rows (i + 1) n (list-push acc node)
+
+Section: Detail Overlay (Dropdowns for editable fields, Markdown for description)
+  tk-status-options : List Text
+  tk-status-options = ["Backlog", "Todo", "In Progress", "In Review", "Done", "Cancelled"]
+
+  tk-priority-options : List Text
+  tk-priority-options = ["Urgent", "High", "Medium", "Low", "None"]
+
+  tk-label-options : List Text
+  tk-label-options = ["bug", "feature", "improve", "docs", "perf", "security"]
+
+  tk-assignee-options : List Text
+  tk-assignee-options = ["Damian", "Val", "Fester", "Blu", "Reek", "---"]
+
+  tk-build-detail : DbServer, Integer -> Overlay
+  tk-build-detail (srv) (sel) =
+    let id = sel + 1
+    in let result = tk-db-query srv (RelFilter (RelScan "issues") (PredColCmp "id" CmpEq (ValInteger id)))
+    in if result.qr-count == 0 then overlay-modal "detail" 160 60 320 370 (widget-label "empty" "No issue selected")
+    else let row = list-at (result.qr-rows) 0
+    in let status = tk-row-int row "status"
+    in let priority = tk-row-int row "priority"
+    in let status-dd = dropdown-with-selected "dd-status" tk-status-options status
+    in let priority-dd = dropdown-with-selected "dd-priority" tk-priority-options priority
+    in let label-dd = dropdown-new "dd-label" tk-label-options
+    in let assignee-dd = dropdown-new "dd-assignee" tk-assignee-options
+    in let desc-md = md-parse (tk-row-text row "description")
+    in let content = widget-panel "detail-body" DirColumn 4 [
+      widget-panel "det-hdr" DirRow 8 [
+        widget-label "det-key" (tk-row-text row "key"),
+        widget-set-flex (widget-label "det-title" (tk-row-text row "title")) 1,
+        widget-button "det-close" "Esc"
+      ],
+      widget-separator "det-sep1",
+      widget-panel "det-fields" DirColumn 4 [
+        tk-detail-row "Status" (dropdown-widget status-dd),
+        tk-detail-row "Priority" (dropdown-widget priority-dd),
+        tk-detail-row "Label" (dropdown-widget label-dd),
+        tk-detail-row "Assignee" (dropdown-widget assignee-dd),
+        tk-detail-kv "Project" (tk-row-text row "project"),
+        tk-detail-kv "Cycle" (tk-row-text row "cycle"),
+        tk-detail-kv "Estimate" (show (tk-row-int row "estimate") & " pts"),
+        tk-detail-kv "Created" (tk-row-text row "created")
+      ],
+      widget-separator "det-sep2",
+      widget-label "det-desc-hdr" "Description",
+      md-document-to-widget desc-md "det-desc",
+      widget-separator "det-sep3",
+      widget-label "det-keys" "s status  p priority  Esc close"
+    ]
+    in overlay-modal "detail" 160 60 320 370 content
+
+  tk-detail-row : Text, WidgetNode -> WidgetNode
+  tk-detail-row (label) (widget) =
+    widget-panel ("df-" & label) DirRow 4 [
+      widget-set-min (widget-label ("df-" & label & "-l") label) 80 0,
+      widget-set-flex widget 1
+    ]
+
+  tk-detail-kv : Text, Text -> WidgetNode
+  tk-detail-kv (label) (value) =
+    widget-panel ("df-" & label) DirRow 4 [
+      widget-set-min (widget-label ("df-" & label & "-l") label) 80 0,
+      widget-set-flex (widget-label ("df-" & label & "-v") value) 1
+    ]
+
+Section: Issue Form Validation
+  tk-issue-form : FormValidation
+  tk-issue-form = form-validation [
+    field-validation "title" [VrRequired, VrMinLength 3, VrMaxLength 200],
+    field-validation "description" [VrMaxLength 5000],
+    field-validation "estimate" [VrPattern "number"]
+  ]
+
+Section: Command Palette Overlay
+  tk-build-palette : Overlay
+  tk-build-palette =
+    let content = widget-panel "pal-body" DirColumn 2 [
+      widget-input "pal-search" "" 0,
+      widget-separator "pal-sep",
+      widget-menu "pal-cmds" [
+        "Change status (s)",
+        "Set priority (p)",
+        "Filter (f)",
+        "List view (1)",
+        "Board view (b)",
+        "Cycle view (3)"
+      ]
+    ]
+    in overlay-modal "palette" 200 90 280 240 content
+
+Section: Render Pipeline
+  draw-view-tracker : GopBuf, ShellUiState -> Integer
+  draw-view-tracker (gb) (st) =
+    let x = work-x
+    in let wh = st.su-wheel
+    in let srv = st.su-tracker-db
+    in let showing = mw-get-app-s1 wh
+    in let dummy = draw-win gb wh x 4 work-w 436 "Tracker"
+    in let root = tk-build-root srv wh
+    in let container = layout-rect (x + 4) 26 (work-w - 8) 410
+    in let laid-out = widget-layout root tk-theme container
+    in let dummy2 = render-tree laid-out tk-theme gb
+    in if showing == 1 then
+      let det = tk-build-detail srv (mw-get-app-s0 wh)
+      in let dummy3 = render-tree (det.ov-widget) tk-theme gb
+      in 0
+    else if showing == 2 then
+      let pal = tk-build-palette
+      in let dummy3 = render-tree (pal.ov-widget) tk-theme gb
+      in 0
+    else 0
+
+Section: Focus Ring
+  tk-focus-ids : List Text
+  tk-focus-ids = ["nav-my", "nav-all", "nav-backlog", "proj-compiler", "proj-kernel", "proj-foreword", "proj-forge", "cyc-14", "cyc-13", "search", "issue-0", "issue-1", "issue-2", "issue-3", "issue-4", "issue-5", "issue-6", "issue-7", "issue-8", "issue-9", "issue-10", "issue-11", "issue-12", "issue-13"]
+
+  tk-build-focus : FocusRing
+  tk-build-focus = focus-ring tk-focus-ids
+
+Section: Keyboard Input (mutates DB via __record-set on st)
+  tracker-key : ShellUiState, Integer -> Integer
+  tracker-key (st) (sc) =
+    let wh = st.su-wheel
+    in let sel = mw-get-app-s0 wh
+    in let showing = mw-get-app-s1 wh
+    in let view-mode = mw-get-app-s2 wh
+    in let is-ctrl = mw-get-kb-ctrl wh
+    in if is-ctrl == 1 then if sc == 37 then mw-set-app-s1 wh (if showing == 2 then 0 else 2) else 0
+    else if showing == 2 then tk-palette-dispatch wh sc
+    else if sc == 36 then tk-move wh sel 1
+    else if sc == 37 then tk-move wh sel (0 - 1)
+    else if sc == 28 then mw-set-app-s1 wh (if showing == 1 then 0 else 1)
+    else if sc == 1 then mw-set-app-s1 wh 0
+    else if sc == 31 then tk-do-cycle-status st sel
+    else if sc == 25 then tk-do-cycle-priority st sel
+    else if sc == 38 then mw-set-app-s2 wh (if view-mode >= 2 then 0 else view-mode + 1)
+    else if sc == 33 then mw-set-app-s3 wh (if (mw-get-app-s3 wh) >= 2 then 0 else (mw-get-app-s3 wh) + 1)
+    else if sc == 48 then mw-set-app-s2 wh 1
+    else 0
+
+  tk-move : MutWheel, Integer, Integer -> Integer
+  tk-move (wh) (sel) (dir) =
+    let next = sel + dir
+    in let clamped = if next < 0 then 0 else if next >= 14 then 13 else next
+    in mw-set-app-s0 wh clamped
+
+  tk-do-cycle-status : ShellUiState, Integer -> Integer
+  tk-do-cycle-status (st) (sel) =
+    let srv = st.su-tracker-db
+    in let id = sel + 1
+    in let result = tk-db-query srv (RelFilter (RelScan "issues") (PredColCmp "id" CmpEq (ValInteger id)))
+    in if result.qr-count == 0 then 0
+    else let row = list-at (result.qr-rows) 0
+    in let cur = tk-row-int row "status"
+    in let next = if cur >= 5 then 0 else cur + 1
+    in let srv2 = tk-db-update-status srv id next
+    in let dummy = __record-set st "su-tracker-db" srv2
+    in 0
+
+  tk-do-cycle-priority : ShellUiState, Integer -> Integer
+  tk-do-cycle-priority (st) (sel) =
+    let srv = st.su-tracker-db
+    in let id = sel + 1
+    in let result = tk-db-query srv (RelFilter (RelScan "issues") (PredColCmp "id" CmpEq (ValInteger id)))
+    in if result.qr-count == 0 then 0
+    else let row = list-at (result.qr-rows) 0
+    in let cur = tk-row-int row "priority"
+    in let next = if cur >= 4 then 0 else cur + 1
+    in let srv2 = tk-db-update-priority srv id next
+    in let dummy = __record-set st "su-tracker-db" srv2
+    in 0
+
+  tk-palette-dispatch : MutWheel, Integer -> Integer
+  tk-palette-dispatch (wh) (sc) =
+    if sc == 1 then mw-set-app-s1 wh 0
+    else if sc == 2 then let dummy = mw-set-app-s2 wh 0 in mw-set-app-s1 wh 0
+    else if sc == 4 then let dummy = mw-set-app-s2 wh 2 in mw-set-app-s1 wh 0
+    else if sc == 48 then let dummy = mw-set-app-s2 wh 1 in mw-set-app-s1 wh 0
+    else 0
+
+Section: Shared Component Instances
+
+  tk-search : SearchBarState
+  tk-search = search-bar-with-chips "tk-search" [
+    filter-chip "status-open" "Open",
+    filter-chip-active "status-all" "All",
+    filter-chip "status-done" "Done",
+    filter-chip "pri-urgent" "Urgent",
+    filter-chip "pri-high" "High"
+  ]
+
+  tk-palette-commands : PaletteState
+  tk-palette-commands = palette-new "tk-pal" [
+    palette-command "new-issue" "Create issue" "c" "action" 1,
+    palette-command "cycle-status" "Cycle status" "s" "action" 2,
+    palette-command "cycle-priority" "Cycle priority" "p" "action" 3,
+    palette-command "assign" "Assign to..." "a" "action" 4,
+    palette-command "add-label" "Add label" "l" "action" 5,
+    palette-command "set-estimate" "Set estimate" "e" "action" 6,
+    palette-command "move-project" "Move to project" "m" "action" 7,
+    palette-command "add-cycle" "Add to cycle" "y" "action" 8,
+    palette-command "view-list" "List view" "1" "nav" 10,
+    palette-command "view-board" "Board view" "b" "nav" 11,
+    palette-command "view-cycle" "Cycle view" "3" "nav" 12,
+    palette-command "filter-all" "Show all" "f" "nav" 13
+  ]
+
+  tk-detail-from-db : DbServer, Integer -> DetailSpec
+  tk-detail-from-db (srv) (sel) =
+    let id = sel + 1
+    in let result = tk-db-query srv (RelFilter (RelScan "issues") (PredColCmp "id" CmpEq (ValInteger id)))
+    in if result.qr-count == 0 then detail-spec "tk-det" "No issue" ""
+    else let row = list-at (result.qr-rows) 0
+    in let status = tk-row-int row "status"
+    in let priority = tk-row-int row "priority"
+    in let spec = detail-spec "tk-det" (tk-row-text row "title") (tk-row-text row "key")
+    in let s1 = detail-add-field spec (df-badge "Status" (tk-status-name status) (tk-status-color status))
+    in let s2 = detail-add-field s1 (df-badge "Priority" (tk-priority-name priority) (tk-priority-color priority))
+    in let s3 = detail-add-field s2 (df-text "Label" (tk-row-text row "label"))
+    in let s4 = detail-add-field s3 (df-text "Assignee" (tk-row-text row "assignee"))
+    in let s5 = detail-add-field s4 (df-text "Project" (tk-row-text row "project"))
+    in let s6 = detail-add-field s5 (df-text "Cycle" (tk-row-text row "cycle"))
+    in let s7 = detail-add-field s6 (df-text "Estimate" (show (tk-row-int row "estimate") & " pts"))
+    in let s8 = detail-add-field s7 (df-text "Created" (tk-row-text row "created"))
+    in let s9 = detail-set-description s8 (tk-row-text row "description")
+    in detail-set-footer s9 "s status  p priority  Esc close"
+
+  tk-status-color : Integer -> Integer
+  tk-status-color (s) = badge-status-color s
+
+  tk-priority-color : Integer -> Integer
+  tk-priority-color (p) = badge-priority-color p
+
+Page 1

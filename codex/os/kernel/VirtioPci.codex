@@ -1,0 +1,247 @@
+Chapter: VirtioPci
+
+ VirtIO 1.0 PCI modern transport layer. Discovers VirtIO devices
+ via PCI, negotiates features, and manages virtqueues (split ring
+ format). Used by VirtioNet and VirtioBlk.
+
+ VirtIO PCI modern uses capability structures in PCI config space
+ to locate MMIO regions:
+   cap type 1 = common config
+   cap type 2 = notifications
+   cap type 3 = ISR status
+   cap type 4 = device-specific config
+   cap type 5 = PCI config access
+
+ A virtqueue has three parts in contiguous physical memory:
+   Descriptor table: 16 bytes per entry
+   Available ring: 6 + 2*qsize bytes
+   Used ring: 6 + 8*qsize bytes
+
+Section: VirtIO PCI Constants
+
+  virtio-vendor : Integer = #1AF4
+  virtio-net-device : Integer = #1041
+  virtio-blk-device : Integer = #1042
+
+  virtio-status-ack : Integer = 1
+  virtio-status-driver : Integer = 2
+  virtio-status-features-ok : Integer = 8
+  virtio-status-driver-ok : Integer = 4
+
+Section: Common Config Offsets (within MMIO BAR)
+
+  vio-cc-device-feature-select : Integer = 0
+  vio-cc-device-feature : Integer = 4
+  vio-cc-driver-feature-select : Integer = 8
+  vio-cc-driver-feature : Integer = 12
+  vio-cc-msix-config : Integer = 16
+  vio-cc-num-queues : Integer = 18
+  vio-cc-device-status : Integer = 20
+  vio-cc-config-generation : Integer = 21
+  vio-cc-queue-select : Integer = 22
+  vio-cc-queue-size : Integer = 24
+  vio-cc-queue-msix-vector : Integer = 26
+  vio-cc-queue-enable : Integer = 28
+  vio-cc-queue-notify-off : Integer = 30
+  vio-cc-queue-desc-lo : Integer = 32
+  vio-cc-queue-desc-hi : Integer = 36
+  vio-cc-queue-avail-lo : Integer = 40
+  vio-cc-queue-avail-hi : Integer = 44
+  vio-cc-queue-used-lo : Integer = 48
+  vio-cc-queue-used-hi : Integer = 52
+
+Section: Common Wrappers
+
+  mmio-write-64 : Integer, Integer, Integer -> Integer
+  mmio-write-64 (addr) (off) (val) =
+    let lo = poke-32 addr off (bit-and val #FFFFFFFF)
+    in poke-32 addr (off + 4) (bit-shru val 32)
+
+  mmio-barrier : Integer
+  mmio-barrier = __heap-save
+
+Section: Virtqueue Descriptor Flags
+
+  vq-desc-f-next : Integer = 1
+  vq-desc-f-write : Integer = 2
+
+Section: VirtIO Device State
+
+  VirtioDevice = record {
+    pci-dev : Arm64PciDevice,
+    common-base : Integer,
+    notify-base : Integer,
+    notify-off-multiplier : Integer,
+    isr-base : Integer,
+    device-cfg-base : Integer
+  }
+
+  VirtqueueState = record {
+    desc-base : Integer,
+    avail-base : Integer,
+    used-base : Integer,
+    queue-size : Integer,
+    free-head : Integer,
+    avail-idx : Integer,
+    last-used-idx : Integer,
+    notify-addr : Integer
+  }
+
+Section: PCI Capability Parsing
+
+  virtio-find-cap : Arm64PciDevice, Integer -> Integer
+  virtio-find-cap (d) (cap-type) =
+   let status = ecam-read-16 (d.pci-bus) (d.pci-dev) (d.pci-func) 6
+   in if bit-and status 16 == 0 then 0
+   else let cap-ptr = bit-and (ecam-read-8 (d.pci-bus) (d.pci-dev) (d.pci-func) 52) #FC
+   in virtio-walk-caps d cap-ptr cap-type
+
+  virtio-walk-caps : Arm64PciDevice, Integer, Integer -> Integer
+  virtio-walk-caps (d) (offset) (cap-type) =
+   if offset == 0 then 0
+   else let cap-id = ecam-read-8 (d.pci-bus) (d.pci-dev) (d.pci-func) offset
+   in if cap-id == 9 then
+     let vio-type = ecam-read-8 (d.pci-bus) (d.pci-dev) (d.pci-func) (offset + 3)
+     in if vio-type == cap-type then offset
+     else let next = bit-and (ecam-read-8 (d.pci-bus) (d.pci-dev) (d.pci-func) (offset + 1)) #FC
+     in virtio-walk-caps d next cap-type
+   else let next = bit-and (ecam-read-8 (d.pci-bus) (d.pci-dev) (d.pci-func) (offset + 1)) #FC
+   in virtio-walk-caps d next cap-type
+
+  virtio-cap-bar-offset : Arm64PciDevice, Integer -> Integer
+  virtio-cap-bar-offset (d) (cap-offset) =
+   let bar-idx = ecam-read-8 (d.pci-bus) (d.pci-dev) (d.pci-func) (cap-offset + 4)
+   in let base = arm64-pci-read-bar-base d bar-idx
+   in let off = ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) (cap-offset + 8)
+   in base + off
+
+Section: Device Init
+
+  virtio-init-device : Arm64PciDevice -> VirtioDevice
+  virtio-init-device (d) =
+   let enabled = arm64-pci-enable-device d
+   in let cc-cap = virtio-find-cap d 1
+   in let notify-cap = virtio-find-cap d 2
+   in let isr-cap = virtio-find-cap d 3
+   in let devcfg-cap = virtio-find-cap d 4
+   in let cc-base = virtio-cap-bar-offset d cc-cap
+   in let n-base = virtio-cap-bar-offset d notify-cap
+   in let n-mult = ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) (notify-cap + 16)
+   in let isr-b = virtio-cap-bar-offset d isr-cap
+   in let dev-b = if devcfg-cap > 0 then virtio-cap-bar-offset d devcfg-cap else 0
+   in VirtioDevice { pci-dev = d, common-base = cc-base, notify-base = n-base, notify-off-multiplier = n-mult, isr-base = isr-b, device-cfg-base = dev-b }
+
+Section: Status and Feature Negotiation
+
+  virtio-reset : VirtioDevice -> Integer
+  virtio-reset (vd) = poke-byte (vd.common-base) vio-cc-device-status 0
+
+  virtio-set-status : VirtioDevice, Integer -> Integer
+  virtio-set-status (vd) (status) =
+   let cur = peek-byte (vd.common-base) vio-cc-device-status
+   in poke-byte (vd.common-base) vio-cc-device-status (bit-or cur status)
+
+  virtio-negotiate : VirtioDevice, Integer -> Integer
+  virtio-negotiate (vd) (driver-features) =
+   let s1 = virtio-set-status vd virtio-status-ack
+   in let s2 = virtio-set-status vd virtio-status-driver
+   in let w1 = poke-32 (vd.common-base) vio-cc-device-feature-select 0
+   in let dev-feat = peek-32 (vd.common-base) vio-cc-device-feature
+   in let accepted = bit-and dev-feat driver-features
+   in let w2 = poke-32 (vd.common-base) vio-cc-driver-feature-select 0
+   in let w3 = poke-32 (vd.common-base) vio-cc-driver-feature accepted
+   in let s3 = virtio-set-status vd virtio-status-features-ok
+   in let check = peek-byte (vd.common-base) vio-cc-device-status
+   in if bit-and check virtio-status-features-ok == 0 then 0 - 1
+   else accepted
+
+Section: Virtqueue Setup
+
+  virtio-setup-queue : VirtioDevice, Integer, Integer -> VirtqueueState
+  virtio-setup-queue (vd) (queue-idx) (mem-base) =
+   let w1 = poke-16 (vd.common-base) vio-cc-queue-select queue-idx
+   in let qsize = bit-and (peek-16 (vd.common-base) vio-cc-queue-size) #FFFF
+   in let desc-base = mem-base
+   in let desc-size = qsize * 16
+   in let avail-base = desc-base + desc-size
+   in let avail-size = 6 + qsize * 2
+   in let avail-aligned = avail-base + avail-size
+   in let used-base = avail-aligned + (16 - bit-and avail-aligned 15)
+   in let zero = virtio-zero-mem mem-base (used-base + 6 + qsize * 8 - mem-base)
+   in let w2 = virtio-init-desc-chain desc-base 0 qsize
+   in let w3 = poke-32 (vd.common-base) vio-cc-queue-desc-lo (bit-and desc-base #FFFFFFFF)
+   in let w4 = poke-32 (vd.common-base) vio-cc-queue-desc-hi (bit-shru desc-base 32)
+   in let w5 = poke-32 (vd.common-base) vio-cc-queue-avail-lo (bit-and avail-base #FFFFFFFF)
+   in let w6 = poke-32 (vd.common-base) vio-cc-queue-avail-hi (bit-shru avail-base 32)
+   in let w7 = poke-32 (vd.common-base) vio-cc-queue-used-lo (bit-and used-base #FFFFFFFF)
+   in let w8 = poke-32 (vd.common-base) vio-cc-queue-used-hi (bit-shru used-base 32)
+   in let w9 = poke-16 (vd.common-base) vio-cc-queue-enable 1
+   in let notify-off = peek-16 (vd.common-base) vio-cc-queue-notify-off
+   in let notify-addr = (vd.notify-base) + notify-off * (vd.notify-off-multiplier)
+   in VirtqueueState { desc-base = desc-base, avail-base = avail-base, used-base = used-base, queue-size = qsize, free-head = 0, avail-idx = 0, last-used-idx = 0, notify-addr = notify-addr }
+
+  virtio-init-desc-chain : Integer, Integer, Integer -> Integer
+  virtio-init-desc-chain (desc-base) (i) (qsize) =
+   if i >= qsize then 0
+   else let off = desc-base + i * 16
+   in let next = if i + 1 < qsize then i + 1 else 0
+   in let w = poke-16 off 14 next
+   in virtio-init-desc-chain desc-base (i + 1) qsize
+
+Section: Virtqueue Operations
+
+  virtio-submit-desc : VirtqueueState, Integer, Integer, Integer -> VirtqueueState
+  virtio-submit-desc (vq) (buf-addr) (buf-len) (flags) =
+   let head = vq.free-head
+   in let desc-off = (vq.desc-base) + head * 16
+   in let w1 = mmio-write-64 desc-off 0 buf-addr
+   in let w2 = poke-32 desc-off 8 buf-len
+   in let w3 = poke-16 desc-off 12 flags
+   in let next-free = bit-and (peek-16 desc-off 14) #FFFF
+   in let aidx = vq.avail-idx
+   in let ring-off = (vq.avail-base) + 4 + bit-and aidx ((vq.queue-size) - 1) * 2
+   in let w4 = poke-16 ring-off 0 head
+   in let new-aidx = aidx + 1
+   in let bar = mmio-barrier
+   in let w5 = poke-16 (vq.avail-base) 2 new-aidx
+   in VirtqueueState { desc-base = vq.desc-base, avail-base = vq.avail-base, used-base = vq.used-base, queue-size = vq.queue-size, free-head = next-free, avail-idx = new-aidx, last-used-idx = vq.last-used-idx, notify-addr = vq.notify-addr }
+
+  virtio-notify : VirtqueueState -> Integer
+  virtio-notify (vq) =
+   let bar = mmio-barrier
+   in poke-16 (vq.notify-addr) 0 (vq.avail-idx)
+
+  virtio-poll-used : VirtqueueState -> VirtqueueState
+  virtio-poll-used (vq) = virtio-poll-used-loop vq 0
+
+  virtio-poll-used-loop : VirtqueueState, Integer -> VirtqueueState
+  virtio-poll-used-loop (vq) (tries) =
+   if tries > 50000000 then vq
+   else let bar = mmio-barrier
+   in let used-idx = bit-and (peek-16 (vq.used-base) 2) #FFFF
+   in if used-idx == vq.last-used-idx then virtio-poll-used-loop vq (tries + 1)
+   else let ring-off = (vq.used-base) + 4 + bit-and (vq.last-used-idx) ((vq.queue-size) - 1) * 8
+   in let used-desc = peek-32 ring-off 0
+   in VirtqueueState { desc-base = vq.desc-base, avail-base = vq.avail-base, used-base = vq.used-base, queue-size = vq.queue-size, free-head = used-desc, avail-idx = vq.avail-idx, last-used-idx = vq.last-used-idx + 1, notify-addr = vq.notify-addr }
+
+Section: Memory Helpers
+
+  virtio-zero-mem : Integer, Integer -> Integer
+  virtio-zero-mem (addr) (len) = virtio-zero-loop addr 0 len
+
+  virtio-zero-loop : Integer, Integer, Integer -> Integer
+  virtio-zero-loop (addr) (i) (len) =
+   if i >= len then 0
+   else let w = poke-byte addr i 0
+   in virtio-zero-loop addr (i + 1) len
+
+  poke-16 : Integer, Integer, Integer -> Integer
+  poke-16 (base) (off) (value) =
+   let w1 = poke-byte base off (bit-and value #FF)
+   in poke-byte base (off + 1) (bit-and (bit-shru value 8) #FF)
+
+  peek-16 : Integer, Integer -> Integer
+  peek-16 (base) (off) =
+   peek-byte base off + bit-shl (peek-byte base (off + 1)) 8
+
+Page 1

@@ -1,0 +1,183 @@
+Chapter: Conv2d
+  cites AI chapter Tensor
+  cites AI chapter GpuProxy
+
+ 2D convolution operations for image-domain neural networks.
+ Fixed-point (scale 1000). Supports standard conv, transpose conv,
+ and depthwise separable conv. CPU path uses direct sliding-window
+ (no im2col). GPU path dispatches via GpuProxy op 12.
+
+ Layout: NCHW (batch, channels, height, width) flattened to 1D.
+ Kernel: [out_channels, in_channels, kH, kW] flattened to 1D.
+
+ We say:
+
+Section: Types
+  Conv2dParams = record {
+    c2-in-channels : Integer,
+    c2-out-channels : Integer,
+    c2-kernel-h : Integer,
+    c2-kernel-w : Integer,
+    c2-stride : Integer,
+    c2-padding : Integer
+  }
+
+  Conv2dLayer = record {
+    c2-params : Conv2dParams,
+    c2-weights : Tensor,
+    c2-bias : Tensor
+  }
+
+Section: Construction
+  conv2d-params : Integer, Integer, Integer, Integer, Integer -> Conv2dParams
+  conv2d-params (in-ch) (out-ch) (k) (stride) (pad) =
+    Conv2dParams { c2-in-channels = in-ch, c2-out-channels = out-ch, c2-kernel-h = k, c2-kernel-w = k, c2-stride = stride, c2-padding = pad }
+
+  conv2d-layer : Conv2dParams, List Integer, List Integer -> Conv2dLayer
+  conv2d-layer (params) (weight-data) (bias-data) =
+    let wrows = params.c2-out-channels
+    in let wcols = params.c2-in-channels * params.c2-kernel-h * params.c2-kernel-w
+    in Conv2dLayer { c2-params = params, c2-weights = tensor-from wrows wcols weight-data, c2-bias = tensor-from (params.c2-out-channels) 1 bias-data }
+
+Section: Output Dimensions
+  conv2d-out-dim : Integer, Integer, Integer, Integer -> Integer
+  conv2d-out-dim (in-dim) (kernel) (stride) (padding) =
+    (in-dim + 2 * padding - kernel) / stride + 1
+
+Section: Forward Pass (CPU)
+  conv2d-forward : Conv2dLayer, List Integer, Integer, Integer -> List Integer
+  conv2d-forward (layer) (input) (in-h) (in-w) =
+    let p = layer.c2-params
+    in let out-h = conv2d-out-dim in-h (p.c2-kernel-h) (p.c2-stride) (p.c2-padding)
+    in let out-w = conv2d-out-dim in-w (p.c2-kernel-w) (p.c2-stride) (p.c2-padding)
+    in conv2d-all-outputs layer input in-h in-w out-h out-w 0 []
+
+  conv2d-all-outputs : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  conv2d-all-outputs (layer) (input) (in-h) (in-w) (out-h) (out-w) (oc) (acc) =
+    if oc >= layer.c2-params.c2-out-channels then acc
+    else let channel = conv2d-one-channel layer input in-h in-w out-h out-w oc 0 0 []
+    in conv2d-all-outputs layer input in-h in-w out-h out-w (oc + 1) (acc & channel)
+
+  conv2d-one-channel : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  conv2d-one-channel (layer) (input) (in-h) (in-w) (out-h) (out-w) (oc) (oh) (ow) (acc) =
+    if oh >= out-h then acc
+    else if ow >= out-w then conv2d-one-channel layer input in-h in-w out-h out-w oc (oh + 1) 0 acc
+    else let val = conv2d-compute-pixel layer input in-h in-w oc oh ow
+    in let bias-val = list-at (layer.c2-bias.data) oc
+    in conv2d-one-channel layer input in-h in-w out-h out-w oc oh (ow + 1) (list-push acc (val + bias-val))
+
+  conv2d-compute-pixel : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  conv2d-compute-pixel (layer) (input) (in-h) (in-w) (oc) (oh) (ow) =
+    let p = layer.c2-params
+    in conv2d-sum-channels layer input in-h in-w oc oh ow p 0 0
+
+  conv2d-sum-channels : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer, Conv2dParams, Integer, Integer -> Integer
+  conv2d-sum-channels (layer) (input) (in-h) (in-w) (oc) (oh) (ow) (p) (ic) (acc) =
+    if ic >= p.c2-in-channels then acc
+    else let ch-sum = conv2d-kernel-sum layer input in-h in-w oc ic oh ow p 0 0 0
+    in conv2d-sum-channels layer input in-h in-w oc oh ow p (ic + 1) (acc + ch-sum)
+
+  conv2d-kernel-sum : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Conv2dParams, Integer, Integer, Integer -> Integer
+  conv2d-kernel-sum (layer) (input) (in-h) (in-w) (oc) (ic) (oh) (ow) (p) (kh) (kw) (acc) =
+    if kh >= p.c2-kernel-h then acc
+    else if kw >= p.c2-kernel-w then conv2d-kernel-sum layer input in-h in-w oc ic oh ow p (kh + 1) 0 acc
+    else let ih = oh * p.c2-stride - p.c2-padding + kh
+    in let iw = ow * p.c2-stride - p.c2-padding + kw
+    in let in-val = conv2d-sample input in-h in-w ic ih iw
+    in let w-idx = oc * (p.c2-in-channels * p.c2-kernel-h * p.c2-kernel-w) + ic * (p.c2-kernel-h * p.c2-kernel-w) + kh * p.c2-kernel-w + kw
+    in let w-val = list-at (layer.c2-weights.data) w-idx
+    in conv2d-kernel-sum layer input in-h in-w oc ic oh ow p kh (kw + 1) (acc + in-val * w-val / 1000)
+
+Section: Padded Sampling
+  conv2d-sample : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  conv2d-sample (input) (h) (w) (c) (y) (x) =
+    if y < 0 then 0
+    else if y >= h then 0
+    else if x < 0 then 0
+    else if x >= w then 0
+    else list-at input (c * h * w + y * w + x)
+
+Section: Transpose Convolution (for upsampling)
+  conv2d-transpose-out-dim : Integer, Integer, Integer, Integer -> Integer
+  conv2d-transpose-out-dim (in-dim) (kernel) (stride) (padding) =
+    (in-dim - 1) * stride - 2 * padding + kernel
+
+  conv2d-transpose-forward : Conv2dLayer, List Integer, Integer, Integer -> List Integer
+  conv2d-transpose-forward (layer) (input) (in-h) (in-w) =
+    let p = layer.c2-params
+    in let out-h = conv2d-transpose-out-dim in-h (p.c2-kernel-h) (p.c2-stride) (p.c2-padding)
+    in let out-w = conv2d-transpose-out-dim in-w (p.c2-kernel-w) (p.c2-stride) (p.c2-padding)
+    in conv2d-trans-all layer input in-h in-w out-h out-w 0 []
+
+  conv2d-trans-all : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  conv2d-trans-all (layer) (input) (in-h) (in-w) (out-h) (out-w) (oc) (acc) =
+    if oc >= layer.c2-params.c2-out-channels then acc
+    else let channel = conv2d-trans-one layer input in-h in-w out-h out-w oc 0 0 []
+    in conv2d-trans-all layer input in-h in-w out-h out-w (oc + 1) (acc & channel)
+
+  conv2d-trans-one : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  conv2d-trans-one (layer) (input) (in-h) (in-w) (out-h) (out-w) (oc) (oh) (ow) (acc) =
+    if oh >= out-h then acc
+    else if ow >= out-w then conv2d-trans-one layer input in-h in-w out-h out-w oc (oh + 1) 0 acc
+    else let val = conv2d-trans-pixel layer input in-h in-w oc oh ow
+    in let bias-val = list-at (layer.c2-bias.data) oc
+    in conv2d-trans-one layer input in-h in-w out-h out-w oc oh (ow + 1) (list-push acc (val + bias-val))
+
+  conv2d-trans-pixel : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  conv2d-trans-pixel (layer) (input) (in-h) (in-w) (oc) (oh) (ow) =
+    let p = layer.c2-params
+    in conv2d-trans-sum layer input in-h in-w oc oh ow p 0 0
+
+  conv2d-trans-sum : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer, Conv2dParams, Integer, Integer -> Integer
+  conv2d-trans-sum (layer) (input) (in-h) (in-w) (oc) (oh) (ow) (p) (ic) (acc) =
+    if ic >= p.c2-in-channels then acc
+    else let ch-sum = conv2d-trans-kernel layer input in-h in-w oc ic oh ow p 0 0 0
+    in conv2d-trans-sum layer input in-h in-w oc oh ow p (ic + 1) (acc + ch-sum)
+
+  conv2d-trans-kernel : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Conv2dParams, Integer, Integer, Integer -> Integer
+  conv2d-trans-kernel (layer) (input) (in-h) (in-w) (oc) (ic) (oh) (ow) (p) (kh) (kw) (acc) =
+    if kh >= p.c2-kernel-h then acc
+    else if kw >= p.c2-kernel-w then conv2d-trans-kernel layer input in-h in-w oc ic oh ow p (kh + 1) 0 acc
+    else let src-h = oh + p.c2-padding - kh
+    in let src-w = ow + p.c2-padding - kw
+    in let valid-h = src-h >= 0
+    in let div-h = if valid-h then src-h / p.c2-stride else 0
+    in let mod-h = if valid-h then src-h - div-h * p.c2-stride else 1
+    in let valid-w = src-w >= 0
+    in let div-w = if valid-w then src-w / p.c2-stride else 0
+    in let mod-w = if valid-w then src-w - div-w * p.c2-stride else 1
+    in if mod-h /= 0 then conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) acc
+    else if mod-w /= 0 then conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) acc
+    else if div-h >= in-h then conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) acc
+    else if div-w >= in-w then conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) acc
+    else let in-val = list-at input (ic * in-h * in-w + div-h * in-w + div-w)
+    in let w-idx = ic * (p.c2-out-channels * p.c2-kernel-h * p.c2-kernel-w) + oc * (p.c2-kernel-h * p.c2-kernel-w) + kh * p.c2-kernel-w + kw
+    in let w-val = list-at (layer.c2-weights.data) w-idx
+    in conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) (acc + in-val * w-val / 1000)
+
+Section: GPU Command Helpers
+  gpu-cmd-conv2d : Integer, Integer, Integer, Integer, Integer, Integer -> GpuCommand
+  gpu-cmd-conv2d (in-ch) (out-ch) (h) (w) (kh) (kw) =
+    let in-size = in-ch * h * w * 4
+    in let kernel-size = out-ch * in-ch * kh * kw * 4
+    in GpuCommand { gpu-op = 12, gpu-rows-a = in-ch * h, gpu-cols-a = w, gpu-cols-b = out-ch * kh * kw, gpu-offset-a = 0, gpu-offset-b = in-size, gpu-offset-out = in-size + kernel-size }
+
+  gpu-cmd-group-norm : Integer, Integer -> GpuCommand
+  gpu-cmd-group-norm (elements) (groups) =
+    GpuCommand { gpu-op = 13, gpu-rows-a = elements, gpu-cols-a = groups, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = elements * 4 }
+
+  gpu-cmd-silu : Integer -> GpuCommand
+  gpu-cmd-silu (n) =
+    GpuCommand { gpu-op = 14, gpu-rows-a = n, gpu-cols-a = 1, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = n * 4 }
+
+  gpu-cmd-upsample2x : Integer, Integer, Integer -> GpuCommand
+  gpu-cmd-upsample2x (channels) (h) (w) =
+    let n = channels * h * w
+    in GpuCommand { gpu-op = 15, gpu-rows-a = channels, gpu-cols-a = h, gpu-cols-b = w, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = n * 4 * 4 }
+
+Section: Queries
+  format-conv2d : Conv2dParams -> Text
+  format-conv2d (p) =
+    "Conv2d(" & show (p.c2-in-channels) & "->" & show (p.c2-out-channels) & " " & show (p.c2-kernel-h) & "x" & show (p.c2-kernel-w) & " s=" & show (p.c2-stride) & " p=" & show (p.c2-padding) & ")"
+
+Page 1

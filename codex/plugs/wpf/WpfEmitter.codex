@@ -4,6 +4,8 @@ Chapter: WPF Emitter
   cites Codex chapter Lists
 
  Generates WPF XAML + C# code-behind from the IR.
+ Emits a .csproj, App.xaml, MainWindow.xaml, and MainWindow.xaml.cs
+ as a combined text output with file markers.
 
 Section: Sanitization
 
@@ -91,7 +93,7 @@ Section: C# Expression Emission
     is IrAwait (task) (ty) (sp) -> "(await " & emit-cs-expr task arities indent & ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-cs-expr body arities indent
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-cs-expr body arities indent
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-cs-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-cs-act body arities indent
     is IrError (msg) (ty) (sp) -> "throw new Exception(\"" & cs-escape msg & "\")"
 
 Section: Binary Operators
@@ -101,21 +103,20 @@ Section: Binary Operators
    let lhs = emit-cs-expr l arities indent
    in let rhs = emit-cs-expr r arities indent
    in when op
-    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
+    is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
-    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
-    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
-    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
-    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
     is IrEq -> "object.Equals(" & lhs & ", " & rhs & ")"
     is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
-    is IrLt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
-    is IrGt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
-    is IrLtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
-    is IrGtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
+    is IrLt | IrLtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
+    is IrGt | IrGtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
+    is IrLtEq | IrLtEqVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
+    is IrGtEq | IrGtEqVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
+    is IrApproxEq -> "object.Equals(" & lhs & ", " & rhs & ")"
+    is IrApproxEqExact -> "object.Equals(" & lhs & ", " & rhs & ")"
     is IrAnd -> "(" & lhs & " && " & rhs & ")"
     is IrOr -> "(" & lhs & " || " & rhs & ")"
     is IrAppendText -> "(\"\" + " & lhs & " + " & rhs & ")"
@@ -189,6 +190,7 @@ Section: Let, Apply, Match, Act
     is IrLitPat (text) (ty) (sp) -> "object.Equals(" & scrut & ", (dynamic)" & text & ")"
     is IrCtorPat (name) (subs) (ty) (sp) -> "(string)" & scrut & "[\"_tag\"] == \"" & name & "\""
     is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
 
   emit-cs-pattern-binds : IRPat, Text, Integer -> Text
   emit-cs-pattern-binds (p) (scrut) (indent) =
@@ -197,6 +199,7 @@ Section: Let, Apply, Match, Act
     is IrLitPat (text) (ty) (sp) -> ""
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-cs-ctor-binds subs scrut indent 0
     is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
 
   emit-cs-ctor-binds : List IRPat, Text, Integer, Integer -> Text
   emit-cs-ctor-binds (subs) (scrut) (indent) (i) =
@@ -266,16 +269,133 @@ Section: Type and Definition Emission
    if i == list-length tds then ""
    else emit-cs-type-def (list-at tds i) & emit-cs-type-defs tds (i + 1)
 
-Section: WPF Assembly
+Section: WPF XAML Generation
+
+  emit-wpf-xaml : Text -> Text
+  emit-wpf-xaml (title) =
+   "<Window x:Class=\"" & title & ".MainWindow\"\n" &
+   "        xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"\n" &
+   "        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n" &
+   "        Title=\"" & title & "\" Width=\"1200\" Height=\"800\"\n" &
+   "        Background=\"#1E1E1E\" WindowStartupLocation=\"CenterScreen\">\n" &
+   "    <Grid x:Name=\"RootGrid\"/>\n" &
+   "</Window>\n"
+
+Section: WPF App.xaml
+
+  emit-wpf-app-xaml : Text -> Text
+  emit-wpf-app-xaml (title) =
+   "<Application x:Class=\"" & title & ".App\"\n" &
+   "             xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"\n" &
+   "             xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n" &
+   "             StartupUri=\"MainWindow.xaml\">\n" &
+   "</Application>\n"
+
+  emit-wpf-app-cs : Text -> Text
+  emit-wpf-app-cs (title) =
+   "using System.Windows;\n\nnamespace " & title & "\n{\n    public partial class App : Application { }\n}\n"
+
+Section: WPF Project File
+
+  emit-wpf-csproj : Text
+  emit-wpf-csproj =
+   "<Project Sdk=\"Microsoft.NET.Sdk\">\n" &
+   "  <PropertyGroup>\n" &
+   "    <OutputType>WinExe</OutputType>\n" &
+   "    <TargetFramework>net9.0-windows</TargetFramework>\n" &
+   "    <UseWPF>true</UseWPF>\n" &
+   "    <Nullable>enable</Nullable>\n" &
+   "  </PropertyGroup>\n" &
+   "</Project>\n"
+
+Section: WPF Builtins Library
+
+  emit-wpf-builtins : Text
+  emit-wpf-builtins =
+   wpf-indent 2 & "// --- Codex runtime builtins ---\n" &
+   wpf-indent 2 & "static void print_line_uni(dynamic s) { System.Diagnostics.Debug.WriteLine(s?.ToString() ?? \"\"); }\n" &
+   wpf-indent 2 & "static void print_line(dynamic s) { print_line_uni(s); }\n" &
+   wpf-indent 2 & "static string show(dynamic n) { return n?.ToString() ?? \"\"; }\n" &
+   wpf-indent 2 & "static long text_length(string s) { return s.Length; }\n" &
+   wpf-indent 2 & "static string text_replace(string s, string a, string b) { return s.Replace(a, b); }\n" &
+   wpf-indent 2 & "static long text_compare(string a, string b) { return string.Compare(a, b, StringComparison.Ordinal); }\n" &
+   wpf-indent 2 & "static bool text_starts_with(string s, string p) { return s.StartsWith(p); }\n" &
+   wpf-indent 2 & "static bool text_contains(string s, string p) { return s.Contains(p); }\n" &
+   wpf-indent 2 & "static string substring(string s, long start, long len) { return s.Substring((int)start, (int)len); }\n" &
+   wpf-indent 2 & "static long char_code(char c) { return c; }\n" &
+   wpf-indent 2 & "static char code_to_char(long n) { return (char)n; }\n" &
+   wpf-indent 2 & "static char char_at(string s, long i) { return s[(int)i]; }\n" &
+   wpf-indent 2 & "static string char_to_text(char c) { return c.ToString(); }\n" &
+   wpf-indent 2 & "static long list_length(dynamic xs) { return ((List<dynamic>)xs).Count; }\n" &
+   wpf-indent 2 & "static dynamic list_at(dynamic xs, long i) { return ((List<dynamic>)xs)[(int)i]; }\n" &
+   wpf-indent 2 & "static List<dynamic> list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" &
+   wpf-indent 2 & "static List<dynamic> list_insert_at(dynamic xs, long pos, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Insert((int)pos, x); return r; }\n" &
+   wpf-indent 2 & "static string integer_to_text(long n) { return n.ToString(); }\n" &
+   wpf-indent 2 & "static long negate(long n) { return -n; }\n" &
+   wpf-indent 2 & "static long bit_and(long a, long b) { return a & b; }\n" &
+   wpf-indent 2 & "static long bit_or(long a, long b) { return a | b; }\n" &
+   wpf-indent 2 & "static long bit_xor(long a, long b) { return a ^ b; }\n" &
+   wpf-indent 2 & "static long bit_not(long a) { return ~a; }\n" &
+   wpf-indent 2 & "static long bit_shl(long a, long b) { return a << (int)b; }\n" &
+   wpf-indent 2 & "static long bit_shru(long a, long b) { return (long)((ulong)a >> (int)b); }\n" &
+   wpf-indent 2 & "static long int_mod(long a, long b) { return a % b; }\n" &
+   wpf-indent 2 & "static long abs(long n) { return Math.Abs(n); }\n\n" &
+   wpf-indent 2 & "// --- WPF helpers ---\n" &
+   wpf-indent 2 & "static Button MakeButton(string text, Action onClick) {\n" &
+   wpf-indent 3 & "var b = new Button { Content = text, Margin = new Thickness(2), Padding = new Thickness(8,4,8,4),\n" &
+   wpf-indent 4 & "Background = new SolidColorBrush(Color.FromRgb(0x3C,0x3C,0x3C)),\n" &
+   wpf-indent 4 & "Foreground = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(0x55,0x55,0x55)) };\n" &
+   wpf-indent 3 & "b.Click += (s, e) => onClick();\n" &
+   wpf-indent 3 & "return b;\n" &
+   wpf-indent 2 & "}\n\n" &
+   wpf-indent 2 & "static TextBlock MakeLabel(string text, double size = 12) {\n" &
+   wpf-indent 3 & "return new TextBlock { Text = text, Foreground = Brushes.White,\n" &
+   wpf-indent 4 & "FontSize = size, Margin = new Thickness(4), VerticalAlignment = VerticalAlignment.Center };\n" &
+   wpf-indent 2 & "}\n\n" &
+   wpf-indent 2 & "static Border MakePanel(UIElement child, string title) {\n" &
+   wpf-indent 3 & "var header = MakeLabel(title, 14);\n" &
+   wpf-indent 3 & "header.FontWeight = FontWeights.Bold;\n" &
+   wpf-indent 3 & "var stack = new DockPanel();\n" &
+   wpf-indent 3 & "DockPanel.SetDock(header, Dock.Top);\n" &
+   wpf-indent 3 & "stack.Children.Add(header);\n" &
+   wpf-indent 3 & "stack.Children.Add(child);\n" &
+   wpf-indent 3 & "return new Border { Child = stack, BorderBrush = new SolidColorBrush(Color.FromRgb(0x44,0x44,0x44)),\n" &
+   wpf-indent 4 & "BorderThickness = new Thickness(1), Margin = new Thickness(2),\n" &
+   wpf-indent 4 & "Background = new SolidColorBrush(Color.FromRgb(0x25,0x25,0x25)) };\n" &
+   wpf-indent 2 & "}\n\n" &
+   wpf-indent 2 & "// --- Process management ---\n" &
+   wpf-indent 2 & "static System.Diagnostics.Process? StartProcess(string exe, string args, string workDir) {\n" &
+   wpf-indent 3 & "try {\n" &
+   wpf-indent 4 & "var psi = new System.Diagnostics.ProcessStartInfo(exe, args) {\n" &
+   wpf-indent 5 & "WorkingDirectory = workDir, UseShellExecute = true };\n" &
+   wpf-indent 4 & "return System.Diagnostics.Process.Start(psi);\n" &
+   wpf-indent 3 & "} catch { return null; }\n" &
+   wpf-indent 2 & "}\n\n" &
+   wpf-indent 2 & "static void KillProcess(System.Diagnostics.Process? p) {\n" &
+   wpf-indent 3 & "try { if (p != null && !p.HasExited) p.Kill(true); } catch { }\n" &
+   wpf-indent 2 & "}\n\n"
+
+Section: WPF Assembly (multi-file)
 
   emit-wpf-chapter : IRChapter, List ATypeDef -> Text
   emit-wpf-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let title = if m.chapter-title == "" then "CodexApp" else wpf-sanitize (m.chapter-title)
-   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Windows;\nusing System.Windows.Controls;\n\nnamespace " & title & "\n{\n    public partial class MainWindow : Window\n    {\n"
-   in let builtins = wpf-indent 2 & "static void print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); }\n" & wpf-indent 2 & "static void print_line(dynamic s) { print_line_uni(s); }\n" & wpf-indent 2 & "static string show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & wpf-indent 2 & "static long text_length(string s) { return s.Length; }\n" & wpf-indent 2 & "static string text_replace(string s, string a, string b) { return s.Replace(a, b); }\n" & wpf-indent 2 & "static long text_compare(string a, string b) { return string.Compare(a, b, StringComparison.Ordinal); }\n" & wpf-indent 2 & "static long list_length(dynamic xs) { return ((List<dynamic>)xs).Count; }\n" & wpf-indent 2 & "static dynamic list_at(dynamic xs, long i) { return ((List<dynamic>)xs)[(int)i]; }\n" & wpf-indent 2 & "static List<dynamic> list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & wpf-indent 2 & "static string integer_to_text(long n) { return n.ToString(); }\n" & wpf-indent 2 & "static long negate(long n) { return -n; }\n" & wpf-indent 2 & "static List<string> _output = new();\n\n"
+   in let cs-header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Windows;\nusing System.Windows.Controls;\nusing System.Windows.Media;\n\nnamespace " & title & "\n{\n    public partial class MainWindow : Window\n    {\n"
+   in let builtins = emit-wpf-builtins
    in let types-text = emit-cs-type-defs type-defs 0
    in let defs-text = emit-cs-defs (m.defs) 0 arities
-   in let constructor = wpf-indent 2 & "public MainWindow()\n" & wpf-indent 2 & "{\n" & wpf-indent 3 & "InitializeComponent();\n" & wpf-indent 3 & "try { opening(); } catch (Exception ex) { _output.Add(\"ERROR: \" + ex.Message); }\n" & wpf-indent 3 & "var panel = new StackPanel();\n" & wpf-indent 3 & "foreach (var line in _output) panel.Children.Add(new TextBlock { Text = line, Margin = new Thickness(4) });\n" & wpf-indent 3 & "Content = new ScrollViewer { Content = panel };\n" & wpf-indent 2 & "}\n"
-   in let footer = "    }\n}\n"
-   in header & builtins & types-text & defs-text & constructor & footer
+   in let constructor = wpf-indent 2 & "public MainWindow()\n" & wpf-indent 2 & "{\n" & wpf-indent 3 & "InitializeComponent();\n" & wpf-indent 3 & "try { opening(); } catch (Exception ex) { Title = \"Error: \" + ex.Message; }\n" & wpf-indent 2 & "}\n"
+   in let cs-footer = "    }\n}\n"
+   in let cs-file = cs-header & builtins & types-text & defs-text & constructor & cs-footer
+   in let xaml-file = emit-wpf-xaml title
+   in let app-xaml = emit-wpf-app-xaml title
+   in let app-cs = emit-wpf-app-cs title
+   in let csproj = emit-wpf-csproj
+   in "<<<FILE:MainWindow.xaml.cs>>>\n" & cs-file &
+      "\n<<<FILE:MainWindow.xaml>>>\n" & xaml-file &
+      "\n<<<FILE:App.xaml>>>\n" & app-xaml &
+      "\n<<<FILE:App.xaml.cs>>>\n" & app-cs &
+      "\n<<<FILE:" & title & ".csproj>>>\n" & csproj
+
+Page 1

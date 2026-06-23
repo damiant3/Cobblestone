@@ -34,12 +34,16 @@ Section: Type Mapping
   rs-type (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> "i64"
-    is NumberTy -> "f64"
+    is RealTy -> "f64"
+    is RealApproxTy -> "f64"
+    is RealTrappingTy -> "f64"
+    is RealSaturatingTy -> "f64"
     is TextTy -> "String"
     is BooleanTy -> "bool"
     is CharTy -> "i64"
     is VoidTy -> "()"
     is NothingTy -> "()"
+    is UnitTy (n) (inner) -> "()"
     is ErrorTy -> "Box<dyn std::any::Any>"
     is FunTy (p) (r) -> "Box<dyn Fn(" & rs-type p & ") -> " & rs-type r & ">"
     is ListTy (elem) -> "Vec<" & rs-type elem & ">"
@@ -49,6 +53,7 @@ Section: Type Mapping
     is SumTy (name) (ty-args) (ctors) -> rs-sanitize (name.value)
     is RecordTy (name) (ty-args) (fields) -> rs-sanitize (name.value)
     is ConstructedTy (name) (args) -> rs-sanitize (name.value)
+    is VectorTy (vn) (vt) -> "Vec<" & rs-type vt & ">"
     is EffectfulTy (effects) (sc) (ret) -> rs-type ret
 
 Section: Constructor-to-Enum Map
@@ -224,7 +229,7 @@ Section: Type Definition Emission
   rs-atype-name : Text -> Text
   rs-atype-name (n) =
    if n == "Integer" then "i64"
-   else if n == "Number" then "f64"
+   else if n == "Real" then "f64"
    else if n == "Text" then "String"
    else if n == "Boolean" then "bool"
    else if n == "List" then "Vec"
@@ -531,26 +536,22 @@ Section: Binary Emission
   emit-rs-bin-op : IRBinaryOp -> Text
   emit-rs-bin-op (op) =
    when op
-    is IrAddInt -> "+"
-    is IrSubInt -> "-"
-    is IrMulInt -> "*"
-    is IrDivInt -> "/"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrRemInt -> "%"
     is IrPowInt -> "^"
-    is IrAddNum -> "+"
-    is IrSubNum -> "-"
-    is IrMulNum -> "*"
-    is IrDivNum -> "/"
     is IrEq -> "=="
     is IrNotEq -> "!="
-    is IrLt -> "<"
-    is IrGt -> ">"
-    is IrLtEq -> "<="
-    is IrGtEq -> ">="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq | IrApproxEqExact -> "=="
     is IrAnd -> "&&"
     is IrOr -> "||"
-    is IrAppendText -> "+"
-    is IrAppendList -> "+"
-    is IrConsList -> "+"
+    is IrAppendText | IrAppendList | IrConsList -> "+"
 
   emit-rs-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, List CtorEnumEntry -> Text
   emit-rs-binary (op) (l) (r) (ty) (arities) (ctor-map) =
@@ -611,6 +612,7 @@ Section: Match Emission
      in if list-length subs == 0 then prefix
         else prefix & "(" & emit-rs-sub-patterns subs ctor-map 0 & ")"
     is IrWildPat (sp) -> "_"
+    is IrVecPat (pats) (ty) (sp) -> "_"
 
   emit-rs-lit-pat : Text, CodexType -> Text
   emit-rs-lit-pat (text) (ty) =
@@ -633,6 +635,7 @@ Section: Match Emission
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-rs-pattern p ctor-map
     is IrWildPat (sp) -> "_"
     is IrLitPat (text) (ty) (sp) -> emit-rs-lit-pat text ty
+    is IrVecPat (pats) (ty) (sp) -> "_"
 
 Section: Act Emission
 

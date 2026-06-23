@@ -27,6 +27,7 @@ Chapter: Browser
   cites Foreword chapter CCE
   cites Foreword chapter Parse
   cites Game chapter Rasterizer
+  cites Foreword chapter ListUtils
 
  The main browser module. Owns the full browser state, renders
  the chrome (tab bar, address bar, trust indicator, page viewport),
@@ -93,7 +94,7 @@ Section: Initialization
       bs-focus = FocusPageContent,
       bs-dirty = True,
       bs-show-trust-prompt = False,
-      bs-pending-trust = Nothing,
+      bs-pending-trust = None,
       bs-display = ds,
       bs-history = history-new 500
     }
@@ -103,7 +104,7 @@ Section: Initialization
     let vp-h = vh - chrome-height
     in let result = resolve-and-load t.tab-address sandbox trust cache vw vp-h
     in when result
-      is PageLoaded (tree, title, caps) ->
+      is PageLoaded (tree) (title) (caps) ->
         tab-set-content t tree title
       is PageCompileError (msg) ->
         tab-set-error t ("Compile error: " & msg)
@@ -237,19 +238,15 @@ Section: Trust Prompt Rendering
 
   join-effects : List Text -> Text
   join-effects (effects) =
-    when effects
-      is [] -> "none"
-      is otherwise -> join-with-comma effects
+    if list-length effects == 0 then "none"
+    else join-with-comma effects
 
   join-with-comma : List Text -> Text
   join-with-comma (xs) =
-    when xs
-      is [] -> ""
-      is otherwise ->
-        let head = list-at xs 0
+    if list-length xs == 0 then ""
+    else let head = list-at xs 0
         in let tail = list-drop xs 1
-        in when tail
-          is [] -> head
+        in if list-length tail == 0 then head
           else head & ", " & join-with-comma tail
 
 Section: Tab Management
@@ -443,7 +440,7 @@ Section: Trust Prompt Flow
   browser-dismiss-trust (state) =
     __record-set (__record-set (__record-set state
       "bs-show-trust-prompt" False)
-      "bs-pending-trust" Nothing)
+      "bs-pending-trust" None)
       "bs-focus" FocusPageContent
 
 Section: Mouse Hit Testing
@@ -555,10 +552,8 @@ Section: Mouse Hit Testing
 
   find-child-at-point : List WidgetNode, Integer, Integer, Text -> Maybe Text
   find-child-at-point (children) (x) (y) (parent-id) =
-    when children
-      is [] -> Just parent-id
-      is otherwise ->
-        let head = list-at children 0
+    if list-length children == 0 then Just parent-id
+    else let head = list-at children 0
         in let hit = widget-find-at-point head x y
         in when hit
           is Just (id) -> Just id
@@ -673,7 +668,7 @@ Section: Render Pipeline
 
 Section: Main Loop
 
-  browser-run : BrowserState -> [Console] Nothing
+  browser-run : BrowserState -> [Console] None
   browser-run (state) = act
     print-line "Codex Browser v0.1"
     print-line ("  Window: " & show state.bs-window-width & "x" & show state.bs-window-height)
@@ -683,7 +678,7 @@ Section: Main Loop
     browser-event-loop state
   end
 
-  browser-event-loop : BrowserState -> [Console] Nothing
+  browser-event-loop : BrowserState -> [Console] None
   browser-event-loop (state) = act
     let ticked = browser-tick-media state 16
     in let presented = if ticked.bs-dirty

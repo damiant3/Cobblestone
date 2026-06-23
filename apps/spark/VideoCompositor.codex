@@ -15,7 +15,7 @@ Section: Types
     vl-frame-count : Integer,
     vl-in-point : Integer,
     vl-out-point : Integer,
-    vl-opacity : Integer,
+    vl-opacity : Real,
     vl-visible : Boolean
   }
 
@@ -64,7 +64,7 @@ Section: Construction
     vl-frame-count = 0,
     vl-in-point = in-pt,
     vl-out-point = out-pt,
-    vl-opacity = 1000,
+    vl-opacity = 1.0,
     vl-visible = True
   }
 
@@ -93,7 +93,7 @@ Section: Layer Management
     vl-visible = layer.vl-visible
   }
 
-  video-layer-set-opacity : VideoLayer, Integer -> VideoLayer
+  video-layer-set-opacity : VideoLayer, Real -> VideoLayer
   video-layer-set-opacity (layer) (opacity) = __record-set layer "vl-opacity" opacity
 
 Section: Transitions
@@ -151,7 +151,7 @@ Section: Frame Composition
     else let src = list-at (layer.vl-frames) local-frame
     in vc-blend-pixels fb src (layer.vl-opacity) 0 (fb.fb-width * fb.fb-height)
 
-  vc-blend-pixels : Framebuf, Framebuf, Integer, Integer, Integer -> Framebuf
+  vc-blend-pixels : Framebuf, Framebuf, Real, Integer, Integer -> Framebuf
   vc-blend-pixels (dst) (src) (opacity) (i) (total) =
     if i >= total then dst
     else let sp = list-at (src.fb-pixels) i
@@ -160,7 +160,7 @@ Section: Frame Composition
     in let dst2 = Framebuf { fb-width = dst.fb-width, fb-height = dst.fb-height, fb-pixels = list-set-at (dst.fb-pixels) i blended }
     in vc-blend-pixels dst2 src opacity (i + 1) total
 
-  vc-blend-px : Integer, Integer, Integer -> Integer
+  vc-blend-px : Integer, Integer, Real -> Integer
   vc-blend-px (dst) (src) (alpha) =
     let dr = dst / 65536
     in let dg = dst / 256 - dr * 256
@@ -168,9 +168,9 @@ Section: Frame Composition
     in let sr = src / 65536
     in let sg = src / 256 - sr * 256
     in let sb = src - src / 256 * 256
-    in let rr = dr + (sr - dr) * alpha / 1000
-    in let rg = dg + (sg - dg) * alpha / 1000
-    in let rb = db + (sb - db) * alpha / 1000
+    in let rr = dr + real-to-int (real-from-int (sr - dr) * alpha)
+    in let rg = dg + real-to-int (real-from-int (sg - dg) * alpha)
+    in let rb = db + real-to-int (real-from-int (sb - db) * alpha)
     in vc-clamp rr 0 255 * 65536 + vc-clamp rg 0 255 * 256 + vc-clamp rb 0 255
 
   vc-clamp : Integer, Integer, Integer -> Integer
@@ -180,18 +180,18 @@ Section: Transition Rendering
 
   transition-apply : Framebuf, Framebuf, VideoTransition, Integer -> Framebuf
   transition-apply (a) (b) (trans) (frame) =
-    let progress = (frame - trans.vt-frame) * 1000 / trans.vt-duration
-    in let t = vc-clamp progress 0 1000
+    let progress = real-from-int (frame - trans.vt-frame) / real-from-int trans.vt-duration
+    in let t = if progress < 0.0 then 0.0 else if progress > 1.0 then 1.0 else progress
     in when trans.vt-kind
-      is TransCut -> if t >= 500 then b else a
+      is TransCut -> if t >= 0.5 then b else a
       is TransCrossfade -> vc-blend-pixels a b t 0 (a.fb-width * a.fb-height)
       is TransWipeLeft -> vc-wipe-left a b t
       is TransWipeDown -> vc-wipe-down a b t
-      is TransFadeBlack -> if t < 500 then vc-blend-pixels a (fb-new (a.fb-width) (a.fb-height) 0) (t * 2) 0 (a.fb-width * a.fb-height) else vc-blend-pixels (fb-new (b.fb-width) (b.fb-height) 0) b ((t - 500) * 2) 0 (b.fb-width * b.fb-height)
+      is TransFadeBlack -> if t < 0.5 then vc-blend-pixels a (fb-new (a.fb-width) (a.fb-height) 0) (t * 2.0) 0 (a.fb-width * a.fb-height) else vc-blend-pixels (fb-new (b.fb-width) (b.fb-height) 0) b ((t - 0.5) * 2.0) 0 (b.fb-width * b.fb-height)
 
-  vc-wipe-left : Framebuf, Framebuf, Integer -> Framebuf
+  vc-wipe-left : Framebuf, Framebuf, Real -> Framebuf
   vc-wipe-left (a) (b) (t) =
-    let cut-x = a.fb-width * t / 1000
+    let cut-x = real-to-int (real-from-int a.fb-width * t)
     in vc-wipe-loop a b cut-x 0 (a.fb-width * a.fb-height) (a.fb-width)
 
   vc-wipe-loop : Framebuf, Framebuf, Integer, Integer, Integer, Integer -> Framebuf
@@ -202,9 +202,9 @@ Section: Transition Rendering
     in let a2 = Framebuf { fb-width = a.fb-width, fb-height = a.fb-height, fb-pixels = list-set-at (a.fb-pixels) i px }
     in vc-wipe-loop a2 b cut (i + 1) total w
 
-  vc-wipe-down : Framebuf, Framebuf, Integer -> Framebuf
+  vc-wipe-down : Framebuf, Framebuf, Real -> Framebuf
   vc-wipe-down (a) (b) (t) =
-    let cut-y = a.fb-height * t / 1000
+    let cut-y = real-to-int (real-from-int a.fb-height * t)
     in vc-wipe-down-loop a b cut-y 0 (a.fb-width * a.fb-height) (a.fb-width)
 
   vc-wipe-down-loop : Framebuf, Framebuf, Integer, Integer, Integer, Integer -> Framebuf

@@ -1,0 +1,154 @@
+Chapter: ImageTensor
+  cites AI chapter Tensor
+  cites Game chapter Color
+  cites Encode chapter Png
+
+ Image-tensor conversion for neural network image processing.
+ Fixed-point (scale 1000). Converts between pixel arrays (List Rgb)
+ and NCHW tensor layout (channels-first, flat List Integer).
+
+ Image pixels are [0,255] integer RGB. Tensor values are fixed-point
+ [-1000, 1000] (normalized to [-1, 1]) or [0, 1000] depending on
+ the model. NCHW layout: all R values, then all G, then all B.
+
+ We say:
+
+Section: Types
+  ImageData = record {
+    img-width : Integer,
+    img-height : Integer,
+    img-pixels : List Rgb
+  }
+
+Section: Construction
+  image-new : Integer, Integer, List Rgb -> ImageData
+  image-new (w) (h) (pixels) = ImageData { img-width = w, img-height = h, img-pixels = pixels }
+
+Section: Image to Tensor (NCHW, normalize to [-1,1])
+  image-to-tensor : ImageData -> List Integer
+  image-to-tensor (img) =
+    let n = img.img-width * img.img-height
+    in let reds = img-extract-channel (img.img-pixels) 0 n 0 []
+    in let greens = img-extract-channel (img.img-pixels) 1 n 0 []
+    in let blues = img-extract-channel (img.img-pixels) 2 n 0 []
+    in reds & greens & blues
+
+  img-extract-channel : List Rgb, Integer, Integer, Integer, List Integer -> List Integer
+  img-extract-channel (pixels) (ch) (n) (i) (acc) =
+    if i >= n then acc
+    else let px = list-at pixels i
+    in let raw = if ch == 0 then px.cr else if ch == 1 then px.cg else px.cb
+    in let normalized = raw * 2000 / 255 - 1000
+    in img-extract-channel pixels ch n (i + 1) (list-push acc normalized)
+
+Section: Image to Tensor (NCHW, normalize to [0,1])
+  image-to-tensor-unit : ImageData -> List Integer
+  image-to-tensor-unit (img) =
+    let n = img.img-width * img.img-height
+    in let reds = img-extract-unit (img.img-pixels) 0 n 0 []
+    in let greens = img-extract-unit (img.img-pixels) 1 n 0 []
+    in let blues = img-extract-unit (img.img-pixels) 2 n 0 []
+    in reds & greens & blues
+
+  img-extract-unit : List Rgb, Integer, Integer, Integer, List Integer -> List Integer
+  img-extract-unit (pixels) (ch) (n) (i) (acc) =
+    if i >= n then acc
+    else let px = list-at pixels i
+    in let raw = if ch == 0 then px.cr else if ch == 1 then px.cg else px.cb
+    in let normalized = raw * 1000 / 255
+    in img-extract-unit pixels ch n (i + 1) (list-push acc normalized)
+
+Section: Tensor to Image (NCHW, denormalize from [-1,1])
+  tensor-to-image : List Integer, Integer, Integer -> ImageData
+  tensor-to-image (data) (w) (h) =
+    let n = w * h
+    in let pixels = img-combine-channels data n 0 []
+    in ImageData { img-width = w, img-height = h, img-pixels = pixels }
+
+  img-combine-channels : List Integer, Integer, Integer, List Rgb -> List Rgb
+  img-combine-channels (data) (n) (i) (acc) =
+    if i >= n then acc
+    else let r = img-denormalize (list-at data i)
+    in let g = img-denormalize (list-at data (n + i))
+    in let b = img-denormalize (list-at data (2 * n + i))
+    in img-combine-channels data n (i + 1) (list-push acc (Rgb { cr = r, cg = g, cb = b }))
+
+  img-denormalize : Integer -> Integer
+  img-denormalize (v) =
+    let clamped = if v < (0 - 1000) then 0 - 1000 else if v > 1000 then 1000 else v
+    in (clamped + 1000) * 255 / 2000
+
+Section: Tensor to Image (NCHW, denormalize from [0,1])
+  tensor-to-image-unit : List Integer, Integer, Integer -> ImageData
+  tensor-to-image-unit (data) (w) (h) =
+    let n = w * h
+    in let pixels = img-combine-unit data n 0 []
+    in ImageData { img-width = w, img-height = h, img-pixels = pixels }
+
+  img-combine-unit : List Integer, Integer, Integer, List Rgb -> List Rgb
+  img-combine-unit (data) (n) (i) (acc) =
+    if i >= n then acc
+    else let r = img-denorm-unit (list-at data i)
+    in let g = img-denorm-unit (list-at data (n + i))
+    in let b = img-denorm-unit (list-at data (2 * n + i))
+    in img-combine-unit data n (i + 1) (list-push acc (Rgb { cr = r, cg = g, cb = b }))
+
+  img-denorm-unit : Integer -> Integer
+  img-denorm-unit (v) =
+    let clamped = if v < 0 then 0 else if v > 1000 then 1000 else v
+    in clamped * 255 / 1000
+
+Section: Image to PNG Bytes
+  image-to-png : ImageData -> List Integer
+  image-to-png (img) = png-encode (img.img-width) (img.img-height) (img.img-pixels)
+
+Section: Resize (nearest neighbor, for preprocessing)
+  image-resize : ImageData, Integer, Integer -> ImageData
+  image-resize (img) (new-w) (new-h) =
+    let pixels = img-resize-loop img new-w new-h 0 0 []
+    in ImageData { img-width = new-w, img-height = new-h, img-pixels = pixels }
+
+  img-resize-loop : ImageData, Integer, Integer, Integer, Integer, List Rgb -> List Rgb
+  img-resize-loop (img) (new-w) (new-h) (y) (x) (acc) =
+    if y >= new-h then acc
+    else if x >= new-w then img-resize-loop img new-w new-h (y + 1) 0 acc
+    else let src-x = x * img.img-width / new-w
+    in let src-y = y * img.img-height / new-h
+    in let px = list-at (img.img-pixels) (src-y * img.img-width + src-x)
+    in img-resize-loop img new-w new-h y (x + 1) (list-push acc px)
+
+Section: Grayscale Conversion
+  image-to-grayscale : ImageData -> List Integer
+  image-to-grayscale (img) = img-gray-loop (img.img-pixels) 0 (img.img-width * img.img-height) []
+
+  img-gray-loop : List Rgb, Integer, Integer, List Integer -> List Integer
+  img-gray-loop (pixels) (i) (n) (acc) =
+    if i >= n then acc
+    else let px = list-at pixels i
+    in let gray = (px.cr * 299 + px.cg * 587 + px.cb * 114) / 1000
+    in img-gray-loop pixels (i + 1) n (list-push acc gray)
+
+Section: Random Noise Tensor (for diffusion initial noise)
+  img-noise-tensor : Integer, Integer, Integer, Integer -> List Integer
+  img-noise-tensor (channels) (h) (w) (seed) =
+    let n = channels * h * w
+    in img-noise-loop n seed 0 []
+
+  img-noise-loop : Integer, Integer, Integer, List Integer -> List Integer
+  img-noise-loop (n) (state) (i) (acc) =
+    if i >= n then acc
+    else let next = img-lcg-next state
+    in let val = (next / 2147484 - 500) * 2
+    in img-noise-loop n next (i + 1) (list-push acc val)
+
+  img-lcg-next : Integer -> Integer
+  img-lcg-next (state) =
+    let raw = state * 1103515245 + 12345
+    in let masked = bit-and raw 2147483647
+    in if masked == 0 then 1 else masked
+
+Section: Queries
+  format-image : ImageData -> Text
+  format-image (img) = show (img.img-width) & "x" & show (img.img-height) & " (" & show (img.img-width * img.img-height) & " pixels)"
+
+Page 1

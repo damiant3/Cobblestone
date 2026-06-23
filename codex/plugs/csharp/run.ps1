@@ -19,7 +19,7 @@ param(
     [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
     [string]$Ir,
-    [int]$MemMB = 4096
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest

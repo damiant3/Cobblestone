@@ -38,33 +38,55 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-06-13:
+As of 2026-06-22:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
   byte-identical. The compiler reproduces itself on bare metal.
-- **331 library modules** (238 foreword + 93 OS) across 24 quires: data structures, crypto,
+- **507 library modules** (360 foreword + 147 OS) across 28 quires: data structures, crypto,
   networking (full TCP/IP + UDP/ICMP/DNS/DHCP/NTP/Syslog/TFTP), game
-  engine (A*, hex maps, ECS, physics, Voronoi, Perlin), AI inference
-  (tensors, neural nets, GGUF model loading, genetic algorithms),
-  encoding (JSON, Base64, Protobuf, CSV), math (quaternions, matrices,
-  Bezier, FFT), compression (LZ77, Huffman, RLE), UI toolkit (themeable
-  widgets, compositor, layout engine, event system, orchestrator), and more.
+  engine (A*, hex maps, ECS, physics, Voronoi, Perlin), 3D engine
+  (renderer, scene graph, LOD, culling, materials, skinning, audio,
+  input, post-processing), AI inference (tensors, neural nets, GGUF
+  model loading, genetic algorithms), encoding (JSON, Base64, Protobuf,
+  CSV), math (quaternions, matrices, Bezier, FFT), compression (LZ77,
+  Huffman, RLE), UI toolkit (themeable widgets, compositor, layout engine,
+  event system, orchestrator), hard real-time primitives (punctual integer,
+  bit, saturating, trig, color, and kinematic ops), and more.
 - **OS stack**: preemptive scheduler, IPC channels, identity (Ed25519),
   trust lattice, 5-phase CDX verifier, interactive shell, VGA console,
   developer debugger, HTTP server, process management, UEFI boot path,
   diagnostic shell.
-- **GUI substrate**: 18-chapter UI foreword with themeable primitives
+- **GUI OS**: graphical operating system shell on bare metal via GOP
+  framebuffer. GuiShell compositor with sidebar launcher, status bar,
+  RTC clock. Resolution support: 640x480, 800x600, 1024x768 (32-bit
+  XRGB8888). Multi-monitor management (extended, mirror, single modes)
+  with default 1920x1080. Working apps: Calculator, Calendar, Notepad,
+  Timer, Diffusion, Tracker, Piano. MutWheel scheduler for mutable GUI
+  state via peek/poke (no GC, no closures). SMP-aware: work-stealing
+  scheduler drives app rendering across cores.
+- **UI foreword**: 28-chapter toolkit with themeable primitives
   (swap one Theme record to get LCARS, cockpit, or terminal look),
   flex layout, compositor with z-order and alpha blending, event dispatch,
   reactive bindings, animations/throbbers, multi-size bitmap icons,
-  bitmap font rendering (CCE-indexed), overlays, sound effects, and a
-  central orchestrator loop.
+  TrueType font rendering (14 CC0 fonts, 4x4 AA rasterizer), overlays,
+  sound effects, and a central orchestrator loop.
 - **Agent lifecycle**: local AI runtime (GGUF loader, inference),
   agent acquisition (bundled/USB/network, verification), coordinator
   (local/upstream escalation, role dispatch), first-boot wizard.
-- **GPU compute proxy**: shared-memory command protocol for host-side CUDA
-  dispatch. Design doc for RTX 4060 Ti integration.
+- **GPU compute**: dual-target compilation via plugs — PTX (NVIDIA) and
+  SPIR-V (Vulkan/OpenCL) plugs built and compiling (157KB/152KB CDX).
+  Shared-memory proxy protocol for host-side dispatch. Device IR
+  emission from compiler; plugs parse IR and emit target format.
+  Kernels K5-K8 complete: warp primitives, shared memory, atomics,
+  math intrinsics, and a kernel verifier. New `codex.foreword.gpu`
+  quire (10 modules). End-to-end vecadd test passes.
+  Design: `docs/Designs/Backends/Active/DualTargetGpuCompilation.md`.
+- **SMP (symmetric multiprocessing)**: all 5 phases complete for x86-64
+  — atomics (lock-prefixed CAS/XADD/XCHG), per-core bootstrap (AP
+  startup via SIPI), work-stealing scheduler, per-core heap isolation,
+  and IPI + lock-free channels for cross-core communication. codex-vm
+  supports `-smp N` flag for multi-core guests.
 - **Signed CDX seed**: Ed25519-signed, self-verified, UEFI-bootable
   GPT disk image.
 - **VMX hypervisor**: codex-vm.exe (WHP-based VM host), DevHypervisor,
@@ -77,14 +99,38 @@ As of 2026-06-13:
   builtin sets a flag the body's tail checks.
 - **Plug architecture**: emitters as standalone CDX programs. Compiler
   emits IR text; plug consumes IR via file I/O, emits target source.
-  **48 transpiler plugs** across languages (Ada, Babbage, C#,
+  **52 plugs (all building clean)** -- across languages (Ada, Babbage, C#,
   Clojure, COBOL, D, Elixir, Fortran, Go, Groovy, Haskell, Java,
   JavaScript, Julia, Kotlin, Lua, Nim, Objective-C, OCaml, Pascal,
   Perl, PHP, Python, Ruby, Rust, Scala, Scheme, Swift, TypeScript,
   WASM, Zig), UI frameworks (Angular, Electron, Flutter, GTK, HTML,
   Jetpack Compose, MAUI, Qt, React, Svelte, SwiftUI, Vue, WinForms,
-  WPF), and binary formats (CDX, ELF, PE, IMG). Port forwarding in
-  codex-vm enables host-to-guest TCP for plug data exchange.
+  WPF), GPU (PTX, SPIR-V), and binary formats (CDX, ELF, PE, IMG).
+  Port forwarding in codex-vm enables host-to-guest TCP for plug data
+  exchange.
+- **SIMD / Vector types**: `Vector N T` as a first-class type with
+  dependent lane count. SSE2 packed codegen (ADDPD, SUBPD, MULPD,
+  DIVPD, CMPPD, MOVUPD). Vector arithmetic operators (`+`, `-`, `*`, `/`)
+  and comparison operators (`<`, `>`, `<=`, `>=`) overloaded for vectors.
+  `vec-splat`, `vec-extract`, `vec-reduce-add`, `vec-select` builtins.
+  `VectorTy(N, T)` and `VectorMaskTy(N)` type constructors in the type
+  checker; mismatched widths are type errors. Bounded integers in vector
+  lanes.
+  Design: `docs/Designs/Features/Active/SIMD.md`.
+- **Real type + approximate equality**: `Number` renamed to `Real`.
+  The `~` operator provides approximate equality (4 ULP default),
+  `~0` for bitwise exact. `==` and `/=` on Real types are compile
+  errors (CDX2085). Safety modes: `Real trapping`, `Real saturating`,
+  `Real checked`. `Real approximate` (f32) for SIMD lane density.
+- **Game engine foreword**: 21-chapter `codex.foreword.engine` quire
+  — Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD,
+  Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags,
+  AbilitySystem, Signal, DebugDraw, TimeOfDay, AssetTable, EdgeMesh,
+  HelmBridge.
+- **Punctual foreword**: 8-chapter `codex.foreword.punctual` quire —
+  IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian.
+  Every function is `punctual`: no heap, no recursion, bounded instruction
+  count. Safe for real-time, embedded, and interrupt contexts.
 - **Dependent types**: `PropEqTy` — the first type carrying value
   information. `===` in type position produces propositional equality;
   `Refl` verified by the unifier (invalid proofs are type errors).
@@ -165,7 +211,7 @@ As of 2026-06-13:
   Controlling/Sales/Production/Maintenance/Quality/Warehouse/Projects/
   BW plus Real Estate, Banking, Insurance, Utilities, and Healthcare
   verticals.
-- **628 application modules across 46 apps** -- see Applications below.
+- **57 apps (27/27 web apps building clean)** -- see Applications below.
 - **Codex.Spark creative suite**: 85-module application (3D modeling,
   image editor, animation, audio/DAW, video compositor, skeletal
   animation, particles, procedural noise, interactive UI shell) running
@@ -184,11 +230,11 @@ As of 2026-06-13:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,094,667 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (~2.31 MB) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 (file) | `E9E869A80630BD35C62B42CF08997601C8306EC70C16D9917D475372348935AB` |
+| Content hash prefix | `EF14F3A5` |
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
@@ -462,6 +508,26 @@ Section: Type Classes
   instance Showable Integer where
     to-text (x) = show x
 
+Section: Vector Types (SIMD)
+
+  dot-product : Vector 2 Real, Vector 2 Real -> Real
+  dot-product (a) (b) = vec-reduce-add (a * b)
+
+  pixel-blend : Vector 4 (Integer between 0 and 255), Integer -> Vector 4 (Integer between 0 and 255)
+  pixel-blend (color) (alpha) =
+    let scale = vec-splat alpha
+    in (color * scale) / vec-splat 255
+
+Section: Approximate Equality
+
+  almost-zero : Real -> Boolean
+  almost-zero (x) = x ~ 0.0
+
+Section: For Expressions
+
+  double-all : List Integer -> List Integer
+  double-all (xs) = for x in xs do x * 2
+
 Section: Web Emitter (HTML/JS Plugs)
 
   effect UI where
@@ -639,50 +705,223 @@ runs — `__narrow` is intent, not a cast.
 ## Compilation Pipeline
 
 ```
-Source (.codex)
-    → Lexer         token stream
-    → Parser        concrete syntax tree
-    → Desugarer     abstract syntax tree
-    → ChapterScoper namespace scoping across chapters
-    → NameResolver  resolved names + citations
-    → TypeChecker   bidirectional type inference
-    → Lowering      typed intermediate representation
-    → Resolve       ConstructedTy → concrete RecordTy/SumTy (CDX path)
-    → LambdaLifting nested lambdas → top-level defs (CDX path)
-    → Emitter       target source code / machine code
+                            Source (.codex)
+                                  │
+                 ┌────────────────┼────────────────┐
+                 │          FRONTEND               │
+                 │                                 │
+                 │  Lexer ─────── token stream     │
+                 │  Parser ────── syntax tree      │
+                 │  Desugarer ─── abstract syntax   │
+                 │  ChapterScoper namespace scope   │
+                 │  NameResolver  resolved names    │
+                 │  TypeChecker ─ typed AST         │
+                 │  Lowering ──── IR                │
+                 │                                 │
+                 └────────────────┼────────────────┘
+                                  │
+            ┌─────────────────────┼─────────────────────┐
+            │                     │                     │
+       Codex text            IR text               CDX path
+       emitter               emitter               (Resolve +
+            │                     │                LambdaLifting)
+            ▼                     │                     │
+       Codex source               │                CDX emitter
+       (bootstrap                 │                (x86-64)
+        round-trip)               │                     │
+                                  │        ┌──────┬─────┼──────┐
+                                  │        │      │     │      │
+                                  │        ▼      ▼     ▼      ▼
+                                  │      CDX    ELF   PE    IMG
+                                  │    (boot-  (x86  (UEFI (GPT/
+                                  │     able)   -64)  PE+)  FAT)
+                                  │
+                 ┌──────────┬─────┼─────┬──────────┐
+                 │          │     │     │          │
+                 ▼          ▼     ▼     ▼          ▼
+              ARM64      RISC-V  WASM  Transpilers GPU plugs
+              ELF64      ELF     WAT   (29 langs)  ├─ PTX
+              (AArch64)  (RV32/  (brow- ├─ Ada,Go, │  (NVIDIA)
+                          RV64)  ser)   │  Java,Py, └─ SPIR-V
+                                        │  Rust,TS     (Vulkan)
+                                        └─ React,
+                                           Svelte,
+                                           Vue,WPF
+
 ```
 
-The pipeline lives in `codex/` — the self-hosted compiler,
-~25,000 lines across 54 `.codex` files. Each phase has its own deck
-allocation and `phase-compact` cycle; cumulative deck ~208 MB, peak
-working set ~210 MB for selfhost. This is the only path that is
-maintained, exercised, and load-bearing.
+The compiler frontend (lexer through lowering) is shared across all
+targets. From IR, three paths fan out:
 
-The original C# reference implementation under `old/src/` was the
-scaffolding that bootstrapped the language. It is **retired** and
-remains in the depot as historical record only.
+- **Codex text** re-emits the compiler's own source for bootstrap
+  verification (byte-identical round-trip).
+- **IR text** serializes the typed IR as S-expressions. All plugs
+  consume this: ARM64, RISC-V, WASM, the 29 transpiler plugs, and
+  the GPU plugs (PTX for NVIDIA, SPIR-V for Vulkan). Each plug is
+  a standalone CDX binary that receives IR over TCP.
+- **CDX path** adds Resolve (concrete types) and LambdaLifting,
+  then emits x86-64 machine code as a signed CDX binary. Container
+  plugs derive ELF, PE, and GPT disk images from the CDX.
+
+The pipeline lives in `codex/` — the self-hosted compiler,
+~28,000 lines across 54 `.codex` files. Each phase has its own deck
+allocation and `phase-compact` cycle; cumulative deck ~208 MB, peak
+working set ~210 MB for selfhost.
 
 ---
 
-## Backends
+## IoT Platform
 
-| Backend | Status | Role |
-|---------|--------|------|
-| **CDX binary** | **Full support** | **Self-sustaining target.** Signed, verified, bootable. The canonical seed. |
-| **Codex-text** | **Full support** | Bootstrap 2. Re-emits self as Codex source. |
-| **x86-64 bare metal (ELF)** | **Full support** | Derived from CDX. Maintained less frequently. |
-| **ARM64 (AArch64)** | Early | ELF64 plug, QEMU virt board, Thumb-2 encoder, 29 runtime functions. Cross-arch test 8/10 content lines. |
-| **RISC-V (RV32IMC/RV64)** | Early | ELF plug, QEMU virt board, RV32C compressed. Cross-arch test 10/10 perfect. |
-| C#, .NET IL, JS, Wasm, others | Legacy | Research/sample targets, may not track current features. |
+Codex targets the IoT market as the first platform where the compiler
+proves firmware meets EU Cyber Resilience Act requirements by
+construction. The IoT stack is orthogonal to the cross-architecture
+codegen plugs — it runs on the hosted VM today and cross-compiles to
+real hardware as the ARM64 and RISC-V backends mature.
 
-CDX and Codex-text are the load-bearing pair. The ELF is a derived artifact.
+### Board Drivers
+
+Nine target boards with register-level drivers using the Board HAL's
+`mmio-read-32`/`mmio-write-32` primitives. Each driver has a smoke test
+on the hosted VM (MMIO stubs; fuel-bounded polling terminates immediately).
+Full details: `docs/TinkersToolbox.md`.
+
+| Board | MCU | Arch | Sub-tests | Highlights |
+|-------|-----|------|----------:|-----------|
+| **STM32F4** | Cortex-M4F 168 MHz | ARM | 6 | GPIO, USART2, SPI1, I2C1 |
+| **ESP32-C6** | RV32IMC 160 MHz | RISC-V | 6 | GPIO, UART0, SPI2, I2C0 |
+| **Raspberry Pi 4** | Cortex-A72 1.5 GHz | ARM | 6 | GPIO, PL011, SPI0, BSC1 |
+| **QEMU virt** | AArch64 + RV | Both | 6 | PL011 + 16550 UART |
+| **nRF52840** | Cortex-M4F 64 MHz | ARM | 17 | CLOCK, SAADC, RADIO, **BLE beacon PDU** |
+| **RP2040 (Pico)** | Dual M0+ 133 MHz | ARM | 14 | Atomic GPIO, ADC, PIO, **WS2812 NeoPixel** |
+| **nRF9160** | Cortex-M33 64 MHz | ARM | 17 | IPC (modem), **AT command/response round-trip** |
+| **STM32L4** | Cortex-M4F 80 MHz | ARM | 9 | MSI clock, **PWR modes**, LPTIM |
+| **FE310 (HiFive1)** | RV32IMAC 320 MHz | RISC-V | 7 | IOF select, PWM, **PLIC** |
+
+88 sub-tests. Register addresses from official reference manuals.
+
+### IoT Protocol Stack
+
+| Protocol | Module | Status | Coverage |
+|----------|--------|--------|----------|
+| **MQTT v5.0** | `codex/foreword/encode/Mqtt.codex` | Implemented | CONNECT, PUBLISH, SUBSCRIBE, PINGREQ, DISCONNECT, QoS 0-2, variable-byte encoding. Test: PASS (7). |
+| **CoAP (RFC 7252)** | `codex/foreword/encode/Coap.codex` | Implemented | GET, POST, PUT, DELETE, ACK, 13 content-formats, option encoding with delta/length nibbles. Test: PASS (6). |
+| **LwM2M** | `codex/foreword/encode/Lwm2m.codex` | Implemented | Object/resource IDs (Device/3, Firmware/5, Temperature/3303), TLV encoding, registration, URI builders. Test: PASS (9). |
+| **OTA Update** | `codex/foreword/core/OtaUpdate.codex` | Implemented | Two-gate verification (Gate A streaming, Gate B 5-phase), A/B boot slots, anti-rollback, abort/rollback state machine. Test: PASS (11, 6 paths). |
+
+### EU Compliance (CRA / ETSI / NIST)
+
+The `ComplianceEvidence` module maps 60 regulatory requirements across
+CRA Annex I (8), ETSI EN 303 645 (40), NISTIR 8259A (5), and IEC 62443
+(7) to the Codex features that satisfy each one -- linear types, effect
+types, signed CDX binaries, capability manifests, LwM2M OTA, punctual
+bounded execution, and the fact-store audit trail. The
+`generate-evidence-report` function produces a text compliance summary
+as a build artifact. Test: PASS (8).
+
+### Punctual Functions (Hard Real-Time)
+
+The `punctual` keyword enforces bounded execution at compile time --
+per-function, opt-in, with instruction-count reporting. Five
+structural checks fire as compile errors:
+
+| Check | CDX Code | Enforces |
+|-------|----------|----------|
+| No heap allocation | CDX6002 | No `list-push`, no record construction in hot path |
+| No recursion | CDX6005 | Tail calls only (proven termination) |
+| No unsafe calls | CDX6001 | Cannot call non-punctual functions |
+| No closures | CDX6003 | No lambda capture (unpredictable allocation) |
+| No bare I/O | CDX6004 | I/O must go through `with-timeout` |
+
+The emitter counts instructions per punctual function and reports
+them (CDX6010). An optional `@budget N` annotation warns when the
+count exceeds the threshold (CDX6011).
+
+```
+punctual classify-threat : SensorReading -> ThreatLevel
+```
+
+The compiler reports: `classify-threat: 115 instructions (44% of
+budget 256)`. No production language has this combination -- Ada
+Ravenscar restricts globally and needs external WCET tools (aiT,
+RapiTime); Rust and MISRA-C have no compile-time execution bound
+mechanism. A full survey of 10 languages and frameworks is in
+`docs/Designs/OS/Active/HardRealtime.md`.
+
+### Codegen Performance
+
+The self-hosted compiler compiles itself (28,000 lines, 54 files) in
+22 seconds on bare metal (codex-vm, x86-64, 8 GB RAM). The full gate
+run -- CDX build, sign, canary, text round-trip, semantic equivalence,
+CDX fixed point, and BVT -- completes in under 140 seconds. The BVT
+(16 tests exercising language features beyond the self-compile) runs
+in 18 seconds.
+
+| Phase | Time |
+|-------|-----:|
+| CDX build (seed to SUT) | 22s |
+| Sign (Ed25519) | 3s |
+| Canary (factorial) | 3s |
+| Text stage 1 + 2 | 48s |
+| Semantic equivalence | 20s |
+| CDX fixed point | 22s |
+| BVT (16 tests) | 18s |
+| **Total** | **~140s** |
+
+The seed is a 2.30 MB CDX binary (content hash
+`6F75DBC7CDF63F48C0B7B58A0188F0C2E87CBEB095FA3214A09D288C9D7C39E3`).
+The compiler is a hard fixed point of itself -- the output of
+self-compilation compiled by itself is byte-identical to itself.
+
+### Codegen vs C — Instruction Count Benchmarks
+
+Four micro-benchmarks comparing Codex codegen output against C
+compilers. Counts are function-body instructions only, from
+disassembly of compiled output. Source: `bench/`.
+
+**x86-64** (Codex bare-metal vs MSVC):
+
+| Benchmark | Codex | C /Od | C /O2 | vs /O2 |
+|-----------|------:|------:|------:|--------|
+| fib(35) — tree-recursive Fibonacci | 21 | 19 | 20 | +1 (+5%) |
+| fact(20) — recursive factorial | 15 | 16 | 15 | tie |
+| gcd(a,b) — Euclidean GCD (TCO loop) | 17 | 18 | 14 | +3 (+21%) |
+| sum(1M) — accumulator loop (TCO) | 14 | 20 | 23 | **-9 (-39%)** |
+
+**ARM64** (Codex cross-compile via plug vs GCC aarch64 -O0):
+
+| Benchmark | Codex | GCC -O0 | vs -O0 |
+|-----------|------:|--------:|--------|
+| fib | 22 | 20 | +2 (+10%) |
+| fact | 13 | 17 | **-4 (-24%)** |
+| gcd | 22 | 21 | +1 (+5%) |
+| sum | 13 | 13 | tie |
+
+**RISC-V RV64** (Codex cross-compile via plug vs GCC riscv64 -O0):
+
+| Benchmark | Codex | GCC -O0 | vs -O0 |
+|-----------|------:|--------:|--------|
+| fib | 20 | 19 | +1 (+5%) |
+| fact | 14 | 14 | tie |
+| gcd | 22 | 22 | tie |
+| sum | 8 | 12 | **-4 (-33%)** |
+
+Codex generates competitive code on all three architectures without
+an optimizer -- the code generator emits these sequences directly.
+On x86-64, sum beats C /O2 by 39% (tight TCO loop vs MSVC unroll);
+gcd beats C /Od and closes on /O2 (frame overhead is the
+remaining gap). On ARM64 and RISC-V, all four benchmarks meet or
+beat GCC -O0 -- fact and sum beat GCC on both cross-targets.
 
 ---
 
 ## CCE — Codex Character Encoding
 
-Codex has its own character encoding (128 codepoints, one byte each),
-frequency-sorted for computation:
+Codex has its own character encoding, designed for computation rather
+than compatibility. Three tiers are implemented:
+
+### Tier 0 (128 codepoints, 1 byte each)
+
+Frequency-sorted for fast arithmetic classification:
 
 | Range | Category | Count |
 |-------|----------|------:|
@@ -694,33 +933,77 @@ frequency-sorted for computation:
 | 97-112 | Accented Latin | 16 |
 | 113-127 | Cyrillic | 15 |
 
-Character classification is arithmetic, not table lookup:
+Classification is arithmetic, not table lookup:
 - `is-letter (c)` = `char-code c >= 13 && char-code c <= 64`
 - `is-digit (c)` = `char-code c >= 3 && char-code c <= 12`
 - `to-upper (c)` = `code-to-char (char-code c + 26)` (case shift is `+26`)
 
+### Tier 1 (2048 codepoints, 2 bytes each)
+
+Multi-byte framing identical to UTF-8 (`110xxxxx 10xxxxxx`). Covers
+every character needed for all 27 EU member state languages — required
+for IoT deployment under the Cyber Resilience Act, where literate
+source must be readable by non-English regulatory reviewers.
+
+| Slice | CCE Range | Script | Coverage |
+|-------|-----------|--------|----------|
+| 0-1 | 128-383 | Latin Extended | FR DE ES PT IT PL CZ SK HU HR TR RO SE NO DK |
+| 2 | 384-511 | Cyrillic Extended | RU UK BG SR MK |
+| 3 | 512-639 | Greek | EL |
+| 4 | 640-767 | Arabic | AR FA UR |
+| 5 | 768-895 | Hebrew | HE YI |
+| 6 | 896-1023 | Devanagari | HI SA MR NE |
+| 7 | 1024-1151 | Thai + Lao | TH LA |
+| 8 | 1152-1279 | Korean Hangul jamo | KO |
+| 9-12 | 1280-1791 | Top CJK | ZH (75% coverage) |
+| 13-14 | 1792-2047 | Japanese kana | JA |
+| 15 | 2048-2175 | Math symbols | Technical |
+
+Unicode conversion uses a 16-entry block-offset table (~48 bytes
+rodata). Lookup: `unicode = slice-base[offset >> 7] + (offset & 127)`.
+No large tables. The lexer accepts Tier 1 characters in identifiers
+and prose with one extra branch per byte (fast path unchanged for
+Tier 0).
+
+### Tier 2 (3-byte encoding)
+
+CJK unified ideographs, full Hangul syllables, Japanese kana extensions,
+and Emoji. 3-byte framing (`1110xxxx 10xxxxxx 10xxxxxx`) covers the
+remaining scripts needed for global deployment. Tier 2 characters are
+accepted in string literals and prose; identifiers remain Tier 0 + Tier 1.
+
+### Design Principles
+
 Unicode exists only at I/O boundaries. Internally, everything is CCE.
+The compiler's own source uses only Tier 0 — the fixed-point property
+is preserved because the input is identical regardless of Tier 1
+support. Existing source files remain valid; new source with Tier 1
+characters requires the updated compiler.
 
 ---
 
 ## Library Quires
 
-Code outside the compiler is organized into **24 quires** (library namespaces)
-with **331 library modules** (238 foreword + 93 OS); **1,126 modules** in the depot including the 54-file compiler, 113 plug files, and 628 application modules:
+Code outside the compiler is organized into **28 quires** (library namespaces)
+with **507 library modules** (360 foreword + 147 OS); the depot includes the 54-file compiler, 134 plug files, and 57 applications:
 
 | Quire | Directory | Count | Highlights |
 |-------|-----------|------:|------------|
-| **Foreword** | `codex/foreword/core/` | 91 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, CCE, MathLib, Path, Format, Hkdf, NumberTheory, Probability, Locale |
+| **Foreword** | `codex/foreword/core/` | 106 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, CCE, MathLib, Path, Format, Hkdf, NumberTheory, Probability, Locale |
 | **Game** | `codex/foreword/game/` | 26 | A*, Dijkstra, DiamondSquare, HexMap, Voronoi, FloodFill, Octree, Quadtree, Bresenham, CellularAutomata, ECS, StateMachine, Tween, TileMap, CardDeck, Rasterizer, Sprite, Scene2D, Color, Raytracer, Klondike, Camera |
 | **AI** | `codex/foreword/ai/` | 19 | Tensor, NeuralNet, Transformer, GGUF, SparseLattice, KNN, DecisionTree, GeneticAlgorithm, Tokenizer, KvCache, Sampling, Optimizer, Attention, Embedding, Loss, DiffusionScheduler |
 | **UI** | `codex/foreword/ui/` | 28 | Theme (3 built-in), Widget, Layout, Render, Surface, Event, Binding, Animation, Icon (5 sizes), Overlay, Sound, Font (CCE), Cursor, Scroll, Focus, Dialog, Orchestrator, Selection, TextField, Clipboard, RichText, Charts, Accessibility |
 | **Signal** | `codex/foreword/signal/` | 14 | FFT, Perlin, Convolution, ADSR Envelope, Resample, Wavelet, Pitch |
 | **Compress** | `codex/foreword/compress/` | 8 | LZ77, Huffman, RLE, Deflate, Gzip, Lz4, Zstd, Brotli |
-| **Encode** | `codex/foreword/encode/` | 32 | JSON, Base64, Hex, URI, UUID, CSV, CRC32, Protobuf, Toml, Cbor, Yaml, MessagePack, Bencode, GrayCode |
+| **Encode** | `codex/foreword/encode/` | 35 | JSON, Base64, Hex, URI, UUID, CSV, CRC32, Protobuf, Toml, Cbor, Yaml, MessagePack, Bencode, GrayCode, Mqtt, Coap, Lwm2m |
 | **Math** | `codex/foreword/math/` | 12 | Quaternion, Matrix4, Bezier, CORDIC, Complex, Spline, Geodesic, LinearAlgebra, Numeric, Decimal |
 | **Sim** | `codex/foreword/sim/` | 7 | Verlet Physics, Collision, ParticleSystem, Steering, SpatialHash |
+| **Punctual** | `codex/foreword/punctual/` | 8 | IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian — every function is `punctual` (no heap, no recursion, bounded instruction count) |
+| **Engine** | `codex/foreword/engine/` | 21 | Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags, AbilitySystem, Signal, DebugDraw, TimeOfDay, AssetTable, EdgeMesh, HelmBridge |
+| **GPU** | `codex/foreword/gpu/` | 10 | Warp primitives, shared memory, atomics, math intrinsics, kernel verifier, vecadd end-to-end test |
+| **Boards** | `codex/foreword/boards/` | 38 | STM32F4, ESP32-C6, RPi4, nRF52840, RP2040, nRF9160, STM32L4, FE310, QEMU virt — register-level HAL drivers |
 | **Net** | `codex/os/net/` | 16 | Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, Syslog, TFTP, HttpClient, Tls (AesGcm + X25519) |
-| **Kernel** | `codex/os/kernel/` | 22 | DiskFacts, DriveManager, Vga, VgaGraphics, Pci, Keyboard, Mouse, BitmapFont, Console, DiagnosticShell, GpuBridge, IdentityManager, Ivshmem, Ne2k, SystemDb, Usb, UsbAudio, UsbMassStorage, UsbVideo, Xhci, VmSerial, VmIde |
+| **Kernel** | `codex/os/kernel/` | 24 | DiskFacts, DriveManager, Vga, VgaGraphics, Pci, Keyboard, Mouse, BitmapFont, Console, DiagnosticShell, GpuBridge, IdentityManager, Ivshmem, Ne2k, SystemDb, Usb, UsbAudio, UsbMassStorage, UsbVideo, Xhci, VmSerial, VmIde |
 | **OS** | `codex/os/*/` | 81 | Trust lattice, verifier, scheduler, IPC, identity, shell, clarifier, replay, observability, dev tools |
 | **Works** | `apps/works/` | 54 | DevConsole, UefiConsole, ConsoleEditor, FirstBoot, AgentRuntime, AgentCoordinator, AgentAcquisition, VmCompile, VmPingpong, VmSweep, Http, WebServer, AnnotationDriver |
 | **Spark** | `apps/spark/` | 89 | 3D modeling, software rasterizer, image editor, animation/skeletal IK, audio/DAW, video compositor, procedural noise, interactive GOP framebuffer UI |
@@ -733,82 +1016,27 @@ of the directory name, capitalized.
 
 ---
 
-## Applications
-
-**628 modules across 46 apps**, all written in Codex, all compiled by the
-seed. Web apps serve generated HTML/JS from CDX servers; WASM apps
-compile through the WASM plug; bare-metal apps render via the GOP
-framebuffer UI foreword.
-
-### Productivity and platform
-
-| App | Modules | What it does |
-|---|---:|---|
-| **CVMM** | 66 | OS desktop environment: window manager, system monitors, productivity suite, sync providers |
-| **Works** | 54 | Dev platform: DevConsole, UEFI console, editor, first-boot wizard, agent runtime/coordinator, HTTP server |
-| **Explorer** | 25 | Parameter explorer: card/character/item designers, settings, workflow exporter |
-| **Browser** | 22 | Content-addressed browser: trust model, media player, data channels |
-| **Helm** | 12 | Operations bridge console: cluster view, mixer, attention routing, voice |
-| **Collab** | 8 | Collaborative editing |
-| **Secrets** | 8 | AES-GCM vaults, PBKDF2, hash-chained audit, team sharing, generator |
-| **FileShare** | 8 | Merkle-verified pieces, Kademlia DHT, Ed25519 announces, rarest-first |
-| **Diagram** | 13 | Flowchart/ERD/UML/network/state-machine editor with routing and undo |
-| **Vision** | 13 | Computer-vision pipeline |
-| **NetTool** | 6 | Packet analyzer, port scanner, group admin |
-| **Workflow** | 4 | State-machine engine: SLA, doc gates, audit; title/claims/mortgage flows |
-| **Designer** | 4 | WYSIWYG UI builder rendering through WASM |
-
-### Business
-
-| App | Modules | What it does |
-|---|---:|---|
-| **ERP** | 23 | GL, AP/AR, Materials, HR, Treasury, Controlling, Sales, Production, Maintenance, Quality, Warehouse, Projects, BW analytics; Real Estate / Banking / Insurance / Utilities / Healthcare verticals |
-| **Market** | 17 | E-commerce: products, cart/tax/payment, shipping, coupons, reviews, digital goods, bundles, subscriptions, auctions (4 types), merchants, drop-shipping, affiliates |
-| **Data** | 42 | Relational DB server: MVCC, WAL, B-trees, query planner, replication, column/graph/time-series stores |
-| **Services** | 5 | System services: TimeService (RTC+NTP+HPET, TOTP), Revocation (trust-lattice evidence) |
-
-### Creative and games
-
-| App | Modules | What it does |
-|---|---:|---|
-| **Spark** | 89 | Creative suite: 3D modeling, CAD workbench, image editor, animation/IK, audio/DAW, video compositor, UV editor -- WebGPU at 120fps via WASM |
-| **Games** | 128 | CodexMagic card platform (engine, server, web portal, clans, marketplace, parental controls), classic board games, AI opponents |
-| **CodexMagic Mobile** | 8 | Mobile client |
-| **MathBook** | 17 | Symbolic CAS: calculus, number theory, circuits, proofs, statistics |
-| **FishTank** | 14 | Boids AI (1000 fish), particles, WebGPU, WASM |
-| **Globe** | 8 | 11 live data feeds + GIS: road network, routing, POIs, geocoding |
-| **Star Atlas** | 7 | Planetarium: 125 deep-sky objects, constellation figures |
-| **Radio** | 3 | DJ console: dual decks, mixer, Web Audio |
-| **Piano** | 1 | Playable piano |
-
-### Page apps (WebApp template)
-
-Twenty single-purpose web apps on the shared WebRuntime/WebTheme/
-WebWidgets quire: news, podcasts, books, recorder, capture, publisher,
-imagetools, fitness, pomodoro, markets, calendar, chat, mail, music,
-notes, weather, tasks, photos, and maps.
-
----
-
 ## Project Structure
 
 ```
 codex/
-  compiler/               Self-hosted compiler (54 files, ~25K lines)
+  compiler/               Self-hosted compiler (54 files, ~28K lines)
   foreword/
-    core/                 Core forewords — data structures, crypto (89 modules)
+    core/                 Core forewords — data structures, crypto (106 modules)
     ai/                   AI — tensors, neural nets, GGUF, transformer (19 modules)
     compress/             Compression — LZ77, Huffman, RLE, Deflate, Zstd, Brotli (8 modules)
-    encode/               Encoding — JSON, Base64, Protobuf, Toml, Cbor, Yaml (32 modules)
+    encode/               Encoding — JSON, Base64, Protobuf, Toml, Cbor, Yaml, MQTT, CoAP (35 modules)
+    engine/               3D Engine — renderer, scene, materials, LOD, culling, audio (21 modules)
     game/                 Game — A*, hex, ECS, physics, terrain (26 modules)
     math/                 Math — quaternions, matrices, Bezier, CORDIC (12 modules)
+    punctual/             Real-time primitives — int, bit, saturate, trig, color (8 modules)
     signal/               Signal — FFT, Perlin, convolution, wavelet (14 modules)
     sim/                  Simulation — physics, collision, particles (7 modules)
     ui/                   UI — themeable widgets, layout, compositor (28 modules)
   os/
     core/                 OS core — shell, registry, clarifier (4 modules)
     dev/                  Developer tools — debugger, inspectors (5 modules)
-    kernel/               Kernel — disk, VGA, USB, PCI, audio, video (22 modules)
+    kernel/               Kernel — disk, VGA, USB, PCI, audio, video (24 modules)
     net/                  Networking — full TCP/IP + protocols (16 modules)
     observe/              Observability — metrics, health, journal (7 modules)
     replay/               Replay — deterministic record/replay (3 modules)
@@ -816,8 +1044,8 @@ codex/
     trust/                Trust — lattice, policy, sessions (11 modules)
     verify/               Verification — 5-phase CDX verifier (5 modules)
   plugs/                  Plug architecture — IR-text-driven emitters
-  test/                   Compiler samples + OS integration tests (211 gate + 400 app tests)
-apps/                     46 applications, 628 modules (see Applications)
+  test/                   Compiler samples + OS integration tests (742 tests)
+apps/                     47 applications, 630 modules (see Applications)
   works/                  Console, agents, VM tools, first boot (54 modules)
   games/                  CodexMagic — card platform, classic games, web portal (128 modules)
   spark/                  Codex.Spark — 3D, CAD, image, animation, audio, video (89 modules)
@@ -830,7 +1058,7 @@ apps/                     46 applications, 628 modules (see Applications)
 annotations/              On-disk annotation sidecars (JSON facts)
 build/                    Build/test harness (PowerShell)
 tools/                    codex-vm, status server, USB writer, VS extensions
-seed/                     Bootstrap seed CDX (~2.1 MB) + UEFI disk image (8 MB)
+seed/                     Bootstrap seed CDX (2.30 MB) + UEFI disk image (8 MB)
 docs/                     Design documents, plans, stories
 old/                      Retired C# reference compiler — historical only
 ```
@@ -851,7 +1079,7 @@ old/                      Retired C# reference compiler — historical only
 | **Networking** | **Full TCP/IP: Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, TLS** | **2026-05-05** |
 | **Real hardware boot** | **"Welcome to Codex" on Asus x86-64 — UEFI PE stub, pure-PS1 toolchain** | **2026-05-07** |
 | **codex-vm** | **WHP VM host (~4500 lines C): PCI, xHCI USB, Intel HDA, HPET, IOAPIC, ACPI, SMBIOS, Bochs VBE, GOP framebuffer, NE2K NIC** | **2026-05-07** |
-| **Plug architecture** | **48 transpiler plugs (Ada → Zig, 14 UI frameworks, 4 binary formats)** | **2026-05-09** |
+| **Plug architecture** | **53 transpiler plugs (Ada → Zig, 14 UI frameworks, GPU PTX + SPIR-V, 4 binary formats)** | **2026-05-09** |
 | **Codex.Spark** | **85-module creative suite on GOP framebuffer** | **2026-05-18** |
 | **Static bounds prover** | **Compiler proves bounded-integer range safety, elides runtime checks** | **2026-05-23** |
 | **Dependent types** | **PropEqTy, Refl, proof erasure, claim/proof/qed** | **2026-05-23** |
@@ -861,8 +1089,19 @@ old/                      Retired C# reference compiler — historical only
 | **For-exprs + phase heap** | **`for x in xs do f x` sugar, CHECK/LOWER heap reduction (~80 MB saved), EOF settle counter, 201/211 tests pass** | **2026-06-02** |
 | **x86-64 codegen optimization** | **Comparison folding, preamble elision, store-load elimination, immediate ops, single-arg mov — fib(35) cut from 107 to 53 instructions. WASM backend + WebGPU 3D. Spark Studio. CodexMagic web platform.** | **2026-06-06** |
 | **Native-class codegen** | **TCO parallel-move shuffle, R8/R9-staged operands, leaf/near-leaf frame elision, IrRemInt + inliner — sum 14 insns (beats C /O2), fact 17, fib 23, gcd 23. Self-verifying fixed point at every step.** | **2026-06-10** |
-| **Application wave** | **628 app modules across 46 apps: ERP suite + 5 verticals, Market e-commerce, Browser, FileShare, Secrets, Diagram, Globe GIS, Star Atlas, MathBook CAS, CVMM desktop, mesh OS (Raft/SWIM), 20 page apps on WebApp template.** | **2026-06-10** |
+| **Application wave** | **630 app modules across 47 apps: ERP suite + 5 verticals, Market e-commerce, Browser, FileShare, Secrets, Diagram, Globe GIS, Star Atlas, MathBook CAS, CVMM desktop, mesh OS (Raft/SWIM), 20 page apps on WebApp template.** | **2026-06-10** |
 | **punctual + unit types + cross-arch** | **Per-function bounded-execution keyword (novel -- no production language has this). Unit types with zero-overhead erasure. ARM64 + RISC-V backend plugs (Hello World on QEMU). IoT protocol stack (MQTT v5, CoAP). Test consolidation (232 -> 137 tests, BVT in 113s).** | **2026-06-13** |
+| **Cross-arch GCC parity** | **ARM64 + RISC-V codegen meets or beats GCC -O0 on all 4 micro-benchmarks. 24 optimization CLs: dest-driven emission, selective pro/epilogue, fused cmp+branch, frameless TCO, identity-return base-chain, 2-arg direct call, mixed TCO. No optimizer -- all emitter-level.** | **2026-06-15** |
+| **SIMD / Vector types** | **`Vector N T` first-class type, SSE2 packed codegen (ADDPD/SUBPD/MULPD/DIVPD), `~` approximate equality operator, CDX2085 (no == on Real), vec-splat/extract/reduce-add builtins, vector operator overloading.** | **2026-06-15** |
+| **GPU plugs** | **Dual-target GPU compilation: PTX plug (NVIDIA) + SPIR-V plug (Vulkan/OpenCL) built and compiling. Device IR emission from compiler. 53 total plugs.** | **2026-06-15** |
+| **Punctual foreword** | **8-chapter `codex.foreword.punctual` quire: IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian. Every function is `punctual`.** | **2026-06-15** |
+| **Game engine foreword** | **21-chapter `codex.foreword.engine` quire: Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags, AbilitySystem, DebugDraw, EdgeMesh.** | **2026-06-16** |
+| **Poisoned compact** | **`__memset` builtin + per-phase poison bytes. Reclaimed memory is poisoned to catch stale-pointer reads immediately instead of silently reading garbage.** | **2026-06-16** |
+| **Number → Real rename** | **`Number` renamed to `Real` across compiler, all plugs, and tests. Qualifier communicates confidence (`Real`, `Real approximate`, `Real guess`), not bit width.** | **2026-06-16** |
+| **VectorMaskTy + comparisons** | **`VectorMask N` type, vector comparison operators (`<`, `>`, `<=`, `>=`), `vec-select` (per-lane conditional). SSE2 CMPPD/MOVMSKPD codegen.** | **2026-06-16** |
+| **SMP + GPU kernels** | **SMP all 5 phases (atomics, per-core bootstrap, work-stealing scheduler, per-core heap, IPI + lock-free channels). GPU K5-K8 (warp, shared memory, atomics, math intrinsics, verifier). `codex.foreword.gpu` quire (10 modules). CCE Tier 2 (CJK/Hangul/Kana/Emoji, 3-byte encoding). Browser all 3 phases (network fetch + page compiler, 19 modules, 5162 lines). 742 tests.** | **2026-06-17** |
+| **Update 25** | **Seed 2.30 MB, 425 library modules across 28 quires (added gpu, boards). VM default 8 GB RAM. Public push.** | **2026-06-18** |
+| **GUI OS + cross-arch** | **GUI shell on bare metal (GuiShell compositor, 7 apps, MutWheel state scheduler, multi-monitor 640x480-1024x768). TrueType font engine (14 CC0 fonts, 4x4 AA). 27 keyboard layouts. ARM64 62 Renode tests, RISC-V 44 Renode tests. All 52 plugs building, 27/27 web apps building, 507 library modules. Mutable records merged. SMP-aware GUI rendering.** | **2026-06-22** |
 
 Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 
@@ -879,14 +1118,18 @@ Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 - [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md) — Foreword quire catalog, library rules
 - [docs/ExaminersAssay.md](docs/ExaminersAssay.md) — Test infrastructure, coverage, known results
 - [docs/TheShimmeringPortal.md](docs/TheShimmeringPortal.md) — Web developer's guide to the UI-to-browser pipeline
+- [docs/KingsAndCourts.md](docs/KingsAndCourts.md) — Hard real-time, EU compliance (CRA/ETSI/IEC), IoT regulatory story
+- [docs/TinkersToolbox.md](docs/TinkersToolbox.md) — Board support package: 9 boards, peripheral drivers, connectivity coverage
+- [docs/Apps.md](docs/Apps.md) — Application catalog with descriptions and READMEs
 
 ---
 
 ## Apps
 
-44 applications built on the Codex stack, from full database servers to
-single-file UI prototypes. Each has a `README.md` with module inventory,
-completeness estimate, and conformance assessment.
+**57 apps**, all written in Codex, all compiled by the seed. 27/27
+web apps build clean through the HTML plug. Bare-metal apps render
+via the GOP framebuffer UI foreword. Each app has a `README.md` with module
+inventory, completeness estimate, and conformance assessment.
 
 **Conformance key**: *Full* = pure Codex, emits through plugs for any
 external format. *Partial* = mostly Codex but has hand-written non-Codex
@@ -894,69 +1137,59 @@ client code or unconnected wiring gaps.
 
 ### Flagship (75-90%)
 
-| App | What | Complete | Conform |
-|-----|------|:--------:|:-------:|
-| [data](apps/data/) | Multi-model database server (OLTP, OLAP, graph, spatial, time-series, full-text) | 90% | Full |
-| [games/classic](apps/games/) | 35 classic board and card games with AI opponents | 90% | Full |
-| [workflow](apps/workflow/) | Long-running business process engine with industry templates | 85% | Full |
-| [diagram](apps/diagram/) | Diagramming editor (flowcharts, ERDs, UML, state machines) with undo/redo | 82% | Full |
-| [designer](apps/designer/) | WYSIWYG UI widget tree builder compiled to WASM | 80% | Full |
-| [helm](apps/helm/) | Scalable comms: The River (auto-clustering chat) + The Bridge (ranked voice) | 78% | Full |
-| [games/codexmagic](apps/games/) | Collectible card game platform: economy, clans, dungeons, multiverse registry | 75% | Full |
-| [cvmm](apps/cvmm/) | Desktop management shell: system managers, fleet/mesh, 11 productivity mini-apps | 75% | Partial |
-| [collab](apps/collab/) | Video collaboration: calls, screen share, meetings, whiteboard, recording | 75% | Full |
-| [mathbook](apps/mathbook/) | Symbolic CAS and interactive math notebook (parse, simplify, differentiate, integrate) | 75% | Full |
+| App | Mod | What | Done | Conf |
+|-----|----:|------|:----:|:----:|
+| [data](apps/data/) | 42 | Multi-model database server (OLTP, OLAP, graph, spatial, time-series, full-text) | 90% | Full |
+| [games](apps/games/) | 128 | CodexMagic card platform + 35 classic board/card games with AI opponents | 90% | Full |
+| [spark](apps/spark/) | 89 | Creative suite: 3D modeling, image editing, animation/IK, audio/DAW, video -- WebGPU via WASM | 85% | Full |
+| [workflow](apps/workflow/) | 4 | Long-running business process engine with SLA, doc gates, industry templates | 85% | Full |
+| [diagram](apps/diagram/) | 13 | Diagramming editor (flowcharts, ERDs, UML, state machines) with undo/redo | 82% | Full |
+| [designer](apps/designer/) | 4 | WYSIWYG UI widget tree builder compiled to WASM | 80% | Full |
+| [weather](apps/weather/) | 1 | Weather dashboard: current, hourly, 7-day, wind chill, heat index, atmospheric | 78% | Full |
+| [notes](apps/notes/) | 1 | Two-pane note-taking with formatting toolbar, tag cycling, archive, duplicate | 78% | Full |
+| [tasks](apps/tasks/) | 1 | Five-column Kanban board with overdue detection, priority/tag editing, delete | 78% | Full |
+| [mail](apps/mail/) | 1 | Three-pane email client with compose, reply, draft save, dynamic unread counts | 78% | Full |
+| [fitness](apps/fitness/) | 1 | Activity rings, workout log, calorie estimation, goal progress, streak counter | 78% | Full |
+| [news](apps/news/) | 1 | RSS/news reader with reading time estimates, share, unread counts, word count | 78% | Full |
+| [books](apps/books/) | 1 | E-book reader with progress bars, reading time, bookmarks, 1-5 star ratings | 78% | Full |
+| [helm](apps/helm/) | 12 | Scalable comms: The River (auto-clustering chat) + The Bridge (ranked voice) | 78% | Full |
+| [music](apps/music/) | 1 | Spotify-style player with now-playing indicator, shuffle/repeat, liked filter | 76% | Full |
+| [calendar](apps/calendar/) | 1 | Month/Week/Day/Agenda with working event creation, input fields, active views | 76% | Full |
+| [capture](apps/capture/) | 1 | Screenshot tool with dynamic annotations, undo/redo stack, tool selection | 76% | Full |
+| [imagetools](apps/imagetools/) | 1 | Image editor with widget-gauge sliders, quality control, active presets | 76% | Full |
+| [piano](apps/piano/) | 1 | Two-octave piano with keyboard input (a-k), ADSR display, metronome, scales | 76% | Full |
+| [maps](apps/maps/) | 1 | Map viewer with cosine-adjusted distance, route summary, layer indicators | 76% | Full |
+| [photos](apps/photos/) | 1 | Photo gallery with slideshow auto-advance, delete confirmation, batch select | 76% | Full |
+| [publisher](apps/publisher/) | 1 | Long-form authoring with word count, TOC, auto-save, version history, tags | 76% | Full |
+| [pomodoro](apps/pomodoro/) | 1 | Focus timer with custom duration, daily goals, break reminders, stats | 76% | Full |
+| [podcasts](apps/podcasts/) | 1 | Podcast client with episode progress, 5-speed playback, download tracking | 76% | Full |
+| [recorder](apps/recorder/) | 1 | Voice recorder with ticking timer, waveform bars, size estimate, rename | 76% | Full |
+| [cvmm](apps/cvmm/) | 66 | Desktop management shell: system managers, fleet/mesh, 11 productivity mini-apps | 75% | Partial |
+| [collab](apps/collab/) | 8 | Video collaboration: calls, screen share, meetings, whiteboard, recording | 75% | Full |
+| [mathbook](apps/mathbook/) | 17 | Symbolic CAS and interactive math notebook (parse, simplify, differentiate, integrate) | 75% | Full |
 
-### Substantial (60-70%)
+| [explorer](apps/explorer/) | 25 | World-building and game-asset design suite with CDX server, workflow export | 75% | Full |
+| [fishtank](apps/fishtank/) | 14 | WebGPU aquarium: boids AI, procedural 3D fish, particles, WASM exports wired | 75% | Full |
+| [nettool](apps/nettool/) | 6 | Network admin toolkit: packet capture, port scanning, mesh admin | 75% | Full |
+| [browser](apps/browser/) | 19 | Bare-metal web browser: TCP fetch, page compiler, content-addressed pages | 75% | Full |
+| [erp](apps/erp/) | 23 | Enterprise resource planning with HTTP server: GL, AP/AR, HR, manufacturing | 75% | Full |
+| [market](apps/market/) | 17 | Self-hosted e-commerce: catalog, cart, checkout, sample DB, multi-vendor | 75% | Full |
+| [radio](apps/radio/) | 3 | Two-deck radio station with transport controls, chat, mixer/EQ | 75% | Full |
+| [secrets](apps/secrets/) | 8 | Encrypted password manager: AES-GCM encrypt/decrypt wired, PBKDF2, DH sharing | 75% | Full |
+| [vision](apps/vision/) | 13 | Organizational intelligence with HTTP API: signal cascade, portfolio health | 75% | Full |
+| [chat](apps/chat/) | 3 | E2E-encrypted messaging with ChatServer API (7 endpoints) | 75% | Full |
+| [starmap](apps/starmap/) | 7 | 3D star map with camera controls: orbit, zoom, fly-to, 80+ celestial objects | 75% | Full |
+| [globe](apps/globe/) | 8 | Earth visualization with routing (extract-path + turn maneuvers), 16 overlays | 75% | Full |
+| [fileshare](apps/fileshare/) | 8 | P2P file sharing with TCP I/O: Merkle pieces, Kademlia DHT, Ed25519 announce | 75% | Full |
+| [works](apps/works/) | 54 | Developer environment with source indexing: UEFI console, repo protocol, agents | 75% | Full |
+| [markets](apps/markets/) | 1 | Financial data dashboard with chart bars: stocks, bonds, commodities, watchlist | 75% | Full |
+| [services](apps/services/) | 5 | Shared system services with account persistence: time, revocation, parental | 75% | Full |
 
-| App | What | Complete | Conform |
-|-----|------|:--------:|:-------:|
-| [explorer](apps/explorer/) | World-building and game-asset design suite with CDX server | 70% | Full |
-| [fishtank](apps/fishtank/) | WebGPU aquarium: boids AI, procedural 3D fish, volumetric lighting, particles | 70% | Partial |
-| [nettool](apps/nettool/) | Network admin toolkit: packet capture, port scanning, mesh admin | 70% | Full |
-| [browser](apps/browser/) | Bare-metal web browser: content-addressed pages, capability tiers, HDA audio | 65% | Full |
-| [erp](apps/erp/) | Enterprise resource planning: GL, AP/AR, HR, manufacturing, compliance | 65% | Full |
-| [market](apps/market/) | Self-hosted e-commerce: catalog, cart, checkout, multi-vendor, auctions | 65% | Partial |
-| [secrets](apps/secrets/) | Encrypted password manager: AES-GCM vaults, PBKDF2, team sharing via DH | 65% | Full |
-| [spark](apps/spark/) | Creative suite: 3D modeling, image editing, animation, audio/DAW, video | 65% | Full |
-| [vision](apps/vision/) | Organizational intelligence: weighted signal cascade, portfolio health | 65% | Full |
-| [chat](apps/chat/) | E2E-encrypted messaging with Signal-style interface | 65% | Partial |
-| [starmap](apps/starmap/) | 3D star map: 80+ celestial objects, constellations, spatial DB, WASM/WebGPU | 65% | Full |
-| [globe](apps/globe/) | Earth visualization with 16 data overlays and Dijkstra turn-by-turn routing | 60% | Partial |
-| [fileshare](apps/fileshare/) | P2P file sharing: Merkle pieces, Kademlia DHT, Ed25519 announce, tit-for-tat | 60% | Full |
-| [works](apps/works/) | Developer environment: UEFI console, repo protocol, build system, AI agents | 60% | Full |
-| [markets](apps/markets/) | Financial data dashboard: stocks, bonds, commodities, watchlist | 60% | Full |
+### Growing (55%)
 
-### Growing (50-59%)
-
-| App | What | Complete | Conform |
-|-----|------|:--------:|:-------:|
-| [codexmagic-mobile](apps/codexmagic-mobile/) | .NET MAUI companion app for CodexMagic | 55% | Partial |
-| [services](apps/services/) | Shared system services: time, revocation, parental controls | 55% | Full |
-| [calendar](apps/calendar/) | Month/Week/Day/Agenda views with mini-calendar | 55% | Full |
-| [tasks](apps/tasks/) | Five-column Kanban board with priority-colored cards | 55% | Partial |
-| [radio](apps/radio/) | Two-deck internet radio station with mixer/crossfader/EQ | 55% | Full |
-| [notes](apps/notes/) | Two-pane note-taking app with folder sidebar | 55% | Partial |
-| [mail](apps/mail/) | Three-pane email client with folder sidebar | 50% | Full |
-| [pomodoro](apps/pomodoro/) | Focus timer with work/break modes and session tracking | 50% | Partial |
-
-### Early (25-45%)
-
-| App | What | Complete | Conform |
-|-----|------|:--------:|:-------:|
-| [news](apps/news/) | RSS/news-feed reader with categorized sidebar | 45% | Partial |
-| [fitness](apps/fitness/) | Activity rings, weekly bar chart, workout history | 45% | Full |
-| [books](apps/books/) | E-book reader with library shelf and reading view | 40% | Full |
-| [music](apps/music/) | Spotify-style music player with album grid and player bar | 40% | Full |
-| [photos](apps/photos/) | Photo gallery with grid, albums, and lightbox | 40% | Partial |
-| [publisher](apps/publisher/) | Long-form content authoring with rich-text editor | 40% | Partial |
-| [capture](apps/capture/) | Screenshot and annotation tool | 35% | Full |
-| [imagetools](apps/imagetools/) | Image editing utility: crop, resize, rotate, adjust, export | 35% | Full |
-| [piano](apps/piano/) | Two-octave virtual piano keyboard | 35% | Partial |
-| [podcasts](apps/podcasts/) | Podcast client with subscription sidebar and playback bar | 35% | Partial |
-| [recorder](apps/recorder/) | Voice recorder with waveform and recording library | 35% | Partial |
-| [weather](apps/weather/) | Weather dashboard: current, hourly, 7-day, atmospheric details | 30% | Full |
-| [maps](apps/maps/) | Map viewer with layer selector and info panel | 25% | Full |
+| App | Mod | What | Done | Conf |
+|-----|----:|------|:----:|:----:|
+| [codexmagic-mobile](apps/codexmagic-mobile/) | 8 | .NET MAUI companion app for CodexMagic | 55% | Partial |
 
 ---
 

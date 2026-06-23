@@ -1,0 +1,295 @@
+Chapter: DiffusionApp
+  cites Guios chapter GuiDisplay
+  cites Guios chapter GuiTimer
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites UI chapter Dropdown
+  cites UI chapter Render
+  cites UI chapter Validation
+  cites UI chapter TextField
+  cites UI chapter SettingsPanel
+  cites UI chapter StatusBadge
+  cites UI chapter CommandPalette
+
+ AssetForge Diffusion UI — Stable Diffusion / FLUX image generation
+ interface for GuiOS. Uses Dropdown widgets for model/sampler/VAE
+ selection, TextField for prompt input, Validation for seed/size
+ fields. Layout: prompt at top, settings left, preview right,
+ status bar at bottom.
+
+Section: Dropdown Definitions
+  df-model-options : List Text
+  df-model-options = ["realisticVision v6", "realisticVision v5.1", "cyberrealisticXL v4", "dreamshaperXL", "flux1-schnell-fp8"]
+
+  df-sampler-options : List Text
+  df-sampler-options = ["Euler", "Euler a", "DPM++ 2M", "DPM++ SDE", "DDIM"]
+
+  df-vae-options : List Text
+  df-vae-options = ["auto", "ae.safetensors", "none"]
+
+  df-lora-options : List Text
+  df-lora-options = ["none", "BookCover_Redmond", "pixel-art-xl", "papercut-xl", "wall_concept"]
+
+  df-model-dropdown : DropdownState
+  df-model-dropdown = dropdown-new "dd-model" df-model-options
+
+  df-sampler-dropdown : DropdownState
+  df-sampler-dropdown = dropdown-with-selected "dd-sampler" df-sampler-options 2
+
+  df-vae-dropdown : DropdownState
+  df-vae-dropdown = dropdown-new "dd-vae" df-vae-options
+
+  df-lora-dropdown : DropdownState
+  df-lora-dropdown = dropdown-new "dd-lora" df-lora-options
+
+Section: Form Validation
+  df-settings-form : FormValidation
+  df-settings-form = form-validation [
+    field-validation "width" [VrRequired, VrPattern "number", VrRange 64 2048],
+    field-validation "height" [VrRequired, VrPattern "number", VrRange 64 2048],
+    field-validation "steps" [VrRequired, VrPattern "number", VrRange 1 150],
+    field-validation "seed" [VrPattern "number"]
+  ]
+
+Section: Settings via SettingsPanel
+  df-settings-spec : SettingsSpec
+  df-settings-spec =
+    let spec = settings-spec "df-settings" "Generation Settings" [
+      sf-dropdown-sel "model" "Model" df-model-options 0,
+      sf-dropdown-sel "sampler" "Sampler" df-sampler-options 2,
+      sf-slider "steps" "Steps" 20 1 50,
+      sf-slider "cfg" "CFG Scale" 7 1 20,
+      sf-number "width" "Width" 512,
+      sf-number "height" "Height" 512,
+      sf-number "seed" "Seed" 42,
+      sf-sep,
+      sf-heading "Post-Processing",
+      sf-dropdown "vae" "VAE" ["auto", "ae.safetensors", "none"],
+      sf-dropdown "lora" "LoRA" ["none", "BookCover_Redmond", "pixel-art-xl", "papercut-xl"],
+      sf-slider "lora-wt" "LoRA Weight" 100 0 200,
+      sf-toggle "hires" "Hires Fix" False
+    ]
+    in settings-with-validation spec df-settings-form
+
+  df-settings-widget : WidgetNode
+  df-settings-widget = widget-set-min (settings-widget df-settings-spec) df-settings-w 0
+
+Section: Command Palette
+  df-palette : PaletteState
+  df-palette = palette-new "df-pal" [
+    palette-command "gen" "Generate" "Enter" "action" 1,
+    palette-command "stop" "Stop" "Esc" "action" 2,
+    palette-command "seed-rand" "Random seed" "r" "action" 3,
+    palette-command "save" "Save image" "s" "action" 4,
+    palette-command "model-next" "Next model" "m" "nav" 5,
+    palette-command "sampler-next" "Next sampler" "n" "nav" 6
+  ]
+
+Section: Layout Constants
+  df-prompt-h : Integer = 50
+  df-settings-w : Integer = 160
+  df-preview-pad : Integer = 4
+  df-status-h : Integer = 22
+  df-btn-w : Integer = 70
+  df-btn-h : Integer = 22
+  df-slider-h : Integer = 14
+  df-field-h : Integer = 18
+  df-row-gap : Integer = 20
+
+Section: Palette
+  df-bg : Integer = #0F1219
+  df-panel : Integer = #1A1F2E
+  df-panel-border : Integer = #2D3548
+  df-input-bg : Integer = #0D1117
+  df-input-border : Integer = #30363D
+  df-btn-gen : Integer = #7C3AED
+  df-btn-gen-hover : Integer = #6D28D9
+  df-btn-stop : Integer = #DC2626
+  df-slider-bg : Integer = #374151
+  df-slider-fill : Integer = #3B82F6
+  df-slider-knob : Integer = #E5E7EB
+  df-preview-bg : Integer = #111827
+  df-progress-bg : Integer = #1F2937
+  df-progress-fill : Integer = #10B981
+  df-tab-active : Integer = #3B82F6
+  df-tab-inactive : Integer = #374151
+  df-label : Integer = #9CA3AF
+  df-value : Integer = #E5E7EB
+  df-prompt-fg : Integer = #F9FAFB
+  df-neg-fg : Integer = #F87171
+  df-dim : Integer = #6B7280
+
+Section: Draw Main View
+  draw-view-diffusion : GopBuf, ShellUiState -> Integer
+  draw-view-diffusion (gb) (st) =
+    let x = work-x
+    in let wh = st.su-wheel
+    in let dummy = draw-win gb wh x 4 work-w 436 "AssetForge"
+    in let dummy2 = df-draw-tabs gb wh x
+    in let dummy3 = df-draw-prompt gb wh x
+    in let dummy4 = df-draw-settings gb wh x
+    in let dummy5 = df-draw-preview gb wh x st
+    in df-draw-status gb wh x st
+
+Section: Tabs (txt2img / img2img / inpaint / upscale)
+  df-draw-tabs : GopBuf, MutWheel, Integer -> Integer
+  df-draw-tabs (gb) (wh) (x) =
+    let y = 26
+    in let tab = mw-get-app-s0 wh
+    in let dummy = df-draw-tab gb wh (x + 4) y "txt2img" (tab == 0) 0
+    in let dummy2 = df-draw-tab gb wh (x + 74) y "img2img" (tab == 1) 1
+    in let dummy3 = df-draw-tab gb wh (x + 144) y "inpaint" (tab == 2) 2
+    in let dummy4 = df-draw-tab gb wh (x + 214) y "upscale" (tab == 3) 3
+    in gop-buf-hline gb (x + 4) (x + work-w - 4) (y + 18) df-panel-border
+
+  df-draw-tab : GopBuf, MutWheel, Integer, Integer, Text, Boolean, Integer -> Integer
+  df-draw-tab (gb) (wh) (x) (y) (label) (active) (idx) =
+    let bg = if active then df-tab-active else df-tab-inactive
+    in let fg = if active then df-value else df-dim
+    in let dummy = gop-buf-rect gb x y 66 18 bg
+    in gop-buf-put-text-role gb wh (x + 6) (y + 2) label fg font-role-sans
+
+Section: Prompt Area
+  df-draw-prompt : GopBuf, MutWheel, Integer -> Integer
+  df-draw-prompt (gb) (wh) (x) =
+    let py = 48
+    in let pw = work-w - 8 - df-btn-w - 4
+    in let dummy = gop-buf-put-text-role gb wh (x + 6) py "Prompt" df-label font-role-sans
+    in let dummy2 = gop-buf-rect gb (x + 4) (py + 14) pw 20 df-input-bg
+    in let dummy3 = gop-buf-outline gb (x + 4) (py + 14) pw 20 df-input-border
+    in let dummy4 = gop-buf-put-text-role gb wh (x + 8) (py + 16) "a yellow rubber duck floating on a pond" df-prompt-fg font-role-mono
+    in let dummy5 = gop-buf-put-text-role gb wh (x + 6) (py + 38) "Negative" df-label font-role-sans
+    in let dummy6 = gop-buf-rect gb (x + 4) (py + 52) pw 20 df-input-bg
+    in let dummy7 = gop-buf-outline gb (x + 4) (py + 52) pw 20 df-input-border
+    in let dummy8 = gop-buf-put-text-role gb wh (x + 8) (py + 54) "blurry, low quality, deformed" df-neg-fg font-role-mono
+    in let bx = x + pw + 8
+    in let dummy9 = gop-buf-rect gb bx (py + 14) df-btn-w 24 df-btn-gen
+    in let dummy10 = gop-buf-put-text-role gb wh (bx + 8) (py + 18) "Generate" df-value font-role-sans
+    in let dummy11 = gop-buf-rect gb bx (py + 44) df-btn-w 24 df-btn-stop
+    in gop-buf-put-text-role gb wh (bx + 18) (py + 48) "Stop" df-value font-role-sans
+
+Section: Settings Panel (left side below prompt)
+  df-draw-settings : GopBuf, MutWheel, Integer -> Integer
+  df-draw-settings (gb) (wh) (x) =
+    let sy = 126
+    in let sw = df-settings-w
+    in let dummy = gop-buf-rect gb (x + 4) sy sw 296 df-panel
+    in let dummy2 = gop-buf-outline gb (x + 4) sy sw 296 df-panel-border
+    in let dummy3 = gop-buf-put-text-role gb wh (x + 8) (sy + 4) "Generation Settings" df-label font-role-sans
+    in let dummy4 = gop-buf-hline gb (x + 8) (x + sw) (sy + 20) df-panel-border
+    in let row = sy + 26
+    in let dummy5 = df-draw-dropdown gb wh (x + 8) row "Model" "realisticVision v6" sw
+    in let dummy6 = df-draw-dropdown gb wh (x + 8) (row + df-row-gap * 1) "Sampler" "DPM++ 2M" sw
+    in let dummy7 = df-draw-slider gb wh (x + 8) (row + df-row-gap * 2) "Steps" 20 1 50 sw
+    in let dummy8 = df-draw-slider gb wh (x + 8) (row + df-row-gap * 3) "CFG Scale" 7 1 20 sw
+    in let dummy9 = df-draw-field gb wh (x + 8) (row + df-row-gap * 4) "Width" "512" sw
+    in let dummy10 = df-draw-field gb wh (x + 8) (row + df-row-gap * 5) "Height" "512" sw
+    in let dummy11 = df-draw-field gb wh (x + 8) (row + df-row-gap * 6) "Seed" "42" sw
+    in let dummy12 = gop-buf-hline gb (x + 8) (x + sw) (row + df-row-gap * 7 + 2) df-panel-border
+    in let dummy13 = df-draw-dropdown gb wh (x + 8) (row + df-row-gap * 7 + 6) "VAE" "auto" sw
+    in let dummy14 = df-draw-dropdown gb wh (x + 8) (row + df-row-gap * 8 + 6) "LoRA" "none" sw
+    in let dummy15 = df-draw-slider gb wh (x + 8) (row + df-row-gap * 9 + 6) "LoRA wt" 1000 0 2000 sw
+    in let dummy16 = gop-buf-hline gb (x + 8) (x + sw) (row + df-row-gap * 10 + 8) df-panel-border
+    in let dummy17 = gop-buf-put-text-role gb wh (x + 8) (row + df-row-gap * 10 + 12) "Hires Fix" df-label font-role-sans
+    in let dummy18 = gop-buf-rect gb (x + sw - 28) (row + df-row-gap * 10 + 12) 20 12 df-slider-bg
+    in gop-buf-rect gb (x + sw - 28) (row + df-row-gap * 10 + 12) 10 12 df-slider-fill
+
+Section: Preview Area (right side)
+  df-draw-preview : GopBuf, MutWheel, Integer, ShellUiState -> Integer
+  df-draw-preview (gb) (wh) (x) (st) =
+    let px = x + df-settings-w + 12
+    in let py = 126
+    in let pw = work-w - df-settings-w - 16
+    in let ph = 272
+    in let dummy = gop-buf-rect gb px py pw ph df-preview-bg
+    in let dummy2 = gop-buf-outline gb px py pw ph df-panel-border
+    in let cx = px + pw / 2
+    in let cy = py + ph / 2
+    in let step = mw-get-app-s1 wh
+    in if step > 0 then df-draw-generating gb wh px py pw ph step
+    else df-draw-placeholder gb wh px py pw ph
+
+  df-draw-placeholder : GopBuf, MutWheel, Integer, Integer, Integer, Integer -> Integer
+  df-draw-placeholder (gb) (wh) (px) (py) (pw) (ph) =
+    let cx = px + pw / 2 - 54
+    in let cy = py + ph / 2 - 8
+    in let dummy = gop-buf-put-text-role gb wh cx cy "No image yet" df-dim font-role-sans
+    in let dummy2 = gop-buf-put-text-role gb wh (cx - 14) (cy + 20) "Press Generate to start" df-dim font-role-sans
+    in let dummy3 = df-draw-duck-outline gb (px + pw / 2 - 20) (py + ph / 2 - 50) df-panel-border
+    in 0
+
+  df-draw-generating : GopBuf, MutWheel, Integer, Integer, Integer, Integer, Integer -> Integer
+  df-draw-generating (gb) (wh) (px) (py) (pw) (ph) (step) =
+    let cx = px + pw / 2
+    in let cy = py + ph / 2
+    in let dummy = gop-buf-put-text-role gb wh (cx - 40) (cy - 8) "Generating..." df-value font-role-sans
+    in let bar-w = pw - 40
+    in let bar-x = px + 20
+    in let bar-y = cy + 16
+    in let fill = bar-w * step / 20
+    in let dummy2 = gop-buf-rect gb bar-x bar-y bar-w 8 df-progress-bg
+    in let dummy3 = gop-buf-rect gb bar-x bar-y fill 8 df-progress-fill
+    in gop-buf-put-text-role gb wh (bar-x + bar-w + 4) (bar-y - 4) (show step & "/20") df-dim font-role-mono
+
+Section: Duck Outline (placeholder icon)
+  df-draw-duck-outline : GopBuf, Integer, Integer, Integer -> Integer
+  df-draw-duck-outline (gb) (x) (y) (color) =
+    let dummy = gop-buf-rect gb (x + 12) y 16 12 color
+    in let dummy2 = gop-buf-rect gb (x + 8) (y + 8) 24 16 color
+    in let dummy3 = gop-buf-rect gb x (y + 16) 40 20 color
+    in let dummy4 = gop-buf-rect gb (x + 4) (y + 36) 32 8 color
+    in let dummy5 = gop-buf-rect gb (x + 28) (y + 4) 8 4 color
+    in 0
+
+Section: Status Bar
+  df-draw-status : GopBuf, MutWheel, Integer, ShellUiState -> Integer
+  df-draw-status (gb) (wh) (x) (st) =
+    let sy = 424
+    in let dummy = gop-buf-rect gb (x + 4) sy (work-w - 8) df-status-h df-panel
+    in let dummy2 = gop-buf-outline gb (x + 4) sy (work-w - 8) df-status-h df-panel-border
+    in let step = mw-get-app-s1 wh
+    in let model-txt = "realisticVision v6"
+    in let status-txt = if step > 0 then "Generating step " & show step & "/20" else "Ready"
+    in let status-col = if step > 0 then df-progress-fill else df-dim
+    in let dummy3 = gop-buf-put-text-role gb wh (x + 8) (sy + 4) status-txt status-col font-role-mono
+    in let dummy4 = gop-buf-put-text-role gb wh (x + 260) (sy + 4) model-txt df-dim font-role-mono
+    in let gpu-txt = "RTX 4060 Ti 16GB"
+    in gop-buf-put-text-role gb wh (x + work-w - 150) (sy + 4) gpu-txt df-dim font-role-mono
+
+Section: UI Widgets
+  df-draw-dropdown : GopBuf, MutWheel, Integer, Integer, Text, Text, Integer -> Integer
+  df-draw-dropdown (gb) (wh) (x) (y) (label) (value) (panel-w) =
+    let vw = panel-w - 12
+    in let dummy = gop-buf-put-text-role gb wh x y label df-label font-role-sans
+    in let dummy2 = gop-buf-rect gb x (y + 12) (vw - 4) df-field-h df-input-bg
+    in let dummy3 = gop-buf-outline gb x (y + 12) (vw - 4) df-field-h df-input-border
+    in let dummy4 = gop-buf-put-text-role gb wh (x + 4) (y + 13) value df-value font-role-mono
+    in gop-buf-put-text-role gb wh (x + vw - 18) (y + 13) "v" df-dim font-role-mono
+
+  df-draw-slider : GopBuf, MutWheel, Integer, Integer, Text, Integer, Integer, Integer, Integer -> Integer
+  df-draw-slider (gb) (wh) (x) (y) (label) (value) (lo) (hi) (panel-w) =
+    let vw = panel-w - 12
+    in let dummy = gop-buf-put-text-role gb wh x y label df-label font-role-sans
+    in let val-text = show value
+    in let dummy2 = gop-buf-put-text-role gb wh (x + vw - 30) y val-text df-value font-role-mono
+    in let bar-y = y + 14
+    in let bar-w = vw - 4
+    in let fill-frac = if hi == lo then 0 else (value - lo) * bar-w / (hi - lo)
+    in let dummy3 = gop-buf-rect gb x bar-y bar-w df-slider-h df-slider-bg
+    in let dummy4 = gop-buf-rect gb x bar-y fill-frac df-slider-h df-slider-fill
+    in let knob-x = x + fill-frac - 3
+    in let knob-x2 = if knob-x < x then x else knob-x
+    in gop-buf-rect gb knob-x2 (bar-y - 1) 6 (df-slider-h + 2) df-slider-knob
+
+  df-draw-field : GopBuf, MutWheel, Integer, Integer, Text, Text, Integer -> Integer
+  df-draw-field (gb) (wh) (x) (y) (label) (value) (panel-w) =
+    let vw = panel-w - 12
+    in let dummy = gop-buf-put-text-role gb wh x y label df-label font-role-sans
+    in let fw = 50
+    in let fx = x + vw - fw - 4
+    in let dummy2 = gop-buf-rect gb fx (y - 1) fw df-field-h df-input-bg
+    in let dummy3 = gop-buf-outline gb fx (y - 1) fw df-field-h df-input-border
+    in gop-buf-put-text-role gb wh (fx + 4) y value df-value font-role-mono
+
+Page 1
