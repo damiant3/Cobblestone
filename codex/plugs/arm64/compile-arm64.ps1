@@ -12,7 +12,7 @@
 param(
     [Parameter(Mandatory=$true)] [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
-    [int]$MemMB = 4096
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -55,7 +55,7 @@ for ($wi = 0; $wi -lt [Math]::Min(64, $rawWire.Length - 12); $wi++) {
     $cl = [BitConverter]::ToInt32($rawWire, $wi)
     $dl = [BitConverter]::ToInt32($rawWire, $wi + 4)
     $fc = [BitConverter]::ToInt32($rawWire, $wi + 8)
-    if ($cl -gt 0 -and $cl -lt 1000000 -and $dl -ge 0 -and $dl -lt 100000 -and $fc -gt 0 -and $fc -lt 200 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64) {
+    if ($cl -gt 0 -and $cl -lt 16000000 -and $dl -ge 0 -and $dl -lt 1000000 -and $fc -gt 0 -and $fc -lt 10000 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64) {
         $wireOff = $wi; break
     }
 }
@@ -74,21 +74,26 @@ $code = New-Object byte[] $codeLen
 $data = New-Object byte[] $dataLen
 [Array]::Copy($wireBytes, $dataStart, $data, 0, $dataLen)
 
-# Parse function table to find entry point offset
+# Parse function table: extract entry point and build symbol map.
 $funcOff = $dataStart + $dataLen
 $entryOffset = 0
-$off = $funcOff
+$funcEntries = [System.Collections.Generic.List[object]]::new()
+$pos = $funcOff
 for ($fi = 0; $fi -lt $funcCount; $fi++) {
-    $nameLen = [BitConverter]::ToInt16($wireBytes, $off)
-    $nameChars = [char[]]::new($nameLen)
+    if ($pos + 6 -gt $wireBytes.Length) { break }
+    $nameLen = [BitConverter]::ToInt16($wireBytes, $pos)
+    $sb = [System.Text.StringBuilder]::new($nameLen)
     for ($ci = 0; $ci -lt $nameLen; $ci++) {
-        $cce = $wireBytes[$off + 2 + $ci]
-        $nameChars[$ci] = if ($cce -lt $script:CceToUnicode.Length) { [char]$script:CceToUnicode[$cce] } else { [char]63 }
+        $cce = $wireBytes[$pos + 2 + $ci]
+        if ($cce -lt $script:CceToUnicode.Length) {
+            [void]$sb.Append([char]$script:CceToUnicode[$cce])
+        } else { [void]$sb.Append('?') }
     }
-    $name = [string]::new($nameChars)
-    $funcOffset = [BitConverter]::ToInt32($wireBytes, $off + 2 + $nameLen)
-    if ($name -eq '__start') { $entryOffset = $funcOffset }
-    $off += 2 + $nameLen + 4
+    $fname = $sb.ToString()
+    $foff = [BitConverter]::ToInt32($wireBytes, $pos + 2 + $nameLen)
+    if ($fi -eq 0) { $entryOffset = $foff }
+    $funcEntries.Add(@{ Name = $fname; Offset = $foff })
+    $pos = $pos + 2 + $nameLen + 4
 }
 
 # Build ELF64 (minimal: single LOAD segment)
@@ -155,5 +160,19 @@ $bw.Flush()
 [System.IO.File]::WriteAllBytes($Out, $elf.ToArray())
 $bw.Close()
 
+# Write symbol map
+$mapFile = [System.IO.Path]::ChangeExtension($Out, '.map')
+$mapLines = [System.Collections.Generic.List[string]]::new()
+$mapLines.Add('# ARM64 Symbol Map')
+$mapLines.Add('# Address         Size  Name')
+for ($mi = 0; $mi -lt $funcEntries.Count; $mi++) {
+    $fe = $funcEntries[$mi]
+    [uint64]$addr = $loadAddr + [uint64]$textStart + [uint64]$fe.Offset
+    $nextOff = if ($mi + 1 -lt $funcEntries.Count) { $funcEntries[$mi + 1].Offset } else { $codeLen }
+    $fsize = $nextOff - $fe.Offset
+    $mapLines.Add("0x$($addr.ToString('X8').PadLeft(8,'0')) $fsize $($fe.Name)")
+}
+[System.IO.File]::WriteAllLines($mapFile, $mapLines)
+
 $sz = (Get-Item $Out).Length
-Write-Host "[arm64-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')))"
+Write-Host "[arm64-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')), map=$mapFile)"

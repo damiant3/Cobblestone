@@ -338,6 +338,47 @@ Write conversion functions manually:
   minute-to-second (m) = Second (m * 60)
 ```
 
+## Unit Families
+
+A `unit family` declaration creates a set of related units that share
+a common base and convert automatically at construction time. The
+family name is the type; member constructors multiply by their factor.
+
+```
+  Duration = unit family Nanosecond
+    Nanosecond = 1
+    Microsecond = 1000
+    Millisecond = 1000000
+    Second = 1000000000
+```
+
+Each member becomes a constructor function: `Second 5` produces
+`5000000000` (5 * 1,000,000,000 nanoseconds). The family type
+(`Duration`) is a `unit Integer` at runtime — zero overhead.
+
+```
+  timeout : Duration
+  timeout = Second 5
+
+  precise : Duration
+  precise = Microsecond 250
+```
+
+Extraction functions are synthesized automatically:
+`Duration-to-Second : Duration -> Integer` divides by the factor.
+
+All members share the same underlying type, so arithmetic works
+across units: `Second 1 + Millisecond 500` = `1500000000` nanoseconds.
+
+Families are organized by scale to avoid 64-bit overflow. Human-scale
+durations (nanoseconds through hours) share `Duration`. Calendar-scale
+durations (seconds through centuries) share `LongDuration`. The
+standard families are defined in `codex/foreword/core/Units.codex`.
+
+The desugarer erases `unit family` into a standard `unit Integer`
+type plus constructor and extractor functions. Downstream phases
+(type checker, IR, codegen) see only the erased form.
+
 ## Punctual Functions
 
 A function marked `punctual` is proven to have bounded execution

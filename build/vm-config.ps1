@@ -235,6 +235,25 @@ function Read-VmReady {
     return $false
 }
 
+function Stop-VmGraceful {
+    param([int]$ProcessId, [int]$TimeoutMs = 5000)
+    $evtName = "Global\CodexVmShutdown_$ProcessId"
+    $evt = $null
+    try { $evt = [System.Threading.EventWaitHandle]::OpenExisting($evtName) } catch {}
+    if ($evt) {
+        $evt.Set() | Out-Null
+        $evt.Dispose()
+        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if ($proc -and -not $proc.HasExited) { $proc.WaitForExit($TimeoutMs) | Out-Null }
+        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if ($proc -and -not $proc.HasExited) {
+            try { Stop-Process -Id $ProcessId -Force -ErrorAction Stop } catch {}
+        }
+    } else {
+        try { Stop-Process -Id $ProcessId -Force -ErrorAction Stop } catch {}
+    }
+}
+
 function Close-Vm {
     param($Conn, $Process)
     if ($Conn) {
@@ -244,7 +263,7 @@ function Close-Vm {
     if ($Process -and -not $Process.HasExited) {
         for ($i = 0; $i -lt 50 -and -not $Process.HasExited; $i++) { Start-Sleep -Milliseconds 100 }
         if (-not $Process.HasExited) {
-            try { Stop-Process -Id $Process.Id -Force -ErrorAction Stop } catch {}
+            Stop-VmGraceful -ProcessId $Process.Id
         }
     }
 }
@@ -252,7 +271,7 @@ function Close-Vm {
 function Start-VmRun {
     param(
         [string]$Kernel, [int]$ConnectTimeoutSec = 30,
-        [int]$MemMB = 8192, [int]$PCore = 1, [string[]]$ExtraArgs = @()
+        [int]$MemMB = 3072, [int]$PCore = 1, [string[]]$ExtraArgs = @()
     )
     if ($script:UseCodexVm) { return Start-CodexVmRun @PSBoundParameters }
     if (-not $script:FallbackVmBin) { Write-Host "No fallback VM"; return $null }
@@ -275,7 +294,7 @@ function Start-VmRun {
         if ($proc.HasExited) { continue }
         $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec
         if ($conn) { return @{ Process = $proc; Conn = $conn; StdoutFile = $stdoutFile; StderrFile = $stderrFile } }
-        try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
+        Stop-VmGraceful -ProcessId $proc.Id -TimeoutMs 3000
         Start-Sleep -Milliseconds 500
     }
     Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
@@ -285,7 +304,7 @@ function Start-VmRun {
 function Start-CodexVmRun {
     param(
         [string]$Kernel, [int]$ConnectTimeoutSec = 30,
-        [int]$MemMB = 8192, [int]$PCore = 1, [string[]]$ExtraArgs = @()
+        [int]$MemMB = 3072, [int]$PCore = 1, [string[]]$ExtraArgs = @()
     )
     $stdoutFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
@@ -302,7 +321,7 @@ function Start-CodexVmRun {
         if ($proc.HasExited) { continue }
         $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec
         if ($conn) { return @{ Process = $proc; Conn = $conn; StdoutFile = $stdoutFile; StderrFile = $stderrFile } }
-        try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
+        Stop-VmGraceful -ProcessId $proc.Id -TimeoutMs 3000
         Start-Sleep -Milliseconds 500
     }
     Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue

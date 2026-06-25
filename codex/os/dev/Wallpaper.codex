@@ -1,0 +1,167 @@
+Chapter: Wallpaper
+  cites Game chapter Color
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Desktop wallpaper manager. Supports solid color, two-color gradient,
+ procedural patterns (grid, dots, stripes, checkerboard, diamond),
+ and future image/slideshow modes. The compositor draws the wallpaper
+ as the bottommost surface before any windows.
+
+Section: Wallpaper Mode
+
+  WallpaperMode =
+    | WpSolid
+    | WpGradientV
+    | WpGradientH
+    | WpPattern (Text)
+    | WpImage (Text)
+    | WpSlideshow
+
+  wallpaper-mode-label : WallpaperMode -> Text
+  wallpaper-mode-label (m) = when m
+    is WpSolid -> "Solid Color"
+    is WpGradientV -> "Vertical Gradient"
+    is WpGradientH -> "Horizontal Gradient"
+    is WpPattern (name) -> "Pattern: " & name
+    is WpImage (path) -> "Image"
+    is WpSlideshow -> "Slideshow"
+
+Section: Pattern
+
+  PatternKind =
+    | PatGrid
+    | PatDots
+    | PatStripes
+    | PatCheckerboard
+    | PatDiamond
+    | PatHexagons
+    | PatWaves
+
+  pattern-label : PatternKind -> Text
+  pattern-label (p) = when p
+    is PatGrid -> "Grid"
+    is PatDots -> "Dots"
+    is PatStripes -> "Stripes"
+    is PatCheckerboard -> "Checkerboard"
+    is PatDiamond -> "Diamond"
+    is PatHexagons -> "Hexagons"
+    is PatWaves -> "Waves"
+
+Section: State
+
+  WallpaperState = record {
+    wp-mode : WallpaperMode,
+    wp-color1 : Integer,
+    wp-color2 : Integer,
+    wp-pattern : PatternKind,
+    wp-pattern-scale : Integer,
+    wp-image-path : Text,
+    wp-slideshow-interval : Integer,
+    wp-slideshow-index : Integer,
+    wp-slideshow-paths : List Text,
+    wp-slideshow-count : Integer
+  }
+
+  wallpaper-new : WallpaperState
+  wallpaper-new = WallpaperState {
+    wp-mode = WpSolid,
+    wp-color1 = #1A1A2E,
+    wp-color2 = #16213E,
+    wp-pattern = PatGrid,
+    wp-pattern-scale = 32,
+    wp-image-path = "",
+    wp-slideshow-interval = 300,
+    wp-slideshow-index = 0,
+    wp-slideshow-paths = [],
+    wp-slideshow-count = 0
+  }
+
+Section: Configuration
+
+  wp-set-solid : WallpaperState, Integer -> WallpaperState
+  wp-set-solid (st) (color) =
+    __record-set (__record-set st "wp-mode" WpSolid) "wp-color1" color
+
+  wp-set-gradient-v : WallpaperState, Integer, Integer -> WallpaperState
+  wp-set-gradient-v (st) (top) (bottom) =
+    __record-set (__record-set (__record-set st "wp-mode" WpGradientV) "wp-color1" top) "wp-color2" bottom
+
+  wp-set-gradient-h : WallpaperState, Integer, Integer -> WallpaperState
+  wp-set-gradient-h (st) (left) (right) =
+    __record-set (__record-set (__record-set st "wp-mode" WpGradientH) "wp-color1" left) "wp-color2" right
+
+  wp-set-pattern : WallpaperState, PatternKind, Integer, Integer -> WallpaperState
+  wp-set-pattern (st) (pat) (fg) (bg) =
+    __record-set (__record-set (__record-set (__record-set st "wp-mode" (WpPattern (pattern-label pat))) "wp-pattern" pat) "wp-color1" fg) "wp-color2" bg
+
+  wp-set-pattern-scale : WallpaperState, Integer -> WallpaperState
+  wp-set-pattern-scale (st) (scale) =
+    let clamped = if scale < 8 then 8 else if scale > 128 then 128 else scale
+    in __record-set st "wp-pattern-scale" clamped
+
+  wp-set-slideshow-interval : WallpaperState, Integer -> WallpaperState
+  wp-set-slideshow-interval (st) (seconds) =
+    let clamped = if seconds < 10 then 10 else if seconds > 86400 then 86400 else seconds
+    in __record-set st "wp-slideshow-interval" clamped
+
+  wp-slideshow-advance : WallpaperState -> WallpaperState
+  wp-slideshow-advance (st) =
+    if st.wp-slideshow-count == 0 then st
+    else let next = st.wp-slideshow-index + 1
+    in let wrapped = if next >= st.wp-slideshow-count then 0 else next
+    in __record-set st "wp-slideshow-index" wrapped
+
+Section: Preset Wallpapers
+
+  wp-preset-midnight : WallpaperState
+  wp-preset-midnight = wp-set-gradient-v wallpaper-new #0A0A1A #1A1A3E
+
+  wp-preset-dawn : WallpaperState
+  wp-preset-dawn = wp-set-gradient-v wallpaper-new #2C1654 #D4547A
+
+  wp-preset-ocean : WallpaperState
+  wp-preset-ocean = wp-set-gradient-v wallpaper-new #0F2027 #2C5364
+
+  wp-preset-forest : WallpaperState
+  wp-preset-forest = wp-set-gradient-v wallpaper-new #0B3D0B #1A5C1A
+
+  wp-preset-carbon : WallpaperState
+  wp-preset-carbon = wp-set-pattern wallpaper-new PatGrid #222222 #1A1A1A
+
+  wp-preset-blueprint : WallpaperState
+  wp-preset-blueprint = wp-set-pattern wallpaper-new PatGrid #2A4A7F #1E3A6A
+
+Section: Widget Building
+
+  wp-settings-widget : WallpaperState -> WidgetNode
+  wp-settings-widget (st) =
+    let title = widget-label "wp-title" "Wallpaper"
+    in let mode-label = widget-label "wp-mode" ("Mode: " & wp-current-mode-label st)
+    in let mode-btns = widget-panel "wp-modes" DirRow 4 [
+      widget-button "wp-btn-solid" "Solid",
+      widget-button "wp-btn-grad-v" "Gradient V",
+      widget-button "wp-btn-grad-h" "Gradient H",
+      widget-button "wp-btn-pattern" "Pattern"
+    ]
+    in let presets = widget-panel "wp-presets" DirRow 4 [
+      widget-button "wp-pre-midnight" "Midnight",
+      widget-button "wp-pre-dawn" "Dawn",
+      widget-button "wp-pre-ocean" "Ocean",
+      widget-button "wp-pre-forest" "Forest",
+      widget-button "wp-pre-carbon" "Carbon",
+      widget-button "wp-pre-blueprint" "Blueprint"
+    ]
+    in let preview = widget-custom "wp-preview" "wallpaper-preview" 200 120
+    in widget-panel "wp-settings" DirColumn 4 [title, mode-label, mode-btns, presets, preview]
+
+  wp-current-mode-label : WallpaperState -> Text
+  wp-current-mode-label (st) = wallpaper-mode-label (st.wp-mode)
+
+Section: Formatting
+
+  format-wallpaper : WallpaperState -> Text
+  format-wallpaper (st) =
+    wp-current-mode-label st & " c1=#" & show (st.wp-color1) & " c2=#" & show (st.wp-color2)
+
+Page 1

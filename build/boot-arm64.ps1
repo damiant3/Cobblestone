@@ -78,7 +78,7 @@ $listener.Start()
 
 $stderrFile = [System.IO.Path]::GetTempFileName()
 try {
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PePlugCdx, '-mem', '4096', '-headless') `
+    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PePlugCdx, '-mem', '3072', '-headless') `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -159,7 +159,7 @@ try {
     $tcpClient.Close()
 } finally {
     if ($proc -and -not $proc.HasExited) {
-        try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
+        Stop-VmGraceful -ProcessId $proc.Id
     }
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
 }

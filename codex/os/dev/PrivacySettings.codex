@@ -1,0 +1,227 @@
+Chapter: PrivacySettings
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Per-app privacy permissions. Controls access to camera, microphone,
+ location, clipboard, and network per application. Tracks permission
+ grants with timestamps for audit. Global kill switches override
+ per-app settings.
+
+Section: Permission Kind
+
+  PermissionKind =
+    | PermCamera
+    | PermMicrophone
+    | PermLocation
+    | PermClipboard
+    | PermNetwork
+    | PermFileSystem
+    | PermNotifications
+
+  permission-label : PermissionKind -> Text
+  permission-label (p) = when p
+    is PermCamera -> "Camera"
+    is PermMicrophone -> "Microphone"
+    is PermLocation -> "Location"
+    is PermClipboard -> "Clipboard"
+    is PermNetwork -> "Network"
+    is PermFileSystem -> "File System"
+    is PermNotifications -> "Notifications"
+
+  permission-icon : PermissionKind -> Text
+  permission-icon (p) = when p
+    is PermCamera -> "eye"
+    is PermMicrophone -> "bell"
+    is PermLocation -> "pin"
+    is PermClipboard -> "clipboard"
+    is PermNetwork -> "wifi"
+    is PermFileSystem -> "folder"
+    is PermNotifications -> "bell"
+
+Section: Permission Grant
+
+  PermissionGrant = record {
+    pg-app-id : Text,
+    pg-kind : PermissionKind,
+    pg-allowed : Boolean,
+    pg-granted-at : Integer,
+    pg-last-used : Integer,
+    pg-use-count : Integer
+  }
+
+  permission-grant : Text, PermissionKind, Boolean, Integer -> PermissionGrant
+  permission-grant (app) (kind) (allowed) (ts) = PermissionGrant {
+    pg-app-id = app, pg-kind = kind, pg-allowed = allowed,
+    pg-granted-at = ts, pg-last-used = 0, pg-use-count = 0
+  }
+
+Section: Global Switches
+
+  GlobalPrivacy = record {
+    gp-camera-enabled : Boolean,
+    gp-mic-enabled : Boolean,
+    gp-location-enabled : Boolean
+  }
+
+  global-privacy-default : GlobalPrivacy
+  global-privacy-default = GlobalPrivacy { gp-camera-enabled = True, gp-mic-enabled = True, gp-location-enabled = True }
+
+Section: State
+
+  PrivacyState = record {
+    ps-global : GlobalPrivacy,
+    ps-grants : List PermissionGrant,
+    ps-grant-count : Integer
+  }
+
+  privacy-new : PrivacyState
+  privacy-new = PrivacyState {
+    ps-global = global-privacy-default,
+    ps-grants = [],
+    ps-grant-count = 0
+  }
+
+Section: Global Toggles
+
+  ps-toggle-camera : PrivacyState -> PrivacyState
+  ps-toggle-camera (st) =
+    let g = st.ps-global
+    in __record-set st "ps-global" (__record-set g "gp-camera-enabled" (if g.gp-camera-enabled then False else True))
+
+  ps-toggle-mic : PrivacyState -> PrivacyState
+  ps-toggle-mic (st) =
+    let g = st.ps-global
+    in __record-set st "ps-global" (__record-set g "gp-mic-enabled" (if g.gp-mic-enabled then False else True))
+
+  ps-toggle-location : PrivacyState -> PrivacyState
+  ps-toggle-location (st) =
+    let g = st.ps-global
+    in __record-set st "ps-global" (__record-set g "gp-location-enabled" (if g.gp-location-enabled then False else True))
+
+Section: Per-App Grants
+
+  ps-grant : PrivacyState, Text, PermissionKind, Integer -> PrivacyState
+  ps-grant (st) (app-id) (kind) (ts) =
+    let existing = ps-find-grant st app-id kind
+    in when existing
+      is Just (g) -> ps-update-grant st app-id kind True ts
+      is None ->
+        let grant = permission-grant app-id kind True ts
+        in __record-set (__record-set st "ps-grants" (list-push (st.ps-grants) grant)) "ps-grant-count" (st.ps-grant-count + 1)
+
+  ps-revoke : PrivacyState, Text, PermissionKind, Integer -> PrivacyState
+  ps-revoke (st) (app-id) (kind) (ts) =
+    let existing = ps-find-grant st app-id kind
+    in when existing
+      is Just (g) -> ps-update-grant st app-id kind False ts
+      is None ->
+        let grant = permission-grant app-id kind False ts
+        in __record-set (__record-set st "ps-grants" (list-push (st.ps-grants) grant)) "ps-grant-count" (st.ps-grant-count + 1)
+
+  ps-update-grant : PrivacyState, Text, PermissionKind, Boolean, Integer -> PrivacyState
+  ps-update-grant (st) (app-id) (kind) (allowed) (ts) =
+    let updated = ps-update-loop (st.ps-grants) app-id kind allowed ts 0 (st.ps-grant-count) []
+    in __record-set st "ps-grants" updated
+
+  ps-update-loop : List PermissionGrant, Text, PermissionKind, Boolean, Integer, Integer, Integer, List PermissionGrant -> List PermissionGrant
+  ps-update-loop (grants) (app-id) (kind) (allowed) (ts) (i) (n) (acc) =
+    if i >= n then acc
+    else let g = list-at grants i
+    in let updated = if g.pg-app-id == app-id then
+      if permission-label (g.pg-kind) == permission-label kind then
+        __record-set (__record-set g "pg-allowed" allowed) "pg-granted-at" ts
+      else g
+    else g
+    in ps-update-loop grants app-id kind allowed ts (i + 1) n (list-push acc updated)
+
+  ps-record-use : PrivacyState, Text, PermissionKind, Integer -> PrivacyState
+  ps-record-use (st) (app-id) (kind) (ts) =
+    let updated = ps-use-loop (st.ps-grants) app-id kind ts 0 (st.ps-grant-count) []
+    in __record-set st "ps-grants" updated
+
+  ps-use-loop : List PermissionGrant, Text, PermissionKind, Integer, Integer, Integer, List PermissionGrant -> List PermissionGrant
+  ps-use-loop (grants) (app-id) (kind) (ts) (i) (n) (acc) =
+    if i >= n then acc
+    else let g = list-at grants i
+    in let updated = if g.pg-app-id == app-id then
+      if permission-label (g.pg-kind) == permission-label kind then
+        __record-set (__record-set g "pg-last-used" ts) "pg-use-count" (g.pg-use-count + 1)
+      else g
+    else g
+    in ps-use-loop grants app-id kind ts (i + 1) n (list-push acc updated)
+
+Section: Access Check
+
+  ps-is-allowed : PrivacyState, Text, PermissionKind -> Boolean
+  ps-is-allowed (st) (app-id) (kind) =
+    let global-ok = ps-global-check (st.ps-global) kind
+    in if global-ok then ps-app-check st app-id kind
+    else False
+
+  ps-global-check : GlobalPrivacy, PermissionKind -> Boolean
+  ps-global-check (g) (kind) = when kind
+    is PermCamera -> g.gp-camera-enabled
+    is PermMicrophone -> g.gp-mic-enabled
+    is PermLocation -> g.gp-location-enabled
+    is otherwise -> True
+
+  ps-app-check : PrivacyState, Text, PermissionKind -> Boolean
+  ps-app-check (st) (app-id) (kind) =
+    let found = ps-find-grant st app-id kind
+    in when found
+      is Just (g) -> g.pg-allowed
+      is None -> False
+
+  ps-find-grant : PrivacyState, Text, PermissionKind -> Maybe PermissionGrant
+  ps-find-grant (st) (app-id) (kind) = ps-find-loop (st.ps-grants) app-id kind 0 (st.ps-grant-count)
+
+  ps-find-loop : List PermissionGrant, Text, PermissionKind, Integer, Integer -> Maybe PermissionGrant
+  ps-find-loop (grants) (app-id) (kind) (i) (n) =
+    if i >= n then None
+    else let g = list-at grants i
+    in if g.pg-app-id == app-id then
+      if permission-label (g.pg-kind) == permission-label kind then Just g
+      else ps-find-loop grants app-id kind (i + 1) n
+    else ps-find-loop grants app-id kind (i + 1) n
+
+Section: Widget
+
+  ps-settings-widget : PrivacyState -> WidgetNode
+  ps-settings-widget (st) =
+    let title = widget-label "ps-title" "Privacy & Permissions"
+    in let globals = ps-global-widget (st.ps-global)
+    in let sep = widget-separator "ps-sep"
+    in let grant-title = widget-label "ps-grant-title" ("App Permissions (" & show (st.ps-grant-count) & ")")
+    in let grant-rows = ps-grant-rows st 0 (st.ps-grant-count) []
+    in widget-panel "ps-settings" DirColumn 4 ([title, globals, sep, grant-title] & grant-rows)
+
+  ps-global-widget : GlobalPrivacy -> WidgetNode
+  ps-global-widget (g) =
+    let cam = widget-button "ps-g-cam" ("Camera: " & if g.gp-camera-enabled then "ON" else "OFF")
+    in let mic = widget-button "ps-g-mic" ("Microphone: " & if g.gp-mic-enabled then "ON" else "OFF")
+    in let loc = widget-button "ps-g-loc" ("Location: " & if g.gp-location-enabled then "ON" else "OFF")
+    in widget-panel "ps-globals" DirRow 4 [cam, mic, loc]
+
+  ps-grant-rows : PrivacyState, Integer, Integer, List WidgetNode -> List WidgetNode
+  ps-grant-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let g = list-at (st.ps-grants) i
+    in let app = widget-label ("ps-gr-app-" & show i) (g.pg-app-id)
+    in let perm = widget-label ("ps-gr-perm-" & show i) (permission-label (g.pg-kind))
+    in let status = widget-label ("ps-gr-stat-" & show i) (if g.pg-allowed then "Allowed" else "Denied")
+    in let uses = widget-label ("ps-gr-uses-" & show i) ("Used: " & show (g.pg-use-count))
+    in let row = widget-panel ("ps-gr-" & show i) DirRow 4 [app, perm, status, uses]
+    in let styled = if g.pg-allowed then row else widget-set-state row state-disabled
+    in ps-grant-rows st (i + 1) n (list-push acc styled)
+
+Section: Formatting
+
+  format-privacy : PrivacyState -> Text
+  format-privacy (st) =
+    "cam=" & (if (st.ps-global).gp-camera-enabled then "on" else "off")
+    & " mic=" & (if (st.ps-global).gp-mic-enabled then "on" else "off")
+    & " loc=" & (if (st.ps-global).gp-location-enabled then "on" else "off")
+    & " grants=" & show (st.ps-grant-count)
+
+Page 1

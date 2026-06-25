@@ -5,8 +5,8 @@ Chapter: Raytracer
   cites Game chapter Rasterizer
 
  Simple 3D raytracer. Renders spheres and planes with diffuse +
- specular (Phong) lighting. Outputs to a Framebuf. Fixed-point
- (scale 1000 for geometry, 0-255 for color channels).
+ specular (Phong) lighting. Outputs to a Framebuf. Real-valued
+ geometry, 0-255 for color channels.
 
  We say:
 
@@ -20,7 +20,7 @@ Section: Scene Objects
 
   RtSphere = record {
     rt-center : Vec3,
-    rt-radius : Integer,
+    rt-radius : Real,
     rt-mat : Material
   }
 
@@ -62,14 +62,14 @@ Section: Materials
 Section: Ray-Object Intersection
   RtHit = record {
     rt-did-hit : Boolean,
-    rt-dist : Integer,
+    rt-dist : Real,
     rt-pos : Vec3,
     rt-norm : Vec3,
     rt-material : Material
   }
 
   rt-no-hit : RtHit
-  rt-no-hit = RtHit { rt-did-hit = False, rt-dist = 999999, rt-pos = vec3-zero, rt-norm = vec3-zero, rt-material = mat-matte rgb-black }
+  rt-no-hit = RtHit { rt-did-hit = False, rt-dist = 999999.0, rt-pos = vec3-zero, rt-norm = vec3-zero, rt-material = mat-matte rgb-black }
 
   rt-intersect-obj : Ray3, SceneObj -> RtHit
   rt-intersect-obj (ray) (obj) = when obj
@@ -108,24 +108,24 @@ Section: Shading (Phong)
     if hit.rt-did-hit then
       let to-light = rt-normalize (vec3-subtract (scene.rt-light-pos) (hit.rt-pos))
       in let n-dot-l = vec3-dot (hit.rt-norm) to-light
-      in let diffuse = if n-dot-l > 0 then n-dot-l else 0
-      in let reflect = rt-reflect (vec3-scale to-light (0 - 1000)) (hit.rt-norm)
-      in let r-dot-v = vec3-dot reflect (vec3-scale ray-dir (0 - 1000))
-      in let spec-raw = if r-dot-v > 0 then r-dot-v else 0
-      in let specular = rt-pow-int spec-raw (hit.rt-material.mat-shininess)
+      in let diffuse = if n-dot-l > 0.0 then n-dot-l else 0.0
+      in let reflect = rt-reflect (vec3-scale to-light (-1.0)) (hit.rt-norm)
+      in let r-dot-v = vec3-dot reflect (vec3-scale ray-dir (-1.0))
+      in let spec-raw = if r-dot-v > 0.0 then r-dot-v else 0.0
+      in let specular = rt-pow-real spec-raw (hit.rt-material.mat-shininess)
       in let mat = hit.rt-material
-      in let amb = scene.rt-ambient
-      in let diff-contrib = mat.mat-diffuse * diffuse / 1000
-      in let spec-contrib = mat.mat-specular * specular / 1000
+      in let amb = real-from-int (scene.rt-ambient)
+      in let diff-contrib = real-from-int (mat.mat-diffuse) * diffuse / 1000.0
+      in let spec-contrib = real-from-int (mat.mat-specular) * specular / 1000.0
       in let intensity = amb + diff-contrib + spec-contrib
-      in let capped = if intensity > 1000 then 1000 else intensity
+      in let capped = if intensity > 1000.0 then 1000 else real-to-int intensity
       in rgb-scale (mat.mat-color) capped
     else scene.rt-bg
 
   rt-reflect : Vec3, Vec3 -> Vec3
   rt-reflect (incoming) (normal) =
     let d = vec3-dot incoming normal
-    in vec3-subtract incoming (vec3-scale normal (2 * d))
+    in vec3-subtract incoming (vec3-scale normal (2.0 * d))
 
 Section: Camera and Rendering
   RtCamera = record {
@@ -138,11 +138,11 @@ Section: Camera and Rendering
 
   rt-pixel-ray : RtCamera, Integer, Integer, Integer, Integer -> Ray3
   rt-pixel-ray (cam) (px) (py) (width) (height) =
-    let aspect = width * 1000 / height
-    in let half-fov = cam.cam-fov / 2
-    in let nx = (2 * px - width) * half-fov / width
-    in let ny = (height - 2 * py) * half-fov / height
-    in let dir = rt-normalize (vec3-new (nx * aspect / 1000) ny 1000)
+    let aspect = real-from-int width / real-from-int height
+    in let half-fov = real-from-int (cam.cam-fov) / 2.0
+    in let nx = (2.0 * real-from-int px - real-from-int width) * half-fov / real-from-int width
+    in let ny = (real-from-int height - 2.0 * real-from-int py) * half-fov / real-from-int height
+    in let dir = rt-normalize (vec3-new (nx * aspect) ny 1.0)
     in ray3-new (cam.cam-origin) dir
 
   rt-render : RtScene, RtCamera, Integer, Integer -> Framebuf
@@ -163,27 +163,16 @@ Section: Camera and Rendering
 Section: Helpers
   rt-normalize : Vec3 -> Vec3
   rt-normalize (v) =
-    let len = rt-vec-len v
-    in if len == 0 then vec3-zero
-    else vec3-new (v.vx * 1000 / len) (v.vy * 1000 / len) (v.vz * 1000 / len)
+    let len = geo-sqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
+    in if len ~0 0.0 then vec3-zero
+    else vec3-new (v.vx / len) (v.vy / len) (v.vz / len)
 
-  rt-vec-len : Vec3 -> Integer
-  rt-vec-len (v) = rt-isqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
+  rt-pow-real : Real, Integer -> Real
+  rt-pow-real (base) (exp) = rt-pow-loop-real base exp 1.0
 
-  rt-isqrt : Integer -> Integer
-  rt-isqrt (n) = if n <= 0 then 0 else rt-isqrt-loop n (n / 2 + 1)
-
-  rt-isqrt-loop : Integer, Integer -> Integer
-  rt-isqrt-loop (n) (guess) =
-    let next = (guess + n / guess) / 2
-    in if next >= guess then guess else rt-isqrt-loop n next
-
-  rt-pow-int : Integer, Integer -> Integer
-  rt-pow-int (base) (exp) = rt-pow-loop base exp 1000
-
-  rt-pow-loop : Integer, Integer, Integer -> Integer
-  rt-pow-loop (base) (exp) (acc) =
+  rt-pow-loop-real : Real, Integer, Real -> Real
+  rt-pow-loop-real (base) (exp) (acc) =
     if exp <= 0 then acc
-    else rt-pow-loop base (exp - 1) (acc * base / 1000)
+    else rt-pow-loop-real base (exp - 1) (acc * base)
 
 Page 1

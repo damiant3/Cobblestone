@@ -1,0 +1,307 @@
+Chapter: FaceRestore
+  cites AI chapter Tensor
+  cites AI chapter Conv2d
+  cites AI chapter Normalization
+  cites AI chapter NeuralNet
+  cites AI chapter SafeTensors
+  cites AI chapter ImageTensor
+  cites Foreword chapter Maybe
+
+ Face restoration for AI-generated images. Implements a simplified
+ CodeFormer-style architecture: detect face regions, crop, restore
+ via a small encoder-decoder network, then paste back.
+
+ Pipeline:
+   1. Face detection (simple skin-tone + structure heuristic)
+   2. Crop and align face region
+   3. Encoder-decoder restoration network
+   4. Blend restored face back into original image
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  FaceBox = record {
+    fb-x : Integer,
+    fb-y : Integer,
+    fb-w : Integer,
+    fb-h : Integer,
+    fb-confidence : Integer
+  }
+
+  FaceRestoreConfig = record {
+    fr-fidelity : Integer,
+    fr-face-size : Integer,
+    fr-upscale : Integer,
+    fr-max-faces : Integer
+  }
+
+  FaceRestoreState = record {
+    frs-encoder : NeuralNetwork,
+    frs-decoder : NeuralNetwork,
+    frs-config : FaceRestoreConfig
+  }
+
+Section: Default Configuration
+  face-restore-default : FaceRestoreConfig
+  face-restore-default = FaceRestoreConfig {
+    fr-fidelity = 700,
+    fr-face-size = 512,
+    fr-upscale = 1,
+    fr-max-faces = 4
+  }
+
+  face-restore-high : FaceRestoreConfig
+  face-restore-high = FaceRestoreConfig {
+    fr-fidelity = 900,
+    fr-face-size = 512,
+    fr-upscale = 2,
+    fr-max-faces = 8
+  }
+
+Section: Face Detection (heuristic)
+  fr-detect-faces : ImageData, Integer -> List FaceBox
+  fr-detect-faces (img) (max-faces) =
+    let candidates = fr-scan-regions img 0 []
+    in let sorted = fr-sort-by-confidence candidates
+    in fr-take-top sorted max-faces 0 []
+
+  fr-scan-regions : ImageData, Integer, List FaceBox -> List FaceBox
+  fr-scan-regions (img) (step) (acc) =
+    let window-sizes = [64, 96, 128, 192]
+    in fr-scan-sizes img window-sizes 0 (list-length window-sizes) acc
+
+  fr-scan-sizes : ImageData, List Integer, Integer, Integer, List FaceBox -> List FaceBox
+  fr-scan-sizes (img) (sizes) (si) (n) (acc) =
+    if si >= n then acc
+    else let sz = list-at sizes si
+    in let found = fr-scan-at-size img sz acc
+    in fr-scan-sizes img sizes (si + 1) n found
+
+  fr-scan-at-size : ImageData, Integer, List FaceBox -> List FaceBox
+  fr-scan-at-size (img) (sz) (acc) =
+    let step = sz / 2
+    in fr-scan-grid img sz step 0 0 acc
+
+  fr-scan-grid : ImageData, Integer, Integer, Integer, Integer, List FaceBox -> List FaceBox
+  fr-scan-grid (img) (sz) (step) (y) (x) (acc) =
+    if y + sz > img.img-height then acc
+    else if x + sz > img.img-width then fr-scan-grid img sz step (y + step) 0 acc
+    else let score = fr-face-score img x y sz
+    in let new-acc = if score > 300 then list-push acc (FaceBox { fb-x = x, fb-y = y, fb-w = sz, fb-h = sz, fb-confidence = score }) else acc
+    in fr-scan-grid img sz step y (x + step) new-acc
+
+  fr-face-score : ImageData, Integer, Integer, Integer -> Integer
+  fr-face-score (img) (x) (y) (sz) =
+    let center-x = x + sz / 2
+    in let center-y = y + sz / 2
+    in let skin-score = fr-skin-tone-score img center-x center-y (sz / 4)
+    in let symmetry = fr-symmetry-score img x y sz
+    in let contrast = fr-contrast-score img x y sz
+    in (skin-score * 400 + symmetry * 300 + contrast * 300) / 1000
+
+  fr-skin-tone-score : ImageData, Integer, Integer, Integer -> Integer
+  fr-skin-tone-score (img) (cx) (cy) (radius) =
+    let samples = [fr-sample-pixel img cx cy, fr-sample-pixel img (cx - radius) cy, fr-sample-pixel img (cx + radius) cy, fr-sample-pixel img cx (cy - radius), fr-sample-pixel img cx (cy + radius)]
+    in fr-avg-skin-score samples 0 5 0
+
+  fr-avg-skin-score : List Rgb, Integer, Integer, Integer -> Integer
+  fr-avg-skin-score (pixels) (i) (n) (acc) =
+    if i >= n then acc / n
+    else let px = list-at pixels i
+    in let is-skin = fr-is-skin-tone px
+    in fr-avg-skin-score pixels (i + 1) n (acc + is-skin)
+
+  fr-is-skin-tone : Rgb -> Integer
+  fr-is-skin-tone (px) =
+    let r = px.cr
+    in let g = px.cg
+    in let b = px.cb
+    in if r > 95 then if g > 40 then if b > 20 then
+      if r > g then if r > b then
+        if (r - g) > 15 then 1000
+        else 500
+      else 200
+      else 200
+    else 0 else 0 else 0
+
+  fr-symmetry-score : ImageData, Integer, Integer, Integer -> Integer
+  fr-symmetry-score (img) (x) (y) (sz) =
+    let half = sz / 2
+    in let cx = x + half
+    in fr-sym-loop img cx y half sz 0 4 0
+
+  fr-sym-loop : ImageData, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fr-sym-loop (img) (cx) (y) (half) (sz) (dy) (n) (acc) =
+    if dy >= n then acc / n
+    else let py = y + sz * dy / n
+    in let left = fr-sample-pixel img (cx - half / 2) py
+    in let right = fr-sample-pixel img (cx + half / 2) py
+    in let diff = fr-color-diff left right
+    in let score = if diff < 30 then 1000 else if diff < 60 then 700 else if diff < 100 then 400 else 100
+    in fr-sym-loop img cx y half sz (dy + 1) n (acc + score)
+
+  fr-contrast-score : ImageData, Integer, Integer, Integer -> Integer
+  fr-contrast-score (img) (x) (y) (sz) =
+    let center = fr-sample-pixel img (x + sz / 2) (y + sz / 2)
+    in let edge = fr-sample-pixel img (x + sz / 4) (y + sz / 4)
+    in let diff = fr-color-diff center edge
+    in if diff > 20 then if diff < 120 then 800 else 400 else 200
+
+  fr-sample-pixel : ImageData, Integer, Integer -> Rgb
+  fr-sample-pixel (img) (x) (y) =
+    let cx = if x < 0 then 0 else if x >= img.img-width then img.img-width - 1 else x
+    in let cy = if y < 0 then 0 else if y >= img.img-height then img.img-height - 1 else y
+    in list-at (img.img-pixels) (cy * img.img-width + cx)
+
+  fr-color-diff : Rgb, Rgb -> Integer
+  fr-color-diff (a) (b) =
+    let dr = if a.cr > b.cr then a.cr - b.cr else b.cr - a.cr
+    in let dg = if a.cg > b.cg then a.cg - b.cg else b.cg - a.cg
+    in let db = if a.cb > b.cb then a.cb - b.cb else b.cb - a.cb
+    in (dr + dg + db) / 3
+
+Section: Face Restoration
+  fr-restore-image : ImageData, FaceRestoreState -> ImageData
+  fr-restore-image (img) (state) =
+    let faces = fr-detect-faces img (state.frs-config.fr-max-faces)
+    in fr-restore-faces img faces state 0 (list-length faces)
+
+  fr-restore-faces : ImageData, List FaceBox, FaceRestoreState, Integer, Integer -> ImageData
+  fr-restore-faces (img) (faces) (state) (i) (n) =
+    if i >= n then img
+    else let face = list-at faces i
+    in let restored = fr-restore-one img face state
+    in fr-restore-faces restored faces state (i + 1) n
+
+  fr-restore-one : ImageData, FaceBox, FaceRestoreState -> ImageData
+  fr-restore-one (img) (face) (state) =
+    let cfg = state.frs-config
+    in let cropped = fr-crop-face img face (cfg.fr-face-size)
+    in let tensor = image-to-tensor-unit cropped
+    in let input = tensor-vector tensor
+    in let encoded = nn-forward (state.frs-encoder) input
+    in let decoded-data = nn-forward (state.frs-decoder) encoded
+    in let restored = tensor-to-image-unit (decoded-data.data) (cfg.fr-face-size) (cfg.fr-face-size)
+    in fr-blend-face img restored face (cfg.fr-fidelity)
+
+  fr-crop-face : ImageData, FaceBox, Integer -> ImageData
+  fr-crop-face (img) (face) (target-size) =
+    let pad = face.fb-w / 4
+    in let x = if face.fb-x - pad < 0 then 0 else face.fb-x - pad
+    in let y = if face.fb-y - pad < 0 then 0 else face.fb-y - pad
+    in let w = face.fb-w + pad * 2
+    in let h = face.fb-h + pad * 2
+    in let cropped = fr-crop-rect img x y w h
+    in image-resize cropped target-size target-size
+
+  fr-crop-rect : ImageData, Integer, Integer, Integer, Integer -> ImageData
+  fr-crop-rect (img) (x) (y) (w) (h) =
+    let pixels = fr-crop-loop img x y w h 0 0 []
+    in image-new w h pixels
+
+  fr-crop-loop : ImageData, Integer, Integer, Integer, Integer, Integer, Integer, List Rgb -> List Rgb
+  fr-crop-loop (img) (ox) (oy) (w) (h) (dy) (dx) (acc) =
+    if dy >= h then acc
+    else if dx >= w then fr-crop-loop img ox oy w h (dy + 1) 0 acc
+    else let px = fr-sample-pixel img (ox + dx) (oy + dy)
+    in fr-crop-loop img ox oy w h dy (dx + 1) (list-push acc px)
+
+Section: Face Blending
+  fr-blend-face : ImageData, ImageData, FaceBox, Integer -> ImageData
+  fr-blend-face (original) (restored) (face) (fidelity) =
+    let pad = face.fb-w / 4
+    in let ox = if face.fb-x - pad < 0 then 0 else face.fb-x - pad
+    in let oy = if face.fb-y - pad < 0 then 0 else face.fb-y - pad
+    in let region-w = face.fb-w + pad * 2
+    in let region-h = face.fb-h + pad * 2
+    in let scaled = image-resize restored region-w region-h
+    in let blended = fr-blend-loop original scaled ox oy region-w region-h fidelity 0 0
+    in blended
+
+  fr-blend-loop : ImageData, ImageData, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> ImageData
+  fr-blend-loop (orig) (rest) (ox) (oy) (rw) (rh) (fidelity) (dy) (dx) =
+    if dy >= rh then orig
+    else if dx >= rw then fr-blend-loop orig rest ox oy rw rh fidelity (dy + 1) 0
+    else let target-x = ox + dx
+    in let target-y = oy + dy
+    in if target-x >= orig.img-width then fr-blend-loop orig rest ox oy rw rh fidelity dy (dx + 1)
+    else if target-y >= orig.img-height then fr-blend-loop orig rest ox oy rw rh fidelity dy (dx + 1)
+    else let edge-dist = fr-edge-dist dx dy rw rh
+    in let alpha = fr-blend-alpha edge-dist fidelity
+    in let orig-px = list-at (orig.img-pixels) (target-y * orig.img-width + target-x)
+    in let rest-px = list-at (rest.img-pixels) (dy * rw + dx)
+    in let blended-px = fr-blend-pixel orig-px rest-px alpha
+    in let new-pixels = list-set-at (orig.img-pixels) (target-y * orig.img-width + target-x) blended-px
+    in let new-img = ImageData { img-width = orig.img-width, img-height = orig.img-height, img-pixels = new-pixels }
+    in fr-blend-loop new-img rest ox oy rw rh fidelity dy (dx + 1)
+
+  fr-edge-dist : Integer, Integer, Integer, Integer -> Integer
+  fr-edge-dist (dx) (dy) (w) (h) =
+    let from-left = dx
+    in let from-right = w - 1 - dx
+    in let from-top = dy
+    in let from-bottom = h - 1 - dy
+    in fr-min4 from-left from-right from-top from-bottom
+
+  fr-blend-alpha : Integer, Integer -> Integer
+  fr-blend-alpha (edge-dist) (fidelity) =
+    let fade-zone = 8
+    in if edge-dist >= fade-zone then fidelity
+    else if edge-dist <= 0 then 0
+    else edge-dist * fidelity / fade-zone
+
+  fr-blend-pixel : Rgb, Rgb, Integer -> Rgb
+  fr-blend-pixel (orig) (rest) (alpha) =
+    let inv = 1000 - alpha
+    in Rgb {
+      cr = (orig.cr * inv + rest.cr * alpha) / 1000,
+      cg = (orig.cg * inv + rest.cg * alpha) / 1000,
+      cb = (orig.cb * inv + rest.cb * alpha) / 1000
+    }
+
+Section: Sorting / Selection
+  fr-sort-by-confidence : List FaceBox -> List FaceBox
+  fr-sort-by-confidence (faces) =
+    fr-insertion-sort faces 0 (list-length faces)
+
+  fr-insertion-sort : List FaceBox, Integer, Integer -> List FaceBox
+  fr-insertion-sort (faces) (i) (n) =
+    if i >= n then faces
+    else let sorted = fr-insert-one faces i
+    in fr-insertion-sort sorted (i + 1) n
+
+  fr-insert-one : List FaceBox, Integer -> List FaceBox
+  fr-insert-one (faces) (i) =
+    if i <= 0 then faces
+    else let cur = list-at faces i
+    in let prev = list-at faces (i - 1)
+    in if cur.fb-confidence > prev.fb-confidence then
+      let swapped = list-set-at (list-set-at faces (i - 1) cur) i prev
+      in fr-insert-one swapped (i - 1)
+    else faces
+
+  fr-take-top : List FaceBox, Integer, Integer, List FaceBox -> List FaceBox
+  fr-take-top (sorted) (k) (i) (acc) =
+    if i >= k then acc
+    else if i >= list-length sorted then acc
+    else fr-take-top sorted k (i + 1) (list-push acc (list-at sorted i))
+
+Section: Helpers
+  fr-min4 : Integer, Integer, Integer, Integer -> Integer
+  fr-min4 (a) (b) (c) (d) =
+    let ab = if a < b then a else b
+    in let cd = if c < d then c else d
+    in if ab < cd then ab else cd
+
+Section: Queries
+  format-face-box : FaceBox -> Text
+  format-face-box (face) =
+    "face(" & show (face.fb-x) & "," & show (face.fb-y) & " " & show (face.fb-w) & "x" & show (face.fb-h) & " conf=" & show (face.fb-confidence) & ")"
+
+  format-face-config : FaceRestoreConfig -> Text
+  format-face-config (cfg) =
+    "fidelity=" & show (cfg.fr-fidelity) & " size=" & show (cfg.fr-face-size) & " max=" & show (cfg.fr-max-faces)
+
+Page 1

@@ -5,7 +5,7 @@ Chapter: ViewportNav
  Viewport navigation: orbit, pan, zoom, and focus. Translates
  mouse input into camera transforms. Orbit rotates around a
  pivot point, pan slides the camera laterally, zoom moves
- along the view axis. Fixed-point scale 1000.
+ along the view axis.
 
  We say:
 
@@ -20,40 +20,40 @@ Section: Types
   NavState = record {
     ns-mode : NavMode,
     ns-pivot : Vec3,
-    ns-yaw : Integer,
-    ns-pitch : Integer,
-    ns-distance : Integer,
-    ns-pan-x : Integer,
-    ns-pan-y : Integer,
+    ns-yaw : Real,
+    ns-pitch : Real,
+    ns-distance : Real,
+    ns-pan-x : Real,
+    ns-pan-y : Real,
     ns-dragging : Boolean,
     ns-last-mx : Integer,
     ns-last-my : Integer,
-    ns-orbit-speed : Integer,
-    ns-pan-speed : Integer,
-    ns-zoom-speed : Integer
+    ns-orbit-speed : Real,
+    ns-pan-speed : Real,
+    ns-zoom-speed : Real
   }
 
 Section: Construction
 
-  nav-new : Vec3, Integer -> NavState
+  nav-new : Vec3, Real -> NavState
   nav-new (pivot) (distance) = NavState {
     ns-mode = NavOrbit,
     ns-pivot = pivot,
-    ns-yaw = 0,
-    ns-pitch = 300,
+    ns-yaw = 0.0,
+    ns-pitch = 0.3,
     ns-distance = distance,
-    ns-pan-x = 0,
-    ns-pan-y = 0,
+    ns-pan-x = 0.0,
+    ns-pan-y = 0.0,
     ns-dragging = False,
     ns-last-mx = 0,
     ns-last-my = 0,
-    ns-orbit-speed = 3,
-    ns-pan-speed = 5,
-    ns-zoom-speed = 100
+    ns-orbit-speed = 0.003,
+    ns-pan-speed = 0.005,
+    ns-zoom-speed = 0.1
   }
 
   nav-default : NavState
-  nav-default = nav-new vec3-zero 5000
+  nav-default = nav-new vec3-zero 5.0
 
 Section: Input
 
@@ -106,83 +106,69 @@ Section: Input
 
   nav-scroll-zoom : NavState, Integer -> NavState
   nav-scroll-zoom (ns) (delta) =
-    let new-dist = ns.ns-distance - delta * ns.ns-zoom-speed
-    in __record-set ns "ns-distance" (if new-dist < 100 then 100 else if new-dist > 100000 then 100000 else new-dist)
+    let new-dist = ns.ns-distance - real-from-int delta * ns.ns-zoom-speed
+    in __record-set ns "ns-distance" (if new-dist < 0.1 then 0.1 else if new-dist > 100.0 then 100.0 else new-dist)
 
 Section: Orbit
 
   nav-apply-orbit : NavState, Integer, Integer -> NavState
   nav-apply-orbit (ns) (dx) (dy) =
-    let new-yaw = ns.ns-yaw + dx * ns.ns-orbit-speed
-    in let new-pitch = ns.ns-pitch - dy * ns.ns-orbit-speed
-    in let clamped-pitch = if new-pitch < -1500 then -1500 else if new-pitch > 1500 then 1500 else new-pitch
+    let new-yaw = ns.ns-yaw + real-from-int dx * ns.ns-orbit-speed
+    in let new-pitch = ns.ns-pitch - real-from-int dy * ns.ns-orbit-speed
+    in let clamped-pitch = if new-pitch < (-1.5) then (-1.5) else if new-pitch > 1.5 then 1.5 else new-pitch
     in __record-set (__record-set ns "ns-yaw" new-yaw) "ns-pitch" clamped-pitch
 
 Section: Pan
 
   nav-apply-pan : NavState, Integer, Integer -> NavState
   nav-apply-pan (ns) (dx) (dy) =
-    let scale = ns.ns-distance * ns.ns-pan-speed / 1000
-    in let new-px = ns.ns-pan-x - dx * scale
-    in let new-py = ns.ns-pan-y + dy * scale
+    let scale = ns.ns-distance * ns.ns-pan-speed
+    in let new-px = ns.ns-pan-x - real-from-int dx * scale
+    in let new-py = ns.ns-pan-y + real-from-int dy * scale
     in __record-set (__record-set ns "ns-pan-x" new-px) "ns-pan-y" new-py
 
 Section: Zoom
 
   nav-apply-zoom : NavState, Integer -> NavState
   nav-apply-zoom (ns) (dy) =
-    let new-dist = ns.ns-distance + dy * ns.ns-zoom-speed
-    in __record-set ns "ns-distance" (if new-dist < 100 then 100 else if new-dist > 100000 then 100000 else new-dist)
+    let new-dist = ns.ns-distance + real-from-int dy * ns.ns-zoom-speed
+    in __record-set ns "ns-distance" (if new-dist < 0.1 then 0.1 else if new-dist > 100.0 then 100.0 else new-dist)
 
 Section: Camera Matrix
 
   nav-camera-position : NavState -> Vec3
   nav-camera-position (ns) =
-    let cos-p = nav-cos-approx (ns.ns-pitch)
-    in let sin-p = nav-sin-approx (ns.ns-pitch)
-    in let cos-y = nav-cos-approx (ns.ns-yaw)
-    in let sin-y = nav-sin-approx (ns.ns-yaw)
-    in let x = ns.ns-pivot.vx + ns.ns-distance * cos-p / 1000 * sin-y / 1000 + ns.ns-pan-x
-    in let y = ns.ns-pivot.vy + ns.ns-distance * sin-p / 1000 + ns.ns-pan-y
-    in let z = ns.ns-pivot.vz + ns.ns-distance * cos-p / 1000 * cos-y / 1000
+    let cos-p = real-cos (ns.ns-pitch)
+    in let sin-p = real-sin (ns.ns-pitch)
+    in let cos-y = real-cos (ns.ns-yaw)
+    in let sin-y = real-sin (ns.ns-yaw)
+    in let x = ns.ns-pivot.vx + ns.ns-distance * cos-p * sin-y + ns.ns-pan-x
+    in let y = ns.ns-pivot.vy + ns.ns-distance * sin-p + ns.ns-pan-y
+    in let z = ns.ns-pivot.vz + ns.ns-distance * cos-p * cos-y
     in vec3-new x y z
 
   nav-view-matrix : NavState -> Mat4
   nav-view-matrix (ns) =
     let eye = nav-camera-position ns
     in let target = vec3-new (ns.ns-pivot.vx + ns.ns-pan-x) (ns.ns-pivot.vy + ns.ns-pan-y) (ns.ns-pivot.vz)
-    in mat4-look-at eye target (vec3-new 0 1000 0)
+    in mat4-look-at eye target (vec3-new 0.0 1.0 0.0)
 
 Section: Focus
 
-  nav-focus-on : NavState, Vec3, Integer -> NavState
+  nav-focus-on : NavState, Vec3, Real -> NavState
   nav-focus-on (ns) (target) (dist) =
-    __record-set (__record-set (__record-set ns "ns-pivot" target) "ns-distance" dist) "ns-pan-x" 0
+    __record-set (__record-set (__record-set ns "ns-pivot" target) "ns-distance" dist) "ns-pan-x" 0.0
 
 Section: Presets
 
   nav-front : NavState -> NavState
-  nav-front (ns) = __record-set (__record-set ns "ns-yaw" 0) "ns-pitch" 0
+  nav-front (ns) = __record-set (__record-set ns "ns-yaw" 0.0) "ns-pitch" 0.0
 
   nav-top : NavState -> NavState
-  nav-top (ns) = __record-set (__record-set ns "ns-yaw" 0) "ns-pitch" 1570
+  nav-top (ns) = __record-set (__record-set ns "ns-yaw" 0.0) "ns-pitch" 1.570
 
   nav-right : NavState -> NavState
-  nav-right (ns) = __record-set (__record-set ns "ns-yaw" 1570) "ns-pitch" 0
-
-Section: Trig
-
-  nav-sin-approx : Integer -> Integer
-  nav-sin-approx (milli-rad) =
-    let x = milli-rad
-    in let x3 = x * x / 1000 * x / 1000
-    in x - x3 / 6
-
-  nav-cos-approx : Integer -> Integer
-  nav-cos-approx (milli-rad) =
-    let x2 = milli-rad * milli-rad / 1000
-    in let x4 = x2 * x2 / 1000
-    in 1000 - x2 / 2 + x4 / 24
+  nav-right (ns) = __record-set (__record-set ns "ns-yaw" 1.570) "ns-pitch" 0.0
 
 Section: Info
 

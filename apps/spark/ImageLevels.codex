@@ -20,7 +20,7 @@ Section: Types
   LevelsConfig = record {
     lv-in-black : Integer,
     lv-in-white : Integer,
-    lv-gamma : Integer,
+    lv-gamma : Real,
     lv-out-black : Integer,
     lv-out-white : Integer
   }
@@ -53,7 +53,7 @@ Section: Histogram
     in let r = px / 65536
     in let g = px / 256 - r * 256
     in let b = px - px / 256 * 256
-    in let lum = (r * 299 + g * 587 + b * 114) / 1000
+    in let lum = real-to-int (real-from-int r * 0.299 + real-from-int g * 0.587 + real-from-int b * 0.114)
     in let rb2 = list-set-at rb r (list-at rb r + 1)
     in let gb2 = list-set-at gb g (list-at gb g + 1)
     in let bb2 = list-set-at bb b (list-at bb b + 1)
@@ -92,7 +92,7 @@ Section: Levels Adjustment
   levels-default = LevelsConfig {
     lv-in-black = 0,
     lv-in-white = 255,
-    lv-gamma = 1000,
+    lv-gamma = 1.0,
     lv-out-black = 0,
     lv-out-white = 255
   }
@@ -102,7 +102,7 @@ Section: Levels Adjustment
     let threshold = hist.hist-pixel-count / 200
     in let black = lvl-find-black (hist.hist-lum) threshold 0
     in let white = lvl-find-white (hist.hist-lum) threshold 255
-    in LevelsConfig { lv-in-black = black, lv-in-white = white, lv-gamma = 1000, lv-out-black = 0, lv-out-white = 255 }
+    in LevelsConfig { lv-in-black = black, lv-in-white = white, lv-gamma = 1.0, lv-out-black = 0, lv-out-white = 255 }
 
   lvl-find-black : List Integer, Integer, Integer -> Integer
   lvl-find-black (bins) (threshold) (i) =
@@ -137,11 +137,11 @@ Section: Levels Adjustment
   lvl-adjust-channel : Integer, LevelsConfig -> Integer
   lvl-adjust-channel (val) (cfg) =
     let range = cfg.lv-in-white - cfg.lv-in-black
-    in let normalized = if range <= 0 then 0 else (val - cfg.lv-in-black) * 1000 / range
-    in let clamped = lvl-clamp normalized 0 1000
-    in let gamma-corrected = clamped * cfg.lv-gamma / 1000
+    in let normalized = if range <= 0 then 0.0 else real-from-int (val - cfg.lv-in-black) / real-from-int range
+    in let clamped = if normalized < 0.0 then 0.0 else if normalized > 1.0 then 1.0 else normalized
+    in let gamma-corrected = clamped * cfg.lv-gamma
     in let out-range = cfg.lv-out-white - cfg.lv-out-black
-    in let result = cfg.lv-out-black + gamma-corrected * out-range / 1000
+    in let result = cfg.lv-out-black + real-to-int (gamma-corrected * real-from-int out-range)
     in lvl-clamp result 0 255
 
 Section: Curves
@@ -169,8 +169,8 @@ Section: Curves
     in let p1 = list-at points (i + 1)
     in if input <= p0.crv-input then p0.crv-output
     else if input < p1.crv-input then
-      let t = (input - p0.crv-input) * 1000 / (p1.crv-input - p0.crv-input)
-      in p0.crv-output + (p1.crv-output - p0.crv-output) * t / 1000
+      let t = real-from-int (input - p0.crv-input) / real-from-int (p1.crv-input - p0.crv-input)
+      in real-to-int (real-from-int p0.crv-output + real-from-int (p1.crv-output - p0.crv-output) * t)
     else crv-find-segment points count input (i + 1)
 
 Section: Helpers

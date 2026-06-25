@@ -2,6 +2,7 @@ Chapter: MAUI Emitter
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Foreword chapter Sort
 
  Generates .NET MAUI C# from the IR. Targets Android, iOS, macOS,
  Windows via Microsoft's multi-platform UI framework.
@@ -190,18 +191,18 @@ Section: Expression Emission
    let lhs = emit-maui-expr l arities indent
    in let rhs = emit-maui-expr r arities indent
    in when op
-    is IrAddInt | IrAddNum -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt | IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt | IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
     is IrEq | IrApproxEq | IrApproxEqExact -> "object.Equals(" & lhs & ", " & rhs & ")"
     is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
-    is IrLt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
-    is IrGt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
-    is IrLtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
-    is IrGtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
+    is IrLt | IrLtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
+    is IrGt | IrGtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
+    is IrLtEq | IrLtEqVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
+    is IrGtEq | IrGtEqVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
     is IrAnd -> "(" & lhs & " && " & rhs & ")"
     is IrOr -> "(" & lhs & " || " & rhs & ")"
     is IrAppendText -> "(\"\" + " & lhs & " + " & rhs & ")"
@@ -268,6 +269,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> "object.Equals(" & scrut & ", (dynamic)" & text & ")"
     is IrCtorPat (name) (subs) (ty) (sp) -> "(string)" & scrut & "[\"_tag\"] == \"" & name & "\""
     is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
 
   emit-maui-pat-binds : IRPat, Text -> Text
   emit-maui-pat-binds (p) (scrut) =
@@ -276,6 +278,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> ""
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-maui-ctor-binds subs scrut 0
     is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
 
   emit-maui-ctor-binds : List IRPat, Text, Integer -> Text
   emit-maui-ctor-binds (subs) (scrut) (i) =
@@ -719,6 +722,6 @@ Section: MAUI Assembly
    in let runtime = emit-maui-color-runtime & emit-maui-state-runtime & emit-maui-reactive-runtime & emit-maui-widget-runtime & emit-maui-dialog-runtime & emit-maui-net-runtime
    in let types-text = emit-maui-type-defs type-defs 0
    in let defs-text = emit-maui-defs (m.defs) 0 arities
-   in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "_page = this;\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) {\n" & maui-indent 3 & "_output.Add(\"ERROR: \" + ex.GetType().Name + \": \" + ex.Message);\n" & maui-indent 3 & "if (ex.InnerException != null) _output.Add(\"INNER: \" + ex.InnerException.Message);\n" & maui-indent 3 & "_output.Add(ex.StackTrace ?? \"\");\n" & maui-indent 2 & "}\n" & maui-indent 2 & "if (Content == null) {\n" & maui-indent 3 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 3 & "if (_output.Count == 0) _output.Add(\"(no output -- opening() did not set Content)\");\n" & maui-indent 3 & "foreach (var line in _output)\n" & maui-indent 4 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Consolas\", TextColor = Colors.Red, FontSize = 12 });\n" & maui-indent 3 & "Content = new ScrollView { Content = stack };\n" & maui-indent 2 & "}\n" & maui-indent 1 & "}\n"
+   in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "_page = this;\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) {\n" & maui-indent 3 & "_output.Add(\"ERROR: \" + ex.GetType().Name + \": \" + ex.Message);\n" & maui-indent 3 & "if (ex.InnerException != null) _output.Add(\"INNER: \" + ex.InnerException.Message);\n" & maui-indent 3 & "_output.Add(ex.StackTrace ?? \"\");\n" & maui-indent 2 & "}\n" & maui-indent 2 & "if (Content == null) {\n" & maui-indent 3 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 3 & "if (_output.Count == 0) _output.Add(\"(no output -- opening() did not set Content)\");\n" & maui-indent 3 & "foreach (var line in _output)\n" & maui-indent 4 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Courier New\", TextColor = Colors.Red, FontSize = 12 });\n" & maui-indent 3 & "Content = new ScrollView { Content = stack };\n" & maui-indent 2 & "}\n" & maui-indent 1 & "}\n"
    in let footer = "}\n"
    in header & page-ref & builtins & runtime & types-text & defs-text & constructor & footer

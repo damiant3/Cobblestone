@@ -90,7 +90,7 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> "(" & emit-gtk-expr task arities & ").result()"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-gtk-expr body arities
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-gtk-expr body arities
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-gtk-expr body arities
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-gtk-act body arities
     is IrError (msg) (ty) (sp) -> "(lambda: (_ for _ in ()).throw(Exception(\"" & gtk-escape msg & "\")))()"
 
 Section: Binary Operators
@@ -109,19 +109,19 @@ Section: Binary Operators
    let lhs = emit-gtk-expr l arities
    in let rhs = emit-gtk-expr r arities
    in when op
-    is IrAddInt | IrAddNum -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
     is IrDivInt -> "(" & lhs & " // " & rhs & ")"
-    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
     is IrEq -> "(" & lhs & " == " & rhs & ")"
     is IrNotEq -> "(" & lhs & " != " & rhs & ")"
-    is IrLt -> "(" & lhs & " < " & rhs & ")"
-    is IrGt -> "(" & lhs & " > " & rhs & ")"
-    is IrLtEq -> "(" & lhs & " <= " & rhs & ")"
-    is IrGtEq -> "(" & lhs & " >= " & rhs & ")"
+    is IrLt | IrLtVec -> "(" & lhs & " < " & rhs & ")"
+    is IrGt | IrGtVec -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq | IrLtEqVec -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq | IrGtEqVec -> "(" & lhs & " >= " & rhs & ")"
     is IrApproxEq | IrApproxEqExact -> "(" & lhs & " == " & rhs & ")"
     is IrAnd -> "(" & lhs & " and " & rhs & ")"
     is IrOr -> "(" & lhs & " or " & rhs & ")"
@@ -198,6 +198,9 @@ Section: Match
     is IrVarPat (name) (ty) (sp) ->
      let pre = if i > 0 then " else " else ""
      in pre & "(lambda " & gtk-sanitize name & ": " & emit-gtk-expr body arities & ")(_s)" & emit-gtk-close opens
+    is IrVecPat (pats) (ty) (sp) ->
+     let pre = if i > 0 then " else " else ""
+     in pre & emit-gtk-expr body arities & emit-gtk-close opens
     is IrWildPat (sp) ->
      let pre = if i > 0 then " else " else ""
      in pre & emit-gtk-expr body arities & emit-gtk-close opens
@@ -217,6 +220,7 @@ Section: Match
    in let rest = collect-gtk-binds subs (i + 1)
    in when sub
     is IrVarPat (name) (ty) (sp) -> [GtkBind { name = name, access = "_s.field" & show i }] & rest
+    is IrVecPat (pats) (ty) (sp) -> rest
     is otherwise -> rest
 
   emit-gtk-bind-names : List GtkBind, Integer -> Text

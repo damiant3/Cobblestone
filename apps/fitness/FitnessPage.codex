@@ -39,7 +39,7 @@ Section: CSS
     & ".ring-unit{font-size:10px;color:#888}"
     & ".ring-label{font-size:12px;color:#888}"
     & ".ring-goal{font-size:10px;color:#555}"
-    & ".stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:28px}"
+    & ".stats-row{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:28px}"
     & ".stat-card{background:#161616;border-radius:12px;padding:16px;text-align:center}"
     & ".stat-val{font-size:24px;font-weight:700;margin-bottom:2px}"
     & ".stat-lbl{font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px}"
@@ -47,6 +47,7 @@ Section: CSS
     & ".stat-exercise .stat-val{color:#30d158}"
     & ".stat-steps .stat-val{color:#5ac8fa}"
     & ".stat-dist .stat-val{color:#bf5af2}"
+    & ".stat-streak .stat-val{color:#ff9500}"
     & ".week-chart{background:#161616;border-radius:12px;padding:20px;margin-bottom:28px}"
     & ".week-title{font-size:14px;font-weight:600;margin-bottom:16px}"
     & ".week-bars{display:flex;align-items:flex-end;gap:8px;height:120px}"
@@ -70,6 +71,52 @@ Section: CSS
     & ".quick-btn.active{border-color:#ff3b30;background:#2a1414}"
     & ".quick-icon{font-size:24px;margin-bottom:6px}"
     & ".quick-name{font-size:11px;color:#999}"
+    & ".goals-section{background:#161616;border-radius:12px;padding:20px;margin-bottom:28px}"
+    & ".goals-title{font-size:14px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}"
+    & ".goals-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}"
+    & ".goal-item{display:flex;flex-direction:column;gap:6px}"
+    & ".goal-label{font-size:12px;color:#888}"
+    & ".goal-progress{font-size:18px;font-weight:600}"
+    & ".goal-bar{height:6px;background:#222;border-radius:3px;overflow:hidden}"
+    & ".goal-fill{height:100%;border-radius:3px;transition:width .3s}"
+    & ".goal-fill-cal{background:#ff3b30}"
+    & ".goal-fill-ex{background:#30d158}"
+    & ".goal-edit-row{display:flex;gap:8px;align-items:center;margin-top:8px}"
+    & ".goal-input{background:#222;border:1px solid #333;border-radius:6px;color:#e1e1e1;padding:6px 10px;font-size:13px;width:80px}"
+    & ".pr-section{background:#161616;border-radius:12px;padding:20px;margin-bottom:28px}"
+    & ".pr-title{font-size:14px;font-weight:600;margin-bottom:14px}"
+    & ".pr-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}"
+    & ".pr-item{display:flex;flex-direction:column;gap:4px;padding:12px;background:#1e1e1e;border-radius:8px}"
+    & ".pr-label{font-size:12px;color:#888}"
+    & ".pr-value{font-size:20px;font-weight:700;color:#ffd60a}"
+    & ".body-section{background:#161616;border-radius:12px;padding:20px;margin-bottom:28px}"
+    & ".body-title{font-size:14px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}"
+    & ".body-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}"
+    & ".body-item{text-align:center;padding:12px;background:#1e1e1e;border-radius:8px}"
+    & ".body-val{font-size:22px;font-weight:700;color:#5ac8fa;margin-bottom:4px}"
+    & ".body-lbl{font-size:11px;color:#888}"
+    & ".filter-bar{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}"
+    & ".filter-btn{background:#1e1e1e;border:1px solid #333;border-radius:16px;padding:6px 14px;font-size:11px;color:#999;cursor:pointer;transition:all .15s}"
+    & ".filter-btn:hover{border-color:#ff3b30;color:#e1e1e1}"
+    & ".filter-btn.active{background:#2a1414;border-color:#ff3b30;color:#ff3b30}"
+    & ".export-bar{display:flex;align-items:center;gap:12px;margin-bottom:20px}"
+    & ".export-msg{font-size:12px;color:#41af4e}"
+    & ".add-workout-bar{display:flex;gap:8px;margin-bottom:16px}"
+
+  workout-cal-estimate : Integer -> Integer
+  workout-cal-estimate (lt) =
+    if lt == 1 then 350
+    else if lt == 2 then 400
+    else if lt == 3 then 450
+    else if lt == 4 then 300
+    else if lt == 5 then 180
+    else if lt == 6 then 320
+    else if lt == 7 then 380
+    else 250
+
+  goal-pct : Integer, Integer -> Integer
+  goal-pct (actual) (goal) =
+    if goal == 0 then 0 else (actual * 100) / goal
 
 Section: Tree
 
@@ -83,16 +130,29 @@ Section: Tree
       rings-section 0,
       stats-row 0,
       quick-log 0,
+      widget-box "add-bar" "add-workout-bar" [
+        widget-button "btn-add-workout" "Log Workout"
+      ],
+      goals-section 0,
       week-chart 0,
+      pr-section 0,
+      body-section 0,
+      widget-box "export-bar" "export-bar" [
+        widget-button "btn-export" "Export Stats",
+        if state-get "export-status" == 1 then widget-label "export-msg" "Stats exported!" else widget-label "export-msg" ""
+      ],
       widget-label "recent-hdr" "Recent Workouts",
-      workout-list 0
+      filter-bar 0,
+      widget-box "workouts" "workout-list" (build-workout-list 0 (state-get "workout-count") [])
     ]
 
   rings-section : Integer -> WidgetNode
   rings-section (x) =
-    widget-box "rings" "rings" [
-      ring "r-move" "ring-move" "524" "CAL" "Move" "Goal: 600",
-      ring "r-exercise" "ring-exercise" "30" "MIN" "Exercise" "Goal: 60",
+    let cal = state-get-text "total-cal"
+    in let ex = state-get-text "total-ex-min"
+    in widget-box "rings" "rings" [
+      ring "r-move" "ring-move" cal "CAL" "Move" "Goal: 600",
+      ring "r-exercise" "ring-exercise" ex "MIN" "Exercise" "Goal: 60",
       ring "r-stand" "ring-stand" "8" "HRS" "Stand" "Goal: 10"
     ]
 
@@ -111,11 +171,17 @@ Section: Tree
 
   stats-row : Integer -> WidgetNode
   stats-row (x) =
-    widget-box "stats" "stats-row" [
-      stat-card "s-cal" "stat-move" "524" "Calories",
-      stat-card "s-ex" "stat-exercise" "30 min" "Exercise",
-      stat-card "s-steps" "stat-steps" "7,842" "Steps",
-      stat-card "s-dist" "stat-dist" "3.6 mi" "Distance"
+    let cal = state-get-text "total-cal"
+    in let ex = state-get-text "total-ex-min"
+    in let steps = state-get-text "total-steps"
+    in let dist = state-get-text "total-dist"
+    in let streak = state-get-text "streak-count-txt"
+    in widget-box "stats" "stats-row" [
+      stat-card "s-cal" "stat-move" cal "Calories",
+      stat-card "s-ex" "stat-exercise" (ex & " min") "Exercise",
+      stat-card "s-steps" "stat-steps" steps "Steps",
+      stat-card "s-dist" "stat-dist" (dist & " mi") "Distance",
+      stat-card "s-streak" "stat-streak" (streak & " days" & if state-get "streak-count" >= 7 then " &#x1F525;" else "") "Streak"
     ]
 
   stat-card : Text, Text, Text, Text -> WidgetNode
@@ -135,7 +201,8 @@ Section: Tree
       quick-btn "q-yoga" "&#x1F9D8;" "Yoga" 5,
       quick-btn "q-hike" "&#x26F0;" "Hike" 6,
       quick-btn "q-row" "&#x1F6A3;" "Row" 7,
-      quick-btn "q-other" "&#x2795;" "Other" 8
+      quick-btn "q-other" "&#x2795;" "Other" 8,
+      if state-get "log-type" > 0 then widget-label "cal-est" ("Est. " & show (workout-cal-estimate (state-get "log-type")) & " cal/30min") else widget-label "cal-est" ""
     ]
 
   quick-btn : Text, Text, Text, Integer -> WidgetNode
@@ -143,6 +210,101 @@ Section: Tree
     widget-box-click id (if state-get "log-type" == n then "quick-btn active" else "quick-btn") [
       widget-label (id & "i") icon,
       widget-label (id & "n") name
+    ]
+
+  goals-section : Integer -> WidgetNode
+  goals-section (x) =
+    let gcal = state-get "goal-cal"
+    in let gex = state-get "goal-ex"
+    in let acal = state-get "actual-cal"
+    in let aex = state-get "actual-ex"
+    in let editing = state-get "editing-goals"
+    in widget-box "goals" "goals-section" [
+      widget-box "goals-hdr" "goals-title" [
+        widget-label "goals-t" "Weekly Goals",
+        widget-button "btn-edit-goals" (if editing == 1 then "Done" else "Edit Goals")
+      ],
+      widget-box "goals-g" "goals-grid" [
+        widget-box "goal-cal-item" "goal-item" [
+          widget-label "goal-cal-lbl" "Calories",
+          widget-label "goal-cal-prog" (show acal & " / " & show gcal & " (" & show (goal-pct acal gcal) & "%)"),
+          widget-box "goal-cal-bar" "goal-bar" [
+            widget-label "goal-cal-fill" ""
+          ]
+        ],
+        widget-box "goal-ex-item" "goal-item" [
+          widget-label "goal-ex-lbl" "Exercise (min)",
+          widget-label "goal-ex-prog" (show aex & " / " & show gex & " (" & show (goal-pct aex gex) & "%)"),
+          widget-box "goal-ex-bar" "goal-bar" [
+            widget-label "goal-ex-fill" ""
+          ]
+        ]
+      ],
+      if editing == 1 then widget-box "goal-edit" "goal-edit-row" [
+        widget-label "ge-cal-lbl" "Cal target:",
+        wk-attach (widget-custom "ge-cal-input" "input" 0 0) [] 0 2,
+        widget-label "ge-ex-lbl" "Ex target:",
+        wk-attach (widget-custom "ge-ex-input" "input" 0 0) [] 0 2
+      ] else widget-label "goal-edit-spacer" ""
+    ]
+
+  pr-section : Integer -> WidgetNode
+  pr-section (x) =
+    widget-box "prs" "pr-section" [
+      widget-label "pr-t" "Personal Records",
+      widget-box "pr-g" "pr-grid" (build-pr-items 0 (state-get "pr-count") [])
+    ]
+
+  build-pr-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  build-pr-items (i) (count) (acc) =
+    if i >= count then acc
+    else let lbl = state-get-text ("pr-label-" & show i)
+    in let val = state-get-text ("pr-value-" & show i)
+    in let item = widget-box ("pr-" & show i) "pr-item" [
+      widget-label ("pr-l-" & show i) lbl,
+      widget-label ("pr-v-" & show i) val
+    ]
+    in build-pr-items (i + 1) count (list-push acc item)
+
+  body-section : Integer -> WidgetNode
+  body-section (x) =
+    let wt = state-get-text "body-weight"
+    in let bmi = state-get-text "body-bmi"
+    in let ht = state-get-text "body-height"
+    in widget-box "body" "body-section" [
+      widget-box "body-hdr" "body-title" [
+        widget-label "body-t" "Body Metrics",
+        widget-box "weight-log-row" "goal-edit-row" [
+          wk-attach (widget-custom "weight-input" "input" 0 0) [] 0 2,
+          widget-button "btn-log-weight" "Log Weight"
+        ]
+      ],
+      widget-box "body-g" "body-grid" [
+        widget-box "body-wt" "body-item" [
+          widget-label "body-wt-v" (wt & " lbs"),
+          widget-label "body-wt-l" "Weight"
+        ],
+        widget-box "body-bmi-item" "body-item" [
+          widget-label "body-bmi-v" bmi,
+          widget-label "body-bmi-l" "BMI"
+        ],
+        widget-box "body-ht" "body-item" [
+          widget-label "body-ht-v" ht,
+          widget-label "body-ht-l" "Height"
+        ]
+      ]
+    ]
+
+  filter-bar : Integer -> WidgetNode
+  filter-bar (x) =
+    let f = state-get "filter-type"
+    in widget-box "filters" "filter-bar" [
+      widget-box-click "f-all" (if f == 0 then "filter-btn active" else "filter-btn") [widget-label "f-all-t" "All"],
+      widget-box-click "f-run" (if f == 1 then "filter-btn active" else "filter-btn") [widget-label "f-run-t" "Run"],
+      widget-box-click "f-bike" (if f == 2 then "filter-btn active" else "filter-btn") [widget-label "f-bike-t" "Cycle"],
+      widget-box-click "f-swim" (if f == 3 then "filter-btn active" else "filter-btn") [widget-label "f-swim-t" "Swim"],
+      widget-box-click "f-lift" (if f == 4 then "filter-btn active" else "filter-btn") [widget-label "f-lift-t" "Weights"],
+      widget-box-click "f-yoga" (if f == 5 then "filter-btn active" else "filter-btn") [widget-label "f-yoga-t" "Yoga"]
     ]
 
   week-chart : Integer -> WidgetNode
@@ -168,28 +330,46 @@ Section: Tree
       widget-label (id & "d") day
     ]
 
-  workout-list : Integer -> WidgetNode
-  workout-list (x) =
-    widget-box "workouts" "workout-list" [
-      workout-item "w0" "&#x1F3C3;" "Morning Run" "Today, 6:30 AM &#x2022; 5.2 mi &#x2022; 42:18" "412",
-      workout-item "w1" "&#x1F3CB;" "Strength Training" "Yesterday &#x2022; Upper Body &#x2022; 45 min" "380",
-      workout-item "w2" "&#x1F6B4;" "Evening Ride" "Jun 6 &#x2022; 12.4 mi &#x2022; 38:50" "510",
-      workout-item "w3" "&#x1F3CA;" "Lap Swim" "Jun 5 &#x2022; 1500m &#x2022; 32 min" "340",
-      workout-item "w4" "&#x1F9D8;" "Yoga Flow" "Jun 4 &#x2022; Vinyasa &#x2022; 55 min" "220",
-      workout-item "w5" "&#x1F3C3;" "Interval Run" "Jun 3 &#x2022; 4.0 mi &#x2022; 35:12" "465",
-      workout-item "w6" "&#x26F0;" "Trail Hike" "Jun 1 &#x2022; Eagle Peak &#x2022; 2h 15m" "680"
-    ]
-
-  workout-item : Text, Text, Text, Text, Text -> WidgetNode
-  workout-item (id) (icon) (name) (meta) (cal) =
-    widget-box-click id (if state-get "selected-workout" == id-num id + 1 then "workout-item selected" else "workout-item") [
-      widget-label (id & "i") icon,
-      widget-box (id & "info") "workout-info" [
-        widget-label (id & "n") name,
-        widget-label (id & "m") meta
+  build-workout-list : Integer, Integer, List WidgetNode -> List WidgetNode
+  build-workout-list (i) (count) (acc) =
+    if i >= count then acc
+    else let ft = state-get "filter-type"
+    in let wtype = state-get ("w-type-" & show i)
+    in if ft > 0 then if wtype /= ft then build-workout-list (i + 1) count acc
+    else let name = state-get-text ("w-name-" & show i)
+    in let dur = state-get-text ("w-dur-" & show i)
+    in let cal = state-get-text ("w-cal-" & show i)
+    in let dist = state-get-text ("w-dist-" & show i)
+    in let date = state-get-text ("w-date-" & show i)
+    in let icon = state-get-text ("w-icon-" & show i)
+    in let meta = date & " &#x2022; " & dist & " &#x2022; " & dur
+    in let sel = state-get "selected-workout"
+    in let item = widget-box-click ("w" & show i) (if sel == i + 1 then "workout-item selected" else "workout-item") [
+      widget-label ("w" & show i & "i") icon,
+      widget-box ("w" & show i & "info") "workout-info" [
+        widget-label ("w" & show i & "n") name,
+        widget-label ("w" & show i & "m") meta
       ],
-      widget-label (id & "c") (cal & " cal")
+      widget-label ("w" & show i & "c") (cal & " cal")
     ]
+    in build-workout-list (i + 1) count (list-push acc item)
+    else let name = state-get-text ("w-name-" & show i)
+    in let dur = state-get-text ("w-dur-" & show i)
+    in let cal = state-get-text ("w-cal-" & show i)
+    in let dist = state-get-text ("w-dist-" & show i)
+    in let date = state-get-text ("w-date-" & show i)
+    in let icon = state-get-text ("w-icon-" & show i)
+    in let meta = date & " &#x2022; " & dist & " &#x2022; " & dur
+    in let sel = state-get "selected-workout"
+    in let item = widget-box-click ("w" & show i) (if sel == i + 1 then "workout-item selected" else "workout-item") [
+      widget-label ("w" & show i & "i") icon,
+      widget-box ("w" & show i & "info") "workout-info" [
+        widget-label ("w" & show i & "n") name,
+        widget-label ("w" & show i & "m") meta
+      ],
+      widget-label ("w" & show i & "c") (cal & " cal")
+    ]
+    in build-workout-list (i + 1) count (list-push acc item)
 
 Section: Handlers
 
@@ -203,8 +383,162 @@ Section: Handlers
     else if id == "q-hike" then let s = state-set-render "log-type" 6 in 0
     else if id == "q-row" then let s = state-set-render "log-type" 7 in 0
     else if id == "q-other" then let s = state-set-render "log-type" 8 in 0
+    else if id == "f-all" then let s = state-set-render "filter-type" 0 in 0
+    else if id == "f-run" then let s = state-set-render "filter-type" 1 in 0
+    else if id == "f-bike" then let s = state-set-render "filter-type" 2 in 0
+    else if id == "f-swim" then let s = state-set-render "filter-type" 3 in 0
+    else if id == "f-lift" then let s = state-set-render "filter-type" 4 in 0
+    else if id == "f-yoga" then let s = state-set-render "filter-type" 5 in 0
+    else if id == "btn-edit-goals" then let cur = state-get "editing-goals" in let s = state-set-render "editing-goals" (if cur == 1 then 0 else 1) in 0
+    else if id == "btn-export" then let s = state-set-render "export-status" 1 in 0
+    else if id == "btn-log-weight" then
+      let wv = state-get-text "weight-input-val"
+      in let cur = state-get "weight-log-count"
+      in let s1 = if text-length wv > 0 then state-set-text "body-weight" wv else ""
+      in let s2 = state-set-render "weight-log-count" (cur + 1)
+      in 0
+    else if id == "btn-add-workout" then add-workout 0
     else if text-starts-with id "w" then let s = state-set-render "selected-workout" (id-num id + 1) in 0
     else 0
+
+  add-workout : Integer -> Integer
+  add-workout (x) =
+    let lt = state-get "log-type"
+    in let idx = state-get "workout-count"
+    in let nm = if lt == 1 then "Run" else if lt == 2 then "Cycle" else if lt == 3 then "Swim" else if lt == 4 then "Weights" else if lt == 5 then "Yoga" else if lt == 6 then "Hike" else if lt == 7 then "Row" else "Workout"
+    in let ic = if lt == 1 then "&#x1F3C3;" else if lt == 2 then "&#x1F6B4;" else if lt == 3 then "&#x1F3CA;" else if lt == 4 then "&#x1F3CB;" else if lt == 5 then "&#x1F9D8;" else if lt == 6 then "&#x26F0;" else if lt == 7 then "&#x1F6A3;" else "&#x2795;"
+    in let ty = if lt >= 1 then if lt <= 5 then lt else 1 else 1
+    in let s1 = state-set-text ("w-name-" & show idx) nm
+    in let s2 = state-set ("w-type-" & show idx) ty
+    in let s3 = state-set-text ("w-dur-" & show idx) "30 min"
+    in let s4 = state-set-text ("w-cal-" & show idx) (show (workout-cal-estimate lt))
+    in let s5 = state-set-text ("w-dist-" & show idx) "0"
+    in let s6 = state-set-text ("w-date-" & show idx) "Today"
+    in let s7 = state-set-text ("w-icon-" & show idx) ic
+    in let s8 = state-set-render "workout-count" (idx + 1)
+    in 0
+
+  fitness-input : Text, Text -> Integer
+  fitness-input (id) (value) =
+    if id == "ge-cal-input" then let s = state-set-text "goal-cal-input" value in 0
+    else if id == "ge-ex-input" then let s = state-set-text "goal-ex-input" value in 0
+    else if id == "weight-input" then let s = state-set-text "weight-input-val" value in 0
+    else 0
+
+Section: Data
+
+  load-workout-data : Integer -> Integer
+  load-workout-data (x) =
+    let s0 = state-set "workout-count" 10
+    in let s1 = state-set-text "w-name-0" "Morning Run"
+    in let s2 = state-set "w-type-0" 1
+    in let s3 = state-set-text "w-dur-0" "42:18"
+    in let s4 = state-set-text "w-cal-0" "412"
+    in let s5 = state-set-text "w-dist-0" "5.2 mi"
+    in let s6 = state-set-text "w-date-0" "Today, 6:30 AM"
+    in let s7 = state-set-text "w-icon-0" "&#x1F3C3;"
+    in let s8 = state-set-text "w-name-1" "Strength Training"
+    in let s9 = state-set "w-type-1" 4
+    in let s10 = state-set-text "w-dur-1" "45 min"
+    in let s11 = state-set-text "w-cal-1" "380"
+    in let s12 = state-set-text "w-dist-1" "Upper Body"
+    in let s13 = state-set-text "w-date-1" "Yesterday"
+    in let s14 = state-set-text "w-icon-1" "&#x1F3CB;"
+    in let s15 = state-set-text "w-name-2" "Evening Ride"
+    in let s16 = state-set "w-type-2" 2
+    in let s17 = state-set-text "w-dur-2" "38:50"
+    in let s18 = state-set-text "w-cal-2" "510"
+    in let s19 = state-set-text "w-dist-2" "12.4 mi"
+    in let s20 = state-set-text "w-date-2" "Jun 6"
+    in let s21 = state-set-text "w-icon-2" "&#x1F6B4;"
+    in let s22 = state-set-text "w-name-3" "Lap Swim"
+    in let s23 = state-set "w-type-3" 3
+    in let s24 = state-set-text "w-dur-3" "32 min"
+    in let s25 = state-set-text "w-cal-3" "340"
+    in let s26 = state-set-text "w-dist-3" "1500m"
+    in let s27 = state-set-text "w-date-3" "Jun 5"
+    in let s28 = state-set-text "w-icon-3" "&#x1F3CA;"
+    in let s29 = state-set-text "w-name-4" "Yoga Flow"
+    in let s30 = state-set "w-type-4" 5
+    in let s31 = state-set-text "w-dur-4" "55 min"
+    in let s32 = state-set-text "w-cal-4" "220"
+    in let s33 = state-set-text "w-dist-4" "Vinyasa"
+    in let s34 = state-set-text "w-date-4" "Jun 4"
+    in let s35 = state-set-text "w-icon-4" "&#x1F9D8;"
+    in let s36 = state-set-text "w-name-5" "Interval Run"
+    in let s37 = state-set "w-type-5" 1
+    in let s38 = state-set-text "w-dur-5" "35:12"
+    in let s39 = state-set-text "w-cal-5" "465"
+    in let s40 = state-set-text "w-dist-5" "4.0 mi"
+    in let s41 = state-set-text "w-date-5" "Jun 3"
+    in let s42 = state-set-text "w-icon-5" "&#x1F3C3;"
+    in let s43 = state-set-text "w-name-6" "Trail Hike"
+    in let s44 = state-set "w-type-6" 1
+    in let s45 = state-set-text "w-dur-6" "2h 15m"
+    in let s46 = state-set-text "w-cal-6" "680"
+    in let s47 = state-set-text "w-dist-6" "Eagle Peak"
+    in let s48 = state-set-text "w-date-6" "Jun 1"
+    in let s49 = state-set-text "w-icon-6" "&#x26F0;"
+    in let s50 = state-set-text "w-name-7" "Spin Class"
+    in let s51 = state-set "w-type-7" 2
+    in let s52 = state-set-text "w-dur-7" "45 min"
+    in let s53 = state-set-text "w-cal-7" "520"
+    in let s54 = state-set-text "w-dist-7" "14.2 mi"
+    in let s55 = state-set-text "w-date-7" "May 31"
+    in let s56 = state-set-text "w-icon-7" "&#x1F6B4;"
+    in let s57 = state-set-text "w-name-8" "Pool Laps"
+    in let s58 = state-set "w-type-8" 3
+    in let s59 = state-set-text "w-dur-8" "28 min"
+    in let s60 = state-set-text "w-cal-8" "310"
+    in let s61 = state-set-text "w-dist-8" "1200m"
+    in let s62 = state-set-text "w-date-8" "May 30"
+    in let s63 = state-set-text "w-icon-8" "&#x1F3CA;"
+    in let s64 = state-set-text "w-name-9" "Power Yoga"
+    in let s65 = state-set "w-type-9" 5
+    in let s66 = state-set-text "w-dur-9" "60 min"
+    in let s67 = state-set-text "w-cal-9" "280"
+    in let s68 = state-set-text "w-dist-9" "Power Flow"
+    in let s69 = state-set-text "w-date-9" "May 29"
+    in let s70 = state-set-text "w-icon-9" "&#x1F9D8;"
+    in 0
+
+  load-stats : Integer -> Integer
+  load-stats (x) =
+    let s1 = state-set-text "total-cal" "524"
+    in let s2 = state-set-text "total-ex-min" "30"
+    in let s3 = state-set-text "total-steps" "7,842"
+    in let s4 = state-set-text "total-dist" "3.6"
+    in let s5 = state-set "streak-count" 7
+    in let s6 = state-set-text "streak-count-txt" "7"
+    in 0
+
+  load-goals : Integer -> Integer
+  load-goals (x) =
+    let s1 = state-set "goal-cal" 4200
+    in let s2 = state-set "goal-ex" 300
+    in let s3 = state-set "actual-cal" 3200
+    in let s4 = state-set "actual-ex" 210
+    in 0
+
+  load-pr-data : Integer -> Integer
+  load-pr-data (x) =
+    let s0 = state-set "pr-count" 4
+    in let s1 = state-set-text "pr-label-0" "Fastest 5K"
+    in let s2 = state-set-text "pr-value-0" "24:30"
+    in let s3 = state-set-text "pr-label-1" "Longest Run"
+    in let s4 = state-set-text "pr-value-1" "13.1 mi"
+    in let s5 = state-set-text "pr-label-2" "Most Calories"
+    in let s6 = state-set-text "pr-value-2" "890"
+    in let s7 = state-set-text "pr-label-3" "Longest Streak"
+    in let s8 = state-set-text "pr-value-3" "14 days"
+    in 0
+
+  load-body-data : Integer -> Integer
+  load-body-data (x) =
+    let s1 = state-set-text "body-weight" "172"
+    in let s2 = state-set-text "body-bmi" "23.4"
+    in let s3 = state-set-text "body-height" "5'11\""
+    in 0
 
 Section: Entry
 
@@ -214,8 +548,21 @@ Section: Entry
   opening : [Console] Integer
   opening = act
     let t = inject-app-style fitness-theme fitness-css
-    in let s = set-render render-fitness
+    in let d1 = load-workout-data 0
+    in let d2 = load-stats 0
+    in let d3 = load-goals 0
+    in let d4 = load-pr-data 0
+    in let d5 = load-body-data 0
+    in let s1 = state-set "selected-workout" (-1)
+    in let s2 = state-set "log-type" 0
+    in let s3 = state-set "filter-type" 0
+    in let s4 = state-set "editing-goals" 0
+    in let s5 = state-set "export-status" 0
+    in let s5b = state-set-text "weight-input-val" ""
+    in let s5c = state-set "weight-log-count" 0
+    in let s6 = set-render render-fitness
     in let h = register-handlers no-pick fitness-click
+    in let hi = register-input-handler fitness-input
     in render-fitness 0
   end
 

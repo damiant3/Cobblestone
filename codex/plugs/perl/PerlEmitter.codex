@@ -25,7 +25,7 @@ Section: Keywords and Sanitization
   pl-sanitize : Text -> Text
   pl-sanitize (name) =
    let s = text-replace name "-" "_"
-   in if pl-is-keyword s then s & "_v"
+   in if pl-is-keyword s 0 then s & "_v"
       else s
 
   pl-escape : Text -> Text
@@ -172,17 +172,25 @@ Section: Expression Emission
   pl-bin-op : IRBinaryOp -> Text
   pl-bin-op (op) =
    when op
-    is IrAddInt | IrAddNum | IrAddVec -> "+"
-    is IrSubInt | IrSubNum | IrSubVec -> "-"
-    is IrMulInt | IrMulNum | IrMulVec -> "*"
-    is IrDivInt | IrDivNum | IrDivVec -> "/"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
     is IrRemInt -> "%"
     is IrPowInt -> "**"
-    is IrEq -> "=="  is IrNotEq -> "!="
-    is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
-    is IrApproxEq -> "=="  is IrApproxEqExact -> "=="
-    is IrAnd -> "&&"  is IrOr -> "||"  is IrAppendText -> "."
-    is IrAppendList -> "+"  is IrConsList -> "+"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq -> "=="
+    is IrApproxEqExact -> "=="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText -> "."
+    is IrAppendList -> "+"
+    is IrConsList -> "+"
 
   emit-pl-lambda-params : List IRParam, Integer -> Text
   emit-pl-lambda-params (params) (i) =
@@ -220,6 +228,7 @@ Section: Expression Emission
     is IrCtorPat (name) (subs) (ty) (sp) -> "($_s->{'tag'} eq \"" & name & "\" ? " & emit-pl-ctor-bind subs body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
     is IrVarPat (name) (ty) (sp) -> "(sub { my $" & pl-sanitize name & " = $_s; " & emit-pl-expr body arities & " })->()"
     is IrWildPat (sp) -> emit-pl-expr body arities
+    is IrVecPat (pats) (ty) (sp) -> emit-pl-expr body arities
 
   emit-pl-ctor-bind : List IRPat, IRExpr, List ArityEntry -> Text
   emit-pl-ctor-bind (subs) (body) (arities) =

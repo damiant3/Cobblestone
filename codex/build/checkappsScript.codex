@@ -1,0 +1,48 @@
+Chapter: CheckAppsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates check-apps.ps1 -- asserts runtime invariants across every
+ generated app page. Each web/<name>.html must carry the shared runtime
+ the apps depend on.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  ca-params : List ShellParam = []
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScComment "Pages not produced by the widget pipeline", ScAssign "Skip" (SeArrayLiteral [SeLit "fishtank"])]
+
+Section: S02 -- Invariant Table
+
+  s02 : List ShellCmd = [ScAssign "Invariants" (SeRaw "[ordered]@{ 'html-shell' = '(?s)^<!(DOCTYPE|doctype) html'; 'click-dispatch' = '_wkOnClick'; 'state-runtime' = 'function state_get\\('; 'render-loop' = 'function set_render\\(|_render'; 'handler-binding' = 'register_handlers\\('; 'theme-css' = 'function theme_to_css\\('; 'audio-runtime' = 'function play_tone\\('; 'input-channel' = 'register_input_handler|function _wkOnInput|on-input' }")]
+
+Section: S03 -- Scan Loop
+
+  s03-inner : List ShellCmd = [ScAssign "appDir" (SeProperty (SeProperty (SeVar "html") "Directory") "Parent"), ScAssign "base" (SeProperty (SeVar "html") "BaseName"), ScRaw "$pages = @(Get-ChildItem (Join-Path $appDir.FullName '*Page.codex') -ErrorAction SilentlyContinue | Where-Object { ($_.BaseName -replace 'WebPage$|Page$','').ToLower() -eq $base })", ScIf (SeRaw "$pages.Count -eq 0") [ScContinue] [], ScIf (SeRaw "$Skip -contains $base") [ScContinue] [], ScAssign "txt" (SeStaticCall "System.IO.File" "ReadAllText" [SeProperty (SeVar "html") "FullName"]), ScAssign "bad" (SeRaw "@()"), ScForEach "k" (SeRaw "$Invariants.Keys") [ScIf (SeRaw "$txt -notmatch $Invariants[$k]") [ScRaw "$bad += $k"] []], ScAssign "lf" (SeRaw "([regex]::Matches($txt, \"`n\")).Count"), ScAssign "crlf" (SeRaw "([regex]::Matches($txt, \"`r`n\")).Count"), ScIf (SeRaw "$lf -ne $crlf") [ScRaw "$bad += 'crlf-endings'"] [], ScRaw "$checked++", ScIf (SeRaw "$bad.Count -gt 0") [ScRaw "Write-Host (\"FAIL {0,-12} {1}\" -f $base, ($bad -join ', ')) -ForegroundColor Red", ScRaw "$failed++"] [ScRaw "Write-Host (\"ok   {0}\" -f $base) -ForegroundColor Green"]]
+
+  s03 : List ShellCmd = [ScAssign "failed" (SeInt 0), ScAssign "checked" (SeInt 0), ScForEach "html" (SeRaw "Get-ChildItem (Join-Path $Repo 'apps\\*\\web\\*.html')") s03-inner]
+
+Section: S04 -- Summary
+
+  s04 : List ShellCmd = [ScEcho (SeLit ""), ScIf (SeRaw "$failed -gt 0") [ScRaw "Write-Host \"$failed of $checked pages violate invariants\" -ForegroundColor Red", ScExit (SeInt 1)] [ScRaw "Write-Host \"all $checked pages carry the shared runtime\" -ForegroundColor Green"]]
+
+Section: Assembly
+
+  ca-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04]
+
+  ca-script : ShellScript = sh-script "check-apps" "Assert runtime invariants across every generated app page" ca-params ca-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell ca-script)
+  end
+
+Page 1

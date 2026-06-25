@@ -1,0 +1,240 @@
+Chapter: AnnotationPersistDriver
+  cites Works chapter AnnotationDriver
+  cites Works chapter AnnotationStore
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter RepoProtocol
+  cites Works chapter Annotation
+  cites Works chapter Discussion
+  cites Works chapter SignedAnnotation
+  cites Works chapter KeyManager
+  cites Works chapter MutationLog
+  cites Works chapter ConsoleEditor
+  cites Works chapter CodeBrowser
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+
+ Persistence wrapper around AnnotationDriver. On init, loads
+ annotations, proposals, and verdicts from DiskFacts (kinds
+ 35-37). On every mutation (annotate, publish, accept, reject,
+ incoming proposal/verdict), persists the new record back to
+ DiskFacts. The AnnotationDriver handles the in-memory state;
+ this layer handles durability.
+
+ Follows the browser opening pattern: a composite state record
+ carrying both the driver and the DiskFactStore, with each
+ operation updating both.
+
+Section: Composite State
+
+  AnnotationPersistState = record {
+    aps-driver : AnnotationDriver,
+    aps-disk : DiskFactStore,
+    aps-log : MutationLog
+  }
+
+Section: Loading from DiskFacts
+
+  load-annotations-into : AnnotationFact, DiskFactStore -> AnnotationFact
+  load-annotations-into (af) (disk) =
+    let anns = repo-persist-load-all-annotations disk
+    in fold-annotations-into af anns 0 (list-length anns)
+
+  fold-annotations-into : AnnotationFact, List Annotation, Integer, Integer -> AnnotationFact
+  fold-annotations-into (af) (anns) (i) (len) =
+    if i >= len then af
+    else let a = list-at anns i
+    in let af2 = annotate-fact-with af a
+    in fold-annotations-into af2 anns (i + 1) len
+
+  annotate-fact-with : AnnotationFact, Annotation -> AnnotationFact
+  annotate-fact-with (af) (a) = AnnotationFact {
+    annotations = annotation-store-add (af.annotations) a,
+    discussions = af.discussions,
+    facts = af.facts
+  }
+
+  load-proposals-into : RepoState, DiskFactStore -> RepoState
+  load-proposals-into (repo) (disk) =
+    let props = repo-persist-load-all-proposals disk
+    in fold-proposals-into repo props 0 (list-length props)
+
+  fold-proposals-into : RepoState, List Proposal, Integer, Integer -> RepoState
+  fold-proposals-into (repo) (props) (i) (len) =
+    if i >= len then repo
+    else let p = list-at props i
+    in let new-proposals = hamt-set (repo.proposals) (p.id) p
+    in fold-proposals-into (__record-set repo "proposals" new-proposals) props (i + 1) len
+
+  load-verdicts-into : RepoState, DiskFactStore -> RepoState
+  load-verdicts-into (repo) (disk) =
+    let vds = repo-persist-load-all-verdicts disk
+    in fold-verdicts-into repo vds 0 (list-length vds)
+
+  fold-verdicts-into : RepoState, List Verdict, Integer, Integer -> RepoState
+  fold-verdicts-into (repo) (vds) (i) (len) =
+    if i >= len then repo
+    else let v = list-at vds i
+    in let existing = when hamt-get (repo.verdicts) (v.proposal-id)
+      is Just (vs) -> vs
+      is None -> []
+    in let new-verdicts = hamt-set (repo.verdicts) (v.proposal-id) (list-push existing v)
+    in fold-verdicts-into (__record-set repo "verdicts" new-verdicts) vds (i + 1) len
+
+Section: Initialization
+
+  persist-driver-init : Keypair, DiskFactStore -> AnnotationPersistState
+  persist-driver-init (kp) (disk) =
+    let base = driver-init kp
+    in let af = load-annotations-into (base.facts) disk
+    in let repo = load-proposals-into (base.repo) disk
+    in let repo2 = load-verdicts-into repo disk
+    in let driver = AnnotationDriver {
+      repo = repo2,
+      facts = af,
+      notifications = base.notifications,
+      verdicts = base.verdicts,
+      source-index = base.source-index,
+      keypair = kp,
+      lattice = base.lattice,
+      threshold = base.threshold,
+      open-chapter = base.open-chapter
+    }
+    in AnnotationPersistState {
+      aps-driver = driver,
+      aps-disk = disk,
+      aps-log = log-empty
+    }
+
+Section: Persistent Annotate
+
+  persist-annotate-cursor : AnnotationPersistState, EditorState, AnnotationKind, Text, Integer -> AnnotationPersistState
+  persist-annotate-cursor (st) (e) (kind) (body) (ts) =
+    let result = annotate-cursor (st.aps-driver) e kind body ts
+    in when result.signed
+      is None -> AnnotationPersistState {
+        aps-driver = result.driver,
+        aps-disk = st.aps-disk,
+        aps-log = st.aps-log
+      }
+      is Just (sa) ->
+        let ann = sa.annotation
+        in let new-disk = repo-persist-save-annotation (st.aps-disk) ann ts
+        in let t = ann.target
+        in let new-log = log-append (st.aps-log) OpAnnotate (ann.target) (ann.kind) (ann.author) (ann.body) ts 0
+        in AnnotationPersistState {
+          aps-driver = result.driver,
+          aps-disk = new-disk,
+          aps-log = new-log
+        }
+
+Section: Persistent Publish
+
+  persist-publish-cursor : AnnotationPersistState, EditorState, AnnotationKind, Text, Text, Integer -> AnnotationPersistState
+  persist-publish-cursor (st) (e) (kind) (body) (suggestion) (ts) =
+    let before-outbox = list-length (st.aps-driver.repo.outbox)
+    in let new-driver = publish-cursor (st.aps-driver) e kind body suggestion ts
+    in let after-outbox = list-length (new-driver.repo.outbox)
+    in if after-outbox > before-outbox then
+      persist-save-latest-proposal st new-driver ts
+    else AnnotationPersistState {
+      aps-driver = new-driver,
+      aps-disk = st.aps-disk,
+      aps-log = st.aps-log
+    }
+
+  persist-save-latest-proposal : AnnotationPersistState, AnnotationDriver, Integer -> AnnotationPersistState
+  persist-save-latest-proposal (st) (drv) (ts) =
+    let outbox = drv.repo.outbox
+    in let pp = list-at outbox (list-length outbox - 1)
+    in let ann = (pp.annotation).annotation
+    in let disk2 = repo-persist-save-annotation (st.aps-disk) ann ts
+    in AnnotationPersistState {
+      aps-driver = drv,
+      aps-disk = disk2,
+      aps-log = log-append (st.aps-log) OpAnnotate (ann.target) (ann.kind) (ann.author) (ann.body) ts 0
+    }
+
+Section: Persistent Accept and Reject
+
+  persist-accept : AnnotationPersistState, Text, Text, Integer -> AnnotationPersistState
+  persist-accept (st) (proposal-id) (reason) (ts) =
+    let new-driver = accept-incoming (st.aps-driver) proposal-id reason ts
+    in persist-save-latest-verdict st new-driver ts
+
+  persist-reject : AnnotationPersistState, Text, Text, Integer -> AnnotationPersistState
+  persist-reject (st) (proposal-id) (reason) (ts) =
+    let new-driver = reject-incoming (st.aps-driver) proposal-id reason ts
+    in persist-save-latest-verdict st new-driver ts
+
+  persist-save-latest-verdict : AnnotationPersistState, AnnotationDriver, Integer -> AnnotationPersistState
+  persist-save-latest-verdict (st) (drv) (ts) =
+    let outbox = drv.repo.verdict-outbox
+    in if list-length outbox == 0 then AnnotationPersistState {
+      aps-driver = drv,
+      aps-disk = st.aps-disk,
+      aps-log = st.aps-log
+    }
+    else let v = list-at outbox (list-length outbox - 1)
+    in let new-disk = repo-persist-save-verdict (st.aps-disk) v ts
+    in AnnotationPersistState {
+      aps-driver = drv,
+      aps-disk = new-disk,
+      aps-log = st.aps-log
+    }
+
+Section: Persistent Incoming
+
+  persist-inject-incoming : AnnotationPersistState, ProposalPayload, Integer -> AnnotationPersistState
+  persist-inject-incoming (st) (pp) (now) =
+    let new-driver = inject-incoming (st.aps-driver) pp now
+    in let ann = (pp.annotation).annotation
+    in let new-disk = repo-persist-save-annotation (st.aps-disk) ann now
+    in AnnotationPersistState {
+      aps-driver = new-driver,
+      aps-disk = new-disk,
+      aps-log = st.aps-log
+    }
+
+  persist-inject-verdict : AnnotationPersistState, Verdict, Integer -> AnnotationPersistState
+  persist-inject-verdict (st) (v) (now) =
+    let new-driver = inject-verdict (st.aps-driver) v now
+    in let new-disk = repo-persist-save-verdict (st.aps-disk) v now
+    in AnnotationPersistState {
+      aps-driver = new-driver,
+      aps-disk = new-disk,
+      aps-log = st.aps-log
+    }
+
+Section: Checkpoint
+
+  persist-checkpoint : AnnotationPersistState -> AnnotationPersistState
+  persist-checkpoint (st) =
+    let new-disk = disk-checkpoint (st.aps-disk)
+    in AnnotationPersistState {
+      aps-driver = st.aps-driver,
+      aps-disk = new-disk,
+      aps-log = st.aps-log
+    }
+
+Section: Queries
+
+  persist-status-line : AnnotationPersistState, EditorState -> Text
+  persist-status-line (st) (e) =
+    let base = driver-status-line (st.aps-driver) e
+    in let disk-count = disk-fact-count (st.aps-disk)
+    in let log-count = log-entry-count (st.aps-log)
+    in base & " disk:" & show disk-count & " log:" & show log-count
+
+  persist-annotations-here : AnnotationPersistState, EditorState -> List Annotation
+  persist-annotations-here (st) (e) = annotations-here (st.aps-driver) e
+
+  persist-driver : AnnotationPersistState -> AnnotationDriver
+  persist-driver (st) = st.aps-driver
+
+  persist-disk : AnnotationPersistState -> DiskFactStore
+  persist-disk (st) = st.aps-disk
+
+Page 1

@@ -1,0 +1,193 @@
+Chapter: PowerShellEmit
+
+  cites Shell chapter ShellTypes
+  cites Foreword chapter Maybe
+
+ Emits idiomatic PowerShell 7+ source from ShellScript values.
+ Split into small functions to stay within LOWER deck budget.
+
+ We say:
+
+Section: Top Level
+
+  emit-powershell : ShellScript -> Text
+  emit-powershell (script) =
+    let header = "# " & script.ss-name & ".ps1 -- " & script.ss-description & "\n# Generated from Codex Shell DSL. Do not edit by hand.\n"
+    in let binding = "[CmdletBinding()]\nparam(\n"
+    in let params = emit-ps-params (script.ss-params) 0 (list-length (script.ss-params))
+    in let body = emit-ps-cmds (script.ss-body) 0 0 (list-length (script.ss-body))
+    in header & binding & params & ")\n\n" & body & "\n"
+
+Section: Parameters
+
+  emit-ps-params : List ShellParam, Integer, Integer -> Text
+  emit-ps-params (params) (i) (len) =
+    if i >= len then ""
+    else let p = list-at params i
+    in let mandatory-attr = if p.sp-mandatory then "    [Parameter(Mandatory=$true)]\n" else ""
+    in let type-attr = emit-ps-param-type (p.sp-type)
+    in let default-val = when p.sp-default is Just (e) -> " = " & emit-ps-expr e is None -> ""
+    in let sep = if i < len - 1 then ",\n" else "\n"
+    in mandatory-attr & "    " & type-attr & "$" & p.sp-name & default-val & sep & emit-ps-params params (i + 1) len
+
+  emit-ps-param-type : ShellParamType -> Text
+  emit-ps-param-type (ty) = when ty is SptString -> "[string]" is SptInt -> "[int]" is SptSwitch -> "[switch]" is SptBool -> "[bool]" is SptPath -> "[string]"
+
+Section: Command List
+
+  emit-ps-cmds : List ShellCmd, Integer, Integer, Integer -> Text
+  emit-ps-cmds (cmds) (indent) (i) (len) =
+    if i >= len then ""
+    else emit-ps-cmd (list-at cmds i) indent & "\n" & emit-ps-cmds cmds indent (i + 1) len
+
+Section: Commands -- Core
+
+  emit-ps-cmd : ShellCmd, Integer -> Text
+  emit-ps-cmd (cmd) (indent) =
+    let pad = ps-indent indent
+    in when cmd
+      is ScRun (name) (args) -> pad & "& " & ps-quote name & " " & emit-ps-args args 0
+      is ScRunDot (path) -> pad & ". " & emit-ps-expr path
+      is ScAssign (name) (value) -> pad & "$" & name & " = " & emit-ps-expr value
+      is ScEcho (e) -> pad & "Write-Host " & emit-ps-expr e
+      is ScWriteError (e) -> pad & "[Console]::Error.WriteLine(" & emit-ps-expr e & ")"
+      is ScComment (text) -> pad & "# " & text
+      is ScBlank -> ""
+      is ScBreak -> pad & "break"
+      is ScContinue -> pad & "continue"
+      is ScExit (e) -> pad & "exit " & emit-ps-expr e
+      is ScReturn (e) -> pad & "return " & emit-ps-expr e
+      is ScRaw (text) -> pad & text
+      is ScSequence (cmds) -> emit-ps-cmds cmds indent 0 (list-length cmds)
+      is ScSetStrictMode -> pad & "Set-StrictMode -Version Latest"
+      is ScSetErrorStop -> pad & "$ErrorActionPreference = 'Stop'"
+      is ScContinueLabel (label) -> pad & "continue " & label
+      is otherwise -> emit-ps-cmd-ext cmd indent pad
+
+Section: Commands -- IO and Extended
+
+  emit-ps-cmd-ext : ShellCmd, Integer, Text -> Text
+  emit-ps-cmd-ext (cmd) (indent) (pad) =
+    when cmd
+      is ScCopy (src) (dst) -> pad & "Copy-Item -Force " & emit-ps-expr src & " " & emit-ps-expr dst
+      is ScMove (src) (dst) -> pad & "Move-Item -Force " & emit-ps-expr src & " " & emit-ps-expr dst
+      is ScDelete (path) -> pad & "Remove-Item -Force -ErrorAction SilentlyContinue " & emit-ps-expr path
+      is ScMkdir (path) -> pad & "New-Item -ItemType Directory -Force " & emit-ps-expr path & " | Out-Null"
+      is ScWriteFile (path) (content) -> pad & "Set-Content -Path " & emit-ps-expr path & " -Value " & emit-ps-expr content & " -Encoding UTF8"
+      is ScReadFile (name) (path) -> pad & "$" & name & " = Get-Content -Path " & emit-ps-expr path & " -Raw"
+      is ScReadBytes (name) (path) -> pad & "$" & name & " = [System.IO.File]::ReadAllBytes(" & emit-ps-expr path & ")"
+      is ScWriteBytes (path) (data) -> pad & "[System.IO.File]::WriteAllBytes(" & emit-ps-expr path & ", " & emit-ps-expr data & ")"
+      is ScHashFile (algo) (result-var) (path) -> pad & "$" & result-var & " = (Get-FileHash -Algorithm " & algo & " " & emit-ps-expr path & ").Hash"
+      is ScTempFile (name) -> pad & "$" & name & " = [System.IO.Path]::GetTempFileName()"
+      is ScSetContent (path) (value) -> pad & "Set-Content -Path " & emit-ps-expr path & " -Value " & emit-ps-expr value & " -Encoding UTF8"
+      is ScAddContent (path) (value) -> pad & "Add-Content -Path " & emit-ps-expr path & " -Value " & emit-ps-expr value & " -Encoding UTF8"
+      is ScDotNetCall (cls) (method) (args) -> pad & "[" & cls & "]::" & method & "(" & emit-ps-args args 0 & ")"
+      is ScDotNetCallAssign (result) (cls) (method) (args) -> pad & "$" & result & " = [" & cls & "]::" & method & "(" & emit-ps-args args 0 & ")"
+      is otherwise -> emit-ps-cmd-flow cmd indent pad
+
+Section: Commands -- Flow Control
+
+  emit-ps-cmd-flow : ShellCmd, Integer, Text -> Text
+  emit-ps-cmd-flow (cmd) (indent) (pad) =
+    when cmd
+      is ScIf (cond) (then-cmds) (else-cmds) ->
+        let tb = emit-ps-cmds then-cmds (indent + 1) 0 (list-length then-cmds)
+        in let ep = if list-length else-cmds == 0 then "" else " else {\n" & emit-ps-cmds else-cmds (indent + 1) 0 (list-length else-cmds) & pad & "}"
+        in pad & "if (" & emit-ps-expr cond & ") {\n" & tb & pad & "}" & ep
+      is ScFor (name) (items) (body) ->
+        pad & "foreach ($" & name & " in " & emit-ps-expr items & ") {\n" & emit-ps-cmds body (indent + 1) 0 (list-length body) & pad & "}"
+      is ScWhile (cond) (body) ->
+        pad & "while (" & emit-ps-expr cond & ") {\n" & emit-ps-cmds body (indent + 1) 0 (list-length body) & pad & "}"
+      is ScForEach (name) (items) (body) ->
+        pad & "foreach ($" & name & " in " & emit-ps-expr items & ") {\n" & emit-ps-cmds body (indent + 1) 0 (list-length body) & pad & "}"
+      is ScForLoop (name) (init) (cond) (step) (body) ->
+        pad & "for ($" & name & " = " & emit-ps-expr init & "; " & emit-ps-expr cond & "; " & emit-ps-expr step & ") {\n" & emit-ps-cmds body (indent + 1) 0 (list-length body) & pad & "}"
+      is ScLabeledWhile (label) (cond) (body) ->
+        pad & ":" & label & " while (" & emit-ps-expr cond & ") {\n" & emit-ps-cmds body (indent + 1) 0 (list-length body) & pad & "}"
+      is ScTry (body) (catch-cmds) (finally-cmds) ->
+        let tb = emit-ps-cmds body (indent + 1) 0 (list-length body)
+        in let cp = if list-length catch-cmds == 0 then "" else " catch {\n" & emit-ps-cmds catch-cmds (indent + 1) 0 (list-length catch-cmds) & pad & "}"
+        in let fp = if list-length finally-cmds == 0 then "" else " finally {\n" & emit-ps-cmds finally-cmds (indent + 1) 0 (list-length finally-cmds) & pad & "}"
+        in pad & "try {\n" & tb & pad & "}" & cp & fp
+      is ScStartProcess (spec) ->
+        let at = emit-ps-array (spec.sp-arguments) 0
+        in let hd = if spec.sp-hidden then " -WindowStyle Hidden" else ""
+        in let pt = if spec.sp-passthru then " -PassThru" else ""
+        in let se = when spec.sp-stderr-file is Just (f) -> " -RedirectStandardError " & emit-ps-expr f is None -> ""
+        in pad & "$" & spec.sp-result-var & " = Start-Process -FilePath " & emit-ps-expr (spec.sp-executable) & " -ArgumentList " & at & hd & pt & se
+      is ScWaitProcess (name) (timeout) -> pad & "$" & name & ".WaitForExit(" & show timeout & ") | Out-Null"
+      is otherwise -> pad & "# <unknown-cmd>"
+
+Section: Expressions -- Leaf
+
+  emit-ps-expr : ShellExpr -> Text
+  emit-ps-expr (e) =
+    when e
+      is SeLit (s) -> ps-quote s
+      is SeInt (n) -> show n
+      is SeVar (name) -> "$" & name
+      is SeEnvVar (name) -> "$env:" & name
+      is SeRaw (text) -> text
+      is SeHashLiteral -> "@{}"
+      is otherwise -> emit-ps-expr-ops e
+
+Section: Expressions -- Operators
+
+  emit-ps-expr-ops : ShellExpr -> Text
+  emit-ps-expr-ops (e) =
+    when e
+      is SeConcat (a) (b) -> "(" & emit-ps-expr a & " + " & emit-ps-expr b & ")"
+      is SeNot (x) -> "(-not " & emit-ps-expr x & ")"
+      is SeAnd (a) (b) -> "(" & emit-ps-expr a & " -and " & emit-ps-expr b & ")"
+      is SeOr (a) (b) -> "(" & emit-ps-expr a & " -or " & emit-ps-expr b & ")"
+      is SeStringEq (a) (b) -> "(" & emit-ps-expr a & " -eq " & emit-ps-expr b & ")"
+      is SeStringNeq (a) (b) -> "(" & emit-ps-expr a & " -ne " & emit-ps-expr b & ")"
+      is SeIntEq (a) (b) -> "(" & emit-ps-expr a & " -eq " & emit-ps-expr b & ")"
+      is SeIntLt (a) (b) -> "(" & emit-ps-expr a & " -lt " & emit-ps-expr b & ")"
+      is SeIntGt (a) (b) -> "(" & emit-ps-expr a & " -gt " & emit-ps-expr b & ")"
+      is SeExitCodeEq (n) -> "($LASTEXITCODE -eq " & show n & ")"
+      is SeMatch (expr) (pattern) -> "(" & emit-ps-expr expr & " -match " & ps-quote pattern & ")"
+      is otherwise -> emit-ps-expr-access e
+
+Section: Expressions -- Access and Method
+
+  emit-ps-expr-access : ShellExpr -> Text
+  emit-ps-expr-access (e) =
+    when e
+      is SeFileExists (path) -> "(Test-Path -PathType Leaf " & emit-ps-expr path & ")"
+      is SeDirExists (path) -> "(Test-Path -PathType Container " & emit-ps-expr path & ")"
+      is SeFileSize (path) -> "(Get-Item " & emit-ps-expr path & ").Length"
+      is SeSubstring (s) (start) (len) -> emit-ps-expr s & ".Substring(" & show start & ", " & show len & ")"
+      is SeTextLength (s) -> emit-ps-expr s & ".Length"
+      is SeIndex (arr) (idx) -> emit-ps-expr arr & "[" & emit-ps-expr idx & "]"
+      is SeProperty (obj) (prop) -> emit-ps-expr obj & "." & prop
+      is SeMethodCall (obj) (method) (args) -> emit-ps-expr obj & "." & method & "(" & emit-ps-args args 0 & ")"
+      is SeStaticCall (cls) (method) (args) -> "[" & cls & "]::" & method & "(" & emit-ps-args args 0 & ")"
+      is SeStartsWith (str) (prefix) -> emit-ps-expr str & ".StartsWith(" & emit-ps-expr prefix & ")"
+      is SeArrayLiteral (items) -> "@(" & emit-ps-array-inner items 0 & ")"
+      is otherwise -> "\"<unknown-expr>\""
+
+Section: Helpers
+
+  ps-indent : Integer -> Text
+  ps-indent (n) = if n <= 0 then "" else "    " & ps-indent (n - 1)
+
+  ps-quote : Text -> Text
+  ps-quote (s) = "\"" & s & "\""
+
+  emit-ps-args : List ShellExpr, Integer -> Text
+  emit-ps-args (args) (i) =
+    if i >= list-length args then ""
+    else if i == list-length args - 1 then emit-ps-expr (list-at args i)
+    else emit-ps-expr (list-at args i) & " " & emit-ps-args args (i + 1)
+
+  emit-ps-array : List ShellExpr, Integer -> Text
+  emit-ps-array (items) (i) = if list-length items == 0 then "@()" else "@(" & emit-ps-array-inner items 0 & ")"
+
+  emit-ps-array-inner : List ShellExpr, Integer -> Text
+  emit-ps-array-inner (items) (i) =
+    if i >= list-length items then ""
+    else if i == list-length items - 1 then emit-ps-expr (list-at items i)
+    else emit-ps-expr (list-at items i) & ", " & emit-ps-array-inner items (i + 1)
+
+Page 1

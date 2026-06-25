@@ -459,6 +459,56 @@ Section: Content Filtering
     else if text-contains text (list-at words 0) then True
       else has-blocked-word (list-drop words 1) text
 
+Section: Audit Log
+
+  AuditAction =
+    | AuditLogin (Integer)
+    | AuditLogout (Integer)
+    | AuditPolicyChange (Integer, Text)
+    | AuditContentBlocked (Integer, Text)
+    | AuditTimeLimitHit (Integer)
+    | AuditAppAccess (Integer, Text)
+
+  AuditEntry = record {
+    ae-timestamp : Integer,
+    ae-action    : AuditAction,
+    ae-actor-id  : Integer
+  }
+
+  format-audit-action : AuditAction -> Text
+  format-audit-action (action) =
+    when action
+      is AuditLogin (id) -> "Account " & show id & " logged in"
+      is AuditLogout (id) -> "Account " & show id & " logged out"
+      is AuditPolicyChange (id) (field) -> "Policy changed for account " & show id & ": " & field
+      is AuditContentBlocked (id) (reason) -> "Content blocked for account " & show id & ": " & reason
+      is AuditTimeLimitHit (id) -> "Time limit reached for account " & show id
+      is AuditAppAccess (id) (app) -> "Account " & show id & " accessed " & app
+
+  format-audit-entry : AuditEntry -> Text
+  format-audit-entry (entry) =
+    "[" & show entry.ae-timestamp & "] " & format-audit-action entry.ae-action & " (by " & show entry.ae-actor-id & ")"
+
+Section: Policy Summary
+
+  format-policy-summary : AccountPolicy -> Text
+  format-policy-summary (p) =
+    "Max tier: " & show p.ap-max-tier
+    & " | Apps: " & show (list-length p.ap-allowed-apps)
+    & " | Camera: " & (if p.ap-can-use-camera then "yes" else "no")
+    & " | Files: " & (if p.ap-can-share-files then "yes" else "no")
+    & " | Chat: " & (if p.ap-can-use-chat then "yes" else "no")
+    & " | Safe: " & (if (p.ap-content-filter).cf-safe-mode then "on" else "off")
+    & " | Daily limit: " & show (p.ap-time-limits).tl-daily-limit-minutes & "min"
+
+  format-account-detail : Account -> Text
+  format-account-detail (a) =
+    "Account: " & a.acc-name
+    & "\nType: " & (when a.acc-type is GuardianAccount -> "Guardian" is ManagedAccount -> "Managed")
+    & "\nAge group: " & age-group-name a.acc-age-group
+    & "\nGuardian: " & show a.acc-guardian-id
+    & "\nPolicy: " & format-policy-summary a.acc-policy
+
 Section: App Access Control
 
   can-use-app : AccountPolicy, Text -> Boolean

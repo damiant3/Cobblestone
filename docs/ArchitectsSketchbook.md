@@ -7,7 +7,7 @@ and platform constraints for the Codex bare-metal compiler.
 
 The bare-metal system occupies a single flat physical address space.
 All addresses are identity-mapped (virtual = physical). The single
-governing constant is `bare-metal-ram-size` (8 GB) in
+governing constant is `bare-metal-ram-size` (3 GB) in
 `codex/Emit/X86_64State.codex`. Every other memory value derives from
 it.
 
@@ -22,14 +22,14 @@ Address              Size       Region
 0x00007000 (28 KB)    4 KB      Kernel metadata cells (see table below)
 0x00008000 (32 KB)   40 KB      Runtime page tables (PML4 + PDPT + 8 PDs)
 0x00100000 (1 MB)     4 MB      Binary code segment (bare-metal-load-addr)
-                                  Current seed: ~2.1 MB of 4 MB headroom
+                                  Current seed: ~2.3 MB of 4 MB headroom
 0x00500000 (5 MB)     1 MB      Serial ring buffer (serial-ring-buf-addr)
 0x00600000 (6 MB)     ────      Heap base (bare-metal-heap-base, R10 init)
      │                           Heap grows UP ──►
      │                           (phase decks + bivy, ~150-200 MB for selfhost)
      │
      │                           ◄── Stack grows DOWN
-0x200000000 (8 GB)    ────      Stack top (bare-metal-stack-top = ram-size)
+0x0C0000000 (3 GB)    ────      Stack top (bare-metal-stack-top = ram-size)
 ```
 
 ### Kernel Metadata Cells (0x7000 region)
@@ -81,11 +81,11 @@ Defined in `codex/Emit/X86_64State.codex`:
 |----------|-------|---------|
 | bare-metal-load-addr | 0x100000 (1 MB) | Binary load address |
 | bare-metal-heap-base | 0x600000 (6 MB) | R10 initial value |
-| bare-metal-ram-size | 0x200000000 (8 GB) | Total physical memory |
-| bare-metal-stack-top | 0x200000000 (8 GB) | RSP initial value |
+| bare-metal-ram-size | 0x0C0000000 (3 GB) | Total physical memory |
+| bare-metal-stack-top | 0x0C0000000 (3 GB) | RSP initial value (dynamic via GPA 0xFE8) |
 
 The CDX header heap field and ELF segment memsz are both computed as
-`bare-metal-ram-size - bare-metal-heap-base` (~8 GB minus 6 MB) in
+`bare-metal-ram-size - bare-metal-heap-base` (~3 GB minus 6 MB) in
 `codex/Emit/X86_64Chapter.codex`.
 
 ## Register Convention
@@ -322,10 +322,10 @@ base     Reservation-copy pattern means dead decks are reclaimed.
           │  in emit-all-defs loop               │
           └──────────────────────────────────────┘
                               ▲
-                              │ gap (~7.8 GB for 8 GB RAM)
+                              │ gap (~2.9 GB for 3 GB RAM)
                               ▼
           ┌──────────────────────────────────────┐
-0x200000000│ Stack top (grows downward)          │
+0x0C0000000│ Stack top (grows downward)          │
           │  ~1 MB typical usage for selfhost    │
           └──────────────────────────────────────┘
 ```
@@ -385,7 +385,7 @@ stays within capacity. The `accum-at-capacity` guard in
 | code-buffer | 8 MB (`code-buffer-size`) | x86-64 machine code; written sequentially via `st-append-code` |
 | data-buffer | 2 MB (`data-buffer-size`) | String literals, CCE tables, static data |
 
-Current selfhost binary: ~2.1 MB code, ~100 KB data.
+Current selfhost binary: ~2.3 MB code, ~100 KB data.
 
 ## Emit Allocator
 
@@ -411,7 +411,7 @@ PE, GPT/FAT images) are produced by plug CDX binaries in `codex/plugs/`.
 ## Heap and Stack
 
 Heap and stack share the arena between `bare-metal-heap-base` (6 MB) and
-`bare-metal-stack-top` (= ram-size, 8 GB). The heap grows upward via
+`bare-metal-stack-top` (= ram-size, 3 GB). The heap grows upward via
 register R10; the stack grows downward via RSP. See the Register
 Convention table above for the full register map.
 
@@ -491,7 +491,7 @@ builds identity-mapping page tables sized to `bare-metal-ram-size`:
 - PDPT at pml4-addr + 4096 (bare-metal-pd-count entries, one per GB)
 - PD pages at pml4-addr + 8192 onward (512 entries each, 2 MB pages)
 
-With 8 GB RAM: 8 PDs = (2 + 8) * 4096 = 40 KB total, from 0x8000 to
+With 3 GB RAM: 3 PDs = (2 + 3) * 4096 = 20 KB total, from 0x8000 to
 0x12000.
 
 The runtime tables replace the trampoline tables via `mov cr3, rax`
@@ -499,23 +499,50 @@ during `emit-process-setup`. After this point, only memory up to
 `bare-metal-ram-size` is mapped. Accessing addresses above this will
 page-fault.
 
+## SMP Memory Model
+
+When codex-vm runs with `-smp N` (N > 1), the guest boots with
+multiple virtual processors. The core count is written to GPA 0xFF8
+before boot; the boot code reads it to decide whether to send
+INIT/SIPI to start application processors.
+
+**Per-core stacks.** Each AP gets an independent stack. The BSP
+stack starts at `bare-metal-stack-top` (= `bare-metal-ram-size`).
+AP stacks are placed below the BSP's, spaced 64 KB apart:
+`AP[i] stack = stack-top - i * 0x10000`. The guest can override
+this by writing per-core stack addresses to a stack table at
+GPA 0x1000 before sending SIPI.
+
+**Per-core heap.** The `CoreHeap` module
+(`codex/os/sched/CoreHeap.codex`) splits the bivy arena equally
+among cores: each core gets `(heap-end - heap-base) / N` bytes.
+Core 0 (BSP) uses the standard R10 bump allocator. Each AP sets
+R10 to its own arena slice on boot. No contention on R10.
+
+**LAPIC ID.** Each AP starts with its LAPIC ID in R15. The
+`CoreState` module uses this for per-core data lookup.
+
+**Atomics.** Six builtins: `atomic-load`, `atomic-store`,
+`atomic-cas`, `atomic-add`, `atomic-exchange`, `memory-fence`.
+x86-64 codegen: LOCK CMPXCHG, LOCK XADD, LOCK XCHG, MFENCE.
+
+**IPI.** Inter-processor interrupts via LAPIC ICR writes. Used for
+cross-core wake and TLB shootdown. Lock-free MPSC channels for
+message passing between cores.
+
 ## Known Platform Constraints
 
 ### 4 GB Barrier and MMIO Hole
 
 Physical addresses 0xC0000000–0xFFFFFFFF (the top 1 GB of the 32-bit
-address space) are reserved for PCI MMIO on x86 platforms. Both
-codex-vm and QEMU respect this: `-m 8192` provides 8 GB of RAM, but
-physical addresses in the MMIO window are not usable as RAM. RAM above
-4 GB is relocated to physical addresses starting at 0x100000000.
+address space) are reserved for PCI MMIO on x86 platforms.
 
-As of the 2026-06-18 memory ceiling raise, `bare-metal-ram-size` is
-8 GB (0x200000000). The page tables map 8 GB of physical address
-space, spanning the MMIO hole at 0xC0000000–0xFFFFFFFF. codex-vm
-(`-mem 8192`) and QEMU relocate RAM above 4 GB to physical addresses
-starting at 0x100000000; the identity map covers this range.
-Low-RAM machines are a USB-validation concern, tracked in
-docs/PM/BACKLOG.md.
+As of 2026-06-20, `bare-metal-ram-size` is 3 GB (0xC0000000). The
+stack top sits at the RAM boundary. The seed reads the actual VM
+memory size from GPA 0xFE8 (written by codex-vm before boot) and
+sets RSP dynamically, so the same seed binary works with any `-mem`
+value. The default VM memory is 3072 MB (`-mem 3072`), reduced from
+8 GB to prevent host memory exhaustion when running concurrent VMs.
 
 ### Code Buffer Ceiling
 
@@ -563,3 +590,54 @@ sum-to-N beats C at both optimization levels. The remaining gaps are
 frame discipline the C compilers do not pay (the guard pair on
 recursive functions) and the registers the JITs win through full
 linear-scan allocation of named bindings -- the next frontier.
+
+## ARM64 Boot Sequence
+
+The ARM64 kernel binary starts with a 2 KB exception vector table
+(16 entries × 32 instructions × 4 bytes), followed by `__start`.
+
+### `__start` Runtime Detection (CL 5010)
+
+`__start` detects whether it was entered from a UEFI stub or bare
+metal by checking X28 (the heap register):
+
+```
+vector_table:     2048 bytes of WFI+B.self entries
+__start:
+  CBNZ X28, uefi    ; UEFI stub already set X28 → skip init
+  ADR  X9, vector_table
+  MSR  VBAR_EL1, X9  ; install exception vectors
+  MOVZ X9, #0x4800, LSL #16
+  MOV  SP, X9         ; SP = 0x48000000
+  MOVZ X28, #0x4010, LSL #16
+                       ; X28 = 0x40100000 (heap = code base for bare metal)
+uefi:
+  BL   opening
+  WFI
+```
+
+On UEFI boot, the PE stub (`Arm64PeWriter.codex`) calls
+`AllocatePages` for the kernel, copies code+rodata, sets
+SP = 0x7F000000, X28 = heap_base (past code+rodata), and jumps to
+`__start`. X28 is non-zero → the CBNZ skips bare-metal init →
+`opening` runs with UEFI's memory layout.
+
+On bare-metal boot (Renode), X28 is 0 on cold start → `__start`
+installs VBAR, sets SP and X28, then calls `opening`.
+
+### Memory Layout (ARM64 UEFI)
+
+```
+0x40100000    Kernel code (copied from PE .text)
+  + align8(code)  Rodata (string literals)
+  + align4K(code+rodata)  Heap base (X28)
+0x7F000000    Stack top (SP, grows down)
+```
+
+### Memory Layout (ARM64 Bare Metal / Renode)
+
+```
+0x40100000    Kernel code (loaded by bootloader)
+  = X28 init   Heap base (shares code region)
+0x48000000    Stack top (SP, grows down)
+```

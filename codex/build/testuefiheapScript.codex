@@ -1,0 +1,64 @@
+Chapter: TestUefiHeapScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates test-uefi-heap.ps1 -- test UEFI heap heuristic and explicit heap= flag.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  testuefiheap-params : List ShellParam = [sh-param-default "PCore" SptInt (SeInt 1)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "root" (SeRaw "Split-Path $PSScriptRoot"), ScAssign "outDir" (SeRaw "Join-Path $root 'build-output\\uefi-heap-test'"), ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] [], ScAssign "src" (SeRaw "Join-Path $root 'apps\\works\\UefiBoot.codex'")]
+
+Section: S02 -- Invoke-InternalImgCompile Function
+
+  s02 : List ShellCmd =
+    [ScRaw "function Invoke-InternalImgCompile {\n    param([string]$Src, [string]$Out, [string]$Log, [string]$Mode)\n    $Stage0 = Join-Path $root 'build-output\\bare-metal\\Codex.cdx'\n    if (-not (Test-Path $Stage0)) { Write-Host \"FAIL: no $Stage0\"; exit 1 }\n    $run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 30 -MemMB 3072 -PCore $PCore\n    if (-not $run) { Write-Host \"FAIL: VM did not start\"; exit 1 }\n    try {\n        if (-not (Read-VmReady -Conn $run.Conn -TimeoutSec 30)) { Write-Host \"FAIL: no READY\"; exit 1 }\n        $stream = $run.Conn.Data.GetStream()\n        $hdr = [System.Text.Encoding]::UTF8.GetBytes(\"$Mode`n\")\n        $stream.Write($hdr, 0, $hdr.Length)\n        $srcBytes = [System.IO.File]::ReadAllBytes($Src)\n        $stream.Write($srcBytes, 0, $srcBytes.Length)\n        $stream.WriteByte(4); $stream.Flush()\n        Set-Content -Path $Log -Value '' -Encoding UTF8\n        while ($true) {\n            $line = Read-StreamLine -Stream $stream -TimeoutSec 120\n            if ($null -eq $line) { break }\n            Add-Content -Path $Log -Value $line -Encoding UTF8\n            if ($line.StartsWith('SIZE:') -or $line.StartsWith('CODEGEN-HALTED') -or $line.StartsWith('HEAP:')) { break }\n        }\n    } finally {\n        Close-Vm -Conn $run.Conn -Process $run.Process\n        Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue\n    }\n}"]
+
+Section: S03 -- Test 1: Heuristic
+
+  s03 : List ShellCmd =
+    let pass = [ScRaw "Write-Host \"  PASS: $heapLine\" -ForegroundColor Green"]
+    in let fail = [ScRaw "Write-Host \"  FAIL: no WD:UEFI-HEAP line\" -ForegroundColor Red", ScExit (SeInt 1)]
+    in [ScRaw "Write-Host \"=== UEFI heap heuristic test ===\" -ForegroundColor Cyan", ScRaw "Write-Host \"Test 1: heuristic (auto)...\"", ScAssign "log1" (SeRaw "Join-Path $outDir 'heuristic.log'"), ScRaw "Invoke-InternalImgCompile -Src $src -Out (Join-Path $outDir 'h.img') -Log $log1 -Mode \"IMG fat16 uefi\"", ScRaw "$log1Lines = if (Test-Path $log1) { Get-Content $log1 } else { @() }", ScRaw "$heapLine = $log1Lines | Where-Object { $_ -match 'WD:UEFI-HEAP:' } | Select-Object -First 1", ScIf (SeVar "heapLine") pass fail]
+
+Section: S04 -- Test 2: Small Heap Warning
+
+  s04 : List ShellCmd =
+    let pass = [ScRaw "Write-Host \"  PASS: $warnLine\" -ForegroundColor Green"]
+    in let fail = [ScRaw "Write-Host \"  FAIL: no WD:UEFI-HEAP-WARN line\" -ForegroundColor Red", ScRaw "$log2Lines | Where-Object { $_ -match 'WD:UEFI' } | ForEach-Object { Write-Host \"  $_\" }", ScExit (SeInt 1)]
+    in [ScRaw "Write-Host \"Test 2: heap=256 (expect warning)...\"", ScAssign "log2" (SeRaw "Join-Path $outDir 'small-heap.log'"), ScRaw "Invoke-InternalImgCompile -Src $src -Out (Join-Path $outDir 's.img') -Log $log2 -Mode \"IMG fat16 uefi heap=256\"", ScRaw "$log2Lines = if (Test-Path $log2) { Get-Content $log2 } else { @() }", ScRaw "$warnLine = $log2Lines | Where-Object { $_ -match 'WD:UEFI-HEAP-WARN' } | Select-Object -First 1", ScIf (SeVar "warnLine") pass fail]
+
+Section: S05 -- Test 3: Large Heap No Warning
+
+  s05 : List ShellCmd =
+    let pass = [ScRaw "Write-Host \"  PASS: $heapLine3 (no warning)\" -ForegroundColor Green"]
+    in let fail = [ScRaw "Write-Host \"  FAIL: unexpected state\" -ForegroundColor Red", ScExit (SeInt 1)]
+    in [ScRaw "Write-Host \"Test 3: heap=65536 (no warning)...\"", ScAssign "log3" (SeRaw "Join-Path $outDir 'large-heap.log'"), ScRaw "Invoke-InternalImgCompile -Src $src -Out (Join-Path $outDir 'l.img') -Log $log3 -Mode \"IMG fat16 uefi heap=65536\"", ScRaw "$log3Lines = if (Test-Path $log3) { Get-Content $log3 } else { @() }", ScRaw "$warnLine3 = $log3Lines | Where-Object { $_ -match 'WD:UEFI-HEAP-WARN' } | Select-Object -First 1", ScRaw "$heapLine3 = $log3Lines | Where-Object { $_ -match 'WD:UEFI-HEAP:' } | Select-Object -First 1", ScIf (SeAnd (SeVar "heapLine3") (SeNot (SeVar "warnLine3"))) pass fail]
+
+Section: S06 -- Done
+
+  s06 : List ShellCmd =
+    [ScRaw "Write-Host \"All heap tests passed.\" -ForegroundColor Green"]
+
+Section: Assembly
+
+  testuefiheap-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]
+
+  testuefiheap-script : ShellScript = sh-script "test-uefi-heap" "Test UEFI heap heuristic and explicit heap= flag" testuefiheap-params testuefiheap-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell testuefiheap-script)
+  end
+
+Page 1

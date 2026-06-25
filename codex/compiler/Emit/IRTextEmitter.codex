@@ -398,8 +398,8 @@ Section: IRExpr Emission
     is IrHandle (eff) (h) (cs) (ty) (sp) -> "(handle " & ir-quote eff & " " & ir-emit-expr h & " (clauses" & ir-emit-handle-clauses cs 0 & ") " & ir-emit-type ty & ")"
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> "(with-timeout " & integer-to-text secs & " (effs" & ir-cat (ir-strs-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted scopes 0 []) & ") " & ir-emit-expr body & " " & ir-emit-type ty & ")"
     is IrRecord (n) (fs) (ty) (sp) -> "(record " & ir-quote n & " (fields" & ir-emit-field-vals fs 0 & ") " & ir-emit-type ty & ")"
-    is IrFieldAccess (r) (f) (ty) (sp) -> "(field-access " & ir-emit-expr r & " " & ir-quote f & " " & ir-emit-type ty & ")"
-    is IrFieldStore (r) (f) (v) (ty) (sp) -> "(field-store " & ir-emit-expr r & " " & ir-quote f & " " & ir-emit-expr v & " " & ir-emit-type ty & ")"
+    is IrFieldAccess (r) (f) (ty) (sp) -> let fi = ir-resolve-field-index (ir-expr-type r) f in "(field-access " & ir-emit-expr r & " " & ir-quote (ir-field-with-index f fi) & " " & ir-emit-type ty & ")"
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> let fi = ir-resolve-field-index (ir-expr-type r) f in "(field-store " & ir-emit-expr r & " " & ir-quote (ir-field-with-index f fi) & " " & ir-emit-expr v & " " & ir-emit-type ty & ")"
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> "(try " & integer-to-text max & " (body" & ir-emit-act-stmts body 0 & ") (fallback" & ir-emit-act-stmts fb 0 & ") (fail" & ir-emit-act-stmts fail 0 & ") " & ir-emit-type ty & ")"
     is IrFork (b) (ty) (sp) -> "(fork " & ir-emit-expr b & " " & ir-emit-type ty & ")"
     is IrAwait (t) (ty) (sp) -> "(await " & ir-emit-expr t & " " & ir-emit-type ty & ")"
@@ -490,6 +490,25 @@ Section: IRExpr Emission
    if i == len then acc
    else let f = list-at xs i
    in ir-emit-field-vals-acc xs (i + 1) len (list-push acc (" (field-val " & ir-quote (f.name) & " " & ir-emit-expr (f.value) & ")"))
+
+Section: Field Index Resolution
+
+  ir-resolve-field-index : CodexType, Text -> Integer
+  ir-resolve-field-index (ty) (name) =
+   when ty
+    is RecordTy (rn) (tvars) (fields) -> ir-find-field-in-record fields name 0
+    is otherwise -> 0 - 1
+
+  ir-find-field-in-record : List RecordField, Text, Integer -> Integer
+  ir-find-field-in-record (fields) (name) (i) =
+   if i >= list-length fields then 0 - 1
+   else if ((list-at fields i).name).value == name then i
+   else ir-find-field-in-record fields name (i + 1)
+
+  ir-field-with-index : Text, Integer -> Text
+  ir-field-with-index (name) (idx) =
+   if idx >= 0 then name & "/" & integer-to-text idx
+   else name
 
 Section: IR Dead Code Elimination
 

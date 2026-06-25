@@ -123,6 +123,7 @@ static unsigned char vk_to_scancode(int vk) {
 static int mouse_captured = 0;
 static volatile unsigned char pending_mouse[3] = {0};
 static volatile int pending_mouse_valid = 0;
+static volatile int pending_mouse_abs_x = 0, pending_mouse_abs_y = 0, pending_mouse_btn = 0;
 static volatile unsigned long long pending_kbd_scancode = 0;
 static volatile int pending_kbd_valid = 0;
 
@@ -1183,6 +1184,7 @@ static struct {
     unsigned int icr_hi;
     unsigned int eoi;
     int ap_count;
+    unsigned long long ap_entry_addr;
     volatile int ap_running[SMP_MAX_CORES];
     HANDLE ap_threads[SMP_MAX_CORES];
 } lapic_state;
@@ -1279,6 +1281,9 @@ static void ap_thread_func(void *arg) {
         switch (ctx.ExitReason) {
         case WHvRunVpExitReasonX64Halt:
             Sleep(100);
+            break;
+        case 0x1000: /* WHvRunVpExitReasonX64ApicInitSipiTrap — ignore, AP already running */
+            /* SIPI ignored — AP already running */
             break;
         case WHvRunVpExitReasonMemoryAccess:
             if (ctx.MemoryAccess.Gpa >= LAPIC_BAR && ctx.MemoryAccess.Gpa < LAPIC_BAR + LAPIC_BAR_SIZE) {
@@ -1518,7 +1523,9 @@ static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         if (access_type == 0) {
             vals[0].Reg64 = read_fn(offset);
         } else {
-            write_fn(offset, (unsigned int)vals[1].Reg64);
+            unsigned int wval = (gpa >= LAPIC_BAR && gpa < LAPIC_BAR + LAPIC_BAR_SIZE)
+                ? (unsigned int)vals[0].Reg64 : (unsigned int)vals[1].Reg64;
+            write_fn(offset, wval);
         }
         vals[2].Reg64 += ilen;
         WHvSetVirtualProcessorRegisters(partition, 0, names, 3, vals);
@@ -2366,32 +2373,22 @@ static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
     case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP:
-    case WM_MOUSEMOVE:
-        if (msg == WM_LBUTTONDOWN || mouse_captured) {
-            if (!mouse_captured && msg == WM_LBUTTONDOWN) {
-                SetCapture(hwnd); mouse_captured = 1;
-            }
-            int mx = (short)LOWORD(lp);
-            int my = (short)HIWORD(lp);
-            static int last_mx = -1, last_my = -1;
-            int dx = (last_mx >= 0) ? mx - last_mx : 0;
-            int dy = (last_my >= 0) ? my - last_my : 0;
-            last_mx = mx; last_my = my;
-            unsigned char flags = 0x08;
-            if (wp & MK_LBUTTON) flags |= 1;
-            if (wp & MK_RBUTTON) flags |= 2;
-            if (wp & MK_MBUTTON) flags |= 4;
-            if (dx < 0) flags |= 0x10;
-            if (dy < 0) flags |= 0x20;
-            pending_mouse[0] = flags;
-            pending_mouse[1] = (unsigned char)(dx & 0xFF);
-            pending_mouse[2] = (unsigned char)(dy & 0xFF);
-            pending_mouse_valid = 1;
+    case WM_MOUSEMOVE: {
+        if (msg == WM_LBUTTONDOWN && !mouse_captured) {
+            SetCapture(hwnd); mouse_captured = 1;
         }
-        if (msg == WM_RBUTTONDOWN && mouse_captured) {
+        if (msg == WM_LBUTTONUP && mouse_captured) {
             ReleaseCapture(); mouse_captured = 0;
         }
+        pending_mouse_abs_x = (short)LOWORD(lp);
+        pending_mouse_abs_y = (short)HIWORD(lp);
+        pending_mouse_btn = 0;
+        if (wp & MK_LBUTTON) pending_mouse_btn |= 1;
+        if (wp & MK_RBUTTON) pending_mouse_btn |= 2;
+        if (wp & MK_MBUTTON) pending_mouse_btn |= 4;
+        pending_mouse_valid = 1;
         return 0;
+    }
     case WM_CLOSE:
         vga_running = 0;
         DestroyWindow(hwnd);
@@ -2425,7 +2422,7 @@ static DWORD WINAPI vga_thread(LPVOID param) {
         NULL, NULL, wc.hInstance, NULL);
     vga_font = CreateFontA(CHAR_H, CHAR_W, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         OEM_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+        NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, "Courier New");
     SetTimer(vga_hwnd, VGA_TIMER_ID, 16, NULL);  /* refresh ~60Hz */
     MSG msg;
     while (vga_running && GetMessageA(&msg, NULL, 0, 0)) {
@@ -3809,6 +3806,22 @@ static int dbg_command_loop(int vec, unsigned long long exc_rip) {
    (WHvDeletePartition), avoiding vid.sys kernel heap corruption (0x13A)
    that results from TerminateProcess killing us mid-hypervisor-call. */
 static volatile int shutdown_requested = 0;
+static HANDLE shutdown_event;
+
+static void create_shutdown_event(void) {
+    char name[64];
+    snprintf(name, sizeof(name), "Global\\CodexVmShutdown_%lu", GetCurrentProcessId());
+    shutdown_event = CreateEventA(NULL, TRUE, FALSE, name);
+}
+
+static DWORD WINAPI shutdown_event_thread(LPVOID arg) {
+    (void)arg;
+    if (!shutdown_event) return 0;
+    WaitForSingleObject(shutdown_event, INFINITE);
+    shutdown_requested = 1;
+    if (partition) WHvCancelRunVirtualProcessor(partition, 0, 0);
+    return 0;
+}
 
 static BOOL WINAPI ctrl_handler(DWORD type) {
     (void)type;
@@ -4170,13 +4183,35 @@ static void create_vm(size_t mem_mb) {
     hr = WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeExceptionExitBitmap, &prop, sizeof(prop.ExceptionExitBitmap));
     if (FAILED(hr)) fprintf(stderr, "WARNING: ExceptionExitBitmap failed: 0x%lx\n", hr);
 
-    guest_mem = VirtualAlloc(NULL, guest_mem_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!guest_mem) die("VirtualAlloc");
-    memset(guest_mem, 0, guest_mem_size);
+    guest_mem = VirtualAlloc(NULL, guest_mem_size, MEM_RESERVE, PAGE_READWRITE);
+    if (!guest_mem) die("VirtualAlloc(reserve)");
 
-    hr = WHvMapGpaRange(partition, guest_mem, 0, guest_mem_size,
-        WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
-    if (FAILED(hr)) { fprintf(stderr, "WHvMapGpaRange: 0x%lx\n", hr); exit(1); }
+    /* Commit and map in 2MB chunks.  Pre-commit the first 8MB (low memory,
+       page tables, kernel load area, serial ring) and the top 2MB (stack).
+       The main loop commits additional chunks on demand when the guest
+       touches unmapped GPA ranges. */
+    {
+        size_t chunk = 2ULL * 1024 * 1024;
+        size_t pre_lo = 16ULL * 1024 * 1024;
+        if (pre_lo > guest_mem_size) pre_lo = guest_mem_size;
+        if (!VirtualAlloc(guest_mem, pre_lo, MEM_COMMIT, PAGE_READWRITE))
+            die("VirtualAlloc(commit low)");
+        hr = WHvMapGpaRange(partition, guest_mem, 0, pre_lo,
+            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+        if (FAILED(hr)) { fprintf(stderr, "WHvMapGpaRange(low): 0x%lx\n", hr); exit(1); }
+
+        if (guest_mem_size > pre_lo) {
+            size_t stack_base = guest_mem_size - chunk;
+            if (stack_base >= pre_lo) {
+                if (!VirtualAlloc((unsigned char *)guest_mem + stack_base, chunk, MEM_COMMIT, PAGE_READWRITE))
+                    die("VirtualAlloc(commit stack)");
+                hr = WHvMapGpaRange(partition, (unsigned char *)guest_mem + stack_base,
+                    stack_base, chunk,
+                    WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+                if (FAILED(hr)) { fprintf(stderr, "WHvMapGpaRange(stack): 0x%lx\n", hr); exit(1); }
+            }
+        }
+    }
 
     hr = WHvCreateVirtualProcessor(partition, 0, 0);
     if (FAILED(hr)) { fprintf(stderr, "WHvCreateVirtualProcessor: 0x%lx\n", hr); exit(1); }
@@ -4184,7 +4219,16 @@ static void create_vm(size_t mem_mb) {
     lapic_state.ap_count = smp_cores > 1 ? smp_cores - 1 : 0;
     lapic_state.ap_running[0] = 1;
     lapic_state.sivr = 0xFF;
-    if (smp_cores > 1) fprintf(stderr, "SMP: enabled, %d cores (%d APs)\n", smp_cores, lapic_state.ap_count);
+    if (smp_cores > 1) {
+        /* Enable BSP LAPIC via APIC_BASE MSR so WHP delivers
+           PendingInterruption in multi-VP mode. */
+        WHV_REGISTER_NAME apic_name = WHvX64RegisterApicBase;
+        WHV_REGISTER_VALUE apic_val;
+        memset(&apic_val, 0, sizeof(apic_val));
+        apic_val.Reg64 = 0xFEE00800ULL;  /* base + global enable (bit 11) */
+        WHvSetVirtualProcessorRegisters(partition, 0, &apic_name, 1, &apic_val);
+        fprintf(stderr, "SMP: enabled, %d cores (%d APs)\n", smp_cores, lapic_state.ap_count);
+    }
     whp_unlock();
 
     if (uefi_mode) {
@@ -4200,7 +4244,17 @@ static void create_vm(size_t mem_mb) {
        Window resize happens in vga_thread after creation (checks gop_active). */
     if (gop_active) {
         if (!gop_fb) gop_fb = (unsigned char *)calloc(1, GOP_FB_SIZE);
-        memset((unsigned char *)guest_mem + GOP_FB_ADDR, 0, (size_t)gop_width * gop_height * 4);
+        size_t fb_bytes = (size_t)gop_width * gop_height * 4;
+        size_t fb_pages = (fb_bytes + 4095) & ~(size_t)4095;
+        if (GOP_FB_ADDR + fb_pages <= guest_mem_size) {
+            if (!VirtualAlloc((unsigned char *)guest_mem + GOP_FB_ADDR, fb_pages, MEM_COMMIT, PAGE_READWRITE))
+                die("VirtualAlloc(commit GOP FB)");
+            hr = WHvMapGpaRange(partition, (unsigned char *)guest_mem + GOP_FB_ADDR,
+                GOP_FB_ADDR, fb_pages,
+                WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+            if (FAILED(hr)) fprintf(stderr, "WARNING: WHvMapGpaRange(GOP FB): 0x%lx\n", hr);
+            memset((unsigned char *)guest_mem + GOP_FB_ADDR, 0, fb_bytes);
+        }
         fprintf(stderr, "GOP: %dx%d framebuffer at 0x%llx\n", gop_width, gop_height, (unsigned long long)GOP_FB_ADDR);
     }
 }
@@ -4668,6 +4722,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     int size = ctx->IoPortAccess.AccessInfo.AccessSize;
     int val = 0;
     if (is_out) val = (int)ctx->IoPortAccess.Rax;
+    if (smp_cores > 1 && is_out && port >= 0x510) fprintf(stderr, "IO-HI[0x%x]=0x%x\n", port, val);
 
     if (is_out) {
         /* REP OUTSW to the IDE data port: a WRITE SECTORS data phase. Read each
@@ -5036,6 +5091,13 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         else if (port == 0x64) {
             result = (kbd_count > 0) ? 1 : 0; /* bit 0 = OBF (output buffer full) */
         }
+        /* Mouse data via I/O ports (avoids WHP host-guest memory coherency issues).
+           Port 0xE1: buttons. 0xE2: accumulated dx (signed, clamped to byte).
+           0xE3: accumulated dy (signed, clamped to byte). 0xE4: availability + reset accumulators. */
+        else if (port == 0xE1) { result = pending_mouse_btn; }
+        else if (port == 0xE2) { result = pending_mouse_abs_x & 0xFFFF; }
+        else if (port == 0xE3) { result = pending_mouse_abs_y & 0xFFFF; pending_mouse_valid = 0; }
+        else if (port == 0xE4) { result = pending_mouse_valid; }
 
         if (ctx->IoPortAccess.AccessInfo.StringOp) {
             /* REP INSW/INSB: write to guest memory at [RDI], update RDI and RCX */
@@ -5753,8 +5815,8 @@ static void sync_shadow_buffers(void) {
     }
 
     /* Flush pending keyboard scancode to guest memory */
-    if (pending_kbd_valid && 28680 + 8 <= guest_mem_size) {
-        *(unsigned long long *)((unsigned char *)guest_mem + 28680) = pending_kbd_scancode;
+    if (pending_kbd_valid && 28680 + 1 <= guest_mem_size) {
+        *((unsigned char *)guest_mem + 28680) = (unsigned char)pending_kbd_scancode;
         pending_kbd_valid = 0;
     }
 
@@ -5772,6 +5834,8 @@ static void sync_shadow_buffers(void) {
 
 int main(int argc, char **argv) {
     SetConsoleCtrlHandler(ctrl_handler, TRUE);
+    create_shutdown_event();
+    CreateThread(NULL, 0, shutdown_event_thread, NULL, 0, NULL);
     atexit(cleanup_whp);
     const char *kernel = NULL, *disk = NULL, *boot_args = NULL, *trace_file = NULL;
     int mem_mb = 2048;
@@ -5856,6 +5920,16 @@ int main(int argc, char **argv) {
     /* Write requested core count to ap-core-count-addr (GPA 0xFF8 = 4088).
        The boot code reads this; if <= 1, SMP init is skipped entirely. */
     *(unsigned int *)((unsigned char *)guest_mem + 0xFF8) = smp_cores > 1 ? smp_cores : 0;
+
+    /* Write RAM size to ram-size-addr (GPA 0xFE8 = 4072).
+       The guest __start reads this to set RSP = ram_size (stack at top of RAM). */
+    *(unsigned long long *)((unsigned char *)guest_mem + 0xFE8) = guest_mem_size;
+
+    /* Write GOP resolution to GPA 0x7C4/0x7C8 so guests can read display size. */
+    if (gop_active) {
+        *(int *)((unsigned char *)guest_mem + 0x7C4) = gop_width;
+        *(int *)((unsigned char *)guest_mem + 0x7C8) = gop_height;
+    }
 
     /* Write boot args string to guest memory at 0x4800 (CCE-encoded).
        Format: 8-byte length prefix + string bytes, like a Codex Text value. */
@@ -6009,6 +6083,28 @@ int main(int argc, char **argv) {
             WHvSetVirtualProcessorRegisters(partition, 0, shadow_names, 16, shadow_gprs);
         }
 
+        /* ── SMP halt spin: WHP blocks on halted VP in multi-VP mode.
+              Poll timer and clear halt before re-entering VP. ── */
+        if (halted && smp_cores > 1) {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            double elapsed = (double)(now.QuadPart - last_tick.QuadPart) / perf_freq.QuadPart;
+            if (elapsed < 0.055) {
+                DWORD ms = (DWORD)((0.055 - elapsed) * 1000.0);
+                if (ms > 0 && ms <= 55) Sleep(ms);
+            }
+            QueryPerformanceCounter(&last_tick);
+            unsigned int *tc = (unsigned int *)((unsigned char *)guest_mem + 28672);
+            (*tc)++;
+            WHV_REGISTER_NAME clr = WHvRegisterInternalActivityState;
+            WHV_REGISTER_VALUE clr_val;
+            memset(&clr_val, 0, sizeof(clr_val));
+            WHvSetVirtualProcessorRegisters(partition, 0, &clr, 1, &clr_val);
+            halted = 0;
+            exits++;
+            continue;
+        }
+
         /* ── Run VP ── */
         HRESULT hr = WHvRunVirtualProcessor(partition, 0, &ctx, sizeof(ctx));
         if (FAILED(hr)) { fprintf(stderr, "WHvRunVirtualProcessor: 0x%lx\n", hr); break; }
@@ -6143,6 +6239,23 @@ int main(int argc, char **argv) {
                     break;
                 }
             }
+            /* Demand-commit: if GPA is in the guest range but not yet committed,
+               commit the 2MB chunk and map it, then retry the instruction. */
+            {
+                unsigned long long gpa = ctx.MemoryAccess.Gpa;
+                if (gpa < guest_mem_size) {
+                    size_t chunk = 2ULL * 1024 * 1024;
+                    size_t base = (gpa / chunk) * chunk;
+                    size_t len = chunk;
+                    if (base + len > guest_mem_size) len = guest_mem_size - base;
+                    if (VirtualAlloc((unsigned char *)guest_mem + base, len, MEM_COMMIT, PAGE_READWRITE)) {
+                        HRESULT hr2 = WHvMapGpaRange(partition, (unsigned char *)guest_mem + base,
+                            base, len,
+                            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+                        if (SUCCEEDED(hr2)) break;
+                    }
+                }
+            }
             { char reason[128];
               snprintf(reason, sizeof(reason), "Unmapped MMIO GPA=0x%llx (%s) after %llu exits",
                   ctx.MemoryAccess.Gpa,
@@ -6216,6 +6329,19 @@ int main(int argc, char **argv) {
                 }
             }
             if (ctx.ExitReason == 4) {
+                unsigned long long gpa = ctx.MemoryAccess.Gpa;
+                if (gpa < guest_mem_size) {
+                    size_t chunk = 2ULL * 1024 * 1024;
+                    size_t base = (gpa / chunk) * chunk;
+                    size_t len = chunk;
+                    if (base + len > guest_mem_size) len = guest_mem_size - base;
+                    if (VirtualAlloc((unsigned char *)guest_mem + base, len, MEM_COMMIT, PAGE_READWRITE)) {
+                        HRESULT hr2 = WHvMapGpaRange(partition, (unsigned char *)guest_mem + base,
+                            base, len,
+                            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+                        if (SUCCEEDED(hr2)) break;
+                    }
+                }
                 char reason[128];
                 snprintf(reason, sizeof(reason), "MemAccess GPA=0x%llx (%s) after %llu exits",
                     ctx.MemoryAccess.Gpa,
@@ -6241,6 +6367,77 @@ int main(int argc, char **argv) {
         if (exits % 64 == 0) sync_shadow_buffers();
         if (hda.sd0ctl & 2) hda_drain_stream();
 
+        /* ── SMP: poll AP trampoline address for AP launch signal ── */
+        if (smp_cores > 1 && !lapic_state.ap_running[1]) {
+            unsigned long long ap_entry = *(unsigned long long *)((unsigned char *)guest_mem + 0x1000);
+            if (ap_entry >= 0x100000 && ap_entry < guest_mem_size) {
+                unsigned long long *stack_table = (unsigned long long *)((unsigned char *)guest_mem + 0xF00);
+                for (int i = 1; i < SMP_MAX_CORES && i <= lapic_state.ap_count; i++) {
+                    if (lapic_state.ap_running[i]) continue;
+                    lapic_state.ap_running[i] = 1;
+                    HRESULT hr2 = WHvCreateVirtualProcessor(partition, i, 0);
+                    if (FAILED(hr2)) {
+                        fprintf(stderr, "SMP: WHvCreateVirtualProcessor(%d): 0x%lx\n", i, hr2);
+                        lapic_state.ap_running[i] = 0;
+                        continue;
+                    }
+                    unsigned long long ap_stack = stack_table[i];
+                    if (ap_stack == 0) ap_stack = 0xC0000000ULL - (unsigned long long)i * 0x10000;
+                    WHV_REGISTER_NAME ap_names[] = {
+                        WHvX64RegisterRip, WHvX64RegisterRsp, WHvX64RegisterRflags,
+                        WHvX64RegisterCs, WHvX64RegisterDs, WHvX64RegisterEs,
+                        WHvX64RegisterSs, WHvX64RegisterFs, WHvX64RegisterGs,
+                        WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4,
+                        WHvX64RegisterEfer, WHvX64RegisterGdtr, WHvX64RegisterRdi,
+                        WHvX64RegisterIdtr
+                    };
+                    WHV_REGISTER_VALUE ap_vals[16];
+                    memset(ap_vals, 0, sizeof(ap_vals));
+                    ap_vals[0].Reg64 = ap_entry;
+                    ap_vals[1].Reg64 = ap_stack;
+                    ap_vals[2].Reg64 = 0x202;
+                    ap_vals[3].Segment.Selector = 0x08;
+                    ap_vals[3].Segment.Base = 0;
+                    ap_vals[3].Segment.Limit = 0xFFFFFFFF;
+                    ap_vals[3].Segment.Attributes = 0xA09B;
+                    for (int s = 4; s <= 9; s++) {
+                        ap_vals[s].Segment.Selector = 0x10;
+                        ap_vals[s].Segment.Base = 0;
+                        ap_vals[s].Segment.Limit = 0xFFFFFFFF;
+                        ap_vals[s].Segment.Attributes = 0xC093;
+                    }
+                    ap_vals[10].Reg64 = 0x80000011;
+                    ap_vals[11].Reg64 = 0x8000;
+                    ap_vals[12].Reg64 = 0x620;
+                    ap_vals[13].Table.Base = 0x100000 + 232;
+                    ap_vals[13].Table.Limit = 23;
+                    ap_vals[14].Reg64 = (unsigned long long)i;
+                    ap_vals[15].Table.Base = 0x6000;
+                    ap_vals[15].Table.Limit = 4095;
+                    WHvSetVirtualProcessorRegisters(partition, i, ap_names, 16, ap_vals);
+                    lapic_state.ap_entry_addr = ap_entry;
+                    /* Increment ap-ready-count and set shadow RAX so BSP sees it */
+                    unsigned long long *ready = (unsigned long long *)((unsigned char *)guest_mem + 4080);
+                    (*ready)++;
+                    /* Force BSP past wait loop by setting RIP to after the loop.
+                       The wait loop's jcc target (exit point) is at the RIP of the
+                       first instruction after the hlt+jmp block. We can find it by
+                       looking at the BSP's current hlt RIP and jumping past it. */
+                    {
+                        WHV_REGISTER_NAME rip_name = WHvX64RegisterRip;
+                        WHV_REGISTER_VALUE rip_val;
+                        WHvGetVirtualProcessorRegisters(partition, 0, &rip_name, 1, &rip_val);
+                        /* Skip past: hlt(1) + jmp rel32(5) = 6 bytes after current hlt */
+                        rip_val.Reg64 += 6;
+                        WHvSetVirtualProcessorRegisters(partition, 0, &rip_name, 1, &rip_val);
+                        fprintf(stderr, "SMP: forced BSP past wait loop to RIP=0x%llx\n", rip_val.Reg64);
+                    }
+                    fprintf(stderr, "SMP: AP %d started, entry=0x%llx stack=0x%llx\n",
+                        i, ap_entry, ap_stack);
+                }
+            }
+        }
+
         /* ── Post-exit: decide what interrupt to queue ── */
         if (pending_irq < 0) {
             int vec = pic_master.vector_base ? pic_master.vector_base : 32;
@@ -6254,7 +6451,18 @@ int main(int argc, char **argv) {
                 double elapsed = (double)(now.QuadPart - last_tick.QuadPart) / perf_freq.QuadPart;
                 if (!no_timer && elapsed >= 0.055) {
                     QueryPerformanceCounter(&last_tick);
-                    pending_irq = vec;  /* timer tick */
+                    if (smp_cores > 1) {
+                        unsigned int *tc = (unsigned int *)((unsigned char *)guest_mem + 28672);
+                        (*tc)++;
+                        fprintf(stderr, "TICK-BUMP: tc=%u exits=%llu\n", *tc, exits);
+                        WHV_REGISTER_NAME clr_name = WHvRegisterInternalActivityState;
+                        WHV_REGISTER_VALUE clr_val;
+                        memset(&clr_val, 0, sizeof(clr_val));
+                        WHvSetVirtualProcessorRegisters(partition, 0, &clr_name, 1, &clr_val);
+                        halted = 0;
+                    } else {
+                        pending_irq = vec;  /* timer tick */
+                    }
                 } else {
                     DWORD ms = (DWORD)((0.055 - elapsed) * 1000.0);
                     if (ms > 50) ms = 50;

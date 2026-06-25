@@ -3,7 +3,7 @@ Chapter: MaterialEditor
  Material editing with PBR-inspired properties. Supports
  albedo, metallic, roughness, emission, and texture assignment.
  Preview renders a sphere with the material applied.
- All values fixed-point scale 1000.
+ Material properties use Real (0.0 to 1.0).
 
  We say:
 
@@ -12,11 +12,11 @@ Section: Types
   PbrMaterial = record {
     pbr-name : Text,
     pbr-albedo : Integer,
-    pbr-metallic : Integer,
-    pbr-roughness : Integer,
+    pbr-metallic : Real,
+    pbr-roughness : Real,
     pbr-emission : Integer,
-    pbr-emission-strength : Integer,
-    pbr-opacity : Integer,
+    pbr-emission-strength : Real,
+    pbr-opacity : Real,
     pbr-albedo-tex : Integer,
     pbr-normal-tex : Integer
   }
@@ -39,11 +39,11 @@ Section: Default Materials
   pbr-default = PbrMaterial {
     pbr-name = "Default",
     pbr-albedo = 12632256,
-    pbr-metallic = 0,
-    pbr-roughness = 500,
+    pbr-metallic = 0.0,
+    pbr-roughness = 0.5,
     pbr-emission = 0,
-    pbr-emission-strength = 0,
-    pbr-opacity = 1000,
+    pbr-emission-strength = 0.0,
+    pbr-opacity = 1.0,
     pbr-albedo-tex = -1,
     pbr-normal-tex = -1
   }
@@ -52,11 +52,11 @@ Section: Default Materials
   pbr-metal = PbrMaterial {
     pbr-name = "Metal",
     pbr-albedo = 11184810,
-    pbr-metallic = 900,
-    pbr-roughness = 200,
+    pbr-metallic = 0.9,
+    pbr-roughness = 0.2,
     pbr-emission = 0,
-    pbr-emission-strength = 0,
-    pbr-opacity = 1000,
+    pbr-emission-strength = 0.0,
+    pbr-opacity = 1.0,
     pbr-albedo-tex = -1,
     pbr-normal-tex = -1
   }
@@ -65,11 +65,11 @@ Section: Default Materials
   pbr-glass = PbrMaterial {
     pbr-name = "Glass",
     pbr-albedo = 14540253,
-    pbr-metallic = 0,
-    pbr-roughness = 50,
+    pbr-metallic = 0.0,
+    pbr-roughness = 0.05,
     pbr-emission = 0,
-    pbr-emission-strength = 0,
-    pbr-opacity = 300,
+    pbr-emission-strength = 0.0,
+    pbr-opacity = 0.3,
     pbr-albedo-tex = -1,
     pbr-normal-tex = -1
   }
@@ -78,11 +78,11 @@ Section: Default Materials
   pbr-emissive = PbrMaterial {
     pbr-name = "Emissive",
     pbr-albedo = #FFFFFF,
-    pbr-metallic = 0,
-    pbr-roughness = 800,
+    pbr-metallic = 0.0,
+    pbr-roughness = 0.8,
     pbr-emission = 16776960,
-    pbr-emission-strength = 800,
-    pbr-opacity = 1000,
+    pbr-emission-strength = 0.8,
+    pbr-opacity = 1.0,
     pbr-albedo-tex = -1,
     pbr-normal-tex = -1
   }
@@ -93,11 +93,11 @@ Section: Construction
   pbr-new (name) (albedo) = PbrMaterial {
     pbr-name = name,
     pbr-albedo = albedo,
-    pbr-metallic = 0,
-    pbr-roughness = 500,
+    pbr-metallic = 0.0,
+    pbr-roughness = 0.5,
     pbr-emission = 0,
-    pbr-emission-strength = 0,
-    pbr-opacity = 1000,
+    pbr-emission-strength = 0.0,
+    pbr-opacity = 1.0,
     pbr-albedo-tex = -1,
     pbr-normal-tex = -1
   }
@@ -132,18 +132,18 @@ Section: Material Editing
   pbr-set-albedo : PbrMaterial, Integer -> PbrMaterial
   pbr-set-albedo (mat) (color) = __record-set mat "pbr-albedo" color
 
-  pbr-set-metallic : PbrMaterial, Integer -> PbrMaterial
-  pbr-set-metallic (mat) (val) = __record-set mat "pbr-metallic" (me-clamp val 0 1000)
+  pbr-set-metallic : PbrMaterial, Real -> PbrMaterial
+  pbr-set-metallic (mat) (val) = __record-set mat "pbr-metallic" (me-clamp-real val 0.0 1.0)
 
-  pbr-set-roughness : PbrMaterial, Integer -> PbrMaterial
-  pbr-set-roughness (mat) (val) = __record-set mat "pbr-roughness" (me-clamp val 0 1000)
+  pbr-set-roughness : PbrMaterial, Real -> PbrMaterial
+  pbr-set-roughness (mat) (val) = __record-set mat "pbr-roughness" (me-clamp-real val 0.0 1.0)
 
-  pbr-set-emission : PbrMaterial, Integer, Integer -> PbrMaterial
+  pbr-set-emission : PbrMaterial, Integer, Real -> PbrMaterial
   pbr-set-emission (mat) (color) (strength) =
-    __record-set (__record-set mat "pbr-emission" color) "pbr-emission-strength" (me-clamp strength 0 1000)
+    __record-set (__record-set mat "pbr-emission" color) "pbr-emission-strength" (me-clamp-real strength 0.0 1.0)
 
-  pbr-set-opacity : PbrMaterial, Integer -> PbrMaterial
-  pbr-set-opacity (mat) (val) = __record-set mat "pbr-opacity" (me-clamp val 0 1000)
+  pbr-set-opacity : PbrMaterial, Real -> PbrMaterial
+  pbr-set-opacity (mat) (val) = __record-set mat "pbr-opacity" (me-clamp-real val 0.0 1.0)
 
   pbr-set-albedo-tex : PbrMaterial, Integer -> PbrMaterial
   pbr-set-albedo-tex (mat) (tex-id) = __record-set mat "pbr-albedo-tex" tex-id
@@ -153,27 +153,33 @@ Section: Shading
   pbr-shade : PbrMaterial, Integer, Integer -> Integer
   pbr-shade (mat) (light-intensity) (view-dot-normal) =
     let base = mat.pbr-albedo
-    in let diffuse = light-intensity * (1000 - mat.pbr-metallic) / 1000
-    in let specular = me-specular-term mat view-dot-normal light-intensity
-    in let lit-r = (base / 65536) * (diffuse + specular) / 1000
-    in let lit-g = (base / 256 - base / 65536 * 256) * (diffuse + specular) / 1000
-    in let lit-b = (base - base / 256 * 256) * (diffuse + specular) / 1000
-    in let er = mat.pbr-emission / 65536 * mat.pbr-emission-strength / 1000
-    in let eg = (mat.pbr-emission / 256 - mat.pbr-emission / 65536 * 256) * mat.pbr-emission-strength / 1000
-    in let eb = (mat.pbr-emission - mat.pbr-emission / 256 * 256) * mat.pbr-emission-strength / 1000
+    in let li = int-to-real light-intensity / 1000.0
+    in let vdn = int-to-real view-dot-normal / 1000.0
+    in let diffuse = li * (1.0 - mat.pbr-metallic)
+    in let specular = me-specular-term mat vdn li
+    in let lighting = diffuse + specular
+    in let lit-r = real-to-int (int-to-real (base / 65536) * lighting)
+    in let lit-g = real-to-int (int-to-real (base / 256 - base / 65536 * 256) * lighting)
+    in let lit-b = real-to-int (int-to-real (base - base / 256 * 256) * lighting)
+    in let er = real-to-int (int-to-real (mat.pbr-emission / 65536) * mat.pbr-emission-strength)
+    in let eg = real-to-int (int-to-real (mat.pbr-emission / 256 - mat.pbr-emission / 65536 * 256) * mat.pbr-emission-strength)
+    in let eb = real-to-int (int-to-real (mat.pbr-emission - mat.pbr-emission / 256 * 256) * mat.pbr-emission-strength)
     in me-clamp (lit-r + er) 0 255 * 65536 + me-clamp (lit-g + eg) 0 255 * 256 + me-clamp (lit-b + eb) 0 255
 
-  me-specular-term : PbrMaterial, Integer, Integer -> Integer
+  me-specular-term : PbrMaterial, Real, Real -> Real
   me-specular-term (mat) (vdn) (intensity) =
-    let smooth = 1000 - mat.pbr-roughness
-    in let power = smooth * smooth / 1000
-    in let spec = vdn * vdn / 1000 * power / 1000
-    in spec * intensity * (mat.pbr-metallic + 200) / 1200 / 1000
+    let smooth = 1.0 - mat.pbr-roughness
+    in let power = smooth * smooth
+    in let spec = vdn * vdn * power
+    in spec * intensity * (mat.pbr-metallic + 0.2) / 1.2
 
 Section: Helpers
 
   me-clamp : Integer, Integer, Integer -> Integer
   me-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  me-clamp-real : Real, Real, Real -> Real
+  me-clamp-real (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
 
 Section: Info
 

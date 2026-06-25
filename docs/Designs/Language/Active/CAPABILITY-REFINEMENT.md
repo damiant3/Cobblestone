@@ -324,3 +324,28 @@ main = with-timeout 5 [FileSystem.Read "/config/"] do
 -- After 5 seconds, FileSystem.Read capability is revoked
 -- parse-and-cache runs with no filesystem access
 ```
+
+---
+
+## External Research (IRISA Harvest, 2026-06-23)
+
+See `docs/Reference/IRISA_Research_Harvest.md` for full context.
+
+### SOTERN — Intent-Based Security
+
+The SOTERN team (IRISA D2) studies "intent-based security" —
+expressing security policies as high-level intents that the system
+enforces automatically. Instead of writing explicit capability
+grants, the user states an intent ("only signed code runs", "no
+network access for untrusted code") and the system derives the
+enforcement mechanism.
+
+**Applicability:** Our effect system already encodes what a function
+can do (`[Console, FileSystem]`). Intent-based security would add a
+higher layer: a prose-level security policy that the compiler
+verifies against the capability lattice. Example: a CPL assertion
+`intent: no function with Network capability may access identity
+keys` would be checked against the capability refinement lattice at
+compile time. This connects the prose layer (V2 narration) to the
+capability system — security policies become load-bearing prose,
+not comments.

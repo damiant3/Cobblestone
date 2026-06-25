@@ -53,6 +53,18 @@ The Ed25519 foreword (`foreword/Ed25519.codex`, CL 541) implements
 key generation, signing, and verification. The primitives are
 constant-time and run on bare metal.
 
+**Post-quantum note (IRISA, 2026-06-23):** The CAPSULE team (IRISA
+D1) researches post-quantum lattice-based cryptography. Ed25519 is
+not quantum-resistant. A future upgrade path should support hybrid
+signatures (Ed25519 + a lattice-based scheme) so that the trust
+lattice can transition without invalidating existing vouches. The
+RotationFact mechanism (below) supports this — a key rotation from
+an Ed25519 identity to a hybrid identity preserves trust chains.
+CAPSULE also studies side-channel attacks on crypto implementations;
+their work could verify that our Ed25519 emitted code is
+constant-time at the machine instruction level, not just at the
+source level. See `docs/Reference/IRISA_Research_Harvest.md`.
+
 ### Storage
 
 The private key must never exist on disk in plaintext. The concrete

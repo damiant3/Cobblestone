@@ -38,12 +38,12 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-06-18:
+As of 2026-06-22:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
   byte-identical. The compiler reproduces itself on bare metal.
-- **425 library modules** (284 foreword + 93 OS) across 28 quires: data structures, crypto,
+- **507 library modules** (360 foreword + 147 OS) across 28 quires: data structures, crypto,
   networking (full TCP/IP + UDP/ICMP/DNS/DHCP/NTP/Syslog/TFTP), game
   engine (A*, hex maps, ECS, physics, Voronoi, Perlin), 3D engine
   (renderer, scene graph, LOD, culling, materials, skinning, audio,
@@ -57,12 +57,20 @@ As of 2026-06-18:
   trust lattice, 5-phase CDX verifier, interactive shell, VGA console,
   developer debugger, HTTP server, process management, UEFI boot path,
   diagnostic shell.
-- **GUI substrate**: 18-chapter UI foreword with themeable primitives
+- **GUI OS**: graphical operating system shell on bare metal via GOP
+  framebuffer. GuiShell compositor with sidebar launcher, status bar,
+  RTC clock. Resolution support: 640x480, 800x600, 1024x768 (32-bit
+  XRGB8888). Multi-monitor management (extended, mirror, single modes)
+  with default 1920x1080. Working apps: Calculator, Calendar, Notepad,
+  Timer, Diffusion, Tracker, Piano. MutWheel scheduler for mutable GUI
+  state via peek/poke (no GC, no closures). SMP-aware: work-stealing
+  scheduler drives app rendering across cores.
+- **UI foreword**: 28-chapter toolkit with themeable primitives
   (swap one Theme record to get LCARS, cockpit, or terminal look),
   flex layout, compositor with z-order and alpha blending, event dispatch,
   reactive bindings, animations/throbbers, multi-size bitmap icons,
-  bitmap font rendering (CCE-indexed), overlays, sound effects, and a
-  central orchestrator loop.
+  TrueType font rendering (14 CC0 fonts, 4x4 AA rasterizer), overlays,
+  sound effects, and a central orchestrator loop.
 - **Agent lifecycle**: local AI runtime (GGUF loader, inference),
   agent acquisition (bundled/USB/network, verification), coordinator
   (local/upstream escalation, role dispatch), first-boot wizard.
@@ -91,7 +99,7 @@ As of 2026-06-18:
   builtin sets a flag the body's tail checks.
 - **Plug architecture**: emitters as standalone CDX programs. Compiler
   emits IR text; plug consumes IR via file I/O, emits target source.
-  **53 transpiler plugs** across languages (Ada, Babbage, C#,
+  **52 plugs (all building clean)** -- across languages (Ada, Babbage, C#,
   Clojure, COBOL, D, Elixir, Fortran, Go, Groovy, Haskell, Java,
   JavaScript, Julia, Kotlin, Lua, Nim, Objective-C, OCaml, Pascal,
   Perl, PHP, Python, Ruby, Rust, Scala, Scheme, Swift, TypeScript,
@@ -203,7 +211,7 @@ As of 2026-06-18:
   Controlling/Sales/Production/Maintenance/Quality/Warehouse/Projects/
   BW plus Real Estate, Banking, Insurance, Utilities, and Healthcare
   verticals.
-- **630 application modules across 47 apps** -- see Applications below.
+- **57 apps (27/27 web apps building clean)** -- see Applications below.
 - **Codex.Spark creative suite**: 85-module application (3D modeling,
   image editor, animation, audio/DAW, video compositor, skeletal
   animation, particles, procedural noise, interactive UI shell) running
@@ -222,11 +230,11 @@ As of 2026-06-18:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,408,997 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (~2.31 MB) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 (file) | `6F75DBC7CDF63F48C0B7B58A0188F0C2E87CBEB095FA3214A09D288C9D7C39E3` |
+| Content hash prefix | `EF14F3A5` |
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
@@ -977,7 +985,7 @@ characters requires the updated compiler.
 ## Library Quires
 
 Code outside the compiler is organized into **28 quires** (library namespaces)
-with **425 library modules** (284 foreword + 93 OS); **1,194 modules** in the depot including the 54-file compiler, 133 plug files, and 630 application modules:
+with **507 library modules** (360 foreword + 147 OS); the depot includes the 54-file compiler, 134 plug files, and 57 applications:
 
 | Quire | Directory | Count | Highlights |
 |-------|-----------|------:|------------|
@@ -1005,63 +1013,6 @@ with **425 library modules** (284 foreword + 93 OS); **1,194 modules** in the de
 Quires cite each other via `cites Game chapter AStar` or
 `cites Net chapter Tcp`. The quire name is the last segment
 of the directory name, capitalized.
-
----
-
-## Applications
-
-**630 modules across 47 apps**, all written in Codex, all compiled by the
-seed. Web apps serve generated HTML/JS from CDX servers; WASM apps
-compile through the WASM plug; bare-metal apps render via the GOP
-framebuffer UI foreword.
-
-### Productivity and platform
-
-| App | Modules | What it does |
-|---|---:|---|
-| **CVMM** | 66 | OS desktop environment: window manager, system monitors, productivity suite, sync providers |
-| **Works** | 54 | Dev platform: DevConsole, UEFI console, editor, first-boot wizard, agent runtime/coordinator, HTTP server |
-| **Explorer** | 25 | Parameter explorer: card/character/item designers, settings, workflow exporter |
-| **Browser** | 19 | Bare-metal browser: network fetch, page compiler, trust model (all 3 phases complete, 5162 lines) |
-| **Helm** | 12 | Operations bridge console: cluster view, mixer, attention routing, voice |
-| **Collab** | 8 | Collaborative editing |
-| **Secrets** | 8 | AES-GCM vaults, PBKDF2, hash-chained audit, team sharing, generator |
-| **FileShare** | 8 | Merkle-verified pieces, Kademlia DHT, Ed25519 announces, rarest-first |
-| **Diagram** | 13 | Flowchart/ERD/UML/network/state-machine editor with routing and undo |
-| **Vision** | 13 | Computer-vision pipeline |
-| **NetTool** | 6 | Packet analyzer, port scanner, group admin |
-| **Workflow** | 4 | State-machine engine: SLA, doc gates, audit; title/claims/mortgage flows |
-| **Designer** | 4 | WYSIWYG UI builder rendering through WASM |
-
-### Business
-
-| App | Modules | What it does |
-|---|---:|---|
-| **ERP** | 23 | GL, AP/AR, Materials, HR, Treasury, Controlling, Sales, Production, Maintenance, Quality, Warehouse, Projects, BW analytics; Real Estate / Banking / Insurance / Utilities / Healthcare verticals |
-| **Market** | 17 | E-commerce: products, cart/tax/payment, shipping, coupons, reviews, digital goods, bundles, subscriptions, auctions (4 types), merchants, drop-shipping, affiliates |
-| **Data** | 42 | Relational DB server: MVCC, WAL, B-trees, query planner, replication, column/graph/time-series stores |
-| **Services** | 5 | System services: TimeService (RTC+NTP+HPET, TOTP), Revocation (trust-lattice evidence) |
-
-### Creative and games
-
-| App | Modules | What it does |
-|---|---:|---|
-| **Spark** | 89 | Creative suite: 3D modeling, CAD workbench, image editor, animation/IK, audio/DAW, video compositor, UV editor -- WebGPU at 120fps via WASM |
-| **Games** | 128 | CodexMagic card platform (engine, server, web portal, clans, marketplace, parental controls), classic board games, AI opponents |
-| **CodexMagic Mobile** | 8 | Mobile client |
-| **MathBook** | 17 | Symbolic CAS: calculus, number theory, circuits, proofs, statistics |
-| **FishTank** | 14 | Boids AI (1000 fish), particles, WebGPU, WASM |
-| **Globe** | 8 | 11 live data feeds + GIS: road network, routing, POIs, geocoding |
-| **Star Atlas** | 7 | Planetarium: 125 deep-sky objects, constellation figures |
-| **Radio** | 3 | DJ console: dual decks, mixer, Web Audio |
-| **Piano** | 1 | Playable piano |
-
-### Page apps (WebApp template)
-
-Twenty single-purpose web apps on the shared WebRuntime/WebTheme/
-WebWidgets quire: news, podcasts, books, recorder, capture, publisher,
-imagetools, fitness, pomodoro, markets, calendar, chat, mail, music,
-notes, weather, tasks, photos, and maps.
 
 ---
 
@@ -1150,6 +1101,7 @@ old/                      Retired C# reference compiler — historical only
 | **VectorMaskTy + comparisons** | **`VectorMask N` type, vector comparison operators (`<`, `>`, `<=`, `>=`), `vec-select` (per-lane conditional). SSE2 CMPPD/MOVMSKPD codegen.** | **2026-06-16** |
 | **SMP + GPU kernels** | **SMP all 5 phases (atomics, per-core bootstrap, work-stealing scheduler, per-core heap, IPI + lock-free channels). GPU K5-K8 (warp, shared memory, atomics, math intrinsics, verifier). `codex.foreword.gpu` quire (10 modules). CCE Tier 2 (CJK/Hangul/Kana/Emoji, 3-byte encoding). Browser all 3 phases (network fetch + page compiler, 19 modules, 5162 lines). 742 tests.** | **2026-06-17** |
 | **Update 25** | **Seed 2.30 MB, 425 library modules across 28 quires (added gpu, boards). VM default 8 GB RAM. Public push.** | **2026-06-18** |
+| **GUI OS + cross-arch** | **GUI shell on bare metal (GuiShell compositor, 7 apps, MutWheel state scheduler, multi-monitor 640x480-1024x768). TrueType font engine (14 CC0 fonts, 4x4 AA). 27 keyboard layouts. ARM64 62 Renode tests, RISC-V 44 Renode tests. All 52 plugs building, 27/27 web apps building, 507 library modules. Mutable records merged. SMP-aware GUI rendering.** | **2026-06-22** |
 
 Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 
@@ -1174,9 +1126,10 @@ Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 
 ## Apps
 
-47 applications built on the Codex stack, from full database servers to
-single-file UI prototypes. Each has a `README.md` with module inventory,
-completeness estimate, and conformance assessment.
+**57 apps**, all written in Codex, all compiled by the seed. 27/27
+web apps build clean through the HTML plug. Bare-metal apps render
+via the GOP framebuffer UI foreword. Each app has a `README.md` with module
+inventory, completeness estimate, and conformance assessment.
 
 **Conformance key**: *Full* = pure Codex, emits through plugs for any
 external format. *Partial* = mostly Codex but has hand-written non-Codex
@@ -1184,69 +1137,59 @@ client code or unconnected wiring gaps.
 
 ### Flagship (75-90%)
 
-| App | What | Complete | Conform |
-|-----|------|:--------:|:-------:|
-| [data](apps/data/) | Multi-model database server (OLTP, OLAP, graph, spatial, time-series, full-text) | 90% | Full |
-| [games/classic](apps/games/) | 35 classic board and card games with AI opponents | 90% | Full |
-| [workflow](apps/workflow/) | Long-running business process engine with industry templates | 85% | Full |
-| [diagram](apps/diagram/) | Diagramming editor (flowcharts, ERDs, UML, state machines) with undo/redo | 82% | Full |
-| [designer](apps/designer/) | WYSIWYG UI widget tree builder compiled to WASM | 80% | Full |
-| [helm](apps/helm/) | Scalable comms: The River (auto-clustering chat) + The Bridge (ranked voice) | 78% | Full |
-| [games/codexmagic](apps/games/) | Collectible card game platform: economy, clans, dungeons, multiverse registry | 75% | Full |
-| [cvmm](apps/cvmm/) | Desktop management shell: system managers, fleet/mesh, 11 productivity mini-apps | 75% | Partial |
-| [collab](apps/collab/) | Video collaboration: calls, screen share, meetings, whiteboard, recording | 75% | Full |
-| [mathbook](apps/mathbook/) | Symbolic CAS and interactive math notebook (parse, simplify, differentiate, integrate) | 75% | Full |
+| App | Mod | What | Done | Conf |
+|-----|----:|------|:----:|:----:|
+| [data](apps/data/) | 42 | Multi-model database server (OLTP, OLAP, graph, spatial, time-series, full-text) | 90% | Full |
+| [games](apps/games/) | 128 | CodexMagic card platform + 35 classic board/card games with AI opponents | 90% | Full |
+| [spark](apps/spark/) | 89 | Creative suite: 3D modeling, image editing, animation/IK, audio/DAW, video -- WebGPU via WASM | 85% | Full |
+| [workflow](apps/workflow/) | 4 | Long-running business process engine with SLA, doc gates, industry templates | 85% | Full |
+| [diagram](apps/diagram/) | 13 | Diagramming editor (flowcharts, ERDs, UML, state machines) with undo/redo | 82% | Full |
+| [designer](apps/designer/) | 4 | WYSIWYG UI widget tree builder compiled to WASM | 80% | Full |
+| [weather](apps/weather/) | 1 | Weather dashboard: current, hourly, 7-day, wind chill, heat index, atmospheric | 78% | Full |
+| [notes](apps/notes/) | 1 | Two-pane note-taking with formatting toolbar, tag cycling, archive, duplicate | 78% | Full |
+| [tasks](apps/tasks/) | 1 | Five-column Kanban board with overdue detection, priority/tag editing, delete | 78% | Full |
+| [mail](apps/mail/) | 1 | Three-pane email client with compose, reply, draft save, dynamic unread counts | 78% | Full |
+| [fitness](apps/fitness/) | 1 | Activity rings, workout log, calorie estimation, goal progress, streak counter | 78% | Full |
+| [news](apps/news/) | 1 | RSS/news reader with reading time estimates, share, unread counts, word count | 78% | Full |
+| [books](apps/books/) | 1 | E-book reader with progress bars, reading time, bookmarks, 1-5 star ratings | 78% | Full |
+| [helm](apps/helm/) | 12 | Scalable comms: The River (auto-clustering chat) + The Bridge (ranked voice) | 78% | Full |
+| [music](apps/music/) | 1 | Spotify-style player with now-playing indicator, shuffle/repeat, liked filter | 76% | Full |
+| [calendar](apps/calendar/) | 1 | Month/Week/Day/Agenda with working event creation, input fields, active views | 76% | Full |
+| [capture](apps/capture/) | 1 | Screenshot tool with dynamic annotations, undo/redo stack, tool selection | 76% | Full |
+| [imagetools](apps/imagetools/) | 1 | Image editor with widget-gauge sliders, quality control, active presets | 76% | Full |
+| [piano](apps/piano/) | 1 | Two-octave piano with keyboard input (a-k), ADSR display, metronome, scales | 76% | Full |
+| [maps](apps/maps/) | 1 | Map viewer with cosine-adjusted distance, route summary, layer indicators | 76% | Full |
+| [photos](apps/photos/) | 1 | Photo gallery with slideshow auto-advance, delete confirmation, batch select | 76% | Full |
+| [publisher](apps/publisher/) | 1 | Long-form authoring with word count, TOC, auto-save, version history, tags | 76% | Full |
+| [pomodoro](apps/pomodoro/) | 1 | Focus timer with custom duration, daily goals, break reminders, stats | 76% | Full |
+| [podcasts](apps/podcasts/) | 1 | Podcast client with episode progress, 5-speed playback, download tracking | 76% | Full |
+| [recorder](apps/recorder/) | 1 | Voice recorder with ticking timer, waveform bars, size estimate, rename | 76% | Full |
+| [cvmm](apps/cvmm/) | 66 | Desktop management shell: system managers, fleet/mesh, 11 productivity mini-apps | 75% | Partial |
+| [collab](apps/collab/) | 8 | Video collaboration: calls, screen share, meetings, whiteboard, recording | 75% | Full |
+| [mathbook](apps/mathbook/) | 17 | Symbolic CAS and interactive math notebook (parse, simplify, differentiate, integrate) | 75% | Full |
 
-### Substantial (60-70%)
+| [explorer](apps/explorer/) | 25 | World-building and game-asset design suite with CDX server, workflow export | 75% | Full |
+| [fishtank](apps/fishtank/) | 14 | WebGPU aquarium: boids AI, procedural 3D fish, particles, WASM exports wired | 75% | Full |
+| [nettool](apps/nettool/) | 6 | Network admin toolkit: packet capture, port scanning, mesh admin | 75% | Full |
+| [browser](apps/browser/) | 19 | Bare-metal web browser: TCP fetch, page compiler, content-addressed pages | 75% | Full |
+| [erp](apps/erp/) | 23 | Enterprise resource planning with HTTP server: GL, AP/AR, HR, manufacturing | 75% | Full |
+| [market](apps/market/) | 17 | Self-hosted e-commerce: catalog, cart, checkout, sample DB, multi-vendor | 75% | Full |
+| [radio](apps/radio/) | 3 | Two-deck radio station with transport controls, chat, mixer/EQ | 75% | Full |
+| [secrets](apps/secrets/) | 8 | Encrypted password manager: AES-GCM encrypt/decrypt wired, PBKDF2, DH sharing | 75% | Full |
+| [vision](apps/vision/) | 13 | Organizational intelligence with HTTP API: signal cascade, portfolio health | 75% | Full |
+| [chat](apps/chat/) | 3 | E2E-encrypted messaging with ChatServer API (7 endpoints) | 75% | Full |
+| [starmap](apps/starmap/) | 7 | 3D star map with camera controls: orbit, zoom, fly-to, 80+ celestial objects | 75% | Full |
+| [globe](apps/globe/) | 8 | Earth visualization with routing (extract-path + turn maneuvers), 16 overlays | 75% | Full |
+| [fileshare](apps/fileshare/) | 8 | P2P file sharing with TCP I/O: Merkle pieces, Kademlia DHT, Ed25519 announce | 75% | Full |
+| [works](apps/works/) | 54 | Developer environment with source indexing: UEFI console, repo protocol, agents | 75% | Full |
+| [markets](apps/markets/) | 1 | Financial data dashboard with chart bars: stocks, bonds, commodities, watchlist | 75% | Full |
+| [services](apps/services/) | 5 | Shared system services with account persistence: time, revocation, parental | 75% | Full |
 
-| App | What | Complete | Conform |
-|-----|------|:--------:|:-------:|
-| [explorer](apps/explorer/) | World-building and game-asset design suite with CDX server | 70% | Full |
-| [fishtank](apps/fishtank/) | WebGPU aquarium: boids AI, procedural 3D fish, volumetric lighting, particles | 70% | Partial |
-| [nettool](apps/nettool/) | Network admin toolkit: packet capture, port scanning, mesh admin | 70% | Full |
-| [browser](apps/browser/) | Bare-metal web browser: network fetch, page compiler, content-addressed pages, capability tiers (all 3 phases complete, 19 modules, 5162 lines) | 65% | Full |
-| [erp](apps/erp/) | Enterprise resource planning: GL, AP/AR, HR, manufacturing, compliance | 65% | Full |
-| [market](apps/market/) | Self-hosted e-commerce: catalog, cart, checkout, multi-vendor, auctions | 65% | Partial |
-| [secrets](apps/secrets/) | Encrypted password manager: AES-GCM vaults, PBKDF2, team sharing via DH | 65% | Full |
-| [spark](apps/spark/) | Creative suite: 3D modeling, image editing, animation, audio/DAW, video | 65% | Full |
-| [vision](apps/vision/) | Organizational intelligence: weighted signal cascade, portfolio health | 65% | Full |
-| [chat](apps/chat/) | E2E-encrypted messaging with Signal-style interface | 65% | Partial |
-| [starmap](apps/starmap/) | 3D star map: 80+ celestial objects, constellations, spatial DB, WASM/WebGPU | 65% | Full |
-| [globe](apps/globe/) | Earth visualization with 16 data overlays and Dijkstra turn-by-turn routing | 60% | Partial |
-| [fileshare](apps/fileshare/) | P2P file sharing: Merkle pieces, Kademlia DHT, Ed25519 announce, tit-for-tat | 60% | Full |
-| [works](apps/works/) | Developer environment: UEFI console, repo protocol, build system, AI agents | 60% | Full |
-| [markets](apps/markets/) | Financial data dashboard: stocks, bonds, commodities, watchlist | 60% | Full |
+### Growing (55%)
 
-### Growing (50-59%)
-
-| App | What | Complete | Conform |
-|-----|------|:--------:|:-------:|
-| [codexmagic-mobile](apps/codexmagic-mobile/) | .NET MAUI companion app for CodexMagic | 55% | Partial |
-| [services](apps/services/) | Shared system services: time, revocation, parental controls | 55% | Full |
-| [calendar](apps/calendar/) | Month/Week/Day/Agenda views with mini-calendar | 55% | Full |
-| [tasks](apps/tasks/) | Five-column Kanban board with priority-colored cards | 55% | Partial |
-| [radio](apps/radio/) | Two-deck internet radio station with mixer/crossfader/EQ | 55% | Full |
-| [notes](apps/notes/) | Two-pane note-taking app with folder sidebar | 55% | Partial |
-| [mail](apps/mail/) | Three-pane email client with folder sidebar | 50% | Full |
-| [pomodoro](apps/pomodoro/) | Focus timer with work/break modes and session tracking | 50% | Partial |
-
-### Early (25-45%)
-
-| App | What | Complete | Conform |
-|-----|------|:--------:|:-------:|
-| [news](apps/news/) | RSS/news-feed reader with categorized sidebar | 45% | Partial |
-| [fitness](apps/fitness/) | Activity rings, weekly bar chart, workout history | 45% | Full |
-| [books](apps/books/) | E-book reader with library shelf and reading view | 40% | Full |
-| [music](apps/music/) | Spotify-style music player with album grid and player bar | 40% | Full |
-| [photos](apps/photos/) | Photo gallery with grid, albums, and lightbox | 40% | Partial |
-| [publisher](apps/publisher/) | Long-form content authoring with rich-text editor | 40% | Partial |
-| [capture](apps/capture/) | Screenshot and annotation tool | 35% | Full |
-| [imagetools](apps/imagetools/) | Image editing utility: crop, resize, rotate, adjust, export | 35% | Full |
-| [piano](apps/piano/) | Two-octave virtual piano keyboard | 35% | Partial |
-| [podcasts](apps/podcasts/) | Podcast client with subscription sidebar and playback bar | 35% | Partial |
-| [recorder](apps/recorder/) | Voice recorder with waveform and recording library | 35% | Partial |
-| [weather](apps/weather/) | Weather dashboard: current, hourly, 7-day, atmospheric details | 30% | Full |
-| [maps](apps/maps/) | Map viewer with layer selector and info panel | 25% | Full |
+| App | Mod | What | Done | Conf |
+|-----|----:|------|:----:|:----:|
+| [codexmagic-mobile](apps/codexmagic-mobile/) | 8 | .NET MAUI companion app for CodexMagic | 55% | Partial |
 
 ---
 

@@ -1,0 +1,139 @@
+Chapter: SettingsPanel
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Dropdown
+  cites UI chapter TextField
+  cites UI chapter Validation
+
+ Reusable settings/properties panel. A vertical stack of labeled
+ fields: dropdowns, text inputs, sliders (gauges), toggles, and
+ static key-value pairs. Apps build a SettingsSpec, and the panel
+ renders it with consistent spacing, label alignment, and
+ validation error display.
+
+ Used by: DiffusionApp (model/sampler/steps), TrackerApp (issue
+ fields), Diagram (node properties), Explorer (item attributes),
+ WorkflowHtml (step forms), ERP (all forms).
+
+ We say:
+
+Section: Types
+  SettingsField =
+    | SfDropdown (Text) (Text) (DropdownState)
+    | SfText (Text) (Text) (Text)
+    | SfNumber (Text) (Text) (Integer)
+    | SfSlider (Text) (Text) (Integer) (Integer) (Integer)
+    | SfToggle (Text) (Text) (Boolean)
+    | SfReadOnly (Text) (Text) (Text)
+    | SfSeparator
+    | SfHeading (Text)
+
+  SettingsSpec = record {
+    sp-id : Text,
+    sp-title : Text,
+    sp-fields : List SettingsField,
+    sp-field-count : Integer,
+    sp-label-width : Integer,
+    sp-validation : FormValidation
+  }
+
+Section: Construction
+  settings-spec : Text, Text, List SettingsField -> SettingsSpec
+  settings-spec (id) (title) (fields) = SettingsSpec {
+    sp-id = id, sp-title = title, sp-fields = fields,
+    sp-field-count = list-length fields, sp-label-width = 80,
+    sp-validation = form-validation []
+  }
+
+  settings-with-validation : SettingsSpec, FormValidation -> SettingsSpec
+  settings-with-validation (spec) (fv) = __record-set spec "sp-validation" fv
+
+  settings-with-label-width : SettingsSpec, Integer -> SettingsSpec
+  settings-with-label-width (spec) (w) = __record-set spec "sp-label-width" w
+
+Section: Field Constructors
+  sf-dropdown : Text, Text, List Text -> SettingsField
+  sf-dropdown (id) (label) (options) =
+    SfDropdown id label (dropdown-new id options)
+
+  sf-dropdown-sel : Text, Text, List Text, Integer -> SettingsField
+  sf-dropdown-sel (id) (label) (options) (sel) =
+    SfDropdown id label (dropdown-with-selected id options sel)
+
+  sf-text : Text, Text, Text -> SettingsField
+  sf-text (id) (label) (value) = SfText id label value
+
+  sf-number : Text, Text, Integer -> SettingsField
+  sf-number (id) (label) (value) = SfNumber id label value
+
+  sf-slider : Text, Text, Integer, Integer, Integer -> SettingsField
+  sf-slider (id) (label) (value) (lo) (hi) = SfSlider id label value lo hi
+
+  sf-toggle : Text, Text, Boolean -> SettingsField
+  sf-toggle (id) (label) (on) = SfToggle id label on
+
+  sf-readonly : Text, Text, Text -> SettingsField
+  sf-readonly (id) (label) (value) = SfReadOnly id label value
+
+  sf-sep : SettingsField = SfSeparator
+
+  sf-heading : Text -> SettingsField
+  sf-heading (text) = SfHeading text
+
+Section: Widget Rendering
+  settings-widget : SettingsSpec -> WidgetNode
+  settings-widget (spec) =
+    let title-w = widget-label (spec.sp-id & "-title") (spec.sp-title)
+    in let sep = widget-separator (spec.sp-id & "-sep0")
+    in let field-widgets = sp-render-fields spec 0 (spec.sp-field-count) []
+    in widget-panel (spec.sp-id) DirColumn 4 ([title-w, sep] & field-widgets)
+
+  sp-render-fields : SettingsSpec, Integer, Integer, List WidgetNode -> List WidgetNode
+  sp-render-fields (spec) (i) (n) (acc) =
+    if i >= n then acc
+    else let field = list-at (spec.sp-fields) i
+    in let w = sp-render-field spec field (spec.sp-label-width)
+    in sp-render-fields spec (i + 1) n (list-push acc w)
+
+  sp-render-field : SettingsSpec, SettingsField, Integer -> WidgetNode
+  sp-render-field (spec) (field) (lw) =
+    when field
+      is SfDropdown (id) (label) (dd) ->
+        sp-labeled-row id label lw (dropdown-widget dd)
+      is SfText (id) (label) (value) ->
+        let err-w = form-field-with-error (spec.sp-validation) (widget-input id value 0) id
+        in sp-labeled-row id label lw err-w
+      is SfNumber (id) (label) (value) ->
+        let err-w = form-field-with-error (spec.sp-validation) (widget-number-field id value) id
+        in sp-labeled-row id label lw err-w
+      is SfSlider (id) (label) (value) (lo) (hi) ->
+        sp-labeled-row id label lw (widget-slider id value lo hi)
+      is SfToggle (id) (label) (on) ->
+        sp-labeled-row id label lw (widget-checkbox id on)
+      is SfReadOnly (id) (label) (value) ->
+        sp-labeled-row id label lw (widget-label (id & "-val") value)
+      is SfSeparator ->
+        widget-separator (spec.sp-id & "-sep")
+      is SfHeading (text) ->
+        widget-label (spec.sp-id & "-hdr") text
+
+  sp-labeled-row : Text, Text, Integer, WidgetNode -> WidgetNode
+  sp-labeled-row (id) (label) (lw) (field-widget) =
+    widget-panel (id & "-row") DirRow 4 [
+      widget-set-min (widget-label (id & "-lbl") label) lw 0,
+      widget-set-flex field-widget 1
+    ]
+
+Section: Value Access
+  settings-get-dropdown : SettingsSpec, Text -> Text
+  settings-get-dropdown (spec) (id) =
+    sp-find-dropdown (spec.sp-fields) id 0 (spec.sp-field-count)
+
+  sp-find-dropdown : List SettingsField, Text, Integer, Integer -> Text
+  sp-find-dropdown (fields) (id) (i) (n) =
+    if i >= n then ""
+    else when list-at fields i
+      is SfDropdown (fid) (label) (dd) -> if fid == id then dropdown-selected-text dd else sp-find-dropdown fields id (i + 1) n
+      is otherwise -> sp-find-dropdown fields id (i + 1) n
+
+Page 1

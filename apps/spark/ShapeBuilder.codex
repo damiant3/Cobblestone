@@ -7,7 +7,6 @@ Chapter: ShapeBuilder
  Procedural shape construction for 2D and 3D geometry.
  Builds meshes from path outlines, extrusion, lathe
  revolution, and boolean-like merge operations.
- Fixed-point scale 1000.
 
  We say:
 
@@ -25,15 +24,15 @@ Section: Types
   }
 
   ExtrudeConfig = record {
-    ex-depth : Integer,
+    ex-depth : Real,
     ex-segments : Integer,
-    ex-taper : Integer,
-    ex-twist : Integer
+    ex-taper : Real,
+    ex-twist : Real
   }
 
   LatheConfig = record {
     lt-segments : Integer,
-    lt-angle : Integer
+    lt-angle : Real
   }
 
 Section: Path Construction
@@ -63,19 +62,19 @@ Section: Path Construction
   shp-circle-loop : Integer, Integer, Integer, Integer, Integer, ShapePath -> ShapePath
   shp-circle-loop (cx) (cy) (r) (segs) (i) (p) =
     if i >= segs then path-close p
-    else let angle = i * 6283 / segs
-    in let x = cx + r * shp-cos-approx angle / 1000
-    in let y = cy + r * shp-sin-approx angle / 1000
+    else let angle = real-from-int i * 6.283 / real-from-int segs
+    in let x = cx + real-to-int (real-from-int r * shp-cos-approx angle)
+    in let y = cy + real-to-int (real-from-int r * shp-sin-approx angle)
     in shp-circle-loop cx cy r segs (i + 1) (path-add p x y)
 
 Section: Extrusion
 
   extrude-default : ExtrudeConfig
   extrude-default = ExtrudeConfig {
-    ex-depth = 1000,
+    ex-depth = 1.0,
     ex-segments = 1,
-    ex-taper = 1000,
-    ex-twist = 0
+    ex-taper = 1.0,
+    ex-twist = 0.0
   }
 
   shape-extrude : ShapePath, ExtrudeConfig -> TriMesh
@@ -85,25 +84,25 @@ Section: Extrusion
   shp-extrude-build : ShapePath, ExtrudeConfig, Integer, TriMesh -> TriMesh
   shp-extrude-build (path) (cfg) (seg) (mesh) =
     if seg >= cfg.ex-segments then mesh
-    else let z0 = seg * cfg.ex-depth / cfg.ex-segments
-    in let z1 = (seg + 1) * cfg.ex-depth / cfg.ex-segments
-    in let scale0 = 1000 + (cfg.ex-taper - 1000) * seg / cfg.ex-segments
-    in let scale1 = 1000 + (cfg.ex-taper - 1000) * (seg + 1) / cfg.ex-segments
+    else let z0 = real-from-int seg * cfg.ex-depth / real-from-int cfg.ex-segments
+    in let z1 = real-from-int (seg + 1) * cfg.ex-depth / real-from-int cfg.ex-segments
+    in let scale0 = 1.0 + (cfg.ex-taper - 1.0) * real-from-int seg / real-from-int cfg.ex-segments
+    in let scale1 = 1.0 + (cfg.ex-taper - 1.0) * real-from-int (seg + 1) / real-from-int cfg.ex-segments
     in let mesh2 = shp-extrude-ring path mesh z0 z1 scale0 scale1 0
     in shp-extrude-build path cfg (seg + 1) mesh2
 
-  shp-extrude-ring : ShapePath, TriMesh, Integer, Integer, Integer, Integer, Integer -> TriMesh
+  shp-extrude-ring : ShapePath, TriMesh, Real, Real, Real, Real, Integer -> TriMesh
   shp-extrude-ring (path) (mesh) (z0) (z1) (s0) (s1) (i) =
     if i >= path.shp-count then mesh
     else let next = if i + 1 >= path.shp-count then 0 else i + 1
     in let p0 = list-at (path.shp-points) i
     in let p1 = list-at (path.shp-points) next
-    in let v0 = vec3-new (p0.pp-x * s0 / 1000) (p0.pp-y * s0 / 1000) z0
-    in let v1 = vec3-new (p1.pp-x * s0 / 1000) (p1.pp-y * s0 / 1000) z0
-    in let v2 = vec3-new (p1.pp-x * s1 / 1000) (p1.pp-y * s1 / 1000) z1
-    in let v3 = vec3-new (p0.pp-x * s1 / 1000) (p0.pp-y * s1 / 1000) z1
-    in let uv0 = vec2-new 0 0
-    in let norm = vec3-new 0 0 1000
+    in let v0 = vec3-new (real-from-int p0.pp-x * s0) (real-from-int p0.pp-y * s0) z0
+    in let v1 = vec3-new (real-from-int p1.pp-x * s0) (real-from-int p1.pp-y * s0) z0
+    in let v2 = vec3-new (real-from-int p1.pp-x * s1) (real-from-int p1.pp-y * s1) z1
+    in let v3 = vec3-new (real-from-int p0.pp-x * s1) (real-from-int p0.pp-y * s1) z1
+    in let uv0 = vec2-new 0.0 0.0
+    in let norm = vec3-new 0.0 0.0 1.0
     in let base = mesh.tm-vert-count
     in let m2 = tri-mesh-add-vert mesh v0 uv0 norm
     in let m3 = tri-mesh-add-vert m2 v1 uv0 norm
@@ -116,7 +115,7 @@ Section: Extrusion
 Section: Lathe Revolution
 
   lathe-default : LatheConfig
-  lathe-default = LatheConfig { lt-segments = 12, lt-angle = 6283 }
+  lathe-default = LatheConfig { lt-segments = 12, lt-angle = 6.283 }
 
   shape-lathe : ShapePath, LatheConfig -> TriMesh
   shape-lathe (path) (cfg) =
@@ -125,12 +124,12 @@ Section: Lathe Revolution
   shp-lathe-build : ShapePath, LatheConfig, Integer, TriMesh -> TriMesh
   shp-lathe-build (path) (cfg) (seg) (mesh) =
     if seg >= cfg.lt-segments then mesh
-    else let a0 = seg * cfg.lt-angle / cfg.lt-segments
-    in let a1 = (seg + 1) * cfg.lt-angle / cfg.lt-segments
+    else let a0 = real-from-int seg * cfg.lt-angle / real-from-int cfg.lt-segments
+    in let a1 = real-from-int (seg + 1) * cfg.lt-angle / real-from-int cfg.lt-segments
     in let mesh2 = shp-lathe-ring path mesh a0 a1 0
     in shp-lathe-build path cfg (seg + 1) mesh2
 
-  shp-lathe-ring : ShapePath, TriMesh, Integer, Integer, Integer -> TriMesh
+  shp-lathe-ring : ShapePath, TriMesh, Real, Real, Integer -> TriMesh
   shp-lathe-ring (path) (mesh) (a0) (a1) (i) =
     if i >= path.shp-count - 1 then mesh
     else let p0 = list-at (path.shp-points) i
@@ -139,12 +138,12 @@ Section: Lathe Revolution
     in let sin0 = shp-sin-approx a0
     in let cos1 = shp-cos-approx a1
     in let sin1 = shp-sin-approx a1
-    in let v0 = vec3-new (p0.pp-x * cos0 / 1000) (p0.pp-y) (p0.pp-x * sin0 / 1000)
-    in let v1 = vec3-new (p1.pp-x * cos0 / 1000) (p1.pp-y) (p1.pp-x * sin0 / 1000)
-    in let v2 = vec3-new (p1.pp-x * cos1 / 1000) (p1.pp-y) (p1.pp-x * sin1 / 1000)
-    in let v3 = vec3-new (p0.pp-x * cos1 / 1000) (p0.pp-y) (p0.pp-x * sin1 / 1000)
-    in let uv0 = vec2-new 0 0
-    in let norm = vec3-new 0 1000 0
+    in let v0 = vec3-new (real-from-int p0.pp-x * cos0) (real-from-int p0.pp-y) (real-from-int p0.pp-x * sin0)
+    in let v1 = vec3-new (real-from-int p1.pp-x * cos0) (real-from-int p1.pp-y) (real-from-int p1.pp-x * sin0)
+    in let v2 = vec3-new (real-from-int p1.pp-x * cos1) (real-from-int p1.pp-y) (real-from-int p1.pp-x * sin1)
+    in let v3 = vec3-new (real-from-int p0.pp-x * cos1) (real-from-int p0.pp-y) (real-from-int p0.pp-x * sin1)
+    in let uv0 = vec2-new 0.0 0.0
+    in let norm = vec3-new 0.0 1.0 0.0
     in let base = mesh.tm-vert-count
     in let m2 = tri-mesh-add-vert mesh v0 uv0 norm
     in let m3 = tri-mesh-add-vert m2 v1 uv0 norm
@@ -207,17 +206,17 @@ Section: 2D Rasterization
 
 Section: Trig Helpers
 
-  shp-sin-approx : Integer -> Integer
-  shp-sin-approx (milli-rad) =
-    let x = milli-rad
-    in let x3 = x * x / 1000 * x / 1000
-    in x - x3 / 6
+  shp-sin-approx : Real -> Real
+  shp-sin-approx (rad) =
+    let x = rad
+    in let x3 = x * x * x
+    in x - x3 / 6.0
 
-  shp-cos-approx : Integer -> Integer
-  shp-cos-approx (milli-rad) =
-    let x2 = milli-rad * milli-rad / 1000
-    in let x4 = x2 * x2 / 1000
-    in 1000 - x2 / 2 + x4 / 24
+  shp-cos-approx : Real -> Real
+  shp-cos-approx (rad) =
+    let x2 = rad * rad
+    in let x4 = x2 * x2
+    in 1.0 - x2 / 2.0 + x4 / 24.0
 
 Section: Info
 

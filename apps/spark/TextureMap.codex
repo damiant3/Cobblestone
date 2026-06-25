@@ -3,7 +3,7 @@ Chapter: TextureMap
 
  Texture storage and UV-mapped sampling. Textures are stored as
  flat pixel arrays with bilinear filtering. UV coordinates use
- fixed-point scale 1000 (0 = left/top, 1000 = right/bottom).
+ Real (0.0 = left/top, 1.0 = right/bottom).
 
  We say:
 
@@ -63,36 +63,36 @@ Section: Configuration
 
 Section: Sampling
 
-  texture-sample : Texture2D, Integer, Integer -> Integer
+  texture-sample : Texture2D, Real, Real -> Integer
   texture-sample (tex) (u) (v) =
     when tex.tex-filter
       is FilterNearest -> tex-sample-nearest tex u v
       is FilterBilinear -> tex-sample-bilinear tex u v
 
-  tex-sample-nearest : Texture2D, Integer, Integer -> Integer
+  tex-sample-nearest : Texture2D, Real, Real -> Integer
   tex-sample-nearest (tex) (u) (v) =
     let wu = tex-wrap-coord u (tex.tex-wrap)
     in let wv = tex-wrap-coord v (tex.tex-wrap)
-    in let px = wu * tex.tex-width / 1000
-    in let py = wv * tex.tex-height / 1000
+    in let px = real-to-int (wu * real-from-int tex.tex-width)
+    in let py = real-to-int (wv * real-from-int tex.tex-height)
     in let cx = tex-clamp-i px 0 (tex.tex-width - 1)
     in let cy = tex-clamp-i py 0 (tex.tex-height - 1)
     in list-at (tex.tex-pixels) (cy * tex.tex-width + cx)
 
-  tex-sample-bilinear : Texture2D, Integer, Integer -> Integer
+  tex-sample-bilinear : Texture2D, Real, Real -> Integer
   tex-sample-bilinear (tex) (u) (v) =
     let wu = tex-wrap-coord u (tex.tex-wrap)
     in let wv = tex-wrap-coord v (tex.tex-wrap)
-    in let fx = wu * tex.tex-width
-    in let fy = wv * tex.tex-height
-    in let x0 = fx / 1000
-    in let y0 = fy / 1000
+    in let fx = wu * real-from-int tex.tex-width
+    in let fy = wv * real-from-int tex.tex-height
+    in let x0 = real-to-int fx
+    in let y0 = real-to-int fy
     in let x1 = tex-clamp-i (x0 + 1) 0 (tex.tex-width - 1)
     in let y1 = tex-clamp-i (y0 + 1) 0 (tex.tex-height - 1)
     in let cx0 = tex-clamp-i x0 0 (tex.tex-width - 1)
     in let cy0 = tex-clamp-i y0 0 (tex.tex-height - 1)
-    in let frac-x = fx - x0 * 1000
-    in let frac-y = fy - y0 * 1000
+    in let frac-x = fx - real-from-int x0
+    in let frac-y = fy - real-from-int y0
     in let c00 = list-at (tex.tex-pixels) (cy0 * tex.tex-width + cx0)
     in let c10 = list-at (tex.tex-pixels) (cy0 * tex.tex-width + x1)
     in let c01 = list-at (tex.tex-pixels) (y1 * tex.tex-width + cx0)
@@ -101,23 +101,26 @@ Section: Sampling
 
 Section: Coordinate Helpers
 
-  tex-wrap-coord : Integer, TextureWrap -> Integer
+  tex-wrap-coord : Real, TextureWrap -> Real
   tex-wrap-coord (c) (wrap) =
     when wrap
-      is WrapRepeat -> let m = c - c / 1000 * 1000 in if m < 0 then m + 1000 else m
-      is WrapClamp -> tex-clamp-i c 0 999
+      is WrapRepeat -> let m = c - real-from-int (real-to-int c) in if m < 0.0 then m + 1.0 else m
+      is WrapClamp -> tex-clamp-real c 0.0 0.999
       is WrapMirror ->
-        let period = c / 1000
-        in let frac = c - period * 1000
-        in let abs-frac = if frac < 0 then 0 - frac else frac
-        in if period - period / 2 * 2 == 0 then abs-frac else 1000 - abs-frac
+        let period = real-to-int c
+        in let frac = c - real-from-int period
+        in let abs-frac = if frac < 0.0 then 0.0 - frac else frac
+        in if period - period / 2 * 2 == 0 then abs-frac else 1.0 - abs-frac
+
+  tex-clamp-real : Real, Real, Real -> Real
+  tex-clamp-real (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
 
   tex-clamp-i : Integer, Integer, Integer -> Integer
   tex-clamp-i (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
 
 Section: Color Interpolation
 
-  tex-lerp-color : Integer, Integer, Integer -> Integer
+  tex-lerp-color : Integer, Integer, Real -> Integer
   tex-lerp-color (a) (b) (t) =
     let ar = a / 65536
     in let ag = a / 256 - ar * 256
@@ -125,9 +128,9 @@ Section: Color Interpolation
     in let br2 = b / 65536
     in let bg = b / 256 - br2 * 256
     in let bb = b - b / 256 * 256
-    in let rr = ar + (br2 - ar) * t / 1000
-    in let rg = ag + (bg - ag) * t / 1000
-    in let rb = ab + (bb - ab) * t / 1000
+    in let rr = real-to-int (real-from-int ar + real-from-int (br2 - ar) * t)
+    in let rg = real-to-int (real-from-int ag + real-from-int (bg - ag) * t)
+    in let rb = real-to-int (real-from-int ab + real-from-int (bb - ab) * t)
     in tex-clamp-i rr 0 255 * 65536 + tex-clamp-i rg 0 255 * 256 + tex-clamp-i rb 0 255
 
 Section: Procedural Textures

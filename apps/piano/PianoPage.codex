@@ -55,6 +55,36 @@ Section: CSS
     & ".key-cap{width:32px;height:32px;background:#1a1a1a;border:1px solid #333;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#666}"
     & ".key-cap.mapped{border-color:#449dff;color:#449dff}"
     & ".key-cap.black-mapped{border-color:#888;color:#888}"
+    & ".ctrl-btn.rec{background:#cc2222;border-color:#cc2222;color:#fff}"
+    & ".ctrl-btn.rec.active{background:#ff3333;border-color:#ff3333;color:#fff;animation:pulse 1s infinite}"
+    & "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}"
+    & ".rec-status{font-size:11px;color:#cc2222;min-width:100px;text-align:center}"
+    & ".metro-display{font-size:13px;color:#449dff;font-variant-numeric:tabular-nums;min-width:60px;text-align:center}"
+    & ".scale-btn{background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:11px}"
+    & ".scale-btn:hover{background:#222;border-color:#555}"
+    & ".scale-btn.active{background:#449dff;border-color:#449dff;color:#fff}"
+    & ".scale-info{font-size:12px;color:#449dff;margin-top:4px;min-height:18px}"
+    & ".transpose-display{font-size:14px;color:#449dff;font-weight:600;min-width:40px;text-align:center}"
+    & ".adsr-section{display:flex;gap:20px;margin-top:16px;align-items:center;flex-wrap:wrap;justify-content:center}"
+    & ".adsr-group{display:flex;flex-direction:column;align-items:center;gap:4px}"
+    & ".adsr-label{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px}"
+    & ".adsr-val{font-size:14px;color:#449dff;font-variant-numeric:tabular-nums;min-width:30px;text-align:center}"
+    & ".adsr-btns{display:flex;gap:4px}"
+    & ".note-history{margin-top:16px;display:flex;gap:8px;align-items:center;justify-content:center}"
+    & ".hist-label{font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px}"
+    & ".hist-note{font-size:14px;color:#449dff;min-width:32px;text-align:center;background:#1a1a1a;padding:4px 6px;border-radius:4px;border:1px solid #333}"
+    & ".hist-note.empty{color:#333}"
+    & ".extra-controls{display:flex;gap:16px;align-items:center;margin-bottom:16px;flex-wrap:wrap;justify-content:center}"
+    & ".black-key-map{margin-top:2px;display:flex;gap:6px;align-items:center}"
+    & ".bk-label{font-size:10px;color:#888;background:#1a1a1a;padding:2px 6px;border-radius:3px;border:1px solid #444}"
+    & "#adsr-info{font-size:12px;color:#888;margin-top:4px;font-variant-numeric:tabular-nums}"
+    & "#bpm-big{font-size:28px;font-weight:700;color:#449dff;font-variant-numeric:tabular-nums}"
+    & "#bpm-unit{font-size:12px;color:#888;text-transform:uppercase}"
+    & "#metro-tick{font-size:20px;color:#449dff;min-width:24px;text-align:center}"
+    & "#rec-dot-icon{color:#ff3333;font-size:16px;margin-right:2px}"
+    & "#rec-indicator{font-size:13px;color:#ff3333;font-weight:700;letter-spacing:2px;animation:pulse 1s infinite}"
+    & "#rec-note-count{font-size:12px;color:#ff3333;margin-left:8px}"
+    & "#scale-notes-display{font-size:13px;color:#449dff;margin-top:4px;letter-spacing:2px;font-weight:600}"
 
 Section: Tree
 
@@ -64,24 +94,80 @@ Section: Tree
       widget-label "brand" "CODEXPIANO",
       widget-label "sub" "Play with your keyboard. Lower row = octave 3, upper row = octave 4.",
       controls-bar 0,
+      extra-controls-bar 0,
+      recording-controls 0,
+      scale-selector 0,
       keyboard-widget 0,
       note-display 0,
+      adsr-controls 0,
+      note-history-display 0,
       key-map-guide 0
     ]
 
+  oct-label : Integer -> Text
+  oct-label (offset) =
+    let lo = 3 + offset
+    in let hi = 4 + offset
+    in show lo & "-" & show hi
+
+  vol-label : Integer -> Text
+  vol-label (v) = show v & "%"
+
+  sus-label : Integer -> Text
+  sus-label (s) = if s == 1 then "On" else "Off"
+
+  reverb-label : Integer -> Text
+  reverb-label (r) = if r == 1 then "On" else "Off"
+
+  metro-label : Integer -> Text
+  metro-label (m) = if m == 1 then "On" else "Off"
+
+  bpm-label : Integer -> Text
+  bpm-label (b) = show b & " BPM"
+
+  transpose-label : Integer -> Text
+  transpose-label (t) =
+    if t > 0 then "+" & show t
+    else if t < 0 then show t
+    else "0"
+
+  scale-name : Integer -> Text
+  scale-name (s) =
+    if s == 0 then "None"
+    else if s == 1 then "Major"
+    else if s == 2 then "Minor"
+    else "Pentatonic"
+
+  scale-info-text : Integer -> Text
+  scale-info-text (s) =
+    if s == 0 then ""
+    else if s == 1 then "Major: W-W-H-W-W-W-H (C D E F G A B)"
+    else if s == 2 then "Minor: W-H-W-W-H-W-W (C D Eb F G Ab Bb)"
+    else "Pentatonic: C D E G A"
+
+  rec-status-text : Integer, Integer -> Text
+  rec-status-text (recording) (count) =
+    if recording == 1 then "Recording..."
+    else if count > 0 then show count & " notes recorded"
+    else "Ready"
+
   controls-bar : Integer -> WidgetNode
   controls-bar (x) =
-    widget-box "controls" "controls" [
+    let oct-off = state-get "oct-offset"
+    in let vol = state-get "volume"
+    in let sus = state-get "sustain"
+    in let rev = state-get "reverb"
+    in widget-box "controls" "controls" [
       widget-box "cg-oct" "ctrl-group" [
         widget-label "oct-lbl" "Octave",
         widget-button "oct-down" "-",
-        widget-label "oct-val" "3-4",
+        widget-label "oct-val" (oct-label oct-off),
         widget-button "oct-up" "+"
       ],
       widget-box "cg-vol" "ctrl-group" [
         widget-label "vol-lbl" "Volume",
         widget-button "vol-down" "-",
-        widget-label "vol-val" "80%",
+        widget-label "vol-val" (vol-label vol),
         widget-button "vol-up" "+"
       ],
       widget-box "cg-wave" "ctrl-group" [
@@ -92,8 +178,165 @@ Section: Tree
       ],
       widget-box "cg-sus" "ctrl-group" [
         widget-label "sus-lbl" "Sustain",
-        widget-button "sus-toggle" "Off"
+        widget-button "sus-toggle" (sus-label sus)
+      ],
+      widget-box "cg-rev" "ctrl-group" [
+        widget-label "rev-lbl" "Reverb",
+        widget-button "rev-toggle" (reverb-label rev)
       ]
+    ]
+
+  metro-tick-indicator : Integer -> Text
+  metro-tick-indicator (tick) =
+    if int-mod tick 2 == 0 then "|" else "-"
+
+  extra-controls-bar : Integer -> WidgetNode
+  extra-controls-bar (x) =
+    let metro = state-get "metronome"
+    in let bpm = state-get "bpm"
+    in let trans = state-get "transpose"
+    in let tick = state-get "tick"
+    in let metro-widgets = if metro == 1
+      then [
+        widget-label "metro-lbl" "Metronome",
+        widget-button "metro-toggle" (metro-label metro),
+        widget-button "bpm-down" "-",
+        widget-label "bpm-big" (show bpm),
+        widget-label "bpm-unit" "BPM",
+        widget-button "bpm-up" "+",
+        widget-label "metro-tick" (metro-tick-indicator tick)
+      ]
+      else [
+        widget-label "metro-lbl" "Metronome",
+        widget-button "metro-toggle" (metro-label metro),
+        widget-button "bpm-down" "-",
+        widget-label "bpm-val" (bpm-label bpm),
+        widget-button "bpm-up" "+"
+      ]
+    in widget-box "extra-controls" "extra-controls" [
+      widget-box "cg-metro" "ctrl-group" metro-widgets,
+      widget-box "cg-trans" "ctrl-group" [
+        widget-label "trans-lbl" "Transpose",
+        widget-button "trans-down" "-",
+        widget-label "trans-val" (transpose-label trans),
+        widget-button "trans-up" "+"
+      ]
+    ]
+
+  recording-controls : Integer -> WidgetNode
+  recording-controls (x) =
+    let recording = state-get "recording"
+    in let rec-count = state-get "rec-count"
+    in let rec-cls = if recording == 1 then "ctrl-btn rec active" else "ctrl-btn rec"
+    in let rec-widgets = if recording == 1
+      then [
+        widget-button "rec-toggle" "Stop Rec",
+        widget-button "rec-play" "Play",
+        widget-button "rec-clear" "Clear",
+        widget-label "rec-dot-icon" "●",
+        widget-label "rec-indicator" "REC",
+        widget-label "rec-note-count" (show rec-count & " notes")
+      ]
+      else [
+        widget-button "rec-toggle" "Record",
+        widget-button "rec-play" "Play",
+        widget-button "rec-clear" "Clear",
+        widget-label "rec-status" (rec-status-text recording rec-count)
+      ]
+    in widget-box "rec-controls" "ctrl-group" rec-widgets
+
+  scale-notes-text : Integer -> Text
+  scale-notes-text (s) =
+    if s == 1 then "C  D  E  F  G  A  B"
+    else if s == 2 then "C  D  Eb  F  G  Ab  Bb"
+    else if s == 3 then "C  D  E  G  A"
+    else ""
+
+  scale-selector : Integer -> WidgetNode
+  scale-selector (x) =
+    let sc = state-get "scale-mode"
+    in let scale-widgets = if sc == 0
+      then [
+        widget-label "scale-lbl" "Scale",
+        widget-button "scale-none" "None",
+        widget-button "scale-major" "Major",
+        widget-button "scale-minor" "Minor",
+        widget-button "scale-penta" "Pentatonic",
+        widget-label "scale-info" (scale-info-text sc)
+      ]
+      else [
+        widget-label "scale-lbl" "Scale",
+        widget-button "scale-none" "None",
+        widget-button "scale-major" "Major",
+        widget-button "scale-minor" "Minor",
+        widget-button "scale-penta" "Pentatonic",
+        widget-label "scale-info" (scale-info-text sc),
+        widget-label "scale-notes-display" (scale-notes-text sc)
+      ]
+    in widget-box "scale-section" "ctrl-group" scale-widgets
+
+  adsr-controls : Integer -> WidgetNode
+  adsr-controls (x) =
+    let atk = state-get "adsr-a"
+    in let dec = state-get "adsr-d"
+    in let slev = state-get "adsr-s"
+    in let rel = state-get "adsr-r"
+    in widget-box "adsr-section" "adsr-section" [
+      widget-box "adsr-a-grp" "adsr-group" [
+        widget-label "adsr-a-lbl" "Attack",
+        widget-label "adsr-a-val" (show atk),
+        widget-box "adsr-a-btns" "adsr-btns" [
+          widget-button "adsr-a-down" "-",
+          widget-button "adsr-a-up" "+"
+        ]
+      ],
+      widget-box "adsr-d-grp" "adsr-group" [
+        widget-label "adsr-d-lbl" "Decay",
+        widget-label "adsr-d-val" (show dec),
+        widget-box "adsr-d-btns" "adsr-btns" [
+          widget-button "adsr-d-down" "-",
+          widget-button "adsr-d-up" "+"
+        ]
+      ],
+      widget-box "adsr-s-grp" "adsr-group" [
+        widget-label "adsr-s-lbl" "Sustain Lv",
+        widget-label "adsr-s-val" (show slev),
+        widget-box "adsr-s-btns" "adsr-btns" [
+          widget-button "adsr-s-down" "-",
+          widget-button "adsr-s-up" "+"
+        ]
+      ],
+      widget-box "adsr-r-grp" "adsr-group" [
+        widget-label "adsr-r-lbl" "Release",
+        widget-label "adsr-r-val" (show rel),
+        widget-box "adsr-r-btns" "adsr-btns" [
+          widget-button "adsr-r-down" "-",
+          widget-button "adsr-r-up" "+"
+        ]
+      ]
+    ]
+
+  note-history-display : Integer -> WidgetNode
+  note-history-display (x) =
+    let h0 = state-get-text "hist-0"
+    in let h1 = state-get-text "hist-1"
+    in let h2 = state-get-text "hist-2"
+    in let h3 = state-get-text "hist-3"
+    in let h4 = state-get-text "hist-4"
+    in let h5 = state-get-text "hist-5"
+    in let h6 = state-get-text "hist-6"
+    in let h7 = state-get-text "hist-7"
+    in let hist-cls = "hist-note"
+    in widget-box "note-history" "note-history" [
+      widget-label "hist-title" "History:",
+      widget-label "hn-0" (if text-length h0 > 0 then h0 else "-"),
+      widget-label "hn-1" (if text-length h1 > 0 then h1 else "-"),
+      widget-label "hn-2" (if text-length h2 > 0 then h2 else "-"),
+      widget-label "hn-3" (if text-length h3 > 0 then h3 else "-"),
+      widget-label "hn-4" (if text-length h4 > 0 then h4 else "-"),
+      widget-label "hn-5" (if text-length h5 > 0 then h5 else "-"),
+      widget-label "hn-6" (if text-length h6 > 0 then h6 else "-"),
+      widget-label "hn-7" (if text-length h7 > 0 then h7 else "-")
     ]
 
   keyboard-widget : Integer -> WidgetNode
@@ -108,20 +351,30 @@ Section: Tree
     let keys = if oct == "3"
     then [
       white-key (id & "-c") "C" "Z",
+      black-key (id & "-cs") "C#" "S",
       white-key (id & "-d") "D" "X",
+      black-key (id & "-ds") "D#" "D",
       white-key (id & "-e") "E" "C",
       white-key (id & "-f") "F" "V",
+      black-key (id & "-fs") "F#" "G",
       white-key (id & "-g") "G" "B",
+      black-key (id & "-gs") "G#" "H",
       white-key (id & "-a") "A" "N",
+      black-key (id & "-as") "A#" "J",
       white-key (id & "-b") "B" "M"
     ]
     else [
       white-key (id & "-c") "C" "Q",
+      black-key (id & "-cs") "C#" "2",
       white-key (id & "-d") "D" "W",
+      black-key (id & "-ds") "D#" "3",
       white-key (id & "-e") "E" "E",
       white-key (id & "-f") "F" "R",
+      black-key (id & "-fs") "F#" "5",
       white-key (id & "-g") "G" "T",
+      black-key (id & "-gs") "G#" "6",
       white-key (id & "-a") "A" "Y",
+      black-key (id & "-as") "A#" "7",
       white-key (id & "-b") "B" "U"
     ]
     in widget-box id "octave" keys
@@ -129,21 +382,32 @@ Section: Tree
   key-note : Text -> Text
   key-note (id) =
     let oct = if text-starts-with id "o3" then "3" else "4"
-    in let last = char-code-at id (text-length id - 1)
-    in let letter = if last == 99 then "C" else if last == 100 then "D" else if last == 101 then "E"
-      else if last == 102 then "F" else if last == 103 then "G" else if last == 97 then "A" else "B"
-    in letter & oct
+    in let is-sharp = char-code-at id (text-length id - 1) == 115
+    in let len = text-length id
+    in let check = if is-sharp then char-code-at id (len - 2) else char-code-at id (len - 1)
+    in let letter = if check == 99 then "C" else if check == 100 then "D" else if check == 101 then "E"
+      else if check == 102 then "F" else if check == 103 then "G" else if check == 97 then "A" else "B"
+    in let suffix = if is-sharp then "#" else ""
+    in letter & suffix & oct
 
   key-freq : Text -> Integer
   key-freq (id) =
     let o4 = text-starts-with id "o4"
-    in let last = char-code-at id (text-length id - 1)
-    in if last == 99 then (if o4 then 262 else 131)
-    else if last == 100 then (if o4 then 294 else 147)
-    else if last == 101 then (if o4 then 330 else 165)
-    else if last == 102 then (if o4 then 349 else 175)
-    else if last == 103 then (if o4 then 392 else 196)
-    else if last == 97 then (if o4 then 440 else 220)
+    in let is-sharp = char-code-at id (text-length id - 1) == 115
+    in let len = text-length id
+    in let check = if is-sharp then char-code-at id (len - 2) else char-code-at id (len - 1)
+    in if is-sharp then
+      if check == 99 then (if o4 then 277 else 139)
+      else if check == 100 then (if o4 then 311 else 156)
+      else if check == 102 then (if o4 then 370 else 185)
+      else if check == 103 then (if o4 then 415 else 208)
+      else (if o4 then 466 else 233)
+    else if check == 99 then (if o4 then 262 else 131)
+    else if check == 100 then (if o4 then 294 else 147)
+    else if check == 101 then (if o4 then 330 else 165)
+    else if check == 102 then (if o4 then 349 else 175)
+    else if check == 103 then (if o4 then 392 else 196)
+    else if check == 97 then (if o4 then 440 else 220)
     else (if o4 then 494 else 247)
 
   white-key : Text, Text, Text -> WidgetNode
@@ -154,12 +418,30 @@ Section: Tree
       widget-label (id & "h") hint
     ]
 
+  black-key : Text, Text, Text -> WidgetNode
+  black-key (id) (note) (hint) =
+    let cls = if state-get-text "current-note" == key-note id then "black-key pressed" else "black-key"
+    in widget-box-click id cls [
+      widget-label (id & "n") note,
+      widget-label (id & "h") hint
+    ]
+
+  adsr-status-text : Integer, Integer, Integer, Integer -> Text
+  adsr-status-text (a) (d) (s) (r) =
+    "Envelope: A=" & show a & " D=" & show d & " S=" & show s & " R=" & show r
+
   note-display : Integer -> WidgetNode
   note-display (x) =
     let n = state-get-text "current-note"
+    in let f = state-get "current-freq"
+    in let atk = state-get "adsr-a"
+    in let dec = state-get "adsr-d"
+    in let slev = state-get "adsr-s"
+    in let rel = state-get "adsr-r"
     in widget-box "display" "display" [
       widget-label "note-show" n,
-      widget-label "freq-show" (if text-length n > 0 then "&#x266A; playing" else "Press a key to play")
+      widget-label "freq-show" (if text-length n > 0 then show f & " Hz" else "Press a key to play"),
+      widget-label "adsr-info" (adsr-status-text atk dec slev rel)
     ]
 
   key-map-guide : Integer -> WidgetNode
@@ -183,6 +465,14 @@ Section: Tree
         widget-label "kn-y" "Y",
         widget-label "kn-u" "U"
       ],
+      widget-box "bk-hi-map" "black-key-map" [
+        widget-label "bk-hi-title" "Black keys (Oct 4):",
+        widget-label "bk-hi-cs" "2=C#",
+        widget-label "bk-hi-ds" "3=D#",
+        widget-label "bk-hi-fs" "5=F#",
+        widget-label "bk-hi-gs" "6=G#",
+        widget-label "bk-hi-as" "7=A#"
+      ],
       widget-box "kr-sharps-lo" "key-row" [
         widget-label "kl-s" "S",
         widget-label "kl-d" "D",
@@ -199,10 +489,63 @@ Section: Tree
         widget-label "kn-b" "B",
         widget-label "kn-n" "N",
         widget-label "kn-m" "M"
+      ],
+      widget-box "bk-lo-map" "black-key-map" [
+        widget-label "bk-lo-title" "Black keys (Oct 3):",
+        widget-label "bk-lo-cs" "S=C#",
+        widget-label "bk-lo-ds" "D=D#",
+        widget-label "bk-lo-fs" "G=F#",
+        widget-label "bk-lo-gs" "H=G#",
+        widget-label "bk-lo-as" "J=A#"
       ]
     ]
 
 Section: Handlers
+
+  play-note-direct : Text, Integer -> Integer
+  play-note-direct (name) (freq) =
+    let sus = state-get "sustain"
+    in let dur = if sus == 1 then 2000 else 450
+    in let s = state-set-text "current-note" name
+    in let s2 = state-set-render "current-freq" freq
+    in let a = play-tone freq dur (state-get "waveform")
+    in let sh = shift-history 0
+    in let s4 = state-set-text "hist-0" name
+    in let hc = state-get "hist-count"
+    in let s5 = state-set "hist-count" (if hc < 8 then hc + 1 else 8)
+    in let recording = state-get "recording"
+    in let s6 = if recording == 1 then state-set-render "rec-count" (state-get "rec-count" + 1) else 0
+    in let s7 = state-set-render "tick" (state-get "tick" + 1)
+    in 0
+
+  piano-keydown : Text -> Integer
+  piano-keydown (k) =
+    if k == "a" then play-key "o4-c"
+    else if k == "w" then play-key "o4-cs"
+    else if k == "s" then play-key "o4-d"
+    else if k == "e" then play-key "o4-ds"
+    else if k == "d" then play-key "o4-e"
+    else if k == "f" then play-key "o4-f"
+    else if k == "t" then play-key "o4-fs"
+    else if k == "g" then play-key "o4-g"
+    else if k == "y" then play-key "o4-gs"
+    else if k == "h" then play-key "o4-a"
+    else if k == "u" then play-key "o4-as"
+    else if k == "j" then play-key "o4-b"
+    else if k == "k" then play-note-direct "C5" 523
+    else 0
+
+  oct-shift-freq : Integer, Integer -> Integer
+  oct-shift-freq (freq) (offset) =
+    if offset == 0 then freq
+    else if offset == 1 then freq * 2
+    else if offset == 2 then freq * 4
+    else if offset == -1 then freq / 2
+    else freq / 4
+
+  clamp : Integer, Integer, Integer -> Integer
+  clamp (v) (lo) (hi) =
+    if v < lo then lo else if v > hi then hi else v
 
   piano-click : Text -> Integer
   piano-click (id) =
@@ -211,13 +554,63 @@ Section: Handlers
     else if id == "wave-sine" then let s = state-set-render "waveform" 0 in 0
     else if id == "wave-tri" then let s = state-set-render "waveform" 1 in 0
     else if id == "wave-sq" then let s = state-set-render "waveform" 2 in 0
+    else if id == "vol-down" then let v = clamp (state-get "volume" - 10) 0 100 in let s = state-set-render "volume" v in 0
+    else if id == "vol-up" then let v = clamp (state-get "volume" + 10) 0 100 in let s = state-set-render "volume" v in 0
+    else if id == "oct-down" then let o = clamp (state-get "oct-offset" - 1) (-2) 2 in let s = state-set-render "oct-offset" o in 0
+    else if id == "oct-up" then let o = clamp (state-get "oct-offset" + 1) (-2) 2 in let s = state-set-render "oct-offset" o in 0
+    else if id == "sus-toggle" then let cur = state-get "sustain" in let s = state-set-render "sustain" (if cur == 0 then 1 else 0) in 0
+    else if id == "rev-toggle" then let cur = state-get "reverb" in let s = state-set-render "reverb" (if cur == 0 then 1 else 0) in 0
+    else if id == "rec-toggle" then let cur = state-get "recording" in let s = state-set-render "recording" (if cur == 0 then 1 else 0) in 0
+    else if id == "rec-play" then let s = state-set-render "tick" (state-get "tick" + 1) in 0
+    else if id == "rec-clear" then let s = state-set-render "rec-count" 0 in let s2 = state-set-render "recording" 0 in 0
+    else if id == "metro-toggle" then let cur = state-get "metronome" in let s = state-set-render "metronome" (if cur == 0 then 1 else 0) in 0
+    else if id == "bpm-down" then let b = clamp (state-get "bpm" - 10) 60 200 in let s = state-set-render "bpm" b in 0
+    else if id == "bpm-up" then let b = clamp (state-get "bpm" + 10) 60 200 in let s = state-set-render "bpm" b in 0
+    else if id == "scale-none" then let s = state-set-render "scale-mode" 0 in 0
+    else if id == "scale-major" then let s = state-set-render "scale-mode" 1 in 0
+    else if id == "scale-minor" then let s = state-set-render "scale-mode" 2 in 0
+    else if id == "scale-penta" then let s = state-set-render "scale-mode" 3 in 0
+    else if id == "trans-down" then let t = clamp (state-get "transpose" - 1) (-12) 12 in let s = state-set-render "transpose" t in 0
+    else if id == "trans-up" then let t = clamp (state-get "transpose" + 1) (-12) 12 in let s = state-set-render "transpose" t in 0
+    else if id == "adsr-a-down" then let v = clamp (state-get "adsr-a" - 5) 0 100 in let s = state-set-render "adsr-a" v in 0
+    else if id == "adsr-a-up" then let v = clamp (state-get "adsr-a" + 5) 0 100 in let s = state-set-render "adsr-a" v in 0
+    else if id == "adsr-d-down" then let v = clamp (state-get "adsr-d" - 5) 0 100 in let s = state-set-render "adsr-d" v in 0
+    else if id == "adsr-d-up" then let v = clamp (state-get "adsr-d" + 5) 0 100 in let s = state-set-render "adsr-d" v in 0
+    else if id == "adsr-s-down" then let v = clamp (state-get "adsr-s" - 5) 0 100 in let s = state-set-render "adsr-s" v in 0
+    else if id == "adsr-s-up" then let v = clamp (state-get "adsr-s" + 5) 0 100 in let s = state-set-render "adsr-s" v in 0
+    else if id == "adsr-r-down" then let v = clamp (state-get "adsr-r" - 5) 0 100 in let s = state-set-render "adsr-r" v in 0
+    else if id == "adsr-r-up" then let v = clamp (state-get "adsr-r" + 5) 0 100 in let s = state-set-render "adsr-r" v in 0
     else 0
+
+  shift-history : Integer -> Integer
+  shift-history (x) =
+    let s7 = state-set-text "hist-7" (state-get-text "hist-6")
+    in let s6 = state-set-text "hist-6" (state-get-text "hist-5")
+    in let s5 = state-set-text "hist-5" (state-get-text "hist-4")
+    in let s4 = state-set-text "hist-4" (state-get-text "hist-3")
+    in let s3 = state-set-text "hist-3" (state-get-text "hist-2")
+    in let s2 = state-set-text "hist-2" (state-get-text "hist-1")
+    in let s1 = state-set-text "hist-1" (state-get-text "hist-0")
+    in 0
 
   play-key : Text -> Integer
   play-key (id) =
-    let s = state-set-text "current-note" (key-note id)
-    in let a = play-tone (key-freq id) 450 (state-get "waveform")
-    in let s2 = state-set-render "tick" (state-get "tick" + 1)
+    let base = key-freq id
+    in let offset = state-get "oct-offset"
+    in let freq = oct-shift-freq base offset
+    in let sus = state-get "sustain"
+    in let dur = if sus == 1 then 2000 else 450
+    in let note-name = key-note id
+    in let s = state-set-text "current-note" note-name
+    in let s2 = state-set-render "current-freq" freq
+    in let a = play-tone freq dur (state-get "waveform")
+    in let sh = shift-history 0
+    in let s4 = state-set-text "hist-0" note-name
+    in let hc = state-get "hist-count"
+    in let s5 = state-set "hist-count" (if hc < 8 then hc + 1 else 8)
+    in let recording = state-get "recording"
+    in let s6 = if recording == 1 then state-set-render "rec-count" (state-get "rec-count" + 1) else 0
+    in let s7 = state-set-render "tick" (state-get "tick" + 1)
     in 0
 
 Section: Entry
@@ -228,8 +621,32 @@ Section: Entry
   opening : [Console] Integer
   opening = act
     let t = inject-app-style piano-theme piano-css
+    in let v = state-set-render "volume" 80
+    in let o = state-set-render "oct-offset" 0
+    in let su = state-set-render "sustain" 0
+    in let rv = state-set-render "reverb" 0
+    in let rc = state-set-render "recording" 0
+    in let rn = state-set-render "rec-count" 0
+    in let mt = state-set-render "metronome" 0
+    in let bp = state-set-render "bpm" 120
+    in let sc = state-set-render "scale-mode" 0
+    in let tr = state-set-render "transpose" 0
+    in let aa = state-set-render "adsr-a" 10
+    in let ad = state-set-render "adsr-d" 30
+    in let as2 = state-set-render "adsr-s" 70
+    in let ar = state-set-render "adsr-r" 40
+    in let hc = state-set "hist-count" 0
+    in let h0 = state-set-text "hist-0" ""
+    in let h1 = state-set-text "hist-1" ""
+    in let h2 = state-set-text "hist-2" ""
+    in let h3 = state-set-text "hist-3" ""
+    in let h4 = state-set-text "hist-4" ""
+    in let h5 = state-set-text "hist-5" ""
+    in let h6 = state-set-text "hist-6" ""
+    in let h7 = state-set-text "hist-7" ""
     in let s = set-render render-piano
     in let h = register-handlers no-pick piano-click
+    in let kb = dom-on-key (dom-query "body") piano-keydown
     in render-piano 0
   end
 

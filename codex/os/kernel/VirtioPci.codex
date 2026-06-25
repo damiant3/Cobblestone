@@ -58,7 +58,7 @@ Section: Common Wrappers
     in poke-32 addr (off + 4) (bit-shru val 32)
 
   mmio-barrier : Integer
-  mmio-barrier = peek-byte 0 0
+  mmio-barrier = __heap-save
 
 Section: Virtqueue Descriptor Flags
 
@@ -111,9 +111,9 @@ Section: PCI Capability Parsing
   virtio-cap-bar-offset : Arm64PciDevice, Integer -> Integer
   virtio-cap-bar-offset (d) (cap-offset) =
    let bar-idx = ecam-read-8 (d.pci-bus) (d.pci-dev) (d.pci-func) (cap-offset + 4)
-   in let bar = arm64-pci-read-bar d bar-idx
+   in let base = arm64-pci-read-bar-base d bar-idx
    in let off = ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) (cap-offset + 8)
-   in bar.bar-base + off
+   in base + off
 
 Section: Device Init
 
@@ -141,15 +141,22 @@ Section: Status and Feature Negotiation
    let cur = peek-byte (vd.common-base) vio-cc-device-status
    in poke-byte (vd.common-base) vio-cc-device-status (bit-or cur status)
 
+  virtio-f-version-1 : Integer = 1
+
   virtio-negotiate : VirtioDevice, Integer -> Integer
   virtio-negotiate (vd) (driver-features) =
-   let s1 = virtio-set-status vd virtio-status-ack
+   let r = virtio-reset vd
+   in let s1 = virtio-set-status vd virtio-status-ack
    in let s2 = virtio-set-status vd virtio-status-driver
    in let w1 = poke-32 (vd.common-base) vio-cc-device-feature-select 0
    in let dev-feat = peek-32 (vd.common-base) vio-cc-device-feature
    in let accepted = bit-and dev-feat driver-features
    in let w2 = poke-32 (vd.common-base) vio-cc-driver-feature-select 0
    in let w3 = poke-32 (vd.common-base) vio-cc-driver-feature accepted
+   in let w4 = poke-32 (vd.common-base) vio-cc-device-feature-select 1
+   in let dev-feat-hi = peek-32 (vd.common-base) vio-cc-device-feature
+   in let w5 = poke-32 (vd.common-base) vio-cc-driver-feature-select 1
+   in let w6 = poke-32 (vd.common-base) vio-cc-driver-feature (bit-and dev-feat-hi virtio-f-version-1)
    in let s3 = virtio-set-status vd virtio-status-features-ok
    in let check = peek-byte (vd.common-base) vio-cc-device-status
    in if bit-and check virtio-status-features-ok == 0 then 0 - 1
@@ -157,9 +164,14 @@ Section: Status and Feature Negotiation
 
 Section: Virtqueue Setup
 
+  virtio-select-queue : VirtioDevice, Integer -> Integer
+  virtio-select-queue (vd) (queue-idx) =
+   let cur = peek-32 (vd.common-base) 20
+   in poke-32 (vd.common-base) 20 (bit-or (bit-and cur #FFFF) (bit-shl (bit-and queue-idx #FFFF) 16))
+
   virtio-setup-queue : VirtioDevice, Integer, Integer -> VirtqueueState
   virtio-setup-queue (vd) (queue-idx) (mem-base) =
-   let w1 = poke-16 (vd.common-base) vio-cc-queue-select queue-idx
+   let w1 = virtio-select-queue vd queue-idx
    in let qsize = bit-and (peek-16 (vd.common-base) vio-cc-queue-size) #FFFF
    in let desc-base = mem-base
    in let desc-size = qsize * 16
@@ -209,7 +221,7 @@ Section: Virtqueue Operations
   virtio-notify : VirtqueueState -> Integer
   virtio-notify (vq) =
    let bar = mmio-barrier
-   in poke-16 (vq.notify-addr) 0 (vq.avail-idx)
+   in poke-32 (vq.notify-addr) 0 (bit-and (vq.avail-idx) #FFFF)
 
   virtio-poll-used : VirtqueueState -> VirtqueueState
   virtio-poll-used (vq) = virtio-poll-used-loop vq 0
@@ -237,11 +249,17 @@ Section: Memory Helpers
 
   poke-16 : Integer, Integer, Integer -> Integer
   poke-16 (base) (off) (value) =
-   let w1 = poke-byte base off (bit-and value #FF)
-   in poke-byte base (off + 1) (bit-and (bit-shru value 8) #FF)
+   let aligned = bit-and off #FFFFFFFC
+   in let shift = bit-shl (bit-and off 2) 3
+   in let old = peek-32 base aligned
+   in let mask = bit-not (bit-shl #FFFF shift)
+   in poke-32 base aligned (bit-or (bit-and old mask) (bit-shl (bit-and value #FFFF) shift))
 
   peek-16 : Integer, Integer -> Integer
   peek-16 (base) (off) =
-   peek-byte base off + bit-shl (peek-byte base (off + 1)) 8
+   let aligned = bit-and off #FFFFFFFC
+   in let word = peek-32 base aligned
+   in let shift = bit-shl (bit-and off 2) 3
+   in bit-and (bit-shru word shift) #FFFF
 
 Page 1

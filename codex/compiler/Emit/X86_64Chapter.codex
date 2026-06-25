@@ -21,7 +21,8 @@ Section: Bare-Metal Start
    let st1 = record-func-offset st "__out_of_memory"
    in let st2 = st-append-code st1 (mov-rr reg-rbx reg-rsp)
    in let st3 = st-append-code st2 (mov-rr reg-r12 reg-r10)
-   in let st4 = st-append-code st3 (li reg-rsp bare-metal-stack-top)
+   in let st3a = st-append-code st3 (li reg-rdi ram-size-addr)
+   in let st4 = st-append-code st3a (mov-load reg-rsp reg-rdi 0)
    in let st5 = st-append-code st4 (mov-rr reg-rbp reg-rsp)
    in let st6 = emit-oom-string st5 [79, 85, 84, 32, 79, 70, 32, 77, 69, 77, 79, 82, 89, 10] 0
    in let st7 = st-append-code st6 [244]
@@ -118,7 +119,8 @@ Section: Bare-Metal Start
   emit-watchdog-panic-handler : CodegenState -> CodegenState
   emit-watchdog-panic-handler (st) =
    let st1 = record-func-offset st "__watchdog_panic"
-   in let st2 = st-append-code st1 (li reg-rsp bare-metal-stack-top)
+   in let st1a = st-append-code st1 (li reg-rdi ram-size-addr)
+   in let st2 = st-append-code st1a (mov-load reg-rsp reg-rdi 0)
    in let st3 = st-append-code st2 (mov-rr reg-rbp reg-rsp)
    in let st4 = emit-oom-string st3 [87, 68, 33, 10] 0
    in let st5 = emit-call-to st4 "__watchdog_dump_slots"
@@ -190,8 +192,8 @@ Section: Bare-Metal Start
     in let rel32 = oom-offset - (pos + 6)
     in collect-overflow-patches checks oom-offset (i + 1) (list-push acc (make-i32-patch (pos + 2) rel32))
 
-  peel-effectful-ty : CodexType -> CodexType
-  peel-effectful-ty (ty) =
+  peel-effectful-ty-once : CodexType -> CodexType
+  peel-effectful-ty-once (ty) =
    when ty
     is EffectfulTy (effs) (sc) (inner) -> inner
     is otherwise -> ty
@@ -203,7 +205,7 @@ Section: Bare-Metal Start
   opening-bare-print-type-loop (defs) (i) (len) =
    if i >= len then NothingTy
    else let d = list-at defs i
-   in if d.name == opening-entry-point then peel-effectful-ty (strip-fun-args (d.type-val))
+   in if d.name == opening-entry-point then peel-effectful-ty-once (strip-fun-args (d.type-val))
       else opening-bare-print-type-loop defs (i + 1) len
 
   emit-opening-result-print : CodegenState -> CodegenState
@@ -335,7 +337,8 @@ Section: Bare-Metal Start
    let st0 = record-func-offset st "__start"
    in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14 & emit-sub-rsp-imm32 0)
    in let st2 = st-append-code st1 cli
-   in let st3 = st-append-code st2 (li reg-rsp bare-metal-stack-top)
+   in let st2a = st-append-code st2 (li reg-rdi ram-size-addr)
+   in let st3 = st-append-code st2a (mov-load reg-rsp reg-rdi 0)
    in let st4 = st-append-code st3 (mov-rr reg-rbp reg-rsp)
    in let st5 = st-append-code st4 (li reg-r10 bare-metal-heap-base)
    in let st5a = st-append-code st5 (li reg-rdi deck-pos-addr)
@@ -344,7 +347,8 @@ Section: Bare-Metal Start
    in let st5d = st-append-code st5c (li reg-rax 0)
    in let st5e = st-append-code st5d (mov-store reg-rdi reg-rax 0)
    in let st7 = st-append-code st5e (li reg-r11 stack-min-rsp-addr)
-   in let st8 = st-append-code st7 (li reg-rax bare-metal-stack-top)
+   in let st7a = st-append-code st7 (li reg-rdi ram-size-addr)
+   in let st8 = st-append-code st7a (mov-load reg-rax reg-rdi 0)
    in let st11 = st-append-code st8 (mov-store reg-r11 reg-rax 0)
    in let st12 = emit-process-setup st11
    in let st13 = emit-grant-capability st12 0 cap-console
@@ -446,7 +450,8 @@ Section: Bare-Metal Start
    in let st53 = emit-control-inline-itoa-and-print st52
    in let st54 = emit-control-wait-and-send st53 10
    in let st55 = emit-control-string st54 [83, 84, 65, 67, 75, 58]
-   in let st56 = st-append-code st55 (li reg-rsi bare-metal-stack-top)
+   in let st55a = st-append-code st55 (li reg-rdi ram-size-addr)
+   in let st56 = st-append-code st55a (mov-load reg-rsi reg-rdi 0)
    in let st57 = st-append-code st56 (li reg-rdi stack-min-rsp-addr)
    in let st58 = st-append-code st57 (mov-load reg-rdi reg-rdi 0)
    in let st59 = st-append-code st58 (sub-rr reg-rsi reg-rdi)
@@ -454,7 +459,8 @@ Section: Bare-Metal Start
    in let st61 = emit-control-inline-itoa-and-print st60
    in let st62 = emit-control-wait-and-send st61 10
    in let st63 = st-append-code st62 (li reg-r11 stack-min-rsp-addr)
-   in let st64 = st-append-code st63 (li reg-rax bare-metal-stack-top)
+   in let st63a = st-append-code st63 (li reg-rdi ram-size-addr)
+   in let st64 = st-append-code st63a (mov-load reg-rax reg-rdi 0)
    in let st65 = st-append-code st64 (mov-store reg-r11 reg-rax 0)
    in let st65t = if st.trace-alloc then emit-trace-serial-dump st65 else st65
    in when st.exit-mode

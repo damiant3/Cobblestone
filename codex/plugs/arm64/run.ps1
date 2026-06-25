@@ -52,7 +52,7 @@ $combined[$combined.Length - 1] = 0  # null terminator for read-file
 # Run plug CDX via serial I/O
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
-$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$inputFile,'-output',$outFile,'-mem','4096','-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
+$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$inputFile,'-output',$outFile,'-mem', '3072','-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
 $proc.WaitForExit(300000)
 
 if (-not $proc.HasExited) {

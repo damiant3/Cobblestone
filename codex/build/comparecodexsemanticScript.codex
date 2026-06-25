@@ -1,0 +1,511 @@
+Chapter: CompareCodexSemanticScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates compare-codex-semantic.ps1 from the Shell DSL.
+ Semantic equivalence check between source Codex and stage1 emitter output.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  sem-params : List ShellParam = [sh-param "Source" SptString, sh-param "Stage1" SptString, sh-param-default "Show" SptString (SeLit "")]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    [ScSetStrictMode, ScSetErrorStop, ScBlank,
+     ScAssign "sourceText" (SeRaw "[System.IO.File]::ReadAllText($Source).Replace(\"`r`n\", \"`n\")"),
+     ScAssign "stage1Text" (SeRaw "[System.IO.File]::ReadAllText($Stage1).Replace(\"`r`n\", \"`n\")")]
+
+Section: S02 -- SemDef Class
+
+  s02 : List ShellCmd =
+    [ScRaw "class SemDef {",
+     ScRaw "    [string]$Name",
+     ScRaw "    [string]$Chapter",
+     ScRaw "    [string]$Sig",
+     ScRaw "    [string]$Body",
+     ScRaw "    [int]$LineNo",
+     ScRaw "    [bool]$IsType",
+     ScRaw "    SemDef([string]$n, [string]$ch, [string]$s, [string]$b, [int]$l, [bool]$t) {",
+     ScRaw "        $this.Name = $n; $this.Chapter = $ch; $this.Sig = $s; $this.Body = $b; $this.LineNo = $l; $this.IsType = $t",
+     ScRaw "    }",
+     ScRaw "}"]
+
+Section: S03 -- Parse-OneDef Function
+
+  s03 : List ShellCmd =
+    [ScRaw "function Parse-OneDef([string[]]$lines, [int]$start, [string]$chapter) {",
+     ScRaw "    $firstLine = $lines[$start]",
+     ScRaw "    $isType = [char]::IsUpper($firstLine[0])",
+     ScRaw "    $name = ''; $sig = ''",
+     ScRaw "    if ($isType) {",
+     ScRaw "        $eqPos = $firstLine.IndexOf(' =')",
+     ScRaw "        if ($eqPos -lt 0) { return @($null, ($start + 1)) }",
+     ScRaw "        $name = $firstLine.Substring(0, $eqPos).Trim()",
+     ScRaw "    } else {",
+     ScRaw "        $colonPos = $firstLine.IndexOf(' : ')",
+     ScRaw "        if ($colonPos -lt 0) { return @($null, ($start + 1)) }",
+     ScRaw "        $name = $firstLine.Substring(0, $colonPos)",
+     ScRaw "        $sig = $firstLine.Substring($colonPos + 3)",
+     ScRaw "        $inlineEq = $sig.IndexOf(' = ')",
+     ScRaw "        $inlineBody = $null",
+     ScRaw "        if ($inlineEq -ge 0) {",
+     ScRaw "            $inlineBody = $sig.Substring($inlineEq + 3)",
+     ScRaw "            $sig = $sig.Substring(0, $inlineEq)",
+     ScRaw "        }",
+     ScRaw "    }",
+     ScRaw "    $bodyLines = [System.Text.StringBuilder]::new()",
+     ScRaw "    if ($isType) { [void]$bodyLines.AppendLine($lines[$start]) }",
+     ScRaw "    elseif ($inlineBody) { [void]$bodyLines.AppendLine(\"$name = $inlineBody\") }",
+     ScRaw "    $j = $start + 1",
+     ScRaw "    while ($j -lt $lines.Count) {",
+     ScRaw "        $ln = $lines[$j]",
+     ScRaw "        if ($ln -match '^(HEAP|STACK):\\d+') { $j++; continue }",
+     ScRaw "        if ($ln.Length -eq 0) {",
+     ScRaw "            $peek = $j + 1",
+     ScRaw "            while ($peek -lt $lines.Count -and $lines[$peek].Length -eq 0) { $peek++ }",
+     ScRaw "            if ($peek -ge $lines.Count) { break }",
+     ScRaw "            if ($lines[$peek].Length -gt 0 -and -not [char]::IsWhiteSpace($lines[$peek][0])) {",
+     ScRaw "                if (-not $isType -and $lines[$peek].StartsWith($name) -and ($lines[$peek].Length -eq $name.Length -or $lines[$peek][$name.Length] -eq ' ' -or $lines[$peek][$name.Length] -eq '(')) { [void]$bodyLines.AppendLine(); $j++; continue }",
+     ScRaw "                if ($lines[$peek][0] -in '}',']',')') { [void]$bodyLines.AppendLine(); $j++; continue }",
+     ScRaw "                if ($lines[$peek] -eq 'end' -or $lines[$peek] -eq 'qed') { [void]$bodyLines.AppendLine(); $j++; continue }",
+     ScRaw "                break",
+     ScRaw "            }",
+     ScRaw "            [void]$bodyLines.AppendLine()",
+     ScRaw "            $j++; continue",
+     ScRaw "        }",
+     ScRaw "        if ($ln.Length -gt 0 -and [char]::IsLetter($ln[0])) {",
+     ScRaw "            if (-not $isType -and $ln.StartsWith($name) -and ($ln.Length -eq $name.Length -or $ln[$name.Length] -eq ' ' -or $ln[$name.Length] -eq '(')) {",
+     ScRaw "                [void]$bodyLines.AppendLine($ln); $j++; continue",
+     ScRaw "            }",
+     ScRaw "            if ($ln -eq 'end' -or $ln -eq 'qed') {",
+     ScRaw "                [void]$bodyLines.AppendLine($ln); $j++; continue",
+     ScRaw "            }",
+     ScRaw "            $looksLikeSig = $ln.Contains(' : ')",
+     ScRaw "            $looksLikeType = [char]::IsUpper($ln[0]) -and $ln.Contains(' =')",
+     ScRaw "            if ($isType -and -not $looksLikeSig -and -not $looksLikeType) {",
+     ScRaw "                [void]$bodyLines.AppendLine($ln); $j++; continue",
+     ScRaw "            }",
+     ScRaw "            break",
+     ScRaw "        }",
+     ScRaw "        if ($ln.Length -gt 0 -and ([char]::IsWhiteSpace($ln[0]) -or $ln[0] -in '|','}',']',')')) {",
+     ScRaw "            [void]$bodyLines.AppendLine($ln); $j++; continue",
+     ScRaw "        }",
+     ScRaw "        break",
+     ScRaw "    }",
+     ScRaw "    $def = [SemDef]::new($name, $chapter, $sig, $bodyLines.ToString().TrimEnd(), ($start + 1), $isType)",
+     ScRaw "    return @($def, $j)",
+     ScRaw "}"]
+
+Section: S04 -- Parse-Stage0 Function
+
+  s04 : List ShellCmd =
+    [ScRaw "function Parse-Stage0([string]$text) {",
+     ScRaw "    $chapters = [ordered]@{}",
+     ScRaw "    $slugs = [System.Collections.Generic.List[string]]::new()",
+     ScRaw "    $rawLines = $text.Split(\"`n\")",
+     ScRaw "    $currentSlug = ''",
+     ScRaw "    $i = 0",
+     ScRaw "    while ($i -lt $rawLines.Count) {",
+     ScRaw "        $raw = $rawLines[$i]",
+     ScRaw "        if ($raw.StartsWith('Chapter: ')) {",
+     ScRaw "            $chName = $raw.Substring(9).Trim()",
+     ScRaw "            $currentSlug = $chName.ToLowerInvariant().Replace(' ', '-')",
+     ScRaw "            if (-not $slugs.Contains($currentSlug)) { $slugs.Add($currentSlug) }",
+     ScRaw "            if (-not $chapters.Contains($currentSlug)) { $chapters[$currentSlug] = [System.Collections.Generic.List[object]]::new() }",
+     ScRaw "            $i++; continue",
+     ScRaw "        }",
+     ScRaw "        if ($raw.StartsWith('Section: ') -or $raw.StartsWith('Page ')) { $i++; continue }",
+     ScRaw "        if ($raw.Length -ge 1 -and $raw[0] -eq ' ' -and ($raw.Length -lt 2 -or $raw[1] -ne ' ')) { $i++; continue }",
+     ScRaw "        if ($raw.Length -ge 2 -and $raw[0] -eq ' ' -and $raw[1] -eq ' ') {",
+     ScRaw "            $dedented = $raw.Substring(2)",
+     ScRaw "            if ($dedented.StartsWith('cites ') -or $dedented.StartsWith('import ')) { $i++; continue }",
+     ScRaw "            if ($dedented.Length -gt 0 -and [char]::IsLetter($dedented[0])) {",
+     ScRaw "                $defLines = [System.Collections.Generic.List[string]]::new()",
+     ScRaw "                while ($i -lt $rawLines.Count) {",
+     ScRaw "                    $r = $rawLines[$i]",
+     ScRaw "                    if ($r.Length -ge 2 -and $r[0] -eq ' ' -and $r[1] -eq ' ') {",
+     ScRaw "                        $defLines.Add($r.Substring(2)); $i++; continue",
+     ScRaw "                    }",
+     ScRaw "                    if ($r.Length -eq 0) {",
+     ScRaw "                        $pk = $i + 1",
+     ScRaw "                        while ($pk -lt $rawLines.Count -and $rawLines[$pk].Length -eq 0) { $pk++ }",
+     ScRaw "                        if ($pk -ge $rawLines.Count) { break }",
+     ScRaw "                        $nx = $rawLines[$pk]",
+     ScRaw "                        if ($nx.Length -ge 2 -and $nx[0] -eq ' ' -and $nx[1] -eq ' ') {",
+     ScRaw "                            $nxD = $nx.Substring(2)",
+     ScRaw "                            $isNewDef = $nxD.Length -gt 0 -and -not [char]::IsWhiteSpace($nxD[0]) -and ($nxD.Contains(' : ') -or [char]::IsUpper($nxD[0]))",
+     ScRaw "                            if (-not $isNewDef) {",
+     ScRaw "                                $defLines.Add(''); $i++; continue",
+     ScRaw "                            }",
+     ScRaw "                        }",
+     ScRaw "                        break",
+     ScRaw "                    }",
+     ScRaw "                    break",
+     ScRaw "                }",
+     ScRaw "                if ($defLines.Count -gt 0) {",
+     ScRaw "                    $arr = $defLines.ToArray()",
+     ScRaw "                    $r = Parse-OneDef $arr 0 $currentSlug",
+     ScRaw "                    if ($r[0] -and $chapters.Contains($currentSlug)) { $chapters[$currentSlug].Add($r[0]) }",
+     ScRaw "                }",
+     ScRaw "                continue",
+     ScRaw "            }",
+     ScRaw "        }",
+     ScRaw "        if ($raw.Length -gt 0 -and [char]::IsLetter($raw[0])) {",
+     ScRaw "            $r = Parse-OneDef $rawLines $i $currentSlug",
+     ScRaw "            if ($r[0] -and $chapters.Contains($currentSlug)) { $chapters[$currentSlug].Add($r[0]) }",
+     ScRaw "            $i = $r[1]; continue",
+     ScRaw "        }",
+     ScRaw "        $i++",
+     ScRaw "    }",
+     ScRaw "    return @($chapters, $slugs)",
+     ScRaw "}"]
+
+Section: S05 -- Parse-Stage1 Function
+
+  s05 : List ShellCmd =
+    [ScRaw "function Parse-Stage1([string]$text) {",
+     ScRaw "    $defs = [System.Collections.Generic.List[object]]::new()",
+     ScRaw "    $lines = $text.Split(\"`n\")",
+     ScRaw "    $i = 0",
+     ScRaw "    while ($i -lt $lines.Count) {",
+     ScRaw "        $ln = $lines[$i]",
+     ScRaw "        if ($ln -match '^(HEAP|STACK):\\d+') { $i++; continue }",
+     ScRaw "        if ($ln.Length -gt 0 -and [char]::IsLetter($ln[0])) {",
+     ScRaw "            $r = Parse-OneDef $lines $i ''",
+     ScRaw "            if ($r[0]) { $defs.Add($r[0]) }",
+     ScRaw "            $i = $r[1]",
+     ScRaw "        } else { $i++ }",
+     ScRaw "    }",
+     ScRaw "    return $defs",
+     ScRaw "}"]
+
+Section: S06 -- Demangle Functions
+
+  s06 : List ShellCmd =
+    [ScRaw "function Demangle-Name([string]$name, [string[]]$slugsSorted) {",
+     ScRaw "    foreach ($slug in $slugsSorted) {",
+     ScRaw "        $prefix = \"${slug}_\"",
+     ScRaw "        if ($name.StartsWith($prefix) -and $name.Length -gt $prefix.Length) {",
+     ScRaw "            return @($slug, $name.Substring($prefix.Length))",
+     ScRaw "        }",
+     ScRaw "    }",
+     ScRaw "    return $null",
+     ScRaw "}",
+     ScBlank,
+     ScRaw "function Demangle-Names([string]$body, [string[]]$slugsSorted) {",
+     ScRaw "    $text = $body",
+     ScRaw "    foreach ($slug in $slugsSorted) {",
+     ScRaw "        $prefix = [regex]::Escape(\"${slug}_\")",
+     ScRaw "        $text = [regex]::Replace($text, \"(?<![a-zA-Z0-9_-])${prefix}([a-z])\", '$1')",
+     ScRaw "    }",
+     ScRaw "    return $text",
+     ScRaw "}"]
+
+Section: S07 -- Operator Precedence Helpers
+
+  s07 : List ShellCmd =
+    [ScRaw "$script:scopeKws = @('if','when','let','act','match','lambda','\\','handle','fork','await','trying')",
+     ScRaw "$script:nonAtomKws = @('let','in','act','end','qed','match','when','is','if','then','else','lambda','handle','fork','await','of','where','with')",
+     ScBlank,
+     ScRaw "function Get-OpPrec([string]$tok) {",
+     ScRaw "    switch ($tok) {",
+     ScRaw "        '||' { return 1 } '&' { return 2 } '|' { return 2 }",
+     ScRaw "        '==' { return 3 } '/=' { return 3 } '<' { return 3 } '>' { return 3 } '<=' { return 3 } '>=' { return 3 }",
+     ScRaw "        '++' { return 4 } '::' { return 4 }",
+     ScRaw "        '+' { return 5 } '-' { return 5 }",
+     ScRaw "        '*' { return 6 } '/' { return 6 } '%' { return 6 }",
+     ScRaw "        '^' { return 7 }",
+     ScRaw "        '.' { return 20 }",
+     ScRaw "        default { return 0 }",
+     ScRaw "    }",
+     ScRaw "}",
+     ScBlank,
+     ScRaw "function Is-AtomToken([string]$tok) {",
+     ScRaw "    if (-not $tok) { return $false }",
+     ScRaw "    $c = $tok[0]",
+     ScRaw "    if ($c -eq '\"' -or $c -eq \"'\") { return $true }",
+     ScRaw "    if (-not ([char]::IsLetterOrDigit($c) -or $c -eq '_')) { return $false }",
+     ScRaw "    return $tok -notin $script:nonAtomKws",
+     ScRaw "}"]
+
+Section: S08 -- Find-MatchingClose and Strip-RedundantParens
+
+  s08 : List ShellCmd =
+    [ScRaw "function Find-MatchingClose([System.Collections.Generic.List[string]]$tokens, [int]$openIdx) {",
+     ScRaw "    $depth = 1",
+     ScRaw "    for ($j = $openIdx + 1; $j -lt $tokens.Count; $j++) {",
+     ScRaw "        if ($tokens[$j] -in '(','[','{') { $depth++ }",
+     ScRaw "        elseif ($tokens[$j] -in ')',']','}') {",
+     ScRaw "            $depth--",
+     ScRaw "            if ($depth -eq 0) { return $(if ($tokens[$j] -eq ')') { $j } else { -1 }) }",
+     ScRaw "        }",
+     ScRaw "    }",
+     ScRaw "    return -1",
+     ScRaw "}",
+     ScBlank,
+     ScRaw "function Strip-RedundantParens([System.Collections.Generic.List[string]]$tokens) {",
+     ScRaw "    $AppPrec = 10",
+     ScRaw "    $changed = $true",
+     ScRaw "    while ($changed) {",
+     ScRaw "        $changed = $false",
+     ScRaw "        for ($i = 0; $i -lt $tokens.Count; $i++) {",
+     ScRaw "            if ($tokens[$i] -ne '(') { continue }",
+     ScRaw "            $close = Find-MatchingClose $tokens $i",
+     ScRaw "            if ($close -lt 0) { break }",
+     ScRaw "            $innerLen = $close - $i - 1",
+     ScRaw "            if ($innerLen -le 0) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }",
+     ScRaw "            if ($innerLen -eq 1) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }",
+     ScRaw "            if ($tokens[$i+1] -eq '[') {",
+     ScRaw "                $bracketClose = Find-MatchingClose $tokens $i",
+     ScRaw "                $depth3 = 0; $allBracketed = $true",
+     ScRaw "                for ($k = $i+1; $k -lt $close; $k++) {",
+     ScRaw "                    if ($tokens[$k] -eq '[') { $depth3++ } elseif ($tokens[$k] -eq ']') { $depth3-- }",
+     ScRaw "                    if ($depth3 -eq 0 -and $k -lt $close - 1) { $allBracketed = $false; break }",
+     ScRaw "                }",
+     ScRaw "                if ($allBracketed) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }",
+     ScRaw "            }",
+     ScRaw "            $first = $tokens[$i + 1]",
+     ScRaw "            if ($first -in $script:scopeKws) {",
+     ScRaw "                $nextTok = if ($close -lt $tokens.Count - 1) { $tokens[$close + 1] } else { $null }",
+     ScRaw "                $rp = if ($nextTok) { $p = Get-OpPrec $nextTok; if ($p -gt 0) { $p } elseif (Is-AtomToken $nextTok) { $AppPrec } else { 0 } } else { 0 }",
+     ScRaw "                if ($rp -eq 0) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }",
+     ScRaw "                continue",
+     ScRaw "            }",
+     ScRaw "            $innerOps = [System.Collections.Generic.List[object]]::new()",
+     ScRaw "            $depth2 = 0; $afterOp = $false",
+     ScRaw "            for ($k = $i + 1; $k -lt $close; $k++) {",
+     ScRaw "                if ($tokens[$k] -in '(','[','{') { $depth2++; $afterOp = $false; continue }",
+     ScRaw "                if ($tokens[$k] -in ')',']','}') { $depth2--; $afterOp = $true; continue }",
+     ScRaw "                if ($depth2 -gt 0) { continue }",
+     ScRaw "                $opP = Get-OpPrec $tokens[$k]",
+     ScRaw "                if ($opP -gt 0 -and $afterOp) { $innerOps.Add(@($tokens[$k], $opP)); $afterOp = $false }",
+     ScRaw "                elseif ($opP -eq 0) { $afterOp = $true }",
+     ScRaw "            }",
+     ScRaw "            $prev = if ($i -gt 0) { $tokens[$i - 1] } else { $null }",
+     ScRaw "            $next = if ($close -lt $tokens.Count - 1) { $tokens[$close + 1] } else { $null }",
+     ScRaw "            $lp = if ($prev) { $p = Get-OpPrec $prev; if ($p -gt 0) { $p } elseif ($prev -in ')',']','}') { $AppPrec } elseif (Is-AtomToken $prev) { $AppPrec } else { 0 } } else { 0 }",
+     ScRaw "            $rp = if ($next) { $p = Get-OpPrec $next; if ($p -gt 0) { $p } elseif ($next -in '(','[','{') { $AppPrec } elseif (Is-AtomToken $next) { $AppPrec } else { 0 } } else { 0 }",
+     ScRaw "            if ($innerOps.Count -eq 0) {",
+     ScRaw "                $leftOK = $lp -lt $AppPrec -or $lp -eq 0",
+     ScRaw "                $rightOK = $rp -le $AppPrec -or $rp -eq 0",
+     ScRaw "                if ($leftOK -and $rightOK) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }",
+     ScRaw "            } else {",
+     ScRaw "                $precL = $innerOps[0][1]; $opL = $innerOps[0][0]",
+     ScRaw "                $precR = $innerOps[-1][1]; $opR = $innerOps[-1][0]",
+     ScRaw "                $isLAssocL = $opL -ne '^' -and $opL -ne '::'",
+     ScRaw "                $isLAssocR = $opR -ne '^' -and $opR -ne '::'",
+     ScRaw "                $leftOK = $lp -eq 0 -or $lp -lt $precL -or ($lp -eq $precL -and $isLAssocL)",
+     ScRaw "                $rightOK = $rp -eq 0 -or $rp -lt $precR -or ($rp -eq $precR -and $isLAssocR)",
+     ScRaw "                if ($leftOK -and $rightOK) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }",
+     ScRaw "            }",
+     ScRaw "        }",
+     ScRaw "    }",
+     ScRaw "}"]
+
+Section: S09 -- Normalize and Collapse Functions
+
+  s09 : List ShellCmd =
+    [ScRaw "function Normalize-OpAliases([System.Collections.Generic.List[string]]$tokens) {",
+     ScRaw "    for ($i = 0; $i -lt $tokens.Count; $i++) {",
+     ScRaw "        if ($tokens[$i] -eq '&' -and $i -gt 0 -and $i -lt $tokens.Count - 1) { $tokens[$i] = '++' }",
+     ScRaw "        if ($tokens[$i] -eq ',' -and $i + 1 -lt $tokens.Count -and $tokens[$i+1].Length -gt 0 -and [char]::IsUpper($tokens[$i+1][0])) { $tokens[$i] = '->' }",
+     ScRaw "    }",
+     ScRaw "    for ($i = $tokens.Count - 2; $i -ge 0; $i--) {",
+     ScRaw "        if ($tokens[$i] -eq '__linked-list-empty' -and $tokens[$i+1] -eq '0') {",
+     ScRaw "            if ($i -gt 0 -and $i + 2 -lt $tokens.Count -and $tokens[$i-1] -eq '(' -and $tokens[$i+2] -eq ')') {",
+     ScRaw "                $tokens.RemoveAt($i+2); $tokens.RemoveAt($i+1); $tokens.RemoveAt($i); $tokens[$i-1] = '['; $tokens.Insert($i, ']')",
+     ScRaw "            } else {",
+     ScRaw "                $tokens[$i] = '['; $tokens[$i+1] = ']'",
+     ScRaw "            }",
+     ScRaw "        }",
+     ScRaw "    }",
+     ScRaw "}",
+     ScBlank,
+     ScRaw "function Collapse-Whitespace([string]$text) {",
+     ScRaw "    $tokens = [System.Collections.Generic.List[string]]::new()",
+     ScRaw "    foreach ($m in [regex]::Matches($text, '[a-zA-Z0-9_][a-zA-Z0-9_\\-]*|\"(?:\\\\.|[^\"\\\\])*\"|''(?:\\\\.|[^''\\\\])*''|\\+\\+|::|->|<-|<=|>=|/=|&&|\\|\\||\\S')) {",
+     ScRaw "        $tokens.Add($m.Value)",
+     ScRaw "    }",
+     ScRaw "    Normalize-OpAliases $tokens",
+     ScRaw "    Strip-RedundantParens $tokens",
+     ScRaw "    return ($tokens -join ' ').Trim()",
+     ScRaw "}",
+     ScBlank,
+     ScRaw "function Alpha-NormalizeTypeVars([string]$sig) {",
+     ScRaw "    $varMap = @{}",
+     ScRaw "    $nextIdx = 0",
+     ScRaw "    $knownTypes = @('in','if','of','is','act','end','qed')",
+     ScRaw "    $tokens = [regex]::Matches($sig, '\\b([a-z]\\d*)\\b|.')",
+     ScRaw "    $sb = [System.Text.StringBuilder]::new()",
+     ScRaw "    foreach ($tok in $tokens) {",
+     ScRaw "        $full = $tok.Value",
+     ScRaw "        if ($full.Length -eq 1 -and [char]::IsLower($full[0]) -and $full -notin $knownTypes) {",
+     ScRaw "            if (-not $varMap.ContainsKey($full)) { $varMap[$full] = \"t$nextIdx\"; $nextIdx++ }",
+     ScRaw "            [void]$sb.Append($varMap[$full])",
+     ScRaw "        } elseif ($full -match '^[a-z]\\d+$' -and $full -notin $knownTypes) {",
+     ScRaw "            if (-not $varMap.ContainsKey($full)) { $varMap[$full] = \"t$nextIdx\"; $nextIdx++ }",
+     ScRaw "            [void]$sb.Append($varMap[$full])",
+     ScRaw "        } else {",
+     ScRaw "            [void]$sb.Append($full)",
+     ScRaw "        }",
+     ScRaw "    }",
+     ScRaw "    return $sb.ToString()",
+     ScRaw "}"]
+
+Section: S10 -- Parse Phase
+
+  s10 : List ShellCmd =
+    [ScComment "Parse",
+     ScAssign "r0" (SeRaw "Parse-Stage0 $sourceText"),
+     ScAssign "s0Chapters" (SeRaw "$r0[0]"),
+     ScAssign "slugs" (SeRaw "$r0[1]"),
+     ScAssign "slugsSorted" (SeRaw "$slugs.ToArray() | Sort-Object { $_.Length } -Descending"),
+     ScBlank,
+     ScRaw "foreach ($ch in @($s0Chapters.Keys)) {",
+     ScRaw "    $defs = $s0Chapters[$ch]",
+     ScRaw "    for ($di = 0; $di -lt $defs.Count; $di++) {",
+     ScRaw "        $dm = Demangle-Name $defs[$di].Name $slugsSorted",
+     ScRaw "        if ($dm -and $dm[0] -eq $ch) { $defs[$di].Name = $dm[1] }",
+     ScRaw "    }",
+     ScRaw "}",
+     ScBlank,
+     ScAssign "s1Defs" (SeRaw "Parse-Stage1 $stage1Text")]
+
+Section: S11 -- Match Phase
+
+  s11 : List ShellCmd =
+    [ScComment "Build collision set",
+     ScAssign "nameToChapters" SeHashLiteral,
+     ScRaw "foreach ($ch in $s0Chapters.Keys) {",
+     ScRaw "    foreach ($d in $s0Chapters[$ch]) {",
+     ScRaw "        if (-not $nameToChapters.ContainsKey($d.Name)) { $nameToChapters[$d.Name] = @() }",
+     ScRaw "        $nameToChapters[$d.Name] += $ch",
+     ScRaw "    }",
+     ScRaw "}",
+     ScAssign "colliding" (SeRaw "@($nameToChapters.Keys | Where-Object { $nameToChapters[$_].Count -gt 1 })"),
+     ScBlank,
+     ScComment "Assign chapters to stage1 defs",
+     ScAssign "nameToChapter" SeHashLiteral,
+     ScRaw "foreach ($ch in $s0Chapters.Keys) {",
+     ScRaw "    foreach ($d in $s0Chapters[$ch]) {",
+     ScRaw "        if ($d.Name -notin $colliding -and -not $nameToChapter.ContainsKey($d.Name)) {",
+     ScRaw "            $nameToChapter[$d.Name] = $ch",
+     ScRaw "        }",
+     ScRaw "    }",
+     ScRaw "}",
+     ScRaw "for ($i = 0; $i -lt $s1Defs.Count; $i++) {",
+     ScRaw "    $d = $s1Defs[$i]",
+     ScRaw "    $dm = Demangle-Name $d.Name $slugsSorted",
+     ScRaw "    if ($dm) { $d.Name = $dm[1]; $d.Chapter = $dm[0] }",
+     ScRaw "    elseif ($nameToChapter.ContainsKey($d.Name)) { $d.Chapter = $nameToChapter[$d.Name] }",
+     ScRaw "    else { $d.Chapter = '?' }",
+     ScRaw "}",
+     ScBlank,
+     ScComment "Match",
+     ScAssign "s1ByKey" SeHashLiteral,
+     ScRaw "foreach ($d in $s1Defs) {",
+     ScRaw "    $key = \"$($d.Chapter)|$($d.Name)\"",
+     ScRaw "    if (-not $s1ByKey.ContainsKey($key)) { $s1ByKey[$key] = $d }",
+     ScRaw "}",
+     ScBlank,
+     ScDotNetCallAssign "matched" "System.Collections.Generic.List[object]" "new" [],
+     ScDotNetCallAssign "dropped" "System.Collections.Generic.List[object]" "new" [],
+     ScAssign "s0Keys" SeHashLiteral,
+     ScRaw "foreach ($ch in $s0Chapters.Keys) {",
+     ScRaw "    foreach ($s0 in $s0Chapters[$ch]) {",
+     ScRaw "        $key = \"$ch|$($s0.Name)\"",
+     ScRaw "        $s0Keys[$key] = $true",
+     ScRaw "        if ($s1ByKey.ContainsKey($key)) { $matched.Add(@($s0, $s1ByKey[$key])) }",
+     ScRaw "        else { $dropped.Add($s0) }",
+     ScRaw "    }",
+     ScRaw "}",
+     ScAssign "extra" (SeRaw "@($s1Defs | Where-Object { -not $s0Keys.ContainsKey(\"$($_.Chapter)|$($_.Name)\") })")]
+
+Section: S12 -- Resolve Colliding Defs
+
+  s12 : List ShellCmd =
+    [ScComment "Resolve colliding defs by body/sig match",
+     ScAssign "extraByName" SeHashLiteral,
+     ScRaw "foreach ($d in $extra) {",
+     ScRaw "    if ($d.Chapter -ne '?') { continue }",
+     ScRaw "    if (-not $extraByName.ContainsKey($d.Name)) { $extraByName[$d.Name] = [System.Collections.Generic.List[object]]::new() }",
+     ScRaw "    $extraByName[$d.Name].Add($d)",
+     ScRaw "}",
+     ScDotNetCallAssign "resolvedExtra" "System.Collections.Generic.HashSet[object]" "new" [],
+     ScAssign "resolvedDropped" (SeRaw "@()"),
+     ScRaw "foreach ($s0 in $dropped) {",
+     ScRaw "    if (-not $extraByName.ContainsKey($s0.Name)) { continue }",
+     ScRaw "    $body0 = Collapse-Whitespace (Demangle-Names $s0.Body $slugsSorted)",
+     ScRaw "    $bestMatch = $null",
+     ScRaw "    foreach ($s1 in $extraByName[$s0.Name]) {",
+     ScRaw "        if ($resolvedExtra.Contains($s1)) { continue }",
+     ScRaw "        $body1 = Collapse-Whitespace (Demangle-Names $s1.Body $slugsSorted)",
+     ScRaw "        if ($body0 -eq $body1) { $bestMatch = $s1; break }",
+     ScRaw "    }",
+     ScRaw "    if (-not $bestMatch) {",
+     ScRaw "        $sig0 = Alpha-NormalizeTypeVars $s0.Sig",
+     ScRaw "        foreach ($s1 in $extraByName[$s0.Name]) {",
+     ScRaw "            if ($resolvedExtra.Contains($s1)) { continue }",
+     ScRaw "            if ($sig0 -eq (Alpha-NormalizeTypeVars $s1.Sig)) { $bestMatch = $s1; break }",
+     ScRaw "        }",
+     ScRaw "    }",
+     ScRaw "    if ($bestMatch) {",
+     ScRaw "        $bestMatch.Chapter = $s0.Chapter",
+     ScRaw "        $matched.Add(@($s0, $bestMatch))",
+     ScRaw "        $resolvedDropped += $s0",
+     ScRaw "        [void]$resolvedExtra.Add($bestMatch)",
+     ScRaw "    }",
+     ScRaw "}",
+     ScDotNetCallAssign "dropped" "System.Collections.Generic.List[object]" "new" [SeRaw "@($dropped | Where-Object { $_ -notin $resolvedDropped })"],
+     ScAssign "extra" (SeRaw "@($extra | Where-Object { -not $resolvedExtra.Contains($_) })")]
+
+Section: S13 -- Compare Phase
+
+  s13 : List ShellCmd =
+    [ScComment "Compare",
+     ScRaw "$bodyMatches = 0; $bodyMismatches = 0",
+     ScRaw "$sigMatches = 0; $sigMismatches = 0",
+     ScDotNetCallAssign "bodyMismatchList" "System.Collections.Generic.List[string]" "new" [],
+     ScBlank,
+     ScRaw "foreach ($pair in $matched) {",
+     ScRaw "    $s0 = $pair[0]; $s1 = $pair[1]",
+     ScRaw "    $normSig0 = Alpha-NormalizeTypeVars ($s0.Sig -replace ',\\s*', ' -> ')",
+     ScRaw "    $normSig1 = Alpha-NormalizeTypeVars ($s1.Sig -replace ',\\s*', ' -> ')",
+     ScRaw "    if ($normSig0 -eq $normSig1) { $sigMatches++ } else { $sigMismatches++ }",
+     ScBlank,
+     ScRaw "    $b0 = Collapse-Whitespace (Demangle-Names $s0.Body $slugsSorted)",
+     ScRaw "    $b1 = Collapse-Whitespace (Demangle-Names $s1.Body $slugsSorted)",
+     ScRaw "    if ($b0 -eq $b1) { $bodyMatches++ }",
+     ScRaw "    else {",
+     ScRaw "        $bodyMismatches++",
+     ScRaw "        $bodyMismatchList.Add(\"$($s0.Chapter): $($s0.Name)\")",
+     ScRaw "    }",
+     ScRaw "}"]
+
+Section: S14 -- Verdict
+
+  s14 : List ShellCmd =
+    let show-dropped = [ScEcho (SeLit "Dropped:"), ScForEach "d" (SeVar "dropped") [ScEcho (SeRaw "\"  $($d.Chapter): $($d.Name) (line $($d.LineNo))\"")]]
+    in let show-mismatches = [ScEcho (SeLit "Body mismatches:"), ScForEach "m" (SeVar "bodyMismatchList") [ScEcho (SeRaw "\"  $m\"")]]
+    in let fail-body = [ScAssign "totalS0" (SeRaw "($s0Chapters.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum"), ScEcho (SeLit "=== Semantic Equivalence FAIL ==="), ScEcho (SeRaw "\"Source: $totalS0 defs  Stage1: $($s1Defs.Count) defs  Matched: $($matched.Count)\""), ScEcho (SeRaw "\"Dropped: $($dropped.Count)  Body mismatches: $bodyMismatches\""), ScIf (SeRaw "$dropped.Count -gt 0") show-dropped [], ScIf (SeRaw "$bodyMismatchList.Count -gt 0") show-mismatches []]
+    in [ScComment "Verdict", ScAssign "pass" (SeRaw "$dropped.Count -eq 0 -and $bodyMismatches -eq 0"), ScBlank, ScIf (SeNot (SeVar "pass")) fail-body [], ScBlank, ScRaw "exit $(if ($pass) { 0 } else { 1 })"]
+
+Section: Assembly
+
+  sem-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12, ScBlank, ScSequence s13, ScBlank, ScSequence s14]
+
+  sem-script : ShellScript = sh-script "compare-codex-semantic" "Semantic equivalence check between source Codex and stage1 emitter output" sem-params sem-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell sem-script)
+  end
+
+Page 1

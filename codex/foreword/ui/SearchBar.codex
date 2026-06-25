@@ -1,0 +1,100 @@
+Chapter: SearchBar
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter TextField
+  cites UI chapter Dropdown
+
+ Search bar with optional filter chips, scope selector, and
+ result count display. Standard pattern for any app with
+ searchable content.
+
+ We say:
+
+Section: Types
+  FilterChip = record {
+    fc-id : Text,
+    fc-label : Text,
+    fc-active : Boolean
+  }
+
+  SearchBarState = record {
+    sb-id : Text,
+    sb-query : Text,
+    sb-cursor : Integer,
+    sb-chips : List FilterChip,
+    sb-scope : DropdownState,
+    sb-result-count : Integer,
+    sb-placeholder : Text
+  }
+
+Section: Construction
+  search-bar-new : Text -> SearchBarState
+  search-bar-new (id) = SearchBarState {
+    sb-id = id, sb-query = "", sb-cursor = 0,
+    sb-chips = [], sb-scope = dropdown-new (id & "-scope") ["All"],
+    sb-result-count = 0, sb-placeholder = "Search..."
+  }
+
+  search-bar-with-chips : Text, List FilterChip -> SearchBarState
+  search-bar-with-chips (id) (chips) =
+    let sb = search-bar-new id
+    in __record-set sb "sb-chips" chips
+
+  search-bar-with-scope : Text, List Text -> SearchBarState
+  search-bar-with-scope (id) (scopes) =
+    let sb = search-bar-new id
+    in __record-set sb "sb-scope" (dropdown-new (id & "-scope") scopes)
+
+  filter-chip : Text, Text -> FilterChip
+  filter-chip (id) (label) = FilterChip { fc-id = id, fc-label = label, fc-active = False }
+
+  filter-chip-active : Text, Text -> FilterChip
+  filter-chip-active (id) (label) = FilterChip { fc-id = id, fc-label = label, fc-active = True }
+
+Section: State Updates
+  sb-set-query : SearchBarState, Text -> SearchBarState
+  sb-set-query (state) (query) = __record-set state "sb-query" query
+
+  sb-set-results : SearchBarState, Integer -> SearchBarState
+  sb-set-results (state) (count) = __record-set state "sb-result-count" count
+
+  sb-toggle-chip : SearchBarState, Text -> SearchBarState
+  sb-toggle-chip (state) (chip-id) =
+    let toggled = sb-toggle-in-list (state.sb-chips) chip-id 0 (list-length (state.sb-chips)) []
+    in __record-set state "sb-chips" toggled
+
+  sb-toggle-in-list : List FilterChip, Text, Integer, Integer, List FilterChip -> List FilterChip
+  sb-toggle-in-list (chips) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at chips i
+    in let toggled = if c.fc-id == target then FilterChip { fc-id = c.fc-id, fc-label = c.fc-label, fc-active = c.fc-active == False } else c
+    in sb-toggle-in-list chips target (i + 1) n (list-push acc toggled)
+
+  sb-active-chips : SearchBarState -> List Text
+  sb-active-chips (state) = sb-collect-active (state.sb-chips) 0 (list-length (state.sb-chips)) []
+
+  sb-collect-active : List FilterChip, Integer, Integer, List Text -> List Text
+  sb-collect-active (chips) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at chips i
+    in if c.fc-active then sb-collect-active chips (i + 1) n (list-push acc (c.fc-id))
+    else sb-collect-active chips (i + 1) n acc
+
+Section: Widget Rendering
+  search-bar-widget : SearchBarState -> WidgetNode
+  search-bar-widget (state) =
+    let input = widget-input (state.sb-id & "-input") (state.sb-query) (state.sb-cursor)
+    in let scope-w = if list-length ((state.sb-scope).dd-options) > 1 then [widget-set-min (dropdown-widget (state.sb-scope)) 80 0] else []
+    in let chip-widgets = sb-render-chips (state.sb-chips) (state.sb-id) 0 (list-length (state.sb-chips)) []
+    in let count-w = if state.sb-result-count > 0 then [widget-label (state.sb-id & "-count") (show (state.sb-result-count) & " results")] else []
+    in widget-panel (state.sb-id) DirRow 4 (scope-w & [widget-set-flex input 1] & chip-widgets & count-w)
+
+  sb-render-chips : List FilterChip, Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  sb-render-chips (chips) (prefix) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at chips i
+    in let state = if c.fc-active then state-pressed else state-normal
+    in let btn = widget-set-state (widget-button (prefix & "-chip-" & c.fc-id) (c.fc-label)) state
+    in sb-render-chips chips prefix (i + 1) n (list-push acc btn)
+
+Page 1

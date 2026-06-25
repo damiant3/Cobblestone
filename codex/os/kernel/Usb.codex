@@ -36,7 +36,11 @@ Section: Device Descriptor
 
   usb-parse-device-desc : List Integer -> UsbDeviceDesc
   usb-parse-device-desc (bytes) =
-    UsbDeviceDesc {
+    if list-length bytes < 18 then UsbDeviceDesc {
+      usb-vendor = 0, usb-product = 0, usb-class = 0, usb-subclass = 0,
+      usb-protocol = 0, usb-max-packet = 0, usb-num-configs = 0, usb-speed = 0
+    }
+    else UsbDeviceDesc {
       usb-vendor = usb-le16 bytes 8,
       usb-product = usb-le16 bytes 10,
       usb-class = list-at bytes 4,
@@ -65,13 +69,17 @@ Section: Endpoint Descriptor
 
   usb-parse-endpoint : List Integer, Integer -> UsbEndpoint
   usb-parse-endpoint (bytes) (offset) =
-    let addr = list-at bytes (offset + 2)
+    if offset + 7 > list-length bytes then UsbEndpoint {
+      ep-address = __narrow 0, ep-direction = __narrow 0, ep-type = __narrow 0,
+      ep-max-packet = __narrow 0, ep-interval = __narrow 0
+    }
+    else let addr = list-at bytes (offset + 2)
     in UsbEndpoint {
-      ep-address = bit-and addr 15,
-      ep-direction = bit-and addr 128,
-      ep-type = bit-and (list-at bytes (offset + 3)) 3,
-      ep-max-packet = usb-le16 bytes (offset + 4),
-      ep-interval = list-at bytes (offset + 6)
+      ep-address = __narrow (bit-and addr 15),
+      ep-direction = __narrow (bit-and addr 128),
+      ep-type = __narrow (bit-and (list-at bytes (offset + 3)) 3),
+      ep-max-packet = __narrow (usb-le16 bytes (offset + 4)),
+      ep-interval = __narrow (list-at bytes (offset + 6))
     }
 
 Section: Interface Descriptor
@@ -86,13 +94,17 @@ Section: Interface Descriptor
 
   usb-parse-interface : List Integer, Integer -> UsbInterface
   usb-parse-interface (bytes) (offset) =
-    UsbInterface {
-      if-number = list-at bytes (offset + 2),
-      if-alt-setting = list-at bytes (offset + 3),
-      if-class = list-at bytes (offset + 5),
-      if-subclass = list-at bytes (offset + 6),
-      if-protocol = list-at bytes (offset + 7),
-      if-num-endpoints = list-at bytes (offset + 4)
+    if offset + 8 > list-length bytes then UsbInterface {
+      if-number = __narrow 0, if-alt-setting = __narrow 0, if-class = __narrow 0,
+      if-subclass = __narrow 0, if-protocol = __narrow 0, if-num-endpoints = __narrow 0
+    }
+    else UsbInterface {
+      if-number = __narrow (list-at bytes (offset + 2)),
+      if-alt-setting = __narrow (list-at bytes (offset + 3)),
+      if-class = __narrow (list-at bytes (offset + 5)),
+      if-subclass = __narrow (list-at bytes (offset + 6)),
+      if-protocol = __narrow (list-at bytes (offset + 7)),
+      if-num-endpoints = __narrow (list-at bytes (offset + 4))
     }
 
 Section: Setup Packet (control transfers)
@@ -141,7 +153,9 @@ Section: Device Classes
 
 Section: Helpers
   usb-le16 : List Integer, Integer -> Integer
-  usb-le16 (bytes) (offset) = bit-or (list-at bytes offset) (bit-shl (list-at bytes (offset + 1)) 8)
+  usb-le16 (bytes) (offset) =
+    if offset + 2 > list-length bytes then 0
+    else bit-or (list-at bytes offset) (bit-shl (list-at bytes (offset + 1)) 8)
 
   usb-le16-encode : Integer -> List Integer
   usb-le16-encode (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]

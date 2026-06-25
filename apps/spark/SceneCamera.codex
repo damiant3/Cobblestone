@@ -3,23 +3,23 @@ Chapter: SceneCamera
   cites Math chapter Matrix4
 
  3D camera with perspective and orthographic projection, orbit
- controls, and frustum queries. All values fixed-point scale 1000.
+ controls, and frustum queries. All values use Real.
 
  We say:
 
 Section: Types
 
   CamProjection =
-    | CamPersp (Integer)
-    | CamOrthoProj (Integer)
+    | CamPersp (Real)
+    | CamOrthoProj (Real)
 
   SparkCamera = record {
     sc-eye : Vec3,
     sc-target : Vec3,
     sc-up : Vec3,
     sc-projection : CamProjection,
-    sc-near : Integer,
-    sc-far : Integer,
+    sc-near : Real,
+    sc-far : Real,
     sc-vp-width : Integer,
     sc-vp-height : Integer
   }
@@ -28,24 +28,24 @@ Section: Construction
 
   spark-camera-new : Integer, Integer -> SparkCamera
   spark-camera-new (vp-w) (vp-h) = SparkCamera {
-    sc-eye = vec3-new 0 2000 5000,
+    sc-eye = vec3-new 0.0 2.0 5.0,
     sc-target = vec3-zero,
-    sc-up = vec3-new 0 1000 0,
-    sc-projection = CamPersp 1047,
-    sc-near = 100,
-    sc-far = 100000,
+    sc-up = vec3-new 0.0 1.0 0.0,
+    sc-projection = CamPersp 1.047,
+    sc-near = 0.1,
+    sc-far = 100.0,
     sc-vp-width = vp-w,
     sc-vp-height = vp-h
   }
 
-  spark-camera-ortho : Integer, Integer, Integer -> SparkCamera
+  spark-camera-ortho : Integer, Integer, Real -> SparkCamera
   spark-camera-ortho (vp-w) (vp-h) (extent) = SparkCamera {
-    sc-eye = vec3-new 0 5000 5000,
+    sc-eye = vec3-new 0.0 5.0 5.0,
     sc-target = vec3-zero,
-    sc-up = vec3-new 0 1000 0,
+    sc-up = vec3-new 0.0 1.0 0.0,
     sc-projection = CamOrthoProj extent,
-    sc-near = 100,
-    sc-far = 100000,
+    sc-near = 0.1,
+    sc-far = 100.0,
     sc-vp-width = vp-w,
     sc-vp-height = vp-h
   }
@@ -57,11 +57,11 @@ Section: Matrices
 
   spark-camera-proj : SparkCamera -> Mat4
   spark-camera-proj (c) =
-    let aspect = c.sc-vp-width * 1000 / c.sc-vp-height
+    let aspect = real-from-int (c.sc-vp-width) / real-from-int (c.sc-vp-height)
     in when c.sc-projection
       is CamPersp (fov) -> mat4-perspective fov aspect (c.sc-near) (c.sc-far)
       is CamOrthoProj (extent) ->
-        let half-w = extent * aspect / 1000
+        let half-w = extent * aspect
         in let half-h = extent
         in mat4-ortho (-half-w) half-w (-half-h) half-h (c.sc-near) (c.sc-far)
 
@@ -70,7 +70,7 @@ Section: Matrices
 
 Section: Orbit Controls
 
-  spark-camera-orbit : SparkCamera, Integer, Integer -> SparkCamera
+  spark-camera-orbit : SparkCamera, Real, Real -> SparkCamera
   spark-camera-orbit (c) (yaw-delta) (pitch-delta) =
     let dir = vec3-subtract (c.sc-eye) (c.sc-target)
     in let dist = mat4-v3-length dir
@@ -82,7 +82,7 @@ Section: Orbit Controls
     in let new-eye = vec3-add (c.sc-target) new-dir
     in __record-set c "sc-eye" new-eye
 
-  spark-camera-pan : SparkCamera, Integer, Integer -> SparkCamera
+  spark-camera-pan : SparkCamera, Real, Real -> SparkCamera
   spark-camera-pan (c) (dx) (dy) =
     let fwd = mat4-v3-normalize (vec3-subtract (c.sc-target) (c.sc-eye))
     in let right = mat4-v3-normalize (vec3-cross fwd (c.sc-up))
@@ -92,18 +92,18 @@ Section: Orbit Controls
     in let new-target = vec3-add (c.sc-target) offset
     in __record-set (__record-set c "sc-eye" new-eye) "sc-target" new-target
 
-  spark-camera-zoom : SparkCamera, Integer -> SparkCamera
+  spark-camera-zoom : SparkCamera, Real -> SparkCamera
   spark-camera-zoom (c) (delta) =
     let dir = vec3-subtract (c.sc-eye) (c.sc-target)
     in let dist = mat4-v3-length dir
-    in let new-dist = sc-max 500 (dist + delta)
+    in let new-dist = sc-max 0.5 (dist + delta)
     in let norm = mat4-v3-normalize dir
     in let new-eye = vec3-add (c.sc-target) (vec3-scale norm new-dist)
     in __record-set c "sc-eye" new-eye
 
 Section: Helpers
 
-  sc-max : Integer, Integer -> Integer
+  sc-max : Real, Real -> Real
   sc-max (a) (b) = if a > b then a else b
 
 Page 1

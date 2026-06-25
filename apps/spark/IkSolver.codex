@@ -6,7 +6,6 @@ Chapter: IkSolver
  Inverse kinematics solver using CCD (Cyclic Coordinate Descent).
  Given a bone chain and a target position, iteratively rotates
  each bone toward the target until convergence or max iterations.
- Fixed-point scale 1000.
 
  We say:
 
@@ -18,14 +17,14 @@ Section: Types
     ik-target : Vec3,
     ik-pole : Vec3,
     ik-max-iterations : Integer,
-    ik-tolerance : Integer
+    ik-tolerance : Real
   }
 
   IkResult = record {
     ikr-armature : ArmatureState,
     ikr-iterations : Integer,
     ikr-converged : Boolean,
-    ikr-error : Integer
+    ikr-error : Real
   }
 
 Section: Construction
@@ -35,9 +34,9 @@ Section: Construction
     ik-bone-indices = bones,
     ik-chain-length = count,
     ik-target = target,
-    ik-pole = vec3-new 0 0 1000,
+    ik-pole = vec3-new 0.0 0.0 1.0,
     ik-max-iterations = 20,
-    ik-tolerance = 10
+    ik-tolerance = 0.01
   }
 
   ik-chain-set-target : IkChain, Vec3 -> IkChain
@@ -82,16 +81,16 @@ Section: CCD Solver
     in let to-target = vec3-subtract (chain.ik-target) bone-pos
     in let len-e = ik-v3-length to-effector
     in let len-t = ik-v3-length to-target
-    in if len-e < 1 then arm
-    else if len-t < 1 then arm
-    else let dot = (to-effector.vx * to-target.vx + to-effector.vy * to-target.vy + to-effector.vz * to-target.vz) / 1000
-    in let cos-a = dot * 1000 / len-e * 1000 / len-t
-    in let clamped = ik-clamp cos-a (-1000) 1000
+    in if len-e < 0.001 then arm
+    else if len-t < 0.001 then arm
+    else let dot = vec3-dot to-effector to-target
+    in let cos-a = dot / (len-e * len-t)
+    in let clamped = ik-clamp cos-a (-1.0) 1.0
     in let angle = ik-acos-approx clamped
     in let cross = vec3-cross to-effector to-target
     in let cross-len = ik-v3-length cross
-    in if cross-len < 1 then arm
-    else let axis = vec3-new (cross.vx * 1000 / cross-len) (cross.vy * 1000 / cross-len) (cross.vz * 1000 / cross-len)
+    in if cross-len < 0.001 then arm
+    else let axis = vec3-new (cross.vx / cross-len) (cross.vy / cross-len) (cross.vz / cross-len)
     in let delta = quat-from-axis-angle axis angle
     in let bone = armature-get-bone arm bone-idx
     in let new-rot = quat-multiply delta (bone.bn-pose-rot)
@@ -99,7 +98,7 @@ Section: CCD Solver
 
 Section: Error Measurement
 
-  ik-end-effector-error : ArmatureState, IkChain -> Integer
+  ik-end-effector-error : ArmatureState, IkChain -> Real
   ik-end-effector-error (arm) (chain) =
     let effector-idx = list-at (chain.ik-bone-indices) (chain.ik-chain-length - 1)
     in let effector-pos = armature-bone-tip arm effector-idx
@@ -108,26 +107,18 @@ Section: Error Measurement
 
 Section: Helpers
 
-  ik-v3-length : Vec3 -> Integer
+  ik-v3-length : Vec3 -> Real
   ik-v3-length (v) =
     let sq = v.vx * v.vx + v.vy * v.vy + v.vz * v.vz
-    in ik-isqrt sq
+    in geo-sqrt sq
 
-  ik-isqrt : Integer -> Integer
-  ik-isqrt (n) = if n <= 0 then 0 else ik-isqrt-loop n (n / 2 + 1)
-
-  ik-isqrt-loop : Integer, Integer -> Integer
-  ik-isqrt-loop (n) (guess) =
-    let next = (guess + n / guess) / 2
-    in if next >= guess then guess else ik-isqrt-loop n next
-
-  ik-acos-approx : Integer -> Integer
+  ik-acos-approx : Real -> Real
   ik-acos-approx (cos-val) =
     let x = cos-val
-    in let x2 = x * x / 1000
-    in 1571 - x - x * x2 / 6000
+    in let x2 = x * x
+    in 1.571 - x - x * x2 / 6.0
 
-  ik-clamp : Integer, Integer, Integer -> Integer
+  ik-clamp : Real, Real, Real -> Real
   ik-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
 
 Section: Info

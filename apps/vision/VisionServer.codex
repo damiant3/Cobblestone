@@ -1,0 +1,99 @@
+Chapter: VisionServer
+  cites Vision chapter VisionTypes
+  cites Vision chapter VisionSignal
+  cites Vision chapter VisionCascade
+  cites Vision chapter VisionPortfolio
+  cites Vision chapter VisionStore
+  cites Vision chapter VisionConfig
+  cites Works chapter Http
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Encode chapter Json
+
+ HTTP API server for the Vision platform. Exposes signal,
+ cascade, and portfolio data as JSON endpoints. Intended to
+ run behind the works WebServer or as a standalone service.
+
+Section: Route Dispatch
+
+  vision-route : Text, VisionAppState -> HttpResponse
+  vision-route (path) (state) =
+    if path == "/api/signals" then serve-signals state
+    else if path == "/api/cascade" then serve-cascade state
+    else if path == "/api/portfolio" then serve-portfolio state
+    else if path == "/api/signals/active" then serve-active-signals state
+    else if path == "/api/signals/overdue" then serve-overdue-signals state
+    else http-not-found
+
+Section: Signal Endpoint
+
+  serve-signals : VisionAppState -> HttpResponse
+  serve-signals (state) =
+    let store = state.va-signals
+    in let j = json-emit (json-object [
+      json-pair "count" (json-int store.ss-count),
+      json-pair "next-id" (json-int store.ss-next-id),
+      json-pair "signals" (json-array (list-map signal-to-jv store.ss-signals))
+    ])
+    in HttpResponse { status = http-200, content-type = "application/json", body = j }
+
+  serve-active-signals : VisionAppState -> HttpResponse
+  serve-active-signals (state) =
+    let active = ss-active state.va-signals
+    in let j = json-emit (json-object [
+      json-pair "count" (json-int (list-length active)),
+      json-pair "signals" (json-array (list-map signal-to-jv active))
+    ])
+    in HttpResponse { status = http-200, content-type = "application/json", body = j }
+
+  serve-overdue-signals : VisionAppState -> HttpResponse
+  serve-overdue-signals (state) =
+    let overdue = ss-overdue state.va-signals 0
+    in let j = json-emit (json-object [
+      json-pair "count" (json-int (list-length overdue)),
+      json-pair "signals" (json-array (list-map signal-to-jv overdue))
+    ])
+    in HttpResponse { status = http-200, content-type = "application/json", body = j }
+
+Section: Cascade Endpoint
+
+  serve-cascade : VisionAppState -> HttpResponse
+  serve-cascade (state) =
+    let cs = state.va-cascade
+    in let j = json-emit (json-object [
+      json-pair "hold-count" (json-int cs.cs-hold-count),
+      json-pair "response-count" (json-int cs.cs-response-count),
+      json-pair "nudge-count" (json-int cs.cs-nudge-count)
+    ])
+    in HttpResponse { status = http-200, content-type = "application/json", body = j }
+
+Section: Portfolio Endpoint
+
+  serve-portfolio : VisionAppState -> HttpResponse
+  serve-portfolio (state) =
+    let pf = state.va-portfolio
+    in let j = json-emit (json-object [
+      json-pair "project-count" (json-int pf.pf-project-count),
+      json-pair "dependency-count" (json-int pf.pf-dep-count),
+      json-pair "projects" (json-array (list-map project-to-jv pf.pf-projects))
+    ])
+    in HttpResponse { status = http-200, content-type = "application/json", body = j }
+
+  project-to-jv : Project -> JsonValue
+  project-to-jv (p) = json-object [
+    json-pair "id" (json-int p.proj-id),
+    json-pair "name" (json-str p.proj-name),
+    json-pair "domain" (json-str p.proj-domain),
+    json-pair "owner" (json-str p.proj-owner),
+    json-pair "milestones" (json-int p.proj-milestone-count),
+    json-pair "risks" (json-int p.proj-risk-count)
+  ]
+
+Section: Entry
+
+  opening : [Console] None
+  opening = act
+    print-line "VisionServer: HTTP API for Vision platform"
+    print-line "  Routes: /api/signals, /api/cascade, /api/portfolio"
+    print-line "  Connect via works WebServer route registration"
+  end

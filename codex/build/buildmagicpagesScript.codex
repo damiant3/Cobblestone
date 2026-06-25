@@ -1,0 +1,44 @@
+Chapter: BuildMagicPagesScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates build-magic-pages.ps1 -- builds CodexMagic web pages from
+ .codex sources through the HTML plug, then post-processes the output
+ HTML to inject shared CSS, scripts, and auth bootstrap.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  magic-params : List ShellParam = [sh-param-default "Pages" SptString (SeLit "")]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "BundleScript" (SeRaw "Join-Path $Repo 'build\\bundle-app.ps1'"), ScAssign "HtmlRunScript" (SeRaw "Join-Path $Repo 'codex\\plugs\\html\\run.ps1'"), ScAssign "AppDir" (SeRaw "Join-Path $Repo 'apps\\games\\codexmagic'"), ScAssign "WebDir" (SeRaw "Join-Path $AppDir 'web'"), ScAssign "OutDir" (SeRaw "Join-Path $WebDir 'build-output'"), ScRaw "New-Item -ItemType Directory -Force -Path $OutDir | Out-Null"]
+
+Section: S02 -- Discover Pages
+
+  s02 : List ShellCmd = [ScIf (SeRaw "$Pages -and $Pages.Length -gt 0") [ScRaw "$pageList = $Pages -split ','"] [ScRaw "$pageList = @(Get-ChildItem -Path $AppDir -Filter '*Page.codex' | ForEach-Object { $_.BaseName })"]]
+
+Section: S03 -- Build Loop
+
+  s03-postprocess : List ShellCmd = [ScDotNetCallAssign "html" "System.IO.File" "ReadAllText" [SeVar "htmlOut"], ScAssign "inject" (SeLit "<link rel=\"stylesheet\" href=\"/magic.css\">"), ScAssign "inject" (SeRaw "$inject + '<script src=\"/magic.js\"></script>'"), ScAssign "inject" (SeRaw "$inject + '<script src=\"/card-render.js\"></script>'"), ScRaw "$html = $html -replace '</head>', \"$inject</head>\"", ScAssign "authBoot" (SeLit "<script>document.addEventListener(\"DOMContentLoaded\",function(){if(typeof ensureAccount===\"function\")ensureAccount()});</script>"), ScRaw "$html = $html -replace '</body>', \"$authBoot</body>\"", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "htmlOut", SeVar "html", SeRaw "[System.Text.Encoding]::UTF8"]]
+
+  s03 : List ShellCmd = [ScForEach "page" (SeVar "pageList") [ScAssign "src" (SeRaw "Join-Path $AppDir \"$page.codex\""), ScIf (SeNot (SeFileExists (SeVar "src"))) [ScRaw "Write-Host \"SKIP: $src not found\" -ForegroundColor Yellow", ScContinue] [], ScAssign "bundled" (SeRaw "Join-Path $OutDir \"$page-bundle.codex\""), ScAssign "htmlOut" (SeRaw "Join-Path $WebDir (($page -replace 'Page$','').ToLower() + '.html')"), ScBlank, ScRaw "Write-Host \"[$page] bundling...\" -ForegroundColor Cyan", ScRaw "& pwsh -NoProfile -File $BundleScript -Src $src -Out $bundled", ScIf (SeRaw "$LASTEXITCODE -ne 0") [ScRaw "Write-Host \"[$page] FAIL: bundle\" -ForegroundColor Red", ScContinue] [], ScBlank, ScRaw "Write-Host \"[$page] compiling to HTML...\" -ForegroundColor Cyan", ScRaw "& pwsh -NoProfile -File $HtmlRunScript -Src $bundled -Out $htmlOut", ScIf (SeRaw "$LASTEXITCODE -ne 0") [ScRaw "Write-Host \"[$page] FAIL: HTML generation\" -ForegroundColor Red", ScContinue] [], ScBlank, ScSequence s03-postprocess, ScRaw "Write-Host \"[$page] OK: $htmlOut\" -ForegroundColor Green"]]
+
+Section: Assembly
+
+  magic-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03]
+
+  magic-script : ShellScript = sh-script "build-magic-pages" "Build CodexMagic web pages from .codex sources through the HTML plug" magic-params magic-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell magic-script)
+  end
+
+Page 1

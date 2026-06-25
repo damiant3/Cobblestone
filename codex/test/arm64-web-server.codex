@@ -5,6 +5,7 @@ Chapter: Arm64WebServer
   cites Net chapter Arm64NetIO
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
+  cites Net chapter Ethernet
   cites Works chapter Http
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
@@ -56,13 +57,17 @@ Section: HTTP Route
 
 Section: Network Init
 
+  ws-find-or-fallback : Arm64PciScanResult, Maybe Arm64PciDevice -> Arm64PciDevice
+  ws-find-or-fallback (scan) (result) =
+    when result
+      is Just (d) -> d
+      is None -> list-at (scan.devices) 0
+
   ws-find-virtio-net : Arm64PciScanResult -> Arm64PciDevice
   ws-find-virtio-net (scan) =
     when arm64-pci-find-device scan #1AF4 #1041
       is Just (d) -> d
-      is None -> when arm64-pci-find-device scan #1AF4 #1000
-        is Just (d) -> d
-        is None -> list-at (scan.devices) 0
+      is None -> ws-find-or-fallback scan (arm64-pci-find-device scan #1AF4 #1000)
 
   ws-init-net : Integer -> Arm64NetIOState
   ws-init-net (dummy) =
@@ -122,14 +127,16 @@ Section: Entry
       print-line-uni ("PCI: " & show (scan.count) & " devices")
       let dev = ws-find-virtio-net scan
       in act
-        print-line-uni ("PCI dev: vendor=" & show (dev.pci-vendor) & " id=" & show (dev.pci-device-id))
+        print-line-uni ("dev=" & show (dev.pci-device-id))
         let enabled = arm64-pci-enable-device dev
         in act
           print-line-uni "PCI enabled, VirtIO init..."
           let vnet = virtio-net-init dev
+          in let arp-frame = arp-build-request ws-local-mac ws-local-ip ws-gateway-ip
+          in let vnet1 = virtio-net-send-frame vnet arp-frame
           in let sess = net-session-new ws-local-mac ws-local-ip ws-gateway-ip ws-port 0 ws-gateway-ip 1000
           in let ts = transport-new sess
-          in let st = Arm64NetIOState { vnet = vnet, transport = ts }
+          in let st = Arm64NetIOState { vnet = vnet1, transport = ts }
           in act
             print-line-uni "VirtIO-net initialized"
             print-line-uni "Listening on port 80"

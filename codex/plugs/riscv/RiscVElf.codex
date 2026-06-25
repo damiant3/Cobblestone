@@ -1,0 +1,103 @@
+Chapter: RISC-V ELF Writer
+
+ Produces RISC-V ELF64 executables from the wire protocol output
+ of the RISC-V codegen plug. Ported from Arm64Elf.codex.
+
+Section: ELF64 Constants
+
+  rv-elf64-magic : List Integer = [127, 69, 76, 70]
+  rv-elf64-class : Integer = 2
+  rv-elf64-lsb : Integer = 1
+  rv-elf64-version : Integer = 1
+  rv-elf64-type-exec : Integer = 2
+  rv-elf64-machine-riscv : Integer = 243
+  rv-elf64-header-size : Integer = 64
+  rv-elf64-phdr-size : Integer = 56
+  rv-elf64-pt-load : Integer = 1
+  rv-elf64-pf-rx : Integer = 5
+  rv-elf64-pf-rw : Integer = 6
+  rv-elf64-page-size : Integer = 4096
+
+Section: Byte Writers
+
+  rv-elf-write-i16 : Integer -> List Integer
+  rv-elf-write-i16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  rv-elf-write-i32 : Integer -> List Integer
+  rv-elf-write-i32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  rv-elf-write-i64 : Integer -> List Integer
+  rv-elf-write-i64 (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255,
+    bit-and (bit-shru v 32) 255, bit-and (bit-shru v 40) 255, bit-and (bit-shru v 48) 255, bit-and (bit-shru v 56) 255]
+
+  rv-elf-pad-zeros : Integer -> List Integer
+  rv-elf-pad-zeros (n) = rv-elf-pad-zeros-loop n []
+
+  rv-elf-pad-zeros-loop : Integer, List Integer -> List Integer
+  rv-elf-pad-zeros-loop (n) (acc) =
+   if n <= 0 then acc
+   else rv-elf-pad-zeros-loop (n - 1) (list-push acc 0)
+
+  rv-elf-align-up : Integer, Integer -> Integer
+  rv-elf-align-up (v) (align) =
+   let r = int-mod v align
+   in if r == 0 then v else v + align - r
+
+Section: ELF64 Header
+
+  rv-elf64-header : Integer, Integer, Integer -> List Integer
+  rv-elf64-header (entry) (phoff) (phnum) =
+   rv-elf64-magic
+   & [rv-elf64-class, rv-elf64-lsb, rv-elf64-version]
+   & rv-elf-pad-zeros 9
+   & rv-elf-write-i16 rv-elf64-type-exec
+   & rv-elf-write-i16 rv-elf64-machine-riscv
+   & rv-elf-write-i32 rv-elf64-version
+   & rv-elf-write-i64 entry
+   & rv-elf-write-i64 phoff
+   & rv-elf-write-i64 0
+   & rv-elf-write-i32 0
+   & rv-elf-write-i16 rv-elf64-header-size
+   & rv-elf-write-i16 rv-elf64-phdr-size
+   & rv-elf-write-i16 phnum
+   & rv-elf-write-i16 0
+   & rv-elf-write-i16 0
+   & rv-elf-write-i16 0
+
+Section: Program Header
+
+  rv-elf64-phdr : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  rv-elf64-phdr (p-type) (flags) (offset) (vaddr) (paddr) (filesz) (memsz) (align) =
+   rv-elf-write-i32 p-type
+   & rv-elf-write-i32 flags
+   & rv-elf-write-i64 offset
+   & rv-elf-write-i64 vaddr
+   & rv-elf-write-i64 paddr
+   & rv-elf-write-i64 filesz
+   & rv-elf-write-i64 memsz
+   & rv-elf-write-i64 align
+
+Section: Build ELF
+
+  rv-build-elf : List Integer, List Integer, Integer -> List Integer
+  rv-build-elf (code) (data) (entry-offset) =
+   let load-addr = #80000000
+   in let headers-end = rv-elf64-header-size + rv-elf64-phdr-size * 2
+   in let text-start = rv-elf-align-up headers-end 16
+   in let code-len = list-length code
+   in let data-len = list-length data
+   in let text-end = text-start + code-len
+   in let rodata-start = rv-elf-align-up text-end 8
+   in let loadable-end = rodata-start + data-len
+   in let entry = load-addr + text-start + entry-offset
+   in let seg-filesz = loadable-end - text-start
+   in let seg-memsz = seg-filesz + #1000000
+   in let hdr = rv-elf64-header entry rv-elf64-header-size 2
+   in let ph-text = rv-elf64-phdr rv-elf64-pt-load rv-elf64-pf-rx text-start (load-addr + text-start) (load-addr + text-start) code-len code-len rv-elf64-page-size
+   in let ph-data = rv-elf64-phdr rv-elf64-pt-load rv-elf64-pf-rw rodata-start (load-addr + rodata-start) (load-addr + rodata-start) data-len (data-len + #1000000) 8
+   in let padding = rv-elf-pad-zeros (text-start - headers-end)
+   in let rodata-padding = rv-elf-pad-zeros (rodata-start - text-end)
+   in hdr & ph-text & ph-data & padding & code & rodata-padding & data
+
+Page 1

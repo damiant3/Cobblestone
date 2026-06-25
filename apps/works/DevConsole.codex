@@ -7,8 +7,14 @@ Chapter: DevConsole
   cites Works chapter DevAgent
   cites Works chapter DevHypervisor
   cites Works chapter DevUiLauncher
+  cites Works chapter AnnotationPersistDriver
+  cites Works chapter AnnotationShellCommands
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Works chapter MutationLog
   cites Foreword chapter Maybe
   cites Foreword chapter Trie
+  cites Kernel chapter DiskFacts
 
  UEFI dev console. Hold a key during boot to enter. Menu-driven
  interface with code browser, editor, compiler, test runner,
@@ -53,12 +59,15 @@ Section: Console State
     view-scroll : Integer,
     view-chapter-idx : Integer,
     status : Text,
-    running : Boolean
+    running : Boolean,
+    ann-persist : AnnotationPersistState,
+    disk-store : DiskFactStore
   }
 
-  dev-console-init : UefiConsoleState -> DevConsoleState
-  dev-console-init (con) =
-    DevConsoleState {
+  dev-console-init : UefiConsoleState, DiskFactStore, Keypair -> DevConsoleState
+  dev-console-init (con) (disk) (kp) =
+    let ann-st = persist-driver-init kp disk
+    in DevConsoleState {
       mode = ModeMainMenu,
       source-index = empty-source-index,
       console = con,
@@ -72,7 +81,9 @@ Section: Console State
       view-scroll = 0,
       view-chapter-idx = 0,
       status = "Codex Dev Console",
-      running = True
+      running = True,
+      ann-persist = ann-st,
+      disk-store = disk
     }
 
 Section: Main Menu
@@ -141,6 +152,40 @@ Section: Main Menu
     menu-item "Back" "back"
   ]
 
+  annotations-menu : MenuState
+  annotations-menu = menu-new "Annotations" [
+    menu-item "View Facts" "facts",
+    menu-item "View Mutation Log" "log",
+    menu-item "Checkpoint DiskFacts" "checkpoint",
+    menu-item "Status" "ann-status",
+    menu-item "Back" "back"
+  ]
+
+Section: Annotation Dispatch
+
+  dispatch-annotations-menu : Text, DevConsoleState -> DevConsoleState
+  dispatch-annotations-menu (key) (state) =
+    if key == "facts" then
+      let result = cmd-facts (state.ann-persist)
+      in __record-set (__record-set state "ann-persist" (result.state)) "status" (result.output)
+    else if key == "log" then
+      let result = cmd-log (state.ann-persist)
+      in __record-set (__record-set state "ann-persist" (result.state)) "status" (result.output)
+    else if key == "checkpoint" then
+      let result = cmd-checkpoint (state.ann-persist)
+      in __record-set (__record-set state "ann-persist" (result.state)) "status" (result.output)
+    else if key == "ann-status" then
+      let status = persist-status-line (state.ann-persist) (editor-state-or-default state)
+      in __record-set state "status" status
+    else if key == "back" then __record-set (__record-set (__record-set state "mode" ModeMainMenu) "menu" main-menu) "status" "Codex Dev Console"
+    else state
+
+  editor-state-or-default : DevConsoleState -> EditorState
+  editor-state-or-default (state) =
+    when state.editor
+      is Just (e) -> e
+      is None -> editor-empty
+
 Section: Menu Dispatch
 
   dispatch-main-menu : Text, DevConsoleState -> DevConsoleState
@@ -154,7 +199,7 @@ Section: Menu Dispatch
     else if key == "sweep" then __record-set (__record-set (__record-set state "mode" ModeSweep) "menu" sweep-menu) "status" "Test runner"
     else if key == "verify" then __record-set (__record-set state "mode" ModeVerify) "status" "Verifying seed..."
     else if key == "debug" then __record-set (__record-set (__record-set state "mode" ModeDebug) "menu" debug-menu) "status" "Debugger"
-    else if key == "annotations" then __record-set (__record-set state "mode" ModeAnnotations) "status" "Annotations"
+    else if key == "annotations" then __record-set (__record-set (__record-set state "mode" ModeAnnotations) "menu" annotations-menu) "status" "Annotations"
     else if key == "agent" then __record-set (__record-set (__record-set state "mode" ModeAgent) "menu" agent-menu) "status" "Agent Manager"
     else if key == "drives" then __record-set (__record-set (__record-set state "mode" ModeDriveManager) "menu" drive-manager-menu) "status" "Drive Manager"
     else if key == "identity" then __record-set (__record-set (__record-set state "mode" ModeIdentity) "menu" identity-menu) "status" "Identity"
@@ -297,7 +342,7 @@ Section: Rendering
       is ModeUiLaunch -> header & render-menu (state.menu)
       is ModeEdit -> header & render-editor-view state
       is ModeVerify -> header & ["  Verify Seed Integrity", ""] & render-menu (state.menu)
-      is ModeAnnotations -> header & ["  Annotations", ""] & render-menu (state.menu)
+      is ModeAnnotations -> header & render-menu (state.menu) & ["", "  " & persist-status-line (state.ann-persist) (editor-state-or-default state)]
       is ModeDriveManager -> header & ["  Drive Manager", ""] & render-menu (state.menu)
       is ModeIdentity -> header & ["  Identity", ""] & render-menu (state.menu)
       is ModeSystemInfo -> header & ["  System Info", ""] & render-menu (state.menu)

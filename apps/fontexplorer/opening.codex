@@ -1,0 +1,137 @@
+Chapter: Opening
+  cites Explorer chapter FontModel
+  cites Explorer chapter FontPreview
+  cites Foreword chapter Console
+  cites Foreword chapter List
+  cites Foreword chapter FileSystem
+  cites UI chapter Widget
+  cites UI chapter Window
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites UI chapter Event
+  cites UI chapter Binding
+  cites UI chapter Scroll
+
+ Font Explorer: AI font generation with live preview.
+ Sliders for weight, italic, temperature. Font blending.
+ Text input for custom preview. Export TTF.
+
+Section: Application State
+
+  mutable ExplorerState = record {
+    es-preview : PreviewState,
+    es-glyph-net : NeuralNetwork,
+    es-kern-net : NeuralNetwork,
+    es-config : FontModelConfig,
+    es-export-path : Text
+  }
+
+Section: Window Layout
+
+  build-explorer-window : ExplorerState -> Widget
+  build-explorer-window (state) =
+    let title = widget-label "Codex Font Explorer" 24
+    in let weight-slider = widget-slider "Weight" 100 900 state.es-preview.ps-weight
+    in let italic-slider = widget-slider "Italic" 0 1000 state.es-preview.ps-italic
+    in let temp-slider = widget-slider "Temperature" 0 1000 state.es-preview.ps-temperature
+    in let text-input = widget-text-field "Preview text" state.es-preview.ps-sample-text
+    in let export-btn = widget-button "Export TTF" 0
+    in let style-label = widget-label (style-to-name state.es-preview.ps-weight state.es-preview.ps-italic) 14
+    in let controls = layout-vertical [
+      title,
+      layout-spacer 8,
+      weight-slider,
+      italic-slider,
+      temp-slider,
+      style-label,
+      layout-spacer 12,
+      text-input,
+      layout-spacer 8,
+      export-btn
+    ]
+    in let preview-upper = widget-label "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 36
+    in let preview-lower = widget-label "abcdefghijklmnopqrstuvwxyz 0123456789" 28
+    in let preview-sample = widget-label state.es-preview.ps-sample-text 20
+    in let preview-kern = widget-label "AVA To Ty WA VA LT" 32
+    in let preview = layout-vertical [
+      preview-upper,
+      preview-lower,
+      layout-spacer 16,
+      preview-sample,
+      layout-spacer 12,
+      preview-kern
+    ]
+    in layout-horizontal [
+      layout-fixed-width controls 280,
+      layout-spacer 16,
+      preview
+    ]
+
+Section: Event Handling
+
+  handle-explorer-event : ExplorerState, Event -> ExplorerState
+  handle-explorer-event (state) (event) =
+    when event
+      is SliderChanged (name) (value) ->
+        if name == "Weight" then
+          let ps = preview-set-weight state.es-preview value
+          in state.es-preview = ps
+        else if name == "Italic" then
+          let ps = preview-set-italic state.es-preview value
+          in state.es-preview = ps
+        else if name == "Temperature" then
+          let ps = preview-set-temperature state.es-preview value
+          in state.es-preview = ps
+        else state
+      is TextChanged (name) (value) ->
+        if name == "Preview text" then
+          let ps = preview-set-text state.es-preview value
+          in state.es-preview = ps
+        else state
+      is ButtonClicked (name) (id) ->
+        if name == "Export TTF" then export-current-font state
+        else state
+      is otherwise -> state
+
+Section: Export
+
+  export-current-font : ExplorerState -> ExplorerState
+  export-current-font (state) =
+    let params = GlyphParams {
+      weight = state.es-preview.ps-weight,
+      italic = state.es-preview.ps-italic,
+      temperature = state.es-preview.ps-temperature,
+      font-blend = []
+    }
+    in let name = "CodexAI-" & style-to-name params.weight params.italic
+    in state
+
+Section: Entry Point
+
+  opening : [Console, FileSystem] Nothing
+  opening = act
+    print-line "Codex Font Explorer v0.1"
+    print-line "Loading model weights..."
+    let config = FontModelConfig {
+      input-dim = 102,
+      hidden1 = 256,
+      hidden2 = 128,
+      output-dim = 119,
+      n-outer-pts = 32,
+      n-inner1-pts = 16,
+      n-inner2-pts = 8,
+      n-fonts = 0
+    }
+    in let preview = preview-init
+    in let state = ExplorerState {
+      es-preview = preview,
+      es-glyph-net = nn-new,
+      es-kern-net = nn-new,
+      es-config = config,
+      es-export-path = "FontExplorer-output.ttf"
+    }
+    in let window = build-explorer-window state
+    in print-line "Window built. Ready."
+    in print-line ("  Controls: Weight, Italic, Temperature sliders")
+    in print-line ("  Preview: " & state.es-preview.ps-sample-text)
+  end

@@ -1,0 +1,95 @@
+Chapter: VmConfigScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates vm-config.ps1 -- shared VM config + helpers for the harness.
+ Memory-mapped I/O: no serial ports, no TCP sockets.
+ The VM loads input from a file into guest memory at 0x400000.
+ Output is written by the guest to 0x500000 and dumped to a file on exit.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  vm-config-params : List ShellParam = []
+
+Section: S01 -- Preamble + VM Binary
+
+  s01 : List ShellCmd =
+    let not-found = [ScWriteError (SeRaw "\"codex-vm not found at $($script:CodexVmBin). Build with tools/build-vm.ps1.\""), ScRaw "throw \"codex-vm not found at $($script:CodexVmBin). Build with tools/build-vm.ps1.\""]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScComment "Locate codex-vm binary", ScRaw "$script:CodexVmBin = Join-Path (Split-Path $PSScriptRoot) 'tools\\codex-vm.exe'", ScIf (SeNot (SeRaw "Test-Path -PathType Leaf $script:CodexVmBin")) not-found []]
+
+Section: S02 -- CCE Encode/Decode Tables
+
+  s02 : List ShellCmd = [ScComment "CCE encode/decode tables -- shared by plug run scripts.", ScRaw "$script:CceToUnicode = @(\n    0, 10, 32,\n    48, 49, 50, 51, 52, 53, 54, 55, 56, 57,\n    101, 116, 97, 111, 105, 110, 115, 104, 114, 100,\n    108, 99, 117, 109, 119, 102, 103, 121, 112, 98,\n    118, 107, 106, 120, 113, 122,\n    69, 84, 65, 79, 73, 78, 83, 72, 82, 68,\n    76, 67, 85, 77, 87, 70, 71, 89, 80, 66,\n    86, 75, 74, 88, 81, 90,\n    46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41,\n    43, 61, 42, 60, 62,\n    47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96,\n    94,\n    36, 37,\n    233, 232, 234, 235, 225, 224, 226, 228,\n    243, 244, 246, 250, 252, 241, 231, 237\n)", ScRaw "$script:UnicodeToCce = [byte[]]::new(256)", ScForLoop "i" (SeInt 0) (SeRaw "$i -lt 256") (SeRaw "$i++") [ScRaw "$script:UnicodeToCce[$i] = 68"], ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $script:CceToUnicode.Length") (SeRaw "$i++") [ScRaw "$u = $script:CceToUnicode[$i] % 256", ScRaw "$script:UnicodeToCce[$u] = [byte]$i"]]
+
+Section: S03 -- Resolve-Rip Function
+
+  s03 : List ShellCmd = [ScComment "Resolve a code address to 'function+offset' using a .map file.", ScRaw "$script:MapCache = @{}", ScRaw "function Resolve-Rip {", ScRaw "    param([long]$Rip, [string]$MapFile = '')", ScRaw "    if (-not $MapFile) { $MapFile = Join-Path (Split-Path $PSScriptRoot) 'seed\\Codex.map' }", ScRaw "    if (-not (Test-Path $MapFile)) { return $null }", ScRaw "    if (-not $script:MapCache[$MapFile]) {", ScRaw "        $entries = @()", ScRaw "        foreach ($line in [System.IO.File]::ReadAllLines($MapFile)) {", ScRaw "            if ($line -match '^(0x[0-9a-fA-F]+)\\s+(\\d+)\\s+(.+)$') {", ScRaw "                $entries += @{ Addr = [Convert]::ToInt64($matches[1], 16); Size = [int]$matches[2]; Name = $matches[3] }", ScRaw "            }", ScRaw "        }", ScRaw "        $script:MapCache[$MapFile] = $entries", ScRaw "    }", ScRaw "    foreach ($e in $script:MapCache[$MapFile]) {", ScRaw "        if ($Rip -ge $e.Addr -and $Rip -lt ($e.Addr + $e.Size)) {", ScRaw "            $off = $Rip - $e.Addr", ScRaw "            return \"$($e.Name)+0x$($off.ToString('X'))\"", ScRaw "        }", ScRaw "    }", ScRaw "    return $null", ScRaw "}"]
+
+Section: S04 -- Resolve-Name Function
+
+  s04 : List ShellCmd = [ScRaw "function Resolve-Name {", ScRaw "    param([string]$Name, [string]$MapFile = '')", ScRaw "    if (-not $MapFile) { $MapFile = Join-Path (Split-Path $PSScriptRoot) 'seed\\Codex.map' }", ScRaw "    if (-not (Test-Path $MapFile)) { return 0 }", ScRaw "    foreach ($line in [System.IO.File]::ReadAllLines($MapFile)) {", ScRaw "        if ($line -match '^(0x[0-9a-fA-F]+)\\s+\\d+\\s+(.+)$') {", ScRaw "            if ($matches[2].Trim() -eq $Name) { return [Convert]::ToInt64($matches[1], 16) }", ScRaw "        }", ScRaw "    }", ScRaw "    return 0", ScRaw "}"]
+
+Section: S05 -- Format-CrashReport Function
+
+  s05 : List ShellCmd = [ScRaw "function Format-CrashReport {", ScRaw "    param([string[]]$ExcLines)", ScRaw "    $report = [System.Collections.Generic.List[string]]::new()", ScRaw "    if ($ExcLines.Count -eq 0) { return $report }", ScRaw "    $excLine = $ExcLines[0]", ScRaw "    $vec = ''", ScRaw "    if ($excLine -match '!EXC=([0-9a-fA-F]+)') { $vec = $matches[1] }", ScRaw "    $vecInt = [Convert]::ToInt32($vec, 16)", ScRaw "    $vecName = switch ($vecInt) { 0 { 'divide error' } 6 { 'invalid opcode' } 13 { 'general protection' } 14 { 'page fault' } default { \"vector $vecInt\" } }", ScRaw "    $rip = 0", ScRaw "    if ($excLine -match 'RIP=([0-9a-fA-F]+)') { $rip = [Convert]::ToInt64($matches[1], 16) }", ScRaw "    $ripSym = Resolve-Rip -Rip $rip", ScRaw "    if (-not $ripSym) { $ripSym = \"0x$($rip.ToString('X8'))\" }", ScRaw "    $cr2 = ''", ScRaw "    if ($excLine -match 'CR2=([0-9a-fA-F]+)') {", ScRaw "        $cr2val = [Convert]::ToInt64($matches[1], 16)", ScRaw "        if ($cr2val -ne 0) { $cr2 = \", CR2=0x$($cr2val.ToString('X12'))\" }", ScRaw "    }", ScRaw "    $header = \"CRASH in $ripSym ($vecName$cr2)\"", ScRaw "    $report.Add($header)", ScRaw "    $report.Add(\"  RIP   0x$($rip.ToString('X8').PadLeft(8,'0'))  $ripSym\")"]
+
+  s05b : List ShellCmd = [ScRaw "    foreach ($regName in @('callR','RBX','R12','R13','R14','R10','RDI','RSI','R15')) {", ScRaw "        if ($excLine -match \"$regName=([0-9a-fA-F]+)\") {", ScRaw "            $val = [Convert]::ToInt64($matches[1], 16)", ScRaw "            $sym = Resolve-Rip -Rip $val", ScRaw "            $hex = \"0x$($val.ToString('X8').PadLeft(8,'0'))\"", ScRaw "            $extra = ''", ScRaw "            if ($regName -eq 'R10') {", ScRaw "                $heapMB = [math]::Round(($val - 0x600000) / 1048576.0, 1)", ScRaw "                $extra = \"  (heap @ $heapMB MB)\"", ScRaw "            }", ScRaw "            if ($sym) { $report.Add(\"  $($regName.PadRight(5)) $hex  $sym$extra\") }", ScRaw "            else { $report.Add(\"  $($regName.PadRight(5)) $hex$extra\") }", ScRaw "        }", ScRaw "    }", ScRaw "    for ($i = 1; $i -lt $ExcLines.Count; $i++) {", ScRaw "        $sl = $ExcLines[$i]", ScRaw "        if ($sl -match 'S\\[([0-9a-fA-F]+)\\]=([0-9a-fA-F]+)') {", ScRaw "            $soff = $matches[1]; $sval = [Convert]::ToInt64($matches[2], 16)", ScRaw "            $ssym = Resolve-Rip -Rip $sval", ScRaw "            if ($ssym) {", ScRaw "                if ($i -eq 1) { $report.Add(\"  Stack trace (heuristic):\") }", ScRaw "                $report.Add(\"    S[$soff] 0x$($sval.ToString('X8').PadLeft(8,'0'))  $ssym\")", ScRaw "            }", ScRaw "        }", ScRaw "    }", ScRaw "    return $report", ScRaw "}"]
+
+Section: S06 -- Write-SweepLog Function
+
+  s06 : List ShellCmd = [ScRaw "function Write-SweepLog {", ScRaw "    param([string]$Message)", ScRaw "    $logPath = $env:CODEX_SWEEP_LOG", ScRaw "    if ($logPath) {", ScRaw "        $ts = (Get-Date).ToString('HH:mm:ss.fff')", ScRaw "        Add-Content -Path $logPath -Value \"$ts $Message\" -Encoding UTF8", ScRaw "    }", ScRaw "}"]
+
+Section: S07 -- Normalize-TripleNewlines Function
+
+  s07 : List ShellCmd = [ScRaw "function Normalize-TripleNewlines {", ScRaw "    param([byte[]]$Bytes)", ScRaw "    $out = [System.Collections.Generic.List[byte]]::new($Bytes.Length)", ScRaw "    $nlRun = 0", ScRaw "    foreach ($b in $Bytes) {", ScRaw "        if ($b -eq 10) {", ScRaw "            $nlRun++", ScRaw "            if ($nlRun -le 2) { $out.Add($b) }", ScRaw "        } else {", ScRaw "            $nlRun = 0", ScRaw "            $out.Add($b)", ScRaw "        }", ScRaw "    }", ScRaw "    return $out.ToArray()", ScRaw "}"]
+
+Section: S08 -- TCP Socket Helpers: Globals + Port Helpers
+
+  s08 : List ShellCmd = [ScComment "TCP socket helpers (for explorer server and legacy TCP plugs)", ScRaw "$script:UseCodexVm = Test-Path -PathType Leaf $script:CodexVmBin", ScRaw "$script:FallbackVmBin = $env:QEMU_BIN_WHPX", ScIf (SeNot (SeVar "script:FallbackVmBin")) [ScForEach "p" (SeArrayLiteral [SeLit "D:\\Program Files\\qemu\\qemu-system-x86_64.exe", SeLit "C:\\Program Files\\qemu\\qemu-system-x86_64.exe"]) [ScIf (SeRaw "Test-Path -PathType Leaf $p") [ScRaw "$script:FallbackVmBin = $p; break"] []]] [], ScRaw "$script:FallbackAccelFlags = @('-accel', 'whpx')", ScRaw "$script:AgentSlot = switch -Wildcard ((Split-Path -Leaf (Get-Location).Path)) { '*-nib' { 1 }; default { 0 } }", ScRaw "$script:PerSlot = 3700", ScBlank, ScRaw "function Get-VmPort {", ScRaw "    param([int]$Attempt = 0)", ScRaw "    $offset = ((Get-Random -Min 0 -Max 32768) + $Attempt * 991) % $script:PerSlot", ScRaw "    return 50200 + ($script:AgentSlot * $script:PerSlot + $offset) * 2", ScRaw "}", ScRaw "function Get-VmChardevData { param([int]$Port) \"socket,id=ch0,host=127.0.0.1,port=$Port,server=on,wait=on,nodelay=on\" }", ScRaw "function Get-VmChardevCtrl { param([int]$Port) \"socket,id=ch1,host=127.0.0.1,port=$Port,server=on,wait=on,nodelay=on\" }"]
+
+Section: S09 -- Connect-Vm Function
+
+  s09 : List ShellCmd = [ScRaw "function Connect-Vm {", ScRaw "    param([int]$DataPort, [int]$CtrlPort, [int]$TimeoutSec = 30)", ScRaw "    $deadline = (Get-Date).AddSeconds($TimeoutSec)", ScRaw "    while ((Get-Date) -lt $deadline) {", ScRaw "        $data = $null; $ctrl = $null", ScRaw "        try {", ScRaw "            $data = [System.Net.Sockets.TcpClient]::new()", ScRaw "            $data.Connect('127.0.0.1', $DataPort)", ScRaw "            $ctrl = [System.Net.Sockets.TcpClient]::new()", ScRaw "            $ctrl.Connect('127.0.0.1', $CtrlPort)", ScRaw "            return @{ Data = $data; Ctrl = $ctrl }", ScRaw "        } catch {", ScRaw "            if ($data) { $data.Dispose() }", ScRaw "            if ($ctrl) { $ctrl.Dispose() }", ScRaw "            Start-Sleep -Milliseconds 500", ScRaw "        }", ScRaw "    }", ScRaw "    return $null", ScRaw "}"]
+
+Section: S10 -- Read-StreamLine + Read-StreamBytes Functions
+
+  s10 : List ShellCmd = [ScRaw "function Read-StreamLine {", ScRaw "    param([System.IO.Stream]$Stream, [int]$TimeoutSec = 60)", ScRaw "    $buf = [System.Collections.Generic.List[byte]]::new()", ScRaw "    $one = New-Object byte[] 1", ScRaw "    $deadline = (Get-Date).AddSeconds($TimeoutSec)", ScRaw "    while ($true) {", ScRaw "        $remainMs = [int][math]::Max(100, ($deadline - (Get-Date)).TotalMilliseconds)", ScRaw "        if ($Stream.CanTimeout) { $Stream.ReadTimeout = $remainMs }", ScRaw "        try { $n = $Stream.Read($one, 0, 1) } catch { return $null }", ScRaw "        if ($n -le 0) { return $null }", ScRaw "        if ($one[0] -eq 10) {", ScRaw "            $bytes = $buf.ToArray()", ScRaw "            return [System.Text.Encoding]::UTF8.GetString($bytes).TrimEnd(\"`r\")", ScRaw "        }", ScRaw "        $buf.Add($one[0])", ScRaw "    }", ScRaw "}", ScBlank, ScRaw "function Read-StreamBytes {", ScRaw "    param([System.IO.Stream]$Stream, [int]$Count, [int]$TimeoutSec = 60)", ScRaw "    $buf = New-Object byte[] $Count", ScRaw "    $offset = 0", ScRaw "    $deadline = (Get-Date).AddSeconds($TimeoutSec)", ScRaw "    while ($offset -lt $Count) {", ScRaw "        $remainMs = [int][math]::Max(100, ($deadline - (Get-Date)).TotalMilliseconds)", ScRaw "        if ($Stream.CanTimeout) { $Stream.ReadTimeout = $remainMs }", ScRaw "        try { $n = $Stream.Read($buf, $offset, $Count - $offset) } catch { return $null }", ScRaw "        if ($n -le 0) { return $null }", ScRaw "        $offset += $n", ScRaw "    }", ScRaw "    return $buf", ScRaw "}"]
+
+Section: S11 -- Read-VmReady Function
+
+  s11 : List ShellCmd = [ScRaw "function Read-VmReady {", ScRaw "    param($Conn, [int]$TimeoutSec = 60)", ScRaw "    if (-not $Conn -or -not $Conn.Ctrl) { return $false }", ScRaw "    $stream = $Conn.Ctrl.GetStream()", ScRaw "    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)", ScRaw "    while ([DateTime]::UtcNow -lt $deadline) {", ScRaw "        $remaining = [int]($deadline - [DateTime]::UtcNow).TotalSeconds", ScRaw "        if ($remaining -le 0) { return $false }", ScRaw "        $line = Read-StreamLine -Stream $stream -TimeoutSec $remaining", ScRaw "        if ($line -and $line.StartsWith('READY')) { return $true }", ScRaw "        if (-not $line) { return $false }", ScRaw "    }", ScRaw "    return $false", ScRaw "}"]
+
+Section: S12 -- Stop-VmGraceful Function
+
+  s12 : List ShellCmd = [ScRaw "function Stop-VmGraceful {", ScRaw "    param([int]$ProcessId, [int]$TimeoutMs = 5000)", ScRaw "    $evtName = \"Global\\CodexVmShutdown_$ProcessId\"", ScRaw "    $evt = $null", ScRaw "    try { $evt = [System.Threading.EventWaitHandle]::OpenExisting($evtName) } catch {}", ScRaw "    if ($evt) {", ScRaw "        $evt.Set() | Out-Null", ScRaw "        $evt.Dispose()", ScRaw "        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue", ScRaw "        if ($proc -and -not $proc.HasExited) { $proc.WaitForExit($TimeoutMs) | Out-Null }", ScRaw "        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue", ScRaw "        if ($proc -and -not $proc.HasExited) {", ScRaw "            try { Stop-Process -Id $ProcessId -Force -ErrorAction Stop } catch {}", ScRaw "        }", ScRaw "    } else {", ScRaw "        try { Stop-Process -Id $ProcessId -Force -ErrorAction Stop } catch {}", ScRaw "    }", ScRaw "}"]
+
+Section: S13 -- Close-Vm Function
+
+  s13 : List ShellCmd = [ScRaw "function Close-Vm {", ScRaw "    param($Conn, $Process)", ScRaw "    if ($Conn) {", ScRaw "        if ($Conn.Data) { try { $Conn.Data.Dispose() } catch {} }", ScRaw "        if ($Conn.Ctrl) { try { $Conn.Ctrl.Dispose() } catch {} }", ScRaw "    }", ScRaw "    if ($Process -and -not $Process.HasExited) {", ScRaw "        for ($i = 0; $i -lt 50 -and -not $Process.HasExited; $i++) { Start-Sleep -Milliseconds 100 }", ScRaw "        if (-not $Process.HasExited) {", ScRaw "            Stop-VmGraceful -ProcessId $Process.Id", ScRaw "        }", ScRaw "    }", ScRaw "}"]
+
+Section: S14 -- Start-VmRun Function
+
+  s14 : List ShellCmd = [ScRaw "function Start-VmRun {", ScRaw "    param(", ScRaw "        [string]$Kernel, [int]$ConnectTimeoutSec = 30,", ScRaw "        [int]$MemMB = 3072, [int]$PCore = 1, [string[]]$ExtraArgs = @()", ScRaw "    )", ScRaw "    if ($script:UseCodexVm) { return Start-CodexVmRun @PSBoundParameters }", ScRaw "    if (-not $script:FallbackVmBin) { Write-Host \"No fallback VM\"; return $null }", ScRaw "    $stdoutFile = [System.IO.Path]::GetTempFileName()", ScRaw "    $stderrFile = [System.IO.Path]::GetTempFileName()", ScRaw "    for ($attempt = 0; $attempt -lt 4; $attempt++) {", ScRaw "        $dataPort = Get-VmPort -Attempt $attempt", ScRaw "        $ctrlPort = $dataPort + 1", ScRaw "        $args = @($script:FallbackAccelFlags) + @(", ScRaw "            '-machine', 'kernel-irqchip=off', '-kernel', $Kernel,", ScRaw "            '-chardev', (Get-VmChardevData -Port $dataPort), '-chardev', (Get-VmChardevCtrl -Port $ctrlPort),", ScRaw "            '-serial', 'chardev:ch0', '-serial', 'chardev:ch1',", ScRaw "            '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',", ScRaw "            '-netdev', 'user,id=net0', '-device', 'ne2k_isa,netdev=net0,irq=9,iobase=0x300,mac=52:54:00:12:34:56',", ScRaw "            '-display', 'none', '-no-reboot', '-m', \"$MemMB\"", ScRaw "        )", ScRaw "        if ($ExtraArgs.Count -gt 0) { $args += $ExtraArgs }", ScRaw "        $proc = Start-Process -FilePath $script:FallbackVmBin -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile", ScRaw "        Start-Sleep -Milliseconds 500", ScRaw "        if ($proc.HasExited) { continue }", ScRaw "        $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec", ScRaw "        if ($conn) { return @{ Process = $proc; Conn = $conn; StdoutFile = $stdoutFile; StderrFile = $stderrFile } }", ScRaw "        Stop-VmGraceful -ProcessId $proc.Id -TimeoutMs 3000", ScRaw "        Start-Sleep -Milliseconds 500", ScRaw "    }", ScRaw "    Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue", ScRaw "    return $null", ScRaw "}"]
+
+Section: S15 -- Start-CodexVmRun Function
+
+  s15 : List ShellCmd = [ScRaw "function Start-CodexVmRun {", ScRaw "    param(", ScRaw "        [string]$Kernel, [int]$ConnectTimeoutSec = 30,", ScRaw "        [int]$MemMB = 3072, [int]$PCore = 1, [string[]]$ExtraArgs = @()", ScRaw "    )", ScRaw "    $stdoutFile = [System.IO.Path]::GetTempFileName()", ScRaw "    $stderrFile = [System.IO.Path]::GetTempFileName()", ScRaw "    $disk = $null", ScRaw "    foreach ($ea in $ExtraArgs) { if ($ea -match 'file=([^,]+)') { $disk = $Matches[1] } }", ScRaw "    for ($attempt = 0; $attempt -lt 4; $attempt++) {", ScRaw "        $dataPort = Get-VmPort -Attempt $attempt", ScRaw "        $ctrlPort = $dataPort + 1", ScRaw "        $vmArgs = @('-kernel', $Kernel, '-data-port', \"$dataPort\", '-ctrl-port', \"$ctrlPort\", '-mem', \"$MemMB\", '-headless')", ScRaw "        if ($disk) { $vmArgs += @('-disk', $disk) }", ScRaw "        foreach ($ea in $ExtraArgs) { if ($ea -notmatch 'file=') { $vmArgs += $ea } }", ScRaw "        $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile", ScRaw "        Start-Sleep -Milliseconds 500", ScRaw "        if ($proc.HasExited) { continue }", ScRaw "        $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec", ScRaw "        if ($conn) { return @{ Process = $proc; Conn = $conn; StdoutFile = $stdoutFile; StderrFile = $stderrFile } }", ScRaw "        Stop-VmGraceful -ProcessId $proc.Id -TimeoutMs 3000", ScRaw "        Start-Sleep -Milliseconds 500", ScRaw "    }", ScRaw "    Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue", ScRaw "    return $null", ScRaw "}"]
+
+Section: Assembly
+
+  vm-config-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScSequence s05b, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12, ScBlank, ScSequence s13, ScBlank, ScSequence s14, ScBlank, ScSequence s15]
+
+  vm-config-script : ShellScript = sh-script "vm-config" "Shared VM config + helpers for the harness" vm-config-params vm-config-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell vm-config-script)
+  end
+
+Page 1

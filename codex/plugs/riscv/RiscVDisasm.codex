@@ -1,0 +1,342 @@
+Chapter: RISC-V Disassembler
+  cites Foreword chapter RiscVEncoder
+
+ Post-generation disassembler for debugging RISC-V codegen output.
+ Reads the finished code buffer after all patches are applied and
+ emits a text listing to wcet-reports. Only decodes instruction
+ forms the plug can emit.
+
+Section: Toggle
+
+  rv-disasm-enabled : Boolean = False
+
+Section: Hex Formatting
+
+  rv-dis-hex-nibble : Integer -> Text
+  rv-dis-hex-nibble (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "A" else if n == 11 then "B"
+    else if n == 12 then "C" else if n == 13 then "D" else if n == 14 then "E"
+    else "F"
+
+  rv-dis-hex-byte : Integer -> Text
+  rv-dis-hex-byte (b) =
+    rv-dis-hex-nibble (bit-and (bit-shru b 4) 15) & rv-dis-hex-nibble (bit-and b 15)
+
+  rv-dis-hex8 : Integer -> Text
+  rv-dis-hex8 (w) =
+    rv-dis-hex-byte (bit-and (bit-shru w 24) 255) & rv-dis-hex-byte (bit-and (bit-shru w 16) 255) & rv-dis-hex-byte (bit-and (bit-shru w 8) 255) & rv-dis-hex-byte (bit-and w 255)
+
+  rv-dis-hex-addr : Integer -> Text
+  rv-dis-hex-addr (a) = "0x" & rv-dis-hex8 a
+
+  rv-dis-show-signed : Integer -> Text
+  rv-dis-show-signed (v) = if v < 0 then "-" & show (0 - v) else show v
+
+Section: Register Names
+
+  rv-dis-reg-name : Integer -> Text
+  rv-dis-reg-name (r) =
+    if r == 0 then "zero"
+    else if r == 1 then "ra"
+    else if r == 2 then "sp"
+    else if r == 3 then "gp"
+    else if r == 4 then "tp"
+    else if r == 5 then "t0"
+    else if r == 6 then "t1"
+    else if r == 7 then "t2"
+    else if r == 8 then "s0"
+    else if r == 9 then "s1"
+    else if r == 10 then "a0"
+    else if r == 11 then "a1"
+    else if r == 12 then "a2"
+    else if r == 13 then "a3"
+    else if r == 14 then "a4"
+    else if r == 15 then "a5"
+    else if r == 16 then "a6"
+    else if r == 17 then "a7"
+    else if r == 18 then "s2"
+    else if r == 19 then "s3"
+    else if r == 20 then "s4"
+    else if r == 21 then "s5"
+    else if r == 22 then "s6"
+    else if r == 23 then "s7"
+    else if r == 24 then "s8"
+    else if r == 25 then "s9"
+    else if r == 26 then "s10"
+    else if r == 27 then "s11"
+    else if r == 28 then "t3"
+    else if r == 29 then "t4"
+    else if r == 30 then "t5"
+    else "t6"
+
+  rv-dis-freg-name : Integer -> Text
+  rv-dis-freg-name (r) =
+    if r == 0 then "ft0" else if r == 1 then "ft1"
+    else if r == 2 then "ft2" else if r == 3 then "ft3"
+    else if r == 4 then "ft4" else if r == 5 then "ft5"
+    else if r == 6 then "ft6" else if r == 7 then "ft7"
+    else if r == 8 then "fs0" else if r == 9 then "fs1"
+    else if r == 10 then "fa0" else if r == 11 then "fa1"
+    else if r == 12 then "fa2" else if r == 13 then "fa3"
+    else if r == 14 then "fa4" else if r == 15 then "fa5"
+    else if r == 16 then "fa6" else if r == 17 then "fa7"
+    else if r == 18 then "fs2" else if r == 19 then "fs3"
+    else if r == 20 then "fs4" else if r == 21 then "fs5"
+    else if r == 22 then "fs6" else if r == 23 then "fs7"
+    else if r == 24 then "fs8" else if r == 25 then "fs9"
+    else if r == 26 then "fs10" else if r == 27 then "fs11"
+    else if r == 28 then "ft8" else if r == 29 then "ft9"
+    else if r == 30 then "ft10" else "ft11"
+
+Section: Bit Extraction
+
+  rv-dis-rd : Integer -> Integer
+  rv-dis-rd (w) = bit-and (bit-shru w 7) #1F
+
+  rv-dis-rs1 : Integer -> Integer
+  rv-dis-rs1 (w) = bit-and (bit-shru w 15) #1F
+
+  rv-dis-rs2 : Integer -> Integer
+  rv-dis-rs2 (w) = bit-and (bit-shru w 20) #1F
+
+  rv-dis-funct3 : Integer -> Integer
+  rv-dis-funct3 (w) = bit-and (bit-shru w 12) 7
+
+  rv-dis-funct7 : Integer -> Integer
+  rv-dis-funct7 (w) = bit-shru w 25
+
+  rv-dis-sign-ext : Integer, Integer -> Integer
+  rv-dis-sign-ext (val) (bits) =
+    let sign-bit = bit-and (bit-shru val (bits - 1)) 1
+    in if sign-bit == 0 then val
+    else val - bit-shl 1 bits
+
+  rv-dis-i-imm : Integer -> Integer
+  rv-dis-i-imm (w) = rv-dis-sign-ext (bit-shru w 20) 12
+
+  rv-dis-s-imm : Integer -> Integer
+  rv-dis-s-imm (w) =
+    let lo = bit-and (bit-shru w 7) #1F
+    in let hi = bit-shru w 25
+    in rv-dis-sign-ext (bit-or lo (bit-shl hi 5)) 12
+
+  rv-dis-b-imm : Integer -> Integer
+  rv-dis-b-imm (w) =
+    let b11 = bit-and (bit-shru w 7) 1
+    in let b4-1 = bit-and (bit-shru w 8) #F
+    in let b10-5 = bit-and (bit-shru w 25) #3F
+    in let b12 = bit-shru w 31
+    in rv-dis-sign-ext (bit-or (bit-shl b4-1 1) (bit-or (bit-shl b10-5 5) (bit-or (bit-shl b11 11) (bit-shl b12 12)))) 13
+
+  rv-dis-u-imm : Integer -> Integer
+  rv-dis-u-imm (w) = rv-dis-sign-ext (bit-shru w 12) 20
+
+  rv-dis-j-imm : Integer -> Integer
+  rv-dis-j-imm (w) =
+    let b19-12 = bit-and (bit-shru w 12) #FF
+    in let b11 = bit-and (bit-shru w 20) 1
+    in let b10-1 = bit-and (bit-shru w 21) #3FF
+    in let b20 = bit-shru w 31
+    in rv-dis-sign-ext (bit-or (bit-shl b10-1 1) (bit-or (bit-shl b11 11) (bit-or (bit-shl b19-12 12) (bit-shl b20 20)))) 21
+
+Section: Instruction Decoder
+
+  rv-dis-r-type : Integer -> Text
+  rv-dis-r-type (w) =
+    let rd = rv-dis-reg-name (rv-dis-rd w)
+    in let rs1 = rv-dis-reg-name (rv-dis-rs1 w)
+    in let rs2 = rv-dis-reg-name (rv-dis-rs2 w)
+    in let f3 = rv-dis-funct3 w
+    in let f7 = rv-dis-funct7 w
+    in if f7 == 0 then
+      if f3 == 0 then "ADD     " & rd & ", " & rs1 & ", " & rs2
+      else if f3 == 1 then "SLL     " & rd & ", " & rs1 & ", " & rs2
+      else if f3 == 2 then "SLT     " & rd & ", " & rs1 & ", " & rs2
+      else if f3 == 3 then "SLTU    " & rd & ", " & rs1 & ", " & rs2
+      else if f3 == 4 then "XOR     " & rd & ", " & rs1 & ", " & rs2
+      else if f3 == 5 then "SRL     " & rd & ", " & rs1 & ", " & rs2
+      else if f3 == 6 then "OR      " & rd & ", " & rs1 & ", " & rs2
+      else "AND     " & rd & ", " & rs1 & ", " & rs2
+    else if f7 == 32 then
+      if f3 == 0 then "SUB     " & rd & ", " & rs1 & ", " & rs2
+      else "SRA     " & rd & ", " & rs1 & ", " & rs2
+    else if f7 == 1 then
+      if f3 == 0 then "MUL     " & rd & ", " & rs1 & ", " & rs2
+      else if f3 == 4 then "DIV     " & rd & ", " & rs1 & ", " & rs2
+      else if f3 == 5 then "DIVU    " & rd & ", " & rs1 & ", " & rs2
+      else if f3 == 6 then "REM     " & rd & ", " & rs1 & ", " & rs2
+      else "REMU    " & rd & ", " & rs1 & ", " & rs2
+    else "OP?     " & rd & ", " & rs1 & ", " & rs2
+
+  rv-dis-i-type : Integer -> Text
+  rv-dis-i-type (w) =
+    let rd = rv-dis-rd w
+    in let rs1 = rv-dis-rs1 w
+    in let imm = rv-dis-i-imm w
+    in let f3 = rv-dis-funct3 w
+    in if rd == 0 & rs1 == 0 & imm == 0 then "NOP"
+    else if f3 == 0 & imm == 0 then "MV      " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1
+    else if f3 == 0 then "ADDI    " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1 & ", " & rv-dis-show-signed imm
+    else if f3 == 1 then
+      let shamt = bit-and imm 63
+      in "SLLI    " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1 & ", " & show shamt
+    else if f3 == 2 then "SLTI    " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1 & ", " & rv-dis-show-signed imm
+    else if f3 == 3 then "SLTIU   " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1 & ", " & show imm
+    else if f3 == 4 then "XORI    " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1 & ", " & rv-dis-show-signed imm
+    else if f3 == 5 then
+      let f7 = rv-dis-funct7 w
+      in let shamt = bit-and imm 63
+      in if bit-and f7 32 == 32 then "SRAI    " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1 & ", " & show shamt
+      else "SRLI    " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1 & ", " & show shamt
+    else if f3 == 6 then "ORI     " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1 & ", " & rv-dis-show-signed imm
+    else "ANDI    " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1 & ", " & rv-dis-show-signed imm
+
+  rv-dis-load : Integer -> Text
+  rv-dis-load (w) =
+    let rd = rv-dis-reg-name (rv-dis-rd w)
+    in let rs1 = rv-dis-reg-name (rv-dis-rs1 w)
+    in let imm = rv-dis-i-imm w
+    in let f3 = rv-dis-funct3 w
+    in if f3 == 0 then "LB      " & rd & ", " & rv-dis-show-signed imm & "(" & rs1 & ")"
+    else if f3 == 2 then "LW      " & rd & ", " & rv-dis-show-signed imm & "(" & rs1 & ")"
+    else if f3 == 3 then "LD      " & rd & ", " & rv-dis-show-signed imm & "(" & rs1 & ")"
+    else "L?      " & rd & ", " & rv-dis-show-signed imm & "(" & rs1 & ")"
+
+  rv-dis-store : Integer -> Text
+  rv-dis-store (w) =
+    let rs2 = rv-dis-reg-name (rv-dis-rs2 w)
+    in let rs1 = rv-dis-reg-name (rv-dis-rs1 w)
+    in let imm = rv-dis-s-imm w
+    in let f3 = rv-dis-funct3 w
+    in if f3 == 0 then "SB      " & rs2 & ", " & rv-dis-show-signed imm & "(" & rs1 & ")"
+    else if f3 == 2 then "SW      " & rs2 & ", " & rv-dis-show-signed imm & "(" & rs1 & ")"
+    else if f3 == 3 then "SD      " & rs2 & ", " & rv-dis-show-signed imm & "(" & rs1 & ")"
+    else "S?      " & rs2 & ", " & rv-dis-show-signed imm & "(" & rs1 & ")"
+
+  rv-dis-branch : Integer, Integer -> Text
+  rv-dis-branch (w) (pc) =
+    let rs1 = rv-dis-reg-name (rv-dis-rs1 w)
+    in let rs2 = rv-dis-reg-name (rv-dis-rs2 w)
+    in let imm = rv-dis-b-imm w
+    in let target = pc + imm
+    in let f3 = rv-dis-funct3 w
+    in if f3 == 0 then "BEQ     " & rs1 & ", " & rs2 & ", " & rv-dis-hex-addr target
+    else if f3 == 1 then "BNE     " & rs1 & ", " & rs2 & ", " & rv-dis-hex-addr target
+    else if f3 == 4 then "BLT     " & rs1 & ", " & rs2 & ", " & rv-dis-hex-addr target
+    else if f3 == 5 then "BGE     " & rs1 & ", " & rs2 & ", " & rv-dis-hex-addr target
+    else if f3 == 6 then "BLTU    " & rs1 & ", " & rs2 & ", " & rv-dis-hex-addr target
+    else "BGEU    " & rs1 & ", " & rs2 & ", " & rv-dis-hex-addr target
+
+  rv-dis-jalr : Integer -> Text
+  rv-dis-jalr (w) =
+    let rd = rv-dis-rd w
+    in let rs1 = rv-dis-rs1 w
+    in let imm = rv-dis-i-imm w
+    in if rd == 0 & rs1 == 1 & imm == 0 then "RET"
+    else "JALR    " & rv-dis-reg-name rd & ", " & rv-dis-reg-name rs1 & ", " & rv-dis-show-signed imm
+
+  rv-dis-jal : Integer, Integer -> Text
+  rv-dis-jal (w) (pc) =
+    let rd = rv-dis-rd w
+    in let imm = rv-dis-j-imm w
+    in let target = pc + imm
+    in if rd == 0 then "J       " & rv-dis-hex-addr target
+    else "JAL     " & rv-dis-reg-name rd & ", " & rv-dis-hex-addr target
+
+  rv-dis-fp : Integer -> Text
+  rv-dis-fp (w) =
+    let f7 = rv-dis-funct7 w
+    in let rd = rv-dis-rd w
+    in let rs1 = rv-dis-rs1 w
+    in let rs2 = rv-dis-rs2 w
+    in if f7 == 1 then "FADD.D  " & rv-dis-freg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+    else if f7 == 5 then "FSUB.D  " & rv-dis-freg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+    else if f7 == 9 then "FMUL.D  " & rv-dis-freg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+    else if f7 == 13 then "FDIV.D  " & rv-dis-freg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+    else if f7 == 81 then
+      let f3 = rv-dis-funct3 w
+      in if f3 == 2 then "FEQ.D   " & rv-dis-reg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+      else if f3 == 1 then "FLT.D   " & rv-dis-reg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+      else "FLE.D   " & rv-dis-reg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+    else if f7 == 105 then "FCVT.D.L " & rv-dis-freg-name rd & ", " & rv-dis-reg-name rs1
+    else if f7 == 97 then "FCVT.L.D " & rv-dis-reg-name rd & ", " & rv-dis-freg-name rs1
+    else if f7 == 113 then "FMV.X.D " & rv-dis-reg-name rd & ", " & rv-dis-freg-name rs1
+    else if f7 == 121 then "FMV.D.X " & rv-dis-freg-name rd & ", " & rv-dis-reg-name rs1
+    else if f7 == 0 then "FADD.S  " & rv-dis-freg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+    else if f7 == 4 then "FSUB.S  " & rv-dis-freg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+    else if f7 == 8 then "FMUL.S  " & rv-dis-freg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+    else if f7 == 12 then "FDIV.S  " & rv-dis-freg-name rd & ", " & rv-dis-freg-name rs1 & ", " & rv-dis-freg-name rs2
+    else if f7 == 104 then "FCVT.S.L " & rv-dis-freg-name rd & ", " & rv-dis-reg-name rs1
+    else if f7 == 96 then "FCVT.L.S " & rv-dis-reg-name rd & ", " & rv-dis-freg-name rs1
+    else if f7 == 33 then "FCVT.D.S " & rv-dis-freg-name rd & ", " & rv-dis-freg-name rs1
+    else if f7 == 32 then "FCVT.S.D " & rv-dis-freg-name rd & ", " & rv-dis-freg-name rs1
+    else "FP?     f7=" & show f7
+
+  rv-dis-amo : Integer -> Text
+  rv-dis-amo (w) =
+    let rd = rv-dis-reg-name (rv-dis-rd w)
+    in let rs1 = rv-dis-reg-name (rv-dis-rs1 w)
+    in let rs2 = rv-dis-reg-name (rv-dis-rs2 w)
+    in let f5 = bit-shru w 27
+    in if f5 == 2 then "LR.D    " & rd & ", (" & rs1 & ")"
+    else if f5 == 3 then "SC.D    " & rd & ", " & rs2 & ", (" & rs1 & ")"
+    else "AMO?    f5=" & show f5
+
+  rv-dis-insn : Integer, Integer -> Text
+  rv-dis-insn (w) (pc) =
+    let opcode = bit-and w #7F
+    in if w == #0FF0000F then "FENCE"
+    else if opcode == #33 then rv-dis-r-type w
+    else if opcode == #13 then rv-dis-i-type w
+    else if opcode == #03 then rv-dis-load w
+    else if opcode == #23 then rv-dis-store w
+    else if opcode == #63 then rv-dis-branch w pc
+    else if opcode == #37 then "LUI     " & rv-dis-reg-name (rv-dis-rd w) & ", " & show (rv-dis-u-imm w)
+    else if opcode == #17 then "AUIPC   " & rv-dis-reg-name (rv-dis-rd w) & ", " & show (rv-dis-u-imm w)
+    else if opcode == #6F then rv-dis-jal w pc
+    else if opcode == #67 then rv-dis-jalr w
+    else if opcode == #53 then rv-dis-fp w
+    else if opcode == #2F then rv-dis-amo w
+    else "UNKNOWN " & rv-dis-hex8 w
+
+Section: Function Label Lookup
+
+  rv-dis-find-func : List Integer, List Text, Integer, Integer -> Text
+  rv-dis-find-func (offsets) (names) (insn-idx) (i) =
+    if i >= list-length offsets then ""
+    else if list-at offsets i == insn-idx then list-at names i
+    else rv-dis-find-func offsets names insn-idx (i + 1)
+
+Section: Main Driver
+
+  rv-dis-read-word : List Integer, Integer -> Integer
+  rv-dis-read-word (code) (byte-off) =
+    let b0 = list-at code byte-off
+    in let b1 = list-at code (byte-off + 1)
+    in let b2 = list-at code (byte-off + 2)
+    in let b3 = list-at code (byte-off + 3)
+    in bit-or b0 (bit-or (bit-shl b1 8) (bit-or (bit-shl b2 16) (bit-shl b3 24)))
+
+  rv-dis-loop : List Integer, List Integer, List Text, Integer, Integer, Integer, List Text -> List Text
+  rv-dis-loop (code) (offsets) (names) (byte-off) (code-len) (load-base) (acc) =
+    if byte-off >= code-len then acc
+    else let insn-idx = byte-off / 4
+    in let func-label = rv-dis-find-func offsets names insn-idx 0
+    in let acc1 = if func-label == "" then acc
+      else list-push acc ("; --- " & func-label & " ---")
+    in let w = rv-dis-read-word code byte-off
+    in let pc = load-base + byte-off
+    in let line = rv-dis-hex-addr pc & "  " & rv-dis-hex8 w & "  " & rv-dis-insn w pc
+    in rv-dis-loop code offsets names (byte-off + 4) code-len load-base (list-push acc1 line)
+
+  rv-disasm-listing : RvState -> RvState
+  rv-disasm-listing (st) =
+    let load-base = #80000000
+    in let code-len = list-length (st.code)
+    in let lines = rv-dis-loop (st.code) (st.func-offsets) (st.func-names) 0 code-len load-base []
+    in __record-set st "wcet-reports" ((st.wcet-reports) & lines)
+
+Page 1

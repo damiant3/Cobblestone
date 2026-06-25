@@ -1,0 +1,240 @@
+Chapter: GlobalSearch
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Unified search across apps, files, settings, and commands.
+ Opens as a centered overlay via keyboard shortcut. Results are
+ categorized and ranked by relevance (exact prefix > substring).
+ Providers register search handlers for their domain.
+
+Section: Result Category
+
+  SearchCategory =
+    | ScApps
+    | ScFiles
+    | ScSettings
+    | ScCommands
+
+  search-category-label : SearchCategory -> Text
+  search-category-label (c) = when c
+    is ScApps -> "Apps"
+    is ScFiles -> "Files"
+    is ScSettings -> "Settings"
+    is ScCommands -> "Commands"
+
+  search-category-icon : SearchCategory -> Text
+  search-category-icon (c) = when c
+    is ScApps -> "grid"
+    is ScFiles -> "folder"
+    is ScSettings -> "gear"
+    is ScCommands -> "terminal"
+
+Section: Search Result
+
+  SearchResult = record {
+    sr-id : Text,
+    sr-title : Text,
+    sr-subtitle : Text,
+    sr-icon : Text,
+    sr-category : SearchCategory,
+    sr-action : Text,
+    sr-score : Integer
+  }
+
+  search-result : Text, Text, Text, Text, SearchCategory, Text -> SearchResult
+  search-result (id) (title) (subtitle) (icon) (cat) (action) = SearchResult {
+    sr-id = id, sr-title = title, sr-subtitle = subtitle, sr-icon = icon,
+    sr-category = cat, sr-action = action, sr-score = 0
+  }
+
+Section: Search Provider
+
+  SearchProvider = record {
+    sprov-id : Text,
+    sprov-name : Text,
+    sprov-category : SearchCategory,
+    sprov-entries : List SearchResult,
+    sprov-entry-count : Integer
+  }
+
+  search-provider-new : Text, Text, SearchCategory -> SearchProvider
+  search-provider-new (id) (name) (cat) = SearchProvider {
+    sprov-id = id, sprov-name = name, sprov-category = cat,
+    sprov-entries = [], sprov-entry-count = 0
+  }
+
+  sprov-add-entry : SearchProvider, SearchResult -> SearchProvider
+  sprov-add-entry (prov) (entry) =
+    __record-set (__record-set prov "sprov-entries" (list-push (prov.sprov-entries) entry)) "sprov-entry-count" (prov.sprov-entry-count + 1)
+
+Section: State
+
+  GlobalSearchState = record {
+    gs-open : Boolean,
+    gs-query : Text,
+    gs-providers : List SearchProvider,
+    gs-provider-count : Integer,
+    gs-results : List SearchResult,
+    gs-result-count : Integer,
+    gs-selected : Integer,
+    gs-history : List Text,
+    gs-history-count : Integer,
+    gs-max-results : Integer
+  }
+
+  global-search-new : GlobalSearchState
+  global-search-new = GlobalSearchState {
+    gs-open = False,
+    gs-query = "",
+    gs-providers = [],
+    gs-provider-count = 0,
+    gs-results = [],
+    gs-result-count = 0,
+    gs-selected = 0,
+    gs-history = [],
+    gs-history-count = 0,
+    gs-max-results = 20
+  }
+
+Section: Provider Management
+
+  gs-register-provider : GlobalSearchState, SearchProvider -> GlobalSearchState
+  gs-register-provider (st) (prov) =
+    __record-set (__record-set st "gs-providers" (list-push (st.gs-providers) prov)) "gs-provider-count" (st.gs-provider-count + 1)
+
+Section: Search
+
+  gs-toggle : GlobalSearchState -> GlobalSearchState
+  gs-toggle (st) =
+    if st.gs-open then gs-close st
+    else __record-set (__record-set st "gs-open" True) "gs-query" ""
+
+  gs-close : GlobalSearchState -> GlobalSearchState
+  gs-close (st) = __record-set (__record-set (__record-set st "gs-open" False) "gs-query" "") "gs-selected" 0
+
+  gs-set-query : GlobalSearchState, Text -> GlobalSearchState
+  gs-set-query (st) (query) =
+    let results = if text-length query == 0 then [] else gs-search-all st query
+    in __record-set (__record-set (__record-set (__record-set st "gs-query" query) "gs-results" results) "gs-result-count" (list-length results)) "gs-selected" 0
+
+  gs-search-all : GlobalSearchState, Text -> List SearchResult
+  gs-search-all (st) (query) =
+    gs-search-providers (st.gs-providers) query 0 (st.gs-provider-count) [] (st.gs-max-results)
+
+  gs-search-providers : List SearchProvider, Text, Integer, Integer, List SearchResult, Integer -> List SearchResult
+  gs-search-providers (provs) (query) (i) (n) (acc) (max-results) =
+    if i >= n then acc
+    else if list-length acc >= max-results then acc
+    else let prov = list-at provs i
+    in let matches = gs-search-provider prov query (max-results - list-length acc)
+    in gs-search-providers provs query (i + 1) n (acc & matches) max-results
+
+  gs-search-provider : SearchProvider, Text, Integer -> List SearchResult
+  gs-search-provider (prov) (query) (max-count) =
+    gs-match-entries (prov.sprov-entries) query 0 (prov.sprov-entry-count) [] max-count
+
+  gs-match-entries : List SearchResult, Text, Integer, Integer, List SearchResult, Integer -> List SearchResult
+  gs-match-entries (entries) (query) (i) (n) (acc) (max-count) =
+    if i >= n then acc
+    else if list-length acc >= max-count then acc
+    else let entry = list-at entries i
+    in if gs-matches entry query then
+      let scored = gs-score-result entry query
+      in gs-match-entries entries query (i + 1) n (list-push acc scored) max-count
+    else gs-match-entries entries query (i + 1) n acc max-count
+
+  gs-matches : SearchResult, Text -> Boolean
+  gs-matches (result) (query) =
+    if text-contains (result.sr-title) query then True
+    else text-contains (result.sr-subtitle) query
+
+  gs-score-result : SearchResult, Text -> SearchResult
+  gs-score-result (result) (query) =
+    let score = if text-starts-with (result.sr-title) query then 100
+      else if text-contains (result.sr-title) query then 50
+      else 10
+    in __record-set result "sr-score" score
+
+Section: Navigation
+
+  gs-nav-up : GlobalSearchState -> GlobalSearchState
+  gs-nav-up (st) =
+    let sel = st.gs-selected - 1
+    in __record-set st "gs-selected" (if sel < 0 then 0 else sel)
+
+  gs-nav-down : GlobalSearchState -> GlobalSearchState
+  gs-nav-down (st) =
+    let sel = st.gs-selected + 1
+    in __record-set st "gs-selected" (if sel >= st.gs-result-count then st.gs-result-count - 1 else sel)
+
+  gs-confirm : GlobalSearchState -> GlobalSearchState
+  gs-confirm (st) =
+    if st.gs-selected >= 0 then
+      if st.gs-selected < st.gs-result-count then
+        let result = list-at (st.gs-results) (st.gs-selected)
+        in let history = gs-add-history (st.gs-history) (st.gs-query) (st.gs-history-count) 20
+        in gs-close (__record-set (__record-set st "gs-history" history) "gs-history-count" (list-length history))
+      else gs-close st
+    else gs-close st
+
+  gs-add-history : List Text, Text, Integer, Integer -> List Text
+  gs-add-history (hist) (query) (count) (max-count) =
+    if text-length query == 0 then hist
+    else let added = list-push hist query
+    in if count >= max-count then gs-trim-list added (count + 1) max-count 0 []
+    else added
+
+  gs-trim-list : List Text, Integer, Integer, Integer, List Text -> List Text
+  gs-trim-list (items) (count) (max-count) (i) (acc) =
+    let drop-n = count - max-count
+    in if i >= count then acc
+    else if i < drop-n then gs-trim-list items count max-count (i + 1) acc
+    else gs-trim-list items count max-count (i + 1) (list-push acc (list-at items i))
+
+Section: Keyboard
+
+  gs-handle-key : GlobalSearchState, Integer -> GlobalSearchState
+  gs-handle-key (st) (key) =
+    if key == 27 then gs-close st
+    else if key == 38 then gs-nav-up st
+    else if key == 40 then gs-nav-down st
+    else if key == 13 then gs-confirm st
+    else st
+
+Section: Widget Building
+
+  gs-widget : GlobalSearchState -> WidgetNode
+  gs-widget (st) =
+    if st.gs-open then gs-open-widget st
+    else widget-label "gs-hidden" ""
+
+  gs-open-widget : GlobalSearchState -> WidgetNode
+  gs-open-widget (st) =
+    let search-input = widget-input "gs-input" (st.gs-query) (text-length (st.gs-query))
+    in let results = gs-result-widgets st 0 (st.gs-result-count) []
+    in let result-panel = widget-panel "gs-results" DirColumn 1 results
+    in widget-panel "global-search" DirColumn 4 [search-input, result-panel]
+
+  gs-result-widgets : GlobalSearchState, Integer, Integer, List WidgetNode -> List WidgetNode
+  gs-result-widgets (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let result = list-at (st.gs-results) i
+    in let icon = widget-label ("gs-r-icon-" & show i) (result.sr-icon)
+    in let cat = widget-label ("gs-r-cat-" & show i) (search-category-label (result.sr-category))
+    in let title = widget-label ("gs-r-title-" & show i) (result.sr-title)
+    in let subtitle = widget-label ("gs-r-sub-" & show i) (result.sr-subtitle)
+    in let row = widget-panel ("gs-r-" & show i) DirRow 4 [icon, title, subtitle, cat]
+    in let styled = if i == st.gs-selected then widget-set-state row state-focused else row
+    in gs-result-widgets st (i + 1) n (list-push acc styled)
+
+Section: Formatting
+
+  format-global-search : GlobalSearchState -> Text
+  format-global-search (st) =
+    (if st.gs-open then "OPEN" else "closed")
+    & " query=\"" & st.gs-query & "\""
+    & " results=" & show (st.gs-result-count)
+    & " providers=" & show (st.gs-provider-count)
+
+Page 1

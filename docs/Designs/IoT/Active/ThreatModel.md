@@ -643,6 +643,22 @@ comparison functions must be clearly marked, and the compliance
 evidence should note that application-level timing safety is the
 developer's responsibility.
 
+**Research lead (IRISA, 2026-06-23):** The EPICURE team (IRISA D4)
+has built static analysis tools that prove constant-time execution
+survives compilation — they verify that CompCert-style codegen
+preserves information flow properties to machine code. Their work
+on RIOT OS (an IoT kernel) directly parallels our bare-metal
+kernel. Applying their approach to our emitter could close R8 by
+construction: the compiler would reject or flag user code whose
+emitted x86-64 contains data-dependent branches on secret-typed
+values. See `docs/Reference/IRISA_Research_Harvest.md` item 3.
+
+The GnuZero tool (SPICY team, IRISA D1, DSN'25 Best Paper) detects
+when compilers optimize away security-critical memory clearing. Since
+we own the emitter, we can make zeroization a semantic guarantee
+immune to dead-store elimination — a `secure-erase` annotation or
+effect that the emitter enforces unconditionally.
+
 ---
 
 ## Cross-Reference: Defense Mechanism by Design Document
@@ -672,7 +688,7 @@ address and that the compliance evidence must classify honestly:
 | R5 | Proof-of-work difficulty not dynamically adjustable | SL 2+ | DoS resilience limited under sustained attack; trust-layer enhancement |
 | R6 | No hardware ID binding by default | SL 2+ | Per-SoC; DEPLOYMENT classification; ESP32-C6 eFuse MAC available |
 | R7 | Debug interfaces (JTAG/SWD) are a board-level concern | SL 3+ | Board chapters document lockdown; compliance evidence prints per-board checklist |
-| R8 | No constant-time enforcement for user code | all | API design + documentation; `ct-compare` builtin in foreword |
+| R8 | No constant-time enforcement for user code | all | API design + documentation; `ct-compare` builtin in foreword; EPICURE-style verified compilation (see 5.2 research lead) |
 | R9 | Cold boot / SRAM remanence | SL 3+ | Zeroization on timeout; hardware tamper detection is DEPLOYMENT |
 | R10 | Cleartext CoAP/MQTT in bring-up mode | SL 2+ | Gated out of compliance-evidence builds; TLS/DTLS mandatory for production |
 

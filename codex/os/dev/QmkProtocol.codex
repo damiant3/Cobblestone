@@ -1,0 +1,223 @@
+Chapter: QmkProtocol
+  cites Kernel chapter UsbHid
+
+ VIA/QMK raw HID command protocol for hobby mechanical keyboards.
+ Builds 32-byte command packets for the raw HID interface (usage
+ page 0xFF60). Supports RGB lighting control, keymap queries, and
+ firmware info. Compatible with VIA v9+ and VIAL firmware.
+
+Section: Command IDs
+
+  via-cmd-get-protocol : Integer = 1
+  via-cmd-get-keyboard-value : Integer = 2
+  via-cmd-set-keyboard-value : Integer = 3
+  via-cmd-get-keymap : Integer = 4
+  via-cmd-set-keymap : Integer = 5
+  via-cmd-get-encoder : Integer = 6
+  via-cmd-set-encoder : Integer = 7
+  via-cmd-lighting-get : Integer = 8
+  via-cmd-lighting-set : Integer = 9
+
+Section: Keyboard Value Sub-commands
+
+  via-kb-uptime : Integer = 1
+  via-kb-layout : Integer = 2
+  via-kb-switch-matrix : Integer = 3
+
+Section: Lighting Sub-commands (VIA v9 QMK RGB)
+
+  via-rgb-get-info : Integer = 64
+  via-rgb-get-mode : Integer = 65
+  via-rgb-get-hsv : Integer = 66
+  via-rgb-get-speed : Integer = 67
+  via-rgb-set-mode : Integer = 68
+  via-rgb-set-hsv : Integer = 69
+  via-rgb-set-speed : Integer = 70
+  via-rgb-set-brightness : Integer = 71
+  via-rgb-save : Integer = 72
+
+Section: RGB Modes (QMK standard)
+
+  RgbMode =
+    | RgbOff
+    | RgbSolid
+    | RgbBreathing
+    | RgbCycleAll
+    | RgbCycleLeftRight
+    | RgbCycleUpDown
+    | RgbRainbowChevron
+    | RgbRainbowPinwheel
+    | RgbJellybean
+    | RgbTypingHeatmap
+    | RgbDigitalRain
+    | RgbSolidReactive
+    | RgbSplash
+    | RgbCustom (Integer)
+
+  rgb-mode-to-id : RgbMode -> Integer
+  rgb-mode-to-id (mode) = when mode
+    is RgbOff -> 0
+    is RgbSolid -> 1
+    is RgbBreathing -> 2
+    is RgbCycleAll -> 3
+    is RgbCycleLeftRight -> 4
+    is RgbCycleUpDown -> 5
+    is RgbRainbowChevron -> 6
+    is RgbRainbowPinwheel -> 7
+    is RgbJellybean -> 8
+    is RgbTypingHeatmap -> 9
+    is RgbDigitalRain -> 10
+    is RgbSolidReactive -> 11
+    is RgbSplash -> 12
+    is RgbCustom (n) -> n
+
+  rgb-mode-from-id : Integer -> RgbMode
+  rgb-mode-from-id (id) =
+    if id == 0 then RgbOff
+    else if id == 1 then RgbSolid
+    else if id == 2 then RgbBreathing
+    else if id == 3 then RgbCycleAll
+    else if id == 4 then RgbCycleLeftRight
+    else if id == 5 then RgbCycleUpDown
+    else if id == 6 then RgbRainbowChevron
+    else if id == 7 then RgbRainbowPinwheel
+    else if id == 8 then RgbJellybean
+    else if id == 9 then RgbTypingHeatmap
+    else if id == 10 then RgbDigitalRain
+    else if id == 11 then RgbSolidReactive
+    else if id == 12 then RgbSplash
+    else RgbCustom id
+
+  rgb-mode-label : RgbMode -> Text
+  rgb-mode-label (mode) = when mode
+    is RgbOff -> "Off"
+    is RgbSolid -> "Solid Color"
+    is RgbBreathing -> "Breathing"
+    is RgbCycleAll -> "Cycle All"
+    is RgbCycleLeftRight -> "Cycle Left/Right"
+    is RgbCycleUpDown -> "Cycle Up/Down"
+    is RgbRainbowChevron -> "Rainbow Chevron"
+    is RgbRainbowPinwheel -> "Rainbow Pinwheel"
+    is RgbJellybean -> "Jellybean Raindrops"
+    is RgbTypingHeatmap -> "Typing Heatmap"
+    is RgbDigitalRain -> "Digital Rain"
+    is RgbSolidReactive -> "Solid Reactive"
+    is RgbSplash -> "Splash"
+    is RgbCustom (n) -> "Custom " & show n
+
+Section: RGB State
+
+  QmkRgbState = record {
+    qr-mode : RgbMode,
+    qr-hue : Integer between 0 and 360,
+    qr-saturation : Integer between 0 and 255,
+    qr-brightness : Integer between 0 and 255,
+    qr-speed : Integer between 0 and 255,
+    qr-enabled : Boolean
+  }
+
+  qmk-rgb-default : QmkRgbState
+  qmk-rgb-default = QmkRgbState {
+    qr-mode = RgbCycleAll,
+    qr-hue = 0,
+    qr-saturation = 255,
+    qr-brightness = 200,
+    qr-speed = 128,
+    qr-enabled = True
+  }
+
+Section: Command Building
+
+  via-build-cmd : Integer, List Integer -> List Integer
+  via-build-cmd (cmd-id) (args) =
+    hid-raw-report 32 ([cmd-id] & args)
+
+  via-cmd-protocol-version : List Integer
+  via-cmd-protocol-version = via-build-cmd via-cmd-get-protocol []
+
+  via-cmd-rgb-get-mode : List Integer
+  via-cmd-rgb-get-mode = via-build-cmd via-cmd-lighting-get [via-rgb-get-mode]
+
+  via-cmd-rgb-get-hsv : List Integer
+  via-cmd-rgb-get-hsv = via-build-cmd via-cmd-lighting-get [via-rgb-get-hsv]
+
+  via-cmd-rgb-get-speed : List Integer
+  via-cmd-rgb-get-speed = via-build-cmd via-cmd-lighting-get [via-rgb-get-speed]
+
+  via-cmd-rgb-set-mode : RgbMode -> List Integer
+  via-cmd-rgb-set-mode (mode) =
+    via-build-cmd via-cmd-lighting-set [via-rgb-set-mode, rgb-mode-to-id mode]
+
+  via-cmd-rgb-set-hsv : Integer, Integer, Integer -> List Integer
+  via-cmd-rgb-set-hsv (h) (s) (v) =
+    via-build-cmd via-cmd-lighting-set [via-rgb-set-hsv, bit-and h 255, bit-shru h 8, s, v]
+
+  via-cmd-rgb-set-speed : Integer -> List Integer
+  via-cmd-rgb-set-speed (speed) =
+    via-build-cmd via-cmd-lighting-set [via-rgb-set-speed, speed]
+
+  via-cmd-rgb-set-brightness : Integer -> List Integer
+  via-cmd-rgb-set-brightness (brightness) =
+    via-build-cmd via-cmd-lighting-set [via-rgb-set-brightness, brightness]
+
+  via-cmd-rgb-save : List Integer
+  via-cmd-rgb-save = via-build-cmd via-cmd-lighting-set [via-rgb-save]
+
+Section: Response Parsing
+
+  via-parse-protocol-version : List Integer -> Integer
+  via-parse-protocol-version (resp) =
+    if list-length resp < 3 then 0
+    else usb-le16 resp 1
+
+  via-parse-rgb-mode : List Integer -> RgbMode
+  via-parse-rgb-mode (resp) =
+    if list-length resp < 3 then RgbOff
+    else rgb-mode-from-id (list-at resp 2)
+
+  via-parse-rgb-hsv : List Integer -> QmkRgbState
+  via-parse-rgb-hsv (resp) =
+    if list-length resp < 6 then qmk-rgb-default
+    else let h = bit-or (list-at resp 2) (bit-shl (list-at resp 3) 8)
+    in let s = list-at resp 4
+    in let v = list-at resp 5
+    in QmkRgbState {
+      qr-mode = RgbSolid,
+      qr-hue = h, qr-saturation = s, qr-brightness = v,
+      qr-speed = 128, qr-enabled = True
+    }
+
+  via-parse-rgb-speed : List Integer -> Integer
+  via-parse-rgb-speed (resp) =
+    if list-length resp < 3 then 128
+    else list-at resp 2
+
+Section: Firmware Info
+
+  QmkFirmwareInfo = record {
+    qf-protocol-version : Integer,
+    qf-vendor : Integer,
+    qf-product : Integer,
+    qf-rgb-supported : Boolean
+  }
+
+  qmk-firmware-info : Integer, Integer, Integer -> QmkFirmwareInfo
+  qmk-firmware-info (version) (vendor) (product) = QmkFirmwareInfo {
+    qf-protocol-version = version,
+    qf-vendor = vendor,
+    qf-product = product,
+    qf-rgb-supported = version >= 9
+  }
+
+Section: Formatting
+
+  format-rgb-state : QmkRgbState -> Text
+  format-rgb-state (st) =
+    rgb-mode-label (st.qr-mode) & " H=" & show (st.qr-hue) & " S=" & show (st.qr-saturation) & " V=" & show (st.qr-brightness) & " speed=" & show (st.qr-speed)
+
+  format-firmware-info : QmkFirmwareInfo -> Text
+  format-firmware-info (info) =
+    "VIA v" & show (info.qf-protocol-version) & " " & show (info.qf-vendor) & ":" & show (info.qf-product)
+    & " rgb=" & if info.qf-rgb-supported then "yes" else "no"
+
+Page 1

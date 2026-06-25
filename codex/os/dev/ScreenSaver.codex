@@ -1,0 +1,296 @@
+Chapter: ScreenSaver
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Screen saver manager. Tracks idle time from input events and
+ activates a chosen screen saver after a configurable delay.
+ Supports multiple saver programs (FishTank, Matrix rain, starfield,
+ blank, etc.), preview mode, lock-on-wake, and password-required
+ resume. The saver itself is a named program ID -- the OS launches
+ it as a full-screen overlay when idle timeout fires.
+
+Section: Saver Programs
+
+  SaverProgram = record {
+    sp-id : Text,
+    sp-name : Text,
+    sp-description : Text,
+    sp-has-preview : Boolean,
+    sp-has-settings : Boolean
+  }
+
+  saver-program : Text, Text, Text -> SaverProgram
+  saver-program (id) (name) (desc) = SaverProgram {
+    sp-id = id, sp-name = name, sp-description = desc,
+    sp-has-preview = True, sp-has-settings = False
+  }
+
+Section: Built-in Savers
+
+  saver-fishtank : SaverProgram
+  saver-fishtank = SaverProgram {
+    sp-id = "fishtank", sp-name = "Fish Tank",
+    sp-description = "Animated aquarium with tropical fish, bubbles, and plants",
+    sp-has-preview = True, sp-has-settings = True
+  }
+
+  saver-matrix : SaverProgram
+  saver-matrix = SaverProgram {
+    sp-id = "matrix", sp-name = "Digital Rain",
+    sp-description = "Cascading green characters inspired by the Matrix",
+    sp-has-preview = True, sp-has-settings = True
+  }
+
+  saver-starfield : SaverProgram
+  saver-starfield = SaverProgram {
+    sp-id = "starfield", sp-name = "Starfield",
+    sp-description = "Flying through a 3D star field at warp speed",
+    sp-has-preview = True, sp-has-settings = True
+  }
+
+  saver-blank : SaverProgram
+  saver-blank = SaverProgram {
+    sp-id = "blank", sp-name = "Blank Screen",
+    sp-description = "Turns the display black to save energy",
+    sp-has-preview = False, sp-has-settings = False
+  }
+
+  saver-lolcat : SaverProgram
+  saver-lolcat = SaverProgram {
+    sp-id = "lolcat", sp-name = "Rainbow Flow",
+    sp-description = "Flowing rainbow colors across the screen using the lolcat palette",
+    sp-has-preview = True, sp-has-settings = True
+  }
+
+  saver-clock : SaverProgram
+  saver-clock = SaverProgram {
+    sp-id = "clock", sp-name = "Bouncing Clock",
+    sp-description = "Large digital clock that drifts across the screen",
+    sp-has-preview = True, sp-has-settings = False
+  }
+
+  saver-pipes : SaverProgram
+  saver-pipes = SaverProgram {
+    sp-id = "pipes", sp-name = "Pipes",
+    sp-description = "3D pipes growing across the screen in random directions",
+    sp-has-preview = True, sp-has-settings = True
+  }
+
+  saver-fireflies : SaverProgram
+  saver-fireflies = SaverProgram {
+    sp-id = "fireflies", sp-name = "Fireflies",
+    sp-description = "Glowing particles drifting through darkness",
+    sp-has-preview = True, sp-has-settings = True
+  }
+
+  saver-list-builtin : List SaverProgram
+  saver-list-builtin = [saver-fishtank, saver-matrix, saver-starfield, saver-blank, saver-lolcat, saver-clock, saver-pipes, saver-fireflies]
+
+Section: State
+
+  ScreenSaverState = record {
+    ss-enabled : Boolean,
+    ss-selected : Text,
+    ss-delay-seconds : Integer,
+    ss-idle-seconds : Integer,
+    ss-active : Boolean,
+    ss-lock-on-wake : Boolean,
+    ss-require-password : Boolean,
+    ss-preview-active : Boolean,
+    ss-programs : List SaverProgram,
+    ss-program-count : Integer,
+    ss-last-input-tick : Integer,
+    ss-display-off-seconds : Integer,
+    ss-display-off-enabled : Boolean
+  }
+
+  screen-saver-new : ScreenSaverState
+  screen-saver-new = ScreenSaverState {
+    ss-enabled = True,
+    ss-selected = "fishtank",
+    ss-delay-seconds = 300,
+    ss-idle-seconds = 0,
+    ss-active = False,
+    ss-lock-on-wake = True,
+    ss-require-password = True,
+    ss-preview-active = False,
+    ss-programs = saver-list-builtin,
+    ss-program-count = 8,
+    ss-last-input-tick = 0,
+    ss-display-off-seconds = 600,
+    ss-display-off-enabled = True
+  }
+
+Section: Configuration
+
+  ss-set-delay : ScreenSaverState, Integer -> ScreenSaverState
+  ss-set-delay (st) (seconds) =
+    let clamped = if seconds < 30 then 30 else if seconds > 7200 then 7200 else seconds
+    in __record-set st "ss-delay-seconds" clamped
+
+  ss-set-selected : ScreenSaverState, Text -> ScreenSaverState
+  ss-set-selected (st) (saver-id) = __record-set st "ss-selected" saver-id
+
+  ss-toggle-enabled : ScreenSaverState -> ScreenSaverState
+  ss-toggle-enabled (st) = __record-set st "ss-enabled" (if st.ss-enabled then False else True)
+
+  ss-toggle-lock-on-wake : ScreenSaverState -> ScreenSaverState
+  ss-toggle-lock-on-wake (st) = __record-set st "ss-lock-on-wake" (if st.ss-lock-on-wake then False else True)
+
+  ss-toggle-require-password : ScreenSaverState -> ScreenSaverState
+  ss-toggle-require-password (st) = __record-set st "ss-require-password" (if st.ss-require-password then False else True)
+
+  ss-set-display-off : ScreenSaverState, Integer -> ScreenSaverState
+  ss-set-display-off (st) (seconds) =
+    let clamped = if seconds < 60 then 60 else if seconds > 14400 then 14400 else seconds
+    in __record-set st "ss-display-off-seconds" clamped
+
+  ss-toggle-display-off : ScreenSaverState -> ScreenSaverState
+  ss-toggle-display-off (st) = __record-set st "ss-display-off-enabled" (if st.ss-display-off-enabled then False else True)
+
+Section: Idle Tracking
+
+  ss-on-input : ScreenSaverState, Integer -> ScreenSaverState
+  ss-on-input (st) (tick) =
+    let st2 = __record-set (__record-set st "ss-idle-seconds" 0) "ss-last-input-tick" tick
+    in if st2.ss-active then ss-deactivate st2 else st2
+
+  ss-tick : ScreenSaverState, Integer -> ScreenSaverState
+  ss-tick (st) (elapsed-seconds) =
+    if st.ss-active then st
+    else if st.ss-enabled then
+      let idle = st.ss-idle-seconds + elapsed-seconds
+      in let st2 = __record-set st "ss-idle-seconds" idle
+      in if idle >= st.ss-delay-seconds then ss-activate st2
+      else st2
+    else st
+
+  ss-activate : ScreenSaverState -> ScreenSaverState
+  ss-activate (st) = __record-set st "ss-active" True
+
+  ss-deactivate : ScreenSaverState -> ScreenSaverState
+  ss-deactivate (st) = __record-set (__record-set st "ss-active" False) "ss-idle-seconds" 0
+
+  ss-should-display-off : ScreenSaverState -> Boolean
+  ss-should-display-off (st) =
+    if st.ss-display-off-enabled then st.ss-idle-seconds >= st.ss-display-off-seconds
+    else False
+
+Section: Preview
+
+  ss-start-preview : ScreenSaverState -> ScreenSaverState
+  ss-start-preview (st) = __record-set st "ss-preview-active" True
+
+  ss-stop-preview : ScreenSaverState -> ScreenSaverState
+  ss-stop-preview (st) = __record-set st "ss-preview-active" False
+
+Section: Program Management
+
+  ss-add-program : ScreenSaverState, SaverProgram -> ScreenSaverState
+  ss-add-program (st) (prog) =
+    __record-set (__record-set st "ss-programs" (list-push (st.ss-programs) prog)) "ss-program-count" (st.ss-program-count + 1)
+
+  ss-find-program : ScreenSaverState, Text -> Maybe SaverProgram
+  ss-find-program (st) (id) = ss-find-loop (st.ss-programs) id 0 (st.ss-program-count)
+
+  ss-find-loop : List SaverProgram, Text, Integer, Integer -> Maybe SaverProgram
+  ss-find-loop (progs) (target) (i) (n) =
+    if i >= n then None
+    else let prog = list-at progs i
+    in if prog.sp-id == target then Just prog
+    else ss-find-loop progs target (i + 1) n
+
+  ss-selected-program : ScreenSaverState -> SaverProgram
+  ss-selected-program (st) =
+    let found = ss-find-program st (st.ss-selected)
+    in when found
+      is Just (prog) -> prog
+      is None -> saver-blank
+
+Section: Delay Presets
+
+  ss-delay-1min : Integer = 60
+  ss-delay-2min : Integer = 120
+  ss-delay-5min : Integer = 300
+  ss-delay-10min : Integer = 600
+  ss-delay-15min : Integer = 900
+  ss-delay-30min : Integer = 1800
+  ss-delay-1hr : Integer = 3600
+  ss-delay-never : Integer = 7200
+
+  ss-delay-label : Integer -> Text
+  ss-delay-label (seconds) =
+    if seconds <= 60 then "1 minute"
+    else if seconds <= 120 then "2 minutes"
+    else if seconds <= 300 then "5 minutes"
+    else if seconds <= 600 then "10 minutes"
+    else if seconds <= 900 then "15 minutes"
+    else if seconds <= 1800 then "30 minutes"
+    else if seconds <= 3600 then "1 hour"
+    else "Never"
+
+Section: Widget Building
+
+  ss-settings-widget : ScreenSaverState -> WidgetNode
+  ss-settings-widget (st) =
+    let title = widget-label "ss-title" "Screen Saver"
+    in let enabled-btn = widget-button "ss-enabled" (if st.ss-enabled then "Enabled" else "Disabled")
+    in let selected-prog = ss-selected-program st
+    in let selected-label = widget-label "ss-selected" ("Saver: " & selected-prog.sp-name)
+    in let delay-label = widget-label "ss-delay" ("Wait: " & ss-delay-label (st.ss-delay-seconds))
+    in let lock-btn = widget-button "ss-lock" (if st.ss-lock-on-wake then "Lock on Wake: ON" else "Lock on Wake: OFF")
+    in let pwd-btn = widget-button "ss-pwd" (if st.ss-require-password then "Require Password: ON" else "Require Password: OFF")
+    in let preview-btn = widget-button "ss-preview" "Preview"
+    in let sep = widget-separator "ss-sep"
+    in let program-list = ss-program-list-widget st
+    in let display-section = ss-display-off-widget st
+    in let status = ss-status-widget st
+    in widget-panel "ss-settings" DirColumn 4 [title, enabled-btn, selected-label, delay-label, lock-btn, pwd-btn, preview-btn, sep, program-list, display-section, status]
+
+  ss-program-list-widget : ScreenSaverState -> WidgetNode
+  ss-program-list-widget (st) =
+    let title = widget-label "ss-prog-title" "Available Screen Savers"
+    in let rows = ss-prog-rows st 0 (st.ss-program-count) []
+    in widget-panel "ss-programs" DirColumn 2 ([title] & rows)
+
+  ss-prog-rows : ScreenSaverState, Integer, Integer, List WidgetNode -> List WidgetNode
+  ss-prog-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let prog = list-at (st.ss-programs) i
+    in let name = widget-label ("ss-p-name-" & prog.sp-id) (prog.sp-name)
+    in let desc = widget-label ("ss-p-desc-" & prog.sp-id) (prog.sp-description)
+    in let select-btn = widget-button ("ss-p-sel-" & prog.sp-id) (if prog.sp-id == st.ss-selected then "* Selected" else "Select")
+    in let row = widget-panel ("ss-p-row-" & prog.sp-id) DirRow 4 [select-btn, name, desc]
+    in let styled = if prog.sp-id == st.ss-selected then widget-set-state row state-focused else row
+    in ss-prog-rows st (i + 1) n (list-push acc styled)
+
+  ss-display-off-widget : ScreenSaverState -> WidgetNode
+  ss-display-off-widget (st) =
+    let title = widget-label "ss-doff-title" "Display Power"
+    in let toggle = widget-button "ss-doff-toggle" (if st.ss-display-off-enabled then "Turn Off Display: ON" else "Turn Off Display: OFF")
+    in let delay = widget-label "ss-doff-delay" ("After: " & ss-delay-label (st.ss-display-off-seconds))
+    in widget-panel "ss-display-off" DirColumn 2 [title, toggle, delay]
+
+  ss-status-widget : ScreenSaverState -> WidgetNode
+  ss-status-widget (st) =
+    let idle = widget-label "ss-idle" ("Idle: " & show (st.ss-idle-seconds) & "s / " & show (st.ss-delay-seconds) & "s")
+    in let active = widget-label "ss-active-label" (if st.ss-active then "Screen saver ACTIVE" else "Screen saver inactive")
+    in let gauge = widget-gauge "ss-idle-gauge" (st.ss-idle-seconds) (st.ss-delay-seconds)
+    in widget-panel "ss-status" DirRow 4 [active, idle, gauge]
+
+Section: Formatting
+
+  format-screen-saver : ScreenSaverState -> Text
+  format-screen-saver (st) =
+    let active-txt = if st.ss-active then "yes" else "no"
+    in let lock-txt = if st.ss-lock-on-wake then "yes" else "no"
+    in let enabled-txt = if st.ss-enabled then "yes" else "no"
+    in "saver=" & st.ss-selected & " delay=" & show (st.ss-delay-seconds) & "s"
+    & " idle=" & show (st.ss-idle-seconds) & "s"
+    & " active=" & active-txt & " lock=" & lock-txt & " enabled=" & enabled-txt
+
+  format-saver-program : SaverProgram -> Text
+  format-saver-program (p) = p.sp-id & ": " & p.sp-name & " -- " & p.sp-description
+
+Page 1
