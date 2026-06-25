@@ -241,6 +241,28 @@ Common agent client names:
 - `BigWhite_Codex_<agent>_main` — main stream (copy-up client)
 - `BigWhite_Codex_<agent>` — dev stream working client
 
+### Checking Stream Sync Status
+
+**Do not use `p4 interchanges` to check if a stream is ahead of another.**
+In a multi-stream topology, content often reaches a target through indirect
+paths (e.g. Mountain → RESTRUCTURE → main). `interchanges` only tracks
+direct integration records and will permanently show CLs whose content
+arrived via a sibling stream — there is no supported way to clear these
+entries without touching every file from the original CL.
+
+Use `p4 diff2` instead — it compares actual content:
+
+```powershell
+# Are there real content differences between two streams?
+p4 diff2 //Codex/<STREAM_A>/... //Codex/<STREAM_B>/...
+
+# Check a specific file
+p4 diff2 //Codex/<STREAM_A>/path/to/file //Codex/<STREAM_B>/path/to/file
+```
+
+If `diff2` reports all files identical, the streams are in sync
+regardless of what `interchanges` says.
+
 ### Seed Verification During Copy-Up
 
 **The seed in a copy-up CL must be a proven fixed point on the TARGET stream.**

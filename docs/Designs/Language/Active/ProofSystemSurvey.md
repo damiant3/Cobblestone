@@ -166,3 +166,42 @@ CDX4010 `BoundsProven` (info, phase codegen) — emitted at each elision site.
 - Implicit arguments (solved by unification)
 - Elaborated AST with all types explicit
 - Integration with linear types and effects
+
+## External Research (IRISA Harvest, 2026-06-23)
+
+See `docs/Reference/IRISA_Research_Harvest.md` for full context.
+
+### EPICURE — Verified Compilation Preserves Security Properties
+
+The EPICURE team (IRISA D4, evolved from CELTIQUE) proves that
+high-level security properties survive compilation to machine code.
+Their CompCert-style verified compilation work shows that
+information flow control and constant-time guarantees at source
+level are preserved through codegen.
+
+**Applicability to punctual verification:** Our `punctual` keyword
+enforces five structural restrictions (CDX6001-CDX6005) at the IR
+level. EPICURE's approach would verify that the x86-64 codegen
+doesn't introduce timing side-channels in the emitted code — e.g.,
+data-dependent branches, variable-latency instructions, or memory
+access patterns that leak information. This extends punctual from
+"bounded instructions" to "bounded and timing-invariant."
+
+**Applicability to proof erasure:** Our CDX4020 erases proof
+definitions during emit. EPICURE's framework could prove that
+erasure is correct — that the erased proofs cannot affect runtime
+behavior, which is the claim we make but do not formally verify.
+
+### PACAP — WCET Analysis for Cycle-Accurate Bounds
+
+The PACAP team (IRISA D3) studies Worst-Case Execution Time
+analysis: formal bounds on execution time for real-time systems.
+
+**Applicability to punctual (medium-term):** CDX6010 reports
+instruction count per punctual function — a proxy for execution
+time. PACAP's WCET techniques could give cycle-accurate bounds on
+specific hardware targets. This would make the punctual budget
+(CDX6011) not just "instruction count" but "wall-clock microseconds
+on target X" — the real promise for hard real-time (Ada/Ravenscar
+parity). Requires a hardware model per target: cycle counts for
+each instruction, pipeline stall analysis, cache miss modeling.

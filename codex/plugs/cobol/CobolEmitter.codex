@@ -86,11 +86,15 @@ Section: PIC Clause and Type Helpers
    when ty
     is IntegerTy (lo) (hi) (mode) -> "PIC S9(18)"
     is RealTy -> "PIC S9(18)"
+    is RealApproxTy -> "PIC S9(18)"
+    is RealTrappingTy -> "PIC S9(18)"
+    is RealSaturatingTy -> "PIC S9(18)"
     is TextTy -> "PIC X(256)"
     is BooleanTy -> "PIC 9(1)"
     is CharTy -> "PIC S9(18)"
     is VoidTy -> "PIC S9(18)"
     is NothingTy -> "PIC S9(18)"
+    is UnitTy (n) (inner) -> "PIC S9(18)"
     is ForAllTy (id) (body) -> cobol-pic body
     is EffectfulTy (effs) (sc) (ret) -> cobol-pic ret
     is otherwise -> "PIC S9(18)"
@@ -190,9 +194,9 @@ Section: Type Definition Emission
   emit-cobol-sum-type (base-name) (ctors) =
    let n = cobol-name base-name
    in let max-fields = cobol-max-ctor-fields ctors 0 0
-   in "       01 WS-" & n & ".\n" ++
-      "         05 WS-" & n & "-TAG    PIC 9(2).\n" ++
-      emit-cobol-sum-data-fields n max-fields 0 ++
+   in "       01 WS-" & n & ".\n" &
+      "         05 WS-" & n & "-TAG    PIC 9(2).\n" &
+      emit-cobol-sum-data-fields n max-fields 0 &
       emit-cobol-sum-tags ctors 1
 
   cobol-max-ctor-fields : List AVariantCtorDef, Integer, Integer -> Integer
@@ -251,7 +255,7 @@ Section: Expression Emission
      in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC S9(18).")
      in CobolExprResult {
       var-name = alloc.name,
-      code = "           DISPLAY \"COBOL: lambda not supported\"\n" ++
+      code = "           DISPLAY \"COBOL: lambda not supported\"\n" &
        "           MOVE 0 TO " & alloc.name & "\n",
       state = st2
      }
@@ -295,27 +299,30 @@ Section: Expression Emission
   cobol-bin-pic (op) =
    when op
     is IrAppendText -> "PIC X(256)"
-    is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq -> "PIC 9(1)"
+    is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec -> "PIC 9(1)"
     is IrApproxEq | IrApproxEqExact -> "PIC 9(1)"
     is IrAnd | IrOr -> "PIC 9(1)"
     is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrPowInt -> "PIC S9(18)"
     is IrAddNum | IrSubNum | IrMulNum | IrDivNum -> "PIC S9(18)"
     is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> "PIC S9(18)"
+    is IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox -> "PIC S9(18)"
+    is IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping -> "PIC S9(18)"
+    is IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating -> "PIC S9(18)"
     is IrAppendList | IrConsList -> "PIC S9(18)"
 
   cobol-bin-hint : IRBinaryOp -> Text
   cobol-bin-hint (op) =
    when op
-    is IrAddInt | IrAddNum | IrAddVec -> "SUM"
-    is IrSubInt | IrSubNum | IrSubVec -> "DIFF"
-    is IrMulInt | IrMulNum | IrMulVec -> "PROD"
-    is IrDivInt | IrDivNum | IrDivVec -> "QUOT"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "SUM"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "DIFF"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "PROD"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "QUOT"
     is IrRemInt -> "REM"
     is IrPowInt -> "POW"
     is IrEq | IrNotEq -> "EQ"
     is IrApproxEq -> "AEQ"
     is IrApproxEqExact -> "AEQX"
-    is IrLt | IrGt | IrLtEq | IrGtEq -> "CMP"
+    is IrLt | IrGt | IrLtEq | IrGtEq | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec -> "CMP"
     is IrAnd -> "LAND"
     is IrOr -> "LOR"
     is IrAppendText -> "CONCAT"
@@ -325,10 +332,10 @@ Section: Expression Emission
   emit-cobol-bin-stmt : IRBinaryOp, Text, Text, Text -> Text
   emit-cobol-bin-stmt (op) (lv) (rv) (result) =
    when op
-    is IrAddInt | IrAddVec -> "           ADD " & lv & " " & rv & " GIVING " & result & "\n"
-    is IrSubInt | IrSubVec -> "           SUBTRACT " & rv & " FROM " & lv & " GIVING " & result & "\n"
-    is IrMulInt | IrMulVec -> "           MULTIPLY " & lv & " BY " & rv & " GIVING " & result & "\n"
-    is IrDivInt | IrDivVec -> "           DIVIDE " & lv & " BY " & rv & " GIVING " & result & "\n"
+    is IrAddInt | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "           ADD " & lv & " " & rv & " GIVING " & result & "\n"
+    is IrSubInt | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "           SUBTRACT " & rv & " FROM " & lv & " GIVING " & result & "\n"
+    is IrMulInt | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "           MULTIPLY " & lv & " BY " & rv & " GIVING " & result & "\n"
+    is IrDivInt | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "           DIVIDE " & lv & " BY " & rv & " GIVING " & result & "\n"
     is IrRemInt -> "           DIVIDE " & lv & " BY " & rv & " GIVING TEMP-QUOT REMAINDER " & result & "\n"
     is IrPowInt -> "           COMPUTE " & result & " = " & lv & " ** " & rv & "\n"
     is IrAddNum -> "           ADD " & lv & " " & rv & " GIVING " & result & "\n"
@@ -337,31 +344,31 @@ Section: Expression Emission
     is IrDivNum -> "           DIVIDE " & lv & " BY " & rv & " GIVING " & result & "\n"
     is IrEq -> emit-cobol-cmp-stmt lv "=" rv result
     is IrNotEq -> emit-cobol-cmp-stmt lv "NOT =" rv result
-    is IrLt -> emit-cobol-cmp-stmt lv "<" rv result
-    is IrGt -> emit-cobol-cmp-stmt lv ">" rv result
-    is IrLtEq -> emit-cobol-cmp-stmt lv "<=" rv result
-    is IrGtEq -> emit-cobol-cmp-stmt lv ">=" rv result
+    is IrLt | IrLtVec -> emit-cobol-cmp-stmt lv "<" rv result
+    is IrGt | IrGtVec -> emit-cobol-cmp-stmt lv ">" rv result
+    is IrLtEq | IrLtEqVec -> emit-cobol-cmp-stmt lv "<=" rv result
+    is IrGtEq | IrGtEqVec -> emit-cobol-cmp-stmt lv ">=" rv result
     is IrApproxEq -> emit-cobol-cmp-stmt lv "=" rv result
     is IrApproxEqExact -> emit-cobol-cmp-stmt lv "=" rv result
     is IrAnd ->
-     "           IF " & lv & " NOT = 0\n" ++
-     "             IF " & rv & " NOT = 0\n" ++
-     "               MOVE 1 TO " & result & "\n" ++
-     "             ELSE\n" ++
-     "               MOVE 0 TO " & result & "\n" ++
-     "             END-IF\n" ++
-     "           ELSE\n" ++
-     "             MOVE 0 TO " & result & "\n" ++
+     "           IF " & lv & " NOT = 0\n" &
+     "             IF " & rv & " NOT = 0\n" &
+     "               MOVE 1 TO " & result & "\n" &
+     "             ELSE\n" &
+     "               MOVE 0 TO " & result & "\n" &
+     "             END-IF\n" &
+     "           ELSE\n" &
+     "             MOVE 0 TO " & result & "\n" &
      "           END-IF\n"
     is IrOr ->
-     "           IF " & lv & " NOT = 0\n" ++
-     "             MOVE 1 TO " & result & "\n" ++
-     "           ELSE\n" ++
-     "             IF " & rv & " NOT = 0\n" ++
-     "               MOVE 1 TO " & result & "\n" ++
-     "             ELSE\n" ++
-     "               MOVE 0 TO " & result & "\n" ++
-     "             END-IF\n" ++
+     "           IF " & lv & " NOT = 0\n" &
+     "             MOVE 1 TO " & result & "\n" &
+     "           ELSE\n" &
+     "             IF " & rv & " NOT = 0\n" &
+     "               MOVE 1 TO " & result & "\n" &
+     "             ELSE\n" &
+     "               MOVE 0 TO " & result & "\n" &
+     "             END-IF\n" &
      "           END-IF\n"
     is IrAppendText -> "           STRING " & lv & " DELIMITED BY SIZE\n                  " & rv & " DELIMITED BY SIZE\n                  INTO " & result & "\n"
     is IrAppendList -> "           DISPLAY \"COBOL: list-append not supported\"\n           MOVE 0 TO " & result & "\n"
@@ -369,10 +376,10 @@ Section: Expression Emission
 
   emit-cobol-cmp-stmt : Text, Text, Text, Text -> Text
   emit-cobol-cmp-stmt (lv) (cmp-op) (rv) (result) =
-   "           IF " & lv & " " & cmp-op & " " & rv & "\n" ++
-   "             MOVE 1 TO " & result & "\n" ++
-   "           ELSE\n" ++
-   "             MOVE 0 TO " & result & "\n" ++
+   "           IF " & lv & " " & cmp-op & " " & rv & "\n" &
+   "             MOVE 1 TO " & result & "\n" &
+   "           ELSE\n" &
+   "             MOVE 0 TO " & result & "\n" &
    "           END-IF\n"
 
   emit-cobol-if-var : IRExpr, IRExpr, IRExpr, List ArityEntry, CobolState -> CobolExprResult
@@ -384,13 +391,10 @@ Section: Expression Emission
    in let else-r = emit-cobol-expr-to-var el arities (then-r.state)
    in CobolExprResult {
     var-name = alloc.name,
-    code = cond.code ++
-     "           IF " & cond.var-name & " NOT = 0\n" ++
-     then-r.code ++
-     "             MOVE " & then-r.var-name & " TO " & alloc.name & "\n" ++
-     "           ELSE\n" ++
-     else-r.code ++
-     "             MOVE " & else-r.var-name & " TO " & alloc.name & "\n" ++
+    code = cond.code & "           IF " & cond.var-name & " NOT = 0\n" &
+     then-r.code & "             MOVE " & then-r.var-name & " TO " & alloc.name & "\n" &
+     "           ELSE\n" &
+     else-r.code & "             MOVE " & else-r.var-name & " TO " & alloc.name & "\n" &
      "           END-IF\n",
     state = else-r.state
    }
@@ -501,8 +505,7 @@ Section: Expression Emission
    in let st3 = cobol-add-ws (alloc2.state) ("       01 " & alloc2.name & "       PIC S9(18).")
    in CobolExprResult {
     var-name = alloc.name,
-    code = str-r.code & idx-r.code ++
-     "           ADD 1 TO " & idx-r.var-name & " GIVING " & alloc2.name & "\n" ++
+    code = str-r.code & idx-r.code & "           ADD 1 TO " & idx-r.var-name & " GIVING " & alloc2.name & "\n" &
      "           MOVE " & str-r.var-name & "(" & alloc2.name & ":1) TO " & alloc.name & "\n",
     state = st3
    }
@@ -518,8 +521,7 @@ Section: Expression Emission
    in let st3 = cobol-add-ws (alloc2.state) ("       01 " & alloc2.name & "       PIC S9(18).")
    in CobolExprResult {
     var-name = alloc.name,
-    code = str-r.code & start-r.code & len-r.code ++
-     "           ADD 1 TO " & start-r.var-name & " GIVING " & alloc2.name & "\n" ++
+    code = str-r.code & start-r.code & len-r.code & "           ADD 1 TO " & start-r.var-name & " GIVING " & alloc2.name & "\n" &
      "           MOVE " & str-r.var-name & "(" & alloc2.name & ":" & len-r.var-name & ") TO " & alloc.name & "\n",
     state = st3
    }
@@ -591,13 +593,12 @@ Section: Expression Emission
    in let st3 = cobol-add-ws (alloc2.state) ("       01 " & alloc2.name & "       PIC S9(18).")
    in CobolExprResult {
     var-name = alloc.name,
-    code = arg-r.code ++
-     "           COMPUTE " & alloc2.name & " = FUNCTION ORD(" & arg-r.var-name & ")\n" ++
-     "           IF (" & alloc2.name & " >= 66 AND " & alloc2.name & " <= 91)\n" ++
-     "              OR (" & alloc2.name & " >= 98 AND " & alloc2.name & " <= 123)\n" ++
-     "             MOVE 1 TO " & alloc.name & "\n" ++
-     "           ELSE\n" ++
-     "             MOVE 0 TO " & alloc.name & "\n" ++
+    code = arg-r.code & "           COMPUTE " & alloc2.name & " = FUNCTION ORD(" & arg-r.var-name & ")\n" &
+     "           IF (" & alloc2.name & " >= 66 AND " & alloc2.name & " <= 91)\n" &
+     "              OR (" & alloc2.name & " >= 98 AND " & alloc2.name & " <= 123)\n" &
+     "             MOVE 1 TO " & alloc.name & "\n" &
+     "           ELSE\n" &
+     "             MOVE 0 TO " & alloc.name & "\n" &
      "           END-IF\n",
     state = st3
    }
@@ -611,12 +612,11 @@ Section: Expression Emission
    in let st3 = cobol-add-ws (alloc2.state) ("       01 " & alloc2.name & "       PIC S9(18).")
    in CobolExprResult {
     var-name = alloc.name,
-    code = arg-r.code ++
-     "           COMPUTE " & alloc2.name & " = FUNCTION ORD(" & arg-r.var-name & ")\n" ++
-     "           IF " & alloc2.name & " >= 49 AND " & alloc2.name & " <= 58\n" ++
-     "             MOVE 1 TO " & alloc.name & "\n" ++
-     "           ELSE\n" ++
-     "             MOVE 0 TO " & alloc.name & "\n" ++
+    code = arg-r.code & "           COMPUTE " & alloc2.name & " = FUNCTION ORD(" & arg-r.var-name & ")\n" &
+     "           IF " & alloc2.name & " >= 49 AND " & alloc2.name & " <= 58\n" &
+     "             MOVE 1 TO " & alloc.name & "\n" &
+     "           ELSE\n" &
+     "             MOVE 0 TO " & alloc.name & "\n" &
      "           END-IF\n",
     state = st3
    }
@@ -628,9 +628,8 @@ Section: Expression Emission
    in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC X(256).")
    in CobolExprResult {
     var-name = alloc.name,
-    code = arg-r.code ++
-     "           OPEN INPUT " & arg-r.var-name & "\n" ++
-     "           READ " & arg-r.var-name & " INTO " & alloc.name & "\n" ++
+    code = arg-r.code & "           OPEN INPUT " & arg-r.var-name & "\n" &
+     "           READ " & arg-r.var-name & " INTO " & alloc.name & "\n" &
      "           CLOSE " & arg-r.var-name & "\n",
     state = st2
    }
@@ -641,9 +640,8 @@ Section: Expression Emission
    in let data-r = emit-cobol-expr-to-var (list-at args 1) arities (path-r.state)
    in CobolExprResult {
     var-name = "0",
-    code = path-r.code & data-r.code ++
-     "           OPEN OUTPUT " & path-r.var-name & "\n" ++
-     "           WRITE " & data-r.var-name & "\n" ++
+    code = path-r.code & data-r.code & "           OPEN OUTPUT " & path-r.var-name & "\n" &
+     "           WRITE " & data-r.var-name & "\n" &
      "           CLOSE " & path-r.var-name & "\n",
     state = data-r.state
    }
@@ -663,7 +661,7 @@ Section: Expression Emission
    in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC S9(18).")
    in CobolExprResult {
     var-name = alloc.name,
-    code = "           DISPLAY \"COBOL: " & op-name & " not supported\"\n" ++
+    code = "           DISPLAY \"COBOL: " & op-name & " not supported\"\n" &
      "           MOVE 0 TO " & alloc.name & "\n",
     state = st2
    }
@@ -705,10 +703,8 @@ Section: Expression Emission
    in let arms = emit-cobol-match-arms branches (alloc.name) arities st2
    in CobolExprResult {
     var-name = alloc.name,
-    code = scrut-r.code ++
-     "           EVALUATE " & scrut-r.var-name & "-TAG\n" ++
-     arms.code ++
-     "           END-EVALUATE\n",
+    code = scrut-r.code & "           EVALUATE " & scrut-r.var-name & "-TAG\n" &
+     arms.code & "           END-EVALUATE\n",
     state = arms.state
    }
 
@@ -734,6 +730,7 @@ Section: Expression Emission
    let label = when b.pattern
     is IrCtorPat (name) (subs) (ty) (sp) -> "             WHEN TAG-" & cobol-name name & "\n"
     is IrWildPat (sp) -> "             WHEN OTHER\n"
+    is IrVecPat (pats) (ty) (sp) -> "             WHEN OTHER\n"
     is IrVarPat (vname) (ty) (sp) -> "             WHEN OTHER\n"
     is IrLitPat (text) (ty) (sp) -> "             WHEN " & text & "\n"
    in let body-r = emit-cobol-expr-to-var (b.body) arities st
@@ -862,12 +859,9 @@ Section: Tail Call Optimization
      in let then-r = emit-cobol-tco-body t func-name params arities (cond.state)
      in let else-r = emit-cobol-tco-body el func-name params arities (then-r.state)
      in CobolMoveResult {
-      code = cond.code ++
-       "           IF " & cond.var-name & " NOT = 0\n" ++
-       then-r.code ++
-       "           ELSE\n" ++
-       else-r.code ++
-       "           END-IF\n",
+      code = cond.code & "           IF " & cond.var-name & " NOT = 0\n" &
+       then-r.code & "           ELSE\n" &
+       else-r.code & "           END-IF\n",
       state = else-r.state
      }
     is IrLet (lname) (ty) (val) (body) (sp) ->
@@ -884,89 +878,100 @@ Section: Tail Call Optimization
      let scrut-r = emit-cobol-expr-to-var scrut arities st
      in let arms = emit-cobol-tco-match-arms branches func-name params arities (scrut-r.state) 0
      in CobolMoveResult {
-      code = scrut-r.code ++
-       "           EVALUATE " & scrut-r.var-name & "-TAG\n" ++
-       arms.code ++
-       "           END-EVALUATE\n",
+      code = scrut-r.code & "           EVALUATE " & scrut-r.var-name & "-TAG\n" &
+       arms.code & "           END-EVALUATE\n",
       state = arms.state
      }
     is IrApply (f) (a) (rty) (sp) ->
      if cobol-is-self-call e func-name then emit-cobol-tco-jump e func-name params arities st
      else let res = emit-cobol-expr-to-var e arities st
      in CobolMoveResult {
-      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" ++
+      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = res.state
      }
     is IrBinary (op) (l) (r) (ty) (sp) ->
      let res = emit-cobol-expr-to-var e arities st
      in CobolMoveResult {
-      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" ++
+      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = res.state
      }
     is IrIntLit (n) (sp) ->
      CobolMoveResult {
-      code = "           MOVE " & integer-to-text n & " TO WS-" & name & "-RET\n" ++
+      code = "           MOVE " & integer-to-text n & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = st
      }
     is IrBoolLit (b) (sp) ->
      CobolMoveResult {
-      code = "           MOVE " & (if b then "1" else "0") & " TO WS-" & name & "-RET\n" ++
+      code = "           MOVE " & (if b then "1" else "0") & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = st
      }
     is IrTextLit (s) (sp) ->
      CobolMoveResult {
-      code = "           MOVE \"" & cobol-escape-text s & "\" TO WS-" & name & "-RET\n" ++
+      code = "           MOVE \"" & cobol-escape-text s & "\" TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = st
      }
     is IrNumLit (n) (sp) ->
      CobolMoveResult {
-      code = "           MOVE " & integer-to-text n & " TO WS-" & name & "-RET\n" ++
+      code = "           MOVE " & integer-to-text n & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = st
      }
     is IrCharLit (n) (sp) ->
      CobolMoveResult {
-      code = "           MOVE " & integer-to-text n & " TO WS-" & name & "-RET\n" ++
+      code = "           MOVE " & integer-to-text n & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = st
      }
     is IrName (n) (ty) (sp) ->
      let name-r = emit-cobol-name-var n st
      in CobolMoveResult {
-      code = "           MOVE " & name-r.var-name & " TO WS-" & name & "-RET\n" ++
+      code = "           MOVE " & name-r.var-name & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = st
      }
     is IrNegate (operand) (sp) ->
      let res = emit-cobol-expr-to-var e arities st
      in CobolMoveResult {
-      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" ++
+      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = res.state
      }
     is IrRecord (rname) (fields) (ty) (sp) ->
      let res = emit-cobol-expr-to-var e arities st
      in CobolMoveResult {
-      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" ++
+      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = res.state
      }
     is IrFieldAccess (rec) (field) (ty) (sp) ->
      let res = emit-cobol-expr-to-var e arities st
      in CobolMoveResult {
-      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" ++
+      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = res.state
+     }
+    is IrFieldStore (rec) (field) (val) (ty) (sp) ->
+     let res = emit-cobol-expr-to-var e arities st
+     in CobolMoveResult {
+      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" &
+       "           GO TO " & name & "-END\n",
+      state = res.state
+     }
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) ->
+     CobolMoveResult {
+      code = "           MOVE 0 TO WS-" & name & "-RET\n" &
+       "           GO TO " & name & "-END\n",
+      state = st
      }
     is IrAct (stmts) (ty) (sp) ->
      let res = emit-cobol-expr-to-var e arities st
      in CobolMoveResult {
-      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" ++
+      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = res.state
      }
@@ -979,27 +984,27 @@ Section: Tail Call Optimization
     is IrAwait (task) (ty) (sp) ->
      let res = emit-cobol-expr-to-var task arities st
      in CobolMoveResult {
-      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" ++
+      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = res.state
      }
     is IrLambda (lparams) (lbody) (lty) (sp) ->
      CobolMoveResult {
-      code = "           DISPLAY \"COBOL: lambda not supported\"\n" ++
-       "           MOVE 0 TO WS-" & name & "-RET\n" ++
+      code = "           DISPLAY \"COBOL: lambda not supported\"\n" &
+       "           MOVE 0 TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = st
      }
     is IrList (elems) (lty) (sp) ->
      let res = emit-cobol-expr-to-var e arities st
      in CobolMoveResult {
-      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" ++
+      code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = res.state
      }
     is IrError (msg) (ty) (sp) ->
      CobolMoveResult {
-      code = "           MOVE 0 TO WS-" & name & "-RET\n" ++
+      code = "           MOVE 0 TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = st
      }
@@ -1011,6 +1016,7 @@ Section: Tail Call Optimization
    in let label = when b.pattern
     is IrCtorPat (pname) (subs) (ty) (sp) -> "             WHEN TAG-" & cobol-name pname & "\n"
     is IrWildPat (sp) -> "             WHEN OTHER\n"
+    is IrVecPat (pats) (ty) (sp) -> "             WHEN OTHER\n"
     is IrVarPat (vname) (ty) (sp) -> "             WHEN OTHER\n"
     is IrLitPat (text) (ty) (sp) -> "             WHEN " & text & "\n"
    in let body-r = emit-cobol-tco-body (b.body) func-name params arities st
@@ -1041,8 +1047,7 @@ Section: Definition Emission
   emit-cobol-def-storage : IRDef -> Text
   emit-cobol-def-storage (d) =
    let name = cobol-name (d.name)
-   in emit-cobol-param-storage (d.params) name 0 ++
-      "       01 WS-" & name & "-RET     " & cobol-pic (cobol-def-ret-type d) & ".\n"
+   in emit-cobol-param-storage (d.params) name 0 & "       01 WS-" & name & "-RET     " & cobol-pic (cobol-def-ret-type d) & ".\n"
 
   cobol-def-ret-type : IRDef -> CodexType
   cobol-def-ret-type (d) =
@@ -1077,9 +1082,8 @@ Section: Definition Emission
       else let res = emit-cobol-expr-to-var (d.body) arities st2
       in let st3 = cobol-set-func (res.state) ""
       in CobolDefResult {
-       code = "       " & name & "-PARA.\n" ++
-        res.code ++
-        "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n\n",
+       code = "       " & name & "-PARA.\n" &
+        res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n\n",
        state = st3
       }
 
@@ -1094,10 +1098,9 @@ Section: Definition Emission
    in let body-r = emit-cobol-tco-body (d.body) (d.name) (d.params) arities st
    in let st2 = cobol-set-func (body-r.state) ""
    in CobolDefResult {
-    code = "       " & name & "-PARA.\n" ++
-     "       " & name & "-LOOP.\n" ++
-     body-r.code ++
-     "       " & name & "-END.\n\n",
+    code = "       " & name & "-PARA.\n" &
+     "       " & name & "-LOOP.\n" &
+     body-r.code & "       " & name & "-END.\n\n",
     state = st2
    }
 
@@ -1197,20 +1200,16 @@ Section: Chapter Emission
    in let st = cobol-initial-state
    in let defs-r = emit-cobol-all-defs (m.defs) arities st 0 entry-idx
    in let entry-r = emit-cobol-entry (m.defs) entry-idx arities (defs-r.state)
-   in "       IDENTIFICATION DIVISION.\n" ++
-      "       PROGRAM-ID. " & program-id & ".\n\n" ++
-      "       DATA DIVISION.\n" ++
-      "       WORKING-STORAGE SECTION.\n" ++
-      emit-cobol-type-defs type-defs 0 ++
-      emit-cobol-def-storage-all (m.defs) 0 entry-idx ++
-      "       01 WS-RESULT         PIC S9(18).\n" ++
-      "       01 WS-TEMP           PIC S9(18).\n" ++
-      "       01 WS-TEXT-RESULT     PIC X(256).\n" ++
-      emit-cobol-ws-lines (entry-r.state).working-storage 0 ++
-      "\n       PROCEDURE DIVISION.\n" ++
-      defs-r.code ++
-      "       MAIN-LOGIC.\n" ++
-      entry-r.code ++
-      "           STOP RUN.\n\n"
+   in "       IDENTIFICATION DIVISION.\n" &
+      "       PROGRAM-ID. " & program-id & ".\n\n" &
+      "       DATA DIVISION.\n" &
+      "       WORKING-STORAGE SECTION.\n" &
+      emit-cobol-type-defs type-defs 0 &
+      emit-cobol-def-storage-all (m.defs) 0 entry-idx & "       01 WS-RESULT         PIC S9(18).\n" &
+      "       01 WS-TEMP           PIC S9(18).\n" &
+      "       01 WS-TEXT-RESULT     PIC X(256).\n" &
+      emit-cobol-ws-lines (entry-r.state).working-storage 0 & "\n       PROCEDURE DIVISION.\n" &
+      defs-r.code & "       MAIN-LOGIC.\n" &
+      entry-r.code & "           STOP RUN.\n\n"
 
 Page 1

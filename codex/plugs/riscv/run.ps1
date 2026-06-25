@@ -1,4 +1,4 @@
-# Run the RISC-V codegen plug: send IR text, receive machine code + metadata.
+# Run the RISC-V codegen plug: send IR text via serial, receive wire output.
 #
 # Usage:
 #   plugs/riscv/run.ps1 -IrInput <file.ir> -Out <file.bin>
@@ -7,10 +7,6 @@
 #   [4B code-len] [4B data-len] [4B func-count]
 #   [code bytes] [data bytes]
 #   [func entries: 2B name-len + name + 4B offset each]
-#
-# Chain with the ELF plug to produce a runnable binary:
-#   plugs/riscv/run.ps1 -IrInput hello.ir -Out hello.x86out
-#   plugs/elf/run.ps1 -X86Input hello.x86out -Out hello.elf
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)] [string]$IrInput,
@@ -34,64 +30,64 @@ if (-not (Test-Path -PathType Leaf $IrInput)) {
     exit 2
 }
 
-$inputBytes = [System.IO.File]::ReadAllBytes($IrInput)
-Write-Host "[riscv-run] Input: $($inputBytes.Length) bytes from $IrInput"
+$irBytes = [System.IO.File]::ReadAllBytes($IrInput)
+Write-Host "[riscv-run] Input: $($irBytes.Length) bytes from $IrInput"
 
-$plugPort = 9100
-$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)
-$listener.Start()
-Write-Host "[riscv-run] Listening on port $plugPort"
-
-$stderrFile = [System.IO.Path]::GetTempFileName()
-try {
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '4096', '-headless') `
-        -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
-
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
-    while (-not $listener.Pending()) {
-        if ([DateTime]::UtcNow -gt $deadline) {
-            [Console]::Error.WriteLine("FAIL: plug did not connect within 30s")
-            exit 5
-        }
-        Start-Sleep -Milliseconds 50
-    }
-    $tcpClient = $listener.AcceptTcpClient()
-    $tcpStream = $tcpClient.GetStream()
-    $listener.Stop()
-    Write-Host "[riscv-run] Plug connected"
-
-    $msgLen = $inputBytes.Length + 1
-    $header = [BitConverter]::GetBytes([int]$msgLen)
-    $tcpStream.Write($header, 0, 4)
-    $tcpStream.WriteByte(1)
-    $chunkSize = 4096
-    $off = 0
-    while ($off -lt $inputBytes.Length) {
-        $n = [Math]::Min($chunkSize, $inputBytes.Length - $off)
-        $tcpStream.Write($inputBytes, $off, $n)
-        $tcpStream.Flush()
-        $off += $n
-        if ($off -lt $inputBytes.Length) { Start-Sleep -Milliseconds 50 }
-    }
-    Write-Host "[riscv-run] Sent $($inputBytes.Length) bytes (IR text)"
-
-    $tcpStream.ReadTimeout = 600000
-    $allBytes = [System.Collections.Generic.List[byte]]::new(65536)
-    $readBuf = [byte[]]::new(8192)
-    try {
-        while ($true) {
-            $n = $tcpStream.Read($readBuf, 0, $readBuf.Length)
-            if ($n -le 0) { break }
-            for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
-        }
-    } catch {}
-    [System.IO.File]::WriteAllBytes($Out, $allBytes.ToArray())
-    Write-Host "[riscv-run] OK: $Out ($($allBytes.Count) bytes)"
-
-    $tcpClient.Close()
-} finally {
-    if ($proc -and -not $proc.HasExited) {
-        try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
-    }
-    Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
+# Build input: CCE mode header + CCE IR + null terminator
+$inputFile = [System.IO.Path]::GetTempFileName()
+$hdrList = [System.Collections.Generic.List[byte]]::new()
+foreach ($ch in "IR-CCE".ToCharArray()) {
+    $u = [int]$ch
+    if ($u -lt 256) { $hdrList.Add([byte]$script:UnicodeToCce[$u]) }
 }
+$hdrList.Add([byte]1)  # CCE newline
+$modeHeader = $hdrList.ToArray()
+$combined = New-Object byte[] ($modeHeader.Length + $irBytes.Length + 1)
+[Buffer]::BlockCopy($modeHeader, 0, $combined, 0, $modeHeader.Length)
+[Buffer]::BlockCopy($irBytes, 0, $combined, $modeHeader.Length, $irBytes.Length)
+$combined[$combined.Length - 1] = 0  # null terminator for read-file
+[System.IO.File]::WriteAllBytes($inputFile, $combined)
+
+# Run plug CDX via serial I/O
+$outFile = [System.IO.Path]::GetTempFileName()
+$errFile = [System.IO.Path]::GetTempFileName()
+$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$inputFile,'-output',$outFile,'-mem','3072','-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
+$proc.WaitForExit(300000)
+
+if (-not $proc.HasExited) {
+    [Console]::Error.WriteLine("FAIL: plug timed out")
+    try { Stop-Process -Id $proc.Id -Force } catch {}
+    exit 5
+}
+
+# Read serial output (binary wire data)
+$outputBytes = [System.IO.File]::ReadAllBytes($outFile)
+
+# Split: wire data is raw bytes, but serial may also contain text lines (WARN, WCET)
+# The wire protocol starts with a 4-byte code-len. Scan for text preamble.
+$wireStart = 0
+$serialLines = @()
+if ($outputBytes.Length -ge 4) {
+    # Check if first bytes look like wire protocol (code-len > 0, reasonable)
+    $possibleCodeLen = [BitConverter]::ToInt32($outputBytes, 0)
+    if ($possibleCodeLen -gt 0 -and $possibleCodeLen -lt $outputBytes.Length) {
+        $wireStart = 0
+    }
+}
+
+[System.IO.File]::WriteAllBytes($Out, $outputBytes)
+Write-Host "[riscv-run] OK: $Out ($($outputBytes.Length) bytes)"
+
+# Show any WARN/WCET lines from serial
+$serialText = ""
+try { $serialText = [System.Text.Encoding]::UTF8.GetString($outputBytes) } catch {}
+foreach ($sl in ($serialText -split "`n")) {
+    $sl = $sl.TrimEnd("`r")
+    if ($sl.StartsWith('[WARN]') -or $sl.StartsWith('[WCET]')) {
+        Write-Host "[riscv-run] $sl" -ForegroundColor Yellow
+    }
+}
+
+Remove-Item -Force $inputFile -ErrorAction SilentlyContinue
+Remove-Item -Force $outFile -ErrorAction SilentlyContinue
+Remove-Item -Force $errFile -ErrorAction SilentlyContinue

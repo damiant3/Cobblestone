@@ -2,6 +2,7 @@ Chapter: Go Emitter
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Foreword chapter Sort
 
  Generates Go source code from the IR.
 
@@ -90,7 +91,7 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> "<-(" & emit-go-expr task arities indent & ".(chan interface{}))"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-go-expr body arities indent
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-go-expr body arities indent
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-go-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-go-act body arities indent
     is IrError (msg) (ty) (sp) -> "func() interface{} { panic(\"" & go-escape msg & "\") }()"
 
 Section: Binary Operators
@@ -110,20 +111,20 @@ Section: Binary Operators
     is IrDivInt -> "(" & lhs & ".(int) / " & rhs & ".(int))"
     is IrRemInt -> "(" & lhs & ".(int) % " & rhs & ".(int))"
     is IrPowInt -> "int(math.Pow(float64(" & lhs & ".(int)), float64(" & rhs & ".(int))))"
-    is IrAddNum -> "(" & lhs & ".(float64) + " & rhs & ".(float64))"
-    is IrSubNum -> "(" & lhs & ".(float64) - " & rhs & ".(float64))"
-    is IrMulNum -> "(" & lhs & ".(float64) * " & rhs & ".(float64))"
-    is IrDivNum -> "(" & lhs & ".(float64) / " & rhs & ".(float64))"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & ".(float64) + " & rhs & ".(float64))"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & ".(float64) - " & rhs & ".(float64))"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & ".(float64) * " & rhs & ".(float64))"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & ".(float64) / " & rhs & ".(float64))"
     is IrAddVec -> go-vec-ewise lhs rhs "+"
     is IrSubVec -> go-vec-ewise lhs rhs "-"
     is IrMulVec -> go-vec-ewise lhs rhs "*"
     is IrDivVec -> go-vec-ewise lhs rhs "/"
     is IrEq -> "(" & lhs & " == " & rhs & ")"
     is IrNotEq -> "(" & lhs & " != " & rhs & ")"
-    is IrLt -> "(" & lhs & ".(int) < " & rhs & ".(int))"
-    is IrGt -> "(" & lhs & ".(int) > " & rhs & ".(int))"
-    is IrLtEq -> "(" & lhs & ".(int) <= " & rhs & ".(int))"
-    is IrGtEq -> "(" & lhs & ".(int) >= " & rhs & ".(int))"
+    is IrLt | IrLtVec -> "(" & lhs & ".(int) < " & rhs & ".(int))"
+    is IrGt | IrGtVec -> "(" & lhs & ".(int) > " & rhs & ".(int))"
+    is IrLtEq | IrLtEqVec -> "(" & lhs & ".(int) <= " & rhs & ".(int))"
+    is IrGtEq | IrGtEqVec -> "(" & lhs & ".(int) >= " & rhs & ".(int))"
     is IrApproxEq -> "(" & lhs & " == " & rhs & ")"
     is IrApproxEqExact -> "(" & lhs & " == " & rhs & ")"
     is IrAnd -> "(" & lhs & ".(bool) && " & rhs & ".(bool))"
@@ -148,7 +149,7 @@ Section: Builtin Emitter
       else bsearch-go-builtin-pos entries name (mid + 1) hi
 
   sort-go-builtins : List GoBuiltinEmitter -> List GoBuiltinEmitter
-  sort-go-builtins (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+  sort-go-builtins (xs) = xs
 
   go-builtin-emitters : List GoBuiltinEmitter =
    sort-go-builtins [
@@ -296,6 +297,7 @@ Section: Match
     is IrCtorPat (name) (subs) (ty) (sp) ->
      if is-mktup-name name then "true"
      else scrut & ".(map[string]interface{})[\"_tag\"] == \"" & name & "\""
+    is IrVecPat (pats) (ty) (sp) -> "true"
     is IrWildPat (sp) -> "true"
 
   emit-go-pat-binds : IRPat, Text -> Text
@@ -306,6 +308,7 @@ Section: Match
     is IrCtorPat (name) (subs) (ty) (sp) ->
      if is-mktup-name name then emit-go-tup-binds subs scrut 0
      else emit-go-ctor-binds subs scrut 0
+    is IrVecPat (pats) (ty) (sp) -> ""
     is IrWildPat (sp) -> ""
 
   emit-go-ctor-binds : List IRPat, Text, Integer -> Text

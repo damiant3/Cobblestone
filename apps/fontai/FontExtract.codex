@@ -1,0 +1,69 @@
+Chapter: FontExtract
+  cites Encode chapter TrueType
+  cites Foreword chapter Console
+
+ Extract glyph contour data from a TTF file for neural network training.
+ Reads TTF bytes from stdin (via -input), parses the font, and prints
+ glyph metrics and contour points as tab-separated values over serial.
+
+ Output format per glyph:
+   GLYPH <codepoint> <advance> <lsb> <xmin> <ymin> <xmax> <ymax> <num-contours>
+   CONTOUR <num-points>
+   POINT <x> <y> <on-curve>
+   END
+
+Section: Entry
+  opening : [Console] Nothing = act
+    let buf = read-all-bytes
+    in let size = list-length buf
+    in print-line ("FONT size=" & show size)
+    in if size < 100 then print-line "ERROR: too small"
+    else let font = ttf-parse buf
+    in let upem = font.tf-head.th-units-per-em
+    in print-line ("UPEM " & show upem)
+    in print-line ("GLYPHS " & show (font.tf-num-glyphs))
+    in let d = extract-ascii font 32 127
+    in print-line "DONE"
+  end
+
+Section: Extract ASCII Range
+  extract-ascii : TtfFont, Integer, Integer -> Integer
+  extract-ascii (font) (cp) (max-cp) =
+    if cp > max-cp then 0
+    else let d = extract-glyph font cp
+    in extract-ascii font (cp + 1) max-cp
+
+  extract-glyph : TtfFont, Integer -> Integer
+  extract-glyph (font) (cp) =
+    let g = ttf-glyph-for-char font cp
+    in let nc = list-length (g.tg-contours)
+    in let d = print-line ("GLYPH " & show cp & " " & show (g.tg-advance) & " " & show (g.tg-lsb) & " " & show (g.tg-x-min) & " " & show (g.tg-y-min) & " " & show (g.tg-x-max) & " " & show (g.tg-y-max) & " " & show nc)
+    in let d2 = extract-contours (g.tg-contours) 0 nc
+    in print-line "END"
+
+  extract-contours : List TtfContour, Integer, Integer -> Integer
+  extract-contours (contours) (i) (n) =
+    if i >= n then 0
+    else let c = list-at contours i
+    in let pts = c.tc-points
+    in let np = list-length pts
+    in let d = print-line ("CONTOUR " & show np)
+    in let d2 = extract-points pts 0 np
+    in extract-contours contours (i + 1) n
+
+  extract-points : List TtfPoint, Integer, Integer -> Integer
+  extract-points (pts) (i) (n) =
+    if i >= n then 0
+    else let p = list-at pts i
+    in let d = print-line ("POINT " & show (p.tp-x) & " " & show (p.tp-y) & " " & show (p.tp-on-curve))
+    in extract-points pts (i + 1) n
+
+Section: Read All Bytes from Serial
+  read-all-bytes : List Integer
+  read-all-bytes = read-bytes-loop []
+
+  read-bytes-loop : List Integer -> List Integer
+  read-bytes-loop (acc) =
+    let b = read-byte
+    in if b < 0 then acc
+    else read-bytes-loop (list-push acc b)

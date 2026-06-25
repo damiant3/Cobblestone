@@ -1,0 +1,57 @@
+Chapter: CvmmBuildScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates apps/cvmm/build.ps1 -- bundles all CVMM chapters + foreword/OS
+ dependencies, compiles to CDX.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  cvmm-params : List ShellParam = [sh-switch "Force"]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path"), ScAssign "AppDir" (SeRaw "(Resolve-Path $PSScriptRoot).Path"), ScAssign "OutDir" (SeRaw "Join-Path $AppDir 'build-output'"), ScAssign "OutFile" (SeRaw "Join-Path $OutDir 'cvmm-server.cdx'"), ScAssign "BundleSrc" (SeRaw "Join-Path $OutDir 'cvmm-source.codex'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'build.log'"), ScBlank, ScRaw "New-Item -ItemType Directory -Force -Path $OutDir | Out-Null"]
+
+Section: S02 -- App Chapter List
+
+  cvmm-chapter-names : List ShellCmd = [ScAssign "AppChapters" (SeRaw "@('CvmmTypes','ResourceModel','Command','CvmmState','CvmmTheme','CvmmDashboard','FileExplorer','DriveManager','UsbManager','ProcessManager','ServiceManager','PortMonitor','NetworkManager','DisplayManager','ServerManager','FleetManager','DeployManager','CvmmDisplay','LogViewer','Terminal','ProductivityDb','Monitor','Calendar','Notes','MeshBridge','DataBinding','Keybindings','Serialize','CvmmSettingsViews','CvmmShell','CvmmRoutes','CvmmServer')")]
+
+Section: S03 -- Build App Ordered List
+
+  s03-loop-body : List ShellCmd = [ScAssign "path" (SeRaw "Join-Path $AppDir \"$ch.codex\""), ScIf (SeNot (SeRaw "Test-Path -PathType Leaf $path")) [ScWriteError (SeRaw "\"MISSING: $path\""), ScExit (SeInt 3)] [], ScRaw "$appOrdered.Add(@{ Quire = 'Cvmm'; Name = $ch; Path = $path; Lines = [System.IO.File]::ReadAllLines($path) })"]
+
+  s03 : List ShellCmd = [ScRunDot (SeRaw "(Join-Path $Repo 'build\\quire-map.ps1')"), ScDotNetCallAssign "appOrdered" "System.Collections.Generic.List[hashtable]" "new" [], ScForEach "ch" (SeVar "AppChapters") s03-loop-body, ScAssign "lines" (SeRaw "Format-CiteChapters -Ordered $appOrdered")]
+
+Section: S04 -- Resolve Foreword and OS Cites
+
+  s04 : List ShellCmd = [ScTry [ScAssign "ordered" (SeRaw "Resolve-CiteOrder -RootLines $lines -Repo $Repo -ExcludeQuires @('Cvmm')")] [ScWriteError (SeRaw "\"MISSING: $($_.Exception.Message)\""), ScExit (SeInt 3)] [], ScAssign "preLines" (SeRaw "Format-CiteChapters -Ordered $ordered")]
+
+Section: S05 -- Bundle Source
+
+  s05 : List ShellCmd = [ScAssign "body" (SeRaw "(@($preLines) + @($lines) -join \"`n\") + \"`n\""), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "BundleSrc", SeVar "body", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScEcho (SeRaw "\"[cvmm] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes\"")]
+
+Section: S06 -- Compile via compile.ps1
+
+  s06-fail : List ShellCmd = [ScWriteError (SeRaw "\"FAIL: compile errors; see $LogFile\""), ScExit (SeInt 5)]
+
+  s06 : List ShellCmd = [ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build\\compile.ps1'"), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $OutFile -Log $LogFile", ScIf (SeRaw "$LASTEXITCODE -ne 0") s06-fail [], ScEcho (SeRaw "\"[cvmm] OK: $OutFile ($((Get-Item $OutFile).Length) bytes)\"")]
+
+Section: Assembly
+
+  cvmm-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence cvmm-chapter-names, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]
+
+  cvmm-script : ShellScript = sh-script "cvmm-build" "Build apps/cvmm/build-output/cvmm-server.cdx -- bundles all CVMM chapters and dependencies, compiles to CDX" cvmm-params cvmm-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cvmm-script)
+  end
+
+Page 1

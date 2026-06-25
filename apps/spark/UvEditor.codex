@@ -6,8 +6,8 @@ Chapter: UvEditor
 
  UV coordinate editor. Displays the UV layout of a mesh on a
  2D canvas with the texture underneath. Supports selecting,
- moving, and scaling UV islands. UV coordinates use fixed-point
- scale 1000 (0 = left/top, 1000 = right/bottom).
+ moving, and scaling UV islands. UV coordinates use Real
+ (0.0 = left/top, 1.0 = right/bottom).
 
  We say:
 
@@ -23,9 +23,9 @@ Section: Types
     ue-islands : List UvIsland,
     ue-island-count : Integer,
     ue-active-island : Integer,
-    ue-zoom : Integer,
-    ue-pan-x : Integer,
-    ue-pan-y : Integer,
+    ue-zoom : Real,
+    ue-pan-x : Real,
+    ue-pan-y : Real,
     ue-show-grid : Boolean
   }
 
@@ -36,9 +36,9 @@ Section: Construction
     ue-islands = [],
     ue-island-count = 0,
     ue-active-island = -1,
-    ue-zoom = 1000,
-    ue-pan-x = 0,
-    ue-pan-y = 0,
+    ue-zoom = 1.0,
+    ue-pan-x = 0.0,
+    ue-pan-y = 0.0,
     ue-show-grid = True
   }
 
@@ -81,13 +81,13 @@ Section: Island Building
 
 Section: Navigation
 
-  uv-editor-zoom : UvEditorState, Integer -> UvEditorState
+  uv-editor-zoom : UvEditorState, Real -> UvEditorState
   uv-editor-zoom (ue) (delta) =
     let new-zoom = ue.ue-zoom + delta
-    in let clamped = if new-zoom < 100 then 100 else if new-zoom > 8000 then 8000 else new-zoom
+    in let clamped = if new-zoom < 0.1 then 0.1 else if new-zoom > 8.0 then 8.0 else new-zoom
     in __record-set ue "ue-zoom" clamped
 
-  uv-editor-pan : UvEditorState, Integer, Integer -> UvEditorState
+  uv-editor-pan : UvEditorState, Real, Real -> UvEditorState
   uv-editor-pan (ue) (dx) (dy) =
     __record-set (__record-set ue "ue-pan-x" (ue.ue-pan-x + dx)) "ue-pan-y" (ue.ue-pan-y + dy)
 
@@ -115,18 +115,18 @@ Section: Selection
 
 Section: UV Transform
 
-  uv-move-selected : UvEditorState, TriMesh, Integer, Integer -> TriMesh
+  uv-move-selected : UvEditorState, TriMesh, Real, Real -> TriMesh
   uv-move-selected (ue) (mesh) (du) (dv) =
     uv-move-loop ue mesh du dv 0
 
-  uv-move-loop : UvEditorState, TriMesh, Integer, Integer, Integer -> TriMesh
+  uv-move-loop : UvEditorState, TriMesh, Real, Real, Integer -> TriMesh
   uv-move-loop (ue) (mesh) (du) (dv) (i) =
     if i >= ue.ue-island-count then mesh
     else let island = list-at (ue.ue-islands) i
     in let mesh2 = if island.ui-selected then uv-move-island-faces mesh island du dv 0 else mesh
     in uv-move-loop ue mesh2 du dv (i + 1)
 
-  uv-move-island-faces : TriMesh, UvIsland, Integer, Integer, Integer -> TriMesh
+  uv-move-island-faces : TriMesh, UvIsland, Real, Real, Integer -> TriMesh
   uv-move-island-faces (mesh) (island) (du) (dv) (j) =
     if j >= island.ui-face-count then mesh
     else let fi = list-at (island.ui-face-indices) j
@@ -136,7 +136,7 @@ Section: UV Transform
     in let mesh4 = uv-offset-vert mesh3 (face.tf-v2) du dv
     in uv-move-island-faces mesh4 island du dv (j + 1)
 
-  uv-offset-vert : TriMesh, Integer, Integer, Integer -> TriMesh
+  uv-offset-vert : TriMesh, Integer, Real, Real -> TriMesh
   uv-offset-vert (mesh) (vi) (du) (dv) =
     let uv = tri-mesh-uv mesh vi
     in let new-uv = Vec2 { v2x = uv.v2x + du, v2y = uv.v2y + dv }
@@ -169,11 +169,11 @@ Section: Rendering
 
   uv-to-screen-x : UvEditorState, Vec2, Integer -> Integer
   uv-to-screen-x (ue) (uv) (canvas-w) =
-    (uv.v2x + ue.ue-pan-x) * ue.ue-zoom / 1000 * canvas-w / 1000
+    real-to-int ((uv.v2x + ue.ue-pan-x) * ue.ue-zoom * real-from-int canvas-w)
 
   uv-to-screen-y : UvEditorState, Vec2, Integer -> Integer
   uv-to-screen-y (ue) (uv) (canvas-h) =
-    (uv.v2y + ue.ue-pan-y) * ue.ue-zoom / 1000 * canvas-h / 1000
+    real-to-int ((uv.v2y + ue.ue-pan-y) * ue.ue-zoom * real-from-int canvas-h)
 
 Section: Info
 

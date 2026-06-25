@@ -10,6 +10,13 @@ Chapter: Notebook
   cites Mathbook chapter Statistics
   cites UI chapter Widget
   cites UI chapter Layout
+  cites UI chapter Editor
+  cites UI chapter Markdown
+  cites UI chapter DataTable
+  cites UI chapter Validation
+  cites UI chapter CommandPalette
+  cites UI chapter SearchBar
+  cites UI chapter StatusBadge
 
  Interactive math notebook. A notebook is a list of cells. Each cell
  has an input expression, an output result, and a display mode (text,
@@ -312,5 +319,45 @@ Section: Widget Building
   nb-cell-widgets (cells) (i) (n) (acc) =
     if i >= n then acc
     else nb-cell-widgets cells (i + 1) n (list-push acc (nb-cell-widget (list-at cells i) i))
+
+Section: Rich Cell Rendering (Editor + Markdown + DataTable)
+  nb-rich-cell : Cell, Integer -> WidgetNode
+  nb-rich-cell (cell) (idx) =
+    when cell.cell-type
+      is CellExpr -> nb-expr-editor cell idx
+      is CellText -> nb-text-md cell idx
+      is CellTable -> nb-table-view cell idx
+      is CellPlot -> nb-cell-widget cell idx
+
+  nb-expr-editor : Cell, Integer -> WidgetNode
+  nb-expr-editor (cell) (idx) =
+    let ed = editor-with-text ("cell-ed-" & show idx) (cell.cell-input)
+    in let ed2 = __record-set ed "ed-show-line-numbers" True
+    in let output-lbl = widget-label ("cell-out-" & show idx) (cell.cell-output)
+    in widget-panel ("cell-" & show idx) DirColumn 2 [
+      editor-widget ed2,
+      output-lbl
+    ]
+
+  nb-text-md : Cell, Integer -> WidgetNode
+  nb-text-md (cell) (idx) =
+    let doc = md-parse (cell.cell-input)
+    in md-document-to-widget doc ("cell-md-" & show idx)
+
+  nb-table-view : Cell, Integer -> WidgetNode
+  nb-table-view (cell) (idx) =
+    let dt = nb-parse-table-cell cell idx
+    in data-table-widget dt
+
+  nb-parse-table-cell : Cell, Integer -> DataTableState
+  nb-parse-table-cell (cell) (idx) =
+    let cols = [table-column "col0" "X" 80, table-column "col1" "Y" 80, table-column "col2" "Result" 100]
+    in data-table-new ("cell-tbl-" & show idx) cols []
+
+Section: Cell Input Validation
+  nb-cell-validation : FormValidation
+  nb-cell-validation = form-validation [
+    field-validation "expr" [VrRequired, VrMinLength 1]
+  ]
 
 Page 1

@@ -27,7 +27,7 @@ Section: Keywords and Sanitization
   gvy-sanitize : Text -> Text
   gvy-sanitize (name) =
    let s = text-replace name "-" "_"
-   in if gvy-is-keyword s then s & "_v"
+   in if gvy-is-keyword s 0 then s & "_v"
       else s
 
   gvy-escape : Text -> Text
@@ -166,17 +166,21 @@ Section: Expression Emission
   gvy-bin-op : IRBinaryOp -> Text
   gvy-bin-op (op) =
    when op
-    is IrAddInt | IrAddNum -> "+"
-    is IrSubInt | IrSubNum -> "-"
-    is IrMulInt | IrMulNum -> "*"
-    is IrDivInt | IrDivNum -> "/"
+    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
     is IrRemInt -> "%"
     is IrPowInt -> "**"
     is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> "+"
     is IrEq | IrApproxEq | IrApproxEqExact -> "=="
     is IrNotEq -> "!="
-    is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
-    is IrAnd -> "&&"  is IrOr -> "||"
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
     is IrAppendText | IrAppendList | IrConsList -> "+"
 
   emit-gvy-lambda-params : List IRParam, Integer -> Text
@@ -215,6 +219,7 @@ Section: Expression Emission
     is IrCtorPat (name) (subs) (ty) (sp) -> "if (_s.tag == \"" & name & "\") { " & emit-gvy-ctor-bindings subs 0 & emit-gvy-expr body arities & " } else { " & emit-gvy-match-body branches (i + 1) arities depth & " }"
     is IrVarPat (name) (ty) (sp) -> "def " & gvy-sanitize name & " = _s; " & emit-gvy-expr body arities
     is IrWildPat (sp) -> emit-gvy-expr body arities
+    is IrVecPat (pats) (ty) (sp) -> emit-gvy-expr body arities
 
   emit-gvy-ctor-bindings : List IRPat, Integer -> Text
   emit-gvy-ctor-bindings (subs) (i) =
@@ -222,6 +227,7 @@ Section: Expression Emission
    else let sub = list-at subs i
    in (when sub
     is IrVarPat (name) (ty) (sp) -> "def " & gvy-sanitize name & " = _s['field" & integer-to-text i & "']; "
+    is IrVecPat (pats) (ty) (sp) -> ""
     is otherwise -> "") & emit-gvy-ctor-bindings subs (i + 1)
 
   emit-gvy-act : List IRActStmt, List ArityEntry -> Text

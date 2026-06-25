@@ -1,0 +1,62 @@
+Chapter: StressSweepScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates stress-sweep.ps1 -- stress loop re-running test.ps1 until killed or failure.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  stress-params : List ShellParam = [sh-param-default "Jobs" SptInt (SeInt 7), sh-switch "Pin", sh-switch "ContinueOnFailure", sh-param-default "LogPath" SptString (SeLit "build-output\\stress-sweep.log")]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScRaw "$ErrorActionPreference = 'Continue'", ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path"]
+
+Section: S02 -- Setup
+
+  s02 : List ShellCmd = [ScAssign "sweepScript" (SeRaw "Join-Path $PSScriptRoot 'test.ps1'"), ScRaw "New-Item -ItemType Directory -Force -Path (Split-Path $LogPath) | Out-Null", ScSetContent (SeVar "LogPath") (SeRaw "\"=== stress-sweep start jobs=$Jobs at $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) ===`n\"")]
+
+Section: S03 -- Iteration Start
+
+  s03 : List ShellCmd = [ScRaw "$iter++", ScAssign "start" (SeRaw "Get-Date"), ScAddContent (SeVar "LogPath") (SeRaw "\"[iter $iter] start $($start.ToString('HH:mm:ss'))\"")]
+
+Section: S04 -- Run Test
+
+  s04-try-body : List ShellCmd = [ScRaw "$sweepArgs = @('-NoProfile','-File',$sweepScript,'-Jobs',$Jobs)", ScIf (SeVar "Pin") [ScRaw "$sweepArgs += '-Pin'"] [], ScRaw "& pwsh @sweepArgs *>&1 | Tee-Object -FilePath $tmp | Out-Null", ScAssign "exit" (SeRaw "$LASTEXITCODE"), ScAssign "tail" (SeRaw "(Get-Content -Path $tmp -Tail 6) -join ' | '")]
+
+  s04-catch : List ShellCmd = [ScAssign "exit" (SeInt (-1)), ScAssign "tail" (SeRaw "\"exception: $_\"")]
+
+  s04-finally : List ShellCmd = [ScRaw "Remove-Item -Force $tmp -ErrorAction SilentlyContinue"]
+
+  s04 : List ShellCmd = [ScDotNetCallAssign "tmp" "System.IO.Path" "GetTempFileName" [], ScTry s04-try-body s04-catch s04-finally]
+
+Section: S05 -- Log Result
+
+  s05 : List ShellCmd = [ScRaw "$dur = [int]((Get-Date) - $start).TotalSeconds", ScAddContent (SeVar "LogPath") (SeRaw "\"[iter $iter] end exit=$exit dur=${dur}s tail=$tail\"")]
+
+Section: S06 -- Check Failure
+
+  s06-continue-branch : List ShellCmd = [ScAddContent (SeVar "LogPath") (SeRaw "\"[iter $iter] FAILED exit=$exit -- continuing (-ContinueOnFailure)\"")]
+
+  s06-stop-branch : List ShellCmd = [ScAddContent (SeVar "LogPath") (SeRaw "\"[iter $iter] FAILED exit=$exit -- stopping\""), ScExit (SeInt 1)]
+
+  s06 : List ShellCmd = [ScIf (SeRaw "$exit -ne 0") [ScIf (SeVar "ContinueOnFailure") s06-continue-branch s06-stop-branch] []]
+
+Section: Assembly
+
+  stress-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScAssign "iter" (SeInt 0), ScLabeledWhile "stress_loop" (SeRaw "$true") [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]]
+
+  stress-script : ShellScript = sh-script "stress-sweep" "Stress loop: re-run test.ps1 -Jobs N until killed or test fails" stress-params stress-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell stress-script)
+  end
+
+Page 1

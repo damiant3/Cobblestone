@@ -13,6 +13,9 @@ Chapter: MarketWeb
   cites Works chapter Http
   cites Foreword chapter Maybe
   cites Foreword chapter Logger
+  cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
   cites Encode chapter Json
 
  HTTP server for the Market storefront. Routes requests to the
@@ -78,13 +81,30 @@ Section: Auth Handlers
   handle-login (st) (req) =
     let log2 = log-info-msg (st.mkt-log) "web" "login attempt" 0
     in let st2 = __record-set st "mkt-log" log2
-    in (st2, render-page (st.mkt-config) None (login-page "Login processing not yet wired"))
+    in let email = find-param-value (req.body) "email"
+    in let password = find-param-value (req.body) "password"
+    in if text-length email == 0 then (st2, render-page (st2.mkt-config) None (login-page "Email is required"))
+    else let match = find-user-by-email (market-read-users st2) email 0
+    in when match
+      is None -> (st2, render-page (st2.mkt-config) None (login-page "Invalid email or password"))
+      is Just (user) ->
+        if verify-password password (st2.mkt-config.store-merchant-id) (user.user-pass-hash)
+        then let (st3, sess) = create-session st2 (user.user-id) (user.user-role) 0
+             in (st3, http-redirect "/")
+        else (st2, render-page (st2.mkt-config) None (login-page "Invalid email or password"))
 
   handle-register : MarketState, HttpRequest, Integer -> (MarketState, HttpResponse)
   handle-register (st) (req) (ts) =
     let log2 = log-info-msg (st.mkt-log) "web" "register attempt" ts
     in let st2 = __record-set st "mkt-log" log2
-    in (st2, render-page (st.mkt-config) None (register-page "Registration processing not yet wired"))
+    in let name = find-param-value (req.body) "name"
+    in let email = find-param-value (req.body) "email"
+    in let password = find-param-value (req.body) "password"
+    in if text-length name == 0 then (st2, render-page (st2.mkt-config) None (register-page "Name is required"))
+    else if text-length email == 0 then (st2, render-page (st2.mkt-config) None (register-page "Email is required"))
+    else if text-length password == 0 then (st2, render-page (st2.mkt-config) None (register-page "Password is required"))
+    else let (st3, user) = register-user st2 email name password ts
+    in (st3, http-redirect "/login")
 
   handle-logout : MarketState, HttpRequest -> (MarketState, HttpResponse)
   handle-logout (st) (req) =
@@ -107,7 +127,7 @@ Section: Admin Handlers
     if path == "/admin" then admin-dashboard 0 0 (money-zero USD)
     else if path == "/admin/products" then admin-product-list (get-active-products st)
     else if path == "/admin/orders" then admin-order-list []
-    else if path == "/admin/users" then "<div class=\"section-title\">Users</div><p>User management coming soon.</p>"
+    else if path == "/admin/users" then admin-user-list (market-read-users st)
     else if path == "/admin/settings" then admin-settings (st.mkt-config)
     else "<p>Admin page not found</p>"
 
@@ -120,6 +140,29 @@ Section: Admin Handlers
     "<div class=\"form-group\"><label>Merchant ID</label><input class=\"form-input\" value=\"" & cfg.store-merchant-id & "\"></div>" &
     "<div class=\"form-group\"><label>Accent Color</label><input class=\"form-input\" type=\"color\" value=\"" & cfg.store-accent-color & "\"></div>" &
     "<button class=\"btn\">Save Settings</button></div>"
+
+  admin-user-list : List User -> Text
+  admin-user-list (users) =
+    "<div class=\"section-title\">Users (" & show (list-length users) & ")</div>" &
+    "<table style=\"width:100%;border-collapse:collapse\">" &
+    "<tr style=\"background:#f5f5f5;text-align:left\">" &
+    "<th style=\"padding:8px;border-bottom:2px solid #ddd\">ID</th>" &
+    "<th style=\"padding:8px;border-bottom:2px solid #ddd\">Name</th>" &
+    "<th style=\"padding:8px;border-bottom:2px solid #ddd\">Email</th>" &
+    "<th style=\"padding:8px;border-bottom:2px solid #ddd\">Role</th></tr>" &
+    admin-user-rows users 0 &
+    "</table>"
+
+  admin-user-rows : List User, Integer -> Text
+  admin-user-rows (users) (i) =
+    if i >= list-length users then ""
+    else let u = list-at users i
+    in "<tr style=\"border-bottom:1px solid #eee\">" &
+    "<td style=\"padding:8px\">" & u.user-id & "</td>" &
+    "<td style=\"padding:8px\">" & u.user-name & "</td>" &
+    "<td style=\"padding:8px\">" & u.user-email & "</td>" &
+    "<td style=\"padding:8px\">" & role-name (u.user-role) & "</td></tr>" &
+    admin-user-rows users (i + 1)
 
 Section: API Handlers
 
@@ -159,6 +202,36 @@ Section: State Helpers
 
   lookup-session : MarketState, HttpRequest -> Maybe Session
   lookup-session (st) (req) = None
+
+  find-user-by-email : List User, Text, Integer -> Maybe User
+  find-user-by-email (users) (email) (i) =
+    if i >= list-length users then None
+    else let u = list-at users i
+    in if u.user-email == email then Just u
+    else find-user-by-email users email (i + 1)
+
+Section: Form Parsing
+
+  find-param-value : Text, Text -> Text
+  find-param-value (qs) (key) =
+    let pairs = text-split qs "&"
+    in find-in-pairs pairs key 0
+
+  find-in-pairs : List Text, Text, Integer -> Text
+  find-in-pairs (pairs) (key) (i) =
+    if i >= list-length pairs then ""
+    else let pair = list-at pairs i
+    in let eqpos = find-char pair 61 0
+    in if eqpos < 0 then find-in-pairs pairs key (i + 1)
+    else let k = text-take pair eqpos
+    in if k == key then text-drop pair (eqpos + 1)
+    else find-in-pairs pairs key (i + 1)
+
+  find-char : Text, Integer, Integer -> Integer
+  find-char (s) (target) (i) =
+    if i >= text-length s then (-1)
+    else if to-unicode (char-code (char-at s i)) == target then i
+    else find-char s target (i + 1)
 
 Section: HTTP Helpers
 

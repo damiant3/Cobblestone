@@ -223,62 +223,88 @@ Section: ARM64 UEFI Entry Stub
    in let exit-label = list-length i / 4
    in a64pe-patch-insn i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
 
-  a64pe-stub-exit-boot-services : List Integer
-  a64pe-stub-exit-boot-services =
-   arm64-sub-imm 31 31 48
-   & arm64-str 31 31 0
-   & arm64-li 9 #4000
-   & arm64-str 9 31 8
+  a64pe-stub-exit-boot-services-at : Integer -> List Integer
+  a64pe-stub-exit-boot-services-at (pt-base) =
+   arm64-sub-imm 31 31 32
+   & arm64-li 9 a64pe-pt-size
+   & arm64-str 9 31 0
    & arm64-mov 0 31
-   & arm64-add-imm 1 31 8
-   & arm64-add-imm 2 31 16
-   & arm64-add-imm 3 31 24
-   & arm64-add-imm 9 31 32
-   & arm64-str 9 31 40
+   & arm64-li 1 pt-base
+   & arm64-add-imm 2 31 8
+   & arm64-add-imm 3 31 16
+   & arm64-add-imm 4 31 24
    & arm64-ldr 9 21 56
    & arm64-blr 9
-   & arm64-ldr 1 31 16
+   & arm64-ldr 1 31 8
    & arm64-mov 0 19
    & arm64-ldr 9 21 232
    & arm64-blr 9
-   & arm64-add-imm 31 31 48
+   & arm64-add-imm 31 31 32
+
+  a64pe-stub-flush-copied-code : Integer, Integer -> List Integer
+  a64pe-stub-flush-copied-code (text-size) (rodata-size) =
+   let i = []
+   in let i = i & arm64-li 9 a64pe-kernel-base
+   in let i = i & arm64-li 10 (a64pe-kernel-base + text-size + rodata-size)
+   in let loop = list-length i / 4
+   in let i = a64pe-emit i (arm64-cmp 9 10)
+   in let exit-idx = list-length i / 4
+   in let i = a64pe-emit i arm64-nop
+   in let i = i & arm64-encode (bit-or #D50B7B20 9)
+   in let i = i & arm64-encode (bit-or #D50B7520 9)
+   in let i = a64pe-emit i (arm64-add-imm 9 9 64)
+   in let i = a64pe-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in let i = a64pe-patch-insn i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
+   in i & arm64-dsb-ish & arm64-isb
 
 Section: Page Table Setup
 
- Identity-map 0-4GB + ECAM region with 4KB granule, 4-level tables.
+ Identity-map 0-4GB + PCI ECAM + high MMIO with 4KB granule, 4-level tables.
  Uses 0x70000-0x7FFFF for page tables (pre-cleared).
- PML4 (PGD) at 0x70000: 1 entry -> PUD at 0x71000
- PUD at 0x71000: 4+1 entries -> PMDs at 0x72000-0x76000
- PMD 0-3: 512 entries each covering 0-4GB (2MB block descriptors)
- PMD 4: 512 entries covering 0x40_0000_0000-0x40_3FFF_FFFF (ECAM region)
+ PGD at 0x70000: entries 0,1 -> PUD0 at 0x71000, PUD1 at 0x77000
+ PUD0 at 0x71000: entries 0-3 (0-4GB), entry 256 (ECAM at 0x4010000000)
+ PUD1 at 0x77000: entry 0 (high MMIO at 0x8000000000, VirtIO BARs)
+ PMD 0-3 at 0x72000-0x75000: 0-4GB (2MB blocks, normal memory,
+   except PMD1 entry 1 = 0x40200000-0x403FFFFF patched to device memory
+   for VirtIO DMA buffers)
+ PMD 4 at 0x76000: ECAM region (2MB blocks, device memory)
+ PMD 5 at 0x78000: high MMIO region (2MB blocks, device memory)
 
-  a64pe-pt-base : Integer = #40070000
+  a64pe-pt-size : Integer = #10000
 
-  a64pe-stub-setup-page-tables : List Integer
-  a64pe-stub-setup-page-tables =
-   arm64-li 9 a64pe-pt-base
+  a64pe-stub-setup-page-tables-at : Integer -> List Integer
+  a64pe-stub-setup-page-tables-at (pt-base) =
+   arm64-li 9 pt-base
    & arm64-li 10 #10000
    & arm64-movz 11 0 0
    & a64pe-stub-zero-loop 9 10
-   & arm64-li 9 a64pe-pt-base
-   & arm64-li 10 (a64pe-pt-base + #1000 + 3)
+   & arm64-li 9 pt-base
+   & arm64-li 10 (pt-base + #1000 + 3)
    & arm64-str 10 9 0
-   & arm64-li 9 (a64pe-pt-base + #1000)
-   & arm64-li 10 (a64pe-pt-base + #2000 + 3)
-   & arm64-str 10 9 0
-   & arm64-li 10 (a64pe-pt-base + #3000 + 3)
+   & arm64-li 10 (pt-base + #7000 + 3)
    & arm64-str 10 9 8
-   & arm64-li 10 (a64pe-pt-base + #4000 + 3)
+   & arm64-li 9 (pt-base + #1000)
+   & arm64-li 10 (pt-base + #2000 + 3)
+   & arm64-str 10 9 0
+   & arm64-li 10 (pt-base + #3000 + 3)
+   & arm64-str 10 9 8
+   & arm64-li 10 (pt-base + #4000 + 3)
    & arm64-str 10 9 16
-   & arm64-li 10 (a64pe-pt-base + #5000 + 3)
+   & arm64-li 10 (pt-base + #5000 + 3)
    & arm64-str 10 9 24
-   & arm64-li 10 (a64pe-pt-base + #6000 + 3)
-   & arm64-str 10 9 (64 * 8)
-   & a64pe-stub-fill-pmd (a64pe-pt-base + #2000) 0
-   & a64pe-stub-fill-pmd (a64pe-pt-base + #3000) #40000000
-   & a64pe-stub-fill-pmd (a64pe-pt-base + #4000) #80000000
-   & a64pe-stub-fill-pmd (a64pe-pt-base + #5000) #C0000000
-   & a64pe-stub-fill-pmd (a64pe-pt-base + #6000) #4000000000
+   & arm64-li 10 (pt-base + #6000 + 3)
+   & arm64-str 10 9 (256 * 8)
+   & arm64-li 9 (pt-base + #7000)
+   & arm64-li 10 (pt-base + #8000 + 3)
+   & arm64-str 10 9 0
+   & a64pe-stub-fill-pmd (pt-base + #2000) 0
+   & a64pe-stub-fill-pmd (pt-base + #3000) #40000000
+   & a64pe-stub-patch-pmd-device (pt-base + #3000) 1 #40000000
+   & a64pe-stub-fill-pmd (pt-base + #4000) #80000000
+   & a64pe-stub-fill-pmd (pt-base + #5000) #C0000000
+   & a64pe-stub-fill-pmd (pt-base + #6000) (bit-or #4000000000 4)
+   & a64pe-stub-fill-pmd (pt-base + #8000) (bit-or #8000000000 4)
 
   a64pe-stub-zero-loop : Integer, Integer -> List Integer
   a64pe-stub-zero-loop (base) (count) =
@@ -315,6 +341,12 @@ Section: Page Table Setup
    in let exit-label = list-length i / 4
    in a64pe-patch-insn i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
 
+  a64pe-stub-patch-pmd-device : Integer, Integer, Integer -> List Integer
+  a64pe-stub-patch-pmd-device (pmd-base) (entry-idx) (phys-start) =
+   arm64-li 9 (pmd-base + entry-idx * 8)
+   & arm64-li 10 (bit-or (phys-start + entry-idx * #200000) #405)
+   & arm64-str 10 9 0
+
 Section: MMU Configuration
 
  MAIR_EL1: attr0 = 0xFF (normal write-back cacheable)
@@ -324,32 +356,26 @@ Section: MMU Configuration
  TTBR0_EL1: page table base at 0x70000
  SCTLR_EL1: enable MMU (bit 0), caches (bits 2,12)
 
-  a64pe-stub-enable-mmu : List Integer
-  a64pe-stub-enable-mmu =
-   arm64-li 9 #FF
+  a64pe-stub-enable-mmu-at : Integer -> List Integer
+  a64pe-stub-enable-mmu-at (pt-base) =
+   arm64-dsb-sy
+   & arm64-li 9 #FF
    & arm64-msr sysreg-mair-el1 9
-   & arm64-isb
-   & arm64-li 9 #35B5110
-   & arm64-msr sysreg-tcr-el1 9
-   & arm64-isb
-   & arm64-li 9 a64pe-pt-base
+   & arm64-li 9 pt-base
    & arm64-msr sysreg-ttbr0-el1 9
-   & arm64-isb
-   & arm64-mrs 9 sysreg-sctlr-el1
-   & arm64-li 10 #1005
-   & arm64-or 9 9 10
-   & arm64-msr sysreg-sctlr-el1 9
+   & arm64-encode #D508701F
+   & arm64-dsb-sy
    & arm64-isb
 
 Section: Jump to Kernel
 
-  a64pe-stub-jump-to-kernel : Integer, Integer -> List Integer
-  a64pe-stub-jump-to-kernel (start-offset) (heap-base) =
+  a64pe-stub-jump-to-kernel : Integer, Integer, Integer -> List Integer
+  a64pe-stub-jump-to-kernel (start-offset) (heap-base) (stack-top) =
    arm64-mov 22 31
    & arm64-li 9 #3C0
    & arm64-msr sysreg-daif 9
    & arm64-isb
-   & arm64-li 9 #7F000000
+   & arm64-li 9 stack-top
    & arm64-mov 31 9
    & arm64-li 28 heap-base
    & arm64-li 9 (a64pe-kernel-base + start-offset)
@@ -367,8 +393,8 @@ Section: Full Stub Assembly
 
   a64pe-build-stub : Integer, Integer, Integer, Integer -> List Integer
   a64pe-build-stub (text-size) (rodata-size) (start-offset) (data-vaddr) =
-   let text-pages = (text-size + rodata-size + 4095) / 4096
-   in let heap-base = a64pe-kernel-base + align-up (text-size + rodata-size) 4096
+   let text-pages = (text-size + rodata-size + 4095) / 4096 + (a64pe-pt-size / 4096) + 8192
+   in let heap-base = a64pe-kernel-base + align-up (text-size + rodata-size) 4096 + a64pe-pt-size
    in let stub0 = a64pe-build-stub-inner text-size rodata-size start-offset data-vaddr 0 text-pages heap-base
    in let size1 = list-length stub0
    in let stub1 = a64pe-build-stub-inner text-size rodata-size start-offset data-vaddr size1 text-pages heap-base
@@ -383,6 +409,8 @@ Section: Full Stub Assembly
    let text-off = stub-size
    in let rodata-off = stub-size + text-size
    in let bl = a64pe-stub-bl-offset
+   in let pt-base = heap-base - a64pe-pt-size
+   in let stack-top = a64pe-kernel-base + text-pages * 4096
    in a64pe-stub-prolog
    & a64pe-stub-save-boot-services
    & a64pe-stub-print-char 67
@@ -392,7 +420,9 @@ Section: Full Stub Assembly
    & a64pe-stub-print-char 50
    & a64pe-stub-copy-rodata rodata-off rodata-size data-vaddr bl
    & a64pe-stub-print-char 51
-   & a64pe-stub-jump-to-kernel start-offset heap-base
+   & a64pe-stub-exit-boot-services-at pt-base
+   & a64pe-stub-flush-copied-code text-size rodata-size
+   & a64pe-stub-jump-to-kernel start-offset heap-base stack-top
 
 Section: Build ARM64 PE from Wire Output
 

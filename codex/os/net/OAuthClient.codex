@@ -1,0 +1,187 @@
+Chapter: OAuthClient
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Encode chapter Base64
+  cites Encode chapter Json
+  cites Encode chapter Uri
+
+ OAuth 2.0 Authorization Code flow with PKCE (RFC 7636). Builds
+ authorization URLs, exchanges codes for tokens, and refreshes
+ expired tokens. The client never stores secrets -- PKCE eliminates
+ the need for client-secret in public-client flows.
+
+Section: Config
+
+  OAuthConfig = record {
+    oc-provider : Text,
+    oc-client-id : Text,
+    oc-redirect-uri : Text,
+    oc-scopes : Text,
+    oc-auth-url : Text,
+    oc-token-url : Text
+  }
+
+Section: State
+
+  OAuthState = record {
+    os-state-nonce : Text,
+    os-code-verifier : Text,
+    os-timestamp : Integer
+  }
+
+  oauth-state-new : Text, Text, Integer -> OAuthState
+  oauth-state-new (nonce) (verifier) (ts) = OAuthState {
+    os-state-nonce = nonce,
+    os-code-verifier = verifier,
+    os-timestamp = ts
+  }
+
+Section: Tokens
+
+  OAuthTokens = record {
+    ot-access-token : Text,
+    ot-refresh-token : Text,
+    ot-id-token : Text,
+    ot-expires-in : Integer,
+    ot-token-type : Text,
+    ot-scope : Text
+  }
+
+  oauth-tokens-empty : OAuthTokens
+  oauth-tokens-empty = OAuthTokens {
+    ot-access-token = "", ot-refresh-token = "", ot-id-token = "",
+    ot-expires-in = 0, ot-token-type = "", ot-scope = ""
+  }
+
+Section: Errors
+
+  OAuthResult =
+    | OAuthSuccess (OAuthTokens)
+    | OAuthError (Text) (Text)
+
+Section: Authorization URL
+
+  oauth-authorize-url : OAuthConfig, OAuthState -> Text
+  oauth-authorize-url (cfg) (st) =
+    let challenge = oauth-pkce-challenge (st.os-code-verifier)
+    in cfg.oc-auth-url
+      & "?response_type=code"
+      & "&client_id=" & uri-encode (cfg.oc-client-id)
+      & "&redirect_uri=" & uri-encode (cfg.oc-redirect-uri)
+      & "&scope=" & uri-encode (cfg.oc-scopes)
+      & "&state=" & uri-encode (st.os-state-nonce)
+      & "&code_challenge=" & challenge
+      & "&code_challenge_method=S256"
+
+Section: PKCE
+
+  oauth-pkce-challenge : Text -> Text
+  oauth-pkce-challenge (verifier) =
+    let hash = sha256-text verifier
+    in b64url-encode-bytes hash
+
+  b64url-encode-bytes : List Integer -> Text
+  b64url-encode-bytes (bs) =
+    let std = base64-encode bs
+    in b64url-strip-pad (b64url-from-std std)
+
+  b64url-from-std : Text -> Text
+  b64url-from-std (s) = b64url-conv s 0 (text-length s) ""
+
+  b64url-conv : Text, Integer, Integer, Text -> Text
+  b64url-conv (s) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = char-code-at s i
+    in let replaced = if c == 76 then char-to-text (code-to-char 73)
+      else if c == 81 then char-to-text (code-to-char 85)
+      else char-to-text (code-to-char c)
+    in b64url-conv s (i + 1) n (acc & replaced)
+
+  b64url-strip-pad : Text -> Text
+  b64url-strip-pad (s) =
+    let len = text-length s
+    in if len == 0 then s
+    else if text-ends-with s "==" then text-take s (len - 2)
+    else if text-ends-with s "=" then text-take s (len - 1)
+    else s
+
+  sha256-text : Text -> List Integer
+  sha256-text (s) = sha256 (text-to-bytes s)
+
+  text-to-bytes : Text -> List Integer
+  text-to-bytes (s) = ttb-loop s 0 (text-length s) []
+
+  ttb-loop : Text, Integer, Integer, List Integer -> List Integer
+  ttb-loop (s) (i) (n) (acc) =
+    if i >= n then acc
+    else ttb-loop s (i + 1) n (list-push acc (char-code-at s i))
+
+  text-ends-with : Text, Text -> Boolean
+  text-ends-with (s) (suffix) =
+    let slen = text-length s
+    in let plen = text-length suffix
+    in if plen > slen then False
+    else text-drop s (slen - plen) == suffix
+
+Section: Token Exchange
+
+  oauth-exchange-code : OAuthConfig, Text, OAuthState -> Text
+  oauth-exchange-code (cfg) (code) (st) =
+    "grant_type=authorization_code"
+    & "&code=" & uri-encode code
+    & "&redirect_uri=" & uri-encode (cfg.oc-redirect-uri)
+    & "&client_id=" & uri-encode (cfg.oc-client-id)
+    & "&code_verifier=" & uri-encode (st.os-code-verifier)
+
+  oauth-refresh-body : OAuthConfig, Text -> Text
+  oauth-refresh-body (cfg) (refresh-token) =
+    "grant_type=refresh_token"
+    & "&refresh_token=" & uri-encode refresh-token
+    & "&client_id=" & uri-encode (cfg.oc-client-id)
+
+Section: Response Parsing
+
+  oauth-parse-tokens : Text -> OAuthResult
+  oauth-parse-tokens (body) =
+    let parsed = json-parse body
+    in when parsed
+      is Just (v) -> oauth-extract-tokens v
+      is None -> OAuthError "parse_error" "failed to parse token response"
+
+  oauth-extract-tokens : JsonValue -> OAuthResult
+  oauth-extract-tokens (v) =
+    let err = json-get-str v "error" ""
+    in if text-length err > 0 then OAuthError err (json-get-str v "error_description" "")
+    else OAuthSuccess (OAuthTokens {
+      ot-access-token = json-get-str v "access_token" "",
+      ot-refresh-token = json-get-str v "refresh_token" "",
+      ot-id-token = json-get-str v "id_token" "",
+      ot-expires-in = json-get-int v "expires_in" 3600,
+      ot-token-type = json-get-str v "token_type" "Bearer",
+      ot-scope = json-get-str v "scope" ""
+    })
+
+Section: Token Queries
+
+  oauth-has-refresh : OAuthTokens -> Boolean
+  oauth-has-refresh (t) = text-length (t.ot-refresh-token) > 0
+
+  oauth-has-id-token : OAuthTokens -> Boolean
+  oauth-has-id-token (t) = text-length (t.ot-id-token) > 0
+
+  oauth-bearer-header : OAuthTokens -> Text
+  oauth-bearer-header (t) = "Bearer " & t.ot-access-token
+
+Section: Formatting
+
+  format-oauth-config : OAuthConfig -> Text
+  format-oauth-config (c) =
+    c.oc-provider & " client=" & c.oc-client-id & " auth=" & c.oc-auth-url
+
+  format-oauth-tokens : OAuthTokens -> Text
+  format-oauth-tokens (t) =
+    "type=" & t.ot-token-type & " expires=" & show (t.ot-expires-in)
+    & " has-refresh=" & if oauth-has-refresh t then "yes" else "no"
+    & " has-id=" & if oauth-has-id-token t then "yes" else "no"
+
+Page 1

@@ -39,7 +39,8 @@ Section: Parse Result
 
   ParsedIR = record {
    chapter : IRChapter,
-   type-defs : List ATypeDef
+   type-defs : List ATypeDef,
+   effect-op-names : List Text
   }
 
 Section: Tokenize
@@ -229,10 +230,26 @@ Section: OverflowMode + BinaryOp
    else if a == "sub-num" then IrSubNum
    else if a == "mul-num" then IrMulNum
    else if a == "div-num" then IrDivNum
+   else if a == "add-real-approx" then IrAddRealApprox
+   else if a == "sub-real-approx" then IrSubRealApprox
+   else if a == "mul-real-approx" then IrMulRealApprox
+   else if a == "div-real-approx" then IrDivRealApprox
+   else if a == "add-real-trapping" then IrAddRealTrapping
+   else if a == "sub-real-trapping" then IrSubRealTrapping
+   else if a == "mul-real-trapping" then IrMulRealTrapping
+   else if a == "div-real-trapping" then IrDivRealTrapping
+   else if a == "add-real-saturating" then IrAddRealSaturating
+   else if a == "sub-real-saturating" then IrSubRealSaturating
+   else if a == "mul-real-saturating" then IrMulRealSaturating
+   else if a == "div-real-saturating" then IrDivRealSaturating
    else if a == "add-vec" then IrAddVec
    else if a == "sub-vec" then IrSubVec
    else if a == "mul-vec" then IrMulVec
    else if a == "div-vec" then IrDivVec
+   else if a == "lt-vec" then IrLtVec
+   else if a == "gt-vec" then IrGtVec
+   else if a == "le-vec" then IrLtEqVec
+   else if a == "ge-vec" then IrGtEqVec
    else if a == "eq" then IrEq
    else if a == "ne" then IrNotEq
    else if a == "lt" then IrLt
@@ -268,6 +285,9 @@ Section: CodexType
   parse-type-atom (a) =
    if a == "int-default" then int-ty-default
    else if a == "real" then RealTy
+   else if a == "real-approx" then RealApproxTy
+   else if a == "real-trapping" then RealTrappingTy
+   else if a == "real-saturating" then RealSaturatingTy
    else if a == "text" then TextTy
    else if a == "boolean" then BooleanTy
    else if a == "char" then CharTy
@@ -291,6 +311,7 @@ Section: CodexType
    else if head == "ctd" then parse-type-ctd xs
    else if head == "effectful" then parse-type-effectful xs
    else if head == "vector" then VectorTy (sexp-int (list-at xs 1)) (parse-type (list-at xs 2))
+   else if head == "unit" then UnitTy (make-name (sexp-str (list-at xs 1))) (parse-type (list-at xs 2))
    else ErrorTy
 
   parse-type-int : List SExp -> CodexType
@@ -470,6 +491,7 @@ Section: IRPattern
    in if head == "var-pat" then IrVarPat (sexp-str (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
    else if head == "lit-pat" then IrLitPat (sexp-str (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
    else if head == "ctor-pat" then parse-ctor-pat xs
+   else if head == "vec-pat" then parse-vec-pat xs
    else IrWildPat synthetic-span
 
   parse-ctor-pat : List SExp -> IRPat
@@ -478,6 +500,16 @@ Section: IRPattern
    in let subs = parse-pat-subs (sexp-list (list-at xs 2))
    in let ty = parse-type (list-at xs 3)
    in IrCtorPat name subs ty synthetic-span
+
+  parse-vec-pat : List SExp -> IRPat
+  parse-vec-pat (xs) =
+   let lane-pats = parse-vec-lane-pats xs 1 (list-length xs) []
+   in IrVecPat lane-pats synthetic-span
+
+  parse-vec-lane-pats : List SExp, Integer, Integer, List IRPat -> List IRPat
+  parse-vec-lane-pats (xs) (i) (len) (acc) =
+   if i >= len then acc
+   else parse-vec-lane-pats xs (i + 1) len (list-push acc (parse-pat (list-at xs i)))
 
   parse-pat-subs : List SExp -> List IRPat
   parse-pat-subs (xs) = parse-pat-subs-loop xs 1 (list-length xs) []
@@ -714,7 +746,7 @@ Section: IRDef + Chapter
        effect-op-names = eff-ops,
        span = synthetic-span
       }
-   in ParsedIR { chapter = chapter, type-defs = parsed-tdefs }
+   in ParsedIR { chapter = chapter, type-defs = parsed-tdefs, effect-op-names = eff-ops }
 
   walk-named-text : List SExp, Text -> Text
   walk-named-text (xs) (key) =

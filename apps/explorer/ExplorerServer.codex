@@ -2,7 +2,13 @@ Chapter: ExplorerServer
   cites Net chapter WebServer
   cites Net chapter Accounts
   cites Explorer chapter ExplorerStore
+  cites Explorer chapter WorkflowExporter
   cites Foreword chapter Maybe
+  cites Foreword chapter Parse
+  cites UI chapter DataTable
+  cites UI chapter FilterableList
+  cites UI chapter SearchBar
+  cites UI chapter StatusBadge
 
  Explorer webapp server. Reads a multi-table .db off the attached disk
  (ExplorerStore format, raw sectors via block-read-sector) and serves any
@@ -175,6 +181,13 @@ Section: Per-user creations
     in let buf = es-build-page-sized kept (cr-sectors * 512)
     in es-disk-save buf cr-start cr-sectors
 
+Section: Integer Parse Helper
+
+  parse-int-or : Text, Integer -> Integer
+  parse-int-or (s) (fallback) =
+    if text-length s == 0 then fallback
+    else parse-decimal-full s
+
 Section: Routes
 
   last-seg : Text -> Text
@@ -212,6 +225,27 @@ Section: Routes
        then when acct
          is None -> err-json "login required"
          is Just (a) -> export-md (a.acc-id) (a.handle)
+       else if base == "/api/export-workflow"
+       then let params = WorkflowParams {
+              model-name = url-decode (qp path "model"),
+              positive-prompt = url-decode (qp path "prompt"),
+              negative-prompt = url-decode (qp path "neg"),
+              frame-prompt = url-decode (qp path "frame"),
+              width = parse-int-or (qp path "width") 768,
+              height = parse-int-or (qp path "height") 1024,
+              steps = parse-int-or (qp path "steps") 20,
+              cfg-whole = parse-int-or (qp path "cfg_whole") 7,
+              cfg-frac = parse-int-or (qp path "cfg_frac") 0,
+              sampler = url-decode (qp path "sampler"),
+              scheduler = url-decode (qp path "scheduler"),
+              seed = parse-int-or (qp path "seed") 424242,
+              upscale-by = 2,
+              upscaler-model = url-decode (qp path "upscaler")
+            }
+            in let pipeline = qp path "pipeline"
+            in if pipeline == "card" then build-card-workflow params
+            else if pipeline == "item" then build-item-workflow params "default"
+            else build-simple-workflow params
        else table-json (last-seg base)
 
 Section: Entry

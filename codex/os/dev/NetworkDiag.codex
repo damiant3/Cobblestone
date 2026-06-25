@@ -1,0 +1,174 @@
+Chapter: NetworkDiag
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Network diagnostics. Ping, traceroute, DNS lookup, port check,
+ speed test, and interface status. Each tool runs as a test with
+ result history. Provides both programmatic API and settings UI.
+
+Section: Diagnostic Tool
+
+  DiagTool =
+    | DiagPing
+    | DiagTraceroute
+    | DiagDnsLookup
+    | DiagPortCheck
+    | DiagSpeedTest
+
+  diag-tool-label : DiagTool -> Text
+  diag-tool-label (t) = when t
+    is DiagPing -> "Ping"
+    is DiagTraceroute -> "Traceroute"
+    is DiagDnsLookup -> "DNS Lookup"
+    is DiagPortCheck -> "Port Check"
+    is DiagSpeedTest -> "Speed Test"
+
+Section: Test Result
+
+  DiagResult = record {
+    dr-tool : DiagTool,
+    dr-target : Text,
+    dr-success : Boolean,
+    dr-latency-ms : Integer,
+    dr-detail : Text,
+    dr-timestamp : Integer
+  }
+
+  diag-result : DiagTool, Text, Boolean, Integer, Text, Integer -> DiagResult
+  diag-result (tool) (target) (ok) (latency) (detail) (ts) = DiagResult {
+    dr-tool = tool, dr-target = target, dr-success = ok,
+    dr-latency-ms = latency, dr-detail = detail, dr-timestamp = ts
+  }
+
+Section: Interface Info
+
+  NetInterface = record {
+    ni-name : Text,
+    ni-ip : Text,
+    ni-mac : Text,
+    ni-link-speed : Integer,
+    ni-up : Boolean,
+    ni-rx-bytes : Integer,
+    ni-tx-bytes : Integer
+  }
+
+  net-interface : Text, Text, Text, Integer -> NetInterface
+  net-interface (name) (ip) (mac) (speed) = NetInterface {
+    ni-name = name, ni-ip = ip, ni-mac = mac, ni-link-speed = speed,
+    ni-up = True, ni-rx-bytes = 0, ni-tx-bytes = 0
+  }
+
+Section: Speed Test Result
+
+  SpeedResult = record {
+    sp-download-kbps : Integer,
+    sp-upload-kbps : Integer,
+    sp-ping-ms : Integer,
+    sp-server : Text,
+    sp-timestamp : Integer
+  }
+
+Section: State
+
+  NetworkDiagState = record {
+    nd-results : List DiagResult,
+    nd-result-count : Integer,
+    nd-interfaces : List NetInterface,
+    nd-interface-count : Integer,
+    nd-running : Boolean,
+    nd-current-tool : DiagTool,
+    nd-target : Text,
+    nd-port : Integer,
+    nd-last-speed : SpeedResult
+  }
+
+  network-diag-new : NetworkDiagState
+  network-diag-new = NetworkDiagState {
+    nd-results = [], nd-result-count = 0,
+    nd-interfaces = [], nd-interface-count = 0,
+    nd-running = False, nd-current-tool = DiagPing, nd-target = "",
+    nd-port = 80,
+    nd-last-speed = SpeedResult { sp-download-kbps = 0, sp-upload-kbps = 0, sp-ping-ms = 0, sp-server = "", sp-timestamp = 0 }
+  }
+
+Section: Actions
+
+  nd-set-target : NetworkDiagState, Text -> NetworkDiagState
+  nd-set-target (st) (t) = __record-set st "nd-target" t
+
+  nd-set-tool : NetworkDiagState, DiagTool -> NetworkDiagState
+  nd-set-tool (st) (t) = __record-set st "nd-current-tool" t
+
+  nd-set-port : NetworkDiagState, Integer -> NetworkDiagState
+  nd-set-port (st) (p) = __record-set st "nd-port" p
+
+  nd-start : NetworkDiagState -> NetworkDiagState
+  nd-start (st) = __record-set st "nd-running" True
+
+  nd-add-result : NetworkDiagState, DiagResult -> NetworkDiagState
+  nd-add-result (st) (r) =
+    __record-set (__record-set (__record-set st "nd-results" (list-push (st.nd-results) r)) "nd-result-count" (st.nd-result-count + 1)) "nd-running" False
+
+  nd-add-interface : NetworkDiagState, NetInterface -> NetworkDiagState
+  nd-add-interface (st) (iface) =
+    __record-set (__record-set st "nd-interfaces" (list-push (st.nd-interfaces) iface)) "nd-interface-count" (st.nd-interface-count + 1)
+
+  nd-update-speed : NetworkDiagState, SpeedResult -> NetworkDiagState
+  nd-update-speed (st) (speed) = __record-set st "nd-last-speed" speed
+
+  nd-clear-results : NetworkDiagState -> NetworkDiagState
+  nd-clear-results (st) = __record-set (__record-set st "nd-results" []) "nd-result-count" 0
+
+Section: Widget
+
+  nd-widget : NetworkDiagState -> WidgetNode
+  nd-widget (st) =
+    let title = widget-label "nd-title" "Network Diagnostics"
+    in let tool-btns = widget-panel "nd-tools" DirRow 4 [
+      widget-button "nd-t-ping" "Ping",
+      widget-button "nd-t-trace" "Traceroute",
+      widget-button "nd-t-dns" "DNS Lookup",
+      widget-button "nd-t-port" "Port Check",
+      widget-button "nd-t-speed" "Speed Test"
+    ]
+    in let target-input = widget-input "nd-target" (st.nd-target) (text-length (st.nd-target))
+    in let run-btn = widget-button "nd-run" (if st.nd-running then "Running..." else "Run")
+    in let iface-section = nd-iface-widget st
+    in let result-section = nd-result-widget st
+    in widget-panel "nd-panel" DirColumn 4 [title, tool-btns, target-input, run-btn, iface-section, result-section]
+
+  nd-iface-widget : NetworkDiagState -> WidgetNode
+  nd-iface-widget (st) =
+    let title = widget-label "nd-if-title" "Interfaces"
+    in let rows = nd-iface-rows st 0 (st.nd-interface-count) []
+    in widget-panel "nd-ifaces" DirColumn 2 ([title] & rows)
+
+  nd-iface-rows : NetworkDiagState, Integer, Integer, List WidgetNode -> List WidgetNode
+  nd-iface-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let iface = list-at (st.nd-interfaces) i
+    in let row = widget-label ("nd-if-" & show i) (iface.ni-name & " " & iface.ni-ip & " " & (if iface.ni-up then "UP" else "DOWN") & " " & show (iface.ni-link-speed) & " Mbps")
+    in nd-iface-rows st (i + 1) n (list-push acc row)
+
+  nd-result-widget : NetworkDiagState -> WidgetNode
+  nd-result-widget (st) =
+    let title = widget-label "nd-r-title" ("Results (" & show (st.nd-result-count) & ")")
+    in let rows = nd-result-rows st 0 (st.nd-result-count) []
+    in widget-panel "nd-results" DirColumn 2 ([title] & rows)
+
+  nd-result-rows : NetworkDiagState, Integer, Integer, List WidgetNode -> List WidgetNode
+  nd-result-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at (st.nd-results) (n - 1 - i)
+    in let status = if r.dr-success then "OK" else "FAIL"
+    in let row = widget-label ("nd-r-" & show i) (diag-tool-label (r.dr-tool) & " " & r.dr-target & " " & status & " " & show (r.dr-latency-ms) & "ms " & r.dr-detail)
+    in nd-result-rows st (i + 1) n (list-push acc row)
+
+Section: Formatting
+
+  format-network-diag : NetworkDiagState -> Text
+  format-network-diag (st) =
+    "tool=" & diag-tool-label (st.nd-current-tool) & " target=" & st.nd-target
+    & " results=" & show (st.nd-result-count) & " interfaces=" & show (st.nd-interface-count)
+
+Page 1

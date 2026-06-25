@@ -82,7 +82,7 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> "(await " & emit-dart-expr task arities indent & ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-dart-expr body arities indent
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-dart-expr body arities indent
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-dart-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-dart-act body arities indent
     is IrError (msg) (ty) (sp) -> "throw Exception(\"" & dart-escape msg & "\")"
 
   emit-dart-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
@@ -96,16 +96,16 @@ Section: Expression Emission
     is IrDivInt -> "((" & lhs & " as int) ~/ (" & rhs & " as int))"
     is IrRemInt -> "((" & lhs & " as int) % (" & rhs & " as int))"
     is IrPowInt -> "pow((" & lhs & " as int), (" & rhs & " as int)).toInt()"
-    is IrAddNum -> "((" & lhs & " as double) + (" & rhs & " as double))"
-    is IrSubNum -> "((" & lhs & " as double) - (" & rhs & " as double))"
-    is IrMulNum -> "((" & lhs & " as double) * (" & rhs & " as double))"
-    is IrDivNum -> "((" & lhs & " as double) / (" & rhs & " as double))"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "((" & lhs & " as double) + (" & rhs & " as double))"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "((" & lhs & " as double) - (" & rhs & " as double))"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "((" & lhs & " as double) * (" & rhs & " as double))"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "((" & lhs & " as double) / (" & rhs & " as double))"
     is IrEq -> "(" & lhs & " == " & rhs & ")"
     is IrNotEq -> "(" & lhs & " != " & rhs & ")"
-    is IrLt -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") < 0)"
-    is IrGt -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") > 0)"
-    is IrLtEq -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") <= 0)"
-    is IrGtEq -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") >= 0)"
+    is IrLt | IrLtVec -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") < 0)"
+    is IrGt | IrGtVec -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") > 0)"
+    is IrLtEq | IrLtEqVec -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") <= 0)"
+    is IrGtEq | IrGtEqVec -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") >= 0)"
     is IrApproxEq -> "(" & lhs & " == " & rhs & ")"
     is IrApproxEqExact -> "(" & lhs & " == " & rhs & ")"
     is IrAnd -> "((" & lhs & " as bool) && (" & rhs & " as bool))"
@@ -174,6 +174,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> scrut & " == " & text
     is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then scrut & " is List" else "(" & scrut & " as Map)['_tag'] == '" & name & "'"
     is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
 
   emit-dart-pat-binds : IRPat, Text, Integer -> Text
   emit-dart-pat-binds (p) (scrut) (indent) =
@@ -182,6 +183,7 @@ Section: Expression Emission
     is IrLitPat (text) (ty) (sp) -> ""
     is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then emit-dart-tup-binds subs scrut indent 0 else emit-dart-ctor-binds subs scrut indent 0
     is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
 
   emit-dart-ctor-binds : List IRPat, Text, Integer, Integer -> Text
   emit-dart-ctor-binds (subs) (scrut) (indent) (i) =
@@ -273,4 +275,5 @@ Section: Tuple Helpers
    in (when sub
     is IrVarPat (name) (ty) (sp) -> dart-indent (indent + 1) & "final " & dart-sanitize name & " = (" & scrut & " as List)[" & show i & "];\n"
     is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
     is otherwise -> "") & emit-dart-tup-binds subs scrut indent (i + 1)

@@ -2,7 +2,11 @@ Chapter: Terminal
   cites Cvmm chapter CvmmTypes
   cites UI chapter Widget
   cites UI chapter Layout
+  cites UI chapter Editor
+  cites UI chapter CommandPalette
+  cites UI chapter SearchBar
   cites Foreword chapter StringUtils
+  cites Game chapter Color
 
  Terminal emulator. Provides a scrollback buffer of character cells
  with foreground/background color, a cursor position, and an input
@@ -93,7 +97,14 @@ Section: Terminal State
     term-scrollback : List TermLine,
     term-scrollback-count : Integer,
     term-scrollback-max : Integer,
-    term-title : Text
+    term-title : Text,
+    term-rainbow : Boolean,
+    term-rainbow-freq : Integer,
+    term-rainbow-speed : Integer,
+    term-rainbow-seed : Integer,
+    term-rainbow-psyche : Boolean,
+    term-rainbow-tick : Integer,
+    term-rainbow-palette : RainbowPalette
   }
 
   terminal-new : Integer, Integer -> TerminalState
@@ -116,7 +127,14 @@ Section: Terminal State
     term-scrollback = [],
     term-scrollback-count = 0,
     term-scrollback-max = 5000,
-    term-title = "Terminal"
+    term-title = "Terminal",
+    term-rainbow = True,
+    term-rainbow-freq = 6,
+    term-rainbow-speed = 3,
+    term-rainbow-seed = 0,
+    term-rainbow-psyche = False,
+    term-rainbow-tick = 0,
+    term-rainbow-palette = PalRainbow
   }
 
   term-init-lines : Integer, Integer, Integer, List TermLine -> List TermLine
@@ -126,12 +144,18 @@ Section: Terminal State
 
 Section: Output (write characters to the buffer)
 
+  term-effective-seed : TerminalState -> Integer
+  term-effective-seed (ts) =
+    if ts.term-rainbow-psyche then ts.term-rainbow-seed + ts.term-rainbow-tick * ts.term-rainbow-speed
+    else ts.term-rainbow-seed
+
   term-put-char : TerminalState, Integer -> TerminalState
   term-put-char (ts) (ch) =
     if ch == 10 then term-newline ts
     else if ch == 13 then __record-set ts "term-cursor-col" 0
     else if ch == 8 then term-backspace ts
-    else let c = cell-new ch (ts.term-fg) (ts.term-bg)
+    else let fg = if ts.term-rainbow then lolcat-color (ts.term-cursor-row) (ts.term-cursor-col) (ts.term-rainbow-freq) (term-effective-seed ts) (ts.term-rainbow-palette) else ts.term-fg
+    in let c = cell-new ch fg (ts.term-bg)
     in let line = list-at (ts.term-lines) (ts.term-cursor-row)
     in let updated = term-line-set line (ts.term-cursor-col) c
     in let lines2 = list-set-at (ts.term-lines) (ts.term-cursor-row) updated
@@ -282,6 +306,33 @@ Section: Color
 
   term-reset-attrs : TerminalState -> TerminalState
   term-reset-attrs (ts) = __record-set (__record-set (__record-set ts "term-fg" term-default-fg) "term-bg" term-default-bg) "term-bold" False
+
+Section: Rainbow Config
+
+  term-toggle-rainbow : TerminalState -> TerminalState
+  term-toggle-rainbow (ts) =
+    __record-set ts "term-rainbow" (if ts.term-rainbow then False else True)
+
+  term-set-rainbow-freq : TerminalState, Integer -> TerminalState
+  term-set-rainbow-freq (ts) (f) = __record-set ts "term-rainbow-freq" f
+
+  term-set-rainbow-speed : TerminalState, Integer -> TerminalState
+  term-set-rainbow-speed (ts) (s) = __record-set ts "term-rainbow-speed" s
+
+  term-set-rainbow-seed : TerminalState, Integer -> TerminalState
+  term-set-rainbow-seed (ts) (s) = __record-set ts "term-rainbow-seed" s
+
+  term-toggle-psyche : TerminalState -> TerminalState
+  term-toggle-psyche (ts) =
+    __record-set ts "term-rainbow-psyche" (if ts.term-rainbow-psyche then False else True)
+
+  term-set-rainbow-palette : TerminalState, RainbowPalette -> TerminalState
+  term-set-rainbow-palette (ts) (p) = __record-set ts "term-rainbow-palette" p
+
+  term-rainbow-advance : TerminalState -> TerminalState
+  term-rainbow-advance (ts) =
+    if ts.term-rainbow-psyche then __record-set ts "term-rainbow-tick" (ts.term-rainbow-tick + 1)
+    else ts
 
 Section: Screen Content
 

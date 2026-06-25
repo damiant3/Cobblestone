@@ -218,19 +218,19 @@ Section: Expression Emission
   py-bin-op-symbol : IRBinaryOp -> Text
   py-bin-op-symbol (op) =
    when op
-    is IrAddInt | IrAddNum | IrAddVec -> "+"
-    is IrSubInt | IrSubNum | IrSubVec -> "-"
-    is IrMulInt | IrMulNum | IrMulVec -> "*"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
     is IrDivInt -> "//"
     is IrRemInt -> "%"
     is IrPowInt -> "**"
-    is IrDivNum | IrDivVec -> "/"
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
     is IrEq -> "=="
     is IrNotEq -> "!="
-    is IrLt -> "<"
-    is IrGt -> ">"
-    is IrLtEq -> "<="
-    is IrGtEq -> ">="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
     is IrApproxEq -> "=="
     is IrApproxEqExact -> "=="
     is IrAnd -> "and"
@@ -297,6 +297,9 @@ Section: Expression Emission
      let prefix = if i > 0 then " else " else ""
      in prefix & "(lambda " & py-sanitize name & ": " & emit-py-expr body arities & ")(_s)" & emit-py-close-parens opens
     is IrWildPat (sp) ->
+     let prefix = if i > 0 then " else " else ""
+     in prefix & emit-py-expr body arities & emit-py-close-parens opens
+    is IrVecPat (pats) (ty) (sp) ->
      let prefix = if i > 0 then " else " else ""
      in prefix & emit-py-expr body arities & emit-py-close-parens opens
 
@@ -676,6 +679,8 @@ Section: Tail Call Optimization
      pad & "else:\n" & py-indent (indent + 1) & py-sanitize name & " = _tco_s\n" & emit-py-tco-body body func-name params arities (indent + 1)
     is IrWildPat (sp) ->
      pad & "else:\n" & emit-py-tco-body body func-name params arities (indent + 1)
+    is IrVecPat (pats) (ty) (sp) ->
+     pad & "else:\n" & emit-py-tco-body body func-name params arities (indent + 1)
 
   emit-py-tco-ctor-bindings : List IRPat, Integer, Integer -> Text
   emit-py-tco-ctor-bindings (subs) (indent) (i) =
@@ -781,6 +786,8 @@ Section: Definition Emission
      pad & "else:\n" & py-indent (indent + 1) & py-sanitize name & " = _sm\n" & emit-py-statement body arities (indent + 1)
     is IrWildPat (sp) ->
      pad & "else:\n" & emit-py-statement body arities (indent + 1)
+    is IrVecPat (pats) (ty) (sp) ->
+     pad & "else:\n" & emit-py-statement body arities (indent + 1)
 
   emit-py-stmt-ctor-bindings : List IRPat, Integer, Integer -> Text
   emit-py-stmt-ctor-bindings (subs) (indent) (i) =
@@ -847,6 +854,7 @@ Section: Chapter Emission
     is EffectfulTy (effs) (sc) (inner) -> py-sanitize opening-entry-point & "()\n"
     is NothingTy -> py-sanitize opening-entry-point & "()\n"
     is VoidTy -> py-sanitize opening-entry-point & "()\n"
+    is UnitTy (n) (inner) -> py-sanitize opening-entry-point & "()\n"
     is otherwise -> "print(" & py-sanitize opening-entry-point & "())\n"
 
   emit-python-chapter : IRChapter, List ATypeDef -> Text

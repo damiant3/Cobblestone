@@ -187,3 +187,57 @@ The actual peer-to-peer protocol for exchanging facts.
 Phases 2 and 3 are independent after Phase 1. Phase 4 is the big lift
 (networking, protocol design, security). Phases 1-3 deliver value
 without any networking — manual fact exchange via file copy works.
+
+---
+
+## External Research (IRISA Harvest, 2026-06-23)
+
+See `docs/Reference/IRISA_Research_Harvest.md` for full context.
+
+### Squirrel Prover — Computational Protocol Verification
+
+The Squirrel prover (SPICY team, IRISA D1) verifies cryptographic
+protocols in the **computational model**, not just symbolic. Its
+higher-order indistinguishability logic bridges symbolic reasoning
+with computational soundness — verified properties hold under
+computational hardness assumptions. Key: it handles mutable protocol
+state (2022) and probabilistic reasoning for concrete security (2024).
+
+**Applicability to Phase 2 (Trust Model):** Our trust lattice
+currently uses symbolic proof terms (Refl, sym, trans, cong) to
+reason about trust delegation. Squirrel's approach would let us
+prove computational indistinguishability — that an attacker observing
+the protocol transcript cannot distinguish between two trust states.
+This is a stronger guarantee than symbolic equivalence and maps
+directly to our append-only mutation log. Their probabilistic
+reasoning could formalize trust decay (the `trust * trust` transitive
+formula) under concrete security assumptions.
+
+**Applicability to Phase 4 (Network Sync):** The sync protocol
+exchanges signed facts between peers. Squirrel could verify that the
+exchange protocol preserves trust transitivity under network
+adversary models (man-in-the-middle, replay, selective forwarding).
+
+### INZU — Delay-Tolerant Networking
+
+The INZU team (IRISA D2) studies opportunistic networks:
+infrastructure-free, intermittent connectivity, delay tolerance.
+
+**Applicability to Phase 4:** When two Codex nodes connect via
+TrustTransport after days of disconnection, they need to reconcile
+divergent fact stores. INZU's delay-tolerant networking protocols
+could inform the reconciliation strategy — our content-addressed
+facts are inherently suited to this (identical changes have
+identical hashes, so reconciliation is set-union with conflict
+detection only on view composition).
+
+### E4SE — Decentralized Edge Architecture
+
+The E4SE team (IRISA D2) explicitly rejects centralized cloud
+in favor of distributing intelligence to edge nodes.
+
+**Applicability to overall design:** Validates the "no central
+registry required" principle. Their patterns for data sovereignty
+through local processing align with our view model (each node has
+its own views, trust thresholds, and local fact stores; federation
+is peer-to-peer, not hub-and-spoke).

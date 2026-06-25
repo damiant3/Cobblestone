@@ -407,3 +407,35 @@ compiler's own code (~2600 functions, most binary expressions have at
 least one local or literal operand), so the machinery cost exceeds its
 seed savings. The win is in user programs with tree recursion or nested
 call arithmetic.
+
+## External Research (IRISA Harvest, 2026-06-23)
+
+See `docs/Reference/IRISA_Research_Harvest.md` for full context.
+
+### PACAP — WCET Analysis Beyond Instruction Count
+
+The PACAP team (IRISA D3) studies Worst-Case Execution Time analysis
+for real-time systems. Our instruction-count metric (this document) is
+a proxy for execution time but misses pipeline effects, cache behavior,
+and instruction latency variation. PACAP's techniques give
+cycle-accurate bounds on specific hardware — this would let the
+punctual budget (CDX6011) express "wall-clock microseconds on target X"
+rather than just instruction count.
+
+Relevant because: our codegen comparison above shows that instruction
+count can be misleading (C /O2 sum uses 23 instructions but loop-
+unrolled, which may be faster dynamically; F# JIT uses 4 instructions
+in a tight loop). A WCET-style analysis would capture the real cost,
+including the stack guard overhead (cmp rsp, r10 + jb) that our
+benchmarks consistently pay but C compilers don't.
+
+### EPICURE — Verified Security Through Codegen
+
+The EPICURE team (IRISA D4) proves that compilation preserves security
+properties (constant-time execution, information flow control). Their
+approach would verify that our punctual codegen doesn't introduce
+timing side-channels — e.g., that a punctual function with no
+data-dependent branches at the IR level also has no data-dependent
+branches in the emitted x86-64. This extends the codegen quality
+analysis from "correct and compact" to "correct, compact, and
+timing-invariant."

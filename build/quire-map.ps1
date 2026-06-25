@@ -14,7 +14,7 @@ $QuireDirs = @{
     'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
     'Engine' = 'codex\foreword\engine'
     'Punctual' = 'codex\foreword\punctual'
-    'Gpu' = 'codex\foreword\gpu'
+    'Gpu' = 'codex\foreword\gpu'; 'Shell' = 'codex\foreword\shell'
     'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
     'Magic' = 'apps\games\magic'; 'Games' = 'apps\games\classic'
     'Spark' = 'apps\spark'; 'Data' = 'apps\data'
@@ -63,6 +63,7 @@ $QuireDirs = @{
     'Workflow' = 'apps\workflow'
     'Site' = 'apps\site'
     'Boards' = 'codex\boards'
+    'Guios' = 'apps\guios'
 }
 
 function New-CitePattern {

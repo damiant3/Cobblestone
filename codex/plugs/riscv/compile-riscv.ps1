@@ -12,7 +12,7 @@
 param(
     [Parameter(Mandatory=$true)] [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
-    [int]$MemMB = 4096
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -47,7 +47,18 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Phase 3: parse wire protocol and build ELF64
-$wireBytes = [System.IO.File]::ReadAllBytes($WireFile)
+$rawWire = [System.IO.File]::ReadAllBytes($WireFile)
+$wireOff = 0
+for ($wi = 0; $wi -lt [Math]::Min(64, $rawWire.Length - 12); $wi++) {
+    $cl = [BitConverter]::ToInt32($rawWire, $wi)
+    $dl = [BitConverter]::ToInt32($rawWire, $wi + 4)
+    $fc = [BitConverter]::ToInt32($rawWire, $wi + 8)
+    if ($cl -gt 0 -and $cl -lt 16000000 -and $dl -ge 0 -and $dl -lt 1000000 -and $fc -gt 0 -and $fc -lt 10000 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64) {
+        $wireOff = $wi; break
+    }
+}
+$wireBytes = New-Object byte[] ($rawWire.Length - $wireOff)
+[Array]::Copy($rawWire, $wireOff, $wireBytes, 0, $wireBytes.Length)
 $codeLen = [BitConverter]::ToInt32($wireBytes, 0)
 $dataLen = [BitConverter]::ToInt32($wireBytes, 4)
 $funcCount = [BitConverter]::ToInt32($wireBytes, 8)
@@ -60,22 +71,25 @@ $code = New-Object byte[] $codeLen
 $data = New-Object byte[] $dataLen
 [Array]::Copy($wireBytes, $dataStart, $data, 0, $dataLen)
 
-# Parse function table to find entry point
+# Parse function table (entry point + symbol map).
 $funcOff = $dataStart + $dataLen
 $entryOffset = 0
-$off = $funcOff
-for ($fi = 0; $fi -lt $funcCount; $fi++) {
-    $nameLen = [BitConverter]::ToInt16($wireBytes, $off)
-    $nameChars = [char[]]::new($nameLen)
+$funcEntries = [System.Collections.Generic.List[PSObject]]::new()
+for ($fi = 0; $fi -lt $funcCount -and $funcOff + 2 -lt $wireBytes.Length; $fi++) {
+    $nameLen = [BitConverter]::ToInt16($wireBytes, $funcOff)
+    $sb = [System.Text.StringBuilder]::new($nameLen)
     for ($ci = 0; $ci -lt $nameLen; $ci++) {
-        $cce = $wireBytes[$off + 2 + $ci]
-        $nameChars[$ci] = if ($cce -lt $script:CceToUnicode.Length) { [char]$script:CceToUnicode[$cce] } else { [char]63 }
+        $cce = $wireBytes[$funcOff + 2 + $ci]
+        if ($cce -lt $script:CceToUnicode.Length) {
+            [void]$sb.Append([char]$script:CceToUnicode[$cce])
+        } else { [void]$sb.Append('?') }
     }
-    $name = [string]::new($nameChars)
-    $funcOffset = [BitConverter]::ToInt32($wireBytes, $off + 2 + $nameLen)
-    if ($name -eq '__start') { $entryOffset = $funcOffset }
-    $off += 2 + $nameLen + 4
+    $fname = $sb.ToString()
+    $foff = [BitConverter]::ToInt32($wireBytes, $funcOff + 2 + $nameLen)
+    $funcEntries.Add([PSCustomObject]@{ Name = $fname; Offset = $foff })
+    $funcOff += 2 + $nameLen + 4
 }
+if ($funcEntries.Count -gt 0) { $entryOffset = $funcEntries[0].Offset }
 
 # Build ELF64 for RISC-V
 $loadAddr = 2147483648  # 0x80000000 — QEMU virt RISC-V convention
@@ -88,7 +102,7 @@ $textEnd = $textStart + $codeLen
 $rodataStart = [int](($textEnd + 7) -band 0xFFFFFFF8)
 [uint64]$entry = $loadAddr + [uint64]$textStart + [uint64]$entryOffset
 $segFilesz = $rodataStart + $dataLen - $textStart
-$segMemsz = $segFilesz + 0x1000000
+$segMemsz = $segFilesz + 0x0F000000
 
 $elf = [System.IO.MemoryStream]::new()
 $bw = [System.IO.BinaryWriter]::new($elf)
@@ -144,6 +158,21 @@ if ($dataLen -gt 0) {
 }
 [System.IO.File]::WriteAllBytes($flatOut, $flatData)
 
+# Write symbol map
+$mapFile = [System.IO.Path]::ChangeExtension($Out, '.map')
+$mapLines = [System.Collections.Generic.List[string]]::new()
+$mapLines.Add('# RISC-V Symbol Map')
+$mapLines.Add('# Address         Size  Name')
+for ($mi = 0; $mi -lt $funcEntries.Count; $mi++) {
+    $fe = $funcEntries[$mi]
+    [uint64]$addr = $loadAddr + [uint64]$textStart + [uint64]$fe.Offset
+    $nextOff = if ($mi + 1 -lt $funcEntries.Count) { $funcEntries[$mi + 1].Offset } else { $codeLen }
+    $fsize = $nextOff - $fe.Offset
+    $mapLines.Add("0x$($addr.ToString('X8').PadLeft(8,'0')) $fsize $($fe.Name)")
+}
+[System.IO.File]::WriteAllLines($mapFile, $mapLines)
+
 $sz = (Get-Item $Out).Length
 Write-Host "[riscv-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')))"
 Write-Host "[riscv-compile] Flat: $flatOut ($($flatData.Length) bytes)"
+Write-Host "[riscv-compile] Map: $mapFile ($($funcEntries.Count) functions)"

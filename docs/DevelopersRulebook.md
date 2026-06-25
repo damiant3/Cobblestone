@@ -6,7 +6,7 @@ A foreword quire is a library package marked `"foreword": true` in its
 `codex.project.json`. Foreword modules compile before user code and
 make their types and functions automatically available.
 
-### codex.foreword (107 modules) — Core
+### codex.foreword (109 modules) — Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -25,7 +25,7 @@ data structures, networking, and system utilities.
 | Identity/Trust | Identity, FactStore, History, KvStore |
 | Misc | Camera, Display, Fuel, Iterate, Location, Logger, LruCache, Microphone, Random, RateLimiter, Rope, Sensors, Sort, Tls |
 
-### codex.foreword.ai (19 modules) — Machine Learning
+### codex.foreword.ai (43 modules) — Machine Learning
 
 Neural networks, tensors, transformers, sampling, and model utilities.
 
@@ -38,7 +38,7 @@ Activation, SparseLattice
 
 Deflate, Gzip, Brotli, Zstd, Lz4, Lz77, Huffman, Rle
 
-### codex.foreword.encode (35 modules) — Encoding and Codecs
+### codex.foreword.encode (38 modules) — Encoding and Codecs
 
 Data formats, image codecs, audio codecs, video codecs, protocols.
 
@@ -96,7 +96,7 @@ Terrain, Texture, TimeOfDay, Water, WorldGen, WorldHUD
 post-processing, spatial audio, input handling, gameplay systems,
 physics, procedural generation, and edge mesh networking.
 
-### codex.foreword.ui (28 modules) — User Interface
+### codex.foreword.ui (43 modules) — User Interface
 
 Widget, Window, Surface, Theme, Font, Icon, Event, Layout, Animation,
 Binding, TextField, RichText, Dialog, Overlay, Orchestrator, Render,
@@ -124,34 +124,34 @@ The self-hosted compiler. Subdirectories: Ast, Core, Emit, IR,
 Semantics, Syntax, Types. Do not modify without reading the code first
 and passing both gates (sample battery + pingpong).
 
-### codex.kernel (24 modules) — Hardware Drivers
+### codex.kernel (33 modules) — Hardware Drivers
 
 Bare-metal hardware interfaces: BitmapFont, Console, DiagnosticShell,
 DiskFacts, DriveManager, GpuBridge, IdentityManager, Ivshmem,
 Keyboard, Mouse, Ne2k, Pci, SystemDb, Usb, UsbAudio, UsbMassStorage,
 UsbVideo, Vga, VgaGraphics, VmIde, VmSerial, Xhci
 
-### codex.os (81 modules) — Operating System
+### codex.os (147 modules) — Operating System
 
 Split across sub-quires:
 
 | Sub-quire | Modules | Purpose |
 |-----------|---------|---------|
 | codex.os | 4 | Core OS abstractions |
-| codex.os.dev | 5 | Device management |
-| codex.os.kernel | 24 | Hardware drivers (PCI, xHCI, NE2K, VGA, IDE, HDA, etc.) |
-| codex.os.net | 18 | Networking stack |
-| codex.os.observe | 7 | Observability |
+| codex.os.dev | 28 | Device management |
+| codex.os.kernel | 33 | Hardware drivers (PCI, xHCI, NE2K, VGA, IDE, HDA, USB HID, etc.) |
+| codex.os.net | 32 | Networking stack |
+| codex.os.observe | 8 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
-| codex.os.sched | 6 | Scheduling |
-| codex.os.trust | 11 | Trust lattice |
+| codex.os.sched | 10 | Scheduling |
+| codex.os.trust | 14 | Trust lattice |
 | codex.os.verify | 5 | Verification |
 
-### codex.plugs (133 modules) — Transpiler Plugs
+### codex.plugs (52 plugs, all building clean) — Transpiler Plugs
 
-53 transpiler plugs (Ada to Zig, 14 UI frameworks, GPU PTX + SPIR-V,
-4 binary formats) plus WASM and HTML backends. Each plug receives IR
-or CDX over TCP and produces the target format.
+47 transpiler plugs (Ada to Zig, 14 UI frameworks, GPU PTX + SPIR-V)
+plus 5 native backends (ARM64, RISC-V, ELF, PE, IMG). Each plug
+receives IR or CDX over TCP and produces the target format.
 
 ## Library Rules
 

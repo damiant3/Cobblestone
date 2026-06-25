@@ -131,6 +131,10 @@ Section: Builtin Detection
    "from-real-trapping",
    "to-real-saturating",
    "from-real-saturating",
+   "real-from-int",
+   "real-to-int",
+   "real-approx-from-int",
+   "real-approx-to-int",
    "vec4-splat",
    "vec4-extract",
    "suggested-vector-width",
@@ -1424,6 +1428,42 @@ Section: State Effect
     reg = val.reg
    }
 
+  emit-real-from-int-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-real-from-int-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (val.state)
+   in EmitResult {
+    state = st-append-code (rd.state) (cvtsi2sd 0 (val.reg) & movq-from-xmm (rd.reg) 0),
+    reg = rd.reg
+   }
+
+  emit-real-to-int-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-real-to-int-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (val.state)
+   in EmitResult {
+    state = st-append-code (rd.state) (movq-to-xmm 0 (val.reg) & cvttsd2si (rd.reg) 0),
+    reg = rd.reg
+   }
+
+  emit-real-approx-from-int-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-real-approx-from-int-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (val.state)
+   in EmitResult {
+    state = st-append-code (rd.state) (cvtsi2sd 0 (val.reg) & xorps-xmm 1 1 & cvtsd2ss-xmm 1 0 & movq-from-xmm (rd.reg) 1),
+    reg = rd.reg
+   }
+
+  emit-real-approx-to-int-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-real-approx-to-int-builtin (st) (args) =
+   let val = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (val.state)
+   in EmitResult {
+    state = st-append-code (rd.state) (movq-to-xmm 0 (val.reg) & cvtss2sd-xmm 1 0 & cvttsd2si (rd.reg) 1),
+    reg = rd.reg
+   }
+
   emit-mask-extract : CodegenState, List IRExpr -> (CodegenState, Integer)
   emit-mask-extract (st) (args) =
    let mask = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -1594,6 +1634,10 @@ Section: Builtin Registry
    BuiltinX86Emitter { name = "from-real-trapping", emit = \s a -> emit-from-real-trapping-builtin s a },
    BuiltinX86Emitter { name = "to-real-saturating", emit = \s a -> emit-to-real-saturating-builtin s a },
    BuiltinX86Emitter { name = "from-real-saturating", emit = \s a -> emit-from-real-saturating-builtin s a },
+   BuiltinX86Emitter { name = "real-from-int", emit = \s a -> emit-real-from-int-builtin s a },
+   BuiltinX86Emitter { name = "real-to-int", emit = \s a -> emit-real-to-int-builtin s a },
+   BuiltinX86Emitter { name = "real-approx-from-int", emit = \s a -> emit-real-approx-from-int-builtin s a },
+   BuiltinX86Emitter { name = "real-approx-to-int", emit = \s a -> emit-real-approx-to-int-builtin s a },
    BuiltinX86Emitter { name = "vec4-splat", emit = \s a -> emit-vec4-splat-builtin s a },
    BuiltinX86Emitter { name = "vec4-extract", emit = \s a -> emit-vec4-extract-builtin s a },
    BuiltinX86Emitter { name = "suggested-vector-width", emit = \s a -> emit-suggested-vector-width-builtin s a },

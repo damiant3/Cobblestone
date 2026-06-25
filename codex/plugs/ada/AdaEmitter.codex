@@ -129,6 +129,10 @@ Section: Type Emission
     is VectorTy (vn) (vt) -> "Long_Long_Integer"
     is EffectfulTy (effects) (sc) (ret) -> ada-type ret
     is LinkedListTy (elem) -> "Long_Long_Integer"
+    is RealApproxTy -> "Long_Float"
+    is RealTrappingTy -> "Long_Float"
+    is RealSaturatingTy -> "Long_Float"
+    is UnitTy (n) (inner) -> "Boolean"
 
 Section: Type Definition Emission
 
@@ -172,9 +176,9 @@ Section: Type Definition Emission
   emit-ada-sum-type : Text, List AVariantCtorDef -> Text
   emit-ada-sum-type (base-name) (ctors) =
    let n = ada-cap-sanitize base-name
-   in "   type " & n & "_Tag is (" & emit-ada-tag-list ctors 0 & ");\n" ++
-      "   type " & n & "(Kind : " & n & "_Tag := " & n & "_Tag'First) is record\n" ++
-      "      case Kind is\n" & emit-ada-sum-branches ctors 0 ++
+   in "   type " & n & "_Tag is (" & emit-ada-tag-list ctors 0 & ");\n" &
+      "   type " & n & "(Kind : " & n & "_Tag := " & n & "_Tag'First) is record\n" &
+      "      case Kind is\n" & emit-ada-sum-branches ctors 0 &
       "      end case;\n   end record;\n\n"
 
   emit-ada-tag-list : List AVariantCtorDef, Integer -> Text
@@ -262,17 +266,17 @@ Section: Expression Emission
   emit-ada-bin-op : IRBinaryOp -> Text
   emit-ada-bin-op (op) =
    when op
-    is IrAddInt | IrAddNum | IrAddVec -> "+"
-    is IrSubInt | IrSubNum | IrSubVec -> "-"
-    is IrMulInt | IrMulNum | IrMulVec -> "*"
-    is IrDivInt | IrDivNum | IrDivVec -> "/"
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
     is IrRemInt -> "mod"
     is IrEq -> "="
     is IrNotEq -> "/="
-    is IrLt -> "<"
-    is IrGt -> ">"
-    is IrLtEq -> "<="
-    is IrGtEq -> ">="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
     is IrApproxEq | IrApproxEqExact -> "="
     is IrAnd -> "and then"
     is IrOr -> "or else"
@@ -411,6 +415,7 @@ Section: Expression Emission
      "when Tag_" & ada-cap-sanitize name & " => " & emit-ada-expr (b.body) arities & ", "
     is IrWildPat (sp) -> "when others => " & emit-ada-expr (b.body) arities & ", "
     is IrVarPat (name) (ty) (sp) -> "when others => " & emit-ada-expr (b.body) arities & ", "
+    is IrVecPat (pats) (ty) (sp) -> "when others => " & emit-ada-expr (b.body) arities & ", "
     is otherwise -> ""
 
   emit-ada-record : List IRFieldVal, List ArityEntry -> Text
@@ -528,16 +533,16 @@ Section: Definition Emission
   emit-ada-procedure : IRDef, List ArityEntry -> Text
   emit-ada-procedure (d) (arities) =
    let name = ada-cap-sanitize (d.name)
-   in "   procedure " & name & (if list-length (d.params) > 0 then "(" & emit-ada-def-params (d.params) 0 & ")" else "") & " is\n" ++
-      "   begin\n" & emit-ada-statement (d.body) arities 2 ++
+   in "   procedure " & name & (if list-length (d.params) > 0 then "(" & emit-ada-def-params (d.params) 0 & ")" else "") & " is\n" &
+      "   begin\n" & emit-ada-statement (d.body) arities 2 &
       "   end " & name & ";\n"
 
   emit-ada-function : IRDef, List ArityEntry, CodexType -> Text
   emit-ada-function (d) (arities) (ret) =
    let name = ada-cap-sanitize (d.name)
-   in "   function " & name & (if list-length (d.params) > 0 then "(" & emit-ada-def-params (d.params) 0 & ")" else "") & " return " & ada-type ret & " is\n" ++
-      "   begin\n" ++
-      "      return " & emit-ada-expr (d.body) arities & ";\n" ++
+   in "   function " & name & (if list-length (d.params) > 0 then "(" & emit-ada-def-params (d.params) 0 & ")" else "") & " return " & ada-type ret & " is\n" &
+      "   begin\n" &
+      "      return " & emit-ada-expr (d.body) arities & ";\n" &
       "   end " & name & ";\n"
 
   emit-ada-def-params : List IRParam, Integer -> Text
@@ -550,12 +555,12 @@ Section: Definition Emission
   emit-ada-tco-def (d) (arities) =
    let name = ada-cap-sanitize (d.name)
    in let ret = ada-get-return-type (d.type-val) (list-length (d.params))
-   in "   function " & name & (if list-length (d.params) > 0 then "(" & emit-ada-tco-params (d.params) 0 & ")" else "") & " return " & ada-type ret & " is\n" ++
-      emit-ada-tco-vars (d.params) 0 ++
-      "   begin\n" ++
-      "      loop\n" ++
-      emit-ada-tco-body (d.body) (d.name) (d.params) arities 3 ++
-      "      end loop;\n" ++
+   in "   function " & name & (if list-length (d.params) > 0 then "(" & emit-ada-tco-params (d.params) 0 & ")" else "") & " return " & ada-type ret & " is\n" &
+      emit-ada-tco-vars (d.params) 0 &
+      "   begin\n" &
+      "      loop\n" &
+      emit-ada-tco-body (d.body) (d.name) (d.params) arities 3 &
+      "      end loop;\n" &
       "   end " & name & ";\n"
 
   emit-ada-tco-params : List IRParam, Integer -> Text
@@ -575,20 +580,20 @@ Section: Definition Emission
    let pad = ada-indent indent
    in when e
     is IrIf (c) (t) (el) (ty) (sp) ->
-     pad & "if " & emit-ada-expr c arities & " then\n" ++
-     emit-ada-tco-body t func-name params arities (indent + 1) ++
-     pad & "else\n" ++
-     emit-ada-tco-body el func-name params arities (indent + 1) ++
+     pad & "if " & emit-ada-expr c arities & " then\n" &
+     emit-ada-tco-body t func-name params arities (indent + 1) &
+     pad & "else\n" &
+     emit-ada-tco-body el func-name params arities (indent + 1) &
      pad & "end if;\n"
     is IrLet (name) (ty) (val) (body) (sp) ->
-     pad & "declare\n" ++
-     pad & "   " & ada-cap-sanitize name & " : constant " & ada-type ty & " := " & emit-ada-expr val arities & ";\n" ++
-     pad & "begin\n" ++
-     emit-ada-tco-body body func-name params arities (indent + 1) ++
+     pad & "declare\n" &
+     pad & "   " & ada-cap-sanitize name & " : constant " & ada-type ty & " := " & emit-ada-expr val arities & ";\n" &
+     pad & "begin\n" &
+     emit-ada-tco-body body func-name params arities (indent + 1) &
      pad & "end;\n"
     is IrMatch (scrut) (branches) (rty) (sp) ->
-     pad & "case " & emit-ada-expr scrut arities & ".Kind is\n" ++
-     emit-ada-tco-match-arms branches func-name params arities indent ++
+     pad & "case " & emit-ada-expr scrut arities & ".Kind is\n" &
+     emit-ada-tco-match-arms branches func-name params arities indent &
      pad & "end case;\n"
     is IrApply (f) (a) (rty) (sp) ->
      if ada-is-self-call e func-name then emit-ada-tco-jump e params arities indent
@@ -647,14 +652,17 @@ Section: Definition Emission
    in let pad = ada-indent (indent + 1)
    in when b.pattern
     is IrCtorPat (name) (subs) (ty) (sp) ->
-     pad & "when Tag_" & ada-cap-sanitize name & " =>\n" ++
-     emit-ada-tco-body (b.body) func-name params arities (indent + 2) ++
+     pad & "when Tag_" & ada-cap-sanitize name & " =>\n" &
+     emit-ada-tco-body (b.body) func-name params arities (indent + 2) &
      emit-ada-tco-match-arms-loop branches func-name params arities indent (i + 1)
     is IrWildPat (sp) ->
-     pad & "when others =>\n" ++
+     pad & "when others =>\n" &
      emit-ada-tco-body (b.body) func-name params arities (indent + 2)
     is IrVarPat (name) (vty) (sp) ->
-     pad & "when others =>\n" ++
+     pad & "when others =>\n" &
+     emit-ada-tco-body (b.body) func-name params arities (indent + 2)
+    is IrVecPat (pats) (ty) (sp) ->
+     pad & "when others =>\n" &
      emit-ada-tco-body (b.body) func-name params arities (indent + 2)
     is otherwise -> emit-ada-tco-match-arms-loop branches func-name params arities indent (i + 1)
 
@@ -719,18 +727,18 @@ Section: Chapter Emission
    let arities = build-arity-map (m.defs) 0 []
    in let pkg = ada-cap-sanitize (m.name.value)
    in let entry-idx = ada-find-entry (m.defs) 0
-   in "with Ada.Text_IO; use Ada.Text_IO;\n" ++
-      "with Ada.Integer_Text_IO; use Ada.Integer_Text_IO;\n" ++
-      "with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;\n" ++
-      "with Ada.Characters.Handling;\n" ++
-      "with Ada.Command_Line;\n" ++
-      "with Ada.Directories;\n" ++
-      "with Interfaces; use Interfaces;\n\n" ++
-      "procedure " & pkg & " is\n\n" ++
-      emit-ada-type-defs type-defs 0 ++
-      emit-ada-defs (m.defs) arities 0 entry-idx ++
-      "begin\n" ++
-      emit-ada-entry-body (m.defs) entry-idx arities ++
+   in "with Ada.Text_IO; use Ada.Text_IO;\n" &
+      "with Ada.Integer_Text_IO; use Ada.Integer_Text_IO;\n" &
+      "with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;\n" &
+      "with Ada.Characters.Handling;\n" &
+      "with Ada.Command_Line;\n" &
+      "with Ada.Directories;\n" &
+      "with Interfaces; use Interfaces;\n\n" &
+      "procedure " & pkg & " is\n\n" &
+      emit-ada-type-defs type-defs 0 &
+      emit-ada-defs (m.defs) arities 0 entry-idx &
+      "begin\n" &
+      emit-ada-entry-body (m.defs) entry-idx arities &
       "end " & pkg & ";\n"
 
 Page 1

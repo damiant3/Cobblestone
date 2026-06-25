@@ -49,21 +49,21 @@ fast iteration (~18s). Full battery: `build/test.ps1 -Jobs 4`.
 
 | Category | Count |
 |----------|-------|
-| PASS_EXPECTED | ~85 |
-| PASS_FAILING | ~42 |
+| PASS_EXPECTED | ~182 |
+| PASS_FAILING | 0 |
 | SKIPPED | 10 |
 | FAIL | 0 |
-| **Total** | **~137** |
+| **Total** | **~192** |
 
 ### Full Battery (`build/test.ps1 -Apps`)
 
 | Category | Count |
 |----------|-------|
-| PASS_EXPECTED | ~290 |
-| PASS_FAILING | ~42 |
+| PASS_EXPECTED | ~405 |
+| PASS_FAILING | 0 |
 | SKIPPED | ~25 |
 | FAIL | 0 |
-| **Total** | **~357** |
+| **Total** | **~430** |
 
 The batch REPL compiler times out on ~118 large-dependency-chain
 tests in `-Apps` mode. These tests compile and pass when given

@@ -1,0 +1,113 @@
+Chapter: TextEncoderXL
+  cites AI chapter Tensor
+  cites AI chapter Transformer
+  cites AI chapter TextEncoder
+  cites AI chapter SafeTensors
+  cites AI chapter Tokenizer
+  cites Foreword chapter Maybe
+
+ SDXL dual text encoder. Combines CLIP ViT-L/14 (768-dim, used
+ in SD 1.5) with OpenCLIP ViT-bigG/14 (1280-dim). The two
+ encoder outputs are concatenated along the feature dimension
+ to produce 2048-dim context for the SDXL UNet cross-attention.
+
+ The penultimate hidden state is used (not the final layer output)
+ because it preserves more semantic information before the
+ contrastive projection head collapses it.
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  DualEncoderState = record {
+    de-encoder1 : TextEncoderState,
+    de-encoder2 : TextEncoderState,
+    de-config1 : TextEncoderConfig,
+    de-config2 : TextEncoderConfig
+  }
+
+  DualEncoderOutput = record {
+    deo-context : List Integer,
+    deo-pooled : List Integer,
+    deo-seq-len : Integer,
+    deo-dim : Integer
+  }
+
+Section: Configuration
+  sdxl-encoder1-config : TextEncoderConfig
+  sdxl-encoder1-config = clip-config-base
+
+  sdxl-encoder2-config : TextEncoderConfig
+  sdxl-encoder2-config = TextEncoderConfig {
+    te-vocab-size = 49408,
+    te-max-seq-len = 77,
+    te-d-model = 1280,
+    te-num-heads = 20,
+    te-d-ff = 5120,
+    te-num-layers = 32
+  }
+
+Section: Dual Encode
+  dual-encode : Text, BpeTokenizer, DualEncoderState -> DualEncoderOutput
+  dual-encode (text) (tokenizer) (state) =
+    let tokens = te-tokenize text tokenizer (state.de-config1.te-max-seq-len)
+    in let seq-len = list-length tokens
+    in let hidden1 = dual-encode-penultimate tokens (state.de-encoder1) (state.de-config1)
+    in let hidden2 = dual-encode-penultimate tokens (state.de-encoder2) (state.de-config2)
+    in let pooled = dual-extract-pooled hidden2 seq-len (state.de-config2.te-d-model)
+    in let context = dual-concat-hidden hidden1 hidden2 seq-len (state.de-config1.te-d-model) (state.de-config2.te-d-model)
+    in DualEncoderOutput { deo-context = context, deo-pooled = pooled, deo-seq-len = seq-len, deo-dim = state.de-config1.te-d-model + state.de-config2.te-d-model }
+
+Section: Penultimate Layer Output
+  dual-encode-penultimate : List Integer, TextEncoderState, TextEncoderConfig -> List Integer
+  dual-encode-penultimate (tokens) (state) (cfg) =
+    let embedded = te-embed tokens state
+    in let tf-cfg = TransformerConfig {
+        tf-d-model = cfg.te-d-model,
+        tf-num-heads = cfg.te-num-heads,
+        tf-d-ff = cfg.te-d-ff,
+        tf-seq-len = list-length tokens,
+        tf-dropout = 0
+      }
+    in te-run-layers embedded (state.tes-layers) tf-cfg 0 (cfg.te-num-layers - 1)
+
+Section: Pooled Output (EOS token hidden state)
+  dual-extract-pooled : List Integer, Integer, Integer -> List Integer
+  dual-extract-pooled (hidden) (seq-len) (dim) =
+    let eos-pos = seq-len - 1
+    in let start = eos-pos * dim
+    in dual-extract-vec hidden start dim 0 []
+
+  dual-extract-vec : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dual-extract-vec (data) (start) (dim) (i) (acc) =
+    if i >= dim then acc
+    else dual-extract-vec data start dim (i + 1) (list-push acc (list-at data (start + i)))
+
+Section: Concatenate Hidden States
+  dual-concat-hidden : List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  dual-concat-hidden (h1) (h2) (seq-len) (dim1) (dim2) =
+    dual-concat-loop h1 h2 seq-len dim1 dim2 0 []
+
+  dual-concat-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dual-concat-loop (h1) (h2) (seq-len) (dim1) (dim2) (pos) (acc) =
+    if pos >= seq-len then acc
+    else let v1 = dual-extract-vec h1 (pos * dim1) dim1 0 []
+    in let v2 = dual-extract-vec h2 (pos * dim2) dim2 0 []
+    in dual-concat-loop h1 h2 seq-len dim1 dim2 (pos + 1) (acc & v1 & v2)
+
+Section: Weight Loading
+  dual-load-state : List Integer, List Integer, SafeTensorFile, SafeTensorFile -> DualEncoderState
+  dual-load-state (data1) (data2) (file1) (file2) =
+    let cfg1 = sdxl-encoder1-config
+    in let cfg2 = sdxl-encoder2-config
+    in let state1 = te-load-state data1 file1 cfg1
+    in let state2 = te-load-state data2 file2 cfg2
+    in DualEncoderState { de-encoder1 = state1, de-encoder2 = state2, de-config1 = cfg1, de-config2 = cfg2 }
+
+Section: Queries
+  format-dual-output : DualEncoderOutput -> Text
+  format-dual-output (out) =
+    "seq=" & show (out.deo-seq-len) & " dim=" & show (out.deo-dim) & " pooled=" & show (list-length (out.deo-pooled))
+
+Page 1

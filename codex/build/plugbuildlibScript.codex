@@ -1,0 +1,64 @@
+Chapter: PlugBuildLibScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates plug-build-lib.ps1 -- shared function library for plug build
+ scripts. Provides: Add-PlugChapter, Resolve-PlugForewords,
+ Bundle-PlugSource, Build-PlugCdx, Build-TranspilerPlug.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: S01 -- Preamble and QuireDir Setup
+
+  s01 : List ShellCmd =
+    let override-block = [ScRaw "$script:QuireOverrides = @{ 'codex\\foreword\\core' = 'Foreword'; 'codex\\os\\core' = 'OS'; 'apps\\erp' = 'ERP' }"]
+    in let scan-dirs = [ScRaw "foreach ($root in @('codex\\foreword', 'codex\\os', 'apps', 'apps\\games')) {", ScRaw "    $rootPath = Join-Path $script:PlugBuildRepo $root", ScRaw "    if (-not (Test-Path $rootPath)) { continue }", ScRaw "    foreach ($d in Get-ChildItem $rootPath -Directory) {", ScRaw "        $rel = $d.FullName.Substring($script:PlugBuildRepo.Length + 1)", ScRaw "        if (-not (Get-ChildItem $d.FullName -Filter '*.codex' -File -ErrorAction SilentlyContinue | Select-Object -First 1)) { continue }", ScRaw "        if ($script:QuireOverrides[$rel]) {", ScRaw "            $qname = $script:QuireOverrides[$rel]", ScRaw "        } else {", ScRaw "            $seg = $d.Name", ScRaw "            $qname = $seg.Substring(0,1).ToUpper() + $seg.Substring(1)", ScRaw "        }", ScRaw "        if (-not $script:QuireDirs[$qname]) { $script:QuireDirs[$qname] = $rel }", ScRaw "    }", ScRaw "}"]
+    in [ScRaw "# Common plug build library. Source this from plug build scripts.", ScRaw "# Provides: Resolve-PlugForewords, Build-PlugCdx, Add-PlugChapter,", ScRaw "#           Bundle-PlugSource, Build-TranspilerPlug", ScBlank, ScRaw "$script:PlugBuildRepo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path", ScRaw ". (Join-Path $script:PlugBuildRepo 'build' 'vm-config.ps1')", ScBlank, ScRaw "$script:QuireDirs = @{}", ScSequence override-block, ScSequence scan-dirs, ScBlank, ScRaw "$script:CitePat = '^\s*cites\s+(' + (($script:QuireDirs.Keys | Sort-Object) -join '|') + ')\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'" ]
+
+Section: S02 -- Add-PlugChapter
+
+  s02 : List ShellCmd =
+    [ScRaw "function Add-PlugChapter {", ScRaw "    param(", ScRaw "        [System.Collections.Generic.List[string]]$Lines,", ScRaw "        [string]$Path,", ScRaw "        [string[]]$StripCites = @()", ScRaw "    )", ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($Path)) {", ScRaw "        $skip = $false", ScRaw "        foreach ($sc in $StripCites) { if ($l -match \"cites.*$sc\") { $skip = $true } }", ScRaw "        if (-not $skip) { $Lines.Add($l) }", ScRaw "    }", ScRaw "    $Lines.Add(''); $Lines.Add('')", ScRaw "}"]
+
+Section: S03 -- Resolve-PlugForewords
+
+  s03 : List ShellCmd =
+    [ScRaw "function Resolve-PlugForewords {", ScRaw "    param([System.Collections.Generic.List[string]]$Lines)", ScRaw "    $visiting = @{}", ScRaw "    $visited  = @{}", ScRaw "    $ordered  = [System.Collections.Generic.List[hashtable]]::new()", ScRaw "    function Resolve-PlugCite([string]$quire, [string]$name) {", ScRaw "        $key = \"${quire}::${name}\"", ScRaw "        if ($visited[$key]) { return }", ScRaw "        if ($visiting[$key]) { return }", ScRaw "        $visiting[$key] = $true", ScRaw "        $fwPath = Join-Path $script:PlugBuildRepo (Join-Path $script:QuireDirs[$quire] \"$name.codex\")", ScRaw "        if (-not (Test-Path -PathType Leaf $fwPath)) {", ScRaw "            [Console]::Error.WriteLine(\"MISSING: cited $quire chapter '$name' (expected $fwPath)\")", ScRaw "            exit 3", ScRaw "        }", ScRaw "        foreach ($l in [System.IO.File]::ReadAllLines($fwPath)) {", ScRaw "            if ($l -match $script:CitePat) { Resolve-PlugCite $matches[1] $matches[2] }", ScRaw "        }", ScRaw "        [void]$visiting.Remove($key)", ScRaw "        $visited[$key] = $true", ScRaw "        [void]$ordered.Add(@{ Quire = $quire; Name = $name; Path = $fwPath })", ScRaw "    }"]
+
+  s03b : List ShellCmd =
+    [ScRaw "    foreach ($l in $Lines) {", ScRaw "        if ($l -match $script:CitePat) { Resolve-PlugCite $matches[1] $matches[2] }", ScRaw "    }", ScRaw "    $preLines = [System.Collections.Generic.List[string]]::new()", ScRaw "    foreach ($entry in $ordered) {", ScRaw "        $renamed = $false", ScRaw "        foreach ($l in [System.IO.File]::ReadAllLines($entry.Path)) {", ScRaw "            if ((-not $renamed) -and $l -match '^Chapter:\s*(.+?)\s*$') {", ScRaw "                [void]$preLines.Add(\"Chapter: $($entry.Quire)--$($matches[1])\")", ScRaw "                $renamed = $true", ScRaw "            } else { [void]$preLines.Add($l) }", ScRaw "        }", ScRaw "        [void]$preLines.Add(''); [void]$preLines.Add('')", ScRaw "    }", ScRaw "    return ,$preLines", ScRaw "}"]
+
+Section: S04 -- Bundle-PlugSource
+
+  s04 : List ShellCmd =
+    [ScRaw "function Bundle-PlugSource {", ScRaw "    param(", ScRaw "        [System.Collections.Generic.List[string]]$PreLines,", ScRaw "        [System.Collections.Generic.List[string]]$Lines,", ScRaw "        [string]$BundleSrc,", ScRaw "        [string]$PlugName", ScRaw "    )", ScRaw "    $body = (($PreLines + $Lines) -join \"`n\") + \"`n\"", ScRaw "    [System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))", ScRaw "    Write-Host \"[$PlugName] bundled $($PreLines.Count + $Lines.Count) lines, $($body.Length) bytes\"", ScRaw "}"]
+
+Section: S05 -- Build-PlugCdx
+
+  s05 : List ShellCmd =
+    [ScRaw "function Build-PlugCdx {", ScRaw "    param(", ScRaw "        [string]$BundleSrc,", ScRaw "        [string]$OutFile,", ScRaw "        [string]$LogFile,", ScRaw "        [string]$PlugName,", ScRaw "        [string]$Survey = ''", ScRaw "    )", ScRaw "    $compileScript = Join-Path $script:PlugBuildRepo 'build' 'compile.ps1'", ScRaw "    $compileArgs = @('-NoProfile', '-File', $compileScript, '-Src', $BundleSrc, '-Out', $OutFile, '-Log', $LogFile)", ScRaw "    if ($Survey) { $compileArgs += @('-Survey', $Survey) }", ScRaw "    & pwsh @compileArgs 2>&1 | Out-Null", ScRaw "    if ($LASTEXITCODE -ne 0) {", ScRaw "        [Console]::Error.WriteLine(\"FAIL: compile errors; see $LogFile\")", ScRaw "        Get-Content $LogFile -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { [Console]::Error.WriteLine(\"  $_\") }", ScRaw "        exit 5", ScRaw "    }", ScRaw "    $sz = (Get-Item $OutFile).Length", ScRaw "    Write-Host \"[$PlugName] OK: $OutFile ($sz bytes)\"", ScRaw "}"]
+
+Section: S06 -- Build-TranspilerPlug
+
+  s06 : List ShellCmd =
+    [ScRaw "function Build-TranspilerPlug {", ScRaw "    param(", ScRaw "        [string]$PlugDir,", ScRaw "        [string]$PlugName,", ScRaw "        [string[]]$Chapters,", ScRaw "        [string]$Survey = ''", ScRaw "    )", ScRaw "    $outDir    = Join-Path $PlugDir 'build-output'", ScRaw "    $outFile   = Join-Path $outDir \"$PlugName-plug.cdx\"", ScRaw "    $bundleSrc = Join-Path $outDir 'plug-source.codex'", ScRaw "    $logFile   = Join-Path $outDir 'build.log'", ScRaw "    New-Item -ItemType Directory -Force -Path $outDir | Out-Null", ScBlank, ScRaw "    $lines = [System.Collections.Generic.List[string]]::new()", ScRaw "    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\PlugTypes.codex')", ScRaw "    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\IRTextParser.codex')"]
+
+  s06b : List ShellCmd =
+    [ScRaw "    foreach ($ch in $Chapters) {", ScRaw "        Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir \"$ch.codex\")", ScRaw "    }", ScBlank, ScRaw "    $preLines = Resolve-PlugForewords $lines", ScRaw "    Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc $bundleSrc -PlugName \"$PlugName-plug\"", ScRaw "    Build-PlugCdx -BundleSrc $bundleSrc -OutFile $outFile -LogFile $logFile -PlugName \"$PlugName-plug\" -Survey $Survey", ScRaw "}"]
+
+Section: Assembly
+
+  lib-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScSequence s03b, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScSequence s06b]
+
+  lib-script : ShellScript = sh-script "plug-build-lib" "Common plug build library -- shared functions for plug build scripts" [] lib-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell lib-script)
+  end
+
+Page 1

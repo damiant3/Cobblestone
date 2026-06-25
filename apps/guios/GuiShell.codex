@@ -1,0 +1,1172 @@
+Chapter: GuiShell
+  cites Foreword chapter Console
+  cites Foreword chapter Fat32
+  cites Guios chapter GuiTimer
+  cites Guios chapter GuiDisplay
+  cites Guios chapter FontLoad
+  cites Guios chapter CalcApp
+  cites Guios chapter CalendarApp
+  cites Guios chapter ProductivityApps
+  cites Guios chapter MediaApps
+  cites Guios chapter CreativeApps
+  cites Guios chapter DiffusionApp
+  cites Guios chapter TrackerApp
+  cites Data chapter Server
+  cites Guios chapter CommsApps
+  cites Guios chapter FontAi
+  cites Guios chapter GopRender
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites Kernel chapter Keyboard
+  cites Kernel chapter Mouse
+
+ Bare-metal GUI desktop for Codex.OS. App launcher sidebar on the
+ left with categorized app buttons. TimingWheel drives periodic
+ clock refresh and heartbeat events.
+
+Section: Screen
+  gui-w : Integer = 1024
+  gui-h : Integer = 768
+  taskbar-h : Integer = 30
+  sidebar-w : Integer = 160
+  desk-h : Integer = 738
+  sidebar-row-h : Integer = desk-h / 22
+  work-x : Integer = 164
+  work-w : Integer = 856
+
+Section: Palette
+  col-bg : Integer = #0B0B1A
+  col-sidebar : Integer = #111827
+  col-sidebar-cat : Integer = #1E293B
+  col-sidebar-app : Integer = #0F172A
+  col-sidebar-sel : Integer = #1D4ED8
+  col-taskbar : Integer = #111827
+  col-taskbar-top : Integer = #1F2937
+  col-start-bg : Integer = #1D4ED8
+  col-hotbar-sel : Integer = #374151
+  col-win-title : Integer = #0F172A
+  col-win-body : Integer = #1E293B
+  col-win-border : Integer = #334155
+  col-fg : Integer = #F1F5F9
+  col-fg2 : Integer = #CBD5E1
+  col-dim : Integer = #64748B
+  col-accent : Integer = #3B82F6
+  col-red : Integer = #EF4444
+  col-green : Integer = #22C55E
+  col-yellow : Integer = #F59E0B
+  col-teal : Integer = #14B8A6
+  col-purple : Integer = #8B5CF6
+  col-orange : Integer = #F97316
+  col-pink : Integer = #EC4899
+  col-cursor : Integer = #FFFFFF
+  col-sep : Integer = #374151
+
+Section: Timer Config
+  tag-clock : Text = "clock"
+  tag-heartbeat : Text = "heartbeat"
+  clock-interval : Integer = 18
+  heartbeat-interval : Integer = 90
+
+Section: SMP Addresses
+  smp-core-count-addr : Integer = 4088
+  smp-ready-count-addr : Integer = 4080
+
+  smp-cores : Integer
+  smp-cores = let n = peek-32 smp-core-count-addr 0 in if n <= 0 then 1 else n
+
+  smp-ready : Integer
+  smp-ready = peek-32 smp-ready-count-addr 0
+
+Section: State
+  ShellUiState = record {
+    su-display : GopDisplay,
+    su-backbuf : GopBuf,
+    su-cursor-save : CursorSave,
+    su-kb-layout : KbLayout,
+    su-wheel : MutWheel,
+    su-tracker-db : DbServer
+  }
+
+Section: Font Loading
+  gui-try-load-fonts : MutWheel -> Integer
+  gui-try-load-fonts (w) =
+    let vol = fat32-try-init 0
+    in if vol.f32-bytes-per-sector == 0 then gui-load-fallback-result w
+    else if vol.f32-sectors-per-cluster == 0 then gui-load-fallback-result w
+    else fl-load-defaults vol w
+
+  gui-load-fallback-result : MutWheel -> Integer
+  gui-load-fallback-result (w) =
+    let d = gui-load-fallback-fonts w
+    in mw-set-fonts-loaded w 1
+
+  fat32-try-init : Integer -> Fat32Volume
+  fat32-try-init (part-start) =
+    let buf = block-read-sector part-start
+    in let bps = fat16-read-u16 buf 11
+    in let spc = peek-byte buf 13
+    in if spc == 0 then Fat32Volume {
+      f32-part-start = 0, f32-bytes-per-sector = 0,
+      f32-sectors-per-cluster = 0, f32-reserved-sectors = 0,
+      f32-num-fats = 0, f32-fat-sectors = 0,
+      f32-root-cluster = 0, f32-fat-start = 0,
+      f32-data-start = 0, f32-total-clusters = 0,
+      f32-next-free = 0
+    }
+    else fat32-init part-start
+
+  gui-load-fallback-fonts : MutWheel -> Integer
+  gui-load-fallback-fonts (w) =
+    let d1 = fl-load-block-font w 1
+    in let d2 = fl-load-block-font w 2
+    in fl-load-block-font w 3
+
+Section: Entry Point
+  opening : [Console] Nothing = act
+    let gop-w = let v = peek-32 0 1988 in if v > 0 then v else 1024
+    in let gop-h = let v = peek-32 0 1992 in if v > 0 then v else 768
+    in let gd = gop-display-new gop-w gop-h
+    in let gb = gop-buf-new gop-w gop-h col-bg
+    in let cs = gop-cursor-save-new 80
+    in let kb = kb-state-new
+    in let w0 = mw-new
+    in let w1 = mw-schedule w0 clock-interval mtw-tag-clock
+    in let w2 = mw-schedule w1 heartbeat-interval mtw-tag-heartbeat
+    in let d1 = mw-set-mouse-x w2 (gui-w / 2)
+    in let d2 = mw-set-mouse-y w2 (gui-h / 2)
+    in let d3 = gop-buf-put-text gb 10 10 "Loading fonts..." col-fg
+    in let d4 = gop-buf-present gd gb
+    in let d5 = block-select 0
+    in let d5b = fl-init-cache w2
+    in let d6 = gui-try-load-fonts w2
+    in let tracker-db = tk-init-tracker-db
+    in let st = ShellUiState {
+      su-display = gd, su-backbuf = gb, su-cursor-save = cs,
+      su-kb-layout = kb.layout, su-wheel = w2,
+      su-tracker-db = tracker-db
+    }
+    in let st2 = gui-render st
+    in let dummy = gui-loop st2
+    in print-line "Codex.OS exited"
+  end
+
+Section: Main Loop
+  gui-loop : ShellUiState -> Integer
+  gui-loop (st) = gui-idle st 0
+
+  mouse-port-avail : Integer
+  mouse-port-avail = port-in-byte 228
+
+  gui-idle : ShellUiState, Integer -> Integer
+  gui-idle (st) (count) =
+    if kb-has-key then gui-on-key st
+    else if mouse-port-avail > 0 then gui-on-mouse-port st
+    else if count >= 5000 then
+      let yield = port-out-byte 224 0
+      in let w = mw-tick (st.su-wheel)
+      in let tag = mw-check-and-fire w
+      in if tag > 0 then
+        let w2 = if tag == mtw-tag-clock then mw-schedule w clock-interval mtw-tag-clock
+          else if tag == mtw-tag-heartbeat then mw-schedule w heartbeat-interval mtw-tag-heartbeat
+          else w
+        in gui-idle (gui-render st) 0
+      else gui-idle st 0
+    else gui-idle st (count + 1)
+
+  gui-on-key : ShellUiState -> Integer
+  gui-on-key (st) =
+    let h = __heap-save
+    in let w = st.su-wheel
+    in let kb = KbState { shift = mw-get-kb-shift w == 1, ctrl = mw-get-kb-ctrl w == 1, caps = mw-get-kb-caps w == 1, num = mw-get-kb-num w == 1, layout = st.su-kb-layout, dead = dead-none }
+    in let ev = kb-poll kb
+    in let d1 = mw-set-kb-shift w (if (ev.state).shift then 1 else 0)
+    in let d2 = mw-set-kb-ctrl w (if (ev.state).ctrl then 1 else 0)
+    in let d3 = mw-set-kb-caps w (if (ev.state).caps then 1 else 0)
+    in let d4 = mw-set-kb-num w (if (ev.state).num then 1 else 0)
+    in let pressed = ev.pressed
+    in let ascii = ev.ascii
+    in let sc = ev.scancode
+    in let restored = __heap-restore h
+    in if pressed == False then let du = mw-set-last-sc (st.su-wheel) 0 in gui-idle st 0
+    else if sc == 1 then 0
+    else let prev-sc = mw-get-last-sc (st.su-wheel)
+    in let d5 = mw-set-last-key (st.su-wheel) ascii
+    in let d6 = mw-set-last-sc (st.su-wheel) sc
+    in let w = st.su-wheel
+    in let d7 = if sc == 59 then mw-set-view w 0
+      else if sc == 60 then mw-set-view w 1
+      else if sc == 61 then mw-set-view w 2
+      else if sc == 62 then mw-set-view w 3
+      else if sc == 63 then mw-set-view w 4
+      else if sc == 64 then mw-set-view w 5
+      else if sc == 65 then mw-set-view w 9
+      else if sc == 66 then mw-set-view w 26
+      else if sc == 15 then if sc == prev-sc then 0 else if mw-get-kb-shift w == 1 then gui-tab-prev w else gui-tab-next w
+      else if sc == 28 then if sc == prev-sc then 0 else gui-tab-activate w
+      else 0
+    in let cur-view = mw-get-view w
+    in if cur-view == 9 then gui-settings-key st sc prev-sc
+    else if cur-view == 5 then gui-notepad-key st ascii sc
+    else if cur-view == 8 then gui-tab-calc-key st sc prev-sc
+    else if cur-view == 14 then gui-piano-key st sc prev-sc
+    else if cur-view == 10 then gui-tracker-key st sc prev-sc
+    else if cur-view == 26 then gui-fonts-key st sc prev-sc
+    else gui-idle (gui-render st) 0
+
+  gui-tab-next : MutWheel -> Integer
+  gui-tab-next (w) =
+    let cur = mw-get-tab-cursor w
+    in let next = gui-tab-skip-forward (cur + 1)
+    in mw-set-tab-cursor w next
+
+  gui-tab-activate : MutWheel -> Integer
+  gui-tab-activate (w) =
+    let cur = mw-get-tab-cursor w
+    in let d = mw-set-app w cur
+    in gui-app-to-view w cur
+
+  gui-tab-prev : MutWheel -> Integer
+  gui-tab-prev (w) =
+    let cur = mw-get-tab-cursor w
+    in let prev = gui-tab-skip-backward (cur - 1)
+    in mw-set-tab-cursor w prev
+
+  gui-tab-skip-forward : Integer -> Integer
+  gui-tab-skip-forward (n) =
+    if n == 5 then 6
+    else if n == 9 then 11
+    else if n == 10 then 11
+    else if n == 13 then 14
+    else if n > 24 then 1
+    else n
+
+  gui-tab-skip-backward : Integer -> Integer
+  gui-tab-skip-backward (n) =
+    if n == 5 then 4
+    else if n == 10 then 8
+    else if n == 9 then 8
+    else if n == 13 then 12
+    else if n < 1 then 24
+    else n
+
+  gui-tab-calc-key : ShellUiState, Integer, Integer -> Integer
+  gui-tab-calc-key (st) (sc) (prev) =
+    if sc == prev then gui-idle st 0
+    else let d = calc-key (st.su-wheel) sc in gui-idle (gui-render st) 0
+
+  gui-tracker-key : ShellUiState, Integer, Integer -> Integer
+  gui-tracker-key (st) (sc) (prev) =
+    if sc == prev then gui-idle st 0
+    else let d = tracker-key st sc in gui-idle (gui-render st) 0
+
+  gui-notepad-key : ShellUiState, Integer, Integer -> Integer
+  gui-notepad-key (st) (ascii) (sc) =
+    let w = st.su-wheel
+    in let nb = w.mw-notepad
+    in if sc == 14 then let d = notepad-backspace nb w in gui-idle (gui-render st) 0
+    else if ascii == 1 then let d = notepad-append nb w 1 in gui-idle (gui-render st) 0
+    else if ascii >= 2 then let d = notepad-append nb w ascii in gui-idle (gui-render st) 0
+    else gui-idle (gui-render st) 0
+
+  gui-piano-key : ShellUiState, Integer, Integer -> Integer
+  gui-piano-key (st) (sc) (prev) =
+    if sc == prev then gui-idle st 0
+    else let w = st.su-wheel
+    in let note = if sc == 30 then 0
+      else if sc == 31 then 1
+      else if sc == 32 then 2
+      else if sc == 33 then 3
+      else if sc == 34 then 4
+      else if sc == 35 then 5
+      else if sc == 36 then 6
+      else if sc == 37 then 7
+      else if sc == 38 then 8
+      else if sc == 39 then 9
+      else (-1)
+    in let d = if note >= 0 then mw-set-app-s0 w note else 0
+    in gui-idle (gui-render st) 0
+
+  gui-on-mouse-port : ShellUiState -> Integer
+  gui-on-mouse-port (st) =
+    let w = st.su-wheel
+    in let btn = port-in-byte 225
+    in let mx = port-in-16 226
+    in let my = port-in-16 227
+    in let left = bit-and btn 1
+    in let was-btn = mw-get-mouse-btn w
+    in let click = if left == 1 then if was-btn == 0 then 1 else 0 else 0
+    in let d1 = mw-set-mouse-x w mx
+    in let d2 = mw-set-mouse-y w my
+    in let d3 = mw-set-mouse-btn w left
+    in let d4 = if click == 1 then gui-handle-click st mx my else 0
+    in gui-idle (gui-render st) 0
+
+  gui-handle-click : ShellUiState, Integer, Integer -> Integer
+  gui-handle-click (st) (mx) (my) =
+    let ty = gui-h - taskbar-h
+    in if my >= ty then gui-handle-hotbar-click st mx
+    else if mx < sidebar-w then gui-handle-sidebar-click st my
+    else if mw-get-view (st.su-wheel) == 26 then gui-handle-font-click st mx my
+    else 0
+
+  gui-handle-font-click : ShellUiState, Integer, Integer -> Integer
+  gui-handle-font-click (st) (mx) (my) =
+    let wh = st.su-wheel
+    in let x0 = work-x + 8
+    in let list-w = 180
+    in let list-top = 50
+    in if mx < x0 then 0
+    else if mx > x0 + list-w then 0
+    else if my < list-top then 0
+    else let slot = (my - list-top) / 40
+    in if slot < 0 then 0
+    else if slot >= fg-font-count then 0
+    else let old-sel = mw-get-app-s0 wh
+    in let d1 = mw-set-app-s0 wh slot
+    in let d2 = if slot /= old-sel then gui-fonts-load-all wh slot else 0
+    in gui-idle (gui-render st) 0
+
+  gui-handle-sidebar-click : ShellUiState, Integer -> Integer
+  gui-handle-sidebar-click (st) (my) =
+    let w = st.su-wheel
+    in let rh = sidebar-row-h
+    in let slot = my / rh
+    in if slot >= 1 then if slot <= 19 then
+      let app-id = gui-slot-to-app slot
+      in if app-id > 0 then let d = mw-set-app w app-id in gui-app-to-view w app-id
+      else 0
+    else 0 else 0
+
+  gui-slot-to-app : Integer -> Integer
+  gui-slot-to-app (slot) =
+    if slot == 1 then 1
+    else if slot == 2 then 2
+    else if slot == 3 then 22
+    else if slot == 4 then 23
+    else if slot == 5 then 3
+    else if slot == 6 then 4
+    else if slot == 7 then 6
+    else if slot == 8 then 7
+    else if slot == 9 then 8
+    else if slot == 10 then 11
+    else if slot == 11 then 12
+    else if slot == 12 then 14
+    else if slot == 13 then 15
+    else if slot == 14 then 16
+    else if slot == 15 then 17
+    else if slot == 16 then 18
+    else if slot == 17 then 19
+    else if slot == 18 then 20
+    else if slot == 19 then 21
+    else if slot == 20 then 24
+    else if slot == 21 then 25
+    else 0
+
+  gui-app-to-view : MutWheel, Integer -> Integer
+  gui-app-to-view (w) (app-id) =
+    if app-id == 1 then mw-set-view w 5
+    else if app-id == 2 then mw-set-view w 7
+    else if app-id == 22 then mw-set-view w 8
+    else if app-id == 23 then mw-set-view w 9
+    else if app-id == 3 then mw-set-view w 10
+    else if app-id == 4 then mw-set-view w 11
+    else if app-id == 6 then mw-set-view w 12
+    else if app-id == 7 then mw-set-view w 13
+    else if app-id == 8 then mw-set-view w 14
+    else if app-id == 11 then mw-set-view w 15
+    else if app-id == 12 then mw-set-view w 16
+    else if app-id == 14 then mw-set-view w 17
+    else if app-id == 15 then mw-set-view w 18
+    else if app-id == 16 then mw-set-view w 19
+    else if app-id == 17 then mw-set-view w 20
+    else if app-id == 18 then mw-set-view w 21
+    else if app-id == 19 then mw-set-view w 22
+    else if app-id == 20 then mw-set-view w 23
+    else if app-id == 21 then mw-set-view w 24
+    else if app-id == 24 then mw-set-view w 25
+    else if app-id == 25 then mw-set-view w 26
+    else mw-set-view w 6
+
+  gui-handle-hotbar-click : ShellUiState, Integer -> Integer
+  gui-handle-hotbar-click (st) (mx) =
+    if mx >= 64 then if mx < 108 then mw-set-view (st.su-wheel) 0
+    else if mx < 158 then mw-set-view (st.su-wheel) 1
+    else if mx < 208 then mw-set-view (st.su-wheel) 2
+    else if mx < 258 then mw-set-view (st.su-wheel) 3
+    else if mx < 308 then mw-set-view (st.su-wheel) 4
+    else 0 else 0
+
+Section: RTC Clock
+  rtc-read : Integer -> Integer
+  rtc-read (reg) = let w = port-out-byte 112 reg in port-in-byte 113
+
+  bcd-dec : Integer -> Integer
+  bcd-dec (v) = (bit-shru v 4) * 10 + bit-and v 15
+
+  rtc-pad2 : Integer -> Text
+  rtc-pad2 (n) = let d = bcd-dec n in if d < 10 then "0" & show d else show d
+
+  rtc-time : Text
+  rtc-time = rtc-pad2 (rtc-read 4) & ":" & rtc-pad2 (rtc-read 2) & ":" & rtc-pad2 (rtc-read 0)
+
+  rtc-date : Text
+  rtc-date = "20" & rtc-pad2 (rtc-read 9) & "-" & rtc-pad2 (rtc-read 8) & "-" & rtc-pad2 (rtc-read 7)
+
+Section: Render
+  gui-render : ShellUiState -> ShellUiState
+  gui-render (st) =
+    let h = __heap-save
+    in let gb = st.su-backbuf
+    in let dummy = gop-buf-clear gb col-bg
+    in let dummy2 = draw-sidebar gb st
+    in let dummy3 = draw-workspace gb st
+    in let dummy4 = draw-taskbar gb st
+    in let dummy5 = gop-cursor-save gb (st.su-cursor-save) (mw-get-mouse-x (st.su-wheel)) (mw-get-mouse-y (st.su-wheel)) 8 10
+    in let dummy6 = gop-draw-arrow-cursor gb (mw-get-mouse-x (st.su-wheel)) (mw-get-mouse-y (st.su-wheel)) col-cursor
+    in let dummy7 = gop-buf-present (st.su-display) gb
+    in let dummy8 = port-out-byte 224 0
+    in let dummy9 = mw-inc-frame (st.su-wheel)
+    in let restored = __heap-restore h
+    in st
+
+Section: App Launcher Sidebar
+  draw-sidebar : GopBuf, ShellUiState -> Integer
+  draw-sidebar (gb) (st) =
+    let dummy = gop-buf-rect gb 0 0 sidebar-w desk-h col-sidebar
+    in let dummy2 = gop-buf-hline gb 0 (sidebar-w - 1) 0 col-sep
+    in let dummy3 = gop-buf-vline gb (sidebar-w - 1) 0 desk-h col-sep
+    in let wh = st.su-wheel
+    in let sel = mw-get-app wh
+    in let tab = mw-get-tab-cursor wh
+    in let rh = sidebar-row-h
+    in let y = 0
+    in let dummy4 = draw-cat gb wh y "Apps" col-accent
+    in let dummy5 = draw-app-sel gb wh (rh) "Notes" col-fg2 1 sel tab
+    in let dummy6 = draw-app-sel gb wh (rh * 2) "Calendar" col-fg2 2 sel tab
+    in let dummy7 = draw-app-sel gb wh (rh * 3) "Calc" col-fg2 22 sel tab
+    in let dummy8 = draw-app-sel gb wh (rh * 4) "Settings" col-fg2 23 sel tab
+    in let dummy11 = draw-app-sel gb wh (rh * 5) "Tracker" col-fg2 3 sel tab
+    in let dummy12 = draw-app-sel gb wh (rh * 6) "Pomodoro" col-fg2 4 sel tab
+    in let dummy13 = draw-app-sel gb wh (rh * 7) "Publisher" col-fg2 6 sel tab
+    in let dummy15 = draw-app-sel gb wh (rh * 8) "Boombox" col-fg2 7 sel tab
+    in let dummy16 = draw-app-sel gb wh (rh * 9) "Piano" col-fg2 8 sel tab
+    in let dummy18 = draw-app-sel gb wh (rh * 10) "Photos" col-fg2 11 sel tab
+    in let dummy19 = draw-app-sel gb wh (rh * 11) "Podcasts" col-fg2 12 sel tab
+    in let dummy22 = draw-app-sel gb wh (rh * 12) "Capture" col-fg2 14 sel tab
+    in let dummy23 = draw-app-sel gb wh (rh * 13) "ImgTools" col-fg2 15 sel tab
+    in let dummy24 = draw-app-sel gb wh (rh * 14) "Diagram" col-fg2 16 sel tab
+    in let dummy25 = draw-app-sel gb wh (rh * 15) "Designer" col-fg2 17 sel tab
+    in let dummy27 = draw-app-sel gb wh (rh * 16) "Mail" col-fg2 18 sel tab
+    in let dummy28 = draw-app-sel gb wh (rh * 17) "Chat" col-fg2 19 sel tab
+    in let dummy29 = draw-app-sel gb wh (rh * 18) "Collab" col-fg2 20 sel tab
+    in let dummy30 = draw-app-sel gb wh (rh * 19) "Helm" col-fg2 21 sel tab
+    in let dummy31 = draw-app-sel gb wh (rh * 20) "Diffusion" col-purple 24 sel tab
+    in draw-app-sel gb wh (rh * 21) "Fonts" col-teal 25 sel tab
+
+  draw-cat : GopBuf, MutWheel, Integer, Text, Integer -> Integer
+  draw-cat (gb) (wh) (y) (label) (color) =
+    let rh = sidebar-row-h
+    in let pad = (rh - 16) / 2
+    in let dummy = gop-buf-rect gb 0 y sidebar-w rh col-sidebar-cat
+    in gop-buf-put-text-role gb wh 6 (y + pad) label color font-role-sans
+
+  draw-app : GopBuf, MutWheel, Integer, Text, Integer -> Integer
+  draw-app (gb) (wh) (y) (label) (color) =
+    let dummy = gop-buf-rect gb 2 y (sidebar-w - 4) 13 col-sidebar-app
+    in gop-buf-put-text-role gb wh 10 (y + 1) label color font-role-sans
+
+  draw-app-sel : GopBuf, MutWheel, Integer, Text, Integer, Integer, Integer, Integer -> Integer
+  draw-app-sel (gb) (wh) (y) (label) (color) (app-id) (sel) (tab) =
+    let rh = sidebar-row-h
+    in let is-active = app-id == sel
+    in let is-tab = app-id == tab
+    in let bg = if is-active then col-sidebar-sel else if is-tab then #1E3A5F else col-sidebar-app
+    in let fg = if is-active then col-accent else if is-tab then col-fg else color
+    in let pad = (rh - 16) / 2
+    in let dummy = gop-buf-rect gb 2 y (sidebar-w - 4) rh bg
+    in let dummy2 = if is-active then gop-buf-rect gb 0 y 3 rh col-accent
+      else if is-tab then gop-buf-rect gb 0 y 3 rh col-teal
+      else 0
+    in gop-buf-put-text-role gb wh 10 (y + pad) label fg font-role-sans
+
+Section: Workspace
+  draw-workspace : GopBuf, ShellUiState -> Integer
+  draw-workspace (gb) (st) =
+    let v = mw-get-view (st.su-wheel)
+    in if v == 0 then draw-view-dashboard gb st
+    else if v == 1 then draw-view-monitor gb st
+    else if v == 2 then draw-view-hardware gb st
+    else if v == 3 then draw-view-about gb st
+    else if v == 4 then draw-view-apps gb st
+    else if v == 5 then draw-view-notepad gb st
+    else if v == 7 then draw-view-calendar gb st
+    else if v == 8 then draw-view-calc gb st
+    else if v == 9 then draw-view-settings gb st
+    else if v == 10 then draw-view-tracker gb st
+    else if v == 11 then draw-view-pomodoro gb st
+    else if v == 12 then draw-view-publisher gb st
+    else if v == 13 then draw-view-boombox gb st
+    else if v == 14 then draw-view-piano gb st
+    else if v == 15 then draw-view-photos gb st
+    else if v == 16 then draw-view-podcasts gb st
+    else if v == 17 then draw-view-capture gb st
+    else if v == 18 then draw-view-imgtools gb st
+    else if v == 19 then draw-view-diagram gb st
+    else if v == 20 then draw-view-designer gb st
+    else if v == 21 then draw-view-mail gb st
+    else if v == 22 then draw-view-chat gb st
+    else if v == 23 then draw-view-collab gb st
+    else if v == 24 then draw-view-helm gb st
+    else if v == 25 then draw-view-diffusion gb st
+    else if v == 26 then draw-view-fonts gb st
+    else draw-view-app-stub gb st
+
+Section: Widget Helper
+  win-panel : Text, List WidgetNode -> WidgetNode
+  win-panel (title) (children) =
+    widget-panel ("win-" & title) DirColumn 2 (
+      [widget-label ("wt-" & title) title] & children
+    )
+
+Section: Dashboard View (F1)
+  draw-view-dashboard : GopBuf, ShellUiState -> Integer
+  draw-view-dashboard (gb) (st) =
+    let wh = st.su-wheel
+    in let ticks = get-ticks
+    in let heap = __heap-save
+    in let heap-mb = heap / 1048576
+    in let sys-panel = win-panel "System" [
+      widget-label "d-status" "Status  Running",
+      widget-label "d-uptime" ("Uptime  " & show (ticks / 18) & "s"),
+      widget-separator "d-sep1",
+      widget-label "d-key" ("Key  " & show (mw-get-last-key wh) & " (sc:" & show (mw-get-last-sc wh) & ")"),
+      widget-label "d-mouse1" ("Mouse  " & show (mw-get-mouse-x wh) & "," & show (mw-get-mouse-y wh)),
+      widget-separator "d-sep2",
+      widget-label "d-frame" ("Frame  " & show (mw-get-frame wh)),
+      widget-label "d-wheel" ("Wheel  " & show (mw-get-tick wh) & "t"),
+      widget-label "d-mouse2" ("Mouse  " & show (mw-get-mouse-x wh) & "," & show (mw-get-mouse-y wh))
+    ]
+    in let mem-panel = win-panel "Memory" [
+      widget-label "d-heap" ("Heap  " & show heap-mb & " MB"),
+      widget-gauge "d-heap-bar" heap-mb 3072,
+      widget-label "d-stack" "Stack  3 GB down",
+      widget-label "d-alloc" "Alloc  Bump (R10)",
+      widget-label "d-gc" "GC  None",
+      widget-label "d-arena" "Arena  6M-3G"
+    ]
+    in let keys-panel = win-panel "Keys" [
+      widget-label "d-k1" "F1-F5  Sys Mon HW Info Apps",
+      widget-label "d-k2" "F6  Notepad",
+      widget-label "d-k3" "F7  Settings",
+      widget-label "d-k4" "F8  Fonts",
+      widget-label "d-k5" "Tab  Sidebar nav",
+      widget-label "d-k6" "Esc  Exit",
+      widget-separator "d-ksep",
+      widget-label "d-k7" "L-Click  Capture mouse",
+      widget-label "d-k8" "R-Click  Release mouse"
+    ]
+    in let top-row = widget-panel "d-top" DirRow 4 [sys-panel, mem-panel]
+    in let tree = widget-panel "d-root" DirColumn 4 [top-row, keys-panel]
+    in let bounds = layout-rect work-x 4 work-w (desk-h - 8)
+    in let laid-out = widget-layout tree theme-terminal bounds
+    in let d-tree = gop-render-tree laid-out theme-terminal gb wh
+    in gop-render-tree laid-out theme-terminal gb wh
+
+Section: Monitor View (F2)
+  draw-view-monitor : GopBuf, ShellUiState -> Integer
+  draw-view-monitor (gb) (st) =
+    let wh = st.su-wheel
+    in let ticks = get-ticks
+    in let heap = __heap-save
+    in let heap-mb = heap / 1048576
+    in let perf-panel = win-panel "Performance" [
+      widget-label "m-timer" ("Timer  " & show ticks & " ticks"),
+      widget-label "m-uptime" ("Uptime  " & show (ticks / 18) & "s"),
+      widget-label "m-heap" ("Heap  " & show heap-mb & " MB"),
+      widget-gauge "m-heap-bar" heap-mb 3072,
+      widget-label "m-frames" ("Frames  " & show (mw-get-frame wh)),
+      widget-label "m-smp" ("SMP  " & show smp-cores & " cores (" & show (smp-ready + 1) & " up)")
+    ]
+    in let proc-panel = win-panel "Processes" [
+      widget-label "m-p1" "kernel  running",
+      widget-label "m-p2" "gui-shell  running",
+      widget-label "m-p3" "keyboard  listening",
+      widget-label "m-p4" "mouse  polling",
+      widget-label "m-p5" "timer  irq-0",
+      widget-label "m-p6" "serial  irq-4",
+      widget-label "m-p7" "watchdog  idle",
+      widget-label "m-p8" "nic  standby",
+      widget-label "m-p9" "ide  ready",
+      widget-label "m-p10" "xhci  standby",
+      widget-label "m-p11" "hda  idle",
+      widget-label "m-p12" "hpet  running"
+    ]
+    in let net-panel = win-panel "Network" [
+      widget-label "m-n1" "NIC  NE2000",
+      widget-label "m-n2" "IP  10.0.2.15",
+      widget-label "m-n3" "GW  10.0.2.2",
+      widget-label "m-n4" "DNS  10.0.2.3",
+      widget-separator "m-nsep1",
+      widget-label "m-n5" "TCP  Ready",
+      widget-label "m-n6" "UDP  Ready",
+      widget-label "m-n7" "ICMP  Ready",
+      widget-separator "m-nsep2",
+      widget-label "m-n8" "HTTP  :9200"
+    ]
+    in let bottom-row = widget-panel "m-bottom" DirRow 4 [proc-panel, net-panel]
+    in let tree = widget-panel "m-root" DirColumn 4 [perf-panel, bottom-row]
+    in let bounds = layout-rect work-x 4 work-w (desk-h - 8)
+    in let laid-out = widget-layout tree theme-terminal bounds
+    in gop-render-tree laid-out theme-terminal gb wh
+
+Section: Hardware View (F3)
+  draw-view-hardware : GopBuf, ShellUiState -> Integer
+  draw-view-hardware (gb) (st) =
+    let wh = st.su-wheel
+    in let cores = smp-cores
+    in let ready = smp-ready
+    in let cpu-panel = win-panel "CPU" [
+      widget-label "h-arch" "Arch  x86-64",
+      widget-label "h-mode" "Mode  Long mode",
+      widget-label "h-vm" "VM  codex-vm",
+      widget-label "h-cores" ("Cores  " & show cores & " (" & show (ready + 1) & " active)"),
+      widget-separator "h-csep",
+      widget-label "h-idt" "IDT  256 vec",
+      widget-label "h-pic" "PIC  8259",
+      widget-label "h-timer" "Timer  PIT 18Hz",
+      widget-label "h-lapic" ("LAPIC  " & if smp-cores > 1 then "Enabled" else "Off")
+    ]
+    in let disp-panel = win-panel "Display" [
+      widget-label "h-dmode" "Mode  GOP FB",
+      widget-label "h-res" "Res  640x480",
+      widget-label "h-depth" "Depth  32-bit",
+      widget-label "h-fb" "FB  0xBF..",
+      widget-separator "h-dsep",
+      widget-label "h-buf" "Buf  GopBuf",
+      widget-label "h-font" "Font  CBF 8x16",
+      widget-label "h-cur" "Cur  8x10"
+    ]
+    in let periph-panel = win-panel "Peripherals" [
+      widget-label "h-kbd" "Keyboard  PS/2",
+      widget-label "h-mouse" "Mouse  PS/2",
+      widget-label "h-serial" "Serial  COM1",
+      widget-label "h-disk" "Disk  IDE",
+      widget-label "h-nic" "NIC  NE2K",
+      widget-label "h-usb" "USB  xHCI",
+      widget-label "h-audio" "Audio  HDA",
+      widget-label "h-hpet" "HPET  Active",
+      widget-separator "h-psep",
+      widget-label "h-pci0" "PCI:0  VGA",
+      widget-label "h-pci1" "PCI:1  xHCI",
+      widget-label "h-pci2" "PCI:2  HDA",
+      widget-label "h-acpi" "ACPI  Yes"
+    ]
+    in let top-row = widget-panel "h-top" DirRow 4 [cpu-panel, disp-panel]
+    in let tree = widget-panel "h-root" DirColumn 4 [top-row, periph-panel]
+    in let bounds = layout-rect work-x 4 work-w (desk-h - 8)
+    in let laid-out = widget-layout tree theme-terminal bounds
+    in gop-render-tree laid-out theme-terminal gb wh
+
+Section: About View (F4)
+  draw-view-about : GopBuf, ShellUiState -> Integer
+  draw-view-about (gb) (st) =
+    let wh = st.su-wheel
+    in let tree = win-panel "About Codex" [
+      widget-label "a-name" "Codex  The first self-sustaining compiler.",
+      widget-label "a-b1" "Boots on bare metal. Compiles itself.",
+      widget-label "a-b2" "No OS. No runtime. No borrowed trust.",
+      widget-separator "a-sep1",
+      widget-label "a-ts" "Type System",
+      widget-label "a-t1" "Dependent + linear + effect types",
+      widget-label "a-t2" "Punctual (hard real-time)",
+      widget-label "a-t3" "Bounded integers, unit types",
+      widget-separator "a-sep2",
+      widget-label "a-sc" "Scale",
+      widget-label "a-s1" "28K lines / 54 files / 506 modules",
+      widget-label "a-s2" "57 apps / 677 modules / 52 plugs",
+      widget-label "a-s3" "152 tests / 22 quires",
+      widget-separator "a-sep3",
+      widget-label "a-d1" "Built 2026-03-14 to 2026-04-24",
+      widget-label "a-d2" "41 days, one human + AI agents",
+      widget-separator "a-sep4",
+      widget-label "a-dh" "This Desktop",
+      widget-label "a-dd1" "GOP framebuffer, GopBuf backbuffer",
+      widget-label "a-dd2" "Mutable timing wheel, CBF + System font",
+      widget-label "a-dd3" "Zero-leak render (heap-save/restore)"
+    ]
+    in let bounds = layout-rect work-x 4 work-w (desk-h - 8)
+    in let laid-out = widget-layout tree theme-terminal bounds
+    in gop-render-tree laid-out theme-terminal gb wh
+
+Section: Apps View (F5)
+  draw-view-apps : GopBuf, ShellUiState -> Integer
+  draw-view-apps (gb) (st) =
+    let wh = st.su-wheel
+    in let prod-panel = win-panel "Productivity" [
+      widget-label "ap-1" "Notes  Two-pane editor",
+      widget-label "ap-2" "Calendar  Month/week/day",
+      widget-label "ap-3" "Tasks  Kanban board",
+      widget-label "ap-4" "Pomodoro  Focus timer",
+      widget-label "ap-5" "Books  E-reader",
+      widget-label "ap-6" "Publisher  Long-form",
+      widget-separator "ap-sep1",
+      widget-label "ap-7" "Mail  3-pane email",
+      widget-label "ap-8" "Chat  E2E encrypted",
+      widget-label "ap-9" "Collab  Video calls",
+      widget-label "ap-10" "Helm  Comms platform",
+      widget-separator "ap-sep2",
+      widget-label "ap-11" "Weather  Dashboard",
+      widget-label "ap-12" "Maps  Navigation",
+      widget-label "ap-13" "News  RSS reader",
+      widget-label "ap-14" "Fitness  Activity rings"
+    ]
+    in let creative-panel = win-panel "Creative + Media" [
+      widget-label "ac-1" "Spark  3D/CAD suite",
+      widget-label "ac-2" "Diagram  Flowcharts",
+      widget-label "ac-3" "Designer  UI builder",
+      widget-label "ac-4" "Capture  Screenshots",
+      widget-label "ac-5" "ImgTools  Image edit",
+      widget-separator "ac-sep1",
+      widget-label "ac-6" "Music  Player",
+      widget-label "ac-7" "Piano  2-octave",
+      widget-label "ac-8" "Radio  Streaming",
+      widget-label "ac-9" "Recorder  Voice",
+      widget-label "ac-10" "Photos  Gallery",
+      widget-label "ac-11" "Podcasts  Player",
+      widget-separator "ac-sep2",
+      widget-label "ac-12" "MathBook  CAS notebook",
+      widget-label "ac-13" "Browser  Bare-metal",
+      widget-label "ac-14" "Explorer  World-build"
+    ]
+    in let biz-panel = win-panel "Business + Games" [
+      widget-label "ab-1" "ERP  Enterprise",
+      widget-label "ab-2" "Market  E-commerce",
+      widget-label "ab-3" "Workflow  BPM engine",
+      widget-label "ab-4" "Vision  Intelligence",
+      widget-label "ab-5" "Secrets  Passwords",
+      widget-label "ab-6" "FileShare  P2P files",
+      widget-separator "ab-sep1",
+      widget-label "ab-7" "Magic  Card game",
+      widget-label "ab-8" "FishTank  WebGPU aqua",
+      widget-label "ab-9" "Starmap  3D stars",
+      widget-label "ab-10" "Globe  Earth viz",
+      widget-separator "ab-sep2",
+      widget-label "ab-11" "Data  Database",
+      widget-label "ab-12" "Services  System svc",
+      widget-label "ab-13" "Nettool  Net admin",
+      widget-separator "ab-sep3",
+      widget-label "ab-14" "Total  57 apps"
+    ]
+    in let tree = widget-panel "apps-root" DirRow 4 [prod-panel, creative-panel, biz-panel]
+    in let bounds = layout-rect work-x 4 work-w (desk-h - 8)
+    in let laid-out = widget-layout tree theme-terminal bounds
+    in gop-render-tree laid-out theme-terminal gb wh
+
+Section: App Name Lookup
+  app-name : Integer -> Text
+  app-name (id) =
+    if id == 1 then "Notes"
+    else if id == 2 then "Calendar"
+    else if id == 3 then "Tasks"
+    else if id == 4 then "Pomodoro"
+    else if id == 5 then "Books"
+    else if id == 6 then "Publisher"
+    else if id == 7 then "Music"
+    else if id == 8 then "Piano"
+    else if id == 9 then "Radio"
+    else if id == 10 then "Recorder"
+    else if id == 11 then "Photos"
+    else if id == 12 then "Podcasts"
+    else if id == 13 then "Spark 3D"
+    else if id == 14 then "Capture"
+    else if id == 15 then "ImgTools"
+    else if id == 16 then "Diagram"
+    else if id == 17 then "Designer"
+    else if id == 18 then "Mail"
+    else if id == 19 then "Chat"
+    else if id == 20 then "Collab"
+    else if id == 21 then "Helm"
+    else if id == 22 then "Calculator"
+    else if id == 23 then "Settings"
+    else if id == 24 then "Monitor"
+    else "Unknown"
+
+  app-desc : Integer -> Text
+  app-desc (id) =
+    if id == 1 then "Two-pane note editor with formatting toolbar"
+    else if id == 2 then "Month, week, and day views with event creation"
+    else if id == 3 then "Five-column Kanban board with priorities"
+    else if id == 4 then "Focus timer with daily goals and break reminders"
+    else if id == 5 then "E-book reader with progress and bookmarks"
+    else if id == 6 then "Long-form authoring with version history"
+    else if id == 7 then "Music player with shuffle and liked filter"
+    else if id == 8 then "Two-octave piano with keyboard input"
+    else if id == 9 then "Two-deck radio station with mixer"
+    else if id == 10 then "Voice recorder with waveform display"
+    else if id == 11 then "Photo gallery with slideshow"
+    else if id == 12 then "Podcast client with episode progress"
+    else if id == 13 then "3D modeling, image editing, audio, video"
+    else if id == 14 then "Screenshot tool with annotations"
+    else if id == 15 then "Image editor with presets and sliders"
+    else if id == 16 then "Flowcharts, ERDs, UML, state machines"
+    else if id == 17 then "WYSIWYG UI widget tree builder"
+    else if id == 18 then "Three-pane email client with compose"
+    else if id == 19 then "End-to-end encrypted messaging"
+    else if id == 20 then "Video calls, screen share, whiteboard"
+    else if id == 21 then "Scalable comms: chat + voice channels"
+    else if id == 22 then "Calculator with display and keypad"
+    else if id == 23 then "Font, display, and language settings"
+    else if id == 24 then "System resource monitor"
+    else "Application"
+
+Section: Font Creator View
+  draw-view-fonts : GopBuf, ShellUiState -> Integer
+  draw-view-fonts (gb) (st) =
+    let wh = st.su-wheel
+    in let dummy = draw-win gb wh work-x 4 work-w (desk-h - 8) "Font Creator"
+    in let sel = mw-get-app-s0 wh
+    in let y0 = 26
+    in let x0 = work-x + 8
+    in let list-w = 180
+    in let preview-x = x0 + list-w + 8
+    in let preview-w = work-w - list-w - 24
+    in let d1 = draw-font-list gb wh x0 y0 list-w sel
+    in let d2 = draw-font-preview gb wh preview-x y0 preview-w sel
+    in let help-y = desk-h - 30
+    in gop-buf-put-text gb x0 help-y "Up/Down  browse generated font catalog" col-dim
+
+  draw-font-list : GopBuf, MutWheel, Integer, Integer, Integer, Integer -> Integer
+  draw-font-list (gb) (wh) (x) (y) (w) (sel) =
+    let d1 = gop-buf-rect gb x y w 20 col-win-title
+    in let d2 = gop-buf-put-text gb (x + 4) (y + 4) "Generated Fonts" col-accent
+    in let d3 = draw-font-list-items gb wh x (y + 24) w sel 0 fg-font-count
+    in gop-buf-vline gb (x + w + 3) y (y + fg-font-count * 40 + 24) col-sep
+
+  draw-font-list-items : GopBuf, MutWheel, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  draw-font-list-items (gb) (wh) (x) (y) (w) (sel) (i) (n) =
+    if i >= n then 0
+    else let row-y = y + i * 40
+    in let bg = if i == sel then col-sidebar-sel else col-win-body
+    in let d1 = gop-buf-rect gb x row-y w 38 bg
+    in let name = fg-font-name i
+    in let desc = font-trunc-desc (fg-font-desc i) (w / 9 - 2)
+    in let d2 = gop-buf-put-text-role gb wh (x + 6) (row-y + 4) name col-fg font-role-sans
+    in let d3 = gop-buf-put-text gb (x + 6) (row-y + 22) desc col-dim
+    in draw-font-list-items gb wh x y w sel (i + 1) n
+
+  font-trunc-desc : Text, Integer -> Text
+  font-trunc-desc (s) (max-len) =
+    if text-length s <= max-len then s
+    else text-take s (max-len - 2) & ".."
+
+  draw-font-preview : GopBuf, MutWheel, Integer, Integer, Integer, Integer -> Integer
+  draw-font-preview (gb) (wh) (x) (y) (w) (sel) =
+    let name = fg-font-name sel
+    in let d1 = gop-buf-rect gb x y w 24 col-win-title
+    in let d2 = gop-buf-put-text-role gb wh (x + 8) (y + 5) name col-accent font-role-sans
+    in let py = y + 32
+    in let d3 = gop-buf-put-text-role gb wh (x + 8) py "Active font preview:" col-dim font-role-sans
+    in let d4 = gop-buf-put-text-role gb wh (x + 8) (py + 20) "The quick brown fox jumps" col-fg font-role-sans
+    in let d5 = gop-buf-put-text-role gb wh (x + 8) (py + 36) "over the lazy dog." col-fg font-role-sans
+    in let d6 = gop-buf-put-text-role gb wh (x + 8) (py + 60) "ABCDEFGHIJKLMNOPQRSTUVWXYZ" col-fg2 font-role-sans
+    in let d7 = gop-buf-put-text-role gb wh (x + 8) (py + 76) "abcdefghijklmnopqrstuvwxyz" col-fg2 font-role-sans
+    in let d8 = gop-buf-put-text-role gb wh (x + 8) (py + 96) "0123456789 !@#$%^&*()_+-=" col-fg2 font-role-sans
+    in let d9 = gop-buf-put-text-role gb wh (x + 8) (py + 120) "Serif role:" col-dim font-role-serif
+    in let d10 = gop-buf-put-text-role gb wh (x + 8) (py + 136) "The quick brown fox 0123456789" col-fg font-role-serif
+    in let d11 = gop-buf-put-text-role gb wh (x + 8) (py + 160) "Sans role:" col-dim font-role-sans
+    in let d12 = gop-buf-put-text-role gb wh (x + 8) (py + 176) "The quick brown fox 0123456789" col-fg font-role-sans
+    in let d13 = gop-buf-put-text-role gb wh (x + 8) (py + 200) "Mono role:" col-dim font-role-mono
+    in let d14 = gop-buf-put-text-role gb wh (x + 8) (py + 216) "The quick brown fox 0123456789" col-fg font-role-mono
+    in let base-s = mw-get-font-serif-base wh
+    in let base-a = mw-get-font-sans-base wh
+    in let base-m = mw-get-font-mono-base wh
+    in let gw-s = mw-get-font-serif-w wh
+    in let gw-a = mw-get-font-sans-w wh
+    in let gw-m = mw-get-font-mono-w wh
+    in let d15 = gop-buf-put-text gb (x + 8) (py + 250) ("Serif: base=" & show base-s & " gw=" & show gw-s) (if base-s > 0 then col-green else col-red)
+    in let d16 = gop-buf-put-text gb (x + 8) (py + 264) ("Sans:  base=" & show base-a & " gw=" & show gw-a) (if base-a > 0 then col-green else col-red)
+    in gop-buf-put-text gb (x + 8) (py + 278) ("Mono:  base=" & show base-m & " gw=" & show gw-m) (if base-m > 0 then col-green else col-red)
+
+  draw-glyph-dump : GopBuf, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  draw-glyph-dump (gb) (base) (gw) (gh) (x) (y) (idx) =
+    let d1 = gop-buf-put-text gb x y ("glyph " & show idx & " (" & show gw & "x" & show gh & ")") col-dim
+    in draw-glyph-dump-rows gb base gw gh x (y + 12) idx 0
+
+  draw-glyph-dump-rows : GopBuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  draw-glyph-dump-rows (gb) (base) (gw) (gh) (x) (y) (idx) (row) =
+    if row >= gh then 0
+    else let d = draw-glyph-dump-cols gb base gw gh x y idx row 0
+    in draw-glyph-dump-rows gb base gw gh x y idx (row + 1)
+
+  draw-glyph-dump-cols : GopBuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  draw-glyph-dump-cols (gb) (base) (gw) (gh) (x) (y) (idx) (row) (col) =
+    if col >= gw then 0
+    else let alpha = peek-byte base (idx * gw * gh + row * gw + col)
+    in let color = if alpha > 200 then #FFFFFF else if alpha > 100 then #808080 else if alpha > 0 then #404040 else #0B0B1A
+    in let d = gop-buf-rect gb (x + col * 4) (y + row * 4) 3 3 color
+    in draw-glyph-dump-cols gb base gw gh x y idx row (col + 1)
+
+  gui-fonts-key : ShellUiState, Integer, Integer -> Integer
+  gui-fonts-key (st) (sc) (prev) =
+    if sc == prev then gui-idle st 0
+    else let wh = st.su-wheel
+    in let sel = mw-get-app-s0 wh
+    in let new-sel = if sc == 72 then (if sel <= 0 then 0 else sel - 1)
+      else if sc == 80 then (if sel >= fg-font-count - 1 then fg-font-count - 1 else sel + 1)
+      else sel
+    in let changed = if new-sel /= sel then 1 else 0
+    in let d1 = mw-set-app-s0 wh new-sel
+    in let d2 = if changed == 1 then gui-fonts-load-all wh new-sel else 0
+    in gui-idle (gui-render st) 0
+
+  gui-fonts-load-all : MutWheel, Integer -> Integer
+  gui-fonts-load-all (wh) (sel) =
+    if sel == 0 then gui-restore-disk-fonts wh
+    else let spec = if sel >= 5 then fai-gen-font fai-build-net (fg-font-name sel) (if sel == 5 then 0 else if sel == 6 then 500 else 1000)
+      else fg-font-spec (sel - 1)
+    in let d1 = fl-load-direct wh spec font-role-sans
+    in let base = mw-get-font-sans-base wh
+    in let gw = mw-get-font-sans-w wh
+    in let d2 = mw-set-font-serif-base wh base
+    in let d3 = mw-set-font-serif-w wh gw
+    in let d4 = mw-set-font-mono-base wh base
+    in let d5 = mw-set-font-mono-w wh gw
+    in mw-set-fonts-loaded wh 1
+
+  gui-restore-disk-fonts : MutWheel -> Integer
+  gui-restore-disk-fonts (wh) =
+    let vol = fat32-try-init 0
+    in if vol.f32-bytes-per-sector == 0 then 0
+    else if vol.f32-sectors-per-cluster == 0 then 0
+    else fl-load-defaults vol wh
+
+Section: App Stub View
+  draw-view-app-stub : GopBuf, ShellUiState -> Integer
+  draw-view-app-stub (gb) (st) =
+    let wh = st.su-wheel
+    in let app-id = mw-get-app wh
+    in let name = app-name app-id
+    in let desc = app-desc app-id
+    in let tree = win-panel name [
+      widget-label "stub-name" name,
+      widget-label "stub-desc" desc,
+      widget-separator "stub-sep1",
+      widget-label "stub-t1" "This app is defined in the Codex source tree",
+      widget-label "stub-t2" "and compiles to a standalone CDX binary.",
+      widget-separator "stub-sep2",
+      widget-label "stub-status" "Status: Available for integration",
+      widget-label "stub-hint" "Click another app in the sidebar to switch"
+    ]
+    in let bounds = layout-rect work-x 4 work-w (desk-h - 8)
+    in let laid-out = widget-layout tree theme-terminal bounds
+    in gop-render-tree laid-out theme-terminal gb wh
+
+Section: Notepad View (F6)
+  draw-view-notepad : GopBuf, ShellUiState -> Integer
+  draw-view-notepad (gb) (st) =
+    let x = work-x
+    in let wh = st.su-wheel
+    in let nb = wh.mw-notepad
+    in let len = mw-get-note-len wh
+    in let dummy = draw-win gb wh x 4 work-w 436 "Notepad"
+    in let cx = x + 10
+    in let cy = 28
+    in let dummy2 = notepad-draw-chars gb nb cx cy 0 len
+    in let cursor-x = cx + notepad-cursor-x len 0 0
+    in let cursor-y = cy + notepad-cursor-y len 0 0
+    in let dummy3 = gop-buf-rect gb cursor-x cursor-y 2 14 col-accent
+    in let dummy4 = gop-buf-hline gb cx (x + work-w - 10) (gui-h - taskbar-h - 30) col-sep
+    in let dummy5 = draw-kv gb wh cx (gui-h - taskbar-h - 22) "Chars" (show len) col-dim col-dim
+    in draw-kv gb wh (cx + 120) (gui-h - taskbar-h - 22) "F6 Notepad" "Type to edit, Backspace to delete" col-dim col-dim
+
+  notepad-draw-chars : GopBuf, NotepadBuf, Integer, Integer, Integer, Integer -> Integer
+  notepad-draw-chars (gb) (nb) (x) (y) (i) (len) =
+    if i >= len then 0
+    else let ch = notepad-get-char nb i
+    in if ch == 1 then notepad-draw-chars gb nb x (y + 16) (i + 1) len
+    else let px = x + notepad-line-x i nb 0 0
+    in let dummy = gop-buf-put-char gb px y ch col-fg
+    in notepad-draw-chars gb nb x y (i + 1) len
+
+  notepad-line-x : Integer, NotepadBuf, Integer, Integer -> Integer
+  notepad-line-x (target) (nb) (i) (col) =
+    if i >= target then col * 9
+    else let ch = notepad-get-char nb i
+    in if ch == 1 then notepad-line-x target nb (i + 1) 0
+    else notepad-line-x target nb (i + 1) (col + 1)
+
+  notepad-cursor-x : Integer, Integer, Integer -> Integer
+  notepad-cursor-x (target) (i) (col) =
+    if i >= target then col * 9
+    else notepad-cursor-x target (i + 1) (col + 1)
+
+  notepad-cursor-y : Integer, Integer, Integer -> Integer
+  notepad-cursor-y (target) (i) (lines) =
+    if i >= target then lines * 16
+    else notepad-cursor-y target (i + 1) lines
+
+Section: Settings Key Handler
+  gui-settings-key : ShellUiState, Integer, Integer -> Integer
+  gui-settings-key (st) (sc) (prev) =
+    if sc == prev then gui-idle st 0
+    else let w = st.su-wheel
+    in let role = mw-get-font-picker-role w
+    in if sc == 72 then gui-settings-role-change w st (-1)
+    else if sc == 80 then gui-settings-role-change w st 1
+    else if sc == 75 then gui-settings-font-change w st role (-1)
+    else if sc == 77 then gui-settings-font-change w st role 1
+    else if sc == 73 then gui-settings-repeat-change w st 1
+    else if sc == 81 then gui-settings-repeat-change w st (-1)
+    else gui-idle (gui-render st) 0
+
+  gui-settings-role-change : MutWheel, ShellUiState, Integer -> Integer
+  gui-settings-role-change (w) (st) (delta) =
+    let r = mw-get-font-picker-role w
+    in let nr = r + delta
+    in let clamped = if nr < 0 then 0 else if nr > 2 then 2 else nr
+    in let d = mw-set-font-picker-role w clamped
+    in gui-idle (gui-render st) 0
+
+  gui-settings-font-change : MutWheel, ShellUiState, Integer, Integer -> Integer
+  gui-settings-font-change (w) (st) (role) (delta) =
+    let idx = gui-get-role-idx w role
+    in let new-idx = idx + delta
+    in let wrapped = if new-idx < 0 then 13 else if new-idx > 13 then 0 else new-idx
+    in let codex-role = role + 1
+    in let d1 = block-select 0
+    in let vol = fat32-init 0
+    in let d2 = fl-load-into-role vol w wrapped codex-role
+    in gui-idle (gui-render st) 0
+
+  gui-settings-repeat-change : MutWheel, ShellUiState, Integer -> Integer
+  gui-settings-repeat-change (w) (st) (delta) =
+    let cur = mw-get-key-repeat-delay w
+    in let nv = cur + delta
+    in let clamped = if nv < 1 then 1 else if nv > 36 then 36 else nv
+    in let d = mw-set-key-repeat-delay w clamped
+    in gui-idle (gui-render st) 0
+
+  gui-get-role-idx : MutWheel, Integer -> Integer
+  gui-get-role-idx (w) (role) =
+    if role == 0 then mw-get-font-role-serif w
+    else if role == 1 then mw-get-font-role-sans w
+    else mw-get-font-role-mono w
+
+Section: Settings View
+  draw-view-settings : GopBuf, ShellUiState -> Integer
+  draw-view-settings (gb) (st) =
+    let wh = st.su-wheel
+    in let loaded = mw-get-fonts-loaded wh
+    in let font-status = if loaded == 1 then "TrueType (loaded)" else "CBF (fallback)"
+    in let picker = mw-get-font-picker-role wh
+    in let display-section = widget-panel "set-disp" DirColumn 2 [
+      widget-label "set-dh" "Display",
+      widget-separator "set-ds",
+      widget-label "set-font" ("Font  " & font-status),
+      widget-label "set-repeat" ("Key repeat  " & show (mw-get-key-repeat-delay wh) & " ticks (PgUp/PgDn)")
+    ]
+    in let serif-label = "Serif:  " & font-cat-name (mw-get-font-role-serif wh) & "  The quick brown fox"
+    in let sans-label = "Sans:  " & font-cat-name (mw-get-font-role-sans wh) & "  The quick brown fox"
+    in let mono-label = "Mono:  " & font-cat-name (mw-get-font-role-mono wh) & "  The quick brown fox"
+    in let roles-section = widget-panel "set-roles" DirColumn 2 [
+      widget-label "set-rh" "Font Roles (Up/Down, Left/Right)",
+      widget-separator "set-rs",
+      widget-label "set-serif" serif-label,
+      widget-label "set-sans" sans-label,
+      widget-label "set-mono" mono-label
+    ]
+    in let enc-section = widget-panel "set-enc" DirColumn 2 [
+      widget-label "set-eh" "Encoding",
+      widget-separator "set-es",
+      widget-label "set-e0" "Tier 0  128 (ASCII)",
+      widget-label "set-e1" "Tier 1  2048 (EU)",
+      widget-label "set-e2" "Tier 2  CJK/Kana/Emoji"
+    ]
+    in let tree = win-panel "Settings" [display-section, widget-separator "set-sep1", roles-section, widget-separator "set-sep2", enc-section]
+    in let bounds = layout-rect work-x 4 work-w (desk-h - 8)
+    in let laid-out = widget-layout tree theme-terminal bounds
+    in gop-render-tree laid-out theme-terminal gb wh
+
+Section: Calendar View
+  draw-view-calendar : GopBuf, ShellUiState -> Integer
+  draw-view-calendar (gb) (st) =
+    let x = work-x
+    in let wh = st.su-wheel
+    in let dummy = draw-win gb wh x 4 work-w 436 "Calendar"
+    in cal-draw gb wh (x + 4) 28 (work-w - 8)
+
+Section: Calculator View
+  draw-view-calc : GopBuf, ShellUiState -> Integer
+  draw-view-calc (gb) (st) =
+    let x = work-x
+    in let wh = st.su-wheel
+    in let dummy = draw-win gb wh x 4 work-w 436 "Calculator"
+    in calc-draw gb wh (x + 10) 28 (work-w - 20)
+
+Section: Taskbar
+  draw-taskbar : GopBuf, ShellUiState -> Integer
+  draw-taskbar (gb) (st) =
+    let ty = gui-h - taskbar-h
+    in let wh = st.su-wheel
+    in let dummy = gop-buf-rect gb 0 ty gui-w taskbar-h col-taskbar
+    in let dummy2 = gop-buf-hline gb 0 (gui-w - 1) ty col-taskbar-top
+    in let dummy3 = gop-buf-rect gb 2 (ty + 3) 50 24 col-start-bg
+    in let dummy4 = gop-buf-put-text-role gb wh 8 (ty + 9) "Codex" col-fg font-role-sans
+    in let dummy5 = gop-buf-vline gb 58 (ty + 4) (ty + 26) col-sep
+    in let cv = mw-get-view wh
+    in let dummy6 = draw-hotbar-item gb wh 64 ty "Sys" 0 cv
+    in let dummy7 = draw-hotbar-item gb wh 114 ty "Mon" 1 cv
+    in let dummy8 = draw-hotbar-item gb wh 164 ty "HW" 2 cv
+    in let dummy9 = draw-hotbar-item gb wh 214 ty "Info" 3 cv
+    in let dummy10b = draw-hotbar-item gb wh 264 ty "Apps" 4 cv
+    in let dummy10 = gop-buf-vline gb (gui-w - 160) (ty + 4) (ty + 26) col-sep
+    in let dummy11 = gop-buf-put-text-role gb wh (gui-w - 150) (ty + 4) (rtc-date) col-fg2 font-role-mono
+    in gop-buf-put-text-role gb wh (gui-w - 150) (ty + 16) (rtc-time) col-fg font-role-mono
+
+  draw-hotbar-item : GopBuf, MutWheel, Integer, Integer, Text, Integer, Integer -> Integer
+  draw-hotbar-item (gb) (wh) (x) (ty) (label) (view-id) (active) =
+    let bg = if view-id == active then col-hotbar-sel else col-taskbar
+    in let fg = if view-id == active then col-accent else col-fg2
+    in let dummy = gop-buf-rect gb x (ty + 3) 44 24 bg
+    in let dummy2 = if view-id == active then gop-buf-hline gb x (x + 43) (ty + 1) col-accent else 0
+    in gop-buf-put-text-role gb wh (x + 6) (ty + 9) label fg font-role-sans
+
+Section: Drawing Helpers
+  draw-win : GopBuf, MutWheel, Integer, Integer, Integer, Integer, Text -> Integer
+  draw-win (gb) (wh) (x) (y) (w) (h) (title) =
+    let dummy = gop-buf-rect gb x y w h col-win-border
+    in let dummy2 = gop-buf-rect gb (x + 1) (y + 1) (w - 2) (h - 2) col-win-body
+    in let dummy3 = gop-buf-rect gb (x + 1) (y + 1) (w - 2) 20 col-win-title
+    in gop-buf-put-text-role gb wh (x + 6) (y + 4) title col-fg font-role-sans
+
+  draw-label : GopBuf, MutWheel, Integer, Integer, Text, Integer -> Integer
+  draw-label (gb) (wh) (x) (y) (txt) (color) =
+    gop-buf-put-text-role gb wh x y txt color font-role-sans
+
+  draw-value : GopBuf, MutWheel, Integer, Integer, Text, Integer -> Integer
+  draw-value (gb) (wh) (x) (y) (txt) (color) =
+    gop-buf-put-text-role gb wh x y txt color font-role-mono
+
+  draw-kv : GopBuf, MutWheel, Integer, Integer, Text, Text, Integer, Integer -> Integer
+  draw-kv (gb) (wh) (x) (y) (key) (val) (kc) (vc) =
+    let kw = gop-role-text-width wh font-role-sans key
+    in let dummy = gop-buf-put-text-role gb wh x y key kc font-role-sans
+    in gop-buf-put-text-role gb wh (x + kw + 9) y val vc font-role-mono
+
+  draw-text-f : GopBuf, MutWheel, Integer, Integer, Text, Integer, Integer -> Integer
+  draw-text-f (gb) (wh) (x) (y) (txt) (color) (role) =
+    gop-buf-put-text-role gb wh x y txt color role
+
+  draw-gauge-bar : GopBuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  draw-gauge-bar (gb) (x) (y) (w) (h) (val) (max-val) (color) =
+    let dummy = gop-buf-rect gb x y w h col-sep
+    in let fill = if max-val > 0 then w * val / max-val else 0
+    in gop-buf-rect gb x y fill h color
+
+  draw-proc-row : GopBuf, MutWheel, Integer, Integer, Text, Text, Integer -> Integer
+  draw-proc-row (gb) (wh) (x) (y) (name) (status) (color) =
+    let dummy = gop-buf-put-text-role gb wh x y name col-fg2 font-role-mono
+    in gop-buf-put-text-role gb wh (x + 100) y status color font-role-mono
+
+Page 1

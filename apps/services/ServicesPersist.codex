@@ -9,6 +9,7 @@ Chapter: ServicesPersist
   cites Kernel chapter DiskFacts
   cites Kernel chapter AppPersist
   cites Services chapter Revocation
+  cites Accounts chapter ManagedAccounts
 
  Persistent storage for system services. Revocation records
  are serialized as kind 26. Parental/account settings as kind 27.
@@ -129,3 +130,106 @@ Section: Save and Load
     in when found
       is None -> revocation-store-new
       is Just (txt) -> revocation-store-from-text txt
+
+Section: Account Serialization
+
+  account-store-to-text : AccountStore -> Text
+  account-store-to-text (store) =
+    let header = show store.as-active-id & "|" & show store.as-guardian-id & "|" & show store.as-next-id & "|" & (if store.as-locked then "1" else "0")
+    in header & "\n" & accounts-to-text store.as-accounts 0 (list-length store.as-accounts) ""
+
+  accounts-to-text : List Account, Integer, Integer, Text -> Text
+  accounts-to-text (accs) (i) (len) (acc) =
+    if i >= len then acc
+    else let a = list-at accs i
+    in let sep = if i == 0 then "" else "\n"
+    in let line = account-to-line a
+    in accounts-to-text accs (i + 1) len (acc & sep & line)
+
+  account-to-line : Account -> Text
+  account-to-line (a) =
+    let type-int = when a.acc-type is GuardianAccount -> 0 is ManagedAccount -> 1
+    in let age-int = when a.acc-age-group is AgeChild -> 0 is AgeTeen -> 1 is AgeRestricted -> 2
+    in show a.acc-id & "|"
+    & a.acc-name & "|"
+    & show type-int & "|"
+    & show age-int & "|"
+    & show a.acc-guardian-id & "|"
+    & show a.acc-created & "|"
+    & show a.acc-last-login & "|"
+    & (if a.acc-active then "1" else "0")
+
+  account-store-from-text : Text -> AccountStore
+  account-store-from-text (txt) =
+    if text-length txt == 0 then account-store-new [] 0
+    else let lines = text-split txt "\n"
+    in if list-length lines < 1 then account-store-new [] 0
+    else let header = parse-account-header (list-at lines 0)
+    in let accs = parse-account-lines lines 1 (list-length lines) []
+    in AccountStore {
+      as-accounts = accs,
+      as-active-id = header.ah-active,
+      as-guardian-id = header.ah-guardian,
+      as-next-id = header.ah-next-id,
+      as-locked = header.ah-locked
+    }
+
+  AccountHeader = record {
+    ah-active : Integer,
+    ah-guardian : Integer,
+    ah-next-id : Integer,
+    ah-locked : Boolean
+  }
+
+  parse-account-header : Text -> AccountHeader
+  parse-account-header (line) =
+    let parts = text-split line "|"
+    in AccountHeader {
+      ah-active = parse-decimal-full (list-at parts 0),
+      ah-guardian = parse-decimal-full (list-at parts 1),
+      ah-next-id = parse-decimal-full (list-at parts 2),
+      ah-locked = list-at parts 3 == "1"
+    }
+
+  parse-account-lines : List Text, Integer, Integer, List Account -> List Account
+  parse-account-lines (lines) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = parse-account-line (list-at lines i)
+    in when parsed
+      is Just (a) -> parse-account-lines lines (i + 1) len (list-push acc a)
+      is None -> parse-account-lines lines (i + 1) len acc
+
+  parse-account-line : Text -> Maybe Account
+  parse-account-line (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 8 then None
+    else let type-int = parse-decimal-full (list-at parts 2)
+    in let age-int = parse-decimal-full (list-at parts 3)
+    in let age = if age-int == 0 then AgeChild else if age-int == 1 then AgeTeen else AgeRestricted
+    in let a = Account {
+      acc-id = parse-decimal-full (list-at parts 0),
+      acc-name = list-at parts 1,
+      acc-type = if type-int == 0 then GuardianAccount else ManagedAccount,
+      acc-identity = [],
+      acc-pin-hash = [],
+      acc-age-group = age,
+      acc-policy = policy-for-age age,
+      acc-guardian-id = parse-decimal-full (list-at parts 4),
+      acc-created = parse-decimal-full (list-at parts 5),
+      acc-last-login = parse-decimal-full (list-at parts 6),
+      acc-active = list-at parts 7 == "1"
+    }
+    in Just a
+
+Section: Account Save and Load
+
+  services-persist-save-accounts : DiskFactStore, AccountStore, Integer -> DiskFactStore
+  services-persist-save-accounts (store) (accounts) (timestamp) =
+    app-write-and-checkpoint store persist-kind-accounts (account-store-to-text accounts) timestamp
+
+  services-persist-load-accounts : DiskFactStore -> AccountStore
+  services-persist-load-accounts (store) =
+    let found = app-scan-last store persist-kind-accounts
+    in when found
+      is None -> account-store-new [] 0
+      is Just (txt) -> account-store-from-text txt

@@ -13,6 +13,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'vm-config.ps1')
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
@@ -95,7 +96,7 @@ try {
 
 } finally {
     if (-not $proc.HasExited) {
-        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Stop-VmGraceful -ProcessId $proc.Id
     }
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
     try { $listener.Stop() } catch {}

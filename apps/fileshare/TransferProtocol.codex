@@ -3,6 +3,8 @@ Chapter: TransferProtocol
   cites Foreword chapter Ed25519
   cites Foreword chapter Maybe
   cites Foreword chapter ListUtils
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
 
  Wire protocol for peer-to-peer piece exchange. Runs over TCP.
 
@@ -187,3 +189,78 @@ Section: Helpers
   read-u32 : List Integer, Integer -> Integer
   read-u32 (data) (off) =
     list-at data off + (list-at data (off + 1)) * 256 + (list-at data (off + 2)) * 65536 + (list-at data (off + 3)) * 16777216
+
+Section: TCP Network I/O
+
+  PeerConnection = record {
+    pc-transport : TcpTransportState,
+    pc-peer-id : List Integer,
+    pc-connected : Boolean
+  }
+
+  connect-peer : List Integer, Integer, List Integer, Integer -> PeerConnection
+  connect-peer (remote-ip) (remote-port) (local-id) (local-port) =
+    let local-mac = [82, 84, 0, 18, 52, 101]
+    in let local-ip = [10, 0, 2, 15]
+    in let gateway-ip = [10, 0, 2, 2]
+    in let sess = net-session-new local-mac local-ip gateway-ip local-port remote-port remote-ip 3000
+    in let ts = transport-new sess
+    in let ts2 = transport-connect ts
+    in PeerConnection { pc-transport = ts2, pc-peer-id = local-id, pc-connected = True }
+
+  send-message : PeerConnection, PeerMessage -> PeerConnection
+  send-message (conn) (msg) =
+    let bytes = encode-peer-message msg
+    in let msg-type = peer-message-type msg
+    in let result = transport-send-message (conn.pc-transport) msg-type bytes
+    in __record-set conn "pc-transport" (result.transport)
+
+  encode-peer-message : PeerMessage -> List Integer
+  encode-peer-message (msg) = when msg
+    is PmKeepAlive -> encode-keepalive
+    is PmHandshake (h) (p) (s) -> encode-handshake h p s
+    is PmBitfield (bits) -> encode-bitfield bits
+    is PmHave (idx) -> encode-have idx
+    is PmRequest (idx) (off) (len) -> encode-request idx off len
+    is PmPiece (idx) (off) (data) -> encode-piece idx off data
+    is PmCancel (idx) (off) (len) -> encode-cancel idx off len
+    is PmChoke -> encode-choke
+    is PmUnchoke -> encode-unchoke
+    is PmInterested -> encode-interested
+    is PmNotInterested -> encode-not-interested
+    is PmInvalid -> []
+
+  peer-message-type : PeerMessage -> Integer
+  peer-message-type (msg) = when msg
+    is PmKeepAlive -> 0
+    is PmHandshake (h) (p) (s) -> 1
+    is PmBitfield (bits) -> 2
+    is PmHave (idx) -> 3
+    is PmRequest (idx) (off) (len) -> 4
+    is PmPiece (idx) (off) (data) -> 5
+    is PmCancel (idx) (off) (len) -> 6
+    is PmChoke -> 7
+    is PmUnchoke -> 8
+    is PmInterested -> 9
+    is PmNotInterested -> 10
+    is PmInvalid -> 255
+
+  ReceivedMessage = record {
+    rm-message : PeerMessage,
+    rm-connection : PeerConnection
+  }
+
+  receive-message : PeerConnection -> ReceivedMessage
+  receive-message (conn) =
+    let result = transport-try-recv (conn.pc-transport)
+    in if result.has-message
+      then let decoded = decode-message (result.body)
+        in let conn2 = __record-set conn "pc-transport" (result.transport)
+        in ReceivedMessage { rm-message = decoded, rm-connection = conn2 }
+      else let conn2 = __record-set conn "pc-transport" (result.transport)
+        in ReceivedMessage { rm-message = PmInvalid, rm-connection = conn2 }
+
+  disconnect-peer : PeerConnection -> PeerConnection
+  disconnect-peer (conn) =
+    let ts = transport-close (conn.pc-transport)
+    in PeerConnection { pc-transport = ts, pc-peer-id = conn.pc-peer-id, pc-connected = False }

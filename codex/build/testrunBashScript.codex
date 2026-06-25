@@ -1,0 +1,49 @@
+Chapter: TestRunBashScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter BashEmit
+
+ Generates test-run.sh (bash version) from the same Shell DSL types
+ as testrunScript.codex. Demonstrates cross-platform emission.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  testrun-params : List ShellParam = [sh-param "Kernel" SptString, sh-param "OutFile" SptString, sh-param-default "MemMB" SptInt (SeInt 3072)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScBlank, ScComment "Resolve paths", ScAssign "SCRIPT_DIR" (SeRaw "$(cd \"$(dirname \"$0\")\" && pwd)"), ScAssign "REPO" (SeRaw "$(cd \"$SCRIPT_DIR/..\" && pwd)"), ScAssign "VM_BIN" (SeRaw "\"$REPO/tools/codex-vm\""), ScBlank, ScAssign "SAMPLE" (SeRaw "$(basename \"$Kernel\" .cdx)")]
+
+Section: S02 -- Temp files
+
+  s02 : List ShellCmd = [ScTempFile "OUTPUT_FILE", ScTempFile "STDERR_FILE", ScComment "Cleanup on exit", ScRaw "cleanup() { rm -f \"$OUTPUT_FILE\" \"$STDERR_FILE\"; }", ScRaw "trap cleanup EXIT"]
+
+Section: S03 -- Launch VM
+
+  s03 : List ShellCmd = [ScComment "Launch codex-vm", ScRaw "\"$VM_BIN\" -kernel \"$Kernel\" -output \"$OUTPUT_FILE\" -mem \"$MemMB\" -headless 2>\"$STDERR_FILE\" &", ScAssign "VM_PID" (SeRaw "$!"), ScBlank, ScComment "Wait with timeout (60s)", ScRaw "TIMEOUT=60", ScRaw "ELAPSED=0", ScRaw "while kill -0 \"$VM_PID\" 2>/dev/null; do", ScRaw "    sleep 1", ScRaw "    ELAPSED=$((ELAPSED + 1))", ScIf (SeRaw "$ELAPSED -ge $TIMEOUT") [ScWriteError (SeLit "FAIL: VM timed out"), ScRaw "kill -9 \"$VM_PID\" 2>/dev/null || true", ScExit (SeInt 1)] [], ScRaw "done"]
+
+Section: S04 -- Check output
+
+  s04 : List ShellCmd = [ScIf (SeNot (SeFileExists (SeVar "OUTPUT_FILE"))) [ScWriteError (SeLit "FAIL: no output"), ScRaw "> \"$OutFile\"", ScExit (SeInt 1)] [], ScBlank, ScIf (SeRaw "! -s \"$OUTPUT_FILE\"") [ScWriteError (SeLit "FAIL: empty output"), ScRaw "> \"$OutFile\"", ScExit (SeInt 1)] []]
+
+Section: S05 -- Filter output
+
+  s05 : List ShellCmd = [ScComment "Filter out HEAP/WD/STACK diagnostic lines", ScRaw "grep -v -E '^(HEAP:|WD:|STACK:)' \"$OUTPUT_FILE\" | sed 's/\\r$//' | sed 's/^\\x01//' > \"$OutFile\"", ScBlank, ScComment "Trim trailing blank lines", ScRaw "while [ \"$(tail -c 2 \"$OutFile\" | od -An -tx1 | tr -d ' ')\" = '0a0a' ]; do", ScRaw "    truncate -s -1 \"$OutFile\"", ScRaw "done", ScBlank, ScExit (SeInt 0)]
+
+Section: Assembly
+
+  testrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+
+  testrun-script : ShellScript = sh-script "test-run" "Boot a CDX kernel under codex-vm and capture filtered serial output" testrun-params testrun-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-bash testrun-script)
+  end
+
+Page 1

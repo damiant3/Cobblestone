@@ -1,0 +1,239 @@
+Chapter: Validation
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+
+ Declarative form validation. Rules attach to fields; validation
+ runs on value change or blur. Error messages display inline as
+ styled labels. The form tracks field-level dirty state so errors
+ only appear after the user has interacted with a field.
+
+Section: Rules
+
+  ValidationRule =
+    | VrRequired
+    | VrMinLength (Integer)
+    | VrMaxLength (Integer)
+    | VrPattern (Text)
+    | VrRange (Integer) (Integer)
+    | VrCustom (Text)
+
+Section: Results
+
+  ValidationResult =
+    | VrOk
+    | VrError (Text)
+
+  vr-is-ok : ValidationResult -> Boolean
+  vr-is-ok (r) = when r
+    is VrOk -> True
+    is VrError (msg) -> False
+
+  vr-message : ValidationResult -> Text
+  vr-message (r) = when r
+    is VrOk -> ""
+    is VrError (msg) -> msg
+
+Section: Field Validation
+
+  FieldValidation = record {
+    fv-field-id : Text,
+    fv-rules : List ValidationRule,
+    fv-rule-count : Integer,
+    fv-result : ValidationResult,
+    fv-dirty : Boolean,
+    fv-show-error : Boolean
+  }
+
+  field-validation : Text, List ValidationRule -> FieldValidation
+  field-validation (id) (rules) = FieldValidation {
+    fv-field-id = id,
+    fv-rules = rules,
+    fv-rule-count = list-length rules,
+    fv-result = VrOk,
+    fv-dirty = False,
+    fv-show-error = False
+  }
+
+Section: Form Validation
+
+  FormValidation = record {
+    form-fields : List FieldValidation,
+    form-field-count : Integer,
+    form-valid : Boolean
+  }
+
+  form-validation : List FieldValidation -> FormValidation
+  form-validation (fields) = FormValidation {
+    form-fields = fields,
+    form-field-count = list-length fields,
+    form-valid = True
+  }
+
+Section: Rule Checking
+
+  vr-check : ValidationRule, Text -> ValidationResult
+  vr-check (rule) (value) = when rule
+    is VrRequired -> vr-check-required value
+    is VrMinLength (n) -> vr-check-min-length value n
+    is VrMaxLength (n) -> vr-check-max-length value n
+    is VrPattern (name) -> vr-check-pattern value name
+    is VrRange (lo) (hi) -> vr-check-range value lo hi
+    is VrCustom (name) -> VrOk
+
+  vr-check-required : Text -> ValidationResult
+  vr-check-required (value) =
+    if text-length value == 0 then VrError "This field is required"
+    else VrOk
+
+  vr-check-min-length : Text, Integer -> ValidationResult
+  vr-check-min-length (value) (n) =
+    if text-length value < n then VrError ("Must be at least " & show n & " characters")
+    else VrOk
+
+  vr-check-max-length : Text, Integer -> ValidationResult
+  vr-check-max-length (value) (n) =
+    if text-length value > n then VrError ("Must be at most " & show n & " characters")
+    else VrOk
+
+  vr-check-pattern : Text, Text -> ValidationResult
+  vr-check-pattern (value) (name) =
+    if name == "number" then vr-check-numeric value
+    else if name == "alpha" then vr-check-alpha value
+    else if name == "email" then vr-check-email value
+    else VrOk
+
+  vr-check-numeric : Text -> ValidationResult
+  vr-check-numeric (value) =
+    if text-length value == 0 then VrOk
+    else if vr-all-digits value 0 (text-length value) then VrOk
+    else VrError "Must contain only digits"
+
+  vr-all-digits : Text, Integer, Integer -> Boolean
+  vr-all-digits (s) (i) (n) =
+    if i >= n then True
+    else let c = char-code-at s i
+    in if c < 51 then False
+    else if c > 61 then False
+    else vr-all-digits s (i + 1) n
+
+  vr-check-alpha : Text -> ValidationResult
+  vr-check-alpha (value) =
+    if text-length value == 0 then VrOk
+    else if vr-all-alpha value 0 (text-length value) then VrOk
+    else VrError "Must contain only letters"
+
+  vr-all-alpha : Text, Integer, Integer -> Boolean
+  vr-all-alpha (s) (i) (n) =
+    if i >= n then True
+    else let c = char-code-at s i
+    in if c >= 13 then if c <= 38 then vr-all-alpha s (i + 1) n else False
+    else False
+
+  vr-check-email : Text -> ValidationResult
+  vr-check-email (value) =
+    if text-length value == 0 then VrOk
+    else if text-contains value "@" then VrOk
+    else VrError "Must be a valid email address"
+
+  vr-check-range : Text, Integer, Integer -> ValidationResult
+  vr-check-range (value) (lo) (hi) =
+    if text-length value == 0 then VrOk
+    else VrError "Range check requires numeric input"
+
+Section: Validate Field
+
+  validate-field : FieldValidation, Text -> FieldValidation
+  validate-field (fv) (value) =
+    let result = vr-check-rules (fv.fv-rules) value 0 (fv.fv-rule-count)
+    in FieldValidation {
+      fv-field-id = fv.fv-field-id,
+      fv-rules = fv.fv-rules,
+      fv-rule-count = fv.fv-rule-count,
+      fv-result = result,
+      fv-dirty = fv.fv-dirty,
+      fv-show-error = fv.fv-show-error
+    }
+
+  vr-check-rules : List ValidationRule, Text, Integer, Integer -> ValidationResult
+  vr-check-rules (rules) (value) (i) (n) =
+    if i >= n then VrOk
+    else let result = vr-check (list-at rules i) value
+    in when result
+      is VrError (msg) -> VrError msg
+      is VrOk -> vr-check-rules rules value (i + 1) n
+
+Section: Validate Form
+
+  validate-form : FormValidation, List Text -> FormValidation
+  validate-form (form) (values) =
+    let fields = vf-validate-all (form.form-fields) values 0 (form.form-field-count) []
+    in let valid = vf-all-ok fields 0 (form.form-field-count)
+    in FormValidation { form-fields = fields, form-field-count = form.form-field-count, form-valid = valid }
+
+  vf-validate-all : List FieldValidation, List Text, Integer, Integer, List FieldValidation -> List FieldValidation
+  vf-validate-all (fields) (values) (i) (n) (acc) =
+    if i >= n then acc
+    else let fv = list-at fields i
+    in let value = if i < list-length values then list-at values i else ""
+    in vf-validate-all fields values (i + 1) n (list-push acc (validate-field fv value))
+
+  vf-all-ok : List FieldValidation, Integer, Integer -> Boolean
+  vf-all-ok (fields) (i) (n) =
+    if i >= n then True
+    else let fv = list-at fields i
+    in if vr-is-ok (fv.fv-result) then vf-all-ok fields (i + 1) n
+    else False
+
+  form-touch-field : FormValidation, Text -> FormValidation
+  form-touch-field (form) (field-id) =
+    let fields = vf-touch (form.form-fields) field-id 0 (form.form-field-count) []
+    in __record-set form "form-fields" fields
+
+  vf-touch : List FieldValidation, Text, Integer, Integer, List FieldValidation -> List FieldValidation
+  vf-touch (fields) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let fv = list-at fields i
+    in let updated = if fv.fv-field-id == target then
+      __record-set (__record-set fv "fv-dirty" True) "fv-show-error" True
+    else fv
+    in vf-touch fields target (i + 1) n (list-push acc updated)
+
+Section: Queries
+
+  form-is-valid : FormValidation -> Boolean
+  form-is-valid (form) = form.form-valid
+
+  form-field-error : FormValidation, Text -> Text
+  form-field-error (form) (field-id) =
+    vf-find-error (form.form-fields) field-id 0 (form.form-field-count)
+
+  vf-find-error : List FieldValidation, Text, Integer, Integer -> Text
+  vf-find-error (fields) (target) (i) (n) =
+    if i >= n then ""
+    else let fv = list-at fields i
+    in if fv.fv-field-id == target then
+      if fv.fv-show-error then vr-message (fv.fv-result) else ""
+    else vf-find-error fields target (i + 1) n
+
+Section: Widget Building
+
+  form-error-widget : FormValidation, Text -> WidgetNode
+  form-error-widget (form) (field-id) =
+    let msg = form-field-error form field-id
+    in if text-length msg == 0 then widget-label (field-id & "-err") ""
+    else let lbl = widget-label (field-id & "-err") msg
+    in widget-set-state lbl state-disabled
+
+  form-field-with-error : FormValidation, WidgetNode, Text -> WidgetNode
+  form-field-with-error (form) (input-widget) (field-id) =
+    let err = form-error-widget form field-id
+    in widget-panel (field-id & "-wrap") DirColumn 2 [input-widget, err]
+
+Section: Formatting
+
+  format-form-validation : FormValidation -> Text
+  format-form-validation (form) =
+    "form fields=" & show (form.form-field-count) & " valid=" & if form.form-valid then "true" else "false"
+
+Page 1

@@ -1,0 +1,48 @@
+Chapter: CleanZombiesScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates clean-zombies.ps1 -- purge orphaned VM + WSL bridge processes.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  cleanzombies-params : List ShellParam = []
+
+Section: S01 -- Init
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "killed" (SeRaw "$false")]
+
+Section: S02 -- Kill VM and WSL Processes
+
+  s02-codexvm-signal : List ShellCmd = [ScForEach "p" (SeVar "procs") [ScRaw "$evtName = \"Global\\CodexVmShutdown_$($p.Id)\"", ScTry [ScRaw "$evt = [System.Threading.EventWaitHandle]::OpenExisting($evtName)", ScRaw "$evt.Set() | Out-Null", ScRaw "$evt.Dispose()"] [] []], ScRaw "Start-Sleep -Milliseconds 3000"]
+
+  s02-kill-remaining : List ShellCmd = [ScRaw "$procs | Where-Object { -not $_.HasExited } | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }", ScAssign "killed" (SeRaw "$true")]
+
+  s02 : List ShellCmd = [ScForEach "name" (SeArrayLiteral [SeLit "qemu-system-x86_64", SeLit "codex-vm", SeLit "wsl"]) [ScRaw "$procs = Get-Process -Name $name -ErrorAction SilentlyContinue", ScIf (SeVar "procs") [ScIf (SeStringEq (SeVar "name") (SeLit "codex-vm")) s02-codexvm-signal [], ScSequence s02-kill-remaining] []]]
+
+Section: S03 -- WSL Shutdown
+
+  s03 : List ShellCmd = [ScIf (SeRaw "Get-Process -Name vmmemWSL -ErrorAction SilentlyContinue") [ScRaw "& wsl.exe --shutdown 2>`$null | Out-Null", ScAssign "killed" (SeRaw "$true")] []]
+
+Section: S04 -- Summary
+
+  s04 : List ShellCmd = [ScIf (SeVar "killed") [ScEcho (SeLit "clean-zombies: done")] [ScEcho (SeLit "clean-zombies: nothing to do")]]
+
+Section: Assembly
+
+  cleanzombies-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04]
+
+  cleanzombies-script : ShellScript = sh-script "clean-zombies" "Purge orphaned VM and WSL bridge processes" cleanzombies-params cleanzombies-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cleanzombies-script)
+  end
+
+Page 1

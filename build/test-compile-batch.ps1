@@ -67,10 +67,10 @@ $Stage0 = Join-Path (Split-Path $PSScriptRoot) 'build-output\bare-metal\Codex.cd
 if (-not (Test-Path -PathType Leaf $Stage0)) { Write-Error "MISSING: $Stage0"; exit 2 }
 
 $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @(
-    '-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '8192', '-headless'
+    '-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '3072', '-headless'
 ) -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 $proc.WaitForExit(1800000)
-if (-not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force } catch {} }
+if (-not $proc.HasExited) { Stop-VmGraceful -ProcessId $proc.Id }
 
 # Parse output byte-by-byte: text lines interleaved with binary CDX blocks.
 $raw = if (Test-Path $outputFile) { [System.IO.File]::ReadAllBytes($outputFile) } else { [byte[]]::new(0) }

@@ -1,0 +1,421 @@
+Chapter: UNet
+  cites AI chapter Tensor
+  cites AI chapter Conv2d
+  cites AI chapter Normalization
+  cites AI chapter Attention
+  cites AI chapter SafeTensors
+  cites AI chapter Embedding
+  cites Foreword chapter Maybe
+
+ UNet noise prediction model for diffusion image generation.
+ Architecture: down blocks -> mid block -> up blocks with skip
+ connections. Each block contains ResNet sub-blocks (conv + norm +
+ silu + conv + residual) and optional cross-attention for text
+ conditioning.
+
+ Fixed-point (scale 1000). Weights loaded from SafeTensors.
+ CPU path for small models; GPU dispatch for production.
+
+ We say:
+
+Section: Configuration
+  UNetConfig = record {
+    un-in-channels : Integer,
+    un-out-channels : Integer,
+    un-block-channels : List Integer,
+    un-num-res-blocks : Integer,
+    un-num-heads : Integer,
+    un-context-dim : Integer,
+    un-time-embed-dim : Integer
+  }
+
+  sd15-unet-config : UNetConfig
+  sd15-unet-config = UNetConfig {
+    un-in-channels = 4,
+    un-out-channels = 4,
+    un-block-channels = [320, 640, 1280, 1280],
+    un-num-res-blocks = 2,
+    un-num-heads = 8,
+    un-context-dim = 768,
+    un-time-embed-dim = 1280
+  }
+
+Section: Timestep Embedding
+  unet-time-embed : Integer, Integer -> List Integer
+  unet-time-embed (timestep) (dim) =
+    let half = dim / 2
+    in unet-sinusoidal-embed timestep half 0 []
+
+  unet-sinusoidal-embed : Integer, Integer, Integer, List Integer -> List Integer
+  unet-sinusoidal-embed (t) (half) (i) (acc) =
+    if i >= half then acc
+    else let freq = t * 1000 / unet-freq-scale i half
+    in let sin-val = unet-sin-approx freq
+    in let cos-val = unet-cos-approx freq
+    in unet-sinusoidal-embed t half (i + 1) (acc & [sin-val, cos-val])
+
+  unet-freq-scale : Integer, Integer -> Integer
+  unet-freq-scale (i) (half) =
+    let log-base = 9210
+    in let exp-val = i * log-base / half
+    in unet-exp-approx exp-val
+
+  unet-sin-approx : Integer -> Integer
+  unet-sin-approx (x) =
+    let x2 = x * x / 1000
+    in x - x * x2 / 6000 + x * x2 * x2 / 120000000
+
+  unet-cos-approx : Integer -> Integer
+  unet-cos-approx (x) =
+    let x2 = x * x / 1000
+    in 1000 - x2 / 2 + x2 * x2 / 24000
+
+  unet-exp-approx : Integer -> Integer
+  unet-exp-approx (x) =
+    if x > 8000 then 30000
+    else if x < (0 - 8000) then 0
+    else 1000 + x + x * x / 2000 + x * x * x / 6000000
+
+Section: ResNet Block Types
+  ResNetBlock = record {
+    rn-conv1-weights : List Integer,
+    rn-conv1-bias : List Integer,
+    rn-conv2-weights : List Integer,
+    rn-conv2-bias : List Integer,
+    rn-norm1-gamma : List Integer,
+    rn-norm1-beta : List Integer,
+    rn-norm2-gamma : List Integer,
+    rn-norm2-beta : List Integer,
+    rn-time-proj : List Integer,
+    rn-time-bias : List Integer,
+    rn-in-channels : Integer,
+    rn-out-channels : Integer
+  }
+
+  ResNetSkipConv = record {
+    rs-weights : List Integer,
+    rs-bias : List Integer,
+    rs-needed : Boolean
+  }
+
+Section: ResNet Block Forward
+  resnet-forward : ResNetBlock, ResNetSkipConv, List Integer, List Integer, Integer, Integer -> List Integer
+  resnet-forward (block) (skip) (input) (time-emb) (h) (w) =
+    let spatial = h * w
+    in let norm1 = group-norm (group-norm-params 32 (block.rn-in-channels) (block.rn-norm1-gamma) (block.rn-norm1-beta)) input h w
+    in let act1 = silu-forward norm1
+    in let conv1-p = conv2d-params (block.rn-in-channels) (block.rn-out-channels) 3 1 1
+    in let conv1-l = conv2d-layer conv1-p (block.rn-conv1-weights) (block.rn-conv1-bias)
+    in let h1 = conv2d-forward conv1-l act1 h w
+    in let h2 = resnet-add-time h1 time-emb (block.rn-out-channels) spatial (block.rn-time-proj) (block.rn-time-bias)
+    in let norm2 = group-norm (group-norm-params 32 (block.rn-out-channels) (block.rn-norm2-gamma) (block.rn-norm2-beta)) h2 h w
+    in let act2 = silu-forward norm2
+    in let conv2-p = conv2d-params (block.rn-out-channels) (block.rn-out-channels) 3 1 1
+    in let conv2-l = conv2d-layer conv2-p (block.rn-conv2-weights) (block.rn-conv2-bias)
+    in let h3 = conv2d-forward conv2-l act2 h w
+    in let residual = resnet-apply-skip skip input (block.rn-in-channels) (block.rn-out-channels) h w
+    in resnet-add h3 residual 0 (list-length h3) []
+
+  resnet-add-time : List Integer, List Integer, Integer, Integer, List Integer, List Integer -> List Integer
+  resnet-add-time (hidden) (time-emb) (channels) (spatial) (proj-w) (proj-b) =
+    let projected = resnet-time-project time-emb proj-w proj-b channels
+    in resnet-broadcast-add hidden projected channels spatial 0 []
+
+  resnet-time-project : List Integer, List Integer, List Integer, Integer -> List Integer
+  resnet-time-project (time-emb) (weights) (bias) (out-dim) =
+    resnet-linear time-emb weights bias (list-length time-emb) out-dim
+
+  resnet-linear : List Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  resnet-linear (input) (weights) (bias) (in-dim) (out-dim) =
+    resnet-linear-loop input weights bias in-dim out-dim 0 []
+
+  resnet-linear-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  resnet-linear-loop (input) (w) (b) (in-dim) (out-dim) (j) (acc) =
+    if j >= out-dim then acc
+    else let dot = resnet-dot input w 0 (j * in-dim) in-dim 0 0
+    in let val = dot + list-at b j
+    in resnet-linear-loop input w b in-dim out-dim (j + 1) (list-push acc val)
+
+  resnet-dot : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  resnet-dot (a) (b) (a-off) (b-off) (len) (k) (acc) =
+    if k >= len then acc
+    else resnet-dot a b a-off b-off len (k + 1) (acc + list-at a (a-off + k) * list-at b (b-off + k) / 1000)
+
+  resnet-broadcast-add : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  resnet-broadcast-add (hidden) (time-proj) (channels) (spatial) (i) (acc) =
+    if i >= channels * spatial then acc
+    else let ch = i / spatial
+    in let tv = list-at time-proj ch
+    in resnet-broadcast-add hidden time-proj channels spatial (i + 1) (list-push acc (list-at hidden i + tv))
+
+  resnet-apply-skip : ResNetSkipConv, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  resnet-apply-skip (skip) (input) (in-ch) (out-ch) (h) (w) =
+    if skip.rs-needed == False then input
+    else let p = conv2d-params in-ch out-ch 1 1 0
+    in let l = conv2d-layer p (skip.rs-weights) (skip.rs-bias)
+    in conv2d-forward l input h w
+
+  resnet-add : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  resnet-add (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else resnet-add a b (i + 1) n (list-push acc (list-at a i + list-at b i))
+
+Section: Cross-Attention Block
+  CrossAttnBlock = record {
+    ca-norm-gamma : List Integer,
+    ca-norm-beta : List Integer,
+    ca-q-weight : List Integer,
+    ca-k-weight : List Integer,
+    ca-v-weight : List Integer,
+    ca-out-weight : List Integer,
+    ca-out-bias : List Integer,
+    ca-channels : Integer,
+    ca-context-dim : Integer,
+    ca-num-heads : Integer
+  }
+
+  cross-attn-forward : CrossAttnBlock, List Integer, List Integer, Integer, Integer -> List Integer
+  cross-attn-forward (block) (hidden) (context) (h) (w) =
+    let spatial = h * w
+    in let ch = block.ca-channels
+    in let normed = group-norm (group-norm-params 32 ch (block.ca-norm-gamma) (block.ca-norm-beta)) hidden h w
+    in let flat = ca-reshape-to-seq normed ch spatial
+    in let q = ca-project flat (block.ca-q-weight) spatial ch ch
+    in let k = ca-project context (block.ca-k-weight) (list-length context / block.ca-context-dim) (block.ca-context-dim) ch
+    in let v = ca-project context (block.ca-v-weight) (list-length context / block.ca-context-dim) (block.ca-context-dim) ch
+    in let attn-out = attention-multi-head q k v spatial ch (block.ca-num-heads)
+    in let projected = ca-project attn-out (block.ca-out-weight) spatial ch ch
+    in let with-bias = ca-add-bias projected (block.ca-out-bias) spatial ch
+    in let spatial-out = ca-reshape-to-spatial with-bias ch spatial
+    in resnet-add hidden spatial-out 0 (list-length hidden) []
+
+  ca-reshape-to-seq : List Integer, Integer, Integer -> List Integer
+  ca-reshape-to-seq (data) (channels) (spatial) =
+    ca-transpose-chw data channels spatial 0 0 []
+
+  ca-transpose-chw : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ca-transpose-chw (data) (channels) (spatial) (s) (c) (acc) =
+    if s >= spatial then acc
+    else if c >= channels then ca-transpose-chw data channels spatial (s + 1) 0 acc
+    else ca-transpose-chw data channels spatial s (c + 1) (list-push acc (list-at data (c * spatial + s)))
+
+  ca-reshape-to-spatial : List Integer, Integer, Integer -> List Integer
+  ca-reshape-to-spatial (data) (channels) (spatial) =
+    ca-transpose-shw data channels spatial 0 0 []
+
+  ca-transpose-shw : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ca-transpose-shw (data) (channels) (spatial) (c) (s) (acc) =
+    if c >= channels then acc
+    else if s >= spatial then ca-transpose-shw data channels spatial (c + 1) 0 acc
+    else ca-transpose-shw data channels spatial c (s + 1) (list-push acc (list-at data (s * channels + c)))
+
+  ca-project : List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  ca-project (input) (weights) (seq-len) (in-dim) (out-dim) =
+    ca-project-loop input weights seq-len in-dim out-dim 0 []
+
+  ca-project-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ca-project-loop (input) (w) (seq-len) (in-dim) (out-dim) (i) (acc) =
+    if i >= seq-len * out-dim then acc
+    else let row = i / out-dim
+    in let col = i - row * out-dim
+    in let dot = resnet-dot input w (row * in-dim) (col * in-dim) in-dim 0 0
+    in ca-project-loop input w seq-len in-dim out-dim (i + 1) (list-push acc dot)
+
+  ca-add-bias : List Integer, List Integer, Integer, Integer -> List Integer
+  ca-add-bias (data) (bias) (seq-len) (dim) =
+    ca-bias-loop data bias dim 0 (seq-len * dim) []
+
+  ca-bias-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ca-bias-loop (data) (bias) (dim) (i) (n) (acc) =
+    if i >= n then acc
+    else let col = i - (i / dim * dim)
+    in ca-bias-loop data bias dim (i + 1) n (list-push acc (list-at data i + list-at bias col))
+
+Section: Downsample / Upsample
+  downsample-conv : List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  downsample-conv (input) (weights) (channels) (h) (w) =
+    let p = conv2d-params channels channels 3 2 1
+    in let bias = unet-zero-list channels 0 []
+    in let l = conv2d-layer p weights bias
+    in conv2d-forward l input h w
+
+  upsample-nearest : List Integer, Integer, Integer, Integer -> List Integer
+  upsample-nearest (input) (channels) (h) (w) =
+    upsample-loop input channels h w 0 0 0 []
+
+  upsample-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  upsample-loop (input) (ch) (h) (w) (c) (y) (x) (acc) =
+    if c >= ch then acc
+    else if y >= h * 2 then upsample-loop input ch h w (c + 1) 0 0 acc
+    else if x >= w * 2 then upsample-loop input ch h w c (y + 1) 0 acc
+    else let src-y = y / 2
+    in let src-x = x / 2
+    in let val = list-at input (c * h * w + src-y * w + src-x)
+    in upsample-loop input ch h w c y (x + 1) (list-push acc val)
+
+Section: UNet State (loaded weights)
+  UNetDownBlock = record {
+    ud-resnet-blocks : List ResNetBlock,
+    ud-skip-convs : List ResNetSkipConv,
+    ud-attn-blocks : List CrossAttnBlock,
+    ud-downsample-weights : List Integer,
+    ud-has-downsample : Boolean,
+    ud-channels : Integer
+  }
+
+  UNetUpBlock = record {
+    uu-resnet-blocks : List ResNetBlock,
+    uu-skip-convs : List ResNetSkipConv,
+    uu-attn-blocks : List CrossAttnBlock,
+    uu-upsample-weights : List Integer,
+    uu-upsample-bias : List Integer,
+    uu-has-upsample : Boolean,
+    uu-channels : Integer
+  }
+
+  UNetMidBlock = record {
+    um-resnet1 : ResNetBlock,
+    um-resnet2 : ResNetBlock,
+    um-skip1 : ResNetSkipConv,
+    um-skip2 : ResNetSkipConv,
+    um-attn : CrossAttnBlock
+  }
+
+  UNetState = record {
+    us-config : UNetConfig,
+    us-input-conv-w : List Integer,
+    us-input-conv-b : List Integer,
+    us-output-conv-w : List Integer,
+    us-output-conv-b : List Integer,
+    us-output-norm-gamma : List Integer,
+    us-output-norm-beta : List Integer,
+    us-time-proj-w1 : List Integer,
+    us-time-proj-b1 : List Integer,
+    us-time-proj-w2 : List Integer,
+    us-time-proj-b2 : List Integer,
+    us-down-blocks : List UNetDownBlock,
+    us-mid-block : UNetMidBlock,
+    us-up-blocks : List UNetUpBlock
+  }
+
+Section: UNet Forward Pass
+  unet-forward : UNetState, List Integer, Integer, List Integer, Integer, Integer -> List Integer
+  unet-forward (state) (noisy-latent) (timestep) (context) (h) (w) =
+    let cfg = state.us-config
+    in let time-emb = unet-time-embed timestep (cfg.un-time-embed-dim)
+    in let time-proj = unet-time-mlp time-emb state
+    in let conv-in-p = conv2d-params (cfg.un-in-channels) (list-at (cfg.un-block-channels) 0) 3 1 1
+    in let conv-in-l = conv2d-layer conv-in-p (state.us-input-conv-w) (state.us-input-conv-b)
+    in let hidden = conv2d-forward conv-in-l noisy-latent h w
+    in let down-result = unet-down-pass (state.us-down-blocks) hidden time-proj context h w 0 (list-length (state.us-down-blocks)) []
+    in let mid-h = down-result.udr-hidden
+    in let mid-hw = down-result.udr-h
+    in let mid-ww = down-result.udr-w
+    in let mid-out = unet-mid-pass (state.us-mid-block) mid-h time-proj context mid-hw mid-ww
+    in let up-out = unet-up-pass (state.us-up-blocks) mid-out time-proj context (down-result.udr-skips) mid-hw mid-ww 0 (list-length (state.us-up-blocks))
+    in let normed = group-norm (group-norm-params 32 (list-at (cfg.un-block-channels) 0) (state.us-output-norm-gamma) (state.us-output-norm-beta)) (up-out.uur-hidden) (up-out.uur-h) (up-out.uur-w)
+    in let activated = silu-forward normed
+    in let conv-out-p = conv2d-params (list-at (cfg.un-block-channels) 0) (cfg.un-out-channels) 3 1 1
+    in let conv-out-l = conv2d-layer conv-out-p (state.us-output-conv-w) (state.us-output-conv-b)
+    in conv2d-forward conv-out-l activated (up-out.uur-h) (up-out.uur-w)
+
+  unet-time-mlp : List Integer, UNetState -> List Integer
+  unet-time-mlp (time-emb) (state) =
+    let h1 = resnet-linear time-emb (state.us-time-proj-w1) (state.us-time-proj-b1) (list-length time-emb) (list-length (state.us-time-proj-b1))
+    in let act = silu-forward h1
+    in resnet-linear act (state.us-time-proj-w2) (state.us-time-proj-b2) (list-length act) (list-length (state.us-time-proj-b2))
+
+Section: Down Pass
+  UNetDownResult = record {
+    udr-hidden : List Integer,
+    udr-skips : List (List Integer),
+    udr-h : Integer,
+    udr-w : Integer
+  }
+
+  unet-down-pass : List UNetDownBlock, List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, List (List Integer) -> UNetDownResult
+  unet-down-pass (blocks) (hidden) (time-proj) (context) (h) (w) (i) (n) (skips) =
+    if i >= n then UNetDownResult { udr-hidden = hidden, udr-skips = skips, udr-h = h, udr-w = w }
+    else let block = list-at blocks i
+    in let res = unet-run-down-block block hidden time-proj context h w
+    in let new-skips = list-push skips (res.udr-hidden)
+    in let new-h = res.udr-h
+    in let new-w = res.udr-w
+    in unet-down-pass blocks (res.udr-hidden) time-proj context new-h new-w (i + 1) n new-skips
+
+  unet-run-down-block : UNetDownBlock, List Integer, List Integer, List Integer, Integer, Integer -> UNetDownResult
+  unet-run-down-block (block) (hidden) (time-proj) (context) (h) (w) =
+    let after-res = unet-run-res-blocks (block.ud-resnet-blocks) (block.ud-skip-convs) hidden time-proj h w 0 (list-length (block.ud-resnet-blocks))
+    in let after-attn = unet-run-attn-blocks (block.ud-attn-blocks) after-res context h w 0 (list-length (block.ud-attn-blocks))
+    in if block.ud-has-downsample then
+      let down = downsample-conv after-attn (block.ud-downsample-weights) (block.ud-channels) h w
+      in UNetDownResult { udr-hidden = down, udr-skips = [], udr-h = h / 2, udr-w = w / 2 }
+    else UNetDownResult { udr-hidden = after-attn, udr-skips = [], udr-h = h, udr-w = w }
+
+  unet-run-res-blocks : List ResNetBlock, List ResNetSkipConv, List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  unet-run-res-blocks (blocks) (skips) (hidden) (time-proj) (h) (w) (i) (n) =
+    if i >= n then hidden
+    else let b = list-at blocks i
+    in let s = list-at skips i
+    in let out = resnet-forward b s hidden time-proj h w
+    in unet-run-res-blocks blocks skips out time-proj h w (i + 1) n
+
+  unet-run-attn-blocks : List CrossAttnBlock, List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  unet-run-attn-blocks (blocks) (hidden) (context) (h) (w) (i) (n) =
+    if i >= n then hidden
+    else let b = list-at blocks i
+    in let out = cross-attn-forward b hidden context h w
+    in unet-run-attn-blocks blocks out context h w (i + 1) n
+
+Section: Mid Pass
+  unet-mid-pass : UNetMidBlock, List Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  unet-mid-pass (mid) (hidden) (time-proj) (context) (h) (w) =
+    let h1 = resnet-forward (mid.um-resnet1) (mid.um-skip1) hidden time-proj h w
+    in let h2 = cross-attn-forward (mid.um-attn) h1 context h w
+    in resnet-forward (mid.um-resnet2) (mid.um-skip2) h2 time-proj h w
+
+Section: Up Pass
+  UNetUpResult = record {
+    uur-hidden : List Integer,
+    uur-h : Integer,
+    uur-w : Integer
+  }
+
+  unet-up-pass : List UNetUpBlock, List Integer, List Integer, List Integer, List (List Integer), Integer, Integer, Integer, Integer -> UNetUpResult
+  unet-up-pass (blocks) (hidden) (time-proj) (context) (skips) (h) (w) (i) (n) =
+    if i >= n then UNetUpResult { uur-hidden = hidden, uur-h = h, uur-w = w }
+    else let block = list-at blocks i
+    in let skip-idx = n - 1 - i
+    in let skip-data = if skip-idx < list-length skips then list-at skips skip-idx else []
+    in let cat = unet-concat-skip hidden skip-data 0 (list-length hidden) (list-length skip-data) []
+    in let after-res = unet-run-res-blocks (block.uu-resnet-blocks) (block.uu-skip-convs) cat time-proj h w 0 (list-length (block.uu-resnet-blocks))
+    in let after-attn = unet-run-attn-blocks (block.uu-attn-blocks) after-res context h w 0 (list-length (block.uu-attn-blocks))
+    in if block.uu-has-upsample then
+      let up = upsample-nearest after-attn (block.uu-channels) h w
+      in let up-h = h * 2
+      in let up-w = w * 2
+      in let conv-p = conv2d-params (block.uu-channels) (block.uu-channels) 3 1 1
+      in let conv-l = conv2d-layer conv-p (block.uu-upsample-weights) (block.uu-upsample-bias)
+      in let refined = conv2d-forward conv-l up up-h up-w
+      in unet-up-pass blocks refined time-proj context skips up-h up-w (i + 1) n
+    else unet-up-pass blocks after-attn time-proj context skips h w (i + 1) n
+
+  unet-concat-skip : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  unet-concat-skip (hidden) (skip) (i) (h-len) (s-len) (acc) =
+    if i >= h-len then acc
+    else let h-val = list-at hidden i
+    in let s-val = if i < s-len then list-at skip i else 0
+    in unet-concat-skip hidden skip (i + 1) h-len s-len (list-push acc (h-val + s-val))
+
+Section: Helpers
+  unet-zero-list : Integer, Integer, List Integer -> List Integer
+  unet-zero-list (n) (i) (acc) =
+    if i >= n then acc
+    else unet-zero-list n (i + 1) (list-push acc 0)
+
+Section: Queries
+  format-unet-config : UNetConfig -> Text
+  format-unet-config (cfg) =
+    "in=" & show (cfg.un-in-channels) & " out=" & show (cfg.un-out-channels) & " heads=" & show (cfg.un-num-heads) & " ctx=" & show (cfg.un-context-dim)
+
+Page 1

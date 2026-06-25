@@ -1,0 +1,355 @@
+Chapter: ClipInterrogator
+  cites AI chapter Tensor
+  cites AI chapter NeuralNet
+  cites AI chapter Activation
+  cites AI chapter ImageTensor
+  cites AI chapter SafeTensors
+  cites AI chapter Normalization
+  cites Foreword chapter Maybe
+
+ CLIP interrogator: reverse-engineers a text prompt from an image.
+ Encodes the image through a CLIP vision encoder, then matches
+ the image embedding against a vocabulary of text embeddings to
+ find the best-matching description tokens.
+
+ Architecture:
+   1. Image -> CLIP ViT encoder -> image embedding
+   2. Image embedding vs pre-computed text embeddings -> cosine similarity
+   3. Top-k matches assembled into a prompt string
+
+ Used for: discovering what prompt would reproduce a given image,
+ prompt-to-prompt editing, and style transfer.
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  VitConfig = record {
+    vit-image-size : Integer,
+    vit-patch-size : Integer,
+    vit-hidden-dim : Integer,
+    vit-num-heads : Integer,
+    vit-num-layers : Integer,
+    vit-embed-dim : Integer
+  }
+
+  VitState = record {
+    vs-config : VitConfig,
+    vs-patch-embed-w : List Integer,
+    vs-patch-embed-b : List Integer,
+    vs-cls-token : List Integer,
+    vs-pos-embed : List Integer,
+    vs-layers : List VitLayerWeights,
+    vs-final-ln-gamma : List Integer,
+    vs-final-ln-beta : List Integer,
+    vs-proj-w : List Integer
+  }
+
+  VitLayerWeights = record {
+    vl-ln1-gamma : List Integer,
+    vl-ln1-beta : List Integer,
+    vl-ln2-gamma : List Integer,
+    vl-ln2-beta : List Integer,
+    vl-qkv-w : List Integer,
+    vl-qkv-b : List Integer,
+    vl-out-w : List Integer,
+    vl-out-b : List Integer,
+    vl-ff1-w : List Integer,
+    vl-ff1-b : List Integer,
+    vl-ff2-w : List Integer,
+    vl-ff2-b : List Integer
+  }
+
+  TextEmbedDB = record {
+    te-embeddings : List (List Integer),
+    te-labels : List Text,
+    te-count : Integer,
+    te-dim : Integer
+  }
+
+  InterrogateResult = record {
+    ir-prompt : Text,
+    ir-scores : List Integer,
+    ir-top-labels : List Text,
+    ir-top-count : Integer
+  }
+
+Section: Default Configuration
+  clip-vit-l14-config : VitConfig
+  clip-vit-l14-config = VitConfig {
+    vit-image-size = 224,
+    vit-patch-size = 14,
+    vit-hidden-dim = 1024,
+    vit-num-heads = 16,
+    vit-num-layers = 24,
+    vit-embed-dim = 768
+  }
+
+  clip-vit-h14-config : VitConfig
+  clip-vit-h14-config = VitConfig {
+    vit-image-size = 224,
+    vit-patch-size = 14,
+    vit-hidden-dim = 1280,
+    vit-num-heads = 16,
+    vit-num-layers = 32,
+    vit-embed-dim = 1024
+  }
+
+Section: Image Encoding (ViT)
+  vit-encode : ImageData, VitState -> List Integer
+  vit-encode (img) (state) =
+    let cfg = state.vs-config
+    in let resized = image-resize img (cfg.vit-image-size) (cfg.vit-image-size)
+    in let patches = vit-patchify resized cfg
+    in let embedded = vit-embed-patches patches state cfg
+    in let encoded = vit-run-layers embedded state cfg
+    in let normed = vit-final-norm encoded state cfg
+    in let cls = vit-extract-cls normed (cfg.vit-hidden-dim)
+    in vit-project cls (state.vs-proj-w) (cfg.vit-hidden-dim) (cfg.vit-embed-dim)
+
+Section: Patch Embedding
+  vit-patchify : ImageData, VitConfig -> List Integer
+  vit-patchify (img) (cfg) =
+    let num-patches = (cfg.vit-image-size / cfg.vit-patch-size) * (cfg.vit-image-size / cfg.vit-patch-size)
+    in let patch-dim = 3 * cfg.vit-patch-size * cfg.vit-patch-size
+    in vit-extract-patches (img.img-pixels) (cfg.vit-image-size) (cfg.vit-patch-size) 0 0 num-patches []
+
+  vit-extract-patches : List Rgb, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vit-extract-patches (pixels) (img-size) (patch-size) (py) (px) (n) (acc) =
+    let patches-per-row = img-size / patch-size
+    in if py * patches-per-row + px >= n then acc
+    else let patch = vit-one-patch pixels img-size patch-size (px * patch-size) (py * patch-size)
+    in let next-px = px + 1
+    in if next-px >= patches-per-row then vit-extract-patches pixels img-size patch-size (py + 1) 0 n (acc & patch)
+    else vit-extract-patches pixels img-size patch-size py next-px n (acc & patch)
+
+  vit-one-patch : List Rgb, Integer, Integer, Integer, Integer -> List Integer
+  vit-one-patch (pixels) (img-w) (patch-size) (ox) (oy) =
+    vit-patch-loop pixels img-w patch-size ox oy 0 0 0 []
+
+  vit-patch-loop : List Rgb, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vit-patch-loop (pixels) (img-w) (ps) (ox) (oy) (ch) (dy) (dx) (acc) =
+    if ch >= 3 then acc
+    else if dy >= ps then vit-patch-loop pixels img-w ps ox oy (ch + 1) 0 0 acc
+    else if dx >= ps then vit-patch-loop pixels img-w ps ox oy ch (dy + 1) 0 acc
+    else let px = list-at pixels ((oy + dy) * img-w + (ox + dx))
+    in let val = if ch == 0 then px.cr * 1000 / 255 else if ch == 1 then px.cg * 1000 / 255 else px.cb * 1000 / 255
+    in let normalized = val * 2 - 1000
+    in vit-patch-loop pixels img-w ps ox oy ch dy (dx + 1) (list-push acc normalized)
+
+  vit-embed-patches : List Integer, VitState, VitConfig -> List Integer
+  vit-embed-patches (patches) (state) (cfg) =
+    let patch-dim = 3 * cfg.vit-patch-size * cfg.vit-patch-size
+    in let num-patches = (cfg.vit-image-size / cfg.vit-patch-size) * (cfg.vit-image-size / cfg.vit-patch-size)
+    in let projected = vit-linear-patches patches (state.vs-patch-embed-w) (state.vs-patch-embed-b) num-patches patch-dim (cfg.vit-hidden-dim)
+    in let with-cls = (state.vs-cls-token) & projected
+    in let seq-len = num-patches + 1
+    in vit-add-pos with-cls (state.vs-pos-embed) 0 (seq-len * cfg.vit-hidden-dim) []
+
+  vit-linear-patches : List Integer, List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  vit-linear-patches (patches) (w) (b) (n) (in-dim) (out-dim) =
+    vit-lp-loop patches w b n in-dim out-dim 0 []
+
+  vit-lp-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vit-lp-loop (data) (w) (b) (n) (in-d) (out-d) (i) (acc) =
+    if i >= n * out-d then acc
+    else let row = i / out-d
+    in let col = i - row * out-d
+    in let dot = vit-dot data w (row * in-d) (col * in-d) in-d 0 0
+    in let val = dot + (if col < list-length b then list-at b col else 0)
+    in vit-lp-loop data w b n in-d out-d (i + 1) (list-push acc val)
+
+  vit-add-pos : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  vit-add-pos (data) (pos) (i) (n) (acc) =
+    if i >= n then acc
+    else let pv = if i < list-length pos then list-at pos i else 0
+    in vit-add-pos data pos (i + 1) n (list-push acc (list-at data i + pv))
+
+Section: ViT Encoder Layers
+  vit-run-layers : List Integer, VitState, VitConfig -> List Integer
+  vit-run-layers (hidden) (state) (cfg) =
+    vit-layer-loop hidden (state.vs-layers) cfg 0 (cfg.vit-num-layers)
+
+  vit-layer-loop : List Integer, List VitLayerWeights, VitConfig, Integer, Integer -> List Integer
+  vit-layer-loop (hidden) (layers) (cfg) (i) (n) =
+    if i >= n then hidden
+    else let lw = list-at layers i
+    in let out = vit-one-layer hidden lw cfg
+    in vit-layer-loop out layers cfg (i + 1) n
+
+  vit-one-layer : List Integer, VitLayerWeights, VitConfig -> List Integer
+  vit-one-layer (hidden) (lw) (cfg) =
+    let seq-len = list-length hidden / cfg.vit-hidden-dim
+    in let normed1 = layer-norm hidden (lw.vl-ln1-gamma) (lw.vl-ln1-beta) (cfg.vit-hidden-dim)
+    in let attn-out = attention-multi-head normed1 normed1 normed1 seq-len (cfg.vit-hidden-dim) (cfg.vit-num-heads)
+    in let res1 = vit-add-vecs hidden attn-out 0 (list-length hidden) []
+    in let normed2 = layer-norm res1 (lw.vl-ln2-gamma) (lw.vl-ln2-beta) (cfg.vit-hidden-dim)
+    in let ff1 = vit-linear normed2 (lw.vl-ff1-w) (lw.vl-ff1-b) seq-len (cfg.vit-hidden-dim) (cfg.vit-hidden-dim * 4)
+    in let act = vit-quick-gelu ff1
+    in let ff2 = vit-linear act (lw.vl-ff2-w) (lw.vl-ff2-b) seq-len (cfg.vit-hidden-dim * 4) (cfg.vit-hidden-dim)
+    in vit-add-vecs res1 ff2 0 (list-length res1) []
+
+  vit-final-norm : List Integer, VitState, VitConfig -> List Integer
+  vit-final-norm (hidden) (state) (cfg) =
+    layer-norm hidden (state.vs-final-ln-gamma) (state.vs-final-ln-beta) (cfg.vit-hidden-dim)
+
+  vit-extract-cls : List Integer, Integer -> List Integer
+  vit-extract-cls (hidden) (dim) =
+    vit-slice hidden 0 dim 0 []
+
+  vit-project : List Integer, List Integer, Integer, Integer -> List Integer
+  vit-project (cls) (w) (in-dim) (out-dim) =
+    vit-proj-loop cls w in-dim out-dim 0 []
+
+  vit-proj-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vit-proj-loop (input) (w) (in-dim) (out-dim) (j) (acc) =
+    if j >= out-dim then acc
+    else let dot = vit-dot input w 0 (j * in-dim) in-dim 0 0
+    in vit-proj-loop input w in-dim out-dim (j + 1) (list-push acc dot)
+
+Section: Cosine Similarity Search
+  ci-interrogate : List Integer, TextEmbedDB, Integer -> InterrogateResult
+  ci-interrogate (image-embed) (db) (top-k) =
+    let normed-img = ci-l2-normalize image-embed
+    in let scores = ci-compute-scores normed-img db 0 (db.te-count) []
+    in let sorted = ci-topk-indices scores top-k
+    in let labels = ci-gather-labels (db.te-labels) sorted 0 (list-length sorted) []
+    in let top-scores = ci-gather-scores scores sorted 0 (list-length sorted) []
+    in InterrogateResult {
+      ir-prompt = ci-join-labels labels 0 (list-length labels) "",
+      ir-scores = top-scores,
+      ir-top-labels = labels,
+      ir-top-count = list-length labels
+    }
+
+  ci-compute-scores : List Integer, TextEmbedDB, Integer, Integer, List Integer -> List Integer
+  ci-compute-scores (img) (db) (i) (n) (acc) =
+    if i >= n then acc
+    else let text-emb = list-at (db.te-embeddings) i
+    in let score = ci-cosine-sim img text-emb (db.te-dim)
+    in ci-compute-scores img db (i + 1) n (list-push acc score)
+
+  ci-cosine-sim : List Integer, List Integer, Integer -> Integer
+  ci-cosine-sim (a) (b) (dim) =
+    ci-dot-loop a b 0 dim 0
+
+  ci-dot-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  ci-dot-loop (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else ci-dot-loop a b (i + 1) n (acc + list-at a i * list-at b i / 1000)
+
+  ci-l2-normalize : List Integer -> List Integer
+  ci-l2-normalize (vec) =
+    let sq-sum = ci-sq-sum vec 0 (list-length vec) 0
+    in let norm = ci-isqrt sq-sum
+    in if norm == 0 then vec
+    else ci-norm-loop vec norm 0 (list-length vec) []
+
+  ci-sq-sum : List Integer, Integer, Integer, Integer -> Integer
+  ci-sq-sum (data) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at data i
+    in ci-sq-sum data (i + 1) n (acc + v * v / 1000)
+
+  ci-norm-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ci-norm-loop (data) (norm) (i) (n) (acc) =
+    if i >= n then acc
+    else ci-norm-loop data norm (i + 1) n (list-push acc (list-at data i * 1000 / norm))
+
+Section: Top-K Selection
+  ci-topk-indices : List Integer, Integer -> List Integer
+  ci-topk-indices (scores) (k) =
+    ci-topk-loop scores k 0 []
+
+  ci-topk-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  ci-topk-loop (scores) (k) (found) (acc) =
+    if found >= k then acc
+    else let best-idx = ci-find-best scores acc 0 (list-length scores) (0 - 1) (0 - 999999)
+    in if best-idx < 0 then acc
+    else ci-topk-loop scores k (found + 1) (list-push acc best-idx)
+
+  ci-find-best : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  ci-find-best (scores) (excluded) (i) (n) (best-idx) (best-val) =
+    if i >= n then best-idx
+    else if ci-is-excluded excluded i 0 then ci-find-best scores excluded (i + 1) n best-idx best-val
+    else let v = list-at scores i
+    in if v > best-val then ci-find-best scores excluded (i + 1) n i v
+    else ci-find-best scores excluded (i + 1) n best-idx best-val
+
+  ci-is-excluded : List Integer, Integer, Integer -> Boolean
+  ci-is-excluded (excluded) (idx) (i) =
+    if i >= list-length excluded then False
+    else if list-at excluded i == idx then True
+    else ci-is-excluded excluded idx (i + 1)
+
+Section: Result Assembly
+  ci-gather-labels : List Text, List Integer, Integer, Integer, List Text -> List Text
+  ci-gather-labels (labels) (indices) (i) (n) (acc) =
+    if i >= n then acc
+    else let idx = list-at indices i
+    in let label = if idx < list-length labels then list-at labels idx else ""
+    in ci-gather-labels labels indices (i + 1) n (list-push acc label)
+
+  ci-gather-scores : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  ci-gather-scores (scores) (indices) (i) (n) (acc) =
+    if i >= n then acc
+    else let idx = list-at indices i
+    in ci-gather-scores scores indices (i + 1) n (list-push acc (list-at scores idx))
+
+  ci-join-labels : List Text, Integer, Integer, Text -> Text
+  ci-join-labels (labels) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else ", "
+    in ci-join-labels labels (i + 1) n (acc & sep & list-at labels i)
+
+Section: Helpers
+  vit-linear : List Integer, List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  vit-linear (input) (w) (b) (seq-len) (in-dim) (out-dim) =
+    vit-lin-loop input w b seq-len in-dim out-dim 0 []
+
+  vit-lin-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vit-lin-loop (input) (w) (b) (seq-len) (in-d) (out-d) (i) (acc) =
+    if i >= seq-len * out-d then acc
+    else let row = i / out-d
+    in let col = i - row * out-d
+    in let dot = vit-dot input w (row * in-d) (col * in-d) in-d 0 0
+    in let val = dot + (if col < list-length b then list-at b col else 0)
+    in vit-lin-loop input w b seq-len in-d out-d (i + 1) (list-push acc val)
+
+  vit-dot : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  vit-dot (a) (b) (a-off) (b-off) (len) (k) (acc) =
+    if k >= len then acc
+    else vit-dot a b a-off b-off len (k + 1) (acc + list-at a (a-off + k) * list-at b (b-off + k) / 1000)
+
+  vit-add-vecs : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  vit-add-vecs (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else vit-add-vecs a b (i + 1) n (list-push acc (list-at a i + list-at b i))
+
+  vit-quick-gelu : List Integer -> List Integer
+  vit-quick-gelu (data) = for v in data -> v * (if v * 1702 / 1000 > 6000 then 1000 else if v * 1702 / 1000 < (0 - 6000) then 0 else 500 + v * 1702 / 1000 * 250 / 1000) / 1000
+
+  vit-slice : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vit-slice (data) (start) (len) (i) (acc) =
+    if i >= len then acc
+    else vit-slice data start len (i + 1) (list-push acc (list-at data (start + i)))
+
+  ci-isqrt : Integer -> Integer
+  ci-isqrt (n) = if n <= 0 then 0 else ci-isqrt-loop n (n / 2 + 1)
+
+  ci-isqrt-loop : Integer, Integer -> Integer
+  ci-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else ci-isqrt-loop n next
+
+Section: Queries
+  format-interrogate : InterrogateResult -> Text
+  format-interrogate (result) =
+    "\"" & result.ir-prompt & "\" (" & show (result.ir-top-count) & " tokens)"
+
+  format-vit-config : VitConfig -> Text
+  format-vit-config (cfg) =
+    "ViT img=" & show (cfg.vit-image-size) & " patch=" & show (cfg.vit-patch-size) & " dim=" & show (cfg.vit-hidden-dim) & " heads=" & show (cfg.vit-num-heads) & " layers=" & show (cfg.vit-num-layers)
+
+Page 1

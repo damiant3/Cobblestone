@@ -1,0 +1,78 @@
+Chapter: ResolveTraceScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates resolve-trace.ps1 from the Shell DSL.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  resolve-trace-params : List ShellParam = [sh-param "TraceFile" SptString, sh-param-default "MapFile" SptString (SeLit "")]
+
+Section: S01 -- Preamble and validation
+
+  s01 : List ShellCmd =
+    let map-default = [ScAssign "MapFile" (SeStaticCall "System.IO.Path" "ChangeExtension" [SeVar "TraceFile", SeLit ".map"])]
+    in let no-map = [ScWriteError (SeRaw "\"Symbol map not found: $MapFile\""), ScExit (SeInt 1)]
+    in let no-trace = [ScWriteError (SeRaw "\"Trace file not found: $TraceFile\""), ScExit (SeInt 1)]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScIf (SeNot (SeVar "MapFile")) map-default [], ScIf (SeNot (SeFileExists (SeVar "MapFile"))) no-map [], ScIf (SeNot (SeFileExists (SeVar "TraceFile"))) no-trace []]
+
+Section: S02 -- Parse symbol map
+
+  s02 : List ShellCmd =
+    let parse-line = [ScIf (SeMatch (SeVar "line") "^(0x[0-9a-fA-F]+)\\s+(\\d+)\\s+(.+)$") [ScRaw "$addr = [Convert]::ToInt64($matches[1], 16)", ScRaw "$size = [int]$matches[2]", ScRaw "$name = $matches[3].Trim()", ScRaw "$map += [PSCustomObject]@{ Addr = $addr; Size = $size; Name = $name }"] []]
+    in [ScAssign "map" (SeRaw "@()"), ScForEach "line" (SeRaw "[System.IO.File]::ReadAllLines($MapFile)") parse-line, ScRaw "$map = $map | Sort-Object Addr"]
+
+Section: S03 -- Resolve-Addr function
+
+  s03 : List ShellCmd = [ScRaw "function Resolve-Addr([long]`$rip) { for (`$i = `$map.Length - 1; `$i -ge 0; `$i--) { if (`$map[`$i].Addr -le `$rip -and (`$map[`$i].Addr + `$map[`$i].Size) -gt `$rip) { `$off = `$rip - `$map[`$i].Addr; return \"`$(`$map[`$i].Name)+0x`$(`$off.ToString('X'))\" } } return \"0x`$(`$rip.ToString('X'))\" }"]
+
+Section: S04 -- Parse trace entries
+
+  s04-text : List ShellCmd =
+    let add-entry = [ScIf (SeMatch (SeVar "line") "^T:([0-9a-fA-F]+):([0-9a-fA-F]+)$") [ScRaw "$entries.Add(@([Convert]::ToInt64($matches[1], 16), [Convert]::ToInt64($matches[2], 16)))"] []]
+    in [ScForEach "line" (SeRaw "[System.IO.File]::ReadAllLines($TraceFile)") add-entry]
+
+  s04-binary : List ShellCmd =
+    let trunc = [ScWriteError (SeLit "Trace file truncated"), ScRaw "$count = [Math]::Floor(($bytes.Length - 8) / 16)"]
+    in [ScReadBytes "bytes" (SeVar "TraceFile"), ScIf (SeIntLt (SeProperty (SeVar "bytes") "Length") (SeInt 8)) [ScWriteError (SeLit "Trace file too small"), ScExit (SeInt 1)] [], ScRaw "$count = [BitConverter]::ToInt64($bytes, 0)", ScIf (SeRaw "$bytes.Length -lt 8 + $count * 16") trunc [], ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $count") (SeRaw "$i++") [ScRaw "$off = 8 + $i * 16", ScRaw "$entries.Add(@([BitConverter]::ToInt64($bytes, $off), [BitConverter]::ToInt64($bytes, $off + 8)))"]]
+
+  s04 : List ShellCmd =
+    let text-branch = [ScSequence s04-text]
+    in let binary-branch = [ScSequence s04-binary]
+    in [ScRaw "$entries = [System.Collections.Generic.List[long[]]]::new()", ScRaw "$firstLine = (Get-Content $TraceFile -First 1).Trim()", ScIf (SeRaw "$firstLine.StartsWith('T:')") text-branch binary-branch]
+
+Section: S05 -- Accumulate per-phase per-function stats
+
+  s05 : List ShellCmd =
+    let phase-check = [ScIf (SeAnd (SeRaw "$size -eq 0") (SeRaw "$phaseNames.ContainsKey([int]$rip)")) [ScAssign "phase" (SeRaw "$phaseNames[[int]$rip]"), ScContinue] []]
+    in let accum = [ScRaw "$func = Resolve-Addr $rip", ScRaw "$key = \"$phase|$func\"", ScIf (SeNot (SeRaw "$summary.ContainsKey($key)")) [ScRaw "$summary[$key] = [PSCustomObject]@{ Phase=$phase; Func=$func; Count=0; Bytes=[long]0 }"] [], ScRaw "$summary[$key].Count++", ScRaw "$summary[$key].Bytes += $size", ScIf (SeNot (SeRaw "$phaseTotal.ContainsKey($phase)")) [ScRaw "$phaseTotal[$phase] = [PSCustomObject]@{ Count=0; Bytes=[long]0 }"] [], ScRaw "$phaseTotal[$phase].Count++", ScRaw "$phaseTotal[$phase].Bytes += $size", ScRaw "$totalAllocs++", ScRaw "$totalBytes += $size"]
+    in let loop-body = [ScAssign "size" (SeIndex (SeVar "e") (SeInt 0)), ScAssign "rip" (SeIndex (SeVar "e") (SeInt 1)), ScSequence phase-check, ScSequence accum]
+    in [ScRaw "$phaseNames = @{ 1='lex'; 2='parse'; 3='desugar'; 4='scope'; 5='check'; 6='lower'; 7='emit' }", ScAssign "phase" (SeLit "init"), ScAssign "summary" SeHashLiteral, ScAssign "phaseTotal" SeHashLiteral, ScAssign "totalAllocs" (SeInt 0), ScRaw "$totalBytes = [long]0", ScForEach "e" (SeVar "entries") loop-body]
+
+Section: S06 -- Output report
+
+  s06 : List ShellCmd =
+    let header = [ScEcho (SeLit ""), ScRaw "Write-Host (\"{0,-12} {1,-40} {2,8} {3,12}\" -f 'Phase', 'Function', 'Count', 'Total Bytes')", ScRaw "Write-Host (\"{0,-12} {1,-40} {2,8} {3,12}\" -f '-----', '--------', '-----', '-----------')"]
+    in let detail = [ScRaw "$sorted = $summary.Values | Sort-Object { $_.Phase }, { -$_.Bytes }", ScForEach "entry" (SeVar "sorted") [ScRaw "Write-Host (\"{0,-12} {1,-40} {2,8} {3,12}\" -f $entry.Phase, $entry.Func, $entry.Count, $entry.Bytes.ToString('N0'))"]]
+    in let phase-totals = [ScEcho (SeLit ""), ScRaw "Write-Host '--- Phase Totals ---'", ScForEach "p" (SeRaw "($phaseTotal.Keys | Sort-Object)") [ScRaw "$pt = $phaseTotal[$p]", ScRaw "Write-Host (\"{0,-12} {1,8} allocs  {2,12} bytes ({3:F1} MB)\" -f $p, $pt.Count, $pt.Bytes.ToString('N0'), ($pt.Bytes / 1048576.0))"]]
+    in let totals = [ScEcho (SeLit ""), ScRaw "Write-Host (\"TOTAL: {0:N0} allocations, {1:N0} bytes ({2:F1} MB)\" -f $totalAllocs, $totalBytes, ($totalBytes / 1048576.0))"]
+    in [ScSequence header, ScSequence detail, ScSequence phase-totals, ScSequence totals]
+
+Section: Assembly
+
+  resolve-trace-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]
+
+  resolve-trace-script : ShellScript = sh-script "resolve-trace" "Resolve allocation trace addresses to symbol names" resolve-trace-params resolve-trace-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell resolve-trace-script)
+  end
+
+Page 1

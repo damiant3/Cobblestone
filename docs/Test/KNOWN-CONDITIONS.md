@@ -43,6 +43,29 @@ hypotheses. Don't reintroduce ClearScreen without a clean repro probe
 suspect hardware. The real architectural fix is moving the heap
 pointer storage off `0x7580`.
 
+### `integer-to-text` produces garbled output for INT64_MIN — DISPLAY ONLY
+
+`__itoa` in `X86_64TextHelpers.codex` negates the input to work with
+positive magnitudes. `neg` of INT64_MIN (-2^63) wraps back to INT64_MIN
+(signed overflow), so the digit-extraction loop divides a negative
+number, producing negative remainders. Adding the CCE digit base (3)
+to negative remainders yields garbage bytes that render as Cyrillic
+characters in CDX2051 warning text.
+
+Visible as: `value type is -х х0 ҿ҃Ҁѿ0҅.9223372036854775807` where
+the low bound should be `-9223372036854775808`.
+
+**Impact**: Display only — the garbled text appears in CDX2051
+bounded-integer warnings. Does not affect compilation correctness,
+type checking, or codegen. The type-check phase uses INT64_MIN for
+`int-ty-default` bounds, so any bounded-integer field assigned a
+default-range value triggers the garbled output.
+
+**Fix**: Special-case INT64_MIN before the `neg` instruction, or
+handle the negative-remainder case in the digit loop. This is a
+compiler codegen change requiring a two-pass seed rebuild. Deferred
+until a seed rebuild is needed for another reason.
+
 ## Type System — Linearity / mutable-aliasing checker
 
 The checker in `Types/TypeChecker.codex` (`lin-of` for `linear`, `consume-of`
@@ -74,6 +97,32 @@ not flagged. False-negative, never false-positive.
   `__mutable-<name>` probe in `check-one-param` uses the un-renamed type name; a
   mutable record threaded across a chapter boundary with renames may not be
   matched. Wants a cross-chapter test.
+
+## LOWER Deck Survey — Small Programs with Large IR
+
+The LOWER phase deck height formula (`opening.codex` line 462) is:
+
+    def_count * lower_mul * headroom / 100 + survey_lower_base
+
+This assumes IR size scales linearly with definition count. Programs
+with few definitions but deeply nested IR trees (e.g., a single
+function that builds a list of 50 sum-type constructors) overflow
+LOWER despite being tiny in line count.
+
+**Discovered:** 2026-06-22 (CL 5800). `CompileScript.codex` — 567
+lines, 5 definitions — overflowed LOWER. The self-host (30K lines,
+2000+ definitions) compiles fine. Splitting into 14 small definitions
+fixed the issue because the deck formula sized the budget correctly.
+
+**Workaround:** keep per-definition IR small. Split large literal
+constructions across many named definitions. Compose via `ScSequence`
+(a single constructor wrapping a reference) rather than `&` (which
+creates nested `list-append` IR trees).
+
+**Root fix:** the survey formula could account for IR depth or total
+node count, not just definition count. Low priority — the workaround
+is simple and the pattern is rare (only affects programs that build
+large data structures as literal values).
 
 ### Effect-handler clauses ARE counted (CL 2710)
 

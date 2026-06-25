@@ -28,34 +28,41 @@ effect types, a content-addressed repository protocol replacing Git
 transpilation targets from Rust to WASM to LLVM IR. The full founding
 document is in the file above.
 
-## Docs Index
+## Session Start
 
-On session start, read ALL live docs using parallel agents. This costs
-~20K tokens (~2% of context) and eliminates an entire class of mistakes
-where an agent doesn't know about a prior decision, a known condition,
-or a design that's relevant to the current task. Skip every
-`docs/Designs/*/Done/`, the `docs/Designs/History/` archive, and
-`docs/PM/Done/` — those are historical and recoverable from
-`p4 filelog` if needed.
+**On session start, run `/init`.** This is non-negotiable. The `/init`
+skill reads all live docs, sets up `.p4config`, checks Perforce status,
+and loads memory. Do not skip it. Do not substitute your own init
+sequence. The skill is at `.claude/skills/init/SKILL.md`.
 
-### Mandatory Reading (read directly, not via agent)
+If the user's first message asks you to initialize, run `/init`. If
+you are unsure whether init has been done, run `/init`.
 
-- `docs/VisionAndVirtues.md` — founding vision, non-negotiables, engineering virtues
-- `docs/DevelopersGuide.md` — language syntax, types, CPL, seed rebuild procedure
-- `docs/DevelopersRulebook.md` — foreword quire catalog, library rules
-- `docs/OperatorsManual.md` — build process, test harness, VM setup, debugging
-- `docs/ArchitectsSketchbook.md` — memory layout, registers, allocators, phase maps
+### Docs Reference
 
-### Also Read (via parallel agents at session start)
+These are the docs that `/init` reads. Listed here for reference only —
+you do not need to read them manually if you ran `/init`.
 
+**Mandatory (read directly — all docs in root of `docs/`):**
+- `docs/Apps.md`
+- `docs/ArchitectsSketchbook.md`
+- `docs/DevelopersGuide.md`
+- `docs/DevelopersRulebook.md`
+- `docs/ExaminersAssay.md`
+- `docs/KingsAndCourts.md`
+- `docs/OperatorsManual.md`
+- `docs/TheShimmeringPortal.md`
+- `docs/TinkersToolbox.md`
+- `docs/UsersHandbook.md`
+- `docs/VisionAndVirtues.md`
+
+**Via parallel agents:**
 - `docs/PM/CurrentPlan.md` — current plan
 - `docs/PM/BACKLOG.md` — outstanding work items
 - `docs/Agents/PerforceProcess.md` — shelve/revert/sync protocol
-- `docs/Designs/*/Active/` — ALL active designs, one section per concern: `Compiler/`, `Language/`, `Memory/`, `OS/`, `Hardware/`, `Backends/`, `Build/`, `Test/`, `Tools/`, `Features/`, `Projects/`, and `Apps/<project>/` (e.g. `Apps/CodexMagic/`, `Apps/Explorer/`). Each section has its own `Active/` + `Done/`; historical piles live under `docs/Designs/History/`
+- `docs/Designs/*/Active/` — ALL active designs (skip `Done/` and `History/`)
 - `docs/PM/Stories/Vision/` — founding prompts
-- `docs/Test/` — known conditions, crash investigations
-- `docs/Reference/` — UEFI specs, AMI Aptio, paper index
-- `docs/ReadingNotes/` — observations from external projects (NVlabs/Sana, etc.)
+- `docs/PM/Stories/Vision/` — founding prompts (read directly, not via agent)
 
 ## Current State
 
@@ -68,13 +75,20 @@ The canonical artifact is `seed/Codex.cdx` — a ~2.1 MB
 self-sustaining CDX binary, bootable via codex-vm (or QEMU multiboot).
 The CDX is the root of trust.
 
-`tools/codex-vm.exe` is a ~4500-line C program (WHP hypervisor) that
-emulates: PCI bus, xHCI USB (mass storage + HID keyboard + UVC camera),
-Intel HDA audio with host waveOut, Bochs VBE display, NE2K NIC with
-NAT, IDE disk, HPET, IOAPIC, ACPI/SMBIOS tables, UEFI firmware
-(LocateProtocol, Block I/O, memory map, auto-extract PE from GPT
-images), VGA text, GOP framebuffer, PS/2, CMOS RTC, PC speaker.
-Build with `tools/build-vm.ps1`.
+`tools/codex-vm.exe` is a ~6000-line C program (WHP hypervisor) that
+emulates: PCI bus (3 devices), xHCI USB 3.x (mass storage + HID
+keyboard + UVC camera), Intel HDA audio with host waveOut, Bochs VBE
+display, NE2K NIC with NAT + port forwarding, IDE disk (read/write
+with flush), HPET, IOAPIC (24 entries), LAPIC (per-core, SIPI for
+SMP boot), ACPI/SMBIOS tables, UEFI firmware (ConIn/ConOut, GOP,
+Block I/O, Simple File System, memory map, runtime services,
+auto-extract PE from GPT images), VGA text, GOP framebuffer at GPA
+0xBF000000 (in-RAM, no MMIO trap), host-side GPU triangle rasterizer
+(I/O ports 0x400-0x40F: depth buffer, lighting, texture mapping),
+PS/2 keyboard + mouse, CMOS RTC, PC speaker. Multi-core via `-smp N`
+(1-16 cores, each an independent WHP VP + host thread). Screenshot
+capture via `-screenshot`. Build with `tools/build-vm.ps1`. Full
+CLI reference and device details in `docs/OperatorsManual.md`.
 
 ### Bootstrap History — 2026-04-24: The cord is cut
 
@@ -199,7 +213,6 @@ fails, fix the build scripts.
 Working directory: `D:\Projects\NewRepository-XXX`. Use pwd to find the
 actual XXX value. You are **XXX** — the last 3 characters of your working
 directory name.
-Agent file: `docs/Agents/<your-name>.txt`
 
 ### Perforce `.p4config`
 

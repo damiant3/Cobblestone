@@ -21,13 +21,31 @@ Section: Raw Output
   serial-write-bytes : List Integer -> Integer
   serial-write-bytes (bs) = serial-write-loop bs 0 (list-length bs)
 
+  wire-buf-addr : Integer = #500000
+
+  serial-write-buf-loop : Integer, Integer, Integer -> Integer
+  serial-write-buf-loop (buf) (i) (len) =
+   if i >= len then len
+   else let b = peek-byte buf i
+   in let w = serial-write-byte b
+   in serial-write-buf-loop buf (i + 1) len
+
+  serial-write-via-buf : List Integer, Integer -> Integer
+  serial-write-via-buf (bs) (len) =
+   let copied = __buf-write-bytes wire-buf-addr 0 bs
+   in serial-write-buf-loop wire-buf-addr 0 len
+
 Section: WCET Output
 
-  a64-print-wcet-reports : List Text, Integer -> Integer
-  a64-print-wcet-reports (reports) (i) =
-   if i >= list-length reports then i
+  a64-print-reports : List Text, Integer -> [Console] Nothing
+  a64-print-reports (reports) (i) = act
+   if i >= list-length reports then print-line-uni ""
    else let line = list-at reports i
-   in a64-print-wcet-reports reports (i + 1)
+   in act
+    print-line-uni line
+    a64-print-reports reports (i + 1)
+   end
+  end
 
 Section: Body
 
@@ -35,11 +53,13 @@ Section: Body
   dispatch (mode) = act
     source <- read-file mode
     let parsed = parse-ir-chapter source
-    in let cg-state = a64-emit-module empty-a64-state (parsed.chapter) (parsed.type-defs)
+    in let cg-state = a64-emit-module make-a64-state (parsed.chapter) (parsed.type-defs) (parsed.effect-op-names)
     in let wire = a64-build-wire-output cg-state
-    in let written = serial-write-bytes wire
-    in let wcet-printed = a64-print-wcet-reports (cg-state.wcet-reports) 0
-    in print-line-uni ""
+    in let wire-len = a64-wire-length cg-state
+    in let written = serial-write-via-buf wire wire-len
+    in let reports = (cg-state.extra).wcet-reports
+    in if list-length reports > 0 then a64-print-reports reports 0
+    else print-line-uni ""
   end
 
   opening : [Console, FileSystem] Nothing = act

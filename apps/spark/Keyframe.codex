@@ -2,7 +2,6 @@ Chapter: Keyframe
 
  Keyframe storage and interpolation. Supports linear, step, and
  smooth (cubic Hermite) interpolation between keyed values.
- All values are fixed-point scale 1000.
 
  We say:
 
@@ -15,7 +14,7 @@ Section: Types
 
   Keyframe2 = record {
     kf-frame : Integer,
-    kf-value : Integer,
+    kf-value : Real,
     kf-interp : InterpMode
   }
 
@@ -30,24 +29,24 @@ Section: Construction
   keytrack-new : Text -> KeyframeTrack
   keytrack-new (name) = KeyframeTrack { kt-name = name, kt-keys = [], kt-count = 0 }
 
-  keytrack-add : KeyframeTrack, Integer, Integer, InterpMode -> KeyframeTrack
+  keytrack-add : KeyframeTrack, Integer, Real, InterpMode -> KeyframeTrack
   keytrack-add (track) (frame) (value) (interp) =
     let key = Keyframe2 { kf-frame = frame, kf-value = value, kf-interp = interp }
     in let new-keys = kf-insert-sorted (track.kt-keys) key 0 (track.kt-count)
     in KeyframeTrack { kt-name = track.kt-name, kt-keys = new-keys, kt-count = track.kt-count + 1 }
 
-  keytrack-add-linear : KeyframeTrack, Integer, Integer -> KeyframeTrack
+  keytrack-add-linear : KeyframeTrack, Integer, Real -> KeyframeTrack
   keytrack-add-linear (track) (frame) (value) = keytrack-add track frame value InterpLinear
 
 Section: Evaluation
 
-  keytrack-eval : KeyframeTrack, Integer -> Integer
+  keytrack-eval : KeyframeTrack, Integer -> Real
   keytrack-eval (track) (frame) =
-    if track.kt-count == 0 then 0
+    if track.kt-count == 0 then 0.0
     else if track.kt-count == 1 then (list-at (track.kt-keys) 0).kf-value
     else kf-eval-between (track.kt-keys) (track.kt-count) frame
 
-  kf-eval-between : List Keyframe2, Integer, Integer -> Integer
+  kf-eval-between : List Keyframe2, Integer, Integer -> Real
   kf-eval-between (keys) (count) (frame) =
     let first = list-at keys 0
     in if frame <= first.kf-frame then first.kf-value
@@ -55,7 +54,7 @@ Section: Evaluation
     in if frame >= last.kf-frame then last.kf-value
     else kf-find-pair keys count frame 0
 
-  kf-find-pair : List Keyframe2, Integer, Integer, Integer -> Integer
+  kf-find-pair : List Keyframe2, Integer, Integer, Integer -> Real
   kf-find-pair (keys) (count) (frame) (i) =
     if i >= count - 1 then (list-at keys (count - 1)).kf-value
     else let a = list-at keys i
@@ -65,22 +64,22 @@ Section: Evaluation
       else kf-find-pair keys count frame (i + 1)
     else kf-find-pair keys count frame (i + 1)
 
-  kf-interpolate : Keyframe2, Keyframe2, Integer -> Integer
+  kf-interpolate : Keyframe2, Keyframe2, Integer -> Real
   kf-interpolate (a) (b) (frame) =
     when a.kf-interp
       is InterpStep -> a.kf-value
       is InterpLinear ->
         let dt = b.kf-frame - a.kf-frame
         in if dt == 0 then a.kf-value
-        else let t = (frame - a.kf-frame) * 1000 / dt
-        in a.kf-value + (b.kf-value - a.kf-value) * t / 1000
+        else let t = real-from-int (frame - a.kf-frame) / real-from-int dt
+        in a.kf-value + (b.kf-value - a.kf-value) * t
       is InterpSmooth ->
         let dt = b.kf-frame - a.kf-frame
         in if dt == 0 then a.kf-value
-        else let t = (frame - a.kf-frame) * 1000 / dt
-        in let t2 = t * t / 1000
-        in let smooth-t = 3 * t2 - 2 * t2 * t / 1000
-        in a.kf-value + (b.kf-value - a.kf-value) * smooth-t / 1000
+        else let t = real-from-int (frame - a.kf-frame) / real-from-int dt
+        in let t2 = t * t
+        in let smooth-t = 3.0 * t2 - 2.0 * t2 * t
+        in a.kf-value + (b.kf-value - a.kf-value) * smooth-t
 
 Section: Sorted Insert
 

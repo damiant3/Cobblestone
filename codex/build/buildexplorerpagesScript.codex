@@ -1,0 +1,53 @@
+Chapter: BuildExplorerPagesScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates build-explorer-pages.ps1 -- runs CDX binaries that emit HTML
+ to serial and captures them as explorer pages.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  explorerpages-params : List ShellParam = []
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "OutDir" (SeLit "D:\\Projects\\CodexMagic\\explorer\\pages"), ScRaw "New-Item -ItemType Directory -Force $OutDir | Out-Null", ScBlank, ScRunDot (SeRaw "(Join-Path $Repo 'build\\vm-config.ps1')")]
+
+Section: S02 -- Page Table
+
+  s02 : List ShellCmd = [ScAssign "pages" (SeRaw "@( @{ Name = 'card'; Cdx = 'build-output\\carddesigner.cdx' }, @{ Name = 'item'; Cdx = 'build-output\\item-designer.cdx' }, @{ Name = 'character'; Cdx = 'build-output\\characterdesigner.cdx' }, @{ Name = 'setting'; Cdx = 'build-output\\settingdesigner.cdx' }, @{ Name = 'voice'; Cdx = 'build-output\\voicestudio.cdx' } )")]
+
+Section: S03 -- Build Loop
+
+  s03-skip : List ShellCmd = [ScRaw "Write-Host \"SKIP $($page.Name): CDX not found at $cdx\" -ForegroundColor Yellow", ScContinue]
+
+  s03-run : List ShellCmd = [ScRaw "Write-Host \"Running $($page.Name)...\" -NoNewline -ForegroundColor Cyan", ScAssign "tmpOut" (SeRaw "Join-Path $env:TEMP \"explorer-$($page.Name)-$PID.txt\""), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'build\\test-run.ps1') -Kernel $cdx -OutFile $tmpOut 2>`$null"]
+
+  s03-check-content : List ShellCmd = [ScRaw "$content = Get-Content -Raw $tmpOut -ErrorAction SilentlyContinue", ScIf (SeRaw "$content -and $content.Length -gt 100") [ScRaw "$content | Set-Content -Path $htmlOut -Encoding UTF8 -NoNewline", ScRaw "Write-Host \" OK ($($content.Length) bytes)\" -ForegroundColor Green"] [ScRaw "Write-Host \" EMPTY output\" -ForegroundColor Yellow"], ScRaw "Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue"]
+
+  s03-no-output : List ShellCmd = [ScRaw "Write-Host \" NO output file\" -ForegroundColor Red"]
+
+  s03 : List ShellCmd = [ScForEach "page" (SeVar "pages") [ScAssign "cdx" (SeRaw "Join-Path $Repo $page.Cdx"), ScAssign "htmlOut" (SeRaw "Join-Path $OutDir \"$($page.Name).html\""), ScIf (SeNot (SeFileExists (SeVar "cdx"))) s03-skip [], ScSequence s03-run, ScIf (SeFileExists (SeVar "tmpOut")) s03-check-content s03-no-output]]
+
+Section: S04 -- Summary
+
+  s04 : List ShellCmd = [ScEcho (SeLit ""), ScRaw "Write-Host \"Pages built in $OutDir\" -ForegroundColor Green", ScRaw "Get-ChildItem $OutDir -Filter '*.html' | ForEach-Object { \"  $($_.Name) ($($_.Length) bytes)\" }"]
+
+Section: Assembly
+
+  explorerpages-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04]
+
+  explorerpages-script : ShellScript = sh-script "build-explorer-pages" "Build explorer HTML pages from compiled CDX binaries" explorerpages-params explorerpages-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell explorerpages-script)
+  end
+
+Page 1

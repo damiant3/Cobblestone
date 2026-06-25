@@ -1,0 +1,176 @@
+Chapter: FilterableList
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter TextField
+  cites UI chapter Scroll
+  cites UI chapter Focus
+
+ Filterable, scrollable list with search box, keyboard navigation,
+ and optional multi-select. Apps provide items as id+label pairs;
+ the widget handles filtering, scrolling, selection highlighting,
+ and focus ring management.
+
+ Used by: TrackerApp (issue list), Explorer (item browser),
+ Helm (current list), Collab (participant list), any sidebar nav.
+
+ We say:
+
+Section: Types
+  ListItem = record {
+    fli-id : Text,
+    fli-label : Text,
+    fli-sublabel : Text,
+    fli-icon : Text,
+    fli-tag : Text,
+    fli-tag-color : Integer,
+    fli-enabled : Boolean
+  }
+
+  FilterableListState = record {
+    fl-id : Text,
+    fl-items : List ListItem,
+    fl-item-count : Integer,
+    fl-filter : Text,
+    fl-selected : Integer,
+    fl-scroll : ScrollState,
+    fl-multi-select : Boolean,
+    fl-selected-ids : List Text,
+    fl-row-height : Integer,
+    fl-show-search : Boolean
+  }
+
+Section: Construction
+  filterable-list-new : Text, List ListItem -> FilterableListState
+  filterable-list-new (id) (items) = FilterableListState {
+    fl-id = id, fl-items = items, fl-item-count = list-length items,
+    fl-filter = "", fl-selected = 0,
+    fl-scroll = scroll-new 300 400 300 ((list-length items) * 22),
+    fl-multi-select = False, fl-selected-ids = [],
+    fl-row-height = 22, fl-show-search = True
+  }
+
+  fl-item : Text, Text -> ListItem
+  fl-item (id) (label) = ListItem {
+    fli-id = id, fli-label = label, fli-sublabel = "",
+    fli-icon = "", fli-tag = "", fli-tag-color = 0, fli-enabled = True
+  }
+
+  fl-item-full : Text, Text, Text, Text, Text, Integer -> ListItem
+  fl-item-full (id) (label) (sublabel) (icon) (tag) (tag-color) = ListItem {
+    fli-id = id, fli-label = label, fli-sublabel = sublabel,
+    fli-icon = icon, fli-tag = tag, fli-tag-color = tag-color, fli-enabled = True
+  }
+
+Section: Filtering
+  fl-set-filter : FilterableListState, Text -> FilterableListState
+  fl-set-filter (state) (query) =
+    let state2 = __record-set state "fl-filter" query
+    in __record-set state2 "fl-selected" 0
+
+  fl-visible-items : FilterableListState -> List ListItem
+  fl-visible-items (state) =
+    if text-length (state.fl-filter) == 0 then state.fl-items
+    else fl-filter-loop (state.fl-items) (state.fl-filter) 0 (state.fl-item-count) []
+
+  fl-filter-loop : List ListItem, Text, Integer, Integer, List ListItem -> List ListItem
+  fl-filter-loop (items) (query) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in let match = text-contains (item.fli-label) query
+    in if match then fl-filter-loop items query (i + 1) n (list-push acc item)
+    else fl-filter-loop items query (i + 1) n acc
+
+  fl-visible-count : FilterableListState -> Integer
+  fl-visible-count (state) = list-length (fl-visible-items state)
+
+Section: Navigation
+  fl-nav-down : FilterableListState -> FilterableListState
+  fl-nav-down (state) =
+    let max-idx = fl-visible-count state - 1
+    in let next = if state.fl-selected >= max-idx then max-idx else state.fl-selected + 1
+    in __record-set state "fl-selected" next
+
+  fl-nav-up : FilterableListState -> FilterableListState
+  fl-nav-up (state) =
+    let next = if state.fl-selected <= 0 then 0 else state.fl-selected - 1
+    in __record-set state "fl-selected" next
+
+  fl-selected-item : FilterableListState -> Maybe ListItem
+  fl-selected-item (state) =
+    let visible = fl-visible-items state
+    in if state.fl-selected < list-length visible then Just (list-at visible (state.fl-selected))
+    else None
+
+  fl-selected-id : FilterableListState -> Text
+  fl-selected-id (state) =
+    when fl-selected-item state
+      is Just (item) -> item.fli-id
+      is None -> ""
+
+Section: Multi-Select
+  fl-toggle-select : FilterableListState, Text -> FilterableListState
+  fl-toggle-select (state) (id) =
+    if fl-is-selected state id then
+      let filtered = fl-remove-id (state.fl-selected-ids) id 0 (list-length (state.fl-selected-ids)) []
+      in __record-set state "fl-selected-ids" filtered
+    else __record-set state "fl-selected-ids" (list-push (state.fl-selected-ids) id)
+
+  fl-is-selected : FilterableListState, Text -> Boolean
+  fl-is-selected (state) (id) = fl-has-id (state.fl-selected-ids) id 0
+
+  fl-has-id : List Text, Text, Integer -> Boolean
+  fl-has-id (ids) (target) (i) =
+    if i >= list-length ids then False
+    else if list-at ids i == target then True
+    else fl-has-id ids target (i + 1)
+
+  fl-remove-id : List Text, Text, Integer, Integer, List Text -> List Text
+  fl-remove-id (ids) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let id = list-at ids i
+    in if id == target then fl-remove-id ids target (i + 1) n acc
+    else fl-remove-id ids target (i + 1) n (list-push acc id)
+
+  fl-select-all : FilterableListState -> FilterableListState
+  fl-select-all (state) =
+    let ids = fl-collect-ids (state.fl-items) 0 (state.fl-item-count) []
+    in __record-set state "fl-selected-ids" ids
+
+  fl-collect-ids : List ListItem, Integer, Integer, List Text -> List Text
+  fl-collect-ids (items) (i) (n) (acc) =
+    if i >= n then acc
+    else fl-collect-ids items (i + 1) n (list-push acc ((list-at items i).fli-id))
+
+Section: Widget Rendering
+  filterable-list-widget : FilterableListState -> WidgetNode
+  filterable-list-widget (state) =
+    let search = if state.fl-show-search then [widget-input (state.fl-id & "-search") (state.fl-filter) 0] else []
+    in let visible = fl-visible-items state
+    in let rows = fl-render-rows visible (state.fl-selected) (state.fl-selected-ids) (state.fl-multi-select) (state.fl-id) 0 (list-length visible) []
+    in let count-label = widget-label (state.fl-id & "-count") (show (list-length visible) & " items")
+    in widget-panel (state.fl-id) DirColumn 2 (search & rows & [count-label])
+
+  fl-render-rows : List ListItem, Integer, List Text, Boolean, Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  fl-render-rows (items) (cursor) (sel-ids) (multi) (prefix) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in let is-cursor = i == cursor
+    in let is-multi-sel = if multi then fl-has-id sel-ids (item.fli-id) 0 else False
+    in let state = if is-cursor then state-focused else if is-multi-sel then state-hover else state-normal
+    in let row-id = prefix & "-row-" & show i
+    in let icon-w = if text-length (item.fli-icon) > 0 then [widget-set-min (widget-label (row-id & "-ico") (item.fli-icon)) 16 0] else []
+    in let label-w = widget-set-flex (widget-label (row-id & "-lbl") (item.fli-label)) 1
+    in let sub-w = if text-length (item.fli-sublabel) > 0 then [widget-set-min (widget-label (row-id & "-sub") (item.fli-sublabel)) 60 0] else []
+    in let tag-w = if text-length (item.fli-tag) > 0 then [widget-set-min (widget-label (row-id & "-tag") (item.fli-tag)) 48 0] else []
+    in let row = widget-set-state (widget-set-min (widget-panel row-id DirRow 4 (icon-w & [label-w] & sub-w & tag-w)) 0 22) state
+    in fl-render-rows items cursor sel-ids multi prefix (i + 1) n (list-push acc row)
+
+Section: Keyboard Handler
+  fl-handle-key : FilterableListState, Integer -> FilterableListState
+  fl-handle-key (state) (sc) =
+    if sc == 36 then fl-nav-down state
+    else if sc == 37 then fl-nav-up state
+    else if sc == 28 then if state.fl-multi-select then fl-toggle-select state (fl-selected-id state) else state
+    else state
+
+Page 1

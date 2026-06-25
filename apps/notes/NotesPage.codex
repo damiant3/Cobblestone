@@ -45,6 +45,36 @@ Section: CSS
     & ".folder-item:hover{background:#262626;color:#ddd}"
     & ".folder-item.active{color:#fac53f}"
     & ".folders{padding:12px 0;border-bottom:1px solid #2a2a2a}"
+    & ".search-box{padding:8px 16px;border-bottom:1px solid #2a2a2a}"
+    & ".search-box input{width:100%;background:#252525;border:1px solid #333;color:#ccc;padding:6px 10px;border-radius:6px;font-size:12px;outline:none}"
+    & ".search-box input:focus{border-color:#fac53f}"
+    & ".tag-badge{display:inline-block;background:#2c2c2c;color:#aaa;font-size:10px;padding:2px 8px;border-radius:10px;margin-right:4px;margin-top:4px}"
+    & ".tag-badge.tag-work{color:#5b9bd5}"
+    & ".tag-badge.tag-personal{color:#c678dd}"
+    & ".tag-badge.tag-idea{color:#e5c07b}"
+    & ".tag-badge.tag-recipe{color:#98c379}"
+    & ".tag-badge.tag-fitness{color:#e06c75}"
+    & ".tag-badge.tag-reading{color:#61afef}"
+    & ".pinned-indicator{color:#fac53f;font-size:12px;margin-left:auto;flex-shrink:0}"
+    & ".note-item{display:flex;flex-wrap:wrap;align-items:flex-start}"
+    & ".note-meta{display:flex;width:100%;align-items:center;gap:4px}"
+    & ".word-count-bar{padding:4px 16px;font-size:11px;color:#555;text-align:right;border-top:1px solid #2a2a2a;background:#1e1e1e}"
+    & ".sort-controls{padding:6px 16px;border-bottom:1px solid #2a2a2a;display:flex;gap:4px}"
+    & ".sort-btn{background:none;border:none;color:#666;font-size:11px;cursor:pointer;padding:2px 6px;border-radius:4px}"
+    & ".sort-btn:hover,.sort-btn.active{color:#fac53f}"
+    & ".folder-item.trash{color:#e06c75}"
+    & ".folder-item.trash:hover{color:#ec6050}"
+    & ".auto-save{font-size:11px;color:#41af4e;margin-left:auto;padding-right:8px;opacity:0.8}"
+    & ".export-btn{background:none;border:none;color:#888;padding:6px 10px;cursor:pointer;border-radius:4px;font-size:12px}"
+    & ".export-btn:hover{background:#333;color:#ddd}"
+    & ".editor-hdr{padding:8px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #2a2a2a;background:#1e1e1e;font-size:12px;color:#666}"
+    & ".editor-tags{padding:4px 16px;display:flex;flex-wrap:wrap;gap:4px;background:#1e1e1e}"
+    & ".pin-active{color:#fac53f !important}"
+    & ".tag-edit-btn{display:inline-block;cursor:pointer;transition:opacity .15s}"
+    & ".tag-edit-btn:hover{opacity:.7}"
+    & ".char-count{color:#444;margin-left:12px}"
+    & ".note-actions{display:flex;gap:4px;margin-left:auto}"
+    & ".format-hint{font-size:10px;color:#444;padding:2px 8px;font-style:italic}"
 
 Section: Tree
 
@@ -58,32 +88,94 @@ Section: Tree
   sidebar-tree : Integer -> WidgetNode
   sidebar-tree (x) =
     let count = state-get "note-count"
+    in let folder = state-get "folder"
+    in let sm = state-get "sort-mode"
     in widget-box "sidebar" "sidebar" [
       widget-box "sidebar-hdr" "sidebar-hdr" [
         widget-label "brand" "CodexNotes",
         widget-button "new-note" "+"
       ],
+      widget-box "search-box" "search-box" [
+        wk-attach (widget-custom "search-input" "input" 0 0) [widget-label "si-v" (state-get-text "search-text"), widget-label "si-p" "Search notes..."] 0 2
+      ],
       widget-box "folders" "folders" [
-        widget-box-click "f-all" (if state-get "folder" == 0 then "folder-item active" else "folder-item") [ widget-label "fa-i" "&#x1F4C4;", widget-label "fa-l" "All Notes" ],
-        widget-box-click "f-fav" (if state-get "folder" == 1 then "folder-item active" else "folder-item") [ widget-label "ff-i" "&#x2B50;", widget-label "ff-l" "Favorites" ],
-        widget-box-click "f-arc" (if state-get "folder" == 2 then "folder-item active" else "folder-item") [ widget-label "fc-i" "&#x1F4E6;", widget-label "fc-l" "Archive" ]
+        widget-box-click "f-all" (if folder == 0 then "folder-item active" else "folder-item") [ widget-label "fa-i" "&#x1F4C4;", widget-label "fa-l" "All Notes" ],
+        widget-box-click "f-fav" (if folder == 1 then "folder-item active" else "folder-item") [ widget-label "ff-i" "&#x2B50;", widget-label "ff-l" "Favorites" ],
+        widget-box-click "f-arc" (if folder == 2 then "folder-item active" else "folder-item") [ widget-label "fc-i" "&#x1F4E6;", widget-label "fc-l" "Archive" ],
+        widget-box-click "f-per" (if folder == 3 then "folder-item active" else "folder-item") [ widget-label "fp-i" "&#x1F464;", widget-label "fp-l" "Personal" ],
+        widget-box-click "f-wrk" (if folder == 4 then "folder-item active" else "folder-item") [ widget-label "fw-i" "&#x1F4BC;", widget-label "fw-l" "Work" ],
+        widget-box-click "f-trash" (if folder == 5 then "folder-item active trash" else "folder-item trash") [ widget-label "ft-i" "&#x1F5D1;", widget-label "ft-l" "Trash" ]
+      ],
+      widget-box "sort-controls" "sort-controls" [
+        widget-label "sort-lbl" "Sort:",
+        widget-button "sort-date" (if sm == 0 then "&#x25BC; Date" else "Date"),
+        widget-button "sort-title" (if sm == 1 then "&#x25BC; Title" else "Title"),
+        widget-button "sort-size" (if sm == 2 then "&#x25BC; Size" else "Size")
       ],
       widget-box "note-list" "note-list" (build-note-items 0 count [])
     ]
 
+  note-matches-folder : Integer, Integer -> Integer
+  note-matches-folder (i) (folder) =
+    if folder == 0 then 1
+    else if folder == 1 then state-get ("n-pinned-" & show i)
+    else if folder == 5 then state-get ("n-trashed-" & show i)
+    else let nf = state-get ("n-folder-" & show i)
+    in if nf == folder then 1 else 0
+
+  note-matches-search : Integer, Text -> Integer
+  note-matches-search (i) (query) =
+    if text-length query == 0 then 1
+    else let title = state-get-text ("n-title-" & show i)
+    in let snip = state-get-text ("n-snip-" & show i)
+    in if text-contains title query then 1
+    else if text-contains snip query then 1
+    else 0
+
   build-note-items : Integer, Integer, List WidgetNode -> List WidgetNode
   build-note-items (i) (count) (acc) =
     if i >= count then acc
+    else let folder = state-get "folder"
+    in let trashed = state-get ("n-trashed-" & show i)
+    in let show-trash = if folder == 5 then 1 else 0
+    in let hidden-by-trash = if show-trash == 1 then (if trashed == 1 then 0 else 1) else trashed
+    in if hidden-by-trash == 1 then build-note-items (i + 1) count acc
+    else let fm = note-matches-folder i folder
+    in if fm == 0 then build-note-items (i + 1) count acc
+    else let query = state-get-text "search-text"
+    in let sm = note-matches-search i query
+    in if sm == 0 then build-note-items (i + 1) count acc
     else let title = state-get-text ("n-title-" & show i)
     in let date = state-get-text ("n-date-" & show i)
     in let snip = state-get-text ("n-snip-" & show i)
     in let active = state-get "active-note"
+    in let pinned = state-get ("n-pinned-" & show i)
+    in let tag1 = state-get-text ("n-tag1-" & show i)
+    in let pin-node = if pinned == 1 then widget-label ("np-" & show i) "&#x2B50;" else widget-label ("np-" & show i) ""
+    in let tag-node = if text-length tag1 > 0 then widget-label ("ntg-" & show i) tag1 else widget-label ("ntg-" & show i) ""
     in let item = widget-box-click ("note-" & show i) (if active == i then "note-item active" else "note-item") [
-      widget-label ("nt-" & show i) title,
+      widget-box ("nm-" & show i) "note-meta" [
+        widget-label ("nt-" & show i) title,
+        widget-label ("pin-" & show i) (if pinned == 1 then "&#x1F4CC;" else "")
+      ],
       widget-label ("nd-" & show i) date,
-      widget-label ("ns-" & show i) snip
+      widget-label ("ns-" & show i) snip,
+      if text-length tag1 > 0 then widget-box ("ntg-" & show i) "tag-badge" [widget-label ("ntgt-" & show i) tag1] else widget-label ("ntg-" & show i) ""
     ]
     in build-note-items (i + 1) count (list-push acc item)
+
+  word-count : Text -> Integer
+  word-count (txt) =
+    if text-length txt == 0 then 0
+    else count-words txt 0 0 0
+
+  count-words : Text, Integer, Integer, Integer -> Integer
+  count-words (txt) (pos) (wc) (in-word) =
+    if pos >= text-length txt then (if in-word == 1 then wc + 1 else wc)
+    else let ch = substring txt pos (pos + 1)
+    in if ch == " " then count-words txt (pos + 1) (if in-word == 1 then wc + 1 else wc) 0
+    else if ch == "\n" then count-words txt (pos + 1) (if in-word == 1 then wc + 1 else wc) 0
+    else count-words txt (pos + 1) wc 1
 
   editor-tree : Integer -> WidgetNode
   editor-tree (x) =
@@ -91,20 +183,48 @@ Section: Tree
     in if active < 0 then widget-box "editor" "empty-editor" [ widget-label "emp" "Select a note or create a new one" ]
     else let title = state-get-text ("n-title-" & show active)
     in let body = state-get-text ("n-body-" & show active)
+    in let pinned = state-get ("n-pinned-" & show active)
+    in let wc = word-count body
+    in let edited = state-get-text ("n-edited-" & show active)
+    in let saved = state-get "auto-saved"
+    in let tag1 = state-get-text ("n-tag1-" & show active)
+    in let tag2 = state-get-text ("n-tag2-" & show active)
+    in let tag3 = state-get-text ("n-tag3-" & show active)
+    in let trashed = state-get ("n-trashed-" & show active)
     in widget-box "editor" "editor" [
+      widget-box "editor-hdr" "editor-hdr" [
+        widget-label "ed-edited" (if text-length edited > 0 then ("Last edited: " & edited) else ""),
+        widget-label "auto-save-ind" (if saved == 1 then "Saved &#x2713;" else ""),
+        widget-button "tb-pin" (if pinned == 1 then "&#x1F4CC; Unpin" else "&#x1F4CC; Pin"),
+        widget-button "tb-archive" "&#x1F4E6; Archive",
+        widget-button "tb-dup" "&#x1F4CB; Duplicate",
+        widget-button "tb-export" "&#x1F4E4; Export",
+        widget-button "tb-restore" (if trashed == 1 then "&#x267B; Restore" else "")
+      ],
+      widget-box "editor-tags" "editor-tags" [
+        widget-box-click "tag-cycle-1" "tag-edit-btn" [ if text-length tag1 > 0 then widget-box "etag1" ("tag-badge tag-" & tag1) [widget-label "et1-t" tag1] else widget-box "etag1" "tag-badge" [widget-label "et1-t" "+ tag"] ],
+        widget-box-click "tag-cycle-2" "tag-edit-btn" [ if text-length tag2 > 0 then widget-box "etag2" ("tag-badge tag-" & tag2) [widget-label "et2-t" tag2] else widget-box "etag2" "tag-badge" [widget-label "et2-t" "+ tag"] ],
+        widget-box-click "tag-cycle-3" "tag-edit-btn" [ if text-length tag3 > 0 then widget-box "etag3" ("tag-badge tag-" & tag3) [widget-label "et3-t" tag3] else widget-box "etag3" "tag-badge" [widget-label "et3-t" "+ tag"] ]
+      ],
       widget-box "toolbar" "editor-toolbar" [
         widget-button "tb-bold" "B",
         widget-button "tb-italic" "I",
+        widget-button "tb-underline" "U",
         widget-button "tb-h1" "H1",
         widget-button "tb-h2" "H2",
         widget-button "tb-list" "&#x2022;",
         widget-button "tb-code" "&lt;/&gt;",
+        widget-button "tb-hr" "---",
         widget-separator "tb-sep",
         widget-button "tb-del" "&#x1F5D1;"
       ],
       widget-box "editor-body" "editor-body" [
         wk-attach (widget-custom "ed-title" "input" 0 0) [widget-label "ed-tv" title, widget-label "ed-tp" "Untitled"] 0 2,
         wk-attach (widget-custom "ed-body" "textarea" 0 0) [widget-label "ed-bv" body] 0 1
+      ],
+      widget-box "wc-bar" "word-count-bar" [
+        widget-label "wc-label" (show wc & " words"),
+        widget-box "cc-wrap" "char-count" [widget-label "cc-label" (show (text-length body) & " characters")]
       ]
     ]
 
@@ -112,27 +232,172 @@ Section: Sample Data
 
   load-sample-notes : Integer -> Integer
   load-sample-notes (x) =
-    let s0 = state-set "note-count" 5
+    let s0 = state-set "note-count" 8
     in let s1 = state-set-text "n-title-0" "Project Ideas"
     in let s2 = state-set-text "n-date-0" "Today"
     in let s3 = state-set-text "n-snip-0" "Build a self-hosting compiler..."
     in let s4 = state-set-text "n-body-0" "Build a self-hosting compiler that reads like a book. The language should have dependent types, linear types, and algebraic effects. Every program is a chapter in a larger story."
+    in let s4a = state-set "n-folder-0" 4
+    in let s4b = state-set "n-pinned-0" 1
+    in let s4c = state-set-text "n-tag1-0" "idea"
+    in let s4d = state-set-text "n-tag2-0" "work"
+    in let s4e = state-set-text "n-tag3-0" "compiler"
+    in let s4f = state-set "n-trashed-0" 0
+    in let s4g = state-set-text "n-edited-0" "Today 14:30"
     in let s5 = state-set-text "n-title-1" "Meeting Notes"
     in let s6 = state-set-text "n-date-1" "Yesterday"
     in let s7 = state-set-text "n-snip-1" "Discussed the memory model..."
     in let s8 = state-set-text "n-body-1" "Discussed the memory model for the bare-metal compiler. Key decisions:\n\n1. Deck allocator for phase-durable data\n2. Bivy for scratch allocations\n3. Phase compaction between stages\n4. Survey-before-allocate discipline"
+    in let s8a = state-set "n-folder-1" 4
+    in let s8b = state-set "n-pinned-1" 0
+    in let s8c = state-set-text "n-tag1-1" "work"
+    in let s8d = state-set-text "n-tag2-1" "meeting"
+    in let s8e = state-set-text "n-tag3-1" ""
+    in let s8f = state-set "n-trashed-1" 0
+    in let s8g = state-set-text "n-edited-1" "Yesterday 10:00"
     in let s9 = state-set-text "n-title-2" "Reading List"
     in let s10 = state-set-text "n-date-2" "Jun 6"
     in let s11 = state-set-text "n-snip-2" "Papers to read on type theory..."
     in let s12 = state-set-text "n-body-2" "Papers to read:\n\n- Dunfield & Krishnaswami: Bidirectional Typing\n- Bernardy et al.: Linear Haskell\n- Pretnar: Algebraic Effects\n- Chlipala: Certified Programming with Dependent Types"
+    in let s12a = state-set "n-folder-2" 3
+    in let s12b = state-set "n-pinned-2" 1
+    in let s12c = state-set-text "n-tag1-2" "reading"
+    in let s12d = state-set-text "n-tag2-2" "personal"
+    in let s12e = state-set-text "n-tag3-2" "research"
+    in let s12f = state-set "n-trashed-2" 0
+    in let s12g = state-set-text "n-edited-2" "Jun 6 09:15"
     in let s13 = state-set-text "n-title-3" "Recipe: Sourdough"
     in let s14 = state-set-text "n-date-3" "Jun 4"
     in let s15 = state-set-text "n-snip-3" "500g flour, 350g water..."
     in let s16 = state-set-text "n-body-3" "Sourdough Bread\n\n500g bread flour\n350g water\n100g starter\n10g salt\n\nMix flour and water, rest 30 min. Add starter and salt. Stretch and fold every 30 min for 2 hours. Bulk ferment 4-6 hours. Shape, cold retard overnight. Bake at 500F in dutch oven."
+    in let s16a = state-set "n-folder-3" 3
+    in let s16b = state-set "n-pinned-3" 0
+    in let s16c = state-set-text "n-tag1-3" "recipe"
+    in let s16d = state-set-text "n-tag2-3" "personal"
+    in let s16e = state-set-text "n-tag3-3" "cooking"
+    in let s16f = state-set "n-trashed-3" 0
+    in let s16g = state-set-text "n-edited-3" "Jun 4 18:00"
     in let s17 = state-set-text "n-title-4" "Workout Plan"
     in let s18 = state-set-text "n-date-4" "Jun 1"
     in let s19 = state-set-text "n-snip-4" "Mon: Push, Tue: Pull, Wed: Legs..."
     in let s20 = state-set-text "n-body-4" "Weekly Split:\n\nMonday: Push (bench, OHP, dips)\nTuesday: Pull (deadlift, rows, pullups)\nWednesday: Legs (squat, lunges, RDL)\nThursday: Rest\nFriday: Upper (bench, rows, curls)\nSaturday: Lower (squat, leg press)\nSunday: Rest"
+    in let s20a = state-set "n-folder-4" 3
+    in let s20b = state-set "n-pinned-4" 0
+    in let s20c = state-set-text "n-tag1-4" "fitness"
+    in let s20d = state-set-text "n-tag2-4" "personal"
+    in let s20e = state-set-text "n-tag3-4" "health"
+    in let s20f = state-set "n-trashed-4" 0
+    in let s20g = state-set-text "n-edited-4" "Jun 1 07:30"
+    in let s21 = state-set-text "n-title-5" "Travel Packing List"
+    in let s22 = state-set-text "n-date-5" "Jun 10"
+    in let s23 = state-set-text "n-snip-5" "Passport, charger, clothes..."
+    in let s24 = state-set-text "n-body-5" "Conference Trip Packing:\n\n- Passport and ID\n- Laptop and charger\n- Phone charger and adapter\n- 3 shirts, 2 pants, underwear\n- Toiletries bag\n- Notebook and pen\n- Business cards\n- Comfortable walking shoes\n- Snacks for the flight"
+    in let s24a = state-set "n-folder-5" 3
+    in let s24b = state-set "n-pinned-5" 0
+    in let s24c = state-set-text "n-tag1-5" "personal"
+    in let s24d = state-set-text "n-tag2-5" "travel"
+    in let s24e = state-set-text "n-tag3-5" ""
+    in let s24f = state-set "n-trashed-5" 0
+    in let s24g = state-set-text "n-edited-5" "Jun 10 20:00"
+    in let s25 = state-set-text "n-title-6" "API Design Guidelines"
+    in let s26 = state-set-text "n-date-6" "Jun 12"
+    in let s27 = state-set-text "n-snip-6" "REST conventions, versioning..."
+    in let s28 = state-set-text "n-body-6" "API Design Notes:\n\n1. Use nouns for resources, verbs for actions\n2. Version in URL path: /v1/resource\n3. Pagination via cursor, not offset\n4. Rate limiting with 429 status\n5. HATEOAS for discoverability\n6. Idempotency keys for POST\n7. ETag for caching\n8. Consistent error envelope: {error, code, message}"
+    in let s28a = state-set "n-folder-6" 4
+    in let s28b = state-set "n-pinned-6" 1
+    in let s28c = state-set-text "n-tag1-6" "work"
+    in let s28d = state-set-text "n-tag2-6" "api"
+    in let s28e = state-set-text "n-tag3-6" "design"
+    in let s28f = state-set "n-trashed-6" 0
+    in let s28g = state-set-text "n-edited-6" "Jun 12 11:45"
+    in let s29 = state-set-text "n-title-7" "Garden Journal"
+    in let s30 = state-set-text "n-date-7" "Jun 15"
+    in let s31 = state-set-text "n-snip-7" "Tomatoes sprouting, basil needs water..."
+    in let s32 = state-set-text "n-body-7" "Garden Log - June 15:\n\nTomatoes: 6 inches tall, first flowers appearing. Staked the larger ones.\nBasil: Wilting slightly, moved to partial shade. Water twice daily.\nPeppers: Slow growth, added fertilizer.\nHerbs: Rosemary and thyme thriving. Harvested first batch of mint.\nSquash: Planted seeds today, should sprout in 7-10 days.\n\nTodo: Build raised bed for fall planting. Order compost."
+    in let s32a = state-set "n-folder-7" 3
+    in let s32b = state-set "n-pinned-7" 0
+    in let s32c = state-set-text "n-tag1-7" "personal"
+    in let s32d = state-set-text "n-tag2-7" "garden"
+    in let s32e = state-set-text "n-tag3-7" "hobby"
+    in let s32f = state-set "n-trashed-7" 0
+    in let s32g = state-set-text "n-edited-7" "Jun 15 16:20"
+    in 0
+
+Section: Note Actions
+
+  insert-format-wrap : Text, Text -> Integer
+  insert-format-wrap (marker) (placeholder) =
+    let active = state-get "active-note"
+    in if active < 0 then 0
+    else let body = state-get-text ("n-body-" & show active)
+    in let appended = body & "\n" & marker & placeholder & marker
+    in let s1 = state-set-text ("n-body-" & show active) appended
+    in let s2 = state-set-text ("n-snip-" & show active) (substring appended 0 40)
+    in let s3 = state-set-text ("n-edited-" & show active) "Just now"
+    in let s4 = state-set-render "auto-saved" 1
+    in 0
+
+  insert-format-line : Text -> Integer
+  insert-format-line (prefix) =
+    let active = state-get "active-note"
+    in if active < 0 then 0
+    else let body = state-get-text ("n-body-" & show active)
+    in let appended = body & "\n" & prefix
+    in let s1 = state-set-text ("n-body-" & show active) appended
+    in let s2 = state-set-text ("n-snip-" & show active) (substring appended 0 40)
+    in let s3 = state-set-text ("n-edited-" & show active) "Just now"
+    in let s4 = state-set-render "auto-saved" 1
+    in 0
+
+  archive-active-note : Integer -> Integer
+  archive-active-note (x) =
+    let active = state-get "active-note"
+    in if active < 0 then 0
+    else let s1 = state-set ("n-folder-" & show active) 2
+    in let s2 = state-set-render "active-note" (-1)
+    in 0
+
+  duplicate-note : Integer -> Integer
+  duplicate-note (x) =
+    let active = state-get "active-note"
+    in if active < 0 then 0
+    else let count = state-get "note-count"
+    in let s1 = state-set-text ("n-title-" & show count) (state-get-text ("n-title-" & show active) & " (copy)")
+    in let s2 = state-set-text ("n-date-" & show count) "Now"
+    in let s3 = state-set-text ("n-snip-" & show count) (state-get-text ("n-snip-" & show active))
+    in let s4 = state-set-text ("n-body-" & show count) (state-get-text ("n-body-" & show active))
+    in let s5 = state-set ("n-folder-" & show count) (state-get ("n-folder-" & show active))
+    in let s6 = state-set ("n-pinned-" & show count) 0
+    in let s7 = state-set ("n-trashed-" & show count) 0
+    in let s8 = state-set-text ("n-tag1-" & show count) (state-get-text ("n-tag1-" & show active))
+    in let s9 = state-set-text ("n-tag2-" & show count) (state-get-text ("n-tag2-" & show active))
+    in let s10 = state-set-text ("n-tag3-" & show count) (state-get-text ("n-tag3-" & show active))
+    in let s11 = state-set-text ("n-edited-" & show count) "Just now"
+    in let s12 = state-set "note-count" (count + 1)
+    in let s13 = state-set-render "active-note" count
+    in 0
+
+  cycle-tag : Integer -> Integer
+  cycle-tag (slot) =
+    let active = state-get "active-note"
+    in if active < 0 then 0
+    else let key = "n-tag" & show slot & "-" & show active
+    in let current = state-get-text key
+    in let next-tag = if current == "" then "work"
+      else if current == "work" then "personal"
+      else if current == "personal" then "idea"
+      else if current == "idea" then "recipe"
+      else if current == "recipe" then "fitness"
+      else if current == "fitness" then "reading"
+      else if current == "reading" then "garden"
+      else if current == "garden" then "travel"
+      else if current == "travel" then "meeting"
+      else if current == "meeting" then "design"
+      else if current == "design" then "hobby"
+      else if current == "hobby" then ""
+      else ""
+    in let s = state-set-text key next-tag
+    in let s2 = state-set-render "tag-dirty" 1
     in 0
 
 Section: Handlers
@@ -143,27 +408,93 @@ Section: Handlers
     else if id == "f-all" then let s = state-set-render "folder" 0 in 0
     else if id == "f-fav" then let s = state-set-render "folder" 1 in 0
     else if id == "f-arc" then let s = state-set-render "folder" 2 in 0
-    else if id == "tb-del" then let s = state-set-render "active-note" (-1) in 0
+    else if id == "f-per" then let s = state-set-render "folder" 3 in 0
+    else if id == "f-wrk" then let s = state-set-render "folder" 4 in 0
+    else if id == "f-trash" then let s = state-set-render "folder" 5 in 0
+    else if id == "tb-del" then trash-active-note 0
+    else if id == "tb-restore" then restore-active-note 0
+    else if id == "tb-pin" then toggle-pin 0
+    else if id == "tb-export" then export-note 0
+    else if id == "tb-archive" then archive-active-note 0
+    else if id == "tb-dup" then duplicate-note 0
+    else if id == "tb-bold" then insert-format-wrap "**" "bold"
+    else if id == "tb-italic" then insert-format-wrap "*" "italic"
+    else if id == "tb-underline" then insert-format-wrap "__" "underline"
+    else if id == "tb-h1" then insert-format-line "# Heading"
+    else if id == "tb-h2" then insert-format-line "## Subheading"
+    else if id == "tb-list" then insert-format-line "- Item"
+    else if id == "tb-code" then insert-format-wrap "`" "code"
+    else if id == "tb-hr" then insert-format-line "\n---\n"
+    else if id == "tag-cycle-1" then cycle-tag 1
+    else if id == "tag-cycle-2" then cycle-tag 2
+    else if id == "tag-cycle-3" then cycle-tag 3
+    else if id == "sort-date" then let s = state-set-render "sort-mode" 0 in 0
+    else if id == "sort-title" then let s = state-set-render "sort-mode" 1 in 0
+    else if id == "sort-size" then let s = state-set-render "sort-mode" 2 in 0
     else if text-starts-with id "note-" then let s = state-set-render "active-note" (id-num id) in 0
     else 0
 
   new-note : Integer -> Integer
   new-note (x) =
     let count = state-get "note-count"
+    in let folder = state-get "folder"
+    in let assigned = if folder > 0 then (if folder < 5 then folder else 0) else 0
     in let s1 = state-set-text ("n-title-" & show count) "Untitled"
     in let s2 = state-set-text ("n-date-" & show count) "Now"
     in let s3 = state-set-text ("n-snip-" & show count) ""
     in let s4 = state-set-text ("n-body-" & show count) ""
-    in let s5 = state-set "note-count" (count + 1)
-    in let s6 = state-set-render "active-note" count
+    in let s5a = state-set ("n-folder-" & show count) assigned
+    in let s5b = state-set ("n-pinned-" & show count) 0
+    in let s5c = state-set ("n-trashed-" & show count) 0
+    in let s5d = state-set-text ("n-tag1-" & show count) ""
+    in let s5e = state-set-text ("n-tag2-" & show count) ""
+    in let s5f = state-set-text ("n-tag3-" & show count) ""
+    in let s5g = state-set-text ("n-edited-" & show count) "Just now"
+    in let s6 = state-set "note-count" (count + 1)
+    in let s7 = state-set-render "active-note" count
+    in 0
+
+  trash-active-note : Integer -> Integer
+  trash-active-note (x) =
+    let active = state-get "active-note"
+    in if active < 0 then 0
+    else let s1 = state-set ("n-trashed-" & show active) 1
+    in let s2 = state-set-render "active-note" (-1)
+    in 0
+
+  restore-active-note : Integer -> Integer
+  restore-active-note (x) =
+    let active = state-get "active-note"
+    in if active < 0 then 0
+    else let s1 = state-set ("n-trashed-" & show active) 0
+    in let s2 = state-set-render "active-note" (-1)
+    in 0
+
+  toggle-pin : Integer -> Integer
+  toggle-pin (x) =
+    let active = state-get "active-note"
+    in if active < 0 then 0
+    else let current = state-get ("n-pinned-" & show active)
+    in let s = state-set-render ("n-pinned-" & show active) (if current == 1 then 0 else 1)
+    in 0
+
+  export-note : Integer -> Integer
+  export-note (x) =
+    let active = state-get "active-note"
+    in if active < 0 then 0
+    else let title = state-get-text ("n-title-" & show active)
+    in let body = state-get-text ("n-body-" & show active)
+    in let content = title & "\n\n" & body
+    in let s = clipboard-write content
     in 0
 
   notes-input : Text, Text -> Integer
   notes-input (id) (value) =
     let active = state-get "active-note"
-    in if active < 0 then 0
-    else if id == "ed-title" then let s = state-set-text ("n-title-" & show active) value in 0
-    else if id == "ed-body" then let s = state-set-text ("n-body-" & show active) value in 0
+    in if id == "search-input" then let s = state-set-text "search-text" value in let r = state-set-render "search-dirty" 1 in 0
+    else if active < 0 then 0
+    else if id == "ed-title" then let s = state-set-text ("n-title-" & show active) value in let s2 = state-set-text ("n-edited-" & show active) "Just now" in let s3 = state-set-render "auto-saved" 1 in 0
+    else if id == "ed-body" then let s = state-set-text ("n-body-" & show active) value in let s2 = state-set-text ("n-snip-" & show active) (substring value 0 40) in let s3 = state-set-text ("n-edited-" & show active) "Just now" in let s4 = state-set-render "auto-saved" 1 in 0
     else 0
 
 Section: Entry
@@ -175,6 +506,11 @@ Section: Entry
   opening = act
     let t = inject-app-style notes-theme notes-css
     in let s = state-set "active-note" (-1)
+    in let sf = state-set "folder" 0
+    in let sm = state-set "sort-mode" 0
+    in let ss = state-set-text "search-text" ""
+    in let sa = state-set "auto-saved" 0
+    in let sd = state-set "search-dirty" 0
     in let s2 = set-render render-notes
     in let h = register-handlers no-pick notes-click
     in let hi = register-input-handler notes-input

@@ -1,0 +1,56 @@
+Chapter: ProfileHistogramScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates profile-histogram.ps1 from the Shell DSL.
+ Reads a .prof file and a .map file, resolves RIP addresses to
+ function names, and prints a frequency histogram sorted by count.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  ph-params : List ShellParam = [sh-param "ProfFile" SptString, sh-param-default "MapFile" SptString (SeLit ""), sh-param-default "Top" SptInt (SeInt 40)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScIf (SeNot (SeVar "MapFile")) [ScAssign "MapFile" (SeRaw "[System.IO.Path]::ChangeExtension($ProfFile, '.map')")] [], ScIf (SeNot (SeFileExists (SeVar "MapFile"))) [ScWriteError (SeRaw "\"Symbol map not found: $MapFile\""), ScExit (SeInt 1)] [], ScIf (SeNot (SeFileExists (SeVar "ProfFile"))) [ScWriteError (SeRaw "\"Profile file not found: $ProfFile\""), ScExit (SeInt 1)] []]
+
+Section: S02 -- Parse map file
+
+  s02 : List ShellCmd = [ScAssign "map" (SeRaw "@()"), ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "MapFile"]) [ScIf (SeMatch (SeVar "line") "^(0x[0-9a-fA-F]+)\\s+(\\d+)\\s+(.+)$") [ScRaw "$addr = [Convert]::ToInt64($matches[1], 16)", ScRaw "$size = [int]$matches[2]", ScRaw "$name = $matches[3].Trim()", ScRaw "$map += [PSCustomObject]@{ Addr = $addr; Size = $size; Name = $name }"] []], ScAssign "map" (SeRaw "$map | Sort-Object Addr")]
+
+Section: S03 -- Resolve function
+
+  s03 : List ShellCmd = [ScRaw "function Resolve-Addr([long]`$rip) { for (`$i = `$map.Length - 1; `$i -ge 0; `$i--) { if (`$map[`$i].Addr -le `$rip -and (`$map[`$i].Addr + `$map[`$i].Size) -gt `$rip) { return `$map[`$i].Name } } return '<unknown>' }"]
+
+Section: S04 -- Read profile and tally
+
+  s04 : List ShellCmd = [ScDotNetCallAssign "profLines" "System.IO.File" "ReadAllLines" [SeVar "ProfFile"], ScAssign "totalSamples" (SeProperty (SeVar "profLines") "Length"), ScIf (SeRaw "$totalSamples -eq 0") [ScEcho (SeLit "No samples in profile."), ScExit (SeInt 0)] [], ScAssign "tally" SeHashLiteral, ScForEach "line" (SeVar "profLines") [ScAssign "hex" (SeMethodCall (SeVar "line") "Trim" []), ScIf (SeRaw "$hex.Length -eq 0") [ScContinue] [], ScRaw "$rip = [Convert]::ToInt64($hex, 16)", ScRaw "$func = Resolve-Addr $rip", ScIf (SeRaw "$tally.ContainsKey($func)") [ScRaw "$tally[$func]++"] [ScRaw "$tally[$func] = 1"]]]
+
+Section: S05 -- Sort and print histogram
+
+  s05-header : List ShellCmd = [ScAssign "sorted" (SeRaw "$tally.GetEnumerator() | Sort-Object { -$_.Value }"), ScAssign "barWidth" (SeInt 40), ScEcho (SeLit ""), ScEcho (SeRaw "\"Profiler Histogram -- $totalSamples samples, $($tally.Count) unique functions\""), ScEcho (SeLit ""), ScRaw "Write-Host ('{0,7} {1,6}  {2,-40} {3}' -f 'Samples', '%', '', 'Function')", ScRaw "Write-Host ('{0,7} {1,6}  {2,-40} {3}' -f '-------', '------', ('-' * 40), '--------')"]
+
+  s05-loop : List ShellCmd = [ScAssign "shown" (SeInt 0), ScAssign "otherSamples" (SeInt 0), ScForEach "entry" (SeVar "sorted") [ScIf (SeRaw "$shown -ge $Top") [ScRaw "$otherSamples += $entry.Value", ScContinue] [], ScRaw "$pct = ($entry.Value / $totalSamples) * 100", ScRaw "$barLen = [Math]::Max(1, [Math]::Round(($entry.Value / $totalSamples) * $barWidth))", ScRaw "$bar = '#' * [Math]::Min($barLen, $barWidth)", ScRaw "Write-Host ('{0,7} {1,5:F1}%  {2,-40} {3}' -f $entry.Value, $pct, $bar, $entry.Key)", ScRaw "$shown++"]]
+
+  s05-tail : List ShellCmd = [ScIf (SeRaw "$otherSamples -gt 0") [ScRaw "$pct = ($otherSamples / $totalSamples) * 100", ScRaw "Write-Host ('{0,7} {1,5:F1}%  {2,-40} {3}' -f $otherSamples, $pct, '', \"... ($($tally.Count - $Top) more)\")"] [], ScEcho (SeLit "")]
+
+  s05 : List ShellCmd = [ScSequence s05-header, ScSequence s05-loop, ScSequence s05-tail]
+
+Section: Assembly
+
+  ph-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+
+  ph-script : ShellScript = sh-script "profile-histogram" "Resolve profiler RIP addresses and print frequency histogram" ph-params ph-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell ph-script)
+  end
+
+Page 1

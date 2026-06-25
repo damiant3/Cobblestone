@@ -1,0 +1,84 @@
+Chapter: CompileScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates compile.ps1 from the Shell DSL.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  compile-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString, sh-param "Log" SptString, sh-param-default "PCore" SptInt (SeInt 1), sh-param-default "MemMB" SptInt (SeInt 3072), sh-switch "IrUni", sh-switch "IrCce", sh-switch "Prose", sh-switch "Repl", sh-switch "Poison", sh-switch "PoisonCompact", sh-switch "DebugMode", sh-switch "Profile", sh-switch "Trace", sh-switch "EscapeCheck", sh-switch "Uefi", sh-param-default "Break" SptString (SeLit ""), sh-param-default "Survey" SptString (SeLit "")]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    let fail = [ScWriteError (SeRaw "\"MISSING: $Stage0 - run build.ps1 first\""), ScExit (SeInt 2)]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "Stage0" (SeLit "build-output\\bare-metal\\Codex.cdx"), ScIf (SeNot (SeFileExists (SeVar "Stage0"))) fail [], ScAssign "kernelHash" (SeRaw "(Get-FileHash -Algorithm SHA256 $Stage0).Hash.Substring(0, 16)"), ScWriteError (SeRaw "\"kernel: $Stage0 [$kernelHash]\"")]
+
+Section: S02 -- Break
+
+  s02-inner : List ShellCmd =
+    let found = [ScDotNetCallAssign "Stage0Copy" "System.IO.Path" "GetTempFileName" [], ScDotNetCall "System.IO.File" "Copy" [SeVar "Stage0", SeVar "Stage0Copy", SeRaw "$true"], ScReadBytes "cdxBytes" (SeVar "Stage0Copy"), ScAssign "origByte" (SeIndex (SeVar "cdxBytes") (SeVar "breakAddr")), ScRaw "$cdxBytes[$breakAddr] = 0xCC", ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Stage0Copy", SeVar "cdxBytes"], ScAssign "Stage0" (SeVar "Stage0Copy"), ScWriteError (SeRaw "\"BREAK: patched INT3 at $Break (0x$(($breakAddr - 224 + 0x100000).ToString('X')), orig=0x$($origByte.ToString('X2')))\"")]
+    in let not-found = [ScWriteError (SeRaw "\"BREAK: function '$Break' not found in map\"")]
+    in let search = [ScForEach "ml" (SeRaw "Get-Content $mapFile") [ScIf (SeMatch (SeVar "ml") "^(0x[0-9a-fA-F]+)\\s+\\d+\\s+$([regex]::Escape($Break))$") [ScRaw "$breakAddr = [Convert]::ToInt64($matches[1], 16) - 0x100000 + 224", ScBreak] []]]
+    in [ScAssign "mapFile" (SeRaw "Join-Path (Split-Path $Stage0) 'Codex.map'"), ScIf (SeNot (SeFileExists (SeVar "mapFile"))) [ScAssign "mapFile" (SeRaw "Join-Path (Split-Path $PSScriptRoot) 'seed\\Codex.map'")] [], ScAssign "breakAddr" (SeInt (-1)), ScIf (SeFileExists (SeVar "mapFile")) search [], ScIf (SeRaw "$breakAddr -ge 224") found not-found]
+
+  s02 : List ShellCmd = [ScIf (SeVar "Break") s02-inner []]
+
+Section: S03 -- Resolve
+
+  s03 : List ShellCmd =
+    let warn = [ScWriteError (SeRaw "\"WARNING: compile.ps1 resolved $($ordered.Count) chapter(s) not in bundled source:\""), ScForEach "extra" (SeVar "ordered") [ScWriteError (SeRaw "\"  $($extra.Quire)::$($extra.Name) ($($extra.Path))\"")], ScWriteError (SeLit "Add them to the build script's chapter list, or remove the cites.")]
+    in [ScAssign "seedSeen" SeHashLiteral, ScAssign "embeddedPat" (SeLit "^Chapter:\\s*(\\w+)--(. +?)\\s*$"), ScDotNetCallAssign "srcLines" "System.IO.File" "ReadAllLines" [SeVar "Src"], ScForEach "line" (SeVar "srcLines") [ScIf (SeMatch (SeVar "line") "$embeddedPat") [ScRaw "$seedSeen[\"$($matches[1])::$($matches[2])\"] = $true"] []], ScTry [ScAssign "ordered" (SeRaw "Resolve-CiteOrder -RootLines $srcLines -Repo '.' -SeedSeen $seedSeen")] [ScSetContent (SeVar "Log") (SeRaw "\"error 3010: $($_.Exception.Message)\""), ScExit (SeInt 8)] [], ScIf (SeRaw "$ordered.Count -gt 0") warn []]
+
+Section: S04 -- Mode
+
+  s04 : List ShellCmd = [ScAssign "sb" (SeStaticCall "System.Text.StringBuilder" "new" [SeInt 524288]), ScRaw "$mode = if ($IrUni) { \"IR-UNI\" } elseif ($IrCce) { \"IR-CCE\" } else { \"CDX\" }", ScIf (SeVar "Prose") [ScAssign "mode" (SeRaw "\"$mode prose\"")] [], ScIf (SeVar "Repl") [ScAssign "mode" (SeRaw "\"$mode repl\"")] [], ScIf (SeVar "Poison") [ScAssign "mode" (SeRaw "\"$mode poison\"")] [], ScIf (SeVar "PoisonCompact") [ScAssign "mode" (SeRaw "\"$mode poison-compact\"")] [], ScIf (SeVar "DebugMode") [ScAssign "mode" (SeRaw "\"$mode debug\"")] [], ScIf (SeVar "Profile") [ScAssign "mode" (SeRaw "\"$mode profile\"")] [], ScIf (SeVar "Trace") [ScAssign "mode" (SeRaw "\"$mode trace\"")] [], ScIf (SeVar "EscapeCheck") [ScAssign "mode" (SeRaw "\"$mode escape-check\"")] [], ScIf (SeVar "Uefi") [ScAssign "mode" (SeRaw "\"$mode uefi\"")] [], ScIf (SeVar "Survey") [ScAssign "mode" (SeRaw "\"$mode survey=$Survey\"")] []]
+
+Section: S05 -- Input
+
+  s05 : List ShellCmd = [ScRaw "[void]$sb.Append(\"$mode`n\")", ScForEach "l" (SeRaw "Format-CiteChapters -Ordered $ordered") [ScRaw "[void]$sb.Append($l + \"`n\")"], ScForEach "line" (SeVar "srcLines") [ScRaw "[void]$sb.Append($line + \"`n\")"], ScRaw "[void]$sb.Append([char]4)", ScTempFile "inputFile", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "inputFile", SeMethodCall (SeVar "sb") "ToString" [], SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScTempFile "outputFile", ScTempFile "stderrFile"]
+
+Section: S06 -- VM Launch
+
+  s06 : List ShellCmd =
+    let timeout = [ScRaw "Stop-VmGraceful -ProcessId $proc.Id", ScSetContent (SeVar "Log") (SeLit "FAIL: VM timed out"), ScExit (SeInt 3)]
+    in let retry = [ScWriteError (SeRaw "\"  compile: no output with ${curMem}MB, retrying with 3072MB\""), ScAssign "curMem" (SeInt 3072), ScContinueLabel "compile_loop"]
+    in let no-out = [ScSetContent (SeVar "Log") (SeLit "FAIL: no output"), ScIf (SeFileExists (SeVar "stderrFile")) [ScAddContent (SeVar "Log") (SeRaw "(Get-Content $stderrFile -Raw)")] [], ScExit (SeInt 4)]
+    in [ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Stage0", SeLit "-input", SeVar "inputFile", SeLit "-output", SeVar "outputFile", SeLit "-mem", SeRaw "\"$curMem\"", SeLit "-headless"]), ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScRaw "$proc.WaitForExit(600000)", ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) timeout [], ScIf (SeOr (SeNot (SeFileExists (SeVar "outputFile"))) (SeRaw "(Get-Item $outputFile).Length -eq 0")) [ScIf (SeAnd (SeRaw "$attempt -lt $maxAttempts") (SeIntLt (SeVar "curMem") (SeInt 3072))) retry no-out] []]
+
+Section: S07 -- Parse
+
+  s07 : List ShellCmd = [ScReadBytes "outBytes" (SeVar "outputFile"), ScAssign "outText" (SeStaticCall "System.Text.Encoding" "UTF8.GetString" [SeVar "outBytes"]), ScRaw "$outLines = $outText -split \"`n\"", ScSetContent (SeVar "Log") (SeLit ""), ScRaw "$binSize = 0; $binStart = -1; $hitExc = $false", ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $outLines.Count") (SeRaw "$i++") [ScAssign "line" (SeMethodCall (SeIndex (SeVar "outLines") (SeVar "i")) "TrimEnd" [SeRaw "\"`r\""]), ScIf (SeStartsWith (SeVar "line") (SeLit "SIZE:")) [ScIf (SeMatch (SeMethodCall (SeVar "line") "Substring" [SeInt 5]) "^\\d+") [ScAssign "binSize" (SeRaw "[int]$matches[0]")] [], ScAssign "binStart" (SeRaw "$i + 1"), ScBreak] [], ScIf (SeOr (SeStartsWith (SeVar "line") (SeLit "CODEGEN-HALTED")) (SeStartsWith (SeVar "line") (SeLit "CODEGEN-ERRORS"))) [ScAddContent (SeVar "Log") (SeVar "line"), ScRaw "for ($k = $i + 1; $k -lt $outLines.Count; $k++) { $el = $outLines[$k].TrimEnd(\"`r\"); if ($el -and -not $el.StartsWith('WD:') -and -not $el.StartsWith('HEAP:') -and -not $el.StartsWith('STACK:')) { Add-Content -Path $Log -Value $el -Encoding UTF8 } }", ScExit (SeInt 4)] [], ScIf (SeStartsWith (SeVar "line") (SeLit "!EXC")) [ScAddContent (SeVar "Log") (SeVar "line"), ScIf (SeAnd (SeRaw "$attempt -lt $maxAttempts") (SeIntLt (SeVar "curMem") (SeInt 8192))) [ScWriteError (SeRaw "\"  compile: crash with ${curMem}MB, retrying with 3584MB\""), ScAssign "curMem" (SeInt 8192), ScAssign "hitExc" (SeRaw "$true"), ScBreak] [ScExit (SeInt 4)]] [], ScIf (SeAnd (SeVar "line") (SeNot (SeStartsWith (SeVar "line") (SeLit "WD:")))) [ScAddContent (SeVar "Log") (SeVar "line")] []]]
+
+Section: S08 -- Binary Extract
+
+  s08-tail : List ShellCmd = [ScAssign "tailText" (SeStaticCall "System.Text.Encoding" "UTF8.GetString" [SeVar "outBytes", SeVar "tailStart", SeRaw "$outBytes.Length - $tailStart"]), ScRaw "$tailLines = $tailText -split \"`n\"", ScDotNetCallAssign "mapFile" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".map"], ScAssign "inMap" (SeRaw "$false"), ScDotNetCallAssign "mapLines" "System.Collections.Generic.List[string]" "new" [], ScRaw "[void]$mapLines.Add('# Codex Symbol Map'); [void]$mapLines.Add('# Address         Size  Name')", ScDotNetCallAssign "profFile" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".prof"], ScRaw "$inProf = $false; $profCount = 0", ScDotNetCallAssign "profLines" "System.Collections.Generic.List[string]" "new" [], ScForEach "tl" (SeVar "tailLines") [ScAssign "tl" (SeMethodCall (SeVar "tl") "TrimEnd" [SeRaw "\"`r\""]), ScIf (SeStartsWith (SeVar "tl") (SeLit "MAP:")) [ScAssign "inMap" (SeRaw "$true"), ScContinue] [], ScIf (SeStartsWith (SeVar "tl") (SeLit "MAP-END")) [ScAssign "inMap" (SeRaw "$false"), ScContinue] [], ScIf (SeAnd (SeVar "inMap") (SeStartsWith (SeVar "tl") (SeLit "0x"))) [ScRaw "[void]$mapLines.Add($tl)"] [], ScIf (SeStartsWith (SeVar "tl") (SeLit "PROF:")) [ScIf (SeNot (SeVar "inProf")) [ScAssign "inProf" (SeRaw "$true"), ScIf (SeMatch (SeMethodCall (SeVar "tl") "Substring" [SeInt 5]) "^\\d+") [ScAssign "profCount" (SeRaw "[int]$matches[0]")] []] [ScRaw "[void]$profLines.Add($tl.Substring(5))"]] []], ScIf (SeRaw "$mapLines.Count -gt 2") [ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "mapFile", SeVar "mapLines", SeRaw "[System.Text.UTF8Encoding]::new($false)"]] [], ScIf (SeRaw "$profLines.Count -gt 0") [ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "profFile", SeVar "profLines", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScWriteError (SeRaw "\"  profile: $($profLines.Count) samples -> $profFile\"")] []]
+
+  s08 : List ShellCmd =
+    let write-bin = [ScRaw "$binBytes = New-Object byte[] $actSize", ScRaw "[Array]::Copy($outBytes, $sizeLineEnd, $binBytes, 0, $actSize)", ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeVar "binBytes"], ScAssign "tailStart" (SeVar "binEnd"), ScIf (SeIntLt (SeVar "tailStart") (SeProperty (SeVar "outBytes") "Length")) s08-tail [], ScExit (SeInt 0)]
+    in let size-fail = [ScAddContent (SeVar "Log") (SeLit "Binary size mismatch"), ScExit (SeInt 5)]
+    in let scan = [ScRaw "for ($j = $sizeLineEnd; $j -lt $outBytes.Length; $j++) { if ($outBytes[$j] -eq 10) { $afterNl = $j + 1; if ($afterNl + 3 -le $outBytes.Length) { $tag = [System.Text.Encoding]::ASCII.GetString($outBytes, $afterNl, [Math]::Min(5, $outBytes.Length - $afterNl)); if ($tag.StartsWith('WD:') -or $tag.StartsWith('HEAP:') -or $tag.StartsWith('STACK:')) { $binEnd = $j + 1; break } } } }"]
+    in [ScIf (SeRaw "$binStart -ge 0") [ScRaw "$sizeLineEnd = 0; $nlCount = 0", ScForLoop "j" (SeInt 0) (SeRaw "$j -lt $outBytes.Length") (SeRaw "$j++") [ScIf (SeRaw "$outBytes[$j] -eq 10") [ScRaw "$nlCount++; if ($nlCount -eq $binStart) { $sizeLineEnd = $j + 1; break }"] []], ScAssign "binEnd" (SeProperty (SeVar "outBytes") "Length"), ScIf (SeAnd (SeRaw "$binSize -gt 0") (SeRaw "($sizeLineEnd + $binSize) -le $outBytes.Length")) [ScAssign "binEnd" (SeRaw "$sizeLineEnd + $binSize")] scan, ScAssign "actSize" (SeRaw "$binEnd - $sizeLineEnd"), ScIf (SeRaw "$actSize -gt 0") write-bin size-fail] [], ScIf (SeVar "hitExc") [ScContinueLabel "compile_loop"] [], ScExit (SeInt 4)]
+
+Section: S09 -- Cleanup
+
+  s09 : List ShellCmd = [ScIf (SeVar "inputFile") [ScDelete (SeVar "inputFile")] [], ScIf (SeVar "outputFile") [ScDelete (SeVar "outputFile")] [], ScIf (SeVar "stderrFile") [ScDelete (SeVar "stderrFile")] []]
+
+Section: Assembly
+
+  compile-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScTry [ScAssign "inputFile" (SeRaw "$null"), ScAssign "outputFile" (SeRaw "$null"), ScAssign "stderrFile" (SeRaw "$null"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'quire-map.ps1')"), ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScAssign "vmBin" (SeRaw "Join-Path (Split-Path $PSScriptRoot) 'tools\\codex-vm.exe'"), ScAssign "curMem" (SeVar "MemMB"), ScAssign "attempt" (SeInt 0), ScAssign "maxAttempts" (SeInt 2), ScLabeledWhile "compile_loop" (SeIntLt (SeVar "attempt") (SeVar "maxAttempts")) [ScRaw "$attempt++", ScIf (SeFileExists (SeVar "outputFile")) [ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "outputFile", SeRaw "[byte[]]::new(0)"]] [], ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08]] [] s09]
+
+  compile-script : ShellScript = sh-script "compile" "Compile a single .codex source file to CDX, TEXT, or IR" compile-params compile-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell compile-script)
+  end
+
+Page 1

@@ -1,0 +1,267 @@
+Chapter: VaeDecoder
+  cites AI chapter Tensor
+  cites AI chapter Conv2d
+  cites AI chapter Normalization
+  cites AI chapter SafeTensors
+  cites AI chapter ImageTensor
+  cites Encode chapter Png
+  cites Foreword chapter Maybe
+
+ VAE (Variational Autoencoder) decoder for diffusion models.
+ Decodes latent representations back to pixel space. Implements
+ the standard SD VAE architecture: post-quant conv -> mid block
+ -> up blocks (with ResNet + nearest upsample) -> output conv.
+
+ The decoder reverses the encoder's downsampling: 64x64 latent
+ (for 512x512 output) goes through 4 upsampling stages.
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  VaeConfig = record {
+    vae-latent-channels : Integer,
+    vae-out-channels : Integer,
+    vae-block-channels : List Integer,
+    vae-num-res-blocks : Integer,
+    vae-scale-factor : Integer
+  }
+
+  VaeResBlock = record {
+    vr-conv1-w : List Integer,
+    vr-conv1-b : List Integer,
+    vr-conv2-w : List Integer,
+    vr-conv2-b : List Integer,
+    vr-norm1-gamma : List Integer,
+    vr-norm1-beta : List Integer,
+    vr-norm2-gamma : List Integer,
+    vr-norm2-beta : List Integer,
+    vr-skip-w : List Integer,
+    vr-skip-b : List Integer,
+    vr-in-ch : Integer,
+    vr-out-ch : Integer,
+    vr-has-skip : Boolean
+  }
+
+  VaeUpBlock = record {
+    vu-res-blocks : List VaeResBlock,
+    vu-upsample-w : List Integer,
+    vu-upsample-b : List Integer,
+    vu-has-upsample : Boolean,
+    vu-channels : Integer
+  }
+
+  VaeState = record {
+    vs-config : VaeConfig,
+    vs-post-quant-w : List Integer,
+    vs-post-quant-b : List Integer,
+    vs-mid-res1 : VaeResBlock,
+    vs-mid-res2 : VaeResBlock,
+    vs-mid-attn-norm-gamma : List Integer,
+    vs-mid-attn-norm-beta : List Integer,
+    vs-mid-attn-q : List Integer,
+    vs-mid-attn-k : List Integer,
+    vs-mid-attn-v : List Integer,
+    vs-mid-attn-out : List Integer,
+    vs-up-blocks : List VaeUpBlock,
+    vs-output-norm-gamma : List Integer,
+    vs-output-norm-beta : List Integer,
+    vs-output-conv-w : List Integer,
+    vs-output-conv-b : List Integer
+  }
+
+Section: Default Configuration
+  sd15-vae-config : VaeConfig
+  sd15-vae-config = VaeConfig {
+    vae-latent-channels = 4,
+    vae-out-channels = 3,
+    vae-block-channels = [512, 512, 256, 128],
+    vae-num-res-blocks = 2,
+    vae-scale-factor = 18215
+  }
+
+Section: VAE ResNet Forward
+  vae-resnet-forward : VaeResBlock, List Integer, Integer, Integer -> List Integer
+  vae-resnet-forward (block) (input) (h) (w) =
+    let norm1 = group-norm (group-norm-params 32 (block.vr-in-ch) (block.vr-norm1-gamma) (block.vr-norm1-beta)) input h w
+    in let act1 = silu-forward norm1
+    in let conv1-p = conv2d-params (block.vr-in-ch) (block.vr-out-ch) 3 1 1
+    in let conv1-l = conv2d-layer conv1-p (block.vr-conv1-w) (block.vr-conv1-b)
+    in let h1 = conv2d-forward conv1-l act1 h w
+    in let norm2 = group-norm (group-norm-params 32 (block.vr-out-ch) (block.vr-norm2-gamma) (block.vr-norm2-beta)) h1 h w
+    in let act2 = silu-forward norm2
+    in let conv2-p = conv2d-params (block.vr-out-ch) (block.vr-out-ch) 3 1 1
+    in let conv2-l = conv2d-layer conv2-p (block.vr-conv2-w) (block.vr-conv2-b)
+    in let h2 = conv2d-forward conv2-l act2 h w
+    in let residual = vae-apply-skip block input h w
+    in vae-add h2 residual 0 (list-length h2) []
+
+  vae-apply-skip : VaeResBlock, List Integer, Integer, Integer -> List Integer
+  vae-apply-skip (block) (input) (h) (w) =
+    if block.vr-has-skip == False then input
+    else let p = conv2d-params (block.vr-in-ch) (block.vr-out-ch) 1 1 0
+    in let l = conv2d-layer p (block.vr-skip-w) (block.vr-skip-b)
+    in conv2d-forward l input h w
+
+  vae-add : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  vae-add (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else vae-add a b (i + 1) n (list-push acc (list-at a i + list-at b i))
+
+Section: VAE Decode
+  vae-decode : VaeState, List Integer, Integer, Integer -> ImageData
+  vae-decode (state) (latents) (lat-h) (lat-w) =
+    let cfg = state.vs-config
+    in let scaled = vae-scale-latents latents (cfg.vae-scale-factor) 0 (list-length latents) []
+    in let post-quant-p = conv2d-params (cfg.vae-latent-channels) (list-at (cfg.vae-block-channels) 0) 3 1 1
+    in let post-quant-l = conv2d-layer post-quant-p (state.vs-post-quant-w) (state.vs-post-quant-b)
+    in let hidden = conv2d-forward post-quant-l scaled lat-h lat-w
+    in let mid-h1 = vae-resnet-forward (state.vs-mid-res1) hidden lat-h lat-w
+    in let mid-h2 = vae-resnet-forward (state.vs-mid-res2) mid-h1 lat-h lat-w
+    in let up-result = vae-run-up-blocks (state.vs-up-blocks) mid-h2 lat-h lat-w 0 (list-length (state.vs-up-blocks))
+    in let normed = group-norm (group-norm-params 32 (cfg.vae-out-channels * 2) (state.vs-output-norm-gamma) (state.vs-output-norm-beta)) (up-result.vur-hidden) (up-result.vur-h) (up-result.vur-w)
+    in let activated = silu-forward normed
+    in let out-p = conv2d-params (list-at (cfg.vae-block-channels) 3) (cfg.vae-out-channels) 3 1 1
+    in let out-l = conv2d-layer out-p (state.vs-output-conv-w) (state.vs-output-conv-b)
+    in let rgb-data = conv2d-forward out-l activated (up-result.vur-h) (up-result.vur-w)
+    in tensor-to-image rgb-data (up-result.vur-w) (up-result.vur-h)
+
+  vae-scale-latents : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vae-scale-latents (latents) (scale-factor) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at latents i * 1000 / scale-factor
+    in vae-scale-latents latents scale-factor (i + 1) n (list-push acc val)
+
+Section: Up Blocks
+  VaeUpResult = record {
+    vur-hidden : List Integer,
+    vur-h : Integer,
+    vur-w : Integer
+  }
+
+  vae-run-up-blocks : List VaeUpBlock, List Integer, Integer, Integer, Integer, Integer -> VaeUpResult
+  vae-run-up-blocks (blocks) (hidden) (h) (w) (i) (n) =
+    if i >= n then VaeUpResult { vur-hidden = hidden, vur-h = h, vur-w = w }
+    else let block = list-at blocks i
+    in let after-res = vae-run-res-list (block.vu-res-blocks) hidden h w 0 (list-length (block.vu-res-blocks))
+    in if block.vu-has-upsample then
+      let up = vae-upsample-nearest after-res (block.vu-channels) h w
+      in let new-h = h * 2
+      in let new-w = w * 2
+      in let conv-p = conv2d-params (block.vu-channels) (block.vu-channels) 3 1 1
+      in let conv-l = conv2d-layer conv-p (block.vu-upsample-w) (block.vu-upsample-b)
+      in let refined = conv2d-forward conv-l up new-h new-w
+      in vae-run-up-blocks blocks refined new-h new-w (i + 1) n
+    else vae-run-up-blocks blocks after-res h w (i + 1) n
+
+  vae-run-res-list : List VaeResBlock, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  vae-run-res-list (blocks) (hidden) (h) (w) (i) (n) =
+    if i >= n then hidden
+    else let b = list-at blocks i
+    in let out = vae-resnet-forward b hidden h w
+    in vae-run-res-list blocks out h w (i + 1) n
+
+  vae-upsample-nearest : List Integer, Integer, Integer, Integer -> List Integer
+  vae-upsample-nearest (input) (ch) (h) (w) =
+    vae-up-loop input ch h w 0 0 0 []
+
+  vae-up-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vae-up-loop (input) (ch) (h) (w) (c) (y) (x) (acc) =
+    if c >= ch then acc
+    else if y >= h * 2 then vae-up-loop input ch h w (c + 1) 0 0 acc
+    else if x >= w * 2 then vae-up-loop input ch h w c (y + 1) 0 acc
+    else let src-y = y / 2
+    in let src-x = x / 2
+    in let val = list-at input (c * h * w + src-y * w + src-x)
+    in vae-up-loop input ch h w c y (x + 1) (list-push acc val)
+
+Section: Convenience
+  vae-decode-to-png : VaeState, List Integer, Integer, Integer -> List Integer
+  vae-decode-to-png (state) (latents) (lat-h) (lat-w) =
+    let img = vae-decode state latents lat-h lat-w
+    in image-to-png img
+
+Section: Weight Loading
+  vae-load-state : List Integer, SafeTensorFile, VaeConfig -> VaeState
+  vae-load-state (data) (file) (cfg) =
+    let pq-w = vae-lw data file "decoder.conv_in.weight"
+    in let pq-b = vae-lw data file "decoder.conv_in.bias"
+    in let mid-r1 = vae-load-res-block data file "decoder.mid.block_1" (list-at (cfg.vae-block-channels) 0) (list-at (cfg.vae-block-channels) 0)
+    in let mid-r2 = vae-load-res-block data file "decoder.mid.block_2" (list-at (cfg.vae-block-channels) 0) (list-at (cfg.vae-block-channels) 0)
+    in let up = vae-load-up-blocks data file cfg 0 4 []
+    in let on-gamma = vae-lw data file "decoder.norm_out.weight"
+    in let on-beta = vae-lw data file "decoder.norm_out.bias"
+    in let oc-w = vae-lw data file "decoder.conv_out.weight"
+    in let oc-b = vae-lw data file "decoder.conv_out.bias"
+    in VaeState {
+      vs-config = cfg,
+      vs-post-quant-w = pq-w, vs-post-quant-b = pq-b,
+      vs-mid-res1 = mid-r1, vs-mid-res2 = mid-r2,
+      vs-mid-attn-norm-gamma = vae-lw data file "decoder.mid.attn_1.norm.weight",
+      vs-mid-attn-norm-beta = vae-lw data file "decoder.mid.attn_1.norm.bias",
+      vs-mid-attn-q = vae-lw data file "decoder.mid.attn_1.q.weight",
+      vs-mid-attn-k = vae-lw data file "decoder.mid.attn_1.k.weight",
+      vs-mid-attn-v = vae-lw data file "decoder.mid.attn_1.v.weight",
+      vs-mid-attn-out = vae-lw data file "decoder.mid.attn_1.proj_out.weight",
+      vs-up-blocks = up,
+      vs-output-norm-gamma = on-gamma, vs-output-norm-beta = on-beta,
+      vs-output-conv-w = oc-w, vs-output-conv-b = oc-b
+    }
+
+  vae-load-res-block : List Integer, SafeTensorFile, Text, Integer, Integer -> VaeResBlock
+  vae-load-res-block (data) (file) (prefix) (in-ch) (out-ch) =
+    let has-skip = in-ch /= out-ch
+    in VaeResBlock {
+      vr-conv1-w = vae-lw data file (prefix & ".conv1.weight"),
+      vr-conv1-b = vae-lw data file (prefix & ".conv1.bias"),
+      vr-conv2-w = vae-lw data file (prefix & ".conv2.weight"),
+      vr-conv2-b = vae-lw data file (prefix & ".conv2.bias"),
+      vr-norm1-gamma = vae-lw data file (prefix & ".norm1.weight"),
+      vr-norm1-beta = vae-lw data file (prefix & ".norm1.bias"),
+      vr-norm2-gamma = vae-lw data file (prefix & ".norm2.weight"),
+      vr-norm2-beta = vae-lw data file (prefix & ".norm2.bias"),
+      vr-skip-w = if has-skip then vae-lw data file (prefix & ".nin_shortcut.weight") else [],
+      vr-skip-b = if has-skip then vae-lw data file (prefix & ".nin_shortcut.bias") else [],
+      vr-in-ch = in-ch,
+      vr-out-ch = out-ch,
+      vr-has-skip = has-skip
+    }
+
+  vae-load-up-blocks : List Integer, SafeTensorFile, VaeConfig, Integer, Integer, List VaeUpBlock -> List VaeUpBlock
+  vae-load-up-blocks (data) (file) (cfg) (i) (n) (acc) =
+    if i >= n then acc
+    else let ch = list-at (cfg.vae-block-channels) i
+    in let prev-ch = if i == 0 then list-at (cfg.vae-block-channels) 0 else list-at (cfg.vae-block-channels) (i - 1)
+    in let prefix = "decoder.up." & show (n - 1 - i)
+    in let res = vae-load-res-list data file prefix prev-ch ch (cfg.vae-num-res-blocks) 0 []
+    in let has-up = i < n - 1
+    in let block = VaeUpBlock {
+        vu-res-blocks = res,
+        vu-upsample-w = if has-up then vae-lw data file (prefix & ".upsample.conv.weight") else [],
+        vu-upsample-b = if has-up then vae-lw data file (prefix & ".upsample.conv.bias") else [],
+        vu-has-upsample = has-up,
+        vu-channels = ch
+      }
+    in vae-load-up-blocks data file cfg (i + 1) n (list-push acc block)
+
+  vae-load-res-list : List Integer, SafeTensorFile, Text, Integer, Integer, Integer, Integer, List VaeResBlock -> List VaeResBlock
+  vae-load-res-list (data) (file) (prefix) (in-ch) (out-ch) (n) (i) (acc) =
+    if i >= n then acc
+    else let ic = if i == 0 then in-ch else out-ch
+    in let rb = vae-load-res-block data file (prefix & ".block." & show i) ic out-ch
+    in vae-load-res-list data file prefix in-ch out-ch n (i + 1) (list-push acc rb)
+
+  vae-lw : List Integer, SafeTensorFile, Text -> List Integer
+  vae-lw (data) (file) (name) =
+    let found = st-find-tensor file name
+    in when found
+      is Just (meta) -> (st-load-tensor data file meta).data
+      is None -> []
+
+Section: Queries
+  format-vae-config : VaeConfig -> Text
+  format-vae-config (cfg) =
+    "latent=" & show (cfg.vae-latent-channels) & " out=" & show (cfg.vae-out-channels) & " scale=" & show (cfg.vae-scale-factor)
+
+Page 1

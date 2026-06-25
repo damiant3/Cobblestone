@@ -1,114 +1,112 @@
 Chapter: RiscVPlug
-  cites Codex chapter General
-  cites Codex chapter Text
-  cites Codex chapter Characters
-  cites Codex chapter Lists
-  cites Net chapter NetIO
-  cites Net chapter NetworkStack
-  cites Net chapter TcpTransport
-  cites Kernel chapter Ne2k
-  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
 
- Plug entry. Connects to host TCP server on port 9100,
- receives IR text, runs the RISC-V code generator, sends
- machine code + metadata back in the wire format for
- chaining to ELF plugs.
+ Plug entry. Reads IR text from serial input (file-mapped by
+ codex-vm), runs the RISC-V code generator, writes binary wire
+ output to serial as raw bytes via UART port.
 
-Section: Network Config
+Section: Raw Output
 
-  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
-  local-ip : List Integer = [10, 0, 2, 15]
-  gateway-ip : List Integer = [10, 0, 2, 2]
-  host-ip : List Integer = [127, 0, 0, 1]
+  serial-data-port : Integer = 1016
 
-Section: Helpers
+  serial-write-byte : Integer -> Integer
+  serial-write-byte (b) = port-out-byte serial-data-port b
 
-  bytes-to-text-chunk : List Integer, Integer, Integer, List Text -> List Text
-  bytes-to-text-chunk (bs) (i) (stop) (acc) =
-   if i >= stop then acc
-   else bytes-to-text-chunk bs (i + 1) stop (list-push acc (char-to-text (code-to-char (list-at bs i))))
+  serial-write-loop : List Integer, Integer, Integer -> Integer
+  serial-write-loop (bs) (i) (len) =
+   if i >= len then len
+   else let w = serial-write-byte (list-at bs i)
+   in serial-write-loop bs (i + 1) len
 
-  bytes-to-text-chunks : List Integer, Integer, Integer, List Text -> List Text
-  bytes-to-text-chunks (bs) (off) (total) (acc) =
-   if off >= total then acc
-   else let stop = if off + 256 > total then total else off + 256
-   in let chunk = text-concat-list (bytes-to-text-chunk bs off stop [])
-   in bytes-to-text-chunks bs stop total (list-push acc chunk)
+  serial-write-bytes : List Integer -> Integer
+  serial-write-bytes (bs) = serial-write-loop bs 0 (list-length bs)
 
-  bytes-to-text : List Integer, Integer, Integer -> Text
-  bytes-to-text (bs) (off) (total) =
-   text-concat-list (bytes-to-text-chunks bs off total [])
+  wire-buf-addr : Integer = #500000
 
-Section: Streaming Send
+  serial-write-buf-loop : Integer, Integer, Integer -> Integer
+  serial-write-buf-loop (buf) (i) (len) =
+   if i >= len then len
+   else let b = peek-byte buf i
+   in let w = serial-write-byte b
+   in serial-write-buf-loop buf (i + 1) len
 
-  spin-wait : Integer, Integer -> Integer
-  spin-wait (i) (n) =
-   if i >= n then 0
-   else spin-wait (i + 1) n
+  rv-wire-length : RvState -> Integer
+  rv-wire-length (st) =
+   12 + list-length (st.code) + list-length (st.data) + rv-func-table-len (st.func-names) (st.func-offsets) 0 0
 
-  send-bytes-loop : TcpTransportState, List Integer, Integer, Integer -> TcpTransportState
-  send-bytes-loop (ts) (bs) (off) (len) =
-   if off >= len then ts
-   else let stop = if off + 1400 > len then len else off + 1400
-   in let chunk = slice-bytes bs off stop
-   in let r = net-send (ts.session) chunk
-   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
-   in let ts2 = flush-transport-outbox ts1
-   in let w = spin-wait 0 10000000
-   in send-bytes-loop ts2 bs stop len
+  rv-func-table-len : List Text, List Integer, Integer, Integer -> Integer
+  rv-func-table-len (names) (offsets) (i) (acc) =
+   if i >= list-length names then acc
+   else rv-func-table-len names offsets (i + 1) (acc + 2 + text-length (list-at names i) + 4)
 
-  send-bytes : TcpTransportState, List Integer -> TcpTransportState
-  send-bytes (ts) (bs) = send-bytes-loop ts bs 0 (list-length bs)
+  rv-send-wire-output : RvState -> Integer
+  rv-send-wire-output (st) =
+   let code = st.code
+   in let data = st.data
+   in let code-len = list-length code
+   in let data-len = list-length data
+   in let func-count = list-length (st.func-names)
+   in let w1 = serial-write-bytes (write-i32-le code-len)
+   in let w2 = serial-write-bytes (write-i32-le data-len)
+   in let w3 = serial-write-bytes (write-i32-le func-count)
+   in let w4 = serial-write-bytes code
+   in let w5 = serial-write-bytes data
+   in let w6 = serial-write-bytes (rv-build-func-table (st.func-names) (st.func-offsets) 0)
+   in w1 + w2 + w3 + w4 + w5 + w6
 
-  slice-bytes : List Integer, Integer, Integer -> List Integer
-  slice-bytes (bs) (start) (stop) =
-   slice-bytes-loop bs start stop []
+  rv-build-func-table : List Text, List Integer, Integer -> List Integer
+  rv-build-func-table (names) (offsets) (i) =
+   if i >= list-length names then []
+   else let name = list-at names i
+   in let name-len = text-length name
+   in let name-bytes = text-to-ascii-bytes name
+   in let off-bytes = write-i32-le (list-at offsets i)
+   in write-i16-le name-len & name-bytes & off-bytes & rv-build-func-table names offsets (i + 1)
 
-  slice-bytes-loop : List Integer, Integer, Integer, List Integer -> List Integer
-  slice-bytes-loop (bs) (i) (stop) (acc) =
-   if i >= stop then acc
-   else slice-bytes-loop bs (i + 1) stop (list-push acc (list-at bs i))
+  write-i32-le : Integer -> List Integer
+  write-i32-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
 
-Section: Drain
+  write-i16-le : Integer -> List Integer
+  write-i16-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
 
-  drain-wait : TcpTransportState, Integer -> Integer
-  drain-wait (ts) (tries) =
-   if tries > 5000000 then 0
-   else let frame = ne2k-recv-frame
-   in if list-length frame == 0 then drain-wait ts (tries + 1)
-   else 0
+  text-to-ascii-bytes : Text -> List Integer
+  text-to-ascii-bytes (s) = text-to-ascii-loop s 0 (text-length s) []
+
+  text-to-ascii-loop : Text, Integer, Integer, List Integer -> List Integer
+  text-to-ascii-loop (s) (i) (len) (acc) =
+   if i >= len then acc
+   else text-to-ascii-loop s (i + 1) len (list-push acc (bit-and (char-code (char-at s i)) 255))
 
 Section: WCET Output
 
-  rv-print-wcet-reports : List Text, Integer -> Integer
-  rv-print-wcet-reports (reports) (i) =
-   if i >= list-length reports then i
+  rv-print-wcet-reports : List Text, Integer -> [Console] Nothing
+  rv-print-wcet-reports (reports) (i) = act
+   if i >= list-length reports then print-line-uni ""
    else let line = list-at reports i
-   in rv-print-wcet-reports reports (i + 1)
+   in act
+    print-line-uni line
+    rv-print-wcet-reports reports (i + 1)
+   end
+  end
 
 Section: Body
 
+  dispatch : Text -> [Console, FileSystem] Nothing
+  dispatch (mode) = act
+    source <- read-file mode
+    let parsed = parse-ir-chapter source
+    in let cg-state = rv-emit-module empty-rv-state (parsed.chapter) (parsed.type-defs) (parsed.effect-op-names)
+    in let written = rv-send-wire-output cg-state
+    in let reports = cg-state.wcet-reports
+    in if list-length reports > 0 then rv-print-wcet-reports reports 0
+    else print-line-uni ""
+  end
+
   opening : [Console, FileSystem] Nothing = act
-   let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
-   in let ts = transport-new sess
-   in let ts1 = net-io-connect ts
-   in let recv = net-io-recv-loop ts1 0
-   in if recv.has-message then
-    let ir-text = bytes-to-text (recv.body) 0 (list-length (recv.body))
-    in let tokens = tokenize ir-text
-    in let tree = build-tree tokens
-    in let xs = sexp-list tree
-    in let type-defs = parse-atype-defs (walk-named-list xs "type-defs")
-    in let parsed = walk-chapter tree
-    in let chapter = parsed.chapter
-    in let cg-state = rv-emit-module empty-rv-state chapter type-defs
-    in let wire = rv-build-wire-output cg-state
-    in let wcet-printed = rv-print-wcet-reports (cg-state.wcet-reports) 0
-    in let ts5 = send-bytes (recv.transport) wire
-    in let ts6 = net-io-close ts5
-    in let drained = drain-wait ts6 0
-    in act print-line-uni ("OK riscv code=" & show (list-length (cg-state.code)) & " funcs=" & show (list-length (cg-state.func-names)) & " data=" & show (list-length (cg-state.data)) & " wire=" & show (list-length wire + drained - drained)) end
-   else act print-line-uni "FAIL" end
+    mode-result <- read-line-cce
+    when mode-result
+      is Just (mode) -> dispatch mode
+      is None -> print-line-uni "no input"
   end
 
 Page 1

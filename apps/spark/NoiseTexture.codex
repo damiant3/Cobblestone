@@ -3,8 +3,7 @@ Chapter: NoiseTexture
 
  Procedural noise generation for textures. Value noise,
  gradient (Perlin-style) noise, Worley (cellular) noise,
- and fractal Brownian motion (fBm). All coordinates and
- output values use fixed-point scale 1000.
+ and fractal Brownian motion (fBm).
 
  We say:
 
@@ -18,10 +17,10 @@ Section: Types
   NoiseConfig = record {
     nc-kind : NoiseKind,
     nc-seed : Integer,
-    nc-scale : Integer,
+    nc-scale : Real,
     nc-octaves : Integer,
-    nc-persistence : Integer,
-    nc-lacunarity : Integer
+    nc-persistence : Real,
+    nc-lacunarity : Real
   }
 
 Section: Construction
@@ -30,123 +29,124 @@ Section: Construction
   noise-config-default = NoiseConfig {
     nc-kind = NoiseGradient,
     nc-seed = 42,
-    nc-scale = 100,
+    nc-scale = 0.1,
     nc-octaves = 4,
-    nc-persistence = 500,
-    nc-lacunarity = 2000
+    nc-persistence = 0.5,
+    nc-lacunarity = 2.0
   }
 
-  noise-config-new : NoiseKind, Integer, Integer -> NoiseConfig
+  noise-config-new : NoiseKind, Integer, Real -> NoiseConfig
   noise-config-new (kind) (seed) (scale) = NoiseConfig {
     nc-kind = kind,
     nc-seed = seed,
     nc-scale = scale,
     nc-octaves = 4,
-    nc-persistence = 500,
-    nc-lacunarity = 2000
+    nc-persistence = 0.5,
+    nc-lacunarity = 2.0
   }
 
 Section: Hash Function
 
-  noise-hash : Integer, Integer, Integer -> Integer
+  noise-hash : Integer, Integer, Integer -> Real
   noise-hash (x) (y) (seed) =
     let h = x * 374761393 + y * 668265263 + seed * 1274126177
     in let h2 = h * h * h
     in let abs-h = if h2 < 0 then 0 - h2 else h2
-    in abs-h - abs-h / 1000 * 1000
+    in let m = abs-h - abs-h / 1000 * 1000
+    in real-from-int m / 1000.0
 
-  noise-hash2 : Integer, Integer, Integer -> Integer
+  noise-hash2 : Integer, Integer, Integer -> Real
   noise-hash2 (x) (y) (seed) =
     let h = noise-hash x y seed
-    in h * 2 - 1000
+    in h * 2.0 - 1.0
 
 Section: Value Noise
 
-  noise-value : Integer, Integer, NoiseConfig -> Integer
+  noise-value : Integer, Integer, NoiseConfig -> Real
   noise-value (x) (y) (cfg) =
-    let gx = x * 1000 / cfg.nc-scale
-    in let gy = y * 1000 / cfg.nc-scale
-    in let ix = gx / 1000
-    in let iy = gy / 1000
-    in let fx = gx - ix * 1000
-    in let fy = gy - iy * 1000
+    let gx = real-from-int x / cfg.nc-scale
+    in let gy = real-from-int y / cfg.nc-scale
+    in let ix = real-to-int gx
+    in let iy = real-to-int gy
+    in let fx = gx - real-from-int ix
+    in let fy = gy - real-from-int iy
     in let c00 = noise-hash ix iy (cfg.nc-seed)
     in let c10 = noise-hash (ix + 1) iy (cfg.nc-seed)
     in let c01 = noise-hash ix (iy + 1) (cfg.nc-seed)
     in let c11 = noise-hash (ix + 1) (iy + 1) (cfg.nc-seed)
     in let sx = noise-smoothstep fx
     in let sy = noise-smoothstep fy
-    in let top = c00 + (c10 - c00) * sx / 1000
-    in let bot = c01 + (c11 - c01) * sx / 1000
-    in top + (bot - top) * sy / 1000
+    in let top = c00 + (c10 - c00) * sx
+    in let bot = c01 + (c11 - c01) * sx
+    in top + (bot - top) * sy
 
 Section: Gradient Noise
 
-  noise-gradient : Integer, Integer, NoiseConfig -> Integer
+  noise-gradient : Integer, Integer, NoiseConfig -> Real
   noise-gradient (x) (y) (cfg) =
-    let gx = x * 1000 / cfg.nc-scale
-    in let gy = y * 1000 / cfg.nc-scale
-    in let ix = gx / 1000
-    in let iy = gy / 1000
-    in let fx = gx - ix * 1000
-    in let fy = gy - iy * 1000
+    let gx = real-from-int x / cfg.nc-scale
+    in let gy = real-from-int y / cfg.nc-scale
+    in let ix = real-to-int gx
+    in let iy = real-to-int gy
+    in let fx = gx - real-from-int ix
+    in let fy = gy - real-from-int iy
     in let d00 = noise-dot-grad ix iy fx fy (cfg.nc-seed)
-    in let d10 = noise-dot-grad (ix + 1) iy (fx - 1000) fy (cfg.nc-seed)
-    in let d01 = noise-dot-grad ix (iy + 1) fx (fy - 1000) (cfg.nc-seed)
-    in let d11 = noise-dot-grad (ix + 1) (iy + 1) (fx - 1000) (fy - 1000) (cfg.nc-seed)
+    in let d10 = noise-dot-grad (ix + 1) iy (fx - 1.0) fy (cfg.nc-seed)
+    in let d01 = noise-dot-grad ix (iy + 1) fx (fy - 1.0) (cfg.nc-seed)
+    in let d11 = noise-dot-grad (ix + 1) (iy + 1) (fx - 1.0) (fy - 1.0) (cfg.nc-seed)
     in let sx = noise-smoothstep fx
     in let sy = noise-smoothstep fy
-    in let top = d00 + (d10 - d00) * sx / 1000
-    in let bot = d01 + (d11 - d01) * sx / 1000
-    in let result = top + (bot - top) * sy / 1000
-    in result / 2 + 500
+    in let top = d00 + (d10 - d00) * sx
+    in let bot = d01 + (d11 - d01) * sx
+    in let result = top + (bot - top) * sy
+    in result / 2.0 + 0.5
 
-  noise-dot-grad : Integer, Integer, Integer, Integer, Integer -> Integer
+  noise-dot-grad : Integer, Integer, Real, Real, Integer -> Real
   noise-dot-grad (ix) (iy) (fx) (fy) (seed) =
     let gx = noise-hash2 ix iy seed
     in let gy = noise-hash2 ix iy (seed + 1)
-    in (gx * fx + gy * fy) / 1000
+    in gx * fx + gy * fy
 
 Section: Cellular Noise
 
-  noise-cellular : Integer, Integer, NoiseConfig -> Integer
+  noise-cellular : Integer, Integer, NoiseConfig -> Real
   noise-cellular (x) (y) (cfg) =
-    let gx = x * 1000 / cfg.nc-scale
-    in let gy = y * 1000 / cfg.nc-scale
-    in let ix = gx / 1000
-    in let iy = gy / 1000
-    in let fx = gx - ix * 1000
-    in let fy = gy - iy * 1000
-    in noise-cell-search ix iy fx fy (cfg.nc-seed) 2000000
+    let gx = real-from-int x / cfg.nc-scale
+    in let gy = real-from-int y / cfg.nc-scale
+    in let ix = real-to-int gx
+    in let iy = real-to-int gy
+    in let fx = gx - real-from-int ix
+    in let fy = gy - real-from-int iy
+    in noise-cell-search ix iy fx fy (cfg.nc-seed) 2000.0
 
-  noise-cell-search : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  noise-cell-search : Integer, Integer, Real, Real, Integer, Real -> Real
   noise-cell-search (ix) (iy) (fx) (fy) (seed) (min-dist) =
     noise-cell-row ix iy fx fy seed min-dist (-1) 2
 
-  noise-cell-row : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  noise-cell-row : Integer, Integer, Real, Real, Integer, Real, Integer, Integer -> Real
   noise-cell-row (ix) (iy) (fx) (fy) (seed) (min-dist) (dy) (max-dy) =
     if dy > max-dy then min-dist
     else let md2 = noise-cell-col ix iy fx fy seed min-dist dy (-1) 2
     in noise-cell-row ix iy fx fy seed md2 (dy + 1) max-dy
 
-  noise-cell-col : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  noise-cell-col : Integer, Integer, Real, Real, Integer, Real, Integer, Integer, Integer -> Real
   noise-cell-col (ix) (iy) (fx) (fy) (seed) (min-dist) (dy) (dx) (max-dx) =
     if dx > max-dx then min-dist
     else let cell-x = noise-hash (ix + dx) (iy + dy) seed
     in let cell-y = noise-hash (ix + dx) (iy + dy) (seed + 7)
-    in let diff-x = dx * 1000 + cell-x - fx
-    in let diff-y = dy * 1000 + cell-y - fy
-    in let dist = diff-x * diff-x / 1000 + diff-y * diff-y / 1000
+    in let diff-x = real-from-int dx + cell-x - fx
+    in let diff-y = real-from-int dy + cell-y - fy
+    in let dist = diff-x * diff-x + diff-y * diff-y
     in let new-min = if dist < min-dist then dist else min-dist
     in noise-cell-col ix iy fx fy seed new-min dy (dx + 1) max-dx
 
 Section: Fractal Brownian Motion
 
-  noise-fbm : Integer, Integer, NoiseConfig -> Integer
+  noise-fbm : Integer, Integer, NoiseConfig -> Real
   noise-fbm (x) (y) (cfg) =
-    noise-fbm-loop x y cfg 0 0 1000 (cfg.nc-scale)
+    noise-fbm-loop x y cfg 0 0.0 1.0 (cfg.nc-scale)
 
-  noise-fbm-loop : Integer, Integer, NoiseConfig, Integer, Integer, Integer, Integer -> Integer
+  noise-fbm-loop : Integer, Integer, NoiseConfig, Integer, Real, Real, Real -> Real
   noise-fbm-loop (x) (y) (cfg) (octave) (acc) (amp) (freq) =
     if octave >= cfg.nc-octaves then acc
     else let sample-cfg = __record-set cfg "nc-scale" freq
@@ -154,9 +154,9 @@ Section: Fractal Brownian Motion
       is NoiseValue -> noise-value x y sample-cfg
       is NoiseGradient -> noise-gradient x y sample-cfg
       is NoiseCellular -> noise-cellular x y sample-cfg
-    in let contribution = val * amp / 1000
-    in let new-amp = amp * cfg.nc-persistence / 1000
-    in let new-freq = freq * 1000 / cfg.nc-lacunarity
+    in let contribution = val * amp
+    in let new-amp = amp * cfg.nc-persistence
+    in let new-freq = freq / cfg.nc-lacunarity
     in noise-fbm-loop x y cfg (octave + 1) (acc + contribution) new-amp new-freq
 
 Section: Texture Generation
@@ -178,19 +178,19 @@ Section: Texture Generation
     else let x = i - i / w * w
     in let y = i / w
     in let val = noise-fbm x y cfg
-    in let clamped = noise-clamp val 0 1000
-    in let gray = clamped * 255 / 1000
+    in let clamped = noise-clamp-real val 0.0 1.0
+    in let gray = real-to-int (clamped * 255.0)
     in let color = gray * 65536 + gray * 256 + gray
     in noise-gen-pixels cfg w h (i + 1) (list-push acc color)
 
 Section: Helpers
 
-  noise-smoothstep : Integer -> Integer
+  noise-smoothstep : Real -> Real
   noise-smoothstep (t) =
-    t * t * (3000 - 2 * t) / 1000000
+    t * t * (3.0 - 2.0 * t)
 
-  noise-clamp : Integer, Integer, Integer -> Integer
-  noise-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+  noise-clamp-real : Real, Real, Real -> Real
+  noise-clamp-real (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
 
 Section: Info
 

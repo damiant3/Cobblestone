@@ -1,0 +1,69 @@
+Chapter: TestRunScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates test-run.ps1 from the Shell DSL.
+ Helper invoked by test.ps1. Boots a CDX kernel under codex-vm.exe,
+ captures serial output, filters HEAP/WD/STACK lines, writes to OutFile.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  testrun-params : List ShellParam = [sh-param "Kernel" SptString, sh-param "OutFile" SptString, sh-param-default "StdinFile" SptString (SeLit ""), sh-param-default "DiskFile" SptString (SeLit ""), sh-param-default "PCore" SptInt (SeInt 1)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "sample" (SeStaticCall "System.IO.Path" "GetFileNameWithoutExtension" [SeVar "Kernel"]), ScAssign "wallBudgetMs" (SeInt 60000), ScBlank, ScRaw "Write-SweepLog \"$sample run-start pcore=$PCore\""]
+
+Section: S02 -- Temp files
+
+  s02 : List ShellCmd = [ScTempFile "outputFile", ScTempFile "stderrFile", ScAssign "inputFile" (SeRaw "$null")]
+
+Section: S03 -- VM args and optional input/disk
+
+  s03 : List ShellCmd =
+    let stdin-copy = [ScDotNetCallAssign "inputFile" "System.IO.Path" "GetTempFileName" [], ScReadBytes "stdinBytes" (SeVar "StdinFile"), ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "inputFile", SeVar "stdinBytes"], ScRaw "$vmArgs += @('-input', $inputFile)"]
+    in let disk-add = [ScRaw "$vmArgs += @('-disk', $DiskFile)"]
+    in [ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Kernel", SeLit "-output", SeVar "outputFile", SeLit "-mem", SeLit "3072", SeLit "-headless"]), ScIf (SeAnd (SeVar "StdinFile") (SeRaw "Test-Path -PathType Leaf $StdinFile")) stdin-copy [], ScIf (SeAnd (SeVar "DiskFile") (SeRaw "Test-Path -PathType Leaf $DiskFile")) disk-add []]
+
+Section: S04 -- VM launch and wait
+
+  s04 : List ShellCmd =
+    let timeout-fail = [ScRaw "Write-SweepLog \"$sample run-fail wall-budget-exceeded pid=$($proc.Id)\"", ScRaw "Stop-VmGraceful -ProcessId $proc.Id", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeLit "", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScExit (SeInt 1)]
+    in [ScRaw "$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScRaw "Write-SweepLog \"$sample vm-pid=$($proc.Id)\"", ScBlank, ScIf (SeNot (SeRaw "$proc.WaitForExit($wallBudgetMs)")) timeout-fail []]
+
+Section: S05 -- Check output exists
+
+  s05 : List ShellCmd =
+    let no-output = [ScRaw "Write-SweepLog \"$sample run-fail no-output\"", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeLit "", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScExit (SeInt 1)]
+    in [ScIf (SeOr (SeNot (SeFileExists (SeVar "outputFile"))) (SeRaw "(Get-Item $outputFile).Length -eq 0")) no-output []]
+
+Section: S06 -- Filter output
+
+  s06 : List ShellCmd = [ScRaw "$raw = [System.IO.File]::ReadAllText($outputFile) -replace \"`r\", '' -replace \"^\\x01\", ''", ScRaw "$allLines = $raw -split \"`n\"", ScDotNetCallAssign "lines" "System.Collections.Generic.List[string]" "new" [], ScForEach "l" (SeVar "allLines") [ScIf (SeOr (SeOr (SeStartsWith (SeVar "l") (SeLit "HEAP:")) (SeStartsWith (SeVar "l") (SeLit "WD:"))) (SeStartsWith (SeVar "l") (SeLit "STACK:"))) [ScContinue] [ScRaw "[void]$lines.Add($l)"]]]
+
+Section: S07 -- Trim trailing blanks and write
+
+  s07 : List ShellCmd = [ScRaw "while ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') { $lines.RemoveAt($lines.Count - 1) }", ScRaw "$body = if ($lines.Count -gt 0) { ($lines -join \"`n\") + \"`n\" } else { '' }", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeVar "body", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScRaw "Write-SweepLog \"$sample run-ok\"", ScExit (SeInt 0)]
+
+Section: S08 -- Cleanup
+
+  s08 : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $outputFile, $stderrFile -ErrorAction SilentlyContinue", ScIf (SeVar "inputFile") [ScRaw "Remove-Item -Force $inputFile -ErrorAction SilentlyContinue"] []]
+
+Section: Assembly
+
+  testrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07] [] s08]
+
+  testrun-script : ShellScript = sh-script "test-run" "Boot a CDX kernel under codex-vm and capture filtered serial output" testrun-params testrun-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell testrun-script)
+  end
+
+Page 1

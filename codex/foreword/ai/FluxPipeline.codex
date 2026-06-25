@@ -1,0 +1,402 @@
+Chapter: FluxPipeline
+  cites AI chapter Tensor
+  cites AI chapter Conv2d
+  cites AI chapter Normalization
+  cites AI chapter Attention
+  cites AI chapter Embedding
+  cites AI chapter Sampler
+  cites AI chapter DiffusionScheduler
+  cites AI chapter ImageTensor
+  cites AI chapter SafeTensors
+  cites AI chapter Tokenizer
+  cites Encode chapter Png
+  cites Foreword chapter Maybe
+
+ FLUX model pipeline. FLUX uses a rectified flow transformer
+ (DiT) architecture instead of the UNet used by SD 1.5/SDXL.
+ Key differences:
+   - Transformer backbone (not UNet) with joint attention
+   - Rectified flow (not DDPM/DDIM) for sampling
+   - T5-XXL text encoder (4096-dim) + CLIP (768-dim)
+   - Rotary positional embeddings (RoPE)
+   - Guidance-distilled (schnell) needs only 1-4 steps
+
+ This implements the FLUX.1 schnell architecture for fast
+ inference (1-4 steps with flow matching).
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Configuration
+  FluxConfig = record {
+    fx-hidden-dim : Integer,
+    fx-num-heads : Integer,
+    fx-depth : Integer,
+    fx-depth-single : Integer,
+    fx-context-dim : Integer,
+    fx-in-channels : Integer,
+    fx-out-channels : Integer,
+    fx-guidance-embed : Boolean,
+    fx-theta : Integer
+  }
+
+  flux-schnell-config : FluxConfig
+  flux-schnell-config = FluxConfig {
+    fx-hidden-dim = 3072,
+    fx-num-heads = 24,
+    fx-depth = 19,
+    fx-depth-single = 38,
+    fx-context-dim = 4096,
+    fx-in-channels = 64,
+    fx-out-channels = 64,
+    fx-guidance-embed = False,
+    fx-theta = 10000
+  }
+
+  flux-dev-config : FluxConfig
+  flux-dev-config = FluxConfig {
+    fx-hidden-dim = 3072,
+    fx-num-heads = 24,
+    fx-depth = 19,
+    fx-depth-single = 38,
+    fx-context-dim = 4096,
+    fx-in-channels = 64,
+    fx-out-channels = 64,
+    fx-guidance-embed = True,
+    fx-theta = 10000
+  }
+
+Section: Rectified Flow Sampling
+  FlowSchedule = record {
+    fs-num-steps : Integer,
+    fs-sigmas : List Integer,
+    fs-shift : Integer
+  }
+
+  flux-schedule : Integer, Integer -> FlowSchedule
+  flux-schedule (num-steps) (shift) =
+    let sigmas = flux-build-sigmas num-steps shift 0 []
+    in FlowSchedule { fs-num-steps = num-steps, fs-sigmas = sigmas, fs-shift = shift }
+
+  flux-build-sigmas : Integer, Integer, Integer, List Integer -> List Integer
+  flux-build-sigmas (steps) (shift) (i) (acc) =
+    if i > steps then acc
+    else let t = 1000 - i * 1000 / steps
+    in let shifted = t * shift / (1000 + (shift - 1000) * t / 1000)
+    in flux-build-sigmas steps shift (i + 1) (list-push acc shifted)
+
+  flux-schnell-schedule : FlowSchedule
+  flux-schnell-schedule = flux-schedule 4 1000
+
+  flux-dev-schedule : FlowSchedule
+  flux-dev-schedule = flux-schedule 28 3000
+
+Section: Flow Matching Step
+  flux-flow-step : List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  flux-flow-step (xt) (velocity) (sigma) (sigma-next) (i) (n) =
+    if i >= n then []
+    else let dt = sigma-next - sigma
+    in flux-step-loop xt velocity dt 0 n []
+
+  flux-step-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  flux-step-loop (xt) (v) (dt) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at xt i + list-at v i * dt / 1000
+    in flux-step-loop xt v dt (i + 1) n (list-push acc val)
+
+Section: Rotary Positional Embedding (RoPE)
+  flux-rope : List Integer, Integer, Integer, Integer -> List Integer
+  flux-rope (x) (seq-len) (dim) (theta) =
+    flux-rope-loop x seq-len dim theta 0 0 []
+
+  flux-rope-loop : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  flux-rope-loop (x) (seq-len) (dim) (theta) (pos) (d) (acc) =
+    if pos >= seq-len then acc
+    else if d >= dim then flux-rope-loop x seq-len dim theta (pos + 1) 0 acc
+    else if d + 1 >= dim then flux-rope-loop x seq-len dim theta pos (d + 2) (acc & [list-at x (pos * dim + d)])
+    else let freq = pos * 1000 / flux-rope-freq d dim theta
+    in let cos-val = flux-cos-approx freq
+    in let sin-val = flux-sin-approx freq
+    in let x0 = list-at x (pos * dim + d)
+    in let x1 = list-at x (pos * dim + d + 1)
+    in let r0 = x0 * cos-val / 1000 - x1 * sin-val / 1000
+    in let r1 = x0 * sin-val / 1000 + x1 * cos-val / 1000
+    in flux-rope-loop x seq-len dim theta pos (d + 2) (acc & [r0, r1])
+
+  flux-rope-freq : Integer, Integer, Integer -> Integer
+  flux-rope-freq (d) (dim) (theta) =
+    flux-pow theta (d * 1000 / dim)
+
+  flux-pow : Integer, Integer -> Integer
+  flux-pow (base) (exp-fp) =
+    let log-base = flux-ln base
+    in let result = log-base * exp-fp / 1000
+    in flux-exp-approx result
+
+  flux-ln : Integer -> Integer
+  flux-ln (x) =
+    if x <= 0 then 0 - 10000
+    else let y = (x - 1000) * 1000 / (x + 1000)
+    in let y2 = y * y / 1000
+    in 2 * (y + y * y2 / 3000 + y * y2 * y2 / 5000000)
+
+Section: DiT Transformer Block (joint attention)
+  FluxBlock = record {
+    fb-img-norm1-gamma : List Integer,
+    fb-img-norm1-beta : List Integer,
+    fb-img-norm2-gamma : List Integer,
+    fb-img-norm2-beta : List Integer,
+    fb-txt-norm1-gamma : List Integer,
+    fb-txt-norm1-beta : List Integer,
+    fb-txt-norm2-gamma : List Integer,
+    fb-txt-norm2-beta : List Integer,
+    fb-img-qkv-w : List Integer,
+    fb-img-out-w : List Integer,
+    fb-txt-qkv-w : List Integer,
+    fb-txt-out-w : List Integer,
+    fb-img-ff1-w : List Integer,
+    fb-img-ff2-w : List Integer,
+    fb-txt-ff1-w : List Integer,
+    fb-txt-ff2-w : List Integer,
+    fb-modulation-w : List Integer,
+    fb-modulation-b : List Integer
+  }
+
+  flux-joint-attn : FluxBlock, List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  flux-joint-attn (block) (img-hidden) (txt-hidden) (img-seq) (txt-seq) (dim) (num-heads) =
+    let d-k = dim / num-heads
+    in let total-seq = img-seq + txt-seq
+    in let img-normed = flux-rms-norm img-hidden (block.fb-img-norm1-gamma) dim img-seq
+    in let txt-normed = flux-rms-norm txt-hidden (block.fb-txt-norm1-gamma) dim txt-seq
+    in let img-qkv = flux-linear img-normed (block.fb-img-qkv-w) img-seq dim (dim * 3)
+    in let txt-qkv = flux-linear txt-normed (block.fb-txt-qkv-w) txt-seq dim (dim * 3)
+    in let q = flux-concat-seqs (flux-slice-qkv img-qkv 0 dim img-seq) (flux-slice-qkv txt-qkv 0 dim txt-seq)
+    in let k = flux-concat-seqs (flux-slice-qkv img-qkv dim dim img-seq) (flux-slice-qkv txt-qkv dim dim txt-seq)
+    in let v = flux-concat-seqs (flux-slice-qkv img-qkv (dim * 2) dim img-seq) (flux-slice-qkv txt-qkv (dim * 2) dim txt-seq)
+    in let attn-out = attention-multi-head q k v total-seq dim num-heads
+    in let img-attn = flux-take-seq attn-out 0 img-seq dim
+    in let img-projected = flux-linear img-attn (block.fb-img-out-w) img-seq dim dim
+    in flux-add-vecs img-hidden img-projected 0 (list-length img-hidden) []
+
+Section: Single-Stream Block (FLUX uses these after joint blocks)
+  FluxSingleBlock = record {
+    fsb-norm-gamma : List Integer,
+    fsb-norm-beta : List Integer,
+    fsb-qkv-w : List Integer,
+    fsb-out-w : List Integer,
+    fsb-ff1-w : List Integer,
+    fsb-ff2-w : List Integer,
+    fsb-modulation-w : List Integer,
+    fsb-modulation-b : List Integer
+  }
+
+  flux-single-block-forward : FluxSingleBlock, List Integer, Integer, Integer, Integer -> List Integer
+  flux-single-block-forward (block) (hidden) (seq-len) (dim) (num-heads) =
+    let normed = flux-rms-norm hidden (block.fsb-norm-gamma) dim seq-len
+    in let qkv = flux-linear normed (block.fsb-qkv-w) seq-len dim (dim * 3)
+    in let q = flux-slice-qkv qkv 0 dim seq-len
+    in let k = flux-slice-qkv qkv dim dim seq-len
+    in let v = flux-slice-qkv qkv (dim * 2) dim seq-len
+    in let attn-out = attention-multi-head q k v seq-len dim num-heads
+    in let projected = flux-linear attn-out (block.fsb-out-w) seq-len dim dim
+    in let ff-in = flux-linear normed (block.fsb-ff1-w) seq-len dim (dim * 4)
+    in let ff-act = flux-gelu-list ff-in
+    in let ff-out = flux-linear ff-act (block.fsb-ff2-w) seq-len (dim * 4) dim
+    in let combined = flux-add-vecs projected ff-out 0 (list-length projected) []
+    in flux-add-vecs hidden combined 0 (list-length hidden) []
+
+Section: FLUX Pipeline State
+  FluxState = record {
+    fxs-config : FluxConfig,
+    fxs-schedule : FlowSchedule,
+    fxs-joint-blocks : List FluxBlock,
+    fxs-single-blocks : List FluxSingleBlock,
+    fxs-input-proj-w : List Integer,
+    fxs-output-proj-w : List Integer,
+    fxs-output-proj-b : List Integer,
+    fxs-final-norm-gamma : List Integer
+  }
+
+Section: FLUX Generate
+  flux-generate : Text, BpeTokenizer, FluxState, Integer, Integer, Integer -> PipelineOutput
+  flux-generate (prompt) (tokenizer) (state) (w) (h) (seed) =
+    let cfg = state.fxs-config
+    in let tokens = te-tokenize prompt tokenizer 77
+    in let txt-seq = list-length tokens
+    in let lat-h = h / 8
+    in let lat-w = w / 8
+    in let img-seq = lat-h * lat-w
+    in let noise = img-noise-tensor (cfg.fx-in-channels) lat-h lat-w seed
+    in let txt-embed = flux-embed-tokens tokens (cfg.fx-context-dim)
+    in let denoised = flux-denoise-loop state noise txt-embed img-seq txt-seq lat-h lat-w 0
+    in let decoded = flux-decode-latents denoised lat-h lat-w w h
+    in PipelineOutput { po-pixels = decoded, po-width = w, po-height = h, po-steps-completed = state.fxs-schedule.fs-num-steps }
+
+  flux-denoise-loop : FluxState, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  flux-denoise-loop (state) (latents) (txt-embed) (img-seq) (txt-seq) (h) (w) (step) =
+    if step >= state.fxs-schedule.fs-num-steps then latents
+    else let sigma = list-at (state.fxs-schedule.fs-sigmas) step
+    in let sigma-next = list-at (state.fxs-schedule.fs-sigmas) (step + 1)
+    in let cfg = state.fxs-config
+    in let img-proj = flux-linear latents (state.fxs-input-proj-w) img-seq (cfg.fx-in-channels) (cfg.fx-hidden-dim)
+    in let hidden = flux-run-joint-blocks (state.fxs-joint-blocks) img-proj txt-embed img-seq txt-seq (cfg.fx-hidden-dim) (cfg.fx-num-heads) 0
+    in let final = flux-run-single-blocks (state.fxs-single-blocks) hidden img-seq (cfg.fx-hidden-dim) (cfg.fx-num-heads) 0
+    in let normed = flux-rms-norm final (state.fxs-final-norm-gamma) (cfg.fx-hidden-dim) img-seq
+    in let velocity = flux-linear normed (state.fxs-output-proj-w) img-seq (cfg.fx-hidden-dim) (cfg.fx-out-channels)
+    in let stepped = flux-step-loop latents velocity (sigma-next - sigma) 0 (list-length latents) []
+    in flux-denoise-loop state stepped txt-embed img-seq txt-seq h w (step + 1)
+
+  flux-run-joint-blocks : List FluxBlock, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  flux-run-joint-blocks (blocks) (img) (txt) (img-seq) (txt-seq) (dim) (heads) (i) =
+    if i >= list-length blocks then img
+    else let block = list-at blocks i
+    in let out = flux-joint-attn block img txt img-seq txt-seq dim heads
+    in flux-run-joint-blocks blocks out txt img-seq txt-seq dim heads (i + 1)
+
+  flux-run-single-blocks : List FluxSingleBlock, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  flux-run-single-blocks (blocks) (hidden) (seq-len) (dim) (heads) (i) =
+    if i >= list-length blocks then hidden
+    else let block = list-at blocks i
+    in let out = flux-single-block-forward block hidden seq-len dim heads
+    in flux-run-single-blocks blocks out seq-len dim heads (i + 1)
+
+Section: Helpers
+  flux-embed-tokens : List Integer, Integer -> List Integer
+  flux-embed-tokens (tokens) (dim) =
+    flux-embed-loop tokens dim 0 (list-length tokens) []
+
+  flux-embed-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  flux-embed-loop (tokens) (dim) (i) (n) (acc) =
+    if i >= n then acc
+    else let token-emb = positional-encoding 1 dim i
+    in flux-embed-loop tokens dim (i + 1) n (acc & token-emb)
+
+  flux-linear : List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  flux-linear (input) (weights) (seq-len) (in-dim) (out-dim) =
+    flux-linear-loop input weights seq-len in-dim out-dim 0 []
+
+  flux-linear-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  flux-linear-loop (input) (w) (seq-len) (in-dim) (out-dim) (i) (acc) =
+    if i >= seq-len * out-dim then acc
+    else let row = i / out-dim
+    in let col = i - row * out-dim
+    in let dot = flux-dot input w (row * in-dim) (col * in-dim) in-dim 0 0
+    in flux-linear-loop input w seq-len in-dim out-dim (i + 1) (list-push acc dot)
+
+  flux-dot : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  flux-dot (a) (b) (a-off) (b-off) (len) (k) (acc) =
+    if k >= len then acc
+    else flux-dot a b a-off b-off len (k + 1) (acc + list-at a (a-off + k) * list-at b (b-off + k) / 1000)
+
+  flux-rms-norm : List Integer, List Integer, Integer, Integer -> List Integer
+  flux-rms-norm (data) (gamma) (dim) (seq-len) =
+    flux-rms-loop data gamma dim seq-len 0 []
+
+  flux-rms-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  flux-rms-loop (data) (gamma) (dim) (seq-len) (pos) (acc) =
+    if pos >= seq-len then acc
+    else let start = pos * dim
+    in let sq-sum = flux-sq-sum data start dim 0
+    in let rms = flux-isqrt (sq-sum / dim)
+    in let inv = if rms == 0 then 1000 else 1000000 / rms
+    in let normed = flux-norm-vec data gamma start dim inv 0 []
+    in flux-rms-loop data gamma dim seq-len (pos + 1) (acc & normed)
+
+  flux-sq-sum : List Integer, Integer, Integer, Integer -> Integer
+  flux-sq-sum (data) (start) (dim) (acc) =
+    if dim <= 0 then acc
+    else let v = list-at data start
+    in flux-sq-sum data (start + 1) (dim - 1) (acc + v * v / 1000)
+
+  flux-norm-vec : List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  flux-norm-vec (data) (gamma) (start) (dim) (inv) (i) (acc) =
+    if i >= dim then acc
+    else let v = list-at data (start + i) * inv / 1000
+    in let g = if i < list-length gamma then list-at gamma i else 1000
+    in flux-norm-vec data gamma start dim inv (i + 1) (list-push acc (v * g / 1000))
+
+  flux-slice-qkv : List Integer, Integer, Integer, Integer -> List Integer
+  flux-slice-qkv (qkv) (offset) (dim) (seq-len) =
+    flux-slice-loop qkv offset dim seq-len (dim * 3) 0 []
+
+  flux-slice-loop : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  flux-slice-loop (data) (offset) (dim) (seq-len) (stride) (pos) (acc) =
+    if pos >= seq-len then acc
+    else let start = pos * stride + offset
+    in let vec = flux-extract data start dim 0 []
+    in flux-slice-loop data offset dim seq-len stride (pos + 1) (acc & vec)
+
+  flux-extract : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  flux-extract (data) (start) (dim) (i) (acc) =
+    if i >= dim then acc
+    else flux-extract data start dim (i + 1) (list-push acc (list-at data (start + i)))
+
+  flux-concat-seqs : List Integer, List Integer -> List Integer
+  flux-concat-seqs (a) (b) = a & b
+
+  flux-take-seq : List Integer, Integer, Integer, Integer -> List Integer
+  flux-take-seq (data) (start-pos) (count) (dim) =
+    flux-extract data (start-pos * dim) (count * dim) 0 []
+
+  flux-add-vecs : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  flux-add-vecs (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else let bv = if i < list-length b then list-at b i else 0
+    in flux-add-vecs a b (i + 1) n (list-push acc (list-at a i + bv))
+
+  flux-gelu-list : List Integer -> List Integer
+  flux-gelu-list (data) = for v in data -> flux-gelu-val v
+
+  flux-gelu-val : Integer -> Integer
+  flux-gelu-val (x) =
+    let sig = if x > 6000 then 1000 else if x < (0 - 6000) then 0 else 500 + x * 250 / 1000 - x * x * x / 48000000
+    in x * sig / 1000
+
+  flux-decode-latents : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  flux-decode-latents (latents) (lat-h) (lat-w) (out-w) (out-h) =
+    let spatial = out-w * out-h
+    in flux-decode-loop latents lat-h lat-w out-w out-h 0 []
+
+  flux-decode-loop : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  flux-decode-loop (latents) (lat-h) (lat-w) (out-w) (out-h) (i) (acc) =
+    if i >= out-w * out-h then acc
+    else let py = i / out-w
+    in let px = i - py * out-w
+    in let ly = py * lat-h / out-h
+    in let lx = px * lat-w / out-w
+    in let r = flux-clamp (list-at latents (0 * lat-h * lat-w + ly * lat-w + lx) + 1000) 0 2000
+    in let g = flux-clamp (list-at latents (1 * lat-h * lat-w + ly * lat-w + lx) + 1000) 0 2000
+    in let b = flux-clamp (list-at latents (2 * lat-h * lat-w + ly * lat-w + lx) + 1000) 0 2000
+    in let pixel = (r * 255 / 2000) * 65536 + (g * 255 / 2000) * 256 + b * 255 / 2000
+    in flux-decode-loop latents lat-h lat-w out-w out-h (i + 1) (list-push acc pixel)
+
+  flux-clamp : Integer, Integer, Integer -> Integer
+  flux-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  flux-isqrt : Integer -> Integer
+  flux-isqrt (n) = if n <= 0 then 0 else flux-isqrt-loop n (n / 2 + 1)
+
+  flux-isqrt-loop : Integer, Integer -> Integer
+  flux-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else flux-isqrt-loop n next
+
+  flux-sin-approx : Integer -> Integer
+  flux-sin-approx (x) = let x2 = x * x / 1000 in x - x * x2 / 6000 + x * x2 * x2 / 120000000
+
+  flux-cos-approx : Integer -> Integer
+  flux-cos-approx (x) = let x2 = x * x / 1000 in 1000 - x2 / 2 + x2 * x2 / 24000
+
+  flux-exp-approx : Integer -> Integer
+  flux-exp-approx (x) =
+    if x > 8000 then 30000
+    else if x < (0 - 8000) then 0
+    else 1000 + x + x * x / 2000 + x * x * x / 6000000
+
+Section: Queries
+  format-flux-config : FluxConfig -> Text
+  format-flux-config (cfg) =
+    "FLUX dim=" & show (cfg.fx-hidden-dim) & " heads=" & show (cfg.fx-num-heads) & " joint=" & show (cfg.fx-depth) & " single=" & show (cfg.fx-depth-single) & " ctx=" & show (cfg.fx-context-dim)
+
+Page 1

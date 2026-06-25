@@ -374,6 +374,7 @@ Section: Local Collection
     is IrCtorPat (name) (subs) (ty) (sp) -> collect-locals-pats subs acc
     is IrLitPat (text) (ty) (sp) -> acc
     is IrWildPat (sp) -> acc
+    is IrVecPat (pats) (ty) (sp) -> acc
 
   collect-locals-pats : List IRPat, List Text -> List Text
   collect-locals-pats (ps) (acc) =
@@ -547,10 +548,10 @@ Section: Expression Emission
               else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
     is IrNotEq -> if wat-is-text-type (ir-expr-type l) then "(i64.extend_i32_u (i64.eqz (call $text_eq " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")))"
                  else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrLt -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrGt -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrLtEq -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrGtEq -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrLt | IrLtVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrGt | IrGtVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrLtEq | IrLtEqVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrGtEq | IrGtEqVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
     is IrApproxEq -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
     is IrApproxEqExact -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
     is otherwise -> "(" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
@@ -564,20 +565,20 @@ Section: Expression Emission
     is IrDivInt -> "i64.div_s"
     is IrRemInt -> "i64.rem_s"
     is IrPowInt -> "i64.mul"
-    is IrAddNum -> "f64.add"
-    is IrSubNum -> "f64.sub"
-    is IrMulNum -> "f64.mul"
-    is IrDivNum -> "f64.div"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "f64.add"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "f64.sub"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "f64.mul"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "f64.div"
     is IrAddVec -> "f64x2.add"
     is IrSubVec -> "f64x2.sub"
     is IrMulVec -> "f64x2.mul"
     is IrDivVec -> "f64x2.div"
     is IrEq -> "i64.eq"
     is IrNotEq -> "i64.ne"
-    is IrLt -> "i64.lt_s"
-    is IrGt -> "i64.gt_s"
-    is IrLtEq -> "i64.le_s"
-    is IrGtEq -> "i64.ge_s"
+    is IrLt | IrLtVec -> "i64.lt_s"
+    is IrGt | IrGtVec -> "i64.gt_s"
+    is IrLtEq | IrLtEqVec -> "i64.le_s"
+    is IrGtEq | IrGtEqVec -> "i64.ge_s"
     is IrAnd -> "i64.and"
     is IrOr -> "i64.or"
     is IrAppendText -> "i64.add"
@@ -604,6 +605,7 @@ Section: Expression Emission
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-wat-ctor-pat ctx name subs body branches i depth
     is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (local.get $_s)) " & emit-wat-expr ctx body
     is IrWildPat (sp) -> emit-wat-expr ctx body
+    is IrVecPat (pats) (ty) (sp) -> emit-wat-expr ctx body
 
   emit-wat-ctor-pat : WasmCtx, Text, List IRPat, IRExpr, List IRBranch, Integer, Integer -> Text
   emit-wat-ctor-pat (ctx) (name) (subs) (body) (branches) (i) (depth) =
@@ -622,6 +624,7 @@ Section: Expression Emission
    in (when sub
     is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (i64.load (i32.add (i32.wrap_i64 (local.get $_s)) (i32.const " & integer-to-text off & ")))) "
     is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
     is otherwise -> "") & emit-wat-bind-ctor-subs ctx subs (i + 1)
 
   emit-wat-act : WasmCtx, List IRActStmt -> Text
@@ -814,6 +817,7 @@ Section: Tail Call Optimization
    in let is-last = i == list-length bs - 1
    in when b.pattern
     is IrWildPat (sp) -> body
+    is IrVecPat (pats) (ty) (sp) -> body
     is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (local.get $_s)) " & body
     is IrLitPat (text) (ty) (sp) ->
      if is-last then body
@@ -1113,7 +1117,8 @@ Section: Chapter Emission
      in let is-void = when ret-type
           is NothingTy -> True
           is VoidTy -> True
-          is EffectfulTy (effs) (scopes) (r) -> when r is NothingTy -> True is VoidTy -> True is otherwise -> False
+          is UnitTy (n) (inner) -> True
+          is EffectfulTy (effs) (scopes) (r) -> when r is NothingTy -> True is VoidTy -> True is UnitTy (n2) (inner2) -> True is otherwise -> False
           is otherwise -> False
      in if is-void then
       "  (func $__start (drop (call $" & wat-sanitize opening-entry-point & ")))\n" &

@@ -7,4 +7,4 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..' 'common' 'plug-build-lib.ps1')
 
-Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'julia' -Chapters @('JuliaEmitter', 'JuliaPlug')
+Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'julia' -Chapters @('JuliaEmitter', 'JuliaPlug') -Survey 'lower-mul:120000'

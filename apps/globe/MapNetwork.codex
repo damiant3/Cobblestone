@@ -174,7 +174,34 @@ Section: Route Finding (Dijkstra)
 
   extract-path : DijkResult, Integer, Integer, RoadGraph -> RouteResult
   extract-path (result) (start) (end-id) (g) =
-    rr-empty
+    let end-idx = end-id - 1
+    in let start-idx = start - 1
+    in if list-at (result.dj-distances) end-idx >= 999999999 then rr-empty
+    else let idx-path = dijk-path result end-idx
+    in let node-path = idx-to-node-ids idx-path 0 (list-length idx-path) []
+    in let total-dist = sum-path-distance g node-path 0 (list-length node-path) 0
+    in let total-time = list-at (result.dj-distances) end-idx
+    in RouteResult {
+      rr-found = True,
+      rr-path = node-path,
+      rr-path-length = list-length node-path,
+      rr-total-distance = total-dist,
+      rr-total-time = total-time
+    }
+
+  idx-to-node-ids : List Integer, Integer, Integer, List Integer -> List Integer
+  idx-to-node-ids (indices) (i) (n) (acc) =
+    if i >= n then acc
+    else idx-to-node-ids indices (i + 1) n (list-push acc (list-at indices i + 1))
+
+  sum-path-distance : RoadGraph, List Integer, Integer, Integer, Integer -> Integer
+  sum-path-distance (g) (path) (i) (len) (acc) =
+    if i + 1 >= len then acc
+    else let from-id = list-at path i
+    in let to-id = list-at path (i + 1)
+    in let edge = find-edge-between g.rg-edges from-id to-id 0 g.rg-edge-count
+    in let dist = edge-dist edge
+    in sum-path-distance g path (i + 1) len (acc + dist)
 
 Section: Turn-by-Turn Direction Generation
 
@@ -237,7 +264,42 @@ Section: Turn-by-Turn Direction Generation
   edge-class (e) = when e is None -> RcResidential is Just (ed) -> ed.re-road-class
 
   determine-maneuver : RoadGraph, List Integer, Integer -> Maneuver
-  determine-maneuver (g) (path) (i) = MnContinue
+  determine-maneuver (g) (path) (i) =
+    let prev-id = list-at path (i - 1)
+    in let curr-id = list-at path i
+    in let next-id = list-at path (i + 1)
+    in let prev-node = rg-find-node g prev-id
+    in let curr-node = rg-find-node g curr-id
+    in let next-node = rg-find-node g next-id
+    in when prev-node
+      is None -> MnContinue
+      is Just (pn) -> when curr-node
+        is None -> MnContinue
+        is Just (cn) -> when next-node
+          is None -> MnContinue
+          is Just (nn) ->
+            let in-dlat = cn.rn-lat - pn.rn-lat
+            in let in-dlon = cn.rn-lon - pn.rn-lon
+            in let out-dlat = nn.rn-lat - cn.rn-lat
+            in let out-dlon = nn.rn-lon - cn.rn-lon
+            in let cross = in-dlat * out-dlon - in-dlon * out-dlat
+            in let dot = in-dlat * out-dlat + in-dlon * out-dlon
+            in angle-to-maneuver cross dot
+
+  angle-to-maneuver : Integer, Integer -> Maneuver
+  angle-to-maneuver (cross) (dot) =
+    let abs-cross = if cross < 0 then 0 - cross else cross
+    in if dot > 0 then
+      if abs-cross * 4 < dot then MnContinue
+      else if cross > 0 then MnSlightLeft
+      else MnSlightRight
+    else if dot == 0 then
+      if cross > 0 then MnTurnLeft
+      else MnTurnRight
+    else
+      if abs-cross * 2 < (0 - dot) then MnUturn
+      else if cross > 0 then MnSharpLeft
+      else MnSharpRight
 
 Section: Sample Road Network
 

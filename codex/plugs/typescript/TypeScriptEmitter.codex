@@ -90,7 +90,7 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> "(await " & emit-ts-expr task arities indent & ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ts-expr body arities indent
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ts-expr body arities indent
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-ts-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-ts-act body arities indent
     is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & ts-escape msg & "\"); })()"
 
 Section: Binary Operators
@@ -100,23 +100,23 @@ Section: Binary Operators
    let lhs = emit-ts-expr l arities indent
    in let rhs = emit-ts-expr r arities indent
    in when op
-    is IrAddInt | IrAddNum -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
     is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
-    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
     is IrAddVec -> "(" & lhs & ".map((v,i) => v + " & rhs & "[i]))"
     is IrSubVec -> "(" & lhs & ".map((v,i) => v - " & rhs & "[i]))"
     is IrMulVec -> "(" & lhs & ".map((v,i) => v * " & rhs & "[i]))"
     is IrDivVec -> "(" & lhs & ".map((v,i) => v / " & rhs & "[i]))"
     is IrEq -> "(" & lhs & " === " & rhs & ")"
     is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
-    is IrLt -> "(" & lhs & " < " & rhs & ")"
-    is IrGt -> "(" & lhs & " > " & rhs & ")"
-    is IrLtEq -> "(" & lhs & " <= " & rhs & ")"
-    is IrGtEq -> "(" & lhs & " >= " & rhs & ")"
+    is IrLt | IrLtVec -> "(" & lhs & " < " & rhs & ")"
+    is IrGt | IrGtVec -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq | IrLtEqVec -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq | IrGtEqVec -> "(" & lhs & " >= " & rhs & ")"
     is IrApproxEq | IrApproxEqExact -> "(" & lhs & " === " & rhs & ")"
     is IrAnd -> "(" & lhs & " && " & rhs & ")"
     is IrOr -> "(" & lhs & " || " & rhs & ")"
@@ -195,6 +195,7 @@ Section: Match
      if is-mktup-name name then "Array.isArray(" & scrut & ")"
      else scrut & "._tag === \"" & name & "\""
     is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
 
   emit-ts-pat-binds : IRPat, Text -> Text
   emit-ts-pat-binds (p) (scrut) =
@@ -205,6 +206,7 @@ Section: Match
      if is-mktup-name name then emit-ts-tup-binds subs scrut 0
      else emit-ts-ctor-binds subs scrut 0
     is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
 
   emit-ts-ctor-binds : List IRPat, Text, Integer -> Text
   emit-ts-ctor-binds (subs) (scrut) (i) =
@@ -247,7 +249,7 @@ Section: Type Definitions
    else let f = list-at fields i
    in ts-sanitize (f.name.value) & ": any; " & emit-ts-iface-fields fields (i + 1)
 
-  emit-ts-variant-type : AName, List AVariantCtorDef -> Text
+  emit-ts-variant-type : Name, List AVariantCtorDef -> Text
   emit-ts-variant-type (name) (ctors) =
    "type " & ts-sanitize (name.value) & " = " & emit-ts-union-members ctors 0 & ";\n" & emit-ts-variant-ctors ctors 0
 

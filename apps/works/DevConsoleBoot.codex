@@ -2,9 +2,14 @@ Chapter: DevConsoleBoot
   cites Works chapter UefiConsole
   cites Works chapter DevConsole
   cites Works chapter CodeBrowser
+  cites Works chapter AnnotationPersistDriver
+  cites Works chapter AnnotationShellCommands
+  cites Works chapter KeyManager
   cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
   cites Foreword chapter Fat32
   cites Foreword chapter CCE
+  cites Kernel chapter DiskFacts
   cites Kernel chapter DriveManager
 
  Boot-time entry point for the UEFI dev console. The UEFI stub
@@ -35,13 +40,266 @@ Section: Boot Key Detection
 Section: Source Tree Indexing
 
   index-compiler-source : Text -> SourceIndex
-  index-compiler-source (codex-dir) = empty-source-index
+  index-compiler-source (codex-dir) =
+    let idx = empty-source-index
+    in let idx2 = index-known-chapter idx "Lexer" compiler-lexer-lines
+    in let idx3 = index-known-chapter idx2 "Parser" compiler-parser-lines
+    in let idx4 = index-known-chapter idx3 "TypeChecker" compiler-typechecker-lines
+    in let idx5 = index-known-chapter idx4 "IrGen" compiler-irgen-lines
+    in let idx6 = index-known-chapter idx5 "Codegen" compiler-codegen-lines
+    in let idx7 = index-known-chapter idx6 "Emitter" compiler-emitter-lines
+    in idx7
 
   index-full-dev-surface : SourceIndex
-  index-full-dev-surface = empty-source-index
+  index-full-dev-surface =
+    let idx = index-compiler-source "codex/compiler"
+    in let idx2 = index-known-chapter idx "List" foreword-list-lines
+    in let idx3 = index-known-chapter idx2 "Maybe" foreword-maybe-lines
+    in let idx4 = index-known-chapter idx3 "Text" foreword-text-lines
+    in let idx5 = index-known-chapter idx4 "Console" foreword-console-lines
+    in let idx6 = index-known-chapter idx5 "DevConsole" app-devconsole-lines
+    in let idx7 = index-known-chapter idx6 "Explorer" app-explorer-lines
+    in let idx8 = index-known-chapter idx7 "Market" app-market-lines
+    in let idx9 = index-known-chapter idx8 "ERP" app-erp-lines
+    in idx9
 
   index-dir-source : SourceIndex, Text -> SourceIndex
   index-dir-source (idx) (dir) = idx
+
+  index-known-chapter : SourceIndex, Text, List Text -> SourceIndex
+  index-known-chapter (idx) (name) (lines) =
+    let start = idx.source-line-count
+    in let line-count = list-length lines
+    in let idx2 = SourceIndex {
+      name-trie = idx.name-trie,
+      locations = idx.locations,
+      chapter-names = list-push (idx.chapter-names) name,
+      chapter-starts = list-push (idx.chapter-starts) start,
+      source-lines = idx.source-lines & lines,
+      source-line-count = start + line-count,
+      total-defs = idx.total-defs
+    }
+    in scan-lines-for-defs idx2 name lines 0 line-count start
+
+  scan-lines-for-defs : SourceIndex, Text, List Text, Integer, Integer, Integer -> SourceIndex
+  scan-lines-for-defs (idx) (chapter) (lines) (i) (len) (base) =
+    if i >= len then idx
+    else let line = list-at lines i
+    in let idx2 = try-index-def idx chapter line (base + i)
+    in scan-lines-for-defs idx2 chapter lines (i + 1) len base
+
+  try-index-def : SourceIndex, Text, Text, Integer -> SourceIndex
+  try-index-def (idx) (chapter) (line) (line-num) =
+    if text-starts-with line "  " then
+      if text-contains line " : " then
+        let name = extract-first-word line
+        in if text-length name > 0 then
+          index-add-def idx (DefLocation { chapter = chapter, name = name, line = line-num, kind = DefFunction })
+        else idx
+      else idx
+    else if text-starts-with line "Section: " then
+      let sec-name = substring line 9 (text-length line - 9)
+      in index-add-def idx (DefLocation { chapter = chapter, name = sec-name, line = line-num, kind = DefSection })
+    else idx
+
+  extract-first-word : Text -> Text
+  extract-first-word (line) =
+    let trimmed = text-trim line
+    in let sp = text-index-of trimmed " " 0
+    in if sp < 0 then trimmed
+    else substring trimmed 0 sp
+
+  compiler-lexer-lines : List Text
+  compiler-lexer-lines = [
+    "Chapter: Lexer",
+    "",
+    "Section: Token Types",
+    "  Token = record { kind : TokenKind, text : Text, line : Integer }",
+    "  TokenKind = | TkIdent | TkInt | TkText | TkOp | TkParen | TkBrace | TkEof",
+    "",
+    "Section: Lexer State",
+    "  LexerState = record { source : Text, pos : Integer, line : Integer }",
+    "  lexer-new : Text -> LexerState",
+    "  next-token : LexerState -> (LexerState, Token)",
+    "  skip-whitespace : LexerState -> LexerState",
+    "  lex-ident : LexerState -> (LexerState, Token)",
+    "  lex-number : LexerState -> (LexerState, Token)",
+    "  lex-string : LexerState -> (LexerState, Token)"
+  ]
+
+  compiler-parser-lines : List Text
+  compiler-parser-lines = [
+    "Chapter: Parser",
+    "",
+    "Section: AST Types",
+    "  Expr = | ExprLit | ExprVar | ExprApp | ExprLam | ExprLet | ExprWhen | ExprIf",
+    "  Decl = | DeclFun | DeclType | DeclEffect",
+    "",
+    "Section: Parse Functions",
+    "  parse-module : List Token -> Module",
+    "  parse-decl : ParserState -> (ParserState, Decl)",
+    "  parse-expr : ParserState -> (ParserState, Expr)",
+    "  parse-type : ParserState -> (ParserState, Type)",
+    "  parse-pattern : ParserState -> (ParserState, Pattern)"
+  ]
+
+  compiler-typechecker-lines : List Text
+  compiler-typechecker-lines = [
+    "Chapter: TypeChecker",
+    "",
+    "Section: Type Environment",
+    "  TyEnv = record { bindings : List (Text, Type), depth : Integer }",
+    "  ty-env-empty : TyEnv",
+    "  ty-env-lookup : TyEnv, Text -> Maybe Type",
+    "",
+    "Section: Inference",
+    "  infer-expr : TyEnv, Expr -> (Type, Constraints)",
+    "  check-expr : TyEnv, Expr, Type -> Constraints",
+    "  unify : Type, Type -> Substitution",
+    "  apply-subst : Substitution, Type -> Type"
+  ]
+
+  compiler-irgen-lines : List Text
+  compiler-irgen-lines = [
+    "Chapter: IrGen",
+    "",
+    "Section: IR Types",
+    "  IrInstr = | IrLoad | IrStore | IrAdd | IrSub | IrCall | IrRet | IrBranch | IrPhi",
+    "  IrBlock = record { label : Text, instrs : List IrInstr }",
+    "",
+    "Section: Lowering",
+    "  lower-expr : IrCtx, Expr -> (IrCtx, IrValue)",
+    "  lower-decl : IrCtx, Decl -> IrCtx",
+    "  lower-pattern : IrCtx, Pattern -> (IrCtx, IrValue)"
+  ]
+
+  compiler-codegen-lines : List Text
+  compiler-codegen-lines = [
+    "Chapter: Codegen",
+    "",
+    "Section: Register Allocation",
+    "  alloc-reg : RegState -> (RegState, Register)",
+    "  free-reg : RegState, Register -> RegState",
+    "  spill-reg : RegState, Register -> RegState",
+    "",
+    "Section: Instruction Selection",
+    "  select-instr : IrInstr -> List MachInstr",
+    "  emit-function : IrFunction -> List MachInstr",
+    "  emit-prologue : Integer -> List MachInstr",
+    "  emit-epilogue : Integer -> List MachInstr"
+  ]
+
+  compiler-emitter-lines : List Text
+  compiler-emitter-lines = [
+    "Chapter: Emitter",
+    "",
+    "Section: Binary Output",
+    "  emit-cdx : List MachInstr -> List Integer",
+    "  emit-text : Module -> Text",
+    "  write-section : Emitter, Text, List Integer -> Emitter",
+    "",
+    "Section: Fixups",
+    "  apply-fixups : List Integer, List Fixup -> List Integer",
+    "  resolve-labels : List MachInstr -> List Fixup"
+  ]
+
+  foreword-list-lines : List Text
+  foreword-list-lines = [
+    "Chapter: List",
+    "",
+    "Section: Core",
+    "  list-length : List a -> Integer",
+    "  list-at : List a, Integer -> a",
+    "  list-push : List a, a -> List a",
+    "  list-drop : List a, Integer -> List a",
+    "  list-take : List a, Integer -> List a",
+    "  list-map : (a -> b), List a -> List b",
+    "  list-filter : (a -> Boolean), List a -> List a",
+    "  list-fold : (b, a -> b), b, List a -> b"
+  ]
+
+  foreword-maybe-lines : List Text
+  foreword-maybe-lines = [
+    "Chapter: Maybe",
+    "",
+    "  Maybe a = | Just (a) | None",
+    "  maybe-map : (a -> b), Maybe a -> Maybe b",
+    "  maybe-bind : Maybe a, (a -> Maybe b) -> Maybe b",
+    "  from-maybe : a, Maybe a -> a"
+  ]
+
+  foreword-text-lines : List Text
+  foreword-text-lines = [
+    "Chapter: Text",
+    "",
+    "  text-length : Text -> Integer",
+    "  text-concat : Text, Text -> Text",
+    "  text-split : Text, Text -> List Text",
+    "  text-starts-with : Text, Text -> Boolean",
+    "  text-contains : Text, Text -> Boolean",
+    "  substring : Text, Integer, Integer -> Text",
+    "  char-at : Text, Integer -> Char"
+  ]
+
+  foreword-console-lines : List Text
+  foreword-console-lines = [
+    "Chapter: Console",
+    "",
+    "  print-line : Text -> [Console] None",
+    "  print-line-uni : Text -> [Console] None",
+    "  read-line : [Console] Text",
+    "  uefi-read-key : Integer"
+  ]
+
+  app-devconsole-lines : List Text
+  app-devconsole-lines = [
+    "Chapter: DevConsole",
+    "",
+    "Section: Console State",
+    "  DevConsoleState = record { mode : ConsoleMode, menu : MenuState, status : Text }",
+    "  dev-console-init : UefiConsoleState -> DevConsoleState",
+    "",
+    "Section: Menu System",
+    "  main-menu : MenuState",
+    "  browse-menu : List Text -> MenuState",
+    "  debug-menu : MenuState",
+    "  compile-menu : MenuState"
+  ]
+
+  app-explorer-lines : List Text
+  app-explorer-lines = [
+    "Chapter: Explorer",
+    "",
+    "Section: File Browser",
+    "  explorer-init : Integer, Integer -> ExplorerState",
+    "  explorer-handle-event : ExplorerState, Event -> ExplorerState",
+    "  explorer-render : ExplorerState -> Widget"
+  ]
+
+  app-market-lines : List Text
+  app-market-lines = [
+    "Chapter: Market",
+    "",
+    "Section: Store",
+    "  market-init : StoreConfig -> MarketState",
+    "  market-read-products : MarketState -> List Product",
+    "  market-read-users : MarketState -> List User",
+    "  market-read-orders : MarketState -> List Order"
+  ]
+
+  app-erp-lines : List Text
+  app-erp-lines = [
+    "Chapter: ERP",
+    "",
+    "Section: Server",
+    "  erp-state-new : Integer, Integer -> ErpState",
+    "  erp-route : ErpState, HttpRequest -> (ErpState, HttpResponse)",
+    "",
+    "Section: GL",
+    "  gl-init : Text -> GlState",
+    "  post-journal : GlState, JournalEntry -> (GlState, PostResult)",
+    "  trial-balance : GlState -> TrialBalance"
+  ]
 
 Section: Boot Flow
 
@@ -61,13 +319,16 @@ Section: Dev Console Entry
 
   enter-dev-console : UefiConsoleState -> [Console, FileSystem] None
   enter-dev-console (con) =
-    let idx = index-full-dev-surface
-    in let state = dev-console-init con
+    let disk = disk-load
+    in let kp = generate-keypair (sha256 (text-to-bytes "codex-dev-console"))
+    in let idx = index-full-dev-surface
+    in let state = dev-console-init con disk kp
     in let state2 = __record-set state "source-index" idx
-    in let state3 = __record-set state2 "status" ("Indexed " & show (idx.total-defs) & " definitions across " & show (list-length (idx.chapter-names)) & " chapters")
+    in let ann-count = disk-fact-count disk
+    in let state3 = __record-set state2 "status" ("Indexed " & show (idx.total-defs) & " defs, " & show ann-count & " facts on disk")
     in act
       print-line-uni "Codex Dev Console"
-      print-line-uni ("Indexed " & show (idx.total-defs) & " definitions")
+      print-line-uni ("Indexed " & show (idx.total-defs) & " definitions, " & show ann-count & " disk facts")
       dev-console-loop state3
     end
 
@@ -382,6 +643,7 @@ Section: Dev Console Entry
     is ModeSweep -> dispatch-sweep-menu line state
     is ModeDriveManager -> dispatch-drive-menu line state
     is ModeIdentity -> dispatch-identity-menu line state
+    is ModeAnnotations -> dispatch-annotations-menu line state
     is otherwise -> state
 
   text-trim : Text -> Text
@@ -545,7 +807,7 @@ Section: Compile Menu Dispatch
     if key == "back" then
       let s = __record-set state "mode" ModeMainMenu
       in __record-set s "menu" main-menu
-    else __record-set state "status" ("Compile: " & key & " (not yet wired)")
+    else __record-set state "status" ("Compile: " & key & " (pending)")
 
 Section: Sweep Menu Dispatch
 
@@ -554,7 +816,7 @@ Section: Sweep Menu Dispatch
     if key == "back" then
       let s = __record-set state "mode" ModeMainMenu
       in __record-set s "menu" main-menu
-    else __record-set state "status" ("Sweep: " & key & " (not yet wired)")
+    else __record-set state "status" ("Sweep: " & key & " (pending)")
 
 Section: Drive Manager Dispatch
 

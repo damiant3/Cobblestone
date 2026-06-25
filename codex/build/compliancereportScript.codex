@@ -1,0 +1,54 @@
+Chapter: ComplianceReportScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates compliance-report.ps1 from the Shell DSL.
+ Compiles a tiny program that calls generate-evidence-report from the
+ ComplianceEvidence foreword, runs it in the VM, and captures the output.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  cr-params : List ShellParam = [sh-param-default "PCore" SptInt (SeInt 1)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "run" (SeRaw "Join-Path $PSScriptRoot 'test-run.ps1'"), ScAssign "src" (SeRaw "Join-Path $PSScriptRoot 'compliance-report.codex'"), ScAssign "outDir" (SeRaw "Join-Path $PSScriptRoot 'output'"), ScAssign "cdx" (SeRaw "Join-Path $outDir 'compliance-report.cdx'"), ScAssign "log" (SeRaw "Join-Path $outDir 'compliance-report.log'"), ScAssign "report" (SeRaw "Join-Path $outDir 'compliance-evidence.txt'")]
+
+Section: S02 -- Output directory
+
+  s02 : List ShellCmd = [ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScRaw "New-Item -ItemType Directory -Force $outDir | Out-Null"] []]
+
+Section: S03 -- Compile
+
+  s03-fail : List ShellCmd = [ScEcho (SeLit "FAIL: compliance report compilation failed"), ScIf (SeFileExists (SeVar "log")) [ScRaw "Get-Content $log | Write-Host"] [], ScExit (SeInt 1)]
+
+  s03 : List ShellCmd = [ScEcho (SeLit "Compiling compliance report generator..."), ScRaw "& $compile -Src $src -Out $cdx -Log $log -PCore $PCore", ScIf (SeExitCodeEq 0) [] s03-fail]
+
+Section: S04 -- Run
+
+  s04-fail : List ShellCmd = [ScEcho (SeLit "FAIL: compliance report execution failed"), ScExit (SeInt 1)]
+
+  s04 : List ShellCmd = [ScEcho (SeLit "Running compliance report..."), ScRaw "& $run -Kernel $cdx -OutFile $report -PCore $PCore", ScIf (SeExitCodeEq 0) [] s04-fail]
+
+Section: S05 -- Report
+
+  s05 : List ShellCmd = [ScRaw "$lines = (Get-Content $report | Measure-Object -Line).Lines", ScEcho (SeRaw "\"Compliance evidence report generated: $report ($lines lines)\""), ScEcho (SeLit ""), ScRaw "Get-Content $report"]
+
+Section: Assembly
+
+  cr-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+
+  cr-script : ShellScript = sh-script "compliance-report" "Generate compliance evidence report" cr-params cr-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cr-script)
+  end
+
+Page 1

@@ -1,0 +1,184 @@
+Chapter: MlpKernels
+  cites Gpu chapter DeviceEffect
+
+ GPU kernels for MLP forward pass, backward pass, and Adam update.
+ Functions prefixed kernel- emit as PTX .entry points.
+
+Section: Forward Pass
+
+  kernel-matmul-relu : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-matmul-relu (weights) (input) (bias) (output) (rows) (cols) = act
+   row <- thread-idx-x
+   if row < rows then mlp-matmul-relu-row weights input bias output row cols
+   else 0
+  end
+
+  mlp-matmul-relu-row : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-matmul-relu-row (weights) (input) (bias) (output) (row) (cols) = act
+   sum <- mlp-dot-row weights input bias row cols
+   activated <- if sum > 0 then sum else 0
+   device-store output row activated
+  end
+
+  kernel-matmul : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-matmul (weights) (input) (bias) (output) (rows) (cols) = act
+   row <- thread-idx-x
+   if row < rows then mlp-matmul-row weights input bias output row cols
+   else 0
+  end
+
+  mlp-matmul-row : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-matmul-row (weights) (input) (bias) (output) (row) (cols) = act
+   sum <- mlp-dot-row weights input bias row cols
+   device-store output row sum
+  end
+
+  mlp-dot-row : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-dot-row (weights) (input) (bias) (row) (cols) = act
+   b <- device-load bias row
+   mlp-dot-accum weights input row cols 0 b
+  end
+
+  mlp-dot-accum : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-dot-accum (weights) (input) (row) (cols) (col) (acc) =
+   if col >= cols then acc
+   else act
+    w <- device-load weights (row * cols + col)
+    x <- device-load input col
+    mlp-dot-accum weights input row cols (col + 1) (acc + w * x)
+   end
+
+Section: Backward Pass
+
+  kernel-relu-grad : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-relu-grad (grad-out) (activations) (grad-in) (n) = act
+   tid <- thread-idx-x
+   if tid < n then mlp-relu-grad-one grad-out activations grad-in tid
+   else 0
+  end
+
+  mlp-relu-grad-one : Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-relu-grad-one (grad-out) (activations) (grad-in) (tid) = act
+   val <- device-load activations tid
+   g <- device-load grad-out tid
+   result <- if val > 0 then g else 0
+   device-store grad-in tid result
+  end
+
+  kernel-outer-product-add : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-outer-product-add (grad-weights) (delta) (input) (rows) (cols) = act
+   tid <- thread-idx-x
+   let row = tid / cols
+   in let col = tid - row * cols
+   in if row < rows then
+    if col < cols then mlp-outer-one grad-weights delta input row col cols
+    else 0
+   else 0
+  end
+
+  mlp-outer-one : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-outer-one (grad-weights) (delta) (input) (row) (col) (cols) = act
+   d <- device-load delta row
+   x <- device-load input col
+   old <- device-load grad-weights (row * cols + col)
+   device-store grad-weights (row * cols + col) (old + d * x)
+  end
+
+  kernel-bias-grad-add : Integer, Integer, Integer -> [Device] Integer
+  kernel-bias-grad-add (grad-bias) (delta) (n) = act
+   tid <- thread-idx-x
+   if tid < n then mlp-bias-one grad-bias delta tid
+   else 0
+  end
+
+  mlp-bias-one : Integer, Integer, Integer -> [Device] Integer
+  mlp-bias-one (grad-bias) (delta) (tid) = act
+   old <- device-load grad-bias tid
+   d <- device-load delta tid
+   device-store grad-bias tid (old + d)
+  end
+
+  kernel-matmul-transpose : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-matmul-transpose (weights) (delta) (output) (rows) (cols) = act
+   col <- thread-idx-x
+   if col < cols then mlp-transpose-col weights delta output rows cols col
+   else 0
+  end
+
+  mlp-transpose-col : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-transpose-col (weights) (delta) (output) (rows) (cols) (col) = act
+   sum <- mlp-transpose-accum weights delta col rows cols 0 0
+   device-store output col sum
+  end
+
+  mlp-transpose-accum : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-transpose-accum (weights) (delta) (col) (rows) (cols) (row) (acc) =
+   if row >= rows then acc
+   else act
+    w <- device-load weights (row * cols + col)
+    d <- device-load delta row
+    mlp-transpose-accum weights delta col rows cols (row + 1) (acc + w * d)
+   end
+
+Section: Adam Optimizer
+
+  kernel-adam-update : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-adam-update (params) (grads) (m-buf) (v-buf) (n) (batch-size) = act
+   tid <- thread-idx-x
+   if tid < n then mlp-adam-one params grads m-buf v-buf tid batch-size
+   else 0
+  end
+
+  mlp-adam-one : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-adam-one (params) (grads) (m-buf) (v-buf) (tid) (batch-size) = act
+   g <- device-load grads tid
+   m-old <- device-load m-buf tid
+   v-old <- device-load v-buf tid
+   p-old <- device-load params tid
+   g-scaled <- g / batch-size
+   m-new <- m-old * 9 / 10 + g-scaled / 10
+   v-new <- v-old * 999 / 1000 + g-scaled * g-scaled / 1000
+   update <- m-new / (v-new + 1)
+   p-new <- p-old - update
+   device-store m-buf tid m-new
+   device-store v-buf tid v-new
+   device-store params tid p-new
+  end
+
+Section: Utility Kernels
+
+  kernel-zero-fill : Integer, Integer -> [Device] Integer
+  kernel-zero-fill (buf) (n) = act
+   tid <- thread-idx-x
+   if tid < n then device-store buf tid 0
+   else 0
+  end
+
+  kernel-mse-loss : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-mse-loss (predicted) (target) (loss-out) (n) = act
+   tid <- thread-idx-x
+   if tid < n then mlp-mse-one predicted target loss-out tid
+   else 0
+  end
+
+  mlp-mse-one : Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-mse-one (predicted) (target) (loss-out) (tid) = act
+   p <- device-load predicted tid
+   t <- device-load target tid
+   diff <- p - t
+   device-store loss-out tid (diff * diff)
+  end
+
+  kernel-mse-grad : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-mse-grad (predicted) (target) (grad-out) (n) = act
+   tid <- thread-idx-x
+   if tid < n then mlp-mse-grad-one predicted target grad-out tid
+   else 0
+  end
+
+  mlp-mse-grad-one : Integer, Integer, Integer, Integer -> [Device] Integer
+  mlp-mse-grad-one (predicted) (target) (grad-out) (tid) = act
+   p <- device-load predicted tid
+   t <- device-load target tid
+   device-store grad-out tid (2 * (p - t))
+  end

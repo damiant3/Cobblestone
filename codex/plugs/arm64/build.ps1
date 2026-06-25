@@ -7,4 +7,4 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..' 'common' 'plug-build-lib.ps1')
 
-Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'arm64' -Chapters @('Arm64Runtime', 'Arm64CodeGen', 'Arm64Plug') -Survey 'lower-mul:60000'
+Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'arm64' -Chapters @('Arm64Runtime', 'Arm64CodeGen', 'Arm64Disasm', 'Arm64Plug') -Survey 'lower-mul:80000'

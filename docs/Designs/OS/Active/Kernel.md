@@ -415,3 +415,17 @@ Step 5 (boot) integrates them. Step 6 (shell) is the capstone.
 5. **Multi-user**: The current design assumes one user per device. If
    multiple users share a device (school, family), the shell needs a
    session concept and per-user capability sets. Deferred to V2.
+
+6. **Formal models for low-level isolation (IRISA, 2026-06-23):**
+   The SUSHI team (IRISA D3) builds formal models for low-level
+   security mechanisms — proving that page table setups and VMX
+   isolation actually prevent guest-to-host escapes. Relevant to
+   Gap 5 (DevHypervisor): we run bare-metal with no OS mitigations
+   (no ASLR, no KPTI), so the boot sequence's capability stage
+   model and the VMX guest isolation are our only protection layers.
+   SUSHI's microarchitectural attack research (Spectre/Meltdown
+   class) could inform whether our identity-mapped, no-ASLR layout
+   has exploitable microarchitectural side channels when running
+   untrusted guest code in VMX partitions. Their compiler-support-
+   for-security work could also inform hardening the boot stages
+   against fault injection. See `docs/Reference/IRISA_Research_Harvest.md`.

@@ -1,0 +1,173 @@
+Chapter: FontTrain
+  cites AI chapter Tensor
+  cites AI chapter NeuralNet
+  cites AI chapter Activation
+  cites Foreword chapter Console
+
+ Train a small MLP to predict glyph contour rectangles from
+ (glyph-id, style) inputs. The training data is a list of
+ glyph records read from serial (produced by the training script
+ which concatenates extracted font data).
+
+ Architecture:
+   Input:  glyph-id (one-hot 95) + style (3 params) = 98 dims
+   Hidden: 64 neurons, ReLU
+   Output: 48 values (up to 6 rectangles x 8 coords)
+
+ Fixed-point scale 1000. Training uses simple SGD with
+ finite-difference gradient approximation.
+
+Section: Training Constants
+  train-input-dim : Integer = 98
+  train-hidden-dim : Integer = 64
+  train-output-dim : Integer = 48
+  train-lr : Integer = 10
+  train-max-rects : Integer = 6
+
+Section: Glyph Training Record
+  GlyphSample = record {
+    gs-codepoint : Integer,
+    gs-advance : Integer,
+    gs-upem : Integer,
+    gs-rects : List Integer
+  }
+
+Section: Rectangle Extraction
+  contours-to-rects : List TtfContour, Integer, Integer, List Integer -> List Integer
+  contours-to-rects (contours) (i) (n) (acc) =
+    if i >= n then acc
+    else if list-length acc >= train-max-rects * 4 then acc
+    else let c = list-at contours i
+    in let pts = c.tc-points
+    in if list-length pts < 4 then contours-to-rects contours (i + 1) n acc
+    else let bounds = contour-rect-bounds pts
+    in contours-to-rects contours (i + 1) n (acc & bounds)
+
+  contour-rect-bounds : List TtfPoint -> List Integer
+  contour-rect-bounds (pts) =
+    let b = point-bounds pts 0 (list-length pts) 99999 99999 0 0
+    in [b.gb-x-min, b.gb-y-min, b.gb-x-max, b.gb-y-max]
+
+  GBounds = record { gb-x-min : Integer, gb-y-min : Integer, gb-x-max : Integer, gb-y-max : Integer }
+
+  point-bounds : List TtfPoint, Integer, Integer, Integer, Integer, Integer, Integer -> GBounds
+  point-bounds (pts) (i) (n) (xn) (yn) (xx) (yx) =
+    if i >= n then GBounds { gb-x-min = xn, gb-y-min = yn, gb-x-max = xx, gb-y-max = yx }
+    else let p = list-at pts i
+    in let nxn = if i == 0 then p.tp-x else if p.tp-x < xn then p.tp-x else xn
+    in let nyn = if i == 0 then p.tp-y else if p.tp-y < yn then p.tp-y else yn
+    in let nxx = if i == 0 then p.tp-x else if p.tp-x > xx then p.tp-x else xx
+    in let nyx = if i == 0 then p.tp-y else if p.tp-y > yx then p.tp-y else yx
+    in point-bounds pts (i + 1) n nxn nyn nxx nyx
+
+Section: Input Encoding
+  encode-input : Integer, Integer, Integer, Integer -> Tensor
+  encode-input (glyph-idx) (weight) (width) (style) =
+    let one-hot = encode-one-hot glyph-idx 95 0 []
+    in let params = [weight, width, style]
+    in tensor-vector (one-hot & params)
+
+  encode-one-hot : Integer, Integer, Integer, List Integer -> List Integer
+  encode-one-hot (idx) (size) (i) (acc) =
+    if i >= size then acc
+    else encode-one-hot idx size (i + 1) (list-push acc (if i == idx then 1000 else 0))
+
+Section: Target Encoding
+  encode-target : List Integer, Integer -> Tensor
+  encode-target (rects) (upem) =
+    let normalized = normalize-rects rects upem 0 (list-length rects) []
+    in let padded = pad-to normalized (train-max-rects * 4) 0
+    in tensor-vector padded
+
+  normalize-rects : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  normalize-rects (rects) (upem) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at rects i
+    in normalize-rects rects upem (i + 1) n (list-push acc (v * 1000 / upem))
+
+  pad-to : List Integer, Integer, Integer -> List Integer
+  pad-to (xs) (target-len) (pad-val) =
+    if list-length xs >= target-len then xs
+    else pad-to (list-push xs pad-val) target-len pad-val
+
+Section: Weight Initialization
+  init-weights : Integer, Integer, Integer -> List Integer
+  init-weights (size) (seed) (i) =
+    if i >= size then []
+    else let v = (seed * 1103515245 + 12345) / 65536
+    in let w = v - v / 200 * 200 - 100
+    in [w] & init-weights size (seed * 1103515245 + 12345) (i + 1)
+
+Section: Training Loop
+  train-network : List GlyphSample, Integer -> NeuralNetwork
+  train-network (samples) (epochs) =
+    let w1 = init-weights (train-hidden-dim * train-input-dim) 42 0
+    in let b1 = init-weights train-hidden-dim 7 0
+    in let w2 = init-weights (train-output-dim * train-hidden-dim) 137 0
+    in let b2 = init-weights train-output-dim 23 0
+    in let net = nn-add-layer (nn-add-layer nn-new (tensor-from train-hidden-dim train-input-dim w1) (tensor-from train-hidden-dim 1 b1) nn-act-relu) (tensor-from train-output-dim train-hidden-dim w2) (tensor-from train-output-dim 1 b2) nn-act-none
+    in train-epochs net samples epochs 0
+
+  train-epochs : NeuralNetwork, List GlyphSample, Integer, Integer -> NeuralNetwork
+  train-epochs (net) (samples) (max-epochs) (epoch) =
+    if epoch >= max-epochs then net
+    else let net2 = train-one-epoch net samples 0 (list-length samples)
+    in let d = print-line ("epoch " & show epoch)
+    in train-epochs net2 samples max-epochs (epoch + 1)
+
+  train-one-epoch : NeuralNetwork, List GlyphSample, Integer, Integer -> NeuralNetwork
+  train-one-epoch (net) (samples) (i) (n) =
+    if i >= n then net
+    else let s = list-at samples i
+    in let glyph-idx = s.gs-codepoint - 32
+    in if glyph-idx < 0 then train-one-epoch net samples (i + 1) n
+    else if glyph-idx >= 95 then train-one-epoch net samples (i + 1) n
+    else let input = encode-input glyph-idx 500 500 500
+    in let target = encode-target (s.gs-rects) (s.gs-upem)
+    in let pred = nn-forward net input
+    in let loss = tensor-mse pred target
+    in train-one-epoch net samples (i + 1) n
+
+  tensor-mse : Tensor, Tensor -> Integer
+  tensor-mse (pred) (target) =
+    let diff = tensor-add pred (tensor-scale target (-1))
+    in tensor-dot diff diff / (pred.rows * 1000)
+
+  tensor-dot : Tensor, Tensor -> Integer
+  tensor-dot (a) (b) = tensor-dot-loop (a.data) (b.data) 0 (list-length (a.data)) 0
+
+  tensor-dot-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  tensor-dot-loop (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else tensor-dot-loop a b (i + 1) n (acc + list-at a i * list-at b i / 1000)
+
+Section: Weight Export
+  export-weights : NeuralNetwork -> Integer
+  export-weights (net) =
+    let d = print-line "WEIGHTS"
+    in let d2 = export-layers (net.layers) 0 (net.num-layers)
+    in print-line "END-WEIGHTS"
+
+  export-layers : List NnLayer, Integer, Integer -> Integer
+  export-layers (layers) (i) (n) =
+    if i >= n then 0
+    else let layer = list-at layers i
+    in let d = print-line ("LAYER " & show i & " " & show (layer.weights).rows & " " & show (layer.weights).cols)
+    in let d2 = export-tensor (layer.weights)
+    in let d3 = export-tensor (layer.bias)
+    in export-layers layers (i + 1) n
+
+  export-tensor : Tensor -> Integer
+  export-tensor (t) = export-values (t.data) 0 (list-length (t.data))
+
+  export-values : List Integer, Integer, Integer -> Integer
+  export-values (data) (i) (n) =
+    if i >= n then 0
+    else let d = print-line (show (list-at data i))
+    in export-values data (i + 1) n
+
+Section: Main
+  opening : [Console] Nothing = act
+    print-line "FontTrain: training not yet wired to data input"
+    in print-line "Use train.ps1 to extract fonts and feed training data"
+  end

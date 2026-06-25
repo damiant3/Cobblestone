@@ -1,0 +1,141 @@
+Chapter: CommandPalette
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Overlay
+  cites UI chapter TextField
+
+ Command palette (Ctrl+K / Cmd+K). A searchable list of actions
+ with keyboard shortcuts displayed. Apps register commands; the
+ palette filters and dispatches. Standard across all apps.
+
+ We say:
+
+Section: Types
+  PaletteCommand = record {
+    pc-id : Text,
+    pc-label : Text,
+    pc-shortcut : Text,
+    pc-category : Text,
+    pc-action : Integer
+  }
+
+  PaletteState = record {
+    ps-id : Text,
+    ps-commands : List PaletteCommand,
+    ps-cmd-count : Integer,
+    ps-filter : Text,
+    ps-highlight : Integer,
+    ps-open : Boolean,
+    ps-max-visible : Integer
+  }
+
+Section: Construction
+  palette-new : Text, List PaletteCommand -> PaletteState
+  palette-new (id) (commands) = PaletteState {
+    ps-id = id, ps-commands = commands, ps-cmd-count = list-length commands,
+    ps-filter = "", ps-highlight = 0, ps-open = False, ps-max-visible = 12
+  }
+
+  palette-command : Text, Text, Text, Text, Integer -> PaletteCommand
+  palette-command (id) (label) (shortcut) (category) (action) = PaletteCommand {
+    pc-id = id, pc-label = label, pc-shortcut = shortcut,
+    pc-category = category, pc-action = action
+  }
+
+Section: State Updates
+  palette-toggle : PaletteState -> PaletteState
+  palette-toggle (state) =
+    let opened = state.ps-open == False
+    in let state2 = __record-set state "ps-open" opened
+    in let state3 = __record-set state2 "ps-filter" ""
+    in __record-set state3 "ps-highlight" 0
+
+  palette-close : PaletteState -> PaletteState
+  palette-close (state) = __record-set state "ps-open" False
+
+  palette-set-filter : PaletteState, Text -> PaletteState
+  palette-set-filter (state) (query) =
+    let state2 = __record-set state "ps-filter" query
+    in __record-set state2 "ps-highlight" 0
+
+  palette-nav-down : PaletteState -> PaletteState
+  palette-nav-down (state) =
+    let visible = palette-visible-count state
+    in let next = if state.ps-highlight >= visible - 1 then 0 else state.ps-highlight + 1
+    in __record-set state "ps-highlight" next
+
+  palette-nav-up : PaletteState -> PaletteState
+  palette-nav-up (state) =
+    let visible = palette-visible-count state
+    in let next = if state.ps-highlight <= 0 then visible - 1 else state.ps-highlight - 1
+    in __record-set state "ps-highlight" next
+
+Section: Filtering
+  palette-visible : PaletteState -> List PaletteCommand
+  palette-visible (state) =
+    if text-length (state.ps-filter) == 0 then state.ps-commands
+    else pal-filter-loop (state.ps-commands) (state.ps-filter) 0 (state.ps-cmd-count) []
+
+  pal-filter-loop : List PaletteCommand, Text, Integer, Integer, List PaletteCommand -> List PaletteCommand
+  pal-filter-loop (cmds) (query) (i) (n) (acc) =
+    if i >= n then acc
+    else let cmd = list-at cmds i
+    in if text-contains (cmd.pc-label) query then pal-filter-loop cmds query (i + 1) n (list-push acc cmd)
+    else pal-filter-loop cmds query (i + 1) n acc
+
+  palette-visible-count : PaletteState -> Integer
+  palette-visible-count (state) = list-length (palette-visible state)
+
+Section: Selection
+  palette-confirm : PaletteState -> Integer
+  palette-confirm (state) =
+    let visible = palette-visible state
+    in if state.ps-highlight < list-length visible then (list-at visible (state.ps-highlight)).pc-action
+    else 0
+
+  palette-selected-command : PaletteState -> Maybe PaletteCommand
+  palette-selected-command (state) =
+    let visible = palette-visible state
+    in if state.ps-highlight < list-length visible then Just (list-at visible (state.ps-highlight))
+    else None
+
+Section: Widget Rendering
+  palette-widget : PaletteState -> WidgetNode
+  palette-widget (state) =
+    let search = widget-input (state.ps-id & "-search") (state.ps-filter) (text-length (state.ps-filter))
+    in let sep = widget-separator (state.ps-id & "-sep")
+    in let visible = palette-visible state
+    in let max-show = if list-length visible > state.ps-max-visible then state.ps-max-visible else list-length visible
+    in let rows = pal-render-rows visible (state.ps-highlight) (state.ps-id) 0 max-show []
+    in widget-panel (state.ps-id) DirColumn 2 ([search, sep] & rows)
+
+  pal-render-rows : List PaletteCommand, Integer, Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  pal-render-rows (cmds) (highlight) (prefix) (i) (n) (acc) =
+    if i >= n then acc
+    else let cmd = list-at cmds i
+    in let is-hl = i == highlight
+    in let state = if is-hl then state-focused else state-normal
+    in let row = widget-set-state (widget-panel (prefix & "-cmd-" & show i) DirRow 4 [
+      widget-set-flex (widget-label (prefix & "-cmd-" & show i & "-lbl") (cmd.pc-label)) 1,
+      widget-set-min (widget-label (prefix & "-cmd-" & show i & "-key") (cmd.pc-shortcut)) 30 0
+    ]) state
+    in pal-render-rows cmds highlight prefix (i + 1) n (list-push acc row)
+
+Section: Overlay Rendering
+  palette-overlay : PaletteState, Integer, Integer -> Overlay
+  palette-overlay (state) (screen-w) (screen-h) =
+    let pw = 320
+    in let ph = 300
+    in let px = (screen-w - pw) / 2
+    in let py = screen-h / 5
+    in overlay-modal (state.ps-id & "-overlay") px py pw ph (palette-widget state)
+
+Section: Keyboard Handler
+  palette-handle-key : PaletteState, Integer -> PaletteState
+  palette-handle-key (state) (sc) =
+    if sc == 1 then palette-close state
+    else if sc == 36 then palette-nav-down state
+    else if sc == 37 then palette-nav-up state
+    else state
+
+Page 1

@@ -20,7 +20,7 @@
 [CmdletBinding()]
 param(
     [string]$Out,
-    [int]$MemMB = 4096,
+    [int]$MemMB = 3072,
     [switch]$SkipIr
 )
 

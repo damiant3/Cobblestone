@@ -32,8 +32,10 @@ Fester swept all app tests 2026-06-17. Key findings:
 - **All 53 remaining "failures" are batch heap exhaustion**, not code
   bugs. Every failing test compiles individually. Lightest-first batch
   sorting (CL 4609/4612) mitigates but does not eliminate the issue.
-- **21/21 web apps compile clean** through the HTML plug (build-apps.ps1).
-- **305/305 foreword modules have compile-smoke tests** (CL 4601/4612).
+- **27/27 web apps compile clean** through the HTML plug (build-apps.ps1,
+  CL 5737). 5 app bugs fixed: tasks (text-to-int), fitness (type mismatch),
+  notes (clipboard-write), piano (% -> int-mod), bridge (VoiceHierarchy API).
+- **360 foreword modules** (up from 305 at CL 4612).
 
 | # | Item | Notes |
 |---|------|-------|
@@ -67,6 +69,12 @@ Fester swept all app tests 2026-06-17. Key findings:
 | # | Item | Notes |
 |---|------|-------|
 | 1 | **Dual-target GPU compilation (PTX + SPIR-V)** | Design complete (CL 4424). **K0-K8 done** (fester, 2026-06-18): foreword.gpu quire (10 modules), Device/Gpu effects + capabilities, PTX plug with GPU intrinsics (special regs, warp shuffle, shared mem, atomics, barriers, math), verifier Phase 3/4 integration (CdxBinary + CdxVerifier), GpuProxy launch-ptx, gpu-dispatch.cu CUDA Driver API, vecadd E2E test (.skip -- needs GPU hardware). Only K9 (libdevice path) remains, deferred by design. |
+
+### Compiler — Phase Discipline
+
+| # | Item | Notes |
+|---|------|-------|
+| 1 | **LOWER deck survey accounts for IR depth** | The LOWER deck formula sizes budget by `def_count * multiplier`. Programs with few defs but deeply nested IR (large literal AST construction) overflow. Workaround: split into many small defs. Root fix: survey formula could factor in IR node count or tree depth, not just def count. See `docs/Test/KNOWN-CONDITIONS.md` and CL 5800. Low priority — workaround is simple. |
 
 ### Tooling — Host Stability
 
