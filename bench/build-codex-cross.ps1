@@ -150,8 +150,12 @@ foreach ($arch in $archs) {
             [void]$allDisasm.Add("")
 
             $safeName = Safe-FileName $f.Name
-            $funcContent = @("# $($f.Name) ($($f.Size) bytes)") + $instrLines
-            [System.IO.File]::WriteAllLines((Join-Path $funcDir "$safeName.disasm"), $funcContent, [System.Text.UTF8Encoding]::new($false))
+            if ($safeName.Length -gt 0 -and $safeName.Length -lt 200) {
+                try {
+                    $funcContent = @("# $($f.Name) ($($f.Size) bytes)") + $instrLines
+                    [System.IO.File]::WriteAllLines((Join-Path $funcDir "$safeName.disasm"), $funcContent, [System.Text.UTF8Encoding]::new($false))
+                } catch {}
+            }
 
             Remove-Item $tmpBin -Force -ErrorAction SilentlyContinue
         }

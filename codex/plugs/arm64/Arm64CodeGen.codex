@@ -469,12 +469,28 @@ Section: Function Emission
    in let st6 = a64-emit st5 (arm64-stp a64-x27 a64-x27 a64-sp 80)
    in st6
 
+  a64-nop-unused-saves : A64State, Integer, Integer -> A64State
+  a64-nop-unused-saves (st) (prologue-start) (save-pairs) =
+   let nop = arm64-nop
+   in let st1 = if save-pairs < 5 then a64-patch-insn st (prologue-start + 6) nop else st
+   in let st2 = if save-pairs < 4 then a64-patch-insn st1 (prologue-start + 5) nop else st1
+   in let st3 = if save-pairs < 3 then a64-patch-insn st2 (prologue-start + 4) nop else st2
+   in if save-pairs < 2 then a64-patch-insn st3 (prologue-start + 3) nop else st3
+
   a64-emit-epilogue : A64State, Integer -> A64State
   a64-emit-epilogue (st) (frame-size) =
+<<<<<<< Updated upstream
    let st1 = a64-emit st (arm64-ldp a64-x27 a64-x27 a64-sp 80)
    in let st2 = a64-emit st1 (arm64-ldp a64-x25 a64-x26 a64-sp 64)
    in let st3 = a64-emit st2 (arm64-ldp a64-x23 a64-x24 a64-sp 48)
    in let st4 = a64-emit st3 (arm64-ldp a64-x21 a64-x22 a64-sp 32)
+=======
+   let save-pairs = a64-compute-save-pairs (st.peak-local - a64-x19)
+   in let st1 = if save-pairs >= 5 then a64-emit st (arm64-ldp a64-x27 a64-x27 a64-sp 80) else st
+   in let st2 = if save-pairs >= 4 then a64-emit st1 (arm64-ldp a64-x25 a64-x26 a64-sp 64) else st1
+   in let st3 = if save-pairs >= 3 then a64-emit st2 (arm64-ldp a64-x23 a64-x24 a64-sp 48) else st2
+   in let st4 = if save-pairs >= 2 then a64-emit st3 (arm64-ldp a64-x21 a64-x22 a64-sp 32) else st3
+>>>>>>> Stashed changes
    in let st5 = a64-emit st4 (arm64-ldp a64-x19 a64-x20 a64-sp 16)
    in let st6 = a64-emit st5 (arm64-ldp a64-fp a64-lr a64-sp 0)
    in let st7 = a64-emit-add-sp st6 frame-size
@@ -854,19 +870,19 @@ Section: Binary Emission
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (a64-csinc-ne rd), reg = rd }
     is IrLt ->
-     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 10 (ir-expr-type left)
+     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp (ll.state) left-reg right-reg 10 (ir-expr-type left)
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (a64-csinc-lt rd), reg = rd }
     is IrGt ->
-     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 13 (ir-expr-type left)
+     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp (ll.state) left-reg right-reg 13 (ir-expr-type left)
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (a64-csinc-gt rd), reg = rd }
     is IrLtEq ->
-     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 12 (ir-expr-type left)
+     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp (ll.state) left-reg right-reg 12 (ir-expr-type left)
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (a64-csinc-le rd), reg = rd }
     is IrGtEq ->
-     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 11 (ir-expr-type left)
+     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp (ll.state) left-reg right-reg 11 (ir-expr-type left)
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (a64-csinc-ge rd), reg = rd }
     is IrAddNum -> a64-emit-real-arith st2 left-reg right-reg arm64-fadd-d
@@ -1123,8 +1139,8 @@ Section: Real Arithmetic
    in a64-emit-vec-select-lanes (bl.state) (ml.reg) (al.reg) (bl.reg) (ptr-r.reg) 0 lanes
 
   a64-emit-vec-select-lanes : A64State, Integer, Integer, Integer, Integer, Integer, Integer -> A64EmitResult
-  a64-emit-vec-select-lanes (st) (mask-reg) (a-ptr) (b-ptr) (out-ptr) (i) (n) =
-   if i >= n then A64EmitResult { state = st, reg = out-ptr }
+  a64-emit-vec-select-lanes (st) (mask-reg) (a-ptr) (b-ptr) (out-local) (i) (n) =
+   if i >= n then a64-load-local st out-local
    else let bit-r = a64-alloc-temp st
    in let st1 = a64-emit-li (bit-r.state) (bit-r.reg) (bit-shl 1 i)
    in let st2 = a64-emit st1 (arm64-and (bit-r.reg) mask-reg (bit-r.reg))
@@ -1139,8 +1155,9 @@ Section: Real Arithmetic
    in let end-label = st6.insn-count
    in let st7 = a64-patch-insn st6 cbz-index (arm64-cbz (bit-r.reg) ((else-label - cbz-index) * 4))
    in let st8 = a64-patch-insn st7 jmp-index (arm64-b ((end-label - jmp-index) * 4))
-   in let st9 = a64-emit st8 (arm64-str (val-r.reg) out-ptr (i * 8))
-   in a64-emit-vec-select-lanes st9 mask-reg a-ptr b-ptr out-ptr (i + 1) n
+   in let ol = a64-load-local st8 out-local
+   in let st9 = a64-emit (ol.state) (arm64-str (val-r.reg) (ol.reg) (i * 8))
+   in a64-emit-vec-select-lanes st9 mask-reg a-ptr b-ptr out-local (i + 1) n
 
   a64-fp-op-insn : Integer, Integer, Integer, Integer -> List Integer
   a64-fp-op-insn (opcode) (fd) (fn) (fm) =
@@ -2795,7 +2812,10 @@ Section: Records and Sum Types
   a64-learn-field-names (st) (type-name) (fields) (i) =
    if i >= list-length fields then st
    else let name = (list-at fields i).name
-   in a64-learn-field-names (__record-set st "extra" (__record-set (st.extra) "learned-fields" (list-push ((st.extra).learned-fields) (A64LearnedField { ftype = type-name, fname = name, findex = i })))) type-name fields (i + 1)
+   in let embedded = a64-parse-embedded-index name
+   in let clean-name = a64-strip-field-name name
+   in let idx = if embedded >= 0 then embedded else i
+   in a64-learn-field-names (__record-set st "extra" (__record-set (st.extra) "learned-fields" (list-push ((st.extra).learned-fields) (A64LearnedField { ftype = type-name, fname = clean-name, findex = idx })))) type-name fields (i + 1)
 
   a64-lookup-field-learned : List A64LearnedField, Text, Text, Integer -> Integer
   a64-lookup-field-learned (fields) (type-name) (name) (i) =
@@ -2813,16 +2833,26 @@ Section: Records and Sum Types
   a64-emit-record : A64State, List IRFieldVal, CodexType -> A64EmitResult
   a64-emit-record (st) (fields) (ty) =
    let st = a64-learn-field-names st (a64-type-name ty) fields 0
-   in let total-size = list-length fields * 8
+   in let max-slot = a64-max-embedded-slot fields 0 (list-length fields)
+   in let total-size = (max-slot + 1) * 8
    in let ptr-loc = a64-alloc-local st
-   in let st1 = a64-emit (ptr-loc.state) (arm64-mov (ptr-loc.reg) a64-heap-reg)
-   in let st2 = if total-size <= 4095 then a64-emit st1 (arm64-add-imm a64-heap-reg a64-heap-reg total-size)
-    else let st1a = a64-emit-li st1 a64-x9 total-size
-    in a64-emit st1a (arm64-add a64-heap-reg a64-heap-reg a64-x9)
-   in let st3 = a64-store-local st2 (ptr-loc.reg) (ptr-loc.reg)
+   in let st1 = a64-emit (ptr-loc.state) (arm64-mov a64-x9 a64-heap-reg)
+   in let st1a = a64-store-local st1 (ptr-loc.reg) a64-x9
+   in let st2 = if total-size <= 4095 then a64-emit st1a (arm64-add-imm a64-heap-reg a64-heap-reg total-size)
+    else let st1b = a64-emit-li st1a a64-x9 total-size
+    in a64-emit st1b (arm64-add a64-heap-reg a64-heap-reg a64-x9)
+   in let st3 = st2
    in let field-types = a64-extract-field-types ty
    in let st4 = a64-emit-record-fields-flat st3 fields (ptr-loc.reg) 0 field-types
    in a64-load-local st4 (ptr-loc.reg)
+
+  a64-max-embedded-slot : List IRFieldVal, Integer, Integer -> Integer
+  a64-max-embedded-slot (fields) (i) (best) =
+   if i >= list-length fields then best - 1
+   else let idx = a64-parse-embedded-index ((list-at fields i).name)
+   in let slot = if idx >= 0 then idx + 1 else i + 1
+   in let new-best = if slot > best then slot else best
+   in a64-max-embedded-slot fields (i + 1) new-best
 
   a64-extract-field-types : CodexType -> List CodexType
   a64-extract-field-types (ty) =
@@ -2898,14 +2928,17 @@ Section: Records and Sum Types
   a64-emit-record-fields-flat (st) (fields) (ptr-local) (i) (field-types) =
    if i >= list-length fields then st
    else let saved-nl = st.next-local
-   in let er = a64-emit-expr st ((list-at fields i).value)
-   in let fty = if i < list-length field-types then list-at field-types i else int-ty-default
+   in let field-entry = list-at fields i
+   in let er = a64-emit-expr st (field-entry.value)
+   in let embedded = a64-parse-embedded-index (field-entry.name)
+   in let slot = if embedded >= 0 then embedded else i
+   in let fty = if slot < list-length field-types then list-at field-types slot else int-ty-default
    in let st0 = a64-maybe-clamp (er.state) (er.reg) fty
    in let val-loc = a64-alloc-local st0
    in let st0a = a64-store-local (val-loc.state) (val-loc.reg) (er.reg)
    in let pl = a64-load-local st0a ptr-local
    in let vl = a64-load-local (pl.state) (val-loc.reg)
-   in let st1 = a64-emit (vl.state) (arm64-str (vl.reg) (pl.reg) (i * 8))
+   in let st1 = a64-emit (vl.state) (arm64-str (vl.reg) (pl.reg) (slot * 8))
    in let st2 = __record-set st1 "next-local" saved-nl
    in a64-emit-record-fields-flat st2 fields ptr-local (i + 1) field-types
 
@@ -3013,7 +3046,9 @@ Section: Records and Sum Types
      else 0
     is otherwise ->
      let learned = a64-lookup-field-learned-any ((st.extra).learned-fields) clean-name 0
-     in if learned >= 0 then learned else 0
+     in if learned >= 0 then learned
+     else let hardcoded = a64-hardcoded-field-index "" clean-name
+     in if hardcoded >= 0 then hardcoded else 0
 
   a64-starts-with-arm64 : Text -> Boolean
   a64-starts-with-arm64 (s) =
@@ -3146,6 +3181,7 @@ Section: Records and Sum Types
   a64-hfi-h : Text, Integer -> Integer
   a64-hfi-h (fn) (flen) =
    if flen == 1 then 7
+   else if a64-field-name-match fn "has-value" then 1
    else if a64-field-name-match fn "has-data" then 2
    else if a64-field-name-match fn "has-frame" then 2
    else if a64-field-name-match fn "has-message" then 3
@@ -3713,6 +3749,7 @@ Section: Tail Call Optimization
     is IrMatch (s) (bs) (t) (sp) -> a64-has-tail-call-branches bs func-name 0
     is IrApply (f) (a) (t) (sp) -> a64-is-self-call expr func-name
     is IrAct (stmts) (t) (sp) -> a64-has-tail-call-act stmts func-name
+    is IrLambda (lp) (lb) (lt) (lsp) -> a64-has-tail-call lb func-name
     is otherwise -> False
 
   a64-has-tail-call-branches : List IRBranch, Text, Integer -> Boolean
@@ -3832,7 +3869,13 @@ Section: Module Emission
     else st5
    else st5
    in let frame-size = a64-compute-frame-size (st5.spill-count)
+<<<<<<< Updated upstream
    in let st6 = a64-patch-frame st5 frame-size
+=======
+   in let actual-pairs = a64-compute-save-pairs (st5.peak-local - a64-x19)
+   in let st5a = a64-nop-unused-saves st5 (st5.prologue-index) actual-pairs
+   in let st6 = a64-patch-frame st5a frame-size
+>>>>>>> Stashed changes
    in let st6 = if stack-arg-base-idx >= 0 then a64-patch-insn st6 stack-arg-base-idx (arm64-add-imm a64-x9 a64-sp frame-size) else st6
    in a64-emit-epilogue st6 frame-size
 
