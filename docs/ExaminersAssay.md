@@ -34,7 +34,7 @@ Each test `foo.codex` may have sidecars that control its behavior:
 
 A test with no sidecar compiles but is unverified (PASS_UNVERIFIED).
 
-## Current State (2026-06-13, CL 4082)
+## Current State (2026-06-26, CL 6111)
 
 99 individual tests consolidated into 11 smoke bundles (unit-smoke,
 rt-smoke, try-smoke, prose-smoke, linear-smoke, linear-errors,
@@ -44,6 +44,9 @@ multiple features in a single VM boot, cutting battery time ~60%.
 
 BVT mode (`build/build.ps1` default): runs a 10-test subset for
 fast iteration (~18s). Full battery: `build/test.ps1 -Jobs 4`.
+
+Cross-architecture testing: ARM64 135/135 (100%), RISC-V 122/133
+(92%). See the Cross-Architecture Battery section below.
 
 ### Default Battery (`build/test.ps1`)
 
@@ -75,6 +78,70 @@ not a code defect.
 Per-chapter compile tests for all foreword modules. Not included
 in the default or `-Apps` battery. Some foreword tests have large
 dependency chains (~127s compile) and are marked `.slow`.
+
+## Cross-Architecture Battery
+
+The cross-architecture test harness compiles each test from
+`codex/test/*.codex` to ARM64 or RISC-V ELF via the plug pipeline
+(source -> IR -> plug codegen -> ELF writer), then boots the ELF on
+Renode (cycle-accurate board simulation) or QEMU and compares UART
+output against the `.expected` sidecar.
+
+### Pipeline
+
+```
+source.codex -> compile.ps1 (IR mode, x86-64 seed)
+             -> arm64/riscv plug CDX (codegen)
+             -> compile-arm64/riscv.ps1 (ELF builder)
+             -> Renode or QEMU (UART capture)
+             -> compare against .expected
+```
+
+### Commands
+
+```powershell
+build/test-cross.ps1 -Arch arm64 -Test <name> -TimeoutSec 10   # single test
+build/test-cross-batch.ps1 -Arch arm64 -Jobs 4 -RenoTimeout 10 # full battery (Renode)
+build/test-cross-batch.ps1 -Arch arm64 -Jobs 4 -UseQemu        # full battery (QEMU)
+```
+
+### ARM64 (2026-06-26, CL 6111)
+
+| Category | Count |
+|----------|-------|
+| PASS_EXPECTED | 135 |
+| PASS_UNVERIFIED | 2 |
+| SKIPPED | 17 |
+| FAIL | 0 |
+| **Total** | **154** |
+
+135/135 verified tests pass (100% parity with x86-64 battery).
+Skips: 15 pre-existing (error tests, fatal tests, hardware-dependent)
++ 2 slow (tls-test: X25519 DH exceeds Renode sim budget; ui-orchestrator-test:
+17-module dependency chain exceeds IR compile budget).
+
+Renode board: Cortex-A53, GICv3, PL011 UART, 1 GB RAM at 0x40000000.
+QEMU: `-M virt -cpu cortex-a53 -m 1G -kernel <elf>`.
+
+### RISC-V (2026-06-25, CL 6088)
+
+| Category | Count |
+|----------|-------|
+| PASS_EXPECTED | 122 |
+| SKIPPED | ~20 |
+| FAIL | 11 |
+| **Total** | **~153** |
+
+122/133 verified tests pass (92%). Remaining failures are in
+vector-f32 IR gaps and edge cases in effect handler dispatch.
+
+Renode board: RV64GC, PLIC/CLINT, NS16550 UART, 256 MB RAM at 0x80000000.
+
+### Plug Build
+
+Both ARM64 and RISC-V plugs are standalone CDX binaries built by the
+x86-64 seed. Rebuild with `codex/plugs/arm64/build.ps1` (~90s) or
+`codex/plugs/riscv/build.ps1`.
 
 ## Skip Inventory
 
