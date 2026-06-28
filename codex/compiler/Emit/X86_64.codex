@@ -156,13 +156,23 @@ Section: Function Emission
    in let r7 = __buf-write-byte (st.workspace.code-buffer) (pos + 6) 144
    in st
 
+  nop-push-4 : CodegenState, Integer -> CodegenState
+  nop-push-4 (st) (pos) =
+   let r1 = __buf-write-byte (st.workspace.code-buffer) pos 15
+   in let r2 = __buf-write-byte (st.workspace.code-buffer) (pos + 1) 31
+   in let r3 = __buf-write-byte (st.workspace.code-buffer) (pos + 2) 64
+   in let r4 = __buf-write-byte (st.workspace.code-buffer) (pos + 3) 0
+   in st
+
   nop-unused-pushes : CodegenState, Integer, Integer, Boolean -> CodegenState
   nop-unused-pushes (st) (func-start) (used) (ofp) =
    let base = if ofp then func-start else func-start + 4
-   in let st1 = if used < 4 then nop-push-2 st (base + 5) else st
-   in let st2 = if used < 3 then nop-push-2 st1 (base + 3) else st1
-   in let st3 = if used < 2 then nop-push-2 st2 (base + 1) else st2
-   in if used < 1 then nop-push-1 st3 base else st3
+   in if used <= 2 then
+    let st1 = if used < 2 then nop-push-2 st (base + 1) else st
+    in let st2 = if used < 1 then nop-push-1 st1 base else st1
+    in nop-push-4 st2 (base + 3)
+   else let st1 = if used < 4 then nop-push-2 st (base + 5) else st
+   in if used < 3 then nop-push-2 st1 (base + 3) else st1
 
  Minimal emission, two tiers. A function that needs at most four
  register locals (no spills) and whose every construct emits through
@@ -278,6 +288,8 @@ Section: Function Emission
     is IrIf (c) (t) (el) (ty) (sp) ->
      tco-max-complex el fname pnames (tco-max-complex t fname pnames best)
     is IrLet (n) (ty) (v) (b) (sp) -> tco-max-complex b fname pnames best
+    is IrMatch (s) (bs) (t) (sp) -> tco-max-complex-branches bs fname pnames best 0
+    is IrAct (stmts) (t) (sp) -> tco-max-complex-act stmts fname pnames best
     is IrApply (f) (a) (ty) (sp) ->
      if is-self-call e fname then
       let args = flatten-tail-args e []
@@ -288,6 +300,20 @@ Section: Function Emission
       in let ct = if c <= 1 then 0 else c
       in if ct > best then ct else best
      else best
+    is otherwise -> best
+
+  tco-max-complex-branches : List IRBranch, Text, List Text, Integer, Integer -> Integer
+  tco-max-complex-branches (branches) (fname) (pnames) (best) (i) =
+   if i == list-length branches then best
+   else let b = list-at branches i
+   in tco-max-complex-branches branches fname pnames (tco-max-complex (b.body) fname pnames best) (i + 1)
+
+  tco-max-complex-act : List IRActStmt, Text, List Text, Integer -> Integer
+  tco-max-complex-act (stmts) (fname) (pnames) (best) =
+   let len = list-length stmts
+   in if len == 0 then best
+   else when list-at stmts (len - 1)
+    is IrDoExec (e) (sp) -> tco-max-complex e fname pnames best
     is otherwise -> best
 
   tco-direct-count-leaf : List IRExpr, List Text, List Text, Integer, Integer -> Integer
@@ -322,11 +348,25 @@ Section: Function Emission
    in let loaded = load-local st-d (loc.reg)
    in store-local (loaded.state) (list-at param-locals ci) (loaded.reg)
 
+  tco-count-complex : CodegenState, List IRExpr, List Integer, Integer, Integer -> Integer
+  tco-count-complex (st) (args) (param-locals) (i) (acc) =
+   if i == list-length args then acc
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then tco-count-complex st args param-locals (i + 1) acc
+   else tco-count-complex st args param-locals (i + 1) (acc + 1)
+
+  tco-ensure-temps : CodegenState, List Integer, Integer -> TcoAllocResult
+  tco-ensure-temps (st) (temps) (needed) =
+   if list-length temps >= needed then TcoAllocResult { alloc-state = st, alloc-locals = temps }
+   else let loc = alloc-local st
+   in tco-ensure-temps (loc.state) (list-push temps (loc.reg)) needed
+
   emit-tail-call-general-shuffle : CodegenState, List IRExpr, List Integer, List Integer, List Integer -> CodegenState
   emit-tail-call-general-shuffle (st) (args) (temp-locals) (param-locals) (order) =
-   let st-c = eval-complex-tail-args st args temp-locals param-locals 0 0
+   let needed = tco-count-complex st args param-locals 0 0
+   in let ensured = tco-ensure-temps st temp-locals needed
+   in let st-c = eval-complex-tail-args (ensured.alloc-state) args (ensured.alloc-locals) param-locals 0 0
    in let st-d = emit-direct-tail-moves st-c args param-locals order 0
-   in copy-complex-temps st-d args temp-locals param-locals 0 0
+   in copy-complex-temps st-d args (ensured.alloc-locals) param-locals 0 0
 
   emit-tail-single-complex : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
   emit-tail-single-complex (st) (args) (param-locals) (order) (ci) =
@@ -416,14 +456,31 @@ Section: Function Emission
     is FunTy (p) (r) -> True
     is otherwise -> False
 
+  leaf-arg-is-bound : IRExpr, List Text -> Boolean
+  leaf-arg-is-bound (a) (binders) =
+   when a
+    is IrName (n) (ty) (sp) -> leaf-name-index binders n 0 >= 0
+    is IrIntLit (v) (sp) -> True
+    is IrBoolLit (v) (sp) -> True
+    is IrBinary (op) (left) (right) (ty) (sp) ->
+     when op
+      is IrAddInt | IrSubInt ->
+       when left
+        is IrName (ln) (lt) (ls) ->
+         if leaf-name-index binders ln 0 >= 0 then
+          when right
+           is IrIntLit (v) (s) -> True
+           is otherwise -> False
+         else False
+        is otherwise -> False
+      is otherwise -> False
+    is otherwise -> False
+
   leaf-args-all-bound : List IRExpr, List Text, Integer -> Boolean
   leaf-args-all-bound (args) (binders) (i) =
    if i == list-length args then True
-   else let a = list-at args i
-   in (when a
-    is IrName (n) (ty) (sp) ->
-     if leaf-name-index binders n 0 >= 0 then leaf-args-all-bound args binders (i + 1) else False
-    is otherwise -> False)
+   else if leaf-arg-is-bound (list-at args i) binders then leaf-args-all-bound args binders (i + 1)
+   else False
 
   leaf-walk-tail-args : CodegenState, List IRExpr, List Text, Text, List Text, Integer, Integer -> Integer
   leaf-walk-tail-args (st) (args) (binders) (fname) (pnames) (lets) (i) =
@@ -589,7 +646,8 @@ Section: Function Emission
    in let is-tco = should-tco def
    in let pnames = for p in (def.params) -> p.name
    in let needs-temps = if is-tco & list-length (def.params) <= 4 then tails-all-direct (def.body) True (def.name) pnames == False else is-tco
-   in let st5 = if is-tco then let tco-alloc = if needs-temps then pre-alloc-tco-temps st4 0 (list-length (def.params)) []
+   in let temp-count = if needs-temps then tco-max-complex (def.body) (def.name) pnames 0 else 0
+   in let st5 = if is-tco then let tco-alloc = if temp-count > 0 then pre-alloc-tco-temps st4 0 temp-count []
     else TcoAllocResult { alloc-state = st4, alloc-locals = [] }
    in let st-a = tco-alloc.alloc-state
    in let p-locals = collect-param-locals (st-a.locals) (def.params) 0 []
@@ -1343,6 +1401,16 @@ Section: Expression Emission
      let r = emit-expr (st-set-tail-pos st in-tail) expr
      in store-local (r.state) target (r.reg)
 
+  last-was-jmp : CodegenState -> Boolean
+  last-was-jmp (st) =
+   if st.code-len < 5 then False
+   else list-at (__buf-read-bytes (st.workspace.code-buffer) (st.code-len - 5) 1) 0 == 233
+
+  emit-jmp-end : CodegenState -> CodegenState
+  emit-jmp-end (st) =
+   if last-was-jmp st then st
+   else st-append-code st (jmp 0)
+
   emit-if-to-local : CodegenState, IRExpr, IRExpr, IRExpr, Integer, Boolean -> CodegenState
   emit-if-to-local (st) (cond) (then-e) (else-e) (target) (in-tail) =
    when cond
@@ -1351,22 +1419,90 @@ Section: Expression Emission
       when right
        is IrIntLit (v) (s) ->
         if v >= (0 - 2147483648) & v <= 2147483647
-        then let saved-tail = st.tco.in-tail-pos
+        then if v == 0 & is-rem-pow2-pattern st left then emit-if-to-local-test-mask st op left then-e else-e target in-tail
+        else let saved-tail = st.tco.in-tail-pos
         in let l = emit-expr (st-set-tail-pos st False) left
         in let inv-cc = invert-cc (comparison-op-cc op)
         in let st3 = st-append-code (l.state) (cmp-ri-or-test (l.reg) v)
         in let jcc-false-pos = st3.code-len
         in let st4 = st-append-code st3 (jcc inv-cc 0)
         in let st5 = emit-to-local st4 then-e target in-tail
-        in let jmp-end-pos = st5.code-len
+        in if last-was-jmp st5 then
+         let st6 = patch-jcc-at st5 jcc-false-pos (st5.code-len)
+         in emit-to-local st6 else-e target in-tail
+        else let jmp-end-pos = st5.code-len
         in let st6 = st-append-code st5 (jmp 0)
         in let st7 = patch-jcc-at st6 jcc-false-pos (st6.code-len)
         in let st8 = emit-to-local st7 else-e target in-tail
         in patch-jmp-at st8 jmp-end-pos (st8.code-len)
-        else emit-if-to-local-generic st cond then-e else-e target in-tail
-       is otherwise -> emit-if-to-local-generic st cond then-e else-e target in-tail
+        else emit-if-to-local-fused-rr st op left right then-e else-e target in-tail
+       is otherwise -> emit-if-to-local-fused-rr st op left right then-e else-e target in-tail
      else emit-if-to-local-generic st cond then-e else-e target in-tail
     is otherwise -> emit-if-to-local-generic st cond then-e else-e target in-tail
+
+  is-rem-pow2-pattern : CodegenState, IRExpr -> Boolean
+  is-rem-pow2-pattern (st) (expr) =
+   when expr
+    is IrBinary (op) (base) (divisor) (ty) (sp) ->
+     when op
+      is IrRemInt ->
+       when divisor
+        is IrIntLit (dv) (ds) -> dv > 0 & bit-and dv (dv - 1) == 0 & if-to-local-left-reg st base >= 0
+        is otherwise -> False
+      is otherwise -> False
+    is otherwise -> False
+
+  emit-if-to-local-test-mask : CodegenState, IRBinaryOp, IRExpr, IRExpr, IRExpr, Integer, Boolean -> CodegenState
+  emit-if-to-local-test-mask (st) (op) (rem-expr) (then-e) (else-e) (target) (in-tail) =
+   when rem-expr
+    is IrBinary (rem-op) (base) (divisor) (ty) (sp) ->
+     when divisor
+      is IrIntLit (dv) (ds) ->
+       let base-reg = if-to-local-left-reg st base
+       in let mask = dv - 1
+       in let inv-cc = invert-cc (comparison-op-cc op)
+       in let st3 = st-append-code st (test-ri base-reg mask)
+       in let jcc-false-pos = st3.code-len
+       in let st4 = st-append-code st3 (jcc inv-cc 0)
+       in let st5 = emit-to-local st4 then-e target in-tail
+       in if last-was-jmp st5 then
+        let st6 = patch-jcc-at st5 jcc-false-pos (st5.code-len)
+        in emit-to-local st6 else-e target in-tail
+       else let jmp-end-pos = st5.code-len
+       in let st6 = st-append-code st5 (jmp 0)
+       in let st7 = patch-jcc-at st6 jcc-false-pos (st6.code-len)
+       in let st8 = emit-to-local st7 else-e target in-tail
+       in patch-jmp-at st8 jmp-end-pos (st8.code-len)
+      is otherwise -> emit-if-to-local-generic st (IrBinary op rem-expr (IrIntLit 0 (ir-expr-span rem-expr)) (ir-expr-type rem-expr) (ir-expr-span rem-expr)) then-e else-e target in-tail
+    is otherwise -> emit-if-to-local-generic st (IrBinary op rem-expr (IrIntLit 0 (ir-expr-span rem-expr)) (ir-expr-type rem-expr) (ir-expr-span rem-expr)) then-e else-e target in-tail
+
+  if-to-local-left-reg : CodegenState, IRExpr -> Integer
+  if-to-local-left-reg (st) (left) =
+   when left
+    is IrName (n) (ty) (sp) ->
+     let slot = lookup-local (st.locals) n
+     in if slot >= 0 & slot < spill-base then slot else 0 - 1
+    is otherwise -> 0 - 1
+
+  emit-if-to-local-fused-rr : CodegenState, IRBinaryOp, IRExpr, IRExpr, IRExpr, IRExpr, Integer, Boolean -> CodegenState
+  emit-if-to-local-fused-rr (st) (op) (cmp-left) (cmp-right) (then-e) (else-e) (target) (in-tail) =
+   let l-reg = if-to-local-left-reg st cmp-left
+   in let r-reg = if-to-local-left-reg st cmp-right
+   in if l-reg >= 0 & r-reg >= 0 then
+    let inv-cc = invert-cc (comparison-op-cc op)
+    in let st3 = st-append-code st (cmp-rr l-reg r-reg)
+    in let jcc-false-pos = st3.code-len
+    in let st4 = st-append-code st3 (jcc inv-cc 0)
+    in let st5 = emit-to-local st4 then-e target in-tail
+    in if last-was-jmp st5 then
+     let st6 = patch-jcc-at st5 jcc-false-pos (st5.code-len)
+     in emit-to-local st6 else-e target in-tail
+    else let jmp-end-pos = st5.code-len
+    in let st6 = st-append-code st5 (jmp 0)
+    in let st7 = patch-jcc-at st6 jcc-false-pos (st6.code-len)
+    in let st8 = emit-to-local st7 else-e target in-tail
+    in patch-jmp-at st8 jmp-end-pos (st8.code-len)
+   else emit-if-to-local-generic st (IrBinary op cmp-left cmp-right (ir-expr-type cmp-left) (ir-expr-span cmp-left)) then-e else-e target in-tail
 
   emit-if-to-local-generic : CodegenState, IRExpr, IRExpr, IRExpr, Integer, Boolean -> CodegenState
   emit-if-to-local-generic (st) (cond) (then-e) (else-e) (target) (in-tail) =
@@ -1375,7 +1511,10 @@ Section: Expression Emission
    in let je-false-pos = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-e 0)
    in let st3 = emit-to-local st2 then-e target in-tail
-   in let jmp-end-pos = st3.code-len
+   in if last-was-jmp st3 then
+    let st4 = patch-jcc-at st3 je-false-pos (st3.code-len)
+    in emit-to-local st4 else-e target in-tail
+   else let jmp-end-pos = st3.code-len
    in let st4 = st-append-code st3 (jmp 0)
    in let st5 = patch-jcc-at st4 je-false-pos (st4.code-len)
    in let st6 = emit-to-local st5 else-e target in-tail
@@ -1579,12 +1718,25 @@ Section: Expression Emission
        is IrAddInt -> emit-binary-add-imm st left v
        is IrSubInt -> emit-binary-sub-imm st left v
        is IrMulInt -> emit-binary-mul-imm st left v
+       is IrDivInt -> if v > 0 & bit-and v (v - 1) == 0 then emit-binary-div-pow2 st left v
+        else emit-binary-or-standard st op left right
+       is IrRemInt -> if v > 0 & bit-and v (v - 1) == 0 then emit-binary-rem-pow2 st left v
+        else emit-binary-or-standard st op left right
        is otherwise -> if is-fusable-int-comparison st op left then emit-binary-cmp-imm st op left v
         else emit-binary-or-standard st op left right
      else emit-binary-or-standard st op left right
     is IrName (n) (ty) (sp) ->
      let slot = lookup-local (st.locals) n
-     in if slot >= 0 & slot < spill-base then emit-binary-reg-right st op left slot right
+     in if slot >= 0 & slot < spill-base then
+      when left
+       is IrIntLit (lv) (ls) ->
+        if lv >= (0 - 2147483648) & lv <= 2147483647 then
+         when op
+          is IrMulInt -> emit-binary-mul-imm st right lv
+          is IrAddInt -> emit-binary-add-imm st right lv
+          is otherwise -> emit-binary-reg-right st op left slot right
+        else emit-binary-reg-right st op left slot right
+       is otherwise -> emit-binary-reg-right st op left slot right
      else emit-binary-or-standard st op left right
     is otherwise ->
      when left
@@ -1698,6 +1850,22 @@ Section: Expression Emission
    let l = emit-expr (st-set-tail-pos st False) left
    in let rd = alloc-temp (l.state)
    in EmitResult { state = st-append-code (rd.state) (imul-rri (rd.reg) (l.reg) imm), reg = rd.reg }
+
+  int-log2 : Integer -> Integer
+  int-log2 (v) = if v <= 1 then 0 else 1 + int-log2 (bit-shru v 1)
+
+  emit-binary-div-pow2 : CodegenState, IRExpr, Integer -> EmitResult
+  emit-binary-div-pow2 (st) (left) (divisor) =
+   let l = emit-expr (st-set-tail-pos st False) left
+   in let rd = alloc-temp (l.state)
+   in let shift = int-log2 divisor
+   in EmitResult { state = st-append-code (rd.state) (mov-rr (rd.reg) (l.reg) & sar-ri (rd.reg) shift), reg = rd.reg }
+
+  emit-binary-rem-pow2 : CodegenState, IRExpr, Integer -> EmitResult
+  emit-binary-rem-pow2 (st) (left) (divisor) =
+   let l = emit-expr (st-set-tail-pos st False) left
+   in let rd = alloc-temp (l.state)
+   in EmitResult { state = st-append-code (rd.state) (mov-rr (rd.reg) (l.reg) & and-ri (rd.reg) (divisor - 1)), reg = rd.reg }
 
   cmp-ri-or-test : Integer, Integer -> List Integer
   cmp-ri-or-test (rd) (imm) =

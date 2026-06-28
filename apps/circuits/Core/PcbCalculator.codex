@@ -1,0 +1,166 @@
+Chapter: PcbCalculator
+  cites Foreword chapter List
+
+ PCB design calculators for trace width, via current capacity,
+ impedance, wavelength, and thermal relief. These are the reference
+ implementations behind the interactive calculator panel.
+
+Section: Trace Width (IPC-2221)
+
+ Calculate minimum trace width for a given current, temperature rise,
+ and copper weight. Uses the IPC-2221 external layer formula.
+ All temperatures in Celsius, current in milliamps, width in nanometers.
+
+  TraceWidthInput = record {
+    tw-current-ma : Integer,
+    tw-temp-rise-c : Integer,
+    tw-copper-weight-oz : Integer,
+    tw-layer : Integer
+  }
+
+  TraceWidthResult = record {
+    twr-width-nm : Integer,
+    twr-current-ma : Integer,
+    twr-temp-rise-c : Integer,
+    twr-resistance-mohm : Integer
+  }
+
+  trace-copper-thickness-nm : Integer -> Integer
+  trace-copper-thickness-nm (oz) =
+    if oz == 1 then 35000
+    else if oz == 2 then 70000
+    else if oz == 3 then 105000
+    else 35000
+
+Section: Via Current Capacity
+
+  ViaCurrentInput = record {
+    vc-drill-nm : Integer,
+    vc-plating-thickness-nm : Integer,
+    vc-length-nm : Integer,
+    vc-temp-rise-c : Integer
+  }
+
+  ViaCurrentResult = record {
+    vcr-max-current-ma : Integer,
+    vcr-resistance-mohm : Integer,
+    vcr-thermal-resistance : Integer
+  }
+
+Section: Wavelength Calculator
+
+ For RF and high-speed design: calculate wavelength and critical
+ trace length at a given frequency and dielectric constant.
+
+  wavelength-nm : Integer, Integer -> Integer
+  wavelength-nm (freq-mhz) (er-x1000) =
+    let c-nm-per-ns = 299792458
+    in let effective-er = er-x1000 * 1000
+    in let lambda = c-nm-per-ns * 1000 / freq-mhz
+    in lambda
+
+  critical-length-nm : Integer, Integer -> Integer
+  critical-length-nm (freq-mhz) (er-x1000) =
+    wavelength-nm freq-mhz er-x1000 / 10
+
+Section: Resistor Color Code
+
+  ColorBand =
+    | BandBlack
+    | BandBrown
+    | BandRed
+    | BandOrange
+    | BandYellow
+    | BandGreen
+    | BandBlue
+    | BandViolet
+    | BandGrey
+    | BandWhite
+    | BandGold
+    | BandSilver
+    | BandNone
+
+  color-band-value : ColorBand -> Integer
+  color-band-value (b) = when b
+    is BandBlack -> 0
+    is BandBrown -> 1
+    is BandRed -> 2
+    is BandOrange -> 3
+    is BandYellow -> 4
+    is BandGreen -> 5
+    is BandBlue -> 6
+    is BandViolet -> 7
+    is BandGrey -> 8
+    is BandWhite -> 9
+    is BandGold -> -1
+    is BandSilver -> -2
+    is BandNone -> -3
+
+  color-band-multiplier : ColorBand -> Integer
+  color-band-multiplier (b) = when b
+    is BandBlack -> 1
+    is BandBrown -> 10
+    is BandRed -> 100
+    is BandOrange -> 1000
+    is BandYellow -> 10000
+    is BandGreen -> 100000
+    is BandBlue -> 1000000
+    is BandViolet -> 10000000
+    is BandGrey -> 100000000
+    is BandWhite -> 1000000000
+    is BandGold -> 0
+    is BandSilver -> 0
+    is BandNone -> 0
+
+  color-band-name : ColorBand -> Text
+  color-band-name (b) = when b
+    is BandBlack -> "Black"
+    is BandBrown -> "Brown"
+    is BandRed -> "Red"
+    is BandOrange -> "Orange"
+    is BandYellow -> "Yellow"
+    is BandGreen -> "Green"
+    is BandBlue -> "Blue"
+    is BandViolet -> "Violet"
+    is BandGrey -> "Grey"
+    is BandWhite -> "White"
+    is BandGold -> "Gold"
+    is BandSilver -> "Silver"
+    is BandNone -> "None"
+
+  four-band-resistance : ColorBand, ColorBand, ColorBand -> Integer
+  four-band-resistance (b1) (b2) (multiplier) =
+    (color-band-value b1 * 10 + color-band-value b2) * color-band-multiplier multiplier
+
+  five-band-resistance : ColorBand, ColorBand, ColorBand, ColorBand -> Integer
+  five-band-resistance (b1) (b2) (b3) (multiplier) =
+    (color-band-value b1 * 100 + color-band-value b2 * 10 + color-band-value b3) * color-band-multiplier multiplier
+
+Section: Voltage Divider
+
+  voltage-divider-output : Integer, Integer, Integer -> Integer
+  voltage-divider-output (v-in-mv) (r1-ohm) (r2-ohm) =
+    v-in-mv * r2-ohm / (r1-ohm + r2-ohm)
+
+  voltage-divider-r2 : Integer, Integer, Integer -> Integer
+  voltage-divider-r2 (v-in-mv) (v-out-mv) (r1-ohm) =
+    r1-ohm * v-out-mv / (v-in-mv - v-out-mv)
+
+Section: Decoupling Capacitor
+
+  decoupling-capacitance-pf : Integer, Integer -> Integer
+  decoupling-capacitance-pf (freq-mhz) (impedance-mohm) =
+    if freq-mhz <= 0 then 0
+    else if impedance-mohm <= 0 then 0
+    else 1000000000 / (6283 * freq-mhz * impedance-mohm / 1000)
+
+Section: Power Dissipation
+
+  regulator-power-mw : Integer, Integer, Integer -> Integer
+  regulator-power-mw (v-in-mv) (v-out-mv) (current-ma) =
+    (v-in-mv - v-out-mv) * current-ma / 1000
+
+  led-resistor-ohm : Integer, Integer, Integer -> Integer
+  led-resistor-ohm (v-supply-mv) (v-forward-mv) (current-ma) =
+    if current-ma <= 0 then 0
+    else (v-supply-mv - v-forward-mv) / current-ma

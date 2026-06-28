@@ -1,0 +1,268 @@
+Chapter: MonteCarloSim
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Statistical variation analysis via Monte Carlo simulation. Varies
+ component parameters according to specified distributions and
+ collects result statistics including mean, standard deviation,
+ yield, and histogram data.
+
+Section: Distribution
+
+  McDistribution =
+    | McUniform (Real) (Real)
+    | McGaussian (Real) (Real)
+    | McWorstCase
+
+Section: Parameter
+
+  McParameter = record {
+    mcp-element-name : Text,
+    mcp-param-name : Text,
+    mcp-nominal : Real,
+    mcp-distribution : McDistribution,
+    mcp-tolerance-pct : Real
+  }
+
+Section: Parameter Value
+
+  McParamValue = record {
+    mpv-element : Text,
+    mpv-param : Text,
+    mpv-value : Real
+  }
+
+Section: Run
+
+  McRun = record {
+    mcr-run-index : Integer,
+    mcr-param-values : List McParamValue,
+    mcr-result-value : Real
+  }
+
+Section: Configuration
+
+  McConfig = record {
+    mcc-num-runs : Integer,
+    mcc-parameters : List McParameter,
+    mcc-measure-node : Text,
+    mcc-seed : Integer
+  }
+
+Section: Result
+
+  McResult = record {
+    mcres-config : McConfig,
+    mcres-runs : List McRun,
+    mcres-mean : Real,
+    mcres-std-dev : Real,
+    mcres-min-value : Real,
+    mcres-max-value : Real,
+    mcres-yield-pct : Real,
+    mcres-histogram-bins : List Integer
+  }
+
+Section: Construction
+
+  empty-mc-result : McConfig -> McResult
+  empty-mc-result (cfg) = McResult {
+      mcres-config = cfg,
+      mcres-runs = [],
+      mcres-mean = 0.0,
+      mcres-std-dev = 0.0,
+      mcres-min-value = 0.0,
+      mcres-max-value = 0.0,
+      mcres-yield-pct = 0.0,
+      mcres-histogram-bins = []
+    }
+
+  mc-add-run : McResult, McRun -> McResult
+  mc-add-run (res) (run) =
+    __record-set res "mcres-runs" (list-push res.mcres-runs run)
+
+Section: Real Counting
+
+ Counts from zero to n accumulating 1.0 per step, producing the
+ equivalent of n as a Real without Integer-to-Real conversion.
+
+  mc-int-count-real : Integer, Integer, Real -> Real
+  mc-int-count-real (i) (n) (acc) =
+    if i >= n then acc else mc-int-count-real (i + 1) n (acc + 1.0)
+
+Section: Statistics
+
+ Computes the arithmetic mean of all run result values.
+
+  mc-compute-mean : McResult -> Real
+  mc-compute-mean (res) =
+    let n = list-length res.mcres-runs
+    in if n == 0 then 0.0 else mc-mean-calc res n
+
+  mc-mean-calc : McResult, Integer -> Real
+  mc-mean-calc (res) (n) = let total = mc-sum-results res.mcres-runs 0 n 0.0 in let count = real-from-int n in total / count
+
+  mc-sum-results : List McRun, Integer, Integer, Real -> Real
+  mc-sum-results (runs) (i) (n) (acc) =
+    if i >= n then acc else mc-sum-step runs i n acc
+
+  mc-sum-step : List McRun, Integer, Integer, Real -> Real
+  mc-sum-step (runs) (i) (n) (acc) = let run = list-at runs i in mc-sum-results runs (i + 1) n (acc + run.mcr-result-value)
+
+ Computes the population standard deviation of run results.
+
+  mc-compute-std-dev : McResult -> Real
+  mc-compute-std-dev (res) =
+    let n = list-length res.mcres-runs
+    in if n == 0 then 0.0 else mc-std-dev-calc res n
+
+  mc-std-dev-calc : McResult, Integer -> Real
+  mc-std-dev-calc (res) (n) =
+    let mean = mc-compute-mean res
+    in let sum-sq = mc-sum-sq-diff res.mcres-runs mean 0 n 0.0
+    in let count = real-from-int n
+    in let variance = sum-sq / count
+    in mc-real-sqrt variance
+
+  mc-sum-sq-diff : List McRun, Real, Integer, Integer, Real -> Real
+  mc-sum-sq-diff (runs) (mean) (i) (n) (acc) =
+    if i >= n then acc else mc-sum-sq-step runs mean i n acc
+
+  mc-sum-sq-step : List McRun, Real, Integer, Integer, Real -> Real
+  mc-sum-sq-step (runs) (mean) (i) (n) (acc) =
+    let run = list-at runs i
+    in let diff = run.mcr-result-value - mean
+    in mc-sum-sq-diff runs mean (i + 1) n (acc + diff * diff)
+
+  mc-real-sqrt : Real -> Real
+  mc-real-sqrt (x) =
+    if x <= 0.0 then 0.0
+    else mc-sqrt-loop x (x / 2.0 + 1.0)
+
+  mc-sqrt-loop : Real, Real -> Real
+  mc-sqrt-loop (x) (guess) =
+    let next = (guess + x / guess) / 2.0
+    in if next ~ guess then next
+    else mc-sqrt-loop x next
+
+Section: Yield
+
+ Computes the percentage of runs whose result value falls within
+ the specification limits [low-spec, high-spec].
+
+  mc-compute-yield : McResult, Real, Real -> Real
+  mc-compute-yield (res) (low-spec) (high-spec) =
+    let n = list-length res.mcres-runs
+    in if n == 0 then 0.0 else mc-yield-calc res low-spec high-spec n
+
+  mc-yield-calc : McResult, Real, Real, Integer -> Real
+  mc-yield-calc (res) (low-spec) (high-spec) (n) =
+    let passing = mc-count-passing res.mcres-runs low-spec high-spec 0 n 0.0
+    in let count = real-from-int n
+    in passing * 100.0 / count
+
+  mc-count-passing : List McRun, Real, Real, Integer, Integer, Real -> Real
+  mc-count-passing (runs) (low) (high) (i) (n) (count) =
+    if i >= n then count else mc-count-step runs low high i n count
+
+  mc-count-step : List McRun, Real, Real, Integer, Integer, Real -> Real
+  mc-count-step (runs) (low) (high) (i) (n) (count) =
+    let run = list-at runs i
+    in let in-spec = if run.mcr-result-value >= low then if run.mcr-result-value <= high then 1.0 else 0.0 else 0.0
+    in mc-count-passing runs low high (i + 1) n (count + in-spec)
+
+Section: Histogram
+
+ Bins run results into bucket-count equal-width buckets between the
+ given minimum and maximum values. Returns a list of integers where
+ each element is the count of runs falling into that bucket.
+
+  mc-histogram : McResult, Integer, Real, Real -> List Integer
+  mc-histogram (res) (bucket-count) (range-min) (range-max) =
+    let range = range-max - range-min
+    in if range ~ 0.0 then [] else mc-histogram-fill res bucket-count range-min range
+
+  mc-histogram-fill : McResult, Integer, Real, Real -> List Integer
+  mc-histogram-fill (res) (bucket-count) (range-min) (range) =
+    let bins = mc-init-bins bucket-count []
+    in let bc-real = real-from-int bucket-count
+    in mc-fill-bins res.mcres-runs bins bucket-count bc-real range-min range 0 (list-length res.mcres-runs)
+
+  mc-init-bins : Integer, List Integer -> List Integer
+  mc-init-bins (n) (acc) =
+    if n <= 0 then acc
+    else mc-init-bins (n - 1) (list-push acc 0)
+
+  mc-fill-bins : List McRun, List Integer, Integer, Real, Real, Real, Integer, Integer -> List Integer
+  mc-fill-bins (runs) (bins) (bucket-count) (bc-real) (range-min) (range) (i) (n) =
+    if i >= n then bins else mc-fill-step runs bins bucket-count bc-real range-min range i n
+
+  mc-fill-step : List McRun, List Integer, Integer, Real, Real, Real, Integer, Integer -> List Integer
+  mc-fill-step (runs) (bins) (bucket-count) (bc-real) (range-min) (range) (i) (n) =
+    let run = list-at runs i
+    in let frac = (run.mcr-result-value - range-min) / range
+    in let raw-idx = real-to-int (frac * bc-real)
+    in let idx = if raw-idx < 0 then 0 else if raw-idx >= bucket-count then bucket-count - 1 else raw-idx
+    in let old-val = list-at bins idx
+    in let new-bins = mc-list-set bins idx (old-val + 1)
+    in mc-fill-bins runs new-bins bucket-count bc-real range-min range (i + 1) n
+
+  mc-list-set : List Integer, Integer, Integer -> List Integer
+  mc-list-set (xs) (target) (val) =
+    mc-list-set-loop xs target val 0 (list-length xs) []
+
+  mc-list-set-loop : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mc-list-set-loop (xs) (target) (val) (i) (n) (acc) =
+    if i >= n then acc else mc-set-step xs target val i n acc
+
+  mc-set-step : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mc-set-step (xs) (target) (val) (i) (n) (acc) =
+    let elem = list-at xs i
+    in let out = if i == target then val else elem
+    in mc-list-set-loop xs target val (i + 1) n (list-push acc out)
+
+Section: Summary
+
+  mc-result-summary : McResult -> Text
+  mc-result-summary (res) =
+    let header = "Monte Carlo Analysis\n"
+    in let runs = "  Runs: " & show (list-length res.mcres-runs) & "\n"
+    in let node = "  Measure node: " & res.mcres-config.mcc-measure-node & "\n"
+    in let params = "  Parameters: " & show (list-length res.mcres-config.mcc-parameters) & "\n"
+    in let stats = mc-format-stats res
+    in header & runs & node & params & stats
+
+  mc-format-stats : McResult -> Text
+  mc-format-stats (res) =
+    let n = list-length res.mcres-runs
+    in if n == 0 then "  No results.\n" else mc-format-stats-detail res n
+
+  mc-format-stats-detail : McResult, Integer -> Text
+  mc-format-stats-detail (res) (n) =
+    let mean = mc-compute-mean res
+    in let sdev = mc-compute-std-dev res
+    in let min-val = mc-find-min res.mcres-runs 0 n (list-at res.mcres-runs 0).mcr-result-value
+    in let max-val = mc-find-max res.mcres-runs 0 n (list-at res.mcres-runs 0).mcr-result-value
+    in mc-stats-text mean sdev min-val max-val
+
+  mc-stats-text : Real, Real, Real, Real -> Text
+  mc-stats-text (mean) (sdev) (min-val) (max-val) = "  Mean: " & (show mean) & "\n" & "  Std Dev: " & (show sdev) & "\n" & "  Min: " & (show min-val) & "\n" & "  Max: " & (show max-val) & "\n"
+
+  mc-find-min : List McRun, Integer, Integer, Real -> Real
+  mc-find-min (runs) (i) (n) (best) =
+    if i >= n then best else mc-find-min-step runs i n best
+
+  mc-find-min-step : List McRun, Integer, Integer, Real -> Real
+  mc-find-min-step (runs) (i) (n) (best) =
+    let run = list-at runs i
+    in let next = if run.mcr-result-value < best then run.mcr-result-value else best
+    in mc-find-min runs (i + 1) n next
+
+  mc-find-max : List McRun, Integer, Integer, Real -> Real
+  mc-find-max (runs) (i) (n) (best) =
+    if i >= n then best else mc-find-max-step runs i n best
+
+  mc-find-max-step : List McRun, Integer, Integer, Real -> Real
+  mc-find-max-step (runs) (i) (n) (best) =
+    let run = list-at runs i
+    in let next = if run.mcr-result-value > best then run.mcr-result-value else best
+    in mc-find-max runs (i + 1) n next

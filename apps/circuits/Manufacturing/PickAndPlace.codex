@@ -1,0 +1,140 @@
+Chapter: PickAndPlace
+  cites Foreword chapter List
+
+ Pick-and-place centroid file generation for SMT assembly. Produces
+ placement data files that automated pick-and-place machines consume
+ to position surface-mount components on the board.
+
+Section: Side
+
+  PlacementSide =
+    | PlaceFront
+    | PlaceBack
+
+  placement-side-text : PlacementSide -> Text
+  placement-side-text (s) = when s
+    is PlaceFront -> "top"
+    is PlaceBack -> "bottom"
+
+Section: Entry
+
+  PlacementEntry = record {
+    pe-ref : Text,
+    pe-value : Text,
+    pe-footprint : Text,
+    pe-x-mm : Integer,
+    pe-y-mm : Integer,
+    pe-rotation-deg : Integer,
+    pe-side : PlacementSide,
+    pe-mpn : Text
+  }
+
+Section: Format
+
+  PlacementFormat =
+    | PnpCsv
+    | PnpKicad
+    | PnpAltium
+
+Section: File
+
+  PlacementFile = record {
+    pf-entries : List PlacementEntry,
+    pf-units : Text,
+    pf-origin-x : Integer,
+    pf-origin-y : Integer,
+    pf-board-name : Text
+  }
+
+  empty-placement-file : PlacementFile
+  empty-placement-file = PlacementFile {
+    pf-entries = [],
+    pf-units = "mm",
+    pf-origin-x = 0,
+    pf-origin-y = 0,
+    pf-board-name = "untitled"
+  }
+
+  add-placement-entry : PlacementFile, PlacementEntry -> PlacementFile
+  add-placement-entry (pf) (entry) = PlacementFile {
+    pf-entries = list-push pf.pf-entries entry,
+    pf-units = pf.pf-units,
+    pf-origin-x = pf.pf-origin-x,
+    pf-origin-y = pf.pf-origin-y,
+    pf-board-name = pf.pf-board-name
+  }
+
+Section: Coordinate Formatting
+
+ Formats a millimeter integer for output. Assembly machines expect
+ simple numeric values with the unit implied by the file header.
+
+  pnp-format-coord : Integer -> Text
+  pnp-format-coord (v) =
+    if v < 0 then "-" & show (0 - v)
+    else show v
+
+Section: Entry Output
+
+ Tab-separated line: ref, value, package, x, y, rotation, side.
+
+  placement-entry-to-csv : PlacementEntry -> Text
+  placement-entry-to-csv (entry) =
+    let a = entry.pe-ref & "," & entry.pe-value & "," & entry.pe-footprint & ","
+    in let b = pnp-format-coord entry.pe-x-mm & "," & pnp-format-coord entry.pe-y-mm & ","
+    in a & b & (show entry.pe-rotation-deg) & "," & placement-side-text entry.pe-side
+
+Section: File Header
+
+  placement-file-header : Text
+  placement-file-header =
+    "Ref,Value,Package,PosX,PosY,Rot,Side"
+
+Section: File Output
+
+ Assembles the complete placement file: header line followed by one
+ line per entry.
+
+  placement-entries-text : List PlacementEntry, Text -> Text
+  placement-entries-text (entries) (acc) =
+    placement-entries-loop entries acc 0 (list-length entries)
+
+  placement-entries-loop : List PlacementEntry, Text, Integer, Integer -> Text
+  placement-entries-loop (entries) (acc) (i) (n) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in placement-entries-loop entries (acc & (placement-entry-to-csv e) & "") (i + 1) n
+
+  placement-file-to-text : PlacementFile -> Text
+  placement-file-to-text (pf) =
+    placement-file-header & "" & placement-entries-text pf.pf-entries ""
+
+Section: Side Counts
+
+  placement-count-side : List PlacementEntry, PlacementSide, Integer -> Integer
+  placement-count-side (entries) (target) (acc) =
+    placement-count-side-loop entries target acc 0 (list-length entries)
+
+  placement-count-side-loop : List PlacementEntry, PlacementSide, Integer, Integer, Integer -> Integer
+  placement-count-side-loop (entries) (target) (acc) (i) (n) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in placement-count-side-step e entries target acc i n
+
+  placement-count-side-step : PlacementEntry, List PlacementEntry, PlacementSide, Integer, Integer, Integer -> Integer
+  placement-count-side-step (e) (entries) (target) (acc) (i) (n) =
+    when e.pe-side
+      is PlaceFront ->
+        when target
+          is PlaceFront -> placement-count-side-loop entries target (acc + 1) (i + 1) n
+          is PlaceBack -> placement-count-side-loop entries target acc (i + 1) n
+      is PlaceBack ->
+        when target
+          is PlaceBack -> placement-count-side-loop entries target (acc + 1) (i + 1) n
+          is PlaceFront -> placement-count-side-loop entries target acc (i + 1) n
+
+  placement-front-count : PlacementFile -> Integer
+  placement-front-count (pf) = placement-count-side pf.pf-entries PlaceFront 0
+
+  placement-back-count : PlacementFile -> Integer
+  placement-back-count (pf) = placement-count-side pf.pf-entries PlaceBack 0

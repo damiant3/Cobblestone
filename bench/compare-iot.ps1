@@ -77,12 +77,16 @@ function Parse-CodexFunc {
 
 # --- Step 3: Generate Report ---
 
-$benchmarks = @('fib', 'fact', 'gcd', 'sum')
+$benchmarks = @('fib', 'fact', 'gcd', 'sum', 'ack', 'tak', 'collatz', 'locals')
 $benchConfig = @{
-    'fib'  = @{ CFunc = 'fib';  CodexFuncs = @('fib') }
-    'fact' = @{ CFunc = 'fact'; CodexFuncs = @('fact') }
-    'gcd'  = @{ CFunc = 'gcd';  CodexFuncs = @('my-gcd') }
-    'sum'  = @{ CFunc = 'sum';  CodexFuncs = @('sum-to') }
+    'fib'     = @{ CFunc = 'fib';     CodexFuncs = @('fib') }
+    'fact'    = @{ CFunc = 'fact';    CodexFuncs = @('fact') }
+    'gcd'     = @{ CFunc = 'gcd';     CodexFuncs = @('my-gcd') }
+    'sum'     = @{ CFunc = 'sum';     CodexFuncs = @('sum-to') }
+    'ack'     = @{ CFunc = 'ack';     CodexFuncs = @('ack') }
+    'tak'     = @{ CFunc = 'tak';     CodexFuncs = @('tak') }
+    'collatz' = @{ CFunc = 'collatz'; CodexFuncs = @('collatz') }
+    'locals'  = @{ CFunc = 'compute'; CodexFuncs = @('compute') }
 }
 
 $archConfigs = @(

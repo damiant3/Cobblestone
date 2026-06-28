@@ -1,0 +1,143 @@
+Chapter: SpiceNetlist
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ SPICE netlist generation from schematic data. Converts circuit
+ elements into SPICE deck format for simulation. Each element maps
+ to a SpiceStatement which serialises to standard SPICE syntax.
+
+Section: Element Types
+
+  SpiceElement =
+    | SResistor (Text) (Text) (Text) (Text)
+    | SCapacitor (Text) (Text) (Text) (Text)
+    | SInductor (Text) (Text) (Text) (Text)
+    | SDiode (Text) (Text) (Text) (Text)
+    | SBjt (Text) (Text) (Text) (Text) (Text)
+    | SMosfet (Text) (Text) (Text) (Text) (Text)
+    | SVoltageSource (Text) (Text) (Text) (Text)
+    | SCurrentSource (Text) (Text) (Text) (Text)
+    | SSubcircuit (Text) (List Text) (Text)
+
+Section: Node
+
+  SpiceNode = record {
+    sn-node-id : Integer,
+    sn-node-name : Text
+  }
+
+Section: Statement
+
+  SpiceStatement = record {
+    ss-element-name : Text,
+    ss-nodes : List Text,
+    ss-value : Text,
+    ss-model-name : Text
+  }
+
+Section: Netlist
+
+  SpiceNetlist = record {
+    sn-title : Text,
+    sn-statements : List SpiceStatement,
+    sn-models : List Text,
+    sn-analysis-commands : List Text
+  }
+
+Section: Construction
+
+  empty-spice-netlist : Text -> SpiceNetlist
+  empty-spice-netlist (title) = SpiceNetlist {
+      sn-title = title,
+      sn-statements = [],
+      sn-models = [],
+      sn-analysis-commands = []
+    }
+
+  add-statement : SpiceNetlist, SpiceStatement -> SpiceNetlist
+  add-statement (nl) (stmt) =
+    __record-set nl "sn-statements" (list-push nl.sn-statements stmt)
+
+  add-model : SpiceNetlist, Text -> SpiceNetlist
+  add-model (nl) (model-text) =
+    __record-set nl "sn-models" (list-push nl.sn-models model-text)
+
+  add-analysis-command : SpiceNetlist, Text -> SpiceNetlist
+  add-analysis-command (nl) (cmd) =
+    __record-set nl "sn-analysis-commands" (list-push nl.sn-analysis-commands cmd)
+
+Section: Statement Formatting
+
+ Formats a SpiceStatement into a standard SPICE line such as
+ "R1 node1 node2 10k" or "M1 d g s b NMOS".
+
+  spice-statement-to-text : SpiceStatement -> Text
+  spice-statement-to-text (stmt) =
+    let nodes-text = join-nodes stmt.ss-nodes 0 (list-length stmt.ss-nodes) ""
+    in let base = stmt.ss-element-name & " " & nodes-text
+    in let with-value = if stmt.ss-value == "" then base else base & " " & stmt.ss-value
+    in if stmt.ss-model-name == "" then with-value else with-value & " " & stmt.ss-model-name
+
+  join-nodes : List Text, Integer, Integer, Text -> Text
+  join-nodes (nodes) (i) (len) (acc) =
+    if i >= len then acc else join-node-step nodes i len acc
+
+  join-node-step : List Text, Integer, Integer, Text -> Text
+  join-node-step (nodes) (i) (len) (acc) =
+    let node = list-at nodes i
+    in let next = if acc == "" then node else acc & " " & node
+    in join-nodes nodes (i + 1) len next
+
+Section: Netlist Formatting
+
+ Assembles a complete SPICE deck: title line, element statements,
+ model definitions, analysis commands, and .end directive.
+
+  spice-netlist-to-text : SpiceNetlist -> Text
+  spice-netlist-to-text (nl) =
+    let title-line = nl.sn-title
+    in let stmts = format-statements nl.sn-statements 0 (list-length nl.sn-statements) ""
+    in let models = format-lines nl.sn-models 0 (list-length nl.sn-models) ""
+    in let cmds = format-lines nl.sn-analysis-commands 0 (list-length nl.sn-analysis-commands) ""
+    in title-line & "\n" & stmts & models & cmds & ".end\n"
+
+  format-statements : List SpiceStatement, Integer, Integer, Text -> Text
+  format-statements (stmts) (i) (len) (acc) =
+    if i >= len then acc else fmt-stmt-step stmts i len acc
+
+  fmt-stmt-step : List SpiceStatement, Integer, Integer, Text -> Text
+  fmt-stmt-step (stmts) (i) (len) (acc) =
+    let line = spice-statement-to-text (list-at stmts i) in format-statements stmts (i + 1) len (acc & line & "\n")
+
+  format-lines : List Text, Integer, Integer, Text -> Text
+  format-lines (lines) (i) (len) (acc) =
+    if i >= len then acc else fmt-line-step lines i len acc
+
+  fmt-line-step : List Text, Integer, Integer, Text -> Text
+  fmt-line-step (xs) (i) (len) (acc) =
+    let line = list-at xs i in format-lines xs (i + 1) len (acc & line & "\n")
+
+Section: Element to Statement
+
+ Convenience converters from SpiceElement variant to SpiceStatement.
+
+  element-to-statement : SpiceElement -> SpiceStatement
+  element-to-statement (e) = when e
+    is SResistor (name) (n1) (n2) (val) ->
+      SpiceStatement { ss-element-name = name, ss-nodes = list-push (list-push [] n1) n2, ss-value = val, ss-model-name = "" }
+    is SCapacitor (name) (n1) (n2) (val) ->
+      SpiceStatement { ss-element-name = name, ss-nodes = list-push (list-push [] n1) n2, ss-value = val, ss-model-name = "" }
+    is SInductor (name) (n1) (n2) (val) ->
+      SpiceStatement { ss-element-name = name, ss-nodes = list-push (list-push [] n1) n2, ss-value = val, ss-model-name = "" }
+    is SDiode (name) (anode) (cathode) (model) ->
+      SpiceStatement { ss-element-name = name, ss-nodes = list-push (list-push [] anode) cathode, ss-value = "", ss-model-name = model }
+    is SBjt (name) (collector) (base) (emitter) (model) ->
+      SpiceStatement { ss-element-name = name, ss-nodes = list-push (list-push (list-push [] collector) base) emitter, ss-value = "", ss-model-name = model }
+    is SMosfet (name) (drain) (gate) (source) (model) ->
+      SpiceStatement { ss-element-name = name, ss-nodes = list-push (list-push (list-push (list-push [] drain) gate) source) "0", ss-value = "", ss-model-name = model }
+    is SVoltageSource (name) (nplus) (nminus) (spec) ->
+      SpiceStatement { ss-element-name = name, ss-nodes = list-push (list-push [] nplus) nminus, ss-value = spec, ss-model-name = "" }
+    is SCurrentSource (name) (nplus) (nminus) (spec) ->
+      SpiceStatement { ss-element-name = name, ss-nodes = list-push (list-push [] nplus) nminus, ss-value = spec, ss-model-name = "" }
+    is SSubcircuit (name) (nodes) (subckt-name) ->
+      SpiceStatement { ss-element-name = name, ss-nodes = nodes, ss-value = "", ss-model-name = subckt-name }

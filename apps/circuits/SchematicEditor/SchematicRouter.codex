@@ -1,0 +1,244 @@
+Chapter: SchematicRouter
+  cites Foreword chapter List
+
+ Auto-wire routing for schematics. Given two pin positions, generates
+ orthogonal wire segments with junction insertion. Schematic wires are
+ always axis-aligned (horizontal or vertical) unless direct mode is
+ used. The grid is 1270000 nm (50 mil), matching the standard
+ schematic grid.
+
+ We say:
+
+Section: Wire Route Segment
+
+  WireRouteSegment = record {
+    wrs-x1 : Integer,
+    wrs-y1 : Integer,
+    wrs-x2 : Integer,
+    wrs-y2 : Integer
+  }
+
+Section: Junction Point
+
+  RouteJunction = record {
+    rj-x : Integer,
+    rj-y : Integer
+  }
+
+Section: Wire Route
+
+  WireRoute = record {
+    wr-segments : List WireRouteSegment,
+    wr-junctions : List RouteJunction,
+    wr-segment-count : Integer
+  }
+
+  empty-wire-route : WireRoute
+  empty-wire-route = WireRoute {
+    wr-segments = [],
+    wr-junctions = [],
+    wr-segment-count = 0
+  }
+
+Section: Route Mode
+
+  WireRouteMode =
+    | RouteOrthogonal
+    | RouteManual
+    | RouteDirect
+
+Section: Grid Snapping
+
+ The schematic grid is 1270000 nm (50 mil). Snap a coordinate to
+ the nearest grid point by rounding to the closest multiple.
+
+  schematic-grid : Integer
+  schematic-grid = 1270000
+
+  snap-wire-to-grid : Integer -> Integer
+  snap-wire-to-grid (coord) =
+    let g = schematic-grid
+    in let half = g / 2
+    in let remainder = if coord >= 0
+          then coord - (coord / g) * g
+          else let pos = 0 - coord
+            in let r = pos - (pos / g) * g
+            in if r == 0 then 0 else g - r
+    in if remainder >= half
+      then coord + g - remainder
+      else coord - remainder
+
+Section: Absolute Value
+
+  abs-val : Integer -> Integer
+  abs-val (x) = if x < 0 then 0 - x else x
+
+Section: Segment Length
+
+ Length of a single segment. For axis-aligned segments this is the
+ absolute difference along the active axis. For diagonal segments
+ we approximate with Manhattan distance.
+
+  segment-length : WireRouteSegment -> Integer
+  segment-length (seg) =
+    let dx = abs-val (seg.wrs-x2 - seg.wrs-x1)
+    in let dy = abs-val (seg.wrs-y2 - seg.wrs-y1)
+    in dx + dy
+
+Section: Total Route Length
+
+  route-length-loop : List WireRouteSegment, Integer -> Integer
+  route-length-loop (segs) (acc) = route-length-idx segs acc 0 (list-length segs)
+
+  route-length-idx : List WireRouteSegment, Integer, Integer, Integer -> Integer
+  route-length-idx (segs) (acc) (i) (n) =
+    if i >= n then acc
+    else route-length-idx segs (acc + segment-length (list-at segs i)) (i + 1) n
+
+  wire-route-total-length : WireRoute -> Integer
+  wire-route-total-length (route) = route-length-loop route.wr-segments 0
+
+Section: Orthogonal Routing
+
+ Generate an L-shaped route between two points: a horizontal segment
+ followed by a vertical segment. If the two points share an axis,
+ only one segment is produced. A junction is placed at the bend
+ point.
+
+  route-orthogonal : Integer, Integer, Integer, Integer -> WireRoute
+  route-orthogonal (x1) (y1) (x2) (y2) =
+    if x1 == x2 then
+      if y1 == y2 then empty-wire-route
+      else let seg = WireRouteSegment {
+        wrs-x1 = x1, wrs-y1 = y1,
+        wrs-x2 = x2, wrs-y2 = y2
+      }
+      in WireRoute {
+        wr-segments = [seg],
+        wr-junctions = [],
+        wr-segment-count = 1
+      }
+    else if y1 == y2 then
+      let seg = WireRouteSegment {
+        wrs-x1 = x1, wrs-y1 = y1,
+        wrs-x2 = x2, wrs-y2 = y2
+      }
+      in WireRoute {
+        wr-segments = [seg],
+        wr-junctions = [],
+        wr-segment-count = 1
+      }
+    else
+      let horiz = WireRouteSegment {
+        wrs-x1 = x1, wrs-y1 = y1,
+        wrs-x2 = x2, wrs-y2 = y1
+      }
+      in let vert = WireRouteSegment {
+        wrs-x1 = x2, wrs-y1 = y1,
+        wrs-x2 = x2, wrs-y2 = y2
+      }
+      in let junction = RouteJunction { rj-x = x2, rj-y = y1 }
+      in WireRoute {
+        wr-segments = [horiz, vert],
+        wr-junctions = [junction],
+        wr-segment-count = 2
+      }
+
+Section: Direct Routing
+
+ A single straight-line segment between two points. No junctions.
+
+  route-direct : Integer, Integer, Integer, Integer -> WireRoute
+  route-direct (x1) (y1) (x2) (y2) =
+    if x1 == x2 then
+      if y1 == y2 then empty-wire-route
+      else let seg = WireRouteSegment {
+        wrs-x1 = x1, wrs-y1 = y1,
+        wrs-x2 = x2, wrs-y2 = y2
+      }
+      in WireRoute {
+        wr-segments = [seg],
+        wr-junctions = [],
+        wr-segment-count = 1
+      }
+    else let seg = WireRouteSegment {
+      wrs-x1 = x1, wrs-y1 = y1,
+      wrs-x2 = x2, wrs-y2 = y2
+    }
+    in WireRoute {
+      wr-segments = [seg],
+      wr-junctions = [],
+      wr-segment-count = 1
+    }
+
+Section: Mode Dispatch
+
+ Route a wire between two points using the selected mode. Manual
+ mode falls back to orthogonal routing.
+
+  route-wire : Integer, Integer, Integer, Integer, WireRouteMode -> WireRoute
+  route-wire (x1) (y1) (x2) (y2) (mode) = when mode
+    is RouteOrthogonal -> route-orthogonal x1 y1 x2 y2
+    is RouteManual -> route-orthogonal x1 y1 x2 y2
+    is RouteDirect -> route-direct x1 y1 x2 y2
+
+Section: Collinear Segment Merging
+
+ Two adjacent segments are collinear if they share an axis and one
+ segment's endpoint equals the next segment's start point on that
+ axis. Merge them into a single segment spanning the full range.
+
+  is-horizontal : WireRouteSegment -> Integer
+  is-horizontal (seg) = if seg.wrs-y1 == seg.wrs-y2 then 1 else 0
+
+  is-vertical : WireRouteSegment -> Integer
+  is-vertical (seg) = if seg.wrs-x1 == seg.wrs-x2 then 1 else 0
+
+  can-merge : WireRouteSegment, WireRouteSegment -> Integer
+  can-merge (a) (b) =
+    if is-horizontal a == 1 then
+      if is-horizontal b == 1 then
+        if a.wrs-y1 == b.wrs-y1 then
+          if a.wrs-x2 == b.wrs-x1 then 1
+          else 0
+        else 0
+      else 0
+    else if is-vertical a == 1 then
+      if is-vertical b == 1 then
+        if a.wrs-x1 == b.wrs-x1 then
+          if a.wrs-y2 == b.wrs-y1 then 1
+          else 0
+        else 0
+      else 0
+    else 0
+
+  merge-two : WireRouteSegment, WireRouteSegment -> WireRouteSegment
+  merge-two (a) (b) = WireRouteSegment {
+    wrs-x1 = a.wrs-x1,
+    wrs-y1 = a.wrs-y1,
+    wrs-x2 = b.wrs-x2,
+    wrs-y2 = b.wrs-y2
+  }
+
+  merge-loop : List WireRouteSegment, List WireRouteSegment -> List WireRouteSegment
+  merge-loop (segs) (acc) =
+    let n = list-length segs in if n == 0 then acc else merge-loop-carry segs acc (list-at segs 0) 1 n
+
+  merge-loop-step : List WireRouteSegment, List WireRouteSegment, WireRouteSegment, WireRouteSegment, Integer, Integer -> List WireRouteSegment
+  merge-loop-step (segs) (acc) (current) (next) (i) (n) =
+    if can-merge current next == 1 then merge-loop-carry segs acc (merge-two current next) i n
+    else merge-loop-carry segs (list-push acc current) next i n
+
+  merge-loop-carry : List WireRouteSegment, List WireRouteSegment, WireRouteSegment, Integer, Integer -> List WireRouteSegment
+  merge-loop-carry (segs) (acc) (current) (i) (n) =
+    if i >= n then list-push acc current
+    else let next = list-at segs i in merge-loop-step segs acc current next (i + 1) n
+
+  merge-collinear-segments : WireRoute -> WireRoute
+  merge-collinear-segments (route) =
+    let merged = merge-loop route.wr-segments []
+    in WireRoute {
+      wr-segments = merged,
+      wr-junctions = route.wr-junctions,
+      wr-segment-count = list-length merged
+    }

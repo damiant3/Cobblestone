@@ -1,0 +1,151 @@
+Chapter: DrillWriter
+  cites Foreword chapter List
+
+ Excellon drill file generation for PCB manufacturing. Produces
+ separate files for plated through-holes, non-plated holes, and
+ via holes with tool tables and drill coordinates.
+
+Section: Drill Tool
+
+  DrillTool = record {
+    dt-number : Integer,
+    dt-diameter : Integer,
+    dt-plated : Integer,
+    dt-hit-count : Integer
+  }
+
+Section: Drill Hit
+
+  DrillHit = record {
+    dh-x : Integer,
+    dh-y : Integer,
+    dh-tool-number : Integer
+  }
+
+Section: Drill File
+
+  DrillFile = record {
+    df-name : Text,
+    df-tools : List DrillTool,
+    df-hits : List DrillHit,
+    df-unit : Text,
+    df-format : Text,
+    df-plated : Integer
+  }
+
+  empty-drill-file : Text, Integer -> DrillFile
+  empty-drill-file (name) (plated) = DrillFile {
+    df-name = name,
+    df-tools = [],
+    df-hits = [],
+    df-unit = "METRIC",
+    df-format = "3.3",
+    df-plated = plated
+  }
+
+  drill-add-tool : DrillFile, DrillTool -> DrillFile
+  drill-add-tool (f) (t) = DrillFile {
+    df-name = f.df-name,
+    df-tools = list-push f.df-tools t,
+    df-hits = f.df-hits,
+    df-unit = f.df-unit,
+    df-format = f.df-format,
+    df-plated = f.df-plated
+  }
+
+  drill-add-hit : DrillFile, DrillHit -> DrillFile
+  drill-add-hit (f) (h) = DrillFile {
+    df-name = f.df-name,
+    df-tools = f.df-tools,
+    df-hits = list-push f.df-hits h,
+    df-unit = f.df-unit,
+    df-format = f.df-format,
+    df-plated = f.df-plated
+  }
+
+Section: Excellon Formatting
+
+  drill-format-coord : Integer -> Text
+  drill-format-coord (nm) =
+    let um = nm / 1000
+    in show um
+
+  drill-tool-to-text : DrillTool -> Text
+  drill-tool-to-text (t) =
+    "T" & (show t.dt-number) & "C" & (drill-format-coord t.dt-diameter)
+
+  drill-hit-to-text : DrillHit -> Text
+  drill-hit-to-text (h) =
+    "X" & (drill-format-coord h.dh-x) & "Y" & (drill-format-coord h.dh-y)
+
+  drill-header : DrillFile -> Text
+  drill-header (f) =
+    let a = "M48" & "; " & f.df-name & "" & "; Format: " & f.df-format & ""
+    in let b = "; " & (if f.df-plated == 1 then "Plated" else "Non-Plated") & " holes"
+    in let c = if f.df-unit == "METRIC" then "METRIC,TZ" else "INCH,TZ"
+    in a & b & c
+
+  drill-tool-table-to-text : List DrillTool -> Text
+  drill-tool-table-to-text (tools) =
+    drill-tool-table-loop tools "" 0 (list-length tools)
+
+  drill-tool-table-loop : List DrillTool, Text, Integer, Integer -> Text
+  drill-tool-table-loop (tools) (acc) (i) (n) =
+    if i >= n then acc
+    else let t = list-at tools i
+    in drill-tool-table-loop tools (acc & (drill-tool-to-text t) & "") (i + 1) n
+
+  drill-hits-for-tool : List DrillHit, Integer -> Text
+  drill-hits-for-tool (hits) (tool-num) =
+    drill-hits-for-tool-loop hits tool-num "" 0 (list-length hits)
+
+  drill-hits-for-tool-loop : List DrillHit, Integer, Text, Integer, Integer -> Text
+  drill-hits-for-tool-loop (hits) (tool-num) (acc) (i) (n) =
+    if i >= n then acc
+    else let h = list-at hits i
+    in drill-hits-for-tool-step h hits tool-num acc i n
+
+  drill-hits-for-tool-step : DrillHit, List DrillHit, Integer, Text, Integer, Integer -> Text
+  drill-hits-for-tool-step (h) (hits) (tool-num) (acc) (i) (n) =
+    if h.dh-tool-number == tool-num then drill-hits-for-tool-loop hits tool-num (acc & (drill-hit-to-text h) & "") (i + 1) n
+    else drill-hits-for-tool-loop hits tool-num acc (i + 1) n
+
+  drill-body-for-tools : List DrillTool, List DrillHit -> Text
+  drill-body-for-tools (tools) (hits) =
+    drill-body-for-tools-loop tools hits "" 0 (list-length tools)
+
+  drill-body-for-tools-loop : List DrillTool, List DrillHit, Text, Integer, Integer -> Text
+  drill-body-for-tools-loop (tools) (hits) (acc) (i) (n) =
+    if i >= n then acc
+    else let t = list-at tools i
+    in drill-body-for-tools-loop tools hits (acc & "T" & (show t.dt-number) & "" & drill-hits-for-tool hits t.dt-number) (i + 1) n
+
+  drill-file-to-text : DrillFile -> Text
+  drill-file-to-text (f) =
+    let a = drill-header f & drill-tool-table-to-text f.df-tools & "%"
+    in a & drill-body-for-tools f.df-tools f.df-hits & "M30"
+
+Section: Statistics
+
+  drill-total-hits : DrillFile -> Integer
+  drill-total-hits (f) = list-length f.df-hits
+
+  drill-tool-count : DrillFile -> Integer
+  drill-tool-count (f) = list-length f.df-tools
+
+  drill-smallest-hole : List DrillTool -> Integer
+  drill-smallest-hole (tools) =
+    if list-length tools == 0 then 0
+    else let first = list-at tools 0
+    in drill-smallest-hole-loop tools first.dt-diameter 1 (list-length tools)
+
+  drill-smallest-hole-loop : List DrillTool, Integer, Integer, Integer -> Integer
+  drill-smallest-hole-loop (tools) (smallest) (i) (n) =
+    if i >= n then smallest
+    else let t = list-at tools i
+    in drill-smallest-hole-pick t tools smallest i n
+
+  drill-smallest-hole-pick : DrillTool, List DrillTool, Integer, Integer, Integer -> Integer
+  drill-smallest-hole-pick (t) (tools) (smallest) (i) (n) =
+    if t.dt-diameter < smallest then drill-smallest-hole-loop tools t.dt-diameter (i + 1) n
+    else drill-smallest-hole-loop tools smallest (i + 1) n

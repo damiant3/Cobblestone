@@ -7,6 +7,7 @@
 | calendar | Month/Week/Day/Agenda calendar with mini-calendar sidebar | [README](apps/calendar/README.md) |
 | capture | Screenshot and image annotation tool | [README](apps/capture/README.md) |
 | chat | E2E-encrypted messaging app with Signal-style interface | [README](apps/chat/README.md) |
+| circuits | EDA suite: schematic capture, SPICE simulation, PCB layout, 3D visualization, manufacturing output | [README](apps/circuits/README.md) |
 | codexmagic-mobile | .NET MAUI companion app for the CodexMagic card game | [README](apps/codexmagic-mobile/README.md) |
 | collab | Video collaboration: calls, screen share, meetings, whiteboard | [README](apps/collab/README.md) |
 | cvmm | Desktop management shell with system managers and productivity mini-apps | [README](apps/cvmm/README.md) |

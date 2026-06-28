@@ -1,14 +1,27 @@
-# Codegen Analysis: Codex vs C, C#, F#, Python (x86-64)
+# Codegen Analysis: Codex vs C, C#, F#, Python
 
 ## Summary
 
-Cross-compiler comparison of x86-64 machine code for four micro-benchmarks:
+Cross-compiler comparison of machine code for four micro-benchmarks:
 fibonacci (tree recursion), factorial (linear recursion), GCD (tail recursion
 with modulo), and sum-to-N (tail-recursive accumulator).
 
 All compilers produce correct results on all benchmarks.
 
-Updated: 2026-06-12 (post commutative both-complex shortcut, CL 3845)
+Updated: 2026-06-27 (ARM64 CLs 6141-6173, RISC-V CLs 6159-6172,
+x86-64 optimization campaign CLs 6205-6243)
+
+## Cross-Architecture Instruction Counts
+
+| Bench | Codex x86 | Codex ARM64 | Codex RV64 | GCC ARM64 -O0 | GCC ARM64 -Os | GCC ARM64 -O2 |
+|-------|----------:|------------:|-----------:|--------------:|--------------:|--------------:|
+| fib   | 21        | 21          | 22         | 20            | 16            | 237*          |
+| fact  | 17        | 13          | 16         | 17            | 9             | 15            |
+| gcd   | 23        | 23          | 7          | 21            | 7             | 8             |
+| sum   | 14        | 17          | 9          | 20            | 9             | 13            |
+
+ARM64 total (74) beats GCC -O0 total (78). RISC-V total (54) beats
+GCC -O2 total on gcd and sum. x86-64 sum (14) beats C /O2 (23).
 
 ## Instruction Counts
 
@@ -18,12 +31,16 @@ CPython 3.11 bytecodes -- each bytecode dispatches ~20-50 native
 instructions through the interpreter loop, so the real cost is 300-1000x
 the bytecode count.
 
-| Bench | Codex | C /Od | C /O2 | C# JIT | F# JIT | Py 3.11 |
-|-------|-------|-------|-------|--------|--------|---------|
-| fib   | 21    | 19    | 20    | 21     | 21     | 21 bc   |
-| fact  | 17    | 16    | 15    | 16     | 15     | 16 bc   |
-| gcd   | 23    | 18    | 14    | 11     | 9      | 15 bc   |
-| sum   | 14    | 20    | 23    | 9      | 4      | 17 bc   |
+| Bench    | Codex | C /Od | C /O2 | C# JIT | F# JIT | Py 3.11 |
+|----------|-------|-------|-------|--------|--------|---------|
+| fib      | 21    | 19    | 20    | 21     | 21     | 21 bc   |
+| fact     | 15    | 16    | 15    | 16     | 15     | 16 bc   |
+| gcd      | 17    | 18    | 14    | 11     | 9      | 15 bc   |
+| sum      | 14    | 20    | 23    | 9      | 4      | 17 bc   |
+| ack      | 24    | 28    | 21    | —      | —      | —       |
+| tak      | 44    | 35    | 39    | —      | —      | —       |
+| collatz  | 20    | 28    | 18    | —      | —      | —       |
+| locals   | 54    | 47    | 73    | —      | —      | —       |
 
 ### Codex vs targets
 
@@ -92,6 +109,25 @@ Starting point (CL 3091): fib 107, fact 79, gcd 79, sum 82.
 | 3746 | IrRemInt + leaf inliner (math-mod inline) | 23 | 17 | 23 | 14 | +20346 B |
 | 3839 | tails-all-direct TCO temp elision | 23 | 17 | 23 | 14 | +1426 B |
 | 3845 | commutative both-complex shortcut (pop+op) | 21 | 17 | 23 | 14 | +408 B |
+| 6205 | emit-and-push for multi-arg calls | 21 | 15 | 17 | 14 | — |
+| 6206 | reg-reg comparison fusion in dest-driven if | 21 | 15 | 17 | 14 | — |
+| 6207 | direct arg-reg emission for simple args | 21 | 15 | 17 | 14 | — |
+| 6210 | power-of-2 div/rem strength reduction | 21 | 15 | 17 | 14 | — |
+| 6212 | left-literal commute + test-mask fusion | 21 | 15 | 17 | 14 | — |
+| 6216 | tco-max-complex match/act traversal | 21 | 15 | 17 | 14 | — |
+| 6220 | dead jump elimination after TCO branches | 21 | 15 | 17 | 14 | — |
+| 6222 | TCO direct div/rem pow2 | 21 | 15 | 17 | 14 | — |
+| 6227 | dest-driven TCO fallback + relaxed direct-tail-binop | 21 | 15 | 17 | 14 | — |
+| 6229 | single-complex TCO routing (no temp-locals guard) | 21 | 15 | 17 | 14 | — |
+| 6233 | tco-max-complex temp reduction with safety nets | 21 | 15 | 17 | 14 | — |
+| 6236 | merge adjacent unused-push NOPs into 4-byte NOP | 21 | 15 | 17 | 14 | — |
+| 6243 | relax leaf-args-all-bound (name+/-literal accepted) | 21 | 15 | 17 | 14 | — |
+
+CLs 6205-6243 do not change fib/fact/gcd/sum (those already hit 1-arg
+or all-reg-locals fast paths). The wins appear in the new benchmarks:
+ack 42->24, tak 77->44, collatz 35->20, locals 59->54. All four new
+benchmarks within 15% of C /O2 or beating it. See the extended
+benchmark table above.
 
 Seed: 2,191,873 (start) -> 2,114,168 (current) = -77,705 bytes total (-3.5%). The 3695 delta is positive: the leaf-profile pass costs more code than the ceremony it removes statically; the win is sum at 14 and 5-9 fewer executed instructions per eligible leaf call.
 

@@ -30,15 +30,17 @@ if (-not (Test-Path -PathType Leaf $PlugCdx)) {
 $lines = [System.Collections.Generic.List[string]]::new()
 
 function Add-Chapter {
-    param([string]$Path, [string[]]$StripCites = @())
+    param([string]$Path)
     if (-not (Test-Path -PathType Leaf $Path)) {
         [Console]::Error.WriteLine("MISSING: $Path")
         exit 3
     }
+    $renamed = $false
     foreach ($l in [System.IO.File]::ReadAllLines($Path)) {
-        $skip = $false
-        foreach ($sc in $StripCites) { if ($l -match "cites.*$sc") { $skip = $true } }
-        if (-not $skip) { $lines.Add($l) }
+        if ((-not $renamed) -and $l -match '^Chapter:\s*(.+?)\s*$') {
+            $lines.Add("Chapter: Cvmm--$($matches[1])")
+            $renamed = $true
+        } else { $lines.Add($l) }
     }
     $lines.Add(''); $lines.Add('')
 }
@@ -46,7 +48,11 @@ function Add-Chapter {
 # App chapters — only the ones needed for the HTML page
 $AppChapters = @(
     'CvmmTypes',
+    'ProductivityDb',
+    'Notes',
+    'Calendar',
     'CvmmTheme',
+    'CvmmSettingsViews',
     'CvmmApp'
 )
 

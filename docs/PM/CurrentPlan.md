@@ -139,29 +139,7 @@ still rely on host tools.
 
 ## Gaps, In Rough Priority
 
-### 1. PS1 wire-out — replace external-script gates with internal paths
-
-The Codex-native gate chapters exist (`VmCompile`, `VmRunner`,
-`VmPingpong`, `VmSweep`, all CL 1153) and `codex-vm.exe` is now the
-default VM for all PS1 build/test scripts (`vm-config.ps1`; QEMU
-available via `$env:USE_QEMU=1`). Until the PS1 scripts are deleted
-(or reduced to thin shims that call into Codex), "Codex compiles
-itself" is true only under the assumption that someone runs PowerShell
-first.
-
-- Add DevConsole menu items that drive `vm-pingpong` and `vm-sweep`
-  from inside the booted system. The menu placeholders ("Run All
-  Samples", "Run Failing Only") under the Sweep mode are still stubs
-  in `DevConsole.codex`.
-- Once the dev-console paths are green, delete the PS1 scripts.
-  `vm-config.ps1`, `clean-zombies.ps1`, `run-with-disk.ps1`,
-  `stress-sweep.ps1`, the `test-disk-*.ps1` family, and
-  `test-self-verify.ps1` should all go.
-- Keep at most one PS1 — a thin shim that knows how to bring up
-  `codex-vm.exe` if you're booting onto Windows for the first time.
-  Aim is zero, but parking-lot one.
-
-### 2. First-boot ceremony — end-to-end on real hardware
+### 1. First-boot ceremony — end-to-end on real hardware
 
 `FirstBoot.codex` has the wizard skeleton (welcome → identity →
 agent-select → upstream → mode → save → complete). Needs:
@@ -176,7 +154,7 @@ agent-select → upstream → mode → save → complete). Needs:
 - One probe sample exercising the whole flow under codex-vm so it
   can be regression-tested without putting a stick in a port.
 
-### 3. Agent acquisition — bundled path proven
+### 2. Agent acquisition — bundled path proven
 
 `AgentAcquisition` has bundled / local / network paths. Bundled is the
 critical one for the USB-stick promise. Need:
@@ -189,7 +167,7 @@ critical one for the USB-stick promise. Need:
 - DevConsole "Agent Manager" menu wires through to register / inspect /
   swap the active agent.
 
-### 4. USB install from inside Codex
+### 3. USB install from inside Codex
 
 USB MSC driver, DriveManager integration, DevConsole "Install to USB",
 and XHCI transfer rings are all done. Remaining:
@@ -199,7 +177,7 @@ and XHCI transfer rings are all done. Remaining:
   then Codex-on-Codex installs (one stick reflashing another) work
   without leaving the system.
 
-### 5. Pure Codex VMX host — retire `codex-vm.exe`
+### 4. Pure Codex VMX host — retire `codex-vm.exe`
 
 `codex-vm.exe` is ~4500 lines of C wrapping WHP. Codex has all the VMX
 builtins (`vmxon`, `vmlaunch-full`, `rdmsr`, `wrmsr`, etc., CLs 1144 +
@@ -218,7 +196,7 @@ eliminate the C host:
 - This is the largest remaining work item but unblocks the no-host-OS
   story entirely.
 
-### 6. Repository protocol replaces Perforce
+### 5. Repository protocol replaces Perforce
 
 `RepoProtocol`, `KeyManager`, `Annotation*`, `BuildRecord`, `Historian`,
 `SignedAnnotation`, `Discussion` are all built. P4 is still the actual
@@ -235,7 +213,7 @@ store of code. To finish:
 - Cutover: dual-store while we prove federation, then the P4 depot
   becomes a frozen mirror.
 
-### 7. Editor and Debugger maturity
+### 6. Editor and Debugger maturity
 
 Editor gaps:
 - Syntax highlighting in GUI mode (`UI` substrate has the primitives;
@@ -251,7 +229,7 @@ Debugger gaps:
 - Backtrace with function names requires debug info emitted into CDX
   (currently uses heuristic stack walk + MAP1 symbol map).
 
-### 8. Phase discipline — finish compiler optimizations
+### 7. Phase discipline — finish compiler optimizations
 
 From `docs/Designs/Active/Compiler/PHASE-ARCHITECTURE.md`:
 - Deck-record toggle ratchet (per-sub-allocation classification).
@@ -264,7 +242,7 @@ Compiler-correctness work, not user-facing, but each one moves the
 heap HWM down and improves the chance that compile-on-stick succeeds
 on lower-RAM boards.
 
-### 9. Spark WebGPU Studio — creative suite in the browser
+### 8. Spark WebGPU Studio — creative suite in the browser
 
 **Updated**: 2026-06-08
 
@@ -317,14 +295,14 @@ directions. The order above is the priority order. That's all.
 
 ## Cross-References
 
-- `docs/Designs/Active/Compiler/PHASE-ARCHITECTURE.md` — gap 8 detail.
-- `docs/Designs/Active/Compiler/Annotations.md` — gaps 6 and 7 (editor
+- `docs/Designs/Active/Compiler/PHASE-ARCHITECTURE.md` — gap 7 detail.
+- `docs/Designs/Active/Compiler/Annotations.md` — gaps 5 and 6 (editor
   overlay).
-- `docs/Reference/UEFI_Spec_Summary.md` — gaps 4 and 5 (USB MSC,
+- `docs/Reference/UEFI_Spec_Summary.md` — gaps 3 and 4 (USB MSC,
   bare-metal VMX entry).
 - `docs/VisionAndVirtues.md` — the founding vision behind this gap
-  list. Read that before redesigning anything in gap 6.
-- `codex/plugs/wasm/build-output/spark-webgpu.codex` — gap 9 WASM
+  list. Read that before redesigning anything in gap 5.
+- `codex/plugs/wasm/build-output/spark-webgpu.codex` — gap 8 WASM
   module (scene, camera, timeline, canvas, export, 400+ exports).
 - `apps/spark/` — 86 Spark modules, most 100% complete, awaiting
-  WASM wiring (gap 9 items d–o).
+  WASM wiring (gap 8 items d–o).

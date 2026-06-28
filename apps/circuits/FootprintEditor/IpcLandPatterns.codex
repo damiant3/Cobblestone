@@ -1,0 +1,296 @@
+Chapter: IpcLandPatterns
+  cites Foreword chapter List
+
+ Automatic footprint generation from IPC-7351 land pattern standards.
+ All dimensions are in nanometers. Density levels correspond to IPC
+ levels A (most land), B (nominal), and C (least land). The generator
+ computes pad positions, courtyard boundaries, and package names from
+ parametric descriptions of standard package families.
+
+Section: Package Type
+
+  IpcPackageType =
+    | IpcChip
+    | IpcSoic
+    | IpcSop
+    | IpcQfp
+    | IpcBga
+    | IpcSot
+    | IpcDip
+    | IpcTqfp
+    | IpcQfn
+    | IpcDfn
+
+Section: Density Level
+
+  IpcDensityLevel =
+    | DensityMostLand
+    | DensityNominal
+    | DensityLeastLand
+
+  ipc-density-margin : IpcDensityLevel -> Integer
+  ipc-density-margin (level) = when level
+    is DensityMostLand -> 500000
+    is DensityNominal -> 250000
+    is DensityLeastLand -> 125000
+
+Section: Chip Parameters
+
+  IpcChipParams = record {
+    icp-body-length : Integer,
+    icp-body-width : Integer,
+    icp-terminal-length : Integer,
+    icp-terminal-width : Integer
+  }
+
+Section: SOIC Parameters
+
+  IpcSoicParams = record {
+    isp-body-length : Integer,
+    isp-body-width : Integer,
+    isp-pin-count : Integer,
+    isp-pitch : Integer,
+    isp-lead-length : Integer,
+    isp-lead-width : Integer,
+    isp-span : Integer
+  }
+
+Section: QFP Parameters
+
+  IpcQfpParams = record {
+    iqp-body-size : Integer,
+    iqp-pin-count-per-side : Integer,
+    iqp-pitch : Integer,
+    iqp-lead-length : Integer,
+    iqp-lead-width : Integer,
+    iqp-span : Integer
+  }
+
+Section: BGA Parameters
+
+  IpcBgaParams = record {
+    ibp-body-size : Integer,
+    ibp-ball-count-x : Integer,
+    ibp-ball-count-y : Integer,
+    ibp-pitch : Integer,
+    ibp-ball-diameter : Integer
+  }
+
+Section: Result Records
+
+  IpcCourtyard = record {
+    icy-x1 : Integer,
+    icy-y1 : Integer,
+    icy-x2 : Integer,
+    icy-y2 : Integer
+  }
+
+  IpcPadResult = record {
+    ipr-pad-x : Integer,
+    ipr-pad-y : Integer,
+    ipr-pad-w : Integer,
+    ipr-pad-h : Integer
+  }
+
+Section: List Append
+
+ Append two lists by rebuilding the first list with the second as tail.
+
+  ipc-list-copy : List IpcPadResult, List IpcPadResult, Integer, Integer -> List IpcPadResult
+  ipc-list-copy (src) (acc) (i) (n) =
+    if i >= n then acc
+    else ipc-list-copy src (list-push acc (list-at src i)) (i + 1) n
+
+  ipc-list-append : List IpcPadResult, List IpcPadResult -> List IpcPadResult
+  ipc-list-append (xs) (ys) =
+    let acc = ipc-list-copy xs [] 0 (list-length xs) in ipc-list-copy ys acc 0 (list-length ys)
+
+Section: Chip Courtyard
+
+ Courtyard for two-terminal chip components. The courtyard extends
+ from the outer edge of each pad plus the density margin.
+
+  ipc-chip-courtyard : IpcChipParams, IpcDensityLevel -> IpcCourtyard
+  ipc-chip-courtyard (p) (d) =
+    let margin = ipc-density-margin d
+    in let half-span = p.icp-body-length / 2 + p.icp-terminal-length
+    in let half-w = p.icp-body-width / 2
+    in IpcCourtyard {
+      icy-x1 = 0 - half-span - margin,
+      icy-y1 = 0 - half-w - margin,
+      icy-x2 = half-span + margin,
+      icy-y2 = half-w + margin
+    }
+
+Section: Chip Pads
+
+ Two pads for a chip component, one on each end along the X axis.
+ Pad width is the terminal width plus a toe/heel/side extension
+ that varies by density level: A adds 150000 nm, B adds 100000,
+ C adds 50000.
+
+  ipc-chip-density-extension : IpcDensityLevel -> Integer
+  ipc-chip-density-extension (d) = when d
+    is DensityMostLand -> 150000
+    is DensityNominal -> 100000
+    is DensityLeastLand -> 50000
+
+  ipc-chip-pads : IpcChipParams, IpcDensityLevel -> List IpcPadResult
+  ipc-chip-pads (p) (d) =
+    let ext = ipc-chip-density-extension d
+    in let pad-w = p.icp-terminal-length + ext
+    in let pad-h = p.icp-body-width + ext
+    in let center-x = p.icp-body-length / 2 + p.icp-terminal-length / 2
+    in let pad1 = IpcPadResult {
+      ipr-pad-x = 0 - center-x,
+      ipr-pad-y = 0,
+      ipr-pad-w = pad-w,
+      ipr-pad-h = pad-h
+    }
+    in let pad2 = IpcPadResult {
+      ipr-pad-x = center-x,
+      ipr-pad-y = 0,
+      ipr-pad-w = pad-w,
+      ipr-pad-h = pad-h
+    }
+    in list-push (list-push [] pad1) pad2
+
+Section: SOIC Pads
+
+ Generates pads for SOIC packages. Pins are numbered sequentially:
+ 1 through pin-count/2 on the left side (negative X), then
+ pin-count/2+1 through pin-count on the right side (positive X),
+ mirrored vertically.
+
+  ipc-soic-density-extension : IpcDensityLevel -> Integer
+  ipc-soic-density-extension (d) = when d
+    is DensityMostLand -> 200000
+    is DensityNominal -> 100000
+    is DensityLeastLand -> 50000
+
+  ipc-soic-pad-x : Integer, Integer -> Integer
+  ipc-soic-pad-x (span) (lead-length) =
+    span / 2 - lead-length / 2
+
+  ipc-soic-build-side : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List IpcPadResult
+  ipc-soic-build-side (pin-idx) (count) (x-center) (y-start) (pitch) (pad-w) (pad-h) (acc-len) =
+    if pin-idx >= count then []
+    else let y = y-start + pin-idx * pitch
+    in let pad = IpcPadResult {
+      ipr-pad-x = x-center,
+      ipr-pad-y = y,
+      ipr-pad-w = pad-w,
+      ipr-pad-h = pad-h
+    }
+    in list-push (ipc-soic-build-side (pin-idx + 1) count x-center y-start pitch pad-w pad-h (acc-len + 1)) pad
+
+  ipc-soic-pads : IpcSoicParams, IpcDensityLevel -> List IpcPadResult
+  ipc-soic-pads (p) (d) =
+    let ext = ipc-soic-density-extension d
+    in let half-pins = p.isp-pin-count / 2
+    in let pad-w = p.isp-lead-length + ext
+    in let pad-h = p.isp-lead-width
+    in let x-center = ipc-soic-pad-x p.isp-span p.isp-lead-length
+    in let y-start = 0 - (half-pins - 1) * p.isp-pitch / 2
+    in let left-pads = ipc-soic-build-side 0 half-pins (0 - x-center) y-start p.isp-pitch pad-w pad-h 0
+    in let right-pads = ipc-soic-build-side 0 half-pins x-center y-start p.isp-pitch pad-w pad-h 0
+    in ipc-list-append left-pads right-pads
+
+Section: QFP Pads
+
+ Generates pads for QFP packages with leads on all four sides.
+ Pin numbering starts at pin 1 on the left side and proceeds
+ counter-clockwise: left, bottom, right, top.
+
+  ipc-qfp-density-extension : IpcDensityLevel -> Integer
+  ipc-qfp-density-extension (d) = when d
+    is DensityMostLand -> 250000
+    is DensityNominal -> 150000
+    is DensityLeastLand -> 50000
+
+  ipc-qfp-build-side : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List IpcPadResult
+  ipc-qfp-build-side (pin-idx) (count) (x-base) (y-base) (dx) (dy) (pad-w) (pad-h) (pitch) =
+    if pin-idx >= count then []
+    else let px = x-base + pin-idx * dx
+    in let py = y-base + pin-idx * dy
+    in let pad = IpcPadResult {
+      ipr-pad-x = px,
+      ipr-pad-y = py,
+      ipr-pad-w = pad-w,
+      ipr-pad-h = pad-h
+    }
+    in list-push (ipc-qfp-build-side (pin-idx + 1) count x-base y-base dx dy pad-w pad-h pitch) pad
+
+  ipc-qfp-pads : IpcQfpParams, IpcDensityLevel -> List IpcPadResult
+  ipc-qfp-pads (p) (d) =
+    let ext = ipc-qfp-density-extension d
+    in let n = p.iqp-pin-count-per-side
+    in let pad-long = p.iqp-lead-length + ext
+    in let pad-short = p.iqp-lead-width
+    in let edge = p.iqp-span / 2 - p.iqp-lead-length / 2
+    in let y-start = 0 - (n - 1) * p.iqp-pitch / 2
+    in let x-start = 0 - (n - 1) * p.iqp-pitch / 2
+    in let left-pads = ipc-qfp-build-side 0 n (0 - edge) y-start 0 p.iqp-pitch pad-long pad-short p.iqp-pitch
+    in let bottom-pads = ipc-qfp-build-side 0 n x-start edge p.iqp-pitch 0 pad-short pad-long p.iqp-pitch
+    in let right-pads = ipc-qfp-build-side 0 n edge y-start 0 p.iqp-pitch pad-long pad-short p.iqp-pitch
+    in let top-pads = ipc-qfp-build-side 0 n x-start (0 - edge) p.iqp-pitch 0 pad-short pad-long p.iqp-pitch
+    in ipc-list-append (ipc-list-append left-pads bottom-pads) (ipc-list-append right-pads top-pads)
+
+Section: BGA Pads
+
+ Generates pads for BGA packages in a regular grid. Each pad is a
+ circle with diameter equal to the ball diameter. Grid origin is
+ centered on the package body.
+
+  ipc-bga-build-row : Integer, Integer, Integer, Integer, Integer, Integer -> List IpcPadResult
+  ipc-bga-build-row (col) (cols) (row-y) (x-start) (pitch) (diameter) =
+    if col >= cols then []
+    else let px = x-start + col * pitch
+    in let pad = IpcPadResult {
+      ipr-pad-x = px,
+      ipr-pad-y = row-y,
+      ipr-pad-w = diameter,
+      ipr-pad-h = diameter
+    }
+    in list-push (ipc-bga-build-row (col + 1) cols row-y x-start pitch diameter) pad
+
+  ipc-bga-build-grid : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List IpcPadResult
+  ipc-bga-build-grid (row) (rows) (cols) (x-start) (y-start) (pitch) (diameter) =
+    if row >= rows then []
+    else let row-y = y-start + row * pitch
+    in let row-pads = ipc-bga-build-row 0 cols row-y x-start pitch diameter
+    in ipc-list-append row-pads (ipc-bga-build-grid (row + 1) rows cols x-start y-start pitch diameter)
+
+  ipc-bga-pads : IpcBgaParams -> List IpcPadResult
+  ipc-bga-pads (p) =
+    let x-start = 0 - (p.ibp-ball-count-x - 1) * p.ibp-pitch / 2
+    in let y-start = 0 - (p.ibp-ball-count-y - 1) * p.ibp-pitch / 2
+    in ipc-bga-build-grid 0 p.ibp-ball-count-y p.ibp-ball-count-x x-start y-start p.ibp-pitch p.ibp-ball-diameter
+
+Section: Package Name
+
+ Generates a human-readable IPC package name from the package type
+ and body dimensions in nanometers. Dimensions are converted to
+ tenths of mm for the name string.
+
+  ipc-nm-to-tenths : Integer -> Text
+  ipc-nm-to-tenths (nm) =
+    let tenths = nm / 100000
+    in let whole = tenths / 10
+    in let frac = tenths - whole * 10
+    in show whole & "." & (show frac)
+
+  ipc-package-name : IpcPackageType, Integer, Integer -> Text
+  ipc-package-name (pkg) (dim1) (dim2) =
+    let size-str = ipc-nm-to-tenths dim1 & "x" & ipc-nm-to-tenths dim2 & "mm"
+    in when pkg
+      is IpcChip -> "CHIP_" & size-str
+      is IpcSoic -> "SOIC_" & size-str
+      is IpcSop -> "SOP_" & size-str
+      is IpcQfp -> "QFP_" & size-str
+      is IpcBga -> "BGA_" & size-str
+      is IpcSot -> "SOT_" & size-str
+      is IpcDip -> "DIP_" & size-str
+      is IpcTqfp -> "TQFP_" & size-str
+      is IpcQfn -> "QFN_" & size-str
+      is IpcDfn -> "DFN_" & size-str

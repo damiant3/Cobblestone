@@ -1165,11 +1165,14 @@ Section: Heap Management Helpers
    in let i = rv-rt-emit i (rv-add rv-s1 rv-s1 rv-t0)
    in let i = i & rv-li rv-s5 rv-ascii-to-cce-table-addr
    in let i = rv-rt-emit i (rv-mv rv-t0 rv-zero)
+   in let i = rv-rt-emit i (rv-mv rv-t3 rv-zero)
    in let loop = list-length i / 4
    in let exit = list-length i / 4
    in let i = rv-rt-emit i rv-nop
-   in let i = rv-rt-emit i (rv-add rv-t1 rv-s3 rv-t0)
-   in let i = rv-rt-emit i (rv-lbu rv-t1 rv-t1 8)
+   in let i = rv-rt-emit i (rv-slli rv-t4 rv-t0 3)
+   in let i = rv-rt-emit i (rv-add rv-t1 rv-s3 rv-t4)
+   in let i = rv-rt-emit i (rv-ld rv-t1 rv-t1 8)
+   in let i = rv-rt-emit i (rv-andi rv-t1 rv-t1 255)
    in let i = rv-rt-emit i (rv-addi rv-t2 rv-zero 127)
    in let clamp = list-length i / 4
    in let i = rv-rt-emit i rv-nop
@@ -1178,9 +1181,10 @@ Section: Heap Management Helpers
    in let i = rv-patch-insn-raw i clamp (rv-bge rv-t2 rv-t1 ((clamp-label - clamp) * 4))
    in let i = rv-rt-emit i (rv-add rv-t1 rv-s5 rv-t1)
    in let i = rv-rt-emit i (rv-lbu rv-t1 rv-t1 0)
-   in let i = rv-rt-emit i (rv-add rv-t2 rv-s4 rv-t0)
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-s4 rv-t3)
    in let i = rv-rt-emit i (rv-sb rv-t2 rv-t1 8)
    in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 1)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t3 1)
    in let i = rv-rt-emit i (rv-j ((loop - list-length i / 4) * 4))
    in let exit-label = list-length i / 4
    in let i = rv-rt-emit i (rv-mv rv-a0 rv-s4)
@@ -1302,6 +1306,29 @@ Section: Memset
    in let i = rv-rt-emit i (rv-mv rv-a0 rv-zero)
    in let i = rv-rt-emit i rv-ret
    in rv-patch-insn-raw i exit (rv-bge rv-t0 rv-a2 ((exit-label - exit) * 4))
+
+Section: Integer Power
+
+  rv-rt-int-pow : List Integer
+  rv-rt-int-pow =
+   let i = []
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-zero 1)
+   in let loop = list-length i / 4
+   in let beqz-patch = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-andi rv-t1 rv-a1 1)
+   in let skip-patch = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-mul rv-t0 rv-t0 rv-a0)
+   in let skip-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-mul rv-a0 rv-a0 rv-a0)
+   in let i = rv-rt-emit i (rv-srli rv-a1 rv-a1 1)
+   in let i = rv-rt-emit i (rv-j ((loop - list-length i / 4) * 4))
+   in let done-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-t0)
+   in let i = rv-rt-emit i rv-ret
+   in let i = rv-patch-insn-raw i beqz-patch (rv-beq rv-a1 rv-zero ((done-label - beqz-patch) * 4))
+   in rv-patch-insn-raw i skip-patch (rv-beq rv-t1 rv-zero ((skip-label - skip-patch) * 4))
 
 Section: Buffer Helpers
 
@@ -1733,15 +1760,21 @@ Section: Text Split (a0=text, a1=delimiter -> list of texts)
 
 Section: Emit All Runtime Helpers
 
+  rv-emit-zero-memo : RvState, Integer, Integer -> RvState
+  rv-emit-zero-memo (st) (base-reg) (i) =
+   if i >= 64 then st
+   else rv-emit-zero-memo (rv-emit st (rv-sd base-reg rv-zero (i * 8))) base-reg (i + 1)
+
   rv-emit-runtime : RvState -> RvState
   rv-emit-runtime (st) =
    let st1 = rv-record-func st "__start"
-   in let st2 = rv-emit-li st1 rv-sp #8FFF0000
+   in let st2 = rv-emit-li st1 rv-sp #13FFF0000
    in let st2a = rv-emit-li st2 rv-t0 #6000
    in let st2b = rv-emit st2a (rv-csrrs rv-zero #300 rv-t0)
    in let st3 = rv-emit-li st2b rv-s1 #80100200
    in let st3 = rv-emit st3 (rv-mv rv-s0 rv-s1)
    in let st3 = rv-emit st3 (rv-addi rv-s1 rv-s1 512)
+   in let st3 = rv-emit-zero-memo st3 rv-s0 0
    in let st3a = rv-emit-li st3 rv-t0 rv-cce-table-addr
    in let cce-table = rv-build-cce-table [] 0
    in let st3b = rv-write-table-loop st3a rv-t0 cce-table 0
@@ -1752,26 +1785,8 @@ Section: Emit All Runtime Helpers
    in let st3d = rv-emit (rv-emit st3c rv-nop) rv-nop
    in let st3e = rv-emit st3d (rv-csrw #305 rv-t0)
    in let st4 = rv-add-call-patch st3e "opening"
-   in let st4a = rv-emit st4 rv-nop
-   in let beq-pos = st4a.insn-count
-   in let st4b = rv-emit st4a rv-nop
-   in let st4c = rv-emit-li st4b rv-t0 #10000
-   in let bltu-pos = st4c.insn-count
-   in let st4d = rv-emit st4c rv-nop
-   in let st4e = rv-add-call-patch st4d "print-line-uni"
-   in let st4f = rv-emit st4e rv-nop
-   in let j-done-pos = st4f.insn-count
-   in let st4g = rv-emit st4f rv-nop
-   in let int-label = st4g.insn-count
-   in let st4h = rv-add-call-patch st4g "__itoa"
-   in let st4i = rv-emit st4h rv-nop
-   in let st4j = rv-add-call-patch st4i "print-line-uni"
-   in let st4k = rv-emit st4j rv-nop
-   in let done-label = st4k.insn-count
-   in let st4l = rv-patch-insn st4k beq-pos (rv-beq rv-a0 rv-zero ((done-label - beq-pos) * 4))
-   in let st4m = rv-patch-insn st4l bltu-pos (rv-bltu rv-a0 rv-t0 ((int-label - bltu-pos) * 4))
-   in let st4n = rv-patch-insn st4m j-done-pos (rv-j ((done-label - j-done-pos) * 4))
-   in let st5 = rv-emit st4n rv-wfi
+   in let st5 = rv-emit st4 rv-nop
+   in let st5 = rv-emit st5 rv-wfi
    in let st6 = rv-emit st5 (rv-j (0 - 4))
    in let st7 = rv-record-func st6 "print-line-uni"
    in let st7a = rv-record-func st7 "print-line"
@@ -1817,15 +1832,15 @@ Section: Emit All Runtime Helpers
    in let st41 = rv-record-func st40 "int-mod"
    in let st42 = rv-emit-block st41 rv-rt-int-mod
    in let st43 = rv-record-func st42 "bit-and"
-   in let st44 = rv-emit st43 (rv-and rv-a0 rv-a0 rv-a1 & rv-ret)
+   in let st44 = rv-emit (rv-emit st43 (rv-and rv-a0 rv-a0 rv-a1)) rv-ret
    in let st45 = rv-record-func st44 "bit-or"
-   in let st46 = rv-emit st45 (rv-or rv-a0 rv-a0 rv-a1 & rv-ret)
+   in let st46 = rv-emit (rv-emit st45 (rv-or rv-a0 rv-a0 rv-a1)) rv-ret
    in let st47 = rv-record-func st46 "bit-xor"
-   in let st48 = rv-emit st47 (rv-xor rv-a0 rv-a0 rv-a1 & rv-ret)
+   in let st48 = rv-emit (rv-emit st47 (rv-xor rv-a0 rv-a0 rv-a1)) rv-ret
    in let st49 = rv-record-func st48 "bit-shl"
-   in let st50 = rv-emit st49 (rv-sll rv-a0 rv-a0 rv-a1 & rv-ret)
+   in let st50 = rv-emit (rv-emit st49 (rv-sll rv-a0 rv-a0 rv-a1)) rv-ret
    in let st51 = rv-record-func st50 "bit-shru"
-   in let st52 = rv-emit st51 (rv-srl rv-a0 rv-a0 rv-a1 & rv-ret)
+   in let st52 = rv-emit (rv-emit st51 (rv-srl rv-a0 rv-a0 rv-a1)) rv-ret
    in let st53 = rv-record-func st52 "list-set-at"
    in let st54 = rv-emit-block st53 rv-rt-list-set-at
    in let st55 = rv-record-func st54 "list-insert-at"
@@ -1850,7 +1865,9 @@ Section: Emit All Runtime Helpers
    in let st74 = rv-emit-block st73 rv-rt-heap-advance
    in let st75 = rv-record-func st74 "memset"
    in let st76 = rv-emit-block st75 rv-rt-memset
-   in let st77 = rv-record-func st76 "__buf-write-byte"
+   in let st76a = rv-record-func st76 "__int_pow"
+   in let st76b = rv-emit-block st76a rv-rt-int-pow
+   in let st77 = rv-record-func st76b "__buf-write-byte"
    in let st78 = rv-emit-block st77 rv-rt-buf-write-byte
    in let st79 = rv-record-func st78 "__buf-read-bytes"
    in let st80 = rv-emit-block st79 rv-rt-buf-read-bytes
@@ -1883,51 +1900,51 @@ Section: Emit All Runtime Helpers
    in let st103 = rv-record-func st102 "poke-qword"
    in let st104 = rv-emit-block st103 rv-rt-poke-qword
    in let st105 = rv-record-func st104 "read-mstatus"
-   in let st106 = rv-emit st105 (rv-csrr rv-a0 #300 & rv-ret)
+   in let st106 = rv-emit (rv-emit st105 (rv-csrr rv-a0 #300)) rv-ret
    in let st107 = rv-record-func st106 "write-mstatus"
-   in let st108 = rv-emit st107 (rv-csrw #300 rv-a0 & rv-ret)
+   in let st108 = rv-emit (rv-emit st107 (rv-csrw #300 rv-a0)) rv-ret
    in let st109 = rv-record-func st108 "read-mtvec"
-   in let st110 = rv-emit st109 (rv-csrr rv-a0 #305 & rv-ret)
+   in let st110 = rv-emit (rv-emit st109 (rv-csrr rv-a0 #305)) rv-ret
    in let st111 = rv-record-func st110 "write-mtvec"
-   in let st112 = rv-emit st111 (rv-csrw #305 rv-a0 & rv-ret)
+   in let st112 = rv-emit (rv-emit st111 (rv-csrw #305 rv-a0)) rv-ret
    in let st113 = rv-record-func st112 "read-mie"
-   in let st114 = rv-emit st113 (rv-csrr rv-a0 #304 & rv-ret)
+   in let st114 = rv-emit (rv-emit st113 (rv-csrr rv-a0 #304)) rv-ret
    in let st115 = rv-record-func st114 "write-mie"
-   in let st116 = rv-emit st115 (rv-csrw #304 rv-a0 & rv-ret)
+   in let st116 = rv-emit (rv-emit st115 (rv-csrw #304 rv-a0)) rv-ret
    in let st117 = rv-record-func st116 "read-mip"
-   in let st118 = rv-emit st117 (rv-csrr rv-a0 #344 & rv-ret)
+   in let st118 = rv-emit (rv-emit st117 (rv-csrr rv-a0 #344)) rv-ret
    in let st119 = rv-record-func st118 "read-mcause"
-   in let st120 = rv-emit st119 (rv-csrr rv-a0 #342 & rv-ret)
+   in let st120 = rv-emit (rv-emit st119 (rv-csrr rv-a0 #342)) rv-ret
    in let st121 = rv-record-func st120 "read-mepc"
-   in let st122 = rv-emit st121 (rv-csrr rv-a0 #341 & rv-ret)
+   in let st122 = rv-emit (rv-emit st121 (rv-csrr rv-a0 #341)) rv-ret
    in let st123 = rv-record-func st122 "write-mepc"
-   in let st124 = rv-emit st123 (rv-csrw #341 rv-a0 & rv-ret)
+   in let st124 = rv-emit (rv-emit st123 (rv-csrw #341 rv-a0)) rv-ret
    in let st125 = rv-record-func st124 "read-mtval"
-   in let st126 = rv-emit st125 (rv-csrr rv-a0 #343 & rv-ret)
+   in let st126 = rv-emit (rv-emit st125 (rv-csrr rv-a0 #343)) rv-ret
    in let st127 = rv-record-func st126 "read-sstatus"
-   in let st128 = rv-emit st127 (rv-csrr rv-a0 #100 & rv-ret)
+   in let st128 = rv-emit (rv-emit st127 (rv-csrr rv-a0 #100)) rv-ret
    in let st129 = rv-record-func st128 "write-sstatus"
-   in let st130 = rv-emit st129 (rv-csrw #100 rv-a0 & rv-ret)
+   in let st130 = rv-emit (rv-emit st129 (rv-csrw #100 rv-a0)) rv-ret
    in let st131 = rv-record-func st130 "read-stvec"
-   in let st132 = rv-emit st131 (rv-csrr rv-a0 #105 & rv-ret)
+   in let st132 = rv-emit (rv-emit st131 (rv-csrr rv-a0 #105)) rv-ret
    in let st133 = rv-record-func st132 "write-stvec"
-   in let st134 = rv-emit st133 (rv-csrw #105 rv-a0 & rv-ret)
+   in let st134 = rv-emit (rv-emit st133 (rv-csrw #105 rv-a0)) rv-ret
    in let st135 = rv-record-func st134 "read-sie"
-   in let st136 = rv-emit st135 (rv-csrr rv-a0 #104 & rv-ret)
+   in let st136 = rv-emit (rv-emit st135 (rv-csrr rv-a0 #104)) rv-ret
    in let st137 = rv-record-func st136 "write-sie"
-   in let st138 = rv-emit st137 (rv-csrw #104 rv-a0 & rv-ret)
+   in let st138 = rv-emit (rv-emit st137 (rv-csrw #104 rv-a0)) rv-ret
    in let st139 = rv-record-func st138 "read-sip"
-   in let st140 = rv-emit st139 (rv-csrr rv-a0 #144 & rv-ret)
+   in let st140 = rv-emit (rv-emit st139 (rv-csrr rv-a0 #144)) rv-ret
    in let st141 = rv-record-func st140 "read-scause"
-   in let st142 = rv-emit st141 (rv-csrr rv-a0 #142 & rv-ret)
+   in let st142 = rv-emit (rv-emit st141 (rv-csrr rv-a0 #142)) rv-ret
    in let st143 = rv-record-func st142 "read-sepc"
-   in let st144 = rv-emit st143 (rv-csrr rv-a0 #141 & rv-ret)
+   in let st144 = rv-emit (rv-emit st143 (rv-csrr rv-a0 #141)) rv-ret
    in let st145 = rv-record-func st144 "write-sepc"
-   in let st146 = rv-emit st145 (rv-csrw #141 rv-a0 & rv-ret)
+   in let st146 = rv-emit (rv-emit st145 (rv-csrw #141 rv-a0)) rv-ret
    in let st147 = rv-record-func st146 "read-cycle"
-   in let st148 = rv-emit st147 (rv-csrr rv-a0 #C00 & rv-ret)
+   in let st148 = rv-emit (rv-emit st147 (rv-csrr rv-a0 #C00)) rv-ret
    in let st149 = rv-record-func st148 "read-time"
-   in let st150 = rv-emit st149 (rv-csrr rv-a0 #C01 & rv-ret)
+   in let st150 = rv-emit (rv-emit st149 (rv-csrr rv-a0 #C01)) rv-ret
    in let st151 = rv-record-func st150 "__trap_handler"
    in let st152 = rv-emit-block st151 rv-rt-trap-handler
    in let st153 = rv-record-func st152 "plic-set-priority"
@@ -1943,6 +1960,21 @@ Section: Emit All Runtime Helpers
    in let st163 = rv-record-func st162 "__resume_id"
    in let st164 = rv-emit st163 rv-ret
    in let st165 = rv-record-func st164 "__try_fail"
-   in rv-emit-block st165 rv-rt-try-fail
+   in let st166 = rv-emit-block st165 rv-rt-try-fail
+   in let st167 = rv-record-func st166 "alloc-bytes"
+   in let st168 = rv-emit st167 (rv-mv rv-t0 rv-a0)
+   in let st169 = rv-emit st168 (rv-mv rv-a0 rv-s1)
+   in let st170 = rv-emit st169 (rv-add rv-s1 rv-s1 rv-t0)
+   in let st171 = rv-emit st170 rv-ret
+   in let st172 = rv-record-func st171 "__cce_to_unicode"
+   in let st173 = rv-emit-li st172 rv-t2 rv-cce-table-addr
+   in let st174 = rv-emit st173 (rv-add rv-t2 rv-t2 rv-a0)
+   in let st175 = rv-emit st174 (rv-lbu rv-a0 rv-t2 0)
+   in let st176 = rv-emit st175 rv-ret
+   in let st177 = rv-record-func st176 "__unicode_to_cce"
+   in let st178 = rv-emit-li st177 rv-t2 rv-ascii-to-cce-table-addr
+   in let st179 = rv-emit st178 (rv-add rv-t2 rv-t2 rv-a0)
+   in let st180 = rv-emit st179 (rv-lbu rv-a0 rv-t2 0)
+   in rv-emit st180 rv-ret
 
 Page 1

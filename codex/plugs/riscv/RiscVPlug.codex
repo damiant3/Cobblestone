@@ -32,7 +32,7 @@ Section: Raw Output
 
   rv-wire-length : RvState -> Integer
   rv-wire-length (st) =
-   12 + list-length (st.code) + list-length (st.data) + rv-func-table-len (st.func-names) (st.func-offsets) 0 0
+   12 + st.code-pos + list-length (st.data) + rv-func-table-len (st.func-names) (st.func-offsets) 0 0
 
   rv-func-table-len : List Text, List Integer, Integer, Integer -> Integer
   rv-func-table-len (names) (offsets) (i) (acc) =
@@ -41,9 +41,9 @@ Section: Raw Output
 
   rv-send-wire-output : RvState -> Integer
   rv-send-wire-output (st) =
-   let code = st.code
+   let code = __buf-read-bytes (st.code-buf) 0 (st.code-pos)
    in let data = st.data
-   in let code-len = list-length code
+   in let code-len = st.code-pos
    in let data-len = list-length data
    in let func-count = list-length (st.func-names)
    in let w1 = serial-write-bytes (write-i32-le code-len)
@@ -60,7 +60,7 @@ Section: Raw Output
    else let name = list-at names i
    in let name-len = text-length name
    in let name-bytes = text-to-ascii-bytes name
-   in let off-bytes = write-i32-le (list-at offsets i)
+   in let off-bytes = write-i32-le ((list-at offsets i) * 4)
    in write-i16-le name-len & name-bytes & off-bytes & rv-build-func-table names offsets (i + 1)
 
   write-i32-le : Integer -> List Integer
@@ -102,10 +102,34 @@ Section: Body
     else print-line-uni ""
   end
 
+  dispatch-repl : Text -> [Console, FileSystem] Nothing
+  dispatch-repl (mode) = act
+    source <- read-file mode
+    let parsed = parse-ir-chapter source
+    in let cg-state = rv-emit-module empty-rv-state (parsed.chapter) (parsed.type-defs) (parsed.effect-op-names)
+    in let written = rv-send-wire-output cg-state
+    in let reports = cg-state.wcet-reports
+    in act
+      if list-length reports > 0 then rv-print-wcet-reports reports 0
+      else print-line-uni ""
+      print-line-uni "WIRE-END"
+      repl-loop
+    end
+  end
+
+  repl-loop : [Console, FileSystem] Nothing = act
+    mode-result <- read-line-cce
+    when mode-result
+      is Just (mode) -> if text-contains mode "repl" then dispatch-repl mode
+        else dispatch mode
+      is None -> print-line-uni "REPL-DONE"
+  end
+
   opening : [Console, FileSystem] Nothing = act
     mode-result <- read-line-cce
     when mode-result
-      is Just (mode) -> dispatch mode
+      is Just (mode) -> if text-contains mode "repl" then dispatch-repl mode
+        else dispatch mode
       is None -> print-line-uni "no input"
   end
 

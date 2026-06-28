@@ -1,0 +1,162 @@
+Chapter: SymbolRenderer
+  cites Foreword chapter List
+
+ Renders schematic symbols to a framebuffer. Draws pin lines, pin
+ names, pin numbers, body shapes, reference designator, and value
+ text. All coordinates are in nanometers internally; the renderer
+ applies a view transform (pan + zoom) to convert to screen pixels.
+
+Section: Render Configuration
+
+  SymRenderConfig = record {
+    src-show-pin-names : Integer,
+    src-show-pin-numbers : Integer,
+    src-show-ref : Integer,
+    src-show-value : Integer,
+    src-body-color : Integer,
+    src-pin-color : Integer,
+    src-text-color : Integer,
+    src-background-color : Integer,
+    src-selection-color : Integer,
+    src-grid-color : Integer,
+    src-pin-length-default : Integer
+  }
+
+  dark-symbol-colors : SymRenderConfig
+  dark-symbol-colors = SymRenderConfig {
+    src-show-pin-names = 1,
+    src-show-pin-numbers = 1,
+    src-show-ref = 1,
+    src-show-value = 1,
+    src-body-color = #CC8800,
+    src-pin-color = #00CC00,
+    src-text-color = #CCCCCC,
+    src-background-color = #1E1E1E,
+    src-selection-color = #4488FF,
+    src-grid-color = #333333,
+    src-pin-length-default = 2540000
+  }
+
+  light-symbol-colors : SymRenderConfig
+  light-symbol-colors = SymRenderConfig {
+    src-show-pin-names = 1,
+    src-show-pin-numbers = 1,
+    src-show-ref = 1,
+    src-show-value = 1,
+    src-body-color = #884400,
+    src-pin-color = #008800,
+    src-text-color = #000000,
+    src-background-color = #FFFFFF,
+    src-selection-color = #2244CC,
+    src-grid-color = #DDDDDD,
+    src-pin-length-default = 2540000
+  }
+
+Section: Symbol View
+
+  SymbolView = record {
+    sv-pan-x : Integer,
+    sv-pan-y : Integer,
+    sv-zoom-num : Integer,
+    sv-zoom-den : Integer,
+    sv-screen-w : Integer,
+    sv-screen-h : Integer
+  }
+
+  default-symbol-view : Integer, Integer -> SymbolView
+  default-symbol-view (w) (h) = SymbolView {
+    sv-pan-x = 0,
+    sv-pan-y = 0,
+    sv-zoom-num = 1,
+    sv-zoom-den = 50000,
+    sv-screen-w = w,
+    sv-screen-h = h
+  }
+
+Section: View Transform
+
+  sym-to-screen-x : SymbolView, Integer -> Integer
+  sym-to-screen-x (v) (wx) =
+    (wx - v.sv-pan-x) * v.sv-zoom-num / v.sv-zoom-den + v.sv-screen-w / 2
+
+  sym-to-screen-y : SymbolView, Integer -> Integer
+  sym-to-screen-y (v) (wy) =
+    (wy - v.sv-pan-y) * v.sv-zoom-num / v.sv-zoom-den + v.sv-screen-h / 2
+
+  sym-view-zoom-in : SymbolView -> SymbolView
+  sym-view-zoom-in (v) = SymbolView {
+    sv-pan-x = v.sv-pan-x,
+    sv-pan-y = v.sv-pan-y,
+    sv-zoom-num = v.sv-zoom-num * 12 / 10,
+    sv-zoom-den = v.sv-zoom-den,
+    sv-screen-w = v.sv-screen-w,
+    sv-screen-h = v.sv-screen-h
+  }
+
+  sym-view-zoom-out : SymbolView -> SymbolView
+  sym-view-zoom-out (v) = SymbolView {
+    sv-pan-x = v.sv-pan-x,
+    sv-pan-y = v.sv-pan-y,
+    sv-zoom-num = v.sv-zoom-num * 10 / 12,
+    sv-zoom-den = v.sv-zoom-den,
+    sv-screen-w = v.sv-screen-w,
+    sv-screen-h = v.sv-screen-h
+  }
+
+  sym-view-pan : SymbolView, Integer, Integer -> SymbolView
+  sym-view-pan (v) (dx) (dy) = SymbolView {
+    sv-pan-x = v.sv-pan-x + dx * v.sv-zoom-den / v.sv-zoom-num,
+    sv-pan-y = v.sv-pan-y + dy * v.sv-zoom-den / v.sv-zoom-num,
+    sv-zoom-num = v.sv-zoom-num,
+    sv-zoom-den = v.sv-zoom-den,
+    sv-screen-w = v.sv-screen-w,
+    sv-screen-h = v.sv-screen-h
+  }
+
+Section: Pin Geometry
+
+ Calculates the tip position of a pin given its base coordinates,
+ length, and orientation. Orientation: 0 = right, 1 = up, 2 = left,
+ 3 = down.
+
+  PinEndpoint = record {
+    pe-x : Integer,
+    pe-y : Integer
+  }
+
+  pin-endpoint : Integer, Integer, Integer, Integer -> PinEndpoint
+  pin-endpoint (base-x) (base-y) (length) (orientation) =
+    if orientation == 0 then PinEndpoint { pe-x = base-x + length, pe-y = base-y }
+    else if orientation == 1 then PinEndpoint { pe-x = base-x, pe-y = base-y - length }
+    else if orientation == 2 then PinEndpoint { pe-x = base-x - length, pe-y = base-y }
+    else PinEndpoint { pe-x = base-x, pe-y = base-y + length }
+
+Section: Pin Name Placement
+
+ Calculates the position for pin name text. The name is offset from
+ the pin base away from the body. The offset parameter controls the
+ distance from the pin endpoint.
+
+  PinNamePos = record {
+    pnp-x : Integer,
+    pnp-y : Integer
+  }
+
+  pin-name-position : Integer, Integer, Integer, Integer, Integer -> PinNamePos
+  pin-name-position (base-x) (base-y) (length) (orientation) (offset) =
+    if orientation == 0 then PinNamePos {
+      pnp-x = base-x + length + offset,
+      pnp-y = base-y
+    }
+    else if orientation == 1 then PinNamePos {
+      pnp-x = base-x,
+      pnp-y = base-y - length - offset
+    }
+    else if orientation == 2 then PinNamePos {
+      pnp-x = base-x - length - offset,
+      pnp-y = base-y
+    }
+    else PinNamePos {
+      pnp-x = base-x,
+      pnp-y = base-y + length + offset
+    }

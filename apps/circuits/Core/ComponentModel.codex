@@ -1,0 +1,241 @@
+Chapter: ComponentModel
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ The unified component model. A component in Codex Circuits is not
+ split across separate symbol, footprint, and model libraries like
+ traditional EDA tools. A single ComponentDef carries everything:
+ schematic symbol geometry, PCB footprint pads, 3D model reference,
+ SPICE simulation model, and supply chain data.
+
+Section: Symbol Geometry
+
+  SymbolPinDirection =
+    | PinDirLeft
+    | PinDirRight
+    | PinDirUp
+    | PinDirDown
+
+  SymbolPin = record {
+    sp-number : Text,
+    sp-name : Text,
+    sp-x : Integer,
+    sp-y : Integer,
+    sp-length : Integer,
+    sp-direction : SymbolPinDirection,
+    sp-electrical-type : Integer,
+    sp-hidden : Integer
+  }
+
+  SymbolGraphicType =
+    | SgLine (Integer) (Integer) (Integer) (Integer)
+    | SgRect (Integer) (Integer) (Integer) (Integer)
+    | SgCircle (Integer) (Integer) (Integer)
+    | SgArc (Integer) (Integer) (Integer) (Integer) (Integer)
+    | SgPolyline (List Integer)
+    | SgText (Text) (Integer) (Integer) (Integer)
+
+  SymbolBody = record {
+    sb-graphics : List SymbolGraphicType,
+    sb-pins : List SymbolPin,
+    sb-origin-x : Integer,
+    sb-origin-y : Integer,
+    sb-body-style : Integer
+  }
+
+Section: Footprint Geometry
+
+  PadShape =
+    | PadRect
+    | PadCircle
+    | PadOval
+    | PadRoundRect (Integer)
+    | PadTrapezoid
+    | PadCustom (List Integer)
+
+  PadType =
+    | PadThruHole
+    | PadSmd
+    | PadConnector
+    | PadNpth
+
+  Pad = record {
+    pad-number : Text,
+    pad-x : Integer,
+    pad-y : Integer,
+    pad-width : Integer,
+    pad-height : Integer,
+    pad-shape : PadShape,
+    pad-type : PadType,
+    pad-drill : Integer,
+    pad-layer-mask : Integer,
+    pad-rotation : Integer,
+    pad-net : Text
+  }
+
+  FootprintGraphicType =
+    | FgLine (Integer) (Integer) (Integer) (Integer) (Integer)
+    | FgRect (Integer) (Integer) (Integer) (Integer) (Integer)
+    | FgCircle (Integer) (Integer) (Integer) (Integer)
+    | FgArc (Integer) (Integer) (Integer) (Integer) (Integer) (Integer)
+    | FgText (Text) (Integer) (Integer) (Integer) (Integer)
+
+  Footprint = record {
+    fp-name : Text,
+    fp-pads : List Pad,
+    fp-graphics : List FootprintGraphicType,
+    fp-courtyard-x1 : Integer,
+    fp-courtyard-y1 : Integer,
+    fp-courtyard-x2 : Integer,
+    fp-courtyard-y2 : Integer,
+    fp-model-3d : Text,
+    fp-model-offset-x : Integer,
+    fp-model-offset-y : Integer,
+    fp-model-offset-z : Integer,
+    fp-model-rotation-x : Integer,
+    fp-model-rotation-y : Integer,
+    fp-model-rotation-z : Integer
+  }
+
+Section: SPICE Model
+
+  SpiceModelType =
+    | SpiceResistor
+    | SpiceCapacitor
+    | SpiceInductor
+    | SpiceDiode
+    | SpiceBjtNpn
+    | SpiceBjtPnp
+    | SpiceMosfetN
+    | SpiceMosfetP
+    | SpiceJfetN
+    | SpiceJfetP
+    | SpiceOpAmp
+    | SpiceVoltageSource
+    | SpiceCurrentSource
+    | SpiceSubcircuit (Text)
+
+  SpiceParam = record {
+    spp-name : Text,
+    spp-value : Text
+  }
+
+  SpiceModel = record {
+    sm-name : Text,
+    sm-type : SpiceModelType,
+    sm-params : List SpiceParam,
+    sm-subcircuit : Text
+  }
+
+Section: Supply Chain
+
+  SupplierPart = record {
+    sup-supplier : Text,
+    sup-part-number : Text,
+    sup-unit-price : Integer,
+    sup-min-qty : Integer,
+    sup-stock : Integer,
+    sup-lifecycle : Text
+  }
+
+Section: Unified Component
+
+  ComponentCategory =
+    | CatResistor
+    | CatCapacitor
+    | CatInductor
+    | CatDiode
+    | CatTransistor
+    | CatIC
+    | CatConnector
+    | CatMechanical
+    | CatPower
+    | CatElectromechanical
+    | CatRfMicrowave
+    | CatOpto
+    | CatSensor
+    | CatOther
+
+  ComponentDef = record {
+    cd-name : Text,
+    cd-description : Text,
+    cd-category : ComponentCategory,
+    cd-value : Text,
+    cd-datasheet : Text,
+    cd-manufacturer : Text,
+    cd-mpn : Text,
+    cd-symbol : SymbolBody,
+    cd-footprint : Footprint,
+    cd-spice-model : Maybe SpiceModel,
+    cd-suppliers : List SupplierPart,
+    cd-keywords : List Text,
+    cd-content-hash : Text
+  }
+
+Section: Component Instance
+
+ A placed component in a design. Carries its reference designator,
+ variant overrides, and placement coordinates.
+
+  ComponentPlacement = record {
+    cp-ref : Text,
+    cp-component : ComponentDef,
+    cp-x : Integer,
+    cp-y : Integer,
+    cp-rotation : Integer,
+    cp-side : Integer,
+    cp-mirror : Integer,
+    cp-value-override : Text,
+    cp-variant : Text,
+    cp-locked : Integer
+  }
+
+Section: Component Library
+
+  ComponentLibrary = record {
+    cl-name : Text,
+    cl-components : List ComponentDef,
+    cl-count : Integer
+  }
+
+  empty-library : ComponentLibrary
+  empty-library = ComponentLibrary {
+    cl-name = "untitled",
+    cl-components = [],
+    cl-count = 0
+  }
+
+  library-add : ComponentLibrary, ComponentDef -> ComponentLibrary
+  library-add (lib) (comp) = ComponentLibrary {
+    cl-name = lib.cl-name,
+    cl-components = list-push lib.cl-components comp,
+    cl-count = lib.cl-count + 1
+  }
+
+  library-find-by-mpn : ComponentLibrary, Text -> Maybe ComponentDef
+  library-find-by-mpn (lib) (mpn) =
+    library-find-by-mpn-in lib.cl-components mpn
+
+  library-find-by-mpn-in : List ComponentDef, Text -> Maybe ComponentDef
+  library-find-by-mpn-in (comps) (mpn) = library-find-by-mpn-loop comps mpn 0 (list-length comps)
+
+  library-find-by-mpn-loop : List ComponentDef, Text, Integer, Integer -> Maybe ComponentDef
+  library-find-by-mpn-loop (comps) (mpn) (i) (n) =
+    if i >= n then None
+    else let c = list-at comps i
+    in if c.cd-mpn == mpn then Just c
+    else library-find-by-mpn-loop comps mpn (i + 1) n
+
+  library-find-by-name : ComponentLibrary, Text -> Maybe ComponentDef
+  library-find-by-name (lib) (name) =
+    library-find-by-name-in lib.cl-components name
+
+  library-find-by-name-in : List ComponentDef, Text -> Maybe ComponentDef
+  library-find-by-name-in (comps) (name) = library-find-by-name-loop comps name 0 (list-length comps)
+
+  library-find-by-name-loop : List ComponentDef, Text, Integer, Integer -> Maybe ComponentDef
+  library-find-by-name-loop (comps) (name) (i) (n) =
+    if i >= n then None
+    else let c = list-at comps i
+    in if c.cd-name == name then Just c
+    else library-find-by-name-loop comps name (i + 1) n

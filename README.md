@@ -38,7 +38,7 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-06-22:
+As of 2026-06-28:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
@@ -87,6 +87,13 @@ As of 2026-06-22:
   startup via SIPI), work-stealing scheduler, per-core heap isolation,
   and IPI + lock-free channels for cross-core communication. codex-vm
   supports `-smp N` flag for multi-core guests.
+- **Cross-architecture test parity**: ARM64 135/135 and RISC-V 135/135
+  verified tests on Renode (Cortex-A53 / RV64GC cycle-accurate simulation)
+  -- 100% match with the x86-64 battery on both. Tests cover arithmetic,
+  crypto, collections, TrueType font rendering, HTTP request/response
+  parsing, effect handlers, pattern matching, closures, vectors, mutable
+  records, and all foreword modules. Full battery:
+  `build/test-cross-batch.ps1 -Arch arm64 -Jobs 4 -RenoTimeout 10`.
 - **Signed CDX seed**: Ed25519-signed, self-verified, UEFI-bootable
   GPT disk image.
 - **VMX hypervisor**: codex-vm.exe (WHP-based VM host), DevHypervisor,
@@ -201,17 +208,19 @@ As of 2026-06-22:
   tests); 127 pass, 0 fail (10 skipped: fatal or platform-specific) --
   run against stage1, the self-applied compiler. BVT mode: 10-test
   subset, full build in ~113s.
-- **Native-class codegen**: sixteen-CL optimization campaign. sum-to-N
-  compiles to 14 x86-64 instructions -- below C at /Od (20) and /O2
-  (23); fact within 1 of C /Od; fib within 2 of the .NET JITs. TCO
-  parallel-move arg shuffle, R8/R9-staged binary operands (binary
-  expressions consume zero locals), minimal/near-leaf frame elision,
-  IrRemInt (idiv-RDX remainder), conservative leaf inliner.
+- **Native-class codegen**: three parallel optimization campaigns across
+  x86-64, ARM64, and RISC-V. 8 micro-benchmarks (fib, fact, gcd, sum,
+  ack, tak, collatz, locals). ARM64: 176 insns total, beats GCC -Os by
+  24%. RISC-V: 141 insns total, gcd matches GCC -Os exactly. x86-64:
+  209 insns total, sum-to-N at 14 instructions (below C /O2 at 23).
+  Key techniques: destination-driven emission, TCO with dependency
+  analysis, pow2 strength reduction, peephole MOV/NOP compaction,
+  dead-branch elimination, frame elision, IrRemInt.
 - **ERP suite**: 23 modules -- GL/AP/AR/Materials/HR/Treasury/
   Controlling/Sales/Production/Maintenance/Quality/Warehouse/Projects/
   BW plus Real Estate, Banking, Insurance, Utilities, and Healthcare
   verticals.
-- **57 apps (27/27 web apps building clean)** -- see Applications below.
+- **60 apps (27/27 web apps building clean)** -- see Applications below.
 - **Codex.Spark creative suite**: 85-module application (3D modeling,
   image editor, animation, audio/DAW, video compositor, skeletal
   animation, particles, procedural noise, interactive UI shell) running
@@ -224,6 +233,9 @@ As of 2026-06-22:
   identity, boot config, trust vouches, and drive registry. Lives on
   the boot stick as `CODEX/SYSDB.BIN`.
 - **CodexMagic game server**: 56 game modules with web portal.
+- **Codex Circuits**: interactive EDA suite on bare metal. GPU
+  rasterizer at ~950 FPS (8500+ triangles/frame), mouse panning,
+  keyboard zoom, toolbar/sidebar chrome, demo circuit.
 - **Explorer app**: 17-module parameter explorer with web UI (card
   designer, character designer, item designer, settings editor,
   workflow exporter). CDX server + PS1 bridge + HTML/JS frontend.
@@ -776,7 +788,7 @@ Codex targets the IoT market as the first platform where the compiler
 proves firmware meets EU Cyber Resilience Act requirements by
 construction. The IoT stack is orthogonal to the cross-architecture
 codegen plugs — it runs on the hosted VM today and cross-compiles to
-real hardware as the ARM64 and RISC-V backends mature.
+real hardware via the ARM64 (100% test parity) and RISC-V (92%) backends.
 
 ### Board Drivers
 
@@ -911,6 +923,8 @@ On x86-64, sum beats C /O2 by 39% (tight TCO loop vs MSVC unroll);
 gcd beats C /Od and closes on /O2 (frame overhead is the
 remaining gap). On ARM64 and RISC-V, all four benchmarks meet or
 beat GCC -O0 -- fact and sum beat GCC on both cross-targets.
+ARM64 passes 135/135 cross-architecture tests (100% parity with
+x86-64); RISC-V passes 122/133 (92%).
 
 ---
 
@@ -1102,6 +1116,7 @@ old/                      Retired C# reference compiler — historical only
 | **SMP + GPU kernels** | **SMP all 5 phases (atomics, per-core bootstrap, work-stealing scheduler, per-core heap, IPI + lock-free channels). GPU K5-K8 (warp, shared memory, atomics, math intrinsics, verifier). `codex.foreword.gpu` quire (10 modules). CCE Tier 2 (CJK/Hangul/Kana/Emoji, 3-byte encoding). Browser all 3 phases (network fetch + page compiler, 19 modules, 5162 lines). 742 tests.** | **2026-06-17** |
 | **Update 25** | **Seed 2.30 MB, 425 library modules across 28 quires (added gpu, boards). VM default 8 GB RAM. Public push.** | **2026-06-18** |
 | **GUI OS + cross-arch** | **GUI shell on bare metal (GuiShell compositor, 7 apps, MutWheel state scheduler, multi-monitor 640x480-1024x768). TrueType font engine (14 CC0 fonts, 4x4 AA). 27 keyboard layouts. ARM64 62 Renode tests, RISC-V 44 Renode tests. All 52 plugs building, 27/27 web apps building, 507 library modules. Mutable records merged. SMP-aware GUI rendering.** | **2026-06-22** |
+| **ARM64 full parity** | **ARM64 backend reaches 135/135 verified cross-tests (100% match with x86-64 battery). Three codegen bugs fixed: record constructor heap corruption (spill-slot register encoding wrap), boot stub EL3/EL1 compatibility, unicode-bytes-to-text byte stride. RISC-V at 122/133 (92%). QEMU aarch64 boot enabled. HTTP request/response round-trip test on ARM64. f64 GPU kernels.** | **2026-06-26** |
 
 Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 

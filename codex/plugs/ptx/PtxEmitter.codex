@@ -13,16 +13,47 @@ Section: Name Sanitization
   ptx-sanitize (name) =
    text-replace name "-" "_"
 
+Section: Hex Formatting
+
+  ptx-hex16 : Integer -> Text
+  ptx-hex16 (n) =
+    ptx-hex-digit (n / 1152921504606846976)
+    & ptx-hex-digit (n / 72057594037927936 - n / 1152921504606846976 * 16)
+    & ptx-hex-digit (n / 4503599627370496 - n / 72057594037927936 * 16)
+    & ptx-hex-digit (n / 281474976710656 - n / 4503599627370496 * 16)
+    & ptx-hex-digit (n / 17592186044416 - n / 281474976710656 * 16)
+    & ptx-hex-digit (n / 1099511627776 - n / 17592186044416 * 16)
+    & ptx-hex-digit (n / 68719476736 - n / 1099511627776 * 16)
+    & ptx-hex-digit (n / 4294967296 - n / 68719476736 * 16)
+    & ptx-hex-digit (n / 268435456 - n / 4294967296 * 16)
+    & ptx-hex-digit (n / 16777216 - n / 268435456 * 16)
+    & ptx-hex-digit (n / 1048576 - n / 16777216 * 16)
+    & ptx-hex-digit (n / 65536 - n / 1048576 * 16)
+    & ptx-hex-digit (n / 4096 - n / 65536 * 16)
+    & ptx-hex-digit (n / 256 - n / 4096 * 16)
+    & ptx-hex-digit (n / 16 - n / 256 * 16)
+    & ptx-hex-digit (n - n / 16 * 16)
+
+  ptx-hex-digit : Integer -> Text
+  ptx-hex-digit (d) =
+    let v = if d < 0 then d + 16 else d
+    in if v == 0 then "0" else if v == 1 then "1" else if v == 2 then "2"
+    else if v == 3 then "3" else if v == 4 then "4" else if v == 5 then "5"
+    else if v == 6 then "6" else if v == 7 then "7" else if v == 8 then "8"
+    else if v == 9 then "9" else if v == 10 then "A" else if v == 11 then "B"
+    else if v == 12 then "C" else if v == 13 then "D" else if v == 14 then "E"
+    else "F"
+
 Section: PTX Type Mapping
 
   ptx-type-for : CodexType -> Text
   ptx-type-for (ty) =
    when ty
     is IntegerTy (lo) (hi) (ov) -> ".s64"
-    is RealTy -> ".f64"
-    is RealApproxTy -> ".f64"
-    is RealTrappingTy -> ".f64"
-    is RealSaturatingTy -> ".f64"
+    is RealTy -> ".f32"
+    is RealApproxTy -> ".f32"
+    is RealTrappingTy -> ".f32"
+    is RealSaturatingTy -> ".f32"
     is BooleanTy -> ".pred"
     is CharTy -> ".u32"
     is TextTy -> ".u64"
@@ -34,10 +65,10 @@ Section: PTX Type Mapping
   ptx-reg-prefix : CodexType -> Text
   ptx-reg-prefix (ty) =
    when ty
-    is RealTy -> "%fd"
-    is RealApproxTy -> "%fd"
-    is RealTrappingTy -> "%fd"
-    is RealSaturatingTy -> "%fd"
+    is RealTy -> "%fs"
+    is RealApproxTy -> "%fs"
+    is RealTrappingTy -> "%fs"
+    is RealSaturatingTy -> "%fs"
     is BooleanTy -> "%p"
     is otherwise -> "%rd"
 
@@ -47,7 +78,9 @@ Section: Register Allocation
    next-reg : Integer,
    type-defs : List ATypeDef,
    arities : List PtxArityEntry,
-   indent : Text
+   indent : Text,
+   self-name : Text,
+   self-param-names : List Text
   }
 
   PtxArityEntry = record {
@@ -61,6 +94,8 @@ Section: Register Allocation
     next-reg = 0,
     type-defs = tds,
     arities = [],
+    self-name = "",
+    self-param-names = [],
     indent = "    "
    }
 
@@ -68,13 +103,55 @@ Section: Register Allocation
   ptx-fresh-reg (ctx) =
    "%rd" & integer-to-text (ctx.next-reg)
 
+  ptx-fresh-f64-reg : PtxCtx -> Text
+  ptx-fresh-f64-reg (ctx) =
+   "%fs" & integer-to-text (ctx.next-reg)
+
+  ptx-is-real-type : CodexType -> Boolean
+  ptx-is-real-type (ty) =
+   when ty
+    is RealTy -> True
+    is RealApproxTy -> True
+    is RealTrappingTy -> True
+    is RealSaturatingTy -> True
+    is FunTy (param) (ret) -> ptx-is-real-type ret
+    is EffectfulTy (names) (texts) (inner) -> ptx-is-real-type inner
+    is otherwise -> False
+
+  ptx-bin-instr-f64 : IRBinaryOp -> Text
+  ptx-bin-instr-f64 (op) =
+   when op
+    is IrEq -> "setp.eq.f32"
+    is IrNotEq -> "setp.ne.f32"
+    is IrLt | IrLtVec -> "setp.lt.f32"
+    is IrGt | IrGtVec -> "setp.gt.f32"
+    is IrLtEq | IrLtEqVec -> "setp.le.f32"
+    is IrGtEq | IrGtEqVec -> "setp.ge.f32"
+    is otherwise -> "setp.eq.f32"
+
+  ptx-is-f64-op : Text -> Boolean
+  ptx-is-f64-op (op) =
+   if text-contains op ".f32" then True
+   else if text-contains op "sin.approx" then True
+   else if text-contains op "cos.approx" then True
+   else if text-contains op "sqrt" then True
+   else if text-contains op "abs.f32" then True
+   else False
+
+  ptx-reg-for-op : PtxCtx, Text -> Text
+  ptx-reg-for-op (ctx) (op) =
+   if ptx-is-f64-op op then ptx-fresh-f64-reg ctx
+   else ptx-fresh-reg ctx
+
   ptx-bump-reg : PtxCtx -> PtxCtx
   ptx-bump-reg (ctx) =
    PtxCtx {
     next-reg = ctx.next-reg + 1,
     type-defs = ctx.type-defs,
     arities = ctx.arities,
-    indent = ctx.indent
+    indent = ctx.indent,
+    self-name = ctx.self-name,
+    self-param-names = ctx.self-param-names
    }
 
 Section: Arity Map
@@ -120,14 +197,14 @@ Section: Binary Op Emission
     is IrDivInt -> "div.s64"
     is IrRemInt -> "rem.s64"
     is IrPowInt -> "mul.lo.s64"
-    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "add.f64"
-    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "sub.f64"
-    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "mul.f64"
-    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "div.rn.f64"
-    is IrAddVec -> "add.f64"
-    is IrSubVec -> "sub.f64"
-    is IrMulVec -> "mul.f64"
-    is IrDivVec -> "div.rn.f64"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "add.f32"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "sub.f32"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "mul.f32"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "div.rn.f32"
+    is IrAddVec -> "add.f32"
+    is IrSubVec -> "sub.f32"
+    is IrMulVec -> "mul.f32"
+    is IrDivVec -> "div.rn.f32"
     is IrEq -> "setp.eq.s64"
     is IrNotEq -> "setp.ne.s64"
     is IrLt | IrLtVec -> "setp.lt.s64"
@@ -175,9 +252,11 @@ Section: Expression Emission
      in let c = ptx-bump-reg ctx
      in PtxResult { code = ctx.indent & "mov.s64 " & r & ", " & integer-to-text n & ";\n", result-reg = r, ctx = c }
     is IrNumLit (n) (sp) ->
-     let r = "%fd" & integer-to-text (ctx.next-reg)
-     in let c = ptx-bump-reg ctx
-     in PtxResult { code = ctx.indent & "mov.f64 " & r & ", 0d" & integer-to-text n & ";\n", result-reg = r, ctx = c }
+     let tmp = "%fd" & integer-to-text (ctx.next-reg)
+     in let c1 = ptx-bump-reg ctx
+     in let r = "%fs" & integer-to-text (c1.next-reg)
+     in let c2 = ptx-bump-reg c1
+     in PtxResult { code = ctx.indent & "mov.f64 " & tmp & ", 0d" & ptx-hex16 n & ";\n" & c2.indent & "cvt.rn.f32.f64 " & r & ", " & tmp & ";\n", result-reg = r, ctx = c2 }
     is IrBoolLit (b) (sp) ->
      let r = ptx-fresh-reg ctx
      in let c = ptx-bump-reg ctx
@@ -204,7 +283,8 @@ Section: Expression Emission
       let r = ptx-fresh-reg ctx
       in let c = ptx-bump-reg ctx
       in PtxResult { code = ctx.indent & "mov.s64 " & r & ", 0;\n", result-reg = r, ctx = c }
-     else PtxResult { code = "", result-reg = "%lv_" & ptx-sanitize n, ctx = ctx }
+     else let prefix = if ptx-is-real-type ty then "f__" else ""
+     in PtxResult { code = "", result-reg = "%lv_" & prefix & ptx-sanitize n, ctx = ctx }
     is IrBinary (op) (l) (r) (ty) (sp) ->
      ptx-emit-binary ctx op l r depth
     is IrNegate (operand) (sp) ->
@@ -216,11 +296,14 @@ Section: Expression Emission
      ptx-emit-if ctx cond th el ty depth
     is IrLet (name) (ty) (val) (body) (sp) ->
      let vr = ptx-emit-expr-at ctx val (depth + 1)
-     in let mv = vr.code & (vr.ctx).indent & "mov.s64 %lv_" & ptx-sanitize name & ", " & vr.result-reg & ";\n"
+     in let is-f = ptx-is-real-type ty
+     in let prefix = if is-f then "f__" else ""
+     in let mov-op = if is-f then "mov.f32" else "mov.s64"
+     in let mv = vr.code & (vr.ctx).indent & mov-op & " %lv_" & prefix & ptx-sanitize name & ", " & vr.result-reg & ";\n"
      in let br = ptx-emit-expr-at (vr.ctx) body (depth + 1)
      in PtxResult { code = mv & br.code, result-reg = br.result-reg, ctx = br.ctx }
     is IrApply (f) (a) (ty) (sp) ->
-     ptx-emit-apply ctx e depth
+     ptx-emit-apply ctx e ty depth
     is IrLambda (params) (body) (ty) (sp) ->
      ptx-emit-expr-at ctx body (depth + 1)
     is IrList (elems) (ty) (sp) ->
@@ -266,20 +349,23 @@ Section: Binary Op Helpers
    let lr = ptx-emit-expr-at ctx l (depth + 1)
    in let rr = ptx-emit-expr-at (lr.ctx) r (depth + 1)
    in if ptx-is-comparison op then
-    let p = "%p" & integer-to-text ((rr.ctx).next-reg)
+    let is-f64 = text-starts-with (lr.result-reg) "%fs" | text-starts-with (lr.result-reg) "%lv_f__" | text-starts-with (rr.result-reg) "%fs" | text-starts-with (rr.result-reg) "%lv_f__"
+    in let cmp-instr = if is-f64 then ptx-bin-instr-f64 op else ptx-bin-instr op
+    in let p = "%p" & integer-to-text ((rr.ctx).next-reg)
     in let c = ptx-bump-reg (rr.ctx)
     in let out = ptx-fresh-reg c
     in let c2 = ptx-bump-reg c
     in PtxResult {
-     code = lr.code & rr.code & c2.indent & ptx-bin-instr op & " " & p & ", " & lr.result-reg & ", " & rr.result-reg & ";\n" & c2.indent & "selp.s64 " & out & ", 1, 0, " & p & ";\n",
+     code = lr.code & rr.code & c2.indent & cmp-instr & " " & p & ", " & lr.result-reg & ", " & rr.result-reg & ";\n" & c2.indent & "selp.s64 " & out & ", 1, 0, " & p & ";\n",
      result-reg = out,
      ctx = c2
     }
    else
-    let out = ptx-fresh-reg (rr.ctx)
+    let instr = ptx-bin-instr op
+    in let out = ptx-reg-for-op (rr.ctx) instr
     in let c = ptx-bump-reg (rr.ctx)
     in PtxResult {
-     code = lr.code & rr.code & c.indent & ptx-bin-instr op & " " & out & ", " & lr.result-reg & ", " & rr.result-reg & ";\n",
+     code = lr.code & rr.code & c.indent & instr & " " & out & ", " & lr.result-reg & ", " & rr.result-reg & ";\n",
      result-reg = out,
      ctx = c
     }
@@ -295,7 +381,9 @@ Section: Control Flow
    in let label-end = "LBB_end_" & integer-to-text (c1.next-reg)
    in let c2 = ptx-bump-reg c1
    in let tr = ptx-emit-expr-at c2 th (depth + 1)
-   in let out = ptx-fresh-reg (tr.ctx)
+   in let is-f = ptx-is-real-type ty
+   in let out = if is-f then ptx-fresh-f64-reg (tr.ctx) else ptx-fresh-reg (tr.ctx)
+   in let mv-op = if is-f then "mov.f32" else "mov.s64"
    in let c3 = ptx-bump-reg (tr.ctx)
    in let er = ptx-emit-expr-at c3 el (depth + 1)
    in let c4 = er.ctx
@@ -304,11 +392,11 @@ Section: Control Flow
      & c4.indent & "setp.ne.s64 " & p & ", " & cr.result-reg & ", 0;\n"
      & c4.indent & "@" & p & " bra " & label-then & ";\n"
      & er.code
-     & c4.indent & "mov.s64 " & out & ", " & er.result-reg & ";\n"
+     & c4.indent & mv-op & " " & out & ", " & er.result-reg & ";\n"
      & c4.indent & "bra " & label-end & ";\n"
      & label-then & ":\n"
      & tr.code
-     & c4.indent & "mov.s64 " & out & ", " & tr.result-reg & ";\n"
+     & c4.indent & mv-op & " " & out & ", " & tr.result-reg & ";\n"
      & label-end & ":\n",
     result-reg = out,
     ctx = c4
@@ -338,7 +426,7 @@ Section: Control Flow
      let br = ptx-emit-expr-at ctx body (depth + 1)
      in PtxResult { code = br.code & (br.ctx).indent & "mov.s64 " & out-reg & ", " & br.result-reg & ";\n", result-reg = out-reg, ctx = br.ctx }
     is IrVarPat (name) (ty) (sp) ->
-     let mv = ctx.indent & "mov.s64 %lv_" & ptx-sanitize name & ", " & scrut-reg & ";\n"
+     let mv = ctx.indent & "mov.b64 %lv_" & ptx-sanitize name & ", " & scrut-reg & ";\n"
      in let br = ptx-emit-expr-at ctx body (depth + 1)
      in PtxResult { code = mv & br.code & (br.ctx).indent & "mov.s64 " & out-reg & ", " & br.result-reg & ";\n", result-reg = out-reg, ctx = br.ctx }
     is IrLitPat (text) (ty) (sp) ->
@@ -378,7 +466,10 @@ Section: Act Block Emission
    in when s
     is IrDoBind (name) (ty) (val) (sp) ->
      let vr = ptx-emit-expr-at ctx val (depth + 1)
-     in let mv = vr.code & (vr.ctx).indent & "mov.s64 %lv_" & ptx-sanitize name & ", " & vr.result-reg & ";\n"
+     in let is-f = ptx-is-real-type ty
+     in let prefix = if is-f then "f__" else ""
+     in let mov-op = if is-f then "mov.f32" else "mov.s64"
+     in let mv = vr.code & (vr.ctx).indent & mov-op & " %lv_" & prefix & ptx-sanitize name & ", " & vr.result-reg & ";\n"
      in let rest = ptx-emit-act-loop (vr.ctx) stmts (i + 1) depth
      in PtxResult { code = mv & rest.code, result-reg = rest.result-reg, ctx = rest.ctx }
     is IrDoExec (e) (sp) ->
@@ -469,9 +560,9 @@ Section: GPU Intrinsic Recognition
    else if name == "mbarrier-arrive" then ptx-emit-mbarrier ctx "arrive" args depth
    else if name == "mbarrier-wait" then ptx-emit-mbarrier ctx "wait" args depth
    else if name == "device-load" then ptx-emit-device-load ctx ".s64" args depth
-   else if name == "device-load-f64" then ptx-emit-device-load ctx ".f64" args depth
+   else if name == "device-load-f64" then ptx-emit-device-load ctx ".f32" args depth
    else if name == "device-store" then ptx-emit-device-store ctx ".s64" args depth
-   else if name == "device-store-f64" then ptx-emit-device-store ctx ".f64" args depth
+   else if name == "device-store-f64" then ptx-emit-device-store ctx ".f32" args depth
    else PtxResult { code = ctx.indent & "// unknown gpu intrinsic: " & name & "\n", result-reg = "%rd0", ctx = ctx }
 
 Section: Warp Shuffle Emission
@@ -581,33 +672,57 @@ Section: Math Intrinsic Emission
    if name == "cordic-sin" then True
    else if name == "cordic-cos" then True
    else if name == "cordic-tan" then True
-   else if name == "cordic-atan2" then True
    else if name == "real-sqrt" then True
    else if name == "real-abs" then True
    else if name == "real-min" then True
    else if name == "real-max" then True
    else if name == "real-floor" then True
    else if name == "real-ceil" then True
+   else if name == "__int-to-real" then True
+   else if name == "__real-to-int" then True
    else False
 
   ptx-emit-math-intrinsic : PtxCtx, Text, List IRExpr, Integer -> PtxResult
   ptx-emit-math-intrinsic (ctx) (name) (args) (depth) =
-   if name == "cordic-sin" then ptx-emit-math-unary ctx "sin.approx.f64" args depth
-   else if name == "cordic-cos" then ptx-emit-math-unary ctx "cos.approx.f64" args depth
+   if name == "cordic-sin" then ptx-emit-sincos ctx "sin" args depth
+   else if name == "cordic-cos" then ptx-emit-sincos ctx "cos" args depth
    else if name == "cordic-tan" then ptx-emit-math-tan ctx args depth
-   else if name == "cordic-atan2" then ptx-emit-math-binary ctx "div.rn.f64" args depth
-   else if name == "real-sqrt" then ptx-emit-math-unary ctx "sqrt.rn.f64" args depth
-   else if name == "real-abs" then ptx-emit-math-unary ctx "abs.f64" args depth
-   else if name == "real-min" then ptx-emit-math-binary ctx "min.f64" args depth
-   else if name == "real-max" then ptx-emit-math-binary ctx "max.f64" args depth
-   else if name == "real-floor" then ptx-emit-math-unary ctx "cvt.rmi.f64.f64" args depth
-   else if name == "real-ceil" then ptx-emit-math-unary ctx "cvt.rpi.f64.f64" args depth
+   else if name == "real-sqrt" then ptx-emit-math-unary ctx "sqrt.rn.f32" args depth
+   else if name == "real-abs" then ptx-emit-math-unary ctx "abs.f32" args depth
+   else if name == "real-min" then ptx-emit-math-binary ctx "min.f32" args depth
+   else if name == "real-max" then ptx-emit-math-binary ctx "max.f32" args depth
+   else if name == "real-floor" then ptx-emit-math-unary ctx "cvt.rmi.f32.f32" args depth
+   else if name == "real-ceil" then ptx-emit-math-unary ctx "cvt.rpi.f32.f32" args depth
+   else if name == "__int-to-real" then ptx-emit-math-unary ctx "cvt.rn.f32.s64" args depth
+   else if name == "__real-to-int" then ptx-emit-cvt-to-int ctx args depth
    else PtxResult { code = "", result-reg = "%rd0", ctx = ctx }
+
+  ptx-emit-cvt-to-int : PtxCtx, List IRExpr, Integer -> PtxResult
+  ptx-emit-cvt-to-int (ctx) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+   in let r = ptx-fresh-reg (a0.ctx)
+   in let c = ptx-bump-reg (a0.ctx)
+   in PtxResult {
+    code = a0.code & c.indent & "cvt.rzi.s64.f32 " & r & ", " & a0.result-reg & ";\n",
+    result-reg = r,
+    ctx = c
+   }
+
+  ptx-emit-sincos : PtxCtx, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-sincos (ctx) (fn) (args) (depth) =
+   let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+   in let r = "%fs" & integer-to-text ((a0.ctx).next-reg)
+   in let c1 = ptx-bump-reg (a0.ctx)
+   in PtxResult {
+    code = a0.code & c1.indent & fn & ".approx.f32 " & r & ", " & a0.result-reg & ";\n",
+    result-reg = r,
+    ctx = c1
+   }
 
   ptx-emit-math-unary : PtxCtx, Text, List IRExpr, Integer -> PtxResult
   ptx-emit-math-unary (ctx) (instr) (args) (depth) =
    let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
-   in let r = "%fd" & integer-to-text ((a0.ctx).next-reg)
+   in let r = "%fs" & integer-to-text ((a0.ctx).next-reg)
    in let c = ptx-bump-reg (a0.ctx)
    in PtxResult {
     code = a0.code & c.indent & instr & " " & r & ", " & a0.result-reg & ";\n",
@@ -619,7 +734,7 @@ Section: Math Intrinsic Emission
   ptx-emit-math-binary (ctx) (instr) (args) (depth) =
    let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
    in let a1 = ptx-emit-expr-at (a0.ctx) (list-at args 1) (depth + 1)
-   in let r = "%fd" & integer-to-text ((a1.ctx).next-reg)
+   in let r = "%fs" & integer-to-text ((a1.ctx).next-reg)
    in let c = ptx-bump-reg (a1.ctx)
    in PtxResult {
     code = a0.code & a1.code & c.indent & instr & " " & r & ", " & a0.result-reg & ", " & a1.result-reg & ";\n",
@@ -630,14 +745,14 @@ Section: Math Intrinsic Emission
   ptx-emit-math-tan : PtxCtx, List IRExpr, Integer -> PtxResult
   ptx-emit-math-tan (ctx) (args) (depth) =
    let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
-   in let rs = "%fd" & integer-to-text ((a0.ctx).next-reg)
+   in let rs = "%fs" & integer-to-text ((a0.ctx).next-reg)
    in let c1 = ptx-bump-reg (a0.ctx)
-   in let rc = "%fd" & integer-to-text (c1.next-reg)
+   in let rc = "%fs" & integer-to-text (c1.next-reg)
    in let c2 = ptx-bump-reg c1
-   in let r = "%fd" & integer-to-text (c2.next-reg)
+   in let r = "%fs" & integer-to-text (c2.next-reg)
    in let c3 = ptx-bump-reg c2
    in PtxResult {
-    code = a0.code & c3.indent & "sin.approx.f64 " & rs & ", " & a0.result-reg & ";\n" & c3.indent & "cos.approx.f64 " & rc & ", " & a0.result-reg & ";\n" & c3.indent & "div.rn.f64 " & r & ", " & rs & ", " & rc & ";\n",
+    code = a0.code & c3.indent & "sin.approx.f32 " & rs & ", " & a0.result-reg & ";\n" & c3.indent & "cos.approx.f32 " & rc & ", " & a0.result-reg & ";\n" & c3.indent & "div.rn.f32 " & r & ", " & rs & ", " & rc & ";\n",
     result-reg = r,
     ctx = c3
    }
@@ -666,33 +781,68 @@ Section: Barrier Emission
      ctx = a0.ctx
     }
 
+Section: Tail Call Optimization
+
+  ptx-tco-eval : PtxCtx, List IRExpr, List Text, Integer, Integer, Integer -> PtxResult
+  ptx-tco-eval (ctx) (args) (params) (depth) (base) (i) =
+    if i >= list-length args then PtxResult { code = "", result-reg = "", ctx = ctx }
+    else let ar = ptx-emit-expr-at ctx (list-at args i) (depth + 1)
+    in let pname = list-at params i
+    in let is-f = text-starts-with pname "f__"
+    in let temp = if is-f then "%fs" & integer-to-text (base + i) else "%rd" & integer-to-text (base + i)
+    in let mv-op = if is-f then "mov.f32" else "mov.s64"
+    in let store = (ar.ctx).indent & mv-op & " " & temp & ", " & ar.result-reg & ";\n"
+    in let rest = ptx-tco-eval (ar.ctx) args params depth base (i + 1)
+    in PtxResult { code = ar.code & store & rest.code, result-reg = "", ctx = rest.ctx }
+
+  ptx-tco-moves : PtxCtx, List Text, Integer, Integer -> Text
+  ptx-tco-moves (ctx) (params) (base) (i) =
+    if i >= list-length params then ""
+    else let pname = list-at params i
+    in let is-f = text-starts-with pname "f__"
+    in let temp = if is-f then "%fs" & integer-to-text (base + i) else "%rd" & integer-to-text (base + i)
+    in let mv-op = if is-f then "mov.f32" else "mov.s64"
+    in ctx.indent & mv-op & " %lv_" & pname & ", " & temp & ";\n" & ptx-tco-moves ctx params base (i + 1)
+
+  ptx-emit-tco-jump : PtxCtx, Text, List IRExpr, Integer -> PtxResult
+  ptx-emit-tco-jump (ctx) (name) (args) (depth) =
+    let base = ctx.next-reg
+    in let n = list-length args
+    in let c1 = PtxCtx { next-reg = base + n, type-defs = ctx.type-defs, arities = ctx.arities, indent = ctx.indent, self-name = ctx.self-name, self-param-names = ctx.self-param-names }
+    in let ev = ptx-tco-eval c1 args (ctx.self-param-names) depth base 0
+    in let mv = ptx-tco-moves (ev.ctx) (ctx.self-param-names) base 0
+    in let bra = (ev.ctx).indent & "bra L_tco_" & ptx-sanitize name & ";\n"
+    in PtxResult { code = ev.code & mv & bra, result-reg = "%rd0", ctx = ev.ctx }
+
 Section: Apply Emission
 
-  ptx-emit-apply : PtxCtx, IRExpr, Integer -> PtxResult
-  ptx-emit-apply (ctx) (e) (depth) =
+  ptx-emit-apply : PtxCtx, IRExpr, CodexType, Integer -> PtxResult
+  ptx-emit-apply (ctx) (e) (ret-ty) (depth) =
    let chain = collect-apply-chain e []
    in when (chain.root)
     is IrName (n) (ty) (sp) ->
      if ptx-is-gpu-intrinsic n then ptx-emit-gpu-intrinsic ctx n
      else if ptx-is-gpu-intrinsic-with-args n then ptx-emit-gpu-intrinsic-call ctx n (chain.args) depth
      else if ptx-is-math-intrinsic n then ptx-emit-math-intrinsic ctx n (chain.args) depth
-     else ptx-emit-call ctx n (chain.args) depth
+     else if n == (ctx.self-name) then ptx-emit-tco-jump ctx n (chain.args) depth
+     else ptx-emit-call ctx n (chain.args) ret-ty depth
     is otherwise ->
      let r = ptx-fresh-reg ctx
      in let c = ptx-bump-reg ctx
      in PtxResult { code = ctx.indent & "mov.s64 " & r & ", 0; // indirect call\n", result-reg = r, ctx = c }
 
-  ptx-emit-call : PtxCtx, Text, List IRExpr, Integer -> PtxResult
-  ptx-emit-call (ctx) (name) (args) (depth) =
+  ptx-emit-call : PtxCtx, Text, List IRExpr, CodexType, Integer -> PtxResult
+  ptx-emit-call (ctx) (name) (args) (ret-ty) (depth) =
    let ar = ptx-emit-call-args ctx args depth 0
    in let base-id = (ar.ctx).next-reg
    in let c1 = ptx-bump-reg (ar.ctx)
    in let ret-param = "_ret_" & integer-to-text base-id
-   in let out = ptx-fresh-reg c1
+   in let out = if ptx-is-real-type ret-ty then ptx-fresh-f64-reg c1 else ptx-fresh-reg c1
    in let c2 = ptx-bump-reg c1
-   in let ret-decl = c2.indent & "{\n" & c2.indent & ".param .s64 " & ret-param & ";\n"
+   in let ret-pt = if ptx-is-real-type ret-ty then ".f32" else ".s64"
+   in let ret-decl = c2.indent & "{\n" & c2.indent & ".param " & ret-pt & " " & ret-param & ";\n"
    in let call-instr = c2.indent & "call (" & ret-param & "), " & ptx-sanitize name & ", (" & ar.result-reg & ");\n"
-   in let ret-load = c2.indent & "ld.param.s64 " & out & ", [" & ret-param & "];\n" & c2.indent & "}\n"
+   in let ret-load = c2.indent & "ld.param" & ret-pt & " " & out & ", [" & ret-param & "];\n" & c2.indent & "}\n"
    in PtxResult {
     code = ar.code & ret-decl & call-instr & ret-load,
     result-reg = out,
@@ -705,7 +855,10 @@ Section: Apply Emission
    else let ar = ptx-emit-expr-at ctx (list-at args i) (depth + 1)
    in let pid = "_ca_" & integer-to-text ((ar.ctx).next-reg)
    in let c1 = ptx-bump-reg (ar.ctx)
-   in let store = c1.indent & ".param .s64 " & pid & ";\n" & c1.indent & "st.param.s64 [" & pid & "], " & ar.result-reg & ";\n"
+   in let is-f-arg = text-starts-with (ar.result-reg) "%fs" | text-starts-with (ar.result-reg) "%lv_f__"
+   in let pt = if is-f-arg then ".f32" else ".s64"
+   in let st = if is-f-arg then "st.param.f32" else "st.param.s64"
+   in let store = c1.indent & ".param " & pt & " " & pid & ";\n" & c1.indent & st & " [" & pid & "], " & ar.result-reg & ";\n"
    in let rest = ptx-emit-call-args c1 args depth (i + 1)
    in let sep = if text-length (rest.result-reg) > 0 then ", " else ""
    in PtxResult {
@@ -720,7 +873,8 @@ Section: Collect Locals
   ptx-collect-locals-expr (e) (acc) =
    when e
     is IrLet (name) (ty) (val) (body) (sp) ->
-     ptx-collect-locals-expr body (ptx-collect-locals-expr val (ptx-locals-add acc (ptx-sanitize name)))
+     let prefix = if ptx-is-real-type ty then "f__" else ""
+     in ptx-collect-locals-expr body (ptx-collect-locals-expr val (ptx-locals-add acc (prefix & ptx-sanitize name)))
     is IrIf (c) (t) (el) (ty) (sp) ->
      ptx-collect-locals-expr el (ptx-collect-locals-expr t (ptx-collect-locals-expr c acc))
     is IrBinary (op) (l) (r) (ty) (sp) ->
@@ -790,7 +944,9 @@ Section: Collect Locals
    if i >= list-length ss then acc
    else let s = list-at ss i
    in let acc1 = when s
-    is IrDoBind (name) (ty) (val) (sp) -> ptx-collect-locals-expr val (ptx-locals-add acc (ptx-sanitize name))
+    is IrDoBind (name) (ty) (val) (sp) ->
+     let prefix = if ptx-is-real-type ty then "f__" else ""
+     in ptx-collect-locals-expr val (ptx-locals-add acc (prefix & ptx-sanitize name))
     is IrDoExec (e) (sp) -> ptx-collect-locals-expr e acc
    in ptx-collect-locals-stmts-loop ss acc1 (i + 1)
 
@@ -819,32 +975,40 @@ Section: Function Emission
   ptx-collect-param-names (params) (i) =
    if i >= list-length params then []
    else let p = list-at params i
-   in [ptx-sanitize (p.name)] & ptx-collect-param-names params (i + 1)
+   in let prefix = if ptx-is-real-type (p.type-val) then "f__" else ""
+   in [prefix & ptx-sanitize (p.name)] & ptx-collect-param-names params (i + 1)
 
   ptx-emit-param-decls : List IRParam, Integer -> Text
   ptx-emit-param-decls (params) (i) =
    if i >= list-length params then ""
    else let p = list-at params i
    in let sep = if i == 0 then "" else ", "
-   in sep & ".param .s64 " & ptx-sanitize (p.name) & ptx-emit-param-decls params (i + 1)
+   in let param-ty = if ptx-is-real-type (p.type-val) then ".f32" else ".s64"
+   in sep & ".param " & param-ty & " " & ptx-sanitize (p.name) & ptx-emit-param-decls params (i + 1)
 
   ptx-emit-param-loads : List IRParam, Integer -> Text
   ptx-emit-param-loads (params) (i) =
    if i >= list-length params then ""
    else let p = list-at params i
    in let sname = ptx-sanitize (p.name)
-   in let tmp = "%rd" & integer-to-text i
-   in "    ld.param.s64 " & tmp & ", [" & sname & "];\n    mov.s64 %lv_" & sname & ", " & tmp & ";\n" & ptx-emit-param-loads params (i + 1)
+   in let is-f = ptx-is-real-type (p.type-val)
+   in let prefix = if is-f then "f__" else ""
+   in let tmp = if is-f then "%fs" & integer-to-text i else "%rd" & integer-to-text i
+   in let ld-ty = if is-f then "ld.param.f32" else "ld.param.s64"
+   in let mv-ty = if is-f then "mov.f32" else "mov.s64"
+   in "    " & ld-ty & " " & tmp & ", [" & sname & "];\n    " & mv-ty & " %lv_" & prefix & sname & ", " & tmp & ";\n" & ptx-emit-param-loads params (i + 1)
 
   ptx-emit-local-decls : List Text, Integer -> Text
   ptx-emit-local-decls (names) (i) =
    if i >= list-length names then ""
-   else "    .reg .s64 %lv_" & list-at names i & ";\n" & ptx-emit-local-decls names (i + 1)
+   else let n = list-at names i
+   in let reg-ty = if text-starts-with n "f__" then ".f32" else ".s64"
+   in "    .reg " & reg-ty & " %lv_" & n & ";\n" & ptx-emit-local-decls names (i + 1)
 
   ptx-is-kernel-entry : Text -> Boolean
   ptx-is-kernel-entry (name) =
-   if text-length name > 7 then
-    substring name 0 7 == "kernel-"
+   if name == "opening" then True
+   else if text-length name > 4 then substring name 0 4 == "gpu-"
    else False
 
   ptx-emit-def : PtxCtx, IRDef -> Text
@@ -856,18 +1020,80 @@ Section: Function Emission
    in let header = if is-kernel then
      ".visible .entry " & ptx-sanitize (d.name) & " (" & ptx-emit-param-decls (d.params) 0 & ")\n{\n"
    else
-     ".visible .func (.param .s64 retval) " & ptx-sanitize (d.name) & " (" & ptx-emit-param-decls (d.params) 0 & ")\n{\n"
-   in let reg-count = if max-regs > ctx.next-reg + 64 then max-regs else ctx.next-reg + 64
+     let ret-pt = if ptx-is-real-type (d.type-val) then ".f32" else ".s64"
+     in ".visible .func (.param " & ret-pt & " retval) " & ptx-sanitize (d.name) & " (" & ptx-emit-param-decls (d.params) 0 & ")\n{\n"
+   in let final-reg = (body-result.ctx).next-reg + 64
+   in let reg-count = if max-regs > final-reg then max-regs else final-reg
    in let reg-decls = "    .reg .s64 %rd<" & integer-to-text reg-count & ">;\n"
                     & "    .reg .u32 %ru<" & integer-to-text reg-count & ">;\n"
                     & "    .reg .f64 %fd<" & integer-to-text reg-count & ">;\n"
+                    & "    .reg .f32 %fs<" & integer-to-text reg-count & ">;\n"
                     & "    .reg .pred %p<" & integer-to-text reg-count & ">;\n"
    in let param-names = ptx-collect-param-names (d.params) 0
    in let local-decls = ptx-emit-local-decls (param-names & locals) 0
    in let param-loads = ptx-emit-param-loads (d.params) 0
    in let ret = if is-kernel then "    ret;\n"
-   else "    st.param.s64 [retval], " & body-result.result-reg & ";\n    ret;\n"
-   in header & reg-decls & local-decls & param-loads & body-result.code & ret & "}\n\n"
+   else let ret-st = if ptx-is-real-type (d.type-val) then "st.param.f32" else "st.param.s64"
+   in "    " & ret-st & " [retval], " & body-result.result-reg & ";\n    ret;\n"
+   in let tco-lbl = "L_tco_" & ptx-sanitize (d.name) & ":\n"
+   in header & reg-decls & local-decls & param-loads & tco-lbl & body-result.code & ret & "}\n\n"
+
+Section: Kernel Entry Wrappers
+
+  ptx-last-param-name : List IRParam -> Text
+  ptx-last-param-name (params) =
+    if list-length params == 0 then ""
+    else (list-at params (list-length params - 1)).name
+
+  ptx-entry-param-decls : List IRParam, Integer, Integer -> Text
+  ptx-entry-param-decls (params) (i) (n) =
+    if i >= n then ""
+    else let sep = if i == 0 then "" else ", "
+    in sep & ".param .s64 p_" & ptx-sanitize ((list-at params i).name) & ptx-entry-param-decls params (i + 1) n
+
+  ptx-entry-param-loads : List IRParam, Integer, Integer -> Text
+  ptx-entry-param-loads (params) (i) (n) =
+    if i >= n then ""
+    else "    ld.param.s64 %r" & integer-to-text (7 + i) & ", [p_" & ptx-sanitize ((list-at params i).name) & "];\n" & ptx-entry-param-loads params (i + 1) n
+
+  ptx-entry-call-stores : List IRParam, Integer, Integer -> Text
+  ptx-entry-call-stores (params) (i) (n) =
+    if i >= n then ""
+    else if i == n - 1 then "    .param .s64 _ea" & integer-to-text i & "; st.param.s64 [_ea" & integer-to-text i & "], %r4;\n"
+    else "    .param .s64 _ea" & integer-to-text i & "; st.param.s64 [_ea" & integer-to-text i & "], %r" & integer-to-text (7 + i) & ";\n" & ptx-entry-call-stores params (i + 1) n
+
+  ptx-entry-call-args : Integer, Integer -> Text
+  ptx-entry-call-args (n) (i) =
+    if i >= n then ""
+    else let sep = if i == 0 then "" else ", "
+    in sep & "_ea" & integer-to-text i & ptx-entry-call-args n (i + 1)
+
+  ptx-emit-entry-wrapper : IRDef -> Text
+  ptx-emit-entry-wrapper (d) =
+    let name = ptx-sanitize (d.name)
+    in let n = list-length (d.params)
+    in let ep = ptx-entry-param-decls (d.params) 0 (n - 1)
+    in let ld = ptx-entry-param-loads (d.params) 0 (n - 1)
+    in let st = ptx-entry-call-stores (d.params) 0 n
+    in let ca = ptx-entry-call-args n 0
+    in ".visible .entry " & name & "_kernel (" & ep & ", .param .s64 pixel_count)\n"
+    & "{\n    .reg .s64 %r<" & integer-to-text (10 + n) & ">; .reg .u32 %u<3>; .reg .pred %p<1>;\n"
+    & "    mov.u32 %u0, %tid.x; mov.u32 %u1, %ctaid.x; mov.u32 %u2, %ntid.x;\n"
+    & "    cvt.s64.u32 %r0, %u0; cvt.s64.u32 %r1, %u1; cvt.s64.u32 %r2, %u2;\n"
+    & "    mul.lo.s64 %r3, %r1, %r2; add.s64 %r4, %r3, %r0;\n"
+    & "    ld.param.s64 %r5, [pixel_count]; setp.ge.s64 %p0, %r4, %r5; @%p0 bra L_" & name & "_x;\n"
+    & ld & st
+    & "    { .param .s64 _er; call (_er), " & name & ", (" & ca & "); ld.param.s64 %r6, [_er]; }\n"
+    & "L_" & name & "_x: ret;\n}\n\n"
+
+  ptx-emit-entry-wrappers : List IRDef, Integer -> Text
+  ptx-emit-entry-wrappers (defs) (i) =
+    if i >= list-length defs then ""
+    else let d = list-at defs i
+    in let w = if list-length (d.params) >= 2 then
+      if ptx-last-param-name (d.params) == "gid" then ptx-emit-entry-wrapper d else ""
+    else ""
+    in w & ptx-emit-entry-wrappers defs (i + 1)
 
 Section: Chapter Emission
 
@@ -878,20 +1104,24 @@ Section: Chapter Emission
     next-reg = 0,
     type-defs = tds,
     arities = ptx-build-arity-map (ch.defs) 0 [],
-    indent = "    "
+    indent = "    ",
+    self-name = "",
+    self-param-names = []
    }
    in let funcs = ptx-filter-funcs (ch.defs) 0
    in let entries = ptx-filter-entries (ch.defs) 0
    in let fwd-decls = ptx-emit-forward-decls funcs 0
    in let func-text = ptx-emit-defs ctx funcs 0
    in let entry-text = ptx-emit-defs ctx entries (list-length funcs)
-   in header & fwd-decls & func-text & entry-text
+   in let wrappers = ptx-emit-entry-wrappers (ch.defs) 0
+   in header & fwd-decls & func-text & entry-text & wrappers
 
   ptx-emit-forward-decls : List IRDef, Integer -> Text
   ptx-emit-forward-decls (defs) (i) =
    if i >= list-length defs then "\n"
    else let d = list-at defs i
-   in ".visible .func (.param .s64 retval) " & ptx-sanitize (d.name) & " (" & ptx-emit-param-decls (d.params) 0 & ");\n" & ptx-emit-forward-decls defs (i + 1)
+   in let ret-pt = if ptx-is-real-type (d.type-val) then ".f32" else ".s64"
+   in ".visible .func (.param " & ret-pt & " retval) " & ptx-sanitize (d.name) & " (" & ptx-emit-param-decls (d.params) 0 & ");\n" & ptx-emit-forward-decls defs (i + 1)
 
   ptx-filter-funcs : List IRDef, Integer -> List IRDef
   ptx-filter-funcs (defs) (i) =
@@ -912,12 +1142,15 @@ Section: Chapter Emission
   ptx-emit-defs : PtxCtx, List IRDef, Integer -> Text
   ptx-emit-defs (ctx) (defs) (i) =
    if i >= list-length defs then ""
-   else let fresh-ctx = PtxCtx {
+   else let d = list-at defs i
+   in let fresh-ctx = PtxCtx {
     next-reg = i * 1000,
     type-defs = ctx.type-defs,
     arities = ctx.arities,
-    indent = "    "
+    indent = "    ",
+    self-name = d.name,
+    self-param-names = ptx-collect-param-names (d.params) 0
    }
-   in ptx-emit-def fresh-ctx (list-at defs i) & ptx-emit-defs ctx defs (i + 1)
+   in ptx-emit-def fresh-ctx d & ptx-emit-defs ctx defs (i + 1)
 
 Page 1

@@ -1,0 +1,258 @@
+Chapter: BoardRenderer3D
+  cites Foreword chapter List
+
+ GPU-accelerated 3D board rendering. Manages camera, lighting, and
+ render passes for the 3D board viewer. All spatial values are in
+ nanometers, angles in millidegrees, light intensities 0-255.
+
+Section: Camera
+
+  Camera3D = record {
+    cam-eye-x : Integer,
+    cam-eye-y : Integer,
+    cam-eye-z : Integer,
+    cam-target-x : Integer,
+    cam-target-y : Integer,
+    cam-target-z : Integer,
+    cam-up-x : Integer,
+    cam-up-y : Integer,
+    cam-up-z : Integer,
+    cam-fov : Integer,
+    cam-near : Integer,
+    cam-far : Integer
+  }
+
+Section: Light
+
+  Light3D = record {
+    light-dir-x : Integer,
+    light-dir-y : Integer,
+    light-dir-z : Integer,
+    light-ambient : Integer,
+    light-diffuse : Integer,
+    light-specular : Integer
+  }
+
+Section: Render Pass
+
+  RenderPass =
+    | PassSubstrate
+    | PassCopper (Integer)
+    | PassSilkscreen
+    | PassSolderMask
+    | PassVias
+    | PassComponents
+    | PassSelection
+
+Section: Render Config
+
+  Render3DConfig = record {
+    r3c-passes : List RenderPass,
+    r3c-background-color : Integer,
+    r3c-substrate-color : Integer,
+    r3c-solder-mask-color-front : Integer,
+    r3c-solder-mask-color-back : Integer,
+    r3c-copper-color : Integer,
+    r3c-silk-color : Integer,
+    r3c-show-components : Integer,
+    r3c-show-solder-mask : Integer,
+    r3c-show-silkscreen : Integer,
+    r3c-wireframe-mode : Integer,
+    r3c-anti-alias : Integer
+  }
+
+Section: Render State
+
+  Render3DState = record {
+    r3s-camera : Camera3D,
+    r3s-light : Light3D,
+    r3s-config : Render3DConfig,
+    r3s-board-width : Integer,
+    r3s-board-height : Integer,
+    r3s-board-thickness : Integer,
+    r3s-rotation-x : Integer,
+    r3s-rotation-y : Integer,
+    r3s-zoom-level : Integer
+  }
+
+Section: Default Camera
+
+ Top-down view: eye directly above board center, looking down.
+
+  default-camera : Integer, Integer -> Camera3D
+  default-camera (board-w) (board-h) =
+    let cx = board-w / 2
+    in let cy = board-h / 2
+    in Camera3D {
+      cam-eye-x = cx,
+      cam-eye-y = cy,
+      cam-eye-z = board-w * 2,
+      cam-target-x = cx,
+      cam-target-y = cy,
+      cam-target-z = 0,
+      cam-up-x = 0,
+      cam-up-y = 1000,
+      cam-up-z = 0,
+      cam-fov = 45000,
+      cam-near = 1000,
+      cam-far = board-w * 10
+    }
+
+Section: Default Light
+
+ Directional light from upper-right, moderate ambient.
+
+  default-light : Light3D
+  default-light = Light3D {
+    light-dir-x = 577,
+    light-dir-y = 577,
+    light-dir-z = -577,
+    light-ambient = 64,
+    light-diffuse = 200,
+    light-specular = 180
+  }
+
+Section: Default Render Config
+
+  default-render-config : Render3DConfig
+  default-render-config = Render3DConfig {
+    r3c-passes = [PassSubstrate, PassCopper 0, PassCopper 31, PassSolderMask, PassSilkscreen, PassVias, PassComponents],
+    r3c-background-color = #1A1A2E,
+    r3c-substrate-color = #2D5016,
+    r3c-solder-mask-color-front = #006600,
+    r3c-solder-mask-color-back = #006600,
+    r3c-copper-color = #B87333,
+    r3c-silk-color = #FFFFFF,
+    r3c-show-components = 1,
+    r3c-show-solder-mask = 1,
+    r3c-show-silkscreen = 1,
+    r3c-wireframe-mode = 0,
+    r3c-anti-alias = 1
+  }
+
+Section: Orbit Camera
+
+ Adjust rotation angles by delta-x and delta-y from mouse drag.
+
+  orbit-camera : Render3DState, Integer, Integer -> Render3DState
+  orbit-camera (st) (dx) (dy) = Render3DState {
+    r3s-camera = st.r3s-camera,
+    r3s-light = st.r3s-light,
+    r3s-config = st.r3s-config,
+    r3s-board-width = st.r3s-board-width,
+    r3s-board-height = st.r3s-board-height,
+    r3s-board-thickness = st.r3s-board-thickness,
+    r3s-rotation-x = st.r3s-rotation-x + dx,
+    r3s-rotation-y = st.r3s-rotation-y + dy,
+    r3s-zoom-level = st.r3s-zoom-level
+  }
+
+Section: Zoom Camera
+
+ Multiply zoom level by a factor expressed as permille (1000 = 1x).
+
+  zoom-camera : Render3DState, Integer -> Render3DState
+  zoom-camera (st) (factor-permille) =
+    let new-zoom = st.r3s-zoom-level * factor-permille / 1000
+    in let clamped = if new-zoom < 100 then 100
+         else if new-zoom > 100000 then 100000
+         else new-zoom
+    in Render3DState {
+      r3s-camera = st.r3s-camera,
+      r3s-light = st.r3s-light,
+      r3s-config = st.r3s-config,
+      r3s-board-width = st.r3s-board-width,
+      r3s-board-height = st.r3s-board-height,
+      r3s-board-thickness = st.r3s-board-thickness,
+      r3s-rotation-x = st.r3s-rotation-x,
+      r3s-rotation-y = st.r3s-rotation-y,
+      r3s-zoom-level = clamped
+    }
+
+Section: Reset Camera Top
+
+ Reset to top-down view: looking straight down, no rotation.
+
+  reset-camera-top : Render3DState -> Render3DState
+  reset-camera-top (st) =
+    let cam = default-camera st.r3s-board-width st.r3s-board-height
+    in Render3DState {
+      r3s-camera = cam,
+      r3s-light = st.r3s-light,
+      r3s-config = st.r3s-config,
+      r3s-board-width = st.r3s-board-width,
+      r3s-board-height = st.r3s-board-height,
+      r3s-board-thickness = st.r3s-board-thickness,
+      r3s-rotation-x = 0,
+      r3s-rotation-y = 0,
+      r3s-zoom-level = 1000
+    }
+
+Section: Reset Camera Front
+
+ Front view: eye at board center Y, looking at the board edge.
+
+  reset-camera-front : Render3DState -> Render3DState
+  reset-camera-front (st) =
+    let cx = st.r3s-board-width / 2
+    in let cz = st.r3s-board-thickness / 2
+    in let cam = Camera3D {
+      cam-eye-x = cx,
+      cam-eye-y = 0 - st.r3s-board-height,
+      cam-eye-z = cz,
+      cam-target-x = cx,
+      cam-target-y = st.r3s-board-height / 2,
+      cam-target-z = cz,
+      cam-up-x = 0,
+      cam-up-y = 0,
+      cam-up-z = 1000,
+      cam-fov = 45000,
+      cam-near = 1000,
+      cam-far = st.r3s-board-width * 10
+    }
+    in Render3DState {
+      r3s-camera = cam,
+      r3s-light = st.r3s-light,
+      r3s-config = st.r3s-config,
+      r3s-board-width = st.r3s-board-width,
+      r3s-board-height = st.r3s-board-height,
+      r3s-board-thickness = st.r3s-board-thickness,
+      r3s-rotation-x = 0,
+      r3s-rotation-y = 0,
+      r3s-zoom-level = 1000
+    }
+
+Section: Reset Camera Isometric
+
+ 45-degree isometric view from the upper-right corner.
+
+  reset-camera-iso : Render3DState -> Render3DState
+  reset-camera-iso (st) =
+    let cx = st.r3s-board-width / 2
+    in let cy = st.r3s-board-height / 2
+    in let dist = st.r3s-board-width * 2
+    in let cam = Camera3D {
+      cam-eye-x = cx + dist,
+      cam-eye-y = cy - dist,
+      cam-eye-z = dist,
+      cam-target-x = cx,
+      cam-target-y = cy,
+      cam-target-z = 0,
+      cam-up-x = 0,
+      cam-up-y = 0,
+      cam-up-z = 1000,
+      cam-fov = 45000,
+      cam-near = 1000,
+      cam-far = dist * 10
+    }
+    in Render3DState {
+      r3s-camera = cam,
+      r3s-light = st.r3s-light,
+      r3s-config = st.r3s-config,
+      r3s-board-width = st.r3s-board-width,
+      r3s-board-height = st.r3s-board-height,
+      r3s-board-thickness = st.r3s-board-thickness,
+      r3s-rotation-x = 45000,
+      r3s-rotation-y = 45000,
+      r3s-zoom-level = 1000
+    }

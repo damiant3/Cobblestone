@@ -1,0 +1,484 @@
+Chapter: CanvasModel
+  cites Foreword chapter List
+
+ Flat canvas item model for interactive editing. Each item on the
+ schematic canvas is a CanvasItem with position, size, kind, and
+ selection state. Hit testing, selection, move, and delete operate
+ on a flat list of items.
+
+Section: Item Kind
+
+  CanvasItemKind =
+    | CiComponent
+    | CiWire
+    | CiLabel
+    | CiJunction
+    | CiPowerRail
+
+Section: Canvas Item
+
+  CompSubtype =
+    | SubIc
+    | SubResistor
+    | SubCapacitor
+    | SubLed
+    | SubConnector
+    | SubSwitch
+    | SubGeneric
+
+  CanvasItem = record {
+    ci-id : Integer,
+    ci-kind : CanvasItemKind,
+    ci-x : Integer,
+    ci-y : Integer,
+    ci-w : Integer,
+    ci-h : Integer,
+    ci-color : Integer,
+    ci-ref : Text,
+    ci-selected : Integer,
+    ci-subtype : CompSubtype,
+    ci-pins-left : Integer,
+    ci-pins-right : Integer,
+    ci-rotation : Integer
+  }
+
+Section: Construction Helpers
+
+  ci-ic : Integer, Integer, Integer, Integer, Integer, Integer, Text, Integer, Integer -> CanvasItem
+  ci-ic (id) (x) (y) (w) (h) (color) (ref) (pl) (pr) = CanvasItem {
+    ci-id = id, ci-kind = CiComponent, ci-x = x, ci-y = y,
+    ci-w = w, ci-h = h, ci-color = color, ci-ref = ref, ci-selected = 0,
+    ci-subtype = SubIc, ci-pins-left = pl, ci-pins-right = pr, ci-rotation = 0
+  }
+
+  ci-resistor : Integer, Integer, Integer, Text -> CanvasItem
+  ci-resistor (id) (x) (y) (ref) = CanvasItem {
+    ci-id = id, ci-kind = CiComponent, ci-x = x, ci-y = y,
+    ci-w = 32, ci-h = 10, ci-color = #E8A838, ci-ref = ref, ci-selected = 0,
+    ci-subtype = SubResistor, ci-pins-left = 1, ci-pins-right = 1, ci-rotation = 0
+  }
+
+  ci-capacitor : Integer, Integer, Integer, Text -> CanvasItem
+  ci-capacitor (id) (x) (y) (ref) = CanvasItem {
+    ci-id = id, ci-kind = CiComponent, ci-x = x, ci-y = y,
+    ci-w = 16, ci-h = 24, ci-color = #E8A838, ci-ref = ref, ci-selected = 0,
+    ci-subtype = SubCapacitor, ci-pins-left = 0, ci-pins-right = 0, ci-rotation = 0
+  }
+
+  ci-led-part : Integer, Integer, Integer, Integer, Text -> CanvasItem
+  ci-led-part (id) (x) (y) (color) (ref) = CanvasItem {
+    ci-id = id, ci-kind = CiComponent, ci-x = x, ci-y = y,
+    ci-w = 20, ci-h = 20, ci-color = color, ci-ref = ref, ci-selected = 0,
+    ci-subtype = SubLed, ci-pins-left = 1, ci-pins-right = 1, ci-rotation = 0
+  }
+
+  ci-connector : Integer, Integer, Integer, Integer, Integer, Text, Integer -> CanvasItem
+  ci-connector (id) (x) (y) (w) (h) (ref) (pins) = CanvasItem {
+    ci-id = id, ci-kind = CiComponent, ci-x = x, ci-y = y,
+    ci-w = w, ci-h = h, ci-color = #555555, ci-ref = ref, ci-selected = 0,
+    ci-subtype = SubConnector, ci-pins-left = 0, ci-pins-right = pins, ci-rotation = 0
+  }
+
+  ci-switch : Integer, Integer, Integer, Text -> CanvasItem
+  ci-switch (id) (x) (y) (ref) = CanvasItem {
+    ci-id = id, ci-kind = CiComponent, ci-x = x, ci-y = y,
+    ci-w = 24, ci-h = 16, ci-color = #E8A838, ci-ref = ref, ci-selected = 0,
+    ci-subtype = SubSwitch, ci-pins-left = 1, ci-pins-right = 1, ci-rotation = 0
+  }
+
+  ci-component : Integer, Integer, Integer, Integer, Integer, Integer, Text -> CanvasItem
+  ci-component (id) (x) (y) (w) (h) (color) (ref) = CanvasItem {
+    ci-id = id, ci-kind = CiComponent, ci-x = x, ci-y = y,
+    ci-w = w, ci-h = h, ci-color = color, ci-ref = ref, ci-selected = 0,
+    ci-subtype = SubGeneric, ci-pins-left = 0, ci-pins-right = 0, ci-rotation = 0
+  }
+
+  ci-wire : Integer, Integer, Integer, Integer, Integer, Integer -> CanvasItem
+  ci-wire (id) (x) (y) (w) (h) (color) = CanvasItem {
+    ci-id = id, ci-kind = CiWire, ci-x = x, ci-y = y,
+    ci-w = w, ci-h = h, ci-color = color, ci-ref = "", ci-selected = 0,
+    ci-subtype = SubGeneric, ci-pins-left = 0, ci-pins-right = 0, ci-rotation = 0
+  }
+
+  ci-label : Integer, Integer, Integer, Integer, Text -> CanvasItem
+  ci-label (id) (x) (y) (chars) (ref) = CanvasItem {
+    ci-id = id, ci-kind = CiLabel, ci-x = x, ci-y = y,
+    ci-w = chars * 6 + 4, ci-h = 12, ci-color = #53E4E4, ci-ref = ref, ci-selected = 0,
+    ci-subtype = SubGeneric, ci-pins-left = 0, ci-pins-right = 0, ci-rotation = 0
+  }
+
+  ci-junction : Integer, Integer, Integer, Integer -> CanvasItem
+  ci-junction (id) (x) (y) (color) = CanvasItem {
+    ci-id = id, ci-kind = CiJunction, ci-x = x, ci-y = y,
+    ci-w = 6, ci-h = 6, ci-color = color, ci-ref = "", ci-selected = 0,
+    ci-subtype = SubGeneric, ci-pins-left = 0, ci-pins-right = 0, ci-rotation = 0
+  }
+
+  ci-rail : Integer, Integer, Integer, Integer, Integer -> CanvasItem
+  ci-rail (id) (x) (y) (w) (color) = CanvasItem {
+    ci-id = id, ci-kind = CiPowerRail, ci-x = x, ci-y = y,
+    ci-w = w, ci-h = 1, ci-color = color, ci-ref = "", ci-selected = 0,
+    ci-subtype = SubGeneric, ci-pins-left = 0, ci-pins-right = 0, ci-rotation = 0
+  }
+
+Section: Demo Scene
+
+  build-demo-items : List CanvasItem
+  build-demo-items =
+    let items = []
+    in let i0 = list-push items (ci-ic 1 200 120 80 110 #E8A838 "U1" 8 8)
+    in let i1 = list-push i0 (ci-connector 2 60 145 36 28 "J1" 4)
+    in let i2 = list-push i1 (ci-ic 3 240 80 60 30 #E8A838 "U2" 1 2)
+    in let i3 = list-push i2 (ci-capacitor 4 280 120 "C1")
+    in let i4 = list-push i3 (ci-capacitor 5 320 120 "C2")
+    in let i5 = list-push i4 (ci-capacitor 6 360 120 "C3")
+    in let i6 = list-push i5 (ci-resistor 7 330 150 "R1")
+    in let i7 = list-push i6 (ci-resistor 8 330 190 "R2")
+    in let i8 = list-push i7 (ci-led-part 9 370 145 #33CC33 "D1")
+    in let i9 = list-push i8 (ci-led-part 10 370 185 #CC3333 "D2")
+    in let i10 = list-push i9 (ci-resistor 11 560 150 "R3")
+    in let i11 = list-push i10 (ci-switch 12 560 180 "SW1")
+    in let i12 = list-push i11 (ci-wire 20 96 158 104 1 #53E467)
+    in let i13 = list-push i12 (ci-wire 21 96 168 104 1 #53E467)
+    in let i14 = list-push i13 (ci-wire 22 280 155 50 1 #53E467)
+    in let i15 = list-push i14 (ci-wire 23 280 195 50 1 #53E467)
+    in let i16 = list-push i15 (ci-wire 24 360 155 30 1 #53E467)
+    in let i17 = list-push i16 (ci-wire 25 360 195 30 1 #53E467)
+    in let i18 = list-push i17 (ci-rail 30 140 78 200 #CC3333)
+    in let i19 = list-push i18 (ci-rail 31 140 280 300 #53E467)
+    in let i20 = list-push i19 (ci-junction 40 288 95 #CC3333)
+    in let i21 = list-push i20 (ci-junction 41 328 165 #53E467)
+    in let i22 = list-push i21 (ci-label 50 405 188 11 "STM32F405")
+    in let i23 = list-push i22 (ci-label 51 108 210 5 "USB-C")
+    in let i24 = list-push i23 (ci-label 52 240 70 9 "LDO 3.3V")
+    in i24
+
+Section: Hit Testing
+
+  hit-test-items : List CanvasItem, Integer, Integer, Integer, Integer -> Integer
+  hit-test-items (items) (mx) (my) (ox) (oy) =
+    hit-test-loop items mx my ox oy 0 (list-length items) (-1)
+
+  hit-test-loop : List CanvasItem, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  hit-test-loop (items) (mx) (my) (ox) (oy) (i) (n) (best) =
+    if i >= n then best
+    else let item = list-at items i
+    in let ix = item.ci-x + ox
+    in let iy = item.ci-y + oy
+    in let margin = 4
+    in let hit = if mx >= ix - margin then if mx <= ix + item.ci-w + margin then if my >= iy - margin then if my <= iy + item.ci-h + margin then 1 else 0 else 0 else 0 else 0
+    in if hit == 1 then hit-test-loop items mx my ox oy (i + 1) n i
+    else hit-test-loop items mx my ox oy (i + 1) n best
+
+Section: Selection
+
+  select-item : List CanvasItem, Integer -> List CanvasItem
+  select-item (items) (idx) =
+    if idx < 0 then items
+    else if idx >= list-length items then items
+    else let item = list-at items idx
+    in let toggled = CanvasItem {
+      ci-id = item.ci-id, ci-kind = item.ci-kind,
+      ci-x = item.ci-x, ci-y = item.ci-y,
+      ci-w = item.ci-w, ci-h = item.ci-h,
+      ci-color = item.ci-color, ci-ref = item.ci-ref,
+      ci-selected = if item.ci-selected == 1 then 0 else 1,
+      ci-subtype = item.ci-subtype, ci-pins-left = item.ci-pins-left, ci-pins-right = item.ci-pins-right, ci-rotation = item.ci-rotation
+    }
+    in list-set-at items idx toggled
+
+  select-only : List CanvasItem, Integer -> List CanvasItem
+  select-only (items) (idx) =
+    let cleared = deselect-all items
+    in if idx < 0 then cleared
+    else if idx >= list-length cleared then cleared
+    else let item = list-at cleared idx
+    in let sel = CanvasItem {
+      ci-id = item.ci-id, ci-kind = item.ci-kind,
+      ci-x = item.ci-x, ci-y = item.ci-y,
+      ci-w = item.ci-w, ci-h = item.ci-h,
+      ci-color = item.ci-color, ci-ref = item.ci-ref,
+      ci-selected = 1,
+      ci-subtype = item.ci-subtype, ci-pins-left = item.ci-pins-left, ci-pins-right = item.ci-pins-right, ci-rotation = item.ci-rotation
+    }
+    in list-set-at cleared idx sel
+
+  deselect-all : List CanvasItem -> List CanvasItem
+  deselect-all (items) = deselect-loop items 0 (list-length items)
+
+  deselect-loop : List CanvasItem, Integer, Integer -> List CanvasItem
+  deselect-loop (items) (i) (n) =
+    if i >= n then items
+    else let item = list-at items i
+    in if item.ci-selected == 0 then deselect-loop items (i + 1) n
+    else let cleared = CanvasItem {
+      ci-id = item.ci-id, ci-kind = item.ci-kind,
+      ci-x = item.ci-x, ci-y = item.ci-y,
+      ci-w = item.ci-w, ci-h = item.ci-h,
+      ci-color = item.ci-color, ci-ref = item.ci-ref,
+      ci-selected = 0,
+      ci-subtype = item.ci-subtype, ci-pins-left = item.ci-pins-left, ci-pins-right = item.ci-pins-right, ci-rotation = item.ci-rotation
+    }
+    in deselect-loop (list-set-at items i cleared) (i + 1) n
+
+Section: Move Selected
+
+  move-selected : List CanvasItem, Integer, Integer -> List CanvasItem
+  move-selected (items) (dx) (dy) = move-sel-loop items dx dy 0 (list-length items)
+
+  move-sel-loop : List CanvasItem, Integer, Integer, Integer, Integer -> List CanvasItem
+  move-sel-loop (items) (dx) (dy) (i) (n) =
+    if i >= n then items
+    else let item = list-at items i
+    in if item.ci-selected == 0 then move-sel-loop items dx dy (i + 1) n
+    else let moved = CanvasItem {
+      ci-id = item.ci-id, ci-kind = item.ci-kind,
+      ci-x = item.ci-x + dx, ci-y = item.ci-y + dy,
+      ci-w = item.ci-w, ci-h = item.ci-h,
+      ci-color = item.ci-color, ci-ref = item.ci-ref,
+      ci-selected = item.ci-selected,
+      ci-subtype = item.ci-subtype, ci-pins-left = item.ci-pins-left, ci-pins-right = item.ci-pins-right, ci-rotation = item.ci-rotation
+    }
+    in move-sel-loop (list-set-at items i moved) dx dy (i + 1) n
+
+Section: Delete Selected
+
+  delete-selected : List CanvasItem -> List CanvasItem
+  delete-selected (items) = delete-sel-loop items 0 (list-length items) []
+
+  delete-sel-loop : List CanvasItem, Integer, Integer, List CanvasItem -> List CanvasItem
+  delete-sel-loop (items) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in if item.ci-selected == 1 then delete-sel-loop items (i + 1) n acc
+    else delete-sel-loop items (i + 1) n (list-push acc item)
+
+Section: Next ID
+
+  next-item-id : List CanvasItem -> Integer
+  next-item-id (items) = next-id-loop items 0 (list-length items) 0
+
+  next-id-loop : List CanvasItem, Integer, Integer, Integer -> Integer
+  next-id-loop (items) (i) (n) (best) =
+    if i >= n then best + 1
+    else let item = list-at items i
+    in let b = if item.ci-id > best then item.ci-id else best
+    in next-id-loop items (i + 1) n b
+
+Section: Placement
+
+  place-component : List CanvasItem, Integer, Integer, Integer, PaletteEntry, Text -> List CanvasItem
+  place-component (items) (id) (x) (y) (pe) (ref) =
+    list-push items (CanvasItem {
+      ci-id = id, ci-kind = CiComponent, ci-x = x, ci-y = y,
+      ci-w = pe.pe-w, ci-h = pe.pe-h, ci-color = pe.pe-color, ci-ref = ref, ci-selected = 0,
+      ci-subtype = pe.pe-subtype, ci-pins-left = pe.pe-pins-l, ci-pins-right = pe.pe-pins-r, ci-rotation = 0
+    })
+
+  place-wire-seg : List CanvasItem, Integer, Integer, Integer, Integer, Integer -> List CanvasItem
+  place-wire-seg (items) (id) (x1) (y1) (x2) (y2) =
+    let dx = x2 - x1
+    in let dy = y2 - y1
+    in let abs-dx = if dx < 0 then 0 - dx else dx
+    in let abs-dy = if dy < 0 then 0 - dy else dy
+    in if abs-dx >= abs-dy then place-h-wire items id x1 y1 x2 y2
+    else place-v-wire items id x1 y1 x2 y2
+
+  place-h-wire : List CanvasItem, Integer, Integer, Integer, Integer, Integer -> List CanvasItem
+  place-h-wire (items) (id) (x1) (y1) (x2) (y2) =
+    let lx = if x1 < x2 then x1 else x2
+    in let w = if x1 < x2 then x2 - x1 else x1 - x2
+    in let mid-x = if x1 < x2 then x2 else x1
+    in let items2 = list-push items (ci-wire id lx y1 w 1 #53E467)
+    in if y1 == y2 then items2
+    else let vy = if y1 < y2 then y1 else y2
+    in let vh = if y1 < y2 then y2 - y1 else y1 - y2
+    in list-push items2 (ci-wire (id + 1) mid-x vy 1 vh #53E467)
+
+  place-v-wire : List CanvasItem, Integer, Integer, Integer, Integer, Integer -> List CanvasItem
+  place-v-wire (items) (id) (x1) (y1) (x2) (y2) =
+    let ly = if y1 < y2 then y1 else y2
+    in let h = if y1 < y2 then y2 - y1 else y1 - y2
+    in let mid-y = if y1 < y2 then y2 else y1
+    in let items2 = list-push items (ci-wire id x1 ly 1 h #53E467)
+    in if x1 == x2 then items2
+    else let hx = if x1 < x2 then x1 else x2
+    in let hw = if x1 < x2 then x2 - x1 else x1 - x2
+    in list-push items2 (ci-wire (id + 1) hx mid-y hw 1 #53E467)
+
+Section: Component Palette
+
+  PaletteEntry = record {
+    pe-name : Text,
+    pe-prefix : Text,
+    pe-w : Integer,
+    pe-h : Integer,
+    pe-color : Integer,
+    pe-subtype : CompSubtype,
+    pe-pins-l : Integer,
+    pe-pins-r : Integer
+  }
+
+  palette-resistor : PaletteEntry
+  palette-resistor = PaletteEntry { pe-name = "Resistor", pe-prefix = "R", pe-w = 32, pe-h = 10, pe-color = #E8A838, pe-subtype = SubResistor, pe-pins-l = 1, pe-pins-r = 1 }
+
+  palette-capacitor : PaletteEntry
+  palette-capacitor = PaletteEntry { pe-name = "Capacitor", pe-prefix = "C", pe-w = 16, pe-h = 24, pe-color = #E8A838, pe-subtype = SubCapacitor, pe-pins-l = 0, pe-pins-r = 0 }
+
+  palette-led : PaletteEntry
+  palette-led = PaletteEntry { pe-name = "LED", pe-prefix = "D", pe-w = 20, pe-h = 20, pe-color = #33CC33, pe-subtype = SubLed, pe-pins-l = 1, pe-pins-r = 1 }
+
+  palette-ic : PaletteEntry
+  palette-ic = PaletteEntry { pe-name = "IC", pe-prefix = "U", pe-w = 80, pe-h = 60, pe-color = #E8A838, pe-subtype = SubIc, pe-pins-l = 4, pe-pins-r = 4 }
+
+  palette-connector : PaletteEntry
+  palette-connector = PaletteEntry { pe-name = "Connector", pe-prefix = "J", pe-w = 36, pe-h = 28, pe-color = #555555, pe-subtype = SubConnector, pe-pins-l = 0, pe-pins-r = 4 }
+
+  palette-switch : PaletteEntry
+  palette-switch = PaletteEntry { pe-name = "Switch", pe-prefix = "SW", pe-w = 24, pe-h = 16, pe-color = #E8A838, pe-subtype = SubSwitch, pe-pins-l = 1, pe-pins-r = 1 }
+
+  palette-count : Integer
+  palette-count = 6
+
+  palette-at : Integer -> PaletteEntry
+  palette-at (i) =
+    if i == 0 then palette-resistor
+    else if i == 1 then palette-capacitor
+    else if i == 2 then palette-led
+    else if i == 3 then palette-ic
+    else if i == 4 then palette-connector
+    else palette-switch
+
+  auto-ref : Text, List CanvasItem -> Text
+  auto-ref (prefix) (items) =
+    let n = count-prefix items prefix 0 (list-length items) 0
+    in prefix & (show (n + 1))
+
+  count-prefix : List CanvasItem, Text, Integer, Integer, Integer -> Integer
+  count-prefix (items) (prefix) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in let match = if text-starts-with (item.ci-ref) prefix then 1 else 0
+    in count-prefix items prefix (i + 1) n (acc + match)
+
+Section: Rotate Selected
+
+  rotate-selected : List CanvasItem -> List CanvasItem
+  rotate-selected (items) = rotate-sel-loop items 0 (list-length items)
+
+  rotate-sel-loop : List CanvasItem, Integer, Integer -> List CanvasItem
+  rotate-sel-loop (items) (i) (n) =
+    if i >= n then items
+    else let item = list-at items i
+    in if item.ci-selected == 0 then rotate-sel-loop items (i + 1) n
+    else let new-rot = if item.ci-rotation >= 270 then 0 else item.ci-rotation + 90
+    in let rotated = CanvasItem {
+      ci-id = item.ci-id, ci-kind = item.ci-kind,
+      ci-x = item.ci-x, ci-y = item.ci-y,
+      ci-w = if new-rot == 90 then item.ci-h else if new-rot == 270 then item.ci-h else item.ci-w,
+      ci-h = if new-rot == 90 then item.ci-w else if new-rot == 270 then item.ci-w else item.ci-h,
+      ci-color = item.ci-color, ci-ref = item.ci-ref,
+      ci-selected = item.ci-selected,
+      ci-subtype = item.ci-subtype,
+      ci-pins-left = item.ci-pins-left, ci-pins-right = item.ci-pins-right,
+      ci-rotation = new-rot
+    }
+    in rotate-sel-loop (list-set-at items i rotated) (i + 1) n
+
+Section: Duplicate Selected
+
+  duplicate-selected : List CanvasItem, Integer -> List CanvasItem
+  duplicate-selected (items) (offset) =
+    dup-sel-loop items 0 (list-length items) items offset (next-item-id items)
+
+  dup-sel-loop : List CanvasItem, Integer, Integer, List CanvasItem, Integer, Integer -> List CanvasItem
+  dup-sel-loop (src) (i) (n) (acc) (offset) (next-id) =
+    if i >= n then acc
+    else let item = list-at src i
+    in if item.ci-selected == 0 then dup-sel-loop src (i + 1) n acc offset next-id
+    else let dup = CanvasItem {
+      ci-id = next-id, ci-kind = item.ci-kind,
+      ci-x = item.ci-x + offset, ci-y = item.ci-y + offset,
+      ci-w = item.ci-w, ci-h = item.ci-h,
+      ci-color = item.ci-color, ci-ref = item.ci-ref,
+      ci-selected = 1,
+      ci-subtype = item.ci-subtype,
+      ci-pins-left = item.ci-pins-left, ci-pins-right = item.ci-pins-right,
+      ci-rotation = item.ci-rotation
+    }
+    in dup-sel-loop src (i + 1) n (list-push acc dup) offset (next-id + 1)
+
+Section: Marquee Selection
+
+  marquee-select : List CanvasItem, Integer, Integer, Integer, Integer -> List CanvasItem
+  marquee-select (items) (x0) (y0) (x1) (y1) =
+    let lx = if x0 < x1 then x0 else x1
+    in let ly = if y0 < y1 then y0 else y1
+    in let hx = if x0 > x1 then x0 else x1
+    in let hy = if y0 > y1 then y0 else y1
+    in marquee-loop items lx ly hx hy 0 (list-length items)
+
+  marquee-loop : List CanvasItem, Integer, Integer, Integer, Integer, Integer, Integer -> List CanvasItem
+  marquee-loop (items) (lx) (ly) (hx) (hy) (i) (n) =
+    if i >= n then items
+    else let item = list-at items i
+    in let inside = if item.ci-x >= lx then if item.ci-x + item.ci-w <= hx then if item.ci-y >= ly then if item.ci-y + item.ci-h <= hy then 1 else 0 else 0 else 0 else 0
+    in let updated = CanvasItem {
+      ci-id = item.ci-id, ci-kind = item.ci-kind,
+      ci-x = item.ci-x, ci-y = item.ci-y,
+      ci-w = item.ci-w, ci-h = item.ci-h,
+      ci-color = item.ci-color, ci-ref = item.ci-ref,
+      ci-selected = inside,
+      ci-subtype = item.ci-subtype, ci-pins-left = item.ci-pins-left, ci-pins-right = item.ci-pins-right, ci-rotation = item.ci-rotation
+    }
+    in marquee-loop (list-set-at items i updated) lx ly hx hy (i + 1) n
+
+Section: Grid Snap
+
+  grid-snap : Integer, Integer -> Integer
+  grid-snap (v) (g) =
+    if g <= 0 then v
+    else let half = g / 2
+    in let rounded = if v >= 0 then (v + half) / g * g else 0 - ((0 - v + half) / g * g)
+    in rounded
+
+Section: Undo Stack
+
+  EditHistory = record {
+    us-snapshots : List (List CanvasItem),
+    us-depth : Integer,
+    us-max : Integer
+  }
+
+  eh-new : EditHistory
+  eh-new = EditHistory { us-snapshots = [], us-depth = 0, us-max = 50 }
+
+  eh-push : EditHistory, List CanvasItem -> EditHistory
+  eh-push (us) (items) =
+    let snaps = if us.us-depth >= us.us-max then us.us-snapshots
+      else list-push (us.us-snapshots) items
+    in EditHistory { us-snapshots = snaps, us-depth = us.us-depth + 1, us-max = us.us-max }
+
+  eh-pop : EditHistory -> EditHistory
+  eh-pop (us) =
+    if us.us-depth <= 0 then us
+    else EditHistory { us-snapshots = us.us-snapshots, us-depth = us.us-depth - 1, us-max = us.us-max }
+
+  eh-top : EditHistory -> List CanvasItem
+  eh-top (us) =
+    if us.us-depth <= 0 then []
+    else list-at (us.us-snapshots) (us.us-depth - 1)
+
+  eh-can-undo : EditHistory -> Integer
+  eh-can-undo (us) = if us.us-depth > 0 then 1 else 0
+
+Section: Selection Count
+
+  count-selected : List CanvasItem -> Integer
+  count-selected (items) = count-sel-loop items 0 (list-length items) 0
+
+  count-sel-loop : List CanvasItem, Integer, Integer, Integer -> Integer
+  count-sel-loop (items) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in count-sel-loop items (i + 1) n (acc + item.ci-selected)

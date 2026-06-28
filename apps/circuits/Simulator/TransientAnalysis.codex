@@ -1,0 +1,344 @@
+Chapter: TransientAnalysis
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Time-domain transient analysis. Simulates circuit behaviour over time
+ using numerical integration and provides measurement functions for
+ rise time, period, frequency, and RMS.
+
+Section: Integration Method
+
+  IntegrationMethod =
+    | Trapezoidal
+    | Gear2
+    | BackwardEuler
+
+Section: Transient Point
+
+  TransientPoint = record {
+    tp-time : Real,
+    tp-value : Real
+  }
+
+Section: Transient Trace
+
+  TransientTrace = record {
+    tt-node-name : Text,
+    tt-points : List TransientPoint,
+    tt-unit : Text
+  }
+
+Section: Transient Configuration
+
+  TransientConfig = record {
+    tc-step-size : Real,
+    tc-stop-time : Real,
+    tc-start-time : Real,
+    tc-max-step : Real,
+    tc-method : IntegrationMethod
+  }
+
+Section: Transient Result
+
+  TransientResult = record {
+    tr-config : TransientConfig,
+    tr-traces : List TransientTrace,
+    tr-trace-count : Integer,
+    tr-time-steps : Integer,
+    tr-converged : Integer
+  }
+
+Section: Construction
+
+  empty-transient-result : TransientConfig -> TransientResult
+  empty-transient-result (cfg) = TransientResult {
+      tr-config = cfg,
+      tr-traces = [],
+      tr-trace-count = 0,
+      tr-time-steps = 0,
+      tr-converged = 0
+    }
+
+  transient-add-trace : TransientResult, TransientTrace -> TransientResult
+  transient-add-trace (res) (tr) =
+    let updated = __record-set res "tr-traces" (list-push res.tr-traces tr)
+    in __record-set updated "tr-trace-count" (res.tr-trace-count + 1)
+
+Section: Interpolation
+
+ Linear interpolation to find trace value at an arbitrary time.
+
+  transient-value-at-time : TransientTrace, Real -> Real
+  transient-value-at-time (tr) (t) =
+    let n = list-length tr.tt-points
+    in if n < 2 then 0.0
+    else trans-interp-scan tr.tt-points t 0 (n - 1)
+
+  trans-interp-scan : List TransientPoint, Real, Integer, Integer -> Real
+  trans-interp-scan (pts) (t) (i) (last) =
+    if i >= last then trans-interp-at pts last else trans-interp-step pts t i last
+
+  trans-interp-at : List TransientPoint, Integer -> Real
+  trans-interp-at (pts) (idx) = let p = list-at pts idx in p.tp-value
+
+  trans-interp-step : List TransientPoint, Real, Integer, Integer -> Real
+  trans-interp-step (pts) (t) (i) (last) =
+    let a = list-at pts i
+    in let b = list-at pts (i + 1)
+    in trans-interp-match a b pts t i last
+
+  trans-interp-match : TransientPoint, TransientPoint, List TransientPoint, Real, Integer, Integer -> Real
+  trans-interp-match (a) (b) (pts) (t) (i) (last) =
+    if t < a.tp-time then a.tp-value
+    else if t <= b.tp-time then trans-interp-lerp a b t
+    else trans-interp-scan pts t (i + 1) last
+
+  trans-interp-lerp : TransientPoint, TransientPoint, Real -> Real
+  trans-interp-lerp (a) (b) (t) =
+    let dt = b.tp-time - a.tp-time
+    in if dt ~ 0.0 then a.tp-value else trans-interp-frac a b t dt
+
+  trans-interp-frac : TransientPoint, TransientPoint, Real, Real -> Real
+  trans-interp-frac (a) (b) (t) (dt) = let frac = (t - a.tp-time) / dt in a.tp-value + frac * (b.tp-value - a.tp-value)
+
+Section: Peak and Valley
+
+  transient-peak-value : TransientTrace -> Real
+  transient-peak-value (tr) =
+    let n = list-length tr.tt-points
+    in if n == 0 then 0.0 else transient-peak-start tr n
+
+  transient-peak-start : TransientTrace, Integer -> Real
+  transient-peak-start (tr) (n) = let first = list-at tr.tt-points 0 in trans-scan-peak tr.tt-points 1 n first.tp-value
+
+  trans-scan-peak : List TransientPoint, Integer, Integer, Real -> Real
+  trans-scan-peak (pts) (i) (n) (best) =
+    if i >= n then best else trans-scan-peak-step pts i n best
+
+  trans-scan-peak-step : List TransientPoint, Integer, Integer, Real -> Real
+  trans-scan-peak-step (pts) (i) (n) (best) =
+    let p = list-at pts i
+    in let next = if p.tp-value > best then p.tp-value else best
+    in trans-scan-peak pts (i + 1) n next
+
+  transient-valley-value : TransientTrace -> Real
+  transient-valley-value (tr) =
+    let n = list-length tr.tt-points
+    in if n == 0 then 0.0 else transient-valley-start tr n
+
+  transient-valley-start : TransientTrace, Integer -> Real
+  transient-valley-start (tr) (n) = let first = list-at tr.tt-points 0 in trans-scan-valley tr.tt-points 1 n first.tp-value
+
+  trans-scan-valley : List TransientPoint, Integer, Integer, Real -> Real
+  trans-scan-valley (pts) (i) (n) (best) =
+    if i >= n then best else trans-scan-valley-step pts i n best
+
+  trans-scan-valley-step : List TransientPoint, Integer, Integer, Real -> Real
+  trans-scan-valley-step (pts) (i) (n) (best) =
+    let p = list-at pts i
+    in let next = if p.tp-value < best then p.tp-value else best
+    in trans-scan-valley pts (i + 1) n next
+
+Section: Rise Time
+
+ Rise time from 10% to 90% of the signal swing. Computes the low and
+ high thresholds from peak and valley, then finds the first crossing
+ times for each threshold.
+
+  transient-rise-time : TransientTrace -> Real
+  transient-rise-time (tr) =
+    let peak = transient-peak-value tr
+    in let valley = transient-valley-value tr
+    in let swing = peak - valley
+    in if swing ~ 0.0 then 0.0 else trans-rise-time-calc tr swing valley
+
+  trans-rise-time-calc : TransientTrace, Real, Real -> Real
+  trans-rise-time-calc (tr) (swing) (valley) =
+    let low-thresh = valley + swing * 0.1
+    in let high-thresh = valley + swing * 0.9
+    in let t-low = trans-find-rising-cross tr.tt-points low-thresh 0 (list-length tr.tt-points - 1)
+    in let t-high = trans-find-rising-cross tr.tt-points high-thresh 0 (list-length tr.tt-points - 1)
+    in trans-rise-time-result t-low t-high
+
+  trans-rise-time-result : Real, Real -> Real
+  trans-rise-time-result (t-low) (t-high) =
+    if t-low ~ 0.0 then 0.0
+    else if t-high ~ 0.0 then 0.0
+    else t-high - t-low
+
+  trans-find-rising-cross : List TransientPoint, Real, Integer, Integer -> Real
+  trans-find-rising-cross (pts) (threshold) (i) (last) =
+    if i >= last then 0.0 else trans-rising-cross-step pts threshold i last
+
+  trans-rising-cross-step : List TransientPoint, Real, Integer, Integer -> Real
+  trans-rising-cross-step (pts) (threshold) (i) (last) =
+    let a = list-at pts i
+    in let b = list-at pts (i + 1)
+    in trans-rising-cross-check a b pts threshold i last
+
+  trans-rising-cross-check : TransientPoint, TransientPoint, List TransientPoint, Real, Integer, Integer -> Real
+  trans-rising-cross-check (a) (b) (pts) (threshold) (i) (last) =
+    if a.tp-value < threshold then trans-rising-cross-test a b pts threshold i last
+    else trans-find-rising-cross pts threshold (i + 1) last
+
+  trans-rising-cross-test : TransientPoint, TransientPoint, List TransientPoint, Real, Integer, Integer -> Real
+  trans-rising-cross-test (a) (b) (pts) (threshold) (i) (last) =
+    if b.tp-value >= threshold then trans-rising-cross-interp a b threshold
+    else trans-find-rising-cross pts threshold (i + 1) last
+
+  trans-rising-cross-interp : TransientPoint, TransientPoint, Real -> Real
+  trans-rising-cross-interp (a) (b) (threshold) =
+    let dv = b.tp-value - a.tp-value
+    in if dv ~ 0.0 then a.tp-time else trans-rising-cross-frac a b threshold dv
+
+  trans-rising-cross-frac : TransientPoint, TransientPoint, Real, Real -> Real
+  trans-rising-cross-frac (a) (b) (threshold) (dv) = let frac = (threshold - a.tp-value) / dv in a.tp-time + frac * (b.tp-time - a.tp-time)
+
+Section: Period and Frequency
+
+ Auto-detects the signal period from zero crossings. Finds the first
+ two positive-going zero crossings and returns their time difference.
+
+  transient-period : TransientTrace -> Real
+  transient-period (tr) =
+    let n = list-length tr.tt-points
+    in if n < 3 then 0.0 else trans-period-calc tr n
+
+  trans-period-calc : TransientTrace, Integer -> Real
+  trans-period-calc (tr) (n) =
+    let first-cross = trans-find-zero-cross tr.tt-points 0 (n - 1)
+    in if first-cross ~ 0.0 then 0.0 else trans-period-second tr first-cross n
+
+  trans-period-second : TransientTrace, Real, Integer -> Real
+  trans-period-second (tr) (first-cross) (n) =
+    let second-cross = trans-find-next-zero-cross tr.tt-points first-cross 0 (n - 1)
+    in if second-cross ~ 0.0 then 0.0 else second-cross - first-cross
+
+  trans-find-zero-cross : List TransientPoint, Integer, Integer -> Real
+  trans-find-zero-cross (pts) (i) (last) =
+    if i >= last then 0.0 else trans-zero-cross-step pts i last
+
+  trans-zero-cross-step : List TransientPoint, Integer, Integer -> Real
+  trans-zero-cross-step (pts) (i) (last) =
+    let a = list-at pts i
+    in let b = list-at pts (i + 1)
+    in trans-zero-cross-check a b pts i last
+
+  trans-zero-cross-check : TransientPoint, TransientPoint, List TransientPoint, Integer, Integer -> Real
+  trans-zero-cross-check (a) (b) (pts) (i) (last) =
+    if a.tp-value <= 0.0 then trans-zero-cross-test a b pts i last
+    else trans-find-zero-cross pts (i + 1) last
+
+  trans-zero-cross-test : TransientPoint, TransientPoint, List TransientPoint, Integer, Integer -> Real
+  trans-zero-cross-test (a) (b) (pts) (i) (last) =
+    if b.tp-value > 0.0 then trans-zero-cross-interp a b
+    else trans-find-zero-cross pts (i + 1) last
+
+  trans-zero-cross-interp : TransientPoint, TransientPoint -> Real
+  trans-zero-cross-interp (a) (b) =
+    let dv = b.tp-value - a.tp-value
+    in if dv ~ 0.0 then a.tp-time else trans-zero-cross-frac a b dv
+
+  trans-zero-cross-frac : TransientPoint, TransientPoint, Real -> Real
+  trans-zero-cross-frac (a) (b) (dv) = let frac = (0.0 - a.tp-value) / dv in a.tp-time + frac * (b.tp-time - a.tp-time)
+
+  trans-find-next-zero-cross : List TransientPoint, Real, Integer, Integer -> Real
+  trans-find-next-zero-cross (pts) (after) (i) (last) =
+    if i >= last then 0.0 else trans-next-zero-step pts after i last
+
+  trans-next-zero-step : List TransientPoint, Real, Integer, Integer -> Real
+  trans-next-zero-step (pts) (after) (i) (last) =
+    let a = list-at pts i
+    in let b = list-at pts (i + 1)
+    in trans-next-zero-check a b pts after i last
+
+  trans-next-zero-check : TransientPoint, TransientPoint, List TransientPoint, Real, Integer, Integer -> Real
+  trans-next-zero-check (a) (b) (pts) (after) (i) (last) =
+    if a.tp-time <= after then trans-find-next-zero-cross pts after (i + 1) last
+    else if a.tp-value <= 0.0 then trans-next-zero-test a b pts after i last
+    else trans-find-next-zero-cross pts after (i + 1) last
+
+  trans-next-zero-test : TransientPoint, TransientPoint, List TransientPoint, Real, Integer, Integer -> Real
+  trans-next-zero-test (a) (b) (pts) (after) (i) (last) =
+    if b.tp-value > 0.0 then trans-next-zero-interp a b
+    else trans-find-next-zero-cross pts after (i + 1) last
+
+  trans-next-zero-interp : TransientPoint, TransientPoint -> Real
+  trans-next-zero-interp (a) (b) =
+    let dv = b.tp-value - a.tp-value
+    in if dv ~ 0.0 then a.tp-time else trans-next-zero-frac a b dv
+
+  trans-next-zero-frac : TransientPoint, TransientPoint, Real -> Real
+  trans-next-zero-frac (a) (b) (dv) = let frac = (0.0 - a.tp-value) / dv in a.tp-time + frac * (b.tp-time - a.tp-time)
+
+  transient-frequency : TransientTrace -> Real
+  transient-frequency (tr) =
+    let period = transient-period tr
+    in if period ~ 0.0 then 0.0
+    else 1.0 / period
+
+Section: RMS
+
+  transient-rms : TransientTrace -> Real
+  transient-rms (tr) =
+    let n = list-length tr.tt-points
+    in if n == 0 then 0.0 else trans-rms-calc tr n
+
+  trans-rms-calc : TransientTrace, Integer -> Real
+  trans-rms-calc (tr) (n) =
+    let sum-sq = trans-sum-squares tr.tt-points 0 n 0.0
+    in let count = real-from-int n
+    in let mean-sq = sum-sq / count
+    in trans-real-sqrt mean-sq
+
+  trans-int-count-real : Integer, Integer, Real -> Real
+  trans-int-count-real (i) (n) (acc) =
+    if i >= n then acc else trans-int-count-real (i + 1) n (acc + 1.0)
+
+  trans-sum-squares : List TransientPoint, Integer, Integer, Real -> Real
+  trans-sum-squares (pts) (i) (n) (acc) =
+    if i >= n then acc else trans-sum-sq-step pts i n acc
+
+  trans-sum-sq-step : List TransientPoint, Integer, Integer, Real -> Real
+  trans-sum-sq-step (pts) (i) (n) (acc) = let p = list-at pts i in trans-sum-squares pts (i + 1) n (acc + p.tp-value * p.tp-value)
+
+  trans-real-sqrt : Real -> Real
+  trans-real-sqrt (x) =
+    if x <= 0.0 then 0.0
+    else trans-sqrt-loop x (x / 2.0 + 1.0)
+
+  trans-sqrt-loop : Real, Real -> Real
+  trans-sqrt-loop (x) (guess) =
+    let next = (guess + x / guess) / 2.0
+    in if next ~ guess then next
+    else trans-sqrt-loop x next
+
+Section: Summary
+
+  transient-result-summary : TransientResult -> Text
+  transient-result-summary (res) =
+    let header = trans-result-header res
+    in let method = "  Method: " & integration-method-text res.tr-config.tc-method & "\n"
+    in let steps = "  Time steps: " & (show res.tr-time-steps) & "\n"
+    in let traces = "  Traces: " & (show res.tr-trace-count) & "\n"
+    in let detail = trans-format-traces res.tr-traces 0 (list-length res.tr-traces) ""
+    in header & method & steps & traces & detail
+
+  trans-result-header : TransientResult -> Text
+  trans-result-header (res) = "Transient Analysis" & (if res.tr-converged == 1 then " (converged)" else " (not converged)") & "\n"
+
+  integration-method-text : IntegrationMethod -> Text
+  integration-method-text (m) = when m
+    is Trapezoidal -> "Trapezoidal"
+    is Gear2 -> "Gear-2"
+    is BackwardEuler -> "Backward Euler"
+
+  trans-format-traces : List TransientTrace, Integer, Integer, Text -> Text
+  trans-format-traces (traces) (i) (n) (acc) =
+    if i >= n then acc else trans-fmt-trace-step traces i n acc
+
+  trans-fmt-trace-step : List TransientTrace, Integer, Integer, Text -> Text
+  trans-fmt-trace-step (traces) (i) (n) (acc) =
+    let tr = list-at traces i
+    in let line = "  " & tr.tt-node-name & " (" & tr.tt-unit & "): " & show (list-length tr.tt-points) & " points\n"
+    in trans-format-traces traces (i + 1) n (acc & line)

@@ -1,0 +1,166 @@
+Chapter: MechanicalFit
+  cites Foreword chapter List
+
+ Mechanical enclosure overlay and interference detection for the 3D
+ board viewer. Checks that the PCB fits within enclosures, components
+ clear height constraints, and mounting holes align with standoffs.
+ All dimensions in nanometers.
+
+Section: Enclosure
+
+  EnclosureBox = record {
+    enc-x1 : Integer,
+    enc-y1 : Integer,
+    enc-z1 : Integer,
+    enc-x2 : Integer,
+    enc-y2 : Integer,
+    enc-z2 : Integer,
+    enc-name : Text,
+    enc-color : Integer,
+    enc-transparent : Integer
+  }
+
+Section: Mounting Hole
+
+  MountingHole = record {
+    mh-x : Integer,
+    mh-y : Integer,
+    mh-diameter : Integer,
+    mh-standoff-height : Integer,
+    mh-name : Text
+  }
+
+Section: Height Constraint
+
+ Defines a rectangular area with a maximum allowed component height.
+ Side 0 = top, 1 = bottom.
+
+  HeightConstraint = record {
+    hc-x1 : Integer,
+    hc-y1 : Integer,
+    hc-x2 : Integer,
+    hc-y2 : Integer,
+    hc-max-height : Integer,
+    hc-side : Integer,
+    hc-name : Text
+  }
+
+Section: Mechanical Model
+
+  MechanicalModel = record {
+    mm-enclosures : List EnclosureBox,
+    mm-mounting-holes : List MountingHole,
+    mm-height-constraints : List HeightConstraint
+  }
+
+Section: Interference Type
+
+  InterferenceType =
+    | ComponentTooTall
+    | ClearanceViolation
+    | BoardTooLarge
+    | HoleMismatch
+
+Section: Interference Result
+
+  InterferenceResult = record {
+    ir-type : InterferenceType,
+    ir-item-name : Text,
+    ir-message : Text,
+    ir-x : Integer,
+    ir-y : Integer,
+    ir-z : Integer
+  }
+
+Section: Empty Model
+
+  empty-mechanical-model : MechanicalModel
+  empty-mechanical-model = MechanicalModel {
+    mm-enclosures = [],
+    mm-mounting-holes = [],
+    mm-height-constraints = []
+  }
+
+Section: Add Enclosure
+
+  add-enclosure : MechanicalModel, EnclosureBox -> MechanicalModel
+  add-enclosure (m) (e) = MechanicalModel {
+    mm-enclosures = list-push m.mm-enclosures e,
+    mm-mounting-holes = m.mm-mounting-holes,
+    mm-height-constraints = m.mm-height-constraints
+  }
+
+Section: Add Mounting Hole
+
+  add-mounting-hole : MechanicalModel, MountingHole -> MechanicalModel
+  add-mounting-hole (m) (h) = MechanicalModel {
+    mm-enclosures = m.mm-enclosures,
+    mm-mounting-holes = list-push m.mm-mounting-holes h,
+    mm-height-constraints = m.mm-height-constraints
+  }
+
+Section: Add Height Constraint
+
+  add-height-constraint : MechanicalModel, HeightConstraint -> MechanicalModel
+  add-height-constraint (m) (c) = MechanicalModel {
+    mm-enclosures = m.mm-enclosures,
+    mm-mounting-holes = m.mm-mounting-holes,
+    mm-height-constraints = list-push m.mm-height-constraints c
+  }
+
+Section: Check Component Height
+
+ Given a component at (x, y) with a given height on a given side,
+ check all height constraints. Returns the first violation found.
+
+  point-in-rect : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  point-in-rect (px) (py) (x1) (y1) (x2) (y2) =
+    if px >= x1 then
+      if px <= x2 then
+        if py >= y1 then
+          if py <= y2 then 1
+          else 0
+        else 0
+      else 0
+    else 0
+
+  check-height-against-list-loop : Integer, Integer, Integer, Integer, Text, List HeightConstraint, Integer, Integer -> Maybe InterferenceResult
+  check-height-against-list-loop (x) (y) (height) (side) (name) (constraints) (i) (n) =
+    if i >= n then None
+    else let c = list-at constraints i
+    in if c.hc-side == side then
+      if point-in-rect x y c.hc-x1 c.hc-y1 c.hc-x2 c.hc-y2 == 1 then
+        if height > c.hc-max-height then
+          Just (InterferenceResult {
+            ir-type = ComponentTooTall,
+            ir-item-name = name,
+            ir-message = "Component " & name & " exceeds height limit in " & c.hc-name,
+            ir-x = x,
+            ir-y = y,
+            ir-z = height
+          })
+        else check-height-against-list-loop x y height side name constraints (i + 1) n
+      else check-height-against-list-loop x y height side name constraints (i + 1) n
+    else check-height-against-list-loop x y height side name constraints (i + 1) n
+
+  check-height-against-list : Integer, Integer, Integer, Integer, Text, List HeightConstraint -> Maybe InterferenceResult
+  check-height-against-list (x) (y) (height) (side) (name) (constraints) =
+    check-height-against-list-loop x y height side name constraints 0 (list-length constraints)
+
+  check-component-height : Integer, Integer, Integer, Integer, Text, MechanicalModel -> Maybe InterferenceResult
+  check-component-height (x) (y) (height) (side) (name) (model) =
+    check-height-against-list x y height side name model.mm-height-constraints
+
+Section: Check Board Fits Enclosure
+
+ Returns 1 if the board width and height fit within the enclosure
+ inner dimensions, 0 otherwise.
+
+  check-board-fits-enclosure : Integer, Integer, EnclosureBox -> Integer
+  check-board-fits-enclosure (board-w) (board-h) (enc) =
+    let enc-w = enc.enc-x2 - enc.enc-x1
+    in let enc-h = enc.enc-y2 - enc.enc-y1
+    in if board-w <= enc-w then
+      if board-h <= enc-h then 1
+      else 0
+    else 0

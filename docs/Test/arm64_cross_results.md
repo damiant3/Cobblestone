@@ -1,175 +1,159 @@
 # ARM64 Cross-Compilation Test Results
 
-**Date**: 2026-06-24 12:51
+**Date**: 2026-06-27 22:04
 **Seed**: `seed/Codex.cdx`
 **Plug**: `codex/plugs/arm64/build-output/arm64-plug.cdx`
-**Emulator**: Renode (`codex-arm64.repl`, Cortex-A53 + PL011)
-**Parallel slots**: 4 (Renode timeout: 1s)
-**Total time**: compile 524s + run 133s = ~11 min (down from 27.7 min)
+**Emulator**: Renode (`codex-arm64.repl, Cortex-A53 + PL011`)
+**Parallel slots**: 4
+**Total time**: 13 min (781.9s)
 
 ## Summary
 
 | Status | Count |
 |--------|------:|
-| PASS_EXPECTED | 124 |
-| PASS_COMPILE_ONLY | 3 |
-| FAIL | 10 |
-| SKIPPED | 15 |
-| **Total** | **152** |
+| PASS_EXPECTED | 132 |
+| PASS_COMPILE_ONLY | 2 |
+| FAIL | 2 |
+| SKIPPED | 18 |
+| **Total** | **154** |
 
 ## Detailed Results
 
-| Test | Status | Notes |
-|------|--------|-------|
-| approx-eq | PASS_EXPECTED |  |
-| arithmetic | PASS_EXPECTED |  |
-| arm64-boot-test | PASS_COMPILE_ONLY |  |
-| arm64-encoder | PASS_EXPECTED |  |
-| arm64-web-server | PASS_COMPILE_ONLY |  |
-| atomic-smoke | PASS_EXPECTED |  |
-| audio-diffusion-test | PASS_EXPECTED |  |
-| av-codec-test | PASS_EXPECTED |  |
-| board-types | PASS_EXPECTED |  |
-| bounded-integer-ops | PASS_EXPECTED |  |
-| bounds-proof | PASS_EXPECTED |  |
-| bounds-prover | PASS_EXPECTED |  |
-| bs3-smoke | PASS_EXPECTED |  |
-| cce-tier1 | PASS_EXPECTED |  |
-| circbuf-test | PASS_EXPECTED |  |
-| class-op-no-instance | SKIPPED | error test (frontend only) |
-| coap-encode | PASS_EXPECTED |  |
-| coap-packet | PASS_EXPECTED |  |
-| color-test | PASS_EXPECTED |  |
-| compliance-evidence | PASS_EXPECTED |  |
-| compliance-report | PASS_EXPECTED |  |
-| concurrent-test | PASS_EXPECTED |  |
-| crypto-test | PASS_EXPECTED |  |
-| db-full-test | SKIPPED | CDX1000 parse errors in db-full concat (~9304 lines). Token mismatch on string literal in Server.... |
-| db-test | SKIPPED | Compiles clean but heap-scan overflows 2GB RAM at runtime (R10 past bare-metal-stack-top). 3 mult... |
-| edit-distance-test | PASS_EXPECTED |  |
-| effect-smoke | PASS_EXPECTED |  |
-| esp32c6-drivers | PASS_EXPECTED |  |
-| eventbus-test | PASS_EXPECTED |  |
-| exc-div-zero | SKIPPED | fatal |
-| exc-gpf | SKIPPED | fatal |
-| exc-null-read | SKIPPED | fatal |
-| exc-stack-heap | SKIPPED | fatal |
-| expr-calculator | PASS_EXPECTED |  |
-| factorial | PASS_EXPECTED |  |
-| fe310-drivers | PASS_EXPECTED |  |
-| final-batch-test | PASS_EXPECTED |  |
-| fork-nested | PASS_EXPECTED |  |
-| fork-reclaim | PASS_EXPECTED |  |
-| geometry-test | PASS_EXPECTED |  |
-| hamt-test | PASS_EXPECTED |  |
-| handler-smoke | PASS_EXPECTED |  |
-| helm-full-test | PASS_COMPILE_ONLY |  |
-| history-test | PASS_EXPECTED |  |
-| image-codec-test | SKIPPED | slow |
-| implicit-convert | PASS_EXPECTED |  |
-| infra-test | PASS_EXPECTED |  |
-| iterate-test | PASS_EXPECTED |  |
-| iterate-zip-test | PASS_EXPECTED |  |
-| keyboard-layout-test | FAIL_OUTPUT |  |
-| klondike-test | SKIPPED | slow |
-| kvstore-test | PASS_EXPECTED |  |
-| lang-smoke | PASS_EXPECTED |  |
-| lazy-smoke | PASS_EXPECTED |  |
-| let-effectful-bug | SKIPPED | slow |
-| linear-branch | PASS_EXPECTED |  |
-| linear-smoke | PASS_EXPECTED |  |
-| list-append-perf-N8-L7 | PASS_EXPECTED |  |
-| list-test | PASS_EXPECTED |  |
-| lwm2m-encode | PASS_EXPECTED |  |
-| mask-ops | PASS_EXPECTED |  |
-| matrix3-test | PASS_EXPECTED |  |
-| media-codec-test | PASS_EXPECTED |  |
-| mini-bootstrap | PASS_EXPECTED |  |
-| mqtt-encode | PASS_EXPECTED |  |
-| mqtt-packet | PASS_EXPECTED |  |
-| mutable-alias | SKIPPED | error test (frontend only) |
-| mutable-smoke | PASS_EXPECTED |  |
-| noise-test | PASS_EXPECTED |  |
-| nrf52840-drivers | PASS_EXPECTED |  |
-| nrf9160-drivers | PASS_EXPECTED |  |
-| ota-gate-real | PASS_EXPECTED |  |
-| ota-state-machine | PASS_EXPECTED |  |
-| ota-update | PASS_EXPECTED |  |
-| par-map | PASS_EXPECTED |  |
-| par-nested | PASS_EXPECTED |  |
-| parse-test | PASS_EXPECTED |  |
-| parser-resync | SKIPPED | error test (frontend only) |
-| pi4-drivers | PASS_EXPECTED |  |
-| pipe-unique-test | PASS_EXPECTED |  |
-| prose-consistency | PASS_EXPECTED |  |
-| prose-smoke | PASS_EXPECTED |  |
-| punctual-iot | PASS_EXPECTED |  |
-| punctual-quire | PASS_EXPECTED |  |
-| punctual-smoke | PASS_EXPECTED |  |
-| qemu-virt-board | PASS_EXPECTED |  |
-| queue-test | PASS_EXPECTED |  |
-| rasterizer-test | PASS_EXPECTED |  |
-| raytracer-test | PASS_EXPECTED |  |
-| real-approx | PASS_EXPECTED |  |
-| real-saturating | FAIL_OUTPUT | line 1: exp=[sum: 7.0] act=[sum: 0.0] |
-| real-trapping | PASS_EXPECTED |  |
-| record-smoke | PASS_EXPECTED |  |
-| riscv-encoder | PASS_EXPECTED |  |
-| riscv32c-encoder | PASS_EXPECTED |  |
-| rp2040-drivers | PASS_EXPECTED |  |
-| sensor-data | PASS_EXPECTED |  |
-| smtp-md-test | PASS_EXPECTED |  |
-| sort-test | PASS_EXPECTED |  |
-| sound-test | PASS_EXPECTED |  |
-| sprite-test | PASS_EXPECTED |  |
-| stats-wrap-test | PASS_EXPECTED |  |
-| stm32f4-drivers | PASS_EXPECTED |  |
-| stm32l4-drivers | PASS_EXPECTED |  |
-| stringbuilder-test | PASS_EXPECTED |  |
-| stringutils-test | PASS_EXPECTED |  |
-| suggested-width | PASS_EXPECTED |  |
-| synth-test | PASS_EXPECTED |  |
-| text-fold-indexed | PASS_EXPECTED |  |
-| textscan-test | PASS_EXPECTED |  |
-| textsearch-test | PASS_EXPECTED |  |
-| thumb2-encoder | PASS_EXPECTED |  |
-| tls-test | PASS_EXPECTED |  |
-| trie-prefix-test | FAIL_OUTPUT | line 1: exp=[count:3] act=[count:2] |
-| truetype-bridge-test | FAIL_OUTPUT | line 2: exp=[A: w=9 h=11 adv=8] act=[A: w=1 h=1 adv=0] |
-| truetype-render-test | FAIL_OUTPUT |  |
-| truetype-test | PASS_EXPECTED |  |
-| try-smoke | FAIL_OUTPUT |  |
-| tuple-syntax | PASS_EXPECTED |  |
-| type-checker-test | PASS_EXPECTED |  |
-| type-class-no-instance-gen | SKIPPED | error test (frontend only) |
-| type-class-no-instance | SKIPPED | error test (frontend only) |
-| typeclass-poly | PASS_EXPECTED |  |
-| typeclass-smoke | PASS_EXPECTED |  |
-| ui-anim-test | PASS_EXPECTED |  |
-| ui-dialog-test | PASS_EXPECTED |  |
-| ui-event-test | FAIL_OUTPUT |  |
-| ui-focus-test | PASS_EXPECTED |  |
-| ui-font-test | PASS_EXPECTED |  |
-| ui-icon-test | PASS_EXPECTED |  |
-| ui-layout-test | PASS_EXPECTED |  |
-| ui-orchestrator-test | FAIL_COMPILE | compile failed or not attempted |
-| ui-scroll-test | PASS_EXPECTED |  |
-| ui-sound-test | PASS_EXPECTED |  |
-| ui-surface-test | PASS_EXPECTED |  |
-| ui-theme-test | PASS_EXPECTED |  |
-| unit-family-mixed | PASS_EXPECTED |  |
-| unit-family | PASS_EXPECTED |  |
-| unit-smoke | PASS_EXPECTED |  |
-| units-foreword | PASS_EXPECTED |  |
-| usb-msc-test | PASS_EXPECTED |  |
-| usb-test | PASS_EXPECTED |  |
-| vec-pattern | PASS_EXPECTED |  |
-| vec-reduce-add | PASS_EXPECTED |  |
-| vec-select | FAIL_OUTPUT | line 1: exp=[lt-true: 3.0] act=[lt-true: 0.0] |
-| vector-basic | PASS_EXPECTED |  |
-| vector-f32 | FAIL_OUTPUT | line 1: exp=[add0: 7.0] act=[add0: '0.0] |
-| vector-int | PASS_EXPECTED |  |
-| watchdog-panic-probe | SKIPPED | deliberate infinite loop; not part of the standard sweep |
-| wavelet-sort-aliasing | PASS_EXPECTED |  |
-| with-timeout-test | PASS_EXPECTED |  |
-| xhci-enum-test | PASS_EXPECTED |  |
+| Test | Status | Compile (s) | Run (s) | Notes |
+|------|--------|------------:|--------:|-------|
+| approx-eq | PASS_EXPECTED | 1.5 | 12.9 |  |
+| arithmetic | PASS_EXPECTED | 1.4 | 12.9 |  |
+| arm64-boot-test | PASS_EXPECTED | 1.4 | 12.9 |  |
+| arm64-encoder | PASS_EXPECTED | 2.1 | 12.9 |  |
+| arm64-http-test | PASS_EXPECTED | 1.8 | 12.8 |  |
+| arm64-web-server | PASS_COMPILE_ONLY | 22.3 | --- |  |
+| atomic-smoke | PASS_EXPECTED | 1.7 | 12.9 |  |
+| audio-diffusion-test | PASS_EXPECTED | 2.1 | 12.8 |  |
+| av-codec-test | FAIL_OUTPUT | 2.9 | 12.9 | line 1: exp=[flac: size=67 magic=102] act=[flac: size=45 magic=102] |
+| board-types | PASS_EXPECTED | 1.4 | 12.9 |  |
+| bounded-integer-ops | PASS_EXPECTED | 1.4 | 12.8 |  |
+| bounds-proof | PASS_EXPECTED | 1.5 | 12.9 |  |
+| bounds-prover | PASS_EXPECTED | 1.5 | 12.9 |  |
+| bs3-smoke | PASS_EXPECTED | 1.4 | 12.9 |  |
+| cce-tier1 | PASS_EXPECTED | 1.8 | 13.8 |  |
+| circbuf-test | PASS_EXPECTED | 1.9 | 12.8 |  |
+| coap-encode | PASS_EXPECTED | 1.6 | 12.9 |  |
+| coap-packet | PASS_EXPECTED | 1.6 | 12.8 |  |
+| color-test | PASS_EXPECTED | 2 | 12.9 |  |
+| compliance-evidence | PASS_EXPECTED | 2.4 | 12.8 |  |
+| compliance-report | PASS_EXPECTED | 2 | 12.9 |  |
+| concurrent-test | PASS_EXPECTED | 1.6 | 12.9 |  |
+| crypto-test | PASS_EXPECTED | 2.1 | 12.9 |  |
+| edit-distance-test | PASS_EXPECTED | 1.6 | 12.8 |  |
+| effect-smoke | PASS_EXPECTED | 1.4 | 12.9 |  |
+| esp32c6-drivers | PASS_EXPECTED | 1.9 | 12.9 |  |
+| eventbus-test | PASS_EXPECTED | 2.2 | 12.9 |  |
+| expr-calculator | PASS_EXPECTED | 2.1 | 12.9 |  |
+| factorial | PASS_EXPECTED | 1.5 | 12.8 |  |
+| fe310-drivers | PASS_EXPECTED | 1.8 | 12.9 |  |
+| final-batch-test | PASS_EXPECTED | 6 | 12.9 |  |
+| fork-nested | PASS_EXPECTED | 1.3 | 12.9 |  |
+| fork-reclaim | PASS_EXPECTED | 1.4 | 12.9 |  |
+| geometry-test | PASS_EXPECTED | 3 | 12.8 |  |
+| hamt-test | PASS_EXPECTED | 2 | 12.9 |  |
+| handler-smoke | FAIL_OUTPUT | 1.4 | 12.8 |  |
+| helm-full-test | PASS_COMPILE_ONLY | 2.7 | --- |  |
+| history-test | PASS_EXPECTED | 1.9 | 12.9 |  |
+| implicit-convert | PASS_EXPECTED | 1.4 | 12.9 |  |
+| infra-test | PASS_EXPECTED | 7.7 | 12.9 |  |
+| iterate-test | PASS_EXPECTED | 1.5 | 13 |  |
+| iterate-zip-test | PASS_EXPECTED | 1.4 | 12.9 |  |
+| keyboard-layout-test | PASS_EXPECTED | 4.4 | 12.9 |  |
+| kvstore-test | PASS_EXPECTED | 2.2 | 12.8 |  |
+| lang-smoke | PASS_EXPECTED | 1.6 | 12.9 |  |
+| lazy-smoke | PASS_EXPECTED | 1.6 | 12.9 |  |
+| linear-branch | PASS_EXPECTED | 1.4 | 12.9 |  |
+| linear-smoke | PASS_EXPECTED | 1.4 | 12.9 |  |
+| list-append-perf-N8-L7 | PASS_EXPECTED | 1.5 | 12.8 |  |
+| list-test | PASS_EXPECTED | 1.9 | 12.9 |  |
+| lwm2m-encode | PASS_EXPECTED | 1.6 | 12.8 |  |
+| mask-ops | PASS_EXPECTED | 1.4 | 12.9 |  |
+| matrix3-test | PASS_EXPECTED | 1.9 | 12.9 |  |
+| media-codec-test | PASS_EXPECTED | 4.1 | 12.9 |  |
+| mini-bootstrap | PASS_EXPECTED | 1.5 | 12.8 |  |
+| mqtt-encode | PASS_EXPECTED | 1.7 | 12.9 |  |
+| mqtt-packet | PASS_EXPECTED | 1.8 | 12.9 |  |
+| mutable-smoke | PASS_EXPECTED | 1.5 | 12.8 |  |
+| noise-test | PASS_EXPECTED | 1.7 | 12.8 |  |
+| nrf52840-drivers | PASS_EXPECTED | 2.5 | 12.9 |  |
+| nrf9160-drivers | PASS_EXPECTED | 2.3 | 12.9 |  |
+| ota-gate-real | PASS_EXPECTED | 1.6 | 12.9 |  |
+| ota-state-machine | PASS_EXPECTED | 9.1 | 12.9 |  |
+| ota-update | PASS_EXPECTED | 1.8 | 12.9 |  |
+| par-map | PASS_EXPECTED | 1.3 | 12.9 |  |
+| par-nested | PASS_EXPECTED | 1.4 | 12.8 |  |
+| parse-test | PASS_EXPECTED | 1.5 | 12.9 |  |
+| pipe-unique-test | PASS_EXPECTED | 1.6 | 12.9 |  |
+| prose-consistency | PASS_EXPECTED | 1.4 | 12.9 |  |
+| prose-smoke | PASS_EXPECTED | 1.4 | 12.8 |  |
+| punctual-iot | PASS_EXPECTED | 1.6 | 12.9 |  |
+| punctual-quire | PASS_EXPECTED | 2 | 12.9 |  |
+| punctual-smoke | PASS_EXPECTED | 1.3 | 12.9 |  |
+| qemu-virt-board | PASS_EXPECTED | 1.5 | 12.9 |  |
+| queue-test | PASS_EXPECTED | 1.5 | 12.8 |  |
+| rasterizer-test | PASS_EXPECTED | 2.7 | 12.9 |  |
+| raytracer-test | PASS_EXPECTED | 5.1 | 12.8 |  |
+| real-approx | PASS_EXPECTED | 1.4 | 12.9 |  |
+| real-saturating | PASS_EXPECTED | 1.4 | 12.9 |  |
+| real-trapping | PASS_EXPECTED | 1.3 | 12.9 |  |
+| record-smoke | PASS_EXPECTED | 1.6 | 12.9 |  |
+| riscv-encoder | PASS_EXPECTED | 2 | 12.9 |  |
+| riscv32c-encoder | PASS_EXPECTED | 1.8 | 12.9 |  |
+| rp2040-drivers | PASS_EXPECTED | 2.3 | 12.9 |  |
+| sensor-data | PASS_EXPECTED | 1.6 | 12.9 |  |
+| smtp-md-test | PASS_EXPECTED | 2.4 | 12.9 |  |
+| sort-test | PASS_EXPECTED | 1.5 | 12.9 |  |
+| sound-test | PASS_EXPECTED | 2.1 | 12.9 |  |
+| sprite-test | PASS_EXPECTED | 2.7 | 12.8 |  |
+| stats-wrap-test | PASS_EXPECTED | 1.9 | 12.9 |  |
+| stm32f4-drivers | PASS_EXPECTED | 2 | 12.9 |  |
+| stm32l4-drivers | PASS_EXPECTED | 1.9 | 12.9 |  |
+| stringbuilder-test | PASS_EXPECTED | 1.7 | 12.9 |  |
+| stringutils-test | PASS_EXPECTED | 1.9 | 12.8 |  |
+| suggested-width | PASS_EXPECTED | 1.4 | 12.9 |  |
+| synth-test | PASS_EXPECTED | 2.1 | 12.8 |  |
+| text-fold-indexed | PASS_EXPECTED | 1.5 | 12.9 |  |
+| textscan-test | PASS_EXPECTED | 1.4 | 13.3 |  |
+| textsearch-test | PASS_EXPECTED | 1.6 | 12.9 |  |
+| thumb2-encoder | PASS_EXPECTED | 1.7 | 12.9 |  |
+| trie-prefix-test | PASS_EXPECTED | 2.2 | 12.8 |  |
+| truetype-bridge-test | PASS_EXPECTED | 7.1 | 12.9 |  |
+| truetype-render-test | PASS_EXPECTED | 5.8 | 12.9 |  |
+| truetype-test | PASS_EXPECTED | 2.1 | 12.9 |  |
+| try-smoke | PASS_EXPECTED | 1.3 | 12.8 |  |
+| ttf-debug | PASS_EXPECTED | 2.9 | 13 |  |
+| tuple-syntax | PASS_EXPECTED | 1.5 | 12.8 |  |
+| type-checker-test | PASS_EXPECTED | 1.4 | 12.9 |  |
+| typeclass-poly | PASS_EXPECTED | 1.3 | 12.9 |  |
+| typeclass-smoke | PASS_EXPECTED | 1.6 | 12.8 |  |
+| ui-anim-test | PASS_EXPECTED | 3.2 | 12.8 |  |
+| ui-dialog-test | PASS_EXPECTED | 4.6 | 12.9 |  |
+| ui-event-test | PASS_EXPECTED | 4.5 | 12.9 |  |
+| ui-focus-test | PASS_EXPECTED | 3.1 | 12.9 |  |
+| ui-font-test | PASS_EXPECTED | 3.4 | 12.9 |  |
+| ui-icon-test | PASS_EXPECTED | 7.7 | 12.9 |  |
+| ui-layout-test | PASS_EXPECTED | 4.7 | 12.9 |  |
+| ui-scroll-test | PASS_EXPECTED | 2.3 | 12.9 |  |
+| ui-sound-test | PASS_EXPECTED | 3.1 | 14.4 |  |
+| ui-surface-test | PASS_EXPECTED | 5.8 | 12.9 |  |
+| ui-theme-test | PASS_EXPECTED | 26.2 | 12.9 |  |
+| unit-family | PASS_EXPECTED | 1.5 | 12.9 |  |
+| unit-family-mixed | PASS_EXPECTED | 1.5 | 12.9 |  |
+| unit-smoke | PASS_EXPECTED | 1.5 | 12.8 |  |
+| units-foreword | PASS_EXPECTED | 1.6 | 12.9 |  |
+| usb-msc-test | PASS_EXPECTED | 2.4 | 12.9 |  |
+| usb-test | PASS_EXPECTED | 1.8 | 12.9 |  |
+| vec-pattern | PASS_EXPECTED | 1.3 | 12.9 |  |
+| vec-reduce-add | PASS_EXPECTED | 1.3 | 12.9 |  |
+| vec-select | PASS_EXPECTED | 1.3 | 12.9 |  |
+| vector-basic | PASS_EXPECTED | 1.4 | 12.8 |  |
+| vector-f32 | PASS_EXPECTED | 1.3 | 12.9 |  |
+| vector-int | PASS_EXPECTED | 1.3 | 12.9 |  |
+| wavelet-sort-aliasing | PASS_EXPECTED | 1.5 | 12.9 |  |
+| with-timeout-test | PASS_EXPECTED | 1.3 | 12.9 |  |
+| xhci-enum-test | PASS_EXPECTED | 1.8 | 12.9 |  |

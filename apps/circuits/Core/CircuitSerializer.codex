@@ -1,0 +1,130 @@
+Chapter: CircuitSerializer
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ JSON serialization for all circuit data types. Every design artifact
+ can be saved to and loaded from JSON text via the encode foreword.
+ The serializer produces deterministic output (sorted keys, stable
+ ordering) so that content hashing is reliable.
+
+Section: Key-Value Pairs
+
+ A lightweight JSON builder that constructs JSON text incrementally.
+ We avoid pulling in the full Json foreword to keep the dependency
+ chain shallow.
+
+  json-string : Text -> Text
+  json-string (s) = "'" & s & "'"
+
+  json-int : Integer -> Text
+  json-int (n) = show n
+
+  json-bool : Integer -> Text
+  json-bool (b) = if b == 1 then "true" else "false"
+
+  json-kv-str : Text, Text -> Text
+  json-kv-str (key) (val) = json-string key & ": " & json-string val
+
+  json-kv-int : Text, Integer -> Text
+  json-kv-int (key) (val) = json-string key & ": " & json-int val
+
+  json-kv-bool : Text, Integer -> Text
+  json-kv-bool (key) (val) = json-string key & ": " & json-bool val
+
+Section: List Formatting
+
+  json-join : List Text, Text -> Text
+  json-join (items) (sep) =
+    if list-length items == 0 then ""
+    else json-join-loop items sep (list-at items 0) 1 (list-length items)
+
+  json-join-loop : List Text, Text, Text, Integer, Integer -> Text
+  json-join-loop (items) (sep) (acc) (i) (n) =
+    if i >= n then acc
+    else let item = list-at items i
+    in json-join-loop items sep (acc & sep & item) (i + 1) n
+
+  json-array : List Text -> Text
+  json-array (items) = "[" & json-join items ", " & "]"
+
+  json-object : List Text -> Text
+  json-object (fields) = "{ " & json-join fields ", " & " }"
+
+Section: Point Serialization
+
+  serialize-point : Integer, Integer -> Text
+  serialize-point (x) (y) =
+    json-object [json-kv-int "x" x, json-kv-int "y" y]
+
+Section: Net Serialization
+
+  serialize-pin-id : Text, Text -> Text
+  serialize-pin-id (ref) (num) =
+    json-object [json-kv-str "ref" ref, json-kv-str "pin" num]
+
+  serialize-net : Text, Integer, Text, List Text -> Text
+  serialize-net (name) (net-id) (net-class) (pin-texts) =
+    json-object [
+      json-kv-str "name" name,
+      json-kv-int "id" net-id,
+      json-kv-str "class" net-class,
+      json-string "pins" & ": " & json-array pin-texts
+    ]
+
+Section: Component Serialization
+
+  serialize-component-assignment : Text, Text, Text, Text -> Text
+  serialize-component-assignment (ref) (value) (footprint) (mpn) =
+    json-object [
+      json-kv-str "ref" ref,
+      json-kv-str "value" value,
+      json-kv-str "footprint" footprint,
+      json-kv-str "mpn" mpn
+    ]
+
+Section: Track Serialization
+
+  serialize-track : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  serialize-track (x1) (y1) (x2) (y2) (width) (layer) (net) =
+    json-object [
+      json-kv-int "x1" x1,
+      json-kv-int "y1" y1,
+      json-kv-int "x2" x2,
+      json-kv-int "y2" y2,
+      json-kv-int "width" width,
+      json-kv-int "layer" layer,
+      json-kv-int "net" net
+    ]
+
+Section: Via Serialization
+
+  serialize-via : Integer, Integer, Integer, Integer, Integer -> Text
+  serialize-via (x) (y) (diameter) (drill) (net) =
+    json-object [
+      json-kv-int "x" x,
+      json-kv-int "y" y,
+      json-kv-int "diameter" diameter,
+      json-kv-int "drill" drill,
+      json-kv-int "net" net
+    ]
+
+Section: Project Serialization
+
+  serialize-sheet-ref : Text, Integer, Text, Integer -> Text
+  serialize-sheet-ref (name) (sheet-id) (file) (parent) =
+    json-object [
+      json-kv-str "name" name,
+      json-kv-int "id" sheet-id,
+      json-kv-str "file" file,
+      json-kv-int "parent" parent
+    ]
+
+  serialize-project-header : Text, Text, Text, Text -> Text
+  serialize-project-header (name) (author) (company) (date) =
+    json-object [
+      json-kv-str "name" name,
+      json-kv-str "author" author,
+      json-kv-str "company" company,
+      json-kv-str "date" date,
+      json-kv-str "tool" "Codex Circuits 0.1.0"
+    ]

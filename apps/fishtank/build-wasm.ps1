@@ -86,7 +86,7 @@ Write-Host "[fishtank-wasm] bundled $($preLines.Count + $lines.Count) lines ($($
 
 # -- Phase 1: source -> IR-CCE --
 $IrFile = Join-Path $OutDir 'build-output' 'fishtank.ir'
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $bundleSrc -Out $IrFile -Log $LogFile -IrCce -Survey "check-mul:400,lower-mul:300,headroom:120" -MemMB 4096
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $bundleSrc -Out $IrFile -Log $LogFile -IrCce
 if ($LASTEXITCODE -ne 0) {
     Write-Error "FAIL: IR compile; see $LogFile"
     Get-Content $LogFile -ErrorAction SilentlyContinue | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }
@@ -113,7 +113,7 @@ $combined[$combined.Length - 1] = 0
 $vmBin = Join-Path $Repo 'tools\codex-vm.exe'
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
-$proc = Start-Process -FilePath $vmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$inputFile,'-output',$outFile,'-mem','4096','-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
+$proc = Start-Process -FilePath $vmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$inputFile,'-output',$outFile,'-mem','3072','-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
 $proc.WaitForExit(600000)
 if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force; Write-Error "FAIL: plug timeout"; exit 5 }
 

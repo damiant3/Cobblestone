@@ -66,6 +66,40 @@ Section: Function Application
      else False
     is otherwise -> False
 
+  is-simple-arg : CodegenState, IRExpr -> Boolean
+  is-simple-arg (st) (expr) =
+   when expr
+    is IrName (n) (ty) (sp) ->
+     let slot = lookup-local (st.locals) n
+     in slot >= 0 & slot < spill-base
+    is IrIntLit (v) (sp) -> True
+    is IrBoolLit (v) (sp) -> True
+    is IrBinary (op) (left) (right) (ty) (sp) ->
+     when op
+      is IrAddInt | IrSubInt ->
+       when left
+        is IrName (n) (ty2) (sp2) ->
+         let slot = lookup-local (st.locals) n
+         in if slot >= 0 & slot < spill-base then
+          when right
+           is IrIntLit (v) (s) -> v >= (0 - 2147483648) & v <= 2147483647
+           is otherwise -> False
+         else False
+        is otherwise -> False
+      is otherwise -> False
+    is otherwise -> False
+
+  all-args-simple : CodegenState, List IRExpr, Integer -> Boolean
+  all-args-simple (st) (args) (i) =
+   if i == list-length args then True
+   else if is-simple-arg st (list-at args i) then all-args-simple st args (i + 1)
+   else False
+
+  emit-simple-args-to-regs : CodegenState, List IRExpr, Integer, Integer -> CodegenState
+  emit-simple-args-to-regs (st) (args) (i) (count) =
+   if i == count then st
+   else emit-simple-args-to-regs (emit-to-local st (list-at args i) (list-at arg-regs i) False) args (i + 1) count
+
   emit-args-to-regs : CodegenState, List IRExpr, Integer, Integer -> CodegenState
   emit-args-to-regs (st) (args) (i) (count) =
    if i == count then st
@@ -85,6 +119,12 @@ Section: Function Application
    in let loc = alloc-local (r.state)
    in let st1 = store-local (loc.state) (loc.reg) (r.reg)
    in save-args-loop st1 args (i + 1) (list-push acc (loc.reg))
+
+  emit-and-push-args : CodegenState, List IRExpr, Integer -> CodegenState
+  emit-and-push-args (st) (args) (i) =
+   if i == list-length args then st
+   else let r = emit-expr (st-set-tail-pos st False) (list-at args i)
+   in emit-and-push-args (st-append-code (r.state) (push-r (r.reg))) args (i + 1)
 
   push-reg-args : CodegenState, List Integer, Integer, Integer -> CodegenState
   push-reg-args (st) (arg-locals) (i) (count) =
@@ -143,8 +183,13 @@ Section: Function Application
    let arg-count = list-length (flat.args)
    in let st3 = if arg-count == 1 then
     emit-to-local (st-set-tail-pos st False) (list-at (flat.args) 0) (list-at arg-regs 0) False
+   else if arg-count <= 6 & all-args-simple st (flat.args) 0 then
+    emit-simple-args-to-regs (st-set-tail-pos st False) (flat.args) 0 arg-count
    else if arg-count <= 4 & all-args-reg-locals (st.locals) (flat.args) 0 then
     emit-args-to-regs st (flat.args) 0 arg-count
+   else if arg-count <= 6 then
+    let st1 = emit-and-push-args (st-set-tail-pos st False) (flat.args) 0
+    in pop-to-arg-regs st1 (arg-count - 1)
    else let saved = save-args-loop (st-set-tail-pos st False) (flat.args) 0 []
    in let st1 = push-stack-args (saved.state) (saved.locals) (arg-count - 1)
    in let reg-count = if arg-count < 6 then arg-count else 6
@@ -250,17 +295,17 @@ Section: Function Application
           is IrSubInt ->
            let l = emit-expr (st-set-tail-pos st False) left
            in st-append-code (l.state) (lea target (l.reg) (0 - v))
-          is otherwise -> eval-tail-arg-standard st arg target
-        else eval-tail-arg-standard st arg target
+          is otherwise -> emit-to-local st arg target False
+        else emit-to-local st arg target False
        is IrName (n) (nty) (nsp) ->
         let slot = lookup-local (st.locals) n
         in if slot >= 0 & slot < spill-base & is-tco-binop op then
          let l = emit-expr (st-set-tail-pos st False) left
          in st-append-code (l.state) (mov-rr target (l.reg) & emit-tco-binop op target slot)
-        else eval-tail-arg-standard st arg target
-       is otherwise -> eval-tail-arg-standard st arg target
-     is otherwise -> eval-tail-arg-standard st arg target
-   else eval-tail-arg-standard st arg target
+        else emit-to-local st arg target False
+       is otherwise -> emit-to-local st arg target False
+     is otherwise -> emit-to-local st arg target False
+   else emit-to-local st arg target False
 
   is-tco-binop : IRBinaryOp -> Boolean
   is-tco-binop (op) =
@@ -365,6 +410,8 @@ Section: Function Application
         is IrAddInt -> bound-fits-i32 v
         is IrSubInt -> bound-fits-i32 v & bound-fits-i32 (0 - v)
         is IrMulInt -> bound-fits-i32 v
+        is IrDivInt -> v > 0 & bit-and v (v - 1) == 0
+        is IrRemInt -> v > 0 & bit-and v (v - 1) == 0
         is otherwise -> False
       is IrName (rn) (rt) (rs) ->
        let rslot = lookup-local (st.locals) rn
@@ -373,7 +420,14 @@ Section: Function Application
           else if rslot == target then is-commutative-tco-op op
           else True
       is otherwise -> False
-    is otherwise -> False
+    is otherwise ->
+     when right
+      is IrIntLit (v) (s) ->
+       when op
+        is IrAddInt -> bound-fits-i32 v
+        is IrSubInt -> bound-fits-i32 v & bound-fits-i32 (0 - v)
+        is otherwise -> False
+      is otherwise -> False
 
   tco-direct-count : CodegenState, List IRExpr, List Integer, Integer, Integer -> Integer
   tco-direct-count (st) (args) (param-locals) (i) (acc) =
@@ -434,14 +488,23 @@ Section: Function Application
         is IrAddInt -> st-append-code (lload.state) (lea target (lload.reg) v)
         is IrSubInt -> st-append-code (lload.state) (lea target (lload.reg) (0 - v))
         is IrMulInt -> st-append-code (lload.state) (imul-rri target (lload.reg) v)
-        is otherwise -> eval-tail-arg-standard st arg target
+        is IrDivInt -> if v > 0 & bit-and v (v - 1) == 0 then
+         let shift = int-log2 v
+         in if lload.reg == target then st-append-code (lload.state) (sar-ri target shift)
+         else st-append-code (lload.state) (mov-rr target (lload.reg) & sar-ri target shift)
+        else eval-tail-arg-standard st arg target
+        is IrRemInt -> if v > 0 & bit-and v (v - 1) == 0 then
+         if lload.reg == target then st-append-code (lload.state) (and-ri target (v - 1))
+         else st-append-code (lload.state) (mov-rr target (lload.reg) & and-ri target (v - 1))
+        else eval-tail-arg-standard st arg target
+        is otherwise -> emit-to-local st arg target False
       is IrName (rn) (rt) (rs) ->
        let rload = load-local (lload.state) (lookup-local (st.locals) rn)
        in if rload.reg == target then st-append-code (rload.state) (emit-tco-binop op target (lload.reg))
           else if lload.reg == target then st-append-code (rload.state) (emit-tco-binop op target (rload.reg))
           else st-append-code (rload.state) (mov-rr target (lload.reg) & emit-tco-binop op target (rload.reg))
-      is otherwise -> eval-tail-arg-standard st arg target
-    is otherwise -> eval-tail-arg-standard st arg target
+      is otherwise -> emit-to-local st arg target False
+    is otherwise -> emit-to-local st arg target False
 
   emit-direct-tail-arg : CodegenState, IRExpr, Integer -> CodegenState
   emit-direct-tail-arg (st) (arg) (target) =
@@ -454,7 +517,7 @@ Section: Function Application
      in if loaded.reg == target then loaded.state
         else st-append-code (loaded.state) (mov-rr target (loaded.reg))
     is IrBinary (op) (left) (right) (ty) (sp) -> emit-direct-tail-binop st arg op left right target
-    is otherwise -> eval-tail-arg-standard st arg target
+    is otherwise -> emit-to-local st arg target False
 
   eval-complex-tail-args : CodegenState, List IRExpr, List Integer, List Integer, Integer, Integer -> CodegenState
   eval-complex-tail-args (st) (args) (temp-locals) (param-locals) (i) (ci) =
@@ -485,14 +548,12 @@ Section: Function Application
    in let plan = tco-shuffle-plan st args (st.tco.param-locals)
    in let st2 = if plan.ok then
        let ci = tco-find-complex st args (st.tco.param-locals) 0
-       in if ci >= 0 & tco-find-complex st args (st.tco.param-locals) (ci + 1) < 0 & list-length (st.tco.temp-locals) == 0
+       in if ci >= 0 & tco-find-complex st args (st.tco.param-locals) (ci + 1) < 0
         then emit-tail-single-complex st args (st.tco.param-locals) (plan.order) ci
        else emit-tail-call-general-shuffle st args (st.tco.temp-locals) (st.tco.param-locals) (plan.order)
-      else if list-length (st.tco.temp-locals) == 0 then
-       st-add-error st cdx-ir-error ("tail shuffle plan failed with no temps in '" & (st.tco.current-func) & "'") (ir-expr-span func-expr)
-      else
-       let st1 = eval-tail-args st args (st.tco.temp-locals) 0
-       in copy-temps-to-params st1 (st.tco.temp-locals) (st.tco.param-locals) 0
+      else let fallback-temps = tco-ensure-temps st (st.tco.temp-locals) (list-length args)
+       in let st1 = eval-tail-args (fallback-temps.alloc-state) args (fallback-temps.alloc-locals) 0
+       in copy-temps-to-params st1 (fallback-temps.alloc-locals) (st.tco.param-locals) 0
    in let rel32 = st.tco.loop-top - (st2.code-len + 5)
    in let st3 = st-append-code st2 (jmp rel32)
    in EmitResult {

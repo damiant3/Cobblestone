@@ -1,0 +1,184 @@
+Chapter: NetlistModel
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ The electrical netlist — the graph of connectivity between component
+ pins. This is the central data structure that bridges schematic capture
+ and PCB layout. Every wire in the schematic and every trace on the
+ board ultimately references a net in this model.
+
+Section: Pin Identity
+
+ A pin is identified by its parent component reference designator and
+ its pin number or name within that component.
+
+  PinId = record {
+    pin-ref : Text,
+    pin-number : Text
+  }
+
+  pin-id : Text, Text -> PinId
+  pin-id (ref) (num) = PinId { pin-ref = ref, pin-number = num }
+
+Section: Pin Electrical Type
+
+ The electrical type of a pin determines ERC compatibility. Two output
+ pins on the same net is an error. An unconnected input is a warning.
+
+  PinElectricalType =
+    | PinInput
+    | PinOutput
+    | PinBidirectional
+    | PinTriState
+    | PinPassive
+    | PinPowerIn
+    | PinPowerOut
+    | PinOpenCollector
+    | PinOpenEmitter
+    | PinUnspecified
+
+  pin-type-name : PinElectricalType -> Text
+  pin-type-name (t) = when t
+    is PinInput -> "input"
+    is PinOutput -> "output"
+    is PinBidirectional -> "bidirectional"
+    is PinTriState -> "tri-state"
+    is PinPassive -> "passive"
+    is PinPowerIn -> "power-in"
+    is PinPowerOut -> "power-out"
+    is PinOpenCollector -> "open-collector"
+    is PinOpenEmitter -> "open-emitter"
+    is PinUnspecified -> "unspecified"
+
+Section: Net
+
+ A net is a named electrical connection between two or more pins.
+ Nets carry their net class assignment which determines DRC constraints.
+
+  Net = record {
+    net-id : Integer,
+    net-name : Text,
+    net-class : Text,
+    net-pins : List PinId
+  }
+
+  net-pin-count : Net -> Integer
+  net-pin-count (n) = list-length n.net-pins
+
+  net-is-power : Net -> Integer
+  net-is-power (n) =
+    if text-starts-with n.net-name "VCC" then 1
+    else if text-starts-with n.net-name "VDD" then 1
+    else if text-starts-with n.net-name "GND" then 1
+    else if text-starts-with n.net-name "VSS" then 1
+    else 0
+
+Section: Net Class
+
+ A net class groups nets that share electrical constraints. The DRC
+ engine uses these constraints to verify trace width, clearance,
+ impedance, and length matching.
+
+  NetClass = record {
+    nc-name : Text,
+    nc-trace-width : Integer,
+    nc-clearance : Integer,
+    nc-via-diameter : Integer,
+    nc-via-drill : Integer,
+    nc-diff-pair : Integer,
+    nc-diff-pair-gap : Integer,
+    nc-impedance : Integer,
+    nc-max-length : Integer,
+    nc-max-skew : Integer
+  }
+
+  default-net-class : NetClass
+  default-net-class = NetClass {
+    nc-name = "Default",
+    nc-trace-width = 250000,
+    nc-clearance = 200000,
+    nc-via-diameter = 800000,
+    nc-via-drill = 400000,
+    nc-diff-pair = 0,
+    nc-diff-pair-gap = 0,
+    nc-impedance = 0,
+    nc-max-length = 0,
+    nc-max-skew = 0
+  }
+
+Section: Netlist
+
+ The complete netlist for a design: all nets, all net classes, and
+ component-to-footprint assignments.
+
+  ComponentAssignment = record {
+    ca-ref : Text,
+    ca-value : Text,
+    ca-footprint : Text,
+    ca-part-number : Text
+  }
+
+  Netlist = record {
+    nl-nets : List Net,
+    nl-net-classes : List NetClass,
+    nl-components : List ComponentAssignment,
+    nl-net-count : Integer,
+    nl-component-count : Integer
+  }
+
+  empty-netlist : Netlist
+  empty-netlist = Netlist {
+    nl-nets = [],
+    nl-net-classes = [],
+    nl-components = [],
+    nl-net-count = 0,
+    nl-component-count = 0
+  }
+
+  netlist-add-net : Netlist, Net -> Netlist
+  netlist-add-net (nl) (n) = Netlist {
+    nl-nets = list-push nl.nl-nets n,
+    nl-net-classes = nl.nl-net-classes,
+    nl-components = nl.nl-components,
+    nl-net-count = nl.nl-net-count + 1,
+    nl-component-count = nl.nl-component-count
+  }
+
+  netlist-add-component : Netlist, ComponentAssignment -> Netlist
+  netlist-add-component (nl) (c) = Netlist {
+    nl-nets = nl.nl-nets,
+    nl-net-classes = nl.nl-net-classes,
+    nl-components = list-push nl.nl-components c,
+    nl-net-count = nl.nl-net-count,
+    nl-component-count = nl.nl-component-count + 1
+  }
+
+Section: Net Lookup
+
+  netlist-find-net-by-name : Netlist, Text -> Maybe Net
+  netlist-find-net-by-name (nl) (name) =
+    netlist-find-net-by-name-in nl.nl-nets name
+
+  netlist-find-net-by-name-in : List Net, Text -> Maybe Net
+  netlist-find-net-by-name-in (nets) (name) = netlist-find-net-by-name-loop nets name 0 (list-length nets)
+
+  netlist-find-net-by-name-loop : List Net, Text, Integer, Integer -> Maybe Net
+  netlist-find-net-by-name-loop (nets) (name) (i) (n) =
+    if i >= n then None
+    else let cur = list-at nets i
+    in if cur.net-name == name then Just cur
+    else netlist-find-net-by-name-loop nets name (i + 1) n
+
+  netlist-find-component : Netlist, Text -> Maybe ComponentAssignment
+  netlist-find-component (nl) (ref) =
+    netlist-find-component-in nl.nl-components ref
+
+  netlist-find-component-in : List ComponentAssignment, Text -> Maybe ComponentAssignment
+  netlist-find-component-in (comps) (ref) = netlist-find-component-loop comps ref 0 (list-length comps)
+
+  netlist-find-component-loop : List ComponentAssignment, Text, Integer, Integer -> Maybe ComponentAssignment
+  netlist-find-component-loop (comps) (ref) (i) (n) =
+    if i >= n then None
+    else let cur = list-at comps i
+    in if cur.ca-ref == ref then Just cur
+    else netlist-find-component-loop comps ref (i + 1) n

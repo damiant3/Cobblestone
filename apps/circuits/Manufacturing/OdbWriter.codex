@@ -1,0 +1,181 @@
+Chapter: OdbWriter
+  cites Foreword chapter List
+
+ ODB++ archive generation for PCB manufacturing. Produces structured
+ layer and feature data in the ODB++ format used by fabrication houses.
+ Coordinates are in nanometers internally.
+
+Section: Layer Type
+
+  OdbLayerType =
+    | OdbSignal
+    | OdbPower
+    | OdbMixed
+    | OdbSolderMask
+    | OdbSilkscreen
+    | OdbPaste
+    | OdbDrill
+
+Section: Layer Side
+
+  OdbSide =
+    | OdbTop
+    | OdbBottom
+    | OdbInner (Integer)
+    | OdbBoth
+
+Section: Layer
+
+  OdbLayer = record {
+    ol-name : Text,
+    ol-type : OdbLayerType,
+    ol-side : OdbSide,
+    ol-polarity : Text
+  }
+
+Section: Feature
+
+  OdbVertex = record {
+    ov-x : Integer,
+    ov-y : Integer
+  }
+
+  OdbFeature =
+    | OdbLine (Integer) (Integer) (Integer) (Integer) (Integer)
+    | OdbPad (Integer) (Integer) (Integer) (Text)
+    | OdbArc (Integer) (Integer) (Integer) (Integer) (Integer) (Integer) (Integer)
+    | OdbSurface (List OdbVertex)
+
+Section: Step Repeat
+
+  OdbStepRepeat = record {
+    osr-step-name : Text,
+    osr-x : Integer,
+    osr-y : Integer,
+    osr-rotation : Integer,
+    osr-mirror : Integer
+  }
+
+Section: Features Per Layer
+
+  OdbFeatureLayer = record {
+    ofl-layer-name : Text,
+    ofl-features : List OdbFeature
+  }
+
+Section: Job
+
+  OdbJob = record {
+    oj-name : Text,
+    oj-layers : List OdbLayer,
+    oj-features-per-layer : List OdbFeatureLayer,
+    oj-step-repeats : List OdbStepRepeat,
+    oj-units : Text
+  }
+
+Section: Empty Job
+
+  empty-odb-job : Text -> OdbJob
+  empty-odb-job (name) = OdbJob {
+    oj-name = name,
+    oj-layers = [],
+    oj-features-per-layer = [],
+    oj-step-repeats = [],
+    oj-units = "MM"
+  }
+
+Section: Add Layer
+
+  odb-add-layer : OdbJob, OdbLayer -> OdbJob
+  odb-add-layer (job) (layer) = OdbJob {
+    oj-name = job.oj-name,
+    oj-layers = list-push job.oj-layers layer,
+    oj-features-per-layer = job.oj-features-per-layer,
+    oj-step-repeats = job.oj-step-repeats,
+    oj-units = job.oj-units
+  }
+
+Section: Add Feature
+
+ Adds a feature to the named layer. Walks the feature-per-layer list
+ to find the matching entry; if none exists, creates a new one.
+
+  odb-update-one-fl : OdbFeatureLayer, OdbFeature -> OdbFeatureLayer
+  odb-update-one-fl (fl) (feat) = OdbFeatureLayer {
+    ofl-layer-name = fl.ofl-layer-name,
+    ofl-features = list-push fl.ofl-features feat
+  }
+
+  odb-find-feature-layer-idx : List OdbFeatureLayer, Text, Integer, Integer -> Integer
+  odb-find-feature-layer-idx (fls) (layer-name) (i) (n) =
+    if i >= n then -1
+    else let fl = list-at fls i
+    in if fl.ofl-layer-name == layer-name then i
+    else odb-find-feature-layer-idx fls layer-name (i + 1) n
+
+  odb-rebuild-feature-layers : List OdbFeatureLayer, Integer, OdbFeature, Integer, Integer, List OdbFeatureLayer -> List OdbFeatureLayer
+  odb-rebuild-feature-layers (fls) (target) (feat) (i) (n) (acc) =
+    if i >= n then acc
+    else let fl = list-at fls i
+    in if i == target then odb-rebuild-feature-layers fls target feat (i + 1) n (list-push acc (odb-update-one-fl fl feat))
+    else odb-rebuild-feature-layers fls target feat (i + 1) n (list-push acc fl)
+
+  odb-update-feature-layer : List OdbFeatureLayer, Text, OdbFeature -> List OdbFeatureLayer
+  odb-update-feature-layer (fls) (layer-name) (feat) =
+    let n = list-length fls
+    in let idx = odb-find-feature-layer-idx fls layer-name 0 n
+    in if idx == -1 then list-push fls (OdbFeatureLayer { ofl-layer-name = layer-name, ofl-features = [feat] })
+    else odb-rebuild-feature-layers fls idx feat 0 n []
+
+  odb-add-feature : OdbJob, Text, OdbFeature -> OdbJob
+  odb-add-feature (job) (layer-name) (feat) = OdbJob {
+    oj-name = job.oj-name,
+    oj-layers = job.oj-layers,
+    oj-features-per-layer = odb-update-feature-layer job.oj-features-per-layer layer-name feat,
+    oj-step-repeats = job.oj-step-repeats,
+    oj-units = job.oj-units
+  }
+
+Section: Layer Count
+
+  odb-layer-count : OdbJob -> Integer
+  odb-layer-count (job) = list-length job.oj-layers
+
+Section: Format Coordinate
+
+  odb-format-coord : Integer -> Text
+  odb-format-coord (nm) =
+    let um = nm / 1000
+    in show um
+
+Section: Feature Text
+
+ Formats a single feature into an ODB++ feature line.
+
+  odb-feature-to-text : OdbFeature -> Text
+  odb-feature-to-text (feat) = when feat
+    is OdbLine (x1) (y1) (x2) (y2) (w) ->
+      let a = "L " & (odb-format-coord x1) & " " & (odb-format-coord y1)
+      in let b = " " & (odb-format-coord x2) & " " & (odb-format-coord y2) & " " & (odb-format-coord w)
+      in a & b
+    is OdbPad (x) (y) (size) (shape) ->
+      "P " & (odb-format-coord x) & " " & (odb-format-coord y) & " " & (odb-format-coord size) & " " & shape
+    is OdbArc (cx) (cy) (x1) (y1) (x2) (y2) (w) ->
+      let a = "A " & (odb-format-coord cx) & " " & (odb-format-coord cy)
+      in let b = " " & (odb-format-coord x1) & " " & (odb-format-coord y1)
+      in let c = " " & (odb-format-coord x2) & " " & (odb-format-coord y2) & " " & (odb-format-coord w)
+      in a & b & c
+    is OdbSurface (verts) ->
+      "S " & show (list-length verts) & " vertices"
+
+Section: Layer Type Name
+
+  odb-layer-type-name : OdbLayerType -> Text
+  odb-layer-type-name (lt) = when lt
+    is OdbSignal -> "SIGNAL"
+    is OdbPower -> "POWER_GROUND"
+    is OdbMixed -> "MIXED"
+    is OdbSolderMask -> "SOLDER_MASK"
+    is OdbSilkscreen -> "SILK_SCREEN"
+    is OdbPaste -> "SOLDER_PASTE"
+    is OdbDrill -> "DRILL"
