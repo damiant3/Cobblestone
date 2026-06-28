@@ -1,0 +1,91 @@
+Chapter: ParametricSweep
+  cites Foreword chapter List
+
+ Parametric sweep analysis for circuit simulation. Varies one or
+ more component parameters across a range and collects the output
+ at each step. Used for design exploration: "what happens to gain
+ as I sweep R1 from 1K to 100K?"
+
+Section: Sweep Parameter
+
+  SweepType =
+    | SweepLinear
+    | SweepLogarithmic
+    | SweepList (List Real)
+
+  SweepParameter = record {
+    swp-element : Text,
+    swp-param : Text,
+    swp-start : Real,
+    swp-stop : Real,
+    swp-steps : Integer,
+    swp-type : SweepType
+  }
+
+Section: Sweep Config
+
+  ParametricConfig = record {
+    pc-primary : SweepParameter,
+    pc-secondary : Maybe SweepParameter,
+    pc-measure-node : Text,
+    pc-measure-type : Text,
+    pc-nested : Integer
+  }
+
+  single-sweep : Text, Text, Real, Real, Integer -> ParametricConfig
+  single-sweep (element) (param) (start) (stop) (steps) = ParametricConfig {
+    pc-primary = SweepParameter {
+      swp-element = element,
+      swp-param = param,
+      swp-start = start,
+      swp-stop = stop,
+      swp-steps = steps,
+      swp-type = SweepLinear
+    },
+    pc-secondary = None,
+    pc-measure-node = "out",
+    pc-measure-type = "voltage",
+    pc-nested = 0
+  }
+
+Section: Sweep Result
+
+  SweepDataPoint = record {
+    sdp-primary-value : Real,
+    sdp-secondary-value : Real,
+    sdp-result : Real
+  }
+
+  ParametricResult = record {
+    pr-config : ParametricConfig,
+    pr-points : List SweepDataPoint,
+    pr-point-count : Integer,
+    pr-min-result : Real,
+    pr-max-result : Real,
+    pr-completed : Integer
+  }
+
+  empty-parametric-result : ParametricConfig -> ParametricResult
+  empty-parametric-result (cfg) = ParametricResult {
+    pr-config = cfg,
+    pr-points = [],
+    pr-point-count = 0,
+    pr-min-result = 999999999.0,
+    pr-max-result = -999999999.0,
+    pr-completed = 0
+  }
+
+  parametric-add-point : ParametricResult, SweepDataPoint -> ParametricResult
+  parametric-add-point (r) (p) = ParametricResult {
+    pr-config = r.pr-config,
+    pr-points = list-push r.pr-points p,
+    pr-point-count = r.pr-point-count + 1,
+    pr-min-result = r.pr-min-result,
+    pr-max-result = r.pr-max-result,
+    pr-completed = r.pr-completed
+  }
+
+  parametric-summary : ParametricResult -> Text
+  parametric-summary (r) =
+    let a = "Parametric sweep: " & r.pr-config.pc-primary.swp-element & "." & r.pr-config.pc-primary.swp-param
+    in a & " (" & (show r.pr-point-count) & " points)" & " -> " & r.pr-config.pc-measure-node

@@ -1,0 +1,73 @@
+Chapter: InputSystem
+  cites Foreword chapter List
+
+ Mouse and keyboard input for the Circuits app.
+ Mouse via I/O ports 0xE1-0xE4 (absolute coordinates, no capture needed).
+ Keyboard via GPA 28680 (scan code byte).
+
+Section: Constants
+
+  kb-addr : Integer = 28680
+
+Section: Types
+
+  InputState = record {
+    in-mx : Integer,
+    in-my : Integer,
+    in-dx : Integer,
+    in-dy : Integer,
+    in-left : Integer,
+    in-right : Integer,
+    in-middle : Integer,
+    in-key : Integer,
+    in-max-x : Integer,
+    in-max-y : Integer
+  }
+
+Section: Construction
+
+  input-new : Integer, Integer -> InputState
+  input-new (w) (h) = InputState {
+    in-mx = w / 2,
+    in-my = h / 2,
+    in-dx = 0,
+    in-dy = 0,
+    in-left = 0,
+    in-right = 0,
+    in-middle = 0,
+    in-key = 0,
+    in-max-x = w - 1,
+    in-max-y = h - 1
+  }
+
+Section: Input Polling
+
+  input-poll : InputState -> InputState
+  input-poll (st) =
+    let dummy = port-in-byte 96
+    in let sc = peek-byte kb-addr 0
+    in let ck = if sc /= 0 then poke-byte kb-addr 0 0 else 0
+    in let has-mouse = port-in-byte #E4
+    in let btn = if has-mouse > 0 then port-in-byte #E1 else 0
+    in let abs-x = if has-mouse > 0 then port-in-16 #E2 else st.in-mx
+    in let abs-y = if has-mouse > 0 then port-in-16 #E3 else st.in-my
+    in let mx = input-clamp abs-x 0 (st.in-max-x)
+    in let my = input-clamp abs-y 0 (st.in-max-y)
+    in let ignore = ck
+    in InputState {
+      in-mx = mx,
+      in-my = my,
+      in-dx = mx - st.in-mx,
+      in-dy = my - st.in-my,
+      in-left = if bit-and btn 1 > 0 then 1 else 0,
+      in-right = if bit-and btn 2 > 0 then 1 else 0,
+      in-middle = if bit-and btn 4 > 0 then 1 else 0,
+      in-key = sc,
+      in-max-x = st.in-max-x,
+      in-max-y = st.in-max-y
+    }
+
+Section: Helpers
+
+  input-clamp : Integer, Integer, Integer -> Integer
+  input-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v

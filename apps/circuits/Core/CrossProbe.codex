@@ -1,0 +1,170 @@
+Chapter: CrossProbe
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Cross-probing between schematic and PCB editors. When a user clicks
+ a component in the schematic, the PCB editor highlights and centers
+ on the corresponding footprint, and vice versa. Also supports
+ net highlighting across both views.
+
+Section: Probe Target
+
+  ProbeTarget =
+    | ProbeComponent (Text)
+    | ProbeNet (Integer)
+    | ProbePin (Text) (Text)
+    | ProbeTrack (Integer)
+    | ProbeVia (Integer)
+    | ProbePad (Text) (Text)
+    | ProbeZone (Integer)
+    | ProbeSheet (Integer)
+    | ProbeNone
+
+  probe-target-description : ProbeTarget -> Text
+  probe-target-description (t) = when t
+    is ProbeComponent (ref) -> "Component " & ref
+    is ProbeNet (id) -> "Net " & (show id)
+    is ProbePin (ref) (pin) -> ref & " pin " & pin
+    is ProbeTrack (idx) -> "Track " & (show idx)
+    is ProbeVia (idx) -> "Via " & (show idx)
+    is ProbePad (ref) (pad) -> ref & " pad " & pad
+    is ProbeZone (idx) -> "Zone " & (show idx)
+    is ProbeSheet (id) -> "Sheet " & (show id)
+    is ProbeNone -> "None"
+
+Section: Probe Event
+
+  ProbeSource =
+    | SourceSchematic
+    | SourcePcb
+    | SourceBoardViewer
+    | SourceNetlist
+    | SourceBom
+
+  ProbeEvent = record {
+    pe-source : ProbeSource,
+    pe-target : ProbeTarget,
+    pe-center-view : Integer,
+    pe-highlight : Integer,
+    pe-select : Integer
+  }
+
+  probe-component : ProbeSource, Text -> ProbeEvent
+  probe-component (src) (ref) = ProbeEvent {
+    pe-source = src,
+    pe-target = ProbeComponent ref,
+    pe-center-view = 1,
+    pe-highlight = 1,
+    pe-select = 1
+  }
+
+  probe-net : ProbeSource, Integer -> ProbeEvent
+  probe-net (src) (net-id) = ProbeEvent {
+    pe-source = src,
+    pe-target = ProbeNet net-id,
+    pe-center-view = 0,
+    pe-highlight = 1,
+    pe-select = 0
+  }
+
+Section: Cross-Probe State
+
+  CrossProbeState = record {
+    cps-active-probe : ProbeTarget,
+    cps-highlighted-net : Integer,
+    cps-highlighted-refs : List Text,
+    cps-history : List ProbeEvent,
+    cps-history-depth : Integer
+  }
+
+  empty-cross-probe : CrossProbeState
+  empty-cross-probe = CrossProbeState {
+    cps-active-probe = ProbeNone,
+    cps-highlighted-net = -1,
+    cps-highlighted-refs = [],
+    cps-history = [],
+    cps-history-depth = 0
+  }
+
+  cross-probe-apply : CrossProbeState, ProbeEvent -> CrossProbeState
+  cross-probe-apply (st) (ev) =
+    let new-net = when ev.pe-target
+      is ProbeNet (id) -> id
+      is otherwise -> st.cps-highlighted-net
+    in let new-refs = when ev.pe-target
+      is ProbeComponent (ref) -> [ref]
+      is ProbePin (ref) (pin) -> [ref]
+      is ProbePad (ref) (pad) -> [ref]
+      is otherwise -> st.cps-highlighted-refs
+    in CrossProbeState {
+      cps-active-probe = ev.pe-target,
+      cps-highlighted-net = new-net,
+      cps-highlighted-refs = new-refs,
+      cps-history = list-push st.cps-history ev,
+      cps-history-depth = st.cps-history-depth + 1
+    }
+
+  cross-probe-clear : CrossProbeState -> CrossProbeState
+  cross-probe-clear (st) = CrossProbeState {
+    cps-active-probe = ProbeNone,
+    cps-highlighted-net = -1,
+    cps-highlighted-refs = [],
+    cps-history = st.cps-history,
+    cps-history-depth = st.cps-history-depth
+  }
+
+Section: Component Location Lookup
+
+ Given a component reference, find its location in the schematic
+ (sheet + x/y) or PCB (x/y/layer). These are stubs that return
+ coordinates — the real implementation walks the design data.
+
+  SchematicLocation = record {
+    sl-sheet-id : Integer,
+    sl-x : Integer,
+    sl-y : Integer
+  }
+
+  PcbLocation = record {
+    pl-x : Integer,
+    pl-y : Integer,
+    pl-layer : Integer,
+    pl-rotation : Integer
+  }
+
+  CrossRefEntry = record {
+    cre-ref : Text,
+    cre-schematic-loc : Maybe SchematicLocation,
+    cre-pcb-loc : Maybe PcbLocation
+  }
+
+  CrossRefTable = record {
+    crt-entries : List CrossRefEntry,
+    crt-count : Integer
+  }
+
+  empty-cross-ref-table : CrossRefTable
+  empty-cross-ref-table = CrossRefTable {
+    crt-entries = [],
+    crt-count = 0
+  }
+
+  cross-ref-add : CrossRefTable, CrossRefEntry -> CrossRefTable
+  cross-ref-add (tbl) (entry) = CrossRefTable {
+    crt-entries = list-push tbl.crt-entries entry,
+    crt-count = tbl.crt-count + 1
+  }
+
+  cross-ref-find : CrossRefTable, Text -> Maybe CrossRefEntry
+  cross-ref-find (tbl) (ref) =
+    cross-ref-find-in tbl.crt-entries ref
+
+  cross-ref-find-in : List CrossRefEntry, Text -> Maybe CrossRefEntry
+  cross-ref-find-in (entries) (ref) = cross-ref-find-in-loop entries ref 0 (list-length entries)
+
+  cross-ref-find-in-loop : List CrossRefEntry, Text, Integer, Integer -> Maybe CrossRefEntry
+  cross-ref-find-in-loop (entries) (ref) (i) (n) =
+    if i >= n then None
+    else let e = list-at entries i
+    in if e.cre-ref == ref then Just e
+    else cross-ref-find-in-loop entries ref (i + 1) n

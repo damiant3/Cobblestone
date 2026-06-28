@@ -59,9 +59,22 @@ Section: Network Session
     }
 
 Section: Frame Wrapping
+  tcp-pseudo-header : List Integer, List Integer, Integer -> List Integer
+  tcp-pseudo-header (src-ip) (dst-ip) (tcp-len) =
+    src-ip & dst-ip & [0, 6] & write-be16 tcp-len
+
+  tcp-with-checksum : List Integer, List Integer, List Integer -> List Integer
+  tcp-with-checksum (tcp-bytes) (src-ip) (dst-ip) =
+    let tcp-len = list-length tcp-bytes
+    in let pseudo = tcp-pseudo-header src-ip dst-ip tcp-len
+    in let padded = if bit-and tcp-len 1 == 1 then pseudo & tcp-bytes & [0] else pseudo & tcp-bytes
+    in let cksum = ip-checksum padded 0 (list-length padded) 0
+    in list-set-at (list-set-at tcp-bytes 16 (bit-shru cksum 8)) 17 (bit-and cksum 255)
+
   wrap-tcp-in-ip-eth : NetSession, List Integer, List Integer -> List Integer
   wrap-tcp-in-ip-eth (sess) (tcp-bytes) (dst-mac) =
-    let ip-pkt = ip-build-packet (sess.local-ip) (sess.conn.remote-ip) ip-proto-tcp tcp-bytes
+    let tcp-ck = tcp-with-checksum tcp-bytes (sess.local-ip) (sess.conn.remote-ip)
+    in let ip-pkt = ip-build-packet (sess.local-ip) (sess.conn.remote-ip) ip-proto-tcp tcp-ck
     in eth-build-frame dst-mac (sess.local-mac) eth-type-ipv4 ip-pkt
 
   resolve-dst-mac : NetSession -> List Integer

@@ -2191,7 +2191,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
             SetWindowPos(vga_hwnd, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER);
             char title[64];
-            sprintf(title, "Codex VM — %dx%d", gop_width, gop_height);
+            sprintf(title, "Codex VM - %dx%d", gop_width, gop_height);
             SetWindowTextA(vga_hwnd, title);
         }
         fprintf(stderr, "GOP: SetMode %d → %dx%d fb=0x%llx\n", mode_num, gop_width, gop_height, GOP_FB_ADDR);
@@ -2241,6 +2241,7 @@ static volatile int vga_running = 1;
 static const char *screenshot_path = NULL;
 static int screenshot_delay_ms = 3000;
 static int gpu_frame_count = 0;
+static volatile int gpu_frame_ready = 0;
 static int gpu_last_tri_count = 0;
 static float gpu_light[3] = {0, 0, -1};
 static float gpu_eye[3] = {0, 0, -1};
@@ -2412,7 +2413,7 @@ static DWORD WINAPI vga_thread(LPVOID param) {
     RegisterClassA(&wc);
     int win_w = gop_active ? gop_width : VGA_WIN_W;
     int win_h = gop_active ? gop_height : VGA_WIN_H;
-    const char *title = gop_active ? "Codex Spark" : "Codex VM";
+    const char *title = gop_active ? "Codex VM - GOP" : "Codex VM";
     RECT r = {0, 0, win_w, win_h};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     vga_hwnd = CreateWindowA("CodexVmVGA", title,
@@ -4186,13 +4187,14 @@ static void create_vm(size_t mem_mb) {
     guest_mem = VirtualAlloc(NULL, guest_mem_size, MEM_RESERVE, PAGE_READWRITE);
     if (!guest_mem) die("VirtualAlloc(reserve)");
 
-    /* Commit and map in 2MB chunks.  Pre-commit the first 8MB (low memory,
-       page tables, kernel load area, serial ring) and the top 2MB (stack).
+    /* Commit and map in 2MB chunks.  Pre-commit the first 32MB (low memory,
+       page tables, kernel load area, serial ring, UEFI PE load area at
+       0x1000000) and the top 2MB (stack).
        The main loop commits additional chunks on demand when the guest
        touches unmapped GPA ranges. */
     {
         size_t chunk = 2ULL * 1024 * 1024;
-        size_t pre_lo = 16ULL * 1024 * 1024;
+        size_t pre_lo = 32ULL * 1024 * 1024;
         if (pre_lo > guest_mem_size) pre_lo = guest_mem_size;
         if (!VirtualAlloc(guest_mem, pre_lo, MEM_COMMIT, PAGE_READWRITE))
             die("VirtualAlloc(commit low)");
@@ -4246,14 +4248,18 @@ static void create_vm(size_t mem_mb) {
         if (!gop_fb) gop_fb = (unsigned char *)calloc(1, GOP_FB_SIZE);
         size_t fb_bytes = (size_t)gop_width * gop_height * 4;
         size_t fb_pages = (fb_bytes + 4095) & ~(size_t)4095;
-        if (GOP_FB_ADDR + fb_pages <= guest_mem_size) {
-            if (!VirtualAlloc((unsigned char *)guest_mem + GOP_FB_ADDR, fb_pages, MEM_COMMIT, PAGE_READWRITE))
-                die("VirtualAlloc(commit GOP FB)");
-            hr = WHvMapGpaRange(partition, (unsigned char *)guest_mem + GOP_FB_ADDR,
-                GOP_FB_ADDR, fb_pages,
+        /* Commit GPU command buffer + depth buffer + GOP framebuffer */
+        size_t gpu_region_start = 0xBE000000ULL;
+        size_t gpu_region_end = GOP_FB_ADDR + fb_pages;
+        size_t gpu_region_size = gpu_region_end - gpu_region_start;
+        if (gpu_region_end <= guest_mem_size) {
+            if (!VirtualAlloc((unsigned char *)guest_mem + gpu_region_start, gpu_region_size, MEM_COMMIT, PAGE_READWRITE))
+                die("VirtualAlloc(commit GPU region)");
+            hr = WHvMapGpaRange(partition, (unsigned char *)guest_mem + gpu_region_start,
+                gpu_region_start, gpu_region_size,
                 WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
-            if (FAILED(hr)) fprintf(stderr, "WARNING: WHvMapGpaRange(GOP FB): 0x%lx\n", hr);
-            memset((unsigned char *)guest_mem + GOP_FB_ADDR, 0, fb_bytes);
+            if (FAILED(hr)) fprintf(stderr, "WARNING: WHvMapGpaRange(GPU region): 0x%lx\n", hr);
+            memset((unsigned char *)guest_mem + gpu_region_start, 0, gpu_region_size);
         }
         fprintf(stderr, "GOP: %dx%d framebuffer at 0x%llx\n", gop_width, gop_height, (unsigned long long)GOP_FB_ADDR);
     }
@@ -4808,6 +4814,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         }
         /* Debug exit */
         else if (port == 0xF4) {
+            fprintf(stderr, "DEBUG EXIT: val=%d RIP=0x%llx\n", val, (unsigned long long)ctx->VpContext.Rip);
             debug_exit_code = val;
         }
         /* NE2000 NIC (0x300-0x31F) */
@@ -4995,11 +5002,15 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         else if (port >= 0x2F8 && port <= 0x2FF) {
             if (port == 0x2FD) {
                 int eof_ready = 0;
-                if (input_file && guest_mem) {
-                    unsigned long long wpos = *(unsigned long long *)((unsigned char *)guest_mem + 28704);
-                    unsigned long long rpos = *(unsigned long long *)((unsigned char *)guest_mem + 28712);
-                    int all_fed = !input_overflow || input_overflow_pos >= input_overflow_len;
-                    if (wpos > 0 && rpos >= wpos && all_fed) eof_ready = 1;
+                if (guest_mem) {
+                    if (!input_file) {
+                        eof_ready = 1;
+                    } else {
+                        unsigned long long wpos = *(unsigned long long *)((unsigned char *)guest_mem + 28704);
+                        unsigned long long rpos = *(unsigned long long *)((unsigned char *)guest_mem + 28712);
+                        int all_fed = !input_overflow || input_overflow_pos >= input_overflow_len;
+                        if (wpos > 0 && rpos >= wpos && all_fed) eof_ready = 1;
+                    }
                 }
                 result = eof_ready ? 0x61 : 0x60;
             }
@@ -5282,6 +5293,7 @@ static int try_inject_serial_interrupt(void) {
 #define GPU_DEPTH_FAR  999999
 
 static void gpu_clear_fb(int color) {
+    gpu_frame_ready = 0;
     if (!gop_active || GOP_FB_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
     unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
     int total = gop_width * gop_height;
@@ -5742,6 +5754,7 @@ static void gpu_rasterize_triangles(int count) {
         SetEvent(gpu_start_events[i]);
     }
     WaitForMultipleObjects(gpu_thread_count, done_events, TRUE, INFINITE);
+    gpu_frame_ready = 1;
 }
 
 static unsigned char *glow_dist = NULL;
@@ -5802,8 +5815,8 @@ static void sync_shadow_buffers(void) {
     if (VGA_BASE + sizeof(shadow_vga) <= guest_mem_size)
         memcpy(shadow_vga, (unsigned char *)guest_mem + VGA_BASE, sizeof(shadow_vga));
 
-    /* Copy GOP framebuffer */
-    if (gop_active && gop_width > 0 && gop_height > 0) {
+    /* Copy GOP framebuffer only after a complete frame is rasterized */
+    if (gop_active && gop_width > 0 && gop_height > 0 && gpu_frame_ready) {
         size_t fb_bytes = (size_t)gop_width * gop_height * 4;
         if (!shadow_gop) shadow_gop = (unsigned char *)calloc(1, GOP_FB_SIZE);
         if (shadow_gop && GOP_FB_ADDR + fb_bytes <= guest_mem_size) {
@@ -5923,7 +5936,16 @@ int main(int argc, char **argv) {
 
     /* Write RAM size to ram-size-addr (GPA 0xFE8 = 4072).
        The guest __start reads this to set RSP = ram_size (stack at top of RAM). */
-    *(unsigned long long *)((unsigned char *)guest_mem + 0xFE8) = guest_mem_size;
+    {
+        /* Cap reported RAM so guest stack (at RAM top) stays below GPU/GOP region.
+           GPU cmd buffer=0xBE000000, depth=0xBE800000, GOP fb=0xBF000000.
+           Guest RSP starts at reported RAM size and grows DOWN — must not overlap. */
+        unsigned long long effective = guest_mem_size;
+        if (effective > GPU_CMD_ADDR)
+            effective = GPU_CMD_ADDR;
+        fprintf(stderr, "RAM cap: guest_mem_size=0x%llx effective=0x%llx gop=%d\n", guest_mem_size, effective, gop_active);
+        *(unsigned long long *)((unsigned char *)guest_mem + 0xFE8) = effective;
+    }
 
     /* Write GOP resolution to GPA 0x7C4/0x7C8 so guests can read display size. */
     if (gop_active) {
@@ -6140,7 +6162,15 @@ int main(int argc, char **argv) {
         case WHvRunVpExitReasonX64MsrAccess:
             handle_msr(&ctx, ctx.MsrAccess.AccessInfo.IsWrite);
             break;
-        case WHvRunVpExitReasonX64Halt:
+        case WHvRunVpExitReasonX64Halt: {
+            WHV_REGISTER_NAME hrn[] = {WHvX64RegisterRip, WHvX64RegisterRsp, WHvX64RegisterR10};
+            WHV_REGISTER_VALUE hrv[3];
+            WHvGetVirtualProcessorRegisters(partition, 0, hrn, 3, hrv);
+            {
+                const char *fn = "?";
+                /* Quick symbol lookup */
+                /* HLT debug output removed — floods console at 500+ FPS, blocks Win32 message pump */
+            }
             if (uefi_mode && ctx.VpContext.Rip >= UEFI_TRAP_PAGE && ctx.VpContext.Rip < UEFI_TRAP_PAGE + 0x1000) {
                 int r = uefi_handle_trap(&ctx);
                 if (r == 2) goto done;
@@ -6168,6 +6198,7 @@ int main(int argc, char **argv) {
                 goto done;
             }
             break;
+        }
         case WHvRunVpExitReasonX64InterruptWindow:
             window_registered = 0;
             /* Fall through to post-exit logic which will inject */
@@ -6175,6 +6206,7 @@ int main(int argc, char **argv) {
         case WHvRunVpExitReasonException: {
             int vec = ctx.VpException.ExceptionType;
             unsigned long long exc_rip = ctx.VpContext.Rip;
+            fprintf(stderr, "EXC: vec=%d RIP=0x%llx exits=%llu\n", vec, exc_rip, exits);
             if (vec == 1 || vec == 3) {
                 /* #DB (single-step) or #BP (INT3 breakpoint) */
                 if (vec == 1) {
@@ -6454,7 +6486,7 @@ int main(int argc, char **argv) {
                     if (smp_cores > 1) {
                         unsigned int *tc = (unsigned int *)((unsigned char *)guest_mem + 28672);
                         (*tc)++;
-                        fprintf(stderr, "TICK-BUMP: tc=%u exits=%llu\n", *tc, exits);
+                        /* TICK-BUMP debug removed */
                         WHV_REGISTER_NAME clr_name = WHvRegisterInternalActivityState;
                         WHV_REGISTER_VALUE clr_val;
                         memset(&clr_val, 0, sizeof(clr_val));
@@ -6481,13 +6513,17 @@ int main(int argc, char **argv) {
         if (exits % 10 == 0) { nat_poll_rx(); if (portfwd_count > 0) portfwd_poll(); ne2k_inject_rx(); }
 
         /* Drip-feed input and set stdin-eof when fully consumed */
-        if (input_file && guest_mem) {
-            input_drip_feed();
-            unsigned long long wpos = *(unsigned long long *)((unsigned char *)guest_mem + 28704);
-            unsigned long long rpos = *(unsigned long long *)((unsigned char *)guest_mem + 28712);
-            int all_fed = !input_overflow || input_overflow_pos >= input_overflow_len;
-            if (wpos > 0 && rpos >= wpos && all_fed)
+        if (guest_mem) {
+            if (input_file) {
+                input_drip_feed();
+                unsigned long long wpos = *(unsigned long long *)((unsigned char *)guest_mem + 28704);
+                unsigned long long rpos = *(unsigned long long *)((unsigned char *)guest_mem + 28712);
+                int all_fed = !input_overflow || input_overflow_pos >= input_overflow_len;
+                if (wpos > 0 && rpos >= wpos && all_fed)
+                    *(unsigned long long *)((unsigned char *)guest_mem + 28920) = 1ULL;
+            } else {
                 *(unsigned long long *)((unsigned char *)guest_mem + 28920) = 1ULL;
+            }
         }
 
         /* Screenshot timer */
@@ -6500,6 +6536,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "DIAG: frames=%d elapsed=%.0fms fps=%.1f tris/frame=%d slices=%d stacks=%d\n",
                     gpu_frame_count, elapsed_ms, fps, gpu_last_tri_count,
                     0, 0);
+                sync_shadow_buffers();
                 save_screenshot_bmp(screenshot_path);
                 debug_exit_code = 0;
                 goto done;
@@ -6546,5 +6583,7 @@ done:
     if (ide.data) free(ide.data);
     if (guest_mem) { VirtualFree(guest_mem, 0, MEM_RELEASE); guest_mem = NULL; }
     WSACleanup();
-    return (debug_exit_code >= 0) ? (debug_exit_code << 1) | 1 : 0;
+    int rc = (debug_exit_code >= 0) ? (debug_exit_code << 1) | 1 : 0;
+    fprintf(stderr, "FINAL: debug_exit_code=%d process_exit=%d\n", debug_exit_code, rc);
+    return rc;
 }

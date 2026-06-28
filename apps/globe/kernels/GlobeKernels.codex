@@ -1,0 +1,292 @@
+Chapter: GlobeKernels
+  cites Gpu chapter DeviceEffect
+
+ GPU kernels for globe rendering. One thread per pixel.
+ Camera params passed as fixed-point integers (x1000).
+ Texture as byte array. Framebuffer as 32-bit ARGB integers.
+
+Section: Device Math Stubs
+
+ These names are recognized by the PTX emitter and replaced with
+ hardware instructions. The stub bodies never execute.
+
+  cordic-sin : Real -> Real
+  cordic-sin (x) = x
+
+  cordic-cos : Real -> Real
+  cordic-cos (x) = x
+
+  real-sqrt : Real -> Real
+  real-sqrt (x) = x
+
+  real-abs : Real -> Real
+  real-abs (x) = x
+
+  real-min : Real, Real -> Real
+  real-min (a) (b) = a
+
+  real-max : Real, Real -> Real
+  real-max (a) (b) = a
+
+Section: Root
+
+  opening : [Device] Integer
+  opening = act
+    a <- earth-pixel 0 0 0 0 0 0 0 0
+    b <- bh-pixel 0 0 0 0 0
+    a + b
+  end
+
+Section: Earth Kernel
+
+  earth-pixel : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  earth-pixel (framebuf) (tex) (params) (tw) (th) (w) (h) (gid) = act
+    i-aspect <- device-load params 0
+    i-zoom <- device-load params 1
+    i-cam-pitch <- device-load params 2
+    i-earth-yaw <- device-load params 3
+    i-earth-pitch <- device-load params 4
+    i-sun-x <- device-load params 5
+    i-sun-y <- device-load params 6
+    i-sun-z <- device-load params 7
+    let px = gid - (gid / w) * w
+    in let py = gid / w
+    in let aspect = __int-to-real i-aspect / 1000.0
+    in let zoom = __int-to-real i-zoom / 1000.0
+    in let cam-pitch = __int-to-real i-cam-pitch / 1000.0
+    in let earth-yaw = __int-to-real i-earth-yaw / 1000.0
+    in let earth-pitch = __int-to-real i-earth-pitch / 1000.0
+    in let sun-x = __int-to-real i-sun-x / 1000.0
+    in let sun-y = __int-to-real i-sun-y / 1000.0
+    in let sun-z = __int-to-real i-sun-z / 1000.0
+    in let ndx = (__int-to-real px / __int-to-real w - 0.5) * 2.0 * aspect
+    in let ndy = (0.5 - __int-to-real py / __int-to-real h) * 2.0
+    in let rlen = real-sqrt (ndx * ndx + ndy * ndy + 1.0)
+    in let rdx = ndx / rlen
+    in let rdy = ndy / rlen
+    in let rdz = 1.0 / rlen
+    in let cos-cp = cordic-cos cam-pitch
+    in let sin-cp = cordic-sin cam-pitch
+    in let dx = rdx
+    in let dy = cos-cp * rdy - sin-cp * rdz
+    in let dz = sin-cp * rdy + cos-cp * rdz
+    in let neg-zoom = 0.0 - zoom
+    in let oy = 0.0 - sin-cp * neg-zoom
+    in let oz = cos-cp * neg-zoom
+    in let b = 2.0 * (oy * dy + oz * dz)
+    in let c = oy * oy + oz * oz - 1.0
+    in let disc = b * b - 4.0 * c
+    in let t = if disc < 0.0 then 0.0 - 1.0 else let tv = (0.0 - b - real-sqrt disc) / 2.0 in if tv > 0.001 then tv else 0.0 - 1.0
+    in if t > 0.001 then
+      let hx = t * dx
+      in let hy = oy + t * dy
+      in let hz = oz + t * dz
+      in let cos-ey = cordic-cos earth-yaw
+      in let sin-ey = cordic-sin earth-yaw
+      in let cos-ep = cordic-cos earth-pitch
+      in let sin-ep = cordic-sin earth-pitch
+      in let ry = cos-ep * hy - sin-ep * hz
+      in let rz = sin-ep * hy + cos-ep * hz
+      in let gx = cos-ey * hx + sin-ey * rz
+      in let gy = ry
+      in let gz = 0.0 - sin-ey * hx + cos-ey * rz
+      in let lat = asin-approx gy
+      in let lon = atan2-approx gx gz
+      in let pi = 3.14159265358979
+      in let u = 1.0 - (lon / pi + 1.0) * 0.5
+      in let v = 0.5 - lat / pi
+      in let tx-raw = __real-to-int (u * __int-to-real tw)
+      in let tx-idx = tx-raw - (tx-raw / tw) * tw
+      in let ty-idx = clamp-int (__real-to-int (v * __int-to-real th)) 0 (th - 1)
+      in let ti = (ty-idx * tw + tx-idx) * 3
+      in earth-shade-pixel framebuf tex gid ti hx hy hz sun-x sun-y sun-z
+    else let miss = real-sqrt (real-max 0.0 (c + 1.0 - b * b / 4.0)) - 1.0
+      in earth-sky-pixel framebuf gid miss
+  end
+
+  earth-shade-pixel : Integer, Integer, Integer, Integer, Real, Real, Real, Real, Real, Real -> [Device] Integer
+  earth-shade-pixel (framebuf) (tex) (gid) (ti) (hx) (hy) (hz) (sx) (sy) (sz) = act
+    tr <- device-load tex ti
+    tg <- device-load tex (ti + 1)
+    tb <- device-load tex (ti + 2)
+    let dot = hx * sx + hy * sy + hz * sz
+    in let sun = real-max 0.0 dot
+    in let diff = 0.12 + sun * 1.3
+    in let rim = real-sqrt (hx * hx + hy * hy)
+    in let atmo = rim * rim * rim * 0.6
+    in let cr = clamp-int (__real-to-int (__int-to-real tr * diff + atmo * 70.0)) 0 255
+    in let cg = clamp-int (__real-to-int (__int-to-real tg * diff + atmo * 130.0)) 0 255
+    in let cb = clamp-int (__real-to-int (__int-to-real tb * diff + atmo * 255.0)) 0 255
+    in let pixel = cr * 65536 + cg * 256 + cb + 255 * 16777216
+    in device-store framebuf gid pixel
+  end
+
+  earth-sky-pixel : Integer, Integer, Real -> [Device] Integer
+  earth-sky-pixel (framebuf) (gid) (miss) =
+    let glow = real-max 0.0 (1.0 - miss * 12.0)
+    in let g2 = glow * glow
+    in let cr = clamp-int (__real-to-int (g2 * 25.0)) 0 255
+    in let cg = clamp-int (__real-to-int (g2 * 50.0)) 0 255
+    in let cb = clamp-int (__real-to-int (g2 * 160.0)) 0 255
+    in let pixel = cr * 65536 + cg * 256 + cb + 255 * 16777216
+    in device-store framebuf gid pixel
+
+Section: Black Hole Ray March
+
+  bh-pixel : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bh-pixel (framebuf) (params) (w) (h) (gid) = act
+    i-aspect <- device-load params 0
+    i-zoom <- device-load params 1
+    i-cam-pitch <- device-load params 2
+    i-cam-yaw <- device-load params 3
+    i-bh-time <- device-load params 4
+    let px = gid - (gid / w) * w
+    in let py = gid / w
+    in let aspect = __int-to-real i-aspect / 1000.0
+    in let zoom = __int-to-real i-zoom / 1000.0
+    in let cp = __int-to-real i-cam-pitch / 1000.0
+    in let cy = __int-to-real i-cam-yaw / 1000.0
+    in let time = __int-to-real i-bh-time / 1000.0
+    in let ndx = (__int-to-real px / __int-to-real w - 0.5) * 2.0 * aspect
+    in let ndy = (0.5 - __int-to-real py / __int-to-real h) * 2.0
+    in let rlen = real-sqrt (ndx * ndx + ndy * ndy + 5.76)
+    in let rdx = ndx / rlen
+    in let rdy = ndy / rlen
+    in let rdz = 2.4 / rlen
+    in let cos-y = cordic-cos cy
+    in let sin-y = cordic-sin cy
+    in let cos-p = cordic-cos cp
+    in let sin-p = cordic-sin cp
+    in let d1x = cos-y * rdx + sin-y * rdz
+    in let d1z = 0.0 - sin-y * rdx + cos-y * rdz
+    in let vx = d1x
+    in let vy = cos-p * rdy - sin-p * d1z
+    in let vz = sin-p * rdy + cos-p * d1z
+    in let neg-zoom = 0.0 - zoom
+    in let o1x = sin-y * neg-zoom
+    in let o1z = cos-y * neg-zoom
+    in let posX = o1x
+    in let posY = 0.0 - sin-p * o1z
+    in let posZ = cos-p * o1z
+    in bh-march framebuf gid posX posY posZ vx vy vz time 0 0.0 0.0 0.0 0.0
+  end
+
+  bh-march : Integer, Integer, Real, Real, Real, Real, Real, Real, Real, Integer, Real, Real, Real, Real -> [Device] Integer
+  bh-march (framebuf) (gid) (px) (py) (pz) (vx) (vy) (vz) (time) (step) (cr) (cg) (cb) (opacity) =
+    if step >= 250 then bh-write framebuf gid cr cg cb opacity vx vy vz
+    else if opacity > 0.99 then bh-write framebuf gid cr cg cb opacity vx vy vz
+    else let r = real-sqrt (px * px + py * py + pz * pz)
+    in if r < 0.32 then bh-write framebuf gid cr cg cb 1.0 vx vy vz
+    else if r > 50.0 then bh-write framebuf gid cr cg cb opacity vx vy vz
+    else let dt = real-min 0.12 (real-max 0.003 (r * 0.04))
+    in let hcx = py * vz - pz * vy
+    in let hcy = pz * vx - px * vz
+    in let hcz = px * vy - py * vx
+    in let h2 = hcx * hcx + hcy * hcy + hcz * hcz
+    in let r5 = r * r * r * r * r
+    in let gm = (0.0 - 0.48) * h2 / r5
+    in let gx = (px / r) * gm
+    in let gy = (py / r) * gm
+    in let gz = (pz / r) * gm
+    in let nvx = vx + gx * dt
+    in let nvy = vy + gy * dt
+    in let nvz = vz + gz * dt
+    in let vl = real-sqrt (nvx * nvx + nvy * nvy + nvz * nvz)
+    in let nvx2 = nvx / vl
+    in let nvy2 = nvy / vl
+    in let nvz2 = nvz / vl
+    in let npx = px + nvx2 * dt
+    in let npy = py + nvy2 * dt
+    in let npz = pz + nvz2 * dt
+    in let crossed = if py * npy < 0.0 then 1.0 else 0.0
+    in if crossed > 0.5 then
+      let tc = py / (py - npy)
+      in let cx = px + (npx - px) * tc
+      in let cz = pz + (npz - pz) * tc
+      in let disk-r = real-sqrt (cx * cx + cz * cz)
+      in let inner-fade = real-min 1.0 (real-max 0.0 ((disk-r - 0.7) / 0.3))
+      in let outer-fade = real-min 1.0 (real-max 0.0 ((2.2 - disk-r) / 0.4))
+      in let in-ring = inner-fade * outer-fade
+      in if in-ring > 0.01 then
+        let angle = atan2-approx cz cx
+      in let orbit = angle + time * 1.5 / (disk-r * disk-r)
+      in let n1 = cordic-sin (orbit * 3.0 + disk-r * 2.0)
+      in let n2 = cordic-sin (orbit * 7.0 + disk-r * 0.5 + 1.3)
+      in let turb = 0.65 + n1 * 0.25 + n2 * 0.1
+      in let density = in-ring * 0.5 * turb
+      in let temp = real-max 0.0 (1.0 - (disk-r - 0.48) / 2.24)
+      in let grav = real-sqrt (real-max 0.0 (1.0 - 0.32 / r))
+      in let side = cordic-sin angle
+      in let doppler = if side > 0.0 then 1.3 + side * 0.5 else 0.4 + (1.0 + side) * 0.3
+      in let bright = grav * doppler * density
+      in let t2 = temp * temp
+      in let rem = 1.0 - opacity
+      in let ncr = cr + bright * (1.2 + t2 * 0.6) * rem
+      in let ncg = cg + bright * (0.9 + temp * 0.5) * rem
+      in let ncb = cb + bright * (0.5 + t2 * 0.4) * rem
+      in let nop = real-min (opacity + density * 0.5) 1.0
+      in bh-march framebuf gid npx npy npz nvx2 nvy2 nvz2 time (step + 1) ncr ncg ncb nop
+      else bh-march framebuf gid npx npy npz nvx2 nvy2 nvz2 time (step + 1) cr cg cb opacity
+    else bh-march framebuf gid npx npy npz nvx2 nvy2 nvz2 time (step + 1) cr cg cb opacity
+
+  bh-write : Integer, Integer, Real, Real, Real, Real, Real, Real, Real -> [Device] Integer
+  bh-write (framebuf) (gid) (cr) (cg) (cb) (opacity) (vx) (vy) (vz) =
+    let gr = gamma-byte cr
+    in let gg = gamma-byte cg
+    in let gb = gamma-byte cb
+    in let pixel = gr * 65536 + gg * 256 + gb + 255 * 16777216
+    in device-store framebuf gid pixel
+
+Section: Math Helpers
+
+  sphere-hit : Real, Real, Real, Real, Real, Real, Real -> Real
+  sphere-hit (ox) (oy) (oz) (dx) (dy) (dz) (r) =
+    let b = 2.0 * (ox * dx + oy * dy + oz * dz)
+    in let c = ox * ox + oy * oy + oz * oz - r * r
+    in let disc = b * b - 4.0 * c
+    in if disc < 0.0 then 0.0 - 1.0
+    else let t = (0.0 - b - real-sqrt disc) / 2.0
+    in if t > 0.001 then t else 0.0 - 1.0
+
+  asin-approx : Real -> Real
+  asin-approx (x) =
+    let clamped = real-min 0.999 (real-max (0.0 - 0.999) x)
+    in atan2-approx clamped (real-sqrt (1.0 - clamped * clamped))
+
+  atan2-approx : Real, Real -> Real
+  atan2-approx (y) (x) =
+    cordic-atan2 y x
+
+  gamma-byte : Real -> Integer
+  gamma-byte (v) =
+    let clamped = real-max 0.0 v
+    in let g = real-sqrt (real-sqrt clamped) * real-sqrt clamped
+    in clamp-int (__real-to-int (g * 255.0)) 0 255
+
+  clamp-int : Integer, Integer, Integer -> Integer
+  clamp-int (v) (lo) (hi) =
+    if v < lo then lo
+    else if v > hi then hi
+    else v
+
+  __int-to-real : Integer -> Real
+  __int-to-real (n) = 0.0
+
+  __real-to-int : Real -> Integer
+  __real-to-int (r) = 0
+
+  cordic-atan2 : Real, Real -> Real
+  cordic-atan2 (y) (x) =
+    let ax = real-abs x
+    in let ay = real-abs y
+    in let mn = real-min ax ay
+    in let mx = real-max ax ay
+    in let a = if mx > 0.0 then mn / mx else 0.0
+    in let a2 = a * a
+    in let numer = 105.0 + 55.0 * a2
+    in let denom = 105.0 + a2 * (90.0 + 9.0 * a2)
+    in let t = a * numer
+    in let base = t / denom
+    in let r1 = if ay > ax then 1.5707963267949 - base else base
+    in let r2 = if x < 0.0 then 3.14159265358979 - r1 else r1
+    in if y < 0.0 then 0.0 - r2 else r2

@@ -1,0 +1,156 @@
+Chapter: PcbRenderer
+  cites Foreword chapter List
+
+ Renders PCB layouts to a framebuffer. Multi-layer rendering with
+ per-layer colors, alpha blending for dimmed layers, ratsnest lines,
+ DRC violation markers, and selection highlights.
+
+Section: PCB View
+
+  PcbView = record {
+    pv-pan-x : Integer,
+    pv-pan-y : Integer,
+    pv-zoom-num : Integer,
+    pv-zoom-den : Integer,
+    pv-screen-w : Integer,
+    pv-screen-h : Integer
+  }
+
+  default-pcb-view : Integer, Integer -> PcbView
+  default-pcb-view (w) (h) = PcbView {
+    pv-pan-x = 0,
+    pv-pan-y = 0,
+    pv-zoom-num = 1,
+    pv-zoom-den = 50000,
+    pv-screen-w = w,
+    pv-screen-h = h
+  }
+
+  pcb-to-screen-x : PcbView, Integer -> Integer
+  pcb-to-screen-x (v) (wx) =
+    (wx - v.pv-pan-x) * v.pv-zoom-num / v.pv-zoom-den + v.pv-screen-w / 2
+
+  pcb-to-screen-y : PcbView, Integer -> Integer
+  pcb-to-screen-y (v) (wy) =
+    (wy - v.pv-pan-y) * v.pv-zoom-num / v.pv-zoom-den + v.pv-screen-h / 2
+
+  pcb-screen-to-world-x : PcbView, Integer -> Integer
+  pcb-screen-to-world-x (v) (sx) =
+    (sx - v.pv-screen-w / 2) * v.pv-zoom-den / v.pv-zoom-num + v.pv-pan-x
+
+  pcb-screen-to-world-y : PcbView, Integer -> Integer
+  pcb-screen-to-world-y (v) (sy) =
+    (sy - v.pv-screen-h / 2) * v.pv-zoom-den / v.pv-zoom-num + v.pv-pan-y
+
+Section: Layer Colors
+
+  PcbLayerColors = record {
+    plc-f-cu : Integer,
+    plc-b-cu : Integer,
+    plc-in1-cu : Integer,
+    plc-in2-cu : Integer,
+    plc-f-silk : Integer,
+    plc-b-silk : Integer,
+    plc-f-mask : Integer,
+    plc-b-mask : Integer,
+    plc-f-paste : Integer,
+    plc-b-paste : Integer,
+    plc-edge-cuts : Integer,
+    plc-courtyard : Integer,
+    plc-fab : Integer,
+    plc-ratsnest : Integer,
+    plc-via : Integer,
+    plc-pad-thru : Integer,
+    plc-background : Integer,
+    plc-grid : Integer,
+    plc-selection : Integer,
+    plc-drc-error : Integer,
+    plc-drc-warning : Integer
+  }
+
+  dark-pcb-colors : PcbLayerColors
+  dark-pcb-colors = PcbLayerColors {
+    plc-f-cu = #CC0000,
+    plc-b-cu = #0000CC,
+    plc-in1-cu = #CCCC00,
+    plc-in2-cu = #00CC00,
+    plc-f-silk = #00CCCC,
+    plc-b-silk = #CC00CC,
+    plc-f-mask = #660066,
+    plc-b-mask = #006666,
+    plc-f-paste = #888888,
+    plc-b-paste = #888888,
+    plc-edge-cuts = #CCCC00,
+    plc-courtyard = #666666,
+    plc-fab = #444444,
+    plc-ratsnest = #668888,
+    plc-via = #AAAAAA,
+    plc-pad-thru = #CCCC88,
+    plc-background = #000000,
+    plc-grid = #222222,
+    plc-selection = #FFFFFF,
+    plc-drc-error = #FF0000,
+    plc-drc-warning = #FFAA00
+  }
+
+Section: Render Settings
+
+  PcbRenderSettings = record {
+    prs-view : PcbView,
+    prs-colors : PcbLayerColors,
+    prs-active-layer : Integer,
+    prs-visible-layers : Integer,
+    prs-dim-inactive : Integer,
+    prs-show-ratsnest : Integer,
+    prs-show-grid : Integer,
+    prs-show-courtyard : Integer,
+    prs-show-fab : Integer,
+    prs-show-drc : Integer,
+    prs-highlight-net : Integer,
+    prs-grid-size : Integer
+  }
+
+  default-pcb-render : Integer, Integer -> PcbRenderSettings
+  default-pcb-render (w) (h) = PcbRenderSettings {
+    prs-view = default-pcb-view w h,
+    prs-colors = dark-pcb-colors,
+    prs-active-layer = 0,
+    prs-visible-layers = #FFFFFFFF,
+    prs-dim-inactive = 1,
+    prs-show-ratsnest = 1,
+    prs-show-grid = 1,
+    prs-show-courtyard = 1,
+    prs-show-fab = 0,
+    prs-show-drc = 1,
+    prs-highlight-net = -1,
+    prs-grid-size = 250000
+  }
+
+Section: Layer Visibility
+
+  layer-is-visible : PcbRenderSettings, Integer -> Integer
+  layer-is-visible (s) (layer-id) =
+    if layer-id < 0 then 0
+    else if layer-id > 31 then 1
+    else let mask = 1
+    in 1
+
+  layer-color-for-id : PcbLayerColors, Integer -> Integer
+  layer-color-for-id (c) (layer-id) =
+    if layer-id == 0 then c.plc-f-cu
+    else if layer-id == 31 then c.plc-b-cu
+    else if layer-id == 1 then c.plc-in1-cu
+    else if layer-id == 2 then c.plc-in2-cu
+    else c.plc-f-cu
+
+Section: Track Width in Pixels
+
+  track-width-pixels : PcbView, Integer -> Integer
+  track-width-pixels (v) (width-nm) =
+    let px = width-nm * v.pv-zoom-num / v.pv-zoom-den
+    in if px < 1 then 1 else px
+
+  via-diameter-pixels : PcbView, Integer -> Integer
+  via-diameter-pixels (v) (diameter-nm) =
+    let px = diameter-nm * v.pv-zoom-num / v.pv-zoom-den
+    in if px < 3 then 3 else px

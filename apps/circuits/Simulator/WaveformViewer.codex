@@ -1,0 +1,185 @@
+Chapter: WaveformViewer
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Waveform display data model for simulation results. Stores time-domain
+ waveforms with measurement cursors and provides analysis functions
+ including interpolation, peak detection, and RMS calculation.
+
+Section: Waveform Data
+
+  WaveformPoint = record {
+    wp-time : Real,
+    wp-value : Real
+  }
+
+  Waveform = record {
+    wf-name : Text,
+    wf-unit-label : Text,
+    wf-points : List WaveformPoint,
+    wf-color : Integer,
+    wf-visible : Integer,
+    wf-y-min : Real,
+    wf-y-max : Real
+  }
+
+Section: Cursors
+
+  WaveformCursor = record {
+    wc-cursor-id : Integer,
+    wc-time-position : Real,
+    wc-color : Integer
+  }
+
+  CursorMeasurement = record {
+    cm-cursor-a-id : Integer,
+    cm-cursor-b-id : Integer,
+    cm-delta-time : Real,
+    cm-delta-value : Real
+  }
+
+Section: Plot
+
+  WaveformPlot = record {
+    wp-waveforms : List Waveform,
+    wp-cursors : List WaveformCursor,
+    wp-time-min : Real,
+    wp-time-max : Real,
+    wp-auto-scale : Integer
+  }
+
+Section: Construction
+
+  empty-plot : WaveformPlot
+  empty-plot = WaveformPlot {
+      wp-waveforms = [],
+      wp-cursors = [],
+      wp-time-min = 0.0,
+      wp-time-max = 1.0,
+      wp-auto-scale = 1
+    }
+
+  plot-add-waveform : WaveformPlot, Waveform -> WaveformPlot
+  plot-add-waveform (plot) (wf) =
+    __record-set plot "wp-waveforms" (list-push plot.wp-waveforms wf)
+
+  plot-add-cursor : WaveformPlot, WaveformCursor -> WaveformPlot
+  plot-add-cursor (plot) (cursor) =
+    __record-set plot "wp-cursors" (list-push plot.wp-cursors cursor)
+
+Section: Interpolation
+
+ Linear interpolation to find waveform value at an arbitrary time.
+ Scans adjacent point pairs and interpolates between the bracketing
+ pair. Returns 0.0 if the waveform has fewer than two points or if
+ the time is outside the sampled range.
+
+  waveform-value-at-time : Waveform, Real -> Real
+  waveform-value-at-time (wf) (t) =
+    let n = list-length wf.wf-points
+    in if n < 2 then 0.0
+    else interp-scan wf.wf-points t 0 (n - 1)
+
+  interp-scan : List WaveformPoint, Real, Integer, Integer -> Real
+  interp-scan (pts) (t) (i) (last) =
+    if i >= last then interp-at pts last else interp-step pts t i last
+
+  interp-at : List WaveformPoint, Integer -> Real
+  interp-at (pts) (idx) = let p = list-at pts idx in p.wp-value
+
+  interp-step : List WaveformPoint, Real, Integer, Integer -> Real
+  interp-step (pts) (t) (i) (last) =
+    let a = list-at pts i
+    in let b = list-at pts (i + 1)
+    in interp-match a b pts t i last
+
+  interp-match : WaveformPoint, WaveformPoint, List WaveformPoint, Real, Integer, Integer -> Real
+  interp-match (a) (b) (pts) (t) (i) (last) =
+    if t < a.wp-time then a.wp-value
+    else if t <= b.wp-time then interp-lerp a b t
+    else interp-scan pts t (i + 1) last
+
+  interp-lerp : WaveformPoint, WaveformPoint, Real -> Real
+  interp-lerp (a) (b) (t) =
+    let dt = b.wp-time - a.wp-time
+    in if dt ~ 0.0 then a.wp-value else interp-frac a b t dt
+
+  interp-frac : WaveformPoint, WaveformPoint, Real, Real -> Real
+  interp-frac (a) (b) (t) (dt) = let frac = (t - a.wp-time) / dt in a.wp-value + frac * (b.wp-value - a.wp-value)
+
+Section: Peak and Min
+
+  waveform-peak : Waveform -> Real
+  waveform-peak (wf) =
+    let n = list-length wf.wf-points
+    in if n == 0 then 0.0 else waveform-peak-start wf n
+
+  waveform-peak-start : Waveform, Integer -> Real
+  waveform-peak-start (wf) (n) = let first = list-at wf.wf-points 0 in scan-peak wf.wf-points 1 n first.wp-value
+
+  scan-peak : List WaveformPoint, Integer, Integer, Real -> Real
+  scan-peak (pts) (i) (n) (best) =
+    if i >= n then best else scan-peak-step pts i n best
+
+  scan-peak-step : List WaveformPoint, Integer, Integer, Real -> Real
+  scan-peak-step (pts) (i) (n) (best) =
+    let p = list-at pts i
+    in let next = if p.wp-value > best then p.wp-value else best
+    in scan-peak pts (i + 1) n next
+
+  waveform-min : Waveform -> Real
+  waveform-min (wf) =
+    let n = list-length wf.wf-points
+    in if n == 0 then 0.0 else waveform-min-start wf n
+
+  waveform-min-start : Waveform, Integer -> Real
+  waveform-min-start (wf) (n) = let first = list-at wf.wf-points 0 in scan-min wf.wf-points 1 n first.wp-value
+
+  scan-min : List WaveformPoint, Integer, Integer, Real -> Real
+  scan-min (pts) (i) (n) (best) =
+    if i >= n then best else scan-min-step pts i n best
+
+  scan-min-step : List WaveformPoint, Integer, Integer, Real -> Real
+  scan-min-step (pts) (i) (n) (best) =
+    let p = list-at pts i
+    in let next = if p.wp-value < best then p.wp-value else best
+    in scan-min pts (i + 1) n next
+
+Section: RMS
+
+ Root mean square of all sampled points. Computes the square root of
+ the mean of squared values using Newton's method for the square root.
+
+  waveform-rms : Waveform -> Real
+  waveform-rms (wf) =
+    let n = list-length wf.wf-points
+    in if n == 0 then 0.0 else waveform-rms-calc wf n
+
+  waveform-rms-calc : Waveform, Integer -> Real
+  waveform-rms-calc (wf) (n) =
+    let sum-sq = sum-squares wf.wf-points 0 n 0.0
+    in let count = real-from-int n
+    in let mean-sq = sum-sq / count
+    in real-sqrt mean-sq
+
+  wf-int-count-real : Integer, Integer, Real -> Real
+  wf-int-count-real (i) (n) (acc) =
+    if i >= n then acc else wf-int-count-real (i + 1) n (acc + 1.0)
+
+  sum-squares : List WaveformPoint, Integer, Integer, Real -> Real
+  sum-squares (pts) (i) (n) (acc) =
+    if i >= n then acc else sum-sq-step pts i n acc
+
+  sum-sq-step : List WaveformPoint, Integer, Integer, Real -> Real
+  sum-sq-step (pts) (i) (n) (acc) = let p = list-at pts i in sum-squares pts (i + 1) n (acc + p.wp-value * p.wp-value)
+
+  real-sqrt : Real -> Real
+  real-sqrt (x) =
+    if x <= 0.0 then 0.0
+    else real-sqrt-loop x (x / 2.0 + 1.0)
+
+  real-sqrt-loop : Real, Real -> Real
+  real-sqrt-loop (x) (guess) =
+    let next = (guess + x / guess) / 2.0
+    in if next ~ guess then next
+    else real-sqrt-loop x next

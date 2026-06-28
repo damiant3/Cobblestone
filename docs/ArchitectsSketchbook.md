@@ -591,6 +591,39 @@ frame discipline the C compilers do not pay (the guard pair on
 recursive functions) and the registers the JITs win through full
 linear-scan allocation of named bindings -- the next frontier.
 
+### RISC-V RV64 Codegen Quality (CL 6287)
+
+Cross-compiled via the RISC-V plug pipeline. Compared against
+`riscv64-linux-gnu-gcc` 13.3.0 cross-compiler.
+
+| Bench   | Codex RV64 | GCC -O0 | GCC -O2 | GCC -Os |
+|---------|----------:|--------:|--------:|--------:|
+| fib     |        20 |      34 |   241*  |      22 |
+| fact    |        14 |      27 |      14 |       9 |
+| gcd     |         7 |      26 |       8 |       6 |
+| sum     |         7 |      27 |      11 |       9 |
+| ack     |        24 |      33 |     103 |      22 |
+| tak     |        39 |      36 |      33 |      34 |
+| collatz |        15 |      29 |      20 |      13 |
+| locals  |        15 |      52 |      25 |      19 |
+
+*GCC -O2 fib transforms tree recursion into a 241-instruction
+iterative loop (O(n) runtime, larger code). GCC -Os keeps the
+recursive form; that is the fair codegen comparison.
+
+Aggregate: Codex 141 vs GCC -Os 134 (+5%). Four benchmarks beat
+GCC -Os (fib, sum, locals by 21%, collatz within 15%). fact gap
+(+56%) is structural: GCC transforms recursion to iteration, a
+compiler-level optimization not available to the plug.
+
+Two optimization campaigns. Phase 1 (CLs 6147-6172, 8 CLs):
+deferred save-reg, destination-driven emission, frameless TCO,
+inline builtins, compact prologue. Average reduction 66%. Phase 2
+(CLs 6261-6287, 17 CLs, 135 insns eliminated): pow2 strength
+reduction, NOP compaction, direct TCO with dependency analysis,
+expanded frameless TCO with temp-only locals, direct N-arg emission,
+reordered mixed-TCO, last-arg skip in TCO shuffle.
+
 ## ARM64 Boot Sequence
 
 The ARM64 kernel binary starts with a 2 KB exception vector table

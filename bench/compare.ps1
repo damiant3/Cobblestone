@@ -26,12 +26,10 @@ if (-not $SkipBuild) {
     & pwsh -NoProfile -File (Join-Path $BenchDir 'build-codex.ps1')
     if ($LASTEXITCODE -ne 0) { Write-Host "Codex build failed"; exit 1 }
 
-    Write-Host "`n=== Extracting Codex disassembly ==="
-    & pwsh -NoProfile -File (Join-Path $BenchDir 'disasm-cdx.ps1')
 }
 
 # --- Step 2: Parse and Compare ---
-$benchmarks = @('fib', 'fact', 'gcd', 'sum')
+$benchmarks = @('fib', 'fact', 'gcd', 'sum', 'ack', 'tak', 'collatz', 'locals')
 $out = [System.Collections.Generic.List[string]]::new()
 
 function Count-Instructions {
@@ -88,10 +86,22 @@ function Parse-Codex-Disasm {
 
 # Map benchmark name to C function name and Codex function names
 $benchConfig = @{
-    'fib'  = @{ CFunc = 'fib';  CodexFuncs = @('fib') }
-    'fact' = @{ CFunc = 'fact'; CodexFuncs = @('fact') }
-    'gcd'  = @{ CFunc = 'gcd';  CodexFuncs = @('my-gcd') }
-    'sum'  = @{ CFunc = 'sum';  CodexFuncs = @('sum-to') }
+    'fib'     = @{ CFunc = 'fib';     CodexFuncs = @('fib') }
+    'fact'    = @{ CFunc = 'fact';    CodexFuncs = @('fact') }
+    'gcd'     = @{ CFunc = 'gcd';     CodexFuncs = @('my-gcd') }
+    'sum'     = @{ CFunc = 'sum';     CodexFuncs = @('sum-to') }
+    'ack'     = @{ CFunc = 'ack';     CodexFuncs = @('ack') }
+    'tak'     = @{ CFunc = 'tak';     CodexFuncs = @('tak') }
+    'collatz' = @{ CFunc = 'collatz'; CodexFuncs = @('collatz') }
+    'locals'  = @{ CFunc = 'compute'; CodexFuncs = @('compute') }
+}
+
+if (-not $SkipBuild) {
+    Write-Host "`n=== Extracting Codex disassembly ==="
+    foreach ($b in $benchmarks) {
+        $funcs = $benchConfig[$b].CodexFuncs
+        & pwsh -NoProfile -File (Join-Path $BenchDir 'disasm-cdx.ps1') -Name $b -Functions $funcs
+    }
 }
 
 [void]$out.Add("Codex vs C Codegen Comparison Report")

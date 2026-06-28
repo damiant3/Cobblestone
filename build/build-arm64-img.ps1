@@ -197,7 +197,7 @@ $rootPeCluster = Alloc-File $pe
 Add-DirEntry $rootOff 1 "CODEX   EFI" 0x20 $rootPeCluster $pe.Length
 
 # startup.nsh
-$nshText = "FS0:" + [char]13 + [char]10 + "load CODEX.EFI" + [char]13 + [char]10
+$nshText = "FS0:" + [char]13 + [char]10 + "CODEX.EFI" + [char]13 + [char]10
 $nshUcs2 = [System.Text.Encoding]::Unicode.GetBytes($nshText)
 $nshBom = [byte[]]@(0xFF, 0xFE)
 $nshContent = $nshBom + $nshUcs2

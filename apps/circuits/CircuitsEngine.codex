@@ -1,0 +1,266 @@
+Chapter: CircuitsEngine
+  cites Foreword chapter List
+
+ Bridges the SchematicModel data types to the GPU rendering pipeline.
+ Provides a component library for visual dimensions and a demo sheet
+ builder using proper SchematicSymbol and WireSegment types.
+
+Section: Component Visual Info
+
+  CompVisual = record {
+    cv-w : Integer,
+    cv-h : Integer,
+    cv-color : Integer,
+    cv-subtype : Integer,
+    cv-pins-left : Integer,
+    cv-pins-right : Integer
+  }
+
+  cv-subtype-ic : Integer = 0
+  cv-subtype-resistor : Integer = 1
+  cv-subtype-capacitor : Integer = 2
+  cv-subtype-led : Integer = 3
+  cv-subtype-connector : Integer = 4
+  cv-subtype-switch : Integer = 5
+  cv-subtype-generic : Integer = 6
+
+  lookup-comp-visual : Text -> CompVisual
+  lookup-comp-visual (name) =
+    if text-starts-with name "STM32" then CompVisual { cv-w = 80, cv-h = 110, cv-color = #E8A838, cv-subtype = cv-subtype-ic, cv-pins-left = 8, cv-pins-right = 8 }
+    else if text-starts-with name "LDO" then CompVisual { cv-w = 60, cv-h = 30, cv-color = #E8A838, cv-subtype = cv-subtype-ic, cv-pins-left = 1, cv-pins-right = 2 }
+    else if text-starts-with name "ESD" then CompVisual { cv-w = 40, cv-h = 30, cv-color = #E8A838, cv-subtype = cv-subtype-ic, cv-pins-left = 2, cv-pins-right = 2 }
+    else if name == "Resistor" then CompVisual { cv-w = 32, cv-h = 10, cv-color = #E8A838, cv-subtype = cv-subtype-resistor, cv-pins-left = 1, cv-pins-right = 1 }
+    else if name == "Capacitor" then CompVisual { cv-w = 16, cv-h = 24, cv-color = #E8A838, cv-subtype = cv-subtype-capacitor, cv-pins-left = 0, cv-pins-right = 0 }
+    else if name == "LED-Green" then CompVisual { cv-w = 20, cv-h = 20, cv-color = #33CC33, cv-subtype = cv-subtype-led, cv-pins-left = 1, cv-pins-right = 1 }
+    else if name == "LED-Red" then CompVisual { cv-w = 20, cv-h = 20, cv-color = #CC3333, cv-subtype = cv-subtype-led, cv-pins-left = 1, cv-pins-right = 1 }
+    else if name == "USB-C" then CompVisual { cv-w = 36, cv-h = 28, cv-color = #555555, cv-subtype = cv-subtype-connector, cv-pins-left = 0, cv-pins-right = 4 }
+    else if name == "Switch" then CompVisual { cv-w = 24, cv-h = 16, cv-color = #E8A838, cv-subtype = cv-subtype-switch, cv-pins-left = 1, cv-pins-right = 1 }
+    else if name == "Crystal" then CompVisual { cv-w = 40, cv-h = 20, cv-color = #E8A838, cv-subtype = cv-subtype-generic, cv-pins-left = 1, cv-pins-right = 1 }
+    else if name == "IC" then CompVisual { cv-w = 80, cv-h = 60, cv-color = #E8A838, cv-subtype = cv-subtype-ic, cv-pins-left = 4, cv-pins-right = 4 }
+    else if name == "Connector" then CompVisual { cv-w = 36, cv-h = 28, cv-color = #555555, cv-subtype = cv-subtype-connector, cv-pins-left = 0, cv-pins-right = 4 }
+    else CompVisual { cv-w = 40, cv-h = 30, cv-color = #888888, cv-subtype = cv-subtype-generic, cv-pins-left = 0, cv-pins-right = 0 }
+
+Section: Palette for Placement
+
+  CompPalette = record {
+    cp-name : Text,
+    cp-prefix : Text,
+    cp-comp-name : Text
+  }
+
+  eng-palette-count : Integer = 6
+
+  eng-palette-at : Integer -> CompPalette
+  eng-palette-at (i) =
+    if i == 0 then CompPalette { cp-name = "Resistor", cp-prefix = "R", cp-comp-name = "Resistor" }
+    else if i == 1 then CompPalette { cp-name = "Capacitor", cp-prefix = "C", cp-comp-name = "Capacitor" }
+    else if i == 2 then CompPalette { cp-name = "LED", cp-prefix = "D", cp-comp-name = "LED-Green" }
+    else if i == 3 then CompPalette { cp-name = "IC", cp-prefix = "U", cp-comp-name = "IC" }
+    else if i == 4 then CompPalette { cp-name = "Connector", cp-prefix = "J", cp-comp-name = "Connector" }
+    else CompPalette { cp-name = "Switch", cp-prefix = "SW", cp-comp-name = "Switch" }
+
+Section: Auto Ref Designator
+
+  eng-auto-ref : Text, Sheet -> Text
+  eng-auto-ref (prefix) (sh) =
+    let n = eng-count-prefix (sh.sh-symbols) prefix 0 (list-length sh.sh-symbols) 0
+    in prefix & (show (n + 1))
+
+  eng-count-prefix : List SchematicSymbol, Text, Integer, Integer, Integer -> Integer
+  eng-count-prefix (syms) (prefix) (i) (n) (acc) =
+    if i >= n then acc
+    else let sym = list-at syms i
+    in let match = if text-starts-with (sym.ss-ref) prefix then 1 else 0
+    in eng-count-prefix syms prefix (i + 1) n (acc + match)
+
+Section: Sheet Mutation Helpers
+
+  sheet-add-junction : Sheet, Junction -> Sheet
+  sheet-add-junction (sh) (j) = Sheet {
+    sh-sheet-id = sh.sh-sheet-id, sh-sheet-name = sh.sh-sheet-name,
+    sh-symbols = sh.sh-symbols,
+    sh-wires = sh.sh-wires,
+    sh-junctions = list-push sh.sh-junctions j,
+    sh-labels = sh.sh-labels,
+    sh-global-labels = sh.sh-global-labels,
+    sh-hierarchical-labels = sh.sh-hierarchical-labels,
+    sh-power-symbols = sh.sh-power-symbols,
+    sh-no-connects = sh.sh-no-connects,
+    sh-bus-entries = sh.sh-bus-entries,
+    sh-sub-sheets = sh.sh-sub-sheets
+  }
+
+  sheet-add-label : Sheet, NetLabel -> Sheet
+  sheet-add-label (sh) (lab) = Sheet {
+    sh-sheet-id = sh.sh-sheet-id, sh-sheet-name = sh.sh-sheet-name,
+    sh-symbols = sh.sh-symbols,
+    sh-wires = sh.sh-wires,
+    sh-junctions = sh.sh-junctions,
+    sh-labels = list-push sh.sh-labels lab,
+    sh-global-labels = sh.sh-global-labels,
+    sh-hierarchical-labels = sh.sh-hierarchical-labels,
+    sh-power-symbols = sh.sh-power-symbols,
+    sh-no-connects = sh.sh-no-connects,
+    sh-bus-entries = sh.sh-bus-entries,
+    sh-sub-sheets = sh.sh-sub-sheets
+  }
+
+  sheet-add-power : Sheet, PowerSymbol -> Sheet
+  sheet-add-power (sh) (ps) = Sheet {
+    sh-sheet-id = sh.sh-sheet-id, sh-sheet-name = sh.sh-sheet-name,
+    sh-symbols = sh.sh-symbols,
+    sh-wires = sh.sh-wires,
+    sh-junctions = sh.sh-junctions,
+    sh-labels = sh.sh-labels,
+    sh-global-labels = sh.sh-global-labels,
+    sh-hierarchical-labels = sh.sh-hierarchical-labels,
+    sh-power-symbols = list-push sh.sh-power-symbols ps,
+    sh-no-connects = sh.sh-no-connects,
+    sh-bus-entries = sh.sh-bus-entries,
+    sh-sub-sheets = sh.sh-sub-sheets
+  }
+
+Section: Selection Helpers
+
+  is-symbol-selected : SchSelection, Text -> Integer
+  is-symbol-selected (sel) (ref) =
+    is-in-text-list (sel.ss-selected-symbols) ref 0 (list-length sel.ss-selected-symbols)
+
+  is-in-text-list : List Text, Text, Integer, Integer -> Integer
+  is-in-text-list (lst) (target) (i) (n) =
+    if i >= n then 0
+    else if list-at lst i == target then 1
+    else is-in-text-list lst target (i + 1) n
+
+  is-wire-selected : SchSelection, Integer -> Integer
+  is-wire-selected (sel) (idx) =
+    is-in-int-list (sel.ss-selected-wire-indices) idx 0 (list-length sel.ss-selected-wire-indices)
+
+  is-in-int-list : List Integer, Integer, Integer, Integer -> Integer
+  is-in-int-list (lst) (target) (i) (n) =
+    if i >= n then 0
+    else if list-at lst i == target then 1
+    else is-in-int-list lst target (i + 1) n
+
+Section: Hit Testing
+
+  eng-hit-test-symbol : List SchematicSymbol, Integer, Integer -> Integer
+  eng-hit-test-symbol (syms) (mx) (my) =
+    eng-hit-sym-loop syms mx my 0 (list-length syms) (-1)
+
+  eng-hit-sym-loop : List SchematicSymbol, Integer, Integer, Integer, Integer, Integer -> Integer
+  eng-hit-sym-loop (syms) (mx) (my) (i) (n) (best) =
+    if i >= n then best
+    else let sym = list-at syms i
+    in let cv = lookup-comp-visual (sym.ss-component-name)
+    in let margin = 4
+    in let hit = if mx >= sym.ss-x - margin then if mx <= sym.ss-x + cv.cv-w + margin then if my >= sym.ss-y - margin then if my <= sym.ss-y + cv.cv-h + margin then 1 else 0 else 0 else 0 else 0
+    in if hit == 1 then eng-hit-sym-loop syms mx my (i + 1) n i
+    else eng-hit-sym-loop syms mx my (i + 1) n best
+
+  eng-hit-test-wire : List WireSegment, Integer, Integer -> Integer
+  eng-hit-test-wire (wires) (mx) (my) =
+    eng-hit-wire-loop wires mx my 0 (list-length wires) (-1)
+
+  eng-hit-wire-loop : List WireSegment, Integer, Integer, Integer, Integer, Integer -> Integer
+  eng-hit-wire-loop (wires) (mx) (my) (i) (n) (best) =
+    if i >= n then best
+    else let w = list-at wires i
+    in let lx = if w.ws-x1 < w.ws-x2 then w.ws-x1 else w.ws-x2
+    in let hx = if w.ws-x1 > w.ws-x2 then w.ws-x1 else w.ws-x2
+    in let ly = if w.ws-y1 < w.ws-y2 then w.ws-y1 else w.ws-y2
+    in let hy = if w.ws-y1 > w.ws-y2 then w.ws-y1 else w.ws-y2
+    in let margin = 4
+    in let hit = if mx >= lx - margin then if mx <= hx + margin then if my >= ly - margin then if my <= hy + margin then 1 else 0 else 0 else 0 else 0
+    in if hit == 1 then eng-hit-wire-loop wires mx my (i + 1) n i
+    else eng-hit-wire-loop wires mx my (i + 1) n best
+
+Section: Move Selected Symbols
+
+  eng-move-selected-symbols : Sheet, SchSelection, Integer, Integer -> Sheet
+  eng-move-selected-symbols (sh) (sel) (dx) (dy) =
+    let syms = eng-move-syms (sh.sh-symbols) sel dx dy 0 (list-length sh.sh-symbols)
+    in Sheet {
+      sh-sheet-id = sh.sh-sheet-id, sh-sheet-name = sh.sh-sheet-name,
+      sh-symbols = syms,
+      sh-wires = sh.sh-wires, sh-junctions = sh.sh-junctions,
+      sh-labels = sh.sh-labels, sh-global-labels = sh.sh-global-labels,
+      sh-hierarchical-labels = sh.sh-hierarchical-labels,
+      sh-power-symbols = sh.sh-power-symbols, sh-no-connects = sh.sh-no-connects,
+      sh-bus-entries = sh.sh-bus-entries, sh-sub-sheets = sh.sh-sub-sheets
+    }
+
+  eng-move-syms : List SchematicSymbol, SchSelection, Integer, Integer, Integer, Integer -> List SchematicSymbol
+  eng-move-syms (syms) (sel) (dx) (dy) (i) (n) =
+    if i >= n then syms
+    else let sym = list-at syms i
+    in if is-symbol-selected sel (sym.ss-ref) == 0 then eng-move-syms syms sel dx dy (i + 1) n
+    else let moved = SchematicSymbol {
+      ss-ref = sym.ss-ref, ss-component-name = sym.ss-component-name,
+      ss-x = sym.ss-x + dx, ss-y = sym.ss-y + dy,
+      ss-rotation = sym.ss-rotation, ss-mirror = sym.ss-mirror,
+      ss-unit = sym.ss-unit, ss-variant-overrides = sym.ss-variant-overrides
+    }
+    in eng-move-syms (list-set-at syms i moved) sel dx dy (i + 1) n
+
+Section: Delete Selected
+
+  eng-delete-selected : Sheet, SchSelection -> Sheet
+  eng-delete-selected (sh) (sel) =
+    let syms = eng-filter-syms (sh.sh-symbols) sel 0 (list-length sh.sh-symbols) []
+    in let wires = eng-filter-wires (sh.sh-wires) sel 0 (list-length sh.sh-wires) []
+    in Sheet {
+      sh-sheet-id = sh.sh-sheet-id, sh-sheet-name = sh.sh-sheet-name,
+      sh-symbols = syms, sh-wires = wires,
+      sh-junctions = sh.sh-junctions, sh-labels = sh.sh-labels,
+      sh-global-labels = sh.sh-global-labels,
+      sh-hierarchical-labels = sh.sh-hierarchical-labels,
+      sh-power-symbols = sh.sh-power-symbols, sh-no-connects = sh.sh-no-connects,
+      sh-bus-entries = sh.sh-bus-entries, sh-sub-sheets = sh.sh-sub-sheets
+    }
+
+  eng-filter-syms : List SchematicSymbol, SchSelection, Integer, Integer, List SchematicSymbol -> List SchematicSymbol
+  eng-filter-syms (syms) (sel) (i) (n) (acc) =
+    if i >= n then acc
+    else let sym = list-at syms i
+    in if is-symbol-selected sel (sym.ss-ref) == 1 then eng-filter-syms syms sel (i + 1) n acc
+    else eng-filter-syms syms sel (i + 1) n (list-push acc sym)
+
+  eng-filter-wires : List WireSegment, SchSelection, Integer, Integer, List WireSegment -> List WireSegment
+  eng-filter-wires (wires) (sel) (i) (n) (acc) =
+    if i >= n then acc
+    else if is-wire-selected sel i == 1 then eng-filter-wires wires sel (i + 1) n acc
+    else eng-filter-wires wires sel (i + 1) n (list-push acc (list-at wires i))
+
+Section: Demo Sheet
+
+  build-demo-sheet : Sheet
+  build-demo-sheet =
+    let sh = empty-sheet "1" "Main"
+    in let s1 = sheet-add-symbol sh (SchematicSymbol { ss-ref = "U1", ss-component-name = "STM32F405RG", ss-x = 200, ss-y = 120, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s2 = sheet-add-symbol s1 (SchematicSymbol { ss-ref = "J1", ss-component-name = "USB-C", ss-x = 60, ss-y = 145, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s3 = sheet-add-symbol s2 (SchematicSymbol { ss-ref = "U2", ss-component-name = "LDO-3V3", ss-x = 240, ss-y = 80, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s4 = sheet-add-symbol s3 (SchematicSymbol { ss-ref = "C1", ss-component-name = "Capacitor", ss-x = 280, ss-y = 120, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s5 = sheet-add-symbol s4 (SchematicSymbol { ss-ref = "C2", ss-component-name = "Capacitor", ss-x = 320, ss-y = 120, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s6 = sheet-add-symbol s5 (SchematicSymbol { ss-ref = "C3", ss-component-name = "Capacitor", ss-x = 360, ss-y = 120, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s7 = sheet-add-symbol s6 (SchematicSymbol { ss-ref = "R1", ss-component-name = "Resistor", ss-x = 330, ss-y = 150, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s8 = sheet-add-symbol s7 (SchematicSymbol { ss-ref = "R2", ss-component-name = "Resistor", ss-x = 330, ss-y = 190, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s9 = sheet-add-symbol s8 (SchematicSymbol { ss-ref = "D1", ss-component-name = "LED-Green", ss-x = 370, ss-y = 145, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s10 = sheet-add-symbol s9 (SchematicSymbol { ss-ref = "D2", ss-component-name = "LED-Red", ss-x = 370, ss-y = 185, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s11 = sheet-add-symbol s10 (SchematicSymbol { ss-ref = "R3", ss-component-name = "Resistor", ss-x = 560, ss-y = 150, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let s12 = sheet-add-symbol s11 (SchematicSymbol { ss-ref = "SW1", ss-component-name = "Switch", ss-x = 560, ss-y = 180, ss-rotation = 0, ss-mirror = 0, ss-unit = 1, ss-variant-overrides = "" })
+    in let w1 = sheet-add-wire s12 (WireSegment { ws-x1 = 96, ws-y1 = 158, ws-x2 = 200, ws-y2 = 158, ws-net-name = "USB_DP" })
+    in let w2 = sheet-add-wire w1 (WireSegment { ws-x1 = 96, ws-y1 = 168, ws-x2 = 200, ws-y2 = 168, ws-net-name = "USB_DM" })
+    in let w3 = sheet-add-wire w2 (WireSegment { ws-x1 = 280, ws-y1 = 155, ws-x2 = 330, ws-y2 = 155, ws-net-name = "PA0" })
+    in let w4 = sheet-add-wire w3 (WireSegment { ws-x1 = 280, ws-y1 = 195, ws-x2 = 330, ws-y2 = 195, ws-net-name = "PA1" })
+    in let w5 = sheet-add-wire w4 (WireSegment { ws-x1 = 362, ws-y1 = 155, ws-x2 = 370, ws-y2 = 155, ws-net-name = "LED1" })
+    in let w6 = sheet-add-wire w5 (WireSegment { ws-x1 = 362, ws-y1 = 195, ws-x2 = 370, ws-y2 = 195, ws-net-name = "LED2" })
+    in let w7 = sheet-add-wire w6 (WireSegment { ws-x1 = 140, ws-y1 = 78, ws-x2 = 340, ws-y2 = 78, ws-net-name = "VCC" })
+    in let w8 = sheet-add-wire w7 (WireSegment { ws-x1 = 140, ws-y1 = 280, ws-x2 = 440, ws-y2 = 280, ws-net-name = "GND" })
+    in let j1 = sheet-add-junction w8 (Junction { jn-x = 288, jn-y = 95 })
+    in let j2 = sheet-add-junction j1 (Junction { jn-x = 328, jn-y = 165 })
+    in let l1 = sheet-add-label j2 (NetLabel { nl-x = 405, nl-y = 188, nl-text = "NRST", nl-rotation = 0 })
+    in let l2 = sheet-add-label l1 (NetLabel { nl-x = 108, nl-y = 210, nl-text = "USB", nl-rotation = 0 })
+    in let p1 = sheet-add-power l2 (PowerSymbol { ps-x = 140, ps-y = 70, ps-net-name = "VCC", ps-symbol-type = VccSymbol })
+    in let p2 = sheet-add-power p1 (PowerSymbol { ps-x = 140, ps-y = 288, ps-net-name = "GND", ps-symbol-type = GndSymbol })
+    in p2

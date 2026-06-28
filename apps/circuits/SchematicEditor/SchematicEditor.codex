@@ -1,0 +1,197 @@
+Chapter: SchematicEditor
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ The schematic editor state machine. Manages the active tool, mouse
+ and keyboard dispatch, selection state, and the undo/redo stack.
+ This is the top-level controller for schematic editing.
+
+Section: Editor Tool
+
+  SchTool =
+    | SchToolSelect
+    | SchToolWire
+    | SchToolBus
+    | SchToolPlace
+    | SchToolLabel
+    | SchToolGlobalLabel
+    | SchToolPower
+    | SchToolNoConnect
+    | SchToolText
+    | SchToolMeasure
+    | SchToolPan
+    | SchToolZoom
+
+  sch-tool-name : SchTool -> Text
+  sch-tool-name (t) = when t
+    is SchToolSelect -> "Select"
+    is SchToolWire -> "Wire"
+    is SchToolBus -> "Bus"
+    is SchToolPlace -> "Place Symbol"
+    is SchToolLabel -> "Net Label"
+    is SchToolGlobalLabel -> "Global Label"
+    is SchToolPower -> "Power Symbol"
+    is SchToolNoConnect -> "No Connect"
+    is SchToolText -> "Text"
+    is SchToolMeasure -> "Measure"
+    is SchToolPan -> "Pan"
+    is SchToolZoom -> "Zoom"
+
+Section: Selection
+
+  SchSelection = record {
+    ss-selected-symbols : List Text,
+    ss-selected-wire-indices : List Integer,
+    ss-selected-label-indices : List Integer,
+    ss-count : Integer
+  }
+
+  empty-selection : SchSelection
+  empty-selection = SchSelection {
+    ss-selected-symbols = [],
+    ss-selected-wire-indices = [],
+    ss-selected-label-indices = [],
+    ss-count = 0
+  }
+
+  selection-add-symbol : SchSelection, Text -> SchSelection
+  selection-add-symbol (sel) (ref) = SchSelection {
+    ss-selected-symbols = list-push sel.ss-selected-symbols ref,
+    ss-selected-wire-indices = sel.ss-selected-wire-indices,
+    ss-selected-label-indices = sel.ss-selected-label-indices,
+    ss-count = sel.ss-count + 1
+  }
+
+  selection-clear : SchSelection -> SchSelection
+  selection-clear (sel) = empty-selection
+
+  selection-is-empty : SchSelection -> Integer
+  selection-is-empty (sel) = if sel.ss-count == 0 then 1 else 0
+
+Section: Undo Stack
+
+  UndoAction =
+    | UndoAddSymbol (Text)
+    | UndoRemoveSymbol (Text)
+    | UndoMoveSymbol (Text) (Integer) (Integer) (Integer) (Integer)
+    | UndoAddWire (Integer)
+    | UndoRemoveWire (Integer)
+    | UndoAddLabel (Integer)
+    | UndoRotateSymbol (Text) (Integer) (Integer)
+    | UndoChangeValue (Text) (Text) (Text)
+
+  UndoStack = record {
+    us-actions : List UndoAction,
+    us-redo-actions : List UndoAction,
+    us-depth : Integer,
+    us-max-depth : Integer
+  }
+
+  empty-undo-stack : UndoStack
+  empty-undo-stack = UndoStack {
+    us-actions = [],
+    us-redo-actions = [],
+    us-depth = 0,
+    us-max-depth = 50
+  }
+
+  undo-push : UndoStack, UndoAction -> UndoStack
+  undo-push (st) (action) = UndoStack {
+    us-actions = list-push st.us-actions action,
+    us-redo-actions = [],
+    us-depth = st.us-depth + 1,
+    us-max-depth = st.us-max-depth
+  }
+
+Section: Editor State
+
+  SchEditorState = record {
+    se-active-tool : SchTool,
+    se-selection : SchSelection,
+    se-undo : UndoStack,
+    se-active-sheet : Integer,
+    se-cursor-x : Integer,
+    se-cursor-y : Integer,
+    se-dragging : Integer,
+    se-drag-start-x : Integer,
+    se-drag-start-y : Integer,
+    se-wire-in-progress : Integer,
+    se-wire-start-x : Integer,
+    se-wire-start-y : Integer,
+    se-place-component : Text,
+    se-grid-snap : Integer,
+    se-modified : Integer
+  }
+
+  empty-editor-state : SchEditorState
+  empty-editor-state = SchEditorState {
+    se-active-tool = SchToolSelect,
+    se-selection = empty-selection,
+    se-undo = empty-undo-stack,
+    se-active-sheet = 0,
+    se-cursor-x = 0,
+    se-cursor-y = 0,
+    se-dragging = 0,
+    se-drag-start-x = 0,
+    se-drag-start-y = 0,
+    se-wire-in-progress = 0,
+    se-wire-start-x = 0,
+    se-wire-start-y = 0,
+    se-place-component = "",
+    se-grid-snap = 1,
+    se-modified = 0
+  }
+
+Section: Tool Switching
+
+  editor-set-tool : SchEditorState, SchTool -> SchEditorState
+  editor-set-tool (st) (tool) = SchEditorState {
+    se-active-tool = tool,
+    se-selection = st.se-selection,
+    se-undo = st.se-undo,
+    se-active-sheet = st.se-active-sheet,
+    se-cursor-x = st.se-cursor-x,
+    se-cursor-y = st.se-cursor-y,
+    se-dragging = 0,
+    se-drag-start-x = 0,
+    se-drag-start-y = 0,
+    se-wire-in-progress = 0,
+    se-wire-start-x = 0,
+    se-wire-start-y = 0,
+    se-place-component = st.se-place-component,
+    se-grid-snap = st.se-grid-snap,
+    se-modified = st.se-modified
+  }
+
+Section: Keyboard Shortcuts
+
+  KeyAction =
+    | KeyNone
+    | KeySetTool (SchTool)
+    | KeyUndo
+    | KeyRedo
+    | KeyDelete
+    | KeyRotate
+    | KeyMirror
+    | KeyEscape
+    | KeyCopy
+    | KeyPaste
+    | KeySelectAll
+    | KeyZoomFit
+    | KeyZoomIn
+    | KeyZoomOut
+    | KeySave
+    | KeyRunErc
+
+  key-to-action : Integer -> KeyAction
+  key-to-action (key) =
+    if key == 87 then KeySetTool SchToolWire
+    else if key == 66 then KeySetTool SchToolBus
+    else if key == 80 then KeySetTool SchToolPlace
+    else if key == 76 then KeySetTool SchToolLabel
+    else if key == 88 then KeySetTool SchToolNoConnect
+    else if key == 27 then KeyEscape
+    else if key == 46 then KeyDelete
+    else if key == 82 then KeyRotate
+    else if key == 89 then KeyMirror
+    else KeyNone

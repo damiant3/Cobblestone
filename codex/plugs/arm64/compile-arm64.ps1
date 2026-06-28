@@ -97,7 +97,7 @@ for ($fi = 0; $fi -lt $funcCount; $fi++) {
 }
 
 # Build ELF64 (minimal: single LOAD segment)
-$loadAddr = [uint64]0x40000000
+$loadAddr = [uint64]0x40100000
 $headerSize = 64
 $phdrSize = 56
 $phdrCount = 1
@@ -107,7 +107,7 @@ $textEnd = $textStart + $codeLen
 $rodataStart = [int](($textEnd + 7) -band 0xFFFFFFF8)
 [uint64]$entry = $loadAddr + [uint64]$textStart + [uint64]$entryOffset
 $segFilesz = $rodataStart + $dataLen - $textStart
-$segMemsz = $segFilesz + 0x1000000  # 16MB heap
+$segMemsz = $segFilesz + 0x0F000000  # 240MB heap
 
 $elf = [System.IO.MemoryStream]::new()
 $bw = [System.IO.BinaryWriter]::new($elf)
@@ -140,7 +140,7 @@ $bw.Write([uint64]($loadAddr + $textStart)) # vaddr
 $bw.Write([uint64]($loadAddr + $textStart)) # paddr
 $bw.Write([uint64]$segFilesz) # filesz
 $bw.Write([uint64]$segMemsz) # memsz
-$bw.Write([uint64]0x10000) # align
+$bw.Write([uint64]0x1000) # align
 
 # Padding to text start
 $padding = $textStart - $headersEnd

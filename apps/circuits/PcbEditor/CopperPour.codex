@@ -1,0 +1,144 @@
+Chapter: CopperPour
+  cites Foreword chapter List
+
+ Zone fill algorithm for copper pours. Takes a zone boundary polygon,
+ subtracts clearance regions around pads, tracks, and vias of other
+ nets, and generates filled copper polygons with optional hatching
+ and thermal relief connections.
+
+Section: Fill Polygon
+
+  FillVertex = record {
+    fv-x : Integer,
+    fv-y : Integer
+  }
+
+  FillPolygon = record {
+    fpoly-vertices : List FillVertex,
+    fpoly-vertex-count : Integer,
+    fpoly-is-hole : Integer
+  }
+
+  empty-fill-polygon : FillPolygon
+  empty-fill-polygon = FillPolygon {
+    fpoly-vertices = [],
+    fpoly-vertex-count = 0,
+    fpoly-is-hole = 0
+  }
+
+  fill-polygon-add-vertex : FillPolygon, Integer, Integer -> FillPolygon
+  fill-polygon-add-vertex (p) (x) (y) = FillPolygon {
+    fpoly-vertices = list-push p.fpoly-vertices (FillVertex { fv-x = x, fv-y = y }),
+    fpoly-vertex-count = p.fpoly-vertex-count + 1,
+    fpoly-is-hole = p.fpoly-is-hole
+  }
+
+Section: Thermal Relief
+
+  ThermalSpoke = record {
+    ts-pad-x : Integer,
+    ts-pad-y : Integer,
+    ts-spoke-width : Integer,
+    ts-gap : Integer,
+    ts-angle : Integer
+  }
+
+  thermal-spoke-count : Integer
+  thermal-spoke-count = 4
+
+Section: Zone Fill Result
+
+  ZoneFillResult = record {
+    zfr-zone-name : Text,
+    zfr-layer : Integer,
+    zfr-net : Integer,
+    zfr-filled-polygons : List FillPolygon,
+    zfr-clearance-holes : List FillPolygon,
+    zfr-thermal-spokes : List ThermalSpoke,
+    zfr-filled-area : Integer,
+    zfr-island-count : Integer
+  }
+
+  empty-fill-result : Text, Integer, Integer -> ZoneFillResult
+  empty-fill-result (name) (layer) (net) = ZoneFillResult {
+    zfr-zone-name = name,
+    zfr-layer = layer,
+    zfr-net = net,
+    zfr-filled-polygons = [],
+    zfr-clearance-holes = [],
+    zfr-thermal-spokes = [],
+    zfr-filled-area = 0,
+    zfr-island-count = 0
+  }
+
+  fill-add-polygon : ZoneFillResult, FillPolygon -> ZoneFillResult
+  fill-add-polygon (r) (p) = ZoneFillResult {
+    zfr-zone-name = r.zfr-zone-name,
+    zfr-layer = r.zfr-layer,
+    zfr-net = r.zfr-net,
+    zfr-filled-polygons = list-push r.zfr-filled-polygons p,
+    zfr-clearance-holes = r.zfr-clearance-holes,
+    zfr-thermal-spokes = r.zfr-thermal-spokes,
+    zfr-filled-area = r.zfr-filled-area,
+    zfr-island-count = r.zfr-island-count + 1
+  }
+
+  fill-add-clearance-hole : ZoneFillResult, FillPolygon -> ZoneFillResult
+  fill-add-clearance-hole (r) (hole) = ZoneFillResult {
+    zfr-zone-name = r.zfr-zone-name,
+    zfr-layer = r.zfr-layer,
+    zfr-net = r.zfr-net,
+    zfr-filled-polygons = r.zfr-filled-polygons,
+    zfr-clearance-holes = list-push r.zfr-clearance-holes hole,
+    zfr-thermal-spokes = r.zfr-thermal-spokes,
+    zfr-filled-area = r.zfr-filled-area,
+    zfr-island-count = r.zfr-island-count
+  }
+
+Section: Clearance Expansion
+
+ Expand a rectangular pad into a clearance polygon by adding the
+ zone clearance on all sides.
+
+  expand-pad-clearance : Integer, Integer, Integer, Integer, Integer -> FillPolygon
+  expand-pad-clearance (cx) (cy) (half-w) (half-h) (clearance) =
+    let x1 = cx - half-w - clearance
+    in let y1 = cy - half-h - clearance
+    in let x2 = cx + half-w + clearance
+    in let y2 = cy + half-h + clearance
+    in let p = empty-fill-polygon
+    in let p1 = fill-polygon-add-vertex p x1 y1
+    in let p2 = fill-polygon-add-vertex p1 x2 y1
+    in let p3 = fill-polygon-add-vertex p2 x2 y2
+    in let p4 = fill-polygon-add-vertex p3 x1 y2
+    in FillPolygon {
+      fpoly-vertices = p4.fpoly-vertices,
+      fpoly-vertex-count = p4.fpoly-vertex-count,
+      fpoly-is-hole = 1
+    }
+
+Section: Hatch Pattern
+
+  HatchLine = record {
+    hl-x1 : Integer,
+    hl-y1 : Integer,
+    hl-x2 : Integer,
+    hl-y2 : Integer,
+    hl-width : Integer
+  }
+
+  generate-hatch-lines : Integer, Integer, Integer, Integer, Integer, Integer -> List HatchLine
+  generate-hatch-lines (x1) (y1) (x2) (y2) (spacing) (width) =
+    generate-hatch-lines-from x1 y1 x2 y2 spacing width y1 []
+
+  generate-hatch-lines-from : Integer, Integer, Integer, Integer, Integer, Integer, Integer, List HatchLine -> List HatchLine
+  generate-hatch-lines-from (x1) (y1) (x2) (y2) (spacing) (width) (current-y) (acc) =
+    if current-y > y2 then acc
+    else let line = HatchLine {
+      hl-x1 = x1,
+      hl-y1 = current-y,
+      hl-x2 = x2,
+      hl-y2 = current-y,
+      hl-width = width
+    }
+    in generate-hatch-lines-from x1 y1 x2 y2 spacing width (current-y + spacing) (list-push acc line)

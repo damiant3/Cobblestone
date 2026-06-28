@@ -64,6 +64,14 @@ $QuireDirs = @{
     'Site' = 'apps\site'
     'Boards' = 'codex\boards'
     'Guios' = 'apps\guios'
+    'Circuits' = 'apps\circuits\Core'
+    'CircuitsSch' = 'apps\circuits\SchematicEditor'
+    'CircuitsSym' = 'apps\circuits\SymbolEditor'
+    'CircuitsSim' = 'apps\circuits\Simulator'
+    'CircuitsPcb' = 'apps\circuits\PcbEditor'
+    'CircuitsFp' = 'apps\circuits\FootprintEditor'
+    'CircuitsBv' = 'apps\circuits\BoardViewer'
+    'CircuitsMfg' = 'apps\circuits\Manufacturing'
 }
 
 function New-CitePattern {

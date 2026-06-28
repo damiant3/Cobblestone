@@ -6,7 +6,8 @@ param(
     [string]$Arch = 'arm64',
     [int]$Jobs = 4,
     [int]$RenoTimeout = 1,
-    [string]$Filter = ""
+    [string]$Filter = "",
+    [switch]$UseQemu
 )
 
 Set-StrictMode -Version Latest
@@ -86,8 +87,11 @@ for ($idx = 0; $idx -lt $eligible.Count; $idx++) {
 $compileEnd = Get-Date
 Write-Host "Compile phase: $([math]::Round(($compileEnd - $compileStart).TotalSeconds, 1))s"
 
-# ---- Phase 2: Run on Renode (parallel) ----
-Write-Host "`n--- Phase 2: Run (${Jobs} parallel slots, ${RenoTimeout}s timeout) ---"
+# ---- Phase 2: Run (parallel) ----
+$emulatorLabel = if ($UseQemu) { "QEMU" } else { "Renode" }
+$qemuTimeoutMs = 500
+$runJobs = if ($UseQemu) { [Math]::Max($Jobs, 8) } else { $Jobs }
+Write-Host "`n--- Phase 2: Run via $emulatorLabel (${runJobs} parallel slots) ---"
 $toRun = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($kv in $compiled.GetEnumerator()) {
     $v = $kv.Value
@@ -96,84 +100,123 @@ foreach ($kv in $compiled.GetEnumerator()) {
 Write-Host "$($toRun.Count) tests to run"
 $runStart = Get-Date
 
+$qemuExe = ''
+$loadAddr = ''
+if ($UseQemu) {
+    $qemuExe = if ($Arch -eq 'riscv64') {
+        "D:\Program Files\qemu\qemu-system-riscv64.exe"
+    } else {
+        "D:\Program Files\qemu\qemu-system-aarch64.exe"
+    }
+    if (-not (Test-Path $qemuExe)) { Write-Error "QEMU not found: $qemuExe"; exit 1 }
+    $loadAddr = if ($Arch -eq 'riscv64') { '0x80000000' } else { '0x40100000' }
+}
+
 $boardPath = (Resolve-Path $boardRepl).Path -replace '\\','/'
-$runResults = $toRun | ForEach-Object -ThrottleLimit $Jobs -Parallel {
+$runResults = $toRun | ForEach-Object -ThrottleLimit $runJobs -Parallel {
     $t = $_
     $name = $t.Name
-    $renodeExe = $using:renodeExe
-    $boardPath = $using:boardPath
+    $useQ = $using:UseQemu
     $outRoot = $using:outRoot
-    $timeoutSec = $using:RenoTimeout
 
     $testOutDir = Join-Path $outRoot $name
-    $elfPath = (Resolve-Path ($t.Elf)).Path -replace '\\','/'
-    $uartLog = (Join-Path $testOutDir 'uart.log') -replace '\\','/'
-    $uartLogWin = $uartLog -replace '/','\'
+    $uartLogWin = Join-Path $testOutDir 'uart.log'
     if (Test-Path $uartLogWin) { Remove-Item $uartLogWin -Force }
 
-    $rescContent = @(
-        'mach create "codex"'
-        "machine LoadPlatformDescription @$boardPath"
-        "sysbus LoadELF @$elfPath"
-        "uart0 CreateFileBackend @$uartLog true"
-        'start'
-        "sleep $timeoutSec"
-        'quit'
-    ) -join "`n"
-    $rescFile = Join-Path $testOutDir 'run.resc'
-    [System.IO.File]::WriteAllText($rescFile, $rescContent)
-    $rescPath = $rescFile -replace '\\','/'
-
     $rs = Get-Date
-    & $renodeExe --disable-xwt --console -e "include @$rescPath" 2>&1 | Out-Null
-    Start-Sleep -Milliseconds 200
-    $re = Get-Date
-    $rt = [math]::Round(($re - $rs).TotalSeconds, 1)
-
     $status = 'UNKNOWN'
     $reason = ''
 
-    if (-not (Test-Path $uartLogWin)) {
-        $status = 'FAIL_RUNTIME'; $reason = 'no uart output'
-    } else {
-        $raw = [System.IO.File]::ReadAllText($uartLogWin) -replace "`r",''
-        $allLines = $raw -split "`n"
-        $lines = [System.Collections.Generic.List[string]]::new()
-        foreach ($l in $allLines) {
-            if ($l.StartsWith('HEAP:') -or $l.StartsWith('WD:') -or $l.StartsWith('STACK:')) { continue }
-            $lines.Add($l)
-        }
-        while ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') {
-            $lines.RemoveAt($lines.Count - 1)
-        }
-
-        $expectedFile = Join-Path ($t.Dir) "$name.expected"
-        $expectedText = [System.IO.File]::ReadAllText($expectedFile) -replace "`r",''
-        $expAllLines = @($expectedText -split "`n")
-        while ($expAllLines.Count -gt 0 -and $expAllLines[$expAllLines.Count - 1] -eq '') {
-            $expAllLines = $expAllLines[0..($expAllLines.Count - 2)]
-        }
-        $expLineCount = $expAllLines.Count
-        if ($lines.Count -gt $expLineCount -and $expLineCount -gt 0) {
-            $lines = [System.Collections.Generic.List[string]]::new(
-                [string[]]@($lines | Select-Object -First $expLineCount))
-        }
-
-        $actual = if ($lines.Count -gt 0) { ($lines -join "`n") + "`n" } else { '' }
-        $actualFile = Join-Path $testOutDir 'runtime.actual'
-        [System.IO.File]::WriteAllText($actualFile, $actual, [System.Text.UTF8Encoding]::new($false))
-
-        if ($expectedText -eq $actual) {
-            $status = 'PASS_EXPECTED'
+    if ($useQ) {
+        $qemuExe = $using:qemuExe
+        $loadAddr = $using:loadAddr
+        $arch = $using:Arch
+        $timeoutMs = $using:qemuTimeoutMs
+        $binFile = Join-Path $testOutDir "$name.bin"
+        if (-not (Test-Path $binFile)) { $binFile = (Get-ChildItem "$testOutDir\*.bin" | Select-Object -First 1).FullName }
+        if (-not $binFile -or -not (Test-Path $binFile)) {
+            $status = 'FAIL_RUNTIME'; $reason = 'no .bin file'
         } else {
-            $status = 'FAIL_OUTPUT'
-            $expLines = $expectedText -split "`n"
-            $actLines = $actual -split "`n"
-            $maxL = [Math]::Max($expLines.Count, $actLines.Count)
-            for ($i = 0; $i -lt [Math]::Min($maxL, 3); $i++) {
-                $e = if ($i -lt $expLines.Count) { $expLines[$i] } else { '(missing)' }
-                $a2 = if ($i -lt $actLines.Count) { $actLines[$i] } else { '(missing)' }
-                if ($e -ne $a2) { $reason = "line $($i+1): exp=[$e] act=[$a2]"; break }
+            $machArgs = if ($arch -eq 'riscv64') {
+                @('-M','virt','-m','256M','-display','none','-monitor','none','-bios','none',
+                  '-device',"loader,file=$binFile,addr=$loadAddr",'-serial',"file:$uartLogWin")
+            } else {
+                @('-M','virt','-cpu','cortex-a53','-m','256M','-display','none','-monitor','none','-bios','none',
+                  '-device',"loader,file=$binFile,addr=$loadAddr",'-serial',"file:$uartLogWin")
+            }
+            $proc = Start-Process -FilePath $qemuExe -ArgumentList $machArgs -PassThru -NoNewWindow
+            $proc.WaitForExit($timeoutMs)
+            if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
+        }
+    } else {
+        $renodeExe = $using:renodeExe
+        $boardPath = $using:boardPath
+        $timeoutSec = $using:RenoTimeout
+        $elfPath = (Resolve-Path ($t.Elf)).Path -replace '\\','/'
+        $uartLog = $uartLogWin -replace '\\','/'
+        $rescContent = @(
+            'mach create "codex"'
+            "machine LoadPlatformDescription @$boardPath"
+            "sysbus LoadELF @$elfPath"
+            "uart0 CreateFileBackend @$uartLog true"
+            'start'
+            "sleep $timeoutSec"
+            'quit'
+        ) -join "`n"
+        $rescFile = Join-Path $testOutDir 'run.resc'
+        [System.IO.File]::WriteAllText($rescFile, $rescContent)
+        $rescPath = ($rescFile -replace '\\','/')
+        & $renodeExe --disable-xwt --console -e "include @$rescPath" 2>&1 | Out-Null
+        Start-Sleep -Milliseconds 200
+    }
+
+    $re = Get-Date
+    $rt = [math]::Round(($re - $rs).TotalSeconds, 1)
+
+    if ($status -ne 'FAIL_RUNTIME') {
+        Start-Sleep -Milliseconds 50
+        if (-not (Test-Path $uartLogWin)) {
+            $status = 'FAIL_RUNTIME'; $reason = 'no uart output'
+        } else {
+            $raw = [System.IO.File]::ReadAllText($uartLogWin) -replace "`r",''
+            $allLines = $raw -split "`n"
+            $lines = [System.Collections.Generic.List[string]]::new()
+            foreach ($l in $allLines) {
+                if ($l.StartsWith('HEAP:') -or $l.StartsWith('WD:') -or $l.StartsWith('STACK:')) { continue }
+                $lines.Add($l)
+            }
+            while ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') {
+                $lines.RemoveAt($lines.Count - 1)
+            }
+
+            $expectedFile = Join-Path ($t.Dir) "$name.expected"
+            $expectedText = [System.IO.File]::ReadAllText($expectedFile) -replace "`r",''
+            $expAllLines = @($expectedText -split "`n")
+            while ($expAllLines.Count -gt 0 -and $expAllLines[$expAllLines.Count - 1] -eq '') {
+                $expAllLines = $expAllLines[0..($expAllLines.Count - 2)]
+            }
+            $expLineCount = $expAllLines.Count
+            if ($lines.Count -gt $expLineCount -and $expLineCount -gt 0) {
+                $lines = [System.Collections.Generic.List[string]]::new(
+                    [string[]]@($lines | Select-Object -First $expLineCount))
+            }
+
+            $actual = if ($lines.Count -gt 0) { ($lines -join "`n") + "`n" } else { '' }
+            $actualFile = Join-Path $testOutDir 'runtime.actual'
+            [System.IO.File]::WriteAllText($actualFile, $actual, [System.Text.UTF8Encoding]::new($false))
+
+            if ($expectedText -eq $actual) {
+                $status = 'PASS_EXPECTED'
+            } else {
+                $status = 'FAIL_OUTPUT'
+                $expLines = $expectedText -split "`n"
+                $actLines = $actual -split "`n"
+                $maxL = [Math]::Max($expLines.Count, $actLines.Count)
+                for ($i = 0; $i -lt [Math]::Min($maxL, 3); $i++) {
+                    $e = if ($i -lt $expLines.Count) { $expLines[$i] } else { '(missing)' }
+                    $a2 = if ($i -lt $actLines.Count) { $actLines[$i] } else { '(missing)' }
+                    if ($e -ne $a2) { $reason = "line $($i+1): exp=[$e] act=[$a2]"; break }
+                }
             }
         }
     }
@@ -214,13 +257,14 @@ foreach ($kv in $compiled.GetEnumerator()) {
 $md = [System.Text.StringBuilder]::new()
 $archLabel = if ($Arch -eq 'arm64') { 'ARM64' } else { 'RISC-V 64' }
 $boardLabel = if ($Arch -eq 'arm64') { 'codex-arm64.repl, Cortex-A53 + PL011' } else { 'codex-riscv64.repl, RV64GC + NS16550' }
+$emuLabel = if ($UseQemu) { "QEMU ($Arch virt)" } else { "Renode (``$boardLabel``)" }
 [void]$md.AppendLine("# $archLabel Cross-Compilation Test Results")
 [void]$md.AppendLine("")
 [void]$md.AppendLine("**Date**: $(Get-Date -Format 'yyyy-MM-dd HH:mm')")
 [void]$md.AppendLine("**Seed**: ``seed/Codex.cdx``")
 [void]$md.AppendLine("**Plug**: ``codex/plugs/$plugName/build-output/$plugName-plug.cdx``")
-[void]$md.AppendLine("**Emulator**: Renode (``$boardLabel``)")
-[void]$md.AppendLine("**Parallel slots**: $Jobs (Renode timeout: ${RenoTimeout}s)")
+[void]$md.AppendLine("**Emulator**: $emuLabel")
+[void]$md.AppendLine("**Parallel slots**: $runJobs")
 [void]$md.AppendLine("**Total time**: ${totalMin} min (${totalSec}s)")
 [void]$md.AppendLine("")
 [void]$md.AppendLine("## Summary")
