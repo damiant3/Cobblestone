@@ -38,12 +38,12 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-06-28:
+As of 2026-07-01:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
   byte-identical. The compiler reproduces itself on bare metal.
-- **507 library modules** (360 foreword + 147 OS) across 28 quires: data structures, crypto,
+- **508 library modules** (371 foreword + 137 OS/kernel) across 28 quires: data structures, crypto,
   networking (full TCP/IP + UDP/ICMP/DNS/DHCP/NTP/Syslog/TFTP), game
   engine (A*, hex maps, ECS, physics, Voronoi, Perlin), 3D engine
   (renderer, scene graph, LOD, culling, materials, skinning, audio,
@@ -138,12 +138,17 @@ As of 2026-06-28:
   IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian.
   Every function is `punctual`: no heap, no recursion, bounded instruction
   count. Safe for real-time, embedded, and interrupt contexts.
-- **Dependent types**: `PropEqTy` — the first type carrying value
-  information. `===` in type position produces propositional equality;
-  `Refl` verified by the unifier (invalid proofs are type errors).
+- **Dependent types + machine-checked proofs**: `PropEqTy` — types
+  carrying value information. `===` in type position produces propositional
+  equality; `Refl` verified by the unifier (invalid proofs are type errors).
   `Proof` as first-class type name. Proof erasure at emit (zero machine
-  code for proof definitions). `claim`/`proof` parser with `induction`
-  keyword. Proof builtins: Refl, sym, trans, cong, assume.
+  code for proof definitions). `claim`/`proof`/`qed` syntax with
+  `induction` keyword. Structural induction over user-defined types with
+  per-constructor subgoal verification. Builtins: Refl, sym, trans, cong,
+  app-cong, assume. Definitional equality normalizer (delta/iota/beta
+  reduction). Flagship proof: `reverse (reverse xs) === xs` machine-checked
+  by induction with a four-lemma chain (append-nil, append-assoc,
+  reverse-append, reverse-reverse). All proofs erase -- zero runtime cost.
 - **Static bounds prover**: compiler proves bounded-integer range safety
   at compile time and elides runtime bounds checks (CDX4010). Handles
   literals, field access, int-mod, bit-and, negation. O(1) shallow
@@ -204,10 +209,9 @@ As of 2026-06-28:
 - **For-expressions**: `for x in xs do f x` syntactic sugar for map
   loops. Desugars to `list-map` with a lambda. Dogfooded across ~50
   call sites in 19 files.
-- **Sample battery**: 137 smoke tests (consolidated from 232 individual
-  tests); 127 pass, 0 fail (10 skipped: fatal or platform-specific) --
-  run against stage1, the self-applied compiler. BVT mode: 10-test
-  subset, full build in ~113s.
+- **Sample battery**: ~207 tests; 207 pass, 0 fail --
+  run against stage1, the self-applied compiler. BVT mode: 24-test
+  subset, full build in ~130s.
 - **Native-class codegen**: three parallel optimization campaigns across
   x86-64, ARM64, and RISC-V. 8 micro-benchmarks (fib, fact, gcd, sum,
   ack, tak, collatz, locals). ARM64: 176 insns total, beats GCC -Os by
@@ -243,19 +247,18 @@ As of 2026-06-28:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (1,921,384 bytes, ~1.83 MB) — the canonical seed:
+**`seed/Codex.cdx`** (1,967,194 bytes, ~1.88 MB) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `A403ED8A` |
-| SHA-256 | `AA8807CEB49104FAE571C618372ACE83717AFAE97E3AE57AB2EE2AF328FC018F` |
+| Content hash prefix | `3D7787D0` |
+| SHA-256 | `3D7787D09331142192E9D0D5FF91C53C3158D9A9EEDD634EDE39CC3885908544` |
 
-The seed shrank ~2.31 MB to ~1.83 MB on 2026-06-29 — the first rebuild
-since June 21 captured the accumulated x86-64 codegen campaign (Val's
-optimization CLs plus in-place binary folds and a TCO spill-to-register
-move). Pure density: the function count actually rose and zero functions
-were dropped (verified against the prior codegen of identical source),
-so the smaller binary is the same compiler emitting tighter code.
+The seed grew from ~1.83 MB to ~1.88 MB on 2026-07-01, absorbing the
+CCE output boundary (tier0/1/2 UTF-8 conversion), the proof infrastructure
+(induction, normalizer, app-cong), and val's syntax cleanup (removed ++
+operator, chained arrows, vestigial tokens). The seed now carries full
+Unicode output support and machine-checked proof verification.
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
@@ -291,7 +294,8 @@ assuming.
   structure. The compiler parses prose alongside code.
 - **Own character encoding.** CCE (Codex Character Encoding) is
   frequency-sorted: `is-letter` is one comparison, not a table lookup.
-  Unicode only at I/O boundaries.
+  Unicode at I/O boundaries: UTF-8 input decodes to CCE (all tiers
+  including CJK, Arabic, emoji); CCE output emits proper UTF-8.
 - **Multiple backends.** The same compiler can target managed runtimes
   (C#, IL, JavaScript, Wasm) and native code (x86-64 bare metal, CDX).
   The bare-metal target is the perf and trust target; the others are
