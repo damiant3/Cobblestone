@@ -120,7 +120,7 @@ construction.
 | 1(a) | No exploitable vulnerabilities | Linear types (no UAF/double-free), bounded integers (no overflow), effect types (no undeclared I/O) | BY-CONSTRUCTION |
 | 1(b) | Secure by default | Empty capability tables, effect types enforce invariants | BY-CONSTRUCTION |
 | 1(c) | Data protection | AES-GCM-256, ChaCha20-Poly1305, TLS 1.3, linear types prevent key aliasing | MECHANISM |
-| 1(d) | Denial-of-service resilience | `punctual` WCET proofs, bounded integers, fuel-capped recursion, preemptive scheduler | BY-CONSTRUCTION |
+| 1(d) | Denial-of-service resilience | `punctual` instruction-count bounds, bounded integers, fuel-capped recursion, preemptive scheduler | BY-CONSTRUCTION |
 | 1(e) | Attack surface minimization | No OS/libc/dynamic linker, effect types restrict capabilities, dead-code elimination | BY-CONSTRUCTION |
 | 1(f) | Logging and monitoring | Effect-typed `[Audit]` channel, append-only FactStore with CRC framing | MECHANISM |
 | 2(a) | Component identification | Content-addressed CDX, Ed25519 signatures, trust lattice provenance | MECHANISM |
