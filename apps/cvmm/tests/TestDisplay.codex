@@ -1,0 +1,141 @@
+Chapter: TestDisplay
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter CvmmDisplay
+
+ Unit tests for the display protocol: dirty rect tracking, frame
+ encoding, input decoding, and display statistics.
+
+Section: Test Harness
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) =
+    if val then "PASS " & label
+    else "FAIL " & label & ": expected True"
+
+  assert-false : Text, Boolean -> Text
+  assert-false (label) (val) =
+    if val then "FAIL " & label & ": expected False"
+    else "PASS " & label
+
+Section: Dirty Rect Tests
+
+  test-dirty-rect-basics : Text
+  test-dirty-rect-basics =
+    let r = dirty-rect-new 10 20 100 50
+    in let t1 = assert-eq-int "rect-x" 10 (r.dr-x)
+    in let t2 = assert-eq-int "rect-w" 100 (r.dr-w)
+    in let t3 = assert-eq-int "rect-pixels" 5000 (r.dr-pixel-count)
+    in let t4 = assert-eq-int "rect-bytes" 20000 (dirty-rect-byte-size r)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-dirty-overlap : Text
+  test-dirty-overlap =
+    let a = dirty-rect-new 0 0 100 100
+    in let b = dirty-rect-new 50 50 100 100
+    in let c = dirty-rect-new 200 200 50 50
+    in let t1 = assert-true "overlap-ab" (dirty-rects-overlap a b)
+    in let t2 = assert-false "no-overlap-ac" (dirty-rects-overlap a c)
+    in let t3 = assert-true "overlap-symmetric" (dirty-rects-overlap b a)
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-dirty-merge : Text
+  test-dirty-merge =
+    let a = dirty-rect-new 10 10 50 50
+    in let b = dirty-rect-new 40 40 50 50
+    in let merged = dirty-rects-merge a b
+    in let t1 = assert-eq-int "merged-x" 10 (merged.dr-x)
+    in let t2 = assert-eq-int "merged-y" 10 (merged.dr-y)
+    in let t3 = assert-eq-int "merged-w" 80 (merged.dr-w)
+    in let t4 = assert-eq-int "merged-h" 80 (merged.dr-h)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Dirty Tracker Tests
+
+  test-tracker : Text
+  test-tracker =
+    let dt = dirty-tracker-new 1024 768
+    in let t1 = assert-eq-int "empty-count" 0 (dt.dt-count)
+    in let dt2 = dt-mark-dirty dt 0 0 100 100
+    in let t2 = assert-eq-int "one-rect" 1 (dt2.dt-count)
+    in let dt3 = dt-mark-dirty dt2 50 50 100 100
+    in let t3 = assert-eq-int "merged-still-one" 1 (dt3.dt-count)
+    in let dt4 = dt-mark-dirty dt3 500 500 50 50
+    in let t4 = assert-eq-int "non-overlapping-two" 2 (dt4.dt-count)
+    in let dt5 = dt-clear dt4
+    in let t5 = assert-eq-int "cleared" 0 (dt5.dt-count)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Encoding Tests
+
+  test-u16-encode : Text
+  test-u16-encode =
+    let encoded = encode-u16-le 256
+    in let t1 = assert-eq-int "u16-lo" 0 (list-at encoded 0)
+    in let t2 = assert-eq-int "u16-hi" 1 (list-at encoded 1)
+    in let decoded = decode-u16-le encoded 0
+    in let t3 = assert-eq-int "u16-roundtrip" 256 decoded
+    in let t4 = assert-eq-int "u16-1024" 1024 (decode-u16-le (encode-u16-le 1024) 0)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-u32-encode : Text
+  test-u32-encode =
+    let val = 65536
+    in let encoded = encode-u32-le val
+    in let decoded = decode-u32-le encoded 0
+    in let t1 = assert-eq-int "u32-roundtrip" val decoded
+    in let t2 = assert-eq-int "u32-zero" 0 (decode-u32-le (encode-u32-le 0) 0)
+    in t1 & "\n" & t2
+
+Section: Modifiers Tests
+
+  test-modifiers : Text
+  test-modifiers =
+    let m = KeyModifiers { km-shift = True, km-ctrl = True, km-alt = False, km-meta = False }
+    in let byte-val = modifiers-to-byte m
+    in let t1 = assert-eq-int "shift-ctrl" 3 byte-val
+    in let m2 = byte-to-modifiers byte-val
+    in let t2 = assert-true "shift-roundtrip" (m2.km-shift)
+    in let t3 = assert-true "ctrl-roundtrip" (m2.km-ctrl)
+    in let t4 = assert-false "no-alt" (m2.km-alt)
+    in let all = modifiers-to-byte (KeyModifiers { km-shift = True, km-ctrl = True, km-alt = True, km-meta = True })
+    in let t5 = assert-eq-int "all-mods" 15 all
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Display State Tests
+
+  test-display-state : Text
+  test-display-state =
+    let ds = display-state-new 1024 768
+    in let t1 = assert-eq-int "width" 1024 (ds.ds-width)
+    in let t2 = assert-eq-int "height" 768 (ds.ds-height)
+    in let ds2 = display-mark-dirty ds 0 0 100 100
+    in let t3 = assert-eq-int "dirty-count" 1 ((ds2.ds-tracker).dt-count)
+    in let ds3 = display-mark-full ds2
+    in let t4 = assert-eq-int "full-dirty" 1 ((ds3.ds-tracker).dt-count)
+    in let ds4 = display-clear-dirty ds3
+    in let t5 = assert-eq-int "cleared-dirty" 0 ((ds4.ds-tracker).dt-count)
+    in let ds5 = display-resize ds4 1920 1080
+    in let t6 = assert-eq-int "resized-w" 1920 (ds5.ds-width)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5 & "\n" & t6
+
+Section: Entry
+
+  opening : [Console] None = act
+    print-line-uni "=== Display Protocol Tests ==="
+    print-line-uni test-dirty-rect-basics
+    print-line-uni test-dirty-overlap
+    print-line-uni test-dirty-merge
+    print-line-uni test-tracker
+    print-line-uni test-u16-encode
+    print-line-uni test-u32-encode
+    print-line-uni test-modifiers
+    print-line-uni test-display-state
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

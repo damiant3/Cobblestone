@@ -1,0 +1,85 @@
+Chapter: ReplayVerifier
+  cites Replay chapter ReplayLog
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ The ReplayVerifier replays a CRF recording against a ReplayLog,
+ consuming events one by one and comparing hashes to confirm
+ bit-exact reproduction of the original execution.
+
+ We say:
+
+Section: Verification Result
+
+  ReplayVerifyResult = record {
+    valid : Boolean,
+    events-consumed : Integer between 0 and 4294967295,
+    error : Text
+  }
+
+  replay-verify-ok : Integer -> ReplayVerifyResult
+  replay-verify-ok (consumed) = ReplayVerifyResult { valid = True, events-consumed = consumed, error = "" }
+
+  replay-verify-fail : Integer, Text -> ReplayVerifyResult
+  replay-verify-fail (consumed) (err) = ReplayVerifyResult { valid = False, events-consumed = consumed, error = err }
+
+Section: Header Verification
+
+  verify-replay-header : ReplaySession, Text, Text -> ReplayVerifyResult
+  verify-replay-header (session) (expected-prog) (expected-ctx) =
+    if session.program-hash /= expected-prog then replay-verify-fail 0 ("program hash mismatch: expected " & expected-prog & " got " & session.program-hash)
+    else if session.context-hash /= expected-ctx then replay-verify-fail 0 ("context hash mismatch: expected " & expected-ctx & " got " & session.context-hash)
+    else replay-verify-ok 0
+
+Section: Sequence Verification
+
+  verify-event-sequence : ReplaySession, List ReplayEvent -> ReplayVerifyResult
+  verify-event-sequence (session) (expected) =
+    if session.event-count /= list-length expected then replay-verify-fail 0 ("event count mismatch: log has " & show (session.event-count) & " expected " & show (list-length expected))
+    else verify-events-loop session expected 0 (list-length expected)
+
+  verify-events-loop : ReplaySession, List ReplayEvent, Integer, Integer -> ReplayVerifyResult
+  verify-events-loop (session) (expected) (i) (len) =
+    if i >= len then replay-verify-ok len
+    else let r = replay-next session
+    in if r.valid == False then replay-verify-fail i "unexpected end of log"
+    else let ev = r.event
+    in let exp = list-at expected i
+    in if event-type-tag ev /= event-type-tag exp then replay-verify-fail i ("event " & show i & " type mismatch: got " & event-type-name ev & " expected " & event-type-name exp)
+    else if event-agent-id ev /= event-agent-id exp then replay-verify-fail i ("event " & show i & " agent mismatch: got " & show (event-agent-id ev) & " expected " & show (event-agent-id exp))
+    else verify-events-loop (r.session) expected (i + 1) len
+
+Section: Schedule Trace Verification
+
+  verify-schedule-trace : ReplaySession, List Integer -> ReplayVerifyResult
+  verify-schedule-trace (session) (expected-agents) =
+    verify-schedule-loop session expected-agents 0 (list-length expected-agents) 0
+
+  verify-schedule-loop : ReplaySession, List Integer, Integer, Integer, Integer -> ReplayVerifyResult
+  verify-schedule-loop (session) (agents) (i) (len) (consumed) =
+    if i >= len then replay-verify-ok consumed
+    else let r = replay-next session
+    in if r.valid == False then replay-verify-fail consumed "log exhausted before trace complete"
+    else when (r.event)
+      is ScheduleEvent (from) (to) (reason) ->
+        if to /= list-at agents i then replay-verify-fail consumed ("schedule " & show i & ": expected agent " & show (list-at agents i) & " got " & show to)
+        else verify-schedule-loop (r.session) agents (i + 1) len (consumed + 1)
+      is otherwise -> verify-schedule-loop (r.session) agents i len (consumed + 1)
+
+Section: Completeness Check
+
+  verify-exhausted : ReplaySession -> ReplayVerifyResult
+  verify-exhausted (session) =
+    if replay-exhausted session then replay-verify-ok (session.cursor)
+    else replay-verify-fail (session.cursor) ("log has " & show (replay-remaining session) & " unconsumed events")
+
+Section: Full Verification Pipeline
+
+  verify-replay-full : ReplaySession, Text, Text, List ReplayEvent -> ReplayVerifyResult
+  verify-replay-full (session) (prog) (ctx) (expected-events) =
+    let hr = verify-replay-header session prog ctx
+    in if hr.valid == False then hr
+    else let sr = verify-event-sequence session expected-events
+    in sr
+
+Page 1

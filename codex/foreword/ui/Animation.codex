@@ -1,0 +1,234 @@
+Chapter: Animation
+  cites UI chapter Theme
+  cites Math chapter Spline
+  cites Foreword chapter ListUtils
+
+ Tick-driven animation system. Throbbers, property transitions,
+ and keyframe sequences. All values are integer fixed-point
+ (scale 1000). Integrates with easing functions from Game.Easing.
+
+Section: Throbber
+  ThrobberKind =
+    | ThrobSpin
+    | ThrobPulse
+    | ThrobBounce
+    | ThrobBar
+
+  Throbber = record {
+    thr-kind : ThrobberKind,
+    thr-period : Integer,
+    thr-elapsed : Integer,
+    thr-phase : Integer,
+    thr-size : Integer,
+    thr-color : Integer between 0 and 16777215,
+    thr-active : Boolean
+  }
+
+Section: Throbber Construction
+  throbber-spin : Integer, Integer, Integer -> Throbber
+  throbber-spin (period) (size) (color) =
+    Throbber { thr-kind = ThrobSpin, thr-period = period, thr-elapsed = 0, thr-phase = 0, thr-size = size, thr-color = color, thr-active = True }
+
+  throbber-pulse : Integer, Integer, Integer -> Throbber
+  throbber-pulse (period) (size) (color) =
+    Throbber { thr-kind = ThrobPulse, thr-period = period, thr-elapsed = 0, thr-phase = 0, thr-size = size, thr-color = color, thr-active = True }
+
+  throbber-bounce : Integer, Integer, Integer -> Throbber
+  throbber-bounce (period) (size) (color) =
+    Throbber { thr-kind = ThrobBounce, thr-period = period, thr-elapsed = 0, thr-phase = 0, thr-size = size, thr-color = color, thr-active = True }
+
+  throbber-bar : Integer, Integer, Integer -> Throbber
+  throbber-bar (period) (size) (color) =
+    Throbber { thr-kind = ThrobBar, thr-period = period, thr-elapsed = 0, thr-phase = 0, thr-size = size, thr-color = color, thr-active = True }
+
+Section: Throbber Tick
+  throbber-tick : Throbber, Integer -> Throbber
+  throbber-tick (thr) (dt) =
+    if thr.thr-active then
+      let new-elapsed = thr.thr-elapsed + dt
+      in let wrapped = if new-elapsed >= thr.thr-period then new-elapsed - thr.thr-period else new-elapsed
+      in let phase = if thr.thr-period > 0 then wrapped * 1000 / thr.thr-period else 0
+      in Throbber { thr-kind = thr.thr-kind, thr-period = thr.thr-period, thr-elapsed = wrapped, thr-phase = phase, thr-size = thr.thr-size, thr-color = thr.thr-color, thr-active = True }
+    else thr
+
+  throbber-start : Throbber -> Throbber
+  throbber-start (thr) =
+    Throbber { thr-kind = thr.thr-kind, thr-period = thr.thr-period, thr-elapsed = 0, thr-phase = 0, thr-size = thr.thr-size, thr-color = thr.thr-color, thr-active = True }
+
+  throbber-stop : Throbber -> Throbber
+  throbber-stop (thr) =
+    Throbber { thr-kind = thr.thr-kind, thr-period = thr.thr-period, thr-elapsed = thr.thr-elapsed, thr-phase = thr.thr-phase, thr-size = thr.thr-size, thr-color = thr.thr-color, thr-active = False }
+
+Section: Throbber Render Values
+  throbber-spin-angle : Throbber -> Integer
+  throbber-spin-angle (thr) = thr.thr-phase * 360 / 1000
+
+  throbber-pulse-scale : Throbber -> Integer
+  throbber-pulse-scale (thr) =
+    let half = if thr.thr-phase < 500 then thr.thr-phase * 2 else (1000 - thr.thr-phase) * 2
+    in 500 + half / 2
+
+  throbber-bounce-offset : Throbber -> Integer
+  throbber-bounce-offset (thr) =
+    let up = if thr.thr-phase < 500 then thr.thr-phase * 2 else (1000 - thr.thr-phase) * 2
+    in thr.thr-size * up / 1000
+
+  throbber-bar-position : Throbber, Integer -> Integer
+  throbber-bar-position (thr) (width) =
+    thr.thr-phase * width / 1000
+
+Section: Property Transition
+  Transition = record {
+    tr-prop : Text,
+    tr-from : Integer,
+    tr-to : Integer,
+    tr-duration : Integer,
+    tr-elapsed : Integer,
+    tr-easing : Integer,
+    tr-done : Boolean
+  }
+
+Section: Transition Construction
+  transition-new : Text, Integer, Integer, Integer, Integer -> Transition
+  transition-new (prop) (from) (to) (duration) (easing) =
+    Transition { tr-prop = prop, tr-from = from, tr-to = to, tr-duration = duration, tr-elapsed = 0, tr-easing = easing, tr-done = False }
+
+Section: Transition Tick
+  transition-tick : Transition, Integer -> Transition
+  transition-tick (tr) (dt) =
+    if tr.tr-done then tr
+    else let new-elapsed = tr.tr-elapsed + dt
+    in if new-elapsed >= tr.tr-duration then
+      Transition { tr-prop = tr.tr-prop, tr-from = tr.tr-from, tr-to = tr.tr-to, tr-duration = tr.tr-duration, tr-elapsed = tr.tr-duration, tr-easing = tr.tr-easing, tr-done = True }
+    else Transition { tr-prop = tr.tr-prop, tr-from = tr.tr-from, tr-to = tr.tr-to, tr-duration = tr.tr-duration, tr-elapsed = new-elapsed, tr-easing = tr.tr-easing, tr-done = False }
+
+  transition-value : Transition -> Integer
+  transition-value (tr) =
+    if tr.tr-done then tr.tr-to
+    else let t = if tr.tr-duration > 0 then tr.tr-elapsed * 1000 / tr.tr-duration else 1000
+    in tr.tr-from + (tr.tr-to - tr.tr-from) * t / 1000
+
+  transition-reset : Transition, Integer, Integer -> Transition
+  transition-reset (tr) (from) (to) =
+    Transition { tr-prop = tr.tr-prop, tr-from = from, tr-to = to, tr-duration = tr.tr-duration, tr-elapsed = 0, tr-easing = tr.tr-easing, tr-done = False }
+
+Section: Keyframe Sequence
+  Keyframe = record {
+    kf-time : Integer,
+    kf-value : Integer
+  }
+
+  KeyframeSeq = record {
+    ks-frames : List Keyframe,
+    ks-count : Integer,
+    ks-elapsed : Integer,
+    ks-duration : Integer,
+    ks-looping : Boolean,
+    ks-done : Boolean
+  }
+
+Section: Keyframe Construction
+  keyframe : Integer, Integer -> Keyframe
+  keyframe (time) (value) = Keyframe { kf-time = time, kf-value = value }
+
+  keyframe-seq : List Keyframe, Boolean -> KeyframeSeq
+  keyframe-seq (frames) (looping) =
+    let count = list-length frames
+    in let dur = if count > 0 then (list-at frames (count - 1)).kf-time else 0
+    in KeyframeSeq { ks-frames = frames, ks-count = count, ks-elapsed = 0, ks-duration = dur, ks-looping = looping, ks-done = False }
+
+Section: Keyframe Tick
+  keyframe-tick : KeyframeSeq, Integer -> KeyframeSeq
+  keyframe-tick (ks) (dt) =
+    if ks.ks-done then ks
+    else let new-elapsed = ks.ks-elapsed + dt
+    in if new-elapsed >= ks.ks-duration then
+      if ks.ks-looping then
+        KeyframeSeq { ks-frames = ks.ks-frames, ks-count = ks.ks-count, ks-elapsed = new-elapsed - ks.ks-duration, ks-duration = ks.ks-duration, ks-looping = True, ks-done = False }
+      else KeyframeSeq { ks-frames = ks.ks-frames, ks-count = ks.ks-count, ks-elapsed = ks.ks-duration, ks-duration = ks.ks-duration, ks-looping = False, ks-done = True }
+    else KeyframeSeq { ks-frames = ks.ks-frames, ks-count = ks.ks-count, ks-elapsed = new-elapsed, ks-duration = ks.ks-duration, ks-looping = ks.ks-looping, ks-done = False }
+
+  keyframe-value : KeyframeSeq -> Integer
+  keyframe-value (ks) =
+    if ks.ks-count == 0 then 0
+    else kf-interp (ks.ks-frames) (ks.ks-elapsed) 0 (ks.ks-count)
+
+  kf-interp : List Keyframe, Integer, Integer, Integer -> Integer
+  kf-interp (frames) (t) (i) (n) =
+    if i + 1 >= n then (list-at frames (n - 1)).kf-value
+    else let cur = list-at frames i
+    in let next = list-at frames (i + 1)
+    in if t < next.kf-time then
+      let seg-dur = next.kf-time - cur.kf-time
+      in if seg-dur <= 0 then cur.kf-value
+      else let local-t = (t - cur.kf-time) * 1000 / seg-dur
+      in cur.kf-value + (next.kf-value - cur.kf-value) * local-t / 1000
+    else kf-interp frames t (i + 1) n
+
+Section: Animation Set
+  AnimEntry = record {
+    ae-id : Text,
+    ae-transition : Transition
+  }
+
+  AnimSet = record {
+    as-entries : List AnimEntry,
+    as-count : Integer,
+    as-throbbers : List Throbber,
+    as-throb-count : Integer
+  }
+
+  anim-set-new : AnimSet
+  anim-set-new = AnimSet { as-entries = [], as-count = 0, as-throbbers = [], as-throb-count = 0 }
+
+  anim-set-add : AnimSet, Text, Transition -> AnimSet
+  anim-set-add (as) (id) (tr) =
+    let entry = AnimEntry { ae-id = id, ae-transition = tr }
+    in AnimSet { as-entries = list-push (as.as-entries) entry, as-count = as.as-count + 1, as-throbbers = as.as-throbbers, as-throb-count = as.as-throb-count }
+
+  anim-set-add-throbber : AnimSet, Throbber -> AnimSet
+  anim-set-add-throbber (as) (thr) =
+    AnimSet { as-entries = as.as-entries, as-count = as.as-count, as-throbbers = list-push (as.as-throbbers) thr, as-throb-count = as.as-throb-count + 1 }
+
+  anim-set-tick : AnimSet, Integer -> AnimSet
+  anim-set-tick (as) (dt) =
+    let entries = for e in (as.as-entries) -> AnimEntry { ae-id = e.ae-id, ae-transition = transition-tick (e.ae-transition) dt }
+    in let throbbers = for thr in (as.as-throbbers) -> throbber-tick thr dt
+    in AnimSet { as-entries = entries, as-count = as.as-count, as-throbbers = throbbers, as-throb-count = as.as-throb-count }
+
+  anim-set-all-done : AnimSet -> Boolean
+  anim-set-all-done (as) = anim-all-done-loop (as.as-entries) 0 (as.as-count)
+
+  anim-all-done-loop : List AnimEntry, Integer, Integer -> Boolean
+  anim-all-done-loop (entries) (i) (n) =
+    if i >= n then True
+    else let e = list-at entries i
+    in if (e.ae-transition).tr-done then anim-all-done-loop entries (i + 1) n
+    else False
+
+Section: Easing Constants
+  ease-linear-id : Integer
+  ease-linear-id = 0
+
+  ease-quad-in-id : Integer
+  ease-quad-in-id = 1
+
+  ease-quad-out-id : Integer
+  ease-quad-out-id = 2
+
+  ease-bounce-id : Integer
+  ease-bounce-id = 3
+
+Section: Spline Easing Bridge
+
+  ease-spline : List Vec3, Integer -> Integer
+  ease-spline (control-points) (t) =
+    let result = spline-eval control-points (real-from-int t)
+    in real-to-int (result.vy)
+
+  ease-catmull-rom : Vec3, Vec3, Vec3, Vec3, Integer -> Integer
+  ease-catmull-rom (p0) (p1) (p2) (p3) (t) =
+    let result = catmull-rom p0 p1 p2 p3 (real-from-int t)
+    in real-to-int (result.vy)
+
+Page 1

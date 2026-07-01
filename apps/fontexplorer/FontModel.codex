@@ -1,0 +1,99 @@
+Chapter: FontModel
+  cites Foreword chapter List
+  cites AI chapter Tensor
+  cites AI chapter NeuralNet
+
+ Neural font model. Three-layer MLP for glyph shape prediction,
+ two-layer MLP for kerning. Supports font blending via weighted
+ combination of font embeddings and temperature-controlled
+ randomness for variation.
+
+Section: Model Configuration
+
+  FontModelConfig = record {
+    input-dim : Integer,
+    hidden1 : Integer,
+    hidden2 : Integer,
+    output-dim : Integer,
+    n-outer-pts : Integer,
+    n-inner1-pts : Integer,
+    n-inner2-pts : Integer,
+    n-fonts : Integer
+  }
+
+Section: Glyph Inference
+
+  GlyphParams = record {
+    weight : Integer,
+    italic : Integer,
+    temperature : Integer,
+    font-blend : List Integer
+  }
+
+  default-glyph-params : GlyphParams
+  default-glyph-params = GlyphParams {
+    weight = 375,
+    italic = 0,
+    temperature = 0,
+    font-blend = []
+  }
+
+  glyph-forward : NeuralNetwork, Integer, GlyphParams -> List Integer
+  glyph-forward (net) (glyph-idx) (params) =
+    let wt = params.weight
+    in let it = params.italic
+    in let input = glyph-encode-input glyph-idx wt it
+    in let result = nn-forward net input
+    in result.data
+
+  glyph-encode-input : Integer, Integer, Integer -> Tensor
+  glyph-encode-input (glyph-idx) (weight) (italic) =
+    let hot = one-hot glyph-idx 95 0 []
+    in let features = [weight, italic,
+      if glyph-idx >= 33 then 1000 else 0,
+      if glyph-idx >= 65 then 1000 else 0,
+      if glyph-idx >= 33 then 0 else 1000,
+      if glyph-idx >= 16 then 0 else 1000,
+      0]
+    in tensor-vector (list-concat hot features)
+
+  one-hot : Integer, Integer, Integer, List Integer -> List Integer
+  one-hot (idx) (size) (i) (acc) =
+    if i >= size then acc
+    else one-hot idx size (i + 1) (list-push acc (if i == idx then 1000 else 0))
+
+Section: Kerning Inference
+
+  kern-forward : NeuralNetwork, Integer, Integer, GlyphParams -> Integer
+  kern-forward (net) (cp1) (cp2) (params) =
+    let g1 = cp1 - 32
+    in let g2 = cp2 - 32
+    in if g1 < 0 then 0
+    else if g1 >= 95 then 0
+    else if g2 < 0 then 0
+    else if g2 >= 95 then 0
+    else let hot1 = one-hot g1 95 0 []
+    in let hot2 = one-hot g2 95 0 []
+    in let input = tensor-vector (list-concat (list-concat hot1 hot2) [params.weight, params.italic])
+    in let result = nn-forward net input
+    in list-at result.data 0
+
+Section: Temperature
+
+  apply-temperature : List Integer, Integer, Integer -> List Integer
+  apply-temperature (activations) (temperature) (seed) =
+    if temperature == 0 then activations
+    else add-noise activations temperature seed 0 []
+
+  add-noise : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  add-noise (vals) (temp) (seed) (i) (acc) =
+    if i >= list-length vals then acc
+    else let v = list-at vals i
+    in let noise = pseudo-random (seed + i * 7919) temp
+    in add-noise vals temp seed (i + 1) (list-push acc (v + noise))
+
+  pseudo-random : Integer, Integer -> Integer
+  pseudo-random (seed) (scale) =
+    let x = seed * 1103515245 + 12345
+    in let r = int-mod (x / 65536) 2001
+    in (r - 1000) * scale / 1000

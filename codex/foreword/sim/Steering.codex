@@ -1,0 +1,132 @@
+Chapter: Steering
+  cites Math chapter Quaternion
+  cites Foreword chapter Units (Speed, Force)
+
+ Autonomous agent steering behaviors (Reynolds). Fixed-point
+ (scale 1000). Produces force vectors that drive agents toward
+ goals, away from threats, or along paths.
+
+ We say:
+
+Section: Agent
+  SteerAgent = record {
+    sa-x : Integer, sa-y : Integer,
+    sa-vx : Integer, sa-vy : Integer,
+    sa-max-speed : Speed,
+    sa-max-force : Force
+  }
+
+  steer-agent : Integer, Integer, Speed, Force -> SteerAgent
+  steer-agent (x) (y) (max-speed) (max-force) = SteerAgent { sa-x = x, sa-y = y, sa-vx = 0, sa-vy = 0, sa-max-speed = max-speed, sa-max-force = max-force }
+
+Section: Behaviors
+  SteerForce = record {
+    sf-x : Integer,
+    sf-y : Integer
+  }
+
+  steer-zero : SteerForce
+  steer-zero = SteerForce { sf-x = 0, sf-y = 0 }
+
+  steer-seek : SteerAgent, Integer, Integer -> SteerForce
+  steer-seek (agent) (tx) (ty) =
+    let dx = tx - agent.sa-x
+    in let dy = ty - agent.sa-y
+    in let dist = steer-mag dx dy
+    in if dist == 0 then steer-zero
+    else let desired-x = dx * agent.sa-max-speed / dist
+    in let desired-y = dy * agent.sa-max-speed / dist
+    in steer-truncate (desired-x - agent.sa-vx) (desired-y - agent.sa-vy) (agent.sa-max-force)
+
+  steer-flee : SteerAgent, Integer, Integer -> SteerForce
+  steer-flee (agent) (tx) (ty) =
+    let dx = agent.sa-x - tx
+    in let dy = agent.sa-y - ty
+    in let dist = steer-mag dx dy
+    in if dist == 0 then steer-zero
+    else let desired-x = dx * agent.sa-max-speed / dist
+    in let desired-y = dy * agent.sa-max-speed / dist
+    in steer-truncate (desired-x - agent.sa-vx) (desired-y - agent.sa-vy) (agent.sa-max-force)
+
+  steer-arrive : SteerAgent, Integer, Integer, Integer -> SteerForce
+  steer-arrive (agent) (tx) (ty) (slow-radius) =
+    let dx = tx - agent.sa-x
+    in let dy = ty - agent.sa-y
+    in let dist = steer-mag dx dy
+    in if dist == 0 then steer-zero
+    else let speed = if dist < slow-radius then agent.sa-max-speed * dist / slow-radius else agent.sa-max-speed
+    in let desired-x = dx * speed / dist
+    in let desired-y = dy * speed / dist
+    in steer-truncate (desired-x - agent.sa-vx) (desired-y - agent.sa-vy) (agent.sa-max-force)
+
+  steer-wander : SteerAgent, Integer, Integer, Integer -> SteerForce
+  steer-wander (agent) (wander-dist) (wander-radius) (seed) =
+    let speed = steer-mag (agent.sa-vx) (agent.sa-vy)
+    in let heading-x = if speed == 0 then 1000 else agent.sa-vx * 1000 / speed
+    in let heading-y = if speed == 0 then 0 else agent.sa-vy * 1000 / speed
+    in let center-x = agent.sa-x + heading-x * wander-dist / 1000
+    in let center-y = agent.sa-y + heading-y * wander-dist / 1000
+    in let angle = steer-hash-angle seed
+    in let offset-x = steer-cos-approx angle * wander-radius / 1000
+    in let offset-y = steer-sin-approx angle * wander-radius / 1000
+    in let target-x = center-x + offset-x
+    in let target-y = center-y + offset-y
+    in steer-seek agent target-x target-y
+
+Section: Combination
+  steer-add : SteerForce, SteerForce -> SteerForce
+  steer-add (a) (b) = SteerForce { sf-x = a.sf-x + b.sf-x, sf-y = a.sf-y + b.sf-y }
+
+  steer-scale-force : SteerForce, Integer -> SteerForce
+  steer-scale-force (f) (s) = SteerForce { sf-x = f.sf-x * s / 1000, sf-y = f.sf-y * s / 1000 }
+
+Section: Apply
+  steer-apply : SteerAgent, SteerForce, Integer -> SteerAgent
+  steer-apply (agent) (force) (dt) =
+    let nvx = agent.sa-vx + force.sf-x * dt / 1000
+    in let nvy = agent.sa-vy + force.sf-y * dt / 1000
+    in let speed = steer-mag nvx nvy
+    in let cvx = if speed > agent.sa-max-speed then nvx * agent.sa-max-speed / speed else nvx
+    in let cvy = if speed > agent.sa-max-speed then nvy * agent.sa-max-speed / speed else nvy
+    in SteerAgent { sa-x = agent.sa-x + cvx * dt / 1000, sa-y = agent.sa-y + cvy * dt / 1000, sa-vx = cvx, sa-vy = cvy, sa-max-speed = agent.sa-max-speed, sa-max-force = agent.sa-max-force }
+
+Section: Helpers
+  steer-mag : Integer, Integer -> Integer
+  steer-mag (x) (y) =
+    let sq = x * x + y * y
+    in steer-isqrt sq
+
+  steer-isqrt : Integer -> Integer
+  steer-isqrt (n) = if n <= 0 then 0 else steer-isqrt-loop n (n / 2 + 1)
+
+  steer-isqrt-loop : Integer, Integer -> Integer
+  steer-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else steer-isqrt-loop n next
+
+  steer-truncate : Integer, Integer, Integer -> SteerForce
+  steer-truncate (fx) (fy) (max) =
+    let mag = steer-mag fx fy
+    in if mag <= max then SteerForce { sf-x = fx, sf-y = fy }
+    else SteerForce { sf-x = fx * max / mag, sf-y = fy * max / mag }
+
+  steer-hash-angle : Integer -> Integer
+  steer-hash-angle (seed) =
+    let h = bit-xor (seed * 2654435761) 1013904223
+    in let positive = if h < 0 then -h else h
+    in positive - (positive / 6283) * 6283
+
+  steer-cos-approx : Integer -> Integer
+  steer-cos-approx (a) = let x2 = a * a / 1000 in 1000 - x2 / 2
+
+  steer-sin-approx : Integer -> Integer
+  steer-sin-approx (a) = a - a * a / 1000 * a / 1000 / 6
+
+Section: Formatting
+  format-steer-agent : SteerAgent -> Text
+  format-steer-agent (a) = "(" & show (a.sa-x) & "," & show (a.sa-y) & " v=" & show (a.sa-vx) & "," & show (a.sa-vy) & ")"
+
+  format-steer-force : SteerForce -> Text
+  format-steer-force (f) = "(" & show (f.sf-x) & "," & show (f.sf-y) & ")"
+
+Page 1

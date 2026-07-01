@@ -1,0 +1,322 @@
+Chapter: AdminApp
+  cites CodexMagic chapter MagicTheme
+
+ Admin dashboard for CodexMagic. Tabs: Mint Coins, Store Management,
+ Users, Clans, Blockchain. Requires admin role. All data fetched via
+ AJAX from /api/admin/* endpoints.
+
+ We say:
+
+Section: Auth Check
+
+  on-admin-check : Text -> Integer
+  on-admin-check (resp) =
+    let obj = json-parse-obj resp
+    in let is-admin = json-obj-field obj "admin"
+    in if is-admin == "true" then admin-init 0
+       else let denied = dom-get "app"
+            in let d2 = dom-set-html denied "<div style=\"text-align:center;padding:80px;color:var(--error);font-size:18px\">Access denied.</div>"
+            in 0
+
+Section: State Keys
+
+  k-active-tab : Text = "admin-tab"
+  k-users-json : Text = "admin-users"
+  k-store-json : Text = "admin-store"
+
+Section: Render
+
+  render-admin : Integer -> Integer
+  render-admin (x) =
+    let tab = state-get-text k-active-tab
+    in let active = if text-length tab == 0 then "mint" else tab
+    in let tree = admin-page active
+    in mount-widget-themed magic-theme tree
+
+  admin-page : Text -> WidgetNode
+  admin-page (active) =
+    magic-page "Admin" True [
+      widget-tab-bar "tabs" [
+        widget-tab-btn "t-mint" "Mint Coins" (active == "mint"),
+        widget-tab-btn "t-store" "Store" (active == "store"),
+        widget-tab-btn "t-users" "Users" (active == "users"),
+        widget-tab-btn "t-clans" "Clans" (active == "clans"),
+        widget-tab-btn "t-bc" "Blockchain" (active == "blockchain")
+      ],
+      render-tab active
+    ]
+
+  render-tab : Text -> WidgetNode
+  render-tab (tab) =
+    if tab == "mint" then render-mint-tab 0
+    else if tab == "store" then render-store-tab 0
+    else if tab == "users" then render-users-tab 0
+    else if tab == "clans" then render-clans-tab 0
+    else if tab == "blockchain" then render-bc-tab 0
+    else widget-label "empty" "Unknown tab"
+
+Section: Tab Switch Handler
+
+  on-tab-click : Text -> Integer
+  on-tab-click (id) =
+    let tab = if id == "t-mint" then "mint"
+              else if id == "t-store" then "store"
+              else if id == "t-users" then "users"
+              else if id == "t-clans" then "clans"
+              else if id == "t-bc" then "blockchain"
+              else "mint"
+    in let s = state-set-text k-active-tab tab
+    in let load = load-tab-data tab
+    in request-render 0
+
+  on-users-loaded : Text -> Integer
+  on-users-loaded (r) = let s = state-set-text-render k-users-json r in 0
+
+  on-store-loaded : Text -> Integer
+  on-store-loaded (r) = let s = state-set-text-render k-store-json r in 0
+
+  on-clans-loaded : Text -> Integer
+  on-clans-loaded (r) = let s = state-set-text-render "admin-clans" r in 0
+
+  on-bc-loaded : Text -> Integer
+  on-bc-loaded (r) = let s = state-set-text-render "admin-bc" r in 0
+
+  load-tab-data : Text -> Integer
+  load-tab-data (tab) =
+    if tab == "users" then fetch-get-then "/api/admin/users" on-users-loaded
+    else if tab == "store" then fetch-get-then "/api/admin/store-items" on-store-loaded
+    else if tab == "clans" then fetch-get-then "/api/admin/clans" on-clans-loaded
+    else if tab == "blockchain" then fetch-get-then "/api/admin/blockchain" on-bc-loaded
+    else 0
+
+Section: Mint Tab
+
+  render-mint-tab : Integer -> WidgetNode
+  render-mint-tab (x) =
+    widget-box "mint-tab" "" [
+      widget-stat-grid "mint-stats" [
+        widget-stat-card "mc-supply" (state-get-text "mc-supply") "Total Supply (MC)",
+        widget-stat-card "mc-minted" (state-get-text "mc-minted") "Total Minted",
+        widget-stat-card "mc-burned" (state-get-text "mc-burned") "Total Burned",
+        widget-stat-card "mc-accts" (state-get-text "mc-accts") "Accounts"
+      ],
+      widget-h2 "mint-hd" "Mint Coins to Account",
+      widget-msg "mint-msg",
+      widget-box "mint-form" "adm-form" [
+        widget-form-field "mh" "Handle" "player-handle",
+        widget-form-field "ma" "Amount" "1000",
+        widget-form-field "mr" "Reason" "promotional grant",
+        widget-primary-button "mint-btn" "Mint"
+      ],
+      widget-h2 "burn-hd" "Burn Coins from Account",
+      widget-msg "burn-msg",
+      widget-box "burn-form" "adm-form" [
+        widget-form-field "bh" "Handle" "player-handle",
+        widget-form-field "ba" "Amount" "100",
+        widget-form-field "br" "Reason" "refund reversal",
+        widget-primary-button "burn-btn" "Burn"
+      ],
+      widget-h2 "log-hd" "Mint/Burn Log",
+      widget-log-box "mint-log"
+    ]
+
+Section: Store Tab
+
+  render-store-tab : Integer -> WidgetNode
+  render-store-tab (x) =
+    widget-box "store-tab" "" [
+      widget-h2 "add-hd" "Add Store Item",
+      widget-msg "store-msg",
+      widget-box "add-form" "adm-form" [
+        widget-form-field "si-name" "Name" "Season 1 Pack",
+        widget-form-select "si-type" "Type" [
+          widget-option "pack" "Pack",
+          widget-option "card" "Single Card",
+          widget-option "bundle" "Bundle",
+          widget-option "cosmetic" "Cosmetic",
+          widget-option "starter" "Starter Deck"
+        ],
+        widget-form-field "si-price" "Price (MC)" "100",
+        widget-form-field "si-qty" "Quantity (-1=unlimited)" "-1",
+        widget-form-field "si-desc" "Description" "Short description",
+        widget-primary-button "add-item-btn" "Add Item"
+      ],
+      widget-h2 "items-hd" "Active Store Items",
+      widget-box "store-items" "adm-table" [],
+      widget-h2 "disc-hd" "Set Sale / Discount",
+      widget-msg "disc-msg",
+      widget-box "disc-form" "adm-form" [
+        widget-form-field "di-id" "Item ID" "1",
+        widget-form-select "di-pct" "Discount %" [
+          widget-option "0" "None",
+          widget-option "10" "10%",
+          widget-option "20" "20%",
+          widget-option "25" "25%",
+          widget-option "50" "50%"
+        ],
+        widget-form-field "di-label" "Sale Label" "Summer Sale",
+        widget-primary-button "disc-btn" "Apply",
+        widget-button "disc-clear" "Clear Discount"
+      ]
+    ]
+
+Section: Users Tab
+
+  render-users-tab : Integer -> WidgetNode
+  render-users-tab (x) =
+    widget-box "users-tab" "" [
+      widget-h2 "usr-hd" "All Accounts",
+      widget-box "usr-search" "adm-form" [
+        widget-form-field "us" "Search" "handle or display name"
+      ],
+      widget-box "users-list" "adm-table" []
+    ]
+
+Section: Clans Tab
+
+  render-clans-tab : Integer -> WidgetNode
+  render-clans-tab (x) =
+    widget-box "clans-tab" "" [
+      widget-h2 "clan-hd" "Clans",
+      widget-stat-grid "clan-stats" [
+        widget-stat-card "cl-total" (state-get-text "cl-total") "Total Clans",
+        widget-stat-card "cl-members" (state-get-text "cl-members") "Total Members"
+      ],
+      widget-box "clans-list" "adm-table" []
+    ]
+
+Section: Blockchain Tab
+
+  render-bc-tab : Integer -> WidgetNode
+  render-bc-tab (x) =
+    widget-box "bc-tab" "" [
+      widget-stat-grid "bc-stats" [
+        widget-stat-card "bc-blocks" (state-get-text "bc-blocks") "Blocks",
+        widget-stat-card "bc-txns" (state-get-text "bc-txns") "Transactions",
+        widget-stat-card "bc-tokens" (state-get-text "bc-tokens") "Card Tokens",
+        widget-stat-card "bc-supply" (state-get-text "bc-supply") "MC Supply"
+      ],
+      widget-h2 "net-hd" "Network Status",
+      widget-box "bc-status" "adm-table" [],
+      widget-h2 "tx-hd" "Recent Transactions",
+      widget-log-box "bc-tx-log"
+    ]
+
+Section: Action Handlers
+
+  on-mint-response : Text -> Integer
+  on-mint-response (r) =
+    let obj = json-parse-obj r
+    in let ok = json-obj-field obj "ok"
+    in if ok == "true"
+       then let m = show-msg "mint-msg" ("Minted. Balance: " & json-obj-field obj "balance") 1 in load-stats 0
+       else show-msg "mint-msg" (json-obj-field obj "error") 0
+
+  do-mint : Integer -> Integer
+  do-mint (x) =
+    let handle = dom-get-value (dom-get "mhi")
+    in let amount = dom-get-value (dom-get "mai")
+    in let reason = dom-get-value (dom-get "mri")
+    in fetch-get-then ("/api/admin/mint?handle=" & url-encode handle & "&amount=" & amount & "&reason=" & url-encode reason) on-mint-response
+
+  on-burn-response : Text -> Integer
+  on-burn-response (r) =
+    let obj = json-parse-obj r
+    in let ok = json-obj-field obj "ok"
+    in if ok == "true"
+       then let m = show-msg "burn-msg" ("Burned. Balance: " & json-obj-field obj "balance") 1 in load-stats 0
+       else show-msg "burn-msg" (json-obj-field obj "error") 0
+
+  do-burn : Integer -> Integer
+  do-burn (x) =
+    let handle = dom-get-value (dom-get "bhi")
+    in let amount = dom-get-value (dom-get "bai")
+    in let reason = dom-get-value (dom-get "bri")
+    in fetch-get-then ("/api/admin/burn?handle=" & url-encode handle & "&amount=" & amount & "&reason=" & url-encode reason) on-burn-response
+
+  on-add-item-response : Text -> Integer
+  on-add-item-response (r) =
+    let obj = json-parse-obj r
+    in let ok = json-obj-field obj "ok"
+    in if ok == "true"
+       then let s = show-msg "store-msg" "Item added" 1 in load-tab-data "store"
+       else show-msg "store-msg" (json-obj-field obj "error") 0
+
+  do-add-item : Integer -> Integer
+  do-add-item (x) =
+    let name = dom-get-value (dom-get "si-namei")
+    in let item-type = dom-get-value (dom-get "si-types")
+    in let price = dom-get-value (dom-get "si-pricei")
+    in let qty = dom-get-value (dom-get "si-qtyi")
+    in let desc = dom-get-value (dom-get "si-desci")
+    in fetch-get-then ("/api/admin/add-item?name=" & url-encode name & "&type=" & item-type & "&price=" & price & "&qty=" & qty & "&desc=" & url-encode desc) on-add-item-response
+
+  on-discount-response : Text -> Integer
+  on-discount-response (r) =
+    let obj = json-parse-obj r
+    in let ok = json-obj-field obj "ok"
+    in if ok == "true"
+       then let s = show-msg "disc-msg" "Discount applied" 1 in load-tab-data "store"
+       else show-msg "disc-msg" (json-obj-field obj "error") 0
+
+  do-set-discount : Integer -> Integer
+  do-set-discount (x) =
+    let item-id = dom-get-value (dom-get "di-idi")
+    in let pct = dom-get-value (dom-get "di-pcts")
+    in let label = dom-get-value (dom-get "di-labeli")
+    in fetch-get-then ("/api/admin/set-discount?id=" & item-id & "&pct=" & pct & "&label=" & url-encode label) on-discount-response
+
+  show-msg : Text, Text, Integer -> Integer
+  show-msg (id) (text) (ok) =
+    let el = dom-get id
+    in let e2 = dom-set-text el text
+    in let e3 = dom-add-class el (if ok == 1 then "msg msg-ok" else "msg msg-err")
+    in let e4 = dom-set-style el "display" "block"
+    in set-timeout (\ x -> let e5 = dom-set-style (dom-get id) "display" "none" in 0) 4000
+
+Section: Load Stats
+
+  on-stats-loaded : Text -> Integer
+  on-stats-loaded (r) =
+    let obj = json-parse-obj r
+    in let s1 = state-set-text-render "mc-supply" (json-obj-field obj "supply")
+    in let s2 = state-set-text "mc-minted" (json-obj-field obj "minted")
+    in let s3 = state-set-text "mc-burned" (json-obj-field obj "burned")
+    in let s4 = state-set-text "mc-accts" (json-obj-field obj "accounts")
+    in 0
+
+  load-stats : Integer -> Integer
+  load-stats (x) =
+    fetch-get-then "/api/admin/stats" on-stats-loaded
+
+Section: Event Wiring
+
+  wire-events : Integer -> Integer
+  wire-events (x) =
+    let r = set-render render-admin
+    in let b1 = dom-on-click (dom-get "t-mint") (\ id -> on-tab-click id)
+    in let b2 = dom-on-click (dom-get "t-store") (\ id -> on-tab-click "t-store")
+    in let b3 = dom-on-click (dom-get "t-users") (\ id -> on-tab-click "t-users")
+    in let b4 = dom-on-click (dom-get "t-clans") (\ id -> on-tab-click "t-clans")
+    in let b5 = dom-on-click (dom-get "t-bc") (\ id -> on-tab-click "t-bc")
+    in let b6 = dom-on-click (dom-get "mint-btn") (\ id -> do-mint 0)
+    in let b7 = dom-on-click (dom-get "burn-btn") (\ id -> do-burn 0)
+    in let b8 = dom-on-click (dom-get "add-item-btn") (\ id -> do-add-item 0)
+    in let b9 = dom-on-click (dom-get "disc-btn") (\ id -> do-set-discount 0)
+    in 0
+
+Section: Entry Point
+
+  admin-init : Integer -> Integer
+  admin-init (x) =
+    let stats = load-stats 0
+    in let tree = admin-page "mint"
+    in let m = mount-widget-themed magic-theme tree
+    in wire-events 0
+
+  opening : Integer -> Integer
+  opening (x) =
+    let t = init-magic-theme 0
+    in fetch-get-then "/api/admin/check" on-admin-check
+
+Page 1

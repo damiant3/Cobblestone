@@ -1,0 +1,310 @@
+Chapter: Row
+  cites Foreword chapter Maybe
+
+ A row is a typed tuple of column values with a null bitmap. Each
+ column value is either an integer, text, or boolean. The row format
+ is: [null-bitmap-bytes...] [col-0-bytes...] [col-1-bytes...] ...
+ Fixed-width columns (Integer = 8 bytes, Boolean = 1 byte) are stored
+ inline. Text columns are length-prefixed (4-byte length + bytes).
+
+ We say:
+
+Section: Column Types
+
+  ColumnType =
+    | ColInteger
+    | ColText
+    | ColBoolean
+
+  col-type-name : ColumnType -> Text
+  col-type-name (ct) =
+    when ct
+      is ColInteger -> "Integer"
+      is ColText -> "Text"
+      is ColBoolean -> "Boolean"
+
+Section: Column Values
+
+  ColumnValue =
+    | ValInteger (Integer)
+    | ValText (Text)
+    | ValBoolean (Boolean)
+    | ValNull
+
+  val-is-null : ColumnValue -> Boolean
+  val-is-null (v) =
+    when v
+      is ValNull -> True
+      is ValInteger (n) -> False
+      is ValText (t) -> False
+      is ValBoolean (b) -> False
+
+  val-to-integer : ColumnValue -> Integer
+  val-to-integer (v) =
+    when v
+      is ValInteger (n) -> n
+      is otherwise -> 0
+
+  val-to-text : ColumnValue -> Text
+  val-to-text (v) =
+    when v
+      is ValText (t) -> t
+      is ValInteger (n) -> show n
+      is ValBoolean (b) -> if b then "True" else "False"
+      is ValNull -> "NULL"
+
+  val-to-boolean : ColumnValue -> Boolean
+  val-to-boolean (v) =
+    when v
+      is ValBoolean (b) -> b
+      is otherwise -> False
+
+Section: Row Type
+
+  RowSchema = record {
+    col-names : List Text,
+    col-types : List ColumnType,
+    col-count : Integer between 0 and 256
+  }
+
+  RowData = record {
+    values : List ColumnValue,
+    schema : RowSchema
+  }
+
+  row-new : RowSchema, List ColumnValue -> RowData
+  row-new (schema) (vals) = RowData { values = vals, schema = schema }
+
+  row-get : RowData, Integer -> ColumnValue
+  row-get (row) (col-idx) =
+    if col-idx < 0 then ValNull
+    else if col-idx >= row.schema.col-count then ValNull
+    else list-at (row.values) col-idx
+
+  row-get-by-name : RowData, Text -> ColumnValue
+  row-get-by-name (row) (name) =
+    let idx = row-find-col (row.schema.col-names) name 0 (row.schema.col-count)
+    in if idx < 0 then ValNull
+    else row-get row idx
+
+  row-find-col : List Text, Text, Integer, Integer -> Integer
+  row-find-col (names) (target) (i) (len) =
+    if i >= len then -1
+    else if list-at names i == target then i
+    else row-find-col names target (i + 1) len
+
+  row-set : RowData, Integer, ColumnValue -> RowData
+  row-set (row) (col-idx) (val) =
+    if col-idx < 0 then row
+    else if col-idx >= row.schema.col-count then row
+    else RowData { values = list-set-at (row.values) col-idx val, schema = row.schema }
+
+Section: Schema Construction
+
+  schema-new : List Text, List ColumnType -> RowSchema
+  schema-new (names) (types) = RowSchema {
+    col-names = names,
+    col-types = types,
+    col-count = list-length names
+  }
+
+  schema-add-col : RowSchema, Text, ColumnType -> RowSchema
+  schema-add-col (s) (name) (ctype) = RowSchema {
+    col-names = list-push (s.col-names) name,
+    col-types = list-push (s.col-types) ctype,
+    col-count = s.col-count + 1
+  }
+
+Section: Serialization
+
+  null-bitmap-bytes : Integer -> Integer
+  null-bitmap-bytes (col-count) = (col-count + 7) / 8
+
+  row-encode : RowData -> List Integer
+  row-encode (row) =
+    let nbytes = null-bitmap-bytes (row.schema.col-count)
+    in let bitmap = row-build-null-bitmap (row.values) 0 (row.schema.col-count) (row-zero-bytes nbytes [])
+    in row-encode-values (row.values) (row.schema.col-types) 0 (row.schema.col-count) bitmap
+
+  row-build-null-bitmap : List ColumnValue, Integer, Integer, List Integer -> List Integer
+  row-build-null-bitmap (vals) (i) (len) (bitmap) =
+    if i >= len then bitmap
+    else let v = list-at vals i
+    in let byte-idx = i / 8
+    in let bit-idx = i - byte-idx * 8
+    in if val-is-null v then
+      let cur = list-at bitmap byte-idx
+      in let updated = bit-or cur (bit-shl 1 bit-idx)
+      in row-build-null-bitmap vals (i + 1) len (list-set-at bitmap byte-idx updated)
+    else row-build-null-bitmap vals (i + 1) len bitmap
+
+  row-zero-bytes : Integer, List Integer -> List Integer
+  row-zero-bytes (n) (acc) =
+    if n <= 0 then acc
+    else row-zero-bytes (n - 1) (list-push acc 0)
+
+Section: Text Character Helpers
+
+  text-char-at : Text, Integer -> Integer
+  text-char-at (s) (i) = char-code (char-at s i)
+
+  text-from-char : Integer -> Text
+  text-from-char (c) = char-to-text (code-to-char c)
+
+Section: Encoding
+
+  row-encode-values : List ColumnValue, List ColumnType, Integer, Integer, List Integer -> List Integer
+  row-encode-values (vals) (types) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vals i
+    in if val-is-null v then row-encode-values vals types (i + 1) len acc
+    else let ct = list-at types i
+    in let encoded = row-encode-value v ct
+    in row-encode-values vals types (i + 1) len (acc & encoded)
+
+  row-encode-value : ColumnValue, ColumnType -> List Integer
+  row-encode-value (v) (ct) =
+    when v
+      is ValInteger (n) -> row-encode-i64 n
+      is ValBoolean (b) -> [if b then 1 else 0]
+      is ValText (t) ->
+        let bytes = row-text-to-bytes t
+        in row-encode-i32 (list-length bytes) & bytes
+      is ValNull -> []
+
+  row-encode-i64 : Integer -> List Integer
+  row-encode-i64 (n) =
+    let b0 = bit-and n 255
+    in let b1 = bit-and (bit-shr n 8) 255
+    in let b2 = bit-and (bit-shr n 16) 255
+    in let b3 = bit-and (bit-shr n 24) 255
+    in let b4 = bit-and (bit-shr n 32) 255
+    in let b5 = bit-and (bit-shr n 40) 255
+    in let b6 = bit-and (bit-shr n 48) 255
+    in let b7 = bit-and (bit-shr n 56) 255
+    in [b0, b1, b2, b3, b4, b5, b6, b7]
+
+  row-encode-i32 : Integer -> List Integer
+  row-encode-i32 (n) =
+    let b0 = bit-and n 255
+    in let b1 = bit-and (bit-shr n 8) 255
+    in let b2 = bit-and (bit-shr n 16) 255
+    in let b3 = bit-and (bit-shr n 24) 255
+    in [b0, b1, b2, b3]
+
+  row-text-to-bytes : Text -> List Integer
+  row-text-to-bytes (t) = row-text-to-bytes-loop t 0 (text-length t) []
+
+  row-text-to-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  row-text-to-bytes-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else row-text-to-bytes-loop t (i + 1) len (list-push acc (text-char-at t i))
+
+Section: Deserialization
+
+  row-decode : List Integer, RowSchema -> RowData
+  row-decode (bytes) (schema) =
+    let nbytes = null-bitmap-bytes (schema.col-count)
+    in let bitmap = row-take-bytes bytes 0 nbytes []
+    in let result = row-decode-values bytes nbytes (schema.col-types) 0 (schema.col-count) bitmap []
+    in RowData { values = result, schema = schema }
+
+  row-take-bytes : List Integer, Integer, Integer, List Integer -> List Integer
+  row-take-bytes (src) (i) (len) (acc) =
+    if i >= len then acc
+    else row-take-bytes src (i + 1) len (list-push acc (list-at src i))
+
+  row-decode-values : List Integer, Integer, List ColumnType, Integer, Integer, List Integer, List ColumnValue -> List ColumnValue
+  row-decode-values (bytes) (offset) (types) (i) (len) (bitmap) (acc) =
+    if i >= len then acc
+    else let is-null = row-bitmap-test bitmap i
+    in if is-null then row-decode-values bytes offset types (i + 1) len bitmap (list-push acc ValNull)
+    else let ct = list-at types i
+    in when ct
+      is ColInteger ->
+        let v = row-decode-i64 bytes offset
+        in row-decode-values bytes (offset + 8) types (i + 1) len bitmap (list-push acc (ValInteger v))
+      is ColBoolean ->
+        let v = list-at bytes offset
+        in row-decode-values bytes (offset + 1) types (i + 1) len bitmap (list-push acc (ValBoolean (v /= 0)))
+      is ColText ->
+        let tlen = row-decode-i32 bytes offset
+        in let t = row-bytes-to-text bytes (offset + 4) tlen
+        in row-decode-values bytes (offset + 4 + tlen) types (i + 1) len bitmap (list-push acc (ValText t))
+
+  row-bitmap-test : List Integer, Integer -> Boolean
+  row-bitmap-test (bitmap) (bit-idx) =
+    let byte-idx = bit-idx / 8
+    in let bit-pos = bit-idx - byte-idx * 8
+    in bit-and (list-at bitmap byte-idx) (bit-shl 1 bit-pos) /= 0
+
+  row-decode-i64 : List Integer, Integer -> Integer
+  row-decode-i64 (bytes) (offset) =
+    (list-at bytes offset)
+    + (list-at bytes (offset + 1)) * 256
+    + (list-at bytes (offset + 2)) * 65536
+    + (list-at bytes (offset + 3)) * 16777216
+    + (list-at bytes (offset + 4)) * 4294967296
+    + (list-at bytes (offset + 5)) * 1099511627776
+    + (list-at bytes (offset + 6)) * 281474976710656
+    + (list-at bytes (offset + 7)) * 72057594037927936
+
+  row-decode-i32 : List Integer, Integer -> Integer
+  row-decode-i32 (bytes) (offset) =
+    (list-at bytes offset)
+    + (list-at bytes (offset + 1)) * 256
+    + (list-at bytes (offset + 2)) * 65536
+    + (list-at bytes (offset + 3)) * 16777216
+
+  row-bytes-to-text : List Integer, Integer, Integer -> Text
+  row-bytes-to-text (bytes) (offset) (len) =
+    row-bytes-to-text-loop bytes offset len 0 ""
+
+  row-bytes-to-text-loop : List Integer, Integer, Integer, Integer, Text -> Text
+  row-bytes-to-text-loop (bytes) (offset) (len) (i) (acc) =
+    if i >= len then acc
+    else let ch = list-at bytes (offset + i)
+    in row-bytes-to-text-loop bytes offset len (i + 1) (acc & text-from-char ch)
+
+Section: Comparison
+
+  val-compare : ColumnValue, ColumnValue -> Integer
+  val-compare (a) (b) =
+    when a
+      is ValInteger (na) ->
+        when b
+          is ValInteger (nb) -> if na < nb then -1 else if na > nb then 1 else 0
+          is otherwise -> -1
+      is ValText (ta) ->
+        when b
+          is ValText (tb) -> text-compare ta tb
+          is otherwise -> -1
+      is ValBoolean (ba) ->
+        when b
+          is ValBoolean (bb) ->
+            let ia = if ba then 1 else 0
+            in let ib = if bb then 1 else 0
+            in if ia < ib then -1 else if ia > ib then 1 else 0
+          is otherwise -> -1
+      is ValNull ->
+        when b
+          is ValNull -> 0
+          is otherwise -> 1
+
+  text-compare : Text, Text -> Integer
+  text-compare (a) (b) =
+    let la = text-length a
+    in let lb = text-length b
+    in let limit = if la < lb then la else lb
+    in text-compare-loop a b 0 limit la lb
+
+  text-compare-loop : Text, Text, Integer, Integer, Integer, Integer -> Integer
+  text-compare-loop (a) (b) (i) (limit) (la) (lb) =
+    if i >= limit then if la < lb then -1 else if la > lb then 1 else 0
+    else let ca = text-char-at a i
+    in let cb = text-char-at b i
+    in if ca < cb then -1
+    else if ca > cb then 1
+    else text-compare-loop a b (i + 1) limit la lb
+
+Page 1

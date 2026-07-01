@@ -1,0 +1,84 @@
+Chapter: CommandHistory
+  cites Foreword chapter Maybe
+  cites Diagram chapter DiagramModel
+  cites Foreword chapter ListUtils
+
+ Undo/redo stack for the diagram editor. Each command records
+ the diagram state before the operation. Undo restores the
+ previous state; redo re-applies it.
+
+Section: Types
+
+  DiagramCommand =
+    | CmdAddNode (DiagramNode)
+    | CmdDeleteNode (DiagramNode) (List DiagramEdge)
+    | CmdMoveNode (Integer) (Integer) (Integer) (Integer) (Integer)
+    | CmdResizeNode (Integer) (Integer) (Integer) (Integer) (Integer)
+    | CmdAddEdge (DiagramEdge)
+    | CmdDeleteEdge (DiagramEdge)
+    | CmdSetLabel (Integer) (Text) (Text)
+    | CmdBatch (List DiagramCommand)
+
+  CommandStack = record {
+    cs-undo  : List Diagram,
+    cs-redo  : List Diagram,
+    cs-max   : Integer
+  }
+
+Section: Construction
+
+  command-stack-new : Integer -> CommandStack
+  command-stack-new (max-depth) =
+    CommandStack {
+      cs-undo = [],
+      cs-redo = [],
+      cs-max = max-depth
+    }
+
+Section: Push
+
+  command-push : CommandStack, Diagram -> CommandStack
+  command-push (cs) (before-state) =
+    let undo = list-push cs.cs-undo before-state
+    in let trimmed = if list-length undo > cs.cs-max
+          then list-take undo cs.cs-max
+          else undo
+    in __record-set (__record-set cs
+      "cs-undo" trimmed)
+      "cs-redo" []
+
+Section: Undo
+
+  command-can-undo : CommandStack -> Boolean
+  command-can-undo (cs) = list-length cs.cs-undo > 0
+
+  command-undo : CommandStack, Diagram -> (CommandStack, Diagram)
+  command-undo (cs) (current) =
+    if list-length cs.cs-undo == 0
+    then (cs, current)
+    else let prev = list-at cs.cs-undo (list-length cs.cs-undo - 1)
+    in let new-undo = list-take cs.cs-undo (list-length cs.cs-undo - 1)
+    in let new-redo = list-push cs.cs-redo current
+    in (__record-set (__record-set cs "cs-undo" new-undo) "cs-redo" new-redo, prev)
+
+Section: Redo
+
+  command-can-redo : CommandStack -> Boolean
+  command-can-redo (cs) = list-length cs.cs-redo > 0
+
+  command-redo : CommandStack, Diagram -> (CommandStack, Diagram)
+  command-redo (cs) (current) =
+    if list-length cs.cs-redo == 0
+    then (cs, current)
+    else let next = list-at cs.cs-redo (list-length cs.cs-redo - 1)
+    in let new-redo = list-take cs.cs-redo (list-length cs.cs-redo - 1)
+    in let new-undo = list-push cs.cs-undo current
+    in (__record-set (__record-set cs "cs-undo" new-undo) "cs-redo" new-redo, next)
+
+Section: Queries
+
+  undo-depth : CommandStack -> Integer
+  undo-depth (cs) = list-length cs.cs-undo
+
+  redo-depth : CommandStack -> Integer
+  redo-depth (cs) = list-length cs.cs-redo

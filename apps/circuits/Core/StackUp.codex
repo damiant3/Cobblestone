@@ -1,0 +1,155 @@
+Chapter: StackUp
+  cites Foreword chapter List
+
+ The PCB layer stack-up definition. Describes the physical layer
+ arrangement of the board: copper layers, dielectric materials,
+ thicknesses, and material properties needed for impedance calculation.
+
+Section: Layer Type
+
+  LayerType =
+    | LayerCopper
+    | LayerPrepreg
+    | LayerCore
+    | LayerSolderMask
+    | LayerSilkscreen
+    | LayerPaste
+    | LayerCourtyard
+    | LayerFab
+    | LayerEdgeCuts
+
+  LayerSide =
+    | SideFront
+    | SideBack
+    | SideInner (Integer)
+    | SideBoth
+    | SideNone
+
+  layer-type-name : LayerType -> Text
+  layer-type-name (t) = when t
+    is LayerCopper -> "copper"
+    is LayerPrepreg -> "prepreg"
+    is LayerCore -> "core"
+    is LayerSolderMask -> "solder-mask"
+    is LayerSilkscreen -> "silkscreen"
+    is LayerPaste -> "paste"
+    is LayerCourtyard -> "courtyard"
+    is LayerFab -> "fab"
+    is LayerEdgeCuts -> "edge-cuts"
+
+Section: Layer Definition
+
+  Layer = record {
+    layer-id : Integer,
+    layer-name : Text,
+    layer-type : LayerType,
+    layer-side : LayerSide,
+    layer-thickness : Integer,
+    layer-visible : Integer,
+    layer-color : Integer
+  }
+
+Section: Dielectric Material
+
+  DielectricMaterial = record {
+    dm-name : Text,
+    dm-dielectric-constant : Integer,
+    dm-loss-tangent : Integer,
+    dm-thickness : Integer
+  }
+
+  fr4-standard : DielectricMaterial
+  fr4-standard = DielectricMaterial {
+    dm-name = "FR-4",
+    dm-dielectric-constant = 4200,
+    dm-loss-tangent = 200,
+    dm-thickness = 200000
+  }
+
+  rogers-4003c : DielectricMaterial
+  rogers-4003c = DielectricMaterial {
+    dm-name = "Rogers 4003C",
+    dm-dielectric-constant = 3550,
+    dm-loss-tangent = 27,
+    dm-thickness = 203000
+  }
+
+Section: Stack-Up
+
+  StackUpLayer = record {
+    sul-layer : Layer,
+    sul-dielectric : DielectricMaterial,
+    sul-copper-weight : Integer
+  }
+
+  StackUp = record {
+    su-name : Text,
+    su-layers : List StackUpLayer,
+    su-layer-count : Integer,
+    su-total-thickness : Integer,
+    su-copper-layer-count : Integer
+  }
+
+  standard-2-layer : StackUp
+  standard-2-layer = StackUp {
+    su-name = "2-Layer 1.6mm FR-4",
+    su-layers = [
+      StackUpLayer {
+        sul-layer = Layer {
+          layer-id = 0,
+          layer-name = "F.Cu",
+          layer-type = LayerCopper,
+          layer-side = SideFront,
+          layer-thickness = 35000,
+          layer-visible = 1,
+          layer-color = #FF0000
+        },
+        sul-dielectric = fr4-standard,
+        sul-copper-weight = 1
+      },
+      StackUpLayer {
+        sul-layer = Layer {
+          layer-id = 31,
+          layer-name = "B.Cu",
+          layer-type = LayerCopper,
+          layer-side = SideBack,
+          layer-thickness = 35000,
+          layer-visible = 1,
+          layer-color = #0000FF
+        },
+        sul-dielectric = fr4-standard,
+        sul-copper-weight = 1
+      }
+    ],
+    su-layer-count = 2,
+    su-total-thickness = 1600000,
+    su-copper-layer-count = 2
+  }
+
+Section: Impedance Calculation
+
+ Microstrip impedance approximation (IPC-2141). All dimensions in
+ nanometers, dielectric constant scaled by 1000. Returns impedance
+ in milliohms.
+
+  microstrip-impedance : Integer, Integer, Integer, Integer -> Integer
+  microstrip-impedance (trace-width) (dielectric-height) (copper-thickness) (er-x1000) =
+    let w = trace-width
+    in let h = dielectric-height
+    in let t = copper-thickness
+    in let effective-w = w + t * 1000 / (h + t)
+    in let ratio = h * 1000 / effective-w
+    in let z0 = 87000 * ratio / (er-x1000 + 1414)
+    in z0
+
+ Stripline impedance approximation. Trace between two ground planes.
+
+  stripline-impedance : Integer, Integer, Integer, Integer -> Integer
+  stripline-impedance (trace-width) (dielectric-height) (copper-thickness) (er-x1000) =
+    let w = trace-width
+    in let b = dielectric-height * 2
+    in let t = copper-thickness
+    in let effective-w = w + t * 1000 / (b - t)
+    in let ratio = b * 1000 / effective-w
+    in let z0 = 60000 * ratio / er-x1000
+    in z0

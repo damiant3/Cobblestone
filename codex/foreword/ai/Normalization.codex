@@ -1,0 +1,197 @@
+Chapter: Normalization
+  cites AI chapter Tensor
+
+ Normalization layers for neural networks. Fixed-point (scale 1000).
+ GroupNorm, LayerNorm, and RMSNorm. GroupNorm is the standard in
+ diffusion model UNets. All operate on flat NCHW data.
+
+ We say:
+
+Section: Types
+  NormParams = record {
+    norm-num-groups : Integer,
+    norm-num-channels : Integer,
+    norm-gamma : List Integer,
+    norm-beta : List Integer,
+    norm-eps : Integer
+  }
+
+Section: Construction
+  group-norm-params : Integer, Integer, List Integer, List Integer -> NormParams
+  group-norm-params (groups) (channels) (gamma) (beta) =
+    NormParams { norm-num-groups = groups, norm-num-channels = channels, norm-gamma = gamma, norm-beta = beta, norm-eps = 1 }
+
+  layer-norm-params : Integer, List Integer, List Integer -> NormParams
+  layer-norm-params (dim) (gamma) (beta) =
+    NormParams { norm-num-groups = 1, norm-num-channels = dim, norm-gamma = gamma, norm-beta = beta, norm-eps = 1 }
+
+  rms-norm-params : Integer, List Integer -> NormParams
+  rms-norm-params (dim) (gamma) =
+    NormParams { norm-num-groups = 1, norm-num-channels = dim, norm-gamma = gamma, norm-beta = norm-zeros dim 0 [], norm-eps = 1 }
+
+  norm-zeros : Integer, Integer, List Integer -> List Integer
+  norm-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else norm-zeros n (i + 1) (list-push acc 0)
+
+Section: Group Normalization
+  group-norm : NormParams, List Integer, Integer, Integer -> List Integer
+  group-norm (params) (input) (h) (w) =
+    let ch-per-group = params.norm-num-channels / params.norm-num-groups
+    in let spatial = h * w
+    in gn-process-groups params input spatial ch-per-group 0 []
+
+  gn-process-groups : NormParams, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gn-process-groups (params) (input) (spatial) (ch-per-group) (g) (acc) =
+    if g >= params.norm-num-groups then acc
+    else let start-ch = g * ch-per-group
+    in let group-size = ch-per-group * spatial
+    in let mean = gn-compute-mean input start-ch spatial ch-per-group group-size
+    in let variance = gn-compute-variance input start-ch spatial ch-per-group group-size mean
+    in let inv-std = norm-isqrt (variance + params.norm-eps)
+    in let normed = gn-normalize-group params input start-ch spatial ch-per-group mean inv-std 0 []
+    in gn-process-groups params input spatial ch-per-group (g + 1) (acc & normed)
+
+  gn-compute-mean : List Integer, Integer, Integer, Integer, Integer -> Integer
+  gn-compute-mean (input) (start-ch) (spatial) (ch-per-group) (group-size) =
+    let total = gn-sum-group input start-ch spatial ch-per-group 0 0
+    in total / group-size
+
+  gn-sum-group : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gn-sum-group (input) (start-ch) (spatial) (ch-per-group) (lc) (acc) =
+    if lc >= ch-per-group then acc
+    else let ch = start-ch + lc
+    in let ch-sum = gn-sum-spatial input (ch * spatial) spatial 0 0
+    in gn-sum-group input start-ch spatial ch-per-group (lc + 1) (acc + ch-sum)
+
+  gn-sum-spatial : List Integer, Integer, Integer, Integer, Integer -> Integer
+  gn-sum-spatial (input) (base) (spatial) (i) (acc) =
+    if i >= spatial then acc
+    else gn-sum-spatial input base spatial (i + 1) (acc + list-at input (base + i))
+
+  gn-compute-variance : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gn-compute-variance (input) (start-ch) (spatial) (ch-per-group) (group-size) (mean) =
+    let sq-sum = gn-sq-diff-group input start-ch spatial ch-per-group mean 0 0
+    in sq-sum / group-size
+
+  gn-sq-diff-group : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gn-sq-diff-group (input) (start-ch) (spatial) (ch-per-group) (mean) (lc) (acc) =
+    if lc >= ch-per-group then acc
+    else let ch = start-ch + lc
+    in let ch-sum = gn-sq-diff-spatial input (ch * spatial) spatial mean 0 0
+    in gn-sq-diff-group input start-ch spatial ch-per-group mean (lc + 1) (acc + ch-sum)
+
+  gn-sq-diff-spatial : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gn-sq-diff-spatial (input) (base) (spatial) (mean) (i) (acc) =
+    if i >= spatial then acc
+    else let diff = list-at input (base + i) - mean
+    in gn-sq-diff-spatial input base spatial mean (i + 1) (acc + diff * diff / 1000)
+
+  gn-normalize-group : NormParams, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gn-normalize-group (params) (input) (start-ch) (spatial) (ch-per-group) (mean) (inv-std) (lc) (acc) =
+    if lc >= ch-per-group then acc
+    else let ch = start-ch + lc
+    in let gamma = list-at (params.norm-gamma) ch
+    in let beta = list-at (params.norm-beta) ch
+    in let normed = gn-norm-spatial input (ch * spatial) spatial mean inv-std gamma beta 0 []
+    in gn-normalize-group params input start-ch spatial ch-per-group mean inv-std (lc + 1) (acc & normed)
+
+  gn-norm-spatial : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gn-norm-spatial (input) (base) (spatial) (mean) (inv-std) (gamma) (beta) (i) (acc) =
+    if i >= spatial then acc
+    else let val = list-at input (base + i)
+    in let normed = (val - mean) * inv-std / 1000
+    in let scaled = normed * gamma / 1000 + beta
+    in gn-norm-spatial input base spatial mean inv-std gamma beta (i + 1) (list-push acc scaled)
+
+Section: Layer Normalization
+  layer-norm-forward : NormParams, List Integer -> List Integer
+  layer-norm-forward (params) (input) =
+    let n = list-length input
+    in let mean = ln-mean input n
+    in let variance = ln-variance input n mean
+    in let inv-std = norm-isqrt (variance + params.norm-eps)
+    in ln-normalize params input mean inv-std 0 n []
+
+  ln-mean : List Integer, Integer -> Integer
+  ln-mean (input) (n) = ln-sum input 0 n 0 / n
+
+  ln-sum : List Integer, Integer, Integer, Integer -> Integer
+  ln-sum (input) (i) (n) (acc) =
+    if i >= n then acc
+    else ln-sum input (i + 1) n (acc + list-at input i)
+
+  ln-variance : List Integer, Integer, Integer -> Integer
+  ln-variance (input) (n) (mean) = ln-sq-sum input 0 n mean 0 / n
+
+  ln-sq-sum : List Integer, Integer, Integer, Integer, Integer -> Integer
+  ln-sq-sum (input) (i) (n) (mean) (acc) =
+    if i >= n then acc
+    else let diff = list-at input i - mean
+    in ln-sq-sum input (i + 1) n mean (acc + diff * diff / 1000)
+
+  ln-normalize : NormParams, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ln-normalize (params) (input) (mean) (inv-std) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at input i
+    in let normed = (val - mean) * inv-std / 1000
+    in let gamma = if i < list-length (params.norm-gamma) then list-at (params.norm-gamma) i else 1000
+    in let beta = if i < list-length (params.norm-beta) then list-at (params.norm-beta) i else 0
+    in let scaled = normed * gamma / 1000 + beta
+    in ln-normalize params input mean inv-std (i + 1) n (list-push acc scaled)
+
+Section: RMS Normalization
+  rms-norm-forward : NormParams, List Integer -> List Integer
+  rms-norm-forward (params) (input) =
+    let n = list-length input
+    in let rms = rms-compute input n
+    in let inv-rms = if rms == 0 then 1000 else 1000000 / rms
+    in rms-normalize params input inv-rms 0 n []
+
+  rms-compute : List Integer, Integer -> Integer
+  rms-compute (input) (n) =
+    let sq-sum = rms-sq-sum input 0 n 0
+    in norm-isqrt (sq-sum / n)
+
+  rms-sq-sum : List Integer, Integer, Integer, Integer -> Integer
+  rms-sq-sum (input) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at input i
+    in rms-sq-sum input (i + 1) n (acc + v * v / 1000)
+
+  rms-normalize : NormParams, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  rms-normalize (params) (input) (inv-rms) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at input i
+    in let normed = val * inv-rms / 1000
+    in let gamma = if i < list-length (params.norm-gamma) then list-at (params.norm-gamma) i else 1000
+    in let scaled = normed * gamma / 1000
+    in rms-normalize params input inv-rms (i + 1) n (list-push acc scaled)
+
+Section: Helpers
+  norm-isqrt : Integer -> Integer
+  norm-isqrt (n) = if n <= 0 then 0 else norm-isqrt-loop n (n / 2 + 1)
+
+  norm-isqrt-loop : Integer, Integer -> Integer
+  norm-isqrt-loop (n) (guess) =
+    let next = (guess + n * 1000 / guess) / 2
+    in if next >= guess then guess else norm-isqrt-loop n next
+
+Section: SiLU Activation (used in UNet ResNet blocks)
+  silu-forward : List Integer -> List Integer
+  silu-forward (input) = silu-loop input 0 (list-length input) []
+
+  silu-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  silu-loop (input) (i) (n) (acc) =
+    if i >= n then acc
+    else let x = list-at input i
+    in let sig = silu-sigmoid x
+    in silu-loop input (i + 1) n (list-push acc (x * sig / 1000))
+
+  silu-sigmoid : Integer -> Integer
+  silu-sigmoid (x) =
+    if x > 6000 then 1000
+    else if x < (0 - 6000) then 0
+    else 500 + x * 250 / 1000 - x * x * x / 48000000
+
+Page 1

@@ -1,0 +1,225 @@
+Chapter: VideoCompositor
+  cites Game chapter Rasterizer
+
+ Layer-based video compositor with transitions. Each video
+ layer has a source framebuf sequence, in/out points, opacity,
+ and blend mode. Transitions crossfade between layers.
+
+ We say:
+
+Section: Types
+
+  VideoLayer = record {
+    vl-name : Text,
+    vl-frames : List Framebuf,
+    vl-frame-count : Integer,
+    vl-in-point : Integer,
+    vl-out-point : Integer,
+    vl-opacity : Real,
+    vl-visible : Boolean
+  }
+
+  TransitionKind =
+    | TransCut
+    | TransCrossfade
+    | TransWipeLeft
+    | TransWipeDown
+    | TransFadeBlack
+
+  VideoTransition = record {
+    vt-kind : TransitionKind,
+    vt-duration : Integer,
+    vt-frame : Integer
+  }
+
+  CompositorState = record {
+    vc-layers : List VideoLayer,
+    vc-layer-count : Integer,
+    vc-transitions : List VideoTransition,
+    vc-transition-count : Integer,
+    vc-width : Integer,
+    vc-height : Integer,
+    vc-fps : Integer,
+    vc-duration : Integer
+  }
+
+Section: Construction
+
+  compositor-new : Integer, Integer, Integer, Integer -> CompositorState
+  compositor-new (w) (h) (fps) (duration) = CompositorState {
+    vc-layers = [],
+    vc-layer-count = 0,
+    vc-transitions = [],
+    vc-transition-count = 0,
+    vc-width = w,
+    vc-height = h,
+    vc-fps = fps,
+    vc-duration = duration
+  }
+
+  video-layer-new : Text, Integer, Integer -> VideoLayer
+  video-layer-new (name) (in-pt) (out-pt) = VideoLayer {
+    vl-name = name,
+    vl-frames = [],
+    vl-frame-count = 0,
+    vl-in-point = in-pt,
+    vl-out-point = out-pt,
+    vl-opacity = 1.0,
+    vl-visible = True
+  }
+
+Section: Layer Management
+
+  compositor-add-layer : CompositorState, VideoLayer -> CompositorState
+  compositor-add-layer (vc) (layer) = CompositorState {
+    vc-layers = list-push (vc.vc-layers) layer,
+    vc-layer-count = vc.vc-layer-count + 1,
+    vc-transitions = vc.vc-transitions,
+    vc-transition-count = vc.vc-transition-count,
+    vc-width = vc.vc-width,
+    vc-height = vc.vc-height,
+    vc-fps = vc.vc-fps,
+    vc-duration = vc.vc-duration
+  }
+
+  video-layer-add-frame : VideoLayer, Framebuf -> VideoLayer
+  video-layer-add-frame (layer) (frame) = VideoLayer {
+    vl-name = layer.vl-name,
+    vl-frames = list-push (layer.vl-frames) frame,
+    vl-frame-count = layer.vl-frame-count + 1,
+    vl-in-point = layer.vl-in-point,
+    vl-out-point = layer.vl-out-point,
+    vl-opacity = layer.vl-opacity,
+    vl-visible = layer.vl-visible
+  }
+
+  video-layer-set-opacity : VideoLayer, Real -> VideoLayer
+  video-layer-set-opacity (layer) (opacity) = __record-set layer "vl-opacity" opacity
+
+Section: Transitions
+
+  compositor-add-transition : CompositorState, VideoTransition -> CompositorState
+  compositor-add-transition (vc) (trans) = CompositorState {
+    vc-layers = vc.vc-layers,
+    vc-layer-count = vc.vc-layer-count,
+    vc-transitions = list-push (vc.vc-transitions) trans,
+    vc-transition-count = vc.vc-transition-count + 1,
+    vc-width = vc.vc-width,
+    vc-height = vc.vc-height,
+    vc-fps = vc.vc-fps,
+    vc-duration = vc.vc-duration
+  }
+
+  transition-crossfade : Integer, Integer -> VideoTransition
+  transition-crossfade (frame) (duration) = VideoTransition {
+    vt-kind = TransCrossfade,
+    vt-duration = duration,
+    vt-frame = frame
+  }
+
+  transition-wipe-left : Integer, Integer -> VideoTransition
+  transition-wipe-left (frame) (duration) = VideoTransition {
+    vt-kind = TransWipeLeft,
+    vt-duration = duration,
+    vt-frame = frame
+  }
+
+Section: Frame Composition
+
+  compositor-render-frame : CompositorState, Integer -> Framebuf
+  compositor-render-frame (vc) (frame) =
+    let base = fb-new (vc.vc-width) (vc.vc-height) 0
+    in vc-composite-layers vc base frame 0
+
+  vc-composite-layers : CompositorState, Framebuf, Integer, Integer -> Framebuf
+  vc-composite-layers (vc) (fb) (frame) (i) =
+    if i >= vc.vc-layer-count then fb
+    else let layer = list-at (vc.vc-layers) i
+    in let fb2 = if layer.vl-visible then
+      if frame >= layer.vl-in-point then
+        if frame < layer.vl-out-point then vc-blend-layer fb layer frame
+        else fb
+      else fb
+    else fb
+    in vc-composite-layers vc fb2 frame (i + 1)
+
+  vc-blend-layer : Framebuf, VideoLayer, Integer -> Framebuf
+  vc-blend-layer (fb) (layer) (frame) =
+    let local-frame = frame - layer.vl-in-point
+    in if local-frame < 0 then fb
+    else if local-frame >= layer.vl-frame-count then fb
+    else let src = list-at (layer.vl-frames) local-frame
+    in vc-blend-pixels fb src (layer.vl-opacity) 0 (fb.fb-width * fb.fb-height)
+
+  vc-blend-pixels : Framebuf, Framebuf, Real, Integer, Integer -> Framebuf
+  vc-blend-pixels (dst) (src) (opacity) (i) (total) =
+    if i >= total then dst
+    else let sp = list-at (src.fb-pixels) i
+    in let dp = list-at (dst.fb-pixels) i
+    in let blended = vc-blend-px dp sp opacity
+    in let dst2 = Framebuf { fb-width = dst.fb-width, fb-height = dst.fb-height, fb-pixels = list-set-at (dst.fb-pixels) i blended }
+    in vc-blend-pixels dst2 src opacity (i + 1) total
+
+  vc-blend-px : Integer, Integer, Real -> Integer
+  vc-blend-px (dst) (src) (alpha) =
+    let dr = dst / 65536
+    in let dg = dst / 256 - dr * 256
+    in let db = dst - dst / 256 * 256
+    in let sr = src / 65536
+    in let sg = src / 256 - sr * 256
+    in let sb = src - src / 256 * 256
+    in let rr = dr + real-to-int (real-from-int (sr - dr) * alpha)
+    in let rg = dg + real-to-int (real-from-int (sg - dg) * alpha)
+    in let rb = db + real-to-int (real-from-int (sb - db) * alpha)
+    in vc-clamp rr 0 255 * 65536 + vc-clamp rg 0 255 * 256 + vc-clamp rb 0 255
+
+  vc-clamp : Integer, Integer, Integer -> Integer
+  vc-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Transition Rendering
+
+  transition-apply : Framebuf, Framebuf, VideoTransition, Integer -> Framebuf
+  transition-apply (a) (b) (trans) (frame) =
+    let progress = real-from-int (frame - trans.vt-frame) / real-from-int trans.vt-duration
+    in let t = if progress < 0.0 then 0.0 else if progress > 1.0 then 1.0 else progress
+    in when trans.vt-kind
+      is TransCut -> if t >= 0.5 then b else a
+      is TransCrossfade -> vc-blend-pixels a b t 0 (a.fb-width * a.fb-height)
+      is TransWipeLeft -> vc-wipe-left a b t
+      is TransWipeDown -> vc-wipe-down a b t
+      is TransFadeBlack -> if t < 0.5 then vc-blend-pixels a (fb-new (a.fb-width) (a.fb-height) 0) (t * 2.0) 0 (a.fb-width * a.fb-height) else vc-blend-pixels (fb-new (b.fb-width) (b.fb-height) 0) b ((t - 0.5) * 2.0) 0 (b.fb-width * b.fb-height)
+
+  vc-wipe-left : Framebuf, Framebuf, Real -> Framebuf
+  vc-wipe-left (a) (b) (t) =
+    let cut-x = real-to-int (real-from-int a.fb-width * t)
+    in vc-wipe-loop a b cut-x 0 (a.fb-width * a.fb-height) (a.fb-width)
+
+  vc-wipe-loop : Framebuf, Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  vc-wipe-loop (a) (b) (cut) (i) (total) (w) =
+    if i >= total then a
+    else let x = i - i / w * w
+    in let px = if x < cut then list-at (b.fb-pixels) i else list-at (a.fb-pixels) i
+    in let a2 = Framebuf { fb-width = a.fb-width, fb-height = a.fb-height, fb-pixels = list-set-at (a.fb-pixels) i px }
+    in vc-wipe-loop a2 b cut (i + 1) total w
+
+  vc-wipe-down : Framebuf, Framebuf, Real -> Framebuf
+  vc-wipe-down (a) (b) (t) =
+    let cut-y = real-to-int (real-from-int a.fb-height * t)
+    in vc-wipe-down-loop a b cut-y 0 (a.fb-width * a.fb-height) (a.fb-width)
+
+  vc-wipe-down-loop : Framebuf, Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  vc-wipe-down-loop (a) (b) (cut) (i) (total) (w) =
+    if i >= total then a
+    else let y = i / w
+    in let px = if y < cut then list-at (b.fb-pixels) i else list-at (a.fb-pixels) i
+    in let a2 = Framebuf { fb-width = a.fb-width, fb-height = a.fb-height, fb-pixels = list-set-at (a.fb-pixels) i px }
+    in vc-wipe-down-loop a2 b cut (i + 1) total w
+
+Section: Info
+
+  compositor-info : CompositorState -> Text
+  compositor-info (vc) =
+    show (vc.vc-layer-count) & " layers, " & show (vc.vc-width) & "x" & show (vc.vc-height) &
+    " @" & show (vc.vc-fps) & "fps, " & show (vc.vc-duration) & " frames"
+
+Page 1

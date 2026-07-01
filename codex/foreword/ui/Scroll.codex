@@ -1,0 +1,143 @@
+Chapter: Scroll
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+
+ Scrollable viewport. Wraps content that may be larger than its
+ visible area. Tracks scroll offset, clamps to content bounds,
+ computes scrollbar thumb position and size. Integrates with
+ mouse scroll events and drag-to-scroll.
+
+Section: Scroll State
+  ScrollState = record {
+    scr-offset-x : Integer,
+    scr-offset-y : Integer,
+    scr-content-w : Integer,
+    scr-content-h : Integer,
+    scr-viewport-w : Integer,
+    scr-viewport-h : Integer,
+    scr-bar-size : Integer between 4 and 64,
+    scr-scroll-h : Boolean,
+    scr-scroll-v : Boolean
+  }
+
+Section: Construction
+  scroll-new : Integer, Integer, Integer, Integer -> ScrollState
+  scroll-new (vw) (vh) (cw) (ch) =
+    ScrollState {
+      scr-offset-x = 0, scr-offset-y = 0,
+      scr-content-w = cw, scr-content-h = ch,
+      scr-viewport-w = vw, scr-viewport-h = vh,
+      scr-bar-size = 12,
+      scr-scroll-h = cw > vw,
+      scr-scroll-v = ch > vh
+    }
+
+Section: Scrolling
+  scroll-by : ScrollState, Integer, Integer -> ScrollState
+  scroll-by (s) (dx) (dy) =
+    let nx = scr-clamp (s.scr-offset-x + dx) 0 (scr-max-x s)
+    in let ny = scr-clamp (s.scr-offset-y + dy) 0 (scr-max-y s)
+    in ScrollState {
+      scr-offset-x = nx, scr-offset-y = ny,
+      scr-content-w = s.scr-content-w, scr-content-h = s.scr-content-h,
+      scr-viewport-w = s.scr-viewport-w, scr-viewport-h = s.scr-viewport-h,
+      scr-bar-size = s.scr-bar-size,
+      scr-scroll-h = s.scr-scroll-h, scr-scroll-v = s.scr-scroll-v
+    }
+
+  scroll-to : ScrollState, Integer, Integer -> ScrollState
+  scroll-to (s) (x) (y) =
+    let nx = scr-clamp x 0 (scr-max-x s)
+    in let ny = scr-clamp y 0 (scr-max-y s)
+    in ScrollState {
+      scr-offset-x = nx, scr-offset-y = ny,
+      scr-content-w = s.scr-content-w, scr-content-h = s.scr-content-h,
+      scr-viewport-w = s.scr-viewport-w, scr-viewport-h = s.scr-viewport-h,
+      scr-bar-size = s.scr-bar-size,
+      scr-scroll-h = s.scr-scroll-h, scr-scroll-v = s.scr-scroll-v
+    }
+
+  scroll-to-top : ScrollState -> ScrollState
+  scroll-to-top (s) = scroll-to s (s.scr-offset-x) 0
+
+  scroll-to-bottom : ScrollState -> ScrollState
+  scroll-to-bottom (s) = scroll-to s (s.scr-offset-x) (scr-max-y s)
+
+  scroll-page-up : ScrollState -> ScrollState
+  scroll-page-up (s) = scroll-by s 0 (-s.scr-viewport-h)
+
+  scroll-page-down : ScrollState -> ScrollState
+  scroll-page-down (s) = scroll-by s 0 (s.scr-viewport-h)
+
+Section: Content Resize
+  scroll-set-content : ScrollState, Integer, Integer -> ScrollState
+  scroll-set-content (s) (cw) (ch) =
+    let s2 = ScrollState {
+      scr-offset-x = s.scr-offset-x, scr-offset-y = s.scr-offset-y,
+      scr-content-w = cw, scr-content-h = ch,
+      scr-viewport-w = s.scr-viewport-w, scr-viewport-h = s.scr-viewport-h,
+      scr-bar-size = s.scr-bar-size,
+      scr-scroll-h = cw > s.scr-viewport-w, scr-scroll-v = ch > s.scr-viewport-h
+    }
+    in scroll-to s2 (s2.scr-offset-x) (s2.scr-offset-y)
+
+Section: Scrollbar Geometry
+  scroll-thumb-y : ScrollState -> Integer
+  scroll-thumb-y (s) =
+    if s.scr-content-h <= s.scr-viewport-h then 0
+    else s.scr-offset-y * s.scr-viewport-h / s.scr-content-h
+
+  scroll-thumb-h : ScrollState -> Integer
+  scroll-thumb-h (s) =
+    if s.scr-content-h <= s.scr-viewport-h then s.scr-viewport-h
+    else let h = s.scr-viewport-h * s.scr-viewport-h / s.scr-content-h
+    in if h < 20 then 20 else h
+
+  scroll-thumb-x : ScrollState -> Integer
+  scroll-thumb-x (s) =
+    if s.scr-content-w <= s.scr-viewport-w then 0
+    else s.scr-offset-x * s.scr-viewport-w / s.scr-content-w
+
+  scroll-thumb-w : ScrollState -> Integer
+  scroll-thumb-w (s) =
+    if s.scr-content-w <= s.scr-viewport-w then s.scr-viewport-w
+    else let w = s.scr-viewport-w * s.scr-viewport-w / s.scr-content-w
+    in if w < 20 then 20 else w
+
+  scroll-pct-y : ScrollState -> Integer
+  scroll-pct-y (s) =
+    if scr-max-y s <= 0 then 0
+    else s.scr-offset-y * 100 / scr-max-y s
+
+  scroll-pct-x : ScrollState -> Integer
+  scroll-pct-x (s) =
+    if scr-max-x s <= 0 then 0
+    else s.scr-offset-x * 100 / scr-max-x s
+
+Section: Visible Region
+  scroll-visible-rect : ScrollState -> LayoutRect
+  scroll-visible-rect (s) =
+    layout-rect (s.scr-offset-x) (s.scr-offset-y) (s.scr-viewport-w) (s.scr-viewport-h)
+
+  scroll-is-visible : ScrollState, Integer, Integer, Integer, Integer -> Boolean
+  scroll-is-visible (s) (x) (y) (w) (h) =
+    let vr = scroll-visible-rect s
+    in let ir = layout-rect x y w h
+    in rect-intersects vr ir
+
+Section: Helpers
+  scr-max-x : ScrollState -> Integer
+  scr-max-x (s) = if s.scr-content-w > s.scr-viewport-w then s.scr-content-w - s.scr-viewport-w else 0
+
+  scr-max-y : ScrollState -> Integer
+  scr-max-y (s) = if s.scr-content-h > s.scr-viewport-h then s.scr-content-h - s.scr-viewport-h else 0
+
+  scr-clamp : Integer, Integer, Integer -> Integer
+  scr-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Formatting
+  format-scroll : ScrollState -> Text
+  format-scroll (s) =
+    "scroll(" & show (s.scr-offset-x) & "," & show (s.scr-offset-y) & " view=" & show (s.scr-viewport-w) & "x" & show (s.scr-viewport-h) & " content=" & show (s.scr-content-w) & "x" & show (s.scr-content-h) & ")"
+
+Page 1

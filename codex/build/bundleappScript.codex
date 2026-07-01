@@ -1,0 +1,49 @@
+Chapter: BundleAppScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates bundle-app.ps1 -- bundles a Codex application source file
+ with all its transitive cited dependencies into a single .codex file.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  bundle-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'quire-map.ps1')")]
+
+Section: S02 -- Read Source
+
+  s02 : List ShellCmd = [ScBlank, ScAssign "srcPath" (SeRaw "(Resolve-Path $Src).Path"), ScDotNetCallAssign "rootLines" "System.IO.File" "ReadAllLines" [SeVar "srcPath"]]
+
+Section: S03 -- Resolve Cite Order
+
+  s03 : List ShellCmd = [ScBlank, ScTry [ScAssign "ordered" (SeRaw "Resolve-CiteOrder -RootLines $rootLines -Repo $Repo")] [ScWriteError (SeRaw "\"MISSING: $($_.Exception.Message)\""), ScExit (SeInt 3)] []]
+
+Section: S04 -- Build Output
+
+  s04 : List ShellCmd = [ScAssign "lines" (SeRaw "Format-CiteChapters -Ordered $ordered"), ScBlank, ScForEach "l" (SeVar "rootLines") [ScRaw "[void]$lines.Add($l)"], ScRaw "[void]$lines.Add('')"]
+
+Section: S05 -- Write Output
+
+  s05 : List ShellCmd = [ScBlank, ScAssign "body" (SeRaw "($lines -join \"`n\") + \"`n\""), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "Out", SeVar "body", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScEcho (SeRaw "\"[bundle-app] $($ordered.Count) dependencies + root -> $Out ($($body.Length) bytes)\"")]
+
+Section: Assembly
+
+  bundle-body : List ShellCmd = [ScSequence s01, ScSequence s02, ScSequence s03, ScBlank, ScSequence s04, ScSequence s05]
+
+  bundle-script : ShellScript = sh-script "bundle-app" "Bundle a Codex application source file with all its transitive cited dependencies into a single .codex file" bundle-params bundle-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell bundle-script)
+  end
+
+Page 1

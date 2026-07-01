@@ -1,0 +1,37 @@
+Chapter: RegStress
+
+ Register-pressure benchmark. Each `mix4` argument is itself a function
+ call (`step`), so the result of evaluating one argument cannot stay in
+ an argument register while the next argument is evaluated -- the codegen
+ must stage every argument into a callee-saved local before the call.
+ The four `mix4` calls are independent: each result is consumed only at
+ the very end. Without per-expression local recycling the staging locals
+ accumulate monotonically across all four calls and spill past the ten
+ callee-saved registers; with recycling each call's four staging locals
+ are reclaimed once the call returns, so the function stays in registers
+ with no spill traffic.
+
+ Measured (RV64, regstress function body): with per-expression local
+ recycling 100 instructions and zero spill memory ops; without recycling
+ 114 instructions and 23 spill loads/stores. To reproduce the baseline,
+ make rv-emit-binary and rv-emit-user-call return their inner result
+ directly (skip the next-local restore), rebuild the plug, and recompile.
+
+Section: Stress
+
+  step : Integer -> Integer
+  step (x) = x * 3 - 1
+
+  mix4 : Integer, Integer, Integer, Integer -> Integer
+  mix4 (a) (b) (c) (d) = a + b * c - d
+
+  regstress : Integer -> Integer
+  regstress (n) =
+   let r1 = mix4 (step n) (step (n + 1)) (step (n + 2)) (step (n + 3))
+   in let r2 = mix4 (step (n + 4)) (step (n + 5)) (step (n + 6)) (step (n + 7))
+   in let r3 = mix4 (step (n + 8)) (step (n + 9)) (step (n + 10)) (step (n + 11))
+   in let r4 = mix4 (step (n + 12)) (step (n + 13)) (step (n + 14)) (step (n + 15))
+   in r1 + r2 + r3 + r4
+
+  opening : Integer
+  opening = regstress 7

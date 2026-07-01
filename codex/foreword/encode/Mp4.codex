@@ -1,0 +1,109 @@
+Chapter: Mp4
+
+ MP4 container encoder (ISO 14496-12). Box-based structure with
+ ftyp, moov (movie header, track, sample table), and mdat (media
+ data). Wraps raw video/audio samples into a valid MP4 file.
+
+ We say:
+
+Section: Types
+  Mp4Track = record {
+    mp4-track-type : Integer,
+    mp4-width : Integer,
+    mp4-height : Integer,
+    mp4-timescale : Integer,
+    mp4-sample-count : Integer,
+    mp4-sample-size : Integer
+  }
+
+Section: Constants
+  mp4-video-track : Integer = 1
+  mp4-audio-track : Integer = 2
+
+Section: Box Encoding
+  mp4-box : List Integer, List Integer -> List Integer
+  mp4-box (box-type) (data) =
+    mp4-be32 (8 + list-length data) & box-type & data
+
+  mp4-full-box : List Integer, Integer, Integer, List Integer -> List Integer
+  mp4-full-box (box-type) (version) (flags) (data) =
+    mp4-box box-type ([version, bit-and (bit-shru flags 16) 255, bit-and (bit-shru flags 8) 255, bit-and flags 255] & data)
+
+Section: File Type
+  mp4-ftyp : List Integer
+  mp4-ftyp = mp4-box [102, 116, 121, 112] ([105, 115, 111, 109, 0, 0, 2, 0, 105, 115, 111, 109, 105, 115, 111, 50, 109, 112, 52, 49])
+
+Section: Movie Box
+  mp4-moov : Mp4Track, Integer -> List Integer
+  mp4-moov (track) (mdat-size) =
+    let mvhd = mp4-mvhd (track.mp4-timescale) (track.mp4-sample-count)
+    in let trak = mp4-trak track
+    in mp4-box [109, 111, 111, 118] (mvhd & trak)
+
+  mp4-mvhd : Integer, Integer -> List Integer
+  mp4-mvhd (timescale) (duration) =
+    mp4-full-box [109, 118, 104, 100] 0 0 (mp4-be32 0 & mp4-be32 0 & mp4-be32 timescale & mp4-be32 duration & mp4-be32 65536 & mp4-be16 256 & mp4-zeros 10 & mp4-identity-matrix & mp4-zeros 24 & mp4-be32 2)
+
+  mp4-identity-matrix : List Integer
+  mp4-identity-matrix = mp4-be32 65536 & mp4-zeros 4 & mp4-zeros 4 & mp4-zeros 4 & mp4-be32 65536 & mp4-zeros 4 & mp4-zeros 4 & mp4-zeros 4 & mp4-be32 1073741824
+
+Section: Track Box
+  mp4-trak : Mp4Track -> List Integer
+  mp4-trak (track) =
+    let tkhd = mp4-tkhd track
+    in let mdia = mp4-mdia track
+    in mp4-box [116, 114, 97, 107] (tkhd & mdia)
+
+  mp4-tkhd : Mp4Track -> List Integer
+  mp4-tkhd (track) =
+    mp4-full-box [116, 107, 104, 100] 0 3 (mp4-be32 0 & mp4-be32 0 & mp4-be32 1 & mp4-zeros 4 & mp4-be32 (track.mp4-sample-count) & mp4-zeros 8 & mp4-be16 0 & mp4-be16 0 & mp4-be16 0 & mp4-be16 0 & mp4-identity-matrix & mp4-be32 (track.mp4-width * 65536) & mp4-be32 (track.mp4-height * 65536))
+
+  mp4-mdia : Mp4Track -> List Integer
+  mp4-mdia (track) =
+    let mdhd = mp4-full-box [109, 100, 104, 100] 0 0 (mp4-be32 0 & mp4-be32 0 & mp4-be32 (track.mp4-timescale) & mp4-be32 (track.mp4-sample-count) & mp4-be16 21956 & mp4-be16 0)
+    in let hdlr = mp4-full-box [104, 100, 108, 114] 0 0 (mp4-zeros 4 & [118, 105, 100, 101] & mp4-zeros 12 & [86, 105, 100, 101, 111, 0])
+    in let minf = mp4-box [109, 105, 110, 102] (mp4-vmhd & mp4-stbl track)
+    in mp4-box [109, 100, 105, 97] (mdhd & hdlr & minf)
+
+  mp4-vmhd : List Integer
+  mp4-vmhd = mp4-full-box [118, 109, 104, 100] 0 1 (mp4-be16 0 & mp4-be16 0 & mp4-be16 0 & mp4-be16 0)
+
+Section: Sample Table
+  mp4-stbl : Mp4Track -> List Integer
+  mp4-stbl (track) =
+    let stsd = mp4-stsd-video track
+    in let stts = mp4-full-box [115, 116, 116, 115] 0 0 (mp4-be32 1 & mp4-be32 (track.mp4-sample-count) & mp4-be32 1)
+    in let stsz = mp4-full-box [115, 116, 115, 122] 0 0 (mp4-be32 (track.mp4-sample-size) & mp4-be32 (track.mp4-sample-count))
+    in let stsc = mp4-full-box [115, 116, 115, 99] 0 0 (mp4-be32 1 & mp4-be32 1 & mp4-be32 (track.mp4-sample-count) & mp4-be32 1)
+    in let stco = mp4-full-box [115, 116, 99, 111] 0 0 (mp4-be32 1 & mp4-be32 0)
+    in mp4-box [115, 116, 98, 108] (stsd & stts & stsz & stsc & stco)
+
+  mp4-stsd-video : Mp4Track -> List Integer
+  mp4-stsd-video (track) =
+    let entry = mp4-zeros 6 & mp4-be16 1 & mp4-zeros 16 & mp4-be16 (track.mp4-width) & mp4-be16 (track.mp4-height) & mp4-be32 4718592 & mp4-be32 4718592 & mp4-zeros 4 & mp4-be16 1 & mp4-zeros 32 & mp4-be16 24 & mp4-be16 65535
+    in let sample-entry = mp4-box [114, 97, 119, 32] entry
+    in mp4-full-box [115, 116, 115, 100] 0 0 (mp4-be32 1 & sample-entry)
+
+Section: Media Data
+  mp4-mdat : List Integer -> List Integer
+  mp4-mdat (data) = mp4-box [109, 100, 97, 116] data
+
+Section: Full File
+  mp4-encode : Mp4Track, List Integer -> List Integer
+  mp4-encode (track) (media-data) =
+    mp4-ftyp & mp4-moov track (list-length media-data) & mp4-mdat media-data
+
+Section: Helpers
+  mp4-be16 : Integer -> List Integer
+  mp4-be16 (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  mp4-be32 : Integer -> List Integer
+  mp4-be32 (v) = [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  mp4-zeros : Integer -> List Integer
+  mp4-zeros (n) = mp4-zeros-loop n []
+
+  mp4-zeros-loop : Integer, List Integer -> List Integer
+  mp4-zeros-loop (n) (acc) = if n <= 0 then acc else mp4-zeros-loop (n - 1) (list-push acc 0)
+
+Page 1

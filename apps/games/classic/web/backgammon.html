@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Backgammon</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #1a120b; }
+  .game-page { max-width: 1200px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/backgammon/bg-scene-0.png') center/cover no-repeat;
+    filter: brightness(0.35) blur(3px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+  .controls button { background: linear-gradient(180deg, #5a3a1a, #3a2210);
+    border: 1px solid #8a6a3a; border-radius: 6px; color: #d4a050;
+    font-family: inherit; font-size: 13px; padding: 6px 16px; cursor: pointer; }
+  .controls button:hover { background: linear-gradient(180deg, #6a4a2a, #4a3220); color: #f5e6c8; }
+  .controls button:disabled { opacity: 0.3; }
+  .speed-label { color: #8a6a3a; font-size: 12px; }
+  #status-line { color: #d4a050; font-size: 13px; margin-bottom: 8px; text-align: center; }
+  .engine-tag { background: #5a3a1a; color: #d4a050; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; margin-left: 12px; border: 1px solid #8a6a3a44; }
+
+  /* ── Board Layout ── */
+  .table-area { display: flex; gap: 12px; align-items: stretch; margin-bottom: 12px; }
+
+  .sidebar { width: 80px; background: linear-gradient(180deg, #2a1a0eee, #1a120bdd);
+    border: 1px solid #3a221044; border-radius: 8px; padding: 8px 4px;
+    display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+    backdrop-filter: blur(4px); }
+  .pip-section { text-align: center; }
+  .pip-label { font-size: 9px; color: #8a6a3a; text-transform: uppercase; letter-spacing: 1px; }
+  .pip-off { font-size: 28px; font-weight: bold; }
+  .pip-off-w { color: #f5e6c8; }
+  .pip-off-b { color: #8b2020; }
+  .pip-total { font-size: 10px; color: #8a6a3a66; }
+
+  .case { flex: 1; background: url('/assets/games/backgammon/wood-case.png') center/cover;
+    border: 3px solid #6a4a2a; border-radius: 8px; padding: 6px;
+    box-shadow: 0 6px 30px rgba(0,0,0,0.6), inset 0 1px 3px rgba(255,255,255,0.05);
+    background-image: url('/assets/games/backgammon/wood-case.png'),
+      repeating-linear-gradient(90deg, transparent 0px, transparent 38px, #3a221066 38px, #3a221066 40px); }
+
+  .field { display: flex; background: url('/assets/games/backgammon/felt-dark.png') center/cover;
+    border-radius: 4px; overflow: hidden; height: 440px; position: relative; }
+  .half { flex: 1; display: flex; flex-direction: column; justify-content: space-between; padding: 4px 2px; }
+
+  .bar { width: 36px; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 6px;
+    background: linear-gradient(90deg, #3a2210 0%, #5a3a1a 15%, #5a3a1a 85%, #3a2210 100%);
+    border-left: 2px solid #b8963a; border-right: 2px solid #b8963a;
+    box-shadow: inset 0 0 8px rgba(0,0,0,0.5);
+    background-image: repeating-linear-gradient(180deg, transparent 0px, transparent 48px, #b8963a55 48px, #b8963a55 50px); }
+  .bar-pip { width: 28px; height: 28px; border-radius: 50%; font-size: 12px; font-weight: bold;
+    display: none; align-items: center; justify-content: center; }
+  .bar-pip.visible { display: flex; }
+  .bar-pip-w { background: radial-gradient(circle at 35% 35%, #fff8e8, #d4b878); color: #5a3a1a; border: 1px solid #b89848; }
+  .bar-pip-b { background: radial-gradient(circle at 35% 35%, #8b2020, #4a0a0a); color: #c88; border: 1px solid #6a1515; }
+
+  .point-row { display: flex; height: 50%; }
+  .point-row.top { align-items: flex-start; }
+  .point-row.bot { align-items: flex-end; }
+
+  .point { flex: 1; display: flex; flex-direction: column; align-items: center; position: relative; min-width: 0; }
+  .point.top .pieces { padding-top: 8px; }
+  .point.bot .pieces { padding-bottom: 8px; flex-direction: column-reverse; }
+  .pieces { display: flex; flex-direction: column; align-items: center; gap: 2px; z-index: 2; position: relative; }
+
+  .tri { position: absolute; width: 90%; z-index: 1; }
+  .point.top .tri { top: 0; height: 180px; clip-path: polygon(50% 100%, 0% 0%, 100% 0%); }
+  .point.bot .tri { bottom: 0; height: 180px; clip-path: polygon(50% 0%, 0% 100%, 100% 100%); }
+  .tri-dark { background: url('/assets/games/backgammon/leather.png') center/cover;
+    filter: brightness(0.6) saturate(1.2);
+    border: 1px solid #5a3a1a88; outline: 1px dashed #8a6a3a33; }
+  .tri-light { background: url('/assets/games/backgammon/felt-gold.png') center/cover;
+    filter: brightness(0.85);
+    border: 1px solid #c8a86844; outline: 1px dashed #c8a86833; }
+
+  .pt-num { position: absolute; z-index: 3; font-size: 8px; color: #8a6a3a55; }
+  .point.top .pt-num { bottom: 0; }
+  .point.bot .pt-num { top: 0; }
+
+  .piece { width: 36px; height: 36px; border-radius: 50%; z-index: 2;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.5), inset 0 1px 3px rgba(255,255,255,0.2);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: bold;
+    transition: transform 0.15s ease-out, opacity 0.15s; }
+  .piece-w { background: radial-gradient(circle at 35% 35%, #fff8e8, #d4b878);
+    border: 2px solid #b89848; color: #8a6a3a; }
+  .piece-b { background: radial-gradient(circle at 35% 35%, #8b2020, #4a0a0a);
+    border: 2px solid #6a1515; color: #c88; }
+
+  /* ── Dice on board ── */
+  .dice-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    z-index: 10; display: flex; gap: 10px; pointer-events: none; }
+  .die-face { font-size: 36px; filter: drop-shadow(0 3px 6px rgba(0,0,0,0.7)); }
+
+  /* ── Score footer ── */
+  .score-footer { display: flex; justify-content: center; gap: 24px; margin-bottom: 8px;
+    font-size: 12px; color: #8a6a3a; }
+
+  .move-log { background: #1a120bcc; border: 1px solid #3a2210; border-radius: 6px;
+    padding: 10px 14px; max-height: 120px; overflow-y: auto; font-size: 11px;
+    color: #8a6a3a; line-height: 1.6; backdrop-filter: blur(4px); }
+  .move-log .ply-w { color: #f5e6c8; } .move-log .ply-b { color: #8b2020; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#0d0805;border-color:#3a221044">
+  <span class="topbar-logo" style="color:#d4a050">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#8a6a3a">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#d4a050;border-color:#d4a050">Backgammon</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button id="btn-play" onclick="startGame()">&#x25B6; Play</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Pause</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Step</button>
+    <button id="btn-reset" onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#d4a050" oninput="updateSpeed()">
+  </div>
+  <div id="status-line">Press Play to begin.</div>
+
+  <div class="table-area">
+    <div class="sidebar">
+      <div class="pip-section"><div class="pip-label">White</div><div class="pip-off pip-off-w" id="off-w">0</div><div class="pip-label">off</div></div>
+      <div class="pip-section"><div class="pip-label">Ply</div><div class="pip-off" style="color:#8a6a3a;font-size:20px" id="ply-count">0</div></div>
+    </div>
+
+    <div class="case">
+      <div class="field">
+        <div class="half" id="left-half"></div>
+        <div class="bar" id="bar-area">
+          <div class="bar-pip bar-pip-w" id="bar-w">0</div>
+          <div class="bar-pip bar-pip-b" id="bar-b">0</div>
+        </div>
+        <div class="half" id="right-half"></div>
+        <div class="dice-overlay" id="dice-overlay"></div>
+      </div>
+    </div>
+
+    <div class="sidebar">
+      <div class="pip-section"><div class="pip-label">Red</div><div class="pip-off pip-off-b" id="off-b">0</div><div class="pip-label">off</div></div>
+      <div class="pip-section"><div style="font-size:9px;color:#8a6a3a55">&#x2615;</div></div>
+    </div>
+  </div>
+
+  <div id="narration" style="text-align:center;font-size:14px;font-weight:bold;color:#d4a050;min-height:20px;margin-bottom:8px"></div>
+  <details class="game-log" open><summary>Move Log</summary><div class="log-body" id="move-log"></div></details>
+  <details class="game-log" style="margin-top:8px">
+    <summary style="color:#d4a050;cursor:pointer;font-weight:bold;font-size:13px">How to Play Backgammon</summary>
+    <div class="log-body" style="color:#8a6a3a;font-size:12px;line-height:1.6;padding:8px">
+      <p><b>Goal:</b> Move all 15 of your pieces off the board before your opponent.</p>
+      <p><b>Setup:</b> 24 narrow triangles (points). Each player starts with 15 pieces in a standard arrangement.</p>
+      <p><b>Movement:</b> Roll two dice. Move pieces forward by the number shown. Doubles mean four moves instead of two.</p>
+      <p><b>Hitting:</b> Landing on a point with a single opponent piece sends it to the bar. It must re-enter before other pieces can move.</p>
+      <p><b>Bearing off:</b> Once all your pieces are in your home board (last 6 points), you can start removing them.</p>
+      <p><b>Bar:</b> Pieces on the bar must re-enter the board through the opponent's home board.</p>
+      <p><b>This simulation:</b> AI plays both sides. Watch pieces move point to point with dice rolls shown.</p>
+    </div>
+  </details>
+</div>
+
+<script>
+var DICE = ['','&#x2680;','&#x2681;','&#x2682;','&#x2683;','&#x2684;','&#x2685;'];
+var state = null, paused = false, running = false, timer = null, delay = 250;
+
+function updateSpeed() { var v=parseInt(document.getElementById('speed').value); delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||250; }
+
+async function apiCall(p) {
+  try { var r=await fetch(p); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+  catch(e) { document.getElementById('status-line').textContent='API error: '+e.message; return null; }
+}
+
+function renderBoard(b) {
+  var topPts = [12,13,14,15,16,17];
+  var topPtsR = [18,19,20,21,22,23];
+  var botPts = [11,10,9,8,7,6];
+  var botPtsR = [5,4,3,2,1,0];
+
+  function buildPoints(pts, dir) {
+    var h = '';
+    for (var i = 0; i < pts.length; i++) {
+      var idx = pts[i];
+      var v = b.points[idx];
+      var count = Math.abs(v);
+      var isW = v > 0;
+      var triCls = (idx % 2 === 0) ? 'tri-dark' : 'tri-light';
+      var pcs = '';
+      var show = Math.min(count, 5);
+      for (var j = 0; j < show; j++) {
+        var label = (j === show - 1 && count > 5) ? count : '';
+        pcs += '<div class="piece '+(isW?'piece-w':'piece-b')+'">'+label+'</div>';
+      }
+      h += '<div class="point '+dir+'"><div class="tri '+triCls+'"></div><div class="pieces">'+pcs+'</div><span class="pt-num">'+(idx+1)+'</span></div>';
+    }
+    return h;
+  }
+
+  document.getElementById('left-half').innerHTML =
+    '<div class="point-row top">'+buildPoints(topPts,'top')+'</div>' +
+    '<div class="point-row bot">'+buildPoints(botPts,'bot')+'</div>';
+  document.getElementById('right-half').innerHTML =
+    '<div class="point-row top">'+buildPoints(topPtsR,'top')+'</div>' +
+    '<div class="point-row bot">'+buildPoints(botPtsR,'bot')+'</div>';
+
+  var bw = document.getElementById('bar-w');
+  var bb = document.getElementById('bar-b');
+  bw.textContent = b.barW; bw.classList.toggle('visible', b.barW > 0);
+  bb.textContent = b.barB; bb.classList.toggle('visible', b.barB > 0);
+
+  document.getElementById('off-w').textContent = b.offW;
+  document.getElementById('off-b').textContent = b.offB;
+  document.getElementById('ply-count').textContent = b.ply;
+}
+
+async function resetGame() {
+  clearTimeout(timer); running = false; paused = false;
+  state = await apiCall('/api/backgammon/new?seed='+(Date.now()&0x7FFFFFFF));
+  if (state) { renderBoard(state); document.getElementById('dice-overlay').innerHTML = ''; }
+  document.getElementById('status-line').textContent = 'Press Play to begin.';
+  document.getElementById('move-log').innerHTML = '';
+  document.getElementById('btn-play').disabled = false;
+  document.getElementById('btn-pause').disabled = true;
+  document.getElementById('btn-step').disabled = true;
+}
+
+async function startGame() {
+  if (running && paused) { togglePause(); return; }
+  await resetGame(); running = true;
+  document.getElementById('btn-play').disabled = true;
+  document.getElementById('btn-pause').disabled = false;
+  document.getElementById('btn-step').disabled = false;
+  document.getElementById('status-line').textContent = 'Game in progress...';
+  updateSpeed(); scheduleTick();
+}
+
+function togglePause() {
+  if (!running) return; paused = !paused;
+  document.getElementById('btn-pause').textContent = paused ? '▶ Resume' : '⏸ Pause';
+  document.getElementById('btn-step').disabled = !paused;
+  if (!paused) scheduleTick();
+}
+function scheduleTick() { if (!paused && running) timer = setTimeout(tick, delay); }
+async function stepOnce() { if (running) await tick(); }
+
+async function tick() {
+  if (!running || !state) return;
+  if (state.done) {
+    var name = state.winner===0?'White':state.winner===1?'Red':'Draw';
+    document.getElementById('status-line').textContent = name+' wins in '+state.ply+' plies!';
+    running = false; document.getElementById('btn-play').disabled = false;
+    document.getElementById('btn-pause').disabled = true; document.getElementById('btn-step').disabled = true;
+    document.getElementById('dice-overlay').innerHTML = '';
+    return;
+  }
+  var prevCur = state.cur;
+  var result = await apiCall('/api/backgammon/step');
+  if (!result) { running = false; return; }
+  state = result; renderBoard(state);
+
+  var pName = prevCur===0?'White':'Red';
+  var pClass = prevCur===0?'ply-w':'ply-b';
+  var d1 = state.d1||0, d2 = state.d2||0;
+  document.getElementById('dice-overlay').innerHTML =
+    '<span class="die-face">'+(DICE[d1]||'')+'</span><span class="die-face">'+(DICE[d2]||'')+'</span>' +
+    (d1===d2&&d1>0?'<span style="color:#d4a050;font-size:11px;font-weight:bold">2x</span>':'');
+
+  var doubles = d1===d2&&d1>0?' (doubles!)':'';
+  var narText = pName+' rolls '+d1+'+'+d2+'='+( d1+d2)+doubles;
+  document.getElementById('narration').textContent = narText;
+  document.getElementById('status-line').textContent =
+    state.done ? (state.winner===0?'White':'Red')+' wins!' : (state.cur===0?'White':'Red')+"'s turn";
+
+  var log = document.getElementById('move-log');
+  log.innerHTML += '<span class="'+pClass+'">'+state.ply+'. '+pName+' ['+d1+','+d2+']'+doubles+'</span><br>';
+  log.scrollTop = log.scrollHeight;
+  scheduleTick();
+}
+
+updateSpeed(); resetGame();
+</script>
+</body>
+</html>

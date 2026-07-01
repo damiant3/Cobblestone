@@ -1,0 +1,283 @@
+Chapter: ImageTo3d
+  cites AI chapter Tensor
+  cites AI chapter NeuralNet
+  cites AI chapter Activation
+  cites AI chapter ImageTensor
+  cites AI chapter SafeTensors
+  cites AI chapter Normalization
+  cites AI chapter Conv2d
+  cites Encode chapter Gltf
+  cites Foreword chapter Maybe
+
+ Image-to-3D mesh reconstruction. Takes a 2D image and produces
+ a textured 3D mesh suitable for game asset use. Implements a
+ simplified TripoSR-style architecture: image encoder -> triplane
+ features -> marching cubes mesh extraction.
+
+ The pipeline:
+   1. Encode input image to feature grid (image encoder MLP)
+   2. Predict triplane features (3 axis-aligned feature planes)
+   3. Query occupancy field from triplane features
+   4. Extract mesh via marching cubes
+   5. Assign vertex colors from input image projection
+   6. Export as GLB via Gltf.codex
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  Recon3dConfig = record {
+    r3-image-size : Integer,
+    r3-feature-dim : Integer,
+    r3-grid-res : Integer,
+    r3-threshold : Integer,
+    r3-num-encoder-layers : Integer
+  }
+
+  Recon3dState = record {
+    r3s-config : Recon3dConfig,
+    r3s-encoder : NeuralNetwork,
+    r3s-decoder : NeuralNetwork,
+    r3s-triplane-proj : List Integer,
+    r3s-triplane-bias : List Integer
+  }
+
+  Recon3dOutput = record {
+    r3o-mesh : GltfMesh,
+    r3o-vertex-count : Integer,
+    r3o-face-count : Integer
+  }
+
+Section: Default Configuration
+  triposr-config : Recon3dConfig
+  triposr-config = Recon3dConfig {
+    r3-image-size = 256,
+    r3-feature-dim = 64,
+    r3-grid-res = 64,
+    r3-threshold = 500,
+    r3-num-encoder-layers = 4
+  }
+
+  triposr-config-low : Recon3dConfig
+  triposr-config-low = Recon3dConfig {
+    r3-image-size = 128,
+    r3-feature-dim = 32,
+    r3-grid-res = 32,
+    r3-threshold = 500,
+    r3-num-encoder-layers = 3
+  }
+
+Section: Image Encoder
+  r3-encode-image : ImageData, Recon3dState -> Tensor
+  r3-encode-image (img) (state) =
+    let resized = image-resize img (state.r3s-config.r3-image-size) (state.r3s-config.r3-image-size)
+    in let tensor-data = image-to-tensor-unit resized
+    in let input = tensor-vector tensor-data
+    in nn-forward (state.r3s-encoder) input
+
+Section: Triplane Feature Generation
+  TriplaneFeatures = record {
+    tp-xy : List Integer,
+    tp-xz : List Integer,
+    tp-yz : List Integer,
+    tp-res : Integer,
+    tp-dim : Integer
+  }
+
+  r3-compute-triplane : Tensor, Recon3dState -> TriplaneFeatures
+  r3-compute-triplane (features) (state) =
+    let cfg = state.r3s-config
+    in let total-dim = cfg.r3-feature-dim * cfg.r3-grid-res * cfg.r3-grid-res
+    in let projected = r3-linear-project (features.data) (state.r3s-triplane-proj) (state.r3s-triplane-bias) (features.rows * features.cols) (total-dim * 3)
+    in let plane-size = total-dim
+    in let xy = r3-slice projected 0 plane-size []
+    in let xz = r3-slice projected plane-size plane-size []
+    in let yz = r3-slice projected (plane-size * 2) plane-size []
+    in TriplaneFeatures { tp-xy = xy, tp-xz = xz, tp-yz = yz, tp-res = cfg.r3-grid-res, tp-dim = cfg.r3-feature-dim }
+
+  r3-linear-project : List Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  r3-linear-project (input) (weights) (bias) (in-dim) (out-dim) =
+    r3-proj-loop input weights bias in-dim out-dim 0 []
+
+  r3-proj-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  r3-proj-loop (input) (w) (b) (in-dim) (out-dim) (j) (acc) =
+    if j >= out-dim then acc
+    else let dot = r3-dot input w 0 (j * in-dim) in-dim 0 0
+    in let bias-val = if j < list-length b then list-at b j else 0
+    in r3-proj-loop input w b in-dim out-dim (j + 1) (list-push acc (dot + bias-val))
+
+  r3-dot : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  r3-dot (a) (b) (a-off) (b-off) (len) (k) (acc) =
+    if k >= len then acc
+    else r3-dot a b a-off b-off len (k + 1) (acc + list-at a (a-off + k) * list-at b (b-off + k) / 1000)
+
+  r3-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  r3-slice (data) (start) (len) (acc) =
+    if len <= 0 then acc
+    else r3-slice data (start + 1) (len - 1) (list-push acc (list-at data start))
+
+Section: Occupancy Query
+  r3-query-occupancy : TriplaneFeatures, Integer, Integer, Integer, Recon3dState -> Integer
+  r3-query-occupancy (tp) (gx) (gy) (gz) (state) =
+    let feat-xy = r3-sample-plane (tp.tp-xy) (tp.tp-res) (tp.tp-dim) gx gy
+    in let feat-xz = r3-sample-plane (tp.tp-xz) (tp.tp-res) (tp.tp-dim) gx gz
+    in let feat-yz = r3-sample-plane (tp.tp-yz) (tp.tp-res) (tp.tp-dim) gy gz
+    in let combined = r3-add-features feat-xy feat-xz feat-yz (tp.tp-dim) 0 []
+    in let input-tensor = tensor-vector combined
+    in let output = nn-forward (state.r3s-decoder) input-tensor
+    in list-at (output.data) 0
+
+  r3-sample-plane : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  r3-sample-plane (plane) (res) (dim) (u) (v) =
+    let cu = if u < 0 then 0 else if u >= res then res - 1 else u
+    in let cv = if v < 0 then 0 else if v >= res then res - 1 else v
+    in let base = (cv * res + cu) * dim
+    in r3-extract-feat plane base dim 0 []
+
+  r3-extract-feat : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  r3-extract-feat (data) (base) (dim) (i) (acc) =
+    if i >= dim then acc
+    else let val = if base + i < list-length data then list-at data (base + i) else 0
+    in r3-extract-feat data base dim (i + 1) (list-push acc val)
+
+  r3-add-features : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  r3-add-features (a) (b) (c) (dim) (i) (acc) =
+    if i >= dim then acc
+    else let val = list-at a i + list-at b i + list-at c i
+    in r3-add-features a b c dim (i + 1) (list-push acc val)
+
+Section: Marching Cubes (simplified)
+  r3-extract-mesh : TriplaneFeatures, Recon3dState -> GltfMesh
+  r3-extract-mesh (tp) (state) =
+    let cfg = state.r3s-config
+    in let res = cfg.r3-grid-res
+    in let grid = r3-eval-grid tp state res 0 0 0 []
+    in let mesh-data = r3-march-grid grid res (cfg.r3-threshold) 0 0 0 [] []
+    in gltf-mesh (mesh-data.mc-verts) (mesh-data.mc-indices)
+
+  r3-eval-grid : TriplaneFeatures, Recon3dState, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  r3-eval-grid (tp) (state) (res) (x) (y) (z) (acc) =
+    if z >= res then acc
+    else if y >= res then r3-eval-grid tp state res x 0 (z + 1) acc
+    else if x >= res then r3-eval-grid tp state res 0 (y + 1) z acc
+    else let occ = r3-query-occupancy tp x y z state
+    in r3-eval-grid tp state res (x + 1) y z (list-push acc occ)
+
+  MarchResult = record {
+    mc-verts : List GltfVertex,
+    mc-indices : List Integer
+  }
+
+  r3-march-grid : List Integer, Integer, Integer, Integer, Integer, Integer, List GltfVertex, List Integer -> MarchResult
+  r3-march-grid (grid) (res) (threshold) (x) (y) (z) (verts) (indices) =
+    if z >= res - 1 then MarchResult { mc-verts = verts, mc-indices = indices }
+    else if y >= res - 1 then r3-march-grid grid res threshold x 0 (z + 1) verts indices
+    else if x >= res - 1 then r3-march-grid grid res threshold 0 (y + 1) z verts indices
+    else let result = r3-march-cell grid res threshold x y z verts indices
+    in r3-march-grid grid res threshold (x + 1) y z (result.mc-verts) (result.mc-indices)
+
+  r3-march-cell : List Integer, Integer, Integer, Integer, Integer, Integer, List GltfVertex, List Integer -> MarchResult
+  r3-march-cell (grid) (res) (threshold) (x) (y) (z) (verts) (indices) =
+    let v000 = r3-grid-at grid res x y z
+    in let v100 = r3-grid-at grid res (x + 1) y z
+    in let v010 = r3-grid-at grid res x (y + 1) z
+    in let v001 = r3-grid-at grid res x y (z + 1)
+    in let inside-count = r3-count-inside v000 v100 v010 v001 threshold
+    in if inside-count == 0 then MarchResult { mc-verts = verts, mc-indices = indices }
+    else if inside-count == 4 then MarchResult { mc-verts = verts, mc-indices = indices }
+    else r3-emit-surface-cell x y z res inside-count (list-length verts) verts indices
+
+  r3-grid-at : List Integer, Integer, Integer, Integer, Integer -> Integer
+  r3-grid-at (grid) (res) (x) (y) (z) =
+    let idx = z * res * res + y * res + x
+    in if idx < list-length grid then list-at grid idx else 0
+
+  r3-count-inside : Integer, Integer, Integer, Integer, Integer -> Integer
+  r3-count-inside (v0) (v1) (v2) (v3) (threshold) =
+    let c0 = if v0 >= threshold then 1 else 0
+    in let c1 = if v1 >= threshold then 1 else 0
+    in let c2 = if v2 >= threshold then 1 else 0
+    in let c3 = if v3 >= threshold then 1 else 0
+    in c0 + c1 + c2 + c3
+
+  r3-emit-surface-cell : Integer, Integer, Integer, Integer, Integer, Integer, List GltfVertex, List Integer -> MarchResult
+  r3-emit-surface-cell (x) (y) (z) (res) (inside) (base-idx) (verts) (indices) =
+    let cx = x * 2000 / res - 1000
+    in let cy = y * 2000 / res - 1000
+    in let cz = z * 2000 / res - 1000
+    in let half = 1000 / res
+    in let v0 = gltf-vertex cx cy cz 0 0 1000 (x * 1000 / res) (y * 1000 / res)
+    in let v1 = gltf-vertex (cx + half) cy cz 0 0 1000 ((x + 1) * 1000 / res) (y * 1000 / res)
+    in let v2 = gltf-vertex (cx + half) (cy + half) cz 0 0 1000 ((x + 1) * 1000 / res) ((y + 1) * 1000 / res)
+    in let v3 = gltf-vertex cx (cy + half) cz 0 0 1000 (x * 1000 / res) ((y + 1) * 1000 / res)
+    in let new-verts = verts & [v0, v1, v2, v3]
+    in let new-indices = indices & [base-idx, base-idx + 1, base-idx + 2, base-idx, base-idx + 2, base-idx + 3]
+    in MarchResult { mc-verts = new-verts, mc-indices = new-indices }
+
+Section: Full Pipeline
+  image-to-3d : ImageData, Recon3dState -> Recon3dOutput
+  image-to-3d (img) (state) =
+    let features = r3-encode-image img state
+    in let triplane = r3-compute-triplane features state
+    in let mesh = r3-extract-mesh triplane state
+    in Recon3dOutput { r3o-mesh = mesh, r3o-vertex-count = mesh.gm-vertex-count, r3o-face-count = mesh.gm-index-count / 3 }
+
+  image-to-glb : ImageData, Recon3dState -> List Integer
+  image-to-glb (img) (state) =
+    let result = image-to-3d img state
+    in gltf-encode-glb (result.r3o-mesh)
+
+Section: Weight Loading
+  r3-load-state : List Integer, SafeTensorFile, Recon3dConfig -> Recon3dState
+  r3-load-state (data) (file) (cfg) =
+    let encoder = r3-load-encoder data file cfg
+    in let decoder = r3-load-decoder data file cfg
+    in let proj-w = r3-load-weight data file "triplane_proj.weight"
+    in let proj-b = r3-load-weight data file "triplane_proj.bias"
+    in Recon3dState { r3s-config = cfg, r3s-encoder = encoder, r3s-decoder = decoder, r3s-triplane-proj = proj-w, r3s-triplane-bias = proj-b }
+
+  r3-load-encoder : List Integer, SafeTensorFile, Recon3dConfig -> NeuralNetwork
+  r3-load-encoder (data) (file) (cfg) =
+    let in-dim = cfg.r3-image-size * cfg.r3-image-size * 3
+    in let hidden = cfg.r3-feature-dim * 4
+    in r3-load-mlp data file "encoder" in-dim hidden (cfg.r3-feature-dim) (cfg.r3-num-encoder-layers)
+
+  r3-load-decoder : List Integer, SafeTensorFile, Recon3dConfig -> NeuralNetwork
+  r3-load-decoder (data) (file) (cfg) =
+    r3-load-mlp data file "decoder" (cfg.r3-feature-dim) (cfg.r3-feature-dim * 2) 1 3
+
+  r3-load-mlp : List Integer, SafeTensorFile, Text, Integer, Integer, Integer, Integer -> NeuralNetwork
+  r3-load-mlp (data) (file) (prefix) (in-dim) (hidden) (out-dim) (num-layers) =
+    let net = nn-new
+    in r3-load-mlp-layers data file prefix net in-dim hidden out-dim num-layers 0
+
+  r3-load-mlp-layers : List Integer, SafeTensorFile, Text, NeuralNetwork, Integer, Integer, Integer, Integer, Integer -> NeuralNetwork
+  r3-load-mlp-layers (data) (file) (prefix) (net) (in-dim) (hidden) (out-dim) (num-layers) (i) =
+    if i >= num-layers then
+      let w = r3-load-weight data file (prefix & ".out.weight")
+      in let b = r3-load-weight data file (prefix & ".out.bias")
+      in nn-add-layer net (tensor-from out-dim hidden w) (tensor-from out-dim 1 b) nn-act-none
+    else let layer-in = if i == 0 then in-dim else hidden
+    in let w = r3-load-weight data file (prefix & ".layers." & show i & ".weight")
+    in let b = r3-load-weight data file (prefix & ".layers." & show i & ".bias")
+    in let updated = nn-add-layer net (tensor-from hidden layer-in w) (tensor-from hidden 1 b) nn-act-gelu
+    in r3-load-mlp-layers data file prefix updated in-dim hidden out-dim num-layers (i + 1)
+
+  r3-load-weight : List Integer, SafeTensorFile, Text -> List Integer
+  r3-load-weight (data) (file) (name) =
+    let found = st-find-tensor file name
+    in when found
+      is Just (meta) -> (st-load-tensor data file meta).data
+      is None -> []
+
+Section: Queries
+  format-r3-config : Recon3dConfig -> Text
+  format-r3-config (cfg) =
+    "img=" & show (cfg.r3-image-size) & " feat=" & show (cfg.r3-feature-dim) & " grid=" & show (cfg.r3-grid-res) & " thresh=" & show (cfg.r3-threshold)
+
+  format-r3-output : Recon3dOutput -> Text
+  format-r3-output (out) =
+    show (out.r3o-vertex-count) & " verts, " & show (out.r3o-face-count) & " faces"
+
+Page 1

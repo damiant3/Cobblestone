@@ -1,0 +1,64 @@
+Chapter: FontAtlas
+  cites Encode chapter TrueType
+  cites Ui chapter GlyphRasterizer
+
+ Cached glyph atlas. Pre-rasterizes glyphs at a given size and stores
+ them for O(1) lookup by codepoint. Avoids re-rasterizing the same
+ glyph on every draw call. The atlas is a flat list indexed by
+ codepoint offset from the range base.
+
+Section: Types
+  FontAtlas = record {
+    fa-font : TtfFont,
+    fa-ppem : Integer,
+    fa-base : Integer,
+    fa-count : Integer,
+    fa-glyphs : List RasterGlyph
+  }
+
+Section: Construction
+  atlas-create : TtfFont, Integer, Integer, Integer -> FontAtlas
+  atlas-create (font) (ppem) (base) (count) =
+    let glyphs = gr-render-range font ppem base (base + count - 1) []
+    in FontAtlas {
+      fa-font = font,
+      fa-ppem = ppem,
+      fa-base = base,
+      fa-count = count,
+      fa-glyphs = glyphs
+    }
+
+  atlas-ascii : TtfFont, Integer -> FontAtlas
+  atlas-ascii (font) (ppem) = atlas-create font ppem 32 95
+
+Section: Lookup
+  atlas-glyph : FontAtlas, Integer -> RasterGlyph
+  atlas-glyph (atlas) (codepoint) =
+    let idx = codepoint - atlas.fa-base
+    in if idx < 0 then atlas-missing atlas
+    else if idx >= atlas.fa-count then atlas-missing atlas
+    else list-at (atlas.fa-glyphs) idx
+
+  atlas-missing : FontAtlas -> RasterGlyph
+  atlas-missing (atlas) =
+    if atlas.fa-count == 0 then RasterGlyph { rg-code = 0, rg-width = 8, rg-height = 16, rg-advance = 8, rg-pixels = [] }
+    else list-at (atlas.fa-glyphs) 0
+
+Section: Measurement
+  atlas-text-width : FontAtlas, Text -> Integer
+  atlas-text-width (atlas) (txt) =
+    atlas-measure-loop atlas txt 0 (text-length txt) 0
+
+  atlas-measure-loop : FontAtlas, Text, Integer, Integer, Integer -> Integer
+  atlas-measure-loop (atlas) (txt) (i) (n) (acc) =
+    if i >= n then acc
+    else let code = char-code-at txt i
+    in let g = atlas-glyph atlas code
+    in atlas-measure-loop atlas txt (i + 1) n (acc + g.rg-advance)
+
+Section: Formatting
+  format-atlas : FontAtlas -> Text
+  format-atlas (atlas) =
+    "FontAtlas: " & show (atlas.fa-count) & " glyphs at " & show (atlas.fa-ppem) & " ppem"
+
+Page 1

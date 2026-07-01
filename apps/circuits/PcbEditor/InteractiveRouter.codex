@@ -1,0 +1,285 @@
+Chapter: InteractiveRouter
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Push-and-shove interactive router for PCB trace layout. The user
+ sketches a path; the router pushes existing tracks and vias out of
+ the way while respecting DRC clearances. If a push would cause a
+ DRC violation elsewhere, the router stops at the last valid position.
+
+Section: Router Mode
+
+  RouterMode =
+    | RouteWalkAround
+    | RoutePushShove
+    | RouteHighlight
+    | RouteDiffPair
+
+  RouterCornerStyle =
+    | CornerMitered45
+    | CornerRounded
+    | CornerRight90
+
+Section: Route Segment
+
+ A route segment is a proposed piece of track that the router is
+ considering. Segments accumulate during a routing operation and
+ are committed to the board when the user clicks to anchor.
+
+  RouteSegment = record {
+    rs-x1 : Integer,
+    rs-y1 : Integer,
+    rs-x2 : Integer,
+    rs-y2 : Integer,
+    rs-width : Integer,
+    rs-layer : Integer,
+    rs-net : Integer
+  }
+
+  RouteVia = record {
+    rv-x : Integer,
+    rv-y : Integer,
+    rv-diameter : Integer,
+    rv-drill : Integer,
+    rv-from-layer : Integer,
+    rv-to-layer : Integer,
+    rv-net : Integer
+  }
+
+Section: Obstacle
+
+ An obstacle is any geometry that the router must avoid or push.
+ The router converts all board geometry into a flat list of obstacles
+ for spatial queries.
+
+  ObstacleType =
+    | ObstTrack (Integer)
+    | ObstVia (Integer)
+    | ObstPad (Text) (Text)
+    | ObstZone (Integer)
+    | ObstKeepout
+    | ObstBoardEdge
+
+  Obstacle = record {
+    obs-x1 : Integer,
+    obs-y1 : Integer,
+    obs-x2 : Integer,
+    obs-y2 : Integer,
+    obs-layer : Integer,
+    obs-net : Integer,
+    obs-clearance : Integer,
+    obs-type : ObstacleType
+  }
+
+Section: Push Result
+
+  PushResult =
+    | PushOk (List RouteSegment)
+    | PushBlocked (Integer) (Integer)
+    | PushViolation (Text)
+
+Section: Router State
+
+  RouterState = record {
+    rt-mode : RouterMode,
+    rt-corner : RouterCornerStyle,
+    rt-active : Integer,
+    rt-net : Integer,
+    rt-layer : Integer,
+    rt-width : Integer,
+    rt-start-x : Integer,
+    rt-start-y : Integer,
+    rt-cursor-x : Integer,
+    rt-cursor-y : Integer,
+    rt-segments : List RouteSegment,
+    rt-vias : List RouteVia,
+    rt-obstacles : List Obstacle
+  }
+
+  empty-router-state : RouterState
+  empty-router-state = RouterState {
+    rt-mode = RoutePushShove,
+    rt-corner = CornerMitered45,
+    rt-active = 0,
+    rt-net = -1,
+    rt-layer = 0,
+    rt-width = 250000,
+    rt-start-x = 0,
+    rt-start-y = 0,
+    rt-cursor-x = 0,
+    rt-cursor-y = 0,
+    rt-segments = [],
+    rt-vias = [],
+    rt-obstacles = []
+  }
+
+Section: Routing Operations
+
+  router-begin : RouterState, Integer, Integer, Integer, Integer, Integer -> RouterState
+  router-begin (st) (x) (y) (net) (layer) (width) = RouterState {
+    rt-mode = st.rt-mode,
+    rt-corner = st.rt-corner,
+    rt-active = 1,
+    rt-net = net,
+    rt-layer = layer,
+    rt-width = width,
+    rt-start-x = x,
+    rt-start-y = y,
+    rt-cursor-x = x,
+    rt-cursor-y = y,
+    rt-segments = [],
+    rt-vias = [],
+    rt-obstacles = st.rt-obstacles
+  }
+
+  router-move : RouterState, Integer, Integer -> RouterState
+  router-move (st) (x) (y) = RouterState {
+    rt-mode = st.rt-mode,
+    rt-corner = st.rt-corner,
+    rt-active = st.rt-active,
+    rt-net = st.rt-net,
+    rt-layer = st.rt-layer,
+    rt-width = st.rt-width,
+    rt-start-x = st.rt-start-x,
+    rt-start-y = st.rt-start-y,
+    rt-cursor-x = x,
+    rt-cursor-y = y,
+    rt-segments = st.rt-segments,
+    rt-vias = st.rt-vias,
+    rt-obstacles = st.rt-obstacles
+  }
+
+  router-anchor : RouterState -> RouterState
+  router-anchor (st) =
+    let seg = RouteSegment {
+      rs-x1 = st.rt-start-x,
+      rs-y1 = st.rt-start-y,
+      rs-x2 = st.rt-cursor-x,
+      rs-y2 = st.rt-cursor-y,
+      rs-width = st.rt-width,
+      rs-layer = st.rt-layer,
+      rs-net = st.rt-net
+    }
+    in RouterState {
+      rt-mode = st.rt-mode,
+      rt-corner = st.rt-corner,
+      rt-active = st.rt-active,
+      rt-net = st.rt-net,
+      rt-layer = st.rt-layer,
+      rt-width = st.rt-width,
+      rt-start-x = st.rt-cursor-x,
+      rt-start-y = st.rt-cursor-y,
+      rt-cursor-x = st.rt-cursor-x,
+      rt-cursor-y = st.rt-cursor-y,
+      rt-segments = list-push st.rt-segments seg,
+      rt-vias = st.rt-vias,
+      rt-obstacles = st.rt-obstacles
+    }
+
+  router-add-via : RouterState -> RouterState
+  router-add-via (st) =
+    let v = RouteVia {
+      rv-x = st.rt-cursor-x,
+      rv-y = st.rt-cursor-y,
+      rv-diameter = 800000,
+      rv-drill = 400000,
+      rv-from-layer = st.rt-layer,
+      rv-to-layer = if st.rt-layer == 0 then 31 else 0,
+      rv-net = st.rt-net
+    }
+    in let new-layer = if st.rt-layer == 0 then 31 else 0
+    in RouterState {
+      rt-mode = st.rt-mode,
+      rt-corner = st.rt-corner,
+      rt-active = st.rt-active,
+      rt-net = st.rt-net,
+      rt-layer = new-layer,
+      rt-width = st.rt-width,
+      rt-start-x = st.rt-cursor-x,
+      rt-start-y = st.rt-cursor-y,
+      rt-cursor-x = st.rt-cursor-x,
+      rt-cursor-y = st.rt-cursor-y,
+      rt-segments = st.rt-segments,
+      rt-vias = list-push st.rt-vias v,
+      rt-obstacles = st.rt-obstacles
+    }
+
+  router-cancel : RouterState -> RouterState
+  router-cancel (st) = RouterState {
+    rt-mode = st.rt-mode,
+    rt-corner = st.rt-corner,
+    rt-active = 0,
+    rt-net = -1,
+    rt-layer = st.rt-layer,
+    rt-width = st.rt-width,
+    rt-start-x = 0,
+    rt-start-y = 0,
+    rt-cursor-x = 0,
+    rt-cursor-y = 0,
+    rt-segments = [],
+    rt-vias = [],
+    rt-obstacles = st.rt-obstacles
+  }
+
+  router-segment-count : RouterState -> Integer
+  router-segment-count (st) = list-length st.rt-segments
+
+  router-via-count : RouterState -> Integer
+  router-via-count (st) = list-length st.rt-vias
+
+Section: Clearance Check
+
+ Check if a proposed segment violates clearance with any obstacle.
+
+  segment-obstacle-clearance : RouteSegment, Obstacle -> Integer
+  segment-obstacle-clearance (seg) (obs) =
+    if seg.rs-layer /= obs.obs-layer then 1
+    else if seg.rs-net == obs.obs-net then 1
+    else let min-dist = seg.rs-width / 2 + obs.obs-clearance
+    in let dx = seg.rs-x1 - obs.obs-x1
+    in let dy = seg.rs-y1 - obs.obs-y1
+    in let dist-sq = dx * dx + dy * dy
+    in if dist-sq > min-dist * min-dist then 1
+    else 0
+
+Section: 45-Degree Routing
+
+ Generate a mitered 45-degree route between two points. Returns
+ two segments: one axis-aligned, one diagonal.
+
+  miter-45-segments : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List RouteSegment
+  miter-45-segments (x1) (y1) (x2) (y2) (width) (layer) (net) =
+    let dx = x2 - x1
+    in let dy = y2 - y1
+    in let adx = if dx < 0 then 0 - dx else dx
+    in let ady = if dy < 0 then 0 - dy else dy
+    in if adx > ady then
+      let diag = ady
+      in let horiz = adx - diag
+      in let mx = x1 + (if dx > 0 then horiz else 0 - horiz)
+      in let seg1 = RouteSegment {
+        rs-x1 = x1, rs-y1 = y1,
+        rs-x2 = mx, rs-y2 = y1,
+        rs-width = width, rs-layer = layer, rs-net = net
+      }
+      in let seg2 = RouteSegment {
+        rs-x1 = mx, rs-y1 = y1,
+        rs-x2 = x2, rs-y2 = y2,
+        rs-width = width, rs-layer = layer, rs-net = net
+      }
+      in [seg1, seg2]
+    else
+      let diag = adx
+      in let vert = ady - diag
+      in let my = y1 + (if dy > 0 then vert else 0 - vert)
+      in let seg1 = RouteSegment {
+        rs-x1 = x1, rs-y1 = y1,
+        rs-x2 = x1, rs-y2 = my,
+        rs-width = width, rs-layer = layer, rs-net = net
+      }
+      in let seg2 = RouteSegment {
+        rs-x1 = x1, rs-y1 = my,
+        rs-x2 = x2, rs-y2 = y2,
+        rs-width = width, rs-layer = layer, rs-net = net
+      }
+      in [seg1, seg2]

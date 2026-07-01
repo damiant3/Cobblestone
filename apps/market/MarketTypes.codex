@@ -1,0 +1,1102 @@
+Chapter: MarketTypes
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+  cites Foreword chapter ListUtils
+
+ Core domain types for the Market e-commerce suite. Every entity has a
+ text ID (slug or generated). Prices are integers in the smallest
+ currency unit (cents). Timestamps are integers (unix seconds).
+
+Section: Money
+
+  Currency =
+    | USD
+    | EUR
+    | GBP
+    | CAD
+    | AUD
+    | JPY
+    | CustomCurrency (Text)
+
+  currency-code : Currency -> Text
+  currency-code (c) =
+    when c
+      is USD -> "USD"
+      is EUR -> "EUR"
+      is GBP -> "GBP"
+      is CAD -> "CAD"
+      is AUD -> "AUD"
+      is JPY -> "JPY"
+      is CustomCurrency (code) -> code
+
+  Money = record {
+    amount : Integer,
+    currency : Currency
+  }
+
+  money : Integer, Currency -> Money
+  money (amt) (cur) = Money { amount = amt, currency = cur }
+
+  money-usd : Integer -> Money
+  money-usd (cents) = money cents USD
+
+  money-add : Money, Money -> Money
+  money-add (a) (b) = Money { amount = a.amount + b.amount, currency = a.currency }
+
+  money-mul : Money, Integer -> Money
+  money-mul (m) (qty) = Money { amount = m.amount * qty, currency = m.currency }
+
+  money-zero : Currency -> Money
+  money-zero (cur) = money 0 cur
+
+  format-money : Money -> Text
+  format-money (m) =
+    let dollars = m.amount / 100
+    in let cents = m.amount - dollars * 100
+    in let cents-str = if cents < 10 then "0" & show cents else show cents
+    in currency-code (m.currency) & " " & show dollars & "." & cents-str
+
+Section: Option Definition
+
+ An option is a named axis of variation: Color, Size, Material, etc.
+ Each option has a set of choices. Products pick which options apply
+ and which choices are available.
+
+  OptionChoice = record {
+    choice-id : Text,
+    choice-label : Text,
+    choice-swatch : Text,
+    choice-price-adj : Integer
+  }
+
+  option-choice : Text, Text -> OptionChoice
+  option-choice (id) (label) = OptionChoice {
+    choice-id = id,
+    choice-label = label,
+    choice-swatch = "",
+    choice-price-adj = 0
+  }
+
+  option-choice-color : Text, Text, Text -> OptionChoice
+  option-choice-color (id) (label) (hex) = OptionChoice {
+    choice-id = id,
+    choice-label = label,
+    choice-swatch = hex,
+    choice-price-adj = 0
+  }
+
+  option-choice-priced : Text, Text, Integer -> OptionChoice
+  option-choice-priced (id) (label) (adj) = OptionChoice {
+    choice-id = id,
+    choice-label = label,
+    choice-swatch = "",
+    choice-price-adj = adj
+  }
+
+  OptionDef = record {
+    option-id : Text,
+    option-name : Text,
+    option-choices : List OptionChoice
+  }
+
+  option-def : Text, Text, List OptionChoice -> OptionDef
+  option-def (id) (name) (choices) = OptionDef {
+    option-id = id,
+    option-name = name,
+    option-choices = choices
+  }
+
+Section: Product
+
+ A product is a thing you sell. It has a base price, a description,
+ and a set of option axes. Each combination of choices is a variant.
+ Inventory is tracked per-variant (or per-product if no options).
+
+  ProductStatus =
+    | Active
+    | Draft
+    | Archived
+
+  Product = record {
+    product-id : Text,
+    product-name : Text,
+    product-slug : Text,
+    product-desc : Text,
+    product-price : Money,
+    product-status : ProductStatus,
+    product-options : List OptionDef,
+    product-tags : List Text,
+    product-image-url : Text,
+    product-weight-grams : Integer,
+    product-created : Integer,
+    product-updated : Integer
+  }
+
+  Variant = record {
+    variant-id : Text,
+    variant-product-id : Text,
+    variant-choices : List OptionChoice,
+    variant-sku : Text,
+    variant-price-override : Maybe Money,
+    variant-stock : Integer,
+    variant-weight-grams : Integer
+  }
+
+  variant-price : Product, Variant -> Money
+  variant-price (prod) (var) =
+    when var.variant-price-override
+      is Just (p) -> p
+      is None -> variant-adjusted-price prod var
+
+  variant-adjusted-price : Product, Variant -> Money
+  variant-adjusted-price (prod) (var) =
+    let adj = sum-adjustments (var.variant-choices) 0
+    in money-add (prod.product-price) (money adj (prod.product-price.currency))
+
+  sum-adjustments : List OptionChoice, Integer -> Integer
+  sum-adjustments (choices) (acc) =
+    if list-length choices == 0 then acc
+    else sum-adjustments (list-tail choices) (acc + (list-at choices 0).choice-price-adj)
+
+Section: Cart
+
+  CartItem = record {
+    ci-product-id : Text,
+    ci-variant-id : Text,
+    ci-quantity : Integer,
+    ci-unit-price : Money
+  }
+
+  Cart = record {
+    cart-id : Text,
+    cart-items : List CartItem,
+    cart-user-id : Text,
+    cart-created : Integer,
+    cart-updated : Integer
+  }
+
+  cart-new : Text, Text, Integer -> Cart
+  cart-new (id) (user-id) (ts) = Cart {
+    cart-id = id,
+    cart-items = [],
+    cart-user-id = user-id,
+    cart-created = ts,
+    cart-updated = ts
+  }
+
+  cart-subtotal : Cart -> Money
+  cart-subtotal (c) = cart-sum-items (c.cart-items) (money-zero USD)
+
+  cart-sum-items : List CartItem, Money -> Money
+  cart-sum-items (items) (acc) =
+    if list-length items == 0 then acc
+    else let item = list-at items 0
+    in cart-sum-items (list-tail items) (money-add acc (money-mul (item.ci-unit-price) (item.ci-quantity)))
+
+  cart-item-count : Cart -> Integer
+  cart-item-count (c) = cart-count-items (c.cart-items) 0
+
+  cart-count-items : List CartItem, Integer -> Integer
+  cart-count-items (items) (acc) =
+    if list-length items == 0 then acc
+    else cart-count-items (list-tail items) (acc + (list-at items 0).ci-quantity)
+
+Section: Tax
+
+  TaxRule = record {
+    tax-region : Text,
+    tax-rate-bps : Integer,
+    tax-name : Text,
+    tax-applies-to : Text
+  }
+
+  tax-rule : Text, Integer, Text -> TaxRule
+  tax-rule (region) (bps) (name) = TaxRule {
+    tax-region = region,
+    tax-rate-bps = bps,
+    tax-name = name,
+    tax-applies-to = "all"
+  }
+
+  TaxResult = record {
+    tax-amount : Money,
+    tax-lines : List TaxLine
+  }
+
+  TaxLine = record {
+    tl-name : Text,
+    tl-rate-bps : Integer,
+    tl-amount : Money
+  }
+
+Section: Order
+
+  OrderStatus =
+    | Pending
+    | Paid
+    | Shipped
+    | Delivered
+    | Cancelled
+    | Refunded
+
+  order-status-name : OrderStatus -> Text
+  order-status-name (s) =
+    when s
+      is Pending -> "pending"
+      is Paid -> "paid"
+      is Shipped -> "shipped"
+      is Delivered -> "delivered"
+      is Cancelled -> "cancelled"
+      is Refunded -> "refunded"
+
+  Order = record {
+    order-id : Text,
+    order-user-id : Text,
+    order-items : List CartItem,
+    order-subtotal : Money,
+    order-tax : TaxResult,
+    order-total : Money,
+    order-status : OrderStatus,
+    order-payment-id : Text,
+    order-shipping-addr : Address,
+    order-created : Integer,
+    order-updated : Integer
+  }
+
+  Address = record {
+    addr-line1 : Text,
+    addr-line2 : Text,
+    addr-city : Text,
+    addr-state : Text,
+    addr-zip : Text,
+    addr-country : Text
+  }
+
+  address-empty : Address
+  address-empty = Address {
+    addr-line1 = "",
+    addr-line2 = "",
+    addr-city = "",
+    addr-state = "",
+    addr-zip = "",
+    addr-country = ""
+  }
+
+Section: User
+
+  UserRole =
+    | RoleCustomer
+    | RoleAdmin
+    | RoleMerchant
+
+  role-name : UserRole -> Text
+  role-name (r) =
+    when r
+      is RoleCustomer -> "customer"
+      is RoleAdmin -> "admin"
+      is RoleMerchant -> "merchant"
+
+  User = record {
+    user-id : Text,
+    user-email : Text,
+    user-name : Text,
+    user-pass-hash : Text,
+    user-role : UserRole,
+    user-created : Integer,
+    user-last-login : Integer
+  }
+
+  Session = record {
+    sess-id : Text,
+    sess-user-id : Text,
+    sess-role : UserRole,
+    sess-created : Integer,
+    sess-expires : Integer
+  }
+
+Section: Payment
+
+  PaymentMethod =
+    | CreditCard
+    | DebitCard
+    | BankTransfer
+    | DigitalWallet (Text)
+
+  PaymentStatus =
+    | PayPending
+    | PayAuthorized
+    | PayCaptured
+    | PayFailed (Text)
+    | PayRefunded
+
+  pay-status-name : PaymentStatus -> Text
+  pay-status-name (s) =
+    when s
+      is PayPending -> "pending"
+      is PayAuthorized -> "authorized"
+      is PayCaptured -> "captured"
+      is PayFailed (msg) -> "failed: " & msg
+      is PayRefunded -> "refunded"
+
+  PaymentResult = record {
+    pay-id : Text,
+    pay-status : PaymentStatus,
+    pay-amount : Money,
+    pay-processor-ref : Text
+  }
+
+Section: Store Config
+
+  StoreConfig = record {
+    store-name : Text,
+    store-currency : Currency,
+    store-tax-rules : List TaxRule,
+    store-merchant-id : Text,
+    store-processor-key : Text,
+    store-logo-url : Text,
+    store-accent-color : Text
+  }
+
+  default-store-config : StoreConfig
+  default-store-config = StoreConfig {
+    store-name = "My Store",
+    store-currency = USD,
+    store-tax-rules = [tax-rule "US" 800 "Sales Tax"],
+    store-merchant-id = "",
+    store-processor-key = "",
+    store-logo-url = "",
+    store-accent-color = "#2563eb"
+  }
+
+Section: Categories
+
+  Category = record {
+    cat-id : Text,
+    cat-name : Text,
+    cat-slug : Text,
+    cat-parent-id : Text,
+    cat-description : Text,
+    cat-image-url : Text,
+    cat-sort-order : Integer
+  }
+
+  category : Text, Text, Text -> Category
+  category (id) (name) (slug) = Category {
+    cat-id = id,
+    cat-name = name,
+    cat-slug = slug,
+    cat-parent-id = "",
+    cat-description = "",
+    cat-image-url = "",
+    cat-sort-order = 0
+  }
+
+  sub-category : Text, Text, Text, Text -> Category
+  sub-category (id) (name) (slug) (parent) = Category {
+    cat-id = id,
+    cat-name = name,
+    cat-slug = slug,
+    cat-parent-id = parent,
+    cat-description = "",
+    cat-image-url = "",
+    cat-sort-order = 0
+  }
+
+Section: Custom Fields
+
+ Custom fields let a merchant attach arbitrary typed metadata to any
+ product. A field definition lives at the store level; products pick
+ which fields apply and set values. This is the "sell anything" layer:
+ wine has vintage and region, electronics have wattage and connector
+ type, art has medium and dimensions.
+
+  FieldType =
+    | FieldText
+    | FieldNumber
+    | FieldBoolean
+    | FieldSelect (List Text)
+    | FieldColor
+    | FieldUrl
+    | FieldDate
+
+  field-type-name : FieldType -> Text
+  field-type-name (ft) =
+    when ft
+      is FieldText -> "text"
+      is FieldNumber -> "number"
+      is FieldBoolean -> "boolean"
+      is FieldSelect (opts) -> "select"
+      is FieldColor -> "color"
+      is FieldUrl -> "url"
+      is FieldDate -> "date"
+
+  CustomFieldDef = record {
+    cfd-id : Text,
+    cfd-name : Text,
+    cfd-type : FieldType,
+    cfd-required : Boolean,
+    cfd-show-in-listing : Boolean,
+    cfd-show-in-filters : Boolean,
+    cfd-group : Text
+  }
+
+  custom-field : Text, Text, FieldType -> CustomFieldDef
+  custom-field (id) (name) (ft) = CustomFieldDef {
+    cfd-id = id,
+    cfd-name = name,
+    cfd-type = ft,
+    cfd-required = False,
+    cfd-show-in-listing = False,
+    cfd-show-in-filters = False,
+    cfd-group = ""
+  }
+
+  CustomFieldValue = record {
+    cfv-field-id : Text,
+    cfv-value : Text
+  }
+
+  field-val : Text, Text -> CustomFieldValue
+  field-val (fid) (v) = CustomFieldValue { cfv-field-id = fid, cfv-value = v }
+
+Section: Product Images
+
+  ProductImage = record {
+    img-id : Text,
+    img-url : Text,
+    img-alt : Text,
+    img-sort-order : Integer,
+    img-is-primary : Boolean
+  }
+
+  product-image : Text, Text, Text -> ProductImage
+  product-image (id) (url) (alt) = ProductImage {
+    img-id = id,
+    img-url = url,
+    img-alt = alt,
+    img-sort-order = 0,
+    img-is-primary = False
+  }
+
+Section: Shipping
+
+  ShippingMethod =
+    | FlatRate (Money)
+    | WeightBased (Integer)
+    | FreeOver (Money)
+    | FreeShipping
+    | LocalPickup
+
+  shipping-method-name : ShippingMethod -> Text
+  shipping-method-name (m) =
+    when m
+      is FlatRate (p) -> "Flat Rate (" & format-money p & ")"
+      is WeightBased (rate) -> "Weight-based"
+      is FreeOver (threshold) -> "Free over " & format-money threshold
+      is FreeShipping -> "Free Shipping"
+      is LocalPickup -> "Local Pickup"
+
+  ShippingResult = record {
+    ship-method : Text,
+    ship-cost : Money,
+    ship-est-days : Integer
+  }
+
+  calc-shipping : ShippingMethod, Money, Integer -> ShippingResult
+  calc-shipping (method) (subtotal) (weight-g) =
+    when method
+      is FlatRate (rate) -> ShippingResult { ship-method = "Flat Rate", ship-cost = rate, ship-est-days = 5 }
+      is WeightBased (rate-per-kg) ->
+        let cost = weight-g * rate-per-kg / 1000
+        in ShippingResult { ship-method = "Standard", ship-cost = money cost (subtotal.currency), ship-est-days = 7 }
+      is FreeOver (threshold) ->
+        if subtotal.amount >= threshold.amount then ShippingResult { ship-method = "Free Shipping", ship-cost = money-zero (subtotal.currency), ship-est-days = 7 }
+        else ShippingResult { ship-method = "Standard", ship-cost = money 599 (subtotal.currency), ship-est-days = 7 }
+      is FreeShipping -> ShippingResult { ship-method = "Free", ship-cost = money-zero (subtotal.currency), ship-est-days = 5 }
+      is LocalPickup -> ShippingResult { ship-method = "Pickup", ship-cost = money-zero (subtotal.currency), ship-est-days = 0 }
+
+Section: Coupons and Discounts
+
+  DiscountType =
+    | PercentOff (Integer)
+    | FixedOff (Money)
+    | FreeShipDiscount
+    | BuyXGetY (Integer) (Integer)
+
+  Coupon = record {
+    coupon-code : Text,
+    coupon-discount : DiscountType,
+    coupon-min-order : Money,
+    coupon-max-uses : Integer,
+    coupon-used-count : Integer,
+    coupon-expires : Integer,
+    coupon-applies-to : Text,
+    coupon-active : Boolean
+  }
+
+  coupon-valid : Coupon, Money, Integer -> Boolean
+  coupon-valid (c) (subtotal) (now) =
+    if c.coupon-active == False then False
+    else if now > c.coupon-expires then False
+    else if c.coupon-max-uses > 0 then if c.coupon-used-count >= c.coupon-max-uses then False else subtotal.amount >= c.coupon-min-order.amount
+    else subtotal.amount >= c.coupon-min-order.amount
+
+  apply-discount : DiscountType, Money -> Money
+  apply-discount (disc) (subtotal) =
+    when disc
+      is PercentOff (pct) -> money (subtotal.amount * pct / 100) (subtotal.currency)
+      is FixedOff (amt) -> if amt.amount > subtotal.amount then subtotal else amt
+      is FreeShipDiscount -> money-zero (subtotal.currency)
+      is BuyXGetY (buy) (get) -> money-zero (subtotal.currency)
+
+Section: Reviews
+
+  Review = record {
+    rev-id : Text,
+    rev-product-id : Text,
+    rev-user-id : Text,
+    rev-user-name : Text,
+    rev-rating : Integer,
+    rev-title : Text,
+    rev-body : Text,
+    rev-verified : Boolean,
+    rev-created : Integer
+  }
+
+  review-stars : Integer -> Text
+  review-stars (n) = stars-loop n 0 ""
+
+  stars-loop : Integer, Integer, Text -> Text
+  stars-loop (rating) (i) (acc) =
+    if i >= 5 then acc
+    else if i < rating then stars-loop rating (i + 1) (acc & "\x2605")
+    else stars-loop rating (i + 1) (acc & "\x2606")
+
+  avg-rating : List Review, Integer, Integer -> Integer
+  avg-rating (reviews) (sum) (count) =
+    if list-length reviews == 0 then if count == 0 then 0 else sum / count
+    else avg-rating (list-tail reviews) (sum + (list-at reviews 0).rev-rating) (count + 1)
+
+Section: Wishlists
+
+  WishlistItem = record {
+    wl-product-id : Text,
+    wl-variant-id : Text,
+    wl-added : Integer
+  }
+
+  Wishlist = record {
+    wl-id : Text,
+    wl-user-id : Text,
+    wl-items : List WishlistItem
+  }
+
+  wishlist-new : Text, Text -> Wishlist
+  wishlist-new (id) (uid) = Wishlist { wl-id = id, wl-user-id = uid, wl-items = [] }
+
+  wishlist-add : Wishlist, Text, Text, Integer -> Wishlist
+  wishlist-add (wl) (pid) (vid) (ts) =
+    __record-set wl "wl-items" (list-push (wl.wl-items) (WishlistItem {
+      wl-product-id = pid, wl-variant-id = vid, wl-added = ts
+    }))
+
+  wishlist-contains : Wishlist, Text -> Boolean
+  wishlist-contains (wl) (pid) = wl-search (wl.wl-items) pid 0
+
+  wl-search : List WishlistItem, Text, Integer -> Boolean
+  wl-search (items) (pid) (i) =
+    if i >= list-length items then False
+    else if (list-at items i).wl-product-id == pid then True
+    else wl-search items pid (i + 1)
+
+Section: Digital Products
+
+  DigitalAsset = record {
+    da-id : Text,
+    da-product-id : Text,
+    da-filename : Text,
+    da-file-size : Integer,
+    da-mime-type : Text,
+    da-download-limit : Integer,
+    da-download-count : Integer
+  }
+
+  LicenseKey = record {
+    lk-id : Text,
+    lk-product-id : Text,
+    lk-order-id : Text,
+    lk-key : Text,
+    lk-activated : Boolean,
+    lk-expires : Integer
+  }
+
+  ProductKind =
+    | Physical
+    | Digital
+    | Service
+    | Bundle
+
+  product-kind-name : ProductKind -> Text
+  product-kind-name (k) =
+    when k
+      is Physical -> "physical"
+      is Digital -> "digital"
+      is Service -> "service"
+      is Bundle -> "bundle"
+
+Section: Product Bundles
+
+  BundleItem = record {
+    bi-product-id : Text,
+    bi-quantity : Integer,
+    bi-discount-pct : Integer
+  }
+
+  ProductBundle = record {
+    pb-id : Text,
+    pb-name : Text,
+    pb-items : List BundleItem,
+    pb-bundle-price : Maybe Money
+  }
+
+  bundle-savings : ProductBundle, List Product -> Money
+  bundle-savings (pb) (products) =
+    when pb.pb-bundle-price
+      is Just (bp) ->
+        let full = bundle-full-price (pb.pb-items) products 0
+        in money (full - bp.amount) (bp.currency)
+      is None -> money-zero USD
+
+  bundle-full-price : List BundleItem, List Product, Integer -> Integer
+  bundle-full-price (items) (products) (acc) =
+    if list-length items == 0 then acc
+    else let bi = list-at items 0
+    in let prod-price = find-product-price (bi.bi-product-id) products
+    in bundle-full-price (list-tail items) products (acc + prod-price * bi.bi-quantity)
+
+  find-product-price : Text, List Product -> Integer
+  find-product-price (pid) (products) =
+    find-product-price-loop pid products 0
+
+  find-product-price-loop : Text, List Product, Integer -> Integer
+  find-product-price-loop (pid) (products) (i) =
+    if i >= list-length products then 0
+    else let p = list-at products i
+    in if p.product-id == pid then p.product-price.amount
+    else find-product-price-loop pid products (i + 1)
+
+Section: Fulfillment
+
+  FulfillmentStatus =
+    | AwaitingFulfillment
+    | Processing
+    | ShipmentCreated (Text)
+    | InTransit (Text)
+    | OutForDelivery
+    | FulfillmentDelivered
+    | ReturnRequested
+    | Returned
+
+  fulfillment-status-name : FulfillmentStatus -> Text
+  fulfillment-status-name (s) =
+    when s
+      is AwaitingFulfillment -> "awaiting"
+      is Processing -> "processing"
+      is ShipmentCreated (tracking) -> "shipped: " & tracking
+      is InTransit (tracking) -> "in transit: " & tracking
+      is OutForDelivery -> "out for delivery"
+      is FulfillmentDelivered -> "delivered"
+      is ReturnRequested -> "return requested"
+      is Returned -> "returned"
+
+  Shipment = record {
+    shp-id : Text,
+    shp-order-id : Text,
+    shp-tracking : Text,
+    shp-carrier : Text,
+    shp-status : FulfillmentStatus,
+    shp-shipped-date : Integer,
+    shp-delivered-date : Integer
+  }
+
+Section: SEO Metadata
+
+  SeoMeta = record {
+    seo-title : Text,
+    seo-description : Text,
+    seo-keywords : Text,
+    seo-og-image : Text
+  }
+
+  seo-default : Text, Text -> SeoMeta
+  seo-default (title) (desc) = SeoMeta {
+    seo-title = title,
+    seo-description = desc,
+    seo-keywords = "",
+    seo-og-image = ""
+  }
+
+Section: Inventory Alerts
+
+  InventoryAlert = record {
+    ia-product-id : Text,
+    ia-variant-id : Text,
+    ia-threshold : Integer,
+    ia-current-stock : Integer,
+    ia-triggered : Boolean
+  }
+
+  check-inventory-alert : Variant, Integer -> Boolean
+  check-inventory-alert (v) (threshold) = v.variant-stock <= threshold
+
+Section: Subscription
+
+  BillingCycle =
+    | Monthly
+    | Quarterly
+    | Annual
+    | CustomCycle (Integer)
+
+  billing-cycle-days : BillingCycle -> Integer
+  billing-cycle-days (c) =
+    when c
+      is Monthly -> 30
+      is Quarterly -> 90
+      is Annual -> 365
+      is CustomCycle (d) -> d
+
+  Subscription = record {
+    sub-id : Text,
+    sub-user-id : Text,
+    sub-product-id : Text,
+    sub-price : Money,
+    sub-cycle : BillingCycle,
+    sub-status : Text,
+    sub-next-billing : Integer,
+    sub-created : Integer
+  }
+
+Section: Auctions
+
+ Auctions let sellers list items for timed competitive bidding.
+ Supports reserve prices, buy-it-now, bid increments, proxy bidding
+ (automatic outbid up to max), snipe protection (extends deadline
+ on late bids), and sealed-bid (highest-wins, second-price Vickrey).
+
+  AuctionType =
+    | EnglishAuction
+    | DutchAuction (Integer)
+    | SealedBid
+    | Vickrey
+
+  auction-type-name : AuctionType -> Text
+  auction-type-name (t) =
+    when t
+      is EnglishAuction -> "English (ascending)"
+      is DutchAuction (drop) -> "Dutch (descending)"
+      is SealedBid -> "Sealed bid"
+      is Vickrey -> "Vickrey (second-price)"
+
+  AuctionStatus =
+    | AuctionScheduled
+    | AuctionLive
+    | AuctionEnded
+    | AuctionCancelled
+    | AuctionSold (Text)
+
+  auction-status-name : AuctionStatus -> Text
+  auction-status-name (s) =
+    when s
+      is AuctionScheduled -> "scheduled"
+      is AuctionLive -> "live"
+      is AuctionEnded -> "ended"
+      is AuctionCancelled -> "cancelled"
+      is AuctionSold (winner) -> "sold to " & winner
+
+  Auction = record {
+    auc-id : Text,
+    auc-product-id : Text,
+    auc-seller-id : Text,
+    auc-type : AuctionType,
+    auc-start-price : Money,
+    auc-reserve-price : Maybe Money,
+    auc-buy-now-price : Maybe Money,
+    auc-bid-increment : Integer,
+    auc-current-bid : Money,
+    auc-bid-count : Integer,
+    auc-high-bidder : Text,
+    auc-start-time : Integer,
+    auc-end-time : Integer,
+    auc-snipe-extend-secs : Integer,
+    auc-status : AuctionStatus,
+    auc-auto-relist : Boolean
+  }
+
+  Bid = record {
+    bid-id : Text,
+    bid-auction-id : Text,
+    bid-user-id : Text,
+    bid-amount : Money,
+    bid-max-amount : Maybe Money,
+    bid-time : Integer,
+    bid-is-proxy : Boolean,
+    bid-is-auto : Boolean
+  }
+
+  AuctionWatcher = record {
+    aw-auction-id : Text,
+    aw-user-id : Text,
+    aw-notify-outbid : Boolean,
+    aw-notify-ending : Boolean
+  }
+
+Section: Merchants and Drop Shipping
+
+ A merchant is a seller who lists products on the marketplace. The
+ platform handles storefront, payment, and customer service. The
+ merchant handles inventory and fulfillment (or uses drop-ship
+ suppliers). Revenue is split per the commission agreement.
+
+  MerchantStatus =
+    | MerchantPending
+    | MerchantApproved
+    | MerchantSuspended
+    | MerchantClosed
+
+  merchant-status-name : MerchantStatus -> Text
+  merchant-status-name (s) =
+    when s
+      is MerchantPending -> "pending"
+      is MerchantApproved -> "approved"
+      is MerchantSuspended -> "suspended"
+      is MerchantClosed -> "closed"
+
+  Merchant = record {
+    merch-id : Text,
+    merch-user-id : Text,
+    merch-store-name : Text,
+    merch-store-slug : Text,
+    merch-description : Text,
+    merch-logo-url : Text,
+    merch-banner-url : Text,
+    merch-status : MerchantStatus,
+    merch-commission-bps : Integer,
+    merch-rating-x10 : Integer,
+    merch-review-count : Integer,
+    merch-total-sales : Integer,
+    merch-total-revenue : Money,
+    merch-joined : Integer,
+    merch-verified : Boolean,
+    merch-policies : MerchantPolicies
+  }
+
+  MerchantPolicies = record {
+    mp-return-days : Integer,
+    mp-return-policy : Text,
+    mp-shipping-policy : Text,
+    mp-privacy-policy : Text
+  }
+
+  default-merchant-policies : MerchantPolicies
+  default-merchant-policies = MerchantPolicies {
+    mp-return-days = 30,
+    mp-return-policy = "Returns accepted within 30 days of delivery.",
+    mp-shipping-policy = "Ships within 1-3 business days.",
+    mp-privacy-policy = "We do not share your information with third parties."
+  }
+
+Section: Drop-Ship Suppliers
+
+ A drop-ship supplier fulfills orders on behalf of merchants. The
+ merchant never touches the product. The supplier ships directly to
+ the customer. Profit = merchant markup over supplier cost.
+
+  Supplier = record {
+    sup-id : Text,
+    sup-name : Text,
+    sup-api-endpoint : Text,
+    sup-api-key : Text,
+    sup-lead-time-days : Integer,
+    sup-countries : List Text,
+    sup-active : Boolean
+  }
+
+  DropShipListing = record {
+    dsl-id : Text,
+    dsl-supplier-id : Text,
+    dsl-supplier-sku : Text,
+    dsl-product-id : Text,
+    dsl-cost : Money,
+    dsl-retail-price : Money,
+    dsl-auto-order : Boolean,
+    dsl-stock-sync : Boolean,
+    dsl-last-synced : Integer
+  }
+
+  dropship-margin : DropShipListing -> Money
+  dropship-margin (d) =
+    money (d.dsl-retail-price.amount - d.dsl-cost.amount) (d.dsl-retail-price.currency)
+
+  dropship-margin-pct : DropShipListing -> Integer
+  dropship-margin-pct (d) =
+    if d.dsl-retail-price.amount == 0 then 0
+    else (d.dsl-retail-price.amount - d.dsl-cost.amount) * 100 / d.dsl-retail-price.amount
+
+Section: Content Creators
+
+ Content creators are merchants who sell digital goods, courses,
+ media, or experiences. They get a creator profile with portfolio,
+ follower count, content feed, and tips/donations support.
+
+  CreatorTier =
+    | CreatorFree
+    | CreatorPro
+    | CreatorEnterprise
+
+  creator-tier-name : CreatorTier -> Text
+  creator-tier-name (t) =
+    when t
+      is CreatorFree -> "Free"
+      is CreatorPro -> "Pro"
+      is CreatorEnterprise -> "Enterprise"
+
+  Creator = record {
+    cr-id : Text,
+    cr-merchant-id : Text,
+    cr-display-name : Text,
+    cr-bio : Text,
+    cr-avatar-url : Text,
+    cr-cover-url : Text,
+    cr-tier : CreatorTier,
+    cr-follower-count : Integer,
+    cr-total-tips : Money,
+    cr-social-links : List SocialLink,
+    cr-featured-products : List Text,
+    cr-verified : Boolean
+  }
+
+  SocialLink = record {
+    sl-platform : Text,
+    sl-url : Text,
+    sl-display : Text
+  }
+
+  social-link : Text, Text, Text -> SocialLink
+  social-link (platform) (url) (display) = SocialLink {
+    sl-platform = platform,
+    sl-url = url,
+    sl-display = display
+  }
+
+  ContentItem = record {
+    ci-id : Text,
+    ci-creator-id : Text,
+    ci-type : ContentType,
+    ci-title : Text,
+    ci-body : Text,
+    ci-media-url : Text,
+    ci-product-ids : List Text,
+    ci-likes : Integer,
+    ci-created : Integer
+  }
+
+  ContentType =
+    | ContentPost
+    | ContentVideo
+    | ContentTutorial
+    | ContentReview
+    | ContentUnboxing
+    | ContentLookbook
+
+  content-type-name : ContentType -> Text
+  content-type-name (t) =
+    when t
+      is ContentPost -> "post"
+      is ContentVideo -> "video"
+      is ContentTutorial -> "tutorial"
+      is ContentReview -> "review"
+      is ContentUnboxing -> "unboxing"
+      is ContentLookbook -> "lookbook"
+
+  Tip = record {
+    tip-id : Text,
+    tip-from-user : Text,
+    tip-to-creator : Text,
+    tip-amount : Money,
+    tip-message : Text,
+    tip-created : Integer
+  }
+
+Section: Marketplace Commission
+
+  CommissionSplit = record {
+    cs-platform-bps : Integer,
+    cs-merchant-bps : Integer,
+    cs-creator-bps : Integer,
+    cs-affiliate-bps : Integer
+  }
+
+  default-commission : CommissionSplit
+  default-commission = CommissionSplit {
+    cs-platform-bps = 1000,
+    cs-merchant-bps = 8500,
+    cs-creator-bps = 0,
+    cs-affiliate-bps = 500
+  }
+
+  creator-commission : CommissionSplit
+  creator-commission = CommissionSplit {
+    cs-platform-bps = 1500,
+    cs-merchant-bps = 0,
+    cs-creator-bps = 8000,
+    cs-affiliate-bps = 500
+  }
+
+  calc-commission : CommissionSplit, Money -> Money
+  calc-commission (cs) (sale) =
+    money (sale.amount * cs.cs-platform-bps / 10000) (sale.currency)
+
+  calc-payout : CommissionSplit, Money -> Money
+  calc-payout (cs) (sale) =
+    money (sale.amount * (cs.cs-merchant-bps + cs.cs-creator-bps) / 10000) (sale.currency)
+
+Section: Affiliate Tracking
+
+  Affiliate = record {
+    aff-id : Text,
+    aff-user-id : Text,
+    aff-code : Text,
+    aff-commission-bps : Integer,
+    aff-total-earned : Money,
+    aff-total-clicks : Integer,
+    aff-total-conversions : Integer,
+    aff-created : Integer
+  }
+
+  AffiliateClick = record {
+    ac-affiliate-id : Text,
+    ac-product-id : Text,
+    ac-referrer : Text,
+    ac-converted : Boolean,
+    ac-order-id : Text,
+    ac-timestamp : Integer
+  }
+
+Section: Payout
+
+  PayoutStatus =
+    | PayoutPending
+    | PayoutProcessing
+    | PayoutCompleted
+    | PayoutFailed (Text)
+
+  Payout = record {
+    po-id : Text,
+    po-merchant-id : Text,
+    po-amount : Money,
+    po-status : PayoutStatus,
+    po-period-start : Integer,
+    po-period-end : Integer,
+    po-line-items : Integer,
+    po-created : Integer
+  }

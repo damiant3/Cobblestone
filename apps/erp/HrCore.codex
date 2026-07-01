@@ -1,0 +1,387 @@
+Chapter: HrCore
+  cites ERP chapter ErpTypes
+  cites ERP chapter ErpConfig
+  cites ERP chapter FinGL
+  cites Foreword chapter Logger
+  cites UI chapter DataTable
+  cites UI chapter SettingsPanel
+  cites UI chapter DetailPane
+  cites UI chapter FilterableList
+  cites UI chapter Validation
+  cites UI chapter Dropdown
+  cites UI chapter SearchBar
+  cites UI chapter StatusBadge
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Human Resources: employee records, payroll, benefits, time and
+ attendance, leave management. Payroll integrates with GL via
+ journal entries for salaries, taxes, and benefit accruals.
+
+Section: Employee
+
+  EmployeeStatus =
+    | EmpActive
+    | EmpOnLeave
+    | EmpTerminated
+    | EmpRetired
+    | EmpSuspended
+
+  emp-status-name : EmployeeStatus -> Text
+  emp-status-name (s) =
+    when s
+      is EmpActive -> "active"
+      is EmpOnLeave -> "on leave"
+      is EmpTerminated -> "terminated"
+      is EmpRetired -> "retired"
+      is EmpSuspended -> "suspended"
+
+  EmploymentType =
+    | FullTime
+    | PartTime
+    | Contract
+    | Intern
+    | Temp
+
+  PayFrequency =
+    | Weekly
+    | BiWeekly
+    | SemiMonthly
+    | Monthly
+
+  pay-periods-per-year : PayFrequency -> Integer
+  pay-periods-per-year (f) =
+    when f
+      is Weekly -> 52
+      is BiWeekly -> 26
+      is SemiMonthly -> 24
+      is Monthly -> 12
+
+  Employee = record {
+    emp-id : Text,
+    emp-first-name : Text,
+    emp-last-name : Text,
+    emp-email : Text,
+    emp-phone : Text,
+    emp-ssn : Text,
+    emp-dob : Integer,
+    emp-hire-date : Integer,
+    emp-termination-date : Integer,
+    emp-company : Text,
+    emp-department : Text,
+    emp-cost-center : Text,
+    emp-manager-id : Text,
+    emp-title : Text,
+    emp-status : EmployeeStatus,
+    emp-type : EmploymentType,
+    emp-pay-frequency : PayFrequency,
+    emp-annual-salary : Integer,
+    emp-hourly-rate : Integer,
+    emp-is-exempt : Boolean,
+    emp-address : Text,
+    emp-emergency-contact : Text,
+    emp-emergency-phone : Text,
+    emp-bank-routing : Text,
+    emp-bank-account : Text,
+    emp-w4-filing : Text,
+    emp-w4-allowances : Integer
+  }
+
+  emp-full-name : Employee -> Text
+  emp-full-name (e) = e.emp-first-name & " " & e.emp-last-name
+
+  emp-per-period-salary : Employee -> Integer
+  emp-per-period-salary (e) =
+    if e.emp-annual-salary > 0 then e.emp-annual-salary / pay-periods-per-year (e.emp-pay-frequency)
+    else 0
+
+Section: Payroll
+
+  PayrollRun = record {
+    pyr-id : Text,
+    pyr-company : Text,
+    pyr-period-start : Integer,
+    pyr-period-end : Integer,
+    pyr-pay-date : Integer,
+    pyr-status : PayrollStatus,
+    pyr-stubs : List PayStub,
+    pyr-total-gross : Integer,
+    pyr-total-taxes : Integer,
+    pyr-total-deductions : Integer,
+    pyr-total-net : Integer,
+    pyr-created : Integer
+  }
+
+  PayrollStatus =
+    | PayrollDraft
+    | PayrollCalculated
+    | PayrollApproved
+    | PayrollPosted
+    | PayrollVoided
+
+  PayStub = record {
+    ps-employee-id : Text,
+    ps-employee-name : Text,
+    ps-gross-pay : Integer,
+    ps-federal-tax : Integer,
+    ps-state-tax : Integer,
+    ps-social-security : Integer,
+    ps-medicare : Integer,
+    ps-health-deduction : Integer,
+    ps-retirement-deduction : Integer,
+    ps-other-deductions : Integer,
+    ps-net-pay : Integer,
+    ps-hours-worked : Integer,
+    ps-overtime-hours : Integer,
+    ps-pto-hours : Integer
+  }
+
+  ps-total-taxes : PayStub -> Integer
+  ps-total-taxes (ps) = ps.ps-federal-tax + ps.ps-state-tax + ps.ps-social-security + ps.ps-medicare
+
+  ps-total-deductions : PayStub -> Integer
+  ps-total-deductions (ps) = ps.ps-health-deduction + ps.ps-retirement-deduction + ps.ps-other-deductions
+
+Section: Payroll Calculation
+
+  calc-pay-stub : Employee, Integer, Integer, Integer -> PayStub
+  calc-pay-stub (emp) (hours) (ot-hours) (pto-hours) =
+    let gross = if emp.emp-is-exempt then emp-per-period-salary emp
+      else (hours * emp.emp-hourly-rate) + (ot-hours * emp.emp-hourly-rate * 3 / 2)
+    in let fed-tax = calc-federal-tax gross (emp.emp-w4-allowances)
+    in let state-tax = gross * 500 / 10000
+    in let ss = if gross * 620 / 10000 > 0 then gross * 620 / 10000 else 0
+    in let medicare = gross * 145 / 10000
+    in let health = 25000
+    in let retirement = gross * 600 / 10000
+    in let total-tax = fed-tax + state-tax + ss + medicare
+    in let total-ded = health + retirement
+    in let net = gross - total-tax - total-ded
+    in PayStub {
+      ps-employee-id = emp.emp-id,
+      ps-employee-name = emp-full-name emp,
+      ps-gross-pay = gross,
+      ps-federal-tax = fed-tax,
+      ps-state-tax = state-tax,
+      ps-social-security = ss,
+      ps-medicare = medicare,
+      ps-health-deduction = health,
+      ps-retirement-deduction = retirement,
+      ps-other-deductions = 0,
+      ps-net-pay = if net > 0 then net else 0,
+      ps-hours-worked = hours,
+      ps-overtime-hours = ot-hours,
+      ps-pto-hours = pto-hours
+    }
+
+  calc-federal-tax : Integer, Integer -> Integer
+  calc-federal-tax (gross) (allowances) =
+    let taxable = gross - allowances * 8850
+    in if taxable <= 0 then 0
+    else if taxable <= 100000 then taxable * 1000 / 10000
+    else if taxable <= 400000 then 10000 + (taxable - 100000) * 1200 / 10000
+    else if taxable <= 850000 then 46000 + (taxable - 400000) * 2200 / 10000
+    else if taxable <= 1700000 then 145000 + (taxable - 850000) * 2400 / 10000
+    else if taxable <= 2150000 then 349000 + (taxable - 1700000) * 3200 / 10000
+    else if taxable <= 5400000 then 493000 + (taxable - 2150000) * 3500 / 10000
+    else 1630500 + (taxable - 5400000) * 3700 / 10000
+
+Section: Payroll GL Integration
+
+  payroll-journal : PayrollRun, ErpConfig -> JournalEntry
+  payroll-journal (run) (cfg) =
+    let am = cfg.cfg-accounts
+    in JournalEntry {
+      je-id = "PR-" & run.pyr-id,
+      je-company = run.pyr-company,
+      je-date = run.pyr-pay-date,
+      je-period = cfg.cfg-period,
+      je-year = cfg.cfg-year,
+      je-description = "Payroll " & run.pyr-id,
+      je-lines = [
+        journal-line-debit (am.am-salaries) (run.pyr-total-gross) "" "Salaries expense",
+        journal-line-debit (am.am-benefits) (sum-benefits (run.pyr-stubs) 0 0) "" "Benefits expense (employer)",
+        journal-line-credit (am.am-tax-payable) (run.pyr-total-taxes) "" "Taxes payable",
+        journal-line-credit (am.am-wages-payable) (run.pyr-total-net) "" "Wages payable",
+        journal-line-credit (am.am-accrued) (run.pyr-total-deductions + sum-benefits (run.pyr-stubs) 0 0) "" "Benefit accruals (employee + employer)"
+      ],
+      je-source = SrcPayroll,
+      je-posted = False,
+      je-reversed = False,
+      je-reversal-of = "",
+      je-created-by = "payroll-system",
+      je-approved-by = "",
+      je-created = run.pyr-created
+    }
+
+  sum-benefits : List PayStub, Integer, Integer -> Integer
+  sum-benefits (stubs) (i) (acc) =
+    if i >= list-length stubs then acc
+    else sum-benefits stubs (i + 1) (acc + (list-at stubs i).ps-health-deduction + (list-at stubs i).ps-retirement-deduction)
+
+Section: Benefits
+
+  BenefitPlan = record {
+    bp-id : Text,
+    bp-name : Text,
+    bp-type : BenefitType,
+    bp-employer-pct : Integer,
+    bp-employee-pct : Integer,
+    bp-monthly-cost : Integer,
+    bp-active : Boolean
+  }
+
+  BenefitType =
+    | HealthInsurance
+    | DentalInsurance
+    | VisionInsurance
+    | LifeInsurance
+    | Retirement401k
+    | Hsa
+    | Fsa
+    | Disability
+
+  BenefitEnrollment = record {
+    be-employee-id : Text,
+    be-plan-id : Text,
+    be-coverage-level : Text,
+    be-start-date : Integer,
+    be-end-date : Integer,
+    be-employee-cost : Integer,
+    be-employer-cost : Integer
+  }
+
+Section: Time and Attendance
+
+  TimeEntry = record {
+    te-id : Text,
+    te-employee-id : Text,
+    te-date : Integer,
+    te-hours : Integer,
+    te-type : TimeType,
+    te-project : Text,
+    te-cost-center : Text,
+    te-approved : Boolean,
+    te-approved-by : Text
+  }
+
+  TimeType =
+    | RegularTime
+    | Overtime
+    | DoubleTime
+    | Holiday
+    | PtoTime
+    | SickTime
+    | JuryDuty
+    | Bereavement
+
+  time-type-name : TimeType -> Text
+  time-type-name (t) =
+    when t
+      is RegularTime -> "regular"
+      is Overtime -> "overtime"
+      is DoubleTime -> "double-time"
+      is Holiday -> "holiday"
+      is PtoTime -> "PTO"
+      is SickTime -> "sick"
+      is JuryDuty -> "jury duty"
+      is Bereavement -> "bereavement"
+
+Section: Leave Management
+
+  LeaveBalance = record {
+    lb-employee-id : Text,
+    lb-type : TimeType,
+    lb-accrued : Integer,
+    lb-used : Integer,
+    lb-available : Integer,
+    lb-max-carryover : Integer
+  }
+
+  LeaveRequest = record {
+    lr-id : Text,
+    lr-employee-id : Text,
+    lr-type : TimeType,
+    lr-start-date : Integer,
+    lr-end-date : Integer,
+    lr-hours : Integer,
+    lr-status : LeaveStatus,
+    lr-approved-by : Text,
+    lr-reason : Text
+  }
+
+  LeaveStatus =
+    | LeavePending
+    | LeaveApproved
+    | LeaveDenied
+    | LeaveCancelled
+
+Section: Performance
+
+  PerformanceReview = record {
+    rev-id : Text,
+    rev-employee-id : Text,
+    rev-reviewer-id : Text,
+    rev-period : Text,
+    rev-rating : Integer,
+    rev-goals : List Goal,
+    rev-comments : Text,
+    rev-status : ReviewStatus,
+    rev-created : Integer
+  }
+
+  Goal = record {
+    goal-description : Text,
+    goal-target : Text,
+    goal-actual : Text,
+    goal-weight : Integer,
+    goal-rating : Integer
+  }
+
+  ReviewStatus =
+    | ReviewDraft
+    | ReviewSubmitted
+    | ReviewAcknowledged
+
+Section: Recruiting
+
+  JobRequisition = record {
+    req-id : Text,
+    req-title : Text,
+    req-department : Text,
+    req-hiring-manager : Text,
+    req-min-salary : Integer,
+    req-max-salary : Integer,
+    req-status : ReqStatus,
+    req-headcount : Integer,
+    req-created : Integer
+  }
+
+  ReqStatus =
+    | ReqOpen
+    | ReqFilled
+    | ReqCancelled
+    | ReqOnHold
+
+  Applicant = record {
+    app-id : Text,
+    app-req-id : Text,
+    app-name : Text,
+    app-email : Text,
+    app-phone : Text,
+    app-resume-url : Text,
+    app-stage : ApplicantStage,
+    app-rating : Integer,
+    app-source : Text,
+    app-applied : Integer
+  }
+
+  ApplicantStage =
+    | Applied
+    | Screening
+    | Interview
+    | Assessment
+    | Offer
+    | Hired
+    | Rejected
+    | Withdrawn

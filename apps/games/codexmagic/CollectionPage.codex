@@ -1,0 +1,314 @@
+Chapter: CollectionPage
+  cites CodexMagic chapter MagicTheme
+  cites UI chapter Layout
+
+ Collection page built properly with widget trees, state management,
+ event handlers, and fetch callbacks. No string-stuffed JavaScript.
+
+ We say:
+
+Section: State Keys
+
+  sk-loaded : Text = "coll-loaded"
+  sk-msg : Text = "coll-msg"
+  sk-pool-count : Text = "coll-pool-count"
+  sk-deck-count : Text = "coll-deck-count"
+  sk-filter-color : Text = "coll-filter-color"
+  sk-filter-type : Text = "coll-filter-type"
+  sk-filter-rarity : Text = "coll-filter-rarity"
+  sk-search : Text = "coll-search"
+  sk-deck-name : Text = "coll-deck-name"
+  sk-deck-valid-msg : Text = "coll-deck-valid"
+  sk-thumbprint : Text = "coll-thumbprint"
+
+Section: API Base
+
+  api-base : Text = "/api/auth"
+
+Section: Page Tree
+
+  collection-tree : Integer -> WidgetNode
+  collection-tree (x) =
+    let loaded = state-get sk-loaded
+    in let msg = state-get-text sk-msg
+    in let deck-n = state-get sk-deck-count
+    in let valid = state-get-text sk-deck-valid-msg
+    in let thumb = state-get-text sk-thumbprint
+    in let stats-txt = if loaded == 1 then msg else "Loading..."
+    in let left = collection-left-panel stats-txt
+    in let right = collection-right-panel deck-n valid thumb
+    in widget-panel "coll-root" DirColumn 0 [magic-nav-widget "Collection", widget-box "coll-page" "page" [left, right]]
+
+  collection-left-panel : Text -> WidgetNode
+  collection-left-panel (stats-txt) =
+    widget-panel "coll-left" DirColumn 8 [
+      filter-bar-tree 0,
+      widget-label "stats" stats-txt,
+      widget-separator "sep-pool",
+      card-grid-tree 0
+    ]
+
+  collection-right-panel : Integer, Text, Text -> WidgetNode
+  collection-right-panel (deck-n) (valid) (thumb) =
+    widget-panel "coll-right" DirColumn 8 [
+      widget-label "deck-hdr" "Deck Builder",
+      widget-label "deck-count" (show deck-n & " / 60 cards"),
+      widget-label "deck-valid" valid,
+      deck-list-tree 0,
+      widget-separator "sep-curve",
+      widget-button "btn-autofill" "Auto-fill",
+      widget-button "btn-clear" "Clear",
+      widget-separator "sep-save",
+      widget-input "deck-name" "" 0,
+      widget-button "btn-mark" "Mark Version",
+      widget-label "thumbprint" thumb,
+      widget-separator "sep-decks",
+      widget-label "decks-hdr" "Saved Decks",
+      saved-decks-tree 0
+    ]
+
+Section: Filter Bar
+
+  filter-bar-tree : Integer -> WidgetNode
+  filter-bar-tree (x) =
+    widget-panel "filter-bar" DirRow 8 [
+      widget-button "fc-all" "All Colors",
+      widget-button "fc-R" "Red",
+      widget-button "fc-Y" "Yellow",
+      widget-button "fc-B" "Blue",
+      widget-button "fc-O" "Orange",
+      widget-button "fc-G" "Green",
+      widget-button "fc-P" "Purple",
+      widget-separator "sep-ft",
+      widget-button "ft-all" "All Types",
+      widget-button "ft-Creature" "Summon",
+      widget-button "ft-Cantrip" "Cantrip",
+      widget-button "ft-Gemstone" "Gem"
+    ]
+
+Section: Card Grid (dynamic list from state)
+
+  card-grid-tree : Integer -> WidgetNode
+  card-grid-tree (x) =
+    let count = state-get "coll-visible-count"
+    in if count == 0 then widget-label "empty-grid" "No cards match filters"
+    else widget-panel "card-grid" DirRow 8 (card-items 0 count [])
+
+  card-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  card-items (i) (count) (acc) =
+    if i >= count then acc
+    else let name = state-get-text ("card-name-" & show i)
+    in let cost-str = state-get-text ("card-cost-" & show i)
+    in let type-str = state-get-text ("card-type-" & show i)
+    in let owned = state-get ("card-owned-" & show i)
+    in let item = widget-panel ("card-" & show i) DirColumn 0 [
+      widget-label ("cn-" & show i) name,
+      widget-label ("cc-" & show i) cost-str,
+      widget-label ("ct-" & show i) type-str,
+      if owned > 0 then widget-label ("co-" & show i) ("x" & show owned) else widget-label ("co-" & show i) ""
+    ]
+    in card-items (i + 1) count (list-push acc item)
+
+Section: Deck List (dynamic from state)
+
+  deck-list-tree : Integer -> WidgetNode
+  deck-list-tree (x) =
+    let count = state-get sk-deck-count
+    in if count == 0 then widget-label "deck-empty" "No cards in deck"
+    else widget-panel "deck-list" DirColumn 2 (deck-items 0 count [])
+
+  deck-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  deck-items (i) (count) (acc) =
+    if i >= count then acc
+    else let name = state-get-text ("dk-name-" & show i)
+    in let qty = state-get ("dk-qty-" & show i)
+    in let item = widget-panel ("dk-" & show i) DirRow 4 [
+      widget-label ("dkn-" & show i) name,
+      widget-label ("dkq-" & show i) ("x" & show qty)
+    ]
+    in deck-items (i + 1) count (list-push acc item)
+
+Section: Saved Decks (dynamic from state)
+
+  saved-decks-tree : Integer -> WidgetNode
+  saved-decks-tree (x) =
+    let count = state-get "saved-deck-count"
+    in if count == 0 then widget-label "no-saved" "No saved decks"
+    else widget-panel "saved-list" DirColumn 4 (saved-deck-items 0 count [])
+
+  saved-deck-items : Integer, Integer, List WidgetNode -> List WidgetNode
+  saved-deck-items (i) (count) (acc) =
+    if i >= count then acc
+    else let name = state-get-text ("sd-name-" & show i)
+    in let cards = state-get ("sd-cards-" & show i)
+    in let item = widget-panel ("sd-" & show i) DirRow 4 [
+      widget-label ("sdn-" & show i) (name & " (" & show cards & ")"),
+      widget-button ("sd-load-" & show i) "Load",
+      widget-button ("sd-del-" & show i) "X"
+    ]
+    in saved-deck-items (i + 1) count (list-push acc item)
+
+Section: Data Loading
+
+  load-pool : Integer -> Integer
+  load-pool (x) =
+    let url = api-base & "/pool"
+    in fetch-get-then url load-pool-cb
+
+  load-pool-cb : Text -> Integer
+  load-pool-cb (resp) =
+    let obj = json-parse-obj resp
+    in let cards-raw = json-obj-field obj "cards"
+    in let count = parse-card-array cards-raw 0 0
+    in let s1 = state-set sk-pool-count count
+    in let s2 = state-set "coll-visible-count" count
+    in let s3 = state-set sk-loaded 1
+    in let s4 = state-set-text sk-msg (show count & " cards in pool")
+    in request-render 0
+
+  parse-card-array : Text, Integer, Integer -> Integer
+  parse-card-array (raw) (pos) (count) =
+    let idx = text-index-of raw "\"name\":\"" pos
+    in if idx < 0 then count
+    else let name-start = idx + 8
+    in let name-end = text-index-of raw "\"" name-start
+    in let name = text-substring raw name-start (name-end - name-start)
+    in let s1 = state-set-text ("card-name-" & show count) name
+    in let type-idx = text-index-of raw "\"type\":\"" name-end
+    in let type-start = type-idx + 8
+    in let type-end = text-index-of raw "\"" type-start
+    in let type-val = text-substring raw type-start (type-end - type-start)
+    in let s2 = state-set-text ("card-type-" & show count) type-val
+    in let s3 = state-set-text ("card-cost-" & show count) ""
+    in let s4 = state-set ("card-owned-" & show count) 0
+    in parse-card-array raw type-end (count + 1)
+
+  load-collection : Integer -> Integer
+  load-collection (x) =
+    let tok = state-get-text "cx_token"
+    in let url = api-base & "/collection?t=" & url-encode tok
+    in fetch-get-then url load-collection-cb
+
+  load-collection-cb : Text -> Integer
+  load-collection-cb (resp) =
+    let s1 = state-set-text sk-msg "Collection loaded"
+    in request-render 0
+
+  load-decks : Integer -> Integer
+  load-decks (x) =
+    let tok = state-get-text "cx_token"
+    in let url = api-base & "/decks?t=" & url-encode tok
+    in fetch-get-then url load-decks-cb
+
+  load-decks-cb : Text -> Integer
+  load-decks-cb (resp) =
+    request-render 0
+
+Section: Event Handlers
+
+  coll-on-click : Text -> Integer
+  coll-on-click (id) =
+    if id == "btn-autofill" then do-autofill 0
+    else if id == "btn-clear" then do-clear 0
+    else if id == "btn-mark" then do-mark 0
+    else if text-starts-with id "fc-" then
+      let color = text-drop id 3
+      in let s = state-set-text-render sk-filter-color (if color == "all" then "" else color)
+      in 0
+    else if text-starts-with id "ft-" then
+      let typ = text-drop id 3
+      in let s = state-set-text-render sk-filter-type (if typ == "all" then "" else typ)
+      in 0
+    else if text-starts-with id "sd-load-" then load-saved-deck (text-drop id 8)
+    else if text-starts-with id "sd-del-" then delete-saved-deck (text-drop id 7)
+    else if text-starts-with id "card-" then add-card-to-deck id
+    else 0
+
+  do-autofill : Integer -> Integer
+  do-autofill (x) =
+    let s = state-set-text sk-msg "Auto-fill coming in a future update"
+    in request-render 0
+
+  do-clear : Integer -> Integer
+  do-clear (x) =
+    let s1 = state-set sk-deck-count 0
+    in let s2 = state-set-text sk-deck-valid-msg ""
+    in request-render 0
+
+  do-mark : Integer -> Integer
+  do-mark (x) =
+    let tok = state-get-text "cx_token"
+    in let name = state-get-text sk-deck-name
+    in let url = api-base & "/mark-deck-version?t=" & url-encode tok & "&name=" & url-encode name
+    in fetch-get-then url mark-cb
+
+  mark-cb : Text -> Integer
+  mark-cb (resp) =
+    let s = state-set-text sk-msg "Version marked"
+    in request-render 0
+
+  add-card-to-deck : Text -> Integer
+  add-card-to-deck (id) = 0
+
+  load-saved-deck : Text -> Integer
+  load-saved-deck (idx-str) = 0
+
+  delete-saved-deck : Text -> Integer
+  delete-saved-deck (idx-str) = 0
+
+  text-starts-with : Text, Text -> Boolean
+  text-starts-with (s) (prefix) =
+    if text-length prefix > text-length s then False
+    else text-substring s 0 (text-length prefix) == prefix
+
+  text-drop : Text, Integer -> Text
+  text-drop (s) (n) = text-substring s n (text-length s - n)
+
+  text-index-of : Text, Text, Integer -> Integer
+  text-index-of (haystack) (needle) (from) =
+    text-index-loop haystack needle from (text-length haystack) (text-length needle)
+
+  text-index-loop : Text, Text, Integer, Integer, Integer -> Integer
+  text-index-loop (h) (n) (i) (hlen) (nlen) =
+    if i + nlen > hlen then -1
+    else if text-substring h i nlen == n then i
+    else text-index-loop h n (i + 1) hlen nlen
+
+  text-substring : Text, Integer, Integer -> Text
+  text-substring (s) (start) (len) =
+    text-sub-loop s start (start + len) ""
+
+  text-sub-loop : Text, Integer, Integer, Text -> Text
+  text-sub-loop (s) (i) (stop) (acc) =
+    if i >= stop then acc
+    else if i >= text-length s then acc
+    else text-sub-loop s (i + 1) stop (acc & char-to-text (char-at s i))
+
+Section: Render
+
+  render : Integer -> Integer
+  render (x) =
+    let tree = collection-tree 0
+    in let m = mount-widget-themed magic-theme tree
+    in 0
+
+Section: Entry
+
+  opening : [Console] Integer
+  opening = act
+    let t1 = inject-theme-css magic-theme
+    in let s1 = state-set sk-loaded 0
+    in let s2 = state-set-text sk-msg "Loading..."
+    in let s3 = state-set sk-deck-count 0
+    in let s4 = set-render render
+    in let h = register-handlers no-pick coll-on-click
+    in let tok = local-storage-get "cx_tok"
+    in let s5 = state-set-text "cx_token" tok
+    in let r1 = render 0
+    in let l1 = load-pool 0
+    in let l2 = load-collection 0
+    in let l3 = load-decks 0
+    in 0
+  end
+
+Page 1

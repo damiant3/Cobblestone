@@ -1,0 +1,160 @@
+Chapter: HomeProjects
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProductivityDb
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Home improvement project tracker. Each project has a room, category
+ (repair, renovation, landscaping, cleaning, organization), priority,
+ budget, timeline, and a materials list with costs and purchase state.
+ Tracks total spend vs budget per project and across all projects.
+
+Section: Project Types
+
+  ProjectStatus =
+    | PjPlanning
+    | PjInProgress
+    | PjOnHold
+    | PjComplete
+    | PjCancelled
+
+  pj-status-label : ProjectStatus -> Text
+  pj-status-label (s) = when s
+    is PjPlanning -> "Planning"
+    is PjInProgress -> "In Progress"
+    is PjOnHold -> "On Hold"
+    is PjComplete -> "Complete"
+    is PjCancelled -> "Cancelled"
+
+  ProjectCategory =
+    | PjRepair
+    | PjRenovation
+    | PjLandscaping
+    | PjCleaning
+    | PjOrganization
+    | PjDecor
+    | PjMaintenance
+
+  pj-cat-label : ProjectCategory -> Text
+  pj-cat-label (c) = when c
+    is PjRepair -> "Repair"
+    is PjRenovation -> "Renovation"
+    is PjLandscaping -> "Landscaping"
+    is PjCleaning -> "Cleaning"
+    is PjOrganization -> "Organization"
+    is PjDecor -> "Decor"
+    is PjMaintenance -> "Maintenance"
+
+Section: Material
+
+  Material = record {
+    mat-id : Integer,
+    mat-name : Text,
+    mat-quantity : Text,
+    mat-cost-cents : Integer,
+    mat-purchased : Boolean,
+    mat-store : Text
+  }
+
+  mat-cost-display : Material -> Text
+  mat-cost-display (m) =
+    let dollars = m.mat-cost-cents / 100
+    in let cents = m.mat-cost-cents - dollars * 100
+    in "$" & show dollars & "." & (if cents < 10 then "0" else "") & show cents
+
+Section: Home Project (in-memory view)
+
+  HomeProject = record {
+    hp-id : Integer,
+    hp-title : Text,
+    hp-description : Text,
+    hp-room : Text,
+    hp-category : ProjectCategory,
+    hp-status : ProjectStatus,
+    hp-priority : Integer,
+    hp-budget-cents : Integer,
+    hp-spent-cents : Integer,
+    hp-start-date : Integer,
+    hp-end-date : Integer,
+    hp-materials : List Material,
+    hp-material-count : Integer,
+    hp-created : Integer
+  }
+
+  hp-budget-remaining : HomeProject -> Integer
+  hp-budget-remaining (p) = p.hp-budget-cents - p.hp-spent-cents
+
+  hp-budget-pct : HomeProject -> Integer
+  hp-budget-pct (p) =
+    if p.hp-budget-cents == 0 then 0
+    else p.hp-spent-cents * 100 / p.hp-budget-cents
+
+  hp-materials-purchased : HomeProject -> Integer
+  hp-materials-purchased (p) = hp-mat-count (p.hp-materials) 0 (p.hp-material-count) 0
+
+  hp-mat-count : List Material, Integer, Integer, Integer -> Integer
+  hp-mat-count (mats) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if (list-at mats i).mat-purchased then 1 else 0
+    in hp-mat-count mats (i + 1) n (acc + delta)
+
+  cents-display : Integer -> Text
+  cents-display (c) =
+    let dollars = c / 100
+    in let remainder = c - dollars * 100
+    in "$" & show dollars & "." & (if remainder < 10 then "0" else "") & show remainder
+
+Section: Home Projects App State
+
+  HomeProjectsState = record {
+    hps-projects : List HomeProject,
+    hps-count : Integer,
+    hps-selected : Integer,
+    hps-filter : Text,
+    hps-filter-room : Text,
+    hps-filter-status : Text,
+    hps-rooms : List Text,
+    hps-room-count : Integer,
+    hps-total-budget : Integer,
+    hps-total-spent : Integer
+  }
+
+  home-projects-new : HomeProjectsState
+  home-projects-new = HomeProjectsState {
+    hps-projects = [], hps-count = 0, hps-selected = -1,
+    hps-filter = "", hps-filter-room = "", hps-filter-status = "",
+    hps-rooms = ["Kitchen", "Bathroom", "Bedroom", "Living Room", "Garage", "Yard", "Basement", "Attic"],
+    hps-room-count = 8,
+    hps-total-budget = 0, hps-total-spent = 0
+  }
+
+Section: Widget Building
+
+  hp-project-row : HomeProject -> WidgetNode
+  hp-project-row (p) =
+    let title = widget-label ("hp-t-" & show (p.hp-id)) (p.hp-title)
+    in let room = widget-label ("hp-r-" & show (p.hp-id)) (p.hp-room)
+    in let cat = widget-label ("hp-c-" & show (p.hp-id)) (pj-cat-label (p.hp-category))
+    in let status = widget-label ("hp-s-" & show (p.hp-id)) (pj-status-label (p.hp-status))
+    in let budget = widget-gauge ("hp-b-" & show (p.hp-id)) (hp-budget-pct p) 100
+    in let spent = widget-label ("hp-sp-" & show (p.hp-id)) (cents-display (p.hp-spent-cents) & " / " & cents-display (p.hp-budget-cents))
+    in widget-panel ("project-" & show (p.hp-id)) DirRow 8 [title, room, cat, status, budget, spent]
+
+  hp-widget : HomeProjectsState -> WidgetNode
+  hp-widget (st) =
+    let title = widget-label "hp-title" "Home Projects"
+    in let summary = widget-label "hp-summary" (show (st.hps-count) & " projects | Budget: " & cents-display (st.hps-total-budget) & " | Spent: " & cents-display (st.hps-total-spent))
+    in let filter = widget-input "hp-filter" (st.hps-filter) (text-length (st.hps-filter))
+    in let new-btn = widget-button "hp-new" "New Project"
+    in let toolbar = widget-toolbar "hp-toolbar" [filter, new-btn]
+    in let rows = hp-rows (st.hps-projects) 0 (st.hps-count) []
+    in widget-panel "home-projects-app" DirColumn 4 ([title, summary, toolbar] & rows)
+
+  hp-rows : List HomeProject, Integer, Integer, List WidgetNode -> List WidgetNode
+  hp-rows (projects) (i) (n) (acc) =
+    if i >= n then acc
+    else hp-rows projects (i + 1) n (list-push acc (hp-project-row (list-at projects i)))
+
+Page 1

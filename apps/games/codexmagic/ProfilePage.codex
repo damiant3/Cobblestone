@@ -1,0 +1,128 @@
+Chapter: ProfilePage
+  cites CodexMagic chapter MagicTheme
+  cites UI chapter Layout
+
+ Profile page using proper MagicTheme constructors.
+
+ We say:
+
+Section: State
+
+  sk-p-loaded : Text = "p-loaded"
+  sk-p-name : Text = "p-name"
+  sk-p-handle : Text = "p-handle"
+  sk-p-rank : Text = "p-rank"
+  sk-p-rating : Text = "p-rating"
+  sk-p-wins : Text = "p-wins"
+  sk-p-losses : Text = "p-losses"
+  sk-p-balance : Text = "p-balance"
+  sk-p-tokens : Text = "p-tokens"
+  sk-p-sub : Text = "p-sub"
+  sk-p-admin : Text = "p-admin"
+  sk-p-msg : Text = "p-msg"
+
+Section: Tree
+
+  profile-tree : Integer -> WidgetNode
+  profile-tree (x) =
+    let loaded = state-get sk-p-loaded
+    in if loaded == 0 then widget-panel "p-page" DirColumn 0 [magic-nav-widget "Profile", widget-label "p-loading" "Loading profile..."]
+    else profile-loaded 0
+
+  profile-loaded : Integer -> WidgetNode
+  profile-loaded (x) =
+    let name = state-get-text sk-p-name
+    in let handle = state-get-text sk-p-handle
+    in let rank = state-get-text sk-p-rank
+    in let rating = state-get-text sk-p-rating
+    in let wins = state-get-text sk-p-wins
+    in let losses = state-get-text sk-p-losses
+    in let bal = state-get-text sk-p-balance
+    in let tokens = state-get-text sk-p-tokens
+    in let sub = state-get-text sk-p-sub
+    in let is-admin = state-get sk-p-admin
+    in let msg = state-get-text sk-p-msg
+    in widget-panel "p-page" DirColumn 0 [
+      magic-nav-widget "Profile",
+      widget-box "p-content" "page" [
+        widget-h2 "p-hdr" name,
+        widget-label "p-handle" ("@" & handle),
+        widget-label "p-rank-info" (rank & " | Rating: " & rating),
+        widget-stat-grid "p-stats" [
+          widget-stat-card "p-w" wins "Wins",
+          widget-stat-card "p-l" losses "Losses",
+          widget-stat-card "p-b" bal "Mana Coin",
+          widget-stat-card "p-t" tokens "Cards"
+        ],
+        widget-h2 "p-sub-hdr" "Subscription",
+        widget-label "p-sub-val" sub,
+        widget-h2 "p-pw-hdr" "Change Password",
+        widget-form-field "p-old" "Current" "",
+        widget-form-field "p-new" "New" "",
+        widget-button "p-pw-btn" "Change Password",
+        widget-label "p-msg" msg,
+        widget-button "p-logout" "Sign Out",
+        if is-admin == 1 then widget-button "p-wipe" "Wipe Collection" else widget-label "p-na" "",
+        widget-button "p-delete" "Delete Account"
+      ]
+    ]
+
+Section: Handlers
+
+  p-click : Text -> Integer
+  p-click (id) =
+    if id == "p-logout" then let tok = state-get-text "cx_token" in let r = fetch-get-then ("/api/auth/logout?t=" & url-encode tok) p-logout-cb in 0
+    else if id == "p-pw-btn" then let tok = state-get-text "cx_token" in let old-pw = dom-get-value (dom-get "p-old") in let new-pw = dom-get-value (dom-get "p-new") in fetch-get-then ("/api/auth/change-password?t=" & url-encode tok & "&old=" & url-encode old-pw & "&new=" & url-encode new-pw) p-pw-cb
+    else if id == "p-wipe" then let tok = state-get-text "cx_token" in fetch-get-then ("/api/auth/wipe-collection?t=" & url-encode tok) p-wipe-cb
+    else 0
+
+  p-logout-cb : Text -> Integer
+  p-logout-cb (resp) = let s = local-storage-set "cx_tok" "" in 0
+
+  p-pw-cb : Text -> Integer
+  p-pw-cb (resp) = let s = state-set-text sk-p-msg "Password changed" in request-render 0
+
+  p-wipe-cb : Text -> Integer
+  p-wipe-cb (resp) = let s = state-set-text sk-p-msg "Collection wiped" in request-render 0
+
+Section: Load
+
+  load-profile : Integer -> Integer
+  load-profile (x) =
+    let tok = state-get-text "cx_token"
+    in fetch-get-then ("/api/auth/profile?t=" & url-encode tok) profile-cb
+
+  profile-cb : Text -> Integer
+  profile-cb (resp) =
+    let obj = json-parse-obj resp
+    in let s1 = state-set-text sk-p-name (json-obj-field obj "display")
+    in let s2 = state-set-text sk-p-handle (json-obj-field obj "handle")
+    in let s3 = state-set-text sk-p-rank (json-obj-field obj "rank")
+    in let s4 = state-set-text sk-p-rating (json-obj-field obj "rating")
+    in let s5 = state-set-text sk-p-wins (json-obj-field obj "wins")
+    in let s6 = state-set-text sk-p-losses (json-obj-field obj "losses")
+    in let s7 = state-set-text sk-p-balance (json-obj-field obj "balance")
+    in let s8 = state-set-text sk-p-tokens (json-obj-field obj "tokens")
+    in let s9 = state-set-text sk-p-sub (json-obj-field obj "subscription")
+    in let admin-str = json-obj-field obj "admin"
+    in let s10 = state-set sk-p-admin (if admin-str == "true" then 1 else 0)
+    in let s11 = state-set sk-p-loaded 1
+    in request-render 0
+
+Section: Entry
+
+  render-p : Integer -> Integer
+  render-p (x) = mount-widget-themed magic-theme (profile-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = init-magic-theme 0
+    in let tok = local-storage-get "cx_tok"
+    in let s1 = state-set-text "cx_token" tok
+    in let s2 = set-render render-p
+    in let h = register-handlers no-pick p-click
+    in let r = render-p 0
+    in load-profile 0
+  end
+
+Page 1

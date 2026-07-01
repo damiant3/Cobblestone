@@ -1,0 +1,85 @@
+Chapter: CollabStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Encode chapter Json
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Kernel chapter AppLog
+  cites Collab chapter CollabTypes
+  cites Collab chapter CallEngine
+  cites Collab chapter MeetingManager
+  cites Foreword chapter ListUtils
+
+ Persistence for the Collab app. Call history (kind 47),
+ contacts/favorites (kind 48), meeting templates (kind 49).
+
+Section: Kind Constants
+
+  pk-call-history : Integer = 47
+  pk-contacts : Integer = 48
+  pk-meeting-templates : Integer = 49
+
+Section: Call Record Serialization
+
+  call-record-to-jv : CallRecord -> JsonValue
+  call-record-to-jv (r) = json-object [
+    json-pair "id" (json-str r.cr-id),
+    json-pair "title" (json-str r.cr-title),
+    json-pair "type" (json-int (ct-to-int r.cr-type)),
+    json-pair "count" (json-int r.cr-participant-count),
+    json-pair "started" (json-int r.cr-started),
+    json-pair "dur" (json-int r.cr-duration-sec),
+    json-pair "rec" (json-bool r.cr-has-recording)
+  ]
+
+  ct-to-int : CallType -> Integer
+  ct-to-int (t) = when t
+    is CtAudio -> 0
+    is CtVideo -> 1
+    is CtScreen -> 2
+
+  int-to-ct : Integer -> CallType
+  int-to-ct (n) =
+    if n == 0 then CtAudio
+    else if n == 1 then CtVideo
+    else CtScreen
+
+  call-record-from-jv : JsonValue -> CallRecord
+  call-record-from-jv (jv) = CallRecord {
+    cr-id = json-get-str jv "id" "",
+    cr-title = json-get-str jv "title" "",
+    cr-type = int-to-ct (json-get-int jv "type" 1),
+    cr-participants = [],
+    cr-participant-count = json-get-int jv "count" 0,
+    cr-started = json-get-int jv "started" 0,
+    cr-duration-sec = json-get-int jv "dur" 0,
+    cr-has-recording = json-get-bool jv "rec" False
+  }
+
+Section: Save and Load
+
+  collab-save-history : DiskFactStore, List CallRecord -> DiskFactStore
+  collab-save-history (disk) (records) =
+    let j = json-emit (json-array (list-map call-record-to-jv records))
+    in app-log-info (app-write-and-checkpoint disk pk-call-history j 0) "collab" ("Saved " & show (list-length records) & " call records") 0
+
+  collab-load-history : DiskFactStore -> List CallRecord
+  collab-load-history (disk) =
+    let found = app-scan-last disk pk-call-history
+    in when found
+      is None -> []
+      is Just (txt) -> collab-parse-records txt
+
+  collab-parse-records : Text -> List CallRecord
+  collab-parse-records (txt) =
+    let parsed = json-parse txt
+    in when parsed
+      is None -> []
+      is Just (arr) -> collab-parse-loop arr 0
+
+  collab-parse-loop : JsonValue, Integer -> List CallRecord
+  collab-parse-loop (arr) (i) =
+    let item = json-array-at arr i
+    in when item
+      is None -> []
+      is Just (jv) -> call-record-from-jv jv :: collab-parse-loop arr (i + 1)

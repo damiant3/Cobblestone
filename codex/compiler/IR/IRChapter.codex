@@ -1,0 +1,157 @@
+Chapter: IR Chapter
+
+ The intermediate representation sits between the typed AST and code
+ emission. Every node carries its resolved type and a SourceSpan
+ inherited from the AST node it was lowered from.
+
+Section: IR Expressions
+  IRBinaryOp =
+   | IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrPowInt | IrRemInt
+   | IrAddNum | IrSubNum | IrMulNum | IrDivNum
+   | IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox
+   | IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping
+   | IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating
+   | IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq
+   | IrAnd | IrOr
+   | IrAppendText | IrAppendList
+   | IrConsList
+   | IrApproxEq
+   | IrApproxEqExact
+   | IrAddVec | IrSubVec | IrMulVec | IrDivVec
+   | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec
+
+  IRExpr =
+   | IrIntLit (Integer) (SourceSpan)
+   | IrNumLit (Integer) (SourceSpan)
+   | IrTextLit (Text) (SourceSpan)
+   | IrBoolLit (Boolean) (SourceSpan)
+   | IrCharLit (Integer) (SourceSpan)
+   | IrName (Text) (CodexType) (SourceSpan)
+   | IrBinary (IRBinaryOp) (IRExpr) (IRExpr) (CodexType) (SourceSpan)
+   | IrNegate (IRExpr) (SourceSpan)
+   | IrIf (IRExpr) (IRExpr) (IRExpr) (CodexType) (SourceSpan)
+   | IrLet (Text) (CodexType) (IRExpr) (IRExpr) (SourceSpan)
+   | IrApply (IRExpr) (IRExpr) (CodexType) (SourceSpan)
+   | IrLambda (List IRParam) (IRExpr) (CodexType) (SourceSpan)
+   | IrList (List IRExpr) (CodexType) (SourceSpan)
+   | IrMatch (IRExpr) (List IRBranch) (CodexType) (SourceSpan)
+   | IrAct (List IRActStmt) (CodexType) (SourceSpan)
+   | IrHandle (Text) (IRExpr) (List IRHandleClause) (CodexType) (SourceSpan)
+   | IrWithTimeout (Integer) (List Text) (List Text) (IRExpr) (CodexType) (SourceSpan)
+   | IrRecord (Text) (List IRFieldVal) (CodexType) (SourceSpan)
+   | IrFieldAccess (IRExpr) (Text) (CodexType) (SourceSpan)
+   | IrFork (IRExpr) (CodexType) (SourceSpan)
+   | IrAwait (IRExpr) (CodexType) (SourceSpan)
+   | IrTry (Integer) (List IRActStmt) (List IRActStmt) (List IRActStmt) (CodexType) (SourceSpan)
+   | IrFieldStore (IRExpr) (Text) (IRExpr) (CodexType) (SourceSpan)
+   | IrError (Text) (CodexType) (SourceSpan)
+
+  IRParam = record {
+   name : Text,
+   type-val : CodexType,
+   span : SourceSpan
+  }
+
+  IRBranch = record {
+   pattern : IRPat,
+   body : IRExpr,
+   guard : IRExpr,
+   span : SourceSpan,
+   alt-group : Integer
+  }
+
+  IRPat =
+   | IrVarPat (Text) (CodexType) (SourceSpan)
+   | IrLitPat (Text) (CodexType) (SourceSpan)
+   | IrCtorPat (Text) (List IRPat) (CodexType) (SourceSpan)
+   | IrWildPat (SourceSpan)
+   | IrVecPat (List IRPat) (CodexType) (SourceSpan)
+
+  IRActStmt =
+   | IrDoBind (Text) (CodexType) (IRExpr) (SourceSpan)
+   | IrDoExec (IRExpr) (SourceSpan)
+
+  ir-act-stmt-expr : IRActStmt -> IRExpr
+  ir-act-stmt-expr (s) =
+   when s
+    is IrDoBind (n) (t) (v) (sp) ->
+     let result = v
+     in result
+    is IrDoExec (v) (sp) -> v
+
+  IRHandleClause = record {
+   op-name : Text,
+   params : List Text,
+   resume-name : Text,
+   body : IRExpr,
+   span : SourceSpan
+  }
+
+  IRFieldVal = record {
+   name : Text,
+   value : IRExpr,
+   span : SourceSpan
+  }
+
+Section: IR Definitions
+  IRDef = record {
+   name : Text,
+   params : List IRParam,
+   type-val : CodexType,
+   body : IRExpr,
+   chapter-slug : Text,
+   is-punctual : Boolean,
+   wcet-budget : Integer,
+   span : SourceSpan
+  }
+
+  IRChapter = record {
+   name : Name,
+   defs : List IRDef,
+   effect-op-names : List Text,
+   span : SourceSpan
+  }
+
+  IRTextMeta = record {
+   chapter-title : Text,
+   prose : Text,
+   section-titles : List Text,
+   ctor-names : List Text
+  }
+
+Section: IR Expression Type
+  ir-expr-type : IRExpr -> CodexType
+  ir-expr-type (e) =
+   when e
+    is IrIntLit (v) (s) -> int-ty-default
+    is IrNumLit (v) (s) -> RealTy
+    is IrTextLit (v) (s) -> TextTy
+    is IrBoolLit (v) (s) -> BooleanTy
+    is IrCharLit (v) (s) -> CharTy
+    is IrName (n) (t) (s) | IrBinary (op) (l) (r) (t) (s) -> t
+    is IrNegate (x) (s) -> ir-expr-type x
+    is IrIf (c) (th) (el) (t) (s) -> t
+    is IrLet (n) (t) (v) (b) (s) -> ir-expr-type b
+    is IrApply (f) (a) (t) (s) | IrLambda (ps) (b) (t) (s) -> t
+    is IrList (es) (t) (s) -> ListTy t
+    is IrMatch (sc) (bs) (t) (s) | IrAct (ss) (t) (s) | IrHandle (eff) (h) (cs) (t) (s) | IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) | IrRecord (n) (fs) (t) (s) | IrFieldAccess (r) (f) (t) (s) | IrFork (body) (t) (s) | IrAwait (task) (t) (s) | IrTry (max) (body) (fb) (fail) (t) (s) | IrFieldStore (r) (f) (v) (t) (s) | IrError (m) (t) (s) -> t
+
+  set-ir-expr-type : IRExpr, CodexType -> IRExpr
+  set-ir-expr-type (e) (new-ty) =
+   when e
+    is IrName (n) (t) (s) -> deck-record (IrName n new-ty s)
+    is IrApply (f) (a) (t) (s) -> deck-record (IrApply f a new-ty s)
+    is IrLet (n) (t) (v) (b) (s) -> deck-record (IrLet n new-ty v b s)
+    is IrIf (c) (th) (el) (t) (s) -> deck-record (IrIf c th el new-ty s)
+    is IrMatch (sc) (bs) (t) (s) -> deck-record (IrMatch sc bs new-ty s)
+    is IrAct (ss) (t) (s) -> deck-record (IrAct ss new-ty s)
+    is IrRecord (n) (fs) (t) (s) -> deck-record (IrRecord n fs new-ty s)
+    is IrFieldAccess (r) (f) (t) (s) -> deck-record (IrFieldAccess r f new-ty s)
+    is otherwise -> e
+
+  ir-expr-span : IRExpr -> SourceSpan
+  ir-expr-span (e) =
+   when e
+    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) | IrName (n) (t) (s) | IrBinary (op) (l) (r) (t) (s) | IrNegate (x) (s) | IrIf (c) (th) (el) (t) (s) | IrLet (n) (t) (v) (b) (s) | IrApply (f) (a) (t) (s) | IrLambda (ps) (b) (t) (s) | IrList (es) (t) (s) | IrMatch (sc) (bs) (t) (s) | IrAct (ss) (t) (s) | IrHandle (eff) (h) (cs) (t) (s) | IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) | IrRecord (n) (fs) (t) (s) | IrFieldAccess (r) (f) (t) (s) | IrFork (body) (t) (s) | IrAwait (task) (t) (s) | IrTry (max) (body) (fb) (fail) (t) (s) | IrFieldStore (r) (f) (v) (t) (s) | IrError (m) (t) (s) -> s
+
+Page 1

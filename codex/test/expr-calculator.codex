@@ -1,0 +1,133 @@
+Chapter: Expr Calculator
+  cites Codex chapter Characters
+  cites Codex chapter Text
+
+Section: Definitions
+
+  Expr =
+    | Lit (Integer)
+    | Add (Expr) (Expr)
+    | Sub (Expr) (Expr)
+    | Mul (Expr) (Expr)
+    | Div (Expr) (Expr)
+
+  ParseResult = record { expr : Expr, pos : Integer }
+
+  skip-ws : Text, Integer -> Integer
+  skip-ws (input) (pos) =
+    if pos >= text-length input then pos
+    else if is-whitespace (char-at input pos) then skip-ws input (pos + 1)
+    else pos
+
+  collect-digits : Text, Integer, Integer, Integer -> Integer
+  collect-digits (input) (pos) (len) (acc) =
+    if pos >= len then acc
+    else if is-digit (char-at input pos)
+      then let d = char-code (char-at input pos) - 3
+        in collect-digits input (pos + 1) len (acc * 10 + d)
+      else acc
+
+  digit-count : Text, Integer, Integer -> Integer
+  digit-count (input) (pos) (len) =
+    if pos >= len then 0
+    else if is-digit (char-at input pos) then 1 + digit-count input (pos + 1) len
+    else 0
+
+  parse-atom : Text, Integer -> ParseResult
+  parse-atom (input) (start) =
+    let pos = skip-ws input start
+    in let len = text-length input
+    in if pos >= len then ParseResult { expr = Lit 0, pos = pos }
+    else if char-to-text (char-at input pos) == "("
+      then let inner = parse-additive input (pos + 1)
+        in let after = skip-ws input inner.pos
+        in if after < len
+          then ParseResult { expr = inner.expr, pos = after + 1 }
+          else ParseResult { expr = inner.expr, pos = after }
+      else let digits = digit-count input pos len
+        in if digits > 0
+          then let value = collect-digits input pos len 0
+            in ParseResult { expr = Lit value, pos = pos + digits }
+          else ParseResult { expr = Lit 0, pos = pos }
+
+  parse-multiplicative : Text, Integer -> ParseResult
+  parse-multiplicative (input) (start) =
+    let left = parse-atom input start
+    in continue-multiplicative input left
+
+  continue-multiplicative : Text, ParseResult -> ParseResult
+  continue-multiplicative (input) (current) =
+    let pos = skip-ws input current.pos
+    in let len = text-length input
+    in if pos >= len then current
+    else if char-to-text (char-at input pos) == "*"
+      then let right = parse-atom input (pos + 1)
+        in continue-multiplicative input (ParseResult { expr = Mul current.expr right.expr, pos = right.pos })
+      else if char-to-text (char-at input pos) == "/"
+        then let right = parse-atom input (pos + 1)
+          in continue-multiplicative input (ParseResult { expr = Div current.expr right.expr, pos = right.pos })
+        else current
+
+  parse-additive : Text, Integer -> ParseResult
+  parse-additive (input) (start) =
+    let left = parse-multiplicative input start
+    in continue-additive input left
+
+  continue-additive : Text, ParseResult -> ParseResult
+  continue-additive (input) (current) =
+    let pos = skip-ws input current.pos
+    in let len = text-length input
+    in if pos >= len then current
+    else if char-to-text (char-at input pos) == "+"
+      then let right = parse-multiplicative input (pos + 1)
+        in continue-additive input (ParseResult { expr = Add current.expr right.expr, pos = right.pos })
+      else if char-to-text (char-at input pos) == "-"
+        then let right = parse-multiplicative input (pos + 1)
+          in continue-additive input (ParseResult { expr = Sub current.expr right.expr, pos = right.pos })
+        else current
+
+  parse : Text -> Expr
+  parse (input) = (parse-additive input 0).expr
+
+  eval : Expr -> Integer
+  eval (e) = when e
+    is Lit (n) -> n
+    is Add (a) (b) -> eval a + eval b
+    is Sub (a) (b) -> eval a - eval b
+    is Mul (a) (b) -> eval a * eval b
+    is Div (a) (b) -> eval a / eval b
+
+  format : Expr -> Text
+  format (e) = when e
+    is Lit (n) -> show n
+    is Add (a) (b) -> "(" & format a & " + " & format b & ")"
+    is Sub (a) (b) -> "(" & format a & " - " & format b & ")"
+    is Mul (a) (b) -> "(" & format a & " * " & format b & ")"
+    is Div (a) (b) -> "(" & format a & " / " & format b & ")"
+
+  test-expr : Text, Integer -> Text
+  test-expr (input) (expected) =
+    let tree = parse input
+    in let result = eval tree
+    in let status = if result == expected then "PASS" else "FAIL"
+    in status & ": " & input & " = " & show result & " (expected " & show expected & ")  tree: " & format tree
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== Expression Calculator ==="
+    print-line-uni ""
+    print-line-uni (test-expr "42" 42)
+    print-line-uni (test-expr "2 + 3" 5)
+    print-line-uni (test-expr "10 - 4" 6)
+    print-line-uni (test-expr "3 * 7" 21)
+    print-line-uni (test-expr "100 / 5" 20)
+    print-line-uni (test-expr "2 + 3 * 4" 14)
+    print-line-uni (test-expr "10 - 2 * 3" 4)
+    print-line-uni (test-expr "(2 + 3) * 4" 20)
+    print-line-uni (test-expr "1 + 2 + 3 + 4" 10)
+    print-line-uni (test-expr "2 * 3 + 4 * 5" 26)
+    print-line-uni ""
+    print-line-uni "All PASS = compiler correctly compiles a recursive descent parser."
+    print-line-uni "QED: not a quine."
+  end
+
+Page 1

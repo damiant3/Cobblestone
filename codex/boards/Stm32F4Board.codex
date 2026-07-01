@@ -1,0 +1,378 @@
+Chapter: Stm32F4Board
+  cites Foreword chapter Board
+  cites Foreword chapter Units (Duration, Frequency)
+
+ Board support for STM32F407 (ARM Cortex-M4F @ 168 MHz).
+ Register addresses from RM0090 (STM32F405/F407 reference manual).
+ Flash at 0x08000000, SRAM at 0x20000000, peripherals at 0x40000000+.
+
+ GPIO, UART, SPI, and I2C drivers using MMIO primitives from the
+ Board HAL. Each peripheral is initialized, used, and released
+ through explicit function calls.
+
+Section: Core Addresses
+
+  stm32-flash-base : Integer = #08000000
+  stm32-sram-base : Integer = #20000000
+  stm32-sram-size : Integer = #30000
+  stm32-periph-base : Integer = #40000000
+
+Section: RCC (Reset and Clock Control)
+
+  stm32-rcc-base : Integer = #40023800
+  stm32-rcc-ahb1enr : Integer = #40023830
+  stm32-rcc-apb1enr : Integer = #40023840
+  stm32-rcc-apb2enr : Integer = #40023844
+
+  stm32-rcc-gpioa-en : Integer = 1
+  stm32-rcc-gpiob-en : Integer = 2
+  stm32-rcc-gpioc-en : Integer = 4
+  stm32-rcc-gpiod-en : Integer = 8
+
+  stm32-rcc-usart2-en : Integer = #20000
+  stm32-rcc-usart1-en : Integer = #10
+  stm32-rcc-spi1-en : Integer = #1000
+  stm32-rcc-i2c1-en : Integer = #200000
+
+Section: GPIO Registers
+
+  stm32-gpioa-base : Integer = #40020000
+  stm32-gpiob-base : Integer = #40020400
+  stm32-gpioc-base : Integer = #40020800
+  stm32-gpiod-base : Integer = #40020C00
+
+  stm32-gpio-moder-off : Integer = #00
+  stm32-gpio-otyper-off : Integer = #04
+  stm32-gpio-ospeedr-off : Integer = #08
+  stm32-gpio-pupdr-off : Integer = #0C
+  stm32-gpio-idr-off : Integer = #10
+  stm32-gpio-odr-off : Integer = #14
+  stm32-gpio-bsrr-off : Integer = #18
+  stm32-gpio-afrl-off : Integer = #20
+  stm32-gpio-afrh-off : Integer = #24
+
+Section: GPIO Driver
+
+  stm32-gpio-enable-port : Integer -> Integer
+  stm32-gpio-enable-port (port-bit) =
+   let ahb1 = mmio-read-32 stm32-rcc-ahb1enr
+   in mmio-write-32 stm32-rcc-ahb1enr (bit-or ahb1 port-bit)
+
+  stm32-gpio-set-mode : Integer, Integer, Integer -> Integer
+  stm32-gpio-set-mode (gpio-base) (pin) (mode) =
+   let addr = gpio-base + stm32-gpio-moder-off
+   in let moder = mmio-read-32 addr
+   in let shift = pin * 2
+   in let cleared = bit-and moder (bit-xor (bit-shl 3 shift) (0 - 1))
+   in mmio-write-32 addr (bit-or cleared (bit-shl mode shift))
+
+  stm32-gpio-set-output : Integer, Integer -> Integer
+  stm32-gpio-set-output (gpio-base) (pin) =
+   stm32-gpio-set-mode gpio-base pin 1
+
+  stm32-gpio-set-input : Integer, Integer -> Integer
+  stm32-gpio-set-input (gpio-base) (pin) =
+   stm32-gpio-set-mode gpio-base pin 0
+
+  stm32-gpio-set-alternate : Integer, Integer, Integer -> Integer
+  stm32-gpio-set-alternate (gpio-base) (pin) (af) =
+   let m = stm32-gpio-set-mode gpio-base pin 2
+   in let af-reg = if pin < 8 then gpio-base + stm32-gpio-afrl-off else gpio-base + stm32-gpio-afrh-off
+   in let af-pin = if pin < 8 then pin else pin - 8
+   in let shift = af-pin * 4
+   in let val = mmio-read-32 af-reg
+   in let cleared = bit-and val (bit-xor (bit-shl #F shift) (0 - 1))
+   in mmio-write-32 af-reg (bit-or cleared (bit-shl af shift))
+
+  stm32-gpio-set-pull : Integer, Integer, Integer -> Integer
+  stm32-gpio-set-pull (gpio-base) (pin) (pull) =
+   let addr = gpio-base + stm32-gpio-pupdr-off
+   in let val = mmio-read-32 addr
+   in let shift = pin * 2
+   in let cleared = bit-and val (bit-xor (bit-shl 3 shift) (0 - 1))
+   in mmio-write-32 addr (bit-or cleared (bit-shl pull shift))
+
+  stm32-gpio-set-speed : Integer, Integer, Integer -> Integer
+  stm32-gpio-set-speed (gpio-base) (pin) (speed) =
+   let addr = gpio-base + stm32-gpio-ospeedr-off
+   in let val = mmio-read-32 addr
+   in let shift = pin * 2
+   in let cleared = bit-and val (bit-xor (bit-shl 3 shift) (0 - 1))
+   in mmio-write-32 addr (bit-or cleared (bit-shl speed shift))
+
+  gpio-set : Integer, Integer -> Integer
+  gpio-set (bsrr-addr) (pin) =
+   mmio-write-32 bsrr-addr (bit-shl 1 pin)
+
+  gpio-clear : Integer, Integer -> Integer
+  gpio-clear (bsrr-addr) (pin) =
+   mmio-write-32 bsrr-addr (bit-shl 1 (pin + 16))
+
+  stm32-gpio-write : Integer, Integer, Boolean -> Integer
+  stm32-gpio-write (gpio-base) (pin) (high) =
+   let bsrr = gpio-base + stm32-gpio-bsrr-off
+   in if high then gpio-set bsrr pin else gpio-clear bsrr pin
+
+  stm32-gpio-read : Integer, Integer -> Boolean
+  stm32-gpio-read (gpio-base) (pin) =
+   let idr = mmio-read-32 (gpio-base + stm32-gpio-idr-off)
+   in bit-and (bit-shru idr pin) 1 == 1
+
+  stm32-gpio-toggle : Integer, Integer -> Integer
+  stm32-gpio-toggle (gpio-base) (pin) =
+   let odr = mmio-read-32 (gpio-base + stm32-gpio-odr-off)
+   in let bit = bit-and (bit-shru odr pin) 1
+   in if bit == 1 then gpio-clear (gpio-base + stm32-gpio-bsrr-off) pin
+      else gpio-set (gpio-base + stm32-gpio-bsrr-off) pin
+
+Section: USART Registers
+
+  stm32-usart1-base : Integer = #40011000
+  stm32-usart2-base : Integer = #40004400
+  stm32-usart-sr-off : Integer = #00
+  stm32-usart-dr-off : Integer = #04
+  stm32-usart-brr-off : Integer = #08
+  stm32-usart-cr1-off : Integer = #0C
+
+  stm32-usart-sr-txe : Integer = #80
+  stm32-usart-sr-rxne : Integer = #20
+  stm32-usart-cr1-ue : Integer = #2000
+  stm32-usart-cr1-te : Integer = #08
+  stm32-usart-cr1-re : Integer = #04
+
+Section: UART Driver
+
+  stm32-uart2-init : Frequency -> Integer
+  stm32-uart2-init (baud) =
+   let en-port = stm32-gpio-enable-port stm32-rcc-gpioa-en
+   in let en-usart = let apb1 = mmio-read-32 stm32-rcc-apb1enr in mmio-write-32 stm32-rcc-apb1enr (bit-or apb1 stm32-rcc-usart2-en)
+   in let af-tx = stm32-gpio-set-alternate stm32-gpioa-base 2 7
+   in let af-rx = stm32-gpio-set-alternate stm32-gpioa-base 3 7
+   in let brr = 16000000 / baud
+   in let w-brr = mmio-write-32 (stm32-usart2-base + stm32-usart-brr-off) brr
+   in mmio-write-32 (stm32-usart2-base + stm32-usart-cr1-off) (bit-or (bit-or stm32-usart-cr1-ue stm32-usart-cr1-te) stm32-usart-cr1-re)
+
+  stm32-uart-tx-ready : Integer -> Boolean
+  stm32-uart-tx-ready (usart-base) =
+   bit-and (mmio-read-32 (usart-base + stm32-usart-sr-off)) stm32-usart-sr-txe > 0
+
+  stm32-uart-rx-ready : Integer -> Boolean
+  stm32-uart-rx-ready (usart-base) =
+   bit-and (mmio-read-32 (usart-base + stm32-usart-sr-off)) stm32-usart-sr-rxne > 0
+
+  stm32-uart-send-byte : Integer, Integer -> Integer
+  stm32-uart-send-byte (usart-base) (byte) =
+   let w = stm32-uart-wait-tx usart-base 10000
+   in mmio-write-32 (usart-base + stm32-usart-dr-off) (bit-and byte #FF)
+
+  stm32-uart-wait-tx : Integer, Integer -> Integer
+  stm32-uart-wait-tx (usart-base) (fuel) =
+   if fuel <= 0 then 0
+   else if stm32-uart-tx-ready usart-base then 1
+   else stm32-uart-wait-tx usart-base (fuel - 1)
+
+  stm32-uart-recv-byte : Integer -> Integer
+  stm32-uart-recv-byte (usart-base) =
+   let w = stm32-uart-wait-rx usart-base 100000
+   in if w == 0 then 0 - 1
+   else bit-and (mmio-read-32 (usart-base + stm32-usart-dr-off)) #FF
+
+  stm32-uart-wait-rx : Integer, Integer -> Integer
+  stm32-uart-wait-rx (usart-base) (fuel) =
+   if fuel <= 0 then 0
+   else if stm32-uart-rx-ready usart-base then 1
+   else stm32-uart-wait-rx usart-base (fuel - 1)
+
+  stm32-uart-send-text : Integer, Text, Integer, Integer -> Integer
+  stm32-uart-send-text (usart-base) (s) (i) (len) =
+   if i >= len then 0
+   else let b = stm32-uart-send-byte usart-base (char-code (char-at s i))
+     in stm32-uart-send-text usart-base s (i + 1) len
+
+  stm32-uart-print : Integer, Text -> Integer
+  stm32-uart-print (usart-base) (s) =
+   stm32-uart-send-text usart-base s 0 (text-length s)
+
+  stm32-uart-println : Integer, Text -> Integer
+  stm32-uart-println (usart-base) (s) =
+   let p = stm32-uart-print usart-base s
+   in let cr = stm32-uart-send-byte usart-base 13
+   in stm32-uart-send-byte usart-base 10
+
+Section: SPI Registers
+
+  stm32-spi1-base : Integer = #40013000
+  stm32-spi-cr1-off : Integer = #00
+  stm32-spi-cr2-off : Integer = #04
+  stm32-spi-sr-off : Integer = #08
+  stm32-spi-dr-off : Integer = #0C
+
+  stm32-spi-cr1-spe : Integer = #40
+  stm32-spi-cr1-mstr : Integer = #04
+  stm32-spi-cr1-br-div8 : Integer = #10
+  stm32-spi-sr-txe : Integer = #02
+  stm32-spi-sr-rxne : Integer = #01
+  stm32-spi-sr-bsy : Integer = #80
+
+Section: SPI Driver
+
+  stm32-spi1-init : Integer
+  stm32-spi1-init =
+   let en-port = stm32-gpio-enable-port stm32-rcc-gpioa-en
+   in let en-spi = let apb2 = mmio-read-32 stm32-rcc-apb2enr in mmio-write-32 stm32-rcc-apb2enr (bit-or apb2 stm32-rcc-spi1-en)
+   in let af-sck = stm32-gpio-set-alternate stm32-gpioa-base 5 5
+   in let af-miso = stm32-gpio-set-alternate stm32-gpioa-base 6 5
+   in let af-mosi = stm32-gpio-set-alternate stm32-gpioa-base 7 5
+   in mmio-write-32 (stm32-spi1-base + stm32-spi-cr1-off) (bit-or (bit-or stm32-spi-cr1-mstr stm32-spi-cr1-br-div8) stm32-spi-cr1-spe)
+
+  stm32-spi-transfer : Integer, Integer -> Integer
+  stm32-spi-transfer (spi-base) (byte) =
+   let w = stm32-spi-wait-tx spi-base 10000
+   in let wr = mmio-write-32 (spi-base + stm32-spi-dr-off) (bit-and byte #FF)
+   in let r = stm32-spi-wait-rx spi-base 10000
+   in bit-and (mmio-read-32 (spi-base + stm32-spi-dr-off)) #FF
+
+  stm32-spi-wait-tx : Integer, Integer -> Integer
+  stm32-spi-wait-tx (spi-base) (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 (spi-base + stm32-spi-sr-off)) stm32-spi-sr-txe > 0 then 1
+   else stm32-spi-wait-tx spi-base (fuel - 1)
+
+  stm32-spi-wait-rx : Integer, Integer -> Integer
+  stm32-spi-wait-rx (spi-base) (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 (spi-base + stm32-spi-sr-off)) stm32-spi-sr-rxne > 0 then 1
+   else stm32-spi-wait-rx spi-base (fuel - 1)
+
+  stm32-spi-busy : Integer -> Boolean
+  stm32-spi-busy (spi-base) =
+   bit-and (mmio-read-32 (spi-base + stm32-spi-sr-off)) stm32-spi-sr-bsy > 0
+
+Section: I2C Registers
+
+  stm32-i2c1-base : Integer = #40005400
+  stm32-i2c-cr1-off : Integer = #00
+  stm32-i2c-cr2-off : Integer = #04
+  stm32-i2c-oar1-off : Integer = #08
+  stm32-i2c-dr-off : Integer = #10
+  stm32-i2c-sr1-off : Integer = #14
+  stm32-i2c-sr2-off : Integer = #18
+  stm32-i2c-ccr-off : Integer = #1C
+  stm32-i2c-trise-off : Integer = #20
+
+  stm32-i2c-cr1-pe : Integer = 1
+  stm32-i2c-cr1-start : Integer = #100
+  stm32-i2c-cr1-stop : Integer = #200
+  stm32-i2c-cr1-ack : Integer = #400
+  stm32-i2c-cr1-swrst : Integer = #8000
+  stm32-i2c-sr1-sb : Integer = 1
+  stm32-i2c-sr1-addr : Integer = 2
+  stm32-i2c-sr1-btf : Integer = 4
+  stm32-i2c-sr1-txe : Integer = #80
+  stm32-i2c-sr1-rxne : Integer = #40
+
+Section: I2C Driver
+
+  stm32-i2c1-init : Integer
+  stm32-i2c1-init =
+   let en-port = stm32-gpio-enable-port stm32-rcc-gpiob-en
+   in let en-i2c = let apb1 = mmio-read-32 stm32-rcc-apb1enr in mmio-write-32 stm32-rcc-apb1enr (bit-or apb1 stm32-rcc-i2c1-en)
+   in let af-scl = stm32-gpio-set-alternate stm32-gpiob-base 6 4
+   in let af-sda = stm32-gpio-set-alternate stm32-gpiob-base 7 4
+   in let rst = mmio-write-32 (stm32-i2c1-base + stm32-i2c-cr1-off) stm32-i2c-cr1-swrst
+   in let clr = mmio-write-32 (stm32-i2c1-base + stm32-i2c-cr1-off) 0
+   in let freq = mmio-write-32 (stm32-i2c1-base + stm32-i2c-cr2-off) 16
+   in let ccr = mmio-write-32 (stm32-i2c1-base + stm32-i2c-ccr-off) 80
+   in let trise = mmio-write-32 (stm32-i2c1-base + stm32-i2c-trise-off) 17
+   in mmio-write-32 (stm32-i2c1-base + stm32-i2c-cr1-off) stm32-i2c-cr1-pe
+
+  stm32-i2c-start : Integer -> Integer
+  stm32-i2c-start (i2c-base) =
+   let cr1 = mmio-read-32 (i2c-base + stm32-i2c-cr1-off)
+   in let w = mmio-write-32 (i2c-base + stm32-i2c-cr1-off) (bit-or cr1 stm32-i2c-cr1-start)
+   in stm32-i2c-wait-flag i2c-base stm32-i2c-sr1-off stm32-i2c-sr1-sb 10000
+
+  stm32-i2c-stop : Integer -> Integer
+  stm32-i2c-stop (i2c-base) =
+   let cr1 = mmio-read-32 (i2c-base + stm32-i2c-cr1-off)
+   in mmio-write-32 (i2c-base + stm32-i2c-cr1-off) (bit-or cr1 stm32-i2c-cr1-stop)
+
+  stm32-i2c-send-addr : Integer, Integer, Boolean -> Integer
+  stm32-i2c-send-addr (i2c-base) (addr) (read) =
+   let byte = if read then bit-or (bit-shl addr 1) 1 else bit-shl addr 1
+   in let w = mmio-write-32 (i2c-base + stm32-i2c-dr-off) byte
+   in let f = stm32-i2c-wait-flag i2c-base stm32-i2c-sr1-off stm32-i2c-sr1-addr 10000
+   in let clear-addr = mmio-read-32 (i2c-base + stm32-i2c-sr2-off)
+   in f
+
+  stm32-i2c-write-byte : Integer, Integer -> Integer
+  stm32-i2c-write-byte (i2c-base) (byte) =
+   let f = stm32-i2c-wait-flag i2c-base stm32-i2c-sr1-off stm32-i2c-sr1-txe 10000
+   in mmio-write-32 (i2c-base + stm32-i2c-dr-off) (bit-and byte #FF)
+
+  stm32-i2c-read-byte : Integer, Boolean -> Integer
+  stm32-i2c-read-byte (i2c-base) (ack) =
+   let cr1 = mmio-read-32 (i2c-base + stm32-i2c-cr1-off)
+   in let set-ack = if ack then mmio-write-32 (i2c-base + stm32-i2c-cr1-off) (bit-or cr1 stm32-i2c-cr1-ack)
+        else mmio-write-32 (i2c-base + stm32-i2c-cr1-off) (bit-and cr1 (bit-xor stm32-i2c-cr1-ack (0 - 1)))
+   in let f = stm32-i2c-wait-flag i2c-base stm32-i2c-sr1-off stm32-i2c-sr1-rxne 10000
+   in bit-and (mmio-read-32 (i2c-base + stm32-i2c-dr-off)) #FF
+
+  stm32-i2c-wait-flag : Integer, Integer, Integer, Integer -> Integer
+  stm32-i2c-wait-flag (i2c-base) (reg-off) (flag) (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 (i2c-base + reg-off)) flag > 0 then 1
+   else stm32-i2c-wait-flag i2c-base reg-off flag (fuel - 1)
+
+  stm32-i2c-write-reg : Integer, Integer, Integer, Integer -> Integer
+  stm32-i2c-write-reg (i2c-base) (dev-addr) (reg) (value) =
+   let s = stm32-i2c-start i2c-base
+   in let a = stm32-i2c-send-addr i2c-base dev-addr False
+   in let r = stm32-i2c-write-byte i2c-base reg
+   in let v = stm32-i2c-write-byte i2c-base value
+   in stm32-i2c-stop i2c-base
+
+  stm32-i2c-read-reg : Integer, Integer, Integer -> Integer
+  stm32-i2c-read-reg (i2c-base) (dev-addr) (reg) =
+   let s1 = stm32-i2c-start i2c-base
+   in let a1 = stm32-i2c-send-addr i2c-base dev-addr False
+   in let r = stm32-i2c-write-byte i2c-base reg
+   in let s2 = stm32-i2c-start i2c-base
+   in let a2 = stm32-i2c-send-addr i2c-base dev-addr True
+   in let val = stm32-i2c-read-byte i2c-base False
+   in let stop = stm32-i2c-stop i2c-base
+   in val
+
+Section: LED (Discovery Board: PD12-PD15)
+
+  stm32-led-green-pin : Integer = 12
+  stm32-led-orange-pin : Integer = 13
+  stm32-led-red-pin : Integer = 14
+  stm32-led-blue-pin : Integer = 15
+  stm32-led-gpio-base : Integer = stm32-gpiod-base
+
+  stm32-led-init : Integer
+  stm32-led-init =
+   let en = stm32-gpio-enable-port stm32-rcc-gpiod-en
+   in let g = stm32-gpio-set-output stm32-led-gpio-base stm32-led-green-pin
+   in let o = stm32-gpio-set-output stm32-led-gpio-base stm32-led-orange-pin
+   in let r = stm32-gpio-set-output stm32-led-gpio-base stm32-led-red-pin
+   in stm32-gpio-set-output stm32-led-gpio-base stm32-led-blue-pin
+
+  stm32-led-on : Integer -> Integer
+  stm32-led-on (pin) = gpio-set (stm32-led-gpio-base + stm32-gpio-bsrr-off) pin
+
+  stm32-led-off : Integer -> Integer
+  stm32-led-off (pin) = gpio-clear (stm32-led-gpio-base + stm32-gpio-bsrr-off) pin
+
+Section: Delay
+
+  stm32-delay-loops : Integer, Integer -> Integer
+  stm32-delay-loops (n) (i) =
+   if i >= n then 0
+   else stm32-delay-loops n (i + 1)
+
+  stm32-delay-ms : Duration -> Integer
+  stm32-delay-ms (ms) = stm32-delay-loops (ms * 4000) 0
+
+Page 1

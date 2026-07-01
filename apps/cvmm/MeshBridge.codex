@@ -1,0 +1,182 @@
+Chapter: MeshBridge
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter FleetManager
+  cites Cvmm chapter ServiceManager
+  cites Net chapter GroupMembership
+  cites Net chapter HealthChecker
+  cites Foreword chapter Maybe
+
+ Bridge between the OS mesh layer (GroupMembership, HealthChecker) and
+ the CVMM desktop (FleetManager, ServiceManager). Converts mesh
+ GroupMembers to FleetNodes for the fleet dashboard, and feeds health
+ check results into service states.
+
+Section: Member to Fleet Node
+
+  member-status-to-resource : MemberStatus -> ResourceStatus
+  member-status-to-resource (ms) = when ms
+    is MsAlive -> StatusOnline
+    is MsSuspect (since) -> StatusDegraded
+    is MsDead -> StatusOffline
+    is MsLeaving -> StatusBusy
+
+  member-role-to-kind : MemberRole -> DeviceKind
+  member-role-to-kind (r) = when r
+    is RoleLeader -> DevServer
+    is RoleMember -> DevPhysicalPC
+    is RoleObserver -> DevEmbedded
+
+  member-to-fleet-node : GroupMember -> FleetNode
+  member-to-fleet-node (m) =
+    let dev = DeviceId {
+      dev-uuid = m.gm-id,
+      dev-name = m.gm-name,
+      dev-kind = member-role-to-kind (m.gm-role)
+    }
+    in let ep = Endpoint {
+      ep-host = m.gm-address,
+      ep-port = m.gm-port,
+      ep-protocol = ProtoTcp
+    }
+    in FleetNode {
+      fn-device = dev,
+      fn-endpoint = ep,
+      fn-status = member-status-to-resource (m.gm-status),
+      fn-uptime = Uptime { ut-seconds = 0 },
+      fn-cpu-percent = 0,
+      fn-mem-used = bytes 0,
+      fn-mem-total = bytes 0,
+      fn-disk-used = bytes 0,
+      fn-disk-total = bytes 0,
+      fn-os-version = "",
+      fn-compiler-version = "",
+      fn-capabilities = [],
+      fn-cap-count = 0,
+      fn-group = "mesh",
+      fn-tags = [],
+      fn-tag-count = 0,
+      fn-last-seen = m.gm-last-heartbeat,
+      fn-latency-ms = 0,
+      fn-services = m.gm-service-count,
+      fn-managed-servers = 0
+    }
+
+Section: Group Sync
+
+  mesh-sync-fleet : GroupState, FleetManagerState -> FleetManagerState
+  mesh-sync-fleet (gs) (fm) =
+    let cleared = FleetManagerState {
+      fm-nodes = [],
+      fm-node-count = 0,
+      fm-groups = fm.fm-groups,
+      fm-group-count = fm.fm-group-count,
+      fm-selected-node = fm.fm-selected-node,
+      fm-selected-group = fm.fm-selected-group,
+      fm-filter = fm.fm-filter,
+      fm-discovery-active = fm.fm-discovery-active
+    }
+    in mesh-sync-loop (gs.gs-members) cleared 0 (gs.gs-member-count)
+
+  mesh-sync-loop : List GroupMember, FleetManagerState, Integer, Integer -> FleetManagerState
+  mesh-sync-loop (members) (fm) (i) (n) =
+    if i >= n then fm
+    else let m = list-at members i
+    in if member-is-reachable m then
+      mesh-sync-loop members (fm-add-node fm (member-to-fleet-node m)) (i + 1) n
+    else mesh-sync-loop members fm (i + 1) n
+
+  mesh-leader-uuid : GroupState -> Text
+  mesh-leader-uuid (gs) = gs.gs-leader-id
+
+Section: Health Check to Service State
+
+  health-state-to-svc : HealthState -> ServiceState
+  health-state-to-svc (hs) = when hs
+    is HsHealthy -> SvcRunning
+    is HsDegraded (since) -> SvcRunning
+    is HsUnhealthy (since) -> SvcFailed "health check unhealthy"
+
+  hcs-sync-services : HealthCheckerState, ServiceManagerState -> ServiceManagerState
+  hcs-sync-services (hcs) (sm) =
+    hcs-sync-loop (hcs.hcs-checks) sm 0 (hcs.hcs-count)
+
+  hcs-sync-loop : List HealthCheck, ServiceManagerState, Integer, Integer -> ServiceManagerState
+  hcs-sync-loop (checks) (sm) (i) (n) =
+    if i >= n then sm
+    else let hc = list-at checks i
+    in let svc-id = hc.hck-service
+    in let new-state = health-state-to-svc (hc.hck-state)
+    in hcs-sync-loop checks (sm-update-service sm svc-id new-state) (i + 1) n
+
+Section: Service Registration
+
+  mesh-register-services : GroupState, ServiceManagerState -> GroupState
+  mesh-register-services (gs) (sm) =
+    let svcs = sm-visible sm
+    in mesh-reg-loop gs svcs 0 (list-length svcs)
+
+  mesh-reg-loop : GroupState, List ServiceEntry, Integer, Integer -> GroupState
+  mesh-reg-loop (gs) (svcs) (i) (n) =
+    if i >= n then gs
+    else let svc = list-at svcs i
+    in let loc = svc-location-new (svc.svc-name) "1.0" (gs.gs-self-id) "" 0 SrPrimary
+    in mesh-reg-loop (mesh-add-service-location gs loc) svcs (i + 1) n
+
+  mesh-add-service-location : GroupState, ServiceLocation -> GroupState
+  mesh-add-service-location (gs) (loc) =
+    __record-set (__record-set gs "gs-services" (list-push (gs.gs-services) loc)) "gs-service-count" (gs.gs-service-count + 1)
+
+Section: Health Check Generation
+
+  mesh-create-checks-for-services : ServiceManagerState, HealthCheckerState -> HealthCheckerState
+  mesh-create-checks-for-services (sm) (hcs) =
+    mesh-gen-checks (sm.sm-services) hcs 0 (sm.sm-count)
+
+  mesh-gen-checks : List ServiceEntry, HealthCheckerState, Integer, Integer -> HealthCheckerState
+  mesh-gen-checks (svcs) (hcs) (i) (n) =
+    if i >= n then hcs
+    else let svc = list-at svcs i
+    in let existing = hcs-find-check hcs (svc.svc-id)
+    in when existing
+      is Just (hc) -> mesh-gen-checks svcs hcs (i + 1) n
+      is None ->
+        let new-check = health-check-new (svc.svc-id) (svc.svc-name) (svc.svc-id) HcPing
+        in mesh-gen-checks svcs (hcs-add-check hcs new-check) (i + 1) n
+
+Section: Summary
+
+  MeshSummary = record {
+    ms-members : Integer,
+    ms-alive : Integer,
+    ms-leader : Text,
+    ms-services : Integer,
+    ms-healthy-checks : Integer,
+    ms-total-checks : Integer
+  }
+
+  mesh-summary : GroupState, HealthCheckerState -> MeshSummary
+  mesh-summary (gs) (hcs) =
+    let alive = mesh-count-alive (gs.gs-members) 0 (gs.gs-member-count) 0
+    in MeshSummary {
+      ms-members = gs.gs-member-count,
+      ms-alive = alive,
+      ms-leader = gs.gs-leader-id,
+      ms-services = gs.gs-service-count,
+      ms-healthy-checks = hcs-healthy-count hcs,
+      ms-total-checks = hcs.hcs-count
+    }
+
+  mesh-count-alive : List GroupMember, Integer, Integer, Integer -> Integer
+  mesh-count-alive (members) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if member-is-alive (list-at members i) then 1 else 0
+    in mesh-count-alive members (i + 1) n (acc + delta)
+
+  mesh-summary-text : MeshSummary -> Text
+  mesh-summary-text (s) =
+    "Mesh: " & show (s.ms-alive) & "/" & show (s.ms-members) & " alive, "
+    & "leader=" & s.ms-leader & ", "
+    & show (s.ms-services) & " services, "
+    & show (s.ms-healthy-checks) & "/" & show (s.ms-total-checks) & " checks healthy"
+
+Page 1

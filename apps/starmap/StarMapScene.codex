@@ -1,0 +1,206 @@
+Chapter: StarMapScene
+  cites Starmap chapter CelestialTypes
+  cites Starmap chapter StarCatalog
+  cites Foreword chapter Maybe
+
+ Scene management for the star map. The camera exists in 3D parsec
+ space and can fly freely. Stars are rendered as screen-space points
+ whose size depends on apparent magnitude adjusted for camera distance.
+ Deep-sky objects get icons. The scene handles frustum culling, level
+ of detail, and selection.
+
+ Camera uses yaw/pitch/distance from a focus point. WASD moves the
+ focus, mouse orbits, scroll zooms. Double-click selects and flies
+ to an object.
+
+Section: Camera
+
+  StarCamera = record {
+    sc-focus-x : Integer,
+    sc-focus-y : Integer,
+    sc-focus-z : Integer,
+    sc-yaw : Integer,
+    sc-pitch : Integer,
+    sc-dist : Integer,
+    sc-fov : Integer,
+    sc-near : Integer,
+    sc-far : Integer,
+    sc-speed : Integer,
+    sc-target-name : Text
+  }
+
+  camera-new : StarCamera
+  camera-new = StarCamera {
+    sc-focus-x = 0, sc-focus-y = 0, sc-focus-z = 0,
+    sc-yaw = 0, sc-pitch = 0,
+    sc-dist = 100000,
+    sc-fov = 60,
+    sc-near = 1,
+    sc-far = 100000000000,
+    sc-speed = 10000,
+    sc-target-name = "Sol"
+  }
+
+  camera-orbit : StarCamera, Integer, Integer -> StarCamera
+  camera-orbit (cam) (dyaw) (dpitch) =
+    let new-pitch = cam.sc-pitch + dpitch
+    in let clamped = if new-pitch > 89000 then 89000
+      else if new-pitch < -89000 then -89000
+      else new-pitch
+    in __record-set (__record-set cam "sc-yaw" (cam.sc-yaw + dyaw)) "sc-pitch" clamped
+
+  camera-zoom : StarCamera, Integer -> StarCamera
+  camera-zoom (cam) (delta) =
+    let new-dist = cam.sc-dist + delta
+    in let clamped = if new-dist < 100 then 100
+      else if new-dist > 50000000000 then 50000000000
+      else new-dist
+    in __record-set cam "sc-dist" clamped
+
+  camera-move-forward : StarCamera, Integer -> StarCamera
+  camera-move-forward (cam) (amount) =
+    __record-set cam "sc-focus-z" (cam.sc-focus-z + amount)
+
+  camera-move-right : StarCamera, Integer -> StarCamera
+  camera-move-right (cam) (amount) =
+    __record-set cam "sc-focus-x" (cam.sc-focus-x + amount)
+
+  camera-move-up : StarCamera, Integer -> StarCamera
+  camera-move-up (cam) (amount) =
+    __record-set cam "sc-focus-y" (cam.sc-focus-y + amount)
+
+  camera-goto : StarCamera, Integer, Integer, Integer, Text -> StarCamera
+  camera-goto (cam) (x) (y) (z) (name) =
+    StarCamera {
+      sc-focus-x = x, sc-focus-y = y, sc-focus-z = z,
+      sc-yaw = cam.sc-yaw, sc-pitch = cam.sc-pitch,
+      sc-dist = cam.sc-dist,
+      sc-fov = cam.sc-fov,
+      sc-near = cam.sc-near, sc-far = cam.sc-far,
+      sc-speed = cam.sc-speed,
+      sc-target-name = name
+    }
+
+  camera-set-speed : StarCamera, Integer -> StarCamera
+  camera-set-speed (cam) (s) = __record-set cam "sc-speed" s
+
+Section: Visible Object (screen projection result)
+
+  VisibleObj = record {
+    vo-obj : CelestialObj,
+    vo-screen-x : Integer,
+    vo-screen-y : Integer,
+    vo-screen-size : Integer,
+    vo-dist-to-cam : Integer,
+    vo-color-rgb : Integer,
+    vo-selected : Boolean
+  }
+
+Section: Scene State
+
+  StarScene = record {
+    ss-camera : StarCamera,
+    ss-catalog : List CelestialObj,
+    ss-catalog-count : Integer,
+    ss-selected-id : Integer,
+    ss-hovered-id : Integer,
+    ss-show-labels : Boolean,
+    ss-show-grid : Boolean,
+    ss-show-constellations : Boolean,
+    ss-mag-limit : Integer,
+    ss-search-query : Text,
+    ss-info-panel-open : Boolean,
+    ss-time-scale : Integer,
+    ss-paused : Boolean
+  }
+
+  scene-new : StarScene
+  scene-new =
+    let all = catalog-stars
+    in StarScene {
+      ss-camera = camera-new,
+      ss-catalog = all,
+      ss-catalog-count = list-length all,
+      ss-selected-id = -1,
+      ss-hovered-id = -1,
+      ss-show-labels = True,
+      ss-show-grid = True,
+      ss-show-constellations = True,
+      ss-mag-limit = 6000,
+      ss-search-query = "",
+      ss-info-panel-open = False,
+      ss-time-scale = 1,
+      ss-paused = False
+    }
+
+  scene-add-objects : StarScene, List CelestialObj -> StarScene
+  scene-add-objects (ss) (objs) =
+    let merged = scene-append-list (ss.ss-catalog) objs 0 (list-length objs)
+    in __record-set (__record-set ss "ss-catalog" merged) "ss-catalog-count" (list-length merged)
+
+  scene-append-list : List CelestialObj, List CelestialObj, Integer, Integer -> List CelestialObj
+  scene-append-list (base) (add) (i) (n) =
+    if i >= n then base
+    else scene-append-list (list-push base (list-at add i)) add (i + 1) n
+
+  scene-select : StarScene, Integer -> StarScene
+  scene-select (ss) (id) =
+    __record-set (__record-set ss "ss-selected-id" id) "ss-info-panel-open" True
+
+  scene-fly-to : StarScene, Integer -> StarScene
+  scene-fly-to (ss) (id) =
+    let target = scene-find-by-id ss id
+    in when target
+      is Just (obj) -> __record-set ss "ss-camera" (camera-goto (ss.ss-camera) (obj.co-x) (obj.co-y) (obj.co-z) (obj.co-name))
+      is None -> ss
+
+  scene-find-by-id : StarScene, Integer -> Maybe CelestialObj
+  scene-find-by-id (ss) (id) = scene-find-loop (ss.ss-catalog) id 0 (ss.ss-catalog-count)
+
+  scene-find-loop : List CelestialObj, Integer, Integer, Integer -> Maybe CelestialObj
+  scene-find-loop (catalog) (id) (i) (n) =
+    if i >= n then None
+    else let obj = list-at catalog i
+    in if obj.co-id == id then Just obj
+    else scene-find-loop catalog id (i + 1) n
+
+  scene-toggle-labels : StarScene -> StarScene
+  scene-toggle-labels (ss) = __record-set ss "ss-show-labels" (if ss.ss-show-labels then False else True)
+
+  scene-toggle-grid : StarScene -> StarScene
+  scene-toggle-grid (ss) = __record-set ss "ss-show-grid" (if ss.ss-show-grid then False else True)
+
+  scene-toggle-constellations : StarScene -> StarScene
+  scene-toggle-constellations (ss) = __record-set ss "ss-show-constellations" (if ss.ss-show-constellations then False else True)
+
+  scene-set-mag-limit : StarScene, Integer -> StarScene
+  scene-set-mag-limit (ss) (mag) = __record-set ss "ss-mag-limit" mag
+
+  scene-search : StarScene, Text -> List CelestialObj
+  scene-search (ss) (query) = catalog-search (ss.ss-catalog) query 0 (ss.ss-catalog-count) []
+
+Section: Selected Object Info
+
+  scene-selected-info : StarScene -> Text
+  scene-selected-info (ss) =
+    if ss.ss-selected-id < 0 then "No selection"
+    else let target = scene-find-by-id ss (ss.ss-selected-id)
+    in when target
+      is Just (obj) ->
+        obj.co-name & "\n"
+        & ck-label (obj.co-kind) & "\n"
+        & "Constellation: " & obj.co-constellation & "\n"
+        & "Spectral: " & sp-label (obj.co-spectral) & "\n"
+        & "Magnitude: " & show (obj.co-mag) & "\n"
+        & "Distance: " & format-dist-ly (obj.co-dist) & "\n"
+        & obj.co-description
+      is None -> "Object not found"
+
+  scene-camera-info : StarScene -> Text
+  scene-camera-info (ss) =
+    "Focus: " & ss.ss-camera.sc-target-name & " ("
+    & show (ss.ss-camera.sc-focus-x) & ", "
+    & show (ss.ss-camera.sc-focus-y) & ", "
+    & show (ss.ss-camera.sc-focus-z) & ")"
+
+Page 1

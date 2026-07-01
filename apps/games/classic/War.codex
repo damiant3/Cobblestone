@@ -1,0 +1,209 @@
+Chapter: War
+  cites Games chapter Rng
+
+ War card game. 52-card deck split evenly between 2 players (26 each).
+ Each round both players flip their top card; higher card wins both.
+ On a tie (war): each player places 3 cards face-down then 1 face-up;
+ the higher face-up card takes all cards. If a player runs out during war,
+ the other player wins. Game ends when one player has all 52 cards or
+ after 1000 rounds (whichever comes first). Winner is player with more cards.
+
+ We say:
+
+Section: Types
+
+  WarState = record {
+    p1-hand  : List Integer,
+    p1-size  : Integer,
+    p2-hand  : List Integer,
+    p2-size  : Integer,
+    rng      : Rng
+  }
+
+  WarResult = record {
+    winner       : Integer,
+    rounds-played : Integer
+  }
+
+Section: Deck
+
+  war-build-deck : Integer, List Integer -> List Integer
+  war-build-deck (i) (acc) =
+    if i >= 52 then acc
+    else war-build-deck (i + 1) (list-push acc i)
+
+  war-shuffle : List Integer, Rng -> List Integer
+  war-shuffle (deck) (r) = war-fy deck 51 r
+
+  war-fy : List Integer, Integer, Rng -> List Integer
+  war-fy (deck) (i) (r) =
+    if i <= 0 then deck
+    else let r2 = rng-next r
+    in let j = rng-mod (rng-value r2) (i + 1)
+    in let a = list-at deck i
+    in let b = list-at deck j
+    in let d2 = list-set-at deck i b
+    in let d3 = list-set-at d2 j a
+    in war-fy d3 (i - 1) r2
+
+  war-card-rank : Integer -> Integer
+  war-card-rank (c) = rng-mod c 13
+
+Section: Hand Operations
+
+  war-take-top : List Integer, Integer -> Integer
+  war-take-top (hand) (size) =
+    if size <= 0 then (-1) else list-at hand 0
+
+  war-shift-hand : List Integer, Integer -> List Integer
+  war-shift-hand (hand) (size) = war-shift-loop hand 0 size
+
+  war-shift-loop : List Integer, Integer, Integer -> List Integer
+  war-shift-loop (hand) (i) (size) =
+    if i + 1 >= size then hand
+    else let next = list-at hand (i + 1)
+    in let h2 = list-set-at hand i next
+    in war-shift-loop h2 (i + 1) size
+
+  war-add-card : List Integer, Integer, Integer -> List Integer
+  war-add-card (hand) (size) (card) =
+    if size >= 52 then hand
+    else list-set-at hand size card
+
+Section: Round Logic
+
+  war-do-round : WarState -> WarState
+  war-do-round (s) =
+    if s.p1-size <= 0 then s
+    else if s.p2-size <= 0 then s
+    else let c1 = war-take-top (s.p1-hand) (s.p1-size)
+    in let c2 = war-take-top (s.p2-hand) (s.p2-size)
+    in let h1 = war-shift-hand (s.p1-hand) (s.p1-size)
+    in let h2 = war-shift-hand (s.p2-hand) (s.p2-size)
+    in let s2 = WarState {
+           p1-hand  = h1,
+           p1-size  = s.p1-size - 1,
+           p2-hand  = h2,
+           p2-size  = s.p2-size - 1,
+           rng      = s.rng
+         }
+    in let r1 = war-card-rank c1
+    in let r2 = war-card-rank c2
+    in if r1 > r2 then war-p1-takes s2 c1 c2
+    else if r2 > r1 then war-p2-takes s2 c1 c2
+    else war-do-war s2 c1 c2
+
+  war-p1-takes : WarState, Integer, Integer -> WarState
+  war-p1-takes (s) (c1) (c2) =
+    let h1a = war-add-card (s.p1-hand) (s.p1-size) c1
+    in let h1b = war-add-card h1a (s.p1-size + 1) c2
+    in WarState {
+         p1-hand  = h1b,
+         p1-size  = s.p1-size + 2,
+         p2-hand  = s.p2-hand,
+         p2-size  = s.p2-size,
+         rng      = s.rng
+       }
+
+  war-p2-takes : WarState, Integer, Integer -> WarState
+  war-p2-takes (s) (c1) (c2) =
+    let h2a = war-add-card (s.p2-hand) (s.p2-size) c1
+    in let h2b = war-add-card h2a (s.p2-size + 1) c2
+    in WarState {
+         p1-hand  = s.p1-hand,
+         p1-size  = s.p1-size,
+         p2-hand  = h2b,
+         p2-size  = s.p2-size + 2,
+         rng      = s.rng
+       }
+
+  war-do-war : WarState, Integer, Integer -> WarState
+  war-do-war (s) (orig1) (orig2) =
+    let skip1 = if s.p1-size >= 3 then 3 else s.p1-size
+    in let skip2 = if s.p2-size >= 3 then 3 else s.p2-size
+    in let s2 = war-skip-cards s skip1 skip2
+    in if s2.p1-size <= 0 then s2
+    else if s2.p2-size <= 0 then s2
+    else let wc1 = war-take-top (s2.p1-hand) (s2.p1-size)
+    in let wc2 = war-take-top (s2.p2-hand) (s2.p2-size)
+    in let h1 = war-shift-hand (s2.p1-hand) (s2.p1-size)
+    in let h2 = war-shift-hand (s2.p2-hand) (s2.p2-size)
+    in let s3 = WarState {
+           p1-hand  = h1,
+           p1-size  = s2.p1-size - 1,
+           p2-hand  = h2,
+           p2-size  = s2.p2-size - 1,
+           rng      = s2.rng
+         }
+    in let wr1 = war-card-rank wc1
+    in let wr2 = war-card-rank wc2
+    in if wr1 >= wr2 then war-p1-takes s3 wc1 wc2
+    else war-p2-takes s3 wc1 wc2
+
+  war-skip-cards : WarState, Integer, Integer -> WarState
+  war-skip-cards (s) (n1) (n2) =
+    let h1 = war-skip-n (s.p1-hand) (s.p1-size) n1
+    in let h2 = war-skip-n (s.p2-hand) (s.p2-size) n2
+    in WarState {
+         p1-hand  = h1,
+         p1-size  = s.p1-size - n1,
+         p2-hand  = h2,
+         p2-size  = s.p2-size - n2,
+         rng      = s.rng
+       }
+
+  war-skip-n : List Integer, Integer, Integer -> List Integer
+  war-skip-n (hand) (size) (n) =
+    if n <= 0 then hand
+    else war-skip-n (war-shift-hand hand size) (size - 1) (n - 1)
+
+Section: Game Runner
+
+  war-init : Integer -> WarState
+  war-init (seed) =
+    let r = rng-new seed
+    in let deck = war-shuffle (war-build-deck 0 []) r
+    in let blank = war-build-slots 52 []
+    in let h1 = war-deal-half deck blank 0 0
+    in let h2 = war-deal-half deck blank 26 0
+    in WarState {
+         p1-hand  = h1,
+         p1-size  = 26,
+         p2-hand  = h2,
+         p2-size  = 26,
+         rng      = r
+       }
+
+  war-build-slots : Integer, List Integer -> List Integer
+  war-build-slots (n) (acc) =
+    if n <= 0 then acc
+    else war-build-slots (n - 1) (list-push acc 0)
+
+  war-deal-half : List Integer, List Integer, Integer, Integer -> List Integer
+  war-deal-half (deck) (hand) (offset) (i) =
+    if i >= 26 then hand
+    else let card = list-at deck (offset + i)
+    in war-deal-half deck (list-set-at hand i card) offset (i + 1)
+
+  run-war-game : Integer -> WarResult
+  run-war-game (seed) =
+    let s = war-init seed
+    in war-loop s 0
+
+  war-loop : WarState, Integer -> WarResult
+  war-loop (s) (rounds) =
+    if s.p1-size <= 0 then WarResult { winner = 2, rounds-played = rounds }
+    else if s.p2-size <= 0 then WarResult { winner = 1, rounds-played = rounds }
+    else if rounds >= 1000 then
+      let w = if s.p1-size >= s.p2-size then 1 else 2
+      in WarResult { winner = w, rounds-played = rounds }
+    else war-loop (war-do-round s) (rounds + 1)
+
+Section: Formatting
+
+  format-war-result : WarResult -> Text
+  format-war-result (r) =
+    "War: Player " & show (r.winner) & " wins after " &
+    show (r.rounds-played) & " rounds"
+
+Page 1

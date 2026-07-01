@@ -1,0 +1,78 @@
+Chapter: Brotli
+
+ Byte-stream framing inspired by Brotli's stored meta-blocks.
+ NOT interoperable with RFC 7932 decoders — real Brotli is a
+ bit-stream format and has no byte-aligned stored meta-block
+ mode. This chapter provides a self-consistent compress/decompress
+ pair using Brotli-like block structure for internal use.
+
+ To brotli-compress gives a Brotli-framed byte stream.
+ To brotli-decompress gives original bytes from a Brotli stream.
+ To brotli-valid gives True when input starts with a valid header.
+
+ We say:
+
+Section: Constants
+
+  brotli-max-meta-block : Integer = 65536
+
+Section: Compression (Uncompressed Meta-Blocks)
+
+  brotli-compress : List Integer -> List Integer
+  brotli-compress (input) =
+    let len = list-length input
+    in if len == 0 then [6]
+    else brotli-header & brotli-emit-meta-blocks input len 0
+
+  brotli-header : List Integer
+  brotli-header = [27]
+
+  brotli-emit-meta-blocks : List Integer, Integer, Integer -> List Integer
+  brotli-emit-meta-blocks (input) (total) (pos) =
+    if pos >= total then [3]
+    else let remaining = total - pos
+    in let chunk = if remaining > brotli-max-meta-block then brotli-max-meta-block else remaining
+    in let is-last = pos + chunk >= total
+    in let header = brotli-meta-header is-last chunk
+    in let data = brotli-slice input pos chunk 0 []
+    in header & data & brotli-emit-meta-blocks input total (pos + chunk)
+
+  brotli-meta-header : Boolean, Integer -> List Integer
+  brotli-meta-header (is-last) (size) =
+    let last-bit = if is-last then 1 else 0
+    in [bit-or last-bit (bit-shl 1 1), bit-and size 255, bit-and (bit-shru size 8) 255]
+
+Section: Decompression
+
+  brotli-decompress : List Integer -> List Integer
+  brotli-decompress (input) =
+    if brotli-valid input == False then []
+    else brotli-decode-meta input 1 (list-length input) []
+
+  brotli-decode-meta : List Integer, Integer, Integer, List Integer -> List Integer
+  brotli-decode-meta (input) (pos) (len) (acc) =
+    if pos + 2 >= len then acc
+    else let hdr = list-at input pos
+    in let is-last = bit-and hdr 1
+    in let size = bit-or (list-at input (pos + 1)) (bit-shl (list-at input (pos + 2)) 8)
+    in let data = brotli-slice input (pos + 3) size 0 []
+    in let acc2 = acc & data
+    in if is-last == 1 then acc2
+    else brotli-decode-meta input (pos + 3 + size) len acc2
+
+Section: Validation
+
+  brotli-valid : List Integer -> Boolean
+  brotli-valid (input) =
+    if list-length input < 1 then False
+    else list-at input 0 == 27
+
+Section: Helpers
+
+  brotli-slice : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  brotli-slice (xs) (off) (len) (i) (acc) =
+    if i >= len then acc
+    else if off + i >= list-length xs then acc
+    else brotli-slice xs off len (i + 1) (list-push acc (list-at xs (off + i)))
+
+Page 1

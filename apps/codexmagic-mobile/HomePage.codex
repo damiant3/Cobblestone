@@ -1,0 +1,113 @@
+Chapter: HomePage
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites MobileApp chapter MobileApp
+
+ Dashboard page. Shows player identity, creations count, and
+ quick actions. Loads data from the explorer server on mount.
+
+Section: State Keys
+
+  sk-home-handle : Text = "home-handle"
+  sk-home-display : Text = "home-display"
+  sk-home-creations : Text = "home-creations"
+  sk-home-loaded : Text = "home-loaded"
+  sk-home-msg : Text = "home-msg"
+
+Section: Page Tree
+
+  home-page-tree : Integer -> WidgetNode
+  home-page-tree (x) =
+   let loaded = state-get sk-home-loaded
+   in let msg = state-get-text sk-home-msg
+   in if loaded == 0 then widget-panel "home-root" DirColumn 16 [
+     widget-label "loading" "Loading..."
+   ]
+   else let handle = state-get-text sk-home-handle
+   in let display = state-get-text sk-home-display
+   in let creations = state-get sk-home-creations
+   in widget-panel "home-root" DirColumn 12 [
+     widget-label "welcome" ("Welcome, " & display),
+     widget-label "handle-lbl" ("@" & handle),
+     widget-separator "sep-profile",
+     widget-panel "stats-row" DirRow 12 [
+       widget-panel "stat-creations" DirColumn 4 [
+         widget-label "cr-count" (show creations),
+         widget-label "cr-label" "Creations"
+       ],
+       widget-panel "stat-gallery" DirColumn 4 [
+         widget-button "go-gallery" "Gallery"
+       ]
+     ],
+     widget-separator "sep-actions",
+     widget-label "actions-title" "Quick Actions",
+     widget-panel "action-row" DirColumn 8 [
+       widget-button "go-creations" "My Creations",
+       widget-button "go-store" "Store (coming soon)",
+       widget-button "go-clan" "Clans (coming soon)"
+     ],
+     widget-separator "sep-bottom",
+     widget-button "logout-btn" "Sign Out",
+     if text-length msg > 0 then widget-label "home-msg" msg
+     else widget-label "home-msg-empty" ""
+   ]
+
+Section: Data Loading
+
+  home-load : Integer -> Integer
+  home-load (x) =
+   let tok = state-get-text "cx-token"
+   in let url = api-base & "/api/auth/me?t=" & url-encode tok
+   in fetch-get-then url (home-profile-cb)
+
+  home-profile-cb : Text -> Integer
+  home-profile-cb (resp) =
+   let obj = json-parse-obj resp
+   in let err = json-obj-field obj "error"
+   in if text-length err > 0 then
+     let m = set-msg sk-home-msg "Session expired"
+     in navigate-to-login 0
+   else let handle = json-obj-field obj "handle"
+   in let display = json-obj-field obj "display"
+   in let s1 = state-set-text sk-home-handle handle
+   in let s2 = state-set-text sk-home-display (if text-length display > 0 then display else handle)
+   in let s3 = state-set sk-home-loaded 1
+   in let r = request-render 0
+   in home-load-creations 0
+
+  home-load-creations : Integer -> Integer
+  home-load-creations (x) =
+   let tok = state-get-text "cx-token"
+   in let url = api-base & "/api/mine?t=" & url-encode tok
+   in fetch-get-then url (home-creations-cb)
+
+  home-creations-cb : Text -> Integer
+  home-creations-cb (resp) =
+   let s = state-set-text "mine-data" resp
+   in let r = request-render 0
+   in 0
+
+Section: Handlers
+
+  home-on-click : Text -> Integer
+  home-on-click (id) =
+   if id == "logout-btn" then
+     let tok = state-get-text "cx-token"
+     in let url = api-base & "/api/auth/logout?t=" & url-encode tok
+     in let s1 = local-storage-set "cx_tok" ""
+     in let s2 = state-set-text "cx-token" ""
+     in let f = fetch-get-then url (logout-cb)
+     in navigate-to-login 0
+   else if id == "go-creations" then navigate-to-page "creations"
+   else if id == "go-gallery" then navigate-to-page "gallery"
+   else if id == "go-store" then set-msg sk-home-msg "Store coming after server merge"
+   else if id == "go-clan" then set-msg sk-home-msg "Clans coming after server merge"
+   else 0
+
+  logout-cb : Text -> Integer
+  logout-cb (resp) = 0
+
+  home-on-pick : Text, Integer -> Integer
+  home-on-pick (group) (idx) = 0
+
+Page 1

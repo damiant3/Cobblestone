@@ -1,0 +1,268 @@
+Chapter: PacketAnalyzer
+  cites Foreword chapter Maybe
+
+ Packet capture and analysis. Captures network frames, decodes
+ protocol layers (Ethernet, IP, TCP, UDP, ARP, ICMP, DNS, HTTP),
+ and presents them in a filterable timeline. Each packet is decoded
+ into a tree of protocol fields. Display filters match on protocol,
+ address, port, or content. This is Wireshark for codex.OS.
+
+Section: Protocol Layers
+
+  EthFrame = record {
+    eth-src-mac : Text,
+    eth-dst-mac : Text,
+    eth-type : Integer,
+    eth-payload-len : Integer
+  }
+
+  IpPacket = record {
+    ip-version : Integer,
+    ip-src : Text,
+    ip-dst : Text,
+    ip-protocol : Integer,
+    ip-ttl : Integer,
+    ip-total-len : Integer,
+    ip-id : Integer,
+    ip-flags : Integer,
+    ip-checksum : Integer
+  }
+
+  TcpSegment = record {
+    tcp-src-port : Integer,
+    tcp-dst-port : Integer,
+    tcp-seq : Integer,
+    tcp-ack : Integer,
+    tcp-flags : Integer,
+    tcp-window : Integer,
+    tcp-payload-len : Integer
+  }
+
+  UdpDatagram = record {
+    udp-src-port : Integer,
+    udp-dst-port : Integer,
+    udp-length : Integer,
+    udp-checksum : Integer
+  }
+
+  ArpPacket = record {
+    arp-op : Integer,
+    arp-sender-mac : Text,
+    arp-sender-ip : Text,
+    arp-target-mac : Text,
+    arp-target-ip : Text
+  }
+
+  IcmpPacket = record {
+    icmp-type : Integer,
+    icmp-code : Integer,
+    icmp-id : Integer,
+    icmp-seq : Integer
+  }
+
+  DnsQuery = record {
+    dns-id : Integer,
+    dns-name : Text,
+    dns-type : Integer,
+    dns-is-response : Boolean,
+    dns-answer-count : Integer
+  }
+
+  HttpMessage = record {
+    http-method : Text,
+    http-path : Text,
+    http-status : Integer,
+    http-content-type : Text,
+    http-content-length : Integer,
+    http-is-request : Boolean
+  }
+
+Section: Decoded Packet
+
+  ProtoLayer =
+    | LayerEth (EthFrame)
+    | LayerIp (IpPacket)
+    | LayerTcp (TcpSegment)
+    | LayerUdp (UdpDatagram)
+    | LayerArp (ArpPacket)
+    | LayerIcmp (IcmpPacket)
+    | LayerDns (DnsQuery)
+    | LayerHttp (HttpMessage)
+    | LayerRaw (Integer)
+
+  layer-name : ProtoLayer -> Text
+  layer-name (l) = when l
+    is LayerEth (f) -> "Ethernet"
+    is LayerIp (p) -> "IPv" & show (p.ip-version)
+    is LayerTcp (s) -> "TCP"
+    is LayerUdp (d) -> "UDP"
+    is LayerArp (a) -> "ARP"
+    is LayerIcmp (i) -> "ICMP"
+    is LayerDns (q) -> "DNS"
+    is LayerHttp (h) -> "HTTP"
+    is LayerRaw (len) -> "Raw (" & show len & "b)"
+
+  CapturedPacket = record {
+    cp-id : Integer,
+    cp-timestamp : Integer,
+    cp-length : Integer,
+    cp-layers : List ProtoLayer,
+    cp-layer-count : Integer,
+    cp-src-addr : Text,
+    cp-dst-addr : Text,
+    cp-src-port : Integer,
+    cp-dst-port : Integer,
+    cp-protocol : Text,
+    cp-info : Text,
+    cp-marked : Boolean
+  }
+
+  pkt-new : Integer, Integer, Integer -> CapturedPacket
+  pkt-new (id) (ts) (len) = CapturedPacket {
+    cp-id = id, cp-timestamp = ts, cp-length = len,
+    cp-layers = [], cp-layer-count = 0,
+    cp-src-addr = "", cp-dst-addr = "",
+    cp-src-port = 0, cp-dst-port = 0,
+    cp-protocol = "", cp-info = "",
+    cp-marked = False
+  }
+
+  pkt-add-layer : CapturedPacket, ProtoLayer -> CapturedPacket
+  pkt-add-layer (p) (l) =
+    __record-set (__record-set p "cp-layers" (list-push (p.cp-layers) l)) "cp-layer-count" (p.cp-layer-count + 1)
+
+  pkt-summary : CapturedPacket -> Text
+  pkt-summary (p) =
+    show (p.cp-id) & " " & p.cp-src-addr & ":" & show (p.cp-src-port) & " -> " & p.cp-dst-addr & ":" & show (p.cp-dst-port) & " " & p.cp-protocol & " " & show (p.cp-length) & "b " & p.cp-info
+
+Section: TCP Flag Decoding
+
+  tcp-flag-syn : Integer -> Boolean
+  tcp-flag-syn (flags) = bit-and flags 2 == 2
+
+  tcp-flag-ack : Integer -> Boolean
+  tcp-flag-ack (flags) = bit-and flags 16 == 16
+
+  tcp-flag-fin : Integer -> Boolean
+  tcp-flag-fin (flags) = bit-and flags 1 == 1
+
+  tcp-flag-rst : Integer -> Boolean
+  tcp-flag-rst (flags) = bit-and flags 4 == 4
+
+  tcp-flag-psh : Integer -> Boolean
+  tcp-flag-psh (flags) = bit-and flags 8 == 8
+
+  tcp-flags-text : Integer -> Text
+  tcp-flags-text (flags) =
+    let s = if tcp-flag-syn flags then "S" else ""
+    in let a = if tcp-flag-ack flags then "A" else ""
+    in let f = if tcp-flag-fin flags then "F" else ""
+    in let r = if tcp-flag-rst flags then "R" else ""
+    in let p = if tcp-flag-psh flags then "P" else ""
+    in "[" & s & a & f & r & p & "]"
+
+Section: Display Filter
+
+  DisplayFilter =
+    | FiltNone
+    | FiltProtocol (Text)
+    | FiltSrcAddr (Text)
+    | FiltDstAddr (Text)
+    | FiltPort (Integer)
+    | FiltContains (Text)
+    | FiltAnd (DisplayFilter) (DisplayFilter)
+    | FiltOr (DisplayFilter) (DisplayFilter)
+    | FiltNot (DisplayFilter)
+
+  filt-matches : DisplayFilter, CapturedPacket -> Boolean
+  filt-matches (f) (pkt) = when f
+    is FiltNone -> True
+    is FiltProtocol (proto) -> pkt.cp-protocol == proto
+    is FiltSrcAddr (addr) -> pkt.cp-src-addr == addr
+    is FiltDstAddr (addr) -> pkt.cp-dst-addr == addr
+    is FiltPort (port) -> pkt.cp-src-port == port
+    is FiltSrcAddr (addr) -> pkt.cp-src-addr == addr
+    is FiltContains (text) -> text-contains (pkt.cp-info) text
+    is FiltAnd (a) (b) -> if filt-matches a pkt then filt-matches b pkt else False
+    is FiltOr (a) (b) -> if filt-matches a pkt then True else filt-matches b pkt
+    is FiltNot (inner) -> if filt-matches inner pkt then False else True
+
+  filt-label : DisplayFilter -> Text
+  filt-label (f) = when f
+    is FiltNone -> "none"
+    is FiltProtocol (p) -> "proto=" & p
+    is FiltSrcAddr (a) -> "src=" & a
+    is FiltDstAddr (a) -> "dst=" & a
+    is FiltPort (p) -> "port=" & show p
+    is FiltContains (t) -> "contains=" & t
+    is FiltAnd (a) (b) -> "(" & filt-label a & " and " & filt-label b & ")"
+    is FiltOr (a) (b) -> "(" & filt-label a & " or " & filt-label b & ")"
+    is FiltNot (inner) -> "not(" & filt-label inner & ")"
+
+Section: Capture State
+
+  CaptureState = record {
+    cap-packets : List CapturedPacket,
+    cap-count : Integer,
+    cap-capturing : Boolean,
+    cap-filter : DisplayFilter,
+    cap-selected : Integer,
+    cap-max-packets : Integer,
+    cap-bytes-total : Integer,
+    cap-start-time : Integer,
+    cap-interface : Text,
+    cap-protocol-stats : List ProtocolStat,
+    cap-proto-stat-count : Integer
+  }
+
+  ProtocolStat = record { prs-name : Text, prs-count : Integer, prs-bytes : Integer }
+
+  capture-new : Text -> CaptureState
+  capture-new (iface) = CaptureState {
+    cap-packets = [], cap-count = 0,
+    cap-capturing = False,
+    cap-filter = FiltNone,
+    cap-selected = -1,
+    cap-max-packets = 10000,
+    cap-bytes-total = 0,
+    cap-start-time = 0,
+    cap-interface = iface,
+    cap-protocol-stats = [],
+    cap-proto-stat-count = 0
+  }
+
+  cap-add-packet : CaptureState, CapturedPacket -> CaptureState
+  cap-add-packet (st) (pkt) =
+    let new-pkts = if st.cap-count >= st.cap-max-packets then st.cap-packets else list-push (st.cap-packets) pkt
+    in let new-count = if st.cap-count >= st.cap-max-packets then st.cap-count else st.cap-count + 1
+    in __record-set (__record-set (__record-set st "cap-packets" new-pkts) "cap-count" new-count) "cap-bytes-total" (st.cap-bytes-total + pkt.cp-length)
+
+  cap-visible : CaptureState -> List CapturedPacket
+  cap-visible (st) = cap-vis-loop (st.cap-packets) (st.cap-filter) 0 (st.cap-count) []
+
+  cap-vis-loop : List CapturedPacket, DisplayFilter, Integer, Integer, List CapturedPacket -> List CapturedPacket
+  cap-vis-loop (pkts) (filt) (i) (n) (acc) =
+    if i >= n then acc
+    else let pkt = list-at pkts i
+    in if filt-matches filt pkt then cap-vis-loop pkts filt (i + 1) n (list-push acc pkt)
+    else cap-vis-loop pkts filt (i + 1) n acc
+
+  cap-start : CaptureState, Integer -> CaptureState
+  cap-start (st) (now) = __record-set (__record-set st "cap-capturing" True) "cap-start-time" now
+
+  cap-stop : CaptureState -> CaptureState
+  cap-stop (st) = __record-set st "cap-capturing" False
+
+  cap-clear : CaptureState -> CaptureState
+  cap-clear (st) = __record-set (__record-set (__record-set st "cap-packets" []) "cap-count" 0) "cap-bytes-total" 0
+
+  cap-set-filter : CaptureState, DisplayFilter -> CaptureState
+  cap-set-filter (st) (f) = __record-set st "cap-filter" f
+
+  cap-packets-per-sec : CaptureState, Integer -> Integer
+  cap-packets-per-sec (st) (now) =
+    let elapsed = now - st.cap-start-time
+    in if elapsed <= 0 then 0
+    else st.cap-count / elapsed
+
+Page 1

@@ -1,0 +1,167 @@
+Chapter: CharDesignerApp
+  cites Explorer chapter ExplorerTheme
+  cites UI chapter Dropdown
+  cites UI chapter DataTable
+  cites UI chapter SettingsPanel
+  cites UI chapter DetailPane
+  cites UI chapter StatusBadge
+  cites UI chapter FilterableList
+  cites UI chapter Validation
+  cites UI chapter SearchBar
+
+ Character designer, fully DB-backed. Dimensions are fetched at load over
+ AJAX (/api/d/<table>); the race dimension groups by ancestry (the
+ racegroups table gives each group's name and its [from,to) slice of the
+ races list). Other dimensions are flat. Selections index the parsed rows
+ (tbl-field) for both name and prompt fragment. No compiled-in content.
+
+ We say:
+
+Section: Prompt
+
+  char-negative : Text
+  char-negative = "blurry, low quality, deformed, extra limbs, extra fingers, ugly, text, watermark, nsfw"
+
+  build-char-prompt : Integer, Integer, Integer, Integer, Integer, Text -> Text
+  build-char-prompt (sr) (sc) (sg) (sp) (spm) (extra) =
+    tbl-field "dRace" sr 1 & ", " & tbl-field "dGender" sg 1 & ", " & tbl-field "dClass" sc 1 & ", " & tbl-field "dPers" sp 1 & ", " & tbl-field "dPort" spm 1 & ", fantasy RPG character art, professional concept art, detailed face, masterpiece, best quality, 4k, sharp focus" & (if text-length extra > 0 then ", " & extra else "")
+
+Section: UI Tree
+
+  race-cats : List (List Text), List Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  race-cats (groups) (rnames) (i) (n) (acc) =
+    if i >= n then acc
+    else let g = list-at groups i
+    in let from = text-to-int (list-at g 1)
+    in let to = text-to-int (list-at g 2)
+    in race-cats groups rnames (i + 1) n (list-push acc (widget-cat-range ("rg" & show i) (list-at g 0) rnames from to))
+
+  race-dimsel : Integer -> WidgetNode
+  race-dimsel (sr) =
+    let rnames = tbl-names "dRace"
+    in let head = if sr < list-length rnames then list-at rnames sr else "?"
+    in let groups = parse-table "dRaceGroups"
+    in widget-dimsel "race" head sr (race-cats groups rnames 0 (list-length groups) [])
+
+  dims : Integer, Integer, Integer, Integer, Integer -> List WidgetNode
+  dims (sr) (sc) (sg) (sp) (spm) = [
+    race-dimsel sr,
+    widget-dim-flat "class" (tbl-names "dClass") sc,
+    widget-dim-flat "gender" (tbl-names "dGender") sg,
+    widget-dim-flat "pers" (tbl-names "dPers") sp,
+    widget-dim-flat "port" (tbl-names "dPort") spm
+  ]
+
+  dimrow-holder : Integer, Integer, Integer, Integer, Integer -> WidgetNode
+  dimrow-holder (sr) (sc) (sg) (sp) (spm) =
+    widget-panel "dimrow-h" DirRow 0 (dims sr sc sg sp spm)
+
+  page-tree : Integer -> WidgetNode
+  page-tree (x) = designer-page-tree "character" "Character Designer" "Backstory, appearance, distinguishing features..."
+
+Section: Fetch Coordination
+
+  rebuild-dims : Integer -> Integer
+  rebuild-dims (x) =
+    let sr = state-get "sr"
+    in let sc = state-get "sc"
+    in let sg = state-get "sg"
+    in let sp = state-get "sp"
+    in let spm = state-get "spm"
+    in mount-widget-into "dimrow" (dimrow-holder sr sc sg sp spm)
+
+  bump-and-build : Integer -> Integer
+  bump-and-build (x) =
+    let c = state-get "loaded" + 1
+    in let s = state-set "loaded" c
+    in if c >= 6 then rebuild-dims 0 else 0
+
+  cb-race : Text -> Integer
+  cb-race (s) = let a = state-set-text "dRace" s in bump-and-build 0
+  cb-racegroups : Text -> Integer
+  cb-racegroups (s) = let a = state-set-text "dRaceGroups" s in bump-and-build 0
+  cb-class : Text -> Integer
+  cb-class (s) = let a = state-set-text "dClass" s in bump-and-build 0
+  cb-gender : Text -> Integer
+  cb-gender (s) = let a = state-set-text "dGender" s in bump-and-build 0
+  cb-pers : Text -> Integer
+  cb-pers (s) = let a = state-set-text "dPers" s in bump-and-build 0
+  cb-port : Text -> Integer
+  cb-port (s) = let a = state-set-text "dPort" s in bump-and-build 0
+
+Section: Callbacks
+
+  group-key : Text -> Text
+  group-key (g) =
+    if g == "race" then "sr"
+    else if g == "class" then "sc"
+    else if g == "gender" then "sg"
+    else if g == "pers" then "sp"
+    else "spm"
+
+  on-pick : Text, Integer -> Integer
+  on-pick (group) (idx) =
+    let s = state-set (group-key group) idx
+    in rebuild-dims 0
+
+  on-click : Text -> Integer
+  on-click (id) =
+    if id == "gen" then do-generate 0
+    else if id == "rnd" then random-seed 0
+    else 0
+
+  meta-html : Text, Text, Text, Text, Text -> Text
+  meta-html (rname) (cname) (gname) (pname) (seed) =
+    "<div class=\"rm\"><span class=\"mt\">" & rname & "</span><span class=\"mt\">" & cname & "</span><span class=\"mt\">" & gname & "</span><span class=\"mt\">" & pname & "</span><span class=\"mt md\">seed:" & seed & "</span></div>"
+
+  add-run : Text, Text, Text, Text, Text -> Text
+  add-run (rname) (cname) (gname) (pname) (seed) =
+    add-history-card "" (meta-html rname cname gname pname seed) hero-click-handler
+
+  do-generate : Integer -> Integer
+  do-generate (x) =
+    let sr = state-get "sr"
+    in let sc = state-get "sc"
+    in let sg = state-get "sg"
+    in let sp = state-get "sp"
+    in let spm = state-get "spm"
+    in let extra = dom-get-value (dom-get "prompt")
+    in let seed = dom-get-value (dom-get "seed")
+    in let prompt = build-char-prompt sr sc sg sp spm extra
+    in let body = gen-body prompt char-negative seed 768 1024
+    in let hm = dom-get "hero-meta"
+    in let h2 = dom-set-html hm ("<b>" & tbl-field "dRace" sr 0 & " " & tbl-field "dClass" sc 0 & "</b> - " & tbl-field "dGender" sg 0 & ", " & tbl-field "dPers" sp 0)
+    in let cid = add-run (tbl-field "dRace" sr 0) (tbl-field "dClass" sc 0) (tbl-field "dGender" sg 0) (tbl-field "dPers" sp 0) seed
+    in generate-image "/api/generate" body cid
+
+  random-seed : Integer -> Integer
+  random-seed (x) = random-seed-cb x
+
+Section: Entry
+
+  init-state : Integer -> Integer
+  init-state (x) =
+    let s1 = state-set "sr" 0
+    in let s2 = state-set "sc" 0
+    in let s3 = state-set "sg" 0
+    in let s4 = state-set "sp" 0
+    in let s5 = state-set "spm" 0
+    in let s6 = state-set "loaded" 0
+    in 0
+
+  opening : Integer -> [Console] None
+  opening (x) = act
+    let ex = init-explorer 0
+    in let st = init-state 0
+    in let h = register-handlers (on-pick) (on-click)
+    in let m = mount-widget-themed dark-gold (page-tree 0)
+    in let f1 = fetch-get-then "/api/d/races" (cb-race)
+    in let f2 = fetch-get-then "/api/d/racegroups" (cb-racegroups)
+    in let f3 = fetch-get-then "/api/d/classes" (cb-class)
+    in let f4 = fetch-get-then "/api/d/genders" (cb-gender)
+    in let f5 = fetch-get-then "/api/d/personalities" (cb-pers)
+    in let f6 = fetch-get-then "/api/d/portraits" (cb-port)
+    in print-line-uni ""
+  end
+
+Page 1

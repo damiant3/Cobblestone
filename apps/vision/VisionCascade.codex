@@ -1,0 +1,353 @@
+Chapter: VisionCascade
+  cites Vision chapter VisionTypes
+  cites Vision chapter VisionSignal
+  cites Vision chapter VisionOrg
+  cites Foreword chapter Maybe
+  cites Foreword chapter TextSearch
+  cites Foreword chapter ListUtils
+
+ Cascade engine. Manages the flow of signals through the
+ organizational hierarchy — hold creation, push-down, response
+ flow, nudging, and escalation.
+
+Section: Hold Construction
+
+  hold-new : Integer, Integer, Text, Integer, Integer -> Hold
+  hold-new (id) (signal-id) (holder) (tier) (now) =
+    Hold {
+      hld-id = id,
+      hld-signal-id = signal-id,
+      hld-holder = holder,
+      hld-tier = tier,
+      hld-action = HoldAssessing,
+      hld-pushed-to = "",
+      hld-response-id = 0,
+      hld-deadline = 0,
+      hld-picked-up = now,
+      hld-completed = 0
+    }
+
+Section: Hold Actions
+
+  hold-push-down : Hold, Text, Integer, Integer -> Hold
+  hold-push-down (h) (target) (deadline) (now) =
+    __record-set (__record-set (__record-set (__record-set h
+      "hld-action" HoldPushedDown)
+      "hld-pushed-to" target)
+      "hld-deadline" deadline)
+      "hld-completed" now
+
+  hold-respond : Hold, Integer, Integer -> Hold
+  hold-respond (h) (response-id) (now) =
+    __record-set (__record-set (__record-set h
+      "hld-action" HoldResponded)
+      "hld-response-id" response-id)
+      "hld-completed" now
+
+  hold-pass : Hold, Integer -> Hold
+  hold-pass (h) (now) =
+    __record-set (__record-set h "hld-action" HoldPassed) "hld-completed" now
+
+  hold-escalate : Hold, Integer -> Hold
+  hold-escalate (h) (now) =
+    __record-set (__record-set h "hld-action" HoldEscalated) "hld-completed" now
+
+Section: Hold Queries
+
+  hold-is-pending : Hold -> Boolean
+  hold-is-pending (h) = when h.hld-action
+    is HoldAssessing -> True
+    is otherwise -> False
+
+  hold-is-overdue : Hold, Integer -> Boolean
+  hold-is-overdue (h) (now) =
+    if h.hld-deadline == 0 then False
+    else if h.hld-completed > 0 then False
+    else now > h.hld-deadline
+
+  hold-days-overdue : Hold, Integer -> Integer
+  hold-days-overdue (h) (now) =
+    if hold-is-overdue h now == False then 0
+    else (now - h.hld-deadline) / 86400
+
+Section: Cascade State
+
+  CascadeState = record {
+    cs-holds : List Hold,
+    cs-hold-count : Integer,
+    cs-next-hold-id : Integer,
+    cs-responses : List Response,
+    cs-response-count : Integer,
+    cs-next-response-id : Integer,
+    cs-nudges : List Nudge,
+    cs-nudge-count : Integer,
+    cs-audit : List AuditEntry,
+    cs-audit-count : Integer
+  }
+
+  cascade-new : CascadeState
+  cascade-new = CascadeState {
+    cs-holds = [], cs-hold-count = 0, cs-next-hold-id = 1,
+    cs-responses = [], cs-response-count = 0, cs-next-response-id = 1,
+    cs-nudges = [], cs-nudge-count = 0,
+    cs-audit = [], cs-audit-count = 0
+  }
+
+Section: Cascade Operations
+
+  cascade-pick-up : CascadeState, Integer, Text, Integer, Integer -> CascadeState
+  cascade-pick-up (cs) (signal-id) (holder) (tier) (now) =
+    let h = hold-new cs.cs-next-hold-id signal-id holder tier now
+    in CascadeState {
+      cs-holds = list-push cs.cs-holds h,
+      cs-hold-count = cs.cs-hold-count + 1,
+      cs-next-hold-id = cs.cs-next-hold-id + 1,
+      cs-responses = cs.cs-responses,
+      cs-response-count = cs.cs-response-count,
+      cs-next-response-id = cs.cs-next-response-id,
+      cs-nudges = cs.cs-nudges,
+      cs-nudge-count = cs.cs-nudge-count
+    }
+
+  cascade-push-down : CascadeState, Integer, Text, Integer, Integer -> CascadeState
+  cascade-push-down (cs) (hold-id) (target) (deadline) (now) =
+    let updated = cs-update-hold cs.cs-holds hold-id (hold-push-down-fn target deadline now)
+    in __record-set cs "cs-holds" updated
+
+  hold-push-down-fn : Text, Integer, Integer, Hold -> Hold
+  hold-push-down-fn (target) (deadline) (now) (h) =
+    hold-push-down h target deadline now
+
+  cascade-respond : CascadeState, Integer, Text, ResponseKind, Text, Text, Text, Text, Integer, Integer -> CascadeState
+  cascade-respond (cs) (signal-id) (author) (kind) (summary) (detail) (cost) (timeline) (confidence) (now) =
+    let rsp = Response {
+      rsp-id = cs.cs-next-response-id,
+      rsp-signal-id = signal-id,
+      rsp-hold-id = 0,
+      rsp-author = author,
+      rsp-kind = kind,
+      rsp-summary = summary,
+      rsp-detail = detail,
+      rsp-cost = cost,
+      rsp-timeline = timeline,
+      rsp-confidence = confidence,
+      rsp-created = now
+    }
+    in CascadeState {
+      cs-holds = cs.cs-holds,
+      cs-hold-count = cs.cs-hold-count,
+      cs-next-hold-id = cs.cs-next-hold-id,
+      cs-responses = list-push cs.cs-responses rsp,
+      cs-response-count = cs.cs-response-count + 1,
+      cs-next-response-id = cs.cs-next-response-id + 1,
+      cs-nudges = cs.cs-nudges,
+      cs-nudge-count = cs.cs-nudge-count
+    }
+
+Section: Nudge Generation
+
+  cascade-check-nudges : CascadeState, Integer -> CascadeState
+  cascade-check-nudges (cs) (now) =
+    let new-nudges = generate-nudges cs.cs-holds now 0 cs.cs-hold-count []
+    in __record-set (__record-set cs
+      "cs-nudges" (cs.cs-nudges & new-nudges))
+      "cs-nudge-count" (cs.cs-nudge-count + list-length new-nudges)
+
+  generate-nudges : List Hold, Integer, Integer, Integer, List Nudge -> List Nudge
+  generate-nudges (holds) (now) (i) (len) (acc) =
+    if i >= len then acc
+    else let h = list-at holds i
+    in if hold-is-overdue h now
+      then let n = Nudge {
+        ndg-signal-id = h.hld-signal-id,
+        ndg-hold-id = h.hld-id,
+        ndg-target = h.hld-holder,
+        ndg-reason = NudgeOverdue,
+        ndg-days-overdue = hold-days-overdue h now,
+        ndg-created = now
+      }
+      in generate-nudges holds now (i + 1) len (list-push acc n)
+    else generate-nudges holds now (i + 1) len acc
+
+Section: Cascade Queries
+
+  cascade-holds-for-signal : CascadeState, Integer -> List Hold
+  cascade-holds-for-signal (cs) (signal-id) =
+    cs-filter-holds cs.cs-holds signal-id 0 cs.cs-hold-count []
+
+  cs-filter-holds : List Hold, Integer, Integer, Integer, List Hold -> List Hold
+  cs-filter-holds (holds) (sig-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let h = list-at holds i
+    in if h.hld-signal-id == sig-id
+      then cs-filter-holds holds sig-id (i + 1) len (list-push acc h)
+      else cs-filter-holds holds sig-id (i + 1) len acc
+
+  cascade-pending-for : CascadeState, Text -> List Hold
+  cascade-pending-for (cs) (holder) =
+    cs-filter-pending cs.cs-holds holder 0 cs.cs-hold-count []
+
+  cs-filter-pending : List Hold, Text, Integer, Integer, List Hold -> List Hold
+  cs-filter-pending (holds) (holder) (i) (len) (acc) =
+    if i >= len then acc
+    else let h = list-at holds i
+    in if h.hld-holder == holder
+      then if hold-is-pending h
+        then cs-filter-pending holds holder (i + 1) len (list-push acc h)
+        else cs-filter-pending holds holder (i + 1) len acc
+      else cs-filter-pending holds holder (i + 1) len acc
+
+  cascade-responses-for : CascadeState, Integer -> List Response
+  cascade-responses-for (cs) (signal-id) =
+    cs-filter-responses cs.cs-responses signal-id 0 cs.cs-response-count []
+
+  cs-filter-responses : List Response, Integer, Integer, Integer, List Response -> List Response
+  cs-filter-responses (rsps) (sig-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at rsps i
+    in if r.rsp-signal-id == sig-id
+      then cs-filter-responses rsps sig-id (i + 1) len (list-push acc r)
+      else cs-filter-responses rsps sig-id (i + 1) len acc
+
+Section: Hold Update Helper
+
+  cs-update-hold : List Hold, Integer, (Hold -> Hold) -> List Hold
+  cs-update-hold (holds) (id) (f) = list-map (cs-maybe-update id f) holds
+
+  cs-maybe-update : Integer, (Hold -> Hold), Hold -> Hold
+  cs-maybe-update (id) (f) (h) =
+    if h.hld-id == id then f h else h
+
+Section: Audit Trail
+
+  cs-audit : CascadeState, Integer, Text, CascadeEvent, Text, Integer -> CascadeState
+  cs-audit (cs) (signal-id) (actor) (event) (detail) (now) =
+    let entry = AuditEntry {
+      ae-signal-id = signal-id,
+      ae-actor = actor,
+      ae-event = event,
+      ae-detail = detail,
+      ae-timestamp = now
+    }
+    in __record-set (__record-set cs
+      "cs-audit" (list-push cs.cs-audit entry))
+      "cs-audit-count" (cs.cs-audit-count + 1)
+
+  cs-audit-for-signal : CascadeState, Integer -> List AuditEntry
+  cs-audit-for-signal (cs) (signal-id) =
+    cs-audit-filter cs.cs-audit signal-id 0 cs.cs-audit-count []
+
+  cs-audit-filter : List AuditEntry, Integer, Integer, Integer, List AuditEntry -> List AuditEntry
+  cs-audit-filter (entries) (sig-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.ae-signal-id == sig-id
+      then cs-audit-filter entries sig-id (i + 1) len (list-push acc e)
+      else cs-audit-filter entries sig-id (i + 1) len acc
+
+Section: Auto-Route Signal to Tier 1
+
+  cascade-route-signal : CascadeState, Signal, OrgGraph, Integer -> CascadeState
+  cascade-route-signal (cs) (sig) (org) (now) =
+    let tier-1 = org-tier-1-for org sig.sig-author
+    in let suggested = org-route-signal org sig.sig-domain sig.sig-content
+    in let routed = cascade-create-tier1-holds cs sig tier-1 suggested now 0 (list-length tier-1)
+    in cs-audit routed sig.sig-id "system" CeSignalCreated ("Routed to " & show (list-length tier-1) & " tier-1 people") now
+
+  cascade-create-tier1-holds : CascadeState, Signal, List Person, List Person, Integer, Integer, Integer -> CascadeState
+  cascade-create-tier1-holds (cs) (sig) (tier1) (suggested) (now) (i) (len) =
+    if i >= len then cs
+    else let person = list-at tier1 i
+    in let updated = cascade-pick-up cs sig.sig-id person.per-id 1 now
+    in cascade-create-tier1-holds updated sig tier1 suggested now (i + 1) len
+
+Section: Response Submission Workflow
+
+  cascade-submit-response : CascadeState, Integer, Integer, Text, ResponseKind, Text, Text, Text, Text, Integer, Integer -> CascadeState
+  cascade-submit-response (cs) (signal-id) (hold-id) (author) (kind) (summary) (detail) (cost) (timeline) (confidence) (now) =
+    let rsp = Response {
+      rsp-id = cs.cs-next-response-id,
+      rsp-signal-id = signal-id,
+      rsp-hold-id = hold-id,
+      rsp-author = author,
+      rsp-kind = kind,
+      rsp-summary = summary,
+      rsp-detail = detail,
+      rsp-cost = cost,
+      rsp-timeline = timeline,
+      rsp-confidence = confidence,
+      rsp-created = now
+    }
+    in let with-rsp = __record-set (__record-set (__record-set cs
+          "cs-responses" (list-push cs.cs-responses rsp))
+          "cs-response-count" (cs.cs-response-count + 1))
+          "cs-next-response-id" (cs.cs-next-response-id + 1)
+    in let with-hold = __record-set with-rsp "cs-holds"
+          (cs-update-hold with-rsp.cs-holds hold-id (hold-respond-fn rsp.rsp-id now))
+    in cs-audit with-hold signal-id author CeResponded (rsp-kind-label kind & ": " & text-take summary 40) now
+
+  hold-respond-fn : Integer, Integer, Hold -> Hold
+  hold-respond-fn (rsp-id) (now) (h) = hold-respond h rsp-id now
+
+Section: Cascade Health
+
+  CascadeHealth = record {
+    ch-total-holds : Integer,
+    ch-pending : Integer,
+    ch-overdue : Integer,
+    ch-responded : Integer,
+    ch-avg-response-days : Integer
+  }
+
+  cascade-health : CascadeState, Integer -> CascadeHealth
+  cascade-health (cs) (now) =
+    cs-health-loop cs.cs-holds now 0 cs.cs-hold-count 0 0 0 0
+
+  cs-health-loop : List Hold, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> CascadeHealth
+  cs-health-loop (holds) (now) (i) (len) (pending) (overdue) (responded) (total-days) =
+    if i >= len then CascadeHealth {
+      ch-total-holds = len,
+      ch-pending = pending,
+      ch-overdue = overdue,
+      ch-responded = responded,
+      ch-avg-response-days = if responded == 0 then 0 else total-days / responded
+    }
+    else let h = list-at holds i
+    in let p = if hold-is-pending h then 1 else 0
+    in let o = if hold-is-overdue h now then 1 else 0
+    in let r = when h.hld-action is HoldResponded -> 1 is otherwise -> 0
+    in let days = if h.hld-completed > 0 then (h.hld-completed - h.hld-picked-up) / 86400 else 0
+    in cs-health-loop holds now (i + 1) len (pending + p) (overdue + o) (responded + r) (total-days + days)
+
+Section: Approaching Deadline Nudges
+
+  cascade-check-approaching : CascadeState, Integer, Integer -> CascadeState
+  cascade-check-approaching (cs) (now) (hours-before) =
+    let threshold = hours-before * 3600
+    in let new-nudges = approaching-nudges cs.cs-holds now threshold 0 cs.cs-hold-count []
+    in __record-set (__record-set cs
+      "cs-nudges" (cs.cs-nudges & new-nudges))
+      "cs-nudge-count" (cs.cs-nudge-count + list-length new-nudges)
+
+  approaching-nudges : List Hold, Integer, Integer, Integer, Integer, List Nudge -> List Nudge
+  approaching-nudges (holds) (now) (threshold) (i) (len) (acc) =
+    if i >= len then acc
+    else let h = list-at holds i
+    in if hold-is-pending h
+      then if h.hld-deadline > 0
+        then let remaining = h.hld-deadline - now
+        in if remaining > 0
+          then if remaining < threshold
+            then let n = Nudge {
+              ndg-signal-id = h.hld-signal-id,
+              ndg-hold-id = h.hld-id,
+              ndg-target = h.hld-holder,
+              ndg-reason = NudgeApproachingDeadline,
+              ndg-days-overdue = 0,
+              ndg-created = now
+            }
+            in approaching-nudges holds now threshold (i + 1) len (list-push acc n)
+          else approaching-nudges holds now threshold (i + 1) len acc
+        else approaching-nudges holds now threshold (i + 1) len acc
+      else approaching-nudges holds now threshold (i + 1) len acc
+    else approaching-nudges holds now threshold (i + 1) len acc

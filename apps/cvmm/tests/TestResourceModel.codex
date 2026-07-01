@@ -1,0 +1,152 @@
+Chapter: TestResourceModel
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ResourceModel
+  cites Foreword chapter Maybe
+
+ Unit tests for the resource model: properties, capabilities,
+ collections, queries, and the universal resource abstraction.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) =
+    if val then "PASS " & label else "FAIL " & label
+
+  assert-false : Text, Boolean -> Text
+  assert-false (label) (val) =
+    if val then "FAIL " & label else "PASS " & label
+
+Section: PropValue Tests
+
+  test-pv-to-text : Text
+  test-pv-to-text =
+    let t1 = assert-eq-text "pv-text" "hello" (pv-to-text (PvText "hello"))
+    in let t2 = assert-eq-text "pv-int" "42" (pv-to-text (PvInt 42))
+    in let t3 = assert-eq-text "pv-bool" "true" (pv-to-text (PvBool True))
+    in let t4 = assert-eq-text "pv-bytes" "1 MB" (pv-to-text (PvBytes (megabytes 1)))
+    in let t5 = assert-eq-text "pv-pct" "75%" (pv-to-text (PvPercent 75))
+    in let t6 = assert-eq-text "pv-dur" "1h 30m" (pv-to-text (PvDuration 5400))
+    in let t7 = assert-eq-text "pv-none" "" (pv-to-text PvNone)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5 & "\n" & t6 & "\n" & t7
+
+  test-pv-truthy : Text
+  test-pv-truthy =
+    let t1 = assert-true "true-truthy" (pv-is-truthy (PvBool True))
+    in let t2 = assert-false "false-not-truthy" (pv-is-truthy (PvBool False))
+    in let t3 = assert-true "nonzero-truthy" (pv-is-truthy (PvInt 1))
+    in let t4 = assert-false "zero-not-truthy" (pv-is-truthy (PvInt 0))
+    in let t5 = assert-false "none-not-truthy" (pv-is-truthy PvNone)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Resource Tests
+
+  test-resource-props : Text
+  test-resource-props =
+    let r = resource-new "disk0" "IDE Disk" "disk"
+    in let r2 = res-add-prop r (prop-new "model" "Model" (PvText "Codex IDE"))
+    in let r3 = res-add-prop r2 (prop-new "capacity" "Capacity" (PvBytes (gigabytes 1)))
+    in let t1 = assert-eq-int "prop-count" 2 (r3.res-prop-count)
+    in let t2 = assert-eq-text "get-model" "Codex IDE" (pv-to-text (res-get-prop r3 "model"))
+    in let t3 = assert-eq-text "get-missing" "" (pv-to-text (res-get-prop r3 "missing"))
+    in let r4 = res-set-prop r3 "model" (PvText "Updated IDE")
+    in let t4 = assert-eq-text "set-model" "Updated IDE" (pv-to-text (res-get-prop r4 "model"))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-resource-caps : Text
+  test-resource-caps =
+    let r = resource-new "svc1" "Web Server" "service"
+    in let r2 = res-add-cap (res-add-cap (res-add-cap r CapStart) CapStop) CapRestart
+    in let t1 = assert-eq-int "cap-count" 3 (r2.res-cap-count)
+    in let t2 = assert-true "has-start" (res-has-cap r2 CapStart)
+    in let t3 = assert-true "has-stop" (res-has-cap r2 CapStop)
+    in let t4 = assert-false "no-delete" (res-has-cap r2 CapDelete)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-cap-flags : Text
+  test-cap-flags =
+    let t1 = assert-true "delete-destructive" (cap-is-destructive CapDelete)
+    in let t2 = assert-true "kill-destructive" (cap-is-destructive CapKill)
+    in let t3 = assert-false "start-not-destructive" (cap-is-destructive CapStart)
+    in let t4 = assert-true "delete-needs-confirm" (cap-needs-confirm CapDelete)
+    in let t5 = assert-false "enable-no-confirm" (cap-needs-confirm CapEnable)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Collection Tests
+
+  test-collection : Text
+  test-collection =
+    let rc = rc-new "service"
+    in let r1 = res-set-status (resource-new "s1" "Web" "service") StatusOnline
+    in let r2 = res-set-status (resource-new "s2" "DNS" "service") StatusOffline
+    in let r3 = res-set-status (resource-new "s3" "DB" "service") StatusOnline
+    in let rc2 = rc-add (rc-add (rc-add rc r1) r2) r3
+    in let t1 = assert-eq-int "count" 3 (rc2.rc-count)
+    in let t2 = assert-eq-int "healthy" 2 (rc-healthy-count rc2)
+    in let found = rc-find rc2 "s2"
+    in let t3 = when found
+      is Just (r) -> assert-eq-text "found-name" "DNS" (r.res-name)
+      is None -> "FAIL find-s2: not found"
+    in let rc3 = rc-remove rc2 "s1"
+    in let t4 = assert-eq-int "after-remove" 2 (rc3.rc-count)
+    in let rc4 = rc-select rc2 "s3"
+    in let sel = rc-selected rc4
+    in let t5 = when sel
+      is Just (r) -> assert-eq-text "selected-name" "DB" (r.res-name)
+      is None -> "FAIL select-s3: not found"
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+  test-collection-filter : Text
+  test-collection-filter =
+    let rc = rc-new "mixed"
+    in let r1 = __record-set (resource-new "f1" "readme.txt" "file") "res-category" "file"
+    in let r2 = __record-set (resource-new "d1" "src" "directory") "res-category" "directory"
+    in let r3 = __record-set (resource-new "f2" "main.codex" "file") "res-category" "file"
+    in let rc2 = rc-add (rc-add (rc-add rc r1) r2) r3
+    in let files = rc-filter-by-category rc2 "file"
+    in let t1 = assert-eq-int "files-only" 2 (list-length files)
+    in let dirs = rc-filter-by-category rc2 "directory"
+    in let t2 = assert-eq-int "dirs-only" 1 (list-length dirs)
+    in let searched = rc-filter-by-text rc2 "main"
+    in let t3 = assert-eq-int "search-main" 1 (list-length searched)
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-collection-children : Text
+  test-collection-children =
+    let rc = rc-new "usb"
+    in let hub = resource-new "hub0" "Root Hub" "hub"
+    in let dev1 = __record-set (resource-new "kbd0" "Keyboard" "hid") "res-parent-id" "hub0"
+    in let dev2 = __record-set (resource-new "msc0" "Disk" "storage") "res-parent-id" "hub0"
+    in let dev3 = resource-new "other" "Other" "device"
+    in let rc2 = rc-add (rc-add (rc-add (rc-add rc hub) dev1) dev2) dev3
+    in let children = rc-children-of rc2 "hub0"
+    in let t1 = assert-eq-int "hub-children" 2 (list-length children)
+    in let roots = rc-children-of rc2 ""
+    in let t2 = assert-eq-int "root-children" 2 (list-length roots)
+    in t1 & "\n" & t2
+
+Section: Entry
+
+  opening : [Console] None = act
+    print-line-uni "=== ResourceModel Tests ==="
+    print-line-uni test-pv-to-text
+    print-line-uni test-pv-truthy
+    print-line-uni test-resource-props
+    print-line-uni test-resource-caps
+    print-line-uni test-cap-flags
+    print-line-uni test-collection
+    print-line-uni test-collection-filter
+    print-line-uni test-collection-children
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

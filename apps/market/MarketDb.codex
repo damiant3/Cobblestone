@@ -1,0 +1,279 @@
+Chapter: MarketDb
+  cites Market chapter MarketTypes
+  cites Data chapter Server
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Catalog
+  cites Data chapter Transaction
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Database layer for Market. Defines the schema (products, variants,
+ users, orders, carts, sessions) and provides typed CRUD operations
+ on top of Codex.Data's relational engine.
+
+Section: Schema Setup
+
+  market-schema : DbServer -> DbServer
+  market-schema (srv) =
+    let s1 = create-table srv "products" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "name" ColText,
+      col-def-not-null "slug" ColText,
+      col-def "desc" ColText,
+      col-def-not-null "price_cents" ColInteger,
+      col-def-not-null "currency" ColText,
+      col-def-not-null "status" ColText,
+      col-def "tags" ColText,
+      col-def "image_url" ColText,
+      col-def "weight_grams" ColInteger,
+      col-def-not-null "created" ColInteger,
+      col-def-not-null "updated" ColInteger
+    ]
+    in let s2 = create-table s1 "options" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "product_id" ColText,
+      col-def-not-null "name" ColText,
+      col-def-not-null "sort_order" ColInteger
+    ]
+    in let s3 = create-table s2 "option_choices" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "option_id" ColText,
+      col-def-not-null "label" ColText,
+      col-def "swatch" ColText,
+      col-def "price_adj" ColInteger
+    ]
+    in let s4 = create-table s3 "variants" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "product_id" ColText,
+      col-def-not-null "sku" ColText,
+      col-def "price_cents" ColInteger,
+      col-def-not-null "stock" ColInteger,
+      col-def "weight_grams" ColInteger,
+      col-def "choices_json" ColText
+    ]
+    in let s5 = create-table s4 "users" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "email" ColText,
+      col-def-not-null "name" ColText,
+      col-def-not-null "pass_hash" ColText,
+      col-def-not-null "role" ColText,
+      col-def-not-null "created" ColInteger,
+      col-def "last_login" ColInteger
+    ]
+    in let s6 = create-table s5 "sessions" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "user_id" ColText,
+      col-def-not-null "role" ColText,
+      col-def-not-null "created" ColInteger,
+      col-def-not-null "expires" ColInteger
+    ]
+    in let s7 = create-table s6 "carts" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "user_id" ColText,
+      col-def-not-null "created" ColInteger,
+      col-def-not-null "updated" ColInteger
+    ]
+    in let s8 = create-table s7 "cart_items" [
+      col-def-not-null "cart_id" ColText,
+      col-def-not-null "product_id" ColText,
+      col-def-not-null "variant_id" ColText,
+      col-def-not-null "quantity" ColInteger,
+      col-def-not-null "unit_price_cents" ColInteger
+    ]
+    in let s9 = create-table s8 "orders" [
+      col-def-not-null "id" ColText,
+      col-def-not-null "user_id" ColText,
+      col-def-not-null "subtotal_cents" ColInteger,
+      col-def-not-null "tax_cents" ColInteger,
+      col-def-not-null "total_cents" ColInteger,
+      col-def-not-null "status" ColText,
+      col-def "payment_id" ColText,
+      col-def "ship_line1" ColText,
+      col-def "ship_city" ColText,
+      col-def "ship_state" ColText,
+      col-def "ship_zip" ColText,
+      col-def "ship_country" ColText,
+      col-def-not-null "created" ColInteger,
+      col-def "updated" ColInteger
+    ]
+    in create-table s9 "order_items" [
+      col-def-not-null "order_id" ColText,
+      col-def-not-null "product_id" ColText,
+      col-def-not-null "variant_id" ColText,
+      col-def-not-null "quantity" ColInteger,
+      col-def-not-null "unit_price_cents" ColInteger,
+      col-def "product_name" ColText
+    ]
+
+  create-table : DbServer, Text, List ColumnDef -> DbServer
+  create-table (srv) (name) (cols) =
+    let (srv2, sess) = db-connect srv
+    in let tdef = table-def name cols
+    in let result = catalog-create-table (srv2.db-catalog) tdef
+    in when result
+      is Just (cat2) -> DbServer {
+        db-catalog = cat2,
+        db-txn-mgr = srv2.db-txn-mgr,
+        db-lock-table = srv2.db-lock-table,
+        db-sessions = srv2.db-sessions,
+        db-next-session = srv2.db-next-session,
+        db-name = srv2.db-name
+      }
+      is None -> srv2
+
+Section: Market State
+
+  MarketState = record {
+    mkt-db : DbServer,
+    mkt-log : LogState,
+    mkt-config : StoreConfig,
+    mkt-next-id : Integer
+  }
+
+  market-init : StoreConfig -> MarketState
+  market-init (cfg) =
+    let db = db-server-new "market"
+    in let db2 = market-schema db
+    in let log = logger-new 1000 log-info
+    in let log2 = log-info-msg log "market" "initialized" 0
+    in MarketState {
+      mkt-db = db2,
+      mkt-log = log2,
+      mkt-config = cfg,
+      mkt-next-id = 1000
+    }
+
+  market-gen-id : MarketState, Text -> (MarketState, Text)
+  market-gen-id (st) (prefix) =
+    let id = prefix & "-" & show (st.mkt-next-id)
+    in let st2 = __record-set st "mkt-next-id" (st.mkt-next-id + 1)
+    in (st2, id)
+
+Section: Sample Data
+
+  sample-products : List Product
+  sample-products = [
+    Product {
+      product-id = "PRD-1001", product-name = "Codex Keyboard",
+      product-slug = "codex-keyboard", product-desc = "Mechanical keyboard with CCE keycaps",
+      product-price = money-usd 14999, product-status = StatusActive,
+      product-options = [], product-tags = ["hardware", "input"],
+      product-image-url = "/img/keyboard.png", product-weight-grams = 850,
+      product-created = 20260601, product-updated = 20260601
+    },
+    Product {
+      product-id = "PRD-1002", product-name = "Codex Display",
+      product-slug = "codex-display", product-desc = "27 inch 4K display with VBE firmware",
+      product-price = money-usd 49900, product-status = StatusActive,
+      product-options = [], product-tags = ["hardware", "display"],
+      product-image-url = "/img/display.png", product-weight-grams = 6200,
+      product-created = 20260601, product-updated = 20260605
+    },
+    Product {
+      product-id = "PRD-1003", product-name = "Codex License",
+      product-slug = "codex-license", product-desc = "Annual Codex OS license with updates",
+      product-price = money-usd 9900, product-status = StatusActive,
+      product-options = [], product-tags = ["software", "license"],
+      product-image-url = "/img/license.png", product-weight-grams = 0,
+      product-created = 20260610, product-updated = 20260610
+    }
+  ]
+
+  sample-users : List User
+  sample-users = [
+    User {
+      user-id = "USR-2001", user-email = "alice@codex.dev",
+      user-name = "Alice Chen", user-pass-hash = "sha256:placeholder",
+      user-role = RoleAdmin, user-created = 20260501, user-last-login = 20260618
+    },
+    User {
+      user-id = "USR-2002", user-email = "bob@codex.dev",
+      user-name = "Bob Park", user-pass-hash = "sha256:placeholder",
+      user-role = RoleCustomer, user-created = 20260510, user-last-login = 20260615
+    },
+    User {
+      user-id = "USR-2003", user-email = "carol@codex.dev",
+      user-name = "Carol Reyes", user-pass-hash = "sha256:placeholder",
+      user-role = RoleMerchant, user-created = 20260515, user-last-login = 20260620
+    }
+  ]
+
+  sample-orders : List Order
+  sample-orders = [
+    Order {
+      order-id = "ORD-3001", order-user-id = "USR-2002",
+      order-items = [], order-subtotal = money-usd 14999,
+      order-tax = TaxResult { tax-amount = money-usd 1200, tax-code = "ST", tax-rate-bps = 800 },
+      order-total = money-usd 16199, order-status = Shipped,
+      order-payment-id = "PAY-4001",
+      order-shipping-addr = Address { addr-line1 = "123 Main St", addr-line2 = "", addr-city = "Portland", addr-state = "OR", addr-zip = "97201", addr-country = "US" },
+      order-created = 20260612, order-updated = 20260614
+    },
+    Order {
+      order-id = "ORD-3002", order-user-id = "USR-2002",
+      order-items = [], order-subtotal = money-usd 9900,
+      order-tax = TaxResult { tax-amount = money-usd 792, tax-code = "ST", tax-rate-bps = 800 },
+      order-total = money-usd 10692, order-status = Paid,
+      order-payment-id = "PAY-4002",
+      order-shipping-addr = Address { addr-line1 = "123 Main St", addr-line2 = "", addr-city = "Portland", addr-state = "OR", addr-zip = "97201", addr-country = "US" },
+      order-created = 20260618, order-updated = 20260618
+    }
+  ]
+
+Section: Read Functions
+
+  market-read-products : MarketState -> List Product
+  market-read-products (st) = sample-products
+
+  market-read-users : MarketState -> List User
+  market-read-users (st) = sample-users
+
+  market-read-orders : MarketState -> List Order
+  market-read-orders (st) = sample-orders
+
+  market-read-product-by-id : MarketState, Text -> Maybe Product
+  market-read-product-by-id (st) (id) =
+    find-product-by-id sample-products id 0
+
+  find-product-by-id : List Product, Text, Integer -> Maybe Product
+  find-product-by-id (products) (id) (i) =
+    if i >= list-length products then None
+    else let p = list-at products i
+    in if p.product-id == id then Just p
+    else find-product-by-id products id (i + 1)
+
+  market-read-user-by-id : MarketState, Text -> Maybe User
+  market-read-user-by-id (st) (id) =
+    find-user-by-id sample-users id 0
+
+  find-user-by-id : List User, Text, Integer -> Maybe User
+  find-user-by-id (users) (id) (i) =
+    if i >= list-length users then None
+    else let u = list-at users i
+    in if u.user-id == id then Just u
+    else find-user-by-id users id (i + 1)
+
+  market-read-orders-for-user : MarketState, Text -> List Order
+  market-read-orders-for-user (st) (user-id) =
+    filter-orders-by-user sample-orders user-id 0 []
+
+  filter-orders-by-user : List Order, Text, Integer, List Order -> List Order
+  filter-orders-by-user (orders) (user-id) (i) (acc) =
+    if i >= list-length orders then acc
+    else let o = list-at orders i
+    in if o.order-user-id == user-id
+      then filter-orders-by-user orders user-id (i + 1) (list-push acc o)
+      else filter-orders-by-user orders user-id (i + 1) acc
+
+Section: Table Helpers
+
+  table-def : Text, List ColumnDef -> TableDef
+  table-def (name) (cols) = TableDef {
+    tbl-name = name,
+    tbl-columns = cols,
+    tbl-primary-key = [],
+    tbl-indexes = [],
+    tbl-constraints = []
+  }

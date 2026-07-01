@@ -1,0 +1,336 @@
+Chapter: DiagramRenderer
+  cites Foreword chapter Maybe
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Game chapter Bresenham
+  cites Math chapter Geometry
+  cites Math chapter Bezier
+  cites Foreword chapter Font
+  cites Diagram chapter DiagramModel
+  cites Diagram chapter DiagramTheme
+  cites Diagram chapter ShapeLibrary
+  cites Diagram chapter EdgeRouter
+
+ Renders a diagram to a framebuffer. Draws grid, edges, nodes,
+ labels, selection handles, and connection guides.
+
+Section: Rendering Pipeline
+
+  render-diagram : Diagram, Framebuf, Integer, Integer, Integer, Integer, List Integer -> Framebuf
+  render-diagram (dg) (fb) (scroll-x) (scroll-y) (vw) (vh) (selected-ids) =
+    let fb1 = if dg.dg-grid > 0 then render-grid fb dg.dg-grid scroll-x scroll-y vw vh else fb
+    in let fb2 = render-all-edges fb1 dg scroll-x scroll-y
+    in let fb3 = render-all-nodes fb2 dg scroll-x scroll-y
+    in let fb4 = render-labels fb3 dg scroll-x scroll-y
+    in render-selection-handles fb4 dg selected-ids scroll-x scroll-y
+
+Section: Grid
+
+  render-grid : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-grid (fb) (grid) (sx) (sy) (vw) (vh) =
+    let start-x = (sx / grid) * grid - sx
+    in let start-y = (sy / grid) * grid - sy
+    in render-grid-vlines (render-grid-hlines fb grid start-y vw vh 0) grid start-x vw vh 0
+
+  render-grid-hlines : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-grid-hlines (fb) (grid) (y0) (vw) (vh) (i) =
+    let y = y0 + i * grid
+    in if y >= vh then fb
+    else if y < 0 then render-grid-hlines fb grid y0 vw vh (i + 1)
+    else let fb2 = fb-hline fb 0 vw y grid-color
+    in render-grid-hlines fb2 grid y0 vw vh (i + 1)
+
+  render-grid-vlines : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-grid-vlines (fb) (grid) (x0) (vw) (vh) (i) =
+    let x = x0 + i * grid
+    in if x >= vw then fb
+    else if x < 0 then render-grid-vlines fb grid x0 vw vh (i + 1)
+    else let fb2 = render-vline fb x 0 vh grid-color
+    in render-grid-vlines fb2 grid x0 vw vh (i + 1)
+
+  render-vline : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  render-vline (fb) (x) (y0) (y1) (color) =
+    if y0 >= y1 then fb
+    else render-vline (fb-set fb x y0 color) x (y0 + 1) y1 color
+
+Section: Node Rendering
+
+  render-all-nodes : Framebuf, Diagram, Integer, Integer -> Framebuf
+  render-all-nodes (fb) (dg) (sx) (sy) =
+    render-nodes-loop fb dg.dg-nodes sx sy 0
+
+  render-nodes-loop : Framebuf, List DiagramNode, Integer, Integer, Integer -> Framebuf
+  render-nodes-loop (fb) (nodes) (sx) (sy) (i) =
+    if i >= list-length nodes then fb
+    else let node = list-at nodes i
+    in let fb2 = render-node fb node sx sy
+    in render-nodes-loop fb2 nodes sx sy (i + 1)
+
+  render-node : Framebuf, DiagramNode, Integer, Integer -> Framebuf
+  render-node (fb) (n) (sx) (sy) =
+    let x = n.dn-x - sx
+    in let y = n.dn-y - sy
+    in let fill = n.dn-style.ns-fill-color
+    in let stroke = n.dn-style.ns-stroke-color
+    in render-shape fb n.dn-shape x y n.dn-width n.dn-height fill stroke
+
+  render-shape : Framebuf, ShapeType, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-shape (fb) (shape) (x) (y) (w) (h) (fill) (stroke) =
+    when shape
+      is ShapeRect -> render-filled-rect fb x y w h fill stroke
+      is ShapeRoundRect -> render-filled-rect fb x y w h fill stroke
+      is ShapeDiamond -> render-diamond fb x y w h fill stroke
+      is ShapeOval -> render-oval fb x y w h fill stroke
+      is ShapeCircle -> render-circle-shape fb x y w h fill stroke
+      is ShapeHexagon -> render-hexagon fb x y w h fill stroke
+      is ShapeParallelogram -> render-parallelogram fb x y w h fill stroke
+      is ShapeCylinder -> render-filled-rect fb x y w h fill stroke
+      is ShapeTriangle -> render-triangle-shape fb x y w h fill stroke
+      is ShapeCloud -> render-filled-rect fb x y w h fill stroke
+      is ShapeActor -> render-actor fb x y w h stroke
+      is ShapeDocument -> render-filled-rect fb x y w h fill stroke
+      is ShapeCompartmentBox (n) -> render-compartment fb x y w h fill stroke n
+
+Section: Shape Primitives
+
+  render-filled-rect : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-filled-rect (fb) (x) (y) (w) (h) (fill) (stroke) =
+    let fb1 = fb-rect fb x y w h fill
+    in let fb2 = fb-hline fb1 x (x + w) y stroke
+    in let fb3 = fb-hline fb2 x (x + w) (y + h) stroke
+    in let fb4 = fb-line fb3 x y x (y + h) stroke
+    in fb-line fb4 (x + w) y (x + w) (y + h) stroke
+
+  render-diamond : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-diamond (fb) (x) (y) (w) (h) (fill) (stroke) =
+    let cx = x + w / 2
+    in let cy = y + h / 2
+    in let fb1 = fb-tri fb cx y (x + w) cy x cy fill
+    in let fb2 = fb-tri fb1 x cy (x + w) cy cx (y + h) fill
+    in let fb3 = fb-line fb2 cx y (x + w) cy stroke
+    in let fb4 = fb-line fb3 (x + w) cy cx (y + h) stroke
+    in let fb5 = fb-line fb4 cx (y + h) x cy stroke
+    in fb-line fb5 x cy cx y stroke
+
+  render-oval : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-oval (fb) (x) (y) (w) (h) (fill) (stroke) =
+    let cx = x + w / 2
+    in let cy = y + h / 2
+    in let rx = w / 2
+    in let ry = h / 2
+    in let fb1 = fb-circle-filled fb cx cy (rx + ry) / 2 fill
+    in fb-circle fb1 cx cy (rx + ry) / 2 stroke
+
+  render-circle-shape : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-circle-shape (fb) (x) (y) (w) (h) (fill) (stroke) =
+    let cx = x + w / 2
+    in let cy = y + h / 2
+    in let r = if w < h then w / 2 else h / 2
+    in let fb1 = fb-circle-filled fb cx cy r fill
+    in fb-circle fb1 cx cy r stroke
+
+  render-hexagon : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-hexagon (fb) (x) (y) (w) (h) (fill) (stroke) =
+    let inset = w / 4
+    in let fb1 = fb-rect fb (x + inset) y (w - inset * 2) h fill
+    in let fb2 = fb-line fb1 (x + inset) y x (y + h / 2) stroke
+    in let fb3 = fb-line fb2 x (y + h / 2) (x + inset) (y + h) stroke
+    in let fb4 = fb-line fb3 (x + inset) (y + h) (x + w - inset) (y + h) stroke
+    in let fb5 = fb-line fb4 (x + w - inset) (y + h) (x + w) (y + h / 2) stroke
+    in let fb6 = fb-line fb5 (x + w) (y + h / 2) (x + w - inset) y stroke
+    in fb-line fb6 (x + w - inset) y (x + inset) y stroke
+
+  render-parallelogram : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-parallelogram (fb) (x) (y) (w) (h) (fill) (stroke) =
+    let skew = w / 5
+    in let fb1 = fb-rect fb (x + skew) y (w - skew) h fill
+    in let fb2 = fb-line fb1 (x + skew) y (x + w) y stroke
+    in let fb3 = fb-line fb2 (x + w) y (x + w - skew) (y + h) stroke
+    in let fb4 = fb-line fb3 (x + w - skew) (y + h) x (y + h) stroke
+    in fb-line fb4 x (y + h) (x + skew) y stroke
+
+  render-triangle-shape : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-triangle-shape (fb) (x) (y) (w) (h) (fill) (stroke) =
+    let fb1 = fb-tri fb (x + w / 2) y x (y + h) (x + w) (y + h) fill
+    in let fb2 = fb-line fb1 (x + w / 2) y (x + w) (y + h) stroke
+    in let fb3 = fb-line fb2 (x + w) (y + h) x (y + h) stroke
+    in fb-line fb3 x (y + h) (x + w / 2) y stroke
+
+  render-actor : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-actor (fb) (x) (y) (w) (h) (stroke) =
+    let cx = x + w / 2
+    in let head-r = w / 6
+    in let head-y = y + head-r
+    in let body-top = y + head-r * 2 + 2
+    in let body-mid = y + h / 2
+    in let body-bot = y + h
+    in let fb1 = fb-circle fb cx head-y head-r stroke
+    in let fb2 = fb-line fb1 cx body-top cx body-mid stroke
+    in let fb3 = fb-line fb2 x (body-top + 8) (x + w) (body-top + 8) stroke
+    in let fb4 = fb-line fb3 cx body-mid x body-bot stroke
+    in fb-line fb4 cx body-mid (x + w) body-bot stroke
+
+  render-compartment : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-compartment (fb) (x) (y) (w) (h) (fill) (stroke) (sections) =
+    let fb1 = render-filled-rect fb x y w h fill stroke
+    in render-compartment-lines fb1 x y w h sections 1
+
+  render-compartment-lines : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-compartment-lines (fb) (x) (y) (w) (h) (sections) (i) =
+    if i >= sections then fb
+    else let line-y = y + h * i / sections
+    in let fb2 = fb-hline fb x (x + w) line-y #333333
+    in render-compartment-lines fb2 x y w h sections (i + 1)
+
+Section: Edge Rendering
+
+  render-all-edges : Framebuf, Diagram, Integer, Integer -> Framebuf
+  render-all-edges (fb) (dg) (sx) (sy) =
+    render-edges-loop fb dg.dg-edges dg.dg-nodes sx sy 0
+
+  render-edges-loop : Framebuf, List DiagramEdge, List DiagramNode, Integer, Integer, Integer -> Framebuf
+  render-edges-loop (fb) (edges) (nodes) (sx) (sy) (i) =
+    if i >= list-length edges then fb
+    else let edge = list-at edges i
+    in let fb2 = render-edge fb edge nodes sx sy
+    in render-edges-loop fb2 edges nodes sx sy (i + 1)
+
+  render-edge : Framebuf, DiagramEdge, List DiagramNode, Integer, Integer -> Framebuf
+  render-edge (fb) (e) (nodes) (sx) (sy) =
+    let src = find-node-in nodes e.de-source
+    in let tgt = find-node-in nodes e.de-target
+    in when src
+      is None -> fb
+      is Just (s) -> when tgt
+        is None -> fb
+        is Just (t) ->
+          let sc = node-center s
+          in let tc = node-center t
+          in let x1 = sc.v2x - sx
+          in let y1 = sc.v2y - sy
+          in let x2 = tc.v2x - sx
+          in let y2 = tc.v2y - sy
+          in let fb1 = fb-line fb x1 y1 x2 y2 e.de-style.es-line-color
+          in let fb2 = render-arrow-head fb1 x1 y1 x2 y2 e.de-style.es-tgt-end e.de-style.es-line-color
+          in fb2
+
+  render-arrow-head : Framebuf, Integer, Integer, Integer, Integer, EdgeEndType, Integer -> Framebuf
+  render-arrow-head (fb) (x1) (y1) (x2) (y2) (end-type) (color) =
+    when end-type
+      is EndNone -> fb
+      is EndArrow ->
+        let dx = x2 - x1
+        in let dy = y2 - y1
+        in let len = rast-isqrt (dx * dx + dy * dy)
+        in if len == 0 then fb
+        else let ax = dx * 12 / len
+          in let ay = dy * 12 / len
+          in let px = 0 - ay / 2
+          in let py = ax / 2
+          in let fb1 = fb-line fb x2 y2 (x2 - ax + px) (y2 - ay + py) color
+          in fb-line fb1 x2 y2 (x2 - ax - px) (y2 - ay - py) color
+      is EndFilledDiamond ->
+        let dx = x2 - x1
+        in let dy = y2 - y1
+        in let len = rast-isqrt (dx * dx + dy * dy)
+        in if len == 0 then fb
+        else let ax = dx * 10 / len
+          in let ay = dy * 10 / len
+          in let px = 0 - ay / 2
+          in let py = ax / 2
+          in fb-tri fb x2 y2 (x2 - ax * 2 + px) (y2 - ay * 2 + py) (x2 - ax * 2 - px) (y2 - ay * 2 - py) color
+      is otherwise -> fb
+
+Section: Label Rendering
+
+  render-labels : Framebuf, Diagram, Integer, Integer -> Framebuf
+  render-labels (fb) (dg) (sx) (sy) =
+    render-node-labels (render-edge-labels fb dg sx sy) dg sx sy
+
+  render-node-labels : Framebuf, Diagram, Integer, Integer -> Framebuf
+  render-node-labels (fb) (dg) (sx) (sy) =
+    render-node-labels-loop fb dg.dg-nodes sx sy 0
+
+  render-node-labels-loop : Framebuf, List DiagramNode, Integer, Integer, Integer -> Framebuf
+  render-node-labels-loop (fb) (nodes) (sx) (sy) (i) =
+    if i >= list-length nodes then fb
+    else let node = list-at nodes i
+    in let label-x = node.dn-x - sx + node.dn-width / 2 - text-length node.dn-label * 3
+    in let label-y = node.dn-y - sy + node.dn-height / 2 - 4
+    in let fb2 = render-text-at fb label-x label-y node.dn-label node.dn-style.ns-text-color
+    in render-node-labels-loop fb2 nodes sx sy (i + 1)
+
+  render-edge-labels : Framebuf, Diagram, Integer, Integer -> Framebuf
+  render-edge-labels (fb) (dg) (sx) (sy) =
+    render-edge-labels-loop fb dg.dg-edges dg.dg-nodes sx sy 0
+
+  render-edge-labels-loop : Framebuf, List DiagramEdge, List DiagramNode, Integer, Integer, Integer -> Framebuf
+  render-edge-labels-loop (fb) (edges) (nodes) (sx) (sy) (i) =
+    if i >= list-length edges then fb
+    else let edge = list-at edges i
+    in if text-length edge.de-label == 0
+      then render-edge-labels-loop fb edges nodes sx sy (i + 1)
+      else let src = find-node-in nodes edge.de-source
+        in let tgt = find-node-in nodes edge.de-target
+        in let fb2 = render-edge-label fb edge src tgt sx sy
+        in render-edge-labels-loop fb2 edges nodes sx sy (i + 1)
+
+  render-edge-label : Framebuf, DiagramEdge, Maybe DiagramNode, Maybe DiagramNode, Integer, Integer -> Framebuf
+  render-edge-label (fb) (e) (src) (tgt) (sx) (sy) =
+    when src
+      is None -> fb
+      is Just (s) -> when tgt
+        is None -> fb
+        is Just (t) ->
+          let mx = (s.dn-x + s.dn-width / 2 + t.dn-x + t.dn-width / 2) / 2 - sx
+          in let my = (s.dn-y + s.dn-height / 2 + t.dn-y + t.dn-height / 2) / 2 - sy
+          in let lx = mx - text-length e.de-label * 3
+          in render-text-at fb lx (my - 4) e.de-label #333333
+
+  render-text-at : Framebuf, Integer, Integer, Text, Integer -> Framebuf
+  render-text-at (fb) (x) (y) (text) (color) =
+    render-text-chars fb x y text color 0
+
+  render-text-chars : Framebuf, Integer, Integer, Text, Integer, Integer -> Framebuf
+  render-text-chars (fb) (x) (y) (text) (color) (i) =
+    if i >= text-length text then fb
+    else let char-x = x + i * 6
+    in let fb2 = render-char-placeholder fb char-x y color
+    in render-text-chars fb2 x y text color (i + 1)
+
+  render-char-placeholder : Framebuf, Integer, Integer, Integer -> Framebuf
+  render-char-placeholder (fb) (x) (y) (color) =
+    fb-rect fb x y 5 7 color
+
+Section: Selection Handles
+
+  render-selection-handles : Framebuf, Diagram, List Integer, Integer, Integer -> Framebuf
+  render-selection-handles (fb) (dg) (ids) (sx) (sy) =
+    render-sel-loop fb dg.dg-nodes ids sx sy 0
+
+  render-sel-loop : Framebuf, List DiagramNode, List Integer, Integer, Integer, Integer -> Framebuf
+  render-sel-loop (fb) (nodes) (ids) (sx) (sy) (i) =
+    if i >= list-length ids then fb
+    else let id = list-at ids i
+    in let node = find-node-in nodes id
+    in let fb2 = when node
+          is None -> fb
+          is Just (n) -> render-handles fb n sx sy
+    in render-sel-loop fb2 nodes ids sx sy (i + 1)
+
+  render-handles : Framebuf, DiagramNode, Integer, Integer -> Framebuf
+  render-handles (fb) (n) (sx) (sy) =
+    let x = n.dn-x - sx
+    in let y = n.dn-y - sy
+    in let w = n.dn-width
+    in let h = n.dn-height
+    in let hs = 4
+    in let c = selection-handle-color
+    in let fb1 = fb-rect fb (x - hs) (y - hs) (hs * 2) (hs * 2) c
+    in let fb2 = fb-rect fb1 (x + w - hs) (y - hs) (hs * 2) (hs * 2) c
+    in let fb3 = fb-rect fb2 (x - hs) (y + h - hs) (hs * 2) (hs * 2) c
+    in let fb4 = fb-rect fb3 (x + w - hs) (y + h - hs) (hs * 2) (hs * 2) c
+    in let fb5 = fb-rect fb4 (x + w / 2 - hs) (y - hs) (hs * 2) (hs * 2) c
+    in let fb6 = fb-rect fb5 (x + w / 2 - hs) (y + h - hs) (hs * 2) (hs * 2) c
+    in let fb7 = fb-rect fb6 (x - hs) (y + h / 2 - hs) (hs * 2) (hs * 2) c
+    in fb-rect fb7 (x + w - hs) (y + h / 2 - hs) (hs * 2) (hs * 2) c

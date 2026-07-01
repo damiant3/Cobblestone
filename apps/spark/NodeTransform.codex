@@ -1,0 +1,134 @@
+Chapter: NodeTransform
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+
+ Hierarchical transform with parent-child composition. Each node
+ stores local position, rotation, scale and computes a world
+ matrix by multiplying parent transforms down the chain.
+
+ We say:
+
+Section: Types
+
+  Transform3D = record {
+    t3-position : Vec3,
+    t3-rotation : Quat,
+    t3-scale : Vec3,
+    t3-parent : Integer
+  }
+
+  TransformHierarchy = record {
+    th-transforms : List Transform3D,
+    th-count : Integer
+  }
+
+Section: Construction
+
+  transform-identity : Transform3D
+  transform-identity = Transform3D {
+    t3-position = vec3-zero,
+    t3-rotation = quat-identity,
+    t3-scale = vec3-new 1.0 1.0 1.0,
+    t3-parent = -1
+  }
+
+  transform-hierarchy-new : TransformHierarchy
+  transform-hierarchy-new = TransformHierarchy {
+    th-transforms = [],
+    th-count = 0
+  }
+
+  transform-new : Vec3, Quat, Vec3 -> Transform3D
+  transform-new (pos) (rot) (scale) = Transform3D {
+    t3-position = pos,
+    t3-rotation = rot,
+    t3-scale = scale,
+    t3-parent = -1
+  }
+
+Section: Hierarchy Operations
+
+  th-add : TransformHierarchy, Transform3D -> TransformHierarchy
+  th-add (h) (t) = TransformHierarchy {
+    th-transforms = list-push (h.th-transforms) t,
+    th-count = h.th-count + 1
+  }
+
+  th-add-child : TransformHierarchy, Transform3D, Integer -> TransformHierarchy
+  th-add-child (h) (t) (parent-idx) =
+    let child = __record-set t "t3-parent" parent-idx
+    in th-add h child
+
+  th-get : TransformHierarchy, Integer -> Transform3D
+  th-get (h) (i) = list-at (h.th-transforms) i
+
+  th-set-position : TransformHierarchy, Integer, Vec3 -> TransformHierarchy
+  th-set-position (h) (i) (pos) =
+    let t = th-get h i
+    in let updated = __record-set t "t3-position" pos
+    in __record-set h "th-transforms" (list-set-at (h.th-transforms) i updated)
+
+  th-set-rotation : TransformHierarchy, Integer, Quat -> TransformHierarchy
+  th-set-rotation (h) (i) (rot) =
+    let t = th-get h i
+    in let updated = __record-set t "t3-rotation" rot
+    in __record-set h "th-transforms" (list-set-at (h.th-transforms) i updated)
+
+  th-set-scale : TransformHierarchy, Integer, Vec3 -> TransformHierarchy
+  th-set-scale (h) (i) (scale) =
+    let t = th-get h i
+    in let updated = __record-set t "t3-scale" scale
+    in __record-set h "th-transforms" (list-set-at (h.th-transforms) i updated)
+
+Section: Matrix Computation
+
+  transform-local-matrix : Transform3D -> Mat4
+  transform-local-matrix (t) =
+    let trans = mat4-translate (t.t3-position.vx) (t.t3-position.vy) (t.t3-position.vz)
+    in let rot = mat4-from-quat (t.t3-rotation)
+    in let scl = mat4-scale (t.t3-scale.vx) (t.t3-scale.vy) (t.t3-scale.vz)
+    in mat4-mul (mat4-mul trans rot) scl
+
+  th-world-matrix : TransformHierarchy, Integer -> Mat4
+  th-world-matrix (h) (i) =
+    let t = th-get h i
+    in let local = transform-local-matrix t
+    in if t.t3-parent < 0 then local
+    else let parent-world = th-world-matrix h (t.t3-parent)
+    in mat4-mul parent-world local
+
+  th-world-position : TransformHierarchy, Integer -> Vec3
+  th-world-position (h) (i) =
+    let m = th-world-matrix h i
+    in vec3-new (mat4-at m 0 3) (mat4-at m 1 3) (mat4-at m 2 3)
+
+Section: Transform Operations
+
+  transform-translate : Transform3D, Vec3 -> Transform3D
+  transform-translate (t) (offset) =
+    let p = t.t3-position
+    in __record-set t "t3-position" (vec3-add p offset)
+
+  transform-rotate-euler : Transform3D, Real, Real, Real -> Transform3D
+  transform-rotate-euler (t) (pitch) (yaw) (roll) =
+    let rx = quat-rotate-x pitch
+    in let ry = quat-rotate-y yaw
+    in let rz = quat-rotate-z roll
+    in let delta = quat-multiply (quat-multiply rx ry) rz
+    in __record-set t "t3-rotation" (quat-multiply (t.t3-rotation) delta)
+
+  transform-scale-uniform : Transform3D, Real -> Transform3D
+  transform-scale-uniform (t) (factor) =
+    let s = t.t3-scale
+    in __record-set t "t3-scale" (vec3-new (s.vx * factor) (s.vy * factor) (s.vz * factor))
+
+Section: Info
+
+  transform-info : Transform3D -> Text
+  transform-info (t) =
+    "pos=(" & show (t.t3-position.vx) & "," & show (t.t3-position.vy) & "," & show (t.t3-position.vz) & ")"
+
+  th-info : TransformHierarchy -> Text
+  th-info (h) = show (h.th-count) & " nodes"
+
+Page 1

@@ -1,0 +1,111 @@
+Chapter: Lwm2m
+  cites Encode chapter Coap
+
+ LwM2M (Lightweight M2M) client protocol per OMA-TS-LightweightM2M.
+ Builds on CoAP for device management, firmware update, and
+ bootstrap. Object/resource model with TLV encoding per
+ OMA-TS-LightweightM2M-V1_1. Pure logic -- no I/O.
+
+ We say:
+
+Section: Object IDs (OMA registry)
+  lwm2m-obj-security : Integer = 0
+  lwm2m-obj-server : Integer = 1
+  lwm2m-obj-access-control : Integer = 2
+  lwm2m-obj-device : Integer = 3
+  lwm2m-obj-connectivity : Integer = 4
+  lwm2m-obj-firmware : Integer = 5
+  lwm2m-obj-location : Integer = 6
+  lwm2m-obj-connectivity-stats : Integer = 7
+
+Section: URI Builders
+  lwm2m-uri : Integer, Integer, Integer -> Text
+  lwm2m-uri (object-id) (instance-id) (resource-id) =
+    "/" & show object-id & "/" & show instance-id & "/" & show resource-id
+
+  lwm2m-object-uri : Integer, Integer -> Text
+  lwm2m-object-uri (object-id) (instance-id) =
+    "/" & show object-id & "/" & show instance-id
+
+Section: TLV Encoding (OMA-TS-LightweightM2M-V1_1 Section 6.4.3)
+  lwm2m-encode-tlv-resource : Integer, List Integer -> List Integer
+  lwm2m-encode-tlv-resource (resource-id) (value) =
+    let len = list-length value
+    in let type-byte = if resource-id < 256
+      then if len < 8 then bit-or 192 len
+        else if len < 256 then 200
+        else 216
+      else if len < 8 then bit-or 224 len
+        else if len < 256 then 232
+        else 248
+    in let id-bytes = if resource-id < 256 then [resource-id]
+      else [bit-shru resource-id 8, bit-and resource-id 255]
+    in let len-bytes = if len < 8 then []
+      else if len < 256 then [len]
+      else [bit-shru len 8, bit-and len 255]
+    in [type-byte] & id-bytes & len-bytes & value
+
+Section: Registration
+  Lwm2mRegistration = record {
+    endpoint : Text,
+    lifetime : Integer between 0 and 4294967295,
+    binding : Text,
+    objects : List Integer
+  }
+
+  default-lwm2m-registration : Lwm2mRegistration
+  default-lwm2m-registration = Lwm2mRegistration {
+    endpoint = "codex-device",
+    lifetime = 300,
+    binding = "U",
+    objects = [lwm2m-obj-device, lwm2m-obj-firmware]
+  }
+
+  lwm2m-registration-path : Lwm2mRegistration -> Text
+  lwm2m-registration-path (reg) =
+    "/rd?ep=" & reg.endpoint & "&lt=" & show (reg.lifetime) & "&b=" & reg.binding
+
+  lwm2m-registration-payload : Lwm2mRegistration -> Text
+  lwm2m-registration-payload (reg) =
+    lwm2m-link-list (reg.objects) 0 (list-length (reg.objects)) ""
+
+  lwm2m-link-list : List Integer, Integer, Integer, Text -> Text
+  lwm2m-link-list (objs) (i) (n) (acc) =
+    if i >= n then acc
+    else let link = "</" & show (list-at objs i) & ">"
+    in let sep = if i > 0 then "," else ""
+    in lwm2m-link-list objs (i + 1) n (acc & sep & link)
+
+Section: Firmware Update Object (Object 5)
+  lwm2m-res-fw-package : Integer = 0
+  lwm2m-res-fw-package-uri : Integer = 1
+  lwm2m-res-fw-update : Integer = 2
+  lwm2m-res-fw-state : Integer = 3
+  lwm2m-res-fw-result : Integer = 5
+
+  LwmFirmwareState =
+    | FwIdle
+    | FwDownloading
+    | FwDownloaded
+    | FwUpdating
+
+  lwm2m-fw-state-value : LwmFirmwareState -> Integer
+  lwm2m-fw-state-value (s) =
+    when s
+      is FwIdle -> 0
+      is FwDownloading -> 1
+      is FwDownloaded -> 2
+      is FwUpdating -> 3
+
+Section: Device Object (Object 3)
+  lwm2m-res-manufacturer : Integer = 0
+  lwm2m-res-model : Integer = 1
+  lwm2m-res-serial : Integer = 2
+  lwm2m-res-firmware-version : Integer = 3
+  lwm2m-res-reboot : Integer = 4
+  lwm2m-res-battery-level : Integer = 9
+  lwm2m-res-memory-free : Integer = 10
+  lwm2m-res-error-code : Integer = 11
+  lwm2m-res-current-time : Integer = 13
+
+Page 1

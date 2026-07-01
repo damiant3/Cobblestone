@@ -1,0 +1,219 @@
+Chapter: Plotting
+  cites Mathbook chapter Expr
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Function plotter. Evaluates an expression at sample points across
+ an x-range, produces a list of (x, y) pairs, and renders them as
+ a widget (the HTML plug emits a canvas-based chart). Supports
+ multiple series, axis labels, grid lines, and auto-scaling.
+
+Section: Plot Types
+
+  PlotKind =
+    | PlotLine
+    | PlotScatter
+    | PlotBar
+    | PlotHistogram
+    | PlotParametric
+    | PlotPolar
+    | PlotVector
+
+  pk-label : PlotKind -> Text
+  pk-label (k) = when k
+    is PlotLine -> "line"
+    is PlotScatter -> "scatter"
+    is PlotBar -> "bar"
+    is PlotHistogram -> "histogram"
+    is PlotParametric -> "parametric"
+    is PlotPolar -> "polar"
+    is PlotVector -> "vector"
+
+Section: Sample Point
+
+  PlotPoint = record { pp-x : Integer, pp-y : Integer }
+
+  PlotSeries = record {
+    ps-label : Text,
+    ps-expr : Expr,
+    ps-var : Text,
+    ps-kind : PlotKind,
+    ps-color : Integer,
+    ps-points : List PlotPoint,
+    ps-point-count : Integer,
+    ps-y-min : Integer,
+    ps-y-max : Integer
+  }
+
+Section: Plot Range
+
+  PlotRange = record {
+    pr-x-min : Integer,
+    pr-x-max : Integer,
+    pr-y-min : Integer,
+    pr-y-max : Integer,
+    pr-x-label : Text,
+    pr-y-label : Text,
+    pr-title : Text,
+    pr-samples : Integer,
+    pr-grid : Boolean,
+    pr-axes : Boolean
+  }
+
+  default-range : PlotRange
+  default-range = PlotRange {
+    pr-x-min = -10, pr-x-max = 10,
+    pr-y-min = -10, pr-y-max = 10,
+    pr-x-label = "x", pr-y-label = "y",
+    pr-title = "", pr-samples = 200,
+    pr-grid = True, pr-axes = True
+  }
+
+  range-with-x : PlotRange, Integer, Integer -> PlotRange
+  range-with-x (r) (lo) (hi) = __record-set (__record-set r "pr-x-min" lo) "pr-x-max" hi
+
+  range-with-y : PlotRange, Integer, Integer -> PlotRange
+  range-with-y (r) (lo) (hi) = __record-set (__record-set r "pr-y-min" lo) "pr-y-max" hi
+
+  range-with-title : PlotRange, Text -> PlotRange
+  range-with-title (r) (title) = __record-set r "pr-title" title
+
+Section: Sampling
+
+  sample-expr : Expr, Text, Integer, Integer, Integer -> PlotSeries
+  sample-expr (e) (var) (x-min) (x-max) (n-samples) =
+    let step = if n-samples <= 1 then 1 else (x-max - x-min) * 1000 / (n-samples - 1)
+    in let points = sample-loop e var x-min step 0 n-samples [] 999999 (negate 999999)
+    in PlotSeries {
+      ps-label = ex-print e,
+      ps-expr = e,
+      ps-var = var,
+      ps-kind = PlotLine,
+      ps-color = #4A90E2,
+      ps-points = points.sp-points,
+      ps-point-count = n-samples,
+      ps-y-min = points.sp-min,
+      ps-y-max = points.sp-max
+    }
+
+  SampleProgress = record { sp-points : List PlotPoint, sp-min : Integer, sp-max : Integer }
+
+  sample-loop : Expr, Text, Integer, Integer, Integer, Integer, List PlotPoint, Integer, Integer -> SampleProgress
+  sample-loop (e) (var) (x-min) (step) (i) (n) (acc) (y-min) (y-max) =
+    if i >= n then SampleProgress { sp-points = acc, sp-min = y-min, sp-max = y-max }
+    else let x = x-min + i * step / 1000
+    in let y-expr = ex-eval (ex-subst e var (ExInt x))
+    in let y = ex-to-int y-expr
+    in let new-min = if y < y-min then y else y-min
+    in let new-max = if y > y-max then y else y-max
+    in let point = PlotPoint { pp-x = x, pp-y = y }
+    in sample-loop e var x-min step (i + 1) n (list-push acc point) new-min new-max
+
+  sample-parametric : Expr, Expr, Text, Integer, Integer, Integer -> PlotSeries
+  sample-parametric (x-expr) (y-expr) (param) (t-min) (t-max) (n) =
+    let step = if n <= 1 then 1 else (t-max - t-min) * 1000 / (n - 1)
+    in let points = param-loop x-expr y-expr param t-min step 0 n []
+    in PlotSeries {
+      ps-label = "(" & ex-print x-expr & ", " & ex-print y-expr & ")",
+      ps-expr = x-expr,
+      ps-var = param,
+      ps-kind = PlotParametric,
+      ps-color = #DD3044,
+      ps-points = points,
+      ps-point-count = n,
+      ps-y-min = 0, ps-y-max = 0
+    }
+
+  param-loop : Expr, Expr, Text, Integer, Integer, Integer, Integer, List PlotPoint -> List PlotPoint
+  param-loop (xe) (ye) (param) (t-min) (step) (i) (n) (acc) =
+    if i >= n then acc
+    else let t = t-min + i * step / 1000
+    in let x = ex-to-int (ex-eval (ex-subst xe param (ExInt t)))
+    in let y = ex-to-int (ex-eval (ex-subst ye param (ExInt t)))
+    in param-loop xe ye param t-min step (i + 1) n (list-push acc (PlotPoint { pp-x = x, pp-y = y }))
+
+Section: Auto Scale
+
+  auto-range : List PlotSeries, Integer, Integer -> PlotRange
+  auto-range (series) (i) (n) =
+    let bounds = series-bounds series i n 999999 (negate 999999) 999999 (negate 999999)
+    in let margin = (bounds.sb-y-max - bounds.sb-y-min) / 10 + 1
+    in PlotRange {
+      pr-x-min = bounds.sb-x-min, pr-x-max = bounds.sb-x-max,
+      pr-y-min = bounds.sb-y-min - margin, pr-y-max = bounds.sb-y-max + margin,
+      pr-x-label = "x", pr-y-label = "y",
+      pr-title = "", pr-samples = 200,
+      pr-grid = True, pr-axes = True
+    }
+
+  SeriesBounds = record { sb-x-min : Integer, sb-x-max : Integer, sb-y-min : Integer, sb-y-max : Integer }
+
+  series-bounds : List PlotSeries, Integer, Integer, Integer, Integer, Integer, Integer -> SeriesBounds
+  series-bounds (series) (i) (n) (xmin) (xmax) (ymin) (ymax) =
+    if i >= n then SeriesBounds { sb-x-min = xmin, sb-x-max = xmax, sb-y-min = ymin, sb-y-max = ymax }
+    else let s = list-at series i
+    in let new-ymin = if s.ps-y-min < ymin then s.ps-y-min else ymin
+    in let new-ymax = if s.ps-y-max > ymax then s.ps-y-max else ymax
+    in series-bounds series (i + 1) n xmin xmax new-ymin new-ymax
+
+Section: Plot State
+
+  PlotState = record {
+    plt-series : List PlotSeries,
+    plt-series-count : Integer,
+    plt-range : PlotRange,
+    plt-width : Integer,
+    plt-height : Integer,
+    plt-auto-scale : Boolean,
+    plt-show-legend : Boolean
+  }
+
+  plot-new : Integer, Integer -> PlotState
+  plot-new (w) (h) = PlotState {
+    plt-series = [],
+    plt-series-count = 0,
+    plt-range = default-range,
+    plt-width = w,
+    plt-height = h,
+    plt-auto-scale = True,
+    plt-show-legend = True
+  }
+
+  plot-add-series : PlotState, Expr, Text, Integer, Integer, Integer -> PlotState
+  plot-add-series (st) (e) (var) (x-min) (x-max) (n-samples) =
+    let series = sample-expr e var x-min x-max n-samples
+    in let new-series = list-push (st.plt-series) series
+    in let new-count = st.plt-series-count + 1
+    in let new-range = if st.plt-auto-scale then auto-range new-series 0 new-count else st.plt-range
+    in PlotState {
+      plt-series = new-series,
+      plt-series-count = new-count,
+      plt-range = new-range,
+      plt-width = st.plt-width,
+      plt-height = st.plt-height,
+      plt-auto-scale = st.plt-auto-scale,
+      plt-show-legend = st.plt-show-legend
+    }
+
+  plot-clear : PlotState -> PlotState
+  plot-clear (st) = __record-set (__record-set st "plt-series" []) "plt-series-count" 0
+
+Section: Widget Building
+
+  plot-widget : PlotState -> WidgetNode
+  plot-widget (st) =
+    let title-lbl = widget-label "plt-title" (st.plt-range).pr-title
+    in let canvas = widget-custom "plt-canvas" "plot" (st.plt-width) (st.plt-height)
+    in let x-axis = widget-label "plt-x" ((st.plt-range).pr-x-label & ": [" & show (st.plt-range).pr-x-min & ", " & show (st.plt-range).pr-x-max & "]")
+    in let y-axis = widget-label "plt-y" ((st.plt-range).pr-y-label & ": [" & show (st.plt-range).pr-y-min & ", " & show (st.plt-range).pr-y-max & "]")
+    in let legend = if st.plt-show-legend then plot-legend (st.plt-series) 0 (st.plt-series-count) [] else widget-label "plt-no-legend" ""
+    in widget-panel "plot" DirColumn 4 [title-lbl, canvas, x-axis, y-axis, legend]
+
+  plot-legend : List PlotSeries, Integer, Integer, List WidgetNode -> WidgetNode
+  plot-legend (series) (i) (n) (acc) =
+    if i >= n then widget-panel "legend" DirRow 8 acc
+    else let s = list-at series i
+    in let item = widget-label ("leg-" & show i) (s.ps-label)
+    in plot-legend series (i + 1) n (list-push acc item)
+
+Page 1

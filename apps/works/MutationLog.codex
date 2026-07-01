@@ -1,0 +1,165 @@
+Chapter: MutationLog
+  cites Works chapter Annotation
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+
+ Append-only, CRC-framed mutation log for annotation operations.
+ Every mutation (annotate, discuss, retract) is recorded as a log
+ entry with its depot CL at time of write. The log is the source
+ of truth; JSON sidecars are materialized views.
+
+ To log-empty gives an empty MutationLog.
+ To log-append gives a MutationLog with a new entry appended.
+ To log-entries gives the list of all entries in append order.
+ To log-entry-count gives the number of entries.
+ To log-is-stale gives True when entries exist with depot-cl older than the given CL.
+ To log-since gives entries appended after the given sequence number.
+ To log-replay gives an AnnotationStore rebuilt by replaying all entries.
+
+ We say:
+
+Section: Entry Types
+
+  MutationOp =
+    | OpAnnotate
+    | OpDiscuss
+    | OpRetract
+
+  LogEntry = record {
+    seq : Integer,
+    op : MutationOp,
+    target : AnnotationTarget,
+    kind : AnnotationKind,
+    author : Text,
+    body : Text,
+    timestamp : Integer,
+    depot-cl : Integer,
+    crc : Text
+  }
+
+Section: Log Structure
+
+  MutationLog = record {
+    entries : List LogEntry,
+    entry-count : Integer,
+    next-seq : Integer
+  }
+
+  log-empty : MutationLog = MutationLog { entries = [], entry-count = 0, next-seq = 1 }
+
+Section: Append
+
+  log-append : MutationLog, MutationOp, AnnotationTarget, AnnotationKind, Text, Text, Integer, Integer -> MutationLog
+  log-append (log) (op) (target) (kind) (author) (body) (ts) (cl) =
+    let content = log-entry-content (log.next-seq) op target kind author body ts cl
+    in let crc = sha256-to-hex (sha256 (text-to-bytes content))
+    in let entry = LogEntry {
+      seq = log.next-seq,
+      op = op,
+      target = target,
+      kind = kind,
+      author = author,
+      body = body,
+      timestamp = ts,
+      depot-cl = cl,
+      crc = crc
+    }
+    in MutationLog {
+      entries = list-push (log.entries) entry,
+      entry-count = log.entry-count + 1,
+      next-seq = log.next-seq + 1
+    }
+
+  log-entry-content : Integer, MutationOp, AnnotationTarget, AnnotationKind, Text, Text, Integer, Integer -> Text
+  log-entry-content (seq) (op) (target) (kind) (author) (body) (ts) (cl) =
+    show seq & "|" & op-name op & "|" & target-key target & "|" & annotation-kind-name kind & "|" & author & "|" & body & "|" & show ts & "|" & show cl
+
+  op-name : MutationOp -> Text
+  op-name (op) = when op
+    is OpAnnotate -> "annotate"
+    is OpDiscuss -> "discuss"
+    is OpRetract -> "retract"
+
+Section: Queries
+
+  log-entries : MutationLog -> List LogEntry
+  log-entries (log) = log.entries
+
+  log-entry-count : MutationLog -> Integer
+  log-entry-count (log) = log.entry-count
+
+  log-is-stale : MutationLog, Integer -> Boolean
+  log-is-stale (log) (current-cl) =
+    log-stale-check (log.entries) current-cl 0 (log.entry-count)
+
+  log-stale-check : List LogEntry, Integer, Integer, Integer -> Boolean
+  log-stale-check (entries) (current-cl) (i) (len) =
+    if i >= len then False
+    else if (list-at entries i).depot-cl < current-cl then True
+    else log-stale-check entries current-cl (i + 1) len
+
+  log-since : MutationLog, Integer -> List LogEntry
+  log-since (log) (after-seq) =
+    log-since-loop (log.entries) after-seq 0 (log.entry-count) []
+
+  log-since-loop : List LogEntry, Integer, Integer, Integer, List LogEntry -> List LogEntry
+  log-since-loop (entries) (after-seq) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.seq > after-seq then log-since-loop entries after-seq (i + 1) len (list-push acc e)
+    else log-since-loop entries after-seq (i + 1) len acc
+
+Section: Replay
+
+  log-replay : MutationLog -> AnnotationStore
+  log-replay (log) = log-replay-loop (log.entries) 0 (log.entry-count) annotation-store-empty
+
+  log-replay-loop : List LogEntry, Integer, Integer, AnnotationStore -> AnnotationStore
+  log-replay-loop (entries) (i) (len) (store) =
+    if i >= len then store
+    else let e = list-at entries i
+    in let store2 = when e.op
+      is OpAnnotate -> annotation-store-add store (create-annotation (e.target) (e.kind) (e.author) (e.body) (e.timestamp))
+      is OpDiscuss -> store
+      is OpRetract -> store
+    in log-replay-loop entries (i + 1) len store2
+
+Section: Staleness Report
+
+  StalenessReport = record {
+    stale-count : Integer,
+    oldest-cl : Integer,
+    newest-cl : Integer
+  }
+
+  log-staleness-report : MutationLog, Integer -> StalenessReport
+  log-staleness-report (log) (current-cl) =
+    log-staleness-scan (log.entries) current-cl 0 (log.entry-count) 0 current-cl 0
+
+  log-staleness-scan : List LogEntry, Integer, Integer, Integer, Integer, Integer, Integer -> StalenessReport
+  log-staleness-scan (entries) (current-cl) (i) (len) (stale) (oldest) (newest) =
+    if i >= len then StalenessReport { stale-count = stale, oldest-cl = oldest, newest-cl = newest }
+    else let e = list-at entries i
+    in let is-stale = e.depot-cl < current-cl
+    in let new-stale = if is-stale then stale + 1 else stale
+    in let new-oldest = if e.depot-cl < oldest then e.depot-cl else oldest
+    in let new-newest = if e.depot-cl > newest then e.depot-cl else newest
+    in log-staleness-scan entries current-cl (i + 1) len new-stale new-oldest new-newest
+
+Section: Serialization Format
+
+  log-entry-to-line : LogEntry -> Text
+  log-entry-to-line (e) =
+    show (e.seq) & "|" & op-name (e.op) & "|" & target-key (e.target) & "|" & annotation-kind-name (e.kind) & "|" & e.author & "|" & e.body & "|" & show (e.timestamp) & "|" & show (e.depot-cl) & "|" & e.crc
+
+  log-to-text : MutationLog -> Text
+  log-to-text (log) = log-serialize-loop (log.entries) 0 (log.entry-count) ""
+
+  log-serialize-loop : List LogEntry, Integer, Integer, Text -> Text
+  log-serialize-loop (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let line = log-entry-to-line (list-at entries i)
+    in let sep = if i == 0 then "" else "\n"
+    in log-serialize-loop entries (i + 1) len (acc & sep & line)
+
+Page 1

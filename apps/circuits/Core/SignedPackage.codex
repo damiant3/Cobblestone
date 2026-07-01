@@ -1,0 +1,106 @@
+Chapter: SignedPackage
+  cites Foreword chapter List
+
+ Trust-lattice signed manufacturing packages. Every manufacturing
+ output from Codex Circuits is wrapped in a signed envelope that
+ carries Ed25519 signature, SHA-256 content hash, capability
+ manifest, and provenance chain.
+
+Section: Package Manifest
+
+  ManufacturingFileType =
+    | MfGerber (Text)
+    | MfDrill (Text)
+    | MfBom (Text)
+    | MfPickAndPlace (Text)
+    | MfOdb
+    | MfIpc2581
+    | MfAssemblyDrawing
+    | MfSchematicPdf
+    | MfReadme
+
+  ManifestEntry = record {
+    me-filename : Text,
+    me-file-type : ManufacturingFileType,
+    me-content-hash : Text,
+    me-size-bytes : Integer
+  }
+
+  PackageManifest = record {
+    pm-project-name : Text,
+    pm-revision : Text,
+    pm-generated-date : Text,
+    pm-generated-by : Text,
+    pm-tool-version : Text,
+    pm-entries : List ManifestEntry,
+    pm-entry-count : Integer,
+    pm-total-size : Integer
+  }
+
+  empty-manifest : Text, Text -> PackageManifest
+  empty-manifest (project) (revision) = PackageManifest {
+    pm-project-name = project,
+    pm-revision = revision,
+    pm-generated-date = "",
+    pm-generated-by = "",
+    pm-tool-version = "Codex Circuits 0.1.0",
+    pm-entries = [],
+    pm-entry-count = 0,
+    pm-total-size = 0
+  }
+
+  manifest-add-entry : PackageManifest, ManifestEntry -> PackageManifest
+  manifest-add-entry (m) (e) = PackageManifest {
+    pm-project-name = m.pm-project-name,
+    pm-revision = m.pm-revision,
+    pm-generated-date = m.pm-generated-date,
+    pm-generated-by = m.pm-generated-by,
+    pm-tool-version = m.pm-tool-version,
+    pm-entries = list-push m.pm-entries e,
+    pm-entry-count = m.pm-entry-count + 1,
+    pm-total-size = m.pm-total-size + e.me-size-bytes
+  }
+
+Section: Signature Envelope
+
+  SignatureEnvelope = record {
+    se-signer-pubkey : Text,
+    se-signature : Text,
+    se-content-hash : Text,
+    se-timestamp : Text,
+    se-capability-manifest : List Text
+  }
+
+Section: DRC Gate
+
+ A signed package records whether DRC passed at generation time.
+ A fab house can verify this without running DRC themselves.
+
+  DrcGateResult = record {
+    dg-passed : Integer,
+    dg-error-count : Integer,
+    dg-warning-count : Integer,
+    dg-exclusion-count : Integer,
+    dg-run-date : Text,
+    dg-rule-set-hash : Text
+  }
+
+Section: Signed Manufacturing Package
+
+  SignedManufacturingPackage = record {
+    smp-manifest : PackageManifest,
+    smp-signature : SignatureEnvelope,
+    smp-drc-gate : DrcGateResult,
+    smp-erc-gate : DrcGateResult,
+    smp-provenance-chain : List Text,
+    smp-format-version : Integer
+  }
+
+  package-summary : SignedManufacturingPackage -> Text
+  package-summary (p) =
+    let a = "Package: " & p.smp-manifest.pm-project-name & " rev " & p.smp-manifest.pm-revision
+    in let b = " | " & (show p.smp-manifest.pm-entry-count) & " files"
+    in let drc = if p.smp-drc-gate.dg-passed == 1 then "PASS" else "FAIL"
+    in let erc = if p.smp-erc-gate.dg-passed == 1 then "PASS" else "FAIL"
+    in let c = " | DRC: " & drc & " | ERC: " & erc & " | Signed by: " & p.smp-signature.se-signer-pubkey
+    in a & b & c

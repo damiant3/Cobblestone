@@ -1,0 +1,130 @@
+Chapter: OtaStateMachine
+
+  cites Foreword chapter OtaUpdate
+  cites Foreword chapter Maybe
+
+ Drives the OTA state machine through a complete firmware update
+ lifecycle: idle -> download -> verify -> activate, plus failure
+ and rollback paths.
+
+Section: Definitions
+
+  test-version : OtaVersion
+  test-version = ota-version-new 1 1000
+
+  new-version : OtaVersion
+  new-version = ota-version-new 2 2000
+
+  test-manifest : OtaManifest
+  test-manifest = OtaManifest {
+    firmware-uri = "codex://updates/v2.cdx",
+    firmware-size = 1024,
+    firmware-hash = [1, 2, 3],
+    version = new-version,
+    min-battery = 20,
+    requires-reboot = True
+  }
+
+  test-config : BootConfig
+  test-config = boot-config-new test-version
+
+  test-happy-path : Integer
+  test-happy-path =
+    let ctx = ota-context-new test-config test-version
+    in let ctx1 = ota-step ctx (EvManifestReceived test-manifest)
+    in let is-downloading = when ctx1.state
+         is OtaDownloading (r) (t) -> 1
+         is otherwise -> 0
+    in let ctx2 = ota-step ctx1 (EvBlockReceived [67, 68, 88, 0] 0)
+    in let ctx3 = ota-step ctx2 (EvGateAResult GateAPass)
+    in let gate-a-ok = if ctx3.gate-a-passed then 1 else 0
+    in let ctx4 = ota-step ctx3 (EvDownloadComplete)
+    in let is-downloaded = when ctx4.state
+         is OtaDownloaded -> 1
+         is otherwise -> 0
+    in let ctx5 = ota-step ctx4 (EvGateBResult GateBPass)
+    in let ctx6 = ota-step ctx5 (EvGateBResult GateBPass)
+    in let is-verified = when ctx6.state
+         is OtaVerified -> 1
+         is otherwise -> 0
+    in let ctx7 = ota-step ctx6 EvActivationConfirmed
+    in let is-activating = when ctx7.state
+         is OtaActivating -> 1
+         is otherwise -> 0
+    in is-downloading + gate-a-ok + is-downloaded + is-verified + is-activating
+
+  test-precondition-fail : Integer
+  test-precondition-fail =
+    let old-manifest = OtaManifest {
+      firmware-uri = "codex://updates/v0.cdx",
+      firmware-size = 512,
+      firmware-hash = [],
+      version = ota-version-new 0 500,
+      min-battery = 20,
+      requires-reboot = True
+    }
+    in let ctx = ota-context-new test-config test-version
+    in let ctx1 = ota-step ctx (EvManifestReceived old-manifest)
+    in when ctx1.state
+      is OtaFailed (reason) -> 1
+      is otherwise -> 0
+
+  test-gate-a-fail : Integer
+  test-gate-a-fail =
+    let ctx = ota-context-new test-config test-version
+    in let ctx1 = ota-step ctx (EvManifestReceived test-manifest)
+    in let ctx2 = ota-step ctx1 (EvGateAResult GateAFailMagic)
+    in when ctx2.state
+      is OtaFailed (reason) -> 1
+      is otherwise -> 0
+
+  test-gate-b-fail : Integer
+  test-gate-b-fail =
+    let ctx = ota-context-new test-config test-version
+    in let ctx1 = ota-step ctx (EvManifestReceived test-manifest)
+    in let ctx2 = ota-step ctx1 (EvGateAResult GateAPass)
+    in let ctx3 = ota-step ctx2 (EvDownloadComplete)
+    in let ctx4 = ota-step ctx3 (EvGateBResult (GateBFailIntegrity "bad hash"))
+    in let ctx5 = ota-step ctx4 (EvGateBResult (GateBFailIntegrity "bad hash"))
+    in when ctx5.state
+      is OtaFailed (reason) -> 1
+      is otherwise -> 0
+
+  test-rollback : Integer
+  test-rollback =
+    let ctx = ota-context-new test-config test-version
+    in let ctx1 = ota-step ctx (EvManifestReceived test-manifest)
+    in let ctx2 = ota-step ctx1 (EvGateAResult GateAPass)
+    in let ctx3 = ota-step ctx2 (EvDownloadComplete)
+    in let ctx4 = ota-step ctx3 (EvGateBResult GateBPass)
+    in let ctx5 = ota-step ctx4 (EvGateBResult GateBPass)
+    in let ctx6 = ota-step ctx5 EvActivationConfirmed
+    in let ctx7 = ota-step ctx6 (EvActivationFailed "flash write error")
+    in let is-rolling = when ctx7.state
+         is OtaRollingBack -> 1
+         is otherwise -> 0
+    in let ctx8 = ota-step ctx7 EvRollbackComplete
+    in let is-failed = when ctx8.state
+         is OtaFailed (reason) -> 1
+         is otherwise -> 0
+    in is-rolling + is-failed
+
+  test-abort : Integer
+  test-abort =
+    let ctx = ota-context-new test-config test-version
+    in let ctx1 = ota-step ctx (EvManifestReceived test-manifest)
+    in let ctx2 = ota-step ctx1 EvAbort
+    in when ctx2.state
+      is OtaIdle -> 1
+      is otherwise -> 0
+
+  opening : Integer =
+    let happy = test-happy-path
+    in let precond = test-precondition-fail
+    in let ga = test-gate-a-fail
+    in let gb = test-gate-b-fail
+    in let rb = test-rollback
+    in let ab = test-abort
+    in happy + precond + ga + gb + rb + ab
+
+Page 1

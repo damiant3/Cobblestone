@@ -1,0 +1,62 @@
+Chapter: CircuitsDisplay
+  cites Foreword chapter List
+  cites Game chapter Rasterizer
+
+ Bridge between Framebuf and the GOP hardware framebuffer.
+ Writes pixels to GOP at physical address #BF000000.
+ Pixels are BGRA 32-bit, row-major.
+
+Section: Constants
+
+  gop-fb-base : Integer = #BF000000
+
+Section: Types
+
+  GopDisplay = record {
+    gd-width : Integer,
+    gd-height : Integer,
+    gd-fb-addr : Integer
+  }
+
+Section: Construction
+
+  gop-display-new : Integer, Integer -> GopDisplay
+  gop-display-new (w) (h) = GopDisplay {
+    gd-width = w,
+    gd-height = h,
+    gd-fb-addr = gop-fb-base
+  }
+
+Section: Pixel Write
+
+  gop-put-pixel : GopDisplay, Integer, Integer, Integer -> Integer
+  gop-put-pixel (gd) (x) (y) (color) =
+    if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= gd.gd-width then 0
+    else if y >= gd.gd-height then 0
+    else let r = color / 65536
+    in let g = color / 256 - r * 256
+    in let b = color - color / 256 * 256
+    in let bgra = b + g * 256 + r * 65536
+    in poke-32 (gd.gd-fb-addr) ((y * gd.gd-width + x) * 4) bgra
+
+Section: Blit Framebuf to GOP
+
+  gop-blit : GopDisplay, Framebuf -> Integer
+  gop-blit (gd) (fb) =
+    gop-blit-row gd fb 0
+
+  gop-blit-row : GopDisplay, Framebuf, Integer -> Integer
+  gop-blit-row (gd) (fb) (y) =
+    if y >= fb.fb-height then 0
+    else if y >= gd.gd-height then 0
+    else let w = gop-blit-cols gd fb 0 y
+    in gop-blit-row gd fb (y + 1)
+
+  gop-blit-cols : GopDisplay, Framebuf, Integer, Integer -> Integer
+  gop-blit-cols (gd) (fb) (x) (y) =
+    if x >= fb.fb-width then 0
+    else let px = list-at (fb.fb-pixels) (y * fb.fb-width + x)
+    in let w = gop-put-pixel gd x y px
+    in gop-blit-cols gd fb (x + 1) y

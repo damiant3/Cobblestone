@@ -1,0 +1,147 @@
+Chapter: Collision3D
+  cites Sim chapter Collision
+  cites Engine chapter Mesh
+  cites Engine chapter Scene3D
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+
+ 3D collision integration. Generates axis-aligned bounding boxes
+ from meshes, tests scene nodes against each other, and produces
+ contact manifolds for physics response. Broadphase uses AABB
+ overlap, narrowphase uses sphere-sphere and sphere-AABB.
+
+ We say:
+
+Section: Scene Collider
+
+  SceneCollider = record {
+    sc-node-idx : Integer,
+    sc-aabb : AABB,
+    sc-radius : Integer,
+    sc-active : Boolean
+  }
+
+  ColliderSet = record {
+    cs-colliders : List SceneCollider,
+    cs-count : Integer
+  }
+
+  cs-new : ColliderSet
+  cs-new = ColliderSet { cs-colliders = [], cs-count = 0 }
+
+  cs-add : ColliderSet, Integer, AABB, Integer -> ColliderSet
+  cs-add (cs) (node-idx) (aabb) (radius) =
+    let collider = SceneCollider { sc-node-idx = node-idx, sc-aabb = aabb, sc-radius = radius, sc-active = True }
+    in ColliderSet { cs-colliders = list-push (cs.cs-colliders) collider, cs-count = cs.cs-count + 1 }
+
+  cs-from-mesh-bounds : MeshBounds, Integer -> AABB
+  cs-from-mesh-bounds (b) (node-idx) =
+    let cx = (b.mb-min-x + b.mb-max-x) / 2
+    in let cy = (b.mb-min-y + b.mb-max-y) / 2
+    in let cz = (b.mb-min-z + b.mb-max-z) / 2
+    in let hw = (b.mb-max-x - b.mb-min-x) / 2
+    in let hh = (b.mb-max-y - b.mb-min-y) / 2
+    in let hd = (b.mb-max-z - b.mb-min-z) / 2
+    in aabb-new cx cy cz hw hh hd
+
+Section: Contact
+
+  Contact3D = record {
+    c3d-node-a : Integer,
+    c3d-node-b : Integer,
+    c3d-normal-x : Integer,
+    c3d-normal-y : Integer,
+    c3d-normal-z : Integer,
+    c3d-penetration : Integer
+  }
+
+Section: Broadphase (AABB Overlap)
+
+  cs-broadphase : ColliderSet -> List Contact3D
+  cs-broadphase (cs) = cs-broad-outer (cs.cs-colliders) (cs.cs-count) 0 []
+
+  cs-broad-outer : List SceneCollider, Integer, Integer, List Contact3D -> List Contact3D
+  cs-broad-outer (colliders) (n) (i) (acc) =
+    if i >= n then acc
+    else let ci = list-at colliders i
+    in if ci.sc-active then
+      let acc2 = cs-broad-inner colliders n ci (i + 1) acc
+      in cs-broad-outer colliders n (i + 1) acc2
+    else cs-broad-outer colliders n (i + 1) acc
+
+  cs-broad-inner : List SceneCollider, Integer, SceneCollider, Integer, List Contact3D -> List Contact3D
+  cs-broad-inner (colliders) (n) (ci) (j) (acc) =
+    if j >= n then acc
+    else let cj = list-at colliders j
+    in if cj.sc-active then
+      let result = col-aabb-aabb (ci.sc-aabb) (cj.sc-aabb)
+      in if result.collides then
+        let contact = Contact3D { c3d-node-a = ci.sc-node-idx, c3d-node-b = cj.sc-node-idx, c3d-normal-x = result.normal-x, c3d-normal-y = result.normal-y, c3d-normal-z = result.normal-z, c3d-penetration = result.penetration }
+        in cs-broad-inner colliders n ci (j + 1) (list-push acc contact)
+      else cs-broad-inner colliders n ci (j + 1) acc
+    else cs-broad-inner colliders n ci (j + 1) acc
+
+Section: Raycast
+
+  RayHit3D = record {
+    rh-hit : Boolean,
+    rh-node : Integer,
+    rh-dist : Integer,
+    rh-normal-x : Integer,
+    rh-normal-y : Integer,
+    rh-normal-z : Integer
+  }
+
+  rh-miss : RayHit3D
+  rh-miss = RayHit3D { rh-hit = False, rh-node = -1, rh-dist = 999999, rh-normal-x = 0, rh-normal-y = 0, rh-normal-z = 0 }
+
+  cs-raycast : ColliderSet, Integer, Integer, Integer, Integer, Integer, Integer -> RayHit3D
+  cs-raycast (cs) (ox) (oy) (oz) (dx) (dy) (dz) = cs-ray-loop (cs.cs-colliders) (cs.cs-count) ox oy oz dx dy dz 0 rh-miss
+
+  cs-ray-loop : List SceneCollider, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, RayHit3D -> RayHit3D
+  cs-ray-loop (colliders) (n) (ox) (oy) (oz) (dx) (dy) (dz) (i) (best) =
+    if i >= n then best
+    else let ci = list-at colliders i
+    in if ci.sc-active then
+      let hit = cs-ray-aabb (ci.sc-aabb) ox oy oz dx dy dz
+      in let best2 = if hit.rh-hit then if hit.rh-dist < best.rh-dist then RayHit3D { rh-hit = True, rh-node = ci.sc-node-idx, rh-dist = hit.rh-dist, rh-normal-x = hit.rh-normal-x, rh-normal-y = hit.rh-normal-y, rh-normal-z = hit.rh-normal-z } else best else best
+      in cs-ray-loop colliders n ox oy oz dx dy dz (i + 1) best2
+    else cs-ray-loop colliders n ox oy oz dx dy dz (i + 1) best
+
+  cs-ray-aabb : AABB, Integer, Integer, Integer, Integer, Integer, Integer -> RayHit3D
+  cs-ray-aabb (box) (ox) (oy) (oz) (dx) (dy) (dz) =
+    let t-min-x = if dx == 0 then -999999 else (box.aabb-x - box.aabb-hw - ox) * 1000 / dx
+    in let t-max-x = if dx == 0 then 999999 else (box.aabb-x + box.aabb-hw - ox) * 1000 / dx
+    in let t-min-y = if dy == 0 then -999999 else (box.aabb-y - box.aabb-hh - oy) * 1000 / dy
+    in let t-max-y = if dy == 0 then 999999 else (box.aabb-y + box.aabb-hh - oy) * 1000 / dy
+    in let t-min-z = if dz == 0 then -999999 else (box.aabb-z - box.aabb-hd - oz) * 1000 / dz
+    in let t-max-z = if dz == 0 then 999999 else (box.aabb-z + box.aabb-hd - oz) * 1000 / dz
+    in let t-lo-x = c3d-min t-min-x t-max-x
+    in let t-hi-x = c3d-max t-min-x t-max-x
+    in let t-lo-y = c3d-min t-min-y t-max-y
+    in let t-hi-y = c3d-max t-min-y t-max-y
+    in let t-lo-z = c3d-min t-min-z t-max-z
+    in let t-hi-z = c3d-max t-min-z t-max-z
+    in let t-enter = c3d-max (c3d-max t-lo-x t-lo-y) t-lo-z
+    in let t-exit = c3d-min (c3d-min t-hi-x t-hi-y) t-hi-z
+    in if t-enter > t-exit then rh-miss
+    else if t-exit < 0 then rh-miss
+    else RayHit3D { rh-hit = True, rh-node = -1, rh-dist = if t-enter >= 0 then t-enter else t-exit, rh-normal-x = 0, rh-normal-y = 1000, rh-normal-z = 0 }
+
+Section: Helpers
+
+  c3d-min : Integer, Integer -> Integer
+  c3d-min (a) (b) = if a < b then a else b
+
+  c3d-max : Integer, Integer -> Integer
+  c3d-max (a) (b) = if a > b then a else b
+
+Section: Formatting
+
+  format-contact : Contact3D -> Text
+  format-contact (c) = "Contact(" & show (c.c3d-node-a) & " vs " & show (c.c3d-node-b) & " pen=" & show (c.c3d-penetration) & ")"
+
+  format-ray-hit : RayHit3D -> Text
+  format-ray-hit (rh) = if rh.rh-hit then "Hit(node=" & show (rh.rh-node) & " dist=" & show (rh.rh-dist) & ")" else "Miss"
+
+Page 1

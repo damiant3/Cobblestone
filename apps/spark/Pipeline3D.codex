@@ -1,0 +1,112 @@
+Chapter: Pipeline3D
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Game chapter Rasterizer
+  cites Spark chapter Mesh
+  cites Spark chapter DepthBuffer
+  cites Spark chapter SceneCamera
+  cites Spark chapter SceneLight
+
+ Software 3D rendering pipeline. Transforms triangle meshes through
+ model-view-projection, clips, rasterizes with depth testing and
+ flat shading. Real for world coordinates, integer pixels for
+ screen coordinates.
+
+ We say:
+
+Section: Types
+
+  RenderTarget = record {
+    rt-fb : Framebuf,
+    rt-db : DepthBuf
+  }
+
+  ScreenVert = record {
+    sv-sx : Integer,
+    sv-sy : Integer,
+    sv-sz : Integer
+  }
+
+Section: Construction
+
+  render-target-new : Integer, Integer, Integer -> RenderTarget
+  render-target-new (w) (h) (bg-color) = RenderTarget {
+    rt-fb = fb-new w h bg-color,
+    rt-db = depth-buf-new w h
+  }
+
+  render-target-clear : RenderTarget, Integer -> RenderTarget
+  render-target-clear (rt) (bg-color) = RenderTarget {
+    rt-fb = fb-new (rt.rt-fb.fb-width) (rt.rt-fb.fb-height) bg-color,
+    rt-db = depth-buf-clear (rt.rt-db)
+  }
+
+Section: Vertex Transform
+
+  pipe-project-vert : Mat4, Vec3, Integer, Integer -> ScreenVert
+  pipe-project-vert (mvp) (v) (vp-w) (vp-h) =
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1.0 })
+    in if clip.v4w <= 0.0 then ScreenVert { sv-sx = -1, sv-sy = -1, sv-sz = 2147483647 }
+    else let ndx = clip.v4x / clip.v4w
+    in let ndy = clip.v4y / clip.v4w
+    in let ndz = clip.v4z / clip.v4w
+    in let sx = real-to-int ((ndx + 1.0) * real-from-int vp-w / 2.0)
+    in let sy = real-to-int ((1.0 - ndy) * real-from-int vp-h / 2.0)
+    in ScreenVert { sv-sx = sx, sv-sy = sy, sv-sz = real-to-int (ndz * 1000.0) }
+
+Section: Triangle Rendering
+
+  pipe-render-tri : RenderTarget, ScreenVert, ScreenVert, ScreenVert, Integer -> RenderTarget
+  pipe-render-tri (rt) (a) (b) (c) (color) =
+    if a.sv-sx < 0 then rt
+    else if b.sv-sx < 0 then rt
+    else if c.sv-sx < 0 then rt
+    else if pipe-backface a b c then rt
+    else let avg-z = (a.sv-sz + b.sv-sz + c.sv-sz) / 3
+    in pipe-scan-tri rt a b c color avg-z
+
+  pipe-backface : ScreenVert, ScreenVert, ScreenVert -> Boolean
+  pipe-backface (a) (b) (c) =
+    let cross = (b.sv-sx - a.sv-sx) * (c.sv-sy - a.sv-sy) - (b.sv-sy - a.sv-sy) * (c.sv-sx - a.sv-sx)
+    in cross <= 0
+
+  pipe-scan-tri : RenderTarget, ScreenVert, ScreenVert, ScreenVert, Integer, Integer -> RenderTarget
+  pipe-scan-tri (rt) (a) (b) (c) (color) (z) =
+    let new-fb = fb-tri (rt.rt-fb) (a.sv-sx) (a.sv-sy) (b.sv-sx) (b.sv-sy) (c.sv-sx) (c.sv-sy) color
+    in RenderTarget { rt-fb = new-fb, rt-db = rt.rt-db }
+
+Section: Mesh Rendering
+
+  pipe-render-mesh : RenderTarget, TriMesh, Mat4, List SparkLight, Integer -> RenderTarget
+  pipe-render-mesh (rt) (mesh) (mvp) (lights) (base-color) =
+    pipe-render-mesh-loop rt mesh mvp lights base-color 0
+
+  pipe-render-mesh-loop : RenderTarget, TriMesh, Mat4, List SparkLight, Integer, Integer -> RenderTarget
+  pipe-render-mesh-loop (rt) (mesh) (mvp) (lights) (base-color) (fi) =
+    if fi >= mesh.tm-face-count then rt
+    else let face = tri-mesh-face mesh fi
+    in let v0 = tri-mesh-vert mesh (face.tf-v0)
+    in let v1 = tri-mesh-vert mesh (face.tf-v1)
+    in let v2 = tri-mesh-vert mesh (face.tf-v2)
+    in let face-normal = mesh-compute-face-normal v0 v1 v2
+    in let face-center = vec3-new ((v0.vx + v1.vx + v2.vx) / 3) ((v0.vy + v1.vy + v2.vy) / 3) ((v0.vz + v1.vz + v2.vz) / 3)
+    in let shade = light-shade-all lights face-center face-normal 0 0.0
+    in let clamped-shade = if shade > 1.0 then 1.0 else shade
+    in let color = light-apply-color base-color clamped-shade
+    in let vp-w = rt.rt-fb.fb-width
+    in let vp-h = rt.rt-fb.fb-height
+    in let s0 = pipe-project-vert mvp v0 vp-w vp-h
+    in let s1 = pipe-project-vert mvp v1 vp-w vp-h
+    in let s2 = pipe-project-vert mvp v2 vp-w vp-h
+    in let rt2 = pipe-render-tri rt s0 s1 s2 color
+    in pipe-render-mesh-loop rt2 mesh mvp lights base-color (fi + 1)
+
+Section: Scene Rendering
+
+  pipe-render-scene : RenderTarget, TriMesh, Mat4, SparkCamera, List SparkLight, Integer -> RenderTarget
+  pipe-render-scene (rt) (mesh) (model) (cam) (lights) (base-color) =
+    let vp = spark-camera-vp cam
+    in let mvp = mat4-mul vp model
+    in pipe-render-mesh rt mesh mvp lights base-color
+
+Page 1

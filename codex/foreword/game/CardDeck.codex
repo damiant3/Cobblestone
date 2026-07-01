@@ -1,0 +1,159 @@
+Chapter: CardDeck
+  cites Foreword chapter Maybe
+
+ Playing card deck with Fisher-Yates shuffle. Cards are integers
+ 0-51 encoding suit (0-3) and rank (0-12). Shuffle uses a
+ deterministic PRNG seeded per-shuffle for reproducibility.
+
+ We say:
+
+Section: Constants
+  deck-size : Integer = 52
+  num-suits : Integer = 4
+  num-ranks : Integer = 13
+
+Section: Card Encoding
+  card-make : Integer, Integer -> Integer
+  card-make (suit) (rank) = suit * num-ranks + rank
+
+  card-suit : Integer -> Integer
+  card-suit (card) = card / num-ranks
+
+  card-rank : Integer -> Integer
+  card-rank (card) = card - (card / num-ranks) * num-ranks
+
+Section: Suit and Rank Names
+  suit-name : Integer -> Text
+  suit-name (s) =
+    if s == 0 then "Spades"
+    else if s == 1 then "Hearts"
+    else if s == 2 then "Diamonds"
+    else "Clubs"
+
+  suit-symbol : Integer -> Text
+  suit-symbol (s) =
+    if s == 0 then "S"
+    else if s == 1 then "H"
+    else if s == 2 then "D"
+    else "C"
+
+  rank-name : Integer -> Text
+  rank-name (r) =
+    if r == 0 then "Ace"
+    else if r == 1 then "2" else if r == 2 then "3" else if r == 3 then "4"
+    else if r == 4 then "5" else if r == 5 then "6" else if r == 6 then "7"
+    else if r == 7 then "8" else if r == 8 then "9" else if r == 9 then "10"
+    else if r == 10 then "Jack"
+    else if r == 11 then "Queen"
+    else "King"
+
+  rank-short : Integer -> Text
+  rank-short (r) =
+    if r == 0 then "A"
+    else if r == 9 then "T" else if r == 10 then "J"
+    else if r == 11 then "Q" else if r == 12 then "K"
+    else show (r + 1)
+
+Section: Card Formatting
+  format-card : Integer -> Text
+  format-card (card) = rank-short (card-rank card) & suit-symbol (card-suit card)
+
+  format-card-long : Integer -> Text
+  format-card-long (card) = rank-name (card-rank card) & " of " & suit-name (card-suit card)
+
+Section: Deck Construction
+  deck-new : List Integer
+  deck-new = deck-build 0 []
+
+  deck-build : Integer, List Integer -> List Integer
+  deck-build (i) (acc) =
+    if i >= deck-size then acc
+    else deck-build (i + 1) (list-push acc i)
+
+Section: Fisher-Yates Shuffle
+  deck-shuffle : List Integer, Integer -> List Integer
+  deck-shuffle (cards) (seed) = fy-shuffle cards (list-length cards - 1) seed
+
+  fy-shuffle : List Integer, Integer, Integer -> List Integer
+  fy-shuffle (cards) (i) (seed) =
+    if i <= 0 then cards
+    else let rng = fy-next-random seed
+    in let j = fy-mod rng (i + 1)
+    in fy-shuffle (fy-swap cards i j) (i - 1) rng
+
+  fy-swap : List Integer, Integer, Integer -> List Integer
+  fy-swap (cards) (i) (j) =
+    if i == j then cards
+    else let vi = list-at cards i
+    in list-set-at (list-set-at cards i (list-at cards j)) j vi
+
+  fy-next-random : Integer -> Integer
+  fy-next-random (seed) =
+    let h = seed * 1103515245 + 12345
+    in let positive = if h < 0 then -h else h
+    in positive
+
+  fy-mod : Integer, Integer -> Integer
+  fy-mod (val) (modulus) =
+    if modulus <= 0 then 0
+    else val - (val / modulus) * modulus
+
+Section: Hand Operations
+  DealResult = record {
+    hand : List Integer,
+    remaining : List Integer
+  }
+
+  deck-deal : List Integer, Integer -> DealResult
+  deck-deal (cards) (n) =
+    let hand = deck-take cards 0 n []
+    in let remaining = deck-drop cards n (list-length cards) []
+    in DealResult { hand = hand, remaining = remaining }
+
+  deck-take : List Integer, Integer, Integer, List Integer -> List Integer
+  deck-take (cards) (i) (n) (acc) =
+    if i >= n then acc
+    else if i >= list-length cards then acc
+    else deck-take cards (i + 1) n (list-push acc (list-at cards i))
+
+  deck-drop : List Integer, Integer, Integer, List Integer -> List Integer
+  deck-drop (cards) (i) (len) (acc) =
+    if i >= len then acc
+    else deck-drop cards (i + 1) len (list-push acc (list-at cards i))
+
+Section: Queries
+  deck-contains : List Integer, Integer -> Boolean
+  deck-contains (cards) (target) = deck-contains-loop cards target 0 (list-length cards)
+
+  deck-contains-loop : List Integer, Integer, Integer, Integer -> Boolean
+  deck-contains-loop (cards) (target) (i) (len) =
+    if i >= len then False
+    else if list-at cards i == target then True
+    else deck-contains-loop cards target (i + 1) len
+
+  format-hand : List Integer -> Text
+  format-hand (cards) = format-hand-loop cards 0 (list-length cards) ""
+
+  format-hand-loop : List Integer, Integer, Integer, Text -> Text
+  format-hand-loop (cards) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else " "
+    in format-hand-loop cards (i + 1) len (acc & sep & format-card (list-at cards i))
+
+Section: Card Value (Blackjack)
+  blackjack-value : Integer -> Integer
+  blackjack-value (card) =
+    let r = card-rank card
+    in if r == 0 then 11
+    else if r >= 10 then 10
+    else r + 1
+
+  hand-total : List Integer -> Integer
+  hand-total (cards) = hand-total-loop cards 0 (list-length cards) 0
+
+  hand-total-loop : List Integer, Integer, Integer, Integer -> Integer
+  hand-total-loop (cards) (i) (len) (acc) =
+    if i >= len then acc
+    else hand-total-loop cards (i + 1) len (acc + blackjack-value (list-at cards i))
+
+Page 1

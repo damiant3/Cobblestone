@@ -1,0 +1,177 @@
+Chapter: ExternalAuthBridge
+  cites Encode chapter Jwt
+  cites Net chapter OAuthClient
+
+ Maps external OAuth identity claims to Codex identity through
+ the trust lattice. External providers are TrustNode entries with
+ configurable trust scores. When a user authenticates via OAuth,
+ the provider vouches for the user at the configured score. OAuth
+ access and refresh tokens are stored per-session for subsequent
+ API calls (email, calendar, files).
+
+Section: External Identity
+
+  ExternalIdentity = record {
+    ei-provider : Text,
+    ei-subject : Text,
+    ei-email : Text,
+    ei-display-name : Text,
+    ei-access-token : Text,
+    ei-refresh-token : Text,
+    ei-token-expiry : Integer
+  }
+
+Section: Provider Trust
+
+  ProviderTrust = record {
+    pt-provider : Text,
+    pt-trust-score : Integer,
+    pt-enabled : Boolean
+  }
+
+  default-provider-trust : Text -> ProviderTrust
+  default-provider-trust (provider) = ProviderTrust {
+    pt-provider = provider,
+    pt-trust-score = 6000,
+    pt-enabled = True
+  }
+
+  provider-trust-google : ProviderTrust
+  provider-trust-google = default-provider-trust "google"
+
+  provider-trust-microsoft : ProviderTrust
+  provider-trust-microsoft = default-provider-trust "microsoft"
+
+Section: Bridge State
+
+  AuthBridgeState = record {
+    ab-providers : List ProviderTrust,
+    ab-provider-count : Integer,
+    ab-identities : List ExternalIdentity,
+    ab-identity-count : Integer
+  }
+
+  auth-bridge-new : AuthBridgeState
+  auth-bridge-new = AuthBridgeState {
+    ab-providers = [provider-trust-google, provider-trust-microsoft],
+    ab-provider-count = 2,
+    ab-identities = [],
+    ab-identity-count = 0
+  }
+
+Section: Authentication
+
+  bridge-authenticate : OAuthTokens, Text -> ExternalIdentity
+  bridge-authenticate (tokens) (provider) =
+    let decoded = jwt-decode (tokens.ot-id-token)
+    in when decoded
+      is JwtOk (jwt) -> ExternalIdentity {
+        ei-provider = provider,
+        ei-subject = jwt-get-sub jwt,
+        ei-email = jwt-get-email jwt,
+        ei-display-name = jwt-get-name jwt,
+        ei-access-token = tokens.ot-access-token,
+        ei-refresh-token = tokens.ot-refresh-token,
+        ei-token-expiry = tokens.ot-expires-in
+      }
+      is JwtMalformed (msg) -> ExternalIdentity {
+        ei-provider = provider,
+        ei-subject = "",
+        ei-email = "",
+        ei-display-name = "",
+        ei-access-token = tokens.ot-access-token,
+        ei-refresh-token = tokens.ot-refresh-token,
+        ei-token-expiry = tokens.ot-expires-in
+      }
+
+  bridge-identity-key : ExternalIdentity -> Text
+  bridge-identity-key (eid) = eid.ei-provider & ":" & eid.ei-subject
+
+Section: Identity Store
+
+  bridge-add-identity : AuthBridgeState, ExternalIdentity -> AuthBridgeState
+  bridge-add-identity (st) (eid) =
+    let existing = bridge-find-identity st (bridge-identity-key eid)
+    in when existing
+      is Just (old) -> bridge-replace-identity st eid
+      is None -> AuthBridgeState {
+        ab-providers = st.ab-providers,
+        ab-provider-count = st.ab-provider-count,
+        ab-identities = list-push (st.ab-identities) eid,
+        ab-identity-count = st.ab-identity-count + 1
+      }
+
+  bridge-find-identity : AuthBridgeState, Text -> Maybe ExternalIdentity
+  bridge-find-identity (st) (key) =
+    ab-find-loop (st.ab-identities) key 0 (st.ab-identity-count)
+
+  ab-find-loop : List ExternalIdentity, Text, Integer, Integer -> Maybe ExternalIdentity
+  ab-find-loop (ids) (key) (i) (n) =
+    if i >= n then None
+    else let eid = list-at ids i
+    in if bridge-identity-key eid == key then Just eid
+    else ab-find-loop ids key (i + 1) n
+
+  bridge-replace-identity : AuthBridgeState, ExternalIdentity -> AuthBridgeState
+  bridge-replace-identity (st) (eid) =
+    let key = bridge-identity-key eid
+    in let updated = ab-replace-loop (st.ab-identities) key eid 0 (st.ab-identity-count) []
+    in __record-set st "ab-identities" updated
+
+  ab-replace-loop : List ExternalIdentity, Text, ExternalIdentity, Integer, Integer, List ExternalIdentity -> List ExternalIdentity
+  ab-replace-loop (ids) (key) (new-eid) (i) (n) (acc) =
+    if i >= n then acc
+    else let eid = list-at ids i
+    in if bridge-identity-key eid == key then ab-replace-loop ids key new-eid (i + 1) n (list-push acc new-eid)
+    else ab-replace-loop ids key new-eid (i + 1) n (list-push acc eid)
+
+Section: Provider Trust Lookup
+
+  bridge-provider-score : AuthBridgeState, Text -> Integer
+  bridge-provider-score (st) (provider) =
+    ab-score-loop (st.ab-providers) provider 0 (st.ab-provider-count)
+
+  ab-score-loop : List ProviderTrust, Text, Integer, Integer -> Integer
+  ab-score-loop (providers) (name) (i) (n) =
+    if i >= n then 0
+    else let pt = list-at providers i
+    in if pt.pt-provider == name then if pt.pt-enabled then pt.pt-trust-score else 0
+    else ab-score-loop providers name (i + 1) n
+
+  bridge-is-enabled : AuthBridgeState, Text -> Boolean
+  bridge-is-enabled (st) (provider) = bridge-provider-score st provider > 0
+
+Section: Token Access
+
+  bridge-get-access-token : AuthBridgeState, Text -> Text
+  bridge-get-access-token (st) (provider) =
+    let found = ab-find-by-provider (st.ab-identities) provider 0 (st.ab-identity-count)
+    in when found
+      is Just (eid) -> eid.ei-access-token
+      is None -> ""
+
+  bridge-get-email : AuthBridgeState, Text -> Text
+  bridge-get-email (st) (provider) =
+    let found = ab-find-by-provider (st.ab-identities) provider 0 (st.ab-identity-count)
+    in when found
+      is Just (eid) -> eid.ei-email
+      is None -> ""
+
+  ab-find-by-provider : List ExternalIdentity, Text, Integer, Integer -> Maybe ExternalIdentity
+  ab-find-by-provider (ids) (provider) (i) (n) =
+    if i >= n then None
+    else let eid = list-at ids i
+    in if eid.ei-provider == provider then Just eid
+    else ab-find-by-provider ids provider (i + 1) n
+
+Section: Formatting
+
+  format-external-identity : ExternalIdentity -> Text
+  format-external-identity (eid) =
+    eid.ei-provider & ":" & eid.ei-subject & " <" & eid.ei-email & "> " & eid.ei-display-name
+
+  format-auth-bridge : AuthBridgeState -> Text
+  format-auth-bridge (st) =
+    "providers=" & show (st.ab-provider-count) & " identities=" & show (st.ab-identity-count)
+
+Page 1

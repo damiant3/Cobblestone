@@ -1,0 +1,577 @@
+Chapter: FontGen
+  cites Encode chapter TrueType
+  cites Encode chapter TrueTypeWriter
+
+ Procedural TrueType font generators. Each generator produces a
+ TtfBuildSpec with glyph outlines as quadratic Bezier contours.
+ Feed the result to ttw-build-ttf to get a valid .ttf byte sequence.
+
+ Three built-in styles:
+ - Block: axis-aligned rectangles, industrial look
+ - Round: rectangles with rounded corners, friendly look
+ - Mono: fixed-width coding font with serifs on I/l, dots on 0
+
+ All fonts target 1000 units-per-em with 95 ASCII glyphs (32-126).
+
+Section: Constants
+  fg-upem : Integer = 1000
+  fg-ascent : Integer = 800
+  fg-descent : Integer = -200
+  fg-cap-h : Integer = 700
+  fg-x-h : Integer = 500
+  fg-baseline : Integer = 0
+  fg-stroke : Integer = 80
+  fg-advance : Integer = 600
+  fg-mono-advance : Integer = 600
+
+Section: Contour Helpers
+
+  fg-pt : Integer, Integer -> TtfPoint
+  fg-pt (x) (y) = TtfPoint { tp-x = x, tp-y = y, tp-on-curve = 1 }
+
+  fg-off : Integer, Integer -> TtfPoint
+  fg-off (x) (y) = TtfPoint { tp-x = x, tp-y = y, tp-on-curve = 0 }
+
+  fg-rect-contour : Integer, Integer, Integer, Integer -> TtfContour
+  fg-rect-contour (x) (y) (w) (h) =
+    TtfContour { tc-points = [fg-pt x y, fg-pt (x + w) y, fg-pt (x + w) (y + h), fg-pt x (y + h)] }
+
+  fg-rect-hole : Integer, Integer, Integer, Integer -> TtfContour
+  fg-rect-hole (x) (y) (w) (h) =
+    TtfContour { tc-points = [fg-pt x (y + h), fg-pt (x + w) (y + h), fg-pt (x + w) y, fg-pt x y] }
+
+  fg-rounded-rect : Integer, Integer, Integer, Integer, Integer -> TtfContour
+  fg-rounded-rect (x) (y) (w) (h) (r) =
+    TtfContour { tc-points = [
+      fg-pt (x + r) y,
+      fg-pt (x + w - r) y,
+      fg-off (x + w) y, fg-pt (x + w) (y + r),
+      fg-pt (x + w) (y + h - r),
+      fg-off (x + w) (y + h), fg-pt (x + w - r) (y + h),
+      fg-pt (x + r) (y + h),
+      fg-off x (y + h), fg-pt x (y + h - r),
+      fg-pt x (y + r),
+      fg-off x y
+    ] }
+
+  fg-rounded-hole : Integer, Integer, Integer, Integer, Integer -> TtfContour
+  fg-rounded-hole (x) (y) (w) (h) (r) =
+    TtfContour { tc-points = [
+      fg-off x y, fg-pt x (y + r),
+      fg-pt x (y + h - r),
+      fg-off x (y + h), fg-pt (x + r) (y + h),
+      fg-pt (x + w - r) (y + h),
+      fg-off (x + w) (y + h), fg-pt (x + w) (y + h - r),
+      fg-pt (x + w) (y + r),
+      fg-off (x + w) y, fg-pt (x + w - r) y,
+      fg-pt (x + r) y
+    ] }
+
+  fg-hbar : Integer, Integer, Integer, Integer -> TtfContour
+  fg-hbar (x) (y) (w) (t) = fg-rect-contour x y w t
+
+  fg-vbar : Integer, Integer, Integer, Integer -> TtfContour
+  fg-vbar (x) (y) (t) (h) = fg-rect-contour x y t h
+
+  fg-make-glyph : Integer, Integer, List TtfContour -> TtfBuildGlyph
+  fg-make-glyph (cp) (adv) (contours) =
+    let bounds = fg-contour-bounds contours 0 (list-length contours) 0 0 0 0
+    in TtfBuildGlyph {
+      bg-codepoint = cp,
+      bg-advance = adv,
+      bg-lsb = bounds.gb-x-min,
+      bg-glyph = TtfGlyph {
+        tg-contours = contours,
+        tg-x-min = bounds.gb-x-min, tg-y-min = bounds.gb-y-min,
+        tg-x-max = bounds.gb-x-max, tg-y-max = bounds.gb-y-max,
+        tg-advance = adv, tg-lsb = bounds.gb-x-min
+      }
+    }
+
+  fg-empty-glyph : Integer, Integer -> TtfBuildGlyph
+  fg-empty-glyph (cp) (adv) =
+    TtfBuildGlyph {
+      bg-codepoint = cp, bg-advance = adv, bg-lsb = 0,
+      bg-glyph = TtfGlyph {
+        tg-contours = [], tg-x-min = 0, tg-y-min = 0,
+        tg-x-max = 0, tg-y-max = 0, tg-advance = adv, tg-lsb = 0
+      }
+    }
+
+  fg-contour-bounds : List TtfContour, Integer, Integer, Integer, Integer, Integer, Integer -> GlobalBounds
+  fg-contour-bounds (cs) (i) (n) (xn) (yn) (xx) (yx) =
+    if i >= n then GlobalBounds { gb-x-min = xn, gb-y-min = yn, gb-x-max = xx, gb-y-max = yx }
+    else let pts = (list-at cs i).tc-points
+    in let b = fg-point-bounds pts 0 (list-length pts) xn yn xx yx
+    in fg-contour-bounds cs (i + 1) n (b.gb-x-min) (b.gb-y-min) (b.gb-x-max) (b.gb-y-max)
+
+  fg-point-bounds : List TtfPoint, Integer, Integer, Integer, Integer, Integer, Integer -> GlobalBounds
+  fg-point-bounds (pts) (i) (n) (xn) (yn) (xx) (yx) =
+    if i >= n then GlobalBounds { gb-x-min = xn, gb-y-min = yn, gb-x-max = xx, gb-y-max = yx }
+    else let p = list-at pts i
+    in let nxn = if i == 0 then p.tp-x else if p.tp-x < xn then p.tp-x else xn
+    in let nyn = if i == 0 then p.tp-y else if p.tp-y < yn then p.tp-y else yn
+    in let nxx = if i == 0 then p.tp-x else if p.tp-x > xx then p.tp-x else xx
+    in let nyx = if i == 0 then p.tp-y else if p.tp-y > yx then p.tp-y else yx
+    in fg-point-bounds pts (i + 1) n nxn nyn nxx nyx
+
+Section: Block Font Glyphs
+
+  fg-block-A : TtfBuildGlyph
+  fg-block-A = fg-make-glyph 65 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-x-h - fg-stroke / 2) (fg-advance - 120) fg-stroke]
+
+  fg-block-B : TtfBuildGlyph
+  fg-block-B = fg-make-glyph 66 fg-advance [fg-rect-contour 60 0 (fg-advance - 120) fg-cap-h, fg-rect-hole (60 + fg-stroke) (fg-stroke) (fg-advance - 120 - fg-stroke * 2) (fg-cap-h / 2 - fg-stroke - fg-stroke / 2), fg-rect-hole (60 + fg-stroke) (fg-cap-h / 2 + fg-stroke / 2) (fg-advance - 120 - fg-stroke * 2) (fg-cap-h / 2 - fg-stroke - fg-stroke / 2)]
+
+  fg-block-C : TtfBuildGlyph
+  fg-block-C = fg-make-glyph 67 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke]
+
+  fg-block-D : TtfBuildGlyph
+  fg-block-D = fg-make-glyph 68 fg-advance [fg-rect-contour 60 0 (fg-advance - 120) fg-cap-h, fg-rect-hole (60 + fg-stroke) fg-stroke (fg-advance - 120 - fg-stroke * 2) (fg-cap-h - fg-stroke * 2)]
+
+  fg-block-E : TtfBuildGlyph
+  fg-block-E = fg-make-glyph 69 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 150) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke]
+
+  fg-block-F : TtfBuildGlyph
+  fg-block-F = fg-make-glyph 70 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 150) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke]
+
+  fg-block-G : TtfBuildGlyph
+  fg-block-G = fg-make-glyph 71 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke (fg-cap-h / 2), fg-hbar (fg-advance / 2) (fg-cap-h / 2 - fg-stroke) (fg-advance / 2 - 60) fg-stroke]
+
+  fg-block-H : TtfBuildGlyph
+  fg-block-H = fg-make-glyph 72 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 120) fg-stroke]
+
+  fg-block-I : TtfBuildGlyph
+  fg-block-I = fg-make-glyph 73 (fg-advance / 2) [fg-vbar (fg-advance / 4 - fg-stroke / 2) 0 fg-stroke fg-cap-h, fg-hbar 40 0 (fg-advance / 2 - 80) fg-stroke, fg-hbar 40 (fg-cap-h - fg-stroke) (fg-advance / 2 - 80) fg-stroke]
+
+  fg-block-J : TtfBuildGlyph
+  fg-block-J = fg-make-glyph 74 fg-advance [fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-vbar 60 0 fg-stroke (fg-cap-h / 3)]
+
+  fg-block-K : TtfBuildGlyph
+  fg-block-K = fg-make-glyph 75 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance / 2 - 60) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) (fg-cap-h / 2) fg-stroke (fg-cap-h / 2), fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke (fg-cap-h / 2)]
+
+  fg-block-L : TtfBuildGlyph
+  fg-block-L = fg-make-glyph 76 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-hbar 60 0 (fg-advance - 120) fg-stroke]
+
+  fg-block-M : TtfBuildGlyph
+  fg-block-M = fg-make-glyph 77 (fg-advance + 100) [fg-vbar 60 0 fg-stroke fg-cap-h, fg-vbar (fg-advance + 100 - 60 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance + 100 - 120) fg-stroke, fg-vbar (fg-advance / 2 + 50 - fg-stroke / 2) (fg-cap-h / 3) fg-stroke (fg-cap-h * 2 / 3)]
+
+  fg-block-N : TtfBuildGlyph
+  fg-block-N = fg-make-glyph 78 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke]
+
+  fg-block-O : TtfBuildGlyph
+  fg-block-O = fg-make-glyph 79 fg-advance [fg-rect-contour 60 0 (fg-advance - 120) fg-cap-h, fg-rect-hole (60 + fg-stroke) fg-stroke (fg-advance - 120 - fg-stroke * 2) (fg-cap-h - fg-stroke * 2)]
+
+  fg-block-P : TtfBuildGlyph
+  fg-block-P = fg-make-glyph 80 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h / 2) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) (fg-cap-h / 2) fg-stroke (fg-cap-h / 2)]
+
+  fg-block-Q : TtfBuildGlyph
+  fg-block-Q = fg-make-glyph 81 fg-advance [fg-rect-contour 60 0 (fg-advance - 120) fg-cap-h, fg-rect-hole (60 + fg-stroke) fg-stroke (fg-advance - 120 - fg-stroke * 2) (fg-cap-h - fg-stroke * 2), fg-rect-contour (fg-advance / 2) 0 (fg-advance / 2 - 60) fg-stroke]
+
+  fg-block-R : TtfBuildGlyph
+  fg-block-R = fg-make-glyph 82 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h / 2) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) (fg-cap-h / 2) fg-stroke (fg-cap-h / 2), fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke (fg-cap-h / 2)]
+
+  fg-block-S : TtfBuildGlyph
+  fg-block-S = fg-make-glyph 83 fg-advance [fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke (fg-cap-h / 2), fg-vbar 60 (fg-cap-h / 2) fg-stroke (fg-cap-h / 2)]
+
+  fg-block-T : TtfBuildGlyph
+  fg-block-T = fg-make-glyph 84 fg-advance [fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance / 2 - fg-stroke / 2) 0 fg-stroke fg-cap-h]
+
+  fg-block-U : TtfBuildGlyph
+  fg-block-U = fg-make-glyph 85 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar 60 0 (fg-advance - 120) fg-stroke]
+
+  fg-block-V : TtfBuildGlyph
+  fg-block-V = fg-make-glyph 86 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar (fg-advance / 2 - fg-stroke / 2) 0 fg-stroke fg-stroke]
+
+  fg-block-W : TtfBuildGlyph
+  fg-block-W = fg-make-glyph 87 (fg-advance + 100) [fg-vbar 60 0 fg-stroke fg-cap-h, fg-vbar (fg-advance + 100 - 60 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar 60 0 (fg-advance + 100 - 120) fg-stroke, fg-vbar (fg-advance / 2 + 50 - fg-stroke / 2) 0 fg-stroke (fg-cap-h * 2 / 3)]
+
+  fg-block-X : TtfBuildGlyph
+  fg-block-X = fg-make-glyph 88 fg-advance [fg-vbar 60 0 fg-stroke (fg-cap-h / 2), fg-vbar (fg-advance - 60 - fg-stroke) (fg-cap-h / 2) fg-stroke (fg-cap-h / 2), fg-vbar 60 (fg-cap-h / 2) fg-stroke (fg-cap-h / 2), fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke (fg-cap-h / 2), fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 120) fg-stroke]
+
+  fg-block-Y : TtfBuildGlyph
+  fg-block-Y = fg-make-glyph 89 fg-advance [fg-vbar 60 (fg-cap-h / 2) fg-stroke (fg-cap-h / 2), fg-vbar (fg-advance - 60 - fg-stroke) (fg-cap-h / 2) fg-stroke (fg-cap-h / 2), fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance / 2 - fg-stroke / 2) 0 fg-stroke (fg-cap-h / 2)]
+
+  fg-block-Z : TtfBuildGlyph
+  fg-block-Z = fg-make-glyph 90 fg-advance [fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) (fg-cap-h / 2) fg-stroke (fg-cap-h / 2), fg-vbar 60 0 fg-stroke (fg-cap-h / 2)]
+
+  fg-block-0 : TtfBuildGlyph
+  fg-block-0 = fg-make-glyph 48 fg-advance [fg-rect-contour 60 0 (fg-advance - 120) fg-cap-h, fg-rect-hole (60 + fg-stroke) fg-stroke (fg-advance - 120 - fg-stroke * 2) (fg-cap-h - fg-stroke * 2)]
+
+  fg-block-1 : TtfBuildGlyph
+  fg-block-1 = fg-make-glyph 49 (fg-advance / 2) [fg-vbar (fg-advance / 4) 0 fg-stroke fg-cap-h, fg-hbar 40 0 (fg-advance / 2 - 80) fg-stroke]
+
+  fg-block-2 : TtfBuildGlyph
+  fg-block-2 = fg-make-glyph 50 fg-advance [fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar 60 0 fg-stroke (fg-cap-h / 2), fg-vbar (fg-advance - 60 - fg-stroke) (fg-cap-h / 2) fg-stroke (fg-cap-h / 2)]
+
+  fg-block-3 : TtfBuildGlyph
+  fg-block-3 = fg-make-glyph 51 fg-advance [fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke fg-cap-h]
+
+  fg-block-4 : TtfBuildGlyph
+  fg-block-4 = fg-make-glyph 52 fg-advance [fg-vbar 60 (fg-cap-h / 2) fg-stroke (fg-cap-h / 2), fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 120) fg-stroke]
+
+  fg-block-5 : TtfBuildGlyph
+  fg-block-5 = fg-make-glyph 53 fg-advance [fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke (fg-cap-h / 2), fg-vbar 60 (fg-cap-h / 2) fg-stroke (fg-cap-h / 2)]
+
+  fg-block-6 : TtfBuildGlyph
+  fg-block-6 = fg-make-glyph 54 fg-advance [fg-vbar 60 0 fg-stroke fg-cap-h, fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke (fg-cap-h / 2)]
+
+  fg-block-7 : TtfBuildGlyph
+  fg-block-7 = fg-make-glyph 55 fg-advance [fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke fg-cap-h]
+
+  fg-block-8 : TtfBuildGlyph
+  fg-block-8 = fg-make-glyph 56 fg-advance [fg-rect-contour 60 0 (fg-advance - 120) fg-cap-h, fg-rect-hole (60 + fg-stroke) fg-stroke (fg-advance - 120 - fg-stroke * 2) (fg-cap-h / 2 - fg-stroke - fg-stroke / 2), fg-rect-hole (60 + fg-stroke) (fg-cap-h / 2 + fg-stroke / 2) (fg-advance - 120 - fg-stroke * 2) (fg-cap-h / 2 - fg-stroke - fg-stroke / 2)]
+
+  fg-block-9 : TtfBuildGlyph
+  fg-block-9 = fg-make-glyph 57 fg-advance [fg-vbar (fg-advance - 60 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar 60 0 (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (fg-advance - 120) fg-stroke, fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar 60 (fg-cap-h / 2) fg-stroke (fg-cap-h / 2)]
+
+Section: Punctuation
+
+  fg-block-space : TtfBuildGlyph
+  fg-block-space = fg-empty-glyph 32 (fg-advance / 2)
+
+  fg-block-period : TtfBuildGlyph
+  fg-block-period = fg-make-glyph 46 (fg-advance / 2) [fg-rect-contour 60 0 fg-stroke fg-stroke]
+
+  fg-block-comma : TtfBuildGlyph
+  fg-block-comma = fg-make-glyph 44 (fg-advance / 2) [fg-rect-contour 60 (-60) fg-stroke (fg-stroke + 60)]
+
+  fg-block-colon : TtfBuildGlyph
+  fg-block-colon = fg-make-glyph 58 (fg-advance / 2) [fg-rect-contour 60 0 fg-stroke fg-stroke, fg-rect-contour 60 (fg-x-h - fg-stroke) fg-stroke fg-stroke]
+
+  fg-block-semicolon : TtfBuildGlyph
+  fg-block-semicolon = fg-make-glyph 59 (fg-advance / 2) [fg-rect-contour 60 (-60) fg-stroke (fg-stroke + 60), fg-rect-contour 60 (fg-x-h - fg-stroke) fg-stroke fg-stroke]
+
+  fg-block-exclaim : TtfBuildGlyph
+  fg-block-exclaim = fg-make-glyph 33 (fg-advance / 2) [fg-rect-contour 60 0 fg-stroke fg-stroke, fg-vbar 60 (fg-stroke * 2) fg-stroke (fg-cap-h - fg-stroke * 2)]
+
+  fg-block-question : TtfBuildGlyph
+  fg-block-question = fg-make-glyph 63 fg-advance [fg-rect-contour (fg-advance / 2 - fg-stroke / 2) 0 fg-stroke fg-stroke, fg-vbar (fg-advance / 2 - fg-stroke / 2) (fg-stroke * 2) fg-stroke (fg-cap-h / 2 - fg-stroke * 2), fg-hbar 60 (fg-cap-h - fg-stroke) (fg-advance - 120) fg-stroke, fg-vbar (fg-advance - 60 - fg-stroke) (fg-cap-h / 2) fg-stroke (fg-cap-h / 2), fg-hbar (fg-advance / 2 - fg-stroke / 2) (fg-cap-h / 2 - fg-stroke) (fg-advance / 2 - 60 + fg-stroke / 2) fg-stroke]
+
+  fg-block-hyphen : TtfBuildGlyph
+  fg-block-hyphen = fg-make-glyph 45 fg-advance [fg-hbar 100 (fg-x-h / 2) (fg-advance - 200) fg-stroke]
+
+  fg-block-plus : TtfBuildGlyph
+  fg-block-plus = fg-make-glyph 43 fg-advance [fg-hbar 100 (fg-x-h / 2) (fg-advance - 200) fg-stroke, fg-vbar (fg-advance / 2 - fg-stroke / 2) (fg-x-h / 2 - 150) fg-stroke 300]
+
+  fg-block-equals : TtfBuildGlyph
+  fg-block-equals = fg-make-glyph 61 fg-advance [fg-hbar 100 (fg-x-h / 2 - 60) (fg-advance - 200) fg-stroke, fg-hbar 100 (fg-x-h / 2 + 60) (fg-advance - 200) fg-stroke]
+
+  fg-block-slash : TtfBuildGlyph
+  fg-block-slash = fg-make-glyph 47 fg-advance [fg-vbar 60 0 fg-stroke (fg-cap-h / 2), fg-vbar (fg-advance - 60 - fg-stroke) (fg-cap-h / 2) fg-stroke (fg-cap-h / 2)]
+
+  fg-block-lparen : TtfBuildGlyph
+  fg-block-lparen = fg-make-glyph 40 (fg-advance / 2) [fg-vbar 80 0 fg-stroke fg-cap-h, fg-hbar 80 0 80 fg-stroke, fg-hbar 80 (fg-cap-h - fg-stroke) 80 fg-stroke]
+
+  fg-block-rparen : TtfBuildGlyph
+  fg-block-rparen = fg-make-glyph 41 (fg-advance / 2) [fg-vbar (fg-advance / 2 - 80 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar (fg-advance / 2 - 160 - fg-stroke) 0 80 fg-stroke, fg-hbar (fg-advance / 2 - 160 - fg-stroke) (fg-cap-h - fg-stroke) 80 fg-stroke]
+
+  fg-block-lbracket : TtfBuildGlyph
+  fg-block-lbracket = fg-make-glyph 91 (fg-advance / 2) [fg-vbar 80 0 fg-stroke fg-cap-h, fg-hbar 80 0 100 fg-stroke, fg-hbar 80 (fg-cap-h - fg-stroke) 100 fg-stroke]
+
+  fg-block-rbracket : TtfBuildGlyph
+  fg-block-rbracket = fg-make-glyph 93 (fg-advance / 2) [fg-vbar (fg-advance / 2 - 80 - fg-stroke) 0 fg-stroke fg-cap-h, fg-hbar (fg-advance / 2 - 180 - fg-stroke) 0 100 fg-stroke, fg-hbar (fg-advance / 2 - 180 - fg-stroke) (fg-cap-h - fg-stroke) 100 fg-stroke]
+
+  fg-block-quote : TtfBuildGlyph
+  fg-block-quote = fg-make-glyph 34 fg-advance [fg-vbar (fg-advance / 2 - 60) (fg-cap-h - 160) fg-stroke 160, fg-vbar (fg-advance / 2 + 60) (fg-cap-h - 160) fg-stroke 160]
+
+  fg-block-apos : TtfBuildGlyph
+  fg-block-apos = fg-make-glyph 39 (fg-advance / 3) [fg-vbar 60 (fg-cap-h - 160) fg-stroke 160]
+
+  fg-block-asterisk : TtfBuildGlyph
+  fg-block-asterisk = fg-make-glyph 42 fg-advance [fg-hbar 100 (fg-cap-h - 200) (fg-advance - 200) fg-stroke, fg-vbar (fg-advance / 2 - fg-stroke / 2) (fg-cap-h - 300) fg-stroke 200]
+
+  fg-block-at : TtfBuildGlyph
+  fg-block-at = fg-make-glyph 64 (fg-advance + 100) [fg-rect-contour 60 0 (fg-advance - 20) fg-cap-h, fg-rect-hole (60 + fg-stroke) fg-stroke (fg-advance - 20 - fg-stroke * 2) (fg-cap-h - fg-stroke * 2), fg-rect-contour (fg-advance / 2) (fg-cap-h / 4) (fg-advance / 2 - 80) (fg-cap-h / 2), fg-rect-hole (fg-advance / 2 + fg-stroke) (fg-cap-h / 4 + fg-stroke) (fg-advance / 2 - 80 - fg-stroke * 2) (fg-cap-h / 2 - fg-stroke * 2)]
+
+  fg-block-hash : TtfBuildGlyph
+  fg-block-hash = fg-make-glyph 35 fg-advance [fg-vbar (fg-advance / 3 - fg-stroke / 2) 50 fg-stroke (fg-cap-h - 100), fg-vbar (fg-advance * 2 / 3 - fg-stroke / 2) 50 fg-stroke (fg-cap-h - 100), fg-hbar 80 (fg-cap-h / 3) (fg-advance - 160) fg-stroke, fg-hbar 80 (fg-cap-h * 2 / 3) (fg-advance - 160) fg-stroke]
+
+  fg-block-underscore : TtfBuildGlyph
+  fg-block-underscore = fg-make-glyph 95 fg-advance [fg-hbar 40 (-40) (fg-advance - 80) fg-stroke]
+
+  fg-block-lbrace : TtfBuildGlyph
+  fg-block-lbrace = fg-make-glyph 123 (fg-advance / 2) [fg-vbar 120 0 fg-stroke (fg-cap-h / 2 - fg-stroke), fg-vbar 120 (fg-cap-h / 2 + fg-stroke) fg-stroke (fg-cap-h / 2 - fg-stroke), fg-hbar 120 0 80 fg-stroke, fg-hbar 120 (fg-cap-h - fg-stroke) 80 fg-stroke, fg-hbar 60 (fg-cap-h / 2 - fg-stroke / 2) (60 + fg-stroke) fg-stroke]
+
+  fg-block-rbrace : TtfBuildGlyph
+  fg-block-rbrace = fg-make-glyph 125 (fg-advance / 2) [fg-vbar (fg-advance / 2 - 120 - fg-stroke) 0 fg-stroke (fg-cap-h / 2 - fg-stroke), fg-vbar (fg-advance / 2 - 120 - fg-stroke) (fg-cap-h / 2 + fg-stroke) fg-stroke (fg-cap-h / 2 - fg-stroke), fg-hbar (fg-advance / 2 - 200 - fg-stroke) 0 80 fg-stroke, fg-hbar (fg-advance / 2 - 200 - fg-stroke) (fg-cap-h - fg-stroke) 80 fg-stroke, fg-hbar (fg-advance / 2 - 120 - fg-stroke) (fg-cap-h / 2 - fg-stroke / 2) (60 + fg-stroke) fg-stroke]
+
+Section: Lowercase (block style — same shapes as uppercase, x-height)
+
+  fg-block-lower : Integer, TtfBuildGlyph -> TtfBuildGlyph
+  fg-block-lower (cp) (upper) =
+    let g = upper.bg-glyph
+    in let scale-h = fg-x-h * 1000 / fg-cap-h
+    in let scaled = fg-scale-glyph g scale-h
+    in TtfBuildGlyph { bg-codepoint = cp, bg-advance = upper.bg-advance * fg-x-h / fg-cap-h + 40, bg-lsb = scaled.tg-lsb, bg-glyph = scaled }
+
+  fg-scale-glyph : TtfGlyph, Integer -> TtfGlyph
+  fg-scale-glyph (g) (scale-k) =
+    let sc = fg-scale-contours (g.tg-contours) scale-k 0 (list-length (g.tg-contours)) []
+    in TtfGlyph {
+      tg-contours = sc,
+      tg-x-min = g.tg-x-min * scale-k / 1000,
+      tg-y-min = g.tg-y-min * scale-k / 1000,
+      tg-x-max = g.tg-x-max * scale-k / 1000,
+      tg-y-max = g.tg-y-max * scale-k / 1000,
+      tg-advance = g.tg-advance * scale-k / 1000,
+      tg-lsb = g.tg-lsb * scale-k / 1000
+    }
+
+  fg-scale-contours : List TtfContour, Integer, Integer, Integer, List TtfContour -> List TtfContour
+  fg-scale-contours (cs) (k) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at cs i
+    in let sp = fg-scale-points (c.tc-points) k 0 (list-length (c.tc-points)) []
+    in fg-scale-contours cs k (i + 1) n (list-push acc (TtfContour { tc-points = sp }))
+
+  fg-scale-points : List TtfPoint, Integer, Integer, Integer, List TtfPoint -> List TtfPoint
+  fg-scale-points (pts) (k) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at pts i
+    in fg-scale-points pts k (i + 1) n (list-push acc (TtfPoint { tp-x = p.tp-x * k / 1000, tp-y = p.tp-y * k / 1000, tp-on-curve = p.tp-on-curve }))
+
+Section: Block Font Assembly
+
+  fg-block-font : TtfBuildSpec
+  fg-block-font =
+    TtfBuildSpec {
+      bs-name = "Codex Block",
+      bs-units-per-em = fg-upem,
+      bs-ascent = fg-ascent,
+      bs-descent = fg-descent,
+      bs-line-gap = 100,
+      bs-glyphs = [
+        fg-block-space, fg-block-exclaim, fg-block-quote, fg-block-hash,
+        fg-empty-glyph 36 fg-advance, fg-empty-glyph 37 fg-advance,
+        fg-empty-glyph 38 fg-advance, fg-block-apos,
+        fg-block-lparen, fg-block-rparen, fg-block-asterisk, fg-block-plus,
+        fg-block-comma, fg-block-hyphen, fg-block-period, fg-block-slash,
+        fg-block-0, fg-block-1, fg-block-2, fg-block-3, fg-block-4,
+        fg-block-5, fg-block-6, fg-block-7, fg-block-8, fg-block-9,
+        fg-block-colon, fg-block-semicolon,
+        fg-empty-glyph 60 fg-advance, fg-block-equals, fg-empty-glyph 62 fg-advance,
+        fg-block-question, fg-block-at,
+        fg-block-A, fg-block-B, fg-block-C, fg-block-D, fg-block-E,
+        fg-block-F, fg-block-G, fg-block-H, fg-block-I, fg-block-J,
+        fg-block-K, fg-block-L, fg-block-M, fg-block-N, fg-block-O,
+        fg-block-P, fg-block-Q, fg-block-R, fg-block-S, fg-block-T,
+        fg-block-U, fg-block-V, fg-block-W, fg-block-X, fg-block-Y, fg-block-Z,
+        fg-block-lbracket, fg-block-slash, fg-block-rbracket,
+        fg-empty-glyph 94 fg-advance, fg-block-underscore, fg-empty-glyph 96 (fg-advance / 3),
+        fg-block-lower 97 fg-block-A, fg-block-lower 98 fg-block-B,
+        fg-block-lower 99 fg-block-C, fg-block-lower 100 fg-block-D,
+        fg-block-lower 101 fg-block-E, fg-block-lower 102 fg-block-F,
+        fg-block-lower 103 fg-block-G, fg-block-lower 104 fg-block-H,
+        fg-block-lower 105 fg-block-I, fg-block-lower 106 fg-block-J,
+        fg-block-lower 107 fg-block-K, fg-block-lower 108 fg-block-L,
+        fg-block-lower 109 fg-block-M, fg-block-lower 110 fg-block-N,
+        fg-block-lower 111 fg-block-O, fg-block-lower 112 fg-block-P,
+        fg-block-lower 113 fg-block-Q, fg-block-lower 114 fg-block-R,
+        fg-block-lower 115 fg-block-S, fg-block-lower 116 fg-block-T,
+        fg-block-lower 117 fg-block-U, fg-block-lower 118 fg-block-V,
+        fg-block-lower 119 fg-block-W, fg-block-lower 120 fg-block-X,
+        fg-block-lower 121 fg-block-Y, fg-block-lower 122 fg-block-Z,
+        fg-block-lbrace, fg-empty-glyph 124 (fg-advance / 3),
+        fg-block-rbrace, fg-empty-glyph 126 fg-advance
+      ]
+    }
+
+Section: Pixel Font (UPM=16, 1 unit = 1 pixel at 16ppem)
+
+  px-upem : Integer = 16
+  px-asc : Integer = 13
+  px-desc : Integer = -3
+  px-cap : Integer = 11
+  px-xh : Integer = 7
+  px-s : Integer = 2
+  px-adv : Integer = 8
+
+  px-glyph : Integer, Integer, List TtfContour -> TtfBuildGlyph
+  px-glyph (cp) (adv) (cs) =
+    let b = fg-contour-bounds cs 0 (list-length cs) 0 0 0 0
+    in TtfBuildGlyph { bg-codepoint = cp, bg-advance = adv, bg-lsb = b.gb-x-min,
+      bg-glyph = TtfGlyph { tg-contours = cs, tg-x-min = b.gb-x-min, tg-y-min = b.gb-y-min, tg-x-max = b.gb-x-max, tg-y-max = b.gb-y-max, tg-advance = adv, tg-lsb = b.gb-x-min } }
+
+  px-v : Integer, Integer, Integer -> TtfContour
+  px-v (x) (y) (h) = fg-rect-contour x y px-s h
+
+  px-h : Integer, Integer, Integer -> TtfContour
+  px-h (x) (y) (w) = fg-rect-contour x y w px-s
+
+  px-box : Integer, Integer, Integer, Integer -> TtfContour
+  px-box (x) (y) (w) (h) = fg-rect-contour x y w h
+
+  px-hole : Integer, Integer, Integer, Integer -> TtfContour
+  px-hole (x) (y) (w) (h) = fg-rect-hole x y w h
+
+  px-pixel-font : TtfBuildSpec
+  px-pixel-font =
+    let s = px-s
+    in let a = px-adv
+    in let c = px-cap
+    in let x = px-xh
+    in let mk = px-glyph
+    in let v = px-v
+    in let h = px-h
+    in TtfBuildSpec {
+      bs-name = "Codex Pixel",
+      bs-units-per-em = px-upem,
+      bs-ascent = px-asc,
+      bs-descent = px-desc,
+      bs-line-gap = 2,
+      bs-glyphs = [
+        fg-empty-glyph 32 5,
+        mk 33 4 [v 1 0 s, v 1 (s + 1) (c - s - 1)],
+        mk 34 6 [v 1 (c - 4) 4, v 4 (c - 4) 4],
+        mk 35 a [v 2 1 (c - 2), v 5 1 (c - 2), h 1 3 6, h 1 7 6],
+        fg-empty-glyph 36 a, fg-empty-glyph 37 a, fg-empty-glyph 38 a,
+        mk 39 3 [v 1 (c - 4) 4],
+        mk 40 5 [v 2 0 c, h 2 0 s, h 2 (c - s) s],
+        mk 41 5 [v 1 0 c, h 1 0 s, h 1 (c - s) s],
+        mk 42 a [v 3 (c - 5) 3, h 1 (c - 3) 6],
+        mk 43 a [v 3 2 7, h 1 5 6],
+        mk 44 4 [v 1 (-1) 3],
+        mk 45 a [h 1 4 6],
+        mk 46 4 [px-box 1 0 s s],
+        mk 47 a [v 1 0 (c / 2), v (a - 3) (c / 2) (c / 2)],
+        mk 48 a [px-box 1 0 6 c, px-hole 3 s 2 (c - s * 2)],
+        mk 49 5 [v 2 0 c, h 1 0 3],
+        mk 50 a [h 1 0 6, h 1 (c / 2) 6, h 1 (c - s) 6, v 1 0 (c / 2), v 5 (c / 2) (c / 2)],
+        mk 51 a [h 1 0 6, h 1 (c / 2) 6, h 1 (c - s) 6, v 5 0 c],
+        mk 52 a [v 1 (c / 2) (c / 2), v 5 0 c, h 1 (c / 2) 6],
+        mk 53 a [h 1 0 6, h 1 (c / 2) 6, h 1 (c - s) 6, v 5 0 (c / 2), v 1 (c / 2) (c / 2)],
+        mk 54 a [v 1 0 c, h 1 0 6, h 1 (c / 2) 6, h 1 (c - s) 6, v 5 0 (c / 2)],
+        mk 55 a [h 1 (c - s) 6, v 5 0 c],
+        mk 56 a [px-box 1 0 6 c, px-hole 3 s 2 (c / 2 - s - 1), px-hole 3 (c / 2 + 1) 2 (c / 2 - s - 1)],
+        mk 57 a [v 5 0 c, h 1 0 6, h 1 (c / 2) 6, h 1 (c - s) 6, v 1 (c / 2) (c / 2)],
+        mk 58 4 [px-box 1 0 s s, px-box 1 (x - s) s s],
+        mk 59 4 [v 1 (-1) 3, px-box 1 (x - s) s s],
+        fg-empty-glyph 60 a,
+        mk 61 a [h 1 3 6, h 1 6 6],
+        fg-empty-glyph 62 a,
+        mk 63 a [px-box 3 0 s s, v 3 (s + 1) (c / 2 - s), h 1 (c - s) 6, v 5 (c / 2) (c / 2), h 3 (c / 2) 4],
+        mk 64 a [px-box 1 0 6 c, px-hole 3 s 2 (c - s * 2), px-box 3 3 2 4],
+        mk 65 a [v 1 0 c, v 5 0 c, h 1 (c - s) 6, h 1 (x - 1) 6],
+        mk 66 a [px-box 1 0 6 c, px-hole 3 s 2 (c / 2 - s - 1), px-hole 3 (c / 2 + 1) 2 (c / 2 - s - 1)],
+        mk 67 a [v 1 0 c, h 1 0 6, h 1 (c - s) 6],
+        mk 68 a [px-box 1 0 6 c, px-hole 3 s 2 (c - s * 2)],
+        mk 69 a [v 1 0 c, h 1 0 6, h 1 (c / 2) 5, h 1 (c - s) 6],
+        mk 70 a [v 1 0 c, h 1 (c / 2) 5, h 1 (c - s) 6],
+        mk 71 a [v 1 0 c, h 1 0 6, h 1 (c - s) 6, v 5 0 (c / 2), h 3 (c / 2) 4],
+        mk 72 a [v 1 0 c, v 5 0 c, h 1 (c / 2) 6],
+        mk 73 5 [v 2 0 c, h 1 0 4, h 1 (c - s) 4],
+        mk 74 a [v 5 0 c, h 1 0 6, v 1 0 3],
+        mk 75 a [v 1 0 c, h 1 (c / 2) 4, v 5 (c / 2) (c / 2), v 5 0 (c / 2)],
+        mk 76 a [v 1 0 c, h 1 0 6],
+        mk 77 9 [v 1 0 c, v 7 0 c, h 1 (c - s) 8, v 4 (c / 2) (c / 2)],
+        mk 78 a [v 1 0 c, v 5 0 c, h 1 (c - s) 6],
+        mk 79 a [px-box 1 0 6 c, px-hole 3 s 2 (c - s * 2)],
+        mk 80 a [v 1 0 c, h 1 (c - s) 6, h 1 (c / 2) 6, v 5 (c / 2) (c / 2)],
+        mk 81 a [px-box 1 0 6 c, px-hole 3 s 2 (c - s * 2), px-box 4 0 3 s],
+        mk 82 a [v 1 0 c, h 1 (c - s) 6, h 1 (c / 2) 6, v 5 (c / 2) (c / 2), v 5 0 (c / 2)],
+        mk 83 a [h 1 0 6, h 1 (c / 2) 6, h 1 (c - s) 6, v 5 0 (c / 2), v 1 (c / 2) (c / 2)],
+        mk 84 a [h 1 (c - s) 6, v 3 0 c],
+        mk 85 a [v 1 0 c, v 5 0 c, h 1 0 6],
+        mk 86 a [v 1 0 c, v 5 0 c, px-box 3 0 s s],
+        mk 87 9 [v 1 0 c, v 7 0 c, h 1 0 8, v 4 0 (c / 2)],
+        mk 88 a [v 1 0 (c / 2), v 5 (c / 2) (c / 2), v 1 (c / 2) (c / 2), v 5 0 (c / 2), h 1 (c / 2) 6],
+        mk 89 a [v 1 (c / 2) (c / 2), v 5 (c / 2) (c / 2), h 1 (c / 2) 6, v 3 0 (c / 2)],
+        mk 90 a [h 1 0 6, h 1 (c - s) 6, v 5 (c / 2) (c / 2), v 1 0 (c / 2)],
+        mk 91 5 [v 1 0 c, h 1 0 3, h 1 (c - s) 3],
+        mk 92 a [v 5 0 (c / 2), v 1 (c / 2) (c / 2)],
+        mk 93 5 [v 2 0 c, h 1 0 3, h 1 (c - s) 3],
+        fg-empty-glyph 94 a,
+        mk 95 a [h 0 (-1) a],
+        fg-empty-glyph 96 4,
+        mk 97 a [v 1 0 x, v 5 0 x, h 1 (x - s) 6, h 1 (x / 2) 6],
+        mk 98 a [px-box 1 0 6 x, px-hole 3 s 2 (x / 2 - s - 1), px-hole 3 (x / 2 + 1) 2 (x / 2 - s - 1)],
+        mk 99 a [v 1 0 x, h 1 0 6, h 1 (x - s) 6],
+        mk 100 a [px-box 1 0 6 x, px-hole 3 s 2 (x - s * 2)],
+        mk 101 a [v 1 0 x, h 1 0 6, h 1 (x / 2) 5, h 1 (x - s) 6],
+        mk 102 a [v 1 0 x, h 1 (x / 2) 5, h 1 (x - s) 6],
+        mk 103 a [v 1 0 x, h 1 0 6, h 1 (x - s) 6, v 5 0 (x / 2), h 3 (x / 2) 4],
+        mk 104 a [v 1 0 x, v 5 0 x, h 1 (x / 2) 6],
+        mk 105 5 [v 2 0 x, h 1 0 4, h 1 (x - s) 4],
+        mk 106 a [v 5 0 x, h 1 0 6, v 1 0 3],
+        mk 107 a [v 1 0 x, h 1 (x / 2) 4, v 5 (x / 2) (x / 2), v 5 0 (x / 2)],
+        mk 108 a [v 1 0 x, h 1 0 6],
+        mk 109 9 [v 1 0 x, v 7 0 x, h 1 (x - s) 8, v 4 (x / 2) (x / 2)],
+        mk 110 a [v 1 0 x, v 5 0 x, h 1 (x - s) 6],
+        mk 111 a [px-box 1 0 6 x, px-hole 3 s 2 (x - s * 2)],
+        mk 112 a [v 1 0 x, h 1 (x - s) 6, h 1 (x / 2) 6, v 5 (x / 2) (x / 2)],
+        mk 113 a [px-box 1 0 6 x, px-hole 3 s 2 (x - s * 2), px-box 4 0 3 s],
+        mk 114 a [v 1 0 x, h 1 (x - s) 6, h 1 (x / 2) 6, v 5 (x / 2) (x / 2), v 5 0 (x / 2)],
+        mk 115 a [h 1 0 6, h 1 (x / 2) 6, h 1 (x - s) 6, v 5 0 (x / 2), v 1 (x / 2) (x / 2)],
+        mk 116 a [h 1 (x - s) 6, v 3 0 x],
+        mk 117 a [v 1 0 x, v 5 0 x, h 1 0 6],
+        mk 118 a [v 1 0 x, v 5 0 x, px-box 3 0 s s],
+        mk 119 9 [v 1 0 x, v 7 0 x, h 1 0 8, v 4 0 (x / 2)],
+        mk 120 a [v 1 0 (x / 2), v 5 (x / 2) (x / 2), v 1 (x / 2) (x / 2), v 5 0 (x / 2), h 1 (x / 2) 6],
+        mk 121 a [v 1 (x / 2) (x / 2), v 5 (x / 2) (x / 2), h 1 (x / 2) 6, v 3 0 (x / 2)],
+        mk 122 a [h 1 0 6, h 1 (x - s) 6, v 5 (x / 2) (x / 2), v 1 0 (x / 2)],
+        mk 123 5 [v 2 0 (c / 2 - 1), v 2 (c / 2 + 1) (c / 2 - 1), h 2 0 s, h 2 (c - s) s, h 1 (c / 2) 3],
+        fg-empty-glyph 124 4,
+        mk 125 5 [v 1 0 (c / 2 - 1), v 1 (c / 2 + 1) (c / 2 - 1), h 1 0 s, h 1 (c - s) s, h 2 (c / 2) 3],
+        fg-empty-glyph 126 a
+      ]
+    }
+
+Section: Font Catalog
+
+  fg-font-count : Integer = 8
+
+  fg-font-name : Integer -> Text
+  fg-font-name (idx) =
+    if idx == 0 then "Disk Fonts"
+    else if idx == 1 then "Codex Pixel"
+    else if idx == 2 then "Codex Block"
+    else if idx == 3 then "Pixel Narrow"
+    else if idx == 4 then "Pixel Wide"
+    else if idx == 5 then "AI Serif"
+    else if idx == 6 then "AI Sans"
+    else if idx == 7 then "AI Mono"
+    else "Unknown"
+
+  fg-font-desc : Integer -> Text
+  fg-font-desc (idx) =
+    if idx == 0 then "Restore TrueType"
+    else if idx == 1 then "16px grid font"
+    else if idx == 2 then "1000 UPM block"
+    else if idx == 3 then "Condensed pixel"
+    else if idx == 4 then "Extended pixel"
+    else if idx == 5 then "Neural net serif"
+    else if idx == 6 then "Neural net sans"
+    else if idx == 7 then "Neural net mono"
+    else ""
+
+  fg-font-spec : Integer -> TtfBuildSpec
+  fg-font-spec (idx) =
+    if idx == 0 then px-pixel-font
+    else if idx == 1 then fg-block-font
+    else if idx == 2 then fg-rescale-px "Pixel Narrow" 6
+    else if idx == 3 then fg-rescale-px "Pixel Wide" 10
+    else px-pixel-font
+
+  fg-rescale-px : Text, Integer -> TtfBuildSpec
+  fg-rescale-px (name) (new-adv) =
+    let base = px-pixel-font
+    in let glyphs = fg-rescale-px-adv (base.bs-glyphs) new-adv 0 (list-length (base.bs-glyphs)) []
+    in TtfBuildSpec {
+      bs-name = name,
+      bs-units-per-em = px-upem,
+      bs-ascent = px-asc,
+      bs-descent = px-desc,
+      bs-line-gap = 2,
+      bs-glyphs = glyphs
+    }
+
+  fg-rescale-px-adv : List TtfBuildGlyph, Integer, Integer, Integer, List TtfBuildGlyph -> List TtfBuildGlyph
+  fg-rescale-px-adv (glyphs) (new-adv) (i) (n) (acc) =
+    if i >= n then acc
+    else let g = list-at glyphs i
+    in let adj = if g.bg-advance == 0 then 0 else new-adv
+    in let nb = TtfBuildGlyph { bg-codepoint = g.bg-codepoint, bg-advance = adj, bg-lsb = g.bg-lsb, bg-glyph = g.bg-glyph }
+    in fg-rescale-px-adv glyphs new-adv (i + 1) n (list-push acc nb)
+
+Page 1

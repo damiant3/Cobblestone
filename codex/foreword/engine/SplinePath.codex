@@ -1,0 +1,156 @@
+Chapter: SplinePath
+  cites Math chapter Quaternion
+
+ 3D spline paths for camera rails, NPC patrol routes, and
+ projectile trajectories. Catmull-Rom interpolation through
+ control points with uniform parameterization. Supports closed
+ (looping) and open paths. Arc-length approximation for
+ constant-speed traversal. Fixed-point (scale 1000).
+
+ We say:
+
+Section: Control Point
+
+  SplinePoint = record {
+    sp-x : Integer, sp-y : Integer, sp-z : Integer
+  }
+
+  sp-new : Integer, Integer, Integer -> SplinePoint
+  sp-new (x) (y) (z) = SplinePoint { sp-x = x, sp-y = y, sp-z = z }
+
+Section: Spline
+
+  Spline3D = record {
+    s3-points : List SplinePoint,
+    s3-count : Integer,
+    s3-closed : Boolean
+  }
+
+  spline-new : Boolean -> Spline3D
+  spline-new (closed) = Spline3D { s3-points = [], s3-count = 0, s3-closed = closed }
+
+  spline-add : Spline3D, SplinePoint -> Spline3D
+  spline-add (s) (pt) = Spline3D { s3-points = list-push (s.s3-points) pt, s3-count = s.s3-count + 1, s3-closed = s.s3-closed }
+
+Section: Catmull-Rom Evaluation
+
+  spline-eval : Spline3D, Integer -> SplinePoint
+  spline-eval (s) (t) =
+    if s.s3-count < 2 then
+      if s.s3-count == 1 then list-at (s.s3-points) 0
+      else sp-new 0 0 0
+    else let seg-count = if s.s3-closed then s.s3-count else s.s3-count - 1
+    in let scaled = t * seg-count / 1000
+    in let seg = spl-clamp (scaled / 1000) 0 (seg-count - 1)
+    in let local-t = scaled - seg * 1000
+    in let i0 = spl-wrap (seg - 1) (s.s3-count)
+    in let i1 = spl-wrap seg (s.s3-count)
+    in let i2 = spl-wrap (seg + 1) (s.s3-count)
+    in let i3 = spl-wrap (seg + 2) (s.s3-count)
+    in let p0 = list-at (s.s3-points) i0
+    in let p1 = list-at (s.s3-points) i1
+    in let p2 = list-at (s.s3-points) i2
+    in let p3 = list-at (s.s3-points) i3
+    in catmull-rom p0 p1 p2 p3 local-t
+
+  catmull-rom : SplinePoint, SplinePoint, SplinePoint, SplinePoint, Integer -> SplinePoint
+  catmull-rom (p0) (p1) (p2) (p3) (t) =
+    let t2 = t * t / 1000
+    in let t3 = t2 * t / 1000
+    in let x = spl-cr-axis (p0.sp-x) (p1.sp-x) (p2.sp-x) (p3.sp-x) t t2 t3
+    in let y = spl-cr-axis (p0.sp-y) (p1.sp-y) (p2.sp-y) (p3.sp-y) t t2 t3
+    in let z = spl-cr-axis (p0.sp-z) (p1.sp-z) (p2.sp-z) (p3.sp-z) t t2 t3
+    in SplinePoint { sp-x = x, sp-y = y, sp-z = z }
+
+  spl-cr-axis : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  spl-cr-axis (v0) (v1) (v2) (v3) (t) (t2) (t3) =
+    let a = (0 - v0 + 3 * v1 - 3 * v2 + v3) / 2
+    in let b = (2 * v0 - 5 * v1 + 4 * v2 - v3) / 2
+    in let c = (0 - v0 + v2) / 2
+    in let d = v1
+    in (a * t3 + b * t2 + c * t) / 1000000 + d
+
+Section: Tangent (derivative)
+
+  spline-tangent : Spline3D, Integer -> Vec3
+  spline-tangent (s) (t) =
+    let dt = 5
+    in let p0 = spline-eval s (spl-clamp (t - dt) 0 1000)
+    in let p1 = spline-eval s (spl-clamp (t + dt) 0 1000)
+    in vec3-new (p1.sp-x - p0.sp-x) (p1.sp-y - p0.sp-y) (p1.sp-z - p0.sp-z)
+
+Section: Arc Length Approximation
+
+  spline-arc-length : Spline3D, Integer -> Integer
+  spline-arc-length (s) (steps) = spl-arc-loop s steps 0 0 (spline-eval s 0)
+
+  spl-arc-loop : Spline3D, Integer, Integer, Integer, SplinePoint -> Integer
+  spl-arc-loop (s) (steps) (i) (accum) (prev) =
+    if i >= steps then accum
+    else let t = (i + 1) * 1000 / steps
+    in let cur = spline-eval s t
+    in let dx = cur.sp-x - prev.sp-x
+    in let dy = cur.sp-y - prev.sp-y
+    in let dz = cur.sp-z - prev.sp-z
+    in let seg-len = spl-isqrt (dx * dx + dy * dy + dz * dz)
+    in spl-arc-loop s steps (i + 1) (accum + seg-len) cur
+
+Section: Path Walker
+
+  SplineWalker = record {
+    sw-spline : Spline3D,
+    sw-t : Integer,
+    sw-speed : Integer,
+    sw-active : Boolean
+  }
+
+  walker-new : Spline3D, Integer -> SplineWalker
+  walker-new (spline) (speed) = SplineWalker { sw-spline = spline, sw-t = 0, sw-speed = speed, sw-active = True }
+
+  walker-tick : SplineWalker, Integer -> SplineWalker
+  walker-tick (w) (dt) =
+    if w.sw-active then
+      let new-t = w.sw-t + w.sw-speed * dt / 1000
+      in if w.sw-spline.s3-closed then SplineWalker { sw-spline = w.sw-spline, sw-t = spl-imod new-t 1000, sw-speed = w.sw-speed, sw-active = True }
+      else if new-t >= 1000 then SplineWalker { sw-spline = w.sw-spline, sw-t = 1000, sw-speed = w.sw-speed, sw-active = False }
+      else SplineWalker { sw-spline = w.sw-spline, sw-t = new-t, sw-speed = w.sw-speed, sw-active = True }
+    else w
+
+  walker-position : SplineWalker -> SplinePoint
+  walker-position (w) = spline-eval (w.sw-spline) (w.sw-t)
+
+Section: Helpers
+
+  spl-wrap : Integer, Integer -> Integer
+  spl-wrap (i) (n) =
+    if n <= 0 then 0
+    else let m = spl-imod i n
+    in if m < 0 then m + n else m
+
+  spl-imod : Integer, Integer -> Integer
+  spl-imod (a) (b) =
+    if b == 0 then 0
+    else a - (a / b) * b
+
+  spl-clamp : Integer, Integer, Integer -> Integer
+  spl-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  spl-isqrt : Integer -> Integer
+  spl-isqrt (n) = if n <= 0 then 0 else spl-isqrt-loop n (n / 2 + 1)
+
+  spl-isqrt-loop : Integer, Integer -> Integer
+  spl-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else spl-isqrt-loop n next
+
+Section: Formatting
+
+  format-spline : Spline3D -> Text
+  format-spline (s) =
+    let kind = if s.s3-closed then "closed" else "open"
+    in "Spline(" & show (s.s3-count) & " pts, " & kind & ")"
+
+  format-walker : SplineWalker -> Text
+  format-walker (w) = "Walker(t=" & show (w.sw-t) & " active=" & show (w.sw-active) & ")"
+
+Page 1

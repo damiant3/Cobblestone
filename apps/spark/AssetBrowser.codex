@@ -1,0 +1,155 @@
+Chapter: AssetBrowser
+
+ Asset catalog and browser. Manages named references to meshes,
+ textures, materials, and audio clips. Supports search, tagging,
+ and thumbnail previews.
+
+ We say:
+
+Section: Types
+
+  AssetKind =
+    | AkMesh
+    | AkTexture
+    | AkMaterial
+    | AkAudio
+    | AkScene
+
+  AssetEntry = record {
+    ae-name : Text,
+    ae-kind : AssetKind,
+    ae-id : Integer,
+    ae-tags : List Text,
+    ae-tag-count : Integer,
+    ae-size-bytes : Integer
+  }
+
+  AssetCatalog = record {
+    ac-assets : List AssetEntry,
+    ac-count : Integer,
+    ac-next-id : Integer,
+    ac-filter-kind : AssetKind,
+    ac-search-query : Text
+  }
+
+  BrowserState = record {
+    bs-catalog : AssetCatalog,
+    bs-scroll-y : Integer,
+    bs-selected : Integer,
+    bs-tile-size : Integer,
+    bs-list-mode : Boolean
+  }
+
+Section: Construction
+
+  asset-catalog-new : AssetCatalog
+  asset-catalog-new = AssetCatalog {
+    ac-assets = [],
+    ac-count = 0,
+    ac-next-id = 1,
+    ac-filter-kind = AkMesh,
+    ac-search-query = ""
+  }
+
+  browser-new : BrowserState
+  browser-new = BrowserState {
+    bs-catalog = asset-catalog-new,
+    bs-scroll-y = 0,
+    bs-selected = -1,
+    bs-tile-size = 64,
+    bs-list-mode = False
+  }
+
+Section: Registration
+
+  asset-register : AssetCatalog, Text, AssetKind, Integer -> AssetCatalog
+  asset-register (cat) (name) (kind) (size) =
+    let entry = AssetEntry {
+      ae-name = name,
+      ae-kind = kind,
+      ae-id = cat.ac-next-id,
+      ae-tags = [],
+      ae-tag-count = 0,
+      ae-size-bytes = size
+    }
+    in AssetCatalog {
+      ac-assets = list-push (cat.ac-assets) entry,
+      ac-count = cat.ac-count + 1,
+      ac-next-id = cat.ac-next-id + 1,
+      ac-filter-kind = cat.ac-filter-kind,
+      ac-search-query = cat.ac-search-query
+    }
+
+  asset-tag : AssetCatalog, Integer, Text -> AssetCatalog
+  asset-tag (cat) (idx) (tag) =
+    if idx < 0 then cat
+    else if idx >= cat.ac-count then cat
+    else let entry = list-at (cat.ac-assets) idx
+    in let updated = AssetEntry {
+      ae-name = entry.ae-name,
+      ae-kind = entry.ae-kind,
+      ae-id = entry.ae-id,
+      ae-tags = list-push (entry.ae-tags) tag,
+      ae-tag-count = entry.ae-tag-count + 1,
+      ae-size-bytes = entry.ae-size-bytes
+    }
+    in __record-set cat "ac-assets" (list-set-at (cat.ac-assets) idx updated)
+
+Section: Filtering
+
+  asset-set-filter : AssetCatalog, AssetKind -> AssetCatalog
+  asset-set-filter (cat) (kind) = __record-set cat "ac-filter-kind" kind
+
+  asset-set-search : AssetCatalog, Text -> AssetCatalog
+  asset-set-search (cat) (query) = __record-set cat "ac-search-query" query
+
+  asset-filtered : AssetCatalog -> List AssetEntry
+  asset-filtered (cat) =
+    asset-filter-loop (cat.ac-assets) (cat.ac-count) (cat.ac-filter-kind) (cat.ac-search-query) 0 []
+
+  asset-filter-loop : List AssetEntry, Integer, AssetKind, Text, Integer, List AssetEntry -> List AssetEntry
+  asset-filter-loop (assets) (count) (kind) (query) (i) (acc) =
+    if i >= count then acc
+    else let entry = list-at assets i
+    in let kind-match = asset-kind-eq (entry.ae-kind) kind
+    in let name-match = if text-length query == 0 then True else text-contains (entry.ae-name) query
+    in let acc2 = if kind-match then if name-match then list-push acc entry else acc else acc
+    in asset-filter-loop assets count kind query (i + 1) acc2
+
+  asset-kind-eq : AssetKind, AssetKind -> Boolean
+  asset-kind-eq (a) (b) =
+    when a
+      is AkMesh -> when b is AkMesh -> True is otherwise -> False
+      is AkTexture -> when b is AkTexture -> True is otherwise -> False
+      is AkMaterial -> when b is AkMaterial -> True is otherwise -> False
+      is AkAudio -> when b is AkAudio -> True is otherwise -> False
+      is AkScene -> when b is AkScene -> True is otherwise -> False
+
+Section: Browser Interaction
+
+  browser-select : BrowserState, Integer -> BrowserState
+  browser-select (bs) (idx) = __record-set bs "bs-selected" idx
+
+  browser-scroll : BrowserState, Integer -> BrowserState
+  browser-scroll (bs) (delta) =
+    let new-y = bs.bs-scroll-y + delta
+    in __record-set bs "bs-scroll-y" (if new-y < 0 then 0 else new-y)
+
+  browser-toggle-view : BrowserState -> BrowserState
+  browser-toggle-view (bs) = __record-set bs "bs-list-mode" (if bs.bs-list-mode then False else True)
+
+Section: Info
+
+  asset-catalog-info : AssetCatalog -> Text
+  asset-catalog-info (cat) = show (cat.ac-count) & " assets"
+
+  asset-entry-info : AssetEntry -> Text
+  asset-entry-info (entry) =
+    let kind = when entry.ae-kind is AkMesh -> "mesh" is AkTexture -> "tex" is AkMaterial -> "mat" is AkAudio -> "audio" is AkScene -> "scene"
+    in entry.ae-name & " [" & kind & "] " & show (entry.ae-size-bytes) & "B"
+
+  browser-info : BrowserState -> Text
+  browser-info (bs) =
+    asset-catalog-info (bs.bs-catalog) & " sel=" & show (bs.bs-selected) & (if bs.bs-list-mode then " list" else " grid")
+
+Page 1

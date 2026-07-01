@@ -1,0 +1,75 @@
+Chapter: ReplayLogTest
+  cites Replay chapter ReplayLog
+  cites Foreword chapter Maybe
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  show-maybe-event : Maybe ReplayEvent -> Text
+  show-maybe-event (m) = when m
+    is Just (ev) -> event-type-name ev
+    is None -> "none"
+
+Section: Test Data
+  empty-session : ReplaySession = session-new "prog1" "ctx1"
+
+  populated-session : ReplaySession =
+    let s0 = session-new "prog1" "ctx1"
+    in let s1 = record-input s0 5 3 "recv" [10, 20, 30]
+    in let s2 = record-schedule s1 2 7 SchedChanRecvBlock
+    in let s3 = record-exit s2 1 0
+    in let s4 = record-input s3 8 1 "send" [40]
+    in let s5 = record-schedule s4 3 4 SchedChanSendBlock
+    in record-exit s5 9 1
+
+Section: Tests
+  test-empty : Text =
+    session-stats empty-session
+
+  test-populated : Text =
+    session-stats populated-session
+
+  test-replay-next : Text =
+    let r1 = replay-next populated-session
+    in let r2 = replay-next (r1.session)
+    in let r3 = replay-next (r2.session)
+    in let r4 = replay-next (r3.session)
+    in let r5 = replay-next (r4.session)
+    in let r6 = replay-next (r5.session)
+    in let r7 = replay-next (r6.session)
+    in "v1=" & show-bool (r1.valid) & " t1=" & event-type-name (r1.event) & " v2=" & show-bool (r2.valid) & " t2=" & event-type-name (r2.event) & " v3=" & show-bool (r3.valid) & " t3=" & event-type-name (r3.event) & " v4=" & show-bool (r7.valid)
+
+  test-validate-header : Text =
+    let m = replay-validate-header populated-session "prog1" "ctx1"
+    in let bp = replay-validate-header populated-session "wrong" "ctx1"
+    in let bc = replay-validate-header populated-session "prog1" "wrong"
+    in "match=" & show-bool m & " bad-prog=" & show-bool bp & " bad-ctx=" & show-bool bc
+
+  test-event-queries : Text =
+    let r1 = replay-next populated-session
+    in let r2 = replay-next (r1.session)
+    in let r3 = replay-next (r2.session)
+    in let sched-reason = when (r2.event)
+      is ScheduleEvent (from) (to) (r) -> reason-name r
+      is otherwise -> "unknown"
+    in "agent1=" & show (event-agent-id (r1.event)) & " tag2=" & show (event-type-tag (r2.event)) & " name3=" & event-type-name (r3.event) & " reason=" & sched-reason
+
+  test-peek-exhausted : Text =
+    let s1 = session-new "p" "c"
+    in let s2 = record-exit s1 0 0
+    in let p1 = replay-peek s2
+    in let e1 = replay-exhausted s2
+    in let r = replay-next s2
+    in let p2 = replay-peek (r.session)
+    in let e2 = replay-exhausted (r.session)
+    in "peek1=" & show-maybe-event p1 & " exh1=" & show-bool e1 & " peek2=" & show-maybe-event p2 & " exh2=" & show-bool e2
+
+  opening : [Console] Nothing = act
+    print-line-uni test-empty
+    print-line-uni test-populated
+    print-line-uni test-replay-next
+    print-line-uni test-validate-header
+    print-line-uni test-event-queries
+    print-line-uni test-peek-exhausted
+  end

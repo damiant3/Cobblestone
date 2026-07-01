@@ -1,0 +1,97 @@
+Chapter: Codex Types
+
+ Type representations used by the type checker and later stages.
+
+Section: Primitive Types
+  CodexType =
+   | IntegerTy (Integer) (Integer) (OverflowMode)
+   | RealTy
+   | RealApproxTy
+   | RealTrappingTy
+   | RealSaturatingTy
+   | TextTy
+   | BooleanTy
+   | CharTy
+   | VoidTy
+   | NothingTy
+   | ErrorTy
+   | FunTy (CodexType) (CodexType)
+   | ListTy (CodexType)
+   | LinkedListTy (CodexType)
+   | TypeVar (Integer)
+   | ForAllTy (Integer) (CodexType)
+   | SumTy (Name) (List CodexType) (List SumCtor)
+   | RecordTy (Name) (List CodexType) (List RecordField)
+   | ConstructedTy (Name) (List CodexType)
+   | EffectfulTy (List Name) (List Text) (CodexType)
+   | ProofTy
+   | PropEqTy (CodexType) (CodexType)
+   | UnitTy (Name) (CodexType)
+   | VectorTy (Integer) (CodexType)
+   | VectorMaskTy (Integer)
+   | TypeCon (Name)
+   | TypeApply (CodexType) (CodexType)
+
+  SumCtor = record {
+   name : Name,
+   fields : List CodexType,
+   return-type : List CodexType
+  }
+
+  RecordField = record {
+   name : Name,
+   type-val : CodexType
+  }
+
+Section: Overflow Modes
+
+ The behavior of a narrow-store at a bounded-Integer field when the
+ incoming value falls outside the field's declared range. Set on a
+ type at declaration time; consulted by codegen at every
+ narrow-store site for that type. Mode is irrelevant for full-width
+ (`i64-min..i64-max`) integers — narrow-store does not fire.
+
+  OverflowMode =
+   | OvError
+   | OvWrapping
+   | OvClamping
+
+Section: Integer Bounds
+  i64-max : Integer = 9223372036854775807
+
+  i64-min : Integer = 0 - 9223372036854775807 - 1
+
+  int-ty-default : CodexType = IntegerTy i64-min i64-max OvError
+
+Section: Pointer Classification
+
+ Whether a runtime value of this type is a heap pointer (True) or an
+ inline scalar (False). The foundation for precise pointer-maps: the
+ escape check, dead-deck reclamation, and a copying compactor all need
+ to know which record/ctor slots hold pointers vs raw values.
+
+ Scalars are stored inline: Integer (1/2/4/8 bytes by bounds), Boolean
+ (1), Char and Number (8, but not pointers). Everything heap-allocated
+ is an 8-byte pointer. Nullary ctors are heap-boxed too (emit-nullary-ctor
+ allocates 8 bytes and stores the tag), so ALL SumTy values are pointers.
+ EffectfulTy and ForAllTy classify by their underlying value type.
+
+ TypeVar is the one undecidable case: a polymorphic field's runtime
+ representation depends on its instantiation. Classified conservatively
+ as a pointer here; a precise map for a generic record requires a
+ per-instantiation (monomorphized) map, which is future work.
+
+  is-pointer-type : CodexType -> Boolean
+  is-pointer-type (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) | RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy | BooleanTy | CharTy | VoidTy | NothingTy | ErrorTy | ProofTy | PropEqTy (a) (b) -> False
+    is TextTy | ListTy (e) | LinkedListTy (e) | RecordTy (n) (a) (f) | SumTy (n) (a) (c) | ConstructedTy (n) (a) | FunTy (p) (r) | VectorTy (vn) (vt) | VectorMaskTy (mn) -> True
+    is EffectfulTy (e) (s) (r) -> is-pointer-type r
+    is ForAllTy (i) (b) -> is-pointer-type b
+    is TypeVar (i) -> True
+    is UnitTy (n) (inner) -> is-pointer-type inner
+    is TypeCon (n) -> False
+    is TypeApply (f) (a) -> True
+
+Page 1
+

@@ -1,0 +1,208 @@
+Chapter: Color
+
+ RGB and HSL color manipulation. Fixed-point (scale 1000 for HSL,
+ 0-255 for RGB channels). Blending, interpolation, palette generation,
+ brightness/contrast adjustment.
+
+ We say:
+
+Section: Types
+  Rgb = record { cr : Integer between 0 and 255, cg : Integer between 0 and 255, cb : Integer between 0 and 255 }
+  Hsl = record { ch : Integer between 0 and 360000, cs : Integer between 0 and 1000, cl : Integer between 0 and 1000 }
+
+Section: Construction
+  rgb : Integer, Integer, Integer -> Rgb
+  rgb (r) (g) (b) = Rgb { cr = r, cg = g, cb = b }
+
+  rgb-black : Rgb
+  rgb-black = Rgb { cr = 0, cg = 0, cb = 0 }
+
+  rgb-white : Rgb
+  rgb-white = Rgb { cr = 255, cg = 255, cb = 255 }
+
+  rgb-red : Rgb
+  rgb-red = Rgb { cr = 255, cg = 0, cb = 0 }
+
+  rgb-green : Rgb
+  rgb-green = Rgb { cr = 0, cg = 255, cb = 0 }
+
+  rgb-blue : Rgb
+  rgb-blue = Rgb { cr = 0, cg = 0, cb = 255 }
+
+  rgb-from-packed : Integer -> Rgb
+  rgb-from-packed (packed) = Rgb { cr = bit-and (bit-shru packed 16) 255, cg = bit-and (bit-shru packed 8) 255, cb = bit-and packed 255 }
+
+  rgb-to-packed : Rgb -> Integer
+  rgb-to-packed (c) = bit-or (bit-shl (c.cr) 16) (bit-or (bit-shl (c.cg) 8) (c.cb))
+
+Section: Blending
+  rgb-lerp : Rgb, Rgb, Integer -> Rgb
+  rgb-lerp (a) (b) (t) =
+    let inv = 1000 - t
+    in Rgb { cr = (a.cr * inv + b.cr * t) / 1000, cg = (a.cg * inv + b.cg * t) / 1000, cb = (a.cb * inv + b.cb * t) / 1000 }
+
+  rgb-add : Rgb, Rgb -> Rgb
+  rgb-add (a) (b) = Rgb { cr = col-clamp8 (a.cr + b.cr), cg = col-clamp8 (a.cg + b.cg), cb = col-clamp8 (a.cb + b.cb) }
+
+  rgb-multiply : Rgb, Rgb -> Rgb
+  rgb-multiply (a) (b) = Rgb { cr = a.cr * b.cr / 255, cg = a.cg * b.cg / 255, cb = a.cb * b.cb / 255 }
+
+  rgb-scale : Rgb, Integer -> Rgb
+  rgb-scale (c) (s) = Rgb { cr = col-clamp8 (c.cr * s / 1000), cg = col-clamp8 (c.cg * s / 1000), cb = col-clamp8 (c.cb * s / 1000) }
+
+  rgb-alpha-blend : Rgb, Rgb, Integer -> Rgb
+  rgb-alpha-blend (fg) (bg) (alpha) = rgb-lerp bg fg alpha
+
+Section: Adjustments
+  rgb-brightness : Rgb, Integer -> Rgb
+  rgb-brightness (c) (delta) = Rgb { cr = col-clamp8 (c.cr + delta), cg = col-clamp8 (c.cg + delta), cb = col-clamp8 (c.cb + delta) }
+
+  rgb-invert : Rgb -> Rgb
+  rgb-invert (c) = Rgb { cr = 255 - c.cr, cg = 255 - c.cg, cb = 255 - c.cb }
+
+  rgb-grayscale : Rgb -> Rgb
+  rgb-grayscale (c) =
+    let lum = (c.cr * 299 + c.cg * 587 + c.cb * 114) / 1000
+    in Rgb { cr = lum, cg = lum, cb = lum }
+
+  rgb-luminance : Rgb -> Integer
+  rgb-luminance (c) = (c.cr * 299 + c.cg * 587 + c.cb * 114) / 1000
+
+Section: HSL Conversion
+  rgb-to-hsl : Rgb -> Hsl
+  rgb-to-hsl (c) =
+    let r = c.cr * 1000 / 255
+    in let g = c.cg * 1000 / 255
+    in let b = c.cb * 1000 / 255
+    in let mx = col-max3 r g b
+    in let mn = col-min3 r g b
+    in let l = (mx + mn) / 2
+    in let delta = mx - mn
+    in if delta == 0 then Hsl { ch = 0, cs = 0, cl = l }
+    else let s = if l > 500 then delta * 1000 / (2000 - mx - mn) else delta * 1000 / (mx + mn)
+    in let h = col-hue r g b mx delta
+    in Hsl { ch = h, cs = s, cl = l }
+
+  col-hue : Integer, Integer, Integer, Integer, Integer -> Integer
+  col-hue (r) (g) (b) (mx) (delta) =
+    if mx == r then let raw = (g - b) * 60 / delta
+      in if raw < 0 then raw + 360 else raw
+    else if mx == g then (b - r) * 60 / delta + 120
+    else (r - g) * 60 / delta + 240
+
+  hsl-to-rgb : Hsl -> Rgb
+  hsl-to-rgb (c) =
+    if c.cs == 0 then let v = c.cl * 255 / 1000
+      in Rgb { cr = v, cg = v, cb = v }
+    else let q = if c.cl < 500 then c.cl * (1000 + c.cs) / 1000 else c.cl + c.cs - c.cl * c.cs / 1000
+    in let p = 2 * c.cl - q
+    in let h = c.ch
+    in Rgb { cr = hsl-channel p q (h + 120), cg = hsl-channel p q h, cb = hsl-channel p q (h - 120) }
+
+  hsl-channel : Integer, Integer, Integer -> Integer
+  hsl-channel (p) (q) (h-raw) =
+    let h = if h-raw < 0 then h-raw + 360 else if h-raw >= 360 then h-raw - 360 else h-raw
+    in let val = if h < 60 then p + (q - p) * h / 60
+      else if h < 180 then q
+      else if h < 240 then p + (q - p) * (240 - h) / 60
+      else p
+    in val * 255 / 1000
+
+Section: Palette
+  palette-gradient : Rgb, Rgb, Integer -> List Rgb
+  palette-gradient (start) (stop) (steps) = pal-grad-loop start stop steps 0 []
+
+  pal-grad-loop : Rgb, Rgb, Integer, Integer, List Rgb -> List Rgb
+  pal-grad-loop (start) (stop) (steps) (i) (acc) =
+    if i >= steps then acc
+    else let t = if steps <= 1 then 0 else i * 1000 / (steps - 1)
+    in pal-grad-loop start stop steps (i + 1) (list-push acc (rgb-lerp start stop t))
+
+  palette-rainbow : Integer -> List Rgb
+  palette-rainbow (steps) = pal-rainbow-loop steps 0 []
+
+  pal-rainbow-loop : Integer, Integer, List Rgb -> List Rgb
+  pal-rainbow-loop (steps) (i) (acc) =
+    if i >= steps then acc
+    else let h = i * 360 / steps
+    in pal-rainbow-loop steps (i + 1) (list-push acc (hsl-to-rgb (Hsl { ch = h, cs = 900, cl = 500 })))
+
+Section: Helpers
+  col-clamp8 : Integer -> Integer
+  col-clamp8 (v) = if v < 0 then 0 else if v > 255 then 255 else v
+
+  col-max3 : Integer, Integer, Integer -> Integer
+  col-max3 (a) (b) (c) = let ab = if a > b then a else b in if ab > c then ab else c
+
+  col-min3 : Integer, Integer, Integer -> Integer
+  col-min3 (a) (b) (c) = let ab = if a < b then a else b in if ab < c then ab else c
+
+Section: Lolcat Rainbow
+
+  RainbowPalette =
+    | PalRainbow
+    | PalWarm
+    | PalCool
+    | PalPastel
+    | PalNeon
+    | PalFire
+    | PalOcean
+    | PalForest
+    | PalMiami
+    | PalMatrix
+    | PalSakura
+    | PalAurora
+
+  lolcat-hue-mod : Integer, Integer -> Integer
+  lolcat-hue-mod (raw) (range) =
+    if range <= 0 then 0
+    else let m = raw - (raw / range) * range
+    in if m < 0 then m + range else m
+
+  lolcat-color : Integer, Integer, Integer, Integer, RainbowPalette -> Integer
+  lolcat-color (row) (col) (freq) (seed) (pal) =
+    let idx = seed + (col + row) * freq
+    in lolcat-apply idx pal
+
+  lolcat-apply : Integer, RainbowPalette -> Integer
+  lolcat-apply (idx) (pal) = when pal
+    is PalRainbow -> lolcat-pal idx 0 360 1000 500
+    is PalWarm -> lolcat-pal idx 0 60 1000 500
+    is PalCool -> lolcat-pal idx 180 90 1000 500
+    is PalPastel -> lolcat-pal idx 0 360 500 700
+    is PalNeon -> lolcat-pal idx 0 360 1000 400
+    is PalFire -> lolcat-pal idx 0 40 1000 500
+    is PalOcean -> lolcat-pal idx 160 80 900 450
+    is PalForest -> lolcat-pal idx 80 80 800 400
+    is PalMiami -> lolcat-pal idx 270 100 800 600
+    is PalMatrix -> lolcat-pal idx 120 30 1000 400
+    is PalSakura -> lolcat-pal idx 300 40 700 700
+    is PalAurora -> lolcat-pal idx 100 180 900 450
+
+  lolcat-pal : Integer, Integer, Integer, Integer, Integer -> Integer
+  lolcat-pal (idx) (hue-start) (hue-range) (sat) (lit) =
+    let offset = lolcat-hue-mod idx hue-range
+    in let hue = lolcat-hue-mod (hue-start + offset) 360
+    in rgb-to-packed (hsl-to-rgb (Hsl { ch = hue, cs = sat, cl = lit }))
+
+Section: Formatting
+  format-rgb : Rgb -> Text
+  format-rgb (c) = "rgb(" & show (c.cr) & "," & show (c.cg) & "," & show (c.cb) & ")"
+
+  format-hsl : Hsl -> Text
+  format-hsl (c) = "hsl(" & show (c.ch) & "," & show (c.cs) & "," & show (c.cl) & ")"
+
+  format-hex-color : Rgb -> Text
+  format-hex-color (c) = "#" & col-hex2 (c.cr) & col-hex2 (c.cg) & col-hex2 (c.cb)
+
+  col-hex2 : Integer -> Text
+  col-hex2 (v) = col-hex-digit (v / 16) & col-hex-digit (bit-and v 15)
+
+  col-hex-digit : Integer -> Text
+  col-hex-digit (d) =
+    if d == 0 then "0" else if d == 1 then "1" else if d == 2 then "2" else if d == 3 then "3"
+    else if d == 4 then "4" else if d == 5 then "5" else if d == 6 then "6" else if d == 7 then "7"
+    else if d == 8 then "8" else if d == 9 then "9" else if d == 10 then "a" else if d == 11 then "b"
+    else if d == 12 then "c" else if d == 13 then "d" else if d == 14 then "e" else "f"
+
+Page 1

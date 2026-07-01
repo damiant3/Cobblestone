@@ -1,0 +1,223 @@
+Chapter: DeployManager
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter FleetManager
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter DataTable
+  cites UI chapter Dropdown
+  cites UI chapter FilterableList
+  cites UI chapter DetailPane
+  cites UI chapter StatusBadge
+  cites UI chapter SearchBar
+  cites UI chapter CommandPalette
+  cites UI chapter SettingsPanel
+  cites UI chapter Validation
+  cites Foreword chapter Maybe
+
+ Deployment pipeline. Build, package, and distribute applications or
+ system updates to fleet nodes. Each deployment is a record: what was
+ deployed, to where, when, by whom, and whether it succeeded. Supports
+ rollback to any previous successful deployment.
+
+Section: Deploy Types
+
+  DeployStage =
+    | StagePending
+    | StageBuilding
+    | StagePackaging
+    | StageDistributing
+    | StageVerifying
+    | StageComplete
+    | StageFailed (Text)
+    | StageRolledBack
+
+  deploy-stage-label : DeployStage -> Text
+  deploy-stage-label (s) = when s
+    is StagePending -> "pending"
+    is StageBuilding -> "building"
+    is StagePackaging -> "packaging"
+    is StageDistributing -> "distributing"
+    is StageVerifying -> "verifying"
+    is StageComplete -> "complete"
+    is StageFailed (msg) -> "failed"
+    is StageRolledBack -> "rolled back"
+
+  deploy-stage-ordinal : DeployStage -> Integer
+  deploy-stage-ordinal (s) = when s
+    is StagePending -> 0
+    is StageBuilding -> 1
+    is StagePackaging -> 2
+    is StageDistributing -> 3
+    is StageVerifying -> 4
+    is StageComplete -> 5
+    is StageFailed (msg) -> -1
+    is StageRolledBack -> -2
+
+  DeployTarget =
+    | TargetAll
+    | TargetGroup (Text)
+    | TargetNodes (List Text)
+
+  deploy-target-label : DeployTarget -> Text
+  deploy-target-label (t) = when t
+    is TargetAll -> "all nodes"
+    is TargetGroup (g) -> "group: " & g
+    is TargetNodes (ns) -> show (list-length ns) & " nodes"
+
+Section: Deploy Artifact
+
+  DeployArtifact = record {
+    da-name : Text,
+    da-version : Text,
+    da-size : ByteSize,
+    da-hash : Text,
+    da-type : Text
+  }
+
+Section: Deployment
+
+  Deployment = record {
+    dep-id : Text,
+    dep-artifact : DeployArtifact,
+    dep-target : DeployTarget,
+    dep-stage : DeployStage,
+    dep-progress : Integer,
+    dep-total-nodes : Integer,
+    dep-succeeded-nodes : Integer,
+    dep-failed-nodes : Integer,
+    dep-started-at : Integer,
+    dep-finished-at : Integer,
+    dep-initiated-by : Text,
+    dep-log : List Text,
+    dep-log-count : Integer,
+    dep-rollback-id : Text
+  }
+
+  deployment-new : Text, DeployArtifact, DeployTarget -> Deployment
+  deployment-new (id) (artifact) (target) = Deployment {
+    dep-id = id,
+    dep-artifact = artifact,
+    dep-target = target,
+    dep-stage = StagePending,
+    dep-progress = 0,
+    dep-total-nodes = 0,
+    dep-succeeded-nodes = 0,
+    dep-failed-nodes = 0,
+    dep-started-at = 0,
+    dep-finished-at = 0,
+    dep-initiated-by = "",
+    dep-log = [],
+    dep-log-count = 0,
+    dep-rollback-id = ""
+  }
+
+  deploy-is-active : Deployment -> Boolean
+  deploy-is-active (d) = when d.dep-stage
+    is StagePending -> True
+    is StageBuilding -> True
+    is StagePackaging -> True
+    is StageDistributing -> True
+    is StageVerifying -> True
+    is otherwise -> False
+
+  deploy-progress-percent : Deployment -> Integer
+  deploy-progress-percent (d) =
+    if d.dep-total-nodes == 0 then deploy-stage-ordinal (d.dep-stage) * 20
+    else (d.dep-succeeded-nodes + d.dep-failed-nodes) * 100 / d.dep-total-nodes
+
+  deploy-add-log : Deployment, Text -> Deployment
+  deploy-add-log (d) (line) =
+    __record-set (__record-set d "dep-log" (list-push (d.dep-log) line)) "dep-log-count" (d.dep-log-count + 1)
+
+Section: Deploy Manager State
+
+  DeployManagerState = record {
+    dpm-deployments : List Deployment,
+    dpm-count : Integer,
+    dpm-selected : Text,
+    dpm-active-count : Integer,
+    dpm-next-id : Integer
+  }
+
+  deploy-manager-new : DeployManagerState
+  deploy-manager-new = DeployManagerState {
+    dpm-deployments = [],
+    dpm-count = 0,
+    dpm-selected = "",
+    dpm-active-count = 0,
+    dpm-next-id = 1
+  }
+
+Section: Actions
+
+  dpm-create : DeployManagerState, DeployArtifact, DeployTarget -> DeployManagerState
+  dpm-create (st) (artifact) (target) =
+    let id = "deploy-" & show (st.dpm-next-id)
+    in let dep = deployment-new id artifact target
+    in DeployManagerState {
+      dpm-deployments = list-push (st.dpm-deployments) dep,
+      dpm-count = st.dpm-count + 1,
+      dpm-selected = id,
+      dpm-active-count = st.dpm-active-count + 1,
+      dpm-next-id = st.dpm-next-id + 1
+    }
+
+  dpm-select : DeployManagerState, Text -> DeployManagerState
+  dpm-select (st) (id) = __record-set st "dpm-selected" id
+
+  dpm-find : DeployManagerState, Text -> Maybe Deployment
+  dpm-find (st) (id) = dpm-find-loop (st.dpm-deployments) id 0 (st.dpm-count)
+
+  dpm-find-loop : List Deployment, Text, Integer, Integer -> Maybe Deployment
+  dpm-find-loop (deps) (id) (i) (n) =
+    if i >= n then None
+    else let d = list-at deps i
+    in if d.dep-id == id then Just d
+    else dpm-find-loop deps id (i + 1) n
+
+  dpm-update-stage : DeployManagerState, Text, DeployStage -> DeployManagerState
+  dpm-update-stage (st) (id) (stage) =
+    let updated = dpm-update-loop (st.dpm-deployments) id stage 0 (st.dpm-count) []
+    in let active = dpm-count-active updated 0 (st.dpm-count) 0
+    in __record-set (__record-set st "dpm-deployments" updated) "dpm-active-count" active
+
+  dpm-update-loop : List Deployment, Text, DeployStage, Integer, Integer, List Deployment -> List Deployment
+  dpm-update-loop (deps) (id) (stage) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = list-at deps i
+    in if d.dep-id == id then dpm-update-loop deps id stage (i + 1) n (list-push acc (__record-set d "dep-stage" stage))
+    else dpm-update-loop deps id stage (i + 1) n (list-push acc d)
+
+  dpm-count-active : List Deployment, Integer, Integer, Integer -> Integer
+  dpm-count-active (deps) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if deploy-is-active (list-at deps i) then 1 else 0
+    in dpm-count-active deps (i + 1) n (acc + delta)
+
+Section: Widget Building
+
+  dpm-deploy-row : Deployment -> WidgetNode
+  dpm-deploy-row (d) =
+    let id-label = widget-label (d.dep-id & "-id") (d.dep-id)
+    in let name = widget-label (d.dep-id & "-name") ((d.dep-artifact).da-name & " " & (d.dep-artifact).da-version)
+    in let target = widget-label (d.dep-id & "-target") (deploy-target-label (d.dep-target))
+    in let stage = widget-label (d.dep-id & "-stage") (deploy-stage-label (d.dep-stage))
+    in let progress = widget-gauge (d.dep-id & "-prog") (deploy-progress-percent d) 100
+    in let nodes = widget-label (d.dep-id & "-nodes") (show (d.dep-succeeded-nodes) & "/" & show (d.dep-total-nodes))
+    in let rollback-btn = widget-button (d.dep-id & "-rollback") "Rollback"
+    in widget-panel d.dep-id DirRow 8 [id-label, name, target, stage, progress, nodes, rollback-btn]
+
+  dpm-widget : DeployManagerState -> WidgetNode
+  dpm-widget (st) =
+    let title = widget-label "dpm-title" "Deployments"
+    in let summary = widget-label "dpm-summary" (show (st.dpm-active-count) & " active, " & show (st.dpm-count) & " total")
+    in let deploy-btn = widget-button "dpm-new" "New Deployment"
+    in let rows = dpm-rows (st.dpm-deployments) 0 (st.dpm-count) []
+    in widget-panel "deploy-manager" DirColumn 4 ([title, summary, deploy-btn] & rows)
+
+  dpm-rows : List Deployment, Integer, Integer, List WidgetNode -> List WidgetNode
+  dpm-rows (deps) (i) (n) (acc) =
+    if i >= n then acc
+    else dpm-rows deps (i + 1) n (list-push acc (dpm-deploy-row (list-at deps i)))
+
+Page 1

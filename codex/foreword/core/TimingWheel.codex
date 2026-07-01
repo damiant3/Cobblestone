@@ -1,0 +1,216 @@
+Chapter: TimingWheel
+  cites Foreword chapter Maybe
+  cites Foreword chapter Units (Duration)
+
+ A Timer is a record containing tmr-id, tmr-deadline, tmr-tag, and tmr-active.
+ A TimerSlot is a record containing ts-timers and ts-count.
+ A TimingWheel is a record containing tw-fine, tw-medium, tw-coarse, tw-overflow, tw-tick-count, tw-next-id, and tw-fired.
+ To tw-new gives an empty three-level TimingWheel.
+ To tw-schedule gives a new TimingWheel with a timer inserted at the given delay and tag.
+ To tw-tick gives a new TimingWheel advanced by one tick, firing expired timers and promoting from coarser levels.
+ To tw-cancel gives a new TimingWheel with the timer marked inactive.
+ To tw-fired-count gives the number of timers that fired on the last tick.
+ To tw-pending-count gives the total number of active timers across all levels and overflow.
+ To format-tw gives a Text summary of the TimingWheel state.
+ To format-timer gives a Text representation of a Timer.
+
+ We say:
+
+Section: Constants
+  tw-fine-slots : Integer = 256
+  tw-fine-resolution : Integer = 1
+  tw-medium-slots : Integer = 64
+  tw-medium-resolution : Integer = 256
+  tw-coarse-slots : Integer = 64
+  tw-coarse-resolution : Integer = 16384
+
+Section: Types
+  Timer = record {
+    tmr-id : Integer,
+    tmr-deadline : Duration,
+    tmr-tag : Text,
+    tmr-active : Boolean
+  }
+
+  TimerSlot = record {
+    ts-timers : List Timer,
+    ts-count : Integer
+  }
+
+  TimingWheel = record {
+    tw-fine : List TimerSlot,
+    tw-medium : List TimerSlot,
+    tw-coarse : List TimerSlot,
+    tw-overflow : List Timer,
+    tw-tick-count : Integer,
+    tw-next-id : Integer,
+    tw-fired : List Timer
+  }
+
+Section: Construction
+  tw-empty-slot : TimerSlot
+  tw-empty-slot = TimerSlot { ts-timers = [], ts-count = 0 }
+
+  tw-new : TimingWheel
+  tw-new = TimingWheel {
+    tw-fine = tw-init-slots tw-fine-slots 0 [],
+    tw-medium = tw-init-slots tw-medium-slots 0 [],
+    tw-coarse = tw-init-slots tw-coarse-slots 0 [],
+    tw-overflow = [],
+    tw-tick-count = 0,
+    tw-next-id = 1,
+    tw-fired = []
+  }
+
+  tw-init-slots : Integer, Integer, List TimerSlot -> List TimerSlot
+  tw-init-slots (n) (i) (acc) =
+    if i >= n then acc
+    else tw-init-slots n (i + 1) (list-push acc tw-empty-slot)
+
+Section: Timer Insertion (O(1))
+  tw-schedule : TimingWheel, Integer, Text -> TimingWheel
+  tw-schedule (wheel) (delay) (tag) =
+    let deadline = wheel.tw-tick-count + delay
+    in let timer = Timer { tmr-id = wheel.tw-next-id, tmr-deadline = deadline, tmr-tag = tag, tmr-active = True }
+    in let updated = tw-insert-timer wheel timer delay
+    in TimingWheel {
+      tw-fine = updated.tw-fine, tw-medium = updated.tw-medium,
+      tw-coarse = updated.tw-coarse,
+      tw-overflow = if delay >= tw-coarse-resolution * tw-coarse-slots then list-push (wheel.tw-overflow) timer else updated.tw-overflow,
+      tw-tick-count = wheel.tw-tick-count,
+      tw-next-id = wheel.tw-next-id + 1,
+      tw-fired = wheel.tw-fired
+    }
+
+  tw-insert-timer : TimingWheel, Timer, Integer -> TimingWheel
+  tw-insert-timer (wheel) (timer) (delay) =
+    if delay < tw-fine-slots then tw-insert-fine wheel timer delay
+    else if delay < tw-medium-resolution * tw-medium-slots then tw-insert-medium wheel timer delay
+    else if delay < tw-coarse-resolution * tw-coarse-slots then tw-insert-coarse wheel timer delay
+    else wheel
+
+  tw-insert-fine : TimingWheel, Timer, Integer -> TimingWheel
+  tw-insert-fine (wheel) (timer) (delay) =
+    let slot-idx = tw-mod (wheel.tw-tick-count + delay) tw-fine-slots
+    in let slot = list-at (wheel.tw-fine) slot-idx
+    in let new-slot = TimerSlot { ts-timers = list-push (slot.ts-timers) timer, ts-count = slot.ts-count + 1 }
+    in TimingWheel { tw-fine = list-set-at (wheel.tw-fine) slot-idx new-slot, tw-medium = wheel.tw-medium, tw-coarse = wheel.tw-coarse, tw-overflow = wheel.tw-overflow, tw-tick-count = wheel.tw-tick-count, tw-next-id = wheel.tw-next-id, tw-fired = wheel.tw-fired }
+
+  tw-insert-medium : TimingWheel, Timer, Integer -> TimingWheel
+  tw-insert-medium (wheel) (timer) (delay) =
+    let slot-idx = tw-mod (delay / tw-medium-resolution) tw-medium-slots
+    in let slot = list-at (wheel.tw-medium) slot-idx
+    in let new-slot = TimerSlot { ts-timers = list-push (slot.ts-timers) timer, ts-count = slot.ts-count + 1 }
+    in TimingWheel { tw-fine = wheel.tw-fine, tw-medium = list-set-at (wheel.tw-medium) slot-idx new-slot, tw-coarse = wheel.tw-coarse, tw-overflow = wheel.tw-overflow, tw-tick-count = wheel.tw-tick-count, tw-next-id = wheel.tw-next-id, tw-fired = wheel.tw-fired }
+
+  tw-insert-coarse : TimingWheel, Timer, Integer -> TimingWheel
+  tw-insert-coarse (wheel) (timer) (delay) =
+    let slot-idx = tw-mod (delay / tw-coarse-resolution) tw-coarse-slots
+    in let slot = list-at (wheel.tw-coarse) slot-idx
+    in let new-slot = TimerSlot { ts-timers = list-push (slot.ts-timers) timer, ts-count = slot.ts-count + 1 }
+    in TimingWheel { tw-fine = wheel.tw-fine, tw-medium = wheel.tw-medium, tw-coarse = list-set-at (wheel.tw-coarse) slot-idx new-slot, tw-overflow = wheel.tw-overflow, tw-tick-count = wheel.tw-tick-count, tw-next-id = wheel.tw-next-id, tw-fired = wheel.tw-fired }
+
+Section: Tick Processing (O(1) amortized)
+  tw-tick : TimingWheel -> TimingWheel
+  tw-tick (wheel) =
+    let new-tick = wheel.tw-tick-count + 1
+    in let slot-idx = tw-mod new-tick tw-fine-slots
+    in let slot = list-at (wheel.tw-fine) slot-idx
+    in let fired = tw-collect-expired (slot.ts-timers) new-tick 0 (slot.ts-count) []
+    in let remaining = tw-collect-active (slot.ts-timers) new-tick 0 (slot.ts-count) []
+    in let new-slot = TimerSlot { ts-timers = remaining, ts-count = list-length remaining }
+    in let promoted = if tw-mod new-tick tw-medium-resolution == 0 then tw-promote-medium wheel new-tick else wheel
+    in TimingWheel {
+      tw-fine = list-set-at (promoted.tw-fine) slot-idx new-slot,
+      tw-medium = promoted.tw-medium,
+      tw-coarse = promoted.tw-coarse,
+      tw-overflow = promoted.tw-overflow,
+      tw-tick-count = new-tick,
+      tw-next-id = wheel.tw-next-id,
+      tw-fired = fired
+    }
+
+  tw-collect-expired : List Timer, Integer, Integer, Integer, List Timer -> List Timer
+  tw-collect-expired (timers) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let t = list-at timers i
+    in if t.tmr-active then if t.tmr-deadline <= now then tw-collect-expired timers now (i + 1) n (list-push acc t)
+      else tw-collect-expired timers now (i + 1) n acc
+    else tw-collect-expired timers now (i + 1) n acc
+
+  tw-collect-active : List Timer, Integer, Integer, Integer, List Timer -> List Timer
+  tw-collect-active (timers) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let t = list-at timers i
+    in if t.tmr-deadline > now then tw-collect-active timers now (i + 1) n (list-push acc t)
+    else tw-collect-active timers now (i + 1) n acc
+
+Section: Promotion (cascade from coarser to finer wheel)
+  tw-promote-medium : TimingWheel, Integer -> TimingWheel
+  tw-promote-medium (wheel) (now) =
+    let slot-idx = tw-mod (now / tw-medium-resolution) tw-medium-slots
+    in let slot = list-at (wheel.tw-medium) slot-idx
+    in let new-fine = tw-demote-to-fine (wheel.tw-fine) (slot.ts-timers) now 0 (slot.ts-count)
+    in let cleared = TimerSlot { ts-timers = [], ts-count = 0 }
+    in TimingWheel { tw-fine = new-fine, tw-medium = list-set-at (wheel.tw-medium) slot-idx cleared, tw-coarse = wheel.tw-coarse, tw-overflow = wheel.tw-overflow, tw-tick-count = wheel.tw-tick-count, tw-next-id = wheel.tw-next-id, tw-fired = wheel.tw-fired }
+
+  tw-demote-to-fine : List TimerSlot, List Timer, Integer, Integer, Integer -> List TimerSlot
+  tw-demote-to-fine (fine) (timers) (now) (i) (n) =
+    if i >= n then fine
+    else let t = list-at timers i
+    in let remaining = t.tmr-deadline - now
+    in let slot-idx = tw-mod (now + remaining) tw-fine-slots
+    in let slot = list-at fine slot-idx
+    in let new-slot = TimerSlot { ts-timers = list-push (slot.ts-timers) t, ts-count = slot.ts-count + 1 }
+    in tw-demote-to-fine (list-set-at fine slot-idx new-slot) timers now (i + 1) n
+
+Section: Cancel (O(1) - marks inactive)
+  tw-cancel : TimingWheel, Integer -> TimingWheel
+  tw-cancel (wheel) (timer-id) =
+    let fine = tw-cancel-in-slots (wheel.tw-fine) timer-id 0 tw-fine-slots
+    in let medium = tw-cancel-in-slots (wheel.tw-medium) timer-id 0 tw-medium-slots
+    in let coarse = tw-cancel-in-slots (wheel.tw-coarse) timer-id 0 tw-coarse-slots
+    in TimingWheel { tw-fine = fine, tw-medium = medium, tw-coarse = coarse, tw-overflow = wheel.tw-overflow, tw-tick-count = wheel.tw-tick-count, tw-next-id = wheel.tw-next-id, tw-fired = wheel.tw-fired }
+
+  tw-cancel-in-slots : List TimerSlot, Integer, Integer, Integer -> List TimerSlot
+  tw-cancel-in-slots (slots) (id) (i) (n) =
+    if i >= n then slots
+    else let slot = list-at slots i
+    in let updated = tw-cancel-in-list (slot.ts-timers) id 0 (slot.ts-count)
+    in tw-cancel-in-slots (list-set-at slots i (TimerSlot { ts-timers = updated, ts-count = slot.ts-count })) id (i + 1) n
+
+  tw-cancel-in-list : List Timer, Integer, Integer, Integer -> List Timer
+  tw-cancel-in-list (timers) (id) (i) (n) =
+    if i >= n then timers
+    else let t = list-at timers i
+    in if t.tmr-id == id then list-set-at timers i (Timer { tmr-id = t.tmr-id, tmr-deadline = t.tmr-deadline, tmr-tag = t.tmr-tag, tmr-active = False })
+    else tw-cancel-in-list timers id (i + 1) n
+
+Section: Queries
+  tw-fired-count : TimingWheel -> Integer
+  tw-fired-count (wheel) = list-length (wheel.tw-fired)
+
+  tw-pending-count : TimingWheel -> Integer
+  tw-pending-count (wheel) =
+    tw-slot-total (wheel.tw-fine) 0 tw-fine-slots 0 +
+    tw-slot-total (wheel.tw-medium) 0 tw-medium-slots 0 +
+    tw-slot-total (wheel.tw-coarse) 0 tw-coarse-slots 0 +
+    list-length (wheel.tw-overflow)
+
+  tw-slot-total : List TimerSlot, Integer, Integer, Integer -> Integer
+  tw-slot-total (slots) (i) (n) (acc) =
+    if i >= n then acc
+    else tw-slot-total slots (i + 1) n (acc + (list-at slots i).ts-count)
+
+Section: Helpers
+  tw-mod : Integer, Integer -> Integer
+  tw-mod (a) (b) = a - a / b * b
+
+Section: Formatting
+  format-tw : TimingWheel -> Text
+  format-tw (w) = "tick=" & show (w.tw-tick-count) & " pending=" & show (tw-pending-count w) & " fired=" & show (tw-fired-count w)
+
+  format-timer : Timer -> Text
+  format-timer (t) = "[" & show (t.tmr-id) & "] " & t.tmr-tag & " @" & show (t.tmr-deadline) & (if t.tmr-active then "" else " CANCELLED")
+
+Page 1

@@ -1,0 +1,106 @@
+Chapter: Midi
+  cites Foreword chapter Units (Duration)
+
+ MIDI file encoder. Produces Standard MIDI File format 0 (single
+ track). Supports note-on, note-off, program change, tempo, and
+ variable-length delta times. Output is a List Integer byte stream.
+
+ We say:
+
+Section: Constants
+  midi-note-off : Integer = 128
+  midi-note-on : Integer = 144
+  midi-program-change : Integer = 192
+  midi-tempo-meta : Integer = 81
+  midi-end-of-track : Integer = 47
+
+Section: Types
+  MidiEvent = record {
+    me-delta : Integer,
+    me-bytes : List Integer
+  }
+
+  MidiTrack = record {
+    mt-events : List MidiEvent,
+    mt-count : Integer,
+    mt-ticks-per-beat : Integer
+  }
+
+Section: Construction
+  midi-track : Integer -> MidiTrack
+  midi-track (tpb) = MidiTrack { mt-events = [], mt-count = 0, mt-ticks-per-beat = tpb }
+
+Section: Events
+  midi-note : MidiTrack, Integer, Integer, Integer, Integer, Integer -> MidiTrack
+  midi-note (track) (delta-on) (channel) (note) (velocity) (duration) =
+    let on-evt = MidiEvent { me-delta = delta-on, me-bytes = [bit-or midi-note-on channel, note, velocity] }
+    in let off-evt = MidiEvent { me-delta = duration, me-bytes = [bit-or midi-note-off channel, note, 0] }
+    in MidiTrack { mt-events = list-push (list-push (track.mt-events) on-evt) off-evt, mt-count = track.mt-count + 2, mt-ticks-per-beat = track.mt-ticks-per-beat }
+
+  midi-program : MidiTrack, Integer, Integer, Integer -> MidiTrack
+  midi-program (track) (delta) (channel) (program) =
+    let evt = MidiEvent { me-delta = delta, me-bytes = [bit-or midi-program-change channel, program] }
+    in MidiTrack { mt-events = list-push (track.mt-events) evt, mt-count = track.mt-count + 1, mt-ticks-per-beat = track.mt-ticks-per-beat }
+
+  midi-set-tempo : MidiTrack, Integer, Integer -> MidiTrack
+  midi-set-tempo (track) (delta) (bpm) =
+    let usec = 60000000 / bpm
+    in let evt = MidiEvent { me-delta = delta, me-bytes = [255, midi-tempo-meta, 3, bit-and (bit-shru usec 16) 255, bit-and (bit-shru usec 8) 255, bit-and usec 255] }
+    in MidiTrack { mt-events = list-push (track.mt-events) evt, mt-count = track.mt-count + 1, mt-ticks-per-beat = track.mt-ticks-per-beat }
+
+Section: Encoding
+  midi-encode : MidiTrack -> List Integer
+  midi-encode (track) =
+    let track-data = midi-encode-events (track.mt-events) 0 (track.mt-count) []
+    in let track-data-with-eot = track-data & [0, 255, midi-end-of-track, 0]
+    in let track-len = list-length track-data-with-eot
+    in midi-file-header (track.mt-ticks-per-beat) & midi-track-header track-len & track-data-with-eot
+
+  midi-file-header : Integer -> List Integer
+  midi-file-header (tpb) =
+    [77, 84, 104, 100] & midi-be32 6 & midi-be16 0 & midi-be16 1 & midi-be16 tpb
+
+  midi-track-header : Integer -> List Integer
+  midi-track-header (length) =
+    [77, 84, 114, 107] & midi-be32 length
+
+  midi-encode-events : List MidiEvent, Integer, Integer, List Integer -> List Integer
+  midi-encode-events (events) (i) (n) (acc) =
+    if i >= n then acc
+    else let evt = list-at events i
+    in let delta-bytes = midi-var-len (evt.me-delta)
+    in midi-encode-events events (i + 1) n (acc & delta-bytes & evt.me-bytes)
+
+Section: Variable-Length Encoding
+  midi-var-len : Integer -> List Integer
+  midi-var-len (val) =
+    if val < 128 then [val]
+    else if val < 16384 then [bit-or 128 (bit-and (bit-shru val 7) 127), bit-and val 127]
+    else if val < 2097152 then [bit-or 128 (bit-and (bit-shru val 14) 127), bit-or 128 (bit-and (bit-shru val 7) 127), bit-and val 127]
+    else [bit-or 128 (bit-and (bit-shru val 21) 127), bit-or 128 (bit-and (bit-shru val 14) 127), bit-or 128 (bit-and (bit-shru val 7) 127), bit-and val 127]
+
+Section: Note Helpers
+  midi-c : Integer -> Integer
+  midi-c (octave) = 12 * octave
+
+  midi-note-name : Integer -> Text
+  midi-note-name (note) =
+    let name = midi-note-names (note - note / 12 * 12)
+    in let oct = note / 12 - 1
+    in name & show oct
+
+  midi-note-names : Integer -> Text
+  midi-note-names (n) =
+    if n == 0 then "C" else if n == 1 then "C#" else if n == 2 then "D"
+    else if n == 3 then "D#" else if n == 4 then "E" else if n == 5 then "F"
+    else if n == 6 then "F#" else if n == 7 then "G" else if n == 8 then "G#"
+    else if n == 9 then "A" else if n == 10 then "A#" else "B"
+
+Section: Helpers
+  midi-be16 : Integer -> List Integer
+  midi-be16 (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  midi-be32 : Integer -> List Integer
+  midi-be32 (v) = [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+Page 1

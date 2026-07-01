@@ -1,0 +1,110 @@
+Chapter: NoiseAnalysis
+  cites Foreword chapter List
+
+ Noise analysis for circuit simulation. Calculates thermal noise,
+ shot noise, and flicker (1/f) noise contributions from each
+ component and produces a total noise spectral density plot.
+
+Section: Noise Source
+
+  NoiseSourceType =
+    | NoiseThermal
+    | NoiseShot
+    | NoiseFlicker
+    | NoiseRts
+
+  NoiseSource = record {
+    ns-element : Text,
+    ns-type : NoiseSourceType,
+    ns-spectral-density : Real,
+    ns-corner-freq : Real
+  }
+
+  noise-type-name : NoiseSourceType -> Text
+  noise-type-name (t) = when t
+    is NoiseThermal -> "thermal"
+    is NoiseShot -> "shot"
+    is NoiseFlicker -> "1/f"
+    is NoiseRts -> "RTS"
+
+Section: Noise Result
+
+  NoisePoint = record {
+    np-frequency : Real,
+    np-total-density : Real,
+    np-integrated-noise : Real
+  }
+
+  NoiseContribution = record {
+    nc-element : Text,
+    nc-noise-type : NoiseSourceType,
+    nc-density : Real,
+    nc-percentage : Real
+  }
+
+  NoiseResult = record {
+    nr-output-node : Text,
+    nr-reference-node : Text,
+    nr-points : List NoisePoint,
+    nr-contributions : List NoiseContribution,
+    nr-total-rms : Real,
+    nr-point-count : Integer,
+    nr-contribution-count : Integer
+  }
+
+  empty-noise-result : Text, Text -> NoiseResult
+  empty-noise-result (output) (ref) = NoiseResult {
+    nr-output-node = output,
+    nr-reference-node = ref,
+    nr-points = [],
+    nr-contributions = [],
+    nr-total-rms = 0.0,
+    nr-point-count = 0,
+    nr-contribution-count = 0
+  }
+
+  noise-add-point : NoiseResult, NoisePoint -> NoiseResult
+  noise-add-point (r) (p) = NoiseResult {
+    nr-output-node = r.nr-output-node,
+    nr-reference-node = r.nr-reference-node,
+    nr-points = list-push r.nr-points p,
+    nr-contributions = r.nr-contributions,
+    nr-total-rms = r.nr-total-rms,
+    nr-point-count = r.nr-point-count + 1,
+    nr-contribution-count = r.nr-contribution-count
+  }
+
+  noise-add-contribution : NoiseResult, NoiseContribution -> NoiseResult
+  noise-add-contribution (r) (c) = NoiseResult {
+    nr-output-node = r.nr-output-node,
+    nr-reference-node = r.nr-reference-node,
+    nr-points = r.nr-points,
+    nr-contributions = list-push r.nr-contributions c,
+    nr-total-rms = r.nr-total-rms,
+    nr-point-count = r.nr-point-count,
+    nr-contribution-count = r.nr-contribution-count + 1
+  }
+
+Section: Thermal Noise
+
+ Johnson-Nyquist thermal noise spectral density for a resistor.
+ V_n^2 = 4kTR, where k = 1.380649e-23 J/K, T = temperature in K.
+
+  thermal-noise-density : Real, Real -> Real
+  thermal-noise-density (resistance) (temperature-k) =
+    4.0 * 0.00000000000000000000001380649 * temperature-k * resistance
+
+Section: Shot Noise
+
+ Shot noise spectral density for a diode junction.
+ I_n^2 = 2qI, where q = 1.602176634e-19 C, I = DC bias current.
+
+  shot-noise-density : Real -> Real
+  shot-noise-density (dc-current) =
+    2.0 * 0.0000000000000000001602176634 * dc-current
+
+Section: Noise Summary
+
+  noise-summary : NoiseResult -> Text
+  noise-summary (r) =
+    "Noise analysis at " & r.nr-output-node & " (ref: " & r.nr-reference-node & "): " & (show r.nr-point-count) & " frequency points, " & (show r.nr-contribution-count) & " noise sources"

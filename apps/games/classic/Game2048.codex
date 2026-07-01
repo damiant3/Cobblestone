@@ -1,0 +1,286 @@
+Chapter: Game2048
+  cites Games chapter Rng
+
+ 2048 on a 4x4 grid. Tiles slide in 4 directions; equal adjacent tiles merge.
+ After each move a new tile (value 2 or 4) is placed in a random empty cell.
+ Grid is a List Integer of 16 cells (row-major), 0=empty.
+ AI: try all 4 directions, pick the one that maximizes empty cells plus
+ a bonus for the highest tile value. Directions: 0=left,1=right,2=up,3=down.
+
+ We say:
+
+Section: Types
+
+  G2048State = record {
+    grid      : List Integer,
+    score     : Integer,
+    moves     : Integer,
+    game-over : Boolean,
+    rng       : Rng
+  }
+
+  G2048Result = record {
+    max-tile  : Integer,
+    score     : Integer,
+    moves     : Integer
+  }
+
+Section: Construction
+
+  g2048-new : Rng -> G2048State
+  g2048-new (rng) =
+    let grid = g2048-fill 0 []
+    in let r1 = rng-next rng
+    in let g1 = g2048-add-tile grid r1
+    in let r2 = rng-next r1
+    in let g2 = g2048-add-tile g1 r2
+    in G2048State { grid = g2, score = 0, moves = 0, game-over = False, rng = r2 }
+
+  g2048-fill : Integer, List Integer -> List Integer
+  g2048-fill (i) (acc) =
+    if i >= 16 then acc
+    else g2048-fill (i + 1) (list-push acc 0)
+
+  g2048-add-tile : List Integer, Rng -> List Integer
+  g2048-add-tile (grid) (rng) =
+    let idx = g2048-random-empty grid rng
+    in if idx < 0 then grid
+    else let r2 = rng-next rng
+    in let val = if rng-mod (rng-value r2) 4 == 0 then 4 else 2
+    in list-set-at grid idx val
+
+  g2048-random-empty : List Integer, Rng -> Integer
+  g2048-random-empty (grid) (rng) =
+    let count = g2048-count-empty grid 0 0
+    in if count == 0 then -1
+    else let r = rng-next rng
+    in let pick = rng-range r 0 (count - 1)
+    in g2048-nth-empty grid 0 pick 0
+
+  g2048-count-empty : List Integer, Integer, Integer -> Integer
+  g2048-count-empty (grid) (i) (acc) =
+    if i >= 16 then acc
+    else if list-at grid i == 0 then g2048-count-empty grid (i + 1) (acc + 1)
+    else g2048-count-empty grid (i + 1) acc
+
+  g2048-nth-empty : List Integer, Integer, Integer, Integer -> Integer
+  g2048-nth-empty (grid) (i) (target) (seen) =
+    if i >= 16 then -1
+    else if list-at grid i /= 0 then g2048-nth-empty grid (i + 1) target seen
+    else if seen == target then i
+    else g2048-nth-empty grid (i + 1) target (seen + 1)
+
+Section: Row Operations
+
+ A row is 4 consecutive cells. Slide left: compact non-zero left, merge equals.
+
+  g2048-slide-row-left : List Integer -> List Integer
+  g2048-slide-row-left (row) =
+    let compacted = g2048-compact row 0 []
+    in let merged = g2048-merge compacted
+    in g2048-pad merged
+
+  g2048-compact : List Integer, Integer, List Integer -> List Integer
+  g2048-compact (row) (i) (acc) =
+    if i >= 4 then acc
+    else if list-at row i /= 0 then g2048-compact row (i + 1) (list-push acc (list-at row i))
+    else g2048-compact row (i + 1) acc
+
+  g2048-merge : List Integer -> List Integer
+  g2048-merge (row) =
+    g2048-merge-loop row 0 []
+
+  g2048-merge-loop : List Integer, Integer, List Integer -> List Integer
+  g2048-merge-loop (row) (i) (acc) =
+    if i >= list-length row then acc
+    else if i + 1 < list-length row then
+      if list-at row i == list-at row (i + 1) then
+        g2048-merge-loop row (i + 2) (list-push acc (list-at row i * 2))
+      else g2048-merge-loop row (i + 1) (list-push acc (list-at row i))
+    else g2048-merge-loop row (i + 1) (list-push acc (list-at row i))
+
+  g2048-pad : List Integer -> List Integer
+  g2048-pad (row) =
+    g2048-pad-loop row
+
+  g2048-pad-loop : List Integer -> List Integer
+  g2048-pad-loop (row) =
+    if list-length row >= 4 then row
+    else g2048-pad-loop (list-push row 0)
+
+  g2048-reverse-row : List Integer -> List Integer
+  g2048-reverse-row (row) =
+    [list-at row 3, list-at row 2, list-at row 1, list-at row 0]
+
+  g2048-slide-row-right : List Integer -> List Integer
+  g2048-slide-row-right (row) =
+    g2048-reverse-row (g2048-slide-row-left (g2048-reverse-row row))
+
+Section: Extract and Rebuild Grid Rows/Cols
+
+  g2048-get-row : List Integer, Integer -> List Integer
+  g2048-get-row (grid) (row) =
+    [list-at grid (row * 4), list-at grid (row * 4 + 1), list-at grid (row * 4 + 2), list-at grid (row * 4 + 3)]
+
+  g2048-set-row : List Integer, Integer, List Integer -> List Integer
+  g2048-set-row (grid) (row) (r) =
+    let g1 = list-set-at grid (row * 4) (list-at r 0)
+    in let g2 = list-set-at g1 (row * 4 + 1) (list-at r 1)
+    in let g3 = list-set-at g2 (row * 4 + 2) (list-at r 2)
+    in list-set-at g3 (row * 4 + 3) (list-at r 3)
+
+  g2048-get-col : List Integer, Integer -> List Integer
+  g2048-get-col (grid) (col) =
+    [list-at grid col, list-at grid (4 + col), list-at grid (8 + col), list-at grid (12 + col)]
+
+  g2048-set-col : List Integer, Integer, List Integer -> List Integer
+  g2048-set-col (grid) (col) (c) =
+    let g1 = list-set-at grid col (list-at c 0)
+    in let g2 = list-set-at g1 (4 + col) (list-at c 1)
+    in let g3 = list-set-at g2 (8 + col) (list-at c 2)
+    in list-set-at g3 (12 + col) (list-at c 3)
+
+Section: Slide Grid
+
+  g2048-slide-left : List Integer -> List Integer
+  g2048-slide-left (grid) =
+    let g1 = g2048-set-row grid 0 (g2048-slide-row-left (g2048-get-row grid 0))
+    in let g2 = g2048-set-row g1 1 (g2048-slide-row-left (g2048-get-row g1 1))
+    in let g3 = g2048-set-row g2 2 (g2048-slide-row-left (g2048-get-row g2 2))
+    in g2048-set-row g3 3 (g2048-slide-row-left (g2048-get-row g3 3))
+
+  g2048-slide-right : List Integer -> List Integer
+  g2048-slide-right (grid) =
+    let g1 = g2048-set-row grid 0 (g2048-slide-row-right (g2048-get-row grid 0))
+    in let g2 = g2048-set-row g1 1 (g2048-slide-row-right (g2048-get-row g1 1))
+    in let g3 = g2048-set-row g2 2 (g2048-slide-row-right (g2048-get-row g2 2))
+    in g2048-set-row g3 3 (g2048-slide-row-right (g2048-get-row g3 3))
+
+  g2048-slide-up : List Integer -> List Integer
+  g2048-slide-up (grid) =
+    let g1 = g2048-set-col grid 0 (g2048-slide-row-left (g2048-get-col grid 0))
+    in let g2 = g2048-set-col g1 1 (g2048-slide-row-left (g2048-get-col g1 1))
+    in let g3 = g2048-set-col g2 2 (g2048-slide-row-left (g2048-get-col g2 2))
+    in g2048-set-col g3 3 (g2048-slide-row-left (g2048-get-col g3 3))
+
+  g2048-slide-down : List Integer -> List Integer
+  g2048-slide-down (grid) =
+    let g1 = g2048-set-col grid 0 (g2048-slide-row-right (g2048-get-col grid 0))
+    in let g2 = g2048-set-col g1 1 (g2048-slide-row-right (g2048-get-col g1 1))
+    in let g3 = g2048-set-col g2 2 (g2048-slide-row-right (g2048-get-col g2 2))
+    in g2048-set-col g3 3 (g2048-slide-row-right (g2048-get-col g3 3))
+
+  g2048-apply-dir : List Integer, Integer -> List Integer
+  g2048-apply-dir (grid) (dir) =
+    if dir == 0 then g2048-slide-left grid
+    else if dir == 1 then g2048-slide-right grid
+    else if dir == 2 then g2048-slide-up grid
+    else g2048-slide-down grid
+
+  g2048-grids-equal : List Integer, List Integer -> Boolean
+  g2048-grids-equal (a) (b) =
+    g2048-eq-loop a b 0
+
+  g2048-eq-loop : List Integer, List Integer, Integer -> Boolean
+  g2048-eq-loop (a) (b) (i) =
+    if i >= 16 then True
+    else if list-at a i /= list-at b i then False
+    else g2048-eq-loop a b (i + 1)
+
+Section: Score and Stats
+
+  g2048-max-tile : List Integer -> Integer
+  g2048-max-tile (grid) =
+    g2048-max-loop grid 0 0
+
+  g2048-max-loop : List Integer, Integer, Integer -> Integer
+  g2048-max-loop (grid) (i) (best) =
+    if i >= 16 then best
+    else let v = list-at grid i
+    in if v > best then g2048-max-loop grid (i + 1) v
+    else g2048-max-loop grid (i + 1) best
+
+  g2048-empty-count : List Integer -> Integer
+  g2048-empty-count (grid) =
+    g2048-count-empty grid 0 0
+
+  g2048-sum-grid : List Integer -> Integer
+  g2048-sum-grid (grid) =
+    g2048-sum-loop grid 0 0
+
+  g2048-sum-loop : List Integer, Integer, Integer -> Integer
+  g2048-sum-loop (grid) (i) (acc) =
+    if i >= 16 then acc
+    else g2048-sum-loop grid (i + 1) (acc + list-at grid i)
+
+Section: AI
+
+  g2048-ai-dir : G2048State -> Integer
+  g2048-ai-dir (st) =
+    let s0 = g2048-eval-dir (st.grid) 0
+    in let s1 = g2048-eval-dir (st.grid) 1
+    in let s2 = g2048-eval-dir (st.grid) 2
+    in let s3 = g2048-eval-dir (st.grid) 3
+    in g2048-best-dir s0 s1 s2 s3
+
+  g2048-eval-dir : List Integer, Integer -> Integer
+  g2048-eval-dir (grid) (dir) =
+    let after = g2048-apply-dir grid dir
+    in if g2048-grids-equal grid after then -1
+    else g2048-empty-count after * 16 + g2048-max-tile after
+
+  g2048-best-dir : Integer, Integer, Integer, Integer -> Integer
+  g2048-best-dir (s0) (s1) (s2) (s3) =
+    let best01 = if s0 >= s1 then 0 else 1
+    in let best23 = if s2 >= s3 then 2 else 3
+    in let v01 = if best01 == 0 then s0 else s1
+    in let v23 = if best23 == 2 then s2 else s3
+    in if v01 >= v23 then best01 else best23
+
+  g2048-can-move : List Integer -> Boolean
+  g2048-can-move (grid) =
+    let after-l = g2048-slide-left grid
+    in if g2048-grids-equal grid after-l == False then True
+    else let after-r = g2048-slide-right grid
+    in if g2048-grids-equal grid after-r == False then True
+    else let after-u = g2048-slide-up grid
+    in if g2048-grids-equal grid after-u == False then True
+    else let after-d = g2048-slide-down grid
+    in g2048-grids-equal grid after-d == False
+
+Section: Apply Move
+
+  g2048-move : G2048State, Integer -> G2048State
+  g2048-move (st) (dir) =
+    if dir < 0 then G2048State { grid = st.grid, score = st.score, moves = st.moves, game-over = True, rng = st.rng }
+    else let after = g2048-apply-dir (st.grid) dir
+    in if g2048-grids-equal (st.grid) after then st
+    else let r = rng-next (st.rng)
+    in let new-grid = g2048-add-tile after r
+    in let new-score = g2048-sum-grid new-grid
+    in let can = g2048-can-move new-grid
+    in G2048State { grid = new-grid, score = new-score, moves = st.moves + 1, game-over = can == False, rng = r }
+
+Section: Game Runner
+
+  run-2048-game : G2048Result
+  run-2048-game =
+    let rng = rng-new 11
+    in let st = g2048-new rng
+    in g2048-loop st
+
+  g2048-loop : G2048State -> G2048Result
+  g2048-loop (st) =
+    if st.game-over then G2048Result { max-tile = g2048-max-tile (st.grid), score = st.score, moves = st.moves }
+    else if st.moves > 2000 then G2048Result { max-tile = g2048-max-tile (st.grid), score = st.score, moves = st.moves }
+    else let dir = g2048-ai-dir st
+    in let next = g2048-move st dir
+    in g2048-loop next
+
+Section: Formatting
+
+  format-2048-result : G2048Result -> Text
+  format-2048-result (r) =
+    "2048: max-tile=" & show (r.max-tile) & " score=" & show (r.score) & " moves=" & show (r.moves)
+
+Page 1

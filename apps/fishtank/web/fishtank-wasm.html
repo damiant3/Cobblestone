@@ -1,0 +1,608 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex Aquarium  WASM</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}body{background:#000;color:#e0e0e0;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;height:100vh}canvas{position:fixed;top:0;left:0;width:100%;height:100%;display:block}.hud{position:fixed;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:linear-gradient(180deg,rgba(0,0,0,0.6),transparent);pointer-events:none;z-index:10;font-size:12px}.hud-left{display:flex;align-items:center;gap:16px}.hud-brand{font-size:16px;font-weight:700;color:#5ac8fa;letter-spacing:2px}.hud-stat{color:rgba(255,255,255,0.5)}.hud-stat span{color:rgba(255,255,255,0.8);font-weight:600}.hud-right{display:flex;gap:12px}.controls{position:fixed;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;background:linear-gradient(0deg,rgba(0,0,0,0.6),transparent);z-index:10}.ctrl-btn{background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.12);color:#e0e0e0;padding:8px 20px;border-radius:20px;cursor:pointer;font-size:13px;font-weight:500;transition:all 0.2s;display:flex;align-items:center;gap:6px;user-select:none}.ctrl-btn:hover{background:rgba(255,255,255,0.15);border-color:rgba(255,255,255,0.25);transform:translateY(-1px)}.ctrl-btn:active{transform:scale(0.97)}.ctrl-btn .icon{font-size:16px}.ctrl-sep{width:1px;height:24px;background:rgba(255,255,255,0.1)}.species-bar{position:fixed;bottom:56px;left:0;right:0;text-align:center;padding:6px;z-index:10;font-size:11px;color:rgba(255,255,255,0.35);pointer-events:none}.add-menu{position:fixed;bottom:60px;left:50%;transform:translateX(-50%);background:rgba(10,15,25,0.9);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:8px;z-index:20;display:none;min-width:180px}.add-menu.open{display:block}.add-option{padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;color:#ccc;transition:background 0.1s}.add-option:hover{background:rgba(255,255,255,0.1);color:#fff}#status{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);font-size:12px;color:rgba(255,255,255,0.3);z-index:5;pointer-events:none}
+</style>
+</head>
+7<body>
+<canvas id="c"></canvas>
+<div id="status">Initializing WebGPU + WASM...</div>
+<div class="hud"><div class="hud-left"><span class="hud-brand">CODEX AQUARIUM</span><span class="hud-stat"><span id="fish-count">0</span></span><span class="hud-stat">Temp <span id="temp">76.5&#xB0;F</span></span><span class="hud-stat"><span id="tod">Day</span></span></div><div class="hud-right"><span class="hud-stat"><span id="fps">--</span></span></div></div>
+<div class="species-bar" id="species"></div>
+<div class="controls"><button class="ctrl-btn" onclick="feedFish()">Feed</button><button class="ctrl-btn" onclick="tapGlass()">Tap Glass</button><div class="ctrl-sep"></div><button class="ctrl-btn" onclick="toggleLight()">Light</button><div class="ctrl-sep"></div><button class="ctrl-btn" onclick="toggleAddMenu()">Add Fish</button></div>
+<div class="add-menu" id="add-menu">
+<div class="add-option" onclick="addFishByName('Clownfish');hideAddMenu()">Clownfish</div>
+<div class="add-option" onclick="addFishByName('Angelfish');hideAddMenu()">Angelfish</div>
+<div class="add-option" onclick="addFishByName('Neon Tetra');hideAddMenu()">Neon Tetra</div>
+<div class="add-option" onclick="addFishByName('Blue Tang');hideAddMenu()">Blue Tang</div>
+<div class="add-option" onclick="addFishByName('Discus');hideAddMenu()">Discus</div>
+<div class="add-option" onclick="addFishByName('Guppy');hideAddMenu()">Guppy</div>
+<div class="add-option" onclick="addFishByName('Seahorse');hideAddMenu()">Seahorse</div>
+<div class="add-option" onclick="addFishByName('Shrimp');hideAddMenu()">Shrimp</div>
+</div>
+<script>
+function toggleAddMenu(){document.getElementById('add-menu').classList.toggle('open');}
+function hideAddMenu(){document.getElementById('add-menu').classList.remove('open');}
+document.addEventListener('click',function(e){if(!e.target.closest('.add-menu')&&!e.target.closest('[onclick*="toggleAddMenu"]'))hideAddMenu();});
+</script>
+7<script>7// fishtank-wasm-bridge.js  Codex Aquarium: WASM + WebGPU renderer
+// Simulation lives in fishtank.wasm; this JS reads shared memory and renders.
+'use strict';
+
+// ============================================================
+// 1. CONSTANTS
+// ============================================================
+
+const TANK = { xMin:-5, xMax:5, yMin:-4, yMax:3, zMin:-3, zMax:3 };
+const MAX_FISH = 256;
+const MAX_PARTICLES = 512;
+
+const SPECIES = [
+  { name:'Clownfish',  tex:'fish-clownfish',  w:3.0, h:2.0 },
+  { name:'Angelfish',  tex:'fish-angelfish',   w:3.5, h:3.5 },
+  { name:'Neon Tetra', tex:'fish-neontetra',   w:1.4, h:0.7 },
+  { name:'Blue Tang',  tex:'fish-tang',        w:3.0, h:2.2 },
+  { name:'Discus',     tex:'fish-discus',      w:3.0, h:3.0 },
+  { name:'Guppy',      tex:'fish-guppy',       w:1.2, h:0.6 },
+  { name:'Seahorse',   tex:'creature-seahorse', w:1.8, h:2.8 },
+  { name:'Shrimp',     tex:'creature-shrimp',   w:1.4, h:0.7 },
+];
+
+const FG_SPRITES = [
+  { tex:'fg-coral-left',   x:-5.5, y:-0.5, z:1.8, w:4.0, h:6.0 },
+  { tex:'fg-coral-right',  x: 5.5, y:-0.5, z:1.8, w:4.0, h:6.0 },
+  { tex:'fg-rock-left',    x:-4.0, y:-2.5, z:2.2, w:3.0, h:3.0 },
+  { tex:'fg-rock-right',   x: 4.0, y:-2.5, z:2.2, w:3.0, h:3.0 },
+  { tex:'fg-coral-center', x: 0.0, y:-2.5, z:3.0, w:5.0, h:3.5 },
+  { tex:'fg-coral-left',   x:-2.5, y:-2.0, z:1.2, w:2.5, h:3.5 },
+  { tex:'fg-coral-right',  x: 2.5, y:-2.0, z:1.2, w:2.5, h:3.5 },
+  { tex:'fg-rock-left',    x:-1.0, y:-3.0, z:2.5, w:2.0, h:1.5 },
+  { tex:'fg-rock-right',   x: 1.0, y:-3.0, z:2.5, w:2.0, h:1.5 },
+  { tex:'fg-coral-center', x:-3.5, y:-2.8, z:2.8, w:3.0, h:2.5 },
+  { tex:'fg-coral-center', x: 3.5, y:-2.8, z:2.8, w:3.0, h:2.5 },
+];
+
+// WASM shared memory layout (all Int32, addresses in bytes)
+const FISH_BASE     = 0x20000;
+const PARTICLE_BASE = 0x30000;
+const CONTROL_BASE  = 0x40000;
+
+// Fish field offsets from FISH_BASE (bytes)
+const F_COUNT  = 0;
+const F_X      = 0x004;
+const F_Y      = 0x404;
+const F_Z      = 0x804;
+const F_VX     = 0xC04;
+const F_VY     = 0x1004;
+const F_VZ     = 0x1404;
+const F_ANGLE  = 0x1804;
+const F_FLEX   = 0x1C04;
+const F_SPECIES= 0x2004;
+
+// Particle field offsets from PARTICLE_BASE (bytes)
+const P_BUBBLES = 0;
+const P_FOOD    = 4;
+const P_SPECKS  = 8;
+const P_X       = 0x00C;
+const P_Y       = 0x80C;
+const P_Z       = 0x100C;
+const P_VY      = 0x180C;
+const P_SIZE    = 0x200C;
+const P_ALPHA   = 0x280C;
+const P_TYPE    = 0x300C;
+const P_PHASE   = 0x380C;
+
+// Control field offsets from CONTROL_BASE (bytes)
+const C_SCATTER   = 0;
+const C_LIGHT_ON  = 4;
+const C_TIME_OF_DAY = 8;
+const C_DELTA_TIME  = 0xC;
+const C_CURRENT_TIME = 0x10;
+7
+// ============================================================
+// 2. WASM MEMORY HELPERS
+// ============================================================
+
+let wasmMem; // Int32Array view over WASM linear memory
+let wasm;    // WASM instance exports
+
+function ri(addr) { return wasmMem[addr >> 2]; }
+function wi(addr, v) { wasmMem[addr >> 2] = v; }
+7
+// ============================================================
+// 3. MATH
+// ============================================================
+
+function mat4Perspective(fov,a,n,f){const t=1/Math.tan(fov/2),nf=1/(n-f);return new Float32Array([t/a,0,0,0,0,t,0,0,0,0,(f+n)*nf,-1,0,0,2*f*n*nf,0]);}
+function mat4LookAt(e,c,u){const zx=e[0]-c[0],zy=e[1]-c[1],zz=e[2]-c[2];let l=Math.hypot(zx,zy,zz);const fz=[zx/l,zy/l,zz/l];const sx=u[1]*fz[2]-u[2]*fz[1],sy=u[2]*fz[0]-u[0]*fz[2],sz=u[0]*fz[1]-u[1]*fz[0];l=Math.hypot(sx,sy,sz);const fs=[sx/l,sy/l,sz/l];const ux=fz[1]*fs[2]-fz[2]*fs[1],uy=fz[2]*fs[0]-fz[0]*fs[2],uz=fz[0]*fs[1]-fz[1]*fs[0];return new Float32Array([fs[0],ux,fz[0],0,fs[1],uy,fz[1],0,fs[2],uz,fz[2],0,-(fs[0]*e[0]+fs[1]*e[1]+fs[2]*e[2]),-(ux*e[0]+uy*e[1]+uz*e[2]),-(fz[0]*e[0]+fz[1]*e[1]+fz[2]*e[2]),1]);}
+function mat4Mul(a,b){const o=new Float32Array(16);for(let i=0;i<4;i++)for(let j=0;j<4;j++){o[j*4+i]=a[i]*b[j*4]+a[4+i]*b[j*4+1]+a[8+i]*b[j*4+2]+a[12+i]*b[j*4+3];}return o;}
+7
+// ============================================================
+// 4. TEXTURE LOADING
+// ============================================================
+
+const fishTexNames = ['fish-clownfish','fish-angelfish','fish-neontetra','fish-tang','fish-discus','fish-guppy','creature-seahorse','creature-shrimp'];
+const fgTexNames = ['fg-coral-left','fg-coral-right','fg-coral-center','fg-rock-left','fg-rock-right'];
+const allTexNames = fishTexNames.concat(fgTexNames);
+
+let atlasRegions = {}, atlasTexture = null, reefTexture = null;
+
+async function loadImage(name) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => { console.warn('Missing:', name); resolve(null); };
+    img.src = 'assets/' + name + '.png';
+  });
+}
+
+async function loadImages() {
+  const imgs = {};
+  const names = allTexNames.concat(['reef-backdrop']);
+  await Promise.all(names.map(async n => { imgs[n] = await loadImage(n); }));
+  return imgs;
+}
+
+function buildAtlas(device, imgs) {
+  const SIZE = 2048;
+  const canvas = document.createElement('canvas');
+  canvas.width = SIZE; canvas.height = SIZE;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.clearRect(0, 0, SIZE, SIZE);
+
+  let sx = 0, sy = 0, sh = 0;
+  const regions = {};
+  for (const name of allTexNames) {
+    const img = imgs[name];
+    if (!img) { regions[name] = {u:0,v:0,w:0.001,h:0.001}; continue; }
+    const iw = Math.min(img.width, 512);
+    const ih = Math.min(img.height, 512);
+    if (sx + iw > SIZE) { sy += sh; sx = 0; sh = 0; }
+    ctx.clearRect(sx, sy, iw, ih);
+    ctx.drawImage(img, 0, 0, img.width, img.height, sx, sy, iw, ih);
+    regions[name] = { u: sx/SIZE, v: sy/SIZE, w: iw/SIZE, h: ih/SIZE };
+    sx += iw; sh = Math.max(sh, ih);
+  }
+
+  const tex = device.createTexture({ size:[SIZE,SIZE], format:'rgba8unorm', usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST|GPUTextureUsage.RENDER_ATTACHMENT });
+  const data = ctx.getImageData(0, 0, SIZE, SIZE);
+  device.queue.writeTexture({texture:tex}, data.data, {bytesPerRow:SIZE*4, rowsPerImage:SIZE}, [SIZE,SIZE]);
+  return { texture: tex, regions };
+}
+
+function buildReefTexture(device, imgs) {
+  const img = imgs['reef-backdrop'];
+  if (!img) return null;
+  const w = img.width, h = img.height;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  const data = ctx.getImageData(0, 0, w, h);
+  const tex = device.createTexture({ size:[w,h], format:'rgba8unorm', usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST });
+  device.queue.writeTexture({texture:tex}, data.data, {bytesPerRow:w*4}, [w,h]);
+  return tex;
+}
+7
+// ============================================================
+// 5. WGSL SHADERS
+// ============================================================
+
+// Background shader: fullscreen quad sampling reef backdrop with scroll, god rays, day/night, vignette
+const SHADER_BG = `
+struct U { time:f32, resX:f32, resY:f32, lightOn:f32, tod:f32, p1:f32, p2:f32, p3:f32 };
+@group(0) @binding(0) var<uniform> u:U;
+@group(0) @binding(1) var tex:texture_2d<f32>;
+@group(0) @binding(2) var smp:sampler;
+
+@vertex fn vs(@builtin(vertex_index) i:u32) -> @builtin(position) vec4f {
+  var p = array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));
+  return vec4f(p[i],0,1);
+}
+
+@fragment fn fs(@builtin(position) pos:vec4f) -> @location(0) vec4f {
+  let uv = pos.xy / vec2f(u.resX, u.resY);
+  let scroll = u.time * 0.003;
+  let backUV = vec2f(fract(uv.x * 0.8 + 0.1 + scroll), uv.y);
+  var col = textureSample(tex, smp, backUV).rgb;
+  let waterFade = smoothstep(0.0, 0.45, uv.y);
+  let night = smoothstep(0.6, 1.0, abs(u.tod - 0.75) * 4.0);
+  let dayAmt = 1.0 - night * 0.5;
+  let waterCol = vec3f(0.02, 0.06, 0.15) * dayAmt;
+  col = mix(col * dayAmt, waterCol, waterFade);
+  var rays = 0.0;
+  for (var i = 0u; i < 5u; i++) {
+    let freq = 1.0 + f32(i) * 0.7;
+    let ph = u.time * (0.15 + f32(i) * 0.06) + f32(i) * 1.3;
+    let r = sin(uv.x * freq * 6.28 + ph) * 0.5 + 0.5;
+    rays += pow(r, 12.0 + f32(i) * 6.0) * uv.y;
+  }
+  rays *= 0.08 * u.lightOn * dayAmt;
+  col += vec3f(0.4, 0.6, 0.9) * rays;
+  let vig = 1.0 - length((uv - 0.5) * vec2f(1.2, 1.0)) * 0.6;
+  col *= clamp(vig, 0.5, 1.0);
+  return vec4f(col, 1);
+}
+`;
+
+// Sprite shader: billboarded quads with tail-wiggle vertex animation, atlas UV, depth fog
+const SHADER_SPRITE = `
+struct Cam { vp:mat4x4f, time:f32, fogR:f32, fogG:f32, fogB:f32, fogDens:f32, p1:f32, p2:f32, p3:f32 };
+@group(0) @binding(0) var<uniform> cam:Cam;
+@group(0) @binding(1) var tex:texture_2d<f32>;
+@group(0) @binding(2) var smp:sampler;
+
+struct VOut { @builtin(position) pos:vec4f, @location(0) uv:vec2f, @location(1) depth:f32 };
+
+@vertex fn vs(
+  @builtin(vertex_index) vi:u32,
+  @location(0) ipos:vec3f,
+  @location(1) ipar:vec4f,
+  @location(2) iuv:vec4f
+) -> VOut {
+  var qx = array<f32,6>(-0.5, 0.5,-0.5, 0.5,-0.5, 0.5);
+  var qy = array<f32,6>(-0.5,-0.5, 0.5,-0.5, 0.5, 0.5);
+  var qu = array<f32,6>(0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+  var qv = array<f32,6>(1.0, 1.0, 0.0, 1.0, 0.0, 0.0);
+  let swimPhase = cam.time * 7.0 + ipar.w;
+  let wiggle = sin(swimPhase + qx[vi] * 5.0) * max(0.4 - qx[vi], 0.0) * 0.08;
+  let lx = qx[vi] * ipar.y;
+  let ly = qy[vi] * ipar.z + wiggle;
+  let ca = cos(ipar.x); let sa = sin(ipar.x);
+  let wp = ipos + vec3f(lx * ca, ly, lx * sa);
+  var o:VOut;
+  o.pos = cam.vp * vec4f(wp, 1);
+  var texU = qu[vi];
+  if (ca < 0.0) { texU = 1.0 - texU; }
+  o.uv = iuv.xy + vec2f(texU, qv[vi]) * iuv.zw;
+  o.depth = length(wp - vec3f(0, 0, 8));
+  return o;
+}
+
+@fragment fn fs(@location(0) uv:vec2f, @location(1) depth:f32) -> @location(0) vec4f {
+  let c = textureSample(tex, smp, uv);
+  if (c.a < 0.2) { discard; }
+  var fc = c.rgb * 1.1;
+  let fog = 1.0 - exp(-depth * cam.fogDens * 0.15);
+  let fogCol = vec3f(cam.fogR, cam.fogG, cam.fogB);
+  fc = mix(fc, fogCol, clamp(fog, 0.0, 0.4));
+  fc = fc * 0.95 + vec3f(0.008, 0.015, 0.03);
+  return vec4f(fc, c.a * 0.95);
+}
+`;
+
+// Particle shader: circles for bubbles (ring+highlight), food (orange disc), specks (faint dot)
+const SHADER_PARTICLE = `
+struct Cam { vp:mat4x4f, time:f32, p1:f32, p2:f32, p3:f32, p4:f32, p5:f32, p6:f32, p7:f32 };
+@group(0) @binding(0) var<uniform> cam:Cam;
+struct VOut { @builtin(position) pos:vec4f, @location(0) co:vec2f, @location(1) alpha:f32, @location(2) ptype:f32 };
+@vertex fn vs(@builtin(vertex_index) vi:u32, @location(0) ipos:vec3f, @location(1) ipar:vec4f) -> VOut {
+  var qx=array<f32,6>(-1.0,1.0,-1.0,1.0,-1.0,1.0);var qy=array<f32,6>(-1.0,-1.0,1.0,-1.0,1.0,1.0);
+  let sz=ipar.x;let wobble=sin(cam.time*3.0+ipar.w)*sz*0.2;
+  let wp=ipos+vec3f(qx[vi]*sz+wobble,qy[vi]*sz,0.0);
+  var o:VOut;o.pos=cam.vp*vec4f(wp,1);o.co=vec2f(qx[vi],qy[vi]);o.alpha=ipar.y;o.ptype=ipar.z;return o;}
+@fragment fn fs(@location(0) co:vec2f,@location(1) alpha:f32,@location(2) ptype:f32)->@location(0) vec4f{
+  let d=length(co);if(d>1.0){discard;}
+  if(ptype<0.5){let ring=smoothstep(0.65,0.8,d)*(1.0-smoothstep(0.8,1.0,d));let hl=smoothstep(0.0,0.35,1.0-length(co-vec2f(-0.3,0.3)));return vec4f(0.7,0.88,1.0,(ring*0.5+hl*0.5)*alpha);}
+  else if(ptype<1.5){let c=1.0-smoothstep(0.5,1.0,d);return vec4f(0.85,0.55,0.2,c*alpha);}
+  else{let c=1.0-smoothstep(0.2,1.0,d);return vec4f(0.6,0.7,0.85,c*alpha*0.25);}}
+`;
+7
+// ============================================================
+// 6. WEBGPU INIT
+// ============================================================
+
+let device, context, fmt, depthTex;
+let bgPipeline, spritePipeline, particlePipeline;
+let bgUniformBuf, bgBindGroup;
+let spriteUniformBuf, spriteBindGroup;
+let particleUniformBuf, particleBindGroup;
+let fishInstanceBuf, fgInstanceBuf, particleInstanceBuf;
+let sampler, startTime = 0;
+
+async function init() {
+  const canvas = document.getElementById('c');
+  if (!navigator.gpu) { document.getElementById('status').textContent = 'WebGPU not available.'; return; }
+  const adapter = await navigator.gpu.requestAdapter();
+  device = await adapter.requestDevice();
+  context = canvas.getContext('webgpu');
+  fmt = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({device, format:fmt, alphaMode:'opaque'});
+
+  // Load WASM module
+  const wasmResp = await fetch('fishtank.wasm?v=' + Date.now());
+  const wasmBytes = await wasmResp.arrayBuffer();
+  const wasmImports = { wasi_snapshot_preview1: { fd_write: () => 0 }, env: { blit_framebuf: () => {}, on_key: () => 0 } };
+  const wasmModule = await WebAssembly.instantiate(wasmBytes, wasmImports);
+  wasm = wasmModule.instance.exports;
+  wasmMem = new Int32Array(wasm.memory.buffer);
+  wasm.init_aquarium();
+  wasmMem = new Int32Array(wasm.memory.buffer);
+  console.log('fishCount after init:', ri(FISH_BASE + F_COUNT));
+  console.log('fish0 x,y,z:', ri(FISH_BASE+F_X), ri(FISH_BASE+F_Y), ri(FISH_BASE+F_Z));
+  console.log('fish0 vx,vy,vz:', ri(FISH_BASE+F_VX), ri(FISH_BASE+F_VY), ri(FISH_BASE+F_VZ));
+  console.log('fish0 species:', ri(FISH_BASE+F_SPECIES));
+
+  // Load textures
+  const imgs = await loadImages();
+  const atlas = buildAtlas(device, imgs);
+  atlasRegions = atlas.regions; atlasTexture = atlas.texture;
+  reefTexture = buildReefTexture(device, imgs) || atlasTexture;
+  sampler = device.createSampler({magFilter:'linear',minFilter:'linear',mipmapFilter:'linear',addressModeU:'repeat',addressModeV:'clamp-to-edge'});
+
+  // Shader modules
+  const bgMod = device.createShaderModule({code:SHADER_BG});
+  const spriteMod = device.createShaderModule({code:SHADER_SPRITE});
+  const partMod = device.createShaderModule({code:SHADER_PARTICLE});
+
+  // Uniform + instance buffers
+  bgUniformBuf = device.createBuffer({size:32,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+  spriteUniformBuf = device.createBuffer({size:96,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+  particleUniformBuf = device.createBuffer({size:96,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+  fishInstanceBuf = device.createBuffer({size:MAX_FISH*48,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+  fgInstanceBuf = device.createBuffer({size:32*48,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+  particleInstanceBuf = device.createBuffer({size:MAX_PARTICLES*32,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+
+  // Background pipeline (fullscreen, uses reef backdrop texture)
+  bgPipeline = device.createRenderPipeline({layout:'auto',vertex:{module:bgMod,entryPoint:'vs'},fragment:{module:bgMod,entryPoint:'fs',targets:[{format:fmt}]},primitive:{topology:'triangle-list'},depthStencil:{format:'depth24plus',depthWriteEnabled:false,depthCompare:'always'}});
+  bgBindGroup = device.createBindGroup({layout:bgPipeline.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:bgUniformBuf}},{binding:1,resource:reefTexture.createView()},{binding:2,resource:sampler}]});
+
+  // Sprite pipeline (fish + fg decorations)
+  const spriteLayout = [{arrayStride:48,stepMode:'instance',attributes:[{shaderLocation:0,offset:0,format:'float32x3'},{shaderLocation:1,offset:12,format:'float32x4'},{shaderLocation:2,offset:28,format:'float32x4'}]}];
+  spritePipeline = device.createRenderPipeline({layout:'auto',vertex:{module:spriteMod,entryPoint:'vs',buffers:spriteLayout},fragment:{module:spriteMod,entryPoint:'fs',targets:[{format:fmt,blend:{color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha'},alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha'}}}]},primitive:{topology:'triangle-list'},depthStencil:{format:'depth24plus',depthWriteEnabled:false,depthCompare:'less'}});
+  spriteBindGroup = device.createBindGroup({layout:spritePipeline.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:spriteUniformBuf}},{binding:1,resource:atlasTexture.createView()},{binding:2,resource:sampler}]});
+
+  // Particle pipeline
+  const partLayout = [{arrayStride:32,stepMode:'instance',attributes:[{shaderLocation:0,offset:0,format:'float32x3'},{shaderLocation:1,offset:12,format:'float32x4'}]}];
+  particlePipeline = device.createRenderPipeline({layout:'auto',vertex:{module:partMod,entryPoint:'vs',buffers:partLayout},fragment:{module:partMod,entryPoint:'fs',targets:[{format:fmt,blend:{color:{srcFactor:'src-alpha',dstFactor:'one'},alpha:{srcFactor:'one',dstFactor:'one'}}}]},primitive:{topology:'triangle-list'},depthStencil:{format:'depth24plus',depthWriteEnabled:false,depthCompare:'less'}});
+  particleBindGroup = device.createBindGroup({layout:particlePipeline.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:particleUniformBuf}}]});
+
+  // Build foreground decor instances once
+  buildDecorInstances();
+
+  resize(); window.addEventListener('resize', resize);
+  startTime = performance.now()/1000;
+  requestAnimationFrame(frame);
+  document.getElementById('status').textContent = 'WASM loaded';
+}
+7
+// ============================================================
+// 7. READ FROM WASM MEMORY
+// ============================================================
+
+function readFishInstances() {
+  wasmMem = new Int32Array(wasm.memory.buffer);
+  const count = ri(FISH_BASE + F_COUNT);
+  const fd = new Float32Array(count * 12);
+  for (let i = 0; i < count; i++) {
+    const x     = ri(FISH_BASE + F_X + i * 4) / 1000;
+    const y     = ri(FISH_BASE + F_Y + i * 4) / 1000;
+    const z     = ri(FISH_BASE + F_Z + i * 4) / 1000;
+    const angle = ri(FISH_BASE + F_ANGLE + i * 4) / 1000;
+    const flex  = ri(FISH_BASE + F_FLEX + i * 4) / 1000;
+    const sid   = ri(FISH_BASE + F_SPECIES + i * 4);
+    const sp = SPECIES[sid] || SPECIES[0];
+    const r = atlasRegions[sp.tex] || {u:0,v:0,w:0.01,h:0.01};
+    const o = i * 12;
+    fd[o]   = x;
+    fd[o+1] = y;
+    fd[o+2] = z;
+    fd[o+3] = angle;
+    fd[o+4] = sp.w;
+    fd[o+5] = sp.h;
+    fd[o+6] = flex;
+    fd[o+7] = r.u;
+    fd[o+8] = r.v;
+    fd[o+9] = r.w;
+    fd[o+10]= r.h;
+    fd[o+11]= 0;
+  }
+  return { data: fd, count };
+}
+
+function readParticleInstances() {
+  wasmMem = new Int32Array(wasm.memory.buffer);
+  const bubbles = ri(PARTICLE_BASE + P_BUBBLES);
+  const food    = ri(PARTICLE_BASE + P_FOOD);
+  const specks  = ri(PARTICLE_BASE + P_SPECKS);
+  const total = bubbles + food + specks;
+  const pd = new Float32Array(total * 8);
+  for (let i = 0; i < total; i++) {
+    const x     = ri(PARTICLE_BASE + P_X + i * 4) / 1000;
+    const y     = ri(PARTICLE_BASE + P_Y + i * 4) / 1000;
+    const z     = ri(PARTICLE_BASE + P_Z + i * 4) / 1000;
+    const size  = ri(PARTICLE_BASE + P_SIZE + i * 4) / 1000;
+    const alpha = ri(PARTICLE_BASE + P_ALPHA + i * 4) / 1000;
+    const type  = ri(PARTICLE_BASE + P_TYPE + i * 4);
+    const phase = ri(PARTICLE_BASE + P_PHASE + i * 4) / 1000;
+    const o = i * 8;
+    pd[o]   = x;
+    pd[o+1] = y;
+    pd[o+2] = z;
+    pd[o+3] = size;
+    pd[o+4] = alpha;
+    pd[o+5] = type;
+    pd[o+6] = phase;
+    pd[o+7] = 0;
+  }
+  return { data: pd, total, bubbles, food, specks };
+}
+7
+// ============================================================
+// 8. DECOR INSTANCES
+// ============================================================
+
+let fgData = null;
+
+function buildDecorInstances() {
+  fgData = new Float32Array(FG_SPRITES.length * 12);
+  for (let i = 0; i < FG_SPRITES.length; i++) {
+    const d = FG_SPRITES[i];
+    const r = atlasRegions[d.tex] || {u:0,v:0,w:0.01,h:0.01};
+    const o = i * 12;
+    fgData[o]   = d.x;
+    fgData[o+1] = d.y;
+    fgData[o+2] = d.z;
+    fgData[o+3] = 0;
+    fgData[o+4] = d.w;
+    fgData[o+5] = d.h;
+    fgData[o+6] = 0;
+    fgData[o+7] = r.u;
+    fgData[o+8] = r.v;
+    fgData[o+9] = r.w;
+    fgData[o+10]= r.h;
+    fgData[o+11]= 0;
+  }
+}
+7
+// ============================================================
+// 9. RENDER FRAME
+// ============================================================
+
+let lastTime=0, frameCount=0, fpsTime=0, fps=0;
+
+function frame(timestamp) {
+  const t = timestamp / 1000;
+  const dt = lastTime ? t - lastTime : 0.016;
+  lastTime = t;
+  frameCount++;
+  if (t - fpsTime > 1) { fps = frameCount; frameCount = 0; fpsTime = t; }
+  const time = t - startTime;
+
+  // Write dt and currentTime to WASM control memory
+  wasmMem = new Int32Array(wasm.memory.buffer);
+  wi(CONTROL_BASE + C_DELTA_TIME, Math.round(dt * 1000));
+  wi(CONTROL_BASE + C_CURRENT_TIME, Math.round(time * 1000));
+
+  // Tick simulation in WASM
+  wasm.tick();
+
+  // Read state from WASM
+  const fish = readFishInstances();
+  const parts = readParticleInstances();
+  const lightOn = ri(CONTROL_BASE + C_LIGHT_ON) / 1000;
+  const timeOfDay = ri(CONTROL_BASE + C_TIME_OF_DAY) / 1000;
+
+  // Camera with gentle sway
+  const camX = Math.sin(time * 0.12) * 0.6;
+  const camY = Math.sin(time * 0.08) * 0.2 - 0.3;
+  const c = document.getElementById('c');
+  const view = mat4LookAt([camX, camY, 8], [0, -0.5, 0], [0, 1, 0]);
+  const proj = mat4Perspective(Math.PI / 3, c.width / c.height, 0.1, 50);
+  const vp = mat4Mul(proj, view);
+  const dayAmt = 1.0 - Math.max(0, Math.abs(timeOfDay - 0.75) * 4 - 1.4) * 0.6;
+
+  // Uniforms
+  device.queue.writeBuffer(bgUniformBuf, 0, new Float32Array([time, c.width, c.height, lightOn, timeOfDay, 0, 0, 0]));
+  const su = new Float32Array(24); su.set(vp); su[16] = time; su[17] = 0.02 * dayAmt; su[18] = 0.06 * dayAmt; su[19] = 0.14 * dayAmt; su[20] = 0.06;
+  device.queue.writeBuffer(spriteUniformBuf, 0, su);
+  const pu = new Float32Array(24); pu.set(vp); pu[16] = time;
+  device.queue.writeBuffer(particleUniformBuf, 0, pu);
+
+  // Upload fish instances from WASM
+  if (fish.count > 0) device.queue.writeBuffer(fishInstanceBuf, 0, fish.data, 0, fish.count * 12);
+
+  // Update FG decor sway
+  for (let i = 0; i < FG_SPRITES.length; i++) {
+    const d = FG_SPRITES[i];
+    const freq = 0.2 + i * 0.07; const phase = i * 2.3 + d.x * 1.7 + d.z * 0.9;
+    const sway = Math.sin(time * freq + phase) * 0.02 + Math.sin(time * freq * 1.7 + phase * 0.6) * 0.008;
+    fgData[i * 12 + 3] = sway;
+  }
+  device.queue.writeBuffer(fgInstanceBuf, 0, fgData);
+
+  // Upload particle instances from WASM
+  if (parts.total > 0) device.queue.writeBuffer(particleInstanceBuf, 0, parts.data, 0, parts.total * 8);
+
+  // RENDER
+  const encoder = device.createCommandEncoder();
+  const colorView = context.getCurrentTexture().createView();
+  const depthView = depthTex.createView();
+  const pass = encoder.beginRenderPass({colorAttachments:[{view:colorView,loadOp:'clear',storeOp:'store',clearValue:{r:0.01,g:0.04,b:0.12,a:1}}],depthStencilAttachment:{view:depthView,depthLoadOp:'clear',depthStoreOp:'store',depthClearValue:1.0}});
+
+  // 1. Background (reef panorama + god rays)
+  pass.setPipeline(bgPipeline); pass.setBindGroup(0, bgBindGroup); pass.draw(3);
+
+  // 2. Foreground decoration sprites
+  pass.setPipeline(spritePipeline); pass.setBindGroup(0, spriteBindGroup);
+  pass.setVertexBuffer(0, fgInstanceBuf); pass.draw(6, FG_SPRITES.length);
+
+  // 3. Fish sprites
+  if (fish.count > 0) {
+    pass.setPipeline(spritePipeline); pass.setBindGroup(0, spriteBindGroup);
+    pass.setVertexBuffer(0, fishInstanceBuf); pass.draw(6, fish.count);
+  }
+
+  // 4. Particles
+  if (parts.total > 0) {
+    pass.setPipeline(particlePipeline); pass.setBindGroup(0, particleBindGroup);
+    pass.setVertexBuffer(0, particleInstanceBuf); pass.draw(6, parts.total);
+  }
+
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+  updateHUD();
+  requestAnimationFrame(frame);
+}
+7
+// ============================================================
+// 10. RESIZE
+// ============================================================
+
+function resize() {
+  const c = document.getElementById('c');
+  const dpr = window.devicePixelRatio || 1;
+  c.width = Math.floor(c.clientWidth * dpr);
+  c.height = Math.floor(c.clientHeight * dpr);
+  if (depthTex) depthTex.destroy();
+  depthTex = device.createTexture({size:[c.width,c.height],format:'depth24plus',usage:GPUTextureUsage.RENDER_ATTACHMENT});
+}
+7
+// ============================================================
+// 11. CONTROLS & HUD
+// ============================================================
+
+function feedFish() { wasm.spawn_food(); }
+function tapGlass() { wasm.scatter(); }
+function toggleLight() { wasm.toggle_light(); }
+function addFishByName(name) {
+  const idx = SPECIES.findIndex(s => s.name === name);
+  if (idx >= 0) wasm.spawn_one_fish(idx);
+  updateHUD();
+}
+
+function updateHUD() {
+  wasmMem = new Int32Array(wasm.memory.buffer);
+  const fishCount = ri(FISH_BASE + F_COUNT);
+  const bubbles = ri(PARTICLE_BASE + P_BUBBLES);
+  const food = ri(PARTICLE_BASE + P_FOOD);
+  const specks = ri(PARTICLE_BASE + P_SPECKS);
+  const timeOfDay = ri(CONTROL_BASE + C_TIME_OF_DAY) / 1000;
+
+  // Count per species
+  const counts = new Array(SPECIES.length).fill(0);
+  for (let i = 0; i < fishCount; i++) {
+    const sid = ri(FISH_BASE + F_SPECIES + i * 4);
+    if (sid >= 0 && sid < SPECIES.length) counts[sid]++;
+  }
+  let s = '';
+  for (let i = 0; i < SPECIES.length; i++) {
+    if (counts[i] > 0) s += SPECIES[i].name + ': ' + counts[i] + '  ';
+  }
+  const el = document.getElementById('species'); if (el) el.textContent = s;
+  const fc = document.getElementById('fish-count'); if (fc) fc.textContent = fishCount + ' fish';
+  const temp = document.getElementById('temp'); if (temp) temp.textContent = (76.5 + Math.sin(lastTime * 0.1) * 0.8).toFixed(1) + '\u00b0F';
+  const todNames = ['Night','Dawn','Day','Dusk'];
+  const tod = document.getElementById('tod'); if (tod) tod.textContent = todNames[Math.floor(timeOfDay * 4) % 4];
+  const fpsEl = document.getElementById('fps'); if (fpsEl) fpsEl.textContent = fps + ' fps';
+}
+7
+window.addEventListener('DOMContentLoaded', init);
+7</script>
+</body>
+</html>7

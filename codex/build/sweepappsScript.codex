@@ -1,0 +1,70 @@
+Chapter: SweepAppsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates sweep-apps.ps1 from the Shell DSL.
+ Compile every .codex under apps/ to verify no crashes.
+ Compile failures (missing entry point, unresolved names) are expected
+ for library modules. The sweep checks for compiler crashes (timeout,
+ GPF, non-zero exit without clean diagnostic).
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  sweep-params : List ShellParam = [sh-param-default "Dir" SptString (SeLit "games"), sh-param-default "Jobs" SptInt (SeInt 4), sh-param-default "TimeoutSec" SptInt (SeInt 60)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScRaw "Set-Location $Repo", ScRaw "[Environment]::CurrentDirectory = $Repo"]
+
+Section: S02 -- Stage0 Setup
+
+  s02 : List ShellCmd = [ScAssign "CompileScript" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "stage0" (SeRaw "Join-Path $Repo 'build-output\\bare-metal\\Codex.cdx'"), ScAssign "seedCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScMkdir (SeRaw "Split-Path $stage0"), ScCopy (SeVar "seedCdx") (SeVar "stage0")]
+
+Section: S03 -- Output Directory
+
+  s03 : List ShellCmd = [ScAssign "outDir" (SeRaw "Join-Path $Repo \"build-output\\sweep-$Dir\""), ScIf (SeDirExists (SeVar "outDir")) [ScRaw "Remove-Item -Recurse -Force $outDir"] [], ScMkdir (SeVar "outDir")]
+
+Section: S04 -- Discover Files
+
+  s04 : List ShellCmd = [ScAssign "files" (SeRaw "@(Get-ChildItem -Path (Join-Path $Repo \"apps\\$Dir\") -Recurse -Include '*.codex' -File | Sort-Object FullName)"), ScRaw "Write-Host \"Sweep: $($files.Count) files under apps/$Dir\""]
+
+Section: S05 -- Counters
+
+  s05 : List ShellCmd = [ScAssign "pass" (SeInt 0), ScAssign "diag" (SeInt 0), ScAssign "crash" (SeInt 0), ScAssign "timeout" (SeInt 0), ScAssign "crashes" (SeRaw "@()")]
+
+Section: S06 -- Sweep Loop
+
+  s06-timeout : List ShellCmd = [ScRaw "Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue", ScRaw "Write-Host \"  TIMEOUT  $rel\" -ForegroundColor Red", ScRaw "$timeout++", ScRaw "$crashes += \"TIMEOUT`t$rel\"", ScContinue]
+
+  s06-crash : List ShellCmd = [ScRaw "Write-Host \"  CRASH($($proc.ExitCode))  $rel\" -ForegroundColor Red", ScRaw "$crash++", ScRaw "$crashes += \"CRASH($($proc.ExitCode))`t$rel\""]
+
+  s06-exit-check : List ShellCmd = [ScIf (SeRaw "$proc.ExitCode -eq 0") [ScRaw "$pass++"] [], ScIf (SeRaw "$proc.ExitCode -eq 4") [ScRaw "$diag++"] [], ScIf (SeRaw "$proc.ExitCode -ne 0 -and $proc.ExitCode -ne 4") s06-crash []]
+
+  s06-body : List ShellCmd = [ScAssign "name" (SeProperty (SeVar "f") "BaseName"), ScAssign "rel" (SeRaw "$f.FullName.Substring($Repo.Length + 1)"), ScAssign "cdxOut" (SeRaw "Join-Path $outDir \"$name.cdx\""), ScAssign "logOut" (SeRaw "Join-Path $outDir \"$name.log\""), ScBlank, ScRaw "$proc = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $CompileScript, '-Src', $f.FullName, '-Out', $cdxOut, '-Log', $logOut) -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $outDir \"$name.stderr\")", ScRaw "$exited = $proc.WaitForExit($TimeoutSec * 1000)", ScIf (SeNot (SeVar "exited")) s06-timeout [], ScBlank, ScSequence s06-exit-check]
+
+  s06 : List ShellCmd = [ScForEach "f" (SeVar "files") s06-body]
+
+Section: S07 -- Summary
+
+  s07-crashes : List ShellCmd = [ScRaw "Write-Host 'Crashes/timeouts:'", ScForEach "c" (SeVar "crashes") [ScRaw "Write-Host \"  $c\""]]
+
+  s07 : List ShellCmd = [ScEcho (SeLit ""), ScRaw "Write-Host \"Results: $($files.Count) files, $pass compiled, $diag diagnostic-halt, $crash crash, $timeout timeout\"", ScIf (SeRaw "$crashes.Count -gt 0") s07-crashes [], ScExit (SeRaw "$crash + $timeout")]
+
+Section: Assembly
+
+  sweep-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
+
+  sweep-script : ShellScript = sh-script "sweep-apps" "Compile every .codex under apps/ to verify no compiler crashes" sweep-params sweep-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell sweep-script)
+  end
+
+Page 1

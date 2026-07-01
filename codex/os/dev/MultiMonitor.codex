@@ -1,0 +1,318 @@
+Chapter: MultiMonitor
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Multi-monitor layout and virtual desktop management. Tracks
+ physical monitor arrangement, computes the unified virtual canvas,
+ handles window placement across monitors, and provides workspace
+ switching. The compositor renders each monitor's viewport from
+ the virtual canvas.
+
+Section: Monitor Layout
+
+  MonLayout = record {
+    ml-id : Text,
+    ml-pos-x : Integer,
+    ml-pos-y : Integer,
+    ml-width : Integer,
+    ml-height : Integer,
+    ml-scale : Integer,
+    ml-primary : Boolean,
+    ml-rotation : Integer,
+    ml-enabled : Boolean
+  }
+
+  monitor-layout-new : Text, Integer, Integer -> MonLayout
+  monitor-layout-new (id) (w) (h) = MonLayout {
+    ml-id = id, ml-pos-x = 0, ml-pos-y = 0,
+    ml-width = w, ml-height = h, ml-scale = 100,
+    ml-primary = False, ml-rotation = 0, ml-enabled = True
+  }
+
+Section: Arrangement
+
+  ArrangeMode =
+    | ArrangeExtend
+    | ArrangeMirror
+    | ArrangeSingle (Text)
+
+  arrange-mode-label : ArrangeMode -> Text
+  arrange-mode-label (mode) = when mode
+    is ArrangeExtend -> "Extended Desktop"
+    is ArrangeMirror -> "Mirror"
+    is ArrangeSingle (id) -> "Single (" & id & ")"
+
+Section: Virtual Canvas
+
+  VirtualCanvas = record {
+    vc-x : Integer,
+    vc-y : Integer,
+    vc-width : Integer,
+    vc-height : Integer
+  }
+
+Section: Workspace
+
+  Workspace = record {
+    ws-id : Integer,
+    ws-name : Text,
+    ws-monitor-id : Text,
+    ws-window-ids : List Text,
+    ws-window-count : Integer
+  }
+
+  workspace-new : Integer, Text -> Workspace
+  workspace-new (id) (name) = Workspace {
+    ws-id = id, ws-name = name, ws-monitor-id = "",
+    ws-window-ids = [], ws-window-count = 0
+  }
+
+Section: Multi-Monitor State
+
+  MultiMonitorState = record {
+    mm-layouts : List MonLayout,
+    mm-layout-count : Integer,
+    mm-arrange : ArrangeMode,
+    mm-canvas : VirtualCanvas,
+    mm-workspaces : List Workspace,
+    mm-workspace-count : Integer,
+    mm-active-workspace : Integer,
+    mm-cursor-x : Integer,
+    mm-cursor-y : Integer,
+    mm-cursor-monitor : Text
+  }
+
+  multi-monitor-new : MultiMonitorState
+  multi-monitor-new = MultiMonitorState {
+    mm-layouts = [],
+    mm-layout-count = 0,
+    mm-arrange = ArrangeExtend,
+    mm-canvas = VirtualCanvas { vc-x = 0, vc-y = 0, vc-width = 0, vc-height = 0 },
+    mm-workspaces = [workspace-new 1 "Workspace 1"],
+    mm-workspace-count = 1,
+    mm-active-workspace = 1,
+    mm-cursor-x = 0,
+    mm-cursor-y = 0,
+    mm-cursor-monitor = ""
+  }
+
+Section: Monitor Management
+
+  mm-add-monitor : MultiMonitorState, Text, Integer, Integer -> MultiMonitorState
+  mm-add-monitor (st) (id) (w) (h) =
+    let layout = monitor-layout-new id w h
+    in let positioned = mm-auto-position st layout
+    in let layouts = list-push (st.mm-layouts) positioned
+    in let st2 = __record-set (__record-set st "mm-layouts" layouts) "mm-layout-count" (st.mm-layout-count + 1)
+    in let st3 = if st.mm-layout-count == 0 then __record-set st2 "mm-cursor-monitor" id else st2
+    in mm-recompute-canvas st3
+
+  mm-auto-position : MultiMonitorState, MonLayout -> MonLayout
+  mm-auto-position (st) (layout) =
+    if st.mm-layout-count == 0 then __record-set layout "ml-primary" True
+    else let right-edge = mm-rightmost-edge st
+    in __record-set layout "ml-pos-x" right-edge
+
+  mm-rightmost-edge : MultiMonitorState -> Integer
+  mm-rightmost-edge (st) = mm-right-loop (st.mm-layouts) 0 (st.mm-layout-count) 0
+
+  mm-right-loop : List MonLayout, Integer, Integer, Integer -> Integer
+  mm-right-loop (layouts) (i) (n) (max-x) =
+    if i >= n then max-x
+    else let layout = list-at layouts i
+    in let right = layout.ml-pos-x + layout.ml-width
+    in mm-right-loop layouts (i + 1) n (if right > max-x then right else max-x)
+
+  mm-remove-monitor : MultiMonitorState, Text -> MultiMonitorState
+  mm-remove-monitor (st) (id) =
+    let filtered = mm-filter-layouts (st.mm-layouts) id 0 (st.mm-layout-count) []
+    in let st2 = __record-set (__record-set st "mm-layouts" filtered) "mm-layout-count" (list-length filtered)
+    in mm-recompute-canvas st2
+
+  mm-filter-layouts : List MonLayout, Text, Integer, Integer, List MonLayout -> List MonLayout
+  mm-filter-layouts (layouts) (exclude) (i) (n) (acc) =
+    if i >= n then acc
+    else let layout = list-at layouts i
+    in if layout.ml-id == exclude then mm-filter-layouts layouts exclude (i + 1) n acc
+    else mm-filter-layouts layouts exclude (i + 1) n (list-push acc layout)
+
+  mm-move-monitor : MultiMonitorState, Text, Integer, Integer -> MultiMonitorState
+  mm-move-monitor (st) (id) (x) (y) =
+    let updated = mm-update-pos (st.mm-layouts) id x y 0 (st.mm-layout-count) []
+    in mm-recompute-canvas (__record-set st "mm-layouts" updated)
+
+  mm-update-pos : List MonLayout, Text, Integer, Integer, Integer, Integer, List MonLayout -> List MonLayout
+  mm-update-pos (layouts) (target) (x) (y) (i) (n) (acc) =
+    if i >= n then acc
+    else let layout = list-at layouts i
+    in let updated = if layout.ml-id == target then __record-set (__record-set layout "ml-pos-x" x) "ml-pos-y" y else layout
+    in mm-update-pos layouts target x y (i + 1) n (list-push acc updated)
+
+  mm-set-primary : MultiMonitorState, Text -> MultiMonitorState
+  mm-set-primary (st) (id) =
+    let updated = mm-set-primary-loop (st.mm-layouts) id 0 (st.mm-layout-count) []
+    in __record-set st "mm-layouts" updated
+
+  mm-set-primary-loop : List MonLayout, Text, Integer, Integer, List MonLayout -> List MonLayout
+  mm-set-primary-loop (layouts) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let layout = list-at layouts i
+    in let updated = __record-set layout "ml-primary" (layout.ml-id == target)
+    in mm-set-primary-loop layouts target (i + 1) n (list-push acc updated)
+
+  mm-set-arrange : MultiMonitorState, ArrangeMode -> MultiMonitorState
+  mm-set-arrange (st) (mode) =
+    let st2 = __record-set st "mm-arrange" mode
+    in mm-recompute-canvas st2
+
+Section: Virtual Canvas
+
+  mm-recompute-canvas : MultiMonitorState -> MultiMonitorState
+  mm-recompute-canvas (st) = when st.mm-arrange
+    is ArrangeMirror -> mm-canvas-mirror st
+    is ArrangeSingle (id) -> mm-canvas-single st id
+    is ArrangeExtend -> mm-canvas-extend st
+
+  mm-canvas-extend : MultiMonitorState -> MultiMonitorState
+  mm-canvas-extend (st) =
+    let bounds = mm-compute-bounds (st.mm-layouts) 0 (st.mm-layout-count) 0 0 0 0
+    in __record-set st "mm-canvas" bounds
+
+  mm-compute-bounds : List MonLayout, Integer, Integer, Integer, Integer, Integer, Integer -> VirtualCanvas
+  mm-compute-bounds (layouts) (i) (n) (min-x) (min-y) (max-x) (max-y) =
+    if i >= n then VirtualCanvas { vc-x = min-x, vc-y = min-y, vc-width = max-x - min-x, vc-height = max-y - min-y }
+    else let layout = list-at layouts i
+    in if layout.ml-enabled then
+      let lx = layout.ml-pos-x
+      in let ly = layout.ml-pos-y
+      in let rx = lx + layout.ml-width
+      in let by = ly + layout.ml-height
+      in let new-min-x = if i == 0 then lx else if lx < min-x then lx else min-x
+      in let new-min-y = if i == 0 then ly else if ly < min-y then ly else min-y
+      in let new-max-x = if i == 0 then rx else if rx > max-x then rx else max-x
+      in let new-max-y = if i == 0 then by else if by > max-y then by else max-y
+      in mm-compute-bounds layouts (i + 1) n new-min-x new-min-y new-max-x new-max-y
+    else mm-compute-bounds layouts (i + 1) n min-x min-y max-x max-y
+
+  mm-canvas-mirror : MultiMonitorState -> MultiMonitorState
+  mm-canvas-mirror (st) =
+    let primary = mm-find-primary st
+    in __record-set st "mm-canvas" (VirtualCanvas { vc-x = 0, vc-y = 0, vc-width = primary.ml-width, vc-height = primary.ml-height })
+
+  mm-canvas-single : MultiMonitorState, Text -> MultiMonitorState
+  mm-canvas-single (st) (id) =
+    let layout = mm-find-layout st id
+    in __record-set st "mm-canvas" (VirtualCanvas { vc-x = 0, vc-y = 0, vc-width = layout.ml-width, vc-height = layout.ml-height })
+
+Section: Monitor Lookup
+
+  mm-find-layout : MultiMonitorState, Text -> MonLayout
+  mm-find-layout (st) (id) = mm-find-layout-loop (st.mm-layouts) id 0 (st.mm-layout-count)
+
+  mm-find-layout-loop : List MonLayout, Text, Integer, Integer -> MonLayout
+  mm-find-layout-loop (layouts) (target) (i) (n) =
+    if i >= n then monitor-layout-new "" 1920 1080
+    else let layout = list-at layouts i
+    in if layout.ml-id == target then layout
+    else mm-find-layout-loop layouts target (i + 1) n
+
+  mm-find-primary : MultiMonitorState -> MonLayout
+  mm-find-primary (st) = mm-find-primary-loop (st.mm-layouts) 0 (st.mm-layout-count)
+
+  mm-find-primary-loop : List MonLayout, Integer, Integer -> MonLayout
+  mm-find-primary-loop (layouts) (i) (n) =
+    if i >= n then monitor-layout-new "default" 1920 1080
+    else let layout = list-at layouts i
+    in if layout.ml-primary then layout
+    else mm-find-primary-loop layouts (i + 1) n
+
+  mm-monitor-at-point : MultiMonitorState, Integer, Integer -> Text
+  mm-monitor-at-point (st) (x) (y) =
+    mm-hit-test (st.mm-layouts) x y 0 (st.mm-layout-count)
+
+  mm-hit-test : List MonLayout, Integer, Integer, Integer, Integer -> Text
+  mm-hit-test (layouts) (x) (y) (i) (n) =
+    if i >= n then ""
+    else let layout = list-at layouts i
+    in if x >= layout.ml-pos-x then if x < layout.ml-pos-x + layout.ml-width then
+      if y >= layout.ml-pos-y then if y < layout.ml-pos-y + layout.ml-height then layout.ml-id
+      else mm-hit-test layouts x y (i + 1) n
+      else mm-hit-test layouts x y (i + 1) n
+    else mm-hit-test layouts x y (i + 1) n
+    else mm-hit-test layouts x y (i + 1) n
+
+Section: Workspace Management
+
+  mm-add-workspace : MultiMonitorState, Text -> MultiMonitorState
+  mm-add-workspace (st) (name) =
+    let id = st.mm-workspace-count + 1
+    in let ws = workspace-new id name
+    in __record-set (__record-set st "mm-workspaces" (list-push (st.mm-workspaces) ws)) "mm-workspace-count" (st.mm-workspace-count + 1)
+
+  mm-switch-workspace : MultiMonitorState, Integer -> MultiMonitorState
+  mm-switch-workspace (st) (ws-id) =
+    if ws-id < 1 then st
+    else if ws-id > st.mm-workspace-count then st
+    else __record-set st "mm-active-workspace" ws-id
+
+  mm-next-workspace : MultiMonitorState -> MultiMonitorState
+  mm-next-workspace (st) =
+    let next = st.mm-active-workspace + 1
+    in if next > st.mm-workspace-count then mm-switch-workspace st 1
+    else mm-switch-workspace st next
+
+  mm-prev-workspace : MultiMonitorState -> MultiMonitorState
+  mm-prev-workspace (st) =
+    let prev = st.mm-active-workspace - 1
+    in if prev < 1 then mm-switch-workspace st (st.mm-workspace-count)
+    else mm-switch-workspace st prev
+
+Section: Cursor Tracking
+
+  mm-move-cursor : MultiMonitorState, Integer, Integer -> MultiMonitorState
+  mm-move-cursor (st) (x) (y) =
+    let clamped-x = mm-clamp x (st.mm-canvas).vc-x ((st.mm-canvas).vc-x + (st.mm-canvas).vc-width - 1)
+    in let clamped-y = mm-clamp y (st.mm-canvas).vc-y ((st.mm-canvas).vc-y + (st.mm-canvas).vc-height - 1)
+    in let monitor = mm-monitor-at-point st clamped-x clamped-y
+    in __record-set (__record-set (__record-set st "mm-cursor-x" clamped-x) "mm-cursor-y" clamped-y) "mm-cursor-monitor" monitor
+
+  mm-clamp : Integer, Integer, Integer -> Integer
+  mm-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Widget Building
+
+  mm-arrangement-widget : MultiMonitorState -> WidgetNode
+  mm-arrangement-widget (st) =
+    let title = widget-label "mm-title" "Display Arrangement"
+    in let mode = widget-label "mm-mode" (arrange-mode-label (st.mm-arrange))
+    in let canvas-info = widget-label "mm-canvas" ("Canvas: " & show ((st.mm-canvas).vc-width) & "x" & show ((st.mm-canvas).vc-height))
+    in let monitors = mm-monitor-widgets st 0 (st.mm-layout-count) []
+    in let monitor-row = widget-panel "mm-monitors" DirRow 8 monitors
+    in let ws-info = widget-label "mm-ws" ("Workspace " & show (st.mm-active-workspace) & "/" & show (st.mm-workspace-count))
+    in widget-panel "mm-display" DirColumn 4 [title, mode, canvas-info, monitor-row, ws-info]
+
+  mm-monitor-widgets : MultiMonitorState, Integer, Integer, List WidgetNode -> List WidgetNode
+  mm-monitor-widgets (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let layout = list-at (st.mm-layouts) i
+    in let label = layout.ml-id & "\n" & show (layout.ml-width) & "x" & show (layout.ml-height)
+    in let w = widget-label ("mm-mon-" & layout.ml-id) label
+    in let scaled = widget-set-min w (layout.ml-width / 16) (layout.ml-height / 16)
+    in let styled = if layout.ml-primary then widget-set-state scaled state-focused else scaled
+    in mm-monitor-widgets st (i + 1) n (list-push acc styled)
+
+Section: Formatting
+
+  format-multi-monitor : MultiMonitorState -> Text
+  format-multi-monitor (st) =
+    "monitors=" & show (st.mm-layout-count) & " " & arrange-mode-label (st.mm-arrange)
+    & " canvas=" & show ((st.mm-canvas).vc-width) & "x" & show ((st.mm-canvas).vc-height)
+    & " workspace=" & show (st.mm-active-workspace) & "/" & show (st.mm-workspace-count)
+
+  format-monitor-layout : MonLayout -> Text
+  format-monitor-layout (m) =
+    m.ml-id & " " & show (m.ml-width) & "x" & show (m.ml-height) & " @(" & show (m.ml-pos-x) & "," & show (m.ml-pos-y) & ")"
+    & " scale=" & show (m.ml-scale) & "%" & (if m.ml-primary then " [PRIMARY]" else "")
+
+Page 1

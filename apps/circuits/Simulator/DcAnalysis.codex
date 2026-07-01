@@ -1,0 +1,139 @@
+Chapter: DcAnalysis
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ DC operating point and DC sweep analysis. Computes node voltages and
+ branch currents at the DC steady state, and sweeps a source across a
+ range to produce voltage-versus-parameter curves.
+
+Section: Sweep Type
+
+  DcSweepType =
+    | LinearSweep
+    | LogSweep
+    | ListSweep
+
+Section: Node Voltage
+
+  DcNodeVoltage = record {
+    dnv-node-name : Text,
+    dnv-voltage : Real
+  }
+
+Section: Branch Current
+
+  DcBranchCurrent = record {
+    dbc-element-name : Text,
+    dbc-current : Real
+  }
+
+Section: Operating Point
+
+  DcOperatingPoint = record {
+    dop-node-voltages : List DcNodeVoltage,
+    dop-branch-currents : List DcBranchCurrent,
+    dop-converged : Integer,
+    dop-iterations : Integer,
+    dop-residual : Real
+  }
+
+Section: Sweep Configuration
+
+  DcSweepConfig = record {
+    dsc-source-name : Text,
+    dsc-start : Real,
+    dsc-stop : Real,
+    dsc-step : Real,
+    dsc-sweep-type : DcSweepType
+  }
+
+Section: Sweep Point
+
+  DcSweepPoint = record {
+    dsp-sweep-value : Real,
+    dsp-node-voltages : List DcNodeVoltage
+  }
+
+Section: Sweep Result
+
+  DcSweepResult = record {
+    dsr-config : DcSweepConfig,
+    dsr-points : List DcSweepPoint,
+    dsr-point-count : Integer
+  }
+
+Section: Construction
+
+  empty-operating-point : DcOperatingPoint
+  empty-operating-point = DcOperatingPoint {
+      dop-node-voltages = [],
+      dop-branch-currents = [],
+      dop-converged = 0,
+      dop-iterations = 0,
+      dop-residual = 0.0
+    }
+
+  dc-add-node-voltage : DcOperatingPoint, DcNodeVoltage -> DcOperatingPoint
+  dc-add-node-voltage (op) (nv) =
+    __record-set op "dop-node-voltages" (list-push op.dop-node-voltages nv)
+
+  dc-add-branch-current : DcOperatingPoint, DcBranchCurrent -> DcOperatingPoint
+  dc-add-branch-current (op) (bc) =
+    __record-set op "dop-branch-currents" (list-push op.dop-branch-currents bc)
+
+Section: Queries
+
+ Searches the node voltage list for a given node name. Returns Just
+ the voltage if found, None otherwise.
+
+  dc-find-node-voltage : DcOperatingPoint, Text -> Maybe Real
+  dc-find-node-voltage (op) (name) =
+    dc-find-nv-scan op.dop-node-voltages name 0 (list-length op.dop-node-voltages)
+
+  dc-find-nv-scan : List DcNodeVoltage, Text, Integer, Integer -> Maybe Real
+  dc-find-nv-scan (voltages) (name) (i) (n) =
+    if i >= n then None else dc-nv-check voltages name i n
+
+  dc-nv-check : List DcNodeVoltage, Text, Integer, Integer -> Maybe Real
+  dc-nv-check (voltages) (name) (i) (n) =
+    let nv = list-at voltages i
+    in if nv.dnv-node-name == name then Just nv.dnv-voltage else dc-find-nv-scan voltages name (i + 1) n
+
+  dc-sweep-point-count : DcSweepResult -> Integer
+  dc-sweep-point-count (sr) = sr.dsr-point-count
+
+Section: Summary
+
+ Produces a textual summary of the DC operating point listing each
+ node voltage and branch current.
+
+  dc-operating-point-summary : DcOperatingPoint -> Text
+  dc-operating-point-summary (op) =
+    let header = dc-op-header op
+    in let voltages = dc-format-voltages op.dop-node-voltages 0 (list-length op.dop-node-voltages) ""
+    in let currents = dc-format-currents op.dop-branch-currents 0 (list-length op.dop-branch-currents) ""
+    in header & "  Node Voltages:\n" & voltages & "  Branch Currents:\n" & currents
+
+  dc-op-header : DcOperatingPoint -> Text
+  dc-op-header (op) = "DC Operating Point" & (if op.dop-converged == 1 then " (converged)" else " (not converged)") & "\n  Iterations: " & (show op.dop-iterations) & "\n"
+
+  dc-format-voltages : List DcNodeVoltage, Integer, Integer, Text -> Text
+  dc-format-voltages (nvs) (i) (n) (acc) =
+    if i >= n then acc else dc-fmt-volt-step nvs i n acc
+
+  dc-fmt-volt-step : List DcNodeVoltage, Integer, Integer, Text -> Text
+  dc-fmt-volt-step (nvs) (i) (n) (acc) =
+    let nv = list-at nvs i in dc-format-voltages nvs (i + 1) n (acc & "    " & nv.dnv-node-name & " = " & (real-to-text nv.dnv-voltage) & " V\n")
+
+  dc-format-currents : List DcBranchCurrent, Integer, Integer, Text -> Text
+  dc-format-currents (bcs) (i) (n) (acc) =
+    if i >= n then acc else dc-fmt-curr-step bcs i n acc
+
+  dc-fmt-curr-step : List DcBranchCurrent, Integer, Integer, Text -> Text
+  dc-fmt-curr-step (bcs) (i) (n) (acc) =
+    let bc = list-at bcs i in dc-format-currents bcs (i + 1) n (acc & "    " & bc.dbc-element-name & " = " & (real-to-text bc.dbc-current) & " A\n")
+
+  real-to-text : Real -> Text
+  real-to-text (x) =
+    let int-part = real-to-int x
+    in show int-part

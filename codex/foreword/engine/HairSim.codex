@@ -1,0 +1,156 @@
+Chapter: HairSim
+  cites Engine chapter SoftBody
+  cites Math chapter Quaternion
+
+ Strand-based hair simulation. Each hair strand is a chain of
+ particles with distance constraints and a stiffness spring pulling
+ toward the rest pose. Root particles are pinned to the head bone.
+ Supports gravity, wind, and collision with a head sphere. Strands
+ are grouped into guide hairs that interpolated hairs follow.
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Hair Strand
+
+  HairStrand = record {
+    hs-particles : List SoftParticle,
+    hs-count : Integer,
+    hs-root-bone : Integer,
+    hs-stiffness : Integer,
+    hs-damping : Integer
+  }
+
+Section: Hair System
+
+  HairSystem = record {
+    hair-strands : List HairStrand,
+    hair-strand-count : Integer,
+    hair-gravity : Integer,
+    hair-wind-x : Integer, hair-wind-y : Integer, hair-wind-z : Integer,
+    hair-head-x : Integer, hair-head-y : Integer, hair-head-z : Integer,
+    hair-head-radius : Integer,
+    hair-iterations : Integer
+  }
+
+  hair-new : Integer, Integer -> HairSystem
+  hair-new (gravity) (head-radius) = HairSystem { hair-strands = [], hair-strand-count = 0, hair-gravity = gravity, hair-wind-x = 0, hair-wind-y = 0, hair-wind-z = 0, hair-head-x = 0, hair-head-y = 0, hair-head-z = 0, hair-head-radius = head-radius, hair-iterations = 3 }
+
+Section: Strand Creation
+
+  hair-add-strand : HairSystem, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> HairSystem
+  hair-add-strand (sys) (root-x) (root-y) (root-z) (length) (segments) (stiffness) (bone) =
+    let seg-len = length / segments
+    in let strand = hair-build-strand root-x root-y root-z seg-len segments stiffness bone 0 []
+    in HairSystem { hair-strands = list-push (sys.hair-strands) strand, hair-strand-count = sys.hair-strand-count + 1, hair-gravity = sys.hair-gravity, hair-wind-x = sys.hair-wind-x, hair-wind-y = sys.hair-wind-y, hair-wind-z = sys.hair-wind-z, hair-head-x = sys.hair-head-x, hair-head-y = sys.hair-head-y, hair-head-z = sys.hair-head-z, hair-head-radius = sys.hair-head-radius, hair-iterations = sys.hair-iterations }
+
+  hair-build-strand : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List SoftParticle -> HairStrand
+  hair-build-strand (rx) (ry) (rz) (seg-len) (segments) (stiffness) (bone) (i) (acc) =
+    if i > segments then HairStrand { hs-particles = acc, hs-count = i, hs-root-bone = bone, hs-stiffness = stiffness, hs-damping = 950 }
+    else let py = ry - i * seg-len
+    in let pinned = i == 0
+    in let p = SoftParticle { sft-x = rx, sft-y = py, sft-z = rz, sft-px = rx, sft-py = py, sft-pz = rz, sft-rest-x = rx, sft-rest-y = py, sft-rest-z = rz, sft-mass = 10, sft-pinned = pinned }
+    in hair-build-strand rx ry rz seg-len segments stiffness bone (i + 1) (list-push acc p)
+
+Section: Simulation
+
+  hair-step : HairSystem, Integer -> HairSystem
+  hair-step (sys) (dt) =
+    let updated = hair-step-strands (sys.hair-strands) sys dt 0 (sys.hair-strand-count) []
+    in __record-set sys "hair-strands" updated
+
+  hair-step-strands : List HairStrand, HairSystem, Integer, Integer, Integer, List HairStrand -> List HairStrand
+  hair-step-strands (strands) (sys) (dt) (i) (n) (acc) =
+    if i >= n then acc
+    else let strand = list-at strands i
+    in let stepped = hair-step-strand strand sys dt
+    in hair-step-strands strands sys dt (i + 1) n (list-push acc stepped)
+
+  hair-step-strand : HairStrand, HairSystem, Integer -> HairStrand
+  hair-step-strand (strand) (sys) (dt) =
+    let integrated = hair-integrate (strand.hs-particles) sys (strand.hs-damping) dt 0 (strand.hs-count) []
+    in let constrained = hair-solve-chain integrated 0 (strand.hs-count - 1) 0 (sys.hair-iterations)
+    in let collided = hair-collide-head constrained sys 0 (strand.hs-count) []
+    in HairStrand { hs-particles = collided, hs-count = strand.hs-count, hs-root-bone = strand.hs-root-bone, hs-stiffness = strand.hs-stiffness, hs-damping = strand.hs-damping }
+
+Section: Integration
+
+  hair-integrate : List SoftParticle, HairSystem, Integer, Integer, Integer, Integer, List SoftParticle -> List SoftParticle
+  hair-integrate (parts) (sys) (damping) (dt) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in if p.sft-pinned then hair-integrate parts sys damping dt (i + 1) n (list-push acc p)
+    else let vx = (p.sft-x - p.sft-px) * damping / 1000 + sys.hair-wind-x * dt / 10000
+    in let vy = (p.sft-y - p.sft-py) * damping / 1000 - sys.hair-gravity * dt / 1000
+    in let vz = (p.sft-z - p.sft-pz) * damping / 1000 + sys.hair-wind-z * dt / 10000
+    in let updated = SoftParticle { sft-x = p.sft-x + vx * dt / 1000, sft-y = p.sft-y + vy * dt / 1000, sft-z = p.sft-z + vz * dt / 1000, sft-px = p.sft-x, sft-py = p.sft-y, sft-pz = p.sft-z, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = False }
+    in hair-integrate parts sys damping dt (i + 1) n (list-push acc updated)
+
+Section: Chain Distance Constraints
+
+  hair-solve-chain : List SoftParticle, Integer, Integer, Integer, Integer -> List SoftParticle
+  hair-solve-chain (parts) (seg-idx) (max-seg) (iter) (max-iter) =
+    if iter >= max-iter then parts
+    else let solved = hair-chain-pass parts 0 max-seg
+    in hair-solve-chain solved 0 max-seg (iter + 1) max-iter
+
+  hair-chain-pass : List SoftParticle, Integer, Integer -> List SoftParticle
+  hair-chain-pass (parts) (i) (n) =
+    if i >= n then parts
+    else let pa = list-at parts i
+    in let pb = list-at parts (i + 1)
+    in let dx = pb.sft-x - pa.sft-x
+    in let dy = pb.sft-y - pa.sft-y
+    in let dz = pb.sft-z - pa.sft-z
+    in let dist = hair-isqrt (dx * dx + dy * dy + dz * dz)
+    in let rest = hair-isqrt ((pa.sft-rest-x - pb.sft-rest-x) * (pa.sft-rest-x - pb.sft-rest-x) + (pa.sft-rest-y - pb.sft-rest-y) * (pa.sft-rest-y - pb.sft-rest-y) + (pa.sft-rest-z - pb.sft-rest-z) * (pa.sft-rest-z - pb.sft-rest-z))
+    in if dist == 0 then hair-chain-pass parts (i + 1) n
+    else let diff = (dist - rest) / 2
+    in let cx = dx * diff / dist
+    in let cy = dy * diff / dist
+    in let cz = dz * diff / dist
+    in let na = if pa.sft-pinned then pa else SoftParticle { sft-x = pa.sft-x + cx, sft-y = pa.sft-y + cy, sft-z = pa.sft-z + cz, sft-px = pa.sft-px, sft-py = pa.sft-py, sft-pz = pa.sft-pz, sft-rest-x = pa.sft-rest-x, sft-rest-y = pa.sft-rest-y, sft-rest-z = pa.sft-rest-z, sft-mass = pa.sft-mass, sft-pinned = False }
+    in let nb = SoftParticle { sft-x = pb.sft-x - cx, sft-y = pb.sft-y - cy, sft-z = pb.sft-z - cz, sft-px = pb.sft-px, sft-py = pb.sft-py, sft-pz = pb.sft-pz, sft-rest-x = pb.sft-rest-x, sft-rest-y = pb.sft-rest-y, sft-rest-z = pb.sft-rest-z, sft-mass = pb.sft-mass, sft-pinned = False }
+    in hair-chain-pass (list-set-at (list-set-at parts i na) (i + 1) nb) (i + 1) n
+
+Section: Head Collision
+
+  hair-collide-head : List SoftParticle, HairSystem, Integer, Integer, List SoftParticle -> List SoftParticle
+  hair-collide-head (parts) (sys) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in let dx = p.sft-x - sys.hair-head-x
+    in let dy = p.sft-y - sys.hair-head-y
+    in let dz = p.sft-z - sys.hair-head-z
+    in let dist = hair-isqrt (dx * dx + dy * dy + dz * dz)
+    in if dist < sys.hair-head-radius then
+      if dist == 0 then hair-collide-head parts sys (i + 1) n (list-push acc p)
+      else let push = sys.hair-head-radius - dist
+      in let pushed = SoftParticle { sft-x = p.sft-x + dx * push / dist, sft-y = p.sft-y + dy * push / dist, sft-z = p.sft-z + dz * push / dist, sft-px = p.sft-px, sft-py = p.sft-py, sft-pz = p.sft-pz, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = p.sft-pinned }
+      in hair-collide-head parts sys (i + 1) n (list-push acc pushed)
+    else hair-collide-head parts sys (i + 1) n (list-push acc p)
+
+Section: Wind
+
+  hair-set-wind : HairSystem, Integer, Integer, Integer -> HairSystem
+  hair-set-wind (sys) (wx) (wy) (wz) =
+    let s2 = __record-set sys "hair-wind-x" wx
+    in let s3 = __record-set s2 "hair-wind-y" wy
+    in __record-set s3 "hair-wind-z" wz
+
+Section: Helpers
+
+  hair-isqrt : Integer -> Integer
+  hair-isqrt (n) = if n <= 0 then 0 else hair-isqrt-loop n (n / 2 + 1)
+
+  hair-isqrt-loop : Integer, Integer -> Integer
+  hair-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else hair-isqrt-loop n next
+
+Section: Formatting
+
+  format-hair : HairSystem -> Text
+  format-hair (sys) = "Hair(" & show (sys.hair-strand-count) & " strands)"
+
+Page 1

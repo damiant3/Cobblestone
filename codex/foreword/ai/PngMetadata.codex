@@ -1,0 +1,185 @@
+Chapter: PngMetadata
+  cites Encode chapter Png
+  cites Encode chapter Json
+  cites Encode chapter Crc32
+  cites Foreword chapter CCE
+
+ PNG metadata embedding for AI-generated images. Writes generation
+ parameters (prompt, negative prompt, seed, steps, sampler, model,
+ CFG scale, size) into PNG tEXt chunks for reproducibility.
+
+ Compatible with A1111/ComfyUI metadata format: the "parameters"
+ key contains the full generation string, and individual keys
+ store structured data.
+
+ We say:
+
+Section: Types
+  GenParams = record {
+    gp-prompt : Text,
+    gp-negative : Text,
+    gp-seed : Integer,
+    gp-steps : Integer,
+    gp-cfg-scale : Integer,
+    gp-sampler : Text,
+    gp-model : Text,
+    gp-width : Integer,
+    gp-height : Integer,
+    gp-lora-info : Text
+  }
+
+Section: Construction
+  gen-params : Text, Text, Integer, Integer, Integer, Text, Text, Integer, Integer -> GenParams
+  gen-params (prompt) (neg) (seed) (steps) (cfg) (sampler) (model) (w) (h) =
+    GenParams { gp-prompt = prompt, gp-negative = neg, gp-seed = seed, gp-steps = steps, gp-cfg-scale = cfg, gp-sampler = sampler, gp-model = model, gp-width = w, gp-height = h, gp-lora-info = "" }
+
+Section: A1111-Compatible Parameter String
+  gen-params-to-string : GenParams -> Text
+  gen-params-to-string (p) =
+    p.gp-prompt
+    & "\nNegative prompt: " & p.gp-negative
+    & "\nSteps: " & show (p.gp-steps)
+    & ", Sampler: " & p.gp-sampler
+    & ", CFG scale: " & gen-format-cfg (p.gp-cfg-scale)
+    & ", Seed: " & show (p.gp-seed)
+    & ", Size: " & show (p.gp-width) & "x" & show (p.gp-height)
+    & ", Model: " & p.gp-model
+    & (if text-length (p.gp-lora-info) > 0 then ", Lora: " & p.gp-lora-info else "")
+
+  gen-format-cfg : Integer -> Text
+  gen-format-cfg (cfg) =
+    let whole = cfg / 1000
+    in let frac = (cfg - whole * 1000) / 100
+    in show whole & "." & show frac
+
+Section: PNG tEXt Chunk
+  png-text-chunk : Text, Text -> List Integer
+  png-text-chunk (key) (value) =
+    let key-bytes = pm-text-to-bytes key
+    in let null-sep = [0]
+    in let val-bytes = pm-text-to-bytes value
+    in let chunk-data = key-bytes & null-sep & val-bytes
+    in let chunk-type = [116, 69, 88, 116]
+    in let length = list-length chunk-data
+    in let type-and-data = chunk-type & chunk-data
+    in let crc = crc32 type-and-data
+    in pm-be32 length & type-and-data & pm-be32 crc
+
+Section: Embed Metadata into PNG
+  png-embed-metadata : List Integer, GenParams -> List Integer
+  png-embed-metadata (png-bytes) (params) =
+    let param-string = gen-params-to-string params
+    in let text-chunk = png-text-chunk "parameters" param-string
+    in let prompt-chunk = png-text-chunk "prompt" (params.gp-prompt)
+    in let seed-chunk = png-text-chunk "seed" (show (params.gp-seed))
+    in let model-chunk = png-text-chunk "model" (params.gp-model)
+    in pm-insert-before-iend png-bytes (text-chunk & prompt-chunk & seed-chunk & model-chunk)
+
+  pm-insert-before-iend : List Integer, List Integer -> List Integer
+  pm-insert-before-iend (png) (chunks) =
+    let iend-pos = pm-find-iend png 0 (list-length png)
+    in if iend-pos < 0 then png & chunks
+    else let before = pm-take png iend-pos 0 []
+    in let after = pm-drop png iend-pos 0 (list-length png) []
+    in before & chunks & after
+
+  pm-find-iend : List Integer, Integer, Integer -> Integer
+  pm-find-iend (data) (i) (len) =
+    if i + 7 >= len then 0 - 1
+    else if list-at data (i + 4) == 73 then
+      if list-at data (i + 5) == 69 then
+        if list-at data (i + 6) == 78 then
+          if list-at data (i + 7) == 68 then i
+          else pm-find-iend data (i + 1) len
+        else pm-find-iend data (i + 1) len
+      else pm-find-iend data (i + 1) len
+    else pm-find-iend data (i + 1) len
+
+Section: JSON Metadata (alternative format)
+  gen-params-to-json : GenParams -> Text
+  gen-params-to-json (p) =
+    json-emit (json-object [
+      json-pair "prompt" (json-str (p.gp-prompt)),
+      json-pair "negative_prompt" (json-str (p.gp-negative)),
+      json-pair "seed" (json-int (p.gp-seed)),
+      json-pair "steps" (json-int (p.gp-steps)),
+      json-pair "cfg_scale" (json-int (p.gp-cfg-scale)),
+      json-pair "sampler" (json-str (p.gp-sampler)),
+      json-pair "model" (json-str (p.gp-model)),
+      json-pair "width" (json-int (p.gp-width)),
+      json-pair "height" (json-int (p.gp-height))
+    ])
+
+Section: Parse Metadata from PNG
+  png-read-metadata : List Integer -> Maybe GenParams
+  png-read-metadata (png-bytes) =
+    let param-text = pm-find-text-chunk png-bytes "parameters" 8 (list-length png-bytes)
+    in when param-text
+      is Just (text) -> Just (pm-parse-param-string text)
+      is None -> None
+
+  pm-find-text-chunk : List Integer, Text, Integer, Integer -> Maybe Text
+  pm-find-text-chunk (data) (key) (pos) (len) =
+    if pos + 12 >= len then None
+    else let chunk-len = pm-read-be32 data pos
+    in let chunk-type-ok = list-at data (pos + 4) == 116
+    in if chunk-type-ok == False then pm-find-text-chunk data key (pos + 12 + chunk-len) len
+    else if list-at data (pos + 5) /= 69 then pm-find-text-chunk data key (pos + 12 + chunk-len) len
+    else let chunk-key = pm-read-until-null data (pos + 8) (pos + 8 + chunk-len) ""
+    in if chunk-key == key then
+      let key-len = text-length chunk-key + 1
+      in let val-start = pos + 8 + key-len
+      in let val-len = chunk-len - key-len
+      in Just (pm-extract-text data val-start val-len "")
+    else pm-find-text-chunk data key (pos + 12 + chunk-len) len
+
+  pm-read-until-null : List Integer, Integer, Integer, Text -> Text
+  pm-read-until-null (data) (pos) (end) (acc) =
+    if pos >= end then acc
+    else let b = list-at data pos
+    in if b == 0 then acc
+    else pm-read-until-null data (pos + 1) end (acc & char-to-text (code-to-char (from-unicode b)))
+
+  pm-parse-param-string : Text -> GenParams
+  pm-parse-param-string (s) =
+    gen-params s "" 0 20 7500 "euler" "unknown" 512 512
+
+Section: Byte Helpers
+  pm-text-to-bytes : Text -> List Integer
+  pm-text-to-bytes (s) = pm-t2b-loop s 0 (text-length s) []
+
+  pm-t2b-loop : Text, Integer, Integer, List Integer -> List Integer
+  pm-t2b-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = to-unicode (char-code (char-at s i))
+    in pm-t2b-loop s (i + 1) len (list-push acc (bit-and c 255))
+
+  pm-extract-text : List Integer, Integer, Integer, Text -> Text
+  pm-extract-text (data) (pos) (remaining) (acc) =
+    if remaining <= 0 then acc
+    else pm-extract-text data (pos + 1) (remaining - 1) (acc & char-to-text (code-to-char (from-unicode (list-at data pos))))
+
+  pm-be32 : Integer -> List Integer
+  pm-be32 (v) = [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  pm-read-be32 : List Integer, Integer -> Integer
+  pm-read-be32 (data) (pos) =
+    bit-or (bit-shl (list-at data pos) 24) (bit-or (bit-shl (list-at data (pos + 1)) 16) (bit-or (bit-shl (list-at data (pos + 2)) 8) (list-at data (pos + 3))))
+
+  pm-take : List Integer, Integer, Integer, List Integer -> List Integer
+  pm-take (data) (n) (i) (acc) =
+    if i >= n then acc
+    else pm-take data n (i + 1) (list-push acc (list-at data i))
+
+  pm-drop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  pm-drop (data) (start) (i) (len) (acc) =
+    if i >= len then acc
+    else if i < start then pm-drop data start (i + 1) len acc
+    else pm-drop data start (i + 1) len (list-push acc (list-at data i))
+
+Section: Queries
+  format-gen-params : GenParams -> Text
+  format-gen-params (p) =
+    show (p.gp-width) & "x" & show (p.gp-height) & " " & p.gp-sampler & " steps=" & show (p.gp-steps) & " seed=" & show (p.gp-seed) & " model=" & p.gp-model
+
+Page 1

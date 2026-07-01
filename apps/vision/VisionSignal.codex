@@ -1,0 +1,307 @@
+Chapter: VisionSignal
+  cites Vision chapter VisionTypes
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ Signal lifecycle management. Signals are the atomic unit of
+ communication in Vision — an idea with explicit weight,
+ domain, and state machine.
+
+Section: Construction
+
+  signal-new : Integer, Text, SignalWeight, Text, Text, Integer -> Signal
+  signal-new (id) (author) (weight) (domain) (content) (now) =
+    Signal {
+      sig-id = id,
+      sig-author = author,
+      sig-weight = weight,
+      sig-domain = domain,
+      sig-content = content,
+      sig-state = SigNew,
+      sig-type = SigCascade,
+      sig-created = now,
+      sig-response-window = weight-response-window weight,
+      sig-closed-at = 0,
+      sig-parent-signal = 0,
+      sig-escalated-from = Musing,
+      sig-tags = [],
+      sig-tag-count = 0,
+      sig-hold-count = 0,
+      sig-response-count = 0,
+      sig-slots = [],
+      sig-slot-count = 0
+    }
+
+  signal-with-tags : Signal, List Text -> Signal
+  signal-with-tags (s) (tags) =
+    __record-set (__record-set s "sig-tags" tags) "sig-tag-count" (list-length tags)
+
+  signal-as-child : Signal, Integer -> Signal
+  signal-as-child (s) (parent-id) =
+    __record-set s "sig-parent-signal" parent-id
+
+  signal-open : Integer, Text, Text, Text, List OpenSlot, Integer -> Signal
+  signal-open (id) (author) (domain) (content) (slots) (now) =
+    Signal {
+      sig-id = id,
+      sig-author = author,
+      sig-weight = Musing,
+      sig-domain = domain,
+      sig-content = content,
+      sig-state = SigNew,
+      sig-type = SigOpen,
+      sig-created = now,
+      sig-response-window = 0,
+      sig-closed-at = 0,
+      sig-parent-signal = 0,
+      sig-escalated-from = Musing,
+      sig-tags = [],
+      sig-tag-count = 0,
+      sig-hold-count = 0,
+      sig-response-count = 0,
+      sig-slots = slots,
+      sig-slot-count = list-length slots
+    }
+
+  weight-response-window : SignalWeight -> Integer
+  weight-response-window (w) = when w
+    is Musing -> 0
+    is Suggestion -> 432000
+    is Directive -> 172800
+    is Mandate -> 86400
+
+Section: State Transitions
+
+  signal-pick-up : Signal -> Signal
+  signal-pick-up (s) = __record-set s "sig-state" SigPickedUp
+
+  signal-push : Signal -> Signal
+  signal-push (s) = __record-set s "sig-state" SigPushed
+
+  signal-respond : Signal -> Signal
+  signal-respond (s) = __record-set s "sig-state" SigResponded
+
+  signal-close : Signal, Integer -> Signal
+  signal-close (s) (now) =
+    __record-set (__record-set s "sig-state" SigClosed) "sig-closed-at" now
+
+  signal-expire : Signal, Integer -> Signal
+  signal-expire (s) (now) =
+    __record-set (__record-set s "sig-state" SigExpired) "sig-closed-at" now
+
+  signal-escalate : Signal, SignalWeight -> Signal
+  signal-escalate (s) (new-weight) =
+    __record-set (__record-set (__record-set s
+      "sig-escalated-from" s.sig-weight)
+      "sig-weight" new-weight)
+      "sig-response-window" (weight-response-window new-weight)
+
+  signal-was-escalated : Signal -> Boolean
+  signal-was-escalated (s) =
+    weight-ordinal s.sig-weight > weight-ordinal s.sig-escalated-from
+
+  signal-add-slot : Signal, OpenSlot -> Signal
+  signal-add-slot (s) (slot) =
+    __record-set (__record-set s
+      "sig-slots" (list-push s.sig-slots slot))
+      "sig-slot-count" (s.sig-slot-count + 1)
+
+  signal-volunteer-for-slot : Signal, Integer, Text -> Signal
+  signal-volunteer-for-slot (s) (slot-idx) (person-id) =
+    if slot-idx >= s.sig-slot-count then s
+    else let slot = list-at s.sig-slots slot-idx
+    in let updated-slot = slot-volunteer slot person-id
+    in __record-set s "sig-slots" (list-replace-at s.sig-slots slot-idx updated-slot)
+
+  list-replace-at : List OpenSlot, Integer, OpenSlot -> List OpenSlot
+  list-replace-at (xs) (idx) (val) = lra-loop xs idx val 0 (list-length xs) []
+
+  lra-loop : List OpenSlot, Integer, OpenSlot, Integer, Integer, List OpenSlot -> List OpenSlot
+  lra-loop (xs) (idx) (val) (i) (len) (acc) =
+    if i >= len then acc
+    else if i == idx then lra-loop xs idx val (i + 1) len (list-push acc val)
+    else lra-loop xs idx val (i + 1) len (list-push acc (list-at xs i))
+
+  signal-inc-holds : Signal -> Signal
+  signal-inc-holds (s) = __record-set s "sig-hold-count" (s.sig-hold-count + 1)
+
+  signal-inc-responses : Signal -> Signal
+  signal-inc-responses (s) = __record-set s "sig-response-count" (s.sig-response-count + 1)
+
+Section: Queries
+
+  signal-is-active : Signal -> Boolean
+  signal-is-active (s) = when s.sig-state
+    is SigNew -> True
+    is SigPickedUp -> True
+    is SigPushed -> True
+    is otherwise -> False
+
+  signal-is-overdue : Signal, Integer -> Boolean
+  signal-is-overdue (s) (now) =
+    if s.sig-response-window == 0 then False
+    else let deadline = s.sig-created + s.sig-response-window
+    in now > deadline
+
+  signal-days-remaining : Signal, Integer -> Integer
+  signal-days-remaining (s) (now) =
+    if s.sig-response-window == 0 then (-1)
+    else let deadline = s.sig-created + s.sig-response-window
+    in (deadline - now) / 86400
+
+  signal-age-days : Signal, Integer -> Integer
+  signal-age-days (s) (now) = (now - s.sig-created) / 86400
+
+  signal-needs-notification : Signal -> Boolean
+  signal-needs-notification (s) = when s.sig-weight
+    is Musing -> False
+    is Suggestion -> False
+    is Directive -> True
+    is Mandate -> True
+
+Section: Signal Store
+
+  SignalStore = record {
+    ss-signals : List Signal,
+    ss-count : Integer,
+    ss-next-id : Integer
+  }
+
+  signal-store-new : SignalStore
+  signal-store-new = SignalStore { ss-signals = [], ss-count = 0, ss-next-id = 1 }
+
+  ss-add : SignalStore, Signal -> SignalStore
+  ss-add (store) (s) =
+    SignalStore {
+      ss-signals = list-push store.ss-signals s,
+      ss-count = store.ss-count + 1,
+      ss-next-id = store.ss-next-id + 1
+    }
+
+  ss-find : SignalStore, Integer -> Maybe Signal
+  ss-find (store) (id) = ss-find-loop store.ss-signals id 0 store.ss-count
+
+  ss-find-loop : List Signal, Integer, Integer, Integer -> Maybe Signal
+  ss-find-loop (signals) (id) (i) (len) =
+    if i >= len then None
+    else let s = list-at signals i
+    in if s.sig-id == id then Just s
+    else ss-find-loop signals id (i + 1) len
+
+  ss-update : SignalStore, Signal -> SignalStore
+  ss-update (store) (updated) =
+    __record-set store "ss-signals" (list-map (ss-replace updated) store.ss-signals)
+
+  ss-replace : Signal, Signal -> Signal
+  ss-replace (updated) (s) =
+    if s.sig-id == updated.sig-id then updated else s
+
+  ss-active : SignalStore -> List Signal
+  ss-active (store) = ss-filter-active store.ss-signals 0 store.ss-count []
+
+  ss-filter-active : List Signal, Integer, Integer, List Signal -> List Signal
+  ss-filter-active (signals) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at signals i
+    in if signal-is-active s
+      then ss-filter-active signals (i + 1) len (list-push acc s)
+      else ss-filter-active signals (i + 1) len acc
+
+  ss-by-domain : SignalStore, Text -> List Signal
+  ss-by-domain (store) (domain) = ss-filter-domain store.ss-signals domain 0 store.ss-count []
+
+  ss-filter-domain : List Signal, Text, Integer, Integer, List Signal -> List Signal
+  ss-filter-domain (signals) (domain) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at signals i
+    in if s.sig-domain == domain
+      then ss-filter-domain signals domain (i + 1) len (list-push acc s)
+      else ss-filter-domain signals domain (i + 1) len acc
+
+  ss-by-author : SignalStore, Text -> List Signal
+  ss-by-author (store) (author) = ss-filter-author store.ss-signals author 0 store.ss-count []
+
+  ss-filter-author : List Signal, Text, Integer, Integer, List Signal -> List Signal
+  ss-filter-author (signals) (author) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at signals i
+    in if s.sig-author == author
+      then ss-filter-author signals author (i + 1) len (list-push acc s)
+      else ss-filter-author signals author (i + 1) len acc
+
+  ss-filter : SignalStore, SignalFilter -> List Signal
+  ss-filter (store) (f) =
+    ss-apply-filter store.ss-signals f 0 store.ss-count []
+
+  ss-apply-filter : List Signal, SignalFilter, Integer, Integer, List Signal -> List Signal
+  ss-apply-filter (signals) (f) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at signals i
+    in if signal-matches-filter s f
+      then ss-apply-filter signals f (i + 1) len (list-push acc s)
+      else ss-apply-filter signals f (i + 1) len acc
+
+  signal-matches-filter : Signal, SignalFilter -> Boolean
+  signal-matches-filter (s) (f) =
+    if weight-ordinal s.sig-weight < f.sf-weight-min then False
+    else if text-length f.sf-domain > 0 then if s.sig-domain /= f.sf-domain then False else signal-matches-rest s f
+    else signal-matches-rest s f
+
+  signal-matches-rest : Signal, SignalFilter -> Boolean
+  signal-matches-rest (s) (f) =
+    if text-length f.sf-author > 0 then if s.sig-author /= f.sf-author then False else signal-matches-text s f
+    else signal-matches-text s f
+
+  signal-matches-text : Signal, SignalFilter -> Boolean
+  signal-matches-text (s) (f) =
+    if f.sf-show-closed == False then
+      if signal-is-active s == False then False
+      else signal-content-match s f
+    else signal-content-match s f
+
+  signal-content-match : Signal, SignalFilter -> Boolean
+  signal-content-match (s) (f) =
+    if text-length f.sf-text-search == 0 then True
+    else text-contains s.sig-content f.sf-text-search
+
+  ss-open-signals : SignalStore -> List Signal
+  ss-open-signals (store) = ss-open-loop store.ss-signals 0 store.ss-count []
+
+  ss-open-loop : List Signal, Integer, Integer, List Signal -> List Signal
+  ss-open-loop (signals) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at signals i
+    in when s.sig-type
+      is SigOpen -> ss-open-loop signals (i + 1) len (list-push acc s)
+      is otherwise -> ss-open-loop signals (i + 1) len acc
+
+  ss-overdue : SignalStore, Integer -> List Signal
+  ss-overdue (store) (now) = ss-overdue-loop store.ss-signals now 0 store.ss-count []
+
+  ss-overdue-loop : List Signal, Integer, Integer, Integer, List Signal -> List Signal
+  ss-overdue-loop (signals) (now) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at signals i
+    in if signal-is-overdue s now
+      then ss-overdue-loop signals now (i + 1) len (list-push acc s)
+      else ss-overdue-loop signals now (i + 1) len acc
+
+  ss-stats : SignalStore -> SignalStats
+  ss-stats (store) = ss-count-stats store.ss-signals 0 store.ss-count 0 0 0 0
+
+  SignalStats = record {
+    sst-active : Integer,
+    sst-closed : Integer,
+    sst-musings : Integer,
+    sst-mandates : Integer
+  }
+
+  ss-count-stats : List Signal, Integer, Integer, Integer, Integer, Integer, Integer -> SignalStats
+  ss-count-stats (signals) (i) (len) (active) (closed) (musings) (mandates) =
+    if i >= len then SignalStats { sst-active = active, sst-closed = closed, sst-musings = musings, sst-mandates = mandates }
+    else let s = list-at signals i
+    in let a = if signal-is-active s then 1 else 0
+    in let c = when s.sig-state is SigClosed -> 1 is otherwise -> 0
+    in let m = when s.sig-weight is Musing -> 1 is otherwise -> 0
+    in let d = when s.sig-weight is Mandate -> 1 is otherwise -> 0
+    in ss-count-stats signals (i + 1) len (active + a) (closed + c) (musings + m) (mandates + d)

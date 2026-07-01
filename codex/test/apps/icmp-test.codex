@@ -1,0 +1,60 @@
+Chapter: IcmpTest
+  cites Net chapter Icmp
+  cites Net chapter Ethernet
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+Section: Tests
+  test-echo-request : Text =
+    let data = icmp-build-echo-request 1000 1 [1, 2, 3, 4]
+    in let msg = icmp-parse data
+    in "type=" & show (msg.icmp-type) & " id=" & show (msg.identifier) & " seq=" & show (msg.sequence) & " len=" & show (list-length (msg.payload))
+
+  test-echo-reply : Text =
+    let req = IcmpMessage { icmp-type = icmp-type-echo-request, code = 0, identifier = 42, sequence = 7, payload = [] }
+    in let reply-data = icmp-build-echo-reply req
+    in let msg = icmp-parse reply-data
+    in "type=" & show (msg.icmp-type) & " id=" & show (msg.identifier) & " seq=" & show (msg.sequence)
+
+  test-predicates : Text =
+    let req-data = icmp-build-echo-request 500 1 [1]
+    in let req = icmp-parse req-data
+    in let reply-msg = IcmpMessage { icmp-type = icmp-type-echo-request, code = 0, identifier = 500, sequence = 1, payload = [1] }
+    in let reply-data = icmp-build-echo-reply reply-msg
+    in let reply = icmp-parse reply-data
+    in "req=" & show-bool (icmp-is-echo-request req) & " reply=" & show-bool (icmp-is-echo-reply reply) & " id-match=" & show-bool (req.identifier == reply.identifier)
+
+  test-unreachable : Text =
+    let data = icmp-build-unreachable icmp-code-port-unreachable [0, 0, 0, 0, 0, 0, 0, 0]
+    in let msg = icmp-parse data
+    in "type=" & show (msg.icmp-type) & " code=" & show (msg.code)
+
+  test-ip : Text =
+    let pkt = icmp-build-echo-ip (ip-bytes 10 0 0 1) (ip-bytes 10 0 0 2) 1 1 [10, 20]
+    in "proto=" & show (ip-proto pkt) & " pktlen=" & show (list-length pkt)
+
+  test-frame : Text =
+    let frame = icmp-build-echo-frame mac-broadcast (mac-bytes 1 2 3 4 5 6) (ip-bytes 10 0 0 1) (ip-bytes 10 0 0 2) 1 1 [10, 20, 30, 40]
+    in "framelen=" & show (list-length frame)
+
+  test-format : Text =
+    let data = icmp-build-echo-request 123 4 [99, 100]
+    in let msg = icmp-parse data
+    in format-icmp msg
+
+  test-checksum : Text =
+    let data = icmp-build-echo-request 1 1 [1, 2]
+    in "verify=" & show (icmp-checksum data 0 (list-length data) 0)
+
+  opening : [Console] Nothing = act
+    print-line-uni test-echo-request
+    print-line-uni test-echo-reply
+    print-line-uni test-predicates
+    print-line-uni test-unreachable
+    print-line-uni test-ip
+    print-line-uni test-frame
+    print-line-uni test-format
+    print-line-uni test-checksum
+  end

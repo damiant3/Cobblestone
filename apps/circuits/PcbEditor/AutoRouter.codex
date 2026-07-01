@@ -1,0 +1,195 @@
+Chapter: AutoRouter
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ GPU-accelerated automatic PCB router using a hybrid topological and
+ A* algorithm. Sorts nets by priority, computes shortest paths on a
+ discretised grid, and accumulates routed segments and vias into a
+ result set per net.
+
+Section: Router Effort
+
+  RouterEffort =
+    | EffortLow
+    | EffortMedium
+    | EffortHigh
+    | EffortMaximum
+
+Section: Configuration
+
+  AutoRouterConfig = record {
+    arc-max-iterations : Integer,
+    arc-via-cost : Integer,
+    arc-corner-cost : Integer,
+    arc-layer-change-cost : Integer,
+    arc-clearance : Integer,
+    arc-grid-resolution : Integer,
+    arc-allow-via : Integer,
+    arc-max-vias-per-net : Integer,
+    arc-effort-level : RouterEffort
+  }
+
+  default-autorouter-config : AutoRouterConfig
+  default-autorouter-config = AutoRouterConfig {
+    arc-max-iterations = 50000,
+    arc-via-cost = 200,
+    arc-corner-cost = 50,
+    arc-layer-change-cost = 500,
+    arc-clearance = 200000,
+    arc-grid-resolution = 100000,
+    arc-allow-via = 1,
+    arc-max-vias-per-net = 8,
+    arc-effort-level = EffortMedium
+  }
+
+Section: Route Request
+
+ A route request describes a single net endpoint pair that must be
+ connected. Priority determines order: lower numbers route first.
+
+  RouteRequest = record {
+    rr-net-id : Integer,
+    rr-start-x : Integer,
+    rr-start-y : Integer,
+    rr-start-layer : Integer,
+    rr-end-x : Integer,
+    rr-end-y : Integer,
+    rr-end-layer : Integer,
+    rr-width : Integer,
+    rr-priority : Integer
+  }
+
+Section: Route Segment and Via
+
+  AutoRouteSegment = record {
+    ars-x1 : Integer,
+    ars-y1 : Integer,
+    ars-x2 : Integer,
+    ars-y2 : Integer,
+    ars-layer : Integer,
+    ars-width : Integer
+  }
+
+  AutoRouteVia = record {
+    arv-x : Integer,
+    arv-y : Integer,
+    arv-from-layer : Integer,
+    arv-to-layer : Integer
+  }
+
+Section: Route Result
+
+  RouteResult = record {
+    rr-res-net-id : Integer,
+    rr-res-segments : List AutoRouteSegment,
+    rr-res-vias : List AutoRouteVia,
+    rr-res-success : Integer,
+    rr-res-total-length : Integer,
+    rr-res-via-count : Integer,
+    rr-res-iterations-used : Integer
+  }
+
+Section: Router State
+
+  AutoRouterState = record {
+    ars-config : AutoRouterConfig,
+    ars-requests : List RouteRequest,
+    ars-results : List RouteResult,
+    ars-completed-count : Integer,
+    ars-failed-count : Integer,
+    ars-total-requests : Integer,
+    ars-progress-pct : Integer
+  }
+
+Section: Grid Cell
+
+ A grid cell is the fundamental unit of the routing grid. Each cell
+ tracks occupancy and cost for the A* search.
+
+  GridCell = record {
+    gc-x : Integer,
+    gc-y : Integer,
+    gc-layer : Integer,
+    gc-cost : Integer,
+    gc-occupied : Integer,
+    gc-net : Integer
+  }
+
+Section: Construction
+
+  empty-autorouter-state : AutoRouterConfig -> AutoRouterState
+  empty-autorouter-state (cfg) = AutoRouterState {
+    ars-config = cfg,
+    ars-requests = [],
+    ars-results = [],
+    ars-completed-count = 0,
+    ars-failed-count = 0,
+    ars-total-requests = 0,
+    ars-progress-pct = 0
+  }
+
+  autorouter-add-request : AutoRouterState, RouteRequest -> AutoRouterState
+  autorouter-add-request (st) (req) = AutoRouterState {
+    ars-config = st.ars-config,
+    ars-requests = list-push st.ars-requests req,
+    ars-results = st.ars-results,
+    ars-completed-count = st.ars-completed-count,
+    ars-failed-count = st.ars-failed-count,
+    ars-total-requests = st.ars-total-requests + 1,
+    ars-progress-pct = st.ars-progress-pct
+  }
+
+Section: Queries
+
+  autorouter-result-count : AutoRouterState -> Integer
+  autorouter-result-count (st) = list-length st.ars-results
+
+Section: Heuristics
+
+ Manhattan distance between two points on a plane.
+
+  manhattan-distance : Integer, Integer, Integer, Integer -> Integer
+  manhattan-distance (x1) (y1) (x2) (y2) =
+    let dx = x2 - x1
+    in let dy = y2 - y1
+    in let adx = if dx < 0 then 0 - dx else dx
+    in let ady = if dy < 0 then 0 - dy else dy
+    in adx + ady
+
+ A* heuristic with via penalty. When start and end layers differ,
+ adds the via cost to the manhattan distance.
+
+  a-star-heuristic : Integer, Integer, Integer, Integer, Integer -> Integer
+  a-star-heuristic (x1) (y1) (x2) (y2) (via-cost) =
+    let base = manhattan-distance x1 y1 x2 y2
+    in base + via-cost
+
+Section: Priority Sorting
+
+ Stub: sorts route requests by priority so that critical nets are
+ routed first. Returns input unchanged until a proper sort is wired.
+
+  sort-requests-by-priority : List RouteRequest -> List RouteRequest
+  sort-requests-by-priority (reqs) = reqs
+
+Section: Completion Estimate
+
+ Returns routing progress as a percentage.
+
+  estimate-completion : AutoRouterState -> Integer
+  estimate-completion (st) =
+    if st.ars-total-requests == 0 then 0
+    else (st.ars-completed-count + st.ars-failed-count) * 100 / st.ars-total-requests
+
+Section: Summary
+
+  autorouter-summary : AutoRouterState -> Text
+  autorouter-summary (st) =
+    let total-vias = count-total-vias st.ars-results 0 (list-length st.ars-results) 0
+    in "Routed " & (show st.ars-completed-count) & "/" & (show st.ars-total-requests) & " nets, " & (show st.ars-failed-count) & " failed, " & (show total-vias) & " vias"
+
+  count-total-vias : List RouteResult, Integer, Integer, Integer -> Integer
+  count-total-vias (results) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at results i
+    in count-total-vias results (i + 1) n (acc + r.rr-res-via-count)

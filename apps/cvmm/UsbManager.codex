@@ -1,0 +1,236 @@
+Chapter: UsbManager
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter DataTable
+  cites UI chapter Dropdown
+  cites UI chapter FilterableList
+  cites UI chapter DetailPane
+  cites UI chapter StatusBadge
+  cites UI chapter SearchBar
+  cites UI chapter CommandPalette
+  cites UI chapter SettingsPanel
+  cites UI chapter Validation
+  cites Foreword chapter Maybe
+
+ USB device tree manager. Shows the full USB topology: host controllers,
+ hubs, and devices. Each device shows class, vendor/product IDs, speed,
+ power draw, and driver state. Supports attach/detach for hot-pluggable
+ devices. Matches the xHCI model in codex-vm and the real xHCI driver
+ in codex.os.
+
+Section: USB Types
+
+  UsbSpeed =
+    | SpeedLow
+    | SpeedFull
+    | SpeedHigh
+    | SpeedSuper
+    | SpeedSuperPlus
+
+  usb-speed-label : UsbSpeed -> Text
+  usb-speed-label (s) = when s
+    is SpeedLow -> "1.5 Mbps"
+    is SpeedFull -> "12 Mbps"
+    is SpeedHigh -> "480 Mbps"
+    is SpeedSuper -> "5 Gbps"
+    is SpeedSuperPlus -> "10 Gbps"
+
+  UsbClass =
+    | UcHid
+    | UcMassStorage
+    | UcAudio
+    | UcVideo
+    | UcPrinter
+    | UcHub
+    | UcNetwork
+    | UcVendor
+    | UcUnknown (Integer)
+
+  usb-class-label : UsbClass -> Text
+  usb-class-label (c) = when c
+    is UcHid -> "HID"
+    is UcMassStorage -> "Mass Storage"
+    is UcAudio -> "Audio"
+    is UcVideo -> "Video"
+    is UcPrinter -> "Printer"
+    is UcHub -> "Hub"
+    is UcNetwork -> "Network"
+    is UcVendor -> "Vendor Specific"
+    is UcUnknown (code) -> "Class " & show code
+
+  usb-class-icon : UsbClass -> Text
+  usb-class-icon (c) = when c
+    is UcHid -> "[K]"
+    is UcMassStorage -> "[D]"
+    is UcAudio -> "[A]"
+    is UcVideo -> "[C]"
+    is UcPrinter -> "[P]"
+    is UcHub -> "[H]"
+    is UcNetwork -> "[N]"
+    is UcVendor -> "[V]"
+    is UcUnknown (code) -> "[?]"
+
+  UsbDriverState =
+    | DriverLoaded (Text)
+    | DriverNone
+    | DriverError (Text)
+
+  usb-driver-label : UsbDriverState -> Text
+  usb-driver-label (d) = when d
+    is DriverLoaded (name) -> name
+    is DriverNone -> "no driver"
+    is DriverError (msg) -> "error: " & msg
+
+Section: USB Device
+
+  UsbDevice = record {
+    usb-id : Text,
+    usb-name : Text,
+    usb-vendor-id : Integer,
+    usb-product-id : Integer,
+    usb-vendor-name : Text,
+    usb-product-name : Text,
+    usb-class : UsbClass,
+    usb-speed : UsbSpeed,
+    usb-power-ma : Integer,
+    usb-port : Integer,
+    usb-parent-id : Text,
+    usb-driver : UsbDriverState,
+    usb-status : ResourceStatus,
+    usb-serial : Text,
+    usb-child-count : Integer
+  }
+
+  usb-device-new : Text, Text, UsbClass, UsbSpeed -> UsbDevice
+  usb-device-new (id) (name) (cls) (speed) = UsbDevice {
+    usb-id = id,
+    usb-name = name,
+    usb-vendor-id = 0,
+    usb-product-id = 0,
+    usb-vendor-name = "",
+    usb-product-name = "",
+    usb-class = cls,
+    usb-speed = speed,
+    usb-power-ma = 0,
+    usb-port = 0,
+    usb-parent-id = "",
+    usb-driver = DriverNone,
+    usb-status = StatusOnline,
+    usb-serial = "",
+    usb-child-count = 0
+  }
+
+Section: USB Manager State
+
+  UsbManagerState = record {
+    um-devices : List UsbDevice,
+    um-device-count : Integer,
+    um-selected : Text,
+    um-host-controllers : Integer
+  }
+
+  usb-manager-new : UsbManagerState
+  usb-manager-new = UsbManagerState {
+    um-devices = [],
+    um-device-count = 0,
+    um-selected = "",
+    um-host-controllers = 0
+  }
+
+Section: Actions
+
+  um-add-device : UsbManagerState, UsbDevice -> UsbManagerState
+  um-add-device (st) (dev) =
+    __record-set (__record-set st "um-devices" (list-push (st.um-devices) dev)) "um-device-count" (st.um-device-count + 1)
+
+  um-remove-device : UsbManagerState, Text -> UsbManagerState
+  um-remove-device (st) (id) =
+    let filtered = um-filter-devices (st.um-devices) id 0 (st.um-device-count) []
+    in __record-set (__record-set st "um-devices" filtered) "um-device-count" (list-length filtered)
+
+  um-filter-devices : List UsbDevice, Text, Integer, Integer, List UsbDevice -> List UsbDevice
+  um-filter-devices (devs) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = list-at devs i
+    in if d.usb-id == id then um-filter-devices devs id (i + 1) n acc
+    else um-filter-devices devs id (i + 1) n (list-push acc d)
+
+  um-select : UsbManagerState, Text -> UsbManagerState
+  um-select (st) (id) = __record-set st "um-selected" id
+
+  um-find : UsbManagerState, Text -> Maybe UsbDevice
+  um-find (st) (id) = um-find-loop (st.um-devices) id 0 (st.um-device-count)
+
+  um-find-loop : List UsbDevice, Text, Integer, Integer -> Maybe UsbDevice
+  um-find-loop (devs) (id) (i) (n) =
+    if i >= n then None
+    else let d = list-at devs i
+    in if d.usb-id == id then Just d
+    else um-find-loop devs id (i + 1) n
+
+  um-children : UsbManagerState, Text -> List UsbDevice
+  um-children (st) (parent-id) =
+    um-children-loop (st.um-devices) parent-id 0 (st.um-device-count) []
+
+  um-children-loop : List UsbDevice, Text, Integer, Integer, List UsbDevice -> List UsbDevice
+  um-children-loop (devs) (parent-id) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = list-at devs i
+    in if d.usb-parent-id == parent-id then um-children-loop devs parent-id (i + 1) n (list-push acc d)
+    else um-children-loop devs parent-id (i + 1) n acc
+
+  um-root-devices : UsbManagerState -> List UsbDevice
+  um-root-devices (st) = um-children st ""
+
+Section: Widget Building
+
+  um-device-row : UsbDevice -> WidgetNode
+  um-device-row (d) =
+    let icon = widget-label (d.usb-id & "-icon") (usb-class-icon (d.usb-class))
+    in let name = widget-label (d.usb-id & "-name") (d.usb-name)
+    in let cls = widget-label (d.usb-id & "-cls") (usb-class-label (d.usb-class))
+    in let speed = widget-label (d.usb-id & "-speed") (usb-speed-label (d.usb-speed))
+    in let power = widget-label (d.usb-id & "-power") (show (d.usb-power-ma) & " mA")
+    in let driver = widget-label (d.usb-id & "-drv") (usb-driver-label (d.usb-driver))
+    in let status-lbl = widget-label (d.usb-id & "-status") (status-label (d.usb-status))
+    in let detach-btn = widget-button (d.usb-id & "-detach") "Detach"
+    in widget-panel d.usb-id DirRow 8 [icon, name, cls, speed, power, driver, status-lbl, detach-btn]
+
+  um-device-detail : UsbDevice -> WidgetNode
+  um-device-detail (d) =
+    let vid = widget-label "vid" ("Vendor: " & show (d.usb-vendor-id) & " " & d.usb-vendor-name)
+    in let pid = widget-label "pid" ("Product: " & show (d.usb-product-id) & " " & d.usb-product-name)
+    in let serial = widget-label "serial" ("Serial: " & d.usb-serial)
+    in let port = widget-label "port" ("Port: " & show (d.usb-port))
+    in let children = widget-label "children" ("Children: " & show (d.usb-child-count))
+    in widget-panel "usb-detail" DirColumn 4 [vid, pid, serial, port, children]
+
+  um-widget : UsbManagerState -> WidgetNode
+  um-widget (st) =
+    let title = widget-label "um-title" "USB Devices"
+    in let summary = widget-label "um-summary" (show (st.um-device-count) & " devices, " & show (st.um-host-controllers) & " controllers")
+    in let rows = um-device-rows (st.um-devices) 0 (st.um-device-count) []
+    in widget-panel "usb-manager" DirColumn 4 ([title, summary] & rows)
+
+  um-device-rows : List UsbDevice, Integer, Integer, List WidgetNode -> List WidgetNode
+  um-device-rows (devs) (i) (n) (acc) =
+    if i >= n then acc
+    else um-device-rows devs (i + 1) n (list-push acc (um-device-row (list-at devs i)))
+
+Section: JSON
+
+  usb-device-to-json : UsbDevice -> Text
+  usb-device-to-json (d) =
+    "{\"id\":\"" & d.usb-id & "\",\"name\":\"" & d.usb-name
+    & "\",\"class\":\"" & usb-class-label (d.usb-class)
+    & "\",\"speed\":\"" & usb-speed-label (d.usb-speed)
+    & "\",\"vendorId\":" & show (d.usb-vendor-id)
+    & ",\"productId\":" & show (d.usb-product-id)
+    & ",\"power\":" & show (d.usb-power-ma)
+    & ",\"port\":" & show (d.usb-port)
+    & ",\"driver\":\"" & usb-driver-label (d.usb-driver)
+    & "\",\"status\":\"" & status-label (d.usb-status)
+    & "\"}"
+
+Page 1

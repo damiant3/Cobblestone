@@ -1,0 +1,447 @@
+Chapter: TrueTypeWriter
+  cites Encode chapter TrueType
+
+ TrueType font file writer. Given glyph outlines (quadratic Bezier
+ control points), character mappings, and metrics, emit a valid
+ TrueType binary as a List Integer (byte sequence). All multi-byte
+ values are big-endian per the TTF spec. The output can be fed
+ directly to fb-parse-ttf or written to disk as a .ttf file.
+
+Section: Build Spec
+
+  TtfBuildGlyph = record {
+    bg-codepoint : Integer,
+    bg-advance : Integer,
+    bg-lsb : Integer,
+    bg-glyph : TtfGlyph
+  }
+
+  TtfBuildSpec = record {
+    bs-name : Text,
+    bs-units-per-em : Integer,
+    bs-ascent : Integer,
+    bs-descent : Integer,
+    bs-line-gap : Integer,
+    bs-glyphs : List TtfBuildGlyph
+  }
+
+Section: Byte Helpers (big-endian append)
+
+  w-u8 : List Integer, Integer -> List Integer
+  w-u8 (buf) (v) = list-push buf (bit-and v 255)
+
+  w-u16 : List Integer, Integer -> List Integer
+  w-u16 (buf) (v) =
+    let hi = bit-and (bit-shru v 8) 255
+    in let lo = bit-and v 255
+    in list-push (list-push buf hi) lo
+
+  w-i16 : List Integer, Integer -> List Integer
+  w-i16 (buf) (v) =
+    let val = if v < 0 then v + 65536 else v
+    in w-u16 buf val
+
+  w-u32 : List Integer, Integer -> List Integer
+  w-u32 (buf) (v) =
+    let b0 = bit-and (bit-shru v 24) 255
+    in let b1 = bit-and (bit-shru v 16) 255
+    in let b2 = bit-and (bit-shru v 8) 255
+    in let b3 = bit-and v 255
+    in list-push (list-push (list-push (list-push buf b0) b1) b2) b3
+
+  w-zeros : List Integer, Integer -> List Integer
+  w-zeros (buf) (n) =
+    if n <= 0 then buf
+    else w-zeros (list-push buf 0) (n - 1)
+
+  w-pad4 : List Integer -> List Integer
+  w-pad4 (buf) =
+    let rem = bit-and (list-length buf) 3
+    in if rem == 0 then buf
+    else w-zeros buf (4 - rem)
+
+  w-tag : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  w-tag (buf) (a) (b) (c) (d) =
+    list-push (list-push (list-push (list-push buf a) b) c) d
+
+  w-text-bytes : List Integer, Text, Integer, Integer -> List Integer
+  w-text-bytes (buf) (s) (i) (len) =
+    if i >= len then buf
+    else w-text-bytes (list-push buf (char-code (char-at s i))) s (i + 1) len
+
+Section: Glyph Encoding
+
+  ttw-encode-glyph : TtfGlyph -> List Integer
+  ttw-encode-glyph (g) =
+    if list-length (g.tg-contours) == 0 then []
+    else let num-contours = list-length (g.tg-contours)
+    in let buf0 = w-i16 [] num-contours
+    in let buf1 = w-i16 buf0 (g.tg-x-min)
+    in let buf2 = w-i16 buf1 (g.tg-y-min)
+    in let buf3 = w-i16 buf2 (g.tg-x-max)
+    in let buf4 = w-i16 buf3 (g.tg-y-max)
+    in let endpoints = ttw-write-endpoints buf4 (g.tg-contours) 0 (list-length (g.tg-contours)) 0
+    in let buf5 = w-u16 (endpoints.ep-buf) 0
+    in let all-pts = ttw-collect-points (g.tg-contours) 0 (list-length (g.tg-contours)) []
+    in let flags = ttw-write-flags buf5 all-pts 0 (list-length all-pts)
+    in let xs = ttw-write-x-coords flags all-pts 0 (list-length all-pts) 0
+    in ttw-write-y-coords xs all-pts 0 (list-length all-pts) 0
+
+  EpResult = record { ep-buf : List Integer, ep-total : Integer }
+
+  ttw-write-endpoints : List Integer, List TtfContour, Integer, Integer, Integer -> EpResult
+  ttw-write-endpoints (buf) (contours) (i) (n) (running) =
+    if i >= n then EpResult { ep-buf = buf, ep-total = running }
+    else let pts = list-length ((list-at contours i).tc-points)
+    in let end-idx = running + pts - 1
+    in ttw-write-endpoints (w-u16 buf end-idx) contours (i + 1) n (running + pts)
+
+  ttw-collect-points : List TtfContour, Integer, Integer, List TtfPoint -> List TtfPoint
+  ttw-collect-points (contours) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at contours i
+    in let acc2 = ttw-append-points acc (c.tc-points) 0 (list-length (c.tc-points))
+    in ttw-collect-points contours (i + 1) n acc2
+
+  ttw-append-points : List TtfPoint, List TtfPoint, Integer, Integer -> List TtfPoint
+  ttw-append-points (acc) (pts) (i) (n) =
+    if i >= n then acc
+    else ttw-append-points (list-push acc (list-at pts i)) pts (i + 1) n
+
+  ttw-write-flags : List Integer, List TtfPoint, Integer, Integer -> List Integer
+  ttw-write-flags (buf) (pts) (i) (n) =
+    if i >= n then buf
+    else let pt = list-at pts i
+    in let on-curve = if pt.tp-on-curve /= 0 then 1 else 0
+    in let prev-x = if i == 0 then 0 else (list-at pts (i - 1)).tp-x
+    in let prev-y = if i == 0 then 0 else (list-at pts (i - 1)).tp-y
+    in let dx = pt.tp-x - prev-x
+    in let dy = pt.tp-y - prev-y
+    in let x-flag = ttw-coord-flag dx 2 16
+    in let y-flag = ttw-coord-flag dy 4 32
+    in ttw-write-flags (w-u8 buf (bit-or on-curve (bit-or x-flag y-flag))) pts (i + 1) n
+
+  ttw-coord-flag : Integer, Integer, Integer -> Integer
+  ttw-coord-flag (delta) (short-bit) (same-bit) =
+    let abs-d = if delta < 0 then 0 - delta else delta
+    in if abs-d == 0 then same-bit
+    else if abs-d < 256 then
+      if delta > 0 then bit-or short-bit same-bit
+      else short-bit
+    else 0
+
+  ttw-write-x-coords : List Integer, List TtfPoint, Integer, Integer, Integer -> List Integer
+  ttw-write-x-coords (buf) (pts) (i) (n) (prev) =
+    if i >= n then buf
+    else let dx = (list-at pts i).tp-x - prev
+    in let abs-dx = if dx < 0 then 0 - dx else dx
+    in let buf2 = if abs-dx == 0 then buf
+      else if abs-dx < 256 then w-u8 buf abs-dx
+      else w-i16 buf dx
+    in ttw-write-x-coords buf2 pts (i + 1) n ((list-at pts i).tp-x)
+
+  ttw-write-y-coords : List Integer, List TtfPoint, Integer, Integer, Integer -> List Integer
+  ttw-write-y-coords (buf) (pts) (i) (n) (prev) =
+    if i >= n then buf
+    else let dy = (list-at pts i).tp-y - prev
+    in let abs-dy = if dy < 0 then 0 - dy else dy
+    in let buf2 = if abs-dy == 0 then buf
+      else if abs-dy < 256 then w-u8 buf abs-dy
+      else w-i16 buf dy
+    in ttw-write-y-coords buf2 pts (i + 1) n ((list-at pts i).tp-y)
+
+Section: Table Builders
+
+  ttw-build-head : TtfBuildSpec, Integer, Integer, Integer, Integer -> List Integer
+  ttw-build-head (spec) (x-min) (y-min) (x-max) (y-max) =
+    let buf = w-u32 [] #00010000
+    in let buf2 = w-u32 buf #00005000
+    in let buf3 = w-u32 buf2 0
+    in let buf4 = w-u32 buf3 #5F0F3CF5
+    in let buf5 = w-u16 buf4 0
+    in let buf6 = w-u16 buf5 (spec.bs-units-per-em)
+    in let buf7 = w-zeros buf6 16
+    in let buf8 = w-i16 buf7 x-min
+    in let buf9 = w-i16 buf8 y-min
+    in let buf10 = w-i16 buf9 x-max
+    in let buf11 = w-i16 buf10 y-max
+    in let buf12 = w-u16 buf11 0
+    in let buf13 = w-u16 buf12 8
+    in let buf14 = w-i16 buf13 0
+    in let buf15 = w-u16 buf14 0
+    in w-u16 buf15 0
+
+  ttw-build-hhea : TtfBuildSpec, Integer -> List Integer
+  ttw-build-hhea (spec) (num-glyphs) =
+    let buf = w-u32 [] #00010000
+    in let buf2 = w-i16 buf (spec.bs-ascent)
+    in let buf3 = w-i16 buf2 (spec.bs-descent)
+    in let buf4 = w-i16 buf3 (spec.bs-line-gap)
+    in let buf5 = w-u16 buf4 (spec.bs-units-per-em)
+    in let buf6 = w-zeros buf5 22
+    in w-u16 buf6 num-glyphs
+
+  ttw-build-maxp : Integer, Integer, Integer -> List Integer
+  ttw-build-maxp (num-glyphs) (max-pts) (max-contours) =
+    let buf = w-u32 [] #00010000
+    in let buf2 = w-u16 buf num-glyphs
+    in let buf3 = w-u16 buf2 max-pts
+    in let buf4 = w-u16 buf3 max-contours
+    in let buf5 = w-u16 buf4 max-pts
+    in let buf6 = w-u16 buf5 max-contours
+    in w-zeros buf6 20
+
+  ttw-build-hmtx : List TtfBuildGlyph, Integer, Integer -> List Integer
+  ttw-build-hmtx (glyphs) (i) (n) =
+    if i >= n then []
+    else let g = list-at glyphs i
+    in let rest = ttw-build-hmtx glyphs (i + 1) n
+    in let entry = w-i16 (w-u16 [] (g.bg-advance)) (g.bg-lsb)
+    in entry & rest
+
+  ttw-build-post : List Integer
+  ttw-build-post =
+    let buf = w-u32 [] #00030000
+    in let buf2 = w-u32 buf 0
+    in let buf3 = w-i16 buf2 0
+    in let buf4 = w-i16 buf3 0
+    in let buf5 = w-u32 buf4 1
+    in w-zeros buf5 16
+
+  ttw-build-name : Text -> List Integer
+  ttw-build-name (name) =
+    let name-len = text-length name
+    in let string-offset = 6 + 12 * 4
+    in let buf = w-u16 [] 0
+    in let buf2 = w-u16 buf 4
+    in let buf3 = w-u16 buf2 string-offset
+    in let buf4 = ttw-name-record buf3 1 0 0 1 0 name-len
+    in let buf5 = ttw-name-record buf4 1 0 0 2 name-len name-len
+    in let buf6 = ttw-name-record buf5 1 0 0 4 0 name-len
+    in let buf7 = ttw-name-record buf6 1 0 0 6 0 name-len
+    in let buf8 = w-text-bytes buf7 name 0 name-len
+    in let style = "Regular"
+    in w-text-bytes buf8 style 0 (text-length style)
+
+  ttw-name-record : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  ttw-name-record (buf) (plat) (enc) (lang) (name-id) (offset) (length) =
+    let buf2 = w-u16 buf plat
+    in let buf3 = w-u16 buf2 enc
+    in let buf4 = w-u16 buf3 lang
+    in let buf5 = w-u16 buf4 name-id
+    in let buf6 = w-u16 buf5 length
+    in w-u16 buf6 offset
+
+  ttw-build-cmap : List TtfBuildGlyph, Integer, Integer -> List Integer
+  ttw-build-cmap (glyphs) (i) (n) =
+    let buf = w-u16 [] 0
+    in let buf2 = w-u16 buf 1
+    in let buf3 = w-u16 buf2 1
+    in let buf4 = w-u16 buf3 0
+    in let buf5 = w-u32 buf4 12
+    in let seg-count = n + 1
+    in let search-range = ttw-search-range seg-count
+    in let buf6 = w-u16 buf5 4
+    in let table-len = 16 + seg-count * 8
+    in let buf7 = w-u16 buf6 table-len
+    in let buf8 = w-u16 buf7 0
+    in let buf9 = w-u16 buf8 (seg-count * 2)
+    in let buf10 = w-u16 buf9 search-range
+    in let buf11 = w-u16 buf10 (ttw-entry-selector seg-count)
+    in let buf12 = w-u16 buf11 (seg-count * 2 - search-range)
+    in let end-codes = ttw-write-cmap-ends buf12 glyphs i n
+    in let end-codes2 = w-u16 end-codes #FFFF
+    in let end-codes3 = w-u16 end-codes2 0
+    in let start-codes = ttw-write-cmap-starts end-codes3 glyphs i n
+    in let start-codes2 = w-u16 start-codes #FFFF
+    in let deltas = ttw-write-cmap-deltas start-codes2 glyphs i n
+    in let deltas2 = w-i16 deltas 1
+    in let range-offsets = w-zeros deltas2 (seg-count * 2)
+    in range-offsets
+
+  ttw-write-cmap-ends : List Integer, List TtfBuildGlyph, Integer, Integer -> List Integer
+  ttw-write-cmap-ends (buf) (glyphs) (i) (n) =
+    if i >= n then buf
+    else ttw-write-cmap-ends (w-u16 buf ((list-at glyphs i).bg-codepoint)) glyphs (i + 1) n
+
+  ttw-write-cmap-starts : List Integer, List TtfBuildGlyph, Integer, Integer -> List Integer
+  ttw-write-cmap-starts (buf) (glyphs) (i) (n) =
+    if i >= n then buf
+    else ttw-write-cmap-starts (w-u16 buf ((list-at glyphs i).bg-codepoint)) glyphs (i + 1) n
+
+  ttw-write-cmap-deltas : List Integer, List TtfBuildGlyph, Integer, Integer -> List Integer
+  ttw-write-cmap-deltas (buf) (glyphs) (i) (n) =
+    if i >= n then buf
+    else let cp = (list-at glyphs i).bg-codepoint
+    in let glyph-id = i + 1
+    in ttw-write-cmap-deltas (w-i16 buf (glyph-id - cp)) glyphs (i + 1) n
+
+  ttw-search-range : Integer -> Integer
+  ttw-search-range (n) = ttw-pow2-le n 1
+
+  ttw-pow2-le : Integer, Integer -> Integer
+  ttw-pow2-le (n) (p) =
+    if p * 2 > n then p
+    else ttw-pow2-le n (p * 2)
+
+  ttw-entry-selector : Integer -> Integer
+  ttw-entry-selector (n) = ttw-log2 n 0
+
+  ttw-log2 : Integer, Integer -> Integer
+  ttw-log2 (n) (acc) =
+    if n <= 1 then acc
+    else ttw-log2 (n / 2) (acc + 1)
+
+Section: Glyf + Loca Assembly
+
+  GlyfLocaResult = record {
+    gl-glyf : List Integer,
+    gl-loca : List Integer
+  }
+
+  ttw-build-glyf-loca : List TtfBuildGlyph, Integer, Integer -> GlyfLocaResult
+  ttw-build-glyf-loca (glyphs) (i) (n) =
+    let notdef = ttw-encode-glyph ttf-empty-glyph
+    in let notdef-padded = w-pad4 notdef
+    in let loca0 = w-u16 [] 0
+    in let notdef-end = list-length notdef-padded
+    in let loca1 = w-u16 loca0 (notdef-end / 2)
+    in ttw-glyf-loca-loop glyphs i n notdef-padded loca1
+
+  ttw-glyf-loca-loop : List TtfBuildGlyph, Integer, Integer, List Integer, List Integer -> GlyfLocaResult
+  ttw-glyf-loca-loop (glyphs) (i) (n) (glyf-acc) (loca-acc) =
+    if i >= n then GlyfLocaResult { gl-glyf = glyf-acc, gl-loca = loca-acc }
+    else let g = (list-at glyphs i).bg-glyph
+    in let encoded = ttw-encode-glyph g
+    in let padded = w-pad4 encoded
+    in let new-glyf = glyf-acc & padded
+    in let new-loca = w-u16 loca-acc (list-length new-glyf / 2)
+    in ttw-glyf-loca-loop glyphs (i + 1) n new-glyf new-loca
+
+Section: Table Directory + Final Assembly
+
+  TtfTableData = record {
+    ttd-tag-a : Integer,
+    ttd-tag-b : Integer,
+    ttd-tag-c : Integer,
+    ttd-tag-d : Integer,
+    ttd-data : List Integer
+  }
+
+  ttw-checksum : List Integer, Integer, Integer, Integer -> Integer
+  ttw-checksum (data) (i) (n) (acc) =
+    if i >= n then acc
+    else let b0 = if i < list-length data then list-at data i else 0
+    in let b1 = if i + 1 < list-length data then list-at data (i + 1) else 0
+    in let b2 = if i + 2 < list-length data then list-at data (i + 2) else 0
+    in let b3 = if i + 3 < list-length data then list-at data (i + 3) else 0
+    in let word = b0 * 16777216 + b1 * 65536 + b2 * 256 + b3
+    in ttw-checksum data (i + 4) n (bit-and (acc + word) #FFFFFFFF)
+
+  ttw-build-ttf : TtfBuildSpec -> List Integer
+  ttw-build-ttf (spec) =
+    let glyphs = spec.bs-glyphs
+    in let n = list-length glyphs
+    in let num-glyphs = n + 1
+    in let bounds = ttw-global-bounds glyphs 0 n 0 0 0 0
+    in let max-stats = ttw-max-stats glyphs 0 n 0 0
+    in let gl = ttw-build-glyf-loca glyphs 0 n
+    in let head-data = ttw-build-head spec (bounds.gb-x-min) (bounds.gb-y-min) (bounds.gb-x-max) (bounds.gb-y-max)
+    in let hhea-data = ttw-build-hhea spec num-glyphs
+    in let maxp-data = ttw-build-maxp num-glyphs (max-stats.ms-pts) (max-stats.ms-contours)
+    in let hmtx-notdef = w-i16 (w-u16 [] (spec.bs-units-per-em / 2)) 0
+    in let hmtx-data = hmtx-notdef & (ttw-build-hmtx glyphs 0 n)
+    in let post-data = ttw-build-post
+    in let name-data = ttw-build-name (spec.bs-name)
+    in let cmap-data = ttw-build-cmap glyphs 0 n
+    in let tables = [
+      TtfTableData { ttd-tag-a = 99, ttd-tag-b = 109, ttd-tag-c = 97, ttd-tag-d = 112, ttd-data = cmap-data },
+      TtfTableData { ttd-tag-a = 103, ttd-tag-b = 108, ttd-tag-c = 121, ttd-tag-d = 102, ttd-data = gl.gl-glyf },
+      TtfTableData { ttd-tag-a = 104, ttd-tag-b = 101, ttd-tag-c = 97, ttd-tag-d = 100, ttd-data = head-data },
+      TtfTableData { ttd-tag-a = 104, ttd-tag-b = 104, ttd-tag-c = 101, ttd-tag-d = 97, ttd-data = hhea-data },
+      TtfTableData { ttd-tag-a = 104, ttd-tag-b = 109, ttd-tag-c = 116, ttd-tag-d = 120, ttd-data = hmtx-data },
+      TtfTableData { ttd-tag-a = 108, ttd-tag-b = 111, ttd-tag-c = 99, ttd-tag-d = 97, ttd-data = gl.gl-loca },
+      TtfTableData { ttd-tag-a = 109, ttd-tag-b = 97, ttd-tag-c = 120, ttd-tag-d = 112, ttd-data = maxp-data },
+      TtfTableData { ttd-tag-a = 110, ttd-tag-b = 97, ttd-tag-c = 109, ttd-tag-d = 101, ttd-data = name-data },
+      TtfTableData { ttd-tag-a = 112, ttd-tag-b = 111, ttd-tag-c = 115, ttd-tag-d = 116, ttd-data = post-data }
+    ]
+    in let num-tables = 9
+    in let dir-size = 12 + num-tables * 16
+    in let offsets = ttw-calc-offsets tables 0 num-tables dir-size []
+    in let header = ttw-write-offset-table num-tables
+    in let dir = ttw-write-table-dir tables offsets 0 num-tables header
+    in ttw-append-table-data tables 0 num-tables dir
+
+  ttw-write-offset-table : Integer -> List Integer
+  ttw-write-offset-table (num-tables) =
+    let buf = w-u32 [] #00010000
+    in let buf2 = w-u16 buf num-tables
+    in let sr = ttw-search-range num-tables
+    in let buf3 = w-u16 buf2 (sr * 16)
+    in let buf4 = w-u16 buf3 (ttw-entry-selector num-tables)
+    in w-u16 buf4 (num-tables * 16 - sr * 16)
+
+  ttw-calc-offsets : List TtfTableData, Integer, Integer, Integer, List Integer -> List Integer
+  ttw-calc-offsets (tables) (i) (n) (running) (acc) =
+    if i >= n then acc
+    else let t = list-at tables i
+    in let padded-len = ttw-pad4-len (list-length (t.ttd-data))
+    in ttw-calc-offsets tables (i + 1) n (running + padded-len) (list-push acc running)
+
+  ttw-pad4-len : Integer -> Integer
+  ttw-pad4-len (len) =
+    let rem = bit-and len 3
+    in if rem == 0 then len else len + 4 - rem
+
+  ttw-write-table-dir : List TtfTableData, List Integer, Integer, Integer, List Integer -> List Integer
+  ttw-write-table-dir (tables) (offsets) (i) (n) (buf) =
+    if i >= n then buf
+    else let t = list-at tables i
+    in let data = t.ttd-data
+    in let off = list-at offsets i
+    in let checksum = ttw-checksum data 0 (ttw-pad4-len (list-length data)) 0
+    in let buf2 = w-tag buf (t.ttd-tag-a) (t.ttd-tag-b) (t.ttd-tag-c) (t.ttd-tag-d)
+    in let buf3 = w-u32 buf2 checksum
+    in let buf4 = w-u32 buf3 off
+    in let buf5 = w-u32 buf4 (list-length data)
+    in ttw-write-table-dir tables offsets (i + 1) n buf5
+
+  ttw-append-table-data : List TtfTableData, Integer, Integer, List Integer -> List Integer
+  ttw-append-table-data (tables) (i) (n) (buf) =
+    if i >= n then buf
+    else let t = list-at tables i
+    in let padded = w-pad4 (t.ttd-data)
+    in ttw-append-table-data tables (i + 1) n (buf & padded)
+
+Section: Stats Helpers
+
+  GlobalBounds = record { gb-x-min : Integer, gb-y-min : Integer, gb-x-max : Integer, gb-y-max : Integer }
+
+  ttw-global-bounds : List TtfBuildGlyph, Integer, Integer, Integer, Integer, Integer, Integer -> GlobalBounds
+  ttw-global-bounds (glyphs) (i) (n) (xn) (yn) (xx) (yx) =
+    if i >= n then GlobalBounds { gb-x-min = xn, gb-y-min = yn, gb-x-max = xx, gb-y-max = yx }
+    else let g = (list-at glyphs i).bg-glyph
+    in let nxn = if g.tg-x-min < xn then g.tg-x-min else xn
+    in let nyn = if g.tg-y-min < yn then g.tg-y-min else yn
+    in let nxx = if g.tg-x-max > xx then g.tg-x-max else xx
+    in let nyx = if g.tg-y-max > yx then g.tg-y-max else yx
+    in ttw-global-bounds glyphs (i + 1) n nxn nyn nxx nyx
+
+  MaxStats = record { ms-pts : Integer, ms-contours : Integer }
+
+  ttw-max-stats : List TtfBuildGlyph, Integer, Integer, Integer, Integer -> MaxStats
+  ttw-max-stats (glyphs) (i) (n) (max-pts) (max-con) =
+    if i >= n then MaxStats { ms-pts = max-pts, ms-contours = max-con }
+    else let g = (list-at glyphs i).bg-glyph
+    in let num-con = list-length (g.tg-contours)
+    in let num-pts = ttw-count-points (g.tg-contours) 0 num-con 0
+    in let np = if num-pts > max-pts then num-pts else max-pts
+    in let nc = if num-con > max-con then num-con else max-con
+    in ttw-max-stats glyphs (i + 1) n np nc
+
+  ttw-count-points : List TtfContour, Integer, Integer, Integer -> Integer
+  ttw-count-points (contours) (i) (n) (acc) =
+    if i >= n then acc
+    else ttw-count-points contours (i + 1) n (acc + list-length ((list-at contours i).tc-points))
+
+Page 1

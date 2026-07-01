@@ -1,0 +1,56 @@
+Chapter: IdentityKeygen
+  cites Foreword chapter Sha512
+  cites Foreword chapter Ed25519
+
+Section: Helpers
+  seed-to-list : Integer, Integer, List Integer -> List Integer
+  seed-to-list (word) (byte-idx) (acc) =
+    if byte-idx >= 8 then acc
+    else let b = bit-and (bit-shru word (byte-idx * 8)) 255
+    in seed-to-list word (byte-idx + 1) (list-push acc b)
+
+  words-to-bytes : List Integer -> List Integer
+  words-to-bytes (words) =
+    let b0 = seed-to-list (list-at words 0) 0 []
+    in let b1 = seed-to-list (list-at words 1) 0 b0
+    in let b2 = seed-to-list (list-at words 2) 0 b1
+    in seed-to-list (list-at words 3) 0 b2
+
+  pack-word : List Integer, Integer -> Integer
+  pack-word (bs) (start) =
+    list-at bs start
+    + list-at bs (start + 1) * 256
+    + list-at bs (start + 2) * 65536
+    + list-at bs (start + 3) * 16777216
+    + list-at bs (start + 4) * 4294967296
+    + list-at bs (start + 5) * 1099511627776
+    + list-at bs (start + 6) * 281474976710656
+    + list-at bs (start + 7) * 72057594037927936
+
+Section: Body
+  opening : [Console] Nothing = act
+    let seed-words = [device-seed 0, device-seed 1, device-seed 2, device-seed 3]
+    in let seed-bytes = words-to-bytes seed-words
+    in let pubkey = ed25519-public-key seed-bytes
+    in let w0 = pack-word pubkey 0
+    in let w1 = pack-word pubkey 8
+    in let w2 = pack-word pubkey 16
+    in let w3 = pack-word pubkey 24
+    in let s0 = identity-set 0 w0
+    in let s1 = identity-set 1 w1
+    in let s2 = identity-set 2 w2
+    in let s3 = identity-set 3 w3
+    in if s0 == 0 then if s1 == 0 then if s2 == 0 then if s3 == 0 then
+      if identity-whoami 0 == w0 then if identity-whoami 1 == w1 then
+        if identity-whoami 2 == w2 then if identity-whoami 3 == w3 then act
+          print-line-uni "PASS: identity derived from device seed"
+        end
+        else print-line-uni "FAIL: word 3 mismatch"
+        else print-line-uni "FAIL: word 2 mismatch"
+      else print-line-uni "FAIL: word 1 mismatch"
+      else print-line-uni "FAIL: word 0 mismatch"
+    else print-line-uni "FAIL: set3"
+    else print-line-uni "FAIL: set2"
+    else print-line-uni "FAIL: set1"
+    else print-line-uni "FAIL: set0"
+  end

@@ -1,0 +1,248 @@
+Chapter: FunnelHash
+
+  cites Foreword chapter Maybe
+  cites Foreword chapter MathLib
+  cites Foreword chapter ListUtils
+
+ An open-addressing hash table that never moves elements after insertion.
+ Based on the funnel hashing construction of Farach-Colton, Krapivin,
+ and Kuszmaul (2025) which achieves O(log² 1/δ) worst-case expected
+ probe complexity without reordering — tightening Yao's 1985 bound on
+ greedy open addressing from Θ(1/δ) to Θ(log² 1/δ). Greedy remains
+ provably slower than non-greedy (log² vs log), vindicating Yao's
+ structural insight that greedy is fundamentally constrained.
+
+ The table is partitioned into geometrically decreasing levels. Each
+ insertion attempts each level in sequence with a bounded probe budget.
+ Elements that survive all levels land in a final fallback tier.
+
+ A FunnelEntry is one of:
+   FunnelOccupied — carries the key and value for a live entry.
+   FunnelVacant — an empty slot.
+
+ A FunnelTable is a record containing:
+   slots      -- flat array of FunnelEntry values.
+   level-starts -- start index of each level within slots.
+   level-sizes  -- size of each level.
+   num-levels   -- number of levels (α).
+   probes-per  -- probe budget per level (β).
+   capacity    -- total number of slots.
+   count       -- number of entries inserted.
+
+ To funnel-new gives FunnelTable, creating an empty table with the
+ given total capacity. Capacity must be at least 16.
+
+ To funnel-get gives Maybe a, looking up a key by probing each level.
+
+ To funnel-put gives FunnelTable, inserting or updating a key-value pair.
+
+ To funnel-has gives Boolean, True when the key exists in the table.
+
+ To funnel-size gives Integer, the number of entries in the table.
+
+ To funnel-capacity gives Integer, the total number of slots.
+
+ We say:
+
+Section: Types
+
+  FunnelEntry a =
+    | FunnelOccupied (Text) (a)
+    | FunnelVacant
+
+  FunnelTable a = record {
+    slots : List (FunnelEntry a),
+    level-starts : List Integer,
+    level-sizes : List Integer,
+    num-levels : Integer between 1 and 64,
+    probes-per : Integer between 1 and 256,
+    capacity : Integer between 16 and 4294967295,
+    count : Integer between 0 and 4294967295
+  }
+
+Section: Hash Functions
+
+  funnel-hash : Text, Integer -> Integer
+  funnel-hash (key) (seed) =
+    let h = funnel-hash-loop key 0 (text-length key) (seed * 2654435761 + 17)
+    in let h2 = bit-xor h (bit-shru h 16)
+    in let h3 = h2 * 2246822519
+    in let h4 = bit-xor h3 (bit-shru h3 13)
+    in let h5 = h4 * 3266489917
+    in let positive = bit-and (bit-xor h5 (bit-shru h5 16)) 2147483647
+    in positive
+
+  funnel-hash-loop : Text, Integer, Integer, Integer -> Integer
+  funnel-hash-loop (s) (i) (len) (h) =
+    if i >= len then h
+    else funnel-hash-loop s (i + 1) len (h * 31 + char-code (char-at s i))
+
+  funnel-probe-index : Text, Integer, Integer, Integer -> Integer
+  funnel-probe-index (key) (level) (probe) (level-size) =
+    let h = funnel-hash key (level * 97 + probe * 13 + 1)
+    in h - (h / level-size) * level-size
+
+Section: Construction
+
+  funnel-new : Integer -> FunnelTable a
+  funnel-new (cap) =
+    let safe-cap = if cap < 16 then 16 else cap
+    in let nl = funnel-compute-levels safe-cap
+    in let sizes = funnel-make-sizes safe-cap nl 0 []
+    in let starts = funnel-make-starts sizes 0 0 []
+    in let total = funnel-sum-sizes sizes 0 (list-length sizes) 0
+    in let empty-slots = funnel-make-empty total 0 []
+    in FunnelTable {
+      slots = empty-slots,
+      level-starts = starts,
+      level-sizes = sizes,
+      num-levels = nl,
+      probes-per = funnel-compute-beta nl,
+      capacity = total,
+      count = 0
+    }
+
+  funnel-compute-levels : Integer -> Integer
+  funnel-compute-levels (cap) =
+    funnel-log2-loop cap 0
+
+  funnel-log2-loop : Integer, Integer -> Integer
+  funnel-log2-loop (n) (acc) =
+    if n <= 1 then math-max 2 acc
+    else funnel-log2-loop (n / 2) (acc + 1)
+
+  funnel-compute-beta : Integer -> Integer
+  funnel-compute-beta (num-levels) =
+    math-max 4 (num-levels * 2)
+
+  funnel-make-sizes : Integer, Integer, Integer, List Integer -> List Integer
+  funnel-make-sizes (remaining) (levels-left) (level) (acc) =
+    if levels-left <= 1 then list-push acc (math-max 4 remaining)
+    else let this-size = math-max 4 (remaining / 4)
+      in funnel-make-sizes (remaining - this-size) (levels-left - 1) (level + 1) (list-push acc this-size)
+
+  funnel-make-starts : List Integer, Integer, Integer, List Integer -> List Integer
+  funnel-make-starts (sizes) (i) (offset) (acc) =
+    if i >= list-length sizes then acc
+    else funnel-make-starts sizes (i + 1) (offset + list-at sizes i) (list-push acc offset)
+
+  funnel-sum-sizes : List Integer, Integer, Integer, Integer -> Integer
+  funnel-sum-sizes (sizes) (i) (len) (acc) =
+    if i >= len then acc
+    else funnel-sum-sizes sizes (i + 1) len (acc + list-at sizes i)
+
+  funnel-make-empty : Integer, Integer, List (FunnelEntry a) -> List (FunnelEntry a)
+  funnel-make-empty (n) (i) (acc) =
+    if i >= n then acc
+    else funnel-make-empty n (i + 1) (list-push acc FunnelVacant)
+
+Section: Lookup
+
+  funnel-get : FunnelTable a, Text -> Maybe a
+  funnel-get (t) (key) =
+    funnel-get-level t key 0
+
+  funnel-get-level : FunnelTable a, Text, Integer -> Maybe a
+  funnel-get-level (t) (key) (level) =
+    if level >= t.num-levels then None
+    else let result = funnel-get-probes t key level 0
+      in when result
+        is Just (v) -> Just v
+        is None -> funnel-get-level t key (level + 1)
+
+  funnel-get-probes : FunnelTable a, Text, Integer, Integer -> Maybe a
+  funnel-get-probes (t) (key) (level) (probe) =
+    if probe >= t.probes-per then None
+    else let lv-start = list-at (t.level-starts) level
+      in let lv-size = list-at (t.level-sizes) level
+      in let idx = lv-start + funnel-probe-index key level probe lv-size
+      in let slot = list-at (t.slots) idx
+      in when slot
+        is FunnelVacant -> None
+        is FunnelOccupied (k) (v) ->
+          if k == key then Just v
+          else funnel-get-probes t key level (probe + 1)
+
+Section: Insert
+
+  funnel-put : FunnelTable a, Text, a -> FunnelTable a
+  funnel-put (t) (key) (value) =
+    let existing = funnel-find-existing t key 0
+    in when existing
+      is Just (idx) ->
+        FunnelTable {
+          slots = list-set-at (t.slots) idx (FunnelOccupied key value),
+          level-starts = t.level-starts,
+          level-sizes = t.level-sizes,
+          num-levels = t.num-levels,
+          probes-per = t.probes-per,
+          capacity = t.capacity,
+          count = t.count
+        }
+      is None -> funnel-insert-new t key value 0
+
+  funnel-find-existing : FunnelTable a, Text, Integer -> Maybe Integer
+  funnel-find-existing (t) (key) (level) =
+    if level >= t.num-levels then None
+    else let result = funnel-find-in-level t key level 0
+      in when result
+        is Just (idx) -> Just idx
+        is None -> funnel-find-existing t key (level + 1)
+
+  funnel-find-in-level : FunnelTable a, Text, Integer, Integer -> Maybe Integer
+  funnel-find-in-level (t) (key) (level) (probe) =
+    if probe >= t.probes-per then None
+    else let lv-start = list-at (t.level-starts) level
+      in let lv-size = list-at (t.level-sizes) level
+      in let idx = lv-start + funnel-probe-index key level probe lv-size
+      in let slot = list-at (t.slots) idx
+      in when slot
+        is FunnelVacant -> None
+        is FunnelOccupied (k) (v) ->
+          if k == key then Just idx
+          else funnel-find-in-level t key level (probe + 1)
+
+  funnel-insert-new : FunnelTable a, Text, a, Integer -> FunnelTable a
+  funnel-insert-new (t) (key) (value) (level) =
+    if level >= t.num-levels then t
+    else let result = funnel-try-level t key value level 0
+      in when result
+        is Just (new-table) -> new-table
+        is None -> funnel-insert-new t key value (level + 1)
+
+  funnel-try-level : FunnelTable a, Text, a, Integer, Integer -> Maybe (FunnelTable a)
+  funnel-try-level (t) (key) (value) (level) (probe) =
+    if probe >= t.probes-per then None
+    else let lv-start = list-at (t.level-starts) level
+      in let lv-size = list-at (t.level-sizes) level
+      in let idx = lv-start + funnel-probe-index key level probe lv-size
+      in let slot = list-at (t.slots) idx
+      in when slot
+        is FunnelVacant ->
+          Just (FunnelTable {
+            slots = list-set-at (t.slots) idx (FunnelOccupied key value),
+            level-starts = t.level-starts,
+            level-sizes = t.level-sizes,
+            num-levels = t.num-levels,
+            probes-per = t.probes-per,
+            capacity = t.capacity,
+            count = t.count + 1
+          })
+        is FunnelOccupied (k) (v) ->
+          funnel-try-level t key value level (probe + 1)
+
+Section: Queries
+
+  funnel-has : FunnelTable a, Text -> Boolean
+  funnel-has (t) (key) =
+    when funnel-get t key
+      is Just (v) -> True
+      is None -> False
+
+  funnel-size : FunnelTable a -> Integer
+  funnel-size (t) = t.count
+
+  funnel-capacity : FunnelTable a -> Integer
+  funnel-capacity (t) = t.capacity
+
+Page 1

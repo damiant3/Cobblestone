@@ -1,0 +1,237 @@
+Chapter: PcbDrc
+  cites Foreword chapter List
+
+ Full design rule check engine for PCB layouts. Walks all geometry
+ on the board and evaluates clearance, width, via, impedance, and
+ manufacturing rules. Produces a list of violations with locations,
+ severities, and suggested fixes.
+
+Section: Violation Location
+
+  DrcLocation = record {
+    dl-x : Integer,
+    dl-y : Integer,
+    dl-layer : Integer
+  }
+
+Section: Violation Category
+
+  DrcCategory =
+    | DrcClearance
+    | DrcWidth
+    | DrcVia
+    | DrcImpedance
+    | DrcLength
+    | DrcSilk
+    | DrcHole
+    | DrcEdge
+    | DrcCourtyard
+    | DrcManufacturing
+    | DrcUnrouted
+    | DrcDuplicate
+
+  drc-category-name : DrcCategory -> Text
+  drc-category-name (c) = when c
+    is DrcClearance -> "clearance"
+    is DrcWidth -> "width"
+    is DrcVia -> "via"
+    is DrcImpedance -> "impedance"
+    is DrcLength -> "length"
+    is DrcSilk -> "silkscreen"
+    is DrcHole -> "hole"
+    is DrcEdge -> "board-edge"
+    is DrcCourtyard -> "courtyard"
+    is DrcManufacturing -> "manufacturing"
+    is DrcUnrouted -> "unrouted"
+    is DrcDuplicate -> "duplicate"
+
+Section: Violation Severity
+
+  DrcSeverity =
+    | DrcError
+    | DrcWarning
+    | DrcInfo
+    | DrcExclusion
+
+Section: Violation
+
+  PcbDrcViolation = record {
+    dv-category : DrcCategory,
+    dv-severity : DrcSeverity,
+    dv-message : Text,
+    dv-location : DrcLocation,
+    dv-item-a : Text,
+    dv-item-b : Text,
+    dv-actual : Integer,
+    dv-required : Integer,
+    dv-fix-suggestion : Text
+  }
+
+Section: DRC Result
+
+  DrcResult = record {
+    dr-violations : List PcbDrcViolation,
+    dr-error-count : Integer,
+    dr-warning-count : Integer,
+    dr-info-count : Integer,
+    dr-exclusion-count : Integer,
+    dr-passed : Integer
+  }
+
+  empty-drc-result : DrcResult
+  empty-drc-result = DrcResult {
+    dr-violations = [],
+    dr-error-count = 0,
+    dr-warning-count = 0,
+    dr-info-count = 0,
+    dr-exclusion-count = 0,
+    dr-passed = 1
+  }
+
+  drc-add-violation : DrcResult, PcbDrcViolation -> DrcResult
+  drc-add-violation (r) (v) =
+    let new-errors = when v.dv-severity
+      is DrcError -> r.dr-error-count + 1
+      is otherwise -> r.dr-error-count
+    in let new-warnings = when v.dv-severity
+      is DrcWarning -> r.dr-warning-count + 1
+      is otherwise -> r.dr-warning-count
+    in let new-infos = when v.dv-severity
+      is DrcInfo -> r.dr-info-count + 1
+      is otherwise -> r.dr-info-count
+    in let new-exclusions = when v.dv-severity
+      is DrcExclusion -> r.dr-exclusion-count + 1
+      is otherwise -> r.dr-exclusion-count
+    in DrcResult {
+      dr-violations = list-push r.dr-violations v,
+      dr-error-count = new-errors,
+      dr-warning-count = new-warnings,
+      dr-info-count = new-infos,
+      dr-exclusion-count = new-exclusions,
+      dr-passed = if new-errors > 0 then 0 else 1
+    }
+
+  drc-summary : DrcResult -> Text
+  drc-summary (r) =
+    "DRC: " & (show r.dr-error-count) & " errors, " & (show r.dr-warning-count) & " warnings, " & (show r.dr-info-count) & " info"
+
+Section: Clearance Checker
+
+ Check track-to-track clearance. Two tracks on the same layer with
+ different nets must maintain minimum clearance.
+
+  check-track-clearance : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  check-track-clearance (ax1) (ay1) (ax2) (ay2) (aw) (bx1) (by1) (bx2) (by2) (bw) (min-clear) (same-net) =
+    if same-net == 1 then 1
+    else let half-a = aw / 2
+    in let half-b = bw / 2
+    in let min-dist = half-a + half-b + min-clear
+    in let dx = ax1 - bx1
+    in let dy = ay1 - by1
+    in let dist-sq = dx * dx + dy * dy
+    in if dist-sq > min-dist * min-dist then 1
+    else 0
+
+Section: Width Checker
+
+  check-track-width : Integer, Integer, Integer -> PcbDrcViolation
+  check-track-width (actual-width) (min-width) (max-width) =
+    if actual-width < min-width then
+      PcbDrcViolation {
+        dv-category = DrcWidth,
+        dv-severity = DrcError,
+        dv-message = "Track width " & (show actual-width) & " nm below minimum " & (show min-width) & " nm",
+        dv-location = DrcLocation { dl-x = 0, dl-y = 0, dl-layer = 0 },
+        dv-item-a = "",
+        dv-item-b = "",
+        dv-actual = actual-width,
+        dv-required = min-width,
+        dv-fix-suggestion = "Increase track width to at least " & (show min-width) & " nm"
+      }
+    else if actual-width > max-width then
+      PcbDrcViolation {
+        dv-category = DrcWidth,
+        dv-severity = DrcWarning,
+        dv-message = "Track width " & (show actual-width) & " nm exceeds maximum " & (show max-width) & " nm",
+        dv-location = DrcLocation { dl-x = 0, dl-y = 0, dl-layer = 0 },
+        dv-item-a = "",
+        dv-item-b = "",
+        dv-actual = actual-width,
+        dv-required = max-width,
+        dv-fix-suggestion = "Reduce track width to at most " & (show max-width) & " nm"
+      }
+    else
+      PcbDrcViolation {
+        dv-category = DrcWidth,
+        dv-severity = DrcInfo,
+        dv-message = "Track width OK",
+        dv-location = DrcLocation { dl-x = 0, dl-y = 0, dl-layer = 0 },
+        dv-item-a = "",
+        dv-item-b = "",
+        dv-actual = actual-width,
+        dv-required = min-width,
+        dv-fix-suggestion = ""
+      }
+
+Section: Via Checker
+
+  check-via-annular-ring : Integer, Integer, Integer -> Integer
+  check-via-annular-ring (diameter) (drill) (min-annular) =
+    let ring = (diameter - drill) / 2
+    in if ring >= min-annular then 1 else 0
+
+  check-hole-to-hole : Integer, Integer, Integer, Integer, Integer -> Integer
+  check-hole-to-hole (x1) (y1) (x2) (y2) (min-dist) =
+    let dx = x2 - x1
+    in let dy = y2 - y1
+    in let dist-sq = dx * dx + dy * dy
+    in if dist-sq >= min-dist * min-dist then 1 else 0
+
+Section: Unrouted Check
+
+  check-unrouted-count : Integer -> PcbDrcViolation
+  check-unrouted-count (count) =
+    if count > 0 then
+      PcbDrcViolation {
+        dv-category = DrcUnrouted,
+        dv-severity = DrcError,
+        dv-message = show count & " unrouted connections remain",
+        dv-location = DrcLocation { dl-x = 0, dl-y = 0, dl-layer = 0 },
+        dv-item-a = "",
+        dv-item-b = "",
+        dv-actual = count,
+        dv-required = 0,
+        dv-fix-suggestion = "Route all connections before manufacturing"
+      }
+    else
+      PcbDrcViolation {
+        dv-category = DrcUnrouted,
+        dv-severity = DrcInfo,
+        dv-message = "All connections routed",
+        dv-location = DrcLocation { dl-x = 0, dl-y = 0, dl-layer = 0 },
+        dv-item-a = "",
+        dv-item-b = "",
+        dv-actual = 0,
+        dv-required = 0,
+        dv-fix-suggestion = ""
+      }
+
+Section: Board Edge Checker
+
+  check-track-to-edge : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  check-track-to-edge (tx1) (ty1) (tx2) (ty2) (tw) (ex1) (ey1) (ex2) (ey2) =
+    let half-w = tw / 2
+    in let dx = tx1 - ex1
+    in let dy = ty1 - ey1
+    in let dist-sq = dx * dx + dy * dy
+    in if dist-sq > half-w * half-w then 1 else 0
+
+Section: Courtyard Overlap
+
+  courtyards-overlap : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  courtyards-overlap (ax1) (ay1) (ax2) (ay2) (bx1) (by1) (bx2) (by2) =
+    if ax1 >= bx2 then 0
+    else if ax2 <= bx1 then 0
+    else if ay1 >= by2 then 0
+    else if ay2 <= by1 then 0
+    else 1

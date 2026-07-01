@@ -1,0 +1,205 @@
+Chapter: Decimal
+
+ Fixed-point decimal arithmetic for currency, audit-precision, and
+ financial contexts. A Decimal is an Integer mantissa with a fixed
+ scale (number of decimal places). Arithmetic preserves scale;
+ operations between different scales promote to the higher.
+
+ To dec-new gives a Decimal from an integer and scale.
+ To dec-add gives the sum of two Decimals.
+ To dec-mul gives the product of two Decimals.
+ To dec-div gives the quotient of two Decimals.
+ To dec-round gives a Decimal rounded to fewer places.
+ To dec-to-text gives a formatted decimal string.
+ To dec-from-text gives a Decimal parsed from a string.
+
+ We say:
+
+Section: Types
+
+  Decimal = record {
+    dec-mantissa : Integer,
+    dec-scale : Integer
+  }
+
+Section: Construction
+
+  dec-new : Integer, Integer -> Decimal
+  dec-new (mantissa) (scale) = Decimal { dec-mantissa = mantissa, dec-scale = scale }
+
+  dec-zero : Decimal = Decimal { dec-mantissa = 0, dec-scale = 2 }
+
+  dec-one : Integer -> Decimal
+  dec-one (scale) = Decimal { dec-mantissa = dec-pow10 scale, dec-scale = scale }
+
+  dec-from-int : Integer, Integer -> Decimal
+  dec-from-int (n) (scale) = Decimal { dec-mantissa = n * dec-pow10 scale, dec-scale = scale }
+
+  dec-from-parts : Integer, Integer, Integer -> Decimal
+  dec-from-parts (whole) (frac) (scale) =
+    Decimal { dec-mantissa = whole * dec-pow10 scale + frac, dec-scale = scale }
+
+Section: Arithmetic
+
+  dec-add : Decimal, Decimal -> Decimal
+  dec-add (a) (b) =
+    let s = dec-max-scale a b
+    in let ma = dec-promote a s
+    in let mb = dec-promote b s
+    in Decimal { dec-mantissa = ma + mb, dec-scale = s }
+
+  dec-sub : Decimal, Decimal -> Decimal
+  dec-sub (a) (b) =
+    let s = dec-max-scale a b
+    in let ma = dec-promote a s
+    in let mb = dec-promote b s
+    in Decimal { dec-mantissa = ma - mb, dec-scale = s }
+
+  dec-mul : Decimal, Decimal -> Decimal
+  dec-mul (a) (b) =
+    let raw = a.dec-mantissa * b.dec-mantissa
+    in let combined-scale = a.dec-scale + b.dec-scale
+    in Decimal { dec-mantissa = raw, dec-scale = combined-scale }
+
+  dec-div : Decimal, Decimal -> Decimal
+  dec-div (a) (b) =
+    if b.dec-mantissa == 0 then Decimal { dec-mantissa = 0, dec-scale = a.dec-scale }
+    else let s = dec-max-scale a b
+    in let ma = dec-promote a s
+    in let mb = dec-promote b s
+    in Decimal { dec-mantissa = ma * dec-pow10 s / mb, dec-scale = s }
+
+  dec-negate : Decimal -> Decimal
+  dec-negate (d) = Decimal { dec-mantissa = 0 - d.dec-mantissa, dec-scale = d.dec-scale }
+
+  dec-abs : Decimal -> Decimal
+  dec-abs (d) = Decimal { dec-mantissa = if d.dec-mantissa < 0 then 0 - d.dec-mantissa else d.dec-mantissa, dec-scale = d.dec-scale }
+
+Section: Comparison
+
+  dec-compare : Decimal, Decimal -> Integer
+  dec-compare (a) (b) =
+    let s = dec-max-scale a b
+    in let ma = dec-promote a s
+    in let mb = dec-promote b s
+    in if ma < mb then 0 - 1 else if ma > mb then 1 else 0
+
+  dec-eq : Decimal, Decimal -> Boolean
+  dec-eq (a) (b) = dec-compare a b == 0
+
+  dec-lt : Decimal, Decimal -> Boolean
+  dec-lt (a) (b) = dec-compare a b < 0
+
+  dec-gt : Decimal, Decimal -> Boolean
+  dec-gt (a) (b) = dec-compare a b > 0
+
+  dec-min : Decimal, Decimal -> Decimal
+  dec-min (a) (b) = if dec-lt a b then a else b
+
+  dec-max : Decimal, Decimal -> Decimal
+  dec-max (a) (b) = if dec-gt a b then a else b
+
+Section: Rounding
+
+  dec-round : Decimal, Integer -> Decimal
+  dec-round (d) (new-scale) =
+    if new-scale >= d.dec-scale then d
+    else let factor = dec-pow10 (d.dec-scale - new-scale)
+    in let half = factor / 2
+    in let adjusted = if d.dec-mantissa >= 0 then d.dec-mantissa + half else d.dec-mantissa - half
+    in Decimal { dec-mantissa = adjusted / factor, dec-scale = new-scale }
+
+  dec-truncate : Decimal, Integer -> Decimal
+  dec-truncate (d) (new-scale) =
+    if new-scale >= d.dec-scale then d
+    else let factor = dec-pow10 (d.dec-scale - new-scale)
+    in Decimal { dec-mantissa = d.dec-mantissa / factor, dec-scale = new-scale }
+
+  dec-floor : Decimal -> Decimal
+  dec-floor (d) = dec-truncate d 0
+
+  dec-ceiling : Decimal -> Decimal
+  dec-ceiling (d) =
+    let floored = dec-truncate d 0
+    in if d.dec-mantissa > floored.dec-mantissa * dec-pow10 (d.dec-scale)
+    then Decimal { dec-mantissa = floored.dec-mantissa + 1, dec-scale = 0 }
+    else floored
+
+Section: Formatting
+
+  dec-to-text : Decimal -> Text
+  dec-to-text (d) =
+    if d.dec-scale == 0 then show (d.dec-mantissa)
+    else let abs-m = if d.dec-mantissa < 0 then 0 - d.dec-mantissa else d.dec-mantissa
+    in let factor = dec-pow10 (d.dec-scale)
+    in let whole = abs-m / factor
+    in let frac = abs-m - whole * factor
+    in let sign = if d.dec-mantissa < 0 then "-" else ""
+    in sign & show whole & "." & dec-pad-frac frac (d.dec-scale)
+
+  dec-pad-frac : Integer, Integer -> Text
+  dec-pad-frac (frac) (scale) =
+    let raw = show frac
+    in let padding = scale - text-length raw
+    in if padding <= 0 then raw
+    else dec-repeat-zero padding "" & raw
+
+  dec-repeat-zero : Integer, Text -> Text
+  dec-repeat-zero (n) (acc) =
+    if n <= 0 then acc
+    else dec-repeat-zero (n - 1) (acc & "0")
+
+Section: Parsing
+
+  dec-from-text : Text, Integer -> Decimal
+  dec-from-text (s) (default-scale) =
+    let dot = dec-find-dot s 0 (text-length s)
+    in if dot < 0 then Decimal { dec-mantissa = text-to-integer s * dec-pow10 default-scale, dec-scale = default-scale }
+    else let whole-str = substring s 0 dot
+    in let frac-str = substring s (dot + 1) (text-length s - dot - 1)
+    in let scale = text-length frac-str
+    in let whole = text-to-integer whole-str
+    in let frac = text-to-integer frac-str
+    in let sign = if whole < 0 then 0 - 1 else 1
+    in Decimal { dec-mantissa = sign * ((if whole < 0 then 0 - whole else whole) * dec-pow10 scale + frac), dec-scale = scale }
+
+  dec-find-dot : Text, Integer, Integer -> Integer
+  dec-find-dot (s) (i) (len) =
+    if i >= len then 0 - 1
+    else if char-code (char-at s i) == 65 then i
+    else dec-find-dot s (i + 1) len
+
+Section: Queries
+
+  dec-whole-part : Decimal -> Integer
+  dec-whole-part (d) = d.dec-mantissa / dec-pow10 (d.dec-scale)
+
+  dec-frac-part : Decimal -> Integer
+  dec-frac-part (d) =
+    let abs-m = if d.dec-mantissa < 0 then 0 - d.dec-mantissa else d.dec-mantissa
+    in abs-m - (abs-m / dec-pow10 (d.dec-scale)) * dec-pow10 (d.dec-scale)
+
+  dec-is-zero : Decimal -> Boolean
+  dec-is-zero (d) = d.dec-mantissa == 0
+
+  dec-is-negative : Decimal -> Boolean
+  dec-is-negative (d) = d.dec-mantissa < 0
+
+Section: Helpers
+
+  dec-pow10 : Integer -> Integer
+  dec-pow10 (n) = dec-pow10-loop n 1
+
+  dec-pow10-loop : Integer, Integer -> Integer
+  dec-pow10-loop (n) (acc) =
+    if n <= 0 then acc
+    else dec-pow10-loop (n - 1) (acc * 10)
+
+  dec-max-scale : Decimal, Decimal -> Integer
+  dec-max-scale (a) (b) = if a.dec-scale > b.dec-scale then a.dec-scale else b.dec-scale
+
+  dec-promote : Decimal, Integer -> Integer
+  dec-promote (d) (target-scale) =
+    d.dec-mantissa * dec-pow10 (target-scale - d.dec-scale)
+
+Page 1

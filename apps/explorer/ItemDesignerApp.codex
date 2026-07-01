@@ -1,0 +1,380 @@
+Chapter: ItemDesignerApp
+  cites Explorer chapter ExplorerTheme
+  cites UI chapter Dropdown
+  cites UI chapter DataTable
+  cites UI chapter TreeView
+  cites UI chapter SettingsPanel
+  cites UI chapter DetailPane
+  cites UI chapter StatusBadge
+  cites UI chapter FilterableList
+  cites UI chapter Validation
+  cites UI chapter SearchBar
+
+ Item designer, fully DB-backed. Dimensions are fetched at load over AJAX
+ (/api/d/<table>). The Type dimension is a fixed hierarchy (Blades,
+ Polearms, ... -> items) whose group membership is page layout (index
+ lists) while the item names come from the items table; Rarity pips are
+ colour-coded from the rarities table; modifier pips (Pommel/Guard/Blade,
+ Head/Haft, ...) appear conditionally on the selected item type, each from
+ its own mod table. No compiled-in content.
+
+ We say:
+
+Section: Type Logic
+
+  is-blade : Integer -> Boolean
+  is-blade (si) = if si <= 5 then True else if si == 15 then True else False
+
+  is-polearm : Integer -> Boolean
+  is-polearm (si) = if si >= 17 then (if si <= 20 then True else False) else False
+
+  join-mod : Text, Text -> Text
+  join-mod (a) (b) = if text-length a == 0 then b else if text-length b == 0 then a else a & ", " & b
+
+  build-mod-prompts : Integer -> Text
+  build-mod-prompts (si) =
+    let mp = state-get "mp" in let mg = state-get "mg" in let mb = state-get "mb"
+    in let ph = state-get "ph" in let pf = state-get "pf"
+    in let mbt = state-get "mbt" in let ml = state-get "ml" in let mss = state-get "mss"
+    in let me = state-get "me" in let mv = state-get "mv" in let mgm = state-get "mgm"
+    in if is-blade si then join-mod (tbl-field "dModPommel" mp 1) (join-mod (tbl-field "dModGuard" mg 1) (tbl-field "dModBlade" mb 1))
+    else if is-polearm si then join-mod (tbl-field "dModPHead" ph 1) (tbl-field "dModPHaft" pf 1)
+    else if si == 8 then join-mod (tbl-field "dModStyle" mss 1) (tbl-field "dModEmblem" me 1)
+    else if si == 9 then tbl-field "dModVisor" mv 1
+    else if si == 10 then tbl-field "dModGem" mgm 1
+    else if si == 11 then join-mod (tbl-field "dModBottle" mbt 1) (tbl-field "dModLiquid" ml 1)
+    else ""
+
+Section: Prompt
+
+  default-negative : Text
+  default-negative = "blurry, low quality, deformed, hands, fingers, person, character, multiple items, white background, text, watermark, nsfw"
+
+  build-item-prompt : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Text
+  build-item-prompt (si) (sm) (sr) (sco) (sen) (sal) (ssz) (scl) (extra) =
+    let mods = build-mod-prompts si
+    in tbl-field "dItems" si 1 & ", " & tbl-field "dMaterials" sm 1 & ", " & tbl-field "dRarities" sr 2 & ", " & tbl-field "dCond" sco 1 & (if text-length (tbl-field "dEnch" sen 1) > 0 then ", " & tbl-field "dEnch" sen 1 else "") & (if text-length (tbl-field "dAlign" sal 1) > 0 then ", " & tbl-field "dAlign" sal 1 else "") & (if text-length (tbl-field "dSize" ssz 1) > 0 then ", " & tbl-field "dSize" ssz 1 else "") & (if text-length (tbl-field "dColor" scl 1) > 0 then ", " & tbl-field "dColor" scl 1 else "") & (if text-length mods > 0 then ", " & mods else "") & ", single item centered on pure black background, game inventory icon, fantasy RPG item art, no hands, no character, isolated object, professional game asset, 4k, sharp focus" & (if text-length extra > 0 then ", " & extra else "")
+
+Section: UI Tree
+
+  type-cats : Integer -> List WidgetNode
+  type-cats (x) =
+    let inames = tbl-names "dItems"
+    in [
+      widget-cat-idx "tc0" "Blades" inames [0, 1, 2, 3, 4, 5, 15],
+      widget-cat-idx "tc1" "Polearms" inames [17, 18, 19, 20],
+      widget-cat-idx "tc2" "Axes & Hammers" inames [6, 21, 22, 23],
+      widget-cat-idx "tc3" "Ranged" inames [14, 24],
+      widget-cat-idx "tc4" "Armor & Worn" inames [8, 9, 16, 26, 27, 28],
+      widget-cat-idx "tc5" "Magic & Misc" inames [7, 25, 29, 30, 10, 13, 11, 12]
+    ]
+
+  type-dimsel : Integer -> WidgetNode
+  type-dimsel (si) =
+    let inames = tbl-names "dItems"
+    in let head = if si < list-length inames then list-at inames si else "?"
+    in widget-dimsel "type" head si (type-cats 0)
+
+  rarity-opts : List (List Text), Integer, Integer, List WidgetNode -> List WidgetNode
+  rarity-opts (rows) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rows i
+    in rarity-opts rows (i + 1) n (list-push acc (widget-opt-color ("rar-" & show i) (list-at r 0) i (list-at r 1)))
+
+  rarity-dimsel : Integer -> WidgetNode
+  rarity-dimsel (sr) =
+    let rows = parse-table "dRarities"
+    in let head = if sr < list-length rows then list-at (list-at rows sr) 0 else "?"
+    in widget-dimsel "rarity" head sr (rarity-opts rows 0 (list-length rows) [])
+
+  md-dimsel : Text, Text -> WidgetNode
+  md-dimsel (gkey) (tblkey) = widget-dim-flat gkey (tbl-names tblkey) (state-get gkey)
+
+  append-mods : List WidgetNode, Integer -> List WidgetNode
+  append-mods (base) (si) =
+    if is-blade si then list-push (list-push (list-push base (md-dimsel "mp" "dModPommel")) (md-dimsel "mg" "dModGuard")) (md-dimsel "mb" "dModBlade")
+    else if is-polearm si then list-push (list-push base (md-dimsel "ph" "dModPHead")) (md-dimsel "pf" "dModPHaft")
+    else if si == 8 then list-push (list-push base (md-dimsel "mss" "dModStyle")) (md-dimsel "me" "dModEmblem")
+    else if si == 9 then list-push base (md-dimsel "mv" "dModVisor")
+    else if si == 10 then list-push base (md-dimsel "mgm" "dModGem")
+    else if si == 11 then list-push (list-push base (md-dimsel "mbt" "dModBottle")) (md-dimsel "ml" "dModLiquid")
+    else base
+
+  dims : Integer -> List WidgetNode
+  dims (x) =
+    let si = state-get "si"
+    in let base = [
+      type-dimsel si,
+      widget-dim-flat "material" (tbl-names "dMaterials") (state-get "sm"),
+      rarity-dimsel (state-get "sr"),
+      widget-dim-flat "cond" (tbl-names "dCond") (state-get "sco"),
+      widget-dim-flat "ench" (tbl-names "dEnch") (state-get "sen"),
+      widget-dim-flat "align" (tbl-names "dAlign") (state-get "sal"),
+      widget-dim-flat "size" (tbl-names "dSize") (state-get "ssz"),
+      widget-dim-flat "color" (tbl-names "dColor") (state-get "scl")
+    ]
+    in append-mods base si
+
+  dimrow-holder : Integer -> WidgetNode
+  dimrow-holder (x) = widget-panel "dimrow-h" DirRow 0 (dims 0)
+
+  page-tree : Integer -> WidgetNode
+  page-tree (x) = designer-page-tree-batch "item" "Item Designer" "Additional details..."
+
+Section: Fetch Coordination
+
+  rebuild-dims : Integer -> Integer
+  rebuild-dims (x) = mount-widget-into "dimrow" (dimrow-holder 0)
+
+  bump-and-build : Integer -> Integer
+  bump-and-build (x) =
+    let c = state-get "loaded" + 1
+    in let s = state-set "loaded" c
+    in if c >= 19 then rebuild-dims 0 else 0
+
+  cb-items : Text -> Integer
+  cb-items (s) = let a = state-set-text "dItems" s in bump-and-build 0
+  cb-materials : Text -> Integer
+  cb-materials (s) = let a = state-set-text "dMaterials" s in bump-and-build 0
+  cb-rarities : Text -> Integer
+  cb-rarities (s) = let a = state-set-text "dRarities" s in bump-and-build 0
+  cb-cond : Text -> Integer
+  cb-cond (s) = let a = state-set-text "dCond" s in bump-and-build 0
+  cb-ench : Text -> Integer
+  cb-ench (s) = let a = state-set-text "dEnch" s in bump-and-build 0
+  cb-align : Text -> Integer
+  cb-align (s) = let a = state-set-text "dAlign" s in bump-and-build 0
+  cb-size : Text -> Integer
+  cb-size (s) = let a = state-set-text "dSize" s in bump-and-build 0
+  cb-color : Text -> Integer
+  cb-color (s) = let a = state-set-text "dColor" s in bump-and-build 0
+  cb-pommel : Text -> Integer
+  cb-pommel (s) = let a = state-set-text "dModPommel" s in bump-and-build 0
+  cb-guard : Text -> Integer
+  cb-guard (s) = let a = state-set-text "dModGuard" s in bump-and-build 0
+  cb-blade : Text -> Integer
+  cb-blade (s) = let a = state-set-text "dModBlade" s in bump-and-build 0
+  cb-phead : Text -> Integer
+  cb-phead (s) = let a = state-set-text "dModPHead" s in bump-and-build 0
+  cb-phaft : Text -> Integer
+  cb-phaft (s) = let a = state-set-text "dModPHaft" s in bump-and-build 0
+  cb-bottle : Text -> Integer
+  cb-bottle (s) = let a = state-set-text "dModBottle" s in bump-and-build 0
+  cb-liquid : Text -> Integer
+  cb-liquid (s) = let a = state-set-text "dModLiquid" s in bump-and-build 0
+  cb-style : Text -> Integer
+  cb-style (s) = let a = state-set-text "dModStyle" s in bump-and-build 0
+  cb-emblem : Text -> Integer
+  cb-emblem (s) = let a = state-set-text "dModEmblem" s in bump-and-build 0
+  cb-visor : Text -> Integer
+  cb-visor (s) = let a = state-set-text "dModVisor" s in bump-and-build 0
+  cb-gem : Text -> Integer
+  cb-gem (s) = let a = state-set-text "dModGem" s in bump-and-build 0
+
+Section: Callbacks
+
+  group-key : Text -> Text
+  group-key (g) =
+    if g == "type" then "si"
+    else if g == "material" then "sm"
+    else if g == "rarity" then "sr"
+    else if g == "cond" then "sco"
+    else if g == "ench" then "sen"
+    else if g == "align" then "sal"
+    else if g == "size" then "ssz"
+    else if g == "color" then "scl"
+    else g
+
+  on-pick : Text, Integer -> Integer
+  on-pick (group) (idx) =
+    let s = state-set (group-key group) idx
+    in mount-widget-into "dimrow" (dimrow-holder 0)
+
+  on-click : Text -> Integer
+  on-click (id) =
+    if id == "gen" then do-generate 0
+    else if id == "batch" then do-batch 0
+    else if id == "rnd" then random-seed 0
+    else 0
+
+  meta-html : Text, Text, Text, Text, Text -> Text
+  meta-html (iname) (mname) (rname) (rcol) (seed) =
+    "<div class=\"rm\"><span class=\"mt\">" & iname & "</span><span class=\"mt\">" & mname & "</span><span class=\"rb\" style=\"background:" & rcol & "22;color:" & rcol & "\">" & rname & "</span><span class=\"mt md\">seed:" & seed & "</span></div>"
+
+  add-run : Text, Text, Text, Text, Text -> Text
+  add-run (iname) (mname) (rname) (rcol) (seed) =
+    add-history-card "" (meta-html iname mname rname rcol seed) hero-click-handler
+
+  do-generate : Integer -> Integer
+  do-generate (x) =
+    let si = state-get "si"
+    in let sm = state-get "sm"
+    in let sr = state-get "sr"
+    in let sco = state-get "sco"
+    in let sen = state-get "sen"
+    in let sal = state-get "sal"
+    in let ssz = state-get "ssz"
+    in let scl = state-get "scl"
+    in let extra = dom-get-value (dom-get "prompt")
+    in let seed = dom-get-value (dom-get "seed")
+    in let prompt = build-item-prompt si sm sr sco sen sal ssz scl extra
+    in let body = gen-body prompt default-negative seed 768 768
+    in let rname = tbl-field "dRarities" sr 0
+    in let rcol = tbl-field "dRarities" sr 1
+    in let ename = tbl-field "dEnch" sen 0
+    in let hm = dom-get "hero-meta"
+    in let h2 = dom-set-html hm ("<b>" & tbl-field "dItems" si 0 & "</b> " & tbl-field "dMaterials" sm 0 & " <span class=\"rb\" style=\"background:" & rcol & "22;color:" & rcol & "\">" & rname & "</span>" & (if ename == "None" then "" else " " & ename) & " " & tbl-field "dCond" sco 0)
+    in let cid = add-run (tbl-field "dItems" si 0) (tbl-field "dMaterials" sm 0) rname rcol seed
+    in generate-image "/api/generate" body cid
+
+  do-batch : Integer -> Integer
+  do-batch (x) = do-batch-loop 0
+
+  do-batch-loop : Integer -> Integer
+  do-batch-loop (i) =
+    if i >= list-length (parse-table "dRarities") then 0
+    else let si = state-get "si"
+    in let sm = state-get "sm"
+    in let sco = state-get "sco"
+    in let sen = state-get "sen"
+    in let sal = state-get "sal"
+    in let ssz = state-get "ssz"
+    in let scl = state-get "scl"
+    in let seed = show (424242 + i)
+    in let prompt = build-item-prompt si sm i sco sen sal ssz scl ""
+    in let body = gen-body prompt default-negative seed 768 768
+    in let cid = add-run (tbl-field "dItems" si 0) (tbl-field "dMaterials" sm 0) (tbl-field "dRarities" i 0) (tbl-field "dRarities" i 1) seed
+    in let r = generate-image "/api/generate" body cid
+    in do-batch-loop (i + 1)
+
+  random-seed : Integer -> Integer
+  random-seed (x) = random-seed-cb x
+
+Section: Entry
+
+  init-state : Integer -> Integer
+  init-state (x) =
+    let s1 = state-set "si" 0
+    in let s2 = state-set "sr" 0
+    in let s3 = state-set "sm" 0
+    in let s4 = state-set "sco" 0
+    in let s5 = state-set "sen" 0
+    in let s6 = state-set "sal" 0
+    in let s7 = state-set "ssz" 0
+    in let s8 = state-set "scl" 0
+    in let m1 = state-set "mp" 0
+    in let m2 = state-set "mg" 0
+    in let m3 = state-set "mb" 0
+    in let m4 = state-set "ph" 0
+    in let m5 = state-set "pf" 0
+    in let m6 = state-set "mss" 0
+    in let m7 = state-set "me" 0
+    in let m8 = state-set "mv" 0
+    in let m9 = state-set "mgm" 0
+    in let m10 = state-set "mbt" 0
+    in let m11 = state-set "ml" 0
+    in let l = state-set "loaded" 0
+    in 0
+
+  fetch-all : Integer -> Integer
+  fetch-all (x) =
+    let f1 = fetch-get-then "/api/d/items" (cb-items)
+    in let f2 = fetch-get-then "/api/d/materials" (cb-materials)
+    in let f3 = fetch-get-then "/api/d/rarities" (cb-rarities)
+    in let f4 = fetch-get-then "/api/d/conditions" (cb-cond)
+    in let f5 = fetch-get-then "/api/d/enchants" (cb-ench)
+    in let f6 = fetch-get-then "/api/d/aligns" (cb-align)
+    in let f7 = fetch-get-then "/api/d/sizes" (cb-size)
+    in let f8 = fetch-get-then "/api/d/colors" (cb-color)
+    in let f9 = fetch-get-then "/api/d/mod-pommel" (cb-pommel)
+    in let f10 = fetch-get-then "/api/d/mod-guard" (cb-guard)
+    in let f11 = fetch-get-then "/api/d/mod-blade" (cb-blade)
+    in let f12 = fetch-get-then "/api/d/mod-phead" (cb-phead)
+    in let f13 = fetch-get-then "/api/d/mod-phaft" (cb-phaft)
+    in let f14 = fetch-get-then "/api/d/mod-bottle" (cb-bottle)
+    in let f15 = fetch-get-then "/api/d/mod-liquid" (cb-liquid)
+    in let f16 = fetch-get-then "/api/d/mod-style" (cb-style)
+    in let f17 = fetch-get-then "/api/d/mod-emblem" (cb-emblem)
+    in let f18 = fetch-get-then "/api/d/mod-visor" (cb-visor)
+    in let f19 = fetch-get-then "/api/d/mod-gem" (cb-gem)
+    in 0
+
+  opening : Integer -> [Console] None
+  opening (x) = act
+    let ex = init-explorer 0
+    in let st = init-state 0
+    in let h = register-handlers (on-pick) (on-click)
+    in let m = mount-widget-themed dark-gold (page-tree 0)
+    in let f = fetch-all 0
+    in print-line-uni ""
+  end
+
+Section: Shared Component Usage
+
+  item-type-tree : TreeViewState
+  item-type-tree = tree-view-new "item-types" [
+    tree-node "blades" "Blades" ">" [
+      tree-node-leaf "broad" "Broadsword" "",
+      tree-node-leaf "long" "Longsword" "",
+      tree-node-leaf "short" "Short Sword" "",
+      tree-node-leaf "curved" "Scimitar" "",
+      tree-node-leaf "rapier" "Rapier" "",
+      tree-node-leaf "great" "Greatsword" ""
+    ],
+    tree-node "polearms" "Polearms" ">" [
+      tree-node-leaf "axe" "Battle Axe" "",
+      tree-node-leaf "spear" "Spear" "",
+      tree-node-leaf "halberd" "Halberd" "",
+      tree-node-leaf "staff" "Quarterstaff" ""
+    ],
+    tree-node-leaf "bow" "Bow" "",
+    tree-node-leaf "shield" "Shield" "",
+    tree-node-leaf "helmet" "Helmet" "",
+    tree-node-leaf "ring" "Ring" "",
+    tree-node-leaf "potion" "Potion" "",
+    tree-node-leaf "armor" "Armor" "",
+    tree-node-leaf "wand" "Wand" "",
+    tree-node-leaf "dagger" "Dagger" ""
+  ]
+
+  item-rarity-badges : List BadgeStyle
+  item-rarity-badges = [
+    badge-label "common",
+    badge-label "uncommon",
+    badge-label "rare",
+    badge-label "epic",
+    badge-label "legendary"
+  ]
+
+  item-modifier-settings : Integer -> SettingsSpec
+  item-modifier-settings (type-idx) =
+    if is-blade type-idx then settings-spec "blade-mods" "Blade Modifiers" [
+      sf-dropdown "pommel" "Pommel" ["Plain", "Jeweled", "Spiked", "Wrapped"],
+      sf-dropdown "guard" "Guard" ["Cross", "Basket", "Ring", "Swept"],
+      sf-dropdown "blade" "Blade" ["Straight", "Curved", "Serrated", "Etched"]
+    ]
+    else if is-polearm type-idx then settings-spec "pole-mods" "Polearm Modifiers" [
+      sf-dropdown "head" "Head" ["Axe", "Spear", "Hook", "Crescent"],
+      sf-dropdown "haft" "Haft" ["Oak", "Ash", "Iron", "Bone"]
+    ]
+    else settings-spec "gen-mods" "Modifiers" [
+      sf-dropdown "style" "Style" ["Simple", "Ornate", "Ancient", "Elven", "Dwarven"]
+    ]
+
+  item-search : SearchBarState
+  item-search = search-bar-with-chips "item-search" [
+    filter-chip "blade" "Blades",
+    filter-chip "pole" "Polearms",
+    filter-chip "ranged" "Ranged",
+    filter-chip "armor" "Armor",
+    filter-chip "magic" "Magic"
+  ]
+
+  item-detail : Text, Text, Text, Integer -> DetailSpec
+  item-detail (name) (item-type) (rarity) (level) =
+    let spec = detail-spec "item-det" name item-type
+    in let s1 = detail-add-field spec (df-badge "Rarity" rarity (badge-label-color rarity))
+    in let s2 = detail-add-field s1 (df-text "Level" (show level))
+    in s2
+
+Page 1

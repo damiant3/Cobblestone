@@ -1,0 +1,183 @@
+Chapter: DateTime
+  cites Foreword chapter Tuple
+
+ A DateTime is a record containing year, month, day, hour, minute, and second.
+ To unix-to-datetime gives a DateTime from a Unix timestamp in seconds.
+ To datetime-to-unix gives a Unix timestamp from a DateTime.
+ To is-leap-year gives True when the year is a leap year.
+ To days-in-month gives the number of days in the given month of the given year.
+ To day-of-week gives the day-of-week index for a Unix timestamp.
+ To day-of-week-name gives a three-letter abbreviation for a day-of-week index.
+ To format-datetime gives ISO 8601 Text for a DateTime.
+ To format-date gives date-only Text for a DateTime.
+ To format-time gives time-only Text for a DateTime.
+ To datetime-add-seconds gives a new timestamp offset by the given seconds.
+ To datetime-add-hours gives a new timestamp offset by the given hours.
+ To datetime-add-days gives a new timestamp offset by the given days.
+ To datetime-diff gives the difference in seconds between two timestamps.
+ To month-name gives a three-letter abbreviation for a month number.
+
+ We say:
+
+Section: Time Types
+
+  Timestamp = unit family NanoStamp
+    NanoStamp = 1
+    MicroStamp = 1000
+    MilliStamp = 1000000
+    SecondStamp = 1000000000
+
+  Elapsed = unit family NanoElapsed
+    NanoElapsed = 1
+    MicroElapsed = 1000
+    MilliElapsed = 1000000
+    SecondElapsed = 1000000000
+
+Section: Components
+  DateTime = record {
+    year : Integer,
+    month : Integer between 1 and 12,
+    day : Integer between 1 and 31,
+    hour : Integer between 0 and 23,
+    minute : Integer between 0 and 59,
+    second : Integer between 0 and 59
+  }
+
+Section: Constants
+  seconds-per-minute : Integer = 60
+  seconds-per-hour : Integer = 3600
+  seconds-per-day : Integer = 86400
+
+Section: From Unix Timestamp
+  unix-to-datetime : Timestamp -> DateTime
+  unix-to-datetime (ts) =
+    let days = ts / seconds-per-day
+    in let time-of-day = ts - days * seconds-per-day
+    in let hour = time-of-day / seconds-per-hour
+    in let minute = (time-of-day - hour * seconds-per-hour) / seconds-per-minute
+    in let second = time-of-day - hour * seconds-per-hour - minute * seconds-per-minute
+    in let (y, m, d) = days-to-ymd days
+    in DateTime { year = y, month = m, day = d, hour = hour, minute = minute, second = second }
+
+  days-to-ymd : Integer -> (Integer, Integer, Integer)
+  days-to-ymd (days) = days-to-year days 1970
+
+  days-to-year : Integer, Integer -> (Integer, Integer, Integer)
+  days-to-year (remaining) (year) =
+    let days-in-y = if is-leap-year year then 366 else 365
+    in if remaining < days-in-y then days-to-month remaining year 1
+    else days-to-year (remaining - days-in-y) (year + 1)
+
+  days-to-month : Integer, Integer, Integer -> (Integer, Integer, Integer)
+  days-to-month (remaining) (year) (month) =
+    if month > 12 then (year + 1, 1, remaining + 1)
+    else let dim = days-in-month year month
+    in if remaining < dim then (year, month, remaining + 1)
+    else days-to-month (remaining - dim) year (month + 1)
+
+  is-leap-year : Integer -> Boolean
+  is-leap-year (y) =
+    if y / 400 * 400 == y then True
+    else if y / 100 * 100 == y then False
+    else y / 4 * 4 == y
+
+  days-in-month : Integer, Integer -> Integer
+  days-in-month (year) (m) =
+    if m == 1 then 31
+    else if m == 2 then if is-leap-year year then 29 else 28
+    else if m == 3 then 31
+    else if m == 4 then 30
+    else if m == 5 then 31
+    else if m == 6 then 30
+    else if m == 7 then 31
+    else if m == 8 then 31
+    else if m == 9 then 30
+    else if m == 10 then 31
+    else if m == 11 then 30
+    else 31
+
+Section: To Unix Timestamp
+  datetime-to-unix : DateTime -> Integer
+  datetime-to-unix (dt) =
+    let days = ymd-to-days (dt.year) (dt.month) (dt.day)
+    in days * seconds-per-day + dt.hour * seconds-per-hour + dt.minute * seconds-per-minute + dt.second
+
+  ymd-to-days : Integer, Integer, Integer -> Integer
+  ymd-to-days (year) (month) (day) =
+    let year-days = count-year-days 1970 year 0
+    in let month-days = count-month-days year 1 month 0
+    in year-days + month-days + day - 1
+
+  count-year-days : Integer, Integer, Integer -> Integer
+  count-year-days (from) (to) (acc) =
+    if from >= to then acc
+    else count-year-days (from + 1) to (acc + if is-leap-year from then 366 else 365)
+
+  count-month-days : Integer, Integer, Integer, Integer -> Integer
+  count-month-days (year) (from) (to) (acc) =
+    if from >= to then acc
+    else count-month-days year (from + 1) to (acc + days-in-month year from)
+
+Section: Day of Week
+  day-of-week : Integer -> Integer
+  day-of-week (unix-ts) =
+    let days = unix-ts / seconds-per-day
+    in (days + 4) / 7 * 7 - days - 4 + (days + 4)
+
+  day-of-week-name : Integer -> Text
+  day-of-week-name (dow) =
+    if dow == 0 then "Thu"
+    else if dow == 1 then "Fri"
+    else if dow == 2 then "Sat"
+    else if dow == 3 then "Sun"
+    else if dow == 4 then "Mon"
+    else if dow == 5 then "Tue"
+    else if dow == 6 then "Wed"
+    else "?"
+
+Section: Formatting
+  format-datetime : DateTime -> Text
+  format-datetime (dt) =
+    pad4 (dt.year) & "-" & pad2 (dt.month) & "-" & pad2 (dt.day) & "T" & pad2 (dt.hour) & ":" & pad2 (dt.minute) & ":" & pad2 (dt.second) & "Z"
+
+  format-date : DateTime -> Text
+  format-date (dt) =
+    pad4 (dt.year) & "-" & pad2 (dt.month) & "-" & pad2 (dt.day)
+
+  format-time : DateTime -> Text
+  format-time (dt) =
+    pad2 (dt.hour) & ":" & pad2 (dt.minute) & ":" & pad2 (dt.second)
+
+  pad2 : Integer -> Text
+  pad2 (n) = if n < 10 then "0" & show n else show n
+
+  pad4 : Integer -> Text
+  pad4 (n) =
+    if n < 10 then "000" & show n
+    else if n < 100 then "00" & show n
+    else if n < 1000 then "0" & show n
+    else show n
+
+Section: Arithmetic
+  datetime-add-seconds : Timestamp, Elapsed -> Timestamp
+  datetime-add-seconds (ts) (secs) = Timestamp (ts + secs)
+
+  datetime-add-hours : Timestamp, Integer -> Timestamp
+  datetime-add-hours (ts) (hours) = Timestamp (ts + hours * seconds-per-hour)
+
+  datetime-add-days : Timestamp, Integer -> Timestamp
+  datetime-add-days (ts) (days) = Timestamp (ts + days * seconds-per-day)
+
+  datetime-diff : Timestamp, Timestamp -> Elapsed
+  datetime-diff (a) (b) = Elapsed (a - b)
+
+Section: Month Names
+  month-name : Integer -> Text
+  month-name (m) =
+    if m == 1 then "Jan" else if m == 2 then "Feb" else if m == 3 then "Mar"
+    else if m == 4 then "Apr" else if m == 5 then "May" else if m == 6 then "Jun"
+    else if m == 7 then "Jul" else if m == 8 then "Aug" else if m == 9 then "Sep"
+    else if m == 10 then "Oct" else if m == 11 then "Nov" else if m == 12 then "Dec"
+    else "?"
+
+Page 1

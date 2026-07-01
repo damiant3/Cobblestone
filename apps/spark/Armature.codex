@@ -1,0 +1,166 @@
+Chapter: Armature
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+
+ Skeletal animation system. An armature is a tree of bones,
+ each with a bind pose and an animated pose. Bones influence
+ mesh vertices through weight painting.
+
+ We say:
+
+Section: Types
+
+  Bone = record {
+    bn-name : Text,
+    bn-parent : Integer,
+    bn-bind-pos : Vec3,
+    bn-bind-rot : Quat,
+    bn-pose-pos : Vec3,
+    bn-pose-rot : Quat,
+    bn-length : Real
+  }
+
+  ArmatureState = record {
+    arm-bones : List Bone,
+    arm-bone-count : Integer,
+    arm-name : Text
+  }
+
+  BoneWeight = record {
+    bw-bone-idx : Integer,
+    bw-weight : Real
+  }
+
+  SkinVertex = record {
+    sv-weights : List BoneWeight,
+    sv-weight-count : Integer
+  }
+
+Section: Construction
+
+  armature-new : Text -> ArmatureState
+  armature-new (name) = ArmatureState {
+    arm-bones = [],
+    arm-bone-count = 0,
+    arm-name = name
+  }
+
+  bone-new : Text, Integer, Vec3, Quat, Real -> Bone
+  bone-new (name) (parent) (pos) (rot) (length) = Bone {
+    bn-name = name,
+    bn-parent = parent,
+    bn-bind-pos = pos,
+    bn-bind-rot = rot,
+    bn-pose-pos = pos,
+    bn-pose-rot = rot,
+    bn-length = length
+  }
+
+Section: Building
+
+  armature-add-bone : ArmatureState, Bone -> ArmatureState
+  armature-add-bone (arm) (bone) = ArmatureState {
+    arm-bones = list-push (arm.arm-bones) bone,
+    arm-bone-count = arm.arm-bone-count + 1,
+    arm-name = arm.arm-name
+  }
+
+  armature-get-bone : ArmatureState, Integer -> Bone
+  armature-get-bone (arm) (i) = list-at (arm.arm-bones) i
+
+Section: Pose
+
+  armature-set-pose : ArmatureState, Integer, Vec3, Quat -> ArmatureState
+  armature-set-pose (arm) (idx) (pos) (rot) =
+    let bone = armature-get-bone arm idx
+    in let updated = __record-set (__record-set bone "bn-pose-pos" pos) "bn-pose-rot" rot
+    in __record-set arm "arm-bones" (list-set-at (arm.arm-bones) idx updated)
+
+  armature-reset-pose : ArmatureState -> ArmatureState
+  armature-reset-pose (arm) = arm-reset-loop arm 0
+
+  arm-reset-loop : ArmatureState, Integer -> ArmatureState
+  arm-reset-loop (arm) (i) =
+    if i >= arm.arm-bone-count then arm
+    else let bone = armature-get-bone arm i
+    in let reset = __record-set (__record-set bone "bn-pose-pos" (bone.bn-bind-pos)) "bn-pose-rot" (bone.bn-bind-rot)
+    in let arm2 = __record-set arm "arm-bones" (list-set-at (arm.arm-bones) i reset)
+    in arm-reset-loop arm2 (i + 1)
+
+Section: World Transform
+
+  armature-bone-world : ArmatureState, Integer -> Mat4
+  armature-bone-world (arm) (idx) =
+    if idx < 0 then mat4-identity
+    else if idx >= arm.arm-bone-count then mat4-identity
+    else let bone = armature-get-bone arm idx
+    in let local = arm-bone-local-matrix bone
+    in if bone.bn-parent < 0 then local
+    else let parent = armature-bone-world arm (bone.bn-parent)
+    in mat4-mul parent local
+
+  arm-bone-local-matrix : Bone -> Mat4
+  arm-bone-local-matrix (bone) =
+    let trans = mat4-translate (bone.bn-pose-pos.vx) (bone.bn-pose-pos.vy) (bone.bn-pose-pos.vz)
+    in let rot = mat4-from-quat (bone.bn-pose-rot)
+    in mat4-mul trans rot
+
+Section: Bone Endpoint
+
+  armature-bone-tip : ArmatureState, Integer -> Vec3
+  armature-bone-tip (arm) (idx) =
+    let world = armature-bone-world arm idx
+    in let bone = armature-get-bone arm idx
+    in let tip-local = vec3-new 0.0 (bone.bn-length) 0.0
+    in mat4-transform-point world tip-local
+
+Section: Skinning
+
+  skin-vertex-new : SkinVertex
+  skin-vertex-new = SkinVertex { sv-weights = [], sv-weight-count = 0 }
+
+  skin-add-weight : SkinVertex, Integer, Real -> SkinVertex
+  skin-add-weight (sv) (bone-idx) (weight) = SkinVertex {
+    sv-weights = list-push (sv.sv-weights) (BoneWeight { bw-bone-idx = bone-idx, bw-weight = weight }),
+    sv-weight-count = sv.sv-weight-count + 1
+  }
+
+  skin-deform-vertex : ArmatureState, SkinVertex, Vec3 -> Vec3
+  skin-deform-vertex (arm) (sv) (rest-pos) =
+    if sv.sv-weight-count == 0 then rest-pos
+    else arm-blend-weights arm sv rest-pos 0 (vec3-new 0.0 0.0 0.0)
+
+  arm-blend-weights : ArmatureState, SkinVertex, Vec3, Integer, Vec3 -> Vec3
+  arm-blend-weights (arm) (sv) (rest-pos) (i) (acc) =
+    if i >= sv.sv-weight-count then acc
+    else let bw = list-at (sv.sv-weights) i
+    in let world = armature-bone-world arm (bw.bw-bone-idx)
+    in let deformed = mat4-transform-point world rest-pos
+    in let weighted = vec3-new (deformed.vx * bw.bw-weight) (deformed.vy * bw.bw-weight) (deformed.vz * bw.bw-weight)
+    in arm-blend-weights arm sv rest-pos (i + 1) (vec3-add acc weighted)
+
+Section: Humanoid Preset
+
+  armature-humanoid : ArmatureState
+  armature-humanoid =
+    let arm = armature-new "Humanoid"
+    in let arm2 = armature-add-bone arm (bone-new "Hips" (-1) (vec3-new 0.0 1.0 0.0) quat-identity 0.2)
+    in let arm3 = armature-add-bone arm2 (bone-new "Spine" 0 (vec3-new 0.0 0.2 0.0) quat-identity 0.3)
+    in let arm4 = armature-add-bone arm3 (bone-new "Chest" 1 (vec3-new 0.0 0.3 0.0) quat-identity 0.2)
+    in let arm5 = armature-add-bone arm4 (bone-new "Head" 2 (vec3-new 0.0 0.2 0.0) quat-identity 0.2)
+    in let arm6 = armature-add-bone arm5 (bone-new "UpperArm.L" 2 (vec3-new (-0.2) 0.15 0.0) quat-identity 0.3)
+    in let arm7 = armature-add-bone arm6 (bone-new "LowerArm.L" 4 (vec3-new 0.0 (-0.3) 0.0) quat-identity 0.25)
+    in let arm8 = armature-add-bone arm7 (bone-new "UpperArm.R" 2 (vec3-new 0.2 0.15 0.0) quat-identity 0.3)
+    in let arm9 = armature-add-bone arm8 (bone-new "LowerArm.R" 6 (vec3-new 0.0 (-0.3) 0.0) quat-identity 0.25)
+    in let arm10 = armature-add-bone arm9 (bone-new "UpperLeg.L" 0 (vec3-new (-0.1) 0.0 0.0) quat-identity 0.4)
+    in let arm11 = armature-add-bone arm10 (bone-new "LowerLeg.L" 8 (vec3-new 0.0 (-0.4) 0.0) quat-identity 0.35)
+    in let arm12 = armature-add-bone arm11 (bone-new "UpperLeg.R" 0 (vec3-new 0.1 0.0 0.0) quat-identity 0.4)
+    in armature-add-bone arm12 (bone-new "LowerLeg.R" 10 (vec3-new 0.0 (-0.4) 0.0) quat-identity 0.35)
+
+Section: Info
+
+  armature-info : ArmatureState -> Text
+  armature-info (arm) =
+    arm.arm-name & ": " & show (arm.arm-bone-count) & " bones"
+
+Page 1

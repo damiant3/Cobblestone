@@ -1,0 +1,522 @@
+Chapter: Arm64 Disassembler
+  cites Encode chapter Hex
+
+Section: Control
+
+  a64-disasm-enabled : Boolean = False
+
+Section: Register Names
+
+  a64-xreg-name : Integer -> Text
+  a64-xreg-name (r) =
+   if r == 29 then "FP"
+   else if r == 30 then "LR"
+   else if r == 31 then "SP"
+   else "X" & show r
+
+  a64-xreg-or-zr : Integer -> Text
+  a64-xreg-or-zr (r) =
+   if r == 31 then "XZR"
+   else a64-xreg-name r
+
+  a64-wreg-name : Integer -> Text
+  a64-wreg-name (r) =
+   if r == 31 then "WSP"
+   else "W" & show r
+
+  a64-dreg-name : Integer -> Text
+  a64-dreg-name (r) = "D" & show r
+
+  a64-sreg-name : Integer -> Text
+  a64-sreg-name (r) = "S" & show r
+
+  a64-vreg-name : Integer -> Text
+  a64-vreg-name (r) = "V" & show r & ".2D"
+
+Section: Condition Codes
+
+  a64-cond-name : Integer -> Text
+  a64-cond-name (c) =
+   if c == 0 then "EQ"
+   else if c == 1 then "NE"
+   else if c == 2 then "HS"
+   else if c == 3 then "LO"
+   else if c == 8 then "HI"
+   else if c == 9 then "LS"
+   else if c == 10 then "GE"
+   else if c == 11 then "LT"
+   else if c == 12 then "GT"
+   else if c == 13 then "LE"
+   else if c == 14 then "AL"
+   else "??"
+
+Section: Bit Field Helpers
+
+  a64-bits : Integer, Integer, Integer -> Integer
+  a64-bits (w) (hi) (lo) =
+   bit-and (bit-shru w lo) ((bit-shl 1 (hi - lo + 1)) - 1)
+
+  a64-sign-extend : Integer, Integer -> Integer
+  a64-sign-extend (val) (bits) =
+   let sign-bit = bit-shl 1 (bits - 1)
+   in if bit-and val sign-bit > 0
+    then val - (bit-shl 1 bits)
+    else val
+
+Section: Hex Formatting
+
+  a64-hex-addr : Integer -> Text
+  a64-hex-addr (addr) = "0x" & hex-int32 addr
+
+  a64-hex-word : Integer -> Text
+  a64-hex-word (w) = hex-int32 w
+
+  a64-format-hex-imm : Integer -> Text
+  a64-format-hex-imm (v) =
+   if v >= 0 then "#0x" & hex-int32 v
+   else "#-0x" & hex-int32 (0 - v)
+
+  a64-format-dec-imm : Integer -> Text
+  a64-format-dec-imm (v) = "#" & show v
+
+Section: Instruction Decoders
+
+  a64-dis-rrr : Integer, Text -> Text
+  a64-dis-rrr (w) (mnem) =
+   let rd = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let rm = a64-bits w 20 16
+   in if rn == 31 then "MOV " & a64-xreg-name rd & ", " & a64-xreg-name rm
+   else mnem & " " & a64-xreg-name rd & ", " & a64-xreg-name rn & ", " & a64-xreg-name rm
+
+  a64-dis-imm12 : Integer, Text -> Text
+  a64-dis-imm12 (w) (mnem) =
+   let rd = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let imm = a64-bits w 21 10
+   in let sh = a64-bits w 22 22
+   in let val = if sh == 1 then imm * 4096 else imm
+   in if val == 0 & (rd == 31 | rn == 31) then "MOV " & a64-xreg-name rd & ", " & a64-xreg-name rn
+   else mnem & " " & a64-xreg-name rd & ", " & a64-xreg-name rn & ", " & a64-format-dec-imm val
+
+  a64-dis-movwide : Integer -> Text
+  a64-dis-movwide (w) =
+   let rd = a64-bits w 4 0
+   in let imm16 = a64-bits w 20 5
+   in let hw = a64-bits w 22 21
+   in let shift = hw * 16
+   in let opc = a64-bits w 30 29
+   in let mnem = if opc == 0 then "MOVN"
+    else if opc == 2 then "MOVZ"
+    else "MOVK"
+   in if shift > 0 then mnem & " " & a64-xreg-name rd & ", #0x" & hex-int16 imm16 & ", LSL #" & show shift
+   else mnem & " " & a64-xreg-name rd & ", #0x" & hex-int16 imm16
+
+  a64-dis-ldr-str-imm : Integer -> Text
+  a64-dis-ldr-str-imm (w) =
+   let rt = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let size = a64-bits w 31 30
+   in let opc = a64-bits w 23 22
+   in let is-load = bit-and opc 1
+   in let mnem = if size == 0 then
+     if is-load == 1 then "LDRB" else "STRB"
+    else if size == 2 then
+     if is-load == 1 then "LDR W" else "STR W"
+    else if is-load == 1 then "LDR" else "STR"
+   in let imm12 = a64-bits w 21 10
+   in let scale = if size == 0 then 1 else if size == 2 then 4 else 8
+   in let offset = imm12 * scale
+   in let rn-name = a64-xreg-name rn
+   in let rt-name = if size == 0 then a64-wreg-name rt
+    else if size == 2 then a64-wreg-name rt
+    else a64-xreg-name rt
+   in if offset == 0 then mnem & " " & rt-name & ", [" & rn-name & "]"
+   else mnem & " " & rt-name & ", [" & rn-name & ", " & a64-format-dec-imm offset & "]"
+
+  a64-dis-ldr-str-pre : Integer -> Text
+  a64-dis-ldr-str-pre (w) =
+   let rt = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let imm9 = a64-sign-extend (a64-bits w 20 12) 9
+   in let is-load = a64-bits w 22 22
+   in let mnem = if is-load == 1 then "LDR" else "STR"
+   in mnem & " " & a64-xreg-name rt & ", [" & a64-xreg-name rn & ", " & a64-format-dec-imm imm9 & "]!"
+
+  a64-dis-ldr-str-reg : Integer -> Text
+  a64-dis-ldr-str-reg (w) =
+   let rt = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let rm = a64-bits w 20 16
+   in let size = a64-bits w 31 30
+   in let opc = a64-bits w 23 22
+   in let is-load = bit-and opc 1
+   in let mnem = if size == 0 then
+     if is-load == 1 then "LDRB" else "STRB"
+    else if size == 2 then
+     if is-load == 1 then "LDR W" else "STR W"
+    else if is-load == 1 then "LDR" else "STR"
+   in let rt-name = if size == 0 then a64-wreg-name rt
+    else if size == 2 then a64-wreg-name rt
+    else a64-xreg-name rt
+   in mnem & " " & rt-name & ", [" & a64-xreg-name rn & ", " & a64-xreg-name rm & "]"
+
+  a64-dis-ldp-stp : Integer -> Text
+  a64-dis-ldp-stp (w) =
+   let rt1 = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let rt2 = a64-bits w 14 10
+   in let imm7 = a64-sign-extend (a64-bits w 21 15) 7
+   in let is-load = a64-bits w 22 22
+   in let mnem = if is-load == 1 then "LDP" else "STP"
+   in let offset = imm7 * 8
+   in if offset == 0 then mnem & " " & a64-xreg-name rt1 & ", " & a64-xreg-name rt2 & ", [" & a64-xreg-name rn & "]"
+   else mnem & " " & a64-xreg-name rt1 & ", " & a64-xreg-name rt2 & ", [" & a64-xreg-name rn & ", " & a64-format-dec-imm offset & "]"
+
+  a64-dis-ldp-stp-pre : Integer -> Text
+  a64-dis-ldp-stp-pre (w) =
+   let rt1 = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let rt2 = a64-bits w 14 10
+   in let imm7 = a64-sign-extend (a64-bits w 21 15) 7
+   in let is-load = a64-bits w 22 22
+   in let mnem = if is-load == 1 then "LDP" else "STP"
+   in let offset = imm7 * 8
+   in mnem & " " & a64-xreg-name rt1 & ", " & a64-xreg-name rt2 & ", [" & a64-xreg-name rn & ", " & a64-format-dec-imm offset & "]!"
+
+  a64-dis-ldp-stp-post : Integer -> Text
+  a64-dis-ldp-stp-post (w) =
+   let rt1 = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let rt2 = a64-bits w 14 10
+   in let imm7 = a64-sign-extend (a64-bits w 21 15) 7
+   in let is-load = a64-bits w 22 22
+   in let mnem = if is-load == 1 then "LDP" else "STP"
+   in let offset = imm7 * 8
+   in mnem & " " & a64-xreg-name rt1 & ", " & a64-xreg-name rt2 & ", [" & a64-xreg-name rn & "], " & a64-format-dec-imm offset
+
+  a64-dis-branch : Integer, Integer -> Text
+  a64-dis-branch (w) (addr) =
+   let imm26 = a64-sign-extend (a64-bits w 25 0) 26
+   in let target = addr + imm26 * 4
+   in let is-link = a64-bits w 31 31
+   in let mnem = if is-link == 1 then "BL" else "B"
+   in mnem & " " & a64-hex-addr target
+
+  a64-dis-bcond : Integer, Integer -> Text
+  a64-dis-bcond (w) (addr) =
+   let imm19 = a64-sign-extend (a64-bits w 23 5) 19
+   in let cond = a64-bits w 3 0
+   in let target = addr + imm19 * 4
+   in "B." & a64-cond-name cond & " " & a64-hex-addr target
+
+  a64-dis-cbz-cbnz : Integer, Integer -> Text
+  a64-dis-cbz-cbnz (w) (addr) =
+   let rt = a64-bits w 4 0
+   in let imm19 = a64-sign-extend (a64-bits w 23 5) 19
+   in let op = a64-bits w 24 24
+   in let mnem = if op == 0 then "CBZ" else "CBNZ"
+   in let target = addr + imm19 * 4
+   in mnem & " " & a64-xreg-name rt & ", " & a64-hex-addr target
+
+  a64-dis-br-blr : Integer -> Text
+  a64-dis-br-blr (w) =
+   let rn = a64-bits w 9 5
+   in let opc = a64-bits w 24 21
+   in let mnem = if opc == 0 then "BR"
+    else if opc == 1 then "BLR"
+    else "RET"
+   in mnem & " " & a64-xreg-name rn
+
+  a64-dis-cmp-reg : Integer -> Text
+  a64-dis-cmp-reg (w) =
+   let rn = a64-bits w 9 5
+   in let rm = a64-bits w 20 16
+   in "CMP " & a64-xreg-name rn & ", " & a64-xreg-name rm
+
+  a64-dis-cmp-imm : Integer -> Text
+  a64-dis-cmp-imm (w) =
+   let rn = a64-bits w 9 5
+   in let imm12 = a64-bits w 21 10
+   in "CMP " & a64-xreg-name rn & ", " & a64-format-dec-imm imm12
+
+  a64-dis-csel-csinc : Integer -> Text
+  a64-dis-csel-csinc (w) =
+   let rd = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let cond = a64-bits w 15 12
+   in let rm = a64-bits w 20 16
+   in let op2 = a64-bits w 10 10
+   in let mnem = if op2 == 0 then "CSEL" else "CSINC"
+   in mnem & " " & a64-xreg-name rd & ", " & a64-xreg-name rn & ", " & a64-xreg-name rm & ", " & a64-cond-name cond
+
+  a64-dis-mul : Integer -> Text
+  a64-dis-mul (w) =
+   let rd = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let rm = a64-bits w 20 16
+   in "MUL " & a64-xreg-name rd & ", " & a64-xreg-name rn & ", " & a64-xreg-name rm
+
+  a64-dis-sdiv : Integer -> Text
+  a64-dis-sdiv (w) =
+   let rd = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let rm = a64-bits w 20 16
+   in "SDIV " & a64-xreg-name rd & ", " & a64-xreg-name rn & ", " & a64-xreg-name rm
+
+  a64-dis-msub : Integer -> Text
+  a64-dis-msub (w) =
+   let rd = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let ra = a64-bits w 14 10
+   in let rm = a64-bits w 20 16
+   in "MSUB " & a64-xreg-name rd & ", " & a64-xreg-name rn & ", " & a64-xreg-name rm & ", " & a64-xreg-name ra
+
+  a64-dis-shift-imm : Integer -> Text
+  a64-dis-shift-imm (w) =
+   let rd = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let imms = a64-bits w 15 10
+   in let immr = a64-bits w 21 16
+   in let opc = a64-bits w 30 29
+   in if opc == 2 then
+    let amt = 64 - immr
+    in "LSL " & a64-xreg-name rd & ", " & a64-xreg-name rn & ", " & a64-format-dec-imm amt
+   else "LSR " & a64-xreg-name rd & ", " & a64-xreg-name rn & ", " & a64-format-dec-imm immr
+
+  a64-dis-fp-rrr : Integer, Text -> Text
+  a64-dis-fp-rrr (w) (mnem) =
+   let fd = a64-bits w 4 0
+   in let fn = a64-bits w 9 5
+   in let fm = a64-bits w 20 16
+   in let is-single = a64-bits w 22 22
+   in let rname = if is-single == 0 then a64-dreg-name else a64-sreg-name
+   in mnem & " " & rname fd & ", " & rname fn & ", " & rname fm
+
+  a64-dis-fp-rr : Integer, Text -> Text
+  a64-dis-fp-rr (w) (mnem) =
+   let fd = a64-bits w 4 0
+   in let fn = a64-bits w 9 5
+   in mnem & " " & a64-dreg-name fd & ", " & a64-xreg-name fn
+
+  a64-dis-fp-move : Integer, Text -> Text
+  a64-dis-fp-move (w) (mnem) =
+   let rd = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in mnem & " " & a64-xreg-name rd & ", " & a64-dreg-name rn
+
+  a64-dis-fcmp : Integer -> Text
+  a64-dis-fcmp (w) =
+   let fn = a64-bits w 9 5
+   in let fm = a64-bits w 20 16
+   in "FCMP " & a64-dreg-name fn & ", " & a64-dreg-name fm
+
+  a64-dis-adr : Integer, Integer -> Text
+  a64-dis-adr (w) (addr) =
+   let rd = a64-bits w 4 0
+   in let immlo = a64-bits w 30 29
+   in let immhi = a64-bits w 23 5
+   in let imm = a64-sign-extend (bit-or immlo (bit-shl immhi 2)) 21
+   in let target = addr + imm
+   in "ADR " & a64-xreg-name rd & ", " & a64-hex-addr target
+
+  a64-dis-ldxr : Integer -> Text
+  a64-dis-ldxr (w) =
+   let rt = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in "LDXR " & a64-xreg-name rt & ", [" & a64-xreg-name rn & "]"
+
+  a64-dis-stxr : Integer -> Text
+  a64-dis-stxr (w) =
+   let rs = a64-bits w 20 16
+   in let rt = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in "STXR " & a64-wreg-name rs & ", " & a64-xreg-name rt & ", [" & a64-xreg-name rn & "]"
+
+  a64-dis-ldar : Integer -> Text
+  a64-dis-ldar (w) =
+   let rt = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in "LDAR " & a64-xreg-name rt & ", [" & a64-xreg-name rn & "]"
+
+  a64-dis-stlr : Integer -> Text
+  a64-dis-stlr (w) =
+   let rt = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in "STLR " & a64-xreg-name rt & ", [" & a64-xreg-name rn & "]"
+
+  a64-dis-mrs : Integer -> Text
+  a64-dis-mrs (w) =
+   let rt = a64-bits w 4 0
+   in let sysreg = a64-bits w 19 5
+   in "MRS " & a64-xreg-name rt & ", S" & show sysreg
+
+  a64-dis-msr : Integer -> Text
+  a64-dis-msr (w) =
+   let rt = a64-bits w 4 0
+   in let sysreg = a64-bits w 19 5
+   in "MSR S" & show sysreg & ", " & a64-xreg-name rt
+
+  a64-dis-svc : Integer -> Text
+  a64-dis-svc (w) =
+   let imm16 = a64-bits w 20 5
+   in "SVC " & a64-format-dec-imm imm16
+
+  a64-dis-neon-rrr : Integer, Text -> Text
+  a64-dis-neon-rrr (w) (mnem) =
+   let vd = a64-bits w 4 0
+   in let vn = a64-bits w 9 5
+   in let vm = a64-bits w 20 16
+   in mnem & " " & a64-vreg-name vd & ", " & a64-vreg-name vn & ", " & a64-vreg-name vm
+
+  a64-dis-ldr-str-q : Integer -> Text
+  a64-dis-ldr-str-q (w) =
+   let qt = a64-bits w 4 0
+   in let rn = a64-bits w 9 5
+   in let imm12 = a64-bits w 21 10
+   in let is-load = a64-bits w 22 22
+   in let mnem = if is-load == 1 then "LDR" else "STR"
+   in let offset = imm12 * 16
+   in if offset == 0 then mnem & " Q" & show qt & ", [" & a64-xreg-name rn & "]"
+   else mnem & " Q" & show qt & ", [" & a64-xreg-name rn & ", " & a64-format-dec-imm offset & "]"
+
+Section: Main Decoder
+
+  a64-decode-insn : Integer, Integer -> Text
+  a64-decode-insn (w) (addr) =
+   if w == #D503201F then "NOP"
+   else if w == #D503207F then "WFI"
+   else if w == #D69F03E0 then "ERET"
+   else if w == #D5033F9F then "DSB SY"
+   else if w == #D5033FBF then "DMB SY"
+   else if w == #D5033FDF then "ISB"
+   else if w == #D5033B9F then "DSB ISH"
+   else if w == #D5033BBF then "DMB ISH"
+   else if bit-and w #FFFFFC1F == #D65F0000 then "RET"
+   else let top11 = bit-and w #FFE00000
+   in if top11 == #8B000000 then a64-dis-rrr w "ADD"
+   else if top11 == #CB000000 then a64-dis-rrr w "SUB"
+   else if top11 == #8A000000 then a64-dis-rrr w "AND"
+   else if top11 == #AA000000 then a64-dis-rrr w "ORR"
+   else if top11 == #CA000000 then a64-dis-rrr w "EOR"
+   else if bit-and w #EB00001F == #EB00001F then a64-dis-cmp-reg w
+   else if bit-and w #FFE0FC00 == #9AC02000 then a64-dis-rrr w "LSL"
+   else if bit-and w #FFE0FC00 == #9AC02400 then a64-dis-rrr w "LSR"
+   else if bit-and w #FFE0FC00 == #9AC02800 then a64-dis-rrr w "ASR"
+   else if bit-and w #FFE0FC00 == #9B007C00 then a64-dis-mul w
+   else if bit-and w #FFE0FC00 == #9AC00C00 then a64-dis-sdiv w
+   else if bit-and w #FFE08000 == #9B008000 then a64-dis-msub w
+   else if bit-and w #FF800000 == #91000000 then a64-dis-imm12 w "ADD"
+   else if bit-and w #FF800000 == #D1000000 then a64-dis-imm12 w "SUB"
+   else if bit-and w #F100001F == #F100001F then a64-dis-cmp-imm w
+   else if bit-and w #FF800000 == #D2800000 then a64-dis-movwide w
+   else if bit-and w #FF800000 == #F2800000 then a64-dis-movwide w
+   else if bit-and w #FF800000 == #92800000 then a64-dis-movwide w
+   else if bit-and w #FFC00000 == #D3400000 then a64-dis-shift-imm w
+   else if bit-and w #FFE00C00 == #F8600800 then a64-dis-ldr-str-reg w
+   else if bit-and w #FFE00C00 == #F8200800 then a64-dis-ldr-str-reg w
+   else if bit-and w #FFE00C00 == #B8600800 then a64-dis-ldr-str-reg w
+   else if bit-and w #FFE00C00 == #B8200800 then a64-dis-ldr-str-reg w
+   else if bit-and w #FFE00C00 == #38600800 then a64-dis-ldr-str-reg w
+   else if bit-and w #FFE00C00 == #38200800 then a64-dis-ldr-str-reg w
+   else if bit-and w #FFC00000 == #F9400000 then a64-dis-ldr-str-imm w
+   else if bit-and w #FFC00000 == #F9000000 then a64-dis-ldr-str-imm w
+   else if bit-and w #FFC00000 == #B9400000 then a64-dis-ldr-str-imm w
+   else if bit-and w #FFC00000 == #B9000000 then a64-dis-ldr-str-imm w
+   else if bit-and w #FFC00000 == #39400000 then a64-dis-ldr-str-imm w
+   else if bit-and w #FFC00000 == #39000000 then a64-dis-ldr-str-imm w
+   else if bit-and w #FBE00C00 == #F8000000 then a64-dis-ldr-str-pre w
+   else if bit-and w #FFC00000 == #A9800000 then a64-dis-ldp-stp-pre w
+   else if bit-and w #FFC00000 == #A9C00000 then a64-dis-ldp-stp-pre w
+   else if bit-and w #FFC00000 == #A8800000 then a64-dis-ldp-stp-post w
+   else if bit-and w #FFC00000 == #A8C00000 then a64-dis-ldp-stp-post w
+   else if bit-and w #FFC00000 == #A9000000 then a64-dis-ldp-stp w
+   else if bit-and w #FFC00000 == #A9400000 then a64-dis-ldp-stp w
+   else if bit-and w #FFC00000 == #3D800000 then a64-dis-ldr-str-q w
+   else if bit-and w #FFC00000 == #3DC00000 then a64-dis-ldr-str-q w
+   else if bit-and w #FC000000 == #14000000 then a64-dis-branch w addr
+   else if bit-and w #FC000000 == #94000000 then a64-dis-branch w addr
+   else if bit-and w #FF000010 == #54000000 then a64-dis-bcond w addr
+   else if bit-and w #FF000000 == #B4000000 then a64-dis-cbz-cbnz w addr
+   else if bit-and w #FF000000 == #B5000000 then a64-dis-cbz-cbnz w addr
+   else if bit-and w #FFFFFC1F == #D61F0000 then a64-dis-br-blr w
+   else if bit-and w #FFFFFC1F == #D63F0000 then a64-dis-br-blr w
+   else if bit-and w #FFE00C00 == #9A800000 then a64-dis-csel-csinc w
+   else if bit-and w #FFE00C00 == #9A800400 then a64-dis-csel-csinc w
+   else if bit-and w #FFE0FC00 == #1E602800 then a64-dis-fp-rrr w "FADD.D"
+   else if bit-and w #FFE0FC00 == #1E603800 then a64-dis-fp-rrr w "FSUB.D"
+   else if bit-and w #FFE0FC00 == #1E600800 then a64-dis-fp-rrr w "FMUL.D"
+   else if bit-and w #FFE0FC00 == #1E601800 then a64-dis-fp-rrr w "FDIV.D"
+   else if bit-and w #FFE0FC00 == #1E202800 then a64-dis-fp-rrr w "FADD.S"
+   else if bit-and w #FFE0FC00 == #1E203800 then a64-dis-fp-rrr w "FSUB.S"
+   else if bit-and w #FFE0FC00 == #1E200800 then a64-dis-fp-rrr w "FMUL.S"
+   else if bit-and w #FFE0FC00 == #1E201800 then a64-dis-fp-rrr w "FDIV.S"
+   else if bit-and w #FFE0FC1F == #1E602000 then a64-dis-fcmp w
+   else if bit-and w #FFFFFC00 == #9E670000 then a64-dis-fp-rr w "FMOV"
+   else if bit-and w #FFFFFC00 == #9E660000 then a64-dis-fp-move w "FMOV"
+   else if bit-and w #FFFFFC00 == #9E620000 then a64-dis-fp-rr w "SCVTF.D"
+   else if bit-and w #FFFFFC00 == #9E780000 then a64-dis-fp-move w "FCVTZS"
+   else if bit-and w #FFFFFC00 == #1E624000 then a64-dis-fp-rr w "FCVT.SD"
+   else if bit-and w #FFFFFC00 == #1E22C000 then a64-dis-fp-rr w "FCVT.DS"
+   else if bit-and w #FFFFFC00 == #9E220000 then a64-dis-fp-rr w "SCVTF.S"
+   else if bit-and w #FFFFFC00 == #9E380000 then a64-dis-fp-move w "FCVTZS.S"
+   else if bit-and w #FFE0FC00 == #4E60D400 then a64-dis-neon-rrr w "FADD.2D"
+   else if bit-and w #FFE0FC00 == #4EE0D400 then a64-dis-neon-rrr w "FSUB.2D"
+   else if bit-and w #FFE0FC00 == #6E60DC00 then a64-dis-neon-rrr w "FMUL.2D"
+   else if bit-and w #FFE0FC00 == #6E60FC00 then a64-dis-neon-rrr w "FDIV.2D"
+   else if bit-and w #FFE0FC00 == #6E601C00 then a64-dis-neon-rrr w "BSL.16B"
+   else if bit-and w #FFC0001F == #C85F7C00 then a64-dis-ldxr w
+   else if bit-and w #FFE0FC00 == #C8007C00 then a64-dis-stxr w
+   else if bit-and w #FFC0001F == #C8DFFC00 then a64-dis-ldar w
+   else if bit-and w #FFC0001F == #C89FFC00 then a64-dis-stlr w
+   else if bit-and w #FFF00000 == #D5300000 then a64-dis-mrs w
+   else if bit-and w #FFF00000 == #D5100000 then a64-dis-msr w
+   else if bit-and w #FFE0001F == #D4000001 then a64-dis-svc w
+   else if bit-and w #9F000000 == #10000000 then a64-dis-adr w addr
+   else "??? " & a64-hex-word w
+
+Section: Function Label Lookup
+
+  a64-find-func-at : List Integer, List Text, Integer, Integer -> Text
+  a64-find-func-at (offsets) (names) (insn-idx) (i) =
+   if i >= list-length offsets then ""
+   else if list-at offsets i == insn-idx then list-at names i
+   else a64-find-func-at offsets names insn-idx (i + 1)
+
+Section: Disassembly Loop
+
+  a64-disasm-base-addr : Integer = #40000080
+
+  a64-read-insn-word : Integer, Integer -> Integer
+  a64-read-insn-word (buf) (byte-off) =
+   let b0 = peek-byte buf byte-off
+   in let b1 = peek-byte buf (byte-off + 1)
+   in let b2 = peek-byte buf (byte-off + 2)
+   in let b3 = peek-byte buf (byte-off + 3)
+   in bit-or (bit-or (bit-or b0 (bit-shl b1 8)) (bit-shl b2 16)) (bit-shl b3 24)
+
+  a64-disasm-loop : Integer, Integer, Integer, List Integer, List Text, List Text -> List Text
+  a64-disasm-loop (buf) (i) (count) (offsets) (names) (acc) =
+   if i >= count then acc
+   else let label = a64-find-func-at offsets names i 0
+   in let acc1 = if label == "" then acc
+    else list-push acc ("; --- " & label & " ---")
+   in let byte-off = i * 4
+   in let addr = a64-disasm-base-addr + byte-off
+   in let w = a64-read-insn-word buf byte-off
+   in let decoded = a64-decode-insn w addr
+   in let line = a64-hex-addr addr & "  " & a64-hex-word w & "  " & decoded
+   in a64-disasm-loop buf (i + 1) count offsets names (list-push acc1 line)
+
+  a64-disasm-append : A64State -> A64State
+  a64-disasm-append (st) =
+   let lines = a64-disasm-loop (st.code-buf) 0 (st.insn-count) (st.func-offsets) (st.func-names) []
+   in let reports = (st.extra).wcet-reports
+   in let combined = reports & lines
+   in __record-set st "extra" (__record-set (st.extra) "wcet-reports" combined)
+
+Page 1
+
+
+
+

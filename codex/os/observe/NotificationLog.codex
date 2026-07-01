@@ -1,0 +1,218 @@
+Chapter: NotificationLog
+  cites Observe chapter Journal
+  cites Dev chapter Notification
+  cites Encode chapter Json
+
+ Persistent notification audit log. Every notification event
+ (push, dismiss, read, clear) is recorded as a Journal entry with
+ structured metadata. Supports filtered retrieval by source, time
+ range, and severity. Entries serialize to JSON for export and
+ external audit tools.
+
+Section: Event Types
+
+  NotifEvent =
+    | NevPush (Integer) (NotifSeverity) (NotifSource)
+    | NevDismiss (Integer)
+    | NevRead (Integer)
+    | NevClearAll
+    | NevMute
+    | NevUnmute
+
+  notif-event-label : NotifEvent -> Text
+  notif-event-label (ev) = when ev
+    is NevPush (id) (sev) (src) -> "push"
+    is NevDismiss (id) -> "dismiss"
+    is NevRead (id) -> "read"
+    is NevClearAll -> "clear-all"
+    is NevMute -> "mute"
+    is NevUnmute -> "unmute"
+
+Section: Audit Record
+
+  NotifAuditEntry = record {
+    nae-event : NotifEvent,
+    nae-notif-id : Integer,
+    nae-title : Text,
+    nae-body : Text,
+    nae-severity : Text,
+    nae-source : Text,
+    nae-timestamp : Integer
+  }
+
+Section: Notification Log State
+
+  NotificationLog = record {
+    nl-journal : Journal,
+    nl-entries : List NotifAuditEntry,
+    nl-entry-count : Integer,
+    nl-max-entries : Integer
+  }
+
+  notification-log-new : NotificationLog
+  notification-log-new = NotificationLog {
+    nl-journal = journal-new LogInfo,
+    nl-entries = [],
+    nl-entry-count = 0,
+    nl-max-entries = 10000
+  }
+
+Section: Logging Events
+
+  nl-log-push : NotificationLog, SystemNotification -> NotificationLog
+  nl-log-push (nl) (notif) =
+    let sev-text = notif-severity-label (notif.notif-severity)
+    in let src-text = notif-source-label (notif.notif-source)
+    in let msg = "[" & sev-text & "] " & src-text & ": " & notif.notif-title & " -- " & notif.notif-body
+    in let j-level = nl-severity-to-log-level (notif.notif-severity)
+    in let j2 = journal-log (nl.nl-journal) j-level "notification" msg (notif.notif-timestamp)
+    in let entry = NotifAuditEntry {
+      nae-event = NevPush (notif.notif-id) (notif.notif-severity) (notif.notif-source),
+      nae-notif-id = notif.notif-id,
+      nae-title = notif.notif-title,
+      nae-body = notif.notif-body,
+      nae-severity = sev-text,
+      nae-source = src-text,
+      nae-timestamp = notif.notif-timestamp
+    }
+    in nl-append-entry (__record-set nl "nl-journal" j2) entry
+
+  nl-log-dismiss : NotificationLog, Integer, Integer -> NotificationLog
+  nl-log-dismiss (nl) (notif-id) (ts) =
+    let j2 = journal-info (nl.nl-journal) "notification" ("dismiss id=" & show notif-id) ts
+    in let entry = NotifAuditEntry {
+      nae-event = NevDismiss notif-id,
+      nae-notif-id = notif-id,
+      nae-title = "", nae-body = "",
+      nae-severity = "info", nae-source = "system",
+      nae-timestamp = ts
+    }
+    in nl-append-entry (__record-set nl "nl-journal" j2) entry
+
+  nl-log-read : NotificationLog, Integer, Integer -> NotificationLog
+  nl-log-read (nl) (notif-id) (ts) =
+    let j2 = journal-debug (nl.nl-journal) "notification" ("read id=" & show notif-id) ts
+    in let entry = NotifAuditEntry {
+      nae-event = NevRead notif-id,
+      nae-notif-id = notif-id,
+      nae-title = "", nae-body = "",
+      nae-severity = "debug", nae-source = "system",
+      nae-timestamp = ts
+    }
+    in nl-append-entry (__record-set nl "nl-journal" j2) entry
+
+  nl-log-clear : NotificationLog, Integer -> NotificationLog
+  nl-log-clear (nl) (ts) =
+    let j2 = journal-info (nl.nl-journal) "notification" "clear-all" ts
+    in let entry = NotifAuditEntry {
+      nae-event = NevClearAll,
+      nae-notif-id = 0,
+      nae-title = "", nae-body = "",
+      nae-severity = "info", nae-source = "system",
+      nae-timestamp = ts
+    }
+    in nl-append-entry (__record-set nl "nl-journal" j2) entry
+
+  nl-log-mute : NotificationLog, Boolean, Integer -> NotificationLog
+  nl-log-mute (nl) (muted) (ts) =
+    let event = if muted then NevMute else NevUnmute
+    in let label = if muted then "mute" else "unmute"
+    in let j2 = journal-info (nl.nl-journal) "notification" label ts
+    in let entry = NotifAuditEntry {
+      nae-event = event,
+      nae-notif-id = 0,
+      nae-title = "", nae-body = "",
+      nae-severity = "info", nae-source = "system",
+      nae-timestamp = ts
+    }
+    in nl-append-entry (__record-set nl "nl-journal" j2) entry
+
+Section: Entry Management
+
+  nl-append-entry : NotificationLog, NotifAuditEntry -> NotificationLog
+  nl-append-entry (nl) (entry) =
+    let entries2 = list-push (nl.nl-entries) entry
+    in let count2 = nl.nl-entry-count + 1
+    in if count2 > nl.nl-max-entries then
+      let trimmed = nl-trim-entries entries2 count2 (nl.nl-max-entries)
+      in NotificationLog { nl-journal = nl.nl-journal, nl-entries = trimmed, nl-entry-count = nl.nl-max-entries, nl-max-entries = nl.nl-max-entries }
+    else NotificationLog { nl-journal = nl.nl-journal, nl-entries = entries2, nl-entry-count = count2, nl-max-entries = nl.nl-max-entries }
+
+  nl-trim-entries : List NotifAuditEntry, Integer, Integer -> List NotifAuditEntry
+  nl-trim-entries (entries) (count) (max-entries) =
+    let drop-count = count - max-entries
+    in nl-drop-loop entries drop-count 0 count []
+
+  nl-drop-loop : List NotifAuditEntry, Integer, Integer, Integer, List NotifAuditEntry -> List NotifAuditEntry
+  nl-drop-loop (entries) (drop-count) (i) (n) (acc) =
+    if i >= n then acc
+    else if i < drop-count then nl-drop-loop entries drop-count (i + 1) n acc
+    else nl-drop-loop entries drop-count (i + 1) n (list-push acc (list-at entries i))
+
+Section: Queries
+
+  nl-by-source : NotificationLog, Text -> List NotifAuditEntry
+  nl-by-source (nl) (src) =
+    nl-filter-entries (nl.nl-entries) 0 (nl.nl-entry-count) src "" 0 0 []
+
+  nl-by-severity : NotificationLog, Text -> List NotifAuditEntry
+  nl-by-severity (nl) (sev) =
+    nl-filter-entries (nl.nl-entries) 0 (nl.nl-entry-count) "" sev 0 0 []
+
+  nl-by-time-range : NotificationLog, Integer, Integer -> List NotifAuditEntry
+  nl-by-time-range (nl) (from-ts) (to-ts) =
+    nl-filter-entries (nl.nl-entries) 0 (nl.nl-entry-count) "" "" from-ts to-ts []
+
+  nl-filter-entries : List NotifAuditEntry, Integer, Integer, Text, Text, Integer, Integer, List NotifAuditEntry -> List NotifAuditEntry
+  nl-filter-entries (entries) (i) (n) (src-filter) (sev-filter) (from-ts) (to-ts) (acc) =
+    if i >= n then acc
+    else let entry = list-at entries i
+    in let match-src = if text-length src-filter == 0 then True else entry.nae-source == src-filter
+    in let match-sev = if text-length sev-filter == 0 then True else entry.nae-severity == sev-filter
+    in let match-time = if from-ts == 0 then True else if entry.nae-timestamp >= from-ts then if to-ts == 0 then True else entry.nae-timestamp <= to-ts else False
+    in if match-src then if match-sev then if match-time then
+      nl-filter-entries entries (i + 1) n src-filter sev-filter from-ts to-ts (list-push acc entry)
+    else nl-filter-entries entries (i + 1) n src-filter sev-filter from-ts to-ts acc
+    else nl-filter-entries entries (i + 1) n src-filter sev-filter from-ts to-ts acc
+    else nl-filter-entries entries (i + 1) n src-filter sev-filter from-ts to-ts acc
+
+Section: JSON Export
+
+  nl-entry-to-json : NotifAuditEntry -> Text
+  nl-entry-to-json (entry) =
+    "{\"event\":\"" & notif-event-label (entry.nae-event)
+    & "\",\"id\":" & show (entry.nae-notif-id)
+    & ",\"severity\":\"" & entry.nae-severity
+    & "\",\"source\":\"" & entry.nae-source
+    & "\",\"title\":\"" & entry.nae-title
+    & "\",\"body\":\"" & entry.nae-body
+    & "\",\"timestamp\":" & show (entry.nae-timestamp) & "}"
+
+  nl-export-json : NotificationLog -> Text
+  nl-export-json (nl) =
+    "[" & nl-export-loop (nl.nl-entries) 0 (nl.nl-entry-count) "" & "]"
+
+  nl-export-loop : List NotifAuditEntry, Integer, Integer, Text -> Text
+  nl-export-loop (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i > 0 then "," else ""
+    in nl-export-loop entries (i + 1) n (acc & sep & nl-entry-to-json (list-at entries i))
+
+Section: Severity Mapping
+
+  nl-severity-to-log-level : NotifSeverity -> LogLevel
+  nl-severity-to-log-level (sev) = when sev
+    is SevInfo -> LogInfo
+    is SevSuccess -> LogInfo
+    is SevWarning -> LogWarn
+    is SevError -> LogError
+    is NotifCritical -> LogFatal
+
+Section: Statistics
+
+  nl-stats : NotificationLog -> Text
+  nl-stats (nl) =
+    "entries=" & show (nl.nl-entry-count) & "/" & show (nl.nl-max-entries)
+    & " journal=" & show ((nl.nl-journal).count)
+
+Page 1

@@ -1,0 +1,512 @@
+Chapter: GMEconomy
+  cites CodexMagic chapter CampaignWorld
+  cites CodexMagic chapter RPGEngine
+  cites CodexMagic chapter ClanEconomy
+  cites CodexMagic chapter Token
+
+ Game Master economy. GMs are dungeon entrepreneurs - they spend
+ coin to construct virtual space, stock monsters, place loot, and
+ upgrade their content. Revenue comes from player entry fees and
+ completion bonuses. You can't spawn dragons that drop vorpal weapons
+ on day one. You earn your way up. Better content costs more but
+ attracts more players. The GM is playing the meta-game of running
+ a profitable dungeon.
+
+ We say:
+
+Section: GM License and Progression
+
+  GMLicense = record {
+    gm-id : Integer,
+    account-id : Integer,
+    clan-id : Integer,
+    tier : GMTier,
+    experience : Integer,
+    dungeons-created : Integer,
+    dungeons-published : Integer,
+    total-plays : Integer,
+    total-revenue : Integer,
+    total-spent : Integer,
+    balance : Integer,
+    reputation : Integer,
+    unlocks : List GMUnlock,
+    created-at : Integer
+  }
+
+  GMTier =
+    | Apprentice
+    | Journeyman
+    | Adept
+    | Master
+    | Grandmaster
+    | Legendary
+
+  gm-tier-name : GMTier -> Text
+  gm-tier-name (t) =
+    when t
+      is Apprentice -> "Apprentice"
+      is Journeyman -> "Journeyman"
+      is Adept -> "Adept"
+      is Master -> "Master"
+      is Grandmaster -> "Grandmaster"
+      is Legendary -> "Legendary"
+
+  gm-tier-rank : GMTier -> Integer
+  gm-tier-rank (t) =
+    when t
+      is Apprentice -> 1
+      is Journeyman -> 2
+      is Adept -> 3
+      is Master -> 4
+      is Grandmaster -> 5
+      is Legendary -> 6
+
+  compute-gm-tier : Integer -> GMTier
+  compute-gm-tier (xp) =
+    if xp >= 50000 then Legendary
+    else if xp >= 20000 then Grandmaster
+    else if xp >= 8000 then Master
+    else if xp >= 3000 then Adept
+    else if xp >= 1000 then Journeyman
+    else Apprentice
+
+  GMUnlock =
+    | UnlockMonsterTier (Integer)
+    | UnlockLootTier (Integer)
+    | UnlockFloorCount (Integer)
+    | UnlockRoomSize (Integer)
+    | UnlockBossSlot
+    | UnlockTrapTypes
+    | UnlockCustomMonsters
+    | UnlockCustomLoot
+    | UnlockMultiDungeon
+    | UnlockRaidDesign
+
+  unlock-name : GMUnlock -> Text
+  unlock-name (u) =
+    when u
+      is UnlockMonsterTier (n) -> "Monster Tier " & show n
+      is UnlockLootTier (n) -> "Loot Tier " & show n
+      is UnlockFloorCount (n) -> show n & " Floors"
+      is UnlockBossSlot -> "Boss Encounter"
+      is UnlockTrapTypes -> "Trap Design"
+      is UnlockCustomMonsters -> "Custom Monsters"
+      is UnlockCustomLoot -> "Custom Loot"
+      is UnlockMultiDungeon -> "Multi-Dungeon Complex"
+      is UnlockRaidDesign -> "Raid Design"
+      is UnlockRoomSize (n) -> show n & "x" & show n & " Rooms"
+
+Section: GM License Creation
+
+  gm-license-new : Integer, Integer, Integer, Integer -> GMLicense
+  gm-license-new (gm-id) (account-id) (clan-id) (time) =
+    GMLicense {
+      gm-id = gm-id,
+      account-id = account-id,
+      clan-id = clan-id,
+      tier = Apprentice,
+      experience = 0,
+      dungeons-created = 0,
+      dungeons-published = 0,
+      total-plays = 0,
+      total-revenue = 0,
+      total-spent = 0,
+      balance = 0,
+      reputation = 0,
+      unlocks = [UnlockMonsterTier 1, UnlockLootTier 1, UnlockFloorCount 3, UnlockRoomSize 8],
+      created-at = time
+    }
+
+  tier-unlocks : GMTier -> List GMUnlock
+  tier-unlocks (tier) =
+    when tier
+      is Apprentice -> [UnlockMonsterTier 1, UnlockLootTier 1, UnlockFloorCount 3, UnlockRoomSize 8]
+      is Journeyman -> [UnlockMonsterTier 2, UnlockLootTier 2, UnlockFloorCount 5, UnlockRoomSize 12, UnlockTrapTypes]
+      is Adept -> [UnlockMonsterTier 3, UnlockLootTier 3, UnlockFloorCount 8, UnlockRoomSize 16, UnlockBossSlot]
+      is Master -> [UnlockMonsterTier 4, UnlockLootTier 4, UnlockFloorCount 12, UnlockRoomSize 24, UnlockCustomMonsters]
+      is Grandmaster -> [UnlockMonsterTier 5, UnlockLootTier 5, UnlockFloorCount 20, UnlockRoomSize 32, UnlockCustomLoot, UnlockMultiDungeon]
+      is Legendary -> [UnlockMonsterTier 6, UnlockLootTier 6, UnlockFloorCount 50, UnlockRoomSize 64, UnlockRaidDesign]
+
+Section: Construction Costs - You pay to build
+
+  MonsterCost = record {
+    tier : Integer,
+    base-cost : Integer,
+    per-hp : Integer,
+    per-attack : Integer,
+    boss-multiplier : Integer
+  }
+
+  monster-cost-for-tier : Integer -> MonsterCost
+  monster-cost-for-tier (tier) =
+    if tier >= 6 then MonsterCost { tier = 6, base-cost = 500, per-hp = 5, per-attack = 10, boss-multiplier = 5 }
+    else if tier >= 5 then MonsterCost { tier = 5, base-cost = 200, per-hp = 4, per-attack = 8, boss-multiplier = 4 }
+    else if tier >= 4 then MonsterCost { tier = 4, base-cost = 100, per-hp = 3, per-attack = 6, boss-multiplier = 3 }
+    else if tier >= 3 then MonsterCost { tier = 3, base-cost = 50, per-hp = 2, per-attack = 4, boss-multiplier = 3 }
+    else if tier >= 2 then MonsterCost { tier = 2, base-cost = 20, per-hp = 1, per-attack = 2, boss-multiplier = 2 }
+    else MonsterCost { tier = 1, base-cost = 5, per-hp = 1, per-attack = 1, boss-multiplier = 2 }
+
+  compute-monster-spawn-cost : Combatant, Integer -> Integer
+  compute-monster-spawn-cost (monster) (tier) =
+    let costs = monster-cost-for-tier tier
+    in let base = costs.base-cost
+    in let hp-cost = monster.max-hp * costs.per-hp
+    in let atk-cost = monster.attack-bonus * costs.per-attack
+    in let boss-mult = if monster.hp >= 100 then costs.boss-multiplier else 1
+    in (base + hp-cost + atk-cost) * boss-mult
+
+  LootPlacementCost = record {
+    tier : Integer,
+    base-cost : Integer,
+    per-value : Integer,
+    rarity-multiplier : Integer
+  }
+
+  loot-cost-for-tier : Integer -> LootPlacementCost
+  loot-cost-for-tier (tier) =
+    if tier >= 5 then LootPlacementCost { tier = 5, base-cost = 300, per-value = 3, rarity-multiplier = 5 }
+    else if tier >= 4 then LootPlacementCost { tier = 4, base-cost = 150, per-value = 2, rarity-multiplier = 4 }
+    else if tier >= 3 then LootPlacementCost { tier = 3, base-cost = 50, per-value = 1, rarity-multiplier = 3 }
+    else if tier >= 2 then LootPlacementCost { tier = 2, base-cost = 20, per-value = 1, rarity-multiplier = 2 }
+    else LootPlacementCost { tier = 1, base-cost = 5, per-value = 1, rarity-multiplier = 1 }
+
+  compute-loot-placement-cost : ItemToken, Integer -> Integer
+  compute-loot-placement-cost (item) (tier) =
+    let costs = loot-cost-for-tier tier
+    in let rarity-mult = when item.rarity
+      is ItemCommon -> 1
+      is ItemUncommon -> 2
+      is ItemRare -> costs.rarity-multiplier
+      is ItemEpic -> costs.rarity-multiplier * 2
+      is ItemLegendary -> costs.rarity-multiplier * 4
+    in costs.base-cost + item.value * costs.per-value * rarity-mult
+
+  FloorCost = record {
+    base-cost : Integer,
+    per-tile : Integer,
+    per-encounter-slot : Integer,
+    per-trap-slot : Integer
+  }
+
+  compute-floor-cost : Integer, Integer, Integer, Integer -> Integer
+  compute-floor-cost (width) (height) (encounter-slots) (trap-slots) =
+    let tiles = width * height
+    in 100 + tiles * 2 + encounter-slots * 25 + trap-slots * 15
+
+  compute-dungeon-total-cost : Dungeon -> Integer
+  compute-dungeon-total-cost (dungeon) =
+    let floor-costs = sum-floor-costs (dungeon.floors) 0 (dungeon.num-floors) 0
+    in let boss-cost = compute-monster-spawn-cost (dungeon.boss) 4
+    in floor-costs + boss-cost + 500
+
+  sum-floor-costs : List DungeonFloor, Integer, Integer, Integer -> Integer
+  sum-floor-costs (floors) (i) (len) (acc) =
+    if i >= len then acc
+    else let f = list-at floors i
+    in let cost = compute-floor-cost (f.map-width) (f.map-height) (list-length (f.encounters)) (list-length (f.traps))
+    in sum-floor-costs floors (i + 1) len (acc + cost)
+
+Section: Revenue Model
+
+  DungeonRevenue = record {
+    dungeon-id : Integer,
+    entry-fee-total : Integer,
+    completion-bonus-total : Integer,
+    tip-total : Integer,
+    plays : Integer,
+    completions : Integer,
+    avg-revenue-per-play : Integer
+  }
+
+  revenue-new : Integer -> DungeonRevenue
+  revenue-new (dungeon-id) =
+    DungeonRevenue { dungeon-id = dungeon-id, entry-fee-total = 0, completion-bonus-total = 0, tip-total = 0, plays = 0, completions = 0, avg-revenue-per-play = 0 }
+
+  record-play : DungeonRevenue, Integer, Boolean, Integer -> DungeonRevenue
+  record-play (rev) (entry-fee) (completed) (tip) =
+    let new-plays = rev.plays + 1
+    in let new-completions = if completed then rev.completions + 1 else rev.completions
+    in let new-entry = rev.entry-fee-total + entry-fee
+    in let new-completion-bonus = if completed then rev.completion-bonus-total + entry-fee / 5 else rev.completion-bonus-total
+    in let new-tips = rev.tip-total + tip
+    in let total-rev = new-entry + new-completion-bonus + new-tips
+    in let avg = if new-plays > 0 then total-rev / new-plays else 0
+    in DungeonRevenue { dungeon-id = rev.dungeon-id, entry-fee-total = new-entry, completion-bonus-total = new-completion-bonus, tip-total = new-tips, plays = new-plays, completions = new-completions, avg-revenue-per-play = avg }
+
+  platform-cut-pct : Integer
+  platform-cut-pct = 15
+
+  clan-cut-pct : Integer
+  clan-cut-pct = 10
+
+  gm-revenue-from-play : Integer -> Integer
+  gm-revenue-from-play (entry-fee) =
+    let platform-cut = entry-fee * platform-cut-pct / 100
+    in let clan-cut = entry-fee * clan-cut-pct / 100
+    in entry-fee - platform-cut - clan-cut
+
+Section: GM Spending Operations
+
+  SpendResult = record {
+    license : GMLicense,
+    success : Boolean,
+    cost : Integer
+  }
+
+  gm-spend : GMLicense, Integer -> SpendResult
+  gm-spend (license) (amount) =
+    if license.balance < amount then SpendResult { license = license, success = False, cost = amount }
+    else let updated = GMLicense {
+      gm-id = license.gm-id,
+      account-id = license.account-id,
+      clan-id = license.clan-id,
+      tier = license.tier,
+      experience = license.experience,
+      dungeons-created = license.dungeons-created,
+      dungeons-published = license.dungeons-published,
+      total-plays = license.total-plays,
+      total-revenue = license.total-revenue,
+      total-spent = license.total-spent + amount,
+      balance = license.balance - amount,
+      reputation = license.reputation,
+      unlocks = license.unlocks,
+      created-at = license.created-at
+    }
+    in SpendResult { license = updated, success = True, cost = amount }
+
+  gm-earn : GMLicense, Integer -> GMLicense
+  gm-earn (license) (amount) =
+    GMLicense {
+      gm-id = license.gm-id,
+      account-id = license.account-id,
+      clan-id = license.clan-id,
+      tier = license.tier,
+      experience = license.experience,
+      dungeons-created = license.dungeons-created,
+      dungeons-published = license.dungeons-published,
+      total-plays = license.total-plays,
+      total-revenue = license.total-revenue + amount,
+      total-spent = license.total-spent,
+      balance = license.balance + amount,
+      reputation = license.reputation,
+      unlocks = license.unlocks,
+      created-at = license.created-at
+    }
+
+  gm-deposit : GMLicense, Integer -> GMLicense
+  gm-deposit (license) (amount) =
+    GMLicense {
+      gm-id = license.gm-id,
+      account-id = license.account-id,
+      clan-id = license.clan-id,
+      tier = license.tier,
+      experience = license.experience,
+      dungeons-created = license.dungeons-created,
+      dungeons-published = license.dungeons-published,
+      total-plays = license.total-plays,
+      total-revenue = license.total-revenue,
+      total-spent = license.total-spent,
+      balance = license.balance + amount,
+      reputation = license.reputation,
+      unlocks = license.unlocks,
+      created-at = license.created-at
+    }
+
+Section: GM Progression
+
+  gm-grant-xp : GMLicense, Integer -> GMLicense
+  gm-grant-xp (license) (xp) =
+    let new-xp = license.experience + xp
+    in let new-tier = compute-gm-tier new-xp
+    in let new-unlocks = if gm-tier-rank new-tier > gm-tier-rank (license.tier) then tier-unlocks new-tier else license.unlocks
+    in GMLicense {
+      gm-id = license.gm-id,
+      account-id = license.account-id,
+      clan-id = license.clan-id,
+      tier = new-tier,
+      experience = new-xp,
+      dungeons-created = license.dungeons-created,
+      dungeons-published = license.dungeons-published,
+      total-plays = license.total-plays,
+      total-revenue = license.total-revenue,
+      total-spent = license.total-spent,
+      balance = license.balance,
+      reputation = license.reputation,
+      unlocks = new-unlocks,
+      created-at = license.created-at
+    }
+
+  gm-record-play : GMLicense, Integer -> GMLicense
+  gm-record-play (license) (revenue) =
+    let xp-earned = 10 + revenue / 10
+    in let license2 = gm-earn license revenue
+    in let license3 = gm-grant-xp license2 xp-earned
+    in GMLicense {
+      gm-id = license3.gm-id,
+      account-id = license3.account-id,
+      clan-id = license3.clan-id,
+      tier = license3.tier,
+      experience = license3.experience,
+      dungeons-created = license3.dungeons-created,
+      dungeons-published = license3.dungeons-published,
+      total-plays = license3.total-plays + 1,
+      total-revenue = license3.total-revenue,
+      total-spent = license3.total-spent,
+      balance = license3.balance,
+      reputation = license3.reputation + 1,
+      unlocks = license3.unlocks,
+      created-at = license3.created-at
+    }
+
+  gm-record-publish : GMLicense -> GMLicense
+  gm-record-publish (license) =
+    let license2 = gm-grant-xp license 100
+    in GMLicense {
+      gm-id = license2.gm-id,
+      account-id = license2.account-id,
+      clan-id = license2.clan-id,
+      tier = license2.tier,
+      experience = license2.experience,
+      dungeons-created = license2.dungeons-created,
+      dungeons-published = license2.dungeons-published + 1,
+      total-plays = license2.total-plays,
+      total-revenue = license2.total-revenue,
+      total-spent = license2.total-spent,
+      balance = license2.balance,
+      reputation = license2.reputation + 10,
+      unlocks = license2.unlocks,
+      created-at = license2.created-at
+    }
+
+Section: Permission Checks - Can the GM afford this content?
+
+  can-spawn-monster : GMLicense, Integer -> Boolean
+  can-spawn-monster (license) (monster-tier) =
+    has-unlock-monster-tier (license.unlocks) monster-tier 0 (list-length (license.unlocks))
+
+  can-place-loot : GMLicense, Integer -> Boolean
+  can-place-loot (license) (loot-tier) =
+    has-unlock-loot-tier (license.unlocks) loot-tier 0 (list-length (license.unlocks))
+
+  can-build-floor : GMLicense, Integer -> Boolean
+  can-build-floor (license) (floor-count) =
+    has-unlock-floor-count (license.unlocks) floor-count 0 (list-length (license.unlocks))
+
+  has-unlock-monster-tier : List GMUnlock, Integer, Integer, Integer -> Boolean
+  has-unlock-monster-tier (unlocks) (tier) (i) (len) =
+    if i >= len then False
+    else let u = list-at unlocks i
+    in when u
+      is UnlockMonsterTier (t) -> if t >= tier then True else has-unlock-monster-tier unlocks tier (i + 1) len
+      is UnlockLootTier (t) -> has-unlock-monster-tier unlocks tier (i + 1) len
+      is UnlockFloorCount (n) -> has-unlock-monster-tier unlocks tier (i + 1) len
+      is UnlockRoomSize (n) -> has-unlock-monster-tier unlocks tier (i + 1) len
+      is UnlockBossSlot -> has-unlock-monster-tier unlocks tier (i + 1) len
+      is UnlockTrapTypes -> has-unlock-monster-tier unlocks tier (i + 1) len
+      is UnlockCustomMonsters -> has-unlock-monster-tier unlocks tier (i + 1) len
+      is UnlockCustomLoot -> has-unlock-monster-tier unlocks tier (i + 1) len
+      is UnlockMultiDungeon -> has-unlock-monster-tier unlocks tier (i + 1) len
+      is UnlockRaidDesign -> has-unlock-monster-tier unlocks tier (i + 1) len
+
+  has-unlock-loot-tier : List GMUnlock, Integer, Integer, Integer -> Boolean
+  has-unlock-loot-tier (unlocks) (tier) (i) (len) =
+    if i >= len then False
+    else let u = list-at unlocks i
+    in when u
+      is UnlockLootTier (t) -> if t >= tier then True else has-unlock-loot-tier unlocks tier (i + 1) len
+      is UnlockMonsterTier (t) -> has-unlock-loot-tier unlocks tier (i + 1) len
+      is UnlockFloorCount (n) -> has-unlock-loot-tier unlocks tier (i + 1) len
+      is UnlockRoomSize (n) -> has-unlock-loot-tier unlocks tier (i + 1) len
+      is UnlockBossSlot -> has-unlock-loot-tier unlocks tier (i + 1) len
+      is UnlockTrapTypes -> has-unlock-loot-tier unlocks tier (i + 1) len
+      is UnlockCustomMonsters -> has-unlock-loot-tier unlocks tier (i + 1) len
+      is UnlockCustomLoot -> has-unlock-loot-tier unlocks tier (i + 1) len
+      is UnlockMultiDungeon -> has-unlock-loot-tier unlocks tier (i + 1) len
+      is UnlockRaidDesign -> has-unlock-loot-tier unlocks tier (i + 1) len
+
+  has-unlock-floor-count : List GMUnlock, Integer, Integer, Integer -> Boolean
+  has-unlock-floor-count (unlocks) (count) (i) (len) =
+    if i >= len then False
+    else let u = list-at unlocks i
+    in when u
+      is UnlockFloorCount (n) -> if n >= count then True else has-unlock-floor-count unlocks count (i + 1) len
+      is UnlockMonsterTier (t) -> has-unlock-floor-count unlocks count (i + 1) len
+      is UnlockLootTier (t) -> has-unlock-floor-count unlocks count (i + 1) len
+      is UnlockRoomSize (n) -> has-unlock-floor-count unlocks count (i + 1) len
+      is UnlockBossSlot -> has-unlock-floor-count unlocks count (i + 1) len
+      is UnlockTrapTypes -> has-unlock-floor-count unlocks count (i + 1) len
+      is UnlockCustomMonsters -> has-unlock-floor-count unlocks count (i + 1) len
+      is UnlockCustomLoot -> has-unlock-floor-count unlocks count (i + 1) len
+      is UnlockMultiDungeon -> has-unlock-floor-count unlocks count (i + 1) len
+      is UnlockRaidDesign -> has-unlock-floor-count unlocks count (i + 1) len
+
+Section: Full Spawn Transaction - Permission + Cost + Debit
+
+  SpawnMonsterResult = record {
+    license : GMLicense,
+    success : Boolean,
+    reason : Text,
+    cost : Integer
+  }
+
+  spawn-monster-in-dungeon : GMLicense, Combatant, Integer -> SpawnMonsterResult
+  spawn-monster-in-dungeon (license) (monster) (tier) =
+    if can-spawn-monster license tier == False then SpawnMonsterResult { license = license, success = False, reason = "Monster tier locked", cost = 0 }
+    else let cost = compute-monster-spawn-cost monster tier
+    in let spend = gm-spend license cost
+    in if spend.success == False then SpawnMonsterResult { license = license, success = False, reason = "Insufficient balance", cost = cost }
+    else SpawnMonsterResult { license = spend.license, success = True, reason = "", cost = cost }
+
+  PlaceLootResult = record {
+    license : GMLicense,
+    success : Boolean,
+    reason : Text,
+    cost : Integer
+  }
+
+  place-loot-in-dungeon : GMLicense, ItemToken, Integer -> PlaceLootResult
+  place-loot-in-dungeon (license) (item) (tier) =
+    if can-place-loot license tier == False then PlaceLootResult { license = license, success = False, reason = "Loot tier locked", cost = 0 }
+    else let cost = compute-loot-placement-cost item tier
+    in let spend = gm-spend license cost
+    in if spend.success == False then PlaceLootResult { license = license, success = False, reason = "Insufficient balance", cost = cost }
+    else PlaceLootResult { license = spend.license, success = True, reason = "", cost = cost }
+
+  BuildFloorResult = record {
+    license : GMLicense,
+    success : Boolean,
+    reason : Text,
+    cost : Integer
+  }
+
+  build-dungeon-floor : GMLicense, Integer, Integer, Integer, Integer, Integer -> BuildFloorResult
+  build-dungeon-floor (license) (current-floors) (width) (height) (encounters) (traps) =
+    if can-build-floor license (current-floors + 1) == False then BuildFloorResult { license = license, success = False, reason = "Floor count locked", cost = 0 }
+    else let cost = compute-floor-cost width height encounters traps
+    in let spend = gm-spend license cost
+    in if spend.success == False then BuildFloorResult { license = license, success = False, reason = "Insufficient balance", cost = cost }
+    else BuildFloorResult { license = spend.license, success = True, reason = "", cost = cost }
+
+Section: Dungeon Economics Summary
+
+  DungeonEconomics = record {
+    dungeon-id : Integer,
+    construction-cost : Integer,
+    monster-cost-total : Integer,
+    loot-cost-total : Integer,
+    revenue-total : Integer,
+    profit : Integer,
+    roi-pct : Integer,
+    break-even-plays : Integer
+  }
+
+  compute-dungeon-economics : Integer, Integer, Integer, Integer, Integer, Integer -> DungeonEconomics
+  compute-dungeon-economics (dungeon-id) (construction) (monsters) (loot) (revenue) (entry-fee) =
+    let total-cost = construction + monsters + loot
+    in let profit = revenue - total-cost
+    in let roi = if total-cost > 0 then profit * 100 / total-cost else 0
+    in let gm-per-play = gm-revenue-from-play entry-fee
+    in let break-even = if gm-per-play > 0 then total-cost / gm-per-play else 0
+    in DungeonEconomics { dungeon-id = dungeon-id, construction-cost = construction, monster-cost-total = monsters, loot-cost-total = loot, revenue-total = revenue, profit = profit, roi-pct = roi, break-even-plays = break-even }
+
+Page 1

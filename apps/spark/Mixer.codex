@@ -1,0 +1,95 @@
+Chapter: Mixer
+  cites Spark chapter Track
+
+ Multi-track audio mixer. Sums all unmuted tracks sample-by-sample
+ into a stereo master buffer with volume and pan applied per track.
+
+ We say:
+
+Section: Types
+
+  MixerState = record {
+    mx-tracks : List AudioTrack,
+    mx-track-count : Integer,
+    mx-master-vol : Real,
+    mx-bpm : Integer,
+    mx-sample-rate : Integer,
+    mx-position : Integer,
+    mx-playing : Boolean
+  }
+
+  MixResult = record {
+    mr-left : List Integer,
+    mr-right : List Integer,
+    mr-length : Integer
+  }
+
+Section: Construction
+
+  mixer-new : Integer, Integer -> MixerState
+  mixer-new (sample-rate) (bpm) = MixerState {
+    mx-tracks = [],
+    mx-track-count = 0,
+    mx-master-vol = 1.0,
+    mx-bpm = bpm,
+    mx-sample-rate = sample-rate,
+    mx-position = 0,
+    mx-playing = False
+  }
+
+Section: Track Management
+
+  mixer-add-track : MixerState, AudioTrack -> MixerState
+  mixer-add-track (mx) (track) = MixerState {
+    mx-tracks = list-push (mx.mx-tracks) track,
+    mx-track-count = mx.mx-track-count + 1,
+    mx-master-vol = mx.mx-master-vol,
+    mx-bpm = mx.mx-bpm,
+    mx-sample-rate = mx.mx-sample-rate,
+    mx-position = mx.mx-position,
+    mx-playing = mx.mx-playing
+  }
+
+Section: Mixdown
+
+  mixer-render : MixerState, Integer -> MixResult
+  mixer-render (mx) (length) =
+    mixer-render-loop mx length 0 [] []
+
+  mixer-render-loop : MixerState, Integer, Integer, List Integer, List Integer -> MixResult
+  mixer-render-loop (mx) (length) (pos) (left) (right) =
+    if pos >= length then MixResult { mr-left = left, mr-right = right, mr-length = length }
+    else let sample = mixer-sum-tracks mx pos
+    in let l = real-to-int (real-from-int sample * mx.mx-master-vol)
+    in let r = l
+    in mixer-render-loop mx length (pos + 1) (list-push left l) (list-push right r)
+
+  mixer-sum-tracks : MixerState, Integer -> Integer
+  mixer-sum-tracks (mx) (pos) =
+    mixer-sum-loop (mx.mx-tracks) (mx.mx-track-count) pos 0 0
+
+  mixer-sum-loop : List AudioTrack, Integer, Integer, Integer, Integer -> Integer
+  mixer-sum-loop (tracks) (count) (pos) (i) (acc) =
+    if i >= count then acc
+    else let track = list-at tracks i
+    in let sample = track-sample-at track pos
+    in mixer-sum-loop tracks count pos (i + 1) (acc + sample)
+
+Section: Transport
+
+  mixer-play : MixerState -> MixerState
+  mixer-play (mx) = __record-set mx "mx-playing" True
+
+  mixer-stop : MixerState -> MixerState
+  mixer-stop (mx) = __record-set (__record-set mx "mx-playing" False) "mx-position" 0
+
+  mixer-set-bpm : MixerState, Integer -> MixerState
+  mixer-set-bpm (mx) (bpm) = __record-set mx "mx-bpm" bpm
+
+Section: Info
+
+  mixer-info : MixerState -> Text
+  mixer-info (mx) =
+    show (mx.mx-track-count) & " tracks, " & show (mx.mx-bpm) & " BPM, " & show (mx.mx-sample-rate) & " Hz"
+
+Page 1

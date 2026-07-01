@@ -1,0 +1,139 @@
+Chapter: Calculus
+  cites Mathbook chapter Expr
+  cites Mathbook chapter Simplify
+
+ Symbolic differentiation and integration. The differentiator
+ implements the standard rules: sum, product, quotient, chain,
+ power, trig, exponential, logarithmic. The integrator handles
+ polynomial, trig, exponential, and power-rule integrals. Both
+ produce symbolic expressions that feed back into the simplifier.
+
+Section: Differentiation
+
+  differentiate : Expr, Text -> Expr
+  differentiate (e) (var) = simplify (diff-raw e var)
+
+  diff-raw : Expr, Text -> Expr
+  diff-raw (e) (var) = when e
+    is ExInt (n) -> ExInt 0
+    is ExRatio (n) (d) -> ExInt 0
+    is ExFloat (n) -> ExInt 0
+    is ExPi -> ExInt 0
+    is ExE -> ExInt 0
+    is ExVar (name) -> if name == var then ExInt 1 else ExInt 0
+    is ExAdd (a) (b) -> ExAdd (diff-raw a var) (diff-raw b var)
+    is ExSub (a) (b) -> ExSub (diff-raw a var) (diff-raw b var)
+    is ExMul (a) (b) -> ExAdd (ExMul (diff-raw a var) b) (ExMul a (diff-raw b var))
+    is ExDiv (a) (b) -> ExDiv (ExSub (ExMul (diff-raw a var) b) (ExMul a (diff-raw b var))) (ExPow b (ExInt 2))
+    is ExPow (base) (ExInt n) -> ExMul (ExInt n) (ExMul (ExPow base (ExInt (n - 1))) (diff-raw base var))
+    is ExPow (ExE) (exp) -> ExMul (ExPow ExE exp) (diff-raw exp var)
+    is ExPow (base) (exp) ->
+      if ex-contains-var base var then
+        if ex-contains-var exp var then
+          ExMul (ExPow base exp) (ExAdd (ExMul (diff-raw exp var) (ExFn "ln" [base])) (ExMul exp (ExDiv (diff-raw base var) base)))
+        else ExMul exp (ExMul (ExPow base (ExSub exp (ExInt 1))) (diff-raw base var))
+      else ExMul (ExMul (ExPow base exp) (ExFn "ln" [base])) (diff-raw exp var)
+    is ExNeg (a) -> ExNeg (diff-raw a var)
+    is ExSqrt (a) -> ExDiv (diff-raw a var) (ExMul (ExInt 2) (ExSqrt a))
+    is ExAbs (a) -> ExMul (ExDiv a (ExAbs a)) (diff-raw a var)
+    is ExFn (name) (args) -> diff-fn name args var
+    is otherwise -> ExInt 0
+
+  diff-fn : Text, List Expr, Text -> Expr
+  diff-fn (name) (args) (var) =
+    if list-length args /= 1 then ExDeriv (ExFn name args) var
+    else let u = list-at args 0
+    in let du = diff-raw u var
+    in let inner = diff-fn-inner name u
+    in ExMul inner du
+
+  diff-fn-inner : Text, Expr -> Expr
+  diff-fn-inner (name) (u) =
+    if name == "sin" then ExFn "cos" [u]
+    else if name == "cos" then ExNeg (ExFn "sin" [u])
+    else if name == "tan" then ExDiv (ExInt 1) (ExPow (ExFn "cos" [u]) (ExInt 2))
+    else if name == "ln" then ExDiv (ExInt 1) u
+    else if name == "asin" then ExDiv (ExInt 1) (ExSqrt (ExSub (ExInt 1) (ExPow u (ExInt 2))))
+    else if name == "acos" then ExNeg (ExDiv (ExInt 1) (ExSqrt (ExSub (ExInt 1) (ExPow u (ExInt 2)))))
+    else if name == "atan" then ExDiv (ExInt 1) (ExAdd (ExInt 1) (ExPow u (ExInt 2)))
+    else if name == "sinh" then ExFn "cosh" [u]
+    else if name == "cosh" then ExFn "sinh" [u]
+    else if name == "tanh" then ExDiv (ExInt 1) (ExPow (ExFn "cosh" [u]) (ExInt 2))
+    else if name == "exp" then ExPow ExE u
+    else ExDeriv (ExFn name [u]) "x"
+
+Section: Integration (basic rules)
+
+  integrate : Expr, Text -> Expr
+  integrate (e) (var) = simplify (int-raw e var)
+
+  int-raw : Expr, Text -> Expr
+  int-raw (e) (var) = when e
+    is ExInt (n) -> ExMul (ExInt n) (ExVar var)
+    is ExRatio (n) (d) -> ExMul (ExRatio n d) (ExVar var)
+    is ExVar (name) -> if name == var then ExDiv (ExPow (ExVar var) (ExInt 2)) (ExInt 2) else ExMul e (ExVar var)
+    is ExAdd (a) (b) -> ExAdd (int-raw a var) (int-raw b var)
+    is ExSub (a) (b) -> ExSub (int-raw a var) (int-raw b var)
+    is ExMul (ExInt n) (b) -> ExMul (ExInt n) (int-raw b var)
+    is ExMul (a) (ExInt n) -> ExMul (ExInt n) (int-raw a var)
+    is ExPow (ExVar name) (ExInt n) ->
+      if name == var then
+        if n == (-1) then ExFn "ln" [ExAbs (ExVar var)]
+        else ExDiv (ExPow (ExVar var) (ExInt (n + 1))) (ExInt (n + 1))
+      else ExMul e (ExVar var)
+    is ExPow (ExE) (ExVar name) ->
+      if name == var then ExPow ExE (ExVar var)
+      else ExMul e (ExVar var)
+    is ExFn (name) (args) -> int-fn name args var
+    is ExNeg (a) -> ExNeg (int-raw a var)
+    is otherwise -> ExIntegral e var
+
+  int-fn : Text, List Expr, Text -> Expr
+  int-fn (name) (args) (var) =
+    if list-length args /= 1 then ExIntegral (ExFn name args) var
+    else let u = list-at args 0
+    in when u
+      is ExVar (v) ->
+        if v == var then
+          if name == "sin" then ExNeg (ExFn "cos" [ExVar var])
+          else if name == "cos" then ExFn "sin" [ExVar var]
+          else if name == "exp" then ExPow ExE (ExVar var)
+          else if name == "tan" then ExNeg (ExFn "ln" [ExAbs (ExFn "cos" [ExVar var])])
+          else if name == "sec" then ExFn "ln" [ExAbs (ExAdd (ExFn "sec" [ExVar var]) (ExFn "tan" [ExVar var]))]
+          else ExIntegral (ExFn name args) var
+        else ExMul (ExFn name args) (ExVar var)
+      is otherwise -> ExIntegral (ExFn name args) var
+
+Section: Higher Derivatives
+
+  nth-derivative : Expr, Text, Integer -> Expr
+  nth-derivative (e) (var) (n) =
+    if n <= 0 then e
+    else nth-derivative (differentiate e var) var (n - 1)
+
+Section: Taylor Series
+
+  taylor-series : Expr, Text, Expr, Integer -> Expr
+  taylor-series (f) (var) (center) (terms) =
+    taylor-loop f var center 0 terms (ExInt 0)
+
+  taylor-loop : Expr, Text, Expr, Integer, Integer, Expr -> Expr
+  taylor-loop (f) (var) (center) (k) (n) (acc) =
+    if k >= n then acc
+    else let dk = nth-derivative f var k
+    in let at-center = simplify (ex-subst dk var center)
+    in let coefficient = ExDiv at-center (ExInt (ex-factorial k))
+    in let term = ExMul coefficient (ExPow (ExSub (ExVar var) center) (ExInt k))
+    in taylor-loop f var center (k + 1) n (ExAdd acc term)
+
+Section: Gradient (multi-variable)
+
+  gradient : Expr, List Text -> List Expr
+  gradient (f) (vars) = grad-loop f vars 0 (list-length vars) []
+
+  grad-loop : Expr, List Text, Integer, Integer, List Expr -> List Expr
+  grad-loop (f) (vars) (i) (n) (acc) =
+    if i >= n then acc
+    else grad-loop f vars (i + 1) n (list-push acc (differentiate f (list-at vars i)))
+
+Page 1

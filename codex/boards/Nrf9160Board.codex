@@ -1,0 +1,383 @@
+Chapter: Nrf9160Board
+  cites Foreword chapter Board
+  cites Foreword chapter Units (Duration, Frequency)
+  cites Foreword chapter TextSearch
+  cites Foreword chapter StringUtils
+
+ Board support for Nordic nRF9160 (ARM Cortex-M33 @ 64 MHz).
+ Register addresses from nRF9160 Product Specification v2.1.
+ The nRF9160 has a secure and non-secure partition; application
+ code runs in non-secure mode. The modem co-processor handles
+ LTE-M / NB-IoT; the app core talks to it via IPC.
+
+ Flash at 0x00000000, SRAM at 0x20000000 (256 KB), peripherals
+ at 0x40000000+ (non-secure alias) / 0x50000000+ (secure alias).
+
+Section: Core Addresses
+
+  nrf91-flash-base : Integer = #00000000
+  nrf91-sram-base : Integer = #20000000
+  nrf91-sram-size : Integer = #40000
+
+Section: CLOCK (0x40005000)
+
+  nrf91-clock-base : Integer = #40005000
+  nrf91-clock-hfclkstart : Integer = #40005000
+  nrf91-clock-hfclkstarted : Integer = #40005100
+
+  nrf91-clock-start-hfclk : Integer
+  nrf91-clock-start-hfclk =
+   let w = mmio-write-32 nrf91-clock-hfclkstart 1
+   in nrf91-clock-wait nrf91-clock-hfclkstarted 100000
+
+  nrf91-clock-wait : Integer, Integer -> Integer
+  nrf91-clock-wait (event-addr) (fuel) =
+   if fuel <= 0 then 0
+   else if mmio-read-32 event-addr > 0 then 1
+   else nrf91-clock-wait event-addr (fuel - 1)
+
+Section: GPIO (P0: 0x50842500 secure, 0x40842500 non-secure)
+
+  nrf91-gpio-base : Integer = #40842500
+  nrf91-gpio-out-off : Integer = #004
+  nrf91-gpio-outset-off : Integer = #008
+  nrf91-gpio-outclr-off : Integer = #00C
+  nrf91-gpio-in-off : Integer = #010
+  nrf91-gpio-dir-off : Integer = #014
+  nrf91-gpio-dirset-off : Integer = #018
+  nrf91-gpio-dirclr-off : Integer = #01C
+  nrf91-gpio-pincnf-base-off : Integer = #200
+
+  nrf91-gpio-set-output : Integer -> Integer
+  nrf91-gpio-set-output (pin) =
+   let dirset = mmio-write-32 (nrf91-gpio-base + nrf91-gpio-dirset-off) (bit-shl 1 pin)
+   in let cnf-addr = nrf91-gpio-base + nrf91-gpio-pincnf-base-off + (pin * 4)
+   in mmio-write-32 cnf-addr 3
+
+  nrf91-gpio-set-input : Integer -> Integer
+  nrf91-gpio-set-input (pin) =
+   let dirclr = mmio-write-32 (nrf91-gpio-base + nrf91-gpio-dirclr-off) (bit-shl 1 pin)
+   in let cnf-addr = nrf91-gpio-base + nrf91-gpio-pincnf-base-off + (pin * 4)
+   in mmio-write-32 cnf-addr 0
+
+  nrf91-gpio-set-pull : Integer, Integer -> Integer
+  nrf91-gpio-set-pull (pin) (pull) =
+   let cnf-addr = nrf91-gpio-base + nrf91-gpio-pincnf-base-off + (pin * 4)
+   in let cnf = mmio-read-32 cnf-addr
+   in let cleared = bit-and cnf (bit-xor #0C (0 - 1))
+   in mmio-write-32 cnf-addr (bit-or cleared (bit-shl pull 2))
+
+  nrf91-gpio-write : Integer, Boolean -> Integer
+  nrf91-gpio-write (pin) (high) =
+   if high then mmio-write-32 (nrf91-gpio-base + nrf91-gpio-outset-off) (bit-shl 1 pin)
+   else mmio-write-32 (nrf91-gpio-base + nrf91-gpio-outclr-off) (bit-shl 1 pin)
+
+  nrf91-gpio-read : Integer -> Boolean
+  nrf91-gpio-read (pin) =
+   bit-and (bit-shru (mmio-read-32 (nrf91-gpio-base + nrf91-gpio-in-off)) pin) 1 == 1
+
+  nrf91-gpio-toggle : Integer -> Integer
+  nrf91-gpio-toggle (pin) =
+   let out = mmio-read-32 (nrf91-gpio-base + nrf91-gpio-out-off)
+   in let bit = bit-and (bit-shru out pin) 1
+   in if bit == 1 then mmio-write-32 (nrf91-gpio-base + nrf91-gpio-outclr-off) (bit-shl 1 pin)
+      else mmio-write-32 (nrf91-gpio-base + nrf91-gpio-outset-off) (bit-shl 1 pin)
+
+Section: UARTE0 (0x40008000)
+
+  nrf91-uarte0-base : Integer = #40008000
+  nrf91-uarte-starttx-off : Integer = #008
+  nrf91-uarte-endtx-off : Integer = #120
+  nrf91-uarte-enable-off : Integer = #500
+  nrf91-uarte-baudrate-off : Integer = #524
+  nrf91-uarte-txd-ptr-off : Integer = #544
+  nrf91-uarte-txd-maxcnt-off : Integer = #548
+  nrf91-uarte-psel-txd-off : Integer = #50C
+
+  nrf91-baud-115200 : Integer = #01D7E000
+
+  nrf91-uarte-init : Frequency -> Integer
+  nrf91-uarte-init (baud-code) =
+   let pin-tx = mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-psel-txd-off) 1
+   in let baud = mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-baudrate-off) baud-code
+   in mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-enable-off) 8
+
+  nrf91-uarte-send-byte : Integer -> Integer
+  nrf91-uarte-send-byte (byte) =
+   let buf-addr = nrf91-sram-base + nrf91-sram-size - 64
+   in let w-buf = mmio-write-32 buf-addr (bit-and byte #FF)
+   in let w-ptr = mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-txd-ptr-off) buf-addr
+   in let w-cnt = mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-txd-maxcnt-off) 1
+   in let clr = mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-endtx-off) 0
+   in let start = mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-starttx-off) 1
+   in nrf91-uarte-wait-endtx 10000
+
+  nrf91-uarte-wait-endtx : Integer -> Integer
+  nrf91-uarte-wait-endtx (fuel) =
+   if fuel <= 0 then 0
+   else if mmio-read-32 (nrf91-uarte0-base + nrf91-uarte-endtx-off) > 0 then 1
+   else nrf91-uarte-wait-endtx (fuel - 1)
+
+  nrf91-uarte-print : Text -> Integer
+  nrf91-uarte-print (s) = nrf91-uarte-send-text s 0 (text-length s)
+
+  nrf91-uarte-send-text : Text, Integer, Integer -> Integer
+  nrf91-uarte-send-text (s) (i) (len) =
+   if i >= len then 0
+   else let b = nrf91-uarte-send-byte (char-code (char-at s i))
+     in nrf91-uarte-send-text s (i + 1) len
+
+  nrf91-uarte-println : Text -> Integer
+  nrf91-uarte-println (s) =
+   let p = nrf91-uarte-print s
+   in let cr = nrf91-uarte-send-byte 13
+   in nrf91-uarte-send-byte 10
+
+Section: SPIM0 (0x40008000 instance 2)
+
+  nrf91-spim-base : Integer = #4000A000
+  nrf91-spim-start-off : Integer = #010
+  nrf91-spim-end-off : Integer = #118
+  nrf91-spim-enable-off : Integer = #500
+  nrf91-spim-frequency-off : Integer = #524
+  nrf91-spim-txd-ptr-off : Integer = #544
+  nrf91-spim-txd-maxcnt-off : Integer = #548
+  nrf91-spim-rxd-ptr-off : Integer = #534
+  nrf91-spim-rxd-maxcnt-off : Integer = #538
+  nrf91-spim-psel-sck-off : Integer = #508
+  nrf91-spim-psel-mosi-off : Integer = #50C
+  nrf91-spim-psel-miso-off : Integer = #510
+
+  nrf91-spim-init : Integer, Integer, Integer -> Integer
+  nrf91-spim-init (sck) (mosi) (miso) =
+   let p-sck = mmio-write-32 (nrf91-spim-base + nrf91-spim-psel-sck-off) sck
+   in let p-mosi = mmio-write-32 (nrf91-spim-base + nrf91-spim-psel-mosi-off) mosi
+   in let p-miso = mmio-write-32 (nrf91-spim-base + nrf91-spim-psel-miso-off) miso
+   in let freq = mmio-write-32 (nrf91-spim-base + nrf91-spim-frequency-off) #10000000
+   in mmio-write-32 (nrf91-spim-base + nrf91-spim-enable-off) 7
+
+  nrf91-spim-transfer : Integer -> Integer
+  nrf91-spim-transfer (byte) =
+   let buf = nrf91-sram-base + nrf91-sram-size - 128
+   in let w-buf = mmio-write-32 buf (bit-and byte #FF)
+   in let w-txptr = mmio-write-32 (nrf91-spim-base + nrf91-spim-txd-ptr-off) buf
+   in let w-txcnt = mmio-write-32 (nrf91-spim-base + nrf91-spim-txd-maxcnt-off) 1
+   in let rx-buf = buf + 4
+   in let w-rxptr = mmio-write-32 (nrf91-spim-base + nrf91-spim-rxd-ptr-off) rx-buf
+   in let w-rxcnt = mmio-write-32 (nrf91-spim-base + nrf91-spim-rxd-maxcnt-off) 1
+   in let clr = mmio-write-32 (nrf91-spim-base + nrf91-spim-end-off) 0
+   in let start = mmio-write-32 (nrf91-spim-base + nrf91-spim-start-off) 1
+   in let wait = nrf91-spim-wait-end 10000
+   in bit-and (mmio-read-32 rx-buf) #FF
+
+  nrf91-spim-wait-end : Integer -> Integer
+  nrf91-spim-wait-end (fuel) =
+   if fuel <= 0 then 0
+   else if mmio-read-32 (nrf91-spim-base + nrf91-spim-end-off) > 0 then 1
+   else nrf91-spim-wait-end (fuel - 1)
+
+Section: TWIM0 (I2C, 0x40008000 instance 3)
+
+  nrf91-twim-base : Integer = #4000C000
+  nrf91-twim-starttx-off : Integer = #008
+  nrf91-twim-stop-off : Integer = #014
+  nrf91-twim-stopped-off : Integer = #104
+  nrf91-twim-enable-off : Integer = #500
+  nrf91-twim-frequency-off : Integer = #524
+  nrf91-twim-address-off : Integer = #588
+  nrf91-twim-txd-ptr-off : Integer = #544
+  nrf91-twim-txd-maxcnt-off : Integer = #548
+  nrf91-twim-rxd-ptr-off : Integer = #534
+  nrf91-twim-rxd-maxcnt-off : Integer = #538
+  nrf91-twim-psel-scl-off : Integer = #508
+  nrf91-twim-psel-sda-off : Integer = #50C
+
+  nrf91-twim-init : Integer, Integer -> Integer
+  nrf91-twim-init (scl) (sda) =
+   let p-scl = mmio-write-32 (nrf91-twim-base + nrf91-twim-psel-scl-off) scl
+   in let p-sda = mmio-write-32 (nrf91-twim-base + nrf91-twim-psel-sda-off) sda
+   in let freq = mmio-write-32 (nrf91-twim-base + nrf91-twim-frequency-off) #01980000
+   in mmio-write-32 (nrf91-twim-base + nrf91-twim-enable-off) 6
+
+  nrf91-twim-write-reg : Integer, Integer, Integer -> Integer
+  nrf91-twim-write-reg (dev-addr) (reg) (value) =
+   let buf = nrf91-sram-base + nrf91-sram-size - 192
+   in let w-reg = mmio-write-32 buf reg
+   in let w-val = mmio-write-32 (buf + 1) value
+   in let w-addr = mmio-write-32 (nrf91-twim-base + nrf91-twim-address-off) dev-addr
+   in let w-ptr = mmio-write-32 (nrf91-twim-base + nrf91-twim-txd-ptr-off) buf
+   in let w-cnt = mmio-write-32 (nrf91-twim-base + nrf91-twim-txd-maxcnt-off) 2
+   in let clr = mmio-write-32 (nrf91-twim-base + nrf91-twim-stopped-off) 0
+   in let start = mmio-write-32 (nrf91-twim-base + nrf91-twim-starttx-off) 1
+   in nrf91-twim-wait-stopped 10000
+
+  nrf91-twim-read-reg : Integer, Integer -> Integer
+  nrf91-twim-read-reg (dev-addr) (reg) =
+   let tx-buf = nrf91-sram-base + nrf91-sram-size - 192
+   in let rx-buf = nrf91-sram-base + nrf91-sram-size - 256
+   in let w-reg = mmio-write-32 tx-buf reg
+   in let w-addr = mmio-write-32 (nrf91-twim-base + nrf91-twim-address-off) dev-addr
+   in let w-txptr = mmio-write-32 (nrf91-twim-base + nrf91-twim-txd-ptr-off) tx-buf
+   in let w-txcnt = mmio-write-32 (nrf91-twim-base + nrf91-twim-txd-maxcnt-off) 1
+   in let w-rxptr = mmio-write-32 (nrf91-twim-base + nrf91-twim-rxd-ptr-off) rx-buf
+   in let w-rxcnt = mmio-write-32 (nrf91-twim-base + nrf91-twim-rxd-maxcnt-off) 1
+   in let clr = mmio-write-32 (nrf91-twim-base + nrf91-twim-stopped-off) 0
+   in let start = mmio-write-32 (nrf91-twim-base + nrf91-twim-starttx-off) 1
+   in let wait = nrf91-twim-wait-stopped 10000
+   in bit-and (mmio-read-32 rx-buf) #FF
+
+  nrf91-twim-wait-stopped : Integer -> Integer
+  nrf91-twim-wait-stopped (fuel) =
+   if fuel <= 0 then 0
+   else if mmio-read-32 (nrf91-twim-base + nrf91-twim-stopped-off) > 0 then 1
+   else nrf91-twim-wait-stopped (fuel - 1)
+
+Section: IPC (Inter-Processor Communication, 0x4002A000)
+
+  nrf91-ipc-base : Integer = #4002A000
+  nrf91-ipc-send-off : Integer = #000
+  nrf91-ipc-receive-off : Integer = #004
+  nrf91-ipc-events-receive-off : Integer = #108
+  nrf91-ipc-send-cnf-off : Integer = #510
+  nrf91-ipc-receive-cnf-off : Integer = #550
+  nrf91-ipc-gpmem0-off : Integer = #660
+  nrf91-ipc-gpmem1-off : Integer = #664
+
+  nrf91-ipc-init : Integer
+  nrf91-ipc-init =
+   let send-cnf = mmio-write-32 (nrf91-ipc-base + nrf91-ipc-send-cnf-off) 1
+   in mmio-write-32 (nrf91-ipc-base + nrf91-ipc-receive-cnf-off) 1
+
+  nrf91-ipc-send-signal : Integer -> Integer
+  nrf91-ipc-send-signal (channel) =
+   mmio-write-32 (nrf91-ipc-base + nrf91-ipc-send-off + (channel * 4)) 1
+
+  nrf91-ipc-check-event : Integer -> Boolean
+  nrf91-ipc-check-event (channel) =
+   mmio-read-32 (nrf91-ipc-base + nrf91-ipc-events-receive-off + (channel * 4)) > 0
+
+  nrf91-ipc-clear-event : Integer -> Integer
+  nrf91-ipc-clear-event (channel) =
+   mmio-write-32 (nrf91-ipc-base + nrf91-ipc-events-receive-off + (channel * 4)) 0
+
+  nrf91-ipc-write-gpmem : Integer, Integer -> Integer
+  nrf91-ipc-write-gpmem (index) (value) =
+   mmio-write-32 (nrf91-ipc-base + nrf91-ipc-gpmem0-off + (index * 4)) value
+
+  nrf91-ipc-read-gpmem : Integer -> Integer
+  nrf91-ipc-read-gpmem (index) =
+   mmio-read-32 (nrf91-ipc-base + nrf91-ipc-gpmem0-off + (index * 4))
+
+Section: AT Command Builder
+
+  AtCommand =
+    | AtCfun (Integer)
+    | AtCops
+    | AtCesq
+    | AtCgdcont (Integer) (Text)
+
+  at-command-text : AtCommand -> Text
+  at-command-text (cmd) =
+   when cmd
+    is AtCfun (mode) -> "AT+CFUN=" & show mode
+    is AtCops -> "AT+COPS?"
+    is AtCesq -> "AT+CESQ"
+    is AtCgdcont (cid) (apn) -> "AT+CGDCONT=" & show cid & ",\"IP\",\"" & apn & "\""
+
+Section: AT Response Parser
+
+ Modem responses follow the format:
+   +COPS: <mode>,<format>,<oper>,<act>
+   +CESQ: <rxlev>,<ber>,<rscp>,<ecno>,<rsrq>,<rsrp>
+   +CGDCONT: <cid>,<PDP_type>,<APN>,...
+   OK / ERROR
+
+  AtResponse =
+    | AtOk
+    | AtError
+    | AtCopsResponse (Integer) (Text)
+    | AtCesqResponse (Integer) (Integer)
+    | AtCgdcontResponse (Integer) (Text)
+    | AtUnknown (Text)
+
+  at-parse-response : Text -> AtResponse
+  at-parse-response (line) =
+   if line == "OK" then AtOk
+   else if line == "ERROR" then AtError
+   else if text-starts-with line "+COPS:" then at-parse-cops line
+   else if text-starts-with line "+CESQ:" then at-parse-cesq line
+   else if text-starts-with line "+CGDCONT:" then at-parse-cgdcont line
+   else AtUnknown line
+
+  at-parse-cops : Text -> AtResponse
+  at-parse-cops (line) =
+   let after-colon = text-drop line 7
+   in let parts = text-split after-colon ","
+   in if list-length parts >= 3
+      then let mode = at-parse-int (text-trim (list-at parts 0))
+           in let oper = text-trim (at-strip-quotes (list-at parts 2))
+           in AtCopsResponse mode oper
+      else AtUnknown line
+
+  at-parse-cesq : Text -> AtResponse
+  at-parse-cesq (line) =
+   let after-colon = text-drop line 7
+   in let parts = text-split after-colon ","
+   in if list-length parts >= 6
+      then let rsrq = at-parse-int (text-trim (list-at parts 4))
+           in let rsrp = at-parse-int (text-trim (list-at parts 5))
+           in AtCesqResponse rsrq rsrp
+      else AtUnknown line
+
+  at-parse-cgdcont : Text -> AtResponse
+  at-parse-cgdcont (line) =
+   let after-colon = text-drop line 10
+   in let parts = text-split after-colon ","
+   in if list-length parts >= 3
+      then let cid = at-parse-int (text-trim (list-at parts 0))
+           in let apn = text-trim (at-strip-quotes (list-at parts 2))
+           in AtCgdcontResponse cid apn
+      else AtUnknown line
+
+  at-strip-quotes : Text -> Text
+  at-strip-quotes (s) =
+   let len = text-length s
+   in if len >= 2 then
+     if char-at s 0 == char-at "\"" 0
+     then text-substring s 1 (len - 2)
+     else s
+   else s
+
+  at-parse-int : Text -> Integer
+  at-parse-int (s) = at-parse-int-loop s 0 (text-length s) 0
+
+  at-parse-int-loop : Text, Integer, Integer, Integer -> Integer
+  at-parse-int-loop (s) (i) (len) (acc) =
+   if i >= len then acc
+   else let c = char-code (char-at s i)
+   in if c >= 3 then
+     if c <= 12 then at-parse-int-loop s (i + 1) len (acc * 10 + (c - 3))
+     else acc
+   else acc
+
+  at-response-name : AtResponse -> Text
+  at-response-name (r) =
+   when r
+    is AtOk -> "OK"
+    is AtError -> "ERROR"
+    is AtCopsResponse (mode) (oper) -> "COPS"
+    is AtCesqResponse (rsrq) (rsrp) -> "CESQ"
+    is AtCgdcontResponse (cid) (apn) -> "CGDCONT"
+    is AtUnknown (line) -> "UNKNOWN"
+
+Section: Delay
+
+  nrf91-delay-loops : Integer, Integer -> Integer
+  nrf91-delay-loops (n) (i) =
+   if i >= n then 0
+   else nrf91-delay-loops n (i + 1)
+
+  nrf91-delay-ms : Duration -> Integer
+  nrf91-delay-ms (ms) = nrf91-delay-loops (ms * 1500) 0
+
+Page 1

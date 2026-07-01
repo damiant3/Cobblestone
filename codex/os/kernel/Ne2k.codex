@@ -1,0 +1,70 @@
+Chapter: Ne2k
+
+ NE2000 NIC driver. Writes frames directly to the NE2000 data port
+ via port I/O, matching the nic-ping test pattern.
+
+Section: Constants
+
+  ne2k-max-frame : Integer = 1536
+  ne2k-cr-port : Integer = 768
+  ne2k-tpsr-port : Integer = 772
+  ne2k-tbcr0-port : Integer = 773
+  ne2k-tbcr1-port : Integer = 774
+  ne2k-isr-port : Integer = 775
+  ne2k-rsar0-port : Integer = 776
+  ne2k-rsar1-port : Integer = 777
+  ne2k-rbcr0-port : Integer = 778
+  ne2k-rbcr1-port : Integer = 779
+  ne2k-data-port : Integer = 784
+  ne2k-tx-page : Integer = 64
+
+Section: Send
+
+  ne2k-setup-dma-write : Integer, Integer -> Integer
+  ne2k-setup-dma-write (page) (count) =
+   let a = port-out-byte ne2k-rsar0-port 0
+   in let b = port-out-byte ne2k-rsar1-port page
+   in let c = port-out-byte ne2k-rbcr0-port (bit-and count 255)
+   in let d = port-out-byte ne2k-rbcr1-port (bit-shr count 8)
+   in port-out-byte ne2k-cr-port 18
+
+  ne2k-write-frame-bytes : List Integer, Integer, Integer -> Integer
+  ne2k-write-frame-bytes (bs) (i) (len) =
+   if i >= len then i
+   else let w = port-out-byte ne2k-data-port (list-at bs i)
+   in ne2k-write-frame-bytes bs (i + 1) len
+
+  ne2k-transmit : Integer -> Integer
+  ne2k-transmit (count) =
+   let a = port-out-byte ne2k-tpsr-port ne2k-tx-page
+   in let b = port-out-byte ne2k-tbcr0-port (bit-and count 255)
+   in let c = port-out-byte ne2k-tbcr1-port (bit-shr count 8)
+   in port-out-byte ne2k-cr-port 38
+
+  ne2k-send-frame : List Integer -> Integer
+  ne2k-send-frame (frame) =
+   let len = list-length frame
+   in if len > ne2k-max-frame then 0
+   else let dma = ne2k-setup-dma-write ne2k-tx-page len
+   in let written = ne2k-write-frame-bytes frame 0 len
+   in ne2k-transmit (len + written - written)
+
+Section: Receive
+
+  ne2k-recv-frame : List Integer
+  ne2k-recv-frame =
+   let len = net-recv-raw 33056
+   in if len <= 0 then []
+   else ne2k-read-from-buf 33056 0 len []
+
+  ne2k-read-from-buf : Integer, Integer, Integer, List Integer -> List Integer
+  ne2k-read-from-buf (base) (i) (len) (acc) =
+   if i >= len then acc
+   else ne2k-read-from-buf base (i + 1) len (list-push acc (peek-byte base i))
+
+Section: Status
+
+  ne2k-available : Boolean
+  ne2k-available = net-status > 0
+
+Page 1

@@ -1,0 +1,95 @@
+Chapter: GroupAdmin
+  cites Net chapter GroupMembership
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Group administration UI. Visualizes the mesh — members with status
+ and role, the leader, services with their locations and roles,
+ election state, and the trust scores that gate membership. This is
+ the admin view for the leaderless domain. Wired into the CVMM
+ shell as a management panel.
+
+Section: Group Dashboard
+
+  group-overview-widget : GroupState -> WidgetNode
+  group-overview-widget (gs) =
+    let title = widget-label "grp-title" ("Group: " & gs.gs-group-name)
+    in let gen = widget-label "grp-gen" ("Generation: " & show (gs.gs-generation))
+    in let leader = widget-label "grp-leader" ("Leader: " & gs.gs-leader-id & (if gs.gs-is-leader then " (self)" else ""))
+    in let alive = gs-alive-count gs
+    in let summary = widget-label "grp-summary" (show alive & "/" & show (gs.gs-member-count) & " alive, " & show (gs.gs-service-count) & " services")
+    in let election = if gs.gs-election-in-progress then widget-label "grp-elec" "ELECTION IN PROGRESS" else widget-label "grp-elec" ""
+    in widget-panel "grp-overview" DirColumn 4 [title, gen, leader, summary, election]
+
+Section: Member Table
+
+  grp-member-row : GroupMember -> WidgetNode
+  grp-member-row (m) =
+    let id-lbl = widget-label (m.gm-id & "-id") (m.gm-id)
+    in let name-lbl = widget-label (m.gm-id & "-name") (m.gm-name)
+    in let addr-lbl = widget-label (m.gm-id & "-addr") (m.gm-address & ":" & show (m.gm-port))
+    in let role-lbl = widget-label (m.gm-id & "-role") (role-label (m.gm-role))
+    in let status-lbl = widget-label (m.gm-id & "-status") (ms-label (m.gm-status))
+    in let trust-lbl = widget-label (m.gm-id & "-trust") ("trust: " & show (m.gm-trust-score))
+    in let svc-count = widget-label (m.gm-id & "-svcs") (show (m.gm-service-count) & " svcs")
+    in let row = widget-panel (m.gm-id) DirRow 8 [id-lbl, name-lbl, addr-lbl, role-lbl, status-lbl, trust-lbl, svc-count]
+    in if member-is-alive m then row
+    else widget-set-state row 3
+
+  grp-member-table : GroupState -> WidgetNode
+  grp-member-table (gs) =
+    let title = widget-label "mem-title" "Members"
+    in let rows = grp-mem-rows (gs.gs-members) 0 (gs.gs-member-count) []
+    in widget-panel "member-table" DirColumn 2 ([title] & rows)
+
+  grp-mem-rows : List GroupMember, Integer, Integer, List WidgetNode -> List WidgetNode
+  grp-mem-rows (members) (i) (n) (acc) =
+    if i >= n then acc
+    else grp-mem-rows members (i + 1) n (list-push acc (grp-member-row (list-at members i)))
+
+Section: Service Registry Table
+
+  grp-service-row : ServiceLocation -> WidgetNode
+  grp-service-row (loc) =
+    let svc = widget-label (loc.sl-service & "-" & loc.sl-member-id & "-svc") (loc.sl-service)
+    in let ver = widget-label (loc.sl-service & "-" & loc.sl-member-id & "-ver") (loc.sl-version)
+    in let member = widget-label (loc.sl-service & "-" & loc.sl-member-id & "-mem") (loc.sl-member-id)
+    in let addr = widget-label (loc.sl-service & "-" & loc.sl-member-id & "-addr") (loc.sl-address & ":" & show (loc.sl-port))
+    in let role-lbl = widget-label (loc.sl-service & "-" & loc.sl-member-id & "-role") (sr-label (loc.sl-role))
+    in let health = widget-gauge (loc.sl-service & "-" & loc.sl-member-id & "-health") (loc.sl-health / 100) 100
+    in let load = widget-gauge (loc.sl-service & "-" & loc.sl-member-id & "-load") (loc.sl-load) 100
+    in widget-panel (loc.sl-service & "-" & loc.sl-member-id) DirRow 8 [svc, ver, member, addr, role-lbl, health, load]
+
+  grp-service-table : GroupState -> WidgetNode
+  grp-service-table (gs) =
+    let title = widget-label "svc-reg-title" "Service Registry"
+    in let unique = gs-unique-services gs
+    in let unique-lbl = widget-label "svc-unique" (show (list-length unique) & " unique services, " & show (gs.gs-service-count) & " instances")
+    in let rows = grp-svc-rows (gs.gs-services) 0 (gs.gs-service-count) []
+    in widget-panel "service-registry" DirColumn 2 ([title, unique-lbl] & rows)
+
+  grp-svc-rows : List ServiceLocation, Integer, Integer, List WidgetNode -> List WidgetNode
+  grp-svc-rows (svcs) (i) (n) (acc) =
+    if i >= n then acc
+    else grp-svc-rows svcs (i + 1) n (list-push acc (grp-service-row (list-at svcs i)))
+
+Section: Full Admin Widget
+
+  grp-admin-widget : GroupState -> WidgetNode
+  grp-admin-widget (gs) =
+    let overview = group-overview-widget gs
+    in let sep1 = widget-separator "grp-sep1"
+    in let members = grp-member-table gs
+    in let sep2 = widget-separator "grp-sep2"
+    in let services = grp-service-table gs
+    in let actions = widget-toolbar "grp-actions" [
+      widget-button "grp-election" "Force Election",
+      widget-button "grp-yield" "Yield Leadership",
+      widget-button "grp-announce" "Announce Service",
+      widget-button "grp-refresh" "Refresh"
+    ]
+    in widget-panel "group-admin" DirColumn 8 [overview, actions, sep1, members, sep2, services]
+
+Page 1

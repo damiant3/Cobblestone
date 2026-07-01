@@ -1,0 +1,180 @@
+Chapter: Synth
+  cites Signal chapter Envelope
+  cites Foreword chapter Units (Frequency)
+
+ Audio synthesis primitives. Oscillators (sine, square, sawtooth,
+ triangle), low-pass filter, mixer, and note sequencer. Fixed-point
+ (scale 1000). Sample rate is caller-defined via step size.
+
+ We say:
+
+Section: Oscillators
+  osc-sine : Integer, Integer -> Integer
+  osc-sine (phase) (amplitude) =
+    let x = phase
+    in let x3 = x * x / 1000 * x / 1000
+    in let x5 = x3 * x / 1000 * x / 1000
+    in amplitude * (x - x3 / 6 + x5 / 120) / 1000
+
+  osc-square : Integer, Integer -> Integer
+  osc-square (phase) (amplitude) =
+    if phase >= 0 then amplitude else -amplitude
+
+  osc-saw : Integer, Integer -> Integer
+  osc-saw (phase) (amplitude) =
+    amplitude * phase / 3142
+
+  osc-triangle : Integer, Integer -> Integer
+  osc-triangle (phase) (amplitude) =
+    let abs-phase = if phase < 0 then -phase else phase
+    in amplitude * (3142 - 2 * abs-phase) / 3142
+
+Section: Phase Accumulation
+  synth-phase : Integer, Integer, Integer -> Integer
+  synth-phase (freq) (sample-idx) (sample-rate) =
+    let period = sample-rate * 1000 / freq
+    in let pos = sample-idx * 1000 * 6283 / period
+    in let wrapped = pos - pos / 6283 * 6283
+    in wrapped - 3142
+
+Section: Waveform Generation
+  WaveType = | WaveSine | WaveSquare | WaveSaw | WaveTriangle
+
+  synth-sample : WaveType, Integer, Integer -> Integer
+  synth-sample (wave) (phase) (amp) = when wave
+    is WaveSine -> osc-sine phase amp
+    is WaveSquare -> osc-square phase amp
+    is WaveSaw -> osc-saw phase amp
+    is WaveTriangle -> osc-triangle phase amp
+
+  synth-generate : WaveType, Frequency, Integer, Frequency, Integer -> List Integer
+  synth-generate (wave) (freq) (amp) (sample-rate) (num-samples) =
+    synth-gen-loop wave freq amp sample-rate num-samples 0 []
+
+  synth-gen-loop : WaveType, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  synth-gen-loop (wave) (freq) (amp) (sr) (n) (i) (acc) =
+    if i >= n then acc
+    else let phase = synth-phase freq i sr
+    in synth-gen-loop wave freq amp sr n (i + 1) (list-push acc (synth-sample wave phase amp))
+
+Section: Low-Pass Filter (Single-Pole IIR)
+  LpfState = record { lpf-prev : Integer, lpf-alpha : Integer }
+
+  lpf-new : Integer -> LpfState
+  lpf-new (alpha) = LpfState { lpf-prev = 0, lpf-alpha = alpha }
+
+  lpf-tick : LpfState, Integer -> LpfState
+  lpf-tick (state) (input) =
+    let a = state.lpf-alpha
+    in let out = (a * input + (1000 - a) * state.lpf-prev) / 1000
+    in LpfState { lpf-prev = out, lpf-alpha = a }
+
+  lpf-value : LpfState -> Integer
+  lpf-value (state) = state.lpf-prev
+
+  lpf-apply : Integer, List Integer -> List Integer
+  lpf-apply (alpha) (samples) = lpf-apply-loop (lpf-new alpha) samples 0 (list-length samples) []
+
+  lpf-apply-loop : LpfState, List Integer, Integer, Integer, List Integer -> List Integer
+  lpf-apply-loop (state) (samples) (i) (n) (acc) =
+    if i >= n then acc
+    else let new-state = lpf-tick state (list-at samples i)
+    in lpf-apply-loop new-state samples (i + 1) n (list-push acc (lpf-value new-state))
+
+Section: Mixer
+  mix-signals : List Integer, List Integer, Integer, Integer -> List Integer
+  mix-signals (a) (b) (vol-a) (vol-b) =
+    mix-loop a b vol-a vol-b 0 (synth-min-len (list-length a) (list-length b)) []
+
+  mix-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mix-loop (a) (b) (va) (vb) (i) (n) (acc) =
+    if i >= n then acc
+    else let mixed = (list-at a i) * va / 1000 + (list-at b i) * vb / 1000
+    in mix-loop a b va vb (i + 1) n (list-push acc mixed)
+
+  synth-min-len : Integer, Integer -> Integer
+  synth-min-len (a) (b) = if a < b then a else b
+
+  mix-scale : List Integer, Integer -> List Integer
+  mix-scale (samples) (vol) = mix-scale-loop samples vol 0 (list-length samples) []
+
+  mix-scale-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mix-scale-loop (samples) (vol) (i) (n) (acc) =
+    if i >= n then acc
+    else mix-scale-loop samples vol (i + 1) n (list-push acc ((list-at samples i) * vol / 1000))
+
+Section: Envelope Application
+  synth-apply-env : List Integer, AdsrEnvelope, Integer, Integer -> List Integer
+  synth-apply-env (samples) (env) (sample-rate) (note-off-sample) =
+    synth-env-loop samples env sample-rate note-off-sample 0 (list-length samples) []
+
+  synth-env-loop : List Integer, AdsrEnvelope, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  synth-env-loop (samples) (env) (sr) (note-off) (i) (n) (acc) =
+    if i >= n then acc
+    else let time = i * 1000 / sr
+    in let released = i >= note-off
+    in let note-off-time = note-off * 1000 / sr
+    in let amp = adsr-eval env time note-off-time released
+    in let val = (list-at samples i) * amp / 1000
+    in synth-env-loop samples env sr note-off (i + 1) n (list-push acc val)
+
+Section: Note Sequencer
+  Note = record { note-freq : Frequency, note-start : Integer, note-duration : Integer, note-wave : WaveType }
+
+  note-new : Frequency, Integer, Integer, WaveType -> Note
+  note-new (freq) (start) (dur) (wave) = Note { note-freq = freq, note-start = start, note-duration = dur, note-wave = wave }
+
+  synth-render-note : Note, Integer, Integer, AdsrEnvelope -> List Integer
+  synth-render-note (note) (amp) (sample-rate) (env) =
+    let total-samples = (note.note-duration + env.env-release) * sample-rate / 1000
+    in let raw = synth-generate (note.note-wave) (note.note-freq) amp sample-rate total-samples
+    in let note-off = note.note-duration * sample-rate / 1000
+    in synth-apply-env raw env sample-rate note-off
+
+Section: Analysis Helpers
+  synth-peak : List Integer -> Integer
+  synth-peak (samples) = synth-peak-loop samples 0 (list-length samples) 0
+
+  synth-peak-loop : List Integer, Integer, Integer, Integer -> Integer
+  synth-peak-loop (samples) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at samples i
+    in let abs-v = if v < 0 then -v else v
+    in synth-peak-loop samples (i + 1) n (if abs-v > best then abs-v else best)
+
+  synth-rms : List Integer -> Integer
+  synth-rms (samples) =
+    let n = list-length samples
+    in if n == 0 then 0
+    else let sum-sq = synth-sum-sq samples 0 n 0
+    in synth-isqrt (sum-sq / n)
+
+  synth-sum-sq : List Integer, Integer, Integer, Integer -> Integer
+  synth-sum-sq (samples) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at samples i
+    in synth-sum-sq samples (i + 1) n (acc + v * v / 1000)
+
+  synth-isqrt : Integer -> Integer
+  synth-isqrt (n) = if n <= 0 then 0 else synth-isqrt-loop n (n / 2 + 1)
+
+  synth-isqrt-loop : Integer, Integer -> Integer
+  synth-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else synth-isqrt-loop n next
+
+  synth-zero-crossings : List Integer -> Integer
+  synth-zero-crossings (samples) =
+    let n = list-length samples
+    in if n < 2 then 0
+    else synth-zc-loop samples 1 n 0
+
+  synth-zc-loop : List Integer, Integer, Integer, Integer -> Integer
+  synth-zc-loop (samples) (i) (n) (count) =
+    if i >= n then count
+    else let prev = list-at samples (i - 1)
+    in let curr = list-at samples i
+    in let crossed = if prev >= 0 then curr < 0 else curr >= 0
+    in synth-zc-loop samples (i + 1) n (if crossed then count + 1 else count)
+
+Page 1

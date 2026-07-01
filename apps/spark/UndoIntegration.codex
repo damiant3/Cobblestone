@@ -1,0 +1,152 @@
+Chapter: UndoIntegration
+  cites Spark chapter History
+  cites Spark chapter Project
+
+ Undo/redo integration across all Spark editors. Wraps
+ project-level operations into undoable actions that push
+ onto the shared undo stack. Each action stores enough
+ state to reverse the operation.
+
+ We say:
+
+Section: Types
+
+  SparkAction =
+    | ActAddObject (Text) (Integer)
+    | ActDeleteObject (Integer)
+    | ActMoveObject (Integer) (Vec3) (Vec3)
+    | ActRotateObject (Integer) (Quat) (Quat)
+    | ActScaleObject (Integer) (Vec3) (Vec3)
+    | ActSetColor (Integer) (Integer) (Integer)
+    | ActCanvasPaint (Integer) (Integer) (Integer) (Integer)
+    | ActSetMode (EditorMode) (EditorMode)
+
+  UndoEntry = record {
+    ue-action : SparkAction,
+    ue-description : Text
+  }
+
+  UndoManager = record {
+    um-stack : List UndoEntry,
+    um-redo-stack : List UndoEntry,
+    um-stack-count : Integer,
+    um-redo-count : Integer,
+    um-max-entries : Integer
+  }
+
+Section: Construction
+
+  undo-manager-new : Integer -> UndoManager
+  undo-manager-new (max) = UndoManager {
+    um-stack = [],
+    um-redo-stack = [],
+    um-stack-count = 0,
+    um-redo-count = 0,
+    um-max-entries = max
+  }
+
+Section: Push
+
+  undo-push : UndoManager, SparkAction, Text -> UndoManager
+  undo-push (um) (action) (desc) =
+    let entry = UndoEntry { ue-action = action, ue-description = desc }
+    in let new-count = if um.um-stack-count >= um.um-max-entries then um.um-max-entries else um.um-stack-count + 1
+    in UndoManager {
+      um-stack = list-push (um.um-stack) entry,
+      um-redo-stack = [],
+      um-stack-count = new-count,
+      um-redo-count = 0,
+      um-max-entries = um.um-max-entries
+    }
+
+Section: Undo
+
+  undo-pop : UndoManager -> UndoManager
+  undo-pop (um) =
+    if um.um-stack-count == 0 then um
+    else let top = list-at (um.um-stack) (um.um-stack-count - 1)
+    in UndoManager {
+      um-stack = um.um-stack,
+      um-redo-stack = list-push (um.um-redo-stack) top,
+      um-stack-count = um.um-stack-count - 1,
+      um-redo-count = um.um-redo-count + 1,
+      um-max-entries = um.um-max-entries
+    }
+
+  undo-peek : UndoManager -> SparkAction
+  undo-peek (um) =
+    if um.um-stack-count == 0 then ActSetMode ModeModel ModeModel
+    else let top = list-at (um.um-stack) (um.um-stack-count - 1)
+    in top.ue-action
+
+  undo-peek-desc : UndoManager -> Text
+  undo-peek-desc (um) =
+    if um.um-stack-count == 0 then "nothing"
+    else let top = list-at (um.um-stack) (um.um-stack-count - 1)
+    in top.ue-description
+
+Section: Redo
+
+  redo-pop : UndoManager -> UndoManager
+  redo-pop (um) =
+    if um.um-redo-count == 0 then um
+    else let top = list-at (um.um-redo-stack) (um.um-redo-count - 1)
+    in UndoManager {
+      um-stack = list-push (um.um-stack) top,
+      um-redo-stack = um.um-redo-stack,
+      um-stack-count = um.um-stack-count + 1,
+      um-redo-count = um.um-redo-count - 1,
+      um-max-entries = um.um-max-entries
+    }
+
+  redo-peek-desc : UndoManager -> Text
+  redo-peek-desc (um) =
+    if um.um-redo-count == 0 then "nothing"
+    else let top = list-at (um.um-redo-stack) (um.um-redo-count - 1)
+    in top.ue-description
+
+Section: Apply
+
+  undo-apply : SparkProject, SparkAction -> SparkProject
+  undo-apply (proj) (action) =
+    when action
+      is ActMoveObject (idx) (old-pos) (new-pos) ->
+        let obj = project-get-object proj idx
+        in let moved = __record-set obj "so-position" new-pos
+        in __record-set proj "sp-objects" (list-set-at (proj.sp-objects) idx moved)
+      is ActSetColor (idx) (old-color) (new-color) ->
+        let obj = project-get-object proj idx
+        in let colored = __record-set obj "so-color" new-color
+        in __record-set proj "sp-objects" (list-set-at (proj.sp-objects) idx colored)
+      is ActSetMode (old-mode) (new-mode) -> project-set-mode proj new-mode
+      is otherwise -> proj
+
+  undo-reverse : SparkProject, SparkAction -> SparkProject
+  undo-reverse (proj) (action) =
+    when action
+      is ActMoveObject (idx) (old-pos) (new-pos) ->
+        let obj = project-get-object proj idx
+        in let moved = __record-set obj "so-position" old-pos
+        in __record-set proj "sp-objects" (list-set-at (proj.sp-objects) idx moved)
+      is ActSetColor (idx) (old-color) (new-color) ->
+        let obj = project-get-object proj idx
+        in let colored = __record-set obj "so-color" old-color
+        in __record-set proj "sp-objects" (list-set-at (proj.sp-objects) idx colored)
+      is ActSetMode (old-mode) (new-mode) -> project-set-mode proj old-mode
+      is otherwise -> proj
+
+Section: Convenience
+
+  undo-can-undo : UndoManager -> Boolean
+  undo-can-undo (um) = um.um-stack-count > 0
+
+  undo-can-redo : UndoManager -> Boolean
+  undo-can-redo (um) = um.um-redo-count > 0
+
+Section: Info
+
+  undo-info : UndoManager -> Text
+  undo-info (um) =
+    "undo=" & show (um.um-stack-count) & " redo=" & show (um.um-redo-count)
+
+Page 1

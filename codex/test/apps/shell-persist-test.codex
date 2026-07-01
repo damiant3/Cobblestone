@@ -1,0 +1,76 @@
+Chapter: ShellPersistTest
+  cites Works chapter ShellPersistence
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Foreword chapter TextSearch
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Helpers
+  format-trust-pair : TrustPair -> Text
+  format-trust-pair (p) = "key=" & pair-key p & " val=" & show (pair-val p)
+
+  format-policy-parsed : PolicyParsed -> Text
+  format-policy-parsed (pr) =
+    if pr.cap == "*" then "name=" & pr.name & " cap=" & pr.cap
+    else "name=" & pr.name & " cap=" & pr.cap & " dir=" & show (pr.dir)
+
+Section: Tests
+  test-parse-trust : Text =
+    let result = parse-trust-entry "alice=9500"
+    in when result
+      is Just (p) -> format-trust-pair p
+      is None -> "none"
+
+  test-parse-trust-bad : Text =
+    let result = parse-trust-entry "baddata"
+    in when result
+      is Just (p) -> format-trust-pair p
+      is None -> "none"
+
+  test-parse-policy : Text =
+    let result = parse-policy-entry "allow-fs=FileSystem:1"
+    in when result
+      is Just (pr) -> format-policy-parsed pr
+      is None -> "none"
+
+  test-parse-policy-star : Text =
+    let result = parse-policy-entry "allow-all=*:0"
+    in when result
+      is Just (pr) -> format-policy-parsed pr
+      is None -> "none"
+
+  test-encode-manifest : Text =
+    let s0 = shell-init (policy-empty "codex-os") 100
+    in let r1 = execute-cmd (CmdTrust "alice" 9000) s0
+    in let r2 = execute-cmd (CmdTrust "bob" 7000) (r1.new-state)
+    in let r3 = execute-cmd (CmdAddRule "allow-console" "Console" 2) (r2.new-state)
+    in let m = build-manifest (r3.new-state) ["alice", "bob"]
+    in encode-manifest m
+
+  test-decode-manifest : Text =
+    let m = decode-manifest "T:alice=9000,bob=7000|P:allow-console=Console:2"
+    in "t=" & m.trust-data & " p=" & m.policy-data
+
+  test-restore : Text =
+    let m = decode-manifest "T:alice=9000,bob=7000|P:allow-console=Console:2,allow-fs=FileSystem:1"
+    in let state = restore-shell-state m 100
+    in let a-score = lattice-trust-score (state.lattice) "alice"
+    in let b-score = lattice-trust-score (state.lattice) "bob"
+    in let rule-count = list-length ((state.policy).rules)
+    in "alice=" & show a-score & " bob=" & show b-score & " rules=" & show rule-count
+
+  opening : [Console] Nothing = act
+    print-line-uni test-parse-trust
+    print-line-uni test-parse-trust-bad
+    print-line-uni test-parse-policy
+    print-line-uni test-parse-policy-star
+    print-line-uni test-encode-manifest
+    print-line-uni test-decode-manifest
+    print-line-uni test-restore
+  end

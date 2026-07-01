@@ -1,0 +1,186 @@
+Chapter: Action
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+
+ State-based actions. Checked whenever a player would receive
+ priority. General life at zero loses the game. Creatures with
+ lethal damage or zero toughness die. Exsanguinate kills. Legend rule.
+ Deck-out check. SBA loop runs until stable or iteration cap.
+
+ We say:
+
+Section: SBA Check
+
+  check-state-based-actions : GameState -> GameState
+  check-state-based-actions (gs) = check-sba-loop gs 0
+
+  check-sba-loop : GameState, Integer -> GameState
+  check-sba-loop (gs) (iterations) =
+    if iterations >= 500 then gs
+    else let result = apply-all-sbas gs
+    in if result.changed then check-sba-loop (result.state) (iterations + 1)
+    else result.state
+
+  SbaResult = record {
+    state : GameState,
+    changed : Boolean
+  }
+
+  apply-all-sbas : GameState -> SbaResult
+  apply-all-sbas (gs) =
+    let bf-before = list-length (gs.battlefield)
+    in let go-before = gs.game-over
+    in let gs1 = check-general-life gs
+    in let gs2 = check-deckout gs1
+    in let gs3 = check-zero-toughness gs2
+    in let gs4 = check-lethal-damage gs3
+    in let gs5 = check-deathtouch-kills gs4
+    in let gs6 = check-legend-rule gs5
+    in let changed = (gs6.game-over /= go-before) | (list-length (gs6.battlefield) /= bf-before)
+    in SbaResult { state = gs6, changed = changed }
+
+Section: General Life Check
+
+  check-general-life : GameState -> GameState
+  check-general-life (gs) =
+    let p0 = get-player gs 0
+    in let p1 = get-player gs 1
+    in if p0.general.life <= 0 then game-set-winner gs 1
+    else if p1.general.life <= 0 then game-set-winner gs 0
+    else gs
+
+  game-set-winner : GameState, Integer -> GameState
+  game-set-winner (gs) (winner) = GameState { players = gs.players, generals = gs.generals, battlefield = gs.battlefield, active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = True, winner = winner, templates = gs.templates }
+
+Section: Deck-out Check
+
+  check-deckout : GameState -> GameState
+  check-deckout (gs) =
+    if gs.game-over then gs
+    else let p0 = get-player gs 0
+    in let p1 = get-player gs 1
+    in if list-length (p0.library) == 0 then game-set-winner gs 1
+    else if list-length (p1.library) == 0 then game-set-winner gs 0
+    else gs
+
+Section: Zero Toughness
+
+  check-zero-toughness : GameState -> GameState
+  check-zero-toughness (gs) = sba-zero-tou-loop gs 0
+
+  sba-zero-tou-loop : GameState, Integer -> GameState
+  sba-zero-tou-loop (gs) (i) =
+    if i >= list-length (gs.battlefield) then gs
+    else let perm = list-at (gs.battlefield) i
+    in let template = list-at (gs.templates) (perm.template-id)
+    in when template.card-type
+      is Creature ->
+        let toughness = template.toughness + perm.toughness-mod
+        in if toughness <= 0 then
+          let gs2 = destroy-permanent gs (perm.id)
+          in sba-zero-tou-loop gs2 i
+        else sba-zero-tou-loop gs (i + 1)
+      is otherwise -> sba-zero-tou-loop gs (i + 1)
+
+Section: Lethal Damage
+
+  check-lethal-damage : GameState -> GameState
+  check-lethal-damage (gs) = sba-lethal-loop gs 0
+
+  sba-lethal-loop : GameState, Integer -> GameState
+  sba-lethal-loop (gs) (i) =
+    if i >= list-length (gs.battlefield) then gs
+    else let perm = list-at (gs.battlefield) i
+    in let template = list-at (gs.templates) (perm.template-id)
+    in when template.card-type
+      is Creature ->
+        let toughness = template.toughness + perm.toughness-mod
+        in if perm.damage-marked >= toughness then
+          if has-keyword (perm.keywords) Indestructible then sba-lethal-loop gs (i + 1)
+          else let gs2 = destroy-permanent gs (perm.id) in sba-lethal-loop gs2 i
+        else sba-lethal-loop gs (i + 1)
+      is otherwise -> sba-lethal-loop gs (i + 1)
+
+Section: Exsanguinate
+
+  check-deathtouch-kills : GameState -> GameState
+  check-deathtouch-kills (gs) = sba-deathtouch-loop gs 0
+
+  sba-deathtouch-loop : GameState, Integer -> GameState
+  sba-deathtouch-loop (gs) (i) =
+    if i >= list-length (gs.battlefield) then gs
+    else let perm = list-at (gs.battlefield) i
+    in let template = list-at (gs.templates) (perm.template-id)
+    in when template.card-type
+      is Creature ->
+        if perm.damage-marked > 0 then
+          if is-deathtouch-marked perm then
+            if has-keyword (perm.keywords) Indestructible then sba-deathtouch-loop gs (i + 1)
+            else let gs2 = destroy-permanent gs (perm.id) in sba-deathtouch-loop gs2 i
+          else sba-deathtouch-loop gs (i + 1)
+        else sba-deathtouch-loop gs (i + 1)
+      is otherwise -> sba-deathtouch-loop gs (i + 1)
+
+  is-deathtouch-marked : Permanent -> Boolean
+  is-deathtouch-marked (perm) = perm.counters < 0
+
+  mark-deathtouch : Permanent -> Permanent
+  mark-deathtouch (perm) = Permanent { id = perm.id, card-id = perm.card-id, template-id = perm.template-id, controller = perm.controller, owner = perm.owner, tapped = perm.tapped, summoning-sick = perm.summoning-sick, damage-marked = perm.damage-marked, counters = -1, keywords = perm.keywords, attached-to = perm.attached-to, power-mod = perm.power-mod, toughness-mod = perm.toughness-mod, defense-mod = perm.defense-mod }
+
+Section: Legend Rule
+
+  check-legend-rule : GameState -> GameState
+  check-legend-rule (gs) = sba-legend-loop gs 0
+
+  sba-legend-loop : GameState, Integer -> GameState
+  sba-legend-loop (gs) (i) =
+    if i >= list-length (gs.battlefield) then gs
+    else let perm = list-at (gs.battlefield) i
+    in let template = list-at (gs.templates) (perm.template-id)
+    in if template.is-legendary then
+      let dupe = find-legend-duplicate (gs.battlefield) (gs.templates) perm (i + 1) (list-length (gs.battlefield))
+      in if dupe >= 0 then
+        let gs2 = destroy-permanent gs dupe
+        in sba-legend-loop gs2 i
+      else sba-legend-loop gs (i + 1)
+    else sba-legend-loop gs (i + 1)
+
+  find-legend-duplicate : List Permanent, List CardTemplate, Permanent, Integer, Integer -> Integer
+  find-legend-duplicate (perms) (templates) (original) (i) (len) =
+    if i >= len then -1
+    else let perm = list-at perms i
+    in if perm.controller == original.controller then
+      let t = list-at templates (perm.template-id)
+      in let orig-t = list-at templates (original.template-id)
+      in if t.is-legendary then
+        if t.name == orig-t.name then perm.id
+        else find-legend-duplicate perms templates original (i + 1) len
+      else find-legend-duplicate perms templates original (i + 1) len
+    else find-legend-duplicate perms templates original (i + 1) len
+
+Section: Destroy Permanent
+
+  destroy-permanent : GameState, Integer -> GameState
+  destroy-permanent (gs) (perm-id) =
+    let owner-idx = find-permanent-owner (gs.battlefield) perm-id 0 (list-length (gs.battlefield))
+    in let p = get-player gs owner-idx
+    in let p2 = player-add-to-graveyard p perm-id
+    in let gs2 = set-player gs owner-idx p2
+    in let new-bf = remove-permanent-from-list (gs2.battlefield) perm-id 0 (list-length (gs2.battlefield)) []
+    in GameState { players = gs2.players, generals = gs2.generals, battlefield = new-bf, active-player = gs2.active-player, priority-player = gs2.priority-player, turn-number = gs2.turn-number, phase = gs2.phase, step = gs2.step, next-permanent-id = gs2.next-permanent-id, next-instance-id = gs2.next-instance-id, game-over = gs2.game-over, winner = gs2.winner, templates = gs2.templates }
+
+  find-permanent-owner : List Permanent, Integer, Integer, Integer -> Integer
+  find-permanent-owner (perms) (perm-id) (i) (len) =
+    if i >= len then 0
+    else let perm = list-at perms i
+    in if perm.id == perm-id then perm.owner
+    else find-permanent-owner perms perm-id (i + 1) len
+
+  remove-permanent-from-list : List Permanent, Integer, Integer, Integer, List Permanent -> List Permanent
+  remove-permanent-from-list (perms) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in if perm.id == target then remove-permanent-from-list perms target (i + 1) len acc
+    else remove-permanent-from-list perms target (i + 1) len (list-push acc perm)
+
+Page 1

@@ -1,0 +1,234 @@
+Chapter: FinApAr
+  cites ERP chapter ErpTypes
+  cites ERP chapter ErpConfig
+  cites ERP chapter FinGL
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Accounts Payable and Accounts Receivable subledgers. AP handles
+ vendor invoices, payment runs, and aging. AR handles customer
+ invoices, cash receipts, and collections. Both post to GL via
+ control accounts.
+
+Section: AP Operations
+
+  create-ap-invoice : GlState, ErpConfig, Vendor, Text, Integer, List ApInvoiceLine, Integer -> (GlState, ApInvoice)
+  create-ap-invoice (st) (cfg) (vendor) (inv-num) (date) (lines) (ts) =
+    let (st2, id) = gl-gen-id st "API"
+    in let total = sum-ap-lines lines 0 0
+    in let tax = sum-ap-tax lines (cfg.cfg-sales-tax-bps) 0 0
+    in let inv = ApInvoice {
+      api-id = id, api-vendor-id = vendor.vnd-id, api-company = st.gl-company,
+      api-invoice-num = inv-num, api-date = date,
+      api-due-date = date + 30, api-amount = total, api-tax-amount = tax,
+      api-currency = vendor.vnd-currency, api-lines = lines,
+      api-status = ApPending, api-po-ref = "", api-gr-ref = "",
+      api-payment-ref = "", api-three-way-match = False, api-created = ts
+    }
+    in let log2 = log-info-msg (st2.gl-log) "ap" ("invoice " & inv-num & " from " & vendor.vnd-name & " for " & show total) ts
+    in ((__record-set st2 "gl-log" log2), inv)
+
+  sum-ap-lines : List ApInvoiceLine, Integer, Integer -> Integer
+  sum-ap-lines (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else sum-ap-lines lines (i + 1) (acc + (list-at lines i).apl-amount)
+
+  sum-ap-tax : List ApInvoiceLine, Integer, Integer, Integer -> Integer
+  sum-ap-tax (lines) (rate-bps) (i) (acc) =
+    if i >= list-length lines then acc
+    else let l = list-at lines i
+    in sum-ap-tax lines rate-bps (i + 1) (acc + l.apl-amount * rate-bps / 10000)
+
+  ap-post-invoice : GlState, ErpConfig, ApInvoice -> (GlState, PostResult)
+  ap-post-invoice (st) (cfg) (inv) =
+    let am = cfg.cfg-accounts
+    in let je = JournalEntry {
+      je-id = "AP-" & inv.api-id,
+      je-company = inv.api-company,
+      je-date = inv.api-date,
+      je-period = cfg.cfg-period, je-year = cfg.cfg-year,
+      je-description = "AP Invoice " & inv.api-invoice-num & " - " & inv.api-vendor-id,
+      je-lines = ap-invoice-je-lines (inv.api-lines) [journal-line-debit (am.am-input-tax) (inv.api-tax-amount) "" "Input tax receivable", journal-line-credit (am.am-ap-control) (inv.api-amount + inv.api-tax-amount) "" "Accounts payable"] 0,
+      je-source = SrcAP,
+      je-posted = False, je-reversed = False, je-reversal-of = "",
+      je-created-by = "ap-system", je-approved-by = "", je-created = inv.api-created
+    }
+    in post-journal st je
+
+  ap-invoice-je-lines : List ApInvoiceLine, List JournalLine, Integer -> List JournalLine
+  ap-invoice-je-lines (lines) (acc) (i) =
+    if i >= list-length lines then acc
+    else let l = list-at lines i
+    in let debit = journal-line-debit (l.apl-gl-account) (l.apl-amount) (l.apl-cost-center) (l.apl-description)
+    in ap-invoice-je-lines lines (list-push acc debit) (i + 1)
+
+  ap-payment : GlState, ErpConfig, ApInvoice, Integer, Integer -> (GlState, PostResult)
+  ap-payment (st) (cfg) (inv) (bank-account) (ts) =
+    let am = cfg.cfg-accounts
+    in let je = JournalEntry {
+      je-id = "APP-" & inv.api-id,
+      je-company = inv.api-company,
+      je-date = ts, je-period = cfg.cfg-period, je-year = cfg.cfg-year,
+      je-description = "Payment for " & inv.api-invoice-num,
+      je-lines = [
+        journal-line-debit (am.am-ap-control) (inv.api-amount + inv.api-tax-amount) "" "Clear AP",
+        journal-line-credit (am.am-cash) (inv.api-amount + inv.api-tax-amount) "" "Cash payment"
+      ],
+      je-source = SrcAP,
+      je-posted = False, je-reversed = False, je-reversal-of = "",
+      je-created-by = "ap-system", je-approved-by = "", je-created = ts
+    }
+    in post-journal st je
+
+Section: AP Aging
+
+  AgingBucket = record {
+    ab-current : Integer,
+    ab-30 : Integer,
+    ab-60 : Integer,
+    ab-90 : Integer,
+    ab-over-90 : Integer,
+    ab-total : Integer
+  }
+
+  aging-empty : AgingBucket
+  aging-empty = AgingBucket { ab-current = 0, ab-30 = 0, ab-60 = 0, ab-90 = 0, ab-over-90 = 0, ab-total = 0 }
+
+  calc-ap-aging : List ApInvoice, Integer -> AgingBucket
+  calc-ap-aging (invoices) (today) = aging-loop invoices today aging-empty 0
+
+  aging-loop : List ApInvoice, Integer, AgingBucket, Integer -> AgingBucket
+  aging-loop (invoices) (today) (bucket) (i) =
+    if i >= list-length invoices then __record-set bucket "ab-total" (bucket.ab-current + bucket.ab-30 + bucket.ab-60 + bucket.ab-90 + bucket.ab-over-90)
+    else let inv = list-at invoices i
+    in when inv.api-status
+      is ApPaid -> aging-loop invoices today bucket (i + 1)
+      is ApVoided -> aging-loop invoices today bucket (i + 1)
+      is otherwise ->
+        let days = (today - inv.api-date) / 86400
+        in let amt = inv.api-amount
+        in let b2 = if days <= 30 then __record-set bucket "ab-current" (bucket.ab-current + amt)
+          else if days <= 60 then __record-set bucket "ab-30" (bucket.ab-30 + amt)
+          else if days <= 90 then __record-set bucket "ab-60" (bucket.ab-60 + amt)
+          else if days <= 120 then __record-set bucket "ab-90" (bucket.ab-90 + amt)
+          else __record-set bucket "ab-over-90" (bucket.ab-over-90 + amt)
+        in aging-loop invoices today b2 (i + 1)
+
+Section: AR Operations
+
+  create-ar-invoice : GlState, ErpConfig, Customer, Text, Integer, List ArInvoiceLine, Integer -> (GlState, ArInvoice)
+  create-ar-invoice (st) (cfg) (cust) (inv-num) (date) (lines) (ts) =
+    let (st2, id) = gl-gen-id st "ARI"
+    in let total = sum-ar-lines lines 0 0
+    in let tax = total * cfg.cfg-sales-tax-bps / 10000
+    in let inv = ArInvoice {
+      ari-id = id, ari-customer-id = cust.cust-id, ari-company = st.gl-company,
+      ari-invoice-num = inv-num, ari-date = date,
+      ari-due-date = date + 30, ari-amount = total, ari-tax-amount = tax,
+      ari-currency = cust.cust-currency, ari-lines = lines,
+      ari-status = ArOpen, ari-so-ref = "", ari-payment-received = 0, ari-created = ts
+    }
+    in let log2 = log-info-msg (st2.gl-log) "ar" ("invoice " & inv-num & " to " & cust.cust-name & " for " & show total) ts
+    in ((__record-set st2 "gl-log" log2), inv)
+
+  sum-ar-lines : List ArInvoiceLine, Integer, Integer -> Integer
+  sum-ar-lines (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else sum-ar-lines lines (i + 1) (acc + (list-at lines i).arl-amount)
+
+  ar-post-invoice : GlState, ErpConfig, ArInvoice -> (GlState, PostResult)
+  ar-post-invoice (st) (cfg) (inv) =
+    let am = cfg.cfg-accounts
+    in let je = JournalEntry {
+      je-id = "AR-" & inv.ari-id,
+      je-company = inv.ari-company,
+      je-date = inv.ari-date,
+      je-period = cfg.cfg-period, je-year = cfg.cfg-year,
+      je-description = "AR Invoice " & inv.ari-invoice-num & " - " & inv.ari-customer-id,
+      je-lines = [
+        journal-line-debit (am.am-ar-control) (inv.ari-amount + inv.ari-tax-amount) "" "Accounts receivable",
+        journal-line-credit (am.am-revenue) (inv.ari-amount) "" "Sales revenue",
+        journal-line-credit (am.am-tax-payable) (inv.ari-tax-amount) "" "Tax collected"
+      ],
+      je-source = SrcAR,
+      je-posted = False, je-reversed = False, je-reversal-of = "",
+      je-created-by = "ar-system", je-approved-by = "", je-created = inv.ari-created
+    }
+    in post-journal st je
+
+  ar-cash-receipt : GlState, ErpConfig, ArInvoice, Integer, Integer -> (GlState, PostResult)
+  ar-cash-receipt (st) (cfg) (inv) (amount) (ts) =
+    let am = cfg.cfg-accounts
+    in let je = JournalEntry {
+      je-id = "CR-" & inv.ari-id,
+      je-company = inv.ari-company,
+      je-date = ts, je-period = cfg.cfg-period, je-year = cfg.cfg-year,
+      je-description = "Cash receipt for " & inv.ari-invoice-num,
+      je-lines = [
+        journal-line-debit (am.am-cash) amount "" "Cash received",
+        journal-line-credit (am.am-ar-control) amount "" "Clear AR"
+      ],
+      je-source = SrcAR,
+      je-posted = False, je-reversed = False, je-reversal-of = "",
+      je-created-by = "ar-system", je-approved-by = "", je-created = ts
+    }
+    in post-journal st je
+
+Section: AR Aging
+
+  calc-ar-aging : List ArInvoice, Integer -> AgingBucket
+  calc-ar-aging (invoices) (today) = ar-aging-loop invoices today aging-empty 0
+
+  ar-aging-loop : List ArInvoice, Integer, AgingBucket, Integer -> AgingBucket
+  ar-aging-loop (invoices) (today) (bucket) (i) =
+    if i >= list-length invoices then __record-set bucket "ab-total" (bucket.ab-current + bucket.ab-30 + bucket.ab-60 + bucket.ab-90 + bucket.ab-over-90)
+    else let inv = list-at invoices i
+    in when inv.ari-status
+      is ArPaid -> ar-aging-loop invoices today bucket (i + 1)
+      is ArWrittenOff -> ar-aging-loop invoices today bucket (i + 1)
+      is otherwise ->
+        let days = (today - inv.ari-date) / 86400
+        in let amt = inv.ari-amount - inv.ari-payment-received
+        in let b2 = if days <= 30 then __record-set bucket "ab-current" (bucket.ab-current + amt)
+          else if days <= 60 then __record-set bucket "ab-30" (bucket.ab-30 + amt)
+          else if days <= 90 then __record-set bucket "ab-60" (bucket.ab-60 + amt)
+          else if days <= 120 then __record-set bucket "ab-90" (bucket.ab-90 + amt)
+          else __record-set bucket "ab-over-90" (bucket.ab-over-90 + amt)
+        in ar-aging-loop invoices today b2 (i + 1)
+
+Section: Payment Run
+
+  PaymentRun = record {
+    pmr-id : Text,
+    pmr-company : Text,
+    pmr-date : Integer,
+    pmr-invoices : List Text,
+    pmr-total : Integer,
+    pmr-status : Text,
+    pmr-bank-account : Text
+  }
+
+  create-payment-run : GlState, List ApInvoice, Text, Integer -> (GlState, PaymentRun)
+  create-payment-run (st) (invoices) (bank) (ts) =
+    let (st2, id) = gl-gen-id st "PMR"
+    in let ids = collect-inv-ids invoices [] 0
+    in let total = sum-inv-amounts invoices 0 0
+    in let run = PaymentRun {
+      pmr-id = id, pmr-company = st.gl-company,
+      pmr-date = ts, pmr-invoices = ids,
+      pmr-total = total, pmr-status = "pending",
+      pmr-bank-account = bank
+    }
+    in let log2 = log-info-msg (st2.gl-log) "ap" ("payment run " & id & " for " & show (list-length invoices) & " invoices, total " & show total) ts
+    in ((__record-set st2 "gl-log" log2), run)
+
+  collect-inv-ids : List ApInvoice, List Text, Integer -> List Text
+  collect-inv-ids (invs) (acc) (i) =
+    if i >= list-length invs then acc
+    else collect-inv-ids invs (list-push acc (list-at invs i).api-id) (i + 1)
+
+  sum-inv-amounts : List ApInvoice, Integer, Integer -> Integer
+  sum-inv-amounts (invs) (i) (acc) =
+    if i >= list-length invs then acc
+    else sum-inv-amounts invs (i + 1) (acc + (list-at invs i).api-amount)

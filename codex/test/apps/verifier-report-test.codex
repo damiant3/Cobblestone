@@ -1,0 +1,57 @@
+Chapter: VerifierReportTest
+  cites Verify chapter VerifyReport
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  phase-line : PhaseReport -> Text
+  phase-line (p) =
+    if p.passed then p.phase-name & ": PASS"
+    else p.phase-name & ": " & p.reason
+
+Section: Body
+  opening : [Console] Nothing =
+    let good-bin = cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+    in let author-key = read-author-key good-bin
+    in let lat = lattice-add-direct lattice-empty author-key 8000
+    in let policy = policy-add-rule (policy-empty "test") (rule-allow "allow-console" (CapabilityMatch "Console" 2))
+    in let r1 = verify-cdx-report good-bin lat policy 0 fact-store-empty 100
+    in let untrusted-lat = lattice-empty
+    in let r2 = verify-cdx-report good-bin untrusted-lat policy 0 fact-store-empty 100
+    in let bad-bin = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    in let r3 = verify-cdx-report bad-bin lat policy 0 fact-store-empty 100
+    in act
+      print-line-uni (format-report-summary r1)
+      print-line-uni (phase-line (r1.integrity) & " | " & phase-line (r1.author) & " | " & phase-line (r1.effects) & " | " & phase-line (r1.proofs))
+      print-line-uni (format-report-summary r2)
+      print-line-uni (phase-line (r2.author))
+      print-line-uni (format-report-summary r3)
+      print-line-uni (phase-line (r3.integrity))
+    end
+
+Page 1

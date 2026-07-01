@@ -1,0 +1,130 @@
+Chapter: RingBuffer
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ Fixed-capacity ring buffer of integers. Overwrites the oldest entry
+ when full. Backed by a flat List Integer with head and tail cursors.
+ O(1) push and O(1) pop using list-set-at mutation.
+
+ A RingBuffer is a record containing:
+   storage  -- flat backing array.
+   capacity -- maximum number of elements (1..65535).
+   head     -- index of the oldest element.
+   tail     -- index of the next write position.
+   count    -- number of elements currently stored.
+
+ A RingPopResult is a record containing:
+   value  -- the popped value (0 if invalid).
+   buffer -- the ring buffer after the pop.
+   valid  -- True if an element was actually removed.
+
+ To ring-new gives RingBuffer,
+   creating an empty ring buffer with the given capacity.
+
+ To ring-push gives RingBuffer,
+   writing a value at the tail; advances the head if full.
+
+ To ring-pop gives RingPopResult,
+   removing and returning the oldest element, or returning valid=False if empty.
+
+ To ring-peek gives Maybe Integer,
+   returning Just the oldest element without removing, or None if empty.
+
+ To ring-push-all gives RingBuffer,
+   pushing elements from a subrange of a list into the ring buffer.
+
+ To ring-drain gives List Integer,
+   popping all elements into a list, oldest first.
+
+ To ring-count gives Integer,
+   returning the number of elements stored.
+
+ To ring-is-empty gives Boolean,
+   True if the ring buffer holds no elements.
+
+ To ring-is-full gives Boolean,
+   True if the ring buffer is at capacity.
+
+ To ring-capacity gives Integer,
+   returning the maximum capacity.
+
+ To ring-available gives Integer,
+   returning the number of free slots remaining.
+
+ We say:
+
+Section: Type
+  RingBuffer = record {
+    storage : List Integer,
+    capacity : Integer between 1 and 65535,
+    head : Integer between 0 and 65535,
+    tail : Integer between 0 and 65535,
+    count : Integer between 0 and 65535
+  }
+
+Section: Construction
+  ring-new : Integer -> RingBuffer
+  ring-new (cap) = RingBuffer { storage = list-zeros cap, capacity = cap, head = 0, tail = 0, count = 0 }
+
+Section: Push / Pop
+  ring-push : RingBuffer, Integer -> RingBuffer
+  ring-push (rb) (val) =
+    let new-storage = list-set-at (rb.storage) (rb.tail) val
+    in let new-tail = ring-wrap (rb.tail + 1) (rb.capacity)
+    in if rb.count == rb.capacity then
+      RingBuffer { storage = new-storage, capacity = rb.capacity, head = ring-wrap (rb.head + 1) (rb.capacity), tail = new-tail, count = rb.count }
+    else RingBuffer { storage = new-storage, capacity = rb.capacity, head = rb.head, tail = new-tail, count = rb.count + 1 }
+
+  RingPopResult = record {
+    value : Integer,
+    buffer : RingBuffer,
+    valid : Boolean
+  }
+
+  ring-pop : RingBuffer -> RingPopResult
+  ring-pop (rb) =
+    if rb.count == 0 then RingPopResult { value = 0, buffer = rb, valid = False }
+    else let val = list-at (rb.storage) (rb.head)
+    in let new-head = ring-wrap (rb.head + 1) (rb.capacity)
+    in RingPopResult { value = val, buffer = RingBuffer { storage = rb.storage, capacity = rb.capacity, head = new-head, tail = rb.tail, count = rb.count - 1 }, valid = True }
+
+  ring-peek : RingBuffer -> Maybe Integer
+  ring-peek (rb) =
+    if rb.count == 0 then None
+    else Just (list-at (rb.storage) (rb.head))
+
+  ring-wrap : Integer, Integer -> Integer
+  ring-wrap (idx) (cap) = if idx >= cap then idx - cap else idx
+
+Section: Bulk Operations
+  ring-push-all : RingBuffer, List Integer, Integer, Integer -> RingBuffer
+  ring-push-all (rb) (items) (i) (len) =
+    if i >= len then rb
+    else ring-push-all (ring-push rb (list-at items i)) items (i + 1) len
+
+  ring-drain : RingBuffer -> List Integer
+  ring-drain (rb) = ring-drain-loop rb []
+
+  ring-drain-loop : RingBuffer, List Integer -> List Integer
+  ring-drain-loop (rb) (acc) =
+    if rb.count == 0 then acc
+    else let r = ring-pop rb
+    in ring-drain-loop (r.buffer) (list-push acc (r.value))
+
+Section: Queries
+  ring-count : RingBuffer -> Integer
+  ring-count (rb) = rb.count
+
+  ring-is-empty : RingBuffer -> Boolean
+  ring-is-empty (rb) = rb.count == 0
+
+  ring-is-full : RingBuffer -> Boolean
+  ring-is-full (rb) = rb.count == rb.capacity
+
+  ring-capacity : RingBuffer -> Integer
+  ring-capacity (rb) = rb.capacity
+
+  ring-available : RingBuffer -> Integer
+  ring-available (rb) = rb.capacity - rb.count
+
+Page 1

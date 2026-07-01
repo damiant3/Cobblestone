@@ -1,0 +1,379 @@
+Chapter: UefiConsole
+  cites Codex chapter Console
+  cites Codex chapter Bitwise
+  cites Foreword chapter Maybe
+
+ Abstraction over UEFI Simple Text Output and Simple Text Input
+ protocols. The dev console targets UefiConsole, not VGA or
+ serial. On UEFI, the SystemTable provides ConOut and ConIn;
+ UefiConsole wraps ConOut and ConIn as typed Codex operations.
+
+ ConOut protocol: Reset at 0, OutputString at 8, TestString at 16,
+ QueryMode at 24, SetMode at 32, SetAttribute at 40, ClearScreen at 48,
+ SetCursorPosition at 56, EnableCursor at 64.
+ ConIn protocol: Reset at 0, ReadKeyStroke at 8.
+ SystemTable: ConIn at offset 48, ConOut at offset 64.
+
+ We say:
+
+Section: Console State
+
+  UefiConsoleState = record {
+    sys-table : Integer,
+    con-out : Integer,
+    con-in : Integer,
+    rows : Integer,
+    cols : Integer,
+    cursor-row : Integer,
+    cursor-col : Integer
+  }
+
+  uefi-console-init : Integer -> UefiConsoleState
+  uefi-console-init (sys-table) =
+    UefiConsoleState {
+      sys-table = sys-table,
+      con-out = peek-qword sys-table 64,
+      con-in = peek-qword sys-table 48,
+      rows = 25,
+      cols = 80,
+      cursor-row = 0,
+      cursor-col = 0
+    }
+
+Section: Text Attributes
+
+  UefiColor =
+    | UefiBlack
+    | UefiBlue
+    | UefiGreen
+    | UefiCyan
+    | UefiRed
+    | UefiMagenta
+    | UefiBrown
+    | UefiLightGray
+    | UefiDarkGray
+    | UefiLightBlue
+    | UefiLightGreen
+    | UefiLightCyan
+    | UefiLightRed
+    | UefiLightMagenta
+    | UefiYellow
+    | UefiWhite
+
+  uefi-color-code : UefiColor -> Integer
+  uefi-color-code (c) = when c
+    is UefiBlack -> 0
+    is UefiBlue -> 1
+    is UefiGreen -> 2
+    is UefiCyan -> 3
+    is UefiRed -> 4
+    is UefiMagenta -> 5
+    is UefiBrown -> 6
+    is UefiLightGray -> 7
+    is UefiDarkGray -> 8
+    is UefiLightBlue -> 9
+    is UefiLightGreen -> 10
+    is UefiLightCyan -> 11
+    is UefiLightRed -> 12
+    is UefiLightMagenta -> 13
+    is UefiYellow -> 14
+    is UefiWhite -> 15
+
+  uefi-attr : UefiColor, UefiColor -> Integer
+  uefi-attr (fg) (bg) = bit-or (uefi-color-code fg) (bit-shl (uefi-color-code bg) 4)
+
+Section: Scan Codes
+
+  uefi-scan-up : Integer = 1
+  uefi-scan-down : Integer = 2
+  uefi-scan-right : Integer = 3
+  uefi-scan-left : Integer = 4
+  uefi-scan-home : Integer = 5
+  uefi-scan-end : Integer = 6
+  uefi-scan-insert : Integer = 7
+  uefi-scan-delete : Integer = 8
+  uefi-scan-page-up : Integer = 9
+  uefi-scan-page-down : Integer = 10
+  uefi-scan-f1 : Integer = 11
+  uefi-scan-f2 : Integer = 12
+  uefi-scan-f3 : Integer = 13
+  uefi-scan-f4 : Integer = 14
+  uefi-scan-f5 : Integer = 15
+  uefi-scan-f6 : Integer = 16
+  uefi-scan-f7 : Integer = 17
+  uefi-scan-f8 : Integer = 18
+  uefi-scan-f9 : Integer = 19
+  uefi-scan-f10 : Integer = 20
+  uefi-scan-f11 : Integer = 21
+  uefi-scan-f12 : Integer = 22
+  uefi-scan-escape : Integer = 23
+
+Section: Key Input
+
+  UefiKey = record {
+    scan-code : Integer,
+    char-code : Integer,
+    shift-state : Integer
+  }
+
+  uefi-key-is-char : UefiKey -> Boolean
+  uefi-key-is-char (k) =
+    if k.scan-code == 0 then k.char-code > 0 else False
+
+  uefi-key-is-enter : UefiKey -> Boolean
+  uefi-key-is-enter (k) = k.char-code == 13
+
+  uefi-key-is-backspace : UefiKey -> Boolean
+  uefi-key-is-backspace (k) = k.char-code == 8
+
+  uefi-key-is-escape : UefiKey -> Boolean
+  uefi-key-is-escape (k) = k.scan-code == uefi-scan-escape
+
+  uefi-key-is-tab : UefiKey -> Boolean
+  uefi-key-is-tab (k) = k.char-code == 9
+
+  uefi-key-is-arrow-up : UefiKey -> Boolean
+  uefi-key-is-arrow-up (k) = k.scan-code == uefi-scan-up
+
+  uefi-key-is-arrow-down : UefiKey -> Boolean
+  uefi-key-is-arrow-down (k) = k.scan-code == uefi-scan-down
+
+Section: Shift State
+
+  uefi-shift-valid : Integer = 2147483648
+  uefi-right-shift : Integer = 1
+  uefi-left-shift : Integer = 2
+  uefi-right-ctrl : Integer = 4
+  uefi-left-ctrl : Integer = 8
+  uefi-right-alt : Integer = 16
+  uefi-left-alt : Integer = 32
+  uefi-right-logo : Integer = 64
+  uefi-left-logo : Integer = 128
+  uefi-menu-key : Integer = 256
+  uefi-sysreq : Integer = 512
+  uefi-any-shift : Integer = 3
+  uefi-any-ctrl : Integer = 12
+  uefi-any-alt : Integer = 48
+  uefi-any-logo : Integer = 192
+
+Section: Modifier Predicates
+
+  uefi-key-has-shift : UefiKey -> Boolean
+  uefi-key-has-shift (k) = bit-and (k.shift-state) uefi-any-shift > 0
+
+  uefi-key-has-ctrl : UefiKey -> Boolean
+  uefi-key-has-ctrl (k) = bit-and (k.shift-state) uefi-any-ctrl > 0
+
+  uefi-key-has-alt : UefiKey -> Boolean
+  uefi-key-has-alt (k) = bit-and (k.shift-state) uefi-any-alt > 0
+
+  uefi-key-has-logo : UefiKey -> Boolean
+  uefi-key-has-logo (k) = bit-and (k.shift-state) uefi-any-logo > 0
+
+  uefi-key-shift-valid : UefiKey -> Boolean
+  uefi-key-shift-valid (k) = bit-and (k.shift-state) uefi-shift-valid > 0
+
+Section: Key Predicates
+
+  uefi-key-is-arrow-left : UefiKey -> Boolean
+  uefi-key-is-arrow-left (k) = k.scan-code == uefi-scan-left
+
+  uefi-key-is-arrow-right : UefiKey -> Boolean
+  uefi-key-is-arrow-right (k) = k.scan-code == uefi-scan-right
+
+  uefi-key-is-home : UefiKey -> Boolean
+  uefi-key-is-home (k) = k.scan-code == uefi-scan-home
+
+  uefi-key-is-end : UefiKey -> Boolean
+  uefi-key-is-end (k) = k.scan-code == uefi-scan-end
+
+  uefi-key-is-insert : UefiKey -> Boolean
+  uefi-key-is-insert (k) = k.scan-code == uefi-scan-insert
+
+  uefi-key-is-delete : UefiKey -> Boolean
+  uefi-key-is-delete (k) = k.scan-code == uefi-scan-delete
+
+  uefi-key-is-page-up : UefiKey -> Boolean
+  uefi-key-is-page-up (k) = k.scan-code == uefi-scan-page-up
+
+  uefi-key-is-page-down : UefiKey -> Boolean
+  uefi-key-is-page-down (k) = k.scan-code == uefi-scan-page-down
+
+  uefi-key-char : UefiKey -> Integer
+  uefi-key-char (k) = k.char-code
+
+Section: Combo Predicates
+
+  uefi-key-is-ctrl-alt-del : UefiKey -> Boolean
+  uefi-key-is-ctrl-alt-del (k) =
+    if uefi-key-shift-valid k == False then False
+    else if uefi-key-has-ctrl k == False then False
+    else if uefi-key-has-alt k == False then False
+    else k.scan-code == uefi-scan-delete
+
+  uefi-key-is-ctrl-c : UefiKey -> Boolean
+  uefi-key-is-ctrl-c (k) =
+    if uefi-key-has-ctrl k == False then False
+    else k.char-code == 3
+
+  uefi-key-is-ctrl-s : UefiKey -> Boolean
+  uefi-key-is-ctrl-s (k) =
+    if uefi-key-has-ctrl k == False then False
+    else k.char-code == 19
+
+  uefi-key-is-ctrl-z : UefiKey -> Boolean
+  uefi-key-is-ctrl-z (k) =
+    if uefi-key-has-ctrl k == False then False
+    else k.char-code == 26
+
+  uefi-key-is-ctrl-f : UefiKey -> Boolean
+  uefi-key-is-ctrl-f (k) =
+    if uefi-key-has-ctrl k == False then False
+    else k.char-code == 6
+
+  uefi-key-is-ctrl-g : UefiKey -> Boolean
+  uefi-key-is-ctrl-g (k) =
+    if uefi-key-has-ctrl k == False then False
+    else k.char-code == 7
+
+  uefi-key-is-ctrl-y : UefiKey -> Boolean
+  uefi-key-is-ctrl-y (k) =
+    if uefi-key-has-ctrl k == False then False
+    else k.char-code == 25
+
+Section: Pointer Input
+
+  UefiPointerState = record {
+    rel-x : Integer,
+    rel-y : Integer,
+    rel-z : Integer,
+    left-button : Boolean,
+    right-button : Boolean
+  }
+
+  uefi-pointer-no-movement : UefiPointerState -> Boolean
+  uefi-pointer-no-movement (p) =
+    if p.rel-x == 0 then
+      if p.rel-y == 0 then p.rel-z == 0 else False
+    else False
+
+  uefi-pointer-any-button : UefiPointerState -> Boolean
+  uefi-pointer-any-button (p) =
+    if p.left-button then True else p.right-button
+
+  UefiAbsPointerState = record {
+    abs-x : Integer,
+    abs-y : Integer,
+    abs-z : Integer,
+    active-buttons : Integer
+  }
+
+Section: Graphics Output
+
+  UefiGopMode = record {
+    max-mode : Integer,
+    current-mode : Integer,
+    fb-base : Integer,
+    fb-size : Integer,
+    h-resolution : Integer,
+    v-resolution : Integer,
+    pixels-per-scanline : Integer
+  }
+
+  UefiPixel = record {
+    blue : Integer,
+    green : Integer,
+    red : Integer,
+    reserved : Integer
+  }
+
+  uefi-pixel : Integer, Integer, Integer -> UefiPixel
+  uefi-pixel (r) (g) (b) = UefiPixel { blue = b, green = g, red = r, reserved = 0 }
+
+  uefi-pixel-pack : UefiPixel -> Integer
+  uefi-pixel-pack (p) =
+    bit-or (bit-or (p.blue) (bit-shl (p.green) 8)) (bit-or (bit-shl (p.red) 16) (bit-shl (p.reserved) 24))
+
+Section: Network
+
+  UefiNetState = record {
+    mac-addr : List Integer,
+    media-present : Boolean,
+    started : Boolean,
+    initialized : Boolean
+  }
+
+  UefiNetPacket = record {
+    data : List Integer,
+    length : Integer,
+    src-mac : List Integer,
+    dst-mac : List Integer,
+    ethertype : Integer
+  }
+
+Section: Console Operations
+
+  uefi-con-set-attr : Integer, Integer -> Integer
+  uefi-con-set-attr (fg) (bg) = uefi-set-attr (bit-or fg (bit-shl bg 4))
+
+  uefi-con-clear : Integer
+  uefi-con-clear = uefi-clear-screen
+
+  uefi-con-move : Integer, Integer -> Integer
+  uefi-con-move (col) (row) = uefi-set-cursor col row
+
+  uefi-con-hide-cursor : Integer
+  uefi-con-hide-cursor = uefi-enable-cursor 0
+
+  uefi-con-show-cursor : Integer
+  uefi-con-show-cursor = uefi-enable-cursor 1
+
+  uefi-con-put-text : Integer, Integer, Text, Integer, Integer -> [Console] None
+  uefi-con-put-text (row) (col) (txt) (fg) (bg) =
+    let w0 = uefi-con-set-attr fg bg
+    in let w1 = uefi-con-move col row
+    in print-uni txt
+
+  uefi-con-fill-row : Integer, Integer, Integer -> [Console] None
+  uefi-con-fill-row (row) (fg) (bg) =
+    let w0 = uefi-con-set-attr fg bg
+    in let w1 = uefi-con-move 0 row
+    in print-uni "                                                                               "
+
+  uefi-con-wait-key-spin : Integer -> UefiKey
+  uefi-con-wait-key-spin (n) =
+    let raw = uefi-read-key
+    in if raw == 0 - 1 then uefi-con-wait-key-spin (n + 1)
+    else UefiKey {
+      scan-code = bit-and (bit-shru raw 16) 65535,
+      char-code = bit-and raw 65535,
+      shift-state = 0
+    }
+
+  uefi-con-wait-key : UefiKey
+  uefi-con-wait-key = uefi-con-wait-key-spin 0
+
+  uefi-con-wait-key-ex-spin : Integer -> UefiKey
+  uefi-con-wait-key-ex-spin (n) =
+    let raw = uefi-read-key-ex
+    in if raw == 0 - 1 then uefi-con-wait-key-ex-spin (n + 1)
+    else UefiKey {
+      scan-code = bit-and (bit-shru raw 16) 65535,
+      char-code = bit-and raw 65535,
+      shift-state = bit-shru raw 32
+    }
+
+  uefi-con-wait-key-ex : UefiKey
+  uefi-con-wait-key-ex = uefi-con-wait-key-ex-spin 0
+
+  uefi-con-poll-key : Maybe UefiKey
+  uefi-con-poll-key =
+    let raw = uefi-read-key
+    in if raw == 0 - 1 then None
+    else Just (UefiKey {
+      scan-code = bit-and (bit-shru raw 16) 65535,
+      char-code = bit-and raw 65535,
+      shift-state = 0
+    })
+
+Page 1

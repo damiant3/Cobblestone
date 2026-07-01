@@ -1,0 +1,125 @@
+Chapter: ServerUtil
+  cites Foreword chapter CCE
+
+ Shared server utilities used by MagicServer, ClanServer, and
+ PlaneServer. HTTP response helpers, request parsing, JSON helpers,
+ string operations, and common list utilities. Defined once here,
+ cited by all servers.
+
+ We say:
+
+Section: Response Helpers
+
+  respond-json : Text -> [Console] Integer
+  respond-json (body) = act
+    print-line-uni ("200 application/json " & body)
+    0
+  end
+
+  respond-error : Text -> [Console] Integer
+  respond-error (msg) = act
+    print-line-uni ("400 application/json {\"error\":\"" & msg & "\"}")
+    0
+  end
+
+  respond-not-found : [Console] Integer
+  respond-not-found = act
+    print-line-uni "404 text/plain Not Found"
+    0
+  end
+
+Section: String Helpers
+
+  text-take : Text, Integer -> Text
+  text-take (s) (n) = text-take-loop s n 0 ""
+
+  text-take-loop : Text, Integer, Integer, Text -> Text
+  text-take-loop (s) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= text-length s then acc
+    else text-take-loop s n (i + 1) (acc & char-to-text (char-at s i))
+
+  text-drop : Text, Integer -> Text
+  text-drop (s) (n) = text-drop-loop s n 0 (text-length s) ""
+
+  text-drop-loop : Text, Integer, Integer, Integer, Text -> Text
+  text-drop-loop (s) (start) (i) (len) (acc) =
+    if i >= len then acc
+    else if i < start then text-drop-loop s start (i + 1) len acc
+    else text-drop-loop s start (i + 1) len (acc & char-to-text (char-at s i))
+
+Section: Request Parsing
+
+  extract-path : Text -> Text
+  extract-path (line) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then "/"
+    else let full = list-at parts 1
+    in let qpos = find-char full 63 0
+    in if qpos < 0 then full
+    else text-take full qpos
+
+  extract-query-param : Text, Text -> Text
+  extract-query-param (line) (key) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then ""
+    else let full = list-at parts 1
+    in let qpos = find-char full 63 0
+    in if qpos < 0 then ""
+    else let qs = text-drop full (qpos + 1)
+    in find-param-value qs key
+
+  find-char : Text, Integer, Integer -> Integer
+  find-char (s) (target) (i) =
+    if i >= text-length s then (-1)
+    else if to-unicode (char-code (char-at s i)) == target then i
+    else find-char s target (i + 1)
+
+  find-param-value : Text, Text -> Text
+  find-param-value (qs) (key) =
+    let pairs = text-split qs "&"
+    in find-in-pairs pairs key 0
+
+  find-in-pairs : List Text, Text, Integer -> Text
+  find-in-pairs (pairs) (key) (i) =
+    if i >= list-length pairs then ""
+    else let pair = list-at pairs i
+    in let eqpos = find-char pair 61 0
+    in if eqpos < 0 then find-in-pairs pairs key (i + 1)
+    else let k = text-take pair eqpos
+    in if k == key then text-drop pair (eqpos + 1)
+    else find-in-pairs pairs key (i + 1)
+
+  parse-int : Text, Integer -> Integer
+  parse-int (s) (default-val) =
+    if text-length s == 0 then default-val
+    else parse-int-loop s 0 0
+
+  parse-int-loop : Text, Integer, Integer -> Integer
+  parse-int-loop (s) (i) (acc) =
+    if i >= text-length s then acc
+    else let c = to-unicode (char-code (char-at s i))
+    in if c >= 48 then
+      if c <= 57 then parse-int-loop s (i + 1) (acc * 10 + c - 48)
+      else acc
+    else acc
+
+Section: JSON Helpers
+
+  jstr : Text -> Text
+  jstr (s) = "\"" & s & "\""
+
+  jbool : Boolean -> Text
+  jbool (b) = if b then "true" else "false"
+
+Section: Common List Utilities
+
+  append-int-lists : List Integer, List Integer -> List Integer
+  append-int-lists (a) (b) = append-int-loop a b 0 (list-length b)
+
+  append-int-loop : List Integer, List Integer, Integer, Integer -> List Integer
+  append-int-loop (acc) (src) (i) (len) =
+    if i >= len then acc
+    else append-int-loop (list-push acc (list-at src i)) src (i + 1) len
+
+Page 1

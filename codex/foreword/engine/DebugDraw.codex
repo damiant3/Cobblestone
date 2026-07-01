@@ -1,0 +1,165 @@
+Chapter: DebugDraw
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Engine chapter Mesh
+  cites Engine chapter Scene3D
+  cites Engine chapter GameLoop
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+
+ Debug visualization overlay. Wireframe mesh rendering, AABB boxes,
+ grid planes, axis indicators, and a stats HUD showing frame time,
+ triangle count, and node count. Draws directly to the framebuffer
+ on top of the 3D scene.
+
+ We say:
+
+Section: Debug Config
+
+  DebugFlags = record {
+    dbg-wireframe : Boolean,
+    dbg-bounds : Boolean,
+    dbg-grid : Boolean,
+    dbg-axes : Boolean,
+    dbg-stats : Boolean,
+    dbg-normals : Boolean
+  }
+
+  dbg-none : DebugFlags
+  dbg-none = DebugFlags { dbg-wireframe = False, dbg-bounds = False, dbg-grid = False, dbg-axes = False, dbg-stats = False, dbg-normals = False }
+
+  dbg-all : DebugFlags
+  dbg-all = DebugFlags { dbg-wireframe = True, dbg-bounds = True, dbg-grid = True, dbg-axes = True, dbg-stats = True, dbg-normals = True }
+
+  dbg-wire-only : DebugFlags
+  dbg-wire-only = DebugFlags { dbg-wireframe = True, dbg-bounds = False, dbg-grid = False, dbg-axes = False, dbg-stats = False, dbg-normals = False }
+
+Section: Wireframe Rendering
+
+  dbg-wireframe-mesh : Framebuf, Mesh, Mat4, Integer, Integer, Integer -> Framebuf
+  dbg-wireframe-mesh (fb) (mesh) (mvp) (half-w) (half-h) (color) =
+    dbg-wire-loop fb mesh mvp half-w half-h color 0 (mesh.mesh-index-count)
+
+  dbg-wire-loop : Framebuf, Mesh, Mat4, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  dbg-wire-loop (fb) (mesh) (mvp) (hw) (hh) (color) (i) (n) =
+    if i >= n then fb
+    else let i0 = mesh-index-at mesh i
+    in let i1 = mesh-index-at mesh (i + 1)
+    in let i2 = mesh-index-at mesh (i + 2)
+    in let v0 = mesh-vertex-at mesh i0
+    in let v1 = mesh-vertex-at mesh i1
+    in let v2 = mesh-vertex-at mesh i2
+    in let s0 = dbg-project-vert v0 mvp hw hh
+    in let s1 = dbg-project-vert v1 mvp hw hh
+    in let s2 = dbg-project-vert v2 mvp hw hh
+    in let fb2 = fb-line fb (s0.dbv-x) (s0.dbv-y) (s1.dbv-x) (s1.dbv-y) color
+    in let fb3 = fb-line fb2 (s1.dbv-x) (s1.dbv-y) (s2.dbv-x) (s2.dbv-y) color
+    in let fb4 = fb-line fb3 (s2.dbv-x) (s2.dbv-y) (s0.dbv-x) (s0.dbv-y) color
+    in dbg-wire-loop fb4 mesh mvp hw hh color (i + 3) n
+
+  DbgVert = record { dbv-x : Integer, dbv-y : Integer }
+
+  dbg-project-vert : Vertex, Mat4, Integer, Integer -> DbgVert
+  dbg-project-vert (v) (mvp) (hw) (hh) =
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vp-x, v4y = v.vp-y, v4z = v.vp-z, v4w = 1000 })
+    in if clip.v4w <= 0 then DbgVert { dbv-x = -9999, dbv-y = -9999 }
+    else let sx = hw + clip.v4x * hw / clip.v4w
+    in let sy = hh - clip.v4y * hh / clip.v4w
+    in DbgVert { dbv-x = sx, dbv-y = sy }
+
+Section: AABB Box
+
+  dbg-draw-aabb : Framebuf, MeshBounds, Mat4, Integer, Integer, Integer -> Framebuf
+  dbg-draw-aabb (fb) (b) (mvp) (hw) (hh) (color) =
+    let corners = dbg-aabb-corners b
+    in let projected = dbg-project-corners corners mvp hw hh 0 8 []
+    in dbg-draw-box-edges fb projected color
+
+  dbg-aabb-corners : MeshBounds -> List Vertex
+  dbg-aabb-corners (b) = [
+    vertex-pos (b.mb-min-x) (b.mb-min-y) (b.mb-min-z),
+    vertex-pos (b.mb-max-x) (b.mb-min-y) (b.mb-min-z),
+    vertex-pos (b.mb-max-x) (b.mb-max-y) (b.mb-min-z),
+    vertex-pos (b.mb-min-x) (b.mb-max-y) (b.mb-min-z),
+    vertex-pos (b.mb-min-x) (b.mb-min-y) (b.mb-max-z),
+    vertex-pos (b.mb-max-x) (b.mb-min-y) (b.mb-max-z),
+    vertex-pos (b.mb-max-x) (b.mb-max-y) (b.mb-max-z),
+    vertex-pos (b.mb-min-x) (b.mb-max-y) (b.mb-max-z)
+  ]
+
+  dbg-project-corners : List Vertex, Mat4, Integer, Integer, Integer, Integer, List DbgVert -> List DbgVert
+  dbg-project-corners (verts) (mvp) (hw) (hh) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = dbg-project-vert (list-at verts i) mvp hw hh
+    in dbg-project-corners verts mvp hw hh (i + 1) n (list-push acc p)
+
+  dbg-draw-box-edges : Framebuf, List DbgVert, Integer -> Framebuf
+  dbg-draw-box-edges (fb) (p) (color) =
+    let fb1 = dbg-edge fb p 0 1 color
+    in let fb2 = dbg-edge fb1 p 1 2 color
+    in let fb3 = dbg-edge fb2 p 2 3 color
+    in let fb4 = dbg-edge fb3 p 3 0 color
+    in let fb5 = dbg-edge fb4 p 4 5 color
+    in let fb6 = dbg-edge fb5 p 5 6 color
+    in let fb7 = dbg-edge fb6 p 6 7 color
+    in let fb8 = dbg-edge fb7 p 7 4 color
+    in let fb9 = dbg-edge fb8 p 0 4 color
+    in let fb10 = dbg-edge fb9 p 1 5 color
+    in let fb11 = dbg-edge fb10 p 2 6 color
+    in dbg-edge fb11 p 3 7 color
+
+  dbg-edge : Framebuf, List DbgVert, Integer, Integer, Integer -> Framebuf
+  dbg-edge (fb) (pts) (a) (b) (color) =
+    let pa = list-at pts a
+    in let pb = list-at pts b
+    in fb-line fb (pa.dbv-x) (pa.dbv-y) (pb.dbv-x) (pb.dbv-y) color
+
+Section: Grid
+
+  dbg-draw-grid : Framebuf, Mat4, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  dbg-draw-grid (fb) (mvp) (hw) (hh) (spacing) (half-extent) (color) =
+    let neg = 0 - half-extent
+    in dbg-grid-lines fb mvp hw hh spacing neg half-extent neg color
+
+  dbg-grid-lines : Framebuf, Mat4, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  dbg-grid-lines (fb) (mvp) (hw) (hh) (spacing) (lo) (hi) (cur) (color) =
+    if cur > hi then fb
+    else let a = dbg-project-vert (vertex-pos cur 0 lo) mvp hw hh
+    in let b = dbg-project-vert (vertex-pos cur 0 hi) mvp hw hh
+    in let c = dbg-project-vert (vertex-pos lo 0 cur) mvp hw hh
+    in let d = dbg-project-vert (vertex-pos hi 0 cur) mvp hw hh
+    in let fb2 = fb-line fb (a.dbv-x) (a.dbv-y) (b.dbv-x) (b.dbv-y) color
+    in let fb3 = fb-line fb2 (c.dbv-x) (c.dbv-y) (d.dbv-x) (d.dbv-y) color
+    in dbg-grid-lines fb3 mvp hw hh spacing lo hi (cur + spacing) color
+
+Section: Axis Indicator
+
+  dbg-draw-axes : Framebuf, Mat4, Integer, Integer, Integer -> Framebuf
+  dbg-draw-axes (fb) (mvp) (hw) (hh) (length) =
+    let origin = dbg-project-vert (vertex-pos 0 0 0) mvp hw hh
+    in let x-end = dbg-project-vert (vertex-pos length 0 0) mvp hw hh
+    in let y-end = dbg-project-vert (vertex-pos 0 length 0) mvp hw hh
+    in let z-end = dbg-project-vert (vertex-pos 0 0 length) mvp hw hh
+    in let fb2 = fb-line fb (origin.dbv-x) (origin.dbv-y) (x-end.dbv-x) (x-end.dbv-y) #FF0000
+    in let fb3 = fb-line fb2 (origin.dbv-x) (origin.dbv-y) (y-end.dbv-x) (y-end.dbv-y) #00FF00
+    in fb-line fb3 (origin.dbv-x) (origin.dbv-y) (z-end.dbv-x) (z-end.dbv-y) #0066FF
+
+Section: Stats HUD
+
+  EngineStats = record {
+    est-fps : Integer,
+    est-frame-ms : Integer,
+    est-tri-count : Integer,
+    est-node-count : Integer,
+    est-draw-calls : Integer,
+    est-cull-rejected : Integer
+  }
+
+  est-zero : EngineStats
+  est-zero = EngineStats { est-fps = 0, est-frame-ms = 0, est-tri-count = 0, est-node-count = 0, est-draw-calls = 0, est-cull-rejected = 0 }
+
+  format-stats : EngineStats -> Text
+  format-stats (s) =
+    "FPS:" & show (s.est-fps) & " " & show (s.est-frame-ms) & "ms | " & show (s.est-tri-count) & " tris | " & show (s.est-node-count) & " nodes | " & show (s.est-draw-calls) & " draws | " & show (s.est-cull-rejected) & " culled"
+
+Page 1

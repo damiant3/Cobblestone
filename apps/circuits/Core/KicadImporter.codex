@@ -1,0 +1,210 @@
+Chapter: KicadImporter
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Import KiCad symbol and footprint libraries into Codex Circuits.
+ Parses KiCad's S-expression based file formats (.kicad_sym for
+ symbols, .kicad_mod for footprints) and converts to the Codex
+ component model.
+
+Section: S-Expression Token
+
+  SexprToken =
+    | SexprOpen
+    | SexprClose
+    | SexprString (Text)
+    | SexprNumber (Integer)
+    | SexprSymbol (Text)
+
+Section: S-Expression Node
+
+  SexprNode =
+    | SexprAtom (Text)
+    | SexprList (List SexprNode)
+
+  sexpr-is-atom : SexprNode -> Integer
+  sexpr-is-atom (n) = when n
+    is SexprAtom (s) -> 1
+    is SexprList (xs) -> 0
+
+  sexpr-atom-value : SexprNode -> Text
+  sexpr-atom-value (n) = when n
+    is SexprAtom (s) -> s
+    is SexprList (xs) -> ""
+
+  sexpr-list-items : SexprNode -> List SexprNode
+  sexpr-list-items (n) = when n
+    is SexprAtom (s) -> []
+    is SexprList (xs) -> xs
+
+  sexpr-list-head : SexprNode -> Text
+  sexpr-list-head (n) = when n
+    is SexprList (xs) ->
+      if list-length xs >= 1 then sexpr-atom-value (list-at xs 0)
+      else ""
+    is SexprAtom (s) -> ""
+
+Section: KiCad Symbol Properties
+
+  KicadProperty = record {
+    kp-key : Text,
+    kp-value : Text,
+    kp-x : Integer,
+    kp-y : Integer,
+    kp-font-size : Integer,
+    kp-hidden : Integer
+  }
+
+Section: KiCad Pin
+
+  KicadPin = record {
+    kpin-type : Text,
+    kpin-shape : Text,
+    kpin-name : Text,
+    kpin-number : Text,
+    kpin-x : Integer,
+    kpin-y : Integer,
+    kpin-length : Integer,
+    kpin-orientation : Integer
+  }
+
+Section: KiCad Symbol
+
+  KicadSymbol = record {
+    ks-name : Text,
+    ks-properties : List KicadProperty,
+    ks-pins : List KicadPin,
+    ks-unit-count : Integer,
+    ks-power-symbol : Integer
+  }
+
+Section: KiCad Pad
+
+  KicadPad = record {
+    kpad-number : Text,
+    kpad-type : Text,
+    kpad-shape : Text,
+    kpad-x : Integer,
+    kpad-y : Integer,
+    kpad-width : Integer,
+    kpad-height : Integer,
+    kpad-drill : Integer,
+    kpad-layers : List Text
+  }
+
+Section: KiCad Footprint
+
+  KicadFootprint = record {
+    kf-name : Text,
+    kf-description : Text,
+    kf-tags : List Text,
+    kf-pads : List KicadPad,
+    kf-model-3d : Text
+  }
+
+Section: Import Result
+
+  ImportStatus =
+    | ImportOk
+    | ImportWarning (Text)
+    | ImportError (Text)
+
+  ImportEntry = record {
+    ie-name : Text,
+    ie-status : ImportStatus,
+    ie-warnings : List Text
+  }
+
+  ImportResult = record {
+    ir-source-file : Text,
+    ir-source-format : Text,
+    ir-entries : List ImportEntry,
+    ir-imported-count : Integer,
+    ir-warning-count : Integer,
+    ir-error-count : Integer
+  }
+
+  empty-import-result : Text, Text -> ImportResult
+  empty-import-result (file) (format) = ImportResult {
+    ir-source-file = file,
+    ir-source-format = format,
+    ir-entries = [],
+    ir-imported-count = 0,
+    ir-warning-count = 0,
+    ir-error-count = 0
+  }
+
+  import-add-entry : ImportResult, ImportEntry -> ImportResult
+  import-add-entry (r) (e) =
+    let new-warnings = when e.ie-status
+      is ImportWarning (msg) -> r.ir-warning-count + 1
+      is otherwise -> r.ir-warning-count
+    in let new-errors = when e.ie-status
+      is ImportError (msg) -> r.ir-error-count + 1
+      is otherwise -> r.ir-error-count
+    in let new-imported = when e.ie-status
+      is ImportOk -> r.ir-imported-count + 1
+      is ImportWarning (msg) -> r.ir-imported-count + 1
+      is ImportError (msg) -> r.ir-imported-count
+    in ImportResult {
+      ir-source-file = r.ir-source-file,
+      ir-source-format = r.ir-source-format,
+      ir-entries = list-push r.ir-entries e,
+      ir-imported-count = new-imported,
+      ir-warning-count = new-warnings,
+      ir-error-count = new-errors
+    }
+
+  import-summary : ImportResult -> Text
+  import-summary (r) =
+    let a = "Import " & r.ir-source-format & " from " & r.ir-source-file
+    in let b = ": " & (show r.ir-imported-count) & " imported, "
+    in let c = show r.ir-warning-count & " warnings, " & (show r.ir-error-count) & " errors"
+    in a & b & c
+
+Section: Pin Type Conversion
+
+ Convert KiCad pin type strings to Codex pin electrical type integers.
+
+  kicad-pin-type-to-int : Text -> Integer
+  kicad-pin-type-to-int (t) =
+    if t == "input" then 0
+    else if t == "output" then 1
+    else if t == "bidirectional" then 2
+    else if t == "tri_state" then 3
+    else if t == "passive" then 4
+    else if t == "power_in" then 5
+    else if t == "power_out" then 6
+    else if t == "open_collector" then 7
+    else if t == "open_emitter" then 8
+    else 9
+
+Section: Pad Type Conversion
+
+  kicad-pad-type-to-int : Text -> Integer
+  kicad-pad-type-to-int (t) =
+    if t == "smd" then 0
+    else if t == "thru_hole" then 1
+    else if t == "np_thru_hole" then 2
+    else if t == "connect" then 3
+    else 0
+
+  kicad-pad-shape-to-int : Text -> Integer
+  kicad-pad-shape-to-int (s) =
+    if s == "rect" then 0
+    else if s == "circle" then 1
+    else if s == "oval" then 2
+    else if s == "roundrect" then 3
+    else if s == "trapezoid" then 4
+    else if s == "custom" then 5
+    else 0
+
+Section: Unit Conversion
+
+ KiCad uses millimeters with decimal precision. We store nanometers.
+
+  kicad-mm-to-nm : Integer -> Integer
+  kicad-mm-to-nm (mm-x1000) = mm-x1000 * 1000
+
+  kicad-mil-to-nm : Integer -> Integer
+  kicad-mil-to-nm (mil-x100) = mil-x100 * 254

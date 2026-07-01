@@ -1,0 +1,168 @@
+Chapter: ELF Writer
+  cites Codex chapter Lists
+
+ Produces ELF executables as byte lists. A 32-bit variant with PVH note
+ for bare metal, and a 64-bit variant for Linux.
+ Ported from codex/compiler/Emit/ElfWriter.codex for plug use.
+ Byte helpers (write-i32, align-up, etc.) come from ByteHelpers chapter.
+
+Section: ELF Format Constants
+  elf-magic : List Integer = [127, 69, 76, 70]
+
+  elf-class-32 : Integer = 1
+
+  elf-class-64 : Integer = 2
+
+  elf-data-lsb : Integer = 1
+
+  elf-version-current : Integer = 1
+
+  elf-type-exec : Integer = 2
+
+  elf-machine-386 : Integer = 3
+
+  elf-machine-x86-64 : Integer = 62
+
+  pt-load : Integer = 1
+
+  pt-note : Integer = 4
+
+  pf-r : Integer = 4
+
+  pf-w : Integer = 2
+
+  pf-x : Integer = 1
+
+  pf-rwx : Integer = 7
+
+  pf-rw : Integer = 6
+
+  xen-elfnote-phys32-entry : Integer = 18
+
+  xen-name : List Integer = [88, 101, 110, 0]
+
+Section: Layout Constants
+  elf-bare-metal-load-addr : Integer = 1048576
+
+  elf-bare-metal-heap-size : Integer = 1069547520
+
+  elf-linux-base-addr : Integer = 4194304
+
+  elf-page-size : Integer = 4096
+
+  elf32-header-size : Integer = 52
+
+  elf32-phdr-size : Integer = 32
+
+  elf64-header-size : Integer = 64
+
+  elf64-phdr-size : Integer = 56
+
+Section: ELF Identification
+  elf-ident-32 : List Integer
+  elf-ident-32 =
+   elf-magic & [elf-class-32, elf-data-lsb, elf-version-current]
+   & pad-zeros 9
+
+  elf-ident-64 : List Integer
+  elf-ident-64 =
+   elf-magic & [elf-class-64, elf-data-lsb, elf-version-current]
+   & pad-zeros 9
+
+Section: 32-bit ELF Header
+  elf32-header-bytes : Integer, Integer, Integer -> List Integer
+  elf32-header-bytes (entry) (phoff) (phnum) =
+   elf-ident-32
+   & write-i16 elf-type-exec
+   & write-i16 elf-machine-386
+   & write-i32 elf-version-current
+   & write-i32 entry
+   & write-i32 phoff
+   & write-i32 0
+   & write-i32 0
+   & write-i16 elf32-header-size
+   & write-i16 elf32-phdr-size
+   & write-i16 phnum
+   & write-i16 0
+   & write-i16 0
+   & write-i16 0
+
+Section: 32-bit ELF Header with section-table fields
+  elf32-header-bytes-shdrs : Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  elf32-header-bytes-shdrs (entry) (phoff) (phnum) (shoff) (shnum) (shstrndx) =
+   elf-ident-32
+   & write-i16 elf-type-exec
+   & write-i16 elf-machine-386
+   & write-i32 elf-version-current
+   & write-i32 entry
+   & write-i32 phoff
+   & write-i32 shoff
+   & write-i32 0
+   & write-i16 elf32-header-size
+   & write-i16 elf32-phdr-size
+   & write-i16 phnum
+   & write-i16 40
+   & write-i16 shnum
+   & write-i16 shstrndx
+
+Section: 32-bit Program Header
+  phdr-32 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  phdr-32 (ptype) (offset) (vaddr) (paddr) (filesz) (memsz) (flags) (palign) =
+   write-i32 ptype
+   & write-i32 offset
+   & write-i32 vaddr
+   & write-i32 paddr
+   & write-i32 filesz
+   & write-i32 memsz
+   & write-i32 flags
+   & write-i32 palign
+
+Section: PVH Note
+  pvh-note : Integer -> List Integer
+  pvh-note (entry-addr) =
+   write-i32 4
+   & write-i32 4
+   & write-i32 xen-elfnote-phys32-entry
+   & xen-name
+   & write-i32 entry-addr
+
+Section: 64-bit ELF Header
+  elf64-header-bytes : Integer, Integer, Integer -> List Integer
+  elf64-header-bytes (entry) (phoff) (phnum) =
+   elf-ident-64
+   & write-i16 elf-type-exec
+   & write-i16 elf-machine-x86-64
+   & write-i32 elf-version-current
+   & write-i64 entry
+   & write-i64 phoff
+   & write-i64 0
+   & write-i32 0
+   & write-i16 elf64-header-size
+   & write-i16 elf64-phdr-size
+   & write-i16 phnum
+   & write-i16 0
+   & write-i16 0
+   & write-i16 0
+
+Section: 64-bit Program Header
+  phdr-64 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  phdr-64 (ptype) (flags) (offset) (vaddr) (paddr) (filesz) (memsz) (palign) =
+   write-i32 ptype
+   & write-i32 flags
+   & write-i64 offset
+   & write-i64 vaddr
+   & write-i64 paddr
+   & write-i64 filesz
+   & write-i64 memsz
+   & write-i64 palign
+
+Section: Codegen Helpers
+  compute-data-vaddr-bare : Integer -> Integer
+  compute-data-vaddr-bare (text-size) =
+   elf-bare-metal-load-addr + align-up text-size 8
+
+  compute-text-start-32 : Integer
+  compute-text-start-32 =
+   let headers-end = elf32-header-size + elf32-phdr-size * 2
+   in let note-offset = align-up headers-end 4
+   in align-up (note-offset + 20) 16

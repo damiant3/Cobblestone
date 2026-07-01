@@ -1,0 +1,748 @@
+Chapter: DbAdmin
+  cites Data chapter DbBoot
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Heap
+  cites Data chapter BTreeIndex
+  cites Data chapter Wal
+  cites Data chapter Transaction
+  cites Data chapter LockManager
+  cites Data chapter Deadlock
+  cites Data chapter Replication
+  cites Data chapter Optimizer
+  cites Data chapter Executor
+  cites Data chapter BufferPool
+  cites Data chapter Optimizer
+  cites Data chapter Security
+  cites Works chapter Http
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Sha256
+
+ Web-based admin console for Codex DB. Serves an HTTP dashboard
+ with diagnostics, table browser, query runner, and administrative
+ controls. Dark theme, auto-refresh, monospace.
+
+ We say:
+
+Section: Admin State
+
+  AdminState = record {
+    as-boot : DbBootState,
+    as-query-log : List QueryLogEntry,
+    as-log-count : Integer,
+    as-plan-cache : PlanCache,
+    as-security : SecurityContext,
+    as-admin-token : Text,
+    as-authenticated : Boolean
+  }
+
+  QueryLogEntry = record {
+    qle-query : Text,
+    qle-rows : Integer,
+    qle-ok : Boolean,
+    qle-time-ms : Integer
+  }
+
+  admin-new : DbBootState -> AdminState
+  admin-new (boot) =
+    let token = sha256-hex ("admin:" & boot.dbs-config.dbc-name & ":" & show (boot.dbs-config.dbc-node-id))
+    in AdminState {
+      as-boot = boot,
+      as-query-log = [],
+      as-log-count = 0,
+      as-plan-cache = plan-cache-new,
+      as-security = security-context-new,
+      as-admin-token = token,
+      as-authenticated = False
+    }
+
+  admin-log-query : AdminState, Text, Integer, Boolean -> AdminState
+  admin-log-query (state) (query) (rows) (ok) =
+    let entry = QueryLogEntry { qle-query = query, qle-rows = rows, qle-ok = ok, qle-time-ms = 0 }
+    in AdminState {
+      as-boot = state.as-boot,
+      as-query-log = list-push (state.as-query-log) entry,
+      as-log-count = state.as-log-count + 1,
+      as-plan-cache = state.as-plan-cache,
+      as-security = state.as-security,
+      as-admin-token = state.as-admin-token,
+      as-authenticated = state.as-authenticated
+    }
+
+  admin-authenticate : AdminState, Text -> AdminState
+  admin-authenticate (state) (token) =
+    AdminState {
+      as-boot = state.as-boot,
+      as-query-log = state.as-query-log,
+      as-log-count = state.as-log-count,
+      as-plan-cache = state.as-plan-cache,
+      as-security = state.as-security,
+      as-admin-token = state.as-admin-token,
+      as-authenticated = token == state.as-admin-token
+    }
+
+Section: CSS
+
+  admin-css : Text
+  admin-css =
+    "<style>"
+    & "* { box-sizing: border-box; margin: 0; padding: 0 }"
+    & "body { font-family: 'Cascadia Code', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; padding: 0 }"
+    & "a { color: #58a6ff; text-decoration: none }"
+    & "a:hover { text-decoration: underline }"
+    & ".header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; gap: 16px }"
+    & ".header h1 { color: #58a6ff; font-size: 18px; font-weight: 600 }"
+    & ".header .version { color: #8b949e; font-size: 13px }"
+    & ".header .status { color: #3fb950; font-size: 13px; margin-left: auto }"
+    & ".nav { background: #161b22; border-bottom: 1px solid #30363d; padding: 0 24px; display: flex; gap: 0 }"
+    & ".nav a { padding: 10px 16px; color: #8b949e; border-bottom: 2px solid transparent; font-size: 13px }"
+    & ".nav a:hover { color: #c9d1d9; border-bottom-color: #30363d; text-decoration: none }"
+    & ".nav a.active { color: #c9d1d9; border-bottom-color: #58a6ff }"
+    & ".content { padding: 24px; max-width: 1200px }"
+    & ".card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; margin-bottom: 16px }"
+    & ".card h2 { color: #58a6ff; font-size: 14px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px }"
+    & ".grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px }"
+    & ".metric { text-align: center }"
+    & ".metric .value { font-size: 32px; color: #f0f6fc; font-weight: 700 }"
+    & ".metric .label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px }"
+    & "table { width: 100%; border-collapse: collapse; font-size: 13px }"
+    & "th { text-align: left; padding: 8px 12px; color: #8b949e; border-bottom: 1px solid #30363d; font-weight: 500 }"
+    & "td { padding: 8px 12px; border-bottom: 1px solid #21262d }"
+    & "tr:hover td { background: #1c2128 }"
+    & ".tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500 }"
+    & ".tag-green { background: #0d3321; color: #3fb950 }"
+    & ".tag-blue { background: #0c2d6b; color: #58a6ff }"
+    & ".tag-yellow { background: #3d2e00; color: #d29922 }"
+    & ".tag-red { background: #3d0f0f; color: #f85149 }"
+    & ".query-box { width: 100%; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-family: inherit; font-size: 13px; padding: 12px; resize: vertical; min-height: 80px }"
+    & ".btn { background: #238636; color: #fff; border: 1px solid #2ea043; border-radius: 6px; padding: 8px 16px; font-family: inherit; font-size: 13px; cursor: pointer }"
+    & ".btn:hover { background: #2ea043 }"
+    & ".btn-danger { background: #da3633; border-color: #f85149 }"
+    & ".btn-danger:hover { background: #f85149 }"
+    & "pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5 }"
+    & ".footer { padding: 24px; color: #484f58; font-size: 11px; text-align: center; border-top: 1px solid #21262d; margin-top: 40px }"
+    & ".dba-login-card { max-width: 400px; margin: 80px auto }"
+    & ".dba-input-short { min-height: auto; height: 40px }"
+    & "</style>"
+
+Section: Page Layout
+
+  admin-page : Text, Text -> Text
+  admin-page (title) (body) =
+    "<!DOCTYPE html><html><head><meta charset='utf-8'><meta http-equiv='refresh' content='15'>"
+    & "<title>Codex DB - " & title & "</title>"
+    & admin-css
+    & "</head><body>"
+    & admin-header
+    & admin-nav title
+    & "<div class='content'>" & body & "</div>"
+    & admin-footer
+    & "</body></html>"
+
+  admin-header : Text
+  admin-header =
+    "<div class='header'>"
+    & "<h1>Codex DB</h1>"
+    & "<span class='version'>v0.1.0</span>"
+    & "<span class='status'>running</span>"
+    & "</div>"
+
+  admin-nav : Text -> Text
+  admin-nav (active) =
+    "<div class='nav'>"
+    & nav-link "Dashboard" "/" active
+    & nav-link "Tables" "/tables" active
+    & nav-link "Query" "/query" active
+    & nav-link "Transactions" "/txn" active
+    & nav-link "Locks" "/locks" active
+    & nav-link "Indexes" "/indexes" active
+    & nav-link "Plans" "/plans" active
+    & nav-link "Backup" "/backup" active
+    & nav-link "Security" "/security" active
+    & nav-link "Replication" "/replication" active
+    & nav-link "Config" "/config" active
+    & "</div>"
+
+  nav-link : Text, Text, Text -> Text
+  nav-link (label) (href) (active) =
+    let cls = if label == active then " class='active'" else ""
+    in "<a href='" & href & "'" & cls & ">" & label & "</a>"
+
+  admin-footer : Text
+  admin-footer =
+    "<div class='footer'>Codex DB &mdash; bare-metal relational database &mdash; no OS required</div>"
+
+Section: Dashboard Page
+
+  page-dashboard : AdminState -> Text
+  page-dashboard (state) =
+    let srv = state.as-boot.dbs-server
+    in let mgr = srv.db-txn-mgr
+    in let svc-tag = when (state.as-boot.dbs-service-state)
+      is SvcRunning -> "<span class='tag tag-green'>RUNNING</span>"
+      is SvcPaused -> "<span class='tag tag-yellow'>PAUSED</span>"
+      is SvcStopped -> "<span class='tag tag-red'>STOPPED</span>"
+    in admin-page "Dashboard" (
+      "<div class='card'><h2>Service</h2><p>State: " & svc-tag
+      & " <a href='/svc/pause'><button class='btn'>Pause</button></a> "
+      & "<a href='/svc/resume'><button class='btn'>Resume</button></a> "
+      & "<a href='/svc/stop'><button class='btn btn-danger'>Stop</button></a></p></div>"
+      & "<div class='grid'>"
+      & metric-card "Tables" (show (srv.db-catalog.table-count))
+      & metric-card "Sessions" (show (hamt-size (srv.db-sessions)))
+      & metric-card "Queries" (show (state.as-boot.dbs-total-queries))
+      & metric-card "Committed" (show (mgr.committed-count))
+      & metric-card "Aborted" (show (mgr.aborted-count))
+      & metric-card "WAL Records" (show (wal-record-count (mgr.wal)))
+      & metric-card "Plans Cached" (show (state.as-plan-cache.pc-count))
+      & metric-card "Node" (show (state.as-boot.dbs-config.dbc-node-id))
+      & "</div>"
+      & "<div class='card'><h2>Recent Queries</h2>"
+      & render-query-log (state.as-query-log) 0 (state.as-log-count)
+      & "</div>"
+      & "<div class='card'><h2>Server Info</h2><pre>"
+      & db-health (state.as-boot)
+      & "</pre></div>"
+    )
+
+  metric-card : Text, Text -> Text
+  metric-card (label) (value) =
+    "<div class='card metric'>"
+    & "<div class='value'>" & value & "</div>"
+    & "<div class='label'>" & label & "</div>"
+    & "</div>"
+
+Section: Tables Page
+
+  page-tables : AdminState -> Text
+  page-tables (state) =
+    let cat = state.as-boot.dbs-server.db-catalog
+    in let entries = hamt-to-list (cat.tables)
+    in admin-page "Tables" (
+      "<div class='card'><h2>Tables (" & show (cat.table-count) & ")</h2>"
+      & "<table><tr><th>Name</th><th>Columns</th><th>Rows</th><th>Indexes</th><th>Actions</th></tr>"
+      & render-table-rows entries 0 (list-length entries)
+      & "</table></div>"
+    )
+
+  render-table-rows : List (HamtEntry CatalogTable), Integer, Integer -> Text
+  render-table-rows (entries) (i) (len) =
+    if i >= len then ""
+    else let e = list-at entries i
+    in let ct = e.value
+    in "<tr>"
+    & "<td><strong>" & ct.cat-table-name & "</strong></td>"
+    & "<td>" & show (ct.cat-table-def.col-count) & "</td>"
+    & "<td>" & show (heap-row-count (ct.cat-heap)) & "</td>"
+    & "<td>" & show (list-length (ct.cat-indexes)) & "</td>"
+    & "<td><a href='/table/" & ct.cat-table-name & "'>Browse</a> | <a href='/schema/" & ct.cat-table-name & "'>Schema</a></td>"
+    & "</tr>"
+    & render-table-rows entries (i + 1) len
+
+Section: Table Detail Page
+
+  page-table-detail : AdminState, Text -> Text
+  page-table-detail (state) (table-name) =
+    let cat = state.as-boot.dbs-server.db-catalog
+    in let maybe-entry = catalog-get-table cat table-name
+    in when maybe-entry
+      is None -> admin-page "Not Found" ("<div class='card'><h2>Table not found: " & table-name & "</h2></div>")
+      is Just (entry) ->
+        let scan = heap-scan (entry.cat-heap)
+        in admin-page table-name (
+          "<div class='card'><h2>" & table-name & " (" & show (scan.scan-count) & " rows)</h2>"
+          & render-schema-table (entry.cat-table-def)
+          & "</div>"
+          & "<div class='card'><h2>Data</h2>"
+          & render-data-table (entry.cat-table-def) (scan.rows) 0 (scan.scan-count)
+          & "</div>"
+        )
+
+  render-schema-table : TableDef -> Text
+  render-schema-table (tdef) =
+    "<table><tr><th>#</th><th>Column</th><th>Type</th><th>Nullable</th></tr>"
+    & render-schema-rows (tdef.columns) 0 (tdef.col-count)
+    & "</table>"
+
+  render-schema-rows : List ColumnDef, Integer, Integer -> Text
+  render-schema-rows (cols) (i) (len) =
+    if i >= len then ""
+    else let cd = list-at cols i
+    in "<tr><td>" & show i & "</td>"
+    & "<td>" & cd.col-name & "</td>"
+    & "<td><span class='tag tag-blue'>" & col-type-name (cd.col-type) & "</span></td>"
+    & "<td>" & (if cd.nullable then "<span class='tag tag-yellow'>nullable</span>" else "<span class='tag tag-green'>NOT NULL</span>") & "</td>"
+    & "</tr>"
+    & render-schema-rows cols (i + 1) len
+
+  render-data-table : TableDef, List RowData, Integer, Integer -> Text
+  render-data-table (tdef) (rows) (i) (len) =
+    let header = "<table><tr>" & render-col-headers (tdef.columns) 0 (tdef.col-count) & "</tr>"
+    in let body = render-data-rows rows 0 len
+    in header & body & "</table>"
+
+  render-col-headers : List ColumnDef, Integer, Integer -> Text
+  render-col-headers (cols) (i) (len) =
+    if i >= len then ""
+    else "<th>" & (list-at cols i).col-name & "</th>" & render-col-headers cols (i + 1) len
+
+  render-data-rows : List RowData, Integer, Integer -> Text
+  render-data-rows (rows) (i) (len) =
+    if i >= len then ""
+    else let row = list-at rows i
+    in "<tr>" & render-data-cells (row.values) 0 (list-length (row.values)) & "</tr>"
+    & render-data-rows rows (i + 1) len
+
+  render-data-cells : List ColumnValue, Integer, Integer -> Text
+  render-data-cells (vals) (i) (len) =
+    if i >= len then ""
+    else let v = list-at vals i
+    in "<td>" & render-value v & "</td>" & render-data-cells vals (i + 1) len
+
+  render-value : ColumnValue -> Text
+  render-value (v) =
+    when v
+      is ValInteger (n) -> show n
+      is ValText (t) -> t
+      is ValBoolean (b) -> if b then "<span class='tag tag-green'>True</span>" else "<span class='tag tag-red'>False</span>"
+      is ValNull -> "<span class='tag tag-yellow'>NULL</span>"
+
+Section: Query Page
+
+  page-query : AdminState -> Text
+  page-query (state) =
+    admin-page "Query" (
+      "<div class='card'><h2>Run Query</h2>"
+      & "<form method='POST' action='/query'>"
+      & "<textarea class='query-box' name='q' placeholder='scan employees'>scan employees</textarea>"
+      & "<br><br><button class='btn' type='submit'>Execute</button>"
+      & "</form></div>"
+      & "<div class='card'><h2>Query Log</h2>"
+      & render-query-log (state.as-query-log) 0 (state.as-log-count)
+      & "</div>"
+    )
+
+Section: Transaction Page
+
+  page-txn : AdminState -> Text
+  page-txn (state) =
+    let mgr = state.as-boot.dbs-server.db-txn-mgr
+    in admin-page "Transactions" (
+      "<div class='grid'>"
+      & metric-card "Active" (show (hamt-size (mgr.active-txns)))
+      & metric-card "Committed" (show (mgr.committed-count))
+      & metric-card "Aborted" (show (mgr.aborted-count))
+      & metric-card "Next TXN ID" (show (mgr.next-txn-id))
+      & "</div>"
+      & "<div class='card'><h2>WAL Summary</h2><pre>"
+      & "records: " & show (wal-record-count (mgr.wal)) & "\n"
+      & "last LSN: " & show (wal-last-lsn (mgr.wal)) & "\n"
+      & "checkpoint LSN: " & show ((mgr.wal).checkpoint-lsn)
+      & "</pre></div>"
+    )
+
+Section: Locks Page
+
+  page-locks : AdminState -> Text
+  page-locks (state) =
+    let lt = state.as-boot.dbs-server.db-lock-table
+    in let deadlock = check-deadlocks lt
+    in let deadlock-html = when deadlock
+      is NoDeadlock -> "<span class='tag tag-green'>No deadlocks</span>"
+      is DeadlockFound (cycle) -> "<span class='tag tag-red'>DEADLOCK: victim " & show (select-victim cycle) & "</span>"
+    in admin-page "Locks" (
+      "<div class='card'><h2>Lock Manager</h2><pre>"
+      & lock-stats lt
+      & "</pre></div>"
+      & "<div class='card'><h2>Deadlock Detection</h2>"
+      & "<p>" & deadlock-html & "</p>"
+      & "</div>"
+    )
+
+Section: Replication Page
+
+  page-replication : AdminState -> Text
+  page-replication (state) =
+    let rs = state.as-boot.dbs-replica
+    in let role-tag = when (rs.rs-role)
+      is RolePrimary -> "<span class='tag tag-green'>PRIMARY</span>"
+      is RoleFollower -> "<span class='tag tag-blue'>FOLLOWER</span>"
+      is RoleCandidate -> "<span class='tag tag-yellow'>CANDIDATE</span>"
+    in admin-page "Replication" (
+      "<div class='card'><h2>Node Status</h2>"
+      & "<p>Role: " & role-tag & "</p>"
+      & "<pre>" & replication-stats rs & "</pre>"
+      & "</div>"
+      & "<div class='card'><h2>Followers</h2>"
+      & render-follower-table (rs.rs-followers) 0 (list-length (rs.rs-followers))
+      & "</div>"
+    )
+
+  render-follower-table : List FollowerInfo, Integer, Integer -> Text
+  render-follower-table (fis) (i) (len) =
+    if len == 0 then "<p>No followers registered</p>"
+    else "<table><tr><th>Node</th><th>Address</th><th>Applied LSN</th><th>Lag</th></tr>"
+    & render-follower-rows fis 0 len
+    & "</table>"
+
+  render-follower-rows : List FollowerInfo, Integer, Integer -> Text
+  render-follower-rows (fis) (i) (len) =
+    if i >= len then ""
+    else let fi = list-at fis i
+    in let lag-tag = if fi.fi-lag == 0 then "<span class='tag tag-green'>synced</span>"
+       else if fi.fi-lag < 100 then "<span class='tag tag-yellow'>" & show (fi.fi-lag) & "</span>"
+       else "<span class='tag tag-red'>" & show (fi.fi-lag) & "</span>"
+    in "<tr><td>" & show (fi.fi-node-id) & "</td><td>" & fi.fi-address & "</td><td>" & show (fi.fi-applied-lsn) & "</td><td>" & lag-tag & "</td></tr>"
+    & render-follower-rows fis (i + 1) len
+
+Section: Config Page
+
+  page-config : AdminState -> Text
+  page-config (state) =
+    let config = state.as-boot.dbs-config
+    in admin-page "Config" (
+      "<div class='card'><h2>Server Configuration</h2>"
+      & "<table><tr><th>Setting</th><th>Value</th></tr>"
+      & config-row "Database Name" config.dbc-name
+      & config-row "Node ID" (show (config.dbc-node-id))
+      & config-row "Listen Port" (show (config.dbc-listen-port))
+      & config-row "Buffer Pool Pages" (show (config.dbc-buffer-pool-pages))
+      & config-row "WAL Checkpoint Interval" (show (config.dbc-wal-checkpoint-interval))
+      & config-row "Max Connections" (show (config.dbc-max-connections))
+      & config-row "Replication Role" config.dbc-replication-role
+      & "</table></div>"
+      & "<div class='card'><h2>Admin Actions</h2>"
+      & "<p><a href='/checkpoint'><button class='btn'>Force Checkpoint</button></a> "
+      & "<a href='/gc'><button class='btn'>Run GC</button></a> "
+      & "<a href='/analyze'><button class='btn'>Analyze Tables</button></a> "
+      & "<a href='/shutdown'><button class='btn btn-danger'>Shutdown</button></a></p>"
+      & "</div>"
+    )
+
+  config-row : Text, Text -> Text
+  config-row (key) (value) =
+    "<tr><td>" & key & "</td><td><strong>" & value & "</strong></td></tr>"
+
+Section: Query Log
+
+  render-query-log : List QueryLogEntry, Integer, Integer -> Text
+  render-query-log (entries) (i) (len) =
+    if len == 0 then "<p>No queries logged yet</p>"
+    else "<table><tr><th>#</th><th>Query</th><th>Rows</th><th>Status</th></tr>"
+    & render-query-entries entries 0 len
+    & "</table>"
+
+  render-query-entries : List QueryLogEntry, Integer, Integer -> Text
+  render-query-entries (entries) (i) (len) =
+    if i >= len then ""
+    else let e = list-at entries i
+    in let status = if e.qle-ok then "<span class='tag tag-green'>OK</span>" else "<span class='tag tag-red'>ERROR</span>"
+    in "<tr><td>" & show (i + 1) & "</td><td>" & e.qle-query & "</td><td>" & show (e.qle-rows) & "</td><td>" & status & "</td></tr>"
+    & render-query-entries entries (i + 1) len
+
+Section: Login Page
+
+  page-login : AdminState -> Text
+  page-login (state) =
+    admin-page "Login" (
+      "<div class='card dba-login-card'>"
+      & "<h2>Admin Login</h2>"
+      & "<form method='POST' action='/login'>"
+      & "<p>Token:</p>"
+      & "<input type='password' name='token' class='query-box dba-input-short'>"
+      & "<br><br><button class='btn' type='submit'>Login</button>"
+      & "</form></div>"
+    )
+
+Section: Kill Transaction Page
+
+  page-kill-txn : AdminState -> Text
+  page-kill-txn (state) =
+    let mgr = state.as-boot.dbs-server.db-txn-mgr
+    in let active = hamt-to-list (mgr.active-txns)
+    in admin-page "Kill Transaction" (
+      "<div class='card'><h2>Active Transactions</h2>"
+      & (if list-length active == 0 then "<p>No active transactions</p>"
+         else "<table><tr><th>TXN ID</th><th>Isolation</th><th>Writes</th><th>Start LSN</th><th>Action</th></tr>"
+         & render-active-txns active 0 (list-length active)
+         & "</table>")
+      & "</div>"
+    )
+
+  render-active-txns : List (HamtEntry TxnInfo), Integer, Integer -> Text
+  render-active-txns (entries) (i) (len) =
+    if i >= len then ""
+    else let e = list-at entries i
+    in let txn = e.value
+    in "<tr><td>" & show (txn.txn-id) & "</td>"
+    & "<td>" & isolation-name (txn.txn-isolation) & "</td>"
+    & "<td>" & show (txn.txn-write-count) & "</td>"
+    & "<td>" & show (txn.txn-start-lsn) & "</td>"
+    & "<td><a href='/kill-txn/" & show (txn.txn-id) & "'><button class='btn btn-danger'>Kill</button></a></td>"
+    & "</tr>"
+    & render-active-txns entries (i + 1) len
+
+Section: Index Management Page
+
+  page-indexes : AdminState -> Text
+  page-indexes (state) =
+    let cat = state.as-boot.dbs-server.db-catalog
+    in let entries = hamt-to-list (cat.tables)
+    in admin-page "Indexes" (
+      "<div class='card'><h2>Index Overview</h2>"
+      & "<table><tr><th>Table</th><th>Index</th><th>Columns</th><th>Unique</th><th>Entries</th><th>Height</th><th>Fill %</th><th>Action</th></tr>"
+      & render-all-indexes entries 0 (list-length entries)
+      & "</table></div>"
+    )
+
+  render-all-indexes : List (HamtEntry CatalogTable), Integer, Integer -> Text
+  render-all-indexes (entries) (i) (len) =
+    if i >= len then ""
+    else let e = list-at entries i
+    in let ct = e.value
+    in render-table-indexes ct (ct.cat-indexes) 0 (list-length (ct.cat-indexes))
+    & render-all-indexes entries (i + 1) len
+
+  render-table-indexes : CatalogTable, List CatalogIndex, Integer, Integer -> Text
+  render-table-indexes (ct) (idxs) (i) (len) =
+    if i >= len then ""
+    else let ci = list-at idxs i
+    in let stats = btree-stats (ci.cat-index-tree)
+    in let unique-tag = if ci.cat-index-def.is-unique then "<span class='tag tag-green'>YES</span>" else "<span class='tag tag-blue'>NO</span>"
+    in let fill-tag = if stats.bts-avg-leaf-fill >= 80 then "<span class='tag tag-green'>" & show (stats.bts-avg-leaf-fill) & "%</span>"
+       else if stats.bts-avg-leaf-fill >= 50 then "<span class='tag tag-yellow'>" & show (stats.bts-avg-leaf-fill) & "%</span>"
+       else "<span class='tag tag-red'>" & show (stats.bts-avg-leaf-fill) & "%</span>"
+    in "<tr><td>" & ct.cat-table-name & "</td>"
+    & "<td>" & ci.cat-index-def.index-name & "</td>"
+    & "<td>" & render-col-list (ci.cat-index-def.columns) & "</td>"
+    & "<td>" & unique-tag & "</td>"
+    & "<td>" & show (stats.bts-count) & "</td>"
+    & "<td>" & show (stats.bts-height) & "</td>"
+    & "<td>" & fill-tag & "</td>"
+    & "<td><a href='/rebalance/" & ct.cat-table-name & "/" & ci.cat-index-def.index-name & "'><button class='btn'>Rebalance</button></a></td>"
+    & "</tr>"
+    & render-table-indexes ct idxs (i + 1) len
+
+  render-col-list : List Text -> Text
+  render-col-list (cols) = rcl-loop cols 0 (list-length cols) ""
+
+  rcl-loop : List Text, Integer, Integer, Text -> Text
+  rcl-loop (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i > 0 then ", " else ""
+    in rcl-loop cols (i + 1) len (acc & sep & list-at cols i)
+
+Section: Plan Cache Page
+
+  page-plans : AdminState -> Text
+  page-plans (state) =
+    let cache = state.as-plan-cache
+    in let enabled-tag = if cache.pc-enabled then "<span class='tag tag-green'>ENABLED</span>" else "<span class='tag tag-red'>DISABLED</span>"
+    in let hit-rate = if cache.pc-hits + cache.pc-misses == 0 then 100
+       else (cache.pc-hits * 100) / (cache.pc-hits + cache.pc-misses)
+    in admin-page "Plans" (
+      "<div class='grid'>"
+      & metric-card "Cached Plans" (show (cache.pc-count))
+      & metric-card "Hit Rate" (show hit-rate & "%")
+      & metric-card "Hits" (show (cache.pc-hits))
+      & metric-card "Misses" (show (cache.pc-misses))
+      & "</div>"
+      & "<div class='card'><h2>Plan Cache Control</h2>"
+      & "<p>Status: " & enabled-tag & "</p>"
+      & "<p><a href='/plans/purge'><button class='btn btn-danger'>Purge All Plans</button></a> "
+      & (if cache.pc-enabled then "<a href='/plans/disable'><button class='btn'>Disable Cache</button></a>"
+         else "<a href='/plans/enable'><button class='btn'>Enable Cache</button></a>")
+      & "</p></div>"
+      & "<div class='card'><h2>Cached Plans</h2>"
+      & render-cached-plans cache
+      & "</div>"
+    )
+
+  render-cached-plans : PlanCache -> Text
+  render-cached-plans (cache) =
+    let entries = hamt-to-list (cache.pc-plans)
+    in if list-length entries == 0 then "<p>No cached plans</p>"
+    else "<table><tr><th>Query Hash</th><th>Uses</th><th>Stale</th><th>Action</th></tr>"
+    & render-plan-entries entries 0 (list-length entries)
+    & "</table>"
+
+  render-plan-entries : List (HamtEntry CachedPlan), Integer, Integer -> Text
+  render-plan-entries (entries) (i) (len) =
+    if i >= len then ""
+    else let e = list-at entries i
+    in let cp = e.value
+    in let stale-tag = if cp.cp-stale then "<span class='tag tag-yellow'>STALE</span>" else "<span class='tag tag-green'>FRESH</span>"
+    in "<tr><td>" & cp.cp-query-hash & "</td>"
+    & "<td>" & show (cp.cp-use-count) & "</td>"
+    & "<td>" & stale-tag & "</td>"
+    & "<td><a href='/plans/evict/" & cp.cp-query-hash & "'><button class='btn btn-danger'>Evict</button></a></td>"
+    & "</tr>"
+    & render-plan-entries entries (i + 1) len
+
+Section: Backup Page
+
+  page-backup : AdminState -> Text
+  page-backup (state) =
+    let wal = state.as-boot.dbs-server.db-txn-mgr.wal
+    in admin-page "Backup" (
+      "<div class='grid'>"
+      & metric-card "WAL Records" (show (wal-record-count wal))
+      & metric-card "Last LSN" (show (wal-last-lsn wal))
+      & metric-card "Checkpoint" (show (wal.checkpoint-lsn))
+      & metric-card "Tables" (show (state.as-boot.dbs-server.db-catalog.table-count))
+      & "</div>"
+      & "<div class='card'><h2>Backup Operations</h2>"
+      & "<p><a href='/backup/full'><button class='btn'>Full Backup</button></a> "
+      & "<a href='/backup/log'><button class='btn'>Log Backup</button></a></p>"
+      & "</div>"
+      & "<div class='card'><h2>Restore</h2>"
+      & "<form method='POST' action='/restore'>"
+      & "<p>Target LSN (0 = latest):</p>"
+      & "<input type='text' name='target-lsn' class='query-box dba-input-short' value='0'>"
+      & "<br><br><button class='btn' type='submit'>Restore</button>"
+      & "</form></div>"
+    )
+
+Section: Security Page
+
+  page-security : AdminState -> Text
+  page-security (state) =
+    let ctx = state.as-security
+    in admin-page "Security" (
+      "<div class='grid'>"
+      & metric-card "Users" (show (ctx.sc-users.us-count))
+      & metric-card "Views" (show (ctx.sc-views.vs-count))
+      & metric-card "Row Policies" (show (ctx.sc-row-policies.rps-count))
+      & metric-card "Encrypted Cols" (show (ctx.sc-col-encryption.ces-count))
+      & "</div>"
+      & "<div class='card'><h2>Users</h2>"
+      & render-user-table ctx
+      & "</div>"
+      & "<div class='card'><h2>Views</h2>"
+      & render-view-table ctx
+      & "</div>"
+      & "<div class='card'><h2>Row-Level Policies</h2>"
+      & render-policy-table ctx
+      & "</div>"
+      & "<div class='card'><h2>Time Windows</h2>"
+      & render-time-window-table ctx
+      & "</div>"
+    )
+
+  render-user-table : SecurityContext -> Text
+  render-user-table (ctx) =
+    let entries = hamt-to-list (ctx.sc-users.us-users)
+    in if list-length entries == 0 then "<p>No users configured</p>"
+    else "<table><tr><th>User</th><th>Auth Level</th><th>Enabled</th><th>Logins</th><th>Action</th></tr>"
+    & render-user-rows entries 0 (list-length entries)
+    & "</table>"
+
+  render-user-rows : List (HamtEntry DbUser), Integer, Integer -> Text
+  render-user-rows (entries) (i) (len) =
+    if i >= len then ""
+    else let e = list-at entries i
+    in let u = e.value
+    in let level-tag = when (u.user-auth-level)
+      is AuthAdmin -> "<span class='tag tag-red'>ADMIN</span>"
+      is AuthReadWrite -> "<span class='tag tag-blue'>READ-WRITE</span>"
+      is AuthReadOnly -> "<span class='tag tag-green'>READ-ONLY</span>"
+      is AuthNone -> "<span class='tag tag-yellow'>NONE</span>"
+    in let enabled-tag = if u.user-enabled then "<span class='tag tag-green'>YES</span>" else "<span class='tag tag-red'>NO</span>"
+    in "<tr><td>" & u.user-name & "</td><td>" & level-tag & "</td><td>" & enabled-tag & "</td><td>" & show (u.user-login-count) & "</td>"
+    & "<td><a href='/user/disable/" & u.user-name & "'><button class='btn btn-danger'>Disable</button></a></td></tr>"
+    & render-user-rows entries (i + 1) len
+
+  render-view-table : SecurityContext -> Text
+  render-view-table (ctx) =
+    let entries = hamt-to-list (ctx.sc-views.vs-views)
+    in if list-length entries == 0 then "<p>No views defined</p>"
+    else "<table><tr><th>View</th><th>Owner</th><th>Min Auth</th></tr>"
+    & render-view-rows entries 0 (list-length entries)
+    & "</table>"
+
+  render-view-rows : List (HamtEntry DbView), Integer, Integer -> Text
+  render-view-rows (entries) (i) (len) =
+    if i >= len then ""
+    else let e = list-at entries i
+    in let v = e.value
+    in "<tr><td>" & v.view-name & "</td><td>" & v.view-owner & "</td><td>" & auth-level-name (v.view-min-auth) & "</td></tr>"
+    & render-view-rows entries (i + 1) len
+
+  render-policy-table : SecurityContext -> Text
+  render-policy-table (ctx) =
+    let policies = ctx.sc-row-policies.rps-policies
+    in if list-length policies == 0 then "<p>No row-level policies</p>"
+    else "<table><tr><th>Policy</th><th>Table</th><th>Applies To</th></tr>"
+    & render-policy-rows policies 0 (list-length policies)
+    & "</table>"
+
+  render-policy-rows : List RowPolicy, Integer, Integer -> Text
+  render-policy-rows (policies) (i) (len) =
+    if i >= len then ""
+    else let p = list-at policies i
+    in "<tr><td>" & p.rp-name & "</td><td>" & p.rp-table & "</td><td>" & auth-level-name (p.rp-applies-to) & "</td></tr>"
+    & render-policy-rows policies (i + 1) len
+
+  render-time-window-table : SecurityContext -> Text
+  render-time-window-table (ctx) =
+    let windows = ctx.sc-time-windows.tws-windows
+    in if list-length windows == 0 then "<p>No time windows configured</p>"
+    else "<table><tr><th>Name</th><th>Table</th><th>Hours</th><th>Auth Level</th></tr>"
+    & render-tw-rows windows 0 (list-length windows)
+    & "</table>"
+
+  render-tw-rows : List TimeWindow, Integer, Integer -> Text
+  render-tw-rows (windows) (i) (len) =
+    if i >= len then ""
+    else let tw = list-at windows i
+    in "<tr><td>" & tw.tw-name & "</td><td>" & tw.tw-table & "</td><td>" & show (tw.tw-start-hour) & ":00-" & show (tw.tw-end-hour) & ":00</td><td>" & auth-level-name (tw.tw-auth-level) & "</td></tr>"
+    & render-tw-rows windows (i + 1) len
+
+Section: Request Router
+
+  admin-route : AdminState, Text -> Text
+  admin-route (state) (path) =
+    if path == "/login" then page-login state
+    else if state.as-authenticated == False then
+      if path == "/" then page-login state
+      else page-login state
+    else if path == "/" then page-dashboard state
+    else if path == "/tables" then page-tables state
+    else if path == "/query" then page-query state
+    else if path == "/txn" then page-txn state
+    else if path == "/kill-txn" then page-kill-txn state
+    else if path == "/locks" then page-locks state
+    else if path == "/indexes" then page-indexes state
+    else if path == "/plans" then page-plans state
+    else if path == "/backup" then page-backup state
+    else if path == "/security" then page-security state
+    else if path == "/replication" then page-replication state
+    else if path == "/config" then page-config state
+    else if text-starts-with path "/table/" then page-table-detail state (text-drop-prefix path 7)
+    else if text-starts-with path "/schema/" then page-table-detail state (text-drop-prefix path 8)
+    else if text-starts-with path "/kill-txn/" then page-kill-txn state
+    else if text-starts-with path "/rebalance/" then page-indexes state
+    else if text-starts-with path "/plans/" then page-plans state
+    else if text-starts-with path "/svc/" then page-dashboard state
+    else admin-page "Not Found" ("<div class='card'><h2>404 - Page not found</h2><p>" & path & "</p></div>")
+
+  text-drop-prefix : Text, Integer -> Text
+  text-drop-prefix (t) (n) = tdp-loop t n (text-length t) ""
+
+  tdp-loop : Text, Integer, Integer, Text -> Text
+  tdp-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else tdp-loop t (i + 1) len (acc & text-from-char (text-char-at t i))
+
+Section: HTTP Handler
+
+  admin-handle-http : AdminState, List Integer -> HttpResponse
+  admin-handle-http (state) (req-bytes) =
+    let req = http-parse-request req-bytes
+    in if req.valid == False then http-error "malformed request"
+    else let body = admin-route state (req.path)
+    in http-html body
+
+Page 1

@@ -1,0 +1,433 @@
+Chapter: Zig Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Zig source code from the IR.
+
+Section: Keywords and Sanitization
+
+  zig-keywords : List Text =
+   ["addrspace", "align", "allowzero", "and", "anyframe",
+    "anytype", "asm", "async", "await", "break",
+    "callconv", "catch", "comptime", "const", "continue",
+    "defer", "else", "enum", "errdefer", "error",
+    "export", "extern", "false", "fn", "for",
+    "if", "inline", "linksection", "noalias", "nosuspend",
+    "null", "opaque", "or", "orelse", "packed",
+    "pub", "resume", "return", "struct", "suspend",
+    "switch", "test", "threadlocal", "true", "try",
+    "undefined", "union", "unreachable", "var", "volatile",
+    "while"]
+
+  is-zig-keyword-loop : List Text, Text, Integer, Integer -> Boolean
+  is-zig-keyword-loop (kws) (name) (i) (len) =
+   if i == len then False
+   else if list-at kws i == name then True
+   else is-zig-keyword-loop kws name (i + 1) len
+
+  is-zig-keyword : Text -> Boolean
+  is-zig-keyword (name) = is-zig-keyword-loop zig-keywords name 0 (list-length zig-keywords)
+
+  zig-sanitize : Text -> Text
+  zig-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if is-zig-keyword s then "@\"" & s & "\""
+      else s
+
+  zig-escape-text : Text -> Text
+  zig-escape-text (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+Section: Type Mapping
+
+  ZigTypeEntry = record {
+   codex-name : Text,
+   zig-name : Text
+  }
+
+  zig-type-map : List ZigTypeEntry =
+   [ZigTypeEntry { codex-name = "Integer", zig-name = "i64" },
+    ZigTypeEntry { codex-name = "Real", zig-name = "f64" },
+    ZigTypeEntry { codex-name = "Text", zig-name = "[]const u8" },
+    ZigTypeEntry { codex-name = "Boolean", zig-name = "bool" },
+    ZigTypeEntry { codex-name = "Char", zig-name = "u32" },
+    ZigTypeEntry { codex-name = "Nothing", zig-name = "void" }]
+
+  zig-lookup-type : List ZigTypeEntry, Text, Integer -> Text
+  zig-lookup-type (entries) (name) (i) =
+   if i >= list-length entries then "anyopaque"
+   else let e = list-at entries i
+   in if e.codex-name == name then e.zig-name
+      else zig-lookup-type entries name (i + 1)
+
+  emit-zig-type : CodexType -> Text
+  emit-zig-type (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> "i64"
+    is RealTy -> "f64"
+    is RealApproxTy -> "f64"
+    is RealTrappingTy -> "f64"
+    is RealSaturatingTy -> "f64"
+    is TextTy -> "[]const u8"
+    is BooleanTy -> "bool"
+    is CharTy -> "u32"
+    is VoidTy -> "void"
+    is NothingTy -> "void"
+    is UnitTy (n) (inner) -> "void"
+    is ListTy (elem) -> "[]" & emit-zig-type elem
+    is VectorTy (vn) (vt) -> "@Vector(" & show vn & ", " & emit-zig-type vt & ")"
+    is FunTy (p) (r) -> "*const fn (" & emit-zig-type p & ") " & emit-zig-type r
+    is RecordTy (n) (a) (f) -> zig-sanitize (n.value)
+    is SumTy (n) (a) (c) -> zig-sanitize (n.value)
+    is ConstructedTy (n) (a) -> zig-sanitize (n.value)
+    is otherwise -> "anyopaque"
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Builtin Emitter
+
+  ZigBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-zig-builtin-pos : List ZigBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-zig-builtin-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-zig-builtin-pos entries name lo mid
+      else bsearch-zig-builtin-pos entries name (mid + 1) hi
+
+  sort-zig-builtins : List ZigBuiltinEmitter -> List ZigBuiltinEmitter
+  sort-zig-builtins (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  zig-builtin-emitters : List ZigBuiltinEmitter =
+   sort-zig-builtins [
+    ZigBuiltinEmitter { name = "print-line", emit = \args arities -> "std.debug.print(\"{s}\\n\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
+    ZigBuiltinEmitter { name = "print-line-raw", emit = \args arities -> "std.debug.print(\"{s}\\n\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
+    ZigBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "std.debug.print(\"{s}\\n\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
+    ZigBuiltinEmitter { name = "print-uni", emit = \args arities -> "std.debug.print(\"{s}\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
+    ZigBuiltinEmitter { name = "print-error", emit = \args arities -> "std.debug.print(\"{s}\\n\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
+    ZigBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "std.debug.print(\"{s}\\n\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
+    ZigBuiltinEmitter { name = "show", emit = \args arities -> "std.fmt.allocPrint(std.heap.page_allocator, \"{}\", .{" & emit-zig-expr (list-at args 0) arities & "}) catch \"<show>\"" },
+    ZigBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "std.fmt.allocPrint(std.heap.page_allocator, \"{}\", .{" & emit-zig-expr (list-at args 0) arities & "}) catch \"<itoa>\"" },
+    ZigBuiltinEmitter { name = "text-length", emit = \args arities -> emit-zig-expr (list-at args 0) arities & ".len" },
+    ZigBuiltinEmitter { name = "list-length", emit = \args arities -> emit-zig-expr (list-at args 0) arities & ".len" },
+    ZigBuiltinEmitter { name = "list-at", emit = \args arities -> emit-zig-expr (list-at args 0) arities & "[" & emit-zig-expr (list-at args 1) arities & "]" },
+    ZigBuiltinEmitter { name = "char-at", emit = \args arities -> emit-zig-expr (list-at args 0) arities & "[" & emit-zig-expr (list-at args 1) arities & "]" },
+    ZigBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-zig-expr (list-at args 0) arities & ")" },
+    ZigBuiltinEmitter { name = "abs", emit = \args arities -> "@as(i64, @intCast(@abs(" & emit-zig-expr (list-at args 0) arities & ")))" },
+    ZigBuiltinEmitter { name = "min", emit = \args arities -> "@min(" & emit-zig-expr (list-at args 0) arities & ", " & emit-zig-expr (list-at args 1) arities & ")" },
+    ZigBuiltinEmitter { name = "max", emit = \args arities -> "@max(" & emit-zig-expr (list-at args 0) arities & ", " & emit-zig-expr (list-at args 1) arities & ")" },
+    ZigBuiltinEmitter { name = "fail", emit = \args arities -> "@panic(" & emit-zig-expr (list-at args 0) arities & ")" }
+   ]
+
+  lookup-zig-builtin : Text, List IRExpr, List ArityEntry -> Text
+  lookup-zig-builtin (name) (args) (arities) =
+   let len = list-length zig-builtin-emitters
+   in let pos = bsearch-zig-builtin-pos zig-builtin-emitters name 0 len
+   in if pos >= len then ""
+      else let e = list-at zig-builtin-emitters pos
+      in if e.name == name then e.emit args arities else ""
+
+Section: Name Mapping
+
+  ZigNameEntry = record {
+   codex-name : Text,
+   zig-name : Text
+  }
+
+  zig-name-map : List ZigNameEntry =
+   [ZigNameEntry { codex-name = "True", zig-name = "true" },
+    ZigNameEntry { codex-name = "False", zig-name = "false" },
+    ZigNameEntry { codex-name = "Nothing", zig-name = "null" }]
+
+  zig-lookup-name : List ZigNameEntry, Text, Integer -> Text
+  zig-lookup-name (entries) (name) (i) =
+   if i >= list-length entries then ""
+   else let e = list-at entries i
+   in if e.codex-name == name then e.zig-name
+      else zig-lookup-name entries name (i + 1)
+
+  emit-zig-name : Text, CodexType, List ArityEntry -> Text
+  emit-zig-name (n) (ty) (arities) =
+   let mapped = zig-lookup-name zig-name-map n 0
+   in if text-length mapped > 0 then mapped
+      else zig-sanitize n
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Binary Operator Mapping
+
+  ZigBinOpEntry = record {
+   op : IRBinaryOp,
+   symbol : Text
+  }
+
+  zig-bin-op-symbol : IRBinaryOp -> Text
+  zig-bin-op-symbol (op) =
+   when op
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrRemInt -> "%"
+    is IrPowInt -> "**"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq | IrApproxEqExact -> "=="
+    is IrAnd -> "and"
+    is IrOr -> "or"
+    is IrAppendText | IrAppendList | IrConsList -> "++"
+
+  emit-zig-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-zig-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "std.mem.concat(.{" & emit-zig-expr l arities & ", " & emit-zig-expr r arities & "})"
+    is IrAnd -> "(" & emit-zig-expr l arities & " and " & emit-zig-expr r arities & ")"
+    is IrOr -> "(" & emit-zig-expr l arities & " or " & emit-zig-expr r arities & ")"
+    is otherwise -> "(" & emit-zig-expr l arities & " " & zig-bin-op-symbol op & " " & emit-zig-expr r arities & ")"
+
+Section: Type Definition Emission
+
+  emit-zig-type-defs : List ATypeDef, Integer -> Text
+  emit-zig-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-zig-type-def (list-at tds i) & emit-zig-type-defs tds (i + 1)
+
+  emit-zig-type-def : ATypeDef -> Text
+  emit-zig-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     emit-zig-record-type (name.value) fields
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-zig-sum-type (name.value) ctors
+
+  emit-zig-sum-type : Text, List AVariantCtorDef -> Text
+  emit-zig-sum-type (name) (ctors) =
+   "const " & zig-sanitize name & " = union(enum) {\n" & emit-zig-ctors ctors 0 (list-length ctors) & "};\n\n"
+
+  emit-zig-ctors : List AVariantCtorDef, Integer, Integer -> Text
+  emit-zig-ctors (ctors) (i) (len) =
+   if i == len then ""
+   else let c = list-at ctors i
+   in "    " & zig-sanitize (c.name.value) & ": void,\n" & emit-zig-ctors ctors (i + 1) len
+
+  emit-zig-record-type : Text, List ARecordFieldDef -> Text
+  emit-zig-record-type (name) (fields) =
+   "const " & zig-sanitize name & " = struct {\n" & emit-zig-record-fields fields 0 & "};\n\n"
+
+  emit-zig-record-fields : List ARecordFieldDef, Integer -> Text
+  emit-zig-record-fields (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in "    " & zig-sanitize (f.name.value) & ": anyopaque = undefined,\n" & emit-zig-record-fields fields (i + 1)
+
+Section: Expression Emission
+
+  zig-max-depth : Integer = 256
+
+  emit-zig-expr : IRExpr, List ArityEntry -> Text
+  emit-zig-expr (e) (arities) = emit-zig-expr-at e arities 0
+
+  emit-zig-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-zig-expr-at (e) (arities) (depth) =
+   if depth >= zig-max-depth then "undefined"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> integer-to-text n & ".0"
+    is IrTextLit (s) (sp) -> "\"" & zig-escape-text s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-zig-name n ty arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-zig-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-zig-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-zig-expr-at c arities (depth + 1) & ") " & emit-zig-expr-at t arities (depth + 1) & " else " & emit-zig-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "blk: { const " & zig-sanitize name & " = " & emit-zig-expr-at val arities (depth + 1) & "; break :blk " & emit-zig-expr-at body arities (depth + 1) & "; }"
+    is IrApply (f) (a) (ty) (sp) -> emit-zig-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "struct { fn call(" & emit-zig-lambda-params params 0 & ") anyopaque { return " & emit-zig-expr body arities & "; } }.call"
+    is IrList (elems) (ty) (sp) -> ".{" & emit-zig-list-elems elems 0 arities & "}"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-zig-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-zig-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-zig-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-zig-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields arities
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-zig-expr-at rec arities (depth + 1) & "." & zig-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "blk: { var _r = " & emit-zig-expr-at rec arities (depth + 1) & "; _r." & zig-sanitize field & " = " & emit-zig-expr-at val arities (depth + 1) & "; break :blk _r; }"
+    is IrFork (body) (ty) (sp) -> emit-zig-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-zig-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-zig-act body arities
+    is IrError (msg) (ty) (sp) -> "@panic(\"" & zig-escape-text msg & "\")"
+
+Section: Lambda and List Helpers
+
+  emit-zig-lambda-params : List IRParam, Integer -> Text
+  emit-zig-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then zig-sanitize ((list-at params i).name) & ": anyopaque"
+   else zig-sanitize ((list-at params i).name) & ": anyopaque, " & emit-zig-lambda-params params (i + 1)
+
+  emit-zig-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-zig-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-zig-expr (list-at elems i) arities
+   else emit-zig-expr (list-at elems i) arities & ", " & emit-zig-list-elems elems (i + 1) arities
+
+Section: Record Emission
+
+  emit-zig-record : Text, List IRFieldVal, List ArityEntry -> Text
+  emit-zig-record (name) (fields) (arities) =
+   zig-sanitize name & "{ " & emit-zig-record-vals fields 0 arities & " }"
+
+  emit-zig-record-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-zig-record-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & "." & zig-sanitize (f.name) & " = " & emit-zig-expr (f.value) arities & emit-zig-record-vals fields (i + 1) arities
+
+Section: Match Emission
+
+  emit-zig-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-zig-match (scrut) (branches) (arities) =
+   "switch (" & emit-zig-expr scrut arities & ") { " & emit-zig-match-arms branches 0 arities & " }"
+
+  emit-zig-match-arms : List IRBranch, Integer, List ArityEntry -> Text
+  emit-zig-match-arms (branches) (i) (arities) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-zig-match-arm (b.pattern) (b.body) arities & emit-zig-match-arms branches (i + 1) arities
+
+  emit-zig-match-arm : IRPat, IRExpr, List ArityEntry -> Text
+  emit-zig-match-arm (pat) (body) (arities) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> text & " => " & emit-zig-expr body arities & ", "
+    is IrCtorPat (name) (subs) (ty) (sp) -> "." & zig-sanitize name & " => " & emit-zig-expr body arities & ", "
+    is IrVarPat (name) (ty) (sp) -> "else => " & emit-zig-expr body arities & ", "
+    is IrWildPat (sp) -> "else => " & emit-zig-expr body arities & ", "
+    is IrVecPat (pats) (ty) (sp) -> "else => " & emit-zig-expr body arities & ", "
+
+Section: Act Emission
+
+  emit-zig-act : List IRActStmt, List ArityEntry -> Text
+  emit-zig-act (stmts) (arities) =
+   "blk: { " & emit-zig-act-stmts stmts 0 arities & " }"
+
+  emit-zig-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-zig-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then "break :blk undefined;"
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "const " & zig-sanitize name & " = " & emit-zig-expr val arities & "; "
+    is IrDoExec (e) (sp) -> if is-last then "break :blk " & emit-zig-expr e arities & "; " else "_ = " & emit-zig-expr e arities & "; ") & emit-zig-act-stmts stmts (i + 1) arities
+
+Section: Apply Emission
+
+  emit-zig-apply : IRExpr, List ArityEntry -> Text
+  emit-zig-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     let builtin = lookup-zig-builtin n args arities
+     in if text-length builtin > 0 then builtin
+        else zig-sanitize n & "(" & emit-zig-apply-args args arities 0 & ")"
+    is otherwise -> emit-zig-expr-curried e arities
+
+  emit-zig-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-zig-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-zig-expr (list-at args i) arities
+   else emit-zig-expr (list-at args i) arities & ", " & emit-zig-apply-args args arities (i + 1)
+
+  emit-zig-expr-curried : IRExpr, List ArityEntry -> Text
+  emit-zig-expr-curried (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> emit-zig-expr f arities & "(" & emit-zig-expr a arities & ")"
+    is otherwise -> emit-zig-expr e arities
+
+Section: Definition Emission
+
+  emit-zig-def : IRDef, List ArityEntry -> Text
+  emit-zig-def (d) (arities) =
+   let name = zig-sanitize (d.name)
+   in let params-text = emit-zig-def-params (d.params) 0
+   in "fn " & name & "(" & params-text & ") anyopaque {\n    return " & emit-zig-expr (d.body) arities & ";\n}\n\n"
+
+  emit-zig-def-params : List IRParam, Integer -> Text
+  emit-zig-def-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then zig-sanitize ((list-at params i).name) & ": anyopaque"
+   else zig-sanitize ((list-at params i).name) & ": anyopaque, " & emit-zig-def-params params (i + 1)
+
+  emit-zig-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-zig-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-zig-def (list-at defs i) arities & emit-zig-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-zig-chapter : IRChapter, List ATypeDef -> Text
+  emit-zig-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "const std = @import(\"std\");\n\n"
+   in let types-text = emit-zig-type-defs type-defs 0
+   in let defs-text = emit-zig-defs (m.defs) 0 arities
+   in header & types-text & defs-text & "pub fn main() void {\n    " & zig-sanitize opening-entry-point & "();\n}\n"
+
+Page 1

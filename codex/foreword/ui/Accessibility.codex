@@ -1,0 +1,165 @@
+Chapter: Accessibility
+  cites UI chapter Widget
+  cites Foreword chapter Maybe
+
+ Semantic accessibility annotations for UI widgets — roles, labels,
+ live-region announcements, focus-order hints, and keyboard
+ navigation aids. Attaches accessibility metadata to WidgetNodes
+ so screen readers and alternative input devices can interpret
+ the interface.
+
+ To a11y-role gives a widget with a semantic role.
+ To a11y-label gives a widget with an accessible label.
+ To a11y-live gives a widget marked as a live region.
+ To a11y-focus-order gives a widget with an explicit tab index.
+
+ We say:
+
+Section: Types
+
+  A11yRole =
+    | RoleButton
+    | RoleTextbox
+    | RoleCheckbox
+    | RoleRadio
+    | RoleSlider
+    | RoleMenu
+    | RoleMenuItem
+    | RoleDialog
+    | RoleAlert
+    | RoleStatus
+    | RoleHeading (Integer)
+    | RoleList
+    | RoleListItem
+    | RoleLink
+    | RoleImage
+    | RoleNone
+
+  A11yLive =
+    | LiveOff
+    | LivePolite
+    | LiveAssertive
+
+  A11yInfo = record {
+    ai-role : A11yRole,
+    ai-label : Text,
+    ai-description : Text,
+    ai-live : A11yLive,
+    ai-tab-index : Integer between 0 and 32767,
+    ai-hidden : Boolean,
+    ai-expanded : Maybe Boolean,
+    ai-checked : Maybe Boolean,
+    ai-value-now : Integer,
+    ai-value-min : Integer,
+    ai-value-max : Integer
+  }
+
+Section: Defaults
+
+  a11y-empty : A11yInfo = A11yInfo {
+    ai-role = RoleNone,
+    ai-label = "",
+    ai-description = "",
+    ai-live = LiveOff,
+    ai-tab-index = 0,
+    ai-hidden = False,
+    ai-expanded = None,
+    ai-checked = None,
+    ai-value-now = 0,
+    ai-value-min = 0,
+    ai-value-max = 100
+  }
+
+Section: Construction
+
+  a11y-role : A11yInfo, A11yRole -> A11yInfo
+  a11y-role (info) (role) = __record-set info "ai-role" role
+
+  a11y-label : A11yInfo, Text -> A11yInfo
+  a11y-label (info) (label) = __record-set info "ai-label" label
+
+  a11y-description : A11yInfo, Text -> A11yInfo
+  a11y-description (info) (desc) = __record-set info "ai-description" desc
+
+  a11y-live : A11yInfo, A11yLive -> A11yInfo
+  a11y-live (info) (mode) = __record-set info "ai-live" mode
+
+  a11y-focus-order : A11yInfo, Integer -> A11yInfo
+  a11y-focus-order (info) (idx) = __record-set info "ai-tab-index" idx
+
+  a11y-hidden : A11yInfo -> A11yInfo
+  a11y-hidden (info) = __record-set info "ai-hidden" True
+
+  a11y-expanded : A11yInfo, Boolean -> A11yInfo
+  a11y-expanded (info) (state) = __record-set info "ai-expanded" (Just state)
+
+  a11y-checked : A11yInfo, Boolean -> A11yInfo
+  a11y-checked (info) (state) = __record-set info "ai-checked" (Just state)
+
+  a11y-value : A11yInfo, Integer, Integer, Integer -> A11yInfo
+  a11y-value (info) (now) (min-val) (max-val) =
+    __record-set (__record-set (__record-set info "ai-value-now" now) "ai-value-min" min-val) "ai-value-max" max-val
+
+Section: Builders
+
+  a11y-button : Text -> A11yInfo
+  a11y-button (label) = a11y-label (a11y-role a11y-empty RoleButton) label
+
+  a11y-textbox : Text -> A11yInfo
+  a11y-textbox (label) = a11y-label (a11y-role a11y-empty RoleTextbox) label
+
+  a11y-checkbox : Text, Boolean -> A11yInfo
+  a11y-checkbox (label) (checked) = a11y-checked (a11y-label (a11y-role a11y-empty RoleCheckbox) label) checked
+
+  a11y-slider : Text, Integer, Integer, Integer -> A11yInfo
+  a11y-slider (label) (now) (lo) (hi) = a11y-value (a11y-label (a11y-role a11y-empty RoleSlider) label) now lo hi
+
+  a11y-heading : Text, Integer -> A11yInfo
+  a11y-heading (label) (level) = a11y-label (a11y-role a11y-empty (RoleHeading level)) label
+
+  a11y-alert : Text -> A11yInfo
+  a11y-alert (msg) = a11y-label (a11y-live (a11y-role a11y-empty RoleAlert) LiveAssertive) msg
+
+  a11y-status : Text -> A11yInfo
+  a11y-status (msg) = a11y-label (a11y-live (a11y-role a11y-empty RoleStatus) LivePolite) msg
+
+Section: Queries
+
+  a11y-role-name : A11yRole -> Text
+  a11y-role-name (r) = when r
+    is RoleButton -> "button"
+    is RoleTextbox -> "textbox"
+    is RoleCheckbox -> "checkbox"
+    is RoleRadio -> "radio"
+    is RoleSlider -> "slider"
+    is RoleMenu -> "menu"
+    is RoleMenuItem -> "menuitem"
+    is RoleDialog -> "dialog"
+    is RoleAlert -> "alert"
+    is RoleStatus -> "status"
+    is RoleHeading (n) -> "heading"
+    is RoleList -> "list"
+    is RoleListItem -> "listitem"
+    is RoleLink -> "link"
+    is RoleImage -> "image"
+    is RoleNone -> "none"
+
+  a11y-is-interactive : A11yRole -> Boolean
+  a11y-is-interactive (r) = when r
+    is RoleButton -> True
+    is RoleTextbox -> True
+    is RoleCheckbox -> True
+    is RoleRadio -> True
+    is RoleSlider -> True
+    is RoleLink -> True
+    is RoleMenuItem -> True
+    is otherwise -> False
+
+  a11y-announce : A11yInfo -> Text
+  a11y-announce (info) =
+    let role = a11y-role-name (info.ai-role)
+    in let label = info.ai-label
+    in if text-length label > 0 then label & ", " & role
+    else role
+
+Page 1

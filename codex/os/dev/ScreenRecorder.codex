@@ -1,0 +1,170 @@
+Chapter: ScreenRecorder
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Screen recording. Captures screen regions to a frame sequence
+ with optional audio. Supports full screen, single window, or
+ custom rectangle selection. Shows a recording indicator in the
+ system tray and provides start/stop/pause controls.
+
+Section: Capture Region
+
+  CaptureRegion =
+    | CapFullScreen
+    | CapWindow (Text)
+    | CapRect (Integer) (Integer) (Integer) (Integer)
+
+  capture-region-label : CaptureRegion -> Text
+  capture-region-label (r) = when r
+    is CapFullScreen -> "Full Screen"
+    is CapWindow (id) -> "Window: " & id
+    is CapRect (x) (y) (w) (h) -> show w & "x" & show h
+
+Section: Audio Source
+
+  AudioSource =
+    | AudNone
+    | AudSystem
+    | AudMicrophone
+    | AudBoth
+
+  audio-source-label : AudioSource -> Text
+  audio-source-label (s) = when s
+    is AudNone -> "No Audio"
+    is AudSystem -> "System Audio"
+    is AudMicrophone -> "Microphone"
+    is AudBoth -> "System + Mic"
+
+Section: Recording State
+
+  RecordingStatus =
+    | RecIdle
+    | RecCountdown (Integer)
+    | RecRecording
+    | RecPaused
+
+  ScreenRecorderState = record {
+    sr-status : RecordingStatus,
+    sr-region : CaptureRegion,
+    sr-audio : AudioSource,
+    sr-output-path : Text,
+    sr-fps : Integer,
+    sr-elapsed-seconds : Integer,
+    sr-frame-count : Integer,
+    sr-file-size : Integer,
+    sr-countdown-seconds : Integer,
+    sr-show-cursor : Boolean,
+    sr-show-clicks : Boolean,
+    sr-max-duration : Integer
+  }
+
+  screen-recorder-new : ScreenRecorderState
+  screen-recorder-new = ScreenRecorderState {
+    sr-status = RecIdle,
+    sr-region = CapFullScreen,
+    sr-audio = AudNone,
+    sr-output-path = "recording",
+    sr-fps = 30,
+    sr-elapsed-seconds = 0,
+    sr-frame-count = 0,
+    sr-file-size = 0,
+    sr-countdown-seconds = 3,
+    sr-show-cursor = True,
+    sr-show-clicks = True,
+    sr-max-duration = 3600
+  }
+
+Section: Actions
+
+  sr-set-region : ScreenRecorderState, CaptureRegion -> ScreenRecorderState
+  sr-set-region (st) (r) = __record-set st "sr-region" r
+
+  sr-set-audio : ScreenRecorderState, AudioSource -> ScreenRecorderState
+  sr-set-audio (st) (a) = __record-set st "sr-audio" a
+
+  sr-set-fps : ScreenRecorderState, Integer -> ScreenRecorderState
+  sr-set-fps (st) (fps) =
+    let clamped = if fps < 1 then 1 else if fps > 60 then 60 else fps
+    in __record-set st "sr-fps" clamped
+
+  sr-start : ScreenRecorderState -> ScreenRecorderState
+  sr-start (st) =
+    if st.sr-countdown-seconds > 0 then __record-set st "sr-status" (RecCountdown (st.sr-countdown-seconds))
+    else __record-set (__record-set (__record-set st "sr-status" RecRecording) "sr-elapsed-seconds" 0) "sr-frame-count" 0
+
+  sr-countdown-tick : ScreenRecorderState -> ScreenRecorderState
+  sr-countdown-tick (st) = when st.sr-status
+    is RecCountdown (n) -> if n <= 1 then __record-set (__record-set (__record-set st "sr-status" RecRecording) "sr-elapsed-seconds" 0) "sr-frame-count" 0
+      else __record-set st "sr-status" (RecCountdown (n - 1))
+    is otherwise -> st
+
+  sr-stop : ScreenRecorderState -> ScreenRecorderState
+  sr-stop (st) = __record-set st "sr-status" RecIdle
+
+  sr-pause : ScreenRecorderState -> ScreenRecorderState
+  sr-pause (st) = when st.sr-status
+    is RecRecording -> __record-set st "sr-status" RecPaused
+    is RecPaused -> __record-set st "sr-status" RecRecording
+    is otherwise -> st
+
+  sr-tick : ScreenRecorderState -> ScreenRecorderState
+  sr-tick (st) = when st.sr-status
+    is RecRecording ->
+      let elapsed = st.sr-elapsed-seconds + 1
+      in let frames = st.sr-frame-count + st.sr-fps
+      in if elapsed >= st.sr-max-duration then sr-stop st
+      else __record-set (__record-set st "sr-elapsed-seconds" elapsed) "sr-frame-count" frames
+    is RecCountdown (n) -> sr-countdown-tick st
+    is otherwise -> st
+
+  sr-is-recording : ScreenRecorderState -> Boolean
+  sr-is-recording (st) = when st.sr-status
+    is RecRecording -> True
+    is RecPaused -> True
+    is otherwise -> False
+
+Section: Display
+
+  sr-elapsed-text : ScreenRecorderState -> Text
+  sr-elapsed-text (st) =
+    let mins = st.sr-elapsed-seconds / 60
+    in let secs = st.sr-elapsed-seconds - mins * 60
+    in sr-pad2 mins & ":" & sr-pad2 secs
+
+  sr-pad2 : Integer -> Text
+  sr-pad2 (n) = if n < 10 then "0" & show n else show n
+
+  sr-status-label : ScreenRecorderState -> Text
+  sr-status-label (st) = when st.sr-status
+    is RecIdle -> "Ready"
+    is RecCountdown (n) -> "Starting in " & show n & "..."
+    is RecRecording -> "Recording " & sr-elapsed-text st
+    is RecPaused -> "Paused " & sr-elapsed-text st
+
+Section: Widget
+
+  sr-widget : ScreenRecorderState -> WidgetNode
+  sr-widget (st) =
+    let title = widget-label "sr-title" "Screen Recorder"
+    in let status = widget-label "sr-status" (sr-status-label st)
+    in let region-btn = widget-button "sr-region" ("Region: " & capture-region-label (st.sr-region))
+    in let audio-btn = widget-button "sr-audio" ("Audio: " & audio-source-label (st.sr-audio))
+    in let fps-label = widget-label "sr-fps" ("FPS: " & show (st.sr-fps))
+    in let cursor-btn = widget-button "sr-cursor" ("Show Cursor: " & if st.sr-show-cursor then "ON" else "OFF")
+    in let controls = sr-control-buttons st
+    in widget-panel "sr-panel" DirColumn 4 [title, status, region-btn, audio-btn, fps-label, cursor-btn, controls]
+
+  sr-control-buttons : ScreenRecorderState -> WidgetNode
+  sr-control-buttons (st) = when st.sr-status
+    is RecIdle -> widget-panel "sr-ctrl" DirRow 4 [widget-button "sr-start" "Start Recording"]
+    is RecCountdown (n) -> widget-panel "sr-ctrl" DirRow 4 [widget-button "sr-cancel" "Cancel"]
+    is RecRecording -> widget-panel "sr-ctrl" DirRow 4 [widget-button "sr-pause" "Pause", widget-button "sr-stop" "Stop"]
+    is RecPaused -> widget-panel "sr-ctrl" DirRow 4 [widget-button "sr-resume" "Resume", widget-button "sr-stop" "Stop"]
+
+Section: Formatting
+
+  format-screen-recorder : ScreenRecorderState -> Text
+  format-screen-recorder (st) =
+    sr-status-label st & " " & capture-region-label (st.sr-region) & " " & audio-source-label (st.sr-audio) & " " & show (st.sr-fps) & "fps"
+
+Page 1

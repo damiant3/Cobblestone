@@ -1,0 +1,109 @@
+Chapter: MissileWarning
+  cites Foreword chapter Console
+
+ Missile Warning Receiver — fighter jet threat classification.
+
+ Every function that touches the threat pipeline is `punctual`:
+ the compiler PROVES bounded execution at compile time.
+ No external tools. No $50,000 WCET analyzer. No trust-me.
+
+ Compare with missile-warning-ada.txt in this directory.
+
+Section: Types
+
+  ThreatLevel =
+    | None
+    | Low
+    | Medium
+    | High
+    | Critical
+
+  SensorReading = record {
+    bearing : Integer between 0 and 359,
+    range-m : Integer between 0 and 100000,
+    velocity : Integer between 0 and 5000,
+    ir-signal : Integer between 0 and 1023
+  }
+
+  Countermeasure =
+    | NoAction
+    | Chaff
+    | Flare
+    | Jam
+    | Evade
+
+Section: Threat Classification
+
+ The compiler enforces: no heap, no recursion, no unbounded calls,
+ no blocking I/O. It counts instructions and reports budget usage.
+
+  punctual classify-threat : SensorReading -> ThreatLevel
+  classify-threat (s) =
+    let range-score = if s.range-m < 1000 then 40
+      else if s.range-m < 5000 then 25
+      else if s.range-m < 20000 then 10
+      else 0
+    in let vel-score = if s.velocity > 3000 then 30
+      else if s.velocity > 1500 then 20
+      else if s.velocity > 500 then 10
+      else 0
+    in let ir-score = if s.ir-signal > 800 then 30
+      else if s.ir-signal > 400 then 15
+      else 0
+    in let total = range-score + vel-score + ir-score
+    in if total >= 80 then Critical
+    else if total >= 60 then High
+    else if total >= 35 then Medium
+    else if total >= 15 then Low
+    else None
+
+Section: Countermeasure Selection
+
+  punctual select-response : ThreatLevel, SensorReading -> Countermeasure
+  select-response (threat) (s) =
+    when threat
+      is Critical -> if s.ir-signal > 600 then Flare else Evade
+      is High -> Jam
+      is Medium -> Chaff
+      is Low | None -> NoAction
+
+Section: Threat Name
+
+  punctual threat-name : ThreatLevel -> Text
+  threat-name (t) =
+    when t
+      is None -> "NONE"
+      is Low -> "LOW"
+      is Medium -> "MEDIUM"
+      is High -> "HIGH"
+      is Critical -> "CRITICAL"
+
+  punctual response-name : Countermeasure -> Text
+  response-name (c) =
+    when c
+      is NoAction -> "HOLD"
+      is Chaff -> "CHAFF"
+      is Flare -> "FLARE"
+      is Jam -> "JAM"
+      is Evade -> "EVADE"
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    let inbound = SensorReading { bearing = 045, range-m = 800, velocity = 2800, ir-signal = 900 }
+    in let threat = classify-threat inbound
+    in let response = select-response threat inbound
+    in act
+      print-line-uni ("THREAT: " & threat-name threat)
+      print-line-uni ("ACTION: " & response-name response)
+    end
+    let far-contact = SensorReading { bearing = 270, range-m = 45000, velocity = 300, ir-signal = 50 }
+    in let threat2 = classify-threat far-contact
+    in let response2 = select-response threat2 far-contact
+    in act
+      print-line-uni ("THREAT: " & threat-name threat2)
+      print-line-uni ("ACTION: " & response-name response2)
+    end
+  end
+
+Page 1

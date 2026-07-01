@@ -1,0 +1,178 @@
+Chapter: Raytracer
+  cites Math chapter Geometry
+  cites Math chapter Quaternion
+  cites Game chapter Color
+  cites Game chapter Rasterizer
+
+ Simple 3D raytracer. Renders spheres and planes with diffuse +
+ specular (Phong) lighting. Outputs to a Framebuf. Real-valued
+ geometry, 0-255 for color channels.
+
+ We say:
+
+Section: Scene Objects
+  Material = record {
+    mat-color : Rgb,
+    mat-diffuse : Integer,
+    mat-specular : Integer,
+    mat-shininess : Integer
+  }
+
+  RtSphere = record {
+    rt-center : Vec3,
+    rt-radius : Real,
+    rt-mat : Material
+  }
+
+  RtPlane = record {
+    rt-point : Vec3,
+    rt-normal : Vec3,
+    rt-mat : Material
+  }
+
+  SceneObj =
+    | ObjSphere (RtSphere)
+    | ObjPlane (RtPlane)
+
+Section: Scene
+  RtScene = record {
+    rt-objects : List SceneObj,
+    rt-light-pos : Vec3,
+    rt-light-color : Rgb,
+    rt-ambient : Integer,
+    rt-bg : Rgb
+  }
+
+  scene-new : Vec3, Rgb, Integer, Rgb -> RtScene
+  scene-new (light) (light-col) (ambient) (bg) = RtScene { rt-objects = [], rt-light-pos = light, rt-light-color = light-col, rt-ambient = ambient, rt-bg = bg }
+
+  scene-add : RtScene, SceneObj -> RtScene
+  scene-add (s) (obj) = RtScene { rt-objects = list-push (s.rt-objects) obj, rt-light-pos = s.rt-light-pos, rt-light-color = s.rt-light-color, rt-ambient = s.rt-ambient, rt-bg = s.rt-bg }
+
+Section: Materials
+  mat-new : Rgb, Integer, Integer, Integer -> Material
+  mat-new (color) (diff) (spec) (shine) = Material { mat-color = color, mat-diffuse = diff, mat-specular = spec, mat-shininess = shine }
+
+  mat-matte : Rgb -> Material
+  mat-matte (color) = Material { mat-color = color, mat-diffuse = 800, mat-specular = 200, mat-shininess = 8 }
+
+  mat-shiny : Rgb -> Material
+  mat-shiny (color) = Material { mat-color = color, mat-diffuse = 500, mat-specular = 700, mat-shininess = 32 }
+
+Section: Ray-Object Intersection
+  RtHit = record {
+    rt-did-hit : Boolean,
+    rt-dist : Real,
+    rt-pos : Vec3,
+    rt-norm : Vec3,
+    rt-material : Material
+  }
+
+  rt-no-hit : RtHit
+  rt-no-hit = RtHit { rt-did-hit = False, rt-dist = 999999.0, rt-pos = vec3-zero, rt-norm = vec3-zero, rt-material = mat-matte rgb-black }
+
+  rt-intersect-obj : Ray3, SceneObj -> RtHit
+  rt-intersect-obj (ray) (obj) = when obj
+    is ObjSphere (s) -> rt-intersect-sphere ray s
+    is ObjPlane (p) -> rt-intersect-plane ray p
+
+  rt-intersect-sphere : Ray3, RtSphere -> RtHit
+  rt-intersect-sphere (ray) (s) =
+    let hit = ray3-sphere ray (s.rt-center) (s.rt-radius)
+    in if hit.rh3-hit then
+      let norm = rt-normalize (vec3-subtract (hit.rh3-point) (s.rt-center))
+      in RtHit { rt-did-hit = True, rt-dist = hit.rh3-t, rt-pos = hit.rh3-point, rt-norm = norm, rt-material = s.rt-mat }
+    else rt-no-hit
+
+  rt-intersect-plane : Ray3, RtPlane -> RtHit
+  rt-intersect-plane (ray) (p) =
+    let hit = ray3-plane ray (p.rt-point) (p.rt-normal)
+    in if hit.rh3-hit then
+      RtHit { rt-did-hit = True, rt-dist = hit.rh3-t, rt-pos = hit.rh3-point, rt-norm = p.rt-normal, rt-material = p.rt-mat }
+    else rt-no-hit
+
+Section: Scene Tracing
+  rt-trace : Ray3, RtScene -> RtHit
+  rt-trace (ray) (scene) = rt-closest ray (scene.rt-objects) 0 (list-length (scene.rt-objects)) rt-no-hit
+
+  rt-closest : Ray3, List SceneObj, Integer, Integer, RtHit -> RtHit
+  rt-closest (ray) (objs) (i) (n) (best) =
+    if i >= n then best
+    else let hit = rt-intersect-obj ray (list-at objs i)
+    in let new-best = if hit.rt-did-hit then if hit.rt-dist < best.rt-dist then hit else best else best
+    in rt-closest ray objs (i + 1) n new-best
+
+Section: Shading (Phong)
+  rt-shade : RtHit, RtScene, Vec3 -> Rgb
+  rt-shade (hit) (scene) (ray-dir) =
+    if hit.rt-did-hit then
+      let to-light = rt-normalize (vec3-subtract (scene.rt-light-pos) (hit.rt-pos))
+      in let n-dot-l = vec3-dot (hit.rt-norm) to-light
+      in let diffuse = if n-dot-l > 0.0 then n-dot-l else 0.0
+      in let reflect = rt-reflect (vec3-scale to-light (-1.0)) (hit.rt-norm)
+      in let r-dot-v = vec3-dot reflect (vec3-scale ray-dir (-1.0))
+      in let spec-raw = if r-dot-v > 0.0 then r-dot-v else 0.0
+      in let specular = rt-pow-real spec-raw (hit.rt-material.mat-shininess)
+      in let mat = hit.rt-material
+      in let amb = real-from-int (scene.rt-ambient)
+      in let diff-contrib = real-from-int (mat.mat-diffuse) * diffuse / 1000.0
+      in let spec-contrib = real-from-int (mat.mat-specular) * specular / 1000.0
+      in let intensity = amb + diff-contrib + spec-contrib
+      in let capped = if intensity > 1000.0 then 1000 else real-to-int intensity
+      in rgb-scale (mat.mat-color) capped
+    else scene.rt-bg
+
+  rt-reflect : Vec3, Vec3 -> Vec3
+  rt-reflect (incoming) (normal) =
+    let d = vec3-dot incoming normal
+    in vec3-subtract incoming (vec3-scale normal (2.0 * d))
+
+Section: Camera and Rendering
+  RtCamera = record {
+    cam-origin : Vec3,
+    cam-fov : Integer
+  }
+
+  camera-new : Vec3, Integer -> RtCamera
+  camera-new (origin) (fov) = RtCamera { cam-origin = origin, cam-fov = fov }
+
+  rt-pixel-ray : RtCamera, Integer, Integer, Integer, Integer -> Ray3
+  rt-pixel-ray (cam) (px) (py) (width) (height) =
+    let aspect = real-from-int width / real-from-int height
+    in let half-fov = real-from-int (cam.cam-fov) / 2.0
+    in let nx = (2.0 * real-from-int px - real-from-int width) * half-fov / real-from-int width
+    in let ny = (real-from-int height - 2.0 * real-from-int py) * half-fov / real-from-int height
+    in let dir = rt-normalize (vec3-new (nx * aspect) ny 1.0)
+    in ray3-new (cam.cam-origin) dir
+
+  rt-render : RtScene, RtCamera, Integer, Integer -> Framebuf
+  rt-render (scene) (cam) (width) (height) =
+    let fb = fb-new width height (rgb-to-packed (scene.rt-bg))
+    in rt-render-loop scene cam fb width height 0 0
+
+  rt-render-loop : RtScene, RtCamera, Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  rt-render-loop (scene) (cam) (fb) (w) (h) (x) (y) =
+    if y >= h then fb
+    else if x >= w then rt-render-loop scene cam fb w h 0 (y + 1)
+    else let ray = rt-pixel-ray cam x y w h
+    in let hit = rt-trace ray scene
+    in let color = rt-shade hit scene (ray.r3-dir)
+    in let fb2 = fb-set fb x y (rgb-to-packed color)
+    in rt-render-loop scene cam fb2 w h (x + 1) y
+
+Section: Helpers
+  rt-normalize : Vec3 -> Vec3
+  rt-normalize (v) =
+    let len = geo-sqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
+    in if len ~0 0.0 then vec3-zero
+    else vec3-new (v.vx / len) (v.vy / len) (v.vz / len)
+
+  rt-pow-real : Real, Integer -> Real
+  rt-pow-real (base) (exp) = rt-pow-loop-real base exp 1.0
+
+  rt-pow-loop-real : Real, Integer, Real -> Real
+  rt-pow-loop-real (base) (exp) (acc) =
+    if exp <= 0 then acc
+    else rt-pow-loop-real base (exp - 1) (acc * base)
+
+Page 1

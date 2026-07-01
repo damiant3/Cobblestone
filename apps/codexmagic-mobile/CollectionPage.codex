@@ -1,0 +1,149 @@
+Chapter: GalleryPage
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter StringUtils
+  cites MobileApp chapter MobileApp
+
+ Public gallery. Shows all users' creations from the explorer
+ server. No auth required for viewing.
+
+Section: State Keys
+
+  sk-gal-loaded : Text = "gal-loaded"
+  sk-gal-msg : Text = "gal-msg"
+  sk-gal-count : Text = "gal-count"
+  sk-gal-filter : Text = "gal-filter"
+
+Section: Page Tree
+
+  gallery-page-tree : Integer -> WidgetNode
+  gallery-page-tree (x) =
+   let loaded = state-get sk-gal-loaded
+   in let msg = state-get-text sk-gal-msg
+   in let count = state-get sk-gal-count
+   in let filter = state-get sk-gal-filter
+   in widget-panel "gal-root" DirColumn 12 [
+     widget-label "gal-title" "Community Gallery",
+     widget-panel "gal-bar" DirRow 8 [
+       widget-label "gal-count-lbl" (show count & " creations"),
+       widget-button "gal-refresh" "Refresh"
+     ],
+     widget-separator "sep-filters",
+     widget-panel "gal-filters" DirRow 4 [
+       widget-button "gal-f-all" (if filter == 0 then "[All]" else "All"),
+       widget-button "gal-f-setting" (if filter == 1 then "[Settings]" else "Settings"),
+       widget-button "gal-f-char" (if filter == 2 then "[Characters]" else "Characters"),
+       widget-button "gal-f-item" (if filter == 3 then "[Items]" else "Items")
+     ],
+     widget-separator "sep-list",
+     if loaded == 0 then widget-label "gal-loading" "Tap Refresh to load"
+     else gallery-list-tree 0,
+     if text-length msg > 0 then widget-label "gal-msg" msg
+     else widget-label "gal-msg-empty" ""
+   ]
+
+  gallery-list-tree : Integer -> WidgetNode
+  gallery-list-tree (x) =
+   let count = state-get sk-gal-count
+   in let filter = state-get sk-gal-filter
+   in if count == 0 then widget-label "gal-empty" "No creations in the gallery yet."
+   else widget-panel "gal-list" DirColumn 6 (gallery-items 0 count filter [])
+
+  gallery-items : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  gallery-items (i) (count) (filter) (acc) =
+   if i >= count then acc
+   else let kind = state-get-text ("gal-kind-" & show i)
+   in let name = state-get-text ("gal-name-" & show i)
+   in let by = state-get-text ("gal-by-" & show i)
+   in let show-it = if filter == 0 then True
+     else if filter == 1 then kind == "setting"
+     else if filter == 2 then kind == "character"
+     else kind == "item"
+   in if show-it then
+     let item = widget-panel ("gal-item-" & show i) DirRow 8 [
+       widget-panel ("gal-left-" & show i) DirColumn 2 [
+         widget-label ("gal-nm-" & show i) name,
+         widget-label ("gal-by-lbl-" & show i) ("by @" & by)
+       ],
+       widget-label ("gal-badge-" & show i) ("[" & kind & "]"),
+       widget-button ("gal-remix-" & show i) "Remix"
+     ]
+     in gallery-items (i + 1) count filter (list-push acc item)
+   else gallery-items (i + 1) count filter acc
+
+Section: Data Loading
+
+  gallery-load : Integer -> Integer
+  gallery-load (x) =
+   let url = api-base & "/api/gallery"
+   in let s = set-msg sk-gal-msg "Loading gallery..."
+   in fetch-get-then url (gallery-load-cb)
+
+  gallery-load-cb : Text -> Integer
+  gallery-load-cb (resp) =
+   let s1 = state-set sk-gal-loaded 1
+   in let parsed = gallery-parse resp 0 0
+   in let s2 = state-set sk-gal-count parsed
+   in let s3 = state-set-text sk-gal-msg ""
+   in let r = request-render 0
+   in 0
+
+  gallery-parse : Text, Integer, Integer -> Integer
+  gallery-parse (resp) (pos) (count) =
+   let by-key = "\"by\":\""
+   in let idx = text-index-of resp by-key pos
+   in if idx < 0 then count
+   else let by-start = idx + text-length by-key
+   in let by-end = text-index-of resp "\"" by-start
+   in let by = text-substring resp by-start (by-end - by-start)
+   in let kind-key = "\"kind\":\""
+   in let kind-idx = text-index-of resp kind-key by-end
+   in if kind-idx < 0 then count
+   else let kind-start = kind-idx + text-length kind-key
+   in let kind-end = text-index-of resp "\"" kind-start
+   in let kind = text-substring resp kind-start (kind-end - kind-start)
+   in let name-key = "\"name\":\""
+   in let name-idx = text-index-of resp name-key kind-end
+   in if name-idx < 0 then count
+   else let name-start = name-idx + text-length name-key
+   in let name-end = text-index-of resp "\"" name-start
+   in let name = text-substring resp name-start (name-end - name-start)
+   in let s1 = state-set-text ("gal-by-" & show count) by
+   in let s2 = state-set-text ("gal-kind-" & show count) kind
+   in let s3 = state-set-text ("gal-name-" & show count) name
+   in gallery-parse resp name-end (count + 1)
+
+Section: Remix
+
+  gallery-remix : Integer -> Integer
+  gallery-remix (idx) =
+   let by = state-get-text ("gal-by-" & show idx)
+   in let name = state-get-text ("gal-name-" & show idx)
+   in let tok = state-get-text "cx-token"
+   in let url = api-base & "/api/remix?t=" & url-encode tok & "&by=" & url-encode by & "&name=" & url-encode name
+   in let s = set-msg sk-gal-msg ("Remixing " & name & "...")
+   in fetch-get-then url (gallery-remix-cb)
+
+  gallery-remix-cb : Text -> Integer
+  gallery-remix-cb (resp) =
+   let obj = json-parse-obj resp
+   in let err = json-obj-field obj "error"
+   in if text-length err > 0 then set-msg sk-gal-msg err
+   else set-msg sk-gal-msg "Remixed! Check My Creations."
+
+Section: Handlers
+
+  gallery-on-click : Text -> Integer
+  gallery-on-click (id) =
+   if id == "gal-refresh" then gallery-load 0
+   else if id == "gal-f-all" then state-set-render sk-gal-filter 0
+   else if id == "gal-f-setting" then state-set-render sk-gal-filter 1
+   else if id == "gal-f-char" then state-set-render sk-gal-filter 2
+   else if id == "gal-f-item" then state-set-render sk-gal-filter 3
+   else if text-starts-with id "gal-remix-" then gallery-remix 0
+   else 0
+
+  gallery-on-pick : Text, Integer -> Integer
+  gallery-on-pick (group) (idx) = 0
+
+Page 1

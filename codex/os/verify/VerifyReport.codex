@@ -1,0 +1,87 @@
+Chapter: VerifyReport
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+
+ A VerifyReport summarizes a CDX verification run: which phases
+ passed, which failed, the final trust score, and human-readable
+ diagnostic text for each step.
+
+ We say:
+
+Section: Report Types
+
+  PhaseReport = record {
+    phase-name : Text,
+    passed : Boolean,
+    reason : Text
+  }
+
+  FullReport = record {
+    integrity : PhaseReport,
+    author : PhaseReport,
+    capabilities : PhaseReport,
+    effects : PhaseReport,
+    proofs : PhaseReport,
+    all-passed : Boolean,
+    phases-passed : Integer between 0 and 5
+  }
+
+Section: Report Generation
+
+  verify-cdx-report : List Integer, TrustLattice, Policy, Integer, BareFactStore, Integer -> FullReport
+  verify-cdx-report (binary) (lattice) (policy) (current-time) (store) (fuel) =
+    let p1 = verify-integrity binary
+    in let p1r = to-phase-report "integrity" p1
+    in let threshold = if p1.accepted then read-threshold binary else 0
+    in let p2 = if p1.accepted then verify-author binary lattice threshold
+      else verify-reject PhaseAuthor "skipped: integrity failed"
+    in let p2r = to-phase-report "author" p2
+    in let p3 = if p2.accepted then verify-capabilities binary policy lattice current-time
+      else verify-reject PhaseCapabilities "skipped: prior phase failed"
+    in let p3r = to-phase-report "capabilities" p3
+    in let p4 = if p3.accepted then verify-effects binary
+      else verify-reject PhaseEffects "skipped: prior phase failed"
+    in let p4r = to-phase-report "effects" p4
+    in let p5 = if p4.accepted then verify-proofs binary store fuel
+      else verify-reject PhaseProofs "skipped: prior phase failed"
+    in let p5r = to-phase-report "proofs" p5
+    in let passed = count-passed p1r p2r p3r p4r p5r
+    in FullReport {
+      integrity = p1r,
+      author = p2r,
+      capabilities = p3r,
+      effects = p4r,
+      proofs = p5r,
+      all-passed = passed == 5,
+      phases-passed = passed
+    }
+
+  read-threshold : List Integer -> Integer
+  read-threshold (binary) = read-le16 binary 216
+
+  to-phase-report : Text, VerifyResult -> PhaseReport
+  to-phase-report (name) (r) = PhaseReport { phase-name = name, passed = r.accepted, reason = r.reason }
+
+  count-passed : PhaseReport, PhaseReport, PhaseReport, PhaseReport, PhaseReport -> Integer
+  count-passed (a) (b) (c) (d) (e) =
+    (if a.passed then 1 else 0) + (if b.passed then 1 else 0) + (if c.passed then 1 else 0) + (if d.passed then 1 else 0) + (if e.passed then 1 else 0)
+
+Section: Report Formatting
+
+  format-phase : PhaseReport -> Text
+  format-phase (p) =
+    if p.passed then p.phase-name & ": PASS"
+    else p.phase-name & ": FAIL (" & p.reason & ")"
+
+  format-report-summary : FullReport -> Text
+  format-report-summary (r) =
+    if r.all-passed then "VERIFIED: " & show (r.phases-passed) & "/5 passed"
+    else "REJECTED: " & show (r.phases-passed) & "/5 passed"
+
+Page 1

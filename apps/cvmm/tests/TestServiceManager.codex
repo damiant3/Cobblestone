@@ -1,0 +1,131 @@
+Chapter: TestServiceManager
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ServiceManager
+  cites Foreword chapter Maybe
+
+ Unit tests for the service manager: dependency graph, start order,
+ dependents, state transitions, and filtering.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) =
+    if val then "PASS " & label
+    else "FAIL " & label & ": expected True"
+
+  assert-false : Text, Boolean -> Text
+  assert-false (label) (val) =
+    if val then "FAIL " & label & ": expected False"
+    else "PASS " & label
+
+Section: Sample Services
+
+  build-sample-services : ServiceManagerState
+  build-sample-services =
+    let sched = __record-set (service-new "sched" "Scheduler" SvcTypeSystem) "svc-state" SvcRunning
+    in let net = __record-set (__record-set (__record-set (service-new "net" "Network" SvcTypeNetwork) "svc-state" SvcRunning) "svc-dependencies" ["sched"]) "svc-dep-count" 1
+    in let web = __record-set (__record-set (__record-set (service-new "web" "Web Server" SvcTypeSystem) "svc-state" SvcRunning) "svc-dependencies" ["net"]) "svc-dep-count" 1
+    in let dns = __record-set (__record-set (__record-set (service-new "dns" "DNS" SvcTypeNetwork) "svc-state" SvcStopped) "svc-dependencies" ["net"]) "svc-dep-count" 1
+    in sm-add-service (sm-add-service (sm-add-service (sm-add-service svc-manager-new sched) net) web) dns
+
+Section: Dependency Tests
+
+  test-deps-satisfied : Text
+  test-deps-satisfied =
+    let st = build-sample-services
+    in let sched-result = when sm-find st "sched"
+      is Just (s) -> sm-deps-satisfied st s
+      is None -> False
+    in let t1 = assert-true "sched-no-deps" sched-result
+    in let net-result = when sm-find st "net"
+      is Just (s) -> sm-deps-satisfied st s
+      is None -> False
+    in let t2 = assert-true "net-deps-met" net-result
+    in let dns-deps = when sm-find st "dns"
+      is Just (s) -> sm-deps-satisfied st s
+      is None -> False
+    in let t3 = assert-true "dns-deps-met-net-running" dns-deps
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-start-order : Text
+  test-start-order =
+    let st = build-sample-services
+    in let web-order = sm-start-order st "web"
+    in let t1 = assert-eq-int "web-order-3" 3 (list-length web-order)
+    in let sched-order = sm-start-order st "sched"
+    in let t2 = assert-eq-int "sched-order-1" 1 (list-length sched-order)
+    in let net-order = sm-start-order st "net"
+    in let t3 = assert-eq-int "net-order-2" 2 (list-length net-order)
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-dependents : Text
+  test-dependents =
+    let st = build-sample-services
+    in let sched-deps = sm-find-dependents st "sched"
+    in let t1 = assert-eq-int "sched-has-1-dependent" 1 (list-length sched-deps)
+    in let net-deps = sm-find-dependents st "net"
+    in let t2 = assert-eq-int "net-has-2-dependents" 2 (list-length net-deps)
+    in let web-deps = sm-find-dependents st "web"
+    in let t3 = assert-eq-int "web-has-0-dependents" 0 (list-length web-deps)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: State Transition Tests
+
+  test-state-update : Text
+  test-state-update =
+    let st = build-sample-services
+    in let t1 = assert-eq-int "running-count-3" 3 (sm-running-count st)
+    in let st2 = sm-update-service st "web" SvcStopped
+    in let t2 = assert-eq-int "running-after-stop" 2 (sm-running-count st2)
+    in let st3 = sm-update-service st2 "dns" SvcRunning
+    in let t3 = assert-eq-int "running-after-start" 3 (sm-running-count st3)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Filter Tests
+
+  test-service-filter : Text
+  test-service-filter =
+    let st = build-sample-services
+    in let all = sm-visible st
+    in let t1 = assert-eq-int "all-visible" 4 (list-length all)
+    in let st2 = __record-set st "sm-show-stopped" False
+    in let running-only = sm-visible st2
+    in let t2 = assert-eq-int "running-only" 3 (list-length running-only)
+    in let st3 = __record-set st "sm-filter" "Web"
+    in let filtered = sm-visible st3
+    in let t3 = assert-eq-int "filter-web" 1 (list-length filtered)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Edge Collection Tests
+
+  test-dep-edges : Text
+  test-dep-edges =
+    let st = build-sample-services
+    in let edges = sm-dep-edges st
+    in let t1 = assert-eq-int "total-edges" 3 (list-length edges)
+    in t1
+
+Section: Entry
+
+  opening : [Console] None = act
+    print-line-uni "=== ServiceManager Tests ==="
+    print-line-uni test-deps-satisfied
+    print-line-uni test-start-order
+    print-line-uni test-dependents
+    print-line-uni test-state-update
+    print-line-uni test-service-filter
+    print-line-uni test-dep-edges
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

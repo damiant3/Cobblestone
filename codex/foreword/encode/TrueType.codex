@@ -1,0 +1,493 @@
+Chapter: TrueType
+
+ TrueType font file parser. Reads the binary TTF format and extracts
+ glyph outlines, character mappings, and horizontal metrics. All
+ multi-byte values in TTF are big-endian. Coordinates are in FUnits
+ (font design units); scaling to pixels is the rasterizer's job.
+
+ Parses the 7 required tables: head, maxp, cmap, loca, glyf, hhea,
+ hmtx. Skips hinting tables (cvt, fpgm, prep), layout tables (GSUB,
+ GPOS), and metadata tables (name, OS/2, post).
+
+Section: Binary Helpers
+  ttf-u8 : List Integer, Integer -> Integer
+  ttf-u8 (buf) (off) = list-at buf off
+
+  ttf-u16 : List Integer, Integer -> Integer
+  ttf-u16 (buf) (off) =
+    let hi = list-at buf off
+    in let lo = list-at buf (off + 1)
+    in hi * 256 + lo
+
+  ttf-i16 : List Integer, Integer -> Integer
+  ttf-i16 (buf) (off) =
+    let v = ttf-u16 buf off
+    in if v >= 32768 then v - 65536 else v
+
+  ttf-u32 : List Integer, Integer -> Integer
+  ttf-u32 (buf) (off) =
+    let a = list-at buf off
+    in let b = list-at buf (off + 1)
+    in let c = list-at buf (off + 2)
+    in let d = list-at buf (off + 3)
+    in a * 16777216 + b * 65536 + c * 256 + d
+
+Section: Table Directory
+  TtfTableEntry = record {
+    tte-tag : Integer,
+    tte-offset : Integer,
+    tte-length : Integer
+  }
+
+  TtfDir = record {
+    td-num-tables : Integer,
+    td-tables : List TtfTableEntry
+  }
+
+  ttf-read-tag : List Integer, Integer -> Integer
+  ttf-read-tag (buf) (off) =
+    let a = list-at buf off
+    in let b = list-at buf (off + 1)
+    in let c = list-at buf (off + 2)
+    in let d = list-at buf (off + 3)
+    in a * 16777216 + b * 65536 + c * 256 + d
+
+  ttf-read-dir : List Integer -> TtfDir
+  ttf-read-dir (buf) =
+    let num = ttf-u16 buf 4
+    in let tables = ttf-read-dir-loop buf 12 num 0 []
+    in TtfDir { td-num-tables = num, td-tables = tables }
+
+  ttf-read-dir-loop : List Integer, Integer, Integer, Integer, List TtfTableEntry -> List TtfTableEntry
+  ttf-read-dir-loop (buf) (off) (num) (i) (acc) =
+    if i >= num then acc
+    else let entry = TtfTableEntry {
+      tte-tag = ttf-read-tag buf off,
+      tte-offset = ttf-u32 buf (off + 8),
+      tte-length = ttf-u32 buf (off + 12)
+    }
+    in ttf-read-dir-loop buf (off + 16) num (i + 1) (list-push acc entry)
+
+  ttf-find-table : TtfDir, Integer -> Integer
+  ttf-find-table (dir) (tag) = ttf-find-table-loop (dir.td-tables) tag 0
+
+  ttf-find-table-loop : List TtfTableEntry, Integer, Integer -> Integer
+  ttf-find-table-loop (tables) (tag) (i) =
+    if i >= list-length tables then (-1)
+    else let entry = list-at tables i
+    in if entry.tte-tag == tag then entry.tte-offset
+    else ttf-find-table-loop tables tag (i + 1)
+
+Section: Head Table
+  TtfHead = record {
+    th-units-per-em : Integer,
+    th-index-to-loc : Integer,
+    th-x-min : Integer,
+    th-y-min : Integer,
+    th-x-max : Integer,
+    th-y-max : Integer
+  }
+
+  ttf-read-head : List Integer, Integer -> TtfHead
+  ttf-read-head (buf) (off) =
+    TtfHead {
+      th-units-per-em = ttf-u16 buf (off + 18),
+      th-index-to-loc = ttf-i16 buf (off + 50),
+      th-x-min = ttf-i16 buf (off + 36),
+      th-y-min = ttf-i16 buf (off + 38),
+      th-x-max = ttf-i16 buf (off + 40),
+      th-y-max = ttf-i16 buf (off + 42)
+    }
+
+Section: Maxp Table
+  ttf-read-num-glyphs : List Integer, Integer -> Integer
+  ttf-read-num-glyphs (buf) (off) = ttf-u16 buf (off + 4)
+
+Section: Hhea Table
+  ttf-read-num-hmetrics : List Integer, Integer -> Integer
+  ttf-read-num-hmetrics (buf) (off) = ttf-u16 buf (off + 34)
+
+Section: Hmtx Table
+  TtfHMetric = record {
+    hm-advance : Integer,
+    hm-lsb : Integer
+  }
+
+  ttf-read-hmetrics : List Integer, Integer, Integer -> List TtfHMetric
+  ttf-read-hmetrics (buf) (off) (count) = ttf-read-hmetrics-loop buf off count 0 []
+
+  ttf-read-hmetrics-loop : List Integer, Integer, Integer, Integer, List TtfHMetric -> List TtfHMetric
+  ttf-read-hmetrics-loop (buf) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else let m = TtfHMetric {
+      hm-advance = ttf-u16 buf (off + i * 4),
+      hm-lsb = ttf-i16 buf (off + i * 4 + 2)
+    }
+    in ttf-read-hmetrics-loop buf off count (i + 1) (list-push acc m)
+
+Section: Loca Table
+  ttf-read-loca-short : List Integer, Integer, Integer -> List Integer
+  ttf-read-loca-short (buf) (off) (num-glyphs) =
+    ttf-read-loca-short-loop buf off (num-glyphs + 1) 0 []
+
+  ttf-read-loca-short-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ttf-read-loca-short-loop (buf) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else let v = ttf-u16 buf (off + i * 2) * 2
+    in ttf-read-loca-short-loop buf off count (i + 1) (list-push acc v)
+
+  ttf-read-loca-long : List Integer, Integer, Integer -> List Integer
+  ttf-read-loca-long (buf) (off) (num-glyphs) =
+    ttf-read-loca-long-loop buf off (num-glyphs + 1) 0 []
+
+  ttf-read-loca-long-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ttf-read-loca-long-loop (buf) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else let v = ttf-u32 buf (off + i * 4)
+    in ttf-read-loca-long-loop buf off count (i + 1) (list-push acc v)
+
+Section: Cmap Table (Format 4)
+  TtfCmap = record {
+    cm-seg-count : Integer,
+    cm-end-codes : List Integer,
+    cm-start-codes : List Integer,
+    cm-id-deltas : List Integer,
+    cm-id-range-offsets : List Integer,
+    cm-glyph-ids : List Integer,
+    cm-range-off-base : Integer
+  }
+
+  ttf-find-cmap4 : List Integer, Integer -> Integer
+  ttf-find-cmap4 (buf) (cmap-off) =
+    let num-sub = ttf-u16 buf (cmap-off + 2)
+    in ttf-find-cmap4-loop buf (cmap-off + 4) num-sub 0 cmap-off
+
+  ttf-find-cmap4-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  ttf-find-cmap4-loop (buf) (off) (num) (i) (cmap-off) =
+    if i >= num then (-1)
+    else let plat = ttf-u16 buf off
+    in let enc = ttf-u16 buf (off + 2)
+    in let sub-off = ttf-u32 buf (off + 4)
+    in let fmt = ttf-u16 buf (cmap-off + sub-off)
+    in if fmt == 4 then cmap-off + sub-off
+    else ttf-find-cmap4-loop buf (off + 8) num (i + 1) cmap-off
+
+  ttf-read-cmap4 : List Integer, Integer -> TtfCmap
+  ttf-read-cmap4 (buf) (off) =
+    let seg-count = ttf-u16 buf (off + 6) / 2
+    in let end-off = off + 14
+    in let start-off = end-off + seg-count * 2 + 2
+    in let delta-off = start-off + seg-count * 2
+    in let range-off = delta-off + seg-count * 2
+    in let glyph-off = range-off + seg-count * 2
+    in let table-len = ttf-u16 buf (off + 2)
+    in let glyph-count = (table-len - (glyph-off - off)) / 2
+    in TtfCmap {
+      cm-seg-count = seg-count,
+      cm-end-codes = ttf-read-u16-array buf end-off seg-count,
+      cm-start-codes = ttf-read-u16-array buf start-off seg-count,
+      cm-id-deltas = ttf-read-i16-array buf delta-off seg-count,
+      cm-id-range-offsets = ttf-read-u16-array buf range-off seg-count,
+      cm-glyph-ids = ttf-read-u16-array buf glyph-off (ttf-cmap-max glyph-count 0),
+      cm-range-off-base = range-off
+    }
+
+  ttf-cmap-max : Integer, Integer -> Integer
+  ttf-cmap-max (a) (b) = if a > b then a else b
+
+  ttf-read-u16-array : List Integer, Integer, Integer -> List Integer
+  ttf-read-u16-array (buf) (off) (count) = ttf-read-u16-array-loop buf off count 0 []
+
+  ttf-read-u16-array-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ttf-read-u16-array-loop (buf) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else ttf-read-u16-array-loop buf off count (i + 1) (list-push acc (ttf-u16 buf (off + i * 2)))
+
+  ttf-read-i16-array : List Integer, Integer, Integer -> List Integer
+  ttf-read-i16-array (buf) (off) (count) = ttf-read-i16-array-loop buf off count 0 []
+
+  ttf-read-i16-array-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ttf-read-i16-array-loop (buf) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else ttf-read-i16-array-loop buf off count (i + 1) (list-push acc (ttf-i16 buf (off + i * 2)))
+
+  ttf-cmap-lookup : TtfCmap, Integer -> Integer
+  ttf-cmap-lookup (cm) (codepoint) = ttf-cmap-lookup-loop cm codepoint 0
+
+  ttf-cmap-lookup-loop : TtfCmap, Integer, Integer -> Integer
+  ttf-cmap-lookup-loop (cm) (cp) (i) =
+    if i >= cm.cm-seg-count then 0
+    else let end-code = list-at (cm.cm-end-codes) i
+    in if cp > end-code then ttf-cmap-lookup-loop cm cp (i + 1)
+    else let start-code = list-at (cm.cm-start-codes) i
+    in if cp < start-code then 0
+    else let range-off = list-at (cm.cm-id-range-offsets) i
+    in if range-off == 0 then
+      let delta = list-at (cm.cm-id-deltas) i
+      in ttf-mod65536 (cp + delta)
+    else let idx = range-off / 2 + (cp - start-code) - (cm.cm-seg-count - i)
+    in if idx < 0 then 0
+    else if idx >= list-length (cm.cm-glyph-ids) then 0
+    else let gid = list-at (cm.cm-glyph-ids) idx
+    in if gid == 0 then 0
+    else let delta = list-at (cm.cm-id-deltas) i
+    in ttf-mod65536 (gid + delta)
+
+  ttf-mod65536 : Integer -> Integer
+  ttf-mod65536 (v) =
+    let m = v - v / 65536 * 65536
+    in if m < 0 then m + 65536 else m
+
+Section: Glyf Table
+  TtfPoint = record {
+    tp-x : Integer,
+    tp-y : Integer,
+    tp-on-curve : Integer
+  }
+
+  TtfContour = record {
+    tc-points : List TtfPoint
+  }
+
+  TtfGlyph = record {
+    tg-contours : List TtfContour,
+    tg-x-min : Integer,
+    tg-y-min : Integer,
+    tg-x-max : Integer,
+    tg-y-max : Integer,
+    tg-advance : Integer,
+    tg-lsb : Integer
+  }
+
+  ttf-empty-glyph : TtfGlyph
+  ttf-empty-glyph = TtfGlyph {
+    tg-contours = [], tg-x-min = 0, tg-y-min = 0,
+    tg-x-max = 0, tg-y-max = 0, tg-advance = 0, tg-lsb = 0
+  }
+
+  ttf-read-glyph : List Integer, Integer, Integer, List TtfHMetric, Integer -> TtfGlyph
+  ttf-read-glyph (buf) (glyf-off) (glyph-off) (hmetrics) (glyph-idx) =
+    let off = glyf-off + glyph-off
+    in let num-contours = ttf-i16 buf off
+    in let hm = ttf-get-hmetric hmetrics glyph-idx
+    in if num-contours < 0 then ttf-read-compound-glyph buf off hm
+    else if num-contours == 0 then __record-set (__record-set ttf-empty-glyph "tg-advance" hm.hm-advance) "tg-lsb" hm.hm-lsb
+    else ttf-read-simple-glyph buf off num-contours hm
+
+  ttf-get-hmetric : List TtfHMetric, Integer -> TtfHMetric
+  ttf-get-hmetric (hmetrics) (idx) =
+    if idx >= list-length hmetrics then list-at hmetrics (list-length hmetrics - 1)
+    else list-at hmetrics idx
+
+  ttf-read-simple-glyph : List Integer, Integer, Integer, TtfHMetric -> TtfGlyph
+  ttf-read-simple-glyph (buf) (off) (num-contours) (hm) =
+    let x-min = ttf-i16 buf (off + 2)
+    in let y-min = ttf-i16 buf (off + 4)
+    in let x-max = ttf-i16 buf (off + 6)
+    in let y-max = ttf-i16 buf (off + 8)
+    in let end-pts = ttf-read-u16-array buf (off + 10) num-contours
+    in let total-pts = list-at end-pts (num-contours - 1) + 1
+    in let instr-len = ttf-u16 buf (off + 10 + num-contours * 2)
+    in let flags-off = off + 10 + num-contours * 2 + 2 + instr-len
+    in let flags-result = ttf-read-flags buf flags-off total-pts
+    in let flags = ttf-fr-flags flags-result
+    in let after-flags = ttf-fr-offset flags-result
+    in let xs-result = ttf-read-coords buf after-flags flags total-pts 1 2
+    in let xs = ttf-cr-coords xs-result
+    in let ys-result = ttf-read-coords buf (ttf-cr-offset xs-result) flags total-pts 4 32
+    in let ys = ttf-cr-coords ys-result
+    in let points = ttf-build-points flags xs ys total-pts 0 []
+    in let contours = ttf-split-contours points end-pts num-contours 0 0 []
+    in TtfGlyph {
+      tg-contours = contours,
+      tg-x-min = x-min, tg-y-min = y-min,
+      tg-x-max = x-max, tg-y-max = y-max,
+      tg-advance = hm.hm-advance, tg-lsb = hm.hm-lsb
+    }
+
+  TtfFlagsResult = record {
+    tfr-flags : List Integer,
+    tfr-offset : Integer
+  }
+
+  ttf-fr-flags : TtfFlagsResult -> List Integer
+  ttf-fr-flags (r) = r.tfr-flags
+
+  ttf-fr-offset : TtfFlagsResult -> Integer
+  ttf-fr-offset (r) = r.tfr-offset
+
+  ttf-read-flags : List Integer, Integer, Integer -> TtfFlagsResult
+  ttf-read-flags (buf) (off) (total) = ttf-read-flags-loop buf off total []
+
+  ttf-read-flags-loop : List Integer, Integer, Integer, List Integer -> TtfFlagsResult
+  ttf-read-flags-loop (buf) (off) (remaining) (acc) =
+    if remaining <= 0 then TtfFlagsResult { tfr-flags = acc, tfr-offset = off }
+    else let flag = ttf-u8 buf off
+    in let is-repeat = ttf-bit-test flag 3
+    in if is-repeat == 0 then ttf-read-flags-loop buf (off + 1) (remaining - 1) (list-push acc flag)
+    else let count = ttf-u8 buf (off + 1)
+    in let expanded = ttf-repeat-flag flag count acc
+    in ttf-read-flags-loop buf (off + 2) (remaining - 1 - count) expanded
+
+  ttf-repeat-flag : Integer, Integer, List Integer -> List Integer
+  ttf-repeat-flag (flag) (count) (acc) =
+    if count <= 0 then list-push acc flag
+    else ttf-repeat-flag flag (count - 1) (list-push acc flag)
+
+  ttf-bit-test : Integer, Integer -> Integer
+  ttf-bit-test (val) (bit) =
+    let shifted = ttf-shift-right val bit
+    in shifted - shifted / 2 * 2
+
+  ttf-shift-right : Integer, Integer -> Integer
+  ttf-shift-right (val) (n) =
+    if n <= 0 then val
+    else ttf-shift-right (val / 2) (n - 1)
+
+  TtfCoordsResult = record {
+    tcr-coords : List Integer,
+    tcr-offset : Integer
+  }
+
+  ttf-cr-coords : TtfCoordsResult -> List Integer
+  ttf-cr-coords (r) = r.tcr-coords
+
+  ttf-cr-offset : TtfCoordsResult -> Integer
+  ttf-cr-offset (r) = r.tcr-offset
+
+  ttf-read-coords : List Integer, Integer, List Integer, Integer, Integer, Integer -> TtfCoordsResult
+  ttf-read-coords (buf) (off) (flags) (total) (short-bit) (same-bit) =
+    ttf-read-coords-loop buf off flags total short-bit same-bit 0 0 []
+
+  ttf-read-coords-loop : List Integer, Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> TtfCoordsResult
+  ttf-read-coords-loop (buf) (off) (flags) (total) (short-bit) (same-bit) (i) (prev) (acc) =
+    if i >= total then TtfCoordsResult { tcr-coords = acc, tcr-offset = off }
+    else let flag = list-at flags i
+    in let is-short = ttf-bit-test flag short-bit
+    in let is-same = ttf-bit-test flag same-bit
+    in if is-short > 0 then
+      let raw = ttf-u8 buf off
+      in let delta = if is-same > 0 then raw else -raw
+      in let val = prev + delta
+      in ttf-read-coords-loop buf (off + 1) flags total short-bit same-bit (i + 1) val (list-push acc val)
+    else if is-same > 0 then
+      ttf-read-coords-loop buf off flags total short-bit same-bit (i + 1) prev (list-push acc prev)
+    else let delta = ttf-i16 buf off
+    in let val = prev + delta
+    in ttf-read-coords-loop buf (off + 2) flags total short-bit same-bit (i + 1) val (list-push acc val)
+
+  ttf-build-points : List Integer, List Integer, List Integer, Integer, Integer, List TtfPoint -> List TtfPoint
+  ttf-build-points (flags) (xs) (ys) (total) (i) (acc) =
+    if i >= total then acc
+    else let flag = list-at flags i
+    in let on-curve = ttf-bit-test flag 0
+    in let pt = TtfPoint { tp-x = list-at xs i, tp-y = list-at ys i, tp-on-curve = on-curve }
+    in ttf-build-points flags xs ys total (i + 1) (list-push acc pt)
+
+  ttf-split-contours : List TtfPoint, List Integer, Integer, Integer, Integer, List TtfContour -> List TtfContour
+  ttf-split-contours (points) (end-pts) (num) (ci) (start) (acc) =
+    if ci >= num then acc
+    else let end-pt = list-at end-pts ci
+    in let contour-pts = ttf-slice-points points start (end-pt + 1) []
+    in let contour = TtfContour { tc-points = contour-pts }
+    in ttf-split-contours points end-pts num (ci + 1) (end-pt + 1) (list-push acc contour)
+
+  ttf-slice-points : List TtfPoint, Integer, Integer, List TtfPoint -> List TtfPoint
+  ttf-slice-points (points) (from) (to) (acc) =
+    if from >= to then acc
+    else ttf-slice-points points (from + 1) to (list-push acc (list-at points from))
+
+Section: Compound Glyphs
+  ttf-read-compound-glyph : List Integer, Integer, TtfHMetric -> TtfGlyph
+  ttf-read-compound-glyph (buf) (off) (hm) =
+    TtfGlyph {
+      tg-contours = [],
+      tg-x-min = ttf-i16 buf (off + 2),
+      tg-y-min = ttf-i16 buf (off + 4),
+      tg-x-max = ttf-i16 buf (off + 6),
+      tg-y-max = ttf-i16 buf (off + 8),
+      tg-advance = hm.hm-advance, tg-lsb = hm.hm-lsb
+    }
+
+Section: Top-Level Font
+  TtfFont = record {
+    tf-buf : List Integer,
+    tf-dir : TtfDir,
+    tf-head : TtfHead,
+    tf-num-glyphs : Integer,
+    tf-num-hmetrics : Integer,
+    tf-hmetrics : List TtfHMetric,
+    tf-cmap : TtfCmap,
+    tf-loca : List Integer,
+    tf-glyf-off : Integer
+  }
+
+  ttf-tag-head : Integer
+  ttf-tag-head = #68656164
+
+  ttf-tag-maxp : Integer
+  ttf-tag-maxp = #6D617870
+
+  ttf-tag-hhea : Integer
+  ttf-tag-hhea = #68686561
+
+  ttf-tag-hmtx : Integer
+  ttf-tag-hmtx = #686D7478
+
+  ttf-tag-cmap : Integer
+  ttf-tag-cmap = #636D6170
+
+  ttf-tag-loca : Integer
+  ttf-tag-loca = #6C6F6361
+
+  ttf-tag-glyf : Integer
+  ttf-tag-glyf = #676C7966
+
+  ttf-parse : List Integer -> TtfFont
+  ttf-parse (buf) =
+    let dir = ttf-read-dir buf
+    in let head-off = ttf-find-table dir ttf-tag-head
+    in let maxp-off = ttf-find-table dir ttf-tag-maxp
+    in let hhea-off = ttf-find-table dir ttf-tag-hhea
+    in let hmtx-off = ttf-find-table dir ttf-tag-hmtx
+    in let cmap-off = ttf-find-table dir ttf-tag-cmap
+    in let loca-off = ttf-find-table dir ttf-tag-loca
+    in let glyf-off = ttf-find-table dir ttf-tag-glyf
+    in let head = ttf-read-head buf head-off
+    in let num-glyphs = ttf-read-num-glyphs buf maxp-off
+    in let num-hmetrics = ttf-read-num-hmetrics buf hhea-off
+    in let hmetrics = ttf-read-hmetrics buf hmtx-off num-hmetrics
+    in let cmap4-off = ttf-find-cmap4 buf cmap-off
+    in let cmap = ttf-read-cmap4 buf cmap4-off
+    in let loca = if head.th-index-to-loc == 0 then ttf-read-loca-short buf loca-off num-glyphs
+      else ttf-read-loca-long buf loca-off num-glyphs
+    in TtfFont {
+      tf-buf = buf,
+      tf-dir = dir,
+      tf-head = head,
+      tf-num-glyphs = num-glyphs,
+      tf-num-hmetrics = num-hmetrics,
+      tf-hmetrics = hmetrics,
+      tf-cmap = cmap,
+      tf-loca = loca,
+      tf-glyf-off = glyf-off
+    }
+
+  ttf-glyph-for-char : TtfFont, Integer -> TtfGlyph
+  ttf-glyph-for-char (font) (codepoint) =
+    let glyph-idx = ttf-cmap-lookup (font.tf-cmap) codepoint
+    in let glyph-off = list-at (font.tf-loca) glyph-idx
+    in let next-off = list-at (font.tf-loca) (glyph-idx + 1)
+    in if glyph-off == next-off then __record-set (__record-set ttf-empty-glyph "tg-advance" (ttf-get-hmetric (font.tf-hmetrics) glyph-idx).hm-advance) "tg-lsb" (ttf-get-hmetric (font.tf-hmetrics) glyph-idx).hm-lsb
+    else ttf-read-glyph (font.tf-buf) (font.tf-glyf-off) glyph-off (font.tf-hmetrics) glyph-idx
+
+Section: Formatting
+  format-ttf-font : TtfFont -> Text
+  format-ttf-font (font) =
+    "TrueType: " & show (font.tf-num-glyphs) & " glyphs, " & show (font.tf-head.th-units-per-em) & " UPM"
+
+  format-ttf-glyph : TtfGlyph -> Text
+  format-ttf-glyph (g) =
+    "Glyph: " & show (list-length (g.tg-contours)) & " contours, advance=" & show (g.tg-advance) & " [" & show (g.tg-x-min) & "," & show (g.tg-y-min) & "]-[" & show (g.tg-x-max) & "," & show (g.tg-y-max) & "]"
+
+Page 1

@@ -1,0 +1,163 @@
+Chapter: Budget
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProductivityDb
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Personal budget tracker. Categories with monthly budgets, income
+ and expense transactions, running balances, and category-level
+ spend vs budget gauges. Supports multiple accounts.
+
+Section: Budget Helpers
+
+  cents-display : Integer -> Text
+  cents-display (c) =
+    let neg = c < 0
+    in let abs-c = if neg then negate c else c
+    in let dollars = abs-c / 100
+    in let remainder = abs-c - dollars * 100
+    in (if neg then "-" else "") & "$" & show dollars & "." & (if remainder < 10 then "0" else "") & show remainder
+
+Section: Category (in-memory view)
+
+  BudgetCategory = record {
+    bc-id : Integer,
+    bc-name : Text,
+    bc-parent-id : Integer,
+    bc-budget-cents : Integer,
+    bc-spent-cents : Integer,
+    bc-color : Text,
+    bc-is-income : Boolean
+  }
+
+  bc-remaining : BudgetCategory -> Integer
+  bc-remaining (c) = c.bc-budget-cents - c.bc-spent-cents
+
+  bc-pct : BudgetCategory -> Integer
+  bc-pct (c) =
+    if c.bc-budget-cents == 0 then 0
+    else c.bc-spent-cents * 100 / c.bc-budget-cents
+
+  bc-is-over : BudgetCategory -> Boolean
+  bc-is-over (c) = c.bc-spent-cents > c.bc-budget-cents
+
+Section: Transaction (in-memory view)
+
+  BudgetTransaction = record {
+    bt-id : Integer,
+    bt-date : Integer,
+    bt-description : Text,
+    bt-amount-cents : Integer,
+    bt-category-id : Integer,
+    bt-category-name : Text,
+    bt-account : Text,
+    bt-notes : Text,
+    bt-is-income : Boolean
+  }
+
+Section: Budget App State
+
+  BudgetAppState = record {
+    ba-categories : List BudgetCategory,
+    ba-cat-count : Integer,
+    ba-transactions : List BudgetTransaction,
+    ba-txn-count : Integer,
+    ba-selected-cat : Integer,
+    ba-filter : Text,
+    ba-month : Integer,
+    ba-year : Integer,
+    ba-total-income : Integer,
+    ba-total-expense : Integer,
+    ba-active-tab : Integer
+  }
+
+  budget-app-new : Integer, Integer -> BudgetAppState
+  budget-app-new (month) (year) = BudgetAppState {
+    ba-categories = [], ba-cat-count = 0,
+    ba-transactions = [], ba-txn-count = 0,
+    ba-selected-cat = -1,
+    ba-filter = "",
+    ba-month = month, ba-year = year,
+    ba-total-income = 0, ba-total-expense = 0,
+    ba-active-tab = 0
+  }
+
+  ba-net : BudgetAppState -> Integer
+  ba-net (st) = st.ba-total-income - st.ba-total-expense
+
+  ba-total-budgeted : BudgetAppState -> Integer
+  ba-total-budgeted (st) = ba-sum-budget (st.ba-categories) 0 (st.ba-cat-count) 0
+
+  ba-sum-budget : List BudgetCategory, Integer, Integer, Integer -> Integer
+  ba-sum-budget (cats) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at cats i
+    in let delta = if c.bc-is-income then 0 else c.bc-budget-cents
+    in ba-sum-budget cats (i + 1) n (acc + delta)
+
+  ba-over-budget-count : BudgetAppState -> Integer
+  ba-over-budget-count (st) = ba-over-loop (st.ba-categories) 0 (st.ba-cat-count) 0
+
+  ba-over-loop : List BudgetCategory, Integer, Integer, Integer -> Integer
+  ba-over-loop (cats) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if bc-is-over (list-at cats i) then 1 else 0
+    in ba-over-loop cats (i + 1) n (acc + delta)
+
+Section: Widget Building
+
+  bc-row : BudgetCategory -> WidgetNode
+  bc-row (c) =
+    let name = widget-label ("bc-n-" & show (c.bc-id)) (c.bc-name)
+    in let budget = widget-label ("bc-b-" & show (c.bc-id)) (cents-display (c.bc-budget-cents))
+    in let spent = widget-label ("bc-s-" & show (c.bc-id)) (cents-display (c.bc-spent-cents))
+    in let remain = widget-label ("bc-r-" & show (c.bc-id)) (cents-display (bc-remaining c))
+    in let gauge = widget-gauge ("bc-g-" & show (c.bc-id)) (bc-pct c) 100
+    in let row = widget-panel ("bcat-" & show (c.bc-id)) DirRow 8 [name, budget, spent, remain, gauge]
+    in if bc-is-over c then widget-set-state row 2 else row
+
+  bt-row : BudgetTransaction -> WidgetNode
+  bt-row (t) =
+    let date-lbl = widget-label ("bt-d-" & show (t.bt-id)) (show (t.bt-date))
+    in let desc = widget-label ("bt-desc-" & show (t.bt-id)) (t.bt-description)
+    in let amt = widget-label ("bt-a-" & show (t.bt-id)) ((if t.bt-is-income then "+" else "-") & cents-display (t.bt-amount-cents))
+    in let cat = widget-label ("bt-c-" & show (t.bt-id)) (t.bt-category-name)
+    in let acct = widget-label ("bt-ac-" & show (t.bt-id)) (t.bt-account)
+    in widget-panel ("txn-" & show (t.bt-id)) DirRow 8 [date-lbl, desc, amt, cat, acct]
+
+  budget-widget : BudgetAppState -> WidgetNode
+  budget-widget (st) =
+    let title = widget-label "ba-title" "Budget"
+    in let period = widget-label "ba-period" (month-label (st.ba-month) & " " & show (st.ba-year))
+    in let summary = widget-label "ba-summary" ("Income: " & cents-display (st.ba-total-income) & " | Expenses: " & cents-display (st.ba-total-expense) & " | Net: " & cents-display (ba-net st))
+    in let over = widget-label "ba-over" (show (ba-over-budget-count st) & " categories over budget")
+    in let tabs = widget-tabs "ba-tabs" ["Categories", "Transactions"] (st.ba-active-tab)
+    in let new-btn = widget-button "ba-new-txn" "New Transaction"
+    in let toolbar = widget-toolbar "ba-toolbar" [new-btn]
+    in let body = if st.ba-active-tab == 0 then
+      let rows = bc-rows (st.ba-categories) 0 (st.ba-cat-count) []
+      in widget-panel "ba-cats" DirColumn 2 rows
+    else let rows = bt-rows (st.ba-transactions) 0 (st.ba-txn-count) []
+      in widget-panel "ba-txns" DirColumn 2 rows
+    in widget-panel "budget-app" DirColumn 4 [title, period, summary, over, tabs, toolbar, body]
+
+  bc-rows : List BudgetCategory, Integer, Integer, List WidgetNode -> List WidgetNode
+  bc-rows (cats) (i) (n) (acc) =
+    if i >= n then acc
+    else bc-rows cats (i + 1) n (list-push acc (bc-row (list-at cats i)))
+
+  bt-rows : List BudgetTransaction, Integer, Integer, List WidgetNode -> List WidgetNode
+  bt-rows (txns) (i) (n) (acc) =
+    if i >= n then acc
+    else bt-rows txns (i + 1) n (list-push acc (bt-row (list-at txns i)))
+
+  month-label : Integer -> Text
+  month-label (m) =
+    if m == 1 then "January" else if m == 2 then "February" else if m == 3 then "March"
+    else if m == 4 then "April" else if m == 5 then "May" else if m == 6 then "June"
+    else if m == 7 then "July" else if m == 8 then "August" else if m == 9 then "September"
+    else if m == 10 then "October" else if m == 11 then "November" else "December"
+
+Page 1

@@ -1,0 +1,419 @@
+Chapter: PhotosPage
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebTheme
+  cites WebApp chapter WebWidgets
+
+ Photo gallery with albums, grid view, and lightbox. Runtime stubs,
+ theme builders, and widget constructors come from the WebApp quire;
+ only the palette, the CSS, the tree, and the handlers live here.
+
+ We say:
+
+Section: Theme
+
+  photos-theme : Theme
+  photos-theme =
+    let p = Palette { pal-bg = #111111, pal-fg = #D8D8D8, pal-primary = #FFFFFF, pal-secondary = #1B1B1B, pal-accent = #4490FF, pal-muted = #777777, pal-error = #EC4D30, pal-success = #41AF4E, pal-warning = #FF9900, pal-border = #262626 }
+    in let base = ws (p.pal-bg) (p.pal-fg) (bdr 0 0 CornerSharp) (eu 0) (eu 0)
+    in let btn = ws #1B1B1B (p.pal-fg) (bdr 0 0 (CornerRound 6)) (exy 12 8) (eu 0)
+    in let lbl = ws 0 (p.pal-fg) bn ez (eu 0)
+    in Theme { th-name = "photos-dark", th-palette = p, th-panel = ss-flat base, th-button = StateStyles { ss-normal = btn, ss-hover = btn, ss-pressed = btn, ss-disabled = btn, ss-focused = btn }, th-label = ss-flat lbl, th-input = ss-flat base, th-gauge = ss-flat base, th-separator = ss-flat base }
+
+Section: CSS
+
+  photos-css : Text
+  photos-css =
+    "*{margin:0;padding:0;box-sizing:border-box}body{background:#111;color:#d8d8d8;font-family:system-ui,sans-serif}#app{display:contents}"
+    & ".photos{max-width:1400px;margin:0 auto;padding:16px}"
+    & ".photos-hdr{display:flex;align-items:center;justify-content:space-between;padding:12px 0;margin-bottom:16px}"
+    & ".photos-hdr h1{font-size:22px;font-weight:600}"
+    & ".photos-tabs{display:flex;gap:4px}"
+    & ".photos-tabs .wk-btn,.photos-tabs button{background:none;border:none;color:#888;padding:8px 16px;cursor:pointer;border-radius:6px;font-size:13px}"
+    & ".photos-tabs .wk-btn:hover,.photos-tabs button:hover{color:#ddd;background:#222}"
+    & ".photo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:4px}"
+    & ".photo-cell{aspect-ratio:1;border-radius:2px;overflow:hidden;cursor:pointer;position:relative;display:flex;align-items:center;justify-content:center;font-size:48px;transition:transform .15s}"
+    & ".photo-cell:hover{transform:scale(1.02);z-index:1}"
+    & ".photo-cell.selected{outline:3px solid #4490FF;outline-offset:-3px;opacity:.85}"
+    & ".album-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}"
+    & ".album-card{border-radius:12px;overflow:hidden;cursor:pointer;transition:transform .15s}"
+    & ".album-card:hover{transform:translateY(-4px)}"
+    & ".album-cover{aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;font-size:64px}"
+    & ".album-info{padding:12px 16px;background:#1a1a1a}"
+    & ".album-name{font-size:15px;font-weight:600;margin-bottom:4px}"
+    & ".album-count{font-size:12px;color:#777}"
+    & ".lightbox{position:fixed;inset:0;background:rgba(0,0,0,.95);display:flex;align-items:center;justify-content:center;z-index:100;cursor:pointer}"
+    & ".lightbox .photo{font-size:200px}"
+    & ".lightbox .close{position:absolute;top:20px;right:20px;color:#fff;font-size:28px;cursor:pointer;background:none;border:none}"
+    & ".lightbox .nav-arrow{position:absolute;top:50%;color:#fff;font-size:36px;cursor:pointer;background:rgba(0,0,0,.5);border:none;padding:12px;border-radius:50%}"
+    & ".lightbox .nav-prev{left:20px}"
+    & ".lightbox .nav-next{right:20px}"
+    & ".lightbox .zoom-2x .photo{font-size:400px}"
+    & ".section-hdr{font-size:14px;color:#888;font-weight:600;padding:16px 0 12px;text-transform:uppercase;letter-spacing:.5px}"
+    & ".select-bar{display:flex;align-items:center;gap:12px;padding:8px 0;font-size:13px;color:#aaa}"
+    & ".select-bar .wk-btn,.select-bar button{background:#222;border:none;color:#ccc;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px}"
+    & ".sort-bar{display:flex;align-items:center;gap:8px;padding:8px 0;font-size:12px;color:#888}"
+    & ".sort-bar .wk-btn,.sort-bar button{background:none;border:1px solid #333;color:#aaa;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px}"
+    & ".sort-bar .wk-btn:hover,.sort-bar button:hover{background:#222;color:#ddd}"
+    & ".info-panel{position:absolute;bottom:0;right:0;width:280px;background:rgba(20,20,20,.95);color:#ccc;padding:16px;font-size:13px;line-height:1.8;border-radius:8px 0 0 0}"
+    & ".info-panel .info-row{display:flex;justify-content:space-between;border-bottom:1px solid #222;padding:4px 0}"
+    & ".info-panel .info-key{color:#888}"
+    & ".slideshow-indicator{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#4490FF;color:#fff;padding:6px 18px;border-radius:20px;font-size:12px;z-index:200;animation:pulse 1.5s infinite}"
+    & "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}"
+    & ".fav-star{position:absolute;top:6px;right:6px;font-size:18px;color:#555;pointer-events:none}"
+    & ".fav-star.active{color:#FF9900}"
+    & ".fav-btn{background:none;border:none;color:#888;font-size:20px;cursor:pointer;padding:4px 8px}"
+    & ".fav-btn:hover{color:#FF9900}"
+    & ".delete-btn{background:#2a1515;border:1px solid #442222;color:#EC4D30;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px}"
+    & ".delete-btn:hover{background:#3a1a1a}"
+    & ".lb-toolbar{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:8px;z-index:101}"
+    & ".lb-toolbar .wk-btn,.lb-toolbar button{background:rgba(40,40,40,.9);border:1px solid #444;color:#ccc;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px}"
+    & ".lb-toolbar .wk-btn:hover,.lb-toolbar button:hover{background:rgba(60,60,60,.9);color:#fff}"
+
+Section: Photo Metadata
+
+  photo-date : Integer -> Text
+  photo-date (n) =
+    if n == 0 then "2026-06-19" else if n == 1 then "2026-06-19" else if n == 2 then "2026-06-19"
+    else if n == 3 then "2026-06-18" else if n == 4 then "2026-06-18" else if n == 5 then "2026-06-18"
+    else if n == 6 then "2026-06-15" else if n == 7 then "2026-06-14" else if n == 8 then "2026-06-13"
+    else if n == 9 then "2026-06-12" else if n == 10 then "2026-06-11" else if n == 11 then "2026-06-10"
+    else if n == 12 then "2026-06-09" else "2026-06-08"
+
+  photo-size : Integer -> Text
+  photo-size (n) =
+    if n == 0 then "4.2 MB" else if n == 1 then "5.8 MB" else if n == 2 then "3.1 MB"
+    else if n == 3 then "2.7 MB" else if n == 4 then "6.4 MB" else if n == 5 then "3.9 MB"
+    else if n == 6 then "4.5 MB" else if n == 7 then "7.1 MB" else if n == 8 then "5.3 MB"
+    else if n == 9 then "8.2 MB" else if n == 10 then "2.9 MB" else if n == 11 then "3.4 MB"
+    else if n == 12 then "4.8 MB" else "3.6 MB"
+
+  photo-width : Integer -> Text
+  photo-width (n) =
+    if n == 0 then "4032" else if n == 1 then "6000" else if n == 2 then "3840"
+    else if n == 3 then "3024" else if n == 4 then "5472" else if n == 5 then "4032"
+    else if n == 6 then "4032" else if n == 7 then "6016" else if n == 8 then "5184"
+    else if n == 9 then "7360" else if n == 10 then "3264" else if n == 11 then "3648"
+    else if n == 12 then "4896" else "3840"
+
+  photo-height : Integer -> Text
+  photo-height (n) =
+    if n == 0 then "3024" else if n == 1 then "4000" else if n == 2 then "2160"
+    else if n == 3 then "4032" else if n == 4 then "3648" else if n == 5 then "3024"
+    else if n == 6 then "3024" else if n == 7 then "4016" else if n == 8 then "3456"
+    else if n == 9 then "4912" else if n == 10 then "2448" else if n == 11 then "2736"
+    else if n == 12 then "3264" else "2160"
+
+  photo-camera : Integer -> Text
+  photo-camera (n) =
+    if n == 0 then "iPhone 16 Pro" else if n == 1 then "Sony A7R V" else if n == 2 then "iPhone 16 Pro"
+    else if n == 3 then "Pixel 9 Pro" else if n == 4 then "Sony A7R V" else if n == 5 then "Canon R5"
+    else if n == 6 then "iPhone 16 Pro" else if n == 7 then "Sony A7R V" else if n == 8 then "Canon R5"
+    else if n == 9 then "Nikon Z9" else if n == 10 then "Pixel 9 Pro" else if n == 11 then "Canon R5"
+    else if n == 12 then "Sony A7R V" else "iPhone 16 Pro"
+
+Section: Tree
+
+  page-tree : Integer -> WidgetNode
+  page-tree (x) =
+    let view = state-get "view"
+    in let lb = state-get "lightbox"
+    in let ss = state-get "slideshow"
+    in widget-panel "root" DirColumn 0 [
+      widget-box "photos" "photos" [
+        widget-box "hdr" "photos-hdr" [
+          widget-label "brand" "CodexPhotos",
+          widget-box "tabs" "photos-tabs" [
+            widget-button "tab-photos" "Photos",
+            widget-button "tab-albums" "Albums",
+            widget-button "tab-fav" "Favorites"
+          ]
+        ],
+        toolbar-view 0,
+        if view == 1 then albums-view 0
+        else if view == 2 then favorites-view 0
+        else photos-grid-view 0
+      ],
+      if ss == 1 then widget-box "ss-wrap" "slideshow-indicator" [
+        widget-label "ss-ind" ("&#x25B6; Slideshow  " & show (state-get "lightbox-photo" + 1) & "/14"),
+        widget-label "ss-timer" ("Next: " & show (5 - state-get "slideshow-counter") & "s")
+      ] else widget-label "no-ss" "",
+      if lb == 1 then lightbox-view 0 else widget-label "no-lb" ""
+    ]
+
+  toolbar-view : Integer -> WidgetNode
+  toolbar-view (x) =
+    let sm = state-get "select-mode"
+    in let sort = state-get "sort-mode"
+    in let dc = state-get "deleted-count"
+    in let ac = state-get "album-count"
+    in let ss = state-get "slideshow"
+    in let ss-counter = state-get "slideshow-counter"
+    in let confirm = state-get "delete-confirm"
+    in let sort-lbl = if sort == 1 then "Size" else if sort == 2 then "Name" else "Date"
+    in widget-box "toolbar" "" [
+      widget-box "select-bar" "select-bar" [
+        widget-button "select-toggle" (if sm == 1 then "Cancel Select" else "Select"),
+        if sm == 1 then widget-label "sel-count" (show (count-selected 0 0) & " selected") else widget-label "sel-none" "",
+        if sm == 1 then widget-button "delete-selected" "Delete" else widget-label "del-none" "",
+        if confirm == 1 then widget-box "confirm-box" "select-bar" [
+          widget-label "confirm-msg" "Delete selected photos?",
+          widget-button "confirm-yes" "Yes, Delete",
+          widget-button "confirm-no" "Cancel"
+        ] else widget-label "no-confirm" "",
+        if dc > 0 then widget-label "del-count" (show dc & " deleted") else widget-label "del-z" ""
+      ],
+      widget-box "sort-bar" "sort-bar" [
+        widget-label "sort-lbl" ("Sort: " & sort-lbl),
+        widget-button "sort-date" "Date",
+        widget-button "sort-size" "Size",
+        widget-button "sort-name" "Name",
+        widget-button "new-album" "+ Album",
+        if ac > 0 then widget-label "ac-lbl" (show ac & " albums") else widget-label "ac-lbl" "6 albums"
+      ],
+      if ss == 1 then widget-label "ss-counter" ("Auto-advance in " & show (5 - ss-counter) & "s") else widget-label "no-ss-counter" ""
+    ]
+
+  count-selected : Integer, Integer -> Integer
+  count-selected (i) (acc) =
+    if i > 13 then acc
+    else let v = state-get ("selected-" & show i)
+    in count-selected (i + 1) (acc + v)
+
+  count-favorites : Integer, Integer -> Integer
+  count-favorites (i) (acc) =
+    if i > 13 then acc
+    else let v = state-get ("fav-" & show i)
+    in count-favorites (i + 1) (acc + v)
+
+  photos-grid-view : Integer -> WidgetNode
+  photos-grid-view (x) =
+    widget-box "grid-wrap" "" [
+      widget-label "today-hdr" "TODAY",
+      widget-box "grid" "photo-grid" [
+        photo-cell "p0" "&#x1F304;" "#2a3a4a",
+        photo-cell "p1" "&#x1F3D4;" "#1a3a2a",
+        photo-cell "p2" "&#x1F307;" "#4a2a1a",
+        photo-cell "p3" "&#x1F338;" "#3a2a3a",
+        photo-cell "p4" "&#x1F30A;" "#1a2a4a",
+        photo-cell "p5" "&#x1F3DE;" "#2a3a1a"
+      ],
+      widget-label "week-hdr" "THIS WEEK",
+      widget-box "grid2" "photo-grid" [
+        photo-cell "p6" "&#x1F305;" "#3a2a1a",
+        photo-cell "p7" "&#x1F3D9;" "#2a2a3a",
+        photo-cell "p8" "&#x26F0;" "#1a2a2a",
+        photo-cell "p9" "&#x1F30C;" "#1a1a3a",
+        photo-cell "p10" "&#x1F341;" "#3a2a0a",
+        photo-cell "p11" "&#x1F33B;" "#2a3a0a",
+        photo-cell "p12" "&#x1F308;" "#2a1a3a",
+        photo-cell "p13" "&#x2600;" "#3a3a1a"
+      ]
+    ]
+
+  photo-emoji : Integer -> Text
+  photo-emoji (n) =
+    if n == 0 then "&#x1F304;" else if n == 1 then "&#x1F3D4;" else if n == 2 then "&#x1F307;"
+    else if n == 3 then "&#x1F338;" else if n == 4 then "&#x1F30A;" else if n == 5 then "&#x1F3DE;"
+    else if n == 6 then "&#x1F305;" else if n == 7 then "&#x1F3D9;" else if n == 8 then "&#x26F0;"
+    else if n == 9 then "&#x1F30C;" else if n == 10 then "&#x1F341;" else if n == 11 then "&#x1F33B;"
+    else if n == 12 then "&#x1F308;" else "&#x2600;"
+
+  photo-cell : Text, Text, Text -> WidgetNode
+  photo-cell (id) (emoji) (bg) =
+    let n = id-num id
+    in let sel = state-get ("selected-" & show n)
+    in let fav = state-get ("fav-" & show n)
+    in let cls = if sel == 1 then "photo-cell selected" else "photo-cell"
+    in let cell = widget-add-child (widget-custom id ("boxc:" & cls) 0 0) (widget-label (id & "e") emoji)
+    in if fav == 1 then widget-add-child cell (widget-label (id & "star") "&#x2B50;")
+    else widget-add-child cell (widget-label (id & "star") "")
+
+  favorites-view : Integer -> WidgetNode
+  favorites-view (x) =
+    let fc = count-favorites 0 0
+    in widget-box "fav-wrap" "" [
+      widget-label "fav-hdr" "FAVORITES",
+      widget-label "fav-count" (show fc & " favorited photos"),
+      fav-grid 0
+    ]
+
+  fav-grid : Integer -> WidgetNode
+  fav-grid (x) =
+    widget-box "fav-grid" "photo-grid" (fav-cells 0)
+
+  fav-cells : Integer -> List WidgetNode
+  fav-cells (i) =
+    if i > 13 then []
+    else let f = state-get ("fav-" & show i)
+    in if f == 1 then (photo-cell ("fp" & show i) (photo-emoji i) "#2a2a3a") :: (fav-cells (i + 1))
+    else fav-cells (i + 1)
+
+  albums-view : Integer -> WidgetNode
+  albums-view (x) =
+    widget-box "albums" "album-grid" [
+      album-card "al1" "&#x1F304;" "#2a3a4a" "Landscapes" "24 photos",
+      album-card "al2" "&#x1F3D9;" "#2a2a3a" "City" "18 photos",
+      album-card "al3" "&#x1F338;" "#3a2a3a" "Nature" "32 photos",
+      album-card "al4" "&#x1F30A;" "#1a2a4a" "Ocean" "15 photos",
+      album-card "al5" "&#x2600;" "#3a3a1a" "Summer 2026" "47 photos",
+      album-card "al6" "&#x1F3D4;" "#1a3a2a" "Mountains" "21 photos"
+    ]
+
+  album-card : Text, Text, Text, Text, Text -> WidgetNode
+  album-card (id) (emoji) (bg) (name) (count) =
+    widget-box id "album-card" [
+      widget-add-child (widget-custom (id & "c") "box:album-cover" 0 0) (widget-label (id & "e") emoji),
+      widget-box (id & "i") "album-info" [
+        widget-label (id & "n") name,
+        widget-label (id & "ct") count
+      ]
+    ]
+
+  lightbox-view : Integer -> WidgetNode
+  lightbox-view (x) =
+    let cur = state-get "lightbox-photo"
+    in let zm = state-get "zoom-level"
+    in let si = state-get "show-info"
+    in let fav = state-get ("fav-" & show cur)
+    in let lb-cls = if zm == 1 then "lightbox zoom-2x" else "lightbox"
+    in widget-box "lightbox" lb-cls [
+      widget-label "lb-photo" (photo-emoji cur),
+      widget-button "lb-close" "&#x2715;",
+      widget-button "lb-prev" "&#x276E;",
+      widget-button "lb-next" "&#x276F;",
+      widget-box "lb-tools" "lb-toolbar" [
+        widget-button "zoom-toggle" (if zm == 1 then "Zoom 1x" else "Zoom 2x"),
+        widget-button "slideshow-toggle" "Slideshow",
+        widget-button "fav-toggle" (if fav == 1 then "&#x2B50; Fav" else "&#x2606; Fav"),
+        widget-button "info-toggle" "Info"
+      ],
+      if si == 1 then info-panel cur else widget-label "no-info" ""
+    ]
+
+  info-panel : Integer -> WidgetNode
+  info-panel (n) =
+    widget-box "info-pnl" "info-panel" [
+      widget-label "info-date-k" "Date",
+      widget-label "info-date-v" (photo-date n),
+      widget-label "info-size-k" "File Size",
+      widget-label "info-size-v" (photo-size n),
+      widget-label "info-dim-k" "Dimensions",
+      widget-label "info-dim-v" (photo-width n & " x " & photo-height n),
+      widget-label "info-cam-k" "Camera",
+      widget-label "info-cam-v" (photo-camera n)
+    ]
+
+Section: Handlers
+
+  photos-click : Text -> Integer
+  photos-click (id) =
+    if id == "tab-albums" then let s = state-set-render "view" 1 in 0
+    else if id == "tab-photos" then let s = state-set-render "view" 0 in 0
+    else if id == "tab-fav" then let s = state-set-render "view" 2 in 0
+    else if id == "lb-close" then
+      let s = state-set "lightbox" 0
+      in let s2 = state-set "show-info" 0
+      in let s3 = state-set "zoom-level" 0
+      in let s4 = state-set-render "slideshow" 0 in 0
+    else if id == "lb-prev" then
+      let cur = state-get "lightbox-photo"
+      in let pv = if cur <= 0 then 13 else cur - 1
+      in let s = state-set-render "lightbox-photo" pv in 0
+    else if id == "lb-next" then
+      let cur = state-get "lightbox-photo"
+      in let nx = if cur >= 13 then 0 else cur + 1
+      in let s = state-set-render "lightbox-photo" nx in 0
+    else if id == "select-toggle" then
+      let sm = state-get "select-mode"
+      in if sm == 1 then
+        let s = clear-selections 0
+        in let s2 = state-set-render "select-mode" 0 in 0
+      else let s = state-set-render "select-mode" 1 in 0
+    else if id == "zoom-toggle" then
+      let zm = state-get "zoom-level"
+      in let nz = if zm == 1 then 0 else 1
+      in let s = state-set-render "zoom-level" nz in 0
+    else if id == "slideshow-toggle" then
+      let ss = state-get "slideshow"
+      in if ss == 1 then
+        let s = state-set "slideshow-counter" 0
+        in let s2 = state-set-render "slideshow" 0 in 0
+      else
+        let s = state-set "slideshow-counter" 0
+        in let s2 = state-set-render "slideshow" 1 in 0
+    else if id == "sort-date" then let s = state-set-render "sort-mode" 0 in 0
+    else if id == "sort-size" then let s = state-set-render "sort-mode" 1 in 0
+    else if id == "sort-name" then let s = state-set-render "sort-mode" 2 in 0
+    else if id == "delete-selected" then
+      let sc = count-selected 0 0
+      in if sc > 0 then let s = state-set-render "delete-confirm" 1 in 0
+      else 0
+    else if id == "confirm-yes" then
+      let dc = state-get "deleted-count"
+      in let sc = count-selected 0 0
+      in let s = clear-selections 0
+      in let s2 = state-set "delete-confirm" 0
+      in let s3 = state-set-render "deleted-count" (dc + sc) in 0
+    else if id == "confirm-no" then
+      let s = state-set-render "delete-confirm" 0 in 0
+    else if id == "info-toggle" then
+      let si = state-get "show-info"
+      in let ni = if si == 1 then 0 else 1
+      in let s = state-set-render "show-info" ni in 0
+    else if id == "new-album" then
+      let ac = state-get "album-count"
+      in let na = if ac == 0 then 7 else ac + 1
+      in let s = state-set-render "album-count" na in 0
+    else if id == "fav-toggle" then
+      let cur = state-get "lightbox-photo"
+      in let fv = state-get ("fav-" & show cur)
+      in let nf = if fv == 1 then 0 else 1
+      in let s = state-set-render ("fav-" & show cur) nf in 0
+    else if text-starts-with id "p" then
+      let sm = state-get "select-mode"
+      in let n = id-num id
+      in if sm == 1 then
+        let sv = state-get ("selected-" & show n)
+        in let ns = if sv == 1 then 0 else 1
+        in let s = state-set-render ("selected-" & show n) ns in 0
+      else
+        let s = state-set "lightbox-photo" n in let s2 = state-set-render "lightbox" 1 in 0
+    else if text-starts-with id "fp" then
+      let n = id-num id
+      in let s = state-set "lightbox-photo" n in let s2 = state-set-render "lightbox" 1 in 0
+    else 0
+
+  clear-selections : Integer -> Integer
+  clear-selections (i) =
+    if i > 13 then 0
+    else let s = state-set ("selected-" & show i) 0
+    in clear-selections (i + 1)
+
+Section: Entry
+
+  render-photos : Integer -> Integer
+  render-photos (x) = mount-widget-themed photos-theme (page-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = inject-app-style photos-theme photos-css
+    in let a = state-set "album-count" 6
+    in let i0 = state-set "view" 0
+    in let i1 = state-set "lightbox" 0
+    in let i2 = state-set "lightbox-photo" 0
+    in let i3 = state-set "slideshow" 0
+    in let i4 = state-set "select-mode" 0
+    in let i5 = state-set "sort-mode" 0
+    in let i6 = state-set "show-info" 0
+    in let i7 = state-set "zoom-level" 0
+    in let i8 = state-set "deleted-count" 0
+    in let i9 = state-set "slideshow-counter" 0
+    in let i10 = state-set "delete-confirm" 0
+    in let s = set-render render-photos
+    in let h = register-handlers no-pick photos-click
+    in render-photos 0
+  end
+
+Page 1

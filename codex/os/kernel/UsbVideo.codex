@@ -1,0 +1,363 @@
+Chapter: UsbVideo
+  cites Kernel chapter Usb
+  cites Kernel chapter Xhci
+  cites Kernel chapter VgaGraphics
+  cites Foreword chapter Maybe
+
+ USB Video Class (UVC) driver. Discovers UVC cameras on xHCI,
+ parses VideoControl and VideoStreaming descriptors, negotiates
+ stream format via Probe/Commit, receives isochronous frames,
+ converts YUYV to RGB, and blits to the graphics framebuffer.
+
+ To uvc-discover gives Maybe UvcDevice from an xHCI controller.
+ To uvc-probe negotiates stream format with the device.
+ To uvc-start-stream sets the active alternate interface.
+ To uvc-read-frame reads one complete YUYV frame.
+ To uvc-frame-to-fb converts and blits a frame to the display.
+
+ We say:
+
+Section: UVC Constants
+
+  uvc-class : Integer = 14
+  uvc-subclass-control : Integer = 1
+  uvc-subclass-streaming : Integer = 2
+
+  uvc-cs-interface : Integer = 36
+
+  uvc-vc-header : Integer = 1
+  uvc-vc-input-terminal : Integer = 2
+  uvc-vc-output-terminal : Integer = 3
+  uvc-vc-processing-unit : Integer = 5
+
+  uvc-vs-input-header : Integer = 1
+  uvc-vs-format-uncompressed : Integer = 4
+  uvc-vs-frame-uncompressed : Integer = 5
+  uvc-vs-format-mjpeg : Integer = 6
+  uvc-vs-frame-mjpeg : Integer = 7
+
+  uvc-tt-streaming : Integer = 257
+  uvc-itt-camera : Integer = 513
+  uvc-ott-display : Integer = 769
+
+Section: Control Request Codes
+
+  uvc-set-cur : Integer = 1
+  uvc-get-cur : Integer = 129
+  uvc-get-min : Integer = 130
+  uvc-get-max : Integer = 131
+  uvc-get-def : Integer = 135
+
+  uvc-vs-probe-control : Integer = 1
+  uvc-vs-commit-control : Integer = 2
+
+Section: Processing Unit Selectors
+
+  uvc-pu-brightness : Integer = 2
+  uvc-pu-contrast : Integer = 3
+  uvc-pu-gain : Integer = 4
+  uvc-pu-saturation : Integer = 7
+  uvc-pu-sharpness : Integer = 8
+
+Section: Device State
+
+  UvcDevice = record {
+    uvc-slot : Integer,
+    uvc-stream-if : Integer,
+    uvc-stream-ep : Integer,
+    uvc-format-index : Integer,
+    uvc-frame-index : Integer,
+    uvc-width : Integer,
+    uvc-height : Integer,
+    uvc-frame-interval : Integer,
+    uvc-max-frame-size : Integer,
+    uvc-max-payload : Integer,
+    uvc-processing-unit-id : Integer,
+    uvc-found : Boolean
+  }
+
+  uvc-not-found : UvcDevice
+  uvc-not-found = UvcDevice {
+    uvc-slot = 0, uvc-stream-if = 0, uvc-stream-ep = 0,
+    uvc-format-index = 0, uvc-frame-index = 0,
+    uvc-width = 0, uvc-height = 0,
+    uvc-frame-interval = 0, uvc-max-frame-size = 0,
+    uvc-max-payload = 0, uvc-processing-unit-id = 0,
+    uvc-found = False
+  }
+
+Section: Frame State
+
+  UvcFrame = record {
+    uvf-data : List Integer,
+    uvf-width : Integer,
+    uvf-height : Integer,
+    uvf-sequence : Integer
+  }
+
+  uvc-empty-frame : UvcFrame
+  uvc-empty-frame = UvcFrame { uvf-data = [], uvf-width = 0, uvf-height = 0, uvf-sequence = 0 }
+
+Section: Discovery
+
+  uvc-discover : XhciController -> Maybe UvcDevice
+  uvc-discover (xc) =
+    if xc.xc-found == False then None
+    else uvc-scan-ports xc 0 (xc.xc-max-ports)
+
+  uvc-scan-ports : XhciController, Integer, Integer -> Maybe UvcDevice
+  uvc-scan-ports (xc) (port) (max) =
+    if port >= max then None
+    else let ps = xhci-port-status port (peek-32 (xc.xc-op-base) (1024 + port * 16))
+    in if ps.xp-connected then
+      let slot = usb-enable-slot xc port
+      in if slot > 0 then
+        let desc = usb-get-config-desc slot
+        in let dev = uvc-parse-config desc slot
+        in if dev.uvc-found then Just dev
+        else uvc-scan-ports xc (port + 1) max
+      else uvc-scan-ports xc (port + 1) max
+    else uvc-scan-ports xc (port + 1) max
+
+  uvc-parse-config : List Integer, Integer -> UvcDevice
+  uvc-parse-config (desc) (slot) =
+    if list-length desc < 9 then uvc-not-found
+    else uvc-parse-descriptors desc slot 0 (list-length desc) uvc-not-found
+
+  uvc-parse-descriptors : List Integer, Integer, Integer, Integer, UvcDevice -> UvcDevice
+  uvc-parse-descriptors (desc) (slot) (off) (len) (dev) =
+    if off >= len then dev
+    else let d-len = list-at desc off
+    in if d-len < 2 then dev
+    else if off + d-len > len then dev
+    else let d-type = list-at desc (off + 1)
+    in if d-type == 4 then
+      if d-len < 7 then uvc-parse-descriptors desc slot (off + d-len) len dev
+      else let if-class = list-at desc (off + 5)
+      in let if-sub = list-at desc (off + 6)
+      in if if-class == uvc-class then
+        if if-sub == uvc-subclass-streaming then
+          let if-num = list-at desc (off + 2)
+          in let d1 = __record-set dev "uvc-stream-if" if-num
+          in let d2 = __record-set d1 "uvc-slot" slot
+          in uvc-parse-descriptors desc slot (off + d-len) len d2
+        else uvc-parse-descriptors desc slot (off + d-len) len (__record-set dev "uvc-slot" slot)
+      else uvc-parse-descriptors desc slot (off + d-len) len dev
+    else if d-type == uvc-cs-interface then
+      let subtype = list-at desc (off + 2)
+      in let next-off = off + d-len
+      in let updated = uvc-parse-cs-descriptor desc off d-len subtype slot dev
+      in uvc-parse-descriptors desc slot next-off len updated
+    else if d-type == 5 then
+      let ep-addr = list-at desc (off + 2)
+      in let ep-attr = list-at desc (off + 3)
+      in let ep-num = bit-and ep-addr 15
+      in let next-off = off + d-len
+      in if bit-and ep-attr 3 == 1 then
+        let d1 = __record-set dev "uvc-stream-ep" ep-num
+        in uvc-parse-descriptors desc slot next-off len d1
+      else if bit-and ep-attr 3 == 3 then
+        let d1 = __record-set dev "uvc-stream-ep" ep-num
+        in uvc-parse-descriptors desc slot next-off len d1
+      else uvc-parse-descriptors desc slot next-off len dev
+    else uvc-parse-descriptors desc slot (off + d-len) len dev
+
+  uvc-parse-cs-descriptor : List Integer, Integer, Integer, Integer, Integer, UvcDevice -> UvcDevice
+  uvc-parse-cs-descriptor (desc) (off) (d-len) (subtype) (slot) (dev) =
+    if subtype == uvc-vc-processing-unit then
+      let unit-id = list-at desc (off + 3)
+      in __record-set dev "uvc-processing-unit-id" unit-id
+    else if subtype == uvc-vs-format-uncompressed then
+      let fmt-idx = list-at desc (off + 3)
+      in let d1 = __record-set dev "uvc-format-index" fmt-idx
+      in __record-set d1 "uvc-found" True
+    else if subtype == uvc-vs-frame-uncompressed then
+      if d-len < 25 then dev
+      else let frm-idx = list-at desc (off + 3)
+      in let w = list-at desc (off + 5) + list-at desc (off + 6) * 256
+      in let h = list-at desc (off + 7) + list-at desc (off + 8) * 256
+      in let interval = list-at desc (off + 21) + list-at desc (off + 22) * 256 + list-at desc (off + 23) * 65536 + list-at desc (off + 24) * 16777216
+      in let max-frame = w * h * 2
+      in let d1 = __record-set dev "uvc-frame-index" frm-idx
+      in let d2 = __record-set d1 "uvc-width" w
+      in let d3 = __record-set d2 "uvc-height" h
+      in let d4 = __record-set d3 "uvc-frame-interval" interval
+      in __record-set d4 "uvc-max-frame-size" max-frame
+    else dev
+
+Section: Probe and Commit
+
+  uvc-probe-data : UvcDevice -> List Integer
+  uvc-probe-data (dev) =
+    let hint = [1, 0]
+    in let fmt = [dev.uvc-format-index]
+    in let frm = [dev.uvc-frame-index]
+    in let interval = uvc-le32 (dev.uvc-frame-interval)
+    in let padding = uvc-zeros 14
+    in let max-frame = uvc-le32 (dev.uvc-max-frame-size)
+    in let max-payload = uvc-le32 3072
+    in hint & fmt & frm & interval & padding & max-frame & max-payload
+
+  uvc-probe-set-pkt : UvcDevice -> UsbSetupPacket
+  uvc-probe-set-pkt (dev) = UsbSetupPacket { sp-request-type = 33, sp-request = uvc-set-cur, sp-value = uvc-vs-probe-control * 256, sp-index = dev.uvc-stream-if, sp-length = 26 }
+
+  uvc-probe-get-pkt : UvcDevice -> UsbSetupPacket
+  uvc-probe-get-pkt (dev) = UsbSetupPacket { sp-request-type = 161, sp-request = uvc-get-cur, sp-value = uvc-vs-probe-control * 256, sp-index = dev.uvc-stream-if, sp-length = 26 }
+
+  uvc-commit-pkt : UvcDevice -> UsbSetupPacket
+  uvc-commit-pkt (dev) = UsbSetupPacket { sp-request-type = 33, sp-request = uvc-set-cur, sp-value = uvc-vs-commit-control * 256, sp-index = dev.uvc-stream-if, sp-length = 26 }
+
+  uvc-probe : UvcDevice -> UvcDevice
+  uvc-probe (dev) =
+    let probe = uvc-probe-data dev
+    in let set-result = usb-control-transfer (dev.uvc-slot) (uvc-probe-set-pkt dev)
+    in let get-result = usb-control-transfer (dev.uvc-slot) (uvc-probe-get-pkt dev)
+    in let commit-result = usb-control-transfer (dev.uvc-slot) (uvc-commit-pkt dev)
+    in dev
+
+Section: Stream Control
+
+  uvc-start-pkt : UvcDevice -> UsbSetupPacket
+  uvc-start-pkt (dev) = UsbSetupPacket { sp-request-type = 1, sp-request = 11, sp-value = 1, sp-index = dev.uvc-stream-if, sp-length = 0 }
+
+  uvc-stop-pkt : UvcDevice -> UsbSetupPacket
+  uvc-stop-pkt (dev) = UsbSetupPacket { sp-request-type = 1, sp-request = 11, sp-value = 0, sp-index = dev.uvc-stream-if, sp-length = 0 }
+
+  uvc-start-stream : UvcDevice -> UvcDevice
+  uvc-start-stream (dev) =
+    let set-alt = usb-control-transfer (dev.uvc-slot) (uvc-start-pkt dev)
+    in dev
+
+  uvc-stop-stream : UvcDevice -> UvcDevice
+  uvc-stop-stream (dev) =
+    let set-alt = usb-control-transfer (dev.uvc-slot) (uvc-stop-pkt dev)
+    in dev
+
+Section: Frame Reading
+
+  UvcRxState = record {
+    urx-buf : List Integer,
+    urx-fid : Integer,
+    urx-sequence : Integer
+  }
+
+  uvc-rx-init : UvcRxState
+  uvc-rx-init = UvcRxState { urx-buf = [], urx-fid = 0 - 1, urx-sequence = 0 }
+
+  uvc-receive-packet : UvcRxState, List Integer -> UvcRxState
+  uvc-receive-packet (rx) (pkt) =
+    if list-length pkt < 2 then rx
+    else let hdr-len = list-at pkt 0
+    in let bfh = list-at pkt 1
+    in let fid = bit-and bfh 1
+    in let eof = bit-and bfh 2
+    in let err = bit-and bfh 32
+    in if err > 0 then rx
+    else if rx.urx-fid >= 0 then
+      if fid == rx.urx-fid then
+        let payload = uvc-slice pkt hdr-len (list-length pkt)
+        in let buf = list-append (rx.urx-buf) payload
+        in if eof > 0 then UvcRxState { urx-buf = buf, urx-fid = fid, urx-sequence = rx.urx-sequence + 1 }
+        else UvcRxState { urx-buf = buf, urx-fid = fid, urx-sequence = rx.urx-sequence }
+      else UvcRxState { urx-buf = uvc-slice pkt hdr-len (list-length pkt), urx-fid = fid, urx-sequence = rx.urx-sequence + 1 }
+    else UvcRxState { urx-buf = uvc-slice pkt hdr-len (list-length pkt), urx-fid = fid, urx-sequence = 0 }
+
+  uvc-frame-complete : UvcRxState, Integer -> Boolean
+  uvc-frame-complete (rx) (expected-size) =
+    list-length (rx.urx-buf) >= expected-size
+
+  uvc-extract-frame : UvcRxState, UvcDevice -> UvcFrame
+  uvc-extract-frame (rx) (dev) =
+    UvcFrame { uvf-data = rx.urx-buf, uvf-width = dev.uvc-width, uvf-height = dev.uvc-height, uvf-sequence = rx.urx-sequence }
+
+Section: YUYV to RGB Conversion
+
+  yuyv-to-rgb : List Integer, Integer, Integer -> List Integer
+  yuyv-to-rgb (yuyv) (width) (height) =
+    yuyv-convert-loop yuyv 0 (width * height / 2) []
+
+  yuyv-convert-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  yuyv-convert-loop (yuyv) (i) (pairs) (acc) =
+    if i >= pairs then acc
+    else let off = i * 4
+    in if off + 4 > list-length yuyv then acc
+    else let y0 = list-at yuyv off
+    in let u = list-at yuyv (off + 1)
+    in let y1 = list-at yuyv (off + 2)
+    in let v = list-at yuyv (off + 3)
+    in let r0 = yuyv-clamp (y0 + (v - 128) * 359 / 256)
+    in let g0 = yuyv-clamp (y0 - (u - 128) * 88 / 256 - (v - 128) * 183 / 256)
+    in let b0 = yuyv-clamp (y0 + (u - 128) * 454 / 256)
+    in let r1 = yuyv-clamp (y1 + (v - 128) * 359 / 256)
+    in let g1 = yuyv-clamp (y1 - (u - 128) * 88 / 256 - (v - 128) * 183 / 256)
+    in let b1 = yuyv-clamp (y1 + (u - 128) * 454 / 256)
+    in yuyv-convert-loop yuyv (i + 1) pairs (acc & [r0, g0, b0, r1, g1, b1])
+
+  yuyv-clamp : Integer -> Integer
+  yuyv-clamp (v) = if v < 0 then 0 else if v > 255 then 255 else v
+
+Section: Display
+
+  uvc-frame-to-fb : UvcFrame, GfxMode, Integer, Integer -> Integer
+  uvc-frame-to-fb (frame) (mode) (dx) (dy) =
+    let px = yuyv-to-rgb (frame.uvf-data) (frame.uvf-width) (frame.uvf-height)
+    in uvc-blit-pixels px (frame.uvf-width) (frame.uvf-height) mode dx dy 0 0
+
+  uvc-blit-pixels : List Integer, Integer, Integer, GfxMode, Integer, Integer, Integer, Integer -> Integer
+  uvc-blit-pixels (px) (w) (h) (mode) (dx) (dy) (x) (y) =
+    if y >= h then 0
+    else if x >= w then uvc-blit-pixels px w h mode dx dy 0 (y + 1)
+    else let off = (y * w + x) * 3
+    in let r = list-at px off
+    in let g = list-at px (off + 1)
+    in let b = list-at px (off + 2)
+    in let drawn = gfx-put-pixel mode (dx + x) (dy + y) (rgb r g b)
+    in drawn + uvc-blit-pixels px w h mode dx dy (x + 1) y
+
+Section: Camera Controls
+
+  uvc-brightness-pkt : UvcDevice -> UsbSetupPacket
+  uvc-brightness-pkt (dev) = UsbSetupPacket { sp-request-type = 33, sp-request = uvc-set-cur, sp-value = uvc-pu-brightness * 256, sp-index = dev.uvc-processing-unit-id * 256, sp-length = 2 }
+
+  uvc-contrast-pkt : UvcDevice -> UsbSetupPacket
+  uvc-contrast-pkt (dev) = UsbSetupPacket { sp-request-type = 33, sp-request = uvc-set-cur, sp-value = uvc-pu-contrast * 256, sp-index = dev.uvc-processing-unit-id * 256, sp-length = 2 }
+
+  uvc-set-brightness : UvcDevice, Integer -> Integer
+  uvc-set-brightness (dev) (value) = usb-control-transfer (dev.uvc-slot) (uvc-brightness-pkt dev)
+
+  uvc-set-contrast : UvcDevice, Integer -> Integer
+  uvc-set-contrast (dev) (value) = usb-control-transfer (dev.uvc-slot) (uvc-contrast-pkt dev)
+
+Section: Formatting
+
+  format-uvc-device : UvcDevice -> Text
+  format-uvc-device (dev) =
+    if dev.uvc-found then "UVC Camera: " & show (dev.uvc-width) & "x" & show (dev.uvc-height) & " YUYV EP" & show (dev.uvc-stream-ep) & " slot " & show (dev.uvc-slot)
+    else "UVC Camera: not found"
+
+  format-uvc-frame : UvcFrame -> Text
+  format-uvc-frame (f) =
+    "frame #" & show (f.uvf-sequence) & " " & show (f.uvf-width) & "x" & show (f.uvf-height) & " " & show (list-length (f.uvf-data)) & " bytes"
+
+Section: Helpers
+
+  uvc-le32 : Integer -> List Integer
+  uvc-le32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  uvc-zeros : Integer -> List Integer
+  uvc-zeros (n) = if n <= 0 then [] else [0] & uvc-zeros (n - 1)
+
+  uvc-slice : List Integer, Integer, Integer -> List Integer
+  uvc-slice (data) (start) (stop) =
+    if start >= stop then []
+    else [list-at data start] & uvc-slice data (start + 1) stop
+
+  list-append : List Integer, List Integer -> List Integer
+  list-append (a) (b) = list-append-loop a b 0 (list-length b)
+
+  list-append-loop : List Integer, List Integer, Integer, Integer -> List Integer
+  list-append-loop (dst) (src) (i) (n) =
+    if i >= n then dst
+    else list-append-loop (list-push dst (list-at src i)) src (i + 1) n
+
+Page 1

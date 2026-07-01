@@ -1,0 +1,64 @@
+Chapter: VerifierCacheTest
+  cites Verify chapter VerifyCache
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+Section: Body
+  opening : [Console] Nothing =
+    let bin1 = cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+    in let bin2 = cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195, 144],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) test-sk
+    in let author-key = read-author-key bin1
+    in let lat = lattice-add-direct lattice-empty author-key 8000
+    in let policy = policy-add-rule (policy-empty "test") (rule-allow "allow-console" (CapabilityMatch "Console" 2))
+    in let cache0 = verify-cache-empty
+    in let cr1 = verify-cdx-cached bin1 lat policy 0 fact-store-empty 100 cache0
+    in let cr2 = verify-cdx-cached bin1 lat policy 0 fact-store-empty 100 (cr1.cache)
+    in let cr3 = verify-cdx-cached bin2 lat policy 0 fact-store-empty 100 (cr2.cache)
+    in let hash1 = cdx-content-hash-hex bin1
+    in let cache-after = verify-cache-invalidate (cr3.cache) hash1
+    in let cr4 = verify-cdx-cached bin1 lat policy 0 fact-store-empty 100 cache-after
+    in act
+      print-line-uni ("miss-1: " & show-bool (cr1.was-cached) & " " & show-bool ((cr1.result).accepted))
+      print-line-uni ("hit-1: " & show-bool (cr2.was-cached) & " " & show-bool ((cr2.result).accepted))
+      print-line-uni ("miss-2: " & show-bool (cr3.was-cached) & " " & show-bool ((cr3.result).accepted))
+      print-line-uni ("hits: " & show (verify-cache-hit-count (cr3.cache)) & " misses: " & show (verify-cache-miss-count (cr3.cache)))
+      print-line-uni ("after-invalidate: " & show-bool (cr4.was-cached) & " " & show-bool ((cr4.result).accepted))
+    end
+
+Page 1

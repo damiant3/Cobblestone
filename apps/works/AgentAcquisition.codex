@@ -1,0 +1,120 @@
+Chapter: AgentAcquisition
+  cites Works chapter DevAgent
+  cites Works chapter AgentRuntime
+  cites Works chapter KeyManager
+  cites Works chapter DevConsoleMenu
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ AgentAcquisition handles getting an AI agent onto the device.
+ Three paths: bundled (on the .img), local (load from USB/disk),
+ or network (download from a trusted source). Every path ends
+ with signature verification before the agent is registered.
+
+ The 16 GB USB stick carries everything: OS, compiler, source,
+ and optionally a pre-bundled agent model. First boot detects
+ whether an agent is present and offers to set the agent up.
+
+ We say:
+
+Section: Acquisition Method
+
+  AcquisitionMethod =
+    | AcquireBundled
+    | AcquireLocal (Text)
+    | AcquireNetwork (Text)
+
+  acquisition-label : AcquisitionMethod -> Text
+  acquisition-label (m) = when m
+    is AcquireBundled -> "bundled (on boot image)"
+    is AcquireLocal (path) -> "local: " & path
+    is AcquireNetwork (url) -> "network: " & url
+
+Section: Agent Package
+
+ An agent package is a directory containing a manifest (name,
+ version, author key, model spec), the GGUF model weights, the
+ agent CDX binary (signed), and the tokenizer vocabulary.
+
+  AgentPackage = record {
+    manifest : AgentManifest,
+    model-path : Text,
+    cdx-path : Text,
+    vocab-path : Text,
+    model-spec : ModelSpec,
+    verified : Boolean
+  }
+
+  PackageValidation =
+    | PackageValid (AgentPackage)
+    | PackageInvalid (Text)
+
+Section: Bundled Agent Discovery
+
+  BundledAgentResult =
+    | BundledFound (Text)
+    | BundledNone
+
+  discover-bundled-agent : Text -> BundledAgentResult
+  discover-bundled-agent (image-root) =
+    let agent-dir = image-root & "/agent"
+    in let manifest-path = agent-dir & "/manifest.json"
+    in if file-exists manifest-path then BundledFound agent-dir
+    else BundledNone
+
+Section: Package Verification
+
+  verify-agent-package : AgentPackage, Keyring, TrustLattice -> PackageValidation
+  verify-agent-package (pkg) (kr) (lat) =
+    if file-exists (pkg.cdx-path) == False then PackageInvalid "agent.cdx not found"
+    else if file-exists (pkg.model-path) == False then PackageInvalid "model.gguf not found"
+    else if pkg.verified == False then PackageInvalid "package not verified"
+    else PackageValid pkg
+
+Section: Acquisition Menu
+
+  acquisition-menu : BundledAgentResult -> MenuState
+  acquisition-menu (bundled) =
+    menu-new "Agent Setup" [
+      when bundled
+        is BundledFound (path) -> menu-item ("Use Bundled Agent (" & path & ")") "bundled"
+        is BundledNone -> menu-item-disabled "No Bundled Agent" "bundled",
+      menu-item "Load from USB Drive" "usb",
+      menu-item "Load from Disk Path" "local",
+      menu-item "Download from Network" "network",
+      menu-item "Skip (no agent)" "skip",
+      menu-item "Back" "back"
+    ]
+
+Section: Agent Sizing Guide
+
+ Model size estimates for the 16 GB stick budget.
+ OS plus compiler plus source plus tests takes about 10 MB.
+ Agent CDX plus vocab takes about 2 MB.
+ Model weights get the remaining 15+ GB.
+ TinyLlama Q4 at 600 MB fits easily for code assist.
+ CodeLlama 7B Q4 at 3800 MB fits for strong code generation.
+ Mixtral 8x7B Q4 at 26 GB does not fit on a 16 GB stick.
+
+  AgentSizeClass =
+    | SizeTiny
+    | SizeSmall
+    | SizeMedium
+    | SizeLarge
+
+  size-class-label : AgentSizeClass -> Text
+  size-class-label (s) = when s
+    is SizeTiny -> "tiny (<1 GB)"
+    is SizeSmall -> "small (1-2 GB)"
+    is SizeMedium -> "medium (3-5 GB)"
+    is SizeLarge -> "large (5+ GB)"
+
+  recommend-size-class : Integer -> AgentSizeClass
+  recommend-size-class (available-mb) =
+    if available-mb >= 5000 then SizeLarge
+    else if available-mb >= 3000 then SizeMedium
+    else if available-mb >= 1000 then SizeSmall
+    else SizeTiny
+
+Page 1

@@ -1,0 +1,130 @@
+Chapter: VmSerial
+
+ Virtual 16550 UART for VMX guests. Handles I/O port exits for
+ COM1 (0x3F8-0x3FF) and COM2 (0x2F8-0x2FF). Output bytes are
+ accumulated in a buffer. Input is fed from a source buffer.
+
+ To vm-serial-new gives an empty serial port state.
+ To vm-serial-handle-out processes a guest OUT instruction.
+ To vm-serial-handle-in provides data for a guest IN instruction.
+ To vm-serial-get-output gives the accumulated output text.
+
+ We say:
+
+Section: Constants
+
+  vm-com1-base : Integer = 1016
+  vm-com2-base : Integer = 760
+  vm-uart-data : Integer = 0
+  vm-uart-ier : Integer = 1
+  vm-uart-iir : Integer = 2
+  vm-uart-lcr : Integer = 3
+  vm-uart-mcr : Integer = 4
+  vm-uart-lsr : Integer = 5
+  vm-uart-msr : Integer = 6
+  vm-uart-scratch : Integer = 7
+
+  vm-lsr-thre : Integer = 96
+
+Section: State
+
+  VmSerialPort = record {
+    vs-base : Integer,
+    vs-output : List Integer,
+    vs-input : List Integer,
+    vs-input-pos : Integer,
+    vs-lcr : Integer,
+    vs-mcr : Integer,
+    vs-ier : Integer,
+    vs-dlab : Boolean
+  }
+
+  vm-serial-new : Integer -> VmSerialPort
+  vm-serial-new (base) = VmSerialPort {
+    vs-base = base,
+    vs-output = [],
+    vs-input = [],
+    vs-input-pos = 0,
+    vs-lcr = 0,
+    vs-mcr = 0,
+    vs-ier = 0,
+    vs-dlab = False
+  }
+
+  vm-serial-with-input : VmSerialPort, List Integer -> VmSerialPort
+  vm-serial-with-input (port) (data) = VmSerialPort {
+    vs-base = port.vs-base,
+    vs-output = port.vs-output,
+    vs-input = data,
+    vs-input-pos = 0,
+    vs-lcr = port.vs-lcr,
+    vs-mcr = port.vs-mcr,
+    vs-ier = port.vs-ier,
+    vs-dlab = port.vs-dlab
+  }
+
+Section: Port Ownership
+
+  vm-serial-owns-port : VmSerialPort, Integer -> Boolean
+  vm-serial-owns-port (port) (io-port) =
+    io-port >= port.vs-base & io-port < port.vs-base + 8
+
+Section: Output Handling
+
+  vm-serial-handle-out : VmSerialPort, Integer, Integer -> VmSerialPort
+  vm-serial-handle-out (port) (io-port) (value) =
+    let reg = io-port - port.vs-base
+    in if reg == vm-uart-data then
+      if port.vs-dlab then port
+      else __record-set port "vs-output" (list-push (port.vs-output) (bit-and value 255))
+    else if reg == vm-uart-ier then
+      if port.vs-dlab then port
+      else __record-set port "vs-ier" (bit-and value 255)
+    else if reg == vm-uart-lcr then
+      __record-set (__record-set port "vs-lcr" (bit-and value 255)) "vs-dlab" (bit-and value 128 == 128)
+    else if reg == vm-uart-mcr then __record-set port "vs-mcr" (bit-and value 255)
+    else port
+
+Section: Input Handling
+
+  vm-serial-handle-in : VmSerialPort, Integer -> VmSerialInResult
+  vm-serial-handle-in (port) (io-port) =
+    let reg = io-port - port.vs-base
+    in if reg == vm-uart-data then
+      if port.vs-dlab then VmSerialInResult { sir-value = 0, sir-port = port }
+      else if port.vs-input-pos >= list-length (port.vs-input) then VmSerialInResult { sir-value = 0, sir-port = port }
+      else let byte = list-at (port.vs-input) (port.vs-input-pos)
+      in VmSerialInResult {
+        sir-value = byte,
+        sir-port = __record-set port "vs-input-pos" (port.vs-input-pos + 1)
+      }
+    else if reg == vm-uart-lsr then
+      let has-data = if port.vs-input-pos < list-length (port.vs-input) then 1 else 0
+      in VmSerialInResult { sir-value = bit-or vm-lsr-thre has-data, sir-port = port }
+    else if reg == vm-uart-ier then VmSerialInResult { sir-value = port.vs-ier, sir-port = port }
+    else if reg == vm-uart-iir then VmSerialInResult { sir-value = 1, sir-port = port }
+    else if reg == vm-uart-lcr then VmSerialInResult { sir-value = port.vs-lcr, sir-port = port }
+    else if reg == vm-uart-mcr then VmSerialInResult { sir-value = port.vs-mcr, sir-port = port }
+    else if reg == vm-uart-msr then VmSerialInResult { sir-value = 176, sir-port = port }
+    else VmSerialInResult { sir-value = 255, sir-port = port }
+
+  VmSerialInResult = record {
+    sir-value : Integer,
+    sir-port : VmSerialPort
+  }
+
+Section: Output Extraction
+
+  vm-serial-get-output : VmSerialPort -> Text
+  vm-serial-get-output (port) =
+    vm-serial-bytes-to-text (port.vs-output) 0 (list-length (port.vs-output)) ""
+
+  vm-serial-bytes-to-text : List Integer, Integer, Integer, Text -> Text
+  vm-serial-bytes-to-text (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else vm-serial-bytes-to-text bs (i + 1) len (acc & char-to-text (code-to-char (list-at bs i)))
+
+  vm-serial-output-length : VmSerialPort -> Integer
+  vm-serial-output-length (port) = list-length (port.vs-output)
+
+Page 1

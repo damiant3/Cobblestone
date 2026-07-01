@@ -1,0 +1,551 @@
+Chapter: Cpu6502
+
+ MOS 6502 CPU emulator. 8-bit, 3 registers (A, X, Y), 16-bit PC,
+ 8-bit SP, status flags (NV-BDIZC). Implements all 56 legal
+ instructions across 13 addressing modes.
+
+Section: CPU State
+
+  CpuState = record {
+    cpu-a : Integer,
+    cpu-x : Integer,
+    cpu-y : Integer,
+    cpu-sp : Integer,
+    cpu-pc : Integer,
+    cpu-flag-c : Integer,
+    cpu-flag-z : Integer,
+    cpu-flag-i : Integer,
+    cpu-flag-d : Integer,
+    cpu-flag-b : Integer,
+    cpu-flag-v : Integer,
+    cpu-flag-n : Integer,
+    cpu-cycles : Integer,
+    cpu-halted : Integer
+  }
+
+  cpu-new : CpuState
+  cpu-new = CpuState {
+    cpu-a = 0, cpu-x = 0, cpu-y = 0,
+    cpu-sp = #FD, cpu-pc = 0,
+    cpu-flag-c = 0, cpu-flag-z = 0, cpu-flag-i = 1,
+    cpu-flag-d = 0, cpu-flag-b = 0, cpu-flag-v = 0,
+    cpu-flag-n = 0, cpu-cycles = 0, cpu-halted = 0
+  }
+
+Section: Flag Helpers
+
+  flag-nz : CpuState, Integer -> CpuState
+  flag-nz (s) (v) =
+    let lo = bit-and v #FF
+    in let s1 = __record-set s "cpu-flag-z" (if lo == 0 then 1 else 0)
+    in __record-set s1 "cpu-flag-n" (if bit-and lo #80 /= 0 then 1 else 0)
+
+  pack-flags : CpuState -> Integer
+  pack-flags (s) =
+    let c = s.cpu-flag-c
+    in let z = s.cpu-flag-z * 2
+    in let i = s.cpu-flag-i * 4
+    in let d = s.cpu-flag-d * 8
+    in let b = 16
+    in let u = 32
+    in let v = s.cpu-flag-v * 64
+    in let n = s.cpu-flag-n * 128
+    in bit-or c (bit-or z (bit-or i (bit-or d (bit-or b (bit-or u (bit-or v n))))))
+
+  unpack-flags : CpuState, Integer -> CpuState
+  unpack-flags (s) (v) =
+    let s1 = __record-set s "cpu-flag-c" (bit-and v 1)
+    in let s2 = __record-set s1 "cpu-flag-z" (if bit-and v 2 /= 0 then 1 else 0)
+    in let s3 = __record-set s2 "cpu-flag-i" (if bit-and v 4 /= 0 then 1 else 0)
+    in let s4 = __record-set s3 "cpu-flag-d" (if bit-and v 8 /= 0 then 1 else 0)
+    in let s5 = __record-set s4 "cpu-flag-v" (if bit-and v 64 /= 0 then 1 else 0)
+    in __record-set s5 "cpu-flag-n" (if bit-and v 128 /= 0 then 1 else 0)
+
+Section: Memory Access
+
+ Reads go through the bank-switched memory module. The bank
+ config is read from $0001 (processor port). Writes always go
+ to RAM (ROMs are read-only).
+
+  c64-ram : Integer = #A00000
+
+  mem-bank : Integer
+  mem-bank = peek-byte c64-ram 1
+
+  mem-read : Integer -> Integer
+  mem-read (addr) =
+    let a = bit-and addr #FFFF
+    in if a < 2 then peek-byte c64-ram a
+    else c64-read a (peek-byte c64-ram 1)
+
+  mem-write : Integer, Integer -> Integer
+  mem-write (addr) (val) =
+    let a = bit-and addr #FFFF
+    in let v = bit-and val #FF
+    in if a == 1 then poke-byte c64-ram 1 (bit-and v #3F)
+    else if a == 0 then poke-byte c64-ram 0 v
+    else poke-byte c64-ram a v
+
+  mem-read-16 : Integer -> Integer
+  mem-read-16 (addr) =
+    let lo = mem-read addr
+    in let hi = mem-read (addr + 1)
+    in bit-or lo (bit-shl hi 8)
+
+  mem-read-16-wrap : Integer -> Integer
+  mem-read-16-wrap (addr) =
+    let lo = mem-read addr
+    in let hi-addr = bit-or (bit-and addr #FF00) (bit-and (addr + 1) #FF)
+    in let hi = mem-read hi-addr
+    in bit-or lo (bit-shl hi 8)
+
+Section: Stack Operations
+
+  stack-push : CpuState, Integer -> CpuState
+  stack-push (s) (val) =
+    let dummy = mem-write (bit-or #100 s.cpu-sp) val
+    in __record-set s "cpu-sp" (bit-and (s.cpu-sp - 1) #FF)
+
+  stack-pull : CpuState -> CpuState
+  stack-pull (s) =
+    let sp = bit-and (s.cpu-sp + 1) #FF
+    in let val = mem-read (bit-or #100 sp)
+    in __record-set (__record-set s "cpu-sp" sp) "cpu-a" val
+
+  stack-pull-val : CpuState -> Integer
+  stack-pull-val (s) =
+    let sp = bit-and (s.cpu-sp + 1) #FF
+    in mem-read (bit-or #100 sp)
+
+Section: Addressing Modes
+
+  addr-immediate : CpuState -> Integer
+  addr-immediate (s) = s.cpu-pc + 1
+
+  addr-zeropage : CpuState -> Integer
+  addr-zeropage (s) = mem-read (s.cpu-pc + 1)
+
+  addr-zeropage-x : CpuState -> Integer
+  addr-zeropage-x (s) = bit-and (mem-read (s.cpu-pc + 1) + s.cpu-x) #FF
+
+  addr-zeropage-y : CpuState -> Integer
+  addr-zeropage-y (s) = bit-and (mem-read (s.cpu-pc + 1) + s.cpu-y) #FF
+
+  addr-absolute : CpuState -> Integer
+  addr-absolute (s) = mem-read-16 (s.cpu-pc + 1)
+
+  addr-absolute-x : CpuState -> Integer
+  addr-absolute-x (s) = bit-and (mem-read-16 (s.cpu-pc + 1) + s.cpu-x) #FFFF
+
+  addr-absolute-y : CpuState -> Integer
+  addr-absolute-y (s) = bit-and (mem-read-16 (s.cpu-pc + 1) + s.cpu-y) #FFFF
+
+  addr-indirect-x : CpuState -> Integer
+  addr-indirect-x (s) =
+    let zp = bit-and (mem-read (s.cpu-pc + 1) + s.cpu-x) #FF
+    in mem-read-16-wrap zp
+
+  addr-indirect-y : CpuState -> Integer
+  addr-indirect-y (s) =
+    let zp = mem-read (s.cpu-pc + 1)
+    in bit-and (mem-read-16-wrap zp + s.cpu-y) #FFFF
+
+  branch-offset : CpuState -> Integer
+  branch-offset (s) =
+    let off = mem-read (s.cpu-pc + 1)
+    in if off >= 128 then off - 256 else off
+
+Section: ALU Operations
+
+  do-adc : CpuState, Integer -> CpuState
+  do-adc (s) (val) =
+    let a = s.cpu-a
+    in let sum = a + val + s.cpu-flag-c
+    in let result = bit-and sum #FF
+    in let s1 = __record-set s "cpu-a" result
+    in let s2 = __record-set s1 "cpu-flag-c" (if sum > 255 then 1 else 0)
+    in let overflow = bit-and (bit-and (bit-xor a result) (bit-xor val result)) #80
+    in let s3 = __record-set s2 "cpu-flag-v" (if overflow /= 0 then 1 else 0)
+    in flag-nz s3 result
+
+  do-sbc : CpuState, Integer -> CpuState
+  do-sbc (s) (val) = do-adc s (bit-xor val #FF)
+
+  do-cmp : CpuState, Integer, Integer -> CpuState
+  do-cmp (s) (reg) (val) =
+    let diff = reg - val
+    in let s1 = __record-set s "cpu-flag-c" (if reg >= val then 1 else 0)
+    in flag-nz s1 (bit-and diff #FF)
+
+  do-asl-val : CpuState, Integer -> CpuState
+  do-asl-val (s) (val) =
+    let result = bit-and (bit-shl val 1) #FF
+    in let s1 = __record-set s "cpu-flag-c" (if bit-and val #80 /= 0 then 1 else 0)
+    in flag-nz s1 result
+
+  do-lsr-val : CpuState, Integer -> CpuState
+  do-lsr-val (s) (val) =
+    let result = bit-shru val 1
+    in let s1 = __record-set s "cpu-flag-c" (bit-and val 1)
+    in flag-nz s1 result
+
+  do-rol-val : CpuState, Integer -> CpuState
+  do-rol-val (s) (val) =
+    let result = bit-and (bit-or (bit-shl val 1) s.cpu-flag-c) #FF
+    in let s1 = __record-set s "cpu-flag-c" (if bit-and val #80 /= 0 then 1 else 0)
+    in flag-nz s1 result
+
+  do-ror-val : CpuState, Integer -> CpuState
+  do-ror-val (s) (val) =
+    let res = bit-or (bit-shru val 1) (bit-shl s.cpu-flag-c 7)
+    in let s1 = __record-set s "cpu-flag-c" (bit-and val 1)
+    in flag-nz s1 res
+
+Section: Interrupts
+
+  cpu-irq : CpuState -> CpuState
+  cpu-irq (s) =
+    if s.cpu-flag-i /= 0 then s
+    else let pc = s.cpu-pc
+    in let s1 = stack-push s (bit-shru pc 8)
+    in let s2 = stack-push s1 (bit-and pc #FF)
+    in let s3 = stack-push s2 (bit-and (pack-flags s2) (bit-xor #10 #FF))
+    in let s4 = __record-set s3 "cpu-flag-i" 1
+    in let vec = mem-read-16 #FFFE
+    in __record-set s4 "cpu-pc" vec
+
+  cpu-nmi : CpuState -> CpuState
+  cpu-nmi (s) =
+    let pc = s.cpu-pc
+    in let s1 = stack-push s (bit-shru pc 8)
+    in let s2 = stack-push s1 (bit-and pc #FF)
+    in let s3 = stack-push s2 (bit-and (pack-flags s2) (bit-xor #10 #FF))
+    in let s4 = __record-set s3 "cpu-flag-i" 1
+    in let vec = mem-read-16 #FFFA
+    in __record-set s4 "cpu-pc" vec
+
+Section: Instruction Execution
+
+ The main decode-execute step. Returns the updated CPU state after
+ executing one instruction. Advances PC and adds cycles.
+
+  cpu-step : CpuState -> CpuState
+  cpu-step (s) =
+    let op = mem-read s.cpu-pc
+    in when op
+
+     is #A9 -> let v = mem-read (addr-immediate s)
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #A5 -> let v = mem-read (addr-zeropage s)
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #B5 -> let v = mem-read (addr-zeropage-x s)
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #AD -> let v = mem-read (addr-absolute s)
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #BD -> let v = mem-read (addr-absolute-x s)
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #B9 -> let v = mem-read (addr-absolute-y s)
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #A1 -> let v = mem-read (addr-indirect-x s)
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #B1 -> let v = mem-read (addr-indirect-y s)
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+
+     is #A2 -> let v = mem-read (addr-immediate s)
+       in __record-set (flag-nz (__record-set s "cpu-x" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #A6 -> let v = mem-read (addr-zeropage s)
+       in __record-set (flag-nz (__record-set s "cpu-x" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #B6 -> let v = mem-read (addr-zeropage-y s)
+       in __record-set (flag-nz (__record-set s "cpu-x" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #AE -> let v = mem-read (addr-absolute s)
+       in __record-set (flag-nz (__record-set s "cpu-x" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #BE -> let v = mem-read (addr-absolute-y s)
+       in __record-set (flag-nz (__record-set s "cpu-x" v) v) "cpu-pc" (s.cpu-pc + 3)
+
+     is #A0 -> let v = mem-read (addr-immediate s)
+       in __record-set (flag-nz (__record-set s "cpu-y" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #A4 -> let v = mem-read (addr-zeropage s)
+       in __record-set (flag-nz (__record-set s "cpu-y" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #B4 -> let v = mem-read (addr-zeropage-x s)
+       in __record-set (flag-nz (__record-set s "cpu-y" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #AC -> let v = mem-read (addr-absolute s)
+       in __record-set (flag-nz (__record-set s "cpu-y" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #BC -> let v = mem-read (addr-absolute-x s)
+       in __record-set (flag-nz (__record-set s "cpu-y" v) v) "cpu-pc" (s.cpu-pc + 3)
+
+     is #85 -> let d = mem-write (addr-zeropage s) s.cpu-a
+       in __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #95 -> let d = mem-write (addr-zeropage-x s) s.cpu-a
+       in __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #8D -> let d = mem-write (addr-absolute s) s.cpu-a
+       in __record-set s "cpu-pc" (s.cpu-pc + 3)
+     is #9D -> let d = mem-write (addr-absolute-x s) s.cpu-a
+       in __record-set s "cpu-pc" (s.cpu-pc + 3)
+     is #99 -> let d = mem-write (addr-absolute-y s) s.cpu-a
+       in __record-set s "cpu-pc" (s.cpu-pc + 3)
+     is #81 -> let d = mem-write (addr-indirect-x s) s.cpu-a
+       in __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #91 -> let d = mem-write (addr-indirect-y s) s.cpu-a
+       in __record-set s "cpu-pc" (s.cpu-pc + 2)
+
+     is #86 -> let d = mem-write (addr-zeropage s) s.cpu-x
+       in __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #96 -> let d = mem-write (addr-zeropage-y s) s.cpu-x
+       in __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #8E -> let d = mem-write (addr-absolute s) s.cpu-x
+       in __record-set s "cpu-pc" (s.cpu-pc + 3)
+
+     is #84 -> let d = mem-write (addr-zeropage s) s.cpu-y
+       in __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #94 -> let d = mem-write (addr-zeropage-x s) s.cpu-y
+       in __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #8C -> let d = mem-write (addr-absolute s) s.cpu-y
+       in __record-set s "cpu-pc" (s.cpu-pc + 3)
+
+     is #AA -> __record-set (flag-nz (__record-set s "cpu-x" s.cpu-a) s.cpu-a) "cpu-pc" (s.cpu-pc + 1)
+     is #A8 -> __record-set (flag-nz (__record-set s "cpu-y" s.cpu-a) s.cpu-a) "cpu-pc" (s.cpu-pc + 1)
+     is #8A -> __record-set (flag-nz (__record-set s "cpu-a" s.cpu-x) s.cpu-x) "cpu-pc" (s.cpu-pc + 1)
+     is #98 -> __record-set (flag-nz (__record-set s "cpu-a" s.cpu-y) s.cpu-y) "cpu-pc" (s.cpu-pc + 1)
+     is #BA -> __record-set (flag-nz (__record-set s "cpu-x" s.cpu-sp) s.cpu-sp) "cpu-pc" (s.cpu-pc + 1)
+     is #9A -> __record-set (__record-set s "cpu-sp" s.cpu-x) "cpu-pc" (s.cpu-pc + 1)
+
+     is #69 -> __record-set (do-adc s (mem-read (addr-immediate s))) "cpu-pc" (s.cpu-pc + 2)
+     is #65 -> __record-set (do-adc s (mem-read (addr-zeropage s))) "cpu-pc" (s.cpu-pc + 2)
+     is #75 -> __record-set (do-adc s (mem-read (addr-zeropage-x s))) "cpu-pc" (s.cpu-pc + 2)
+     is #6D -> __record-set (do-adc s (mem-read (addr-absolute s))) "cpu-pc" (s.cpu-pc + 3)
+     is #7D -> __record-set (do-adc s (mem-read (addr-absolute-x s))) "cpu-pc" (s.cpu-pc + 3)
+     is #79 -> __record-set (do-adc s (mem-read (addr-absolute-y s))) "cpu-pc" (s.cpu-pc + 3)
+     is #61 -> __record-set (do-adc s (mem-read (addr-indirect-x s))) "cpu-pc" (s.cpu-pc + 2)
+     is #71 -> __record-set (do-adc s (mem-read (addr-indirect-y s))) "cpu-pc" (s.cpu-pc + 2)
+
+     is #E9 -> __record-set (do-sbc s (mem-read (addr-immediate s))) "cpu-pc" (s.cpu-pc + 2)
+     is #E5 -> __record-set (do-sbc s (mem-read (addr-zeropage s))) "cpu-pc" (s.cpu-pc + 2)
+     is #F5 -> __record-set (do-sbc s (mem-read (addr-zeropage-x s))) "cpu-pc" (s.cpu-pc + 2)
+     is #ED -> __record-set (do-sbc s (mem-read (addr-absolute s))) "cpu-pc" (s.cpu-pc + 3)
+     is #FD -> __record-set (do-sbc s (mem-read (addr-absolute-x s))) "cpu-pc" (s.cpu-pc + 3)
+     is #F9 -> __record-set (do-sbc s (mem-read (addr-absolute-y s))) "cpu-pc" (s.cpu-pc + 3)
+     is #E1 -> __record-set (do-sbc s (mem-read (addr-indirect-x s))) "cpu-pc" (s.cpu-pc + 2)
+     is #F1 -> __record-set (do-sbc s (mem-read (addr-indirect-y s))) "cpu-pc" (s.cpu-pc + 2)
+
+     is #29 -> let v = bit-and s.cpu-a (mem-read (addr-immediate s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #25 -> let v = bit-and s.cpu-a (mem-read (addr-zeropage s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #35 -> let v = bit-and s.cpu-a (mem-read (addr-zeropage-x s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #2D -> let v = bit-and s.cpu-a (mem-read (addr-absolute s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #3D -> let v = bit-and s.cpu-a (mem-read (addr-absolute-x s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #39 -> let v = bit-and s.cpu-a (mem-read (addr-absolute-y s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #21 -> let v = bit-and s.cpu-a (mem-read (addr-indirect-x s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #31 -> let v = bit-and s.cpu-a (mem-read (addr-indirect-y s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+
+     is #09 -> let v = bit-or s.cpu-a (mem-read (addr-immediate s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #05 -> let v = bit-or s.cpu-a (mem-read (addr-zeropage s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #15 -> let v = bit-or s.cpu-a (mem-read (addr-zeropage-x s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #0D -> let v = bit-or s.cpu-a (mem-read (addr-absolute s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #1D -> let v = bit-or s.cpu-a (mem-read (addr-absolute-x s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #19 -> let v = bit-or s.cpu-a (mem-read (addr-absolute-y s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #01 -> let v = bit-or s.cpu-a (mem-read (addr-indirect-x s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #11 -> let v = bit-or s.cpu-a (mem-read (addr-indirect-y s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+
+     is #49 -> let v = bit-xor s.cpu-a (mem-read (addr-immediate s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #45 -> let v = bit-xor s.cpu-a (mem-read (addr-zeropage s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #55 -> let v = bit-xor s.cpu-a (mem-read (addr-zeropage-x s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #4D -> let v = bit-xor s.cpu-a (mem-read (addr-absolute s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #5D -> let v = bit-xor s.cpu-a (mem-read (addr-absolute-x s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #59 -> let v = bit-xor s.cpu-a (mem-read (addr-absolute-y s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 3)
+     is #41 -> let v = bit-xor s.cpu-a (mem-read (addr-indirect-x s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+     is #51 -> let v = bit-xor s.cpu-a (mem-read (addr-indirect-y s))
+       in __record-set (flag-nz (__record-set s "cpu-a" v) v) "cpu-pc" (s.cpu-pc + 2)
+
+     is #C9 -> __record-set (do-cmp s s.cpu-a (mem-read (addr-immediate s))) "cpu-pc" (s.cpu-pc + 2)
+     is #C5 -> __record-set (do-cmp s s.cpu-a (mem-read (addr-zeropage s))) "cpu-pc" (s.cpu-pc + 2)
+     is #D5 -> __record-set (do-cmp s s.cpu-a (mem-read (addr-zeropage-x s))) "cpu-pc" (s.cpu-pc + 2)
+     is #CD -> __record-set (do-cmp s s.cpu-a (mem-read (addr-absolute s))) "cpu-pc" (s.cpu-pc + 3)
+     is #DD -> __record-set (do-cmp s s.cpu-a (mem-read (addr-absolute-x s))) "cpu-pc" (s.cpu-pc + 3)
+     is #D9 -> __record-set (do-cmp s s.cpu-a (mem-read (addr-absolute-y s))) "cpu-pc" (s.cpu-pc + 3)
+     is #C1 -> __record-set (do-cmp s s.cpu-a (mem-read (addr-indirect-x s))) "cpu-pc" (s.cpu-pc + 2)
+     is #D1 -> __record-set (do-cmp s s.cpu-a (mem-read (addr-indirect-y s))) "cpu-pc" (s.cpu-pc + 2)
+
+     is #E0 -> __record-set (do-cmp s s.cpu-x (mem-read (addr-immediate s))) "cpu-pc" (s.cpu-pc + 2)
+     is #E4 -> __record-set (do-cmp s s.cpu-x (mem-read (addr-zeropage s))) "cpu-pc" (s.cpu-pc + 2)
+     is #EC -> __record-set (do-cmp s s.cpu-x (mem-read (addr-absolute s))) "cpu-pc" (s.cpu-pc + 3)
+
+     is #C0 -> __record-set (do-cmp s s.cpu-y (mem-read (addr-immediate s))) "cpu-pc" (s.cpu-pc + 2)
+     is #C4 -> __record-set (do-cmp s s.cpu-y (mem-read (addr-zeropage s))) "cpu-pc" (s.cpu-pc + 2)
+     is #CC -> __record-set (do-cmp s s.cpu-y (mem-read (addr-absolute s))) "cpu-pc" (s.cpu-pc + 3)
+
+     is #0A -> let r = do-asl-val s s.cpu-a
+       in __record-set (__record-set r "cpu-a" (bit-and (bit-shl s.cpu-a 1) #FF)) "cpu-pc" (s.cpu-pc + 1)
+     is #06 -> let a = addr-zeropage s in let v = mem-read a in let r = do-asl-val s v
+       in let d = mem-write a (bit-and (bit-shl v 1) #FF)
+       in __record-set r "cpu-pc" (s.cpu-pc + 2)
+     is #16 -> let a = addr-zeropage-x s in let v = mem-read a in let r = do-asl-val s v
+       in let d = mem-write a (bit-and (bit-shl v 1) #FF)
+       in __record-set r "cpu-pc" (s.cpu-pc + 2)
+     is #0E -> let a = addr-absolute s in let v = mem-read a in let r = do-asl-val s v
+       in let d = mem-write a (bit-and (bit-shl v 1) #FF)
+       in __record-set r "cpu-pc" (s.cpu-pc + 3)
+     is #1E -> let a = addr-absolute-x s in let v = mem-read a in let r = do-asl-val s v
+       in let d = mem-write a (bit-and (bit-shl v 1) #FF)
+       in __record-set r "cpu-pc" (s.cpu-pc + 3)
+
+     is #4A -> let r = do-lsr-val s s.cpu-a
+       in __record-set (__record-set r "cpu-a" (bit-shru s.cpu-a 1)) "cpu-pc" (s.cpu-pc + 1)
+     is #46 -> let a = addr-zeropage s in let v = mem-read a in let r = do-lsr-val s v
+       in let d = mem-write a (bit-shru v 1)
+       in __record-set r "cpu-pc" (s.cpu-pc + 2)
+     is #56 -> let a = addr-zeropage-x s in let v = mem-read a in let r = do-lsr-val s v
+       in let d = mem-write a (bit-shru v 1)
+       in __record-set r "cpu-pc" (s.cpu-pc + 2)
+     is #4E -> let a = addr-absolute s in let v = mem-read a in let r = do-lsr-val s v
+       in let d = mem-write a (bit-shru v 1)
+       in __record-set r "cpu-pc" (s.cpu-pc + 3)
+     is #5E -> let a = addr-absolute-x s in let v = mem-read a in let r = do-lsr-val s v
+       in let d = mem-write a (bit-shru v 1)
+       in __record-set r "cpu-pc" (s.cpu-pc + 3)
+
+     is #2A -> let oc = s.cpu-flag-c in let av = s.cpu-a in let r = do-rol-val s av
+       in __record-set (__record-set r "cpu-a" (bit-and (bit-or (bit-shl av 1) oc) #FF)) "cpu-pc" (s.cpu-pc + 1)
+     is #26 -> let a = addr-zeropage s in let v = mem-read a in let oc = s.cpu-flag-c in let r = do-rol-val s v
+       in let d = mem-write a (bit-and (bit-or (bit-shl v 1) oc) #FF)
+       in __record-set r "cpu-pc" (s.cpu-pc + 2)
+     is #36 -> let a = addr-zeropage-x s in let v = mem-read a in let oc = s.cpu-flag-c in let r = do-rol-val s v
+       in let d = mem-write a (bit-and (bit-or (bit-shl v 1) oc) #FF)
+       in __record-set r "cpu-pc" (s.cpu-pc + 2)
+     is #2E -> let a = addr-absolute s in let v = mem-read a in let oc = s.cpu-flag-c in let r = do-rol-val s v
+       in let d = mem-write a (bit-and (bit-or (bit-shl v 1) oc) #FF)
+       in __record-set r "cpu-pc" (s.cpu-pc + 3)
+     is #3E -> let a = addr-absolute-x s in let v = mem-read a in let oc = s.cpu-flag-c in let r = do-rol-val s v
+       in let d = mem-write a (bit-and (bit-or (bit-shl v 1) oc) #FF)
+       in __record-set r "cpu-pc" (s.cpu-pc + 3)
+     is #6A -> let oc = s.cpu-flag-c in let av = s.cpu-a in let r = do-ror-val s av
+       in __record-set (__record-set r "cpu-a" (bit-or (bit-shru av 1) (bit-shl oc 7))) "cpu-pc" (s.cpu-pc + 1)
+     is #66 -> let a = addr-zeropage s in let v = mem-read a in let oc = s.cpu-flag-c in let r = do-ror-val s v
+       in let d = mem-write a (bit-or (bit-shru v 1) (bit-shl oc 7))
+       in __record-set r "cpu-pc" (s.cpu-pc + 2)
+     is #76 -> let a = addr-zeropage-x s in let v = mem-read a in let oc = s.cpu-flag-c in let r = do-ror-val s v
+       in let d = mem-write a (bit-or (bit-shru v 1) (bit-shl oc 7))
+       in __record-set r "cpu-pc" (s.cpu-pc + 2)
+     is #6E -> let a = addr-absolute s in let v = mem-read a in let oc = s.cpu-flag-c in let r = do-ror-val s v
+       in let d = mem-write a (bit-or (bit-shru v 1) (bit-shl oc 7))
+       in __record-set r "cpu-pc" (s.cpu-pc + 3)
+     is #7E -> let a = addr-absolute-x s in let v = mem-read a in let oc = s.cpu-flag-c in let r = do-ror-val s v
+       in let d = mem-write a (bit-or (bit-shru v 1) (bit-shl oc 7))
+       in __record-set r "cpu-pc" (s.cpu-pc + 3)
+
+     is #E6 -> let a = addr-zeropage s in let v = bit-and (mem-read a + 1) #FF
+       in let d = mem-write a v in __record-set (flag-nz s v) "cpu-pc" (s.cpu-pc + 2)
+     is #F6 -> let a = addr-zeropage-x s in let v = bit-and (mem-read a + 1) #FF
+       in let d = mem-write a v in __record-set (flag-nz s v) "cpu-pc" (s.cpu-pc + 2)
+     is #EE -> let a = addr-absolute s in let v = bit-and (mem-read a + 1) #FF
+       in let d = mem-write a v in __record-set (flag-nz s v) "cpu-pc" (s.cpu-pc + 3)
+     is #FE -> let a = addr-absolute-x s in let v = bit-and (mem-read a + 1) #FF
+       in let d = mem-write a v in __record-set (flag-nz s v) "cpu-pc" (s.cpu-pc + 3)
+
+     is #C6 -> let a = addr-zeropage s in let v = bit-and (mem-read a - 1) #FF
+       in let d = mem-write a v in __record-set (flag-nz s v) "cpu-pc" (s.cpu-pc + 2)
+     is #D6 -> let a = addr-zeropage-x s in let v = bit-and (mem-read a - 1) #FF
+       in let d = mem-write a v in __record-set (flag-nz s v) "cpu-pc" (s.cpu-pc + 2)
+     is #CE -> let a = addr-absolute s in let v = bit-and (mem-read a - 1) #FF
+       in let d = mem-write a v in __record-set (flag-nz s v) "cpu-pc" (s.cpu-pc + 3)
+     is #DE -> let a = addr-absolute-x s in let v = bit-and (mem-read a - 1) #FF
+       in let d = mem-write a v in __record-set (flag-nz s v) "cpu-pc" (s.cpu-pc + 3)
+
+     is #E8 -> let v = bit-and (s.cpu-x + 1) #FF
+       in __record-set (flag-nz (__record-set s "cpu-x" v) v) "cpu-pc" (s.cpu-pc + 1)
+     is #C8 -> let v = bit-and (s.cpu-y + 1) #FF
+       in __record-set (flag-nz (__record-set s "cpu-y" v) v) "cpu-pc" (s.cpu-pc + 1)
+     is #CA -> let v = bit-and (s.cpu-x - 1) #FF
+       in __record-set (flag-nz (__record-set s "cpu-x" v) v) "cpu-pc" (s.cpu-pc + 1)
+     is #88 -> let v = bit-and (s.cpu-y - 1) #FF
+       in __record-set (flag-nz (__record-set s "cpu-y" v) v) "cpu-pc" (s.cpu-pc + 1)
+
+     is #90 -> if s.cpu-flag-c == 0 then __record-set s "cpu-pc" (s.cpu-pc + 2 + branch-offset s) else __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #B0 -> if s.cpu-flag-c /= 0 then __record-set s "cpu-pc" (s.cpu-pc + 2 + branch-offset s) else __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #F0 -> if s.cpu-flag-z /= 0 then __record-set s "cpu-pc" (s.cpu-pc + 2 + branch-offset s) else __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #D0 -> if s.cpu-flag-z == 0 then __record-set s "cpu-pc" (s.cpu-pc + 2 + branch-offset s) else __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #30 -> if s.cpu-flag-n /= 0 then __record-set s "cpu-pc" (s.cpu-pc + 2 + branch-offset s) else __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #10 -> if s.cpu-flag-n == 0 then __record-set s "cpu-pc" (s.cpu-pc + 2 + branch-offset s) else __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #50 -> if s.cpu-flag-v == 0 then __record-set s "cpu-pc" (s.cpu-pc + 2 + branch-offset s) else __record-set s "cpu-pc" (s.cpu-pc + 2)
+     is #70 -> if s.cpu-flag-v /= 0 then __record-set s "cpu-pc" (s.cpu-pc + 2 + branch-offset s) else __record-set s "cpu-pc" (s.cpu-pc + 2)
+
+     is #4C -> __record-set s "cpu-pc" (addr-absolute s)
+     is #6C -> let a = mem-read-16 (s.cpu-pc + 1)
+       in __record-set s "cpu-pc" (mem-read-16-wrap a)
+
+     is #20 -> let ret = s.cpu-pc + 2
+       in let s1 = stack-push s (bit-shru ret 8)
+       in let s2 = stack-push s1 (bit-and ret #FF)
+       in __record-set s2 "cpu-pc" (addr-absolute s)
+
+     is #60 -> let lo = stack-pull-val s
+       in let s1 = __record-set s "cpu-sp" (bit-and (s.cpu-sp + 1) #FF)
+       in let hi = stack-pull-val s1
+       in let s2 = __record-set s1 "cpu-sp" (bit-and (s1.cpu-sp + 1) #FF)
+       in let ret = bit-or lo (bit-shl hi 8)
+       in __record-set s2 "cpu-pc" (ret + 1)
+
+     is #40 -> let s1 = __record-set s "cpu-sp" (bit-and (s.cpu-sp + 1) #FF)
+       in let flags = mem-read (bit-or #100 s1.cpu-sp)
+       in let s2 = unpack-flags s1 flags
+       in let s3 = __record-set s2 "cpu-sp" (bit-and (s2.cpu-sp + 1) #FF)
+       in let lo = mem-read (bit-or #100 s3.cpu-sp)
+       in let s4 = __record-set s3 "cpu-sp" (bit-and (s3.cpu-sp + 1) #FF)
+       in let hi = mem-read (bit-or #100 s4.cpu-sp)
+       in __record-set s4 "cpu-pc" (bit-or lo (bit-shl hi 8))
+
+     is #48 -> __record-set (stack-push s s.cpu-a) "cpu-pc" (s.cpu-pc + 1)
+     is #68 -> let sp = bit-and (s.cpu-sp + 1) #FF
+       in let val = mem-read (bit-or #100 sp)
+       in __record-set (flag-nz (__record-set (__record-set s "cpu-sp" sp) "cpu-a" val) val) "cpu-pc" (s.cpu-pc + 1)
+     is #08 -> __record-set (stack-push s (pack-flags s)) "cpu-pc" (s.cpu-pc + 1)
+     is #28 -> let sp = bit-and (s.cpu-sp + 1) #FF
+       in let val = mem-read (bit-or #100 sp)
+       in __record-set (unpack-flags (__record-set s "cpu-sp" sp) val) "cpu-pc" (s.cpu-pc + 1)
+
+     is #18 -> __record-set (__record-set s "cpu-flag-c" 0) "cpu-pc" (s.cpu-pc + 1)
+     is #38 -> __record-set (__record-set s "cpu-flag-c" 1) "cpu-pc" (s.cpu-pc + 1)
+     is #58 -> __record-set (__record-set s "cpu-flag-i" 0) "cpu-pc" (s.cpu-pc + 1)
+     is #78 -> __record-set (__record-set s "cpu-flag-i" 1) "cpu-pc" (s.cpu-pc + 1)
+     is #D8 -> __record-set (__record-set s "cpu-flag-d" 0) "cpu-pc" (s.cpu-pc + 1)
+     is #F8 -> __record-set (__record-set s "cpu-flag-d" 1) "cpu-pc" (s.cpu-pc + 1)
+     is #B8 -> __record-set (__record-set s "cpu-flag-v" 0) "cpu-pc" (s.cpu-pc + 1)
+
+     is #24 -> let v = mem-read (addr-zeropage s)
+       in let s1 = __record-set s "cpu-flag-z" (if bit-and s.cpu-a v == 0 then 1 else 0)
+       in let s2 = __record-set s1 "cpu-flag-v" (if bit-and v #40 /= 0 then 1 else 0)
+       in __record-set (__record-set s2 "cpu-flag-n" (if bit-and v #80 /= 0 then 1 else 0)) "cpu-pc" (s.cpu-pc + 2)
+     is #2C -> let v = mem-read (addr-absolute s)
+       in let s1 = __record-set s "cpu-flag-z" (if bit-and s.cpu-a v == 0 then 1 else 0)
+       in let s2 = __record-set s1 "cpu-flag-v" (if bit-and v #40 /= 0 then 1 else 0)
+       in __record-set (__record-set s2 "cpu-flag-n" (if bit-and v #80 /= 0 then 1 else 0)) "cpu-pc" (s.cpu-pc + 3)
+
+     is #00 -> __record-set s "cpu-halted" 1
+
+     is #EA -> __record-set s "cpu-pc" (s.cpu-pc + 1)
+
+     is otherwise -> let d = mem-write #0400 op
+       in let d2 = mem-write #0401 (bit-and s.cpu-pc #FF)
+       in let d3 = mem-write #0402 (bit-shru s.cpu-pc 8)
+       in __record-set s "cpu-halted" 1

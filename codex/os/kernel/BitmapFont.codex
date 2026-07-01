@@ -1,0 +1,237 @@
+Chapter: BitmapFont
+
+ Codex Bitmap Font (CBF). 8x16 pixel glyphs indexed directly by
+ CCE code (0-127). Font data lives in an alloc-bytes buffer for
+ O(1) lookup: font-base + cce-code * 16 + row. No Unicode
+ conversion needed at render time.
+
+ We say:
+
+Section: Constants
+  cbf-glyph-height : Integer = 16
+  cbf-glyph-width : Integer = 8
+  cbf-glyph-count : Integer = 128
+  cbf-data-size : Integer = 2048
+
+Section: Font Handle
+  CbfFont = record { cbf-base : Integer }
+
+Section: Initialization
+  cbf-init : CbfFont
+  cbf-init =
+    let base = alloc-bytes cbf-data-size
+    in let w = cbf-write-all base
+    in CbfFont { cbf-base = base + w - w }
+
+Section: Glyph Lookup
+  cbf-row : CbfFont, Integer, Integer -> Integer
+  cbf-row (font) (cce) (row) =
+    if cce < 0 then 0
+    else if cce >= cbf-glyph-count then 0
+    else if row < 0 then 0
+    else if row >= cbf-glyph-height then 0
+    else peek-byte (font.cbf-base) (cce * cbf-glyph-height + row)
+
+  cbf-pixel : CbfFont, Integer, Integer, Integer -> Boolean
+  cbf-pixel (font) (cce) (col) (row) =
+    let glyph-byte = cbf-row font cce row
+    in bit-and (bit-shru glyph-byte (7 - col)) 1 == 1
+
+Section: Write All Glyphs
+  cbf-write-all : Integer -> Integer
+  cbf-write-all (base) =
+    let w0 = cbf-write-whitespace base
+    in let w1 = cbf-write-digits base
+    in let w2 = cbf-write-lower base
+    in let w3 = cbf-write-upper base
+    in let w4 = cbf-write-punct base
+    in let w5 = cbf-write-accented base
+    in let w6 = cbf-write-cyrillic base
+    in w0 + w1 + w2 + w3 + w4 + w5 + w6
+
+Section: Whitespace (CCE 0-2)
+  cbf-write-whitespace : Integer -> Integer
+  cbf-write-whitespace (b) =
+    let w0 = cbf-g b 0 0 0 0 0 0 0 0 0
+    in let w1 = cbf-g b 1 0 0 0 0 0 0 0 0
+    in let w2 = cbf-g b 2 0 0 0 0 0 0 0 0
+    in w0 + w1 + w2
+
+Section: Digits (CCE 3-12 -> 0-9)
+  cbf-write-digits : Integer -> Integer
+  cbf-write-digits (b) =
+    let w0 = cbf-g b 3 60 102 110 118 102 102 60 0
+    in let w1 = cbf-g b 4 24 56 24 24 24 24 126 0
+    in let w2 = cbf-g b 5 60 102 6 12 24 48 126 0
+    in let w3 = cbf-g b 6 60 102 6 28 6 102 60 0
+    in let w4 = cbf-g b 7 12 28 44 108 126 12 12 0
+    in let w5 = cbf-g b 8 126 96 124 6 6 102 60 0
+    in let w6 = cbf-g b 9 60 96 96 124 102 102 60 0
+    in let w7 = cbf-g b 10 126 6 12 24 48 48 48 0
+    in let w8 = cbf-g b 11 60 102 102 60 102 102 60 0
+    in let w9 = cbf-g b 12 60 102 102 62 6 6 60 0
+    in w0 + w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8 + w9
+
+Section: Lowercase (CCE 13-38 -> e t a o i n s h r d l c u m w f g y p b v k j x q z)
+  cbf-write-lower : Integer -> Integer
+  cbf-write-lower (b) =
+    let we = cbf-g b 13 0 0 60 102 126 96 60 0
+    in let wt = cbf-g b 14 48 48 124 48 48 48 28 0
+    in let wa = cbf-g b 15 0 0 60 6 62 102 62 0
+    in let wo = cbf-g b 16 0 0 60 102 102 102 60 0
+    in let wi = cbf-g b 17 24 0 56 24 24 24 60 0
+    in let wn = cbf-g b 18 0 0 124 102 102 102 102 0
+    in let ws = cbf-g b 19 0 0 62 96 60 6 124 0
+    in let wh = cbf-g b 20 96 96 124 102 102 102 102 0
+    in let wr = cbf-g b 21 0 0 124 102 96 96 96 0
+    in let wd = cbf-g b 22 6 6 62 102 102 102 62 0
+    in let wl = cbf-g b 23 56 24 24 24 24 24 60 0
+    in let wc = cbf-g b 24 0 0 60 102 96 102 60 0
+    in let wu = cbf-g b 25 0 0 102 102 102 102 62 0
+    in let wm = cbf-g b 26 0 0 102 127 107 99 99 0
+    in let ww = cbf-g b 27 0 0 99 99 107 127 54 0
+    in let wf = cbf-g b 28 28 48 48 124 48 48 48 0
+    in let wg = cbf-g b 29 0 0 62 102 102 62 6 60
+    in let wy = cbf-g b 30 0 0 102 102 102 62 6 60
+    in let wp = cbf-g b 31 0 0 124 102 102 124 96 96
+    in let wb = cbf-g b 32 96 96 124 102 102 102 124 0
+    in let wv = cbf-g b 33 0 0 102 102 102 60 24 0
+    in let wk = cbf-g b 34 96 96 102 108 120 108 102 0
+    in let wj = cbf-g b 35 12 0 28 12 12 12 108 56
+    in let wx = cbf-g b 36 0 0 102 36 24 36 102 0
+    in let wq = cbf-g b 37 0 0 62 102 102 62 6 6
+    in let wz = cbf-g b 38 0 0 126 12 24 48 126 0
+    in we + wt + wa + wo + wi + wn + ws + wh + wr + wd + wl + wc + wu + wm + ww + wf + wg + wy + wp + wb + wv + wk + wj + wx + wq + wz
+
+Section: Uppercase (CCE 39-64 -> E T A O I N S H R D L C U M W F G Y P B V K J X Q Z)
+  cbf-write-upper : Integer -> Integer
+  cbf-write-upper (b) =
+    let wE = cbf-g b 39 126 96 96 124 96 96 126 0
+    in let wT = cbf-g b 40 126 24 24 24 24 24 24 0
+    in let wA = cbf-g b 41 24 60 102 102 126 102 102 0
+    in let wO = cbf-g b 42 60 102 102 102 102 102 60 0
+    in let wI = cbf-g b 43 126 24 24 24 24 24 126 0
+    in let wN = cbf-g b 44 102 118 126 110 102 102 102 0
+    in let wS = cbf-g b 45 60 102 96 60 6 102 60 0
+    in let wH = cbf-g b 46 102 102 102 126 102 102 102 0
+    in let wR = cbf-g b 47 124 102 102 124 108 102 102 0
+    in let wD = cbf-g b 48 120 108 102 102 102 108 120 0
+    in let wL = cbf-g b 49 96 96 96 96 96 96 126 0
+    in let wC = cbf-g b 50 60 102 96 96 96 102 60 0
+    in let wU = cbf-g b 51 102 102 102 102 102 102 60 0
+    in let wM = cbf-g b 52 99 119 127 107 99 99 99 0
+    in let wW = cbf-g b 53 99 99 99 107 127 119 99 0
+    in let wF = cbf-g b 54 126 96 96 124 96 96 96 0
+    in let wG = cbf-g b 55 60 102 96 110 102 102 60 0
+    in let wY = cbf-g b 56 102 102 102 60 24 24 24 0
+    in let wP = cbf-g b 57 124 102 102 124 96 96 96 0
+    in let wB = cbf-g b 58 124 102 102 124 102 102 124 0
+    in let wV = cbf-g b 59 102 102 102 102 60 24 24 0
+    in let wK = cbf-g b 60 102 108 120 112 120 108 102 0
+    in let wJ = cbf-g b 61 6 6 6 6 6 102 60 0
+    in let wX = cbf-g b 62 102 102 36 24 36 102 102 0
+    in let wQ = cbf-g b 63 60 102 102 102 106 108 54 0
+    in let wZ = cbf-g b 64 126 6 12 24 48 96 126 0
+    in wE + wT + wA + wO + wI + wN + wS + wH + wR + wD + wL + wC + wU + wM + wW + wF + wG + wY + wP + wB + wV + wK + wJ + wX + wQ + wZ
+
+Section: Punctuation (CCE 65-96)
+  cbf-write-punct : Integer -> Integer
+  cbf-write-punct (b) =
+    let w65 = cbf-g b 65 0 0 0 0 0 24 24 0
+    in let w66 = cbf-g b 66 0 0 0 0 0 24 24 48
+    in let w67 = cbf-g b 67 24 24 24 24 24 0 24 0
+    in let w68 = cbf-g b 68 60 102 6 12 24 0 24 0
+    in let w69 = cbf-g b 69 0 24 24 0 0 24 24 0
+    in let w70 = cbf-g b 70 0 24 24 0 0 24 24 48
+    in let w71 = cbf-g b 71 0 102 102 0 0 0 0 0
+    in let w72 = cbf-g b 72 0 36 126 36 36 126 36 0
+    in let w73 = cbf-g b 73 0 0 0 126 0 0 0 0
+    in let w74 = cbf-g b 74 12 24 48 48 48 24 12 0
+    in let w75 = cbf-g b 75 48 24 12 12 12 24 48 0
+    in let w76 = cbf-g b 76 0 24 24 126 24 24 0 0
+    in let w77 = cbf-g b 77 0 0 126 0 126 0 0 0
+    in let w78 = cbf-g b 78 0 102 60 255 60 102 0 0
+    in let w79 = cbf-g b 79 6 12 24 48 24 12 6 0
+    in let w80 = cbf-g b 80 96 48 24 12 24 48 96 0
+    in let w81 = cbf-g b 81 6 12 24 48 96 192 0 0
+    in let w82 = cbf-g b 82 60 102 110 110 96 98 60 0
+    in let w83 = cbf-g b 83 0 36 126 36 36 126 36 0
+    in let w84 = cbf-g b 84 0 0 0 38 0 0 0 0
+    in let w85 = cbf-g b 85 0 0 0 0 0 0 126 0
+    in let w86 = cbf-g b 86 192 96 48 24 12 6 0 0
+    in let w87 = cbf-g b 87 24 24 24 24 24 24 24 24
+    in let w88 = cbf-g b 88 60 48 48 48 48 48 60 0
+    in let w89 = cbf-g b 89 60 12 12 12 12 12 60 0
+    in let w90 = cbf-g b 90 14 24 24 48 24 24 14 0
+    in let w91 = cbf-g b 91 112 24 24 12 24 24 112 0
+    in let w92 = cbf-g b 92 0 0 50 126 76 0 0 0
+    in let w93 = cbf-g b 93 48 24 12 0 0 0 0 0
+    in let w94 = cbf-g b 94 24 60 102 0 0 0 0 0
+    in let w95 = cbf-g b 95 24 60 102 0 0 0 0 0
+    in let w96 = cbf-g b 96 24 60 102 0 0 0 0 0
+    in w65 + w66 + w67 + w68 + w69 + w70 + w71 + w72 + w73 + w74 + w75 + w76 + w77 + w78 + w79 + w80 + w81 + w82 + w83 + w84 + w85 + w86 + w87 + w88 + w89 + w90 + w91 + w92 + w93 + w94 + w95 + w96
+
+Section: Accented (CCE 97-112 -> approx glyphs)
+  cbf-write-accented : Integer -> Integer
+  cbf-write-accented (b) =
+    let w97 = cbf-g b 97 12 24 60 102 126 96 60 0
+    in let w98 = cbf-g b 98 48 24 60 102 126 96 60 0
+    in let w99 = cbf-g b 99 24 0 60 102 126 96 60 0
+    in let w100 = cbf-g b 100 24 0 60 102 126 96 60 0
+    in let w101 = cbf-g b 101 12 24 60 6 62 102 62 0
+    in let w102 = cbf-g b 102 48 24 60 6 62 102 62 0
+    in let w103 = cbf-g b 103 24 0 60 6 62 102 62 0
+    in let w104 = cbf-g b 104 24 0 60 6 62 102 62 0
+    in let w105 = cbf-g b 105 12 24 60 102 102 102 60 0
+    in let w106 = cbf-g b 106 24 0 60 102 102 102 60 0
+    in let w107 = cbf-g b 107 24 0 60 102 102 102 60 0
+    in let w108 = cbf-g b 108 12 24 102 102 102 102 62 0
+    in let w109 = cbf-g b 109 24 0 102 102 102 102 62 0
+    in let w110 = cbf-g b 110 0 0 124 102 102 102 102 0
+    in let w111 = cbf-g b 111 0 0 60 102 96 102 60 0
+    in let w112 = cbf-g b 112 24 0 56 24 24 24 60 0
+    in w97 + w98 + w99 + w100 + w101 + w102 + w103 + w104 + w105 + w106 + w107 + w108 + w109 + w110 + w111 + w112
+
+Section: Cyrillic (CCE 113-127 -> а о е и н т с р в л к м д п у)
+  cbf-write-cyrillic : Integer -> Integer
+  cbf-write-cyrillic (b) =
+    let w113 = cbf-g b 113 0 0 60 6 62 102 62 0
+    in let w114 = cbf-g b 114 0 0 60 102 102 102 60 0
+    in let w115 = cbf-g b 115 0 0 60 102 126 96 60 0
+    in let w116 = cbf-g b 116 0 0 124 102 102 102 102 0
+    in let w117 = cbf-g b 117 0 0 124 102 102 102 102 0
+    in let w118 = cbf-g b 118 126 24 24 24 24 24 24 0
+    in let w119 = cbf-g b 119 0 0 62 96 60 6 124 0
+    in let w120 = cbf-g b 120 0 0 124 102 96 96 96 0
+    in let w121 = cbf-g b 121 0 0 102 102 102 60 24 0
+    in let w122 = cbf-g b 122 56 24 24 24 24 24 60 0
+    in let w123 = cbf-g b 123 96 96 102 108 120 108 102 0
+    in let w124 = cbf-g b 124 0 0 102 127 107 99 99 0
+    in let w125 = cbf-g b 125 6 6 62 102 102 102 62 0
+    in let w126 = cbf-g b 126 0 0 124 102 102 124 96 96
+    in let w127 = cbf-g b 127 0 0 102 102 102 102 62 0
+    in w113 + w114 + w115 + w116 + w117 + w118 + w119 + w120 + w121 + w122 + w123 + w124 + w125 + w126 + w127
+
+Section: Glyph Writer
+  cbf-g : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cbf-g (base) (cce) (r2) (r3) (r4) (r5) (r6) (r7) (r8) (r9) =
+    let off = cce * cbf-glyph-height
+    in let w0 = poke-byte base off 0
+    in let w1 = poke-byte base (off + 1) 0
+    in let w2 = poke-byte base (off + 2) r2
+    in let w3 = poke-byte base (off + 3) r3
+    in let w4 = poke-byte base (off + 4) r4
+    in let w5 = poke-byte base (off + 5) r5
+    in let w6 = poke-byte base (off + 6) r6
+    in let w7 = poke-byte base (off + 7) r7
+    in let w8 = poke-byte base (off + 8) r8
+    in let w9 = poke-byte base (off + 9) r9
+    in let w10 = poke-byte base (off + 10) 0
+    in let w11 = poke-byte base (off + 11) 0
+    in let w12 = poke-byte base (off + 12) 0
+    in let w13 = poke-byte base (off + 13) 0
+    in let w14 = poke-byte base (off + 14) 0
+    in let w15 = poke-byte base (off + 15) 0
+    in w0 + w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8 + w9 + w10 + w11 + w12 + w13 + w14 + w15
+
+Page 1

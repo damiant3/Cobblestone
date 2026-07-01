@@ -1,0 +1,70 @@
+Chapter: RunPlugScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates run-plug.ps1 from the Shell DSL.
+ Boots a plug CDX in a VM with NE2K NIC, listens on TCP,
+ sends the input file, receives the output file.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  plug-params : List ShellParam = [sh-param "Plug" SptString, sh-param "Input" SptString, sh-param "Output" SptString, sh-param-default "MemMB" SptInt (SeInt 4096), sh-param-default "TimeoutSec" SptInt (SeInt 120), sh-param-default "Port" SptInt (SeInt 9100)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    let missing-plug = [ScWriteError (SeRaw "\"MISSING plug: $Plug\""), ScExit (SeInt 2)]
+    in let missing-input = [ScWriteError (SeRaw "\"MISSING input: $Input\""), ScExit (SeInt 2)]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScIf (SeNot (SeFileExists (SeVar "Plug"))) missing-plug [], ScIf (SeNot (SeFileExists (SeVar "Input"))) missing-input []]
+
+Section: S02 -- Read input and start listener
+
+  s02 : List ShellCmd = [ScReadBytes "inputBytes" (SeVar "Input"), ScEcho (SeRaw "\"[plug] Input: $($inputBytes.Length) bytes\""), ScEcho (SeRaw "\"[plug] Plug: $Plug\""), ScBlank, ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)", ScRaw "$listener.Start()", ScEcho (SeRaw "\"[plug] Listening on TCP $Port\"")]
+
+Section: S03 -- Boot VM
+
+  s03 : List ShellCmd = [ScAssign "vmBin" (SeRaw "Join-Path $Repo 'tools\\codex-vm.exe'"), ScTempFile "stderrFile", ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Plug", SeLit "-mem", SeRaw "\"$MemMB\"", SeLit "-headless"]), ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScEcho (SeRaw "\"[plug] VM PID $($proc.Id)\"")]
+
+Section: S04 -- Wait for TCP connection
+
+  s04 : List ShellCmd =
+    let vm-exited = [ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScWriteError (SeRaw "\"FAIL: VM exited before connecting. stderr: $stderr\""), ScExit (SeInt 4)]
+    in let timeout-hit = [ScWriteError (SeLit "FAIL: plug did not connect within 60s"), ScExit (SeInt 5)]
+    in [ScAssign "deadline" (SeRaw "[DateTime]::UtcNow.AddSeconds(60)"), ScLabeledWhile "wait_conn" (SeNot (SeRaw "$listener.Pending()")) [ScIf (SeProperty (SeVar "proc") "HasExited") vm-exited [], ScIf (SeRaw "[DateTime]::UtcNow -gt $deadline") timeout-hit [], ScRaw "Start-Sleep -Milliseconds 100"], ScRaw "$client = $listener.AcceptTcpClient()", ScRaw "$stream = $client.GetStream()", ScRaw "$listener.Stop()", ScEcho (SeLit "[plug] Connected")]
+
+Section: S05 -- Send input
+
+  s05 : List ShellCmd = [ScRaw "$stream.Write($inputBytes, 0, $inputBytes.Length)", ScRaw "$stream.Flush()", ScRaw "$client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)", ScEcho (SeRaw "\"[plug] Sent $($inputBytes.Length) bytes, waiting for output...\"")]
+
+Section: S06 -- Receive output
+
+  s06 : List ShellCmd = [ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScRaw "$allBytes = [System.Collections.Generic.List[byte]]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScTry [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }"]] [ScComment "Read timeout or connection reset -- normal end"] [], ScRaw "$client.Close()"]
+
+Section: S07 -- Check output and write
+
+  s07 : List ShellCmd =
+    let no-output = [ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(5000)"] [], ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScWriteError (SeRaw "\"FAIL: plug produced no output. stderr: $stderr\""), ScExit (SeInt 6)]
+    in [ScIf (SeRaw "$allBytes.Count -eq 0") no-output [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Output", SeRaw "$allBytes.ToArray()"], ScEcho (SeRaw "\"[plug] OK: $Output ($($allBytes.Count) bytes)\"")]
+
+Section: S08 -- Cleanup
+
+  s08 : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue", ScRaw "try { $listener.Stop() } catch {}"]
+
+Section: Assembly
+
+  plug-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07] [] s08]
+
+  plug-script : ShellScript = sh-script "run-plug" "Boot a plug CDX in a VM with NE2K NIC and exchange data over TCP" plug-params plug-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell plug-script)
+  end
+
+Page 1

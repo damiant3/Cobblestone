@@ -1,0 +1,51 @@
+Chapter: TrustNodeTest
+  cites Trust chapter TrustNode
+  cites Trust chapter TrustTransport
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Net chapter MessageFraming
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  maybe-show : Maybe Integer -> Text
+  maybe-show (m) = when m
+    is Just (i) -> show i
+    is None -> "none"
+
+Section: Body
+  opening : [Console] Nothing =
+    let lat = lattice-add-direct lattice-empty "alice" 8000
+    in let policy = policy-add-rule (policy-empty "test") (rule-allow "allow-all" AlwaysTrue)
+    in let node0 = node-new [1, 2, 3] lat policy
+    in let stats0 = node-stats node0
+    in let sess = net-session-new [0, 0, 0, 0, 0, 1] [10, 0, 0, 1] [10, 0, 0, 254] 5000 80 [10, 0, 0, 2] 1000
+    in let ts = transport-new sess
+    in let trust-sess = TrustSession { transport = ts, peer-key = [10, 20], peer-trust = 8000, authenticated = True, messages-exchanged = 0 }
+    in let node1 = node-add-peer node0 "alice" trust-sess
+    in let alice-idx = node-find-peer node1 "alice"
+    in let bob-idx = node-find-peer node1 "bob"
+    in let msg = MsgPropose (ProposeMsg { id = [1], from = AgentIdentity { public-key = [1] }, to = AgentIdentity { public-key = [2] }, capability = Capability { name = "test", direction = 1, scope = "/" }, context = [], expires = 5000000000, signature = [] })
+    in let sr = node-send node1 "alice" msg
+    in let sr2 = node-send (sr.node) "ghost" msg
+    in let replay0 = node-is-replay node1 0 0
+    in let node-replay = node-set-peer node1 0 (TrustPeer { session = trust-sess, name = "alice", next-seq = 0, last-seen-seq = 5 })
+    in let replay3 = node-is-replay node-replay 0 3
+    in let replay6 = node-is-replay node-replay 0 6
+    in act
+      print-line-uni stats0
+      print-line-uni ("peers=" & show (node-peer-count node1) & " alice=" & maybe-show alice-idx & " bob=" & maybe-show bob-idx)
+      print-line-uni ("sent=" & show-bool (sr.success) & " seq=" & show ((sr.node).outbound-seq) & " err=" & sr.error)
+      print-line-uni ("sent=" & show-bool (sr2.success) & " err=" & sr2.error)
+      print-line-uni ("replay0=" & show-bool replay0 & " replay3=" & show-bool replay3 & " replay6=" & show-bool replay6)
+    end
+
+Page 1

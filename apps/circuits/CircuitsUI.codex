@@ -1,0 +1,410 @@
+Chapter: CircuitsUI
+  cites Foreword chapter List
+  cites Foreword chapter Console
+  cites Game chapter Rasterizer
+  cites Game chapter Bresenham
+  cites Game chapter Color
+
+ The main UI renderer for Codex Circuits. Draws the toolbar, tab bar,
+ schematic canvas with demo circuit, sidebar with component list, and
+ status bar — all to a framebuffer for GOP display and screenshot.
+
+Section: Demo Circuit Data
+
+ A pre-built demo schematic: STM32 microcontroller with USB connector,
+ decoupling caps, crystal oscillator, reset circuit, and LED indicators.
+ Placed at screen coordinates for visual impact.
+
+  DemoComponent = record {
+    dc-ref : Text,
+    dc-value : Text,
+    dc-x : Integer,
+    dc-y : Integer,
+    dc-w : Integer,
+    dc-h : Integer,
+    dc-pins : Integer
+  }
+
+  DemoWire = record {
+    dw-x1 : Integer,
+    dw-y1 : Integer,
+    dw-x2 : Integer,
+    dw-y2 : Integer
+  }
+
+  DemoLabel = record {
+    dlb-text : Text,
+    dlb-x : Integer,
+    dlb-y : Integer
+  }
+
+Section: Demo Components
+
+  demo-mcu : DemoComponent
+  demo-mcu = DemoComponent { dc-ref = "U1", dc-value = "STM32F405RG", dc-x = 400, dc-y = 200, dc-w = 120, dc-h = 160, dc-pins = 64 }
+
+  demo-usb : DemoComponent
+  demo-usb = DemoComponent { dc-ref = "J1", dc-value = "USB-C", dc-x = 120, dc-y = 220, dc-w = 60, dc-h = 40, dc-pins = 4 }
+
+  demo-crystal : DemoComponent
+  demo-crystal = DemoComponent { dc-ref = "Y1", dc-value = "8MHz", dc-x = 400, dc-y = 420, dc-w = 40, dc-h = 20, dc-pins = 2 }
+
+  demo-cap1 : DemoComponent
+  demo-cap1 = DemoComponent { dc-ref = "C1", dc-value = "100nF", dc-x = 280, dc-y = 120, dc-w = 16, dc-h = 24, dc-pins = 2 }
+
+  demo-cap2 : DemoComponent
+  demo-cap2 = DemoComponent { dc-ref = "C2", dc-value = "100nF", dc-x = 320, dc-y = 120, dc-w = 16, dc-h = 24, dc-pins = 2 }
+
+  demo-cap3 : DemoComponent
+  demo-cap3 = DemoComponent { dc-ref = "C3", dc-value = "4.7uF", dc-x = 360, dc-y = 120, dc-w = 16, dc-h = 24, dc-pins = 2 }
+
+  demo-cap4 : DemoComponent
+  demo-cap4 = DemoComponent { dc-ref = "C4", dc-value = "22pF", dc-x = 380, dc-y = 440, dc-w = 16, dc-h = 24, dc-pins = 2 }
+
+  demo-cap5 : DemoComponent
+  demo-cap5 = DemoComponent { dc-ref = "C5", dc-value = "22pF", dc-x = 430, dc-y = 440, dc-w = 16, dc-h = 24, dc-pins = 2 }
+
+  demo-res1 : DemoComponent
+  demo-res1 = DemoComponent { dc-ref = "R1", dc-value = "10K", dc-x = 560, dc-y = 150, dc-w = 32, dc-h = 12, dc-pins = 2 }
+
+  demo-res2 : DemoComponent
+  demo-res2 = DemoComponent { dc-ref = "R2", dc-value = "330", dc-x = 620, dc-y = 220, dc-w = 32, dc-h = 12, dc-pins = 2 }
+
+  demo-res3 : DemoComponent
+  demo-res3 = DemoComponent { dc-ref = "R3", dc-value = "330", dc-x = 620, dc-y = 260, dc-w = 32, dc-h = 12, dc-pins = 2 }
+
+  demo-led1 : DemoComponent
+  demo-led1 = DemoComponent { dc-ref = "D1", dc-value = "Green", dc-x = 700, dc-y = 220, dc-w = 20, dc-h = 20, dc-pins = 2 }
+
+  demo-led2 : DemoComponent
+  demo-led2 = DemoComponent { dc-ref = "D2", dc-value = "Red", dc-x = 700, dc-y = 260, dc-w = 20, dc-h = 20, dc-pins = 2 }
+
+  demo-vreg : DemoComponent
+  demo-vreg = DemoComponent { dc-ref = "U2", dc-value = "LDO 3.3V", dc-x = 240, dc-y = 80, dc-w = 60, dc-h = 30, dc-pins = 3 }
+
+  demo-btn : DemoComponent
+  demo-btn = DemoComponent { dc-ref = "SW1", dc-value = "Reset", dc-x = 560, dc-y = 180, dc-w = 24, dc-h = 16, dc-pins = 2 }
+
+  demo-esd : DemoComponent
+  demo-esd = DemoComponent { dc-ref = "U3", dc-value = "ESD Prot", dc-x = 200, dc-y = 220, dc-w = 40, dc-h = 30, dc-pins = 4 }
+
+Section: Render Helpers
+
+  draw-filled-rect : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-filled-rect (fb) (x) (y) (w) (h) (color) =
+    draw-rect-rows fb x y w h color 0
+
+  draw-rect-rows : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-rect-rows (fb) (x) (y) (w) (h) (color) (row) =
+    if row >= h then fb
+    else let fb2 = fb-hline fb x (x + w) (y + row) color
+    in draw-rect-rows fb2 x y w h color (row + 1)
+
+  draw-border-rect : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-border-rect (fb) (x) (y) (w) (h) (color) =
+    let fb1 = fb-hline fb x (x + w) y color
+    in let fb2 = fb-hline fb1 x (x + w) (y + h) color
+    in let fb3 = fb-line fb2 x y x (y + h) color
+    in fb-line fb3 (x + w) y (x + w) (y + h) color
+
+Section: Grid Rendering
+
+  draw-grid : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-grid (fb) (x0) (y0) (w) (h) (spacing) (color) =
+    let fb1 = draw-grid-vlines fb x0 y0 w h spacing color 0
+    in draw-grid-hlines fb1 x0 y0 w h spacing color 0
+
+  draw-grid-vlines : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-grid-vlines (fb) (x0) (y0) (w) (h) (spacing) (color) (i) =
+    let x = x0 + i * spacing
+    in if x >= x0 + w then fb
+    else let fb2 = draw-dotted-vline fb x y0 (y0 + h) spacing color
+    in draw-grid-vlines fb2 x0 y0 w h spacing color (i + 1)
+
+  draw-grid-hlines : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-grid-hlines (fb) (x0) (y0) (w) (h) (spacing) (color) (i) =
+    let y = y0 + i * spacing
+    in if y >= y0 + h then fb
+    else let fb2 = draw-dotted-hline fb x0 (x0 + w) y spacing color
+    in draw-grid-hlines fb2 x0 y0 w h spacing color (i + 1)
+
+  draw-dotted-vline : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-dotted-vline (fb) (x) (y0) (y1) (spacing) (color) =
+    if y0 >= y1 then fb
+    else let fb2 = fb-set fb x y0 color
+    in draw-dotted-vline fb2 x (y0 + spacing) y1 spacing color
+
+  draw-dotted-hline : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-dotted-hline (fb) (x0) (x1) (y) (spacing) (color) =
+    if x0 >= x1 then fb
+    else let fb2 = fb-set fb x0 y color
+    in draw-dotted-hline fb2 (x0 + spacing) x1 y spacing color
+
+Section: Component Rendering
+
+  draw-ic-body : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-ic-body (fb) (x) (y) (w) (h) (body-color) (pin-color) =
+    let fb1 = draw-border-rect fb x y w h body-color
+    in let fb2 = draw-ic-left-pins fb1 x y h pin-color 0 (h / 10)
+    in draw-ic-right-pins fb2 (x + w) y h pin-color 0 (h / 10)
+
+  draw-ic-left-pins : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-ic-left-pins (fb) (x) (y) (h) (color) (i) (count) =
+    if i >= count then fb
+    else let py = y + 5 + i * 10
+    in if py >= y + h - 5 then fb
+    else let fb2 = fb-hline fb (x - 8) x py color
+    in draw-ic-left-pins fb2 x y h color (i + 1) count
+
+  draw-ic-right-pins : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-ic-right-pins (fb) (x) (y) (h) (color) (i) (count) =
+    if i >= count then fb
+    else let py = y + 5 + i * 10
+    in if py >= y + h - 5 then fb
+    else let fb2 = fb-hline fb x (x + 8) py color
+    in draw-ic-right-pins fb2 x y h color (i + 1) count
+
+  draw-resistor : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-resistor (fb) (x) (y) (w) (h) (color) =
+    let fb1 = draw-border-rect fb x y w h color
+    in let fb2 = fb-hline fb1 (x - 8) x (y + h / 2) color
+    in fb-hline fb2 (x + w) (x + w + 8) (y + h / 2) color
+
+  draw-capacitor : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-capacitor (fb) (x) (y) (w) (h) (color) =
+    let mid-x = x + w / 2
+    in let fb1 = fb-line fb mid-x y mid-x (y + h / 2 - 2) color
+    in let fb2 = fb-hline fb1 (x + 2) (x + w - 2) (y + h / 2 - 2) color
+    in let fb3 = fb-hline fb2 (x + 2) (x + w - 2) (y + h / 2 + 2) color
+    in fb-line fb3 mid-x (y + h / 2 + 2) mid-x (y + h) color
+
+  draw-led : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-led (fb) (x) (y) (w) (h) (color) =
+    let cx = x + w / 2
+    in let cy = y + h / 2
+    in let fb1 = fb-circle fb cx cy (w / 2) color
+    in let fb2 = fb-line fb1 (x - 8) cy x cy color
+    in fb-line fb2 (x + w) cy (x + w + 8) cy color
+
+  draw-crystal : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-crystal (fb) (x) (y) (w) (h) (color) =
+    let fb1 = draw-border-rect fb (x + 4) y (w - 8) h color
+    in let fb2 = fb-line fb1 x (y + h / 2) (x + 4) (y + h / 2) color
+    in fb-line fb2 (x + w - 4) (y + h / 2) (x + w) (y + h / 2) color
+
+  draw-button : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-button (fb) (x) (y) (w) (h) (color) =
+    let fb1 = fb-line fb x (y + h / 2) (x + w / 3) (y + h / 2) color
+    in let fb2 = fb-line fb1 (x + w / 3) (y + h / 2) (x + w * 2 / 3) (y + 2) color
+    in fb-line fb2 (x + w * 2 / 3) (y + h / 2) (x + w) (y + h / 2) color
+
+Section: Wire Rendering
+
+  draw-wire : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-wire (fb) (x1) (y1) (x2) (y2) (color) = fb-line fb x1 y1 x2 y2 color
+
+  draw-junction : Framebuf, Integer, Integer, Integer -> Framebuf
+  draw-junction (fb) (x) (y) (color) = fb-circle-filled fb x y 3 color
+
+Section: Label Rendering (placeholder rectangles for text)
+
+  draw-label-box : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  draw-label-box (fb) (x) (y) (char-count) (color) =
+    let w = char-count * 6 + 4
+    in draw-filled-rect fb x (y - 4) w 9 color
+
+Section: Full Demo Schematic Render
+
+  render-demo-schematic : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  render-demo-schematic (fb) (ox) (oy) (cw) (ch) =
+    let fb0 = draw-filled-rect fb ox oy cw ch #1A1A2E
+    in let fb1 = draw-grid fb0 ox oy cw ch 20 #252545
+    in let fb2 = draw-ic-body fb1 (ox + 400) (oy + 200) 120 160 #E8A838 #53E467
+    in let fb3 = draw-ic-body fb2 (ox + 240) (oy + 80) 60 30 #E8A838 #53E467
+    in let fb4 = draw-ic-body fb3 (ox + 200) (oy + 220) 40 30 #E8A838 #53E467
+    in let fb5 = draw-border-rect fb4 (ox + 120) (oy + 220) 60 40 #E8A838
+    in let fb6 = draw-capacitor fb5 (ox + 280) (oy + 120) 16 24 #E8A838
+    in let fb7 = draw-capacitor fb6 (ox + 320) (oy + 120) 16 24 #E8A838
+    in let fb8 = draw-capacitor fb7 (ox + 360) (oy + 120) 16 24 #E8A838
+    in let fb9 = draw-capacitor fb8 (ox + 380) (oy + 440) 16 24 #E8A838
+    in let fb10 = draw-capacitor fb9 (ox + 430) (oy + 440) 16 24 #E8A838
+    in let fb11 = draw-resistor fb10 (ox + 560) (oy + 150) 32 12 #E8A838
+    in let fb12 = draw-resistor fb11 (ox + 620) (oy + 220) 32 12 #E8A838
+    in let fb13 = draw-resistor fb12 (ox + 620) (oy + 260) 32 12 #E8A838
+    in let fb14 = draw-led fb13 (ox + 700) (oy + 220) 20 20 #33CC33
+    in let fb15 = draw-led fb14 (ox + 700) (oy + 260) 20 20 #CC3333
+    in let fb16 = draw-crystal fb15 (ox + 400) (oy + 420) 40 20 #E8A838
+    in let fb17 = draw-button fb16 (ox + 560) (oy + 180) 24 16 #E8A838
+    in let fb18 = draw-wire fb17 (ox + 180) (oy + 235) (ox + 200) (oy + 235) #53E467
+    in let fb19 = draw-wire fb18 (ox + 240) (oy + 235) (ox + 392) (oy + 235) #53E467
+    in let fb20 = draw-wire fb19 (ox + 180) (oy + 245) (ox + 200) (oy + 245) #53E467
+    in let fb21 = draw-wire fb20 (ox + 240) (oy + 245) (ox + 392) (oy + 245) #53E467
+    in let fb22 = draw-wire fb21 (ox + 288) (oy + 95) (ox + 288) (oy + 120) #CC3333
+    in let fb23 = draw-wire fb22 (ox + 328) (oy + 95) (ox + 328) (oy + 120) #CC3333
+    in let fb24 = draw-wire fb23 (ox + 368) (oy + 95) (ox + 368) (oy + 120) #CC3333
+    in let fb25 = draw-wire fb24 (ox + 288) (oy + 144) (ox + 288) (oy + 165) #53E467
+    in let fb26 = draw-wire fb25 (ox + 328) (oy + 144) (ox + 328) (oy + 165) #53E467
+    in let fb27 = draw-wire fb26 (ox + 368) (oy + 144) (ox + 368) (oy + 165) #53E467
+    in let fb28 = draw-wire fb27 (ox + 288) (oy + 165) (ox + 368) (oy + 165) #53E467
+    in let fb29 = draw-junction fb28 (ox + 328) (oy + 165) #53E467
+    in let fb30 = draw-wire fb29 (ox + 520) (oy + 230) (ox + 620) (oy + 226) #53E467
+    in let fb31 = draw-wire fb30 (ox + 520) (oy + 270) (ox + 620) (oy + 266) #53E467
+    in let fb32 = draw-wire fb31 (ox + 652) (oy + 226) (ox + 700) (oy + 230) #53E467
+    in let fb33 = draw-wire fb32 (ox + 652) (oy + 266) (ox + 700) (oy + 270) #53E467
+    in let fb34 = draw-wire fb33 (ox + 520) (oy + 156) (ox + 560) (oy + 156) #53E467
+    in let fb35 = draw-wire fb34 (ox + 592) (oy + 156) (ox + 620) (oy + 156) #CC3333
+    in let fb36 = draw-wire fb35 (ox + 620) (oy + 156) (ox + 620) (oy + 180) #CC3333
+    in let fb37 = draw-wire fb36 (ox + 560) (oy + 188) (ox + 560) (oy + 200) #53E467
+    in let fb38 = draw-junction fb37 (ox + 288) (oy + 95) #CC3333
+    in let fb39 = draw-junction fb38 (ox + 328) (oy + 95) #CC3333
+    in let fb40 = draw-wire fb39 (ox + 288) (oy + 95) (ox + 368) (oy + 95) #CC3333
+    in let fb41 = draw-wire fb40 (ox + 420) (oy + 360) (ox + 420) (oy + 420) #53E467
+    in let fb42 = draw-wire fb41 (ox + 400) (oy + 430) (ox + 380) (oy + 440) #53E467
+    in let fb43 = draw-wire fb42 (ox + 440) (oy + 430) (ox + 430) (oy + 440) #53E467
+    in let fb44 = draw-label-box fb43 (ox + 405) (oy + 188) 11 #53E4E4
+    in let fb45 = draw-label-box fb44 (ox + 108) (oy + 210) 5 #53E4E4
+    in let fb46 = draw-label-box fb45 (ox + 200) (oy + 210) 5 #53E4E4
+    in let fb47 = draw-label-box fb46 (ox + 560) (oy + 140) 4 #53E4E4
+    in let fb48 = draw-label-box fb47 (ox + 625) (oy + 210) 4 #53E4E4
+    in let fb49 = draw-label-box fb48 (ox + 625) (oy + 250) 4 #53E4E4
+    in let fb50 = draw-label-box fb49 (ox + 700) (oy + 210) 4 #53E4E4
+    in let fb51 = draw-label-box fb50 (ox + 700) (oy + 250) 4 #53E4E4
+    in let fb52 = draw-label-box fb51 (ox + 240) (oy + 70) 9 #53E4E4
+    in let fb53 = draw-label-box fb52 (ox + 400) (oy + 410) 5 #53E4E4
+    in let fb54 = draw-label-box fb53 (ox + 50) (oy + 50) 14 #EAEAEA
+    in let fb55 = draw-label-box fb54 (ox + 50) (oy + 65) 26 #888888
+    in fb55
+
+Section: Toolbar Rendering
+
+  render-toolbar : Framebuf, Integer, Integer, Integer -> Framebuf
+  render-toolbar (fb) (x) (y) (w) =
+    let fb1 = draw-filled-rect fb x y w 28 #0F3460
+    in let fb2 = draw-filled-rect fb1 (x + 4) (y + 4) 50 20 #E94560
+    in let fb3 = draw-filled-rect fb2 (x + 58) (y + 4) 40 20 #16213E
+    in let fb4 = draw-filled-rect fb3 (x + 102) (y + 4) 40 20 #16213E
+    in let fb5 = draw-filled-rect fb4 (x + 146) (y + 4) 40 20 #16213E
+    in let fb6 = draw-filled-rect fb5 (x + 200) (y + 4) 3 20 #444466
+    in let fb7 = draw-filled-rect fb6 (x + 210) (y + 4) 40 20 #16213E
+    in let fb8 = draw-filled-rect fb7 (x + 254) (y + 4) 40 20 #16213E
+    in let fb9 = draw-filled-rect fb8 (x + 298) (y + 4) 40 20 #16213E
+    in let fb10 = draw-filled-rect fb9 (x + 342) (y + 4) 40 20 #16213E
+    in fb10
+
+Section: Tab Bar Rendering
+
+  render-tab-bar : Framebuf, Integer, Integer, Integer -> Framebuf
+  render-tab-bar (fb) (x) (y) (w) =
+    let fb1 = draw-filled-rect fb x y w 24 #16213E
+    in let fb2 = draw-filled-rect fb1 (x + 2) (y + 2) 80 20 #1A1A2E
+    in let fb3 = fb-hline fb2 (x + 2) (x + 82) (y + 22) #E94560
+    in let fb4 = draw-filled-rect fb3 (x + 86) (y + 2) 70 20 #0F3460
+    in let fb5 = draw-filled-rect fb4 (x + 160) (y + 2) 80 20 #0F3460
+    in let fb6 = draw-filled-rect fb5 (x + 244) (y + 2) 60 20 #0F3460
+    in let fb7 = draw-filled-rect fb6 (x + 308) (y + 2) 70 20 #0F3460
+    in fb7
+
+Section: Sidebar Rendering
+
+  render-sidebar : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  render-sidebar (fb) (x) (y) (w) (h) =
+    let fb1 = draw-filled-rect fb x y w h #16213E
+    in let fb2 = fb-line fb1 x y x (y + h) #444466
+    in let fb3 = draw-filled-rect fb2 (x + 4) (y + 4) (w - 8) 16 #0F3460
+    in let fb4 = draw-label-box fb3 (x + 8) (y + 10) 10 #EAEAEA
+    in let fb5 = render-sidebar-items fb4 x (y + 28) w 0
+    in fb5
+
+  render-sidebar-items : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  render-sidebar-items (fb) (x) (y) (w) (i) =
+    if i >= 16 then fb
+    else let item-y = y + i * 18
+    in let color = if i == 0 then #E94560 else #888888
+    in let fb2 = draw-label-box fb (x + 8) (item-y + 6) 12 color
+    in render-sidebar-items fb2 x y w (i + 1)
+
+Section: Status Bar Rendering
+
+  render-status-bar-live : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  render-status-bar-live (fb) (x) (y) (w) (wx) (wy) (zoom) (grid) =
+    let fb1 = draw-filled-rect fb x y w 20 col-toolbar
+    in let fb2 = draw-status-text fb1 (x + 4) (y + 3) "X:" wx col-wire
+    in let fb3 = draw-status-text fb2 (x + 80) (y + 3) "Y:" wy col-wire
+    in let fb4 = draw-status-label fb3 (x + 160) (y + 3) "Grid:" grid col-text-dim
+    in let fb5 = draw-status-label fb4 (x + 250) (y + 3) "Zoom:" zoom col-text-dim
+    in let fb6 = draw-status-tool fb5 (x + 340) (y + 3) "Select" col-accent
+    in let fb7 = draw-filled-rect fb6 (x + w - 80) (y + 4) 8 12 #33CC33
+    in let fb8 = draw-label-box fb7 (x + w - 68) (y + 10) 5 col-text
+    in fb8
+
+  draw-status-text : Framebuf, Integer, Integer, Text, Integer, Integer -> Framebuf
+  draw-status-text (fb) (x) (y) (prefix) (val) (color) =
+    let label-len = text-length prefix + 6
+    in draw-label-box fb x (y + 7) label-len color
+
+  draw-status-label : Framebuf, Integer, Integer, Text, Integer, Integer -> Framebuf
+  draw-status-label (fb) (x) (y) (prefix) (val) (color) =
+    let label-len = text-length prefix + 4
+    in draw-label-box fb x (y + 7) label-len color
+
+  draw-status-tool : Framebuf, Integer, Integer, Text, Integer -> Framebuf
+  draw-status-tool (fb) (x) (y) (tool-name) (color) =
+    draw-label-box fb x (y + 7) (text-length tool-name) color
+
+Section: Crosshair
+
+  draw-crosshair : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-crosshair (fb) (mx) (my) (cx) (cy) (cw) (ch) (color) =
+    if mx < cx then fb
+    else if mx >= cx + cw then fb
+    else if my < cy then fb
+    else if my >= cy + ch then fb
+    else let fb1 = draw-crosshair-h fb cx (cx + cw - 1) my mx color
+    in draw-crosshair-v fb1 mx cy (cy + ch - 1) my color
+
+  draw-crosshair-h : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-crosshair-h (fb) (x0) (x1) (y) (gap-x) (color) =
+    if x0 > x1 then fb
+    else let skip = if x0 >= gap-x - 4 then if x0 <= gap-x + 4 then 1 else 0 else 0
+    in let fb2 = if skip == 1 then fb else fb-set fb x0 y color
+    in draw-crosshair-h fb2 (x0 + 1) x1 y gap-x color
+
+  draw-crosshair-v : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  draw-crosshair-v (fb) (x) (y0) (y1) (gap-y) (color) =
+    if y0 > y1 then fb
+    else let skip = if y0 >= gap-y - 4 then if y0 <= gap-y + 4 then 1 else 0 else 0
+    in let fb2 = if skip == 1 then fb else fb-set fb x y0 color
+    in draw-crosshair-v fb2 x (y0 + 1) y1 gap-y color
+
+Section: Full UI Render
+
+  render-circuits-ui : Integer, Integer -> Framebuf
+  render-circuits-ui (w) (h) =
+    let fb = fb-new w h col-bg
+    in let fb1 = render-toolbar fb 0 0 w
+    in let fb2 = render-tab-bar fb1 0 28 w
+    in let canvas-x = 0
+    in let canvas-y = 52
+    in let canvas-w = w - 200
+    in let canvas-h = h - 52 - 20
+    in let fb3 = render-demo-schematic fb2 canvas-x canvas-y canvas-w canvas-h
+    in let fb4 = render-sidebar fb3 (w - 200) 52 200 (h - 52 - 20)
+    in let fb5 = render-status-bar-live fb4 0 (h - 20) w 0 0 100 20
+    in fb5
+
+  render-circuits-interactive : Integer, Integer, ViewPort, RawInput -> Framebuf
+  render-circuits-interactive (w) (h) (vp) (inp) =
+    let fb = fb-new w h col-bg
+    in let fb1 = render-toolbar fb 0 0 w
+    in let fb2 = render-tab-bar fb1 0 28 w
+    in let cx = vp.vp-canvas-x
+    in let cy = vp.vp-canvas-y
+    in let cw = vp.vp-canvas-w
+    in let ch = vp.vp-canvas-h
+    in let fb3 = render-demo-schematic fb2 (cx + vp.vp-pan-x) (cy + vp.vp-pan-y) cw ch
+    in let fb4 = render-sidebar fb3 (w - sidebar-w) 52 sidebar-w (h - 52 - status-h)
+    in let wx = vp-screen-to-world-x vp (inp.ri-mx)
+    in let wy = vp-screen-to-world-y vp (inp.ri-my)
+    in let fb5 = render-status-bar-live fb4 0 (h - status-h) w wx wy (vp.vp-zoom) (vp.vp-grid)
+    in let fb6 = draw-crosshair fb5 (inp.ri-mx) (inp.ri-my) cx cy cw ch #FFFFFF
+    in fb6

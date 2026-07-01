@@ -1,0 +1,68 @@
+Chapter: ConcatCodexSelfScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates concat-codex-self.ps1 from the Shell DSL.
+ Concatenates codex/ source with quire-prefixed chapters
+ and cited foreword chapters preloaded, topologically sorted.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  concat-params : List ShellParam = [sh-param "CodexDir" SptString, sh-param "OutFile" SptString]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScIf (SeNot (SeVar "CodexDir")) [ScAssign "CodexDir" (SeRaw "Join-Path $Repo 'codex\\compiler'")] [], ScAssign "CodexDir" (SeRaw "(Resolve-Path $CodexDir).Path"), ScAssign "ForewordDir" (SeRaw "Join-Path $Repo 'codex\\foreword\\core'"), ScBlank, ScDotNetCallAssign "lines" "System.Collections.Generic.List[string]" "new" []]
+
+Section: S02 -- Add-WithQuire Helper
+
+  s02 : List ShellCmd = [ScRaw "function Add-WithQuire {", ScRaw "    param([string]$Path, [string]$Quire)", ScRaw "    $renamed = $false", ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($Path)) {", ScRaw "        if ((-not $renamed) -and $Quire -and $l -match '^Chapter:\\s*(.+?)\\s*$') {", ScRaw "            $lines.Add(\"Chapter: ${Quire}--$($matches[1])\")", ScRaw "            $renamed = $true", ScRaw "        } else {", ScRaw "            $lines.Add($l)", ScRaw "        }", ScRaw "    }", ScRaw "    $lines.Add('')", ScRaw "    $lines.Add('')", ScRaw "}"]
+
+Section: S03 -- Cited Forewords Scan
+
+  s03 : List ShellCmd = [ScComment "1. Cited forewords -- scan compiler source, transitively resolve", ScAssign "citePat" (SeLit "^\\s*cites\\s+Foreword\\s+chapter\\s+([A-Za-z_][A-Za-z0-9_-]*)"), ScDotNetCallAssign "queue" "System.Collections.Generic.Queue[string]" "new" [], ScRaw "Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object {", ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($_.FullName)) {", ScRaw "        if ($l -match $citePat) { $queue.Enqueue($matches[1]) }", ScRaw "    }", ScRaw "}"]
+
+Section: S04 -- Foreword Transitive Resolution
+
+  s04 : List ShellCmd = [ScDotNetCallAssign "seen" "System.Collections.Generic.HashSet[string]" "new" [], ScAssign "ordered" (SeRaw "@()"), ScRaw "while ($queue.Count -gt 0) {", ScRaw "    $fw = $queue.Dequeue()", ScRaw "    if (-not $seen.Add($fw)) { continue }", ScRaw "    $fwPath = Join-Path $ForewordDir \"$fw.codex\"", ScRaw "    if (-not (Test-Path -PathType Leaf $fwPath)) { continue }", ScRaw "    $fwLines = [System.IO.File]::ReadAllLines($fwPath)", ScRaw "    foreach ($l in $fwLines) {", ScRaw "        if ($l -match $citePat) { $queue.Enqueue($matches[1]) }", ScRaw "    }", ScRaw "    $ordered += @{ Name = $fw; Path = $fwPath }", ScRaw "}", ScRaw "[array]::Reverse($ordered)", ScDotNetCallAssign "emitted" "System.Collections.Generic.HashSet[string]" "new" [], ScForEach "entry" (SeVar "ordered") [ScIf (SeNot (SeRaw "$emitted.Add($entry.Name)")) [ScContinue] [], ScRaw "Add-WithQuire -Path $entry.Path -Quire 'Foreword'"]]
+
+Section: S05 -- Name Comparer
+
+  s05 : List ShellCmd = [ScComment "Ordinal name comparer for FileInfo / DirectoryInfo arrays", ScRaw "$nameCmp = [System.Collections.Generic.Comparer[object]]::Create({", ScRaw "    param($a, $b)", ScRaw "    [System.StringComparer]::Ordinal.Compare($a.Name, $b.Name)", ScRaw "})"]
+
+Section: S06 -- Sort-ByDeps Function
+
+  s06 : List ShellCmd = [ScRaw "function Sort-ByDeps {", ScRaw "    param([System.IO.FileInfo[]]$Files, [string]$QuireName)", ScRaw "    if ($Files.Count -le 1) { return $Files }", ScRaw "    $internalCite = \"^\\s*cites\\s+($QuireName|Codex)\\s+chapter\\s+(.+?)(?:\\s*\\(|$)\"", ScRaw "    $chapterPat = '^Chapter:\\s*(.+?)\\s*$'", ScRaw "    $chapterToStem = @{}", ScRaw "    $stemToFile = @{}", ScRaw "    $deps = @{}", ScRaw "    foreach ($f in $Files) {", ScRaw "        $stem = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)", ScRaw "        $stemToFile[$stem] = $f", ScRaw "        $firstLine = (Get-Content -TotalCount 1 $f.FullName)", ScRaw "        if ($firstLine -match $chapterPat) {", ScRaw "            $cname = $matches[1]", ScRaw "            if (-not $chapterToStem.ContainsKey($cname)) { $chapterToStem[$cname] = $stem }", ScRaw "        }", ScRaw "        $deps[$stem] = @()", ScRaw "        foreach ($l in [System.IO.File]::ReadAllLines($f.FullName)) {", ScRaw "            if ($l -match $internalCite) { $deps[$stem] += $matches[2] }", ScRaw "        }", ScRaw "    }"]
+
+  s06b : List ShellCmd = [ScRaw "    $result = [System.Collections.Generic.List[System.IO.FileInfo]]::new()", ScRaw "    $visited = [System.Collections.Generic.HashSet[string]]::new()", ScRaw "    $visiting = [System.Collections.Generic.HashSet[string]]::new()", ScRaw "    function Visit([string]$Stem) {", ScRaw "        if ($visited.Contains($Stem)) { return }", ScRaw "        if ($visiting.Contains($Stem)) { return }", ScRaw "        [void]$visiting.Add($Stem)", ScRaw "        foreach ($citedChapter in $deps[$Stem]) {", ScRaw "            $depStem = $chapterToStem[$citedChapter]", ScRaw "            if ($depStem -and $stemToFile.ContainsKey($depStem)) { Visit $depStem }", ScRaw "        }", ScRaw "        [void]$visiting.Remove($Stem)", ScRaw "        [void]$visited.Add($Stem)", ScRaw "        $result.Add($stemToFile[$Stem])", ScRaw "    }", ScRaw "    $sorted = @($stemToFile.Keys) | Sort-Object", ScRaw "    foreach ($stem in $sorted) { Visit $stem }", ScRaw "    return $result.ToArray()", ScRaw "}"]
+
+Section: S07 -- Root Files
+
+  s07 : List ShellCmd = [ScComment "2. Root .codex (depth 0), sorted ordinal", ScAssign "rootFiles" (SeRaw "@(Get-ChildItem $CodexDir -Filter '*.codex' -File)"), ScRaw "[Array]::Sort($rootFiles, $nameCmp)", ScForEach "f" (SeVar "rootFiles") [ScRaw "Add-WithQuire -Path $f.FullName -Quire ''"]]
+
+Section: S08 -- Subdirectory Files
+
+  s08 : List ShellCmd = [ScComment "3. Subdirs (depth 1), each .codex prefixed with subdir name", ScAssign "subDirs" (SeRaw "@(Get-ChildItem $CodexDir -Directory)"), ScRaw "[Array]::Sort($subDirs, $nameCmp)", ScForEach "d" (SeVar "subDirs") [ScAssign "quire" (SeProperty (SeVar "d") "Name"), ScAssign "subFiles" (SeRaw "@(Get-ChildItem $d.FullName -Filter '*.codex' -File)"), ScRaw "[Array]::Sort($subFiles, $nameCmp)", ScAssign "subFiles" (SeRaw "@($subFiles | Where-Object { $_.Name -match 'State|Encoder' }) + @($subFiles | Where-Object { $_.Name -notmatch 'State|Encoder' })"), ScForEach "f" (SeVar "subFiles") [ScRaw "Add-WithQuire -Path $f.FullName -Quire $quire"]]]
+
+Section: S09 -- Output
+
+  s09 : List ShellCmd = [ScAssign "body" (SeRaw "($lines -join \"`n\") + \"`n\""), ScIf (SeVar "OutFile") [ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeVar "body", SeRaw "[System.Text.UTF8Encoding]::new($false)"]] [ScRaw "[Console]::Out.Write($body)"]]
+
+Section: Assembly
+
+  concat-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScSequence s06b, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09]
+
+  concat-script : ShellScript = sh-script "concat-codex-self" "Concatenate codex/ source with quire-prefixed chapters and cited foreword chapters preloaded" concat-params concat-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell concat-script)
+  end
+
+Page 1

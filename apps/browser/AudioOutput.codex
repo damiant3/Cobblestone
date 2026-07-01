@@ -1,0 +1,250 @@
+Chapter: AudioOutput
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ Intel HDA audio output driver for the browser. Writes decoded
+ PCM samples to the Intel HDA controller emulated by codex-vm.
+
+ The HDA controller uses memory-mapped I/O at a PCI BAR address.
+ Audio output requires:
+   1. Controller reset and initialization
+   2. Codec discovery via the CORB/RIRB command interface
+   3. Configure an output stream (48kHz, 16-bit stereo)
+   4. Set up a Buffer Descriptor List (BDL) for DMA
+   5. Write PCM samples to the DMA buffer and advance the pointer
+
+ codex-vm simplifies this: the HDA controller auto-configures
+ codec 0 with a single output converter, and the BDL can be a
+ single buffer. The controller DMA-reads PCM and outputs via
+ the host's waveOut API.
+
+Section: Constants
+
+ HDA register offsets from the BAR base address.
+
+  hda-bar-base : Integer
+  hda-bar-base = #FEBD0000
+
+  hda-gcap : Integer
+  hda-gcap = 0
+
+  hda-gctl : Integer
+  hda-gctl = 8
+
+  hda-statests : Integer
+  hda-statests = 14
+
+  hda-corblbase : Integer
+  hda-corblbase = 64
+
+  hda-corbwp : Integer
+  hda-corbwp = 72
+
+  hda-corbrp : Integer
+  hda-corbrp = 74
+
+  hda-rirblbase : Integer
+  hda-rirblbase = 80
+
+  hda-rirbwp : Integer
+  hda-rirbwp = 88
+
+  hda-sd0ctl : Integer
+  hda-sd0ctl = 128
+
+  hda-sd0sts : Integer
+  hda-sd0sts = 131
+
+  hda-sd0lpib : Integer
+  hda-sd0lpib = 132
+
+  hda-sd0cbl : Integer
+  hda-sd0cbl = 136
+
+  hda-sd0lvi : Integer
+  hda-sd0lvi = 140
+
+  hda-sd0fmt : Integer
+  hda-sd0fmt = 146
+
+  hda-sd0bdpl : Integer
+  hda-sd0bdpl = 152
+
+  hda-sd0bdpu : Integer
+  hda-sd0bdpu = 156
+
+Section: Audio Format Constants
+
+  hda-sample-rate : Integer
+  hda-sample-rate = 48000
+
+  hda-bits-per-sample : Integer
+  hda-bits-per-sample = 16
+
+  hda-channels : Integer
+  hda-channels = 2
+
+  hda-bytes-per-sample : Integer
+  hda-bytes-per-sample = 4
+
+  hda-buffer-size : Integer
+  hda-buffer-size = 65536
+
+  hda-bdl-entries : Integer
+  hda-bdl-entries = 4
+
+Section: Types
+
+  AudioOutputState = record {
+    ao-initialized : Boolean,
+    ao-bar-base    : Integer,
+    ao-buffer-addr : Integer,
+    ao-bdl-addr    : Integer,
+    ao-write-pos   : Integer,
+    ao-playing     : Boolean,
+    ao-volume      : Integer
+  }
+
+Section: Initialization
+
+  audio-output-new : AudioOutputState
+  audio-output-new =
+    AudioOutputState {
+      ao-initialized = False,
+      ao-bar-base = hda-bar-base,
+      ao-buffer-addr = 0,
+      ao-bdl-addr = 0,
+      ao-write-pos = 0,
+      ao-playing = False,
+      ao-volume = 80
+    }
+
+  audio-init : AudioOutputState -> AudioOutputState
+  audio-init (ao) =
+    let reset = hda-reset ao.ao-bar-base
+    in let buf-addr = hda-alloc-buffer hda-buffer-size
+    in let bdl-addr = hda-alloc-buffer (hda-bdl-entries * 16)
+    in let setup = hda-setup-stream ao.ao-bar-base buf-addr bdl-addr
+    in __record-set (__record-set (__record-set (__record-set ao
+      "ao-initialized" True)
+      "ao-buffer-addr" buf-addr)
+      "ao-bdl-addr" bdl-addr)
+      "ao-write-pos" 0
+
+Section: HDA Register Access
+
+  hda-read-32 : Integer, Integer -> Integer
+  hda-read-32 (bar) (offset) =
+    peek-32 bar offset
+
+  hda-write-32 : Integer, Integer, Integer -> Integer
+  hda-write-32 (bar) (offset) (val) =
+    poke-32 bar offset val
+
+  hda-read-16 : Integer, Integer -> Integer
+  hda-read-16 (bar) (offset) =
+    bit-and (peek-32 bar offset) 65535
+
+  hda-write-16 : Integer, Integer, Integer -> Integer
+  hda-write-16 (bar) (offset) (val) =
+    poke-32 bar offset val
+
+Section: Controller Operations
+
+  hda-reset : Integer -> Integer
+  hda-reset (bar) =
+    let w1 = hda-write-32 bar hda-gctl 0
+    in let w2 = hda-write-32 bar hda-gctl 1
+    in w1 + w2
+
+  hda-alloc-buffer : Integer -> Integer
+  hda-alloc-buffer (size) =
+    __heap-advance size
+
+  hda-setup-stream : Integer, Integer, Integer -> Integer
+  hda-setup-stream (bar) (buf-addr) (bdl-addr) =
+    let w1 = hda-setup-bdl bdl-addr buf-addr
+    in let w2 = hda-write-32 bar hda-sd0bdpl bdl-addr
+    in let w3 = hda-write-32 bar hda-sd0bdpu 0
+    in let w4 = hda-write-32 bar hda-sd0cbl hda-buffer-size
+    in let w5 = hda-write-16 bar hda-sd0lvi (hda-bdl-entries - 1)
+    in let fmt = hda-format-48k-16bit-stereo
+    in let w6 = hda-write-16 bar hda-sd0fmt fmt
+    in w1 + w2 + w3 + w4 + w5 + w6
+
+  hda-setup-bdl : Integer, Integer -> Integer
+  hda-setup-bdl (bdl-addr) (buf-addr) =
+    let chunk-size = hda-buffer-size / hda-bdl-entries
+    in hda-setup-bdl-entry bdl-addr buf-addr chunk-size 0
+
+  hda-setup-bdl-entry : Integer, Integer, Integer, Integer -> Integer
+  hda-setup-bdl-entry (bdl-addr) (buf-addr) (chunk-size) (idx) =
+    if idx >= hda-bdl-entries then 0
+    else let entry-addr = bdl-addr + idx * 16
+    in let buf-offset = buf-addr + idx * chunk-size
+    in let w1 = poke-32 entry-addr 0 buf-offset
+    in let w2 = poke-32 entry-addr 4 0
+    in let w3 = poke-32 entry-addr 8 chunk-size
+    in let w4 = poke-32 entry-addr 12 1
+    in hda-setup-bdl-entry bdl-addr buf-addr chunk-size (idx + 1)
+
+  hda-format-48k-16bit-stereo : Integer
+  hda-format-48k-16bit-stereo = 17
+
+Section: PCM Output
+
+  audio-write-pcm : AudioOutputState, List Integer -> AudioOutputState
+  audio-write-pcm (ao) (samples) =
+    if ao.ao-initialized == False then ao
+    else let written = write-pcm-loop ao.ao-buffer-addr ao.ao-write-pos samples 0 (list-length samples) hda-buffer-size
+    in let new-pos = int-mod (ao.ao-write-pos + list-length samples * 2) hda-buffer-size
+    in __record-set ao "ao-write-pos" new-pos
+
+  write-pcm-loop : Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
+  write-pcm-loop (buf-addr) (write-pos) (samples) (idx) (count) (buf-size) =
+    if idx >= count then 0
+    else let sample = list-at samples idx
+    in let offset = int-mod (write-pos + idx * 2) buf-size
+    in let lo = int-mod sample 256
+    in let hi = int-mod (sample / 256) 256
+    in let w1 = poke-byte (buf-addr + offset) 0 lo
+    in let w2 = poke-byte (buf-addr + offset + 1) 0 hi
+    in write-pcm-loop buf-addr write-pos samples (idx + 1) count buf-size
+
+Section: Stream Control
+
+  audio-start : AudioOutputState -> AudioOutputState
+  audio-start (ao) =
+    if ao.ao-initialized == False then ao
+    else let w = hda-write-32 ao.ao-bar-base hda-sd0ctl 2
+    in __record-set ao "ao-playing" True
+
+  audio-stop : AudioOutputState -> AudioOutputState
+  audio-stop (ao) =
+    let w = hda-write-32 ao.ao-bar-base hda-sd0ctl 0
+    in __record-set ao "ao-playing" False
+
+  audio-set-volume : AudioOutputState, Integer -> AudioOutputState
+  audio-set-volume (ao) (vol) =
+    __record-set ao "ao-volume" (clamp-vol vol)
+
+  clamp-vol : Integer -> Integer
+  clamp-vol (v) =
+    if v < 0 then 0 else if v > 100 then 100 else v
+
+Section: Queries
+
+  audio-is-playing : AudioOutputState -> Boolean
+  audio-is-playing (ao) = ao.ao-playing
+
+  audio-samples-per-ms : Integer
+  audio-samples-per-ms = hda-sample-rate / 1000
+
+  audio-buffer-ms : Integer
+  audio-buffer-ms = hda-buffer-size / hda-bytes-per-sample / audio-samples-per-ms
+
+  format-audio-output : AudioOutputState -> Text
+  format-audio-output (ao) =
+    if ao.ao-initialized
+    then "HDA: 48kHz 16-bit stereo, buffer=" & show audio-buffer-ms & "ms"
+    else "HDA: not initialized"

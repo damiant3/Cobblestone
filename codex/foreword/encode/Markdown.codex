@@ -1,0 +1,127 @@
+Chapter: Markdown
+  cites Foreword chapter Maybe
+
+ Markdown parser. Converts Markdown text to a structured document
+ tree. Supports headings, bold, italic, code, links, lists, and
+ paragraphs. Output is a list of MdBlock nodes.
+
+ We say:
+
+Section: Block Types
+  MdBlock =
+    | MdHeading (Integer) (Text)
+    | MdParagraph (Text)
+    | MdCode (Text) (Text)
+    | MdListItem (Integer) (Text)
+    | MdHorizontalRule
+    | MdBlockquote (Text)
+    | MdBlank
+
+Section: Parsing
+  md-parse : Text -> List MdBlock
+  md-parse (input) =
+    let lines = text-split input "\n"
+    in md-parse-lines lines 0 (list-length lines) []
+
+  md-parse-lines : List Text, Integer, Integer, List MdBlock -> List MdBlock
+  md-parse-lines (lines) (i) (n) (acc) =
+    if i >= n then acc
+    else let line = list-at lines i
+    in let block = md-parse-line line
+    in md-parse-lines lines (i + 1) n (list-push acc block)
+
+  md-parse-line : Text -> MdBlock
+  md-parse-line (line) =
+    let len = text-length line
+    in if len == 0 then MdBlank
+    else let first = char-code (char-at line 0)
+    in if first == 83 then md-parse-heading line len
+    else if first == 73 then md-parse-maybe-hr line len
+    else if first == 80 then md-parse-maybe-blockquote line len
+    else if first == 65 then md-parse-maybe-list line len
+    else md-parse-maybe-code line len first
+
+  md-parse-heading : Text, Integer -> MdBlock
+  md-parse-heading (line) (len) =
+    let level = md-count-prefix line 83 0 len
+    in if level >= 1 then if level <= 6 then
+      let text = md-trim-start line (level + 1) len
+      in MdHeading level text
+    else MdParagraph line
+    else MdParagraph line
+
+  md-parse-maybe-hr : Text, Integer -> MdBlock
+  md-parse-maybe-hr (line) (len) =
+    if len >= 3 then
+      let dashes = md-count-prefix line 73 0 len
+      in if dashes >= 3 then MdHorizontalRule
+      else MdParagraph line
+    else MdParagraph line
+
+  md-parse-maybe-blockquote : Text, Integer -> MdBlock
+  md-parse-maybe-blockquote (line) (len) =
+    if len >= 2 then let text = md-trim-start line 2 len
+      in MdBlockquote text
+    else MdParagraph line
+
+  md-parse-maybe-list : Text, Integer -> MdBlock
+  md-parse-maybe-list (line) (len) =
+    if len >= 2 then let second = char-code (char-at line 1)
+      in if second == 2 then MdListItem 0 (md-trim-start line 2 len)
+      else MdParagraph line
+    else MdParagraph line
+
+  md-parse-maybe-code : Text, Integer, Integer -> MdBlock
+  md-parse-maybe-code (line) (len) (first) =
+    if first == 93 then if len >= 3 then
+      let ticks = md-count-prefix line 93 0 len
+      in if ticks >= 3 then MdCode (md-trim-start line ticks len) ""
+      else MdParagraph line
+    else MdParagraph line
+    else MdParagraph line
+
+Section: Helpers
+  md-count-prefix : Text, Integer, Integer, Integer -> Integer
+  md-count-prefix (line) (cce-code) (i) (len) =
+    if i >= len then i
+    else if char-code (char-at line i) == cce-code then md-count-prefix line cce-code (i + 1) len
+    else i
+
+  md-trim-start : Text, Integer, Integer -> Text
+  md-trim-start (line) (start) (len) = substring line start (len - start)
+
+Section: Rendering (back to plain text with structure markers)
+  md-render : List MdBlock -> Text
+  md-render (blocks) = md-render-loop blocks 0 (list-length blocks) ""
+
+  md-render-loop : List MdBlock, Integer, Integer, Text -> Text
+  md-render-loop (blocks) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else "\n"
+    in md-render-loop blocks (i + 1) n (acc & sep & md-render-block (list-at blocks i))
+
+  md-render-block : MdBlock -> Text
+  md-render-block (block) = when block
+    is MdHeading (level) (text) -> "[H" & show level & "] " & text
+    is MdParagraph (text) -> text
+    is MdCode (lang) (code) -> "[CODE " & lang & "]"
+    is MdListItem (indent) (text) -> "  * " & text
+    is MdHorizontalRule -> "---"
+    is MdBlockquote (text) -> "  > " & text
+    is MdBlank -> ""
+
+Section: Queries
+  md-count-headings : List MdBlock -> Integer
+  md-count-headings (blocks) = md-ch-loop blocks 0 (list-length blocks) 0
+
+  md-ch-loop : List MdBlock, Integer, Integer, Integer -> Integer
+  md-ch-loop (blocks) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = list-at blocks i
+    in let is-h = when b is MdHeading (l) (t) -> 1 is MdParagraph (t) -> 0 is MdCode (l) (c) -> 0 is MdListItem (ind) (t) -> 0 is MdHorizontalRule -> 0 is MdBlockquote (t) -> 0 is MdBlank -> 0
+    in md-ch-loop blocks (i + 1) n (acc + is-h)
+
+  md-block-count : List MdBlock -> Integer
+  md-block-count (blocks) = list-length blocks
+
+Page 1

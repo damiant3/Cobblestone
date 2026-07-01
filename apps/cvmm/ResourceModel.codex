@@ -1,0 +1,336 @@
+Chapter: ResourceModel
+  cites Cvmm chapter CvmmTypes
+  cites Foreword chapter Maybe
+
+ The abstract resource lifecycle. Every managed entity in the system
+ is a Resource: files, disks, USB devices, services, ports, fleet
+ nodes, servers, deployments. A Resource has identity, status, a set
+ of capabilities (what you can do to it), and a set of properties
+ (what you can read from it). Managers are just typed collections of
+ Resources with a domain-specific query surface.
+
+ This chapter is the foundation. The individual managers cite it and
+ specialize it. The monitor binds to it. The shell renders it.
+
+Section: Property
+
+  PropValue =
+    | PvText (Text)
+    | PvInt (Integer)
+    | PvBool (Boolean)
+    | PvBytes (ByteSize)
+    | PvDuration (Integer)
+    | PvPercent (Integer)
+    | PvStatus (ResourceStatus)
+    | PvNone
+
+  pv-to-text : PropValue -> Text
+  pv-to-text (v) = when v
+    is PvText (s) -> s
+    is PvInt (n) -> show n
+    is PvBool (b) -> if b then "true" else "false"
+    is PvBytes (sz) -> format-bytes sz
+    is PvDuration (secs) -> format-uptime (Uptime { ut-seconds = secs })
+    is PvPercent (n) -> show n & "%"
+    is PvStatus (s) -> status-label s
+    is PvNone -> ""
+
+  pv-to-int : PropValue -> Integer
+  pv-to-int (v) = when v
+    is PvInt (n) -> n
+    is PvPercent (n) -> n
+    is PvBytes (sz) -> sz.bs-bytes
+    is PvDuration (s) -> s
+    is PvBool (b) -> if b then 1 else 0
+    is otherwise -> 0
+
+  pv-is-truthy : PropValue -> Boolean
+  pv-is-truthy (v) = when v
+    is PvBool (b) -> b
+    is PvInt (n) -> n /= 0
+    is PvText (s) -> text-length s > 0
+    is PvNone -> False
+    is otherwise -> True
+
+  Property = record {
+    prop-key : Text,
+    prop-label : Text,
+    prop-value : PropValue,
+    prop-unit : Text,
+    prop-editable : Boolean
+  }
+
+  prop-new : Text, Text, PropValue -> Property
+  prop-new (key) (label) (val) = Property {
+    prop-key = key,
+    prop-label = label,
+    prop-value = val,
+    prop-unit = "",
+    prop-editable = False
+  }
+
+  prop-editable : Text, Text, PropValue -> Property
+  prop-editable (key) (label) (val) = Property {
+    prop-key = key,
+    prop-label = label,
+    prop-value = val,
+    prop-unit = "",
+    prop-editable = True
+  }
+
+  prop-with-unit : Property, Text -> Property
+  prop-with-unit (p) (metric-unit) = __record-set p "prop-unit" metric-unit
+
+Section: Capability
+
+ The resource-action capability set. Named ResourceCap because the
+ Trust quire's agent protocol owns the name Capability.
+
+  ResourceCap =
+    | CapStart
+    | CapStop
+    | CapRestart
+    | CapPause
+    | CapResume
+    | CapKill
+    | CapDelete
+    | CapRename
+    | CapMount
+    | CapUnmount
+    | CapFormat
+    | CapAttach
+    | CapDetach
+    | CapDeploy
+    | CapRollback
+    | CapEnable
+    | CapDisable
+    | CapConfigure
+    | CapInspect
+    | CapExport
+    | CapCustom (Text)
+
+  cap-label : ResourceCap -> Text
+  cap-label (c) = when c
+    is CapStart -> "Start"
+    is CapStop -> "Stop"
+    is CapRestart -> "Restart"
+    is CapPause -> "Pause"
+    is CapResume -> "Resume"
+    is CapKill -> "Kill"
+    is CapDelete -> "Delete"
+    is CapRename -> "Rename"
+    is CapMount -> "Mount"
+    is CapUnmount -> "Unmount"
+    is CapFormat -> "Format"
+    is CapAttach -> "Attach"
+    is CapDetach -> "Detach"
+    is CapDeploy -> "Deploy"
+    is CapRollback -> "Rollback"
+    is CapEnable -> "Enable"
+    is CapDisable -> "Disable"
+    is CapConfigure -> "Configure"
+    is CapInspect -> "Inspect"
+    is CapExport -> "Export"
+    is CapCustom (name) -> name
+
+  cap-is-destructive : ResourceCap -> Boolean
+  cap-is-destructive (c) = when c
+    is CapDelete -> True
+    is CapFormat -> True
+    is CapKill -> True
+    is otherwise -> False
+
+  cap-needs-confirm : ResourceCap -> Boolean
+  cap-needs-confirm (c) = when c
+    is CapDelete -> True
+    is CapFormat -> True
+    is CapKill -> True
+    is CapStop -> True
+    is CapRollback -> True
+    is otherwise -> False
+
+Section: Resource
+
+  Resource = record {
+    res-id : Text,
+    res-name : Text,
+    res-kind : Text,
+    res-status : ResourceStatus,
+    res-properties : List Property,
+    res-prop-count : Integer,
+    res-capabilities : List ResourceCap,
+    res-cap-count : Integer,
+    res-parent-id : Text,
+    res-children-count : Integer,
+    res-icon : Text,
+    res-category : Text
+  }
+
+  resource-new : Text, Text, Text -> Resource
+  resource-new (id) (name) (kind) = Resource {
+    res-id = id,
+    res-name = name,
+    res-kind = kind,
+    res-status = StatusUnknown,
+    res-properties = [],
+    res-prop-count = 0,
+    res-capabilities = [],
+    res-cap-count = 0,
+    res-parent-id = "",
+    res-children-count = 0,
+    res-icon = "",
+    res-category = kind
+  }
+
+  res-set-status : Resource, ResourceStatus -> Resource
+  res-set-status (r) (s) = __record-set r "res-status" s
+
+  res-add-prop : Resource, Property -> Resource
+  res-add-prop (r) (p) =
+    __record-set (__record-set r "res-properties" (list-push (r.res-properties) p)) "res-prop-count" (r.res-prop-count + 1)
+
+  res-add-cap : Resource, ResourceCap -> Resource
+  res-add-cap (r) (c) =
+    __record-set (__record-set r "res-capabilities" (list-push (r.res-capabilities) c)) "res-cap-count" (r.res-cap-count + 1)
+
+  res-get-prop : Resource, Text -> PropValue
+  res-get-prop (r) (key) = res-prop-lookup (r.res-properties) key 0 (r.res-prop-count)
+
+  res-prop-lookup : List Property, Text, Integer, Integer -> PropValue
+  res-prop-lookup (props) (key) (i) (n) =
+    if i >= n then PvNone
+    else let p = list-at props i
+    in if p.prop-key == key then p.prop-value
+    else res-prop-lookup props key (i + 1) n
+
+  res-set-prop : Resource, Text, PropValue -> Resource
+  res-set-prop (r) (key) (val) =
+    let updated = res-prop-set-loop (r.res-properties) key val 0 (r.res-prop-count) []
+    in __record-set r "res-properties" updated
+
+  res-prop-set-loop : List Property, Text, PropValue, Integer, Integer, List Property -> List Property
+  res-prop-set-loop (props) (key) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at props i
+    in if p.prop-key == key then res-prop-set-loop props key val (i + 1) n (list-push acc (__record-set p "prop-value" val))
+    else res-prop-set-loop props key val (i + 1) n (list-push acc p)
+
+  res-has-cap : Resource, ResourceCap -> Boolean
+  res-has-cap (r) (target) =
+    let target-label = cap-label target
+    in res-cap-search (r.res-capabilities) target-label 0 (r.res-cap-count)
+
+  res-cap-search : List ResourceCap, Text, Integer, Integer -> Boolean
+  res-cap-search (caps) (target) (i) (n) =
+    if i >= n then False
+    else if cap-label (list-at caps i) == target then True
+    else res-cap-search caps target (i + 1) n
+
+Section: Resource Collection
+
+  ResourceCollection = record {
+    rc-kind : Text,
+    rc-resources : List Resource,
+    rc-count : Integer,
+    rc-selected : Text
+  }
+
+  rc-new : Text -> ResourceCollection
+  rc-new (kind) = ResourceCollection {
+    rc-kind = kind,
+    rc-resources = [],
+    rc-count = 0,
+    rc-selected = ""
+  }
+
+  rc-add : ResourceCollection, Resource -> ResourceCollection
+  rc-add (rc) (r) =
+    __record-set (__record-set rc "rc-resources" (list-push (rc.rc-resources) r)) "rc-count" (rc.rc-count + 1)
+
+  rc-remove : ResourceCollection, Text -> ResourceCollection
+  rc-remove (rc) (id) =
+    let filtered = rc-filter (rc.rc-resources) id 0 (rc.rc-count) []
+    in __record-set (__record-set rc "rc-resources" filtered) "rc-count" (list-length filtered)
+
+  rc-filter : List Resource, Text, Integer, Integer, List Resource -> List Resource
+  rc-filter (rs) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rs i
+    in if r.res-id == id then rc-filter rs id (i + 1) n acc
+    else rc-filter rs id (i + 1) n (list-push acc r)
+
+  rc-find : ResourceCollection, Text -> Maybe Resource
+  rc-find (rc) (id) = rc-find-loop (rc.rc-resources) id 0 (rc.rc-count)
+
+  rc-find-loop : List Resource, Text, Integer, Integer -> Maybe Resource
+  rc-find-loop (rs) (id) (i) (n) =
+    if i >= n then None
+    else let r = list-at rs i
+    in if r.res-id == id then Just r
+    else rc-find-loop rs id (i + 1) n
+
+  rc-select : ResourceCollection, Text -> ResourceCollection
+  rc-select (rc) (id) = __record-set rc "rc-selected" id
+
+  rc-selected : ResourceCollection -> Maybe Resource
+  rc-selected (rc) =
+    if text-length (rc.rc-selected) == 0 then None
+    else rc-find rc (rc.rc-selected)
+
+  rc-count-by-status : ResourceCollection, ResourceStatus -> Integer
+  rc-count-by-status (rc) (target) =
+    let target-text = status-label target
+    in rc-status-count (rc.rc-resources) target-text 0 (rc.rc-count) 0
+
+  rc-status-count : List Resource, Text, Integer, Integer, Integer -> Integer
+  rc-status-count (rs) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if status-label ((list-at rs i).res-status) == target then 1 else 0
+    in rc-status-count rs target (i + 1) n (acc + delta)
+
+  rc-healthy-count : ResourceCollection -> Integer
+  rc-healthy-count (rc) = rc-health-loop (rc.rc-resources) 0 (rc.rc-count) 0
+
+  rc-health-loop : List Resource, Integer, Integer, Integer -> Integer
+  rc-health-loop (rs) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if status-is-healthy ((list-at rs i).res-status) then 1 else 0
+    in rc-health-loop rs (i + 1) n (acc + delta)
+
+Section: Resource Query
+
+  rc-filter-by-category : ResourceCollection, Text -> List Resource
+  rc-filter-by-category (rc) (cat) =
+    rc-cat-loop (rc.rc-resources) cat 0 (rc.rc-count) []
+
+  rc-cat-loop : List Resource, Text, Integer, Integer, List Resource -> List Resource
+  rc-cat-loop (rs) (cat) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rs i
+    in if r.res-category == cat then rc-cat-loop rs cat (i + 1) n (list-push acc r)
+    else rc-cat-loop rs cat (i + 1) n acc
+
+  rc-filter-by-text : ResourceCollection, Text -> List Resource
+  rc-filter-by-text (rc) (query) =
+    if text-length query == 0 then rc.rc-resources
+    else rc-text-loop (rc.rc-resources) query 0 (rc.rc-count) []
+
+  rc-text-loop : List Resource, Text, Integer, Integer, List Resource -> List Resource
+  rc-text-loop (rs) (query) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rs i
+    in if text-contains (r.res-name) query then rc-text-loop rs query (i + 1) n (list-push acc r)
+    else rc-text-loop rs query (i + 1) n acc
+
+  rc-children-of : ResourceCollection, Text -> List Resource
+  rc-children-of (rc) (parent-id) =
+    rc-children-loop (rc.rc-resources) parent-id 0 (rc.rc-count) []
+
+  rc-children-loop : List Resource, Text, Integer, Integer, List Resource -> List Resource
+  rc-children-loop (rs) (parent-id) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rs i
+    in if r.res-parent-id == parent-id then rc-children-loop rs parent-id (i + 1) n (list-push acc r)
+    else rc-children-loop rs parent-id (i + 1) n acc
+
+Page 1

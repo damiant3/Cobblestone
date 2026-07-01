@@ -1,0 +1,176 @@
+Chapter: Touch
+  cites UI chapter Event
+  cites Foreword chapter Maybe
+
+ Touch gesture recognition — tap, double-tap, long-press, swipe,
+ pinch, and rotate from raw touch point streams. Tracks up to 10
+ simultaneous touch points. Gestures are recognized from the
+ history of touch-down, touch-move, and touch-up events.
+
+ To touch-state-new gives an empty touch tracking state.
+ To touch-handle-event gives updated state after a touch event.
+ To touch-recognized gives the list of recognized gestures.
+
+ We say:
+
+Section: Types
+
+  TouchPoint = record {
+    tp-id : Integer between 0 and 9,
+    tp-x : Integer,
+    tp-y : Integer,
+    tp-timestamp : Integer,
+    tp-active : Boolean
+  }
+
+  TouchGesture =
+    | GestureTap (Integer) (Integer)
+    | GestureDoubleTap (Integer) (Integer)
+    | GestureLongPress (Integer) (Integer)
+    | GestureSwipeLeft (Integer)
+    | GestureSwipeRight (Integer)
+    | GestureSwipeUp (Integer)
+    | GestureSwipeDown (Integer)
+    | GesturePinch (Integer)
+    | GestureRotate (Integer)
+    | GestureNone
+
+  TouchPhase =
+    | TouchDown
+    | TouchMoved
+    | TouchUp
+    | TouchCancelled
+
+  TouchEvent = record {
+    te-id : Integer between 0 and 9,
+    te-phase : TouchPhase,
+    te-x : Integer,
+    te-y : Integer,
+    te-timestamp : Integer
+  }
+
+  TouchState = record {
+    tst-points : List TouchPoint,
+    tst-point-count : Integer,
+    tst-gestures : List TouchGesture,
+    tst-last-tap-time : Integer,
+    tst-last-tap-x : Integer,
+    tst-last-tap-y : Integer,
+    tst-swipe-threshold : Integer,
+    tst-long-press-ms : Integer,
+    tst-double-tap-ms : Integer
+  }
+
+Section: Construction
+
+  touch-state-new : TouchState
+  touch-state-new = TouchState {
+    tst-points = [],
+    tst-point-count = 0,
+    tst-gestures = [],
+    tst-last-tap-time = 0,
+    tst-last-tap-x = 0,
+    tst-last-tap-y = 0,
+    tst-swipe-threshold = 50,
+    tst-long-press-ms = 500,
+    tst-double-tap-ms = 300
+  }
+
+Section: Event Handling
+
+  touch-handle-event : TouchState, TouchEvent -> TouchState
+  touch-handle-event (st) (ev) = when ev.te-phase
+    is TouchDown -> touch-on-down st ev
+    is TouchMoved -> touch-on-move st ev
+    is TouchUp -> touch-on-up st ev
+    is TouchCancelled -> touch-on-cancel st ev
+
+  touch-on-down : TouchState, TouchEvent -> TouchState
+  touch-on-down (st) (ev) =
+    let pt = TouchPoint { tp-id = ev.te-id, tp-x = ev.te-x, tp-y = ev.te-y, tp-timestamp = ev.te-timestamp, tp-active = True }
+    in __record-set (__record-set (__record-set st "tst-points" (list-push (st.tst-points) pt)) "tst-point-count" (st.tst-point-count + 1)) "tst-gestures" []
+
+  touch-on-move : TouchState, TouchEvent -> TouchState
+  touch-on-move (st) (ev) =
+    let updated = touch-update-point (st.tst-points) (ev.te-id) (ev.te-x) (ev.te-y) 0 (st.tst-point-count)
+    in __record-set st "tst-points" updated
+
+  touch-on-up : TouchState, TouchEvent -> TouchState
+  touch-on-up (st) (ev) =
+    let pt = touch-find-point (st.tst-points) (ev.te-id) 0 (st.tst-point-count)
+    in let gestures = touch-classify st pt ev
+    in let cleaned = touch-remove-point (st.tst-points) (ev.te-id) 0 (st.tst-point-count) []
+    in __record-set (__record-set (__record-set (__record-set (__record-set st
+      "tst-points" cleaned)
+      "tst-point-count" (st.tst-point-count - 1))
+      "tst-gestures" gestures)
+      "tst-last-tap-time" (ev.te-timestamp))
+      "tst-last-tap-x" (ev.te-x)
+
+  touch-on-cancel : TouchState, TouchEvent -> TouchState
+  touch-on-cancel (st) (ev) =
+    let cleaned = touch-remove-point (st.tst-points) (ev.te-id) 0 (st.tst-point-count) []
+    in __record-set (__record-set st "tst-points" cleaned) "tst-point-count" (st.tst-point-count - 1)
+
+Section: Classification
+
+  touch-classify : TouchState, Maybe TouchPoint, TouchEvent -> List TouchGesture
+  touch-classify (st) (start-pt) (ev) = when start-pt
+    is None -> []
+    is Just (pt) ->
+      let dx = ev.te-x - pt.tp-x
+      in let dy = ev.te-y - pt.tp-y
+      in let dist = touch-abs dx + touch-abs dy
+      in let duration = ev.te-timestamp - pt.tp-timestamp
+      in if dist < st.tst-swipe-threshold then touch-classify-tap st ev duration
+      else touch-classify-swipe dx dy dist
+
+  touch-classify-tap : TouchState, TouchEvent, Integer -> List TouchGesture
+  touch-classify-tap (st) (ev) (duration) =
+    if duration > st.tst-long-press-ms then [GestureLongPress (ev.te-x) (ev.te-y)]
+    else let dt = ev.te-timestamp - st.tst-last-tap-time
+    in if dt < st.tst-double-tap-ms then [GestureDoubleTap (ev.te-x) (ev.te-y)]
+    else [GestureTap (ev.te-x) (ev.te-y)]
+
+  touch-classify-swipe : Integer, Integer, Integer -> List TouchGesture
+  touch-classify-swipe (dx) (dy) (dist) =
+    if touch-abs dx > touch-abs dy then
+      if dx > 0 then [GestureSwipeRight dist] else [GestureSwipeLeft dist]
+    else
+      if dy > 0 then [GestureSwipeDown dist] else [GestureSwipeUp dist]
+
+Section: Point Management
+
+  touch-update-point : List TouchPoint, Integer, Integer, Integer, Integer, Integer -> List TouchPoint
+  touch-update-point (points) (id) (x) (y) (i) (len) =
+    if i >= len then points
+    else let pt = list-at points i
+    in if pt.tp-id == id then list-set-at points i (__record-set (__record-set pt "tp-x" x) "tp-y" y)
+    else touch-update-point points id x y (i + 1) len
+
+  touch-find-point : List TouchPoint, Integer, Integer, Integer -> Maybe TouchPoint
+  touch-find-point (points) (id) (i) (len) =
+    if i >= len then None
+    else let pt = list-at points i
+    in if pt.tp-id == id then Just pt
+    else touch-find-point points id (i + 1) len
+
+  touch-remove-point : List TouchPoint, Integer, Integer, Integer, List TouchPoint -> List TouchPoint
+  touch-remove-point (points) (id) (i) (len) (acc) =
+    if i >= len then acc
+    else let pt = list-at points i
+    in if pt.tp-id == id then touch-remove-point points id (i + 1) len acc
+    else touch-remove-point points id (i + 1) len (list-push acc pt)
+
+Section: Queries
+
+  touch-recognized : TouchState -> List TouchGesture
+  touch-recognized (st) = st.tst-gestures
+
+  touch-active-count : TouchState -> Integer
+  touch-active-count (st) = st.tst-point-count
+
+  touch-abs : Integer -> Integer
+  touch-abs (x) = if x < 0 then 0 - x else x
+
+Page 1

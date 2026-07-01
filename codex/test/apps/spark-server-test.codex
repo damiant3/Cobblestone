@@ -1,0 +1,76 @@
+Chapter: SparkServerTest
+  cites Net chapter Router
+  cites Works chapter Http
+
+ Tests Spark server routing and responses without TCP transport.
+ Verifies route matching, HTML generation, and API responses.
+
+Section: Inline Route Handler
+
+  test-route : Text -> Text
+  test-route (path) =
+    if path == "/" then "html-ok"
+    else if path == "/index.html" then "html-ok"
+    else if path == "/api/scene" then "scene-json"
+    else if path == "/api/stats" then "stats-json"
+    else "404 " & path
+
+Section: MIME Type Tests
+
+  test-mime : Text -> Text
+  test-mime (ext) =
+    if ext == "html" then "text/html"
+    else if ext == "js" then "application/javascript"
+    else if ext == "css" then "text/css"
+    else if ext == "wasm" then "application/wasm"
+    else if ext == "json" then "application/json"
+    else "text/plain"
+
+Section: Body
+
+  build-router : Router
+  build-router =
+    let r = router-empty
+    in let r2 = router-get r "/" "spark-html"
+    in let r3 = router-get r2 "/api/scene" "spark-scene"
+    in let r4 = router-get r3 "/api/stats" "spark-stats"
+    in let r5 = router-get r4 "/api/health" "health"
+    in router-get r5 "/api/*" "spark-api"
+
+  match-report : Router, Text -> Text
+  match-report (r) (path) =
+    let m = router-match r "GET" path
+    in if m.matched then "matched " & (m.handler).service else "no match"
+
+  opening : [Console] Nothing = act
+    let r = build-router
+    in print-line-uni ("route /: " & match-report r "/")
+    print-line-uni ("route /api/scene: " & match-report r "/api/scene")
+    print-line-uni ("route /api/health: " & match-report r "/api/health")
+    print-line-uni ("route /missing: " & match-report r "/missing")
+    print-line-uni ("route /api/unknown: " & match-report r "/api/unknown")
+    print-line-uni ("route-count: " & show (router-count r))
+    print-line-uni ("handler /: " & test-route "/")
+    print-line-uni ("handler /api/scene: " & test-route "/api/scene")
+    print-line-uni ("handler /nope: " & test-route "/nope")
+    print-line-uni ("mime html: " & test-mime "html")
+    print-line-uni ("mime wasm: " & test-mime "wasm")
+    print-line-uni ("mime css: " & test-mime "css")
+    let resp = http-html "<h1>test</h1>"
+    in print-line-uni ("http status: " & resp.status)
+    print-line-uni ("http type: " & resp.content-type)
+    print-line-uni ("404 status: " & (http-not-found).status)
+
+    let bin = http-binary "application/wasm" [0, 97, 115, 109]
+    in print-line-uni ("binary status: " & bin.status)
+    print-line-uni ("binary type: " & bin.content-type)
+    print-line-uni ("binary length: " & show (bin.body-length))
+
+    let encoded = http-encode-binary bin
+    in print-line-uni ("encoded length: " & show (list-length encoded))
+
+    let bin404 = http-binary-not-found
+    in print-line-uni ("bin404 status: " & bin404.status)
+
+    print-line-uni "spark-server ok"
+  end

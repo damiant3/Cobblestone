@@ -1,0 +1,215 @@
+Chapter: SchematicVariants
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+
+ Design variant overlay on schematic properties. Extends the core
+ DesignVariants module with schematic-specific logic: typed variant
+ properties, diff computation between a variant and baseline, BOM
+ filtering for DNP components, and human-readable summaries.
+
+ We say:
+
+Section: Variant Property
+
+ The property being overridden in a variant. VpValue changes the
+ component value (e.g. 100k to 47k). VpFootprint changes the
+ package. VpDnp marks do-not-populate. VpPopulated reverses a
+ DNP. VpCustom carries an arbitrary field name and value.
+
+  VariantProperty =
+    | VpValue (Text)
+    | VpFootprint (Text)
+    | VpDnp
+    | VpPopulated
+    | VpCustom (Text) (Text)
+
+  variant-property-name : VariantProperty -> Text
+  variant-property-name (vp) = when vp
+    is VpValue (v) -> "value"
+    is VpFootprint (f) -> "footprint"
+    is VpDnp -> "dnp"
+    is VpPopulated -> "populated"
+    is VpCustom (name) (val) -> name
+
+  variant-property-value : VariantProperty -> Text
+  variant-property-value (vp) = when vp
+    is VpValue (v) -> v
+    is VpFootprint (f) -> f
+    is VpDnp -> "1"
+    is VpPopulated -> "0"
+    is VpCustom (name) (val) -> val
+
+Section: Variant Change
+
+ A single property change within a variant, recording the component
+ reference, the property being changed, and both the original and
+ variant values for diffing and reporting.
+
+  VariantChange = record {
+    vc-ref : Text,
+    vc-property : Text,
+    vc-original-value : Text,
+    vc-variant-value : Text
+  }
+
+Section: Variant Diff
+
+ The computed difference between a variant and the baseline design.
+ Contains all changes, plus summary counts.
+
+  VariantDiff = record {
+    vd-variant-name : Text,
+    vd-changes : List VariantChange,
+    vd-change-count : Integer,
+    vd-dnp-count : Integer
+  }
+
+  empty-variant-diff : Text -> VariantDiff
+  empty-variant-diff (name) = VariantDiff {
+    vd-variant-name = name,
+    vd-changes = [],
+    vd-change-count = 0,
+    vd-dnp-count = 0
+  }
+
+Section: Component Record
+
+ A lightweight component record used as input to diff computation.
+ Carries the reference designator and its baseline field values.
+
+  VariantComponent = record {
+    vcmp-ref : Text,
+    vcmp-value : Text,
+    vcmp-footprint : Text
+  }
+
+Section: Override Record
+
+ A schematic-level override record pairing a component reference
+ with a typed variant property.
+
+  SchematicOverride = record {
+    so-ref : Text,
+    so-property : VariantProperty
+  }
+
+Section: Diff Computation
+
+ Build a VariantDiff by walking each override and looking up the
+ baseline component to determine original values.
+
+  find-component-by-ref : List VariantComponent, Text -> Maybe VariantComponent
+  find-component-by-ref (components) (ref) = find-component-by-ref-loop components ref 0 (list-length components)
+
+  find-component-by-ref-loop : List VariantComponent, Text, Integer, Integer -> Maybe VariantComponent
+  find-component-by-ref-loop (components) (ref) (i) (n) =
+    if i >= n then None
+    else let c = list-at components i
+    in if c.vcmp-ref == ref then Just c
+    else find-component-by-ref-loop components ref (i + 1) n
+
+  original-value-for-property : VariantComponent, VariantProperty -> Text
+  original-value-for-property (comp) (prop) = when prop
+    is VpValue (v) -> comp.vcmp-value
+    is VpFootprint (f) -> comp.vcmp-footprint
+    is VpDnp -> "0"
+    is VpPopulated -> "1"
+    is VpCustom (name) (val) -> ""
+
+  is-dnp-property : VariantProperty -> Integer
+  is-dnp-property (prop) = when prop
+    is VpDnp -> 1
+    is otherwise -> 0
+
+  diff-loop : List SchematicOverride, List VariantComponent, List VariantChange, Integer, Integer -> VariantDiff
+  diff-loop (overrides) (components) (changes) (count) (dnps) = diff-loop-idx overrides components changes count dnps 0 (list-length overrides)
+
+  diff-loop-idx : List SchematicOverride, List VariantComponent, List VariantChange, Integer, Integer, Integer, Integer -> VariantDiff
+  diff-loop-idx (overrides) (components) (changes) (count) (dnps) (i) (n) =
+    if i >= n then VariantDiff { vd-variant-name = "", vd-changes = changes, vd-change-count = count, vd-dnp-count = dnps }
+    else let ov = list-at overrides i
+    in let change = diff-loop-make-change ov components
+    in let new-dnps = dnps + is-dnp-property ov.so-property
+    in diff-loop-idx overrides components (list-push changes change) (count + 1) new-dnps (i + 1) n
+
+  diff-loop-make-change : SchematicOverride, List VariantComponent -> VariantChange
+  diff-loop-make-change (ov) (components) =
+    let found = find-component-by-ref components ov.so-ref
+    in let orig = when found is Just (comp) -> original-value-for-property comp ov.so-property is None -> ""
+    in VariantChange { vc-ref = ov.so-ref, vc-property = variant-property-name ov.so-property, vc-original-value = orig, vc-variant-value = variant-property-value ov.so-property }
+
+  compute-variant-diff : Text, List SchematicOverride, List VariantComponent -> VariantDiff
+  compute-variant-diff (variant-name) (overrides) (components) =
+    let result = diff-loop overrides components [] 0 0
+    in VariantDiff {
+      vd-variant-name = variant-name,
+      vd-changes = result.vd-changes,
+      vd-change-count = result.vd-change-count,
+      vd-dnp-count = result.vd-dnp-count
+    }
+
+Section: BOM Filtering
+
+ Given a list of all component references and a variant diff, return
+ only those references that are NOT marked do-not-populate in this
+ variant. A component is DNP if the diff contains a change for that
+ ref with property "dnp" and variant-value "1".
+
+  is-ref-dnp-in-diff : List VariantChange, Text -> Integer
+  is-ref-dnp-in-diff (changes) (ref) = is-ref-dnp-in-diff-loop changes ref 0 (list-length changes)
+
+  is-ref-dnp-in-diff-loop : List VariantChange, Text, Integer, Integer -> Integer
+  is-ref-dnp-in-diff-loop (changes) (ref) (i) (n) =
+    if i >= n then 0
+    else let ch = list-at changes i
+    in if ch.vc-ref == ref then is-ref-dnp-check ch changes ref i n
+    else is-ref-dnp-in-diff-loop changes ref (i + 1) n
+
+  is-ref-dnp-check : VariantChange, List VariantChange, Text, Integer, Integer -> Integer
+  is-ref-dnp-check (ch) (changes) (ref) (i) (n) =
+    if ch.vc-property == "dnp" then is-ref-dnp-check-val ch changes ref i n
+    else is-ref-dnp-in-diff-loop changes ref (i + 1) n
+
+  is-ref-dnp-check-val : VariantChange, List VariantChange, Text, Integer, Integer -> Integer
+  is-ref-dnp-check-val (ch) (changes) (ref) (i) (n) =
+    if ch.vc-variant-value == "1" then 1
+    else is-ref-dnp-in-diff-loop changes ref (i + 1) n
+
+  bom-filter-loop : List Text, VariantDiff, List Text -> List Text
+  bom-filter-loop (refs) (diff) (acc) = bom-filter-loop-idx refs diff acc 0 (list-length refs)
+
+  bom-filter-loop-idx : List Text, VariantDiff, List Text, Integer, Integer -> List Text
+  bom-filter-loop-idx (refs) (diff) (acc) (i) (n) =
+    if i >= n then acc
+    else let ref = list-at refs i
+    in if is-ref-dnp-in-diff diff.vd-changes ref == 1 then bom-filter-loop-idx refs diff acc (i + 1) n
+    else bom-filter-loop-idx refs diff (list-push acc ref) (i + 1) n
+
+  variant-bom-filter : List Text, VariantDiff -> List Text
+  variant-bom-filter (refs) (diff) = bom-filter-loop refs diff []
+
+Section: Per-Reference Lookup
+
+ Return all changes in a diff that apply to a given reference
+ designator.
+
+  changes-for-ref-loop : List VariantChange, Text, List VariantChange -> List VariantChange
+  changes-for-ref-loop (changes) (ref) (acc) = changes-for-ref-loop-idx changes ref acc 0 (list-length changes)
+
+  changes-for-ref-loop-idx : List VariantChange, Text, List VariantChange, Integer, Integer -> List VariantChange
+  changes-for-ref-loop-idx (changes) (ref) (acc) (i) (n) =
+    if i >= n then acc
+    else let ch = list-at changes i
+    in if ch.vc-ref == ref then changes-for-ref-loop-idx changes ref (list-push acc ch) (i + 1) n
+    else changes-for-ref-loop-idx changes ref acc (i + 1) n
+
+  variant-changes-for-ref : VariantDiff, Text -> List VariantChange
+  variant-changes-for-ref (diff) (ref) =
+    changes-for-ref-loop diff.vd-changes ref []
+
+Section: Summary
+
+  variant-summary : VariantDiff -> Text
+  variant-summary (diff) =
+    "Variant '" & diff.vd-variant-name & "': " & (show diff.vd-change-count) & " changes, " & (show diff.vd-dnp-count) & " DNP"

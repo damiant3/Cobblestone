@@ -1,0 +1,91 @@
+Chapter: Gic
+
+ GICv3 interrupt controller driver for ARM64.
+ Initializes the Distributor (GICD), Redistributor (GICR), and
+ CPU interface (ICC system registers) for single-core operation.
+
+ QEMU virt GICv3 base addresses:
+   GICD: 0x08000000
+   GICR: 0x080A0000 (redistributor for core 0)
+
+ Oracle Cloud Ampere A1 uses GICv3 at firmware-provided addresses.
+ For now we hardcode QEMU virt defaults; OCI addresses can be
+ discovered from UEFI configuration tables or ACPI.
+
+Section: GIC Base Addresses
+
+  gicd-base : Integer = #08000000
+  gicr-base : Integer = #080A0000
+
+Section: GICD Register Offsets
+
+  gicd-ctlr : Integer = 0
+  gicd-typer : Integer = 4
+  gicd-isenabler-base : Integer = #100
+  gicd-icenabler-base : Integer = #180
+  gicd-ipriorityr-base : Integer = #400
+
+Section: GICR Register Offsets
+
+  gicr-waker : Integer = #14
+  gicr-sgi-base : Integer = #10000
+  gicr-isenabler0 : Integer = #100
+  gicr-ipriorityr-base : Integer = #400
+
+Section: GICD Control Values
+
+  gicd-ctlr-enable-g1ns : Integer = 2
+  gicd-ctlr-are-ns : Integer = 16
+
+Section: GIC Initialization
+
+  gic-init-distributor : Integer -> Integer
+  gic-init-distributor (dummy) =
+   let w1 = poke-32 gicd-base gicd-ctlr 0
+   in let w2 = poke-32 gicd-base gicd-ctlr (bit-or gicd-ctlr-enable-g1ns gicd-ctlr-are-ns)
+   in w2
+
+  gic-init-redistributor : Integer -> Integer
+  gic-init-redistributor (dummy) =
+   let waker = peek-32 gicr-base gicr-waker
+   in let cleared = bit-and waker (bit-xor #FFFFFFFF 2)
+   in let w1 = poke-32 gicr-base gicr-waker cleared
+   in gic-wait-rwp 0
+
+  gic-wait-rwp : Integer -> Integer
+  gic-wait-rwp (tries) =
+   if tries > 1000000 then 0
+   else let waker = peek-32 gicr-base gicr-waker
+   in if bit-and waker 4 == 0 then 0
+   else gic-wait-rwp (tries + 1)
+
+  gic-init-cpu-interface : Integer -> Integer
+  gic-init-cpu-interface (dummy) =
+   let w1 = write-icc-pmr-el1 #FF
+   in let w2 = write-icc-igrpen1-el1 1
+   in w2
+
+  gic-enable-ppi : Integer -> Integer
+  gic-enable-ppi (intid) =
+   let sgi-off = gicr-base + gicr-sgi-base
+   in let bit-val = bit-shl 1 intid
+   in poke-32 sgi-off gicr-isenabler0 bit-val
+
+  gic-set-priority : Integer, Integer -> Integer
+  gic-set-priority (intid) (priority) =
+   let sgi-off = gicr-base + gicr-sgi-base
+   in let off = gicr-ipriorityr-base + intid
+   in poke-byte sgi-off off priority
+
+Section: Full GIC Init
+
+  gic-init : Integer -> Integer
+  gic-init (dummy) =
+   let d = gic-init-distributor 0
+   in let r = gic-init-redistributor 0
+   in let c = gic-init-cpu-interface 0
+   in let ppi = gic-enable-ppi 30
+   in let pri = gic-set-priority 30 #A0
+   in 0
+
+Page 1

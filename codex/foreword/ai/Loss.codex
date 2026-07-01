@@ -1,0 +1,126 @@
+Chapter: Loss
+
+ Loss functions for neural network training — cross-entropy, mean
+ squared error, hinge loss, KL divergence, and binary cross-entropy.
+ Each takes prediction and target vectors as List Integer in
+ fixed-point scale-1000 arithmetic and returns a scalar loss value.
+
+ To loss-mse gives the mean squared error.
+ To loss-cross-entropy gives the categorical cross-entropy.
+ To loss-binary-ce gives the binary cross-entropy.
+ To loss-hinge gives the hinge loss for SVM-style classification.
+ To loss-kl-divergence gives the Kullback-Leibler divergence.
+ To loss-huber gives the Huber loss (smooth L1).
+
+ We say:
+
+Section: Mean Squared Error
+
+  loss-mse : List Integer, List Integer -> Integer
+  loss-mse (pred) (target) =
+    let n = list-length pred
+    in if n == 0 then 0
+    else loss-mse-loop pred target 0 n 0 / n
+
+  loss-mse-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  loss-mse-loop (pred) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let diff = list-at pred i - list-at target i
+    in loss-mse-loop pred target (i + 1) len (acc + diff * diff / 1000)
+
+Section: Cross-Entropy
+
+  loss-cross-entropy : List Integer, List Integer -> Integer
+  loss-cross-entropy (pred) (target) =
+    let n = list-length pred
+    in if n == 0 then 0
+    else 0 - loss-ce-loop pred target 0 n 0 / n
+
+  loss-ce-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  loss-ce-loop (pred) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = loss-clamp (list-at pred i) 1 999
+    in let t = list-at target i
+    in loss-ce-loop pred target (i + 1) len (acc + t * loss-log p / 1000)
+
+  loss-binary-ce : List Integer, List Integer -> Integer
+  loss-binary-ce (pred) (target) =
+    let n = list-length pred
+    in if n == 0 then 0
+    else 0 - loss-bce-loop pred target 0 n 0 / n
+
+  loss-bce-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  loss-bce-loop (pred) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = loss-clamp (list-at pred i) 1 999
+    in let t = list-at target i
+    in let term = t * loss-log p / 1000 + (1000 - t) * loss-log (1000 - p) / 1000
+    in loss-bce-loop pred target (i + 1) len (acc + term)
+
+Section: Hinge Loss
+
+  loss-hinge : List Integer, List Integer -> Integer
+  loss-hinge (pred) (target) =
+    let n = list-length pred
+    in if n == 0 then 0
+    else loss-hinge-loop pred target 0 n 0 / n
+
+  loss-hinge-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  loss-hinge-loop (pred) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let margin = 1000 - list-at target i * list-at pred i / 1000
+    in let h = if margin > 0 then margin else 0
+    in loss-hinge-loop pred target (i + 1) len (acc + h)
+
+Section: KL Divergence
+
+  loss-kl-divergence : List Integer, List Integer -> Integer
+  loss-kl-divergence (p) (q) =
+    let n = list-length p
+    in if n == 0 then 0
+    else loss-kl-loop p q 0 n 0
+
+  loss-kl-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  loss-kl-loop (p) (q) (i) (len) (acc) =
+    if i >= len then acc
+    else let pi = loss-clamp (list-at p i) 1 999
+    in let qi = loss-clamp (list-at q i) 1 999
+    in loss-kl-loop p q (i + 1) len (acc + pi * (loss-log pi - loss-log qi) / 1000)
+
+Section: Huber Loss
+
+  loss-huber : List Integer, List Integer, Integer -> Integer
+  loss-huber (pred) (target) (delta) =
+    let n = list-length pred
+    in if n == 0 then 0
+    else loss-huber-loop pred target delta 0 n 0 / n
+
+  loss-huber-loop : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  loss-huber-loop (pred) (target) (delta) (i) (len) (acc) =
+    if i >= len then acc
+    else let diff = list-at pred i - list-at target i
+    in let abs-diff = if diff < 0 then 0 - diff else diff
+    in let h = if abs-diff <= delta then diff * diff / (2 * 1000)
+      else delta * (abs-diff - delta / 2) / 1000
+    in loss-huber-loop pred target delta (i + 1) len (acc + h)
+
+Section: Helpers
+
+  loss-log : Integer -> Integer
+  loss-log (x) =
+    if x <= 0 then 0 - 10000
+    else loss-log-approx x
+
+  loss-log-approx : Integer -> Integer
+  loss-log-approx (x) =
+    let y = (x - 1000) * 1000 / (x + 1000)
+    in let y2 = y * y / 1000
+    in 2 * (y + y * y2 / (3 * 1000) + y * y2 * y2 / (5 * 1000 * 1000))
+
+  loss-clamp : Integer, Integer, Integer -> Integer
+  loss-clamp (x) (lo) (hi) =
+    if x < lo then lo
+    else if x > hi then hi
+    else x
+
+Page 1

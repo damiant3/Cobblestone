@@ -1,0 +1,169 @@
+Chapter: SoftBody
+  cites Sim chapter Physics
+  cites Engine chapter PhysicsJoint
+  cites Math chapter Quaternion
+
+ Position-based dynamics for soft body simulation. Jiggly flesh,
+ fat, breasts, bellies, cheeks — anything that deforms under gravity
+ and inertia but wants to return to rest shape. A point cloud with
+ distance constraints and shape-matching. Damping controls jiggle
+ frequency. Stiffness controls how quickly it returns to rest.
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Soft Particle
+
+  SoftParticle = record {
+    sft-x : Integer, sft-y : Integer, sft-z : Integer,
+    sft-px : Integer, sft-py : Integer, sft-pz : Integer,
+    sft-rest-x : Integer, sft-rest-y : Integer, sft-rest-z : Integer,
+    sft-mass : Integer,
+    sft-pinned : Boolean
+  }
+
+Section: Soft Constraint
+
+  SoftConstraint = record {
+    sc-a : Integer,
+    sc-b : Integer,
+    sc-rest-dist : Integer,
+    sc-stiffness : Integer
+  }
+
+Section: Soft Body
+
+  SoftBodyState = record {
+    sb-particles : List SoftParticle,
+    sb-constraints : List SoftConstraint,
+    sb-part-count : Integer,
+    sb-con-count : Integer,
+    sb-gravity : Integer,
+    sb-damping : Integer,
+    sb-shape-stiffness : Integer,
+    sb-iterations : Integer
+  }
+
+  sb-new : Integer, Integer, Integer, Integer -> SoftBodyState
+  sb-new (gravity) (damping) (shape-stiff) (iters) = SoftBodyState { sb-particles = [], sb-constraints = [], sb-part-count = 0, sb-con-count = 0, sb-gravity = gravity, sb-damping = damping, sb-shape-stiffness = shape-stiff, sb-iterations = iters }
+
+  sb-jiggle-preset : SoftBodyState
+  sb-jiggle-preset = sb-new 9800 920 600 4
+
+  sb-belly-preset : SoftBodyState
+  sb-belly-preset = sb-new 9800 950 400 4
+
+  sb-cheek-preset : SoftBodyState
+  sb-cheek-preset = sb-new 9800 900 800 3
+
+Section: Construction
+
+  sb-add-particle : SoftBodyState, Integer, Integer, Integer, Integer, Boolean -> SoftBodyState
+  sb-add-particle (sb) (x) (y) (z) (mass) (pinned) =
+    let p = SoftParticle { sft-x = x, sft-y = y, sft-z = z, sft-px = x, sft-py = y, sft-pz = z, sft-rest-x = x, sft-rest-y = y, sft-rest-z = z, sft-mass = mass, sft-pinned = pinned }
+    in __record-set (__record-set sb "sb-particles" (list-push (sb.sb-particles) p)) "sb-part-count" (sb.sb-part-count + 1)
+
+  sb-add-constraint : SoftBodyState, Integer, Integer, Integer -> SoftBodyState
+  sb-add-constraint (sb) (a) (b) (stiffness) =
+    let pa = list-at (sb.sb-particles) a
+    in let pb = list-at (sb.sb-particles) b
+    in let dx = pb.sft-x - pa.sft-x
+    in let dy = pb.sft-y - pa.sft-y
+    in let dz = pb.sft-z - pa.sft-z
+    in let dist = sb-isqrt (dx * dx + dy * dy + dz * dz)
+    in let con = SoftConstraint { sc-a = a, sc-b = b, sc-rest-dist = dist, sc-stiffness = stiffness }
+    in __record-set (__record-set sb "sb-constraints" (list-push (sb.sb-constraints) con)) "sb-con-count" (sb.sb-con-count + 1)
+
+Section: Simulation Step
+
+  sb-step : SoftBodyState, Integer -> SoftBodyState
+  sb-step (sb) (dt) =
+    let moved = sb-integrate sb dt
+    in let constrained = sb-solve-constraints moved 0
+    in sb-shape-match constrained
+
+  sb-integrate : SoftBodyState, Integer -> SoftBodyState
+  sb-integrate (sb) (dt) =
+    let parts = sb-integrate-loop (sb.sb-particles) (sb.sb-gravity) (sb.sb-damping) dt 0 (sb.sb-part-count) []
+    in __record-set sb "sb-particles" parts
+
+  sb-integrate-loop : List SoftParticle, Integer, Integer, Integer, Integer, Integer, List SoftParticle -> List SoftParticle
+  sb-integrate-loop (parts) (gravity) (damping) (dt) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in if p.sft-pinned then sb-integrate-loop parts gravity damping dt (i + 1) n (list-push acc p)
+    else let vx = (p.sft-x - p.sft-px) * damping / 1000
+    in let vy = (p.sft-y - p.sft-py) * damping / 1000 - gravity * dt / 1000
+    in let vz = (p.sft-z - p.sft-pz) * damping / 1000
+    in let nx = p.sft-x + vx * dt / 1000
+    in let ny = p.sft-y + vy * dt / 1000
+    in let nz = p.sft-z + vz * dt / 1000
+    in let updated = SoftParticle { sft-x = nx, sft-y = ny, sft-z = nz, sft-px = p.sft-x, sft-py = p.sft-y, sft-pz = p.sft-z, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = False }
+    in sb-integrate-loop parts gravity damping dt (i + 1) n (list-push acc updated)
+
+Section: Constraint Solving
+
+  sb-solve-constraints : SoftBodyState, Integer -> SoftBodyState
+  sb-solve-constraints (sb) (iter) =
+    if iter >= sb.sb-iterations then sb
+    else let parts = sb-solve-all-cons (sb.sb-particles) (sb.sb-constraints) 0 (sb.sb-con-count)
+    in sb-solve-constraints (__record-set sb "sb-particles" parts) (iter + 1)
+
+  sb-solve-all-cons : List SoftParticle, List SoftConstraint, Integer, Integer -> List SoftParticle
+  sb-solve-all-cons (parts) (cons) (i) (n) =
+    if i >= n then parts
+    else let con = list-at cons i
+    in sb-solve-all-cons (sb-solve-one-con parts con) cons (i + 1) n
+
+  sb-solve-one-con : List SoftParticle, SoftConstraint -> List SoftParticle
+  sb-solve-one-con (parts) (con) =
+    let pa = list-at parts (con.sc-a)
+    in let pb = list-at parts (con.sc-b)
+    in let dx = pb.sft-x - pa.sft-x
+    in let dy = pb.sft-y - pa.sft-y
+    in let dz = pb.sft-z - pa.sft-z
+    in let dist = sb-isqrt (dx * dx + dy * dy + dz * dz)
+    in if dist == 0 then parts
+    else let diff = (dist - con.sc-rest-dist) * con.sc-stiffness / 1000
+    in let cx = dx * diff / dist / 2
+    in let cy = dy * diff / dist / 2
+    in let cz = dz * diff / dist / 2
+    in let na = if pa.sft-pinned then pa else SoftParticle { sft-x = pa.sft-x + cx, sft-y = pa.sft-y + cy, sft-z = pa.sft-z + cz, sft-px = pa.sft-px, sft-py = pa.sft-py, sft-pz = pa.sft-pz, sft-rest-x = pa.sft-rest-x, sft-rest-y = pa.sft-rest-y, sft-rest-z = pa.sft-rest-z, sft-mass = pa.sft-mass, sft-pinned = False }
+    in let nb = if pb.sft-pinned then pb else SoftParticle { sft-x = pb.sft-x - cx, sft-y = pb.sft-y - cy, sft-z = pb.sft-z - cz, sft-px = pb.sft-px, sft-py = pb.sft-py, sft-pz = pb.sft-pz, sft-rest-x = pb.sft-rest-x, sft-rest-y = pb.sft-rest-y, sft-rest-z = pb.sft-rest-z, sft-mass = pb.sft-mass, sft-pinned = False }
+    in list-set-at (list-set-at parts (con.sc-a) na) (con.sc-b) nb
+
+Section: Shape Matching
+
+  sb-shape-match : SoftBodyState -> SoftBodyState
+  sb-shape-match (sb) =
+    if sb.sb-shape-stiffness <= 0 then sb
+    else let parts = sb-shape-loop (sb.sb-particles) (sb.sb-shape-stiffness) 0 (sb.sb-part-count) []
+    in __record-set sb "sb-particles" parts
+
+  sb-shape-loop : List SoftParticle, Integer, Integer, Integer, List SoftParticle -> List SoftParticle
+  sb-shape-loop (parts) (stiff) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in if p.sft-pinned then sb-shape-loop parts stiff (i + 1) n (list-push acc p)
+    else let target-x = p.sft-x + (p.sft-rest-x - p.sft-x) * stiff / 1000
+    in let target-y = p.sft-y + (p.sft-rest-y - p.sft-y) * stiff / 1000
+    in let target-z = p.sft-z + (p.sft-rest-z - p.sft-z) * stiff / 1000
+    in let shaped = SoftParticle { sft-x = target-x, sft-y = target-y, sft-z = target-z, sft-px = p.sft-px, sft-py = p.sft-py, sft-pz = p.sft-pz, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = False }
+    in sb-shape-loop parts stiff (i + 1) n (list-push acc shaped)
+
+Section: Helpers
+
+  sb-isqrt : Integer -> Integer
+  sb-isqrt (n) = if n <= 0 then 0 else sb-isqrt-loop n (n / 2 + 1)
+
+  sb-isqrt-loop : Integer, Integer -> Integer
+  sb-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else sb-isqrt-loop n next
+
+Section: Formatting
+
+  format-soft-body : SoftBodyState -> Text
+  format-soft-body (sb) = "SoftBody(" & show (sb.sb-part-count) & " particles, " & show (sb.sb-con-count) & " constraints)"
+
+Page 1

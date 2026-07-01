@@ -1,0 +1,153 @@
+Chapter: CardEmitter
+  cites Explorer chapter WorldModel
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter Mana
+
+ Lowers a system-neutral WorldModel Entity into a REAL CodexMagic CardTemplate
+ (not the HTML mockup the slice draws). The same tagged abstraction the SD /
+ D&D emitters read is mapped, field by field, into the actual card data model
+ the CodexMagic engine plays with: a weapon becomes a Legendary Artifact
+ Equipment, a character becomes a Legendary Creature. Power tier drives rarity
+ and P/T; granted-effects map to real Keywords; vocation drives the mana cost
+ and colours. Because it produces a genuine CardTemplate, the result can be
+ priced (cmc), coloured (cost-colors), and formatted by Card's own helpers.
+
+ We say:
+
+Section: Tier Mappings
+
+  tier-to-rarity : Text -> Rarity
+  tier-to-rarity (t) =
+    if t == "artifact" then LegendaryMythic
+    else if t == "legendary" then Mythic
+    else if t == "exceptional" then Rare
+    else Uncommon
+
+  tier-power : Text -> Integer
+  tier-power (t) =
+    if t == "artifact" then 4 else if t == "legendary" then 3 else if t == "exceptional" then 2 else 1
+
+  tier-tough : Text -> Integer
+  tier-tough (t) =
+    if t == "artifact" then 6 else if t == "legendary" then 4 else if t == "exceptional" then 3 else 2
+
+Section: Effect -> Keyword
+
+  apply-weapon-eff : KeywordSet, Text -> KeywordSet
+  apply-weapon-eff (ks) (e) =
+    if e == "leadership-aura" then grant-keyword ks Vigilance
+    else if e == "blinding-light" then grant-keyword ks FirstStrike
+    else if e == "ward-wounds" then grant-keyword ks Lifelink
+    else ks
+
+  weapon-kws : List Text, Integer, Integer, KeywordSet -> KeywordSet
+  weapon-kws (es) (i) (n) (ks) =
+    if i >= n then ks else weapon-kws es (i + 1) n (apply-weapon-eff ks (list-at es i))
+
+  apply-char-eff : KeywordSet, Text -> KeywordSet
+  apply-char-eff (ks) (e) =
+    if e == "counterspell" then grant-keyword ks Flash
+    else if e == "foresight" then grant-keyword ks Hexproof
+    else if e == "spellcasting" then grant-keyword ks Vigilance
+    else ks
+
+  char-kws : List Text, Integer, Integer, KeywordSet -> KeywordSet
+  char-kws (es) (i) (n) (ks) =
+    if i >= n then ks else char-kws es (i + 1) n (apply-char-eff ks (list-at es i))
+
+Section: Mana
+
+  vocation-cost : Text -> ManaCost
+  vocation-cost (v) =
+    if v == "arcane caster" then mana-cost-add (mana-cost-u 2) (mana-cost-generic 3)
+    else if v == "divine" then mana-cost-add (mana-cost-add (mana-cost-w 1) (mana-cost-b 1)) (mana-cost-generic 2)
+    else if v == "martial" then mana-cost-add (mana-cost-w 2) (mana-cost-generic 2)
+    else mana-cost-generic 2
+
+Section: Entity -> CardTemplate
+
+  weapon-card : Entity, WeaponAbstraction -> CardTemplate
+  weapon-card (e) (w) = CardTemplate {
+    id = w.narrative-weight,
+    name = e.name,
+    mana-cost = mana-cost-generic 3,
+    card-type = Artifact,
+    rarity = tier-to-rarity (w.power-tier),
+    subtypes = ["Equipment"],
+    is-legendary = True,
+    is-basic = False,
+    power = 0,
+    toughness = 0,
+    defense = 0,
+    keywords = weapon-kws (w.granted-effects) 0 (list-length (w.granted-effects)) keywords-none,
+    abilities = [],
+    color = color-set-empty,
+    is-token = False
+  }
+
+  char-card : Entity, CharacterAbstraction -> CardTemplate
+  char-card (e) (c) =
+    let cost = vocation-cost (c.vocation)
+    in CardTemplate {
+      id = c.narrative-weight,
+      name = e.name,
+      mana-cost = cost,
+      card-type = Creature,
+      rarity = tier-to-rarity (c.power-tier),
+      subtypes = [c.vocation],
+      is-legendary = True,
+      is-basic = False,
+      power = tier-power (c.power-tier),
+      toughness = tier-tough (c.power-tier),
+      defense = 0,
+      keywords = char-kws (c.granted-effects) 0 (list-length (c.granted-effects)) keywords-none,
+      abilities = [],
+      color = cost-colors cost,
+      is-token = False
+    }
+
+  entity-to-card : Entity -> CardTemplate
+  entity-to-card (e) =
+    when e.abstraction
+      is WeaponAbs (w) -> weapon-card e w
+      is CharAbs (c) -> char-card e c
+
+  entities-to-cards : List Entity, Integer, Integer, List CardTemplate -> List CardTemplate
+  entities-to-cards (es) (i) (n) (acc) =
+    if i >= n then acc
+    else entities-to-cards es (i + 1) n (list-push acc (entity-to-card (list-at es i)))
+
+Section: Full Formatting
+
+  kw-add : Text, Boolean, Text -> Text
+  kw-add (acc) (on) (nm) =
+    if on then (if text-length acc == 0 then nm else acc & ", " & nm) else acc
+
+  kw-list : KeywordSet -> Text
+  kw-list (k) =
+    kw-add (kw-add (kw-add (kw-add (kw-add (kw-add (kw-add (kw-add (kw-add (kw-add (kw-add (kw-add (kw-add (kw-add (kw-add ""
+      (k.flying) "Flying") (k.reach) "Reach") (k.first-strike) "First strike") (k.double-strike) "Double strike")
+      (k.trample) "Trample") (k.haste) "Haste") (k.vigilance) "Vigilance") (k.lifelink) "Lifelink")
+      (k.deathtouch) "Deathtouch") (k.defender) "Defender") (k.intimidate) "Intimidate") (k.flash) "Flash")
+      (k.shroud) "Shroud") (k.hexproof) "Hexproof") (k.indestructible) "Indestructible"
+
+  join-sub : List Text, Integer, Integer, Text -> Text
+  join-sub (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else join-sub xs (i + 1) n (if text-length acc == 0 then list-at xs i else acc & " " & list-at xs i)
+
+  format-card-full : CardTemplate -> Text
+  format-card-full (t) =
+    let sup = if t.is-legendary then "Legendary " else ""
+    in let subs = join-sub (t.subtypes) 0 (list-length (t.subtypes)) ""
+    in let typeline = sup & card-type-name (t.card-type) & (if text-length subs == 0 then "" else " - " & subs)
+    in let pt = if t.power > 0 then "  " & show (t.power) & "/" & show (t.toughness) else ""
+    in let kws = kw-list (t.keywords)
+    in t.name & "  " & format-mana-cost (t.mana-cost) & " (cmc " & show (cmc (t.mana-cost)) & ")\n"
+       & typeline & "   [" & rarity-name (t.rarity) & "]" & pt
+       & (if text-length kws == 0 then "" else "\nKeywords: " & kws)
+
+  format-set : List CardTemplate, Integer, Integer, Text -> Text
+  format-set (cs) (i) (n) (acc) =
+    if i >= n then acc
+    else format-set cs (i + 1) n (acc & format-card-full (list-at cs i) & "\n\n")

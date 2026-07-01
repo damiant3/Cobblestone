@@ -1,0 +1,79 @@
+Chapter: CountMinSketch
+  cites Foreword chapter ListUtils
+
+ A CmSketch is a record containing cms-table, cms-width, cms-depth, and cms-total.
+ To cms-new gives an empty CmSketch with the given width and depth.
+ To cms-add gives a new CmSketch with the count incremented for the given key.
+ To cms-count gives the estimated frequency of the given key.
+ To cms-total gives the total count across all insertions.
+ To format-cms gives a Text summary of the sketch dimensions and total.
+
+ We say:
+
+Section: Types
+  CmSketch = record {
+    cms-table : List Integer,
+    cms-width : Integer,
+    cms-depth : Integer,
+    cms-total : Integer
+  }
+
+Section: Construction
+  cms-new : Integer, Integer -> CmSketch
+  cms-new (width) (depth) = CmSketch { cms-table = list-zeros (width * depth), cms-width = width, cms-depth = depth, cms-total = 0 }
+
+Section: Update
+  cms-add : CmSketch, Text, Integer -> CmSketch
+  cms-add (sketch) (key) (count) =
+    let h = cms-hash-key key
+    in let updated = cms-add-rows (sketch.cms-table) h (sketch.cms-width) (sketch.cms-depth) count 0
+    in CmSketch { cms-table = updated, cms-width = sketch.cms-width, cms-depth = sketch.cms-depth, cms-total = sketch.cms-total + count }
+
+  cms-add-rows : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  cms-add-rows (table) (hash) (width) (depth) (count) (row) =
+    if row >= depth then table
+    else let col = cms-row-hash hash row width
+    in let idx = row * width + col
+    in let old = list-at table idx
+    in cms-add-rows (list-set-at table idx (old + count)) hash width depth count (row + 1)
+
+Section: Query
+  cms-count : CmSketch, Text -> Integer
+  cms-count (sketch) (key) =
+    let h = cms-hash-key key
+    in cms-min-rows (sketch.cms-table) h (sketch.cms-width) (sketch.cms-depth) 0 999999999
+
+  cms-min-rows : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cms-min-rows (table) (hash) (width) (depth) (row) (best) =
+    if row >= depth then best
+    else let col = cms-row-hash hash row width
+    in let idx = row * width + col
+    in let val = list-at table idx
+    in let new-best = if val < best then val else best
+    in cms-min-rows table hash width depth (row + 1) new-best
+
+Section: Hash Functions
+  cms-hash-key : Text -> Integer
+  cms-hash-key (key) = cms-text-hash key 0 (text-length key) 5381
+
+  cms-text-hash : Text, Integer, Integer, Integer -> Integer
+  cms-text-hash (key) (i) (len) (hash) =
+    if i >= len then let positive = if hash < 0 then -hash else hash in positive
+    else let c = char-code (char-at key i)
+    in cms-text-hash key (i + 1) len (hash * 33 + c)
+
+  cms-row-hash : Integer, Integer, Integer -> Integer
+  cms-row-hash (hash) (row) (width) =
+    let h = hash * (row + 1) * 2654435761 + row * 1103515245
+    in let positive = if h < 0 then -h else h
+    in positive - positive / width * width
+
+Section: Queries
+  cms-total : CmSketch -> Integer
+  cms-total (sketch) = sketch.cms-total
+
+Section: Formatting
+  format-cms : CmSketch -> Text
+  format-cms (s) = "cms " & show (s.cms-width) & "x" & show (s.cms-depth) & " total=" & show (s.cms-total)
+
+Page 1

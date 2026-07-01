@@ -1,0 +1,323 @@
+Chapter: EdgeMesh
+  cites Engine chapter HelmBridge
+  cites Engine chapter GameplayTags
+  cites Game chapter Netcode
+  cites Foreword chapter Maybe
+
+ Edge mesh game server orchestrator. Ties together the mesh network
+ (GroupMembership, MeshRoles, EdgeRouter), the game engine, and Helm
+ voice/chat into a single system that auto-spawns game servers at
+ the nearest edge location to the player group.
+
+ The flow:
+ 1. Players queue via matchmaker (Elo rating, region, game mode)
+ 2. Matchmaker pairs players into a match
+ 3. Orchestrator finds the optimal edge region (lowest aggregate
+    latency to all players in the match)
+ 4. Orchestrator spawns a GameServer instance at that edge node
+ 5. GameServer boots the engine, loads the game mode, connects
+    to Helm for voice/chat, starts the game loop
+ 6. Players connect to the edge node via the trust handshake
+ 7. Game runs with rollback netcode + Helm event bridge
+ 8. On match end, ManaCoin rewards are posted to the blockchain,
+    the server drains, and the orchestrator reclaims the node
+
+ Fixed-point (scale 1000) for latencies and scores.
+
+ We say:
+
+Section: Region
+
+  EdgeRegion = record {
+    er-id : Integer,
+    er-name : Text,
+    er-lat : Integer,
+    er-lon : Integer,
+    er-capacity : Integer,
+    er-active-servers : Integer,
+    er-healthy : Boolean
+  }
+
+  RegionList = record {
+    rl-regions : List EdgeRegion,
+    rl-count : Integer
+  }
+
+  region-list-new : RegionList
+  region-list-new = RegionList { rl-regions = [], rl-count = 0 }
+
+  region-add : RegionList, Text, Integer, Integer, Integer -> RegionList
+  region-add (rl) (name) (lat) (lon) (capacity) =
+    let region = EdgeRegion { er-id = rl.rl-count, er-name = name, er-lat = lat, er-lon = lon, er-capacity = capacity, er-active-servers = 0, er-healthy = True }
+    in RegionList { rl-regions = list-push (rl.rl-regions) region, rl-count = rl.rl-count + 1 }
+
+  default-regions : RegionList
+  default-regions =
+    let r0 = region-add region-list-new "us-east" 39000 (-77000) 100
+    in let r1 = region-add r0 "us-west" 37000 (-122000) 80
+    in let r2 = region-add r1 "eu-west" 51000 (0) 80
+    in let r3 = region-add r2 "eu-central" 50000 8000 60
+    in let r4 = region-add r3 "asia-east" 35000 139000 60
+    in region-add r4 "asia-south" 19000 72000 40
+
+Section: Player Queue
+
+  QueuedPlayer = record {
+    qp-id : Integer,
+    qp-name : Text,
+    qp-rating : Integer,
+    qp-region-pref : Integer,
+    qp-latencies : List Integer,
+    qp-queue-time : Integer,
+    qp-game-mode : GameMode
+  }
+
+  GameMode =
+    | ModeRanked
+    | ModeCasual
+    | ModeTournament
+    | ModeCustom (Text)
+
+  MatchQueue = record {
+    mq-players : List QueuedPlayer,
+    mq-count : Integer,
+    mq-max-wait : Integer,
+    mq-rating-window : Integer
+  }
+
+  mq-new : MatchQueue
+  mq-new = MatchQueue { mq-players = [], mq-count = 0, mq-max-wait = 60000, mq-rating-window = 200 }
+
+  mq-enqueue : MatchQueue, QueuedPlayer -> MatchQueue
+  mq-enqueue (q) (player) = MatchQueue {
+    mq-players = list-push (q.mq-players) player,
+    mq-count = q.mq-count + 1,
+    mq-max-wait = q.mq-max-wait,
+    mq-rating-window = q.mq-rating-window
+  }
+
+Section: Match Pairing
+
+  MatchPair = record {
+    mp-player-a : QueuedPlayer,
+    mp-player-b : QueuedPlayer,
+    mp-rating-diff : Integer,
+    mp-region : Integer
+  }
+
+  mq-try-pair : MatchQueue, Integer -> Maybe MatchPair
+  mq-try-pair (q) (now) =
+    if q.mq-count < 2 then None
+    else mq-find-pair (q.mq-players) q.mq-rating-window q.mq-max-wait now 0 1 (q.mq-count)
+
+  mq-find-pair : List QueuedPlayer, Integer, Integer, Integer, Integer, Integer, Integer -> Maybe MatchPair
+  mq-find-pair (players) (window) (max-wait) (now) (i) (j) (n) =
+    if i >= n then None
+    else if j >= n then mq-find-pair players window max-wait now (i + 1) (i + 2) n
+    else let a = list-at players i
+    in let b = list-at players j
+    in let diff = em-abs (a.qp-rating - b.qp-rating)
+    in let wait-a = now - a.qp-queue-time
+    in let wait-b = now - b.qp-queue-time
+    in let widened = window + (em-max wait-a wait-b) * window / max-wait
+    in if diff <= widened then
+      let region = em-best-shared-region a b
+      in Just (MatchPair { mp-player-a = a, mp-player-b = b, mp-rating-diff = diff, mp-region = region })
+    else mq-find-pair players window max-wait now i (j + 1) n
+
+  em-best-shared-region : QueuedPlayer, QueuedPlayer -> Integer
+  em-best-shared-region (a) (b) =
+    if list-length (a.qp-latencies) == 0 then a.qp-region-pref
+    else if list-length (b.qp-latencies) == 0 then a.qp-region-pref
+    else em-min-aggregate (a.qp-latencies) (b.qp-latencies) 0 (list-length (a.qp-latencies)) 0 999999
+
+  em-min-aggregate : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  em-min-aggregate (lat-a) (lat-b) (i) (n) (best-idx) (best-val) =
+    if i >= n then best-idx
+    else let agg = list-at lat-a i + list-at lat-b i
+    in if agg < best-val then em-min-aggregate lat-a lat-b (i + 1) n i agg
+    else em-min-aggregate lat-a lat-b (i + 1) n best-idx best-val
+
+Section: Game Server Instance
+
+  ServerStatus =
+    | SsBooting
+    | SsReady
+    | SsRunning
+    | SsDraining
+    | SsShutdown
+
+  GameServer = record {
+    gs-id : Integer,
+    gs-region : Integer,
+    gs-status : ServerStatus,
+    gs-session : EngineSession,
+    gs-helm-room : Integer,
+    gs-mode : GameMode,
+    gs-tick : Integer,
+    gs-max-players : Integer,
+    gs-port : Integer
+  }
+
+  gs-new : Integer, Integer, GameMode, Integer -> GameServer
+  gs-new (id) (region) (mode) (port) = GameServer {
+    gs-id = id,
+    gs-region = region,
+    gs-status = SsBooting,
+    gs-session = session-new,
+    gs-helm-room = id,
+    gs-mode = mode,
+    gs-tick = 0,
+    gs-max-players = 2,
+    gs-port = port
+  }
+
+  gs-boot : GameServer -> GameServer
+  gs-boot (gs) = __record-set gs "gs-status" SsReady
+
+  gs-start : GameServer -> GameServer
+  gs-start (gs) =
+    let gs2 = __record-set gs "gs-status" SsRunning
+    in let gs3 = __record-set gs2 "gs-session" (session-phase (gs2.gs-session) PhasePlaying)
+    in gs3
+
+  gs-drain : GameServer -> GameServer
+  gs-drain (gs) = __record-set gs "gs-status" SsDraining
+
+  gs-shutdown : GameServer -> GameServer
+  gs-shutdown (gs) = __record-set gs "gs-status" SsShutdown
+
+  gs-add-player : GameServer, Text, Integer, PlayerRole -> GameServer
+  gs-add-player (gs) (name) (team) (role) =
+    __record-set gs "gs-session" (session-add-player (gs.gs-session) name team role)
+
+Section: Server Fleet
+
+  ServerFleet = record {
+    sf-servers : List GameServer,
+    sf-count : Integer,
+    sf-next-id : Integer,
+    sf-next-port : Integer
+  }
+
+  fleet-new : ServerFleet
+  fleet-new = ServerFleet { sf-servers = [], sf-count = 0, sf-next-id = 1, sf-next-port = 7000 }
+
+  fleet-spawn : ServerFleet, Integer, GameMode -> ServerFleet
+  fleet-spawn (fl) (region) (mode) =
+    let gs = gs-new (fl.sf-next-id) region mode (fl.sf-next-port)
+    in ServerFleet {
+      sf-servers = list-push (fl.sf-servers) (gs-boot gs),
+      sf-count = fl.sf-count + 1,
+      sf-next-id = fl.sf-next-id + 1,
+      sf-next-port = fl.sf-next-port + 1
+    }
+
+  fleet-server-at : ServerFleet, Integer -> Maybe GameServer
+  fleet-server-at (fl) (idx) =
+    if idx < 0 then None
+    else if idx >= fl.sf-count then None
+    else Just (list-at (fl.sf-servers) idx)
+
+  fleet-active-count : ServerFleet -> Integer
+  fleet-active-count (fl) = fleet-count-active (fl.sf-servers) 0 (fl.sf-count) 0
+
+  fleet-count-active : List GameServer, Integer, Integer, Integer -> Integer
+  fleet-count-active (servers) (i) (n) (acc) =
+    if i >= n then acc
+    else let gs = list-at servers i
+    in let active = when gs.gs-status
+      is SsRunning -> 1
+      is SsReady -> 1
+      is otherwise -> 0
+    in fleet-count-active servers (i + 1) n (acc + active)
+
+Section: ManaCoin Reward
+
+  MatchReward = record {
+    mr-winner-id : Integer,
+    mr-loser-id : Integer,
+    mr-winner-coins : Integer,
+    mr-loser-coins : Integer,
+    mr-rating-delta : Integer
+  }
+
+  compute-reward : Integer, Integer, Boolean -> MatchReward
+  compute-reward (winner-rating) (loser-rating) (ranked) =
+    let diff = winner-rating - loser-rating
+    in let expected = 500 + diff * 400 / 10000
+    in let k-factor = if ranked then 32 else 0
+    in let delta = k-factor * (1000 - expected) / 1000
+    in let winner-coins = if ranked then 50 + delta else 10
+    in let loser-coins = if ranked then 10 else 5
+    in MatchReward {
+      mr-winner-id = 0,
+      mr-loser-id = 0,
+      mr-winner-coins = winner-coins,
+      mr-loser-coins = loser-coins,
+      mr-rating-delta = delta
+    }
+
+Section: Orchestration Loop
+
+  OrchestratorState = record {
+    orch-queue : MatchQueue,
+    orch-fleet : ServerFleet,
+    orch-regions : RegionList,
+    orch-matches-made : Integer,
+    orch-total-served : Integer
+  }
+
+  orch-new : OrchestratorState
+  orch-new = OrchestratorState {
+    orch-queue = mq-new,
+    orch-fleet = fleet-new,
+    orch-regions = default-regions,
+    orch-matches-made = 0,
+    orch-total-served = 0
+  }
+
+  orch-enqueue : OrchestratorState, QueuedPlayer -> OrchestratorState
+  orch-enqueue (st) (player) = __record-set st "orch-queue" (mq-enqueue (st.orch-queue) player)
+
+  orch-tick : OrchestratorState, Integer -> OrchestratorState
+  orch-tick (st) (now) =
+    let pair = mq-try-pair (st.orch-queue) now
+    in when pair
+      is None -> st
+      is Just (match) ->
+        let fleet2 = fleet-spawn (st.orch-fleet) (match.mp-region) (match.mp-player-a.qp-game-mode)
+        in let st2 = __record-set st "orch-fleet" fleet2
+        in let st3 = __record-set st2 "orch-matches-made" (st.orch-matches-made + 1)
+        in __record-set st3 "orch-total-served" (st.orch-total-served + 2)
+
+Section: Helpers
+
+  em-abs : Integer -> Integer
+  em-abs (n) = if n < 0 then 0 - n else n
+
+  em-max : Integer, Integer -> Integer
+  em-max (a) (b) = if a > b then a else b
+
+Section: Formatting
+
+  format-server : GameServer -> Text
+  format-server (gs) =
+    let status = when gs.gs-status
+      is SsBooting -> "booting"
+      is SsReady -> "ready"
+      is SsRunning -> "running"
+      is SsDraining -> "draining"
+      is SsShutdown -> "shutdown"
+    in "Server#" & show (gs.gs-id) & " region=" & show (gs.gs-region) & " " & status & " port=" & show (gs.gs-port)
+
+  format-fleet : ServerFleet -> Text
+  format-fleet (fl) = "Fleet(" & show (fl.sf-count) & " servers, " & show (fleet-active-count fl) & " active)"
+
+  format-orchestrator : OrchestratorState -> Text
+  format-orchestrator (st) = "Orchestrator(queue=" & show (st.orch-queue.mq-count) & " matches=" & show (st.orch-matches-made) & " served=" & show (st.orch-total-served) & ")"
+
+  format-reward : MatchReward -> Text
+  format-reward (r) = "winner=" & show (r.mr-winner-coins) & "mc loser=" & show (r.mr-loser-coins) & "mc rating-delta=" & show (r.mr-rating-delta)
+
+Page 1

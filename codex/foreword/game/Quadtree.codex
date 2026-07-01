@@ -1,0 +1,146 @@
+Chapter: Quadtree
+
+ 2D spatial partitioning tree. Each node subdivides into 4 quadrants.
+ Flat-array backed. Supports point insert and range query.
+
+ We say:
+
+Section: Types
+  QtBounds = record {
+    qt-x0 : Integer, qt-y0 : Integer,
+    qt-x1 : Integer, qt-y1 : Integer
+  }
+
+  QtPoint = record {
+    pt-id : Integer,
+    pt-x : Integer, pt-y : Integer
+  }
+
+  QtNode = record {
+    qt-bounds : QtBounds,
+    qt-points : List QtPoint,
+    qt-children : List Integer,
+    qt-is-leaf : Boolean,
+    qt-count : Integer between 0 and 65535,
+    qt-depth : Integer between 0 and 16
+  }
+
+  Quadtree = record {
+    qt-nodes : List QtNode,
+    qt-node-count : Integer,
+    qt-max-depth : Integer between 1 and 16,
+    qt-max-points : Integer between 1 and 64
+  }
+
+Section: Construction
+  qt-new : QtBounds, Integer, Integer -> Quadtree
+  qt-new (bounds) (max-depth) (max-points) =
+    let root = QtNode { qt-bounds = bounds, qt-points = [], qt-children = [], qt-is-leaf = True, qt-count = 0, qt-depth = 0 }
+    in Quadtree { qt-nodes = [root], qt-node-count = 1, qt-max-depth = max-depth, qt-max-points = max-points }
+
+  qt-bounds-new : Integer, Integer, Integer, Integer -> QtBounds
+  qt-bounds-new (x0) (y0) (x1) (y1) = QtBounds { qt-x0 = x0, qt-y0 = y0, qt-x1 = x1, qt-y1 = y1 }
+
+Section: Bounds Helpers
+  qt-contains : QtBounds, Integer, Integer -> Boolean
+  qt-contains (b) (x) (y) =
+    x >= b.qt-x0 & x < b.qt-x1 & y >= b.qt-y0 & y < b.qt-y1
+
+  qt-overlaps : QtBounds, QtBounds -> Boolean
+  qt-overlaps (a) (b) =
+    a.qt-x0 < b.qt-x1 & a.qt-x1 > b.qt-x0 & a.qt-y0 < b.qt-y1 & a.qt-y1 > b.qt-y0
+
+  qt-quadrant-bounds : QtBounds, Integer -> QtBounds
+  qt-quadrant-bounds (b) (idx) =
+    let mx = (b.qt-x0 + b.qt-x1) / 2
+    in let my = (b.qt-y0 + b.qt-y1) / 2
+    in if idx == 0 then qt-bounds-new (b.qt-x0) (b.qt-y0) mx my
+    else if idx == 1 then qt-bounds-new mx (b.qt-y0) (b.qt-x1) my
+    else if idx == 2 then qt-bounds-new (b.qt-x0) my mx (b.qt-y1)
+    else qt-bounds-new mx my (b.qt-x1) (b.qt-y1)
+
+  qt-which-quadrant : QtBounds, Integer, Integer -> Integer
+  qt-which-quadrant (b) (x) (y) =
+    let mx = (b.qt-x0 + b.qt-x1) / 2
+    in let my = (b.qt-y0 + b.qt-y1) / 2
+    in (if x >= mx then 1 else 0) + (if y >= my then 2 else 0)
+
+Section: Insert
+  qt-insert : Quadtree, QtPoint -> Quadtree
+  qt-insert (tree) (pt) = qt-insert-at tree 0 pt
+
+  qt-insert-at : Quadtree, Integer, QtPoint -> Quadtree
+  qt-insert-at (tree) (node-idx) (pt) =
+    let node = list-at (tree.qt-nodes) node-idx
+    in if node.qt-is-leaf then
+      if node.qt-count < tree.qt-max-points then qt-add-to-leaf tree node-idx pt
+      else if node.qt-depth >= tree.qt-max-depth then qt-add-to-leaf tree node-idx pt
+      else let tree2 = qt-subdivide tree node-idx
+      in qt-insert-at tree2 node-idx pt
+    else let q = qt-which-quadrant (node.qt-bounds) (pt.pt-x) (pt.pt-y)
+    in qt-insert-at tree (list-at (node.qt-children) q) pt
+
+  qt-add-to-leaf : Quadtree, Integer, QtPoint -> Quadtree
+  qt-add-to-leaf (tree) (node-idx) (pt) =
+    let node = list-at (tree.qt-nodes) node-idx
+    in let updated = QtNode { qt-bounds = node.qt-bounds, qt-points = list-push (node.qt-points) pt, qt-children = node.qt-children, qt-is-leaf = True, qt-count = node.qt-count + 1, qt-depth = node.qt-depth }
+    in Quadtree { qt-nodes = list-set-at (tree.qt-nodes) node-idx updated, qt-node-count = tree.qt-node-count, qt-max-depth = tree.qt-max-depth, qt-max-points = tree.qt-max-points }
+
+  qt-subdivide : Quadtree, Integer -> Quadtree
+  qt-subdivide (tree) (node-idx) =
+    let node = list-at (tree.qt-nodes) node-idx
+    in let base-idx = tree.qt-node-count
+    in let children = [base-idx, base-idx + 1, base-idx + 2, base-idx + 3]
+    in let new-nodes = qt-create-children (node.qt-bounds) (node.qt-depth + 1) 0 []
+    in let updated = QtNode { qt-bounds = node.qt-bounds, qt-points = [], qt-children = children, qt-is-leaf = False, qt-count = 0, qt-depth = node.qt-depth }
+    in let nodes2 = list-set-at (tree.qt-nodes) node-idx updated
+    in let tree2 = Quadtree { qt-nodes = nodes2 & new-nodes, qt-node-count = tree.qt-node-count + 4, qt-max-depth = tree.qt-max-depth, qt-max-points = tree.qt-max-points }
+    in qt-reinsert tree2 node-idx (node.qt-points) 0 (node.qt-count)
+
+  qt-create-children : QtBounds, Integer, Integer, List QtNode -> List QtNode
+  qt-create-children (pb) (cd) (i) (acc) =
+    if i >= 4 then acc
+    else let cb = qt-quadrant-bounds pb i
+    in qt-create-children pb cd (i + 1) (list-push acc (QtNode { qt-bounds = cb, qt-points = [], qt-children = [], qt-is-leaf = True, qt-count = 0, qt-depth = cd }))
+
+  qt-reinsert : Quadtree, Integer, List QtPoint, Integer, Integer -> Quadtree
+  qt-reinsert (tree) (node-idx) (pts) (i) (len) =
+    if i >= len then tree
+    else qt-reinsert (qt-insert-at tree node-idx (list-at pts i)) node-idx pts (i + 1) len
+
+Section: Query
+  qt-query-range : Quadtree, QtBounds -> List QtPoint
+  qt-query-range (tree) (range) = qt-query-node tree 0 range []
+
+  qt-query-node : Quadtree, Integer, QtBounds, List QtPoint -> List QtPoint
+  qt-query-node (tree) (node-idx) (range) (acc) =
+    let node = list-at (tree.qt-nodes) node-idx
+    in if qt-overlaps (node.qt-bounds) range == False then acc
+    else if node.qt-is-leaf then qt-filter-points (node.qt-points) range 0 (node.qt-count) acc
+    else qt-query-kids tree (node.qt-children) range 0 4 acc
+
+  qt-filter-points : List QtPoint, QtBounds, Integer, Integer, List QtPoint -> List QtPoint
+  qt-filter-points (pts) (range) (i) (len) (acc) =
+    if i >= len then acc
+    else let pt = list-at pts i
+    in if qt-contains range (pt.pt-x) (pt.pt-y) then qt-filter-points pts range (i + 1) len (list-push acc pt)
+    else qt-filter-points pts range (i + 1) len acc
+
+  qt-query-kids : Quadtree, List Integer, QtBounds, Integer, Integer, List QtPoint -> List QtPoint
+  qt-query-kids (tree) (children) (range) (i) (limit) (acc) =
+    if i >= limit then acc
+    else qt-query-kids tree children range (i + 1) limit (qt-query-node tree (list-at children i) range acc)
+
+Section: Queries
+  qt-total-points : Quadtree -> Integer
+  qt-total-points (tree) = qt-sum-points (tree.qt-nodes) 0 (tree.qt-node-count) 0
+
+  qt-sum-points : List QtNode, Integer, Integer, Integer -> Integer
+  qt-sum-points (nodes) (i) (len) (acc) =
+    if i >= len then acc
+    else qt-sum-points nodes (i + 1) len (acc + (list-at nodes i).qt-count)
+
+  qt-num-nodes : Quadtree -> Integer
+  qt-num-nodes (tree) = tree.qt-node-count
+
+Page 1

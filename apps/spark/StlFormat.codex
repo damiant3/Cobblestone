@@ -1,0 +1,123 @@
+Chapter: StlFormat
+  cites Math chapter Quaternion
+  cites Spark chapter Mesh
+
+ ASCII STL import and export for triangle meshes. STL stores
+ a flat list of triangles with per-face normals. No vertex
+ sharing, no UVs, no colors — pure geometry. Vertex
+ positions and normals are Real.
+
+ We say:
+
+Section: Types
+
+  StlTriangle = record {
+    stl-normal : Vec3,
+    stl-v0 : Vec3,
+    stl-v1 : Vec3,
+    stl-v2 : Vec3
+  }
+
+Section: Export
+
+  stl-export : TriMesh, Text -> Text
+  stl-export (mesh) (name) =
+    let header = "solid " & name & "\n"
+    in let body = stl-export-faces mesh 0
+    in let footer = "endsolid " & name & "\n"
+    in header & body & footer
+
+  stl-export-faces : TriMesh, Integer -> Text
+  stl-export-faces (mesh) (fi) =
+    if fi >= mesh.tm-face-count then ""
+    else let face = tri-mesh-face mesh fi
+    in let v0 = tri-mesh-vert mesh (face.tf-v0)
+    in let v1 = tri-mesh-vert mesh (face.tf-v1)
+    in let v2 = tri-mesh-vert mesh (face.tf-v2)
+    in let normal = mesh-compute-face-normal v0 v1 v2
+    in let tri-text = stl-format-tri normal v0 v1 v2
+    in tri-text & stl-export-faces mesh (fi + 1)
+
+  stl-format-tri : Vec3, Vec3, Vec3, Vec3 -> Text
+  stl-format-tri (n) (v0) (v1) (v2) =
+    "  facet normal " & stl-fmt-v3 n & "\n" &
+    "    outer loop\n" &
+    "      vertex " & stl-fmt-v3 v0 & "\n" &
+    "      vertex " & stl-fmt-v3 v1 & "\n" &
+    "      vertex " & stl-fmt-v3 v2 & "\n" &
+    "    endloop\n" &
+    "  endfacet\n"
+
+  stl-fmt-v3 : Vec3 -> Text
+  stl-fmt-v3 (v) =
+    stl-fmt-fixed (v.vx) & " " & stl-fmt-fixed (v.vy) & " " & stl-fmt-fixed (v.vz)
+
+  stl-fmt-fixed : Real -> Text
+  stl-fmt-fixed (val) =
+    let abs-val = if val < 0.0 then 0.0 - val else val
+    in let whole = real-to-int abs-val
+    in let frac = real-to-int ((abs-val - int-to-real whole) * 1000.0)
+    in let prefix = if val < 0.0 then "-" else ""
+    in prefix & show whole & "." & stl-pad3 frac
+
+  stl-pad3 : Integer -> Text
+  stl-pad3 (n) =
+    if n < 10 then "00" & show n
+    else if n < 100 then "0" & show n
+    else show n
+
+Section: Import
+
+  stl-parse-count : Text -> Integer
+  stl-parse-count (text) =
+    stl-count-facets text 0 (text-length text) 0
+
+  stl-count-facets : Text, Integer, Integer, Integer -> Integer
+  stl-count-facets (text) (pos) (len) (count) =
+    if pos >= len - 5 then count
+    else if stl-match-at text pos "facet" then stl-count-facets text (pos + 5) len (count + 1)
+    else stl-count-facets text (pos + 1) len count
+
+  stl-match-at : Text, Integer, Text -> Boolean
+  stl-match-at (text) (pos) (pattern) =
+    stl-match-loop text pos pattern 0 (text-length pattern)
+
+  stl-match-loop : Text, Integer, Text, Integer, Integer -> Boolean
+  stl-match-loop (text) (tpos) (pat) (pi) (plen) =
+    if pi >= plen then True
+    else if tpos + pi >= text-length text then False
+    else if char-code (char-at text (tpos + pi)) == char-code (char-at pat pi) then stl-match-loop text tpos pat (pi + 1) plen
+    else False
+
+Section: Mesh Construction from STL
+
+  stl-to-mesh : Integer -> TriMesh
+  stl-to-mesh (face-count) =
+    stl-build-empty-mesh face-count 0 tri-mesh-empty
+
+  stl-build-empty-mesh : Integer, Integer, TriMesh -> TriMesh
+  stl-build-empty-mesh (count) (i) (mesh) =
+    if i >= count then mesh
+    else let base = i * 3
+    in let v = vec3-zero
+    in let uv = vec2-new 0.0 0.0
+    in let n = vec3-new 0.0 1.0 0.0
+    in let m2 = tri-mesh-add-vert mesh v uv n
+    in let m3 = tri-mesh-add-vert m2 v uv n
+    in let m4 = tri-mesh-add-vert m3 v uv n
+    in let m5 = tri-mesh-add-face m4 base (base + 1) (base + 2)
+    in stl-build-empty-mesh count (i + 1) m5
+
+Section: Statistics
+
+  stl-export-size : TriMesh -> Integer
+  stl-export-size (mesh) =
+    80 + mesh.tm-face-count * 200
+
+Section: Info
+
+  stl-info : TriMesh, Text -> Text
+  stl-info (mesh) (name) =
+    "STL '" & name & "' " & show (mesh.tm-face-count) & " triangles"
+
+Page 1

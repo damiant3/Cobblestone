@@ -1,0 +1,370 @@
+Chapter: NetworkManager
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter DataTable
+  cites UI chapter Dropdown
+  cites UI chapter FilterableList
+  cites UI chapter DetailPane
+  cites UI chapter StatusBadge
+  cites UI chapter SearchBar
+  cites UI chapter CommandPalette
+  cites UI chapter SettingsPanel
+  cites UI chapter Validation
+  cites Foreword chapter Maybe
+
+ Network interface and configuration manager. Shows NICs, IP addresses,
+ DNS servers, routing tables, and real-time traffic stats. Supports
+ DHCP and static configuration. The NIC model covers both the NE2K
+ in codex-vm and real hardware (Intel I210, Realtek, etc.).
+
+Section: NIC Types
+
+  NicType =
+    | NicEthernet
+    | NicWifi
+    | NicLoopback
+    | NicVirtual
+    | NicBridge
+
+  nic-type-label : NicType -> Text
+  nic-type-label (t) = when t
+    is NicEthernet -> "Ethernet"
+    is NicWifi -> "Wi-Fi"
+    is NicLoopback -> "Loopback"
+    is NicVirtual -> "Virtual"
+    is NicBridge -> "Bridge"
+
+  NicDuplex =
+    | DuplexFull
+    | DuplexHalf
+    | DuplexUnknown
+
+  nic-duplex-label : NicDuplex -> Text
+  nic-duplex-label (d) = when d
+    is DuplexFull -> "full"
+    is DuplexHalf -> "half"
+    is DuplexUnknown -> "?"
+
+Section: IP Address
+
+  IpVersion =
+    | Ipv4
+    | Ipv6
+
+  IpAddress = record {
+    ip-addr : Text,
+    ip-version : IpVersion,
+    ip-prefix-len : Integer,
+    ip-gateway : Text,
+    ip-dhcp : Boolean
+  }
+
+  ip-address-new : Text, Integer -> IpAddress
+  ip-address-new (addr) (prefix) = IpAddress {
+    ip-addr = addr,
+    ip-version = Ipv4,
+    ip-prefix-len = prefix,
+    ip-gateway = "",
+    ip-dhcp = True
+  }
+
+  format-ip-cidr : IpAddress -> Text
+  format-ip-cidr (ip) = ip.ip-addr & "/" & show (ip.ip-prefix-len)
+
+  subnet-mask-from-prefix : Integer -> Text
+  subnet-mask-from-prefix (prefix) =
+    if prefix >= 24 then "255.255.255." & show (256 - (1 * (32 - prefix)))
+    else if prefix >= 16 then "255.255." & show (256 - (1 * (24 - prefix))) & ".0"
+    else if prefix >= 8 then "255." & show (256 - (1 * (16 - prefix))) & ".0.0"
+    else show (256 - (1 * (8 - prefix))) & ".0.0.0"
+
+Section: NIC
+
+  Nic = record {
+    nic-id : Text,
+    nic-name : Text,
+    nic-type : NicType,
+    nic-mac : Text,
+    nic-status : ResourceStatus,
+    nic-speed-mbps : Integer,
+    nic-duplex : NicDuplex,
+    nic-mtu : Integer,
+    nic-addresses : List IpAddress,
+    nic-addr-count : Integer,
+    nic-rx-bytes : ByteSize,
+    nic-tx-bytes : ByteSize,
+    nic-rx-packets : Integer,
+    nic-tx-packets : Integer,
+    nic-rx-errors : Integer,
+    nic-tx-errors : Integer,
+    nic-driver : Text
+  }
+
+  nic-new : Text, Text, NicType, Text -> Nic
+  nic-new (id) (name) (ntype) (mac) = Nic {
+    nic-id = id,
+    nic-name = name,
+    nic-type = ntype,
+    nic-mac = mac,
+    nic-status = StatusOnline,
+    nic-speed-mbps = 100,
+    nic-duplex = DuplexFull,
+    nic-mtu = 1500,
+    nic-addresses = [],
+    nic-addr-count = 0,
+    nic-rx-bytes = bytes 0,
+    nic-tx-bytes = bytes 0,
+    nic-rx-packets = 0,
+    nic-tx-packets = 0,
+    nic-rx-errors = 0,
+    nic-tx-errors = 0,
+    nic-driver = ""
+  }
+
+  nic-add-address : Nic, IpAddress -> Nic
+  nic-add-address (n) (addr) =
+    __record-set (__record-set n "nic-addresses" (list-push (n.nic-addresses) addr)) "nic-addr-count" (n.nic-addr-count + 1)
+
+  nic-primary-ip : Nic -> Text
+  nic-primary-ip (n) =
+    if n.nic-addr-count == 0 then "no address"
+    else (list-at (n.nic-addresses) 0).ip-addr
+
+Section: DNS
+
+  DnsServer = record {
+    dns-addr : Text,
+    dns-name : Text,
+    dns-latency-ms : Integer,
+    dns-queries : Integer,
+    dns-primary : Boolean
+  }
+
+Section: Route
+
+  RouteEntry = record {
+    rt-destination : Text,
+    rt-gateway : Text,
+    rt-interface : Text,
+    rt-metric : Integer,
+    rt-type : Text
+  }
+
+Section: Network Manager State
+
+  NetworkManagerState = record {
+    nm-nics : List Nic,
+    nm-nic-count : Integer,
+    nm-dns : List DnsServer,
+    nm-dns-count : Integer,
+    nm-routes : List RouteEntry,
+    nm-route-count : Integer,
+    nm-selected-nic : Text,
+    nm-hostname : Text
+  }
+
+  net-manager-new : NetworkManagerState
+  net-manager-new = NetworkManagerState {
+    nm-nics = [],
+    nm-nic-count = 0,
+    nm-dns = [],
+    nm-dns-count = 0,
+    nm-routes = [],
+    nm-route-count = 0,
+    nm-selected-nic = "",
+    nm-hostname = "codex-vm"
+  }
+
+Section: Actions
+
+  nm-add-nic : NetworkManagerState, Nic -> NetworkManagerState
+  nm-add-nic (st) (n) =
+    __record-set (__record-set st "nm-nics" (list-push (st.nm-nics) n)) "nm-nic-count" (st.nm-nic-count + 1)
+
+  nm-add-dns : NetworkManagerState, DnsServer -> NetworkManagerState
+  nm-add-dns (st) (d) =
+    __record-set (__record-set st "nm-dns" (list-push (st.nm-dns) d)) "nm-dns-count" (st.nm-dns-count + 1)
+
+  nm-add-route : NetworkManagerState, RouteEntry -> NetworkManagerState
+  nm-add-route (st) (r) =
+    __record-set (__record-set st "nm-routes" (list-push (st.nm-routes) r)) "nm-route-count" (st.nm-route-count + 1)
+
+  nm-select-nic : NetworkManagerState, Text -> NetworkManagerState
+  nm-select-nic (st) (id) = __record-set st "nm-selected-nic" id
+
+  nm-find-nic : NetworkManagerState, Text -> Maybe Nic
+  nm-find-nic (st) (id) = nm-find-nic-loop (st.nm-nics) id 0 (st.nm-nic-count)
+
+  nm-find-nic-loop : List Nic, Text, Integer, Integer -> Maybe Nic
+  nm-find-nic-loop (nics) (id) (i) (n) =
+    if i >= n then None
+    else let nic = list-at nics i
+    in if nic.nic-id == id then Just nic
+    else nm-find-nic-loop nics id (i + 1) n
+
+  nm-total-rx : NetworkManagerState -> ByteSize
+  nm-total-rx (st) = nm-sum-rx (st.nm-nics) 0 (st.nm-nic-count) 0
+
+  nm-sum-rx : List Nic, Integer, Integer, Integer -> ByteSize
+  nm-sum-rx (nics) (i) (n) (acc) =
+    if i >= n then bytes acc
+    else nm-sum-rx nics (i + 1) n (acc + (list-at nics i).nic-rx-bytes.bs-bytes)
+
+  nm-total-tx : NetworkManagerState -> ByteSize
+  nm-total-tx (st) = nm-sum-tx (st.nm-nics) 0 (st.nm-nic-count) 0
+
+  nm-sum-tx : List Nic, Integer, Integer, Integer -> ByteSize
+  nm-sum-tx (nics) (i) (n) (acc) =
+    if i >= n then bytes acc
+    else nm-sum-tx nics (i + 1) n (acc + (list-at nics i).nic-tx-bytes.bs-bytes)
+
+Section: Widget Building
+
+  nm-nic-row : Nic -> WidgetNode
+  nm-nic-row (n) =
+    let type-label = widget-label (n.nic-id & "-type") (nic-type-label (n.nic-type))
+    in let name-label = widget-label (n.nic-id & "-name") (n.nic-name)
+    in let ip-label = widget-label (n.nic-id & "-ip") (nic-primary-ip n)
+    in let mac-label = widget-label (n.nic-id & "-mac") (n.nic-mac)
+    in let speed-label = widget-label (n.nic-id & "-speed") (show (n.nic-speed-mbps) & " Mbps")
+    in let status-lbl = widget-label (n.nic-id & "-status") (status-label (n.nic-status))
+    in let rx-label = widget-label (n.nic-id & "-rx") ("RX: " & format-bytes (n.nic-rx-bytes))
+    in let tx-label = widget-label (n.nic-id & "-tx") ("TX: " & format-bytes (n.nic-tx-bytes))
+    in widget-panel n.nic-id DirRow 8 [type-label, name-label, ip-label, mac-label, speed-label, status-lbl, rx-label, tx-label]
+
+  nm-widget : NetworkManagerState -> WidgetNode
+  nm-widget (st) =
+    let title = widget-label "nm-title" "Network"
+    in let summary = widget-label "nm-summary" (show (st.nm-nic-count) & " interfaces, RX: " & format-bytes (nm-total-rx st) & " TX: " & format-bytes (nm-total-tx st))
+    in let nic-rows = nm-nic-rows (st.nm-nics) 0 (st.nm-nic-count) []
+    in let dns-title = widget-label "dns-title" "DNS Servers"
+    in let dns-rows = nm-dns-rows (st.nm-dns) 0 (st.nm-dns-count) []
+    in let route-title = widget-label "route-title" "Routes"
+    in let route-rows = nm-route-rows (st.nm-routes) 0 (st.nm-route-count) []
+    in widget-panel "network-manager" DirColumn 8 ([title, summary] & nic-rows & [dns-title] & dns-rows & [route-title] & route-rows)
+
+  nm-nic-rows : List Nic, Integer, Integer, List WidgetNode -> List WidgetNode
+  nm-nic-rows (nics) (i) (n) (acc) =
+    if i >= n then acc
+    else nm-nic-rows nics (i + 1) n (list-push acc (nm-nic-row (list-at nics i)))
+
+  nm-dns-rows : List DnsServer, Integer, Integer, List WidgetNode -> List WidgetNode
+  nm-dns-rows (dns) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = list-at dns i
+    in let row = widget-panel ("dns-" & show i) DirRow 8 [
+      widget-label ("dns-addr-" & show i) (d.dns-addr),
+      widget-label ("dns-name-" & show i) (d.dns-name),
+      widget-label ("dns-lat-" & show i) (show (d.dns-latency-ms) & " ms"),
+      widget-label ("dns-q-" & show i) (show (d.dns-queries) & " queries")
+    ]
+    in nm-dns-rows dns (i + 1) n (list-push acc row)
+
+  nm-route-rows : List RouteEntry, Integer, Integer, List WidgetNode -> List WidgetNode
+  nm-route-rows (routes) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at routes i
+    in let row = widget-panel ("rt-" & show i) DirRow 8 [
+      widget-label ("rt-dst-" & show i) (r.rt-destination),
+      widget-label ("rt-gw-" & show i) (r.rt-gateway),
+      widget-label ("rt-if-" & show i) (r.rt-interface),
+      widget-label ("rt-met-" & show i) ("metric " & show (r.rt-metric))
+    ]
+    in nm-route-rows routes (i + 1) n (list-push acc row)
+
+Section: Traffic Snapshot
+
+  TrafficSnapshot = record {
+    ts-nic-id : Text,
+    ts-rx-bytes : Integer,
+    ts-tx-bytes : Integer,
+    ts-rx-packets : Integer,
+    ts-tx-packets : Integer,
+    ts-timestamp : Integer
+  }
+
+  traffic-snapshot : Nic, Integer -> TrafficSnapshot
+  traffic-snapshot (n) (ts) = TrafficSnapshot {
+    ts-nic-id = n.nic-id,
+    ts-rx-bytes = (n.nic-rx-bytes).bs-bytes,
+    ts-tx-bytes = (n.nic-tx-bytes).bs-bytes,
+    ts-rx-packets = n.nic-rx-packets,
+    ts-tx-packets = n.nic-tx-packets,
+    ts-timestamp = ts
+  }
+
+  traffic-rate : TrafficSnapshot, TrafficSnapshot -> TrafficSnapshot
+  traffic-rate (prev) (curr) =
+    let dt = curr.ts-timestamp - prev.ts-timestamp
+    in if dt <= 0 then TrafficSnapshot { ts-nic-id = curr.ts-nic-id, ts-rx-bytes = 0, ts-tx-bytes = 0, ts-rx-packets = 0, ts-tx-packets = 0, ts-timestamp = curr.ts-timestamp }
+    else TrafficSnapshot {
+      ts-nic-id = curr.ts-nic-id,
+      ts-rx-bytes = (curr.ts-rx-bytes - prev.ts-rx-bytes) / dt,
+      ts-tx-bytes = (curr.ts-tx-bytes - prev.ts-tx-bytes) / dt,
+      ts-rx-packets = (curr.ts-rx-packets - prev.ts-rx-packets) / dt,
+      ts-tx-packets = (curr.ts-tx-packets - prev.ts-tx-packets) / dt,
+      ts-timestamp = curr.ts-timestamp
+    }
+
+  traffic-rate-label : TrafficSnapshot -> Text
+  traffic-rate-label (r) =
+    "RX: " & format-bytes (bytes (r.ts-rx-bytes)) & "/s, TX: " & format-bytes (bytes (r.ts-tx-bytes)) & "/s"
+
+Section: NIC Detail
+
+  NicDetail = record {
+    nd-nic : Nic,
+    nd-rate : TrafficSnapshot,
+    nd-error-rate : Integer
+  }
+
+  nic-detail-new : Nic -> NicDetail
+  nic-detail-new (n) = NicDetail {
+    nd-nic = n,
+    nd-rate = TrafficSnapshot { ts-nic-id = n.nic-id, ts-rx-bytes = 0, ts-tx-bytes = 0, ts-rx-packets = 0, ts-tx-packets = 0, ts-timestamp = 0 },
+    nd-error-rate = if n.nic-rx-packets + n.nic-tx-packets > 0 then (n.nic-rx-errors + n.nic-tx-errors) * 10000 / (n.nic-rx-packets + n.nic-tx-packets) else 0
+  }
+
+  nic-detail-widget : NicDetail -> WidgetNode
+  nic-detail-widget (d) =
+    let n = d.nd-nic
+    in let name = widget-label "nd-name" (n.nic-name)
+    in let ntype = widget-label "nd-type" (nic-type-label (n.nic-type))
+    in let mac = widget-label "nd-mac" ("MAC: " & n.nic-mac)
+    in let speed = widget-label "nd-speed" ("Speed: " & show (n.nic-speed-mbps) & " Mbps " & nic-duplex-label (n.nic-duplex))
+    in let mtu = widget-label "nd-mtu" ("MTU: " & show (n.nic-mtu))
+    in let driver = widget-label "nd-driver" ("Driver: " & n.nic-driver)
+    in let rx = widget-label "nd-rx" ("RX: " & format-bytes (n.nic-rx-bytes) & " (" & show (n.nic-rx-packets) & " pkts, " & show (n.nic-rx-errors) & " err)")
+    in let tx = widget-label "nd-tx" ("TX: " & format-bytes (n.nic-tx-bytes) & " (" & show (n.nic-tx-packets) & " pkts, " & show (n.nic-tx-errors) & " err)")
+    in let rate = widget-label "nd-rate" (traffic-rate-label (d.nd-rate))
+    in let err-label = widget-label "nd-errrate" ("Error rate: " & show (d.nd-error-rate) & " per 10K packets")
+    in let addrs-title = widget-label "nd-addrs" ("Addresses: " & show (n.nic-addr-count))
+    in let addr-rows = nm-addr-rows (n.nic-addresses) 0 (n.nic-addr-count) []
+    in widget-panel "nic-detail" DirColumn 4 ([name, ntype, mac, speed, mtu, driver, rx, tx, rate, err-label, addrs-title] & addr-rows)
+
+  nm-addr-rows : List IpAddress, Integer, Integer, List WidgetNode -> List WidgetNode
+  nm-addr-rows (addrs) (i) (n) (acc) =
+    if i >= n then acc
+    else let ip = list-at addrs i
+    in let row = widget-panel ("addr-" & show i) DirRow 8 [
+      widget-label ("ip-" & show i) (format-ip-cidr ip),
+      widget-label ("gw-" & show i) ("GW: " & ip.ip-gateway),
+      widget-label ("dhcp-" & show i) (if ip.ip-dhcp then "DHCP" else "Static")
+    ]
+    in nm-addr-rows addrs (i + 1) n (list-push acc row)
+
+Section: JSON
+
+  nic-to-json : Nic -> Text
+  nic-to-json (n) =
+    "{\"id\":\"" & n.nic-id & "\",\"name\":\"" & n.nic-name
+    & "\",\"type\":\"" & nic-type-label (n.nic-type)
+    & "\",\"mac\":\"" & n.nic-mac
+    & "\",\"ip\":\"" & nic-primary-ip n
+    & "\",\"speed\":" & show (n.nic-speed-mbps)
+    & ",\"status\":\"" & status-label (n.nic-status)
+    & "\",\"rxBytes\":" & show (n.nic-rx-bytes).bs-bytes
+    & ",\"txBytes\":" & show (n.nic-tx-bytes).bs-bytes & "}"
+
+Page 1

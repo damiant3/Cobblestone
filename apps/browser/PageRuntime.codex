@@ -1,0 +1,383 @@
+Chapter: PageRuntime
+  cites Foreword chapter Widget
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Foreword chapter RichText
+  cites UI chapter Layout
+  cites Browser chapter ContentAddress
+  cites Browser chapter TrustManager
+  cites Browser chapter PageSandbox
+  cites Browser chapter ContentCache
+  cites Browser chapter PageFetcher
+  cites Browser chapter BrowserTheme
+  cites Browser chapter PageCompiler
+
+ The page runtime compiles or loads a page, verifies its
+ capability profile, and extracts the widget tree.
+
+ Phase 1 (MVP): Built-in pages as inline functions. Local file
+ loading via pre-compiled CDX. No in-browser compilation.
+
+ Phase 2: Invoke the compiler pipeline in-process to compile
+ page source to CDX, then extract the widget tree entry point.
+
+Section: Types
+
+  PageLoadResult =
+    | PageLoaded (WidgetNode) (Text) (PageCapabilities)
+    | PageCompileError (Text)
+    | PageFetchError (Text)
+    | PageTrustDenied (CapabilityTier)
+    | PageSizeDenied (Integer)
+
+  PageSource =
+    | SourceInline (Integer) (Integer -> WidgetNode) (Text)
+    | SourceBytes (List Integer) (Boolean)
+    | SourceAddress (Text) (Text)
+
+Section: Address Resolution and Loading
+
+  resolve-and-load : Text, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer
+    -> PageLoadResult
+  resolve-and-load (address) (config) (trust) (cache) (vw) (vh) =
+    let parsed = parse-codex-address address
+    in when parsed
+      is None -> PageFetchError ("Invalid address: " & address)
+      is Just (addr) -> load-by-address addr config trust cache vw vh
+
+  load-by-address : CodexAddress, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer
+    -> PageLoadResult
+  load-by-address (addr) (config) (trust) (cache) (vw) (vh) =
+    when addr
+      is LocalAddress (name) ->
+        load-local-page name vw vh
+      is NamedAddress (host) (path) (ver) ->
+        load-remote-page host path config trust vw vh
+      is HashAddress (hash) ->
+        load-from-cache cache hash config trust vw vh
+
+Section: Local Page Loading
+
+  load-local-page : Text, Integer, Integer -> PageLoadResult
+  load-local-page (name) (vw) (vh) =
+    let source = resolve-local-page name
+    in when source
+      is None -> PageFetchError ("Unknown local page: " & name)
+      is Just (src) -> load-page-source src vw vh
+
+  load-page-source : PageSource, Integer, Integer -> PageLoadResult
+  load-page-source (source) (vw) (vh) =
+    when source
+      is SourceInline (builder) (title) ->
+        let tree = builder vw vh
+        in let caps = PageCapabilities { pc-effects = ["Display"], pc-tier = TierStatic }
+        in PageLoaded (tree) (title) (caps)
+      is SourceBytes (bytes) (is-source) ->
+        let outcome = compile-page bytes is-source vw vh
+        in when outcome
+          is PcSuccess (tree) (title) (effects) ->
+            let caps = PageCapabilities { pc-effects = effects, pc-tier = TierStatic }
+            in PageLoaded tree title caps
+          is PcError (msg) ->
+            PageCompileError msg
+      is SourceAddress (host) (path) ->
+        PageFetchError ("Network loading requires Phase 2: " & host & "/" & path)
+
+Section: Remote Page Loading
+
+  load-remote-page : Text, Text, SandboxConfig, TrustStore, Integer, Integer
+    -> PageLoadResult
+  load-remote-page (host) (path) (config) (trust) (vw) (vh) =
+    let result = fetch-page-tcp host path fetch-defaults
+    in when result
+      is FetchOk (page) ->
+        load-fetched-page page config trust vw vh
+      is FetchNetworkError (msg) ->
+        PageFetchError ("Network error: " & msg)
+      is FetchHashMismatch (actual) (expected) ->
+        PageFetchError ("Content hash mismatch: " & actual & " vs " & expected)
+      is FetchNotFound ->
+        PageFetchError ("Page not found: " & host & "/" & path)
+      is FetchTimeout ->
+        PageFetchError ("Fetch timed out: " & host & "/" & path)
+
+  load-fetched-page : FetchedPage, SandboxConfig, TrustStore, Integer, Integer
+    -> PageLoadResult
+  load-fetched-page (page) (config) (trust) (vw) (vh) =
+    let size-ok = page.fp-size <= config.sb-max-source-bytes
+    in if size-ok == False
+      then PageSizeDenied (page.fp-size)
+      else let sig-ok = verify-fetched-signature page
+        in if sig-ok == False
+          then PageFetchError "Publisher signature verification failed"
+          else load-page-source (SourceBytes (page.fp-bytes) (page.fp-is-source)) vw vh
+
+Section: Media Demo Page
+
+  page-media-demo : Integer, Integer -> WidgetNode
+  page-media-demo (w) (h) =
+    let heading = widget-label "title" "Codex Media Player"
+    in let desc = widget-label "desc"
+          "Multimedia playback — no plugins, no HTML5, no codec downloads."
+    in let sep1 = widget-separator "sep1"
+    in let video-area = widget-custom "mock-video" "" w 300
+    in let play-btn = widget-button "media-play" ">"
+    in let stop-btn = widget-button "media-stop" "[]"
+    in let progress = widget-progress "media-progress" 42 100
+    in let time-label = widget-label "media-time" "01:42 / 04:00"
+    in let vol-label = widget-label "media-vol" "VOL:80"
+    in let controls = widget-panel "controls" DirRow spacing-md [
+          play-btn, stop-btn, widget-set-flex progress 1, time-label, vol-label
+        ]
+    in let player = widget-panel "player" DirColumn 0 [
+          video-area, widget-set-min controls w 48
+        ]
+    in let sep2 = widget-separator "sep2"
+    in let how = widget-panel "how" DirColumn spacing-sm [
+          widget-label "h1" "Page declares [Display, Network, Audio] effects.",
+          widget-label "h2" "Server streams video + audio over typed data channels.",
+          widget-label "h3" "Browser decodes: keyframes + deltas for video, PCM for audio.",
+          widget-label "h4" "Video frames blit to VBE. Audio writes to Intel HDA via DMA."
+        ]
+    in widget-panel "media-demo" DirColumn spacing-md [
+      heading, desc, sep1, player, sep2, how
+    ]
+
+Section: Cache Loading
+
+  load-from-cache : ContentCacheState, ContentHash, SandboxConfig, TrustStore, Integer, Integer
+    -> PageLoadResult
+  load-from-cache (cache) (hash) (config) (trust) (vw) (vh) =
+    let cached = cache-lookup cache hash
+    in when cached
+      is None -> PageFetchError ("Content not in cache: " & content-hash-short hash)
+      is Just (entry) ->
+        PageCompileError "CDX loading requires verified content-hash"
+
+Section: Local Page Registry
+
+  resolve-local-page : Text -> Maybe PageSource
+  resolve-local-page (name) =
+    when name
+      is "newtab" -> Just (SourceInline (page-new-tab) ("New Tab"))
+      is "hello" -> Just (SourceInline (page-hello) ("Hello, Codex"))
+      is "about" -> Just (SourceInline (page-about) ("About Codex Browser"))
+      is "dashboard" -> Just (SourceInline (page-dashboard) ("System Dashboard"))
+      is "trust" -> Just (SourceInline (page-trust-info) ("Trust Model"))
+      is "history" -> Just (SourceInline (page-history) ("History"))
+      is "settings" -> Just (SourceInline (page-settings) ("Settings"))
+      is "media" -> Just (SourceInline (page-media-demo) ("Media Player Demo"))
+      is otherwise -> None
+
+Section: New Tab Page
+
+  page-new-tab : Integer, Integer -> WidgetNode
+  page-new-tab (w) (h) =
+    let heading = widget-label "title" "Codex Browser"
+    in let subtitle = widget-label "subtitle" "A new web, from first principles"
+    in let sep = widget-separator "sep1"
+    in let quick-heading = widget-label "quick-title" "Quick Links"
+    in let links = widget-panel "links" DirColumn 4 [
+          widget-button "link-hello" "Hello World — codex://local/hello",
+          widget-button "link-about" "About — codex://local/about",
+          widget-button "link-dash" "Dashboard — codex://local/dashboard",
+          widget-button "link-trust" "Trust Model — codex://local/trust",
+          widget-button "link-settings" "Settings — codex://local/settings",
+          widget-button "link-media" "Media Player — codex://local/media"
+        ]
+    in let info = widget-label "info"
+          "Type an address above or click a link to get started."
+    in widget-panel "newtab" DirColumn spacing-lg [
+      heading, subtitle, sep, quick-heading, links, info
+    ]
+
+Section: Hello Page
+
+  page-hello : Integer, Integer -> WidgetNode
+  page-hello (w) (h) =
+    let heading = widget-label "title" "Hello, Codex"
+    in let p1 = widget-label "p1"
+          "This is the first page rendered by the Codex Browser."
+    in let p2 = widget-label "p2"
+          "No HTML was parsed. No CSS was applied. No JavaScript was interpreted."
+    in let p3 = widget-label "p3"
+          "This page is a compiled Codex function that returns a widget tree."
+    in let p4 = widget-label "p4"
+          "Its capability profile is [Display] — it can paint pixels and nothing else."
+    in let sep = widget-separator "sep"
+    in let detail-heading = widget-label "detail-title" "How It Works"
+    in let d1 = widget-label "d1"
+          "1. The browser resolves codex://local/hello to a built-in page function."
+    in let d2 = widget-label "d2"
+          "2. The function receives the viewport dimensions and returns a WidgetNode tree."
+    in let d3 = widget-label "d3"
+          "3. The layout engine computes flex positions for each widget."
+    in let d4 = widget-label "d4"
+          "4. The renderer paints the widget tree to a framebuffer."
+    in let d5 = widget-label "d5"
+          "5. The compositor blends the page surface with the browser chrome."
+    in widget-panel "hello" DirColumn spacing-md [
+      heading, p1, p2, p3, p4, sep, detail-heading, d1, d2, d3, d4, d5
+    ]
+
+Section: About Page
+
+  page-about : Integer, Integer -> WidgetNode
+  page-about (w) (h) =
+    let heading = widget-label "title" "Codex Browser v0.1"
+    in let version = widget-label "version"
+          "Built on the Codex self-sustaining compiler (fixed point of itself)"
+    in let sep1 = widget-separator "sep1"
+    in let cap-title = widget-label "cap-title" "Capability Tiers"
+    in let tiers = widget-panel "tiers" DirColumn spacing-sm [
+          tier-row "Static" "[Display]" "No consent needed" trust-color-static,
+          tier-row "Connected" "[Display, Network]" "Implicit for trusted publishers" trust-color-connected,
+          tier-row "Interactive" "[Display, Network, Storage]" "User prompted" trust-color-interactive,
+          tier-row "Sensor" "[..., Camera/Mic]" "Explicit per device" trust-color-sensor,
+          tier-row "System" "[..., FileSystem]" "Explicit + high trust" trust-color-system
+        ]
+    in let sep2 = widget-separator "sep2"
+    in let addr-title = widget-label "addr-title" "Addressing"
+    in let addr-info = widget-panel "addr-info" DirColumn spacing-sm [
+          widget-label "a1" "Content-addressed: SHA-256 hash is the address.",
+          widget-label "a2" "Publisher identity: Ed25519 public key.",
+          widget-label "a3" "Name resolution: Trust lattice, not DNS.",
+          widget-label "a4" "Verification: Hash check + signature, not TLS certificates."
+        ]
+    in let sep3 = widget-separator "sep3"
+    in let frame-title = widget-label "frame-title" "Frame Model"
+    in let frame-info = widget-panel "frame-info" DirColumn spacing-sm [
+          widget-label "f1" "Pages are compiled Codex programs — not interpreted markup.",
+          widget-label "f2" "Servers send a compiled frame (CDX), then stream typed data.",
+          widget-label "f3" "Data channels are structurally typed — mismatch = bind rejected.",
+          widget-label "f4" "Layout is pre-determined — data updates trigger constrained repaints."
+        ]
+    in widget-panel "about" DirColumn spacing-md [
+      heading, version, sep1, cap-title, tiers, sep2,
+      addr-title, addr-info, sep3, frame-title, frame-info
+    ]
+
+  tier-row : Text, Text, Text, Integer -> WidgetNode
+  tier-row (name) (effects) (description) (color) =
+    let indicator = widget-custom ("tier-" & name) "" 12 12
+    in let name-label = widget-label ("tier-name-" & name) name
+    in let effect-label = widget-label ("tier-eff-" & name) effects
+    in let desc-label = widget-label ("tier-desc-" & name) description
+    in widget-panel ("tier-" & name) DirRow spacing-md [
+      indicator, name-label, effect-label, desc-label
+    ]
+
+Section: Dashboard Page
+
+  page-dashboard : Integer, Integer -> WidgetNode
+  page-dashboard (w) (h) =
+    let heading = widget-label "title" "System Dashboard"
+    in let sep = widget-separator "sep"
+    in let status-section = widget-panel "status" DirColumn spacing-sm [
+          status-row "Compiler" "Fixed point (self-sustaining)" True,
+          status-row "Test Battery" "105/105 pass" True,
+          status-row "Seed" "Codex.cdx (~2.1 MB)" True,
+          status-row "VM" "codex-vm (WHP hypervisor)" True,
+          status-row "Network" "NE2K + TCP/IP + DNS" True,
+          status-row "Trust Store" "3 publishers trusted" False,
+          status-row "Content Cache" "0/64 entries" False
+        ]
+    in let sep2 = widget-separator "sep2"
+    in let memory-title = widget-label "mem-title" "Memory Layout"
+    in let memory = widget-panel "memory" DirColumn spacing-sm [
+          widget-label "m1" "Code:  #100000 — ~2.1 MB binary",
+          widget-label "m2" "Heap:  #600000 — grows up (R10)",
+          widget-label "m3" "Stack: #80000000 — grows down (RSP)",
+          widget-label "m4" "Gap:   ~1.8 GB available"
+        ]
+    in widget-panel "dashboard" DirColumn spacing-md [
+      heading, sep, status-section, sep2, memory-title, memory
+    ]
+
+  status-row : Text, Text, Boolean -> WidgetNode
+  status-row (name) (value) (ok) =
+    let indicator = widget-label ("ind-" & name) (if ok then "[OK]" else "[--]")
+    in let name-label = widget-label ("name-" & name) name
+    in let value-label = widget-label ("val-" & name) value
+    in widget-panel ("row-" & name) DirRow spacing-md [
+      indicator, name-label, value-label
+    ]
+
+Section: Trust Info Page
+
+  page-trust-info : Integer, Integer -> WidgetNode
+  page-trust-info (w) (h) =
+    let heading = widget-label "title" "Trust Model"
+    in let intro = widget-label "intro"
+          "The Codex Browser uses compile-time capability verification instead of runtime sandboxing."
+    in let sep1 = widget-separator "sep1"
+    in let how-title = widget-label "how-title" "How It Works"
+    in let how = widget-panel "how" DirColumn spacing-sm [
+          widget-label "h1" "1. Every page declares its effects in its type signature.",
+          widget-label "h2" "2. The compiler verifies the code matches the declaration.",
+          widget-label "h3" "3. The browser shows the capability profile before execution.",
+          widget-label "h4" "4. Static [Display] pages run without consent — they are safe by construction.",
+          widget-label "h5" "5. Higher tiers require user consent, scoped by publisher."
+        ]
+    in let sep2 = widget-separator "sep2"
+    in let embed-title = widget-label "embed-title" "Page Embedding (EROS Factory Pattern)"
+    in let embed = widget-panel "embed" DirColumn spacing-sm [
+          widget-label "e1" "Embedded pages use the EROS factory pattern for isolation.",
+          widget-label "e2" "The inner page receives ONLY capabilities explicitly passed.",
+          widget-label "e3" "Capability ceiling: inner effects must be a subset of outer effects.",
+          widget-label "e4" "Revocation cascades from parent to child (seL4 derivation tree).",
+          widget-label "e5" "Communication between pages is via typed data channels only."
+        ]
+    in let sep3 = widget-separator "sep3"
+    in let vs-title = widget-label "vs-title" "What This Eliminates"
+    in let vs = widget-panel "vs" DirColumn spacing-sm [
+          widget-label "v1" "XSS — no string-to-code eval, pages are compiled",
+          widget-label "v2" "CSRF — effect types prevent unauthorized network calls",
+          widget-label "v3" "Cookie theft — no cookies, sessions are capability tokens",
+          widget-label "v4" "Supply chain attacks — every dependency is content-addressed and signed",
+          widget-label "v5" "DOM clobbering — no DOM, widget tree is typed"
+        ]
+    in widget-panel "trust" DirColumn spacing-md [
+      heading, intro, sep1, how-title, how, sep2,
+      embed-title, embed, sep3, vs-title, vs
+    ]
+
+Section: History Page
+
+  page-history : Integer, Integer -> WidgetNode
+  page-history (w) (h) =
+    let heading = widget-label "title" "Browsing History"
+    in let info = widget-label "info" "History is stored locally. No telemetry. No cloud sync."
+    in let empty = widget-label "empty" "(History tracking will be enabled in a future build)"
+    in widget-panel "history" DirColumn spacing-md [heading, info, empty]
+
+Section: Settings Page
+
+  page-settings : Integer, Integer -> WidgetNode
+  page-settings (w) (h) =
+    let heading = widget-label "title" "Browser Settings"
+    in let theme-section = widget-panel "theme-settings" DirColumn spacing-sm [
+          widget-label "theme-title" "Theme",
+          widget-button "theme-dark" "Dark (current)",
+          widget-button "theme-light" "Light"
+        ]
+    in let trust-section = widget-panel "trust-settings" DirColumn spacing-sm [
+          widget-label "trust-title" "Trust Defaults",
+          widget-checkbox "auto-static" True,
+          widget-label "auto-static-label" "Auto-run Static [Display] pages",
+          widget-label "source-limit-label" "Max page source size: 1 MB"
+        ]
+    in let cache-section = widget-panel "cache-settings" DirColumn spacing-sm [
+          widget-label "cache-title" "Content Cache",
+          widget-label "cache-info" "Capacity: 64 entries (LRU eviction)",
+          widget-button "cache-clear" "Clear Cache"
+        ]
+    in widget-panel "settings" DirColumn spacing-lg [
+      heading,
+      widget-separator "sep1",
+      theme-section,
+      widget-separator "sep2",
+      trust-section,
+      widget-separator "sep3",
+      cache-section
+    ]

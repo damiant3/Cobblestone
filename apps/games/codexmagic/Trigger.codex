@@ -1,0 +1,151 @@
+Chapter: Trigger
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+
+ Triggered ability processing. When game events occur (enter/leave
+ battlefield, deal damage, attack, block, cast, upkeep), the engine
+ checks all permanents for matching triggers and queues their effects.
+ Triggers use APNAP ordering (active player first).
+
+ We say:
+
+Section: Trigger Event
+
+  TriggerEvent =
+   | EvtEnterBattlefield (Integer)
+   | EvtLeaveBattlefield (Integer)
+   | EvtDealCombatDamage (Integer) (Integer)
+   | EvtAttack (Integer)
+   | EvtBlock (Integer)
+   | EvtCast (Integer) (Integer)
+   | EvtUpkeep (Integer)
+   | EvtDeath (Integer)
+
+Section: Pending Trigger
+
+  PendingTrigger = record {
+    source-perm-id : Integer,
+    controller : Integer,
+    eff : Effect,
+    targets : List Integer
+  }
+
+Section: Trigger Collection
+
+  collect-triggers : GameState, TriggerEvent -> List PendingTrigger
+  collect-triggers (gs) (event) =
+    collect-triggers-loop (gs.battlefield) (gs.templates) event 0 (list-length (gs.battlefield)) []
+
+  collect-triggers-loop : List Permanent, List CardTemplate, TriggerEvent, Integer, Integer, List PendingTrigger -> List PendingTrigger
+  collect-triggers-loop (perms) (templates) (event) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in let template = list-at templates (perm.template-id)
+    in let matched = check-abilities-for-trigger (template.abilities) event (perm.id) (perm.controller) 0 (list-length (template.abilities)) acc
+    in collect-triggers-loop perms templates event (i + 1) len matched
+
+  check-abilities-for-trigger : List Ability, TriggerEvent, Integer, Integer, Integer, Integer, List PendingTrigger -> List PendingTrigger
+  check-abilities-for-trigger (abs) (event) (perm-id) (controller) (i) (len) (acc) =
+    if i >= len then acc
+    else when list-at abs i
+      is TriggeredAbility (cond) (eff) ->
+        if trigger-matches cond event then
+          let pt = PendingTrigger { source-perm-id = perm-id, controller = controller, eff = eff, targets = [] }
+          in check-abilities-for-trigger abs event perm-id controller (i + 1) len (list-push acc pt)
+        else check-abilities-for-trigger abs event perm-id controller (i + 1) len acc
+      is otherwise -> check-abilities-for-trigger abs event perm-id controller (i + 1) len acc
+
+  trigger-matches : TriggerCondition, TriggerEvent -> Boolean
+  trigger-matches (cond) (event) =
+    when cond
+      is OnEnterBattlefield -> when event
+        is EvtEnterBattlefield (id) -> True
+        is otherwise -> False
+      is OnLeaveBattlefield -> when event
+        is EvtLeaveBattlefield (id) -> True
+        is otherwise -> False
+      is OnDealCombatDamage -> when event
+        is EvtDealCombatDamage (src) (amt) -> True
+        is otherwise -> False
+      is OnAttack -> when event
+        is EvtAttack (id) -> True
+        is otherwise -> False
+      is OnBlock -> when event
+        is EvtBlock (id) -> True
+        is otherwise -> False
+      is OnCast -> when event
+        is EvtCast (player) (card-id) -> True
+        is otherwise -> False
+      is OnUpkeep -> when event
+        is EvtUpkeep (player) -> True
+        is otherwise -> False
+      is OnDeath -> when event
+        is EvtDeath (id) -> True
+        is otherwise -> False
+      is OnDrawStep -> False
+
+Section: Trigger Resolution
+
+  resolve-pending-triggers : GameState, List PendingTrigger -> GameState
+  resolve-pending-triggers (gs) (triggers) = resolve-trigger-loop gs triggers 0 (list-length triggers)
+
+  resolve-trigger-loop : GameState, List PendingTrigger, Integer, Integer -> GameState
+  resolve-trigger-loop (gs) (triggers) (i) (len) =
+    if i >= len then gs
+    else if gs.game-over then gs
+    else let pt = list-at triggers i
+    in let gs2 = apply-trigger-effect gs pt
+    in resolve-trigger-loop gs2 triggers (i + 1) len
+
+  apply-trigger-effect : GameState, PendingTrigger -> GameState
+  apply-trigger-effect (gs) (pt) =
+    when pt.eff
+      is DealDamage (amount) ->
+        if list-length (pt.targets) > 0 then deal-damage-to-permanent gs (list-at (pt.targets) 0) amount
+        else gs
+      is GainLife (amount) ->
+        let p = get-player gs (pt.controller)
+        in let new-general = general-gain-life (p.general) amount
+        in let p2 = PlayerState { general = new-general, prismatic = p.prismatic, library = p.library, hand = p.hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used }
+        in set-player gs (pt.controller) p2
+      is DrawCards (count) -> draw-trigger-cards gs (pt.controller) count
+      is LoseLife (amount) ->
+        let opp = if pt.controller == 0 then 1 else 0
+        in let p = get-player gs opp
+        in let new-general = general-deal-damage (p.general) amount
+        in let p2 = PlayerState { general = new-general, prismatic = p.prismatic, library = p.library, hand = p.hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used }
+        in set-player gs opp p2
+      is BoostPTD (pw) (to) (de) ->
+        if list-length (pt.targets) > 0 then boost-permanent gs (list-at (pt.targets) 0) pw to de
+        else gs
+      is otherwise -> gs
+
+  draw-trigger-cards : GameState, Integer, Integer -> GameState
+  draw-trigger-cards (gs) (player) (n) =
+    if n <= 0 then gs
+    else let p = get-player gs player
+    in let p2 = player-draw p
+    in let gs2 = set-player gs player p2
+    in draw-trigger-cards gs2 player (n - 1)
+
+  boost-permanent : GameState, Integer, Integer, Integer, Integer -> GameState
+  boost-permanent (gs) (perm-id) (pw) (to) (de) = GameState { players = gs.players, generals = gs.generals, battlefield = boost-in-list (gs.battlefield) perm-id pw to de 0 (list-length (gs.battlefield)) [], active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
+
+  boost-in-list : List Permanent, Integer, Integer, Integer, Integer, Integer, Integer, List Permanent -> List Permanent
+  boost-in-list (perms) (target) (pw) (to) (de) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in let updated = if perm.id == target then Permanent { id = perm.id, card-id = perm.card-id, template-id = perm.template-id, controller = perm.controller, owner = perm.owner, tapped = perm.tapped, summoning-sick = perm.summoning-sick, damage-marked = perm.damage-marked, counters = perm.counters, keywords = perm.keywords, attached-to = perm.attached-to, power-mod = perm.power-mod + pw, toughness-mod = perm.toughness-mod + to, defense-mod = perm.defense-mod + de, equipped-to = perm.equipped-to, socketed-gem = perm.socketed-gem } else perm
+    in boost-in-list perms target pw to de (i + 1) len (list-push acc updated)
+
+  deal-damage-to-permanent : GameState, Integer, Integer -> GameState
+  deal-damage-to-permanent (gs) (perm-id) (amount) = GameState { players = gs.players, generals = gs.generals, battlefield = damage-trig-list (gs.battlefield) perm-id amount 0 (list-length (gs.battlefield)) [], active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
+
+  damage-trig-list : List Permanent, Integer, Integer, Integer, Integer, List Permanent -> List Permanent
+  damage-trig-list (perms) (target) (amount) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in let updated = if perm.id == target then permanent-deal-damage perm amount else perm
+    in damage-trig-list perms target amount (i + 1) len (list-push acc updated)
+
+Page 1

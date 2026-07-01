@@ -1,0 +1,192 @@
+Chapter: Mvcc
+  cites Data chapter Row
+  cites Foreword chapter Maybe
+  cites Foreword chapter Pair
+
+ Multi-version concurrency control. Each row version carries a
+ creation txn-id and an optional deletion txn-id. Readers see a
+ consistent snapshot as of their transaction's start time. Writers
+ create new versions rather than overwriting.
+
+ We say:
+
+Section: Versioned Row
+
+  VersionedRow = record {
+    vr-data : RowData,
+    vr-created-by : Integer,
+    vr-deleted-by : Integer,
+    vr-version : Integer
+  }
+
+  vr-new : RowData, Integer -> VersionedRow
+  vr-new (data) (txn-id) = VersionedRow {
+    vr-data = data,
+    vr-created-by = txn-id,
+    vr-deleted-by = 0,
+    vr-version = 1
+  }
+
+  vr-is-visible : VersionedRow, Integer -> Boolean
+  vr-is-visible (vr) (snapshot-txn) =
+    if vr.vr-created-by > snapshot-txn then False
+    else if vr.vr-deleted-by == 0 then True
+    else if vr.vr-deleted-by > snapshot-txn then True
+    else False
+
+  vr-mark-deleted : VersionedRow, Integer -> VersionedRow
+  vr-mark-deleted (vr) (txn-id) = VersionedRow {
+    vr-data = vr.vr-data,
+    vr-created-by = vr.vr-created-by,
+    vr-deleted-by = txn-id,
+    vr-version = vr.vr-version
+  }
+
+Section: Version Store
+
+  VersionStore = record {
+    vs-rows : List VersionedRow,
+    vs-count : Integer,
+    vs-next-version : Integer
+  }
+
+  vs-new : VersionStore
+  vs-new = VersionStore { vs-rows = [], vs-count = 0, vs-next-version = 1 }
+
+  vs-insert : VersionStore, RowData, Integer -> VersionStore
+  vs-insert (vs) (data) (txn-id) =
+    let vr = VersionedRow {
+      vr-data = data,
+      vr-created-by = txn-id,
+      vr-deleted-by = 0,
+      vr-version = vs.vs-next-version
+    }
+    in VersionStore {
+      vs-rows = list-push (vs.vs-rows) vr,
+      vs-count = vs.vs-count + 1,
+      vs-next-version = vs.vs-next-version + 1
+    }
+
+  vs-delete : VersionStore, Integer, Integer -> VersionStore
+  vs-delete (vs) (row-idx) (txn-id) =
+    if row-idx < 0 then vs
+    else if row-idx >= vs.vs-count then vs
+    else let vr = list-at (vs.vs-rows) row-idx
+    in let deleted = vr-mark-deleted vr txn-id
+    in VersionStore {
+      vs-rows = list-set-at (vs.vs-rows) row-idx deleted,
+      vs-count = vs.vs-count,
+      vs-next-version = vs.vs-next-version
+    }
+
+  vs-update : VersionStore, Integer, RowData, Integer -> VersionStore
+  vs-update (vs) (row-idx) (new-data) (txn-id) =
+    let vs2 = vs-delete vs row-idx txn-id
+    in vs-insert vs2 new-data txn-id
+
+Section: Snapshot Scan
+
+  vs-scan : VersionStore, Integer -> List RowData
+  vs-scan (vs) (snapshot-txn) =
+    vs-scan-loop (vs.vs-rows) snapshot-txn 0 (vs.vs-count) []
+
+  vs-scan-loop : List VersionedRow, Integer, Integer, Integer, List RowData -> List RowData
+  vs-scan-loop (rows) (snapshot) (i) (len) (acc) =
+    if i >= len then acc
+    else let vr = list-at rows i
+    in if vr-is-visible vr snapshot then vs-scan-loop rows snapshot (i + 1) len (list-push acc (vr.vr-data))
+    else vs-scan-loop rows snapshot (i + 1) len acc
+
+  vs-scan-with-idx : VersionStore, Integer -> List (Pair Integer RowData)
+  vs-scan-with-idx (vs) (snapshot-txn) =
+    vs-scan-idx-loop (vs.vs-rows) snapshot-txn 0 (vs.vs-count) []
+
+  vs-scan-idx-loop : List VersionedRow, Integer, Integer, Integer, List (Pair Integer RowData) -> List (Pair Integer RowData)
+  vs-scan-idx-loop (rows) (snapshot) (i) (len) (acc) =
+    if i >= len then acc
+    else let vr = list-at rows i
+    in if vr-is-visible vr snapshot then vs-scan-idx-loop rows snapshot (i + 1) len (list-push acc (make-pair i (vr.vr-data)))
+    else vs-scan-idx-loop rows snapshot (i + 1) len acc
+
+Section: Garbage Collection
+
+  vs-gc : VersionStore, Integer -> VersionStore
+  vs-gc (vs) (oldest-active-txn) =
+    let kept = vs-gc-filter (vs.vs-rows) oldest-active-txn 0 (vs.vs-count) []
+    in VersionStore {
+      vs-rows = kept,
+      vs-count = list-length kept,
+      vs-next-version = vs.vs-next-version
+    }
+
+  vs-gc-filter : List VersionedRow, Integer, Integer, Integer, List VersionedRow -> List VersionedRow
+  vs-gc-filter (rows) (oldest) (i) (len) (acc) =
+    if i >= len then acc
+    else let vr = list-at rows i
+    in if vr.vr-deleted-by > 0 then
+      if vr.vr-deleted-by < oldest then vs-gc-filter rows oldest (i + 1) len acc
+      else vs-gc-filter rows oldest (i + 1) len (list-push acc vr)
+    else vs-gc-filter rows oldest (i + 1) len (list-push acc vr)
+
+Section: Statistics
+
+  vs-stats : VersionStore -> Text
+  vs-stats (vs) =
+    "versions=" & show (vs.vs-count) & " next=" & show (vs.vs-next-version)
+
+  vs-visible-count : VersionStore, Integer -> Integer
+  vs-visible-count (vs) (snapshot) = list-length (vs-scan vs snapshot)
+
+Section: Optimistic Concurrency
+
+  OccWriteSet = record {
+    ows-reads : List Integer,
+    ows-writes : List Integer,
+    ows-read-versions : List Integer,
+    ows-count : Integer
+  }
+
+  occ-new : OccWriteSet
+  occ-new = OccWriteSet { ows-reads = [], ows-writes = [], ows-read-versions = [], ows-count = 0 }
+
+  occ-record-read : OccWriteSet, Integer, Integer -> OccWriteSet
+  occ-record-read (ws) (row-idx) (version) = OccWriteSet {
+    ows-reads = list-push (ws.ows-reads) row-idx,
+    ows-writes = ws.ows-writes,
+    ows-read-versions = list-push (ws.ows-read-versions) version,
+    ows-count = ws.ows-count + 1
+  }
+
+  occ-record-write : OccWriteSet, Integer -> OccWriteSet
+  occ-record-write (ws) (row-idx) = OccWriteSet {
+    ows-reads = ws.ows-reads,
+    ows-writes = list-push (ws.ows-writes) row-idx,
+    ows-read-versions = ws.ows-read-versions,
+    ows-count = ws.ows-count + 1
+  }
+
+  OccValidation =
+    | OccValid
+    | OccConflict (Integer)
+
+  occ-validate : OccWriteSet, VersionStore -> OccValidation
+  occ-validate (ws) (vs) =
+    occ-validate-loop (ws.ows-reads) (ws.ows-read-versions) vs 0 (list-length (ws.ows-reads))
+
+  occ-validate-loop : List Integer, List Integer, VersionStore, Integer, Integer -> OccValidation
+  occ-validate-loop (reads) (versions) (vs) (i) (len) =
+    if i >= len then OccValid
+    else let row-idx = list-at reads i
+    in let expected-version = list-at versions i
+    in if row-idx >= vs.vs-count then OccConflict row-idx
+    else let current = list-at (vs.vs-rows) row-idx
+    in if current.vr-version /= expected-version then OccConflict row-idx
+    else if current.vr-deleted-by /= 0 then OccConflict row-idx
+    else occ-validate-loop reads versions vs (i + 1) len
+
+  occ-stats : OccWriteSet -> Text
+  occ-stats (ws) =
+    "reads=" & show (list-length (ws.ows-reads))
+    & " writes=" & show (list-length (ws.ows-writes))
+
+Page 1

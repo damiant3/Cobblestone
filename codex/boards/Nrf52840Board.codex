@@ -1,0 +1,539 @@
+Chapter: Nrf52840Board
+  cites Foreword chapter Board
+  cites Foreword chapter Units (Duration, Frequency)
+
+ Board support for Nordic nRF52840 (ARM Cortex-M4F @ 64 MHz).
+ Register addresses from nRF52840 Product Specification v1.7.
+ Flash at 0x00000000, SRAM at 0x20000000, peripherals at 0x40000000+.
+
+ The nRF52840 uses a task/event peripheral model: write 1 to a
+ TASKS_ register to trigger an action, read EVENTS_ registers for
+ completion. SHORTS registers wire events to tasks in hardware.
+
+Section: Core Addresses
+
+  nrf-flash-base : Integer = #00000000
+  nrf-sram-base : Integer = #20000000
+  nrf-sram-size : Integer = #40000
+
+Section: CLOCK (0x40000000)
+
+  nrf-clock-base : Integer = #40000000
+  nrf-clock-hfclkstart : Integer = #40000000
+  nrf-clock-hfclkstop : Integer = #40000004
+  nrf-clock-lfclkstart : Integer = #40000008
+  nrf-clock-hfclkstarted : Integer = #40000100
+  nrf-clock-lfclkstarted : Integer = #40000104
+
+  nrf-clock-start-hfclk : Integer
+  nrf-clock-start-hfclk =
+   let w = mmio-write-32 nrf-clock-hfclkstart 1
+   in nrf-clock-wait-started nrf-clock-hfclkstarted 100000
+
+  nrf-clock-start-lfclk : Integer
+  nrf-clock-start-lfclk =
+   let w = mmio-write-32 nrf-clock-lfclkstart 1
+   in nrf-clock-wait-started nrf-clock-lfclkstarted 100000
+
+  nrf-clock-wait-started : Integer, Integer -> Integer
+  nrf-clock-wait-started (event-addr) (fuel) =
+   if fuel <= 0 then 0
+   else if mmio-read-32 event-addr > 0 then 1
+   else nrf-clock-wait-started event-addr (fuel - 1)
+
+Section: GPIO (P0: 0x50000000, P1: 0x50000300)
+
+  nrf-p0-base : Integer = #50000000
+  nrf-p1-base : Integer = #50000300
+  nrf-gpio-out-off : Integer = #504
+  nrf-gpio-outset-off : Integer = #508
+  nrf-gpio-outclr-off : Integer = #50C
+  nrf-gpio-in-off : Integer = #510
+  nrf-gpio-dir-off : Integer = #514
+  nrf-gpio-dirset-off : Integer = #518
+  nrf-gpio-dirclr-off : Integer = #51C
+  nrf-gpio-pincnf-base-off : Integer = #700
+
+  nrf-gpio-set-output : Integer, Integer -> Integer
+  nrf-gpio-set-output (port-base) (pin) =
+   let dirset = mmio-write-32 (port-base + nrf-gpio-dirset-off) (bit-shl 1 pin)
+   in let cnf-addr = port-base + nrf-gpio-pincnf-base-off + (pin * 4)
+   in mmio-write-32 cnf-addr 3
+
+  nrf-gpio-set-input : Integer, Integer -> Integer
+  nrf-gpio-set-input (port-base) (pin) =
+   let dirclr = mmio-write-32 (port-base + nrf-gpio-dirclr-off) (bit-shl 1 pin)
+   in let cnf-addr = port-base + nrf-gpio-pincnf-base-off + (pin * 4)
+   in mmio-write-32 cnf-addr 0
+
+  nrf-gpio-set-pull : Integer, Integer, Integer -> Integer
+  nrf-gpio-set-pull (port-base) (pin) (pull) =
+   let cnf-addr = port-base + nrf-gpio-pincnf-base-off + (pin * 4)
+   in let cnf = mmio-read-32 cnf-addr
+   in let cleared = bit-and cnf (bit-xor #0C (0 - 1))
+   in mmio-write-32 cnf-addr (bit-or cleared (bit-shl pull 2))
+
+  nrf-gpio-write : Integer, Integer, Boolean -> Integer
+  nrf-gpio-write (port-base) (pin) (high) =
+   if high then mmio-write-32 (port-base + nrf-gpio-outset-off) (bit-shl 1 pin)
+   else mmio-write-32 (port-base + nrf-gpio-outclr-off) (bit-shl 1 pin)
+
+  nrf-gpio-read : Integer, Integer -> Boolean
+  nrf-gpio-read (port-base) (pin) =
+   bit-and (bit-shru (mmio-read-32 (port-base + nrf-gpio-in-off)) pin) 1 == 1
+
+  nrf-gpio-toggle : Integer, Integer -> Integer
+  nrf-gpio-toggle (port-base) (pin) =
+   let out = mmio-read-32 (port-base + nrf-gpio-out-off)
+   in let bit = bit-and (bit-shru out pin) 1
+   in if bit == 1 then mmio-write-32 (port-base + nrf-gpio-outclr-off) (bit-shl 1 pin)
+      else mmio-write-32 (port-base + nrf-gpio-outset-off) (bit-shl 1 pin)
+
+Section: UARTE0 (0x40002000)
+
+  nrf-uarte0-base : Integer = #40002000
+  nrf-uarte-starttx : Integer = #008
+  nrf-uarte-startrx : Integer = #000
+  nrf-uarte-stoptx : Integer = #00C
+  nrf-uarte-endtx-off : Integer = #120
+  nrf-uarte-endrx-off : Integer = #110
+  nrf-uarte-enable-off : Integer = #500
+  nrf-uarte-baudrate-off : Integer = #524
+  nrf-uarte-txd-ptr-off : Integer = #544
+  nrf-uarte-txd-maxcnt-off : Integer = #548
+  nrf-uarte-rxd-ptr-off : Integer = #534
+  nrf-uarte-rxd-maxcnt-off : Integer = #538
+  nrf-uarte-psel-txd-off : Integer = #50C
+  nrf-uarte-psel-rxd-off : Integer = #514
+
+  nrf-baud-115200 : Integer = #01D7E000
+
+  nrf-uarte-init : Integer, Integer, Frequency -> Integer
+  nrf-uarte-init (uarte-base) (tx-pin) (baud-code) =
+   let pin-tx = mmio-write-32 (uarte-base + nrf-uarte-psel-txd-off) tx-pin
+   in let baud = mmio-write-32 (uarte-base + nrf-uarte-baudrate-off) baud-code
+   in mmio-write-32 (uarte-base + nrf-uarte-enable-off) 8
+
+  nrf-uarte-send-byte : Integer, Integer -> Integer
+  nrf-uarte-send-byte (uarte-base) (byte) =
+   let buf-addr = nrf-sram-base + nrf-sram-size - 64
+   in let w-buf = mmio-write-32 buf-addr (bit-and byte #FF)
+   in let w-ptr = mmio-write-32 (uarte-base + nrf-uarte-txd-ptr-off) buf-addr
+   in let w-cnt = mmio-write-32 (uarte-base + nrf-uarte-txd-maxcnt-off) 1
+   in let clr = mmio-write-32 (uarte-base + nrf-uarte-endtx-off) 0
+   in let start = mmio-write-32 (uarte-base + nrf-uarte-starttx) 1
+   in nrf-uarte-wait-endtx uarte-base 10000
+
+  nrf-uarte-wait-endtx : Integer, Integer -> Integer
+  nrf-uarte-wait-endtx (uarte-base) (fuel) =
+   if fuel <= 0 then 0
+   else if mmio-read-32 (uarte-base + nrf-uarte-endtx-off) > 0 then 1
+   else nrf-uarte-wait-endtx uarte-base (fuel - 1)
+
+  nrf-uarte-print : Integer, Text -> Integer
+  nrf-uarte-print (uarte-base) (s) =
+   nrf-uarte-send-text uarte-base s 0 (text-length s)
+
+  nrf-uarte-send-text : Integer, Text, Integer, Integer -> Integer
+  nrf-uarte-send-text (uarte-base) (s) (i) (len) =
+   if i >= len then 0
+   else let b = nrf-uarte-send-byte uarte-base (char-code (char-at s i))
+     in nrf-uarte-send-text uarte-base s (i + 1) len
+
+  nrf-uarte-println : Integer, Text -> Integer
+  nrf-uarte-println (uarte-base) (s) =
+   let p = nrf-uarte-print uarte-base s
+   in let cr = nrf-uarte-send-byte uarte-base 13
+   in nrf-uarte-send-byte uarte-base 10
+
+Section: SPIM0 (0x40003000)
+
+  nrf-spim0-base : Integer = #40003000
+  nrf-spim-start-off : Integer = #010
+  nrf-spim-stop-off : Integer = #014
+  nrf-spim-end-off : Integer = #118
+  nrf-spim-enable-off : Integer = #500
+  nrf-spim-frequency-off : Integer = #524
+  nrf-spim-config-off : Integer = #554
+  nrf-spim-txd-ptr-off : Integer = #544
+  nrf-spim-txd-maxcnt-off : Integer = #548
+  nrf-spim-rxd-ptr-off : Integer = #534
+  nrf-spim-rxd-maxcnt-off : Integer = #538
+  nrf-spim-psel-sck-off : Integer = #508
+  nrf-spim-psel-mosi-off : Integer = #50C
+  nrf-spim-psel-miso-off : Integer = #510
+
+  nrf-spi-freq-1m : Integer = #10000000
+  nrf-spi-freq-4m : Integer = #40000000
+  nrf-spi-freq-8m : Integer = #80000000
+
+  nrf-spim-init : Integer, Integer, Integer, Integer -> Integer
+  nrf-spim-init (spim-base) (sck-pin) (mosi-pin) (miso-pin) =
+   let p-sck = mmio-write-32 (spim-base + nrf-spim-psel-sck-off) sck-pin
+   in let p-mosi = mmio-write-32 (spim-base + nrf-spim-psel-mosi-off) mosi-pin
+   in let p-miso = mmio-write-32 (spim-base + nrf-spim-psel-miso-off) miso-pin
+   in let freq = mmio-write-32 (spim-base + nrf-spim-frequency-off) nrf-spi-freq-1m
+   in mmio-write-32 (spim-base + nrf-spim-enable-off) 7
+
+  nrf-spim-transfer : Integer, Integer -> Integer
+  nrf-spim-transfer (spim-base) (byte) =
+   let buf = nrf-sram-base + nrf-sram-size - 128
+   in let w-buf = mmio-write-32 buf (bit-and byte #FF)
+   in let w-txptr = mmio-write-32 (spim-base + nrf-spim-txd-ptr-off) buf
+   in let w-txcnt = mmio-write-32 (spim-base + nrf-spim-txd-maxcnt-off) 1
+   in let rx-buf = buf + 4
+   in let w-rxptr = mmio-write-32 (spim-base + nrf-spim-rxd-ptr-off) rx-buf
+   in let w-rxcnt = mmio-write-32 (spim-base + nrf-spim-rxd-maxcnt-off) 1
+   in let clr = mmio-write-32 (spim-base + nrf-spim-end-off) 0
+   in let start = mmio-write-32 (spim-base + nrf-spim-start-off) 1
+   in let wait = nrf-spim-wait-end spim-base 10000
+   in bit-and (mmio-read-32 rx-buf) #FF
+
+  nrf-spim-wait-end : Integer, Integer -> Integer
+  nrf-spim-wait-end (spim-base) (fuel) =
+   if fuel <= 0 then 0
+   else if mmio-read-32 (spim-base + nrf-spim-end-off) > 0 then 1
+   else nrf-spim-wait-end spim-base (fuel - 1)
+
+Section: TWIM0 (I2C, 0x40003000 — shared with SPIM via instance ID)
+
+  nrf-twim0-base : Integer = #40003000
+  nrf-twim-starttx-off : Integer = #008
+  nrf-twim-startrx-off : Integer = #000
+  nrf-twim-stop-off : Integer = #014
+  nrf-twim-stopped-off : Integer = #104
+  nrf-twim-txdsent-off : Integer = #11C
+  nrf-twim-rxdready-off : Integer = #108
+  nrf-twim-enable-off : Integer = #500
+  nrf-twim-frequency-off : Integer = #524
+  nrf-twim-address-off : Integer = #588
+  nrf-twim-txd-ptr-off : Integer = #544
+  nrf-twim-txd-maxcnt-off : Integer = #548
+  nrf-twim-rxd-ptr-off : Integer = #534
+  nrf-twim-rxd-maxcnt-off : Integer = #538
+  nrf-twim-psel-scl-off : Integer = #508
+  nrf-twim-psel-sda-off : Integer = #50C
+
+  nrf-i2c-freq-100k : Integer = #01980000
+  nrf-i2c-freq-400k : Integer = #06400000
+
+  nrf-twim-init : Integer, Integer, Integer -> Integer
+  nrf-twim-init (twim-base) (scl-pin) (sda-pin) =
+   let p-scl = mmio-write-32 (twim-base + nrf-twim-psel-scl-off) scl-pin
+   in let p-sda = mmio-write-32 (twim-base + nrf-twim-psel-sda-off) sda-pin
+   in let freq = mmio-write-32 (twim-base + nrf-twim-frequency-off) nrf-i2c-freq-100k
+   in mmio-write-32 (twim-base + nrf-twim-enable-off) 6
+
+  nrf-twim-write-reg : Integer, Integer, Integer, Integer -> Integer
+  nrf-twim-write-reg (twim-base) (dev-addr) (reg) (value) =
+   let buf = nrf-sram-base + nrf-sram-size - 192
+   in let w-reg = mmio-write-32 buf reg
+   in let w-val = mmio-write-32 (buf + 1) value
+   in let w-addr = mmio-write-32 (twim-base + nrf-twim-address-off) dev-addr
+   in let w-ptr = mmio-write-32 (twim-base + nrf-twim-txd-ptr-off) buf
+   in let w-cnt = mmio-write-32 (twim-base + nrf-twim-txd-maxcnt-off) 2
+   in let clr = mmio-write-32 (twim-base + nrf-twim-stopped-off) 0
+   in let start = mmio-write-32 (twim-base + nrf-twim-starttx-off) 1
+   in nrf-twim-wait-stopped twim-base 10000
+
+  nrf-twim-read-reg : Integer, Integer, Integer -> Integer
+  nrf-twim-read-reg (twim-base) (dev-addr) (reg) =
+   let tx-buf = nrf-sram-base + nrf-sram-size - 192
+   in let rx-buf = nrf-sram-base + nrf-sram-size - 256
+   in let w-reg = mmio-write-32 tx-buf reg
+   in let w-addr = mmio-write-32 (twim-base + nrf-twim-address-off) dev-addr
+   in let w-txptr = mmio-write-32 (twim-base + nrf-twim-txd-ptr-off) tx-buf
+   in let w-txcnt = mmio-write-32 (twim-base + nrf-twim-txd-maxcnt-off) 1
+   in let w-rxptr = mmio-write-32 (twim-base + nrf-twim-rxd-ptr-off) rx-buf
+   in let w-rxcnt = mmio-write-32 (twim-base + nrf-twim-rxd-maxcnt-off) 1
+   in let clr = mmio-write-32 (twim-base + nrf-twim-stopped-off) 0
+   in let start = mmio-write-32 (twim-base + nrf-twim-starttx-off) 1
+   in let wait = nrf-twim-wait-stopped twim-base 10000
+   in bit-and (mmio-read-32 rx-buf) #FF
+
+  nrf-twim-wait-stopped : Integer, Integer -> Integer
+  nrf-twim-wait-stopped (twim-base) (fuel) =
+   if fuel <= 0 then 0
+   else if mmio-read-32 (twim-base + nrf-twim-stopped-off) > 0 then 1
+   else nrf-twim-wait-stopped twim-base (fuel - 1)
+
+Section: SAADC (0x40007000)
+
+  nrf-saadc-base : Integer = #40007000
+  nrf-saadc-start-off : Integer = #000
+  nrf-saadc-sample-off : Integer = #004
+  nrf-saadc-stop-off : Integer = #008
+  nrf-saadc-end-off : Integer = #104
+  nrf-saadc-enable-off : Integer = #500
+  nrf-saadc-resolution-off : Integer = #5F0
+  nrf-saadc-result-ptr-off : Integer = #62C
+  nrf-saadc-result-maxcnt-off : Integer = #630
+  nrf-saadc-ch0-pselp-off : Integer = #510
+
+  nrf-saadc-init : Integer -> Integer
+  nrf-saadc-init (channel) =
+   let en = mmio-write-32 (nrf-saadc-base + nrf-saadc-enable-off) 1
+   in let res = mmio-write-32 (nrf-saadc-base + nrf-saadc-resolution-off) 3
+   in mmio-write-32 (nrf-saadc-base + nrf-saadc-ch0-pselp-off + (channel * 16)) (channel + 1)
+
+  nrf-saadc-read : Integer -> Integer
+  nrf-saadc-read (result-buf) =
+   let w-ptr = mmio-write-32 (nrf-saadc-base + nrf-saadc-result-ptr-off) result-buf
+   in let w-cnt = mmio-write-32 (nrf-saadc-base + nrf-saadc-result-maxcnt-off) 1
+   in let clr = mmio-write-32 (nrf-saadc-base + nrf-saadc-end-off) 0
+   in let start = mmio-write-32 (nrf-saadc-base + nrf-saadc-start-off) 1
+   in let sample = mmio-write-32 (nrf-saadc-base + nrf-saadc-sample-off) 1
+   in let wait = nrf-saadc-wait-end 10000
+   in bit-and (mmio-read-32 result-buf) #3FFF
+
+  nrf-saadc-wait-end : Integer -> Integer
+  nrf-saadc-wait-end (fuel) =
+   if fuel <= 0 then 0
+   else if mmio-read-32 (nrf-saadc-base + nrf-saadc-end-off) > 0 then 1
+   else nrf-saadc-wait-end (fuel - 1)
+
+Section: RADIO (2.4 GHz, 0x40001000)
+
+  nrf-radio-base : Integer = #40001000
+  nrf-radio-txen-off : Integer = #000
+  nrf-radio-rxen-off : Integer = #004
+  nrf-radio-disable-off : Integer = #010
+  nrf-radio-ready-off : Integer = #100
+  nrf-radio-end-off : Integer = #10C
+  nrf-radio-disabled-off : Integer = #110
+  nrf-radio-mode-off : Integer = #510
+  nrf-radio-pcnf0-off : Integer = #514
+  nrf-radio-pcnf1-off : Integer = #518
+  nrf-radio-base0-off : Integer = #51C
+  nrf-radio-prefix0-off : Integer = #524
+  nrf-radio-txpower-off : Integer = #50C
+  nrf-radio-frequency-off : Integer = #508
+  nrf-radio-packetptr-off : Integer = #504
+  nrf-radio-txaddress-off : Integer = #52C
+  nrf-radio-rxaddresses-off : Integer = #530
+
+  nrf-radio-mode-ble-1mbit : Integer = 3
+
+  nrf-ble-access-addr : Integer = #8E89BED6
+
+  nrf-radio-config-ble : Integer
+  nrf-radio-config-ble =
+   let mode = mmio-write-32 (nrf-radio-base + nrf-radio-mode-off) nrf-radio-mode-ble-1mbit
+   in let pcnf0 = mmio-write-32 (nrf-radio-base + nrf-radio-pcnf0-off) #00030006
+   in let pcnf1 = mmio-write-32 (nrf-radio-base + nrf-radio-pcnf1-off) #00040025
+   in let base0 = mmio-write-32 (nrf-radio-base + nrf-radio-base0-off) (bit-shl nrf-ble-access-addr 8)
+   in let pfx0 = mmio-write-32 (nrf-radio-base + nrf-radio-prefix0-off) (bit-and (bit-shru nrf-ble-access-addr 24) #FF)
+   in let txaddr = mmio-write-32 (nrf-radio-base + nrf-radio-txaddress-off) 0
+   in mmio-write-32 (nrf-radio-base + nrf-radio-txpower-off) 0
+
+  nrf-radio-set-channel : Integer -> Integer
+  nrf-radio-set-channel (ch) =
+   let freq = if ch == 37 then 2 else if ch == 38 then 26 else if ch == 39 then 80 else ch * 2 + 4
+   in mmio-write-32 (nrf-radio-base + nrf-radio-frequency-off) freq
+
+Section: BLE Advertising PDU
+
+ BLE advertising PDU format (Bluetooth Core Spec Vol 6 Part B 2.3):
+ PDU Header (2 bytes): PDU type (4 bits) + flags (4 bits) + length (8 bits)
+ AdvA (6 bytes): advertiser address
+ AdvData (0-31 bytes): AD structures (length + type + data)
+
+  BleAdvType =
+    | AdvInd
+    | AdvDirectInd
+    | AdvNonconnInd
+    | AdvScanInd
+
+  ble-adv-type-code : BleAdvType -> Integer
+  ble-adv-type-code (t) =
+   when t
+    is AdvInd -> 0
+    is AdvDirectInd -> 1
+    is AdvNonconnInd -> 2
+    is AdvScanInd -> 6
+
+  BleAdStruct = record {
+   ad-length : Integer between 0 and 31,
+   ad-type : Integer between 0 and 255,
+   ad-data : List Integer
+  }
+
+  ble-ad-flags : Integer -> BleAdStruct
+  ble-ad-flags (flags) = BleAdStruct { ad-length = 2, ad-type = 1, ad-data = [flags] }
+
+  ble-ad-complete-name : Text -> BleAdStruct
+  ble-ad-complete-name (name) =
+   let bytes = ble-text-to-bytes name 0 (text-length name) []
+   in BleAdStruct { ad-length = __narrow (1 + list-length bytes), ad-type = 9, ad-data = bytes }
+
+  ble-ad-tx-power : Integer -> BleAdStruct
+  ble-ad-tx-power (dbm) = BleAdStruct { ad-length = 2, ad-type = #0A, ad-data = [bit-and dbm #FF] }
+
+  ble-text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
+  ble-text-to-bytes (s) (i) (len) (acc) =
+   if i >= len then acc
+   else ble-text-to-bytes s (i + 1) len (list-push acc (char-code (char-at s i)))
+
+  ble-encode-ad-struct : BleAdStruct -> List Integer
+  ble-encode-ad-struct (ad) =
+   ble-append-bytes [ad.ad-length, ad.ad-type] ad.ad-data 0 (list-length ad.ad-data)
+
+  ble-encode-ad-list : List BleAdStruct, Integer, List Integer -> List Integer
+  ble-encode-ad-list (ads) (i) (acc) =
+   if i >= list-length ads then acc
+   else let encoded = ble-encode-ad-struct (list-at ads i)
+   in ble-encode-ad-list ads (i + 1) (ble-append-bytes acc encoded 0 (list-length encoded))
+
+  ble-append-bytes : List Integer, List Integer, Integer, Integer -> List Integer
+  ble-append-bytes (acc) (src) (i) (len) =
+   if i >= len then acc
+   else ble-append-bytes (list-push acc (list-at src i)) src (i + 1) len
+
+  ble-build-adv-pdu : BleAdvType, List Integer, List BleAdStruct -> List Integer
+  ble-build-adv-pdu (adv-type) (addr) (ad-structs) =
+   let ad-data = ble-encode-ad-list ad-structs 0 []
+   in let payload-len = 6 + list-length ad-data
+   in let header-lo = bit-and (ble-adv-type-code adv-type) #0F
+   in let header-hi = bit-and payload-len #3F
+   in let pdu = [header-lo, header-hi]
+   in let with-addr = ble-append-bytes pdu addr 0 (list-length addr)
+   in ble-append-bytes with-addr ad-data 0 (list-length ad-data)
+
+  ble-default-addr : List Integer
+  ble-default-addr = [#C0, #DE, #C0, #FF, #EE, #01]
+
+  ble-flags-general-discoverable : Integer = #06
+
+  ble-build-beacon : Text -> List Integer
+  ble-build-beacon (name) =
+   let flags = ble-ad-flags ble-flags-general-discoverable
+   in let dev-name = ble-ad-complete-name name
+   in let tx-power = ble-ad-tx-power 0
+   in ble-build-adv-pdu AdvNonconnInd ble-default-addr [flags, dev-name, tx-power]
+
+Section: GATT Service Definitions
+
+ Bluetooth GATT attribute table construction. Each service is a
+ list of attributes (handles, UUIDs, properties, values). This is
+ the data a BLE peripheral advertises to connected clients.
+
+ Standard 16-bit UUIDs from Bluetooth SIG Assigned Numbers.
+
+  GattPermission =
+    | GattRead
+    | GattWrite
+    | GattReadWrite
+    | GattNotify
+
+  gatt-permission-bits : GattPermission -> Integer
+  gatt-permission-bits (p) =
+   when p
+    is GattRead -> #02
+    is GattWrite -> #08
+    is GattReadWrite -> #0A
+    is GattNotify -> #12
+
+  GattAttribute = record {
+   handle : Integer between 1 and 65535,
+   uuid : Integer,
+   permissions : Integer,
+   value : List Integer
+  }
+
+  GattService = record {
+   svc-uuid : Integer,
+   svc-handle : Integer between 1 and 65535,
+   attributes : List GattAttribute
+  }
+
+  gatt-uuid-primary-service : Integer = #2800
+  gatt-uuid-characteristic : Integer = #2803
+  gatt-uuid-ccc-descriptor : Integer = #2902
+
+  gatt-uuid-gap-service : Integer = #1800
+  gatt-uuid-gatt-service : Integer = #1801
+  gatt-uuid-device-name : Integer = #2A00
+  gatt-uuid-appearance : Integer = #2A01
+  gatt-uuid-heart-rate-service : Integer = #180D
+  gatt-uuid-heart-rate-measurement : Integer = #2A37
+  gatt-uuid-body-sensor-location : Integer = #2A38
+  gatt-uuid-battery-service : Integer = #180F
+  gatt-uuid-battery-level : Integer = #2A19
+  gatt-uuid-temperature-service : Integer = #1809
+  gatt-uuid-temperature-measurement : Integer = #2A1C
+
+  gatt-build-service-attr : Integer, Integer -> GattAttribute
+  gatt-build-service-attr (handle) (svc-uuid) =
+   GattAttribute { handle = __narrow handle, uuid = gatt-uuid-primary-service, permissions = gatt-permission-bits GattRead, value = [bit-and svc-uuid #FF, bit-and (bit-shru svc-uuid 8) #FF] }
+
+  gatt-build-char-decl : Integer, Integer, Integer, GattPermission -> GattAttribute
+  gatt-build-char-decl (handle) (value-handle) (char-uuid) (perm) =
+   GattAttribute { handle = __narrow handle, uuid = gatt-uuid-characteristic, permissions = gatt-permission-bits GattRead, value = [gatt-permission-bits perm, bit-and value-handle #FF, bit-and (bit-shru value-handle 8) #FF, bit-and char-uuid #FF, bit-and (bit-shru char-uuid 8) #FF] }
+
+  gatt-build-char-value : Integer, Integer, GattPermission, List Integer -> GattAttribute
+  gatt-build-char-value (handle) (char-uuid) (perm) (val) =
+   GattAttribute { handle = __narrow handle, uuid = char-uuid, permissions = gatt-permission-bits perm, value = val }
+
+  gatt-build-ccc-descriptor : Integer -> GattAttribute
+  gatt-build-ccc-descriptor (handle) =
+   GattAttribute { handle = __narrow handle, uuid = gatt-uuid-ccc-descriptor, permissions = gatt-permission-bits GattReadWrite, value = [0, 0] }
+
+  gatt-heart-rate-service : GattService
+  gatt-heart-rate-service =
+   let svc = gatt-build-service-attr 1 gatt-uuid-heart-rate-service
+   in let hr-decl = gatt-build-char-decl 2 3 gatt-uuid-heart-rate-measurement GattNotify
+   in let hr-val = gatt-build-char-value 3 gatt-uuid-heart-rate-measurement GattNotify [0, 72]
+   in let hr-ccc = gatt-build-ccc-descriptor 4
+   in let loc-decl = gatt-build-char-decl 5 6 gatt-uuid-body-sensor-location GattRead
+   in let loc-val = gatt-build-char-value 6 gatt-uuid-body-sensor-location GattRead [1]
+   in GattService { svc-uuid = gatt-uuid-heart-rate-service, svc-handle = 1, attributes = [svc, hr-decl, hr-val, hr-ccc, loc-decl, loc-val] }
+
+  gatt-battery-service : GattService
+  gatt-battery-service =
+   let svc = gatt-build-service-attr 10 gatt-uuid-battery-service
+   in let bat-decl = gatt-build-char-decl 11 12 gatt-uuid-battery-level GattRead
+   in let bat-val = gatt-build-char-value 12 gatt-uuid-battery-level GattRead [85]
+   in GattService { svc-uuid = gatt-uuid-battery-service, svc-handle = 10, attributes = [svc, bat-decl, bat-val] }
+
+  gatt-temperature-service : GattService
+  gatt-temperature-service =
+   let svc = gatt-build-service-attr 20 gatt-uuid-temperature-service
+   in let temp-decl = gatt-build-char-decl 21 22 gatt-uuid-temperature-measurement GattNotify
+   in let temp-val = gatt-build-char-value 22 gatt-uuid-temperature-measurement GattNotify [0, 0, #E2, 0]
+   in let temp-ccc = gatt-build-ccc-descriptor 23
+   in GattService { svc-uuid = gatt-uuid-temperature-service, svc-handle = 20, attributes = [svc, temp-decl, temp-val, temp-ccc] }
+
+  gatt-service-attr-count : GattService -> Integer
+  gatt-service-attr-count (svc) = list-length svc.attributes
+
+Section: LED (P0.13 on nRF52840-DK)
+
+  nrf-led1-pin : Integer = 13
+  nrf-led2-pin : Integer = 14
+  nrf-led3-pin : Integer = 15
+  nrf-led4-pin : Integer = 16
+
+  nrf-led-init : Integer
+  nrf-led-init =
+   let l1 = nrf-gpio-set-output nrf-p0-base nrf-led1-pin
+   in let l2 = nrf-gpio-set-output nrf-p0-base nrf-led2-pin
+   in let l3 = nrf-gpio-set-output nrf-p0-base nrf-led3-pin
+   in nrf-gpio-set-output nrf-p0-base nrf-led4-pin
+
+  nrf-led-on : Integer -> Integer
+  nrf-led-on (pin) = nrf-gpio-write nrf-p0-base pin False
+
+  nrf-led-off : Integer -> Integer
+  nrf-led-off (pin) = nrf-gpio-write nrf-p0-base pin True
+
+Section: Delay
+
+  nrf-delay-loops : Integer, Integer -> Integer
+  nrf-delay-loops (n) (i) =
+   if i >= n then 0
+   else nrf-delay-loops n (i + 1)
+
+  nrf-delay-ms : Duration -> Integer
+  nrf-delay-ms (ms) = nrf-delay-loops (ms * 1500) 0
+
+Page 1

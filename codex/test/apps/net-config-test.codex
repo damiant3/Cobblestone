@@ -1,0 +1,53 @@
+Chapter: NetConfigTest
+  cites Net chapter NetworkConfig
+  cites Net chapter DnsResolver
+  cites Foreword chapter Maybe
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  show-maybe-ip : Maybe (List Integer) -> Text
+  show-maybe-ip (m) = when m
+    is Just (ip) -> format-net-ip ip
+    is None -> "none"
+
+Section: Tests
+  test-empty : Text =
+    let cfg = net-config-empty [0, 0, 0, 0, 0, 0] "test"
+    in format-net-config cfg
+
+  test-static : Text =
+    let cfg = net-config-static [1, 2, 3, 4, 5, 6] [10, 0, 0, 50] [255, 255, 255, 0] [10, 0, 0, 1] [8, 8, 8, 8] "node1"
+    in "configured=" & show-bool (net-is-configured cfg) & " " & format-net-config cfg
+
+  test-static2 : Text =
+    let base = net-config-static [1, 2, 3, 4, 5, 6] [192, 168, 1, 100] [255, 255, 255, 0] [192, 168, 1, 1] [8, 8, 4, 4] "node2"
+    in format-net-config (NetworkConfig { state = base.state, local-ip = base.local-ip, subnet-mask = base.subnet-mask, gateway = base.gateway, dns-server = base.dns-server, local-mac = base.local-mac, hostname = base.hostname, resolver = base.resolver, ntp-offset = base.ntp-offset, lease-time = 3600, lease-start = base.lease-start })
+
+  test-dns : Text =
+    let cfg = net-config-static [1, 2, 3, 4, 5, 6] [10, 0, 0, 50] [255, 255, 255, 0] [10, 0, 0, 1] [8, 8, 8, 8] "node1"
+    in let cfg1 = net-cache-dns cfg "example.com" [93, 184, 216, 34] 300 100
+    in let found = net-resolve cfg1 "example.com" 200
+    in let expired = net-resolve cfg1 "example.com" 500
+    in let localhost = net-resolve cfg1 "localhost" 100
+    in "found=" & show-maybe-ip found & " expired=" & show-maybe-ip expired & " localhost=" & show-maybe-ip localhost
+
+  test-lease : Text =
+    let base = net-config-static [1, 2, 3, 4, 5, 6] [10, 0, 0, 50] [255, 255, 255, 0] [10, 0, 0, 1] [8, 8, 8, 8] "node1"
+    in let cfg = NetworkConfig { state = base.state, local-ip = base.local-ip, subnet-mask = base.subnet-mask, gateway = base.gateway, dns-server = base.dns-server, local-mac = base.local-mac, hostname = base.hostname, resolver = base.resolver, ntp-offset = base.ntp-offset, lease-time = 3600, lease-start = 1000 }
+    in "remain-1500=" & show (net-lease-remaining cfg 1500) & " remain-4600=" & show (net-lease-remaining cfg 4600) & " remain-5000=" & show (net-lease-remaining cfg 5000)
+
+  test-ntp : Text =
+    let cfg = net-config-empty [0, 0, 0, 0, 0, 0] "test"
+    in let cfg1 = net-apply-ntp cfg 42
+    in "offset=" & show (cfg1.ntp-offset)
+
+  opening : [Console] Nothing = act
+    print-line-uni test-empty
+    print-line-uni test-static
+    print-line-uni test-static2
+    print-line-uni test-dns
+    print-line-uni test-lease
+    print-line-uni test-ntp
+  end

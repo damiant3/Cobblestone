@@ -1,0 +1,98 @@
+Chapter: PageSandbox
+  cites Foreword chapter Maybe
+  cites Browser chapter TrustManager
+  cites Browser chapter ContentAddress
+  cites Foreword chapter ListUtils
+  cites Foreword chapter StringUtils
+
+ The capability gate. Verifies a page's declared effect profile
+ against the user's trust decisions before allowing execution.
+ Pages that exceed their granted capabilities are rejected at
+ compile time (effect type mismatch) — the sandbox is the
+ runtime policy layer on top.
+
+ Capability tiers:
+   Static      [Display]                 no consent needed
+   Connected   [Display, Network]        implicit for trusted
+   Interactive [Display, Network, Storage]  prompted
+   Sensor      [Display, ..., Camera]    explicit per-device
+   System      [Display, ..., FileSystem] explicit + high trust
+
+Section: Types
+
+  SandboxVerdict =
+    | SandboxAllow
+    | SandboxPrompt (CapabilityTier) (List Text)
+    | SandboxDeny (Text)
+
+  SandboxConfig = record {
+    sb-max-source-bytes  : Integer,
+    sb-max-compile-ticks : Integer,
+    sb-auto-trust-static : Boolean
+  }
+
+Section: Default Configuration
+
+  sandbox-default-config : SandboxConfig
+  sandbox-default-config =
+    SandboxConfig {
+      sb-max-source-bytes = 1048576,
+      sb-max-compile-ticks = 10000,
+      sb-auto-trust-static = True
+    }
+
+Section: Verification
+
+  sandbox-check : SandboxConfig, TrustStore, Maybe (List Integer), PageCapabilities -> SandboxVerdict
+  sandbox-check (config) (store) (publisher) (caps) =
+    if caps.pc-tier == TierStatic
+    then if config.sb-auto-trust-static
+      then SandboxAllow
+      else SandboxPrompt (TierStatic) (caps.pc-effects)
+    else when publisher
+      is None -> SandboxPrompt (caps.pc-tier) (caps.pc-effects)
+      is Just (pub-key) ->
+        let verdict = check-page-trust store pub-key caps
+        in when verdict
+          is TrustGranted -> SandboxAllow
+          is TrustNeeded (tier) -> SandboxPrompt (tier) (caps.pc-effects)
+          is TrustEscalation (requested) (granted) ->
+            SandboxPrompt (requested) (caps.pc-effects)
+
+Section: Source Size Gate
+
+  sandbox-check-source-size : SandboxConfig, Integer -> SandboxVerdict
+  sandbox-check-source-size (config) (size) =
+    if size > config.sb-max-source-bytes
+    then SandboxDeny ("Source too large: " & show size & " bytes (limit: " & show config.sb-max-source-bytes & ")")
+    else SandboxAllow
+
+Section: Embedding Capabilities
+
+ The factory pattern for page embedding. An embedded page's
+ capabilities are derived from the embedder's capabilities —
+ never escalated. Revocation cascades from parent to child.
+
+  CapabilityGrant = record {
+    cg-effect : Text,
+    cg-scope  : GrantScope
+  }
+
+  GrantScope =
+    | GrantFull
+    | GrantReadOnly
+    | GrantOriginOnly
+
+  can-embed-with : PageCapabilities, List CapabilityGrant -> SandboxVerdict
+  can-embed-with (parent-caps) (grants) =
+    if all-grants-within-parent parent-caps.pc-effects grants
+    then SandboxAllow
+    else SandboxDeny "Embedded page requests capabilities beyond parent"
+
+  all-grants-within-parent : List Text, List CapabilityGrant -> Boolean
+  all-grants-within-parent (parent-effects) (grants) =
+    if list-length grants == 0 then True
+    else let head = list-at grants 0
+        in if list-any parent-effects (text-eq head.cg-effect)
+          then all-grants-within-parent parent-effects (list-drop grants 1)
+          else False

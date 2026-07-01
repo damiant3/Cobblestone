@@ -1,0 +1,694 @@
+Chapter: GuiShell
+  cites Foreword chapter Console
+  cites Foreword chapter List
+  cites Foreword chapter Fat32
+  cites Guios chapter GuiTimer
+  cites Guios chapter GuiDisplay
+  cites Guios chapter FontLoad
+  cites Guios chapter FontAi
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites UI chapter AppRunner
+  cites UI chapter InputSource
+  cites UI chapter GpuRender
+  cites Kernel chapter Keyboard
+
+ Bare-metal GUI desktop for Codex.OS. Uses the BareApp framework for
+ input polling, event dispatch, and GPU triangle rendering. App sidebar
+ on the left, taskbar at the bottom, workspace in the center.
+
+Section: Screen
+  gui-w : Integer = 1024
+  gui-h : Integer = 768
+  gui-max-tris : Integer = 24000
+  sidebar-w : Integer = 160
+  taskbar-h : Integer = 24
+
+Section: State
+  ShellState = record {
+    ss-app : BareApp,
+    ss-wheel : MutWheel,
+    ss-active : Integer,
+    ss-view : Integer,
+    ss-fb : GopBuf
+  }
+
+Section: RTC Clock
+  rtc-read : Integer -> Integer
+  rtc-read (reg) = let w = port-out-byte 112 reg in port-in-byte 113
+
+  bcd-dec : Integer -> Integer
+  bcd-dec (v) = (bit-shru v 4) * 10 + bit-and v 15
+
+  rtc-pad2 : Integer -> Text
+  rtc-pad2 (n) = let d = bcd-dec n in if d < 10 then "0" & show d else show d
+
+  rtc-time : Text
+  rtc-time = rtc-pad2 (rtc-read 4) & ":" & rtc-pad2 (rtc-read 2) & ":" & rtc-pad2 (rtc-read 0)
+
+  rtc-date : Text
+  rtc-date = "20" & rtc-pad2 (rtc-read 9) & "-" & rtc-pad2 (rtc-read 8) & "-" & rtc-pad2 (rtc-read 7)
+
+Section: Font Loading
+  gui-try-load-fonts : MutWheel -> Integer
+  gui-try-load-fonts (w) =
+    let d0 = block-select 0
+    in let d1 = fl-init-cache w
+    in let vol = fat32-try-init 0
+    in if vol.f32-bytes-per-sector == 0 then gui-load-fallback w
+    else if vol.f32-sectors-per-cluster == 0 then gui-load-fallback w
+    else fl-load-defaults vol w
+
+  gui-load-fallback : MutWheel -> Integer
+  gui-load-fallback (w) =
+    let d1 = fl-load-block-font w 1
+    in let d2 = fl-load-block-font w 2
+    in let d3 = fl-load-block-font w 3
+    in mw-set-fonts-loaded w 1
+
+  fat32-try-init : Integer -> Fat32Volume
+  fat32-try-init (part-start) =
+    let buf = block-read-sector part-start
+    in let bps = fat16-read-u16 buf 11
+    in let spc = peek-byte buf 13
+    in if spc == 0 then Fat32Volume {
+      f32-part-start = 0, f32-bytes-per-sector = 0,
+      f32-sectors-per-cluster = 0, f32-reserved-sectors = 0,
+      f32-num-fats = 0, f32-fat-sectors = 0,
+      f32-root-cluster = 0, f32-fat-start = 0,
+      f32-data-start = 0, f32-total-clusters = 0,
+      f32-next-free = 0
+    }
+    else fat32-init part-start
+
+Section: Framebuffer Text Overlay
+  gop-fb-base-addr : Integer = 3204448256
+
+  fb-overlay-new : Integer, Integer -> GopBuf
+  fb-overlay-new (w) (h) =
+    GopBuf { gb-base = gop-fb-base-addr, gb-width = w, gb-height = h }
+
+Section: Entry Point
+  opening : [Console] Nothing = act
+    let w0 = mw-new
+    in let w1 = mw-schedule w0 18 mtw-tag-clock
+    in let w2 = mw-schedule w1 90 mtw-tag-heartbeat
+    in let d-fonts = gui-try-load-fonts w2
+    in let fb = fb-overlay-new gui-w gui-h
+    in let root = shell-build-root 0 0
+    in let ba = bare-app-new root theme-terminal gui-w gui-h gui-max-tris
+    in let ss = ShellState { ss-app = ba, ss-wheel = w2, ss-active = 0, ss-view = 0, ss-fb = fb }
+    in let frames = shell-loop ss
+    in print-line ("Codex.OS | " & show frames & " frames")
+  end
+
+Section: Main Loop
+  shell-loop : ShellState -> Integer
+  shell-loop (ss) =
+    let ba2 = bare-app-tick (ss.ss-app)
+    in let ss2 = shell-process-input ss ba2
+    in let rendered = shell-composite-render ss2
+    in let pace = shell-frame-pace 0
+    in if (ss2.ss-app).ba-quit then ss2.ss-view
+    else shell-loop ss2
+
+  shell-frame-pace : Integer -> Integer
+  shell-frame-pace (i) =
+    if i >= 30 then 0
+    else let y = port-out-byte 224 0
+    in shell-frame-pace (i + 1)
+
+Section: Composite Render
+  shell-composite-render : ShellState -> Integer
+  shell-composite-render (ss) =
+    let root = ((ss.ss-app).ba-state).app-root
+    in let th = ((ss.ss-app).ba-state).app-theme
+    in let fb = ss.ss-fb
+    in let w = ss.ss-wheel
+    in let d1 = gr-clear ((th.th-palette).pal-bg)
+    in let d2 = gr-clear-depth
+    in let gf = gf-new gui-max-tris
+    in let gf2 = composite-walk-gpu gf root th 10000
+    in let d3 = gr-flush (gf2.gf-idx)
+    in composite-walk-text fb w root #E2E8F0
+
+  composite-walk-gpu : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  composite-walk-gpu (gf) (node) (th) (depth) =
+    let gf2 = composite-gpu-node gf node th depth
+    in composite-gpu-children gf2 (node.wn-children) th depth 0 (node.wn-child-count)
+
+  composite-gpu-children : GpuFrame, List WidgetNode, Theme, Integer, Integer, Integer -> GpuFrame
+  composite-gpu-children (gf) (children) (th) (depth) (i) (n) =
+    if i >= n then gf
+    else let gf2 = composite-walk-gpu gf (list-at children i) th depth
+    in composite-gpu-children gf2 children th depth (i + 1) n
+
+  composite-gpu-node : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  composite-gpu-node (gf) (node) (th) (depth) =
+    when node.wn-kind
+      is WkPanel -> gr-render-panel gf node th depth
+      is WkSeparator -> gr-render-separator gf node th depth
+      is WkGauge (v) (m) -> gr-render-gauge gf node th v m depth
+      is WkButton (txt) -> gr-render-panel gf node th depth
+      is otherwise -> gf
+
+  composite-walk-text : GopBuf, MutWheel, WidgetNode, Integer -> Integer
+  composite-walk-text (fb) (w) (node) (fg) =
+    let d1 = composite-text-node fb w node fg
+    in let d2 = composite-text-children fb w (node.wn-children) fg 0 (node.wn-child-count)
+    in d1 + d2
+
+  composite-text-children : GopBuf, MutWheel, List WidgetNode, Integer, Integer, Integer -> Integer
+  composite-text-children (fb) (w) (children) (fg) (i) (n) =
+    if i >= n then 0
+    else let d = composite-walk-text fb w (list-at children i) fg
+    in composite-text-children fb w children fg (i + 1) n
+
+  composite-text-node : GopBuf, MutWheel, WidgetNode, Integer -> Integer
+  composite-text-node (fb) (w) (node) (fg) =
+    let bounds = node.wn-bounds
+    in let x = bounds.lr-x + 4
+    in let y = bounds.lr-y + 3
+    in when node.wn-kind
+      is WkLabel (txt) -> gop-buf-put-text-role fb w x y txt fg font-role-sans
+      is WkButton (txt) -> gop-buf-put-text-role fb w (x + 4) (y + 2) txt fg font-role-sans
+      is otherwise -> 0
+
+  shell-process-input : ShellState, BareApp -> ShellState
+  shell-process-input (ss) (ba) =
+    let ri = bare-app-input ba
+    in let key = ri-key-pressed ri
+    in let clicked = ri-left-down ri
+    in let mx = ri.ri-mx
+    in let my = ri.ri-my
+    in let w = ss.ss-wheel
+    in let d1 = mw-tick w
+    in let tag = mw-check-and-fire w
+    in let d2 = if tag == mtw-tag-clock then let rr = mw-schedule w 18 mtw-tag-clock in 0
+      else if tag == mtw-tag-heartbeat then let rr = mw-schedule w 90 mtw-tag-heartbeat in 0
+      else 0
+    in let ss2 = shell-handle-key ss ba key
+    in let ss3 = if clicked then shell-handle-click ss2 mx my else ss2
+    in if tag > 0 then shell-rebuild ss3
+    else ss3
+
+  shell-handle-key : ShellState, BareApp, Integer -> ShellState
+  shell-handle-key (ss) (ba) (key) =
+    if key == 1 then ShellState { ss-app = bare-app-set-quit ba, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = ss.ss-view, ss-fb = ss.ss-fb }
+    else if key == 59 then shell-set-view ss ba 0
+    else if key == 60 then shell-set-view ss ba 1
+    else if key == 61 then shell-set-view ss ba 2
+    else if key == 62 then shell-set-view ss ba 3
+    else if key == 63 then shell-set-view ss ba 4
+    else if key == 72 then shell-nav-up ss ba
+    else if key == 80 then shell-nav-down ss ba
+    else if key == 28 then shell-nav-activate ss ba
+    else ShellState { ss-app = ba, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = ss.ss-view, ss-fb = ss.ss-fb }
+
+  shell-handle-click : ShellState, Integer, Integer -> ShellState
+  shell-handle-click (ss) (mx) (my) =
+    if mx < sidebar-w then shell-sidebar-click ss my
+    else if my >= gui-h - taskbar-h then shell-hotbar-click ss mx
+    else ss
+
+  shell-sidebar-click : ShellState, Integer -> ShellState
+  shell-sidebar-click (ss) (my) =
+    let top = 38
+    in let row-h = 17
+    in let slot = (my - top) / row-h
+    in if my < top then ss
+    else if slot >= 21 then ss
+    else let view = slot + 5
+    in let root = shell-build-root view slot
+    in ShellState { ss-app = bare-app-set-root (ss.ss-app) root, ss-wheel = ss.ss-wheel, ss-active = slot, ss-view = view, ss-fb = ss.ss-fb }
+
+  shell-hotbar-click : ShellState, Integer -> ShellState
+  shell-hotbar-click (ss) (mx) =
+    let x0 = sidebar-w + 50
+    in let btn = (mx - x0) / 40
+    in if mx < x0 then ss
+    else if btn > 4 then ss
+    else shell-set-view ss (ss.ss-app) btn
+
+  shell-set-view : ShellState, BareApp, Integer -> ShellState
+  shell-set-view (ss) (ba) (v) =
+    let root = shell-build-root v (ss.ss-active)
+    in ShellState { ss-app = bare-app-set-root ba root, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = v, ss-fb = ss.ss-fb }
+
+  shell-rebuild : ShellState -> ShellState
+  shell-rebuild (ss) =
+    let root = shell-build-root (ss.ss-view) (ss.ss-active)
+    in ShellState { ss-app = bare-app-set-root (ss.ss-app) root, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = ss.ss-view, ss-fb = ss.ss-fb }
+
+  shell-nav-up : ShellState, BareApp -> ShellState
+  shell-nav-up (ss) (ba) =
+    let cur = ss.ss-active
+    in let next = if cur <= 0 then 20 else cur - 1
+    in let view = next + 5
+    in let root = shell-build-root view next
+    in ShellState { ss-app = bare-app-set-root ba root, ss-wheel = ss.ss-wheel, ss-active = next, ss-view = view, ss-fb = ss.ss-fb }
+
+  shell-nav-down : ShellState, BareApp -> ShellState
+  shell-nav-down (ss) (ba) =
+    let cur = ss.ss-active
+    in let next = if cur >= 20 then 0 else cur + 1
+    in let view = next + 5
+    in let root = shell-build-root view next
+    in ShellState { ss-app = bare-app-set-root ba root, ss-wheel = ss.ss-wheel, ss-active = next, ss-view = view, ss-fb = ss.ss-fb }
+
+  shell-nav-activate : ShellState, BareApp -> ShellState
+  shell-nav-activate (ss) (ba) =
+    let view = ss.ss-active + 5
+    in shell-set-view ss ba view
+
+Section: Widget Tree
+  shell-build-root : Integer, Integer -> WidgetNode
+  shell-build-root (view) (active) =
+    let sidebar = shell-build-sidebar view active
+    in let content = shell-build-content view
+    in let taskbar = shell-build-taskbar view
+    in let right = widget-panel "right" DirColumn 0 [content, taskbar]
+    in widget-panel "root" DirRow 0 [sidebar, right]
+
+Section: Sidebar
+  shell-build-sidebar : Integer, Integer -> WidgetNode
+  shell-build-sidebar (view) (active) =
+    let logo = widget-set-min (widget-label "logo" "CODEX OS") sidebar-w 20
+    in let sep = widget-separator "nav-sep"
+    in widget-set-min (widget-panel "sidebar" DirColumn 1 [
+      logo, sep,
+      shell-nav-btn "Notes" 0 active view,
+      shell-nav-btn "Calendar" 1 active view,
+      shell-nav-btn "Calc" 2 active view,
+      shell-nav-btn "Settings" 3 active view,
+      shell-nav-btn "Tasks" 4 active view,
+      shell-nav-btn "Pomodoro" 5 active view,
+      shell-nav-btn "Publisher" 6 active view,
+      shell-nav-btn "Boombox" 7 active view,
+      shell-nav-btn "Piano" 8 active view,
+      shell-nav-btn "Photos" 9 active view,
+      shell-nav-btn "Podcasts" 10 active view,
+      shell-nav-btn "Capture" 11 active view,
+      shell-nav-btn "ImgTools" 12 active view,
+      shell-nav-btn "Diagram" 13 active view,
+      shell-nav-btn "Designer" 14 active view,
+      shell-nav-btn "Mail" 15 active view,
+      shell-nav-btn "Chat" 16 active view,
+      shell-nav-btn "Collab" 17 active view,
+      shell-nav-btn "Helm" 18 active view,
+      shell-nav-btn "Diffusion" 19 active view,
+      shell-nav-btn "Fonts" 20 active view
+    ]) sidebar-w 0
+
+  shell-nav-btn : Text, Integer, Integer, Integer -> WidgetNode
+  shell-nav-btn (label) (idx) (active) (view) =
+    if idx == active then widget-label ("nav-" & show idx) ("> " & label & " <")
+    else widget-label ("nav-" & show idx) ("  " & label)
+
+Section: Taskbar
+  shell-build-taskbar : Integer -> WidgetNode
+  shell-build-taskbar (view) =
+    let codex-lbl = widget-label "tb-codex" "Codex"
+    in let sys = widget-label "tb-sys" (if view == 0 then "[Sys]" else " Sys ")
+    in let mon = widget-label "tb-mon" (if view == 1 then "[Mon]" else " Mon ")
+    in let hw = widget-label "tb-hw" (if view == 2 then "[HW]" else " HW ")
+    in let info = widget-label "tb-info" (if view == 3 then "[Info]" else " Info ")
+    in let apps = widget-label "tb-apps" (if view == 4 then "[Apps]" else " Apps ")
+    in let spacer = widget-set-flex (widget-label "tb-space" "") 1
+    in let clock = widget-label "tb-clock" (rtc-date & " " & rtc-time)
+    in widget-set-min (widget-panel "taskbar" DirRow 4 [codex-lbl, sys, mon, hw, info, apps, spacer, clock]) 0 taskbar-h
+
+Section: Content Dispatch
+  shell-build-content : Integer -> WidgetNode
+  shell-build-content (view) =
+    let body = if view == 0 then view-dashboard
+      else if view == 1 then view-monitor
+      else if view == 2 then view-hardware
+      else if view == 3 then view-about
+      else if view == 4 then view-apps
+      else if view == 5 then view-notepad
+      else if view == 6 then view-calendar
+      else if view == 7 then view-calc
+      else if view == 8 then view-settings
+      else if view == 9 then view-tasks
+      else if view == 10 then view-pomodoro
+      else if view == 11 then view-publisher
+      else if view == 12 then view-boombox
+      else if view == 13 then view-piano
+      else if view == 14 then view-photos
+      else if view == 15 then view-podcasts
+      else if view == 16 then view-capture
+      else if view == 17 then view-imgtools
+      else if view == 18 then view-diagram
+      else if view == 19 then view-designer
+      else if view == 20 then view-mail
+      else if view == 21 then view-chat
+      else if view == 22 then view-collab
+      else if view == 23 then view-helm
+      else if view == 24 then view-diffusion
+      else if view == 25 then view-fonts
+      else view-stub "Unknown" "No view for this ID"
+    in widget-set-flex body 1
+
+Section: Dashboard (F1)
+  view-dashboard : WidgetNode
+  view-dashboard =
+    let ticks = get-ticks
+    in let heap = __heap-save
+    in let heap-mb = heap / 1048576
+    in widget-panel "dashboard" DirColumn 2 [
+      widget-label "d-welcome" "Welcome to Codex OS",
+      widget-separator "d-sep0",
+      widget-label "d-clock" (rtc-date & "  " & rtc-time),
+      widget-label "d-uptime" ("Uptime: " & show (ticks / 18) & "s"),
+      widget-label "d-heap" ("Memory: " & show heap-mb & " MB used / 3072 MB"),
+      widget-gauge "d-hbar" heap-mb 3072,
+      widget-separator "d-sep1",
+      widget-label "d-ktitle" "Keyboard Shortcuts",
+      widget-label "d-k1" "F1 Dashboard  F2 Monitor  F3 Hardware",
+      widget-label "d-k2" "F4 About      F5 Apps catalog",
+      widget-label "d-k3" "Up/Down  Navigate sidebar",
+      widget-label "d-k4" "Enter    Open selected app",
+      widget-label "d-k5" "Esc      Exit Codex OS",
+      widget-separator "d-sep2",
+      widget-label "d-info" "21 apps | GPU triangle render | 5x7 bitmap font"
+    ]
+
+Section: Monitor (F2)
+  view-monitor : WidgetNode
+  view-monitor =
+    let ticks = get-ticks
+    in let heap = __heap-save
+    in let heap-mb = heap / 1048576
+    in widget-panel "monitor" DirColumn 2 [
+      widget-label "m-title" "Performance Monitor",
+      widget-separator "m-sep1",
+      widget-label "m-clock" ("Clock: " & rtc-time),
+      widget-label "m-timer" ("Ticks: " & show ticks),
+      widget-label "m-uptime" ("Uptime: " & show (ticks / 18) & "s"),
+      widget-separator "m-sep1b",
+      widget-label "m-heap" ("Heap: " & show heap-mb & " MB / 3072 MB"),
+      widget-gauge "m-hbar" heap-mb 3072,
+      widget-separator "m-sep2",
+      widget-label "m-proc" "Processes:",
+      widget-label "m-p1" "  kernel     running    PID 0",
+      widget-label "m-p2" "  gui-shell  running    PID 1",
+      widget-label "m-p3" "  keyboard   listening  IRQ 1",
+      widget-label "m-p4" "  mouse      polling    port E1-E4",
+      widget-label "m-p5" "  timer      irq-0      PIT 18Hz",
+      widget-label "m-p6" "  ide        ready      port 1F0",
+      widget-label "m-p7" "  nic        standby    NE2K 300",
+      widget-label "m-p8" "  hda        idle       port FE000000"
+    ]
+
+Section: Hardware (F3)
+  view-hardware : WidgetNode
+  view-hardware =
+    widget-panel "hardware" DirColumn 2 [
+      widget-label "h-title" "Hardware",
+      widget-separator "h-sep1",
+      widget-label "h-arch" "Arch: x86-64 long mode",
+      widget-label "h-vm" "VM: codex-vm (WHP)",
+      widget-label "h-ram" "RAM: 3 GB",
+      widget-separator "h-sep2",
+      widget-label "h-disp" "Display: GOP 1024x768 32bpp",
+      widget-label "h-fb" "FB: 0xBF000000",
+      widget-label "h-gpu" "GPU: Triangle rasterizer",
+      widget-separator "h-sep3",
+      widget-label "h-kbd" "Keyboard: PS/2",
+      widget-label "h-mouse" "Mouse: Absolute (ports E1-E4)",
+      widget-label "h-disk" "Disk: IDE PIO",
+      widget-label "h-nic" "NIC: NE2000 (10.0.2.15)",
+      widget-label "h-usb" "USB: xHCI",
+      widget-label "h-audio" "Audio: Intel HDA"
+    ]
+
+Section: About (F4)
+  view-about : WidgetNode
+  view-about =
+    widget-panel "about" DirColumn 2 [
+      widget-label "a-title" "About Codex",
+      widget-separator "a-sep1",
+      widget-label "a-b1" "The first self-sustaining compiler.",
+      widget-label "a-b2" "Boots on bare metal. Compiles itself.",
+      widget-label "a-b3" "No OS. No runtime. No borrowed trust.",
+      widget-separator "a-sep2",
+      widget-label "a-ts" "Type System:",
+      widget-label "a-t1" "  Dependent + linear + effect types",
+      widget-label "a-t2" "  Punctual (hard real-time)",
+      widget-label "a-t3" "  Bounded integers, unit types",
+      widget-separator "a-sep3",
+      widget-label "a-s1" "28K lines / 54 files / 500+ modules",
+      widget-label "a-s2" "57 apps / 52 plugs / 22 quires",
+      widget-label "a-s3" "Built 2026-03-14, 41 days to fixed point"
+    ]
+
+Section: Apps Catalog (F5)
+  view-apps : WidgetNode
+  view-apps =
+    widget-panel "apps" DirColumn 2 [
+      widget-label "ap-title" "Apps Catalog (57 apps)",
+      widget-separator "ap-sep0",
+      widget-label "ap-h1" "Productivity:",
+      widget-label "ap-1" "  Notes, Calendar, Tasks, Pomodoro, Publisher",
+      widget-label "ap-2" "  Mail, Chat, Collab, Helm",
+      widget-separator "ap-sep1",
+      widget-label "ap-h2" "Media + Creative:",
+      widget-label "ap-3" "  Boombox, Piano, Photos, Podcasts",
+      widget-label "ap-4" "  Capture, ImgTools, Diagram, Designer",
+      widget-separator "ap-sep2",
+      widget-label "ap-h3" "System + AI:",
+      widget-label "ap-5" "  Calculator, Settings, Diffusion, Fonts"
+    ]
+
+Section: Settings
+  view-settings : WidgetNode
+  view-settings =
+    widget-panel "settings" DirColumn 2 [
+      widget-label "set-title" "Settings",
+      widget-separator "set-sep1",
+      widget-label "set-theme" "Theme: Terminal",
+      widget-label "set-res" "Resolution: 1024x768",
+      widget-label "set-font" "Font: 5x7 bitmap (GPU)",
+      widget-label "set-enc" "Encoding: CCE"
+    ]
+
+Section: Stub View
+  view-stub : Text, Text -> WidgetNode
+  view-stub (name) (desc) =
+    widget-panel ("stub-" & name) DirColumn 4 [
+      widget-label ("s-title-" & name) name,
+      widget-separator ("s-sep-" & name),
+      widget-label ("s-desc-" & name) desc,
+      widget-label ("s-hint-" & name) "Use sidebar or F-keys to navigate"
+    ]
+
+Section: Notepad
+  view-notepad : WidgetNode
+  view-notepad =
+    widget-panel "notepad" DirColumn 2 [
+      widget-label "np-title" "Notepad",
+      widget-separator "np-sep",
+      widget-set-flex (widget-panel "np-edit" DirColumn 0 [
+        widget-label "np-line1" "Type here to edit...",
+        widget-label "np-line2" "",
+        widget-label "np-line3" ""
+      ]) 1,
+      widget-separator "np-sep2",
+      widget-label "np-status" "Ln 1, Col 0  |  UTF-8  |  LF"
+    ]
+
+Section: Calendar
+  view-calendar : WidgetNode
+  view-calendar =
+    let hdr = widget-panel "cal-hdr" DirRow 4 [
+      widget-label "cal-prev" "<",
+      widget-set-flex (widget-label "cal-month" (rtc-date)) 1,
+      widget-label "cal-next" ">"
+    ]
+    in let days = widget-label "cal-days" "Su Mo Tu We Th Fr Sa"
+    in widget-panel "calendar" DirColumn 2 [
+      widget-label "cal-title" "Calendar",
+      widget-separator "cal-sep",
+      hdr, days,
+      widget-label "cal-w1" " 1  2  3  4  5  6  7",
+      widget-label "cal-w2" " 8  9 10 11 12 13 14",
+      widget-label "cal-w3" "15 16 17 18 19 20 21",
+      widget-label "cal-w4" "22 23 24 25 26 27 28",
+      widget-label "cal-w5" "29 30"
+    ]
+
+Section: Calculator
+  view-calc : WidgetNode
+  view-calc =
+    let display = widget-panel "calc-disp" DirColumn 0 [
+      widget-label "calc-val" "0",
+      widget-separator "calc-dsep"
+    ]
+    in let row1 = widget-panel "calc-r1" DirRow 4 [
+      widget-label "c-7" "7", widget-label "c-8" "8",
+      widget-label "c-9" "9", widget-label "c-div" "/"
+    ]
+    in let row2 = widget-panel "calc-r2" DirRow 4 [
+      widget-label "c-4" "4", widget-label "c-5" "5",
+      widget-label "c-6" "6", widget-label "c-mul" "*"
+    ]
+    in let row3 = widget-panel "calc-r3" DirRow 4 [
+      widget-label "c-1" "1", widget-label "c-2" "2",
+      widget-label "c-3" "3", widget-label "c-sub" "-"
+    ]
+    in let row4 = widget-panel "calc-r4" DirRow 4 [
+      widget-label "c-0" "0", widget-label "c-dot" ".",
+      widget-label "c-eq" "=", widget-label "c-add" "+"
+    ]
+    in widget-panel "calc" DirColumn 2 [
+      widget-label "calc-title" "Calculator",
+      widget-separator "calc-sep",
+      display, row1, row2, row3, row4
+    ]
+
+Section: Productivity Apps
+  view-tasks : WidgetNode
+  view-tasks =
+    widget-panel "tasks" DirColumn 2 [
+      widget-label "tk-title" "Tasks (Kanban)",
+      widget-separator "tk-sep",
+      widget-label "tk-h1" "Backlog:  Item 1, Item 2",
+      widget-label "tk-h2" "To Do:    Item 3",
+      widget-label "tk-h3" "Doing:    Item 4",
+      widget-label "tk-h4" "Done:     Item 5"
+    ]
+
+  view-pomodoro : WidgetNode
+  view-pomodoro =
+    widget-panel "pomo" DirColumn 4 [
+      widget-label "pm-title" "Pomodoro Timer",
+      widget-separator "pm-sep",
+      widget-label "pm-time" "25:00",
+      widget-gauge "pm-bar" 25 25,
+      widget-separator "pm-sep2",
+      widget-label "pm-status" "Ready  |  Sessions: 0  |  Goal: 4"
+    ]
+
+  view-publisher : WidgetNode
+  view-publisher =
+    widget-panel "pub" DirColumn 2 [
+      widget-label "pub-title" "Publisher",
+      widget-separator "pub-sep",
+      widget-set-flex (widget-label "pub-body" "Start writing your document here...") 1,
+      widget-separator "pub-sep2",
+      widget-label "pub-status" "Words: 0  |  Draft  |  Untitled"
+    ]
+
+Section: Media Apps
+  view-boombox : WidgetNode
+  view-boombox =
+    widget-panel "boom" DirColumn 2 [
+      widget-label "bm-title" "Boombox",
+      widget-separator "bm-sep",
+      widget-label "bm-np" "Now Playing: --",
+      widget-gauge "bm-prog" 0 100,
+      widget-separator "bm-sep2",
+      widget-label "bm-t1" "1. Track One         3:42",
+      widget-label "bm-t2" "2. Track Two         4:15",
+      widget-label "bm-t3" "3. Track Three       2:58",
+      widget-label "bm-t4" "4. Track Four        5:21",
+      widget-separator "bm-sep3",
+      widget-label "bm-ctrl" "[Prev]  [Play]  [Next]  [Shuffle]"
+    ]
+
+  view-piano : WidgetNode
+  view-piano =
+    let keys = widget-panel "pn-keys" DirRow 1 [
+      widget-label "k-c" " C ", widget-label "k-d" " D ",
+      widget-label "k-e" " E ", widget-label "k-f" " F ",
+      widget-label "k-g" " G ", widget-label "k-a" " A ",
+      widget-label "k-b" " B ", widget-label "k-c2" " C2"
+    ]
+    in widget-panel "piano" DirColumn 4 [
+      widget-label "pn-title" "Piano",
+      widget-separator "pn-sep",
+      widget-label "pn-oct" "Octave 4  |  Keys: A S D F G H J K",
+      keys,
+      widget-separator "pn-sep2",
+      widget-label "pn-hint" "Press A-K to play notes"
+    ]
+
+  view-photos : WidgetNode
+  view-photos = view-stub "Photos" "Photo gallery with chronological grid and lightbox"
+
+  view-podcasts : WidgetNode
+  view-podcasts = view-stub "Podcasts" "Podcast client with subscriptions and playback"
+
+Section: Creative Apps
+  view-capture : WidgetNode
+  view-capture = view-stub "Capture" "Screenshot and annotation tool"
+
+  view-imgtools : WidgetNode
+  view-imgtools = view-stub "ImgTools" "Crop, resize, rotate, adjust, multi-format export"
+
+  view-diagram : WidgetNode
+  view-diagram = view-stub "Diagram" "Flowcharts, ERDs, UML, and state machines"
+
+  view-designer : WidgetNode
+  view-designer = view-stub "Designer" "WYSIWYG UI widget tree builder"
+
+Section: Comms Apps
+  view-mail : WidgetNode
+  view-mail =
+    widget-panel "mail" DirColumn 2 [
+      widget-label "ml-title" "Mail",
+      widget-separator "ml-sep",
+      widget-label "ml-folders" "Inbox (3) | Sent | Drafts | Archive",
+      widget-separator "ml-sep2",
+      widget-label "ml-m1" "alice@   Re: Project update",
+      widget-label "ml-m2" "bob@     Meeting tomorrow",
+      widget-label "ml-m3" "team@    Weekly standup notes"
+    ]
+
+  view-chat : WidgetNode
+  view-chat =
+    widget-panel "chat" DirColumn 2 [
+      widget-label "ch-title" "Chat (E2E encrypted)",
+      widget-separator "ch-sep",
+      widget-label "ch-m1" "alice: Hey, how's it going?",
+      widget-label "ch-m2" "you: Good! Working on the GUI",
+      widget-label "ch-m3" "alice: Looks great so far",
+      widget-separator "ch-sep2",
+      widget-label "ch-input" "> Type a message..."
+    ]
+
+  view-collab : WidgetNode
+  view-collab = view-stub "Collab" "Video calls, screen share, and whiteboard"
+
+  view-helm : WidgetNode
+  view-helm = view-stub "Helm" "Scalable comms: River chat + Bridge voice"
+
+Section: AI Apps
+  view-diffusion : WidgetNode
+  view-diffusion =
+    widget-panel "diff" DirColumn 2 [
+      widget-label "df-title" "Diffusion Studio",
+      widget-separator "df-sep",
+      widget-label "df-prompt" "Prompt: A crystal sword in morning light",
+      widget-label "df-model" "Model: SDXL  |  Steps: 30  |  CFG: 7",
+      widget-gauge "df-prog" 0 30,
+      widget-separator "df-sep2",
+      widget-label "df-status" "Ready  |  512x512  |  Seed: random"
+    ]
+
+  view-fonts : WidgetNode
+  view-fonts =
+    widget-panel "fonts" DirColumn 2 [
+      widget-label "ft-title" "Font Creator",
+      widget-separator "ft-sep",
+      widget-label "ft-info" "AI-generated TrueType fonts",
+      widget-label "ft-f1" "1. Codex Sans     2-layer MLP",
+      widget-label "ft-f2" "2. Codex Serif    Style weight: 0",
+      widget-label "ft-f3" "3. Codex Mono     Style weight: 500",
+      widget-separator "ft-sep2",
+      widget-label "ft-preview" "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      widget-label "ft-prev2" "abcdefghijklmnopqrstuvwxyz",
+      widget-label "ft-prev3" "0123456789 !@#$%^&*()"
+    ]

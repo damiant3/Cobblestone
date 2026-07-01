@@ -1,0 +1,731 @@
+Chapter: FontLoad
+  cites Foreword chapter CCE
+  cites Encode chapter TrueType
+  cites Encode chapter TrueTypeWriter
+  cites Encode chapter FontGen
+  cites Ui chapter GlyphRasterizer
+  cites Foreword chapter Fat32
+  cites Guios chapter GuiTimer
+  cites Guios chapter GuiDisplay
+
+ Load CC0 TrueType fonts from IDE disk, rasterize at 16ppem with
+ anti-aliasing, and store as alloc-bytes backed GopBitmapFont data.
+ Stores font base pointers into MutWheel MetaBuffer for role dispatch.
+
+Section: Constants
+  font-ppem : Integer = 16
+  font-glyph-count : Integer = 95
+  font-first-code : Integer = 32
+
+Section: Font Catalog (13 CC0 fonts)
+
+  font-cat-name : Integer -> Text
+  font-cat-name (idx) =
+    if idx == 0 then "CMU Serif"
+    else if idx == 1 then "CMU Serif Bold"
+    else if idx == 2 then "CMU Serif Italic"
+    else if idx == 3 then "CMU Serif BoldIt"
+    else if idx == 4 then "Liber Struct"
+    else if idx == 5 then "CMU Sans"
+    else if idx == 6 then "CMU Sans Bold"
+    else if idx == 7 then "Home Video"
+    else if idx == 8 then "Home Video Bold"
+    else if idx == 9 then "Secoline"
+    else if idx == 10 then "CMU Mono"
+    else if idx == 11 then "Public Pixel"
+    else if idx == 12 then "Unitblock"
+    else "Unknown"
+
+  cce-to-fat-text : Text -> Text
+  cce-to-fat-text (s) = cce-to-fat-loop s 0 (text-length s) ""
+
+  cce-to-fat-loop : Text, Integer, Integer, Text -> Text
+  cce-to-fat-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let cce-code = char-code (char-at s i)
+    in if cce-code == 65 then cce-to-fat-loop s (i + 1) len (acc & ".")
+    else let unicode = to-unicode cce-code
+    in cce-to-fat-loop s (i + 1) len (acc & char-to-text (code-to-char unicode))
+
+  font-cat-file : Integer -> Text
+  font-cat-file (idx) =
+    if idx == 0 then "CMUNRM.TTF"
+    else if idx == 1 then "CMUNBX.TTF"
+    else if idx == 2 then "CMUNTI.TTF"
+    else if idx == 3 then "CMUNTB.TTF"
+    else if idx == 4 then "LIBERSTR.TTF"
+    else if idx == 5 then "CMUNSS.TTF"
+    else if idx == 6 then "CMUNSX.TTF"
+    else if idx == 7 then "HOMEVID.TTF"
+    else if idx == 8 then "HOMEVIDB.TTF"
+    else if idx == 9 then "SECOLINE.TTF"
+    else if idx == 10 then "CMUNTT.TTF"
+    else if idx == 11 then "PUBPIXEL.TTF"
+    else if idx == 12 then "UNITBLK.TTF"
+    else ""
+
+  font-cat-role : Integer -> Integer
+  font-cat-role (idx) =
+    if idx <= 4 then 1
+    else if idx <= 9 then 2
+    else 3
+
+  font-cat-count : Integer = 13
+  font-cache-entry-size : Integer = 8
+
+Section: Font Cache (13 slots, 8 bytes each: base:4 + gw:4)
+
+  fl-init-cache : MutWheel -> Integer
+  fl-init-cache (w) =
+    let base = alloc-bytes (font-cat-count * font-cache-entry-size)
+    in let d = fl-zero-buf base (font-cat-count * font-cache-entry-size) 0
+    in mw-set-font-cache-base w base
+
+  fl-cache-get-base : MutWheel, Integer -> Integer
+  fl-cache-get-base (w) (idx) =
+    let cache = mw-get-font-cache-base w
+    in if cache == 0 then 0
+    else peek-32 cache (idx * font-cache-entry-size)
+
+  fl-cache-get-gw : MutWheel, Integer -> Integer
+  fl-cache-get-gw (w) (idx) =
+    let cache = mw-get-font-cache-base w
+    in if cache == 0 then 0
+    else peek-32 cache (idx * font-cache-entry-size + 4)
+
+  fl-cache-set : MutWheel, Integer, Integer, Integer -> Integer
+  fl-cache-set (w) (idx) (base) (gw) =
+    let cache = mw-get-font-cache-base w
+    in let d1 = poke-32 cache (idx * font-cache-entry-size) base
+    in poke-32 cache (idx * font-cache-entry-size + 4) gw
+
+Section: Rasterize to alloc-bytes
+
+  fl-raster-to-gobf : List RasterGlyph, Integer, Integer -> Integer
+  fl-raster-to-gobf (rasters) (gw) (gh) =
+    let pixel-size = font-glyph-count * gw * gh
+    in let buf-size = pixel-size + font-glyph-count + font-glyph-count
+    in let base = alloc-bytes buf-size
+    in let d = fl-zero-buf base buf-size 0
+    in let d2 = fl-copy-rasters rasters base gw gh 0 (list-length rasters)
+    in let d3 = fl-copy-advances rasters base pixel-size gw gh 0 (list-length rasters)
+    in base
+
+  fl-copy-advances : List RasterGlyph, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-copy-advances (rasters) (base) (adv-off) (gw) (gh) (i) (n) =
+    if i >= n then 0
+    else let rg = list-at rasters i
+    in let idx = rg.rg-code - font-first-code
+    in if idx < 0 then fl-copy-advances rasters base adv-off gw gh (i + 1) n
+    else if idx >= font-glyph-count then fl-copy-advances rasters base adv-off gw gh (i + 1) n
+    else let adv = rg.rg-advance
+    in let clamped = if adv < 1 then gw else if adv > 255 then 255 else adv
+    in let d = poke-byte base (adv-off + idx) clamped
+    in fl-copy-advances rasters base adv-off gw gh (i + 1) n
+
+  fl-zero-buf : Integer, Integer, Integer -> Integer
+  fl-zero-buf (base) (size) (i) =
+    if i >= size then 0
+    else let d = poke-byte base i 0
+    in fl-zero-buf base size (i + 1)
+
+  fl-copy-rasters : List RasterGlyph, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-copy-rasters (rasters) (base) (gw) (gh) (i) (n) =
+    if i >= n then 0
+    else let rg = list-at rasters i
+    in let idx = rg.rg-code - font-first-code
+    in if idx < 0 then fl-copy-rasters rasters base gw gh (i + 1) n
+    else if idx >= font-glyph-count then fl-copy-rasters rasters base gw gh (i + 1) n
+    else let d = fl-copy-glyph-pixels (rg.rg-pixels) base (idx * gw * gh) (rg.rg-width) gw gh 0 0
+    in fl-copy-rasters rasters base gw gh (i + 1) n
+
+  fl-copy-glyph-pixels : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-copy-glyph-pixels (pixels) (base) (off) (src-w) (dst-w) (dst-h) (row) (col) =
+    if row >= dst-h then 0
+    else if col >= dst-w then fl-copy-glyph-pixels pixels base off src-w dst-w dst-h (row + 1) 0
+    else let val = if col < src-w then
+           let pi = row * src-w + col
+           in if pi < list-length pixels then list-at pixels pi else 0
+         else 0
+    in let d = poke-byte base (off + row * dst-w + col) val
+    in fl-copy-glyph-pixels pixels base off src-w dst-w dst-h row (col + 1)
+
+Section: Fast Font Read (sector-by-sector into alloc-bytes, then to List)
+
+  fl-read-font-sectors : Fat32Volume, Integer, Integer, Integer, Integer -> Integer
+  fl-read-font-sectors (vol) (cluster) (remaining) (buf) (pos) =
+    if remaining <= 0 then pos
+    else if cluster < 2 then pos
+    else fl-read-cluster-sectors vol cluster remaining buf pos 0
+
+  fl-read-cluster-sectors : Fat32Volume, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-read-cluster-sectors (vol) (cluster) (remaining) (buf) (pos) (sec-off) =
+    if remaining <= 0 then pos
+    else if sec-off >= (vol.f32-sectors-per-cluster) then
+      fl-read-font-sectors vol (fat32-next-cluster vol cluster) remaining buf pos
+    else let sector = fat32-cluster-sector vol cluster + sec-off
+    in let sbuf = block-read-sector sector
+    in let bytes-this = if remaining < 512 then remaining else 512
+    in let d = fl-copy-sector sbuf buf pos bytes-this 0
+    in fl-read-cluster-sectors vol cluster (remaining - bytes-this) buf (pos + bytes-this) (sec-off + 1)
+
+  fl-copy-sector : Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-copy-sector (src) (dst) (dst-off) (count) (i) =
+    if i >= count then 0
+    else let d = poke-byte dst (dst-off + i) (peek-byte src i)
+    in fl-copy-sector src dst dst-off count (i + 1)
+
+  fat32-cluster-sector : Fat32Volume, Integer -> Integer
+  fat32-cluster-sector (vol) (cluster) =
+    (vol.f32-data-start) + (cluster - 2) * (vol.f32-sectors-per-cluster)
+
+Section: Buffer-backed TTF Binary Helpers (O(1) access via peek-byte)
+
+  fb-u8 : Integer, Integer -> Integer
+  fb-u8 (buf) (off) = peek-byte buf off
+
+  fb-u16 : Integer, Integer -> Integer
+  fb-u16 (buf) (off) = peek-byte buf off * 256 + peek-byte buf (off + 1)
+
+  fb-i16 : Integer, Integer -> Integer
+  fb-i16 (buf) (off) =
+    let v = fb-u16 buf off
+    in if v >= 32768 then v - 65536 else v
+
+  fb-u32 : Integer, Integer -> Integer
+  fb-u32 (buf) (off) =
+    peek-byte buf off * 16777216 + peek-byte buf (off + 1) * 65536 + peek-byte buf (off + 2) * 256 + peek-byte buf (off + 3)
+
+Section: Buffer-backed TTF Parse
+
+  fb-find-table : Integer, Integer, Integer, Integer -> Integer
+  fb-find-table (buf) (off) (num) (tag) =
+    if num <= 0 then (-1)
+    else if fb-u32 buf off == tag then fb-u32 buf (off + 8)
+    else fb-find-table buf (off + 16) (num - 1) tag
+
+  fb-read-u16-array : Integer, Integer, Integer -> List Integer
+  fb-read-u16-array (buf) (off) (count) = fb-read-u16-arr-loop buf off count 0 []
+
+  fb-read-u16-arr-loop : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fb-read-u16-arr-loop (buf) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else fb-read-u16-arr-loop buf off count (i + 1) (list-push acc (fb-u16 buf (off + i * 2)))
+
+  fb-read-i16-array : Integer, Integer, Integer -> List Integer
+  fb-read-i16-array (buf) (off) (count) = fb-read-i16-arr-loop buf off count 0 []
+
+  fb-read-i16-arr-loop : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fb-read-i16-arr-loop (buf) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else fb-read-i16-arr-loop buf off count (i + 1) (list-push acc (fb-i16 buf (off + i * 2)))
+
+  fb-find-cmap4 : Integer, Integer -> Integer
+  fb-find-cmap4 (buf) (cmap-off) =
+    let num-sub = fb-u16 buf (cmap-off + 2)
+    in fb-find-cmap4-loop buf (cmap-off + 4) num-sub 0 cmap-off
+
+  fb-find-cmap4-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  fb-find-cmap4-loop (buf) (off) (num) (i) (cmap-off) =
+    if i >= num then (-1)
+    else let fmt = fb-u16 buf (cmap-off + fb-u32 buf (off + 4))
+    in if fmt == 4 then cmap-off + fb-u32 buf (off + 4)
+    else fb-find-cmap4-loop buf (off + 8) num (i + 1) cmap-off
+
+  fb-read-cmap4 : Integer, Integer -> TtfCmap
+  fb-read-cmap4 (buf) (off) =
+    let seg-count = fb-u16 buf (off + 6) / 2
+    in let end-off = off + 14
+    in let start-off = end-off + seg-count * 2 + 2
+    in let delta-off = start-off + seg-count * 2
+    in let range-off = delta-off + seg-count * 2
+    in let glyph-off = range-off + seg-count * 2
+    in let table-len = fb-u16 buf (off + 2)
+    in let glyph-count = (table-len - (glyph-off - off)) / 2
+    in TtfCmap {
+      cm-seg-count = seg-count,
+      cm-end-codes = fb-read-u16-array buf end-off seg-count,
+      cm-start-codes = fb-read-u16-array buf start-off seg-count,
+      cm-id-deltas = fb-read-i16-array buf delta-off seg-count,
+      cm-id-range-offsets = fb-read-u16-array buf range-off seg-count,
+      cm-glyph-ids = fb-read-u16-array buf glyph-off (if glyph-count > 0 then glyph-count else 0),
+      cm-range-off-base = range-off
+    }
+
+  fb-read-loca-short : Integer, Integer, Integer -> List Integer
+  fb-read-loca-short (buf) (off) (num-glyphs) =
+    fb-read-loca-short-loop buf off (num-glyphs + 1) 0 []
+
+  fb-read-loca-short-loop : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fb-read-loca-short-loop (buf) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else fb-read-loca-short-loop buf off count (i + 1) (list-push acc (fb-u16 buf (off + i * 2) * 2))
+
+  fb-read-loca-long : Integer, Integer, Integer -> List Integer
+  fb-read-loca-long (buf) (off) (num-glyphs) =
+    fb-read-loca-long-loop buf off (num-glyphs + 1) 0 []
+
+  fb-read-loca-long-loop : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fb-read-loca-long-loop (buf) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else fb-read-loca-long-loop buf off count (i + 1) (list-push acc (fb-u32 buf (off + i * 4)))
+
+  fb-read-hmetrics : Integer, Integer, Integer -> List TtfHMetric
+  fb-read-hmetrics (buf) (off) (count) = fb-read-hm-loop buf off count 0 []
+
+  fb-read-hm-loop : Integer, Integer, Integer, Integer, List TtfHMetric -> List TtfHMetric
+  fb-read-hm-loop (buf) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else let m = TtfHMetric { hm-advance = fb-u16 buf (off + i * 4), hm-lsb = fb-i16 buf (off + i * 4 + 2) }
+    in fb-read-hm-loop buf off count (i + 1) (list-push acc m)
+
+  fb-parse-ttf : Integer, Integer -> TtfFont
+  fb-parse-ttf (buf) (size) =
+    let num-tables = fb-u16 buf 4
+    in let head-off = fb-find-table buf 12 num-tables #68656164
+    in let maxp-off = fb-find-table buf 12 num-tables #6D617870
+    in let hhea-off = fb-find-table buf 12 num-tables #68686561
+    in let hmtx-off = fb-find-table buf 12 num-tables #686D7478
+    in let cmap-off = fb-find-table buf 12 num-tables #636D6170
+    in let loca-off = fb-find-table buf 12 num-tables #6C6F6361
+    in let glyf-off = fb-find-table buf 12 num-tables #676C7966
+    in let upem = fb-u16 buf (head-off + 18)
+    in let idx-to-loc = fb-i16 buf (head-off + 50)
+    in let head = TtfHead {
+      th-units-per-em = upem, th-index-to-loc = idx-to-loc,
+      th-x-min = fb-i16 buf (head-off + 36), th-y-min = fb-i16 buf (head-off + 38),
+      th-x-max = fb-i16 buf (head-off + 40), th-y-max = fb-i16 buf (head-off + 42)
+    }
+    in let num-glyphs = fb-u16 buf (maxp-off + 4)
+    in let num-hmetrics = fb-u16 buf (hhea-off + 34)
+    in let hmetrics = fb-read-hmetrics buf hmtx-off num-hmetrics
+    in let cmap4-off = fb-find-cmap4 buf cmap-off
+    in let cmap = fb-read-cmap4 buf cmap4-off
+    in let loca = if idx-to-loc == 0 then fb-read-loca-short buf loca-off num-glyphs
+      else fb-read-loca-long buf loca-off num-glyphs
+    in let byte-list = fb-buf-to-list buf size
+    in TtfFont {
+      tf-buf = byte-list, tf-dir = TtfDir { td-num-tables = num-tables, td-tables = [] },
+      tf-head = head, tf-num-glyphs = num-glyphs,
+      tf-num-hmetrics = num-hmetrics, tf-hmetrics = hmetrics,
+      tf-cmap = cmap, tf-loca = loca, tf-glyf-off = glyf-off
+    }
+
+  fb-buf-to-list : Integer, Integer -> List Integer
+  fb-buf-to-list (base) (len) = fb-buf-to-list-loop base len 0 []
+
+  fb-buf-to-list-loop : Integer, Integer, Integer, List Integer -> List Integer
+  fb-buf-to-list-loop (base) (len) (i) (acc) =
+    if i >= len then acc
+    else fb-buf-to-list-loop base len (i + 1) (list-push acc (peek-byte base i))
+
+  fb-bit-test : Integer, Integer -> Integer
+  fb-bit-test (val) (bit) =
+    let shifted = fb-shift-right val bit
+    in shifted - shifted / 2 * 2
+
+  fb-shift-right : Integer, Integer -> Integer
+  fb-shift-right (val) (n) =
+    if n <= 0 then val
+    else fb-shift-right (val / 2) (n - 1)
+
+  FbFlagsResult = record { fbfr-flags : List Integer, fbfr-offset : Integer }
+
+  fb-read-flags : Integer, Integer, Integer -> FbFlagsResult
+  fb-read-flags (buf) (off) (total) = fb-read-flags-loop buf off total []
+
+  fb-read-flags-loop : Integer, Integer, Integer, List Integer -> FbFlagsResult
+  fb-read-flags-loop (buf) (off) (remaining) (acc) =
+    if remaining <= 0 then FbFlagsResult { fbfr-flags = acc, fbfr-offset = off }
+    else let flag = fb-u8 buf off
+    in let is-repeat = fb-bit-test flag 3
+    in if is-repeat == 0 then fb-read-flags-loop buf (off + 1) (remaining - 1) (list-push acc flag)
+    else let count = fb-u8 buf (off + 1)
+    in let expanded = fb-repeat-flag flag count acc
+    in fb-read-flags-loop buf (off + 2) (remaining - 1 - count) expanded
+
+  fb-repeat-flag : Integer, Integer, List Integer -> List Integer
+  fb-repeat-flag (flag) (count) (acc) =
+    if count <= 0 then list-push acc flag
+    else fb-repeat-flag flag (count - 1) (list-push acc flag)
+
+  FbCoordsResult = record { fbcr-coords : List Integer, fbcr-offset : Integer }
+
+  fb-read-coords : Integer, Integer, List Integer, Integer, Integer, Integer -> FbCoordsResult
+  fb-read-coords (buf) (off) (flags) (total) (short-bit) (same-bit) =
+    fb-read-coords-loop buf off flags total short-bit same-bit 0 0 []
+
+  fb-read-coords-loop : Integer, Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> FbCoordsResult
+  fb-read-coords-loop (buf) (off) (flags) (total) (short-bit) (same-bit) (i) (prev) (acc) =
+    if i >= total then FbCoordsResult { fbcr-coords = acc, fbcr-offset = off }
+    else let flag = list-at flags i
+    in let is-short = fb-bit-test flag short-bit
+    in let is-same = fb-bit-test flag same-bit
+    in if is-short > 0 then
+      let raw = fb-u8 buf off
+      in let delta = if is-same > 0 then raw else -raw
+      in let val = prev + delta
+      in fb-read-coords-loop buf (off + 1) flags total short-bit same-bit (i + 1) val (list-push acc val)
+    else if is-same > 0 then
+      fb-read-coords-loop buf off flags total short-bit same-bit (i + 1) prev (list-push acc prev)
+    else let delta = fb-i16 buf off
+    in let val = prev + delta
+    in fb-read-coords-loop buf (off + 2) flags total short-bit same-bit (i + 1) val (list-push acc val)
+
+  fb-read-simple-glyph : Integer, Integer, Integer, TtfHMetric -> TtfGlyph
+  fb-read-simple-glyph (buf) (off) (num-contours) (hm) =
+    let x-min = fb-i16 buf (off + 2)
+    in let y-min = fb-i16 buf (off + 4)
+    in let x-max = fb-i16 buf (off + 6)
+    in let y-max = fb-i16 buf (off + 8)
+    in let end-pts = fb-read-u16-array buf (off + 10) num-contours
+    in let total-pts = list-at end-pts (num-contours - 1) + 1
+    in let instr-len = fb-u16 buf (off + 10 + num-contours * 2)
+    in let flags-off = off + 10 + num-contours * 2 + 2 + instr-len
+    in let flags-result = fb-read-flags buf flags-off total-pts
+    in let flags = flags-result.fbfr-flags
+    in let after-flags = flags-result.fbfr-offset
+    in let xs-result = fb-read-coords buf after-flags flags total-pts 1 4
+    in let xs = xs-result.fbcr-coords
+    in let ys-result = fb-read-coords buf (xs-result.fbcr-offset) flags total-pts 2 5
+    in let ys = ys-result.fbcr-coords
+    in let points = ttf-build-points flags xs ys total-pts 0 []
+    in let contours = ttf-split-contours points end-pts num-contours 0 0 []
+    in TtfGlyph {
+      tg-contours = contours,
+      tg-x-min = x-min, tg-y-min = y-min,
+      tg-x-max = x-max, tg-y-max = y-max,
+      tg-advance = hm.hm-advance, tg-lsb = hm.hm-lsb
+    }
+
+  fb-read-glyph : Integer, Integer, Integer, List TtfHMetric, Integer -> TtfGlyph
+  fb-read-glyph (buf) (glyf-off) (glyph-off) (hmetrics) (glyph-idx) =
+    let off = glyf-off + glyph-off
+    in let num-contours = fb-i16 buf off
+    in let hm = ttf-get-hmetric hmetrics glyph-idx
+    in if num-contours < 0 then fb-read-compound-glyph buf off hm
+    else if num-contours == 0 then fb-make-empty-glyph hm
+    else fb-read-simple-glyph buf off num-contours hm
+
+  fb-read-compound-glyph : Integer, Integer, TtfHMetric -> TtfGlyph
+  fb-read-compound-glyph (buf) (off) (hm) =
+    TtfGlyph {
+      tg-contours = [],
+      tg-x-min = fb-i16 buf (off + 2), tg-y-min = fb-i16 buf (off + 4),
+      tg-x-max = fb-i16 buf (off + 6), tg-y-max = fb-i16 buf (off + 8),
+      tg-advance = hm.hm-advance, tg-lsb = hm.hm-lsb
+    }
+
+  fb-make-empty-glyph : TtfHMetric -> TtfGlyph
+  fb-make-empty-glyph (hm) =
+    TtfGlyph {
+      tg-contours = [], tg-x-min = 0, tg-y-min = 0,
+      tg-x-max = 0, tg-y-max = 0,
+      tg-advance = hm.hm-advance, tg-lsb = hm.hm-lsb
+    }
+
+  fb-glyph-for-char : Integer, TtfFont, Integer -> TtfGlyph
+  fb-glyph-for-char (buf) (font) (codepoint) =
+    let glyph-idx = ttf-cmap-lookup (font.tf-cmap) codepoint
+    in let glyph-off = list-at (font.tf-loca) glyph-idx
+    in let next-off = list-at (font.tf-loca) (glyph-idx + 1)
+    in if glyph-off == next-off then fb-make-empty-glyph (ttf-get-hmetric (font.tf-hmetrics) glyph-idx)
+    else fb-read-glyph buf (font.tf-glyf-off) glyph-off (font.tf-hmetrics) glyph-idx
+
+Section: Buffer-backed Glyph Rasterization
+
+  fb-render-glyph : Integer, TtfFont, Integer, Integer -> RasterGlyph
+  fb-render-glyph (buf) (font) (codepoint) (ppem) =
+    let g = fb-glyph-for-char buf font codepoint
+    in let upem = font.tf-head.th-units-per-em
+    in let font-ymax = font.tf-head.th-y-max
+    in let font-ymin = font.tf-head.th-y-min
+    in let w = (g.tg-x-max - g.tg-x-min) * ppem / upem + 1
+    in let adv = g.tg-advance * ppem / upem
+    in let gw = if w < 1 then 1 else w
+    in if list-length (g.tg-contours) == 0 then
+      RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = ppem, rg-advance = adv, rg-pixels = gr-make-row (gw * ppem) 0 }
+    else let x-off = -g.tg-x-min
+    in let y-off = -font-ymin
+    in let full-h = (font-ymax - font-ymin) * ppem / upem + 1
+    in let max-cell = ppem + ppem / 4
+    in let cell-h = if full-h < ppem then ppem else if full-h > max-cell then max-cell else full-h
+    in let edges = gr-all-contour-edges (g.tg-contours) (ppem * 4) upem x-off y-off 0 []
+    in let super-w = gw * 4
+    in let super-h = cell-h * 4
+    in let super-pixels = gr-render-edges edges super-w super-h 0 super-h
+    in let downsampled = gr-downsample-4x super-pixels super-w super-h gw cell-h
+    in let flipped = gr-flip-y downsampled gw cell-h
+    in let trimmed = if cell-h > ppem then fl-trim-to-ppem flipped gw cell-h ppem else flipped
+    in RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = ppem, rg-advance = adv, rg-pixels = trimmed }
+
+  fl-trim-to-ppem : List Integer, Integer, Integer, Integer -> List Integer
+  fl-trim-to-ppem (pixels) (gw) (full-h) (ppem) =
+    fl-trim-loop pixels gw full-h ppem 0 0 []
+
+  fl-trim-loop : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fl-trim-loop (pixels) (gw) (full-h) (ppem) (row) (col) (acc) =
+    if row >= ppem then acc
+    else if col >= gw then fl-trim-loop pixels gw full-h ppem (row + 1) 0 acc
+    else let v = list-at pixels (row * gw + col)
+    in fl-trim-loop pixels gw full-h ppem row (col + 1) (list-push acc v)
+
+  fb-render-ascii : Integer, TtfFont, Integer -> List RasterGlyph
+  fb-render-ascii (buf) (font) (ppem) = fb-render-range buf font ppem 32 127 []
+
+  fb-render-range : Integer, TtfFont, Integer, Integer, Integer, List RasterGlyph -> List RasterGlyph
+  fb-render-range (buf) (font) (ppem) (from) (to) (acc) =
+    if from > to then acc
+    else let g = fb-render-glyph buf font from ppem
+    in fb-render-range buf font ppem (from + 1) to (list-push acc g)
+
+Section: Load One Font from Disk
+
+  fl-max-width : List RasterGlyph, Integer, Integer -> Integer
+  fl-max-width (rasters) (i) (mx) =
+    if i >= list-length rasters then
+      if mx < 1 then 8 else mx
+    else let rg = list-at rasters i
+    in let w = rg.rg-width
+    in fl-max-width rasters (i + 1) (if w > mx then w else mx)
+
+  fl-write-yoffsets : Integer, TtfFont, Integer, Integer, Integer -> Integer
+  fl-write-yoffsets (buf) (font) (gbase) (gw) (gh) = 0
+
+  fl-max-height : List RasterGlyph, Integer, Integer -> Integer
+  fl-max-height (rasters) (i) (mx) =
+    if i >= list-length rasters then
+      if mx < 1 then 16 else mx
+    else let rg = list-at rasters i
+    in let h = rg.rg-height
+    in fl-max-height rasters (i + 1) (if h > mx then h else mx)
+
+  fl-load-into-role : Fat32Volume, MutWheel, Integer, Integer -> Integer
+  fl-load-into-role (vol) (w) (idx) (role) =
+    let cached-base = fl-cache-get-base w idx
+    in if cached-base > 0 then fl-store-role w role cached-base (fl-cache-get-gw w idx) idx
+    else fl-load-fresh vol w idx role
+
+  fl-load-fresh : Fat32Volume, MutWheel, Integer, Integer -> Integer
+  fl-load-fresh (vol) (w) (idx) (role) =
+    let fname = cce-to-fat-text (font-cat-file idx)
+    in when fat32-resolve-path vol fname
+      is Just (entry) ->
+        let file-size = entry.de-size
+        in let buf = alloc-bytes file-size
+        in let read = fl-read-font-sectors vol (entry.de-cluster) file-size buf 0
+        in let font = fb-parse-ttf buf file-size
+        in let rasters = fb-render-ascii buf font font-ppem
+        in let max-w = fl-max-width rasters 0 0
+        in let gbase = fl-raster-to-gobf rasters max-w font-ppem
+        in let d = fl-write-yoffsets buf font gbase max-w font-ppem
+        in let d2 = fl-cache-set w idx gbase max-w
+        in let d3 = mw-set-font-glyph-h w font-ppem
+        in fl-store-role w role gbase max-w idx
+      is None -> 0
+
+  fl-store-role : MutWheel, Integer, Integer, Integer, Integer -> Integer
+  fl-store-role (w) (role) (base) (gw) (idx) =
+    if role == 1 then fl-store-serif w base gw idx
+    else if role == 2 then fl-store-sans w base gw idx
+    else fl-store-mono w base gw idx
+
+  fl-store-serif : MutWheel, Integer, Integer, Integer -> Integer
+  fl-store-serif (w) (base) (gw) (idx) =
+    let d1 = mw-set-font-serif-base w base
+    in let d2 = mw-set-font-serif-w w gw
+    in mw-set-font-role-serif w idx
+
+  fl-store-sans : MutWheel, Integer, Integer, Integer -> Integer
+  fl-store-sans (w) (base) (gw) (idx) =
+    let d1 = mw-set-font-sans-base w base
+    in let d2 = mw-set-font-sans-w w gw
+    in mw-set-font-role-sans w idx
+
+  fl-store-mono : MutWheel, Integer, Integer, Integer -> Integer
+  fl-store-mono (w) (base) (gw) (idx) =
+    let d1 = mw-set-font-mono-base w base
+    in let d2 = mw-set-font-mono-w w gw
+    in mw-set-font-role-mono w idx
+
+Section: Load Default Fonts
+
+  fl-load-defaults : Fat32Volume, MutWheel -> Integer
+  fl-load-defaults (vol) (w) =
+    let d1 = fl-load-into-role vol w 0 1
+    in let d2 = fl-load-into-role vol w 5 2
+    in let d3 = fl-load-into-role vol w 10 3
+    in let d4 = mw-set-font-glyph-h w font-ppem
+    in if mw-get-font-serif-base w == 0 then 0
+    else if mw-get-font-sans-base w == 0 then 0
+    else if mw-get-font-mono-base w == 0 then 0
+    else mw-set-fonts-loaded w 1
+
+Section: Generated Font Loading
+
+  fl-list-to-buf : List Integer, Integer, Integer, Integer -> Integer
+  fl-list-to-buf (bytes) (buf) (i) (n) =
+    if i >= n then n
+    else let d = poke-byte buf i (list-at bytes i)
+    in fl-list-to-buf bytes buf (i + 1) n
+
+  fl-load-generated : MutWheel, TtfBuildSpec, Integer -> Integer
+  fl-load-generated (w) (spec) (role) =
+    let ttf-bytes = ttw-build-ttf spec
+    in let size = list-length ttf-bytes
+    in if size < 100 then 0
+    else let buf = alloc-bytes size
+    in let d = fl-list-to-buf ttf-bytes buf 0 size
+    in let font = fb-parse-ttf buf size
+    in let dp1 = 0
+    in let dp2 = 0
+    in let rasters = fb-render-ascii buf font font-ppem
+    in let max-w = fl-max-width rasters 0 0
+    in let dp3 = 0
+    in let gbase = fl-raster-to-gobf rasters max-w font-ppem
+    in let d2 = mw-set-font-glyph-h w font-ppem
+    in fl-store-role w role gbase max-w 99
+
+  fl-load-direct : MutWheel, TtfBuildSpec, Integer -> Integer
+  fl-load-direct (w) (spec) (role) =
+    let glyphs = spec.bs-glyphs
+    in let n = list-length glyphs
+    in let upem = spec.bs-units-per-em
+    in let font-ymin = spec.bs-descent
+    in let font-ymax = spec.bs-ascent
+    in let rasters = fl-render-spec-glyphs glyphs n upem font-ppem font-ymin font-ymax 0 []
+    in let max-w = fl-max-width rasters 0 0
+    in let gbase = fl-raster-to-gobf rasters max-w font-ppem
+    in let d = mw-set-font-glyph-h w font-ppem
+    in fl-store-role w role gbase max-w 99
+
+  fl-render-spec-glyphs : List TtfBuildGlyph, Integer, Integer, Integer, Integer, Integer, Integer, List RasterGlyph -> List RasterGlyph
+  fl-render-spec-glyphs (glyphs) (n) (upem) (ppem) (font-ymin) (font-ymax) (cp) (acc) =
+    if cp > 127 then acc
+    else if cp < 32 then fl-render-spec-glyphs glyphs n upem ppem font-ymin font-ymax (cp + 1) acc
+    else let g = fl-find-spec-glyph glyphs n cp 0
+    in let rg = fl-render-one-spec g upem ppem cp font-ymin font-ymax
+    in fl-render-spec-glyphs glyphs n upem ppem font-ymin font-ymax (cp + 1) (list-push acc rg)
+
+  fl-find-spec-glyph : List TtfBuildGlyph, Integer, Integer, Integer -> TtfGlyph
+  fl-find-spec-glyph (glyphs) (n) (cp) (i) =
+    if i >= n then ttf-empty-glyph
+    else let g = list-at glyphs i
+    in if g.bg-codepoint == cp then g.bg-glyph
+    else fl-find-spec-glyph glyphs n cp (i + 1)
+
+  fl-render-one-spec : TtfGlyph, Integer, Integer, Integer, Integer, Integer -> RasterGlyph
+  fl-render-one-spec (g) (upem) (ppem) (codepoint) (font-ymin) (font-ymax) =
+    let w = (g.tg-x-max - g.tg-x-min) * ppem / upem + 1
+    in let adv = g.tg-advance * ppem / upem
+    in let gw = if w < 1 then 1 else w
+    in if list-length (g.tg-contours) == 0 then
+      RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = ppem, rg-advance = adv, rg-pixels = gr-make-row (gw * ppem) 0 }
+    else let pixels = fl-block-raster (g.tg-contours) gw ppem upem (g.tg-x-min) font-ymin font-ymax
+    in RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = ppem, rg-advance = adv, rg-pixels = pixels }
+
+  fl-block-raster : List TtfContour, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  fl-block-raster (contours) (gw) (gh) (upem) (x-off) (y-min) (y-max) =
+    let sw = gw * 2
+    in let sh = gh * 2
+    in let buf = alloc-bytes (sw * sh)
+    in let d = fl-zero-buf buf (sw * sh) 0
+    in let d2 = fl-block-fill-all buf contours 0 (list-length contours) sw sh upem x-off y-min upem
+    in fl-block-downsample buf sw sh gw gh
+
+  fl-block-downsample : Integer, Integer, Integer, Integer, Integer -> List Integer
+  fl-block-downsample (buf) (sw) (sh) (dw) (dh) =
+    fl-block-ds-loop buf sw sh dw dh 0 0 []
+
+  fl-block-ds-loop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fl-block-ds-loop (buf) (sw) (sh) (dw) (dh) (row) (col) (acc) =
+    if row >= dh then acc
+    else if col >= dw then fl-block-ds-loop buf sw sh dw dh (row + 1) 0 acc
+    else let sx = col * 2
+    in let sy = row * 2
+    in let v00 = peek-byte buf (sy * sw + sx)
+    in let v10 = peek-byte buf (sy * sw + sx + 1)
+    in let v01 = peek-byte buf ((sy + 1) * sw + sx)
+    in let v11 = peek-byte buf ((sy + 1) * sw + sx + 1)
+    in let avg = (v00 + v10 + v01 + v11) / 4
+    in fl-block-ds-loop buf sw sh dw dh row (col + 1) (list-push acc avg)
+
+  fl-buf-to-list : Integer, Integer, Integer, List Integer -> List Integer
+  fl-buf-to-list (buf) (size) (i) (acc) =
+    if i >= size then acc
+    else fl-buf-to-list buf size (i + 1) (list-push acc (peek-byte buf i))
+
+  fl-block-fill-all : Integer, List TtfContour, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-block-fill-all (buf) (contours) (i) (n) (gw) (gh) (upem) (x-off) (y-min) (y-range) =
+    if i >= n then 0
+    else let c = list-at contours i
+    in let pts = c.tc-points
+    in let d = fl-block-fill-one buf pts gw gh upem x-off y-min y-range
+    in fl-block-fill-all buf contours (i + 1) n gw gh upem x-off y-min y-range
+
+  fl-block-fill-one : Integer, List TtfPoint, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-block-fill-one (buf) (pts) (gw) (gh) (upem) (x-off) (y-min) (y-range) =
+    if list-length pts < 4 then 0
+    else let cx0 = fl-pts-min-x pts 0 (list-length pts) 99999
+    in let cy0 = fl-pts-min-y pts 0 (list-length pts) 99999
+    in let cx1 = fl-pts-max-x pts 0 (list-length pts) 0
+    in let cy1 = fl-pts-max-y pts 0 (list-length pts) 0
+    in let px0 = (cx0 - x-off) * gh / upem
+    in let px1 = (cx1 - x-off) * gh / upem
+    in let py0 = gh - 1 - (cy1 - y-min) * gh / upem
+    in let py1 = gh - 1 - (cy0 - y-min) * gh / upem
+    in let p0 = list-at pts 0
+    in let p2 = list-at pts 2
+    in let is-hole = if (p0.tp-y) > (p2.tp-y) then 1 else 0
+    in let val = if is-hole == 1 then 0 else 255
+    in fl-block-fill-rect buf gw gh px0 py0 px1 py1 val
+
+  fl-pts-min-x : List TtfPoint, Integer, Integer, Integer -> Integer
+  fl-pts-min-x (pts) (i) (n) (m) =
+    if i >= n then m
+    else let x = (list-at pts i).tp-x
+    in fl-pts-min-x pts (i + 1) n (if x < m then x else m)
+
+  fl-pts-min-y : List TtfPoint, Integer, Integer, Integer -> Integer
+  fl-pts-min-y (pts) (i) (n) (m) =
+    if i >= n then m
+    else let y = (list-at pts i).tp-y
+    in fl-pts-min-y pts (i + 1) n (if y < m then y else m)
+
+  fl-pts-max-x : List TtfPoint, Integer, Integer, Integer -> Integer
+  fl-pts-max-x (pts) (i) (n) (m) =
+    if i >= n then m
+    else let x = (list-at pts i).tp-x
+    in fl-pts-max-x pts (i + 1) n (if x > m then x else m)
+
+  fl-pts-max-y : List TtfPoint, Integer, Integer, Integer -> Integer
+  fl-pts-max-y (pts) (i) (n) (m) =
+    if i >= n then m
+    else let y = (list-at pts i).tp-y
+    in fl-pts-max-y pts (i + 1) n (if y > m then y else m)
+
+  fl-block-fill-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-block-fill-rect (buf) (gw) (gh) (x0) (y0) (x1) (y1) (val) =
+    let cx0 = if x0 < 0 then 0 else x0
+    in let cy0 = if y0 < 0 then 0 else y0
+    in let cx1 = if x1 >= gw then gw - 1 else x1
+    in let cy1 = if y1 >= gh then gh - 1 else y1
+    in fl-block-rows buf gw cx0 cy0 cx1 cy1 val cy0
+
+  fl-block-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-block-rows (buf) (gw) (x0) (y0) (x1) (y1) (val) (row) =
+    if row > y1 then 0
+    else let d = fl-block-cols buf gw x0 x1 val row x0
+    in fl-block-rows buf gw x0 y0 x1 y1 val (row + 1)
+
+  fl-block-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-block-cols (buf) (gw) (x0) (x1) (val) (row) (col) =
+    if col > x1 then 0
+    else let d = poke-byte buf (row * gw + col) val
+    in fl-block-cols buf gw x0 x1 val row (col + 1)
+
+  fl-load-block-font : MutWheel, Integer -> Integer
+  fl-load-block-font (w) (role) =
+    fl-load-direct w px-pixel-font role
+
+Page 1

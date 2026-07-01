@@ -1,0 +1,99 @@
+Chapter: HelmStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Encode chapter Json
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Kernel chapter AppLog
+  cites Helm chapter HelmTypes
+  cites Helm chapter HelmVoice
+  cites Foreword chapter ListUtils
+
+ Persistence for Helm. Rooms (kind 45) and voice hierarchy
+ (kind 46) are saved to DiskFacts.
+
+Section: Kind Constants
+
+  pk-helm-rooms : Integer = 45
+  pk-helm-voice : Integer = 46
+
+Section: Room Serialization
+
+  room-to-json : Room -> Text
+  room-to-json (room) =
+    json-emit (json-object [
+      json-pair "id" (json-str room.rm-id),
+      json-pair "name" (json-str room.rm-name),
+      json-pair "mode" (json-int (if room.rm-mode == RmClustered then 1 else 0)),
+      json-pair "msgCount" (json-int room.rm-message-count),
+      json-pair "pCount" (json-int room.rm-participant-count),
+      json-pair "bandMin" (json-int room.rm-band-minutes),
+      json-pair "threshold" (json-int room.rm-cluster-threshold),
+      json-pair "nextCur" (json-int room.rm-next-current-id),
+      json-pair "nextMsg" (json-int room.rm-next-msg-id)
+    ])
+
+Section: Voice Serialization
+
+  voice-node-to-jv : VoiceNode -> JsonValue
+  voice-node-to-jv (n) = json-object [
+    json-pair "id" (json-str n.vn-id),
+    json-pair "name" (json-str n.vn-name),
+    json-pair "rank" (json-int (rank-ordinal n.vn-rank)),
+    json-pair "parent" (json-str n.vn-parent),
+    json-pair "muted" (json-bool n.vn-muted),
+    json-pair "listenUp" (json-bool n.vn-listening-up)
+  ]
+
+  int-to-rank : Integer -> Rank
+  int-to-rank (n) =
+    if n == 0 then Admiral
+    else if n == 1 then Captain
+    else if n == 2 then Lieutenant
+    else Crew
+
+  voice-node-from-jv : JsonValue -> VoiceNode
+  voice-node-from-jv (jv) = VoiceNode {
+    vn-id = json-get-str jv "id" "",
+    vn-name = json-get-str jv "name" "",
+    vn-rank = int-to-rank (json-get-int jv "rank" 3),
+    vn-parent = json-get-str jv "parent" "",
+    vn-children = [],
+    vn-child-count = 0,
+    vn-muted = json-get-bool jv "muted" False,
+    vn-listening-up = json-get-bool jv "listenUp" True,
+    vn-speaking = False
+  }
+
+Section: Save and Load
+
+  helm-save-room : DiskFactStore, Room -> DiskFactStore
+  helm-save-room (disk) (room) =
+    let j = room-to-json room
+    in app-log-info (app-write-and-checkpoint disk pk-helm-rooms j 0) "helm" ("Room saved: " & room.rm-name) 0
+
+  helm-save-voice : DiskFactStore, VoiceHierarchy -> DiskFactStore
+  helm-save-voice (disk) (h) =
+    let j = json-emit (json-array (list-map voice-node-to-jv h.vh-nodes))
+    in app-log-info (app-write-and-checkpoint disk pk-helm-voice j 0) "helm" ("Voice saved: " & show h.vh-node-count & " nodes") 0
+
+  helm-load-voice-nodes : DiskFactStore -> List VoiceNode
+  helm-load-voice-nodes (disk) =
+    let found = app-scan-last disk pk-helm-voice
+    in when found
+      is None -> []
+      is Just (txt) -> hs-parse-nodes txt
+
+  hs-parse-nodes : Text -> List VoiceNode
+  hs-parse-nodes (txt) =
+    let parsed = json-parse txt
+    in when parsed
+      is None -> []
+      is Just (arr) -> hs-parse-loop arr 0
+
+  hs-parse-loop : JsonValue, Integer -> List VoiceNode
+  hs-parse-loop (arr) (i) =
+    let item = json-array-at arr i
+    in when item
+      is None -> []
+      is Just (jv) -> voice-node-from-jv jv :: hs-parse-loop arr (i + 1)

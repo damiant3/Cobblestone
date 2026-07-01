@@ -1,0 +1,381 @@
+Chapter: FinTreasury
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Treasury management: bank accounting, cash position, liquidity
+ forecasting, debt management, investment tracking, intercompany
+ cash pooling, and payment factory. Tracks every bank account,
+ reconciles statements, and projects future cash flows.
+
+Section: Bank Accounts
+
+  BankAccount = record {
+    ba-id : Text,
+    ba-name : Text,
+    ba-company : Text,
+    ba-bank-name : Text,
+    ba-routing : Text,
+    ba-account-num : Text,
+    ba-currency : Text,
+    ba-gl-account : Text,
+    ba-current-balance : Integer,
+    ba-available-balance : Integer,
+    ba-type : BankAccountType,
+    ba-active : Boolean
+  }
+
+  BankAccountType =
+    | Checking
+    | Savings
+    | MoneyMarket
+    | LineOfCredit
+    | Escrow
+    | Trust
+
+  bank-type-name : BankAccountType -> Text
+  bank-type-name (t) =
+    when t
+      is Checking -> "checking"
+      is Savings -> "savings"
+      is MoneyMarket -> "money market"
+      is LineOfCredit -> "line of credit"
+      is Escrow -> "escrow"
+      is Trust -> "trust"
+
+Section: Cash Position
+
+  CashPosition = record {
+    cp-company : Text,
+    cp-date : Integer,
+    cp-opening-balance : Integer,
+    cp-receipts : Integer,
+    cp-disbursements : Integer,
+    cp-transfers : Integer,
+    cp-closing-balance : Integer,
+    cp-by-account : List AccountPosition
+  }
+
+  AccountPosition = record {
+    ap-bank-id : Text,
+    ap-bank-name : Text,
+    ap-balance : Integer,
+    ap-pending-in : Integer,
+    ap-pending-out : Integer,
+    ap-available : Integer
+  }
+
+  calc-cash-position : List BankAccount, List PendingCashFlow, Integer -> CashPosition
+  calc-cash-position (accounts) (flows) (date) =
+    let positions = build-positions accounts flows [] 0
+    in let totals = sum-positions positions 0 0 0 0
+    in CashPosition {
+      cp-company = if list-length accounts > 0 then (list-at accounts 0).ba-company else "",
+      cp-date = date,
+      cp-opening-balance = totals.tp-balance,
+      cp-receipts = totals.tp-pending-in,
+      cp-disbursements = totals.tp-pending-out,
+      cp-transfers = 0,
+      cp-closing-balance = totals.tp-balance + totals.tp-pending-in - totals.tp-pending-out,
+      cp-by-account = positions
+    }
+
+  TotalPositions = record { tp-balance : Integer, tp-pending-in : Integer, tp-pending-out : Integer }
+
+  build-positions : List BankAccount, List PendingCashFlow, List AccountPosition, Integer -> List AccountPosition
+  build-positions (accounts) (flows) (acc) (i) =
+    if i >= list-length accounts then acc
+    else let ba = list-at accounts i
+    in let pending = sum-pending-for-account flows (ba.ba-id) 0 0 0
+    in let pos = AccountPosition {
+      ap-bank-id = ba.ba-id, ap-bank-name = ba.ba-name,
+      ap-balance = ba.ba-current-balance,
+      ap-pending-in = pending.pf-in, ap-pending-out = pending.pf-out,
+      ap-available = ba.ba-current-balance + pending.pf-in - pending.pf-out
+    }
+    in build-positions accounts flows (list-push acc pos) (i + 1)
+
+  PendingFlows = record { pf-in : Integer, pf-out : Integer }
+
+  sum-pending-for-account : List PendingCashFlow, Text, Integer, Integer, Integer -> PendingFlows
+  sum-pending-for-account (flows) (acct-id) (i) (in-total) (out-total) =
+    if i >= list-length flows then PendingFlows { pf-in = in-total, pf-out = out-total }
+    else let f = list-at flows i
+    in if f.pcf-bank-id == acct-id then
+      if f.pcf-amount >= 0 then sum-pending-for-account flows acct-id (i + 1) (in-total + f.pcf-amount) out-total
+      else sum-pending-for-account flows acct-id (i + 1) in-total (out-total + (0 - f.pcf-amount))
+    else sum-pending-for-account flows acct-id (i + 1) in-total out-total
+
+  sum-positions : List AccountPosition, Integer, Integer, Integer, Integer -> TotalPositions
+  sum-positions (positions) (i) (bal) (pin) (pout) =
+    if i >= list-length positions then TotalPositions { tp-balance = bal, tp-pending-in = pin, tp-pending-out = pout }
+    else let p = list-at positions i
+    in sum-positions positions (i + 1) (bal + p.ap-balance) (pin + p.ap-pending-in) (pout + p.ap-pending-out)
+
+Section: Cash Flow Forecasting
+
+  PendingCashFlow = record {
+    pcf-id : Text,
+    pcf-source : CashFlowSource,
+    pcf-bank-id : Text,
+    pcf-amount : Integer,
+    pcf-expected-date : Integer,
+    pcf-probability-pct : Integer,
+    pcf-description : Text
+  }
+
+  CashFlowSource =
+    | CfArInvoice
+    | CfApInvoice
+    | CfPayroll
+    | CfLoanPayment
+    | CfTaxPayment
+    | CfInvestmentReturn
+    | CfTransfer
+    | CfManual
+
+  cf-source-name : CashFlowSource -> Text
+  cf-source-name (s) =
+    when s
+      is CfArInvoice -> "AR invoice"
+      is CfApInvoice -> "AP invoice"
+      is CfPayroll -> "payroll"
+      is CfLoanPayment -> "loan payment"
+      is CfTaxPayment -> "tax payment"
+      is CfInvestmentReturn -> "investment return"
+      is CfTransfer -> "transfer"
+      is CfManual -> "manual"
+
+  LiquidityForecast = record {
+    lf-company : Text,
+    lf-periods : List ForecastPeriod,
+    lf-generated : Integer
+  }
+
+  ForecastPeriod = record {
+    fp2-start : Integer,
+    fp2-end : Integer,
+    fp2-opening : Integer,
+    fp2-inflows : Integer,
+    fp2-outflows : Integer,
+    fp2-closing : Integer
+  }
+
+  build-forecast : Integer, List PendingCashFlow, Integer, Integer -> List ForecastPeriod
+  build-forecast (opening) (flows) (start-date) (periods) =
+    build-fc-loop opening flows start-date periods 0 []
+
+  build-fc-loop : Integer, List PendingCashFlow, Integer, Integer, Integer, List ForecastPeriod -> List ForecastPeriod
+  build-fc-loop (balance) (flows) (start) (total) (i) (acc) =
+    if i >= total then acc
+    else let period-start = start + i * 604800
+    in let period-end = period-start + 604800
+    in let in-out = sum-flows-in-period flows period-start period-end 0 0 0
+    in let closing = balance + in-out.pf-in - in-out.pf-out
+    in let fp = ForecastPeriod {
+      fp2-start = period-start, fp2-end = period-end,
+      fp2-opening = balance, fp2-inflows = in-out.pf-in,
+      fp2-outflows = in-out.pf-out, fp2-closing = closing
+    }
+    in build-fc-loop closing flows start total (i + 1) (list-push acc fp)
+
+  sum-flows-in-period : List PendingCashFlow, Integer, Integer, Integer, Integer, Integer -> PendingFlows
+  sum-flows-in-period (flows) (start) (finish) (i) (ins) (outs) =
+    if i >= list-length flows then PendingFlows { pf-in = ins, pf-out = outs }
+    else let f = list-at flows i
+    in if f.pcf-expected-date >= start then if f.pcf-expected-date < finish then
+      if f.pcf-amount >= 0 then sum-flows-in-period flows start finish (i + 1) (ins + f.pcf-amount * f.pcf-probability-pct / 100) outs
+      else sum-flows-in-period flows start finish (i + 1) ins (outs + (0 - f.pcf-amount) * f.pcf-probability-pct / 100)
+    else sum-flows-in-period flows start finish (i + 1) ins outs
+    else sum-flows-in-period flows start finish (i + 1) ins outs
+
+Section: Debt Management
+
+  DebtInstrument = record {
+    di-id : Text,
+    di-company : Text,
+    di-name : Text,
+    di-type : DebtType,
+    di-principal : Integer,
+    di-outstanding : Integer,
+    di-rate-bps : Integer,
+    di-term-months : Integer,
+    di-payment-amount : Integer,
+    di-next-payment : Integer,
+    di-maturity-date : Integer,
+    di-gl-liability : Text,
+    di-gl-interest : Text,
+    di-lender : Text
+  }
+
+  DebtType =
+    | TermLoan
+    | RevolvingCredit
+    | Mortgage
+    | BondPayable
+    | CapitalLease
+    | NotesPayable
+
+  monthly-interest : DebtInstrument -> Integer
+  monthly-interest (d) = d.di-outstanding * d.di-rate-bps / 120000
+
+  debt-service-je : DebtInstrument, Integer, Integer -> JournalEntry
+  debt-service-je (d) (principal-pmt) (ts) =
+    let interest = monthly-interest d
+    in JournalEntry {
+      je-id = "DS-" & d.di-id & "-" & show ts,
+      je-company = d.di-company, je-date = ts,
+      je-period = 0, je-year = 0,
+      je-description = "Debt service: " & d.di-name,
+      je-lines = [
+        journal-line-debit (d.di-gl-liability) principal-pmt "" "Principal payment",
+        journal-line-debit (d.di-gl-interest) interest "" "Interest expense",
+        journal-line-credit "1000" (principal-pmt + interest) "" "Cash"
+      ],
+      je-source = SrcBank, je-posted = False, je-reversed = False,
+      je-reversal-of = "", je-created-by = "treasury", je-approved-by = "", je-created = ts
+    }
+
+Section: Investment Tracking
+
+  Investment = record {
+    inv-id : Text,
+    inv-company : Text,
+    inv-name : Text,
+    inv-type : InvestmentType,
+    inv-cost-basis : Integer,
+    inv-current-value : Integer,
+    inv-rate-bps : Integer,
+    inv-maturity : Integer,
+    inv-gl-account : Text
+  }
+
+  InvestmentType =
+    | CertOfDeposit
+    | TreasuryBill
+    | MoneyMarketFund
+    | CorporateBond
+    | MunicipalBond
+    | EquitySecurity
+
+  investment-gain : Investment -> Integer
+  investment-gain (inv) = inv.inv-current-value - inv.inv-cost-basis
+
+Section: Intercompany
+
+  IntercompanyTransfer = record {
+    ict-id : Text,
+    ict-from-company : Text,
+    ict-to-company : Text,
+    ict-amount : Integer,
+    ict-currency : Text,
+    ict-reason : Text,
+    ict-date : Integer,
+    ict-status : Text
+  }
+
+  intercompany-je-pair : IntercompanyTransfer -> (JournalEntry, JournalEntry)
+  intercompany-je-pair (t) =
+    let from-je = JournalEntry {
+      je-id = "IC-" & t.ict-id & "-FROM",
+      je-company = t.ict-from-company, je-date = t.ict-date,
+      je-period = 0, je-year = 0,
+      je-description = "IC transfer to " & t.ict-to-company & ": " & t.ict-reason,
+      je-lines = [
+        journal-line-debit "1150" (t.ict-amount) "" "IC receivable",
+        journal-line-credit "1000" (t.ict-amount) "" "Cash out"
+      ],
+      je-source = SrcBank, je-posted = False, je-reversed = False,
+      je-reversal-of = "", je-created-by = "treasury", je-approved-by = "", je-created = t.ict-date
+    }
+    in let to-je = JournalEntry {
+      je-id = "IC-" & t.ict-id & "-TO",
+      je-company = t.ict-to-company, je-date = t.ict-date,
+      je-period = 0, je-year = 0,
+      je-description = "IC transfer from " & t.ict-from-company & ": " & t.ict-reason,
+      je-lines = [
+        journal-line-debit "1000" (t.ict-amount) "" "Cash in",
+        journal-line-credit "2150" (t.ict-amount) "" "IC payable"
+      ],
+      je-source = SrcBank, je-posted = False, je-reversed = False,
+      je-reversal-of = "", je-created-by = "treasury", je-approved-by = "", je-created = t.ict-date
+    }
+    in (from-je, to-je)
+
+Section: Bank Reconciliation
+
+  ReconciliationResult = record {
+    rr-matched-count : Integer,
+    rr-unmatched-bank : Integer,
+    rr-unmatched-book : Integer,
+    rr-bank-balance : Integer,
+    rr-book-balance : Integer,
+    rr-difference : Integer
+  }
+
+  reconcile : BankStatement, List JournalEntry -> ReconciliationResult
+  reconcile (stmt) (journals) =
+    let matched = count-matched (stmt.bs-transactions) 0 0
+    in let unmatched-bank = count-unmatched-bank (stmt.bs-transactions) 0 0
+    in let unmatched-book = count-unmatched-book journals stmt 0 0
+    in let book-bal = get-book-balance journals (stmt.bs-bank-account) 0 0
+    in ReconciliationResult {
+      rr-matched-count = matched,
+      rr-unmatched-bank = unmatched-bank,
+      rr-unmatched-book = unmatched-book,
+      rr-bank-balance = stmt.bs-closing-balance,
+      rr-book-balance = book-bal,
+      rr-difference = stmt.bs-closing-balance - book-bal
+    }
+
+ A book entry is unmatched when the journal touches the statement's
+ bank account and no matched bank transaction references the journal
+ id.
+
+  count-unmatched-book : List JournalEntry, BankStatement, Integer, Integer -> Integer
+  count-unmatched-book (journals) (stmt) (i) (acc) =
+    if i >= list-length journals then acc
+    else let je = list-at journals i
+    in if je-touches-account (je.je-lines) (stmt.bs-bank-account) 0 == False then count-unmatched-book journals stmt (i + 1) acc
+    else if je-matched-in-stmt (stmt.bs-transactions) (je.je-id) 0 then count-unmatched-book journals stmt (i + 1) acc
+    else count-unmatched-book journals stmt (i + 1) (acc + 1)
+
+  je-touches-account : List JournalLine, Text, Integer -> Boolean
+  je-touches-account (lines) (acct) (i) =
+    if i >= list-length lines then False
+    else if (list-at lines i).jl-account == acct then True
+    else je-touches-account lines acct (i + 1)
+
+  je-matched-in-stmt : List BankTransaction, Text, Integer -> Boolean
+  je-matched-in-stmt (txns) (je-id) (i) =
+    if i >= list-length txns then False
+    else let t = list-at txns i
+    in if t.bt-matched then if t.bt-matched-je == je-id then True else je-matched-in-stmt txns je-id (i + 1)
+    else je-matched-in-stmt txns je-id (i + 1)
+
+  count-matched : List BankTransaction, Integer, Integer -> Integer
+  count-matched (txns) (i) (acc) =
+    if i >= list-length txns then acc
+    else let t = list-at txns i
+    in count-matched txns (i + 1) (if t.bt-matched then acc + 1 else acc)
+
+  count-unmatched-bank : List BankTransaction, Integer, Integer -> Integer
+  count-unmatched-bank (txns) (i) (acc) =
+    if i >= list-length txns then acc
+    else let t = list-at txns i
+    in count-unmatched-bank txns (i + 1) (if t.bt-matched then acc else acc + 1)
+
+  get-book-balance : List JournalEntry, Text, Integer, Integer -> Integer
+  get-book-balance (journals) (bank-acct) (i) (acc) =
+    if i >= list-length journals then acc
+    else let je = list-at journals i
+    in get-book-balance journals bank-acct (i + 1) (acc + je-amount-for-account (je.je-lines) bank-acct 0 0)
+
+  je-amount-for-account : List JournalLine, Text, Integer, Integer -> Integer
+  je-amount-for-account (lines) (acct) (i) (acc) =
+    if i >= list-length lines then acc
+    else let l = list-at lines i
+    in if l.jl-account == acct then je-amount-for-account lines acct (i + 1) (acc + l.jl-debit - l.jl-credit)
+    else je-amount-for-account lines acct (i + 1) acc

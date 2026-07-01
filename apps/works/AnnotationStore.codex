@@ -1,0 +1,70 @@
+Chapter: AnnotationStore
+  cites Works chapter Annotation
+  cites Works chapter Discussion
+  cites Foreword chapter FactStore
+
+ Unified store that bridges annotations and discussions into the
+ Codex fact layer. Every annotation and discussion post is also
+ a Fact in the FactStore, giving content-addressed identity and
+ replay deduplication across the entire repository.
+
+ We say:
+
+Section: Fact Integration
+
+  AnnotationFact = record {
+    annotations : AnnotationStore,
+    discussions : DiscussionStore,
+    facts : BareFactStore
+  }
+
+  annotation-fact-empty : AnnotationFact = AnnotationFact {
+    annotations = annotation-store-empty,
+    discussions = discussion-store-empty,
+    facts = fact-store-empty
+  }
+
+  annotate : AnnotationFact, AnnotationTarget, AnnotationKind, Text, Text, Integer -> AnnotationFact
+  annotate (af) (target) (kind) (author) (body) (ts) =
+    let a = create-annotation target kind author body ts
+    in let fact = fact-create DefinitionFact (annotation-content-string target kind author body) author ts
+    in AnnotationFact {
+      annotations = annotation-store-add (af.annotations) a,
+      discussions = af.discussions,
+      facts = fact-store (af.facts) fact
+    }
+
+  discuss : AnnotationFact, AnnotationTarget, Text, Text, Integer -> AnnotationFact
+  discuss (af) (target) (author) (body) (ts) =
+    let key = target-key target
+    in let ds = discussion-open (af.discussions) target
+    in let tid-result = discussion-for-target ds target
+    in when tid-result
+      is None -> af
+      is Just (thread) ->
+        let ds2 = discussion-post ds (thread.thread-id) author body ts
+        in let fact = fact-create VouchFact (key & "|" & author & "|" & body) author ts
+        in AnnotationFact {
+          annotations = af.annotations,
+          discussions = ds2,
+          facts = fact-store (af.facts) fact
+        }
+
+Section: Queries
+
+  af-annotations-for : AnnotationFact, AnnotationTarget -> List Annotation
+  af-annotations-for (af) (target) = annotation-for-target (af.annotations) target
+
+  af-discussion-for : AnnotationFact, AnnotationTarget -> Maybe Thread
+  af-discussion-for (af) (target) = discussion-for-target (af.discussions) target
+
+  af-annotation-count : AnnotationFact -> Integer
+  af-annotation-count (af) = annotation-count (af.annotations)
+
+  af-discussion-count : AnnotationFact -> Integer
+  af-discussion-count (af) = discussion-count (af.discussions)
+
+  af-fact-count : AnnotationFact -> Integer
+  af-fact-count (af) = fact-count (af.facts)
+
+Page 1

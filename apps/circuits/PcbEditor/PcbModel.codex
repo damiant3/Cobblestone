@@ -1,0 +1,386 @@
+Chapter: PcbModel
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ The PCB board data model. Everything that lives on a physical PCB
+ layout: board outline, copper tracks, vias, zones, placed footprints,
+ and the ratsnest of unrouted connections. All coordinates are in
+ nanometers. Layer IDs follow the KiCad convention: 0 = F.Cu through
+ 31 = B.Cu for copper, with higher IDs for technical layers.
+
+Section: Board Outline
+
+ The board outline is a closed or open polygon of vertices defining the
+ physical edge of the PCB. The edge-cuts layer geometry determines the
+ board shape for manufacturing.
+
+  OutlineVertex = record {
+    ov-x : Integer,
+    ov-y : Integer
+  }
+
+  BoardOutline = record {
+    bo-vertices : List OutlineVertex,
+    bo-is-closed : Integer
+  }
+
+  empty-outline : BoardOutline
+  empty-outline = BoardOutline {
+    bo-vertices = [],
+    bo-is-closed = 0
+  }
+
+  outline-add-vertex : BoardOutline, Integer, Integer -> BoardOutline
+  outline-add-vertex (outline) (x) (y) = BoardOutline {
+    bo-vertices = list-push outline.bo-vertices (OutlineVertex { ov-x = x, ov-y = y }),
+    bo-is-closed = outline.bo-is-closed
+  }
+
+  outline-close : BoardOutline -> BoardOutline
+  outline-close (outline) = BoardOutline {
+    bo-vertices = outline.bo-vertices,
+    bo-is-closed = 1
+  }
+
+  outline-vertex-count : BoardOutline -> Integer
+  outline-vertex-count (outline) = list-length outline.bo-vertices
+
+Section: Track Segment
+
+ A track segment is a straight copper trace between two points on a
+ single layer. Width is in nanometers. The locked flag prevents the
+ router from modifying this segment.
+
+  TrackSegment = record {
+    ts-x1 : Integer,
+    ts-y1 : Integer,
+    ts-x2 : Integer,
+    ts-y2 : Integer,
+    ts-width : Integer,
+    ts-layer-id : Integer,
+    ts-net-id : Integer,
+    ts-locked : Integer
+  }
+
+ An arc segment is a curved copper trace defined by center, radius, and
+ angular span. Angles are in millidegrees (360000 = full circle).
+
+  ArcSegment = record {
+    as-center-x : Integer,
+    as-center-y : Integer,
+    as-radius : Integer,
+    as-start-angle : Integer,
+    as-end-angle : Integer,
+    as-width : Integer,
+    as-layer-id : Integer,
+    as-net-id : Integer
+  }
+
+Section: Via
+
+ Vias connect copper on different layers. Through vias span the entire
+ stack. Blind vias connect an outer layer to an inner layer. Buried
+ vias connect two inner layers. Micro vias connect adjacent layers
+ only, typically for HDI designs.
+
+  ViaType =
+    | ViaThrough
+    | ViaBlind (Integer) (Integer)
+    | ViaBuried (Integer) (Integer)
+    | ViaMicro
+
+  via-type-name : ViaType -> Text
+  via-type-name (vt) = when vt
+    is ViaThrough -> "through"
+    is ViaBlind (s) (e) -> "blind"
+    is ViaBuried (s) (e) -> "buried"
+    is ViaMicro -> "micro"
+
+  Via = record {
+    via-x : Integer,
+    via-y : Integer,
+    via-diameter : Integer,
+    via-drill : Integer,
+    via-type : ViaType,
+    via-net-id : Integer,
+    via-locked : Integer
+  }
+
+Section: Zone (Copper Pour)
+
+ Zones define copper fill areas on a layer. The fill algorithm floods
+ the zone polygon with copper, respecting clearance to other nets.
+ Thermal relief controls how pads connect to the zone pour: direct
+ connection for low impedance or spoke-based relief for easier soldering.
+
+  ZoneFillType =
+    | ZoneSolid
+    | ZoneHatched (Integer) (Integer)
+    | ZoneNone
+
+  zone-fill-name : ZoneFillType -> Text
+  zone-fill-name (ft) = when ft
+    is ZoneSolid -> "solid"
+    is ZoneHatched (w) (g) -> "hatched"
+    is ZoneNone -> "none"
+
+  ThermalReliefStyle =
+    | ThermalDirect
+    | ThermalRelief (Integer) (Integer)
+
+  thermal-style-name : ThermalReliefStyle -> Text
+  thermal-style-name (ts) = when ts
+    is ThermalDirect -> "direct"
+    is ThermalRelief (sw) (g) -> "relief"
+
+  ZoneVertex = record {
+    zv-x : Integer,
+    zv-y : Integer
+  }
+
+  Zone = record {
+    zone-name : Text,
+    zone-net-id : Integer,
+    zone-layer-id : Integer,
+    zone-priority : Integer,
+    zone-fill-type : ZoneFillType,
+    zone-thermal-style : ThermalReliefStyle,
+    zone-min-clearance : Integer,
+    zone-min-width : Integer,
+    zone-vertices : List ZoneVertex,
+    zone-is-keepout : Integer,
+    zone-keepout-tracks : Integer,
+    zone-keepout-vias : Integer,
+    zone-keepout-pads : Integer
+  }
+
+  zone-vertex-count : Zone -> Integer
+  zone-vertex-count (z) = list-length z.zone-vertices
+
+Section: Footprint Placement
+
+ A placed footprint is a component body positioned on the board. The
+ reference designator links back to the schematic netlist. Layer ID 0
+ means front copper, 31 means back copper. Pads carry their own net
+ assignments from the netlist.
+
+  PlacedPad = record {
+    pp-number : Text,
+    pp-x : Integer,
+    pp-y : Integer,
+    pp-width : Integer,
+    pp-height : Integer,
+    pp-shape-type : Integer,
+    pp-drill : Integer,
+    pp-layer-mask : Integer,
+    pp-net-id : Integer,
+    pp-thermal-gap : Integer,
+    pp-thermal-width : Integer
+  }
+
+  PlacedFootprint = record {
+    pf-ref : Text,
+    pf-footprint-name : Text,
+    pf-x : Integer,
+    pf-y : Integer,
+    pf-rotation : Integer,
+    pf-layer-id : Integer,
+    pf-locked : Integer,
+    pf-pads : List PlacedPad
+  }
+
+  footprint-pad-count : PlacedFootprint -> Integer
+  footprint-pad-count (fp) = list-length fp.pf-pads
+
+  footprint-is-front : PlacedFootprint -> Integer
+  footprint-is-front (fp) =
+    if fp.pf-layer-id == 0 then 1
+    else 0
+
+  footprint-is-back : PlacedFootprint -> Integer
+  footprint-is-back (fp) =
+    if fp.pf-layer-id == 31 then 1
+    else 0
+
+Section: Ratsnest
+
+ The ratsnest is the set of unrouted connections. Each line represents
+ a direct connection that needs a physical copper path. The router
+ converts ratsnest lines into tracks and vias. An empty ratsnest means
+ the board is fully routed.
+
+  RatsnestLine = record {
+    rn-x1 : Integer,
+    rn-y1 : Integer,
+    rn-x2 : Integer,
+    rn-y2 : Integer,
+    rn-net-id : Integer
+  }
+
+Section: Board
+
+ The top-level board record. Holds the complete physical PCB design:
+ outline, all copper geometry, placed components, and unrouted
+ connections. Width and height are the bounding box in nanometers.
+ Grid size controls snap resolution.
+
+  Board = record {
+    board-name : Text,
+    board-outline : BoardOutline,
+    board-tracks : List TrackSegment,
+    board-arcs : List ArcSegment,
+    board-vias : List Via,
+    board-zones : List Zone,
+    board-footprints : List PlacedFootprint,
+    board-ratsnest : List RatsnestLine,
+    board-layer-count : Integer,
+    board-width-nm : Integer,
+    board-height-nm : Integer,
+    board-grid-size : Integer,
+    board-origin-x : Integer,
+    board-origin-y : Integer
+  }
+
+  empty-board : Board
+  empty-board = Board {
+    board-name = "untitled",
+    board-outline = empty-outline,
+    board-tracks = [],
+    board-arcs = [],
+    board-vias = [],
+    board-zones = [],
+    board-footprints = [],
+    board-ratsnest = [],
+    board-layer-count = 2,
+    board-width-nm = 100000000,
+    board-height-nm = 100000000,
+    board-grid-size = 1270000,
+    board-origin-x = 0,
+    board-origin-y = 0
+  }
+
+  board-add-track : Board, TrackSegment -> Board
+  board-add-track (b) (t) = Board {
+    board-name = b.board-name,
+    board-outline = b.board-outline,
+    board-tracks = list-push b.board-tracks t,
+    board-arcs = b.board-arcs,
+    board-vias = b.board-vias,
+    board-zones = b.board-zones,
+    board-footprints = b.board-footprints,
+    board-ratsnest = b.board-ratsnest,
+    board-layer-count = b.board-layer-count,
+    board-width-nm = b.board-width-nm,
+    board-height-nm = b.board-height-nm,
+    board-grid-size = b.board-grid-size,
+    board-origin-x = b.board-origin-x,
+    board-origin-y = b.board-origin-y
+  }
+
+  board-add-arc : Board, ArcSegment -> Board
+  board-add-arc (b) (a) = Board {
+    board-name = b.board-name,
+    board-outline = b.board-outline,
+    board-tracks = b.board-tracks,
+    board-arcs = list-push b.board-arcs a,
+    board-vias = b.board-vias,
+    board-zones = b.board-zones,
+    board-footprints = b.board-footprints,
+    board-ratsnest = b.board-ratsnest,
+    board-layer-count = b.board-layer-count,
+    board-width-nm = b.board-width-nm,
+    board-height-nm = b.board-height-nm,
+    board-grid-size = b.board-grid-size,
+    board-origin-x = b.board-origin-x,
+    board-origin-y = b.board-origin-y
+  }
+
+  board-add-via : Board, Via -> Board
+  board-add-via (b) (v) = Board {
+    board-name = b.board-name,
+    board-outline = b.board-outline,
+    board-tracks = b.board-tracks,
+    board-arcs = b.board-arcs,
+    board-vias = list-push b.board-vias v,
+    board-zones = b.board-zones,
+    board-footprints = b.board-footprints,
+    board-ratsnest = b.board-ratsnest,
+    board-layer-count = b.board-layer-count,
+    board-width-nm = b.board-width-nm,
+    board-height-nm = b.board-height-nm,
+    board-grid-size = b.board-grid-size,
+    board-origin-x = b.board-origin-x,
+    board-origin-y = b.board-origin-y
+  }
+
+  board-add-zone : Board, Zone -> Board
+  board-add-zone (b) (z) = Board {
+    board-name = b.board-name,
+    board-outline = b.board-outline,
+    board-tracks = b.board-tracks,
+    board-arcs = b.board-arcs,
+    board-vias = b.board-vias,
+    board-zones = list-push b.board-zones z,
+    board-footprints = b.board-footprints,
+    board-ratsnest = b.board-ratsnest,
+    board-layer-count = b.board-layer-count,
+    board-width-nm = b.board-width-nm,
+    board-height-nm = b.board-height-nm,
+    board-grid-size = b.board-grid-size,
+    board-origin-x = b.board-origin-x,
+    board-origin-y = b.board-origin-y
+  }
+
+  board-add-footprint : Board, PlacedFootprint -> Board
+  board-add-footprint (b) (fp) = Board {
+    board-name = b.board-name,
+    board-outline = b.board-outline,
+    board-tracks = b.board-tracks,
+    board-arcs = b.board-arcs,
+    board-vias = b.board-vias,
+    board-zones = b.board-zones,
+    board-footprints = list-push b.board-footprints fp,
+    board-ratsnest = b.board-ratsnest,
+    board-layer-count = b.board-layer-count,
+    board-width-nm = b.board-width-nm,
+    board-height-nm = b.board-height-nm,
+    board-grid-size = b.board-grid-size,
+    board-origin-x = b.board-origin-x,
+    board-origin-y = b.board-origin-y
+  }
+
+  board-add-ratsnest : Board, RatsnestLine -> Board
+  board-add-ratsnest (b) (r) = Board {
+    board-name = b.board-name,
+    board-outline = b.board-outline,
+    board-tracks = b.board-tracks,
+    board-arcs = b.board-arcs,
+    board-vias = b.board-vias,
+    board-zones = b.board-zones,
+    board-footprints = b.board-footprints,
+    board-ratsnest = list-push b.board-ratsnest r,
+    board-layer-count = b.board-layer-count,
+    board-width-nm = b.board-width-nm,
+    board-height-nm = b.board-height-nm,
+    board-grid-size = b.board-grid-size,
+    board-origin-x = b.board-origin-x,
+    board-origin-y = b.board-origin-y
+  }
+
+  board-track-count : Board -> Integer
+  board-track-count (b) = list-length b.board-tracks
+
+  board-arc-count : Board -> Integer
+  board-arc-count (b) = list-length b.board-arcs
+
+  board-via-count : Board -> Integer
+  board-via-count (b) = list-length b.board-vias
+
+  board-zone-count : Board -> Integer
+  board-zone-count (b) = list-length b.board-zones
+
+  board-footprint-count : Board -> Integer
+  board-footprint-count (b) = list-length b.board-footprints
+
+  board-unrouted-count : Board -> Integer
+  board-unrouted-count (b) = list-length b.board-ratsnest

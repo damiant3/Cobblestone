@@ -1,0 +1,145 @@
+Chapter: Attention
+  cites AI chapter Tensor
+  cites Math chapter Cordic
+  cites Foreword chapter ListUtils
+
+ Scaled dot-product attention and multi-head attention for
+ transformer models. Uses fixed-point scale-1000 arithmetic.
+ Tensors are flat List Integer with explicit dimension tracking.
+
+ To attention-sdp gives scaled dot-product attention output.
+ To attention-multi-head gives multi-head attention output.
+ To attention-scores gives raw attention weights before softmax.
+ To attention-softmax gives softmax-normalized scores.
+
+ We say:
+
+Section: Scaled Dot-Product Attention
+
+  AttentionResult = record {
+    attn-output : List Integer,
+    attn-weights : List Integer
+  }
+
+  attention-sdp : List Integer, List Integer, List Integer, Integer, Integer -> AttentionResult
+  attention-sdp (query) (key) (value) (seq-len) (d-k) =
+    let scores = attn-compute-scores query key seq-len d-k
+    in let weights = attn-softmax-rows scores seq-len
+    in let output = attn-weighted-sum weights value seq-len d-k
+    in AttentionResult { attn-output = output, attn-weights = weights }
+
+  attn-compute-scores : List Integer, List Integer, Integer, Integer -> List Integer
+  attn-compute-scores (q) (k) (seq-len) (d-k) =
+    let scale = cordic-sqrt (d-k * 1000)
+    in attn-score-loop q k seq-len d-k scale 0 (seq-len * seq-len) []
+
+  attn-score-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  attn-score-loop (q) (k) (seq-len) (d-k) (scale) (i) (total) (acc) =
+    if i >= total then acc
+    else let row = i / seq-len
+    in let col = i - row * seq-len
+    in let dot = attn-dot q k (row * d-k) (col * d-k) d-k 0
+    in let scaled = dot * 1000 / scale
+    in attn-score-loop q k seq-len d-k scale (i + 1) total (list-push acc scaled)
+
+  attn-dot : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  attn-dot (a) (b) (a-off) (b-off) (len) (acc) =
+    attn-dot-loop a b a-off b-off len 0 acc
+
+  attn-dot-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  attn-dot-loop (a) (b) (a-off) (b-off) (len) (k) (acc) =
+    if k >= len then acc
+    else attn-dot-loop a b a-off b-off len (k + 1) (acc + list-at a (a-off + k) * list-at b (b-off + k) / 1000)
+
+Section: Softmax
+
+  attn-softmax-rows : List Integer, Integer -> List Integer
+  attn-softmax-rows (scores) (seq-len) =
+    attn-softmax-row-loop scores seq-len 0 seq-len []
+
+  attn-softmax-row-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  attn-softmax-row-loop (scores) (seq-len) (row) (num-rows) (acc) =
+    if row >= num-rows then acc
+    else let row-data = attn-extract-row scores (row * seq-len) seq-len 0 []
+    in let soft = attention-softmax row-data
+    in attn-softmax-row-loop scores seq-len (row + 1) num-rows (acc & soft)
+
+  attention-softmax : List Integer -> List Integer
+  attention-softmax (xs) =
+    let max-val = attn-find-max xs 0 (list-length xs) (0 - 999999)
+    in let exps = for v in xs -> attn-exp (v - max-val)
+    in let total = attn-sum exps 0 (list-length exps) 0
+    in for v in exps -> v * 1000 / total
+
+  attn-find-max : List Integer, Integer, Integer, Integer -> Integer
+  attn-find-max (xs) (i) (len) (best) =
+    if i >= len then best
+    else let v = list-at xs i
+    in attn-find-max xs (i + 1) len (if v > best then v else best)
+
+  attn-exp : Integer -> Integer
+  attn-exp (x) =
+    if x < (0 - 6000) then 0
+    else let x2 = x * x / 1000
+    in 1000 + x + x2 / 2 + x * x2 / (6 * 1000) + x2 * x2 / (24 * 1000)
+
+  attn-sum : List Integer, Integer, Integer, Integer -> Integer
+  attn-sum (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else attn-sum xs (i + 1) len (acc + list-at xs i)
+
+Section: Weighted Sum
+
+  attn-weighted-sum : List Integer, List Integer, Integer, Integer -> List Integer
+  attn-weighted-sum (weights) (values) (seq-len) (d-v) =
+    attn-wsum-loop weights values seq-len d-v 0 (seq-len * d-v) []
+
+  attn-wsum-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  attn-wsum-loop (w) (v) (seq-len) (d-v) (i) (total) (acc) =
+    if i >= total then acc
+    else let row = i / d-v
+    in let col = i - row * d-v
+    in let val = attn-wsum-inner w v row col seq-len d-v 0 0
+    in attn-wsum-loop w v seq-len d-v (i + 1) total (list-push acc val)
+
+  attn-wsum-inner : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  attn-wsum-inner (w) (v) (row) (col) (seq-len) (d-v) (k) (acc) =
+    if k >= seq-len then acc
+    else let weight = list-at w (row * seq-len + k)
+    in let value = list-at v (k * d-v + col)
+    in attn-wsum-inner w v row col seq-len d-v (k + 1) (acc + weight * value / 1000)
+
+Section: Multi-Head Attention
+
+  attention-multi-head : List Integer, List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  attention-multi-head (q) (k) (v) (seq-len) (d-model) (num-heads) =
+    let d-k = d-model / num-heads
+    in attn-mha-loop q k v seq-len d-k num-heads 0 []
+
+  attn-mha-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  attn-mha-loop (q) (k) (v) (seq-len) (d-k) (num-heads) (h) (acc) =
+    if h >= num-heads then acc
+    else let offset = h * d-k
+    in let q-head = attn-extract-head q seq-len d-k offset (d-k * num-heads)
+    in let k-head = attn-extract-head k seq-len d-k offset (d-k * num-heads)
+    in let v-head = attn-extract-head v seq-len d-k offset (d-k * num-heads)
+    in let result = attention-sdp q-head k-head v-head seq-len d-k
+    in attn-mha-loop q k v seq-len d-k num-heads (h + 1) (acc & result.attn-output)
+
+  attn-extract-head : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  attn-extract-head (data) (seq-len) (d-k) (offset) (stride) =
+    attn-head-loop data seq-len d-k offset stride 0 []
+
+  attn-head-loop : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  attn-head-loop (data) (seq-len) (d-k) (offset) (stride) (pos) (acc) =
+    if pos >= seq-len then acc
+    else let row-start = pos * stride + offset
+    in let row = attn-extract-row data row-start d-k 0 []
+    in attn-head-loop data seq-len d-k offset stride (pos + 1) (acc & row)
+
+  attn-extract-row : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  attn-extract-row (data) (start) (len) (i) (acc) =
+    if i >= len then acc
+    else attn-extract-row data start len (i + 1) (list-push acc (list-at data (start + i)))
+
+Page 1

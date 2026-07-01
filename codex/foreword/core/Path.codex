@@ -1,0 +1,140 @@
+Chapter: Path
+
+ Filesystem path manipulation — join, split, normalize, extension,
+ stem, parent, filename. Pure text operations on path strings using
+ forward-slash separators (Codex convention). No I/O; FileSystem
+ handles actual disk access.
+
+ To path-join gives a path from two segments.
+ To path-parent gives the directory portion of a path.
+ To path-filename gives the filename portion of a path.
+ To path-stem gives the filename without extension.
+ To path-extension gives the file extension (without dot).
+ To path-normalize gives a path with redundant separators removed.
+ To path-segments gives the list of path components.
+ To path-is-absolute gives True when the path starts with a slash.
+
+ We say:
+
+Section: Constants
+
+  path-separator : Integer = 81
+
+Section: Join
+
+  path-join : Text, Text -> Text
+  path-join (a) (b) =
+    if text-length a == 0 then b
+    else if text-length b == 0 then a
+    else if path-ends-with-sep a then
+      if path-is-absolute b then a & substring b 1 (text-length b - 1)
+      else a & b
+    else if path-is-absolute b then a & b
+    else a & "/" & b
+
+  path-ends-with-sep : Text -> Boolean
+  path-ends-with-sep (s) =
+    let len = text-length s
+    in if len == 0 then False
+    else char-code (char-at s (len - 1)) == path-separator
+
+Section: Decomposition
+
+  path-parent : Text -> Text
+  path-parent (p) =
+    let idx = path-last-sep p
+    in if idx < 0 then ""
+    else substring p 0 idx
+
+  path-filename : Text -> Text
+  path-filename (p) =
+    let idx = path-last-sep p
+    in if idx < 0 then p
+    else substring p (idx + 1) (text-length p - idx - 1)
+
+  path-stem : Text -> Text
+  path-stem (p) =
+    let name = path-filename p
+    in let dot = path-last-dot name
+    in if dot <= 0 then name
+    else substring name 0 dot
+
+  path-extension : Text -> Text
+  path-extension (p) =
+    let name = path-filename p
+    in let dot = path-last-dot name
+    in if dot <= 0 then ""
+    else substring name (dot + 1) (text-length name - dot - 1)
+
+Section: Segments
+
+  path-segments : Text -> List Text
+  path-segments (p) = path-split-loop p 0 (text-length p) 0 []
+
+  path-split-loop : Text, Integer, Integer, Integer, List Text -> List Text
+  path-split-loop (s) (i) (len) (start) (acc) =
+    if i >= len then
+      if i > start then list-push acc (substring s start (i - start))
+      else acc
+    else if char-code (char-at s i) == path-separator then
+      if i > start then path-split-loop s (i + 1) len (i + 1) (list-push acc (substring s start (i - start)))
+      else path-split-loop s (i + 1) len (i + 1) acc
+    else path-split-loop s (i + 1) len start acc
+
+Section: Predicates
+
+  path-is-absolute : Text -> Boolean
+  path-is-absolute (p) =
+    if text-length p == 0 then False
+    else char-code (char-at p 0) == path-separator
+
+  path-has-extension : Text, Text -> Boolean
+  path-has-extension (p) (ext) = path-extension p == ext
+
+Section: Normalize
+
+  path-normalize : Text -> Text
+  path-normalize (p) =
+    let segs = path-segments p
+    in let clean = path-remove-dots segs 0 (list-length segs) []
+    in path-rejoin clean 0 (list-length clean) "" (path-is-absolute p)
+
+  path-remove-dots : List Text, Integer, Integer, List Text -> List Text
+  path-remove-dots (segs) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at segs i
+    in if s == "." then path-remove-dots segs (i + 1) len acc
+    else if s == ".." then
+      if list-length acc > 0 then path-remove-dots segs (i + 1) len (path-drop-last acc)
+      else path-remove-dots segs (i + 1) len acc
+    else path-remove-dots segs (i + 1) len (list-push acc s)
+
+  path-drop-last : List Text -> List Text
+  path-drop-last (xs) = path-take xs 0 (list-length xs - 1) []
+
+  path-take : List Text, Integer, Integer, List Text -> List Text
+  path-take (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else path-take xs (i + 1) n (list-push acc (list-at xs i))
+
+  path-rejoin : List Text, Integer, Integer, Text, Boolean -> Text
+  path-rejoin (segs) (i) (len) (acc) (abs) =
+    if i >= len then if abs then "/" & acc else acc
+    else let sep = if i == 0 then "" else "/"
+    in path-rejoin segs (i + 1) len (acc & sep & list-at segs i) abs
+
+Section: Helpers
+
+  path-last-sep : Text -> Integer
+  path-last-sep (p) = path-scan-back p (text-length p - 1) path-separator
+
+  path-last-dot : Text -> Integer
+  path-last-dot (p) = path-scan-back p (text-length p - 1) 65
+
+  path-scan-back : Text, Integer, Integer -> Integer
+  path-scan-back (s) (i) (target) =
+    if i < 0 then 0 - 1
+    else if char-code (char-at s i) == target then i
+    else path-scan-back s (i - 1) target
+
+Page 1

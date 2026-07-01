@@ -1,0 +1,64 @@
+Chapter: TestSelfVerifyScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates test-self-verify.ps1 from the Shell DSL.
+ Compiles and runs a self-verification program that checks the seed CDX
+ signature, magic bytes, and author key presence.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  selfverify-params : List ShellParam = [sh-param-default "Seed" SptString (SeRaw "(Join-Path $PSScriptRoot '..\\seed\\Codex.cdx')"), sh-param-default "PCore" SptInt (SeInt 1)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    let no-seed = [ScRaw "throw \"Seed not found: $Seed\""]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "run" (SeRaw "Join-Path $PSScriptRoot 'test-run.ps1'"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Seed"))) no-seed [], ScReadBytes "seedBytes" (SeRaw "(Resolve-Path $Seed).Path"), ScAssign "seedLen" (SeProperty (SeVar "seedBytes") "Length"), ScRaw "Write-Host \"Seed: $Seed ($seedLen bytes)\""]
+
+Section: S02 -- Header extraction
+
+  s02 : List ShellCmd = [ScRaw "$headerBytes = $seedBytes[0..223]", ScRaw "$headerLiteral = ($headerBytes | ForEach-Object { $_.ToString() }) -join ','"]
+
+Section: S03 -- Source generation
+
+  s03 : List ShellCmd = [ScRaw "$src = @\"\nChapter: SelfVerifySeed\n  cites Codex chapter General\n  cites Verify chapter CdxBinary\n  cites Foreword chapter Ed25519\n  cites Foreword chapter Sha256\n  cites Foreword chapter Sha512\n  cites Foreword chapter Maybe\n\nSection: Body\n\n  opening : [Console] Nothing = act\n    let header = [$headerLiteral]\n    in let magic-ok = cdx-verify-magic header\n    in let pub-key = list-slice header 40 72\n    in let sig = list-slice header 72 136\n    in let content-hash = cdx-read-content-hash header\n    in let sig-valid = ed25519-verify pub-key content-hash sig\n    in let has-author = list-at header 40 + list-at header 41 + list-at header 42 + list-at header 43\n    in act\n      print-line-uni (\"\"SIZE: $seedLen\"\")\n      print-line-uni (\"\"MAGIC: \"\" & show magic-ok)\n      print-line-uni (\"\"SIGNATURE: \"\" & show sig-valid)\n      print-line-uni (\"\"AUTHOR-KEY-PRESENT: \"\" & show (has-author > 0))\n      if magic-ok then if sig-valid then\n        print-line-uni \"\"THE SEED VERIFIES ITSELF\"\"\n      else print-line-uni \"\"SIGNATURE INVALID\"\"\n      else print-line-uni \"\"BAD MAGIC\"\"\n    end\n  end\n\"@"]
+
+Section: S04 -- Temp files and write source
+
+  s04 : List ShellCmd = [ScDotNetCallAssign "tmpSrc" "System.IO.Path" "GetTempFileName" [], ScAssign "tmpSrc" (SeRaw "$tmpSrc + '.codex'"), ScDotNetCallAssign "tmpCdx" "System.IO.Path" "GetTempFileName" [], ScAssign "tmpCdx" (SeRaw "$tmpCdx + '.cdx'"), ScDotNetCallAssign "tmpLog" "System.IO.Path" "GetTempFileName" [], ScAssign "tmpLog" (SeRaw "$tmpLog + '.log'"), ScDotNetCallAssign "tmpOut" "System.IO.Path" "GetTempFileName" [], ScAssign "tmpOut" (SeRaw "$tmpOut + '.out'"), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "tmpSrc", SeVar "src"], ScRaw "Write-Host \"Generated source: $([System.IO.File]::ReadAllBytes($tmpSrc).Length) bytes\""]
+
+Section: S05 -- Compile
+
+  s05 : List ShellCmd =
+    let compile-fail = [ScRaw "Write-Host \"COMPILE FAILED\" -ForegroundColor Red", ScRaw "Get-Content $tmpLog | Write-Host", ScExit (SeInt 1)]
+    in [ScRaw "Write-Host \"Compiling...\" -ForegroundColor Cyan", ScRaw "& pwsh -File $compile -Src $tmpSrc -Out $tmpCdx -Log $tmpLog -PCore $PCore", ScIf (SeRaw "$LASTEXITCODE -ne 0") compile-fail []]
+
+Section: S06 -- Run
+
+  s06 : List ShellCmd =
+    let run-fail = [ScRaw "Write-Host \"RUN FAILED\" -ForegroundColor Red", ScExit (SeInt 1)]
+    in [ScRaw "Write-Host \"Running...\" -ForegroundColor Cyan", ScRaw "& pwsh -File $run -Kernel $tmpCdx -Out $tmpOut", ScIf (SeRaw "$LASTEXITCODE -ne 0") run-fail []]
+
+Section: S07 -- Output
+
+  s07 : List ShellCmd = [ScBlank, ScRaw "Get-Content $tmpOut"]
+
+Section: Assembly
+
+  selfverify-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
+
+  selfverify-script : ShellScript = sh-script "test-self-verify" "Compile and run a self-verification program that checks the seed CDX" selfverify-params selfverify-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell selfverify-script)
+  end
+
+Page 1

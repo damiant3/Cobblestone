@@ -1,0 +1,394 @@
+Chapter: Expr
+  cites Foreword chapter Maybe
+
+ Symbolic expression tree. The foundation of the entire math system.
+ Every mathematical object — numbers, variables, sums, products,
+ powers, functions, matrices, sets — is an Expr. Expressions are
+ trees: a sum is a node with two child expressions. This is the
+ Mathematica FullForm: everything is a head applied to arguments.
+
+ Fixed-point integers use scale 1000 for rational approximations.
+ Exact rationals are Ratio(num, den). Symbolic variables are Var(name).
+ Operations are constructors: Add, Mul, Pow, etc. Functions are
+ Fn(name, args). This keeps the representation uniform — the
+ simplifier, differentiator, and printer all walk the same tree.
+
+Section: Expression Tree
+
+  Expr =
+    | ExInt (Integer)
+    | ExRatio (Integer) (Integer)
+    | ExFloat (Integer)
+    | ExVar (Text)
+    | ExAdd (Expr) (Expr)
+    | ExSub (Expr) (Expr)
+    | ExMul (Expr) (Expr)
+    | ExDiv (Expr) (Expr)
+    | ExPow (Expr) (Expr)
+    | ExNeg (Expr)
+    | ExAbs (Expr)
+    | ExSqrt (Expr)
+    | ExFn (Text) (List Expr)
+    | ExSum (Expr) (Text) (Expr) (Expr)
+    | ExProd (Expr) (Text) (Expr) (Expr)
+    | ExDeriv (Expr) (Text)
+    | ExIntegral (Expr) (Text)
+    | ExDefIntegral (Expr) (Text) (Expr) (Expr)
+    | ExLim (Expr) (Text) (Expr)
+    | ExEq (Expr) (Expr)
+    | ExLt (Expr) (Expr)
+    | ExGt (Expr) (Expr)
+    | ExLeq (Expr) (Expr)
+    | ExGeq (Expr) (Expr)
+    | ExAnd (Expr) (Expr)
+    | ExOr (Expr) (Expr)
+    | ExNot (Expr)
+    | ExSet (List Expr)
+    | ExList (List Expr)
+    | ExMatrix (Integer) (Integer) (List Expr)
+    | ExPi
+    | ExE
+    | ExInfinity
+    | ExUndefined
+    | ExTrue
+    | ExFalse
+
+Section: Smart Constructors
+
+  ex-int : Integer -> Expr
+  ex-int (n) = ExInt n
+
+  ex-var : Text -> Expr
+  ex-var (name) = ExVar name
+
+  ex-ratio : Integer, Integer -> Expr
+  ex-ratio (num) (den) =
+    if den == 0 then ExUndefined
+    else if num == 0 then ExInt 0
+    else let g = ex-gcd (ex-abs-int num) (ex-abs-int den)
+    in let sn = if den < 0 then negate num else num
+    in let sd = if den < 0 then negate den else den
+    in if sd / g == 1 then ExInt (sn / g)
+    else ExRatio (sn / g) (sd / g)
+
+  ex-gcd : Integer, Integer -> Integer
+  ex-gcd (a) (b) = if b == 0 then a else ex-gcd b (a - (a / b) * b)
+
+  ex-abs-int : Integer -> Integer
+  ex-abs-int (n) = if n < 0 then negate n else n
+
+  ex-add : Expr, Expr -> Expr
+  ex-add (a) (b) = when a
+    is ExInt (0) -> b
+    is otherwise -> when b
+      is ExInt (0) -> a
+      is otherwise -> ExAdd a b
+
+  ex-sub : Expr, Expr -> Expr
+  ex-sub (a) (b) = when b
+    is ExInt (0) -> a
+    is otherwise -> ExSub a b
+
+  ex-mul : Expr, Expr -> Expr
+  ex-mul (a) (b) = when a
+    is ExInt (0) -> ExInt 0
+    is ExInt (1) -> b
+    is otherwise -> when b
+      is ExInt (0) -> ExInt 0
+      is ExInt (1) -> a
+      is otherwise -> ExMul a b
+
+  ex-div : Expr, Expr -> Expr
+  ex-div (a) (b) = when b
+    is ExInt (0) -> ExUndefined
+    is ExInt (1) -> a
+    is otherwise -> ExDiv a b
+
+  ex-pow : Expr, Expr -> Expr
+  ex-pow (base) (exp) = when exp
+    is ExInt (0) -> ExInt 1
+    is ExInt (1) -> base
+    is otherwise -> ExPow base exp
+
+  ex-neg : Expr -> Expr
+  ex-neg (e) = when e
+    is ExInt (n) -> ExInt (negate n)
+    is ExNeg (inner) -> inner
+    is otherwise -> ExNeg e
+
+  ex-sqrt : Expr -> Expr
+  ex-sqrt (e) = when e
+    is ExInt (0) -> ExInt 0
+    is ExInt (1) -> ExInt 1
+    is otherwise -> ExSqrt e
+
+  ex-fn : Text, List Expr -> Expr
+  ex-fn (name) (args) = ExFn name args
+
+  ex-sin : Expr -> Expr
+  ex-sin (e) = ExFn "sin" [e]
+
+  ex-cos : Expr -> Expr
+  ex-cos (e) = ExFn "cos" [e]
+
+  ex-tan : Expr -> Expr
+  ex-tan (e) = ExFn "tan" [e]
+
+  ex-ln : Expr -> Expr
+  ex-ln (e) = ExFn "ln" [e]
+
+  ex-log : Expr, Expr -> Expr
+  ex-log (base) (arg) = ExFn "log" [base, arg]
+
+  ex-exp : Expr -> Expr
+  ex-exp (e) = ExPow ExE e
+
+  ex-fact : Expr -> Expr
+  ex-fact (e) = ExFn "factorial" [e]
+
+  ex-floor : Expr -> Expr
+  ex-floor (e) = ExFn "floor" [e]
+
+  ex-ceil : Expr -> Expr
+  ex-ceil (e) = ExFn "ceil" [e]
+
+  ex-max : Expr, Expr -> Expr
+  ex-max (a) (b) = ExFn "max" [a, b]
+
+  ex-min : Expr, Expr -> Expr
+  ex-min (a) (b) = ExFn "min" [a, b]
+
+Section: Predicates
+
+  ex-is-zero : Expr -> Boolean
+  ex-is-zero (e) = when e
+    is ExInt (0) -> True
+    is ExRatio (0) (d) -> True
+    is ExFloat (0) -> True
+    is otherwise -> False
+
+  ex-is-one : Expr -> Boolean
+  ex-is-one (e) = when e
+    is ExInt (1) -> True
+    is ExRatio (n) (d) -> n == d
+    is otherwise -> False
+
+  ex-is-const : Expr -> Boolean
+  ex-is-const (e) = when e
+    is ExInt (n) -> True
+    is ExRatio (n) (d) -> True
+    is ExFloat (n) -> True
+    is ExPi -> True
+    is ExE -> True
+    is ExTrue -> True
+    is ExFalse -> True
+    is otherwise -> False
+
+  ex-is-var : Expr -> Boolean
+  ex-is-var (e) = when e
+    is ExVar (name) -> True
+    is otherwise -> False
+
+  ex-is-negative : Expr -> Boolean
+  ex-is-negative (e) = when e
+    is ExInt (n) -> n < 0
+    is ExRatio (n) (d) -> n < 0
+    is ExFloat (n) -> n < 0
+    is ExNeg (inner) -> True
+    is otherwise -> False
+
+  ex-is-integer : Expr -> Boolean
+  ex-is-integer (e) = when e
+    is ExInt (n) -> True
+    is otherwise -> False
+
+  ex-is-atom : Expr -> Boolean
+  ex-is-atom (e) = when e
+    is ExInt (n) -> True
+    is ExRatio (n) (d) -> True
+    is ExFloat (n) -> True
+    is ExVar (name) -> True
+    is ExPi -> True
+    is ExE -> True
+    is ExInfinity -> True
+    is ExUndefined -> True
+    is ExTrue -> True
+    is ExFalse -> True
+    is otherwise -> False
+
+Section: Variable Collection
+
+  ex-free-vars : Expr -> List Text
+  ex-free-vars (e) = when e
+    is ExVar (name) -> [name]
+    is ExAdd (a) (b) -> ex-merge-vars (ex-free-vars a) (ex-free-vars b)
+    is ExSub (a) (b) -> ex-merge-vars (ex-free-vars a) (ex-free-vars b)
+    is ExMul (a) (b) -> ex-merge-vars (ex-free-vars a) (ex-free-vars b)
+    is ExDiv (a) (b) -> ex-merge-vars (ex-free-vars a) (ex-free-vars b)
+    is ExPow (a) (b) -> ex-merge-vars (ex-free-vars a) (ex-free-vars b)
+    is ExNeg (a) -> ex-free-vars a
+    is ExAbs (a) -> ex-free-vars a
+    is ExSqrt (a) -> ex-free-vars a
+    is ExFn (name) (args) -> ex-fn-vars args 0 (list-length args) []
+    is ExDeriv (body) (var) -> ex-free-vars body
+    is ExIntegral (body) (var) -> ex-free-vars body
+    is otherwise -> []
+
+  ex-merge-vars : List Text, List Text -> List Text
+  ex-merge-vars (a) (b) = ex-merge-loop a b 0 (list-length b)
+
+  ex-merge-loop : List Text, List Text, Integer, Integer -> List Text
+  ex-merge-loop (acc) (items) (i) (n) =
+    if i >= n then acc
+    else let item = list-at items i
+    in if ex-var-in acc item 0 (list-length acc) then ex-merge-loop acc items (i + 1) n
+    else ex-merge-loop (list-push acc item) items (i + 1) n
+
+  ex-var-in : List Text, Text, Integer, Integer -> Boolean
+  ex-var-in (vars) (target) (i) (n) =
+    if i >= n then False
+    else if list-at vars i == target then True
+    else ex-var-in vars target (i + 1) n
+
+  ex-fn-vars : List Expr, Integer, Integer, List Text -> List Text
+  ex-fn-vars (args) (i) (n) (acc) =
+    if i >= n then acc
+    else ex-fn-vars args (i + 1) n (ex-merge-vars acc (ex-free-vars (list-at args i)))
+
+  ex-contains-var : Expr, Text -> Boolean
+  ex-contains-var (e) (var) =
+    ex-var-in (ex-free-vars e) var 0 (list-length (ex-free-vars e))
+
+Section: Substitution
+
+  ex-subst : Expr, Text, Expr -> Expr
+  ex-subst (e) (var) (val) = when e
+    is ExVar (name) -> if name == var then val else e
+    is ExAdd (a) (b) -> ExAdd (ex-subst a var val) (ex-subst b var val)
+    is ExSub (a) (b) -> ExSub (ex-subst a var val) (ex-subst b var val)
+    is ExMul (a) (b) -> ExMul (ex-subst a var val) (ex-subst b var val)
+    is ExDiv (a) (b) -> ExDiv (ex-subst a var val) (ex-subst b var val)
+    is ExPow (a) (b) -> ExPow (ex-subst a var val) (ex-subst b var val)
+    is ExNeg (a) -> ExNeg (ex-subst a var val)
+    is ExAbs (a) -> ExAbs (ex-subst a var val)
+    is ExSqrt (a) -> ExSqrt (ex-subst a var val)
+    is ExFn (name) (args) -> ExFn name (ex-subst-list args var val 0 (list-length args) [])
+    is ExDeriv (body) (v) -> ExDeriv (ex-subst body var val) v
+    is ExIntegral (body) (v) -> ExIntegral (ex-subst body var val) v
+    is ExEq (a) (b) -> ExEq (ex-subst a var val) (ex-subst b var val)
+    is otherwise -> e
+
+  ex-subst-list : List Expr, Text, Expr, Integer, Integer, List Expr -> List Expr
+  ex-subst-list (exprs) (var) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else ex-subst-list exprs var val (i + 1) n (list-push acc (ex-subst (list-at exprs i) var val))
+
+Section: Numeric Evaluation
+
+  ex-eval : Expr -> Expr
+  ex-eval (e) = when e
+    is ExInt (n) -> e
+    is ExRatio (n) (d) -> ExFloat (n * 1000 / d)
+    is ExAdd (a) (b) -> ex-eval-binop (ex-eval a) (ex-eval b) "+"
+    is ExSub (a) (b) -> ex-eval-binop (ex-eval a) (ex-eval b) "-"
+    is ExMul (a) (b) -> ex-eval-binop (ex-eval a) (ex-eval b) "*"
+    is ExDiv (a) (b) -> ex-eval-binop (ex-eval a) (ex-eval b) "/"
+    is ExPow (a) (b) -> ex-eval-pow (ex-eval a) (ex-eval b)
+    is ExNeg (a) -> let va = ex-eval a in when va
+      is ExInt (n) -> ExInt (negate n)
+      is ExFloat (n) -> ExFloat (negate n)
+      is otherwise -> ExNeg va
+    is ExPi -> ExFloat 3141
+    is ExE -> ExFloat 2718
+    is otherwise -> e
+
+  ex-eval-binop : Expr, Expr, Text -> Expr
+  ex-eval-binop (a) (b) (op) =
+    let av = ex-to-int a
+    in let bv = ex-to-int b
+    in if op == "+" then ExInt (av + bv)
+    else if op == "-" then ExInt (av - bv)
+    else if op == "*" then ExInt (av * bv)
+    else if op == "/" then if bv == 0 then ExUndefined else ExInt (av / bv)
+    else ExUndefined
+
+  ex-to-int : Expr -> Integer
+  ex-to-int (e) = when e
+    is ExInt (n) -> n
+    is ExFloat (n) -> n / 1000
+    is ExRatio (n) (d) -> n / d
+    is otherwise -> 0
+
+  ex-eval-pow : Expr, Expr -> Expr
+  ex-eval-pow (base) (exp) =
+    let bv = ex-to-int base
+    in let ev = ex-to-int exp
+    in if ev == 0 then ExInt 1
+    else if ev == 1 then base
+    else ExInt (ex-int-pow bv ev)
+
+  ex-int-pow : Integer, Integer -> Integer
+  ex-int-pow (base) (exp) =
+    if exp <= 0 then 1
+    else base * ex-int-pow base (exp - 1)
+
+Section: Structural Equality
+
+  ex-equal : Expr, Expr -> Boolean
+  ex-equal (a) (b) = when a
+    is ExInt (n) -> when b is ExInt (m) -> n == m is otherwise -> False
+    is ExVar (na) -> when b is ExVar (nb) -> na == nb is otherwise -> False
+    is ExRatio (n1) (d1) -> when b is ExRatio (n2) (d2) -> n1 == n2 then d1 == d2 else False is otherwise -> False
+    is ExAdd (a1) (a2) -> when b is ExAdd (b1) (b2) -> if ex-equal a1 b1 then ex-equal a2 b2 else False is otherwise -> False
+    is ExSub (a1) (a2) -> when b is ExSub (b1) (b2) -> if ex-equal a1 b1 then ex-equal a2 b2 else False is otherwise -> False
+    is ExMul (a1) (a2) -> when b is ExMul (b1) (b2) -> if ex-equal a1 b1 then ex-equal a2 b2 else False is otherwise -> False
+    is ExDiv (a1) (a2) -> when b is ExDiv (b1) (b2) -> if ex-equal a1 b1 then ex-equal a2 b2 else False is otherwise -> False
+    is ExPow (a1) (a2) -> when b is ExPow (b1) (b2) -> if ex-equal a1 b1 then ex-equal a2 b2 else False is otherwise -> False
+    is ExNeg (a1) -> when b is ExNeg (b1) -> ex-equal a1 b1 is otherwise -> False
+    is ExPi -> when b is ExPi -> True is otherwise -> False
+    is ExE -> when b is ExE -> True is otherwise -> False
+    is ExInfinity -> when b is ExInfinity -> True is otherwise -> False
+    is ExUndefined -> when b is ExUndefined -> True is otherwise -> False
+    is otherwise -> False
+
+Section: Tree Size
+
+  ex-size : Expr -> Integer
+  ex-size (e) = when e
+    is ExAdd (a) (b) -> 1 + ex-size a + ex-size b
+    is ExSub (a) (b) -> 1 + ex-size a + ex-size b
+    is ExMul (a) (b) -> 1 + ex-size a + ex-size b
+    is ExDiv (a) (b) -> 1 + ex-size a + ex-size b
+    is ExPow (a) (b) -> 1 + ex-size a + ex-size b
+    is ExNeg (a) -> 1 + ex-size a
+    is ExAbs (a) -> 1 + ex-size a
+    is ExSqrt (a) -> 1 + ex-size a
+    is ExFn (name) (args) -> 1 + ex-size-list args 0 (list-length args) 0
+    is otherwise -> 1
+
+  ex-size-list : List Expr, Integer, Integer, Integer -> Integer
+  ex-size-list (exprs) (i) (n) (acc) =
+    if i >= n then acc
+    else ex-size-list exprs (i + 1) n (acc + ex-size (list-at exprs i))
+
+  ex-depth : Expr -> Integer
+  ex-depth (e) = when e
+    is ExAdd (a) (b) -> 1 + ex-max-int (ex-depth a) (ex-depth b)
+    is ExSub (a) (b) -> 1 + ex-max-int (ex-depth a) (ex-depth b)
+    is ExMul (a) (b) -> 1 + ex-max-int (ex-depth a) (ex-depth b)
+    is ExDiv (a) (b) -> 1 + ex-max-int (ex-depth a) (ex-depth b)
+    is ExPow (a) (b) -> 1 + ex-max-int (ex-depth a) (ex-depth b)
+    is ExNeg (a) -> 1 + ex-depth a
+    is ExFn (name) (args) -> 1 + ex-depth-list args 0 (list-length args) 0
+    is otherwise -> 0
+
+  ex-max-int : Integer, Integer -> Integer
+  ex-max-int (a) (b) = if a > b then a else b
+
+  ex-depth-list : List Expr, Integer, Integer, Integer -> Integer
+  ex-depth-list (exprs) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = ex-depth (list-at exprs i)
+    in ex-depth-list exprs (i + 1) n (ex-max-int acc d)
+
+Page 1

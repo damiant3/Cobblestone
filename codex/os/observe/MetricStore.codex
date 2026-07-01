@@ -1,0 +1,116 @@
+Chapter: MetricStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ A MetricStore collects named counters, gauges, and histograms
+ in a HAMT, providing increment, set, and snapshot operations
+ for OS observability.
+
+ We say:
+
+Section: Metric Types
+
+  MetricKind =
+    | Counter
+    | Gauge
+    | Histogram
+
+  Metric = record {
+    name : Text,
+    kind : MetricKind,
+    value : Integer,
+    min-val : Integer,
+    max-val : Integer,
+    sample-count : Integer between 0 and 4294967295
+  }
+
+  MetricStore = record {
+    metrics : HamtMap Metric,
+    count : Integer between 0 and 65535
+  }
+
+Section: Store Operations
+
+  metric-store-empty : MetricStore
+  metric-store-empty = MetricStore { metrics = hamt-empty, count = 0 }
+
+  metric-register : MetricStore, Text, MetricKind -> MetricStore
+  metric-register (store) (name) (kind) =
+    if hamt-contains (store.metrics) name then store
+    else let m = Metric { name = name, kind = kind, value = 0, min-val = 0, max-val = 0, sample-count = 0 }
+    in MetricStore { metrics = hamt-set (store.metrics) name m, count = store.count + 1 }
+
+Section: Counter Operations
+
+  metric-increment : MetricStore, Text -> MetricStore
+  metric-increment (store) (name) = metric-add store name 1
+
+  metric-add : MetricStore, Text, Integer -> MetricStore
+  metric-add (store) (name) (delta) =
+    let found = hamt-get (store.metrics) name
+    in when found
+      is None -> store
+      is Just (m) ->
+        let new-val = m.value + delta
+        in let updated = Metric { name = m.name, kind = m.kind, value = new-val, min-val = m.min-val, max-val = if new-val > m.max-val then new-val else m.max-val, sample-count = m.sample-count + 1 }
+        in MetricStore { metrics = hamt-set (store.metrics) name updated, count = store.count }
+
+Section: Gauge Operations
+
+  metric-set : MetricStore, Text, Integer -> MetricStore
+  metric-set (store) (name) (val) =
+    let found = hamt-get (store.metrics) name
+    in when found
+      is None -> store
+      is Just (m) ->
+        let new-min = if m.sample-count == 0 then val else if val < m.min-val then val else m.min-val
+        in let new-max = if val > m.max-val then val else m.max-val
+        in let updated = Metric { name = m.name, kind = m.kind, value = val, min-val = new-min, max-val = new-max, sample-count = m.sample-count + 1 }
+        in MetricStore { metrics = hamt-set (store.metrics) name updated, count = store.count }
+
+Section: Histogram Operations
+
+  metric-observe : MetricStore, Text, Integer -> MetricStore
+  metric-observe (store) (name) (val) =
+    let found = hamt-get (store.metrics) name
+    in when found
+      is None -> store
+      is Just (m) ->
+        let new-min = if m.sample-count == 0 then val else if val < m.min-val then val else m.min-val
+        in let new-max = if val > m.max-val then val else m.max-val
+        in let new-total = m.value + val
+        in let updated = Metric { name = m.name, kind = m.kind, value = new-total, min-val = new-min, max-val = new-max, sample-count = m.sample-count + 1 }
+        in MetricStore { metrics = hamt-set (store.metrics) name updated, count = store.count }
+
+Section: Queries
+
+  metric-get : MetricStore, Text -> Maybe Metric
+  metric-get (store) (name) = hamt-get (store.metrics) name
+
+  metric-value : MetricStore, Text -> Integer
+  metric-value (store) (name) =
+    let found = hamt-get (store.metrics) name
+    in when found
+      is Just (m) -> m.value
+      is None -> 0
+
+  metric-count : MetricStore -> Integer
+  metric-count (store) = store.count
+
+Section: Formatting
+
+  format-metric : Metric -> Text
+  format-metric (m) = m.name & "=" & show (m.value) & " min=" & show (m.min-val) & " max=" & show (m.max-val) & " samples=" & show (m.sample-count)
+
+  format-metric-kind : MetricKind -> Text
+  format-metric-kind (k) = when k
+    is Counter -> "counter"
+    is Gauge -> "gauge"
+    is Histogram -> "histogram"
+
+  metric-average : Metric -> Integer
+  metric-average (m) =
+    if m.sample-count == 0 then 0
+    else m.value / m.sample-count
+
+Page 1

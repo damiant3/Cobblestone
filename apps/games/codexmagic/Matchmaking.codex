@@ -1,0 +1,221 @@
+Chapter: Matchmaking
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+  cites CodexMagic chapter General
+  cites CodexMagic chapter Deck
+
+ Matchmaking: player accounts, rank brackets, match requests, and
+ pairing logic. Elo-based rating with seasonal rank brackets.
+
+ We say:
+
+Section: Player Account
+
+  PlayerAccount = record {
+    account-id : Integer,
+    name : Text,
+    handle : Text,
+    display-name : Text,
+    password : Text,
+    pw-score : Integer,
+    balance : Integer,
+    admin : Boolean,
+    banned : Boolean,
+    clan-id : Integer,
+    roles : List Text,
+    session-token : Text,
+    rating : Integer,
+    rank : RankBracket,
+    wins : Integer,
+    losses : Integer,
+    general-id : Integer,
+    subscription : SubscriptionTier
+  }
+
+  RankBracket =
+   | Bronze
+   | Silver
+   | Gold
+   | Platinum
+   | Diamond
+   | RankMaster
+   | RankGrandmaster
+
+  rank-name : RankBracket -> Text
+  rank-name (r) =
+    when r
+      is Bronze -> "Bronze"
+      is Silver -> "Silver"
+      is Gold -> "Gold"
+      is Platinum -> "Platinum"
+      is Diamond -> "Diamond"
+      is RankMaster -> "RankMaster"
+      is RankGrandmaster -> "RankGrandmaster"
+
+  rank-min-rating : RankBracket -> Integer
+  rank-min-rating (r) =
+    when r
+      is Bronze -> 0
+      is Silver -> 1000
+      is Gold -> 1200
+      is Platinum -> 1400
+      is Diamond -> 1600
+      is RankMaster -> 1800
+      is RankGrandmaster -> 2000
+
+  account-new : Integer, Text, Text, Text, Integer, SubscriptionTier -> PlayerAccount
+  account-new (id) (handle) (display) (pw) (pw-sc) (sub) = PlayerAccount { account-id = id, name = handle, handle = handle, display-name = display, password = pw, pw-score = pw-sc, balance = 500, admin = False, banned = False, clan-id = 0, roles = [], session-token = "", rating = 1000, rank = Bronze, wins = 0, losses = 0, general-id = 0, subscription = sub }
+
+Section: Rating Updates
+
+  rating-k-factor : Integer
+  rating-k-factor = 32
+
+  update-ratings : PlayerAccount, PlayerAccount, Integer -> RatingUpdate
+  update-ratings (winner) (loser) (draw) =
+    if draw == 1 then
+      let expected-w = expected-score (winner.rating) (loser.rating)
+      in let expected-l = expected-score (loser.rating) (winner.rating)
+      in let new-w = winner.rating + rating-k-factor * (50 - expected-w) / 100
+      in let new-l = loser.rating + rating-k-factor * (50 - expected-l) / 100
+      in RatingUpdate { winner-new-rating = new-w, loser-new-rating = new-l }
+    else
+      let expected-w = expected-score (winner.rating) (loser.rating)
+      in let new-w = winner.rating + rating-k-factor * (100 - expected-w) / 100
+      in let new-l = loser.rating - rating-k-factor * expected-w / 100
+      in RatingUpdate { winner-new-rating = new-w, loser-new-rating = if new-l < 0 then 0 else new-l }
+
+  RatingUpdate = record {
+    winner-new-rating : Integer,
+    loser-new-rating : Integer
+  }
+
+  expected-score : Integer, Integer -> Integer
+  expected-score (my-rating) (opp-rating) =
+    let diff = opp-rating - my-rating
+    in if diff > 400 then 10
+    else if diff > 200 then 25
+    else if diff > 0 then 40
+    else if diff > -200 then 60
+    else if diff > -400 then 75
+    else 90
+
+  rating-to-rank : Integer -> RankBracket
+  rating-to-rank (rating) =
+    if rating >= 2000 then RankGrandmaster
+    else if rating >= 1800 then RankMaster
+    else if rating >= 1600 then Diamond
+    else if rating >= 1400 then Platinum
+    else if rating >= 1200 then Gold
+    else if rating >= 1000 then Silver
+    else Bronze
+
+  apply-rating-update : PlayerAccount, Integer, Boolean -> PlayerAccount
+  apply-rating-update (account) (new-rating) (is-winner) =
+    let new-rank = rating-to-rank new-rating
+    in if is-winner then PlayerAccount { account-id = account.account-id, name = account.name, handle = account.handle, display-name = account.display-name, password = account.password, pw-score = account.pw-score, balance = account.balance, admin = account.admin, banned = account.banned, clan-id = account.clan-id, roles = account.roles, session-token = account.session-token, rating = new-rating, rank = new-rank, wins = account.wins + 1, losses = account.losses, general-id = account.general-id, subscription = account.subscription }
+    else PlayerAccount { account-id = account.account-id, name = account.name, handle = account.handle, display-name = account.display-name, password = account.password, pw-score = account.pw-score, balance = account.balance, admin = account.admin, banned = account.banned, clan-id = account.clan-id, roles = account.roles, session-token = account.session-token, rating = new-rating, rank = new-rank, wins = account.wins, losses = account.losses + 1, general-id = account.general-id, subscription = account.subscription }
+
+Section: Match Request
+
+  MatchRequest = record {
+    player-id : Integer,
+    format : Format,
+    deck : DeckList,
+    rating : Integer,
+    rank : RankBracket,
+    competition-tier : CompetitionTier
+  }
+
+  CompetitionTier =
+   | TierOpen
+   | TierFair
+
+  competition-tier-name : CompetitionTier -> Text
+  competition-tier-name (ct) =
+    when ct
+      is TierOpen -> "Open"
+      is TierFair -> "Fair"
+
+Section: Pairing
+
+  PairResult = record {
+    player-a : Integer,
+    player-b : Integer,
+    matched : Boolean,
+    rating-diff : Integer
+  }
+
+  pair-failed : PairResult
+  pair-failed = PairResult { player-a = -1, player-b = -1, matched = False, rating-diff = 0 }
+
+  try-pair : MatchRequest, MatchRequest -> PairResult
+  try-pair (a) (b) =
+    if format-compatible (a.format) (b.format) == False then pair-failed
+    else if tier-compatible (a.competition-tier) (b.competition-tier) == False then pair-failed
+    else let diff = abs-int (a.rating - b.rating)
+    in if diff > 400 then pair-failed
+    else PairResult { player-a = a.player-id, player-b = b.player-id, matched = True, rating-diff = diff }
+
+  format-compatible : Format, Format -> Boolean
+  format-compatible (a) (b) =
+    when a
+      is FormatStandard -> when b
+        is FormatStandard -> True
+        is otherwise -> False
+      is FormatVintage -> when b
+        is FormatVintage -> True
+        is otherwise -> False
+      is FormatDraft -> when b
+        is FormatDraft -> True
+        is otherwise -> False
+      is FormatSealed -> when b
+        is FormatSealed -> True
+        is otherwise -> False
+
+  tier-compatible : CompetitionTier, CompetitionTier -> Boolean
+  tier-compatible (a) (b) =
+    when a
+      is TierOpen -> when b
+        is TierOpen -> True
+        is otherwise -> False
+      is TierFair -> when b
+        is TierFair -> True
+        is otherwise -> False
+
+  abs-int : Integer -> Integer
+  abs-int (n) = if n < 0 then 0 - n else n
+
+Section: Queue Processing
+
+  find-best-match : List MatchRequest, Integer, Integer, Integer -> PairResult
+  find-best-match (queue) (target-idx) (i) (len) =
+    if i >= len then pair-failed
+    else if i == target-idx then find-best-match queue target-idx (i + 1) len
+    else let target = list-at queue target-idx
+    in let candidate = list-at queue i
+    in let result = try-pair target candidate
+    in if result.matched then result
+    else find-best-match queue target-idx (i + 1) len
+
+Section: Season Reset
+
+  season-reset-rating : PlayerAccount -> PlayerAccount
+  season-reset-rating (account) =
+    let new-rating = (account.rating + 1000) / 2
+    in let new-rank = rating-to-rank new-rating
+    in PlayerAccount { account-id = account.account-id, name = account.name, handle = account.handle, display-name = account.display-name, password = account.password, pw-score = account.pw-score, balance = account.balance, admin = account.admin, banned = account.banned, clan-id = account.clan-id, roles = account.roles, session-token = account.session-token, rating = new-rating, rank = new-rank, wins = 0, losses = 0, general-id = account.general-id, subscription = account.subscription }
+
+Section: Formatting
+
+  format-account : PlayerAccount -> Text
+  format-account (a) =
+    a.name & " [" & rank-name (a.rank) & " " & show (a.rating) & " W:" & show (a.wins) & " L:" & show (a.losses) & "]"
+
+  format-pair : PairResult -> Text
+  format-pair (p) =
+    if p.matched then "Matched P" & show (p.player-a) & " vs P" & show (p.player-b) & " (diff " & show (p.rating-diff) & ")"
+    else "No match found"
+
+Page 1

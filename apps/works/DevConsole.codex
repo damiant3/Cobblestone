@@ -1,0 +1,356 @@
+Chapter: DevConsole
+  cites Works chapter UefiConsole
+  cites Works chapter DevConsoleMenu
+  cites Works chapter CodeBrowser
+  cites Works chapter ConsoleEditor
+  cites Works chapter DevDebugger
+  cites Works chapter DevAgent
+  cites Works chapter DevHypervisor
+  cites Works chapter DevUiLauncher
+  cites Works chapter AnnotationPersistDriver
+  cites Works chapter AnnotationShellCommands
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Works chapter MutationLog
+  cites Foreword chapter Maybe
+  cites Foreword chapter Trie
+  cites Kernel chapter DiskFacts
+
+ UEFI dev console. Hold a key during boot to enter. Menu-driven
+ interface with code browser, editor, compiler, test runner,
+ debugger, agent manager, hypervisor, and UI launcher. Runs on
+ UEFI console I/O (ConOut/ConIn).
+
+ We say:
+
+Section: Console Mode
+
+  ConsoleMode =
+    | ModeMainMenu
+    | ModeBrowse
+    | ModeViewSource
+    | ModeSearch
+    | ModeEdit
+    | ModeCompile
+    | ModeSweep
+    | ModeDebug
+    | ModeVerify
+    | ModeAnnotations
+    | ModeAgent
+    | ModeHypervisor
+    | ModeUiLaunch
+    | ModeDriveManager
+    | ModeIdentity
+    | ModeSystemInfo
+
+Section: Console State
+
+  DevConsoleState = record {
+    mode : ConsoleMode,
+    source-index : SourceIndex,
+    console : UefiConsoleState,
+    menu : MenuState,
+    search-query : Text,
+    search-results : List SearchResult,
+    editor : Maybe EditorState,
+    debugger : DebuggerState,
+    undo-stack : UndoStack,
+    redo-stack : UndoStack,
+    view-scroll : Integer,
+    view-chapter-idx : Integer,
+    status : Text,
+    running : Boolean,
+    ann-persist : AnnotationPersistState,
+    disk-store : DiskFactStore
+  }
+
+  dev-console-init : UefiConsoleState, DiskFactStore, Keypair -> DevConsoleState
+  dev-console-init (con) (disk) (kp) =
+    let ann-st = persist-driver-init kp disk
+    in DevConsoleState {
+      mode = ModeMainMenu,
+      source-index = empty-source-index,
+      console = con,
+      menu = main-menu,
+      search-query = "",
+      search-results = [],
+      editor = None,
+      debugger = debugger-init,
+      undo-stack = undo-stack-new 50,
+      redo-stack = undo-stack-new 50,
+      view-scroll = 0,
+      view-chapter-idx = 0,
+      status = "Codex Dev Console",
+      running = True,
+      ann-persist = ann-st,
+      disk-store = disk
+    }
+
+Section: Main Menu
+
+  main-menu : MenuState
+  main-menu = menu-new "Codex Dev Console" [
+    menu-item "Browse Source" "browse",
+    menu-item "Search Definitions" "search",
+    menu-item "Edit File" "edit",
+    menu-item "Compile" "compile",
+    menu-item "Run Tests" "sweep",
+    menu-item "Debugger" "debug",
+    menu-item "Verify Seed" "verify",
+    menu-item "Annotations" "annotations",
+    menu-item "Agent Manager" "agent",
+    menu-item "Drive Manager" "drives",
+    menu-item "Identity" "identity",
+    menu-item "Launch VM" "vm",
+    menu-item "Launch UI" "ui",
+    menu-item "System Info" "info",
+    menu-item "Boot Codex" "boot"
+  ]
+
+  browse-menu : List Text -> MenuState
+  browse-menu (chapters) =
+    menu-new "Source Chapters" (for name in chapters -> menu-item name name)
+
+  compile-menu : MenuState
+  compile-menu = menu-new "Compile" [
+    menu-item "Compile File (CDX)" "cdx",
+    menu-item "Compile File (ELF)" "elf",
+    menu-item "Compile File (EFI)" "efi",
+    menu-item "Build Disk Image (IMG)" "img",
+    menu-item "Self-Compile (Pingpong)" "pingpong",
+    menu-item "Back" "back"
+  ]
+
+  sweep-menu : MenuState
+  sweep-menu = menu-new "Test Runner" [
+    menu-item "Run All Samples" "all",
+    menu-item "Run Single Sample" "single",
+    menu-item "Run Failing Only" "failing",
+    menu-item "Show Last Results" "results",
+    menu-item "Back" "back"
+  ]
+
+  drive-manager-menu : MenuState
+  drive-manager-menu = menu-new "Drive Manager" [
+    menu-item "List Drives" "list",
+    menu-item "Inspect Drive" "inspect",
+    menu-item "Format Drive" "format",
+    menu-item "Partition Drive" "partition",
+    menu-item "Install Codex to Drive" "install",
+    menu-item "Install to Disk (from USB)" "install-disk",
+    menu-item "Install Alongside (dual boot)" "alongside",
+    menu-item "Wipe Drive" "wipe",
+    menu-item "Back" "back"
+  ]
+
+  identity-menu : MenuState
+  identity-menu = menu-new "Identity" [
+    menu-item "Show Fingerprint" "fingerprint",
+    menu-item "Lock (zero key)" "lock",
+    menu-item "Unlock (enter passphrase)" "unlock",
+    menu-item "Change Passphrase" "change-pass",
+    menu-item "Back" "back"
+  ]
+
+  annotations-menu : MenuState
+  annotations-menu = menu-new "Annotations" [
+    menu-item "View Facts" "facts",
+    menu-item "View Mutation Log" "log",
+    menu-item "Checkpoint DiskFacts" "checkpoint",
+    menu-item "Status" "ann-status",
+    menu-item "Back" "back"
+  ]
+
+Section: Annotation Dispatch
+
+  dispatch-annotations-menu : Text, DevConsoleState -> DevConsoleState
+  dispatch-annotations-menu (key) (state) =
+    if key == "facts" then
+      let result = cmd-facts (state.ann-persist)
+      in __record-set (__record-set state "ann-persist" (result.state)) "status" (result.output)
+    else if key == "log" then
+      let result = cmd-log (state.ann-persist)
+      in __record-set (__record-set state "ann-persist" (result.state)) "status" (result.output)
+    else if key == "checkpoint" then
+      let result = cmd-checkpoint (state.ann-persist)
+      in __record-set (__record-set state "ann-persist" (result.state)) "status" (result.output)
+    else if key == "ann-status" then
+      let status = persist-status-line (state.ann-persist) (editor-state-or-default state)
+      in __record-set state "status" status
+    else if key == "back" then __record-set (__record-set (__record-set state "mode" ModeMainMenu) "menu" main-menu) "status" "Codex Dev Console"
+    else state
+
+  editor-state-or-default : DevConsoleState -> EditorState
+  editor-state-or-default (state) =
+    when state.editor
+      is Just (e) -> e
+      is None -> editor-empty
+
+Section: Menu Dispatch
+
+  dispatch-main-menu : Text, DevConsoleState -> DevConsoleState
+  dispatch-main-menu (key) (state) =
+    if key == "browse" then
+      let bm = browse-menu (state.source-index.chapter-names)
+      in __record-set (__record-set (__record-set state "mode" ModeBrowse) "menu" bm) "status" ("Source: " & show (list-length (state.source-index.chapter-names)) & " chapters")
+    else if key == "search" then __record-set (__record-set state "mode" ModeSearch) "status" "Enter search query:"
+    else if key == "edit" then __record-set (__record-set state "mode" ModeEdit) "status" "Enter file path:"
+    else if key == "compile" then __record-set (__record-set (__record-set state "mode" ModeCompile) "menu" compile-menu) "status" "Select compile target"
+    else if key == "sweep" then __record-set (__record-set (__record-set state "mode" ModeSweep) "menu" sweep-menu) "status" "Test runner"
+    else if key == "verify" then __record-set (__record-set state "mode" ModeVerify) "status" "Verifying seed..."
+    else if key == "debug" then __record-set (__record-set (__record-set state "mode" ModeDebug) "menu" debug-menu) "status" "Debugger"
+    else if key == "annotations" then __record-set (__record-set (__record-set state "mode" ModeAnnotations) "menu" annotations-menu) "status" "Annotations"
+    else if key == "agent" then __record-set (__record-set (__record-set state "mode" ModeAgent) "menu" agent-menu) "status" "Agent Manager"
+    else if key == "drives" then __record-set (__record-set (__record-set state "mode" ModeDriveManager) "menu" drive-manager-menu) "status" "Drive Manager"
+    else if key == "identity" then __record-set (__record-set (__record-set state "mode" ModeIdentity) "menu" identity-menu) "status" "Identity"
+    else if key == "vm" then __record-set (__record-set (__record-set state "mode" ModeHypervisor) "menu" hypervisor-menu) "status" "Hypervisor"
+    else if key == "ui" then __record-set (__record-set (__record-set state "mode" ModeUiLaunch) "menu" ui-launcher-menu) "status" "UI Launcher"
+    else if key == "info" then __record-set (__record-set state "mode" ModeSystemInfo) "status" "System Information"
+    else if key == "boot" then __record-set state "running" False
+    else state
+
+Section: Debugger Dispatch
+
+  dispatch-debug-menu : Text, DevConsoleState -> DevConsoleState
+  dispatch-debug-menu (key) (state) =
+    if key == "mem" then
+      let lines = debug-mem-dump (state.debugger) (state.debugger.last-address) (state.debugger.dump-length)
+      in __record-set (__record-set state "status" ("Memory @ 0x" & hex-i64 (state.debugger.last-address))) "search-results" []
+    else if key == "io" then
+      let dbg = __record-set (state.debugger) "mode" DebugIO
+      in __record-set (__record-set state "debugger" dbg) "status" "Port I/O watch"
+    else if key == "bp" then
+      let dbg = __record-set (state.debugger) "mode" DebugBreakpoints
+      in __record-set (__record-set state "debugger" dbg) "status" ("Breakpoints: " & show (list-length (state.debugger.breakpoints.entries)))
+    else if key == "bp-add" then __record-set state "status" "Enter function name:"
+    else if key == "stack" then
+      let dbg = __record-set (state.debugger) "mode" DebugStack
+      in __record-set (__record-set state "debugger" dbg) "status" "Backtrace"
+    else if key == "bt" then
+      let dbg = __record-set (state.debugger) "mode" DebugStack
+      in __record-set (__record-set state "debugger" dbg) "status" "Backtrace"
+    else if key == "perf" then
+      let dbg = __record-set (state.debugger) "mode" DebugPerf
+      in __record-set (__record-set state "debugger" dbg) "status" "Perf counters"
+    else if key == "sym" then __record-set state "status" "Enter symbol name:"
+    else if key == "addr" then __record-set state "status" "Enter address (hex):"
+    else if key == "back" then __record-set (__record-set (__record-set state "mode" ModeMainMenu) "menu" main-menu) "status" "Codex Dev Console"
+    else state
+
+  render-debug-view : DevConsoleState -> List Text
+  render-debug-view (state) =
+    let dbg = state.debugger
+    in when dbg.mode
+      is DebugMemory -> debug-mem-dump dbg (dbg.last-address) (dbg.dump-length)
+      is DebugIO -> debug-port-watch (dbg.watch-ports)
+      is DebugBreakpoints -> bp-list-text (dbg.breakpoints)
+      is DebugStack -> debug-backtrace-from-exc dbg
+      is DebugPerf -> debug-perf-view
+      is DebugRegisters -> debug-register-view
+
+  render-breakpoint-list : List Breakpoint, Integer, Integer, List Text -> List Text
+  render-breakpoint-list (bps) (i) (len) (acc) =
+    if i >= len then if len == 0 then ["  (no breakpoints set)"] else acc
+    else let bp = list-at bps i
+    in let en = if bp.enabled then "ON " else "OFF"
+    in let line = "  #" & show (bp.id) & " " & en & " 0x" & hex-i64 (bp.address) & " hits=" & show (bp.hit-count) & " " & bp.label
+    in render-breakpoint-list bps (i + 1) len (list-push acc line)
+
+Section: Compile Dispatch
+
+  dispatch-compile-menu : Text, DevConsoleState -> DevConsoleState
+  dispatch-compile-menu (key) (state) =
+    if key == "cdx" then __record-set state "status" "Enter source path (CDX output):"
+    else if key == "elf" then __record-set state "status" "Enter source path (ELF output):"
+    else if key == "efi" then __record-set state "status" "Enter source path (EFI output):"
+    else if key == "img" then __record-set state "status" "Building disk image..."
+    else if key == "pingpong" then __record-set state "status" "Starting self-compile (pingpong)..."
+    else if key == "back" then __record-set (__record-set (__record-set state "mode" ModeMainMenu) "menu" main-menu) "status" "Codex Dev Console"
+    else state
+
+Section: Sweep Dispatch
+
+  dispatch-sweep-menu : Text, DevConsoleState -> DevConsoleState
+  dispatch-sweep-menu (key) (state) =
+    if key == "all" then __record-set state "status" "Running all samples..."
+    else if key == "single" then __record-set state "status" "Enter sample name:"
+    else if key == "failing" then __record-set state "status" "Running failing samples..."
+    else if key == "results" then __record-set state "status" "Last results:"
+    else if key == "back" then __record-set (__record-set (__record-set state "mode" ModeMainMenu) "menu" main-menu) "status" "Codex Dev Console"
+    else state
+
+Section: Agent Dispatch
+
+  dispatch-agent-menu : Text, DevConsoleState -> DevConsoleState
+  dispatch-agent-menu (key) (state) =
+    if key == "status" then __record-set state "status" "Agent: no agent loaded"
+    else if key == "list" then __record-set state "status" "Registry: 0 agents"
+    else if key == "role" then __record-set (__record-set state "menu" role-switch-menu) "status" "Select role"
+    else if key == "gpu" then __record-set state "status" "GPU Bridge: not initialized"
+    else if key == "back" then __record-set (__record-set (__record-set state "mode" ModeMainMenu) "menu" main-menu) "status" "Codex Dev Console"
+    else state
+
+Section: Hypervisor Dispatch
+
+  dispatch-hypervisor-menu : Text, DevConsoleState -> DevConsoleState
+  dispatch-hypervisor-menu (key) (state) =
+    if key == "vmx-init" then __record-set state "status" "VMX init: checking CPU support..."
+    else if key == "vmx-launch" then __record-set state "status" "Launching HLT guest..."
+    else if key == "vmx-serial" then __record-set state "status" "Launching serial guest..."
+    else if key == "back" then __record-set (__record-set (__record-set state "mode" ModeMainMenu) "menu" main-menu) "status" "Codex Dev Console"
+    else state
+
+Section: UI Launcher Dispatch
+
+  dispatch-ui-menu : Text, DevConsoleState -> DevConsoleState
+  dispatch-ui-menu (key) (state) =
+    if key == "auto" then __record-set state "status" "Launching UI (auto resolution)..."
+    else if key == "1080p" then __record-set state "status" "Launching UI (1920x1080)..."
+    else if key == "720p" then __record-set state "status" "Launching UI (1280x720)..."
+    else if key == "xga" then __record-set state "status" "Launching UI (1024x768)..."
+    else if key == "list-modes" then __record-set state "status" "Querying GOP modes..."
+    else if key == "back" then __record-set (__record-set (__record-set state "mode" ModeMainMenu) "menu" main-menu) "status" "Codex Dev Console"
+    else state
+
+Section: Search Interface
+
+  dev-console-search : DevConsoleState, Text -> DevConsoleState
+  dev-console-search (state) (query) =
+    let prefix-results = search-by-prefix (state.source-index) query
+    in let sub-results = if list-length prefix-results > 0 then prefix-results
+      else search-by-substring (state.source-index) query
+    in let result-count = list-length sub-results
+    in __record-set (__record-set (__record-set state "search-query" query) "search-results" sub-results) "status" (show result-count & " results for '" & query & "'")
+
+Section: Rendering
+
+  render-dev-console : DevConsoleState -> List Text
+  render-dev-console (state) =
+    let header = ["", "  Codex Dev Console", "  " & state.status, ""]
+    in when state.mode
+      is ModeMainMenu -> header & render-menu (state.menu)
+      is ModeBrowse -> header & render-menu (state.menu)
+      is ModeViewSource -> header & ["  (source viewer — see draw-console-screen)"]
+      is ModeSearch ->
+        let result-lines = for r in (state.search-results) -> "  " & format-search-result r
+        in header & ["  Search: " & state.search-query, ""] & result-lines
+      is ModeCompile -> header & render-menu (state.menu)
+      is ModeSweep -> header & render-menu (state.menu)
+      is ModeDebug -> header & render-menu (state.menu) & [""] & render-debug-view state
+      is ModeAgent -> header & render-menu (state.menu)
+      is ModeHypervisor -> header & render-menu (state.menu)
+      is ModeUiLaunch -> header & render-menu (state.menu)
+      is ModeEdit -> header & render-editor-view state
+      is ModeVerify -> header & ["  Verify Seed Integrity", ""] & render-menu (state.menu)
+      is ModeAnnotations -> header & render-menu (state.menu) & ["", "  " & persist-status-line (state.ann-persist) (editor-state-or-default state)]
+      is ModeDriveManager -> header & ["  Drive Manager", ""] & render-menu (state.menu)
+      is ModeIdentity -> header & ["  Identity", ""] & render-menu (state.menu)
+      is ModeSystemInfo -> header & ["  System Info", ""] & render-menu (state.menu)
+
+  render-editor-view : DevConsoleState -> List Text
+  render-editor-view (state) =
+    when state.editor
+      is Just (e) -> ["  Editing: " & e.file-path, "  " & editor-status-line e, ""] & editor-visible-lines e
+      is None -> ["  No file open. Select a chapter to edit."]
+
+Page 1

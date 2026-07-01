@@ -1,0 +1,109 @@
+Chapter: AnimPlayer
+  cites Spark chapter AnimChannel
+
+ Animation playback engine. Evaluates all channels at the current
+ frame, advances the playhead, and supports looping modes.
+
+ We say:
+
+Section: Types
+
+  LoopMode =
+    | LoopOnce
+    | LoopRepeat
+    | LoopPingPong
+
+  PlaybackState =
+    | PlayStopped
+    | PlayPlaying
+    | PlayPaused
+
+  AnimPlayerState = record {
+    ap-frame : Integer,
+    ap-start-frame : Integer,
+    ap-end-frame : Integer,
+    ap-fps : Integer,
+    ap-state : PlaybackState,
+    ap-loop : LoopMode,
+    ap-direction : Integer,
+    ap-channels : AnimChannelSet
+  }
+
+Section: Construction
+
+  anim-player-new : AnimChannelSet, Integer -> AnimPlayerState
+  anim-player-new (channels) (fps) =
+    let last = anim-total-frames channels
+    in AnimPlayerState {
+      ap-frame = 0,
+      ap-start-frame = 0,
+      ap-end-frame = last,
+      ap-fps = fps,
+      ap-state = PlayStopped,
+      ap-loop = LoopOnce,
+      ap-direction = 1,
+      ap-channels = channels
+    }
+
+Section: Playback Control
+
+  anim-play : AnimPlayerState -> AnimPlayerState
+  anim-play (ap) = __record-set ap "ap-state" PlayPlaying
+
+  anim-pause : AnimPlayerState -> AnimPlayerState
+  anim-pause (ap) = __record-set ap "ap-state" PlayPaused
+
+  anim-stop : AnimPlayerState -> AnimPlayerState
+  anim-stop (ap) =
+    let ap2 = __record-set ap "ap-state" PlayStopped
+    in __record-set ap2 "ap-frame" (ap.ap-start-frame)
+
+  anim-set-frame : AnimPlayerState, Integer -> AnimPlayerState
+  anim-set-frame (ap) (f) = __record-set ap "ap-frame" f
+
+  anim-set-loop : AnimPlayerState, LoopMode -> AnimPlayerState
+  anim-set-loop (ap) (mode) = __record-set ap "ap-loop" mode
+
+Section: Advance
+
+  anim-tick : AnimPlayerState -> AnimPlayerState
+  anim-tick (ap) =
+    when ap.ap-state
+      is PlayStopped -> ap
+      is PlayPaused -> ap
+      is PlayPlaying ->
+        let next = ap.ap-frame + ap.ap-direction
+        in if next > ap.ap-end-frame then anim-handle-end ap
+        else if next < ap.ap-start-frame then anim-handle-start ap
+        else __record-set ap "ap-frame" next
+
+  anim-handle-end : AnimPlayerState -> AnimPlayerState
+  anim-handle-end (ap) =
+    when ap.ap-loop
+      is LoopOnce -> anim-stop ap
+      is LoopRepeat -> __record-set ap "ap-frame" (ap.ap-start-frame)
+      is LoopPingPong -> __record-set (__record-set ap "ap-direction" (-1)) "ap-frame" (ap.ap-end-frame - 1)
+
+  anim-handle-start : AnimPlayerState -> AnimPlayerState
+  anim-handle-start (ap) =
+    when ap.ap-loop
+      is LoopOnce -> anim-stop ap
+      is LoopRepeat -> __record-set ap "ap-frame" (ap.ap-end-frame)
+      is LoopPingPong -> __record-set (__record-set ap "ap-direction" 1) "ap-frame" (ap.ap-start-frame + 1)
+
+Section: Evaluation
+
+  anim-current-values : AnimPlayerState -> List Real
+  anim-current-values (ap) = anim-eval-all (ap.ap-channels) (ap.ap-frame) 0
+
+Section: Info
+
+  anim-info : AnimPlayerState -> Text
+  anim-info (ap) =
+    let state-str = when ap.ap-state
+        is PlayStopped -> "stopped"
+        is PlayPlaying -> "playing"
+        is PlayPaused -> "paused"
+    in "Frame " & show (ap.ap-frame) & "/" & show (ap.ap-end-frame) & " (" & state-str & ", " & show (ap.ap-fps) & " fps)"
+
+Page 1

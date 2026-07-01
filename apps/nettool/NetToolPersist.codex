@@ -1,0 +1,140 @@
+Chapter: NetToolPersist
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Encode chapter Json
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Kernel chapter AppLog
+  cites Nettool chapter PortScanner
+  cites Foreword chapter ListUtils
+
+ Persistent storage for network tool. Scan results and discovered
+ hosts are serialized as JSON (kind 40). Packet captures are
+ ephemeral and not persisted.
+
+Section: Kind Constants
+
+  pk-nettool : Integer = 40
+
+Section: Scan Result Serialization
+
+  scan-result-to-jv : ScanResult -> JsonValue
+  scan-result-to-jv (r) = json-object [
+    json-pair "port" (json-int r.scr-port),
+    json-pair "proto" (json-str r.scr-protocol),
+    json-pair "status" (json-str (ps-label r.scr-status)),
+    json-pair "svc" (json-str r.scr-service),
+    json-pair "banner" (json-str r.scr-banner),
+    json-pair "lat" (json-int r.scr-latency-ms),
+    json-pair "ver" (json-str r.scr-version)
+  ]
+
+  label-to-ps : Text -> PortStatus
+  label-to-ps (s) =
+    if s == "open" then PsOpen
+    else if s == "closed" then PsClosed
+    else if s == "filtered" then PsFiltered
+    else if s == "open|filtered" then PsOpenFiltered
+    else PsTimeout
+
+  scan-result-from-jv : JsonValue -> ScanResult
+  scan-result-from-jv (jv) = ScanResult {
+    scr-port = json-get-int jv "port" 0,
+    scr-protocol = json-get-str jv "proto" "tcp",
+    scr-status = label-to-ps (json-get-str jv "status" "closed"),
+    scr-service = json-get-str jv "svc" "",
+    scr-banner = json-get-str jv "banner" "",
+    scr-latency-ms = json-get-int jv "lat" 0,
+    scr-version = json-get-str jv "ver" ""
+  }
+
+Section: Discovered Host Serialization
+
+  host-to-jv : DiscoveredHost -> JsonValue
+  host-to-jv (h) = json-object [
+    json-pair "addr" (json-str h.dh-address),
+    json-pair "name" (json-str h.dh-hostname),
+    json-pair "mac" (json-str h.dh-mac),
+    json-pair "os" (json-str h.dh-os-guess),
+    json-pair "ports" (json-array (list-map port-int-jv h.dh-open-ports)),
+    json-pair "lat" (json-int h.dh-latency-ms)
+  ]
+
+  port-int-jv : Integer -> JsonValue
+  port-int-jv (p) = json-int p
+
+  host-from-jv : JsonValue -> DiscoveredHost
+  host-from-jv (jv) = DiscoveredHost {
+    dh-address = json-get-str jv "addr" "",
+    dh-hostname = json-get-str jv "name" "",
+    dh-mac = json-get-str jv "mac" "",
+    dh-os-guess = json-get-str jv "os" "",
+    dh-open-ports = parse-int-array jv "ports",
+    dh-latency-ms = json-get-int jv "lat" 0
+  }
+
+  parse-int-array : JsonValue, Text -> List Integer
+  parse-int-array (parent) (key) =
+    let sub = json-get parent key
+    in when sub
+      is None -> []
+      is Just (arr) -> parse-int-items arr 0
+
+  parse-int-items : JsonValue, Integer -> List Integer
+  parse-int-items (arr) (i) =
+    let item = json-array-at arr i
+    in when item
+      is None -> []
+      is Just (jv) -> json-get-int jv "" 0 :: parse-int-items arr (i + 1)
+
+Section: Combined Save/Load
+
+  nettool-to-json : ScanState, NetworkMap -> Text
+  nettool-to-json (scan) (netmap) =
+    json-emit (json-object [
+      json-pair "target" (json-str (scan.ss-profile).sp-target),
+      json-pair "results" (json-array (list-map scan-result-to-jv scan.ss-results)),
+      json-pair "subnet" (json-str netmap.nm-subnet),
+      json-pair "hosts" (json-array (list-map host-to-jv netmap.nm-hosts))
+    ])
+
+  nettool-persist-save : DiskFactStore, ScanState, NetworkMap, Integer -> DiskFactStore
+  nettool-persist-save (store) (scan) (netmap) (ts) =
+    let json = nettool-to-json scan netmap
+    in app-log-info (app-write-and-checkpoint store pk-nettool json ts) "nettool" ("Scan saved: " & show (scan.ss-result-count) & " results, " & show (netmap.nm-host-count) & " hosts") ts
+
+  nettool-persist-load-results : DiskFactStore -> List ScanResult
+  nettool-persist-load-results (store) =
+    let found = app-scan-last store pk-nettool
+    in when found
+      is None -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is None -> []
+          is Just (jv) -> parse-jv-sub-nt jv "results" scan-result-from-jv
+
+  nettool-persist-load-hosts : DiskFactStore -> List DiscoveredHost
+  nettool-persist-load-hosts (store) =
+    let found = app-scan-last store pk-nettool
+    in when found
+      is None -> []
+      is Just (txt) -> let parsed = json-parse txt
+        in when parsed
+          is None -> []
+          is Just (jv) -> parse-jv-sub-nt jv "hosts" host-from-jv
+
+Section: JSON Helpers
+
+  parse-jv-sub-nt : JsonValue, Text, (JsonValue -> a) -> List a
+  parse-jv-sub-nt (parent) (key) (convert) =
+    let sub = json-get parent key
+    in when sub
+      is None -> []
+      is Just (arr) -> parse-jv-items-nt arr convert 0
+
+  parse-jv-items-nt : JsonValue, (JsonValue -> a), Integer -> List a
+  parse-jv-items-nt (arr) (convert) (i) =
+    let item = json-array-at arr i
+    in when item
+      is None -> []
+      is Just (jv) -> convert jv :: parse-jv-items-nt arr convert (i + 1)

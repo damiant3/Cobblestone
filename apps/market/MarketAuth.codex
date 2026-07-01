@@ -1,0 +1,69 @@
+Chapter: MarketAuth
+  cites Market chapter MarketTypes
+  cites Market chapter MarketDb
+  cites Foreword chapter Logger
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hmac
+  cites Foreword chapter Maybe
+
+ Authentication and session management. Passwords are hashed with
+ HMAC-SHA256 using a per-store salt. Sessions are time-limited
+ tokens stored in the sessions table.
+
+Section: Password Hashing
+
+  hash-password : Text, Text -> Text
+  hash-password (password) (salt) =
+    hmac-sha256-hex salt password
+
+  verify-password : Text, Text, Text -> Boolean
+  verify-password (password) (salt) (stored-hash) =
+    hash-password password salt == stored-hash
+
+Section: Session Management
+
+  session-duration : Integer = 86400
+
+  create-session : MarketState, Text, UserRole, Integer -> (MarketState, Session)
+  create-session (st) (user-id) (role) (ts) =
+    let (st2, sid) = market-gen-id st "sess"
+    in let sess = Session {
+      sess-id = sid,
+      sess-user-id = user-id,
+      sess-role = role,
+      sess-created = ts,
+      sess-expires = ts + session-duration
+    }
+    in let log2 = log-info-msg (st2.mkt-log) "auth" ("session created for " & user-id) ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, sess)
+
+  session-valid : Session, Integer -> Boolean
+  session-valid (sess) (now) = now < sess.sess-expires
+
+Section: User Registration
+
+  register-user : MarketState, Text, Text, Text, Integer -> (MarketState, User)
+  register-user (st) (email) (name) (password) (ts) =
+    let (st2, uid) = market-gen-id st "usr"
+    in let pass-hash = hash-password password (st2.mkt-config.store-merchant-id)
+    in let user = User {
+      user-id = uid,
+      user-email = email,
+      user-name = name,
+      user-pass-hash = pass-hash,
+      user-role = RoleCustomer,
+      user-created = ts,
+      user-last-login = ts
+    }
+    in let log2 = log-info-msg (st2.mkt-log) "auth" ("registered " & email) ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, user)
+
+  create-admin-user : MarketState, Text, Text, Text, Integer -> (MarketState, User)
+  create-admin-user (st) (email) (name) (password) (ts) =
+    let (st2, user) = register-user st email name password ts
+    in let admin = __record-set user "user-role" RoleAdmin
+    in let log2 = log-info-msg (st2.mkt-log) "auth" ("admin created " & email) ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, admin)

@@ -1,0 +1,551 @@
+Chapter: ManagedAccounts
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hmac
+  cites Foreword chapter Maybe
+  cites Foreword chapter DateTime
+  cites Foreword chapter ListUtils
+
+ Managed account system. A parent (guardian) account can create
+ child (managed) accounts with restricted capabilities. Each
+ account has its own Ed25519 identity derived from the guardian's
+ key, its own trust store subset, and a policy profile that
+ controls what the account can do.
+
+ Account hierarchy:
+   Guardian (full access, Ed25519 keypair)
+     └── Managed Account 1 (restricted, derived key)
+     └── Managed Account 2 (restricted, derived key)
+     └── ...
+
+ A managed account cannot:
+   - Modify its own policy (only the guardian can)
+   - Create other managed accounts
+   - Access the guardian's secrets vault
+   - Install trust for publishers above its tier ceiling
+   - Override time limits or content filters
+
+Section: Types
+
+  AccountType =
+    | GuardianAccount
+    | ManagedAccount
+
+  AgeGroup =
+    | AgeChild
+    | AgeTeen
+    | AgeRestricted
+
+  Account = record {
+    acc-id          : Integer,
+    acc-name        : Text,
+    acc-type        : AccountType,
+    acc-identity    : List Integer,
+    acc-pin-hash    : List Integer,
+    acc-age-group   : AgeGroup,
+    acc-policy      : AccountPolicy,
+    acc-guardian-id  : Integer,
+    acc-created     : Integer,
+    acc-last-login  : Integer,
+    acc-active      : Boolean
+  }
+
+  AccountPolicy = record {
+    ap-max-tier         : Integer,
+    ap-allowed-apps     : List Text,
+    ap-blocked-publishers : List (List Integer),
+    ap-content-filter   : ContentFilter,
+    ap-time-limits      : TimeLimits,
+    ap-can-share-files  : Boolean,
+    ap-can-use-camera   : Boolean,
+    ap-can-use-network  : Boolean,
+    ap-can-install-apps : Boolean,
+    ap-require-approval : Boolean
+  }
+
+  ContentFilter = record {
+    cf-enabled       : Boolean,
+    cf-blocked-words  : List Text,
+    cf-blocked-hashes : List (List Integer),
+    cf-safe-mode     : Boolean,
+    cf-max-page-tier : Integer
+  }
+
+  TimeLimits = record {
+    tl-enabled       : Boolean,
+    tl-daily-minutes : Integer,
+    tl-start-hour    : Integer,
+    tl-end-hour      : Integer,
+    tl-weekend-extra : Integer,
+    tl-used-today    : Integer
+  }
+
+  AccountStore = record {
+    as-accounts    : List Account,
+    as-active-id   : Integer,
+    as-guardian-id  : Integer,
+    as-next-id     : Integer,
+    as-locked      : Boolean
+  }
+
+Section: Age Group Defaults
+
+  child-policy : AccountPolicy
+  child-policy =
+    AccountPolicy {
+      ap-max-tier = 0,
+      ap-allowed-apps = ["browser", "diagram"],
+      ap-blocked-publishers = [],
+      ap-content-filter = ContentFilter {
+        cf-enabled = True,
+        cf-blocked-words = [],
+        cf-blocked-hashes = [],
+        cf-safe-mode = True,
+        cf-max-page-tier = 0
+      },
+      ap-time-limits = TimeLimits {
+        tl-enabled = True,
+        tl-daily-minutes = 120,
+        tl-start-hour = 8,
+        tl-end-hour = 20,
+        tl-weekend-extra = 60,
+        tl-used-today = 0
+      },
+      ap-can-share-files = False,
+      ap-can-use-camera = False,
+      ap-can-use-network = True,
+      ap-can-install-apps = False,
+      ap-require-approval = True
+    }
+
+  teen-policy : AccountPolicy
+  teen-policy =
+    AccountPolicy {
+      ap-max-tier = 1,
+      ap-allowed-apps = ["browser", "diagram", "fileshare", "secrets"],
+      ap-blocked-publishers = [],
+      ap-content-filter = ContentFilter {
+        cf-enabled = True,
+        cf-blocked-words = [],
+        cf-blocked-hashes = [],
+        cf-safe-mode = False,
+        cf-max-page-tier = 1
+      },
+      ap-time-limits = TimeLimits {
+        tl-enabled = True,
+        tl-daily-minutes = 240,
+        tl-start-hour = 7,
+        tl-end-hour = 22,
+        tl-weekend-extra = 120,
+        tl-used-today = 0
+      },
+      ap-can-share-files = True,
+      ap-can-use-camera = False,
+      ap-can-use-network = True,
+      ap-can-install-apps = False,
+      ap-require-approval = False
+    }
+
+  restricted-policy : AccountPolicy
+  restricted-policy =
+    AccountPolicy {
+      ap-max-tier = 2,
+      ap-allowed-apps = ["browser", "diagram", "fileshare", "secrets"],
+      ap-blocked-publishers = [],
+      ap-content-filter = ContentFilter {
+        cf-enabled = False,
+        cf-blocked-words = [],
+        cf-blocked-hashes = [],
+        cf-safe-mode = False,
+        cf-max-page-tier = 2
+      },
+      ap-time-limits = TimeLimits {
+        tl-enabled = False,
+        tl-daily-minutes = 0,
+        tl-start-hour = 0,
+        tl-end-hour = 24,
+        tl-weekend-extra = 0,
+        tl-used-today = 0
+      },
+      ap-can-share-files = True,
+      ap-can-use-camera = True,
+      ap-can-use-network = True,
+      ap-can-install-apps = True,
+      ap-require-approval = False
+    }
+
+  policy-for-age : AgeGroup -> AccountPolicy
+  policy-for-age (ag) =
+    when ag
+      is AgeChild -> child-policy
+      is AgeTeen -> teen-policy
+      is AgeRestricted -> restricted-policy
+
+Section: Account Store
+
+  account-store-new : List Integer, Integer -> AccountStore
+  account-store-new (guardian-identity) (now) =
+    let guardian = Account {
+      acc-id = 1,
+      acc-name = "Guardian",
+      acc-type = GuardianAccount,
+      acc-identity = guardian-identity,
+      acc-pin-hash = [],
+      acc-age-group = AgeRestricted,
+      acc-policy = restricted-policy,
+      acc-guardian-id = 0,
+      acc-created = now,
+      acc-last-login = now,
+      acc-active = True
+    }
+    in AccountStore {
+      as-accounts = [guardian],
+      as-active-id = 1,
+      as-guardian-id = 1,
+      as-next-id = 2,
+      as-locked = False
+    }
+
+Section: Account Creation
+
+  create-managed-account : AccountStore, Text, AgeGroup, Text, List Integer, Integer -> AccountStore
+  create-managed-account (store) (name) (age) (pin) (guardian-key) (now) =
+    let id = store.as-next-id
+    in let pin-hash = sha256 (text-to-bytes pin)
+    in let derived-key = derive-account-key guardian-key id
+    in let policy = policy-for-age age
+    in let account = Account {
+      acc-id = id,
+      acc-name = name,
+      acc-type = ManagedAccount,
+      acc-identity = derived-key,
+      acc-pin-hash = pin-hash,
+      acc-age-group = age,
+      acc-policy = policy,
+      acc-guardian-id = store.as-guardian-id,
+      acc-created = now,
+      acc-last-login = 0,
+      acc-active = True
+    }
+    in __record-set (__record-set store
+      "as-accounts" (list-push store.as-accounts account))
+      "as-next-id" (id + 1)
+
+  derive-account-key : List Integer, Integer -> List Integer
+  derive-account-key (guardian-key) (account-id) =
+    hmac-sha256 guardian-key (text-to-bytes ("managed-account:" & show account-id))
+
+  remove-managed-account : AccountStore, Integer -> AccountStore
+  remove-managed-account (store) (id) =
+    if id == store.as-guardian-id then store
+    else __record-set store "as-accounts" (list-filter store.as-accounts (acc-id-neq id))
+
+  acc-id-neq : Integer, Account -> Boolean
+  acc-id-neq (id) (a) = a.acc-id /= id
+
+Section: Login
+
+  account-login : AccountStore, Integer, Text, Integer -> AccountStore
+  account-login (store) (id) (pin) (now) =
+    let account = find-account store.as-accounts id
+    in when account
+      is None -> store
+      is Just (acc) ->
+        if verify-pin acc pin
+        then let updated = __record-set acc "acc-last-login" now
+          in __record-set (__record-set store
+            "as-active-id" id)
+            "as-accounts" (replace-account store.as-accounts updated)
+        else store
+
+  account-logout : AccountStore -> AccountStore
+  account-logout (store) =
+    __record-set store "as-active-id" store.as-guardian-id
+
+  account-lock : AccountStore -> AccountStore
+  account-lock (store) =
+    __record-set (__record-set store "as-locked" True) "as-active-id" 0
+
+  account-unlock-guardian : AccountStore, Text, Integer -> AccountStore
+  account-unlock-guardian (store) (pin) (now) =
+    account-login (__record-set store "as-locked" False) store.as-guardian-id pin now
+
+  verify-pin : Account, Text -> Boolean
+  verify-pin (acc) (pin) =
+    if list-length acc.acc-pin-hash == 0 then True
+    else let hash = sha256 (text-to-bytes pin)
+    in sha256-to-hex hash == sha256-to-hex acc.acc-pin-hash
+
+Section: Active Account Queries
+
+  active-account : AccountStore -> Maybe Account
+  active-account (store) =
+    find-account store.as-accounts store.as-active-id
+
+  is-guardian : AccountStore -> Boolean
+  is-guardian (store) =
+    store.as-active-id == store.as-guardian-id
+
+  is-managed : AccountStore -> Boolean
+  is-managed (store) =
+    store.as-active-id /= store.as-guardian-id & store.as-active-id > 0
+
+  active-policy : AccountStore -> AccountPolicy
+  active-policy (store) =
+    let acc = active-account store
+    in when acc
+      is None -> child-policy
+      is Just (a) -> a.acc-policy
+
+  managed-accounts : AccountStore -> List Account
+  managed-accounts (store) =
+    filter-managed store.as-accounts []
+
+  filter-managed : List Account, List Account -> List Account
+  filter-managed (accounts) (acc) =
+    if list-length accounts == 0 then acc
+    else let head = list-at accounts 0
+      in when head.acc-type
+        is ManagedAccount -> filter-managed (list-drop accounts 1) (list-push acc head)
+        is otherwise -> filter-managed (list-drop accounts 1) acc
+
+Section: Account Lookup
+
+  find-account : List Account, Integer -> Maybe Account
+  find-account (accounts) (id) =
+    if list-length accounts == 0 then None
+    else let head = list-at accounts 0
+      in if head.acc-id == id then Just head
+      else find-account (list-drop accounts 1) id
+
+  replace-account : List Account, Account -> List Account
+  replace-account (accounts) (updated) =
+    list-map (replace-one-account updated) accounts
+
+  replace-one-account : Account, Account -> Account
+  replace-one-account (updated) (a) =
+    if a.acc-id == updated.acc-id then updated else a
+
+Section: Policy Modification (Guardian Only)
+
+  update-policy : AccountStore, Integer, AccountPolicy -> AccountStore
+  update-policy (store) (account-id) (new-policy) =
+    if is-guardian store == False then store
+    else let acc = find-account store.as-accounts account-id
+    in when acc
+      is None -> store
+      is Just (a) ->
+        when a.acc-type
+          is GuardianAccount -> store
+          is ManagedAccount ->
+            let updated = __record-set a "acc-policy" new-policy
+            in __record-set store "as-accounts" (replace-account store.as-accounts updated)
+
+  set-time-limit : AccountStore, Integer, Integer -> AccountStore
+  set-time-limit (store) (account-id) (daily-minutes) =
+    let acc = find-account store.as-accounts account-id
+    in when acc
+      is None -> store
+      is Just (a) ->
+        let new-limits = __record-set a.acc-policy.ap-time-limits "tl-daily-minutes" daily-minutes
+        in let new-policy = __record-set a.acc-policy "ap-time-limits" new-limits
+        in update-policy store account-id new-policy
+
+  set-allowed-hours : AccountStore, Integer, Integer, Integer -> AccountStore
+  set-allowed-hours (store) (account-id) (start) (end-hour) =
+    let acc = find-account store.as-accounts account-id
+    in when acc
+      is None -> store
+      is Just (a) ->
+        let new-limits = __record-set (__record-set a.acc-policy.ap-time-limits
+              "tl-start-hour" start)
+              "tl-end-hour" end-hour
+        in let new-policy = __record-set a.acc-policy "ap-time-limits" new-limits
+        in update-policy store account-id new-policy
+
+  block-publisher : AccountStore, Integer, List Integer -> AccountStore
+  block-publisher (store) (account-id) (publisher-key) =
+    let acc = find-account store.as-accounts account-id
+    in when acc
+      is None -> store
+      is Just (a) ->
+        let blocked = list-push a.acc-policy.ap-blocked-publishers publisher-key
+        in let new-policy = __record-set a.acc-policy "ap-blocked-publishers" blocked
+        in update-policy store account-id new-policy
+
+  toggle-safe-mode : AccountStore, Integer -> AccountStore
+  toggle-safe-mode (store) (account-id) =
+    let acc = find-account store.as-accounts account-id
+    in when acc
+      is None -> store
+      is Just (a) ->
+        let cf = a.acc-policy.ap-content-filter
+        in let new-cf = __record-set cf "cf-safe-mode" (if cf.cf-safe-mode then False else True)
+        in let new-policy = __record-set a.acc-policy "ap-content-filter" new-cf
+        in update-policy store account-id new-policy
+
+Section: Time Enforcement
+
+  check-time-allowed : AccountPolicy, Integer, Boolean -> TimeCheckResult
+  check-time-allowed (policy) (current-hour) (is-weekend) =
+    if policy.ap-time-limits.tl-enabled == False
+    then TimeAllowed
+    else let limits = policy.ap-time-limits
+    in let max-mins = limits.tl-daily-minutes + (if is-weekend then limits.tl-weekend-extra else 0)
+    in if limits.tl-used-today >= max-mins
+      then TimeLimitReached max-mins
+      else if current-hour < limits.tl-start-hour
+      then TimeOutsideHours limits.tl-start-hour limits.tl-end-hour
+      else if current-hour >= limits.tl-end-hour
+      then TimeOutsideHours limits.tl-start-hour limits.tl-end-hour
+      else let remaining = max-mins - limits.tl-used-today
+        in TimeAllowedRemaining remaining
+
+  TimeCheckResult =
+    | TimeAllowed
+    | TimeAllowedRemaining (Integer)
+    | TimeLimitReached (Integer)
+    | TimeOutsideHours (Integer) (Integer)
+
+  record-time-used : AccountStore, Integer, Integer -> AccountStore
+  record-time-used (store) (account-id) (minutes) =
+    let acc = find-account store.as-accounts account-id
+    in when acc
+      is None -> store
+      is Just (a) ->
+        let used = a.acc-policy.ap-time-limits.tl-used-today + minutes
+        in let new-limits = __record-set a.acc-policy.ap-time-limits "tl-used-today" used
+        in let new-policy = __record-set a.acc-policy "ap-time-limits" new-limits
+        in let updated = __record-set a "acc-policy" new-policy
+        in __record-set store "as-accounts" (replace-account store.as-accounts updated)
+
+  reset-daily-time : AccountStore -> AccountStore
+  reset-daily-time (store) =
+    __record-set store "as-accounts" (list-map reset-one-time store.as-accounts)
+
+  reset-one-time : Account -> Account
+  reset-one-time (a) =
+    let new-limits = __record-set a.acc-policy.ap-time-limits "tl-used-today" 0
+    in let new-policy = __record-set a.acc-policy "ap-time-limits" new-limits
+    in __record-set a "acc-policy" new-policy
+
+Section: Content Filtering
+
+  check-content-allowed : AccountPolicy, List Integer, Text -> ContentCheckResult
+  check-content-allowed (policy) (publisher-key) (page-name) =
+    if policy.ap-content-filter.cf-enabled == False
+    then ContentAllowed
+    else if is-publisher-blocked policy.ap-blocked-publishers publisher-key
+    then ContentBlockedPublisher
+    else if has-blocked-word policy.ap-content-filter.cf-blocked-words page-name
+    then ContentBlockedWord
+    else ContentAllowed
+
+  ContentCheckResult =
+    | ContentAllowed
+    | ContentBlockedPublisher
+    | ContentBlockedWord
+    | ContentBlockedHash
+
+  is-publisher-blocked : List (List Integer), List Integer -> Boolean
+  is-publisher-blocked (blocked) (key) =
+    if list-length blocked == 0 then False
+    else if sha256-to-hex (list-at blocked 0) == sha256-to-hex key then True
+      else is-publisher-blocked (list-drop blocked 1) key
+
+  has-blocked-word : List Text, Text -> Boolean
+  has-blocked-word (words) (text) =
+    if list-length words == 0 then False
+    else if text-contains text (list-at words 0) then True
+      else has-blocked-word (list-drop words 1) text
+
+Section: Audit Log
+
+  AuditAction =
+    | AuditLogin (Integer)
+    | AuditLogout (Integer)
+    | AuditPolicyChange (Integer, Text)
+    | AuditContentBlocked (Integer, Text)
+    | AuditTimeLimitHit (Integer)
+    | AuditAppAccess (Integer, Text)
+
+  AuditEntry = record {
+    ae-timestamp : Integer,
+    ae-action    : AuditAction,
+    ae-actor-id  : Integer
+  }
+
+  format-audit-action : AuditAction -> Text
+  format-audit-action (action) =
+    when action
+      is AuditLogin (id) -> "Account " & show id & " logged in"
+      is AuditLogout (id) -> "Account " & show id & " logged out"
+      is AuditPolicyChange (id) (field) -> "Policy changed for account " & show id & ": " & field
+      is AuditContentBlocked (id) (reason) -> "Content blocked for account " & show id & ": " & reason
+      is AuditTimeLimitHit (id) -> "Time limit reached for account " & show id
+      is AuditAppAccess (id) (app) -> "Account " & show id & " accessed " & app
+
+  format-audit-entry : AuditEntry -> Text
+  format-audit-entry (entry) =
+    "[" & show entry.ae-timestamp & "] " & format-audit-action entry.ae-action & " (by " & show entry.ae-actor-id & ")"
+
+Section: Policy Summary
+
+  format-policy-summary : AccountPolicy -> Text
+  format-policy-summary (p) =
+    "Max tier: " & show p.ap-max-tier
+    & " | Apps: " & show (list-length p.ap-allowed-apps)
+    & " | Camera: " & (if p.ap-can-use-camera then "yes" else "no")
+    & " | Files: " & (if p.ap-can-share-files then "yes" else "no")
+    & " | Chat: " & (if p.ap-can-use-chat then "yes" else "no")
+    & " | Safe: " & (if (p.ap-content-filter).cf-safe-mode then "on" else "off")
+    & " | Daily limit: " & show (p.ap-time-limits).tl-daily-limit-minutes & "min"
+
+  format-account-detail : Account -> Text
+  format-account-detail (a) =
+    "Account: " & a.acc-name
+    & "\nType: " & (when a.acc-type is GuardianAccount -> "Guardian" is ManagedAccount -> "Managed")
+    & "\nAge group: " & age-group-name a.acc-age-group
+    & "\nGuardian: " & show a.acc-guardian-id
+    & "\nPolicy: " & format-policy-summary a.acc-policy
+
+Section: App Access Control
+
+  can-use-app : AccountPolicy, Text -> Boolean
+  can-use-app (policy) (app-name) =
+    app-in-list policy.ap-allowed-apps app-name
+
+  app-in-list : List Text, Text -> Boolean
+  app-in-list (apps) (name) =
+    if list-length apps == 0 then False
+    else if list-at apps 0 == name then True
+      else app-in-list (list-drop apps 1) name
+
+Section: Formatting
+
+  age-group-name : AgeGroup -> Text
+  age-group-name (ag) =
+    when ag
+      is AgeChild -> "Child"
+      is AgeTeen -> "Teen"
+      is AgeRestricted -> "Restricted"
+
+  format-account : Account -> Text
+  format-account (a) =
+    a.acc-name & " (" & age-group-name a.acc-age-group & ")"
+
+  format-time-check : TimeCheckResult -> Text
+  format-time-check (r) =
+    when r
+      is TimeAllowed -> "Access allowed"
+      is TimeAllowedRemaining (mins) -> show mins & " minutes remaining"
+      is TimeLimitReached (limit) -> "Daily limit reached (" & show limit & " min)"
+      is TimeOutsideHours (start) (end-h) -> "Outside allowed hours (" & show start & ":00-" & show end-h & ":00)"
+
+  format-content-check : ContentCheckResult -> Text
+  format-content-check (r) =
+    when r
+      is ContentAllowed -> "Allowed"
+      is ContentBlockedPublisher -> "Blocked: publisher"
+      is ContentBlockedWord -> "Blocked: content filter"
+      is ContentBlockedHash -> "Blocked: content hash"

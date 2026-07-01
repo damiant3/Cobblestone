@@ -1,0 +1,79 @@
+Chapter: BuildManifest
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Works chapter DigestCompute
+
+ A BuildManifest is a structured record of everything in a seed
+ rebuild. The manifest captures the full state of the build — what
+ went in, what came out, what the gates said — as a single
+ serializable record. BuildManifest replaces the manual digest +
+ README update steps in the seed rebuild checklist.
+
+ We say:
+
+Section: Manifest Record
+
+  BuildManifest = record {
+    cl-number : Integer,
+    prior-cl : Integer,
+    cdx-digest : DigestRecord,
+    img-digest : DigestRecord,
+    source-digest : DigestRecord,
+    fixed-point-size : Integer,
+    sweep-pass : Integer,
+    sweep-fail : Integer,
+    sweep-skip : Integer,
+    sweep-total : Integer,
+    author : Text,
+    date : Text
+  }
+
+  create-manifest : Integer, Integer, DigestRecord, DigestRecord, DigestRecord, Integer, Text, Text -> BuildManifest
+  create-manifest (cl) (prior) (cdx) (img) (src) (fp-size) (author) (date) =
+    BuildManifest {
+      cl-number = cl,
+      prior-cl = prior,
+      cdx-digest = cdx,
+      img-digest = img,
+      source-digest = src,
+      fixed-point-size = fp-size,
+      sweep-pass = 0,
+      sweep-fail = 0,
+      sweep-skip = 0,
+      sweep-total = 0,
+      author = author,
+      date = date
+    }
+
+  manifest-set-sweep : BuildManifest, Integer, Integer, Integer, Integer -> BuildManifest
+  manifest-set-sweep (m) (pass) (fail) (skip) (total) =
+    let m1 = __record-set m "sweep-pass" pass
+    in let m2 = __record-set m1 "sweep-fail" fail
+    in let m3 = __record-set m2 "sweep-skip" skip
+    in __record-set m3 "sweep-total" total
+
+Section: Formatting
+
+  format-manifest : BuildManifest -> Text
+  format-manifest (m) =
+    "Seed Rebuild CL " & show (m.cl-number) & " (prior: " & show (m.prior-cl) & ")\n"
+    & "Author: " & m.author & "  Date: " & m.date & "\n\n"
+    & "CDX:\n" & format-digest (m.cdx-digest) & "\n\n"
+    & "IMG:\n" & format-digest (m.img-digest) & "\n\n"
+    & "Source:\n" & format-digest (m.source-digest) & "\n\n"
+    & "Fixed point: " & show (m.fixed-point-size) & " bytes\n"
+    & "Sweep: " & show (m.sweep-pass) & "/" & show (m.sweep-fail) & "/" & show (m.sweep-skip) & "/" & show (m.sweep-total) & "\n"
+
+  format-manifest-commit-message : BuildManifest -> Text
+  format-manifest-commit-message (m) =
+    "seed: rebuild for CL " & show (m.cl-number)
+    & " - " & show (m.cdx-digest.size) & " CDX"
+    & ", sweep " & show (m.sweep-pass) & "/" & show (m.sweep-fail) & "/" & show (m.sweep-skip) & "/" & show (m.sweep-total)
+
+Section: README Update
+
+  format-readme-digest-row : Text, DigestRecord -> Text
+  format-readme-digest-row (label) (d) =
+    "| " & label & " | " & show (d.size) & " | " & d.sha256 & " |"
+
+Page 1

@@ -1,0 +1,343 @@
+Chapter: GpuRender
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Widget
+  cites UI chapter Overlay
+
+ GPU-triangle rendering backend for bare-metal widget apps. Renders
+ widgets, overlays, and chrome using gpu-rect / gpu-tri commands at
+ the GOP framebuffer address. Uses a 4-tier depth system for proper
+ z-ordering:
+   depth 10000 = scene (background geometry)
+   depth 5000  = chrome (toolbar, sidebar, status bar text)
+   depth 2000  = overlay panels (dropdown menus, popups)
+   depth 1000  = overlay text (menu items, tooltip text)
+
+Section: GPU Constants
+
+  gr-cmd : Integer = #BE000000
+
+Section: GPU Primitives
+
+  gr-tri : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gr-tri (idx) (x0) (y0) (x1) (y1) (x2) (y2) (c0) (c1) (c2) (depth) =
+    let off = idx * 72
+    in let s = poke-32 gr-cmd off x0
+    in let s1 = s + poke-32 gr-cmd (off + 4) y0
+    in let s2 = s1 + poke-32 gr-cmd (off + 8) x1
+    in let s3 = s2 + poke-32 gr-cmd (off + 12) y1
+    in let s4 = s3 + poke-32 gr-cmd (off + 16) x2
+    in let s5 = s4 + poke-32 gr-cmd (off + 20) y2
+    in let s6 = s5 + poke-32 gr-cmd (off + 24) c0
+    in let s7 = s6 + poke-32 gr-cmd (off + 28) c1
+    in let s8 = s7 + poke-32 gr-cmd (off + 32) c2
+    in let s9 = s8 + poke-32 gr-cmd (off + 36) depth
+    in let sa = s9 + poke-32 gr-cmd (off + 40) depth
+    in let sb = sa + poke-32 gr-cmd (off + 44) depth
+    in let sc = sb + poke-32 gr-cmd (off + 48) 0
+    in let sd = sc + poke-32 gr-cmd (off + 52) 0
+    in let se = sd + poke-32 gr-cmd (off + 56) 0
+    in let sf = se + poke-32 gr-cmd (off + 60) 0
+    in let sg = sf + poke-32 gr-cmd (off + 64) 0
+    in sg + poke-32 gr-cmd (off + 68) 0
+
+  gr-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gr-rect (idx) (x) (y) (w) (h) (color) (depth) =
+    let t0 = gr-tri idx x y (x + w) y x (y + h) color color color depth
+    in t0 + gr-tri (idx + 1) (x + w) y (x + w) (y + h) x (y + h) color color color depth
+
+Section: Depth Constants
+
+  gr-depth-scene : Integer = 10000
+  gr-depth-chrome : Integer = 5000
+  gr-depth-overlay : Integer = 2000
+  gr-depth-top : Integer = 1000
+
+Section: Frame Control
+
+  gr-clear : Integer -> Integer
+  gr-clear (color) = port-out-32 #401 color
+
+  gr-clear-depth : Integer
+  gr-clear-depth = port-out-32 #402 0
+
+  gr-flush : Integer -> Integer
+  gr-flush (count) = port-out-32 #400 count
+
+Section: Widget Rendering
+
+  GpuFrame = record {
+    gf-idx : Integer,
+    gf-max : Integer
+  }
+
+  gf-new : Integer -> GpuFrame
+  gf-new (max-tris) = GpuFrame { gf-idx = 0, gf-max = max-tris }
+
+  gr-render-tree : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  gr-render-tree (gf) (w) (th) (depth) =
+    let gf2 = gr-render-node gf w th depth
+    in gr-render-children gf2 (w.wn-children) th depth 0 (w.wn-child-count)
+
+  gr-render-children : GpuFrame, List WidgetNode, Theme, Integer, Integer, Integer -> GpuFrame
+  gr-render-children (gf) (children) (th) (depth) (i) (n) =
+    if i >= n then gf
+    else let gf2 = gr-render-tree gf (list-at children i) th depth
+    in gr-render-children gf2 children th depth (i + 1) n
+
+  gr-render-node : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  gr-render-node (gf) (w) (th) (depth) = when w.wn-kind
+    is WkPanel -> gr-render-panel gf w th depth
+    is WkLabel (txt) -> gr-render-label gf w th txt depth
+    is WkButton (txt) -> gr-render-button gf w th txt depth
+    is WkGauge (val) (max-val) -> gr-render-gauge gf w th val max-val depth
+    is WkSeparator -> gr-render-separator gf w th depth
+    is WkInput (txt) (cursor) -> gr-render-input gf w th txt cursor depth
+    is WkCustom (tag) -> gr-render-panel gf w th depth
+
+  gr-render-panel : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  gr-render-panel (gf) (w) (th) (depth) =
+    let style = theme-resolve-panel th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth
+
+  gr-render-button : GpuFrame, WidgetNode, Theme, Text, Integer -> GpuFrame
+  gr-render-button (gf) (w) (th) (txt) (depth) =
+    let style = theme-resolve-button th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let gf2 = gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth
+    in let content = box-content-from-style (w.wn-bounds) style
+    in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
+    in gr-emit-text gf2 txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
+
+  gr-render-label : GpuFrame, WidgetNode, Theme, Text, Integer -> GpuFrame
+  gr-render-label (gf) (w) (th) (txt) (depth) =
+    let style = theme-resolve-label th (w.wn-state)
+    in let content = box-content-from-style (w.wn-bounds) style
+    in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
+    in gr-emit-text gf txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
+
+  gr-render-gauge : GpuFrame, WidgetNode, Theme, Integer, Integer, Integer -> GpuFrame
+  gr-render-gauge (gf) (w) (th) (val) (max-val) (depth) =
+    let style = theme-resolve-gauge th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let gf2 = gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth
+    in let content = box-content-from-style (w.wn-bounds) style
+    in let fill-w = if max-val > 0 then content.lr-w * val / max-val else 0
+    in gr-emit-rect gf2 (content.lr-x) (content.lr-y) fill-w (content.lr-h) (style.ws-fg) depth
+
+  gr-render-separator : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  gr-render-separator (gf) (w) (th) (depth) =
+    let style = theme-resolve-separator th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in gr-emit-rect gf (br.lr-x) (br.lr-y + br.lr-h / 2) (br.lr-w) 1 (style.ws-bg) depth
+
+  gr-render-input : GpuFrame, WidgetNode, Theme, Text, Integer, Integer -> GpuFrame
+  gr-render-input (gf) (w) (th) (txt) (cursor) (depth) =
+    let style = theme-resolve-input th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let gf2 = gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth
+    in let content = box-content-from-style (w.wn-bounds) style
+    in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
+    in let gf3 = gr-emit-text gf2 txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
+    in let cursor-x = content.lr-x + cursor * 6
+    in gr-emit-rect gf3 cursor-x (content.lr-y) 1 7 (style.ws-fg) text-depth
+
+Section: Overlay Rendering
+
+  gr-render-overlay : GpuFrame, Overlay, Theme -> GpuFrame
+  gr-render-overlay (gf) (ov) (th) =
+    if ov.ov-visible then
+      let gf2 = gr-emit-rect gf (ov.ov-x) (ov.ov-y) (ov.ov-width) (ov.ov-height) ((th.th-palette).pal-bg) gr-depth-overlay
+      in let laid = widget-layout (ov.ov-widget) th (layout-rect (ov.ov-x) (ov.ov-y) (ov.ov-width) (ov.ov-height))
+      in gr-render-tree gf2 laid th gr-depth-overlay
+    else gf
+
+  gr-render-overlays : GpuFrame, OverlayStack, Theme, Integer, Integer -> GpuFrame
+  gr-render-overlays (gf) (os) (th) (i) (n) =
+    if i >= n then gf
+    else let gf2 = gr-render-overlay gf (list-at (os.os-overlays) i) th
+    in gr-render-overlays gf2 os th (i + 1) n
+
+Section: GPU Rect Emit
+
+  gr-emit-rect : GpuFrame, Integer, Integer, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-rect (gf) (x) (y) (w) (h) (color) (depth) =
+    if w <= 0 then gf
+    else if h <= 0 then gf
+    else if gf.gf-idx + 2 > gf.gf-max then gf
+    else let written = gr-rect (gf.gf-idx) x y w h color depth
+    in GpuFrame { gf-idx = gf.gf-idx + 2, gf-max = gf.gf-max }
+
+Section: 5x7 Bitmap Text
+
+  gr-emit-text : GpuFrame, Text, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-text (gf) (txt) (x) (y) (color) (depth) =
+    gr-emit-text-loop gf txt x y color depth 0 (text-length txt)
+
+  gr-emit-text-loop : GpuFrame, Text, Integer, Integer, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-text-loop (gf) (txt) (x) (y) (color) (depth) (i) (len) =
+    if i >= len then gf
+    else let ch = gr-text-char-at txt i
+    in let gf2 = gr-emit-glyph gf ch (x + i * 6) y color depth
+    in gr-emit-text-loop gf2 txt x y color depth (i + 1) len
+
+  gr-emit-glyph : GpuFrame, Integer, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-glyph (gf) (ch) (x) (y) (color) (depth) =
+    let rows = gr-glyph-rows ch
+    in gr-emit-glyph-rows gf rows x y color depth 0 7
+
+  gr-emit-glyph-rows : GpuFrame, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-glyph-rows (gf) (rows) (x) (y) (color) (depth) (row) (max-row) =
+    if row >= max-row then gf
+    else let bits = list-at rows row
+    in let gf2 = gr-emit-glyph-cols gf bits x (y + row) color depth 0 5
+    in gr-emit-glyph-rows gf2 rows x y color depth (row + 1) max-row
+
+  gr-emit-glyph-cols : GpuFrame, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-glyph-cols (gf) (bits) (x) (y) (color) (depth) (col) (max-col) =
+    if col >= max-col then gf
+    else if bit-and bits (bit-shl 1 (4 - col)) > 0 then
+      let gf2 = gr-emit-rect gf (x + col) y 1 1 color depth
+      in gr-emit-glyph-cols gf2 bits x y color depth (col + 1) max-col
+    else gr-emit-glyph-cols gf bits x y color depth (col + 1) max-col
+
+Section: CCE to ASCII
+
+  gr-text-char-at : Text, Integer -> Integer
+  gr-text-char-at (t) (i) = gr-cce-to-ascii (char-code (char-at t i))
+
+  gr-cce-to-ascii : Integer -> Integer
+  gr-cce-to-ascii (c) =
+    if c == 2 then 32
+    else if c >= 3 then if c <= 12 then c + 45 else gr-cce-alpha c
+    else 32
+
+  gr-cce-alpha : Integer -> Integer
+  gr-cce-alpha (c) =
+    if c == 13 then 69 else if c == 14 then 84 else if c == 15 then 65
+    else if c == 16 then 79 else if c == 17 then 73 else if c == 18 then 78
+    else if c == 19 then 83 else if c == 20 then 72 else if c == 21 then 82
+    else if c == 22 then 68 else if c == 23 then 76 else if c == 24 then 67
+    else if c == 25 then 85 else if c == 26 then 77 else if c == 27 then 87
+    else if c == 28 then 70 else if c == 29 then 71 else if c == 30 then 89
+    else if c == 31 then 80 else if c == 32 then 66 else if c == 33 then 86
+    else if c == 34 then 75 else if c == 35 then 74 else if c == 36 then 88
+    else if c == 37 then 81 else if c == 38 then 90
+    else if c >= 39 then if c <= 64 then gr-cce-alpha (c - 26) else gr-cce-punct c
+    else 32
+
+  gr-cce-punct : Integer -> Integer
+  gr-cce-punct (c) =
+    if c == 65 then 46 else if c == 66 then 44 else if c == 67 then 33
+    else if c == 68 then 63 else if c == 69 then 58 else if c == 70 then 59
+    else if c == 71 then 39 else if c == 73 then 45 else if c == 74 then 40
+    else if c == 75 then 41 else if c == 76 then 43 else if c == 77 then 61
+    else if c == 78 then 42 else if c == 81 then 47
+    else 32
+
+Section: Glyph Data
+
+  gr-glyph-rows : Integer -> List Integer
+  gr-glyph-rows (ch) =
+    if ch == 48 then [14, 17, 19, 21, 25, 17, 14]
+    else if ch == 49 then [4, 12, 4, 4, 4, 4, 14]
+    else if ch == 50 then [14, 17, 1, 2, 4, 8, 31]
+    else if ch == 51 then [14, 17, 1, 6, 1, 17, 14]
+    else if ch == 52 then [2, 6, 10, 18, 31, 2, 2]
+    else if ch == 53 then [31, 16, 30, 1, 1, 17, 14]
+    else if ch == 54 then [6, 8, 16, 30, 17, 17, 14]
+    else if ch == 55 then [31, 1, 2, 4, 4, 4, 4]
+    else if ch == 56 then [14, 17, 17, 14, 17, 17, 14]
+    else if ch == 57 then [14, 17, 17, 15, 1, 2, 12]
+    else gr-glyph-alpha ch
+
+  gr-glyph-alpha : Integer -> List Integer
+  gr-glyph-alpha (ch) =
+    if ch == 65 then [14, 17, 17, 31, 17, 17, 17]
+    else if ch == 66 then [30, 17, 17, 30, 17, 17, 30]
+    else if ch == 67 then [14, 17, 16, 16, 16, 17, 14]
+    else if ch == 68 then [30, 17, 17, 17, 17, 17, 30]
+    else if ch == 69 then [31, 16, 16, 30, 16, 16, 31]
+    else if ch == 70 then [31, 16, 16, 30, 16, 16, 16]
+    else if ch == 71 then [14, 17, 16, 19, 17, 17, 14]
+    else if ch == 72 then [17, 17, 17, 31, 17, 17, 17]
+    else if ch == 73 then [14, 4, 4, 4, 4, 4, 14]
+    else if ch == 74 then [7, 2, 2, 2, 2, 18, 12]
+    else if ch == 75 then [17, 18, 20, 24, 20, 18, 17]
+    else if ch == 76 then [16, 16, 16, 16, 16, 16, 31]
+    else if ch == 77 then [17, 27, 21, 21, 17, 17, 17]
+    else gr-glyph-alpha2 ch
+
+  gr-glyph-alpha2 : Integer -> List Integer
+  gr-glyph-alpha2 (ch) =
+    if ch == 78 then [17, 25, 21, 19, 17, 17, 17]
+    else if ch == 79 then [14, 17, 17, 17, 17, 17, 14]
+    else if ch == 80 then [30, 17, 17, 30, 16, 16, 16]
+    else if ch == 81 then [14, 17, 17, 17, 21, 18, 13]
+    else if ch == 82 then [30, 17, 17, 30, 20, 18, 17]
+    else if ch == 83 then [14, 17, 16, 14, 1, 17, 14]
+    else if ch == 84 then [31, 4, 4, 4, 4, 4, 4]
+    else if ch == 85 then [17, 17, 17, 17, 17, 17, 14]
+    else if ch == 86 then [17, 17, 17, 17, 10, 10, 4]
+    else if ch == 87 then [17, 17, 17, 21, 21, 27, 17]
+    else if ch == 88 then [17, 17, 10, 4, 10, 17, 17]
+    else if ch == 89 then [17, 17, 10, 4, 4, 4, 4]
+    else if ch == 90 then [31, 1, 2, 4, 8, 16, 31]
+    else gr-glyph-misc ch
+
+  gr-glyph-misc : Integer -> List Integer
+  gr-glyph-misc (ch) =
+    if ch == 46 then [0, 0, 0, 0, 0, 0, 4]
+    else if ch == 44 then [0, 0, 0, 0, 0, 4, 8]
+    else if ch == 58 then [0, 0, 4, 0, 0, 4, 0]
+    else if ch == 45 then [0, 0, 0, 14, 0, 0, 0]
+    else if ch == 43 then [0, 4, 4, 31, 4, 4, 0]
+    else if ch == 42 then [0, 4, 21, 14, 21, 4, 0]
+    else if ch == 47 then [1, 1, 2, 4, 8, 16, 16]
+    else if ch == 40 then [2, 4, 8, 8, 8, 4, 2]
+    else if ch == 41 then [8, 4, 2, 2, 2, 4, 8]
+    else if ch == 91 then [14, 8, 8, 8, 8, 8, 14]
+    else if ch == 93 then [14, 2, 2, 2, 2, 2, 14]
+    else if ch == 61 then [0, 0, 31, 0, 31, 0, 0]
+    else if ch == 60 then [2, 4, 8, 16, 8, 4, 2]
+    else if ch == 62 then [8, 4, 2, 1, 2, 4, 8]
+    else if ch == 32 then [0, 0, 0, 0, 0, 0, 0]
+    else if ch == 95 then [0, 0, 0, 0, 0, 0, 31]
+    else if ch == 35 then [10, 10, 31, 10, 31, 10, 10]
+    else if ch == 33 then [4, 4, 4, 4, 0, 0, 4]
+    else if ch == 63 then [14, 17, 1, 2, 4, 0, 4]
+    else if ch == 37 then [24, 25, 2, 4, 8, 19, 3]
+    else gr-glyph-lower ch
+
+  gr-glyph-lower : Integer -> List Integer
+  gr-glyph-lower (ch) =
+    if ch == 97 then [0, 0, 14, 1, 15, 17, 15]
+    else if ch == 98 then [16, 16, 30, 17, 17, 17, 30]
+    else if ch == 99 then [0, 0, 14, 16, 16, 17, 14]
+    else if ch == 100 then [1, 1, 15, 17, 17, 17, 15]
+    else if ch == 101 then [0, 0, 14, 17, 31, 16, 14]
+    else if ch == 102 then [6, 8, 28, 8, 8, 8, 8]
+    else if ch == 103 then [0, 0, 15, 17, 15, 1, 14]
+    else if ch == 104 then [16, 16, 30, 17, 17, 17, 17]
+    else if ch == 105 then [4, 0, 12, 4, 4, 4, 14]
+    else if ch == 106 then [2, 0, 6, 2, 2, 18, 12]
+    else if ch == 107 then [16, 16, 18, 20, 24, 20, 18]
+    else if ch == 108 then [12, 4, 4, 4, 4, 4, 14]
+    else if ch == 109 then [0, 0, 26, 21, 21, 21, 21]
+    else if ch == 110 then [0, 0, 30, 17, 17, 17, 17]
+    else if ch == 111 then [0, 0, 14, 17, 17, 17, 14]
+    else if ch == 112 then [0, 0, 30, 17, 30, 16, 16]
+    else if ch == 113 then [0, 0, 15, 17, 15, 1, 1]
+    else if ch == 114 then [0, 0, 22, 25, 16, 16, 16]
+    else if ch == 115 then [0, 0, 15, 16, 14, 1, 30]
+    else if ch == 116 then [8, 8, 28, 8, 8, 9, 6]
+    else if ch == 117 then [0, 0, 17, 17, 17, 19, 13]
+    else if ch == 118 then [0, 0, 17, 17, 17, 10, 4]
+    else if ch == 119 then [0, 0, 17, 17, 21, 21, 10]
+    else if ch == 120 then [0, 0, 17, 10, 4, 10, 17]
+    else if ch == 121 then [0, 0, 17, 17, 15, 1, 14]
+    else if ch == 122 then [0, 0, 31, 2, 4, 8, 31]
+    else [0, 0, 14, 10, 14, 0, 0]
+
+Page 1

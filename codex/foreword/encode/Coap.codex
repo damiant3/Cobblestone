@@ -1,0 +1,148 @@
+Chapter: Coap
+
+ CoAP (Constrained Application Protocol) per RFC 7252.
+ UDP-based RESTful protocol for constrained IoT devices.
+ Each builder returns a List Integer (the raw packet bytes).
+
+Section: Message Types
+
+  CoapType =
+    | CoapConfirmable
+    | CoapNonConfirmable
+    | CoapAcknowledgement
+    | CoapReset
+
+  coap-type-value : CoapType -> Integer
+  coap-type-value (t) =
+   when t
+    is CoapConfirmable -> 0
+    is CoapNonConfirmable -> 1
+    is CoapAcknowledgement -> 2
+    is CoapReset -> 3
+
+Section: Method Codes
+
+  CoapMethod =
+    | CoapGet
+    | CoapPost
+    | CoapPut
+    | CoapDelete
+
+  coap-method-code : CoapMethod -> Integer
+  coap-method-code (m) =
+   when m
+    is CoapGet -> 1
+    is CoapPost -> 2
+    is CoapPut -> 3
+    is CoapDelete -> 4
+
+Section: Response Codes
+
+  CoapResponseClass =
+    | CoapSuccess
+    | CoapClientError
+    | CoapServerError
+
+  coap-response-code : Integer, Integer -> Integer
+  coap-response-code (class-val) (detail) =
+   bit-or (bit-shl class-val 5) detail
+
+  coap-200-ok : Integer = coap-response-code 2 0
+  coap-201-created : Integer = coap-response-code 2 1
+  coap-204-deleted : Integer = coap-response-code 2 2
+  coap-205-content : Integer = coap-response-code 2 5
+  coap-400-bad-request : Integer = coap-response-code 4 0
+  coap-404-not-found : Integer = coap-response-code 4 4
+  coap-405-not-allowed : Integer = coap-response-code 4 5
+  coap-500-internal : Integer = coap-response-code 5 0
+
+Section: Content Formats
+
+  coap-format-text : Integer = 0
+  coap-format-link : Integer = 40
+  coap-format-xml : Integer = 41
+  coap-format-octet : Integer = 42
+  coap-format-json : Integer = 50
+  coap-format-cbor : Integer = 60
+
+Section: Option Numbers
+
+  coap-opt-if-match : Integer = 1
+  coap-opt-uri-host : Integer = 3
+  coap-opt-uri-port : Integer = 7
+  coap-opt-uri-path : Integer = 11
+  coap-opt-content-format : Integer = 12
+  coap-opt-accept : Integer = 17
+  coap-opt-uri-query : Integer = 15
+  coap-opt-observe : Integer = 6
+
+Section: Packet Builder
+
+  coap-build-header : CoapType, Integer, Integer, Integer -> List Integer
+  coap-build-header (msg-type) (code) (msg-id) (token-len) =
+   let ver = 1
+   in let byte0 = bit-or (bit-or (bit-shl ver 6) (bit-shl (coap-type-value msg-type) 4)) (bit-and token-len 15)
+   in [byte0, code, bit-shru msg-id 8, bit-and msg-id 255]
+
+  CoapOption = record {
+   number : Integer between 0 and 65535,
+   value : List Integer
+  }
+
+  coap-encode-option : Integer, CoapOption -> List Integer
+  coap-encode-option (prev-number) (opt) =
+   let delta = opt.number - prev-number
+   in let opt-len = list-length (opt.value)
+   in let delta-nibble = if delta < 13 then delta else if delta < 269 then 13 else 14
+   in let len-nibble = if opt-len < 13 then opt-len else if opt-len < 269 then 13 else 14
+   in let header = [bit-or (bit-shl delta-nibble 4) len-nibble]
+   in let delta-ext = if delta < 13 then [] else if delta < 269 then [delta - 13] else [bit-shru (delta - 269) 8, bit-and (delta - 269) 255]
+   in let len-ext = if opt-len < 13 then [] else if opt-len < 269 then [opt-len - 13] else [bit-shru (opt-len - 269) 8, bit-and (opt-len - 269) 255]
+   in header & delta-ext & len-ext & opt.value
+
+  coap-build-request : CoapType, CoapMethod, Integer, List Integer, List CoapOption, List Integer -> List Integer
+  coap-build-request (msg-type) (method) (msg-id) (token) (options) (payload) =
+   let header = coap-build-header msg-type (coap-method-code method) msg-id (list-length token)
+   in let opts = coap-encode-options options 0 0
+   in let payload-marker = if list-length payload > 0 then [255] else []
+   in header & token & opts & payload-marker & payload
+
+  coap-encode-options : List CoapOption, Integer, Integer -> List Integer
+  coap-encode-options (options) (i) (prev-number) =
+   if i >= list-length options then []
+   else let opt = list-at options i
+   in let encoded = coap-encode-option prev-number opt
+   in encoded & coap-encode-options options (i + 1) (opt.number)
+
+Section: URI Path Helper
+
+  coap-uri-path-option : Text -> CoapOption
+  coap-uri-path-option (segment) =
+   CoapOption {
+    number = coap-opt-uri-path,
+    value = coap-text-to-bytes segment
+   }
+
+  coap-text-to-bytes : Text -> List Integer
+  coap-text-to-bytes (s) = coap-text-to-bytes-loop s 0 (text-length s) []
+
+  coap-text-to-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  coap-text-to-bytes-loop (s) (i) (len) (acc) =
+   if i >= len then acc
+   else coap-text-to-bytes-loop s (i + 1) len (list-push acc (char-code (char-at s i)))
+
+Section: Convenience Builders
+
+  coap-get : Integer, List Integer, Text -> List Integer
+  coap-get (msg-id) (token) (path) =
+   coap-build-request CoapConfirmable CoapGet msg-id token [coap-uri-path-option path] []
+
+  coap-post : Integer, List Integer, Text, List Integer -> List Integer
+  coap-post (msg-id) (token) (path) (payload) =
+   coap-build-request CoapConfirmable CoapPost msg-id token [coap-uri-path-option path, CoapOption { number = coap-opt-content-format, value = [coap-format-cbor] }] payload
+
+  coap-ack : Integer -> List Integer
+  coap-ack (msg-id) =
+   coap-build-header CoapAcknowledgement 0 msg-id 0
+
+Page 1

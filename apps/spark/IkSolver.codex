@@ -1,0 +1,135 @@
+Chapter: IkSolver
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Spark chapter Armature
+
+ Inverse kinematics solver using CCD (Cyclic Coordinate Descent).
+ Given a bone chain and a target position, iteratively rotates
+ each bone toward the target until convergence or max iterations.
+
+ We say:
+
+Section: Types
+
+  IkChain = record {
+    ik-bone-indices : List Integer,
+    ik-chain-length : Integer,
+    ik-target : Vec3,
+    ik-pole : Vec3,
+    ik-max-iterations : Integer,
+    ik-tolerance : Real
+  }
+
+  IkResult = record {
+    ikr-armature : ArmatureState,
+    ikr-iterations : Integer,
+    ikr-converged : Boolean,
+    ikr-error : Real
+  }
+
+Section: Construction
+
+  ik-chain-new : List Integer, Integer, Vec3 -> IkChain
+  ik-chain-new (bones) (count) (target) = IkChain {
+    ik-bone-indices = bones,
+    ik-chain-length = count,
+    ik-target = target,
+    ik-pole = vec3-new 0.0 0.0 1.0,
+    ik-max-iterations = 20,
+    ik-tolerance = 0.01
+  }
+
+  ik-chain-set-target : IkChain, Vec3 -> IkChain
+  ik-chain-set-target (chain) (target) = __record-set chain "ik-target" target
+
+  ik-chain-set-pole : IkChain, Vec3 -> IkChain
+  ik-chain-set-pole (chain) (pole) = __record-set chain "ik-pole" pole
+
+  ik-chain-set-iterations : IkChain, Integer -> IkChain
+  ik-chain-set-iterations (chain) (n) = __record-set chain "ik-max-iterations" n
+
+Section: CCD Solver
+
+  ik-solve : ArmatureState, IkChain -> IkResult
+  ik-solve (arm) (chain) =
+    ik-iterate arm chain 0
+
+  ik-iterate : ArmatureState, IkChain, Integer -> IkResult
+  ik-iterate (arm) (chain) (iter) =
+    if iter >= chain.ik-max-iterations then
+      let err = ik-end-effector-error arm chain
+      in IkResult { ikr-armature = arm, ikr-iterations = iter, ikr-converged = False, ikr-error = err }
+    else let err = ik-end-effector-error arm chain
+    in if err <= chain.ik-tolerance then IkResult { ikr-armature = arm, ikr-iterations = iter, ikr-converged = True, ikr-error = err }
+    else let arm2 = ik-ccd-pass arm chain 0
+    in ik-iterate arm2 chain (iter + 1)
+
+  ik-ccd-pass : ArmatureState, IkChain, Integer -> ArmatureState
+  ik-ccd-pass (arm) (chain) (i) =
+    if i >= chain.ik-chain-length then arm
+    else let bone-idx = list-at (chain.ik-bone-indices) i
+    in let arm2 = ik-rotate-bone-toward arm chain bone-idx
+    in ik-ccd-pass arm2 chain (i + 1)
+
+  ik-rotate-bone-toward : ArmatureState, IkChain, Integer -> ArmatureState
+  ik-rotate-bone-toward (arm) (chain) (bone-idx) =
+    let effector-idx = list-at (chain.ik-bone-indices) (chain.ik-chain-length - 1)
+    in let effector-pos = armature-bone-tip arm effector-idx
+    in let bone-world = armature-bone-world arm bone-idx
+    in let bone-pos = vec3-new (mat4-at bone-world 0 3) (mat4-at bone-world 1 3) (mat4-at bone-world 2 3)
+    in let to-effector = vec3-subtract effector-pos bone-pos
+    in let to-target = vec3-subtract (chain.ik-target) bone-pos
+    in let len-e = ik-v3-length to-effector
+    in let len-t = ik-v3-length to-target
+    in if len-e < 0.001 then arm
+    else if len-t < 0.001 then arm
+    else let dot = vec3-dot to-effector to-target
+    in let cos-a = dot / (len-e * len-t)
+    in let clamped = ik-clamp cos-a (-1.0) 1.0
+    in let angle = ik-acos-approx clamped
+    in let cross = vec3-cross to-effector to-target
+    in let cross-len = ik-v3-length cross
+    in if cross-len < 0.001 then arm
+    else let axis = vec3-new (cross.vx / cross-len) (cross.vy / cross-len) (cross.vz / cross-len)
+    in let delta = quat-from-axis-angle axis angle
+    in let bone = armature-get-bone arm bone-idx
+    in let new-rot = quat-multiply delta (bone.bn-pose-rot)
+    in armature-set-pose arm bone-idx (bone.bn-pose-pos) new-rot
+
+Section: Error Measurement
+
+  ik-end-effector-error : ArmatureState, IkChain -> Real
+  ik-end-effector-error (arm) (chain) =
+    let effector-idx = list-at (chain.ik-bone-indices) (chain.ik-chain-length - 1)
+    in let effector-pos = armature-bone-tip arm effector-idx
+    in let diff = vec3-subtract effector-pos (chain.ik-target)
+    in ik-v3-length diff
+
+Section: Helpers
+
+  ik-v3-length : Vec3 -> Real
+  ik-v3-length (v) =
+    let sq = v.vx * v.vx + v.vy * v.vy + v.vz * v.vz
+    in geo-sqrt sq
+
+  ik-acos-approx : Real -> Real
+  ik-acos-approx (cos-val) =
+    let x = cos-val
+    in let x2 = x * x
+    in 1.571 - x - x * x2 / 6.0
+
+  ik-clamp : Real, Real, Real -> Real
+  ik-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Info
+
+  ik-result-info : IkResult -> Text
+  ik-result-info (r) =
+    (if r.ikr-converged then "converged" else "not converged") &
+    " iter=" & show (r.ikr-iterations) & " err=" & show (r.ikr-error)
+
+  ik-chain-info : IkChain -> Text
+  ik-chain-info (chain) =
+    show (chain.ik-chain-length) & " bones, target=(" & show (chain.ik-target.vx) & "," & show (chain.ik-target.vy) & "," & show (chain.ik-target.vz) & ")"
+
+Page 1

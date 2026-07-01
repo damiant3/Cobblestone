@@ -1,0 +1,193 @@
+Chapter: ImageLevels
+  cites Game chapter Rasterizer
+
+ Histogram computation, levels adjustment, and curves for
+ image editing. Operates on the active canvas layer's pixel
+ data. All channel values 0-255.
+
+ We say:
+
+Section: Types
+
+  Histogram = record {
+    hist-r : List Integer,
+    hist-g : List Integer,
+    hist-b : List Integer,
+    hist-lum : List Integer,
+    hist-pixel-count : Integer
+  }
+
+  LevelsConfig = record {
+    lv-in-black : Integer,
+    lv-in-white : Integer,
+    lv-gamma : Real,
+    lv-out-black : Integer,
+    lv-out-white : Integer
+  }
+
+  CurvesPoint = record {
+    crv-input : Integer,
+    crv-output : Integer
+  }
+
+  CurvesConfig = record {
+    crv-points : List CurvesPoint,
+    crv-count : Integer
+  }
+
+Section: Histogram
+
+  histogram-compute : Framebuf -> Histogram
+  histogram-compute (fb) =
+    let r-bins = lvl-zeros 256 0 []
+    in let g-bins = lvl-zeros 256 0 []
+    in let b-bins = lvl-zeros 256 0 []
+    in let lum-bins = lvl-zeros 256 0 []
+    in let total = fb.fb-width * fb.fb-height
+    in hist-build fb r-bins g-bins b-bins lum-bins 0 total
+
+  hist-build : Framebuf, List Integer, List Integer, List Integer, List Integer, Integer, Integer -> Histogram
+  hist-build (fb) (rb) (gb) (bb) (lb) (i) (total) =
+    if i >= total then Histogram { hist-r = rb, hist-g = gb, hist-b = bb, hist-lum = lb, hist-pixel-count = total }
+    else let px = list-at (fb.fb-pixels) i
+    in let r = px / 65536
+    in let g = px / 256 - r * 256
+    in let b = px - px / 256 * 256
+    in let lum = real-to-int (real-from-int r * 0.299 + real-from-int g * 0.587 + real-from-int b * 0.114)
+    in let rb2 = list-set-at rb r (list-at rb r + 1)
+    in let gb2 = list-set-at gb g (list-at gb g + 1)
+    in let bb2 = list-set-at bb b (list-at bb b + 1)
+    in let lb2 = list-set-at lb lum (list-at lb lum + 1)
+    in hist-build fb rb2 gb2 bb2 lb2 (i + 1) total
+
+  lvl-zeros : Integer, Integer, List Integer -> List Integer
+  lvl-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else lvl-zeros n (i + 1) (list-push acc 0)
+
+Section: Histogram Stats
+
+  hist-max-value : List Integer -> Integer
+  hist-max-value (bins) = hist-max-loop bins 256 0 0
+
+  hist-max-loop : List Integer, Integer, Integer, Integer -> Integer
+  hist-max-loop (bins) (n) (i) (mx) =
+    if i >= n then mx
+    else let v = list-at bins i
+    in hist-max-loop bins n (i + 1) (if v > mx then v else mx)
+
+  hist-mean : List Integer, Integer -> Integer
+  hist-mean (bins) (total) =
+    if total == 0 then 0
+    else hist-mean-loop bins 256 0 0 / total
+
+  hist-mean-loop : List Integer, Integer, Integer, Integer -> Integer
+  hist-mean-loop (bins) (n) (i) (sum) =
+    if i >= n then sum
+    else hist-mean-loop bins n (i + 1) (sum + i * list-at bins i)
+
+Section: Levels Adjustment
+
+  levels-default : LevelsConfig
+  levels-default = LevelsConfig {
+    lv-in-black = 0,
+    lv-in-white = 255,
+    lv-gamma = 1.0,
+    lv-out-black = 0,
+    lv-out-white = 255
+  }
+
+  levels-auto : Histogram -> LevelsConfig
+  levels-auto (hist) =
+    let threshold = hist.hist-pixel-count / 200
+    in let black = lvl-find-black (hist.hist-lum) threshold 0
+    in let white = lvl-find-white (hist.hist-lum) threshold 255
+    in LevelsConfig { lv-in-black = black, lv-in-white = white, lv-gamma = 1.0, lv-out-black = 0, lv-out-white = 255 }
+
+  lvl-find-black : List Integer, Integer, Integer -> Integer
+  lvl-find-black (bins) (threshold) (i) =
+    if i >= 255 then 0
+    else if list-at bins i > threshold then i
+    else lvl-find-black bins threshold (i + 1)
+
+  lvl-find-white : List Integer, Integer, Integer -> Integer
+  lvl-find-white (bins) (threshold) (i) =
+    if i <= 0 then 255
+    else if list-at bins i > threshold then i
+    else lvl-find-white bins threshold (i - 1)
+
+  levels-apply : Framebuf, LevelsConfig -> Framebuf
+  levels-apply (fb) (cfg) =
+    lvl-apply-loop fb cfg 0 (fb.fb-width * fb.fb-height) fb
+
+  lvl-apply-loop : Framebuf, LevelsConfig, Integer, Integer, Framebuf -> Framebuf
+  lvl-apply-loop (src) (cfg) (i) (total) (dst) =
+    if i >= total then dst
+    else let px = list-at (src.fb-pixels) i
+    in let r = px / 65536
+    in let g = px / 256 - r * 256
+    in let b = px - px / 256 * 256
+    in let nr = lvl-adjust-channel r cfg
+    in let ng = lvl-adjust-channel g cfg
+    in let nb = lvl-adjust-channel b cfg
+    in let new-px = nr * 65536 + ng * 256 + nb
+    in let dst2 = Framebuf { fb-width = dst.fb-width, fb-height = dst.fb-height, fb-pixels = list-set-at (dst.fb-pixels) i new-px }
+    in lvl-apply-loop src cfg (i + 1) total dst2
+
+  lvl-adjust-channel : Integer, LevelsConfig -> Integer
+  lvl-adjust-channel (val) (cfg) =
+    let range = cfg.lv-in-white - cfg.lv-in-black
+    in let normalized = if range <= 0 then 0.0 else real-from-int (val - cfg.lv-in-black) / real-from-int range
+    in let clamped = if normalized < 0.0 then 0.0 else if normalized > 1.0 then 1.0 else normalized
+    in let gamma-corrected = clamped * cfg.lv-gamma
+    in let out-range = cfg.lv-out-white - cfg.lv-out-black
+    in let result = cfg.lv-out-black + real-to-int (gamma-corrected * real-from-int out-range)
+    in lvl-clamp result 0 255
+
+Section: Curves
+
+  curves-new : CurvesConfig
+  curves-new = CurvesConfig {
+    crv-points = [CurvesPoint { crv-input = 0, crv-output = 0 }, CurvesPoint { crv-input = 255, crv-output = 255 }],
+    crv-count = 2
+  }
+
+  curves-add-point : CurvesConfig, Integer, Integer -> CurvesConfig
+  curves-add-point (cfg) (input) (output) = CurvesConfig {
+    crv-points = list-push (cfg.crv-points) (CurvesPoint { crv-input = input, crv-output = output }),
+    crv-count = cfg.crv-count + 1
+  }
+
+  curves-eval : CurvesConfig, Integer -> Integer
+  curves-eval (cfg) (input) =
+    crv-find-segment (cfg.crv-points) (cfg.crv-count) input 0
+
+  crv-find-segment : List CurvesPoint, Integer, Integer, Integer -> Integer
+  crv-find-segment (points) (count) (input) (i) =
+    if i >= count - 1 then (list-at points (count - 1)).crv-output
+    else let p0 = list-at points i
+    in let p1 = list-at points (i + 1)
+    in if input <= p0.crv-input then p0.crv-output
+    else if input < p1.crv-input then
+      let t = real-from-int (input - p0.crv-input) / real-from-int (p1.crv-input - p0.crv-input)
+      in real-to-int (real-from-int p0.crv-output + real-from-int (p1.crv-output - p0.crv-output) * t)
+    else crv-find-segment points count input (i + 1)
+
+Section: Helpers
+
+  lvl-clamp : Integer, Integer, Integer -> Integer
+  lvl-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Info
+
+  histogram-info : Histogram -> Text
+  histogram-info (h) =
+    show (h.hist-pixel-count) & " pixels, mean=" & show (hist-mean (h.hist-lum) (h.hist-pixel-count))
+
+  levels-info : LevelsConfig -> Text
+  levels-info (cfg) =
+    "in=" & show (cfg.lv-in-black) & "-" & show (cfg.lv-in-white) &
+    " out=" & show (cfg.lv-out-black) & "-" & show (cfg.lv-out-white) &
+    " gamma=" & show (cfg.lv-gamma)
+
+Page 1

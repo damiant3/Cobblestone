@@ -1,0 +1,171 @@
+Chapter: NetworkConfig
+  cites Net chapter Dhcp
+  cites Net chapter DnsResolver
+  cites Foreword chapter Maybe
+
+ Unified network configuration state. Holds the results of DHCP
+ lease acquisition, DNS resolver setup, and NTP time sync.
+ Provides the single record that the rest of the OS consults
+ for "how do I reach the network."
+
+ We say:
+
+Section: Network State
+  NetState =
+    | NetUnconfigured
+    | NetDhcpPending
+    | NetConfigured
+    | NetFailed
+
+  NetworkConfig = record {
+    state : NetState,
+    local-ip : List Integer,
+    subnet-mask : List Integer,
+    gateway : List Integer,
+    dns-server : List Integer,
+    local-mac : List Integer,
+    hostname : Text,
+    resolver : DnsResolver,
+    ntp-offset : Integer,
+    lease-time : Integer,
+    lease-start : Integer
+  }
+
+Section: Construction
+  net-config-empty : List Integer, Text -> NetworkConfig
+  net-config-empty (mac) (hostname) = NetworkConfig {
+    state = NetUnconfigured,
+    local-ip = [0, 0, 0, 0],
+    subnet-mask = [0, 0, 0, 0],
+    gateway = [0, 0, 0, 0],
+    dns-server = [0, 0, 0, 0],
+    local-mac = mac,
+    hostname = hostname,
+    resolver = resolver-new (host-table-add host-table-empty "localhost" [127, 0, 0, 1]),
+    ntp-offset = 0,
+    lease-time = 0,
+    lease-start = 0
+  }
+
+  net-config-static : List Integer, List Integer, List Integer, List Integer, List Integer, Text -> NetworkConfig
+  net-config-static (mac) (ip) (mask) (gw) (dns) (hostname) = NetworkConfig {
+    state = NetConfigured,
+    local-ip = ip,
+    subnet-mask = mask,
+    gateway = gw,
+    dns-server = dns,
+    local-mac = mac,
+    hostname = hostname,
+    resolver = resolver-new (host-table-add (host-table-add host-table-empty "localhost" [127, 0, 0, 1]) hostname ip),
+    ntp-offset = 0,
+    lease-time = 0,
+    lease-start = 0
+  }
+
+Section: DHCP Integration
+  net-apply-dhcp-lease : NetworkConfig, DhcpLease, Integer -> NetworkConfig
+  net-apply-dhcp-lease (cfg) (lease) (now) =
+    if dhcp-is-offer lease then net-apply-dhcp-offer cfg lease
+    else if dhcp-is-ack lease then net-apply-dhcp-ack cfg lease now
+    else cfg
+
+  net-apply-dhcp-offer : NetworkConfig, DhcpLease -> NetworkConfig
+  net-apply-dhcp-offer (cfg) (lease) = NetworkConfig {
+    state = NetDhcpPending,
+    local-ip = lease.client-ip,
+    subnet-mask = lease.subnet-mask,
+    gateway = lease.gateway,
+    dns-server = lease.dns-server,
+    local-mac = cfg.local-mac,
+    hostname = cfg.hostname,
+    resolver = cfg.resolver,
+    ntp-offset = cfg.ntp-offset,
+    lease-time = lease.lease-time,
+    lease-start = 0
+  }
+
+  net-apply-dhcp-ack : NetworkConfig, DhcpLease, Integer -> NetworkConfig
+  net-apply-dhcp-ack (cfg) (lease) (now) =
+    let ht = host-table-add (host-table-add host-table-empty "localhost" [127, 0, 0, 1]) (cfg.hostname) (lease.client-ip)
+    in NetworkConfig {
+      state = NetConfigured,
+      local-ip = lease.client-ip,
+      subnet-mask = lease.subnet-mask,
+      gateway = lease.gateway,
+      dns-server = lease.dns-server,
+      local-mac = cfg.local-mac,
+      hostname = cfg.hostname,
+      resolver = resolver-new ht,
+      ntp-offset = cfg.ntp-offset,
+      lease-time = lease.lease-time,
+      lease-start = now
+    }
+
+Section: DNS Integration
+  net-resolve : NetworkConfig, Text, Integer -> Maybe (List Integer)
+  net-resolve (cfg) (name) (now) = resolve (cfg.resolver) name now
+
+  net-cache-dns : NetworkConfig, Text, List Integer, Integer, Integer -> NetworkConfig
+  net-cache-dns (cfg) (name) (ip) (ttl) (now) = NetworkConfig {
+    state = cfg.state,
+    local-ip = cfg.local-ip,
+    subnet-mask = cfg.subnet-mask,
+    gateway = cfg.gateway,
+    dns-server = cfg.dns-server,
+    local-mac = cfg.local-mac,
+    hostname = cfg.hostname,
+    resolver = resolver-cache-result (cfg.resolver) name ip ttl now,
+    ntp-offset = cfg.ntp-offset,
+    lease-time = cfg.lease-time,
+    lease-start = cfg.lease-start
+  }
+
+Section: NTP Integration
+  net-apply-ntp : NetworkConfig, Integer -> NetworkConfig
+  net-apply-ntp (cfg) (offset) = NetworkConfig {
+    state = cfg.state,
+    local-ip = cfg.local-ip,
+    subnet-mask = cfg.subnet-mask,
+    gateway = cfg.gateway,
+    dns-server = cfg.dns-server,
+    local-mac = cfg.local-mac,
+    hostname = cfg.hostname,
+    resolver = cfg.resolver,
+    ntp-offset = offset,
+    lease-time = cfg.lease-time,
+    lease-start = cfg.lease-start
+  }
+
+Section: Queries
+  net-is-configured : NetworkConfig -> Boolean
+  net-is-configured (cfg) = when cfg.state
+    is NetConfigured -> True
+    is otherwise -> False
+
+  net-lease-remaining : NetworkConfig, Integer -> Integer
+  net-lease-remaining (cfg) (now) =
+    if cfg.lease-time == 0 then 0
+    else let elapsed = now - cfg.lease-start
+    in if elapsed >= cfg.lease-time then 0
+    else cfg.lease-time - elapsed
+
+Section: Formatting
+  format-net-config : NetworkConfig -> Text
+  format-net-config (cfg) =
+    format-net-state (cfg.state) & " ip=" & format-net-ip (cfg.local-ip)
+    & " gw=" & format-net-ip (cfg.gateway) & " dns=" & format-net-ip (cfg.dns-server)
+    & " lease=" & show (cfg.lease-time)
+
+  format-net-state : NetState -> Text
+  format-net-state (s) = when s
+    is NetUnconfigured -> "UNCONFIGURED"
+    is NetDhcpPending -> "DHCP_PENDING"
+    is NetConfigured -> "CONFIGURED"
+    is NetFailed -> "FAILED"
+
+  format-net-ip : List Integer -> Text
+  format-net-ip (ip) =
+    show (list-at ip 0) & "." & show (list-at ip 1) & "."
+    & show (list-at ip 2) & "." & show (list-at ip 3)
+
+Page 1

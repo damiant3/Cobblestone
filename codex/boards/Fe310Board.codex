@@ -1,0 +1,250 @@
+Chapter: Fe310Board
+  cites Foreword chapter Board
+  cites Foreword chapter Units (Duration, Frequency)
+
+ Board support for SiFive FE310-G002 (RISC-V RV32IMAC @ 320 MHz).
+ Register addresses from FE310-G002 Manual v1p1.
+ The reference RISC-V microcontroller (HiFive1 Rev B).
+
+ Flash (SPI) at 0x20000000, SRAM at 0x80000000 (16 KB),
+ peripherals at 0x10000000+.
+
+Section: Core Addresses
+
+  fe310-flash-base : Integer = #20000000
+  fe310-sram-base : Integer = #80000000
+  fe310-sram-size : Integer = #4000
+
+Section: GPIO (0x10012000)
+
+  fe310-gpio-base : Integer = #10012000
+  fe310-gpio-input-val-off : Integer = #00
+  fe310-gpio-input-en-off : Integer = #04
+  fe310-gpio-output-en-off : Integer = #08
+  fe310-gpio-output-val-off : Integer = #0C
+  fe310-gpio-pue-off : Integer = #10
+  fe310-gpio-iof-sel-off : Integer = #3C
+  fe310-gpio-iof-en-off : Integer = #38
+
+  fe310-gpio-set-output : Integer -> Integer
+  fe310-gpio-set-output (pin) =
+   let oe = mmio-read-32 (fe310-gpio-base + fe310-gpio-output-en-off)
+   in mmio-write-32 (fe310-gpio-base + fe310-gpio-output-en-off) (bit-or oe (bit-shl 1 pin))
+
+  fe310-gpio-set-input : Integer -> Integer
+  fe310-gpio-set-input (pin) =
+   let ie = mmio-read-32 (fe310-gpio-base + fe310-gpio-input-en-off)
+   in mmio-write-32 (fe310-gpio-base + fe310-gpio-input-en-off) (bit-or ie (bit-shl 1 pin))
+
+  fe310-gpio-set-pull : Integer, Boolean -> Integer
+  fe310-gpio-set-pull (pin) (enable) =
+   let pue = mmio-read-32 (fe310-gpio-base + fe310-gpio-pue-off)
+   in if enable then mmio-write-32 (fe310-gpio-base + fe310-gpio-pue-off) (bit-or pue (bit-shl 1 pin))
+      else mmio-write-32 (fe310-gpio-base + fe310-gpio-pue-off) (bit-and pue (bit-xor (bit-shl 1 pin) (0 - 1)))
+
+  fe310-gpio-write : Integer, Boolean -> Integer
+  fe310-gpio-write (pin) (high) =
+   let oval = mmio-read-32 (fe310-gpio-base + fe310-gpio-output-val-off)
+   in if high then mmio-write-32 (fe310-gpio-base + fe310-gpio-output-val-off) (bit-or oval (bit-shl 1 pin))
+      else mmio-write-32 (fe310-gpio-base + fe310-gpio-output-val-off) (bit-and oval (bit-xor (bit-shl 1 pin) (0 - 1)))
+
+  fe310-gpio-read : Integer -> Boolean
+  fe310-gpio-read (pin) =
+   bit-and (bit-shru (mmio-read-32 (fe310-gpio-base + fe310-gpio-input-val-off)) pin) 1 == 1
+
+  fe310-gpio-toggle : Integer -> Integer
+  fe310-gpio-toggle (pin) =
+   let oval = mmio-read-32 (fe310-gpio-base + fe310-gpio-output-val-off)
+   in mmio-write-32 (fe310-gpio-base + fe310-gpio-output-val-off) (bit-xor oval (bit-shl 1 pin))
+
+  fe310-gpio-set-iof : Integer, Integer -> Integer
+  fe310-gpio-set-iof (pin) (iof) =
+   let sel = mmio-read-32 (fe310-gpio-base + fe310-gpio-iof-sel-off)
+   in let en = mmio-read-32 (fe310-gpio-base + fe310-gpio-iof-en-off)
+   in let w-sel = if iof == 0
+        then mmio-write-32 (fe310-gpio-base + fe310-gpio-iof-sel-off) (bit-and sel (bit-xor (bit-shl 1 pin) (0 - 1)))
+        else mmio-write-32 (fe310-gpio-base + fe310-gpio-iof-sel-off) (bit-or sel (bit-shl 1 pin))
+   in mmio-write-32 (fe310-gpio-base + fe310-gpio-iof-en-off) (bit-or en (bit-shl 1 pin))
+
+Section: UART0 (0x10013000)
+
+  fe310-uart0-base : Integer = #10013000
+  fe310-uart1-base : Integer = #10023000
+  fe310-uart-txdata-off : Integer = #00
+  fe310-uart-rxdata-off : Integer = #04
+  fe310-uart-txctrl-off : Integer = #08
+  fe310-uart-rxctrl-off : Integer = #0C
+  fe310-uart-div-off : Integer = #18
+
+  fe310-uart-txdata-full : Integer = #80000000
+
+  fe310-uart-init : Integer, Frequency -> Integer
+  fe310-uart-init (uart-base) (baud) =
+   let iof-tx = fe310-gpio-set-iof 16 0
+   in let iof-rx = fe310-gpio-set-iof 17 0
+   in let div = (16000000 / baud) - 1
+   in let w-div = mmio-write-32 (uart-base + fe310-uart-div-off) div
+   in let w-txctrl = mmio-write-32 (uart-base + fe310-uart-txctrl-off) 1
+   in mmio-write-32 (uart-base + fe310-uart-rxctrl-off) 1
+
+  fe310-uart-send-byte : Integer, Integer -> Integer
+  fe310-uart-send-byte (uart-base) (byte) =
+   let w = fe310-uart-wait-tx uart-base 10000
+   in mmio-write-32 (uart-base + fe310-uart-txdata-off) (bit-and byte #FF)
+
+  fe310-uart-wait-tx : Integer, Integer -> Integer
+  fe310-uart-wait-tx (uart-base) (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 (uart-base + fe310-uart-txdata-off)) fe310-uart-txdata-full == 0 then 1
+   else fe310-uart-wait-tx uart-base (fuel - 1)
+
+  fe310-uart-print : Integer, Text -> Integer
+  fe310-uart-print (uart-base) (s) = fe310-uart-send-text uart-base s 0 (text-length s)
+
+  fe310-uart-send-text : Integer, Text, Integer, Integer -> Integer
+  fe310-uart-send-text (uart-base) (s) (i) (len) =
+   if i >= len then 0
+   else let b = fe310-uart-send-byte uart-base (char-code (char-at s i))
+     in fe310-uart-send-text uart-base s (i + 1) len
+
+  fe310-uart-println : Integer, Text -> Integer
+  fe310-uart-println (uart-base) (s) =
+   let p = fe310-uart-print uart-base s
+   in let cr = fe310-uart-send-byte uart-base 13
+   in fe310-uart-send-byte uart-base 10
+
+Section: SPI0 (QSPI, 0x10014000) — SPI1 at 0x10024000
+
+  fe310-spi0-base : Integer = #10014000
+  fe310-spi1-base : Integer = #10024000
+  fe310-spi-sckdiv-off : Integer = #00
+  fe310-spi-sckmode-off : Integer = #04
+  fe310-spi-csid-off : Integer = #10
+  fe310-spi-csmode-off : Integer = #18
+  fe310-spi-fmt-off : Integer = #40
+  fe310-spi-txdata-off : Integer = #48
+  fe310-spi-rxdata-off : Integer = #4C
+  fe310-spi-fctrl-off : Integer = #60
+
+  fe310-spi-txdata-full : Integer = #80000000
+  fe310-spi-rxdata-empty : Integer = #80000000
+
+  fe310-spi-init : Integer -> Integer
+  fe310-spi-init (spi-base) =
+   let iof-sck = fe310-gpio-set-iof 5 0
+   in let iof-mosi = fe310-gpio-set-iof 3 0
+   in let iof-miso = fe310-gpio-set-iof 4 0
+   in let iof-cs = fe310-gpio-set-iof 2 0
+   in let w-div = mmio-write-32 (spi-base + fe310-spi-sckdiv-off) 8
+   in let w-mode = mmio-write-32 (spi-base + fe310-spi-sckmode-off) 0
+   in let w-fmt = mmio-write-32 (spi-base + fe310-spi-fmt-off) #80008
+   in mmio-write-32 (spi-base + fe310-spi-fctrl-off) 0
+
+  fe310-spi-transfer : Integer, Integer -> Integer
+  fe310-spi-transfer (spi-base) (byte) =
+   let w = fe310-spi-wait-tx spi-base 10000
+   in let wr = mmio-write-32 (spi-base + fe310-spi-txdata-off) (bit-and byte #FF)
+   in let r = fe310-spi-wait-rx spi-base 10000
+   in bit-and (mmio-read-32 (spi-base + fe310-spi-rxdata-off)) #FF
+
+  fe310-spi-wait-tx : Integer, Integer -> Integer
+  fe310-spi-wait-tx (spi-base) (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 (spi-base + fe310-spi-txdata-off)) fe310-spi-txdata-full == 0 then 1
+   else fe310-spi-wait-tx spi-base (fuel - 1)
+
+  fe310-spi-wait-rx : Integer, Integer -> Integer
+  fe310-spi-wait-rx (spi-base) (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (mmio-read-32 (spi-base + fe310-spi-rxdata-off)) fe310-spi-rxdata-empty == 0 then 1
+   else fe310-spi-wait-rx spi-base (fuel - 1)
+
+Section: PWM0 (0x10015000)
+
+  fe310-pwm0-base : Integer = #10015000
+  fe310-pwm1-base : Integer = #10025000
+  fe310-pwm2-base : Integer = #10035000
+  fe310-pwm-cfg-off : Integer = #00
+  fe310-pwm-count-off : Integer = #08
+  fe310-pwm-s-off : Integer = #10
+  fe310-pwm-cmp0-off : Integer = #20
+  fe310-pwm-cmp1-off : Integer = #24
+  fe310-pwm-cmp2-off : Integer = #28
+  fe310-pwm-cmp3-off : Integer = #2C
+
+  fe310-pwm-cfg-enalways : Integer = #1000
+  fe310-pwm-cfg-zerocmp : Integer = #200
+
+  fe310-pwm-init : Integer, Integer -> Integer
+  fe310-pwm-init (pwm-base) (scale) =
+   let iof = fe310-gpio-set-iof 1 1
+   in let cfg = bit-or (bit-or fe310-pwm-cfg-enalways fe310-pwm-cfg-zerocmp) (bit-and scale #0F)
+   in mmio-write-32 (pwm-base + fe310-pwm-cfg-off) cfg
+
+  fe310-pwm-set-cmp : Integer, Integer, Integer -> Integer
+  fe310-pwm-set-cmp (pwm-base) (channel) (value) =
+   let off = fe310-pwm-cmp0-off + (channel * 4)
+   in mmio-write-32 (pwm-base + off) (bit-and value #FFFF)
+
+Section: PLIC (Platform-Level Interrupt Controller, 0x0C000000)
+
+  fe310-plic-base : Integer = #0C000000
+  fe310-plic-priority-off : Integer = #000000
+  fe310-plic-pending-off : Integer = #001000
+  fe310-plic-enable-off : Integer = #002000
+  fe310-plic-threshold-off : Integer = #200000
+  fe310-plic-claim-off : Integer = #200004
+
+  fe310-plic-set-priority : Integer, Integer -> Integer
+  fe310-plic-set-priority (irq) (priority) =
+   mmio-write-32 (fe310-plic-base + fe310-plic-priority-off + (irq * 4)) (bit-and priority 7)
+
+  fe310-plic-enable-irq : Integer -> Integer
+  fe310-plic-enable-irq (irq) =
+   let word = irq / 32
+   in let bit = int-mod irq 32
+   in let addr = fe310-plic-base + fe310-plic-enable-off + (word * 4)
+   in let val = mmio-read-32 addr
+   in mmio-write-32 addr (bit-or val (bit-shl 1 bit))
+
+  fe310-plic-set-threshold : Integer -> Integer
+  fe310-plic-set-threshold (threshold) =
+   mmio-write-32 (fe310-plic-base + fe310-plic-threshold-off) (bit-and threshold 7)
+
+  fe310-plic-claim : Integer
+  fe310-plic-claim =
+   mmio-read-32 (fe310-plic-base + fe310-plic-claim-off)
+
+  fe310-plic-complete : Integer -> Integer
+  fe310-plic-complete (irq) =
+   mmio-write-32 (fe310-plic-base + fe310-plic-claim-off) irq
+
+Section: LED (HiFive1 Rev B: GPIO 19=green, 21=red, 22=blue)
+
+  fe310-led-green : Integer = 19
+  fe310-led-red : Integer = 21
+  fe310-led-blue : Integer = 22
+
+  fe310-led-init : Integer
+  fe310-led-init =
+   let g = fe310-gpio-set-output fe310-led-green
+   in let r = fe310-gpio-set-output fe310-led-red
+   in fe310-gpio-set-output fe310-led-blue
+
+  fe310-led-on : Integer -> Integer
+  fe310-led-on (pin) = fe310-gpio-write pin True
+
+  fe310-led-off : Integer -> Integer
+  fe310-led-off (pin) = fe310-gpio-write pin False
+
+Section: Delay
+
+  fe310-delay-loops : Integer, Integer -> Integer
+  fe310-delay-loops (n) (i) =
+   if i >= n then 0
+   else fe310-delay-loops n (i + 1)
+
+  fe310-delay-ms : Duration -> Integer
+  fe310-delay-ms (ms) = fe310-delay-loops (ms * 8000) 0
+
+Page 1

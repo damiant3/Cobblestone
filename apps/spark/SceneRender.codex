@@ -1,0 +1,130 @@
+Chapter: SceneRender
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Game chapter Rasterizer
+  cites Spark chapter Mesh
+  cites Spark chapter Pipeline3D
+  cites Spark chapter SceneCamera
+  cites Spark chapter SceneLight
+  cites Spark chapter SceneGraph
+  cites Spark chapter SceneMaterial
+
+ Scene graph traversal and rendering. Walks the graph, computes
+ world transforms, culls invisible nodes, and renders visible
+ mesh nodes through the 3D pipeline.
+
+ We say:
+
+Section: Types
+
+  SceneRenderCtx = record {
+    src-meshes : List TriMesh,
+    src-mesh-count : Integer,
+    src-materials : MaterialLibrary,
+    src-camera : SparkCamera,
+    src-lights : List SparkLight
+  }
+
+Section: Construction
+
+  render-ctx-new : SparkCamera, List SparkLight -> SceneRenderCtx
+  render-ctx-new (cam) (lights) = SceneRenderCtx {
+    src-meshes = [],
+    src-mesh-count = 0,
+    src-materials = material-lib-new,
+    src-camera = cam,
+    src-lights = lights
+  }
+
+  render-ctx-add-mesh : SceneRenderCtx, TriMesh -> SceneRenderCtx
+  render-ctx-add-mesh (ctx) (mesh) = SceneRenderCtx {
+    src-meshes = list-push (ctx.src-meshes) mesh,
+    src-mesh-count = ctx.src-mesh-count + 1,
+    src-materials = ctx.src-materials,
+    src-camera = ctx.src-camera,
+    src-lights = ctx.src-lights
+  }
+
+Section: Full Scene Render
+
+  scene-render : SceneGraph3D, SceneRenderCtx, Integer, Integer, Integer -> Framebuf
+  scene-render (sg) (ctx) (vp-w) (vp-h) (bg-color) =
+    let rt = render-target-new vp-w vp-h bg-color
+    in let rt2 = scene-render-nodes sg ctx rt 0
+    in rt2.rt-fb
+
+  scene-render-nodes : SceneGraph3D, SceneRenderCtx, RenderTarget, Integer -> RenderTarget
+  scene-render-nodes (sg) (ctx) (rt) (i) =
+    if i >= sg.sg-count then rt
+    else let node = sg-get-node sg i
+    in let rt2 = if node.sgn-visible then scene-render-node sg ctx rt i node else rt
+    in scene-render-nodes sg ctx rt2 (i + 1)
+
+  scene-render-node : SceneGraph3D, SceneRenderCtx, RenderTarget, Integer, SceneGraphNode -> RenderTarget
+  scene-render-node (sg) (ctx) (rt) (idx) (node) =
+    when node.sgn-kind
+      is SnkMesh (mesh-idx) ->
+        if mesh-idx < 0 then rt
+        else if mesh-idx >= ctx.src-mesh-count then rt
+        else let mesh = list-at (ctx.src-meshes) mesh-idx
+        in let world = sg-world-matrix sg idx
+        in let mat = material-lib-get (ctx.src-materials) mesh-idx
+        in pipe-render-scene rt mesh world (ctx.src-camera) (ctx.src-lights) (mat.mat-albedo)
+      is otherwise -> rt
+
+Section: Wireframe Render
+
+  scene-render-wireframe : SceneGraph3D, SceneRenderCtx, Integer, Integer, Integer, Integer -> Framebuf
+  scene-render-wireframe (sg) (ctx) (vp-w) (vp-h) (bg-color) (wire-color) =
+    let fb = fb-new vp-w vp-h bg-color
+    in scene-wire-nodes sg ctx fb 0 wire-color
+
+  scene-wire-nodes : SceneGraph3D, SceneRenderCtx, Framebuf, Integer, Integer -> Framebuf
+  scene-wire-nodes (sg) (ctx) (fb) (i) (color) =
+    if i >= sg.sg-count then fb
+    else let node = sg-get-node sg i
+    in let fb2 = when node.sgn-kind
+        is SnkMesh (mesh-idx) ->
+          if node.sgn-visible then
+            if mesh-idx >= 0 then
+              if mesh-idx < ctx.src-mesh-count then
+                scene-wire-mesh sg ctx fb i mesh-idx color
+              else fb
+            else fb
+          else fb
+        is otherwise -> fb
+    in scene-wire-nodes sg ctx fb2 (i + 1) color
+
+  scene-wire-mesh : SceneGraph3D, SceneRenderCtx, Framebuf, Integer, Integer, Integer -> Framebuf
+  scene-wire-mesh (sg) (ctx) (fb) (node-idx) (mesh-idx) (color) =
+    let mesh = list-at (ctx.src-meshes) mesh-idx
+    in let world = sg-world-matrix sg node-idx
+    in let vp = spark-camera-vp (ctx.src-camera)
+    in let mvp = mat4-mul vp world
+    in scene-wire-faces fb mesh mvp (fb.fb-width) (fb.fb-height) color 0
+
+  scene-wire-faces : Framebuf, TriMesh, Mat4, Integer, Integer, Integer, Integer -> Framebuf
+  scene-wire-faces (fb) (mesh) (mvp) (w) (h) (color) (fi) =
+    if fi >= mesh.tm-face-count then fb
+    else let face = tri-mesh-face mesh fi
+    in let v0 = tri-mesh-vert mesh (face.tf-v0)
+    in let v1 = tri-mesh-vert mesh (face.tf-v1)
+    in let v2 = tri-mesh-vert mesh (face.tf-v2)
+    in let s0 = pipe-project-vert mvp v0 w h
+    in let s1 = pipe-project-vert mvp v1 w h
+    in let s2 = pipe-project-vert mvp v2 w h
+    in let fb2 = if s0.sv-sx >= 0 then
+        if s1.sv-sx >= 0 then fb-line fb (s0.sv-sx) (s0.sv-sy) (s1.sv-sx) (s1.sv-sy) color
+        else fb
+      else fb
+    in let fb3 = if s1.sv-sx >= 0 then
+        if s2.sv-sx >= 0 then fb-line fb2 (s1.sv-sx) (s1.sv-sy) (s2.sv-sx) (s2.sv-sy) color
+        else fb2
+      else fb2
+    in let fb4 = if s2.sv-sx >= 0 then
+        if s0.sv-sx >= 0 then fb-line fb3 (s2.sv-sx) (s2.sv-sy) (s0.sv-sx) (s0.sv-sy) color
+        else fb3
+      else fb3
+    in scene-wire-faces fb4 mesh mvp w h color (fi + 1)
+
+Page 1

@@ -1,0 +1,133 @@
+Chapter: AnnotationShellCommands
+  cites Works chapter AnnotationPersistDriver
+  cites Works chapter AnnotationDriver
+  cites Works chapter AnnotationStore
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter RepoProtocol
+  cites Works chapter Annotation
+  cites Works chapter FactSync
+  cites Works chapter KeyManager
+  cites Works chapter MutationLog
+  cites Works chapter ConsoleEditor
+  cites Foreword chapter Maybe
+  cites Kernel chapter DiskFacts
+
+ Shell commands for the annotation and sync subsystem. These
+ are the command handlers that ShellDispatch routes to when the
+ user types annotation/sync/facts commands in the DevConsole.
+
+ Each command takes the current AnnotationPersistState, performs
+ the operation, and returns the updated state plus output text.
+
+Section: Command Result
+
+  AnnotationCmdResult = record {
+    state : AnnotationPersistState,
+    output : Text
+  }
+
+  ann-cmd-ok : AnnotationPersistState, Text -> AnnotationCmdResult
+  ann-cmd-ok (st) (msg) = AnnotationCmdResult { state = st, output = msg }
+
+Section: Facts Command
+
+ Show fact counts by kind from DiskFacts.
+
+  cmd-facts : AnnotationPersistState -> AnnotationCmdResult
+  cmd-facts (st) =
+    let disk = persist-disk st
+    in let defs = repo-persist-load-all-definitions disk
+    in let anns = repo-persist-load-all-annotations disk
+    in let props = repo-persist-load-all-proposals disk
+    in let verds = repo-persist-load-all-verdicts disk
+    in let posts = repo-persist-load-all-posts disk
+    in let output = "Fact Store:\n"
+      & "  Definitions (kind 30): " & show (list-length defs) & "\n"
+      & "  Annotations (kind 35): " & show (list-length anns) & "\n"
+      & "  Proposals   (kind 36): " & show (list-length props) & "\n"
+      & "  Verdicts    (kind 37): " & show (list-length verds) & "\n"
+      & "  Posts       (kind 38): " & show (list-length posts) & "\n"
+      & "  Disk total:            " & show (disk-fact-count disk)
+    in ann-cmd-ok st output
+
+Section: Annotate Command
+
+ Create an annotation on a named definition.
+
+  cmd-annotate : AnnotationPersistState, EditorState, Text, Text, Integer -> AnnotationCmdResult
+  cmd-annotate (st) (editor) (kind-name) (body) (ts) =
+    let kind = parse-cmd-annotation-kind kind-name
+    in let new-st = persist-annotate-cursor st editor kind body ts
+    in ann-cmd-ok new-st ("Annotation created: " & kind-name)
+
+  parse-cmd-annotation-kind : Text -> AnnotationKind
+  parse-cmd-annotation-kind (s) =
+    if s == "rationale" then Rationale
+    else if s == "invariant" then Invariant
+    else if s == "warning" then Warning
+    else if s == "discovery" then Discovery
+    else if s == "doctrine" then Doctrine
+    else if s == "todo" then Todo
+    else Discovery
+
+Section: Propose Command
+
+ Create and publish a proposal (annotation + code suggestion).
+
+  cmd-propose : AnnotationPersistState, EditorState, Text, Text, Integer -> AnnotationCmdResult
+  cmd-propose (st) (editor) (body) (suggestion) (ts) =
+    let new-st = persist-publish-cursor st editor Discovery body suggestion ts
+    in ann-cmd-ok new-st "Proposal published"
+
+Section: Accept and Reject Commands
+
+  cmd-accept : AnnotationPersistState, Text, Text, Integer -> AnnotationCmdResult
+  cmd-accept (st) (proposal-id) (reason) (ts) =
+    let new-st = persist-accept st proposal-id reason ts
+    in ann-cmd-ok new-st ("Accepted proposal " & proposal-id)
+
+  cmd-reject : AnnotationPersistState, Text, Text, Integer -> AnnotationCmdResult
+  cmd-reject (st) (proposal-id) (reason) (ts) =
+    let new-st = persist-reject st proposal-id reason ts
+    in ann-cmd-ok new-st ("Rejected proposal " & proposal-id)
+
+Section: Log Command
+
+ Show the mutation log entries.
+
+  cmd-log : AnnotationPersistState -> AnnotationCmdResult
+  cmd-log (st) =
+    let log = st.aps-log
+    in let count = log-entry-count log
+    in if count == 0 then ann-cmd-ok st "Mutation log: empty"
+    else let header = "Mutation log: " & show count & " entries\n"
+    in let body = format-log-entries (log-entries log) 0 count ""
+    in ann-cmd-ok st (header & body)
+
+  format-log-entries : List LogEntry, Integer, Integer, Text -> Text
+  format-log-entries (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in let line = "  " & show (e.seq) & " " & op-name (e.op) & " " & target-key (e.target) & " by " & e.author
+    in let sep = if i == 0 then "" else "\n"
+    in format-log-entries entries (i + 1) len (acc & sep & line)
+
+Section: Status Command
+
+  cmd-status : AnnotationPersistState, EditorState -> AnnotationCmdResult
+  cmd-status (st) (e) =
+    ann-cmd-ok st (persist-status-line st e)
+
+Section: Checkpoint Command
+
+  cmd-checkpoint : AnnotationPersistState -> AnnotationCmdResult
+  cmd-checkpoint (st) =
+    let new-st = persist-checkpoint st
+    in ann-cmd-ok new-st "DiskFacts checkpoint written"
+
+Section: Sync Status Command
+
+  cmd-sync-status : SyncState -> Text
+  cmd-sync-status (ss) = sync-status ss
+
+Page 1

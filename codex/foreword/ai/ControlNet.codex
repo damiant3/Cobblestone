@@ -1,0 +1,220 @@
+Chapter: ControlNet
+  cites AI chapter Tensor
+  cites AI chapter Conv2d
+  cites AI chapter Normalization
+  cites AI chapter UNet
+  cites AI chapter ImageTensor
+  cites AI chapter SafeTensors
+  cites Foreword chapter Maybe
+
+ ControlNet for spatially-conditioned image generation. Takes a
+ control image (edge map, depth map, pose, etc.) and injects
+ spatial conditioning into the UNet at each down/mid block via
+ trainable zero-conv layers.
+
+ Architecture: a copy of the UNet encoder (down blocks + mid block)
+ processes the control image in parallel. Zero-conv output from each
+ block is added to the corresponding main UNet block output.
+
+ Preprocessors for generating control images from input:
+   - Canny edge detection
+   - Depth estimation (MiDaS-style MLP)
+   - Pose detection (placeholder)
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  ControlNetConfig = record {
+    cn-channels : List Integer,
+    cn-num-res-blocks : Integer,
+    cn-context-dim : Integer,
+    cn-conditioning-channels : Integer,
+    cn-scale : Integer
+  }
+
+  ControlNetState = record {
+    cns-config : ControlNetConfig,
+    cns-input-conv-w : List Integer,
+    cns-input-conv-b : List Integer,
+    cns-hint-conv-w : List Integer,
+    cns-hint-conv-b : List Integer,
+    cns-down-blocks : List UNetDownBlock,
+    cns-mid-block : UNetMidBlock,
+    cns-zero-convs : List ZeroConv,
+    cns-mid-zero-conv : ZeroConv
+  }
+
+  ZeroConv = record {
+    zc-weight : List Integer,
+    zc-bias : List Integer,
+    zc-in-ch : Integer,
+    zc-out-ch : Integer
+  }
+
+  ControlNetOutput = record {
+    cno-down-residuals : List (List Integer),
+    cno-mid-residual : List Integer
+  }
+
+Section: Default Configuration
+  sd15-controlnet-config : ControlNetConfig
+  sd15-controlnet-config = ControlNetConfig {
+    cn-channels = [320, 640, 1280, 1280],
+    cn-num-res-blocks = 2,
+    cn-context-dim = 768,
+    cn-conditioning-channels = 3,
+    cn-scale = 1000
+  }
+
+Section: ControlNet Forward
+  controlnet-forward : ControlNetState, List Integer, List Integer, Integer, List Integer, Integer, Integer -> ControlNetOutput
+  controlnet-forward (state) (noisy-latent) (control-image) (timestep) (context) (h) (w) =
+    let cfg = state.cns-config
+    in let time-emb = unet-time-embed timestep 1280
+    in let hint-p = conv2d-params (cfg.cn-conditioning-channels) (list-at (cfg.cn-channels) 0) 3 1 1
+    in let hint-l = conv2d-layer hint-p (state.cns-hint-conv-w) (state.cns-hint-conv-b)
+    in let hint-features = conv2d-forward hint-l control-image h w
+    in let conv-in-p = conv2d-params 4 (list-at (cfg.cn-channels) 0) 3 1 1
+    in let conv-in-l = conv2d-layer conv-in-p (state.cns-input-conv-w) (state.cns-input-conv-b)
+    in let hidden = conv2d-forward conv-in-l noisy-latent h w
+    in let combined = cn-add-vecs hidden hint-features 0 (list-length hidden) []
+    in let down-result = cn-run-down (state.cns-down-blocks) (state.cns-zero-convs) combined time-emb context h w (cfg.cn-scale) 0 []
+    in let mid-out = unet-mid-pass (state.cns-mid-block) (down-result.cndr-hidden) time-emb context (down-result.cndr-h) (down-result.cndr-w)
+    in let mid-residual = cn-zero-conv-forward (state.cns-mid-zero-conv) mid-out (down-result.cndr-h) (down-result.cndr-w) (cfg.cn-scale)
+    in ControlNetOutput { cno-down-residuals = down-result.cndr-residuals, cno-mid-residual = mid-residual }
+
+Section: Down Pass with Zero Convs
+  CnDownResult = record {
+    cndr-hidden : List Integer,
+    cndr-residuals : List (List Integer),
+    cndr-h : Integer,
+    cndr-w : Integer
+  }
+
+  cn-run-down : List UNetDownBlock, List ZeroConv, List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, List (List Integer) -> CnDownResult
+  cn-run-down (blocks) (zconvs) (hidden) (time-emb) (context) (h) (w) (scale) (i) (residuals) =
+    if i >= list-length blocks then CnDownResult { cndr-hidden = hidden, cndr-residuals = residuals, cndr-h = h, cndr-w = w }
+    else let block = list-at blocks i
+    in let after-res = unet-run-res-blocks (block.ud-resnet-blocks) (block.ud-skip-convs) hidden time-emb h w 0 (list-length (block.ud-resnet-blocks))
+    in let after-attn = unet-run-attn-blocks (block.ud-attn-blocks) after-res context h w 0 (list-length (block.ud-attn-blocks))
+    in let zc = if i < list-length zconvs then list-at zconvs i else cn-identity-zconv (block.ud-channels)
+    in let residual = cn-zero-conv-forward zc after-attn h w scale
+    in let new-residuals = list-push residuals residual
+    in if block.ud-has-downsample then
+      let down = downsample-conv after-attn (block.ud-downsample-weights) (block.ud-channels) h w
+      in cn-run-down blocks zconvs down time-emb context (h / 2) (w / 2) scale (i + 1) new-residuals
+    else cn-run-down blocks zconvs after-attn time-emb context h w scale (i + 1) new-residuals
+
+Section: Zero Convolution
+  cn-zero-conv-forward : ZeroConv, List Integer, Integer, Integer, Integer -> List Integer
+  cn-zero-conv-forward (zc) (input) (h) (w) =
+    let p = conv2d-params (zc.zc-in-ch) (zc.zc-out-ch) 1 1 0
+    in let l = conv2d-layer p (zc.zc-weight) (zc.zc-bias)
+    in let conv-out = conv2d-forward l input h w
+    in cn-scale-output conv-out 1000 0 (list-length conv-out) []
+
+  cn-scale-output : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cn-scale-output (data) (scale) (i) (n) (acc) =
+    if i >= n then acc
+    else cn-scale-output data scale (i + 1) n (list-push acc (list-at data i * scale / 1000))
+
+  cn-identity-zconv : Integer -> ZeroConv
+  cn-identity-zconv (ch) =
+    ZeroConv { zc-weight = [], zc-bias = [], zc-in-ch = ch, zc-out-ch = ch }
+
+Section: Apply ControlNet to UNet (inject residuals)
+  controlnet-apply : List Integer, ControlNetOutput, Integer -> List Integer
+  controlnet-apply (unet-hidden) (cn-out) (block-idx) =
+    if block-idx >= list-length (cn-out.cno-down-residuals) then unet-hidden
+    else let residual = list-at (cn-out.cno-down-residuals) block-idx
+    in cn-add-vecs unet-hidden residual 0 (list-length unet-hidden) []
+
+  controlnet-apply-mid : List Integer, ControlNetOutput -> List Integer
+  controlnet-apply-mid (unet-hidden) (cn-out) =
+    cn-add-vecs unet-hidden (cn-out.cno-mid-residual) 0 (list-length unet-hidden) []
+
+Section: Preprocessors
+
+  cn-canny-edge : ImageData, Integer, Integer -> List Integer
+  cn-canny-edge (img) (low-thresh) (high-thresh) =
+    let gray = image-to-grayscale img
+    in let gx = cn-sobel-x gray (img.img-width) (img.img-height)
+    in let gy = cn-sobel-y gray (img.img-width) (img.img-height)
+    in let magnitude = cn-gradient-mag gx gy 0 (list-length gx) []
+    in cn-threshold magnitude low-thresh high-thresh 0 (list-length magnitude) []
+
+  cn-sobel-x : List Integer, Integer, Integer -> List Integer
+  cn-sobel-x (data) (w) (h) =
+    cn-conv3x3 data w h [0 - 1, 0, 1, 0 - 2, 0, 2, 0 - 1, 0, 1]
+
+  cn-sobel-y : List Integer, Integer, Integer -> List Integer
+  cn-sobel-y (data) (w) (h) =
+    cn-conv3x3 data w h [0 - 1, 0 - 2, 0 - 1, 0, 0, 0, 1, 2, 1]
+
+  cn-conv3x3 : List Integer, Integer, Integer, List Integer -> List Integer
+  cn-conv3x3 (data) (w) (h) (kernel) =
+    cn-conv3x3-loop data w h kernel 0 []
+
+  cn-conv3x3-loop : List Integer, Integer, Integer, List Integer, Integer, List Integer -> List Integer
+  cn-conv3x3-loop (data) (w) (h) (kernel) (i) (acc) =
+    if i >= w * h then acc
+    else let py = i / w
+    in let px = i - py * w
+    in let val = cn-apply-kernel data w h kernel px py
+    in cn-conv3x3-loop data w h kernel (i + 1) (list-push acc val)
+
+  cn-apply-kernel : List Integer, Integer, Integer, List Integer, Integer, Integer -> Integer
+  cn-apply-kernel (data) (w) (h) (kernel) (px) (py) =
+    cn-ksample data w h (px - 1) (py - 1) * list-at kernel 0
+    + cn-ksample data w h px (py - 1) * list-at kernel 1
+    + cn-ksample data w h (px + 1) (py - 1) * list-at kernel 2
+    + cn-ksample data w h (px - 1) py * list-at kernel 3
+    + cn-ksample data w h px py * list-at kernel 4
+    + cn-ksample data w h (px + 1) py * list-at kernel 5
+    + cn-ksample data w h (px - 1) (py + 1) * list-at kernel 6
+    + cn-ksample data w h px (py + 1) * list-at kernel 7
+    + cn-ksample data w h (px + 1) (py + 1) * list-at kernel 8
+
+  cn-ksample : List Integer, Integer, Integer, Integer, Integer -> Integer
+  cn-ksample (data) (w) (h) (x) (y) =
+    if x < 0 then 0 else if x >= w then 0 else if y < 0 then 0 else if y >= h then 0
+    else list-at data (y * w + x)
+
+  cn-gradient-mag : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  cn-gradient-mag (gx) (gy) (i) (n) (acc) =
+    if i >= n then acc
+    else let x = list-at gx i
+    in let y = list-at gy i
+    in let mag = cn-isqrt (x * x + y * y)
+    in cn-gradient-mag gx gy (i + 1) n (list-push acc mag)
+
+  cn-threshold : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cn-threshold (data) (low) (high) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at data i
+    in let out = if v >= high then 1000 else if v >= low then 500 else 0
+    in cn-threshold data low high (i + 1) n (list-push acc out)
+
+Section: Helpers
+  cn-add-vecs : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  cn-add-vecs (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else let bv = if i < list-length b then list-at b i else 0
+    in cn-add-vecs a b (i + 1) n (list-push acc (list-at a i + bv))
+
+  cn-isqrt : Integer -> Integer
+  cn-isqrt (n) = if n <= 0 then 0 else cn-isqrt-loop n (n / 2 + 1)
+
+  cn-isqrt-loop : Integer, Integer -> Integer
+  cn-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else cn-isqrt-loop n next
+
+Section: Queries
+  format-controlnet-config : ControlNetConfig -> Text
+  format-controlnet-config (cfg) =
+    "ControlNet cond=" & show (cfg.cn-conditioning-channels) & " ctx=" & show (cfg.cn-context-dim) & " scale=" & show (cfg.cn-scale)
+
+Page 1

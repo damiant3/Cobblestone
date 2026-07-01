@@ -1,0 +1,133 @@
+Chapter: ErpGlTest
+  cites Foreword chapter Tuple
+  cites Foreword chapter Maybe
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+
+ First test of the ERP general ledger. Loads the standard chart of
+ accounts, opens period 6 of 2026 and closes period 5, posts balanced
+ entries, verifies rejection of an unbalanced entry and of a posting
+ into the closed period, and checks that the trial balance and the
+ accounting equation hold.
+
+Section: Setup
+
+  test-state : GlState =
+    let st = gl-init "DEMO"
+    in let st2 = load-standard-coa st
+    in let p-open = FiscalPeriod { fp-year = 2026, fp-period = 6, fp-company = "DEMO", fp-start-date = 20260601, fp-end-date = 20260630, fp-status = PeriodOpen }
+    in let p-closed = FiscalPeriod { fp-year = 2026, fp-period = 5, fp-company = "DEMO", fp-start-date = 20260501, fp-end-date = 20260531, fp-status = PeriodClosed }
+    in __record-set st2 "gl-periods" [p-open, p-closed]
+
+  make-je : Text, Integer, List JournalLine -> JournalEntry
+  make-je (id) (period) (lines) = JournalEntry {
+    je-id = id, je-company = "DEMO", je-date = 20260615,
+    je-period = period, je-year = 2026, je-description = id,
+    je-lines = lines, je-source = SrcManual, je-posted = False,
+    je-reversed = False, je-reversal-of = "", je-created-by = "test",
+    je-approved-by = "", je-created = 0
+  }
+
+  je-capital : JournalEntry =
+    make-je "JE-1" 6 [journal-line-debit "1000" 100000 "" "seed capital", journal-line-credit "3000" 100000 "" "common stock"]
+
+  je-revenue : JournalEntry =
+    make-je "JE-2" 6 [journal-line-debit "1000" 50000 "" "cash sale", journal-line-credit "4000" 50000 "" "revenue"]
+
+  je-expense : JournalEntry =
+    make-je "JE-3" 6 [journal-line-debit "6200" 20000 "" "rent", journal-line-credit "1000" 20000 "" "rent paid"]
+
+  je-unbalanced : JournalEntry =
+    make-je "JE-X" 6 [journal-line-debit "1000" 5000 "" "debit", journal-line-credit "4000" 4000 "" "credit"]
+
+  je-late : JournalEntry =
+    make-je "JE-L" 5 [journal-line-debit "1000" 1000 "" "debit", journal-line-credit "4000" 1000 "" "credit"]
+
+  je-unknown : JournalEntry =
+    make-je "JE-U" 7 [journal-line-debit "1000" 1000 "" "debit", journal-line-credit "4000" 1000 "" "credit"]
+
+Section: Helpers
+
+  post-ok : GlState, JournalEntry -> GlState
+  post-ok (st) (je) =
+    when post-journal st je
+      is (st2, r) -> st2
+
+  result-text : PostResult -> Text
+  result-text (r) =
+    when r
+      is PostSuccess (je) ->
+        let p = if je.je-posted then "True" else "False"
+        in "ok je=" & je.je-id & " posted=" & p
+      is PostFailed (msg) -> "rejected msg=" & msg
+
+  post-result : GlState, JournalEntry -> Text
+  post-result (st) (je) =
+    when post-journal st je
+      is (st2, r) -> result-text r
+
+  posted-state : GlState =
+    post-ok (post-ok (post-ok test-state je-capital) je-revenue) je-expense
+
+Section: Tests
+
+  test-coa : Text =
+    let st = test-state
+    in let nm = when find-account st "1000" is Just (a) -> a.gl-name is None -> "missing"
+    in "coa: accounts=" & show (list-length (st.gl-accounts)) & " cash=" & nm
+
+  test-balanced : Text =
+    when post-journal test-state je-capital
+      is (st2, r) ->
+        let left = "post-balanced: " & result-text r
+        in left & " cash=" & show (get-balance st2 "1000")
+
+  test-unbalanced : Text =
+    "post-unbalanced: " & post-result test-state je-unbalanced
+
+  test-closed : Text =
+    "post-closed: " & post-result test-state je-late
+
+  test-unknown : Text =
+    "post-unknown: " & post-result test-state je-unknown
+
+  test-tb : GlState -> Text
+  test-tb (st) =
+    let tb = trial-balance st
+    in let d = tb-total-debits tb
+    in let c = tb-total-credits tb
+    in let ok = if d == c then "True" else "False"
+    in let left = "trial-balance: lines=" & show (list-length tb) & " debits=" & show d
+    in left & " credits=" & show c & " balanced=" & ok
+
+  test-income : GlState -> Text
+  test-income (st) =
+    let r = total-revenue st
+    in let e = total-expenses st
+    in "income: revenue=" & show r & " expenses=" & show e & " net=" & show (net-income st)
+
+  test-equation : GlState -> Text
+  test-equation (st) =
+    let a = total-assets st
+    in let l = total-liabilities st
+    in let q = total-equity st
+    in let n = net-income st
+    in let ok = if a == l + q + n then "True" else "False"
+    in let left = "equation: assets=" & show a & " liabilities=" & show l
+    in left & " equity=" & show q & " holds=" & ok
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni test-coa
+    print-line-uni test-balanced
+    print-line-uni test-unbalanced
+    print-line-uni test-closed
+    print-line-uni test-unknown
+    let st = posted-state
+    in act
+      print-line-uni (test-tb st)
+      print-line-uni (test-income st)
+      print-line-uni (test-equation st)
+    end
+  end

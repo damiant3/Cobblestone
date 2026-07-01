@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Mastermind</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #1a0a1a; }
+  .game-page { max-width: 520px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/mastermind/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .board { background: #1a0a1acc; border: 3px solid #bc8cff44; border-radius: 12px;
+    padding: 20px; margin-bottom: 12px;
+    backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(188,140,255,0.1); }
+  .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #bc8cff, #7733cc); border: 2px solid #cc99ff;
+    border-radius: 20px; color: #fff; font-family: inherit; font-size: 14px; padding: 8px 24px;
+    cursor: pointer; font-weight: bold; }
+  .controls button:hover { transform: scale(1.05); }
+  .controls button:disabled { opacity: 0.3; }
+  .speed-label { color: #bc8cff66; font-size: 12px; }
+  .engine-tag { background: #1a0a1a; color: #bc8cff; font-size: 10px; padding: 2px 8px;
+    border-radius: 10px; margin-left: 12px; border: 1px solid #bc8cff44; }
+  .section-label { color: #bc8cff88; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+
+  /* Pegs */
+  .secret-row { display: flex; justify-content: center; gap: 10px; margin: 12px 0; }
+  .peg { width: 40px; height: 40px; border-radius: 50%; border: 2px solid #484f58;
+    display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3), inset 0 1px 3px rgba(255,255,255,0.15); }
+  .peg-hidden { background: #21262d; color: #666; }
+  .peg-0 { background: radial-gradient(circle at 35% 30%, #ff4444, #cc2222); }
+  .peg-1 { background: radial-gradient(circle at 35% 30%, #4477ff, #2255cc); }
+  .peg-2 { background: radial-gradient(circle at 35% 30%, #44cc66, #22aa44); }
+  .peg-3 { background: radial-gradient(circle at 35% 30%, #eebb44, #ccaa22); }
+  .peg-4 { background: radial-gradient(circle at 35% 30%, #bb55ff, #8822cc); }
+  .peg-5 { background: radial-gradient(circle at 35% 30%, #ff8844, #cc6622); }
+  .peg-sm { width: 28px; height: 28px; font-size: 11px; }
+
+  /* Color legend */
+  .color-legend { display: flex; gap: 6px; justify-content: center; margin: 8px 0; }
+  .legend-dot { width: 16px; height: 16px; border-radius: 50%; border: 1px solid #484f58; }
+
+  /* Guess history */
+  .guess-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; padding: 6px 10px;
+    border-radius: 8px; background: #1a0a1a88; transition: background 0.3s; }
+  .guess-row:last-child { background: #bc8cff15; }
+  .guess-row.solved-row { background: #22aa4422; border: 1px solid #22aa4444; }
+  .guess-pegs { display: flex; gap: 6px; }
+  .guess-num { width: 24px; color: #bc8cff66; font-size: 12px; text-align: right; font-weight: bold; }
+  .fb-pegs { display: flex; flex-wrap: wrap; width: 36px; gap: 2px; margin-left: 8px; }
+  .fb-peg { width: 14px; height: 14px; border-radius: 50%; }
+  .fb-black { background: #222; border: 2px solid #888; box-shadow: 0 0 4px rgba(0,0,0,0.5); }
+  .fb-white { background: #fff; border: 2px solid #aaa; box-shadow: 0 0 4px rgba(255,255,255,0.3); }
+  .fb-empty { background: transparent; border: 1px solid #444; }
+
+  .pool-bar { background: #1a0a1a; border: 1px solid #bc8cff33; border-radius: 8px; height: 14px;
+    margin: 10px 0; overflow: hidden; }
+  .pool-fill { background: linear-gradient(90deg, #bc8cff, #7733cc); height: 100%;
+    transition: width 0.4s ease; border-radius: 8px; }
+  .pool-label { color: #bc8cff66; font-size: 11px; text-align: center; margin-bottom: 2px; }
+
+  .stats-row { display: flex; justify-content: center; gap: 30px; margin: 10px 0; }
+  .stat-box { text-align: center; }
+  .stat-val { font-size: 28px; font-weight: bold; color: #bc8cff; }
+  .stat-lbl { font-size: 10px; color: #bc8cff66; text-transform: uppercase; }
+
+  .guess-history { max-height: 400px; overflow-y: auto; padding: 4px 0; }
+  .guess-history::-webkit-scrollbar { width: 4px; }
+  .guess-history::-webkit-scrollbar-thumb { background: #bc8cff44; border-radius: 4px; }
+
+  .result-banner { text-align: center; padding: 16px; border-radius: 10px; margin-top: 12px;
+    font-size: 20px; font-weight: bold; animation: fadeIn 0.5s; }
+  .result-win { background: #22aa4422; border: 2px solid #22aa4444; color: #55dd66; }
+  .result-fail { background: #cc222222; border: 2px solid #cc222244; color: #ff6655; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+  .rules { background: #1a0a1a99; border: 1px solid #bc8cff22; border-radius: 8px; padding: 16px;
+    margin-top: 16px; color: #bc8cff88; font-size: 13px; line-height: 1.6; }
+  .rules summary { color: #bc8cff; cursor: pointer; font-weight: bold; font-size: 14px; }
+  .rules p { margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#1a0a1a;border-color:#bc8cff22">
+  <span class="topbar-logo" style="color:#bc8cff">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#bc8cff66">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#bc8cff;border-color:#bc8cff">Mastermind</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; Play</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Pause</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Step</button>
+    <button onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#bc8cff" oninput="updateSpeed()">
+  </div>
+  <div id="status-line" style="color:#bc8cff;font-size:16px;text-align:center;margin-bottom:10px;font-weight:bold">Mastermind</div>
+  <div class="board">
+    <div class="section-label">Secret Code</div>
+    <div class="secret-row" id="secret-row">
+      <div class="peg peg-hidden">?</div><div class="peg peg-hidden">?</div><div class="peg peg-hidden">?</div><div class="peg peg-hidden">?</div>
+    </div>
+    <div class="color-legend">
+      <div class="legend-dot" style="background:#cc2222" title="Red"></div>
+      <div class="legend-dot" style="background:#2255cc" title="Blue"></div>
+      <div class="legend-dot" style="background:#22aa44" title="Green"></div>
+      <div class="legend-dot" style="background:#ccaa22" title="Yellow"></div>
+      <div class="legend-dot" style="background:#8822cc" title="Purple"></div>
+      <div class="legend-dot" style="background:#cc6622" title="Orange"></div>
+    </div>
+    <div class="pool-label">Remaining candidates: <span id="pool-count">-</span></div>
+    <div class="pool-bar"><div class="pool-fill" id="pool-fill" style="width:100%"></div></div>
+    <div class="stats-row">
+      <div class="stat-box"><div class="stat-val" id="sc">0</div><div class="stat-lbl">Guesses</div></div>
+      <div class="stat-box"><div class="stat-val" id="sf">10</div><div class="stat-lbl">Remaining</div></div>
+    </div>
+    <div class="section-label" style="margin-top:12px">Guess History</div>
+    <div class="guess-history" id="guess-history"></div>
+    <div id="result-area"></div>
+  </div>
+  <details class="rules">
+    <summary>How to Play Mastermind</summary>
+    <p><b>Goal:</b> Guess the secret 4-color code in 10 guesses or fewer.</p>
+    <p><b>Colors:</b> Red, Blue, Green, Yellow, Purple, Orange (6 colors, 4 positions).</p>
+    <p><b>Feedback:</b> After each guess, you receive feedback pegs:</p>
+    <p>&#x25CF; <b>Black peg</b> = right color in the right position.<br>&#x25CB; <b>White peg</b> = right color in the wrong position.</p>
+    <p><b>Strategy:</b> The AI uses the remaining candidate pool to narrow down possibilities each guess.</p>
+    <p><b>This simulation:</b> AI codebreaker tries to crack the secret in 10 guesses using elimination strategy.</p>
+  </details>
+</div>
+<script>
+var state,running=false,paused=false,timer,delay=300;
+var guessHistory=[];
+var COLORS=['#cc2222','#2255cc','#22aa44','#ccaa22','#8822cc','#cc6622'];
+var initialPool=1296;
+
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||250}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+
+function decodeGuess(code){
+  return [Math.floor(code/216)%6, Math.floor(code/36)%6, Math.floor(code/6)%6, code%6];
+}
+
+function pegHtml(digits, size){
+  var cls = size==='sm' ? 'peg peg-sm' : 'peg';
+  return digits.map(function(v){return '<div class="'+cls+' peg-'+v+'"></div>'}).join('');
+}
+
+function feedbackHtml(fb){
+  var blacks=Math.floor(fb/10), whites=fb%10, empty=4-blacks-whites;
+  var h='';
+  for(var i=0;i<blacks;i++) h+='<span class="fb-peg fb-black"></span>';
+  for(var i=0;i<whites;i++) h+='<span class="fb-peg fb-white"></span>';
+  for(var i=0;i<empty;i++) h+='<span class="fb-peg fb-empty"></span>';
+  return h;
+}
+
+function renderHistory(){
+  var el=document.getElementById('guess-history');
+  var h='';
+  for(var i=0;i<guessHistory.length;i++){
+    var g=guessHistory[i];
+    var isSolved = g.fb===40;
+    var rowClass = 'guess-row' + (isSolved?' solved-row':'');
+    h+='<div class="'+rowClass+'">';
+    h+='<span class="guess-num">'+(i+1)+'</span>';
+    h+='<div class="guess-pegs">'+pegHtml(g.digits,'sm')+'</div>';
+    h+='<div class="fb-pegs">'+feedbackHtml(g.fb)+'</div>';
+    h+='</div>';
+  }
+  el.innerHTML=h;
+  el.scrollTop=el.scrollHeight;
+}
+
+function render(s){
+  document.getElementById('sc').textContent=s.guesses;
+  document.getElementById('sf').textContent=Math.max(0, 10 - s.guesses);
+
+  var pool = s.poolSize!==undefined ? s.poolSize : initialPool;
+  document.getElementById('pool-count').textContent=pool;
+  var pct = Math.max(0, Math.min(100, (pool/initialPool)*100));
+  document.getElementById('pool-fill').style.width=pct+'%';
+
+  // Secret row — reveal when done
+  var secretEl=document.getElementById('secret-row');
+  if(s.done && s.secret!=null){
+    var digits=decodeGuess(s.secret);
+    secretEl.innerHTML=pegHtml(digits);
+  } else {
+    secretEl.innerHTML='<div class="peg peg-hidden">?</div><div class="peg peg-hidden">?</div><div class="peg peg-hidden">?</div><div class="peg peg-hidden">?</div>';
+  }
+
+  // Result
+  var resultArea=document.getElementById('result-area');
+  if(s.done){
+    if(s.solved){
+      resultArea.innerHTML='<div class="result-banner result-win">CRACKED in '+s.guesses+' guesses!</div>';
+    } else {
+      resultArea.innerHTML='<div class="result-banner result-fail">FAILED after '+s.guesses+' guesses</div>';
+    }
+    document.getElementById('status-line').textContent=s.solved?'Cracked in '+s.guesses+' guesses!':'Failed after '+s.guesses+' guesses';
+    running=false;
+  } else {
+    resultArea.innerHTML='';
+  }
+
+  renderHistory();
+}
+
+async function resetGame(){
+  clearTimeout(timer);running=false;paused=false;guessHistory=[];
+  var seed=Math.floor(Math.random()*100000);
+  state=await api('/api/mastermind/new?seed='+seed);
+  if(state) render(state);
+  document.getElementById('status-line').textContent='Mastermind';
+  document.getElementById('result-area').innerHTML='';
+  document.getElementById('guess-history').innerHTML='';
+  document.getElementById('pool-count').textContent=initialPool;
+  document.getElementById('pool-fill').style.width='100%';
+  document.getElementById('btn-pause').disabled=true;
+  document.getElementById('btn-step').disabled=true;
+}
+async function startGame(){
+  await resetGame();running=true;
+  document.getElementById('btn-pause').disabled=false;
+  document.getElementById('btn-step').disabled=false;
+  updateSpeed();scheduleTick();
+}
+function togglePause(){
+  if(!running)return;paused=!paused;
+  document.getElementById('btn-pause').textContent=paused?'▶ Resume':'⏸ Pause';
+  document.getElementById('btn-step').disabled=!paused;
+  if(!paused)scheduleTick();
+}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running&&paused)await tick()}
+async function tick(){
+  if(!running||!state||state.done){running=false;return}
+  state=await api('/api/mastermind/step');
+  if(!state){running=false;return}
+  if(state.guess!=null){
+    guessHistory.push({digits:decodeGuess(state.guess), fb:state.feedback||0});
+  }
+  render(state);
+  if(state.done){running=false;return}
+  var blacks=Math.floor(state.feedback/10), whites=state.feedback%10;
+  document.getElementById('status-line').textContent='Guess '+state.guesses+' — '+blacks+' black, '+whites+' white | Pool: '+(state.poolSize||'?');
+  scheduleTick();
+}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

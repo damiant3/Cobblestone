@@ -1,0 +1,297 @@
+Chapter: Qt Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Generates QML + JavaScript from the IR.
+
+Section: Sanitization
+
+  qt-sanitize : Text -> Text
+  qt-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  qt-escape : Text -> Text
+  qt-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  qt-indent : Integer -> Text
+  qt-indent (n) =
+   if n <= 0 then ""
+   else "    " & qt-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then 0
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0
+
+Section: Expression Emission
+
+  emit-qt-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-qt-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> show n
+    is IrTextLit (s) (sp) -> "\"" & qt-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
+    is IrName (n) (ty) (sp) -> qt-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-qt-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-qt-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-qt-expr c arities indent & " ? " & emit-qt-expr t arities indent & " : " & emit-qt-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(function() { var " & qt-sanitize name & " = " & emit-qt-expr val arities indent & "; return " & emit-qt-expr body arities indent & "; })()"
+    is IrApply (f) (a) (ty) (sp) -> emit-qt-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "function(" & emit-qt-params params 0 & ") { return " & emit-qt-expr body arities indent & "; }"
+    is IrList (elems) (ty) (sp) -> "[" & emit-qt-list-elems elems arities indent 0 & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-qt-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-qt-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-qt-record-fields fields arities indent 0 & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-qt-expr rec arities indent & "." & qt-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(function() { var _r = " & emit-qt-expr rec arities indent & "; _r." & qt-sanitize field & " = " & emit-qt-expr val arities indent & "; return _r; })()"
+    is IrFork (body) (ty) (sp) -> emit-qt-expr body arities indent
+    is IrAwait (task) (ty) (sp) -> emit-qt-expr task arities indent
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-qt-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-qt-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-qt-act body arities indent
+    is IrError (msg) (ty) (sp) -> "(function() { throw new Error(\"" & qt-escape msg & "\"); })()"
+
+Section: Binary Operators
+
+  qt-vec-op-symbol : IRBinaryOp -> Text
+  qt-vec-op-symbol (op) =
+   when op
+    is IrAddVec -> "+"
+    is IrSubVec -> "-"
+    is IrMulVec -> "*"
+    is IrDivVec -> "/"
+    is otherwise -> "+"
+
+  emit-qt-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-qt-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-qt-expr l arities indent
+   in let rhs = emit-qt-expr r arities indent
+   in when op
+    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "Math.floor(" & lhs & " / " & rhs & ")"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
+    is IrRemInt -> "(" & lhs & " % " & rhs & ")"
+    is IrPowInt -> "Math.pow(" & lhs & ", " & rhs & ")"
+    is IrEq -> "(" & lhs & " === " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
+    is IrLt | IrLtVec -> "(" & lhs & " < " & rhs & ")"
+    is IrGt | IrGtVec -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq | IrLtEqVec -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq | IrGtEqVec -> "(" & lhs & " >= " & rhs & ")"
+    is IrApproxEq | IrApproxEqExact -> "(" & lhs & " === " & rhs & ")"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(" & lhs & " + " & rhs & ")"
+    is IrAppendList -> "(" & lhs & ".concat(" & rhs & "))"
+    is IrConsList -> "[" & lhs & "].concat(" & rhs & ")"
+    is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> lhs & ".map(function(v, i) { return v " & qt-vec-op-symbol op & " " & rhs & "[i]; })"
+
+Section: Apply and Helpers
+
+  FlatApply = record {
+   root : IRExpr,
+   args : List IRExpr
+  }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-qt-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-qt-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let func = emit-qt-expr (chain.root) arities indent
+   in func & "(" & emit-qt-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-qt-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-qt-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-qt-expr (list-at args i) arities indent & emit-qt-apply-args args arities indent (i + 1)
+
+  emit-qt-params : List IRParam, Integer -> Text
+  emit-qt-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & qt-sanitize (list-at params i).name & emit-qt-params params (i + 1)
+
+  emit-qt-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-qt-list-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-qt-expr (list-at elems i) arities indent & emit-qt-list-elems elems arities indent (i + 1)
+
+  emit-qt-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-qt-record-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", " & qt-sanitize (f.name) & ": " & emit-qt-expr (f.value) arities indent & emit-qt-record-fields fields arities indent (i + 1)
+
+Section: Match
+
+  emit-qt-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-qt-match (scrut) (branches) (arities) (indent) =
+   "(function() { var _s = " & emit-qt-expr scrut arities indent & "; " & emit-qt-branches branches arities indent 0 & " })()"
+
+  emit-qt-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-qt-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then "throw new Error('non-exhaustive match');"
+   else let b = list-at branches i
+   in let cond = emit-qt-pat-cond (b.pattern) "_s"
+   in let binds = emit-qt-pat-binds (b.pattern) "_s"
+   in let body = emit-qt-expr (b.body) arities indent
+   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-qt-branches branches arities indent (i + 1)
+
+  emit-qt-pat-cond : IRPat, Text -> Text
+  emit-qt-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
+    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
+
+  emit-qt-pat-binds : IRPat, Text -> Text
+  emit-qt-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "var " & qt-sanitize name & " = " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-qt-ctor-binds subs scrut 0
+    is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
+
+  emit-qt-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-qt-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = scrut & "._" & show i
+   in emit-qt-pat-binds sub access & emit-qt-ctor-binds subs scrut (i + 1)
+
+Section: Act Blocks
+
+  emit-qt-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-qt-act (stmts) (arities) (indent) =
+   "(function() {\n" & emit-qt-act-stmts stmts arities (indent + 1) 0 & qt-indent indent & "})()"
+
+  emit-qt-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-qt-act-stmts (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> qt-indent indent & "var " & qt-sanitize name & " = " & emit-qt-expr val arities indent & ";\n" & emit-qt-act-stmts stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) ->
+     if is-last then qt-indent indent & "return " & emit-qt-expr e arities indent & ";\n"
+     else qt-indent indent & emit-qt-expr e arities indent & ";\n" & emit-qt-act-stmts stmts arities indent (i + 1)
+
+Section: Type Definitions
+
+  emit-qt-type-def : ATypeDef -> Text
+  emit-qt-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "function " & qt-sanitize (name.value) & "(fields) { var r = { _type: \"" & name.value & "\" }; for (var k in fields) r[k] = fields[k]; return r; }\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-qt-variant-ctors ctors 0
+
+  emit-qt-variant-ctors : List AVariantCtorDef, Integer -> Text
+  emit-qt-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let ctor-text = if n == 0 then "var " & qt-sanitize (c.name.value) & " = { _tag: \"" & c.name.value & "\" };\n"
+      else "function " & qt-sanitize (c.name.value) & "(" & emit-qt-ctor-params n 0 & ") { return { _tag: \"" & c.name.value & "\"" & emit-qt-ctor-fields n 0 & " }; }\n"
+   in ctor-text & emit-qt-variant-ctors ctors (i + 1)
+
+  emit-qt-ctor-params : Integer, Integer -> Text
+  emit-qt-ctor-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "_" & show i & emit-qt-ctor-params n (i + 1)
+
+  emit-qt-ctor-fields : Integer, Integer -> Text
+  emit-qt-ctor-fields (n) (i) =
+   if i == n then ""
+   else ", _" & show i & ": _" & show i & emit-qt-ctor-fields n (i + 1)
+
+Section: Definition Emission
+
+  emit-qt-def : IRDef, List ArityEntry -> Text
+  emit-qt-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = qt-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "var " & sname & " = " & emit-qt-expr (d.body) arities 0 & ";\n\n"
+      else "function " & sname & "(" & emit-qt-params (d.params) 0 & ") {\n    return " & emit-qt-expr (d.body) arities 1 & ";\n}\n\n"
+
+  emit-qt-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-qt-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-qt-def (list-at defs i) arities & emit-qt-defs defs (i + 1) arities
+
+  emit-qt-type-defs : List ATypeDef, Integer -> Text
+  emit-qt-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-qt-type-def (list-at tds i) & emit-qt-type-defs tds (i + 1)
+
+Section: QML Assembly
+
+  emit-qt-chapter : IRChapter, List ATypeDef -> Text
+  emit-qt-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "App" else m.chapter-title
+   in let builtins = "function print_line_uni(s) { outputModel.append({text: s}); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\n\n"
+   in let types-text = emit-qt-type-defs type-defs 0
+   in let defs-text = emit-qt-defs (m.defs) 0 arities
+   in let qml-header = "import QtQuick 2.15\nimport QtQuick.Controls 2.15\nimport QtQuick.Layouts 1.15\n\n"
+   in let qml-body = "ApplicationWindow {\n    visible: true\n    width: 640\n    height: 480\n    title: \"" & qt-escape title & "\"\n\n    ListModel { id: outputModel }\n\n    ColumnLayout {\n        anchors.fill: parent\n        anchors.margins: 10\n        Repeater {\n            model: outputModel\n            Text { text: model.text; font.pixelSize: 14 }\n        }\n    }\n\n    Component.onCompleted: {\n"
+   in let js-block = builtins & types-text & defs-text & "        try { opening(); } catch(e) { console.error(e); }\n"
+   in qml-header & qml-body & js-block & "    }\n}\n"
+
+Page 1

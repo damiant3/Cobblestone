@@ -1,0 +1,282 @@
+Chapter: Poker
+  cites Games chapter Rng
+
+ Five-card draw poker, two players. Cards are integers 0-51:
+ suit = card / 13, rank = card mod 13 (0=2 up to 12=Ace).
+ Hand ranks: 0=high-card, 1=pair, 2=two-pair, 3=trips,
+ 4=straight, 5=flush, 6=full-house, 7=quads, 8=straight-flush.
+
+ We say:
+
+Section: Types
+
+  PokerHand = record {
+    cards : List Integer
+  }
+
+  HandRank = record {
+    rank    : Integer,
+    primary : Integer,
+    secondary : Integer
+  }
+
+  PokerResult = record {
+    winner        : Integer,
+    p1-rank       : Integer,
+    p2-rank       : Integer,
+    hands-played  : Integer
+  }
+
+Section: Card Helpers
+
+  card-rank : Integer -> Integer
+  card-rank (c) = rng-mod c 13
+
+  card-suit : Integer -> Integer
+  card-suit (c) = c / 13
+
+  card-rank-name : Integer -> Text
+  card-rank-name (r) =
+    if r == 12 then "A"
+    else if r == 11 then "K"
+    else if r == 10 then "Q"
+    else if r == 9  then "J"
+    else if r == 8  then "T"
+    else show (r + 2)
+
+Section: Deck Building and Shuffle
+
+  poker-deck-new : List Integer
+  poker-deck-new = poker-build-deck 0 []
+
+  poker-build-deck : Integer, List Integer -> List Integer
+  poker-build-deck (i) (acc) =
+    if i >= 52 then acc
+    else poker-build-deck (i + 1) (list-push acc i)
+
+  poker-shuffle : List Integer, Rng -> List Integer
+  poker-shuffle (deck) (r) =
+    poker-fy deck 51 r
+
+  poker-fy : List Integer, Integer, Rng -> List Integer
+  poker-fy (deck) (i) (r) =
+    if i <= 0 then deck
+    else let r2 = rng-next r
+    in let j = rng-mod (rng-value r2) (i + 1)
+    in let a = list-at deck i
+    in let b = list-at deck j
+    in let d2 = list-set-at deck i b
+    in let d3 = list-set-at d2 j a
+    in poker-fy d3 (i - 1) r2
+
+Section: Dealing
+
+  deal-hand : List Integer, Integer -> PokerHand
+  deal-hand (deck) (start) =
+    let c0 = list-at deck start
+    in let c1 = list-at deck (start + 1)
+    in let c2 = list-at deck (start + 2)
+    in let c3 = list-at deck (start + 3)
+    in let c4 = list-at deck (start + 4)
+    in let cards = list-push (list-push (list-push (list-push (list-push [] c0) c1) c2) c3) c4
+    in PokerHand { cards = cards }
+
+Section: Hand Evaluation
+
+  count-rank : List Integer, Integer -> Integer
+  count-rank (cards) (r) =
+    count-rank-loop cards r 0 0
+
+  count-rank-loop : List Integer, Integer, Integer, Integer -> Integer
+  count-rank-loop (cards) (r) (i) (acc) =
+    if i >= 5 then acc
+    else let delta = if card-rank (list-at cards i) == r then 1 else 0
+    in count-rank-loop cards r (i + 1) (acc + delta)
+
+  count-suit : List Integer, Integer -> Integer
+  count-suit (cards) (s) =
+    count-suit-loop cards s 0 0
+
+  count-suit-loop : List Integer, Integer, Integer, Integer -> Integer
+  count-suit-loop (cards) (s) (i) (acc) =
+    if i >= 5 then acc
+    else let delta = if card-suit (list-at cards i) == s then 1 else 0
+    in count-suit-loop cards s (i + 1) (acc + delta)
+
+  hand-is-flush : List Integer -> Boolean
+  hand-is-flush (cards) =
+    let s = card-suit (list-at cards 0)
+    in count-suit cards s == 5
+
+  hand-min-rank : List Integer -> Integer
+  hand-min-rank (cards) =
+    hand-min-loop cards 0 12
+
+  hand-min-loop : List Integer, Integer, Integer -> Integer
+  hand-min-loop (cards) (i) (m) =
+    if i >= 5 then m
+    else let r = card-rank (list-at cards i)
+    in let new-m = if r < m then r else m
+    in hand-min-loop cards (i + 1) new-m
+
+  hand-max-rank : List Integer -> Integer
+  hand-max-rank (cards) =
+    hand-max-loop cards 0 0
+
+  hand-max-loop : List Integer, Integer, Integer -> Integer
+  hand-max-loop (cards) (i) (m) =
+    if i >= 5 then m
+    else let r = card-rank (list-at cards i)
+    in let new-m = if r > m then r else m
+    in hand-max-loop cards (i + 1) new-m
+
+  hand-is-straight : List Integer -> Boolean
+  hand-is-straight (cards) =
+    let mn = hand-min-rank cards
+    in let mx = hand-max-rank cards
+    in let span = mx - mn
+    in if span /= 4 then False
+    else count-unique-ranks cards 0 0 == 5
+
+  count-unique-ranks : List Integer, Integer, Integer -> Integer
+  count-unique-ranks (cards) (r) (acc) =
+    if r >= 13 then acc
+    else let n = count-rank cards r
+    in let delta = if n > 0 then 1 else 0
+    in count-unique-ranks cards (r + 1) (acc + delta)
+
+  best-rank-of-count : List Integer, Integer -> Integer
+  best-rank-of-count (cards) (target) =
+    best-rank-loop cards target 12 (-1)
+
+  best-rank-loop : List Integer, Integer, Integer, Integer -> Integer
+  best-rank-loop (cards) (target) (r) (found) =
+    if r < 0 then found
+    else let n = count-rank cards r
+    in let new-found = if n == target then r else found
+    in best-rank-loop cards target (r - 1) new-found
+
+  max-rank-count : List Integer -> Integer
+  max-rank-count (cards) =
+    max-count-loop cards 0 0
+
+  max-count-loop : List Integer, Integer, Integer -> Integer
+  max-count-loop (cards) (r) (best) =
+    if r >= 13 then best
+    else let n = count-rank cards r
+    in let new-best = if n > best then n else best
+    in max-count-loop cards (r + 1) new-best
+
+  evaluate-hand : PokerHand -> HandRank
+  evaluate-hand (h) =
+    let cards = h.cards
+    in let flush = hand-is-flush cards
+    in let straight = hand-is-straight cards
+    in let mc = max-rank-count cards
+    in let quad-rank = best-rank-of-count cards 4
+    in let trip-rank = best-rank-of-count cards 3
+    in let pair-rank = best-rank-of-count cards 2
+    in let hi = hand-max-rank cards
+    in if flush & straight then HandRank { rank = 8, primary = hi, secondary = 0 }
+    else if mc == 4 then HandRank { rank = 7, primary = quad-rank, secondary = hi }
+    else if trip-rank >= 0 & pair-rank >= 0 then HandRank { rank = 6, primary = trip-rank, secondary = pair-rank }
+    else if flush then HandRank { rank = 5, primary = hi, secondary = 0 }
+    else if straight then HandRank { rank = 4, primary = hi, secondary = 0 }
+    else if mc == 3 then HandRank { rank = 3, primary = trip-rank, secondary = hi }
+    else if mc == 2 then
+      let p2 = second-pair-rank cards pair-rank
+      in if p2 >= 0 then HandRank { rank = 2, primary = pair-rank, secondary = p2 }
+      else HandRank { rank = 1, primary = pair-rank, secondary = hi }
+    else HandRank { rank = 0, primary = hi, secondary = 0 }
+
+  second-pair-rank : List Integer, Integer -> Integer
+  second-pair-rank (cards) (first-pair) =
+    second-pair-loop cards first-pair 12 (-1)
+
+  second-pair-loop : List Integer, Integer, Integer, Integer -> Integer
+  second-pair-loop (cards) (first-pair) (r) (found) =
+    if r < 0 then found
+    else if r == first-pair then second-pair-loop cards first-pair (r - 1) found
+    else let n = count-rank cards r
+    in let new-found = if n >= 2 then r else found
+    in second-pair-loop cards first-pair (r - 1) new-found
+
+Section: Hand Comparison
+
+  compare-hands : HandRank, HandRank -> Integer
+  compare-hands (a) (b) =
+    if a.rank > b.rank then 1
+    else if a.rank < b.rank then 2
+    else if a.primary > b.primary then 1
+    else if a.primary < b.primary then 2
+    else if a.secondary > b.secondary then 1
+    else if a.secondary < b.secondary then 2
+    else 0
+
+Section: Draw Strategy (AI)
+
+  draw-count : PokerHand -> Integer
+  draw-count (h) =
+    let cards = h.cards
+    in let mc = max-rank-count cards
+    in let flush = hand-is-flush cards
+    in let straight = hand-is-straight cards
+    in if flush | straight then 0
+    else if mc == 4 then 1
+    else if mc == 3 then 2
+    else if mc == 2 then
+      let p2 = second-pair-rank cards (best-rank-of-count cards 2)
+      in if p2 >= 0 then 1 else 2
+    else 3
+
+Section: Game Runner
+
+  run-poker-hand : Rng -> PokerResult
+  run-poker-hand (r) =
+    let deck = poker-shuffle poker-deck-new r
+    in let h1 = deal-hand deck 0
+    in let h2 = deal-hand deck 5
+    in let rank1 = evaluate-hand h1
+    in let rank2 = evaluate-hand h2
+    in let winner = compare-hands rank1 rank2
+    in PokerResult { winner = winner, p1-rank = rank1.rank, p2-rank = rank2.rank, hands-played = 1 }
+
+  run-poker-session : Integer, Integer -> PokerResult
+  run-poker-session (seed) (n) =
+    poker-session-loop (rng-new seed) n 0 0 0 0
+
+  poker-session-loop : Rng, Integer, Integer, Integer, Integer, Integer -> PokerResult
+  poker-session-loop (r) (n) (played) (p1-wins) (p2-wins) (last-rank1) =
+    if played >= n then PokerResult { winner = if p1-wins > p2-wins then 1 else if p2-wins > p1-wins then 2 else 0, p1-rank = p1-wins, p2-rank = p2-wins, hands-played = played }
+    else let r2 = rng-next r
+    in let deck = poker-shuffle poker-deck-new r2
+    in let h1 = deal-hand deck 0
+    in let h2 = deal-hand deck 5
+    in let rank1 = evaluate-hand h1
+    in let rank2 = evaluate-hand h2
+    in let w = compare-hands rank1 rank2
+    in let new-p1 = if w == 1 then p1-wins + 1 else p1-wins
+    in let new-p2 = if w == 2 then p2-wins + 1 else p2-wins
+    in poker-session-loop r2 n (played + 1) new-p1 new-p2 rank1.rank
+
+Section: Formatting
+
+  rank-name : Integer -> Text
+  rank-name (r) =
+    if r == 8 then "Straight-Flush"
+    else if r == 7 then "Quads"
+    else if r == 6 then "Full-House"
+    else if r == 5 then "Flush"
+    else if r == 4 then "Straight"
+    else if r == 3 then "Trips"
+    else if r == 2 then "Two-Pair"
+    else if r == 1 then "Pair"
+    else "High-Card"
+
+  format-poker-result : PokerResult -> Text
+  format-poker-result (r) =
+    let w = if r.winner == 1 then "P1" else if r.winner == 2 then "P2" else "Tie"
+    in "Poker (" & show (r.hands-played) & " hands): P1=" & show (r.p1-rank) &
+       " P2=" & show (r.p2-rank) & " overall=" & w
+
+Page 1

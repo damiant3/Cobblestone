@@ -1,0 +1,182 @@
+Chapter: RenderPass
+  cites Math chapter Quaternion
+  cites Game chapter Rasterizer
+  cites Spark chapter Pipeline3D
+  cites Spark chapter SceneGraph
+  cites Spark chapter SceneMaterial
+  cites Spark chapter DepthBuffer
+
+ Multi-pass rendering pipeline. Separates the render into
+ discrete passes: shadow, geometry, lighting, post-process.
+ Each pass writes to an intermediate framebuffer that feeds
+ the next pass.
+
+ We say:
+
+Section: Types
+
+  RenderPassKind =
+    | PassShadow
+    | PassGeometry
+    | PassLighting
+    | PassPostProcess
+    | PassOverlay
+
+  PassConfig = record {
+    pc-kind : RenderPassKind,
+    pc-enabled : Boolean,
+    pc-width : Integer,
+    pc-height : Integer
+  }
+
+  PassResult = record {
+    pr-fb : Framebuf,
+    pr-db : DepthBuf,
+    pr-kind : RenderPassKind
+  }
+
+  RenderPipeline = record {
+    rp-passes : List PassConfig,
+    rp-pass-count : Integer,
+    rp-width : Integer,
+    rp-height : Integer,
+    rp-bg-color : Integer,
+    rp-ambient : Real
+  }
+
+Section: Construction
+
+  render-pipeline-new : Integer, Integer, Integer -> RenderPipeline
+  render-pipeline-new (w) (h) (bg) = RenderPipeline {
+    rp-passes = [],
+    rp-pass-count = 0,
+    rp-width = w,
+    rp-height = h,
+    rp-bg-color = bg,
+    rp-ambient = 0.2
+  }
+
+  render-pipeline-add-pass : RenderPipeline, RenderPassKind -> RenderPipeline
+  render-pipeline-add-pass (rp) (kind) =
+    let pc = PassConfig {
+      pc-kind = kind,
+      pc-enabled = True,
+      pc-width = rp.rp-width,
+      pc-height = rp.rp-height
+    }
+    in RenderPipeline {
+      rp-passes = list-push (rp.rp-passes) pc,
+      rp-pass-count = rp.rp-pass-count + 1,
+      rp-width = rp.rp-width,
+      rp-height = rp.rp-height,
+      rp-bg-color = rp.rp-bg-color,
+      rp-ambient = rp.rp-ambient
+    }
+
+  render-pipeline-default : Integer, Integer, Integer -> RenderPipeline
+  render-pipeline-default (w) (h) (bg) =
+    let rp = render-pipeline-new w h bg
+    in let rp2 = render-pipeline-add-pass rp PassShadow
+    in let rp3 = render-pipeline-add-pass rp2 PassGeometry
+    in let rp4 = render-pipeline-add-pass rp3 PassLighting
+    in render-pipeline-add-pass rp4 PassPostProcess
+
+Section: Pass Execution
+
+  rp-execute : RenderPipeline, SceneGraph3D, SceneRenderCtx -> Framebuf
+  rp-execute (rp) (sg) (ctx) =
+    let initial = PassResult {
+      pr-fb = fb-new (rp.rp-width) (rp.rp-height) (rp.rp-bg-color),
+      pr-db = depth-buf-new (rp.rp-width) (rp.rp-height),
+      pr-kind = PassGeometry
+    }
+    in let result = rp-execute-loop rp sg ctx initial 0
+    in result.pr-fb
+
+  rp-execute-loop : RenderPipeline, SceneGraph3D, SceneRenderCtx, PassResult, Integer -> PassResult
+  rp-execute-loop (rp) (sg) (ctx) (prev) (i) =
+    if i >= rp.rp-pass-count then prev
+    else let pc = list-at (rp.rp-passes) i
+    in let result = if pc.pc-enabled then rp-run-pass pc sg ctx prev rp else prev
+    in rp-execute-loop rp sg ctx result (i + 1)
+
+  rp-run-pass : PassConfig, SceneGraph3D, SceneRenderCtx, PassResult, RenderPipeline -> PassResult
+  rp-run-pass (pc) (sg) (ctx) (prev) (rp) =
+    when pc.pc-kind
+      is PassShadow -> rp-shadow-pass pc sg ctx prev
+      is PassGeometry -> rp-geometry-pass pc sg ctx prev
+      is PassLighting -> rp-lighting-pass pc sg ctx prev rp
+      is PassPostProcess -> rp-post-pass pc prev
+      is PassOverlay -> prev
+
+Section: Shadow Pass
+
+  rp-shadow-pass : PassConfig, SceneGraph3D, SceneRenderCtx, PassResult -> PassResult
+  rp-shadow-pass (pc) (sg) (ctx) (prev) =
+    let shadow-db = depth-buf-new (pc.pc-width) (pc.pc-height)
+    in PassResult { pr-fb = prev.pr-fb, pr-db = shadow-db, pr-kind = PassShadow }
+
+Section: Geometry Pass
+
+  rp-geometry-pass : PassConfig, SceneGraph3D, SceneRenderCtx, PassResult -> PassResult
+  rp-geometry-pass (pc) (sg) (ctx) (prev) =
+    let rt = RenderTarget { rt-fb = prev.pr-fb, rt-db = prev.pr-db }
+    in let rt2 = rp-geo-nodes sg ctx rt 0
+    in PassResult { pr-fb = rt2.rt-fb, pr-db = rt2.rt-db, pr-kind = PassGeometry }
+
+  rp-geo-nodes : SceneGraph3D, SceneRenderCtx, RenderTarget, Integer -> RenderTarget
+  rp-geo-nodes (sg) (ctx) (rt) (i) =
+    if i >= sg.sg-count then rt
+    else let node = sg-get-node sg i
+    in let rt2 = if node.sgn-visible then rp-geo-node sg ctx rt i node else rt
+    in rp-geo-nodes sg ctx rt2 (i + 1)
+
+  rp-geo-node : SceneGraph3D, SceneRenderCtx, RenderTarget, Integer, SceneGraphNode -> RenderTarget
+  rp-geo-node (sg) (ctx) (rt) (idx) (node) =
+    when node.sgn-kind
+      is SnkMesh (mesh-idx) ->
+        if mesh-idx < 0 then rt
+        else if mesh-idx >= ctx.src-mesh-count then rt
+        else let mesh = list-at (ctx.src-meshes) mesh-idx
+        in let world = sg-world-matrix sg idx
+        in let mat = material-lib-get (ctx.src-materials) mesh-idx
+        in pipe-render-scene rt mesh world (ctx.src-camera) (ctx.src-lights) (mat.mat-albedo)
+      is otherwise -> rt
+
+Section: Lighting Pass
+
+  rp-lighting-pass : PassConfig, SceneGraph3D, SceneRenderCtx, PassResult, RenderPipeline -> PassResult
+  rp-lighting-pass (pc) (sg) (ctx) (prev) (rp) =
+    PassResult { pr-fb = prev.pr-fb, pr-db = prev.pr-db, pr-kind = PassLighting }
+
+Section: Post-Process Pass
+
+  rp-post-pass : PassConfig, PassResult -> PassResult
+  rp-post-pass (pc) (prev) =
+    PassResult { pr-fb = prev.pr-fb, pr-db = prev.pr-db, pr-kind = PassPostProcess }
+
+Section: Pass Configuration
+
+  rp-enable-pass : RenderPipeline, Integer -> RenderPipeline
+  rp-enable-pass (rp) (idx) =
+    if idx < 0 then rp
+    else if idx >= rp.rp-pass-count then rp
+    else let pc = list-at (rp.rp-passes) idx
+    in let updated = __record-set pc "pc-enabled" True
+    in __record-set rp "rp-passes" (list-set-at (rp.rp-passes) idx updated)
+
+  rp-disable-pass : RenderPipeline, Integer -> RenderPipeline
+  rp-disable-pass (rp) (idx) =
+    if idx < 0 then rp
+    else if idx >= rp.rp-pass-count then rp
+    else let pc = list-at (rp.rp-passes) idx
+    in let updated = __record-set pc "pc-enabled" False
+    in __record-set rp "rp-passes" (list-set-at (rp.rp-passes) idx updated)
+
+Section: Info
+
+  rp-info : RenderPipeline -> Text
+  rp-info (rp) =
+    show (rp.rp-pass-count) & " passes, " & show (rp.rp-width) & "x" & show (rp.rp-height)
+
+Page 1

@@ -1,0 +1,345 @@
+Chapter: DataChannel
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Encode chapter WebSocket
+  cites Encode chapter Json
+  cites Foreword chapter CCE
+  cites Foreword chapter Sha256
+  cites Foreword chapter ListUtils
+
+ Typed data channels for the frame model. The browser opens a
+ WebSocket to the server, sends BIND messages declaring typed
+ slots, and receives streamed records in binary encoding.
+
+ Wire format for DATA messages:
+   byte 0:     #44 ('D' — data marker)
+   bytes 1-2:  channel name length (LE uint16)
+   bytes 3-N:  channel name (CCE)
+   bytes N+1-N+4: payload length (LE uint32)
+   bytes N+5-M:   payload (type-encoded record)
+
+ Record encoding (struct, no tags):
+   Integer:  8 bytes LE
+   Text:     4-byte length + CCE bytes
+   Boolean:  1 byte (0 or 1)
+   List T:   4-byte count + elements
+   Maybe T:  1 byte tag (0=None, 1=Just) + payload
+   Variant:  1 byte tag + payload
+
+Section: Types
+
+  ChannelState =
+    | ChannelPending
+    | ChannelBound
+    | ChannelClosed
+    | ChannelError (Text)
+
+  DataChannel = record {
+    dc-name       : Text,
+    dc-type-sig   : Text,
+    dc-state      : ChannelState,
+    dc-buffer     : List (List Integer),
+    dc-version    : Integer,
+    dc-recv-count : Integer,
+    dc-drop-count : Integer
+  }
+
+  ChannelManager = record {
+    cm-channels    : List DataChannel,
+    cm-ws-state    : Integer,
+    cm-total-recv  : Integer,
+    cm-total-sent  : Integer
+  }
+
+  ChannelMessage =
+    | MsgBind (Text) (Text)
+    | MsgAck (Text)
+    | MsgData (Text) (List Integer)
+    | MsgClose (Text)
+    | MsgUnbind (Text)
+    | MsgError (Text) (Text)
+    | MsgUnknown
+
+Section: Channel Manager
+
+  channel-manager-new : ChannelManager
+  channel-manager-new =
+    ChannelManager {
+      cm-channels = [],
+      cm-ws-state = 0,
+      cm-total-recv = 0,
+      cm-total-sent = 0
+    }
+
+  channel-open : ChannelManager, Text, Text -> ChannelManager
+  channel-open (mgr) (name) (type-sig) =
+    let ch = DataChannel {
+      dc-name = name,
+      dc-type-sig = type-sig,
+      dc-state = ChannelPending,
+      dc-buffer = [],
+      dc-version = 0,
+      dc-recv-count = 0,
+      dc-drop-count = 0
+    }
+    in __record-set (__record-set mgr
+      "cm-channels" (list-push mgr.cm-channels ch))
+      "cm-total-sent" (mgr.cm-total-sent + 1)
+
+  channel-close : ChannelManager, Text -> ChannelManager
+  channel-close (mgr) (name) =
+    __record-set mgr
+      "cm-channels" (channel-set-state mgr.cm-channels name ChannelClosed)
+
+  channel-close-all : ChannelManager -> ChannelManager
+  channel-close-all (mgr) =
+    __record-set mgr
+      "cm-channels" (list-map close-one-channel mgr.cm-channels)
+
+  close-one-channel : DataChannel -> DataChannel
+  close-one-channel (ch) =
+    __record-set ch "dc-state" ChannelClosed
+
+Section: Message Processing
+
+  channel-process-message : ChannelManager, ChannelMessage -> ChannelManager
+  channel-process-message (mgr) (msg) =
+    when msg
+      is MsgAck (name) ->
+        __record-set mgr
+          "cm-channels" (channel-set-state mgr.cm-channels name ChannelBound)
+      is MsgData (name) (payload) ->
+        __record-set (__record-set mgr
+          "cm-channels" (channel-push-data mgr.cm-channels name payload))
+          "cm-total-recv" (mgr.cm-total-recv + 1)
+      is MsgClose (name) ->
+        __record-set mgr
+          "cm-channels" (channel-set-state mgr.cm-channels name ChannelClosed)
+      is MsgError (name) (reason) ->
+        __record-set mgr
+          "cm-channels" (channel-set-state mgr.cm-channels name (ChannelError reason))
+      is otherwise -> mgr
+
+Section: Channel State Updates
+
+  channel-set-state : List DataChannel, Text, ChannelState -> List DataChannel
+  channel-set-state (channels) (name) (state) =
+    list-map (channel-update-one name state) channels
+
+  channel-update-one : Text, ChannelState, DataChannel -> DataChannel
+  channel-update-one (name) (state) (ch) =
+    if ch.dc-name == name
+    then __record-set ch "dc-state" state
+    else ch
+
+  channel-push-data : List DataChannel, Text, List Integer -> List DataChannel
+  channel-push-data (channels) (name) (payload) =
+    list-map (channel-push-one name payload) channels
+
+  channel-push-one : Text, List Integer, DataChannel -> DataChannel
+  channel-push-one (name) (payload) (ch) =
+    if ch.dc-name == name
+    then __record-set (__record-set (__record-set ch
+      "dc-buffer" (list-push ch.dc-buffer payload))
+      "dc-version" (ch.dc-version + 1))
+      "dc-recv-count" (ch.dc-recv-count + 1)
+    else ch
+
+  channel-drain : ChannelManager, Text -> (ChannelManager, List (List Integer))
+  channel-drain (mgr) (name) =
+    let ch = channel-find mgr name
+    in when ch
+      is None -> (mgr, [])
+      is Just (dc) ->
+        let data = dc.dc-buffer
+        in let cleared = __record-set dc "dc-buffer" []
+        in (__record-set mgr
+          "cm-channels" (channel-replace mgr.cm-channels cleared), data)
+
+  channel-replace : List DataChannel, DataChannel -> List DataChannel
+  channel-replace (channels) (updated) =
+    list-map (channel-replace-one updated) channels
+
+  channel-replace-one : DataChannel, DataChannel -> DataChannel
+  channel-replace-one (updated) (ch) =
+    if ch.dc-name == updated.dc-name then updated else ch
+
+Section: Protocol Encoding
+
+  encode-bind : Text, Text -> List Integer
+  encode-bind (name) (type-sig) =
+    let msg = "BIND " & name & " " & type-sig
+    in ws-encode-text msg
+
+  encode-unbind : Text -> List Integer
+  encode-unbind (name) =
+    ws-encode-text ("UNBIND " & name)
+
+Section: Protocol Decoding
+
+  decode-channel-message : WsFrame -> ChannelMessage
+  decode-channel-message (frame) =
+    if ws-is-text frame
+    then parse-text-message frame.ws-payload
+    else if ws-is-binary frame
+    then parse-binary-message frame.ws-payload
+    else if ws-is-close frame
+    then MsgClose "connection"
+    else MsgUnknown
+
+  parse-text-message : List Integer -> ChannelMessage
+  parse-text-message (payload) =
+    let txt = payload-to-text payload
+    in let space-idx = text-index-of txt " "
+    in if space-idx < 0
+      then parse-single-word-message txt
+      else let cmd = text-take txt space-idx
+        in let rest = text-drop txt (space-idx + 1)
+        in parse-command cmd rest
+
+  parse-single-word-message : Text -> ChannelMessage
+  parse-single-word-message (txt) =
+    if txt == "CLOSE" then MsgClose ""
+    else MsgUnknown
+
+  parse-command : Text, Text -> ChannelMessage
+  parse-command (cmd) (rest) =
+    when cmd
+      is "ACK" -> MsgAck rest
+      is "CLOSE" -> MsgClose rest
+      is "ERROR" ->
+        let space = text-index-of rest " "
+        in if space < 0
+          then MsgError (rest) ("unknown error")
+          else MsgError (text-take rest space) (text-drop rest (space + 1))
+      is otherwise -> MsgUnknown
+
+  parse-binary-message : List Integer -> ChannelMessage
+  parse-binary-message (payload) =
+    if list-length payload < 3 then MsgUnknown
+    else let marker = list-at payload 0
+      in if marker /= 68 then MsgUnknown
+      else let name-len = read-uint16-le payload 1
+        in if list-length payload < 3 + name-len + 4 then MsgUnknown
+        else let name = read-text payload 3 name-len
+          in let payload-len = read-uint32-le payload (3 + name-len)
+          in let data-start = 3 + name-len + 4
+          in let data = list-slice payload data-start (data-start + payload-len)
+          in MsgData (name) (data)
+
+Section: Binary Encoding Primitives
+
+  write-uint16-le : Integer -> List Integer
+  write-uint16-le (n) =
+    [int-mod n 256, int-mod (n / 256) 256]
+
+  write-uint32-le : Integer -> List Integer
+  write-uint32-le (n) =
+    [int-mod n 256,
+     int-mod (n / 256) 256,
+     int-mod (n / 65536) 256,
+     int-mod (n / 16777216) 256]
+
+  write-int64-le : Integer -> List Integer
+  write-int64-le (n) =
+    write-uint32-le (int-mod n 4294967296)
+    & write-uint32-le (n / 4294967296)
+
+  write-text-field : Text -> List Integer
+  write-text-field (t) =
+    let bytes = text-to-bytes t
+    in write-uint32-le (list-length bytes) & bytes
+
+  write-bool : Boolean -> List Integer
+  write-bool (b) =
+    if b then [1] else [0]
+
+  read-uint16-le : List Integer, Integer -> Integer
+  read-uint16-le (bs) (offset) =
+    list-at bs offset + (list-at bs (offset + 1)) * 256
+
+  read-uint32-le : List Integer, Integer -> Integer
+  read-uint32-le (bs) (offset) =
+    list-at bs offset
+    + (list-at bs (offset + 1)) * 256
+    + (list-at bs (offset + 2)) * 65536
+    + (list-at bs (offset + 3)) * 16777216
+
+  read-int64-le : List Integer, Integer -> Integer
+  read-int64-le (bs) (offset) =
+    read-uint32-le bs offset
+    + (read-uint32-le bs (offset + 4)) * 4294967296
+
+  read-text : List Integer, Integer, Integer -> Text
+  read-text (bs) (offset) (len) =
+    bytes-to-text-range bs offset len
+
+  bytes-to-text-range : List Integer, Integer, Integer -> Text
+  bytes-to-text-range (bs) (offset) (length) =
+    payload-to-text (list-slice bs offset (offset + length))
+
+  list-slice : List Integer, Integer, Integer -> List Integer
+  list-slice (xs) (start) (end-idx) =
+    list-take (list-drop xs start) (end-idx - start)
+
+Section: Text Conversion
+
+  payload-to-text : List Integer -> Text
+  payload-to-text (bs) =
+    payload-to-text-acc bs 0 ""
+
+  payload-to-text-acc : List Integer, Integer, Text -> Text
+  payload-to-text-acc (bs) (idx) (acc) =
+    if idx >= list-length bs then acc
+    else let ch = char-to-text (code-to-char (list-at bs idx))
+      in payload-to-text-acc bs (idx + 1) (acc & ch)
+
+  text-index-of : Text, Text -> Integer
+  text-index-of (haystack) (needle) =
+    text-index-of-at haystack needle 0
+
+  text-index-of-at : Text, Text, Integer -> Integer
+  text-index-of-at (haystack) (needle) (pos) =
+    if pos > text-length haystack - text-length needle
+    then (-1)
+    else if text-take (text-drop haystack pos) (text-length needle) == needle
+    then pos
+    else text-index-of-at haystack needle (pos + 1)
+
+Section: Channel Lookup
+
+  channel-find : ChannelManager, Text -> Maybe DataChannel
+  channel-find (mgr) (name) =
+    channel-find-in mgr.cm-channels name
+
+  channel-find-in : List DataChannel, Text -> Maybe DataChannel
+  channel-find-in (channels) (name) =
+    if list-length channels == 0 then None
+    else let head = list-at channels 0
+        in if head.dc-name == name
+          then Just head
+          else channel-find-in (list-drop channels 1) name
+
+  channel-is-bound : ChannelManager, Text -> Boolean
+  channel-is-bound (mgr) (name) =
+    let ch = channel-find mgr name
+    in when ch
+      is Just (dc) -> when dc.dc-state
+        is ChannelBound -> True
+        is otherwise -> False
+      is None -> False
+
+  channel-has-data : ChannelManager, Text -> Boolean
+  channel-has-data (mgr) (name) =
+    let ch = channel-find mgr name
+    in when ch
+      is Just (dc) -> list-length dc.dc-buffer > 0
+      is None -> False
+
+Section: Statistics
+
+  channel-stats : ChannelManager -> Text
+  channel-stats (mgr) =
+    "Channels: " & show (list-length mgr.cm-channels)
+    & " | Recv: " & show mgr.cm-total-recv
+    & " | Sent: " & show mgr.cm-total-sent

@@ -1,0 +1,298 @@
+Chapter: StoryGraph
+  cites Explorer chapter NameForge
+
+ A story is a GRAPH, not a book: events are nodes, causal links are edges, and
+ the outline gets filled out at playtime. Two standard breakdowns compose it:
+
+   ARCHETYPE -- the macro shape, the classic plots: Hero's Journey, Tragedy
+     (Oedipus), Overcoming the Monster (Heracles), the Quest, Voyage and Return,
+     Rags to Riches, Rebirth.
+   MOTIF -- the little story bit, the objective threaded through it: save the
+     captive, slay the villain, find lost kin, recover the relic, avenge the
+     fallen, escape, protect, overthrow, uncover, survive.
+
+ forge-story-as seed arc motif -> Story spins the chosen shape around the chosen
+ objective, using a forged Cast (hero, villain, mentor, captive, kin, relic,
+ places...). KEY FRAMES are certain; the final beat branches into possibilities
+ resolved at playtime. Deterministic: same seed+arc+motif = same saga.
+
+ We say:
+
+Section: Types
+
+  Event = record {
+    id : Integer,
+    key-frame : Boolean,
+    label : Text,
+    detail : Text,
+    leads-to : List Integer
+  }
+
+  Story = record {
+    title : Text,
+    arc : Text,
+    motif : Text,
+    hero : Text,
+    villain : Text,
+    goal : Text,
+    events : List Event
+  }
+
+  mk-event : Integer, Boolean, Text, Text, List Integer -> Event
+  mk-event (id) (key) (label) (detail) (next) =
+    Event { id = id, key-frame = key, label = label, detail = detail, leads-to = next }
+
+Section: Cast
+
+  doom-words : List Text
+  doom-words = ["Withering", "Long Night", "Hollowing", "Sundering", "Crimson Tide", "Great Silence", "Unmaking", "Pale Doom", "Last Winter", "Drowning Dark"]
+
+  captive-titles : List Text
+  captive-titles = ["Princess", "Prince", "Lady", "Lord", "the Heir", "young", "the Oracle"]
+
+  Cast = record {
+    kingdom : Text,
+    hero : Text,
+    villain : Text,
+    mentor : Text,
+    ally : Text,
+    captive : Text,
+    kin : Text,
+    fallen : Text,
+    relic : Text,
+    home : Text,
+    capital : Text,
+    region : Text,
+    bastion : Text,
+    wilds : Text,
+    doom : Text
+  }
+
+  forge-cast : Integer -> Cast
+  forge-cast (s) =
+    let w = forge-setting s
+    in let vil = forge-ruler (s + 6203)
+    in Cast {
+      kingdom = w.kingdom,
+      hero = forge-person (s + 5101),
+      villain = vil,
+      mentor = forge-person (s + 7307),
+      ally = forge-person (s + 8419),
+      captive = pick captive-titles s 71 & " " & forge-person (s + 9521),
+      kin = forge-person (s + 10631),
+      fallen = forge-person (s + 11743),
+      relic = list-at (w.items) 0,
+      home = list-at (w.villages) 0,
+      capital = w.capital,
+      region = list-at (w.regions) 0,
+      bastion = forge-castle (s + 12853),
+      wilds = list-at (w.forests) 0,
+      doom = "the " & pick doom-words s 91 & " of " & vil
+    }
+
+Section: Motif (the little story bits)
+
+  Motif =
+   | Rescue
+   | Slay
+   | FindKin
+   | Recover
+   | Avenge
+   | Escape
+   | Protect
+   | Overthrow
+   | Uncover
+   | Survive
+
+  motif-name : Motif -> Text
+  motif-name (m) =
+    when m
+      is Rescue -> "Save the captive"
+      is Slay -> "Slay the villain"
+      is FindKin -> "Find lost kin"
+      is Recover -> "Recover the relic"
+      is Avenge -> "Avenge the fallen"
+      is Escape -> "Escape"
+      is Protect -> "Protect the home"
+      is Overthrow -> "Overthrow the tyrant"
+      is Uncover -> "Uncover the truth"
+      is Survive -> "Survive"
+
+  motif-goal : Motif, Cast -> Text
+  motif-goal (m) (c) =
+    when m
+      is Rescue -> "save " & c.captive & " from " & c.villain
+      is Slay -> "slay " & c.villain & " and end " & c.doom
+      is FindKin -> "find " & c.kin & ", your father, lost these long years"
+      is Recover -> "recover " & c.relic & " from " & c.bastion
+      is Avenge -> "avenge " & c.fallen & ", slain by " & c.villain
+      is Escape -> "escape " & c.bastion & " before " & c.doom & " takes hold"
+      is Protect -> "protect " & c.home & " from " & c.villain
+      is Overthrow -> "overthrow " & c.villain & " and free " & c.capital
+      is Uncover -> "uncover the truth behind " & c.doom
+      is Survive -> "outlast " & c.doom & " in " & c.wilds
+
+  parse-motif : Text -> Motif
+  parse-motif (t) =
+    if t == "Slay" then Slay
+    else if t == "FindKin" then FindKin
+    else if t == "Recover" then Recover
+    else if t == "Avenge" then Avenge
+    else if t == "Escape" then Escape
+    else if t == "Protect" then Protect
+    else if t == "Overthrow" then Overthrow
+    else if t == "Uncover" then Uncover
+    else if t == "Survive" then Survive
+    else Rescue
+
+  all-motifs : List Text
+  all-motifs = ["Rescue", "Slay", "FindKin", "Recover", "Avenge", "Escape", "Protect", "Overthrow", "Uncover", "Survive"]
+
+Section: Archetype (the macro shape)
+
+  StoryArc =
+   | HerosJourney
+   | OvercomingMonster
+   | Tragedy
+   | Quest
+   | VoyageReturn
+   | RagsToRiches
+   | Rebirth
+
+  arc-name : StoryArc -> Text
+  arc-name (a) =
+    when a
+      is HerosJourney -> "Hero's Journey"
+      is OvercomingMonster -> "Overcoming the Monster"
+      is Tragedy -> "Tragedy"
+      is Quest -> "The Quest"
+      is VoyageReturn -> "Voyage and Return"
+      is RagsToRiches -> "Rags to Riches"
+      is Rebirth -> "Rebirth"
+
+  parse-arc : Text -> StoryArc
+  parse-arc (t) =
+    if t == "OvercomingMonster" then OvercomingMonster
+    else if t == "Tragedy" then Tragedy
+    else if t == "Quest" then Quest
+    else if t == "VoyageReturn" then VoyageReturn
+    else if t == "RagsToRiches" then RagsToRiches
+    else if t == "Rebirth" then Rebirth
+    else HerosJourney
+
+  all-arcs : List Text
+  all-arcs = ["HerosJourney", "OvercomingMonster", "Tragedy", "Quest", "VoyageReturn", "RagsToRiches", "Rebirth"]
+
+Section: Beats per archetype (key frames 1-5 -> branch 6/7/8)
+
+  arc-events : StoryArc, Motif, Cast -> List Event
+  arc-events (arc) (m) (c) =
+    let goal = motif-goal m c
+    in when arc
+      is HerosJourney -> [
+        mk-event 1 True "Ordinary World" (c.hero & " lived untested in " & c.home & ", in the Kingdom of " & c.kingdom & ".") [2],
+        mk-event 2 True "Call to Adventure" ("Word came that " & c.hero & " alone could " & goal & ".") [3],
+        mk-event 3 True "Mentor & Threshold" (c.mentor & " gave " & c.hero & " " & c.relic & ", and they crossed into " & c.wilds & ".") [4],
+        mk-event 4 True "Trials" ("Through " & c.region & ", " & c.hero & " won " & c.ally & " and was sorely tested.") [5],
+        mk-event 5 True "The Ordeal" ("At " & c.bastion & ", " & c.hero & " faced " & c.villain & " and " & c.doom & ".") [6, 7, 8],
+        mk-event 6 False "Return (triumph)" (c.hero & " did " & goal & ", and came home to " & c.capital & " transformed.") [],
+        mk-event 7 False "The Abyss (ruin)" (c.hero & " fell at " & c.bastion & ", and " & c.doom & " spread over " & c.region & ".") [],
+        mk-event 8 False "Changed (bargain)" (c.hero & " prevailed, but was forever changed by what it cost.") [] ]
+      is OvercomingMonster -> [
+        mk-event 1 True "The Threat" (c.villain & " loosed " & c.doom & " upon " & c.region & ".") [2],
+        mk-event 2 True "The Vow" (c.hero & " of " & c.home & " swore to " & goal & ".") [3],
+        mk-event 3 True "Preparation" (c.hero & " took up " & c.relic & " and sought out " & c.ally & ".") [4],
+        mk-event 4 True "The Lair" ("They came through " & c.wilds & " to " & c.bastion & ", the beast's seat.") [5],
+        mk-event 5 True "The Battle" (c.hero & " closed with " & c.villain & " at last.") [6, 7, 8],
+        mk-event 6 False "Slain (triumph)" (c.hero & " struck the monster down and " & goal & " was done.") [],
+        mk-event 7 False "Devoured (ruin)" (c.villain & " proved too strong; " & c.hero & " was lost and " & c.doom & " reigns.") [],
+        mk-event 8 False "Pyrrhic (bargain)" ("The beast died, but so did much of what " & c.hero & " loved.") [] ]
+      is Tragedy -> [
+        mk-event 1 True "The Height" (c.hero & " rose beloved and powerful in " & c.capital & ".") [2],
+        mk-event 2 True "The Flaw" ("A fatal certainty drove " & c.hero & " to " & goal & ", blind to its cost.") [3],
+        mk-event 3 True "Fateful Choice" (c.hero & " spurned the counsel of " & c.mentor & " and pressed on.") [4],
+        mk-event 4 True "Unravelling" ("The truth of " & c.doom & " turned " & c.hero & "'s own deeds against them.") [5],
+        mk-event 5 True "Recognition" ("At " & c.bastion & ", " & c.hero & " saw what they had wrought.") [6, 7, 8],
+        mk-event 6 False "Downfall" (c.hero & " was cast down and exiled into " & c.wilds & ".") [],
+        mk-event 7 False "Madness" (c.hero & ", undone, was lost to grief and " & c.doom & ".") [],
+        mk-event 8 False "Bitter Peace" (c.hero & " endured, but ruled a hollow " & c.capital & " alone.") [] ]
+      is Quest -> [
+        mk-event 1 True "The Charge" (c.hero & " was charged to " & goal & ".") [2],
+        mk-event 2 True "The Company" (c.ally & " and " & c.mentor & " joined the road.") [3],
+        mk-event 3 True "The Long Road" ("Trials beset them across " & c.region & " and " & c.wilds & ".") [4],
+        mk-event 4 True "Arrival" ("They reached " & c.bastion & ", journey's end.") [5],
+        mk-event 5 True "The Final Trial" ("Only " & c.villain & " stood between them and the goal.") [6, 7, 8],
+        mk-event 6 False "Goal Won (triumph)" (c.hero & " did " & goal & " and bore the prize to " & c.capital & ".") [],
+        mk-event 7 False "Scattered (ruin)" ("The company broke; the quest failed and " & c.doom & " held.") [],
+        mk-event 8 False "Costly (bargain)" ("The goal was won, but " & c.ally & " did not return.") [] ]
+      is VoyageReturn -> [
+        mk-event 1 True "Departure" (c.hero & " left " & c.home & " behind.") [2],
+        mk-event 2 True "The Strange Land" (c.hero & " entered " & c.wilds & ", a world unlike any home.") [3],
+        mk-event 3 True "Wonder" ("Marvels and " & c.ally & " met them, but " & c.doom & " lurked beneath.") [4],
+        mk-event 4 True "The Threat Closes" (c.villain & " closed in; now " & c.hero & " had to " & goal & ".") [5],
+        mk-event 5 True "The Escape" (c.hero & " fled toward " & c.capital & " with the danger at their heels.") [6, 7, 8],
+        mk-event 6 False "Home, Changed (triumph)" (c.hero & " returned to " & c.home & " wiser, the goal achieved.") [],
+        mk-event 7 False "Lost (ruin)" (c.hero & " never escaped " & c.wilds & "; " & c.doom & " kept them.") [],
+        mk-event 8 False "Hollow Return (bargain)" (c.hero & " came home, but home no longer felt like home.") [] ]
+      is RagsToRiches -> [
+        mk-event 1 True "The Lowly" (c.hero & " was nameless and poor in " & c.home & ".") [2],
+        mk-event 2 True "The Chance" ("A single chance came: to " & goal & ".") [3],
+        mk-event 3 True "The Rise" (c.hero & " gained " & c.relic & " and renown across " & c.region & ".") [4],
+        mk-event 4 True "The Fall" (c.villain & " cast " & c.hero & " down to nothing again.") [5],
+        mk-event 5 True "The True Test" ("At " & c.bastion & ", " & c.hero & "'s real worth was weighed.") [6, 7, 8],
+        mk-event 6 False "Crowned (triumph)" (c.hero & " did " & goal & " and was raised up in " & c.capital & ".") [],
+        mk-event 7 False "Undone (ruin)" (c.hero & " lost everything a second and final time.") [],
+        mk-event 8 False "Risen, Alone (bargain)" (c.hero & " gained the crown but kept no one to share it.") [] ]
+      is Rebirth -> [
+        mk-event 1 True "The Shadow" (c.doom & " crept over " & c.hero & " and all of " & c.region & ".") [2],
+        mk-event 2 True "The Threat Grows" ("As " & c.villain & " waxed strong, " & c.hero & " had to " & goal & ".") [3],
+        mk-event 3 True "The Despair" (c.hero & " was imprisoned and failing within " & c.bastion & ".") [4],
+        mk-event 4 True "The Spark" (c.ally & " and " & c.relic & " kindled a last hope.") [5],
+        mk-event 5 True "Redemption" (c.hero & " rose against " & c.villain & " in the dark.") [6, 7, 8],
+        mk-event 6 False "Renewed (triumph)" (c.hero & " threw off " & c.doom & " and " & goal & " was done.") [],
+        mk-event 7 False "Consumed (ruin)" ("The dark was too deep; " & c.doom & " took " & c.hero & ".") [],
+        mk-event 8 False "Changed (bargain)" (c.hero & " was reborn, but not as the one they had been.") [] ]
+
+Section: Forge
+
+  forge-story-as : Integer, StoryArc, Motif -> Story
+  forge-story-as (s) (arc) (m) =
+    let c = forge-cast s
+    in Story {
+      title = arc-name arc & " of " & c.hero,
+      arc = arc-name arc,
+      motif = motif-name m,
+      hero = c.hero,
+      villain = c.villain,
+      goal = motif-goal m c,
+      events = arc-events arc m c
+    }
+
+  forge-story : Integer -> Story
+  forge-story (s) = forge-story-as s HerosJourney Slay
+
+Section: Format (outline view of the graph)
+
+  edges-text : List Integer, Integer, Integer, Text -> Text
+  edges-text (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else edges-text xs (i + 1) n (if i == 0 then show (list-at xs i) else acc & ", " & show (list-at xs i))
+
+  event-line : Event -> Text
+  event-line (e) =
+    let mark = if e.key-frame then "[KEY] " else "  ?   "
+    in let arrow = if list-length (e.leads-to) == 0 then "" else "   -> " & edges-text (e.leads-to) 0 (list-length (e.leads-to)) ""
+    in mark & show (e.id) & ". " & e.label & " - " & e.detail & arrow
+
+  events-text : List Event, Integer, Integer, Text -> Text
+  events-text (es) (i) (n) (acc) =
+    if i >= n then acc
+    else events-text es (i + 1) n (acc & event-line (list-at es i) & "\n")
+
+  format-story : Story -> Text
+  format-story (st) =
+    st.title & "\n"
+    & "Archetype: " & st.arc & "   Motif: " & st.motif & "\n"
+    & "Goal: " & st.goal & "\n"
+    & "Key frames are certain; '?' branches are possibilities resolved at playtime.\n\n"
+    & events-text (st.events) 0 (list-length (st.events)) ""

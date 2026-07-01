@@ -1,0 +1,162 @@
+Chapter: RenderModes
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Game chapter Rasterizer
+  cites Spark chapter SceneCamera
+  cites Spark chapter SceneGraph
+  cites Spark chapter SceneRender
+
+ Viewport render mode switching: solid, wireframe, flat-shaded,
+ textured, and x-ray. Each mode uses a different rendering
+ path through the same scene graph.
+
+ We say:
+
+Section: Types
+
+  RenderMode =
+    | RmSolid
+    | RmWireframe
+    | RmFlatShade
+    | RmTextured
+    | RmXray
+    | RmBoundingBox
+
+  RenderConfig = record {
+    rc-mode : RenderMode,
+    rc-bg-color : Integer,
+    rc-wire-color : Integer,
+    rc-xray-opacity : Real,
+    rc-show-normals : Boolean,
+    rc-show-grid : Boolean,
+    rc-show-axes : Boolean
+  }
+
+Section: Construction
+
+  render-config-default : RenderConfig
+  render-config-default = RenderConfig {
+    rc-mode = RmSolid,
+    rc-bg-color = #333333,
+    rc-wire-color = #FFFFFF,
+    rc-xray-opacity = 0.3,
+    rc-show-normals = False,
+    rc-show-grid = True,
+    rc-show-axes = True
+  }
+
+Section: Mode Switching
+
+  render-config-set-mode : RenderConfig, RenderMode -> RenderConfig
+  render-config-set-mode (cfg) (mode) = __record-set cfg "rc-mode" mode
+
+  render-config-cycle : RenderConfig -> RenderConfig
+  render-config-cycle (cfg) =
+    let next = when cfg.rc-mode
+      is RmSolid -> RmWireframe
+      is RmWireframe -> RmFlatShade
+      is RmFlatShade -> RmTextured
+      is RmTextured -> RmXray
+      is RmXray -> RmBoundingBox
+      is RmBoundingBox -> RmSolid
+    in __record-set cfg "rc-mode" next
+
+Section: Rendering
+
+  rm-render-scene : SceneGraph3D, SceneRenderCtx, RenderConfig, Integer, Integer -> Framebuf
+  rm-render-scene (sg) (ctx) (cfg) (vp-w) (vp-h) =
+    when cfg.rc-mode
+      is RmSolid -> scene-render sg ctx vp-w vp-h (cfg.rc-bg-color)
+      is RmWireframe -> scene-render-wireframe sg ctx vp-w vp-h (cfg.rc-bg-color) (cfg.rc-wire-color)
+      is RmFlatShade -> scene-render sg ctx vp-w vp-h (cfg.rc-bg-color)
+      is RmXray -> rm-render-xray sg ctx cfg vp-w vp-h
+      is otherwise -> scene-render sg ctx vp-w vp-h (cfg.rc-bg-color)
+
+  rm-render-xray : SceneGraph3D, SceneRenderCtx, RenderConfig, Integer, Integer -> Framebuf
+  rm-render-xray (sg) (ctx) (cfg) (vp-w) (vp-h) =
+    let solid = scene-render sg ctx vp-w vp-h (cfg.rc-bg-color)
+    in let wire = scene-render-wireframe sg ctx vp-w vp-h 0 (cfg.rc-wire-color)
+    in rm-blend-xray solid wire (cfg.rc-xray-opacity) 0 (vp-w * vp-h)
+
+  rm-blend-xray : Framebuf, Framebuf, Real, Integer, Integer -> Framebuf
+  rm-blend-xray (solid) (wire) (opacity) (i) (total) =
+    if i >= total then solid
+    else let wp = list-at (wire.fb-pixels) i
+    in let fb2 = if wp /= 0 then
+      let sp = list-at (solid.fb-pixels) i
+      in let blended = rm-blend-px sp wp opacity
+      in Framebuf { fb-width = solid.fb-width, fb-height = solid.fb-height, fb-pixels = list-set-at (solid.fb-pixels) i blended }
+    else solid
+    in rm-blend-xray fb2 wire opacity (i + 1) total
+
+  rm-blend-px : Integer, Integer, Real -> Integer
+  rm-blend-px (dst) (src) (alpha) =
+    let dr = dst / 65536
+    in let dg = dst / 256 - dr * 256
+    in let db = dst - dst / 256 * 256
+    in let sr = src / 65536
+    in let sg2 = src / 256 - sr * 256
+    in let sb = src - src / 256 * 256
+    in let rr = real-to-int (real-from-int dr + real-from-int (sr - dr) * alpha)
+    in let rg = real-to-int (real-from-int dg + real-from-int (sg2 - dg) * alpha)
+    in let rb = real-to-int (real-from-int db + real-from-int (sb - db) * alpha)
+    in rm-clamp rr 0 255 * 65536 + rm-clamp rg 0 255 * 256 + rm-clamp rb 0 255
+
+Section: Overlays
+
+  rm-draw-axes : Framebuf, SceneRenderCtx, Integer, Integer -> Framebuf
+  rm-draw-axes (fb) (ctx) (vp-w) (vp-h) =
+    let origin = vec3-zero
+    in let vp = spark-camera-vp (ctx.src-camera)
+    in let sx = rm-project-x vp origin vp-w vp-h
+    in let sy = rm-project-y vp origin vp-w vp-h
+    in if sx < 0 then fb
+    else let x-end = vec3-new 1.0 0.0 0.0
+    in let y-end = vec3-new 0.0 1.0 0.0
+    in let z-end = vec3-new 0.0 0.0 1.0
+    in let xe = rm-project-x vp x-end vp-w vp-h
+    in let ye = rm-project-y vp x-end vp-w vp-h
+    in let fb2 = if xe >= 0 then fb-line fb sx sy xe ye 16711680 else fb
+    in let yex = rm-project-x vp y-end vp-w vp-h
+    in let yey = rm-project-y vp y-end vp-w vp-h
+    in let fb3 = if yex >= 0 then fb-line fb2 sx sy yex yey 65280 else fb2
+    in let zex = rm-project-x vp z-end vp-w vp-h
+    in let zey = rm-project-y vp z-end vp-w vp-h
+    in if zex >= 0 then fb-line fb3 sx sy zex zey 255 else fb3
+
+  rm-project-x : Mat4, Vec3, Integer, Integer -> Integer
+  rm-project-x (mvp) (v) (vp-w) (vp-h) =
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1.0 })
+    in if clip.v4w <= 0.0 then -1
+    else real-to-int ((clip.v4x / clip.v4w + 1.0) * real-from-int vp-w / 2.0)
+
+  rm-project-y : Mat4, Vec3, Integer, Integer -> Integer
+  rm-project-y (mvp) (v) (vp-w) (vp-h) =
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1.0 })
+    in if clip.v4w <= 0.0 then -1
+    else real-to-int ((1.0 - clip.v4y / clip.v4w) * real-from-int vp-h / 2.0)
+
+Section: Helpers
+
+  rm-clamp : Integer, Integer, Integer -> Integer
+  rm-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Info
+
+  render-mode-name : RenderMode -> Text
+  render-mode-name (mode) =
+    when mode
+      is RmSolid -> "Solid"
+      is RmWireframe -> "Wireframe"
+      is RmFlatShade -> "Flat"
+      is RmTextured -> "Textured"
+      is RmXray -> "X-Ray"
+      is RmBoundingBox -> "BBox"
+
+  render-config-info : RenderConfig -> Text
+  render-config-info (cfg) =
+    render-mode-name (cfg.rc-mode) &
+    (if cfg.rc-show-grid then " +grid" else "") &
+    (if cfg.rc-show-axes then " +axes" else "")
+
+Page 1

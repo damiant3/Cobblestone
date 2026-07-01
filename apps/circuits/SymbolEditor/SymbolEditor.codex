@@ -1,0 +1,175 @@
+Chapter: SymbolEditor
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ The symbol editor state machine. Manages the active tool, pin and
+ graphic selection, cursor tracking, grid snapping, and body style
+ switching. This is the top-level controller for symbol editing.
+
+Section: Editor Tool
+
+  SyeTool =
+    | SyeToolSelect
+    | SyeToolPin
+    | SyeToolLine
+    | SyeToolRect
+    | SyeToolCircle
+    | SyeToolArc
+    | SyeToolText
+    | SyeToolPolyline
+    | SyeToolAnchor
+
+  sye-tool-name : SyeTool -> Text
+  sye-tool-name (t) = when t
+    is SyeToolSelect -> "Select"
+    is SyeToolPin -> "Place Pin"
+    is SyeToolLine -> "Line"
+    is SyeToolRect -> "Rectangle"
+    is SyeToolCircle -> "Circle"
+    is SyeToolArc -> "Arc"
+    is SyeToolText -> "Text"
+    is SyeToolPolyline -> "Polyline"
+    is SyeToolAnchor -> "Set Anchor"
+
+Section: Editor State
+
+  SyeEditorState = record {
+    sye-active-tool : SyeTool,
+    sye-cursor-x : Integer,
+    sye-cursor-y : Integer,
+    sye-grid-size : Integer,
+    sye-grid-snap : Integer,
+    sye-selected-pins : List Text,
+    sye-selected-graphics : List Integer,
+    sye-active-body-style : Integer,
+    sye-pin-length-default : Integer,
+    sye-modified : Integer
+  }
+
+  empty-sye-state : SyeEditorState
+  empty-sye-state = SyeEditorState {
+    sye-active-tool = SyeToolSelect,
+    sye-cursor-x = 0,
+    sye-cursor-y = 0,
+    sye-grid-size = 1270000,
+    sye-grid-snap = 1,
+    sye-selected-pins = [],
+    sye-selected-graphics = [],
+    sye-active-body-style = 1,
+    sye-pin-length-default = 2540000,
+    sye-modified = 0
+  }
+
+Section: Tool Switching
+
+  sye-set-tool : SyeEditorState, SyeTool -> SyeEditorState
+  sye-set-tool (st) (tool) = SyeEditorState {
+    sye-active-tool = tool,
+    sye-cursor-x = st.sye-cursor-x,
+    sye-cursor-y = st.sye-cursor-y,
+    sye-grid-size = st.sye-grid-size,
+    sye-grid-snap = st.sye-grid-snap,
+    sye-selected-pins = st.sye-selected-pins,
+    sye-selected-graphics = st.sye-selected-graphics,
+    sye-active-body-style = st.sye-active-body-style,
+    sye-pin-length-default = st.sye-pin-length-default,
+    sye-modified = st.sye-modified
+  }
+
+  sye-clear-selection : SyeEditorState -> SyeEditorState
+  sye-clear-selection (st) = SyeEditorState {
+    sye-active-tool = st.sye-active-tool,
+    sye-cursor-x = st.sye-cursor-x,
+    sye-cursor-y = st.sye-cursor-y,
+    sye-grid-size = st.sye-grid-size,
+    sye-grid-snap = st.sye-grid-snap,
+    sye-selected-pins = [],
+    sye-selected-graphics = [],
+    sye-active-body-style = st.sye-active-body-style,
+    sye-pin-length-default = st.sye-pin-length-default,
+    sye-modified = st.sye-modified
+  }
+
+Section: Keyboard Shortcuts
+
+  SyeKeyAction =
+    | SyeKeyNone
+    | SyeKeySetTool (SyeTool)
+    | SyeKeyDelete
+    | SyeKeyRotate
+    | SyeKeyMirror
+    | SyeKeyEscape
+    | SyeKeyCopy
+    | SyeKeyPaste
+    | SyeKeySelectAll
+    | SyeKeyZoomFit
+    | SyeKeyZoomIn
+    | SyeKeyZoomOut
+    | SyeKeySave
+    | SyeKeyUndo
+    | SyeKeyRedo
+
+  sye-key-to-action : Integer -> SyeKeyAction
+  sye-key-to-action (key) =
+    if key == 80 then SyeKeySetTool SyeToolPin
+    else if key == 76 then SyeKeySetTool SyeToolLine
+    else if key == 82 then SyeKeySetTool SyeToolRect
+    else if key == 67 then SyeKeySetTool SyeToolCircle
+    else if key == 65 then SyeKeySetTool SyeToolArc
+    else if key == 84 then SyeKeySetTool SyeToolText
+    else if key == 27 then SyeKeyEscape
+    else if key == 46 then SyeKeyDelete
+    else SyeKeyNone
+
+Section: Pin Table
+
+ A flat table representation of pins for import/export and bulk
+ editing. Electrical type and shape are encoded as integers matching
+ the SymPin conventions in SymbolModel.
+
+  PinTableEntry = record {
+    pte-number : Text,
+    pte-name : Text,
+    pte-electrical-type : Integer,
+    pte-shape : Integer,
+    pte-x : Integer,
+    pte-y : Integer,
+    pte-orientation : Integer,
+    pte-length : Integer,
+    pte-hidden : Integer
+  }
+
+  pin-entry-to-line : PinTableEntry -> Text
+  pin-entry-to-line (e) =
+    e.pte-number & "," &
+    e.pte-name & "," &
+    show e.pte-electrical-type & "," &
+    show e.pte-shape & "," &
+    show e.pte-x & "," &
+    show e.pte-y & "," &
+    show e.pte-orientation & "," &
+    show e.pte-length & "," &
+    show e.pte-hidden
+
+  pin-table-header : Text
+  pin-table-header = "Number,Name,ElecType,Shape,X,Y,Orientation,Length,Hidden"
+
+  pin-table-join-line : Text, Text -> Text
+  pin-table-join-line (line) (remainder) =
+    if remainder == "" then line
+    else line & "\n" & remainder
+
+  pin-table-build-lines : List PinTableEntry -> Text
+  pin-table-build-lines (entries) = pin-table-build-lines-loop entries 0 (list-length entries)
+
+  pin-table-build-lines-loop : List PinTableEntry, Integer, Integer -> Text
+  pin-table-build-lines-loop (entries) (i) (n) =
+    if i >= n then ""
+    else pin-table-join-line (pin-entry-to-line (list-at entries i)) (pin-table-build-lines-loop entries (i + 1) n)
+
+  pin-table-to-csv : List PinTableEntry -> Text
+  pin-table-to-csv (entries) =
+    pin-table-header & "\n" & pin-table-build-lines entries
+
+  csv-line-to-pin-entry : Text -> Maybe PinTableEntry
+  csv-line-to-pin-entry (line) = None

@@ -1,0 +1,174 @@
+Chapter: Graph
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ Directed weighted graph with adjacency-list representation. Vertices
+ are integers 0..n-1. Each vertex holds a list of outbound edges.
+ Supports breadth-first search, depth-first search, and topological
+ sort. Undirected graphs are modeled by adding edges in both directions.
+
+ A GraphEdge is a record containing:
+   target -- destination vertex index.
+   weight -- integer edge weight.
+
+ A Graph is a record containing:
+   adj          -- list of adjacency lists, one per vertex.
+   num-vertices -- total number of vertices.
+
+ A BfsState is a record containing:
+   queue, visited, result -- working state for breadth-first expansion.
+
+ A TopoState is a record containing:
+   visited, result -- working state for topological sort.
+
+ To graph-new gives Graph,
+   creating a graph with the given number of vertices and no edges.
+
+ To graph-add-edge gives Graph,
+   adding a directed edge from one vertex to another with the given weight.
+
+ To graph-add-undirected gives Graph,
+   adding edges in both directions between two vertices.
+
+ To graph-bfs gives List Integer,
+   returning vertices in breadth-first order from the start vertex.
+
+ To graph-dfs gives List Integer,
+   returning vertices in depth-first order from the start vertex.
+
+ To graph-topo-sort gives List Integer,
+   returning vertices in topological order.
+
+ To graph-num-edges gives Integer,
+   returning the total number of directed edges in the graph.
+
+ To format-int-list gives Text,
+   formatting an integer list as comma-separated values.
+
+ We say:
+
+Section: Type
+  GraphEdge = record {
+    target : Integer,
+    weight : Integer
+  }
+
+  Graph = record {
+    adj : List (List GraphEdge),
+    num-vertices : Integer
+  }
+
+Section: Construction
+  graph-new : Integer -> Graph
+  graph-new (n) = Graph { adj = graph-empty-adj n 0 [], num-vertices = n }
+
+  graph-empty-adj : Integer, Integer, List (List GraphEdge) -> List (List GraphEdge)
+  graph-empty-adj (n) (i) (acc) =
+    if i >= n then acc
+    else graph-empty-adj n (i + 1) (list-push acc [])
+
+  graph-add-edge : Graph, Integer, Integer, Integer -> Graph
+  graph-add-edge (g) (from) (to) (weight) =
+    let edges = list-at (g.adj) from
+    in let new-edges = list-push edges (GraphEdge { target = to, weight = weight })
+    in Graph { adj = list-set-at (g.adj) from new-edges, num-vertices = g.num-vertices }
+
+  graph-add-undirected : Graph, Integer, Integer, Integer -> Graph
+  graph-add-undirected (g) (a) (b) (weight) =
+    graph-add-edge (graph-add-edge g a b weight) b a weight
+
+Section: BFS
+  graph-bfs : Graph, Integer -> List Integer
+  graph-bfs (g) (start) =
+    let visited = list-zeros (g.num-vertices)
+    in let visited2 = list-set-at visited start 1
+    in graph-bfs-loop g [start] visited2 [start]
+
+  graph-bfs-loop : Graph, List Integer, List Integer, List Integer -> List Integer
+  graph-bfs-loop (g) (queue) (visited) (result) =
+    if list-length queue == 0 then result
+    else let v = list-at queue 0
+    in let rest = list-tail queue
+    in let expanded = graph-bfs-expand g v (list-at (g.adj) v) 0 visited rest result
+    in graph-bfs-loop g (expanded.queue) (expanded.visited) (expanded.result)
+
+  BfsState = record { queue : List Integer, visited : List Integer, result : List Integer }
+
+  graph-bfs-expand : Graph, Integer, List GraphEdge, Integer, List Integer, List Integer, List Integer -> BfsState
+  graph-bfs-expand (g) (v) (edges) (i) (visited) (queue) (result) =
+    if i >= list-length edges then BfsState { queue = queue, visited = visited, result = result }
+    else let e = list-at edges i
+    in if list-at visited (e.target) == 1 then graph-bfs-expand g v edges (i + 1) visited queue result
+    else graph-bfs-expand g v edges (i + 1) (list-set-at visited (e.target) 1) (list-push queue (e.target)) (list-push result (e.target))
+
+Section: DFS
+  DfsState = record { dfs-visited : List Integer, dfs-result : List Integer }
+
+  graph-dfs : Graph, Integer -> List Integer
+  graph-dfs (g) (start) =
+    let visited = list-zeros (g.num-vertices)
+    in let state = graph-dfs-visit g start visited []
+    in state.dfs-result
+
+  graph-dfs-visit : Graph, Integer, List Integer, List Integer -> DfsState
+  graph-dfs-visit (g) (v) (visited) (result) =
+    if list-at visited v == 1 then DfsState { dfs-visited = visited, dfs-result = result }
+    else let visited2 = list-set-at visited v 1
+    in let result2 = list-push result v
+    in graph-dfs-neighbors g (list-at (g.adj) v) 0 visited2 result2
+
+  graph-dfs-neighbors : Graph, List GraphEdge, Integer, List Integer, List Integer -> DfsState
+  graph-dfs-neighbors (g) (edges) (i) (visited) (result) =
+    if i >= list-length edges then DfsState { dfs-visited = visited, dfs-result = result }
+    else let e = list-at edges i
+    in let state = graph-dfs-visit g (e.target) visited result
+    in graph-dfs-neighbors g edges (i + 1) (state.dfs-visited) (state.dfs-result)
+
+Section: Topological Sort
+  graph-topo-sort : Graph -> List Integer
+  graph-topo-sort (g) =
+    let visited = list-zeros (g.num-vertices)
+    in graph-topo-all g 0 visited []
+
+  graph-topo-all : Graph, Integer, List Integer, List Integer -> List Integer
+  graph-topo-all (g) (v) (visited) (result) =
+    if v >= g.num-vertices then result
+    else if list-at visited v == 1 then graph-topo-all g (v + 1) visited result
+    else let state = graph-topo-visit g v visited result
+    in graph-topo-all g (v + 1) (state.visited) (state.result)
+
+  TopoState = record { visited : List Integer, result : List Integer }
+
+  graph-topo-visit : Graph, Integer, List Integer, List Integer -> TopoState
+  graph-topo-visit (g) (v) (visited) (result) =
+    if list-at visited v == 1 then TopoState { visited = visited, result = result }
+    else let visited2 = list-set-at visited v 1
+    in let state = graph-topo-neighbors g (list-at (g.adj) v) 0 visited2 result
+    in TopoState { visited = state.visited, result = list-push (state.result) v }
+
+  graph-topo-neighbors : Graph, List GraphEdge, Integer, List Integer, List Integer -> TopoState
+  graph-topo-neighbors (g) (edges) (i) (visited) (result) =
+    if i >= list-length edges then TopoState { visited = visited, result = result }
+    else let e = list-at edges i
+    in let state = graph-topo-visit g (e.target) visited result
+    in graph-topo-neighbors g edges (i + 1) (state.visited) (state.result)
+
+Section: Helpers
+  graph-num-edges : Graph -> Integer
+  graph-num-edges (g) = graph-count-edges (g.adj) 0 (g.num-vertices) 0
+
+  graph-count-edges : List (List GraphEdge), Integer, Integer, Integer -> Integer
+  graph-count-edges (adj) (i) (n) (acc) =
+    if i >= n then acc
+    else graph-count-edges adj (i + 1) n (acc + list-length (list-at adj i))
+
+  format-int-list : List Integer -> Text
+  format-int-list (xs) = format-ints-loop xs 0 (list-length xs) ""
+
+  format-ints-loop : List Integer, Integer, Integer, Text -> Text
+  format-ints-loop (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else ","
+    in format-ints-loop xs (i + 1) len (acc & sep & show (list-at xs i))
+
+Page 1

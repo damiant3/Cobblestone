@@ -1,0 +1,148 @@
+Chapter: Noise
+  cites Signal chapter Perlin
+  cites Foreword chapter Tuple
+
+ Additional noise generators: value noise, Worley (cellular) noise,
+ fractal Brownian motion, and domain warping. Fixed-point (scale
+ 1000). Complements the Perlin foreword.
+
+ We say:
+
+Section: Value Noise
+  value-noise-1d : Integer -> Integer
+  value-noise-1d (x) =
+    let xi = if x >= 0 then x / 1000 else x / 1000 - 1
+    in let frac = x - xi * 1000
+    in let t = noise-smooth frac
+    in let a = noise-hash-val xi
+    in let b = noise-hash-val (xi + 1)
+    in a + (b - a) * t / 1000
+
+  value-noise-2d : Integer, Integer -> Integer
+  value-noise-2d (x) (y) =
+    let xi = if x >= 0 then x / 1000 else x / 1000 - 1
+    in let yi = if y >= 0 then y / 1000 else y / 1000 - 1
+    in let fx = noise-smooth (x - xi * 1000)
+    in let fy = noise-smooth (y - yi * 1000)
+    in let v00 = noise-hash-val2 xi yi
+    in let v10 = noise-hash-val2 (xi + 1) yi
+    in let v01 = noise-hash-val2 xi (yi + 1)
+    in let v11 = noise-hash-val2 (xi + 1) (yi + 1)
+    in let a = v00 + (v10 - v00) * fx / 1000
+    in let b = v01 + (v11 - v01) * fx / 1000
+    in a + (b - a) * fy / 1000
+
+Section: Worley (Cellular) Noise
+  worley-2d : Integer, Integer -> (Integer, Integer)
+  worley-2d (x) (y) =
+    let xi = if x >= 0 then x / 1000 else x / 1000 - 1
+    in let yi = if y >= 0 then y / 1000 else y / 1000 - 1
+    in let fx = x - xi * 1000
+    in let fy = y - yi * 1000
+    in worley-scan xi yi fx fy (0 - 1) (0 - 1) 999999 999999
+
+  worley-scan : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> (Integer, Integer)
+  worley-scan (xi) (yi) (fx) (fy) (dx) (dy) (f1) (f2) =
+    if dy > 1 then (f1, f2)
+    else if dx > 1 then worley-scan xi yi fx fy (0 - 1) (dy + 1) f1 f2
+    else let nx = xi + dx
+    in let ny = yi + dy
+    in let px = dx * 1000 - fx + worley-point-x nx ny
+    in let py = dy * 1000 - fy + worley-point-y nx ny
+    in let dist = noise-isqrt (px * px + py * py)
+    in let new-f1 = if dist < f1 then dist else f1
+    in let new-f2 = if dist < f1 then f1 else if dist < f2 then dist else f2
+    in worley-scan xi yi fx fy (dx + 1) dy new-f1 new-f2
+
+  worley-point-x : Integer, Integer -> Integer
+  worley-point-x (cx) (cy) =
+    let h = noise-hash-pair cx cy
+    in h * 1000 / 65535
+
+  worley-point-y : Integer, Integer -> Integer
+  worley-point-y (cx) (cy) =
+    let h = noise-hash-pair (cx + 7919) (cy + 104729)
+    in h * 1000 / 65535
+
+Section: Fractal Brownian Motion
+  fbm-2d : Integer, Integer, Integer, Integer, Integer -> Integer
+  fbm-2d (x) (y) (octaves) (lacunarity) (persistence) =
+    fbm-loop x y octaves lacunarity persistence 0 1000 1000 0
+
+  fbm-loop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fbm-loop (x) (y) (octaves) (lac) (pers) (i) (freq) (amp) (sum) =
+    if i >= octaves then sum
+    else let val = value-noise-2d (x * freq / 1000) (y * freq / 1000)
+    in let centered = val - 500
+    in fbm-loop x y octaves lac pers (i + 1) (freq * lac / 1000) (amp * pers / 1000) (sum + centered * amp / 1000)
+
+Section: Domain Warping
+  warp-2d : Integer, Integer, Integer -> Integer
+  warp-2d (x) (y) (strength) =
+    let wx = x + value-noise-2d (x + 1730) (y + 5439) * strength / 1000
+    in let wy = y + value-noise-2d (x + 8912) (y + 2741) * strength / 1000
+    in value-noise-2d wx wy
+
+Section: Noise Map Generation
+  noise-map-2d : Integer, Integer, Integer -> List Integer
+  noise-map-2d (width) (height) (scale) =
+    noise-map-loop width height scale 0 0 []
+
+  noise-map-loop : Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  noise-map-loop (w) (h) (scale) (x) (y) (acc) =
+    if y >= h then acc
+    else if x >= w then noise-map-loop w h scale 0 (y + 1) acc
+    else let val = value-noise-2d (x * scale) (y * scale)
+    in noise-map-loop w h scale (x + 1) y (list-push acc val)
+
+  noise-map-min : List Integer -> Integer
+  noise-map-min (vals) = noise-fold-min vals 0 (list-length vals) 999999
+
+  noise-fold-min : List Integer, Integer, Integer, Integer -> Integer
+  noise-fold-min (vals) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at vals i
+    in noise-fold-min vals (i + 1) n (if v < best then v else best)
+
+  noise-map-max : List Integer -> Integer
+  noise-map-max (vals) = noise-fold-max vals 0 (list-length vals) 0
+
+  noise-fold-max : List Integer, Integer, Integer, Integer -> Integer
+  noise-fold-max (vals) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at vals i
+    in noise-fold-max vals (i + 1) n (if v > best then v else best)
+
+Section: Hash Helpers
+  noise-hash-val : Integer -> Integer
+  noise-hash-val (x) =
+    let h = perlin-hash x
+    in let bounded = bit-and h 65535
+    in bounded * 1000 / 65535
+
+  noise-hash-val2 : Integer, Integer -> Integer
+  noise-hash-val2 (x) (y) =
+    let h = perlin-hash2 x y
+    in let bounded = bit-and h 65535
+    in bounded * 1000 / 65535
+
+  noise-hash-pair : Integer, Integer -> Integer
+  noise-hash-pair (x) (y) =
+    let h = bit-xor (x * 2654435761) (y * 2246822519)
+    in let h2 = bit-xor h (bit-shru h 13)
+    in let h3 = h2 * 1103515245 + 12345
+    in let positive = if h3 < 0 then -h3 else h3
+    in bit-and positive 65535
+
+  noise-smooth : Integer -> Integer
+  noise-smooth (t) = t * t * (3000 - 2 * t) / 1000000
+
+  noise-isqrt : Integer -> Integer
+  noise-isqrt (n) = if n <= 0 then 0 else noise-isqrt-loop n (n / 2 + 1)
+
+  noise-isqrt-loop : Integer, Integer -> Integer
+  noise-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else noise-isqrt-loop n next
+
+Page 1

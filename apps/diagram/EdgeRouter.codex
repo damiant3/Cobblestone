@@ -1,0 +1,85 @@
+Chapter: EdgeRouter
+  cites Math chapter Geometry
+  cites Math chapter Bezier
+  cites Diagram chapter DiagramModel
+  cites Foreword chapter ListUtils
+
+ Edge routing algorithms. Computes the path an edge takes
+ between two nodes, accounting for routing mode and node
+ intersection.
+
+Section: Routing
+
+  route-edge : DiagramEdge, DiagramNode, DiagramNode -> List Vec2
+  route-edge (edge) (src) (tgt) =
+    when edge.de-routing
+      is RouteStraight -> route-straight src tgt
+      is RouteOrthogonal -> route-orthogonal src tgt
+      is RouteBezier -> route-bezier-edge src tgt
+      is RouteStepwise -> route-stepwise src tgt
+
+Section: Straight Line
+
+  route-straight : DiagramNode, DiagramNode -> List Vec2
+  route-straight (src) (tgt) =
+    let s = clip-to-border src (node-center tgt)
+    in let t = clip-to-border tgt (node-center src)
+    in [s, t]
+
+Section: Orthogonal (Manhattan)
+
+  route-orthogonal : DiagramNode, DiagramNode -> List Vec2
+  route-orthogonal (src) (tgt) =
+    let sc = node-center src
+    in let tc = node-center tgt
+    in let mid-x = (sc.v2x + tc.v2x) / 2
+    in let s = clip-to-border src (vec2-new mid-x sc.v2y)
+    in let t = clip-to-border tgt (vec2-new mid-x tc.v2y)
+    in [s, vec2-new mid-x s.v2y, vec2-new mid-x t.v2y, t]
+
+Section: Bezier Curve
+
+  route-bezier-edge : DiagramNode, DiagramNode -> List Vec2
+  route-bezier-edge (src) (tgt) =
+    let sc = node-center src
+    in let tc = node-center tgt
+    in let dx = tc.v2x - sc.v2x
+    in let dy = tc.v2y - sc.v2y
+    in let ctrl-offset = rast-abs dx / 3 + rast-abs dy / 3
+    in let c1 = vec2-new (sc.v2x + dx / 3) (sc.v2y)
+    in let c2 = vec2-new (tc.v2x - dx / 3) (tc.v2y)
+    in let s = clip-to-border src tc
+    in let t = clip-to-border tgt sc
+    in [s, c1, c2, t]
+
+Section: Stepwise (L-shaped)
+
+  route-stepwise : DiagramNode, DiagramNode -> List Vec2
+  route-stepwise (src) (tgt) =
+    let sc = node-center src
+    in let tc = node-center tgt
+    in let s = clip-to-border src tc
+    in let t = clip-to-border tgt sc
+    in [s, vec2-new s.v2x t.v2y, t]
+
+Section: Border Clipping
+
+  clip-to-border : DiagramNode, Vec2 -> Vec2
+  clip-to-border (n) (target) =
+    let cx = n.dn-x + n.dn-width / 2
+    in let cy = n.dn-y + n.dn-height / 2
+    in let dx = target.v2x - cx
+    in let dy = target.v2y - cy
+    in let hw = n.dn-width / 2
+    in let hh = n.dn-height / 2
+    in if dx == 0 & dy == 0 then vec2-new cx cy
+    else let abs-dx = rast-abs dx
+    in let abs-dy = rast-abs dy
+    in if abs-dx * hh > abs-dy * hw
+      then let sign-x = if dx > 0 then 1 else (-1)
+        in vec2-new (cx + hw * sign-x) (cy + dy * hw / abs-dx)
+      else let sign-y = if dy > 0 then 1 else (-1)
+        in vec2-new (cx + dx * hh / abs-dy) (cy + hh * sign-y)
+
+  rast-abs : Integer -> Integer
+  rast-abs (x) = if x < 0 then 0 - x else x

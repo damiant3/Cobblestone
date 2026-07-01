@@ -1,0 +1,87 @@
+Chapter: EventBus
+  cites Foreword chapter Maybe
+
+ An Event is a record containing evt-topic, evt-payload, and evt-timestamp.
+ An EventLog is a record containing log-events, log-count, and log-max.
+ To event-new gives an Event with the given topic, payload, and timestamp.
+ To event-log-new gives an empty EventLog with the given maximum capacity.
+ To event-log-add gives a new EventLog with the event appended, dropping the oldest when full.
+ To event-log-filter gives all events matching the given topic.
+ To event-log-last gives the most recent event as a Maybe, or None when the log is empty.
+ To event-log-since gives all events with timestamp at or after the given value.
+ To format-event gives a Text representation of an Event.
+ To format-event-log gives a Text summary of the EventLog count and capacity.
+
+ We say:
+
+Section: Types
+  Event = record {
+    evt-topic : Text,
+    evt-payload : Text,
+    evt-timestamp : Integer
+  }
+
+  EventLog = record {
+    log-events : List Event,
+    log-count : Integer,
+    log-max : Integer
+  }
+
+Section: Construction
+  event-new : Text, Text, Integer -> Event
+  event-new (topic) (payload) (ts) = Event { evt-topic = topic, evt-payload = payload, evt-timestamp = ts }
+
+  event-log-new : Integer -> EventLog
+  event-log-new (max) = EventLog { log-events = [], log-count = 0, log-max = max }
+
+Section: Logging
+  event-log-add : EventLog, Event -> EventLog
+  event-log-add (log) (evt) =
+    let events = if log.log-count >= log.log-max then list-push (evt-drop-first (log.log-events)) evt
+      else list-push (log.log-events) evt
+    in let count = if log.log-count >= log.log-max then log.log-max else log.log-count + 1
+    in EventLog { log-events = events, log-count = count, log-max = log.log-max }
+
+  evt-drop-first : List Event -> List Event
+  evt-drop-first (xs) = evt-drop-loop xs 1 (list-length xs) []
+
+  evt-drop-loop : List Event, Integer, Integer, List Event -> List Event
+  evt-drop-loop (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else evt-drop-loop xs (i + 1) n (list-push acc (list-at xs i))
+
+Section: Queries
+  event-log-filter : EventLog, Text -> List Event
+  event-log-filter (log) (topic) = evt-filter-loop (log.log-events) topic 0 (log.log-count) []
+
+  evt-filter-loop : List Event, Text, Integer, Integer, List Event -> List Event
+  evt-filter-loop (events) (topic) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at events i
+    in let matches = e.evt-topic == topic
+    in if matches then evt-filter-loop events topic (i + 1) n (list-push acc e)
+    else evt-filter-loop events topic (i + 1) n acc
+
+  event-log-last : EventLog -> Maybe Event
+  event-log-last (log) =
+    if log.log-count == 0 then None
+    else Just (list-at (log.log-events) (log.log-count - 1))
+
+  event-log-since : EventLog, Integer -> List Event
+  event-log-since (log) (ts) = evt-since-loop (log.log-events) ts 0 (log.log-count) []
+
+  evt-since-loop : List Event, Integer, Integer, Integer, List Event -> List Event
+  evt-since-loop (events) (ts) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at events i
+    in if e.evt-timestamp >= ts then evt-since-loop events ts (i + 1) n (list-push acc e)
+    else evt-since-loop events ts (i + 1) n acc
+
+Section: Formatting
+  format-event : Event -> Text
+  format-event (e) = "[" & show (e.evt-timestamp) & "] " & e.evt-topic & ": " & e.evt-payload
+
+  format-event-log : EventLog -> Text
+  format-event-log (log) = show (log.log-count) & "/" & show (log.log-max) & " events"
+
+Page 1

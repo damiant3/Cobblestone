@@ -1,0 +1,228 @@
+Chapter: Panelizer
+  cites Foreword chapter List
+
+ PCB panelization for manufacturing. Computes step-and-repeat board
+ arrays with V-score lines, tab-route breakaway tabs, and fiducial
+ marks. All dimensions in nanometers.
+
+Section: Panel Config
+
+  PanelConfig = record {
+    pc-board-width : Integer,
+    pc-board-height : Integer,
+    pc-columns : Integer,
+    pc-rows : Integer,
+    pc-gap-x : Integer,
+    pc-gap-y : Integer,
+    pc-rail-width-top : Integer,
+    pc-rail-width-bottom : Integer,
+    pc-rail-width-left : Integer,
+    pc-rail-width-right : Integer,
+    pc-fiducial-count : Integer,
+    pc-panel-origin-x : Integer,
+    pc-panel-origin-y : Integer
+  }
+
+Section: Separation Method
+
+  SeparationMethod =
+    | VScore
+    | TabRoute (Integer) (Integer)
+    | MouseBite (Integer) (Integer) (Integer)
+
+Section: V-Score Line
+
+  VScoreLine = record {
+    vs-x1 : Integer,
+    vs-y1 : Integer,
+    vs-x2 : Integer,
+    vs-y2 : Integer,
+    vs-depth-pct : Integer
+  }
+
+Section: Tab Edge
+
+  TabEdge =
+    | TabTop
+    | TabBottom
+    | TabLeft
+    | TabRight
+
+Section: Tab Route Tab
+
+  TabRouteTab = record {
+    tr-x : Integer,
+    tr-y : Integer,
+    tr-width : Integer,
+    tr-height : Integer,
+    tr-edge : TabEdge
+  }
+
+Section: Fiducial Mark
+
+  FiducialMark = record {
+    fm-x : Integer,
+    fm-y : Integer,
+    fm-diameter : Integer,
+    fm-clearance : Integer
+  }
+
+Section: Board Position
+
+  BoardPosition = record {
+    bp-x : Integer,
+    bp-y : Integer,
+    bp-col : Integer,
+    bp-row : Integer
+  }
+
+Section: Panel Layout
+
+  PanelLayout = record {
+    pl-config : PanelConfig,
+    pl-board-positions : List BoardPosition,
+    pl-v-scores : List VScoreLine,
+    pl-tabs : List TabRouteTab,
+    pl-fiducials : List FiducialMark,
+    pl-total-width : Integer,
+    pl-total-height : Integer,
+    pl-board-count : Integer
+  }
+
+Section: Board Position Calculation
+
+  board-position : PanelConfig, Integer, Integer -> BoardPosition
+  board-position (cfg) (col) (row) =
+    let x = cfg.pc-panel-origin-x + cfg.pc-rail-width-left + col * (cfg.pc-board-width + cfg.pc-gap-x)
+    in let y = cfg.pc-panel-origin-y + cfg.pc-rail-width-bottom + row * (cfg.pc-board-height + cfg.pc-gap-y)
+    in BoardPosition {
+      bp-x = x,
+      bp-y = y,
+      bp-col = col,
+      bp-row = row
+    }
+
+Section: Generate Board Positions
+
+  generate-positions-row : PanelConfig, Integer, Integer, List BoardPosition -> List BoardPosition
+  generate-positions-row (cfg) (col) (row) (acc) =
+    if col >= cfg.pc-columns then acc
+    else
+      let pos = board-position cfg col row
+      in generate-positions-row cfg (col + 1) row (list-push acc pos)
+
+  generate-positions : PanelConfig, Integer, List BoardPosition -> List BoardPosition
+  generate-positions (cfg) (row) (acc) =
+    if row >= cfg.pc-rows then acc
+    else
+      let with-row = generate-positions-row cfg 0 row acc
+      in generate-positions cfg (row + 1) with-row
+
+Section: Generate V-Scores
+
+ Horizontal score lines between rows and vertical score lines between
+ columns spanning the full panel array area.
+
+  generate-v-scores-vertical : PanelConfig, Integer, Integer, List VScoreLine -> List VScoreLine
+  generate-v-scores-vertical (cfg) (col) (depth) (acc) =
+    if col >= cfg.pc-columns then acc
+    else
+      let x = cfg.pc-rail-width-left + col * (cfg.pc-board-width + cfg.pc-gap-x) + cfg.pc-board-width
+      in let y-start = cfg.pc-rail-width-bottom
+      in let y-end = cfg.pc-rail-width-bottom + cfg.pc-rows * cfg.pc-board-height + (cfg.pc-rows - 1) * cfg.pc-gap-y
+      in if col < cfg.pc-columns - 1 then
+        let line = VScoreLine { vs-x1 = x, vs-y1 = y-start, vs-x2 = x, vs-y2 = y-end, vs-depth-pct = depth }
+        in generate-v-scores-vertical cfg (col + 1) depth (list-push acc line)
+      else generate-v-scores-vertical cfg (col + 1) depth acc
+
+  generate-v-scores-horizontal : PanelConfig, Integer, Integer, List VScoreLine -> List VScoreLine
+  generate-v-scores-horizontal (cfg) (row) (depth) (acc) =
+    if row >= cfg.pc-rows then acc
+    else
+      let y = cfg.pc-rail-width-bottom + row * (cfg.pc-board-height + cfg.pc-gap-y) + cfg.pc-board-height
+      in let x-start = cfg.pc-rail-width-left
+      in let x-end = cfg.pc-rail-width-left + cfg.pc-columns * cfg.pc-board-width + (cfg.pc-columns - 1) * cfg.pc-gap-x
+      in if row < cfg.pc-rows - 1 then
+        let line = VScoreLine { vs-x1 = x-start, vs-y1 = y, vs-x2 = x-end, vs-y2 = y, vs-depth-pct = depth }
+        in generate-v-scores-horizontal cfg (row + 1) depth (list-push acc line)
+      else generate-v-scores-horizontal cfg (row + 1) depth acc
+
+  generate-v-scores : PanelConfig, Integer, Integer -> List VScoreLine
+  generate-v-scores (cfg) (depth-h) (depth-v) =
+    let horiz = generate-v-scores-horizontal cfg 0 depth-h []
+    in generate-v-scores-vertical cfg 0 depth-v horiz
+
+Section: Generate Fiducials
+
+ Three fiducial marks: bottom-left corner, bottom-right corner, and
+ top-left corner offset slightly inward from the panel rails.
+
+  generate-fiducials : PanelConfig -> List FiducialMark
+  generate-fiducials (cfg) =
+    let total-w = cfg.pc-rail-width-left + cfg.pc-columns * cfg.pc-board-width + (cfg.pc-columns - 1) * cfg.pc-gap-x + cfg.pc-rail-width-right
+    in let total-h = cfg.pc-rail-width-bottom + cfg.pc-rows * cfg.pc-board-height + (cfg.pc-rows - 1) * cfg.pc-gap-y + cfg.pc-rail-width-top
+    in let inset = 2000000
+    in let diam = 1000000
+    in let clear = 2000000
+    in let f1 = FiducialMark { fm-x = inset, fm-y = inset, fm-diameter = diam, fm-clearance = clear }
+    in let f2 = FiducialMark { fm-x = total-w - inset, fm-y = inset, fm-diameter = diam, fm-clearance = clear }
+    in let f3 = FiducialMark { fm-x = inset, fm-y = total-h - inset, fm-diameter = diam, fm-clearance = clear }
+    in [f1, f2, f3]
+
+Section: Panel Dimensions
+
+  panel-total-width : PanelConfig -> Integer
+  panel-total-width (cfg) =
+    cfg.pc-rail-width-left + cfg.pc-columns * cfg.pc-board-width + (cfg.pc-columns - 1) * cfg.pc-gap-x + cfg.pc-rail-width-right
+
+  panel-total-height : PanelConfig -> Integer
+  panel-total-height (cfg) =
+    cfg.pc-rail-width-bottom + cfg.pc-rows * cfg.pc-board-height + (cfg.pc-rows - 1) * cfg.pc-gap-y + cfg.pc-rail-width-top
+
+Section: Compute Panel Layout
+
+  compute-panel-layout : PanelConfig, SeparationMethod -> PanelLayout
+  compute-panel-layout (cfg) (method) =
+    let positions = generate-positions cfg 0 []
+    in let scores = when method
+         is VScore -> generate-v-scores cfg 70 70
+         is TabRoute (tw) (tc) -> []
+         is MouseBite (hd) (hs) (hc) -> []
+    in let fids = generate-fiducials cfg
+    in let tw = panel-total-width cfg
+    in let th = panel-total-height cfg
+    in let count = cfg.pc-columns * cfg.pc-rows
+    in PanelLayout {
+      pl-config = cfg,
+      pl-board-positions = positions,
+      pl-v-scores = scores,
+      pl-tabs = [],
+      pl-fiducials = fids,
+      pl-total-width = tw,
+      pl-total-height = th,
+      pl-board-count = count
+    }
+
+Section: Panel Board Count
+
+  panel-board-count : PanelLayout -> Integer
+  panel-board-count (pl) = pl.pl-board-count
+
+Section: Panel Utilization
+
+ Percentage of the total panel area occupied by boards.
+
+  panel-utilization : PanelLayout -> Integer
+  panel-utilization (pl) =
+    let board-area = pl.pl-config.pc-board-width * pl.pl-config.pc-board-height * pl.pl-board-count
+    in let panel-area = pl.pl-total-width * pl.pl-total-height
+    in if panel-area == 0 then 0
+    else board-area * 100 / panel-area
+
+Section: Panel Summary
+
+  panel-summary : PanelLayout -> Text
+  panel-summary (pl) =
+    let a = show pl.pl-board-count & " boards (" & (show pl.pl-config.pc-columns) & "x" & (show pl.pl-config.pc-rows)
+    in let b = "), panel " & (show pl.pl-total-width) & "x" & (show pl.pl-total-height)
+    in a & b & " nm, utilization " & show (panel-utilization pl) & "%"

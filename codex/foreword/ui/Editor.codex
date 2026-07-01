@@ -1,0 +1,412 @@
+Chapter: Editor
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Multi-line text editor with line numbers, search/replace, and
+ keyboard handling. State tracks lines as a list of Text, cursor
+ position, scroll offset, and search matches. The widget builder
+ composes a line-number gutter, content area, and optional search
+ bar from base widget kinds.
+
+Section: State
+
+  EditorState = record {
+    ed-id : Text,
+    ed-lines : List Text,
+    ed-line-count : Integer,
+    ed-cursor-line : Integer,
+    ed-cursor-col : Integer,
+    ed-scroll-offset : Integer,
+    ed-visible-lines : Integer,
+    ed-show-line-numbers : Boolean,
+    ed-search-query : Text,
+    ed-search-matches : List Integer,
+    ed-search-match-count : Integer,
+    ed-search-current : Integer,
+    ed-replace-text : Text,
+    ed-tab-size : Integer,
+    ed-read-only : Boolean,
+    ed-dirty : Boolean
+  }
+
+Section: Construction
+
+  editor-new : Text -> EditorState
+  editor-new (id) = EditorState {
+    ed-id = id,
+    ed-lines = [""],
+    ed-line-count = 1,
+    ed-cursor-line = 0,
+    ed-cursor-col = 0,
+    ed-scroll-offset = 0,
+    ed-visible-lines = 25,
+    ed-show-line-numbers = True,
+    ed-search-query = "",
+    ed-search-matches = [],
+    ed-search-match-count = 0,
+    ed-search-current = -1,
+    ed-replace-text = "",
+    ed-tab-size = 4,
+    ed-read-only = False,
+    ed-dirty = False
+  }
+
+  editor-with-text : Text, Text -> EditorState
+  editor-with-text (id) (content) =
+    let lines = text-split content "\n"
+    in let count = list-length lines
+    in let safe = if count == 0 then [""] else lines
+    in EditorState {
+      ed-id = id,
+      ed-lines = safe,
+      ed-line-count = if count == 0 then 1 else count,
+      ed-cursor-line = 0,
+      ed-cursor-col = 0,
+      ed-scroll-offset = 0,
+      ed-visible-lines = 25,
+      ed-show-line-numbers = True,
+      ed-search-query = "",
+      ed-search-matches = [],
+      ed-search-match-count = 0,
+      ed-search-current = -1,
+      ed-replace-text = "",
+      ed-tab-size = 4,
+      ed-read-only = False,
+      ed-dirty = False
+    }
+
+Section: Line Access
+
+  ed-line-at : EditorState, Integer -> Text
+  ed-line-at (ed) (idx) =
+    if idx < 0 then ""
+    else if idx >= ed.ed-line-count then ""
+    else list-at (ed.ed-lines) idx
+
+  ed-set-line : EditorState, Integer, Text -> EditorState
+  ed-set-line (ed) (idx) (txt) =
+    __record-set (__record-set ed "ed-lines" (list-set-at (ed.ed-lines) idx txt)) "ed-dirty" True
+
+  ed-current-line : EditorState -> Text
+  ed-current-line (ed) = ed-line-at ed (ed.ed-cursor-line)
+
+Section: Cursor Movement
+
+  editor-move-left : EditorState -> EditorState
+  editor-move-left (ed) =
+    if ed.ed-cursor-col > 0 then ed-ensure-visible (__record-set ed "ed-cursor-col" (ed.ed-cursor-col - 1))
+    else if ed.ed-cursor-line > 0 then
+      let prev-len = text-length (ed-line-at ed (ed.ed-cursor-line - 1))
+      in ed-ensure-visible (__record-set (__record-set ed "ed-cursor-line" (ed.ed-cursor-line - 1)) "ed-cursor-col" prev-len)
+    else ed
+
+  editor-move-right : EditorState -> EditorState
+  editor-move-right (ed) =
+    let line-len = text-length (ed-current-line ed)
+    in if ed.ed-cursor-col < line-len then ed-ensure-visible (__record-set ed "ed-cursor-col" (ed.ed-cursor-col + 1))
+    else if ed.ed-cursor-line < ed.ed-line-count - 1 then
+      ed-ensure-visible (__record-set (__record-set ed "ed-cursor-line" (ed.ed-cursor-line + 1)) "ed-cursor-col" 0)
+    else ed
+
+  editor-move-up : EditorState -> EditorState
+  editor-move-up (ed) =
+    if ed.ed-cursor-line <= 0 then ed
+    else let new-line = ed.ed-cursor-line - 1
+    in let new-col = ed-clamp-col ed new-line (ed.ed-cursor-col)
+    in ed-ensure-visible (__record-set (__record-set ed "ed-cursor-line" new-line) "ed-cursor-col" new-col)
+
+  editor-move-down : EditorState -> EditorState
+  editor-move-down (ed) =
+    if ed.ed-cursor-line >= ed.ed-line-count - 1 then ed
+    else let new-line = ed.ed-cursor-line + 1
+    in let new-col = ed-clamp-col ed new-line (ed.ed-cursor-col)
+    in ed-ensure-visible (__record-set (__record-set ed "ed-cursor-line" new-line) "ed-cursor-col" new-col)
+
+  editor-move-home : EditorState -> EditorState
+  editor-move-home (ed) = __record-set ed "ed-cursor-col" 0
+
+  editor-move-end : EditorState -> EditorState
+  editor-move-end (ed) =
+    __record-set ed "ed-cursor-col" (text-length (ed-current-line ed))
+
+  editor-page-up : EditorState -> EditorState
+  editor-page-up (ed) =
+    let new-line = ed.ed-cursor-line - ed.ed-visible-lines
+    in let clamped = if new-line < 0 then 0 else new-line
+    in let new-col = ed-clamp-col ed clamped (ed.ed-cursor-col)
+    in ed-ensure-visible (__record-set (__record-set ed "ed-cursor-line" clamped) "ed-cursor-col" new-col)
+
+  editor-page-down : EditorState -> EditorState
+  editor-page-down (ed) =
+    let new-line = ed.ed-cursor-line + ed.ed-visible-lines
+    in let max-line = ed.ed-line-count - 1
+    in let clamped = if new-line > max-line then max-line else new-line
+    in let new-col = ed-clamp-col ed clamped (ed.ed-cursor-col)
+    in ed-ensure-visible (__record-set (__record-set ed "ed-cursor-line" clamped) "ed-cursor-col" new-col)
+
+  ed-clamp-col : EditorState, Integer, Integer -> Integer
+  ed-clamp-col (ed) (line-idx) (col) =
+    let line-len = text-length (ed-line-at ed line-idx)
+    in if col > line-len then line-len else col
+
+  ed-ensure-visible : EditorState -> EditorState
+  ed-ensure-visible (ed) =
+    if ed.ed-cursor-line < ed.ed-scroll-offset then __record-set ed "ed-scroll-offset" (ed.ed-cursor-line)
+    else if ed.ed-cursor-line >= ed.ed-scroll-offset + ed.ed-visible-lines then
+      __record-set ed "ed-scroll-offset" (ed.ed-cursor-line - ed.ed-visible-lines + 1)
+    else ed
+
+Section: Editing
+
+  editor-insert-char : EditorState, Integer -> EditorState
+  editor-insert-char (ed) (ch) =
+    if ed.ed-read-only then ed
+    else let line = ed-current-line ed
+    in let new-line = text-take line (ed.ed-cursor-col) & char-to-text (code-to-char ch) & text-drop line (ed.ed-cursor-col)
+    in let ed2 = ed-set-line ed (ed.ed-cursor-line) new-line
+    in __record-set ed2 "ed-cursor-col" (ed.ed-cursor-col + 1)
+
+  editor-insert-line : EditorState -> EditorState
+  editor-insert-line (ed) =
+    if ed.ed-read-only then ed
+    else let line = ed-current-line ed
+    in let before = text-take line (ed.ed-cursor-col)
+    in let after = text-drop line (ed.ed-cursor-col)
+    in let lines2 = list-set-at (ed.ed-lines) (ed.ed-cursor-line) before
+    in let lines3 = ed-insert-at-list lines2 (ed.ed-cursor-line + 1) after
+    in ed-ensure-visible (__record-set (__record-set (__record-set (__record-set ed "ed-lines" lines3) "ed-line-count" (ed.ed-line-count + 1)) "ed-cursor-line" (ed.ed-cursor-line + 1)) "ed-cursor-col" 0)
+
+  editor-backspace : EditorState -> EditorState
+  editor-backspace (ed) =
+    if ed.ed-read-only then ed
+    else if ed.ed-cursor-col > 0 then
+      let line = ed-current-line ed
+      in let new-line = text-take line (ed.ed-cursor-col - 1) & text-drop line (ed.ed-cursor-col)
+      in let ed2 = ed-set-line ed (ed.ed-cursor-line) new-line
+      in __record-set ed2 "ed-cursor-col" (ed.ed-cursor-col - 1)
+    else if ed.ed-cursor-line > 0 then
+      let prev-line = ed-line-at ed (ed.ed-cursor-line - 1)
+      in let cur-line = ed-current-line ed
+      in let merged = prev-line & cur-line
+      in let lines2 = list-set-at (ed.ed-lines) (ed.ed-cursor-line - 1) merged
+      in let lines3 = ed-remove-at-list lines2 (ed.ed-cursor-line)
+      in ed-ensure-visible (__record-set (__record-set (__record-set (__record-set ed "ed-lines" lines3) "ed-line-count" (ed.ed-line-count - 1)) "ed-cursor-line" (ed.ed-cursor-line - 1)) "ed-cursor-col" (text-length prev-line))
+    else ed
+
+  editor-delete : EditorState -> EditorState
+  editor-delete (ed) =
+    if ed.ed-read-only then ed
+    else let line = ed-current-line ed
+    in if ed.ed-cursor-col < text-length line then
+      let new-line = text-take line (ed.ed-cursor-col) & text-drop line (ed.ed-cursor-col + 1)
+      in ed-set-line ed (ed.ed-cursor-line) new-line
+    else if ed.ed-cursor-line < ed.ed-line-count - 1 then
+      let next-line = ed-line-at ed (ed.ed-cursor-line + 1)
+      in let merged = line & next-line
+      in let lines2 = list-set-at (ed.ed-lines) (ed.ed-cursor-line) merged
+      in let lines3 = ed-remove-at-list lines2 (ed.ed-cursor-line + 1)
+      in __record-set (__record-set ed "ed-lines" lines3) "ed-line-count" (ed.ed-line-count - 1)
+    else ed
+
+  editor-insert-tab : EditorState -> EditorState
+  editor-insert-tab (ed) = ed-insert-spaces ed (ed.ed-tab-size) 0
+
+  ed-insert-spaces : EditorState, Integer, Integer -> EditorState
+  ed-insert-spaces (ed) (n) (i) =
+    if i >= n then ed
+    else ed-insert-spaces (editor-insert-char ed 32) n (i + 1)
+
+Section: List Manipulation
+
+  ed-insert-at-list : List Text, Integer, Text -> List Text
+  ed-insert-at-list (lines) (pos) (item) =
+    let before = ed-take-list lines 0 pos []
+    in let after = ed-drop-list lines pos (list-length lines) []
+    in before & [item] & after
+
+  ed-remove-at-list : List Text, Integer -> List Text
+  ed-remove-at-list (lines) (pos) =
+    let before = ed-take-list lines 0 pos []
+    in let after = ed-drop-list lines (pos + 1) (list-length lines) []
+    in before & after
+
+  ed-take-list : List Text, Integer, Integer, List Text -> List Text
+  ed-take-list (lines) (i) (n) (acc) =
+    if i >= n then acc
+    else ed-take-list lines (i + 1) n (list-push acc (list-at lines i))
+
+  ed-drop-list : List Text, Integer, Integer, List Text -> List Text
+  ed-drop-list (lines) (i) (n) (acc) =
+    if i >= n then acc
+    else ed-drop-list lines (i + 1) n (list-push acc (list-at lines i))
+
+Section: Search
+
+  editor-search : EditorState, Text -> EditorState
+  editor-search (ed) (query) =
+    if text-length query == 0 then __record-set (__record-set (__record-set ed "ed-search-query" "") "ed-search-matches" []) "ed-search-match-count" 0
+    else let matches = ed-find-matches (ed.ed-lines) query 0 (ed.ed-line-count) []
+    in let count = list-length matches
+    in __record-set (__record-set (__record-set (__record-set ed "ed-search-query" query) "ed-search-matches" matches) "ed-search-match-count" count) "ed-search-current" (if count > 0 then 0 else -1)
+
+  ed-find-matches : List Text, Text, Integer, Integer, List Integer -> List Integer
+  ed-find-matches (lines) (query) (i) (n) (acc) =
+    if i >= n then acc
+    else let line = list-at lines i
+    in if text-contains line query then ed-find-matches lines query (i + 1) n (list-push acc i)
+    else ed-find-matches lines query (i + 1) n acc
+
+  editor-search-next : EditorState -> EditorState
+  editor-search-next (ed) =
+    if ed.ed-search-match-count == 0 then ed
+    else let next = ed.ed-search-current + 1
+    in let wrapped = if next >= ed.ed-search-match-count then 0 else next
+    in let line-idx = list-at (ed.ed-search-matches) wrapped
+    in ed-ensure-visible (__record-set (__record-set ed "ed-search-current" wrapped) "ed-cursor-line" line-idx)
+
+  editor-search-prev : EditorState -> EditorState
+  editor-search-prev (ed) =
+    if ed.ed-search-match-count == 0 then ed
+    else let prev = ed.ed-search-current - 1
+    in let wrapped = if prev < 0 then ed.ed-search-match-count - 1 else prev
+    in let line-idx = list-at (ed.ed-search-matches) wrapped
+    in ed-ensure-visible (__record-set (__record-set ed "ed-search-current" wrapped) "ed-cursor-line" line-idx)
+
+  editor-replace-current : EditorState -> EditorState
+  editor-replace-current (ed) =
+    if ed.ed-read-only then ed
+    else if ed.ed-search-current < 0 then ed
+    else let line-idx = list-at (ed.ed-search-matches) (ed.ed-search-current)
+    in let line = ed-line-at ed line-idx
+    in let new-line = ed-replace-first line (ed.ed-search-query) (ed.ed-replace-text)
+    in let ed2 = ed-set-line ed line-idx new-line
+    in editor-search ed2 (ed.ed-search-query)
+
+  editor-replace-all : EditorState -> EditorState
+  editor-replace-all (ed) =
+    if ed.ed-read-only then ed
+    else let ed2 = ed-replace-all-lines ed 0 (ed.ed-line-count)
+    in editor-search ed2 (ed.ed-search-query)
+
+  ed-replace-all-lines : EditorState, Integer, Integer -> EditorState
+  ed-replace-all-lines (ed) (i) (n) =
+    if i >= n then ed
+    else let line = ed-line-at ed i
+    in if text-contains line (ed.ed-search-query) then
+      let new-line = ed-replace-first line (ed.ed-search-query) (ed.ed-replace-text)
+      in ed-replace-all-lines (ed-set-line ed i new-line) (i + 1) n
+    else ed-replace-all-lines ed (i + 1) n
+
+  ed-replace-first : Text, Text, Text -> Text
+  ed-replace-first (line) (query) (replacement) =
+    let qlen = text-length query
+    in ed-replace-scan line query replacement qlen 0 (text-length line)
+
+  ed-replace-scan : Text, Text, Text, Integer, Integer, Integer -> Text
+  ed-replace-scan (line) (query) (repl) (qlen) (i) (n) =
+    if i + qlen > n then line
+    else if text-starts-with (text-drop line i) query then
+      text-take line i & repl & text-drop line (i + qlen)
+    else ed-replace-scan line query repl qlen (i + 1) n
+
+Section: Value
+
+  editor-value : EditorState -> Text
+  editor-value (ed) = ed-join-lines (ed.ed-lines) 0 (ed.ed-line-count) ""
+
+  ed-join-lines : List Text, Integer, Integer, Text -> Text
+  ed-join-lines (lines) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i > 0 then "\n" else ""
+    in ed-join-lines lines (i + 1) n (acc & sep & list-at lines i)
+
+Section: Keyboard Handling
+
+  editor-handle-key : EditorState, Integer, Integer -> EditorState
+  editor-handle-key (ed) (key) (mods) =
+    if key == 37 then editor-move-left ed
+    else if key == 39 then editor-move-right ed
+    else if key == 38 then editor-move-up ed
+    else if key == 40 then editor-move-down ed
+    else if key == 36 then editor-move-home ed
+    else if key == 35 then editor-move-end ed
+    else if key == 33 then editor-page-up ed
+    else if key == 34 then editor-page-down ed
+    else if key == 13 then editor-insert-line ed
+    else if key == 8 then editor-backspace ed
+    else if key == 46 then editor-delete ed
+    else if key == 9 then editor-insert-tab ed
+    else if key >= 32 then if key <= 126 then editor-insert-char ed key else ed
+    else ed
+
+Section: Widget Building
+
+  editor-widget : EditorState -> WidgetNode
+  editor-widget (ed) =
+    let search-bar = if text-length (ed.ed-search-query) > 0 then [ed-search-bar ed] else []
+    in let gutter = if ed.ed-show-line-numbers then [ed-gutter-widget ed] else []
+    in let content = ed-content-widget ed
+    in let body = widget-panel (ed.ed-id & "-body") DirRow 0 (gutter & [content])
+    in widget-panel (ed.ed-id) DirColumn 0 (search-bar & [body])
+
+  ed-gutter-widget : EditorState -> WidgetNode
+  ed-gutter-widget (ed) =
+    let start = ed.ed-scroll-offset
+    in let end-idx = ed-visible-end ed
+    in let rows = ed-gutter-rows ed start end-idx []
+    in let gutter = widget-panel (ed.ed-id & "-gutter") DirColumn 0 rows
+    in widget-set-min gutter 40 0
+
+  ed-gutter-rows : EditorState, Integer, Integer, List WidgetNode -> List WidgetNode
+  ed-gutter-rows (ed) (i) (end-idx) (acc) =
+    if i >= end-idx then acc
+    else let num = widget-label (ed.ed-id & "-ln-" & show i) (show (i + 1))
+    in ed-gutter-rows ed (i + 1) end-idx (list-push acc num)
+
+  ed-content-widget : EditorState -> WidgetNode
+  ed-content-widget (ed) =
+    let start = ed.ed-scroll-offset
+    in let end-idx = ed-visible-end ed
+    in let rows = ed-content-rows ed start end-idx []
+    in let content = widget-panel (ed.ed-id & "-content") DirColumn 0 rows
+    in widget-set-flex content 1
+
+  ed-content-rows : EditorState, Integer, Integer, List WidgetNode -> List WidgetNode
+  ed-content-rows (ed) (i) (end-idx) (acc) =
+    if i >= end-idx then acc
+    else let line-text = ed-line-at ed i
+    in let lbl = widget-label (ed.ed-id & "-line-" & show i) line-text
+    in let styled = if i == ed.ed-cursor-line then widget-set-state lbl state-focused else lbl
+    in let match-styled = if ed-is-match-line ed i then widget-set-state styled state-hover else styled
+    in ed-content-rows ed (i + 1) end-idx (list-push acc match-styled)
+
+  ed-is-match-line : EditorState, Integer -> Boolean
+  ed-is-match-line (ed) (line-idx) =
+    if ed.ed-search-match-count == 0 then False
+    else if ed.ed-search-current < 0 then False
+    else list-at (ed.ed-search-matches) (ed.ed-search-current) == line-idx
+
+  ed-visible-end : EditorState -> Integer
+  ed-visible-end (ed) =
+    let end-idx = ed.ed-scroll-offset + ed.ed-visible-lines
+    in if end-idx > ed.ed-line-count then ed.ed-line-count else end-idx
+
+  ed-search-bar : EditorState -> WidgetNode
+  ed-search-bar (ed) =
+    let query-input = widget-input (ed.ed-id & "-search") (ed.ed-search-query) (text-length (ed.ed-search-query))
+    in let match-info = widget-label (ed.ed-id & "-match-info") (show (ed.ed-search-current + 1) & "/" & show (ed.ed-search-match-count))
+    in let prev-btn = widget-button (ed.ed-id & "-prev") "Prev"
+    in let next-btn = widget-button (ed.ed-id & "-next") "Next"
+    in let repl-input = widget-input (ed.ed-id & "-replace") (ed.ed-replace-text) (text-length (ed.ed-replace-text))
+    in let repl-btn = widget-button (ed.ed-id & "-repl") "Replace"
+    in let repl-all-btn = widget-button (ed.ed-id & "-repl-all") "All"
+    in widget-panel (ed.ed-id & "-search-bar") DirRow 4 [query-input, match-info, prev-btn, next-btn, repl-input, repl-btn, repl-all-btn]
+
+Section: Formatting
+
+  format-editor : EditorState -> Text
+  format-editor (ed) =
+    ed.ed-id & " lines=" & show (ed.ed-line-count) & " cursor=" & show (ed.ed-cursor-line) & ":" & show (ed.ed-cursor-col)
+    & (if ed.ed-dirty then " [modified]" else "")
+
+Page 1

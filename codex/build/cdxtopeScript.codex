@@ -1,0 +1,92 @@
+Chapter: CdxToPeScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates cdx-to-pe.ps1 -- converts a CDX binary to a PE32+ UEFI application.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  cdxtope-params : List ShellParam = [sh-param "CdxInput" SptString, sh-param "Out" SptString, sh-param-default "HeapPages" SptInt (SeInt 512)]
+
+Section: S01 -- Preamble and CDX Reading
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScReadBytes "cdx" (SeVar "CdxInput"), ScRaw "function R32($off) { [BitConverter]::ToInt32($cdx, $off) }", ScRaw "function R64($off) { [BitConverter]::ToInt64($cdx, $off) }", ScBlank, ScAssign "textOff" (SeRaw "R64 168"), ScAssign "textSz" (SeRaw "R64 176"), ScAssign "rodataOff" (SeRaw "R64 184"), ScAssign "rodataSz" (SeRaw "R64 192"), ScAssign "entryOff" (SeRaw "R64 200"), ScAssign "debugOff" (SeRaw "R32 220")]
+
+Section: S02 -- Find opening in Debug Map
+
+  s02-search : List ShellCmd = [ScAssign "mapCount" (SeRaw "R32 ($debugOff + 4)"), ScAssign "mapStringsOff" (SeRaw "R32 ($debugOff + 8)"), ScAssign "stringsBase" (SeRaw "$debugOff + $mapStringsOff"), ScAssign "entriesBase" (SeRaw "$debugOff + 12"), ScAssign "openingStrPos" (SeInt (-1)), ScForLoop "i" (SeVar "stringsBase") (SeRaw "$i -lt $cdx.Length - $openingCce.Length") (SeRaw "$i++") [ScAssign "match" (SeRaw "$true"), ScForLoop "j" (SeInt 0) (SeRaw "$j -lt $openingCce.Length -and $match") (SeRaw "$j++") [ScIf (SeRaw "$cdx[$i+$j] -ne $openingCce[$j]") [ScAssign "match" (SeRaw "$false")] []], ScIf (SeAnd (SeVar "match") (SeRaw "($i + $openingCce.Length -ge $cdx.Length -or $cdx[$i + $openingCce.Length] -eq 0)")) [ScAssign "openingStrPos" (SeRaw "$i - $stringsBase"), ScBreak] []]]
+
+  s02-lookup : List ShellCmd = [ScIf (SeRaw "$openingStrPos -ge 0") [ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $mapCount") (SeRaw "$i++") [ScAssign "eOff" (SeRaw "$entriesBase + $i * 12"), ScAssign "strOff" (SeRaw "R32 ($eOff + 8)"), ScIf (SeRaw "$strOff -eq $openingStrPos") [ScAssign "openingFuncOff" (SeRaw "R32 $eOff"), ScBreak] []]] []]
+
+  s02 : List ShellCmd = [ScComment "Find 'opening' in the debug map", ScRaw "$openingCce = [byte[]]@(16, 31, 13, 18, 17, 18, 29)", ScAssign "openingFuncOff" (SeInt (-1)), ScIf (SeAnd (SeRaw "$debugOff -gt 0") (SeRaw "$debugOff -lt $cdx.Length")) [ScSequence s02-search, ScSequence s02-lookup] [], ScBlank, ScIf (SeRaw "$openingFuncOff -lt 0") [ScWriteError (SeRaw "\"[cdx-to-pe] WARN: 'opening' not found in debug map, using __start\""), ScAssign "openingFuncOff" (SeVar "entryOff")] [], ScWriteError (SeRaw "\"[cdx-to-pe] text=$textSz @ $textOff  rodata=$rodataSz @ $rodataOff  opening=0x$($openingFuncOff.ToString('X'))\"")]
+
+Section: S03 -- PE Constants and Layout
+
+  s03 : List ShellCmd = [ScAssign "FileAlign" (SeInt 512), ScAssign "SectionAlign" (SeInt 4096), ScAssign "HeaderSize" (SeInt 512), ScAssign "ImageBase" (SeRaw "0x100000"), ScBlank, ScAssign "textAligned" (SeRaw "($textSz + 7) -band -8"), ScAssign "dataVaddr" (SeRaw "$ImageBase + $textAligned"), ScBlank, ScComment "Memory layout constants (must match X86_64Boot.codex)", ScAssign "DeckPosAddr" (SeInt 28720), ScAssign "DeckBoundCounterAddr" (SeInt 28904), ScAssign "HeapHwmAddr" (SeInt 28728), ScAssign "BivySaveAddr" (SeInt 28912), ScAssign "SysTableAddr" (SeRaw "0x8000")]
+
+Section: S04 -- Assemble UEFI Stub Prolog
+
+  s04 : List ShellCmd = [ScComment "Assemble the UEFI app stub", ScRaw "$ms = [System.IO.MemoryStream]::new()", ScRaw "$bw = [System.IO.BinaryWriter]::new($ms)", ScBlank, ScComment "Prolog: save all callee-saved regs", ScRaw "$bw.Write([byte[]]@(0x55, 0x48, 0x89, 0xE5, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x56, 0x57, 0x48, 0x83, 0xEC, 0x28, 0x49, 0x89, 0xD7, 0x49, 0x89, 0xCE))", ScBlank, ScComment "Disable watchdog: BootServices->SetWatchdogTimer(0,0,0,NULL)", ScRaw "$bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60, 0x48, 0x31, 0xC9, 0x48, 0x31, 0xD2, 0x4D, 0x31, 0xC0, 0x4C, 0x89, 0x44, 0x24, 0x20, 0xFF, 0x90, 0x00, 0x01, 0x00, 0x00))"]
+
+Section: S05 -- Stub IP and AllocatePages
+
+  s05 : List ShellCmd = [ScComment "Get current IP for relative addressing", ScRaw "$getIpOff = $ms.Position", ScRaw "$bw.Write([byte[]]@(0xE8, 0x00, 0x00, 0x00, 0x00, 0x5B, 0x48, 0x83, 0xEB, 0x05))", ScBlank, ScComment "AllocatePages for code+rodata", ScRaw "$codePages = [int](($textSz + $rodataSz + 4095) / 4096)", ScRaw "$bw.Write([byte[]]@(0x48, 0x31, 0xC9))", ScRaw "$bw.Write([byte[]]@(0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00))", ScRaw "$bw.Write([byte[]]@(0x49, 0xC7, 0xC0))", ScRaw "$bw.Write([BitConverter]::GetBytes([int]$codePages))", ScRaw "$bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x30))", ScRaw "$bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))", ScRaw "$bw.Write([byte[]]@(0xFF, 0x50, 0x28))", ScBlank, ScComment "AllocatePages for heap at fixed address 0x1000000", ScRaw "$bw.Write([byte[]]@(0x48, 0xC7, 0x44, 0x24, 0x38))", ScRaw "$bw.Write([BitConverter]::GetBytes([int]0x1000000))", ScRaw "$bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00))", ScRaw "$bw.Write([byte[]]@(0x48, 0xC7, 0xC2, 0x02, 0x00, 0x00, 0x00))", ScRaw "$bw.Write([byte[]]@(0x49, 0xC7, 0xC0))", ScRaw "$bw.Write([BitConverter]::GetBytes([int]$HeapPages))", ScRaw "$bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x38))", ScRaw "$bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))", ScRaw "$bw.Write([byte[]]@(0xFF, 0x50, 0x28))"]
+
+Section: S06 -- Stub Memory Setup
+
+  s06 : List ShellCmd = [ScComment "Store SystemTable at 0x8000", ScRaw "$bw.Write([byte[]]@(0x4C, 0x89, 0x3C, 0x25))", ScRaw "$bw.Write([BitConverter]::GetBytes([int]$SysTableAddr))", ScBlank, ScComment "r10 = 0x1000000 (heap base)", ScRaw "$bw.Write([byte[]]@(0x49, 0xBA))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]0x1000000))", ScBlank, ScComment "Set RSP to top of heap allocation", ScRaw "$stackTop = 0x1000000 + $HeapPages * 4096", ScRaw "$bw.Write([byte[]]@(0x48, 0xB8))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]$stackTop))", ScRaw "$bw.Write([byte[]]@(0x48, 0x89, 0xC4))", ScRaw "$bw.Write([byte[]]@(0x48, 0x89, 0xC5))", ScBlank, ScComment "Store stackTop at stack-min-rsp-addr", ScAssign "StackMinRspAddr" (SeInt 28736), ScRaw "$bw.Write([byte[]]@(0x48, 0xBF))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]$StackMinRspAddr))", ScRaw "$bw.Write([byte[]]@(0x48, 0x89, 0x07))"]
+
+Section: S07 -- Stub Heap Pointers
+
+  s07 : List ShellCmd = [ScComment "Store heap base at deck-pos-addr", ScRaw "$bw.Write([byte[]]@(0x48, 0xBF))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]$DeckPosAddr))", ScRaw "$bw.Write([byte[]]@(0x4C, 0x89, 0x17))", ScBlank, ScComment "Store 0 at deck-bound-counter-addr", ScRaw "$bw.Write([byte[]]@(0x48, 0xBF))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]$DeckBoundCounterAddr))", ScRaw "$bw.Write([byte[]]@(0x48, 0x31, 0xC0))", ScRaw "$bw.Write([byte[]]@(0x48, 0x89, 0x07))", ScBlank, ScComment "Store heap base at heap-hwm-addr", ScRaw "$bw.Write([byte[]]@(0x48, 0xBF))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]$HeapHwmAddr))", ScRaw "$bw.Write([byte[]]@(0x4C, 0x89, 0x17))", ScBlank, ScComment "Store 0 at bivy-save-addr", ScRaw "$bw.Write([byte[]]@(0x48, 0xBF))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]$BivySaveAddr))", ScRaw "$bw.Write([byte[]]@(0x48, 0x89, 0x07))"]
+
+Section: S08 -- Stub Copy Sections
+
+  s08 : List ShellCmd = [ScComment "Copy text section (patched after stub size known)", ScRaw "$copyTextPatchPos = $ms.Position + 3", ScRaw "$bw.Write([byte[]]@(0x48, 0x8D, 0xB3))", ScRaw "$bw.Write([int]0)", ScRaw "$bw.Write([byte[]]@(0x48, 0xBF))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]$ImageBase))", ScRaw "$bw.Write([byte[]]@(0x48, 0xB9))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]$textSz))", ScRaw "$bw.Write([byte[]]@(0xF3, 0xA4))", ScBlank, ScComment "Copy rodata section", ScRaw "$copyRodataPatchPos = $ms.Position + 3", ScRaw "$bw.Write([byte[]]@(0x48, 0x8D, 0xB3))", ScRaw "$bw.Write([int]0)", ScRaw "$bw.Write([byte[]]@(0x48, 0xBF))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]$dataVaddr))", ScRaw "$bw.Write([byte[]]@(0x48, 0xB9))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]$rodataSz))", ScRaw "$bw.Write([byte[]]@(0xF3, 0xA4))"]
+
+Section: S09 -- Stub Call and Close
+
+  s09 : List ShellCmd = [ScComment "Clear screen", ScRaw "$bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x40, 0x48, 0x89, 0xC1, 0xFF, 0x50, 0x30))", ScBlank, ScComment "Call opening", ScRaw "$bw.Write([byte[]]@(0x48, 0xB8))", ScRaw "$bw.Write([BitConverter]::GetBytes([long]($ImageBase + $openingFuncOff)))", ScRaw "$bw.Write([byte[]]@(0xFF, 0xD0))", ScBlank, ScComment "Epilog: halt", ScRaw "$bw.Write([byte[]]@(0xF4))", ScBlank, ScRaw "$bw.Close()", ScAssign "stub" (SeMethodCall (SeVar "ms") "ToArray" [])]
+
+Section: S10 -- Patch Copy Offsets
+
+  s10 : List ShellCmd = [ScComment "Patch the copy offsets", ScAssign "rbxOff" (SeVar "getIpOff"), ScAssign "textDataOff" (SeRaw "$stub.Length - $rbxOff"), ScAssign "rodataDataOff" (SeRaw "$stub.Length + $textSz - $rbxOff"), ScBlank, ScRaw "[BitConverter]::GetBytes([int]$textDataOff).CopyTo($stub, $copyTextPatchPos)", ScRaw "[BitConverter]::GetBytes([int]$rodataDataOff).CopyTo($stub, $copyRodataPatchPos)"]
+
+Section: S11 -- Extract Sections from CDX
+
+  s11 : List ShellCmd = [ScComment "Extract text and rodata from CDX", ScRaw "$textBytes = New-Object byte[] $textSz", ScRaw "[Array]::Copy($cdx, $textOff, $textBytes, 0, $textSz)", ScRaw "$rodataBytes = New-Object byte[] $rodataSz", ScIf (SeRaw "$rodataSz -gt 0") [ScRaw "[Array]::Copy($cdx, $rodataOff, $rodataBytes, 0, $rodataSz)"] [], ScBlank, ScAssign "code" (SeRaw "$stub + $textBytes + $rodataBytes"), ScAssign "codeSize" (SeProperty (SeVar "code") "Length"), ScAssign "codeRaw" (SeRaw "($codeSize + $FileAlign - 1) -band (-bnot ($FileAlign - 1))"), ScAssign "codePad" (SeRaw "$codeRaw - $codeSize"), ScAssign "codeSecEnd" (SeRaw "($codeSize + $SectionAlign - 1) -band (-bnot ($SectionAlign - 1))"), ScAssign "relocRva" (SeRaw "$SectionAlign + $codeSecEnd"), ScAssign "imageSize" (SeRaw "($relocRva + $SectionAlign + $SectionAlign - 1) -band (-bnot ($SectionAlign - 1))"), ScAssign "relocRawOff" (SeRaw "$HeaderSize + $codeRaw")]
+
+Section: S12 -- PE Headers
+
+  s12 : List ShellCmd = [ScComment "Build PE headers", ScRaw "$hms = [System.IO.MemoryStream]::new()", ScRaw "$hbw = [System.IO.BinaryWriter]::new($hms)", ScBlank, ScComment "DOS header", ScRaw "$hbw.Write([byte[]]@(0x4D, 0x5A))", ScRaw "$hbw.Write((New-Object byte[] 58))", ScRaw "$hbw.Write([int]128)", ScRaw "$hbw.Write((New-Object byte[] (128 - 64)))", ScBlank, ScComment "PE signature", ScRaw "$hbw.Write([byte[]]@(0x50, 0x45, 0x00, 0x00))", ScBlank, ScComment "COFF header", ScRaw "$hbw.Write([ushort]0x8664); $hbw.Write([ushort]2)", ScRaw "$hbw.Write([int]0); $hbw.Write([int]0); $hbw.Write([int]0)", ScRaw "$hbw.Write([ushort]240); $hbw.Write([ushort]0x0022)"]
+
+Section: S13 -- PE Optional Header
+
+  s13 : List ShellCmd = [ScComment "Optional header (PE32+)", ScRaw "$hbw.Write([ushort]0x020B)", ScRaw "$hbw.Write([byte]0); $hbw.Write([byte]0)", ScRaw "$hbw.Write([int]$codeRaw); $hbw.Write([int]0); $hbw.Write([int]0)", ScRaw "$hbw.Write([int]$SectionAlign)", ScRaw "$hbw.Write([int]$SectionAlign)", ScRaw "$hbw.Write([long]0)", ScRaw "$hbw.Write([int]$SectionAlign); $hbw.Write([int]$FileAlign)", ScRaw "$hbw.Write([ushort]0); $hbw.Write([ushort]0)", ScRaw "$hbw.Write([ushort]0); $hbw.Write([ushort]0)", ScRaw "$hbw.Write([ushort]0); $hbw.Write([ushort]0)", ScRaw "$hbw.Write([int]0)", ScRaw "$hbw.Write([int]$imageSize); $hbw.Write([int]$HeaderSize); $hbw.Write([int]0)", ScRaw "$hbw.Write([ushort]10)", ScRaw "$hbw.Write([ushort]0x0160)"]
+
+Section: S14 -- PE Data Directories and Section Headers
+
+  s14 : List ShellCmd = [ScRaw "$hbw.Write([long]0); $hbw.Write([long]0)", ScRaw "$hbw.Write([long]0); $hbw.Write([long]0)", ScRaw "$hbw.Write([int]0); $hbw.Write([int]16)", ScBlank, ScComment "Data directories", ScForLoop "i" (SeInt 0) (SeRaw "$i -lt 16") (SeRaw "$i++") [ScIf (SeRaw "$i -eq 5") [ScRaw "$hbw.Write([int]$relocRva); $hbw.Write([int]8)"] [ScRaw "$hbw.Write([long]0)"]], ScBlank, ScComment ".text section header", ScRaw "$hbw.Write([System.Text.Encoding]::ASCII.GetBytes(\".text`0`0`0\"))", ScRaw "$hbw.Write([int]$codeSize); $hbw.Write([int]$SectionAlign)", ScRaw "$hbw.Write([int]$codeRaw); $hbw.Write([int]$HeaderSize)", ScRaw "$hbw.Write([int]0); $hbw.Write([int]0)", ScRaw "$hbw.Write([ushort]0); $hbw.Write([ushort]0)", ScRaw "$hbw.Write([int]0x60000020)", ScBlank, ScComment ".reloc section header", ScRaw "$hbw.Write([System.Text.Encoding]::ASCII.GetBytes(\".reloc`0`0\"))", ScRaw "$hbw.Write([int]8); $hbw.Write([int]$relocRva)", ScRaw "$hbw.Write([int]$FileAlign); $hbw.Write([int]$relocRawOff)", ScRaw "$hbw.Write([int]0); $hbw.Write([int]0)", ScRaw "$hbw.Write([ushort]0); $hbw.Write([ushort]0)", ScRaw "$hbw.Write([int]0x42000040)"]
+
+Section: S15 -- Write PE Output
+
+  s15 : List ShellCmd = [ScRaw "$hbw.Close()", ScAssign "headers" (SeMethodCall (SeVar "hms") "ToArray" []), ScRaw "$headerPad = New-Object byte[] ($HeaderSize - $headers.Length)", ScBlank, ScRaw "$relocBlock = New-Object byte[] $FileAlign", ScRaw "[BitConverter]::GetBytes([int]$relocRva).CopyTo($relocBlock, 0)", ScRaw "[BitConverter]::GetBytes([int]8).CopyTo($relocBlock, 4)", ScBlank, ScComment "Write PE", ScRaw "$outMs = [System.IO.MemoryStream]::new()", ScRaw "$outMs.Write($headers, 0, $headers.Length)", ScRaw "$outMs.Write($headerPad, 0, $headerPad.Length)", ScRaw "$outMs.Write($code, 0, $code.Length)", ScIf (SeRaw "$codePad -gt 0") [ScRaw "$outMs.Write((New-Object byte[] $codePad), 0, $codePad)"] [], ScRaw "$outMs.Write($relocBlock, 0, $relocBlock.Length)", ScBlank, ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeMethodCall (SeVar "outMs") "ToArray" []], ScEcho (SeRaw "\"[cdx-to-pe] OK: $Out ($($outMs.Length) bytes, stub=$($stub.Length) opening=0x$($openingFuncOff.ToString('X')))\"")]
+
+Section: Assembly
+
+  cdxtope-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12, ScBlank, ScSequence s13, ScBlank, ScSequence s14, ScBlank, ScSequence s15]
+
+  cdxtope-script : ShellScript = sh-script "cdx-to-pe" "Convert a CDX binary to a PE32+ UEFI application" cdxtope-params cdxtope-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cdxtope-script)
+  end
+
+Page 1

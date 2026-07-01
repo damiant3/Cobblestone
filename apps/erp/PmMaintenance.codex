@@ -1,0 +1,268 @@
+Chapter: PmMaintenance
+  cites ERP chapter ErpTypes
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Plant Maintenance: equipment master, maintenance plans (preventive
+ and condition-based), work orders, breakdown repair, spare parts,
+ calibration tracking, and maintenance history.
+
+Section: Equipment
+
+  Equipment = record {
+    eq-id : Text,
+    eq-name : Text,
+    eq-serial : Text,
+    eq-plant : Text,
+    eq-location : Text,
+    eq-category : EquipmentCategory,
+    eq-manufacturer : Text,
+    eq-model : Text,
+    eq-install-date : Integer,
+    eq-warranty-end : Integer,
+    eq-status : EquipmentStatus,
+    eq-cost-center : Text,
+    eq-parent-id : Text,
+    eq-criticality : Criticality,
+    eq-replacement-cost : Integer,
+    eq-mtbf-hrs : Integer,
+    eq-total-downtime-hrs : Integer
+  }
+
+  EquipmentCategory =
+    | EqProduction
+    | EqUtility
+    | EqHvac
+    | EqElectrical
+    | EqSafety
+    | EqTransport
+    | EqIT
+
+  EquipmentStatus =
+    | EqOperational
+    | EqInMaintenance
+    | EqBrokenDown
+    | EqDecommissioned
+    | EqInStorage
+
+  Criticality =
+    | CritA
+    | CritB
+    | CritC
+
+  eq-age-days : Equipment, Integer -> Integer
+  eq-age-days (eq) (now) = (now - eq.eq-install-date) / 86400
+
+  eq-availability-pct : Equipment, Integer -> Integer
+  eq-availability-pct (eq) (total-hrs) =
+    if total-hrs == 0 then 100
+    else (total-hrs - eq.eq-total-downtime-hrs) * 100 / total-hrs
+
+Section: Maintenance Plans
+
+  MaintenancePlan = record {
+    mp-id : Text,
+    mp-equipment-id : Text,
+    mp-name : Text,
+    mp-type : MaintenanceType,
+    mp-interval-days : Integer,
+    mp-interval-hrs : Integer,
+    mp-last-performed : Integer,
+    mp-next-due : Integer,
+    mp-tasks : List MaintenanceTask,
+    mp-spare-parts : List SparePart,
+    mp-estimated-hrs : Integer,
+    mp-active : Boolean
+  }
+
+  MaintenanceType =
+    | Preventive
+    | ConditionBased
+    | Predictive
+    | Corrective
+    | Emergency
+
+  maint-type-name : MaintenanceType -> Text
+  maint-type-name (t) =
+    when t
+      is Preventive -> "preventive"
+      is ConditionBased -> "condition-based"
+      is Predictive -> "predictive"
+      is Corrective -> "corrective"
+      is Emergency -> "emergency"
+
+  MaintenanceTask = record {
+    mt-seq : Integer,
+    mt-description : Text,
+    mt-skill-required : Text,
+    mt-est-minutes : Integer,
+    mt-safety-notes : Text
+  }
+
+  SparePart = record {
+    sp-material-id : Text,
+    sp-name : Text,
+    sp-quantity : Integer,
+    sp-unit-cost : Integer,
+    sp-lead-days : Integer,
+    sp-critical : Boolean
+  }
+
+  mp-overdue : MaintenancePlan, Integer -> Boolean
+  mp-overdue (mp) (now) = now > mp.mp-next-due
+
+  mp-due-within : MaintenancePlan, Integer, Integer -> Boolean
+  mp-due-within (mp) (now) (days) = mp.mp-next-due <= now + days * 86400
+
+Section: Work Orders
+
+  WorkOrder = record {
+    wo-id : Text,
+    wo-equipment-id : Text,
+    wo-plant : Text,
+    wo-type : MaintenanceType,
+    wo-priority : WoPriority,
+    wo-description : Text,
+    wo-plan-ref : Text,
+    wo-assigned-to : Text,
+    wo-status : WoStatus,
+    wo-planned-start : Integer,
+    wo-planned-end : Integer,
+    wo-actual-start : Integer,
+    wo-actual-end : Integer,
+    wo-tasks : List WoTask,
+    wo-parts-used : List PartUsage,
+    wo-labor-hrs : Integer,
+    wo-total-cost : Integer,
+    wo-failure-code : Text,
+    wo-root-cause : Text,
+    wo-notes : Text,
+    wo-created : Integer
+  }
+
+  WoPriority =
+    | WpEmergency
+    | WpUrgent
+    | WpHigh
+    | WpNormal
+    | WpLow
+
+  wp-name : WoPriority -> Text
+  wp-name (p) =
+    when p
+      is WpEmergency -> "emergency"
+      is WpUrgent -> "urgent"
+      is WpHigh -> "high"
+      is WpNormal -> "normal"
+      is WpLow -> "low"
+
+  WoStatus =
+    | WoCreated
+    | WoApproved
+    | WoScheduled
+    | WoInProgress2
+    | WoOnHold (Text)
+    | WoComplete
+    | WoCancelled3
+
+  WoTask = record {
+    wot-seq : Integer,
+    wot-description : Text,
+    wot-status : Text,
+    wot-actual-minutes : Integer,
+    wot-technician : Text,
+    wot-notes : Text
+  }
+
+  PartUsage = record {
+    pu-material-id : Text,
+    pu-quantity : Integer,
+    pu-unit-cost : Integer,
+    pu-from-warehouse : Text
+  }
+
+  wo-total-parts-cost : WorkOrder -> Integer
+  wo-total-parts-cost (wo) = sum-parts (wo.wo-parts-used) 0 0
+
+  sum-parts : List PartUsage, Integer, Integer -> Integer
+  sum-parts (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else let p = list-at parts i
+    in sum-parts parts (i + 1) (acc + p.pu-quantity * p.pu-unit-cost)
+
+Section: Failure Analysis
+
+  FailureCode = record {
+    fc-code : Text,
+    fc-description : Text,
+    fc-category : Text,
+    fc-severity : Integer
+  }
+
+  FailureRecord = record {
+    fr-equipment-id : Text,
+    fr-wo-id : Text,
+    fr-failure-code : Text,
+    fr-root-cause : Text,
+    fr-downtime-hrs : Integer,
+    fr-repair-cost : Integer,
+    fr-date : Integer,
+    fr-recurring : Boolean
+  }
+
+Section: Calibration
+
+  CalibrationRecord = record {
+    cal-id : Text,
+    cal-equipment-id : Text,
+    cal-standard-ref : Text,
+    cal-result : CalResult,
+    cal-readings : List CalReading,
+    cal-technician : Text,
+    cal-date : Integer,
+    cal-next-due : Integer,
+    cal-certificate : Text
+  }
+
+  CalResult =
+    | CalPass
+    | CalFail
+    | CalAdjusted
+    | CalOutOfTolerance
+
+  CalReading = record {
+    cr-parameter : Text,
+    cr-nominal : Integer,
+    cr-actual : Integer,
+    cr-tolerance : Integer,
+    cr-in-spec : Boolean
+  }
+
+  cal-reading-check : CalReading -> Boolean
+  cal-reading-check (r) =
+    let deviation = if r.cr-actual >= r.cr-nominal then r.cr-actual - r.cr-nominal else r.cr-nominal - r.cr-actual
+    in deviation <= r.cr-tolerance
+
+Section: KPIs
+
+  MaintenanceKpi = record {
+    kpi-plant : Text,
+    kpi-period : Integer,
+    kpi-total-wo : Integer,
+    kpi-completed-wo : Integer,
+    kpi-overdue-wo : Integer,
+    kpi-emergency-pct : Integer,
+    kpi-planned-pct : Integer,
+    kpi-mttr-hrs : Integer,
+    kpi-mtbf-hrs : Integer,
+    kpi-total-cost : Integer,
+    kpi-parts-cost : Integer,
+    kpi-labor-cost : Integer,
+    kpi-availability-pct : Integer
+  }
+
+  kpi-compliance-pct : MaintenanceKpi -> Integer
+  kpi-compliance-pct (k) =
+    if k.kpi-total-wo == 0 then 0
+    else k.kpi-completed-wo * 100 / k.kpi-total-wo

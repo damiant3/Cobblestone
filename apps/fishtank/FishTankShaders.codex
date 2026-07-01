@@ -1,0 +1,82 @@
+Chapter: FishTankShaders
+
+ WGSL shader source for the Codex Aquarium WebGPU renderer.
+ Background (reef panorama + god rays), sprite (fish + decorations),
+ and particle (bubbles + food + specks) shaders.
+
+Section: Background
+
+  shader-bg : Text =
+    "struct U{time:f32,resX:f32,resY:f32,lightOn:f32,tod:f32,p1:f32,p2:f32,p3:f32};"
+    & "@group(0)@binding(0) var<uniform> u:U;@group(0)@binding(1) var tex:texture_2d<f32>;@group(0)@binding(2) var smp:sampler;"
+    & "@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4f{var p=array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));return vec4f(p[i],0,1);}"
+    & "@fragment fn fs(@builtin(position) pos:vec4f)->@location(0) vec4f{"
+    & "let uv=pos.xy/vec2f(u.resX,u.resY);"
+    & "let scroll=u.time*0.003;let backUV=vec2f(fract(uv.x*0.8+0.1+scroll),uv.y);"
+    & "var col=textureSample(tex,smp,backUV).rgb;"
+    & "let waterFade=smoothstep(0.0,0.45,uv.y);let night=smoothstep(0.6,1.0,abs(u.tod-0.75)*4.0);let dayAmt=1.0-night*0.5;"
+    & "let waterCol=vec3f(0.02,0.06,0.15)*dayAmt;col=mix(col*dayAmt,waterCol,waterFade);"
+    & "var rays=0.0;for(var i=0u;i<5u;i++){let freq=1.0+f32(i)*0.7;let ph=u.time*(0.15+f32(i)*0.06)+f32(i)*1.3;let r=sin(uv.x*freq*6.28+ph)*0.5+0.5;rays+=pow(r,12.0+f32(i)*6.0)*uv.y;}"
+    & "rays*=0.08*u.lightOn*dayAmt;col+=vec3f(0.4,0.6,0.9)*rays;"
+    & "let vig=1.0-length((uv-0.5)*vec2f(1.2,1.0))*0.6;col*=clamp(vig,0.5,1.0);"
+    & "return vec4f(col,1);}"
+
+Section: Sprite
+
+  shader-sprite : Text =
+    "struct Cam{vp:mat4x4f,time:f32,fogR:f32,fogG:f32,fogB:f32,fogDens:f32,p1:f32,p2:f32,p3:f32};"
+    & "@group(0)@binding(0) var<uniform> cam:Cam;@group(0)@binding(1) var tex:texture_2d<f32>;@group(0)@binding(2) var smp:sampler;"
+    & "struct VOut{@builtin(position) pos:vec4f,@location(0) uv:vec2f,@location(1) depth:f32};"
+    & "@vertex fn vs(@builtin(vertex_index) vi:u32,@location(0) ipos:vec3f,@location(1) ipar:vec4f,@location(2) iuv:vec4f)->VOut{"
+    & "var qx=array<f32,6>(-0.5,0.5,-0.5,0.5,-0.5,0.5);var qy=array<f32,6>(-0.5,-0.5,0.5,-0.5,0.5,0.5);"
+    & "var qu=array<f32,6>(0.0,1.0,0.0,1.0,0.0,1.0);var qv=array<f32,6>(1.0,1.0,0.0,1.0,0.0,0.0);"
+    & "let swimPhase=cam.time*7.0+ipar.w;let wiggle=sin(swimPhase+qx[vi]*5.0)*max(0.4-qx[vi],0.0)*0.08;"
+    & "let lx=qx[vi]*ipar.y;let ly=qy[vi]*ipar.z+wiggle;"
+    & "let ca=cos(ipar.x);let sa=sin(ipar.x);let wp=ipos+vec3f(lx*ca,ly,lx*sa);"
+    & "var o:VOut;o.pos=cam.vp*vec4f(wp,1);"
+    & "var texU=qu[vi];if(ca<0.0){texU=1.0-texU;}"
+    & "o.uv=iuv.xy+vec2f(texU,qv[vi])*iuv.zw;o.depth=length(wp-vec3f(0,0,8));return o;}"
+    & "@fragment fn fs(@location(0) uv:vec2f,@location(1) depth:f32)->@location(0) vec4f{"
+    & "let c=textureSample(tex,smp,uv);if(c.a<0.2){discard;}"
+    & "let fog=1.0-exp(-depth*cam.fogDens*0.3);let fogCol=vec3f(cam.fogR,cam.fogG,cam.fogB);"
+    & "var fc=mix(c.rgb,fogCol,clamp(fog,0.0,0.5));fc=fc*0.92+vec3f(0.01,0.03,0.06);"
+    & "return vec4f(fc,c.a);}"
+
+Section: Particle
+
+  shader-particle : Text =
+    "struct Cam{vp:mat4x4f,time:f32,p1:f32,p2:f32,p3:f32,p4:f32,p5:f32,p6:f32,p7:f32};"
+    & "@group(0)@binding(0) var<uniform> cam:Cam;"
+    & "struct VOut{@builtin(position) pos:vec4f,@location(0) co:vec2f,@location(1) alpha:f32,@location(2) ptype:f32};"
+    & "@vertex fn vs(@builtin(vertex_index) vi:u32,@location(0) ipos:vec3f,@location(1) ipar:vec4f)->VOut{"
+    & "var qx=array<f32,6>(-1.0,1.0,-1.0,1.0,-1.0,1.0);var qy=array<f32,6>(-1.0,-1.0,1.0,-1.0,1.0,1.0);"
+    & "let sz=ipar.x;let wobble=sin(cam.time*3.0+ipar.w)*sz*0.2;let wp=ipos+vec3f(qx[vi]*sz+wobble,qy[vi]*sz,0.0);"
+    & "var o:VOut;o.pos=cam.vp*vec4f(wp,1);o.co=vec2f(qx[vi],qy[vi]);o.alpha=ipar.y;o.ptype=ipar.z;return o;}"
+    & "@fragment fn fs(@location(0) co:vec2f,@location(1) alpha:f32,@location(2) ptype:f32)->@location(0) vec4f{"
+    & "let d=length(co);if(d>1.0){discard;}"
+    & "if(ptype<0.5){let ring=smoothstep(0.65,0.8,d)*(1.0-smoothstep(0.8,1.0,d));let hl=smoothstep(0.0,0.35,1.0-length(co-vec2f(-0.3,0.3)));return vec4f(0.7,0.88,1.0,(ring*0.5+hl*0.5)*alpha);}"
+    & "else if(ptype<1.5){let c=1.0-smoothstep(0.5,1.0,d);return vec4f(0.85,0.55,0.2,c*alpha);}"
+    & "else{let c=1.0-smoothstep(0.2,1.0,d);return vec4f(0.6,0.7,0.85,c*alpha*0.25);}}"
+
+Section: Fish 3D Mesh
+
+  shader-fish3d : Text =
+    "struct Cam{vp:mat4x4f,time:f32,p1:f32,p2:f32,p3:f32,p4:f32,p5:f32,p6:f32,p7:f32};"
+    & "@group(0)@binding(0) var<uniform> cam:Cam;"
+    & "struct VOut{@builtin(position) pos:vec4f,@location(0) norm:vec3f,@location(1) depth:f32};"
+    & "@vertex fn vs(@location(0) p:vec3f,@location(1) n:vec3f,@location(2) ipos:vec3f,@location(3) irot:f32)->VOut{"
+    & "let ca=cos(irot);let sa=sin(irot);let rp=vec3f(p.x*ca+p.z*sa,p.y,p.z*ca-p.x*sa);"
+    & "let wp=rp+ipos;var o:VOut;o.pos=cam.vp*vec4f(wp,1);o.norm=vec3f(n.x*ca+n.z*sa,n.y,n.z*ca-n.x*sa);o.depth=length(wp-vec3f(0,0,8));return o;}"
+    & "@fragment fn fs(@location(0) norm:vec3f,@location(1) depth:f32)->@location(0) vec4f{"
+    & "let light=normalize(vec3f(0.3,1.0,0.5));let diff=max(dot(normalize(norm),light),0.2);"
+    & "let col=vec3f(0.6,0.7,0.8)*diff;let fog=1.0-exp(-depth*0.05);"
+    & "return vec4f(mix(col,vec3f(0.02,0.06,0.15),clamp(fog,0.0,0.5)),1);}"
+
+Section: JS Wrappers
+
+  shader-bg-js : Text = "const SHADER_BG=`" & shader-bg & "`;\n"
+  shader-sprite-js : Text = "const SHADER_SPRITE=`" & shader-sprite & "`;\n"
+  shader-particle-js : Text = "const SHADER_PARTICLE=`" & shader-particle & "`;\n"
+  shader-fish3d-js : Text = "const SHADER_FISH3D=`" & shader-fish3d & "`;\n"
+
+Page 1

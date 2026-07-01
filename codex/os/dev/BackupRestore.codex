@@ -1,0 +1,142 @@
+Chapter: BackupRestore
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Backup and restore. Scheduled or manual backups to external drive
+ or network path. Supports full system, user data, or selected
+ folders. Incremental backups track changed files since last full.
+ Restore from any backup point in history.
+
+Section: Backup Scope
+
+  BackupScope =
+    | BkFull
+    | BkUserData
+    | BkSelected (List Text)
+
+  backup-scope-label : BackupScope -> Text
+  backup-scope-label (s) = when s
+    is BkFull -> "Full System"
+    is BkUserData -> "User Data Only"
+    is BkSelected (paths) -> "Selected Folders"
+
+Section: Backup Type
+
+  BackupType =
+    | BkTypeFull
+    | BkTypeIncremental
+
+Section: Backup Entry
+
+  BackupEntry = record {
+    be-id : Integer,
+    be-timestamp : Integer,
+    be-scope : BackupScope,
+    be-backup-type : BackupType,
+    be-destination : Text,
+    be-size-bytes : Integer,
+    be-file-count : Integer,
+    be-duration-seconds : Integer,
+    be-success : Boolean,
+    be-label : Text
+  }
+
+Section: Schedule
+
+  BackupSchedule =
+    | SchedNone
+    | SchedDaily (Integer)
+    | SchedWeekly (Integer) (Integer)
+    | SchedMonthly (Integer) (Integer)
+
+  schedule-label : BackupSchedule -> Text
+  schedule-label (s) = when s
+    is SchedNone -> "Manual only"
+    is SchedDaily (hour) -> "Daily at " & show hour & ":00"
+    is SchedWeekly (dow) (hour) -> "Weekly"
+    is SchedMonthly (day) (hour) -> "Monthly on day " & show day
+
+Section: State
+
+  BackupState = record {
+    bk-enabled : Boolean,
+    bk-scope : BackupScope,
+    bk-destination : Text,
+    bk-schedule : BackupSchedule,
+    bk-history : List BackupEntry,
+    bk-history-count : Integer,
+    bk-next-id : Integer,
+    bk-running : Boolean,
+    bk-progress : Integer between 0 and 100,
+    bk-last-backup : Integer,
+    bk-auto-incremental : Boolean
+  }
+
+  backup-new : BackupState
+  backup-new = BackupState {
+    bk-enabled = False, bk-scope = BkUserData, bk-destination = "",
+    bk-schedule = SchedNone, bk-history = [], bk-history-count = 0,
+    bk-next-id = 1, bk-running = False, bk-progress = 0,
+    bk-last-backup = 0, bk-auto-incremental = True
+  }
+
+Section: Actions
+
+  bk-set-destination : BackupState, Text -> BackupState
+  bk-set-destination (st) (path) = __record-set st "bk-destination" path
+
+  bk-set-scope : BackupState, BackupScope -> BackupState
+  bk-set-scope (st) (scope) = __record-set st "bk-scope" scope
+
+  bk-set-schedule : BackupState, BackupSchedule -> BackupState
+  bk-set-schedule (st) (sched) = __record-set st "bk-schedule" sched
+
+  bk-toggle-enabled : BackupState -> BackupState
+  bk-toggle-enabled (st) = __record-set st "bk-enabled" (if st.bk-enabled then False else True)
+
+  bk-start : BackupState -> BackupState
+  bk-start (st) = __record-set (__record-set st "bk-running" True) "bk-progress" 0
+
+  bk-update-progress : BackupState, Integer -> BackupState
+  bk-update-progress (st) (pct) = __record-set st "bk-progress" pct
+
+  bk-complete : BackupState, Integer, Integer, Integer, Boolean -> BackupState
+  bk-complete (st) (ts) (size) (files) (success) =
+    let entry = BackupEntry { be-id = st.bk-next-id, be-timestamp = ts, be-scope = st.bk-scope, be-backup-type = BkTypeFull, be-destination = st.bk-destination, be-size-bytes = size, be-file-count = files, be-duration-seconds = 0, be-success = success, be-label = "Backup " & show (st.bk-next-id) }
+    in __record-set (__record-set (__record-set (__record-set (__record-set st "bk-running" False) "bk-progress" 100) "bk-history" (list-push (st.bk-history) entry)) "bk-history-count" (st.bk-history-count + 1)) "bk-next-id" (st.bk-next-id + 1)
+
+Section: Widget
+
+  bk-widget : BackupState -> WidgetNode
+  bk-widget (st) =
+    let title = widget-label "bk-title" "Backup & Restore"
+    in let dest = widget-label "bk-dest" ("Destination: " & if text-length (st.bk-destination) > 0 then st.bk-destination else "(not set)")
+    in let scope = widget-label "bk-scope" ("Scope: " & backup-scope-label (st.bk-scope))
+    in let sched = widget-label "bk-sched" ("Schedule: " & schedule-label (st.bk-schedule))
+    in let toggle = widget-button "bk-toggle" (if st.bk-enabled then "Enabled" else "Disabled")
+    in let backup-btn = widget-button "bk-now" (if st.bk-running then "Running..." else "Backup Now")
+    in let progress = if st.bk-running then widget-gauge "bk-progress" (st.bk-progress) 100 else widget-label "bk-idle" ""
+    in let history-title = widget-label "bk-hist-title" ("History (" & show (st.bk-history-count) & ")")
+    in let hist-rows = bk-history-rows st 0 (st.bk-history-count) []
+    in widget-panel "bk-settings" DirColumn 4 ([title, dest, scope, sched, toggle, backup-btn, progress, history-title] & hist-rows)
+
+  bk-history-rows : BackupState, Integer, Integer, List WidgetNode -> List WidgetNode
+  bk-history-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let entry = list-at (st.bk-history) (n - 1 - i)
+    in let label = widget-label ("bk-h-" & show i) (entry.be-label & " | " & show (entry.be-file-count) & " files | " & (if entry.be-success then "OK" else "FAILED"))
+    in let restore-btn = widget-button ("bk-r-" & show i) "Restore"
+    in let row = widget-panel ("bk-hr-" & show i) DirRow 4 [label, restore-btn]
+    in bk-history-rows st (i + 1) n (list-push acc row)
+
+Section: Formatting
+
+  format-backup : BackupState -> Text
+  format-backup (st) =
+    backup-scope-label (st.bk-scope) & " -> " & st.bk-destination
+    & " schedule=" & schedule-label (st.bk-schedule)
+    & " history=" & show (st.bk-history-count)
+    & (if st.bk-running then " [RUNNING " & show (st.bk-progress) & "%]" else "")
+
+Page 1

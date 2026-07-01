@@ -1,0 +1,728 @@
+Chapter: WinForms Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Generates WinForms C# from the IR.
+
+Section: Sanitization
+
+  wf-sanitize : Text -> Text
+  wf-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  wf-escape : Text -> Text
+  wf-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in text-replace s2 "\n" "\\n"
+
+  wf-indent : Integer -> Text
+  wf-indent (n) =
+   if n <= 0 then ""
+   else "    " & wf-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare name (list-at entries mid).name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   list-insert-at xs (bsearch-arity-pos xs (e.name) 0 (list-length xs)) e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry { name = d.name, arity = list-length (d.params), generic-count = 0 }))
+
+Section: Expression Emission
+
+  emit-wf-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-wf-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n & "L"
+    is IrNumLit (n) (sp) -> "BitConverter.Int64BitsToDouble(" & show n & "L)"
+    is IrTextLit (s) (sp) -> "\"" & wf-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "((char)" & show n & ")"
+    is IrName (n) (ty) (sp) -> wf-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-wf-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-wf-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-wf-expr c arities indent & " ? " & emit-wf-expr t arities indent & " : " & emit-wf-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "((Func<dynamic>)(() => { dynamic " & wf-sanitize name & " = " & emit-wf-expr val arities indent & "; return " & emit-wf-expr body arities indent & "; }))()"
+    is IrApply (f) (a) (ty) (sp) -> emit-wf-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "((" & emit-wf-params params 0 & ") => " & emit-wf-expr body arities indent & ")"
+    is IrList (elems) (ty) (sp) -> "new List<dynamic> { " & emit-wf-elems elems arities indent 0 & " }"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-wf-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-wf-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "new Dictionary<string,dynamic> { [\"_type\"] = \"" & name & "\"" & emit-wf-rec-fields fields arities indent 0 & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-wf-expr rec arities indent & ")[\"" & field & "\"])"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((" & emit-wf-expr rec arities indent & ")[\"" & field & "\"] = " & emit-wf-expr val arities indent & ")"
+    is IrFork (body) (ty) (sp) -> "Task.Run(() => " & emit-wf-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-wf-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-wf-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-wf-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-wf-act body arities indent
+    is IrError (msg) (ty) (sp) -> "throw new Exception(\"" & wf-escape msg & "\")"
+
+  emit-wf-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-wf-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-wf-expr l arities indent
+   in let rhs = emit-wf-expr r arities indent
+   in when op
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
+    is IrRemInt -> "(" & lhs & " % " & rhs & ")"
+    is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
+    is IrEq -> "object.Equals(" & lhs & ", " & rhs & ")"
+    is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
+    is IrLt | IrLtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
+    is IrGt | IrGtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
+    is IrLtEq | IrLtEqVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
+    is IrGtEq | IrGtEqVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
+    is IrApproxEq -> "object.Equals(" & lhs & ", " & rhs & ")"
+    is IrApproxEqExact -> "object.Equals(" & lhs & ", " & rhs & ")"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(\"\" + " & lhs & " + " & rhs & ")"
+    is IrAppendList -> "((List<dynamic>)" & lhs & ").Concat((List<dynamic>)" & rhs & ").ToList()"
+    is IrConsList -> "new List<dynamic> { " & lhs & " }.Concat((List<dynamic>)" & rhs & ").ToList()"
+
+  FlatApply = record { root : IRExpr, args : List IRExpr }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-wf-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-wf-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in emit-wf-expr (chain.root) arities indent & "(" & emit-wf-elems (chain.args) arities indent 0 & ")"
+
+  emit-wf-params : List IRParam, Integer -> Text
+  emit-wf-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "dynamic " & wf-sanitize (list-at params i).name & emit-wf-params params (i + 1)
+
+  emit-wf-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-wf-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-wf-expr (list-at elems i) arities indent & emit-wf-elems elems arities indent (i + 1)
+
+  emit-wf-rec-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-wf-rec-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", [\"" & f.name & "\"] = " & emit-wf-expr (f.value) arities indent & emit-wf-rec-fields fields arities indent (i + 1)
+
+  emit-wf-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-wf-match (scrut) (branches) (arities) (indent) =
+   "((Func<dynamic>)(() => { dynamic _s = " & emit-wf-expr scrut arities indent & "; " & emit-wf-branches branches arities indent 0 & "throw new Exception(\"match\"); }))()"
+
+  emit-wf-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-wf-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in let cond = emit-wf-pat-cond (b.pattern) "_s"
+   in let binds = emit-wf-pat-binds (b.pattern) "_s"
+   in "if (" & cond & ") { " & binds & "return " & emit-wf-expr (b.body) arities indent & "; } " & emit-wf-branches branches arities indent (i + 1)
+
+  emit-wf-pat-cond : IRPat, Text -> Text
+  emit-wf-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> "object.Equals(" & scrut & ", (dynamic)" & text & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "(string)" & scrut & "[\"_tag\"] == \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
+
+  emit-wf-pat-binds : IRPat, Text -> Text
+  emit-wf-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "dynamic " & wf-sanitize name & " = " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-wf-ctor-binds subs scrut 0
+    is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
+
+  emit-wf-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-wf-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else emit-wf-pat-binds (list-at subs i) (scrut & "[\"_" & show i & "\"]") & emit-wf-ctor-binds subs scrut (i + 1)
+
+  emit-wf-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-wf-act (stmts) (arities) (indent) =
+   "((Func<dynamic>)(() => { " & emit-wf-act-loop stmts arities indent 0 & " }))()"
+
+  emit-wf-act-loop : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-wf-act-loop (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> "dynamic " & wf-sanitize name & " = " & emit-wf-expr val arities indent & "; " & emit-wf-act-loop stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) -> if is-last then "return " & emit-wf-expr e arities indent & "; " else emit-wf-expr e arities indent & "; " & emit-wf-act-loop stmts arities indent (i + 1)
+
+Section: Type and Definition Emission
+
+  emit-wf-type-def : ATypeDef -> Text
+  emit-wf-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) -> ""
+    is AVariantTypeDef (name) (tparams) (ctors) (s) -> emit-wf-var-ctors ctors 0
+
+  emit-wf-var-ctors : List AVariantCtorDef, Integer -> Text
+  emit-wf-var-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let t = if n == 0 then wf-indent 2 & "static readonly Dictionary<string,dynamic> " & wf-sanitize (c.name.value) & " = new() { [\"_tag\"] = \"" & c.name.value & "\" };\n"
+      else wf-indent 2 & "static Dictionary<string,dynamic> " & wf-sanitize (c.name.value) & "(" & emit-wf-ctor-p n 0 & ") => new() { [\"_tag\"] = \"" & c.name.value & "\"" & emit-wf-ctor-f n 0 & " };\n"
+   in t & emit-wf-var-ctors ctors (i + 1)
+
+  emit-wf-ctor-p : Integer, Integer -> Text
+  emit-wf-ctor-p (n) (i) =
+   if i == n then "" else let sep = if i > 0 then ", " else "" in sep & "dynamic _" & show i & emit-wf-ctor-p n (i + 1)
+
+  emit-wf-ctor-f : Integer, Integer -> Text
+  emit-wf-ctor-f (n) (i) =
+   if i == n then "" else ", [\"_" & show i & "\"] = _" & show i & emit-wf-ctor-f n (i + 1)
+
+  emit-wf-def : IRDef, List ArityEntry -> Text
+  emit-wf-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = wf-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then wf-indent 2 & "static dynamic " & sname & " = " & emit-wf-expr (d.body) arities 2 & ";\n\n"
+      else wf-indent 2 & "static dynamic " & sname & "(" & emit-wf-params (d.params) 0 & ") {\n" & wf-indent 3 & "return " & emit-wf-expr (d.body) arities 3 & ";\n" & wf-indent 2 & "}\n\n"
+
+  emit-wf-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-wf-defs (defs) (i) (arities) =
+   if i == list-length defs then "" else emit-wf-def (list-at defs i) arities & emit-wf-defs defs (i + 1) arities
+
+  emit-wf-type-defs : List ATypeDef, Integer -> Text
+  emit-wf-type-defs (tds) (i) =
+   if i == list-length tds then "" else emit-wf-type-def (list-at tds i) & emit-wf-type-defs tds (i + 1)
+
+Section: Widget Mapping
+
+ Each widget kind maps to a C# WinForms control. The mapping is
+ data: a WidgetCase record holds the tag name and the C# body that
+ constructs the control. The emitter walks the list to build a
+ switch statement. Adding a new widget kind is adding a record to
+ the list, not editing a string buried in a concatenation chain.
+
+  WidgetCase = record {
+   wc-tag : Text,
+   wc-body : Text
+  }
+
+  wf-case-label : WidgetCase
+  wf-case-label = WidgetCase {
+   wc-tag = "WkLabel",
+   wc-body = wf-indent 5 & "var lbl = new Label { Text = (string)kind[\"_0\"], AutoSize = true, Padding = new Padding(4) };\n" & wf-indent 5 & "return lbl;\n"
+  }
+
+  wf-case-button : WidgetCase
+  wf-case-button = WidgetCase {
+   wc-tag = "WkButton",
+   wc-body = let line1 = wf-indent 5 & "var btn = new Button { Text = (string)kind[\"_0\"], AutoSize = true, Padding = new Padding(8, 4, 8, 4) };\n"
+    in let line2 = wf-indent 5 & "var id = d.ContainsKey(\"wn-id\") ? (string)d[\"wn-id\"] : \"\";\n"
+    in let line3 = wf-indent 5 & "btn.Click += (s, e) => { _output.Add(\"click:\" + id); };\n"
+    in let line4 = wf-indent 5 & "return btn;\n"
+    in line1 & line2 & line3 & line4
+  }
+
+  wf-case-gauge : WidgetCase
+  wf-case-gauge = WidgetCase {
+   wc-tag = "WkGauge",
+   wc-body = let line1 = wf-indent 5 & "var val = (int)(long)kind[\"_0\"]; var max = (int)(long)kind[\"_1\"];\n"
+    in let line2 = wf-indent 5 & "if (max < 1) max = 1000;\n"
+    in let line3 = wf-indent 5 & "var tb = new TrackBar { Minimum = 0, Maximum = max, Value = Math.Min(val, max), TickFrequency = max/10, Width = 200 };\n"
+    in let line4 = wf-indent 5 & "return tb;\n"
+    in line1 & line2 & line3 & line4
+  }
+
+  wf-case-input : WidgetCase
+  wf-case-input = WidgetCase {
+   wc-tag = "WkInput",
+   wc-body = wf-indent 5 & "var txt = new TextBox { Text = (string)kind[\"_0\"], Width = 300 };\n" & wf-indent 5 & "return txt;\n"
+  }
+
+  wf-case-separator : WidgetCase
+  wf-case-separator = WidgetCase {
+   wc-tag = "WkSeparator",
+   wc-body = wf-indent 5 & "var sep = new Label { Height = 2, BackColor = Color.Gray, Dock = DockStyle.Top };\n" & wf-indent 5 & "return sep;\n"
+  }
+
+  wf-panel-body : Text
+  wf-panel-body =
+   let line1 = wf-indent 5 & "var dir = d.ContainsKey(\"wn-layout-dir\") ? d[\"wn-layout-dir\"] : null;\n"
+   in let line2 = wf-indent 5 & "bool isCol = dir != null && ((Dictionary<string,dynamic>)dir)[\"_tag\"] == \"DirColumn\";\n"
+   in let line3 = wf-indent 5 & "var panel = new FlowLayoutPanel { FlowDirection = isCol ? FlowDirection.TopDown : FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Padding = new Padding(4) };\n"
+   in let line4 = wf-indent 5 & "if (d.ContainsKey(\"wn-children\")) {\n"
+   in let line5 = wf-indent 6 & "var kids = (List<dynamic>)d[\"wn-children\"];\n"
+   in let line6 = wf-indent 6 & "foreach (var kid in kids) panel.Controls.Add(build_widget(kid));\n"
+   in let line7 = wf-indent 5 & "}\n" & wf-indent 5 & "return panel;\n"
+   in line1 & line2 & line3 & line4 & line5 & line6 & line7
+
+  wf-widget-cases : List WidgetCase
+  wf-widget-cases = [wf-case-label, wf-case-button, wf-case-gauge, wf-case-input, wf-case-separator]
+
+  emit-wf-switch-case : WidgetCase, Integer -> Text
+  emit-wf-switch-case (wc) (indent) =
+   wf-indent indent & "case \"" & wc.wc-tag & "\": {\n" & wc.wc-body & wf-indent indent & "}\n"
+
+  emit-wf-switch-cases : List WidgetCase, Integer, Integer -> Text
+  emit-wf-switch-cases (cases) (indent) (i) =
+   if i == list-length cases then wf-indent indent & "case \"WkPanel\": default: {\n" & wf-panel-body & wf-indent indent & "}\n"
+   else emit-wf-switch-case (list-at cases i) indent & emit-wf-switch-cases cases indent (i + 1)
+
+  wf-widget-builder : Text
+  wf-widget-builder =
+   let sig = wf-indent 2 & "static Control build_widget(dynamic node) {\n"
+   in let guard = wf-indent 3 & "if (node == null) return new Panel();\n"
+   in let unpack = wf-indent 3 & "var d = (Dictionary<string,dynamic>)node;\n" & wf-indent 3 & "var kind = (Dictionary<string,dynamic>)d[\"wn-kind\"];\n" & wf-indent 3 & "var tag = (string)kind[\"_tag\"];\n"
+   in let switch-open = wf-indent 3 & "switch (tag) {\n"
+   in let switch-body = emit-wf-switch-cases wf-widget-cases 4 0
+   in let switch-close = wf-indent 3 & "}\n"
+   in let close = wf-indent 2 & "}\n\n"
+   in sig & guard & unpack & switch-open & switch-body & switch-close & close
+
+Section: Builtin Definitions
+
+ Complete runtime library emitted into every WinForms app.
+ Grouped by category: I/O, conversion, text, list, char,
+ bitwise, math, DOM/controls, state, dialogs, widget mount,
+ theme, render, JSON, and utility.
+
+  wf-bi-fields : Text
+  wf-bi-fields =
+   let f1 = wf-indent 2 & "static readonly List<string> _output = new();\n"
+   in let f2 = wf-indent 2 & "static readonly Dictionary<string, dynamic> _state = new();\n"
+   in let f3 = wf-indent 2 & "static readonly Dictionary<string, Control> _controls = new();\n"
+   in let f4 = wf-indent 2 & "static Form _form;\n"
+   in let f5 = wf-indent 2 & "static Action _renderCallback;\n"
+   in let f6 = wf-indent 2 & "static long _nextId = 1;\n"
+   in f1 & f2 & f3 & f4 & f5 & f6 & "\n"
+
+  wf-bi-io : Text
+  wf-bi-io =
+   let p1 = wf-indent 2 & "static void print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); }\n"
+   in let p2 = wf-indent 2 & "static void print_line(dynamic s) { print_line_uni(s); }\n"
+   in let p3 = wf-indent 2 & "static string read_line() { return Microsoft.VisualBasic.Interaction.InputBox(\"Input\", \"Read Line\", \"\"); }\n"
+   in p1 & p2 & p3
+
+  wf-bi-conv : Text
+  wf-bi-conv =
+   let c1 = wf-indent 2 & "static string show(dynamic n) { return n?.ToString() ?? \"\"; }\n"
+   in let c2 = wf-indent 2 & "static string integer_to_text(long n) { return n.ToString(); }\n"
+   in let c3 = wf-indent 2 & "static long negate(long n) { return -n; }\n"
+   in let c4 = wf-indent 2 & "static long text_to_int(dynamic s) { return long.TryParse((string)s, out var v) ? v : 0L; }\n"
+   in let c5 = wf-indent 2 & "static long real_to_int(dynamic d) { return (long)(double)d; }\n"
+   in let c6 = wf-indent 2 & "static double int_to_real(dynamic n) { return (double)(long)n; }\n"
+   in c1 & c2 & c3 & c4 & c5 & c6
+
+  wf-bi-text : Text
+  wf-bi-text =
+   let t1 = wf-indent 2 & "static long text_length(dynamic s) { return ((string)s).Length; }\n"
+   in let t2 = wf-indent 2 & "static string text_replace(dynamic s, dynamic a, dynamic b) { return ((string)s).Replace((string)a, (string)b); }\n"
+   in let t3 = wf-indent 2 & "static long text_compare(dynamic a, dynamic b) { return string.Compare((string)a, (string)b, StringComparison.Ordinal); }\n"
+   in let t4 = wf-indent 2 & "static bool text_contains(dynamic s, dynamic sub) { return ((string)s).Contains((string)sub); }\n"
+   in let t5 = wf-indent 2 & "static bool text_starts_with(dynamic s, dynamic pre) { return ((string)s).StartsWith((string)pre); }\n"
+   in let t6 = wf-indent 2 & "static bool text_ends_with(dynamic s, dynamic suf) { return ((string)s).EndsWith((string)suf); }\n"
+   in let t7 = wf-indent 2 & "static string text_trim(dynamic s) { return ((string)s).Trim(); }\n"
+   in let t8 = wf-indent 2 & "static string text_to_lower(dynamic s) { return ((string)s).ToLowerInvariant(); }\n"
+   in let t9 = wf-indent 2 & "static string text_to_upper(dynamic s) { return ((string)s).ToUpperInvariant(); }\n"
+   in let t10 = wf-indent 2 & "static long text_index_of(dynamic s, dynamic sub) { return ((string)s).IndexOf((string)sub); }\n"
+   in let t11 = wf-indent 2 & "static string text_slice(dynamic s, dynamic start, dynamic end_) { var str = (string)s; return str.Substring((int)(long)start, (int)((long)end_ - (long)start)); }\n"
+   in let t12 = wf-indent 2 & "static string text_substring(dynamic s, dynamic start, dynamic len) { return ((string)s).Substring((int)(long)start, (int)(long)len); }\n"
+   in let grp1 = t1 & t2 & t3 & t4 & t5 & t6
+   in let grp2 = t7 & t8 & t9 & t10 & t11 & t12
+   in let t13 = wf-indent 2 & "static List<dynamic> text_split(dynamic s, dynamic sep) { return ((string)s).Split(new[]{ (string)sep }, StringSplitOptions.None).Cast<dynamic>().ToList(); }\n"
+   in let t14 = wf-indent 2 & "static string text_join(dynamic sep, dynamic parts) { return string.Join((string)sep, ((List<dynamic>)parts).Select(x => x?.ToString() ?? \"\")); }\n"
+   in grp1 & grp2 & t13 & t14
+
+  wf-bi-char : Text
+  wf-bi-char =
+   let c1 = wf-indent 2 & "static long char_code(dynamic s) { return (long)((string)s)[0]; }\n"
+   in let c2 = wf-indent 2 & "static string char_at(dynamic s, dynamic i) { return ((string)s)[(int)(long)i].ToString(); }\n"
+   in let c3 = wf-indent 2 & "static string text_char_at(dynamic s, dynamic i) { return char_at(s, i); }\n"
+   in let c4 = wf-indent 2 & "static string text_from_char(dynamic code) { return ((char)(int)(long)code).ToString(); }\n"
+   in c1 & c2 & c3 & c4
+
+  wf-bi-bit : Text
+  wf-bi-bit =
+   let b1 = wf-indent 2 & "static long bit_and(dynamic a, dynamic b) { return (long)a & (long)b; }\n"
+   in let b2 = wf-indent 2 & "static long bit_or(dynamic a, dynamic b) { return (long)a | (long)b; }\n"
+   in let b3 = wf-indent 2 & "static long bit_xor(dynamic a, dynamic b) { return (long)a ^ (long)b; }\n"
+   in let b4 = wf-indent 2 & "static long bit_shl(dynamic a, dynamic n) { return (long)a << (int)(long)n; }\n"
+   in let b5 = wf-indent 2 & "static long bit_shr(dynamic a, dynamic n) { return (long)a >> (int)(long)n; }\n"
+   in let b6 = wf-indent 2 & "static long bit_shru(dynamic a, dynamic n) { return (long)((ulong)(long)a >> (int)(long)n); }\n"
+   in let b7 = wf-indent 2 & "static long bit_not(dynamic a) { return ~(long)a; }\n"
+   in b1 & b2 & b3 & b4 & b5 & b6 & b7
+
+  wf-bi-math : Text
+  wf-bi-math =
+   let m1 = wf-indent 2 & "static long int_mod(dynamic a, dynamic b) { return (long)a % (long)b; }\n"
+   in let m2 = wf-indent 2 & "static long int_abs(dynamic a) { return Math.Abs((long)a); }\n"
+   in let m3 = wf-indent 2 & "static long int_min(dynamic a, dynamic b) { return Math.Min((long)a, (long)b); }\n"
+   in let m4 = wf-indent 2 & "static long int_max(dynamic a, dynamic b) { return Math.Max((long)a, (long)b); }\n"
+   in let m5 = wf-indent 2 & "static long int_clamp(dynamic v, dynamic lo, dynamic hi) { return Math.Clamp((long)v, (long)lo, (long)hi); }\n"
+   in m1 & m2 & m3 & m4 & m5
+
+  wf-bi-list : Text
+  wf-bi-list =
+   let l1 = wf-indent 2 & "static long list_length(dynamic xs) { return ((List<dynamic>)xs).Count; }\n"
+   in let l2 = wf-indent 2 & "static dynamic list_at(dynamic xs, dynamic i) { return ((List<dynamic>)xs)[(int)(long)i]; }\n"
+   in let l3 = wf-indent 2 & "static List<dynamic> list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n"
+   in let l4 = wf-indent 2 & "static List<dynamic> list_insert_at(dynamic xs, dynamic i, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Insert((int)(long)i, x); return r; }\n"
+   in let l5 = wf-indent 2 & "static List<dynamic> list_remove_at(dynamic xs, dynamic i) { var r = new List<dynamic>((List<dynamic>)xs); r.RemoveAt((int)(long)i); return r; }\n"
+   in let l6 = wf-indent 2 & "static List<dynamic> list_reverse(dynamic xs) { var r = new List<dynamic>((List<dynamic>)xs); r.Reverse(); return r; }\n"
+   in let l7 = wf-indent 2 & "static List<dynamic> list_concat(dynamic a, dynamic b) { return ((List<dynamic>)a).Concat((List<dynamic>)b).ToList(); }\n"
+   in let l8 = wf-indent 2 & "static List<dynamic> list_take(dynamic xs, dynamic n) { return ((List<dynamic>)xs).Take((int)(long)n).ToList(); }\n"
+   in let l9 = wf-indent 2 & "static List<dynamic> list_drop(dynamic xs, dynamic n) { return ((List<dynamic>)xs).Skip((int)(long)n).ToList(); }\n"
+   in let l10 = wf-indent 2 & "static List<dynamic> list_map(dynamic f, dynamic xs) { return ((List<dynamic>)xs).Select(x => ((Func<dynamic,dynamic>)f)(x)).ToList(); }\n"
+   in let l11 = wf-indent 2 & "static List<dynamic> list_filter(dynamic f, dynamic xs) { return ((List<dynamic>)xs).Where(x => (bool)((Func<dynamic,dynamic>)f)(x)).ToList(); }\n"
+   in let l12 = wf-indent 2 & "static bool list_empty(dynamic xs) { return ((List<dynamic>)xs).Count == 0; }\n"
+   in let l13 = wf-indent 2 & "static dynamic list_head(dynamic xs) { return ((List<dynamic>)xs)[0]; }\n"
+   in let l14 = wf-indent 2 & "static List<dynamic> list_tail(dynamic xs) { return ((List<dynamic>)xs).Skip(1).ToList(); }\n"
+   in let l15 = wf-indent 2 & "static List<dynamic> list_sort_by(dynamic f, dynamic xs) { return ((List<dynamic>)xs).OrderBy(x => ((Func<dynamic,dynamic>)f)(x)).ToList(); }\n"
+   in let grp1 = l1 & l2 & l3 & l4 & l5
+   in let grp2 = l6 & l7 & l8 & l9 & l10
+   in let grp3 = l11 & l12 & l13 & l14 & l15
+   in grp1 & grp2 & grp3
+
+  wf-bi-state : Text
+  wf-bi-state =
+   let s1 = wf-indent 2 & "static dynamic state_get(dynamic key) { var k = (string)key; return _state.ContainsKey(k) ? _state[k] : 0L; }\n"
+   in let s2 = wf-indent 2 & "static void state_set(dynamic key, dynamic val) { _state[(string)key] = val; }\n"
+   in let s3 = wf-indent 2 & "static string state_get_text(dynamic key) { var k = (string)key; return _state.ContainsKey(k) ? _state[k]?.ToString() ?? \"\" : \"\"; }\n"
+   in let s4 = wf-indent 2 & "static void state_set_text(dynamic key, dynamic val) { _state[(string)key] = val?.ToString() ?? \"\"; }\n"
+   in let s5 = wf-indent 2 & "static void state_set_render(dynamic key, dynamic val) { _state[(string)key] = val; request_render(); }\n"
+   in let s6 = wf-indent 2 & "static void state_set_text_render(dynamic key, dynamic val) { _state[(string)key] = val?.ToString() ?? \"\"; request_render(); }\n"
+   in s1 & s2 & s3 & s4 & s5 & s6
+
+  wf-bi-dom : Text
+  wf-bi-dom =
+   let d1 = wf-indent 2 & "static Control dom_body() { return _form; }\n"
+   in let d2 = wf-indent 2 & "static Control dom_get(dynamic id) { var k = (string)id; return _controls.ContainsKey(k) ? _controls[k] : null; }\n"
+   in let d3 = wf-indent 2 & "static Control dom_query(dynamic sel) { var s = (string)sel; return s.StartsWith(\"#\") ? dom_get(s.Substring(1)) : null; }\n"
+   in let d4 = wf-indent 2 & "static void dom_append(dynamic parent, dynamic child) { ((Control)parent).Controls.Add((Control)child); }\n"
+   in let d5 = wf-indent 2 & "static void dom_prepend(dynamic parent, dynamic child) { var p = (Control)parent; var c = (Control)child; p.Controls.Add(c); p.Controls.SetChildIndex(c, 0); }\n"
+   in let d6 = wf-indent 2 & "static void dom_remove(dynamic elem) { var c = (Control)elem; c.Parent?.Controls.Remove(c); }\n"
+   in let d7 = wf-indent 2 & "static void dom_set_text(dynamic elem, dynamic text) { ((Control)elem).Text = text?.ToString() ?? \"\"; }\n"
+   in let d8 = wf-indent 2 & "static void dom_set_html(dynamic elem, dynamic html) { ((Control)elem).Text = html?.ToString() ?? \"\"; }\n"
+   in let d9 = wf-indent 2 & "static string dom_get_value(dynamic elem) { return ((Control)elem).Text; }\n"
+   in let d10 = wf-indent 2 & "static void dom_set_value(dynamic elem, dynamic val) { ((Control)elem).Text = val?.ToString() ?? \"\"; }\n"
+   in let grp1 = d1 & d2 & d3 & d4 & d5 & d6 & d7
+   in let grp2 = d8 & d9 & d10
+   in grp1 & grp2
+
+  wf-bi-dom-create : Text
+  wf-bi-dom-create =
+   let sig = wf-indent 2 & "static Control dom_create(dynamic tag) {\n"
+   in let body1 = wf-indent 3 & "var t = (string)tag;\n"
+   in let body2 = wf-indent 3 & "if (t == \"button\") return new Button { AutoSize = true };\n"
+   in let body3 = wf-indent 3 & "if (t == \"input\") return new TextBox();\n"
+   in let body4 = wf-indent 3 & "if (t == \"textarea\") return new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Height = 100 };\n"
+   in let body5 = wf-indent 3 & "if (t == \"select\") return new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };\n"
+   in let body6 = wf-indent 3 & "if (t == \"hr\") return new Label { Height = 2, BackColor = Color.Gray, Dock = DockStyle.Top, AutoSize = false };\n"
+   in let body7 = wf-indent 3 & "if (t == \"img\") return new PictureBox { SizeMode = PictureBoxSizeMode.Zoom };\n"
+   in let body8 = wf-indent 3 & "if (t == \"progress\") return new ProgressBar();\n"
+   in let body9 = wf-indent 3 & "if (t == \"span\" || t == \"label\" || t == \"p\" || t == \"h1\" || t == \"h2\" || t == \"h3\") return new Label { AutoSize = true };\n"
+   in let body10 = wf-indent 3 & "return new FlowLayoutPanel { AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.TopDown };\n"
+   in let close = wf-indent 2 & "}\n"
+   in sig & body1 & body2 & body3 & body4 & body5 & body6 & body7 & body8 & body9 & body10 & close
+
+  wf-bi-dom-attr : Text
+  wf-bi-dom-attr =
+   let sig = wf-indent 2 & "static void dom_set_attr(dynamic elem, dynamic attr, dynamic val) {\n"
+   in let body1 = wf-indent 3 & "var c = (Control)elem; var a = (string)attr;\n"
+   in let body2 = wf-indent 3 & "if (a == \"id\" || a == \"name\") { c.Name = val?.ToString() ?? \"\"; _controls[c.Name] = c; }\n"
+   in let body3 = wf-indent 3 & "else if (a == \"width\") c.Width = (int)(long)val;\n"
+   in let body4 = wf-indent 3 & "else if (a == \"height\") c.Height = (int)(long)val;\n"
+   in let body5 = wf-indent 3 & "else if (a == \"enabled\") c.Enabled = (bool)val;\n"
+   in let body6 = wf-indent 3 & "else if (a == \"visible\") c.Visible = (string)val != \"none\";\n"
+   in let body7 = wf-indent 3 & "else if (a == \"value\" && c is TextBox tb) tb.Text = val?.ToString() ?? \"\";\n"
+   in let close = wf-indent 2 & "}\n"
+   in sig & body1 & body2 & body3 & body4 & body5 & body6 & body7 & close
+
+  wf-bi-dom-style : Text
+  wf-bi-dom-style =
+   let sig = wf-indent 2 & "static void dom_set_style(dynamic elem, dynamic prop, dynamic val) {\n"
+   in let body1 = wf-indent 3 & "var c = (Control)elem; var p = (string)prop;\n"
+   in let body2 = wf-indent 3 & "if (p == \"background-color\" || p == \"backgroundColor\") c.BackColor = _parseColor(val);\n"
+   in let body3 = wf-indent 3 & "else if (p == \"color\") c.ForeColor = _parseColor(val);\n"
+   in let body4 = wf-indent 3 & "else if (p == \"font-size\" || p == \"fontSize\") c.Font = new Font(c.Font.FontFamily, float.Parse(val.ToString()));\n"
+   in let body5 = wf-indent 3 & "else if (p == \"width\") c.Width = (int)(long)val;\n"
+   in let body6 = wf-indent 3 & "else if (p == \"height\") c.Height = (int)(long)val;\n"
+   in let body7 = wf-indent 3 & "else if (p == \"display\") c.Visible = (string)val != \"none\";\n"
+   in let body8 = wf-indent 3 & "else if (p == \"padding\") c.Padding = new Padding((int)(long)val);\n"
+   in let body9 = wf-indent 3 & "else if (p == \"margin\") c.Margin = new Padding((int)(long)val);\n"
+   in let close = wf-indent 2 & "}\n"
+   in sig & body1 & body2 & body3 & body4 & body5 & body6 & body7 & body8 & body9 & close
+
+  wf-bi-dom-events : Text
+  wf-bi-dom-events =
+   let sig = wf-indent 2 & "static void dom_on(dynamic elem, dynamic evt, dynamic handler) {\n"
+   in let body1 = wf-indent 3 & "var c = (Control)elem; var e = (string)evt; var h = (Func<dynamic,dynamic>)handler;\n"
+   in let body2 = wf-indent 3 & "if (e == \"click\") c.Click += (s, a) => h(null);\n"
+   in let body3 = wf-indent 3 & "else if (e == \"input\" || e == \"change\") {\n"
+   in let body4 = wf-indent 4 & "if (c is TextBox tb) tb.TextChanged += (s, a) => h(tb.Text);\n"
+   in let body5 = wf-indent 4 & "else if (c is TrackBar tr) tr.ValueChanged += (s, a) => h((long)tr.Value);\n"
+   in let body6 = wf-indent 4 & "else if (c is ComboBox cb) cb.SelectedIndexChanged += (s, a) => h(cb.SelectedItem);\n"
+   in let body7 = wf-indent 4 & "else if (c is CheckBox chk) chk.CheckedChanged += (s, a) => h(chk.Checked);\n"
+   in let body8 = wf-indent 3 & "}\n"
+   in let body9 = wf-indent 3 & "else if (e == \"keydown\") c.KeyDown += (s, a) => h((long)a.KeyCode);\n"
+   in let body10 = wf-indent 3 & "else if (e == \"mousemove\") c.MouseMove += (s, a) => h(new Dictionary<string,dynamic>{ [\"x\"] = (long)a.X, [\"y\"] = (long)a.Y });\n"
+   in let close = wf-indent 2 & "}\n"
+   in let shortcuts = wf-indent 2 & "static void dom_on_click(dynamic e, dynamic h) { dom_on(e, \"click\", h); }\n" & wf-indent 2 & "static void dom_on_input(dynamic e, dynamic h) { dom_on(e, \"input\", h); }\n" & wf-indent 2 & "static void dom_on_key(dynamic e, dynamic h) { dom_on(e, \"keydown\", h); }\n"
+   in sig & body1 & body2 & body3 & body4 & body5 & body6 & body7 & body8 & body9 & body10 & close & shortcuts
+
+  wf-bi-dom-class : Text
+  wf-bi-dom-class =
+   let c1 = wf-indent 2 & "static void dom_add_class(dynamic elem, dynamic cls) { var c = (Control)elem; c.Tag = ((c.Tag as string) ?? \"\") + \" \" + (string)cls; }\n"
+   in let c2 = wf-indent 2 & "static void dom_remove_class(dynamic elem, dynamic cls) { var c = (Control)elem; if (c.Tag is string t) c.Tag = t.Replace((string)cls, \"\").Trim(); }\n"
+   in let c3 = wf-indent 2 & "static void dom_set_aria(dynamic elem, dynamic attr, dynamic val) { }\n"
+   in let c4 = wf-indent 2 & "static void dom_set_role(dynamic elem, dynamic role) { }\n"
+   in c1 & c2 & c3 & c4
+
+  wf-bi-color : Text
+  wf-bi-color =
+   let sig = wf-indent 2 & "static Color _parseColor(dynamic val) {\n"
+   in let body1 = wf-indent 3 & "if (val is long l) return Color.FromArgb((int)((l >> 16) & 0xFF), (int)((l >> 8) & 0xFF), (int)(l & 0xFF));\n"
+   in let body2 = wf-indent 3 & "if (val is string s && s.StartsWith(\"#\") && s.Length == 7) return ColorTranslator.FromHtml(s);\n"
+   in let body3 = wf-indent 3 & "return Color.Black;\n"
+   in let close = wf-indent 2 & "}\n"
+   in let helper = wf-indent 2 & "static string int_to_css_color(dynamic n) { var c = (long)n; return \"#\" + ((c >> 16) & 0xFF).ToString(\"X2\") + ((c >> 8) & 0xFF).ToString(\"X2\") + (c & 0xFF).ToString(\"X2\"); }\n"
+   in sig & body1 & body2 & body3 & close & helper
+
+  wf-bi-dialog : Text
+  wf-bi-dialog =
+   let d1 = wf-indent 2 & "static void show_alert(dynamic msg) { MessageBox.Show(msg?.ToString() ?? \"\", \"Alert\"); }\n"
+   in let d2 = wf-indent 2 & "static bool show_confirm(dynamic msg) { return MessageBox.Show(msg?.ToString() ?? \"\", \"Confirm\", MessageBoxButtons.YesNo) == DialogResult.Yes; }\n"
+   in let d3 = wf-indent 2 & "static string show_prompt(dynamic msg, dynamic def_) { return Microsoft.VisualBasic.Interaction.InputBox(msg?.ToString() ?? \"\", \"Prompt\", def_?.ToString() ?? \"\"); }\n"
+   in let d4 = wf-indent 2 & "static void close_dialog(dynamic id) { }\n"
+   in d1 & d2 & d3 & d4
+
+  wf-bi-widget-mount : Text
+  wf-bi-widget-mount =
+   let w1 = wf-indent 2 & "static void mount_widget(dynamic node) { var c = build_widget(node); c.Dock = DockStyle.Fill; _form.Controls.Clear(); _form.Controls.Add(c); }\n"
+   in let w2 = wf-indent 2 & "static void mount_widget_themed(dynamic node, dynamic theme) { mount_widget(node); }\n"
+   in let w3 = wf-indent 2 & "static void mount_widget_into(dynamic node, dynamic parent) { var c = build_widget(node); ((Control)parent).Controls.Add(c); }\n"
+   in let w4 = wf-indent 2 & "static void register_handlers(dynamic root, dynamic handlers) { }\n"
+   in let w5 = wf-indent 2 & "static long next_card_id() { return _nextId++; }\n"
+   in w1 & w2 & w3 & w4 & w5
+
+  wf-bi-render : Text
+  wf-bi-render =
+   let r1 = wf-indent 2 & "static void set_render(dynamic cb) { _renderCallback = () => ((Func<dynamic,dynamic>)cb)(null); }\n"
+   in let r2 = wf-indent 2 & "static void request_render() { if (_renderCallback != null) _form?.BeginInvoke(_renderCallback); }\n"
+   in r1 & r2
+
+  wf-bi-theme : Text
+  wf-bi-theme =
+   let t1 = wf-indent 2 & "static string theme_to_css(dynamic theme) { return \"\"; }\n"
+   in let t2 = wf-indent 2 & "static void inject_theme_css(dynamic theme) { }\n"
+   in let t3 = wf-indent 2 & "static void save_theme(dynamic key, dynamic theme) { _state[\"_theme_\" + (string)key] = theme; }\n"
+   in let t4 = wf-indent 2 & "static dynamic load_theme(dynamic key) { var k = \"_theme_\" + (string)key; return _state.ContainsKey(k) ? _state[k] : null; }\n"
+   in let t5 = wf-indent 2 & "static void save_layout(dynamic key, dynamic layout) { _state[\"_layout_\" + (string)key] = layout; }\n"
+   in let t6 = wf-indent 2 & "static dynamic load_layout(dynamic key) { var k = \"_layout_\" + (string)key; return _state.ContainsKey(k) ? _state[k] : null; }\n"
+   in t1 & t2 & t3 & t4 & t5 & t6
+
+  wf-bi-json : Text
+  wf-bi-json =
+   let j1 = wf-indent 2 & "static string json_stringify(dynamic obj) { try { return System.Text.Json.JsonSerializer.Serialize(obj); } catch { return \"{}\"; } }\n"
+   in let j2 = wf-indent 2 & "static dynamic json_parse(dynamic s) { try { return System.Text.Json.JsonSerializer.Deserialize<dynamic>((string)s); } catch { return null; } }\n"
+   in let j3 = wf-indent 2 & "static dynamic json_parse_obj(dynamic s) { return json_parse(s); }\n"
+   in let j4 = wf-indent 2 & "static dynamic json_obj_field(dynamic obj, dynamic key) { if (obj is System.Text.Json.JsonElement je) return je.GetProperty((string)key).ToString(); return null; }\n"
+   in let j5 = wf-indent 2 & "static string url_encode(dynamic s) { return Uri.EscapeDataString((string)s); }\n"
+   in j1 & j2 & j3 & j4 & j5
+
+  wf-bi-util : Text
+  wf-bi-util =
+   let u1 = wf-indent 2 & "static readonly Random _rng = new();\n"
+   in let u2 = wf-indent 2 & "static long random_int(dynamic lo, dynamic hi) { return _rng.Next((int)(long)lo, (int)(long)hi + 1); }\n"
+   in let u3 = wf-indent 2 & "static void set_timeout(dynamic handler, dynamic ms) { var t = new System.Windows.Forms.Timer { Interval = (int)(long)ms }; t.Tick += (s, e) => { t.Stop(); ((Func<dynamic,dynamic>)handler)(null); }; t.Start(); }\n"
+   in let u4 = wf-indent 2 & "static string local_storage_get(dynamic key) { var k = \"_ls_\" + (string)key; return _state.ContainsKey(k) ? _state[k]?.ToString() ?? \"\" : \"\"; }\n"
+   in let u5 = wf-indent 2 & "static void local_storage_set(dynamic key, dynamic val) { _state[\"_ls_\" + (string)key] = val?.ToString() ?? \"\"; }\n"
+   in let u6 = wf-indent 2 & "static void download_text(dynamic filename, dynamic content) { var dlg = new SaveFileDialog { FileName = (string)filename }; if (dlg.ShowDialog() == DialogResult.OK) System.IO.File.WriteAllText(dlg.FileName, (string)content); }\n"
+   in u1 & u2 & u3 & u4 & u5 & u6
+
+  wf-bi-stubs : Text
+  wf-bi-stubs =
+   let s1 = wf-indent 2 & "static void css_animate_spin(dynamic e) { }\n"
+   in let s2 = wf-indent 2 & "static void css_animate_pulse(dynamic e) { }\n"
+   in let s3 = wf-indent 2 & "static void css_animate_bounce(dynamic e) { }\n"
+   in let s4 = wf-indent 2 & "static void css_transition(dynamic e, dynamic prop, dynamic dur) { }\n"
+   in let s5 = wf-indent 2 & "static void play_tone(dynamic freq, dynamic dur, dynamic wave, dynamic vol) { try { Console.Beep((int)(long)freq, (int)(long)dur); } catch { } }\n"
+   in let s6 = wf-indent 2 & "static void fetch_json(dynamic url, dynamic cb) { ((Func<dynamic,dynamic>)cb)(null); }\n"
+   in let s7 = wf-indent 2 & "static void fetch_then(dynamic url, dynamic cb) { ((Func<dynamic,dynamic>)cb)(null); }\n"
+   in let s8 = wf-indent 2 & "static void fetch_get_then(dynamic url, dynamic cb) { ((Func<dynamic,dynamic>)cb)(null); }\n"
+   in let s9 = wf-indent 2 & "static void generate_image(dynamic prompt, dynamic cb) { ((Func<dynamic,dynamic>)cb)(null); }\n"
+   in let s10 = wf-indent 2 & "static void check_sd_status(dynamic cb) { ((Func<dynamic,dynamic>)cb)(false); }\n"
+   in let grp1 = s1 & s2 & s3 & s4 & s5
+   in let grp2 = s6 & s7 & s8 & s9 & s10
+   in grp1 & grp2
+
+  wf-bi-cuda-state : Text
+  wf-bi-cuda-state =
+   let f1 = wf-indent 2 & "static IntPtr _cudaCtx;\n"
+   in let f2 = wf-indent 2 & "static IntPtr _cudaModule;\n"
+   in let f3 = wf-indent 2 & "static bool _cudaReady;\n"
+   in let f4 = wf-indent 2 & "static string _cudaError = \"\";\n"
+   in f1 & f2 & f3 & f4
+
+  wf-bi-cuda-imports : Text
+  wf-bi-cuda-imports =
+   let a = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuInit(int f);\n"
+   in let b = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuDeviceGet(out int d, int o);\n"
+   in let c = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuCtxCreate_v2(out IntPtr c, uint f, int d);\n"
+   in let d = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuModuleLoadData(out IntPtr m, byte[] p);\n"
+   in let e = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuModuleGetFunction(out IntPtr f, IntPtr m, string n);\n"
+   in let f = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuMemAlloc_v2(out IntPtr p, long s);\n"
+   in let g = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuMemFree_v2(IntPtr p);\n"
+   in let h = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuMemcpyHtoD_v2(IntPtr d, long[] s, long n);\n"
+   in let i = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuMemcpyDtoH_v2(long[] d, IntPtr s, long n);\n"
+   in let j = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuLaunchKernel(IntPtr f, int gx, int gy, int gz, int bx, int by, int bz, int sh, IntPtr st, IntPtr[] a, IntPtr e);\n"
+   in let k = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuCtxSynchronize();\n"
+   in let l = wf-indent 2 & "[System.Runtime.InteropServices.DllImport(\"nvcuda\")] static extern int cuDeviceGetName(byte[] n, int len, int d);\n"
+   in let grp1 = a & b & c & d & e & f
+   in let grp2 = g & h & i & j & k & l
+   in grp1 & grp2 & "\n"
+
+  wf-bi-cuda-init : Text
+  wf-bi-cuda-init =
+   let sig = wf-indent 2 & "static bool gpu_init() {\n"
+   in let body1 = wf-indent 3 & "try {\n"
+   in let body2 = wf-indent 4 & "if (cuInit(0) != 0) { _cudaError = \"cuInit failed\"; return false; }\n"
+   in let body3 = wf-indent 4 & "if (cuDeviceGet(out int dev, 0) != 0) { _cudaError = \"no device\"; return false; }\n"
+   in let body4 = wf-indent 4 & "if (cuCtxCreate_v2(out _cudaCtx, 0, dev) != 0) { _cudaError = \"ctx failed\"; return false; }\n"
+   in let body5 = wf-indent 4 & "var nameBuf = new byte[256]; cuDeviceGetName(nameBuf, 256, dev);\n"
+   in let body6 = wf-indent 4 & "var devName = System.Text.Encoding.ASCII.GetString(nameBuf).TrimEnd('\\0');\n"
+   in let body7 = wf-indent 4 & "_cudaError = \"GPU: \" + devName; _cudaReady = true; return true;\n"
+   in let body8 = wf-indent 3 & "} catch (Exception ex) { _cudaError = \"no CUDA: \" + ex.Message; return false; }\n"
+   in let close = wf-indent 2 & "}\n"
+   in sig & body1 & body2 & body3 & body4 & body5 & body6 & body7 & body8 & close
+
+  wf-bi-cuda-module : Text
+  wf-bi-cuda-module =
+   let sig = wf-indent 2 & "static bool gpu_load_ptx(dynamic path) {\n"
+   in let body1 = wf-indent 3 & "if (!_cudaReady) { _cudaError = \"GPU not initialized\"; return false; }\n"
+   in let body2 = wf-indent 3 & "var ptxText = System.IO.File.ReadAllText((string)path);\n"
+   in let body3 = wf-indent 3 & "var ptxBytes = System.Text.Encoding.ASCII.GetBytes(ptxText + \"\\0\");\n"
+   in let body4 = wf-indent 3 & "var rc = cuModuleLoadData(out _cudaModule, ptxBytes);\n"
+   in let body5 = wf-indent 3 & "if (rc != 0) { _cudaError = \"module load failed: \" + rc; return false; }\n"
+   in let body6 = wf-indent 3 & "_cudaError = \"PTX loaded\"; return true;\n"
+   in let close = wf-indent 2 & "}\n"
+   in sig & body1 & body2 & body3 & body4 & body5 & body6 & close
+
+  wf-bi-cuda-mem : Text
+  wf-bi-cuda-mem =
+   let alloc = wf-indent 2 & "static long gpu_alloc(dynamic count) {\n" & wf-indent 3 & "if (!_cudaReady) return 0;\n" & wf-indent 3 & "cuMemAlloc_v2(out IntPtr ptr, (long)count * 8);\n" & wf-indent 3 & "return (long)ptr;\n" & wf-indent 2 & "}\n"
+   in let free = wf-indent 2 & "static void gpu_free(dynamic ptr) { if (_cudaReady) cuMemFree_v2((IntPtr)(long)ptr); }\n"
+   in let todev = wf-indent 2 & "static void gpu_copy_to(dynamic dstPtr, dynamic hostArr) {\n" & wf-indent 3 & "var arr = (long[])hostArr; cuMemcpyHtoD_v2((IntPtr)(long)dstPtr, arr, arr.Length * 8);\n" & wf-indent 2 & "}\n"
+   in let tohost = wf-indent 2 & "static long[] gpu_copy_from(dynamic srcPtr, dynamic count) {\n" & wf-indent 3 & "var arr = new long[(int)(long)count]; cuMemcpyDtoH_v2(arr, (IntPtr)(long)srcPtr, (long)count * 8);\n" & wf-indent 3 & "return arr;\n" & wf-indent 2 & "}\n"
+   in alloc & free & todev & tohost
+
+  wf-bi-cuda-launch : Text
+  wf-bi-cuda-launch =
+   let sig = wf-indent 2 & "static bool gpu_launch(dynamic kernelName, dynamic gridSize, dynamic blockSize, dynamic args) {\n"
+   in let body1 = wf-indent 3 & "if (!_cudaReady || _cudaModule == IntPtr.Zero) return false;\n"
+   in let body2 = wf-indent 3 & "var rc = cuModuleGetFunction(out IntPtr func, _cudaModule, (string)kernelName);\n"
+   in let body3 = wf-indent 3 & "if (rc != 0) { _cudaError = \"kernel not found: \" + (string)kernelName; return false; }\n"
+   in let body4 = wf-indent 3 & "var argList = (List<dynamic>)args;\n"
+   in let body5 = wf-indent 3 & "var argBuf = new long[argList.Count];\n"
+   in let body6 = wf-indent 3 & "for (int i = 0; i < argList.Count; i++) argBuf[i] = (long)argList[i];\n"
+   in let body7 = wf-indent 3 & "var handle = System.Runtime.InteropServices.GCHandle.Alloc(argBuf, System.Runtime.InteropServices.GCHandleType.Pinned);\n"
+   in let body8 = wf-indent 3 & "var basePtr = handle.AddrOfPinnedObject();\n"
+   in let body9 = wf-indent 3 & "var ptrs = new IntPtr[argBuf.Length];\n"
+   in let body10 = wf-indent 3 & "for (int i = 0; i < argBuf.Length; i++) ptrs[i] = basePtr + i * 8;\n"
+   in let body11 = wf-indent 3 & "rc = cuLaunchKernel(func, (int)(long)gridSize, 1, 1, (int)(long)blockSize, 1, 1, 0, IntPtr.Zero, ptrs, IntPtr.Zero);\n"
+   in let body12 = wf-indent 3 & "handle.Free();\n"
+   in let body13 = wf-indent 3 & "if (rc != 0) { _cudaError = \"launch failed: \" + rc; return false; }\n"
+   in let body14 = wf-indent 3 & "return true;\n"
+   in let close = wf-indent 2 & "}\n"
+   in let grp1 = sig & body1 & body2 & body3 & body4 & body5 & body6
+   in let grp2 = body7 & body8 & body9 & body10 & body11 & body12 & body13 & body14 & close
+   in grp1 & grp2
+
+  wf-bi-cuda-util : Text
+  wf-bi-cuda-util =
+   let sync = wf-indent 2 & "static void gpu_sync() { if (_cudaReady) cuCtxSynchronize(); }\n"
+   in let avail = wf-indent 2 & "static bool gpu_available() { return _cudaReady; }\n"
+   in let err = wf-indent 2 & "static string gpu_error() { return _cudaError; }\n"
+   in sync & avail & err
+
+  wf-bi-cuda : Text
+  wf-bi-cuda =
+   let state = wf-bi-cuda-state & wf-bi-cuda-imports
+   in let api = wf-bi-cuda-init & wf-bi-cuda-module & wf-bi-cuda-mem
+   in let launch = wf-bi-cuda-launch & wf-bi-cuda-util
+   in state & api & launch & "\n"
+
+  wf-builtins : Text
+  wf-builtins =
+   let core = wf-bi-fields & wf-bi-io & wf-bi-conv
+   in let data = wf-bi-text & wf-bi-char & wf-bi-bit & wf-bi-math
+   in let col = wf-bi-list & wf-bi-state
+   in let dom = wf-bi-dom & wf-bi-dom-create & wf-bi-dom-attr & wf-bi-dom-style & wf-bi-dom-events & wf-bi-dom-class & wf-bi-color
+   in let ui = wf-bi-dialog & wf-bi-widget-mount & wf-bi-render & wf-bi-theme
+   in let extra = wf-bi-json & wf-bi-util & wf-bi-stubs & wf-bi-cuda
+   in core & data & col & dom & ui & extra & "\n"
+
+Section: WinForms Assembly
+
+ Builds the complete C# file from IR and type definitions.
+ The constructor evaluates the opening binding (a zero-param def
+ producing a WidgetNode dictionary) and hands it to build_widget.
+
+  wf-constructor : Text -> Text
+  wf-constructor (title) =
+   let hdr = wf-indent 2 & "public MainForm()\n" & wf-indent 2 & "{\n"
+   in let setup = wf-indent 3 & "Text = \"" & title & "\";\n" & wf-indent 3 & "Size = new Size(900, 700);\n"
+   in let init-form = wf-indent 3 & "_form = this;\n"
+   in let try-open = wf-indent 3 & "dynamic result = null;\n" & wf-indent 3 & "try { result = opening; } catch (Exception ex) { _output.Add(\"ERROR: \" + ex.Message); }\n"
+   in let widget-branch = wf-indent 3 & "if (result is Dictionary<string,dynamic> rd && rd.ContainsKey(\"wn-kind\")) {\n" & wf-indent 4 & "var root = build_widget(result);\n" & wf-indent 4 & "root.Dock = DockStyle.Fill;\n" & wf-indent 4 & "Controls.Add(root);\n" & wf-indent 3 & "}"
+   in let text-branch = " else {\n" & wf-indent 4 & "var tb = new TextBox { Multiline = true, ReadOnly = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, Font = new Font(\"Courier New\", 10) };\n" & wf-indent 4 & "tb.Text = string.Join(Environment.NewLine, _output);\n" & wf-indent 4 & "Controls.Add(tb);\n" & wf-indent 3 & "}\n"
+   in let close = wf-indent 2 & "}\n\n"
+   in hdr & setup & init-form & try-open & widget-branch & text-branch & close
+
+  wf-main-method : Text
+  wf-main-method =
+   let attr = wf-indent 2 & "[STAThread]\n"
+   in let sig = wf-indent 2 & "static void Main()\n" & wf-indent 2 & "{\n"
+   in let body = wf-indent 3 & "Application.EnableVisualStyles();\n" & wf-indent 3 & "Application.Run(new MainForm());\n"
+   in let close = wf-indent 2 & "}\n"
+   in attr & sig & body & close
+
+  emit-winforms-chapter : IRChapter, List ATypeDef -> Text
+  emit-winforms-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "CodexApp" else wf-sanitize (m.chapter-title)
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Drawing;\nusing System.Linq;\nusing System.Runtime.InteropServices;\nusing System.Windows.Forms;\nusing System.Text.Json;\n\nnamespace " & title & "\n{\n    public class MainForm : Form\n    {\n"
+   in let types-text = emit-wf-type-defs type-defs 0
+   in let defs-text = emit-wf-defs (m.defs) 0 arities
+   in let body = wf-builtins & types-text & defs-text
+   in let controls = wf-widget-builder & wf-constructor title
+   in let tail = wf-main-method & "    }\n}\n"
+   in header & body & controls & tail

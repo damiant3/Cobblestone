@@ -1,0 +1,136 @@
+Chapter: GlobeScene
+  cites Globe chapter GlobeTypes
+  cites Globe chapter MapMode
+  cites Foreword chapter Maybe
+
+ Scene management for the globe. Camera orbits Earth at configurable
+ distance. Overlay layers toggle on/off. The scene tracks which data
+ feeds are active and their refresh intervals.
+
+Section: Camera
+
+  GlobeCamera = record {
+    gcam-lat : Integer,
+    gcam-lon : Integer,
+    gcam-dist : Integer,
+    gcam-tilt : Integer,
+    gcam-fov : Integer,
+    gcam-target-lat : Integer,
+    gcam-target-lon : Integer
+  }
+
+  globe-camera-new : GlobeCamera
+  globe-camera-new = GlobeCamera {
+    gcam-lat = 30000, gcam-lon = 0,
+    gcam-dist = 25000,
+    gcam-tilt = 0, gcam-fov = 45,
+    gcam-target-lat = 0, gcam-target-lon = 0
+  }
+
+  gcam-orbit : GlobeCamera, Integer, Integer -> GlobeCamera
+  gcam-orbit (cam) (dlat) (dlon) =
+    let new-lat = cam.gcam-lat + dlat
+    in let clamped = if new-lat > 89000 then 89000
+      else if new-lat < -89000 then -89000
+      else new-lat
+    in let new-lon = cam.gcam-lon + dlon
+    in let wrapped = if new-lon > 180000 then new-lon - 360000
+      else if new-lon < -180000 then new-lon + 360000
+      else new-lon
+    in __record-set (__record-set cam "gcam-lat" clamped) "gcam-lon" wrapped
+
+  gcam-zoom : GlobeCamera, Integer -> GlobeCamera
+  gcam-zoom (cam) (delta) =
+    let new-dist = cam.gcam-dist + delta
+    in let clamped = if new-dist < 6500 then 6500
+      else if new-dist > 200000 then 200000
+      else new-dist
+    in __record-set cam "gcam-dist" clamped
+
+  gcam-goto : GlobeCamera, Integer, Integer -> GlobeCamera
+  gcam-goto (cam) (lat) (lon) =
+    __record-set (__record-set cam "gcam-target-lat" lat) "gcam-target-lon" lon
+
+Section: Overlay State
+
+  OverlayState = record {
+    os-kind : OverlayKind,
+    os-enabled : Boolean,
+    os-refresh-sec : Integer,
+    os-last-fetch : Integer,
+    os-point-count : Integer,
+    os-loading : Boolean
+  }
+
+  overlay-new : OverlayKind, Integer -> OverlayState
+  overlay-new (kind) (refresh) = OverlayState {
+    os-kind = kind, os-enabled = False,
+    os-refresh-sec = refresh, os-last-fetch = 0,
+    os-point-count = 0, os-loading = False
+  }
+
+  overlay-toggle : OverlayState -> OverlayState
+  overlay-toggle (o) = __record-set o "os-enabled" (if o.os-enabled then False else True)
+
+Section: Globe State
+
+  GlobeState = record {
+    gs-camera : GlobeCamera,
+    gs-overlays : List OverlayState,
+    gs-overlay-count : Integer,
+    gs-auto-rotate : Boolean,
+    gs-rotate-speed : Integer,
+    gs-show-grid : Boolean,
+    gs-show-borders : Boolean,
+    gs-show-labels : Boolean,
+    gs-time-of-day : Integer,
+    gs-sun-lon : Integer,
+    gs-map : MapState
+  }
+
+  globe-state-new : GlobeState
+  globe-state-new = GlobeState {
+    gs-camera = globe-camera-new,
+    gs-overlays = [
+      overlay-new OvAircraft 10,
+      overlay-new OvEarthquakes 300,
+      overlay-new OvTemperature 3600,
+      overlay-new OvWind 1800,
+      overlay-new OvISS 5,
+      overlay-new OvClouds 600,
+      overlay-new OvVolcanoes 86400,
+      overlay-new OvWildfires 600,
+      overlay-new OvStorms 1800,
+      overlay-new OvFireballs 3600,
+      overlay-new OvSolarFlares 600,
+      overlay-new OvOceanBuoys 1800,
+      overlay-new OvRadar 300
+    ],
+    gs-overlay-count = 13,
+    gs-auto-rotate = True,
+    gs-rotate-speed = 100,
+    gs-show-grid = True,
+    gs-show-borders = False,
+    gs-show-labels = True,
+    gs-time-of-day = 0,
+    gs-sun-lon = 0,
+    gs-map = map-state-new
+  }
+
+  globe-toggle-overlay : GlobeState, Integer -> GlobeState
+  globe-toggle-overlay (gs) (idx) =
+    if idx < 0 then gs
+    else if idx >= gs.gs-overlay-count then gs
+    else let ov = list-at (gs.gs-overlays) idx
+    in let toggled = overlay-toggle ov
+    in __record-set gs "gs-overlays" (list-set-at (gs.gs-overlays) idx toggled)
+
+  globe-toggle-rotate : GlobeState -> GlobeState
+  globe-toggle-rotate (gs) =
+    __record-set gs "gs-auto-rotate" (if gs.gs-auto-rotate then False else True)
+
+  globe-toggle-grid : GlobeState -> GlobeState
+  globe-toggle-grid (gs) =
+    __record-set gs "gs-show-grid" (if gs.gs-show-grid then False else True)
+
+Page 1

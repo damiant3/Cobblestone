@@ -1,0 +1,160 @@
+Chapter: Opening
+  cites Vision chapter VisionTypes
+  cites Vision chapter VisionSignal
+  cites Vision chapter VisionCascade
+  cites Vision chapter VisionOrg
+  cites Vision chapter VisionPortfolio
+  cites Vision chapter VisionStore
+  cites Vision chapter VisionConfig
+  cites Vision chapter VisionTheme
+  cites Vision chapter SignalPage
+  cites Vision chapter PortfolioPage
+  cites Vision chapter TimelinePage
+  cites Vision chapter OrgPage
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter Event
+  cites Foreword chapter CCE
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppLog
+
+ Entry point for the Vision organizational intelligence platform.
+ Loads saved state, provides signal creation, cascade management,
+ and portfolio viewing.
+
+Section: Entry Point
+
+  opening : [Console] None
+  opening = act
+    let disk = disk-load
+    in let signals = vision-load-signals disk
+    in let state = vision-app-new disk
+    in let with-signals = __record-set state "va-signals" signals
+    in let with-org = __record-set with-signals "va-org" sample-org
+    in let with-config = __record-set with-org "va-config" config-default
+    in let disk2 = app-log-info disk "vision" ("Vision started, " & show signals.ss-count & " signals") 0
+    in let ready = __record-set with-config "va-disk" disk2
+    in print-line "Codex Vision v0.1"
+    in print-line ("  Signals: " & show signals.ss-count)
+    in print-line ("  Org: " & show (ready.va-org).og-people-count & " people")
+    in print-line "  Keys: 1=Feed 2=Portfolio 3=Timeline 4=Org 5=Open"
+    in print-line "  Ctrl+N=New Signal  Ctrl+R=Respond  Ctrl+P=Pick Up"
+    in vision-event-loop ready
+  end
+
+Section: Sample Org
+
+  sample-org : OrgGraph
+  sample-org =
+    let g = org-new
+    in let g1 = org-add-person g (Person { per-id = "ceo", per-name = "CEO", per-role = RoleExec, per-reports-to = "", per-domain = "company", per-domains = ["company"] })
+    in let g2 = org-add-person g1 (Person { per-id = "vp-eng", per-name = "VP Engineering", per-role = RoleVP, per-reports-to = "ceo", per-domain = "engineering", per-domains = ["engineering", "infrastructure", "code"] })
+    in let g3 = org-add-person g2 (Person { per-id = "vp-people", per-name = "VP People", per-role = RoleVP, per-reports-to = "ceo", per-domain = "people", per-domains = ["people", "hiring", "culture", "resumes"] })
+    in let g4 = org-add-person g3 (Person { per-id = "vp-product", per-name = "VP Product", per-role = RoleVP, per-reports-to = "ceo", per-domain = "product", per-domains = ["product", "design", "ux", "feature"] })
+    in let g5 = org-add-person g4 (Person { per-id = "vp-commerce", per-name = "VP Commerce", per-role = RoleVP, per-reports-to = "ceo", per-domain = "commerce", per-domains = ["commerce", "checkout", "payment", "conversion"] })
+    in let g6 = org-add-person g5 (Person { per-id = "dir-recruit", per-name = "Dir Recruiting", per-role = RoleDirector, per-reports-to = "vp-people", per-domain = "hiring", per-domains = ["hiring", "resumes", "interviews"] })
+    in let g7 = org-add-person g6 (Person { per-id = "dir-infra", per-name = "Dir Infrastructure", per-role = RoleDirector, per-reports-to = "vp-eng", per-domain = "infrastructure", per-domains = ["infrastructure", "devops", "latency", "deploy"] })
+    in let g8 = org-add-person g7 (Person { per-id = "dir-product", per-name = "Dir Product", per-role = RoleDirector, per-reports-to = "vp-product", per-domain = "product", per-domains = ["roadmap", "feature", "user"] })
+    in let g9 = org-add-person g8 (Person { per-id = "lead-backend", per-name = "Lead Backend", per-role = RoleLead, per-reports-to = "dir-infra", per-domain = "backend", per-domains = ["api", "backend", "database"] })
+    in let g10 = org-add-person g9 (Person { per-id = "lead-frontend", per-name = "Lead Frontend", per-role = RoleLead, per-reports-to = "dir-product", per-domain = "frontend", per-domains = ["ui", "frontend", "css", "react"] })
+    in let g11 = org-add-domain g10 (Domain { dom-id = "engineering", dom-name = "Engineering", dom-parent = "", dom-owner = "vp-eng", dom-keywords = ["code", "deploy", "latency", "infrastructure", "build", "api", "bug"] })
+    in let g12 = org-add-domain g11 (Domain { dom-id = "people", dom-name = "People", dom-parent = "", dom-owner = "vp-people", dom-keywords = ["hiring", "resumes", "culture", "onboarding", "retention", "interview"] })
+    in let g13 = org-add-domain g12 (Domain { dom-id = "product", dom-name = "Product", dom-parent = "", dom-owner = "vp-product", dom-keywords = ["design", "ux", "feature", "roadmap", "user", "ui"] })
+    in org-add-domain g13 (Domain { dom-id = "commerce", dom-name = "Commerce", dom-parent = "", dom-owner = "vp-commerce", dom-keywords = ["checkout", "payment", "conversion", "cart", "pricing", "subscription"] })
+
+Section: Event Loop
+
+  vision-event-loop : VisionAppState -> [Console] None
+  vision-event-loop (state) = act
+    let scan = uefi-read-key
+    in let ev = if scan == 0
+          then event-timer "tick" 0
+          else event-key-down scan 0 0
+    in let handled = vision-handle-event state ev
+    in vision-event-loop handled
+  end
+
+Section: Event Dispatch
+
+  vision-handle-event : VisionAppState, Event -> VisionAppState
+  vision-handle-event (state) (ev) =
+    when ev.ev-kind
+      is EvKeyDown -> vision-handle-key state ev.ev-key ev.ev-modifiers
+      is EvTimer -> vision-tick state
+      is otherwise -> state
+
+  vision-tick : VisionAppState -> VisionAppState
+  vision-tick (state) =
+    let cs = cascade-check-nudges state.va-cascade 0
+    in let cs2 = cascade-check-approaching cs 0 24
+    in __record-set state "va-cascade" cs2
+
+Section: Key Handling
+
+  vision-handle-key : VisionAppState, Integer, Integer -> VisionAppState
+  vision-handle-key (state) (k) (mods) =
+    let ctrl = int-mod (mods / 1) 2 == 1
+    in if ctrl then vision-ctrl-key state k
+    else vision-normal-key state k
+
+  vision-normal-key : VisionAppState, Integer -> VisionAppState
+  vision-normal-key (state) (k) =
+    if k == 49 then __record-set state "va-view" VvSignalFeed
+    else if k == 50 then __record-set state "va-view" VvPortfolio
+    else if k == 51 then __record-set state "va-view" VvTimeline
+    else if k == 52 then __record-set state "va-view" VvOrg
+    else if k == 53 then __record-set state "va-view" VvOpenBoard
+    else if k == 27 then __record-set state "va-view" VvSignalFeed
+    else state
+
+  vision-ctrl-key : VisionAppState, Integer -> VisionAppState
+  vision-ctrl-key (state) (k) =
+    if k == 78 then vision-demo-signal state
+    else if k == 82 then vision-demo-response state
+    else if k == 80 then vision-demo-pickup state
+    else if k == 83 then vision-save-state state
+    else state
+
+Section: Demo Signal Creation
+
+  vision-demo-signal : VisionAppState -> VisionAppState
+  vision-demo-signal (state) =
+    let id = state.va-signals.ss-next-id
+    in let sig = signal-new id "ceo" Suggestion "hiring" "I think resumes suck. Nobody reads them." 0
+    in let sig2 = signal-with-tags sig ["hiring", "process", "innovation"]
+    in let store = ss-add state.va-signals sig2
+    in let cs = cascade-route-signal state.va-cascade sig2 state.va-org 0
+    in let disk = app-log-info state.va-disk "vision" ("Signal created: " & text-take sig2.sig-content 40) 0
+    in __record-set (__record-set (__record-set state
+      "va-signals" store)
+      "va-cascade" cs)
+      "va-disk" disk
+
+Section: Demo Pickup
+
+  vision-demo-pickup : VisionAppState -> VisionAppState
+  vision-demo-pickup (state) =
+    if state.va-selected-signal == 0 then state
+    else let cs = cascade-pick-up state.va-cascade state.va-selected-signal "vp-people" 1 0
+    in let cs2 = cs-audit cs state.va-selected-signal "vp-people" CePickedUp "VP People picked up signal" 0
+    in __record-set state "va-cascade" cs2
+
+Section: Demo Response
+
+  vision-demo-response : VisionAppState -> VisionAppState
+  vision-demo-response (state) =
+    if state.va-selected-signal == 0 then state
+    else let cs = cascade-submit-response state.va-cascade state.va-selected-signal 0
+          "dir-recruit" RspProposal
+          "Portfolio-based assessment for technical roles, $40K 4-week pilot"
+          "Team recommends replacing resumes with portfolio review for technical roles. Already piloting in Austin with positive preliminary results."
+          "$40K" "4 weeks" 85 0
+    in let disk = app-log-info state.va-disk "vision" "Response submitted" 0
+    in __record-set (__record-set state "va-cascade" cs) "va-disk" disk
+
+Section: Save
+
+  vision-save-state : VisionAppState -> VisionAppState
+  vision-save-state (state) =
+    let disk = vision-save-signals state.va-disk state.va-signals
+    in __record-set state "va-disk" disk

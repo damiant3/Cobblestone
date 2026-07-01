@@ -1,0 +1,884 @@
+Chapter: Python Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Python source code from the IR.
+
+Section: Keywords and Sanitization
+
+  py-keywords : List Text =
+   ["and", "as", "assert", "async", "await",
+    "break", "class", "continue", "def", "del",
+    "elif", "else", "except", "finally", "for",
+    "from", "global", "if", "import", "in",
+    "is", "lambda", "nonlocal", "not", "or",
+    "pass", "raise", "return", "try", "type",
+    "while", "with", "yield",
+    "True", "False", "None"]
+
+  is-py-keyword-loop : List Text, Text, Integer, Integer -> Boolean
+  is-py-keyword-loop (kws) (name) (i) (len) =
+   if i == len then False
+   else if list-at kws i == name then True
+   else is-py-keyword-loop kws name (i + 1) len
+
+  is-py-keyword : Text -> Boolean
+  is-py-keyword (name) = is-py-keyword-loop py-keywords name 0 (list-length py-keywords)
+
+  py-sanitize : Text -> Text
+  py-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if is-py-keyword s then "_" & s
+      else s
+
+  py-escape-text : Text -> Text
+  py-escape-text (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  py-indent : Integer -> Text
+  py-indent (n) =
+   if n <= 0 then ""
+   else "    " & py-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-py-type-defs : List ATypeDef, Integer -> Text
+  emit-py-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-py-type-def (list-at tds i) & emit-py-type-defs tds (i + 1)
+
+  emit-py-type-def : ATypeDef -> Text
+  emit-py-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     emit-py-record-type (name.value) fields
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     if is-tup-type (name.value) then ""
+     else emit-py-sum-type ctors
+
+  emit-py-sum-type : List AVariantCtorDef -> Text
+  emit-py-sum-type (ctors) =
+   emit-py-sum-type-loop ctors 0 (list-length ctors)
+
+  emit-py-sum-type-loop : List AVariantCtorDef, Integer, Integer -> Text
+  emit-py-sum-type-loop (ctors) (i) (len) =
+   if i == len then ""
+   else let c = list-at ctors i
+   in emit-py-ctor c & emit-py-sum-type-loop ctors (i + 1) len
+
+  emit-py-ctor : AVariantCtorDef -> Text
+  emit-py-ctor (c) =
+   let name = py-sanitize (c.name.value)
+   in if list-length (c.fields) == 0 then
+    "@dataclass(frozen=True)\nclass " & name & ":\n    tag: str = \"" & c.name.value & "\"\n\n"
+   else
+    "@dataclass(frozen=True)\nclass " & name & ":\n" & emit-py-ctor-fields (c.fields) 0 & "    tag: str = \"" & c.name.value & "\"\n\n"
+
+  emit-py-ctor-fields : List ATypeExpr, Integer -> Text
+  emit-py-ctor-fields (fields) (i) =
+   if i == list-length fields then ""
+   else "    field" & integer-to-text i & ": Any = None\n" & emit-py-ctor-fields fields (i + 1)
+
+  emit-py-record-type : Text, List ARecordFieldDef -> Text
+  emit-py-record-type (name) (fields) =
+   let sname = py-sanitize name
+   in if list-length fields == 0 then
+    "@dataclass(frozen=True)\nclass " & sname & ":\n    pass\n\n"
+   else
+    "@dataclass(frozen=True)\nclass " & sname & ":\n" & emit-py-record-fields fields 0 & "\n"
+
+  emit-py-record-fields : List ARecordFieldDef, Integer -> Text
+  emit-py-record-fields (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in "    " & py-sanitize (f.name.value) & ": Any = None\n" & emit-py-record-fields fields (i + 1)
+
+Section: Expression Emission
+
+  py-max-depth : Integer = 256
+
+  emit-py-expr : IRExpr, List ArityEntry -> Text
+  emit-py-expr (e) (arities) = emit-py-expr-at e arities 0
+
+  emit-py-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-py-expr-at (e) (arities) (depth) =
+   if depth >= py-max-depth then "None"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> "struct.unpack('=d', struct.pack('=q', " & integer-to-text n & "))[0]"
+    is IrTextLit (s) (sp) -> "\"" & py-escape-text s & "\""
+    is IrBoolLit (b) (sp) -> if b then "True" else "False"
+    is IrCharLit (n) (sp) -> "chr(" & integer-to-text n & ")"
+    is IrName (n) (ty) (sp) -> emit-py-name n ty arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-py-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-py-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-py-expr-at t arities (depth + 1) & " if " & emit-py-expr-at c arities (depth + 1) & " else " & emit-py-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> emit-py-let name val body arities
+    is IrApply (f) (a) (ty) (sp) -> emit-py-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> emit-py-lambda params body arities
+    is IrList (elems) (ty) (sp) -> emit-py-list elems arities
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-py-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-py-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-py-handle body clauses arities depth
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-py-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> emit-py-record name fields arities
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-py-expr-at rec arities (depth + 1) & "." & py-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(lambda _r: (setattr(_r, '" & py-sanitize field & "', " & emit-py-expr-at val arities (depth + 1) & "), _r)[-1])(" & emit-py-expr-at rec arities (depth + 1) & ")"
+    is IrFork (body) (ty) (sp) -> "__import__('concurrent.futures').ThreadPoolExecutor().submit(lambda: (" & emit-py-expr-at body arities (depth + 1) & ")(None))"
+    is IrAwait (task) (ty) (sp) -> "(" & emit-py-expr-at task arities (depth + 1) & ").result()"
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-py-try max body fb fail-stmts arities
+    is IrError (msg) (ty) (sp) -> "(lambda: (_ for _ in ()).throw(Exception(\"" & py-escape-text msg & "\")))()"
+
+  emit-py-name : Text, CodexType, List ArityEntry -> Text
+  emit-py-name (n) (ty) (arities) =
+   if n == "read-line" then "input()"
+   else if n == "show" then "str"
+   else if n == "negate" then "(lambda x: -x)"
+   else if n == "True" then "True"
+   else if n == "False" then "False"
+   else if n == "Nothing" then "None"
+   else if n == "get-state" then "_py_state[0]"
+   else if is-py-builtin-name n then py-sanitize n
+   else if text-length n > 0 then
+    if is-upper-letter (char-code (char-at n 0)) then py-sanitize n & "()"
+    else let ar = lookup-arity arities n
+    in if ar == 0 then py-sanitize n & "()"
+       else py-sanitize n
+   else py-sanitize n
+
+  emit-py-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-py-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(" & emit-py-expr l arities & " + " & emit-py-expr r arities & ")"
+    is IrAppendList -> "(" & emit-py-expr l arities & " + " & emit-py-expr r arities & ")"
+    is IrConsList -> "[" & emit-py-expr l arities & "] + " & emit-py-expr r arities
+    is IrPowInt -> "(" & emit-py-expr l arities & " ** " & emit-py-expr r arities & ")"
+    is IrDivInt -> "(" & emit-py-expr l arities & " // " & emit-py-expr r arities & ")"
+    is IrRemInt -> "(" & emit-py-expr l arities & " % " & emit-py-expr r arities & ")"
+    is IrAnd -> "(" & emit-py-expr l arities & " and " & emit-py-expr r arities & ")"
+    is IrOr -> "(" & emit-py-expr l arities & " or " & emit-py-expr r arities & ")"
+    is IrAddVec -> "[a + b for a, b in zip(" & emit-py-expr l arities & ", " & emit-py-expr r arities & ")]"
+    is IrSubVec -> "[a - b for a, b in zip(" & emit-py-expr l arities & ", " & emit-py-expr r arities & ")]"
+    is IrMulVec -> "[a * b for a, b in zip(" & emit-py-expr l arities & ", " & emit-py-expr r arities & ")]"
+    is IrDivVec -> "[a / b for a, b in zip(" & emit-py-expr l arities & ", " & emit-py-expr r arities & ")]"
+    is otherwise -> "(" & emit-py-expr l arities & " " & py-bin-op-symbol op & " " & emit-py-expr r arities & ")"
+
+  py-bin-op-symbol : IRBinaryOp -> Text
+  py-bin-op-symbol (op) =
+   when op
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt -> "//"
+    is IrRemInt -> "%"
+    is IrPowInt -> "**"
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq -> "=="
+    is IrApproxEqExact -> "=="
+    is IrAnd -> "and"
+    is IrOr -> "or"
+    is IrAppendText -> "+"
+    is IrAppendList -> "+"
+    is IrConsList -> "+"
+
+  emit-py-let : Text, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-py-let (name) (val) (body) (arities) =
+   "(lambda " & py-sanitize name & ": " & emit-py-expr body arities & ")(" & emit-py-expr val arities & ")"
+
+  emit-py-lambda : List IRParam, IRExpr, List ArityEntry -> Text
+  emit-py-lambda (params) (body) (arities) =
+   if list-length params == 0 then "(lambda: " & emit-py-expr body arities & ")"
+   else "(lambda " & emit-py-lambda-params params 0 & ": " & emit-py-expr body arities & ")"
+
+  emit-py-lambda-params : List IRParam, Integer -> Text
+  emit-py-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then py-sanitize ((list-at params i).name)
+   else py-sanitize ((list-at params i).name) & ", " & emit-py-lambda-params params (i + 1)
+
+  emit-py-list : List IRExpr, List ArityEntry -> Text
+  emit-py-list (elems) (arities) =
+   "[" & emit-py-list-elems elems 0 arities & "]"
+
+  emit-py-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-py-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-py-expr (list-at elems i) arities
+   else emit-py-expr (list-at elems i) arities & ", " & emit-py-list-elems elems (i + 1) arities
+
+  emit-py-record : Text, List IRFieldVal, List ArityEntry -> Text
+  emit-py-record (name) (fields) (arities) =
+   py-sanitize name & "(" & emit-py-record-field-vals fields 0 arities & ")"
+
+  emit-py-record-field-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-py-record-field-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in py-sanitize (f.name) & "=" & emit-py-expr (f.value) arities & (if i < list-length fields - 1 then ", " else "") & emit-py-record-field-vals fields (i + 1) arities
+
+  emit-py-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-py-match (scrut) (branches) (arities) =
+   "(lambda _s: " & emit-py-match-body branches 0 arities 0 & ")(" & emit-py-expr scrut arities & ")"
+
+  emit-py-match-body : List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-py-match-body (branches) (i) (arities) (opens) =
+   if i == list-length branches then " else (_ for _ in ()).throw(Exception(\"Non-exhaustive match\"))" & emit-py-close-parens opens
+   else let b = list-at branches i
+   in emit-py-match-arm (b.pattern) (b.body) branches i arities opens
+
+  emit-py-match-arm : IRPat, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-py-match-arm (pat) (body) (branches) (i) (arities) (opens) =
+   when pat
+    is IrLitPat (text) (ty) (sp) ->
+     let prefix = if i > 0 then " else " else ""
+     in prefix & "(" & emit-py-expr body arities & " if _s == " & text & emit-py-match-body branches (i + 1) arities (opens + 1)
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     let prefix = if i > 0 then " else " else ""
+     in prefix & "(" & emit-py-ctor-pat-body subs "_s" body arities & " if isinstance(_s, " & py-sanitize name & ")" & emit-py-match-body branches (i + 1) arities (opens + 1)
+    is IrVarPat (name) (ty) (sp) ->
+     let prefix = if i > 0 then " else " else ""
+     in prefix & "(lambda " & py-sanitize name & ": " & emit-py-expr body arities & ")(_s)" & emit-py-close-parens opens
+    is IrWildPat (sp) ->
+     let prefix = if i > 0 then " else " else ""
+     in prefix & emit-py-expr body arities & emit-py-close-parens opens
+    is IrVecPat (pats) (ty) (sp) ->
+     let prefix = if i > 0 then " else " else ""
+     in prefix & emit-py-expr body arities & emit-py-close-parens opens
+
+  emit-py-close-parens : Integer -> Text
+  emit-py-close-parens (n) =
+   if n <= 0 then ""
+   else ")" & emit-py-close-parens (n - 1)
+
+  emit-py-ctor-pat-body : List IRPat, Text, IRExpr, List ArityEntry -> Text
+  emit-py-ctor-pat-body (subs) (binding) (body) (arities) =
+   let var-bindings = collect-py-var-bindings subs binding 0
+   in if list-length var-bindings == 0 then emit-py-expr body arities
+      else "(lambda " & emit-py-binding-names var-bindings 0 & ": " & emit-py-expr body arities & ")(" & emit-py-binding-accesses var-bindings 0 & ")"
+
+  PyVarBinding = record {
+   name : Text,
+   access : Text
+  }
+
+  collect-py-var-bindings : List IRPat, Text, Integer -> List PyVarBinding
+  collect-py-var-bindings (subs) (binding) (i) =
+   if i == list-length subs then []
+   else let sub = list-at subs i
+   in let rest = collect-py-var-bindings subs binding (i + 1)
+   in when sub
+    is IrVarPat (name) (ty) (sp) -> [PyVarBinding { name = name, access = binding & ".field" & integer-to-text i }] & rest
+    is otherwise -> rest
+
+  emit-py-binding-names : List PyVarBinding, Integer -> Text
+  emit-py-binding-names (bindings) (i) =
+   if i == list-length bindings then ""
+   else if i == list-length bindings - 1 then py-sanitize ((list-at bindings i).name)
+   else py-sanitize ((list-at bindings i).name) & ", " & emit-py-binding-names bindings (i + 1)
+
+  emit-py-binding-accesses : List PyVarBinding, Integer -> Text
+  emit-py-binding-accesses (bindings) (i) =
+   if i == list-length bindings then ""
+   else if i == list-length bindings - 1 then (list-at bindings i).access
+   else (list-at bindings i).access & ", " & emit-py-binding-accesses bindings (i + 1)
+
+  emit-py-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, List ArityEntry -> Text
+  emit-py-try (max) (body) (fb) (fail-stmts) (arities) =
+   let body-text = emit-py-act body arities
+   in let fb-text = emit-py-act fb arities
+   in let fail-text = emit-py-act fail-stmts arities
+   in "(lambda _b=(lambda: " & body-text & "), _fb=(lambda: " & fb-text & "), _fx=(lambda: " & fail-text & "): (lambda _ns: (exec('_r=None\\nfor _ in range(" & integer-to-text max & "):\\n    try:\\n        _r=_b()\\n        break\\n    except:\\n        pass\\nelse:\\n    try:\\n        _r=_fb()\\n    except:\\n        _r=_fx()',_ns),_ns[\"_r\"])[-1])({\"_b\":_b,\"_fb\":_fb,\"_fx\":_fx}))()"
+
+  emit-py-act : List IRActStmt, List ArityEntry -> Text
+  emit-py-act (stmts) (arities) =
+   if py-act-has-binds stmts 0 then
+    "(lambda: (" & emit-py-act-bind-chain stmts 0 arities & "))()"
+   else
+    "(lambda: [" & emit-py-act-elems stmts 0 arities & "][-1])()"
+
+  py-act-has-binds : List IRActStmt, Integer -> Boolean
+  py-act-has-binds (stmts) (i) =
+   if i == list-length stmts then False
+   else let s = list-at stmts i
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> True
+    is IrDoExec (e) (sp) -> py-act-has-binds stmts (i + 1)
+
+  emit-py-act-bind-chain : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-py-act-bind-chain (stmts) (i) (arities) =
+   if i == list-length stmts then "None"
+   else let s = list-at stmts i
+   in if i == list-length stmts - 1 then
+    when s
+     is IrDoBind (name) (ty) (val) (sp) -> "(lambda " & py-sanitize name & ": " & py-sanitize name & ")(" & emit-py-expr val arities & ")"
+     is IrDoExec (e) (sp) -> emit-py-expr e arities
+   else when s
+    is IrDoBind (name) (ty) (val) (sp) -> "(lambda " & py-sanitize name & ": " & emit-py-act-bind-chain stmts (i + 1) arities & ")(" & emit-py-expr val arities & ")"
+    is IrDoExec (e) (sp) -> "[" & emit-py-expr e arities & ", " & emit-py-act-bind-chain stmts (i + 1) arities & "][-1]"
+
+  emit-py-act-elems : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-py-act-elems (stmts) (i) (arities) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let elem = when s
+    is IrDoBind (name) (ty) (val) (sp) -> emit-py-expr val arities
+    is IrDoExec (e) (sp) -> emit-py-expr e arities
+   in if i == list-length stmts - 1 then elem
+      else elem & ", " & emit-py-act-elems stmts (i + 1) arities
+
+  emit-py-handle : IRExpr, List IRHandleClause, List ArityEntry, Integer -> Text
+  emit-py-handle (body) (clauses) (arities) (depth) =
+   if list-length clauses == 0 then emit-py-expr-at body arities (depth + 1)
+   else "(lambda: (" & emit-py-handle-clauses clauses arities depth & emit-py-expr-at body arities (depth + 1) & "))()"
+
+  emit-py-handle-clauses : List IRHandleClause, List ArityEntry, Integer -> Text
+  emit-py-handle-clauses (clauses) (arities) (depth) =
+   emit-py-handle-clauses-loop clauses 0 arities depth
+
+  emit-py-handle-clauses-loop : List IRHandleClause, Integer, List ArityEntry, Integer -> Text
+  emit-py-handle-clauses-loop (clauses) (i) (arities) (depth) =
+   if i == list-length clauses then ""
+   else let c = list-at clauses i
+   in let body-expr = emit-py-unwrap-clause-lambda (c.body) (list-length (c.params))
+   in "(lambda " & py-sanitize (c.resume-name) & ": " & emit-py-expr-at body-expr arities (depth + 1) & "), " & emit-py-handle-clauses-loop clauses (i + 1) arities depth
+
+  emit-py-unwrap-clause-lambda : IRExpr, Integer -> IRExpr
+  emit-py-unwrap-clause-lambda (e) (n) =
+   if n == 0 then e
+   else when e
+    is IrLambda (ps) (b) (t) (s) -> b
+    is otherwise -> e
+
+Section: Builtin Dispatch
+
+  PyBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-py-emitter-pos : List PyBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-py-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-py-emitter-pos entries name lo mid
+      else bsearch-py-emitter-pos entries name (mid + 1) hi
+
+  sort-py-emitters : List PyBuiltinEmitter -> List PyBuiltinEmitter
+  sort-py-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  py-builtin-emitters : List PyBuiltinEmitter = sort-py-emitters [
+   PyBuiltinEmitter { name = "show", emit = \args arities -> "str(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "print(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "__import__('sys').stderr.write(" & emit-py-expr (list-at args 0) arities & " + \"\\n\")" },
+   PyBuiltinEmitter { name = "text-length", emit = \args arities -> "len(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "is-letter", emit = \args arities -> "chr(" & emit-py-expr (list-at args 0) arities & ").isalpha()" },
+   PyBuiltinEmitter { name = "is-digit", emit = \args arities -> "chr(" & emit-py-expr (list-at args 0) arities & ").isdigit()" },
+   PyBuiltinEmitter { name = "is-whitespace", emit = \args arities -> "chr(" & emit-py-expr (list-at args 0) arities & ").isspace()" },
+   PyBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "int(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "str(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "char-code", emit = \args arities -> emit-py-expr (list-at args 0) arities },
+   PyBuiltinEmitter { name = "code-to-char", emit = \args arities -> emit-py-expr (list-at args 0) arities },
+   PyBuiltinEmitter { name = "char-to-text", emit = \args arities -> "chr(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "list-length", emit = \args arities -> "len(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "char-at", emit = \args arities -> "ord(" & emit-py-expr (list-at args 0) arities & "[" & emit-py-expr (list-at args 1) arities & "])" },
+   PyBuiltinEmitter { name = "char-code-at", emit = \args arities -> "ord(" & emit-py-expr (list-at args 0) arities & "[" & emit-py-expr (list-at args 1) arities & "])" },
+   PyBuiltinEmitter { name = "substring", emit = \args arities -> emit-py-expr (list-at args 0) arities & "[" & emit-py-expr (list-at args 1) arities & ":" & emit-py-expr (list-at args 1) arities & " + " & emit-py-expr (list-at args 2) arities & "]" },
+   PyBuiltinEmitter { name = "list-at", emit = \args arities -> emit-py-expr (list-at args 0) arities & "[" & emit-py-expr (list-at args 1) arities & "]" },
+   PyBuiltinEmitter { name = "list-insert-at", emit = \args arities -> "(lambda _l, _i, _v: (_l.insert(_i, _v), _l)[1])(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & ", " & emit-py-expr (list-at args 2) arities & ")" },
+   PyBuiltinEmitter { name = "list-set-at", emit = \args arities -> "(lambda _l, _i, _v: (_l.__setitem__(_i, _v), _l)[1])(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & ", " & emit-py-expr (list-at args 2) arities & ")" },
+   PyBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(lambda _l, _v: (_l.append(_v), _l)[1])(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "text-compare", emit = \args arities -> "(0 if " & emit-py-expr (list-at args 0) arities & " == " & emit-py-expr (list-at args 1) arities & " else (-1 if " & emit-py-expr (list-at args 0) arities & " < " & emit-py-expr (list-at args 1) arities & " else 1))" },
+   PyBuiltinEmitter { name = "text-replace", emit = \args arities -> emit-py-expr (list-at args 0) arities & ".replace(" & emit-py-expr (list-at args 1) arities & ", " & emit-py-expr (list-at args 2) arities & ")" },
+   PyBuiltinEmitter { name = "text-concat-list", emit = \args arities -> "\"\".join(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "text-split", emit = \args arities -> emit-py-expr (list-at args 0) arities & ".split(" & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "text-contains", emit = \args arities -> "(" & emit-py-expr (list-at args 1) arities & " in " & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "text-starts-with", emit = \args arities -> emit-py-expr (list-at args 0) arities & ".startswith(" & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "open-file", emit = \args arities -> "open(" & emit-py-expr (list-at args 0) arities & ", 'r')" },
+   PyBuiltinEmitter { name = "read-all", emit = \args arities -> emit-py-expr (list-at args 0) arities & ".read()" },
+   PyBuiltinEmitter { name = "close-file", emit = \args arities -> emit-py-expr (list-at args 0) arities & ".close()" },
+   PyBuiltinEmitter { name = "read-file", emit = \args arities -> "open(" & emit-py-expr (list-at args 0) arities & ", 'r').read()" },
+   PyBuiltinEmitter { name = "write-file", emit = \args arities -> "open(" & emit-py-expr (list-at args 0) arities & ", 'w').write(" & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "file-exists", emit = \args arities -> "__import__('os').path.exists(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "list-files", emit = \args arities -> "__import__('glob').glob(__import__('os').path.join(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & "))" },
+   PyBuiltinEmitter { name = "list-directories", emit = \args arities -> "[d for d in __import__('os').listdir(" & emit-py-expr (list-at args 0) arities & ") if __import__('os').path.isdir(__import__('os').path.join(" & emit-py-expr (list-at args 0) arities & ", d))]" },
+   PyBuiltinEmitter { name = "create-directory", emit = \args arities -> "__import__('os').makedirs(" & emit-py-expr (list-at args 0) arities & ", exist_ok=True)" },
+   PyBuiltinEmitter { name = "path-combine", emit = \args arities -> "__import__('os').path.join(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "path-filename", emit = \args arities -> "__import__('os').path.basename(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "get-args", emit = \args arities -> "__import__('sys').argv" },
+   PyBuiltinEmitter { name = "get-env", emit = \args arities -> "__import__('os').environ.get(" & emit-py-expr (list-at args 0) arities & ", \"\")" },
+   PyBuiltinEmitter { name = "current-dir", emit = \args arities -> "__import__('os').getcwd()" },
+   PyBuiltinEmitter { name = "run-process", emit = \args arities -> "__import__('subprocess').check_output(" & emit-py-expr (list-at args 0) arities & " + \" \" + " & emit-py-expr (list-at args 1) arities & ", shell=True, text=True)" },
+   PyBuiltinEmitter { name = "process-exit", emit = \args arities -> "__import__('sys').exit(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "write-binary", emit = \args arities -> "__import__('sys').stdout.buffer.write(bytes(" & emit-py-expr (list-at args 0) arities & "))" },
+   PyBuiltinEmitter { name = "write-binary-file", emit = \args arities -> "open(" & emit-py-expr (list-at args 0) arities & ", 'wb').write(bytes(" & emit-py-expr (list-at args 1) arities & "))" },
+   PyBuiltinEmitter { name = "fork", emit = \args arities -> "__import__('concurrent.futures').ThreadPoolExecutor().submit(lambda: (" & emit-py-expr (list-at args 0) arities & ")(None))" },
+   PyBuiltinEmitter { name = "await", emit = \args arities -> "(" & emit-py-expr (list-at args 0) arities & ").result()" },
+   PyBuiltinEmitter { name = "par", emit = \args arities -> "list(__import__('concurrent.futures').ThreadPoolExecutor().map(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & "))" },
+   PyBuiltinEmitter { name = "race", emit = \args arities -> "next(iter(__import__('concurrent.futures').as_completed([__import__('concurrent.futures').ThreadPoolExecutor().submit(lambda t=_t_: _t_(None)) for _t_ in " & emit-py-expr (list-at args 0) arities & "]))).result()" },
+   PyBuiltinEmitter { name = "bit-and", emit = \args arities -> "(" & emit-py-expr (list-at args 0) arities & " & " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "bit-or", emit = \args arities -> "(" & emit-py-expr (list-at args 0) arities & " | " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "bit-xor", emit = \args arities -> "(" & emit-py-expr (list-at args 0) arities & " ^ " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "bit-shl", emit = \args arities -> "(" & emit-py-expr (list-at args 0) arities & " << " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "bit-shr", emit = \args arities -> "(" & emit-py-expr (list-at args 0) arities & " >> " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "bit-not", emit = \args arities -> "(~" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-py-expr (list-at args 0) arities & " % " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "min", emit = \args arities -> "min(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "max", emit = \args arities -> "max(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "abs", emit = \args arities -> "abs(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "read-line", emit = \args arities -> "input()" },
+   PyBuiltinEmitter { name = "__record-set", emit = \args arities -> emit-py-record-set args arities },
+   PyBuiltinEmitter { name = "get-state", emit = \args arities -> "_py_state[0]" },
+   PyBuiltinEmitter { name = "set-state", emit = \args arities -> "(lambda _v: (_py_state.__setitem__(0, _v), _v)[1])(" & emit-py-expr (list-at args 0) arities & ")" },
+   PyBuiltinEmitter { name = "run-state", emit = \args arities -> emit-py-run-state args arities },
+   PyBuiltinEmitter { name = "__linked-list-empty", emit = \args arities -> "[]" },
+   PyBuiltinEmitter { name = "__linked-list-push", emit = \args arities -> "(lambda _l, _v: (_l.append(_v), _l)[1])(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "__linked-list-to-list", emit = \args arities -> emit-py-expr (list-at args 0) arities },
+   PyBuiltinEmitter { name = "text-to-double-bits", emit = \args arities -> "__import__('struct').unpack('q', __import__('struct').pack('d', float(" & emit-py-expr (list-at args 0) arities & ")))[0]" },
+   PyBuiltinEmitter { name = "run-process-full", emit = \args arities -> emit-py-run-process-full args arities },
+   PyBuiltinEmitter { name = "__heap-save", emit = \args arities -> "0" },
+   PyBuiltinEmitter { name = "__heap-restore", emit = \args arities -> "0" },
+   PyBuiltinEmitter { name = "__heap-advance", emit = \args arities -> "0" },
+   PyBuiltinEmitter { name = "__deck-pos", emit = \args arities -> "0" },
+   PyBuiltinEmitter { name = "__deck-set", emit = \args arities -> "0" },
+   PyBuiltinEmitter { name = "__deck-alloc", emit = \args arities -> "0" },
+   PyBuiltinEmitter { name = "__deck-enter", emit = \args arities -> "0" },
+   PyBuiltinEmitter { name = "__deck-exit", emit = \args arities -> "0" },
+   PyBuiltinEmitter { name = "__list-with-capacity", emit = \args arities -> "[]" },
+   PyBuiltinEmitter { name = "__buf-write-byte", emit = \args arities -> "0" },
+   PyBuiltinEmitter { name = "__buf-write-bytes", emit = \args arities -> "0" },
+   PyBuiltinEmitter { name = "__buf-read-bytes", emit = \args arities -> "[]" }
+  ]
+
+  is-py-builtin-name : Text -> Boolean
+  is-py-builtin-name (n) =
+   let len = list-length py-builtin-emitters
+   in let pos = bsearch-py-emitter-pos py-builtin-emitters n 0 len
+   in if pos >= len then False
+      else (list-at py-builtin-emitters pos).name == n
+
+  emit-py-builtin : Text, List IRExpr, List ArityEntry -> Text
+  emit-py-builtin (n) (args) (arities) =
+   let len = list-length py-builtin-emitters
+   in let pos = bsearch-py-emitter-pos py-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at py-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
+
+  emit-py-record-set : List IRExpr, List ArityEntry -> Text
+  emit-py-record-set (args) (arities) =
+   let field-name = when (list-at args 1)
+    is IrTextLit (s) (sp) -> s
+    is otherwise -> ""
+   in "__import__('dataclasses').replace(" & emit-py-expr (list-at args 0) arities & ", " & py-sanitize field-name & "=" & emit-py-expr (list-at args 2) arities & ")"
+
+  emit-py-run-state : List IRExpr, List ArityEntry -> Text
+  emit-py-run-state (args) (arities) =
+   let init = emit-py-expr (list-at args 0) arities
+   in let body = emit-py-expr (list-at args 1) arities
+   in "(lambda: (lambda _saved: (_py_state.__setitem__(0, " & init & "), (lambda _r: (_py_state.__setitem__(0, _saved), _r)[1])(" & body & "))[1])(_py_state[0]))()"
+
+  emit-py-run-process-full : List IRExpr, List ArityEntry -> Text
+  emit-py-run-process-full (args) (arities) =
+   let a0 = emit-py-expr (list-at args 0) arities
+   in let a1 = emit-py-expr (list-at args 1) arities
+   in "(lambda: (lambda _r: ProcessResult(stdout=_r.stdout, stderr=_r.stderr, exit_code=_r.returncode))(__import__('subprocess').run(" & a0 & " + \" \" + " & a1 & ", shell=True, capture_output=True, text=True)))()"
+
+Section: Apply Emission
+
+  emit-py-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-py-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-py-expr (list-at args i) arities
+        else emit-py-expr (list-at args i) arities & ", " & emit-py-apply-args args arities (i + 1)
+
+  emit-py-apply : IRExpr, List ArityEntry -> Text
+  emit-py-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if is-py-builtin-name n then emit-py-builtin n args arities
+     else if is-mktup-name n then "(" & emit-py-apply-args args arities 0 & (if list-length args == 1 then ",)" else ")")
+     else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then py-sanitize n & "(" & emit-py-apply-args args arities 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar > 1 & list-length args == ar then py-sanitize n & "(" & emit-py-apply-args args arities 0 & ")"
+        else emit-py-expr-curried e arities
+    is otherwise -> emit-py-expr-curried e arities
+
+  emit-py-expr-curried : IRExpr, List ArityEntry -> Text
+  emit-py-expr-curried (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> emit-py-expr f arities & "(" & emit-py-expr a arities & ")"
+    is otherwise -> emit-py-expr e arities
+
+Section: Tail Call Optimization
+
+  is-self-call : IRExpr, Text -> Boolean
+  is-self-call (e) (func-name) =
+   let chain = collect-apply-chain e []
+   in is-self-call-root (chain.root) func-name
+
+  is-self-call-root : IRExpr, Text -> Boolean
+  is-self-call-root (e) (func-name) =
+   when e
+    is IrName (n) (ty) (sp) -> n == func-name
+    is otherwise -> False
+
+  has-tail-call : IRExpr, Text -> Boolean
+  has-tail-call (e) (func-name) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) -> has-tail-call t func-name | has-tail-call el func-name
+    is IrLet (name) (ty) (val) (body) (sp) -> has-tail-call body func-name
+    is IrMatch (scrut) (branches) (ty) (sp) -> has-tail-call-branches branches func-name 0
+    is IrApply (f) (a) (ty) (sp) -> is-self-call e func-name
+    is IrAct (stmts) (ty) (sp) -> has-tail-call-act stmts func-name
+    is otherwise -> False
+
+  has-tail-call-branches : List IRBranch, Text, Integer -> Boolean
+  has-tail-call-branches (branches) (func-name) (i) =
+   if i == list-length branches then False
+   else let b = list-at branches i
+   in if has-tail-call (b.body) func-name then True
+      else has-tail-call-branches branches func-name (i + 1)
+
+  has-tail-call-act : List IRActStmt, Text -> Boolean
+  has-tail-call-act (stmts) (func-name) =
+   let len = list-length stmts
+   in if len == 0 then False
+    else let last = list-at stmts (len - 1)
+     in when last
+      is IrDoExec (e) (sp) -> has-tail-call e func-name
+      is otherwise -> False
+
+  should-tco : IRDef -> Boolean
+  should-tco (d) =
+   if list-length (d.params) == 0 then False
+   else has-tail-call (d.body) (d.name)
+
+  emit-py-tco-body : IRExpr, Text, List IRParam, List ArityEntry, Integer -> Text
+  emit-py-tco-body (e) (func-name) (params) (arities) (indent) =
+   let pad = py-indent indent
+   in when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     pad & "if " & emit-py-expr c arities & ":\n" & emit-py-tco-body t func-name params arities (indent + 1) & pad & "else:\n" & emit-py-tco-body el func-name params arities (indent + 1)
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     pad & py-sanitize name & " = " & emit-py-expr val arities & "\n" & emit-py-tco-body body func-name params arities indent
+    is IrMatch (scrut) (branches) (ty) (sp) ->
+     emit-py-tco-match scrut branches func-name params arities indent
+    is IrApply (f) (a) (rty) (sp) ->
+     if is-self-call e func-name then emit-py-tco-jump e params arities indent
+     else pad & "return " & emit-py-expr e arities & "\n"
+    is IrAct (stmts) (ty) (sp) ->
+     emit-py-tco-act stmts func-name params arities indent
+    is otherwise ->
+     pad & "return " & emit-py-expr e arities & "\n"
+
+  emit-py-tco-jump : IRExpr, List IRParam, List ArityEntry, Integer -> Text
+  emit-py-tco-jump (e) (params) (arities) (indent) =
+   let pad = py-indent indent
+   in let chain = collect-apply-chain e []
+   in let args = chain.args
+   in emit-py-tco-temps args arities indent 0 & emit-py-tco-assign params indent 0 & pad & "continue\n"
+
+  emit-py-tco-temps : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-py-tco-temps (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let pad = py-indent indent
+   in pad & "_tco_" & integer-to-text i & " = " & emit-py-expr (list-at args i) arities & "\n" & emit-py-tco-temps args arities indent (i + 1)
+
+  emit-py-tco-assign : List IRParam, Integer, Integer -> Text
+  emit-py-tco-assign (params) (indent) (i) =
+   if i == list-length params then ""
+   else let pad = py-indent indent
+   in pad & py-sanitize ((list-at params i).name) & " = _tco_" & integer-to-text i & "\n" & emit-py-tco-assign params indent (i + 1)
+
+  emit-py-tco-match : IRExpr, List IRBranch, Text, List IRParam, List ArityEntry, Integer -> Text
+  emit-py-tco-match (scrut) (branches) (func-name) (params) (arities) (indent) =
+   let pad = py-indent indent
+   in pad & "_tco_s = " & emit-py-expr scrut arities & "\n" & emit-py-tco-match-branches branches func-name params arities indent 0 True
+
+  emit-py-tco-match-branches : List IRBranch, Text, List IRParam, List ArityEntry, Integer, Integer, Boolean -> Text
+  emit-py-tco-match-branches (branches) (func-name) (params) (arities) (indent) (i) (is-first) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-py-tco-match-branch (b.pattern) (b.body) func-name params arities indent is-first & emit-py-tco-match-branches branches func-name params arities indent (i + 1) False
+
+  emit-py-tco-match-branch : IRPat, IRExpr, Text, List IRParam, List ArityEntry, Integer, Boolean -> Text
+  emit-py-tco-match-branch (pat) (body) (func-name) (params) (arities) (indent) (is-first) =
+   let pad = py-indent indent
+   in when pat
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     let keyword = if is-first then "if" else "elif"
+     in pad & keyword & " isinstance(_tco_s, " & py-sanitize name & "):\n" & emit-py-tco-ctor-bindings subs indent 0 & emit-py-tco-body body func-name params arities (indent + 1)
+    is IrLitPat (text) (ty) (sp) ->
+     let keyword = if is-first then "if" else "elif"
+     in pad & keyword & " _tco_s == " & text & ":\n" & emit-py-tco-body body func-name params arities (indent + 1)
+    is IrVarPat (name) (ty) (sp) ->
+     pad & "else:\n" & py-indent (indent + 1) & py-sanitize name & " = _tco_s\n" & emit-py-tco-body body func-name params arities (indent + 1)
+    is IrWildPat (sp) ->
+     pad & "else:\n" & emit-py-tco-body body func-name params arities (indent + 1)
+    is IrVecPat (pats) (ty) (sp) ->
+     pad & "else:\n" & emit-py-tco-body body func-name params arities (indent + 1)
+
+  emit-py-tco-ctor-bindings : List IRPat, Integer, Integer -> Text
+  emit-py-tco-ctor-bindings (subs) (indent) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in emit-py-tco-ctor-binding sub indent i & emit-py-tco-ctor-bindings subs indent (i + 1)
+
+  emit-py-tco-ctor-binding : IRPat, Integer, Integer -> Text
+  emit-py-tco-ctor-binding (sub) (indent) (i) =
+   when sub
+    is IrVarPat (name) (ty) (sp) -> py-indent (indent + 1) & py-sanitize name & " = _tco_s.field" & integer-to-text i & "\n"
+    is otherwise -> ""
+
+  emit-py-tco-act : List IRActStmt, Text, List IRParam, List ArityEntry, Integer -> Text
+  emit-py-tco-act (stmts) (func-name) (params) (arities) (indent) =
+   emit-py-tco-act-loop stmts func-name params arities indent 0 (list-length stmts)
+
+  emit-py-tco-act-loop : List IRActStmt, Text, List IRParam, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-py-tco-act-loop (stmts) (func-name) (params) (arities) (indent) (i) (len) =
+   if i == len then ""
+   else let s = list-at stmts i
+   in let is-last = i == len - 1
+   in let pad = py-indent indent
+   in if is-last then when s
+     is IrDoExec (e) (sp) -> emit-py-tco-body e func-name params arities indent
+     is IrDoBind (name) (ty) (val) (sp) -> pad & py-sanitize name & " = " & emit-py-expr val arities & "\n"
+    else (when s
+     is IrDoBind (name) (ty) (val) (sp) -> pad & py-sanitize name & " = " & emit-py-expr val arities & "\n"
+     is IrDoExec (e) (sp) -> pad & emit-py-expr e arities & "\n") & emit-py-tco-act-loop stmts func-name params arities indent (i + 1) len
+
+Section: Definition Emission
+
+  emit-py-def : IRDef, List ArityEntry -> Text
+  emit-py-def (d) (arities) =
+   if should-tco d then emit-py-tco-def d arities
+   else emit-py-normal-def d arities
+
+  emit-py-normal-def : IRDef, List ArityEntry -> Text
+  emit-py-normal-def (d) (arities) =
+   let name = py-sanitize (d.name)
+   in let params-text = emit-py-def-params (d.params) 0
+   in let is-effectful = is-effectful-type (d.type-val)
+   in if is-effectful then
+    "def " & name & "(" & params-text & "):\n" & emit-py-statement (d.body) arities 1 & "\n"
+   else
+    "def " & name & "(" & params-text & "):\n    return " & emit-py-expr (d.body) arities & "\n\n"
+
+  emit-py-tco-def : IRDef, List ArityEntry -> Text
+  emit-py-tco-def (d) (arities) =
+   let name = py-sanitize (d.name)
+   in let params-text = emit-py-def-params (d.params) 0
+   in "def " & name & "(" & params-text & "):\n    while True:\n" & emit-py-tco-body (d.body) (d.name) (d.params) arities 2 & "\n"
+
+  emit-py-def-params : List IRParam, Integer -> Text
+  emit-py-def-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then py-sanitize ((list-at params i).name)
+   else py-sanitize ((list-at params i).name) & ", " & emit-py-def-params params (i + 1)
+
+  is-effectful-type : CodexType -> Boolean
+  is-effectful-type (ty) =
+   when ty
+    is EffectfulTy (effs) (sc) (ret) -> True
+    is FunTy (p) (r) -> is-effectful-type r
+    is ForAllTy (id) (body) -> is-effectful-type body
+    is otherwise -> False
+
+  emit-py-statement : IRExpr, List ArityEntry, Integer -> Text
+  emit-py-statement (e) (arities) (indent) =
+   let pad = py-indent indent
+   in when e
+    is IrAct (stmts) (ty) (sp) -> emit-py-act-stmts stmts arities indent
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     pad & "if " & emit-py-expr c arities & ":\n" & emit-py-statement t arities (indent + 1) & pad & "else:\n" & emit-py-statement el arities (indent + 1)
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     pad & py-sanitize name & " = " & emit-py-expr val arities & "\n" & emit-py-statement body arities indent
+    is IrMatch (scrut) (branches) (ty) (sp) ->
+     emit-py-stmt-match scrut branches arities indent
+    is otherwise -> pad & emit-py-expr e arities & "\n"
+
+  emit-py-stmt-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-py-stmt-match (scrut) (branches) (arities) (indent) =
+   let pad = py-indent indent
+   in pad & "_sm = " & emit-py-expr scrut arities & "\n" & emit-py-stmt-match-branches branches arities indent 0 True
+
+  emit-py-stmt-match-branches : List IRBranch, List ArityEntry, Integer, Integer, Boolean -> Text
+  emit-py-stmt-match-branches (branches) (arities) (indent) (i) (is-first) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-py-stmt-match-branch (b.pattern) (b.body) arities indent is-first & emit-py-stmt-match-branches branches arities indent (i + 1) False
+
+  emit-py-stmt-match-branch : IRPat, IRExpr, List ArityEntry, Integer, Boolean -> Text
+  emit-py-stmt-match-branch (pat) (body) (arities) (indent) (is-first) =
+   let pad = py-indent indent
+   in when pat
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     let keyword = if is-first then "if" else "elif"
+     in pad & keyword & " isinstance(_sm, " & py-sanitize name & "):\n" & emit-py-stmt-ctor-bindings subs indent 0 & emit-py-statement body arities (indent + 1)
+    is IrLitPat (text) (ty) (sp) ->
+     let keyword = if is-first then "if" else "elif"
+     in pad & keyword & " _sm == " & text & ":\n" & emit-py-statement body arities (indent + 1)
+    is IrVarPat (name) (ty) (sp) ->
+     pad & "else:\n" & py-indent (indent + 1) & py-sanitize name & " = _sm\n" & emit-py-statement body arities (indent + 1)
+    is IrWildPat (sp) ->
+     pad & "else:\n" & emit-py-statement body arities (indent + 1)
+    is IrVecPat (pats) (ty) (sp) ->
+     pad & "else:\n" & emit-py-statement body arities (indent + 1)
+
+  emit-py-stmt-ctor-bindings : List IRPat, Integer, Integer -> Text
+  emit-py-stmt-ctor-bindings (subs) (indent) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> py-indent (indent + 1) & py-sanitize name & " = _sm.field" & integer-to-text i & "\n"
+    is otherwise -> "") & emit-py-stmt-ctor-bindings subs indent (i + 1)
+
+  emit-py-act-stmts : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-py-act-stmts (stmts) (arities) (indent) =
+   emit-py-act-stmts-loop stmts arities indent 0 (list-length stmts)
+
+  emit-py-act-stmts-loop : List IRActStmt, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-py-act-stmts-loop (stmts) (arities) (indent) (i) (len) =
+   if i == len then ""
+   else let s = list-at stmts i
+   in let pad = py-indent indent
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> pad & py-sanitize name & " = " & emit-py-expr val arities & "\n"
+    is IrDoExec (e) (sp) ->
+     if i == len - 1 then emit-py-statement e arities indent
+     else pad & emit-py-expr e arities & "\n") & emit-py-act-stmts-loop stmts arities indent (i + 1) len
+
+Section: Chapter Emission
+
+  strip-fun-args : CodexType -> CodexType
+  strip-fun-args (ty) =
+   when ty
+    is FunTy (p) (r) -> strip-fun-args r
+    is ForAllTy (id) (body) -> strip-fun-args body
+    is otherwise -> ty
+
+  peel-effectful-ty : CodexType -> CodexType
+  peel-effectful-ty (ty) =
+   when ty
+    is EffectfulTy (effs) (sc) (ret) -> peel-effectful-ty ret
+    is otherwise -> ty
+
+  opening-return-type : List IRDef -> CodexType
+  opening-return-type (defs) = opening-return-loop defs 0
+
+  opening-return-loop : List IRDef, Integer -> CodexType
+  opening-return-loop (defs) (i) =
+   if i >= list-length defs then NothingTy
+   else let d = list-at defs i
+   in if d.name == opening-entry-point then peel-effectful-ty (strip-fun-args (d.type-val))
+      else opening-return-loop defs (i + 1)
+
+  opening-has-params : List IRDef -> Boolean
+  opening-has-params (defs) = opening-has-params-loop defs 0
+
+  opening-has-params-loop : List IRDef, Integer -> Boolean
+  opening-has-params-loop (defs) (i) =
+   if i >= list-length defs then True
+   else let d = list-at defs i
+   in if d.name == opening-entry-point then list-length (d.params) > 0
+      else opening-has-params-loop defs (i + 1)
+
+  py-emit-entry : CodexType, Boolean -> Text
+  py-emit-entry (ret-ty) (has-params) =
+   if has-params then ""
+   else when ret-ty
+    is EffectfulTy (effs) (sc) (inner) -> py-sanitize opening-entry-point & "()\n"
+    is NothingTy -> py-sanitize opening-entry-point & "()\n"
+    is VoidTy -> py-sanitize opening-entry-point & "()\n"
+    is UnitTy (n) (inner) -> py-sanitize opening-entry-point & "()\n"
+    is otherwise -> "print(" & py-sanitize opening-entry-point & "())\n"
+
+  emit-python-chapter : IRChapter, List ATypeDef -> Text
+  emit-python-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\n"
+   in let types-text = emit-py-type-defs type-defs 0
+   in let defs-text = emit-py-defs (m.defs) 0 arities
+   in let ret-ty = opening-return-type (m.defs)
+   in let has-params = opening-has-params (m.defs)
+   in let entry = py-emit-entry ret-ty has-params
+   in header & types-text & defs-text & entry
+
+  emit-py-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-py-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-py-def (list-at defs i) arities & emit-py-defs defs (i + 1) arities
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+Page 1

@@ -1,0 +1,260 @@
+Chapter: Event
+  cites Foreword chapter Maybe
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Widget
+
+ Event system. Events flow through the widget tree in two phases:
+ capture (root to target) then bubble (target to root). Handlers
+ can stop propagation. Supports keyboard, mouse, timer, network,
+ resize, and custom application events.
+
+Section: Event Kind
+  EventKind =
+    | EvKeyDown (Integer) (Integer)
+    | EvKeyUp (Integer) (Integer)
+    | EvMouseMove (Integer) (Integer)
+    | EvMouseDown (Integer) (Integer) (Integer)
+    | EvMouseUp (Integer) (Integer) (Integer)
+    | EvScroll (Integer) (Integer) (Integer)
+    | EvFocus (Text)
+    | EvBlur (Text)
+    | EvResize (Integer) (Integer)
+    | EvTimer (Text)
+    | EvNetwork (Text) (Integer)
+    | EvCustom (Text) (Integer)
+
+Section: Event
+  Event = record {
+    ev-kind : EventKind,
+    ev-target : Text,
+    ev-timestamp : Integer,
+    ev-stopped : Boolean,
+    ev-handled : Boolean
+  }
+
+Section: Construction
+  event-key-down : Integer, Integer, Integer -> Event
+  event-key-down (key) (mods) (ts) =
+    Event { ev-kind = EvKeyDown key mods, ev-target = "", ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-key-up : Integer, Integer, Integer -> Event
+  event-key-up (key) (mods) (ts) =
+    Event { ev-kind = EvKeyUp key mods, ev-target = "", ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-mouse-move : Integer, Integer, Integer -> Event
+  event-mouse-move (x) (y) (ts) =
+    Event { ev-kind = EvMouseMove x y, ev-target = "", ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-mouse-down : Integer, Integer, Integer, Integer -> Event
+  event-mouse-down (x) (y) (btn) (ts) =
+    Event { ev-kind = EvMouseDown x y btn, ev-target = "", ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-mouse-up : Integer, Integer, Integer, Integer -> Event
+  event-mouse-up (x) (y) (btn) (ts) =
+    Event { ev-kind = EvMouseUp x y btn, ev-target = "", ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-scroll : Integer, Integer, Integer, Integer -> Event
+  event-scroll (x) (y) (delta) (ts) =
+    Event { ev-kind = EvScroll x y delta, ev-target = "", ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-focus : Text, Integer -> Event
+  event-focus (id) (ts) =
+    Event { ev-kind = EvFocus id, ev-target = id, ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-blur : Text, Integer -> Event
+  event-blur (id) (ts) =
+    Event { ev-kind = EvBlur id, ev-target = id, ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-resize : Integer, Integer, Integer -> Event
+  event-resize (w) (h) (ts) =
+    Event { ev-kind = EvResize w h, ev-target = "", ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-timer : Text, Integer -> Event
+  event-timer (name) (ts) =
+    Event { ev-kind = EvTimer name, ev-target = "", ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-network : Text, Integer, Integer -> Event
+  event-network (channel) (len) (ts) =
+    Event { ev-kind = EvNetwork channel len, ev-target = "", ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+  event-custom : Text, Integer, Integer -> Event
+  event-custom (name) (data) (ts) =
+    Event { ev-kind = EvCustom name data, ev-target = "", ev-timestamp = ts, ev-stopped = False, ev-handled = False }
+
+Section: Propagation
+  event-stop : Event -> Event
+  event-stop (ev) =
+    Event { ev-kind = ev.ev-kind, ev-target = ev.ev-target, ev-timestamp = ev.ev-timestamp, ev-stopped = True, ev-handled = ev.ev-handled }
+
+  event-handle : Event -> Event
+  event-handle (ev) =
+    Event { ev-kind = ev.ev-kind, ev-target = ev.ev-target, ev-timestamp = ev.ev-timestamp, ev-stopped = ev.ev-stopped, ev-handled = True }
+
+  event-retarget : Event, Text -> Event
+  event-retarget (ev) (target) =
+    Event { ev-kind = ev.ev-kind, ev-target = target, ev-timestamp = ev.ev-timestamp, ev-stopped = ev.ev-stopped, ev-handled = ev.ev-handled }
+
+Section: Handler
+  HandlerResult =
+    | HrPass (Event)
+    | HrHandled (Event)
+    | HrStop (Event)
+
+  EventHandler = record {
+    eh-widget-id : Text,
+    eh-event-name : Text,
+    eh-action : Integer
+  }
+
+  HandlerTable = record {
+    ht-handlers : List EventHandler,
+    ht-count : Integer
+  }
+
+Section: Handler Table
+  handler-table-new : HandlerTable
+  handler-table-new = HandlerTable { ht-handlers = [], ht-count = 0 }
+
+  handler-table-add : HandlerTable, Text, Text, Integer -> HandlerTable
+  handler-table-add (ht) (widget-id) (event-name) (action) =
+    let h = EventHandler { eh-widget-id = widget-id, eh-event-name = event-name, eh-action = action }
+    in HandlerTable { ht-handlers = list-push (ht.ht-handlers) h, ht-count = ht.ht-count + 1 }
+
+  handler-table-lookup : HandlerTable, Text, Text -> Maybe EventHandler
+  handler-table-lookup (ht) (widget-id) (event-name) =
+    ht-lookup-loop (ht.ht-handlers) widget-id event-name 0 (ht.ht-count)
+
+  ht-lookup-loop : List EventHandler, Text, Text, Integer, Integer -> Maybe EventHandler
+  ht-lookup-loop (handlers) (wid) (ename) (i) (n) =
+    if i >= n then None
+    else let h = list-at handlers i
+    in if h.eh-widget-id == wid then
+      if h.eh-event-name == ename then Just h
+      else ht-lookup-loop handlers wid ename (i + 1) n
+    else ht-lookup-loop handlers wid ename (i + 1) n
+
+Section: Event Routing
+  event-target-from-mouse : WidgetNode, Integer, Integer -> Text
+  event-target-from-mouse (root) (mx) (my) =
+    let found = ev-hit-widget root mx my
+    in when found
+      is Just (w) -> w.wn-id
+      is None -> root.wn-id
+
+  ev-hit-widget : WidgetNode, Integer, Integer -> Maybe WidgetNode
+  ev-hit-widget (w) (mx) (my) =
+    if rect-contains (w.wn-bounds) mx my then
+      let child-hit = ev-hit-children (w.wn-children) mx my 0 (w.wn-child-count)
+      in when child-hit
+        is Just (c) -> Just c
+        is None -> Just w
+    else None
+
+  ev-hit-children : List WidgetNode, Integer, Integer, Integer, Integer -> Maybe WidgetNode
+  ev-hit-children (children) (mx) (my) (i) (n) =
+    if i >= n then None
+    else let hit = ev-hit-widget (list-at children i) mx my
+    in when hit
+      is Just (w) -> Just w
+      is None -> ev-hit-children children mx my (i + 1) n
+
+Section: Path Building
+  EventPath = record {
+    ep-ids : List Text,
+    ep-count : Integer
+  }
+
+  event-path-to : WidgetNode, Text -> EventPath
+  event-path-to (root) (target) =
+    let path = ev-build-path root target []
+    in EventPath { ep-ids = path, ep-count = list-length path }
+
+  ev-build-path : WidgetNode, Text, List Text -> List Text
+  ev-build-path (w) (target) (acc) =
+    let acc2 = list-push acc (w.wn-id)
+    in if w.wn-id == target then acc2
+    else ev-build-path-children (w.wn-children) target acc2 0 (w.wn-child-count)
+
+  ev-build-path-children : List WidgetNode, Text, List Text, Integer, Integer -> List Text
+  ev-build-path-children (children) (target) (acc) (i) (n) =
+    if i >= n then []
+    else let path = ev-build-path (list-at children i) target acc
+    in if list-length path > 0 then path
+    else ev-build-path-children children target acc (i + 1) n
+
+Section: Queries
+  event-kind-name : EventKind -> Text
+  event-kind-name (k) = when k
+    is EvKeyDown (key) (mods) -> "keydown"
+    is EvKeyUp (key) (mods) -> "keyup"
+    is EvMouseMove (x) (y) -> "mousemove"
+    is EvMouseDown (x) (y) (btn) -> "mousedown"
+    is EvMouseUp (x) (y) (btn) -> "mouseup"
+    is EvScroll (x) (y) (d) -> "scroll"
+    is EvFocus (id) -> "focus"
+    is EvBlur (id) -> "blur"
+    is EvResize (w) (h) -> "resize"
+    is EvTimer (name) -> "timer"
+    is EvNetwork (ch) (len) -> "network"
+    is EvCustom (name) (d) -> "custom"
+
+  event-is-mouse : EventKind -> Boolean
+  event-is-mouse (k) = when k
+    is EvMouseMove (x) (y) -> True
+    is EvMouseDown (x) (y) (b) -> True
+    is EvMouseUp (x) (y) (b) -> True
+    is EvScroll (x) (y) (d) -> True
+    is EvKeyDown (k2) (m) -> False
+    is EvKeyUp (k2) (m) -> False
+    is EvFocus (id) -> False
+    is EvBlur (id) -> False
+    is EvResize (w) (h) -> False
+    is EvTimer (n) -> False
+    is EvNetwork (c) (l) -> False
+    is EvCustom (n) (d) -> False
+
+  event-is-keyboard : EventKind -> Boolean
+  event-is-keyboard (k) = when k
+    is EvKeyDown (k2) (m) -> True
+    is EvKeyUp (k2) (m) -> True
+    is EvMouseMove (x) (y) -> False
+    is EvMouseDown (x) (y) (b) -> False
+    is EvMouseUp (x) (y) (b) -> False
+    is EvScroll (x) (y) (d) -> False
+    is EvFocus (id) -> False
+    is EvBlur (id) -> False
+    is EvResize (w) (h) -> False
+    is EvTimer (n) -> False
+    is EvNetwork (c) (l) -> False
+    is EvCustom (n) (d) -> False
+
+Section: Modifier Constants
+  mod-none : Integer
+  mod-none = 0
+
+  mod-shift : Integer
+  mod-shift = 1
+
+  mod-ctrl : Integer
+  mod-ctrl = 2
+
+  mod-alt : Integer
+  mod-alt = 4
+
+Section: Mouse Button Constants
+  btn-left : Integer
+  btn-left = 0
+
+  btn-right : Integer
+  btn-right = 1
+
+  btn-middle : Integer
+  btn-middle = 2
+
+Section: Formatting
+  format-event : Event -> Text
+  format-event (ev) =
+    event-kind-name (ev.ev-kind) & " target=" & ev.ev-target & " t=" & show (ev.ev-timestamp)
+
+Page 1

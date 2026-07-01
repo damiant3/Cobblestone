@@ -1,0 +1,629 @@
+Chapter: CreationsApp
+  cites Explorer chapter AuthClient
+  cites Explorer chapter ExplorerTheme
+  cites Explorer chapter NameForge
+  cites Explorer chapter StoryGraph
+
+ Creations SPA: account-owned world builder with community gallery and
+ integrated World Forge. Replaces the hand-JS creations.html with pure Codex
+ compiled to JavaScript by the html plug. Auth via AuthClient; dimension
+ data fetched from the bare-metal DB server; NameForge and StoryGraph run
+ client-side for procedural world generation.
+
+ Data model: a creation is (kind, name, data) owned by an account.
+ kind = setting | character | item | world. name = composed from picks or
+ forged from seed. data = joined prompt fragments or formatted world text.
+
+ We say:
+
+Section: CSS
+
+  cr-css : Text
+  cr-css =
+    "body{font:15px/1.5 system-ui,sans-serif;background:#0d0d10;color:#e8e6df;padding:32px;max-width:860px;margin:0 auto}"
+    & "h1{font-size:22px;color:#e9c46a;margin-bottom:4px}"
+    & ".sub{color:#8a8780;margin-bottom:24px;font-size:13px}"
+    & ".card{background:#16161b;border:1px solid #26262e;border-radius:10px;padding:18px;margin-bottom:18px}"
+    & ".card h2{font-size:14px;text-transform:uppercase;letter-spacing:.08em;color:#9a8c66;margin-bottom:12px}"
+    & "label{display:block;font-size:12px;color:#8a8780;margin:8px 0 3px}"
+    & "input,select{width:100%;padding:8px 10px;background:#0d0d10;border:1px solid #33333d;border-radius:6px;color:#e8e6df;font:inherit}"
+    & ".btn{padding:8px 16px;background:#e9c46a;color:#1a1a1a;border:0;border-radius:6px;font:inherit;font-weight:600;cursor:pointer;margin-top:10px}"
+    & ".btn.ghost{background:transparent;color:#9a8c66;border:1px solid #33333d}"
+    & ".btn.del{background:transparent;color:#c4756b;border:1px solid #4a2e2c;padding:4px 10px;margin:0;font-size:12px}"
+    & ".btn.remix{background:transparent;color:#e9c46a;border:1px solid #4a4226;padding:4px 10px;margin:0;font-size:12px}"
+    & ".row{display:flex;gap:12px}.row>*{flex:1}"
+    & ".hidden{display:none}"
+    & ".crea{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #222}"
+    & ".crea:last-child{border-bottom:0}"
+    & ".badge{display:inline-block;font-size:11px;text-transform:uppercase;color:#1a1a1a;background:#7aa874;border-radius:4px;padding:1px 7px;margin-right:8px}"
+    & ".nm{font-weight:600}.dt{color:#8a8780;font-size:12px}"
+    & ".acts{display:flex;gap:10px;align-items:center}"
+    & ".acts a{color:#e9c46a;font-size:12px;text-decoration:none}"
+    & ".smsg{font-size:13px;min-height:18px;margin-top:6px}"
+    & ".smsg.ok{color:#7aa874}.smsg.err{color:#c4756b}"
+    & ".preview{color:#8a8780;margin:8px 0;font-size:13px}"
+    & ".empty{color:#8a8780;font-size:13px;padding:8px 0}"
+
+Section: Dimension Config
+
+ Each kind has a list of dimension table names. The server serves each table
+ at /api/<table> as a JSON array of [name, prompt-fragment] rows. Adding a
+ new kind or dimension is a data change: add entries here and the UI builds
+ itself.
+
+  kind-count : Integer
+  kind-count = 4
+
+  kind-name : Integer -> Text
+  kind-name (i) =
+    if i == 0 then "setting"
+    else if i == 1 then "character"
+    else if i == 2 then "item"
+    else "world"
+
+  kind-dim-count : Text -> Integer
+  kind-dim-count (kind) =
+    if kind == "setting" then 4
+    else if kind == "character" then 4
+    else if kind == "item" then 3
+    else 0
+
+  kind-dim-key : Text, Integer -> Text
+  kind-dim-key (kind) (i) =
+    if kind == "setting" then
+      if i == 0 then "biomes" else if i == 1 then "times" else if i == 2 then "weathers" else "moods"
+    else if kind == "character" then
+      if i == 0 then "races" else if i == 1 then "classes" else if i == 2 then "genders" else "personalities"
+    else
+      if i == 0 then "items" else if i == 1 then "materials" else "rarities"
+
+  kind-dim-label : Text, Integer -> Text
+  kind-dim-label (kind) (i) =
+    if kind == "setting" then
+      if i == 0 then "Biome" else if i == 1 then "Time" else if i == 2 then "Weather" else "Mood"
+    else if kind == "character" then
+      if i == 0 then "Race" else if i == 1 then "Class" else if i == 2 then "Gender" else "Personality"
+    else
+      if i == 0 then "Type" else if i == 1 then "Material" else "Rarity"
+
+Section: Forge Options
+
+  arc-opt : Text -> Text
+  arc-opt (k) = "<option value=\"" & k & "\">" & arc-name (parse-arc k) & "</option>"
+
+  arc-opts-loop : List Text, Integer, Integer, Text -> Text
+  arc-opts-loop (xs) (i) (n) (acc) =
+    if i >= n then acc else arc-opts-loop xs (i + 1) n (acc & arc-opt (list-at xs i))
+
+  arc-opts : Text
+  arc-opts = arc-opts-loop all-arcs 0 (list-length all-arcs) ""
+
+  motif-opt : Text -> Text
+  motif-opt (k) = "<option value=\"" & k & "\">" & motif-name (parse-motif k) & "</option>"
+
+  motif-opts-loop : List Text, Integer, Integer, Text -> Text
+  motif-opts-loop (xs) (i) (n) (acc) =
+    if i >= n then acc else motif-opts-loop xs (i + 1) n (acc & motif-opt (list-at xs i))
+
+  motif-opts : Text
+  motif-opts = motif-opts-loop all-motifs 0 (list-length all-motifs) ""
+
+Section: Shell
+
+  kind-options-loop : Integer, Integer, Text -> Text
+  kind-options-loop (i) (n) (acc) =
+    if i >= n then acc
+    else kind-options-loop (i + 1) n (acc & "<option value=\"" & kind-name i & "\">" & kind-name i & "</option>")
+
+  shell : Text
+  shell =
+    "<h1>My Creations " & auth-who-html & "</h1>"
+    & "<div class=\"sub\">A persistent, account-owned content store. Generated worlds saved to a Codex backend over its own TCP stack and disk.</div>"
+    & auth-card-html
+    & "<div id=\"appCard\" class=\"card hidden\">"
+    & "<h2>Compose &amp; save a world</h2>"
+    & "<label>Kind</label>"
+    & "<select id=\"kind\">" & kind-options-loop 0 kind-count "" & "</select>"
+    & "<div id=\"dims\"></div>"
+    & "<label>Name (auto-composed, editable)</label>"
+    & "<input id=\"cname\" placeholder=\"composed from your picks\">"
+    & "<div id=\"preview\" class=\"preview\"></div>"
+    & "<div class=\"row\">"
+    & "<button id=\"saveBtn\" class=\"btn\">Save creation</button>"
+    & "<button id=\"rollBtn\" class=\"btn ghost\">Randomize</button>"
+    & "</div>"
+    & "<div id=\"saveMsg\" class=\"smsg\"></div>"
+    & "</div>"
+    & "<div id=\"listCard\" class=\"card hidden\">"
+    & "<h2>Saved by you <button id=\"exportBtn\" class=\"btn ghost\" style=\"float:right;margin:0;padding:4px 10px;font-size:12px\">Export as Markdown</button></h2>"
+    & "<div id=\"list\"></div>"
+    & "</div>"
+    & "<div id=\"forgeCard\" class=\"card hidden\">"
+    & "<h2>Forge a World</h2>"
+    & "<div class=\"sub\">Procedural settings and branching story graphs from one seed. NameForge and StoryGraph run in your browser.</div>"
+    & "<div class=\"row\">"
+    & "<div><label>Seed</label><input id=\"wf-seed\" type=\"number\" value=\"42\"></div>"
+    & "<div><label>Archetype</label><select id=\"wf-arc\">" & arc-opts & "</select></div>"
+    & "<div><label>Motif</label><select id=\"wf-motif\">" & motif-opts & "</select></div>"
+    & "</div>"
+    & "<div class=\"row\">"
+    & "<button id=\"forgeBtn\" class=\"btn\">Forge</button>"
+    & "<button id=\"forgeSaveBtn\" class=\"btn ghost\">Save as Creation</button>"
+    & "</div>"
+    & "<div id=\"forgeMsg\" class=\"smsg\"></div>"
+    & "<pre id=\"wf-world\" class=\"preview\" style=\"white-space:pre-wrap;max-height:300px;overflow-y:auto\"></pre>"
+    & "<pre id=\"wf-story\" class=\"preview\" style=\"white-space:pre-wrap;max-height:300px;overflow-y:auto\"></pre>"
+    & "</div>"
+    & "<div class=\"card\">"
+    & "<h2>Community gallery</h2>"
+    & "<div class=\"dt\" style=\"margin-bottom:10px\">Browse what others have created. Remix copies a creation into your collection.</div>"
+    & "<div id=\"gallery\"></div>"
+    & "</div>"
+
+Section: Auth Handlers
+
+  on-login-click : Text -> Integer
+  on-login-click (id) =
+    let u = dom-get-value (dom-get "au")
+    in let p = dom-get-value (dom-get "ap")
+    in let url = "/api/auth/login?u=" & url-encode u & "&p=" & url-encode p
+    in let c = auth-clear-msg 0
+    in fetch-get-then url (on-login-result)
+
+  on-login-result : Text -> Integer
+  on-login-result (raw) =
+    if text-length raw == 0
+    then auth-set-msg "server unavailable" 0
+    else let obj = json-parse-obj raw
+         in let tok = json-obj-field obj "token"
+         in if text-length tok > 0
+            then let s = set-auth-token tok
+                 in fetch-get-then ("/api/auth/me?t=" & url-encode tok) (on-me-result)
+            else let err = json-obj-field obj "error"
+                 in auth-set-msg (if text-length err > 0 then err else "login failed") 0
+
+  on-reg-click : Text -> Integer
+  on-reg-click (id) =
+    let u = dom-get-value (dom-get "au")
+    in let p = dom-get-value (dom-get "ap")
+    in let url = "/api/auth/register?u=" & url-encode u & "&d=" & url-encode u & "&p=" & url-encode p
+    in let c = auth-clear-msg 0
+    in fetch-get-then url (on-reg-result)
+
+  on-reg-result : Text -> Integer
+  on-reg-result (raw) =
+    if text-length raw == 0
+    then auth-set-msg "server unavailable" 0
+    else let obj = json-parse-obj raw
+         in let rid = json-obj-field obj "id"
+         in if text-length rid > 0 then auth-set-msg "registered — now log in" 1
+            else let err = json-obj-field obj "error"
+                 in auth-set-msg (if text-length err > 0 then err else "register failed") 0
+
+  on-me-result : Text -> Integer
+  on-me-result (raw) =
+    if text-length raw == 0
+    then let s = auth-show-logged-out 0 in 0
+    else let obj = json-parse-obj raw
+         in let handle = json-obj-field obj "handle"
+         in if text-length handle > 0
+            then let s = auth-show-logged-in handle
+                 in let lo = dom-on-click (dom-get "aOut") (on-logout-click)
+                 in let v = show-app 0
+                 in let f = start-fetches 0
+                 in load-gallery 0
+            else let s = auth-show-logged-out 0
+                 in 0
+
+  on-logout-click : Text -> Integer
+  on-logout-click (id) =
+    let s = auth-show-logged-out 0
+    in hide-app 0
+
+  show-app : Integer -> Integer
+  show-app (x) =
+    let a = dom-remove-class (dom-get "appCard") "hidden"
+    in let b = dom-remove-class (dom-get "listCard") "hidden"
+    in let c = dom-remove-class (dom-get "forgeCard") "hidden"
+    in 0
+
+  hide-app : Integer -> Integer
+  hide-app (x) =
+    let a = dom-add-class (dom-get "appCard") "hidden"
+    in let b = dom-add-class (dom-get "listCard") "hidden"
+    in let c = dom-add-class (dom-get "forgeCard") "hidden"
+    in 0
+
+  check-auth : Integer -> Integer
+  check-auth (x) =
+    let tok = get-auth-token 0
+    in if text-length tok > 0
+       then fetch-get-then ("/api/auth/me?t=" & url-encode tok) (on-me-result)
+       else 0
+
+Section: Dimension Fetching
+
+  total-dims : Integer
+  total-dims = 11
+
+  dim-loaded : Integer -> Integer
+  dim-loaded (x) =
+    let c = state-get "dld" + 1
+    in let s = state-set "dld" c
+    in if c >= total-dims then rebuild-composer 0 else 0
+
+  cb-biomes : Text -> Integer
+  cb-biomes (r) = let s = state-set-text "d-biomes" r in dim-loaded 0
+  cb-times : Text -> Integer
+  cb-times (r) = let s = state-set-text "d-times" r in dim-loaded 0
+  cb-weathers : Text -> Integer
+  cb-weathers (r) = let s = state-set-text "d-weathers" r in dim-loaded 0
+  cb-moods : Text -> Integer
+  cb-moods (r) = let s = state-set-text "d-moods" r in dim-loaded 0
+  cb-races : Text -> Integer
+  cb-races (r) = let s = state-set-text "d-races" r in dim-loaded 0
+  cb-classes : Text -> Integer
+  cb-classes (r) = let s = state-set-text "d-classes" r in dim-loaded 0
+  cb-genders : Text -> Integer
+  cb-genders (r) = let s = state-set-text "d-genders" r in dim-loaded 0
+  cb-personalities : Text -> Integer
+  cb-personalities (r) = let s = state-set-text "d-personalities" r in dim-loaded 0
+  cb-items : Text -> Integer
+  cb-items (r) = let s = state-set-text "d-items" r in dim-loaded 0
+  cb-materials : Text -> Integer
+  cb-materials (r) = let s = state-set-text "d-materials" r in dim-loaded 0
+  cb-rarities : Text -> Integer
+  cb-rarities (r) = let s = state-set-text "d-rarities" r in dim-loaded 0
+
+  start-fetches : Integer -> Integer
+  start-fetches (x) =
+    let s = state-set "dld" 0
+    in let f1 = fetch-get-then "/api/d/biomes" (cb-biomes)
+    in let f2 = fetch-get-then "/api/d/times" (cb-times)
+    in let f3 = fetch-get-then "/api/d/weathers" (cb-weathers)
+    in let f4 = fetch-get-then "/api/d/moods" (cb-moods)
+    in let f5 = fetch-get-then "/api/d/races" (cb-races)
+    in let f6 = fetch-get-then "/api/d/classes" (cb-classes)
+    in let f7 = fetch-get-then "/api/d/genders" (cb-genders)
+    in let f8 = fetch-get-then "/api/d/personalities" (cb-personalities)
+    in let f9 = fetch-get-then "/api/d/items" (cb-items)
+    in let f10 = fetch-get-then "/api/d/materials" (cb-materials)
+    in let f11 = fetch-get-then "/api/d/rarities" (cb-rarities)
+    in 0
+
+Section: Composer
+
+  get-dim-rows : Text -> List (List Text)
+  get-dim-rows (key) =
+    let raw = state-get-text ("d-" & key)
+    in if text-length raw > 0 then json-parse raw else []
+
+  build-options-loop : List (List Text), Integer, Integer, Text -> Text
+  build-options-loop (rows) (i) (n) (acc) =
+    if i >= n then acc
+    else let row = list-at rows i
+         in let name = list-at row 0
+         in build-options-loop rows (i + 1) n (acc & "<option value=\"" & show i & "\">" & name & "</option>")
+
+  build-dim-select : Text, Text, List (List Text) -> Text
+  build-dim-select (key) (label) (rows) =
+    "<label>" & label & "</label><select id=\"sel-" & key & "\">" & build-options-loop rows 0 (list-length rows) "" & "</select>"
+
+  build-dims-loop : Text, Integer, Integer, Text -> Text
+  build-dims-loop (kind) (i) (n) (acc) =
+    if i >= n then acc
+    else let key = kind-dim-key kind i
+         in let label = kind-dim-label kind i
+         in let rows = get-dim-rows key
+         in build-dims-loop kind (i + 1) n (acc & build-dim-select key label rows)
+
+  wire-selects-loop : Text, Integer, Integer -> Integer
+  wire-selects-loop (kind) (i) (n) =
+    if i >= n then 0
+    else let key = kind-dim-key kind i
+         in let el = dom-get ("sel-" & key)
+         in let w = dom-on-input el (on-sel-change)
+         in wire-selects-loop kind (i + 1) n
+
+  rebuild-composer : Integer -> Integer
+  rebuild-composer (x) =
+    let kind = dom-get-value (dom-get "kind")
+    in let n = kind-dim-count kind
+    in let html = build-dims-loop kind 0 n ""
+    in let d = dom-set-html (dom-get "dims") html
+    in let w = wire-selects-loop kind 0 n
+    in compose-picks 0
+
+  on-sel-change : Text -> Integer
+  on-sel-change (val) = compose-picks 0
+
+  get-sel-value : Text -> Integer
+  get-sel-value (key) =
+    let el = dom-get ("sel-" & key)
+    in text-to-int (dom-get-value el)
+
+  get-pick-name : Text, Integer -> Text
+  get-pick-name (key) (idx) =
+    let rows = get-dim-rows key
+    in if idx < list-length rows then list-at (list-at rows idx) 0 else ""
+
+  get-pick-data : Text, Integer -> Text
+  get-pick-data (key) (idx) =
+    let rows = get-dim-rows key
+    in if idx < list-length rows
+       then let row = list-at rows idx
+            in if list-length row > 1 then list-at row 1 else list-at row 0
+       else ""
+
+  compose-loop : Text, Integer, Integer, Text, Text -> Integer
+  compose-loop (kind) (i) (n) (names) (data) =
+    if i >= n
+    then let cn = dom-set-value (dom-get "cname") names
+         in let pr = dom-set-text (dom-get "preview") data
+         in let sd = state-set-text "last-data" data
+         in 0
+    else let key = kind-dim-key kind i
+         in let idx = get-sel-value key
+         in let nm = get-pick-name key idx
+         in let dt = get-pick-data key idx
+         in let sep = if i > 0 then " / " else ""
+         in let dsep = if i > 0 then " | " else ""
+         in compose-loop kind (i + 1) n (names & sep & nm) (data & dsep & dt)
+
+  compose-picks : Integer -> Integer
+  compose-picks (x) =
+    let kind = dom-get-value (dom-get "kind")
+    in compose-loop kind 0 (kind-dim-count kind) "" ""
+
+  on-kind-change : Text -> Integer
+  on-kind-change (val) = rebuild-composer 0
+
+  on-randomize : Text -> Integer
+  on-randomize (id) =
+    let kind = dom-get-value (dom-get "kind")
+    in let n = kind-dim-count kind
+    in let r = randomize-loop kind 0 n
+    in compose-picks 0
+
+  randomize-loop : Text, Integer, Integer -> Integer
+  randomize-loop (kind) (i) (n) =
+    if i >= n then 0
+    else let key = kind-dim-key kind i
+         in let rows = get-dim-rows key
+         in let len = list-length rows
+         in let idx = if len > 0 then random-int 0 (len - 1) else 0
+         in let el = dom-get ("sel-" & key)
+         in let s = dom-set-value el (show idx)
+         in randomize-loop kind (i + 1) n
+
+Section: Save
+
+  on-save-click : Text -> Integer
+  on-save-click (id) =
+    let tok = get-auth-token 0
+    in let kind = dom-get-value (dom-get "kind")
+    in let name = dom-get-value (dom-get "cname")
+    in let data = state-get-text "last-data"
+    in let url = "/api/save?t=" & url-encode tok & "&kind=" & url-encode kind & "&name=" & url-encode name & "&data=" & url-encode data
+    in fetch-get-then url (on-save-result)
+
+  on-save-result : Text -> Integer
+  on-save-result (raw) =
+    let obj = json-parse-obj raw
+    in let ok = json-obj-field obj "ok"
+    in if ok == "true"
+       then let m = dom-set-text (dom-get "saveMsg") "saved!"
+            in let c = dom-set-attr (dom-get "saveMsg") "class" "smsg ok"
+            in let l = load-mine 0
+            in load-gallery 0
+       else let err = json-obj-field obj "error"
+            in let m = dom-set-text (dom-get "saveMsg") (if text-length err > 0 then err else "save failed")
+            in let c = dom-set-attr (dom-get "saveMsg") "class" "smsg err"
+            in 0
+
+Section: My Creations
+
+  load-mine : Integer -> Integer
+  load-mine (x) =
+    let tok = get-auth-token 0
+    in fetch-get-then ("/api/mine?t=" & url-encode tok) (on-mine-result)
+
+  on-mine-result : Text -> Integer
+  on-mine-result (raw) =
+    let items = json-parse raw
+    in let n = list-length items
+    in if n == 0
+       then let h = dom-set-html (dom-get "list") "<div class=\"empty\">Nothing saved yet.</div>"
+            in 0
+       else let html = render-mine-loop items 0 n ""
+            in let h = dom-set-html (dom-get "list") html
+            in let s = state-set "mine-count" n
+            in wire-delete-loop 0 n
+
+  render-mine-loop : List (List Text), Integer, Integer, Text -> Text
+  render-mine-loop (items) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+         in let kind = json-obj-field item "kind"
+         in let name = json-obj-field item "name"
+         in let data = json-obj-field item "data"
+         in let si = show i
+         in let s1 = state-set-text ("mi-" & si) name
+         in let row = "<div class=\"crea\"><div><span class=\"badge\">" & kind & "</span><span class=\"nm\">" & name & "</span><div class=\"dt\">" & data & "</div></div><div class=\"acts\"><a href=\"/" & kind & "?prompt=" & url-encode data & "\" target=\"_blank\">open in designer</a><button class=\"btn del\" id=\"del-" & si & "\">delete</button></div></div>"
+         in render-mine-loop items (i + 1) n (acc & row)
+
+  wire-delete-loop : Integer, Integer -> Integer
+  wire-delete-loop (i) (n) =
+    if i >= n then 0
+    else let el = dom-get ("del-" & show i)
+         in let w = dom-on-click el (on-delete-click)
+         in wire-delete-loop (i + 1) n
+
+  on-delete-click : Text -> Integer
+  on-delete-click (id) =
+    let idx = text-to-int (text-replace id "del-" "")
+    in let name = state-get-text ("mi-" & show idx)
+    in let tok = get-auth-token 0
+    in let url = "/api/delete?t=" & url-encode tok & "&name=" & url-encode name
+    in fetch-get-then url (on-delete-result)
+
+  on-delete-result : Text -> Integer
+  on-delete-result (raw) =
+    let l = load-mine 0
+    in load-gallery 0
+
+Section: Gallery
+
+  load-gallery : Integer -> Integer
+  load-gallery (x) = fetch-get-then "/api/gallery" (on-gallery-result)
+
+  on-gallery-result : Text -> Integer
+  on-gallery-result (raw) =
+    let items = json-parse raw
+    in let n = list-length items
+    in if n == 0
+       then let h = dom-set-html (dom-get "gallery") "<div class=\"empty\">No creations yet — be the first.</div>"
+            in 0
+       else let html = render-gallery-loop items (n - 1) ""
+            in let h = dom-set-html (dom-get "gallery") html
+            in if is-auth-logged-in 0 == 1 then wire-remix-loop 0 n else 0
+
+  render-gallery-loop : List (List Text), Integer, Text -> Text
+  render-gallery-loop (items) (i) (acc) =
+    if i < 0 then acc
+    else let item = list-at items i
+         in let kind = json-obj-field item "kind"
+         in let name = json-obj-field item "name"
+         in let data = json-obj-field item "data"
+         in let by = json-obj-field item "by"
+         in let si = show i
+         in let s1 = state-set-text ("gn-" & si) name
+         in let s2 = state-set-text ("gb-" & si) by
+         in let row = "<div class=\"crea\"><div><span class=\"badge\">" & kind & "</span><span class=\"nm\">" & name & "</span> <span class=\"dt\">by @" & by & "</span><div class=\"dt\">" & data & "</div></div><button class=\"btn remix\" id=\"rmx-" & si & "\">remix</button></div>"
+         in render-gallery-loop items (i - 1) (acc & row)
+
+  wire-remix-loop : Integer, Integer -> Integer
+  wire-remix-loop (i) (n) =
+    if i >= n then 0
+    else let el = dom-get ("rmx-" & show i)
+         in let w = dom-on-click el (on-remix-click)
+         in wire-remix-loop (i + 1) n
+
+  on-remix-click : Text -> Integer
+  on-remix-click (id) =
+    let idx = text-to-int (text-replace id "rmx-" "")
+    in let name = state-get-text ("gn-" & show idx)
+    in let by = state-get-text ("gb-" & show idx)
+    in let tok = get-auth-token 0
+    in let url = "/api/remix?t=" & url-encode tok & "&by=" & url-encode by & "&name=" & url-encode name
+    in fetch-get-then url (on-remix-result)
+
+  on-remix-result : Text -> Integer
+  on-remix-result (raw) =
+    let obj = json-parse-obj raw
+    in let ok = json-obj-field obj "ok"
+    in let sm = dom-get "saveMsg"
+    in let m = if ok == "true" then dom-set-text sm "remixed into your collection!" else dom-set-text sm ""
+    in let l = load-mine 0
+    in load-gallery 0
+
+Section: World Forge
+
+  on-forge-click : Text -> Integer
+  on-forge-click (id) =
+    let seed = text-to-int (dom-get-value (dom-get "wf-seed"))
+    in let arc = parse-arc (dom-get-value (dom-get "wf-arc"))
+    in let m = parse-motif (dom-get-value (dom-get "wf-motif"))
+    in let setting = forge-setting seed
+    in let story = forge-story-as seed arc m
+    in let st = format-setting setting
+    in let sy = format-story story
+    in let a = dom-set-text (dom-get "wf-world") st
+    in let b = dom-set-text (dom-get "wf-story") sy
+    in let s1 = state-set-text "forge-name" (setting.kingdom)
+    in let s2 = state-set-text "forge-world" st
+    in let s3 = state-set-text "forge-story" sy
+    in let fm = dom-set-text (dom-get "forgeMsg") ""
+    in 0
+
+  on-forge-save : Text -> Integer
+  on-forge-save (id) =
+    let tok = get-auth-token 0
+    in let name = state-get-text "forge-name"
+    in let seed = dom-get-value (dom-get "wf-seed")
+    in let arc = dom-get-value (dom-get "wf-arc")
+    in let mot = dom-get-value (dom-get "wf-motif")
+    in if text-length name == 0
+       then let m = dom-set-text (dom-get "forgeMsg") "forge a world first"
+            in let c = dom-set-attr (dom-get "forgeMsg") "class" "smsg err"
+            in 0
+       else let data = "seed:" & seed & " | " & arc-name (parse-arc arc) & " | " & motif-name (parse-motif mot)
+            in let url = "/api/save?t=" & url-encode tok & "&kind=world&name=" & url-encode name & "&data=" & url-encode data
+            in fetch-get-then url (on-forge-save-result)
+
+  on-forge-save-result : Text -> Integer
+  on-forge-save-result (raw) =
+    let obj = json-parse-obj raw
+    in let ok = json-obj-field obj "ok"
+    in if ok == "true"
+       then let m = dom-set-text (dom-get "forgeMsg") ("saved " & state-get-text "forge-name" & "!")
+            in let c = dom-set-attr (dom-get "forgeMsg") "class" "smsg ok"
+            in let l = load-mine 0
+            in load-gallery 0
+       else let err = json-obj-field obj "error"
+            in let m = dom-set-text (dom-get "forgeMsg") (if text-length err > 0 then err else "save failed")
+            in let c = dom-set-attr (dom-get "forgeMsg") "class" "smsg err"
+            in 0
+
+Section: Export
+
+  on-export-click : Text -> Integer
+  on-export-click (id) =
+    let tok = get-auth-token 0
+    in fetch-get-then ("/api/export?t=" & url-encode tok) (on-export-result)
+
+  on-export-result : Text -> Integer
+  on-export-result (raw) = download-text raw "world-codex.md" "text/markdown"
+
+Section: Entry
+
+  wire-auth : Integer -> Integer
+  wire-auth (x) =
+    let lb = dom-get "aLogin"
+    in let l2 = dom-on-click lb (on-login-click)
+    in let rb = dom-get "aReg"
+    in let r2 = dom-on-click rb (on-reg-click)
+    in 0
+
+  wire-app : Integer -> Integer
+  wire-app (x) =
+    let kb = dom-get "kind"
+    in let k2 = dom-on-input kb (on-kind-change)
+    in let sb = dom-get "saveBtn"
+    in let s2 = dom-on-click sb (on-save-click)
+    in let rb = dom-get "rollBtn"
+    in let r2 = dom-on-click rb (on-randomize)
+    in let eb = dom-get "exportBtn"
+    in let e2 = dom-on-click eb (on-export-click)
+    in let fb = dom-get "forgeBtn"
+    in let f2 = dom-on-click fb (on-forge-click)
+    in let fs = dom-get "forgeSaveBtn"
+    in let f3 = dom-on-click fs (on-forge-save)
+    in 0
+
+  opening : Integer -> [Console] None
+  opening (x) = act
+    let app = dom-get "app"
+    in let css = dom-create "style"
+    in let c2 = dom-set-text css (cr-css & auth-css)
+    in let head = dom-query "head"
+    in let h2 = dom-append head css
+    in let m = dom-set-html app shell
+    in let w1 = wire-auth 0
+    in let w2 = wire-app 0
+    in let ch = check-auth 0
+    in let gl = load-gallery 0
+    in print-line-uni ""
+  end
+
+Page 1

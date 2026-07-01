@@ -1,0 +1,223 @@
+Chapter: IsUtilities
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Utilities: meter management, rate schedules, billing determinants,
+ usage calculation, demand charges, tiered pricing, device management,
+ outage tracking, and regulatory compliance.
+
+Section: Service Points and Meters
+
+  ServicePoint = record {
+    sp-id : Text,
+    sp-address : Text,
+    sp-customer-id : Text,
+    sp-type : ServiceType,
+    sp-meter-id : Text,
+    sp-rate-schedule : Text,
+    sp-connected : Integer,
+    sp-status : Text
+  }
+
+  ServiceType =
+    | Electric
+    | Gas
+    | Water
+    | Sewer
+    | Steam
+    | Telecom
+
+  Meter = record {
+    mtr-id : Text,
+    mtr-serial : Text,
+    mtr-type : MeterType,
+    mtr-multiplier : Integer,
+    mtr-installed : Integer,
+    mtr-last-read : Integer,
+    mtr-last-value : Integer,
+    mtr-status : Text
+  }
+
+  MeterType =
+    | AnalogMeter
+    | DigitalMeter
+    | SmartMeter
+    | IntervalMeter
+    | DemandMeter
+    | NetMeter
+
+  MeterReading = record {
+    mr-meter-id : Text,
+    mr-read-date : Integer,
+    mr-value : Integer,
+    mr-read-type : ReadType,
+    mr-estimated : Boolean,
+    mr-reader-id : Text
+  }
+
+  ReadType =
+    | ActualRead
+    | EstimatedRead
+    | CustomerRead
+    | RemoteRead
+
+  calc-usage : MeterReading, MeterReading, Integer -> Integer
+  calc-usage (current) (prior) (multiplier) =
+    (current.mr-value - prior.mr-value) * multiplier
+
+Section: Rate Schedules
+
+  RateSchedule = record {
+    rs-id : Text,
+    rs-name : Text,
+    rs-service-type : ServiceType,
+    rs-effective : Integer,
+    rs-tiers : List RateTier,
+    rs-demand-charge : Integer,
+    rs-customer-charge : Integer,
+    rs-minimum-charge : Integer,
+    rs-time-of-use : Boolean,
+    rs-tou-periods : List TouPeriod
+  }
+
+  RateTier = record {
+    rt-min-usage : Integer,
+    rt-max-usage : Integer,
+    rt-rate-per-unit : Integer
+  }
+
+  TouPeriod = record {
+    tou-name : Text,
+    tou-start-hour : Integer,
+    tou-end-hour : Integer,
+    tou-rate-multiplier : Integer,
+    tou-weekend : Boolean
+  }
+
+  calc-tiered-charge : Integer, List RateTier -> Integer
+  calc-tiered-charge (usage) (tiers) = tiered-loop usage tiers 0 0
+
+  tiered-loop : Integer, List RateTier, Integer, Integer -> Integer
+  tiered-loop (remaining) (tiers) (i) (acc) =
+    if remaining <= 0 then acc
+    else if i >= list-length tiers then acc
+    else let tier = list-at tiers i
+    in let tier-width = tier.rt-max-usage - tier.rt-min-usage
+    in let in-tier = if remaining > tier-width then tier-width else remaining
+    in tiered-loop (remaining - in-tier) tiers (i + 1) (acc + in-tier * tier.rt-rate-per-unit / 10000)
+
+Section: Billing
+
+  UtilityBill = record {
+    ub-id : Text,
+    ub-customer-id : Text,
+    ub-service-point : Text,
+    ub-period-start : Integer,
+    ub-period-end : Integer,
+    ub-usage : Integer,
+    ub-usage-unit : Text,
+    ub-demand-kw : Integer,
+    ub-customer-charge : Integer,
+    ub-energy-charge : Integer,
+    ub-demand-charge : Integer,
+    ub-fuel-adj : Integer,
+    ub-taxes : Integer,
+    ub-total : Integer,
+    ub-due-date : Integer,
+    ub-status : Text
+  }
+
+  calc-utility-bill : Text, Text, Integer, Integer, Integer, RateSchedule -> UtilityBill
+  calc-utility-bill (customer) (sp) (usage) (demand) (period-end) (rate) =
+    let energy = calc-tiered-charge usage (rate.rs-tiers)
+    in let demand-chg = demand * rate.rs-demand-charge / 1000
+    in let subtotal = rate.rs-customer-charge + energy + demand-chg
+    in let tax = subtotal * 800 / 10000
+    in UtilityBill {
+      ub-id = "", ub-customer-id = customer, ub-service-point = sp,
+      ub-period-start = period-end - 2592000, ub-period-end = period-end,
+      ub-usage = usage, ub-usage-unit = "kWh", ub-demand-kw = demand,
+      ub-customer-charge = rate.rs-customer-charge,
+      ub-energy-charge = energy, ub-demand-charge = demand-chg,
+      ub-fuel-adj = 0, ub-taxes = tax,
+      ub-total = subtotal + tax,
+      ub-due-date = period-end + 2592000, ub-status = "open"
+    }
+
+Section: Outage Management
+
+  Outage = record {
+    out-id : Text,
+    out-type : OutageType,
+    out-cause : Text,
+    out-area : Text,
+    out-customers-affected : Integer,
+    out-start : Integer,
+    out-restored : Integer,
+    out-duration-mins : Integer,
+    out-crew-assigned : Text,
+    out-status : Text
+  }
+
+  OutageType =
+    | PlannedOutage
+    | UnplannedOutage
+    | MajorEvent
+    | MomentaryInterruption
+
+  saidi : List Outage, Integer -> Integer
+  saidi (outages) (total-customers) =
+    if total-customers == 0 then 0
+    else sum-customer-minutes outages 0 0 / total-customers
+
+  sum-customer-minutes : List Outage, Integer, Integer -> Integer
+  sum-customer-minutes (outages) (i) (acc) =
+    if i >= list-length outages then acc
+    else let o = list-at outages i
+    in sum-customer-minutes outages (i + 1) (acc + o.out-customers-affected * o.out-duration-mins)
+
+  saifi : List Outage, Integer -> Integer
+  saifi (outages) (total-customers) =
+    if total-customers == 0 then 0
+    else sum-customer-interruptions outages 0 0 * 1000 / total-customers
+
+  sum-customer-interruptions : List Outage, Integer, Integer -> Integer
+  sum-customer-interruptions (outages) (i) (acc) =
+    if i >= list-length outages then acc
+    else sum-customer-interruptions outages (i + 1) (acc + (list-at outages i).out-customers-affected)
+
+Section: Device Management
+
+  Device = record {
+    dev-id : Text,
+    dev-type : Text,
+    dev-serial : Text,
+    dev-location : Text,
+    dev-installed : Integer,
+    dev-firmware : Text,
+    dev-last-comm : Integer,
+    dev-battery-pct : Integer,
+    dev-status : Text
+  }
+
+Section: Residential Rate Presets
+
+  residential-electric-rate : RateSchedule
+  residential-electric-rate = RateSchedule {
+    rs-id = "res-electric",
+    rs-name = "Residential Electric",
+    rs-service-type = Electric,
+    rs-effective = 0,
+    rs-tiers = [
+      RateTier { rt-min-usage = 0, rt-max-usage = 500, rt-rate-per-unit = 1000 },
+      RateTier { rt-min-usage = 500, rt-max-usage = 1000, rt-rate-per-unit = 1200 },
+      RateTier { rt-min-usage = 1000, rt-max-usage = 99999, rt-rate-per-unit = 1500 }
+    ],
+    rs-demand-charge = 0,
+    rs-customer-charge = 1200,
+    rs-minimum-charge = 1500,
+    rs-time-of-use = False,
+    rs-tou-periods = []
+  }

@@ -1,0 +1,158 @@
+Chapter: MeshOps
+  cites Math chapter Quaternion
+  cites Math chapter Geometry
+  cites Spark chapter Mesh
+
+ Mesh editing operations: translate, scale, flip normals, merge,
+ extrude faces, and subdivide. Operates on TriMesh.
+
+ We say:
+
+Section: Transform
+
+  mesh-translate : TriMesh, Vec3 -> TriMesh
+  mesh-translate (m) (offset) =
+    let new-verts = mop-translate-verts (m.tm-verts) offset 0 (m.tm-vert-count) []
+    in TriMesh { tm-verts = new-verts, tm-uvs = m.tm-uvs, tm-normals = m.tm-normals, tm-faces = m.tm-faces, tm-vert-count = m.tm-vert-count, tm-face-count = m.tm-face-count }
+
+  mop-translate-verts : List Vec3, Vec3, Integer, Integer, List Vec3 -> List Vec3
+  mop-translate-verts (verts) (offset) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at verts i
+    in let moved = vec3-add v offset
+    in mop-translate-verts verts offset (i + 1) n (list-push acc moved)
+
+  mesh-scale-uniform : TriMesh, Real -> TriMesh
+  mesh-scale-uniform (m) (factor) =
+    let new-verts = mop-scale-verts (m.tm-verts) factor 0 (m.tm-vert-count) []
+    in TriMesh { tm-verts = new-verts, tm-uvs = m.tm-uvs, tm-normals = m.tm-normals, tm-faces = m.tm-faces, tm-vert-count = m.tm-vert-count, tm-face-count = m.tm-face-count }
+
+  mop-scale-verts : List Vec3, Real, Integer, Integer, List Vec3 -> List Vec3
+  mop-scale-verts (verts) (factor) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at verts i
+    in let scaled = vec3-scale v factor
+    in mop-scale-verts verts factor (i + 1) n (list-push acc scaled)
+
+Section: Normals
+
+  mesh-flip-normals : TriMesh -> TriMesh
+  mesh-flip-normals (m) =
+    let new-normals = mop-flip-normals-loop (m.tm-normals) 0 (m.tm-vert-count) []
+    in let new-faces = mop-flip-faces-loop (m.tm-faces) 0 (m.tm-face-count) []
+    in TriMesh { tm-verts = m.tm-verts, tm-uvs = m.tm-uvs, tm-normals = new-normals, tm-faces = new-faces, tm-vert-count = m.tm-vert-count, tm-face-count = m.tm-face-count }
+
+  mop-flip-normals-loop : List Vec3, Integer, Integer, List Vec3 -> List Vec3
+  mop-flip-normals-loop (normals) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at normals i
+    in let flipped = Vec3 { vx = -v.vx, vy = -v.vy, vz = -v.vz }
+    in mop-flip-normals-loop normals (i + 1) n (list-push acc flipped)
+
+  mop-flip-faces-loop : List TriFace, Integer, Integer, List TriFace -> List TriFace
+  mop-flip-faces-loop (faces) (i) (n) (acc) =
+    if i >= n then acc
+    else let f = list-at faces i
+    in let swapped = TriFace { tf-v0 = f.tf-v0, tf-v1 = f.tf-v2, tf-v2 = f.tf-v1 }
+    in mop-flip-faces-loop faces (i + 1) n (list-push acc swapped)
+
+Section: Merge
+
+  mesh-merge : TriMesh, TriMesh -> TriMesh
+  mesh-merge (a) (b) =
+    let offset = a.tm-vert-count
+    in let merged-verts = mop-append-list-v3 (a.tm-verts) (b.tm-verts) 0 (b.tm-vert-count)
+    in let merged-uvs = mop-append-list-v2 (a.tm-uvs) (b.tm-uvs) 0 (b.tm-vert-count)
+    in let merged-normals = mop-append-list-v3 (a.tm-normals) (b.tm-normals) 0 (b.tm-vert-count)
+    in let merged-faces = mop-offset-faces (a.tm-faces) (b.tm-faces) offset 0 (b.tm-face-count)
+    in TriMesh { tm-verts = merged-verts, tm-uvs = merged-uvs, tm-normals = merged-normals, tm-faces = merged-faces, tm-vert-count = a.tm-vert-count + b.tm-vert-count, tm-face-count = a.tm-face-count + b.tm-face-count }
+
+  mop-append-list-v3 : List Vec3, List Vec3, Integer, Integer -> List Vec3
+  mop-append-list-v3 (base) (extra) (i) (n) =
+    if i >= n then base
+    else mop-append-list-v3 (list-push base (list-at extra i)) extra (i + 1) n
+
+  mop-append-list-v2 : List Vec2, List Vec2, Integer, Integer -> List Vec2
+  mop-append-list-v2 (base) (extra) (i) (n) =
+    if i >= n then base
+    else mop-append-list-v2 (list-push base (list-at extra i)) extra (i + 1) n
+
+  mop-offset-faces : List TriFace, List TriFace, Integer, Integer, Integer -> List TriFace
+  mop-offset-faces (base) (extra) (offset) (i) (n) =
+    if i >= n then base
+    else let f = list-at extra i
+    in let shifted = TriFace { tf-v0 = f.tf-v0 + offset, tf-v1 = f.tf-v1 + offset, tf-v2 = f.tf-v2 + offset }
+    in mop-offset-faces (list-push base shifted) extra offset (i + 1) n
+
+Section: Subdivide
+
+  mesh-subdivide : TriMesh -> TriMesh
+  mesh-subdivide (m) = mop-subdiv-loop m 0 tri-mesh-empty
+
+  mop-subdiv-loop : TriMesh, Integer, TriMesh -> TriMesh
+  mop-subdiv-loop (src) (fi) (out) =
+    if fi >= src.tm-face-count then out
+    else let face = tri-mesh-face src fi
+    in let v0 = tri-mesh-vert src (face.tf-v0)
+    in let v1 = tri-mesh-vert src (face.tf-v1)
+    in let v2 = tri-mesh-vert src (face.tf-v2)
+    in let n0 = tri-mesh-normal src (face.tf-v0)
+    in let n1 = tri-mesh-normal src (face.tf-v1)
+    in let n2 = tri-mesh-normal src (face.tf-v2)
+    in let u0 = tri-mesh-uv src (face.tf-v0)
+    in let u1 = tri-mesh-uv src (face.tf-v1)
+    in let u2 = tri-mesh-uv src (face.tf-v2)
+    in let m01 = mop-midpoint v0 v1
+    in let m12 = mop-midpoint v1 v2
+    in let m20 = mop-midpoint v2 v0
+    in let nm01 = mesh-compute-face-normal v0 m01 m20
+    in let base = out.tm-vert-count
+    in let o1 = tri-mesh-add-vert out v0 u0 n0
+    in let o2 = tri-mesh-add-vert o1 m01 (mop-midpoint-v2 u0 u1) nm01
+    in let o3 = tri-mesh-add-vert o2 m20 (mop-midpoint-v2 u2 u0) nm01
+    in let o4 = tri-mesh-add-vert o3 v1 u1 n1
+    in let o5 = tri-mesh-add-vert o4 m12 (mop-midpoint-v2 u1 u2) nm01
+    in let o6 = tri-mesh-add-vert o5 v2 u2 n2
+    in let f1 = tri-mesh-add-face o6 base (base + 1) (base + 2)
+    in let f2 = tri-mesh-add-face f1 (base + 1) (base + 3) (base + 4)
+    in let f3 = tri-mesh-add-face f2 (base + 2) (base + 4) (base + 5)
+    in let f4 = tri-mesh-add-face f3 (base + 1) (base + 4) (base + 2)
+    in mop-subdiv-loop src (fi + 1) f4
+
+  mop-midpoint : Vec3, Vec3 -> Vec3
+  mop-midpoint (a) (b) = Vec3 { vx = (a.vx + b.vx) / 2, vy = (a.vy + b.vy) / 2, vz = (a.vz + b.vz) / 2 }
+
+  mop-midpoint-v2 : Vec2, Vec2 -> Vec2
+  mop-midpoint-v2 (a) (b) = Vec2 { v2x = (a.v2x + b.v2x) / 2, v2y = (a.v2y + b.v2y) / 2 }
+
+Section: Extrude Face
+
+  mesh-extrude-face : TriMesh, Integer, Vec3 -> TriMesh
+  mesh-extrude-face (m) (face-idx) (offset) =
+    let face = tri-mesh-face m face-idx
+    in let v0 = tri-mesh-vert m (face.tf-v0)
+    in let v1 = tri-mesh-vert m (face.tf-v1)
+    in let v2 = tri-mesh-vert m (face.tf-v2)
+    in let e0 = vec3-add v0 offset
+    in let e1 = vec3-add v1 offset
+    in let e2 = vec3-add v2 offset
+    in let n = mesh-compute-face-normal e0 e1 e2
+    in let uv0 = tri-mesh-uv m (face.tf-v0)
+    in let uv1 = tri-mesh-uv m (face.tf-v1)
+    in let uv2 = tri-mesh-uv m (face.tf-v2)
+    in let base = m.tm-vert-count
+    in let m1 = tri-mesh-add-vert m e0 uv0 n
+    in let m2 = tri-mesh-add-vert m1 e1 uv1 n
+    in let m3 = tri-mesh-add-vert m2 e2 uv2 n
+    in let side-n0 = mesh-compute-face-normal v0 v1 e1
+    in let side-n1 = mesh-compute-face-normal v1 v2 e2
+    in let side-n2 = mesh-compute-face-normal v2 v0 e0
+    in let m4 = tri-mesh-add-face m3 base (base + 1) (base + 2)
+    in let m5 = tri-mesh-add-face m4 (face.tf-v0) (face.tf-v1) (base + 1)
+    in let m6 = tri-mesh-add-face m5 (face.tf-v0) (base + 1) base
+    in let m7 = tri-mesh-add-face m6 (face.tf-v1) (face.tf-v2) (base + 2)
+    in let m8 = tri-mesh-add-face m7 (face.tf-v1) (base + 2) (base + 1)
+    in let m9 = tri-mesh-add-face m8 (face.tf-v2) (face.tf-v0) base
+    in tri-mesh-add-face m9 (face.tf-v2) base (base + 2)
+
+Page 1

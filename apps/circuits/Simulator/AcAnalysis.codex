@@ -1,0 +1,295 @@
+Chapter: AcAnalysis
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ AC small-signal frequency response analysis. Computes magnitude and
+ phase across a frequency range and provides stability metrics such as
+ gain margin and phase margin.
+
+Section: Sweep Type
+
+  AcSweepType =
+    | AcDecade
+    | AcOctave
+    | AcLinear
+
+Section: AC Point
+
+  AcPoint = record {
+    ap-frequency : Real,
+    ap-magnitude : Real,
+    ap-phase-degrees : Real
+  }
+
+Section: AC Trace
+
+  AcTrace = record {
+    at-node-name : Text,
+    at-points : List AcPoint,
+    at-unit : Text
+  }
+
+Section: AC Configuration
+
+  AcConfig = record {
+    ac-start-freq : Real,
+    ac-stop-freq : Real,
+    ac-points-per-decade : Integer,
+    ac-sweep-type : AcSweepType
+  }
+
+Section: AC Result
+
+  AcResult = record {
+    ar-config : AcConfig,
+    ar-traces : List AcTrace,
+    ar-trace-count : Integer
+  }
+
+Section: Construction
+
+  empty-ac-result : AcConfig -> AcResult
+  empty-ac-result (cfg) = AcResult {
+      ar-config = cfg,
+      ar-traces = [],
+      ar-trace-count = 0
+    }
+
+  ac-add-trace : AcResult, AcTrace -> AcResult
+  ac-add-trace (res) (tr) =
+    let updated = __record-set res "ar-traces" (list-push res.ar-traces tr)
+    in __record-set updated "ar-trace-count" (res.ar-trace-count + 1)
+
+Section: Interpolation
+
+ Linear interpolation on an AC trace to find magnitude at a given
+ frequency. Scans adjacent point pairs and interpolates between the
+ bracketing pair.
+
+  ac-magnitude-at-freq : AcTrace, Real -> Real
+  ac-magnitude-at-freq (tr) (freq) =
+    let n = list-length tr.at-points
+    in if n < 2 then 0.0
+    else ac-mag-scan tr.at-points freq 0 (n - 1)
+
+  ac-mag-scan : List AcPoint, Real, Integer, Integer -> Real
+  ac-mag-scan (pts) (freq) (i) (last) =
+    if i >= last then ac-mag-at pts last else ac-mag-step pts freq i last
+
+  ac-mag-at : List AcPoint, Integer -> Real
+  ac-mag-at (pts) (idx) = let p = list-at pts idx in p.ap-magnitude
+
+  ac-mag-step : List AcPoint, Real, Integer, Integer -> Real
+  ac-mag-step (pts) (freq) (i) (last) =
+    let a = list-at pts i
+    in let b = list-at pts (i + 1)
+    in ac-mag-match a b pts freq i last
+
+  ac-mag-match : AcPoint, AcPoint, List AcPoint, Real, Integer, Integer -> Real
+  ac-mag-match (a) (b) (pts) (freq) (i) (last) =
+    if freq < a.ap-frequency then a.ap-magnitude
+    else if freq <= b.ap-frequency then ac-mag-lerp a b freq
+    else ac-mag-scan pts freq (i + 1) last
+
+  ac-mag-lerp : AcPoint, AcPoint, Real -> Real
+  ac-mag-lerp (a) (b) (freq) =
+    let df = b.ap-frequency - a.ap-frequency
+    in if df ~ 0.0 then a.ap-magnitude else ac-mag-frac a b freq df
+
+  ac-mag-frac : AcPoint, AcPoint, Real, Real -> Real
+  ac-mag-frac (a) (b) (freq) (df) = let frac = (freq - a.ap-frequency) / df in a.ap-magnitude + frac * (b.ap-magnitude - a.ap-magnitude)
+
+  ac-phase-at-freq : AcTrace, Real -> Real
+  ac-phase-at-freq (tr) (freq) =
+    let n = list-length tr.at-points
+    in if n < 2 then 0.0
+    else ac-phase-scan tr.at-points freq 0 (n - 1)
+
+  ac-phase-scan : List AcPoint, Real, Integer, Integer -> Real
+  ac-phase-scan (pts) (freq) (i) (last) =
+    if i >= last then ac-phase-at pts last else ac-phase-step pts freq i last
+
+  ac-phase-at : List AcPoint, Integer -> Real
+  ac-phase-at (pts) (idx) = let p = list-at pts idx in p.ap-phase-degrees
+
+  ac-phase-step : List AcPoint, Real, Integer, Integer -> Real
+  ac-phase-step (pts) (freq) (i) (last) =
+    let a = list-at pts i
+    in let b = list-at pts (i + 1)
+    in ac-phase-match a b pts freq i last
+
+  ac-phase-match : AcPoint, AcPoint, List AcPoint, Real, Integer, Integer -> Real
+  ac-phase-match (a) (b) (pts) (freq) (i) (last) =
+    if freq < a.ap-frequency then a.ap-phase-degrees
+    else if freq <= b.ap-frequency then ac-phase-lerp a b freq
+    else ac-phase-scan pts freq (i + 1) last
+
+  ac-phase-lerp : AcPoint, AcPoint, Real -> Real
+  ac-phase-lerp (a) (b) (freq) =
+    let df = b.ap-frequency - a.ap-frequency
+    in if df ~ 0.0 then a.ap-phase-degrees else ac-phase-frac a b freq df
+
+  ac-phase-frac : AcPoint, AcPoint, Real, Real -> Real
+  ac-phase-frac (a) (b) (freq) (df) = let frac = (freq - a.ap-frequency) / df in a.ap-phase-degrees + frac * (b.ap-phase-degrees - a.ap-phase-degrees)
+
+Section: Bandwidth
+
+ Finds the -3dB bandwidth frequency. First locates the peak magnitude,
+ then scans for the frequency where magnitude drops 3dB below peak.
+
+  ac-bandwidth-3db : AcTrace -> Real
+  ac-bandwidth-3db (tr) =
+    let n = list-length tr.at-points
+    in if n < 2 then 0.0 else ac-bandwidth-calc tr n
+
+  ac-bandwidth-calc : AcTrace, Integer -> Real
+  ac-bandwidth-calc (tr) (n) =
+    let peak = ac-find-peak-mag tr.at-points 0 n 0.0
+    in let threshold = peak - 3.0
+    in ac-find-3db-freq tr.at-points threshold 0 (n - 1)
+
+  ac-find-peak-mag : List AcPoint, Integer, Integer, Real -> Real
+  ac-find-peak-mag (pts) (i) (n) (best) =
+    if i >= n then best else ac-peak-mag-step pts i n best
+
+  ac-peak-mag-step : List AcPoint, Integer, Integer, Real -> Real
+  ac-peak-mag-step (pts) (i) (n) (best) =
+    let p = list-at pts i
+    in let next = if p.ap-magnitude > best then p.ap-magnitude else best
+    in ac-find-peak-mag pts (i + 1) n next
+
+  ac-find-3db-freq : List AcPoint, Real, Integer, Integer -> Real
+  ac-find-3db-freq (pts) (threshold) (i) (last) =
+    if i >= last then 0.0 else ac-3db-step pts threshold i last
+
+  ac-3db-step : List AcPoint, Real, Integer, Integer -> Real
+  ac-3db-step (pts) (threshold) (i) (last) =
+    let a = list-at pts i
+    in let b = list-at pts (i + 1)
+    in ac-3db-check a b pts threshold i last
+
+  ac-3db-check : AcPoint, AcPoint, List AcPoint, Real, Integer, Integer -> Real
+  ac-3db-check (a) (b) (pts) (threshold) (i) (last) =
+    if a.ap-magnitude >= threshold then ac-3db-test a b pts threshold i last
+    else ac-find-3db-freq pts threshold (i + 1) last
+
+  ac-3db-test : AcPoint, AcPoint, List AcPoint, Real, Integer, Integer -> Real
+  ac-3db-test (a) (b) (pts) (threshold) (i) (last) =
+    if b.ap-magnitude < threshold then ac-3db-interp a b threshold
+    else ac-find-3db-freq pts threshold (i + 1) last
+
+  ac-3db-interp : AcPoint, AcPoint, Real -> Real
+  ac-3db-interp (a) (b) (threshold) =
+    let dm = a.ap-magnitude - b.ap-magnitude
+    in if dm ~ 0.0 then a.ap-frequency else ac-3db-frac a b threshold dm
+
+  ac-3db-frac : AcPoint, AcPoint, Real, Real -> Real
+  ac-3db-frac (a) (b) (threshold) (dm) = let frac = (a.ap-magnitude - threshold) / dm in a.ap-frequency + frac * (b.ap-frequency - a.ap-frequency)
+
+Section: Stability Margins
+
+ Gain margin: magnitude in dB at the frequency where phase crosses
+ -180 degrees. Phase margin: 180 plus the phase in degrees at the
+ frequency where magnitude crosses 0 dB.
+
+  ac-gain-margin : AcTrace -> Real
+  ac-gain-margin (tr) =
+    let n = list-length tr.at-points
+    in if n < 2 then 0.0 else ac-gain-margin-calc tr n
+
+  ac-gain-margin-calc : AcTrace, Integer -> Real
+  ac-gain-margin-calc (tr) (n) =
+    let cross-freq = ac-find-phase-cross tr.at-points (0.0 - 180.0) 0 (n - 1)
+    in if cross-freq ~ 0.0 then 0.0 else 0.0 - ac-magnitude-at-freq tr cross-freq
+
+  ac-phase-margin : AcTrace -> Real
+  ac-phase-margin (tr) =
+    let n = list-length tr.at-points
+    in if n < 2 then 0.0 else ac-phase-margin-calc tr n
+
+  ac-phase-margin-calc : AcTrace, Integer -> Real
+  ac-phase-margin-calc (tr) (n) =
+    let unity-freq = ac-find-mag-cross tr.at-points 0.0 0 (n - 1)
+    in if unity-freq ~ 0.0 then 0.0 else 180.0 + ac-phase-at-freq tr unity-freq
+
+  ac-find-phase-cross : List AcPoint, Real, Integer, Integer -> Real
+  ac-find-phase-cross (pts) (target) (i) (last) =
+    if i >= last then 0.0 else ac-phase-cross-step pts target i last
+
+  ac-phase-cross-step : List AcPoint, Real, Integer, Integer -> Real
+  ac-phase-cross-step (pts) (target) (i) (last) =
+    let a = list-at pts i
+    in let b = list-at pts (i + 1)
+    in ac-phase-cross-check a b pts target i last
+
+  ac-phase-cross-check : AcPoint, AcPoint, List AcPoint, Real, Integer, Integer -> Real
+  ac-phase-cross-check (a) (b) (pts) (target) (i) (last) =
+    if a.ap-phase-degrees >= target then ac-phase-cross-test a b pts target i last
+    else ac-find-phase-cross pts target (i + 1) last
+
+  ac-phase-cross-test : AcPoint, AcPoint, List AcPoint, Real, Integer, Integer -> Real
+  ac-phase-cross-test (a) (b) (pts) (target) (i) (last) =
+    if b.ap-phase-degrees < target then ac-phase-cross-interp a b target
+    else ac-find-phase-cross pts target (i + 1) last
+
+  ac-phase-cross-interp : AcPoint, AcPoint, Real -> Real
+  ac-phase-cross-interp (a) (b) (target) =
+    let dp = a.ap-phase-degrees - b.ap-phase-degrees
+    in if dp ~ 0.0 then a.ap-frequency else ac-phase-cross-frac a b target dp
+
+  ac-phase-cross-frac : AcPoint, AcPoint, Real, Real -> Real
+  ac-phase-cross-frac (a) (b) (target) (dp) = let frac = (a.ap-phase-degrees - target) / dp in a.ap-frequency + frac * (b.ap-frequency - a.ap-frequency)
+
+  ac-find-mag-cross : List AcPoint, Real, Integer, Integer -> Real
+  ac-find-mag-cross (pts) (target) (i) (last) =
+    if i >= last then 0.0 else ac-mag-cross-step pts target i last
+
+  ac-mag-cross-step : List AcPoint, Real, Integer, Integer -> Real
+  ac-mag-cross-step (pts) (target) (i) (last) =
+    let a = list-at pts i
+    in let b = list-at pts (i + 1)
+    in ac-mag-cross-check a b pts target i last
+
+  ac-mag-cross-check : AcPoint, AcPoint, List AcPoint, Real, Integer, Integer -> Real
+  ac-mag-cross-check (a) (b) (pts) (target) (i) (last) =
+    if a.ap-magnitude >= target then ac-mag-cross-test a b pts target i last
+    else ac-find-mag-cross pts target (i + 1) last
+
+  ac-mag-cross-test : AcPoint, AcPoint, List AcPoint, Real, Integer, Integer -> Real
+  ac-mag-cross-test (a) (b) (pts) (target) (i) (last) =
+    if b.ap-magnitude < target then ac-mag-cross-interp a b target
+    else ac-find-mag-cross pts target (i + 1) last
+
+  ac-mag-cross-interp : AcPoint, AcPoint, Real -> Real
+  ac-mag-cross-interp (a) (b) (target) =
+    let dm = a.ap-magnitude - b.ap-magnitude
+    in if dm ~ 0.0 then a.ap-frequency else ac-mag-cross-frac a b target dm
+
+  ac-mag-cross-frac : AcPoint, AcPoint, Real, Real -> Real
+  ac-mag-cross-frac (a) (b) (target) (dm) = let frac = (a.ap-magnitude - target) / dm in a.ap-frequency + frac * (b.ap-frequency - a.ap-frequency)
+
+Section: Summary
+
+  ac-result-summary : AcResult -> Text
+  ac-result-summary (res) =
+    let header = "AC Analysis: " & (show res.ar-trace-count) & " traces\n"
+    in let sweep = ac-sweep-type-text res.ar-config.ac-sweep-type
+    in let range = "  Sweep: " & sweep & "\n"
+    in let traces = ac-format-traces res.ar-traces 0 (list-length res.ar-traces) ""
+    in header & range & traces
+
+  ac-sweep-type-text : AcSweepType -> Text
+  ac-sweep-type-text (st) = when st
+    is AcDecade -> "Decade"
+    is AcOctave -> "Octave"
+    is AcLinear -> "Linear"
+
+  ac-format-traces : List AcTrace, Integer, Integer, Text -> Text
+  ac-format-traces (traces) (i) (n) (acc) =
+    if i >= n then acc else ac-fmt-trace-step traces i n acc
+
+  ac-fmt-trace-step : List AcTrace, Integer, Integer, Text -> Text
+  ac-fmt-trace-step (traces) (i) (n) (acc) =
+    let tr = list-at traces i
+    in let line = "  " & tr.at-node-name & " (" & tr.at-unit & "): " & show (list-length tr.at-points) & " points\n"
+    in ac-format-traces traces (i + 1) n (acc & line)

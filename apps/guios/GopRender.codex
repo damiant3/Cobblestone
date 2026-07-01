@@ -1,0 +1,198 @@
+Chapter: GopRender
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Widget
+  cites Guios chapter GuiDisplay
+
+ Render a laid-out widget tree to a GopBuf. Mirrors the structure of
+ foreword Render but uses GopBuf drawing primitives (poke-32 backed,
+ O(1) per pixel) instead of Framebuf (List-backed). This is the
+ bridge between the UI foreword widget system and the GOP framebuffer.
+
+Section: Render Widget Tree
+  gop-render-tree : WidgetNode, Theme, GopBuf, MutWheel -> Integer
+  gop-render-tree (w) (th) (gb) (wh) =
+    let d = gop-render-node w th gb wh
+    in gop-render-children (w.wn-children) th gb wh 0 (w.wn-child-count)
+
+  gop-render-children : List WidgetNode, Theme, GopBuf, MutWheel, Integer, Integer -> Integer
+  gop-render-children (children) (th) (gb) (wh) (i) (n) =
+    if i >= n then 0
+    else let d = gop-render-tree (list-at children i) th gb wh
+    in gop-render-children children th gb wh (i + 1) n
+
+Section: Render Single Node
+  gop-render-node : WidgetNode, Theme, GopBuf, MutWheel -> Integer
+  gop-render-node (w) (th) (gb) (wh) = when w.wn-kind
+    is WkPanel -> gop-render-panel w th gb
+    is WkLabel (txt) -> gop-render-label w th txt gb wh
+    is WkButton (txt) -> gop-render-button w th txt gb wh
+    is WkGauge (val) (max-val) -> gop-render-gauge w th val max-val gb
+    is WkSeparator -> gop-render-separator w th gb
+    is WkInput (txt) (cursor) -> gop-render-input w th txt cursor gb wh
+    is WkCustom (tag) -> gop-render-custom w th tag gb
+
+Section: Panel
+  gop-render-panel : WidgetNode, Theme, GopBuf -> Integer
+  gop-render-panel (w) (th) (gb) =
+    let style = theme-resolve-panel th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let d1 = gop-render-filled-rect gb br (style.ws-bg)
+    in gop-render-border gb br (style.ws-border)
+
+Section: Label
+  gop-render-label : WidgetNode, Theme, Text, GopBuf, MutWheel -> Integer
+  gop-render-label (w) (th) (txt) (gb) (wh) =
+    let style = theme-resolve-label th (w.wn-state)
+    in let content = box-content-from-style (w.wn-bounds) style
+    in gop-buf-put-text-role gb wh (content.lr-x) (content.lr-y) txt (style.ws-fg) font-role-sans
+
+Section: Button
+  gop-render-button : WidgetNode, Theme, Text, GopBuf, MutWheel -> Integer
+  gop-render-button (w) (th) (txt) (gb) (wh) =
+    let style = theme-resolve-button th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let d1 = gop-render-styled-rect gb br style
+    in let content = box-content-from-style (w.wn-bounds) style
+    in gop-buf-put-text-role gb wh (content.lr-x) (content.lr-y) txt (style.ws-fg) font-role-sans
+
+Section: Gauge
+  gop-render-gauge : WidgetNode, Theme, Integer, Integer, GopBuf -> Integer
+  gop-render-gauge (w) (th) (val) (max-val) (gb) =
+    let style = theme-resolve-gauge th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let d1 = gop-render-filled-rect gb br (style.ws-bg)
+    in let d2 = gop-render-border gb br (style.ws-border)
+    in let content = box-content-from-style (w.wn-bounds) style
+    in let fill-w = if max-val > 0 then content.lr-w * val / max-val else 0
+    in let fill-rect = layout-rect (content.lr-x) (content.lr-y) fill-w (content.lr-h)
+    in gop-render-filled-rect gb fill-rect (style.ws-fg)
+
+Section: Separator
+  gop-render-separator : WidgetNode, Theme, GopBuf -> Integer
+  gop-render-separator (w) (th) (gb) =
+    let style = theme-resolve-separator th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let h = box-max 1 (style.ws-min-height)
+    in let sep-rect = layout-rect (br.lr-x) (br.lr-y + br.lr-h / 2 - h / 2) (br.lr-w) h
+    in gop-render-filled-rect gb sep-rect (style.ws-bg)
+
+Section: Input
+  gop-render-input : WidgetNode, Theme, Text, Integer, GopBuf, MutWheel -> Integer
+  gop-render-input (w) (th) (txt) (cursor) (gb) (wh) =
+    let style = theme-resolve-input th (w.wn-state)
+    in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
+    in let d1 = gop-render-styled-rect gb br style
+    in let content = box-content-from-style (w.wn-bounds) style
+    in let d2 = gop-buf-put-text-role gb wh (content.lr-x) (content.lr-y) txt (style.ws-fg) font-role-mono
+    in let cursor-x = content.lr-x + cursor * 6
+    in gop-buf-rect gb cursor-x (content.lr-y) 1 8 (style.ws-fg)
+
+Section: Custom Widgets
+  gop-render-custom : WidgetNode, Theme, Text, GopBuf -> Integer
+  gop-render-custom (w) (th) (tag) (gb) =
+    if tag == "event-dot" then gop-render-event-dot w th gb
+    else gop-render-panel w th gb
+
+  gop-render-event-dot : WidgetNode, Theme, GopBuf -> Integer
+  gop-render-event-dot (w) (th) (gb) =
+    let style = theme-resolve-panel th (w.wn-state)
+    in let cx = (w.wn-bounds).lr-x + (w.wn-bounds).lr-w / 2
+    in let cy = (w.wn-bounds).lr-y + (w.wn-bounds).lr-h / 2
+    in gop-buf-rect gb (cx - 3) (cy - 3) 6 6 (style.ws-fg)
+
+Section: Drawing Primitives
+  gop-render-filled-rect : GopBuf, LayoutRect, Integer -> Integer
+  gop-render-filled-rect (gb) (r) (color) =
+    if r.lr-w <= 0 then 0
+    else if r.lr-h <= 0 then 0
+    else gop-buf-rect gb (r.lr-x) (r.lr-y) (r.lr-w) (r.lr-h) color
+
+  gop-render-border : GopBuf, LayoutRect, Border -> Integer
+  gop-render-border (gb) (r) (bdr) =
+    let d1 = gop-render-border-side gb (r.lr-x) (r.lr-y) (r.lr-w) ((bdr.bdr-top).brd-width) ((bdr.bdr-top).brd-color)
+    in let d2 = gop-render-border-side gb (r.lr-x) (r.lr-y + r.lr-h - (bdr.bdr-bottom).brd-width) (r.lr-w) ((bdr.bdr-bottom).brd-width) ((bdr.bdr-bottom).brd-color)
+    in let d3 = gop-render-border-side gb (r.lr-x) (r.lr-y) ((bdr.bdr-left).brd-width) (r.lr-h) ((bdr.bdr-left).brd-color)
+    in gop-render-border-side gb (r.lr-x + r.lr-w - (bdr.bdr-right).brd-width) (r.lr-y) ((bdr.bdr-right).brd-width) (r.lr-h) ((bdr.bdr-right).brd-color)
+
+  gop-render-border-side : GopBuf, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-render-border-side (gb) (x) (y) (w) (h) (color) =
+    if w <= 0 then 0
+    else if h <= 0 then 0
+    else gop-buf-rect gb x y w h color
+
+  gop-render-styled-rect : GopBuf, LayoutRect, WidgetStyle -> Integer
+  gop-render-styled-rect (gb) (r) (style) =
+    let d1 = if (style.ws-shadow).sh-enabled then gop-render-shadow gb r (style.ws-shadow) else 0
+    in let d2 = if (style.ws-gradient).gr-enabled then gop-render-gradient gb r (style.ws-gradient) else gop-render-filled-rect gb r (style.ws-bg)
+    in let d3 = gop-render-border gb r (style.ws-border)
+    in if (style.ws-accent-border).ab-enabled then gop-render-accent-border gb r (style.ws-accent-border) else 0
+
+Section: Shadow
+  gop-render-shadow : GopBuf, LayoutRect, Shadow -> Integer
+  gop-render-shadow (gb) (r) (sh) =
+    gop-render-shadow-layers gb r sh 0 (sh.sh-blur)
+
+  gop-render-shadow-layers : GopBuf, LayoutRect, Shadow, Integer, Integer -> Integer
+  gop-render-shadow-layers (gb) (r) (sh) (layer) (max-layers) =
+    if layer >= max-layers then 0
+    else let spread = max-layers - layer
+    in let alpha = 1000 - layer * 1000 / max-layers
+    in let shadow-color = gop-fade-color (sh.sh-color) alpha
+    in let shadow-rect = layout-rect (r.lr-x + (sh.sh-offset-x) + spread) (r.lr-y + (sh.sh-offset-y) + spread) (r.lr-w) (r.lr-h)
+    in let d = gop-render-filled-rect gb shadow-rect shadow-color
+    in gop-render-shadow-layers gb r sh (layer + 1) max-layers
+
+  gop-fade-color : Integer, Integer -> Integer
+  gop-fade-color (color) (alpha) =
+    let r = bit-and (bit-shru color 16) 255
+    in let g = bit-and (bit-shru color 8) 255
+    in let b = bit-and color 255
+    in let fr = r * alpha / 1000
+    in let fg = g * alpha / 1000
+    in let fb-val = b * alpha / 1000
+    in bit-or (bit-shl fr 16) (bit-or (bit-shl fg 8) fb-val)
+
+Section: Gradient
+  gop-render-gradient : GopBuf, LayoutRect, Gradient -> Integer
+  gop-render-gradient (gb) (r) (gr) =
+    if gr.gr-vertical then gop-render-gradient-v gb r (gr.gr-start-color) (gr.gr-end-color) 0
+    else gop-render-gradient-h gb r (gr.gr-start-color) (gr.gr-end-color) 0
+
+  gop-render-gradient-v : GopBuf, LayoutRect, Integer, Integer, Integer -> Integer
+  gop-render-gradient-v (gb) (r) (start) (stop) (row) =
+    if row >= r.lr-h then 0
+    else let color = gop-lerp-color start stop row (r.lr-h)
+    in let d = gop-buf-hline gb (r.lr-x) (r.lr-x + r.lr-w - 1) (r.lr-y + row) color
+    in gop-render-gradient-v gb r start stop (row + 1)
+
+  gop-render-gradient-h : GopBuf, LayoutRect, Integer, Integer, Integer -> Integer
+  gop-render-gradient-h (gb) (r) (start) (stop) (col) =
+    if col >= r.lr-w then 0
+    else let color = gop-lerp-color start stop col (r.lr-w)
+    in let d = gop-buf-vline gb (r.lr-x + col) (r.lr-y) (r.lr-y + r.lr-h - 1) color
+    in gop-render-gradient-h gb r start stop (col + 1)
+
+  gop-lerp-color : Integer, Integer, Integer, Integer -> Integer
+  gop-lerp-color (start) (stop) (pos) (total) =
+    if total <= 0 then start
+    else let sr = bit-and (bit-shru start 16) 255
+    in let sg = bit-and (bit-shru start 8) 255
+    in let sb = bit-and start 255
+    in let er = bit-and (bit-shru stop 16) 255
+    in let eg = bit-and (bit-shru stop 8) 255
+    in let eb = bit-and stop 255
+    in let r = sr + (er - sr) * pos / total
+    in let g = sg + (eg - sg) * pos / total
+    in let b = sb + (eb - sb) * pos / total
+    in bit-or (bit-shl r 16) (bit-or (bit-shl g 8) b)
+
+Section: Accent Border
+  gop-render-accent-border : GopBuf, LayoutRect, AccentBorder -> Integer
+  gop-render-accent-border (gb) (r) (ab) =
+    if ab.ab-side == 0 then gop-buf-rect gb (r.lr-x) (r.lr-y) (r.lr-w) (ab.ab-width) (ab.ab-color)
+    else if ab.ab-side == 1 then gop-buf-rect gb (r.lr-x + r.lr-w - ab.ab-width) (r.lr-y) (ab.ab-width) (r.lr-h) (ab.ab-color)
+    else if ab.ab-side == 2 then gop-buf-rect gb (r.lr-x) (r.lr-y + r.lr-h - ab.ab-width) (r.lr-w) (ab.ab-width) (ab.ab-color)
+    else gop-buf-rect gb (r.lr-x) (r.lr-y) (ab.ab-width) (r.lr-h) (ab.ab-color)
+
+Page 1

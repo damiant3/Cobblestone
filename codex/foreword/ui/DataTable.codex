@@ -1,0 +1,282 @@
+Chapter: DataTable
+  cites Foreword chapter Sort
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Sortable data table with column headers, row selection, pagination,
+ and striped rows. Columns define width, alignment, and sortability.
+ The widget builder composes header buttons and data label rows from
+ base widget kinds.
+
+Section: Column
+
+  TableColumn = record {
+    tc-id : Text,
+    tc-label : Text,
+    tc-width : Integer,
+    tc-sortable : Boolean,
+    tc-align : Integer
+  }
+
+  table-column : Text, Text, Integer -> TableColumn
+  table-column (id) (label) (width) = TableColumn {
+    tc-id = id,
+    tc-label = label,
+    tc-width = width,
+    tc-sortable = True,
+    tc-align = 0
+  }
+
+  table-column-fixed : Text, Text, Integer -> TableColumn
+  table-column-fixed (id) (label) (width) = TableColumn {
+    tc-id = id,
+    tc-label = label,
+    tc-width = width,
+    tc-sortable = False,
+    tc-align = 0
+  }
+
+Section: Row
+
+  TableRow = record {
+    tr-id : Text,
+    tr-cells : List Text,
+    tr-cell-count : Integer,
+    tr-selected : Boolean
+  }
+
+  table-row : Text, List Text -> TableRow
+  table-row (id) (cells) = TableRow {
+    tr-id = id,
+    tr-cells = cells,
+    tr-cell-count = list-length cells,
+    tr-selected = False
+  }
+
+Section: State
+
+  DataTableState = record {
+    dt-id : Text,
+    dt-columns : List TableColumn,
+    dt-col-count : Integer,
+    dt-rows : List TableRow,
+    dt-row-count : Integer,
+    dt-sort-col : Integer,
+    dt-sort-asc : Boolean,
+    dt-selected-row : Integer,
+    dt-multi-select : Boolean,
+    dt-page-size : Integer,
+    dt-page : Integer,
+    dt-stripe : Boolean
+  }
+
+  data-table-new : Text, List TableColumn, List TableRow -> DataTableState
+  data-table-new (id) (cols) (rows) = DataTableState {
+    dt-id = id,
+    dt-columns = cols,
+    dt-col-count = list-length cols,
+    dt-rows = rows,
+    dt-row-count = list-length rows,
+    dt-sort-col = -1,
+    dt-sort-asc = True,
+    dt-selected-row = -1,
+    dt-multi-select = False,
+    dt-page-size = 20,
+    dt-page = 0,
+    dt-stripe = True
+  }
+
+Section: Actions
+
+  data-table-sort : DataTableState, Integer -> DataTableState
+  data-table-sort (dt) (col-idx) =
+    if col-idx < 0 then dt
+    else if col-idx >= dt.dt-col-count then dt
+    else let col = list-at (dt.dt-columns) col-idx
+    in if col.tc-sortable then
+      let asc = if dt.dt-sort-col == col-idx then if dt.dt-sort-asc then False else True else True
+      in let sorted = dt-sort-rows (dt.dt-rows) col-idx asc (dt.dt-row-count)
+      in __record-set (__record-set (__record-set dt "dt-rows" sorted) "dt-sort-col" col-idx) "dt-sort-asc" asc
+    else dt
+
+  dt-sort-rows : List TableRow, Integer, Boolean, Integer -> List TableRow
+  dt-sort-rows (rows) (col) (asc) (n) =
+    if n <= 1 then rows
+    else dt-isort rows col asc 1 n
+
+  dt-isort : List TableRow, Integer, Boolean, Integer, Integer -> List TableRow
+  dt-isort (rows) (col) (asc) (i) (n) =
+    if i >= n then rows
+    else dt-isort (dt-insert rows col asc i) col asc (i + 1) n
+
+  dt-insert : List TableRow, Integer, Boolean, Integer -> List TableRow
+  dt-insert (rows) (col) (asc) (i) =
+    if i <= 0 then rows
+    else let cur = list-at rows i
+    in let prev = list-at rows (i - 1)
+    in let cur-val = dt-cell-at cur col
+    in let prev-val = dt-cell-at prev col
+    in let swap = if asc then cur-val < prev-val else cur-val > prev-val
+    in if swap then dt-insert (list-set-at (list-set-at rows i prev) (i - 1) cur) col asc (i - 1)
+    else rows
+
+  dt-cell-at : TableRow, Integer -> Text
+  dt-cell-at (row) (col) =
+    if col < 0 then ""
+    else if col >= row.tr-cell-count then ""
+    else list-at (row.tr-cells) col
+
+  data-table-select-row : DataTableState, Integer -> DataTableState
+  data-table-select-row (dt) (idx) =
+    if idx < 0 then dt
+    else if idx >= dt.dt-row-count then dt
+    else let cleared = if dt.dt-multi-select then dt.dt-rows else dt-clear-rows (dt.dt-rows) (dt.dt-row-count)
+    in let row = list-at cleared idx
+    in let toggled = __record-set row "tr-selected" (if row.tr-selected then False else True)
+    in __record-set (__record-set dt "dt-rows" (list-set-at cleared idx toggled)) "dt-selected-row" idx
+
+  dt-clear-rows : List TableRow, Integer -> List TableRow
+  dt-clear-rows (rows) (n) = dt-clear-loop rows 0 n []
+
+  dt-clear-loop : List TableRow, Integer, Integer, List TableRow -> List TableRow
+  dt-clear-loop (rows) (i) (n) (acc) =
+    if i >= n then acc
+    else dt-clear-loop rows (i + 1) n (list-push acc (__record-set (list-at rows i) "tr-selected" False))
+
+  data-table-select-all : DataTableState -> DataTableState
+  data-table-select-all (dt) =
+    __record-set dt "dt-rows" (dt-set-all-selected (dt.dt-rows) (dt.dt-row-count) True)
+
+  data-table-deselect-all : DataTableState -> DataTableState
+  data-table-deselect-all (dt) =
+    __record-set dt "dt-rows" (dt-set-all-selected (dt.dt-rows) (dt.dt-row-count) False)
+
+  dt-set-all-selected : List TableRow, Integer, Boolean -> List TableRow
+  dt-set-all-selected (rows) (n) (val) = dt-set-sel-loop rows 0 n val []
+
+  dt-set-sel-loop : List TableRow, Integer, Integer, Boolean, List TableRow -> List TableRow
+  dt-set-sel-loop (rows) (i) (n) (val) (acc) =
+    if i >= n then acc
+    else dt-set-sel-loop rows (i + 1) n val (list-push acc (__record-set (list-at rows i) "tr-selected" val))
+
+Section: Pagination
+
+  data-table-page-count : DataTableState -> Integer
+  data-table-page-count (dt) =
+    if dt.dt-page-size <= 0 then 1
+    else let full = dt.dt-row-count / dt.dt-page-size
+    in if full * dt.dt-page-size < dt.dt-row-count then full + 1 else full
+
+  data-table-page-next : DataTableState -> DataTableState
+  data-table-page-next (dt) =
+    let max-page = data-table-page-count dt - 1
+    in let next = dt.dt-page + 1
+    in if next > max-page then dt
+    else __record-set dt "dt-page" next
+
+  data-table-page-prev : DataTableState -> DataTableState
+  data-table-page-prev (dt) =
+    if dt.dt-page <= 0 then dt
+    else __record-set dt "dt-page" (dt.dt-page - 1)
+
+  data-table-visible-rows : DataTableState -> List TableRow
+  data-table-visible-rows (dt) =
+    let start = dt.dt-page * dt.dt-page-size
+    in let end-idx = start + dt.dt-page-size
+    in let actual-end = if end-idx > dt.dt-row-count then dt.dt-row-count else end-idx
+    in dt-slice-rows (dt.dt-rows) start actual-end []
+
+  dt-slice-rows : List TableRow, Integer, Integer, List TableRow -> List TableRow
+  dt-slice-rows (rows) (i) (end-idx) (acc) =
+    if i >= end-idx then acc
+    else dt-slice-rows rows (i + 1) end-idx (list-push acc (list-at rows i))
+
+Section: Widget Building
+
+  data-table-widget : DataTableState -> WidgetNode
+  data-table-widget (dt) =
+    let header = dt-header-widget dt
+    in let vis = data-table-visible-rows dt
+    in let body-rows = dt-body-widgets dt vis 0 (list-length vis) (dt.dt-page * dt.dt-page-size) []
+    in let footer = dt-footer-widget dt
+    in widget-panel (dt.dt-id) DirColumn 0 ([header] & body-rows & [footer])
+
+  dt-header-widget : DataTableState -> WidgetNode
+  dt-header-widget (dt) =
+    let cols = dt-header-cols dt 0 (dt.dt-col-count) []
+    in widget-panel (dt.dt-id & "-hdr") DirRow 1 cols
+
+  dt-header-cols : DataTableState, Integer, Integer, List WidgetNode -> List WidgetNode
+  dt-header-cols (dt) (i) (n) (acc) =
+    if i >= n then acc
+    else let col = list-at (dt.dt-columns) i
+    in let indicator = if dt.dt-sort-col == i then if dt.dt-sort-asc then " ^" else " v" else ""
+    in let btn = widget-button (dt.dt-id & "-col-" & show i) (col.tc-label & indicator)
+    in let sized = widget-set-min btn (col.tc-width) 24
+    in dt-header-cols dt (i + 1) n (list-push acc sized)
+
+  dt-body-widgets : DataTableState, List TableRow, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  dt-body-widgets (dt) (rows) (i) (n) (base-idx) (acc) =
+    if i >= n then acc
+    else let row = list-at rows i
+    in let row-widget = dt-row-widget dt row (base-idx + i) i
+    in dt-body-widgets dt rows (i + 1) n base-idx (list-push acc row-widget)
+
+  dt-row-widget : DataTableState, TableRow, Integer, Integer -> WidgetNode
+  dt-row-widget (dt) (row) (abs-idx) (vis-idx) =
+    let cells = dt-cell-widgets dt row 0 (dt.dt-col-count) []
+    in let row-w = widget-panel (dt.dt-id & "-row-" & show abs-idx) DirRow 1 cells
+    in let selected = if row.tr-selected then widget-set-state row-w state-pressed else row-w
+    in if dt.dt-stripe then
+      let even = vis-idx - (vis-idx / 2) * 2
+      in if even == 0 then selected else widget-set-state selected state-hover
+    else selected
+
+  dt-cell-widgets : DataTableState, TableRow, Integer, Integer, List WidgetNode -> List WidgetNode
+  dt-cell-widgets (dt) (row) (i) (n) (acc) =
+    if i >= n then acc
+    else let col = list-at (dt.dt-columns) i
+    in let txt = dt-cell-at row i
+    in let lbl = widget-label (dt.dt-id & "-cell-" & row.tr-id & "-" & show i) txt
+    in let sized = widget-set-min lbl (col.tc-width) 16
+    in dt-cell-widgets dt row (i + 1) n (list-push acc sized)
+
+  dt-footer-widget : DataTableState -> WidgetNode
+  dt-footer-widget (dt) =
+    let page-count = data-table-page-count dt
+    in let info = widget-label (dt.dt-id & "-info") ("Page " & show (dt.dt-page + 1) & " of " & show page-count & " | " & show (dt.dt-row-count) & " rows")
+    in let prev-btn = widget-button (dt.dt-id & "-prev") "< Prev"
+    in let next-btn = widget-button (dt.dt-id & "-next") "Next >"
+    in widget-panel (dt.dt-id & "-footer") DirRow 8 [prev-btn, info, next-btn]
+
+Section: Keyboard Handling
+
+  data-table-handle-key : DataTableState, Integer -> DataTableState
+  data-table-handle-key (dt) (key) =
+    if key == 38 then dt-nav-up dt
+    else if key == 40 then dt-nav-down dt
+    else if key == 13 then data-table-select-row dt (dt.dt-selected-row)
+    else if key == 33 then data-table-page-prev dt
+    else if key == 34 then data-table-page-next dt
+    else dt
+
+  dt-nav-up : DataTableState -> DataTableState
+  dt-nav-up (dt) =
+    let prev = dt.dt-selected-row - 1
+    in if prev < 0 then dt
+    else __record-set dt "dt-selected-row" prev
+
+  dt-nav-down : DataTableState -> DataTableState
+  dt-nav-down (dt) =
+    let next = dt.dt-selected-row + 1
+    in if next >= dt.dt-row-count then dt
+    else __record-set dt "dt-selected-row" next
+
+Section: Formatting
+
+  format-data-table : DataTableState -> Text
+  format-data-table (dt) =
+    dt.dt-id & " cols=" & show (dt.dt-col-count) & " rows=" & show (dt.dt-row-count)
+    & " page=" & show (dt.dt-page + 1) & "/" & show (data-table-page-count dt)
+
+Page 1

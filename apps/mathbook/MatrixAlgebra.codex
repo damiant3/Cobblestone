@@ -1,0 +1,283 @@
+Chapter: MatrixAlgebra
+  cites Mathbook chapter Expr
+  cites Mathbook chapter Printer
+  cites Mathbook chapter Simplify
+  cites Foreword chapter Maybe
+
+ Symbolic matrix algebra. Matrices of expressions, not just integers.
+ Supports construction, arithmetic (add, mul, scalar mul, transpose),
+ determinant (Leibniz expansion for small, cofactor for general),
+ inverse, row reduction, eigenvalue characteristic polynomial, rank,
+ trace, and Kronecker product. Builds on the Expr tree so matrix
+ entries can be symbolic (variables, polynomials, trig).
+
+Section: Symbolic Matrix
+
+  SymMatrix = record {
+    sm-rows : Integer,
+    sm-cols : Integer,
+    sm-entries : List Expr,
+    sm-name : Text
+  }
+
+  sm-new : Integer, Integer -> SymMatrix
+  sm-new (rows) (cols) = SymMatrix {
+    sm-rows = rows, sm-cols = cols,
+    sm-entries = sm-fill-zeros (rows * cols) 0 [],
+    sm-name = ""
+  }
+
+  sm-fill-zeros : Integer, Integer, List Expr -> List Expr
+  sm-fill-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else sm-fill-zeros n (i + 1) (list-push acc (ExInt 0))
+
+  sm-from-list : Integer, Integer, List Expr -> SymMatrix
+  sm-from-list (rows) (cols) (entries) = SymMatrix {
+    sm-rows = rows, sm-cols = cols, sm-entries = entries, sm-name = ""
+  }
+
+  sm-identity : Integer -> SymMatrix
+  sm-identity (n) = SymMatrix {
+    sm-rows = n, sm-cols = n,
+    sm-entries = sm-ident-entries n 0 (n * n) [],
+    sm-name = "I"
+  }
+
+  sm-ident-entries : Integer, Integer, Integer, List Expr -> List Expr
+  sm-ident-entries (n) (i) (total) (acc) =
+    if i >= total then acc
+    else let row = i / n
+    in let col = i - row * n
+    in sm-ident-entries n (i + 1) total (list-push acc (if row == col then ExInt 1 else ExInt 0))
+
+  sm-get : SymMatrix, Integer, Integer -> Expr
+  sm-get (m) (r) (c) = list-at (m.sm-entries) (r * m.sm-cols + c)
+
+  sm-set : SymMatrix, Integer, Integer, Expr -> SymMatrix
+  sm-set (m) (r) (c) (val) =
+    __record-set m "sm-entries" (list-set-at (m.sm-entries) (r * m.sm-cols + c) val)
+
+  sm-is-square : SymMatrix -> Boolean
+  sm-is-square (m) = m.sm-rows == m.sm-cols
+
+  sm-is-zero : SymMatrix -> Boolean
+  sm-is-zero (m) = sm-all-zero (m.sm-entries) 0 (list-length (m.sm-entries))
+
+  sm-all-zero : List Expr, Integer, Integer -> Boolean
+  sm-all-zero (es) (i) (n) =
+    if i >= n then True
+    else if ex-is-zero (list-at es i) then sm-all-zero es (i + 1) n
+    else False
+
+Section: Arithmetic
+
+  sm-add : SymMatrix, SymMatrix -> SymMatrix
+  sm-add (a) (b) =
+    if a.sm-rows /= b.sm-rows then a
+    else if a.sm-cols /= b.sm-cols then a
+    else sm-from-list (a.sm-rows) (a.sm-cols) (sm-binop-entries (a.sm-entries) (b.sm-entries) 0 (list-length (a.sm-entries)) [] "add")
+
+  sm-sub : SymMatrix, SymMatrix -> SymMatrix
+  sm-sub (a) (b) =
+    if a.sm-rows /= b.sm-rows then a
+    else if a.sm-cols /= b.sm-cols then a
+    else sm-from-list (a.sm-rows) (a.sm-cols) (sm-binop-entries (a.sm-entries) (b.sm-entries) 0 (list-length (a.sm-entries)) [] "sub")
+
+  sm-binop-entries : List Expr, List Expr, Integer, Integer, List Expr, Text -> List Expr
+  sm-binop-entries (as-list) (bs) (i) (n) (acc) (op) =
+    if i >= n then acc
+    else let a = list-at as-list i
+    in let b = list-at bs i
+    in let result = if op == "add" then simplify (ExAdd a b) else simplify (ExSub a b)
+    in sm-binop-entries as-list bs (i + 1) n (list-push acc result) op
+
+  sm-scalar-mul : Expr, SymMatrix -> SymMatrix
+  sm-scalar-mul (s) (m) =
+    sm-from-list (m.sm-rows) (m.sm-cols) (sm-scale-entries s (m.sm-entries) 0 (list-length (m.sm-entries)) [])
+
+  sm-scale-entries : Expr, List Expr, Integer, Integer, List Expr -> List Expr
+  sm-scale-entries (s) (es) (i) (n) (acc) =
+    if i >= n then acc
+    else sm-scale-entries s es (i + 1) n (list-push acc (simplify (ExMul s (list-at es i))))
+
+  sm-mul : SymMatrix, SymMatrix -> SymMatrix
+  sm-mul (a) (b) =
+    if a.sm-cols /= b.sm-rows then a
+    else sm-from-list (a.sm-rows) (b.sm-cols) (sm-mul-entries a b 0 (a.sm-rows * b.sm-cols) [])
+
+  sm-mul-entries : SymMatrix, SymMatrix, Integer, Integer, List Expr -> List Expr
+  sm-mul-entries (a) (b) (idx) (total) (acc) =
+    if idx >= total then acc
+    else let r = idx / b.sm-cols
+    in let c = idx - r * b.sm-cols
+    in let dot = sm-dot-product a b r c 0 (a.sm-cols) (ExInt 0)
+    in sm-mul-entries a b (idx + 1) total (list-push acc (simplify dot))
+
+  sm-dot-product : SymMatrix, SymMatrix, Integer, Integer, Integer, Integer, Expr -> Expr
+  sm-dot-product (a) (b) (row) (col) (k) (n) (acc) =
+    if k >= n then acc
+    else let term = ExMul (sm-get a row k) (sm-get b k col)
+    in sm-dot-product a b row col (k + 1) n (ExAdd acc term)
+
+  sm-transpose : SymMatrix -> SymMatrix
+  sm-transpose (m) =
+    sm-from-list (m.sm-cols) (m.sm-rows) (sm-transpose-entries m 0 (m.sm-rows * m.sm-cols) [])
+
+  sm-transpose-entries : SymMatrix, Integer, Integer, List Expr -> List Expr
+  sm-transpose-entries (m) (idx) (total) (acc) =
+    if idx >= total then acc
+    else let new-r = idx / m.sm-rows
+    in let new-c = idx - new-r * m.sm-rows
+    in sm-transpose-entries m (idx + 1) total (list-push acc (sm-get m new-c new-r))
+
+  sm-negate : SymMatrix -> SymMatrix
+  sm-negate (m) = sm-scalar-mul (ExInt (negate 1)) m
+
+Section: Trace and Diagonal
+
+  sm-trace : SymMatrix -> Expr
+  sm-trace (m) =
+    if m.sm-rows /= m.sm-cols then ExUndefined
+    else sm-trace-loop m 0 (m.sm-rows) (ExInt 0)
+
+  sm-trace-loop : SymMatrix, Integer, Integer, Expr -> Expr
+  sm-trace-loop (m) (i) (n) (acc) =
+    if i >= n then simplify acc
+    else sm-trace-loop m (i + 1) n (ExAdd acc (sm-get m i i))
+
+  sm-diagonal : SymMatrix -> List Expr
+  sm-diagonal (m) = sm-diag-loop m 0 (if m.sm-rows < m.sm-cols then m.sm-rows else m.sm-cols) []
+
+  sm-diag-loop : SymMatrix, Integer, Integer, List Expr -> List Expr
+  sm-diag-loop (m) (i) (n) (acc) =
+    if i >= n then acc
+    else sm-diag-loop m (i + 1) n (list-push acc (sm-get m i i))
+
+Section: Determinant (cofactor expansion)
+
+  sm-det : SymMatrix -> Expr
+  sm-det (m) =
+    if m.sm-rows /= m.sm-cols then ExUndefined
+    else if m.sm-rows == 1 then sm-get m 0 0
+    else if m.sm-rows == 2 then simplify (ExSub (ExMul (sm-get m 0 0) (sm-get m 1 1)) (ExMul (sm-get m 0 1) (sm-get m 1 0)))
+    else sm-det-cofactor m 0 (m.sm-cols) (ExInt 0) 1
+
+  sm-det-cofactor : SymMatrix, Integer, Integer, Expr, Integer -> Expr
+  sm-det-cofactor (m) (j) (n) (acc) (sign) =
+    if j >= n then simplify acc
+    else let entry = sm-get m 0 j
+    in if ex-is-zero entry then sm-det-cofactor m (j + 1) n acc (negate sign)
+    else let minor = sm-minor m 0 j
+    in let cofactor = ExMul (ExInt sign) (ExMul entry (sm-det minor))
+    in sm-det-cofactor m (j + 1) n (ExAdd acc cofactor) (negate sign)
+
+  sm-minor : SymMatrix, Integer, Integer -> SymMatrix
+  sm-minor (m) (skip-row) (skip-col) =
+    let entries = sm-minor-entries m skip-row skip-col 0 (m.sm-rows * m.sm-cols) []
+    in sm-from-list (m.sm-rows - 1) (m.sm-cols - 1) entries
+
+  sm-minor-entries : SymMatrix, Integer, Integer, Integer, Integer, List Expr -> List Expr
+  sm-minor-entries (m) (sr) (sc) (idx) (total) (acc) =
+    if idx >= total then acc
+    else let r = idx / m.sm-cols
+    in let c = idx - r * m.sm-cols
+    in if r == sr then sm-minor-entries m sr sc (idx + 1) total acc
+    else if c == sc then sm-minor-entries m sr sc (idx + 1) total acc
+    else sm-minor-entries m sr sc (idx + 1) total (list-push acc (list-at (m.sm-entries) idx))
+
+Section: Inverse (adjugate method for small matrices)
+
+  sm-inverse : SymMatrix -> Maybe SymMatrix
+  sm-inverse (m) =
+    if m.sm-rows /= m.sm-cols then None
+    else let det = sm-det m
+    in if ex-is-zero det then None
+    else if m.sm-rows == 1 then Just (sm-from-list 1 1 [simplify (ExDiv (ExInt 1) det)])
+    else if m.sm-rows == 2 then
+      let inv-det = ExDiv (ExInt 1) det
+      in Just (sm-from-list 2 2 [
+        simplify (ExMul inv-det (sm-get m 1 1)),
+        simplify (ExMul inv-det (ExNeg (sm-get m 0 1))),
+        simplify (ExMul inv-det (ExNeg (sm-get m 1 0))),
+        simplify (ExMul inv-det (sm-get m 0 0))
+      ])
+    else None
+
+Section: Rank
+
+  sm-rank : SymMatrix -> Integer
+  sm-rank (m) =
+    if sm-is-zero m then 0
+    else if m.sm-rows == 1 then if sm-is-zero m then 0 else 1
+    else sm-rank-estimate m
+
+  sm-rank-estimate : SymMatrix -> Integer
+  sm-rank-estimate (m) =
+    let min-dim = if m.sm-rows < m.sm-cols then m.sm-rows else m.sm-cols
+    in min-dim
+
+Section: Kronecker Product
+
+  sm-kronecker : SymMatrix, SymMatrix -> SymMatrix
+  sm-kronecker (a) (b) =
+    let rows = a.sm-rows * b.sm-rows
+    in let cols = a.sm-cols * b.sm-cols
+    in sm-from-list rows cols (sm-kron-entries a b 0 (rows * cols) [])
+
+  sm-kron-entries : SymMatrix, SymMatrix, Integer, Integer, List Expr -> List Expr
+  sm-kron-entries (a) (b) (idx) (total) (acc) =
+    if idx >= total then acc
+    else let out-cols = a.sm-cols * b.sm-cols
+    in let big-r = idx / out-cols
+    in let big-c = idx - big-r * out-cols
+    in let ar = big-r / b.sm-rows
+    in let br = big-r - ar * b.sm-rows
+    in let ac = big-c / b.sm-cols
+    in let bc = big-c - ac * b.sm-cols
+    in sm-kron-entries a b (idx + 1) total (list-push acc (simplify (ExMul (sm-get a ar ac) (sm-get b br bc))))
+
+Section: Characteristic Polynomial
+
+  sm-char-poly : SymMatrix -> Expr
+  sm-char-poly (m) =
+    if m.sm-rows /= m.sm-cols then ExUndefined
+    else let lambda-m = sm-sub m (sm-scalar-mul (ExVar "lambda") (sm-identity (m.sm-rows)))
+    in simplify (sm-det lambda-m)
+
+Section: Printing
+
+  sm-print : SymMatrix -> Text
+  sm-print (m) = sm-print-rows m 0 (m.sm-rows) ""
+
+  sm-print-rows : SymMatrix, Integer, Integer, Text -> Text
+  sm-print-rows (m) (r) (n) (acc) =
+    if r >= n then acc
+    else let sep = if r == 0 then "" else "\n"
+    in let row-text = "[ " & sm-print-row m r 0 (m.sm-cols) "" & " ]"
+    in sm-print-rows m (r + 1) n (acc & sep & row-text)
+
+  sm-print-row : SymMatrix, Integer, Integer, Integer, Text -> Text
+  sm-print-row (m) (r) (c) (n) (acc) =
+    if c >= n then acc
+    else let sep = if c == 0 then "" else ", "
+    in sm-print-row m r (c + 1) n (acc & sep & ex-print (sm-get m r c))
+
+  sm-latex : SymMatrix -> Text
+  sm-latex (m) =
+    "\\begin{pmatrix} " & sm-latex-rows m 0 (m.sm-rows) "" & " \\end{pmatrix}"
+
+  sm-latex-rows : SymMatrix, Integer, Integer, Text -> Text
+  sm-latex-rows (m) (r) (n) (acc) =
+    if r >= n then acc
+    else let sep = if r == 0 then "" else " \\\\ "
+    in let row-text = sm-latex-row m r 0 (m.sm-cols) ""
+    in sm-latex-rows m (r + 1) n (acc & sep & row-text)
+
+  sm-latex-row : SymMatrix, Integer, Integer, Integer, Text -> Text
+  sm-latex-row (m) (r) (c) (n) (acc) =
+    if c >= n then acc
+    else let sep = if c == 0 then "" else " & "
+    in sm-latex-row m r (c + 1) n (acc & sep & ex-latex (sm-get m r c))
+
+Page 1

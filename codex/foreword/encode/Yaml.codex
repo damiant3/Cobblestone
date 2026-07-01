@@ -1,0 +1,273 @@
+Chapter: Yaml
+  cites Foreword chapter Maybe
+
+ YAML parser and emitter — covers flat key/value mappings and
+ flat scalar lists from YAML 1.2. Nested structures (list-of-maps,
+ map-of-lists) are not recursively parsed — values are scalars
+ only. Does not support anchors, aliases, tags, multi-document
+ streams, or flow style. Suitable for simple config files.
+
+ To yaml-parse gives a Maybe YamlValue from YAML text.
+ To yaml-get gives a value at a key path.
+ To yaml-emit gives YAML text from a YamlValue.
+
+ We say:
+
+Section: Types
+
+  YamlValue =
+    | YamlString (Text)
+    | YamlInt (Integer)
+    | YamlBool (Boolean)
+    | YamlNull
+    | YamlList (List YamlValue)
+    | YamlMap (List YamlPair)
+
+  YamlPair = record {
+    yp-key : Text,
+    yp-value : YamlValue
+  }
+
+Section: Construction
+
+  yaml-string : Text -> YamlValue
+  yaml-string (s) = YamlString s
+
+  yaml-int : Integer -> YamlValue
+  yaml-int (n) = YamlInt n
+
+  yaml-bool : Boolean -> YamlValue
+  yaml-bool (b) = YamlBool b
+
+  yaml-null : YamlValue = YamlNull
+
+  yaml-list : List YamlValue -> YamlValue
+  yaml-list (items) = YamlList items
+
+  yaml-map : List YamlPair -> YamlValue
+  yaml-map (pairs) = YamlMap pairs
+
+  yaml-pair : Text, YamlValue -> YamlPair
+  yaml-pair (k) (v) = YamlPair { yp-key = k, yp-value = v }
+
+Section: Lookup
+
+  yaml-get : YamlValue, Text -> Maybe YamlValue
+  yaml-get (v) (key) = when v
+    is YamlMap (pairs) -> yaml-find-pair pairs key 0 (list-length pairs)
+    is otherwise -> None
+
+  yaml-find-pair : List YamlPair, Text, Integer, Integer -> Maybe YamlValue
+  yaml-find-pair (pairs) (key) (i) (len) =
+    if i >= len then None
+    else let p = list-at pairs i
+    in if p.yp-key == key then Just (p.yp-value)
+    else yaml-find-pair pairs key (i + 1) len
+
+  yaml-get-str : YamlValue, Text, Text -> Text
+  yaml-get-str (v) (key) (default) =
+    when yaml-get v key
+      is Just (val) -> when val
+        is YamlString (s) -> s
+        is otherwise -> default
+      is None -> default
+
+  yaml-get-int : YamlValue, Text, Integer -> Integer
+  yaml-get-int (v) (key) (default) =
+    when yaml-get v key
+      is Just (val) -> when val
+        is YamlInt (n) -> n
+        is otherwise -> default
+      is None -> default
+
+  yaml-get-list : YamlValue, Text -> List YamlValue
+  yaml-get-list (v) (key) =
+    when yaml-get v key
+      is Just (val) -> when val
+        is YamlList (items) -> items
+        is otherwise -> []
+      is None -> []
+
+Section: Parsing
+
+  yaml-parse : Text -> Maybe YamlValue
+  yaml-parse (input) =
+    let lines = text-split input "\n"
+    in let result = yaml-parse-block lines 0 (list-length lines) 0
+    in Just (result.value)
+
+  YamlParseResult = record {
+    value : YamlValue,
+    next-line : Integer
+  }
+
+  yaml-parse-block : List Text, Integer, Integer, Integer -> YamlParseResult
+  yaml-parse-block (lines) (start) (len) (indent) =
+    if start >= len then YamlParseResult { value = YamlNull, next-line = start }
+    else let line = list-at lines start
+    in let trimmed = yaml-trim line
+    in if text-length trimmed == 0 then yaml-parse-block lines (start + 1) len indent
+    else if yaml-starts-with trimmed "#" then yaml-parse-block lines (start + 1) len indent
+    else if yaml-starts-with trimmed "- " then yaml-parse-list lines start len indent
+    else if yaml-contains trimmed ": " then yaml-parse-map lines start len indent
+    else YamlParseResult { value = yaml-parse-scalar trimmed, next-line = start + 1 }
+
+  yaml-parse-scalar : Text -> YamlValue
+  yaml-parse-scalar (s) =
+    if s == "true" then YamlBool True
+    else if s == "false" then YamlBool False
+    else if s == "null" then YamlNull
+    else if s == "~" then YamlNull
+    else if yaml-is-int s then YamlInt (text-to-integer s)
+    else YamlString (yaml-unquote s)
+
+  yaml-is-int : Text -> Boolean
+  yaml-is-int (s) =
+    let len = text-length s
+    in if len == 0 then False
+    else let start = if char-code (char-at s 0) == 73 then 1 else 0
+    in yaml-all-digits s start len
+
+  yaml-all-digits : Text, Integer, Integer -> Boolean
+  yaml-all-digits (s) (i) (len) =
+    if i >= len then i > 0
+    else let c = char-code (char-at s i)
+    in if c >= 3 then if c <= 12 then yaml-all-digits s (i + 1) len else False
+    else False
+
+  yaml-parse-list : List Text, Integer, Integer, Integer -> YamlParseResult
+  yaml-parse-list (lines) (start) (len) (indent) =
+    yaml-list-loop lines start len indent []
+
+  yaml-list-loop : List Text, Integer, Integer, Integer, List YamlValue -> YamlParseResult
+  yaml-list-loop (lines) (pos) (len) (indent) (acc) =
+    if pos >= len then YamlParseResult { value = YamlList acc, next-line = pos }
+    else let line = list-at lines pos
+    in let line-indent = yaml-count-indent line
+    in let trimmed = yaml-trim line
+    in if line-indent < indent then YamlParseResult { value = YamlList acc, next-line = pos }
+    else if yaml-starts-with trimmed "- " then
+      let val-str = yaml-trim (substring trimmed 2 (text-length trimmed - 2))
+      in let val = yaml-parse-scalar val-str
+      in yaml-list-loop lines (pos + 1) len indent (list-push acc val)
+    else YamlParseResult { value = YamlList acc, next-line = pos }
+
+  yaml-parse-map : List Text, Integer, Integer, Integer -> YamlParseResult
+  yaml-parse-map (lines) (start) (len) (indent) =
+    yaml-map-loop lines start len indent []
+
+  yaml-map-loop : List Text, Integer, Integer, Integer, List YamlPair -> YamlParseResult
+  yaml-map-loop (lines) (pos) (len) (indent) (acc) =
+    if pos >= len then YamlParseResult { value = YamlMap acc, next-line = pos }
+    else let line = list-at lines pos
+    in let line-indent = yaml-count-indent line
+    in let trimmed = yaml-trim line
+    in if text-length trimmed == 0 then yaml-map-loop lines (pos + 1) len indent acc
+    else if yaml-starts-with trimmed "#" then yaml-map-loop lines (pos + 1) len indent acc
+    else if line-indent < indent then YamlParseResult { value = YamlMap acc, next-line = pos }
+    else if yaml-contains trimmed ": " then
+      let colon = yaml-find-colon-space trimmed 0 (text-length trimmed)
+      in let key = substring trimmed 0 colon
+      in let val-str = yaml-trim (substring trimmed (colon + 2) (text-length trimmed - colon - 2))
+      in let val = yaml-parse-scalar val-str
+      in yaml-map-loop lines (pos + 1) len indent (list-push acc (YamlPair { yp-key = key, yp-value = val }))
+    else YamlParseResult { value = YamlMap acc, next-line = pos }
+
+Section: Emission
+
+  yaml-emit : YamlValue -> Text
+  yaml-emit (v) = yaml-emit-at v 0
+
+  yaml-emit-at : YamlValue, Integer -> Text
+  yaml-emit-at (v) (indent) = when v
+    is YamlString (s) -> yaml-quote-if-needed s
+    is YamlInt (n) -> show n
+    is YamlBool (b) -> if b then "true" else "false"
+    is YamlNull -> "null"
+    is YamlList (items) -> yaml-emit-list items indent 0 (list-length items) ""
+    is YamlMap (pairs) -> yaml-emit-map pairs indent 0 (list-length pairs) ""
+
+  yaml-emit-list : List YamlValue, Integer, Integer, Integer, Text -> Text
+  yaml-emit-list (items) (indent) (i) (len) (acc) =
+    if i >= len then acc
+    else let prefix = if i == 0 then "" else "\n" & yaml-indent indent
+    in let val = yaml-emit-at (list-at items i) (indent + 2)
+    in yaml-emit-list items indent (i + 1) len (acc & prefix & "- " & val)
+
+  yaml-emit-map : List YamlPair, Integer, Integer, Integer, Text -> Text
+  yaml-emit-map (pairs) (indent) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pairs i
+    in let prefix = if i == 0 then "" else "\n" & yaml-indent indent
+    in let val = yaml-emit-at (p.yp-value) (indent + 2)
+    in yaml-emit-map pairs indent (i + 1) len (acc & prefix & p.yp-key & ": " & val)
+
+  yaml-indent : Integer -> Text
+  yaml-indent (n) = yaml-spaces n ""
+
+  yaml-spaces : Integer, Text -> Text
+  yaml-spaces (n) (acc) =
+    if n <= 0 then acc
+    else yaml-spaces (n - 1) (acc & " ")
+
+  yaml-quote-if-needed : Text -> Text
+  yaml-quote-if-needed (s) =
+    if yaml-needs-quoting s then "\"" & s & "\""
+    else s
+
+  yaml-needs-quoting : Text -> Boolean
+  yaml-needs-quoting (s) =
+    if text-length s == 0 then True
+    else if yaml-starts-with s "- " then True
+    else yaml-contains s ": "
+
+Section: Helpers
+
+  yaml-trim : Text -> Text
+  yaml-trim (s) = yaml-trim-left (yaml-trim-right s)
+
+  yaml-trim-left : Text -> Text
+  yaml-trim-left (s) =
+    if text-length s == 0 then s
+    else if char-code (char-at s 0) == 2 then yaml-trim-left (substring s 1 (text-length s - 1))
+    else s
+
+  yaml-trim-right : Text -> Text
+  yaml-trim-right (s) =
+    let len = text-length s
+    in if len == 0 then s
+    else if char-code (char-at s (len - 1)) == 2 then yaml-trim-right (substring s 0 (len - 1))
+    else s
+
+  yaml-count-indent : Text -> Integer
+  yaml-count-indent (s) = yaml-ci-loop s 0 (text-length s)
+
+  yaml-ci-loop : Text, Integer, Integer -> Integer
+  yaml-ci-loop (s) (i) (len) =
+    if i >= len then i
+    else if char-code (char-at s i) == 2 then yaml-ci-loop s (i + 1) len
+    else i
+
+  yaml-starts-with : Text, Text -> Boolean
+  yaml-starts-with (s) (prefix) = text-starts-with s prefix
+
+  yaml-contains : Text, Text -> Boolean
+  yaml-contains (s) (sub) = text-contains s sub
+
+  yaml-find-colon-space : Text, Integer, Integer -> Integer
+  yaml-find-colon-space (s) (i) (len) =
+    if i + 1 >= len then len
+    else if char-code (char-at s i) == 69 then
+      if char-code (char-at s (i + 1)) == 2 then i
+      else yaml-find-colon-space s (i + 1) len
+    else yaml-find-colon-space s (i + 1) len
+
+  yaml-unquote : Text -> Text
+  yaml-unquote (s) =
+    let len = text-length s
+    in if len < 2 then s
+    else if char-code (char-at s 0) == 72 then substring s 1 (len - 2)
+    else if char-code (char-at s 0) == 71 then substring s 1 (len - 2)
+    else s
+
+Page 1

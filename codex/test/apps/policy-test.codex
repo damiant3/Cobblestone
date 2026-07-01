@@ -1,0 +1,38 @@
+Chapter: PolicyTest
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Maybe
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+Section: Tests
+
+  test-policy : Policy
+  test-policy =
+    let p0 = policy-empty "test"
+    in let p1 = policy-add-rule p0 (rule-allow "trusted-console" (AllOf [CapabilityMatch "Console" 2, TrustAbove 5000]))
+    in let p2 = policy-add-rule p1 (rule-allow-scoped "config-read" (CapabilityMatch "FileSystem" 0) "/config/")
+    in let p3 = policy-add-rule p2 (rule-deny "default" AlwaysTrue "no matching rule")
+    in p3
+
+  test-trusted-console : Text =
+    let ctx = PolicyContext { capability = "Console", direction = 2, trust-score = 8000, current-time = 0, agent-id = "agent-1" }
+    in let decision = eval-policy test-policy ctx
+    in decision.matched-rule & "\n" & show-bool (decision.allowed)
+
+  test-config-read : Text =
+    let ctx = PolicyContext { capability = "FileSystem", direction = 0, trust-score = 1000, current-time = 0, agent-id = "agent-2" }
+    in let decision = eval-policy test-policy ctx
+    in decision.matched-rule & "\n" & decision.reason
+
+  test-default-deny : Text =
+    let ctx = PolicyContext { capability = "Network", direction = 1, trust-score = 100, current-time = 0, agent-id = "agent-3" }
+    in let decision = eval-policy test-policy ctx
+    in decision.matched-rule & "\n" & show-bool (decision.allowed)
+
+  opening : [Console] Nothing = act
+    print-line-uni test-trusted-console
+    print-line-uni test-config-read
+    print-line-uni test-default-deny
+  end

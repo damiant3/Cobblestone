@@ -1,0 +1,162 @@
+Chapter: ClanPage
+  cites CodexMagic chapter MagicTheme
+  cites UI chapter Layout
+
+ Clan page. Pure widget tree.
+
+ We say:
+
+Section: State
+
+  sk-c-in-clan : Text = "c-in-clan"
+  sk-c-name : Text = "c-name"
+  sk-c-tag : Text = "c-tag"
+  sk-c-leader : Text = "c-leader"
+  sk-c-members : Text = "c-members"
+  sk-c-treasury : Text = "c-treasury"
+  sk-c-tab : Text = "c-tab"
+  sk-c-msg : Text = "c-msg"
+
+Section: Tree
+
+  clan-tree : Integer -> WidgetNode
+  clan-tree (x) =
+    let in-clan = state-get sk-c-in-clan
+    in let content = if in-clan == 0 then clan-none-tree 0 else clan-view-tree 0
+    in widget-panel "c-page" DirColumn 0 [magic-nav-widget "Clan", widget-box "c-wrap" "page" [content]]
+
+  clan-none-tree : Integer -> WidgetNode
+  clan-none-tree (x) =
+    widget-panel "c-none" DirColumn 12 [
+      widget-label "c-title" "Clans",
+      widget-separator "c-s1",
+      widget-h2 "c-create-hdr" "Create a Clan",
+      widget-form-field "c-name-inp" "Name" "",
+      widget-form-field "c-tag-inp" "Tag (3-5)" "",
+      widget-button "c-create" "Create",
+      widget-separator "c-s2",
+      widget-h2 "c-search-hdr" "Search Clans",
+      widget-form-field "c-search-inp" "Name or Tag" "",
+      widget-button "c-search" "Search",
+      widget-label "c-msg" (state-get-text sk-c-msg)
+    ]
+
+  clan-view-tree : Integer -> WidgetNode
+  clan-view-tree (x) =
+    let name = state-get-text sk-c-name
+    in let tag = state-get-text sk-c-tag
+    in let leader = state-get-text sk-c-leader
+    in let members = state-get-text sk-c-members
+    in let treasury = state-get-text sk-c-treasury
+    in let tab = state-get sk-c-tab
+    in widget-panel "c-view" DirColumn 12 [
+      widget-label "c-clan-name" (name & " [" & tag & "]"),
+      widget-label "c-clan-info" ("Leader: " & leader & " | Members: " & members & " | Treasury: " & treasury & " MC"),
+      widget-tab-bar "c-tabs" [
+        widget-tab-btn "c-t-info" "Info" (tab == 0),
+        widget-tab-btn "c-t-members" "Members" (tab == 1),
+        widget-tab-btn "c-t-treasury" "Treasury" (tab == 2)
+      ],
+      widget-separator "c-s3",
+      if tab == 0 then widget-label "c-info" "Clan info loaded"
+      else if tab == 1 then widget-label "c-mem" "Members list..."
+      else widget-panel "c-treas" DirColumn 8 [
+        widget-input "c-dep-amt" "100" 0,
+        widget-button "c-deposit" "Deposit",
+        widget-button "c-withdraw" "Withdraw"
+      ],
+      widget-separator "c-s4",
+      widget-button "c-leave" "Leave Clan",
+      widget-label "c-msg" (state-get-text sk-c-msg)
+    ]
+
+Section: Handlers
+
+  c-click : Text -> Integer
+  c-click (id) =
+    if id == "c-create" then create-clan 0
+    else if id == "c-search" then search-clans 0
+    else if id == "c-leave" then leave-clan 0
+    else if id == "c-deposit" then deposit-clan 0
+    else if id == "c-withdraw" then withdraw-clan 0
+    else if id == "c-t-info" then state-set-render sk-c-tab 0
+    else if id == "c-t-members" then state-set-render sk-c-tab 1
+    else if id == "c-t-treasury" then state-set-render sk-c-tab 2
+    else 0
+
+  create-clan : Integer -> Integer
+  create-clan (x) =
+    let tok = state-get-text "cx_token"
+    in let name = dom-get-value (dom-get "c-name-inp")
+    in let tag = dom-get-value (dom-get "c-tag-inp")
+    in fetch-get-then ("/api/clan/create?t=" & url-encode tok & "&name=" & url-encode name & "&tag=" & url-encode tag) clan-action-cb
+
+  search-clans : Integer -> Integer
+  search-clans (x) =
+    let q = dom-get-value (dom-get "c-search-inp")
+    in fetch-get-then ("/api/clan/search?q=" & url-encode q) search-cb
+
+  search-cb : Text -> Integer
+  search-cb (resp) =
+    let s = state-set-text sk-c-msg "Search results loaded"
+    in request-render 0
+
+  leave-clan : Integer -> Integer
+  leave-clan (x) =
+    let tok = state-get-text "cx_token"
+    in fetch-get-then ("/api/clan/leave?t=" & url-encode tok) clan-action-cb
+
+  deposit-clan : Integer -> Integer
+  deposit-clan (x) =
+    let tok = state-get-text "cx_token"
+    in let amt = dom-get-value (dom-get "c-dep-amt")
+    in fetch-get-then ("/api/clan/deposit?t=" & url-encode tok & "&amount=" & amt) clan-action-cb
+
+  withdraw-clan : Integer -> Integer
+  withdraw-clan (x) =
+    let tok = state-get-text "cx_token"
+    in let amt = dom-get-value (dom-get "c-dep-amt")
+    in fetch-get-then ("/api/clan/withdraw?t=" & url-encode tok & "&amount=" & amt) clan-action-cb
+
+  clan-action-cb : Text -> Integer
+  clan-action-cb (resp) =
+    let s = state-set-text sk-c-msg "Done"
+    in load-clan 0
+
+  load-clan : Integer -> Integer
+  load-clan (x) =
+    let tok = state-get-text "cx_token"
+    in fetch-get-then ("/api/clan/info?t=" & url-encode tok) clan-info-cb
+
+  clan-info-cb : Text -> Integer
+  clan-info-cb (resp) =
+    let obj = json-parse-obj resp
+    in let id-str = json-obj-field obj "id"
+    in if id-str == "0" then let s = state-set sk-c-in-clan 0 in request-render 0
+    else let s1 = state-set sk-c-in-clan 1
+    in let s2 = state-set-text sk-c-name (json-obj-field obj "name")
+    in let s3 = state-set-text sk-c-tag (json-obj-field obj "tag")
+    in let s4 = state-set-text sk-c-leader (json-obj-field obj "leader")
+    in let s5 = state-set-text sk-c-members (json-obj-field obj "members")
+    in let s6 = state-set-text sk-c-treasury (json-obj-field obj "treasury")
+    in request-render 0
+
+Section: Entry
+
+  render-c : Integer -> Integer
+  render-c (x) = mount-widget-themed magic-theme (clan-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = init-magic-theme 0
+    in let tok = local-storage-get "cx_tok"
+    in let s1 = state-set-text "cx_token" tok
+    in let s2 = state-set sk-c-in-clan 0
+    in let s3 = state-set sk-c-tab 0
+    in let s4 = set-render render-c
+    in let h = register-handlers no-pick c-click
+    in let r = render-c 0
+    in load-clan 0
+  end
+
+Page 1

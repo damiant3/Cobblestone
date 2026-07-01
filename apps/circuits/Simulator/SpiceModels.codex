@@ -1,0 +1,114 @@
+Chapter: SpiceModels
+  cites Foreword chapter List
+
+ Built-in SPICE device model library. Provides standard semiconductor
+ models as data structures that serialise to .model directives for
+ inclusion in SPICE netlists.
+
+Section: Model Parameter
+
+  ModelParam = record {
+    mp-name : Text,
+    mp-value : Text
+  }
+
+Section: Device Model
+
+  DeviceModel = record {
+    dm-name : Text,
+    dm-type : Text,
+    dm-level : Integer,
+    dm-params : List ModelParam
+  }
+
+Section: Built-in Diode Models
+
+ 1N4148 small signal switching diode. Fast recovery, low capacitance.
+
+  model-1n4148 : DeviceModel
+  model-1n4148 = DeviceModel {
+      dm-name = "D1N4148",
+      dm-type = "D",
+      dm-level = 1,
+      dm-params = [ModelParam { mp-name = "IS", mp-value = "2.52e-9" }, ModelParam { mp-name = "RS", mp-value = "0.568" }, ModelParam { mp-name = "N", mp-value = "1.752" }, ModelParam { mp-name = "BV", mp-value = "100" }, ModelParam { mp-name = "IBV", mp-value = "100e-6" }, ModelParam { mp-name = "CJO", mp-value = "4e-12" }]
+    }
+
+  model-ideal-diode : DeviceModel
+  model-ideal-diode = DeviceModel {
+      dm-name = "DIDEAL",
+      dm-type = "D",
+      dm-level = 1,
+      dm-params = [ModelParam { mp-name = "IS", mp-value = "1e-14" }, ModelParam { mp-name = "N", mp-value = "0.001" }]
+    }
+
+Section: Built-in BJT Models
+
+ 2N2222 general-purpose NPN transistor.
+
+  model-2n2222 : DeviceModel
+  model-2n2222 = DeviceModel {
+      dm-name = "Q2N2222",
+      dm-type = "NPN",
+      dm-level = 1,
+      dm-params = [ModelParam { mp-name = "IS", mp-value = "14.34e-15" }, ModelParam { mp-name = "BF", mp-value = "255.9" }, ModelParam { mp-name = "NF", mp-value = "1.0" }, ModelParam { mp-name = "VAF", mp-value = "74.03" }, ModelParam { mp-name = "RB", mp-value = "10" }, ModelParam { mp-name = "RC", mp-value = "1" }]
+    }
+
+Section: Built-in MOSFET Models
+
+ 2N7002 small signal N-channel MOSFET.
+
+  model-2n7002 : DeviceModel
+  model-2n7002 = DeviceModel {
+      dm-name = "M2N7002",
+      dm-type = "NMOS",
+      dm-level = 1,
+      dm-params = [ModelParam { mp-name = "VTO", mp-value = "1.8" }, ModelParam { mp-name = "KP", mp-value = "0.15" }, ModelParam { mp-name = "LAMBDA", mp-value = "0.04" }, ModelParam { mp-name = "RD", mp-value = "1.5" }]
+    }
+
+Section: Built-in Op-Amp Models
+
+ LM358 dual operational amplifier. Represented as a subcircuit
+ reference name for .subckt inclusion.
+
+  model-lm358 : DeviceModel
+  model-lm358 = DeviceModel {
+      dm-name = "LM358",
+      dm-type = "SUBCKT",
+      dm-level = 0,
+      dm-params = [ModelParam { mp-name = "GBW", mp-value = "1e6" }, ModelParam { mp-name = "AVOL", mp-value = "100000" }, ModelParam { mp-name = "ROUT", mp-value = "75" }]
+    }
+
+  model-ideal-opamp : DeviceModel
+  model-ideal-opamp = DeviceModel {
+      dm-name = "IDEALOA",
+      dm-type = "SUBCKT",
+      dm-level = 0,
+      dm-params = [ModelParam { mp-name = "AVOL", mp-value = "1e12" }, ModelParam { mp-name = "ROUT", mp-value = "0.001" }]
+    }
+
+Section: SPICE Formatting
+
+ Formats a DeviceModel as a .model line for SPICE. Subcircuit types
+ emit a comment reference instead since .subckt requires a full
+ netlist definition.
+
+  device-model-to-spice : DeviceModel -> Text
+  device-model-to-spice (dm) =
+    if dm.dm-type == "SUBCKT" then "* subcircuit reference: " & dm.dm-name else device-model-spice-fmt dm
+
+  device-model-spice-fmt : DeviceModel -> Text
+  device-model-spice-fmt (dm) =
+    let header = ".model " & dm.dm-name & " " & dm.dm-type
+    in let params = format-model-params dm.dm-params 0 (list-length dm.dm-params) ""
+    in header & " (" & params & ")"
+
+  format-model-params : List ModelParam, Integer, Integer, Text -> Text
+  format-model-params (params) (i) (len) (acc) =
+    if i >= len then acc else fmt-param-step params i len acc
+
+  fmt-param-step : List ModelParam, Integer, Integer, Text -> Text
+  fmt-param-step (params) (i) (len) (acc) =
+    let p = list-at params i
+    in let pair = p.mp-name & "=" & p.mp-value
+    in let next = if acc == "" then pair else acc & " " & pair
+    in format-model-params params (i + 1) len next

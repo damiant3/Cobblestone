@@ -1,0 +1,99 @@
+Chapter: Pitch
+  cites Foreword chapter Units (Frequency)
+
+ Pitch detection via autocorrelation — estimates the fundamental
+ frequency of a periodic signal. Uses fixed-point scale-1000
+ arithmetic. Operates on windowed sample buffers.
+
+ To pitch-detect gives the estimated frequency in Hz (scale-1000).
+ To pitch-autocorrelation gives the autocorrelation at a given lag.
+ To pitch-confidence gives a confidence score for the detection.
+
+ We say:
+
+Section: Detection
+
+  PitchResult = record {
+    pr-frequency : Frequency,
+    pr-period : Integer,
+    pr-confidence : Integer
+  }
+
+  pitch-detect : List Integer, Frequency -> PitchResult
+  pitch-detect (samples) (sample-rate) =
+    let n = list-length samples
+    in let min-lag = sample-rate / 1000
+    in let max-lag = if n / 2 < sample-rate / 50 then n / 2 else sample-rate / 50
+    in let best = pitch-find-peak samples n min-lag max-lag min-lag 0 0
+    in if best.bp-lag == 0 then PitchResult { pr-frequency = 0, pr-period = 0, pr-confidence = 0 }
+    else let freq = sample-rate * 1000 / best.bp-lag
+    in PitchResult { pr-frequency = freq, pr-period = best.bp-lag, pr-confidence = best.bp-confidence }
+
+  BestPeak = record {
+    bp-lag : Integer,
+    bp-confidence : Integer
+  }
+
+  pitch-find-peak : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> BestPeak
+  pitch-find-peak (samples) (n) (min-lag) (max-lag) (lag) (best-lag) (best-val) =
+    if lag > max-lag then BestPeak { bp-lag = best-lag, bp-confidence = best-val }
+    else let ac = pitch-autocorrelation samples n lag
+    in if ac > best-val then pitch-find-peak samples n min-lag max-lag (lag + 1) lag ac
+    else pitch-find-peak samples n min-lag max-lag (lag + 1) best-lag best-val
+
+Section: Autocorrelation
+
+  pitch-autocorrelation : List Integer, Integer, Integer -> Integer
+  pitch-autocorrelation (samples) (n) (lag) =
+    pitch-ac-loop samples n lag 0 0
+
+  pitch-ac-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  pitch-ac-loop (samples) (n) (lag) (i) (acc) =
+    if i + lag >= n then acc
+    else pitch-ac-loop samples n lag (i + 1) (acc + list-at samples i * list-at samples (i + lag) / 1000)
+
+Section: Confidence
+
+  pitch-confidence : List Integer, Integer, Integer -> Integer
+  pitch-confidence (samples) (n) (period) =
+    if period == 0 then 0
+    else let ac0 = pitch-autocorrelation samples n 0
+    in let ac-p = pitch-autocorrelation samples n period
+    in if ac0 == 0 then 0
+    else ac-p * 1000 / ac0
+
+Section: Frequency Conversion
+
+  pitch-midi-note : Integer -> Integer
+  pitch-midi-note (freq-fp) =
+    if freq-fp <= 0 then 0
+    else pitch-midi-search freq-fp 0 127
+
+  pitch-midi-search : Integer, Integer, Integer -> Integer
+  pitch-midi-search (freq) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = (lo + hi) / 2
+    in let mid-freq = pitch-note-freq mid
+    in if freq < mid-freq then pitch-midi-search freq lo mid
+    else pitch-midi-search freq (mid + 1) hi
+
+  pitch-note-freq : Integer -> Integer
+  pitch-note-freq (note) =
+    let base = 440000
+    in let semitones = note - 69
+    in pitch-freq-shift base semitones
+
+  pitch-freq-shift : Integer, Integer -> Integer
+  pitch-freq-shift (base) (semitones) =
+    if semitones == 0 then base
+    else if semitones > 0 then pitch-freq-shift (base * 1059 / 1000) (semitones - 1)
+    else pitch-freq-shift (base * 1000 / 1059) (semitones + 1)
+
+  pitch-note-name : Integer -> Text
+  pitch-note-name (note) =
+    let n = note - (note / 12) * 12
+    in if n == 0 then "C" else if n == 1 then "C#" else if n == 2 then "D" else if n == 3 then "D#"
+    else if n == 4 then "E" else if n == 5 then "F" else if n == 6 then "F#" else if n == 7 then "G"
+    else if n == 8 then "G#" else if n == 9 then "A" else if n == 10 then "A#" else "B"
+
+Page 1

@@ -1,0 +1,353 @@
+Chapter: HelmGameBridge
+  cites Helm chapter HelmTypes
+  cites Helm chapter HelmCluster
+  cites Helm chapter HelmVoice
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ Game integration for Helm. Maps game state to voice hierarchies
+ and chat rooms. Supports squad-based games, tournament brackets,
+ clan coordination, and spectator modes.
+
+Section: Game Rank Templates
+
+  GameRankPreset =
+    | GrpMmoRaid
+    | GrpBattleRoyale
+    | GrpMoba
+    | GrpRts
+    | GrpFps
+    | GrpSports
+    | GrpCardGame
+    | GrpCustom
+
+  grp-label : GameRankPreset -> Text
+  grp-label (p) = when p
+    is GrpMmoRaid -> "MMO Raid"
+    is GrpBattleRoyale -> "Battle Royale"
+    is GrpMoba -> "MOBA"
+    is GrpRts -> "RTS"
+    is GrpFps -> "FPS"
+    is GrpSports -> "Sports"
+    is GrpCardGame -> "Card Game"
+    is GrpCustom -> "Custom"
+
+  grp-ranks : GameRankPreset -> List Text
+  grp-ranks (p) = when p
+    is GrpMmoRaid -> ["Raid Leader", "Tank Lead", "Healer Lead", "DPS Lead", "Raider"]
+    is GrpBattleRoyale -> ["Shot Caller", "Squad Lead", "Player"]
+    is GrpMoba -> ["Captain", "Solo", "Support"]
+    is GrpRts -> ["Commander", "Division Lead", "Unit"]
+    is GrpFps -> ["IGL", "Anchor", "Entry", "AWPer", "Support"]
+    is GrpSports -> ["Coach", "Captain", "Player"]
+    is GrpCardGame -> ["Judge", "Player A", "Player B"]
+    is GrpCustom -> ["Leader", "Officer", "Member"]
+
+  grp-max-squad : GameRankPreset -> Integer
+  grp-max-squad (p) = when p
+    is GrpMmoRaid -> 40
+    is GrpBattleRoyale -> 4
+    is GrpMoba -> 5
+    is GrpRts -> 8
+    is GrpFps -> 5
+    is GrpSports -> 15
+    is GrpCardGame -> 2
+    is GrpCustom -> 20
+
+Section: Game Session
+
+  GameSession = record {
+    gs-id : Text,
+    gs-game-name : Text,
+    gs-preset : GameRankPreset,
+    gs-room : Room,
+    gs-voice : VoiceHierarchy,
+    gs-players : List GamePlayer,
+    gs-player-count : Integer,
+    gs-spectators : List Text,
+    gs-spectator-count : Integer,
+    gs-phase : GamePhase,
+    gs-started : Integer,
+    gs-events : List GameEvent,
+    gs-event-count : Integer
+  }
+
+  GamePlayer = record {
+    gp-id : Text,
+    gp-name : Text,
+    gp-team : Text,
+    gp-role : Text,
+    gp-rank : Rank,
+    gp-alive : Boolean,
+    gp-score : Integer,
+    gp-stats : PlayerGameStats
+  }
+
+  PlayerGameStats = record {
+    pgs-kills : Integer,
+    pgs-deaths : Integer,
+    pgs-assists : Integer,
+    pgs-damage : Integer,
+    pgs-healing : Integer,
+    pgs-objectives : Integer
+  }
+
+  pgs-empty : PlayerGameStats
+  pgs-empty = PlayerGameStats {
+    pgs-kills = 0, pgs-deaths = 0, pgs-assists = 0,
+    pgs-damage = 0, pgs-healing = 0, pgs-objectives = 0
+  }
+
+  GamePhase =
+    | GpLobby
+    | GpDraft
+    | GpLoading
+    | GpPlaying
+    | GpPaused
+    | GpOvertime
+    | GpPostGame
+
+  gp-label : GamePhase -> Text
+  gp-label (p) = when p
+    is GpLobby -> "Lobby"
+    is GpDraft -> "Draft"
+    is GpLoading -> "Loading"
+    is GpPlaying -> "Playing"
+    is GpPaused -> "Paused"
+    is GpOvertime -> "Overtime"
+    is GpPostGame -> "Post-Game"
+
+Section: Game Events
+
+  GameEvent = record {
+    ge-type : GameEventType,
+    ge-actor : Text,
+    ge-target : Text,
+    ge-detail : Text,
+    ge-timestamp : Integer,
+    ge-importance : Integer
+  }
+
+  GameEventType =
+    | GeKill
+    | GeDeath
+    | GeObjective
+    | GePhaseChange
+    | GePlayerJoin
+    | GePlayerLeave
+    | GePlayerEliminated
+    | GeTeamWipe
+    | GeVictory
+    | GeDefeat
+    | GeTimeout
+    | GeChat
+    | GePing
+    | GeItemPickup
+    | GeAbilityUsed
+
+  ge-type-label : GameEventType -> Text
+  ge-type-label (t) = when t
+    is GeKill -> "Kill"
+    is GeDeath -> "Death"
+    is GeObjective -> "Objective"
+    is GePhaseChange -> "Phase"
+    is GePlayerJoin -> "Join"
+    is GePlayerLeave -> "Leave"
+    is GePlayerEliminated -> "Eliminated"
+    is GeTeamWipe -> "Team Wipe"
+    is GeVictory -> "Victory"
+    is GeDefeat -> "Defeat"
+    is GeTimeout -> "Timeout"
+    is GeChat -> "Chat"
+    is GePing -> "Ping"
+    is GeItemPickup -> "Item"
+    is GeAbilityUsed -> "Ability"
+
+  ge-is-critical : GameEventType -> Boolean
+  ge-is-critical (t) = when t
+    is GeTeamWipe -> True
+    is GeVictory -> True
+    is GeDefeat -> True
+    is GePlayerEliminated -> True
+    is otherwise -> False
+
+Section: Session Construction
+
+  game-session-new : Text, Text, GameRankPreset, Integer -> GameSession
+  game-session-new (id) (game-name) (preset) (now) =
+    GameSession {
+      gs-id = id,
+      gs-game-name = game-name,
+      gs-preset = preset,
+      gs-room = room-new id (game-name & " — " & id),
+      gs-voice = hierarchy-new TplGaming,
+      gs-players = [],
+      gs-player-count = 0,
+      gs-spectators = [],
+      gs-spectator-count = 0,
+      gs-phase = GpLobby,
+      gs-started = now,
+      gs-events = [],
+      gs-event-count = 0
+    }
+
+Section: Player Management
+
+  gs-add-player : GameSession, Text, Text, Text, Text, Rank -> GameSession
+  gs-add-player (sess) (id) (name) (team) (role) (rank) =
+    let player = GamePlayer {
+      gp-id = id, gp-name = name, gp-team = team,
+      gp-role = role, gp-rank = rank,
+      gp-alive = True, gp-score = 0, gp-stats = pgs-empty
+    }
+    in let voice = vh-add-node sess.gs-voice id name rank team
+    in __record-set (__record-set (__record-set sess "gs-players" (list-push sess.gs-players player)) "gs-player-count" (sess.gs-player-count + 1)) "gs-voice" voice
+
+  gs-add-spectator : GameSession, Text -> GameSession
+  gs-add-spectator (sess) (id) =
+    __record-set (__record-set sess "gs-spectators" (list-push sess.gs-spectators id)) "gs-spectator-count" (sess.gs-spectator-count + 1)
+
+  gs-find-player : GameSession, Text -> Maybe GamePlayer
+  gs-find-player (sess) (id) = gs-find-loop sess.gs-players id 0 sess.gs-player-count
+
+  gs-find-loop : List GamePlayer, Text, Integer, Integer -> Maybe GamePlayer
+  gs-find-loop (players) (id) (i) (len) =
+    if i >= len then None
+    else let p = list-at players i
+    in if p.gp-id == id then Just p
+    else gs-find-loop players id (i + 1) len
+
+Section: Event Processing
+
+  gs-emit-event : GameSession, GameEventType, Text, Text, Text, Integer -> GameSession
+  gs-emit-event (sess) (etype) (actor) (target) (detail) (now) =
+    let importance = if ge-is-critical etype then 100 else 50
+    in let ev = GameEvent {
+      ge-type = etype, ge-actor = actor, ge-target = target,
+      ge-detail = detail, ge-timestamp = now,
+      ge-importance = importance
+    }
+    in let with-event = __record-set (__record-set sess "gs-events" (list-push sess.gs-events ev)) "gs-event-count" (sess.gs-event-count + 1)
+    in let msg-text = ge-type-label etype & ": " & actor & (if text-length target > 0 then " -> " & target else "") & " " & detail
+    in let with-msg = __record-set with-event "gs-room" (room-add-message sess.gs-room actor msg-text now)
+    in if ge-is-critical etype
+      then __record-set with-msg "gs-voice" (vh-emergency sess.gs-voice actor msg-text now)
+      else with-msg
+
+Section: Phase Transitions
+
+  gs-set-phase : GameSession, GamePhase, Integer -> GameSession
+  gs-set-phase (sess) (phase) (now) =
+    let with-phase = __record-set sess "gs-phase" phase
+    in gs-emit-event with-phase GePhaseChange "system" "" (gp-label phase) now
+
+  gs-player-eliminated : GameSession, Text, Integer -> GameSession
+  gs-player-eliminated (sess) (player-id) (now) =
+    let updated-players = list-map (eliminate-if player-id) sess.gs-players
+    in let with-players = __record-set sess "gs-players" updated-players
+    in gs-emit-event with-players GePlayerEliminated player-id "" "" now
+
+  eliminate-if : Text, GamePlayer -> GamePlayer
+  eliminate-if (id) (p) =
+    if p.gp-id == id then __record-set p "gp-alive" False else p
+
+  gs-record-kill : GameSession, Text, Text, Integer -> GameSession
+  gs-record-kill (sess) (killer) (victim) (now) =
+    let with-kill = __record-set sess "gs-players" (list-map (add-kill-if killer) sess.gs-players)
+    in let with-death = __record-set with-kill "gs-players" (list-map (add-death-if victim) with-kill.gs-players)
+    in gs-emit-event with-death GeKill killer victim "" now
+
+  add-kill-if : Text, GamePlayer -> GamePlayer
+  add-kill-if (id) (p) =
+    if p.gp-id == id
+    then __record-set (__record-set p "gp-score" (p.gp-score + 1)) "gp-stats" (__record-set p.gp-stats "pgs-kills" (p.gp-stats.pgs-kills + 1))
+    else p
+
+  add-death-if : Text, GamePlayer -> GamePlayer
+  add-death-if (id) (p) =
+    if p.gp-id == id
+    then __record-set p "gp-stats" (__record-set p.gp-stats "pgs-deaths" (p.gp-stats.pgs-deaths + 1))
+    else p
+
+Section: Team Hierarchy Builder
+
+  gs-build-team-hierarchy : List GamePlayer, Text, GameRankPreset -> VoiceHierarchy
+  gs-build-team-hierarchy (players) (team-name) (preset) =
+    let h = hierarchy-new TplGaming
+    in let h1 = vh-add-node h team-name team-name Admiral ""
+    in build-team-nodes h1 players team-name 0 (list-length players)
+
+  build-team-nodes : VoiceHierarchy, List GamePlayer, Text, Integer, Integer -> VoiceHierarchy
+  build-team-nodes (h) (players) (team-id) (i) (len) =
+    if i >= len then h
+    else let p = list-at players i
+    in let updated = vh-add-node h p.gp-id p.gp-name p.gp-rank team-id
+    in build-team-nodes updated players team-id (i + 1) len
+
+Section: Tournament Bracket Voice
+
+  TournamentMatch = record {
+    tm-match-id : Text,
+    tm-team-a : Text,
+    tm-team-b : Text,
+    tm-round : Integer,
+    tm-session : Maybe GameSession,
+    tm-winner : Text,
+    tm-status : MatchStatus
+  }
+
+  MatchStatus =
+    | MsPending
+    | MsInProgress
+    | MsComplete
+
+  tournament-create-match-voice : Text, Text, Text, Integer -> GameSession
+  tournament-create-match-voice (match-id) (team-a) (team-b) (now) =
+    let sess = game-session-new match-id "Tournament Match" GrpCardGame now
+    in let with-a = gs-add-player sess (team-a & "-p1") team-a team-a "Player A" Captain
+    in gs-add-player with-a (team-b & "-p1") team-b team-b "Player B" Captain
+
+Section: Spectator Mode
+
+  SpectatorView =
+    | SvOverview
+    | SvFollowPlayer (Text)
+    | SvFollowTeam (Text)
+    | SvFreeCamera
+
+  gs-spectator-room : GameSession -> Room
+  gs-spectator-room (sess) =
+    let spec-room = room-new (sess.gs-id & "-spec") ("Spectators: " & sess.gs-game-name)
+    in spec-room
+
+Section: Session Statistics
+
+  GameSessionStats = record {
+    gss-duration-sec : Integer,
+    gss-total-events : Integer,
+    gss-kills : Integer,
+    gss-objectives : Integer,
+    gss-emergencies : Integer,
+    gss-messages : Integer
+  }
+
+  gs-stats : GameSession, Integer -> GameSessionStats
+  gs-stats (sess) (now) =
+    let duration = now - sess.gs-started
+    in let kills = count-events-of-type sess.gs-events GeKill 0 sess.gs-event-count 0
+    in let objectives = count-events-of-type sess.gs-events GeObjective 0 sess.gs-event-count 0
+    in GameSessionStats {
+      gss-duration-sec = duration,
+      gss-total-events = sess.gs-event-count,
+      gss-kills = kills,
+      gss-objectives = objectives,
+      gss-emergencies = sess.gs-voice.vh-emergency-count,
+      gss-messages = sess.gs-room.rm-message-count
+    }
+
+  count-events-of-type : List GameEvent, GameEventType, Integer, Integer, Integer -> Integer
+  count-events-of-type (events) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at events i
+    in let hit = if ge-type-label e.ge-type == ge-type-label target then 1 else 0
+    in count-events-of-type events target (i + 1) len (acc + hit)

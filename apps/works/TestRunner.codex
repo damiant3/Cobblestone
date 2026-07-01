@@ -1,0 +1,107 @@
+Chapter: TestRunner
+  cites Foreword chapter Maybe
+
+ Test runner for the Codex OS. TestRunner compiles and runs test
+ samples natively — no QEMU, no PS1, no TCP sockets. The compiler
+ is a process on the OS; tests are compiled by spawning the compiler
+ and collecting output.
+
+ TestRunner replaces run-for-sweep.ps1 + the sweep worker scriptblock.
+ On bare metal with the scheduler, each test is a child process.
+
+ We say:
+
+Section: Test Execution
+
+  TestOutcome =
+    | TestPass
+    | TestFail
+    | TestError
+    | TestSkipped
+
+  TestResult = record {
+    name : Text,
+    outcome : TestOutcome,
+    expected : Text,
+    actual : Text,
+    elapsed : Integer
+  }
+
+  test-passed : TestResult -> Boolean
+  test-passed (r) =
+   when r.outcome
+    is TestPass -> True
+    is otherwise -> False
+
+Section: Result Formatting
+
+  format-outcome : TestOutcome -> Text
+  format-outcome (o) = when o
+    is TestPass -> "PASS"
+    is TestFail -> "FAIL"
+    is TestError -> "ERROR"
+    is TestSkipped -> "SKIP"
+
+  format-test-result : TestResult -> Text
+  format-test-result (r) =
+    format-outcome (r.outcome) & " " & r.name
+    & if test-failed r then
+      "\n  expected: " & r.expected & "\n  actual:   " & r.actual
+    else ""
+
+  test-failed : TestResult -> Boolean
+  test-failed (r) =
+   when r.outcome
+    is TestFail -> True
+    is otherwise -> False
+
+Section: Test Suite
+
+  TestSuite = record {
+    name : Text,
+    results : List TestResult,
+    pass-count : Integer,
+    fail-count : Integer,
+    skip-count : Integer,
+    total : Integer
+  }
+
+  empty-suite : Text -> TestSuite
+  empty-suite (name) = TestSuite {
+    name = name, results = [], pass-count = 0,
+    fail-count = 0, skip-count = 0, total = 0
+  }
+
+  suite-add : TestSuite, TestResult -> TestSuite
+  suite-add (suite) (result) =
+    let new-results = list-snoc (suite.results) result
+    in when result.outcome
+      is TestPass -> TestSuite { name = suite.name, results = new-results, pass-count = suite.pass-count + 1, fail-count = suite.fail-count, skip-count = suite.skip-count, total = suite.total + 1 }
+      is TestSkipped -> TestSuite { name = suite.name, results = new-results, pass-count = suite.pass-count, fail-count = suite.fail-count, skip-count = suite.skip-count + 1, total = suite.total + 1 }
+      is otherwise -> TestSuite { name = suite.name, results = new-results, pass-count = suite.pass-count, fail-count = suite.fail-count + 1, skip-count = suite.skip-count, total = suite.total + 1 }
+
+  suite-all-pass : TestSuite -> Boolean
+  suite-all-pass (s) = s.fail-count == 0
+
+  format-suite-summary : TestSuite -> Text
+  format-suite-summary (s) =
+    s.name & ": "
+    & show (s.pass-count) & " passed, "
+    & show (s.fail-count) & " failed, "
+    & show (s.skip-count) & " skipped / "
+    & show (s.total) & " total"
+
+Section: Failure Report
+
+  format-failures : TestSuite -> Text
+  format-failures (suite) =
+    format-failures-loop (suite.results) 0 (list-length (suite.results)) ""
+
+  format-failures-loop : List TestResult, Integer, Integer, Text -> Text
+  format-failures-loop (results) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at results i
+    in if test-passed r then format-failures-loop results (i + 1) len acc
+    else format-failures-loop results (i + 1) len (acc & format-test-result r & "\n")
+
+Page 1

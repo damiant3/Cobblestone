@@ -1,0 +1,110 @@
+Chapter: Track
+
+ Audio track: PCM sample buffer with volume, pan, mute, solo.
+ Volume and gain use fixed-point scale 1000 (signed). Sample
+ rate is 44100 Hz by convention.
+
+ We say:
+
+Section: Types
+
+  AudioClip = record {
+    acl-samples : List Integer,
+    acl-start : Integer,
+    acl-length : Integer,
+    acl-gain : Integer
+  }
+
+  AudioTrack = record {
+    at-name : Text,
+    at-clips : List AudioClip,
+    at-clip-count : Integer,
+    at-volume : Integer,
+    at-pan : Integer,
+    at-mute : Boolean,
+    at-solo : Boolean
+  }
+
+Section: Construction
+
+  audio-track-new : Text -> AudioTrack
+  audio-track-new (name) = AudioTrack {
+    at-name = name,
+    at-clips = [],
+    at-clip-count = 0,
+    at-volume = 1000,
+    at-pan = 0,
+    at-mute = False,
+    at-solo = False
+  }
+
+  audio-clip-new : List Integer, Integer, Integer -> AudioClip
+  audio-clip-new (samples) (start) (gain) = AudioClip {
+    acl-samples = samples,
+    acl-start = start,
+    acl-length = list-length samples,
+    acl-gain = gain
+  }
+
+Section: Track Operations
+
+  track-add-clip : AudioTrack, AudioClip -> AudioTrack
+  track-add-clip (track) (clip) = AudioTrack {
+    at-name = track.at-name,
+    at-clips = list-push (track.at-clips) clip,
+    at-clip-count = track.at-clip-count + 1,
+    at-volume = track.at-volume,
+    at-pan = track.at-pan,
+    at-mute = track.at-mute,
+    at-solo = track.at-solo
+  }
+
+  track-set-volume : AudioTrack, Integer -> AudioTrack
+  track-set-volume (t) (v) = __record-set t "at-volume" v
+
+  track-set-pan : AudioTrack, Integer -> AudioTrack
+  track-set-pan (t) (p) = __record-set t "at-pan" p
+
+  track-set-mute : AudioTrack, Boolean -> AudioTrack
+  track-set-mute (t) (m) = __record-set t "at-mute" m
+
+  track-set-solo : AudioTrack, Boolean -> AudioTrack
+  track-set-solo (t) (s) = __record-set t "at-solo" s
+
+Section: Sample Access
+
+  track-sample-at : AudioTrack, Integer -> Integer
+  track-sample-at (track) (pos) =
+    if track.at-mute then 0
+    else track-clips-sample (track.at-clips) (track.at-clip-count) pos (track.at-volume) 0 0
+
+  track-clips-sample : List AudioClip, Integer, Integer, Integer, Integer, Integer -> Integer
+  track-clips-sample (clips) (count) (pos) (vol) (i) (acc) =
+    if i >= count then acc * vol / 1000
+    else let clip = list-at clips i
+    in let offset = pos - clip.acl-start
+    in let sample = if offset < 0 then 0
+      else if offset >= clip.acl-length then 0
+      else list-at (clip.acl-samples) offset * clip.acl-gain / 1000
+    in track-clips-sample clips count pos vol (i + 1) (acc + sample)
+
+Section: Info
+
+  track-info : AudioTrack -> Text
+  track-info (t) =
+    let mute-str = if t.at-mute then " [M]" else ""
+    in let solo-str = if t.at-solo then " [S]" else ""
+    in t.at-name & ": " & show (t.at-clip-count) & " clips, vol=" & show (t.at-volume) & mute-str & solo-str
+
+  track-total-samples : AudioTrack -> Integer
+  track-total-samples (t) = track-total-loop (t.at-clips) (t.at-clip-count) 0 0
+
+  track-total-loop : List AudioClip, Integer, Integer, Integer -> Integer
+  track-total-loop (clips) (count) (i) (acc) =
+    if i >= count then acc
+    else let clip = list-at clips i
+    in let clip-last = clip.acl-start + clip.acl-length
+    in let new-acc = if clip-last > acc then clip-last else acc
+    in track-total-loop clips count (i + 1) new-acc
+
+Page 1

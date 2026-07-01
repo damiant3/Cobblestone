@@ -1,0 +1,364 @@
+Chapter: Perl Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Perl 5 source code from the IR.
+
+Section: Keywords and Sanitization
+
+  pl-keywords : List Text =
+   ["chomp", "chop", "chr", "crypt", "die", "do", "dump", "each",
+    "else", "elsif", "eval", "exec", "exit", "for", "foreach",
+    "given", "goto", "grep", "if", "keys", "last", "length", "local",
+    "map", "my", "next", "no", "our", "package", "print", "push",
+    "redo", "require", "return", "say", "shift", "sort", "split",
+    "sub", "unless", "until", "use", "values", "warn", "when", "while"]
+
+  pl-is-keyword : Text, Integer -> Boolean
+  pl-is-keyword (name) (i) =
+   if i == list-length pl-keywords then False
+   else if list-at pl-keywords i == name then True
+   else pl-is-keyword name (i + 1)
+
+  pl-sanitize : Text -> Text
+  pl-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if pl-is-keyword s 0 then s & "_v"
+      else s
+
+  pl-escape : Text -> Text
+  pl-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in text-replace s2 "\n" "\\n"
+
+  pl-indent : Integer -> Text
+  pl-indent (n) = if n <= 0 then "" else "    " & pl-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-pl-type-defs : List ATypeDef, Integer -> Text
+  emit-pl-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-pl-type-def (list-at tds i) & emit-pl-type-defs tds (i + 1)
+
+  emit-pl-type-def : ATypeDef -> Text
+  emit-pl-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     "sub new_" & pl-sanitize (name.value) & " { my %h = @_; return \\%h; }\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-pl-ctors ctors 0
+
+  emit-pl-ctors : List AVariantCtorDef, Integer -> Text
+  emit-pl-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in "sub new_" & pl-sanitize (c.name.value) & " { my %h = @_; $h{tag} = \"" & c.name.value & "\"; return \\%h; }\n" & emit-pl-ctors ctors (i + 1)
+
+Section: Expression Emission
+
+  emit-pl-expr : IRExpr, List ArityEntry -> Text
+  emit-pl-expr (e) (arities) = emit-pl-expr-at e arities 0
+
+  emit-pl-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-pl-expr-at (e) (arities) (depth) =
+   if depth >= 256 then "undef"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> integer-to-text n
+    is IrTextLit (s) (sp) -> "\"" & pl-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "1" else "0"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-pl-name n arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-pl-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-pl-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-pl-expr-at c arities (depth + 1) & " ? " & emit-pl-expr-at t arities (depth + 1) & " : " & emit-pl-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(sub { my $" & pl-sanitize name & " = " & emit-pl-expr-at val arities (depth + 1) & "; " & emit-pl-expr-at body arities (depth + 1) & " })->()"
+    is IrApply (f) (a) (ty) (sp) -> emit-pl-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "sub { my (" & emit-pl-lambda-params params 0 & ") = @_; " & emit-pl-expr body arities & " }"
+    is IrList (elems) (ty) (sp) -> "[" & emit-pl-list-elems elems 0 arities & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-pl-match scrut branches arities depth
+    is IrAct (stmts) (ty) (sp) -> emit-pl-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-pl-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-pl-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> "new_" & pl-sanitize name & "(" & emit-pl-field-vals fields 0 arities & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-pl-expr-at rec arities (depth + 1) & "->{'" & pl-sanitize field & "'}"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(sub { my $r = " & emit-pl-expr-at rec arities (depth + 1) & "; $r->{'" & pl-sanitize field & "'} = " & emit-pl-expr-at val arities (depth + 1) & "; $r })->()"
+    is IrFork (body) (ty) (sp) -> emit-pl-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-pl-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(eval { " & emit-pl-act body arities & " } // " & emit-pl-act fb arities & ")"
+    is IrError (msg) (ty) (sp) -> "die(\"" & pl-escape msg & "\")"
+
+  emit-pl-name : Text, List ArityEntry -> Text
+  emit-pl-name (n) (arities) =
+   if n == "True" then "1"
+   else if n == "False" then "0"
+   else if n == "Nothing" then "undef"
+   else let ar = lookup-arity arities n
+   in if ar == 0 then pl-sanitize n & "()"
+      else "\\&" & pl-sanitize n
+
+  emit-pl-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-pl-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(" & emit-pl-expr l arities & " . " & emit-pl-expr r arities & ")"
+    is IrAppendList -> "[@{" & emit-pl-expr l arities & "}, @{" & emit-pl-expr r arities & "}]"
+    is IrConsList -> "[" & emit-pl-expr l arities & ", @{" & emit-pl-expr r arities & "}]"
+    is IrEq -> "(" & emit-pl-expr l arities & " == " & emit-pl-expr r arities & ")"
+    is IrNotEq -> "(" & emit-pl-expr l arities & " != " & emit-pl-expr r arities & ")"
+    is IrApproxEq -> "(" & emit-pl-expr l arities & " == " & emit-pl-expr r arities & ")"
+    is IrApproxEqExact -> "(" & emit-pl-expr l arities & " == " & emit-pl-expr r arities & ")"
+    is IrAnd -> "(" & emit-pl-expr l arities & " && " & emit-pl-expr r arities & ")"
+    is IrOr -> "(" & emit-pl-expr l arities & " || " & emit-pl-expr r arities & ")"
+    is IrPowInt -> "(" & emit-pl-expr l arities & " ** " & emit-pl-expr r arities & ")"
+    is IrDivInt -> "int(" & emit-pl-expr l arities & " / " & emit-pl-expr r arities & ")"
+    is IrRemInt -> "(" & emit-pl-expr l arities & " % " & emit-pl-expr r arities & ")"
+    is IrAddVec -> "[map { " & emit-pl-expr l arities & "->[$_] + " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
+    is IrSubVec -> "[map { " & emit-pl-expr l arities & "->[$_] - " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
+    is IrMulVec -> "[map { " & emit-pl-expr l arities & "->[$_] * " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
+    is IrDivVec -> "[map { " & emit-pl-expr l arities & "->[$_] / " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
+    is otherwise -> "(" & emit-pl-expr l arities & " " & pl-bin-op op & " " & emit-pl-expr r arities & ")"
+
+  pl-bin-op : IRBinaryOp -> Text
+  pl-bin-op (op) =
+   when op
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrRemInt -> "%"
+    is IrPowInt -> "**"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq -> "=="
+    is IrApproxEqExact -> "=="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText -> "."
+    is IrAppendList -> "+"
+    is IrConsList -> "+"
+
+  emit-pl-lambda-params : List IRParam, Integer -> Text
+  emit-pl-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then "$" & pl-sanitize ((list-at params i).name)
+   else "$" & pl-sanitize ((list-at params i).name) & ", " & emit-pl-lambda-params params (i + 1)
+
+  emit-pl-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-pl-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-pl-expr (list-at elems i) arities
+   else emit-pl-expr (list-at elems i) arities & ", " & emit-pl-list-elems elems (i + 1) arities
+
+  emit-pl-field-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-pl-field-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & "'" & pl-sanitize (f.name) & "' => " & emit-pl-expr (f.value) arities & emit-pl-field-vals fields (i + 1) arities
+
+  emit-pl-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-pl-match (scrut) (branches) (arities) (depth) =
+   "(sub { my $_s = " & emit-pl-expr scrut arities & "; " & emit-pl-match-body branches 0 arities depth & " })->()"
+
+  emit-pl-match-body : List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-pl-match-body (branches) (i) (arities) (depth) =
+   if i == list-length branches then "die('Non-exhaustive match')"
+   else let b = list-at branches i
+   in emit-pl-match-arm (b.pattern) (b.body) branches i arities depth
+
+  emit-pl-match-arm : IRPat, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-pl-match-arm (pat) (body) (branches) (i) (arities) (depth) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "($_s == " & text & " ? " & emit-pl-expr body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "($_s->{'tag'} eq \"" & name & "\" ? " & emit-pl-ctor-bind subs body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
+    is IrVarPat (name) (ty) (sp) -> "(sub { my $" & pl-sanitize name & " = $_s; " & emit-pl-expr body arities & " })->()"
+    is IrWildPat (sp) -> emit-pl-expr body arities
+    is IrVecPat (pats) (ty) (sp) -> emit-pl-expr body arities
+
+  emit-pl-ctor-bind : List IRPat, IRExpr, List ArityEntry -> Text
+  emit-pl-ctor-bind (subs) (body) (arities) =
+   "(sub { " & emit-pl-ctor-bindings subs 0 & emit-pl-expr body arities & " })->()"
+
+  emit-pl-ctor-bindings : List IRPat, Integer -> Text
+  emit-pl-ctor-bindings (subs) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> "my $" & pl-sanitize name & " = $_s->{'field" & integer-to-text i & "'}; "
+    is otherwise -> "") & emit-pl-ctor-bindings subs (i + 1)
+
+  emit-pl-act : List IRActStmt, List ArityEntry -> Text
+  emit-pl-act (stmts) (arities) =
+   "(sub { " & emit-pl-act-stmts stmts 0 arities & " })->()"
+
+  emit-pl-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-pl-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then "undef"
+   else let s = list-at stmts i
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "my $" & pl-sanitize name & " = " & emit-pl-expr val arities & "; "
+    is IrDoExec (e) (sp) -> emit-pl-expr e arities & "; ") & (if i < list-length stmts - 1 then emit-pl-act-stmts stmts (i + 1) arities else "")
+
+Section: Apply Emission
+
+  emit-pl-apply : IRExpr, List ArityEntry -> Text
+  emit-pl-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     let bi = pl-try-builtin n args arities
+     in if text-length bi > 0 then bi
+     else pl-sanitize n & "(" & emit-pl-apply-args args arities 0 & ")"
+    is otherwise -> emit-pl-expr root arities & "->(" & emit-pl-apply-args args arities 0 & ")"
+
+  emit-pl-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-pl-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-pl-expr (list-at args i) arities
+        else emit-pl-expr (list-at args i) arities & ", " & emit-pl-apply-args args arities (i + 1)
+
+  PlBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-pl-emitter-pos : List PlBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-pl-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-pl-emitter-pos entries name lo mid
+      else bsearch-pl-emitter-pos entries name (mid + 1) hi
+
+  sort-pl-emitters : List PlBuiltinEmitter -> List PlBuiltinEmitter
+  sort-pl-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  pl-builtin-emitters : List PlBuiltinEmitter = sort-pl-emitters [
+   PlBuiltinEmitter { name = "char-at", emit = \args arities -> "ord(substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", 1))" },
+   PlBuiltinEmitter { name = "char-code", emit = \args arities -> emit-pl-expr (list-at args 0) arities },
+   PlBuiltinEmitter { name = "char-to-text", emit = \args arities -> "chr(" & emit-pl-expr (list-at args 0) arities & ")" },
+   PlBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-pl-expr (list-at args 0) arities & " % " & emit-pl-expr (list-at args 1) arities & ")" },
+   PlBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "\"\" . " & emit-pl-expr (list-at args 0) arities },
+   PlBuiltinEmitter { name = "list-at", emit = \args arities -> emit-pl-expr (list-at args 0) arities & "->[" & emit-pl-expr (list-at args 1) arities & "]" },
+   PlBuiltinEmitter { name = "list-length", emit = \args arities -> "scalar(@{" & emit-pl-expr (list-at args 0) arities & "})" },
+   PlBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-pl-expr (list-at args 0) arities & ")" },
+   PlBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "say " & emit-pl-expr (list-at args 0) arities },
+   PlBuiltinEmitter { name = "process-exit", emit = \args arities -> "exit(" & emit-pl-expr (list-at args 0) arities & ")" },
+   PlBuiltinEmitter { name = "read-file", emit = \args arities -> "(sub { local $/; open my $fh, '<', " & emit-pl-expr (list-at args 0) arities & "; <$fh> })->()" },
+   PlBuiltinEmitter { name = "show", emit = \args arities -> "\"\" . " & emit-pl-expr (list-at args 0) arities },
+   PlBuiltinEmitter { name = "substring", emit = \args arities -> "substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", " & emit-pl-expr (list-at args 2) arities & ")" },
+   PlBuiltinEmitter { name = "text-contains", emit = \args arities -> "(index(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ") >= 0)" },
+   PlBuiltinEmitter { name = "text-length", emit = \args arities -> "length(" & emit-pl-expr (list-at args 0) arities & ")" },
+   PlBuiltinEmitter { name = "text-replace", emit = \args arities -> "(sub { my $s = " & emit-pl-expr (list-at args 0) arities & "; $s =~ s/\\Q" & emit-pl-expr (list-at args 1) arities & "\\E/" & emit-pl-expr (list-at args 2) arities & "/g; $s })->()" },
+   PlBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "int(" & emit-pl-expr (list-at args 0) arities & ")" },
+   PlBuiltinEmitter { name = "write-file", emit = \args arities -> "(sub { open my $fh, '>', " & emit-pl-expr (list-at args 0) arities & "; print $fh " & emit-pl-expr (list-at args 1) arities & " })->()" }
+  ]
+
+  is-pl-builtin-name : Text -> Boolean
+  is-pl-builtin-name (n) =
+   let len = list-length pl-builtin-emitters
+   in let pos = bsearch-pl-emitter-pos pl-builtin-emitters n 0 len
+   in if pos >= len then False
+      else (list-at pl-builtin-emitters pos).name == n
+
+  pl-try-builtin : Text, List IRExpr, List ArityEntry -> Text
+  pl-try-builtin (n) (args) (arities) =
+   let len = list-length pl-builtin-emitters
+   in let pos = bsearch-pl-emitter-pos pl-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at pl-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
+
+Section: Definition Emission
+
+  emit-pl-def : IRDef, List ArityEntry -> Text
+  emit-pl-def (d) (arities) =
+   let name = pl-sanitize (d.name)
+   in "sub " & name & " {\n    my (" & emit-pl-lambda-params (d.params) 0 & ") = @_;\n    " & emit-pl-expr (d.body) arities & "\n}\n\n"
+
+  emit-pl-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-pl-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-pl-def (list-at defs i) arities & emit-pl-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-perl-chapter : IRChapter, List ATypeDef -> Text
+  emit-perl-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "use strict;\nuse warnings;\nuse feature 'say';\n\n"
+   in let types-text = emit-pl-type-defs type-defs 0
+   in let defs-text = emit-pl-defs (m.defs) 0 arities
+   in let entry = pl-emit-entry (m.defs)
+   in header & types-text & defs-text & entry
+
+  pl-emit-entry : List IRDef -> Text
+  pl-emit-entry (defs) = pl-emit-entry-loop defs 0
+
+  pl-emit-entry-loop : List IRDef, Integer -> Text
+  pl-emit-entry-loop (defs) (i) =
+   if i >= list-length defs then ""
+   else let d = list-at defs i
+   in if d.name == opening-entry-point then
+    if list-length (d.params) == 0 then pl-sanitize opening-entry-point & "();\n" else ""
+   else pl-emit-entry-loop defs (i + 1)
+
+Page 1

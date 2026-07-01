@@ -1,0 +1,143 @@
+Chapter: AccessControl
+  cites Foreword chapter Maybe
+
+ AccessControl maps subjects to resources with explicit permission
+ grants (read, write, execute, admin). Access checks walk the
+ permission table and return allow or deny with no ambient authority.
+
+ We say:
+
+Section: Permission Types
+
+  Permission =
+    | PermRead
+    | PermWrite
+    | PermExecute
+    | PermAdmin
+
+  AccessEntry = record {
+    subject : Text,
+    resource : Text,
+    permissions : List Permission
+  }
+
+  AccessTable = record {
+    entries : List AccessEntry,
+    count : Integer between 0 and 65535
+  }
+
+Section: Table Operations
+
+  acl-empty : AccessTable
+  acl-empty = AccessTable { entries = [], count = 0 }
+
+  acl-grant : AccessTable, Text, Text, Permission -> AccessTable
+  acl-grant (table) (subject) (resource) (perm) =
+    let existing = acl-find-entry table subject resource
+    in when existing
+      is None ->
+        let entry = AccessEntry { subject = subject, resource = resource, permissions = [perm] }
+        in AccessTable { entries = list-push (table.entries) entry, count = table.count + 1 }
+      is Just (idx) ->
+        let entry = list-at (table.entries) idx
+        in if has-permission (entry.permissions) perm 0 (list-length (entry.permissions)) then table
+        else let updated = AccessEntry { subject = entry.subject, resource = entry.resource, permissions = list-push (entry.permissions) perm }
+        in AccessTable { entries = list-set-at (table.entries) idx updated, count = table.count }
+
+  acl-revoke : AccessTable, Text, Text, Permission -> AccessTable
+  acl-revoke (table) (subject) (resource) (perm) =
+    let existing = acl-find-entry table subject resource
+    in when existing
+      is None -> table
+      is Just (idx) ->
+        let entry = list-at (table.entries) idx
+        in let filtered = filter-perms (entry.permissions) perm 0 (list-length (entry.permissions)) []
+        in if list-length filtered == 0 then
+          let new-entries = remove-at-index (table.entries) idx 0 (table.count) []
+          in AccessTable { entries = new-entries, count = table.count - 1 }
+        else let updated = AccessEntry { subject = entry.subject, resource = entry.resource, permissions = filtered }
+        in AccessTable { entries = list-set-at (table.entries) idx updated, count = table.count }
+
+  acl-check : AccessTable, Text, Text, Permission -> Boolean
+  acl-check (table) (subject) (resource) (perm) =
+    let existing = acl-find-entry table subject resource
+    in when existing
+      is None -> False
+      is Just (idx) ->
+        let entry = list-at (table.entries) idx
+        in has-permission (entry.permissions) perm 0 (list-length (entry.permissions))
+
+Section: Helpers
+
+  acl-find-entry : AccessTable, Text, Text -> Maybe Integer
+  acl-find-entry (table) (subject) (resource) =
+    find-entry-loop (table.entries) subject resource 0 (table.count)
+
+  find-entry-loop : List AccessEntry, Text, Text, Integer, Integer -> Maybe Integer
+  find-entry-loop (entries) (subject) (resource) (i) (len) =
+    if i >= len then None
+    else let e = list-at entries i
+    in if e.subject == subject then if e.resource == resource then Just i else find-entry-loop entries subject resource (i + 1) len
+    else find-entry-loop entries subject resource (i + 1) len
+
+  has-permission : List Permission, Permission, Integer, Integer -> Boolean
+  has-permission (perms) (target) (i) (len) =
+    if i >= len then False
+    else if perm-eq (list-at perms i) target then True
+    else has-permission perms target (i + 1) len
+
+  perm-eq : Permission, Permission -> Boolean
+  perm-eq (a) (b) =
+    perm-rank a == perm-rank b
+
+  perm-rank : Permission -> Integer
+  perm-rank (p) = when p
+    is PermRead -> 0
+    is PermWrite -> 1
+    is PermExecute -> 2
+    is PermAdmin -> 3
+
+  filter-perms : List Permission, Permission, Integer, Integer, List Permission -> List Permission
+  filter-perms (perms) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at perms i
+    in if perm-eq p target then filter-perms perms target (i + 1) len acc
+    else filter-perms perms target (i + 1) len (list-push acc p)
+
+  remove-at-index : List AccessEntry, Integer, Integer, Integer, List AccessEntry -> List AccessEntry
+  remove-at-index (entries) (skip) (i) (len) (acc) =
+    if i >= len then acc
+    else if i == skip then remove-at-index entries skip (i + 1) len acc
+    else remove-at-index entries skip (i + 1) len (list-push acc (list-at entries i))
+
+Section: Queries
+
+  acl-count : AccessTable -> Integer
+  acl-count (table) = table.count
+
+  acl-permissions-for : AccessTable, Text, Text -> List Permission
+  acl-permissions-for (table) (subject) (resource) =
+    let existing = acl-find-entry table subject resource
+    in when existing
+      is None -> []
+      is Just (idx) -> (list-at (table.entries) idx).permissions
+
+Section: Formatting
+
+  format-permission : Permission -> Text
+  format-permission (p) = when p
+    is PermRead -> "read"
+    is PermWrite -> "write"
+    is PermExecute -> "execute"
+    is PermAdmin -> "admin"
+
+  format-acl-entry : AccessEntry -> Text
+  format-acl-entry (e) = e.subject & " -> " & e.resource & " [" & format-perm-list (e.permissions) 0 (list-length (e.permissions)) "" & "]"
+
+  format-perm-list : List Permission, Integer, Integer, Text -> Text
+  format-perm-list (perms) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else ","
+    in format-perm-list perms (i + 1) len (acc & sep & format-permission (list-at perms i))
+
+Page 1

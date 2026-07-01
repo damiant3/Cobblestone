@@ -1,0 +1,137 @@
+Chapter: Tftp
+  cites Net chapter Ethernet
+  cites Foreword chapter CCE
+
+ TFTP client (RFC 1350). Read/write files over UDP in 512-byte blocks.
+ Pure logic — no I/O. Packets are UDP payloads on port 69.
+
+ We say:
+
+Section: Constants
+  tftp-port : Integer = 69
+  tftp-block-size : Integer = 512
+
+  tftp-op-rrq : Integer = 1
+  tftp-op-wrq : Integer = 2
+  tftp-op-data : Integer = 3
+  tftp-op-ack : Integer = 4
+  tftp-op-error : Integer = 5
+
+  tftp-err-undefined : Integer = 0
+  tftp-err-not-found : Integer = 1
+  tftp-err-access : Integer = 2
+  tftp-err-disk-full : Integer = 3
+  tftp-err-illegal-op : Integer = 4
+  tftp-err-unknown-tid : Integer = 5
+  tftp-err-exists : Integer = 6
+
+Section: Packet Types
+  TftpPacket =
+    | TftpRrq (Text)
+    | TftpWrq (Text)
+    | TftpData (Integer) (List Integer)
+    | TftpAck (Integer)
+    | TftpError (Integer) (Text)
+    | TftpInvalid
+
+Section: Request Construction
+  tftp-build-rrq : Text -> List Integer
+  tftp-build-rrq (filename) =
+    write-be16 tftp-op-rrq & tftp-encode-string filename & [0] & tftp-encode-string "octet" & [0]
+
+  tftp-build-wrq : Text -> List Integer
+  tftp-build-wrq (filename) =
+    write-be16 tftp-op-wrq & tftp-encode-string filename & [0] & tftp-encode-string "octet" & [0]
+
+  tftp-build-data : Integer, List Integer -> List Integer
+  tftp-build-data (block-num) (block-data) =
+    write-be16 tftp-op-data & write-be16 block-num & block-data
+
+  tftp-build-ack : Integer -> List Integer
+  tftp-build-ack (block-num) = write-be16 tftp-op-ack & write-be16 block-num
+
+  tftp-build-error : Integer, Text -> List Integer
+  tftp-build-error (code) (msg) =
+    write-be16 tftp-op-error & write-be16 code & tftp-encode-string msg & [0]
+
+  tftp-encode-string : Text -> List Integer
+  tftp-encode-string (s) = tftp-encode-loop s 0 (text-length s) []
+
+  tftp-encode-loop : Text, Integer, Integer, List Integer -> List Integer
+  tftp-encode-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else tftp-encode-loop s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
+
+Section: Packet Parsing
+  tftp-parse : List Integer -> TftpPacket
+  tftp-parse (data) =
+    let dlen = list-length data
+    in if dlen < 4 then TftpInvalid
+    else let op = read-be16 data 0
+    in if op == tftp-op-data then
+      let block = read-be16 data 2
+      in TftpData block (tftp-extract-bytes data 4 dlen [])
+    else if op == tftp-op-ack then TftpAck (read-be16 data 2)
+    else if op == tftp-op-error then
+      let code = read-be16 data 2
+      in let msg = tftp-decode-string data 4 dlen ""
+      in TftpError code msg
+    else if op == tftp-op-rrq then TftpRrq (tftp-decode-string data 2 dlen "")
+    else if op == tftp-op-wrq then TftpWrq (tftp-decode-string data 2 dlen "")
+    else TftpInvalid
+
+  tftp-extract-bytes : List Integer, Integer, Integer, List Integer -> List Integer
+  tftp-extract-bytes (data) (i) (dlen) (acc) =
+    if i >= dlen then acc
+    else tftp-extract-bytes data (i + 1) dlen (list-push acc (list-at data i))
+
+  tftp-decode-string : List Integer, Integer, Integer, Text -> Text
+  tftp-decode-string (data) (i) (dlen) (acc) =
+    if i >= dlen then acc
+    else let b = list-at data i
+    in if b == 0 then acc
+    else tftp-decode-string data (i + 1) dlen (acc & char-to-text (code-to-char (from-unicode b)))
+
+Section: Transfer State
+  TftpTransfer = record {
+    filename : Text,
+    server-port : Integer between 0 and 65535,
+    block-num : Integer between 0 and 65535,
+    data : List Integer,
+    complete : Boolean,
+    error-msg : Text
+  }
+
+  tftp-transfer-new : Text -> TftpTransfer
+  tftp-transfer-new (filename) = TftpTransfer { filename = filename, server-port = 0, block-num = 0, data = [], complete = False, error-msg = "" }
+
+  tftp-receive-data : TftpTransfer, Integer, List Integer -> TftpTransfer
+  tftp-receive-data (t) (block) (block-data) =
+    let is-last = list-length block-data < tftp-block-size
+    in TftpTransfer { filename = t.filename, server-port = t.server-port, block-num = block, data = t.data & block-data, complete = is-last, error-msg = "" }
+
+  tftp-receive-error : TftpTransfer, Text -> TftpTransfer
+  tftp-receive-error (t) (msg) = TftpTransfer { filename = t.filename, server-port = t.server-port, block-num = t.block-num, data = t.data, complete = True, error-msg = msg }
+
+Section: Queries
+  tftp-is-last-block : List Integer -> Boolean
+  tftp-is-last-block (block-data) = list-length block-data < tftp-block-size
+
+  tftp-transfer-size : TftpTransfer -> Integer
+  tftp-transfer-size (t) = list-length (t.data)
+
+Section: Formatting
+  format-tftp-packet : TftpPacket -> Text
+  format-tftp-packet (p) = when p
+    is TftpRrq (f) -> "RRQ " & f
+    is TftpWrq (f) -> "WRQ " & f
+    is TftpData (b) (d) -> "DATA block=" & show b & " len=" & show (list-length d)
+    is TftpAck (b) -> "ACK " & show b
+    is TftpError (c) (m) -> "ERROR " & show c & " " & m
+    is TftpInvalid -> "INVALID"
+
+  format-tftp-transfer : TftpTransfer -> Text
+  format-tftp-transfer (t) =
+    t.filename & " block=" & show (t.block-num) & " size=" & show (tftp-transfer-size t) & " done=" & show (t.complete)
+
+Page 1

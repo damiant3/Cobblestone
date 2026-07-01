@@ -1,0 +1,156 @@
+Chapter: ColorPicker
+  cites Game chapter Color
+
+ HSV color model and color picker state. HSV channels are Real
+ (hue 0.0-360.0, saturation 0.0-1.0, value 0.0-1.0).
+ Converts between HSV and packed RGB Integer.
+
+ We say:
+
+Section: Types
+
+  HsvColor = record {
+    hsv-h : Real,
+    hsv-s : Real,
+    hsv-v : Real
+  }
+
+  PickerState = record {
+    pk-hsv : HsvColor,
+    pk-rgb : Integer,
+    pk-history : List Integer,
+    pk-history-count : Integer
+  }
+
+Section: HSV Construction
+
+  hsv-new : Real, Real, Real -> HsvColor
+  hsv-new (h) (s) (v) = HsvColor {
+    hsv-h = hsv-wrap-hue h,
+    hsv-s = hsv-clamp-real s 0.0 1.0,
+    hsv-v = hsv-clamp-real v 0.0 1.0
+  }
+
+  hsv-wrap-hue : Real -> Real
+  hsv-wrap-hue (h) =
+    let m = h - real-from-int (real-to-int (h / 360.0)) * 360.0
+    in if m < 0.0 then m + 360.0 else m
+
+  hsv-clamp : Integer, Integer, Integer -> Integer
+  hsv-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  hsv-clamp-real : Real, Real, Real -> Real
+  hsv-clamp-real (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: HSV to RGB
+
+  hsv-to-rgb : HsvColor -> Integer
+  hsv-to-rgb (hsv) =
+    let h = hsv.hsv-h
+    in let s = hsv.hsv-s
+    in let v = hsv.hsv-v
+    in let c = v * s
+    in let sector = real-to-int (h / 60.0)
+    in let frac = h - real-from-int sector * 60.0
+    in let x = c * (1.0 - real-abs (frac / 60.0 * 2.0 - 1.0))
+    in let m = v - c
+    in let r1 = if sector == 0 then c else if sector == 1 then x else if sector == 2 then 0.0 else if sector == 3 then 0.0 else if sector == 4 then x else c
+    in let g1 = if sector == 0 then x else if sector == 1 then c else if sector == 2 then c else if sector == 3 then x else if sector == 4 then 0.0 else 0.0
+    in let b1 = if sector == 0 then 0.0 else if sector == 1 then 0.0 else if sector == 2 then x else if sector == 3 then c else if sector == 4 then c else x
+    in let r = real-to-int ((r1 + m) * 255.0)
+    in let g = real-to-int ((g1 + m) * 255.0)
+    in let b = real-to-int ((b1 + m) * 255.0)
+    in hsv-clamp r 0 255 * 65536 + hsv-clamp g 0 255 * 256 + hsv-clamp b 0 255
+
+  real-abs : Real -> Real
+  real-abs (n) = if n < 0.0 then 0.0 - n else n
+
+Section: RGB to HSV
+
+  rgb-to-hsv : Integer -> HsvColor
+  rgb-to-hsv (rgb) =
+    let r = real-from-int (rgb / 65536) / 255.0
+    in let g = real-from-int (rgb / 256 - rgb / 65536 * 256) / 255.0
+    in let b = real-from-int (rgb - rgb / 256 * 256) / 255.0
+    in let mx = hsv-max3 r g b
+    in let mn = hsv-min3 r g b
+    in let delta = mx - mn
+    in let v = mx
+    in let s = if mx < 0.001 then 0.0 else delta / mx
+    in let h = if delta < 0.001 then 0.0
+      else if mx ~0 r then (g - b) * 60.0 / delta
+      else if mx ~0 g then 120.0 + (b - r) * 60.0 / delta
+      else 240.0 + (r - g) * 60.0 / delta
+    in HsvColor { hsv-h = hsv-wrap-hue h, hsv-s = s, hsv-v = v }
+
+  hsv-max3 : Real, Real, Real -> Real
+  hsv-max3 (a) (b) (c) =
+    let m = if a > b then a else b
+    in if m > c then m else c
+
+  hsv-min3 : Real, Real, Real -> Real
+  hsv-min3 (a) (b) (c) =
+    let m = if a < b then a else b
+    in if m < c then m else c
+
+Section: Picker State
+
+  picker-new : Integer -> PickerState
+  picker-new (initial-rgb) = PickerState {
+    pk-hsv = rgb-to-hsv initial-rgb,
+    pk-rgb = initial-rgb,
+    pk-history = [initial-rgb],
+    pk-history-count = 1
+  }
+
+  picker-set-hsv : PickerState, Real, Real, Real -> PickerState
+  picker-set-hsv (pk) (h) (s) (v) =
+    let hsv = hsv-new h s v
+    in let rgb = hsv-to-rgb hsv
+    in PickerState {
+      pk-hsv = hsv,
+      pk-rgb = rgb,
+      pk-history = list-push (pk.pk-history) rgb,
+      pk-history-count = pk.pk-history-count + 1
+    }
+
+  picker-set-rgb : PickerState, Integer -> PickerState
+  picker-set-rgb (pk) (rgb) = PickerState {
+    pk-hsv = rgb-to-hsv rgb,
+    pk-rgb = rgb,
+    pk-history = list-push (pk.pk-history) rgb,
+    pk-history-count = pk.pk-history-count + 1
+  }
+
+  picker-rgb : PickerState -> Integer
+  picker-rgb (pk) = pk.pk-rgb
+
+Section: Color Operations
+
+  color-lighten : Integer, Real -> Integer
+  color-lighten (rgb) (amount) =
+    let hsv = rgb-to-hsv rgb
+    in hsv-to-rgb (hsv-new (hsv.hsv-h) (hsv.hsv-s) (hsv-clamp-real (hsv.hsv-v + amount) 0.0 1.0))
+
+  color-darken : Integer, Real -> Integer
+  color-darken (rgb) (amount) =
+    let hsv = rgb-to-hsv rgb
+    in hsv-to-rgb (hsv-new (hsv.hsv-h) (hsv.hsv-s) (hsv-clamp-real (hsv.hsv-v - amount) 0.0 1.0))
+
+  color-saturate : Integer, Real -> Integer
+  color-saturate (rgb) (amount) =
+    let hsv = rgb-to-hsv rgb
+    in hsv-to-rgb (hsv-new (hsv.hsv-h) (hsv-clamp-real (hsv.hsv-s + amount) 0.0 1.0) (hsv.hsv-v))
+
+  color-complement : Integer -> Integer
+  color-complement (rgb) =
+    let hsv = rgb-to-hsv rgb
+    in hsv-to-rgb (hsv-new (hsv.hsv-h + 180.0) (hsv.hsv-s) (hsv.hsv-v))
+
+Section: Info
+
+  picker-info : PickerState -> Text
+  picker-info (pk) =
+    "rgb=" & show (pk.pk-rgb) & " h=" & show (pk.pk-hsv.hsv-h) & " s=" & show (pk.pk-hsv.hsv-s) & " v=" & show (pk.pk-hsv.hsv-v)
+
+Page 1

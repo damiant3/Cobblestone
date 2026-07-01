@@ -1,0 +1,111 @@
+Chapter: SignedAnnotation
+  cites Works chapter Annotation
+  cites Works chapter Discussion
+  cites Works chapter KeyManager
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ Signed annotations and discussions. Every annotation carries an
+ Ed25519 signature from its author. The trust lattice determines
+ annotation weight — a signed annotation from a trusted author
+ outweighs an unsigned one. Annotations from untrusted sources
+ are flagged but preserved (the repository never forgets).
+
+ We say:
+
+Section: Signed Annotation
+
+  SignedAnnotation = record {
+    annotation : Annotation,
+    signature : List Integer,
+    signer-fingerprint : Text,
+    verified : Boolean
+  }
+
+  sign-annotation : Keypair, Annotation -> SignedAnnotation
+  sign-annotation (kp) (a) =
+    let content = annotation-content-string (a.target) (a.kind) (a.author) (a.body)
+    in let sig = sign-content kp content
+    in SignedAnnotation {
+      annotation = a,
+      signature = sig,
+      signer-fingerprint = kp.fingerprint,
+      verified = True
+    }
+
+  verify-annotation : Keyring, SignedAnnotation -> SignedAnnotation
+  verify-annotation (kr) (sa) =
+    let lookup = keyring-lookup kr (sa.signer-fingerprint)
+    in when lookup
+      is None -> __record-set sa "verified" False
+      is Just (entry) ->
+        let content = annotation-content-string (sa.annotation.target) (sa.annotation.kind) (sa.annotation.author) (sa.annotation.body)
+        in let valid = verify-signature (entry.public-key) content (sa.signature)
+        in __record-set sa "verified" valid
+
+Section: Signed Discussion Post
+
+  SignedPost = record {
+    post : Post,
+    signature : List Integer,
+    signer-fingerprint : Text,
+    verified : Boolean
+  }
+
+  sign-post : Keypair, Post -> SignedPost
+  sign-post (kp) (p) =
+    let content = p.thread-id & "|" & p.author & "|" & p.body & "|" & p.parent-hash
+    in let sig = sign-content kp content
+    in SignedPost { post = p, signature = sig, signer-fingerprint = kp.fingerprint, verified = True }
+
+Section: Trust-Weighted Annotations
+
+  AnnotationWeight = record {
+    annotation : SignedAnnotation,
+    trust-score : Integer,
+    effective-weight : Integer
+  }
+
+  compute-annotation-weight : TrustLattice, SignedAnnotation -> AnnotationWeight
+  compute-annotation-weight (lat) (sa) =
+    let trust = if sa.verified then lattice-trust-score lat (sa.annotation.author) else 0
+    in let kind-multiplier = annotation-kind-weight (sa.annotation.kind)
+    in AnnotationWeight {
+      annotation = sa,
+      trust-score = trust,
+      effective-weight = trust * kind-multiplier / 10000
+    }
+
+  annotation-kind-weight : AnnotationKind -> Integer
+  annotation-kind-weight (k) = when k
+    is Doctrine -> 10000
+    is Invariant -> 8000
+    is Warning -> 7000
+    is Rationale -> 5000
+    is Discovery -> 3000
+    is Todo -> 2000
+
+Section: Annotation Authority
+
+  AnnotationAuthority =
+    | Authoritative
+    | Advisory
+    | Untrusted
+    | Unsigned
+
+  classify-authority : AnnotationWeight -> AnnotationAuthority
+  classify-authority (aw) =
+    if aw.annotation.verified == False then
+      if list-length (aw.annotation.signature) == 0 then Unsigned else Untrusted
+    else if aw.trust-score >= 8000 then Authoritative
+    else Advisory
+
+  authority-label : AnnotationAuthority -> Text
+  authority-label (a) = when a
+    is Authoritative -> "AUTHORITATIVE"
+    is Advisory -> "advisory"
+    is Untrusted -> "UNTRUSTED"
+    is Unsigned -> "unsigned"
+
+Page 1

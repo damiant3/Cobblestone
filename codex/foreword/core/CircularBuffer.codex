@@ -1,0 +1,152 @@
+Chapter: CircularBuffer
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+  cites Foreword chapter MathLib
+
+ Fixed-capacity circular buffer of integers. O(1) push and pop from
+ both ends. When full, push-back overwrites the oldest entry. Backed
+ by a flat list with head and tail indices that wrap around modulo the
+ capacity.
+
+ A CircBuf is a record containing:
+   cb-data     -- flat storage array.
+   cb-head     -- index of the front element.
+   cb-tail     -- index of the next write position.
+   cb-count    -- number of elements currently stored.
+   cb-capacity -- maximum number of elements.
+
+ To circbuf-new gives CircBuf,
+   creating an empty circular buffer with the given capacity.
+
+ To circbuf-push-back gives CircBuf,
+   appending a value at the tail; overwrites the head if full.
+
+ To circbuf-push-front gives CircBuf,
+   prepending a value at the head; overwrites the tail if full.
+
+ To circbuf-pop-front gives CircBuf,
+   removing the front element; returns the buffer unchanged if empty.
+
+ To circbuf-pop-back gives CircBuf,
+   removing the back element; returns the buffer unchanged if empty.
+
+ To circbuf-front gives Maybe Integer,
+   returning Just the front element, or None if empty.
+
+ To circbuf-back gives Maybe Integer,
+   returning Just the back element, or None if empty.
+
+ To circbuf-at gives Maybe Integer,
+   returning Just the element at the given logical index, or None if out of range.
+
+ To circbuf-count gives Integer,
+   returning the number of elements stored.
+
+ To circbuf-capacity gives Integer,
+   returning the maximum capacity.
+
+ To circbuf-is-empty gives Boolean,
+   True if the buffer holds no elements.
+
+ To circbuf-is-full gives Boolean,
+   True if the buffer is at capacity.
+
+ To circbuf-to-list gives List Integer,
+   draining the buffer contents into a list, front to back.
+
+ To circbuf-sum gives Integer,
+   returning the sum of all elements in the buffer.
+
+ We say:
+
+Section: Types
+  CircBuf = record {
+    cb-data : List Integer,
+    cb-head : Integer,
+    cb-tail : Integer,
+    cb-count : Integer,
+    cb-capacity : Integer
+  }
+
+Section: Construction
+  circbuf-new : Integer -> CircBuf
+  circbuf-new (cap) = CircBuf { cb-data = list-zeros cap, cb-head = 0, cb-tail = 0, cb-count = 0, cb-capacity = cap }
+
+Section: Push
+  circbuf-push-back : CircBuf, Integer -> CircBuf
+  circbuf-push-back (buf) (val) =
+    if buf.cb-count >= buf.cb-capacity then
+      let new-data = list-set-at (buf.cb-data) (buf.cb-tail) val
+      in CircBuf { cb-data = new-data, cb-head = math-mod (buf.cb-head + 1) (buf.cb-capacity), cb-tail = math-mod (buf.cb-tail + 1) (buf.cb-capacity), cb-count = buf.cb-count, cb-capacity = buf.cb-capacity }
+    else let new-data = list-set-at (buf.cb-data) (buf.cb-tail) val
+    in CircBuf { cb-data = new-data, cb-head = buf.cb-head, cb-tail = math-mod (buf.cb-tail + 1) (buf.cb-capacity), cb-count = buf.cb-count + 1, cb-capacity = buf.cb-capacity }
+
+  circbuf-push-front : CircBuf, Integer -> CircBuf
+  circbuf-push-front (buf) (val) =
+    let new-head = math-mod (buf.cb-head - 1 + buf.cb-capacity) (buf.cb-capacity)
+    in if buf.cb-count >= buf.cb-capacity then
+      let new-tail = math-mod (buf.cb-tail - 1 + buf.cb-capacity) (buf.cb-capacity)
+      in CircBuf { cb-data = list-set-at (buf.cb-data) new-head val, cb-head = new-head, cb-tail = new-tail, cb-count = buf.cb-count, cb-capacity = buf.cb-capacity }
+    else CircBuf { cb-data = list-set-at (buf.cb-data) new-head val, cb-head = new-head, cb-tail = buf.cb-tail, cb-count = buf.cb-count + 1, cb-capacity = buf.cb-capacity }
+
+Section: Pop
+  circbuf-pop-front : CircBuf -> CircBuf
+  circbuf-pop-front (buf) =
+    if buf.cb-count == 0 then buf
+    else CircBuf { cb-data = buf.cb-data, cb-head = math-mod (buf.cb-head + 1) (buf.cb-capacity), cb-tail = buf.cb-tail, cb-count = buf.cb-count - 1, cb-capacity = buf.cb-capacity }
+
+  circbuf-pop-back : CircBuf -> CircBuf
+  circbuf-pop-back (buf) =
+    if buf.cb-count == 0 then buf
+    else CircBuf { cb-data = buf.cb-data, cb-head = buf.cb-head, cb-tail = math-mod (buf.cb-tail - 1 + buf.cb-capacity) (buf.cb-capacity), cb-count = buf.cb-count - 1, cb-capacity = buf.cb-capacity }
+
+Section: Access
+  circbuf-front : CircBuf -> Maybe Integer
+  circbuf-front (buf) =
+    if buf.cb-count == 0 then None
+    else Just (list-at (buf.cb-data) (buf.cb-head))
+
+  circbuf-back : CircBuf -> Maybe Integer
+  circbuf-back (buf) =
+    if buf.cb-count == 0 then None
+    else Just (list-at (buf.cb-data) (math-mod (buf.cb-tail - 1 + buf.cb-capacity) (buf.cb-capacity)))
+
+  circbuf-at : CircBuf, Integer -> Maybe Integer
+  circbuf-at (buf) (i) =
+    if i < 0 then None
+    else if i >= buf.cb-count then None
+    else Just (list-at (buf.cb-data) (math-mod (buf.cb-head + i) (buf.cb-capacity)))
+
+Section: Queries
+  circbuf-count : CircBuf -> Integer
+  circbuf-count (buf) = buf.cb-count
+
+  circbuf-capacity : CircBuf -> Integer
+  circbuf-capacity (buf) = buf.cb-capacity
+
+  circbuf-is-empty : CircBuf -> Boolean
+  circbuf-is-empty (buf) = buf.cb-count == 0
+
+  circbuf-is-full : CircBuf -> Boolean
+  circbuf-is-full (buf) = buf.cb-count >= buf.cb-capacity
+
+Section: Bulk
+  circbuf-to-list : CircBuf -> List Integer
+  circbuf-to-list (buf) = circbuf-to-list-loop buf 0 (buf.cb-count) []
+
+  circbuf-to-list-loop : CircBuf, Integer, Integer, List Integer -> List Integer
+  circbuf-to-list-loop (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at (buf.cb-data) (math-mod (buf.cb-head + i) (buf.cb-capacity))
+    in circbuf-to-list-loop buf (i + 1) n (list-push acc val)
+
+  circbuf-sum : CircBuf -> Integer
+  circbuf-sum (buf) = circbuf-sum-loop buf 0 (buf.cb-count) 0
+
+  circbuf-sum-loop : CircBuf, Integer, Integer, Integer -> Integer
+  circbuf-sum-loop (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at (buf.cb-data) (math-mod (buf.cb-head + i) (buf.cb-capacity))
+    in circbuf-sum-loop buf (i + 1) n (acc + val)
+
+Page 1

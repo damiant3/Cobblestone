@@ -1,0 +1,180 @@
+Chapter: Musculature
+  cites Engine chapter Skinning
+  cites Engine chapter SoftBody
+  cites Math chapter Quaternion
+
+ Anatomical character simulation. Three layers: skeleton (bones),
+ musculature (muscles that contract/relax between attachment points
+ on bones, displacing the skin surface), and a fat/skin layer
+ (soft tissue that jiggles over the muscle volume). Muscles have
+ rest length, contracted length, and activation level. When a joint
+ bends, the muscles spanning that joint activate, bulge outward,
+ and push the skin vertices. Tendons connect muscle endpoints to
+ bone attachment sites. Fixed-point (scale 1000).
+
+ We say:
+
+Section: Bone Attachment
+
+  BoneAttach = record {
+    ba-bone-idx : Integer,
+    ba-offset-x : Integer, ba-offset-y : Integer, ba-offset-z : Integer
+  }
+
+Section: Muscle
+
+  Muscle = record {
+    mu-name : Text,
+    mu-origin : BoneAttach,
+    mu-insertion : BoneAttach,
+    mu-rest-length : Integer,
+    mu-contracted-length : Integer,
+    mu-activation : Integer,
+    mu-bulge-radius : Integer,
+    mu-bulge-falloff : Integer,
+    mu-fiber-direction-x : Integer,
+    mu-fiber-direction-y : Integer,
+    mu-fiber-direction-z : Integer
+  }
+
+  muscle-new : Text, BoneAttach, BoneAttach, Integer, Integer, Integer -> Muscle
+  muscle-new (name) (origin) (insertion) (rest) (contracted) (bulge) = Muscle { mu-name = name, mu-origin = origin, mu-insertion = insertion, mu-rest-length = rest, mu-contracted-length = contracted, mu-activation = 0, mu-bulge-radius = bulge, mu-bulge-falloff = 500, mu-fiber-direction-x = 0, mu-fiber-direction-y = 1000, mu-fiber-direction-z = 0 }
+
+Section: Muscle System
+
+  MuscleSystem = record {
+    ms-muscles : List Muscle,
+    ms-count : Integer
+  }
+
+  ms-new : MuscleSystem
+  ms-new = MuscleSystem { ms-muscles = [], ms-count = 0 }
+
+  ms-add : MuscleSystem, Muscle -> MuscleSystem
+  ms-add (sys) (m) = MuscleSystem { ms-muscles = list-push (sys.ms-muscles) m, ms-count = sys.ms-count + 1 }
+
+  ms-activate : MuscleSystem, Integer, Integer -> MuscleSystem
+  ms-activate (sys) (idx) (level) =
+    if idx < 0 then sys
+    else if idx >= sys.ms-count then sys
+    else let m = list-at (sys.ms-muscles) idx
+    in let updated = Muscle { mu-name = m.mu-name, mu-origin = m.mu-origin, mu-insertion = m.mu-insertion, mu-rest-length = m.mu-rest-length, mu-contracted-length = m.mu-contracted-length, mu-activation = musc-clamp level 0 1000, mu-bulge-radius = m.mu-bulge-radius, mu-bulge-falloff = m.mu-bulge-falloff, mu-fiber-direction-x = m.mu-fiber-direction-x, mu-fiber-direction-y = m.mu-fiber-direction-y, mu-fiber-direction-z = m.mu-fiber-direction-z }
+    in MuscleSystem { ms-muscles = list-set-at (sys.ms-muscles) idx updated, ms-count = sys.ms-count }
+
+Section: Muscle-Driven Joint Activation
+
+  ms-auto-activate : MuscleSystem, List Mat4, Integer -> MuscleSystem
+  ms-auto-activate (sys) (bone-palette) (bone-count) = ms-auto-loop sys bone-palette 0 (sys.ms-count)
+
+  ms-auto-loop : MuscleSystem, List Mat4, Integer, Integer -> MuscleSystem
+  ms-auto-loop (sys) (palette) (i) (n) =
+    if i >= n then sys
+    else let m = list-at (sys.ms-muscles) i
+    in let origin-world = mat4-transform-point (list-at palette (m.mu-origin.ba-bone-idx)) (vec3-new (m.mu-origin.ba-offset-x) (m.mu-origin.ba-offset-y) (m.mu-origin.ba-offset-z))
+    in let insert-world = mat4-transform-point (list-at palette (m.mu-insertion.ba-bone-idx)) (vec3-new (m.mu-insertion.ba-offset-x) (m.mu-insertion.ba-offset-y) (m.mu-insertion.ba-offset-z))
+    in let dx = insert-world.vx - origin-world.vx
+    in let dy = insert-world.vy - origin-world.vy
+    in let dz = insert-world.vz - origin-world.vz
+    in let current-len = musc-isqrt (dx * dx + dy * dy + dz * dz)
+    in let stretch = if m.mu-rest-length == 0 then 0 else (m.mu-rest-length - current-len) * 1000 / (m.mu-rest-length - m.mu-contracted-length)
+    in let activation = musc-clamp stretch 0 1000
+    in ms-auto-loop (ms-activate sys i activation) palette (i + 1) n
+
+Section: Skin Displacement from Muscles
+
+  MuscleDisplacement = record {
+    md-dx : Integer, md-dy : Integer, md-dz : Integer
+  }
+
+  ms-displace-vertex : MuscleSystem, Integer, Integer, Integer, List Mat4 -> MuscleDisplacement
+  ms-displace-vertex (sys) (vx) (vy) (vz) (palette) = ms-displace-loop sys vx vy vz palette 0 (sys.ms-count) (MuscleDisplacement { md-dx = 0, md-dy = 0, md-dz = 0 })
+
+  ms-displace-loop : MuscleSystem, Integer, Integer, Integer, List Mat4, Integer, Integer, MuscleDisplacement -> MuscleDisplacement
+  ms-displace-loop (sys) (vx) (vy) (vz) (palette) (i) (n) (acc) =
+    if i >= n then acc
+    else let m = list-at (sys.ms-muscles) i
+    in if m.mu-activation <= 0 then ms-displace-loop sys vx vy vz palette (i + 1) n acc
+    else let origin-w = mat4-transform-point (list-at palette (m.mu-origin.ba-bone-idx)) (vec3-new (m.mu-origin.ba-offset-x) (m.mu-origin.ba-offset-y) (m.mu-origin.ba-offset-z))
+    in let insert-w = mat4-transform-point (list-at palette (m.mu-insertion.ba-bone-idx)) (vec3-new (m.mu-insertion.ba-offset-x) (m.mu-insertion.ba-offset-y) (m.mu-insertion.ba-offset-z))
+    in let mid-x = (origin-w.vx + insert-w.vx) / 2
+    in let mid-y = (origin-w.vy + insert-w.vy) / 2
+    in let mid-z = (origin-w.vz + insert-w.vz) / 2
+    in let dx = vx - mid-x
+    in let dy = vy - mid-y
+    in let dz = vz - mid-z
+    in let dist-sq = dx * dx + dy * dy + dz * dz
+    in let radius-sq = m.mu-bulge-radius * m.mu-bulge-radius
+    in if dist-sq > radius-sq then ms-displace-loop sys vx vy vz palette (i + 1) n acc
+    else let dist = musc-isqrt dist-sq
+    in let falloff = if m.mu-bulge-radius == 0 then 0 else 1000 - dist * 1000 / m.mu-bulge-radius
+    in let bulge = m.mu-activation * falloff * m.mu-bulge-radius / 1000000
+    in let push-x = if dist == 0 then 0 else dx * bulge / dist
+    in let push-y = if dist == 0 then bulge else dy * bulge / dist
+    in let push-z = if dist == 0 then 0 else dz * bulge / dist
+    in ms-displace-loop sys vx vy vz palette (i + 1) n (MuscleDisplacement { md-dx = acc.md-dx + push-x, md-dy = acc.md-dy + push-y, md-dz = acc.md-dz + push-z })
+
+Section: Cartilage Layer
+
+  CartilagePoint = record {
+    cp-x : Integer, cp-y : Integer, cp-z : Integer,
+    cp-bone : Integer,
+    cp-flexibility : Integer,
+    cp-rest-x : Integer, cp-rest-y : Integer, cp-rest-z : Integer
+  }
+
+  CartilageSystem = record {
+    cart-points : List CartilagePoint,
+    cart-count : Integer
+  }
+
+  cart-new : CartilageSystem
+  cart-new = CartilageSystem { cart-points = [], cart-count = 0 }
+
+  cart-add : CartilageSystem, Integer, Integer, Integer, Integer, Integer -> CartilageSystem
+  cart-add (sys) (x) (y) (z) (bone) (flex) =
+    let pt = CartilagePoint { cp-x = x, cp-y = y, cp-z = z, cp-bone = bone, cp-flexibility = flex, cp-rest-x = x, cp-rest-y = y, cp-rest-z = z }
+    in CartilageSystem { cart-points = list-push (sys.cart-points) pt, cart-count = sys.cart-count + 1 }
+
+  cart-deform : CartilageSystem, Integer, Integer, Integer, Integer -> CartilageSystem
+  cart-deform (sys) (idx) (fx) (fy) (fz) =
+    if idx < 0 then sys
+    else if idx >= sys.cart-count then sys
+    else let pt = list-at (sys.cart-points) idx
+    in let dx = fx * pt.cp-flexibility / 1000
+    in let dy = fy * pt.cp-flexibility / 1000
+    in let dz = fz * pt.cp-flexibility / 1000
+    in let deformed = CartilagePoint { cp-x = pt.cp-rest-x + dx, cp-y = pt.cp-rest-y + dy, cp-z = pt.cp-rest-z + dz, cp-bone = pt.cp-bone, cp-flexibility = pt.cp-flexibility, cp-rest-x = pt.cp-rest-x, cp-rest-y = pt.cp-rest-y, cp-rest-z = pt.cp-rest-z }
+    in CartilageSystem { cart-points = list-set-at (sys.cart-points) idx deformed, cart-count = sys.cart-count }
+
+Section: Preset: Human Arm
+
+  ms-human-bicep : Integer, Integer -> Muscle
+  ms-human-bicep (shoulder-bone) (forearm-bone) =
+    muscle-new "bicep" (BoneAttach { ba-bone-idx = shoulder-bone, ba-offset-x = 0, ba-offset-y = -100, ba-offset-z = 50 }) (BoneAttach { ba-bone-idx = forearm-bone, ba-offset-x = 0, ba-offset-y = 50, ba-offset-z = 0 }) 300 200 80
+
+  ms-human-tricep : Integer, Integer -> Muscle
+  ms-human-tricep (shoulder-bone) (forearm-bone) =
+    muscle-new "tricep" (BoneAttach { ba-bone-idx = shoulder-bone, ba-offset-x = 0, ba-offset-y = -100, ba-offset-z = -50 }) (BoneAttach { ba-bone-idx = forearm-bone, ba-offset-x = 0, ba-offset-y = 50, ba-offset-z = 0 }) 300 220 60
+
+Section: Helpers
+
+  musc-clamp : Integer, Integer, Integer -> Integer
+  musc-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  musc-isqrt : Integer -> Integer
+  musc-isqrt (n) = if n <= 0 then 0 else musc-isqrt-loop n (n / 2 + 1)
+
+  musc-isqrt-loop : Integer, Integer -> Integer
+  musc-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else musc-isqrt-loop n next
+
+Section: Formatting
+
+  format-muscle-system : MuscleSystem -> Text
+  format-muscle-system (sys) = "MuscleSystem(" & show (sys.ms-count) & " muscles)"
+
+  format-cartilage : CartilageSystem -> Text
+  format-cartilage (sys) = "Cartilage(" & show (sys.cart-count) & " points)"
+
+Page 1

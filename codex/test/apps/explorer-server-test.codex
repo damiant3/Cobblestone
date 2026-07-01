@@ -1,0 +1,88 @@
+Chapter: ExplorerServerTest
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Net chapter MessageFraming
+  cites Kernel chapter Ne2k
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Minimal web server CDX. Boots bare-metal with NE2K NIC and serves
+ JSON API requests. Two modes: serial (file-mapped I/O) and TCP
+ (persistent connection via NE2K NIC NAT to host:9100).
+
+ We say:
+
+Section: Server State
+
+  ServerState = record {
+    request-count : Integer
+  }
+
+  server-new : ServerState
+  server-new = ServerState { request-count = 0 }
+
+Section: Request Parsing
+
+  extract-path : Text -> Text
+  extract-path (line) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then "/"
+    else list-at parts 1
+
+Section: JSON Helpers
+
+  jstr : Text -> Text
+  jstr (s) = "\"" & s & "\""
+
+Section: Request Dispatch
+
+  dispatch : ServerState, Text -> Text
+  dispatch (state) (line) =
+    let path = extract-path line
+    in if path == "/api/status" then "{\"requests\":" & show (state.request-count) & ",\"mode\":\"serial\"}"
+    else if path == "/api/health" then "{\"status\":\"ok\"}"
+    else "{\"error\":\"not found\",\"path\":" & jstr path & "}"
+
+Section: Serial Mode
+
+  handle-serial-request : ServerState, Text -> [Console] ServerState
+  handle-serial-request (state) (line) =
+    let ns = ServerState { request-count = state.request-count + 1 }
+    in let response = dispatch ns line
+    in act
+      print-line-uni ("200 application/json " & response)
+      ns
+    end
+
+  serial-server-loop : ServerState -> [Console] ServerState
+  serial-server-loop (state) = act
+    line-result <- read-line
+    when line-result
+      is Just (line) -> act
+        ns <- handle-serial-request state line
+        serial-server-loop ns
+      end
+      is None -> state
+  end
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let state = server-new
+    in act
+      print-line-uni "READY"
+      mode-result <- read-line
+      when mode-result
+        is Just (mode) -> act
+          ns <- serial-server-loop state
+          print-line-uni "SHUTDOWN"
+        end
+        is None -> act
+          print-line-uni "SHUTDOWN"
+        end
+    end
+
+Page 1

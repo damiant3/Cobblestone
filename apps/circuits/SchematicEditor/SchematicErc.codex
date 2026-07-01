@@ -1,0 +1,236 @@
+Chapter: SchematicErc
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Electrical Rules Check for Codex Circuits schematics. ERC validates
+ connectivity, pin compatibility, reference designator uniqueness,
+ and power flag presence. Every violation carries a severity, location,
+ and human-readable message.
+
+ We say:
+
+Section: Violation Types
+
+  ErcViolationType =
+    | UnconnectedPin
+    | ConflictingPinTypes
+    | DuplicateRefDes
+    | MissingPowerFlag
+    | FloatingNet
+    | MultipleDrivers
+    | PinNotConnected
+    | DifferentUnitsNotUsed
+
+  erc-violation-type-name : ErcViolationType -> Text
+  erc-violation-type-name (t) = when t
+    is UnconnectedPin -> "unconnected-pin"
+    is ConflictingPinTypes -> "conflicting-pin-types"
+    is DuplicateRefDes -> "duplicate-ref-des"
+    is MissingPowerFlag -> "missing-power-flag"
+    is FloatingNet -> "floating-net"
+    is MultipleDrivers -> "multiple-drivers"
+    is PinNotConnected -> "pin-not-connected"
+    is DifferentUnitsNotUsed -> "different-units-not-used"
+
+Section: Severity
+
+  ErcSeverity =
+    | ErcError
+    | ErcWarning
+    | ErcInfo
+
+  erc-severity-name : ErcSeverity -> Text
+  erc-severity-name (s) = when s
+    is ErcError -> "error"
+    is ErcWarning -> "warning"
+    is ErcInfo -> "info"
+
+Section: Violation
+
+  ErcViolation = record {
+    ev-type : ErcViolationType,
+    ev-severity : ErcSeverity,
+    ev-message : Text,
+    ev-sheet-name : Text,
+    ev-ref : Text,
+    ev-pin-number : Text,
+    ev-x : Integer,
+    ev-y : Integer
+  }
+
+Section: Result
+
+  ErcResult = record {
+    er-violations : List ErcViolation,
+    er-error-count : Integer,
+    er-warning-count : Integer,
+    er-info-count : Integer,
+    er-passed : Integer
+  }
+
+  empty-erc-result : ErcResult
+  empty-erc-result = ErcResult {
+    er-violations = [],
+    er-error-count = 0,
+    er-warning-count = 0,
+    er-info-count = 0,
+    er-passed = 1
+  }
+
+  erc-add-violation : ErcResult, ErcViolation -> ErcResult
+  erc-add-violation (r) (v) =
+    let new-errors = when v.ev-severity
+          is ErcError -> r.er-error-count + 1
+          is otherwise -> r.er-error-count
+    in let new-warnings = when v.ev-severity
+          is ErcWarning -> r.er-warning-count + 1
+          is otherwise -> r.er-warning-count
+    in let new-infos = when v.ev-severity
+          is ErcInfo -> r.er-info-count + 1
+          is otherwise -> r.er-info-count
+    in let new-passed = if new-errors == 0 then 1 else 0
+    in ErcResult {
+      er-violations = list-push r.er-violations v,
+      er-error-count = new-errors,
+      er-warning-count = new-warnings,
+      er-info-count = new-infos,
+      er-passed = new-passed
+    }
+
+  erc-passed : ErcResult -> Integer
+  erc-passed (r) = if r.er-error-count == 0 then 1 else 0
+
+  erc-summary-text : ErcResult -> Text
+  erc-summary-text (r) =
+    "ERC: " & (show r.er-error-count) & " errors, " & (show r.er-warning-count) & " warnings"
+
+Section: Settings
+
+ Per-violation-type severity overrides. The user can downgrade errors
+ to warnings, suppress violations entirely by setting them to info,
+ or promote warnings to errors.
+
+  ErcSettings = record {
+    es-conflict-severity : ErcSeverity,
+    es-unconnected-severity : ErcSeverity,
+    es-floating-severity : ErcSeverity,
+    es-duplicate-ref-severity : ErcSeverity,
+    es-missing-power-severity : ErcSeverity,
+    es-multiple-drivers-severity : ErcSeverity,
+    es-pin-not-connected-severity : ErcSeverity,
+    es-unused-units-severity : ErcSeverity
+  }
+
+  default-erc-settings : ErcSettings
+  default-erc-settings = ErcSettings {
+    es-conflict-severity = ErcError,
+    es-unconnected-severity = ErcWarning,
+    es-floating-severity = ErcWarning,
+    es-duplicate-ref-severity = ErcError,
+    es-missing-power-severity = ErcError,
+    es-multiple-drivers-severity = ErcError,
+    es-pin-not-connected-severity = ErcWarning,
+    es-unused-units-severity = ErcInfo
+  }
+
+Section: Pin Compatibility
+
+ Pin electrical types are encoded as integers matching the convention
+ in ComponentModel:
+   0 = input, 1 = output, 2 = bidirectional, 3 = tri-state,
+   4 = passive, 5 = power-in, 6 = power-out, 7 = open-collector,
+   8 = open-emitter, 9 = unspecified.
+
+ Two pins on the same net are compatible (1) or conflicting (0).
+ Rules: passive is compatible with everything. Input-input is fine.
+ Two outputs conflict. Power-out plus power-out conflicts. Bidirectional
+ is compatible with everything except output-output. Open-collector and
+ open-emitter can share a net with each other and with inputs.
+
+  pins-compatible : Integer, Integer -> Integer
+  pins-compatible (a) (b) =
+    if a == 4 then 1
+    else if b == 4 then 1
+    else if a == 9 then 1
+    else if b == 9 then 1
+    else if a == 0 then
+      if b == 0 then 1
+      else if b == 1 then 1
+      else if b == 2 then 1
+      else if b == 3 then 1
+      else if b == 5 then 1
+      else if b == 6 then 1
+      else if b == 7 then 1
+      else if b == 8 then 1
+      else 0
+    else if a == 1 then
+      if b == 0 then 1
+      else if b == 1 then 0
+      else if b == 2 then 1
+      else if b == 3 then 1
+      else if b == 5 then 1
+      else if b == 6 then 0
+      else if b == 7 then 0
+      else if b == 8 then 0
+      else 0
+    else if a == 2 then
+      if b == 0 then 1
+      else if b == 1 then 1
+      else if b == 2 then 1
+      else if b == 3 then 1
+      else if b == 5 then 1
+      else if b == 6 then 1
+      else if b == 7 then 1
+      else if b == 8 then 1
+      else 0
+    else if a == 3 then
+      if b == 0 then 1
+      else if b == 1 then 1
+      else if b == 2 then 1
+      else if b == 3 then 1
+      else if b == 5 then 1
+      else if b == 6 then 1
+      else if b == 7 then 1
+      else if b == 8 then 1
+      else 0
+    else if a == 5 then
+      if b == 0 then 1
+      else if b == 1 then 1
+      else if b == 2 then 1
+      else if b == 3 then 1
+      else if b == 5 then 1
+      else if b == 6 then 1
+      else if b == 7 then 1
+      else if b == 8 then 1
+      else 0
+    else if a == 6 then
+      if b == 0 then 1
+      else if b == 1 then 0
+      else if b == 2 then 1
+      else if b == 3 then 1
+      else if b == 5 then 1
+      else if b == 6 then 0
+      else if b == 7 then 0
+      else if b == 8 then 0
+      else 0
+    else if a == 7 then
+      if b == 0 then 1
+      else if b == 1 then 0
+      else if b == 2 then 1
+      else if b == 3 then 1
+      else if b == 5 then 1
+      else if b == 6 then 0
+      else if b == 7 then 1
+      else if b == 8 then 1
+      else 0
+    else if a == 8 then
+      if b == 0 then 1
+      else if b == 1 then 0
+      else if b == 2 then 1
+      else if b == 3 then 1
+      else if b == 5 then 1
+      else if b == 6 then 0
+      else if b == 7 then 1
+      else if b == 8 then 1
+      else 0
+    else 0

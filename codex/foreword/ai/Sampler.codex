@@ -1,0 +1,182 @@
+Chapter: Sampler
+  cites AI chapter DiffusionScheduler
+  cites AI chapter Tensor
+
+ Diffusion model samplers. Implements Euler, Euler Ancestral,
+ DPM++ 2M, DPM++ SDE, and DDIM. Each sampler takes the current
+ noisy latent, predicted noise, and timestep information, and
+ returns the next (less noisy) latent.
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  SamplerType =
+    | SamplerEuler
+    | SamplerEulerA
+    | SamplerDpmpp2m
+    | SamplerDpmppsde
+    | SamplerDdim
+
+  SamplerState = record {
+    ss-type : SamplerType,
+    ss-schedule : NoiseSchedule,
+    ss-sigma-prev : Integer,
+    ss-old-denoised : List Integer
+  }
+
+Section: Construction
+  sampler-new : SamplerType, NoiseSchedule -> SamplerState
+  sampler-new (stype) (schedule) =
+    SamplerState { ss-type = stype, ss-schedule = schedule, ss-sigma-prev = 0, ss-old-denoised = [] }
+
+Section: Sigma from Alpha-Bar
+  sampler-sigma : NoiseSchedule, Integer -> Integer
+  sampler-sigma (schedule) (t) =
+    let abar = list-at (schedule.ns-alpha-cumprod) t
+    in if abar <= 0 then 30000
+    else sampler-isqrt ((1000 - abar) * 1000000 / abar)
+
+  sampler-isqrt : Integer -> Integer
+  sampler-isqrt (n) = if n <= 0 then 0 else sampler-isqrt-loop n (n / 2 + 1)
+
+  sampler-isqrt-loop : Integer, Integer -> Integer
+  sampler-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else sampler-isqrt-loop n next
+
+Section: Unified Step
+  sampler-step : SamplerState, List Integer, List Integer, Integer, Integer -> List Integer
+  sampler-step (state) (latents) (noise-pred) (t) (t-prev) =
+    when state.ss-type
+      is SamplerEuler -> euler-step (state.ss-schedule) latents noise-pred t t-prev
+      is SamplerEulerA -> euler-a-step (state.ss-schedule) latents noise-pred t t-prev
+      is SamplerDpmpp2m -> dpmpp2m-step state latents noise-pred t t-prev
+      is SamplerDpmppsde -> dpmpp-sde-step (state.ss-schedule) latents noise-pred t t-prev
+      is SamplerDdim -> diffusion-ddim-step latents noise-pred t t-prev (state.ss-schedule)
+
+Section: Euler Sampler
+  euler-step : NoiseSchedule, List Integer, List Integer, Integer, Integer -> List Integer
+  euler-step (schedule) (xt) (noise-pred) (t) (t-prev) =
+    let sigma = sampler-sigma schedule t
+    in let sigma-next = if t-prev >= 0 then sampler-sigma schedule t-prev else 0
+    in let dt = sigma-next - sigma
+    in euler-apply xt noise-pred sigma dt 0 (list-length xt) []
+
+  euler-apply : List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  euler-apply (xt) (noise) (sigma) (dt) (i) (n) (acc) =
+    if i >= n then acc
+    else let x0-pred = list-at xt i - list-at noise i * sigma / 1000
+    in let d = (list-at xt i - x0-pred) * 1000 / sigma
+    in let val = list-at xt i + d * dt / 1000
+    in euler-apply xt noise sigma dt (i + 1) n (list-push acc val)
+
+Section: Euler Ancestral Sampler
+  euler-a-step : NoiseSchedule, List Integer, List Integer, Integer, Integer -> List Integer
+  euler-a-step (schedule) (xt) (noise-pred) (t) (t-prev) =
+    let sigma = sampler-sigma schedule t
+    in let sigma-next = if t-prev >= 0 then sampler-sigma schedule t-prev else 0
+    in let sigma-up = if sigma == 0 then 0 else sigma-next * sampler-isqrt ((sigma * sigma - sigma-next * sigma-next) * 1000 / (sigma * sigma)) / 1000
+    in let sigma-down = sampler-isqrt (sigma-next * sigma-next - sigma-up * sigma-up)
+    in let dt = sigma-down - sigma
+    in euler-a-apply xt noise-pred sigma dt sigma-up 0 (list-length xt) []
+
+  euler-a-apply : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  euler-a-apply (xt) (noise) (sigma) (dt) (sigma-up) (i) (n) (acc) =
+    if i >= n then acc
+    else let x0-pred = list-at xt i - list-at noise i * sigma / 1000
+    in let d = (list-at xt i - x0-pred) * 1000 / sigma
+    in let val = list-at xt i + d * dt / 1000
+    in euler-a-apply xt noise sigma dt sigma-up (i + 1) n (list-push acc val)
+
+Section: DPM++ 2M Sampler
+  dpmpp2m-step : SamplerState, List Integer, List Integer, Integer, Integer -> List Integer
+  dpmpp2m-step (state) (xt) (noise-pred) (t) (t-prev) =
+    let schedule = state.ss-schedule
+    in let sigma = sampler-sigma schedule t
+    in let sigma-next = if t-prev >= 0 then sampler-sigma schedule t-prev else 0
+    in let x0-pred = dpmpp-predict-x0 xt noise-pred sigma (list-length xt)
+    in let h = dpmpp-log-ratio sigma sigma-next
+    in if list-length (state.ss-old-denoised) == 0 then
+      dpmpp-first-order xt x0-pred sigma sigma-next h (list-length xt)
+    else
+      let r = state.ss-sigma-prev * 1000 / sigma
+      in dpmpp-second-order xt x0-pred (state.ss-old-denoised) sigma sigma-next h r (list-length xt)
+
+  dpmpp-predict-x0 : List Integer, List Integer, Integer, Integer -> List Integer
+  dpmpp-predict-x0 (xt) (noise) (sigma) (n) = dpmpp-x0-loop xt noise sigma 0 n []
+
+  dpmpp-x0-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dpmpp-x0-loop (xt) (noise) (sigma) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at xt i - list-at noise i * sigma / 1000
+    in dpmpp-x0-loop xt noise sigma (i + 1) n (list-push acc val)
+
+  dpmpp-log-ratio : Integer, Integer -> Integer
+  dpmpp-log-ratio (sigma) (sigma-next) =
+    if sigma <= 0 then 0
+    else if sigma-next <= 0 then 6000
+    else dpmpp-log (sigma * 1000 / sigma-next)
+
+  dpmpp-log : Integer -> Integer
+  dpmpp-log (x) =
+    if x <= 0 then 0 - 10000
+    else let y = x - 1000
+    in y - y * y / 2000 + y * y * y / 3000000
+
+  dpmpp-first-order : List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  dpmpp-first-order (xt) (x0) (sigma) (sigma-next) (h) (n) =
+    dpmpp-fo-loop xt x0 sigma sigma-next h 0 n []
+
+  dpmpp-fo-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dpmpp-fo-loop (xt) (x0) (sigma) (sigma-next) (h) (i) (n) (acc) =
+    if i >= n then acc
+    else let exp-neg-h = dpmpp-exp (0 - h)
+    in let val = list-at x0 i + (list-at xt i - list-at x0 i) * exp-neg-h / 1000
+    in dpmpp-fo-loop xt x0 sigma sigma-next h (i + 1) n (list-push acc val)
+
+  dpmpp-second-order : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  dpmpp-second-order (xt) (x0) (old-x0) (sigma) (sigma-next) (h) (r) (n) =
+    dpmpp-so-loop xt x0 old-x0 sigma sigma-next h r 0 n []
+
+  dpmpp-so-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dpmpp-so-loop (xt) (x0) (old-x0) (sigma) (sigma-next) (h) (r) (i) (n) (acc) =
+    if i >= n then acc
+    else let exp-neg-h = dpmpp-exp (0 - h)
+    in let d0 = list-at x0 i
+    in let d1 = (list-at x0 i - list-at old-x0 i) * 1000 / (2 * r)
+    in let val = list-at x0 i + (list-at xt i - list-at x0 i) * exp-neg-h / 1000 + d1 * (exp-neg-h - 1000 + h) / h
+    in dpmpp-so-loop xt x0 old-x0 sigma sigma-next h r (i + 1) n (list-push acc val)
+
+  dpmpp-exp : Integer -> Integer
+  dpmpp-exp (x) =
+    if x > 8000 then 30000
+    else if x < (0 - 8000) then 0
+    else 1000 + x + x * x / 2000 + x * x * x / 6000000
+
+Section: DPM++ SDE Sampler
+  dpmpp-sde-step : NoiseSchedule, List Integer, List Integer, Integer, Integer -> List Integer
+  dpmpp-sde-step (schedule) (xt) (noise-pred) (t) (t-prev) =
+    let sigma = sampler-sigma schedule t
+    in let sigma-next = if t-prev >= 0 then sampler-sigma schedule t-prev else 0
+    in let x0-pred = dpmpp-predict-x0 xt noise-pred sigma (list-length xt)
+    in let h = dpmpp-log-ratio sigma sigma-next
+    in dpmpp-first-order xt x0-pred sigma sigma-next h (list-length xt)
+
+Section: Update State (for multi-step samplers)
+  sampler-update : SamplerState, List Integer, Integer -> SamplerState
+  sampler-update (state) (denoised) (sigma) =
+    SamplerState { ss-type = state.ss-type, ss-schedule = state.ss-schedule, ss-sigma-prev = sigma, ss-old-denoised = denoised }
+
+Section: Sampler Name
+  sampler-name : SamplerType -> Text
+  sampler-name (st) =
+    when st
+      is SamplerEuler -> "euler"
+      is SamplerEulerA -> "euler_a"
+      is SamplerDpmpp2m -> "dpm++_2m"
+      is SamplerDpmppsde -> "dpm++_sde"
+      is SamplerDdim -> "ddim"
+
+Page 1

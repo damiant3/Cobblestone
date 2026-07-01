@@ -1,0 +1,182 @@
+Chapter: AppRunner
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Widget
+  cites UI chapter Event
+  cites UI chapter Overlay
+  cites UI chapter Orchestrator
+  cites UI chapter InputSource
+  cites UI chapter GpuRender
+
+ Bare-metal application runner. Provides a complete frame loop that
+ polls input via InputSource, dispatches events through the
+ Orchestrator, and renders widgets via the GPU triangle backend.
+ An app supplies its widget tree, theme, and an action handler;
+ the runner handles everything else.
+
+Section: Types
+
+  BareApp = record {
+    ba-state : AppState,
+    ba-input : RawInput,
+    ba-quit : Boolean,
+    ba-width : Integer,
+    ba-height : Integer,
+    ba-max-tris : Integer
+  }
+
+  ActionResult = record {
+    ar-state : AppState,
+    ar-quit : Boolean
+  }
+
+Section: Construction
+
+  bare-app-new : WidgetNode, Theme, Integer, Integer, Integer -> BareApp
+  bare-app-new (root) (theme) (w) (h) (max-tris) =
+    BareApp {
+      ba-state = app-new root theme w h,
+      ba-input = raw-input-new w h,
+      ba-quit = False,
+      ba-width = w,
+      ba-height = h,
+      ba-max-tris = max-tris
+    }
+
+Section: Frame Loop
+
+  bare-app-tick : BareApp -> BareApp
+  bare-app-tick (ba) =
+    let ri = raw-input-poll (ba.ba-input)
+    in let events = ri-collect-events ri (ba.ba-state).app-frame
+    in let st2 = app-tick (ba.ba-state) 16 events
+    in BareApp {
+      ba-state = st2,
+      ba-input = ri,
+      ba-quit = ba.ba-quit,
+      ba-width = ba.ba-width,
+      ba-height = ba.ba-height,
+      ba-max-tris = ba.ba-max-tris
+    }
+
+  bare-app-render : BareApp -> Integer
+  bare-app-render (ba) =
+    let bg = ((ba.ba-state).app-theme).th-palette
+    in let c = gr-clear (bg.pal-bg)
+    in let d = gr-clear-depth
+    in let gf = gf-new (ba.ba-max-tris)
+    in let gf2 = gr-render-tree gf ((ba.ba-state).app-root) ((ba.ba-state).app-theme) gr-depth-scene
+    in let gf3 = gr-render-overlays gf2 ((ba.ba-state).app-overlays) ((ba.ba-state).app-theme) 0 (((ba.ba-state).app-overlays).os-count)
+    in let ignore = c + d
+    in gr-flush (gf3.gf-idx)
+
+Section: Menu Helpers
+
+  bare-app-open-menu : BareApp, Text, Integer, Integer, List Text -> BareApp
+  bare-app-open-menu (ba) (id) (x) (y) (items) =
+    let menu-w = bare-menu-width items 0 (list-length items) 0
+    in let menu-h = list-length items * 20 + 4
+    in let menu-widget = widget-menu id items
+    in let ov = overlay-context-menu id x y menu-w menu-h menu-widget
+    in BareApp {
+      ba-state = app-push-overlay (ba.ba-state) ov,
+      ba-input = ba.ba-input,
+      ba-quit = ba.ba-quit,
+      ba-width = ba.ba-width,
+      ba-height = ba.ba-height,
+      ba-max-tris = ba.ba-max-tris
+    }
+
+  bare-app-close-menu : BareApp, Text -> BareApp
+  bare-app-close-menu (ba) (id) =
+    let st = ba.ba-state
+    in let ovs = overlay-dismiss (st.app-overlays) id
+    in BareApp {
+      ba-state = AppState {
+        app-root = st.app-root, app-theme = st.app-theme,
+        app-compositor = st.app-compositor, app-overlays = ovs,
+        app-bindings = st.app-bindings, app-animations = st.app-animations,
+        app-sounds = st.app-sounds, app-handlers = st.app-handlers,
+        app-timers = st.app-timers, app-timer-count = st.app-timer-count,
+        app-focused = st.app-focused, app-hovered = st.app-hovered,
+        app-dirty = True, app-frame = st.app-frame, app-time = st.app-time
+      },
+      ba-input = ba.ba-input,
+      ba-quit = ba.ba-quit,
+      ba-width = ba.ba-width,
+      ba-height = ba.ba-height,
+      ba-max-tris = ba.ba-max-tris
+    }
+
+  bare-app-close-all-menus : BareApp -> BareApp
+  bare-app-close-all-menus (ba) =
+    let st = ba.ba-state
+    in BareApp {
+      ba-state = AppState {
+        app-root = st.app-root, app-theme = st.app-theme,
+        app-compositor = st.app-compositor, app-overlays = overlay-stack-new,
+        app-bindings = st.app-bindings, app-animations = st.app-animations,
+        app-sounds = st.app-sounds, app-handlers = st.app-handlers,
+        app-timers = st.app-timers, app-timer-count = st.app-timer-count,
+        app-focused = st.app-focused, app-hovered = st.app-hovered,
+        app-dirty = True, app-frame = st.app-frame, app-time = st.app-time
+      },
+      ba-input = ba.ba-input,
+      ba-quit = ba.ba-quit,
+      ba-width = ba.ba-width,
+      ba-height = ba.ba-height,
+      ba-max-tris = ba.ba-max-tris
+    }
+
+  bare-menu-width : List Text, Integer, Integer, Integer -> Integer
+  bare-menu-width (items) (i) (n) (max-w) =
+    if i >= n then max-w * 6 + 16
+    else let w = text-length (list-at items i)
+    in bare-menu-width items (i + 1) n (if w > max-w then w else max-w)
+
+Section: Queries
+
+  bare-app-frame : BareApp -> Integer
+  bare-app-frame (ba) = (ba.ba-state).app-frame
+
+  bare-app-input : BareApp -> RawInput
+  bare-app-input (ba) = ba.ba-input
+
+  bare-app-set-quit : BareApp -> BareApp
+  bare-app-set-quit (ba) = BareApp {
+    ba-state = ba.ba-state, ba-input = ba.ba-input,
+    ba-quit = True, ba-width = ba.ba-width,
+    ba-height = ba.ba-height, ba-max-tris = ba.ba-max-tris
+  }
+
+  bare-app-set-root : BareApp, WidgetNode -> BareApp
+  bare-app-set-root (ba) (root) =
+    let st = ba.ba-state
+    in BareApp {
+      ba-state = AppState {
+        app-root = root, app-theme = st.app-theme,
+        app-compositor = st.app-compositor, app-overlays = st.app-overlays,
+        app-bindings = st.app-bindings, app-animations = st.app-animations,
+        app-sounds = st.app-sounds, app-handlers = st.app-handlers,
+        app-timers = st.app-timers, app-timer-count = st.app-timer-count,
+        app-focused = st.app-focused, app-hovered = st.app-hovered,
+        app-dirty = True, app-frame = st.app-frame, app-time = st.app-time
+      },
+      ba-input = ba.ba-input,
+      ba-quit = ba.ba-quit,
+      ba-width = ba.ba-width,
+      ba-height = ba.ba-height,
+      ba-max-tris = ba.ba-max-tris
+    }
+
+  bare-app-has-menu : BareApp, Text -> Boolean
+  bare-app-has-menu (ba) (id) =
+    let found = overlay-find ((ba.ba-state).app-overlays) id
+    in when found
+      is Just (ov) -> True
+      is None -> False
+
+  bare-app-has-any-menu : BareApp -> Boolean
+  bare-app-has-any-menu (ba) = ((ba.ba-state).app-overlays).os-count > 0
+
+Page 1

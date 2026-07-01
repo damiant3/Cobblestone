@@ -1,0 +1,113 @@
+Chapter: MarketCoupon
+  cites Market chapter MarketTypes
+  cites Market chapter MarketDb
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+
+ Coupon and discount engine. Validates coupon codes, applies discounts,
+ tracks usage. Supports stacking rules and category restrictions.
+
+Section: Coupon Management
+
+  create-coupon : MarketState, Text, DiscountType, Integer, Integer, Integer -> (MarketState, Coupon)
+  create-coupon (st) (code) (disc) (min-cents) (max-uses) (expires) =
+    let c = Coupon {
+      coupon-code = code,
+      coupon-discount = disc,
+      coupon-min-order = money-usd min-cents,
+      coupon-max-uses = max-uses,
+      coupon-used-count = 0,
+      coupon-expires = expires,
+      coupon-applies-to = "all",
+      coupon-active = True
+    }
+    in let log2 = log-info-msg (st.mkt-log) "coupon" ("created coupon " & code) 0
+    in let st2 = __record-set st "mkt-log" log2
+    in (st2, c)
+
+  deactivate-coupon : Coupon -> Coupon
+  deactivate-coupon (c) = __record-set c "coupon-active" False
+
+  increment-coupon-use : Coupon -> Coupon
+  increment-coupon-use (c) = __record-set c "coupon-used-count" (c.coupon-used-count + 1)
+
+Section: Coupon Application
+
+  CouponResult =
+    | CouponApplied (Money) (Text)
+    | CouponInvalid (Text)
+
+  apply-coupon : Coupon, Money, Integer -> CouponResult
+  apply-coupon (c) (subtotal) (now) =
+    if coupon-valid c subtotal now == False then
+      CouponInvalid (coupon-invalid-reason c subtotal now)
+    else let discount = apply-discount (c.coupon-discount) subtotal
+    in CouponApplied (discount) (c.coupon-code & ": -" & format-money discount)
+
+  coupon-invalid-reason : Coupon, Money, Integer -> Text
+  coupon-invalid-reason (c) (subtotal) (now) =
+    if c.coupon-active == False then "Coupon is no longer active"
+    else if now > c.coupon-expires then "Coupon has expired"
+    else if c.coupon-max-uses > 0 then if c.coupon-used-count >= c.coupon-max-uses then "Coupon usage limit reached" else "Order minimum not met (" & format-money (c.coupon-min-order) & ")"
+    else "Order minimum not met (" & format-money (c.coupon-min-order) & ")"
+
+Section: Stacking Rules
+
+  StackingPolicy =
+    | NoStacking
+    | BestOnly
+    | StackAll
+
+  apply-best-coupon : List Coupon, Money, Integer -> CouponResult
+  apply-best-coupon (coupons) (subtotal) (now) =
+    find-best-coupon coupons subtotal now (money-zero USD) ""
+
+  find-best-coupon : List Coupon, Money, Integer, Money, Text -> CouponResult
+  find-best-coupon (coupons) (subtotal) (now) (best-amt) (best-code) =
+    if list-length coupons == 0 then
+      if best-amt.amount > 0 then CouponApplied (best-amt) (best-code)
+      else CouponInvalid "No valid coupons"
+    else let c = list-at coupons 0
+    in let result = apply-coupon c subtotal now
+    in let (new-best, new-code) = when result
+      is CouponApplied (amt) (desc) -> if amt.amount > best-amt.amount then (amt, desc) else (best-amt, best-code)
+      is CouponInvalid (msg) -> (best-amt, best-code)
+    in find-best-coupon (list-tail coupons) subtotal now new-best new-code
+
+Section: Common Coupon Presets
+
+  percent-off-coupon : Text, Integer, Integer -> Coupon
+  percent-off-coupon (code) (pct) (expires) = Coupon {
+    coupon-code = code,
+    coupon-discount = PercentOff pct,
+    coupon-min-order = money-zero USD,
+    coupon-max-uses = 0,
+    coupon-used-count = 0,
+    coupon-expires = expires,
+    coupon-applies-to = "all",
+    coupon-active = True
+  }
+
+  fixed-off-coupon : Text, Integer, Integer, Integer -> Coupon
+  fixed-off-coupon (code) (amount-cents) (min-order-cents) (expires) = Coupon {
+    coupon-code = code,
+    coupon-discount = FixedOff (money-usd amount-cents),
+    coupon-min-order = money-usd min-order-cents,
+    coupon-max-uses = 0,
+    coupon-used-count = 0,
+    coupon-expires = expires,
+    coupon-applies-to = "all",
+    coupon-active = True
+  }
+
+  free-ship-coupon : Text, Integer -> Coupon
+  free-ship-coupon (code) (expires) = Coupon {
+    coupon-code = code,
+    coupon-discount = FreeShipDiscount,
+    coupon-min-order = money-zero USD,
+    coupon-max-uses = 0,
+    coupon-used-count = 0,
+    coupon-expires = expires,
+    coupon-applies-to = "all",
+    coupon-active = True
+  }

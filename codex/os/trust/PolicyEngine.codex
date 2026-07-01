@@ -1,0 +1,114 @@
+Chapter: PolicyEngine
+  cites Foreword chapter Maybe
+
+ The PolicyEngine evaluates capability-match, trust-threshold,
+ time-window, and agent-identity conditions against incoming
+ requests, producing allow or deny decisions for the trust layer.
+
+ We say:
+
+Section: Policy Rules
+
+  PolicyCondition =
+    | CapabilityMatch (Text) (Integer)
+    | TrustAbove (Integer)
+    | TimeWindow (Integer) (Integer)
+    | AgentIs (Text)
+    | AllOf (List PolicyCondition)
+    | AnyOf (List PolicyCondition)
+    | NotCond (PolicyCondition)
+    | AlwaysTrue
+
+  PolicyEffect =
+    | Allow
+    | Deny (Text)
+    | AllowWithScope (Text)
+    | AllowWithDuration (Integer)
+
+  PolicyRule = record {
+    name : Text,
+    condition : PolicyCondition,
+    outcome : PolicyEffect
+  }
+
+  Policy = record {
+    name : Text,
+    rules : List PolicyRule
+  }
+
+Section: Evaluation Context
+
+  PolicyContext = record {
+    capability : Text,
+    direction : Integer between 0 and 255,
+    trust-score : Integer between 0 and 65535,
+    current-time : Integer,
+    agent-id : Text
+  }
+
+Section: Condition Evaluation
+
+  eval-condition : PolicyCondition, PolicyContext -> Boolean
+  eval-condition (cond) (ctx) = when cond
+    is CapabilityMatch (name) (dir) -> ctx.capability == name & (dir == 2 | ctx.direction == dir)
+    is TrustAbove (threshold) -> ctx.trust-score >= threshold
+    is TimeWindow (start) (stop) -> ctx.current-time >= start & ctx.current-time <= stop
+    is AgentIs (id) -> ctx.agent-id == id
+    is AllOf (conds) -> eval-all conds ctx 0 (list-length conds)
+    is AnyOf (conds) -> eval-any conds ctx 0 (list-length conds)
+    is NotCond (inner) -> if eval-condition inner ctx then False else True
+    is AlwaysTrue -> True
+
+  eval-all : List PolicyCondition, PolicyContext, Integer, Integer -> Boolean
+  eval-all (conds) (ctx) (i) (len) =
+    if i == len then True
+    else if eval-condition (list-at conds i) ctx then eval-all conds ctx (i + 1) len
+    else False
+
+  eval-any : List PolicyCondition, PolicyContext, Integer, Integer -> Boolean
+  eval-any (conds) (ctx) (i) (len) =
+    if i == len then False
+    else if eval-condition (list-at conds i) ctx then True
+    else eval-any conds ctx (i + 1) len
+
+Section: Policy Evaluation
+
+  PolicyDecision = record {
+    allowed : Boolean,
+    matched-rule : Text,
+    reason : Text
+  }
+
+  eval-policy : Policy, PolicyContext -> PolicyDecision
+  eval-policy (pol) (ctx) = eval-rules (pol.rules) ctx 0 (list-length (pol.rules))
+
+  eval-rules : List PolicyRule, PolicyContext, Integer, Integer -> PolicyDecision
+  eval-rules (rules) (ctx) (i) (len) =
+    if i == len then PolicyDecision { allowed = False, matched-rule = "default-deny", reason = "no matching rule" }
+    else let r = list-at rules i
+    in if eval-condition (r.condition) ctx
+      then when r.outcome
+        is Allow -> PolicyDecision { allowed = True, matched-rule = r.name, reason = "allowed" }
+        is Deny (reason) -> PolicyDecision { allowed = False, matched-rule = r.name, reason = reason }
+        is AllowWithScope (scope) -> PolicyDecision { allowed = True, matched-rule = r.name, reason = "allowed within " & scope }
+        is AllowWithDuration (dur) -> PolicyDecision { allowed = True, matched-rule = r.name, reason = "allowed for " & show dur & " ticks" }
+    else eval-rules rules ctx (i + 1) len
+
+Section: Policy Builders
+
+  policy-empty : Text -> Policy
+  policy-empty (name) = Policy { name = name, rules = [] }
+
+  policy-add-rule : Policy, PolicyRule -> Policy
+  policy-add-rule (pol) (rule) = Policy { name = pol.name, rules = list-push (pol.rules) rule }
+
+  rule-allow : Text, PolicyCondition -> PolicyRule
+  rule-allow (name) (cond) = PolicyRule { name = name, condition = cond, outcome = Allow }
+
+  rule-deny : Text, PolicyCondition, Text -> PolicyRule
+  rule-deny (name) (cond) (reason) = PolicyRule { name = name, condition = cond, outcome = Deny reason }
+
+  rule-allow-scoped : Text, PolicyCondition, Text -> PolicyRule
+  rule-allow-scoped (name) (cond) (scope) = PolicyRule { name = name, condition = cond, outcome = AllowWithScope scope }
+
+Page 1

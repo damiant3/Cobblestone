@@ -1,0 +1,139 @@
+Chapter: TaskQueue
+  cites Foreword chapter Maybe
+
+ A TaskQueue holds prioritized tasks (critical, high, normal, low)
+ and tracks each task's status from pending through running to
+ complete or failed.
+
+ We say:
+
+Section: Task Types
+
+  TaskPriority =
+    | TaskCritical
+    | TaskHigh
+    | TaskNormal
+    | TaskLow
+
+  TaskStatus =
+    | TaskPending
+    | TaskRunning (Integer)
+    | TaskComplete (Integer)
+    | TaskFailed (Text)
+
+  Task = record {
+    id : Integer,
+    name : Text,
+    priority : TaskPriority,
+    status : TaskStatus
+  }
+
+  TaskQueue = record {
+    tasks : List Task,
+    count : Integer between 0 and 65535,
+    next-id : Integer between 0 and 4294967295
+  }
+
+Section: Queue Operations
+
+  task-queue-empty : TaskQueue
+  task-queue-empty = TaskQueue { tasks = [], count = 0, next-id = 0 }
+
+  task-enqueue : TaskQueue, Text, TaskPriority -> TaskQueue
+  task-enqueue (q) (name) (prio) =
+    let t = Task { id = q.next-id, name = name, priority = prio, status = TaskPending }
+    in let inserted = insert-by-priority (q.tasks) t 0 (q.count)
+    in TaskQueue { tasks = inserted, count = q.count + 1, next-id = q.next-id + 1 }
+
+  insert-by-priority : List Task, Task, Integer, Integer -> List Task
+  insert-by-priority (tasks) (t) (i) (len) =
+    if i >= len then list-push tasks t
+    else let existing = list-at tasks i
+    in if priority-rank (t.priority) < priority-rank (existing.priority) then list-insert-at tasks i t
+    else insert-by-priority tasks t (i + 1) len
+
+  priority-rank : TaskPriority -> Integer
+  priority-rank (p) = when p
+    is TaskCritical -> 0
+    is TaskHigh -> 1
+    is TaskNormal -> 2
+    is TaskLow -> 3
+
+Section: Dequeue
+
+  TaskDequeueResult = record {
+    queue : TaskQueue,
+    task : Task,
+    has-task : Boolean
+  }
+
+  task-dequeue : TaskQueue -> TaskDequeueResult
+  task-dequeue (q) =
+    if q.count == 0 then TaskDequeueResult { queue = q, task = Task { id = 0, name = "", priority = TaskNormal, status = TaskPending }, has-task = False }
+    else let t = list-at (q.tasks) 0
+    in let remaining = list-drop-first (q.tasks) 1 (q.count) []
+    in TaskDequeueResult { queue = TaskQueue { tasks = remaining, count = q.count - 1, next-id = q.next-id }, task = t, has-task = True }
+
+  list-drop-first : List Task, Integer, Integer, List Task -> List Task
+  list-drop-first (tasks) (i) (len) (acc) =
+    if i >= len then acc
+    else list-drop-first tasks (i + 1) len (list-push acc (list-at tasks i))
+
+Section: Status Updates
+
+  task-mark-running : TaskQueue, Integer, Integer -> TaskQueue
+  task-mark-running (q) (task-id) (pid) =
+    TaskQueue { tasks = update-task-status (q.tasks) task-id (TaskRunning pid) 0 (q.count), count = q.count, next-id = q.next-id }
+
+  task-mark-complete : TaskQueue, Integer, Integer -> TaskQueue
+  task-mark-complete (q) (task-id) (exit-code) =
+    TaskQueue { tasks = update-task-status (q.tasks) task-id (TaskComplete exit-code) 0 (q.count), count = q.count, next-id = q.next-id }
+
+  task-mark-failed : TaskQueue, Integer, Text -> TaskQueue
+  task-mark-failed (q) (task-id) (reason) =
+    TaskQueue { tasks = update-task-status (q.tasks) task-id (TaskFailed reason) 0 (q.count), count = q.count, next-id = q.next-id }
+
+  update-task-status : List Task, Integer, TaskStatus, Integer, Integer -> List Task
+  update-task-status (tasks) (id) (new-status) (i) (len) =
+    if i >= len then tasks
+    else let t = list-at tasks i
+    in if t.id == id then list-set-at tasks i (Task { id = t.id, name = t.name, priority = t.priority, status = new-status })
+    else update-task-status tasks id new-status (i + 1) len
+
+Section: Queries
+
+  task-queue-count : TaskQueue -> Integer
+  task-queue-count (q) = q.count
+
+  task-queue-pending : TaskQueue -> Integer
+  task-queue-pending (q) = count-by-status (q.tasks) 0 (q.count) 0
+
+  count-by-status : List Task, Integer, Integer, Integer -> Integer
+  count-by-status (tasks) (i) (len) (acc) =
+    if i >= len then acc
+    else let t = list-at tasks i
+    in count-by-status tasks (i + 1) len (acc + (when (t.status) is TaskPending -> 1 is otherwise -> 0))
+
+Section: Formatting
+
+  format-priority : TaskPriority -> Text
+  format-priority (p) = when p
+    is TaskCritical -> "critical"
+    is TaskHigh -> "high"
+    is TaskNormal -> "normal"
+    is TaskLow -> "low"
+
+  format-task-status : TaskStatus -> Text
+  format-task-status (s) = when s
+    is TaskPending -> "pending"
+    is TaskRunning (pid) -> "running(pid=" & show pid & ")"
+    is TaskComplete (code) -> "complete(" & show code & ")"
+    is TaskFailed (reason) -> "failed: " & reason
+
+  format-task : Task -> Text
+  format-task (t) = "#" & show (t.id) & " " & t.name & " [" & format-priority (t.priority) & "] " & format-task-status (t.status)
+
+  task-queue-stats : TaskQueue -> Text
+  task-queue-stats (q) = "tasks=" & show (q.count) & " pending=" & show (task-queue-pending q) & " next-id=" & show (q.next-id)
+
+Page 1

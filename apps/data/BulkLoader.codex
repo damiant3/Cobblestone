@@ -1,0 +1,180 @@
+Chapter: BulkLoader
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Transaction
+  cites Foreword chapter Maybe
+
+ Bulk data loading for efficient batch inserts. Bypasses per-row
+ validation overhead by batching rows into pages directly and
+ deferring index builds. Supports CSV-like text import and
+ programmatic batch insert.
+
+ We say:
+
+Section: Batch Insert
+
+  BulkInsertResult = record {
+    bi-catalog : Catalog,
+    bi-txn-mgr : TxnManager,
+    bi-rows-loaded : Integer,
+    bi-pages-created : Integer,
+    bi-ok : Boolean,
+    bi-msg : Text
+  }
+
+  bulk-insert : Catalog, TxnManager, Text, List RowData -> BulkInsertResult
+  bulk-insert (cat) (mgr) (table-name) (rows) =
+    let maybe-entry = catalog-get-table cat table-name
+    in when maybe-entry
+      is None -> BulkInsertResult { bi-catalog = cat, bi-txn-mgr = mgr, bi-rows-loaded = 0, bi-pages-created = 0, bi-ok = False, bi-msg = "table not found: " & table-name }
+      is Just (entry) ->
+        let br = txn-begin mgr Serializable
+        in let result = bulk-insert-rows (br.tbr-mgr) (br.tbr-txn.txn-id) cat table-name entry rows 0 (list-length rows) 0
+        in let cr = txn-commit (result.bi-txn-mgr) (br.tbr-txn.txn-id)
+        in BulkInsertResult {
+          bi-catalog = result.bi-catalog,
+          bi-txn-mgr = cr.tr-mgr,
+          bi-rows-loaded = result.bi-rows-loaded,
+          bi-pages-created = result.bi-pages-created,
+          bi-ok = True,
+          bi-msg = "loaded " & show (result.bi-rows-loaded) & " rows"
+        }
+
+  bulk-insert-rows : TxnManager, Integer, Catalog, Text, CatalogTable, List RowData, Integer, Integer, Integer -> BulkInsertResult
+  bulk-insert-rows (mgr) (txn-id) (cat) (table-name) (entry) (rows) (i) (len) (pages-created) =
+    if i >= len then BulkInsertResult { bi-catalog = cat, bi-txn-mgr = mgr, bi-rows-loaded = i, bi-pages-created = pages-created, bi-ok = True, bi-msg = "" }
+    else let row = list-at rows i
+    in let ir = catalog-insert-row cat table-name row
+    in if ir.cir-ok == False then BulkInsertResult { bi-catalog = cat, bi-txn-mgr = mgr, bi-rows-loaded = i, bi-pages-created = pages-created, bi-ok = False, bi-msg = ir.cir-msg }
+    else let encoded = row-encode row
+    in let mgr2 = txn-log-insert mgr txn-id (entry.cat-table-id) 0 i encoded
+    in bulk-insert-rows mgr2 txn-id (ir.cir-cat) table-name entry rows (i + 1) len pages-created
+
+Section: Text Import (CSV-like)
+
+  ImportConfig = record {
+    ic-delimiter : Integer,
+    ic-has-header : Boolean,
+    ic-null-marker : Text
+  }
+
+  default-import-config : ImportConfig
+  default-import-config = ImportConfig { ic-delimiter = 44, ic-has-header = True, ic-null-marker = "NULL" }
+
+  tab-import-config : ImportConfig
+  tab-import-config = ImportConfig { ic-delimiter = 9, ic-has-header = True, ic-null-marker = "NULL" }
+
+  pipe-import-config : ImportConfig
+  pipe-import-config = ImportConfig { ic-delimiter = 124, ic-has-header = False, ic-null-marker = "" }
+
+  parse-import-row : Text, ImportConfig, RowSchema -> RowData
+  parse-import-row (line) (config) (schema) =
+    let fields = split-delimited line (config.ic-delimiter) 0 (text-length line) [] ""
+    in let vals = parse-fields fields (schema.col-types) (config.ic-null-marker) 0 (schema.col-count) []
+    in row-new schema vals
+
+  split-delimited : Text, Integer, Integer, Integer, List Text, Text -> List Text
+  split-delimited (line) (delim) (i) (len) (acc) (current) =
+    if i >= len then list-push acc current
+    else let ch = text-char-at line i
+    in if ch == delim then split-delimited line delim (i + 1) len (list-push acc current) ""
+    else split-delimited line delim (i + 1) len acc (current & text-from-char ch)
+
+  parse-fields : List Text, List ColumnType, Text, Integer, Integer, List ColumnValue -> List ColumnValue
+  parse-fields (fields) (types) (null-marker) (i) (len) (acc) =
+    if i >= len then acc
+    else if i >= list-length fields then parse-fields fields types null-marker (i + 1) len (list-push acc ValNull)
+    else let field = list-at fields i
+    in if field == null-marker then parse-fields fields types null-marker (i + 1) len (list-push acc ValNull)
+    else let ct = list-at types i
+    in let val = parse-field-value field ct
+    in parse-fields fields types null-marker (i + 1) len (list-push acc val)
+
+  parse-field-value : Text, ColumnType -> ColumnValue
+  parse-field-value (field) (ct) =
+    when ct
+      is ColInteger -> ValInteger (text-to-int field 0 (text-length field) 0)
+      is ColText -> ValText field
+      is ColBoolean -> ValBoolean (field == "True" | field == "true" | field == "1")
+
+  text-to-int : Text, Integer, Integer, Integer -> Integer
+  text-to-int (t) (i) (len) (acc) =
+    if i >= len then acc
+    else let ch = text-char-at t i
+    in if ch >= 48 then if ch <= 57 then text-to-int t (i + 1) len (acc * 10 + ch - 48)
+    else acc
+    else if ch == 45 then if i == 0 then negate (text-to-int t (i + 1) len 0) else acc
+    else acc
+
+Section: Bulk Import from Lines
+
+  bulk-import-lines : Catalog, TxnManager, Text, List Text, ImportConfig -> BulkInsertResult
+  bulk-import-lines (cat) (mgr) (table-name) (lines) (config) =
+    let maybe-entry = catalog-get-table cat table-name
+    in when maybe-entry
+      is None -> BulkInsertResult { bi-catalog = cat, bi-txn-mgr = mgr, bi-rows-loaded = 0, bi-pages-created = 0, bi-ok = False, bi-msg = "table not found: " & table-name }
+      is Just (entry) ->
+        let schema = table-schema (entry.cat-table-def)
+        in let start = if config.ic-has-header then 1 else 0
+        in let rows = parse-lines-to-rows lines config schema start (list-length lines) []
+        in bulk-insert cat mgr table-name rows
+
+  parse-lines-to-rows : List Text, ImportConfig, RowSchema, Integer, Integer, List RowData -> List RowData
+  parse-lines-to-rows (lines) (config) (schema) (i) (len) (acc) =
+    if i >= len then acc
+    else let line = list-at lines i
+    in if text-length line == 0 then parse-lines-to-rows lines config schema (i + 1) len acc
+    else let row = parse-import-row line config schema
+    in parse-lines-to-rows lines config schema (i + 1) len (list-push acc row)
+
+Section: Export to Text
+
+  export-table : Catalog, Text, ImportConfig -> List Text
+  export-table (cat) (table-name) (config) =
+    let scan = catalog-scan cat table-name
+    in let maybe-entry = catalog-get-table cat table-name
+    in when maybe-entry
+      is None -> ["ERROR: table not found"]
+      is Just (entry) ->
+        let schema = table-schema (entry.cat-table-def)
+        in let header = if config.ic-has-header then [export-header schema (config.ic-delimiter)] else []
+        in let data = export-rows (scan.rows) config 0 (scan.scan-count) []
+        in header & data
+
+  export-header : RowSchema, Integer -> Text
+  export-header (schema) (delim) = export-join (schema.col-names) delim 0 (schema.col-count) ""
+
+  export-rows : List RowData, ImportConfig, Integer, Integer, List Text -> List Text
+  export-rows (rows) (config) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let line = export-row-vals (row.values) (config.ic-delimiter) (config.ic-null-marker) 0 (list-length (row.values)) ""
+    in export-rows rows config (i + 1) len (list-push acc line)
+
+  export-row-vals : List ColumnValue, Integer, Text, Integer, Integer, Text -> Text
+  export-row-vals (vals) (delim) (null-marker) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vals i
+    in let sep = if i > 0 then text-from-char delim else ""
+    in let t = when v
+      is ValInteger (n) -> show n
+      is ValText (t) -> t
+      is ValBoolean (b) -> if b then "True" else "False"
+      is ValNull -> null-marker
+    in export-row-vals vals delim null-marker (i + 1) len (acc & sep & t)
+
+  export-join : List Text, Integer, Integer, Integer, Text -> Text
+  export-join (strs) (delim) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i > 0 then text-from-char delim else ""
+    in export-join strs delim (i + 1) len (acc & sep & list-at strs i)
+
+Section: Statistics
+
+  bulk-stats : BulkInsertResult -> Text
+  bulk-stats (r) =
+    if r.bi-ok then "loaded " & show (r.bi-rows-loaded) & " rows (" & show (r.bi-pages-created) & " pages)"
+    else "FAILED: " & r.bi-msg
+
+Page 1

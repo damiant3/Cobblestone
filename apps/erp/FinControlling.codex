@@ -1,0 +1,336 @@
+Chapter: FinControlling
+  cites ERP chapter ErpTypes
+  cites ERP chapter ErpConfig
+  cites ERP chapter FinGL
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+  cites Foreword chapter Hamt
+
+ Controlling (CO): internal management accounting. Cost center
+ accounting, profit center accounting, internal orders, product
+ costing, profitability analysis, activity-based costing, and
+ budgeting. Parallel to FI (external reporting) — CO tracks where
+ money goes internally and whether it went according to plan.
+
+Section: Cost Center Accounting
+
+  CostCenterBudget = record {
+    ccb-cost-center : Text,
+    ccb-period : Integer,
+    ccb-year : Integer,
+    ccb-budget-amount : Integer,
+    ccb-actual-amount : Integer,
+    ccb-committed : Integer,
+    ccb-remaining : Integer
+  }
+
+  ccb-variance : CostCenterBudget -> Integer
+  ccb-variance (b) = b.ccb-budget-amount - b.ccb-actual-amount
+
+  ccb-variance-pct : CostCenterBudget -> Integer
+  ccb-variance-pct (b) =
+    if b.ccb-budget-amount == 0 then 0
+    else (b.ccb-budget-amount - b.ccb-actual-amount) * 100 / b.ccb-budget-amount
+
+  CostAllocation = record {
+    ca-id : Text,
+    ca-from-cc : Text,
+    ca-to-cc : Text,
+    ca-amount : Integer,
+    ca-basis : AllocationBasis,
+    ca-period : Integer,
+    ca-year : Integer,
+    ca-description : Text
+  }
+
+  AllocationBasis =
+    | AbHeadcount
+    | AbSquareFootage
+    | AbRevenue
+    | AbDirectCost
+    | AbActivityRate
+    | AbFixed (Integer)
+
+  alloc-basis-name : AllocationBasis -> Text
+  alloc-basis-name (b) =
+    when b
+      is AbHeadcount -> "headcount"
+      is AbSquareFootage -> "square footage"
+      is AbRevenue -> "revenue"
+      is AbDirectCost -> "direct cost"
+      is AbActivityRate -> "activity rate"
+      is AbFixed (pct) -> "fixed " & show pct & "%"
+
+  calc-allocation : Integer, AllocationBasis, Integer -> Integer
+  calc-allocation (pool-amount) (basis) (driver-value) =
+    when basis
+      is AbFixed (pct) -> pool-amount * pct / 100
+      is AbHeadcount -> if driver-value == 0 then 0 else pool-amount / driver-value
+      is AbSquareFootage -> if driver-value == 0 then 0 else pool-amount / driver-value
+      is AbRevenue -> if driver-value == 0 then 0 else pool-amount / driver-value
+      is AbDirectCost -> if driver-value == 0 then 0 else pool-amount / driver-value
+      is AbActivityRate -> pool-amount * driver-value / 10000
+
+  allocation-je : CostAllocation, Text, ErpConfig -> JournalEntry
+  allocation-je (alloc) (company) (cfg) =
+    let am = cfg.cfg-accounts
+    in JournalEntry {
+      je-id = "CA-" & alloc.ca-id,
+      je-company = company, je-date = 0,
+      je-period = alloc.ca-period, je-year = alloc.ca-year,
+      je-description = "Cost allocation: " & alloc.ca-from-cc & " -> " & alloc.ca-to-cc,
+      je-lines = [
+        journal-line-debit (am.am-allocation) (alloc.ca-amount) (alloc.ca-to-cc) ("Allocated from " & alloc.ca-from-cc),
+        journal-line-credit (am.am-allocation) (alloc.ca-amount) (alloc.ca-from-cc) ("Allocated to " & alloc.ca-to-cc)
+      ],
+      je-source = SrcAllocation, je-posted = False, je-reversed = False,
+      je-reversal-of = "", je-created-by = "controlling", je-approved-by = "", je-created = 0
+    }
+
+Section: Profit Center Accounting
+
+  ProfitCenter = record {
+    pc-code : Text,
+    pc-name : Text,
+    pc-company : Text,
+    pc-manager : Text,
+    pc-type : ProfitCenterType,
+    pc-active : Boolean
+  }
+
+  ProfitCenterType =
+    | PcProduct
+    | PcRegion
+    | PcChannel
+    | PcDivision
+
+  ProfitCenterPnL = record {
+    pcpl-code : Text,
+    pcpl-name : Text,
+    pcpl-revenue : Integer,
+    pcpl-direct-costs : Integer,
+    pcpl-allocated-costs : Integer,
+    pcpl-gross-margin : Integer,
+    pcpl-contribution-margin : Integer,
+    pcpl-net-margin : Integer
+  }
+
+  calc-profit-center-pnl : ProfitCenter, Integer, Integer, Integer -> ProfitCenterPnL
+  calc-profit-center-pnl (pc) (rev) (direct) (allocated) =
+    ProfitCenterPnL {
+      pcpl-code = pc.pc-code,
+      pcpl-name = pc.pc-name,
+      pcpl-revenue = rev,
+      pcpl-direct-costs = direct,
+      pcpl-allocated-costs = allocated,
+      pcpl-gross-margin = rev - direct,
+      pcpl-contribution-margin = rev - direct - allocated,
+      pcpl-net-margin = if rev == 0 then 0 else (rev - direct - allocated) * 100 / rev
+    }
+
+Section: Internal Orders
+
+  InternalOrder = record {
+    io-id : Text,
+    io-company : Text,
+    io-name : Text,
+    io-type : OrderType,
+    io-responsible : Text,
+    io-cost-center : Text,
+    io-budget : Integer,
+    io-actual : Integer,
+    io-committed : Integer,
+    io-status : OrderStatus2,
+    io-start-date : Integer,
+    io-end-date : Integer,
+    io-settlement-cc : Text,
+    io-settlement-rule : Text
+  }
+
+  OrderType =
+    | OtOverhead
+    | OtCapitalInvestment
+    | OtMarketing
+    | OtResearch
+    | OtMaintenance
+    | OtReorganization
+
+  OrderStatus2 =
+    | OsCreated
+    | OsReleased
+    | OsTechComplete
+    | OsClosed
+
+  io-remaining : InternalOrder -> Integer
+  io-remaining (o) = o.io-budget - o.io-actual - o.io-committed
+
+  io-over-budget : InternalOrder -> Boolean
+  io-over-budget (o) = o.io-actual + o.io-committed > o.io-budget
+
+Section: Product Costing
+
+  ProductCost = record {
+    pcost-material-id : Text,
+    pcost-name : Text,
+    pcost-bom : List BomComponent,
+    pcost-routing : List RoutingStep,
+    pcost-material-cost : Integer,
+    pcost-labor-cost : Integer,
+    pcost-overhead-cost : Integer,
+    pcost-total-cost : Integer,
+    pcost-standard-cost : Integer,
+    pcost-variance : Integer
+  }
+
+  BomComponent = record {
+    bom-material-id : Text,
+    bom-quantity-x1000 : Integer,
+    bom-unit-cost : Integer,
+    bom-scrap-pct : Integer
+  }
+
+  bom-line-cost : BomComponent -> Integer
+  bom-line-cost (b) =
+    let gross-qty = b.bom-quantity-x1000 * (100 + b.bom-scrap-pct) / 100
+    in gross-qty * b.bom-unit-cost / 1000
+
+  RoutingStep = record {
+    rs-operation : Text,
+    rs-work-center : Text,
+    rs-setup-mins : Integer,
+    rs-run-mins-per-unit : Integer,
+    rs-labor-rate : Integer,
+    rs-machine-rate : Integer
+  }
+
+  routing-step-cost : RoutingStep, Integer -> Integer
+  routing-step-cost (rs) (qty) =
+    let labor = (rs.rs-setup-mins + rs.rs-run-mins-per-unit * qty) * rs.rs-labor-rate / 60
+    in let machine = (rs.rs-setup-mins + rs.rs-run-mins-per-unit * qty) * rs.rs-machine-rate / 60
+    in labor + machine
+
+  calc-product-cost : Text, Text, List BomComponent, List RoutingStep, Integer, Integer -> ProductCost
+  calc-product-cost (mat-id) (name) (bom) (routing) (qty) (overhead-rate-pct) =
+    let mat-cost = sum-bom-cost bom 0 0
+    in let labor-cost = sum-routing-cost routing qty 0 0
+    in let overhead = (mat-cost + labor-cost) * overhead-rate-pct / 100
+    in let total = mat-cost + labor-cost + overhead
+    in ProductCost {
+      pcost-material-id = mat-id, pcost-name = name,
+      pcost-bom = bom, pcost-routing = routing,
+      pcost-material-cost = mat-cost, pcost-labor-cost = labor-cost,
+      pcost-overhead-cost = overhead, pcost-total-cost = total,
+      pcost-standard-cost = total, pcost-variance = 0
+    }
+
+  sum-bom-cost : List BomComponent, Integer, Integer -> Integer
+  sum-bom-cost (bom) (i) (acc) =
+    if i >= list-length bom then acc
+    else sum-bom-cost bom (i + 1) (acc + bom-line-cost (list-at bom i))
+
+  sum-routing-cost : List RoutingStep, Integer, Integer, Integer -> Integer
+  sum-routing-cost (routing) (qty) (i) (acc) =
+    if i >= list-length routing then acc
+    else sum-routing-cost routing qty (i + 1) (acc + routing-step-cost (list-at routing i) qty)
+
+Section: Profitability Analysis (CO-PA)
+
+  ProfitabilitySegment = record {
+    pa-product : Text,
+    pa-customer-group : Text,
+    pa-region : Text,
+    pa-channel : Text,
+    pa-revenue : Integer,
+    pa-cogs : Integer,
+    pa-discounts : Integer,
+    pa-freight : Integer,
+    pa-commissions : Integer,
+    pa-gross-profit : Integer,
+    pa-contribution-margin : Integer,
+    pa-period : Integer,
+    pa-year : Integer
+  }
+
+  pa-gross-margin-pct : ProfitabilitySegment -> Integer
+  pa-gross-margin-pct (pa) =
+    if pa.pa-revenue == 0 then 0
+    else pa.pa-gross-profit * 100 / pa.pa-revenue
+
+  pa-contribution-pct : ProfitabilitySegment -> Integer
+  pa-contribution-pct (pa) =
+    if pa.pa-revenue == 0 then 0
+    else pa.pa-contribution-margin * 100 / pa.pa-revenue
+
+  calc-pa-segment : Text, Text, Text, Text, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> ProfitabilitySegment
+  calc-pa-segment (product) (cust-group) (region) (channel) (rev) (cogs) (disc) (freight) (comm) (period) (year) =
+    let gp = rev - cogs - disc
+    in let cm = gp - freight - comm
+    in ProfitabilitySegment {
+      pa-product = product, pa-customer-group = cust-group,
+      pa-region = region, pa-channel = channel,
+      pa-revenue = rev, pa-cogs = cogs, pa-discounts = disc,
+      pa-freight = freight, pa-commissions = comm,
+      pa-gross-profit = gp, pa-contribution-margin = cm,
+      pa-period = period, pa-year = year
+    }
+
+Section: Budgeting
+
+  BudgetVersion =
+    | BudgetOriginal
+    | BudgetRevised (Integer)
+    | BudgetForecast (Integer)
+
+  BudgetLine = record {
+    bl-account : Text,
+    bl-cost-center : Text,
+    bl-period : Integer,
+    bl-year : Integer,
+    bl-version : BudgetVersion,
+    bl-amount : Integer,
+    bl-notes : Text
+  }
+
+  BudgetComparison = record {
+    bc-account : Text,
+    bc-budget : Integer,
+    bc-actual : Integer,
+    bc-variance : Integer,
+    bc-variance-pct : Integer,
+    bc-favorable : Boolean
+  }
+
+  compare-budget-actual : Text, Integer, Integer, AccountType -> BudgetComparison
+  compare-budget-actual (account) (budget) (actual) (atype) =
+    let variance = budget - actual
+    in let pct = if budget == 0 then 0 else variance * 100 / budget
+    in let favorable = when atype
+      is Revenue -> actual > budget
+      is Expense -> actual < budget
+      is otherwise -> variance >= 0
+    in BudgetComparison {
+      bc-account = account, bc-budget = budget,
+      bc-actual = actual, bc-variance = variance,
+      bc-variance-pct = pct, bc-favorable = favorable
+    }
+
+Section: Activity-Based Costing
+
+  Activity = record {
+    act-id : Text,
+    act-name : Text,
+    act-cost-pool : Integer,
+    act-driver : Text,
+    act-driver-total : Integer,
+    act-rate : Integer
+  }
+
+  calc-activity-rate : Activity -> Integer
+  calc-activity-rate (a) =
+    if a.act-driver-total == 0 then 0
+    else a.act-cost-pool * 10000 / a.act-driver-total
+
+  apply-activity-cost : Activity, Integer -> Integer
+  apply-activity-cost (a) (driver-qty) =
+    a.act-rate * driver-qty / 10000

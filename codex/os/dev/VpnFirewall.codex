@@ -1,0 +1,211 @@
+Chapter: VpnFirewall
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ VPN, proxy, and firewall settings. VPN supports config import
+ for WireGuard and OpenVPN profiles. Firewall rules allow/deny
+ traffic per app, port, or protocol. Proxy settings for HTTP
+ and SOCKS. Connection profiles switch between home/work/public
+ presets.
+
+Section: VPN
+
+  VpnProtocol =
+    | VpnWireGuard
+    | VpnOpenVpn
+
+  VpnProfile = record {
+    vp-id : Text,
+    vp-name : Text,
+    vp-protocol : VpnProtocol,
+    vp-server : Text,
+    vp-port : Integer,
+    vp-connected : Boolean,
+    vp-auto-connect : Boolean
+  }
+
+  vpn-profile : Text, Text, VpnProtocol, Text, Integer -> VpnProfile
+  vpn-profile (id) (name) (proto) (server) (port) = VpnProfile {
+    vp-id = id, vp-name = name, vp-protocol = proto,
+    vp-server = server, vp-port = port, vp-connected = False, vp-auto-connect = False
+  }
+
+Section: Proxy
+
+  ProxyMode =
+    | ProxyNone
+    | ProxyHttp (Text) (Integer)
+    | ProxySocks (Text) (Integer)
+    | ProxyAuto (Text)
+
+  proxy-label : ProxyMode -> Text
+  proxy-label (m) = when m
+    is ProxyNone -> "No Proxy"
+    is ProxyHttp (host) (port) -> "HTTP " & host & ":" & show port
+    is ProxySocks (host) (port) -> "SOCKS " & host & ":" & show port
+    is ProxyAuto (url) -> "Auto: " & url
+
+Section: Firewall
+
+  FwAction =
+    | FwAllow
+    | FwDeny
+
+  FwRule = record {
+    fw-id : Integer,
+    fw-app : Text,
+    fw-port : Integer,
+    fw-protocol : Text,
+    fw-action : FwAction,
+    fw-enabled : Boolean,
+    fw-description : Text
+  }
+
+  fw-rule : Integer, Text, Integer, Text, FwAction, Text -> FwRule
+  fw-rule (id) (app) (port) (proto) (action) (desc) = FwRule {
+    fw-id = id, fw-app = app, fw-port = port, fw-protocol = proto,
+    fw-action = action, fw-enabled = True, fw-description = desc
+  }
+
+Section: Connection Profile
+
+  ConnProfile =
+    | ConnHome
+    | ConnWork
+    | ConnPublic
+
+  conn-profile-label : ConnProfile -> Text
+  conn-profile-label (p) = when p
+    is ConnHome -> "Home"
+    is ConnWork -> "Work"
+    is ConnPublic -> "Public"
+
+Section: State
+
+  VpnFirewallState = record {
+    vf-vpn-profiles : List VpnProfile,
+    vf-vpn-count : Integer,
+    vf-active-vpn : Text,
+    vf-proxy : ProxyMode,
+    vf-firewall-enabled : Boolean,
+    vf-fw-rules : List FwRule,
+    vf-fw-rule-count : Integer,
+    vf-fw-next-id : Integer,
+    vf-conn-profile : ConnProfile
+  }
+
+  vpn-firewall-new : VpnFirewallState
+  vpn-firewall-new = VpnFirewallState {
+    vf-vpn-profiles = [], vf-vpn-count = 0, vf-active-vpn = "",
+    vf-proxy = ProxyNone, vf-firewall-enabled = True,
+    vf-fw-rules = [], vf-fw-rule-count = 0, vf-fw-next-id = 1,
+    vf-conn-profile = ConnHome
+  }
+
+Section: VPN Actions
+
+  vf-add-vpn : VpnFirewallState, VpnProfile -> VpnFirewallState
+  vf-add-vpn (st) (profile) =
+    __record-set (__record-set st "vf-vpn-profiles" (list-push (st.vf-vpn-profiles) profile)) "vf-vpn-count" (st.vf-vpn-count + 1)
+
+  vf-connect-vpn : VpnFirewallState, Text -> VpnFirewallState
+  vf-connect-vpn (st) (id) =
+    let updated = vf-set-vpn-connected (st.vf-vpn-profiles) id True 0 (st.vf-vpn-count) []
+    in __record-set (__record-set st "vf-vpn-profiles" updated) "vf-active-vpn" id
+
+  vf-disconnect-vpn : VpnFirewallState -> VpnFirewallState
+  vf-disconnect-vpn (st) =
+    let updated = vf-set-vpn-connected (st.vf-vpn-profiles) (st.vf-active-vpn) False 0 (st.vf-vpn-count) []
+    in __record-set (__record-set st "vf-vpn-profiles" updated) "vf-active-vpn" ""
+
+  vf-set-vpn-connected : List VpnProfile, Text, Boolean, Integer, Integer, List VpnProfile -> List VpnProfile
+  vf-set-vpn-connected (profiles) (target) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at profiles i
+    in let updated = if p.vp-id == target then __record-set p "vp-connected" val else p
+    in vf-set-vpn-connected profiles target val (i + 1) n (list-push acc updated)
+
+Section: Proxy Actions
+
+  vf-set-proxy : VpnFirewallState, ProxyMode -> VpnFirewallState
+  vf-set-proxy (st) (mode) = __record-set st "vf-proxy" mode
+
+Section: Firewall Actions
+
+  vf-toggle-firewall : VpnFirewallState -> VpnFirewallState
+  vf-toggle-firewall (st) = __record-set st "vf-firewall-enabled" (if st.vf-firewall-enabled then False else True)
+
+  vf-add-rule : VpnFirewallState, Text, Integer, Text, FwAction, Text -> VpnFirewallState
+  vf-add-rule (st) (app) (port) (proto) (action) (desc) =
+    let rule = fw-rule (st.vf-fw-next-id) app port proto action desc
+    in __record-set (__record-set (__record-set st "vf-fw-rules" (list-push (st.vf-fw-rules) rule)) "vf-fw-rule-count" (st.vf-fw-rule-count + 1)) "vf-fw-next-id" (st.vf-fw-next-id + 1)
+
+  vf-remove-rule : VpnFirewallState, Integer -> VpnFirewallState
+  vf-remove-rule (st) (rule-id) =
+    let filtered = vf-filter-rules (st.vf-fw-rules) rule-id 0 (st.vf-fw-rule-count) []
+    in __record-set (__record-set st "vf-fw-rules" filtered) "vf-fw-rule-count" (list-length filtered)
+
+  vf-filter-rules : List FwRule, Integer, Integer, Integer, List FwRule -> List FwRule
+  vf-filter-rules (rules) (exclude) (i) (n) (acc) =
+    if i >= n then acc
+    else let rule = list-at rules i
+    in if rule.fw-id == exclude then vf-filter-rules rules exclude (i + 1) n acc
+    else vf-filter-rules rules exclude (i + 1) n (list-push acc rule)
+
+  vf-set-conn-profile : VpnFirewallState, ConnProfile -> VpnFirewallState
+  vf-set-conn-profile (st) (p) = __record-set st "vf-conn-profile" p
+
+Section: Widget
+
+  vf-widget : VpnFirewallState -> WidgetNode
+  vf-widget (st) =
+    let title = widget-label "vf-title" "VPN, Proxy & Firewall"
+    in let profile = widget-label "vf-profile" ("Network: " & conn-profile-label (st.vf-conn-profile))
+    in let vpn-section = vf-vpn-widget st
+    in let proxy-section = widget-label "vf-proxy" ("Proxy: " & proxy-label (st.vf-proxy))
+    in let fw-toggle = widget-button "vf-fw-toggle" ("Firewall: " & if st.vf-firewall-enabled then "ON" else "OFF")
+    in let fw-rules = vf-rules-widget st
+    in widget-panel "vf-settings" DirColumn 4 [title, profile, vpn-section, proxy-section, fw-toggle, fw-rules]
+
+  vf-vpn-widget : VpnFirewallState -> WidgetNode
+  vf-vpn-widget (st) =
+    let title = widget-label "vf-vpn-title" ("VPN (" & show (st.vf-vpn-count) & " profiles)")
+    in let active = widget-label "vf-vpn-active" (if text-length (st.vf-active-vpn) > 0 then "Connected: " & st.vf-active-vpn else "Disconnected")
+    in let rows = vf-vpn-rows st 0 (st.vf-vpn-count) []
+    in widget-panel "vf-vpn" DirColumn 2 ([title, active] & rows)
+
+  vf-vpn-rows : VpnFirewallState, Integer, Integer, List WidgetNode -> List WidgetNode
+  vf-vpn-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at (st.vf-vpn-profiles) i
+    in let name = widget-label ("vf-vp-" & p.vp-id) (p.vp-name & " (" & p.vp-server & ")")
+    in let btn = widget-button ("vf-vc-" & p.vp-id) (if p.vp-connected then "Disconnect" else "Connect")
+    in let row = widget-panel ("vf-vr-" & p.vp-id) DirRow 4 [name, btn]
+    in vf-vpn-rows st (i + 1) n (list-push acc row)
+
+  vf-rules-widget : VpnFirewallState -> WidgetNode
+  vf-rules-widget (st) =
+    let title = widget-label "vf-fw-title" ("Rules (" & show (st.vf-fw-rule-count) & ")")
+    in let rows = vf-rule-rows st 0 (st.vf-fw-rule-count) []
+    in widget-panel "vf-fw-rules" DirColumn 2 ([title] & rows)
+
+  vf-rule-rows : VpnFirewallState, Integer, Integer, List WidgetNode -> List WidgetNode
+  vf-rule-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let rule = list-at (st.vf-fw-rules) i
+    in let action-text = when rule.fw-action is FwAllow -> "ALLOW" is FwDeny -> "DENY"
+    in let row = widget-label ("vf-fr-" & show i) (action-text & " " & rule.fw-app & " :" & show (rule.fw-port) & "/" & rule.fw-protocol & " -- " & rule.fw-description)
+    in vf-rule-rows st (i + 1) n (list-push acc row)
+
+Section: Formatting
+
+  format-vpn-firewall : VpnFirewallState -> Text
+  format-vpn-firewall (st) =
+    "vpn=" & (if text-length (st.vf-active-vpn) > 0 then st.vf-active-vpn else "none")
+    & " proxy=" & proxy-label (st.vf-proxy)
+    & " firewall=" & (if st.vf-firewall-enabled then "on" else "off")
+    & " rules=" & show (st.vf-fw-rule-count)
+    & " profile=" & conn-profile-label (st.vf-conn-profile)
+
+Page 1

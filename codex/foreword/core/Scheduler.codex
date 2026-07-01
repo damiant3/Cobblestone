@@ -1,0 +1,124 @@
+Chapter: Scheduler
+  cites Foreword chapter Maybe
+  cites Foreword chapter PriorityQueue
+  cites Foreword chapter Units (Duration)
+
+ A SchedTask is a record containing task-id, task-name, task-priority, task-deadline, task-status, and task-period.
+ A SchedTaskQueue is a record containing tq-tasks, tq-count, tq-next-id, and tq-clock.
+ To tq-new gives an empty SchedTaskQueue.
+ To tq-add gives a new SchedTaskQueue with a one-shot task at the given priority and deadline.
+ To tq-add-periodic gives a new SchedTaskQueue with a recurring task at the given priority and period.
+ To tq-next gives the highest-priority ready task as a Maybe, or None when no tasks are ready.
+ To tq-complete gives a new SchedTaskQueue with the task marked done, or renewed when periodic.
+ To tq-tick gives a new SchedTaskQueue with the clock advanced by the given amount.
+ To tq-pending-count gives the number of pending tasks.
+ To tq-done-count gives the number of completed tasks.
+ To format-task gives a Text representation of a SchedTask.
+ To format-tq gives a Text summary of the SchedTaskQueue state.
+
+ We say:
+
+Section: Types
+  SchedTask = record {
+    task-id : Integer,
+    task-name : Text,
+    task-priority : Integer,
+    task-deadline : Duration,
+    task-status : Integer,
+    task-period : Duration
+  }
+
+  SchedTaskQueue = record {
+    tq-tasks : List SchedTask,
+    tq-count : Integer,
+    tq-next-id : Integer,
+    tq-clock : Integer
+  }
+
+Section: Status Constants
+  task-pending : Integer = 0
+  task-running : Integer = 1
+  task-done : Integer = 2
+  task-blocked : Integer = 3
+
+Section: Construction
+  tq-new : SchedTaskQueue
+  tq-new = SchedTaskQueue { tq-tasks = [], tq-count = 0, tq-next-id = 1, tq-clock = 0 }
+
+  tq-add : SchedTaskQueue, Text, Integer, Integer -> SchedTaskQueue
+  tq-add (q) (name) (priority) (deadline) =
+    let t = SchedTask { task-id = q.tq-next-id, task-name = name, task-priority = priority, task-deadline = deadline, task-status = task-pending, task-period = 0 }
+    in SchedTaskQueue { tq-tasks = list-push (q.tq-tasks) t, tq-count = q.tq-count + 1, tq-next-id = q.tq-next-id + 1, tq-clock = q.tq-clock }
+
+  tq-add-periodic : SchedTaskQueue, Text, Integer, Integer -> SchedTaskQueue
+  tq-add-periodic (q) (name) (priority) (period) =
+    let t = SchedTask { task-id = q.tq-next-id, task-name = name, task-priority = priority, task-deadline = q.tq-clock + period, task-status = task-pending, task-period = period }
+    in SchedTaskQueue { tq-tasks = list-push (q.tq-tasks) t, tq-count = q.tq-count + 1, tq-next-id = q.tq-next-id + 1, tq-clock = q.tq-clock }
+
+Section: Scheduling
+  tq-next : SchedTaskQueue -> Maybe SchedTask
+  tq-next (q) = tq-find-best (q.tq-tasks) 0 (q.tq-count) (q.tq-clock)
+
+  tq-find-best : List SchedTask, Integer, Integer, Integer -> Maybe SchedTask
+  tq-find-best (tasks) (i) (n) (clock) = tq-best-loop tasks i n clock (0 - 1) (0 - 1)
+
+  tq-best-loop : List SchedTask, Integer, Integer, Integer, Integer, Integer -> Maybe SchedTask
+  tq-best-loop (tasks) (i) (n) (clock) (best-idx) (best-pri) =
+    if i >= n then if best-idx < 0 then None else Just (list-at tasks best-idx)
+    else let t = list-at tasks i
+    in if t.task-status /= task-pending then tq-best-loop tasks (i + 1) n clock best-idx best-pri
+    else if t.task-deadline > 0 then if t.task-deadline > clock then tq-best-loop tasks (i + 1) n clock best-idx best-pri
+      else if t.task-priority > best-pri then tq-best-loop tasks (i + 1) n clock i (t.task-priority)
+      else tq-best-loop tasks (i + 1) n clock best-idx best-pri
+    else if t.task-priority > best-pri then tq-best-loop tasks (i + 1) n clock i (t.task-priority)
+    else tq-best-loop tasks (i + 1) n clock best-idx best-pri
+
+Section: SchedTask Lifecycle
+  tq-complete : SchedTaskQueue, Integer -> SchedTaskQueue
+  tq-complete (q) (task-id) =
+    let idx = tq-find-by-id (q.tq-tasks) task-id 0 (q.tq-count)
+    in if idx < 0 then q
+    else let t = list-at (q.tq-tasks) idx
+    in if t.task-period > 0 then
+      let renewed = SchedTask { task-id = t.task-id, task-name = t.task-name, task-priority = t.task-priority, task-deadline = q.tq-clock + t.task-period, task-status = task-pending, task-period = t.task-period }
+      in SchedTaskQueue { tq-tasks = list-set-at (q.tq-tasks) idx renewed, tq-count = q.tq-count, tq-next-id = q.tq-next-id, tq-clock = q.tq-clock }
+    else let finished = SchedTask { task-id = t.task-id, task-name = t.task-name, task-priority = t.task-priority, task-deadline = t.task-deadline, task-status = task-done, task-period = 0 }
+    in SchedTaskQueue { tq-tasks = list-set-at (q.tq-tasks) idx finished, tq-count = q.tq-count, tq-next-id = q.tq-next-id, tq-clock = q.tq-clock }
+
+  tq-tick : SchedTaskQueue, Integer -> SchedTaskQueue
+  tq-tick (q) (dt) = SchedTaskQueue { tq-tasks = q.tq-tasks, tq-count = q.tq-count, tq-next-id = q.tq-next-id, tq-clock = q.tq-clock + dt }
+
+Section: Queries
+  tq-find-by-id : List SchedTask, Integer, Integer, Integer -> Integer
+  tq-find-by-id (tasks) (id) (i) (n) =
+    if i >= n then 0 - 1
+    else if (list-at tasks i).task-id == id then i
+    else tq-find-by-id tasks id (i + 1) n
+
+  tq-pending-count : SchedTaskQueue -> Integer
+  tq-pending-count (q) = tq-count-status (q.tq-tasks) task-pending 0 (q.tq-count) 0
+
+  tq-done-count : SchedTaskQueue -> Integer
+  tq-done-count (q) = tq-count-status (q.tq-tasks) task-done 0 (q.tq-count) 0
+
+  tq-count-status : List SchedTask, Integer, Integer, Integer, Integer -> Integer
+  tq-count-status (tasks) (status) (i) (n) (acc) =
+    if i >= n then acc
+    else let t = list-at tasks i
+    in tq-count-status tasks status (i + 1) n (if t.task-status == status then acc + 1 else acc)
+
+Section: Formatting
+  format-task : SchedTask -> Text
+  format-task (t) = "[" & show (t.task-id) & "] " & t.task-name & " pri=" & show (t.task-priority) & " " & tq-status-name (t.task-status)
+
+  tq-status-name : Integer -> Text
+  tq-status-name (s) =
+    if s == 0 then "pending"
+    else if s == 1 then "running"
+    else if s == 2 then "done"
+    else "blocked"
+
+  format-tq : SchedTaskQueue -> Text
+  format-tq (q) = "tasks=" & show (q.tq-count) & " pending=" & show (tq-pending-count q) & " done=" & show (tq-done-count q) & " clock=" & show (q.tq-clock)
+
+Page 1

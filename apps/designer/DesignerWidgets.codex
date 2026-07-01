@@ -1,0 +1,196 @@
+Chapter: DesignerWidgets
+
+ Widget type definitions and memory layout for the Codex UI Designer.
+ Widgets stored at widget-base (#200000), 128-byte stride, max 256.
+ String pool at #210000 (64 KB).
+
+ We say:
+
+Section: Constants
+
+  widget-base : Integer = 2097152
+  widget-stride : Integer = 128
+  max-widgets : Integer = 256
+  string-pool-base : Integer = 2162688
+  string-pool-size : Integer = 65536
+  designer-state-addr : Integer = 2228224
+
+  wt-section : Integer = 0
+  wt-button : Integer = 1
+  wt-toggle : Integer = 2
+  wt-prop-row : Integer = 3
+  wt-text-input : Integer = 4
+  wt-slider : Integer = 5
+  wt-color : Integer = 6
+  wt-grid : Integer = 7
+  wt-tabs : Integer = 8
+  wt-panel : Integer = 9
+  wt-spacer : Integer = 10
+
+Section: Widget Access
+
+  w32 : Integer, Integer -> Integer
+  w32 (addr) (val) = poke-32 0 addr val
+
+  rd : Integer -> Integer
+  rd (addr) = peek-32 0 addr
+
+  widget-addr : Integer -> Integer
+  widget-addr (idx) = widget-base + idx * widget-stride
+
+  wgt-type : Integer -> Integer
+  wgt-type (idx) = rd (widget-addr idx)
+
+  wgt-x : Integer -> Integer
+  wgt-x (idx) = rd (widget-addr idx + 4)
+
+  wgt-y : Integer -> Integer
+  wgt-y (idx) = rd (widget-addr idx + 8)
+
+  wgt-w : Integer -> Integer
+  wgt-w (idx) = rd (widget-addr idx + 12)
+
+  wgt-h : Integer -> Integer
+  wgt-h (idx) = rd (widget-addr idx + 16)
+
+  wgt-parent : Integer -> Integer
+  wgt-parent (idx) = rd (widget-addr idx + 20)
+
+  wgt-first-child : Integer -> Integer
+  wgt-first-child (idx) = rd (widget-addr idx + 24)
+
+  wgt-next-sibling : Integer -> Integer
+  wgt-next-sibling (idx) = rd (widget-addr idx + 28)
+
+  wgt-text-off : Integer -> Integer
+  wgt-text-off (idx) = rd (widget-addr idx + 32)
+
+  wgt-text-len : Integer -> Integer
+  wgt-text-len (idx) = rd (widget-addr idx + 36)
+
+  wgt-onclick-off : Integer -> Integer
+  wgt-onclick-off (idx) = rd (widget-addr idx + 40)
+
+  wgt-onclick-len : Integer -> Integer
+  wgt-onclick-len (idx) = rd (widget-addr idx + 44)
+
+  wgt-flags : Integer -> Integer
+  wgt-flags (idx) = rd (widget-addr idx + 56)
+
+  wgt-grid-cols : Integer -> Integer
+  wgt-grid-cols (idx) = rd (widget-addr idx + 60)
+
+Section: Widget Write
+
+  wgt-set-type : Integer, Integer -> Integer
+  wgt-set-type (idx) (t) = w32 (widget-addr idx) t
+
+  wgt-set-pos : Integer, Integer, Integer -> Integer
+  wgt-set-pos (idx) (x) (y) =
+    let a = w32 (widget-addr idx + 4) x
+    in w32 (widget-addr idx + 8) y
+
+  wgt-set-size : Integer, Integer, Integer -> Integer
+  wgt-set-size (idx) (w2) (h2) =
+    let a = w32 (widget-addr idx + 12) w2
+    in w32 (widget-addr idx + 16) h2
+
+  wgt-set-parent : Integer, Integer -> Integer
+  wgt-set-parent (idx) (p) = w32 (widget-addr idx + 20) p
+
+  wgt-set-first-child : Integer, Integer -> Integer
+  wgt-set-first-child (idx) (c) = w32 (widget-addr idx + 24) c
+
+  wgt-set-next-sibling : Integer, Integer -> Integer
+  wgt-set-next-sibling (idx) (s) = w32 (widget-addr idx + 28) s
+
+  wgt-set-text : Integer, Integer, Integer -> Integer
+  wgt-set-text (idx) (off) (len) =
+    let a = w32 (widget-addr idx + 32) off
+    in w32 (widget-addr idx + 36) len
+
+  wgt-set-onclick : Integer, Integer, Integer -> Integer
+  wgt-set-onclick (idx) (off) (len) =
+    let a = w32 (widget-addr idx + 40) off
+    in w32 (widget-addr idx + 44) len
+
+  wgt-set-flags : Integer, Integer -> Integer
+  wgt-set-flags (idx) (f) = w32 (widget-addr idx + 56) f
+
+  wgt-set-grid-cols : Integer, Integer -> Integer
+  wgt-set-grid-cols (idx) (c) = w32 (widget-addr idx + 60) c
+
+Section: String Pool
+
+  pool-ptr : Integer = rd (designer-state-addr + 8)
+
+  pool-write-text : Text -> Integer
+  pool-write-text (s) =
+    let ptr = rd (designer-state-addr + 8)
+    in let len = text-length s
+    in let written = pool-write-loop s ptr 0 len
+    in let a = w32 (designer-state-addr + 8) (ptr + len)
+    in ptr
+
+  pool-write-loop : Text, Integer, Integer, Integer -> Integer
+  pool-write-loop (s) (base) (i) (len) =
+    if i >= len then base + len
+    else let ch = char-code (char-at s i)
+    in let a = w32 (string-pool-base + base + i) ch
+    in pool-write-loop s base (i + 1) len
+
+  pool-read-char : Integer, Integer -> Integer
+  pool-read-char (off) (i) = rd (string-pool-base + off + i)
+
+Section: Widget Type Names
+
+  widget-type-name : Integer -> Text
+  widget-type-name (t) =
+    if t == 0 then "Section"
+    else if t == 1 then "Button"
+    else if t == 2 then "Toggle"
+    else if t == 3 then "PropRow"
+    else if t == 4 then "TextInput"
+    else if t == 5 then "Slider"
+    else if t == 6 then "ColorPick"
+    else if t == 7 then "Grid"
+    else if t == 8 then "TabGroup"
+    else if t == 9 then "Panel"
+    else if t == 10 then "Spacer"
+    else "Unknown"
+
+  widget-default-w : Integer -> Integer
+  widget-default-w (t) =
+    if t == 0 then 200
+    else if t == 1 then 120
+    else if t == 7 then 240
+    else if t == 8 then 240
+    else if t == 9 then 260
+    else if t == 10 then 200
+    else 150
+
+  widget-default-h : Integer -> Integer
+  widget-default-h (t) =
+    if t == 0 then 24
+    else if t == 1 then 28
+    else if t == 7 then 100
+    else if t == 8 then 120
+    else if t == 9 then 200
+    else if t == 10 then 8
+    else 24
+
+Section: Render CSS Classes
+
+  designer-render-css : Text
+  designer-render-css =
+    ".dsg-drop-hint{padding:8px;font-size:0.45em;color:var(--dim);text-align:center;opacity:0.5}"
+    & ".dsg-child-rel{position:relative}"
+    & ".dsg-p-panel-label{font-size:0.45em;color:var(--dim);padding:2px 4px;letter-spacing:0.08em}"
+    & ".dsg-p-generic{font-size:0.5em;color:var(--dim);padding:4px}"
+    & ".dsg-props-empty{padding:12px 8px;font-size:0.5em;color:var(--dim);opacity:0.5;text-align:center}"
+    & ".dsg-preview-canvas{background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:2px;min-height:200px}"
+    & ".dsg-props-actions{display:flex;gap:4px}"
+    & ".dsg-dup-btn{flex:1;}"
+    & ".dsg-del-btn{flex:1;color:var(--warn)}"
+
+Page 1

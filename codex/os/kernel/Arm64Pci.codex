@@ -1,0 +1,200 @@
+Chapter: Arm64Pci
+  cites Foreword chapter Maybe
+
+ PCI Configuration Space access via ECAM (memory-mapped) for ARM64.
+ On ARM64 there are no I/O ports; PCI config space is accessed
+ through a memory-mapped region (Enhanced Configuration Access
+ Mechanism). QEMU virt maps ECAM at 0x4010000000 for bus 0-255.
+
+ We reuse the PciDevice, PciBar, and PciScanResult records from
+ the x86 Pci chapter. This chapter provides the ARM64 config
+ space read/write functions and bus scanning.
+
+Section: ECAM Constants
+
+  ecam-base : Integer = #4010000000
+  ecam-bus-shift : Integer = 20
+  ecam-dev-shift : Integer = 15
+  ecam-func-shift : Integer = 12
+
+Section: ECAM Address Calculation
+
+  ecam-address : Integer, Integer, Integer, Integer -> Integer
+  ecam-address (bus) (device) (func) (offset) =
+   ecam-base + bit-shl bus ecam-bus-shift + bit-shl device ecam-dev-shift + bit-shl func ecam-func-shift + offset
+
+Section: Config Space Access
+
+  ecam-read-32 : Integer, Integer, Integer, Integer -> Integer
+  ecam-read-32 (bus) (dev) (func) (offset) =
+   peek-32 (ecam-address bus dev func offset) 0
+
+  ecam-write-32 : Integer, Integer, Integer, Integer, Integer -> Integer
+  ecam-write-32 (bus) (dev) (func) (offset) (value) =
+   poke-32 (ecam-address bus dev func offset) 0 value
+
+  ecam-read-16 : Integer, Integer, Integer, Integer -> Integer
+  ecam-read-16 (bus) (dev) (func) (offset) =
+   let word = peek-32 (ecam-address bus dev func (bit-and offset #FC)) 0
+   in let shift = bit-shl (bit-and offset 2) 3
+   in bit-and (bit-shru word shift) #FFFF
+
+  ecam-read-8 : Integer, Integer, Integer, Integer -> Integer
+  ecam-read-8 (bus) (dev) (func) (offset) =
+   let word = peek-32 (ecam-address bus dev func (bit-and offset #FC)) 0
+   in let shift = bit-shl (bit-and offset 3) 3
+   in bit-and (bit-shru word shift) #FF
+
+Section: Device Info
+
+  Arm64PciDevice = record {
+    pci-bus : Integer,
+    pci-dev : Integer,
+    pci-func : Integer,
+    pci-vendor : Integer,
+    pci-device-id : Integer,
+    pci-class : Integer,
+    pci-subclass : Integer,
+    pci-header-type : Integer
+  }
+
+  Arm64PciScanResult = record {
+    devices : List Arm64PciDevice,
+    count : Integer
+  }
+
+Section: BAR Info
+
+  Arm64PciBar = record {
+    bar-index : Integer,
+    bar-base : Integer,
+    bar-size : Integer,
+    bar-is-io : Boolean,
+    bar-is-64bit : Boolean
+  }
+
+Section: Bus Scanning
+
+  arm64-pci-scan-bus : Integer -> Arm64PciScanResult
+  arm64-pci-scan-bus (bus) = arm64-pci-scan-loop bus 0 0 [] 0
+
+  arm64-pci-read-dev : Integer, Integer, Integer -> Arm64PciDevice
+  arm64-pci-read-dev (bus) (dev) (func) =
+   let reg0 = ecam-read-32 bus dev func 0
+   in let class-reg = ecam-read-32 bus dev func 8
+   in let hdr-reg = ecam-read-32 bus dev func 12
+   in Arm64PciDevice {
+    pci-bus = bus, pci-dev = dev, pci-func = func,
+    pci-vendor = bit-and reg0 #FFFF,
+    pci-device-id = bit-and (bit-shru reg0 16) #FFFF,
+    pci-class = bit-and (bit-shru class-reg 24) #FF,
+    pci-subclass = bit-and (bit-shru class-reg 16) #FF,
+    pci-header-type = bit-and (bit-shru hdr-reg 16) 127
+   }
+
+  arm64-pci-scan-loop : Integer, Integer, Integer, List Arm64PciDevice, Integer -> Arm64PciScanResult
+  arm64-pci-scan-loop (bus) (dev) (func) (acc) (count) =
+   if dev >= 32 then Arm64PciScanResult { devices = acc, count = count }
+   else if func >= 8 then arm64-pci-scan-loop bus (dev + 1) 0 acc count
+   else let vendor = bit-and (ecam-read-32 bus dev func 0) #FFFF
+   in if vendor == #FFFF then
+     if func == 0 then arm64-pci-scan-loop bus (dev + 1) 0 acc count
+     else arm64-pci-scan-loop bus dev (func + 1) acc count
+   else if vendor == 0 then
+     if func == 0 then arm64-pci-scan-loop bus (dev + 1) 0 acc count
+     else arm64-pci-scan-loop bus dev (func + 1) acc count
+   else let entry = arm64-pci-read-dev bus dev func
+   in let multi = bit-and (entry.pci-header-type) 128 > 0
+   in if func == 0 then
+     if multi then arm64-pci-scan-loop bus dev 1 (list-push acc entry) (count + 1)
+     else arm64-pci-scan-loop bus (dev + 1) 0 (list-push acc entry) (count + 1)
+   else arm64-pci-scan-loop bus dev (func + 1) (list-push acc entry) (count + 1)
+
+Section: Device Queries
+
+  arm64-pci-find-vendor : Arm64PciScanResult, Integer -> Maybe Arm64PciDevice
+  arm64-pci-find-vendor (scan) (vendor) = arm64-pci-find-vendor-loop (scan.devices) vendor 0 (scan.count)
+
+  arm64-pci-find-vendor-loop : List Arm64PciDevice, Integer, Integer, Integer -> Maybe Arm64PciDevice
+  arm64-pci-find-vendor-loop (devs) (vendor) (i) (len) =
+   if i >= len then None
+   else let d = list-at devs i
+   in if d.pci-vendor == vendor then Just d
+   else arm64-pci-find-vendor-loop devs vendor (i + 1) len
+
+  arm64-pci-find-device : Arm64PciScanResult, Integer, Integer -> Maybe Arm64PciDevice
+  arm64-pci-find-device (scan) (vendor) (did) = arm64-pci-find-dev-loop (scan.devices) vendor did 0 (scan.count)
+
+  arm64-pci-find-dev-loop : List Arm64PciDevice, Integer, Integer, Integer, Integer -> Maybe Arm64PciDevice
+  arm64-pci-find-dev-loop (devs) (vendor) (did) (i) (len) =
+   if i >= len then None
+   else let d = list-at devs i
+   in if d.pci-vendor == vendor then if d.pci-device-id == did then Just d
+     else arm64-pci-find-dev-loop devs vendor did (i + 1) len
+   else arm64-pci-find-dev-loop devs vendor did (i + 1) len
+
+Section: BAR Parsing
+
+  arm64-pci-read-bar-base : Arm64PciDevice, Integer -> Integer
+  arm64-pci-read-bar-base (d) (bar-idx) =
+   let raw = ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) (16 + bar-idx * 4)
+   in let base-lo = bit-and raw #FFFFFFF0
+   in let is-64 = bit-and (bit-shru raw 1) 3 == 2
+   in if is-64
+     then base-lo + bit-shl (ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) (16 + (bar-idx + 1) * 4)) 32
+     else base-lo
+
+  arm64-pci-read-bar : Arm64PciDevice, Integer -> Arm64PciBar
+  arm64-pci-read-bar (d) (bar-idx) =
+   let raw = ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) (16 + bar-idx * 4)
+   in let is-io = bit-and raw 1 == 1
+   in let is-64 = if is-io then False else bit-and (bit-shru raw 1) 3 == 2
+   in let base = if is-io then bit-and raw #FFFFFFFC
+     else arm64-pci-read-bar-base d bar-idx
+   in Arm64PciBar { bar-index = bar-idx, bar-base = base, bar-size = 0, bar-is-io = is-io, bar-is-64bit = is-64 }
+
+Section: Enable Bus Mastering and MMIO
+
+  arm64-pci-enable-device : Arm64PciDevice -> Integer
+  arm64-pci-enable-device (d) =
+   let cmd = ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) 4
+   in let new-cmd = bit-or cmd 7
+   in ecam-write-32 (d.pci-bus) (d.pci-dev) (d.pci-func) 4 new-cmd
+
+Section: BAR Assignment (for bare-metal boot without firmware)
+
+  arm64-pci-mmio-base : Integer = #10000000
+
+  arm64-pci-assign-bar : Arm64PciDevice, Integer, Integer -> Integer
+  arm64-pci-assign-bar (d) (bar-idx) (addr) =
+   let reg = 16 + bar-idx * 4
+   in let saved = ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) reg
+   in let is-io = bit-and saved 1 == 1
+   in let is-64 = if is-io then False else bit-and (bit-shru saved 1) 3 == 2
+   in let probe = ecam-write-32 (d.pci-bus) (d.pci-dev) (d.pci-func) reg #FFFFFFFF
+   in let size-raw = ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) reg
+   in let restore = ecam-write-32 (d.pci-bus) (d.pci-dev) (d.pci-func) reg saved
+   in if size-raw == 0 then addr
+   else let mask = if is-io then #FFFFFFFC else #FFFFFFF0
+   in let size = bit-and (bit-not (bit-and size-raw mask)) mask + 1
+   in let aligned = bit-and (addr + size - 1) (bit-not (size - 1))
+   in let low-bits = bit-and saved (bit-not mask)
+   in let w = ecam-write-32 (d.pci-bus) (d.pci-dev) (d.pci-func) reg (bit-or aligned low-bits)
+   in let w2 = if is-64 then ecam-write-32 (d.pci-bus) (d.pci-dev) (d.pci-func) (reg + 4) 0 else 0
+   in aligned + size
+
+  arm64-pci-assign-bars : Arm64PciDevice, Integer -> Integer
+  arm64-pci-assign-bars (d) (start-addr) =
+   let a1 = arm64-pci-assign-bar d 0 start-addr
+   in let a2 = arm64-pci-assign-bar d 2 a1
+   in let a3 = arm64-pci-assign-bar d 4 a2
+   in a3
+
+  arm64-pci-assign-all-bars : Arm64PciScanResult, Integer, Integer -> Integer
+  arm64-pci-assign-all-bars (scan) (i) (addr) =
+   if i >= scan.count then addr
+   else let d = list-at (scan.devices) i
+   in let next-addr = arm64-pci-assign-bars d addr
+   in arm64-pci-assign-all-bars scan (i + 1) next-addr
+
+Page 1

@@ -1,0 +1,159 @@
+Chapter: Http
+  cites Foreword chapter CCE
+
+ Minimal HTTP/1.0 response formatting. Builds response bytes (status line,
+ headers, body) suitable for sending over TCP. Request parsing is intentionally
+ minimal — just enough to detect GET and extract the path.
+
+ We say:
+
+Section: Status Codes
+  http-200 : Text = "200 OK"
+  http-404 : Text = "404 Not Found"
+  http-500 : Text = "500 Internal Server Error"
+
+Section: Response Building
+  HttpResponse = record {
+    status : Text,
+    content-type : Text,
+    body : Text
+  }
+
+  http-html : Text -> HttpResponse
+  http-html (body) = HttpResponse { status = http-200, content-type = "text/html", body = body }
+
+  http-plain : Text -> HttpResponse
+  http-plain (body) = HttpResponse { status = http-200, content-type = "text/plain", body = body }
+
+  http-not-found : HttpResponse
+  http-not-found = HttpResponse { status = http-404, content-type = "text/plain", body = "404 Not Found" }
+
+  http-error : Text -> HttpResponse
+  http-error (msg) = HttpResponse { status = http-500, content-type = "text/plain", body = msg }
+
+Section: Binary Response
+
+  HttpBinaryResponse = record {
+    status : Text,
+    content-type : Text,
+    body-bytes : List Integer,
+    body-length : Integer
+  }
+
+  http-binary : Text, List Integer -> HttpBinaryResponse
+  http-binary (content-type) (bytes) = HttpBinaryResponse { status = http-200, content-type = content-type, body-bytes = bytes, body-length = list-length bytes }
+
+  http-binary-not-found : HttpBinaryResponse
+  http-binary-not-found = HttpBinaryResponse { status = http-404, content-type = "text/plain", body-bytes = http-text-to-ascii "404 Not Found", body-length = 13 }
+
+  http-encode-binary : HttpBinaryResponse -> List Integer
+  http-encode-binary (resp) =
+    let status-line = http-text-to-ascii ("HTTP/1.0 " & resp.status) & [13, 10]
+    in let h1 = http-text-to-ascii ("Content-Type: " & resp.content-type) & [13, 10]
+    in let h2 = http-text-to-ascii ("Content-Length: " & show (resp.body-length)) & [13, 10]
+    in let h3 = http-text-to-ascii "Connection: close" & [13, 10]
+    in let blank = [13, 10]
+    in status-line & h1 & h2 & h3 & blank & resp.body-bytes
+
+Section: Serialize Response
+  http-encode : HttpResponse -> List Integer
+  http-encode (resp) =
+    let body-bytes = http-text-to-ascii (resp.body)
+    in let status-line = http-text-to-ascii ("HTTP/1.0 " & resp.status) & [13, 10]
+    in let h1 = http-text-to-ascii ("Content-Type: " & resp.content-type) & [13, 10]
+    in let h2 = http-text-to-ascii ("Content-Length: " & show (list-length body-bytes)) & [13, 10]
+    in let h3 = http-text-to-ascii "Connection: close" & [13, 10]
+    in let blank = [13, 10]
+    in status-line & h1 & h2 & h3 & blank & body-bytes
+
+  http-text-to-ascii : Text -> List Integer
+  http-text-to-ascii (s) = text-to-unicode-bytes s
+
+Section: Request Parsing
+
+ The body is everything after the CRLF CRLF blank line that ends the
+ header block, empty when the request has no body or no blank line.
+ Bare-LF requests are not recognized; senders must use CRLF per the
+ HTTP specification.
+
+  HttpRequest = record {
+    method : Text,
+    path : Text,
+    body : Text,
+    valid : Boolean
+  }
+
+  http-parse-request : List Integer -> HttpRequest
+  http-parse-request (bs) =
+    let len = list-length bs
+    in let sp1 = http-find-byte bs 32 0 len
+    in if sp1 >= len then HttpRequest { method = "", path = "", body = "", valid = False }
+    else let sp2 = http-find-byte bs 32 (sp1 + 1) len
+    in let path-stop = if sp2 >= len then http-find-line-stop bs (sp1 + 1) len else sp2
+    in let body-start = http-find-blank-line bs 0 len
+    in let body-text = if body-start >= len then "" else http-bytes-to-text bs body-start len
+    in HttpRequest { method = http-bytes-to-text bs 0 sp1, path = http-bytes-to-text bs (sp1 + 1) path-stop, body = body-text, valid = True }
+
+  http-find-blank-line : List Integer, Integer, Integer -> Integer
+  http-find-blank-line (bs) (i) (len) =
+    if i + 3 >= len then len
+    else if list-at bs i == 13 then
+      if list-at bs (i + 1) == 10 then
+        if list-at bs (i + 2) == 13 then
+          if list-at bs (i + 3) == 10 then i + 4
+          else http-find-blank-line bs (i + 1) len
+        else http-find-blank-line bs (i + 1) len
+      else http-find-blank-line bs (i + 1) len
+    else http-find-blank-line bs (i + 1) len
+
+  http-find-byte : List Integer, Integer, Integer, Integer -> Integer
+  http-find-byte (bs) (target) (i) (len) =
+    if i >= len then len
+    else let b = list-at bs i
+    in if b == target then i
+    else http-find-byte bs target (i + 1) len
+
+  http-find-line-stop : List Integer, Integer, Integer -> Integer
+  http-find-line-stop (bs) (i) (len) =
+    if i >= len then len
+    else let b = list-at bs i
+    in if b == 13 then i
+    else if b == 10 then i
+    else http-find-line-stop bs (i + 1) len
+
+  http-bytes-to-text : List Integer, Integer, Integer -> Text
+  http-bytes-to-text (bs) (start) (stop) =
+    unicode-bytes-to-text (http-slice bs start stop [])
+
+  http-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  http-slice (bs) (i) (stop) (acc) =
+    if i >= stop then acc
+    else http-slice bs (i + 1) stop (list-push acc (list-at bs i))
+
+  http-is-get : HttpRequest -> Boolean
+  http-is-get (req) = req.method == "GET"
+
+Section: HTML Helpers
+  html-page : Text, Text -> Text
+  html-page (title) (body) =
+    "<!DOCTYPE html><html><head><title>" & title & "</title>"
+    & "<style>body{font-family:monospace;background:#1a1a2e;color:#e0e0e0;padding:20px}"
+    & "h1{color:#0f0}h2{color:#0af}.ok{color:#0f0}.info{color:#0af}</style>"
+    & "</head><body>" & body & "</body></html>"
+
+  html-h1 : Text -> Text
+  html-h1 (s) = "<h1>" & s & "</h1>"
+
+  html-h2 : Text -> Text
+  html-h2 (s) = "<h2>" & s & "</h2>"
+
+  html-p : Text -> Text
+  html-p (s) = "<p>" & s & "</p>"
+
+  html-span-class : Text, Text -> Text
+  html-span-class (cls) (s) = "<span class='" & cls & "'>" & s & "</span>"
+
+  html-pre : Text -> Text
+  html-pre (s) = "<pre>" & s & "</pre>"
+
+Page 1

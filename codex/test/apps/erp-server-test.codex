@@ -1,0 +1,49 @@
+Chapter: ErpServerTest
+  cites Foreword chapter Tuple
+  cites ERP chapter ErpTypes
+  cites ERP chapter ErpConfig
+  cites ERP chapter FinGL
+  cites ERP chapter ErpServer
+  cites Works chapter Http
+
+ Exercises the ERP JSON API exactly as web-server-test exercises the
+ web server: requests are constructed as records and handed straight
+ to erp-route, no sockets. The golden output pins status lines and
+ exact JSON bodies.
+
+Section: Helpers
+
+  get-req : Text -> HttpRequest
+  get-req (path) = HttpRequest { method = "GET", path = path, body = "", valid = True }
+
+  post-req : Text, Text -> HttpRequest
+  post-req (path) (body) = HttpRequest { method = "POST", path = path, body = body, valid = True }
+
+  show-resp : HttpResponse -> Text
+  show-resp (r) = r.status & " " & r.body
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    let st = erp-state-new 6 2026
+    in let (st1, health) = erp-route st (get-req "/health")
+    in let (st2, posted) = erp-route st1 (post-req "/api/gl/journal" "{\"id\":\"JE-9\",\"debit\":\"1000\",\"credit\":\"3000\",\"amount\":250000}")
+    in let (st3, tb) = erp-route st2 (get-req "/api/gl/trial-balance")
+    in let (st4, kpi) = erp-route st3 (get-req "/api/kpi/dashboard")
+    in let (st5, bad-json) = erp-route st4 (post-req "/api/gl/journal" "not json")
+    in let (st6, missing) = erp-route st5 (post-req "/api/gl/journal" "{\"id\":\"X\"}")
+    in let (st7, wrong-verb) = erp-route st6 (get-req "/api/gl/journal")
+    in let (st8, nope) = erp-route st7 (get-req "/api/nope")
+    in let (st9, aging) = erp-route st8 (get-req "/api/ap/aging")
+    in act
+      print-line-uni ("health: " & show-resp health)
+      print-line-uni ("post: " & show-resp posted)
+      print-line-uni ("tb: " & show-resp tb)
+      print-line-uni ("kpi: " & show-resp kpi)
+      print-line-uni ("bad-json: " & show-resp bad-json)
+      print-line-uni ("missing: " & show-resp missing)
+      print-line-uni ("wrong-verb: " & show-resp wrong-verb)
+      print-line-uni ("nope: " & nope.status)
+      print-line-uni ("ap-aging: " & show-resp aging)
+    end
+  end

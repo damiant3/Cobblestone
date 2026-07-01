@@ -1,0 +1,196 @@
+Chapter: BashEmit
+
+  cites Shell chapter ShellTypes
+  cites Foreword chapter Maybe
+
+ Emits POSIX-compatible Bash 4+ from ShellScript values.
+ Split into small functions to stay within LOWER deck budget.
+
+ We say:
+
+Section: Top Level
+
+  emit-bash : ShellScript -> Text
+  emit-bash (script) =
+    let header = "#!/usr/bin/env bash\n# " & script.ss-name & ".sh -- " & script.ss-description & "\n# Generated from Codex Shell DSL. Do not edit by hand.\nset -euo pipefail\n\n"
+    in let params = emit-bash-params (script.ss-params) 0 (list-length (script.ss-params)) 1
+    in let body = emit-bash-cmds (script.ss-body) 0 0 (list-length (script.ss-body))
+    in header & params & body & "\n"
+
+Section: Parameters
+
+  emit-bash-params : List ShellParam, Integer, Integer, Integer -> Text
+  emit-bash-params (params) (i) (len) (pos) =
+    if i >= len then ""
+    else let p = list-at params i
+    in let line = when p.sp-type
+      is SptSwitch -> p.sp-name & "=false\n"
+      is otherwise -> when p.sp-default
+        is Just (e) -> p.sp-name & "=${" & show pos & ":-" & emit-bash-expr-unquoted e & "}\n"
+        is None -> p.sp-name & "=${" & show pos & ":?\"Missing required argument: " & p.sp-name & "\"}\n"
+    in let next-pos = when p.sp-type is SptSwitch -> pos is otherwise -> pos + 1
+    in line & emit-bash-params params (i + 1) len next-pos
+
+Section: Command List
+
+  emit-bash-cmds : List ShellCmd, Integer, Integer, Integer -> Text
+  emit-bash-cmds (cmds) (indent) (i) (len) =
+    if i >= len then ""
+    else emit-bash-cmd (list-at cmds i) indent & "\n" & emit-bash-cmds cmds indent (i + 1) len
+
+Section: Commands -- Core
+
+  emit-bash-cmd : ShellCmd, Integer -> Text
+  emit-bash-cmd (cmd) (indent) =
+    let pad = bash-indent indent
+    in when cmd
+      is ScRun (name) (args) -> pad & bash-quote name & " " & emit-bash-args args 0
+      is ScRunDot (path) -> pad & "source " & emit-bash-expr path
+      is ScAssign (name) (value) -> pad & name & "=" & emit-bash-expr value
+      is ScEcho (e) -> pad & "echo " & emit-bash-expr e
+      is ScWriteError (e) -> pad & "echo " & emit-bash-expr e & " >&2"
+      is ScComment (text) -> pad & "# " & text
+      is ScBlank -> ""
+      is ScBreak -> pad & "break"
+      is ScContinue -> pad & "continue"
+      is ScExit (e) -> pad & "exit " & emit-bash-expr e
+      is ScReturn (e) -> pad & "return " & emit-bash-expr e
+      is ScRaw (text) -> pad & text
+      is ScSequence (cmds) -> emit-bash-cmds cmds indent 0 (list-length cmds)
+      is ScSetStrictMode -> pad & "# (strict mode set in header)"
+      is ScSetErrorStop -> pad & "# (set -e in header)"
+      is ScContinueLabel (label) -> pad & "continue"
+      is otherwise -> emit-bash-cmd-ext cmd indent pad
+
+Section: Commands -- IO
+
+  emit-bash-cmd-ext : ShellCmd, Integer, Text -> Text
+  emit-bash-cmd-ext (cmd) (indent) (pad) =
+    when cmd
+      is ScCopy (src) (dst) -> pad & "cp -f " & emit-bash-expr src & " " & emit-bash-expr dst
+      is ScMove (src) (dst) -> pad & "mv -f " & emit-bash-expr src & " " & emit-bash-expr dst
+      is ScDelete (path) -> pad & "rm -f " & emit-bash-expr path & " 2>/dev/null || true"
+      is ScMkdir (path) -> pad & "mkdir -p " & emit-bash-expr path
+      is ScWriteFile (path) (content) -> pad & "printf '%s\\n' " & emit-bash-expr content & " > " & emit-bash-expr path
+      is ScReadFile (name) (path) -> pad & name & "=$(<" & emit-bash-expr-unquoted path & ")"
+      is ScReadBytes (name) (path) -> pad & name & "=$(<" & emit-bash-expr-unquoted path & ")"
+      is ScWriteBytes (path) (data) -> pad & "printf '%s' " & emit-bash-expr data & " > " & emit-bash-expr path
+      is ScHashFile (algo) (result-var) (path) -> pad & result-var & "=$(sha256sum " & emit-bash-expr path & " | cut -d' ' -f1)"
+      is ScTempFile (name) -> pad & name & "=$(mktemp)"
+      is ScSetContent (path) (value) -> pad & "printf '%s\\n' " & emit-bash-expr value & " > " & emit-bash-expr path
+      is ScAddContent (path) (value) -> pad & "printf '%s\\n' " & emit-bash-expr value & " >> " & emit-bash-expr path
+      is ScDotNetCall (cls) (method) (args) -> pad & "# [" & cls & "]::" & method & " -- requires platform-specific implementation"
+      is ScDotNetCallAssign (result) (cls) (method) (args) -> pad & "# " & result & "=$([" & cls & "]::" & method & ") -- requires platform-specific implementation"
+      is otherwise -> emit-bash-cmd-flow cmd indent pad
+
+Section: Commands -- Flow
+
+  emit-bash-cmd-flow : ShellCmd, Integer, Text -> Text
+  emit-bash-cmd-flow (cmd) (indent) (pad) =
+    when cmd
+      is ScIf (cond) (then-cmds) (else-cmds) ->
+        let tb = emit-bash-cmds then-cmds (indent + 1) 0 (list-length then-cmds)
+        in let ep = if list-length else-cmds == 0 then "" else pad & "else\n" & emit-bash-cmds else-cmds (indent + 1) 0 (list-length else-cmds)
+        in pad & "if " & emit-bash-cond cond & "; then\n" & tb & ep & pad & "fi"
+      is ScFor (name) (items) (body) ->
+        pad & "for " & name & " in " & emit-bash-expr-unquoted items & "; do\n" & emit-bash-cmds body (indent + 1) 0 (list-length body) & pad & "done"
+      is ScWhile (cond) (body) ->
+        pad & "while " & emit-bash-cond cond & "; do\n" & emit-bash-cmds body (indent + 1) 0 (list-length body) & pad & "done"
+      is ScForEach (name) (items) (body) ->
+        pad & "for " & name & " in " & emit-bash-expr-unquoted items & "; do\n" & emit-bash-cmds body (indent + 1) 0 (list-length body) & pad & "done"
+      is ScForLoop (name) (init) (cond) (step) (body) ->
+        pad & "for (( " & name & "=" & emit-bash-expr-unquoted init & "; " & emit-bash-expr-unquoted cond & "; " & emit-bash-expr-unquoted step & " )); do\n" & emit-bash-cmds body (indent + 1) 0 (list-length body) & pad & "done"
+      is ScLabeledWhile (label) (cond) (body) ->
+        pad & "# label: " & label & "\n" & pad & "while " & emit-bash-cond cond & "; do\n" & emit-bash-cmds body (indent + 1) 0 (list-length body) & pad & "done"
+      is ScTry (body) (catch-cmds) (finally-cmds) ->
+        let tb = emit-bash-cmds body (indent + 1) 0 (list-length body)
+        in let cleanup = if list-length finally-cmds == 0 then "" else pad & "_cleanup() {\n" & emit-bash-cmds finally-cmds (indent + 1) 0 (list-length finally-cmds) & pad & "}\n" & pad & "trap _cleanup EXIT\n"
+        in let catch-body = if list-length catch-cmds == 0 then pad & "    true\n" else emit-bash-cmds catch-cmds (indent + 1) 0 (list-length catch-cmds)
+        in cleanup & pad & "{\n" & tb & pad & "} || {\n" & catch-body & pad & "}"
+      is ScStartProcess (spec) ->
+        let stderr-redir = when spec.sp-stderr-file is Just (f) -> " 2>" & emit-bash-expr f is None -> ""
+        in pad & emit-bash-expr (spec.sp-executable) & " " & emit-bash-args (spec.sp-arguments) 0 & stderr-redir & " &\n" & pad & spec.sp-result-var & "=$!"
+      is ScWaitProcess (name) (timeout) ->
+        pad & "wait \"$" & name & "\""
+      is otherwise -> pad & "# <unknown-cmd>"
+
+Section: Conditions
+
+  emit-bash-cond : ShellExpr -> Text
+  emit-bash-cond (e) =
+    when e
+      is SeFileExists (path) -> "[ -f " & emit-bash-expr path & " ]"
+      is SeDirExists (path) -> "[ -d " & emit-bash-expr path & " ]"
+      is SeStringEq (a) (b) -> "[ " & emit-bash-expr a & " = " & emit-bash-expr b & " ]"
+      is SeStringNeq (a) (b) -> "[ " & emit-bash-expr a & " != " & emit-bash-expr b & " ]"
+      is SeIntEq (a) (b) -> "[ " & emit-bash-expr a & " -eq " & emit-bash-expr b & " ]"
+      is SeIntLt (a) (b) -> "[ " & emit-bash-expr a & " -lt " & emit-bash-expr b & " ]"
+      is SeIntGt (a) (b) -> "[ " & emit-bash-expr a & " -gt " & emit-bash-expr b & " ]"
+      is SeNot (x) -> "! " & emit-bash-cond x
+      is SeAnd (a) (b) -> "{ " & emit-bash-cond a & " && " & emit-bash-cond b & "; }"
+      is SeOr (a) (b) -> "{ " & emit-bash-cond a & " || " & emit-bash-cond b & "; }"
+      is SeExitCodeEq (n) -> "[ $? -eq " & show n & " ]"
+      is SeMatch (expr) (pattern) -> "[[ " & emit-bash-expr expr & " =~ " & pattern & " ]]"
+      is SeStartsWith (str) (prefix) -> "[[ " & emit-bash-expr str & " == " & emit-bash-expr prefix & "* ]]"
+      is otherwise -> "[ " & emit-bash-expr e & " ]"
+
+Section: Expressions -- Leaf
+
+  emit-bash-expr : ShellExpr -> Text
+  emit-bash-expr (e) =
+    when e
+      is SeLit (s) -> bash-quote s
+      is SeInt (n) -> show n
+      is SeVar (name) -> "\"$" & name & "\""
+      is SeEnvVar (name) -> "\"$" & name & "\""
+      is SeRaw (text) -> text
+      is SeHashLiteral -> "# (declare -A for associative arrays)"
+      is otherwise -> emit-bash-expr-compound e
+
+Section: Expressions -- Compound
+
+  emit-bash-expr-compound : ShellExpr -> Text
+  emit-bash-expr-compound (e) =
+    when e
+      is SeConcat (a) (b) -> emit-bash-expr a & emit-bash-expr b
+      is SeNot (x) -> "! " & emit-bash-expr x
+      is SeFileExists (path) -> "[ -f " & emit-bash-expr path & " ]"
+      is SeDirExists (path) -> "[ -d " & emit-bash-expr path & " ]"
+      is SeFileSize (path) -> "$(stat -c%s " & emit-bash-expr path & " 2>/dev/null || stat -f%z " & emit-bash-expr path & ")"
+      is SeTextLength (s) -> "${#" & emit-bash-expr-bare s & "}"
+      is SeSubstring (s) (start) (len) -> "${" & emit-bash-expr-bare s & ":" & show start & ":" & show len & "}"
+      is SeIndex (arr) (idx) -> "${" & emit-bash-expr-bare arr & "[" & emit-bash-expr-unquoted idx & "]}"
+      is SeProperty (obj) (prop) -> "# ." & prop & " (no bash equivalent)"
+      is SeMethodCall (obj) (method) (args) -> "# ." & method & "() (no bash equivalent)"
+      is SeStaticCall (cls) (method) (args) -> "# [" & cls & "]::" & method & " (no bash equivalent)"
+      is SeMatch (expr) (pattern) -> "[[ " & emit-bash-expr expr & " =~ " & pattern & " ]]"
+      is SeStartsWith (str) (prefix) -> "[[ " & emit-bash-expr str & " == " & emit-bash-expr prefix & "* ]]"
+      is SeArrayLiteral (items) -> "(" & emit-bash-args items 0 & ")"
+      is SeStringEq (a) (b) -> "[ " & emit-bash-expr a & " = " & emit-bash-expr b & " ]"
+      is SeStringNeq (a) (b) -> "[ " & emit-bash-expr a & " != " & emit-bash-expr b & " ]"
+      is SeIntEq (a) (b) -> "[ " & emit-bash-expr a & " -eq " & emit-bash-expr b & " ]"
+      is SeIntLt (a) (b) -> "[ " & emit-bash-expr a & " -lt " & emit-bash-expr b & " ]"
+      is SeIntGt (a) (b) -> "[ " & emit-bash-expr a & " -gt " & emit-bash-expr b & " ]"
+      is otherwise -> "\"<unknown>\""
+
+Section: Helpers
+
+  emit-bash-expr-bare : ShellExpr -> Text
+  emit-bash-expr-bare (e) = when e is SeVar (name) -> name is SeEnvVar (name) -> name is otherwise -> emit-bash-expr e
+
+  emit-bash-expr-unquoted : ShellExpr -> Text
+  emit-bash-expr-unquoted (e) = when e is SeLit (s) -> s is SeInt (n) -> show n is SeVar (name) -> "$" & name is SeEnvVar (name) -> "$" & name is SeRaw (text) -> text is otherwise -> emit-bash-expr e
+
+  bash-indent : Integer -> Text
+  bash-indent (n) = if n <= 0 then "" else "    " & bash-indent (n - 1)
+
+  bash-quote : Text -> Text
+  bash-quote (s) = "\"" & s & "\""
+
+  emit-bash-args : List ShellExpr, Integer -> Text
+  emit-bash-args (args) (i) =
+    if i >= list-length args then ""
+    else if i == list-length args - 1 then emit-bash-expr (list-at args i)
+    else emit-bash-expr (list-at args i) & " " & emit-bash-args args (i + 1)
+
+Page 1

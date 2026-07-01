@@ -1,0 +1,185 @@
+Chapter: FatReader
+
+ FAT16 filesystem reader. Reads files from a FAT16 partition
+ using the VirtIO block device. Supports traversal of
+ directory entries, FAT chain following, and file data reading.
+
+ Assumes the FAT16 BPB is at the start of the partition
+ (sector offset provided by caller). Supports 8.3 filenames.
+
+Section: BPB Fields
+
+  FatBpb = record {
+    bytes-per-sector : Integer,
+    sectors-per-cluster : Integer,
+    reserved-sectors : Integer,
+    num-fats : Integer,
+    root-entry-count : Integer,
+    fat-sectors : Integer,
+    part-start : Integer
+  }
+
+Section: Parse BPB
+
+  fat-parse-bpb : List Integer, Integer -> FatBpb
+  fat-parse-bpb (sector-data) (part-start-sector) =
+   FatBpb {
+    bytes-per-sector = fat-le16 sector-data 11,
+    sectors-per-cluster = list-at sector-data 13,
+    reserved-sectors = fat-le16 sector-data 14,
+    num-fats = list-at sector-data 16,
+    root-entry-count = fat-le16 sector-data 17,
+    fat-sectors = fat-le16 sector-data 22,
+    part-start = part-start-sector
+   }
+
+Section: Derived Offsets
+
+  fat-root-dir-sector : FatBpb -> Integer
+  fat-root-dir-sector (bpb) =
+   (bpb.part-start) + (bpb.reserved-sectors) + (bpb.num-fats) * (bpb.fat-sectors)
+
+  fat-root-dir-sectors : FatBpb -> Integer
+  fat-root-dir-sectors (bpb) =
+   ((bpb.root-entry-count) * 32 + (bpb.bytes-per-sector) - 1) / (bpb.bytes-per-sector)
+
+  fat-data-start-sector : FatBpb -> Integer
+  fat-data-start-sector (bpb) =
+   fat-root-dir-sector bpb + fat-root-dir-sectors bpb
+
+  fat-cluster-to-sector : FatBpb, Integer -> Integer
+  fat-cluster-to-sector (bpb) (cluster) =
+   fat-data-start-sector bpb + (cluster - 2) * (bpb.sectors-per-cluster)
+
+Section: FAT Table Read
+
+  fat-read-fat-entry : VirtioBlkState, FatBpb, Integer -> FatEntryResult
+  fat-read-fat-entry (blk) (bpb) (cluster) =
+   let fat-sector = (bpb.part-start) + (bpb.reserved-sectors) + cluster / ((bpb.bytes-per-sector) / 2)
+   in let r = virtio-blk-read-sector blk fat-sector
+   in let off = bit-and cluster (((bpb.bytes-per-sector) / 2) - 1)
+   in let entry = fat-le16 (r.data) (off * 2)
+   in FatEntryResult { blk = r.state, entry = entry }
+
+  FatEntryResult = record {
+    blk : VirtioBlkState,
+    entry : Integer
+  }
+
+Section: Directory Entry Parsing
+
+  FatDirEntry = record {
+    name : Text,
+    attr : Integer,
+    cluster : Integer,
+    size : Integer,
+    is-dir : Boolean,
+    is-valid : Boolean
+  }
+
+  fat-parse-dir-entry : List Integer, Integer -> FatDirEntry
+  fat-parse-dir-entry (sector-data) (entry-off) =
+   let first-byte = list-at sector-data entry-off
+   in if first-byte == 0 then FatDirEntry { name = "", attr = 0, cluster = 0, size = 0, is-dir = False, is-valid = False }
+   else if first-byte == #E5 then FatDirEntry { name = "", attr = 0, cluster = 0, size = 0, is-dir = False, is-valid = False }
+   else let attr = list-at sector-data (entry-off + 11)
+   in let cluster = fat-le16 sector-data (entry-off + 26)
+   in let size = fat-le32 sector-data (entry-off + 28)
+   in let name = fat-read-83-name sector-data entry-off
+   in FatDirEntry { name = name, attr = attr, cluster = cluster, size = size, is-dir = bit-and attr #10 > 0, is-valid = True }
+
+  fat-read-83-name : List Integer, Integer -> Text
+  fat-read-83-name (data) (off) =
+   fat-read-83-loop data off 0 11 ""
+
+  fat-read-83-loop : List Integer, Integer, Integer, Integer, Text -> Text
+  fat-read-83-loop (data) (off) (i) (len) (acc) =
+   if i >= len then acc
+   else let ch = list-at data (off + i)
+   in if ch == 32 then fat-read-83-loop data off (i + 1) len acc
+   else fat-read-83-loop data off (i + 1) len (acc & code-to-char ch)
+
+Section: Find File in Root Directory
+
+  FatFindResult = record {
+    blk : VirtioBlkState,
+    entry : FatDirEntry,
+    found : Boolean
+  }
+
+  fat-find-in-root : VirtioBlkState, FatBpb, Text -> FatFindResult
+  fat-find-in-root (blk) (bpb) (name83) =
+   let root-sector = fat-root-dir-sector bpb
+   in let root-sectors = fat-root-dir-sectors bpb
+   in fat-find-loop blk bpb name83 root-sector 0 root-sectors
+
+  fat-find-loop : VirtioBlkState, FatBpb, Text, Integer, Integer, Integer -> FatFindResult
+  fat-find-loop (blk) (bpb) (name83) (sector) (idx) (max-sectors) =
+   if idx >= max-sectors then FatFindResult { blk = blk, entry = FatDirEntry { name = "", attr = 0, cluster = 0, size = 0, is-dir = False, is-valid = False }, found = False }
+   else let r = virtio-blk-read-sector blk (sector + idx)
+   in fat-find-in-sector (r.state) bpb name83 (r.data) 0 sector idx max-sectors
+
+  fat-find-in-sector : VirtioBlkState, FatBpb, Text, List Integer, Integer, Integer, Integer, Integer -> FatFindResult
+  fat-find-in-sector (blk) (bpb) (name83) (data) (entry-idx) (sector) (sec-idx) (max-sectors) =
+   if entry-idx >= 16 then fat-find-loop blk bpb name83 sector (sec-idx + 1) max-sectors
+   else let e = fat-parse-dir-entry data (entry-idx * 32)
+   in if e.is-valid == False then if list-at data (entry-idx * 32) == 0 then FatFindResult { blk = blk, entry = e, found = False }
+     else fat-find-in-sector blk bpb name83 data (entry-idx + 1) sector sec-idx max-sectors
+   else if e.name == name83 then FatFindResult { blk = blk, entry = e, found = True }
+   else fat-find-in-sector blk bpb name83 data (entry-idx + 1) sector sec-idx max-sectors
+
+Section: Read File Data
+
+  FatReadResult = record {
+    blk : VirtioBlkState,
+    data : List Integer,
+    ok : Boolean
+  }
+
+  fat-read-file : VirtioBlkState, FatBpb, FatDirEntry -> FatReadResult
+  fat-read-file (blk) (bpb) (entry) =
+   fat-read-chain blk bpb (entry.cluster) (entry.size) 0 []
+
+  fat-read-chain : VirtioBlkState, FatBpb, Integer, Integer, Integer, List Integer -> FatReadResult
+  fat-read-chain (blk) (bpb) (cluster) (remaining) (total-read) (acc) =
+   if remaining <= 0 then FatReadResult { blk = blk, data = acc, ok = True }
+   else if cluster >= #FFF8 then FatReadResult { blk = blk, data = acc, ok = True }
+   else let sector = fat-cluster-to-sector bpb cluster
+   in let cluster-bytes = (bpb.sectors-per-cluster) * (bpb.bytes-per-sector)
+   in let to-read = if remaining < cluster-bytes then remaining else cluster-bytes
+   in let read-result = fat-read-cluster-data blk sector (bpb.sectors-per-cluster) to-read acc
+   in let next-r = fat-read-fat-entry (read-result.blk) bpb cluster
+   in fat-read-chain (next-r.blk) bpb (next-r.entry) (remaining - to-read) (total-read + to-read) (read-result.data)
+
+  fat-read-cluster-data : VirtioBlkState, Integer, Integer, Integer, List Integer -> FatClusterReadResult
+  fat-read-cluster-data (blk) (start-sector) (sector-count) (byte-count) (acc) =
+   fat-read-sectors-loop blk start-sector 0 sector-count byte-count 0 acc
+
+  FatClusterReadResult = record {
+    blk : VirtioBlkState,
+    data : List Integer
+  }
+
+  fat-read-sectors-loop : VirtioBlkState, Integer, Integer, Integer, Integer, Integer, List Integer -> FatClusterReadResult
+  fat-read-sectors-loop (blk) (base-sector) (idx) (count) (byte-limit) (bytes-read) (acc) =
+   if idx >= count then FatClusterReadResult { blk = blk, data = acc }
+   else if bytes-read >= byte-limit then FatClusterReadResult { blk = blk, data = acc }
+   else let r = virtio-blk-read-sector blk (base-sector + idx)
+   in let to-copy = if byte-limit - bytes-read < 512 then byte-limit - bytes-read else 512
+   in let acc1 = fat-append-bytes acc (r.data) 0 to-copy
+   in fat-read-sectors-loop (r.state) base-sector (idx + 1) count byte-limit (bytes-read + to-copy) acc1
+
+  fat-append-bytes : List Integer, List Integer, Integer, Integer -> List Integer
+  fat-append-bytes (acc) (src) (i) (count) =
+   if i >= count then acc
+   else fat-append-bytes (list-push acc (list-at src i)) src (i + 1) count
+
+Section: Byte Helpers
+
+  fat-le16 : List Integer, Integer -> Integer
+  fat-le16 (data) (off) = list-at data off + list-at data (off + 1) * 256
+
+  fat-le32 : List Integer, Integer -> Integer
+  fat-le32 (data) (off) = list-at data off + list-at data (off + 1) * 256 + list-at data (off + 2) * 65536 + list-at data (off + 3) * 16777216
+
+Page 1

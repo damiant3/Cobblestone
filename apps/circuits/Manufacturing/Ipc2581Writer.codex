@@ -1,0 +1,217 @@
+Chapter: Ipc2581Writer
+  cites Foreword chapter List
+
+ IPC-2581 single-file manufacturing package generation. Produces an
+ XML document conforming to IPC-2581 for board fabrication and
+ assembly data exchange.
+
+Section: Layer Info
+
+  IpcLayer = record {
+    il-name : Text,
+    il-side : Text,
+    il-type : Text
+  }
+
+Section: Component Info
+
+  IpcComponent = record {
+    icomp-ref : Text,
+    icomp-package : Text,
+    icomp-x : Integer,
+    icomp-y : Integer,
+    icomp-rotation : Integer,
+    icomp-side : Text
+  }
+
+Section: Net Info
+
+  IpcNet = record {
+    in-name : Text,
+    in-pins : List Text
+  }
+
+Section: BOM Entry
+
+  IpcBomEntry = record {
+    ib-ref-list : List Text,
+    ib-mpn : Text,
+    ib-value : Text
+  }
+
+Section: Content
+
+  Ipc2581Content = record {
+    ic-design-name : Text,
+    ic-revision : Text,
+    ic-units : Text,
+    ic-layers : List IpcLayer,
+    ic-components : List IpcComponent,
+    ic-nets : List IpcNet,
+    ic-bom-entries : List IpcBomEntry
+  }
+
+Section: Empty Content
+
+  empty-ipc2581 : Text -> Ipc2581Content
+  empty-ipc2581 (name) = Ipc2581Content {
+    ic-design-name = name,
+    ic-revision = "1",
+    ic-units = "MILLIMETER",
+    ic-layers = [],
+    ic-components = [],
+    ic-nets = [],
+    ic-bom-entries = []
+  }
+
+Section: Add Layer
+
+  ipc2581-add-layer : Ipc2581Content, IpcLayer -> Ipc2581Content
+  ipc2581-add-layer (c) (l) = Ipc2581Content {
+    ic-design-name = c.ic-design-name,
+    ic-revision = c.ic-revision,
+    ic-units = c.ic-units,
+    ic-layers = list-push c.ic-layers l,
+    ic-components = c.ic-components,
+    ic-nets = c.ic-nets,
+    ic-bom-entries = c.ic-bom-entries
+  }
+
+Section: Add Component
+
+  ipc2581-add-component : Ipc2581Content, IpcComponent -> Ipc2581Content
+  ipc2581-add-component (c) (comp) = Ipc2581Content {
+    ic-design-name = c.ic-design-name,
+    ic-revision = c.ic-revision,
+    ic-units = c.ic-units,
+    ic-layers = c.ic-layers,
+    ic-components = list-push c.ic-components comp,
+    ic-nets = c.ic-nets,
+    ic-bom-entries = c.ic-bom-entries
+  }
+
+Section: Add Net
+
+  ipc2581-add-net : Ipc2581Content, IpcNet -> Ipc2581Content
+  ipc2581-add-net (c) (n) = Ipc2581Content {
+    ic-design-name = c.ic-design-name,
+    ic-revision = c.ic-revision,
+    ic-units = c.ic-units,
+    ic-layers = c.ic-layers,
+    ic-components = c.ic-components,
+    ic-nets = list-push c.ic-nets n,
+    ic-bom-entries = c.ic-bom-entries
+  }
+
+Section: Add BOM Entry
+
+  ipc2581-add-bom-entry : Ipc2581Content, IpcBomEntry -> Ipc2581Content
+  ipc2581-add-bom-entry (c) (b) = Ipc2581Content {
+    ic-design-name = c.ic-design-name,
+    ic-revision = c.ic-revision,
+    ic-units = c.ic-units,
+    ic-layers = c.ic-layers,
+    ic-components = c.ic-components,
+    ic-nets = c.ic-nets,
+    ic-bom-entries = list-push c.ic-bom-entries b
+  }
+
+Section: XML Escape
+
+ Stub implementation. A full version would escape angle brackets,
+ ampersands, and quotes for XML safety.
+
+  xml-escape : Text -> Text
+  xml-escape (t) = t
+
+Section: XML Header
+
+  ipc2581-hdr-decl : Text
+  ipc2581-hdr-decl = "<?xml version='1.0' encoding='UTF-8'?><IPC-2581 revision='C'>  <Content>"
+
+  ipc2581-hdr-design : Ipc2581Content -> Text
+  ipc2581-hdr-design (c) = "    <Design name='" & (xml-escape c.ic-design-name) & "' />"
+
+  ipc2581-hdr-units : Ipc2581Content -> Text
+  ipc2581-hdr-units (c) = "    <Units unitRef='" & c.ic-units & "' />"
+
+  ipc2581-hdr-rev : Ipc2581Content -> Text
+  ipc2581-hdr-rev (c) = "    <Revision value='" & c.ic-revision & "' />"
+
+  ipc2581-xml-header : Ipc2581Content -> Text
+  ipc2581-xml-header (c) = ipc2581-hdr-decl & ipc2581-hdr-design c & ipc2581-hdr-units c & ipc2581-hdr-rev c
+
+Section: XML Layers
+
+  ipc2581-xml-one-layer : IpcLayer -> Text
+  ipc2581-xml-one-layer (l) = "    <LayerFeature layerRef='" & (xml-escape l.il-name) & "' side='" & l.il-side & "' type='" & l.il-type & "' />"
+
+  ipc2581-xml-layers-loop : List IpcLayer, Text, Integer, Integer -> Text
+  ipc2581-xml-layers-loop (layers) (acc) (i) (n) =
+    if i >= n then acc
+    else let l = list-at layers i
+    in ipc2581-xml-layers-loop layers (acc & (ipc2581-xml-one-layer l)) (i + 1) n
+
+  ipc2581-xml-layers-list : List IpcLayer, Text -> Text
+  ipc2581-xml-layers-list (layers) (acc) =
+    ipc2581-xml-layers-loop layers acc 0 (list-length layers)
+
+  ipc2581-xml-layers : Ipc2581Content -> Text
+  ipc2581-xml-layers (c) = let a = "  <LayerFeatures>" in let b = ipc2581-xml-layers-list c.ic-layers "" in a & b & "  </LayerFeatures>"
+
+Section: XML Components
+
+  ipc2581-format-coord : Integer -> Text
+  ipc2581-format-coord (nm) =
+    let um = nm / 1000
+    in show um
+
+  ipc2581-comp-open : IpcComponent -> Text
+  ipc2581-comp-open (comp) = "    <Component refDes='" & (xml-escape comp.icomp-ref) & "' packageRef='" & (xml-escape comp.icomp-package) & "' layerRef='" & comp.icomp-side & "'>"
+
+  ipc2581-comp-loc : IpcComponent -> Text
+  ipc2581-comp-loc (comp) = "      <Location x='" & (ipc2581-format-coord comp.icomp-x) & "' y='" & (ipc2581-format-coord comp.icomp-y) & "' rotation='" & (show comp.icomp-rotation) & "' />"
+
+  ipc2581-xml-one-component : IpcComponent -> Text
+  ipc2581-xml-one-component (comp) = ipc2581-comp-open comp & (ipc2581-comp-loc comp) & "    </Component>"
+
+  ipc2581-xml-components-loop : List IpcComponent, Text, Integer, Integer -> Text
+  ipc2581-xml-components-loop (comps) (acc) (i) (n) =
+    if i >= n then acc
+    else let comp = list-at comps i
+    in ipc2581-xml-components-loop comps (acc & (ipc2581-xml-one-component comp)) (i + 1) n
+
+  ipc2581-xml-components-list : List IpcComponent, Text -> Text
+  ipc2581-xml-components-list (comps) (acc) =
+    ipc2581-xml-components-loop comps acc 0 (list-length comps)
+
+  ipc2581-xml-components : Ipc2581Content -> Text
+  ipc2581-xml-components (c) = let a = "  <Components>" in let b = ipc2581-xml-components-list c.ic-components "" in a & b & "  </Components>"
+
+Section: XML BOM
+
+  ipc2581-xml-one-bom-entry : IpcBomEntry -> Text
+  ipc2581-xml-one-bom-entry (b) = "    <BomItem mpn='" & (xml-escape b.ib-mpn) & "' value='" & (xml-escape b.ib-value) & "' />"
+
+  ipc2581-xml-bom-loop : List IpcBomEntry, Text, Integer, Integer -> Text
+  ipc2581-xml-bom-loop (entries) (acc) (i) (n) =
+    if i >= n then acc
+    else let b = list-at entries i
+    in ipc2581-xml-bom-loop entries (acc & (ipc2581-xml-one-bom-entry b)) (i + 1) n
+
+  ipc2581-xml-bom-list : List IpcBomEntry, Text -> Text
+  ipc2581-xml-bom-list (entries) (acc) =
+    ipc2581-xml-bom-loop entries acc 0 (list-length entries)
+
+  ipc2581-xml-bom : Ipc2581Content -> Text
+  ipc2581-xml-bom (c) = let a = "  <Bom>" in let b = ipc2581-xml-bom-list c.ic-bom-entries "" in a & b & "  </Bom>"
+
+Section: XML Footer
+
+  ipc2581-xml-footer : Text
+  ipc2581-xml-footer = "  </Content>" & "</IPC-2581>"
+
+Section: Complete XML
+
+  ipc2581-to-xml : Ipc2581Content -> Text
+  ipc2581-to-xml (c) = let a = ipc2581-xml-header c in let b = ipc2581-xml-layers c in let d = ipc2581-xml-components c in let e = ipc2581-xml-bom c in a & b & d & e & ipc2581-xml-footer

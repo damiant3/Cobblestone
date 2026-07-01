@@ -1,0 +1,129 @@
+Chapter: Diagnostic Bag
+  cites Codex chapter Lists
+  cites Codex chapter Build Settings (max-errors)
+
+ A DiagnosticBag accumulates diagnostics across a compilation. When
+ the error count exceeds max-errors, further errors are suppressed
+ and a single CDX0001 sentinel is appended. Warnings, info, and
+ hints are never capped. One bag is threaded through every phase
+ of the pipeline.
+
+Section: Type
+  DiagnosticBag = record {
+   diagnostics : List Diagnostic,
+   error-count : Integer between 0 and 255,
+   truncated : Boolean
+  }
+
+Section: Constructors
+  empty-bag : DiagnosticBag
+  empty-bag =
+   DiagnosticBag {
+    diagnostics = [],
+    error-count = 0,
+    truncated = False
+   }
+
+  bag-from-list : List Diagnostic -> DiagnosticBag
+  bag-from-list (ds) =
+   bag-from-list-loop empty-bag ds 0 (list-length ds)
+
+  bag-from-list-loop : DiagnosticBag, List Diagnostic, Integer, Integer -> DiagnosticBag
+  bag-from-list-loop (bag) (ds) (i) (len) =
+   if i == len then bag
+   else bag-from-list-loop (bag-add bag (list-at ds i)) ds (i + 1) len
+
+Section: Add
+
+ The bag survives across phase compacts (per-function `__heap-restore`
+ in the emitter, frontend phase compacts), so every cons cell in
+ `diagnostics` and the bag record itself must live on the deck. The
+ `deck-record` wraps below force the surrounding scope to allocate
+ the new list cell + record into deck rather than the caller's bivy.
+
+  bag-add : DiagnosticBag, Diagnostic -> DiagnosticBag
+  bag-add (bag) (d) =
+   if d.severity == sev-error then bag-add-error bag d
+   else deck-record (DiagnosticBag {
+    diagnostics = deck-record (list-push (bag.diagnostics) d),
+    error-count = bag.error-count,
+    truncated = bag.truncated
+   })
+
+  bag-add-error : DiagnosticBag, Diagnostic -> DiagnosticBag
+  bag-add-error (bag) (d) =
+   if bag.error-count >= max-errors then
+    if bag.truncated then bag
+    else deck-record (DiagnosticBag {
+     diagnostics = deck-record (list-push (bag.diagnostics) (make-error cdx-too-many-errors "Too many errors. Further errors suppressed." synthetic-span)),
+     error-count = bag.error-count + 1,
+     truncated = True
+    })
+   else deck-record (DiagnosticBag {
+    diagnostics = deck-record (list-push (bag.diagnostics) d),
+    error-count = bag.error-count + 1,
+    truncated = bag.truncated
+   })
+
+  bag-concat : DiagnosticBag, List Diagnostic -> DiagnosticBag
+  bag-concat (bag) (ds) =
+   bag-concat-loop bag ds 0 (list-length ds)
+
+  bag-concat-loop : DiagnosticBag, List Diagnostic, Integer, Integer -> DiagnosticBag
+  bag-concat-loop (bag) (ds) (i) (len) =
+   if i == len then bag
+   else bag-concat-loop (bag-add bag (list-at ds i)) ds (i + 1) len
+
+  bag-merge : DiagnosticBag, DiagnosticBag -> DiagnosticBag
+  bag-merge (bag) (other) =
+   bag-concat bag (other.diagnostics)
+
+  bag-merge-all : List DiagnosticBag -> DiagnosticBag
+  bag-merge-all (bags) =
+   bag-merge-all-loop empty-bag bags 0 (list-length bags)
+
+  bag-merge-all-loop : DiagnosticBag, List DiagnosticBag, Integer, Integer -> DiagnosticBag
+  bag-merge-all-loop (acc) (bags) (i) (len) =
+   if i == len then acc
+   else bag-merge-all-loop (bag-merge acc (list-at bags i)) bags (i + 1) len
+
+Section: Queries
+  bag-has-errors : DiagnosticBag -> Boolean
+  bag-has-errors (bag) =
+   bag.error-count > 0
+
+  bag-count : DiagnosticBag -> Integer
+  bag-count (bag) =
+   list-length (bag.diagnostics)
+
+  bag-diagnostics : DiagnosticBag -> List Diagnostic
+  bag-diagnostics (bag) =
+   bag.diagnostics
+
+  bag-errors : DiagnosticBag -> List Diagnostic
+  bag-errors (bag) =
+   bag-errors-loop (bag.diagnostics) [] 0 (list-length (bag.diagnostics))
+
+  bag-errors-loop : List Diagnostic, List Diagnostic, Integer, Integer -> List Diagnostic
+  bag-errors-loop (ds) (acc) (i) (len) =
+   if i == len then acc
+   else let d = list-at ds i
+    in if d.severity == sev-error
+        then bag-errors-loop ds (list-push acc d) (i + 1) len
+        else bag-errors-loop ds acc (i + 1) len
+
+  bag-has-code : DiagnosticBag, Integer -> Boolean
+  bag-has-code (bag) (code) =
+   bag-has-code-loop (bag.diagnostics) code 0 (list-length (bag.diagnostics))
+
+  bag-has-code-loop : List Diagnostic, Integer, Integer, Integer -> Boolean
+  bag-has-code-loop (ds) (code) (i) (len) =
+   if i == len then False
+   else if (list-at ds i).code == code then True
+   else bag-has-code-loop ds code (i + 1) len
+
+  bag-is-truncated : DiagnosticBag -> Boolean
+  bag-is-truncated (bag) =
+   bag.truncated
+
+Page 1

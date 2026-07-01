@@ -1,0 +1,139 @@
+Chapter: PriorityQueue
+  cites Foreword chapter Maybe
+
+ Binary min-heap priority queue backed by a flat List Integer. O(log n)
+ insert and extract-min. Entries are (priority, value) pairs stored as
+ alternating elements: [pri0, val0, pri1, val1, ...]. The smallest
+ priority sits at the root.
+
+ A PriorityQueue is a record containing:
+   data  -- flat interleaved priority/value array.
+   count -- number of entries (0..65535).
+
+ A PqEntry is a record containing:
+   priority -- the priority key.
+   value    -- the associated value.
+
+ A PqPopResult is a record containing:
+   entry -- the extracted entry.
+   queue -- the heap after extraction.
+   valid -- True if an entry was actually removed.
+
+ To pq-empty gives PriorityQueue,
+   creating an empty priority queue.
+
+ To pq-insert gives PriorityQueue,
+   inserting an entry with the given priority and value, restoring heap order by sifting up.
+
+ To pq-pop gives PqPopResult,
+   extracting the minimum-priority entry, or returning valid=False if empty.
+
+ To pq-peek gives Maybe PqEntry,
+   returning Just the minimum entry without removing, or None if empty.
+
+ To pq-count gives Integer,
+   returning the number of entries in the heap.
+
+ To pq-is-empty gives Boolean,
+   True if the heap holds no entries.
+
+ We say:
+
+Section: Type
+  PriorityQueue = record {
+    data : List Integer,
+    count : Integer between 0 and 65535
+  }
+
+  PqEntry = record {
+    priority : Integer,
+    value : Integer
+  }
+
+  PqPopResult = record {
+    entry : PqEntry,
+    queue : PriorityQueue,
+    valid : Boolean
+  }
+
+Section: Construction
+  pq-empty : PriorityQueue
+  pq-empty = PriorityQueue { data = [], count = 0 }
+
+Section: Insert
+  pq-insert : PriorityQueue, Integer, Integer -> PriorityQueue
+  pq-insert (pq) (priority) (value) =
+    let new-data = pq.data & [priority, value]
+    in let new-count = pq.count + 1
+    in pq-sift-up (PriorityQueue { data = new-data, count = new-count }) (new-count - 1)
+
+  pq-sift-up : PriorityQueue, Integer -> PriorityQueue
+  pq-sift-up (pq) (idx) =
+    if idx == 0 then pq
+    else let parent = (idx - 1) / 2
+    in if pq-pri pq idx < pq-pri pq parent then pq-sift-up (pq-swap pq idx parent) parent
+    else pq
+
+Section: Extract Min
+  pq-pop : PriorityQueue -> PqPopResult
+  pq-pop (pq) =
+    if pq.count == 0 then PqPopResult { entry = PqEntry { priority = 0, value = 0 }, queue = pq, valid = False }
+    else let min-entry = PqEntry { priority = pq-pri pq 0, value = pq-val pq 0 }
+    in if pq.count == 1 then PqPopResult { entry = min-entry, queue = pq-empty, valid = True }
+    else let last = pq.count - 1
+    in let swapped = pq-swap pq 0 last
+    in let shrunk = PriorityQueue { data = pq-remove-last (swapped.data) last, count = pq.count - 1 }
+    in let heapified = pq-sift-down shrunk 0
+    in PqPopResult { entry = min-entry, queue = heapified, valid = True }
+
+  pq-peek : PriorityQueue -> Maybe PqEntry
+  pq-peek (pq) =
+    if pq.count == 0 then None
+    else Just (PqEntry { priority = pq-pri pq 0, value = pq-val pq 0 })
+
+  pq-sift-down : PriorityQueue, Integer -> PriorityQueue
+  pq-sift-down (pq) (idx) =
+    let left = 2 * idx + 1
+    in let right = 2 * idx + 2
+    in let smallest = pq-find-smallest pq idx left right
+    in if smallest == idx then pq
+    else pq-sift-down (pq-swap pq idx smallest) smallest
+
+  pq-find-smallest : PriorityQueue, Integer, Integer, Integer -> Integer
+  pq-find-smallest (pq) (idx) (left) (right) =
+    let s1 = if left < pq.count then (if pq-pri pq left < pq-pri pq idx then left else idx) else idx
+    in if right < pq.count then (if pq-pri pq right < pq-pri pq s1 then right else s1) else s1
+
+Section: Helpers
+  pq-pri : PriorityQueue, Integer -> Integer
+  pq-pri (pq) (idx) = list-at (pq.data) (idx * 2)
+
+  pq-val : PriorityQueue, Integer -> Integer
+  pq-val (pq) (idx) = list-at (pq.data) (idx * 2 + 1)
+
+  pq-swap : PriorityQueue, Integer, Integer -> PriorityQueue
+  pq-swap (pq) (a) (b) =
+    let pa = pq-pri pq a
+    in let va = pq-val pq a
+    in let pb = pq-pri pq b
+    in let vb = pq-val pq b
+    in let d1 = list-set-at (list-set-at (pq.data) (a * 2) pb) (a * 2 + 1) vb
+    in let d2 = list-set-at (list-set-at d1 (b * 2) pa) (b * 2 + 1) va
+    in PriorityQueue { data = d2, count = pq.count }
+
+  pq-remove-last : List Integer, Integer -> List Integer
+  pq-remove-last (data) (last-idx) = pq-take data 0 (last-idx * 2) []
+
+  pq-take : List Integer, Integer, Integer, List Integer -> List Integer
+  pq-take (data) (i) (stop) (acc) =
+    if i >= stop then acc
+    else pq-take data (i + 1) stop (list-push acc (list-at data i))
+
+Section: Queries
+  pq-count : PriorityQueue -> Integer
+  pq-count (pq) = pq.count
+
+  pq-is-empty : PriorityQueue -> Boolean
+  pq-is-empty (pq) = pq.count == 0
+
+Page 1

@@ -1,0 +1,140 @@
+Chapter: Server
+  cites Data chapter Session
+  cites Data chapter Protocol
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Transaction
+  cites Data chapter LockManager
+  cites Data chapter Deadlock
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Tuple
+
+ Codex DB server. Manages connections, dispatches requests to
+ sessions, and coordinates the catalog and transaction manager.
+ Entry point: opening.
+
+ We say:
+
+Section: Server State
+
+  DbServer = record {
+    db-catalog : Catalog,
+    db-txn-mgr : TxnManager,
+    db-lock-table : LockState,
+    db-sessions : HamtMap SessionState,
+    db-next-session : Integer,
+    db-name : Text
+  }
+
+  db-server-new : Text -> DbServer
+  db-server-new (name) = DbServer {
+    db-catalog = catalog-new,
+    db-txn-mgr = txn-manager-new,
+    db-lock-table = lock-table-new,
+    db-sessions = hamt-empty,
+    db-next-session = 1,
+    db-name = name
+  }
+
+Section: Connection Management
+
+  db-connect : DbServer -> (DbServer, SessionState)
+  db-connect (srv) =
+    let sess = session-new (srv.db-next-session)
+    in let new-srv = DbServer {
+      db-catalog = srv.db-catalog,
+      db-txn-mgr = srv.db-txn-mgr,
+      db-lock-table = srv.db-lock-table,
+      db-sessions = hamt-set (srv.db-sessions) (show (srv.db-next-session)) sess,
+      db-next-session = srv.db-next-session + 1,
+      db-name = srv.db-name
+    }
+    in (new-srv, sess)
+
+  db-disconnect : DbServer, Integer -> DbServer
+  db-disconnect (srv) (session-id) =
+    let key = show session-id
+    in DbServer {
+      db-catalog = srv.db-catalog,
+      db-txn-mgr = srv.db-txn-mgr,
+      db-lock-table = srv.db-lock-table,
+      db-sessions = hamt-remove (srv.db-sessions) key,
+      db-next-session = srv.db-next-session,
+      db-name = srv.db-name
+    }
+
+Section: Request Dispatch
+
+  DbResponse = record {
+    dbr-server : DbServer,
+    dbr-frames : List Frame
+  }
+
+  db-handle-frame : DbServer, Integer, Frame -> DbResponse
+  db-handle-frame (srv) (session-id) (f) =
+    let key = show session-id
+    in let maybe-sess = hamt-get (srv.db-sessions) key
+    in when maybe-sess
+      is None -> DbResponse {
+        dbr-server = srv,
+        dbr-frames = [proto-error-frame "session not found"]
+      }
+      is Just (sess) ->
+        let result = session-handle sess f (srv.db-catalog) (srv.db-txn-mgr)
+        in let new-srv = DbServer {
+          db-catalog = result.sr-catalog,
+          db-txn-mgr = result.sr-txn-mgr,
+          db-lock-table = srv.db-lock-table,
+          db-sessions = hamt-set (srv.db-sessions) key (result.sr-session),
+          db-next-session = srv.db-next-session,
+          db-name = srv.db-name
+        }
+        in DbResponse {
+          dbr-server = new-srv,
+          dbr-frames = result.sr-frames
+        }
+
+Section: DDL Operations
+
+  db-create-table : DbServer, TableDef -> DbServer
+  db-create-table (srv) (tdef) =
+    let result = catalog-create-table (srv.db-catalog) tdef
+    in DbServer {
+      db-catalog = result.cat,
+      db-txn-mgr = srv.db-txn-mgr,
+      db-lock-table = srv.db-lock-table,
+      db-sessions = srv.db-sessions,
+      db-next-session = srv.db-next-session,
+      db-name = srv.db-name
+    }
+
+  db-insert : DbServer, Text, RowData -> DbServer
+  db-insert (srv) (table-name) (row) =
+    let result = catalog-insert-row (srv.db-catalog) table-name row
+    in DbServer {
+      db-catalog = result.cir-cat,
+      db-txn-mgr = srv.db-txn-mgr,
+      db-lock-table = srv.db-lock-table,
+      db-sessions = srv.db-sessions,
+      db-next-session = srv.db-next-session,
+      db-name = srv.db-name
+    }
+
+Section: Deadlock Check
+
+  db-check-deadlocks : DbServer -> DeadlockResult
+  db-check-deadlocks (srv) = check-deadlocks (srv.db-lock-table)
+
+Section: Statistics
+
+  db-stats : DbServer -> Text
+  db-stats (srv) =
+    "db=" & srv.db-name
+    & " " & catalog-stats (srv.db-catalog)
+    & " " & txn-stats (srv.db-txn-mgr)
+    & " " & lock-stats (srv.db-lock-table)
+    & " sessions=" & show (hamt-size (srv.db-sessions))
+
+Page 1

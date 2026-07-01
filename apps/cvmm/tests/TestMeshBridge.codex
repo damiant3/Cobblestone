@@ -1,0 +1,130 @@
+Chapter: TestMeshBridge
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter FleetManager
+  cites Cvmm chapter ServiceManager
+  cites Cvmm chapter MeshBridge
+  cites Net chapter GroupMembership
+  cites Net chapter HealthChecker
+  cites Foreword chapter Maybe
+
+ Tests for the mesh-to-CVMM bridge.
+
+Section: Harness
+
+  assert-eq : Text, Text, Text -> Text
+  assert-eq (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-int : Text, Integer, Integer -> Text
+  assert-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) = if val then "PASS " & label else "FAIL " & label
+
+Section: Status Conversion
+
+  test-status-conversion : Text
+  test-status-conversion =
+    let t1 = assert-eq "alive-to-online" "online" (status-label (member-status-to-resource MsAlive))
+    in let t2 = assert-eq "suspect-to-degraded" "degraded" (status-label (member-status-to-resource (MsSuspect 100)))
+    in let t3 = assert-eq "dead-to-offline" "offline" (status-label (member-status-to-resource MsDead))
+    in let t4 = assert-eq "leaving-to-busy" "busy" (status-label (member-status-to-resource MsLeaving))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Member to Fleet Node
+
+  test-member-to-node : Text
+  test-member-to-node =
+    let m = member-new "node-1" "test-server" "10.0.0.1" 8080 []
+    in let fn = member-to-fleet-node m
+    in let t1 = assert-eq "uuid" "node-1" ((fn.fn-device).dev-uuid)
+    in let t2 = assert-eq "name" "test-server" ((fn.fn-device).dev-name)
+    in let t3 = assert-eq "host" "10.0.0.1" ((fn.fn-endpoint).ep-host)
+    in let t4 = assert-int "port" 8080 ((fn.fn-endpoint).ep-port)
+    in let t5 = assert-eq "status" "online" (status-label (fn.fn-status))
+    in let t6 = assert-eq "group" "mesh" (fn.fn-group)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5 & "\n" & t6
+
+Section: Group Sync
+
+  test-group-sync : Text
+  test-group-sync =
+    let gs = group-new "test-cluster" "self-1"
+    in let m1 = member-new "n1" "server-1" "10.0.0.1" 8080 []
+    in let m2 = member-new "n2" "server-2" "10.0.0.2" 8080 []
+    in let gs2 = gs-add-member gs m1
+    in let gs3 = gs-add-member gs2 m2
+    in let fm = fleet-manager-new
+    in let synced = mesh-sync-fleet gs3 fm
+    in let t1 = assert-int "node-count" 2 (synced.fm-node-count)
+    in let t2 = assert-int "healthy" 2 (fm-healthy-count synced)
+    in t1 & "\n" & t2
+
+Section: Health to Service State
+
+  test-health-to-svc : Text
+  test-health-to-svc =
+    let t1 = assert-eq "healthy-to-running" "running" (svc-state-label (health-state-to-svc HsHealthy))
+    in let t2 = assert-eq "degraded-to-running" "running" (svc-state-label (health-state-to-svc (HsDegraded 50)))
+    in let t3 = assert-eq "unhealthy-to-failed" "failed" (svc-state-label (health-state-to-svc (HsUnhealthy 100)))
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Health Sync
+
+  test-health-sync : Text
+  test-health-sync =
+    let sm = svc-manager-new
+    in let svc1 = service-new "web" "Web Server" SvcTypeNetwork
+    in let svc2 = service-new "db" "Database" SvcTypeSystem
+    in let sm2 = sm-add-service (sm-add-service sm svc1) svc2
+    in let hcs = health-checker-new
+    in let hc1 = health-check-new "web" "web-server" "web" HcPing
+    in let hc2 = health-check-new "db" "database" "db" HcPing
+    in let hc1-ok = hck-record-result (hck-record-result (hck-record-result hc1 (CrHealthy 5) 1) (CrHealthy 4) 2) (CrHealthy 3) 3
+    in let hc2-fail = hck-record-result (hck-record-result (hck-record-result hc2 (CrUnhealthy "timeout") 1) (CrUnhealthy "timeout") 2) (CrUnhealthy "timeout") 3
+    in let hcs2 = hcs-add-check (hcs-add-check hcs hc1-ok) hc2-fail
+    in let synced = hcs-sync-services hcs2 sm2
+    in let web-state = when sm-find synced "web"
+      is Just (s) -> svc-state-label (s.svc-state)
+      is None -> "not found"
+    in let db-state = when sm-find synced "db"
+      is Just (s) -> svc-state-label (s.svc-state)
+      is None -> "not found"
+    in let t1 = assert-eq "web-running" "running" web-state
+    in let t2 = assert-eq "db-failed" "failed" db-state
+    in t1 & "\n" & t2
+
+Section: Summary
+
+  test-summary : Text
+  test-summary =
+    let gs = group-new "test" "self"
+    in let m1 = member-new "n1" "s1" "10.0.0.1" 8080 []
+    in let gs2 = gs-add-member gs m1
+    in let hcs = health-checker-new
+    in let s = mesh-summary gs2 hcs
+    in let t1 = assert-int "members" 1 (s.ms-members)
+    in let t2 = assert-int "alive" 1 (s.ms-alive)
+    in let t3 = assert-eq "leader" "self" (s.ms-leader)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Check Generation
+
+  test-check-gen : Text
+  test-check-gen =
+    let sm = svc-manager-new
+    in let svc = service-new "api" "API" SvcTypeNetwork
+    in let sm2 = sm-add-service sm svc
+    in let hcs = health-checker-new
+    in let hcs2 = mesh-create-checks-for-services sm2 hcs
+    in let t1 = assert-int "check-count" 1 (hcs2.hcs-count)
+    in let found = hcs-find-check hcs2 "api"
+    in let t2 = when found
+      is Just (hc) -> assert-eq "check-service" "api" (hc.hck-service)
+      is None -> "FAIL check-not-found"
+    in t1 & "\n" & t2
+
+Page 1

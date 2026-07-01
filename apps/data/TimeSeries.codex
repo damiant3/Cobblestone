@@ -1,0 +1,291 @@
+Chapter: TimeSeries
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Time-series storage and analytics. Optimized for append-heavy
+ workloads with time-ordered data. Supports downsampling, windowed
+ aggregation, retention policies, and gap detection.
+
+ We say:
+
+Section: Time-Series Types
+
+  TsPoint = record {
+    ts-time : Integer,
+    ts-value : Integer,
+    ts-tags : List TsTag
+  }
+
+  TsTag = record {
+    tag-key : Text,
+    tag-value : Text
+  }
+
+  TsSeries = record {
+    tss-name : Text,
+    tss-points : List TsPoint,
+    tss-count : Integer,
+    tss-min-time : Integer,
+    tss-max-time : Integer
+  }
+
+  ts-series-new : Text -> TsSeries
+  ts-series-new (name) = TsSeries { tss-name = name, tss-points = [], tss-count = 0, tss-min-time = 2147483647, tss-max-time = 0 }
+
+Section: Append
+
+  ts-append : TsSeries, TsPoint -> TsSeries
+  ts-append (series) (point) = TsSeries {
+    tss-name = series.tss-name,
+    tss-points = list-push (series.tss-points) point,
+    tss-count = series.tss-count + 1,
+    tss-min-time = if point.ts-time < series.tss-min-time then point.ts-time else series.tss-min-time,
+    tss-max-time = if point.ts-time > series.tss-max-time then point.ts-time else series.tss-max-time
+  }
+
+  ts-append-value : TsSeries, Integer, Integer -> TsSeries
+  ts-append-value (series) (time) (value) =
+    ts-append series (TsPoint { ts-time = time, ts-value = value, ts-tags = [] })
+
+  ts-bulk-append : TsSeries, List TsPoint -> TsSeries
+  ts-bulk-append (series) (points) = ts-bulk-loop series points 0 (list-length points)
+
+  ts-bulk-loop : TsSeries, List TsPoint, Integer, Integer -> TsSeries
+  ts-bulk-loop (series) (points) (i) (len) =
+    if i >= len then series
+    else ts-bulk-loop (ts-append series (list-at points i)) points (i + 1) len
+
+Section: Range Query
+
+  ts-range : TsSeries, Integer, Integer -> List TsPoint
+  ts-range (series) (start) (finish) =
+    ts-range-loop (series.tss-points) start finish 0 (series.tss-count) []
+
+  ts-range-loop : List TsPoint, Integer, Integer, Integer, Integer, List TsPoint -> List TsPoint
+  ts-range-loop (points) (start) (finish) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at points i
+    in if p.ts-time >= start & p.ts-time <= finish then ts-range-loop points start finish (i + 1) len (list-push acc p)
+    else ts-range-loop points start finish (i + 1) len acc
+
+  ts-last-n : TsSeries, Integer -> List TsPoint
+  ts-last-n (series) (n) =
+    let start = if series.tss-count > n then series.tss-count - n else 0
+    in ts-take-from (series.tss-points) start (series.tss-count) []
+
+  ts-take-from : List TsPoint, Integer, Integer, List TsPoint -> List TsPoint
+  ts-take-from (points) (i) (len) (acc) =
+    if i >= len then acc
+    else ts-take-from points (i + 1) len (list-push acc (list-at points i))
+
+Section: Windowed Aggregation
+
+  TsWindowResult = record {
+    tw-window-start : Integer,
+    tw-window-end : Integer,
+    tw-sum : Integer,
+    tw-count : Integer,
+    tw-min : Integer,
+    tw-max : Integer,
+    tw-avg : Integer
+  }
+
+  ts-window-aggregate : TsSeries, Integer, Integer, Integer -> List TsWindowResult
+  ts-window-aggregate (series) (start) (finish) (window-size) =
+    ts-window-loop (series.tss-points) start finish window-size start (series.tss-count) []
+
+  ts-window-loop : List TsPoint, Integer, Integer, Integer, Integer, Integer, List TsWindowResult -> List TsWindowResult
+  ts-window-loop (points) (start) (finish) (win-size) (win-start) (len) (acc) =
+    if win-start >= finish then acc
+    else let win-end = win-start + win-size
+    in let agg = ts-agg-window points win-start win-end 0 len 0 0 2147483647 0
+    in let result = TsWindowResult {
+      tw-window-start = win-start,
+      tw-window-end = win-end,
+      tw-sum = agg.twa-sum,
+      tw-count = agg.twa-count,
+      tw-min = agg.twa-min,
+      tw-max = agg.twa-max,
+      tw-avg = if agg.twa-count == 0 then 0 else agg.twa-sum / agg.twa-count
+    }
+    in ts-window-loop points start finish win-size win-end len (list-push acc result)
+
+  TsWindowAcc = record {
+    twa-sum : Integer,
+    twa-count : Integer,
+    twa-min : Integer,
+    twa-max : Integer
+  }
+
+  ts-agg-window : List TsPoint, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> TsWindowAcc
+  ts-agg-window (points) (win-start) (win-end) (i) (len) (sum) (count) (mn) (mx) =
+    if i >= len then TsWindowAcc { twa-sum = sum, twa-count = count, twa-min = mn, twa-max = mx }
+    else let p = list-at points i
+    in if p.ts-time >= win-start & p.ts-time < win-end then
+      ts-agg-window points win-start win-end (i + 1) len (sum + p.ts-value) (count + 1) (if p.ts-value < mn then p.ts-value else mn) (if p.ts-value > mx then p.ts-value else mx)
+    else ts-agg-window points win-start win-end (i + 1) len sum count mn mx
+
+Section: Downsampling
+
+  ts-downsample : TsSeries, Integer -> TsSeries
+  ts-downsample (series) (bucket-size) =
+    let windows = ts-window-aggregate series (series.tss-min-time) (series.tss-max-time + 1) bucket-size
+    in let points = ts-windows-to-points windows 0 (list-length windows) []
+    in TsSeries {
+      tss-name = series.tss-name & "_ds" & show bucket-size,
+      tss-points = points,
+      tss-count = list-length points,
+      tss-min-time = series.tss-min-time,
+      tss-max-time = series.tss-max-time
+    }
+
+  ts-windows-to-points : List TsWindowResult, Integer, Integer, List TsPoint -> List TsPoint
+  ts-windows-to-points (windows) (i) (len) (acc) =
+    if i >= len then acc
+    else let w = list-at windows i
+    in if w.tw-count > 0 then
+      let p = TsPoint { ts-time = w.tw-window-start, ts-value = w.tw-avg, ts-tags = [] }
+      in ts-windows-to-points windows (i + 1) len (list-push acc p)
+    else ts-windows-to-points windows (i + 1) len acc
+
+Section: Rate of Change
+
+  ts-rate : TsSeries -> List TsPoint
+  ts-rate (series) =
+    if series.tss-count < 2 then []
+    else ts-rate-loop (series.tss-points) 1 (series.tss-count) []
+
+  ts-rate-loop : List TsPoint, Integer, Integer, List TsPoint -> List TsPoint
+  ts-rate-loop (points) (i) (len) (acc) =
+    if i >= len then acc
+    else let prev = list-at points (i - 1)
+    in let cur = list-at points i
+    in let dt = cur.ts-time - prev.ts-time
+    in let dv = cur.ts-value - prev.ts-value
+    in let rate = if dt == 0 then 0 else (dv * 1000) / dt
+    in ts-rate-loop points (i + 1) len (list-push acc (TsPoint { ts-time = cur.ts-time, ts-value = rate, ts-tags = [] }))
+
+Section: Gap Detection
+
+  TsGap = record {
+    gap-start : Integer,
+    gap-end : Integer,
+    gap-duration : Integer
+  }
+
+  ts-detect-gaps : TsSeries, Integer -> List TsGap
+  ts-detect-gaps (series) (max-interval) =
+    if series.tss-count < 2 then []
+    else ts-gap-loop (series.tss-points) max-interval 1 (series.tss-count) []
+
+  ts-gap-loop : List TsPoint, Integer, Integer, Integer, List TsGap -> List TsGap
+  ts-gap-loop (points) (max-interval) (i) (len) (acc) =
+    if i >= len then acc
+    else let prev = list-at points (i - 1)
+    in let cur = list-at points i
+    in let dt = cur.ts-time - prev.ts-time
+    in if dt > max-interval then
+      let gap = TsGap { gap-start = prev.ts-time, gap-end = cur.ts-time, gap-duration = dt }
+      in ts-gap-loop points max-interval (i + 1) len (list-push acc gap)
+    else ts-gap-loop points max-interval (i + 1) len acc
+
+Section: Retention Policy
+
+  ts-apply-retention : TsSeries, Integer -> TsSeries
+  ts-apply-retention (series) (cutoff-time) =
+    let kept = ts-retention-filter (series.tss-points) cutoff-time 0 (series.tss-count) []
+    in TsSeries {
+      tss-name = series.tss-name,
+      tss-points = kept,
+      tss-count = list-length kept,
+      tss-min-time = if list-length kept == 0 then 2147483647 else (list-at kept 0).ts-time,
+      tss-max-time = series.tss-max-time
+    }
+
+  ts-retention-filter : List TsPoint, Integer, Integer, Integer, List TsPoint -> List TsPoint
+  ts-retention-filter (points) (cutoff) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at points i
+    in if p.ts-time >= cutoff then ts-retention-filter points cutoff (i + 1) len (list-push acc p)
+    else ts-retention-filter points cutoff (i + 1) len acc
+
+Section: Tag Filtering
+
+  ts-filter-tag : TsSeries, Text, Text -> TsSeries
+  ts-filter-tag (series) (key) (value) =
+    let filtered = ts-tag-filter-loop (series.tss-points) key value 0 (series.tss-count) []
+    in TsSeries {
+      tss-name = series.tss-name,
+      tss-points = filtered,
+      tss-count = list-length filtered,
+      tss-min-time = series.tss-min-time,
+      tss-max-time = series.tss-max-time
+    }
+
+  ts-tag-filter-loop : List TsPoint, Text, Text, Integer, Integer, List TsPoint -> List TsPoint
+  ts-tag-filter-loop (points) (key) (value) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at points i
+    in if ts-has-tag (p.ts-tags) key value then ts-tag-filter-loop points key value (i + 1) len (list-push acc p)
+    else ts-tag-filter-loop points key value (i + 1) len acc
+
+  ts-has-tag : List TsTag, Text, Text -> Boolean
+  ts-has-tag (tags) (key) (value) = ts-tag-check tags key value 0 (list-length tags)
+
+  ts-tag-check : List TsTag, Text, Text, Integer, Integer -> Boolean
+  ts-tag-check (tags) (key) (value) (i) (len) =
+    if i >= len then False
+    else let t = list-at tags i
+    in if t.tag-key == key & t.tag-value == value then True
+    else ts-tag-check tags key value (i + 1) len
+
+Section: Multi-Series Store
+
+  TsStore = record {
+    tsst-series : HamtMap TsSeries,
+    tsst-count : Integer
+  }
+
+  ts-store-new : TsStore
+  ts-store-new = TsStore { tsst-series = hamt-empty, tsst-count = 0 }
+
+  ts-store-create : TsStore, Text -> TsStore
+  ts-store-create (store) (name) =
+    TsStore { tsst-series = hamt-set (store.tsst-series) name (ts-series-new name), tsst-count = store.tsst-count + 1 }
+
+  ts-store-append : TsStore, Text, TsPoint -> TsStore
+  ts-store-append (store) (name) (point) =
+    let found = hamt-get (store.tsst-series) name
+    in when found
+      is None -> store
+      is Just (series) -> TsStore { tsst-series = hamt-set (store.tsst-series) name (ts-append series point), tsst-count = store.tsst-count }
+
+  ts-store-query : TsStore, Text, Integer, Integer -> List TsPoint
+  ts-store-query (store) (name) (start) (finish) =
+    let found = hamt-get (store.tsst-series) name
+    in when found
+      is None -> []
+      is Just (series) -> ts-range series start finish
+
+  ts-store-downsample : TsStore, Text, Integer -> TsStore
+  ts-store-downsample (store) (name) (bucket) =
+    let found = hamt-get (store.tsst-series) name
+    in when found
+      is None -> store
+      is Just (series) ->
+        let ds = ts-downsample series bucket
+        in TsStore { tsst-series = hamt-set (store.tsst-series) (ds.tss-name) ds, tsst-count = store.tsst-count + 1 }
+
+Section: Statistics
+
+  ts-stats : TsSeries -> Text
+  ts-stats (series) =
+    "series=" & series.tss-name
+    & " points=" & show (series.tss-count)
+    & " range=" & show (series.tss-min-time) & "-" & show (series.tss-max-time)
+
+  ts-store-stats : TsStore -> Text
+  ts-store-stats (store) =
+    "ts-store: series=" & show (store.tsst-count)
+
+Page 1

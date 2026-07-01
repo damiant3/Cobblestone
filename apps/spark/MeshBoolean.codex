@@ -1,0 +1,162 @@
+Chapter: MeshBoolean
+  cites Math chapter Quaternion
+  cites Spark chapter Mesh
+
+ Constructive solid geometry (CSG) operations on triangle meshes.
+ Union, intersection, and difference via inside/outside face
+ classification. Uses ray-casting parity to determine which
+ faces lie inside the opposing mesh.
+
+ We say:
+
+Section: Types
+
+  CsgOp =
+    | CsgUnion
+    | CsgIntersect
+    | CsgDifference
+
+  FaceClass =
+    | FaceInside
+    | FaceOutside
+    | FaceBoundary
+
+Section: CSG Entry Points
+
+  mesh-union : TriMesh, TriMesh -> TriMesh
+  mesh-union (a) (b) = csg-combine a b CsgUnion
+
+  mesh-intersect : TriMesh, TriMesh -> TriMesh
+  mesh-intersect (a) (b) = csg-combine a b CsgIntersect
+
+  mesh-difference : TriMesh, TriMesh -> TriMesh
+  mesh-difference (a) (b) = csg-combine a b CsgDifference
+
+Section: CSG Core
+
+  csg-combine : TriMesh, TriMesh, CsgOp -> TriMesh
+  csg-combine (a) (b) (op) =
+    let a-classified = csg-classify-faces a b
+    in let b-classified = csg-classify-faces b a
+    in let result = tri-mesh-empty
+    in let r2 = csg-collect-a result a a-classified op 0
+    in csg-collect-b r2 b b-classified op 0
+
+  csg-classify-faces : TriMesh, TriMesh -> List FaceClass
+  csg-classify-faces (subject) (tool) =
+    csg-classify-loop subject tool 0 []
+
+  csg-classify-loop : TriMesh, TriMesh, Integer, List FaceClass -> List FaceClass
+  csg-classify-loop (subject) (tool) (fi) (acc) =
+    if fi >= subject.tm-face-count then acc
+    else let face = tri-mesh-face subject fi
+    in let centroid = csg-face-centroid subject face
+    in let cls = csg-point-inside tool centroid
+    in csg-classify-loop subject tool (fi + 1) (list-push acc cls)
+
+  csg-face-centroid : TriMesh, TriFace -> Vec3
+  csg-face-centroid (mesh) (face) =
+    let v0 = tri-mesh-vert mesh (face.tf-v0)
+    in let v1 = tri-mesh-vert mesh (face.tf-v1)
+    in let v2 = tri-mesh-vert mesh (face.tf-v2)
+    in vec3-new ((v0.vx + v1.vx + v2.vx) / 3.0) ((v0.vy + v1.vy + v2.vy) / 3.0) ((v0.vz + v1.vz + v2.vz) / 3.0)
+
+Section: Point-in-Mesh
+
+  csg-point-inside : TriMesh, Vec3 -> FaceClass
+  csg-point-inside (mesh) (point) =
+    let crossings = csg-ray-cast mesh point 0 0
+    in if crossings - crossings / 2 * 2 == 1 then FaceInside else FaceOutside
+
+  csg-ray-cast : TriMesh, Vec3, Integer, Integer -> Integer
+  csg-ray-cast (mesh) (origin) (fi) (count) =
+    if fi >= mesh.tm-face-count then count
+    else let face = tri-mesh-face mesh fi
+    in let hit = csg-ray-tri-test origin mesh face
+    in csg-ray-cast mesh origin (fi + 1) (count + hit)
+
+  csg-ray-tri-test : Vec3, TriMesh, TriFace -> Integer
+  csg-ray-tri-test (origin) (mesh) (face) =
+    let v0 = tri-mesh-vert mesh (face.tf-v0)
+    in let v1 = tri-mesh-vert mesh (face.tf-v1)
+    in let v2 = tri-mesh-vert mesh (face.tf-v2)
+    in let e1x = v1.vx - v0.vx
+    in let e1y = v1.vy - v0.vy
+    in let e2x = v2.vx - v0.vx
+    in let e2y = v2.vy - v0.vy
+    in let tx = origin.vx - v0.vx
+    in let ty = origin.vy - v0.vy
+    in let det = e1x * e2y - e1y * e2x
+    in if det == 0.0 then 0
+    else if csg-abs-real det < 0.01 then 0
+    else let u = (tx * e2y - ty * e2x) / det
+    in if u < 0.0 then 0
+    else if u > 1.0 then 0
+    else let v = (e1x * ty - e1y * tx) / det
+    in if v < 0.0 then 0
+    else if u + v > 1.0 then 0
+    else if v0.vz + (v1.vz - v0.vz) * u + (v2.vz - v0.vz) * v > origin.vz then 1
+    else 0
+
+Section: Face Collection
+
+  csg-collect-a : TriMesh, TriMesh, List FaceClass, CsgOp, Integer -> TriMesh
+  csg-collect-a (result) (a) (classes) (op) (fi) =
+    if fi >= a.tm-face-count then result
+    else let cls = list-at classes fi
+    in let keep = csg-keep-a cls op
+    in let r2 = if keep == 1 then csg-copy-face result a fi else result
+    in csg-collect-a r2 a classes op (fi + 1)
+
+  csg-collect-b : TriMesh, TriMesh, List FaceClass, CsgOp, Integer -> TriMesh
+  csg-collect-b (result) (b) (classes) (op) (fi) =
+    if fi >= b.tm-face-count then result
+    else let cls = list-at classes fi
+    in let keep = csg-keep-b cls op
+    in let r2 = if keep == 1 then csg-copy-face result b fi else result
+    in csg-collect-b r2 b classes op (fi + 1)
+
+  csg-keep-a : FaceClass, CsgOp -> Integer
+  csg-keep-a (cls) (op) =
+    when op
+      is CsgUnion -> when cls is FaceOutside -> 1 is otherwise -> 0
+      is CsgIntersect -> when cls is FaceInside -> 1 is otherwise -> 0
+      is CsgDifference -> when cls is FaceOutside -> 1 is otherwise -> 0
+
+  csg-keep-b : FaceClass, CsgOp -> Integer
+  csg-keep-b (cls) (op) =
+    when op
+      is CsgUnion -> when cls is FaceOutside -> 1 is otherwise -> 0
+      is CsgIntersect -> when cls is FaceInside -> 1 is otherwise -> 0
+      is CsgDifference -> when cls is FaceInside -> 1 is otherwise -> 0
+
+  csg-copy-face : TriMesh, TriMesh, Integer -> TriMesh
+  csg-copy-face (result) (src) (fi) =
+    let face = tri-mesh-face src fi
+    in let v0 = tri-mesh-vert src (face.tf-v0)
+    in let v1 = tri-mesh-vert src (face.tf-v1)
+    in let v2 = tri-mesh-vert src (face.tf-v2)
+    in let uv0 = tri-mesh-uv src (face.tf-v0)
+    in let uv1 = tri-mesh-uv src (face.tf-v1)
+    in let uv2 = tri-mesh-uv src (face.tf-v2)
+    in let n0 = tri-mesh-normal src (face.tf-v0)
+    in let n1 = tri-mesh-normal src (face.tf-v1)
+    in let n2 = tri-mesh-normal src (face.tf-v2)
+    in let base = result.tm-vert-count
+    in let r2 = tri-mesh-add-vert result v0 uv0 n0
+    in let r3 = tri-mesh-add-vert r2 v1 uv1 n1
+    in let r4 = tri-mesh-add-vert r3 v2 uv2 n2
+    in tri-mesh-add-face r4 base (base + 1) (base + 2)
+
+Section: Helpers
+
+  csg-abs-real : Real -> Real
+  csg-abs-real (n) = if n < 0.0 then 0.0 - n else n
+
+Section: Info
+
+  csg-info : CsgOp -> Text
+  csg-info (op) =
+    when op is CsgUnion -> "union" is CsgIntersect -> "intersect" is CsgDifference -> "difference"
+
+Page 1

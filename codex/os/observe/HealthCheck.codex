@@ -1,0 +1,123 @@
+Chapter: HealthCheck
+  cites OS chapter ServiceRegistry
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ HealthCheck probes registered services and reports each as
+ healthy, degraded, or critical. The watchdog consumes these
+ status values to drive restart and alerting decisions.
+
+ We say:
+
+Section: Health Status
+
+  CheckStatus =
+    | Healthy
+    | Degraded (Text)
+    | Critical (Text)
+
+  HealthResult = record {
+    name : Text,
+    status : CheckStatus
+  }
+
+  HealthReport = record {
+    checks : List HealthResult,
+    check-count : Integer between 0 and 255,
+    healthy-count : Integer between 0 and 255,
+    degraded-count : Integer between 0 and 255,
+    critical-count : Integer between 0 and 255
+  }
+
+Section: Individual Checks
+
+  check-processes : HealthResult
+  check-processes =
+    let count = process-count
+    in if count == 0 then HealthResult { name = "processes", status = Critical "no processes running" }
+    else if count >= 15 then HealthResult { name = "processes", status = Degraded "near capacity (15/16)" }
+    else HealthResult { name = "processes", status = Healthy }
+
+  check-fuel : ShellState -> HealthResult
+  check-fuel (state) =
+    if state.fuel <= 1 then HealthResult { name = "fuel", status = Critical "verification fuel exhausted" }
+    else if state.fuel < 10 then HealthResult { name = "fuel", status = Degraded ("low fuel: " & show (state.fuel)) }
+    else HealthResult { name = "fuel", status = Healthy }
+
+  check-registry : ShellState -> HealthResult
+  check-registry (state) =
+    let count = registry-count (state.registry)
+    in if count >= 65000 then HealthResult { name = "registry", status = Degraded "registry near capacity" }
+    else HealthResult { name = "registry", status = Healthy }
+
+  check-services : ServiceRegistry -> HealthResult
+  check-services (reg) =
+    if service-count reg == 0 then HealthResult { name = "services", status = Degraded "no services registered" }
+    else HealthResult { name = "services", status = Healthy }
+
+Section: Full Check
+
+  run-health-check : ShellState, ServiceRegistry -> HealthReport
+  run-health-check (state) (svc-reg) =
+    let checks = [
+      check-processes,
+      check-fuel state,
+      check-registry state,
+      check-services svc-reg
+    ]
+    in let counts = count-statuses checks 0 4 0 0 0
+    in HealthReport {
+      checks = checks,
+      check-count = 4,
+      healthy-count = counts-healthy counts,
+      degraded-count = counts-degraded counts,
+      critical-count = counts-critical counts
+    }
+
+  StatusCounts = record {
+    h : Integer,
+    d : Integer,
+    c : Integer
+  }
+
+  counts-healthy : StatusCounts -> Integer
+  counts-healthy (sc) = sc.h
+
+  counts-degraded : StatusCounts -> Integer
+  counts-degraded (sc) = sc.d
+
+  counts-critical : StatusCounts -> Integer
+  counts-critical (sc) = sc.c
+
+  count-statuses : List HealthResult, Integer, Integer, Integer, Integer, Integer -> StatusCounts
+  count-statuses (checks) (i) (len) (h) (d) (c) =
+    if i >= len then StatusCounts { h = h, d = d, c = c }
+    else let check = list-at checks i
+    in when (check.status)
+      is Healthy -> count-statuses checks (i + 1) len (h + 1) d c
+      is Degraded (msg) -> count-statuses checks (i + 1) len h (d + 1) c
+      is Critical (msg) -> count-statuses checks (i + 1) len h d (c + 1)
+
+Section: Formatting
+
+  format-status : CheckStatus -> Text
+  format-status (s) = when s
+    is Healthy -> "OK"
+    is Degraded (msg) -> "DEGRADED: " & msg
+    is Critical (msg) -> "CRITICAL: " & msg
+
+  format-health-report : HealthReport -> Text
+  format-health-report (r) =
+    "health: " & show (r.healthy-count) & "/" & show (r.check-count) & " ok"
+    & (if r.degraded-count > 0 then ", " & show (r.degraded-count) & " degraded" else "")
+    & (if r.critical-count > 0 then ", " & show (r.critical-count) & " critical" else "")
+
+  is-system-healthy : HealthReport -> Boolean
+  is-system-healthy (r) = r.critical-count == 0
+
+Page 1

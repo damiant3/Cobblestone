@@ -1,0 +1,188 @@
+Chapter: KshEmit
+
+  cites Shell chapter ShellTypes
+  cites Foreword chapter Maybe
+
+ Emits KornShell (ksh93+) from ShellScript values.
+ Because we can.
+
+ We say:
+
+Section: Top Level
+
+  emit-ksh : ShellScript -> Text
+  emit-ksh (script) =
+    let header = "#!/usr/bin/env ksh\n# " & script.ss-name & ".ksh -- " & script.ss-description & "\n# Generated from Codex Shell DSL. Do not edit by hand.\nset -o errexit -o nounset -o pipefail\ntypeset -r PROGNAME=" & bash-ksh-quote (script.ss-name) & "\n\n"
+    in let params = emit-ksh-params (script.ss-params) 0 (list-length (script.ss-params)) 1
+    in let body = emit-ksh-cmds (script.ss-body) 0 0 (list-length (script.ss-body))
+    in header & params & "\n" & body & "\n"
+
+Section: Parameters
+
+  emit-ksh-params : List ShellParam, Integer, Integer, Integer -> Text
+  emit-ksh-params (params) (i) (len) (pos) =
+    if i >= len then ""
+    else let p = list-at params i
+    in let line = when p.sp-type
+      is SptSwitch -> "typeset " & p.sp-name & "=false\n"
+      is SptInt -> when p.sp-default is Just (e) -> "typeset -i " & p.sp-name & "=${" & show pos & ":-" & emit-ksh-expr-bare e & "}\n" is None -> "typeset -i " & p.sp-name & "=${" & show pos & ":?\"Missing: " & p.sp-name & "\"}\n"
+      is otherwise -> when p.sp-default is Just (e) -> "typeset " & p.sp-name & "=${" & show pos & ":-" & emit-ksh-expr-bare e & "}\n" is None -> "typeset " & p.sp-name & "=${" & show pos & ":?\"Missing: " & p.sp-name & "\"}\n"
+    in let next-pos = when p.sp-type is SptSwitch -> pos is otherwise -> pos + 1
+    in line & emit-ksh-params params (i + 1) len next-pos
+
+Section: Command List
+
+  emit-ksh-cmds : List ShellCmd, Integer, Integer, Integer -> Text
+  emit-ksh-cmds (cmds) (indent) (i) (len) =
+    if i >= len then ""
+    else emit-ksh-cmd (list-at cmds i) indent & "\n" & emit-ksh-cmds cmds indent (i + 1) len
+
+Section: Commands -- Core
+
+  emit-ksh-cmd : ShellCmd, Integer -> Text
+  emit-ksh-cmd (cmd) (indent) =
+    let pad = ksh-indent indent
+    in when cmd
+      is ScRun (name) (args) -> pad & bash-ksh-quote name & " " & emit-ksh-args args 0
+      is ScRunDot (path) -> pad & ". " & emit-ksh-expr path
+      is ScAssign (name) (value) -> pad & name & "=" & emit-ksh-expr value
+      is ScEcho (e) -> pad & "print -- " & emit-ksh-expr e
+      is ScWriteError (e) -> pad & "print -u2 -- " & emit-ksh-expr e
+      is ScComment (text) -> pad & "# " & text
+      is ScBlank -> ""
+      is ScBreak -> pad & "break"
+      is ScContinue -> pad & "continue"
+      is ScExit (e) -> pad & "exit " & emit-ksh-expr e
+      is ScReturn (e) -> pad & "return " & emit-ksh-expr e
+      is ScRaw (text) -> pad & text
+      is ScSequence (cmds) -> emit-ksh-cmds cmds indent 0 (list-length cmds)
+      is ScSetStrictMode -> pad & "# (strict mode set in header)"
+      is ScSetErrorStop -> pad & "# (errexit set in header)"
+      is ScContinueLabel (label) -> pad & "continue"
+      is otherwise -> emit-ksh-cmd-ext cmd indent pad
+
+Section: Commands -- IO
+
+  emit-ksh-cmd-ext : ShellCmd, Integer, Text -> Text
+  emit-ksh-cmd-ext (cmd) (indent) (pad) =
+    when cmd
+      is ScCopy (src) (dst) -> pad & "cp -f " & emit-ksh-expr src & " " & emit-ksh-expr dst
+      is ScMove (src) (dst) -> pad & "mv -f " & emit-ksh-expr src & " " & emit-ksh-expr dst
+      is ScDelete (path) -> pad & "rm -f " & emit-ksh-expr path & " 2>/dev/null || true"
+      is ScMkdir (path) -> pad & "mkdir -p " & emit-ksh-expr path
+      is ScWriteFile (path) (content) -> pad & "print -- " & emit-ksh-expr content & " > " & emit-ksh-expr path
+      is ScReadFile (name) (path) -> pad & name & "=$(<" & emit-ksh-expr-bare path & ")"
+      is ScReadBytes (name) (path) -> pad & name & "=$(<" & emit-ksh-expr-bare path & ")"
+      is ScWriteBytes (path) (data) -> pad & "print -n " & emit-ksh-expr data & " > " & emit-ksh-expr path
+      is ScHashFile (algo) (result-var) (path) -> pad & result-var & "=$(sha256sum " & emit-ksh-expr path & " | cut -d' ' -f1)"
+      is ScTempFile (name) -> pad & name & "=$(mktemp)"
+      is ScSetContent (path) (value) -> pad & "print -- " & emit-ksh-expr value & " > " & emit-ksh-expr path
+      is ScAddContent (path) (value) -> pad & "print -- " & emit-ksh-expr value & " >> " & emit-ksh-expr path
+      is ScDotNetCall (cls) (method) (args) -> pad & "# [" & cls & "]::" & method & " -- no ksh equivalent"
+      is ScDotNetCallAssign (result) (cls) (method) (args) -> pad & "# " & result & "=$([" & cls & "]::" & method & ") -- no ksh equivalent"
+      is otherwise -> emit-ksh-cmd-flow cmd indent pad
+
+Section: Commands -- Flow
+
+  emit-ksh-cmd-flow : ShellCmd, Integer, Text -> Text
+  emit-ksh-cmd-flow (cmd) (indent) (pad) =
+    when cmd
+      is ScIf (cond) (then-cmds) (else-cmds) ->
+        let tb = emit-ksh-cmds then-cmds (indent + 1) 0 (list-length then-cmds)
+        in let ep = if list-length else-cmds == 0 then "" else pad & "else\n" & emit-ksh-cmds else-cmds (indent + 1) 0 (list-length else-cmds)
+        in pad & "if " & emit-ksh-cond cond & "; then\n" & tb & ep & pad & "fi"
+      is ScFor (name) (items) (body) ->
+        pad & "for " & name & " in " & emit-ksh-expr-bare items & "; do\n" & emit-ksh-cmds body (indent + 1) 0 (list-length body) & pad & "done"
+      is ScWhile (cond) (body) ->
+        pad & "while " & emit-ksh-cond cond & "; do\n" & emit-ksh-cmds body (indent + 1) 0 (list-length body) & pad & "done"
+      is ScForEach (name) (items) (body) ->
+        pad & "for " & name & " in " & emit-ksh-expr-bare items & "; do\n" & emit-ksh-cmds body (indent + 1) 0 (list-length body) & pad & "done"
+      is ScForLoop (name) (init) (cond) (step) (body) ->
+        pad & "(( " & name & "=" & emit-ksh-expr-bare init & " ))\n" & pad & "while (( " & emit-ksh-expr-bare cond & " )); do\n" & emit-ksh-cmds body (indent + 1) 0 (list-length body) & pad & "    (( " & emit-ksh-expr-bare step & " ))\n" & pad & "done"
+      is ScLabeledWhile (label) (cond) (body) ->
+        pad & "# label: " & label & "\n" & pad & "while " & emit-ksh-cond cond & "; do\n" & emit-ksh-cmds body (indent + 1) 0 (list-length body) & pad & "done"
+      is ScTry (body) (catch-cmds) (finally-cmds) ->
+        let tb = emit-ksh-cmds body (indent + 1) 0 (list-length body)
+        in let cleanup = if list-length finally-cmds == 0 then "" else pad & "function _cleanup {\n" & emit-ksh-cmds finally-cmds (indent + 1) 0 (list-length finally-cmds) & pad & "}\n" & pad & "trap _cleanup EXIT\n"
+        in let catch-body = if list-length catch-cmds == 0 then pad & "    true\n" else emit-ksh-cmds catch-cmds (indent + 1) 0 (list-length catch-cmds)
+        in cleanup & pad & "{\n" & tb & pad & "} || {\n" & catch-body & pad & "}"
+      is ScStartProcess (spec) ->
+        let stderr-redir = when spec.sp-stderr-file is Just (f) -> " 2>" & emit-ksh-expr f is None -> ""
+        in pad & emit-ksh-expr (spec.sp-executable) & " " & emit-ksh-args (spec.sp-arguments) 0 & stderr-redir & " &\n" & pad & spec.sp-result-var & "=$!"
+      is ScWaitProcess (name) (timeout) ->
+        pad & "wait $" & name
+      is otherwise -> pad & "# <unknown>"
+
+Section: Conditions
+
+  emit-ksh-cond : ShellExpr -> Text
+  emit-ksh-cond (e) =
+    when e
+      is SeFileExists (path) -> "[[ -f " & emit-ksh-expr path & " ]]"
+      is SeDirExists (path) -> "[[ -d " & emit-ksh-expr path & " ]]"
+      is SeStringEq (a) (b) -> "[[ " & emit-ksh-expr a & " == " & emit-ksh-expr b & " ]]"
+      is SeStringNeq (a) (b) -> "[[ " & emit-ksh-expr a & " != " & emit-ksh-expr b & " ]]"
+      is SeIntEq (a) (b) -> "(( " & emit-ksh-expr-bare a & " == " & emit-ksh-expr-bare b & " ))"
+      is SeIntLt (a) (b) -> "(( " & emit-ksh-expr-bare a & " < " & emit-ksh-expr-bare b & " ))"
+      is SeIntGt (a) (b) -> "(( " & emit-ksh-expr-bare a & " > " & emit-ksh-expr-bare b & " ))"
+      is SeNot (x) -> "! " & emit-ksh-cond x
+      is SeAnd (a) (b) -> emit-ksh-cond a & " && " & emit-ksh-cond b
+      is SeOr (a) (b) -> "{ " & emit-ksh-cond a & " || " & emit-ksh-cond b & "; }"
+      is SeExitCodeEq (n) -> "(( $? == " & show n & " ))"
+      is SeMatch (expr) (pattern) -> "[[ " & emit-ksh-expr expr & " == " & pattern & " ]]"
+      is SeStartsWith (str) (prefix) -> "[[ " & emit-ksh-expr str & " == " & emit-ksh-expr prefix & "* ]]"
+      is otherwise -> "[[ " & emit-ksh-expr e & " ]]"
+
+Section: Expressions -- Leaf
+
+  emit-ksh-expr : ShellExpr -> Text
+  emit-ksh-expr (e) =
+    when e
+      is SeLit (s) -> bash-ksh-quote s
+      is SeInt (n) -> show n
+      is SeVar (name) -> "\"$" & name & "\""
+      is SeEnvVar (name) -> "\"$" & name & "\""
+      is SeRaw (text) -> text
+      is SeHashLiteral -> "# typeset -A for associative arrays"
+      is otherwise -> emit-ksh-expr-compound e
+
+Section: Expressions -- Compound
+
+  emit-ksh-expr-compound : ShellExpr -> Text
+  emit-ksh-expr-compound (e) =
+    when e
+      is SeConcat (a) (b) -> emit-ksh-expr a & emit-ksh-expr b
+      is SeNot (x) -> "! " & emit-ksh-expr x
+      is SeFileExists (path) -> "[[ -f " & emit-ksh-expr path & " ]]"
+      is SeDirExists (path) -> "[[ -d " & emit-ksh-expr path & " ]]"
+      is SeFileSize (path) -> "$(wc -c < " & emit-ksh-expr path & " | tr -d ' ')"
+      is SeTextLength (s) -> "${#" & emit-ksh-expr-bare s & "}"
+      is SeSubstring (s) (start) (len) -> "${" & emit-ksh-expr-bare s & ":" & show start & ":" & show len & "}"
+      is SeIndex (arr) (idx) -> "${" & emit-ksh-expr-bare arr & "[" & emit-ksh-expr-bare idx & "]}"
+      is SeProperty (obj) (prop) -> "# ." & prop & " (no ksh equivalent)"
+      is SeMethodCall (obj) (method) (args) -> "# ." & method & "() (no ksh equivalent)"
+      is SeStaticCall (cls) (method) (args) -> "# [" & cls & "]::" & method & " (no ksh equivalent)"
+      is SeMatch (expr) (pattern) -> "[[ " & emit-ksh-expr expr & " == " & pattern & " ]]"
+      is SeStartsWith (str) (prefix) -> "[[ " & emit-ksh-expr str & " == " & emit-ksh-expr prefix & "* ]]"
+      is SeArrayLiteral (items) -> "(" & emit-ksh-args items 0 & ")"
+      is SeStringEq (a) (b) -> "[[ " & emit-ksh-expr a & " == " & emit-ksh-expr b & " ]]"
+      is otherwise -> "\"<unknown>\""
+
+Section: Helpers
+
+  emit-ksh-expr-bare : ShellExpr -> Text
+  emit-ksh-expr-bare (e) = when e is SeVar (name) -> name is SeEnvVar (name) -> name is SeLit (s) -> s is SeInt (n) -> show n is SeRaw (text) -> text is otherwise -> emit-ksh-expr e
+
+  ksh-indent : Integer -> Text
+  ksh-indent (n) = if n <= 0 then "" else "    " & ksh-indent (n - 1)
+
+  bash-ksh-quote : Text -> Text
+  bash-ksh-quote (s) = "\"" & s & "\""
+
+  emit-ksh-args : List ShellExpr, Integer -> Text
+  emit-ksh-args (args) (i) =
+    if i >= list-length args then ""
+    else if i == list-length args - 1 then emit-ksh-expr (list-at args i)
+    else emit-ksh-expr (list-at args i) & " " & emit-ksh-args args (i + 1)
+
+Page 1

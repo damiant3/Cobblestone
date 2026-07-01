@@ -1,0 +1,119 @@
+Chapter: TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter MessageFraming
+  cites Foreword chapter Sha256
+
+ TCP transport binding for the trust network. Sends and receives
+ length-prefixed framed messages over a TCP connection via the
+ NetworkStack. TcpTransport is Step 5 of the trust network
+ implementation order (TrustAndRuntime.md).
+
+ We say:
+
+Section: Transport State
+  TcpTransportState = record {
+    session : NetSession,
+    recv-buf : List Integer,
+    recv-base : Integer,
+    recv-len : Integer,
+    recv-cap : Integer,
+    messages-sent : Integer between 0 and 4294967295,
+    messages-received : Integer between 0 and 4294967295
+  }
+
+  transport-recv-buf-cap : Integer = 33554432
+
+  transport-new : NetSession -> TcpTransportState
+  transport-new (sess) =
+    let base = __heap-save
+    in let adv = __heap-advance transport-recv-buf-cap
+    in TcpTransportState { session = sess, recv-buf = [], recv-base = base, recv-len = 0, recv-cap = transport-recv-buf-cap, messages-sent = 0, messages-received = 0 }
+
+Section: Send Message
+  TransportSendResult = record {
+    transport : TcpTransportState,
+    success : Boolean,
+    output : Text
+  }
+
+  transport-send-message : TcpTransportState, Integer, List Integer -> TransportSendResult
+  transport-send-message (ts) (type-tag) (body) =
+    let framed = frame-encode type-tag body
+    in let r = net-send (ts.session) framed
+    in TransportSendResult {
+      transport = TcpTransportState { session = r.session, recv-buf = [], recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent + 1, messages-received = ts.messages-received },
+      success = True,
+      output = r.output
+    }
+
+Section: Receive Processing
+  TransportRecvResult = record {
+    transport : TcpTransportState,
+    tag : Integer between 0 and 255,
+    body : List Integer,
+    has-message : Boolean
+  }
+
+  transport-feed-raw : TcpTransportState, List Integer -> TcpTransportState
+  transport-feed-raw (ts) (data) =
+    let n = list-length data
+    in let w = __buf-write-bytes (ts.recv-base) (ts.recv-len) data
+    in TcpTransportState { session = ts.session, recv-buf = [], recv-base = ts.recv-base, recv-len = ts.recv-len + n, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+
+  transport-feed-data : TcpTransportState, List Integer -> TcpTransportState
+  transport-feed-data (ts) (data) = transport-feed-raw ts data
+
+  recv-buf-byte : TcpTransportState, Integer -> Integer
+  recv-buf-byte (ts) (i) = peek-byte (ts.recv-base) i
+
+  recv-buf-i32 : TcpTransportState, Integer -> Integer
+  recv-buf-i32 (ts) (off) =
+    recv-buf-byte ts off + recv-buf-byte ts (off + 1) * 256 + recv-buf-byte ts (off + 2) * 65536 + recv-buf-byte ts (off + 3) * 16777216
+
+  transport-try-recv : TcpTransportState -> TransportRecvResult
+  transport-try-recv (ts) =
+    if ts.recv-len < 4 then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+    else let msg-len = recv-buf-i32 ts 0
+    in let total = 4 + msg-len
+    in if ts.recv-len < total then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+    else let tag = recv-buf-byte ts 4
+    in let body = __buf-read-bytes (ts.recv-base) 5 (msg-len - 1)
+    in let remaining-len = ts.recv-len - total
+    in let hp = __heap-save
+    in let remaining = __buf-read-bytes (ts.recv-base) total remaining-len
+    in let w = __buf-write-bytes (ts.recv-base) 0 remaining
+    in let restored = __heap-restore hp
+    in let ts1 = TcpTransportState { session = ts.session, recv-buf = [], recv-base = ts.recv-base, recv-len = remaining-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received + 1 }
+    in TransportRecvResult { transport = ts1, tag = tag, body = body, has-message = True }
+
+  transport-slice : List Integer, Integer, Integer -> List Integer
+  transport-slice (buf) (start) (stop) = transport-slice-loop buf start stop []
+
+  transport-slice-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  transport-slice-loop (buf) (i) (stop) (acc) =
+    if i >= stop then acc
+    else transport-slice-loop buf (i + 1) stop (list-push acc (list-at buf i))
+
+Section: Feed Inbound Frame
+  transport-process-frame : TcpTransportState, List Integer -> TransportRecvResult
+  transport-process-frame (ts) (frame) =
+    let r = net-process-frame (ts.session) frame
+    in let ts1 = transport-feed-raw (TcpTransportState { session = r.session, recv-buf = [], recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }) (r.data)
+    in transport-try-recv ts1
+
+Section: Connection Lifecycle
+  transport-connect : TcpTransportState -> TcpTransportState
+  transport-connect (ts) =
+    let r = net-connect (ts.session)
+    in TcpTransportState { session = r.session, recv-buf = [], recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+
+  transport-close : TcpTransportState -> TcpTransportState
+  transport-close (ts) =
+    let r = net-close (ts.session)
+    in TcpTransportState { session = r.session, recv-buf = [], recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+
+Section: Stats
+  transport-stats : TcpTransportState -> Text
+  transport-stats (ts) = "sent=" & show (ts.messages-sent) & " recv=" & show (ts.messages-received) & " buf=" & show (list-length (ts.recv-buf))
+
+Page 1
